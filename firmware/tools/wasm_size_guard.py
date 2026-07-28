@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bundle-size budget for the browser conversion bridge (`firmware/obc-web-convert`, #896).
+"""Bundle-size budget for the browser conversion bridge (`apps/obc-web-convert`, #896).
 
 This artifact is what a visitor downloads the moment they drop a route on the hosted builder (the
 frontend loads it through a dynamic import, so it is its own chunk, not part of the initial page).
@@ -72,7 +72,7 @@ def main() -> int:
     parser.add_argument(
         "--pkg",
         type=Path,
-        default=Path("packer/web_builder/frontend/src/lib/convert/pkg"),
+        default=Path("builder/app/src/lib/convert/pkg"),
         help="the wasm-pack output directory (default: the frontend's checked-out location)",
     )
     args = parser.parse_args()

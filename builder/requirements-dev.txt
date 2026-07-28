@@ -1,0 +1,8 @@
+# Test-only deps for builder/tests. Kept out of requirements.txt so a web-builder
+# install (and the site deploy, which uses requirements-static.txt) does not pull a
+# test runner it never uses.
+-r requirements.txt
+pytest>=8.0.0
+# FastAPI's TestClient is a thin httpx wrapper — the pure /api/schema and /api/presets
+# endpoint tests need it, and fastapi does not depend on it itself.
+httpx>=0.27.0

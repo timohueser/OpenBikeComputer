@@ -1,6 +1,6 @@
 //! Shared-fixture pin for the OBCU update container (`OBCU_Spec.md` §1).
 //!
-//! The checked-in `protocol-vectors/update-container-v1.bin` is a full `UPDATE.BIN`
+//! The checked-in `specs/vectors/update-container-v1.bin` is a full `UPDATE.BIN`
 //! (64-byte header + 128-byte raw image). This test decodes it through the
 //! production [`ImageHeader::decode`] and verifies both CRCs — the same bytes the
 //! iOS companion's `OBCUHeader` decoder pins in `OBCUHeaderTests` and the
@@ -9,10 +9,10 @@
 
 use obc_dfu::{crc32, ImageHeader, HEADER_LEN};
 
-/// `protocol-vectors/update-container-v1.bin`, resolved from this crate's root
+/// `specs/vectors/update-container-v1.bin`, resolved from this crate's root
 /// (`firmware/obc-dfu` → repo root).
 fn container() -> Vec<u8> {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../protocol-vectors/update-container-v1.bin");
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../specs/vectors/update-container-v1.bin");
     std::fs::read(&path).unwrap_or_else(|e| {
         panic!("fixture {} unreadable ({e}) — run `cargo test -p obc-vectors regenerate -- --ignored`", path.display())
     })

@@ -1,8 +1,8 @@
 # cargo-deny: supply-chain gate for both cargo roots (the firmware workspace and the
 # standalone obc-fw-nrf54l board crate). Run from the repo root against each lockfile:
-#   cargo deny --manifest-path firmware/Cargo.toml --all-features check
+#   cargo deny --all-features check
 #   cargo deny --manifest-path firmware/obc-fw-nrf54l/Cargo.toml --all-features check
-#   cargo deny --manifest-path firmware/obc-desktop/Cargo.toml --all-features check
+#   cargo deny --manifest-path apps/obc-desktop/Cargo.toml --all-features check
 # Checks advisories (RustSec), licenses, banned crates, and dependency sources.
 #
 # ONE THING THIS FILE CANNOT SEE, so it is written down here (#907): `geos-src`

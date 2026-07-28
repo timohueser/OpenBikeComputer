@@ -66,7 +66,18 @@ jobs:
           filters: |
             rust:
               - 'firmware/**'
-              - 'packer/presets/**'
+              # host/ holds the packer, the bench + its golden hashes, and the test oracles
+              # (obcm-testkit, obc-vectors) that firmware crates dev-depend on.
+              - 'host/**'
+              # apps/ holds the four shells: the simulator, both wasm hosts, and the Tauri app.
+              - 'apps/**'
+              - 'builder/presets/**'
+              # builder/tests/ drives the real obc-pack binary and the builder's pure API
+              # endpoints, so the packer, the presets it round-trips, and the server module
+              # under test all have to be able to trigger it.
+              - 'builder/tests/**'
+              - 'builder/server/*.py'
+              - 'builder/requirements*.txt'
               - 'rust-toolchain.toml'
               - 'deny.toml'
               - '.github/workflows/ci.yml'
@@ -76,6 +87,8 @@ jobs:
               - '.github/workflows/ci.yml'
             wasm:
               - 'firmware/**'
+              - 'host/**'
+              - 'apps/**'
               - 'docs/**'
               # The root cargo config is gone (`MapCache::new_boxed` removed the wasm
               # shadow-stack flag it carried — PRs #661/#666), but rustflags placed there
@@ -89,30 +102,32 @@ jobs:
             desktop:
               # The Tauri shell embeds the built frontend and links obc-pack, so it
               # breaks from either side.
-              - 'firmware/obc-desktop/**'
-              - 'firmware/obc-pack/**'
-              - 'packer/web_builder/frontend/**'
-              - 'packer/presets/**'
+              - 'apps/obc-desktop/**'
+              - 'host/obc-pack/**'
+              - 'builder/app/**'
+              - 'builder/presets/**'
               # The GEOS smoke test (#907) packs this fixture with that preset and
               # pins the digest, so either one moving must re-run the three-platform
               # matrix rather than leaving a stale hash asserted.
-              - 'packer/tests/corpus/**'
-              - 'packer/palette.json'
+              - 'builder/tests/corpus/**'
+              - 'builder/palette.json'
               - 'rust-toolchain.toml'
               - '.github/workflows/ci.yml'
             web:
-              - 'packer/web_builder/frontend/**'
+              - 'builder/app/**'
               # The frontend now embeds firmware code: obc-web-convert (#896) compiles the shared
               # obc-route conversion path to wasm and the builder imports it, so any shared-crate
-              # change can move those bytes. Its byte-identity guard reads protocol-vectors/, and
+              # change can move those bytes. Its byte-identity guard reads specs/vectors/, and
               # the toolchain file picks the compiler that produces the module.
               - 'firmware/**'
-              - 'protocol-vectors/**'
+              - 'host/**'
+              - 'apps/**'
+              - 'specs/vectors/**'
               - 'rust-toolchain.toml'
               - '.github/workflows/ci.yml'
 
   # cargo fmt --check for all three manifests. rustfmt walks up from each file and finds the
-  # shared firmware/rustfmt.toml, so the excluded crates inherit it; the virtual workspace
+  # shared rustfmt.toml at the repo root, so the excluded crates inherit it; the virtual workspace
   # manifest needs `--all`, the board crate + bootloader are checked on their own.
   fmt:
     needs: changes
@@ -127,7 +142,7 @@ jobs:
         run: |
           rc=0
           echo "::group::firmware workspace"
-          cargo fmt --all --check --manifest-path firmware/Cargo.toml || rc=1
+          cargo fmt --all --check || rc=1
           echo "::endgroup::"
           echo "::group::obc-fw-nrf54l (workspace-excluded)"
           cargo fmt --check --manifest-path firmware/obc-fw-nrf54l/Cargo.toml || rc=1
@@ -136,7 +151,7 @@ jobs:
           cargo fmt --check --manifest-path firmware/obc-boot/Cargo.toml || rc=1
           echo "::endgroup::"
           echo "::group::obc-desktop (workspace-excluded)"
-          cargo fmt --check --manifest-path firmware/obc-desktop/Cargo.toml || rc=1
+          cargo fmt --check --manifest-path apps/obc-desktop/Cargo.toml || rc=1
           echo "::endgroup::"
           exit $rc
 
@@ -152,13 +167,13 @@ jobs:
           cache: false
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: firmware
+          workspaces: .
           key: host
       # Native host build: system libGEOS (built from source — apt's is too old) + serialport/
       # eframe system libs. See .github/actions/setup-host-deps.
       - uses: ./.github/actions/setup-host-deps
       - name: cargo clippy (workspace, all targets + features)
-        run: cargo clippy --manifest-path firmware/Cargo.toml --workspace --all-targets --all-features --locked -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
   # The 251-test shared render + packer suite — the real safety net.
   test:
@@ -172,13 +187,13 @@ jobs:
           cache: false
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: firmware
+          workspaces: .
           key: host
       # Native host build: system libGEOS (built from source — apt's is too old) + serialport/
       # eframe system libs. See .github/actions/setup-host-deps.
       - uses: ./.github/actions/setup-host-deps
       - name: cargo test (workspace, all features)
-        run: cargo test --manifest-path firmware/Cargo.toml --workspace --all-features --locked
+        run: cargo test --workspace --all-features --locked
       - name: firmware resource/dependency tool unit tests
         run: python3 -m unittest discover -s firmware/tools/tests -v
       - name: firmware production dependency direction
@@ -188,7 +203,21 @@ jobs:
       # file. Timings are printed to the log but never gated (shared runners are noisy); an
       # intentional rendering change regenerates hashes.txt (--write-hashes) in the same PR.
       - name: obc-bench --check (render pixel-hash tripwire)
-        run: cargo run --manifest-path firmware/Cargo.toml -p obc-bench --release --locked -- --check firmware/obc-bench/hashes.txt
+        run: cargo run -p obc-bench --release --locked -- --check host/obc-bench/hashes.txt
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Routing-profile round-trips through the builder's pack path. These shell out to the
+      # real obc-pack binary over the tiny corpus and byte-compare the §8.6 profile table
+      # against independently quantized expectations — so they pin the packer's writer
+      # against the spec rather than against itself — plus the pure /api/schema and
+      # /api/presets endpoints via FastAPI's TestClient. The suite existed and passed but no
+      # workflow ran it; requirements-dev.txt is what makes it installable.
+      - name: web-builder packer tests (pytest)
+        run: |
+          pip install -r builder/requirements-dev.txt
+          cargo build -p obc-pack --release --locked
+          PYTHONPATH=. python3 -m pytest builder/tests/ -v
 
   # The real device board crate (nRF54L15) on its thumbv8m target: clippy each feature config + a
   # release build of the shipping default. Build-only (no board in CI). Each leg runs from the crate
@@ -335,10 +364,10 @@ jobs:
           cache: false
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: firmware
+          workspaces: .
           key: thumbv8m
       - name: cargo build -p obc-app (thumbv8m.main, nRF54L)
-        run: cargo build --manifest-path firmware/Cargo.toml -p obc-app --target thumbv8m.main-none-eabihf --locked
+        run: cargo build -p obc-app --target thumbv8m.main-none-eabihf --locked
       - name: thumbv8m +strict-align backend probe
         run: python3 firmware/tools/resource_guard.py strict-align
 
@@ -356,7 +385,7 @@ jobs:
         with:
           tool: cargo-deny
       - name: cargo-deny (firmware workspace)
-        run: cargo deny --manifest-path firmware/Cargo.toml --all-features --config deny.toml check
+        run: cargo deny --all-features --config deny.toml check
       - name: cargo-deny (obc-fw-nrf54l board crate)
         run: cargo deny --manifest-path firmware/obc-fw-nrf54l/Cargo.toml --all-features --config deny.toml check
       - name: cargo-deny (obc-boot bootloader)
@@ -364,12 +393,12 @@ jobs:
       # The desktop shell is the one artifact a *user* installs, so its tree is the
       # one where a bad licence or a live advisory matters most.
       - name: cargo-deny (obc-desktop app)
-        run: cargo deny --manifest-path firmware/obc-desktop/Cargo.toml --all-features --config deny.toml check
+        run: cargo deny --manifest-path apps/obc-desktop/Cargo.toml --all-features --config deny.toml check
 
-  # The web demo (firmware/obc-web-demo) is the firmware's own render path compiled to wasm
+  # The web demo (apps/obc-web-demo) is the firmware's own render path compiled to wasm
   # behind a thin JS-driven host; build it on PRs (not just on the deploy-to-Pages push) so a
   # wasm-only breakage — bindgen surface, embedded assets, Trunk config — is caught before merge.
-  # (The `wasm` path filter's firmware/** covers firmware/obc-web-demo/** and every shared crate.)
+  # (The `wasm` path filter's firmware/** covers apps/obc-web-demo/** and every shared crate.)
   wasm:
     needs: changes
     if: needs.changes.outputs.wasm == 'true'
@@ -381,7 +410,7 @@ jobs:
           cache: false
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: firmware
+          workspaces: .
           key: wasm
       - uses: taiki-e/install-action@v2
         with:
@@ -389,7 +418,7 @@ jobs:
       - name: trunk build (obc-web-demo → wasm)
         run: trunk build --config docs/Trunk.toml
 
-  # The hosted builder's conversion bridge (firmware/obc-web-convert, #896): the shared obc-route
+  # The hosted builder's conversion bridge (apps/obc-web-convert, #896): the shared obc-route
   # GPX↔OBCR path compiled to wasm so route conversion runs client-side and the hosted tier needs
   # no backend at all. Two things happen here and the order matters:
   #
@@ -412,22 +441,22 @@ jobs:
           cache: false
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: firmware
+          workspaces: .
           key: wasm-convert
       - uses: taiki-e/install-action@v2
         with:
           tool: wasm-pack@0.15.0
       - name: wasm-pack build (obc-web-convert → wasm)
         run: |
-          wasm-pack build firmware/obc-web-convert --release --target web \
-            --out-dir ../../packer/web_builder/frontend/src/lib/convert/pkg \
+          wasm-pack build apps/obc-web-convert --release --target web \
+            --out-dir ../../builder/app/src/lib/convert/pkg \
             --out-name obc_web_convert
       - name: bundle-size budget
         run: python3 firmware/tools/wasm_size_guard.py
       - uses: actions/upload-artifact@v4
         with:
           name: obc-web-convert-pkg
-          path: packer/web_builder/frontend/src/lib/convert/pkg
+          path: builder/app/src/lib/convert/pkg
           retention-days: 1
 
   # Render the docs site (stdlib-only Python, no pip) and fail on error, plus the cross-page
@@ -528,18 +557,18 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: packer/web_builder/frontend
+        working-directory: builder/app
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: obc-web-convert-pkg
-          path: packer/web_builder/frontend/src/lib/convert/pkg
+          path: builder/app/src/lib/convert/pkg
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: packer/web_builder/frontend/package-lock.json
+          cache-dependency-path: builder/app/package-lock.json
       - run: npm ci
       - name: svelte-check
         run: npm run check
@@ -548,17 +577,17 @@ jobs:
       - name: production builds (dev + web + desktop hosts)
         run: npm run build:all
 
-  # The Tauri desktop shell (firmware/obc-desktop, #906). Workspace-excluded like the
+  # The Tauri desktop shell (apps/obc-desktop, #906). Workspace-excluded like the
   # board crate and the bootloader, and for the same kind of reason: Tauri drags in
   # wry and a platform webview, and putting WebKitGTK's headers in the way of
   # `cargo test` for the renderer helps nobody.
   #
-  # It is also the one Rust job that needs Node, because `tauri::generate_context!`
-  # *embeds* the built frontend — so a desktop build genuinely fails when either half
-  # breaks, which is the point of building it here rather than trusting that two
-  # green halves make a green whole. The wasm bridge comes from `wasm-convert` for the
-  # same reason the `web` job takes it: the frontend imports it, so `build:desktop`
-  # cannot run without it.
+  # `tauri::generate_context!` *embeds* the built frontend, so a desktop build
+  # genuinely fails when either half breaks — which is the point of building it here
+  # rather than trusting that two green halves make a green whole. The bundle itself
+  # comes from `desktop-frontend` above (built once, on Linux); the wasm bridge it
+  # imports comes from `wasm-convert`, for the same reason the `web` job takes it.
+  # No leg of this matrix runs Node.
   #
   # Build-only plus tests: the `#[ignore]`d ones pack a real region off the network
   # and belong on a developer's machine, not in CI.
@@ -583,8 +612,40 @@ jobs:
   # `geos_smoke.rs` is the acceptance test — it packs the checked-in fixture through
   # the linked GEOS and pins the digest, so all three platforms assert the *same*
   # bytes. Linking is not evidence that the geometry runs.
-  desktop:
+  # The bundle the Tauri shell embeds. Built once, on Linux, and handed to all three
+  # legs of `desktop` below: it is a Vite build of the same sources whatever runner
+  # produces it, so building it per-platform bought nothing and cost three `npm ci`
+  # runs and a Node toolchain on each. Split out rather than folded into `web`
+  # because that job builds the *web* host and runs the test suite; this is one
+  # `--mode desktop` bundle and nothing else.
+  desktop-frontend:
     needs: [changes, wasm-convert]
+    if: needs.changes.outputs.desktop == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: obc-web-convert-pkg
+          path: builder/app/src/lib/convert/pkg
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: builder/app/package-lock.json
+      - name: Build the desktop bundle
+        working-directory: builder/app
+        run: |
+          npm ci
+          npm run build:desktop
+      - uses: actions/upload-artifact@v4
+        with:
+          name: obc-desktop-frontend
+          path: builder/app/dist/desktop
+          retention-days: 1
+
+  desktop:
+    needs: [changes, desktop-frontend]
     if: needs.changes.outputs.desktop == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
@@ -614,7 +675,7 @@ jobs:
           cache: false
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: firmware/obc-desktop
+          workspaces: apps/obc-desktop
           key: desktop-${{ matrix.slug }}
       # wry's Linux backend. macOS and Windows need nothing extra — which is most of
       # why Tauri was chosen over Electron (#906) — but Linux wants WebKitGTK.
@@ -625,39 +686,41 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev \
             libjavascriptcoregtk-4.1-dev libgtk-3-dev librsvg2-dev
+      # The bundle the shell embeds, built once on Linux by `desktop-frontend` and
+      # unpacked here. It is byte-identical on all three runners — a Vite build of the
+      # same sources — so building it per-platform was three runs of `npm ci` and
+      # three Node toolchains for one output. Landing it at the path tauri.conf.json's
+      # `frontendDist` names is the whole integration; nothing here runs npm, and the
+      # `beforeBuildCommand` in that file is never executed (there is no Tauri CLI in
+      # this repo — see the note above about `custom-protocol`).
       - uses: actions/download-artifact@v4
         with:
-          name: obc-web-convert-pkg
-          path: packer/web_builder/frontend/src/lib/convert/pkg
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: packer/web_builder/frontend/package-lock.json
-      - name: Build the frontend the shell embeds
-        working-directory: packer/web_builder/frontend
-        run: |
-          npm ci
-          npm run build:desktop
+          name: obc-desktop-frontend
+          path: builder/app/dist/desktop
+      # Order matters. `cargo test` never produces the plain binary — even with
+      # --all-targets it builds bins as *test harnesses*, a different artifact — so the
+      # `build` below is a full codegen + link either way. Running it first means the
+      # normal lib it produces is already there for `test` to link against, instead of
+      # `test` building one set of artifacts and `build` starting a second.
       - name: "obc-desktop: clippy"
-        working-directory: firmware/obc-desktop
+        working-directory: apps/obc-desktop
         run: cargo clippy --release --all-targets --locked -- -D warnings
+      - name: "obc-desktop: build (release)"
+        working-directory: apps/obc-desktop
+        run: cargo build --release --locked
       # The GEOS smoke test lives here: packs the fixture through the vendored
       # library and asserts the digest. --nocapture so the log records the digest
       # and the linked GEOS version even on a green run.
       - name: "obc-desktop: test (incl. the GEOS smoke test)"
-        working-directory: firmware/obc-desktop
+        working-directory: apps/obc-desktop
         run: cargo test --release --locked -- --nocapture
-      - name: "obc-desktop: build (release)"
-        working-directory: firmware/obc-desktop
-        run: cargo build --release --locked
       # A dynamic reference to libGEOS here would mean the app only works on a
       # machine that already has it — the exact failure D2 exists to remove. On
       # Windows there is nothing to check: a missing DLL is a load failure, so the
       # smoke test above could not have run at all.
       - name: "obc-desktop: no dynamic libGEOS"
         if: runner.os != 'Windows'
-        working-directory: firmware/obc-desktop
+        working-directory: apps/obc-desktop
         run: |
           bin="target/release/${{ matrix.exe }}"
           if [ "$RUNNER_OS" = "macOS" ]; then deps=$(otool -L "$bin"); else deps=$(ldd "$bin"); fi
@@ -670,23 +733,30 @@ jobs:
       # +1.2 MB the static GEOS costs is the number the alternative — shipping a
       # dylib beside the app — has to beat.
       - name: "obc-desktop: record the artifact size"
-        working-directory: firmware/obc-desktop
+        working-directory: apps/obc-desktop
         run: |
           bytes=$(wc -c < "target/release/${{ matrix.exe }}")
           echo "| ${{ matrix.slug }} | $bytes bytes |" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: obc-desktop-${{ matrix.slug }}
-          path: firmware/obc-desktop/target/release/${{ matrix.exe }}
+          path: apps/obc-desktop/target/release/${{ matrix.exe }}
           retention-days: 7
       # macOS ships two architectures and this crate is built on the Apple-silicon
       # runner, so the Intel slice is proved by *cross-building* it: enough to know
       # the vendored GEOS still configures, compiles and links for x86_64, which is
       # the part that would break. It is not run — a universal `lipo`'d bundle is
       # D3's (#908) job, and this step is what keeps that option open.
+      #
+      # **Push events only, not pull requests.** A second target triple means a second
+      # vendored GEOS and a second full dependency tree: measured at 415 s on a cold
+      # cache, the largest single step in this workflow and about 40 % of the macOS
+      # leg. It is build-only insurance for a future universal bundle, not a
+      # correctness gate on the app anyone runs, so it belongs off the per-PR path —
+      # a merge to develop still catches an x86_64 vendoring break within one commit.
       - name: "obc-desktop: the macOS Intel slice (build-only)"
-        if: runner.os == 'macOS'
-        working-directory: firmware/obc-desktop
+        if: runner.os == 'macOS' && github.event_name == 'push'
+        working-directory: apps/obc-desktop
         run: |
           rustup target add x86_64-apple-darwin
           cargo build --release --locked --target x86_64-apple-darwin
@@ -694,7 +764,7 @@ jobs:
 
   ci:
     if: always()
-    needs: [changes, fmt, clippy, test, embedded, boot, device, deny, wasm, wasm-convert, docs, ios-unit, ios-app, web, desktop]
+    needs: [changes, fmt, clippy, test, embedded, boot, device, deny, wasm, wasm-convert, docs, ios-unit, ios-app, web, desktop-frontend, desktop]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all required jobs succeeded (or were skipped)

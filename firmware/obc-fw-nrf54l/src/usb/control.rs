@@ -8,7 +8,7 @@
 //! becomes.
 //!
 //! **Every control frame is `selector u8 · payload`, where the payload is the exact bytes the
-//! corresponding GATT characteristic carries** — the same bytes `protocol-vectors/` pins and that
+//! corresponding GATT characteristic carries** — the same bytes `specs/vectors/` pins and that
 //! the firmware and iOS already encode. Nothing about the object model, the descriptors, the status
 //! envelope, the commands or the CRC changes.
 //!

@@ -28,8 +28,8 @@ maps: a self-contained LOD pyramid of quadtree-indexed geometry) and **OBCR**
 be read *directly* off flash by a microcontroller, with no JSON, reparsing, or
 heap churn. How they work: the
 [data-formats guide](https://timohueser.github.io/OpenBikeComputer/software/formats/);
-the normative byte layouts: [`OBCM_Spec.md`](OBCM_Spec.md) /
-[`OBCR_Spec.md`](OBCR_Spec.md).
+the normative byte layouts: [`OBCM_Spec.md`](specs/OBCM_Spec.md) /
+[`OBCR_Spec.md`](specs/OBCR_Spec.md).
 
 ---
 
@@ -37,39 +37,58 @@ the normative byte layouts: [`OBCM_Spec.md`](OBCM_Spec.md) /
 
 | Path | What it is |
 | :-- | :-- |
-| `firmware/` | Rust workspace — the device app, the desktop simulator, the shared reader/renderer, and the map packer. See [`firmware/README.md`](firmware/README.md). |
-| `firmware/obc-formats/` | Dependency-free `no_std` persistent-format authority — versions, fixed layouts, flags, sentinels, primitive codecs, and the shared byte-I/O seam. |
-| `firmware/obc-ports/` | Dependency-free `no_std` semantic ports — fixes, sensor/input/settings traits, clocks, and recorded-track points shared without depending upward on app, platform, or host policy. |
-| `firmware/obc-map-scene/` | Dependency-light `no_std` streamed map-scene seam — neutral bounds/styles plus allocation-free candidate/decode visitors shared by map sources and the renderer. |
-| `firmware/obc-reader/` | `no_std + alloc` — pure OBCM **v5** parsing (header, style table, LOD table, per-LOD quadtree query + chunk decode). Dependency-light. |
-| `firmware/obc-route/` | `no_std` — the OBCR route reader **and** the GPX → OBCR converter. |
-| `firmware/obc-render/` | `no_std` — the **shared rendering path**: `Viewport` projection, meters-per-pixel LOD selection, painter z-ordering, even-odd scanline polygon fill, weighted polylines, text. Generic over an `embedded-graphics` `DrawTarget` so host and MCU run identical drawing code. |
+| `firmware/` | The crates the **device image actually reaches** — nothing else. See [`firmware/README.md`](firmware/README.md). |
+| `firmware/docs/` | Hardware notes that live nowhere else — the LS021 bring-up log, the FLPR blob's timing policy — plus the frozen resource baseline. Concepts belong on the [docs site](https://timohueser.github.io/OpenBikeComputer/), not here. |
 | `firmware/obc-app/` | `no_std` — the **application layer**: camera, camera mode (follow-user / free), screen stack, input model, route tracking, plus compatibility re-exports of `obc-ports`. One per-frame entry point (`App::render_frame`) both hosts call. Builds for `thumbv8m.main-none-eabihf`. |
-| `firmware/obc-sim/` | Desktop **simulator host** (eframe/egui, pure Rust — no SDL): renders `obc-app` into a framebuffer at the device's 240×320 / 64-color look, plus a control panel, GPX replay, and headless capture. |
-| `firmware/obc-web-demo/` | The website's **live-demo host**: the same shared crates compiled to wasm behind a small `obc_demo_*` API — the landing page's JS owns the frame loop and canvas, no GUI framework in the tree. |
-| `firmware/obc-web-convert/` | The web builder's **conversion bridge**: `obc-route`'s GPX → OBCR and track → GPX compiled to wasm behind two functions and a typed error, so route conversion runs in the visitor's browser instead of on a server. |
-| `firmware/obc-host-core/` | Host glue **shared by the two simulator hosts** (desktop + web): GPX replay stepping, the frame-interleaved route planner, in-memory stores. |
-| `firmware/obc-pack/` | The **map packer** (Rust): OSM `.osm.pbf` → `.obcm` — ingest, multipolygon assembly, land generation, quadtree build, streaming serialize. |
-| `packer/presets/` | Style presets — complete packer configs (features + LODs + marker, plus a `_meta` block). `default.json` ("Bikepacking") is the read-only factory default; `minimal.json` and `high-detail.json` ship alongside. |
-| `packer/palette.json` | The device's 64-color (RGB222) gamut, offered as the web builder's default color picker so the editor and the panel agree. |
-| `packer/web_builder/` | **Web builder** (FastAPI): pick regions on a map, edit styles, and build an `.obcm` in the browser — shells out to `obc-pack`. |
 | `firmware/obc-ble/` | `no_std` — the **BLE data-plane core** (epic #267): the S0 control-plane descriptor codecs, CRC-32, list objects, and the whole-object transfer state machine. Radio-free and host-tested; the board crate drives the L2CAP bytes through it. |
-| `firmware/obc-dfu/` | `no_std` — the **SD-staged DFU core** (epic #615): the `OBCU` update-image container + boot-state page codecs, the bootloader's install engine (verify → flash → readback → trial/rollback), and the app-side armer. Host-tested with mock IO; both `obc-boot` and the board crate are thin drivers over it. |
-| `firmware/obc-mkimage/` | Host tool (`wrap` / `inspect`) — prepends the 64-byte `OBCU` header to a raw app image to make an `UPDATE.BIN`, and decodes + CRC-verifies one. The release pipeline's image producer. |
 | `firmware/obc-boot/` | The **32 KB nRF54L bootloader** — reads the `BOOT_STATE` page, runs `obc-dfu`'s install engine, flashes the app slot via RRAMC (LED codes, no display). Workspace-excluded + standalone like the board crate; flashed once. |
+| `firmware/obc-dfu/` | `no_std` — the **SD-staged DFU core** (epic #615): the `OBCU` update-image container + boot-state page codecs, the bootloader's install engine (verify → flash → readback → trial/rollback), and the app-side armer. Host-tested with mock IO; both `obc-boot` and the board crate are thin drivers over it. |
+| `firmware/obc-formats/` | Dependency-free `no_std` persistent-format authority — versions, fixed layouts, flags, sentinels, primitive codecs, and the shared byte-I/O seam. |
+| `firmware/obc-fw-nrf54l/` | The **nRF54L15 board crate** — the real device target, driving the LS021 panel through the FLPR coprocessor. Its own cargo root (own target + `.cargo/config.toml`), built on its own. |
+| `firmware/obc-map-scene/` | Dependency-light `no_std` streamed map-scene seam — neutral bounds/styles plus allocation-free candidate/decode visitors shared by map sources and the renderer. |
+| `firmware/obc-platform/`, `obc-display/`, `obc-sensors/`, `obc-storage/` | The **platform adapters** beneath the app facade: concrete implementations of the semantic ports, the display seam and its `ls021` geometry, sensor plumbing, and the SD/RRAM stores. |
+| `firmware/obc-ports/` | Dependency-free `no_std` semantic ports — fixes, sensor/input/settings traits, clocks, and recorded-track points shared without depending upward on app, platform, or host policy. |
+| `firmware/obc-reader/` | `no_std + alloc` — pure OBCM **v5** parsing (header, style table, LOD table, per-LOD quadtree query + chunk decode). Dependency-light. |
+| `firmware/obc-render/` | `no_std` — the **shared rendering path**: `Viewport` projection, meters-per-pixel LOD selection, painter z-ordering, even-odd scanline polygon fill, weighted polylines, text. Generic over an `embedded-graphics` `DrawTarget` so host and MCU run identical drawing code. |
+| `firmware/obc-route/` | `no_std` — the OBCR route reader **and** the GPX → OBCR converter. |
+| `host/obc-bench/` | The **render benchmark + pixel-hash tripwire**: seven fixed scenes through the real pipeline, timings printed and frame hashes gated against `hashes.txt` in CI. |
+| `host/obc-host-core/` | Host glue **shared by the two simulator hosts** (desktop + web): GPX replay stepping, the frame-interleaved route planner, in-memory stores. |
+| `host/obc-mkimage/` | Host tool (`wrap` / `inspect`) — prepends the 64-byte `OBCU` header to a raw app image to make an `UPDATE.BIN`, and decodes + CRC-verifies one. The release pipeline's image producer. |
+| `host/obc-pack/` | The **map packer** (Rust): OSM `.osm.pbf` → `.obcm` — ingest, multipolygon assembly, land generation, quadtree build, streaming serialize. |
+| `host/obc-replay/`, `host/obc-usb-host/` | GPX replay stepping shared by the simulator hosts, and the VCOM feeder that drives a debug-uart board from a recorded ride. |
+| `host/obcm-testkit/`, `host/obc-vectors/` | The **test oracles**. `obcm-testkit` hand-assembles OBCM bytes from the spec's constants — deliberately independent of the production serializer, so reader tests prove agreement with the *format* rather than with the writer. `obc-vectors` builds the shared `specs/vectors/` fixtures. |
+| `apps/obc-desktop/` | The **Tauri desktop app**: the builder UI in a native window with `obc-pack` linked in and a vendored GEOS, plus the thumbdrive device page. Its own cargo root, like the board crate. |
+| `apps/obc-sim/` | Desktop **simulator host** (eframe/egui, pure Rust — no SDL): renders `obc-app` into a framebuffer at the device's 240×320 / 64-color look, plus a control panel, GPX replay, and headless capture. |
+| `apps/obc-web-convert/` | The web builder's **conversion bridge**: `obc-route`'s GPX → OBCR and track → GPX compiled to wasm behind two functions and a typed error, so route conversion runs in the visitor's browser instead of on a server. |
+| `apps/obc-web-demo/` | The website's **live-demo host**: the same shared crates compiled to wasm behind a small `obc_demo_*` API — the landing page's JS owns the frame loop and canvas, no GUI framework in the tree. |
+| `builder/` | The **map builder** — one Svelte app in `app/`, three hosts (static web, Tauri desktop, and the FastAPI dev server in `server/`). Nothing here packs anything: they all drive `host/obc-pack`. |
+| `builder/app/` | The shared **Svelte UI**. `vite.config.ts` resolves `$host` at build time to exactly one of `web.ts` / `desktop.ts` / `dev.ts`, so the hosts you didn't build have no path into the bundle. |
+| `builder/palette.json` | The device's 64-color (RGB222) gamut, offered as the web builder's default color picker so the editor and the panel agree. |
+| `builder/presets/` | Style presets — complete packer configs (features + LODs + marker, plus a `_meta` block). `default.json` ("Bikepacking") is the read-only factory default; `minimal.json` and `high-detail.json` ship alongside. |
+| `builder/server/` | **Web builder** (FastAPI): pick regions on a map, edit styles, and build an `.obcm` in the browser — shells out to `obc-pack`. |
 | `companion-ios/` | The **iOS companion app** (SwiftUI + the `OBCKit` package): import GPX/TCX, encode OBCR, and sync routes/rides with the device over BLE. |
-| `protocol-vectors/` | Shared binary fixtures pinning the BLE wire contract, the OBCR route format and the recorded-track log + its GPX export — asserted byte-exact by `cargo test`, `swift test`, and the web builder's wasm conversion tests. |
-| `OBCM_Spec.md` / `OBCR_Spec.md` / `OBCU_Spec.md` / `obc-ble-interface-spec.md` | The binary map / route / firmware-update-image format specifications and the BLE wire contract. |
-| `OBCC_Spec.md` | The **map catalog manifest** — the JSON contract between a map bakery and the sites/apps that hand artifacts to a device, and the OBCM version law that keeps them honest. |
-| `firmware/docs/`, `packer/docs/` | Design notes and handover docs (UI spec, rendering pipeline, line-style plans, packer port stages…). |
+| `specs/vectors/` | The **executable half of the specs** — shared binary fixtures pinning the BLE wire contract, the OBCR route format and the recorded-track log + its GPX export — asserted byte-exact by `cargo test`, `swift test`, and the web builder's wasm conversion tests. |
+| `tools/` | Dev scripts: the `justfile` behind `obc <task>`, the GEOS and RISC-V toolchain installers, and shell completion. |
+| `docs/` | The public docs site — `content/` is the source, `index.html` the landing page with the live wasm demo. |
+| `specs/` | The **normative contracts**, in one place because all three languages read them. `OBCM_Spec.md` / `OBCR_Spec.md` / `OBCU_Spec.md` are the binary map / route / firmware-update-image layouts; `obc-ble-interface-spec.md` is the BLE wire contract; `OBCC_Spec.md` is the map catalog manifest — the JSON contract between a map bakery and the sites/apps that hand artifacts to a device, plus the OBCM version law that keeps them honest. The docs site's pages are the readable tours; these are the byte tables they link to. |
 
-The crate dependency direction includes `obc-sim → obc-app → obc-render → obc-map-scene`,
-with `obc-reader → obc-map-scene` independently adapting streamed OBCM data. The
-dependency-light `obc-formats`, `obc-map-scene`, and `obc-ports` foundations sit beneath the
-reader/route, renderer, and app/route layers respectively.
-The nRF54L firmware and the website's
-`obc-web-demo` are *sibling hosts* beside `obc-sim`, reusing
-`obc-app` / `obc-render` / `obc-reader` / `obc-route` unchanged.
+The split between the three Rust trees is **computed, not judged**: a crate lives in
+`firmware/` if and only if the device image reaches it through normal dependencies.
+Everything else is a tool (`host/`) or a shell (`apps/`). Dev-dependencies are allowed to
+cross the line — `obc-render` tests against `obcm-testkit`, `obc-route` against `obc-pack` —
+because a dev-dep never touches the `no_std` build.
+
+The dependency direction includes `obc-sim → obc-app → obc-render → obc-map-scene`, with
+`obc-reader → obc-map-scene` independently adapting streamed OBCM data. The dependency-light
+`obc-formats`, `obc-map-scene`, and `obc-ports` foundations sit beneath the reader/route,
+renderer, and app/route layers respectively. The nRF54L firmware and the website's
+`obc-web-demo` are *sibling hosts* beside `obc-sim`, reusing `obc-app` / `obc-render` /
+`obc-reader` / `obc-route` unchanged. `firmware/tools/check_dependencies.py` enforces the
+whole layering mechanically, and CI runs it.
+
+One cargo workspace spans all three trees, rooted at `Cargo.toml` here — so one `Cargo.lock`
+and one `target/`. Three crates stand outside it, each because it drags a toolchain the rest
+has no use for: `obc-fw-nrf54l`, `obc-boot`, and `obc-desktop`.
 
 ---
 
@@ -79,9 +98,9 @@ The nRF54L firmware and the website's
 | :-- | :-- |
 | Building anything Rust | A stable Rust toolchain (`rustup`). |
 | The packer (`obc-pack`) | System **GEOS ≥ 3.14** (`brew install geos`; `tools/install-geos.sh` builds it if your distro's is older) — linked for multipolygon area assembly, and the packer's only native dependency. |
-| The desktop app (`obc-desktop`) | **No GEOS** — it compiles a vendored one into the binary. It wants **CMake** (to build that) and **Node 22+** (it embeds the built frontend) instead. See [its README](firmware/obc-desktop/README.md). |
+| The desktop app (`obc-desktop`) | **No GEOS** — it compiles a vendored one into the binary. It wants **CMake** (to build that) and **Node 22+** (it embeds the built frontend) instead. See [its README](apps/obc-desktop/README.md). |
 | The desktop simulator | Just Rust — the GUI is pure eframe/egui, **no SDL/Homebrew setup**. |
-| The web builder (optional) | Python 3.13 + the deps in `packer/requirements.txt`, and **Node 22+** for the one-time UI build (`npm ci && npm run build` in `packer/web_builder/frontend/`). |
+| The web builder (optional) | Python 3.13 + the deps in `builder/requirements.txt`, and **Node 22+** for the one-time UI build (`npm ci && npm run build` in `builder/app/`). |
 | Checking the shared crates build for the device | `rustup target add thumbv8m.main-none-eabihf`. |
 
 ---
@@ -90,10 +109,10 @@ The nRF54L firmware and the website's
 
 ```sh
 # The whole firmware workspace (simulator + shared crates + packer):
-cd firmware && cargo build --release
+cargo build --release
 ```
 
-This produces, in `firmware/target/release/`:
+This produces, in `target/release/`:
 
 - `obc-sim` — the desktop simulator
 - `obc-pack` — the map packer
@@ -112,7 +131,7 @@ Download an OSM extract (e.g. from [Geofabrik](https://download.geofabrik.de/)),
 then:
 
 ```sh
-firmware/target/release/obc-pack region.osm.pbf packer/presets/default.json region.obcm
+target/release/obc-pack region.osm.pbf builder/presets/default.json region.obcm
 ```
 
 ```
@@ -140,7 +159,7 @@ usage: obc-pack <pbf...> <config.json> <out.obcm> [--bbox W,S,E,N] [--chunk-size
 
 ### The config — features, styles, and LODs
 
-The config JSON (any preset under `packer/presets/`, or your own file) is the
+The config JSON (any preset under `builder/presets/`, or your own file) is the
 single source of truth for *what* gets packed and *how it looks*
 (`obc-pack schema` prints its JSON Schema):
 
@@ -179,7 +198,7 @@ and the untouched artifacts keep reporting the version they were actually built 
 instead of being relabelled with the new one.
 
 The manifest layout, the sidecar, and the version law (an OBCM bump invalidates every
-baked artifact) are normative in [`OBCC_Spec.md`](OBCC_Spec.md); pass
+baked artifact) are normative in [`OBCC_Spec.md`](specs/OBCC_Spec.md); pass
 `--generated-at` in CI to make a re-run byte-reproducible.
 
 ### Web builder
@@ -189,19 +208,19 @@ device palette, watch build progress:
 
 ```sh
 # from the repo root
-.venv/bin/python -m packer.web_builder        # http://localhost:8000
+.venv/bin/python -m builder.server        # http://localhost:8000
 ```
 
 It drives the `obc-pack` binary you built above (override its path with the
 `OBC_PACK_BIN` env var). The UI is a Svelte app compiled once with Node
-(`cd packer/web_builder/frontend && npm ci && npm run build`). Features:
+(`cd builder/app && npm ci && npm run build`). Features:
 
 - **Region picker** — click regions or search the Geofabrik tree; builds stream
   live progress over server-sent events and finish with a download link.
 - **Bounding-box build mode** — draw a crop box on the map and the selected PBFs
   are cropped to it before packing, so you can target a small area precisely.
 - **Style presets** — pick Bikepacking / Minimal / High detail on the main page
-  (the files under `packer/presets/`); the **advanced editor** exposes every
+  (the files under `builder/presets/`); the **advanced editor** exposes every
   knob: per-feature colors / z-order / weights / per-LOD detail, LOD tiers, and
   output settings, with the color picker defaulting to the device's 64-color
   gamut (`palette.json`).
@@ -219,12 +238,12 @@ Downloads, caches, and the build queue are env-configurable (all optional):
 | :-- | :-- | :-- |
 | `OBCM_CACHE_DIR` | `~/.cache/obcm` | Geofabrik index, PBF downloads, land polygons. |
 | `OBCM_OUTPUT_DIR` | `<cache>/builds` | Per-job build outputs, served by the download endpoint. |
-| `OBC_PACK_BIN` | `firmware/target/{release,debug}/obc-pack` | Path to the packer binary. |
+| `OBC_PACK_BIN` | `target/{release,debug}/obc-pack` | Path to the packer binary. |
 | `OBCM_MAX_CONCURRENT_JOBS` | `1` | Parallel packs (obc-pack is memory-hungry). |
 | `OBCM_KEEP_JOBS` | `20` | Finished builds kept before the sweeper evicts by count/age. |
 
-For frontend development, run the API (`.venv/bin/python -m packer.web_builder
---no-browser`) and `npm run dev` in `packer/web_builder/frontend/` side by side —
+For frontend development, run the API (`.venv/bin/python -m builder.server
+--no-browser`) and `npm run dev` in `builder/app/` side by side —
 Vite proxies `/api` to port 8000.
 
 The same Svelte source builds for three hosts, chosen by Vite mode (issue #895).
@@ -233,26 +252,26 @@ Python server mounts:
 
 | Script | Host | Output |
 | :-- | :-- | :-- |
-| `npm run build` | the local FastAPI dev server | `packer/web_builder/static/dist/` |
+| `npm run build` | the local FastAPI dev server | `builder/server/static/dist/` |
 | `npm run build:web` | the static hosted site (no backend) | `frontend/dist/web/` |
 | `npm run build:desktop` | the Tauri desktop app | `frontend/dist/desktop/` |
 
 The static host has no API to call, so it reads two files instead: `regions.json`
 (the trimmed Geofabrik index the picker draws — the same document `/api/regions`
-returns) and `catalog.json` (the [OBCC](OBCC_Spec.md) manifest of pre-baked maps,
+returns) and `catalog.json` (the [OBCC](specs/OBCC_Spec.md) manifest of pre-baked maps,
 produced by `obc-pack catalog`). Both default to `./data/` beside the app;
 `VITE_DATA_BASE` and `VITE_CATALOG_URL` move them. To run that host locally:
 
 ```sh
 # regions.json — needs the packer venv (Geofabrik index + shapely)
-.venv/bin/python -m packer.web_builder.static_data \
-    --out packer/web_builder/frontend/public/data
+.venv/bin/python -m builder.server.static_data \
+    --out builder/app/public/data
 
 # catalog.json — from a bake tree (OBCC_Spec.md §8), pointed at where it is served
-firmware/target/release/obc-pack catalog <bake-tree> \
+target/release/obc-pack catalog <bake-tree> \
     --base-url http://localhost:5173/data
 
-cd packer/web_builder/frontend && npm run dev -- --mode web
+cd builder/app && npm run dev -- --mode web
 ```
 
 `obc site [PORT]` does the built version of all of that in one command: builds the
@@ -285,7 +304,7 @@ the way they will on hardware. It lives outside `src/` because no build has it a
 an input, which is what keeps the simulated device out of every shipped bundle.
 
 ```sh
-cd packer/web_builder/frontend
+cd builder/app
 VITE_DATA_BASE=/data npm run dev -- --mode web   # then open /dev-harness/
 ```
 
@@ -307,13 +326,13 @@ Maps must be **v5**.
 
 ```sh
 # Interactive, simulating the device (240×320, 64 colors), 3× window scale:
-firmware/target/release/obc-sim region.obcm
+target/release/obc-sim region.obcm
 
 # Larger window / different simulated resolution:
-firmware/target/release/obc-sim region.obcm --size 480x640 --scale 2
+target/release/obc-sim region.obcm --size 480x640 --scale 2
 
 # Full color (skip the 64-color quantization) for comparison:
-firmware/target/release/obc-sim region.obcm --true-color
+target/release/obc-sim region.obcm --true-color
 ```
 
 **Interactive controls:** drag to pan, scroll to zoom, Esc/Q to quit. The
@@ -369,7 +388,7 @@ the device writes the bytes to its card verbatim. How the link is shaped — the
 GATT control plane, the L2CAP data plane, pairing and reconnect — is
 [the companion link](https://timohueser.github.io/OpenBikeComputer/software/companion-link/);
 the normative byte contract is
-[`obc-ble-interface-spec.md`](obc-ble-interface-spec.md), and its host-tested
+[`obc-ble-interface-spec.md`](specs/obc-ble-interface-spec.md), and its host-tested
 core (descriptor codecs, CRC-32, the transfer state machine) is
 [`firmware/obc-ble/`](firmware/obc-ble), which rides the normal `cargo test`.
 
@@ -386,7 +405,7 @@ Flashing, the dependency pins, and the on-glass verify steps live in the
 ## Firmware updates
 
 The device updates itself in the field — no probe needed. An update ships as a
-single **`UPDATE.BIN`** file (an [`OBCU`](OBCU_Spec.md) container: a 64-byte
+single **`UPDATE.BIN`** file (an [`OBCU`](specs/OBCU_Spec.md) container: a 64-byte
 header plus the raw app image). The trust model — verify before erase, a single
 trial boot with rollback — is the
 [firmware updates](https://timohueser.github.io/OpenBikeComputer/software/firmware-updates/)
@@ -423,13 +442,13 @@ pipeline) is in the [firmware README](firmware/README.md#firmware-update-images-
 ## Testing
 
 ```sh
-cargo test -p obc-pack --manifest-path firmware/Cargo.toml   # the packer
-cd firmware && cargo test                                    # the whole workspace
+cargo test -p obc-pack   # the packer
+cargo test                                                # the whole workspace
 ```
 
-The `obc-pack` tests use fixtures under `packer/tests/corpus/` — the committed
+The `obc-pack` tests use fixtures under `builder/tests/corpus/` — the committed
 `tiny/tiny.osm` plus a `config.json`. Regenerate the binary fixtures with
-`packer/tests/corpus/build_corpus.sh`, the one thing left in the tree that wants
+`builder/tests/corpus/build_corpus.sh`, the one thing left in the tree that wants
 `osmium-tool` (for `osmium cat`, XML → PBF; it packs no map).
 
 ---
@@ -454,7 +473,7 @@ coprocessor with partial / dirty-row updates.
 styling (dashed / two-color lines — a future OBCM v6 — and road casing).
 
 > The packer was originally a Python pipeline; it has been ported to Rust
-> (`firmware/obc-pack`) and the Python pipeline removed. The port's design notes
+> (`host/obc-pack`) and the Python pipeline removed. The port's design notes
 > live in `packer/docs/`.
 
 ---

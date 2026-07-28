@@ -4,7 +4,7 @@ import OBCDomain
 /// The **OBCU update-container header** (`OBCU_Spec.md` §1.1), decoded on the
 /// phone so a corrupt or foreign file fails in the picker — never on the device.
 /// The Rust `obc-dfu` crate is the canonical writer/reader; this is the app-side
-/// twin, pinned byte-for-byte against the same `protocol-vectors/` fixture.
+/// twin, pinned byte-for-byte against the same `specs/vectors/` fixture.
 ///
 /// A `fwImage` transfer (spec §7.6) carries the *whole* container — this 64-byte
 /// header plus the raw image after it — so the transfer layer stays format-blind;

@@ -28,7 +28,7 @@ const MOVING_MIN_MPS: f32 = 0.8;
 /// and record *absent* into the log, never freeze its last value.
 const SENSOR_STALE_MS: u32 = 5_000;
 
-/// The device's operating mode (`docs/ui_framework_brief.md` §"Operating modes").
+/// The device's operating mode (`docs/content/software/ui.md` §"The whole flow").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Mode {
     /// No route active — the Home screensaver.

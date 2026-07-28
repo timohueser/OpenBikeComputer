@@ -374,7 +374,7 @@ fn corrupt_missing_sentinel_stops_at_chunk_end() {
 /// nearest-16 query fills and the results are the closest 16.
 #[test]
 fn monaco_water_query_smoke() {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../obc-sim/assets/monaco.obcm");
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../apps/obc-sim/assets/monaco.obcm");
     let bytes = std::fs::read(path).expect("committed monaco.obcm");
     let src = SliceSource(&bytes);
     let tables = MapTables::parse(&src).unwrap();

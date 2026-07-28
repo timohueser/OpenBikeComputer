@@ -1,0 +1,40 @@
+[workspace]
+# The host workspace root. It lives at the repo root rather than under firmware/ because its
+# members no longer all belong to the firmware: the device-reachable crates stay in firmware/,
+# the host tools and test oracles live in host/, and the four shells that drive them live in
+# apps/. One root keeps a single Cargo.lock and a single target/ across all three.
+members = [
+    # firmware/ — reachable from the device image through normal dependencies.
+    "firmware/obc-formats",
+    "firmware/obc-ports",
+    "firmware/obc-map-scene",
+    "firmware/obc-reader",
+    "firmware/obc-route",
+    "firmware/obc-render",
+    "firmware/obc-app",
+    "firmware/obc-platform",
+    "firmware/obc-display",
+    "firmware/obc-sensors",
+    "firmware/obc-storage",
+    "firmware/obc-ble",
+    "firmware/obc-dfu",
+    # host/ — tools, shared host glue, and the test oracles. Never on the device.
+    "host/obc-host-core",
+    "host/obc-pack",
+    "host/obc-mkimage",
+    "host/obc-bench",
+    "host/obc-vectors",
+    "host/obcm-testkit",
+    "host/obc-replay",
+    "host/obc-usb-host",
+    # apps/ — the shells. obc-desktop is here too, but carries its own [workspace].
+    "apps/obc-sim",
+    "apps/obc-web-demo",
+    "apps/obc-web-convert",
+]
+# obc-fw-nrf54l is a standalone board crate (own target + .cargo/config.toml, own empty
+# [workspace]); it's built on its own, not as part of this host workspace (which builds its
+# members for the host target). obc-boot and obc-desktop carry their own [workspace] tables,
+# which excludes them automatically for the same reason.
+exclude = ["firmware/obc-fw-nrf54l"]
+resolver = "2"

@@ -135,8 +135,8 @@ where" grid linking the four software pages + hardware + build; a short "how to 
 docs" note (conceptual, not an API ref).
 
 ### ★ Rendering pipeline (`/docs/software/rendering/`) — first polished page
-The full draw of one map frame, distilled from `firmware/docs/rendering_pipeline.md` and
-**re-verified** against `obc-render/src/lib.rs` + `obc-reader/src/reader.rs`. Sections &
+The full draw of one map frame, originally distilled from the since-retired
+`firmware/docs/rendering_pipeline.md` and **re-verified** against `obc-render/src/lib.rs` + `obc-reader/src/reader.rs`. Sections &
 planned figures:
 
 1. **One render path, two surfaces** — the `DrawTarget` + `color_fn` seam; identical code

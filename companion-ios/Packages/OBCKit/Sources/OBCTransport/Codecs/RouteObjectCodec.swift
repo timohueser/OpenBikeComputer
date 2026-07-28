@@ -8,13 +8,13 @@ import OBCDomain
 /// `no_std` `obc-route` reader the firmware runs.
 ///
 /// This is a **hand-written all-Swift** port of the layout in
-/// [`OBCR_Spec.md`](../../../../../../OBCR_Spec.md) — the same choice `OBCKit`
+/// [`OBCR_Spec.md`](../../../../../../specs/OBCR_Spec.md) — the same choice `OBCKit`
 /// made for the ride/config codecs. Byte-for-byte parity with the Rust
 /// `gpx_to_obcr` is **not** a goal (the firmware only needs *valid* OBCR, and the
 /// two producers decimate independently); the geometry math here mirrors the app's
 /// own ``RouteStats`` so an uploaded route's stored header totals match exactly
 /// what E1 displayed. The `route-plain.obcr` / `route-waypoints.obcr` shared
-/// fixtures (`protocol-vectors/`, produced by the firmware converter) pin the
+/// fixtures (`specs/vectors/`, produced by the firmware converter) pin the
 /// **reader** so it can't drift from real device output.
 ///
 /// File layout (little-endian throughout, coordinates in microdegrees):

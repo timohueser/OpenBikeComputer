@@ -18,8 +18,8 @@ shipping image is already ~870 KB and growing, and a second full slot doesn't fi
 the chip's life. Instead the design leans entirely on **verifying before erasing**
 and a **rollback snapshot**, so a single slot is never left in a state that can't
 boot. The byte-level formats are normative in
-[`OBCU_Spec.md`](src:OBCU_Spec.md) — the same tier as the
-[`OBCM`](src:OBCM_Spec.md) / [`OBCR`](src:OBCR_Spec.md) format specs; here we
+[`OBCU_Spec.md`](src:specs/OBCU_Spec.md) — the same tier as the
+[`OBCM`](src:specs/OBCM_Spec.md) / [`OBCR`](src:specs/OBCR_Spec.md) format specs; here we
 cover the design and the trust model.
 
 ## The trust model
@@ -144,13 +144,13 @@ card that never returns.
 > **CRC-32, no signatures — on purpose (v1).** Integrity is a CRC-32/IEEE over the
 > whole image, end to end. There is no cryptographic signature: physical access to
 > the card is already root on an open device, so the meaningful gate is the human
-> at the install step, not a key. The [`OBCU`](src:OBCU_Spec.md) header reserves
+> at the install step, not a key. The [`OBCU`](src:specs/OBCU_Spec.md) header reserves
 > bytes for a signature scheme if internet-sourced OTA ever lands.
 
 ## Three ways an update arrives
 
 A staged update is one file, `/UPDATE.BIN`, in the card's root — an
-[`OBCU`](src:OBCU_Spec.md) container (a 64-byte header with the image length,
+[`OBCU`](src:specs/OBCU_Spec.md) container (a 64-byte header with the image length,
 CRC-32, and a `git describe` version string, then the raw application image).
 There are three ways it gets there, and **exactly one** way it gets installed.
 
@@ -291,9 +291,9 @@ a frozen COM line would apply for the multi-ten-second install.
 
 ## Where this lives
 
-- The byte formats — the `UPDATE.BIN` container and the boot-state page — normative: [`OBCU_Spec.md`](src:OBCU_Spec.md)
+- The byte formats — the `UPDATE.BIN` container and the boot-state page — normative: [`OBCU_Spec.md`](src:specs/OBCU_Spec.md)
 - The shared `no_std` core: [`obc-dfu`](src:firmware/obc-dfu) — the container + state codecs ([`image.rs`](src:firmware/obc-dfu/src/image.rs) · [`state.rs`](src:firmware/obc-dfu/src/state.rs)), the bootloader's install engine ([`engine.rs`](src:firmware/obc-dfu/src/engine.rs)), and the app-side armer ([`armer.rs`](src:firmware/obc-dfu/src/armer.rs))
 - The bootloader itself, its LED codes and flash-once workflow: [`obc-boot`](src:firmware/obc-boot) ([README](src:firmware/obc-boot/README.md))
-- The host tool that builds and inspects `UPDATE.BIN`: [`obc-mkimage`](src:firmware/obc-mkimage) — the `objcopy → wrap` pipeline is in the [firmware README](src:firmware/README.md)
-- The BLE and USB staging paths — the `fwImage` object and `installFw` command: [the companion link](../companion-link/) (contract: [`obc-ble-interface-spec.md`](src:obc-ble-interface-spec.md) §4.4, §7.6); the browser half in [`web_builder/frontend/src/lib/device/`](src:packer/web_builder/frontend/src/lib/device)
+- The host tool that builds and inspects `UPDATE.BIN`: [`obc-mkimage`](src:host/obc-mkimage) — the `objcopy → wrap` pipeline is in the [firmware README](src:firmware/README.md)
+- The BLE and USB staging paths — the `fwImage` object and `installFw` command: [the companion link](../companion-link/) (contract: [`obc-ble-interface-spec.md`](src:specs/obc-ble-interface-spec.md) §4.4, §7.6); the browser half in [`web_builder/frontend/src/lib/device/`](src:builder/app/src/lib/device)
 - Copying a card image by hand and the release recipe: the [repo README](src:README.md)

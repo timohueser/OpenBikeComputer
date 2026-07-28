@@ -884,6 +884,5 @@ A compile-time assertion fails the build if the renderer's total buffer footprin
 - The renderer and all its rasterisers: [`obc-render/src/`](src:firmware/obc-render/src) — the frame loop and buffers in `lib.rs`; projection, collection, stroking, polygon fill and the overlays in `viewport.rs` / `collect.rs` / `stroke.rs` / `fill.rs` / `overlay.rs`
 - The streamed scene contract: [`obc-map-scene/src/lib.rs`](src:firmware/obc-map-scene/src/lib.rs); the production OBCM adapter: [`obc-reader/src/scene.rs`](src:firmware/obc-reader/src/scene.rs)
 - The map parsing, quadtree walk, and skip-don't-decode: [`obc-reader/src/reader.rs`](src:firmware/obc-reader/src/reader.rs)
-- A from-scratch reference walkthrough with `file:line` anchors: [`firmware/docs/rendering_pipeline.md`](src:firmware/docs/rendering_pipeline.md)
 
 For how this renderer gets *driven* — the camera, the screen stack, and the per-frame loop — see [system architecture](../architecture/). For the map format it reads, see [data formats](../formats/).

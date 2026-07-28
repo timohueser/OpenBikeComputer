@@ -1,8 +1,9 @@
 {
   "schema_version": 1,
   "standalone_manifests": [
-    "obc-fw-nrf54l/Cargo.toml",
-    "obc-boot/Cargo.toml"
+    "firmware/obc-fw-nrf54l/Cargo.toml",
+    "firmware/obc-boot/Cargo.toml",
+    "apps/obc-desktop/Cargo.toml"
   ],
   "groups": {
     "foundation": [
@@ -28,6 +29,7 @@
     ],
     "host": [
       "obc-bench",
+      "obc-desktop",
       "obc-host-core",
       "obc-mkimage",
       "obc-pack",

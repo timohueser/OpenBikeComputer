@@ -6,7 +6,7 @@ name: Deploy site
 #   /                     landing page + the live device demo   trunk (obc-web-demo → wasm)
 #   /docs/  /blog/        docs site + expedition log            build_docs.py (trunk pre_build hook)
 #   /builder/             the static map builder (#894 phase C) vite --mode web
-#   /builder/data/…       the Geofabrik region index            packer.web_builder.static_data
+#   /builder/data/…       the Geofabrik region index            builder.server.static_data
 #
 # Because the demo is the firmware's own render path compiled to wasm, every push
 # rebuilds it — the site can never show a stale screenshot. And everything here is
@@ -108,7 +108,7 @@ jobs:
       - name: Cache cargo + build artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: firmware
+          workspaces: .
 
       # Pinned to the versions ci.yml builds these with, so the deploy cannot differ
       # from the tools that gated the PR.
@@ -134,22 +134,22 @@ jobs:
       # Same invocation as ci.yml's wasm-convert job.
       - name: Build the wasm conversion bridge
         run: |
-          wasm-pack build firmware/obc-web-convert --release --target web \
-            --out-dir ../../packer/web_builder/frontend/src/lib/convert/pkg \
+          wasm-pack build apps/obc-web-convert --release --target web \
+            --out-dir ../../builder/app/src/lib/convert/pkg \
             --out-name obc_web_convert
 
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: packer/web_builder/frontend/package-lock.json
+          cache-dependency-path: builder/app/package-lock.json
 
       # VITE_SITE_BASE makes the builder's links to the docs and the landing relative:
       # they are siblings inside this artifact, so naming them by absolute URL would be
       # the one place a domain move still bit us. Left unset everywhere else (dev
       # server, desktop app), where the site genuinely is somewhere else.
       - name: Build the static map builder
-        working-directory: packer/web_builder/frontend
+        working-directory: builder/app
         env:
           VITE_SITE_BASE: "../"
           VITE_CATALOG_URL: ${{ env.OBC_CATALOG_URL }}
@@ -170,14 +170,14 @@ jobs:
       # is ~4 MB, so fetching it fresh is cheaper than reasoning about staleness.
       - name: Bake the region index
         run: |
-          pip install -r packer/requirements-static.txt
-          python -m packer.web_builder.static_data \
-            --out packer/web_builder/frontend/dist/web/data
+          pip install -r builder/requirements-static.txt
+          python -m builder.server.static_data \
+            --out builder/app/dist/web/data
 
       - name: Assemble the site
         run: |
           mkdir -p docs/dist/builder
-          cp -R packer/web_builder/frontend/dist/web/. docs/dist/builder/
+          cp -R builder/app/dist/web/. docs/dist/builder/
           du -sh docs/dist/* | sort -h
 
       # Two ways a deploy ships something broken without anyone noticing. Both checks

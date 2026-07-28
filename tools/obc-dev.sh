@@ -104,7 +104,7 @@ resolve_map() {
   local newest; newest="$(_all_maps | head -n1)"
   if [[ -n "$newest" ]]; then _warn "no map given — using newest: ${newest##*/}"; printf '%s\n' "$newest"; return 0; fi
   # last resort: the committed sample fixture, so a fresh clone's `obc sim` just works
-  local fx="$OBC_ROOT/firmware/obc-sim/assets/grimsel.obcm"
+  local fx="$OBC_ROOT/apps/obc-sim/assets/grimsel.obcm"
   [[ -f "$fx" ]] && { _warn "no map found — using the bundled sample: ${fx##*/}"; printf '%s\n' "$fx"; return 0; }
   _err "no map file. Pass one:  obc sim <map.obcm>"
   _hint "or set OBC_MAP in obc.local, or build one:  obc pack <region.osm.pbf>   /   obc web"
@@ -117,7 +117,7 @@ resolve_gpx() {
   [[ "$g" == none || "$g" == "-" ]] && { printf 'none\n'; return 0; }
   [[ -n "$g" ]] && { _abspath "$g"; return 0; }
   [[ -n "${OBC_GPX:-}" ]] && { _abspath "$OBC_GPX"; return 0; }
-  local def="$OBC_ROOT/firmware/obc-sim/assets/grimsel-climb.gpx"
+  local def="$OBC_ROOT/apps/obc-sim/assets/grimsel-climb.gpx"
   [[ -f "$def" ]] && { printf '%s\n' "$def"; return 0; }
   printf '\n'   # nothing — caller decides whether that is fatal
 }

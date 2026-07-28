@@ -162,7 +162,7 @@ mod tests {
 
     #[test]
     fn constants_match_the_committed_obcm_fixture() {
-        let fixture = include_bytes!("../../obc-sim/assets/grimsel-demo.obcm");
+        let fixture = include_bytes!("../../../apps/obc-sim/assets/grimsel-demo.obcm");
         validate_header_prefix(fixture).unwrap();
         assert_eq!(fixture[4], VERSION);
         assert_eq!(u32::from_le_bytes(fixture[21..25].try_into().unwrap()), HEADER_LEN as u32);

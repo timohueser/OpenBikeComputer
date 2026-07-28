@@ -6,14 +6,14 @@ L2CAP CoC data plane, the typed object model, and the two design-surfaced deltas
 > ### Divergence policy — read first
 >
 > **This file is a mirror, not the freeze.** The wire contract is owned by
-> **[`obc-ble-interface-spec.md`](../obc-ble-interface-spec.md)** (repo root — the
+> **[`obc-ble-interface-spec.md`](../specs/obc-ble-interface-spec.md)** (repo root — the
 > firmware `S0` freeze, landed in PR #279): the canonical source of truth for
 > services, transport, and security. If this document and that spec disagree,
 > **the spec wins and this file is corrected** — never the reverse.
 >
 > **Status: protocol v2** (epic #632 — the one coordinated wire break over v1).
 > This mirror describes the **v2** surface; the shared fixtures in
-> [`protocol-vectors/`](../protocol-vectors/) pin it byte-exactly on both sides
+> [`specs/vectors/`](../specs/vectors/) pin it byte-exactly on both sides
 > (`ProtocolVectorTests` here, `obc-vectors` in the firmware workspace), and
 > **spec §9 is the v1 → v2 repin checklist**. The v2 changes: the widened
 > `protocolVersion` read (version + store epoch), a 12-byte `TransferControl`
@@ -266,7 +266,7 @@ flight at a time**.
 by `BLEChannel` (raw streaming, progress/cancel/resume) over a `ByteChannel` — the
 L2CAP CoC (`L2CAPByteChannel`) on the real path, an in-memory pipe in tests. Field
 widths, the CRC variant, and the GATT UUIDs (`BLE/GATT.swift`) are pinned
-byte-exactly against the shared `protocol-vectors/` fixtures by
+byte-exactly against the shared `specs/vectors/` fixtures by
 `ProtocolVectorTests`. **V4 (#768) re-pins these Swift codecs to the v2 shapes** —
 the single notify surface, the 12-byte descriptor, the widened version read, and
 the `routeList` `crc32`.

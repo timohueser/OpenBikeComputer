@@ -3,7 +3,7 @@
 //! Finish (`/tracks/RD{id}.ORD`). The stored file **is** the wire object, so a BLE ride
 //! download is a verbatim byte stream with no encode on the transfer path.
 //!
-//! Layout (little-endian; pinned by `protocol-vectors/ride-v{1,2}.bin` against the Swift
+//! Layout (little-endian; pinned by `specs/vectors/ride-v{1,2}.bin` against the Swift
 //! `RideObjectCodec`):
 //!
 //! ```text

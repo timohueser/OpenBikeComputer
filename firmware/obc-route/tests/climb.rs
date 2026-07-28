@@ -249,7 +249,7 @@ fn category_placeholder_is_populated() {
 #[test]
 fn grimsel_fixture_detects_the_pass() {
     // The fixture lives in the sim crate's assets; read it relative to this crate's dir.
-    let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../obc-sim/assets/grimsel-climb.obcr"))
+    let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../apps/obc-sim/assets/grimsel-climb.obcr"))
         .expect("grimsel-climb.obcr fixture present");
     let src = SliceSource(&bytes);
     let ridx = RouteIndex::read(&src).unwrap();

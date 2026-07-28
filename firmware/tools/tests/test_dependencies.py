@@ -174,10 +174,10 @@ class DependencyTests(unittest.TestCase):
         self.assertIn(check_dependencies.Edge("obc-fw-nrf54l", "obc-app"), edges)
 
     def test_standalone_manifest_paths_are_relative_to_primary_root(self):
-        primary = Path("/repo/firmware/Cargo.toml")
+        primary = Path("/repo/Cargo.toml")
         manifests = check_dependencies.metadata_manifests(
             primary,
-            {"standalone_manifests": ["obc-fw-nrf54l/Cargo.toml", "obc-boot/Cargo.toml"]},
+            {"standalone_manifests": ["firmware/obc-fw-nrf54l/Cargo.toml", "firmware/obc-boot/Cargo.toml"]},
         )
         self.assertEqual(
             manifests,
