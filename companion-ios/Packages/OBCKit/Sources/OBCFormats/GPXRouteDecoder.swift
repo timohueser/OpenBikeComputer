@@ -3,7 +3,8 @@ import OBCDomain
 
 /// GPX 1.0/1.1 → `ImportedRoute`. Reads what a route needs and nothing
 /// more: `<trkpt>` (or `<rtept>`) geometry with `<ele>`, file-level `<wpt>`
-/// waypoints, the route name, and the `creator` attribute for the E1 banner.
+/// waypoints (name, note, and the `<sym>`/`<type>` symbol that gives them a
+/// category), the route name, and the `creator` attribute for the E1 banner.
 /// Time data is ignored — a planned route has none.
 public struct GPXRouteDecoder: RouteFileDecoder {
     public var fileExtensions: Set<String> { ["gpx"] }
@@ -56,6 +57,8 @@ final class GPXCollector: NSObject, XMLParserDelegate {
     private var pendingElevation: Double?
     private var pendingWaypointName: String?
     private var pendingWaypointNote: String?
+    private var pendingWaypointSym: String?
+    private var pendingWaypointType: String?
     /// `<trkpt>` wins over `<rtept>`; a file with only a `<rte>` still imports.
     private var routePointFallback: [RoutePoint] = []
 
@@ -73,6 +76,8 @@ final class GPXCollector: NSObject, XMLParserDelegate {
             pendingElevation = nil
             pendingWaypointName = nil
             pendingWaypointNote = nil
+            pendingWaypointSym = nil
+            pendingWaypointType = nil
         default:
             break
         }
@@ -103,6 +108,13 @@ final class GPXCollector: NSObject, XMLParserDelegate {
             }
         case "desc" where path.last == "wpt":
             pendingWaypointNote = value.isEmpty ? nil : value
+        // The waypoint's icon: Garmin (and the planners that copy it) write
+        // `<sym>`, RideWithGPS/Komoot `<type>`. Both are kept; `WaypointSymbol`
+        // decides which wins and what it means.
+        case "sym" where path.last == "wpt":
+            pendingWaypointSym = value
+        case "type" where path.last == "wpt":
+            pendingWaypointType = value
         case "trkpt":
             if let coordinate = pendingCoordinate {
                 points.append(RoutePoint(coordinate: coordinate, elevationMeters: pendingElevation))
@@ -116,7 +128,8 @@ final class GPXCollector: NSObject, XMLParserDelegate {
                 rawWaypoints.append(RawWaypoint(
                     name: pendingWaypointName?.isEmpty == false ? pendingWaypointName! : "Waypoint",
                     note: pendingWaypointNote,
-                    coordinate: coordinate
+                    coordinate: coordinate,
+                    symbol: WaypointSymbol.symbol(sym: pendingWaypointSym, type: pendingWaypointType)
                 ))
             }
         default:

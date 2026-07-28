@@ -3,7 +3,7 @@ import OBCDomain
 import OBCFormats
 @testable import OBCTransport
 
-/// The route encoder (B12, #286): its OBCR v2 reader pinned against the shared
+/// The route encoder (B12, #286): its OBCR v3 reader pinned against the shared
 /// firmware-produced fixtures (`specs/vectors/route-*.obcr`, decoded by the
 /// production `obc-route` reader on the other side), plus encode→decode round-trips
 /// proving geometry, exact stats, and waypoints survive an upload.
@@ -33,7 +33,7 @@ final class RouteObjectCodecTests: XCTestCase {
         let decoded = try RouteObjectCodec.decode(try fixture("route-waypoints.obcr"))
 
         // Header stats (manifest.json).
-        XCTAssertEqual(decoded.version, 2)
+        XCTAssertEqual(decoded.version, 3)
         XCTAssertEqual(decoded.name, "Vector Loop")
         XCTAssertEqual(decoded.storedPointCount, 9)
         XCTAssertEqual(decoded.totalDistanceMeters, 2207)
@@ -53,6 +53,25 @@ final class RouteObjectCodecTests: XCTestCase {
         XCTAssertEqual(decoded.waypoints[0].coordinate.latitude, 48.0001, accuracy: 1e-5)
         XCTAssertEqual(decoded.waypoints[1].name, "Pass Summit")
         XCTAssertEqual(decoded.waypoints[1].distanceAlongMeters, 1700)
+
+        // …and the v3 fields the firmware converter wrote (manifest.json): the
+        // fountain's `<sym>Drinking Water</sym>` mapped to Water and it sits 13 m
+        // **left** of travel; the summit's `<type>Viewpoint</type>` is unmapped
+        // (generic) and it sits on a track vertex, so on-route.
+        XCTAssertEqual(decoded.waypoints[0].category, .water)
+        XCTAssertEqual(decoded.waypoints[0].lateralOffsetMeters, -13)
+        XCTAssertNil(decoded.waypoints[1].category)
+        XCTAssertEqual(decoded.waypoints[1].lateralOffsetMeters, 0)
+    }
+
+    /// The v3 bump is breaking on both sides: the same bytes labelled v1 or v2 are
+    /// refused rather than read with the old 40-byte record.
+    func testRejectsPreV3Routes() throws {
+        var bytes = try fixture("route-waypoints.obcr")
+        for old: UInt8 in [1, 2] {
+            bytes[bytes.startIndex + 4] = old
+            XCTAssertThrowsError(try RouteObjectCodec.decode(bytes), "v\(old) must not decode")
+        }
     }
 
     func testPlainFixtureRidesIdenticallyMinusWaypoints() throws {
@@ -83,14 +102,17 @@ final class RouteObjectCodecTests: XCTestCase {
             name: "Round Trip Ridge", points: points,
             waypoints: [
                 Waypoint(index: 0, name: "Trailhead", distanceAlongMeters: 0, coordinate: points[0].coordinate),
-                Waypoint(index: 1, name: "Summit", distanceAlongMeters: 900, coordinate: points[4].coordinate),
+                Waypoint(
+                    index: 1, name: "Summit", distanceAlongMeters: 900, coordinate: points[4].coordinate,
+                    category: .water, lateralOffsetMeters: -120.4
+                ),
             ]
         )
 
         let bytes = RouteObjectCodec.encode(route, name: route.name!)
         let decoded = try RouteObjectCodec.decode(bytes)
 
-        XCTAssertEqual(decoded.version, 2)
+        XCTAssertEqual(decoded.version, 3)
         XCTAssertEqual(decoded.name, "Round Trip Ridge")
 
         // Exact stats mirror RouteStats (the E1 display) at whole-meter resolution.
@@ -108,10 +130,15 @@ final class RouteObjectCodecTests: XCTestCase {
             points.last!.coordinate.latitude, accuracy: 1e-6
         )
 
-        // Waypoints round-trip name, distance-along, and coordinate.
+        // Waypoints round-trip name, distance-along, coordinate, category and the
+        // signed offset (stored as whole metres, so −120.4 comes back as −120).
         XCTAssertEqual(decoded.waypoints.map(\.name), ["Trailhead", "Summit"])
         XCTAssertEqual(decoded.waypoints[1].distanceAlongMeters, 900)
         XCTAssertEqual(decoded.waypoints[1].coordinate.longitude, points[4].coordinate.longitude, accuracy: 1e-6)
+        XCTAssertNil(decoded.waypoints[0].category, "an uncategorized waypoint stays generic")
+        XCTAssertEqual(decoded.waypoints[0].lateralOffsetMeters, 0)
+        XCTAssertEqual(decoded.waypoints[1].category, .water)
+        XCTAssertEqual(decoded.waypoints[1].lateralOffsetMeters, -120)
     }
 
     func testDecimationDropsCollinearInteriorPoints() throws {
@@ -190,14 +217,17 @@ final class RouteObjectCodecTests: XCTestCase {
         let route = ImportedRoute(
             name: "Determinism Pin", points: points,
             waypoints: [Waypoint(index: 0, name: "Start", distanceAlongMeters: 0,
-                                 coordinate: points[0].coordinate)])
+                                 coordinate: points[0].coordinate,
+                                 category: .water, lateralOffsetMeters: -42)])
 
         let first = RouteObjectCodec.encode(route, name: route.name!)
         let second = RouteObjectCodec.encode(route, name: route.name!)
         XCTAssertEqual(first, second, "the OBCR encode must be byte-identical run to run")
 
         // The stored fixture CRC — an encoder change must re-pin this on purpose,
-        // not dim adoption silently.
+        // not dim adoption silently. Re-pinned for OBCR v3 (#947: version byte 3,
+        // the 44-byte waypoint record, and this waypoint's category + signed
+        // offset now inside it).
         let goldenCRC: UInt32 = 0x6B3F_72E3
         XCTAssertEqual(
             CRC32.checksum(first), goldenCRC,

@@ -239,10 +239,10 @@ final class ProtocolVectorTests: XCTestCase {
         XCTAssertEqual(entries[2], RouteListEntry(
             objectID: 9, byteLen: UInt32(plainRoute.count), distanceMeters: 2207,
             ascentMeters: 76, pointCount: 9, waypointCount: 0, name: "Vector Loop",
-            crc32: 0xEBD7_D5B6, expiresAt: nil, retention: 0
+            crc32: 0x1557_AE0B, expiresAt: nil, retention: 0
         ))
         // The CRC is the OBCR object's own — the app can re-derive it to verify identity (V6).
-        XCTAssertEqual(entries[0].crc32, 0x1F66_C051)
+        XCTAssertEqual(entries[0].crc32, 0x1BFB_6E3C)
 
         XCTAssertEqual(RouteList.encode(entries), bytes)  // byte-exact re-encode
     }
