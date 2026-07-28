@@ -249,8 +249,12 @@ wants the bakery and the café in one list.
 - **Geometry is decimated** for storage (perpendicular-distance + max segment span)
   while **stats use every raw point** — the header totals stay exact.
 - **Chunking:** points are grouped into chunks of ≤ `MAX_POINTS_PER_CHUNK` (256),
-  each emitting a `ChunkMeta`. The converter raises the per-chunk point budget if a
-  route would exceed `MAX_ROUTE_CHUNKS` (512), so the resident index stays bounded.
+  each emitting a `ChunkMeta`. The index is hard-capped at `MAX_ROUTE_CHUNKS` (256 —
+  ≈65 k stored points, ~650 km at 10 m spacing): a route that would need more chunks
+  **fails conversion** with `Error::TooLarge` rather than being silently coarsened,
+  so the resident index stays bounded. The cap is a stack budget, not a storage one —
+  a `RouteIndex` is `MAX_ROUTE_CHUNKS × 48 B` and several call paths hold one by
+  value, so raising it means first making those paths resident.
 - **Waypoints:** a bounded `<wpt>` pass runs **before** the track pass (GPX carries
   waypoints file-level, ahead of the track), collecting up to `MAX_WAYPOINTS` (32,
   a converter cap — the format allows 65535). Each waypoint's `<sym>`/`<type>` is

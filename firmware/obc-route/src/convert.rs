@@ -177,7 +177,7 @@ pub(crate) struct EmitStats {
 }
 
 /// The streaming OBCR writer shared by [`gpx_to_obcr`] and the nav router's emit
-/// ([`crate::nav`]): reserves the v2 header up front, feeds raw points through the
+/// ([`crate::nav`]): reserves the v3 header up front, feeds raw points through the
 /// 1-step-lookahead decimator and the `int16`-delta densify guard into the chunk
 /// [`Encoder`], then backfills the header once offsets and totals are known. Owns every
 /// format/geometry invariant (bbox growth, start point, cumulative distance, chunk
@@ -200,7 +200,7 @@ pub(crate) struct ObcrEmitter {
 }
 
 impl ObcrEmitter {
-    /// Reserve the v2 header on `sink`; the body follows immediately
+    /// Reserve the v3 header on `sink`; the body follows immediately
     /// (`data_offset = HEADER_FULL_LEN`).
     pub(crate) fn new(sink: &mut dyn ByteSink) -> Result<ObcrEmitter, Error> {
         sink.write(&[0u8; HEADER_FULL_LEN])?;
@@ -370,7 +370,7 @@ fn signed_offset_m(d2: f32, cross: f32) -> i16 {
 }
 
 /// Sort the placed waypoints by position along the route and write the fixed-record
-/// table (v2 §4) at `offset` (right after the chunk index). Returns the table's file
+/// table (spec §4) at `offset` (right after the chunk index). Returns the table's file
 /// offset for the header extension — 0 when there are no waypoints.
 fn write_waypoints(sink: &mut dyn ByteSink, wps: &mut Vec<WpPlace, MAX_WAYPOINTS>, offset: u32) -> Result<u32, Error> {
     if wps.is_empty() {
@@ -598,7 +598,7 @@ fn build_header(
     put_u32(&mut h, 52, s.chunk_count);
     put_u32(&mut h, 56, index_offset);
     put_u32(&mut h, 60, HEADER_FULL_LEN as u32); // data_offset
-                                                 // v2 waypoint extension (§1.1): table offset + count; the rest reserved.
+                                                 // Waypoint header extension (§1.1): table offset + count; the rest reserved.
     put_u32(&mut h, 112, wpt_offset);
     put_u16(&mut h, 116, s.waypoint_count);
     h

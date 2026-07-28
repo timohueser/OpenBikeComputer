@@ -12,8 +12,8 @@
 //!   have never seen) yields `None` = Generic, and the waypoint stores and renders like any other.
 //! - **Only the six.** Waypoints share the map's `PoiCategory` ids so one icon language covers
 //!   both sources (#946). Symbols with no honest home among the six stay Generic rather than being
-//!   forced into the nearest one — "Restroom", "Parking", "Ferry", "Hospital", "Viewpoint" and
-//!   "Summit" are all deliberately absent.
+//!   forced into the nearest one — "Restroom", "Parking", "Ferry", "Hospital", "First Aid",
+//!   "Viewpoint" and "Summit" are all deliberately absent.
 //!
 //! Matching is **case- and separator-insensitive**: the same class arrives as `Drinking Water`,
 //! `drinking_water` and `drinking-water` depending on who exported it, so both sides normalise to
