@@ -17,6 +17,7 @@
 
 import { parseCatalog, type Catalog } from "../catalog/manifest";
 import { catalogPresets } from "../catalog/presets";
+import { LINKS } from "../constants";
 import type { LoadStyleEditor, Platform, RegionFeature } from "./types";
 
 // `||`, not `??`: a deployment that has no catalog to point at yet (the site deploy
@@ -143,6 +144,9 @@ export const platform: Platform = {
     // is what makes it serverless. Nothing to serve, and no issue that owes it.
     schema: null,
     palette: null,
+
+    // This host *is* the site, so its header links back out to the rest of it.
+    siteNav: LINKS,
 };
 
 export const loadStyleEditor: LoadStyleEditor | null = null;

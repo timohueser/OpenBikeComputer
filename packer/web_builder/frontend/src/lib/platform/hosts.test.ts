@@ -108,6 +108,15 @@ describe("the hosts as a set", () => {
         expect(desktop.platform.legacyConfig).toBeUndefined();
     });
 
+    it("links back to the site only where there is a site around the app", () => {
+        // The desktop app is a standalone window: no docs/simulator/GitHub in
+        // its chrome, tabs instead. Optional member, not a cap — a nav link has
+        // no moment of intent to gate (#901).
+        expect(web.platform.siteNav).toBeDefined();
+        expect(dev.platform.siteNav).toBeDefined();
+        expect(desktop.platform.siteNav).toBeUndefined();
+    });
+
     it("reports and clears caches only where the app owns a filesystem", () => {
         // The same shape as `legacyConfig`: optional, not a capability, because
         // a tier without a disk has nothing to report and no gate sentence worth

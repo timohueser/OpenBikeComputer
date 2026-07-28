@@ -374,6 +374,37 @@ async function importRide(
 }
 
 /**
+ * Pull one ride: import it durably, then ack — the per-row pull, same code path as the bulk one.
+ *
+ * The ack follows the same rule `pullRides` holds: only after `library.import` has fsynced, and
+ * always via `durableIds`, so what is acked is what is provably on disk rather than what this
+ * call believes it just wrote. Acking is monotonic on the device, so re-acking ids a previous
+ * pull already flagged is a no-op, not a hazard.
+ */
+export async function pullRide(
+    source: RideSyncSource,
+    library: RideLibrary,
+    scope: RideScope,
+    entry: RideListEntry,
+    ctx: JobContext,
+): Promise<{ ride: LibraryRide; imported: boolean }> {
+    if (!scope.serial || scope.epoch === null) {
+        throw new RideLibraryError(
+            "no-scope",
+            "This device did not report both a serial number and a store epoch, so its ride ids " +
+                "cannot be told apart from another device's. Nothing was copied and the device was " +
+                "not told anything.",
+        );
+    }
+    const result = await importRide(source, library, scope, entry, ctx);
+    ctx.phase("verifying");
+    const acked = await library.durableIds(scope);
+    if (acked.length > 0) await source.ackRides(acked, ctx.signal);
+    ctx.phase("done");
+    return result;
+}
+
+/**
  * The GPX, from the same `obc_route::track_to_gpx` the device runs at Finish.
  *
  * Through the wasm bridge and the ride-object → track-log inversion `rides.ts` already owns and

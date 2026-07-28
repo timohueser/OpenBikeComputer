@@ -1,7 +1,32 @@
 <script lang="ts">
-    import { LINKS } from "../lib/constants";
+    import DeviceChip from "./DeviceChip.svelte";
+    import { platform } from "../lib/platform";
     import { available, DESKTOP_ADDS } from "../lib/platform/gating";
-    import { ADVANCED_ROUTE, DESKTOP_ROUTE } from "../lib/routes";
+    import { router, type Route } from "../lib/router.svelte";
+    import { ADVANCED_ROUTE, DESKTOP_ROUTE, DEVICE_ROUTE, RIDES_ROUTE } from "../lib/routes";
+
+    // The header has two shapes, decided by capability rather than host name:
+    // an app with more than one place to be gets tabs; a single-page site keeps
+    // links. Each tab exists exactly where its route does (`App.svelte` gates
+    // the same way), so a tab can never point at a page that falls back home.
+    const tabs: Array<{ route: Route; href: string; label: string }> = [
+        { route: "home", href: "#/", label: "Map builder" },
+        ...(available("styleEditor")
+            ? [{ route: "advanced" as const, href: ADVANCED_ROUTE, label: "Style editor" }]
+            : []),
+        ...(available("deviceDashboard")
+            ? [{ route: "device" as const, href: DEVICE_ROUTE, label: "Device" }]
+            : []),
+        ...(available("rideLibrary")
+            ? [{ route: "rides" as const, href: RIDES_ROUTE, label: "Ride library" }]
+            : []),
+    ];
+    const tabbed = tabs.length > 1;
+
+    // Links out of the app, present only where there is a site around it (the
+    // desktop app has none — `platform.siteNav` is absent there, and so are
+    // these). Orthogonal to the tabs: the dev server shows both.
+    const siteNav = platform.siteNav;
 </script>
 
 <header>
@@ -20,24 +45,40 @@
                 />
             </svg>
             <span class="name">OpenBikeComputer</span>
-            <span class="crumb mono">map builder</span>
+            {#if !tabbed}
+                <span class="crumb mono">map builder</span>
+            {/if}
         </div>
-        <nav>
-            <!-- Nav chrome is the one place a missing feature is better left
-                 out than shown dead: there is no intent behind a link, so a
-                 greyed one explains nothing anyone was asking. The style
-                 editor's reason lives where you reach for it, under the
-                 presets. -->
-            {#if available("styleEditor")}
-                <a href={ADVANCED_ROUTE}>Advanced editor</a>
+
+        {#if tabbed}
+            <nav class="tabs" aria-label="App sections">
+                {#each tabs as tab (tab.route)}
+                    <a href={tab.href} class="tab" class:on={router.route === tab.route}
+                        aria-current={router.route === tab.route ? "page" : undefined}>
+                        {tab.label}
+                    </a>
+                {/each}
+            </nav>
+        {/if}
+
+        <div class="right">
+            <nav class="links">
+                <!-- Nav chrome is the one place a missing feature is better left
+                     out than shown dead: there is no intent behind a link, so a
+                     greyed one explains nothing anyone was asking. -->
+                {#if DESKTOP_ADDS.length}
+                    <a href={DESKTOP_ROUTE}>Desktop app</a>
+                {/if}
+                {#if siteNav}
+                    <a href={siteNav.docs}>Docs</a>
+                    <a href={siteNav.simulator}>Simulator</a>
+                    <a href={siteNav.github}>GitHub</a>
+                {/if}
+            </nav>
+            {#if available("deviceDashboard")}
+                <DeviceChip />
             {/if}
-            {#if DESKTOP_ADDS.length}
-                <a href={DESKTOP_ROUTE}>Desktop app</a>
-            {/if}
-            <a href={LINKS.docs}>Docs</a>
-            <a href={LINKS.simulator}>Simulator</a>
-            <a href={LINKS.github}>GitHub</a>
-        </nav>
+        </div>
     </div>
 </header>
 
@@ -59,13 +100,14 @@
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 16px;
+        gap: 18px;
     }
 
     .brand {
         display: flex;
         align-items: baseline;
         gap: 9px;
+        flex: none;
     }
 
     .brand svg {
@@ -87,15 +129,49 @@
         padding: 1px 8px;
     }
 
-    nav {
+    .tabs {
+        display: flex;
+        align-self: stretch;
+        gap: 2px;
+        margin-right: auto;
+    }
+
+    .tab {
+        display: flex;
+        align-items: center;
+        padding: 0 13px;
+        font-size: 13.5px;
+        color: var(--ink-faint);
+        border-bottom: 2px solid transparent;
+        /* keep the text centered despite the indicator border */
+        border-top: 2px solid transparent;
+    }
+
+    .tab:hover {
+        color: var(--ink);
+    }
+
+    .tab.on {
+        color: var(--ink);
+        font-weight: 600;
+        border-bottom-color: var(--forest);
+    }
+
+    .right {
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        min-width: 0;
+    }
+
+    .links {
         display: flex;
         gap: 18px;
         font-size: 13.5px;
     }
 
-    nav a:first-child {
-        color: var(--ink);
-        font-weight: 600;
+    .links:empty {
+        display: none;
     }
 
     @media (max-width: 700px) {
@@ -103,8 +179,12 @@
             display: none;
         }
 
-        nav {
+        .links {
             gap: 12px;
+        }
+
+        .tab {
+            padding: 0 9px;
         }
     }
 </style>
