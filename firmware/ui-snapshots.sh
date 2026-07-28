@@ -225,6 +225,14 @@ DETOUR_PRE="B d d w p d d d p f d d d d d d p p p f p T"
 # five steps to `Waypoint list` (the last hidden non-sensor entry) and press. The page-sized panel lands on
 # its own page — the `2 / 3` counter, full-width and three rows tall (`--` with no route loaded).
 "$SIM" "$MAP" --boot --script "B u p d d d d p d p d d d d d d p d d d d d p" --png "$OUT/fields-wpt-panel.png"
+# The six `Next: <category>` fields (epic #946, U5). `B u p p d p` is Home -> Settings -> Ride ->
+# Data fields (the Fields grid). (a) the Add-field picker scrolled onto the new group: six rows
+# wearing the category's own row icon in place of a span badge, directly under `Next waypoint`.
+"$SIM" "$MAP" --boot --script "B u p p d p d d d d d d p d d d d d" --png "$OUT/addfield-next-category.png"
+# (b) three of them placed, drawn by the WYSIWYG editor's ghost: icon + the localized category word
+# + a per-category sample distance (the editor has no route, so the live cell would read `--`).
+"$SIM" "$MAP" --boot --stat-fields "next-water,next-campsite,next-lodging" \
+    --script "B u p p d p" --png "$OUT/fields-next-category.png"
 # The Display page (row 4): the two Map-overlay toggles + the idle-return picker moved from Power.
 "$SIM" "$MAP" --boot --script "B u p d d d d d p"   --png "$OUT/display.png"
 "$SIM" "$MAP" --boot --script "B u p d d d d d d p" --png "$OUT/power.png"
@@ -407,6 +415,21 @@ UPSCOPE() { local n=$1 s="p u p p d d d d d"; for _ in $(seq 1 "$n"); do s="$s p
     --script "$(UPSCOPE 1) $UPBASE h d p w f" --png "$OUT/up-ahead-waypoints-only-water.png"
 "$SIM" "$UPMAP" --boot --routes-dir "$PLAINROUTE" --script "$(UPSCOPE 1) $UPBASE" --png "$OUT/up-ahead-nothing-waypoints.png"
 "$SIM" "$UPMAP" --boot --routes-dir "$PLAINROUTE" --script "$(UPSCOPE 2) $UPBASE" --png "$OUT/up-ahead-nothing-pois.png"
+# The `Next: <category>` stat tiles live (epic #946, U5), on the same POI-dense Monaco ride. The
+# Auto climb panel would take the base screen on this line, so the script turns it Off first
+# (`B u p p d d d p`), climbs back to Home, starts the ride and steps Back once to the Statistics
+# view; the trailing frames let the per-category cache arm and harvest one snapshot per placed
+# category (never per frame — that is the whole refresh policy). Water resolves to a *custom
+# waypoint*, resupply and pharmacy to corridor POIs, so one frame pins both sources; the long names
+# pin the ellipsis. NOTE the U4 source setting deliberately does not scope these tiles.
+U5FIELDS="next-water,next-resupply,next-pharmacy,speed,dist-to-go"
+U5CLIMBOFF="B u p p d d d p b b b"
+"$SIM" "$UPMAP" --boot --routes-dir "$UPROUTES" --gpx "$UPGPX" --at 60 --stat-fields "$U5FIELDS" \
+    --script "$U5CLIMBOFF p p p p b f f f f f f" --png "$OUT/stats-next-category.png"
+# The empty state: a route-less ride, where nothing can be "ahead" — icon + the category's own word
+# + `--`, at the taller tile height the chart-less grid gives.
+"$SIM" "$MAP" --boot --gpx "$GPX" --at 30 --stat-fields "$U5FIELDS" \
+    --script "$U5CLIMBOFF B d d d w p p p b f f" --png "$OUT/stats-next-category-empty.png"
 # Route-less ride tracking (Menu's Map station). The Menu compass is Routes/Rides/POIs/Map/Settings,
 # so the Map station is three steps down from the Routes start (`d d d w`). A live `--gpx` fix pins
 # the follow camera + marker so the frames reproduce (no route → no magenta line, no off-route chip).
@@ -489,6 +512,13 @@ for lang in de fr es; do
     "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d p"     --png "$OUT/autodelete-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d d p"     --png "$OUT/units-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d d d d p" --png "$OUT/stats-settings-$lang.png"
+    # The `Next: <category>` tiles + their picker rows per language (epic #946, U5): the longest
+    # category words (de `Campingplatz` / `Fahrradladen`, fr `Hébergement`) are what the tile caption
+    # and the icon-gutter picker row have to fit whole.
+    "$SIM" "$MAP" --boot --lang "$lang" --stat-fields "next-campsite,next-lodging,next-bike-shop" \
+        --script "B u p p d p" --png "$OUT/fields-next-category-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p p d p d d d d d d p d d d d d d d d d d" \
+        --png "$OUT/addfield-next-category-$lang.png"
     # Date & Time is the tightest screen per-language: the localized month name fills the fixed
     # month stepper cell (#614 widened it to 70 px for the four-char French months). Eyeball the
     # month glyphs against the active cell's amber border.

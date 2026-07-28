@@ -444,6 +444,12 @@ impl UiRuntime {
     /// refresh a `Next: <category>` tile. A screen always wins — the Up-ahead list is a thing the
     /// rider is *looking at*, a stat tile's refresh can wait a screen visit — and a cache request
     /// never counts as a "fresh open" (there is no screen entry to re-take for).
+    ///
+    /// The two can never fight over the buffer's *contents*: the cache only asks while the
+    /// Statistics screen is the base one (so never while the Up-ahead list is up, including U4's
+    /// `Waypoints only` scope where that screen deliberately asks for nothing), and
+    /// [`NextAhead::harvest`](crate::next_ahead::NextAhead) only accepts a snapshot taken for its own
+    /// key — so a foreign snapshot can no more land in a tile than a tile's can land in the list.
     pub(crate) fn reconcile_corridor(&mut self, fresh_open: bool) {
         match self.stack.iter().rev().find_map(|s| s.corridor_request()) {
             Some(key) => {
