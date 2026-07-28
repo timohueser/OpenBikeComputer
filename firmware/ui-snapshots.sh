@@ -49,13 +49,17 @@ NAVDIR="$(mktemp -d)"
 # Traverse", stages [0, 1, 99]) — so the top level shows one folder grouping ids 0+1 (its two vector
 # routes, the 99 dangling) above the loose grimsel route (id 2), and drilling in lists the two stages.
 TRIPDIR="$(mktemp -d)"
-trap 'rm -rf "$TRACKS" "$NAVDIR" "$TRIPDIR"' EXIT
+# A routes dir holding only the waypoint-less `route-plain` vector route — the Up-ahead
+# "nothing ahead" empty states below need a route whose corridor is genuinely empty.
+PLAINROUTE="$(mktemp -d)"
+trap 'rm -rf "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE"' EXIT
 cp "$ROUTES/ride-v1.bin" "$TRACKS/RD0.ORD"
 cp "$ROUTES/ride-v1.bin" "$TRACKS/RD1.ORD"
 printf '\x88\x45\x00\x00' | dd of="$TRACKS/RD1.ORD" bs=1 seek=16 conv=notrunc status=none
 printf 'OBCS\x01\x00\x01\x00\x00\x00\x88\x63' > "$TRACKS/SYNCED.SET"
 cp "$ROUTES/route-plain.obcr"     "$TRIPDIR/1-plain.obcr"
 cp "$ROUTES/route-waypoints.obcr" "$TRIPDIR/2-waypoints.obcr"
+cp "$ROUTES/route-plain.obcr" "$PLAINROUTE/"
 cp "$repo_root/apps/obc-sim/assets/grimsel-climb.obcr" "$TRIPDIR/3-grimsel.obcr"
 cp "$repo_root/apps/obc-sim/assets/TP1.OBT" "$TRIPDIR/TP1.OBT"
 
@@ -348,10 +352,38 @@ DETOUR_PRE="B d d w p d d d p f d d d d d d p p p f p T"
 # base riding view for the Climb screen; it isn't reachable by gesture until C5 wires the Back-cycle,
 # so this debug seam opens it. Staged in a temp routes dir (the fixture lives in the sim crate's
 # assets, not specs/vectors).
-CLIMBROUTES="$(mktemp -d)"; trap 'rm -rf "$TRACKS" "$NAVDIR" "$TRIPDIR" "$CLIMBROUTES"' EXIT
+CLIMBROUTES="$(mktemp -d)"; trap 'rm -rf "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE" "$CLIMBROUTES"' EXIT
 cp "$repo_root/apps/obc-sim/assets/grimsel-climb.obcr" "$CLIMBROUTES/"
 "$SIM" "$MAP" --boot --routes-dir "$CLIMBROUTES" --script "p p p p" --gpx "$GPX" --at 1500 --open-climb --png "$OUT/climb.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p p" --gpx "$GPX" --at 30 --png "$OUT/ridecontrol.png"
+# The "Up ahead" timeline (epic #946, U3) — the ride compass's north station. Needs a POI-DENSE map,
+# so these frames use `monaco.obcm` (not $MAP) with the committed `monaco-upahead.gpx`: a ~2.7 km line
+# across central Monaco whose 300 m corridor catches real Resupply / Pharmacy / Lodging POIs, and whose
+# waypoints cover five categories, two Generic ones, and offsets on both sides of the line. The route is
+# imported at run time (`--import`), so no second `.obcr` is committed to re-cut on a format bump.
+# `f` draws one throwaway frame so the corridor snapshot lands before the next token.
+UPMAP="$repo_root/apps/obc-sim/assets/monaco.obcm"
+UPGPX="$repo_root/apps/obc-sim/assets/monaco-upahead.gpx"
+UPROUTES="$(mktemp -d)"; trap 'rm -rf "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE" "$CLIMBROUTES" "$UPROUTES"' EXIT
+"$SIM" --import "$UPGPX" --routes-dir "$UPROUTES" >/dev/null
+UPBASE="p p p p T B w p f"
+# (a) The merged list: map-POI rows (muted icons) and custom-waypoint rows (AMBER icon + diamond pip)
+# on one along-route axis, each with distance-to-go, climb-to-go and — past 50 m — the side arrow.
+"$SIM" "$UPMAP" --boot --routes-dir "$UPROUTES" --gpx "$UPGPX" --at 60 --script "$UPBASE" --png "$OUT/up-ahead.png"
+# (b) The same list filtered to Water, scrolled onto the custom "Fontaine du port" waypoint sitting
+# between two map fountains — the source-colour + pip check the epic wanted eyeballed.
+"$SIM" "$UPMAP" --boot --routes-dir "$UPROUTES" --gpx "$UPGPX" --at 60 \
+    --script "$UPBASE h d p w f d d d d d d d d d" --png "$OUT/up-ahead-water.png"
+# (c) The Hold category picker: Everything over the six categories, all seven rows on one page.
+"$SIM" "$UPMAP" --boot --routes-dir "$UPROUTES" --gpx "$UPGPX" --at 60 --script "$UPBASE h w" --png "$OUT/up-ahead-picker.png"
+# (d) A POI row's detail, now carrying the signed off-route offset with the side spelled out.
+"$SIM" "$UPMAP" --boot --routes-dir "$UPROUTES" --gpx "$UPGPX" --at 60 \
+    --script "$UPBASE d d d d d d d d d d p" --png "$OUT/up-ahead-poi-detail.png"
+# (e) The empty-state trio: no route (a route-less ride), nothing ahead, and nothing of this category
+# ahead (the specs/vectors plain route is far from the Monaco map, so its corridor is genuinely empty).
+"$SIM" "$UPMAP" --boot --script "B d d d w p p p B w p" --png "$OUT/up-ahead-noroute.png"
+"$SIM" "$UPMAP" --boot --routes-dir "$PLAINROUTE" --script "$UPBASE" --png "$OUT/up-ahead-nothing.png"
+"$SIM" "$UPMAP" --boot --routes-dir "$PLAINROUTE" --script "$UPBASE h d p w f" --png "$OUT/up-ahead-nocategory.png"
 # Route-less ride tracking (Menu's Map station). The Menu compass is Routes/Rides/POIs/Map/Settings,
 # so the Map station is three steps down from the Routes start (`d d d w`). A live `--gpx` fix pins
 # the follow camera + marker so the frames reproduce (no route → no magenta line, no off-route chip).

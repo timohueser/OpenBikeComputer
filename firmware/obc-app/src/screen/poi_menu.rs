@@ -65,8 +65,23 @@ impl PoiMenuScreen {
             let ink = if row.selected { INK } else { SUBTEXT };
             let bg = if row.selected { AMBER } else { PARCHMENT };
             draw_category_icon(cv, cat, Point::new(a.top_left.x + 22, mid), ink, bg);
-            cv.text(cat.name(), Point::new(a.top_left.x + 44, mid - 14), Font::Body, TextAlign::Left, INK);
+            cv.text(rx.t(category_msg(cat)), Point::new(a.top_left.x + 44, mid - 14), Font::Body, TextAlign::Left, INK);
         });
+    }
+}
+
+/// The catalog key for a category's name (epic #602 + #946). [`PoiCategory::name`] is the
+/// format crate's English label — fine for a spec dump, wrong on glass — so every screen that
+/// *shows* a category (this menu, the POI list's title, the Up-ahead picker) resolves it here, and
+/// the three can't drift into three spellings.
+pub(super) fn category_msg(cat: PoiCategory) -> Msg {
+    match cat {
+        PoiCategory::Water => Msg::PoiCatWater,
+        PoiCategory::Campsite => Msg::PoiCatCampsite,
+        PoiCategory::Accommodation => Msg::PoiCatAccommodation,
+        PoiCategory::Resupply => Msg::PoiCatResupply,
+        PoiCategory::Pharmacy => Msg::PoiCatPharmacy,
+        PoiCategory::BikeShop => Msg::PoiCatBikeShop,
     }
 }
 

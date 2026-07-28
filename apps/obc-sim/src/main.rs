@@ -1059,12 +1059,11 @@ fn main() {
         let link = if args.ble_connected { obc_app::BleLink::Connected } else { obc_app::BleLink::Advertising };
         app.set_ble_status(obc_app::BleStatus { link, passkey: args.ble_passkey, paired: args.ble_paired });
         if let Some(script) = &args.script {
-            // The `d` token flushes lazy draw-time state (the POI snapshot / detail hours) by drawing
-            // one throwaway frame against the map reader — `route: None` since the POI screens the
-            // token targets never draw the route, and the route isn't opened until below anyway.
-            // It then drains a pending create-route request (epic #116, R4), so a script can walk
-            // the whole POI→route flow: the request's answer swaps the confirm for the overview /
-            // failure card, which the next token (or the final render) sees.
+            // The `f` token flushes lazy draw-time state (the POI snapshot / detail hours / the
+            // Up-ahead corridor snapshot) by drawing one throwaway frame against the map reader and
+            // the active route. It then drains a pending create-route request (epic #116, R4), so a
+            // script can walk the whole POI→route flow: the request's answer swaps the confirm for
+            // the overview / failure card, which the next token (or the final render) sees.
             let (rw, rh, rtc) = (args.width, args.height, args.true_color);
             // `--nav-hold` / `--inject-nav-fail` leave the request un-drained so the planning
             // screen stays up (for its own snapshot, or for the injected answer to land in).
@@ -1080,8 +1079,23 @@ fn main() {
                         app.set_ride_profile(ride_store.profile_by_id(id));
                         app.set_ride_preview(&ride_store.preview_by_id(id));
                     }
-                    let mut fb = Framebuffer::new(rw, rh);
-                    let _ = app.render_frame(&mut fb, &reader, None, rw as f32, rh as f32, |c| color_of(c, rtc));
+                    // The frame carries the **streamed route** when one is active, exactly as the
+                    // GUI's per-frame render does: the Up-ahead timeline's corridor snapshot (epic
+                    // #946) is taken in the pre-draw `prepare` pass off that route, so a routeless
+                    // throwaway frame would leave it pending and the next gesture would step an
+                    // empty list. Scoped so the borrow of `store` ends before the drain below.
+                    {
+                        store.sync_active(app.active_route_index());
+                        let src = store.active_source();
+                        let idx = src.as_ref().and_then(|s| RouteIndex::read(s).ok());
+                        let route = match (idx.as_ref(), src.as_ref()) {
+                            (Some(i), Some(s)) => Some(RouteReader::new(i, s)),
+                            _ => None,
+                        };
+                        let mut fb = Framebuffer::new(rw, rh);
+                        let _ = app
+                            .render_frame(&mut fb, &reader, route.as_ref(), rw as f32, rh as f32, |c| color_of(c, rtc));
+                    }
                     // Drain the typed host protocol each `d` (mirroring the GUI's per-frame dispatch):
                     // a create-route request's answer swaps the confirm for the overview/failure card
                     // so the next token acts on it; a scripted delete re-feeds the catalog.

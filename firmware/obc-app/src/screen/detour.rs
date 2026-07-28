@@ -512,6 +512,8 @@ mod tests {
             trips: &[],
             nav_profiles: &NavProfiles::EMPTY,
             poi_scratch: &scratch,
+            waypoints: &[],
+            corridor: &[],
             sensor_scan_hits: &[],
             now_ms: 0,
         };

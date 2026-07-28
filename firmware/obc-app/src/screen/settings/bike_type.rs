@@ -137,6 +137,8 @@ mod tests {
             trips: &[],
             nav_profiles: profs,
             poi_scratch: &scratch,
+            waypoints: &[],
+            corridor: &[],
             sensor_scan_hits: &[],
             now_ms: 0,
         };
