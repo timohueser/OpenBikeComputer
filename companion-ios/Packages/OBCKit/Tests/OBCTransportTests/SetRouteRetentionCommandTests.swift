@@ -4,10 +4,10 @@ import OBCDomain
 @testable import OBCTransport
 
 /// The `setRouteRetention` command encoder (spec §4.4 cmd 6, epic #638): wire
-/// layout pinned against the shared `protocol-vectors/command-set-route-retention.bin`
+/// layout pinned against the shared `specs/vectors/command-set-route-retention.bin`
 /// (the firmware pins the same file), plus the object-id + retention-byte layout.
 @Suite struct SetRouteRetentionCommandTests {
-    /// `protocol-vectors/` at the repo root (the `ProtocolVectorTests` convention).
+    /// `specs/vectors/` (the `ProtocolVectorTests` convention).
     private static let vectorsDir = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()  // OBCTransportTests
         .deletingLastPathComponent()  // Tests
@@ -15,7 +15,7 @@ import OBCDomain
         .deletingLastPathComponent()  // Packages
         .deletingLastPathComponent()  // companion-ios
         .deletingLastPathComponent()  // repo root
-        .appendingPathComponent("protocol-vectors")
+        .appendingPathComponent("specs/vectors")
 
     private func fixture(_ name: String) throws -> Data {
         let url = Self.vectorsDir.appendingPathComponent(name)

@@ -1,0 +1,39 @@
+{
+    "$schema": "https://schema.tauri.app/config/2",
+    "productName": "OpenBikeComputer",
+    "version": "0.1.0",
+    "identifier": "de.timohueser.openbikecomputer",
+    "build": {
+        "frontendDist": "../../builder/app/dist/desktop",
+        "devUrl": "http://localhost:5173",
+        "beforeDevCommand": "npm --prefix ../../builder/app run dev -- --mode desktop",
+        "beforeBuildCommand": "npm --prefix ../../builder/app run build:desktop"
+    },
+    "app": {
+        "windows": [
+            {
+                "label": "main",
+                "title": "OpenBikeComputer",
+                "width": 1360,
+                "height": 900,
+                "minWidth": 900,
+                "minHeight": 620,
+                "dragDropEnabled": false
+            }
+        ],
+        "security": {
+            "csp": "default-src 'self'; img-src 'self' data: blob: https://tile.openstreetmap.org; style-src 'self' 'unsafe-inline'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self' ipc: http://ipc.localhost"
+        }
+    },
+    "bundle": {
+        "active": true,
+        "targets": "all",
+        "icon": [
+            "icons/32x32.png",
+            "icons/128x128.png",
+            "icons/128x128@2x.png",
+            "icons/icon.ico",
+            "icons/icon.png"
+        ]
+    }
+}

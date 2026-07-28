@@ -1,0 +1,124 @@
+[package]
+name = "obc-desktop"
+version = "0.1.0"
+edition = "2021"
+publish = false  # internal app crate — not published to crates.io
+description = "OpenBikeComputer desktop app: the web builder in a Tauri shell, with obc-pack linked in"
+
+# A standalone cargo root, like obc-fw-nrf54l and obc-boot — deliberately NOT a
+# member of the root Cargo.toml. Tauri drags in wry and a platform webview
+# (WebKitGTK on Linux, WebView2 on Windows), so joining the workspace would put a
+# GUI toolkit and its system headers in the way of `cargo test` for the renderer.
+# The cost is the usual one for an excluded crate: its own Cargo.lock, its own
+# fmt/clippy/test invocations, and its own CI job — see the repo CLAUDE.md and
+# .github/workflows/ci.yml's `desktop` job.
+[workspace]
+
+[features]
+# Both defaults are about the same thing — that plain `cargo build` in this
+# directory produces a *shippable app*, not a developer's private configuration.
+default = ["custom-protocol", "vendored-geos"]
+
+# `tauri/custom-protocol` is what decides whether the app *is* an app: with it,
+# `tauri::generate_context!` embeds the built frontend and the webview loads it
+# over the `tauri://` protocol; without it, Tauri is in "dev" mode and points the
+# window at `build.devUrl`. The Tauri templates leave it off and have their CLI
+# add it for `tauri build` — which silently produces a blank window for anyone
+# running plain `cargo run`, which is how this repo builds everything.
+#
+# So it is ON by default here, and the live-reload loop is the explicit opt-out:
+#
+#     npm --prefix ../../builder/app run dev -- --mode desktop
+#     cargo run --no-default-features --features vendored-geos   # follows Vite
+#
+# Keep the other default explicitly named there: the two features are orthogonal,
+# and `--no-default-features` alone would silently also drop the vendored GEOS.
+custom-protocol = ["tauri/custom-protocol"]
+
+# `vendored-geos` (D2, #907) is what makes this crate buildable and shippable on a
+# machine that has never heard of GEOS. `obc-pack` links libGEOS through the `geos`
+# crate; by default that means *system* GEOS ≥ 3.14, which is a Homebrew/apt/vcpkg
+# errand no user of a desktop app should be asked to run — and on Windows barely
+# exists. Enabling it here pulls `geos-src`, which carries the GEOS 3.14.1 C++
+# sources inside the crate and builds them with CMake into a **static** archive
+# that links straight into this binary. Nothing to install, nothing to ship
+# alongside, no `.dll`/`.dylib`/`.so` search path at runtime.
+#
+# The mechanism is cargo's feature unification, so it is worth spelling out: this
+# crate names `geos` directly *only* to turn on `geos/static`, and because
+# `obc-pack`'s `geos` dependency resolves to the same package in this build graph,
+# it gets the vendored, static libGEOS too. There is deliberately no matching
+# feature on `obc-pack`: the `firmware/` workspace is a separate cargo root, so its
+# `--all-features` clippy/test runs (and the CLI packer, and CI's host jobs) keep
+# using system GEOS and stay fast. The app vendors; the dev workspace does not.
+# `tests/geos_smoke.rs` is what stops that from being a claim in a comment.
+#
+# Opt out for a fast local edit loop when you *do* have system GEOS ≥ 3.14:
+#
+#     cargo build --no-default-features --features custom-protocol
+vendored-geos = ["dep:geos"]
+
+[build-dependencies]
+# Generates the Tauri context (config + the embedded frontend bundle).
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# The whole point of this crate: obc-pack is a library dependency, not a
+# subprocess. `pipeline::pack` is the same function the CLI calls.
+obc-pack = { path = "../../host/obc-pack" }
+# Not called for its geometry — `obc-pack` owns all of that. This entry exists to
+# add `static` to the feature set of the *same* `geos` package `obc-pack` depends
+# on (see `vendored-geos` above), and the version must therefore stay pinned to
+# `obc-pack`'s. `geos_version_is_the_one_obc_pack_asked_for` in tests/geos_smoke.rs
+# fails if the two drift, because a silently *older* system GEOS satisfying
+# `v3_14_0`'s runtime check is exactly the bug this vendoring exists to prevent.
+geos = { version = "11.1.1", features = ["v3_14_0", "static"], optional = true }
+# The device's own CRC-32/IEEE, linked rather than re-typed. A file streamed to a
+# device needs its whole-object checksum before the descriptor is written (spec
+# §4.2), and this is the implementation `lib/usb/crc32.ts` was ported from — so
+# the host, the app and the firmware cannot drift. No radio types come with it:
+# obc-ble is deliberately no_std and transport-free.
+obc-ble = { path = "../../firmware/obc-ble" }
+tauri = { version = "2", features = [] }
+# Native USB (#909). Pure Rust, and chosen over `rusb`/libusb for exactly the
+# reason `vendored-geos` above exists: there is no C library to vendor, no CMake
+# leg, and nothing for a user to install. It talks to each platform's own USB
+# stack directly — usbfs on Linux, IOKit on macOS, WinUSB on Windows.
+#
+# `features = ["tokio"]` is load-bearing, not tuning. nusb wraps every blocking
+# syscall in a `MaybeFuture`, and without a runtime feature the `.await` arm of
+# that type is a `panic!` — it compiles on all three platforms and dies the first
+# time anything is actually awaited. Tauri's runtime is tokio, so this is the
+# arm to enable. See `usb::runtime_guard` for what stops it happening again.
+nusb = { version = "0.2", features = ["tokio"] }
+# `HotplugWatch` is a `futures_core::Stream`; this is the trait, and nothing else
+# (futures-core has no dependencies of its own).
+futures-core = "0.3"
+# Tauri's async runtime is tokio, and these are the pieces the USB plane needs:
+# `sync` for the per-endpoint mutexes and the cancel epochs, `macros` for the
+# select! that makes a parked transfer cancellable, `fs` to read a map off the
+# disk without blocking a runtime worker.
+tokio = { version = "1", features = ["sync", "macros", "fs", "io-util"] }
+# Used from Rust only (no JS permission needed): "show the file I just built" in
+# the platform's own file manager.
+tauri-plugin-opener = "2"
+# The one place the *user* names a directory: relocating the ride library (E2
+# #912). Called from Rust, like the opener above, so `capabilities/default.json`
+# stays at `core:default` and no JS gets a file-picker. That is also the crate's
+# standing rule about paths, met rather than bent — the frontend still never
+# names a place; here the OS's own chooser does, with the person driving it.
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+# `preserve_order` for the same reason obc-pack needs it: a packer config's style
+# IDs are assigned in document order, and this crate hands configs through.
+serde_json = { version = "1", features = ["preserve_order"] }
+# Blocking HTTP for the Geofabrik index, the `.pbf` downloads and the map
+# catalog. Blocking because every caller is already on its own worker thread, and
+# rustls-by-default keeps the Windows/macOS builds free of an OpenSSL system dep
+# (D2 #907 cares about that).
+ureq = "3"
+
+[dev-dependencies]
+# So the app-vs-CLI parity test states a digest rather than "the vectors were
+# equal" — a claim someone can re-run and compare against.
+sha2 = "0.11"

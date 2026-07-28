@@ -12,7 +12,7 @@ a `Trial` still present at a *later* entry rolls back the same way. All install
 `obc_dfu::engine` and is unit-tested there with mock IO; this crate only wires
 real SPI/RRAMC/GPIO into that engine (`src/sd.rs`, `src/install.rs`, `src/led.rs`)
 and acts on the outcome. The byte formats and the boot decision table are
-normative in [`OBCU_Spec.md`](../../OBCU_Spec.md).
+normative in [`OBCU_Spec.md`](../../specs/OBCU_Spec.md).
 
 The RRAM layout (single source of truth for the app side:
 `../obc-fw-nrf54l/build.rs`; this crate's static [`memory.x`](memory.x) mirrors it):

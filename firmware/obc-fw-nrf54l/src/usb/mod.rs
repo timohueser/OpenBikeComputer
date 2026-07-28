@@ -9,7 +9,7 @@
 //! endpoint are the same thing (reliable, ordered, unframed), so the object stream needs *zero*
 //! translation: the identical [`obc_ble::Receiver`] / [`obc_ble::StreamSender`] state machine, the
 //! identical descriptors, the identical whole-object CRC-32, and the identical
-//! `protocol-vectors/` fixtures. Everything that decides *what* a message means lives in
+//! `specs/vectors/` fixtures. Everything that decides *what* a message means lives in
 //! [`crate::link`], shared with the radio.
 //!
 //! Only one thing genuinely differs. BLE's control plane is GATT: seven separately-addressed
@@ -21,7 +21,7 @@
 //!
 //! One vendor-specific interface (class `0xFF`), four bulk endpoints, allocated in this order so
 //! the host's "lowest IN/OUT pair is control, the next is bulk" rule
-//! (`packer/web_builder/frontend/src/lib/usb/webusb.ts::discoverLayout`) reads them correctly:
+//! (`builder/app/src/lib/usb/webusb.ts::discoverLayout`) reads them correctly:
 //!
 //! | Endpoint | Direction | Carries |
 //! | :-- | :-- | :-- |
@@ -95,7 +95,7 @@ bind_interrupts!(struct Irqs {
 ///
 /// Allocating a real id is an **owner action, not a firmware change** — see the PR body. When it
 /// lands, exactly two constants move: [`PRODUCT_ID`] here and `OBC_USB_FILTERS` in
-/// `packer/web_builder/frontend/src/lib/usb/webusb.ts`.
+/// `builder/app/src/lib/usb/webusb.ts`.
 const VENDOR_ID: u16 = 0x1209;
 const PRODUCT_ID: u16 = 0x0001;
 

@@ -13,8 +13,8 @@ you've paired, powered, and are in range, it just works — no accounts, no clou
 nothing leaves the two devices.
 
 This page is the *shape* of that link. The normative, byte-level reference is the
-[BLE interface spec](src:obc-ble-interface-spec.md) (the same tier as the
-[`OBCM`](src:OBCM_Spec.md) / [`OBCR`](src:OBCR_Spec.md) format specs); here we
+[BLE interface spec](src:specs/obc-ble-interface-spec.md) (the same tier as the
+[`OBCM`](src:specs/OBCM_Spec.md) / [`OBCR`](src:specs/OBCR_Spec.md) format specs); here we
 cover the design and the *why*. Four ideas run through all of it:
 
 - **Two planes.** Small typed control state rides GATT; bulk bytes ride a single
@@ -94,8 +94,8 @@ ordered" — and a USB bulk endpoint is exactly that. So the object model above,
 the 12-byte descriptor, the status envelope and the whole-object CRC-32 all
 transplant onto a cable without a byte changing: USB is a second *transport*, not
 a second protocol, and it reads the same
-[`protocol-vectors/`](src:protocol-vectors) fixtures. The host half lives in the
-web builder's [USB client](src:packer/web_builder/frontend/src/lib/usb), which
+[`specs/vectors/`](src:specs/vectors) fixtures. The host half lives in the
+web builder's [USB client](src:builder/app/src/lib/usb), which
 drives the whole contract over an in-memory device; the device half — the LM20's
 USB peripheral, and the small matter of which control characteristic a frame
 belongs to when there is no GATT to say so — is
@@ -106,7 +106,7 @@ hardware, and the fix that got it there is worth knowing about: it must be built
 
 That host client has **two** transports under it, and only one of them is a
 browser. WebUSB is Chromium-only, so the desktop app drives the cable itself
-through [`nusb`](src:firmware/obc-desktop/src/usb) and is the universal path,
+through [`nusb`](src:apps/obc-desktop/src/usb) and is the universal path,
 including for Safari and Firefox. Everything above the byte pipe is the same
 code: the same object model, the same descriptors, the same CRC, the same
 fixtures. The native side moves bytes and nothing else — it does not know what an
@@ -129,7 +129,7 @@ never going over BLE — so USB adds a `map` type carrying an
 everything else. Two consequences follow from the size rather than from the
 format: the browser cannot hold the artifact (it streams the download into a
 scratch file, checksums it against the [catalog
-manifest](src:OBCC_Spec.md) and only then opens the transfer, because the
+manifest](src:specs/OBCC_Spec.md) and only then opens the transfer, because the
 descriptor has to announce a whole-object CRC before the first byte moves), and
 the transfer takes *minutes* — the ceiling is the SD card at a few hundred KB/s,
 not the cable. How maps are named and enumerated on the card is the device side's
@@ -147,7 +147,7 @@ Every bulk payload is a typed **object**. The set is small and closed:
 | `6` / `7` | `routeList` / `rideList` | device → app | the store catalogs — fixed-size entries (`routeList` **84 B**, `rideList` **72 B**) |
 | `9` | `trip` | app → device (upload) · device → app (detail read) | a **trip** — tiny metadata that *references* member routes by object id in ride order (spec §7.7); routes stay standalone OBCR files |
 | `10` | `tripList` | device → app | the trip catalog — fixed-size **76 B** entries, mirroring `routeList`'s core (no auto-expiry tail) |
-| `5` | `fwImage` | app → device (upload) | a firmware update image — an [`OBCU`](src:OBCU_Spec.md) `UPDATE.BIN` container, staged to the card verbatim (see below) |
+| `5` | `fwImage` | app → device (upload) | a firmware update image — an [`OBCU`](src:specs/OBCU_Spec.md) `UPDATE.BIN` container, staged to the card verbatim (see below) |
 | `3` | `config` | — | reserved on the CoC; the Config blob crosses GATT |
 | `16` | `map` | host → device (upload) | an [OBCM](../formats/) map — **the cable only**, see below |
 
@@ -209,7 +209,7 @@ is the mirror in the other direction: the device stores each finished ride as
 the exact bytes it will later stream, so a ride download is a verbatim file copy.
 
 One object is not a stored file but a **firmware update**: a `fwImage` upload
-carries an [`OBCU`](src:OBCU_Spec.md) `UPDATE.BIN` container, which the device
+carries an [`OBCU`](src:specs/OBCU_Spec.md) `UPDATE.BIN` container, which the device
 writes to the card root verbatim — the transfer layer stays format-blind, exactly
 as with a route's OBCR bytes. **Staging is not installing.** A committed `fwImage`
 only *places* the file; the app then sends a separate `installFw` command to
@@ -459,7 +459,7 @@ a trip pointing at a route that isn't there, and re-running skips whatever alrea
 landed. A device-side "delete this whole folder" is a cascade the device composes
 from ordinary object deletes (the member routes, then the trip), each flowing back
 as its own `storeChanged`; the wire trip delete itself is non-cascading. The
-byte layout is the [BLE interface spec §7.4 / §7.7](src:obc-ble-interface-spec.md).
+byte layout is the [BLE interface spec §7.4 / §7.7](src:specs/obc-ble-interface-spec.md).
 
 **Ids are never reused — which is what keeps the bookkeeping honest.** The phone
 persists *"I uploaded route 7"* and *"I've synced ride 12"* by durable object id.
@@ -567,7 +567,7 @@ SD sidecar (route id → level + last-used), travels as a command, and the devic
 reports each route's computed `expires_at` back in its `routeList` entry — which
 grew a small tail to carry it. Formats stay pinned; the mutable state routes
 *around* them. The command layouts, the connect-ordering rules, and the 84-byte
-list entry are the [BLE interface spec §4.4 / §7.4](src:obc-ble-interface-spec.md).
+list entry are the [BLE interface spec §4.4 / §7.4](src:specs/obc-ble-interface-spec.md).
 
 **A whole trip is one retention choice.** When you upload a *trip*, the confirm
 sheet shows a single **Auto-delete** picker, and that one choice is the
@@ -603,7 +603,7 @@ reads (below).
 
 **The epoch lives on the card.** It is persisted as a tiny **`EPOCH.OBE`** file in
 the card root — the record layout and its torn-file → fresh-era conventions are in
-the [BLE interface spec §1](src:obc-ble-interface-spec.md) — so the store carries
+the [BLE interface spec §1](src:specs/obc-ble-interface-spec.md) — so the store carries
 its *own* era name. Swap the card and you transplant the
 store: the epoch travels with it, so the same device never conflates two cards' id
 spaces — and a card written by a *different* device presents *its own* epoch, a
@@ -627,7 +627,7 @@ unaffected). The same gate catches a read that genuinely failed, so a device who
 era can't be established can never stamp a checkmark under an unknown id space.
 
 The widened read's bytes, the exact mint rule, and the full list of era events live
-in the [BLE interface spec §1](src:obc-ble-interface-spec.md); the design rationale
+in the [BLE interface spec §1](src:specs/obc-ble-interface-spec.md); the design rationale
 is epic [#632](https://github.com/timohueser/OpenBikeComputer/issues/632) item 5,
 with the card-resident decision in
 [#776](https://github.com/timohueser/OpenBikeComputer/issues/776).
@@ -680,7 +680,7 @@ was truncated, and the app surfaces a one-line *"some items couldn't be listed"*
 warning instead of quietly reporting everything is synced.
 
 The `routeList` entry's `crc32`, the 6-byte list header with `total`, and their
-exact byte layout are the [BLE interface spec §7.4](src:obc-ble-interface-spec.md);
+exact byte layout are the [BLE interface spec §7.4](src:specs/obc-ble-interface-spec.md);
 the proof-only badge and adopt-by-content behaviour are epic
 [#632](https://github.com/timohueser/OpenBikeComputer/issues/632) item 6.
 
@@ -928,7 +928,7 @@ phone**; like everything else, the phone gets the numbers *after* the ride, insi
 the ride object it syncs. Those recording formats — the track log and the v1/v2
 ride object — are the [recorded-rides section](../formats/#recorded-rides-the-track-log-and-the-ride-object)
 of the data-formats page (normative bytes in the
-[BLE interface spec §7.2](src:obc-ble-interface-spec.md)).
+[BLE interface spec §7.2](src:specs/obc-ble-interface-spec.md)).
 
 ---
 
@@ -996,7 +996,7 @@ holding it.
 
 ## Where this lives
 
-- The wire contract, normative: [`obc-ble-interface-spec.md`](src:obc-ble-interface-spec.md) (§10 is the USB binding)
+- The wire contract, normative: [`obc-ble-interface-spec.md`](src:specs/obc-ble-interface-spec.md) (§10 is the USB binding)
 - The host-tested, radio-free core — descriptor codecs, CRC-32, the transfer state machine: [`obc-ble`](src:firmware/obc-ble) ([`transfer.rs`](src:firmware/obc-ble/src/transfer.rs) · [`descriptor.rs`](src:firmware/obc-ble/src/descriptor.rs))
 - On the device, shared by every transport — the command handler, descriptor classification, the identity blobs, the one object store, and the cross-transport transfer gate: [`obc-fw-nrf54l/src/link/`](src:firmware/obc-fw-nrf54l/src/link)
 - On the device — the GATT server, connection lifecycle, and the CoC data plane: [`obc-fw-nrf54l/src/ble/`](src:firmware/obc-fw-nrf54l/src/ble)
@@ -1006,9 +1006,9 @@ holding it.
 - The app-facing sensor mailboxes both the radio manager and the injection path feed — one instance-owned `SensorHub`, handed to each task at spawn: [`obc-platform/src/sensor_hub.rs`](src:firmware/obc-platform/src/sensor_hub.rs)
 - The device UI's link seam — the connected indicator, passkey card, and upload prompts consume this: [`obc-app/src/ble.rs`](src:firmware/obc-app/src/ble.rs) (and the [UI system](../ui/#screens-the-companion-link-pushes))
 - The phone side — the SwiftUI companion app and its transport layer: [`companion-ios/`](src:companion-ios)
-- The host side — the same object model over a USB byte pipe, with a simulated device for the paths hardware can't be made to take: [`web_builder/frontend/src/lib/usb/`](src:packer/web_builder/frontend/src/lib/usb)
-- The desktop app's transport — `nusb`, hot-plug, and the file-path bulk plane, under the *same* client: [`obc-desktop/src/usb/`](src:firmware/obc-desktop/src/usb) and [`lib/desktop/usb.ts`](src:packer/web_builder/frontend/src/lib/desktop/usb.ts)
-- The browser's flows over that client — sending a map, a route or a firmware image, and the read-only ride export whose device handle has no way to ack: [`web_builder/frontend/src/lib/device/`](src:packer/web_builder/frontend/src/lib/device)
-- The desktop app's ride library — the folder, the index, and the temp-fsync-rename-fsync write the ack waits on: [`obc-desktop/src/rides.rs`](src:firmware/obc-desktop/src/rides.rs); the pull that fills it, and the ack list it computes from the disk: [`lib/device/library.ts`](src:packer/web_builder/frontend/src/lib/device/library.ts)
-- Shared fixtures pinning the byte layouts every implementation must agree on — the firmware, the phone, and the web builder's wasm converter and USB client: [`protocol-vectors/`](src:protocol-vectors)
+- The host side — the same object model over a USB byte pipe, with a simulated device for the paths hardware can't be made to take: [`web_builder/frontend/src/lib/usb/`](src:builder/app/src/lib/usb)
+- The desktop app's transport — `nusb`, hot-plug, and the file-path bulk plane, under the *same* client: [`obc-desktop/src/usb/`](src:apps/obc-desktop/src/usb) and [`lib/desktop/usb.ts`](src:builder/app/src/lib/desktop/usb.ts)
+- The browser's flows over that client — sending a map, a route or a firmware image, and the read-only ride export whose device handle has no way to ack: [`web_builder/frontend/src/lib/device/`](src:builder/app/src/lib/device)
+- The desktop app's ride library — the folder, the index, and the temp-fsync-rename-fsync write the ack waits on: [`obc-desktop/src/rides.rs`](src:apps/obc-desktop/src/rides.rs); the pull that fills it, and the ack list it computes from the disk: [`lib/device/library.ts`](src:builder/app/src/lib/device/library.ts)
+- Shared fixtures pinning the byte layouts every implementation must agree on — the firmware, the phone, and the web builder's wasm converter and USB client: [`specs/vectors/`](src:specs/vectors)
 - The route and ride formats that cross the link: [Data formats](../formats/)

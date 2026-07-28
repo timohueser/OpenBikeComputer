@@ -7,26 +7,26 @@
 #   OUT_DIR   where the PNGs land (default: ui-snapshots/)
 #
 # Env overrides:
-#   SIM   the obc-sim binary   (default: <repo>/firmware/target/release/obc-sim)
+#   SIM   the obc-sim binary   (default: <repo>/target/release/obc-sim)
 #   MAP   the .obcm map        (default: the committed Grimsel showcase fixture, OBCM v7)
 #   GPX   the replay track     (default: the committed Grimsel climb fixture)
 #
 # The defaults are the OBCM **v7** fixtures baked into obc-sim (the Grimsel showcase
 # map + its climb replay), so the sweep runs out-of-the-box; point MAP/GPX at a local
-# map to sweep a different region. Routes come from the repo's protocol-vectors/
+# map to sweep a different region. Routes come from the repo's specs/vectors/
 # fixtures. Exits non-zero on the first failing render (set -e), so a broken sim can't
 # produce a silently short sweep.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-SIM="${SIM:-$repo_root/firmware/target/release/obc-sim}"
-MAP="${MAP:-$repo_root/firmware/obc-sim/assets/grimsel.obcm}"
-GPX="${GPX:-$repo_root/firmware/obc-sim/assets/grimsel-climb.gpx}"
-# A second, tiny replay that lies *on* protocol-vectors' `route-waypoints.obcr` ("Vector Loop") — the
+SIM="${SIM:-$repo_root/target/release/obc-sim}"
+MAP="${MAP:-$repo_root/apps/obc-sim/assets/grimsel.obcm}"
+GPX="${GPX:-$repo_root/apps/obc-sim/assets/grimsel-climb.gpx}"
+# A second, tiny replay that lies *on* specs/vectors' `route-waypoints.obcr` ("Vector Loop") — the
 # Grimsel climb GPX above is far off it, so it can't drive the waypoint chip/ticks. Synthetic + its
 # provenance are pinned in the assets README; it stops ~300 m short of the "Pass Summit" waypoint.
-WPTGPX="$repo_root/firmware/obc-sim/assets/vector-loop-replay.gpx"
-ROUTES="$repo_root/protocol-vectors"
+WPTGPX="$repo_root/apps/obc-sim/assets/vector-loop-replay.gpx"
+ROUTES="$repo_root/specs/vectors"
 OUT="${1:-ui-snapshots}"
 
 mkdir -p "$OUT"
@@ -44,7 +44,7 @@ TRACKS="$(mktemp -d)"
 # A scratch routes dir for the create-route sweep below — the router writes its reserved
 # `_nav.obcr` there instead of littering a `routes/` in the working directory.
 NAVDIR="$(mktemp -d)"
-# A routes dir with a trip folder (epic #526, TR3): the two protocol-vectors routes + the sim crate's
+# A routes dir with a trip folder (epic #526, TR3): the two specs/vectors routes + the sim crate's
 # grimsel-climb, named so their sorted-scan ids are 0/1/2, plus the committed `TP1.OBT` ("Alpen
 # Traverse", stages [0, 1, 99]) — so the top level shows one folder grouping ids 0+1 (its two vector
 # routes, the 99 dangling) above the loose grimsel route (id 2), and drilling in lists the two stages.
@@ -56,8 +56,8 @@ printf '\x88\x45\x00\x00' | dd of="$TRACKS/RD1.ORD" bs=1 seek=16 conv=notrunc st
 printf 'OBCS\x01\x00\x01\x00\x00\x00\x88\x63' > "$TRACKS/SYNCED.SET"
 cp "$ROUTES/route-plain.obcr"     "$TRIPDIR/1-plain.obcr"
 cp "$ROUTES/route-waypoints.obcr" "$TRIPDIR/2-waypoints.obcr"
-cp "$repo_root/firmware/obc-sim/assets/grimsel-climb.obcr" "$TRIPDIR/3-grimsel.obcr"
-cp "$repo_root/firmware/obc-sim/assets/TP1.OBT" "$TRIPDIR/TP1.OBT"
+cp "$repo_root/apps/obc-sim/assets/grimsel-climb.obcr" "$TRIPDIR/3-grimsel.obcr"
+cp "$repo_root/apps/obc-sim/assets/TP1.OBT" "$TRIPDIR/TP1.OBT"
 
 # Menu navigation: Home's press (and back-hold) opens the compass Menu — the single door into the
 # app — so the Route menu is now `p p` from boot (open Menu, then press the Routes station, which the
@@ -115,7 +115,7 @@ cp "$repo_root/firmware/obc-sim/assets/TP1.OBT" "$TRIPDIR/TP1.OBT"
 # Resupply "Carrefour" supermarket (--center on it → row 0), a fix + heading for the live arrow,
 # and a deterministic --clock (Mon 2025-01-06 12:00 → OPEN). `p d p` presses into the list, draws
 # once to fill the lazy snapshot, then presses the POI into its detail.
-MONACO="$repo_root/firmware/obc-sim/assets/monaco.obcm"
+MONACO="$repo_root/apps/obc-sim/assets/monaco.obcm"
 "$SIM" "$MONACO" --boot --center 7416969,43730798 --heading 0 --clock "2025-01-06T12:00" \
     --script "B d d w p d d d p f p" --png "$OUT/poi-detail.png"
 # The closed state (#685): the same detail at Mon 23:00 — after Carrefour's 08:00-21:00 — so the
@@ -324,7 +324,7 @@ DETOUR_PRE="B d d w p d d d p f d d d d d d p p p f p T"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p b" --gpx "$GPX" --at 30 --sensors-demo --png "$OUT/statistics-sensors.png"
 # The low-battery cue (issue: < 10 %): a warning-red battery glyph in the map's top-left corner.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --battery 5 --script "p p p p" --gpx "$GPX" --at 30 --png "$OUT/map-lowbatt.png"
-# Waypoint UI (epic #523). protocol-vectors holds two routes in filename order: id 0 = route-plain,
+# Waypoint UI (epic #523). specs/vectors holds two routes in filename order: id 0 = route-plain,
 # id 1 = route-waypoints ("Vector Loop": named waypoints Brunnen @ ~0 m and Pass Summit @ ~1.70 km on
 # a 2.20 km track). The default `p p p p` rides id 0, so the extra `d` after the Route-menu press
 # (`p p r p p`) picks id 1 — the *only* route these shots use. `--gpx $WPTGPX` is the committed replay
@@ -340,16 +340,16 @@ DETOUR_PRE="B d d w p d d d p f d d d d d d p p p f p T"
 # (c) Stats mid-route: the amber live-fraction progress bar carries a black tick per named waypoint
 # (Brunnen at the left edge, Pass Summit at its ~0.77 fraction) with the fill sweeping between them.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p d p p b" --gpx "$WPTGPX" --at 233 --png "$OUT/stats-wpt.png"
-# Climb screen (epic #506, C4). The default protocol-vectors routes don't match the Grimsel replay
+# Climb screen (epic #506, C4). The default specs/vectors routes don't match the Grimsel replay
 # (they're tiny test routes), so ride the committed grimsel-climb.obcr — the route the GPX follows,
 # giving the detector its three back-to-back climbs. `--at 1500` replays ~25 min in (progress ~5 km,
 # ~40 % up climb 0), so the cursor sits mid-profile with grade stripes on both sides. The title bar
 # carries the summit-flag glyph left of the summit elevation (#688). `--open-climb` then swaps the
 # base riding view for the Climb screen; it isn't reachable by gesture until C5 wires the Back-cycle,
 # so this debug seam opens it. Staged in a temp routes dir (the fixture lives in the sim crate's
-# assets, not protocol-vectors).
+# assets, not specs/vectors).
 CLIMBROUTES="$(mktemp -d)"; trap 'rm -rf "$TRACKS" "$NAVDIR" "$TRIPDIR" "$CLIMBROUTES"' EXIT
-cp "$repo_root/firmware/obc-sim/assets/grimsel-climb.obcr" "$CLIMBROUTES/"
+cp "$repo_root/apps/obc-sim/assets/grimsel-climb.obcr" "$CLIMBROUTES/"
 "$SIM" "$MAP" --boot --routes-dir "$CLIMBROUTES" --script "p p p p" --gpx "$GPX" --at 1500 --open-climb --png "$OUT/climb.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p p" --gpx "$GPX" --at 30 --png "$OUT/ridecontrol.png"
 # Route-less ride tracking (Menu's Map station). The Menu compass is Routes/Rides/POIs/Map/Settings,
@@ -390,7 +390,7 @@ cp "$repo_root/firmware/obc-sim/assets/grimsel-climb.obcr" "$CLIMBROUTES/"
 # the card auto-opens.
 "$SIM" "$MAP" --boot --ble-passkey 42 --png "$OUT/passkey-card.png"
 # Route-upload popups (#451), all three variants. `--inject-upload[-replace] ID` raises the upload
-# event after the script, exactly as the control panel's inject buttons do. protocol-vectors holds
+# event after the script, exactly as the control panel's inject buttons do. specs/vectors holds
 # two routes: id 0 = route-plain, id 1 = route-waypoints (filename order).
 # Idle: "ROUTE RECEIVED" — a stats line, a mini elevation sparkline (route 0 has elevation), and
 # View route / Dismiss (#682).

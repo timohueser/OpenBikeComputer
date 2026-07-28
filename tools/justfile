@@ -31,7 +31,7 @@ sim *args:
     cmd=(cargo run --release -p obc-sim -- "$mapf" --physical)
     [[ -n "$gpxf" && "$gpxf" != none ]] && cmd+=(--gpx "$gpxf")
     (( ${#_EXTRA[@]} )) && cmd+=("${_EXTRA[@]}")
-    cd "$OBC_ROOT/firmware"; _run "${cmd[@]}"
+    cd "$OBC_ROOT"; _run "${cmd[@]}"
 
 # ── Board firmware ───────────────────────────────────────────────────────────
 
@@ -100,7 +100,7 @@ uart *args:
     set -euo pipefail
     source "{{lib}}"; obc_init; ensure_geos
     split_args "$@"
-    cd "$OBC_ROOT/firmware"
+    cd "$OBC_ROOT"
     # `--list` just enumerates serial ports; no GPX needed.
     for e in "${_EXTRA[@]:-}"; do [[ "$e" == --list ]] && { _run cargo run --release -p obc-usb-host -- --list; exit 0; }; done
     gpxf="$(resolve_gpx "${_POS[0]:-}")"
@@ -147,7 +147,7 @@ rtt:
 # ── Map packing & the web builder ────────────────────────────────────────────
 
 # Pack an OSM extract into a .obcm map. Args: <region.osm.pbf> [preset.json] [out.obcm]
-# [-- --chunk-size N | --no-land]. Preset defaults to packer/presets/default.json; the
+# [-- --chunk-size N | --no-land]. Preset defaults to builder/presets/default.json; the
 # output defaults to <region>.obcm in the repo root (so `obc sim` picks it up next).
 # Pack an OSM extract to a .obcm map. Args: <region.osm.pbf> [preset.json] [out.obcm]
 pack *args:
@@ -158,12 +158,12 @@ pack *args:
     pbf="${_POS[0]:-}"
     [[ -n "$pbf" ]] || { _err "usage: obc pack <region.osm.pbf> [preset.json] [out.obcm]"; exit 1; }
     pbf="$(_abspath "$pbf")"
-    preset="${_POS[1]:-${OBC_PRESET:-$OBC_ROOT/packer/presets/default.json}}"; preset="$(_abspath "$preset")"
+    preset="${_POS[1]:-${OBC_PRESET:-$OBC_ROOT/builder/presets/default.json}}"; preset="$(_abspath "$preset")"
     out="${_POS[2]:-}"
     if [[ -n "$out" ]]; then out="$(_abspath "$out")"
     else base="$(basename "$pbf")"; base="${base%.osm.pbf}"; base="${base%.pbf}"; out="$OBC_ROOT/${base}.obcm"; fi
-    ( cd "$OBC_ROOT/firmware" && _run cargo build --release -p obc-pack )
-    cmd=("$OBC_ROOT/firmware/target/release/obc-pack" "$pbf" "$preset" "$out")
+    ( cd "$OBC_ROOT" && _run cargo build --release -p obc-pack )
+    cmd=("$OBC_ROOT/target/release/obc-pack" "$pbf" "$preset" "$out")
     (( ${#_EXTRA[@]} )) && cmd+=("${_EXTRA[@]}")
     _run "${cmd[@]}"
     _say "wrote $out"
@@ -176,18 +176,18 @@ web *args:
     set -euo pipefail
     source "{{lib}}"; obc_init; ensure_geos
     cd "$OBC_ROOT"
-    export OBC_PACK_BIN="$OBC_ROOT/firmware/target/release/obc-pack"
+    export OBC_PACK_BIN="$OBC_ROOT/target/release/obc-pack"
     if [[ ! -x .venv/bin/python ]]; then
       _say "creating .venv + installing packer deps…"
       _run python3 -m venv .venv
       _run .venv/bin/pip install -q --upgrade pip
-      _run .venv/bin/pip install -q -r packer/requirements.txt
+      _run .venv/bin/pip install -q -r builder/requirements.txt
     fi
-    [[ -x "$OBC_PACK_BIN" ]] || { _say "building obc-pack…"; ( cd firmware && _run cargo build --release -p obc-pack ); }
-    if [[ ! -d packer/web_builder/static/dist ]]; then
-      _say "building the frontend…"; ( cd packer/web_builder/frontend && _run npm ci && _run npm run build )
+    [[ -x "$OBC_PACK_BIN" ]] || { _say "building obc-pack…"; ( cd "$OBC_ROOT" && _run cargo build --release -p obc-pack ); }
+    if [[ ! -d builder/server/static/dist ]]; then
+      _say "building the frontend…"; ( cd builder/app && _run npm ci && _run npm run build )
     fi
-    _run .venv/bin/python -m packer.web_builder "$@"
+    _run .venv/bin/python -m builder.server "$@"
 
 # Run the desktop app (Tauri + obc-pack linked in as a library, #906). The Rust side
 # embeds the built frontend, so the frontend is built first. Opts: dev (live-reload
@@ -208,7 +208,7 @@ desktop *args:
       build|build-only) mode=build ;;
       *) _err "unknown desktop option: '$o'  (want: dev build)"; exit 1 ;;
     esac; done
-    fe="$OBC_ROOT/packer/web_builder/frontend"
+    fe="$OBC_ROOT/builder/app"
     [[ -d "$fe/node_modules" ]] || { _say "installing frontend deps…"; ( cd "$fe" && _run npm ci ); }
     # The wasm GPX↔OBCR bridge (#896) is imported by the app, and `npm run check`/
     # `test`/`build` all fail without it — build it before anything else needs it.
@@ -219,11 +219,11 @@ desktop *args:
       # `cargo run` embed dist/desktop; opt out of it and the window follows Vite.
       _say "starting Vite (desktop mode) on :5173 — leave it running, then this window follows it"
       ( cd "$fe" && npm run dev -- --mode desktop & )
-      cd "$OBC_ROOT/firmware/obc-desktop"; _run cargo run --no-default-features --features vendored-geos
+      cd "$OBC_ROOT/apps/obc-desktop"; _run cargo run --no-default-features --features vendored-geos
     else
       _say "building the desktop frontend bundle…"
       ( cd "$fe" && _run npm run build:desktop )
-      cd "$OBC_ROOT/firmware/obc-desktop"
+      cd "$OBC_ROOT/apps/obc-desktop"
       [[ "$mode" == build ]] && { _run cargo build --release; _say "built: $PWD/target/release/obc-desktop"; exit 0; }
       _run cargo run --release
     fi
@@ -244,7 +244,7 @@ site *args:
     set -euo pipefail
     source "{{lib}}"; obc_init
     port="${1:-4173}"
-    fe="$OBC_ROOT/packer/web_builder/frontend"
+    fe="$OBC_ROOT/builder/app"
     [[ -d "$fe/node_modules" ]] || { _say "installing frontend deps…"; ( cd "$fe" && _run npm ci ); }
     [[ -f "$fe/src/lib/convert/pkg/obc_web_convert_bg.wasm" ]] || \
       { _say "building the wasm convert bridge…"; ( cd "$fe" && _run npm run build:wasm ); }
@@ -255,11 +255,11 @@ site *args:
       _say "creating .venv + installing packer deps…"
       _run python3 -m venv .venv
       _run .venv/bin/pip install -q --upgrade pip
-      _run .venv/bin/pip install -q -r packer/requirements.txt
+      _run .venv/bin/pip install -q -r builder/requirements.txt
     fi
     # The Geofabrik index the picker draws. The FastAPI host computes it per request;
     # a site with no backend needs it as a file — the deploy runs this same module.
-    _run .venv/bin/python -m packer.web_builder.static_data --out "$fe/dist/web/data"
+    _run .venv/bin/python -m builder.server.static_data --out "$fe/dist/web/data"
     _say "serving http://localhost:$port  (Ctrl-C to stop)"
     # Absolute interpreter + `--directory`, not `cd` + a relative `.venv/bin/python`: the relative
     # form resolved against the *serving* directory and vanished the moment we left the repo root.
@@ -272,14 +272,14 @@ build:
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{lib}}"; obc_init; ensure_geos
-    cd "$OBC_ROOT/firmware"; _run cargo build --release
+    cd "$OBC_ROOT"; _run cargo build --release
 
 # Run the host test suite. Extra args pass through (e.g. -p obc-pack).
 test *args:
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{lib}}"; obc_init; ensure_geos
-    cd "$OBC_ROOT/firmware"; _run cargo test "$@"
+    cd "$OBC_ROOT"; _run cargo test "$@"
 
 # The workspace excludes three crates, and rustfmt walks up from each file to find its
 # own manifest — so this is a FOUR-step and the fmt CI guard fails if a leg is skipped.
@@ -288,21 +288,21 @@ fmt:
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{lib}}"; obc_init
-    cd "$OBC_ROOT/firmware"
+    cd "$OBC_ROOT"
     _run cargo fmt --all
-    _run cargo fmt --manifest-path obc-fw-nrf54l/Cargo.toml
-    _run cargo fmt --manifest-path obc-boot/Cargo.toml
-    _run cargo fmt --manifest-path obc-desktop/Cargo.toml
+    _run cargo fmt --manifest-path firmware/obc-fw-nrf54l/Cargo.toml
+    _run cargo fmt --manifest-path firmware/obc-boot/Cargo.toml
+    _run cargo fmt --manifest-path apps/obc-desktop/Cargo.toml
 
 # Render benchmark + pixel-hash tripwire. Args: (none) | check | write.
 bench *args:
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{lib}}"; obc_init; ensure_geos
-    cd "$OBC_ROOT/firmware"
+    cd "$OBC_ROOT"
     case "${1:-}" in
-      check) _run cargo run -p obc-bench --release -- --check obc-bench/hashes.txt ;;
-      write) _run cargo run -p obc-bench --release -- --write-hashes obc-bench/hashes.txt ;;
+      check) _run cargo run -p obc-bench --release -- --check host/obc-bench/hashes.txt ;;
+      write) _run cargo run -p obc-bench --release -- --write-hashes host/obc-bench/hashes.txt ;;
       *)     _run cargo run -p obc-bench --release ;;
     esac
 
@@ -311,7 +311,7 @@ check-device:
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{lib}}"; obc_init
-    cd "$OBC_ROOT/firmware"; _run cargo build -p obc-app --target thumbv8m.main-none-eabihf
+    cd "$OBC_ROOT"; _run cargo build -p obc-app --target thumbv8m.main-none-eabihf
 
 # Run the CI rust gates locally — "will CI pass?" before you push. Mirrors the required
 # `ci` job (fmt/clippy/test+bench/device/docs; board legs if a RISC-V gcc is present;
@@ -326,18 +326,18 @@ check *args:
     FAILED=(); PASSED=(); SKIPPED=()
     step() { local label="$1"; shift; printf '\n'; _say "▶ $label"
              if _run "$@"; then PASSED+=("$label"); else _err "$label FAILED"; FAILED+=("$label"); fi; }
-    cd "$OBC_ROOT/firmware"
+    cd "$OBC_ROOT"
     if want fmt; then
       step "fmt (workspace)"   cargo fmt --all --check
-      step "fmt (board crate)" cargo fmt --check --manifest-path obc-fw-nrf54l/Cargo.toml
-      step "fmt (bootloader)"  cargo fmt --check --manifest-path obc-boot/Cargo.toml
-      step "fmt (desktop app)" cargo fmt --check --manifest-path obc-desktop/Cargo.toml
+      step "fmt (board crate)" cargo fmt --check --manifest-path firmware/obc-fw-nrf54l/Cargo.toml
+      step "fmt (bootloader)"  cargo fmt --check --manifest-path firmware/obc-boot/Cargo.toml
+      step "fmt (desktop app)" cargo fmt --check --manifest-path apps/obc-desktop/Cargo.toml
     fi
     want clippy && step "clippy (workspace, all-targets/features)" \
       cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
     if want test; then
       step "test (workspace, all features)" cargo test --workspace --all-features --locked
-      step "bench pixel-hash tripwire" cargo run -p obc-bench --release --locked -- --check obc-bench/hashes.txt
+      step "bench pixel-hash tripwire" cargo run -p obc-bench --release --locked -- --check host/obc-bench/hashes.txt
     fi
     want device && step "device build (obc-app @ thumbv8m)" \
       cargo build -p obc-app --target thumbv8m.main-none-eabihf --locked
@@ -354,7 +354,7 @@ check *args:
     fi
     if want frontend; then
       if command -v npm >/dev/null 2>&1; then
-        fe="$OBC_ROOT/packer/web_builder/frontend"
+        fe="$OBC_ROOT/builder/app"
         pushd "$fe" >/dev/null
         [[ -d node_modules ]] || step "frontend deps (npm ci)" npm ci
         # Not optional: the TS wrapper imports the generated bindings, so svelte-check
@@ -369,7 +369,7 @@ check *args:
     fi
     if want deny; then
       if command -v cargo-deny >/dev/null 2>&1; then
-        step "deny (workspace)"   cargo deny --manifest-path "$OBC_ROOT/firmware/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
+        step "deny (workspace)"   cargo deny --manifest-path "$OBC_ROOT/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
         step "deny (board crate)" cargo deny --manifest-path "$OBC_ROOT/firmware/obc-fw-nrf54l/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
       else _warn "skip deny — cargo-deny not installed (cargo install cargo-deny)"; SKIPPED+=("deny"); fi
     fi
@@ -413,7 +413,7 @@ doctor *args:
     ck venv     "python venv (web builder)" '[[ -x "$OBC_ROOT/.venv/bin/python" ]]' 'obc doctor --install (or run obc web)'
     m="$(_all_maps | head -n1 || true)"
     if [[ -n "$m" ]]; then _ok "default sim map → ${m##*/}"
-    elif [[ -f "$OBC_ROOT/firmware/obc-sim/assets/grimsel.obcm" ]]; then _ok "default sim map → bundled grimsel.obcm"
+    elif [[ -f "$OBC_ROOT/apps/obc-sim/assets/grimsel.obcm" ]]; then _ok "default sim map → bundled grimsel.obcm"
     else _warn "no .obcm found — build one with 'obc pack' or 'obc web', or drop one in the repo root"; fi
 
     if (( ! install )); then
@@ -430,7 +430,7 @@ doctor *args:
       riscv)    _run bash "$OBC_TOOLS/install-riscv.sh" ;;
       geos)     _run bash "$OBC_TOOLS/install-geos.sh" ;;
       cmake)    _err "install cmake via your system package manager (needs sudo)" ;;
-      venv)     _run python3 -m venv "$OBC_ROOT/.venv" && _run "$OBC_ROOT/.venv/bin/pip" install -q -r "$OBC_ROOT/packer/requirements.txt" ;;
+      venv)     _run python3 -m venv "$OBC_ROOT/.venv" && _run "$OBC_ROOT/.venv/bin/pip" install -q -r "$OBC_ROOT/builder/requirements.txt" ;;
       cargo)    _err "install Rust yourself: https://rustup.rs" ;;
       node)     _err "install Node 22+ via your system package manager (needs sudo)" ;;
     esac; done

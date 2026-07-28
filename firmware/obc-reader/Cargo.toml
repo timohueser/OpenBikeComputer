@@ -22,4 +22,4 @@ libm = { version = "0.2", default-features = false } # no arch asm: identical co
 [dev-dependencies]
 # Shared OBCM byte builder for the format-contract tests (one source of the layout,
 # also used by obc-render's priority test).
-obcm-testkit = { path = "../obcm-testkit" }
+obcm-testkit = { path = "../../host/obcm-testkit" }

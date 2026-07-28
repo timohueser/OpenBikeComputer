@@ -3,7 +3,7 @@
 //! never contains route bytes, so membership edits never touch a route payload. The reference
 //! firmware stores each trip as `TP{id}.OBT` beside the `RT{id}.OBR` route files.
 //!
-//! Layout (little-endian; pinned by `protocol-vectors/trip-v1.bin` against the Swift trip codec):
+//! Layout (little-endian; pinned by `specs/vectors/trip-v1.bin` against the Swift trip codec):
 //!
 //! ```text
 //! Header (56 bytes):

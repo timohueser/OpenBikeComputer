@@ -1,0 +1,11 @@
+{
+    // Enable format on save globally (or just for Rust)
+    "editor.formatOnSave": true,
+
+    // Ensure rust-analyzer is the default formatter for Rust files
+    "[rust]": {
+        "editor.defaultFormatter": "rust-lang.rust-analyzer",
+        "editor.formatOnSave": true,
+        "rewrap.wrappingColumn": 100
+    },
+}

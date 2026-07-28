@@ -6,12 +6,12 @@ import CoreBluetooth
 #endif
 
 /// The Swift half of the S0 shared-vector pin: the checked-in fixtures under
-/// `protocol-vectors/` (repo root) must decode through the app's codecs to the
+/// `specs/vectors/` (repo root) must decode through the app's codecs to the
 /// values `manifest.json` states, and re-encode **byte-exactly**. The firmware
 /// side pins the same files (`cargo test -p obc-vectors`), so neither side can
 /// drift from `obc-ble-interface-spec.md` without a test going red.
 final class ProtocolVectorTests: XCTestCase {
-    /// `protocol-vectors/` at the repo root, resolved from this file's location
+    /// `specs/vectors/`, resolved from this file's location
     /// (companion-ios/Packages/OBCKit/Tests/OBCTransportTests/…).
     private static let vectorsDir = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()  // OBCTransportTests
@@ -20,7 +20,7 @@ final class ProtocolVectorTests: XCTestCase {
         .deletingLastPathComponent()  // Packages
         .deletingLastPathComponent()  // companion-ios
         .deletingLastPathComponent()  // repo root
-        .appendingPathComponent("protocol-vectors")
+        .appendingPathComponent("specs/vectors")
 
     private func fixture(_ name: String) throws -> Data {
         let url = Self.vectorsDir.appendingPathComponent(name)

@@ -4,11 +4,11 @@ import OBCFormats
 @testable import OBCTransport
 
 /// The route encoder (B12, #286): its OBCR v2 reader pinned against the shared
-/// firmware-produced fixtures (`protocol-vectors/route-*.obcr`, decoded by the
+/// firmware-produced fixtures (`specs/vectors/route-*.obcr`, decoded by the
 /// production `obc-route` reader on the other side), plus encode→decode round-trips
 /// proving geometry, exact stats, and waypoints survive an upload.
 final class RouteObjectCodecTests: XCTestCase {
-    /// `protocol-vectors/` at the repo root, resolved from this file's location.
+    /// `specs/vectors/`, resolved from this file's location.
     private static let vectorsDir = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()  // OBCTransportTests
         .deletingLastPathComponent()  // Tests
@@ -16,7 +16,7 @@ final class RouteObjectCodecTests: XCTestCase {
         .deletingLastPathComponent()  // Packages
         .deletingLastPathComponent()  // companion-ios
         .deletingLastPathComponent()  // repo root
-        .appendingPathComponent("protocol-vectors")
+        .appendingPathComponent("specs/vectors")
 
     private func fixture(_ name: String) throws -> Data {
         let url = Self.vectorsDir.appendingPathComponent(name)
