@@ -95,6 +95,41 @@ fn render_without_route(app: &mut App, map: &[u8]) {
     });
 }
 
+/// A `ByteSource` whose every streamed read fails — a card that has stopped answering, or a POI
+/// section that can't be walked. `len` still reports the real file, so the reader's bounds checks
+/// pass and the failure lands where a real one would: in the quadtree/chunk reads.
+struct FailingSource<'a>(SliceSource<'a>);
+
+impl obc_formats::io::ByteSource for FailingSource<'_> {
+    fn read_at(&self, _off: u32, _buf: &mut [u8]) -> Result<(), obc_formats::io::Error> {
+        Err(obc_formats::io::Error::Io)
+    }
+    fn len(&self) -> u32 {
+        self.0.len()
+    }
+}
+
+/// Render one frame whose map `Reader` streams from a **failing** source. The tables are parsed off
+/// a clean source first (the host parses once per map load, not per frame), so the failure is
+/// exactly the one that matters here: the corridor query's own reads.
+fn render_with_failing_map(app: &mut App, map: &[u8], obcr: &[u8]) {
+    let clean = SliceSource(map);
+    let tables = MapTables::parse(&clean).expect("valid .obcm");
+    let failing = FailingSource(SliceSource(map));
+    let cache = MapCache::new();
+    let reader = Reader::new(&failing, &tables, &cache);
+
+    let route_src = SliceSource(obcr);
+    let idx = RouteIndex::read(&route_src).expect("valid .obcr");
+    let route = RouteReader::new(&idx, &route_src);
+
+    let mut buf = Buf::new(240, 320);
+    app.render_frame(&mut buf, &reader, Some(&route), 240.0, 320.0, |c| {
+        let (r, g, b) = rgb565_to_rgb888(c);
+        Rgb888::new(r, g, b)
+    });
+}
+
 /// **The host seam.** An idle App asks for no `Reader`; arming a corridor request makes it ask;
 /// the frame that takes the snapshot satisfies it; every frame after that is quiet again.
 #[test]
@@ -134,6 +169,37 @@ fn a_frame_without_a_route_retries_rather_than_settling() {
     render_with_route(&mut app, &map, &obcr);
     assert!(!app.base_needs_reader(), "the first frame with a route settles it");
     assert_eq!(app.corridor_snapshot_len(), 4);
+}
+
+/// **A failing query settles, it does not retry.** A corrupt POI section or a card that has stopped
+/// answering is the one case where retrying would be worst: the query's most expensive form would
+/// re-run on **every** rendered frame with the `Reader` kept built — exactly the per-frame SD work
+/// the #115/#425 discipline forbids. So an errored take settles on an empty list, like
+/// `PoiScratch` does, and only an explicit re-entry retries.
+#[test]
+fn an_erroring_source_settles_after_one_attempt() {
+    let (map, obcr) = (map_bytes(), route_bytes());
+    let mut app = App::new_idle(AppState::new(7_800_000, 48_000_000, 0.05));
+    app.arm_corridor(PoiCategorySet::ALL, 0);
+    assert!(app.base_needs_reader());
+
+    render_with_failing_map(&mut app, &map, &obcr);
+    assert!(!app.corridor_snapshot_pending(), "one attempt is all a failing source gets");
+    assert!(!app.base_needs_reader(), "the seam goes quiet — no per-frame retry of the worst case");
+    assert_eq!(app.corridor_snapshot_len(), 0, "settled empty, never a half-filled list");
+
+    // And it stays quiet however many frames go by.
+    for _ in 0..3 {
+        render_with_failing_map(&mut app, &map, &obcr);
+    }
+    assert!(!app.base_needs_reader());
+
+    // Re-entry is the retry, and once the source works the snapshot lands normally.
+    app.invalidate_corridor();
+    assert!(app.base_needs_reader(), "re-entry retries the identical key");
+    render_with_route(&mut app, &map, &obcr);
+    assert_eq!(app.corridor_snapshot_len(), 4, "a healthy frame fills it");
+    assert!(!app.base_needs_reader());
 }
 
 /// **The frozen contract (#115).** Once taken, the snapshot does not move: neither more frames nor

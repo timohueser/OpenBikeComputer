@@ -27,7 +27,9 @@
 //! only when a frame needs it. [`pending`](CorridorScratch::pending) is what
 //! [`App::base_needs_reader`](crate::App::base_needs_reader) adds to its answer, so the host builds
 //! the `Reader` exactly until the snapshot lands and then stops — the same energy pattern as the
-//! nearest-POI snapshot and the POI-detail hours read.
+//! nearest-POI snapshot and the POI-detail hours read. A **failed** query counts as landed (an
+//! empty list): retrying it every frame would re-run the query's worst case forever against a
+//! corrupt POI section or a failing card. See [`CorridorScratch::prepare`].
 
 use obc_reader::{CorridorPoi, PoiCategorySet, Reader, RoutePath, MAX_CORRIDOR_RESULTS};
 use obc_route::RouteReader;
@@ -132,9 +134,19 @@ impl CorridorScratch {
     }
 
     /// Take the snapshot if one is armed, pending, and the frame carries both the map `Reader` and
-    /// the streamed route. Called once per frame from the pre-draw `prepare` boundary; a frame
-    /// missing either input simply retries next time (the seam keeps asking for the `Reader` until
-    /// it lands). A query error leaves the scratch pending rather than freezing a half-list.
+    /// the streamed route. Called once per frame from the pre-draw `prepare` boundary.
+    ///
+    /// Two failures, deliberately handled differently:
+    ///
+    /// - **A missing input** (the host didn't build the `Reader` this frame, or no route is open
+    ///   yet) is *not* an attempt — the scratch stays pending and retries next frame, which is what
+    ///   keeps the seam asking until the inputs arrive.
+    /// - **A query error** (a corrupt POI section, a failing card) **settles** the scratch on an
+    ///   empty list, exactly as [`PoiScratch`](crate::screen::PoiScratch) does. Staying pending here
+    ///   would re-run the *most expensive* form of the query on every rendered frame with the
+    ///   `Reader` kept built — precisely the per-frame SD work the #115/#425 discipline exists to
+    ///   forbid, in the one situation where it hurts most. One attempt per armed key; re-entry
+    ///   ([`invalidate`](Self::invalidate)) or a filter change retries as usual.
     pub(crate) fn prepare(&mut self, reader: Option<&Reader>, route: Option<&RouteReader>) {
         let Some(key) = self.want else { return };
         if self.holds(key) {
@@ -142,11 +154,11 @@ impl CorridorScratch {
         }
         let (Some(reader), Some(route)) = (reader, route) else { return };
         let path: &dyn RoutePath = route;
-        if reader.corridor_pois(key.filter, path, key.anchor_m, &mut self.pois).is_ok() {
-            self.taken_for = Some(key);
-        } else {
+        if reader.corridor_pois(key.filter, path, key.anchor_m, &mut self.pois).is_err() {
+            // Never freeze a half-filled list: an errored query settles as "queried, nothing".
             self.pois.clear();
         }
+        self.taken_for = Some(key);
     }
 }
 
