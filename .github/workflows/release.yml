@@ -104,10 +104,10 @@ jobs:
           OBJCOPY=$(find "$(rustc --print sysroot)" -name llvm-objcopy | head -1)
           APP_ELF=firmware/obc-fw-nrf54l/target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l
           "$OBJCOPY" -O binary "$APP_ELF" app.bin
-          cargo run --manifest-path firmware/Cargo.toml -p obc-mkimage --release --locked -- \
+          cargo run -p obc-mkimage --release --locked -- \
             wrap --bin app.bin --version "$VERSION" --out UPDATE.BIN
           echo "::group::obc-mkimage inspect UPDATE.BIN"
-          cargo run --manifest-path firmware/Cargo.toml -p obc-mkimage --release --locked -- \
+          cargo run -p obc-mkimage --release --locked -- \
             inspect UPDATE.BIN
           echo "::endgroup::"
 

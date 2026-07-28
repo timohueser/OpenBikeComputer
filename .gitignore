@@ -73,3 +73,7 @@ packer/web_builder/frontend/public/data/
 
 # XcodeBuildMCP session defaults (local tool state)
 .xcodebuildmcp/
+
+# Cargo build output — the workspace root now sits at the repo root (its members span
+# firmware/, host/ and apps/), so the build dir is here rather than under firmware/.
+target/

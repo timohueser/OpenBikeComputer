@@ -108,7 +108,7 @@ jobs:
       - name: Cache cargo + build artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: firmware
+          workspaces: .
 
       # Pinned to the versions ci.yml builds these with, so the deploy cannot differ
       # from the tools that gated the PR.

@@ -133,7 +133,7 @@ jobs:
         run: |
           rc=0
           echo "::group::firmware workspace"
-          cargo fmt --all --check --manifest-path firmware/Cargo.toml || rc=1
+          cargo fmt --all --check || rc=1
           echo "::endgroup::"
           echo "::group::obc-fw-nrf54l (workspace-excluded)"
           cargo fmt --check --manifest-path firmware/obc-fw-nrf54l/Cargo.toml || rc=1
@@ -158,13 +158,13 @@ jobs:
           cache: false
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: firmware
+          workspaces: .
           key: host
       # Native host build: system libGEOS (built from source — apt's is too old) + serialport/
       # eframe system libs. See .github/actions/setup-host-deps.
       - uses: ./.github/actions/setup-host-deps
       - name: cargo clippy (workspace, all targets + features)
-        run: cargo clippy --manifest-path firmware/Cargo.toml --workspace --all-targets --all-features --locked -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
   # The 251-test shared render + packer suite — the real safety net.
   test:
@@ -178,13 +178,13 @@ jobs:
           cache: false
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: firmware
+          workspaces: .
           key: host
       # Native host build: system libGEOS (built from source — apt's is too old) + serialport/
       # eframe system libs. See .github/actions/setup-host-deps.
       - uses: ./.github/actions/setup-host-deps
       - name: cargo test (workspace, all features)
-        run: cargo test --manifest-path firmware/Cargo.toml --workspace --all-features --locked
+        run: cargo test --workspace --all-features --locked
       - name: firmware resource/dependency tool unit tests
         run: python3 -m unittest discover -s firmware/tools/tests -v
       - name: firmware production dependency direction
@@ -194,7 +194,7 @@ jobs:
       # file. Timings are printed to the log but never gated (shared runners are noisy); an
       # intentional rendering change regenerates hashes.txt (--write-hashes) in the same PR.
       - name: obc-bench --check (render pixel-hash tripwire)
-        run: cargo run --manifest-path firmware/Cargo.toml -p obc-bench --release --locked -- --check firmware/obc-bench/hashes.txt
+        run: cargo run -p obc-bench --release --locked -- --check firmware/obc-bench/hashes.txt
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -207,7 +207,7 @@ jobs:
       - name: web-builder packer tests (pytest)
         run: |
           pip install -r packer/requirements-dev.txt
-          cargo build --manifest-path firmware/Cargo.toml -p obc-pack --release --locked
+          cargo build -p obc-pack --release --locked
           PYTHONPATH=. python3 -m pytest packer/tests/ -v
 
   # The real device board crate (nRF54L15) on its thumbv8m target: clippy each feature config + a
@@ -355,10 +355,10 @@ jobs:
           cache: false
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: firmware
+          workspaces: .
           key: thumbv8m
       - name: cargo build -p obc-app (thumbv8m.main, nRF54L)
-        run: cargo build --manifest-path firmware/Cargo.toml -p obc-app --target thumbv8m.main-none-eabihf --locked
+        run: cargo build -p obc-app --target thumbv8m.main-none-eabihf --locked
       - name: thumbv8m +strict-align backend probe
         run: python3 firmware/tools/resource_guard.py strict-align
 
@@ -376,7 +376,7 @@ jobs:
         with:
           tool: cargo-deny
       - name: cargo-deny (firmware workspace)
-        run: cargo deny --manifest-path firmware/Cargo.toml --all-features --config deny.toml check
+        run: cargo deny --all-features --config deny.toml check
       - name: cargo-deny (obc-fw-nrf54l board crate)
         run: cargo deny --manifest-path firmware/obc-fw-nrf54l/Cargo.toml --all-features --config deny.toml check
       - name: cargo-deny (obc-boot bootloader)
@@ -401,7 +401,7 @@ jobs:
           cache: false
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: firmware
+          workspaces: .
           key: wasm
       - uses: taiki-e/install-action@v2
         with:
@@ -432,7 +432,7 @@ jobs:
           cache: false
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: firmware
+          workspaces: .
           key: wasm-convert
       - uses: taiki-e/install-action@v2
         with:

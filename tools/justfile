@@ -163,7 +163,7 @@ pack *args:
     if [[ -n "$out" ]]; then out="$(_abspath "$out")"
     else base="$(basename "$pbf")"; base="${base%.osm.pbf}"; base="${base%.pbf}"; out="$OBC_ROOT/${base}.obcm"; fi
     ( cd "$OBC_ROOT/firmware" && _run cargo build --release -p obc-pack )
-    cmd=("$OBC_ROOT/firmware/target/release/obc-pack" "$pbf" "$preset" "$out")
+    cmd=("$OBC_ROOT/target/release/obc-pack" "$pbf" "$preset" "$out")
     (( ${#_EXTRA[@]} )) && cmd+=("${_EXTRA[@]}")
     _run "${cmd[@]}"
     _say "wrote $out"
@@ -176,7 +176,7 @@ web *args:
     set -euo pipefail
     source "{{lib}}"; obc_init; ensure_geos
     cd "$OBC_ROOT"
-    export OBC_PACK_BIN="$OBC_ROOT/firmware/target/release/obc-pack"
+    export OBC_PACK_BIN="$OBC_ROOT/target/release/obc-pack"
     if [[ ! -x .venv/bin/python ]]; then
       _say "creating .venv + installing packer deps…"
       _run python3 -m venv .venv
@@ -369,7 +369,7 @@ check *args:
     fi
     if want deny; then
       if command -v cargo-deny >/dev/null 2>&1; then
-        step "deny (workspace)"   cargo deny --manifest-path "$OBC_ROOT/firmware/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
+        step "deny (workspace)"   cargo deny --manifest-path "$OBC_ROOT/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
         step "deny (board crate)" cargo deny --manifest-path "$OBC_ROOT/firmware/obc-fw-nrf54l/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
       else _warn "skip deny — cargo-deny not installed (cargo install cargo-deny)"; SKIPPED+=("deny"); fi
     fi
