@@ -16,6 +16,7 @@
 
 use core::fmt::Write;
 
+use obc_reader::PoiCategory;
 use obc_render::text::TextAlign;
 use obc_route::{Profile, RouteReader, Waypoints};
 
@@ -64,6 +65,11 @@ pub struct Readout<'a> {
     /// The UI language (epic #602) — the word-bearing tile captions (`AVG`, `CLIMBED`, `TO GO`…)
     /// route through the catalog; the unit symbols glued to the value stay language-independent.
     pub language: Language,
+    /// The App-owned per-category "next ahead" cache (epic #946, U5) — the map-POI half of the six
+    /// `Next: <category>` tiles. Read-only here, and *only* read by those tiles: everything else in
+    /// this catalogue is resident data. Empty on a host that never refreshes it, which simply makes
+    /// the tiles waypoint-only.
+    pub next_ahead: &'a crate::next_ahead::NextAhead,
 }
 
 /// Grid geometry: a page is `ROWS_PER_PAGE × COLS` tiles. A single-span field fills one slot, a
@@ -121,11 +127,30 @@ pub enum StatField {
     /// single-column raw-int tile (epic #707). `--` with no sensor / no data / stale; a fresh `0`
     /// is a coasting rider and shows `0`, not `--`.
     Cadence = 14,
+    /// Next **water** on the route ahead — a **two-column** tile (epic #946, U5). See
+    /// [`category`](StatField::category) for the shared anatomy of the six.
+    NextWater = 15,
+    /// Next **campsite** on the route ahead — a two-column tile.
+    NextCampsite = 16,
+    /// Next **lodging** on the route ahead — a two-column tile.
+    NextLodging = 17,
+    /// Next **resupply** on the route ahead — a two-column tile.
+    NextResupply = 18,
+    /// Next **pharmacy** on the route ahead — a two-column tile.
+    NextPharmacy = 19,
+    /// Next **bike shop** on the route ahead — a two-column tile.
+    NextBikeShop = 20,
 }
 
 impl StatField {
     /// Every field, in catalogue order — drives the "Add field" picker and decode validation.
-    pub const ALL: [StatField; 15] = [
+    ///
+    /// Catalogue order is a **UI** decision and deliberately independent of the on-disk
+    /// discriminants (which are append-only): the six `Next: <category>` tiles are numbered last but
+    /// listed **directly after** [`NextWaypoint`](StatField::NextWaypoint), because that is where a
+    /// rider looking for "what's coming up" will look for them (epic #946, U5 — grouping in the
+    /// picker is the *only* curation knob the epic allows).
+    pub const ALL: [StatField; 21] = [
         StatField::Speed,
         StatField::AvgSpeed,
         StatField::DistDone,
@@ -137,11 +162,33 @@ impl StatField {
         StatField::RideTime,
         StatField::Clock,
         StatField::NextWaypoint,
+        StatField::NextWater,
+        StatField::NextCampsite,
+        StatField::NextLodging,
+        StatField::NextResupply,
+        StatField::NextPharmacy,
+        StatField::NextBikeShop,
         StatField::WaypointList,
         StatField::HeartRate,
         StatField::Power,
         StatField::Cadence,
     ];
+
+    /// The POI category a `Next: <category>` tile tracks, or `None` for every other field. The one
+    /// switch the whole feature hangs off: it selects the tile drawer (icon + name | distance), the
+    /// picker row's icon, the field's name, and which categories the
+    /// [`NextAhead`](crate::next_ahead::NextAhead) cache keeps warm.
+    pub const fn category(self) -> Option<PoiCategory> {
+        Some(match self {
+            StatField::NextWater => PoiCategory::Water,
+            StatField::NextCampsite => PoiCategory::Campsite,
+            StatField::NextLodging => PoiCategory::Accommodation,
+            StatField::NextResupply => PoiCategory::Resupply,
+            StatField::NextPharmacy => PoiCategory::Pharmacy,
+            StatField::NextBikeShop => PoiCategory::BikeShop,
+            _ => return None,
+        })
+    }
 
     /// Decode a persisted discriminant, or `None` for an unknown byte (a newer writer, a bit-flip
     /// the CRC missed) — the codec drops it rather than trusting a garbage field.
@@ -150,11 +197,20 @@ impl StatField {
     }
 
     /// Column span: `2` for the full-width [`Clock`](StatField::Clock),
-    /// [`NextWaypoint`](StatField::NextWaypoint), and the [`WaypointList`](StatField::WaypointList)
-    /// panel, else `1`.
+    /// [`NextWaypoint`](StatField::NextWaypoint), the six `Next: <category>` tiles (same
+    /// icon + name | distance anatomy), and the [`WaypointList`](StatField::WaypointList) panel,
+    /// else `1`.
     pub const fn span(self) -> u8 {
         match self {
-            StatField::Clock | StatField::NextWaypoint | StatField::WaypointList => 2,
+            StatField::Clock
+            | StatField::NextWaypoint
+            | StatField::WaypointList
+            | StatField::NextWater
+            | StatField::NextCampsite
+            | StatField::NextLodging
+            | StatField::NextResupply
+            | StatField::NextPharmacy
+            | StatField::NextBikeShop => 2,
             _ => 1,
         }
     }
@@ -179,6 +235,12 @@ impl StatField {
 
     /// The field's name for the settings list / picker, in the UI `lang` (epic #602). The on-grid
     /// caption is in [`cell`](StatField::cell).
+    ///
+    /// A `Next: <category>` field names itself with the **category's** own catalog string — the very
+    /// one the Up-ahead picker and the POI menu use (epic #946 reuses one icon *and* one word per
+    /// category; a parallel `statfield.next_water` set would be the same six words drifting in four
+    /// languages). What makes the row read as a field rather than a place is the category icon the
+    /// picker draws beside it, and the tile preview in the editor.
     pub const fn name(self, lang: Language) -> &'static str {
         match self {
             StatField::Speed => t(Msg::StatfieldSpeed, lang),
@@ -196,6 +258,12 @@ impl StatField {
             StatField::HeartRate => t(Msg::StatfieldHeartRate, lang),
             StatField::Power => t(Msg::StatfieldPower, lang),
             StatField::Cadence => t(Msg::StatfieldCadence, lang),
+            StatField::NextWater => t(Msg::PoiCatWater, lang),
+            StatField::NextCampsite => t(Msg::PoiCatCampsite, lang),
+            StatField::NextLodging => t(Msg::PoiCatAccommodation, lang),
+            StatField::NextResupply => t(Msg::PoiCatResupply, lang),
+            StatField::NextPharmacy => t(Msg::PoiCatPharmacy, lang),
+            StatField::NextBikeShop => t(Msg::PoiCatBikeShop, lang),
         }
     }
 
@@ -318,7 +386,78 @@ impl StatField {
                 let v = cx.activity.live_cadence_display().map(|rpm| rpm as u32);
                 StatCell::new(cap(t(Msg::TileRpm, lang), ""), fmt_int_opt(v), false)
             }
+            // The six `Next: <category>` tiles (epic #946, U5) share one arm — the field's own
+            // `category()` is the only thing that differs. Anatomy = the next-waypoint tile's, plus
+            // the category icon the drawer puts left of the caption. Spelled out rather than a
+            // wildcard so the match stays exhaustive and a future field still fails to compile
+            // until it has a cell.
+            StatField::NextWater
+            | StatField::NextCampsite
+            | StatField::NextLodging
+            | StatField::NextResupply
+            | StatField::NextPharmacy
+            | StatField::NextBikeShop => {
+                let cat = self.category().expect("the six Next: variants all carry a category");
+                let mut cell = match next_of_category(cat, cx) {
+                    Some((dist_along_m, name)) => {
+                        let mut caption: heapless::String<24> = heapless::String::new();
+                        for ch in name.chars() {
+                            if caption.push(ch).is_err() {
+                                break;
+                            }
+                        }
+                        let value = fmt_dist_short(dist_along_m - cx.activity.progress_m, units);
+                        StatCell::new(caption, value, false)
+                    }
+                    // Nothing of this kind ahead (no route, nothing cached yet, or a genuinely
+                    // empty corridor): the icon still says *what*, so the caption falls back to the
+                    // category's name and the value to the house `--`.
+                    None => StatCell::new(cap(self.name(lang), ""), dashes(), false),
+                };
+                cell.value_align = TextAlign::Right;
+                cell
+            }
         }
+    }
+}
+
+/// The nearest thing of `cat` **ahead** on the route, across both of the epic's sources: the
+/// resident categorized waypoint table (U1) and the cached corridor-POI answer (U2 via the U5
+/// [`NextAhead`](crate::next_ahead::NextAhead) cache). Returns its along-route position and its
+/// name, or `None` when nothing of that kind is ahead.
+///
+/// Two rules, both inherited from the Up-ahead timeline so one entry can never read differently in
+/// the list and in a tile:
+///
+/// * **ahead** means `dist_along_m >= progress` (the same boundary [`figures`] calls "passed") —
+///   applied to the *cached* POI too, so a cache line the rider has ridden past is dropped here and
+///   re-armed by the scheduler rather than shown as `0m`;
+/// * a **tie** goes to the rider's own waypoint, exactly like [`Merge`]'s tie-break.
+///
+/// The waypoint half is a walk over resident RAM (the table is route-ordered, so the first match is
+/// the nearest) — no cache, no I/O, correct on the very first frame. Only the map-POI half is
+/// cached, because only it costs a card read.
+///
+/// [`figures`]: crate::screen::up_ahead
+/// [`Merge`]: crate::screen::up_ahead
+fn next_of_category<'a>(cat: PoiCategory, cx: &'a Readout<'a>) -> Option<(u32, &'a str)> {
+    // Route-relative, like every other route field: with no route loaded there is no "ahead". The
+    // guard is the *active route*, not the frame's `route` reader — the same fact the Up-ahead list
+    // gates on (a route-less ride must never leak the previous route's resident table or a cache
+    // line taken against it).
+    cx.activity.active_route?;
+    let progress = cx.activity.progress_m;
+    let wpt = cx
+        .waypoints
+        .as_slice()
+        .iter()
+        .find(|w| w.category == Some(cat) && w.dist_along_m >= progress)
+        .map(|w| (w.dist_along_m, w.name.as_str()));
+    let poi = cx.next_ahead.poi(cat).filter(|p| p.dist_along_m >= progress).map(|p| (p.dist_along_m, p.name.as_str()));
+    match (wpt, poi) {
+        (Some(w), Some(p)) if p.0 < w.0 => Some(p),
+        (Some(w), _) => Some(w),
+        (None, p) => p,
     }
 }
 
@@ -852,6 +991,10 @@ mod tests {
     /// next-waypoint. The point of [`Readout`]: formatting a cell needs no `MapRenderer`, no
     /// `Render`. Tests that exercise the next-waypoint tile set `waypoints` / `next_waypoint` on the
     /// returned value.
+    /// An empty per-category cache: the tiles then answer from the resident waypoint table alone.
+    /// A `static` (not a `&` temporary) so it outlives the borrowed `Readout`.
+    static EMPTY_CACHE: &crate::next_ahead::NextAhead = &crate::next_ahead::NextAhead::EMPTY;
+
     fn readout<'a>(activity: &'a Activity, units: Units, waypoints: &'a Waypoints) -> Readout<'a> {
         Readout {
             fix: None,
@@ -865,6 +1008,7 @@ mod tests {
             now: DateTime::default(),
             now_ms: 0,
             language: Language::En,
+            next_ahead: EMPTY_CACHE,
         }
     }
 
@@ -1087,6 +1231,222 @@ mod tests {
         assert_eq!((p[1].field, p[1].col, p[1].row), (StatField::Speed, 0, 1));
     }
 
+    // ── `Next: <category>` tiles (epic #946, U5) ───────────────────────────────────────────────
+
+    /// A `Waypoints` table from `(dist_along_m, name, category)` — the categorized (U1) source half
+    /// of a `Next: <category>` tile.
+    fn cat_wpts(items: &[(u32, &str, Option<PoiCategory>)]) -> Waypoints {
+        let mut w = Waypoints::new();
+        for &(dist_along_m, name, category) in items {
+            let mut n = heapless::String::new();
+            n.push_str(name).unwrap();
+            w.entries
+                .push(obc_route::WptEntry { dist_along_m, lon: 0, lat: 0, category, lateral_offset_m: 0, name: n })
+                .unwrap();
+        }
+        w
+    }
+
+    /// A cache holding one harvested corridor answer per `(category, dist_along_m, name)` — the
+    /// map-POI (U2) source half, filled through the real arm→harvest path so the test can't cache
+    /// something the scheduler wouldn't.
+    fn cache(items: &[(PoiCategory, u32, &str)]) -> crate::next_ahead::NextAhead {
+        use obc_reader::{Poi, PoiCategorySet};
+        let mut c = crate::next_ahead::NextAhead::new();
+        for &(cat, dist_along_m, name) in items {
+            c.reconcile(PoiCategorySet::only(cat), true, Some(0), 0);
+            let key = c.request().expect("a placed, never-taken category is always wanted");
+            let mut n = heapless::String::new();
+            n.push_str(name).unwrap();
+            let subtype = obc_formats::obcm::POI_SUBTYPES
+                .iter()
+                .position(|s| s.category == cat)
+                .map(|i| i as u8 + 1)
+                .expect("every category has a subtype");
+            c.harvest(
+                key,
+                &[obc_reader::CorridorPoi {
+                    poi: Poi { lat: 0, lon: 0, subtype, name: n, hours_ref: 0xFFFF, distance_m: dist_along_m },
+                    dist_along_m,
+                    offset_m: 0,
+                }],
+            );
+        }
+        c
+    }
+
+    /// A **route-loaded** readout over both sources at `progress_m` — `active_route` is what makes a
+    /// route-relative tile answer at all (the Up-ahead list's own guard).
+    fn riding<'a>(
+        activity: &'a mut Activity,
+        waypoints: &'a Waypoints,
+        next_ahead: &'a crate::next_ahead::NextAhead,
+        units: Units,
+        progress_m: u32,
+    ) -> Readout<'a> {
+        activity.active_route = Some(0);
+        activity.progress_m = progress_m;
+        Readout { next_ahead, ..readout(activity, units, waypoints) }
+    }
+
+    /// The six tiles sit **directly after** `Next waypoint` in catalogue order (the picker's order),
+    /// while their on-disk discriminants are appended at the end — the two orders are independent,
+    /// and both are contracts.
+    #[test]
+    fn next_category_fields_group_after_the_next_waypoint_field() {
+        let at = |f: StatField| StatField::ALL.iter().position(|g| *g == f).expect("in the catalogue");
+        let six = [
+            StatField::NextWater,
+            StatField::NextCampsite,
+            StatField::NextLodging,
+            StatField::NextResupply,
+            StatField::NextPharmacy,
+            StatField::NextBikeShop,
+        ];
+        for (i, f) in six.iter().enumerate() {
+            assert_eq!(at(*f), at(StatField::NextWaypoint) + 1 + i, "{f:?} follows the next-waypoint field");
+            assert_eq!(f.span(), 2, "{f:?} is a full-width tile");
+            assert_eq!(f.rows(), 1, "{f:?} is one row tall");
+        }
+        // The categories, in canonical id order — the picker's block mirrors the POI menu's.
+        assert_eq!(six.map(|f| f.category().unwrap()), PoiCategory::ALL);
+        // Every other field carries no category, so nothing else can pick up the icon anatomy.
+        for f in StatField::ALL {
+            assert_eq!(f.category().is_some(), six.contains(&f), "{f:?} category-ness");
+        }
+    }
+
+    /// Append-only discriminants 15..=20, decoding through `from_u8` and surviving a
+    /// `StatFieldList` decode — a persisted grid carrying them reloads.
+    #[test]
+    fn next_category_discriminants_round_trip() {
+        let expected = [
+            (StatField::NextWater, 15u8),
+            (StatField::NextCampsite, 16),
+            (StatField::NextLodging, 17),
+            (StatField::NextResupply, 18),
+            (StatField::NextPharmacy, 19),
+            (StatField::NextBikeShop, 20),
+        ];
+        for (f, b) in expected {
+            assert_eq!(f as u8, b, "append-only: {f:?} is byte {b}");
+            assert_eq!(StatField::from_u8(b), Some(f));
+        }
+        let bytes: [u8; 6] = expected.map(|(_, b)| b);
+        let list = StatFieldList::decode(6, &bytes);
+        assert_eq!(list.as_slice(), expected.map(|(f, _)| f), "a decoded selection keeps all six, in order");
+        // And they round-trip back out through the fixed-width settings blob.
+        let (len, ids) = list.encode();
+        assert_eq!(StatFieldList::decode(len, &ids).as_slice(), list.as_slice());
+    }
+
+    /// Three tiles' worth of layout: each is full-width, so three of them fill a page and the fourth
+    /// starts the next — the wide-tile rule, unchanged.
+    #[test]
+    fn next_category_tiles_fill_rows_like_any_wide_tile() {
+        let l = list(&[StatField::NextWater, StatField::Speed, StatField::NextPharmacy]);
+        let p = page_fields(&l, 0);
+        assert_eq!((p[0].field, p[0].col, p[0].row), (StatField::NextWater, 0, 0));
+        assert_eq!((p[1].field, p[1].col, p[1].row), (StatField::Speed, 0, 1));
+        assert_eq!(
+            (p[2].field, p[2].col, p[2].row),
+            (StatField::NextPharmacy, 0, 2),
+            "the second wide tile bumps past the half-filled row rather than straddling it"
+        );
+    }
+
+    /// The tile answers from **both** sources: the nearest entry ahead wins whether it is a map POI
+    /// (the cache) or the rider's own categorized waypoint, and a tie goes to the waypoint — the
+    /// Up-ahead merge's rule, so one entry can't read differently in the list and in a tile.
+    #[test]
+    fn next_category_tile_takes_the_nearest_of_either_source() {
+        let w = cat_wpts(&[(2_000, "Brunnen", Some(PoiCategory::Water)), (9_000, "Camp", Some(PoiCategory::Campsite))]);
+        let c = cache(&[(PoiCategory::Water, 5_000, "Fontaine"), (PoiCategory::Campsite, 4_000, "Camping Est")]);
+        let mut a = Activity::new(Mode::Riding);
+
+        // Water: the waypoint at 2 km is nearer than the cached POI at 5 km.
+        let cx = riding(&mut a, &w, &c, Units::Metric, 0);
+        let cell = StatField::NextWater.cell(&cx);
+        assert_eq!(cell.caption.as_str(), "Brunnen", "the rider's own waypoint is nearest");
+        assert_eq!(cell.value.as_str(), "2.0km");
+        assert_eq!(cell.value_align, TextAlign::Right, "the wide-tile distance hugs the far edge");
+        // Campsite: the cached map POI at 4 km beats the waypoint at 9 km.
+        let cell = StatField::NextCampsite.cell(&cx);
+        assert_eq!(cell.caption.as_str(), "Camping Est", "the corridor POI is nearest");
+        assert_eq!(cell.value.as_str(), "4.0km");
+
+        // Ride past the water waypoint: the tile hands over to the cached POI and counts down to it.
+        let cx = riding(&mut a, &w, &c, Units::Metric, 2_100);
+        let cell = StatField::NextWater.cell(&cx);
+        assert_eq!((cell.caption.as_str(), cell.value.as_str()), ("Fontaine", "2.9km"));
+
+        // A tie at the same metre goes to the waypoint (`Merge`'s tie-break).
+        let tie = cat_wpts(&[(5_000, "Brunnen", Some(PoiCategory::Water))]);
+        let cx = riding(&mut a, &tie, &c, Units::Metric, 0);
+        assert_eq!(StatField::NextWater.cell(&cx).caption.as_str(), "Brunnen", "a tie goes to the plan entry");
+    }
+
+    /// The empty state is the icon's own caption + `--`: no route at all, nothing of that category
+    /// ahead, and — the case the refresh policy creates — a cached entry the rider has ridden past,
+    /// which must never render as a phantom `0m`.
+    #[test]
+    fn next_category_tile_empty_states() {
+        let w = cat_wpts(&[(2_000, "Turn left", None), (3_000, "Camp", Some(PoiCategory::Campsite))]);
+        let c = cache(&[(PoiCategory::Water, 1_000, "Fontaine")]);
+        let mut a = Activity::new(Mode::Riding);
+
+        // No route loaded: route-relative, so `--` — and no leak from the resident tables.
+        let empty = crate::next_ahead::NextAhead::new();
+        let cx = Readout { next_ahead: &c, ..readout(&a, Units::Metric, &w) };
+        let cell = StatField::NextWater.cell(&cx);
+        assert_eq!((cell.caption.as_str(), cell.value.as_str()), ("Water", "--"), "no route ⇒ the category name + --");
+        assert_eq!(cell.value_align, TextAlign::Right, "the fallback stays right-aligned too");
+
+        // Nothing of this category anywhere (the generic waypoint doesn't answer a category question).
+        let cx = riding(&mut a, &w, &empty, Units::Metric, 0);
+        assert_eq!(StatField::NextPharmacy.cell(&cx).value.as_str(), "--");
+        assert_eq!(StatField::NextWater.cell(&cx).value.as_str(), "--", "an empty cache is just no answer yet");
+        // …while a categorized waypoint of another kind still answers its own tile.
+        assert_eq!(StatField::NextCampsite.cell(&cx).caption.as_str(), "Camp");
+
+        // A cached entry the rider has passed is dropped, not clamped to `0m` (the scheduler re-arms).
+        let cx = riding(&mut a, &w, &c, Units::Metric, 1_500);
+        let cell = StatField::NextWater.cell(&cx);
+        assert_eq!((cell.caption.as_str(), cell.value.as_str()), ("Water", "--"), "a passed cache line reads --");
+    }
+
+    /// The distance is the shared `fmt_dist_short` readout, so the tile re-scales with the unit
+    /// system exactly like the next-waypoint tile beside it.
+    #[test]
+    fn next_category_tile_follows_the_unit_system() {
+        let w = Waypoints::new();
+        let c = cache(&[(PoiCategory::BikeShop, 12_400, "Cycles Monaco")]);
+        let mut a = Activity::new(Mode::Riding);
+        assert_eq!(StatField::NextBikeShop.cell(&riding(&mut a, &w, &c, Units::Metric, 0)).value.as_str(), "12.4km");
+        assert_eq!(StatField::NextBikeShop.cell(&riding(&mut a, &w, &c, Units::Imperial, 0)).value.as_str(), "7.7mi");
+    }
+
+    /// The field names are the **category** catalog strings (epic #602 + the epic's one-word-per-
+    /// category rule) — in all four languages, and never an English fallback.
+    #[test]
+    fn next_category_field_names_are_the_localized_category_words() {
+        use crate::screen::poi_menu::category_msg;
+        for lang in [Language::En, Language::De, Language::Fr, Language::Es] {
+            for f in StatField::ALL {
+                let Some(cat) = f.category() else { continue };
+                assert_eq!(f.name(lang), t(category_msg(cat), lang), "{f:?} in {lang:?} is the category's own word");
+                assert!(!f.name(lang).is_empty());
+            }
+            // The words are distinct within a language, so six picker rows can't read alike.
+            let names: heapless::Vec<&str, 6> = PoiCategory::ALL.iter().map(|c| t(category_msg(*c), lang)).collect();
+            for (i, n) in names.iter().enumerate() {
+                assert!(!names[i + 1..].contains(n), "{n:?} appears twice in {lang:?}");
+            }
+        }
+        assert_eq!(StatField::NextLodging.name(Language::De), "Unterkunft");
+        assert_eq!(StatField::NextBikeShop.name(Language::Fr), "Vélociste");
+    }
+
     // ── Multi-row panel machinery (issue #574) ─────────────────────────────────────────────────
 
     /// The panel's shape: span 2, rows 3, so a `SLOTS_PER_PAGE`-slot footprint — exactly one page.
@@ -1146,12 +1506,13 @@ mod tests {
         assert!(l.push(StatField::Grade)); // panel + 7 singles
         assert_eq!(page_count(&l), 3, "the seventh single spills to a third page");
 
-        // A maxed selection filled from the catalogue in order (the first MAX_STAT_FIELDS fields —
-        // nine singles, the two wide tiles, then the panel; `push` refuses the rest) reaches four
-        // pages. Nothing may cap at two. (The catalogue itself now carries more than MAX_STAT_FIELDS
-        // fields, so a full grid is a MAX_STAT_FIELDS-sized *subset*, not all of `ALL`.)
+        // A maxed selection carrying the panel (it leads, then the catalogue fills the rest until
+        // `push` refuses) reaches four pages. Nothing may cap at two. (The catalogue carries far
+        // more than MAX_STAT_FIELDS fields, so a full grid is always a MAX_STAT_FIELDS-sized
+        // *subset* — and the panel is only in it if it was picked, hence the explicit lead.)
         let full = {
             let mut l = StatFieldList { ids: [StatField::Speed; MAX_STAT_FIELDS], len: 0 };
+            l.push(StatField::WaypointList);
             for f in StatField::ALL {
                 l.push(f); // silently refused once the grid is full
             }

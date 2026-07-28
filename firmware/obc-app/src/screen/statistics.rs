@@ -400,16 +400,24 @@ impl StatisticsScreen {
             }
             let cell = placed.field.cell(&cx);
             let tile_w = if placed.field.span() == 2 { chart_w } else { col_w };
-            super::tile(
-                cv,
-                rect(x, y, tile_w, row_h),
-                &cell.caption,
-                &cell.value,
-                cell.arrow,
-                cell.value_align,
-                PARCHMENT_SHADE,
-                INK,
-            );
+            let area = rect(x, y, tile_w, row_h);
+            // A `Next: <category>` tile carries the category's icon in front of its caption, which
+            // moves the caption — so it has its own drawer (epic #946, U5).
+            match placed.field.category() {
+                Some(cat) => {
+                    super::category_tile(cv, area, cat, &cell.caption, &cell.value, PARCHMENT_SHADE, INK);
+                }
+                None => super::tile(
+                    cv,
+                    area,
+                    &cell.caption,
+                    &cell.value,
+                    cell.arrow,
+                    cell.value_align,
+                    PARCHMENT_SHADE,
+                    INK,
+                ),
+            }
         }
     }
 }

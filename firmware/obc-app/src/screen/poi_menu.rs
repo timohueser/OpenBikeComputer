@@ -74,7 +74,7 @@ impl PoiMenuScreen {
 /// format crate's English label — fine for a spec dump, wrong on glass — so every screen that
 /// *shows* a category (this menu, the POI list's title, the Up-ahead picker) resolves it here, and
 /// the three can't drift into three spellings.
-pub(super) fn category_msg(cat: PoiCategory) -> Msg {
+pub(crate) fn category_msg(cat: PoiCategory) -> Msg {
     match cat {
         PoiCategory::Water => Msg::PoiCatWater,
         PoiCategory::Campsite => Msg::PoiCatCampsite,

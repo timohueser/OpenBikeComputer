@@ -107,6 +107,12 @@ struct Args {
     /// i18n catalog — the per-language snapshot mechanism. Defaults to `en` (the device default), so
     /// omitting it leaves the English output byte-identical.
     lang: Option<obc_app::settings::Language>,
+    /// Headless `--png` only: replace the Statistics grid's field selection with this comma-separated
+    /// list (epic #946, U5 — the `Next: <category>` tiles). Names are the catalogue's kebab-case ids
+    /// (`speed`, `next-waypoint`, `next-water`, …; `obc-sim --stat-fields ?` isn't a thing, but an
+    /// unknown name fails with the full list). Stands in for walking the Fields editor with a
+    /// twenty-token script just to place a tile.
+    stat_fields: Option<std::vec::Vec<obc_app::StatField>>,
     /// Headless `--png` only: render with a phone linked over BLE, so the connected indicator
     /// shows (the menu title bar / Home). Stands in for the sim control panel's "Phone connected"
     /// toggle when capturing a snapshot.
@@ -240,6 +246,7 @@ impl Default for Args {
             home_seed: None,
             clock: None,
             lang: None,
+            stat_fields: None,
             ble_connected: false,
             ble_passkey: None,
             ble_paired: false,
@@ -332,6 +339,74 @@ fn parse_lang(s: &str) -> Result<obc_app::settings::Language, String> {
     }
 }
 
+/// The catalogue's kebab-case field ids, in catalogue order — the `--stat-fields` vocabulary. Kept
+/// beside [`parse_stat_fields`] so an added [`StatField`](obc_app::StatField) shows up as a missing
+/// arm here rather than as a silently unnameable field.
+fn stat_field_id(f: obc_app::StatField) -> &'static str {
+    use obc_app::StatField as F;
+    match f {
+        F::Speed => "speed",
+        F::AvgSpeed => "avg-speed",
+        F::DistDone => "dist-done",
+        F::DistToGo => "dist-to-go",
+        F::Climbed => "climbed",
+        F::ToClimb => "to-climb",
+        F::Grade => "grade",
+        F::Elevation => "elevation",
+        F::RideTime => "ride-time",
+        F::Clock => "clock",
+        F::NextWaypoint => "next-waypoint",
+        F::WaypointList => "waypoint-list",
+        F::HeartRate => "heart-rate",
+        F::Power => "power",
+        F::Cadence => "cadence",
+        F::NextWater => "next-water",
+        F::NextCampsite => "next-campsite",
+        F::NextLodging => "next-lodging",
+        F::NextResupply => "next-resupply",
+        F::NextPharmacy => "next-pharmacy",
+        F::NextBikeShop => "next-bike-shop",
+    }
+}
+
+/// An empty [`StatFieldList`](obc_app::StatFieldList) — the grid selection every `--stat-fields`
+/// (and `--sensors-demo`) list is built onto, since the type starts at the device's default six and
+/// only shrinks by index.
+fn empty_stat_field_list() -> obc_app::StatFieldList {
+    let mut sf = obc_app::StatFieldList::default();
+    while !sf.is_empty() {
+        sf.remove(0);
+    }
+    sf
+}
+
+/// Parse a `--stat-fields` list into the grid selection. Unknown names fail with the whole
+/// vocabulary listed, so a typo in a snapshot script is a loud, self-explaining error.
+///
+/// Every name is also pushed onto a real [`StatFieldList`](obc_app::StatFieldList) as it is parsed,
+/// so a list the grid *cannot hold* fails here just as loudly instead of silently truncating into a
+/// snapshot: `push` refuses both past the grid's cap and on a repeat, and either way the frame the
+/// script asked for is not the frame it would get.
+fn parse_stat_fields(s: &str) -> Result<std::vec::Vec<obc_app::StatField>, String> {
+    let mut fields = std::vec::Vec::new();
+    let mut grid = empty_stat_field_list();
+    for n in s.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+        let f = obc_app::StatField::ALL.into_iter().find(|f| stat_field_id(*f) == n).ok_or_else(|| {
+            let all: std::vec::Vec<&str> = obc_app::StatField::ALL.into_iter().map(stat_field_id).collect();
+            format!("--stat-fields: unknown field `{n}`; known: {}", all.join(", "))
+        })?;
+        if !grid.push(f) {
+            return Err(format!(
+                "--stat-fields: `{n}` does not fit the grid — it is either a repeat, or past the \
+                 grid's cap ({} field(s) accepted before it)",
+                grid.len()
+            ));
+        }
+        fields.push(f);
+    }
+    Ok(fields)
+}
+
 fn parse_args() -> Result<Args, String> {
     let mut a = Args::default();
     let mut it = std::env::args().skip(1);
@@ -387,6 +462,9 @@ fn parse_args() -> Result<Args, String> {
             }
             "--lang" => {
                 a.lang = Some(parse_lang(&it.next().ok_or("--lang needs en|de|fr|es")?)?);
+            }
+            "--stat-fields" => {
+                a.stat_fields = Some(parse_stat_fields(&it.next().ok_or("--stat-fields needs a comma list")?)?);
             }
             "--ble-connected" => a.ble_connected = true,
             "--nav-hold" => a.nav_hold = true,
@@ -828,7 +906,7 @@ fn main() {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: obc-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--home-seed N] [--clock YYYY-MM-DDTHH:MM] [--route-retention LEVEL:AGE] [--lang en|de|fr|es] [--ble-connected] [--ble-passkey N] [--ble-paired] [--sensors-screen] [--inject-upload ID] [--inject-upload-replace ID] [--nav-hold] [--inject-nav-fail exhausted|nopath] [--detour-hold] [--inject-detour-fail exhausted|nopath] [--inject-warning gps,altimeter,compass,map] [--boot-fault nocard|nomap|badmap] [--open-climb]");
+            eprintln!("error: {e}\nusage: obc-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--home-seed N] [--clock YYYY-MM-DDTHH:MM] [--route-retention LEVEL:AGE] [--lang en|de|fr|es] [--stat-fields LIST] [--ble-connected] [--ble-passkey N] [--ble-paired] [--sensors-screen] [--inject-upload ID] [--inject-upload-replace ID] [--nav-hold] [--inject-nav-fail exhausted|nopath] [--detour-hold] [--inject-detour-fail exhausted|nopath] [--inject-warning gps,altimeter,compass,map] [--boot-fault nocard|nomap|badmap] [--open-climb]");
             std::process::exit(2);
         }
     };
@@ -976,7 +1054,12 @@ fn main() {
         // flag `set_settings` isn't called, and `--clock` alone still leaves `language` English, so
         // the existing snapshots' output is byte-unchanged. `set_settings` restamps the WallClock
         // from this local set-point (see `App::set_settings`).
-        if args.clock.is_some() || args.lang.is_some() || args.sensors_demo || args.sensors_screen {
+        if args.clock.is_some()
+            || args.lang.is_some()
+            || args.stat_fields.is_some()
+            || args.sensors_demo
+            || args.sensors_screen
+        {
             let mut settings = obc_app::settings::Settings::default();
             if let Some(clock) = args.clock {
                 settings.clock = clock;
@@ -1002,6 +1085,19 @@ fn main() {
                     StatField::Climbed,
                 ] {
                     sf.push(f);
+                }
+                settings.stat_fields = sf;
+            }
+            // `--stat-fields` (epic #946, U5): replace the grid selection wholesale, so a snapshot can
+            // put a `Next: <category>` tile (or any other field) on the visible page without walking
+            // the Fields editor. Applied after `--sensors-demo` so an explicit list always wins.
+            if let Some(fields) = &args.stat_fields {
+                let mut sf = empty_stat_field_list();
+                for f in fields {
+                    // Can't fail: `parse_stat_fields` pushed the identical list onto an identical
+                    // grid and rejected the argument outright if any of it didn't fit.
+                    let added = sf.push(*f);
+                    debug_assert!(added, "`--stat-fields` is validated at parse time");
                 }
                 settings.stat_fields = sf;
             }

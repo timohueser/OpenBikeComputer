@@ -127,13 +127,7 @@ impl<'a> Entry<'a> {
     fn name(&self) -> &'a str {
         match self {
             Entry::Waypoint(w) => w.name.as_str(),
-            Entry::Poi(p) => {
-                if p.poi.name.is_empty() {
-                    poi_label_of(p.poi.subtype).unwrap_or("POI")
-                } else {
-                    p.poi.name.as_str()
-                }
-            }
+            Entry::Poi(p) => poi_row_name(&p.poi),
         }
     }
 
@@ -166,6 +160,17 @@ impl<'a> Entry<'a> {
             Some(c) => filter.contains(c),
             None => filter == PoiCategorySet::ALL,
         }
+    }
+}
+
+/// How a map POI names itself in a route-ordered readout: its own name, or — unnamed — its subtype
+/// label (the POI browser's fallback), so it reads the same on an Up-ahead row as in a
+/// [`Next: <category>` tile](crate::stat_fields::StatField). Never empty.
+pub(crate) fn poi_row_name(poi: &obc_reader::Poi) -> &str {
+    if poi.name.is_empty() {
+        poi_label_of(poi.subtype).unwrap_or("POI")
+    } else {
+        poi.name.as_str()
     }
 }
 
