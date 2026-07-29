@@ -540,6 +540,14 @@
         <a href="#features">Features</a>
         <a href="docs/">Docs</a>
         <a href="blog/">Blog</a>
+        <!-- The map app, a sibling in the same published artifact (/builder/ — the path is
+             the app's, the name is what it does for a visitor: pick a region, pick a style,
+             put a map on the card). Written flat, unlike the docs/blog header's version,
+             which build_docs.py omits when OBC_BUILDER_PATH says no catalog is configured:
+             this page is copied by trunk, not rendered, so a conditional here would mean a
+             whole build stage for a state that is now a misconfiguration rather than a
+             phase — and a catalog-less builder is a page that explains itself, not a 404. -->
+        <a href="builder/">Maps</a>
       </nav>
     </div>
   </header>
@@ -715,6 +723,7 @@
       <div class="links">
         <a href="https://github.com/timohueser/OpenBikeComputer" target="_blank" rel="noopener">GitHub</a>
         <a href="docs/">Docs</a>
+        <a href="builder/">Maps</a>
       </div>
       <div class="made">Headed for the trail.</div>
     </div>
