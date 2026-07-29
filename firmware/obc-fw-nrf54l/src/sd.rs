@@ -1278,7 +1278,8 @@ impl Storage {
         }
         let mut maps: Vec<MapSummary, MAX_MAPS> = Vec::new();
         self.scan_maps_into(&mut maps);
-        let chosen = choose_map(&maps)?;
+        let keep = choose_map_index(&maps)?;
+        let chosen = &maps[keep];
         let (name, display, entry_block, entry_offset) =
             (chosen.file.clone(), chosen.name.clone(), chosen.entry_block, chosen.entry_offset);
         defmt::info!(
@@ -1298,7 +1299,53 @@ impl Storage {
         self.open_map = Some((file, len));
         self.open_map_name = Some(name);
         self.build_map_extents(entry_block, entry_offset, file, len);
+        // Last, and only on the success path: the map that just opened is the survivor, so the
+        // uploads it superseded can go. Every early return above leaves the card untouched — a map
+        // that could not be opened has proved nothing, and deleting its predecessor on the strength
+        // of a failed open is how a rider ends up with no map at all.
+        self.retire_superseded_maps(&maps, keep);
         Some(len)
+    }
+
+    /// Delete the uploaded maps the one just opened superseded — the card side of the **one map**
+    /// rule (#992). Returns how many were reclaimed.
+    ///
+    /// Which files are eligible is [`obc_app::is_superseded_upload`]'s decision, tested where tests
+    /// run; this is the binding, and it adds one board-only guard the pure rule cannot know about:
+    /// **never delete the file that is open**. That cannot trigger given the caller — `keep` is the
+    /// open one — and it is here because the cost of the two states disagreeing some day is a
+    /// deleted file under a live handle.
+    ///
+    /// **Timing, deliberately: at open, not at commit.** A map upload lands while the *previous*
+    /// map is held open for the session, and the renderer streams from that handle — so the moment
+    /// the replacement commits is exactly the moment its predecessor cannot be touched. This runs at
+    /// the next `open_map` instead, which is also when the new map takes effect. The consequence,
+    /// stated rather than discovered: between an upload and the next boot the card carries **both**
+    /// maps, and the free-space guard at announce (§4.1 rule 2) sees it — a replacement whose old
+    /// and new copies do not fit together is refused until the device is restarted once.
+    fn retire_superseded_maps(&mut self, maps: &[MapSummary], keep: usize) -> usize {
+        let choices = map_choices(maps);
+        let mut doomed: Vec<ShortFileName, MAX_MAPS> = Vec::new();
+        for (i, m) in maps.iter().enumerate() {
+            if obc_app::is_superseded_upload(&choices, keep, i) && !self.map_file_is(&m.file) {
+                let _ = doomed.push(m.file.clone());
+            }
+        }
+        let mut retired = 0;
+        for name in doomed {
+            match self.vmgr.delete_file_in_dir(self.root, &name) {
+                Ok(()) => {
+                    defmt::info!("SD: retired superseded map {}", defmt::Debug2Format(&name));
+                    retired += 1;
+                }
+                Err(e) => defmt::warn!(
+                    "SD: could not retire the superseded map {} ({}) — the next boot will try again",
+                    defmt::Debug2Format(&name),
+                    defmt::Debug2Format(&e)
+                ),
+            }
+        }
+        retired
     }
 
     /// Scan the card root into the **map catalog** (issue #927) — the "which maps are on this card"
@@ -2964,9 +3011,9 @@ fn map_display_name(short: &ShortFileName, long: Option<&str>) -> String<24> {
     out
 }
 
-/// Pick the map [`Storage::open_map`] loads, by the rule documented there — the board's binding of
-/// the host-tested [`obc_app::choose_map`] classifier to the scanned catalog.
-fn choose_map(maps: &[MapSummary]) -> Option<&MapSummary> {
+/// The scanned catalog as the host-tested classifiers want it — one [`obc_app::MapChoice`] per map,
+/// in scan order, so an index into this is an index into `maps`.
+fn map_choices(maps: &[MapSummary]) -> Vec<obc_app::MapChoice, MAX_MAPS> {
     let mut choices: Vec<obc_app::MapChoice, MAX_MAPS> = Vec::new();
     for m in maps.iter().take(MAX_MAPS) {
         let _ = choices.push(obc_app::MapChoice {
@@ -2975,7 +3022,15 @@ fn choose_map(maps: &[MapSummary]) -> Option<&MapSummary> {
             readable: m.obcm_version == obc_formats::obcm::VERSION,
         });
     }
-    maps.get(obc_app::choose_map(&choices)?)
+    choices
+}
+
+/// Pick the map [`Storage::open_map`] loads, by the rule documented there — the board's binding of
+/// the host-tested [`obc_app::choose_map`] classifier to the scanned catalog. Returns the **index**
+/// into `maps`, because the retirement rule that follows the choice
+/// ([`obc_app::is_superseded_upload`]) is stated in terms of the same indices.
+fn choose_map_index(maps: &[MapSummary]) -> Option<usize> {
+    obc_app::choose_map(&map_choices(maps))
 }
 
 /// The **durable trip object id** in an uploaded trip's filename — `TP{id}.OBT` → `id` (spec §7.7;
