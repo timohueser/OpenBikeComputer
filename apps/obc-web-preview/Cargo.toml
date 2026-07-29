@@ -1,0 +1,40 @@
+[package]
+name = "obc-web-preview"
+version = "0.1.0"
+edition = "2021"
+publish = false # internal firmware crate — not published to crates.io
+description = "The builder's preset-preview renderer (epic #894, B2): a demo .obcm in, device-resolution RGBA frames out, drawn by the exact obc-render path the nRF54L runs. No app, no chrome, no replay — a camera and a framebuffer."
+
+# `cdylib` is what wasm-bindgen links; `rlib` keeps the crate a normal workspace library so
+# `cargo test`/`clippy` exercise the preview core on the host target too.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The map file reader and the renderer — the same `no_std` crates the device runs, which is the
+# whole claim a preview makes: this is what the preset draws, not an artist's impression.
+# `alloc` gives us `MapCache::new_boxed` (a zeroed heap allocation instead of a ≈277 KB stack
+# temporary — the trap #661 documented for the demo host).
+obc-reader = { path = "../../firmware/obc-reader", features = ["alloc"] }
+obc-render = { path = "../../firmware/obc-render" }
+# The device-resolution frame authority (FRAME_W/FRAME_H) — no re-declared 240×320 literals.
+obc-display = { path = "../../firmware/obc-display" }
+# `RgbaFrame`, the shared browser framebuffer both wasm hosts draw into.
+obc-host-core = { path = "../../host/obc-host-core" }
+embedded-graphics = "0.8"
+
+# --- Web (wasm32) surface — the only target this crate actually ships on. The preview core above
+# stays target-independent so `cargo test` exercises it natively in the workspace, exactly like
+# obc-web-convert's conversion core.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+# `Uint8ClampedArray` over wasm memory — the zero-copy frame handle `frame()` returns — and
+# `js_sys::Error` + `Reflect::set` so a failure crosses to JS carrying a stable `code`.
+js-sys = "0.3"
+# Surface Rust panics in the browser console instead of an opaque trap.
+console_error_panic_hook = "0.1"
+
+# wasm-pack drives wasm-opt over the release artifact; `-Oz` is the size-first setting. The
+# preview module is fetched lazily, but it is still a download on someone's phone.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ['-Oz']

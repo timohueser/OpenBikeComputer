@@ -1,7 +1,9 @@
 <script lang="ts">
     import type { BuildablePreset } from "../lib/config/model";
     import { working } from "../lib/config/storage.svelte";
+    import { presetTagline } from "../lib/preview/copy";
     import Gated from "./Gated.svelte";
+    import PresetPreview from "./PresetPreview.svelte";
     import { ADVANCED_ROUTE } from "../lib/routes";
 
     // Written once so the live link and its dead twin can't drift apart.
@@ -25,23 +27,27 @@
 
 <div class="cards">
     {#each presets as preset (preset.id)}
-        <button
-            type="button"
-            class="preset"
-            class:selected={basedOn === preset.id}
-            onclick={() => pick(preset)}
-        >
-            <span class="name">
-                {preset.name}
-                {#if basedOn === preset.id && !modified}<span class="check">✓</span>{/if}
-            </span>
-            <span class="swatches">
-                {#each preset.swatch ?? [] as c (c)}
-                    <span class="sw" style:background={c}></span>
-                {/each}
-            </span>
-            <span class="desc small muted">{preset.description}</span>
-        </button>
+        <div class="card" class:selected={basedOn === preset.id}>
+            <!-- Outside the button, like the catalog tier's card: the selected preview is
+                 draggable, and a drag inside a <button> is a click. -->
+            <PresetPreview
+                presetId={preset.id}
+                label={preset.name}
+                interactive={basedOn === preset.id}
+            />
+            <button type="button" class="pick" onclick={() => pick(preset)}>
+                <span class="name">
+                    {preset.name}
+                    {#if basedOn === preset.id && !modified}<span class="check">✓</span>{/if}
+                </span>
+                <span class="swatches">
+                    {#each preset.swatch ?? [] as c (c)}
+                        <span class="sw" style:background={c}></span>
+                    {/each}
+                </span>
+                <span class="desc small muted">{presetTagline(preset.id, preset.description)}</span>
+            </button>
+        </div>
     {/each}
 </div>
 
@@ -66,31 +72,46 @@
 <style>
     .cards {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        /* Wider than the old text-only cards: these hold a 3:4 portrait picture, and below
+           ~160 px the panel's own hairlines stop resolving. */
+        grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
         gap: 10px;
     }
 
-    .preset {
+    .card {
         display: flex;
         flex-direction: column;
-        align-items: flex-start;
-        gap: 7px;
+        align-items: stretch;
+        gap: 8px;
         text-align: left;
         background: var(--parchment);
         border: 1px solid var(--parchment-3);
         border-radius: 12px;
         padding: 11px 12px;
-        transition: border-color 0.15s, box-shadow 0.15s;
+        transition:
+            border-color 0.15s,
+            box-shadow 0.15s;
     }
 
-    .preset:hover {
+    .card:hover {
         border-color: var(--wood);
     }
 
-    .preset.selected {
+    .card.selected {
         border: 2px solid var(--forest);
         padding: 10px 11px;
         box-shadow: 0 2px 10px rgba(60, 107, 57, 0.16);
+    }
+
+    .pick {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 5px;
+        text-align: left;
+        background: none;
+        border: none;
+        padding: 0;
     }
 
     .name {

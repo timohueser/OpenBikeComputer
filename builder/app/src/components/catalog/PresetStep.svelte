@@ -11,6 +11,8 @@
     import type { RegionEntry } from "../../lib/catalog/regions";
     import type { Preset } from "../../lib/config/model";
     import { formatBytes } from "../../lib/format";
+    import { presetTagline } from "../../lib/preview/copy";
+    import PresetPreview from "../PresetPreview.svelte";
 
     let {
         presets,
@@ -50,37 +52,41 @@
 <div class="cards">
     {#each presets as preset (preset.id)}
         {@const status = statusOf(preset)}
-        <button
-            type="button"
-            class="preset"
-            class:selected={presetId === preset.id}
-            class:blocked={status.blocked}
-            onclick={() => onpick(preset.id)}
-        >
-            {#if preset.preview}
-                <img class="preview" src={preset.preview} alt="" />
-            {/if}
-            <span class="name">{preset.name}</span>
-            <span class="desc small muted">{preset.description}</span>
-            {#if status.note}
-                <span class="note small" class:warn={status.blocked}>{status.note}</span>
-            {/if}
-        </button>
+        <div class="card" class:selected={presetId === preset.id} class:blocked={status.blocked}>
+            <!-- The picture sits outside the button: the selected card's map is draggable, and a
+                 drag inside a <button> is a click. The button keeps the name and the copy, which
+                 is the whole hit target on a card that is not yet chosen. -->
+            <PresetPreview
+                presetId={preset.id}
+                label={preset.name}
+                interactive={presetId === preset.id}
+                fallback={preset.preview}
+            />
+            <button type="button" class="pick" onclick={() => onpick(preset.id)}>
+                <span class="name">{preset.name}</span>
+                <span class="desc small muted">{presetTagline(preset.id, preset.description)}</span>
+                {#if status.note}
+                    <span class="note small" class:warn={status.blocked}>{status.note}</span>
+                {/if}
+            </button>
+        </div>
     {/each}
 </div>
 
 <style>
     .cards {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        /* Wider than the old text-only cards: these hold a 3:4 portrait picture, and below
+           ~160 px the panel's own hairlines stop resolving. */
+        grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
         gap: 10px;
     }
 
-    .preset {
+    .card {
         display: flex;
         flex-direction: column;
-        align-items: flex-start;
-        gap: 7px;
+        align-items: stretch;
+        gap: 8px;
         text-align: left;
         background: var(--parchment);
         border: 1px solid var(--parchment-3);
@@ -91,11 +97,11 @@
             box-shadow 0.15s;
     }
 
-    .preset:hover {
+    .card:hover {
         border-color: var(--wood);
     }
 
-    .preset.selected {
+    .card.selected {
         border: 2px solid var(--forest);
         padding: 10px 11px;
         box-shadow: 0 2px 10px rgba(60, 107, 57, 0.16);
@@ -103,18 +109,20 @@
 
     /* Baked-but-not-here stays readable and pickable: picking it is how the
        download card gets to say what's missing and offer the alternative. */
-    .preset.blocked .name,
-    .preset.blocked .desc {
+    .card.blocked .name,
+    .card.blocked .desc {
         opacity: 0.6;
     }
 
-    .preview {
-        width: 100%;
-        aspect-ratio: 4 / 3;
-        object-fit: cover;
-        border-radius: 8px;
-        border: 1px solid var(--line);
-        background: var(--parchment-2);
+    .pick {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 5px;
+        text-align: left;
+        background: none;
+        border: none;
+        padding: 0;
     }
 
     .name {

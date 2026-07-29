@@ -4,6 +4,11 @@ __pycache__/
 # ...except the small tile baked into the STM32 firmware via include_bytes! (issue
 # #34). It must ship in-repo so the board crate builds without a separate pack step.
 !firmware/obc-fw-stm32f429/tiles/*.obcm
+# ...and the style presets' demo maps (B2, #899). They must ship in-repo: they are what
+# a preset card on the hosted site renders, and baking one wants libGEOS, a 600 MB OSM
+# extract and minutes of CPU — none of which belongs in a static-site deploy. Regenerate
+# with builder/bake-previews.sh; the sizes are in previews.json beside them.
+!builder/app/public/preview/*.obcm
 *.obcr
 # ...except the shared wire-protocol test vectors (S0, issue #268). They must ship
 # in-repo: firmware `cargo test -p obc-vectors` and the app's swift tests pin their
