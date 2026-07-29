@@ -25,6 +25,10 @@ struct RootView: View {
     /// Online/offline signal for the MapKit basemap previews (#294), injected
     /// into the whole tree as `\.obcIsOnline`.
     @State private var reachability: ReachabilityStore
+    /// The proactive update surface (#773 U5): decides, on becoming active, whether a published
+    /// firmware update is worth a sheet. Answers from U4's 6-hour cache, so foregrounding is not a
+    /// network request.
+    @State private var updateSurfaceModel: UpdateSurfaceModel
     @State private var path: [MainDestination] = []
     @Environment(\.scenePhase) private var scenePhase
 
@@ -34,6 +38,10 @@ struct RootView: View {
     /// model (upload seeding) and the Settings model (the Auto-delete picker), so a
     /// change in Settings seeds the next upload.
     private let retentionDefaults: any RetentionDefaultsStore
+    /// The proactive-update preferences (#773 U5) — the auto-check toggle, the answered ledger and
+    /// the last-seen device. Shared by the launch surface here and the Settings toggle, so the switch
+    /// silences the surface it names.
+    private let updateSurface: any UpdateSurfaceStore
     /// The in-flight transfer ledger (#459) — shared by the upload sheets and
     /// the ride-sync coordinator (the writers) and the lifecycle model (the
     /// reader draining before a background disconnect).
@@ -57,12 +65,15 @@ struct RootView: View {
         retentionDefaults: any RetentionDefaultsStore = InMemoryRetentionDefaultsStore(),
         reachability: any NetworkReachability = PathMonitorReachability(),
         backgroundTasks: any BackgroundTaskRunner = UIKitBackgroundTaskRunner(),
+        updateSurface: any UpdateSurfaceStore = InMemoryUpdateSurfaceStore(),
+        updateNotifier: (any UpdateNotifying)? = nil,
         importAtLaunch: (data: Data, fileName: String)? = nil,
         firmwareDemoAtLaunch: (data: Data, autoSend: Bool)? = nil
     ) {
         self.transport = transport
         self.bondStore = bondStore
         self.retentionDefaults = retentionDefaults
+        self.updateSurface = updateSurface
         self.importAtLaunch = importAtLaunch
         self.firmwareDemoAtLaunch = firmwareDemoAtLaunch
         let importer = RouteImporter(decoders: [GPXRouteDecoder(), TCXRouteDecoder()])
@@ -93,6 +104,15 @@ struct RootView: View {
             isBonded: { bondStore.load() != nil }
         ))
         _reachability = State(initialValue: ReachabilityStore(reachability))
+        // #773 U5 — the launch surface. The runner (policy + U4's checker + this store) is the
+        // *same* type the background refresh runs, so the sheet and the notification can't disagree
+        // about what's worth raising.
+        _updateSurfaceModel = State(initialValue: UpdateSurfaceModel(
+            transport: transport,
+            bondStore: bondStore,
+            runner: UpdateSurfaceRunner(store: updateSurface),
+            notifier: updateNotifier
+        ))
     }
 
     var body: some View {
@@ -167,6 +187,13 @@ struct RootView: View {
         .task {
             lifecycleModel.start()
             reachability.start()
+            // #773 U5: remember the device's version while the link can be read, and run the launch
+            // check once for this cold start (the `.active` edge below covers every return).
+            updateSurfaceModel.start()
+            updateSurfaceModel.appBecameActive()
+            // A notice tapped from a cold launch: iOS delivers the response during startup, so the
+            // flag may already be set by the time the first `.task` runs.
+            if UpdateRouteRequest.shared.consume() { pushFirmwareUpdate() }
             if let importAtLaunch {
                 importModel.open(data: importAtLaunch.data, fileName: importAtLaunch.fileName)
             }
@@ -183,6 +210,15 @@ struct RootView: View {
         // silent-reconnect path.
         .onChange(of: scenePhase) { _, newPhase in
             lifecycleModel.scenePhaseChanged(to: newPhase)
+            // #773 U5: the launch check on every return to the front (cache-backed — see
+            // `UpdateSurfaceModel`), and the background wake requested on the way out. `.inactive`
+            // is deliberately neither: it's the shade/app-switcher flicker the link policy ignores
+            // too.
+            switch newPhase {
+            case .active: updateSurfaceModel.appBecameActive()
+            case .background: BackgroundUpdateRefresh.schedule()
+            default: break
+            }
         }
         // Share-sheet / "open with OBC" delivery: iOS hands route files here
         // (registered in project.yml → CFBundleDocumentTypes). Same path as a
@@ -197,6 +233,45 @@ struct RootView: View {
         // idle-timer touch reads the same ledger the upload sheets, ride sync,
         // and firmware send claim from. UIKit stays at the composition root.
         .keepAwakeDuringTransfers(transferActivity)
+        // #773 U5 — the launch sheet. Presented only when the policy says so (auto-check on, a
+        // parseable running version, a fresh answer of `available`, and this version not already
+        // put to the rider); a swipe-down is routed to `dismiss()` because closing it *is* an
+        // answer, the same as Not now.
+        .sheet(item: pendingUpdate) { update in
+            UpdateAvailableSheet(
+                update: update,
+                onView: {
+                    updateSurfaceModel.viewUpdate()
+                    pushFirmwareUpdate()
+                },
+                onNotNow: { updateSurfaceModel.dismiss() }
+            )
+            .presentationDetents([.height(400)])
+        }
+        // A tapped update notice lands on S7 (the delegate set in `OBCCompanionApp` flips the flag;
+        // a cold-launch tap is picked up by the `.task` above, a foreground one here).
+        .onChange(of: UpdateRouteRequest.shared.openFirmwareUpdate) { _, wants in
+            if wants, UpdateRouteRequest.shared.consume() { pushFirmwareUpdate() }
+        }
+    }
+
+    // MARK: The proactive update surface (#773 U5)
+
+    /// Presentation binding for the launch sheet. Dismissal answers — a rider who swipes it away has
+    /// said "not now" just as deliberately as one who taps it.
+    private var pendingUpdate: Binding<UpdateSurfaceModel.PendingUpdate?> {
+        Binding(
+            get: { updateSurfaceModel.pending },
+            set: { if $0 == nil { updateSurfaceModel.dismiss() } }
+        )
+    }
+
+    /// Push S7, from the sheet's View or from a tapped notification. Idempotent: a second tap while
+    /// the screen is already on the stack must not stack a second copy (which would strand the
+    /// in-flight transfer the lower one owns).
+    private func pushFirmwareUpdate() {
+        guard !path.contains(.firmwareUpdate) else { return }
+        path.append(.firmwareUpdate)
     }
 
     // MARK: Import-flow presentation pieces
@@ -395,6 +470,9 @@ struct RootView: View {
                 transport: transport,
                 bondStore: bondStore,
                 retentionDefaults: retentionDefaults,
+                // #773 U5: the same store the launch surface reads, so the toggle it hosts silences
+                // both proactive surfaces at once.
+                updateSurface: updateSurface,
                 onDeviceRenamed: { mainModel.deviceRenamed(to: $0) },
                 // H2: bond is cleared + link dropped by the model; pop the
                 // stack and hand the launch flow back to the D1 prompt.

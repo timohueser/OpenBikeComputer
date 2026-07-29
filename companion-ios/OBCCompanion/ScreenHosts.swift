@@ -20,6 +20,7 @@ struct SettingsScreen: View {
         transport: any DeviceTransport,
         bondStore: any BondStore,
         retentionDefaults: any RetentionDefaultsStore,
+        updateSurface: any UpdateSurfaceStore,
         onDeviceRenamed: @escaping (String) -> Void,
         onForget: @escaping () -> Void,
         onOpenFirmwareUpdate: @escaping () -> Void,
@@ -29,6 +30,7 @@ struct SettingsScreen: View {
             transport: transport,
             bondStore: bondStore,
             retentionDefaults: retentionDefaults,
+            updateSurface: updateSurface,
             onDeviceRenamed: onDeviceRenamed,
             onForget: onForget
         ))

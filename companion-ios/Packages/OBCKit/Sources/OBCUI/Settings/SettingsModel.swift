@@ -44,6 +44,12 @@ public final class SettingsModel {
     /// skipped. Changing it seeds only future uploads — never a retro write.
     public private(set) var defaultRetention: Retention
 
+    /// "Check for updates automatically" (#773 U5) — **on by default**. It gates both proactive
+    /// surfaces: the launch sheet and the background refresh, and with it the network request
+    /// itself. Off means the app never asks the update server anything on its own; the firmware
+    /// screen's own check (which the rider opened deliberately) is untouched.
+    public private(set) var autoCheckUpdates: Bool
+
     // MARK: Derived (design G copy)
 
     /// The device row's status line: "Connected · 82%" in forest, or the
@@ -68,12 +74,11 @@ public final class SettingsModel {
         firmwareVersion.map { $0.hasPrefix("v") ? $0 : "v\($0)" }
     }
 
-    /// "v0.4.2 · latest" — the firmware group's version row. "Latest" is by
-    /// definition until OTA lands: the phone has no update channel to compare
-    /// against (the footer points at the desktop tool).
-    public var firmwareLine: String {
-        (firmwareDisplay ?? "—") + " · latest"
-    }
+    /// "v0.4.2" — the firmware group's version row. It used to read "· latest", which was true only
+    /// while the phone had no update channel to compare against; since #773 U4 it has one, and the
+    /// firmware screen is where that comparison is stated. A row that claims "latest" on its own
+    /// authority would now be a guess, and sometimes a wrong one.
+    public var firmwareLine: String { firmwareDisplay ?? "—" }
 
     /// H3 is a config write — link-bound, dimmed when unreachable (S4 rule).
     public var canRename: Bool { isConnected }
@@ -86,6 +91,9 @@ public final class SettingsModel {
     /// behind the Auto-delete row, shared with `MainScreenModel` so a change here
     /// seeds the next upload's picker.
     private let retentionDefaults: any RetentionDefaultsStore
+    /// The proactive-update preference store (#773 U5) — the same seam the launch sheet and the
+    /// background refresh read, so flipping the toggle here silences both at once.
+    private let updateSurface: any UpdateSurfaceStore
     /// Fires after a rename so the composition root can refresh the main
     /// screen's top bar (Settings never reaches into another feature's model).
     private let onDeviceRenamed: (String) -> Void
@@ -99,6 +107,7 @@ public final class SettingsModel {
         transport: any DeviceTransport,
         bondStore: any BondStore,
         retentionDefaults: any RetentionDefaultsStore = InMemoryRetentionDefaultsStore(),
+        updateSurface: any UpdateSurfaceStore = InMemoryUpdateSurfaceStore(),
         onDeviceRenamed: @escaping (String) -> Void = { _ in },
         onForget: @escaping () -> Void = {}
     ) {
@@ -106,6 +115,8 @@ public final class SettingsModel {
         self.bondStore = bondStore
         self.retentionDefaults = retentionDefaults
         self.defaultRetention = retentionDefaults.loadDefaultRetention()
+        self.updateSurface = updateSurface
+        self.autoCheckUpdates = updateSurface.loadAutoCheckEnabled()
         self.onDeviceRenamed = onDeviceRenamed
         self.onForget = onForget
     }
@@ -119,6 +130,17 @@ public final class SettingsModel {
         guard retention != defaultRetention else { return }
         defaultRetention = retention
         retentionDefaults.saveDefaultRetention(retention)
+    }
+
+    // MARK: Automatic update checks (#773 U5)
+
+    /// Flip "Check for updates automatically" and persist it. Takes effect at the next foreground /
+    /// background wake — nothing is cancelled retroactively because nothing is in flight; the
+    /// policy reads this store every time it decides.
+    public func setAutoCheckUpdates(_ enabled: Bool) {
+        guard enabled != autoCheckUpdates else { return }
+        autoCheckUpdates = enabled
+        updateSurface.saveAutoCheckEnabled(enabled)
     }
 
     /// Subscribe the live streams and read the identity (call once, from `.task`).

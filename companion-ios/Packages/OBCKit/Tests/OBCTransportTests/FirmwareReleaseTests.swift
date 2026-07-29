@@ -305,6 +305,39 @@ struct FirmwareReleaseTests {
         #expect(try await checker.check().release?.version == "1.4.0")
     }
 
+    /// #773 U5: the opt-in channel must not be able to take down the stable check. A rider who once
+    /// flipped the dev switch would otherwise lose the launch sheet and the background check
+    /// entirely the day the pre-release manifest 500s or goes malformed.
+    @Test func aBrokenPreReleaseChannelLeavesTheStableAnswerStanding() async throws {
+        let fetcher = StubFetcher()
+        fetcher.stub(UpdateChecker.manifestURL, body: Self.manifest(version: "1.4.0"))
+        fetcher.stub(UpdateChecker.prereleaseManifestURL, status: 500)
+        let checker = UpdateChecker(fetcher: fetcher, store: InMemoryUpdateCheckStore())
+        checker.setIncludePrereleases(true)
+
+        #expect(try await checker.check().release?.version == "1.4.0")
+
+        let garbage = StubFetcher()
+        garbage.stub(UpdateChecker.manifestURL, body: Self.manifest(version: "1.4.0"))
+        garbage.stub(UpdateChecker.prereleaseManifestURL, body: Data("not json".utf8))
+        let second = UpdateChecker(fetcher: garbage, store: InMemoryUpdateCheckStore())
+        second.setIncludePrereleases(true)
+
+        #expect(try await second.check().release?.version == "1.4.0")
+    }
+
+    /// The *stable* channel stays loud, which is the half every rider is on: a malformed manifest
+    /// there is a publishing failure and hiding it would hide it forever (U4's rule, unchanged).
+    @Test func aBrokenStableChannelStillThrowsWithThePreReleaseSwitchOn() async {
+        let fetcher = StubFetcher()
+        fetcher.stub(UpdateChecker.manifestURL, body: Data("not json".utf8))
+        fetcher.stub(UpdateChecker.prereleaseManifestURL, body: Self.manifest(version: "1.5.0-rc1"))
+        let checker = UpdateChecker(fetcher: fetcher, store: InMemoryUpdateCheckStore())
+        checker.setIncludePrereleases(true)
+
+        await #expect(throws: FirmwareManifestError.notJSON) { try await checker.check() }
+    }
+
     @Test func aPreReleaseOnlyChannelIsTheAnswerWhenNothingStableIsPublished() async throws {
         let fetcher = StubFetcher()
         fetcher.stub(UpdateChecker.manifestURL, status: 404)
