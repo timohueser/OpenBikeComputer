@@ -222,8 +222,17 @@ chunk, every feature — before renaming it into the tree. A corrupt artifact ne
 name, so it can never reach the manifest. Re-running is cheap: the skip is keyed on the
 SHA-256 of the extract and of the preset config plus the OBCM version, never on
 timestamps, and a run prints the real per-artifact sizes and a total (which is what the
-storage bill is actually made of). A region that fails is loud — in the summary, and in
-the exit status.
+storage bill is actually made of). The sidecar-only facts — a region's display name, the
+extract's date — are keyed separately, so a re-dated but byte-identical extract rewrites
+the sidecar and packs nothing. A region that fails is loud — in the summary, and in the
+exit status.
+
+`publish` refuses to shrink the live catalog: before uploading anything it reads the
+manifest already at the destination and stops if this tree would drop coverage that is
+currently served, naming the artifacts that would disappear. That is the guard against
+the easy mistake — publishing a `--region`-narrowed or CI-sized tree over the full one,
+which succeeds atomically and un-offers everything it does not contain. `--allow-shrink`
+proceeds anyway, loudly, for the deliberate case.
 
 Useful flags: `--region <id>` / `--preset <id>` to narrow the matrix, `--source <dir>` to
 bake from local extracts, `--force` to re-bake regardless, `--no-land` to skip the
