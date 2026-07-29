@@ -121,10 +121,13 @@
         } finally {
             repairing = false;
         }
+        // Refresh first: its success path clears `error`, and the whole point of surfacing a
+        // repair failure is that there is no manual export button left to fall back on — on a
+        // read-only folder this message is the only sign anything is wrong.
+        await refresh();
         if (failures.length > 0) {
             error = `Some GPX files could not be re-written: ${failures.join("; ")}`;
         }
-        await refresh();
     }
 
     async function pull() {
@@ -252,6 +255,11 @@
 
     <div class="logbook">
         <div class="listcol">
+            {#if view?.migrationWarning}
+                <!-- The backend could not move a pre-split library into app data. Persistent, not
+                     dismissible: until it is fixed those rides read as absent and will not sync. -->
+                <p class="note error small" role="alert">{view.migrationWarning}</p>
+            {/if}
             {#if error}
                 <p class="note error small" role="alert">{error}</p>
             {/if}

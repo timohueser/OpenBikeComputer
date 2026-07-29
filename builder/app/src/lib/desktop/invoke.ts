@@ -190,6 +190,8 @@ export interface RideIndexView {
     folder: string;
     isDefault: boolean;
     rides: RideIndexEntry[];
+    /** Non-null when the backend's pre-split migration failed on this open — see rides.rs. */
+    migrationWarning: string | null;
 }
 
 export interface RideImportRequest {

@@ -59,6 +59,7 @@ export function openRideLibrary(): RideLibrary {
                 folder: view.folder,
                 isDefault: view.isDefault,
                 rides: view.rides.map(toRide),
+                migrationWarning: view.migrationWarning ?? null,
             };
         },
 
