@@ -354,6 +354,13 @@ what the rider is doing:
   it reopens the geometry handle, re-runs map-matching from the current fix, and
   recomputes progress — and the card just tells the rider it happened. The
   recording session is untouched.
+- **A whole trip** → one *"Trip received — View trip / Dismiss"* card. The member
+  routes commit first (each raising the prompt above, the newest replacing the
+  last), then the trip object lands and its card takes the prompt's place — so
+  the transfer ends on a single card showing the trip's name, summed
+  distance/climb, and stage count; *View trip* opens the trip's folder in the
+  Route menu. Same card whether idle or riding (a trip is a folder, not a
+  navigable route — there is nothing to swap onto).
 
 Two rules keep the prompt from ever doing harm. It **never lands while a hold
 gesture is charging** — a popup appearing under a half-completed *Finish &amp; new*

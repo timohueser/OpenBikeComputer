@@ -1621,6 +1621,20 @@ impl App {
         }
     }
 
+    /// [`HostEvent::TripUploaded`]: the "TRIP RECEIVED" advisory prompt — for a **fresh** trip
+    /// only. Nothing to adopt or invalidate — a trip is a folder of already-committed routes (each
+    /// of which raised its own event when it landed); this popup replaces the burst's last
+    /// per-route popup, so one card announces the whole delivery. A **replace** is a trip *edit*
+    /// pushed from the host (hosts edit a trip exclusively by replace-at-same-id — the desktop's
+    /// rename / add / remove / reorder is one upload per click), so it is silent: the user just
+    /// made the change, and a card per click would be the exact parade this event exists to kill.
+    fn on_trip_uploaded(&mut self, id: u16, replaced: bool) {
+        if replaced {
+            return;
+        }
+        self.ui.post_trip_upload_event(id, &self.catalogs, self.activity.is_tracking());
+    }
+
     /// [`HostEvent::Warning`]: accumulate the flags and deliver (or defer) the advisory card.
     fn on_warning(&mut self, flags: WarningFlags) {
         self.ui.post_warning(flags);
@@ -2420,6 +2434,7 @@ impl App {
         match event {
             HostEvent::StoreChanged => self.host.note_store_changed(),
             HostEvent::RouteUploaded { id, replaced, elevation } => self.on_route_uploaded(id, replaced, elevation),
+            HostEvent::TripUploaded { id, replaced } => self.on_trip_uploaded(id, replaced),
             HostEvent::Warning(flags) => self.on_warning(flags),
             HostEvent::NavPlanned(result) => self.on_nav_planned(result),
             HostEvent::DetourPlanned(result) => self.on_detour_planned(result),

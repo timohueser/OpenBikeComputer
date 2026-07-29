@@ -388,6 +388,15 @@ active_route = "Aktive Route"
 nav_follows = "Navigation folgt"
 new_version = "der neuen Version"
 
+# --- Trip-received popup (the trip twin of the route-received card) ---
+[trip_received]
+title = "TOUR ERHALTEN"
+view_trip = "Tour ansehen"
+dismiss = "Verwerfen"
+route_one = "Route"
+routes = "Routen"
+trip_removed = "Tour entfernt"
+
 # --- Route swap / active-route prompt ---
 [route_swap]
 received_title = "ROUTE ERHALTEN"

@@ -156,6 +156,12 @@ struct Args {
     /// buttons; the catalog is already scanned, so this is exactly the device's rescan-then-event
     /// order.
     inject_upload: Option<(u16, bool)>,
+    /// Headless `--png` only: inject a committed **trip** upload (the trip's durable object id)
+    /// after the script — the "TRIP RECEIVED" popup. On the device the trip object commits after
+    /// its member routes, so combining this with `--inject-upload` renders the exact end state of
+    /// a trip transfer: the trip card having replaced the last per-route popup. The `.obt` trips
+    /// beside the routes are already scanned, so this is the device's re-feed-then-event order.
+    inject_trip_upload: Option<u16>,
     /// Headless `--png` only: raise device warnings through the real `App::apply_event` seam
     /// after the script, so the advisory warning card renders. A comma-list of `gps` / `altimeter`
     /// / `compass` / `map` (issue #504) / `rec` (the mid-ride ride-log write error, issue #11) —
@@ -257,6 +263,7 @@ impl Default for Args {
             detour_hold: false,
             inject_detour_fail: None,
             inject_upload: None,
+            inject_trip_upload: None,
             inject_warning: None,
             boot_fault: None,
             open_climb: false,
@@ -510,6 +517,10 @@ fn parse_args() -> Result<Args, String> {
             "--inject-upload-replace" => {
                 let id = it.next().and_then(|s| s.parse().ok()).ok_or("--inject-upload-replace needs an object id")?;
                 a.inject_upload = Some((id, true));
+            }
+            "--inject-trip-upload" => {
+                let id = it.next().and_then(|s| s.parse().ok()).ok_or("--inject-trip-upload needs a trip id")?;
+                a.inject_trip_upload = Some(id);
             }
             "--inject-warning" => {
                 let spec = it.next().ok_or("--inject-warning needs gps,altimeter,compass,map")?;
@@ -907,7 +918,7 @@ fn main() {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: obc-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--home-seed N] [--clock YYYY-MM-DDTHH:MM] [--route-retention LEVEL:AGE] [--lang en|de|fr|es] [--stat-fields LIST] [--ble-connected] [--ble-passkey N] [--ble-paired] [--sensors-screen] [--inject-upload ID] [--inject-upload-replace ID] [--nav-hold] [--inject-nav-fail exhausted|nopath] [--detour-hold] [--inject-detour-fail exhausted|nopath] [--inject-warning gps,altimeter,compass,map] [--boot-fault nocard|nomap|badmap] [--open-climb]");
+            eprintln!("error: {e}\nusage: obc-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--home-seed N] [--clock YYYY-MM-DDTHH:MM] [--route-retention LEVEL:AGE] [--lang en|de|fr|es] [--stat-fields LIST] [--ble-connected] [--ble-passkey N] [--ble-paired] [--sensors-screen] [--inject-upload ID] [--inject-upload-replace ID] [--inject-trip-upload ID] [--nav-hold] [--inject-nav-fail exhausted|nopath] [--detour-hold] [--inject-detour-fail exhausted|nopath] [--inject-warning gps,altimeter,compass,map] [--boot-fault nocard|nomap|badmap] [--open-climb]");
             std::process::exit(2);
         }
     };
@@ -1288,6 +1299,12 @@ fn main() {
             // exactly the seam the board fills (#682) — the idle card draws it.
             let elevation = store.elevation_sparkline(id);
             app.apply_event(obc_app::HostEvent::RouteUploaded { id, replaced, elevation });
+        }
+        // Inject a committed trip upload, strictly after `--inject-upload` — the device's
+        // routes-then-trip commit order, so the trip card replaces any route popup (the single
+        // most-recent-wins prompt slot). The `.obt` trips were scanned above, so the id resolves.
+        if let Some(id) = args.inject_trip_upload {
+            app.apply_event(obc_app::HostEvent::TripUploaded { id, replaced: false });
         }
         // Raise device warnings (issue #504) through the real `Warning` event, so the advisory
         // card renders — the sim has no I²C probe / fragmented card to trip it for real.
