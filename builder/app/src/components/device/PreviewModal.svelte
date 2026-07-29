@@ -25,6 +25,15 @@
   (`pointAtDistance`); a pointer on either map polyline snaps the dot to the nearest track point
   (`nearestPointIndex`) and puts the cursor line at its distance. One lazily-created circleMarker,
   mutated with `setLatLng`, updates gated through rAF — no layer churn on mousemove.
+
+  A trip hands in `segments` instead of `points`: per-stage tracks in the trip band's colors,
+  concatenated onto ONE shared axis (`lib/device/segments`), so every mechanism above — window,
+  hover, waypoints — runs unchanged over the concatenation. What changes is paint: the map draws
+  one polyline pair per stage (gray full stage underneath, the stage color re-sliced to the
+  window on top — the same dim/undim the single track does with coral), the profile marks the
+  seams with thin rules and carries a stage-colored ribbon along its top edge, and the waypoint
+  card merges every stage's waypoints onto the shared axis, each row wearing its stage's dot. A
+  plain route/ride preview is exactly the degenerate case: one coral segment.
 -->
 <script lang="ts">
     import L from "leaflet";
@@ -32,7 +41,6 @@
     import {
         FULL_WINDOW,
         clampWindow,
-        cumulativeDistances,
         elevationProfile,
         isFullWindow,
         nearestPointIndex,
@@ -43,31 +51,75 @@
         type ProfilePoint,
         type ProfileWindow,
     } from "../../lib/device/elevation";
+    import { concatSegments, waypointDistanceM, type TrackSegment } from "../../lib/device/segments";
 
     const PROFILE = { width: 900, height: 96, pad: 2 };
     /** A drag narrower than this fraction of the strip is a click, not a range. */
     const MIN_DRAG_FRACTION = 0.005;
     /** Wheel-to-zoom gearing: one notch (~100 deltaY) scales the window by e^0.2 ≈ 1.22. */
     const WHEEL_GEARING = 0.002;
+    /** The single-track highlight color — a one-segment "trip" in coral is exactly today's look. */
+    const CORAL = "#cf6a2a";
+    /** The dimmed remainder outside the zoom window — one gray-green for every stage. */
+    const DIM = "#8b957f";
 
     let {
         title,
-        points,
+        points: singlePoints = [],
+        segments = null,
         stats,
         onclose,
         actions,
-        waypoints = [],
+        waypoints: singleWaypoints = [],
     }: {
         title: string;
-        points: readonly ProfilePoint[];
+        /** The track of a plain route/ride preview. Ignored when `segments` is set. */
+        points?: readonly ProfilePoint[];
+        /** A trip's stages, in trip order — each drawn in its own color on map and profile. */
+        segments?: readonly TrackSegment[] | null;
         /** Label/value pairs for the header's stat chips, already formatted. */
         stats: ReadonlyArray<{ label: string; value: string }>;
         onclose: () => void;
         /** The header's action side — Delete, Pull, whatever the object supports. */
         actions?: import("svelte").Snippet;
-        /** The route's stored waypoints (OBCR §4); empty for rides and trips. */
+        /** The route's stored waypoints (OBCR §4); empty for rides. Trips carry theirs per stage
+         *  inside `segments` instead. */
         waypoints?: readonly RouteWaypoint[];
     } = $props();
+
+    /** Everything below runs on segments; a plain preview is one coral segment of the whole
+     *  track, which reproduces the single-track rendering exactly. */
+    const segs = $derived<readonly TrackSegment[]>(
+        segments ?? [{ name: title, color: CORAL, points: singlePoints, waypoints: singleWaypoints }],
+    );
+    /** The shared axis: concatenated points, cumulative distances, per-stage spans and seams. */
+    const axis = $derived(concatSegments(segs.map((s) => s.points)));
+    const points = $derived(axis.points);
+
+    /** One waypoint on the shared axis. `color` is its stage's dot in the card — only a trip
+     *  preview colors its rows; a route's own waypoints stay unadorned. */
+    interface AxisWaypoint {
+        readonly name: string;
+        readonly lat: number;
+        readonly lon: number;
+        /** Metres on the shared axis, already clamped into the stage's drawn span. */
+        readonly distM: number;
+        readonly color: string | null;
+    }
+
+    /** Every stage's waypoints on the shared axis, in axis order (stages are ordered, and each
+     *  stage's table is ordered by its own distance — OBCR §4). */
+    const waypoints = $derived<AxisWaypoint[]>(
+        segs.flatMap((s, k) =>
+            s.waypoints.map((w) => ({
+                name: w.name,
+                lat: w.lat,
+                lon: w.lon,
+                distM: waypointDistanceM(axis, k, w.distAlongM),
+                color: segments !== null ? s.color : null,
+            })),
+        ),
+    );
 
     let mapEl = $state<HTMLDivElement>();
     let profileEl = $state<HTMLDivElement>();
@@ -88,15 +140,16 @@
      *  both the profile strip and the map polylines, drawn by both. Null: nothing hovered. */
     let hoverT = $state<number | null>(null);
 
-    const cum = $derived(cumulativeDistances(points));
+    const cum = $derived(axis.cum);
     /** The full-track profile decides whether the strip (and the whole zoom UI) exists at all. */
     const hasProfile = $derived(elevationProfile(points, PROFILE.width, PROFILE.height) !== null);
     const profile = $derived(
         hasProfile ? elevationProfile(points, PROFILE.width, PROFILE.height, win) : null,
     );
 
-    /** The windowed polyline, owned by the map effect, re-sliced by the window effect. */
-    let coralLine = $state<L.Polyline | null>(null);
+    /** The windowed polylines — one per drawable stage, each owning its `[a, b]` slice of the
+     *  concatenated points — owned by the map effect, re-sliced by the window effect. */
+    let coloredLines = $state<Array<{ line: L.Polyline; a: number; b: number }>>([]);
     let leafletMap: L.Map | null = null;
     let markers: L.Marker[] = [];
 
@@ -165,15 +218,28 @@
         }).addTo(map);
         const latlngs = points.map((p) => [p.lat, p.lon] as [number, number]);
         if (latlngs.length > 1) {
-            // The subdued whole track underneath, the windowed span in coral on top. At the full
-            // window the coral covers the gray entirely — today's all-coral look.
-            const gray = L.polyline(latlngs, { color: "#8b957f", weight: 4 });
-            gray.addTo(map);
-            const coral = L.polyline(latlngs, { color: "#cf6a2a", weight: 5 });
-            coral.addTo(map);
+            // The stages that brought a drawable polyline — for a plain preview, exactly one,
+            // covering the whole track.
+            const drawable = segs.flatMap((seg, k) => {
+                const range = axis.ranges[k];
+                return range && range[1] > range[0] ? [{ seg, a: range[0], b: range[1] }] : [];
+            });
+            // The subdued whole track underneath, the windowed span in each stage's color on top —
+            // every gray first, every colored line above them all. At the full window the colors
+            // cover the gray entirely — today's all-coral look, per stage.
+            const grays = drawable.map(({ a, b }) =>
+                L.polyline(latlngs.slice(a, b + 1), { color: DIM, weight: 4 }),
+            );
+            for (const gray of grays) gray.addTo(map);
+            const colored = drawable.map(({ seg, a, b }) => ({
+                line: L.polyline(latlngs.slice(a, b + 1), { color: seg.color, weight: 5 }),
+                a,
+                b,
+            }));
+            for (const { line } of colored) line.addTo(map);
             if (hasProfile) {
-                // The reverse hover: a pointer on either polyline snaps the dot to the nearest
-                // track point and the profile draws its cursor line at that distance. Without a
+                // The reverse hover: a pointer on any polyline snaps the dot to the nearest
+                // track point and the profile draws its cursor line at its distance. Without a
                 // profile there is nothing to sync, so the map stays hover-quiet.
                 const report = (event: L.LeafletMouseEvent) => {
                     // Queued as a thunk: the O(n) scan runs inside the rAF gate, once a frame.
@@ -184,15 +250,15 @@
                     });
                 };
                 const clear = () => queueHover(null);
-                for (const line of [gray, coral]) {
+                for (const line of [...grays, ...colored.map((c) => c.line)]) {
                     line.on("mousemove", report);
                     line.on("mouseout", clear);
                 }
             }
             L.circleMarker(latlngs[0], { radius: 5, color: "#3c6b39", fillColor: "#3c6b39", fillOpacity: 1 }).addTo(map);
             L.circleMarker(latlngs[latlngs.length - 1], { radius: 5, color: "#3c6b39", fillOpacity: 0 }).addTo(map);
-            map.fitBounds(gray.getBounds(), { padding: [24, 24] });
-            coralLine = coral;
+            map.fitBounds(L.latLngBounds(latlngs), { padding: [24, 24] });
+            coloredLines = colored;
         } else {
             map.setView(latlngs[0] ?? [0, 0], latlngs.length ? 13 : 2);
         }
@@ -229,20 +295,26 @@
             // The dot belonged to this map instance; the next one starts without.
             hoverMarker = null;
             hoverShown = false;
-            coralLine = null;
+            coloredLines = [];
             leafletMap = null;
             markers = [];
             map.remove();
         };
     });
 
-    // The map's echo of the profile window: re-slice the coral polyline, nothing else — no
-    // re-fit, no recreation. The gray full track only shows once a window exists.
+    // The map's echo of the profile window: re-slice each stage's colored polyline to its share
+    // of the window, nothing else — no re-fit, no recreation. The gray full track only shows once
+    // a window exists; a stage entirely outside the window dims to gray by emptying its colored
+    // line.
     $effect(() => {
-        const coral = coralLine;
-        if (!coral) return;
+        const lines = coloredLines;
+        if (lines.length === 0) return;
         const [first, last] = windowIndexRange(cum, win);
-        coral.setLatLngs(points.slice(first, last + 1).map((p) => [p.lat, p.lon] as [number, number]));
+        for (const { line, a, b } of lines) {
+            const lo = Math.max(a, first);
+            const hi = Math.min(b, last);
+            line.setLatLngs(lo <= hi ? points.slice(lo, hi + 1).map((p) => [p.lat, p.lon] as [number, number]) : []);
+        }
     });
 
     // A new object in the same modal instance starts back at the whole track, nothing hovered.
@@ -334,26 +406,37 @@
         return ((d - profile.startM) / span) * 100;
     });
 
-    /**
-     * A waypoint's distance clamped onto the drawn axis. `distAlongM` was measured on the RAW
-     * pre-decimation track at pack time, so it can slightly exceed the decimated read-back
-     * polyline's total — an end-of-route waypoint must not fall off the strip (or read farther
-     * than the caption's total) over that difference.
-     */
-    function clampedDistM(w: RouteWaypoint): number {
-        return totalTrackM > 0 ? Math.max(0, Math.min(w.distAlongM, totalTrackM)) : w.distAlongM;
-    }
-
-    /** A waypoint's x position across the profile strip for the current window, in percent —
-     *  null only when it falls outside the current zoom window. */
-    function tickPercent(w: RouteWaypoint): number | null {
+    /** An axis distance's x position across the profile strip for the current window, in
+     *  percent — null when it falls outside the current zoom window. Waypoint ticks and stage
+     *  boundary rules alike. (Waypoint distances arrive pre-clamped onto the drawn axis —
+     *  `waypointDistanceM` — since `distAlongM` was measured on the RAW pre-decimation track and
+     *  can slightly exceed the decimated polyline's length.) */
+    function pctInWindow(d: number): number | null {
         if (!profile) return null;
         const span = profile.endM - profile.startM;
-        if (span <= 0) return null;
-        const d = clampedDistM(w);
-        if (d < profile.startM || d > profile.endM) return null;
+        if (span <= 0 || d < profile.startM || d > profile.endM) return null;
         return ((d - profile.startM) / span) * 100;
     }
+
+    /** The per-stage top-edge ribbon over the profile: each stage's share of the current window,
+     *  in its color — only for a multi-stage trip, where profile and map need to read together. */
+    const ribbon = $derived.by(() => {
+        if (!profile || segments === null || segs.length < 2) return [];
+        const span = profile.endM - profile.startM;
+        if (span <= 0) return [];
+        const spans: Array<{ color: string; left: number; width: number }> = [];
+        for (let k = 0; k < segs.length; k++) {
+            const a = Math.max(axis.offsetsM[k], profile.startM);
+            const b = Math.min(axis.offsetsM[k] + axis.lengthsM[k], profile.endM);
+            if (b <= a) continue;
+            spans.push({
+                color: segs[k].color,
+                left: ((a - profile.startM) / span) * 100,
+                width: ((b - a) / span) * 100,
+            });
+        }
+        return spans;
+    });
 
     const km = (m: number) => (m / 1000).toFixed(1);
 
@@ -408,7 +491,10 @@
                             >
                                 <span class="wpglyph" aria-hidden="true"></span>
                                 <span class="wpname">{w.name || "Waypoint"}</span>
-                                <span class="wpkm small faint">km {km(clampedDistM(w))}</span>
+                                {#if w.color}
+                                    <span class="wpstage" style:background={w.color} aria-hidden="true"></span>
+                                {/if}
+                                <span class="wpkm small faint">km {km(w.distM)}</span>
                             </button>
                         {/each}
                     </div>
@@ -441,8 +527,20 @@
                         <path class="line" d={profile.linePath} />
                     </svg>
                 {/if}
+                {#each ribbon as span, i (i)}
+                    <span
+                        class="stageband"
+                        style="left: {span.left}%; width: {span.width}%; background: {span.color}"
+                    ></span>
+                {/each}
+                {#each axis.boundariesM as boundary, i (i)}
+                    {@const pct = pctInWindow(boundary)}
+                    {#if pct !== null}
+                        <span class="stageline" style="left: {pct}%"></span>
+                    {/if}
+                {/each}
                 {#each waypoints as w, i (i)}
-                    {@const pct = tickPercent(w)}
+                    {@const pct = pctInWindow(w.distM)}
                     {#if pct !== null}
                         <span class="wptick" style="left: {pct}%" title={w.name}></span>
                     {/if}
@@ -637,6 +735,14 @@
         flex: none;
     }
 
+    /* A trip row's stage dot — the same dot the trip band draws beside the stage's name. */
+    .wpstage {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        flex: none;
+    }
+
     /* The Leaflet marker DOM is injected, so its styles must escape the component scope. */
     :global(.wpanchor) {
         background: transparent;
@@ -706,6 +812,24 @@
         bottom: 0;
         border-left: 1px solid var(--ink-soft);
         opacity: 0.65;
+        pointer-events: none;
+    }
+
+    /* The per-stage ribbon along the profile's top edge — the map's colors, quietly echoed. */
+    .stageband {
+        position: absolute;
+        top: 0;
+        height: 3px;
+        opacity: 0.55;
+        pointer-events: none;
+    }
+
+    /* A seam between two stages: a thin full-height rule, subdued. */
+    .stageline {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        border-left: 1px solid var(--line-strong);
         pointer-events: none;
     }
 
