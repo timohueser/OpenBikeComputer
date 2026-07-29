@@ -14,6 +14,7 @@
     import { onMount } from "svelte";
     import { commonPrefixName, sortForTrip } from "../../lib/device/multidrop";
     import { prepareRoute, type PreparedRoute } from "../../lib/device/route";
+    import { RETENTION_LEVELS, retentionLabel } from "../../lib/device/retention";
     import { formatBytes } from "../../lib/format";
 
     let {
@@ -22,8 +23,10 @@
         oncancel,
     }: {
         files: File[];
-        /** The rider decided: upload these, in this order, grouped iff `tripName` is non-null. */
-        onadd: (routes: PreparedRoute[], tripName: string | null) => void;
+        /** The rider decided: upload these, in this order, grouped iff `tripName` is non-null,
+         *  every stage stamped with the §4.4 cmd 6 `retention` level (0 = forever = stamp
+         *  nothing). */
+        onadd: (routes: PreparedRoute[], tripName: string | null, retention: number) => void;
         oncancel: () => void;
     } = $props();
 
@@ -39,6 +42,8 @@
     let rows = $state<Row[]>(sortForTrip(files).map((file) => ({ file, prepared: null, error: null })));
     // svelte-ignore state_referenced_locally
     let tripName = $state(commonPrefixName(files.map((f) => f.name)));
+    /** Applied to every uploaded stage after its commit — same choice the drop tile offers. */
+    let retention = $state(0);
     let converting = $state(true);
 
     onMount(() => {
@@ -84,7 +89,7 @@
     function add(asTrip: boolean) {
         const routes = rows.map((row) => row.prepared).filter((p): p is PreparedRoute => p !== null);
         if (routes.length === 0) return;
-        onadd(routes, asTrip ? tripName.trim() || "Trip" : null);
+        onadd(routes, asTrip ? tripName.trim() || "Trip" : null, retention);
     }
 
     function onKeydown(event: KeyboardEvent) {
@@ -148,6 +153,14 @@
                 bind:value={tripName}
                 maxlength="48"
             />
+            <label class="small soft keep" for="tripdrop-keep">
+                keep on device:
+                <select id="tripdrop-keep" bind:value={retention}>
+                    {#each RETENTION_LEVELS as level (level)}
+                        <option value={level}>{retentionLabel(level)}</option>
+                    {/each}
+                </select>
+            </label>
         </div>
 
         <div class="actions">
@@ -269,6 +282,23 @@
         gap: 10px;
         border-top: 1px solid var(--line);
         padding-top: 10px;
+    }
+
+    .tripline {
+        flex-wrap: wrap;
+    }
+
+    .keep {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        margin-left: auto;
+    }
+
+    .keep select {
+        font-size: 12.5px;
+        padding: 3px 6px;
+        border-radius: 7px;
     }
 
     .tripline input {

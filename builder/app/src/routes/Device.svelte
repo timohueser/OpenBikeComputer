@@ -1,32 +1,51 @@
 <!--
-  The device page: what is on the card, listed and touchable — the thumbdrive view (#894 epic,
-  restructure of 2026-07-28).
+  The device page: what is on the card, as a gallery — trips as combined-preview bands, routes and
+  rides as track-thumbnail tiles, the drop zone as the grid's ghost tile (#894 epic, gallery
+  redesign of 2026-07-29; the wireframe's Option A).
 
   This route is loaded through a dynamic import (`App.svelte`), which is what lets it reach the
   protocol client and codecs directly: nothing here may leak into the entry chunk, and nothing
   here needs to — the session already exists in `deviceHolder`, opened by the header chip.
 
-  Division of labour with the cards: the cards render lists and take snippets; every operation
-  that touches the cable lives here, funneled through `dashboard.enqueue` so the page cannot trip
-  the client's one-transfer rule over itself.
+  Division of labour with the tiles: the tile components (`TripBand`, `RouteTiles`, `RideTiles`)
+  render lists and take callbacks; every operation that touches the cable lives here, funneled
+  through `dashboard.enqueue` so the page cannot trip the client's one-transfer rule over itself.
+  That includes the thumbnails: `deviceThumbs.fill` walks the lists one small download at a time
+  through the same queue, so a tile filling in never races a click.
 -->
 <script lang="ts">
+    import { untrack } from "svelte";
     import FirmwareCard from "../components/device/FirmwareCard.svelte";
     import PreviewModal from "../components/device/PreviewModal.svelte";
-    import RidesCard from "../components/device/RidesCard.svelte";
+    import RideTiles from "../components/device/RideTiles.svelte";
     import RouteDrop from "../components/device/RouteDrop.svelte";
-    import RoutesCard from "../components/device/RoutesCard.svelte";
+    import RouteTiles from "../components/device/RouteTiles.svelte";
     import TransferBar from "../components/device/TransferBar.svelte";
+    import TripBand from "../components/device/TripBand.svelte";
     import TripDropDialog from "../components/device/TripDropDialog.svelte";
     import { routeTrack } from "../lib/convert/bridge";
     import { dashboard, type TripView } from "../lib/device/dashboard.svelte";
     import type { ProfilePoint } from "../lib/device/elevation";
-    import { pullRide, pullRides, rideSyncAccess, type LibraryView, type RideLibrary } from "../lib/device/library";
+    import {
+        previewTrack,
+        pullRide,
+        pullRides,
+        rideSyncAccess,
+        type LibraryView,
+        type RideLibrary,
+    } from "../lib/device/library";
     import { addStage, createTrip, moveStage, removeStage, renameRoute, updateTrip } from "../lib/device/manage";
     import { rideDistance, rideDuration, rideScope } from "../lib/device/rides";
     import type { PreparedRoute } from "../lib/device/route";
     import { deviceHolder } from "../lib/device/session.svelte";
     import { DeviceJob, jobRegistry } from "../lib/device/job.svelte";
+    import {
+        deviceThumbs,
+        rideFingerprint,
+        routeFingerprint,
+        type Thumb,
+        type ThumbRequest,
+    } from "../lib/device/thumbs.svelte";
     import { formatBytes } from "../lib/format";
     import { platform } from "../lib/platform";
     import { confirmAction } from "../lib/ui/confirm.svelte";
@@ -45,7 +64,7 @@
         if (client) void dashboard.ensureLoaded(client, scope);
     });
 
-    /** One mutation, queued, with the refresh that makes the card the authority again. */
+    /** One mutation, queued, with the refresh that makes the page the authority again. */
     async function mutate(op: (client: ProtocolClient) => Promise<unknown>): Promise<void> {
         const c = client;
         if (!c) return;
@@ -69,6 +88,10 @@
                 ? createTrip(c, route.name || `Route ${route.objectId}`, [route.objectId])
                 : updateTrip(c, tripId, (t) => addStage(t, route.objectId)),
         );
+
+    /** The ⋯ menu's "Keep on device" pick — §4.4 cmd 6, then the refresh shows the new tag. */
+    const doSetRetention = (route: RouteListEntry, level: number) =>
+        void mutate((c) => c.setRouteRetention(route.objectId, level));
 
     const doMoveStage = (trip: TripView, index: number, delta: number) =>
         void mutate((c) => updateTrip(c, trip.objectId, (t) => moveStage(t, index, delta)));
@@ -127,7 +150,7 @@
     let tripDrop = $state<File[] | null>(null);
     const dropJob = new DeviceJob("routes");
 
-    async function addRoutes(routes: PreparedRoute[], tripName: string | null) {
+    async function addRoutes(routes: PreparedRoute[], tripName: string | null, retention: number) {
         const c = client;
         tripDrop = null;
         if (!c) return;
@@ -135,29 +158,49 @@
             async (ctx) => {
                 // Sequential — the wire takes one transfer at a time. The device dedupes a
                 // re-dropped file by CRC and answers with the existing id, so the collected
-                // ids are correct even when half of these were already on the card.
+                // ids are correct even when half of these were already on the card — and the
+                // chosen retention lands on those too, which is the spec's case (b), an edit.
+                //
+                // The retention stamp is best-effort per stage: the uploads and the trip are
+                // the substance, and a failed annotation on stage k must not strand stages
+                // k+1…n off the card. Failures are counted and said once, in the result line.
                 const ids: number[] = [];
+                let retentionFailures = 0;
                 for (const route of routes) {
                     const { objectId } = await dashboard.enqueue(() => sendRoute(c, route, ctx));
                     ids.push(objectId);
+                    if (retention !== 0) {
+                        try {
+                            await dashboard.enqueue(() => c.setRouteRetention(objectId, retention, ctx.signal));
+                        } catch (cause) {
+                            // A cancel is the rider's, not a stamp failure — stop the whole job.
+                            if (ctx.signal.aborted) throw cause;
+                            retentionFailures += 1;
+                        }
+                    }
                 }
                 if (tripName !== null) {
                     await dashboard.enqueue(() => createTrip(c, tripName, ids, ctx.signal));
                 }
-                return { count: ids.length, tripName };
+                return { count: ids.length, tripName, retentionFailures };
             },
-            (r) =>
-                r.tripName !== null
-                    ? `“${r.tripName}” is on the device, ${r.count} stages.`
-                    : `${r.count} routes are on the device.`,
+            (r) => {
+                const landed =
+                    r.tripName !== null
+                        ? `“${r.tripName}” is on the device, ${r.count} stages.`
+                        : `${r.count} routes are on the device.`;
+                if (r.retentionFailures === 0) return landed;
+                const which = r.retentionFailures === 1 ? "one stage" : `${r.retentionFailures} stages`;
+                return `${landed} The keep-on-device setting could not be applied to ${which} — set it from the route's ⋯ menu.`;
+            },
         );
         await dashboard.refresh(c);
     }
 
     // --- the library's view of the card's rides ------------------------------
     //
-    // Only for the badges and the pulls: `platform.rides` exists exactly on the tier that also
-    // has the Ride-library page. Loaded once, refreshed after every pull.
+    // Only for the badges, the pulls and the free thumbnails: `platform.rides` exists exactly on
+    // the tier that also has the Ride-library page. Loaded once, refreshed after every pull.
 
     let library = $state<RideLibrary | null>(null);
     let libraryView = $state<LibraryView | null>(null);
@@ -210,7 +253,71 @@
         await refreshLibrary();
     }
 
+    // --- thumbnails: one small download per object, ever, behind everything else ----
+
+    function routeThumbRequest(c: ProtocolClient, route: RouteListEntry): ThumbRequest {
+        return {
+            kind: "route",
+            id: route.objectId,
+            fingerprint: routeFingerprint(route),
+            load: async (signal) => {
+                const points = await routeTrack(await c.download(ObjectType.Route, route.objectId, { signal }));
+                return points.map((p) => [p.lat, p.lon] as [number, number]);
+            },
+        };
+    }
+
+    function rideThumbRequest(c: ProtocolClient, ride: RideListEntry, held: Thumb | undefined): ThumbRequest {
+        return {
+            kind: "ride",
+            id: ride.objectId,
+            fingerprint: rideFingerprint(ride),
+            // A ride already pulled has its preview track in the library index — the free win:
+            // no download, and the tile shows exactly what the Ride-library page shows.
+            load: held
+                ? async () => held
+                : async (signal) =>
+                      previewTrack(
+                          decodeRideObject(await c.download(ObjectType.Ride, ride.objectId, { signal })),
+                      ),
+        };
+    }
+
+    $effect(() => {
+        const c = client;
+        if (!c) return;
+        deviceThumbs.ensureScope(scope);
+        const heldTracks = new Map<number, Thumb>();
+        if (libraryView && scope.epoch !== null) {
+            for (const r of libraryView.rides) {
+                if (r.present && r.serial === scope.serial && r.epoch === scope.epoch && r.track.length > 1) {
+                    heldTracks.set(r.objectId, r.track);
+                }
+            }
+        }
+        const requests: ThumbRequest[] = [
+            ...dashboard.routes.map((route) => routeThumbRequest(c, route)),
+            ...dashboard.rides.map((ride) => rideThumbRequest(c, ride, heldTracks.get(ride.objectId))),
+        ];
+        const aborter = new AbortController();
+        // `untrack`: the fill reads (and writes) the thumb store's reactive map, and this effect
+        // must re-run on list changes, not on every thumbnail that lands.
+        void untrack(() => deviceThumbs.fill(scope, requests, serialize, aborter.signal));
+        // Unmount or disconnect: stop walking, and abort the download in flight.
+        return () => aborter.abort();
+    });
+
     // --- previews: download the object, decode it, show it. Never acks. ----
+
+    /** Aborts preview-driven fetches when the device (or the page) goes away — the trip preview
+     *  walks stage tracks through the queue and must not keep walking a dead link. */
+    let pageLifetime = new AbortController();
+    $effect(() => {
+        void client;
+        const lifetime = new AbortController();
+        pageLifetime = lifetime;
+        return () => lifetime.abort();
+    });
 
     let preview = $state<{
         title: string;
@@ -219,7 +326,7 @@
         /** Set for routes: the modal's footer offers Delete. */
         route: RouteListEntry | null;
     } | null>(null);
-    /** The object a preview download is running for, to mark the busy row. */
+    /** The object a preview download is running for, to mark the page busy. */
     let previewing = $state<string | null>(null);
 
     async function previewRoute(route: RouteListEntry) {
@@ -274,6 +381,46 @@
             previewing = null;
         }
     }
+
+    /**
+     * Preview a whole trip: its stages' thumbnail tracks, concatenated, with the trip's totals as
+     * the stats. The tracks are the same downsampled ones the band draws — mostly already in the
+     * store or the cache, fetched through the queue where not — so this opens without downloading
+     * anything the tiles did not already need. No elevation: the profile simply stays away.
+     */
+    async function previewTrip(trip: TripView) {
+        const c = client;
+        if (!c || previewing) return;
+        const stages = dashboard.stagesOf(trip).filter((s): s is { id: number; route: RouteListEntry } => s.route !== null);
+        if (stages.length === 0) return;
+        previewing = `trip-${trip.objectId}`;
+        try {
+            const points: ProfilePoint[] = [];
+            for (const stage of stages) {
+                const track = await deviceThumbs.ensure(
+                    scope,
+                    routeThumbRequest(c, stage.route),
+                    serialize,
+                    pageLifetime.signal,
+                );
+                for (const [lat, lon] of track) points.push({ lat, lon, ele: null });
+            }
+            preview = {
+                title: trip.name || `Trip ${trip.objectId}`,
+                points,
+                stats: [
+                    { label: "Stages", value: `${stages.length}` },
+                    { label: "Distance", value: `${(trip.totalDistanceM / 1000).toFixed(1)} km` },
+                    { label: "Ascent", value: `${trip.totalAscentM.toLocaleString()} m` },
+                ],
+                route: null,
+            };
+        } catch (cause) {
+            dashboard.error = cause instanceof Error ? cause.message : String(cause);
+        } finally {
+            previewing = null;
+        }
+    }
 </script>
 
 <article>
@@ -313,62 +460,103 @@
             <p class="small muted">Reading the card…</p>
         {/if}
 
-        <RoutesCard
-            onpreview={(route) => void previewRoute(route)}
-            onrename={doRenameRoute}
-            ondelete={(route) => void deleteRoute(route)}
-            onaddtotrip={doAddToTrip}
-            onrenametrip={doRenameTrip}
-            ondeletetrip={(trip) => void deleteTrip(trip)}
-            onremovestage={(trip, index) => void doRemoveStage(trip, index)}
-            onmovestage={doMoveStage}
-        />
-        <section class="card">
-            <RouteDrop
-                {client}
-                {serialize}
-                onmultiple={(files) => (tripDrop = files)}
-                onsent={() => client && void dashboard.refresh(client)}
-            />
+        <section>
+            <div class="secline">
+                <h3>Routes</h3>
+                <span class="small faint">
+                    {dashboard.routes.length}
+                    {dashboard.routes.length === 1 ? "route" : "routes"}{#if dashboard.trips.length}
+                        · {dashboard.trips.length}
+                        {dashboard.trips.length === 1 ? "trip" : "trips"}{/if}
+                </span>
+            </div>
+
+            {#each dashboard.trips as trip (trip.objectId)}
+                <TripBand
+                    {trip}
+                    stages={dashboard.stagesOf(trip)}
+                    trackFor={(id) => deviceThumbs.get("route", id)}
+                    busy={previewing !== null}
+                    onopen={() => void previewTrip(trip)}
+                    onopenstage={(route) => void previewRoute(route)}
+                    onrename={(name) => doRenameTrip(trip, name)}
+                    ondelete={() => void deleteTrip(trip)}
+                    onmovestage={(index, delta) => doMoveStage(trip, index, delta)}
+                    onremovestage={(index) => void doRemoveStage(trip, index)}
+                />
+            {/each}
+
+            <RouteTiles
+                routes={dashboard.topLevelRoutes}
+                trips={dashboard.trips}
+                trackFor={(id) => deviceThumbs.get("route", id)}
+                busy={previewing !== null}
+                onopen={(route) => void previewRoute(route)}
+                onrename={doRenameRoute}
+                ondelete={(route) => void deleteRoute(route)}
+                onaddtotrip={doAddToTrip}
+                onsetretention={doSetRetention}
+            >
+                <RouteDrop
+                    {client}
+                    {serialize}
+                    heading={null}
+                    empty={dashboard.topLevelRoutes.length === 0 && dashboard.trips.length === 0}
+                    onmultiple={(files) => (tripDrop = files)}
+                    onsent={() => client && void dashboard.refresh(client)}
+                />
+            </RouteTiles>
             <TransferBar job={dropJob} />
         </section>
-        <RidesCard {heldHere}>
-            {#snippet actions()}
-                {#if library}
-                    <button
-                        type="button"
-                        class="btn primary"
-                        disabled={pullJob.running || dashboard.rides.length === 0}
-                        onclick={() => void pullAll()}
-                    >
-                        Pull all to library
-                    </button>
-                {/if}
-            {/snippet}
-            {#snippet row(ride)}
-                <button
-                    type="button"
-                    class="btn"
-                    disabled={previewing !== null}
-                    onclick={() => void previewRide(ride)}
-                >
-                    Preview
-                </button>
-                {#if library}
-                    <button
-                        type="button"
-                        class="btn"
-                        disabled={pullJob.running || (heldHere?.has(ride.objectId) ?? false)}
-                        onclick={() => void pullOne(ride)}
-                    >
-                        Pull
-                    </button>
-                {/if}
-            {/snippet}
-        </RidesCard>
-        {#if pullJob.running || pullJob.result || pullJob.error}
-            <TransferBar job={pullJob} />
-        {/if}
+
+        <section>
+            <div class="secline">
+                <h3>Rides</h3>
+                <span class="small faint">{dashboard.rides.length} on the device</span>
+                <span class="secend">
+                    {#if library}
+                        <button
+                            type="button"
+                            class="btn primary"
+                            disabled={pullJob.running || dashboard.rides.length === 0}
+                            onclick={() => void pullAll()}
+                        >
+                            ⤓&nbsp; Pull all to library
+                        </button>
+                    {/if}
+                </span>
+            </div>
+
+            {#if dashboard.ridesTruncated}
+                <p class="small faint">
+                    The device listed its newest rides only; older ones are still on the card.
+                </p>
+            {/if}
+
+            {#if dashboard.rides.length === 0}
+                <p class="small muted">No rides on the device.</p>
+            {:else}
+                <RideTiles
+                    rides={dashboard.rides}
+                    {heldHere}
+                    trackFor={(id) => deviceThumbs.get("ride", id)}
+                    busy={previewing !== null}
+                    pulling={pullJob.running}
+                    onopen={(ride) => void previewRide(ride)}
+                    onpull={library ? (ride) => void pullOne(ride) : null}
+                />
+            {/if}
+
+            <p class="small faint disclosure">
+                Rides are renamed and deleted on the device itself — over the cable they are read-only, so a
+                ride can never be lost.
+            </p>
+
+            {#if pullJob.running || pullJob.result || pullJob.error}
+                <TransferBar job={pullJob} />
+            {/if}
+        </section>
+
         <section class="card">
             <FirmwareCard {client} info={session.info} />
         </section>
@@ -376,7 +564,7 @@
         {#if tripDrop}
             <TripDropDialog
                 files={tripDrop}
-                onadd={(routes, tripName) => void addRoutes(routes, tripName)}
+                onadd={(routes, tripName, retention) => void addRoutes(routes, tripName, retention)}
                 oncancel={() => (tripDrop = null)}
             />
         {/if}
@@ -437,7 +625,7 @@
         margin: 0 auto;
         display: flex;
         flex-direction: column;
-        gap: 14px;
+        gap: 18px;
         padding-bottom: 8px;
     }
 
@@ -456,6 +644,35 @@
 
     .mono {
         font-family: var(--mono);
+    }
+
+    section {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+    }
+
+    .secline {
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+        margin: 0;
+    }
+
+    .secline h3 {
+        margin: 0;
+        font-size: 17px;
+    }
+
+    .secend {
+        margin-left: auto;
+        display: flex;
+        gap: 8px;
+        align-items: center;
+    }
+
+    .disclosure {
+        margin: 0;
     }
 
     .empty {
