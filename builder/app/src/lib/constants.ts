@@ -16,7 +16,7 @@
  * GitHub is genuinely external and stays absolute in both.
  */
 const SITE_BASE: string =
-    import.meta.env.VITE_SITE_BASE || "https://timohueser.github.io/OpenBikeComputer/";
+    import.meta.env.VITE_SITE_BASE || "https://openbikecomputer.com/";
 
 export const LINKS = {
     docs: `${SITE_BASE}docs/`,

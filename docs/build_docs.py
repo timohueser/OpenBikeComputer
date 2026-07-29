@@ -64,7 +64,7 @@ BLOG_INDEX_TEMPLATE = ROOT / "templates" / "blog_index.html"
 
 REPO = "https://github.com/timohueser/OpenBikeComputer"
 BRANCH = "main"
-SITE = "https://timohueser.github.io/OpenBikeComputer/"   # absolute base for the feed
+SITE = "https://openbikecomputer.com/"   # absolute base for the feed
 
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
           "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]

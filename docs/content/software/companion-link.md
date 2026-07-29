@@ -120,7 +120,7 @@ without ever entering the webview — no reason to copy a few hundred megabytes
 through JavaScript just to hand them straight back.
 
 The browser side already **writes** over it: a map, a dropped GPX and a firmware
-image, from the [map builder](https://timohueser.github.io/OpenBikeComputer/)'s
+image, from the [map builder](https://openbikecomputer.com/)'s
 device step. The cable changes exactly one thing about the object set, and it is
 the interesting one. A **map** was never an object, because a 200 MB file was
 never going over BLE — so USB adds a `map` type carrying an

@@ -85,6 +85,7 @@ describe("deployment portability", () => {
         // Exactly what .github/workflows/deploy-site.yml passes.
         const files = await buildWeb({ VITE_SITE_BASE: "../" });
         expect(offenders(files, "timohueser.github.io")).toEqual([]);
+        expect(offenders(files, "openbikecomputer.com")).toEqual([]);
         expect(offenders(files, ROOTED_SITE_PATH)).toEqual([]);
     }, 180_000);
 });

@@ -8,7 +8,7 @@ rendering path for `.obcm` maps.
 This file is the **build / test / dev-loop guide** for all the Rust in the repo,
 not just this directory — for *how the system works* (crate graph, render
 pipeline, formats, UI) read the docs site:
-<https://timohueser.github.io/OpenBikeComputer/>. Per-crate roles are tabulated
+<https://openbikecomputer.com/>. Per-crate roles are tabulated
 in the [repo README](../README.md#repository-layout).
 
 The workspace is rooted at the **repo root** (`../Cargo.toml`), and spans three
@@ -73,7 +73,7 @@ cd firmware/obc-fw-nrf54l && cargo build --release --no-default-features --featu
 The host-tested, radio-free BLE core (`obc-ble`) is a normal workspace member, so the
 `cargo test` below already exercises it. The wire contract those bytes cross to the phone
 is [`obc-ble-interface-spec.md`](../specs/obc-ble-interface-spec.md); the concepts are on the docs
-site under [the companion link](https://timohueser.github.io/OpenBikeComputer/software/companion-link/).
+site under [the companion link](https://openbikecomputer.com/software/companion-link/).
 
 ## Test
 
