@@ -180,7 +180,7 @@ fn reveal_file(app: tauri::AppHandle, path: String) -> Result<(), String> {
 /// a cached root is the fact that would then be wrong exactly when a rider is looking at it. The
 /// archive (the `.obcride` objects and the index) lives in app data and never moves — see
 /// `rides.rs`'s module docs for the split.
-fn ride_library(app: &tauri::AppHandle) -> (rides::Library, bool) {
+fn ride_library(app: &tauri::AppHandle) -> (rides::Library, bool, Option<String>) {
     let default = paths::rides_dir(app.path().document_dir().ok());
     let archive = paths::ride_archive_dir(app.path().app_data_dir().ok());
     let (root, is_default) = match app.path().app_config_dir().ok().and_then(|dir| rides::configured(&dir)) {
@@ -188,20 +188,30 @@ fn ride_library(app: &tauri::AppHandle) -> (rides::Library, bool) {
         _ => (default, true),
     };
     let library = rides::Library::new(root, archive);
-    // The one-time move of pre-split folders (then a cheap no-op). A failure is logged, not fatal:
-    // it leaves the old files where they were and the library reading the safe, empty direction —
-    // nothing is acked from a half-moved state.
-    if let Err(e) = library.migrate() {
+    // The one-time move of pre-split folders (then a cheap no-op). A failure is not fatal — it
+    // leaves the old files where they were and the library reading the safe, empty direction, so
+    // nothing is acked from a half-moved state — but it is *surfaced*: `rides_index` puts the
+    // warning on screen, and `rides_choose_folder` refuses to move a folder that still holds
+    // unmigrated files (relocating past them would orphan them permanently).
+    let warning = library.migrate().err().map(|e| {
         eprintln!("ride library migration: {e}");
-    }
-    (library, is_default)
+        format!(
+            "Rides from an older version of this app could not be moved into the app's own storage \
+             ({e}). They are unchanged in {}, but they will not appear here or sync until this is \
+             fixed — is that folder read-only?",
+            library.root().display()
+        )
+    });
+    (library, is_default, warning)
 }
 
 /// The library folder and everything in it.
 #[tauri::command]
 fn rides_index(app: tauri::AppHandle) -> rides::IndexView {
-    let (library, is_default) = ride_library(&app);
-    library.view(is_default)
+    let (library, is_default, warning) = ride_library(&app);
+    let mut view = library.view(is_default);
+    view.migration_warning = warning;
+    view
 }
 
 /// Land one pulled ride durably, and **only then** resolve.
@@ -215,7 +225,7 @@ fn rides_index(app: tauri::AppHandle) -> rides::IndexView {
 /// On the blocking pool because `fsync` genuinely blocks — that is the whole point of calling it.
 #[tauri::command]
 async fn rides_import(app: tauri::AppHandle, request: rides::ImportRequest) -> Result<rides::Imported, String> {
-    let (library, _) = ride_library(&app);
+    let (library, _, _) = ride_library(&app);
     tauri::async_runtime::spawn_blocking(move || library.import(&request)).await.map_err(|e| e.to_string())?
 }
 
@@ -230,7 +240,7 @@ fn rides_ack_set(app: tauri::AppHandle, serial: String, epoch: u32) -> Vec<u16> 
 /// The stored ride object of one key — what a GPX re-export decodes.
 #[tauri::command]
 async fn rides_read(app: tauri::AppHandle, key: String) -> Result<tauri::ipc::Response, String> {
-    let (library, _) = ride_library(&app);
+    let (library, _, _) = ride_library(&app);
     let bytes =
         tauri::async_runtime::spawn_blocking(move || library.read_object(&key)).await.map_err(|e| e.to_string())??;
     // The raw path, like `usb_read`: a ride object is hundreds of kilobytes and a JSON number
@@ -242,7 +252,7 @@ async fn rides_read(app: tauri::AppHandle, key: String) -> Result<tauri::ipc::Re
 /// deleted, and the "Show in folder" fallback when the file to show is not there yet.
 #[tauri::command]
 async fn rides_write_gpx(app: tauri::AppHandle, key: String, gpx: String) -> Result<String, String> {
-    let (library, _) = ride_library(&app);
+    let (library, _, _) = ride_library(&app);
     tauri::async_runtime::spawn_blocking(move || library.write_gpx(&key, &gpx)).await.map_err(|e| e.to_string())?
 }
 
@@ -257,8 +267,19 @@ async fn rides_write_gpx(app: tauri::AppHandle, key: String, gpx: String) -> Res
 async fn rides_choose_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
 
-    let (from, _) = ride_library(&app);
-    let from = from.root().to_path_buf();
+    let (library, _, migration_warning) = ride_library(&app);
+    // A folder that still holds pre-split files must not be moved away from: the relocation moves
+    // only GPX, so re-pointing the root would strand the old index and archives somewhere the app
+    // never looks again — silently, permanently, and repeatably on a read-only folder.
+    if migration_warning.is_some() || library.has_unmigrated() {
+        return Err(format!(
+            "{} still holds ride files from an older version of this app that could not be moved \
+             into the app's own storage. Moving the library now would leave them behind for good — \
+             fix that folder first (is it read-only?) and reopen the ride library.",
+            library.root().display()
+        ));
+    }
+    let from = library.root().to_path_buf();
     let (tx, rx) = std::sync::mpsc::channel();
     app.dialog().file().set_title("Where should pulled rides be kept?").pick_folder(move |picked| {
         let _ = tx.send(picked);

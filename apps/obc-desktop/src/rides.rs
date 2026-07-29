@@ -68,9 +68,27 @@
 use std::fs::File;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+
+/// One process-wide lock over every disk-touching library operation.
+///
+/// Tauri runs commands concurrently, and this module's correctness arguments are all sequential:
+/// the migration's "index moves last", the import's "object, GPX, index in that order", and the
+/// stem-uniqueness check against the index it just read. Two commands interleaving those steps can
+/// commit a truncated `.obcride` through the deterministic `.part` name, or mint a stem a
+/// concurrently-migrated file already uses — both of which end in an ack for bytes that are not
+/// whole. A single coarse mutex is deliberately the whole answer: every operation here is a few
+/// small files, so there is nothing worth being clever about.
+static LIBRARY_LOCK: Mutex<()> = Mutex::new(());
+
+fn lock() -> MutexGuard<'static, ()> {
+    // A panic while holding the lock poisons it; the disk state is still governed by the
+    // rename-last discipline, so the next operation may simply proceed.
+    LIBRARY_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 /// The index's filename. Readable JSON on purpose, even though it now lives in app data: it is
 /// still the record a person (or a support thread) can open and read.
@@ -183,6 +201,11 @@ pub struct IndexView {
     /// True when the folder is the app's default rather than one the user picked.
     pub is_default: bool,
     pub rides: Vec<RideEntry>,
+    /// Set when [`Library::migrate`] failed on this open — legacy files are still sitting in the
+    /// visible folder and the library is reading past them. Filled in by the command layer (which
+    /// is the one that ran the migration); surfaced so the failure is a sentence on screen rather
+    /// than an `eprintln!` nobody sees.
+    pub migration_warning: Option<String>,
 }
 
 /// One ride, as the pull hands it over. The bytes and the GPX both cross the IPC boundary here.
@@ -290,8 +313,14 @@ impl Library {
     fn entry(&self, ride: LibraryRide) -> RideEntry {
         let ride_path = self.archive.join(&ride.ride_file);
         let gpx_path = self.root.join(&ride.gpx_file);
+        // Existence alone is not durability: `present` feeds `durable_ids`, which feeds the ack,
+        // so a truncated or swapped archive file must read as *absent* — the ride is then pulled
+        // again, which is the direction that costs a download instead of a ride. The index's own
+        // `bytes` is the cheap whole-file check (the CRC is there too, but hashing every archive
+        // on every read would make listing a library O(bytes)).
+        let present = std::fs::metadata(&ride_path).is_ok_and(|m| m.is_file() && m.len() == ride.bytes);
         RideEntry {
-            present: ride_path.is_file(),
+            present,
             gpx_present: gpx_path.is_file(),
             ride_path: ride_path.display().to_string(),
             gpx_path: gpx_path.display().to_string(),
@@ -304,7 +333,13 @@ impl Library {
     }
 
     pub fn view(&self, is_default: bool) -> IndexView {
-        IndexView { folder: self.root.display().to_string(), is_default, rides: self.entries() }
+        let _guard = lock();
+        IndexView {
+            folder: self.root.display().to_string(),
+            is_default,
+            rides: self.entries(),
+            migration_warning: None,
+        }
     }
 
     /// The ride ids of `(serial, epoch)` whose object is **in the archive right now** — the exact
@@ -317,6 +352,7 @@ impl Library {
     /// every pull is also what heals a device that lost its `/tracks/SYNCED.SET` (§4.4: an ack is
     /// add-only, and unknown ids are ignored).
     pub fn durable_ids(&self, serial: &str, epoch: u32) -> Vec<u16> {
+        let _guard = lock();
         let mut ids: Vec<u16> = self
             .entries()
             .into_iter()
@@ -333,6 +369,7 @@ impl Library {
     /// Returns only after the ride object, the GPX and the index have each been fsynced. The caller
     /// may ack **after** this resolves and at no earlier point.
     pub fn import(&self, req: &ImportRequest) -> Result<Imported, String> {
+        let _guard = lock();
         if req.serial.is_empty() {
             return Err("this device reports no serial number, so a ride from it cannot be keyed".into());
         }
@@ -419,6 +456,7 @@ impl Library {
 
     /// The stored ride object of one key — what a re-export reads.
     pub fn read_object(&self, key: &str) -> Result<Vec<u8>, String> {
+        let _guard = lock();
         let ride = self.find(key)?;
         std::fs::read(self.archive.join(&ride.ride_file))
             .map_err(|e| format!("read {}: {e}", self.archive.join(&ride.ride_file).display()))
@@ -428,6 +466,7 @@ impl Library {
     /// somebody deleted or renamed. The archived object is the source, so this can always be run
     /// again.
     pub fn write_gpx(&self, key: &str, gpx: &str) -> Result<String, String> {
+        let _guard = lock();
         if gpx.is_empty() || gpx.len() > MAX_GPX_BYTES {
             return Err(format!("a GPX of {} bytes is outside 1..={MAX_GPX_BYTES}", gpx.len()));
         }
@@ -479,41 +518,54 @@ impl Library {
     ///   or an import that ran between two migration attempts), every key from both survives; on a
     ///   key collision the archive's record wins, because post-split writes go there. Nothing is
     ///   ever dropped.
+    /// * **A same-named archive file is "already moved" only if the bytes match.** Two different
+    ///   rides can share one basename across two indexes (a restored backup, a second machine's
+    ///   relocated folder). Treating bare name-existence as "done" would delete the only copy of
+    ///   one of them — and then ack it. A mismatch re-homes the source under a fresh name and
+    ///   re-points its record.
     pub fn migrate(&self) -> Result<(), String> {
+        let _guard = lock();
         if self.archive == self.root {
             return Ok(()); // degenerate configuration; nothing to split.
         }
         // An unreadable/absent visible folder has nothing to migrate — including the fresh-install
         // case and a relocated folder on an unplugged drive.
-        let Ok(entries) = std::fs::read_dir(&self.root) else {
+        let Some((has_index, mut ride_files)) = legacy_files(&self.root) else {
             return Ok(());
         };
-        let mut ride_files: Vec<String> = Vec::new();
-        let mut has_index = false;
-        for entry in entries.flatten() {
-            if !entry.path().is_file() {
-                continue;
-            }
-            let Some(name) = entry.file_name().to_str().map(str::to_owned) else { continue };
-            if name == INDEX_FILE {
-                has_index = true;
-            } else if !name.starts_with('.') && Path::new(&name).extension().is_some_and(|e| e == RIDE_EXT) {
-                ride_files.push(name);
-            }
-        }
         if !has_index && ride_files.is_empty() {
             return Ok(());
         }
 
         std::fs::create_dir_all(&self.archive).map_err(|e| format!("create {}: {e}", self.archive.display()))?;
         ride_files.sort();
+        // Basenames the migration had to change, old → new, applied to the index records below.
+        let mut renames: Vec<(String, String)> = Vec::new();
         for name in &ride_files {
             let source = self.root.join(name);
-            if self.archive.join(name).is_file() {
-                // A leftover from an interrupted earlier run: the archive copy is the authoritative
-                // one (post-split writes go there), and the source is a stale duplicate of a file
-                // that is provably ours. Removing it is the *completion* of that move.
-                std::fs::remove_file(&source).map_err(|e| format!("remove {}: {e}", source.display()))?;
+            let target = self.archive.join(name);
+            if target.is_file() {
+                if same_contents(&source, &target)? {
+                    // A leftover from an interrupted earlier run: the archive copy is byte-for-byte
+                    // this file, so removing the source is the *completion* of that move.
+                    std::fs::remove_file(&source).map_err(|e| format!("remove {}: {e}", source.display()))?;
+                } else {
+                    // Same basename, different bytes: a restored backup, or a second machine's
+                    // folder — two different rides whose stems collided across two indexes. The
+                    // one thing this must never be read as is "already moved": deleting the source
+                    // here would destroy the only copy of one ride while its record unions in
+                    // pointing at the other's bytes — and `durable_ids` would then ack a ride that
+                    // was never stored. Re-home it under a fresh name instead, and re-point its
+                    // record when the indexes merge.
+                    let fresh = crate::paths::unique_in(&self.archive, name);
+                    let fresh_name = fresh
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .ok_or_else(|| format!("no usable name beside {}", target.display()))?
+                        .to_string();
+                    move_file_durably(&source, &self.archive, &fresh_name)?;
+                    renames.push((name.clone(), fresh_name));
+                }
                 continue;
             }
             move_file_durably(&source, &self.archive, name)?;
@@ -524,12 +576,17 @@ impl Library {
 
         if has_index {
             let source = self.root.join(INDEX_FILE);
-            match read_index(&self.archive.join(INDEX_FILE)) {
-                // The archive already has an index: merge conservatively — the union of records,
-                // never fewer — and only then retire the source.
-                Some(archived) => {
-                    let visible = read_index(&source).unwrap_or_default();
-                    let mut merged = archived;
+            match read_index(&source) {
+                Some(mut visible) => {
+                    // Records whose file was re-homed above follow it by name.
+                    for ride in &mut visible.rides {
+                        if let Some((_, to)) = renames.iter().find(|(from, _)| *from == ride.ride_file) {
+                            ride.ride_file.clone_from(to);
+                        }
+                    }
+                    // Union with whatever the archive already holds — never fewer records; on a
+                    // key collision the archive's record wins (post-split writes go there).
+                    let mut merged = read_index(&self.archive.join(INDEX_FILE)).unwrap_or_default();
                     for ride in visible.rides {
                         if !merged.rides.iter().any(|r| r.key == ride.key) {
                             merged.rides.push(ride);
@@ -539,7 +596,22 @@ impl Library {
                     self.commit(&merged)?;
                     std::fs::remove_file(&source).map_err(|e| format!("remove {}: {e}", source.display()))?;
                 }
-                None => move_file_durably(&source, &self.archive, INDEX_FILE)?,
+                // The visible index exists but cannot be parsed. It is still provably ours and is
+                // preserved, never deleted: as the archive's index if that slot is free (load()
+                // treats it as empty), otherwise parked beside it under a name nothing reads.
+                None => {
+                    if self.archive.join(INDEX_FILE).is_file() {
+                        let parked = crate::paths::unique_in(&self.archive, "pre-split-index.json");
+                        let parked_name = parked
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .ok_or_else(|| format!("no usable name in {}", self.archive.display()))?
+                            .to_string();
+                        move_file_durably(&source, &self.archive, &parked_name)?;
+                    } else {
+                        move_file_durably(&source, &self.archive, INDEX_FILE)?;
+                    }
+                }
             }
         }
         // Make the unlinks in the visible folder durable too — best effort, same rule as every
@@ -547,6 +619,50 @@ impl Library {
         let _ = sync_dir(&self.root);
         Ok(())
     }
+
+    /// Whether the visible folder still holds pre-split library files — i.e. [`Library::migrate`]
+    /// has work it has not managed to finish. The relocation command refuses while this is true:
+    /// re-pointing the root would orphan those files permanently.
+    pub fn has_unmigrated(&self) -> bool {
+        let _guard = lock();
+        if self.archive == self.root {
+            return false;
+        }
+        legacy_files(&self.root).is_some_and(|(has_index, rides)| has_index || !rides.is_empty())
+    }
+}
+
+/// The pre-split files in `root` that belong to this module: whether an `index.json` is there, and
+/// every `*.obcride` basename. `None` when the folder cannot be read at all.
+fn legacy_files(root: &Path) -> Option<(bool, Vec<String>)> {
+    let entries = std::fs::read_dir(root).ok()?;
+    let mut has_index = false;
+    let mut ride_files = Vec::new();
+    for entry in entries.flatten() {
+        if !entry.path().is_file() {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else { continue };
+        if name == INDEX_FILE {
+            has_index = true;
+        } else if !name.starts_with('.') && Path::new(&name).extension().is_some_and(|e| e == RIDE_EXT) {
+            ride_files.push(name);
+        }
+    }
+    Some((has_index, ride_files))
+}
+
+/// Whether two files hold the same bytes. Length first (free), then the bytes themselves — an
+/// `.obcride` is at most a few hundred kilobytes, so reading both is cheaper than being wrong.
+fn same_contents(a: &Path, b: &Path) -> Result<bool, String> {
+    let meta_a = std::fs::metadata(a).map_err(|e| format!("stat {}: {e}", a.display()))?;
+    let meta_b = std::fs::metadata(b).map_err(|e| format!("stat {}: {e}", b.display()))?;
+    if meta_a.len() != meta_b.len() {
+        return Ok(false);
+    }
+    let bytes_a = std::fs::read(a).map_err(|e| format!("read {}: {e}", a.display()))?;
+    let bytes_b = std::fs::read(b).map_err(|e| format!("read {}: {e}", b.display()))?;
+    Ok(bytes_a == bytes_b)
 }
 
 /// Read and parse an index file; `None` for missing or unreadable (the caller decides what that
@@ -760,6 +876,7 @@ pub fn remember(config_dir: &Path, dir: &Path) -> Result<(), String> {
 /// did move read as missing there and are quietly re-exported from the archive, which still holds
 /// every ride.
 pub fn relocate(from: &Path, to: &Path) -> Result<(), String> {
+    let _guard = lock();
     if from == to {
         return Ok(());
     }
@@ -780,12 +897,20 @@ pub fn relocate(from: &Path, to: &Path) -> Result<(), String> {
         .collect();
     names.sort();
 
+    // Two passes: the first so a collision is discovered before anything has moved (all-or-nothing
+    // for the user), the second re-checked per file because `rename` clobbers and std has no
+    // portable no-clobber rename. The re-check narrows the TOCTOU window to the one rename; a file
+    // another program drops into that window can still lose — documented residual race, and the
+    // library lock already rules out this process racing itself.
     for name in &names {
         if to.join(name).exists() {
             return Err(format!("{} already contains a file named {name} — pick another folder", to.display()));
         }
     }
     for name in &names {
+        if to.join(name).exists() {
+            return Err(format!("{} now contains a file named {name} — nothing further was moved", to.display()));
+        }
         move_file_durably(&from.join(name), to, name)?;
     }
     sync_dir(to).map_err(|e| format!("sync {}: {e}", to.display()))?;
@@ -1222,6 +1347,120 @@ mod tests {
         assert_eq!(lib.durable_ids("S", 1), vec![1, 2, 3], "the union: nothing lost from either index");
         assert!(!folder.join(INDEX_FILE).exists());
         assert_eq!(lib.load().rides.len(), 3);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// **The collision that must never read as "already moved".** The archive and a legacy folder
+    /// each hold a *different* ride under the *same* basename (two indexes minted the same stem —
+    /// a restored backup, a second machine's folder). The legacy file is re-homed under a fresh
+    /// name and its record follows it: both rides stay readable, both ack, and neither's bytes
+    /// were deleted or shadowed.
+    #[test]
+    fn a_same_named_archive_with_different_bytes_is_re_homed_not_deleted() {
+        let base = temp("migrate-collide");
+        let folder = base.join("rides");
+        std::fs::create_dir_all(&folder).expect("folder");
+        // The legacy library holds ride S:1:1 under the stem "2025-12-01-Twin"…
+        let legacy = legacy_library(&folder, &[request("S", 1, 1, "Twin")]);
+        // …and the archive already holds a different ride, whose fresh index also minted
+        // "2025-12-01-Twin" (different key, different bytes, same date and name).
+        let lib = library(&base);
+        let archived = lib.import(&request("S2", 2, 2, "Twin")).expect("post-split import");
+        assert_eq!(legacy[0].ride.ride_file, archived.ride.ride_file, "the setup really collides");
+
+        lib.migrate().expect("migrate");
+
+        // Both rides, both durably ackable, each reading its *own* bytes.
+        assert_eq!(lib.durable_ids("S", 1), vec![1]);
+        assert_eq!(lib.durable_ids("S2", 2), vec![2]);
+        assert_eq!(lib.read_object(&legacy[0].ride.key).expect("legacy bytes"), request("S", 1, 1, "Twin").object);
+        assert_eq!(lib.read_object(&archived.ride.key).expect("archived bytes"), request("S2", 2, 2, "Twin").object);
+        // The re-homed record points at a fresh file, not the other ride's.
+        let entries = lib.entries();
+        let moved = entries.iter().find(|e| e.ride.key == legacy[0].ride.key).expect("record survived");
+        assert_ne!(moved.ride.ride_file, archived.ride.ride_file, "the record followed the re-homed file");
+        assert!(moved.present && entries.iter().all(|e| e.present));
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The benign half of the same check: identical bytes under one basename are the residue of an
+    /// interrupted earlier run, and removing the source *completes* that move.
+    #[test]
+    fn an_identical_leftover_duplicate_is_completed_not_duplicated() {
+        let base = temp("migrate-dup");
+        let folder = base.join("rides");
+        std::fs::create_dir_all(&folder).expect("folder");
+        let legacy = legacy_library(&folder, &[request("S", 1, 1, "Copied already")]);
+        // Simulate the crash-after-copy-before-unlink state by hand.
+        std::fs::create_dir_all(base.join("archive")).expect("archive");
+        std::fs::copy(folder.join(&legacy[0].ride.ride_file), base.join("archive").join(&legacy[0].ride.ride_file))
+            .expect("pre-copy");
+
+        let lib = library(&base);
+        lib.migrate().expect("migrate");
+        assert!(!folder.join(&legacy[0].ride.ride_file).exists(), "the leftover source retired");
+        assert_eq!(lib.durable_ids("S", 1), vec![1]);
+        assert_eq!(lib.read_object(&legacy[0].ride.key).expect("bytes"), request("S", 1, 1, "Copied already").object);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// `present` is not bare existence: a truncated archive file must read as *not durable*, drop
+    /// out of the ack list, and be repaired by the next pull — a re-download, never a wrong ack.
+    #[test]
+    fn a_truncated_archive_is_not_durable_and_is_repaired() {
+        let base = temp("truncated");
+        let lib = library(&base);
+        let landed = lib.import(&request("S", 1, 4, "Torn")).expect("import");
+        assert_eq!(lib.durable_ids("S", 1), vec![4]);
+
+        let path = base.join("archive").join(&landed.ride.ride_file);
+        let whole = std::fs::read(&path).expect("read");
+        std::fs::write(&path, &whole[..whole.len() / 2]).expect("truncate");
+
+        assert!(lib.durable_ids("S", 1).is_empty(), "a torn file acks nothing");
+        assert!(!lib.entries()[0].present, "…and the UI sees it as missing");
+
+        let repaired = lib.import(&request("S", 1, 4, "Torn")).expect("the next pull repairs it");
+        assert!(!repaired.imported, "the same ride arriving again, not a new one");
+        assert_eq!(lib.durable_ids("S", 1), vec![4]);
+        assert_eq!(std::fs::read(&path).expect("whole again"), whole);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn has_unmigrated_reports_the_folder_until_the_move_is_done() {
+        let base = temp("unmigrated");
+        let folder = base.join("rides");
+        std::fs::create_dir_all(&folder).expect("folder");
+        let lib = library(&base);
+        assert!(!lib.has_unmigrated(), "a gpx-only (or empty) folder has nothing pending");
+        legacy_library(&folder, &[request("S", 1, 1, "Pending")]);
+        assert!(lib.has_unmigrated(), "legacy files pending");
+        lib.migrate().expect("migrate");
+        assert!(!lib.has_unmigrated(), "and done");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// An unreadable legacy index is preserved, never deleted — parked beside the archive's real
+    /// index under a name nothing reads — and the migration still completes.
+    #[test]
+    fn an_unreadable_legacy_index_is_parked_not_deleted() {
+        let base = temp("migrate-corrupt-index");
+        let folder = base.join("rides");
+        std::fs::create_dir_all(&folder).expect("folder");
+        std::fs::write(folder.join(INDEX_FILE), b"{ not json").expect("corrupt legacy index");
+        let lib = library(&base);
+        lib.import(&request("S", 1, 1, "Fine")).expect("archive index exists");
+
+        lib.migrate().expect("migrate completes past the corrupt file");
+        assert!(!folder.join(INDEX_FILE).exists(), "the legacy file left the visible folder");
+        assert!(base.join("archive").join("pre-split-index.json").is_file(), "…and was parked, not deleted");
+        assert_eq!(lib.durable_ids("S", 1), vec![1], "the real index is untouched");
+        assert!(!lib.has_unmigrated());
 
         let _ = std::fs::remove_dir_all(&base);
     }

@@ -71,8 +71,8 @@ pub fn places(maps_dir: &std::path::Path, ride_archive: &std::path::Path) -> Vec
             "rides",
             "Ride archive",
             "The device's own recordings of your pulled rides — what the GPX files and the ride \
-             list are rebuilt from. Deleting one would make the app fetch that ride from the \
-             device again.",
+             list are rebuilt from. Don't delete these: the app can only get a ride back if it is \
+             still on the device, and pulling it here is what lets the device delete its copy.",
             ride_archive,
             false,
         ),
