@@ -18,7 +18,7 @@ trees — one `Cargo.lock`, one `target/`:
 | :-- | :-- | :-- |
 | `firmware/` | `obc-formats`, `obc-ports`, `obc-map-scene`, `obc-reader`, `obc-route`, `obc-render`, `obc-app`, `obc-ble`, `obc-dfu`, the platform adapters | **yes** — that is the rule |
 | `../host/` | the packer (`obc-pack`), the bakery (`obc-bake`), `obc-mkimage`, `obc-bench`, the oracles (`obcm-testkit`, `obc-vectors`), `obc-host-core`, `obc-replay`, `obc-usb-host` | no |
-| `../apps/` | `obc-sim`, `obc-web-demo`, `obc-web-convert`, `obc-desktop` | no |
+| `../apps/` | `obc-sim`, `obc-web-demo`, `obc-web-convert`, `obc-web-preview`, `obc-desktop` | no |
 
 Dev-dependencies cross that boundary on purpose — `obc-render` and `obc-reader`
 test against `obcm-testkit`, `obc-route` against `obc-pack` — because a dev-dep
