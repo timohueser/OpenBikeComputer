@@ -434,50 +434,70 @@ export async function reexportGpx(library: RideLibrary, ride: LibraryRide): Prom
 export const PREVIEW_POINTS = 256;
 
 /**
- * A downsampled `[lat, lon]` track for the list.
+ * Downsample any `[lat, lon]` track to at most {@link PREVIEW_POINTS}, rounded to six decimals.
  *
  * Uniform stride rather than Douglas–Peucker: this is a thumbnail, the input is already a recorded
- * track rather than a decimated route, and a stride cannot introduce a shortcut across a switchback
- * that a tolerance-based simplifier can. The first and last points are always kept, so the preview
- * starts and ends where the ride did.
+ * track (or a route the converter has decimated once), and a stride cannot introduce a shortcut
+ * across a switchback that a tolerance-based simplifier can. The first and last points are always
+ * kept, so the preview starts and ends where the track did. Shared by the library index and the
+ * device page's thumbnail cache (`thumbs.svelte.ts`), so a ride thumbnail is the same points in
+ * both places.
  */
-export function previewTrack(ride: RideObject): Array<[number, number]> {
-    const points = ride.points;
+export function downsampleTrack(points: readonly (readonly [number, number])[]): Array<[number, number]> {
     if (points.length === 0) return [];
-    const stride = Math.max(1, Math.ceil(points.length / (PREVIEW_POINTS - 1)));
+    // At or under the cap nothing is dropped — which also makes a second pass a no-op, so a track
+    // that went through the ride library's downsample once is not thinned again by the thumb store.
+    const stride = points.length <= PREVIEW_POINTS ? 1 : Math.ceil(points.length / (PREVIEW_POINTS - 1));
     const out: Array<[number, number]> = [];
     for (let i = 0; i < points.length; i += stride) {
-        out.push([round6(points[i].lat1e7 / 1e7), round6(points[i].lon1e7 / 1e7)]);
+        out.push([round6(points[i][0]), round6(points[i][1])]);
     }
     const last = points[points.length - 1];
-    const tail: [number, number] = [round6(last.lat1e7 / 1e7), round6(last.lon1e7 / 1e7)];
+    const tail: [number, number] = [round6(last[0]), round6(last[1])];
     if (out.length === 0 || out[out.length - 1][0] !== tail[0] || out[out.length - 1][1] !== tail[1]) {
         out.push(tail);
     }
     return out;
 }
 
+/** A downsampled `[lat, lon]` track for the list — {@link downsampleTrack} over a ride's points. */
+export function previewTrack(ride: RideObject): Array<[number, number]> {
+    return downsampleTrack(ride.points.map((p) => [p.lat1e7 / 1e7, p.lon1e7 / 1e7]));
+}
+
 /** Six decimals is a ~11 cm grid — the device's own GPX precision, and about a third of the JSON. */
-function round6(deg: number): number {
+export function round6(deg: number): number {
     return Math.round(deg * 1e6) / 1e6;
 }
 
+/** One track fitted into a box by {@link fitTracks}: its path, and where it starts and ends. */
+export interface FittedTrack {
+    /** `M … L …` path in the `width × height` viewBox. */
+    readonly d: string;
+    /** Projected `[x, y]` of the first point — the start dot. */
+    readonly start: readonly [number, number];
+    /** Projected `[x, y]` of the last point — the end dot. */
+    readonly end: readonly [number, number];
+}
+
 /**
- * An SVG path for a preview track, fitted to a `width × height` box.
+ * Fit one or more `[lat, lon]` tracks into a shared `width × height` box.
  *
- * Equirectangular with a `cos(lat)` correction on longitude, which is the projection a few
- * kilometres of track deserves: anything more would be a map library, and anything less draws the
- * Alps as an oval. Returns `null` when there is nothing to draw.
+ * One projection for the lot — a trip's stages are drawn against common bounds, so where stage 2
+ * begins is where stage 1 ended. Equirectangular with a `cos(lat)` correction on longitude, which
+ * is the projection a few kilometres of track deserves: anything more would be a map library, and
+ * anything less draws the Alps as an oval. A track with fewer than two points maps to `null`.
  */
-export function trackPath(
-    track: readonly (readonly [number, number])[],
+export function fitTracks(
+    tracks: ReadonlyArray<readonly (readonly [number, number])[]>,
     width: number,
     height: number,
     pad = 2,
-): string | null {
-    if (track.length < 2) return null;
-    const lats = track.map((p) => p[0]);
-    const lons = track.map((p) => p[1]);
+): Array<FittedTrack | null> {
+    const all = tracks.flat();
+    if (all.length < 2) return tracks.map(() => null);
+    const lats = all.map((p) => p[0]);
+    const lons = all.map((p) => p[1]);
     const midLat = (Math.min(...lats) + Math.max(...lats)) / 2;
     const kx = Math.cos((midLat * Math.PI) / 180) || 1e-6;
 
@@ -493,13 +513,34 @@ export function trackPath(
     const offsetX = (width - spanX * scale) / 2;
     const offsetY = (height - spanY * scale) / 2;
 
-    return track
-        .map((point, i) => {
-            const x = offsetX + (point[1] * kx - minX) * scale;
-            // SVG y grows downwards; north is up.
-            const y = height - offsetY - (point[0] - minY) * scale;
-            return `${i === 0 ? "M" : "L"}${x.toFixed(1)} ${y.toFixed(1)}`;
-        })
-        .join("");
+    const project = (point: readonly [number, number]): [number, number] => [
+        offsetX + (point[1] * kx - minX) * scale,
+        // SVG y grows downwards; north is up.
+        height - offsetY - (point[0] - minY) * scale,
+    ];
+
+    return tracks.map((track) => {
+        if (track.length < 2) return null;
+        const d = track
+            .map((point, i) => {
+                const [x, y] = project(point);
+                return `${i === 0 ? "M" : "L"}${x.toFixed(1)} ${y.toFixed(1)}`;
+            })
+            .join("");
+        return { d, start: project(track[0]), end: project(track[track.length - 1]) };
+    });
+}
+
+/**
+ * An SVG path for one preview track, fitted to a `width × height` box — {@link fitTracks} for the
+ * single-track case. Returns `null` when there is nothing to draw.
+ */
+export function trackPath(
+    track: readonly (readonly [number, number])[],
+    width: number,
+    height: number,
+    pad = 2,
+): string | null {
+    return fitTracks([track], width, height, pad)[0]?.d ?? null;
 }
 
