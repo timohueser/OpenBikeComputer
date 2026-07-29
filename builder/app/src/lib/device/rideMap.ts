@@ -139,6 +139,12 @@ export function clusterRides(
     return clusters;
 }
 
+/**
+ * Known limit: a track crossing the antimeridian (lon jumping ±180) makes its cluster's bounds
+ * span most of the world, so a badge click zooms way out instead of in. Left as-is deliberately —
+ * unwrapping longitudes is real complexity for a case a bikepacking track effectively never hits,
+ * and the failure is a wrong zoom, not a wrong ack or a lost ride.
+ */
 function toCluster(members: ReadonlyArray<{ ride: RideTrack; rep: readonly [number, number] }>): RideCluster {
     let south = Infinity;
     let west = Infinity;
