@@ -68,7 +68,7 @@ const INIT_DIVISOR: u8 = 127;
 /// guard decides). M32 failed on-glass over DK jumpers (2026-07-24, app-level reads); bench at
 /// M8 = the shipping setting. Hand-bump to M16/M32 here to probe the ceiling (esp. on the
 /// production PCB's short traces).
-const FAST_HZ: Frequency = Frequency::M8;
+const FAST_HZ: Frequency = Frequency::M16;
 
 /// Scratch depth (blocks) = the largest batch. 64 × 512 = 32 KB — lives in a `.bss` static (see
 /// [`SCRATCH`]), not on the executor task's stack.
