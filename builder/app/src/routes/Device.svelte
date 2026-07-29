@@ -434,6 +434,9 @@
                     waypoints: await routeWaypoints(obcr),
                 });
             }
+            // The chip counts the FULL stage list, dangling included — the same count the trip
+            // band shows — and says plainly when some of it could not be drawn.
+            const missing = stages.length - segments.length;
             preview = {
                 title: trip.name || `Trip ${trip.objectId}`,
                 points: [],
@@ -442,7 +445,7 @@
                     { label: "Distance", value: `${(distanceM / 1000).toFixed(1)} km` },
                     { label: "Ascent", value: `${ascentM.toLocaleString()} m` },
                     { label: "Descent", value: `${descentM.toLocaleString()} m` },
-                    { label: "Stages", value: `${segments.length}` },
+                    { label: "Stages", value: missing > 0 ? `${stages.length} · ${missing} missing` : `${stages.length}` },
                 ],
                 waypoints: [],
                 route: null,
