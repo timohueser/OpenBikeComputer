@@ -17,7 +17,8 @@
         corners = "13px 13px 0 0",
         tag,
     }: {
-        /** Tracks to draw, in order. `color: null` draws ink — the single-track tiles' look. */
+        /** Tracks to draw, in order — each in its caller's color (routes coral, rides forest,
+         *  trip stages the stage palette). `color: null` falls back to ink. */
         segments: ReadonlyArray<{ track: Thumb; color?: string | null }>;
         /** The viewBox; the element itself is fluid and letterboxes via preserveAspectRatio. */
         width?: number;
@@ -43,6 +44,12 @@
     );
     const first = $derived(drawn[0] ?? null);
     const last = $derived(drawn[drawn.length - 1] ?? null);
+    /** A trip band draws each stage a touch heavier; a single track stays fine-lined. */
+    const multi = $derived(drawn.length > 1);
+    /** Single-track dots are ink so they read against a coral or forest line on the panel
+     *  background; a trip's dots keep their stage colors — the band's rows key off them. */
+    const dotColor = (segment: { color: string | null } | null): string =>
+        (multi ? segment?.color : null) ?? "var(--ink)";
 </script>
 
 <div class="thumb" style:height="{height}px" style:border-radius={corners}>
@@ -53,13 +60,13 @@
                     d={segment.fit.d}
                     fill="none"
                     stroke={segment.color ?? "var(--ink)"}
-                    stroke-width={segment.color ? 2.6 : 2.2}
+                    stroke-width={multi ? 2.6 : 2.2}
                     stroke-linecap="round"
                     stroke-linejoin="round"
                 />
             {/each}
             {#if first}
-                <circle cx={first.fit.start[0]} cy={first.fit.start[1]} r="4" fill={first.color ?? "var(--forest)"} />
+                <circle cx={first.fit.start[0]} cy={first.fit.start[1]} r="4" fill={dotColor(first)} />
             {/if}
             {#if last}
                 <circle
@@ -67,7 +74,7 @@
                     cy={last.fit.end[1]}
                     r="4"
                     fill="none"
-                    stroke={last.color ?? "var(--forest)"}
+                    stroke={dotColor(last)}
                     stroke-width="2"
                 />
             {/if}

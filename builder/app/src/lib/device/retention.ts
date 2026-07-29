@@ -33,14 +33,15 @@ export function retentionLabel(level: number): string {
  *
  * `expiresAt === 0` with a non-zero retention is a real state, not a decoding gap: the device
  * anchors expiry to last *use* and has no RTC, so a route uploaded before any peer set the
- * trusted clock has a level but no started countdown.
+ * trusted clock has a level but no started countdown. The phrase says what will happen —
+ * "expires 1 week after use" — rather than describing the clock's internals.
  */
 export function expiryPhrase(
     route: Pick<RouteListEntry, "retention" | "expiresAt">,
     now: number = Date.now(),
 ): string {
     if (route.retention === 0) return "kept forever";
-    if (route.expiresAt === 0) return "expiry not started";
+    if (route.expiresAt === 0) return `expires ${retentionLabel(route.retention)} after use`;
     const days = Math.ceil((route.expiresAt * 1000 - now) / 86_400_000);
     if (days <= 0) return "expiring";
     return days === 1 ? "expires tomorrow" : `expires in ${days} days`;

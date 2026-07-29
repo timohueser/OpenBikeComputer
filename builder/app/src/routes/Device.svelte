@@ -36,7 +36,7 @@
     } from "../lib/device/library";
     import { addStage, createTrip, moveStage, removeStage, renameRoute, updateTrip } from "../lib/device/manage";
     import { rideDistance, rideDuration, rideScope } from "../lib/device/rides";
-    import type { PreparedRoute } from "../lib/device/route";
+    import { decodeRouteHeader, type PreparedRoute } from "../lib/device/route";
     import { deviceHolder } from "../lib/device/session.svelte";
     import { DeviceJob, jobRegistry } from "../lib/device/job.svelte";
     import {
@@ -46,7 +46,6 @@
         type Thumb,
         type ThumbRequest,
     } from "../lib/device/thumbs.svelte";
-    import { formatBytes } from "../lib/format";
     import { platform } from "../lib/platform";
     import { confirmAction } from "../lib/ui/confirm.svelte";
     import { ObjectType } from "../lib/usb/protocol";
@@ -346,8 +345,10 @@
                 stats: [
                     { label: "Distance", value: `${(route.distanceM / 1000).toFixed(1)} km` },
                     { label: "Ascent", value: `${route.ascentM.toLocaleString()} m` },
+                    // From the OBCR header of the bytes just downloaded — the list entry does not
+                    // carry descent, but the header (§2) does.
+                    { label: "Descent", value: `${decodeRouteHeader(obcr).descentM.toLocaleString()} m` },
                     { label: "Points", value: route.pointCount.toLocaleString() },
-                    { label: "On card", value: formatBytes(route.byteLen) },
                 ],
                 route,
             };
@@ -435,14 +436,6 @@
     {#if client && session}
         <div class="idrow">
             <h1>OpenBikeComputer</h1>
-            <span class="small faint mono">
-                {#if session.info}
-                    {session.info.hardwareRevision} · fw {session.info.firmwareRevision} · serial {session.info.serialNumber}
-                {/if}
-                {#if session.identity?.obcmVersion != null}
-                    · maps v{session.identity.obcmVersion}
-                {/if}
-            </span>
         </div>
 
         {#if dashboard.busy}
@@ -513,7 +506,9 @@
             <TransferBar job={dropJob} />
         </section>
 
-        <section>
+        <!-- The routes block above, the rides ledger below: a wider gap and a hairline rule, so
+             the two galleries read as two sections rather than one long grid. -->
+        <section class="rides">
             <div class="secline">
                 <h3>Rides</h3>
                 <span class="small faint">{dashboard.rides.length} on the device</span>
@@ -565,6 +560,17 @@
             <FirmwareCard {client} info={session.info} />
         </section>
 
+        <!-- The identity line, demoted to a footer: reference data for a bug report, not a
+             headline. Selectable on purpose. -->
+        <p class="identity small faint mono">
+            {#if session.info}
+                {session.info.hardwareRevision} · fw {session.info.firmwareRevision} · serial {session.info.serialNumber}
+            {/if}
+            {#if session.identity?.obcmVersion != null}
+                · maps v{session.identity.obcmVersion}
+            {/if}
+        </p>
+
         {#if tripDrop}
             <TripDropDialog
                 files={tripDrop}
@@ -613,12 +619,32 @@
                     stroke-linejoin="round"
                 />
             </svg>
-            <p class="big">No device connected</p>
-            <p class="small muted">
-                Plug the OpenBikeComputer in over USB — it will appear here by itself.
-            </p>
+            <!-- Driven by the session states that actually exist: idle = nothing attached,
+                 connecting = the watcher saw it and is opening the link, error = it saw it and
+                 could not. -->
             {#if session?.status === "connecting"}
-                <p class="small faint">Connecting…</p>
+                <p class="big">Device detected — connecting…</p>
+                <p class="small muted">The link is being opened; this takes a moment.</p>
+            {:else if session?.status === "error"}
+                <p class="big">The device could not be opened</p>
+                {#if session.error}
+                    <p class="small muted">{session.error}</p>
+                {/if}
+                <p class="small faint">
+                    Unplug it and plug it back in, or use Connect in the header to try again.
+                </p>
+            {:else}
+                <p class="big">No device detected</p>
+                <p class="small muted">
+                    Plug the OpenBikeComputer in over USB — it will appear here by itself.
+                </p>
+                {#if platform.usbViaWebUsb}
+                    <!-- WebUSB only: a device this browser has never been granted is invisible
+                         until the chooser runs, and the chooser needs a click. -->
+                    <p class="small faint">
+                        First time in this browser? Click Connect in the header to grant access.
+                    </p>
+                {/if}
             {/if}
         </section>
     {/if}
@@ -657,6 +683,13 @@
         gap: 12px;
     }
 
+    /* The routes/rides seam: extra air plus a quiet hairline, no chrome. */
+    section.rides {
+        margin-top: 14px;
+        padding-top: 20px;
+        border-top: 1px solid var(--line-strong);
+    }
+
     .secline {
         display: flex;
         align-items: baseline;
@@ -678,6 +711,13 @@
 
     .disclosure {
         margin: 0;
+    }
+
+    .identity {
+        margin: 0;
+        font-size: 11px;
+        text-align: center;
+        user-select: text;
     }
 
     .empty {

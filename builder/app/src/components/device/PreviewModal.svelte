@@ -14,10 +14,17 @@
   The zoom state is one `[t0, t1]` window over distance-along-track (`lib/device/elevation`), and
   every surface reads it: the profile redraws the windowed span from the real points, the map's
   coral polyline is re-sliced to `windowIndexRange`, and the km caption names the span. Drag on
-  the profile selects a range (within the current window), wheel zooms about the cursor,
-  double-click resets. A preview without drawable elevation (trips, elevation-less rides) has no
-  profile strip and no zoom — the map stays fully coral. The map deliberately does NOT re-fit on
-  zoom changes: one initial fitBounds, then the viewport is the rider's.
+  the profile selects a range (within the current window), Ctrl/⌘-drag pans a zoomed window along
+  the track, wheel zooms about the cursor, double-click resets. A preview without drawable
+  elevation (trips, elevation-less rides) has no profile strip and no zoom — the map stays fully
+  coral. The map deliberately does NOT re-fit on zoom changes: one initial fitBounds, then the
+  viewport is the rider's.
+
+  Hover is synced both ways over the same distance axis: a pointer on the profile draws a thin
+  cursor line there and an amber dot on the map at the matching point along the track
+  (`pointAtDistance`); a pointer on either map polyline snaps the dot to the nearest track point
+  (`nearestPointIndex`) and puts the cursor line at its distance. One lazily-created circleMarker,
+  mutated with `setLatLng`, updates gated through rAF — no layer churn on mousemove.
 -->
 <script lang="ts">
     import L from "leaflet";
@@ -28,6 +35,9 @@
         cumulativeDistances,
         elevationProfile,
         isFullWindow,
+        nearestPointIndex,
+        panWindow,
+        pointAtDistance,
         windowIndexRange,
         zoomWindow,
         type ProfilePoint,
@@ -65,9 +75,18 @@
     let wpRows: HTMLButtonElement[] = [];
 
     let win = $state<ProfileWindow>(FULL_WINDOW);
-    /** An in-progress range drag on the profile, as fractions of the strip's width. */
-    let drag = $state<{ from: number; to: number } | null>(null);
+    /** An in-progress drag on the profile, as fractions of the strip's width: a plain drag selects
+     *  a range, a Ctrl/⌘ drag pans the (zoomed) window from its position at pointer-down. */
+    let drag = $state<
+        | { mode: "select"; from: number; to: number }
+        | { mode: "pan"; from: number; base: ProfileWindow }
+        | null
+    >(null);
     let selectedWp = $state<number | null>(null);
+
+    /** The hovered position along the whole track, as a fraction of the total distance — fed by
+     *  both the profile strip and the map polylines, drawn by both. Null: nothing hovered. */
+    let hoverT = $state<number | null>(null);
 
     const cum = $derived(cumulativeDistances(points));
     /** The full-track profile decides whether the strip (and the whole zoom UI) exists at all. */
@@ -80,6 +99,59 @@
     let coralLine = $state<L.Polyline | null>(null);
     let leafletMap: L.Map | null = null;
     let markers: L.Marker[] = [];
+
+    // --- the shared hover cursor -----------------------------------------------------------
+    //
+    // One rAF gate for both sources (profile pointermove, map polyline mousemove): the latest
+    // report wins, `hoverT` changes at most once a frame, and everything downstream — the strip's
+    // cursor line, the map dot's `setLatLng` — hangs off that one state. A source may queue a
+    // thunk instead of a value, in which case its work (the map side's nearest-point scan) also
+    // runs at most once a frame, not once per raw mousemove.
+
+    let hoverRaf = 0;
+    let hoverNext: number | null | (() => number | null) = null;
+    function queueHover(t: number | null | (() => number | null)) {
+        hoverNext = t;
+        if (hoverRaf) return;
+        hoverRaf = requestAnimationFrame(() => {
+            hoverRaf = 0;
+            hoverT = typeof hoverNext === "function" ? hoverNext() : hoverNext;
+        });
+    }
+
+    /** The map dot: created on the first hover, then only ever moved / attached / detached. */
+    let hoverMarker: L.CircleMarker | null = null;
+    let hoverShown = false;
+
+    $effect(() => {
+        const t = hoverT;
+        const map = leafletMap;
+        if (!map) return;
+        if (t === null) {
+            if (hoverShown) {
+                hoverMarker?.remove();
+                hoverShown = false;
+            }
+            return;
+        }
+        const at = pointAtDistance(points, cum, t * totalTrackM);
+        if (!at) return;
+        // Amber with a panel-colored ring — visible on the coral span and the gray remainder
+        // alike. Non-interactive so it never steals the mousemove from the line under it.
+        hoverMarker ??= L.circleMarker([at.lat, at.lon], {
+            radius: 5.5,
+            weight: 2,
+            color: "#f3f0df",
+            fillColor: "#e3ad33",
+            fillOpacity: 1,
+            interactive: false,
+        });
+        hoverMarker.setLatLng([at.lat, at.lon]);
+        if (!hoverShown) {
+            hoverMarker.addTo(map);
+            hoverShown = true;
+        }
+    });
 
     $effect(() => {
         closeButton?.focus();
@@ -99,6 +171,24 @@
             gray.addTo(map);
             const coral = L.polyline(latlngs, { color: "#cf6a2a", weight: 5 });
             coral.addTo(map);
+            if (hasProfile) {
+                // The reverse hover: a pointer on either polyline snaps the dot to the nearest
+                // track point and the profile draws its cursor line at that distance. Without a
+                // profile there is nothing to sync, so the map stays hover-quiet.
+                const report = (event: L.LeafletMouseEvent) => {
+                    // Queued as a thunk: the O(n) scan runs inside the rAF gate, once a frame.
+                    const { lat, lng } = event.latlng;
+                    queueHover(() => {
+                        const i = nearestPointIndex(points, lat, lng);
+                        return i >= 0 && totalTrackM > 0 ? cum[i] / totalTrackM : null;
+                    });
+                };
+                const clear = () => queueHover(null);
+                for (const line of [gray, coral]) {
+                    line.on("mousemove", report);
+                    line.on("mouseout", clear);
+                }
+            }
             L.circleMarker(latlngs[0], { radius: 5, color: "#3c6b39", fillColor: "#3c6b39", fillOpacity: 1 }).addTo(map);
             L.circleMarker(latlngs[latlngs.length - 1], { radius: 5, color: "#3c6b39", fillOpacity: 0 }).addTo(map);
             map.fitBounds(gray.getBounds(), { padding: [24, 24] });
@@ -132,6 +222,13 @@
         const raf = requestAnimationFrame(() => map.invalidateSize());
         return () => {
             cancelAnimationFrame(raf);
+            if (hoverRaf) {
+                cancelAnimationFrame(hoverRaf);
+                hoverRaf = 0;
+            }
+            // The dot belonged to this map instance; the next one starts without.
+            hoverMarker = null;
+            hoverShown = false;
             coralLine = null;
             leafletMap = null;
             markers = [];
@@ -148,11 +245,12 @@
         coral.setLatLngs(points.slice(first, last + 1).map((p) => [p.lat, p.lon] as [number, number]));
     });
 
-    // A new object in the same modal instance starts back at the whole track.
+    // A new object in the same modal instance starts back at the whole track, nothing hovered.
     $effect(() => {
         void points;
         win = FULL_WINDOW;
         selectedWp = null;
+        hoverT = null;
     });
 
     // Wheel-to-zoom needs `preventDefault` (the page must not scroll behind it), so the listener
@@ -178,18 +276,35 @@
         if (!profileEl || event.button !== 0) return;
         profileEl.setPointerCapture(event.pointerId);
         const f = fractionAt(profileEl, event.clientX);
-        drag = { from: f, to: f };
+        // Ctrl (or ⌘) turns the drag into a pan of the zoomed window; at the full window there is
+        // nothing to pan, so the modifier is simply ignored there.
+        drag =
+            (event.ctrlKey || event.metaKey) && !isFullWindow(win)
+                ? { mode: "pan", from: f, base: win }
+                : { mode: "select", from: f, to: f };
     }
 
     function onProfileMove(event: PointerEvent) {
-        if (!drag || !profileEl) return;
-        drag = { ...drag, to: fractionAt(profileEl, event.clientX) };
+        if (!profileEl) return;
+        const f = fractionAt(profileEl, event.clientX);
+        // Hover tracks the pointer whether or not a drag is running — the cursor line is where
+        // the pointer is either way.
+        queueHover(win[0] + f * (win[1] - win[0]));
+        if (!drag) return;
+        if (drag.mode === "pan") {
+            // Content follows the pointer: a strip fraction moved right slides the window left by
+            // the same share of the window it was when the pan began.
+            win = panWindow(drag.base, -(f - drag.from) * (drag.base[1] - drag.base[0]));
+        } else {
+            drag = { ...drag, to: f };
+        }
     }
 
     function onProfileUp() {
         const d = drag;
         drag = null;
-        if (!d || Math.abs(d.to - d.from) < MIN_DRAG_FRACTION) return; // a click, not a range
+        // A pan applied itself live; only a wide-enough select commits a new window here.
+        if (!d || d.mode !== "select" || Math.abs(d.to - d.from) < MIN_DRAG_FRACTION) return;
         // The drag selects within the *current* window: fractions of the strip map back onto it.
         const span = win[1] - win[0];
         win = clampWindow(win[0] + d.from * span, win[0] + d.to * span);
@@ -208,6 +323,16 @@
     }
 
     const totalTrackM = $derived(cum.length ? cum[cum.length - 1] : 0);
+
+    /** The hover cursor's x across the strip, in percent — null when nothing is hovered or the
+     *  hovered distance falls outside the current window (a map hover on the gray remainder). */
+    const hoverPct = $derived.by(() => {
+        if (hoverT === null || !profile) return null;
+        const d = hoverT * totalTrackM;
+        const span = profile.endM - profile.startM;
+        if (span <= 0 || d < profile.startM || d > profile.endM) return null;
+        return ((d - profile.startM) / span) * 100;
+    });
 
     /**
      * A waypoint's distance clamped onto the drawn axis. `distAlongM` was measured on the RAW
@@ -296,11 +421,12 @@
             <div
                 class="profile"
                 role="application"
-                aria-label="Elevation profile — drag or scroll to zoom, double-click to reset"
+                aria-label="Elevation profile — drag or scroll to zoom, ctrl-drag to pan, double-click to reset"
                 bind:this={profileEl}
                 onpointerdown={onProfileDown}
                 onpointermove={onProfileMove}
                 onpointerup={onProfileUp}
+                onpointerleave={() => queueHover(null)}
                 onpointercancel={() => (drag = null)}
                 ondblclick={resetZoom}
             >
@@ -321,11 +447,14 @@
                         <span class="wptick" style="left: {pct}%" title={w.name}></span>
                     {/if}
                 {/each}
-                {#if drag && Math.abs(drag.to - drag.from) >= MIN_DRAG_FRACTION}
+                {#if drag && drag.mode === "select" && Math.abs(drag.to - drag.from) >= MIN_DRAG_FRACTION}
                     <div
                         class="band"
                         style="left: {Math.min(drag.from, drag.to) * 100}%; width: {Math.abs(drag.to - drag.from) * 100}%"
                     ></div>
+                {/if}
+                {#if hoverPct !== null}
+                    <div class="cursorline" style="left: {hoverPct}%"></div>
                 {/if}
                 {#if profile}
                     <p class="caption small faint">
@@ -340,7 +469,7 @@
                 {:else}
                     <p class="caption small faint">No elevation in this span — double-click to reset.</p>
                 {/if}
-                <p class="hint small faint">drag or scroll to zoom · double-click resets</p>
+                <p class="hint small faint">drag or scroll to zoom · ctrl/⌘-drag pans · double-click resets</p>
             </div>
         {/if}
     </div>
@@ -568,6 +697,15 @@
         background: rgba(207, 106, 42, 0.14);
         border-left: 1.5px dashed var(--coral);
         border-right: 1.5px dashed var(--coral);
+        pointer-events: none;
+    }
+
+    .cursorline {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        border-left: 1px solid var(--ink-soft);
+        opacity: 0.65;
         pointer-events: none;
     }
 
