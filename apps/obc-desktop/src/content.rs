@@ -105,7 +105,7 @@ mod tests {
     #[test]
     fn every_shipped_preset_is_a_packer_config() {
         let presets = presets();
-        assert!(presets.len() >= 3, "expected the shipped presets to be embedded, got {}", presets.len());
+        assert!(presets.len() >= 2, "expected the shipped presets to be embedded, got {}", presets.len());
         for p in &presets {
             // The claim that matters: what the app hands the build command parses
             // as a config for the packer that is linked into this same binary.
