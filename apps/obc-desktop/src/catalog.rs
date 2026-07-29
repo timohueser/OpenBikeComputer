@@ -21,7 +21,7 @@
 
 use serde::Serialize;
 
-const DEFAULT_CATALOG_URL: &str = "https://timohueser.github.io/OpenBikeComputer/builder/data/catalog.json";
+const DEFAULT_CATALOG_URL: &str = "https://openbikecomputer.com/builder/data/catalog.json";
 
 /// The manifest body plus the URL it was read from — §2 resolves a preview
 /// reference against the manifest's own location, and only this side knows it.

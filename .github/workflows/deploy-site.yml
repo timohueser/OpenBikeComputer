@@ -19,7 +19,7 @@ name: Deploy site
 # Pages serves every object with a fixed header set and offers **no** configuration
 # surface for response headers — no `_headers`, no `.htaccess`, no per-path rules:
 #
-#     $ curl -sSI https://timohueser.github.io/OpenBikeComputer/
+#     $ curl -sSI https://openbikecomputer.com/
 #     cache-control: max-age=600
 #     access-control-allow-origin: *
 #     (no Cross-Origin-Opener-Policy, no Cross-Origin-Embedder-Policy)
@@ -183,7 +183,7 @@ jobs:
       # Two ways a deploy ships something broken without anyone noticing. Both checks
       # are cheap; both catch a class of failure that is invisible until a user hits it.
       # Path-absolute references only: `href="/OpenBikeComputer/…"`, not
-      # `https://timohueser.github.io/OpenBikeComputer/…`. The landing page's
+      # `https://openbikecomputer.com/…`. The landing page's
       # og:image/twitter:image MUST be absolute — scrapers don't resolve relative URLs
       # — so those two tags are the one place the current origin is legitimately baked
       # in, and they are the one thing to hand-edit on the day the domain changes.

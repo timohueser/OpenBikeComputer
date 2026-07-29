@@ -8,7 +8,7 @@ as the durable `RDnn.ORD` ride object (GPX export happens in the companion app a
 device writes no GPX). The firmware drives
 the reflective **LS021B7DD02** memory LCD (the panel the project ships on) via the
 nRF54L's **FLPR** (the VPR RISC-V coprocessor) — the only display path. The LS021 protocol
-is on the [display-protocol docs page](https://timohueser.github.io/OpenBikeComputer/hardware/display-protocol/);
+is on the [display-protocol docs page](https://openbikecomputer.com/hardware/display-protocol/);
 the `ls021-*` binaries below are its standalone bring-up benches.
 
 See the module doc in [`src/main.rs`](src/main.rs) for the full peripheral/pin
