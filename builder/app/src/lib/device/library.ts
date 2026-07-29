@@ -72,7 +72,10 @@ export type { RideListEntry, RideObject, RideScope };
  *
  * Mirrors `rides::LibraryRide` in `apps/obc-desktop/src/rides.rs` field for field. `present`
  * and `gpxPresent` are recomputed against the filesystem on every read there, so they describe the
- * folder now rather than what it looked like when the entry was written.
+ * disk now rather than what it looked like when the entry was written. Since the GPX-only split,
+ * the two paths point at different places: `ridePath` is the archived `.obcride` in **app data**
+ * (internal, not relocatable), `gpxPath` the `.gpx` in the **visible** folder — and `present`
+ * means "the archive file exists", which is the durability the ack stands on.
  */
 export interface LibraryRide {
     readonly key: string;
@@ -268,8 +271,8 @@ export async function pullRides(
     //
     // `gpxPresent` deliberately is *not*: a missing GPX is a derived file, and the archive it is
     // derived from is right there. Pulling a ride over the cable to rewrite a file that can be
-    // regenerated locally would be a transfer nobody needed. The row's own export button and the
-    // bulk export do that instead ({@link reexportGpx}).
+    // regenerated locally would be a transfer nobody needed. The logbook's quiet auto-repair does
+    // that instead ({@link reexportGpx}, run on open and after every pull).
     const held = new Map((await library.view()).rides.map((ride) => [ride.key, ride]));
     const wanted = [...catalog.entries]
         .sort((a, b) => a.startTime - b.startTime || a.objectId - b.objectId)
@@ -416,7 +419,7 @@ export async function gpxOf(ride: RideObject): Promise<string> {
     return trackToGpx(rideToTrackLog(ride), ride.name);
 }
 
-/** Re-export one library ride's GPX from its stored object. The bulk export is this, in a loop. */
+/** Re-export one library ride's GPX from its stored object. The auto-repair is this, in a loop. */
 export async function reexportGpx(library: RideLibrary, ride: LibraryRide): Promise<string> {
     const object = await library.readObject(ride.key);
     return library.writeGpx(ride.key, await gpxOf(decodeRideObject(object)));

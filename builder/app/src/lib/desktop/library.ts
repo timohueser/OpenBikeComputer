@@ -23,9 +23,10 @@ import type { RideScope } from "../device/rides";
  * `RideIndexEntry` → `LibraryRide`.
  *
  * A rename of two fields and nothing else. The wire carries `rideFile`/`gpxFile` as *basenames*
- * plus the joined absolute paths, because a basename is what the index stores (a folder can move)
- * and a path is what `reveal()` needs — and joining them in JavaScript would have to guess a path
- * separator.
+ * plus the joined absolute paths, because a basename is what the index stores (the GPX folder can
+ * move) and a path is what `reveal()` needs — and joining them in JavaScript would have to guess a
+ * path separator. Since the GPX-only split the two paths point at different roots: `ridePath` into
+ * the internal archive under app data, `gpxPath` into the visible folder.
  */
 function toRide(entry: RideIndexEntry): LibraryRide {
     return {

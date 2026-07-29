@@ -1,10 +1,20 @@
 <!--
-  The ride library: the folder, the list, and the pull that fills it (E2, #912).
+  The ride library, as a logbook (E2 #912; #894 redesign, the "Logbook" option): the list on the
+  left, a sticky all-rides map on the right, and the pull that fills both.
 
   The desktop tier's answer to a real gap — an Android or no-phone rider has no way to get a ride
   off the device today. Not a second sync product: there is no editing here, no analysis, and no
-  upload to Strava or Komoot (#781, which the iOS companion owns). It copies rides into a folder,
-  shows what is in it, and writes GPX.
+  upload to Strava or Komoot (#781, which the iOS companion owns). It copies rides into a folder
+  of GPX files, shows what is in it, and keeps those GPX files existing.
+
+  ## The folder is GPX-only, and the GPX repairs itself
+
+  The visible folder holds one `.gpx` per ride and nothing else; the device's own ride objects and
+  the index live in app data (`apps/obc-desktop/src/rides.rs` owns that split). So there is no
+  export button anywhere: the GPX exists because the ride does, and a missing one (deleted,
+  renamed, moved away) is quietly re-written from the archived object on the next open or pull.
+  What remains per ride is: click → preview, and "Show in folder". A ride whose *archive* is
+  missing is the one thing a re-export cannot fix — that needs the device, and its row says so.
 
   ## The one sentence that has to be on screen
 
@@ -21,7 +31,8 @@
   would be a number the app cannot stand behind.
 -->
 <script lang="ts">
-    import { onMount } from "svelte";
+    import { onMount, untrack } from "svelte";
+    import RideMap from "./RideMap.svelte";
     import TransferBar from "./TransferBar.svelte";
     import { DeviceJob } from "../../lib/device/job.svelte";
     import {
@@ -35,7 +46,6 @@
         type RideSyncSource,
     } from "../../lib/device/library";
     import { rideDistance, rideDuration, type RideScope } from "../../lib/device/rides";
-    import { formatBytes } from "../../lib/format";
     import { initConvert } from "../../lib/convert/bridge";
 
     let {
@@ -45,11 +55,11 @@
         onpreview = null,
     }: {
         /** The device's ride reads + ack. Null while no device is connected — the library still
-         *  renders and exports; only the pull needs a cable. */
+         *  renders and repairs; only the pull needs a cable. */
         rides?: RideSyncSource | null;
         library: RideLibrary;
         scope?: RideScope | null;
-        /** Open a preview of an archived ride (from disk, no cable). Null hides the button. */
+        /** Open a preview of an archived ride (from disk, no cable). Null disables row clicks. */
         onpreview?: ((ride: LibraryRide) => void) | null;
     } = $props();
 
@@ -58,16 +68,22 @@
     let view = $state<LibraryView | null>(null);
     let error = $state<string | null>(null);
     let report = $state<PullReport | null>(null);
-    let exporting = $state(false);
+    let revealing = $state(false);
+    /** The highlighted ride and which side started it — a map hover scrolls the list, a list
+     *  hover must not scroll the list out from under the pointer. */
+    let hovered = $state<{ key: string; from: "list" | "map" } | null>(null);
+    /** `$state` so `bind:this` targets a reactive property (Svelte warns otherwise); the scroll
+     *  effect reads it under `untrack`, so row churn never re-runs it. */
+    const rowEls = $state<Record<string, HTMLLIElement | undefined>>({});
 
-    /** The preview box, in the SVG's own units. Small on purpose: it is a glance, not a map. */
+    /** The row thumbnail, in the SVG's own units. Small on purpose: it is a glance, not a map. */
     const PREVIEW = { width: 96, height: 54 };
 
     onMount(() => {
-        // The wasm GPX exporter is ~95 KB and every pull ends in it; starting it beside the first
-        // index read turns the conversion into a plain function call later.
+        // The wasm GPX exporter is ~95 KB and both the pull and the auto-repair end in it;
+        // starting it beside the first index read turns the conversion into a plain call later.
         void initConvert();
-        void refresh();
+        void refresh().then(() => repairGpx());
     });
 
     async function refresh() {
@@ -77,6 +93,38 @@
         } catch (cause) {
             error = cause instanceof Error ? cause.message : String(cause);
         }
+    }
+
+    /**
+     * Quietly re-write every missing GPX from its archived object — sequential, non-blocking,
+     * run on open and after every pull. Nothing crosses the cable: the archive each GPX is
+     * derived from is already on this disk, which is also why a pull does not re-download a ride
+     * whose GPX someone deleted.
+     */
+    let repairing = false;
+    async function repairGpx() {
+        if (repairing) return;
+        const wanting = (view?.rides ?? []).filter((ride) => ride.present && !ride.gpxPresent);
+        if (wanting.length === 0) return;
+        repairing = true;
+        const failures: string[] = [];
+        try {
+            for (const ride of wanting) {
+                try {
+                    await reexportGpx(library, ride);
+                } catch (cause) {
+                    failures.push(
+                        `${ride.name || `Ride ${ride.objectId}`} — ${cause instanceof Error ? cause.message : String(cause)}`,
+                    );
+                }
+            }
+        } finally {
+            repairing = false;
+        }
+        if (failures.length > 0) {
+            error = `Some GPX files could not be re-written: ${failures.join("; ")}`;
+        }
+        await refresh();
     }
 
     async function pull() {
@@ -90,6 +138,7 @@
         );
         await refresh();
         if (result) report = result;
+        void repairGpx();
     }
 
     function describe(value: PullReport): string {
@@ -102,40 +151,18 @@
         return `Copied ${parts.join(" and ")} to ${view?.folder ?? "the library"}.`;
     }
 
-    /**
-     * Re-write every ride's GPX from its stored object — the bulk export, and the repair.
-     *
-     * Nothing crosses the cable: the archive each GPX is derived from is already in the folder,
-     * which is why a pull does not re-download a ride whose GPX someone deleted.
-     */
-    async function exportAll() {
-        if (!view) return;
-        exporting = true;
-        error = null;
-        try {
-            for (const ride of view.rides) {
-                if (ride.present) await reexportGpx(library, ride);
-            }
-            await refresh();
-            await library.reveal(view.folder);
-        } catch (cause) {
-            error = cause instanceof Error ? cause.message : String(cause);
-        } finally {
-            exporting = false;
-        }
-    }
-
-    async function exportOne(ride: LibraryRide) {
-        exporting = true;
+    /** Reveal the ride's GPX in the file manager, re-exporting it first if it went missing. */
+    async function showInFolder(ride: LibraryRide) {
+        revealing = true;
         error = null;
         try {
             const path = ride.gpxPresent ? ride.gpxPath : await reexportGpx(library, ride);
-            await refresh();
+            if (!ride.gpxPresent) await refresh();
             await library.reveal(path);
         } catch (cause) {
             error = cause instanceof Error ? cause.message : String(cause);
         } finally {
-            exporting = false;
+            revealing = false;
         }
     }
 
@@ -152,18 +179,32 @@
     const listed = $derived(
         [...(view?.rides ?? [])].sort((a, b) => b.startTime - a.startTime || b.importedAt - a.importedAt),
     );
-    const missing = $derived(listed.filter((ride) => !ride.present).length);
+    /** Rides whose *archive* is gone: the one loss a local re-export cannot repair. */
+    const missingArchive = $derived(listed.filter((ride) => !ride.present).length);
+    const totalKm = $derived(Math.round(listed.reduce((sum, r) => sum + r.distanceM, 0) / 1000));
 
-    /** The device's ride ids this library already holds — what the Pull button can promise. */
-    const heldHere = $derived(
-        new Set(
-            scope
-                ? listed
-                      .filter((ride) => ride.present && ride.serial === scope.serial && ride.epoch === scope.epoch)
-                      .map((ride) => ride.objectId)
-                : [],
-        ),
+    /** What the map draws: every ride with an archive and a drawable track. */
+    const mapRides = $derived(
+        listed
+            .filter((ride) => ride.present && ride.track.length > 1)
+            .map((ride) => ({ key: ride.key, name: ride.name || `Ride ${ride.objectId}`, track: ride.track })),
     );
+
+    const byKey = $derived(new Map(listed.map((ride) => [ride.key, ride])));
+
+    function openByKey(key: string) {
+        const ride = byKey.get(key);
+        if (ride && ride.present) onpreview?.(ride);
+    }
+
+    // A hover that started on the map brings its row into view; one that started on the list
+    // must leave the list alone.
+    $effect(() => {
+        const hot = hovered;
+        untrack(() => {
+            if (hot?.from === "map") rowEls[hot.key]?.scrollIntoView({ block: "nearest" });
+        });
+    });
 
     function when(startTime: number): string {
         if (!startTime) return "date not recorded";
@@ -179,10 +220,10 @@
 
     function facts(ride: LibraryRide): string {
         return [
+            when(ride.startTime),
             rideDistance(ride.distanceM),
             rideDuration(ride.movingTimeS),
             `${ride.climbM.toLocaleString()} m up`,
-            `${ride.points.toLocaleString()} points`,
         ].join(" · ");
     }
 </script>
@@ -190,121 +231,132 @@
 <section class="block">
     <div class="head">
         <h4>Ride library</h4>
-        {#if rides && scope}
-            <button type="button" class="btn primary" disabled={job.running} onclick={() => void pull()}>
-                Pull rides from device
+        <span class="count small faint">
+            {listed.length} ride{listed.length === 1 ? "" : "s"}{#if totalKm > 0}&nbsp;· {totalKm.toLocaleString()} km
+                total{/if}
+        </span>
+        <span class="headend">
+            <button type="button" class="link small faint" onclick={() => view && void library.reveal(view.folder)}>
+                {view?.folder ?? "…"}
             </button>
-        {:else}
-            <span class="small faint">Plug the device in to pull new rides.</span>
-        {/if}
+            <button type="button" class="btn ghost small-btn" onclick={() => void relocate()}>Change…</button>
+            {#if rides && scope}
+                <button type="button" class="btn primary" disabled={job.running} onclick={() => void pull()}>
+                    ⤓&nbsp; Pull rides from device
+                </button>
+            {:else}
+                <span class="small faint">Plug the device in to pull new rides.</span>
+            {/if}
+        </span>
     </div>
 
-    <p class="small faint folder">
-        <button type="button" class="link" onclick={() => view && void library.reveal(view.folder)}>
-            {view?.folder ?? "…"}
-        </button>
-        <button type="button" class="btn ghost small-btn" onclick={() => void relocate()}>Change…</button>
-    </p>
-
-    {#if error}
-        <p class="note error small" role="alert">{error}</p>
-    {/if}
-
-    {#if report && report.failed.length > 0}
-        <p class="note error small" role="alert">
-            {report.failed.length} ride{report.failed.length === 1 ? "" : "s"} could not be saved and
-            {report.failed.length === 1 ? "was" : "were"} left on the device:
-            {report.failed.map((f) => `${f.name} — ${f.message}`).join("; ")}
-        </p>
-    {/if}
-    {#if report?.truncated}
-        <p class="small faint">
-            The device listed its newest rides only; older ones are still on the card and were not
-            pulled.
-        </p>
-    {/if}
-
-    {#if listed.length === 0}
-        <p class="small muted">
-            No rides here yet. Plug the device in and pull — the files land in the folder above,
-            where you can back them up or drag them into anything that reads GPX.
-        </p>
-    {:else}
-        <ul class="rides">
-            {#each listed as ride (ride.key)}
-                {@const path = trackPath(ride.track, PREVIEW.width, PREVIEW.height)}
-                <li class:missing={!ride.present}>
-                    <div class="preview" aria-hidden="true">
-                        {#if path}
-                            <svg viewBox="0 0 {PREVIEW.width} {PREVIEW.height}" role="presentation">
-                                <path d={path} />
-                            </svg>
-                        {/if}
-                    </div>
-                    <div class="what">
-                        <p class="name">
-                            {ride.name || `Ride ${ride.objectId}`}
-                            {#if scope && heldHere.has(ride.objectId) && ride.epoch === scope.epoch}
-                                <span class="tag">on device</span>
-                            {/if}
-                        </p>
-                        <p class="small faint">{when(ride.startTime)} · {facts(ride)}</p>
-                        <p class="small faint">
-                            {#if ride.present}
-                                {formatBytes(ride.bytes)} archived{ride.gpxPresent ? " · GPX" : " · no GPX yet"}
-                            {:else}
-                                <span class="warn">the file is no longer in this folder</span>
-                            {/if}
-                        </p>
-                    </div>
-                    {#if onpreview}
-                        <button
-                            type="button"
-                            class="btn"
-                            disabled={!ride.present}
-                            onclick={() => onpreview?.(ride)}
-                        >
-                            Preview
-                        </button>
-                    {/if}
-                    <button
-                        type="button"
-                        class="btn"
-                        disabled={exporting || !ride.present}
-                        onclick={() => void exportOne(ride)}
-                    >
-                        {ride.gpxPresent ? "Show GPX" : "Export GPX"}
-                    </button>
-                </li>
-            {/each}
-        </ul>
-
-        <div class="bulk">
-            <button type="button" class="btn ghost" disabled={exporting} onclick={() => void exportAll()}>
-                Export all as GPX
-            </button>
-            {#if missing > 0}
-                <span class="small faint">
-                    {missing} ride{missing === 1 ? "" : "s"} listed here {missing === 1 ? "has" : "have"} no
-                    file left in the folder — pull again to fetch {missing === 1 ? "it" : "them"} back.
-                </span>
+    <div class="logbook">
+        <div class="listcol">
+            {#if error}
+                <p class="note error small" role="alert">{error}</p>
             {/if}
+
+            {#if report && report.failed.length > 0}
+                <p class="note error small" role="alert">
+                    {report.failed.length} ride{report.failed.length === 1 ? "" : "s"} could not be saved and
+                    {report.failed.length === 1 ? "was" : "were"} left on the device:
+                    {report.failed.map((f) => `${f.name} — ${f.message}`).join("; ")}
+                </p>
+            {/if}
+            {#if report?.truncated}
+                <p class="small faint">
+                    The device listed its newest rides only; older ones are still on the card and were not
+                    pulled.
+                </p>
+            {/if}
+
+            {#if listed.length === 0}
+                <p class="small muted">
+                    No rides here yet. Plug the device in and pull — each ride lands as a GPX file in the
+                    folder above, where you can back it up or drag it into anything that reads GPX.
+                </p>
+            {:else}
+                <ul class="rides">
+                    {#each listed as ride (ride.key)}
+                        {@const path = trackPath(ride.track, PREVIEW.width, PREVIEW.height)}
+                        <li
+                            class:missing={!ride.present}
+                            class:hot={hovered?.key === ride.key}
+                            bind:this={rowEls[ride.key]}
+                            onmouseenter={() => (hovered = { key: ride.key, from: "list" })}
+                            onmouseleave={() => (hovered = null)}
+                        >
+                            <button
+                                type="button"
+                                class="open"
+                                disabled={!ride.present || !onpreview}
+                                onclick={() => onpreview?.(ride)}
+                            >
+                                <span class="preview" aria-hidden="true">
+                                    {#if path}
+                                        <svg viewBox="0 0 {PREVIEW.width} {PREVIEW.height}" role="presentation">
+                                            <path d={path} />
+                                        </svg>
+                                    {/if}
+                                </span>
+                                <span class="what">
+                                    <span class="name">{ride.name || `Ride ${ride.objectId}`}</span>
+                                    <span class="small faint">{facts(ride)}</span>
+                                    {#if !ride.present}
+                                        <span class="small warn">
+                                            not on this computer any more — pull from the device to restore it
+                                        </span>
+                                    {/if}
+                                </span>
+                            </button>
+                            <button
+                                type="button"
+                                class="iconbtn"
+                                title="Show in folder"
+                                aria-label="Show in folder"
+                                disabled={revealing || (!ride.present && !ride.gpxPresent)}
+                                onclick={() => void showInFolder(ride)}
+                            >
+                                📁
+                            </button>
+                            <span class="chev" aria-hidden="true">›</span>
+                        </li>
+                    {/each}
+                </ul>
+
+                {#if missingArchive > 0}
+                    <p class="small faint">
+                        {missingArchive} ride{missingArchive === 1 ? "" : "s"} listed here
+                        {missingArchive === 1 ? "is" : "are"} no longer on this computer — pull from the
+                        device to restore {missingArchive === 1 ? "it" : "them"}.
+                    </p>
+                {/if}
+            {/if}
+
+            <!--
+              The disclosure. Deliberately below the list and always present: a rider who learns this
+              after the device has deleted a ride has learned it too late.
+            -->
+            <p class="small muted disclosure">
+                Copying a ride here tells the device a durable copy exists off it. That is what lets you
+                delete the ride on the device without a warning — and it is also what starts the device's
+                auto-delete countdown for that ride. Check <strong>Settings → Rides</strong> on the device
+                for how long it keeps a synced ride; the app cannot read that setting over the cable. The
+                copies in this folder are yours and are never deleted by this app.
+            </p>
+
+            <TransferBar {job} />
         </div>
-    {/if}
 
-    <!--
-      The disclosure. Deliberately below the list and always present: a rider who learns this after
-      the device has deleted a ride has learned it too late.
-    -->
-    <p class="small muted disclosure">
-        Copying a ride here tells the device a durable copy exists off it. That is what lets you
-        delete the ride on the device without a warning — and it is also what starts the device's
-        auto-delete countdown for that ride. Check <strong>Settings → Rides</strong> on the device
-        for how long it keeps a synced ride; the app cannot read that setting over the cable. The
-        copies in this folder are yours and are never deleted by this app.
-    </p>
-
-    <TransferBar {job} />
+        <div class="mapcol">
+            <RideMap
+                rides={mapRides}
+                hovered={hovered?.key ?? null}
+                onhover={(key) => (hovered = key ? { key, from: "map" } : null)}
+                onopen={openByKey}
+            />
+        </div>
+    </div>
 </section>
 
 <style>
@@ -321,18 +373,19 @@
         display: flex;
         align-items: center;
         gap: 10px;
-        margin-bottom: 6px;
+        margin-bottom: 10px;
+        flex-wrap: wrap;
     }
 
-    .head :global(.btn) {
+    .count {
+        white-space: nowrap;
+    }
+
+    .headend {
         margin-left: auto;
-    }
-
-    .folder {
         display: flex;
         align-items: center;
         gap: 8px;
-        margin: 0 0 10px;
         min-width: 0;
     }
 
@@ -342,14 +395,46 @@
         padding: 0;
         font: inherit;
         color: inherit;
-        text-align: left;
+        text-align: right;
         text-decoration: underline;
         text-decoration-style: dotted;
         cursor: pointer;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+        max-width: 320px;
     }
+
+    /* --- the two columns: ledger left, sticky map right --- */
+
+    .logbook {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(320px, 42%);
+        gap: 14px;
+        align-items: start;
+    }
+
+    .mapcol {
+        position: sticky;
+        top: 0;
+        height: calc(100dvh - var(--head-h) - 120px);
+        min-height: 280px;
+    }
+
+    @media (max-width: 940px) {
+        .logbook {
+            grid-template-columns: minmax(0, 1fr);
+        }
+
+        /* Stacked: the map first, at a fixed height, and no stickiness — the page scrolls. */
+        .mapcol {
+            order: -1;
+            position: static;
+            height: 300px;
+        }
+    }
+
+    /* --- the ledger --- */
 
     .rides {
         list-style: none;
@@ -360,16 +445,41 @@
     .rides li {
         display: flex;
         align-items: center;
-        gap: 12px;
-        padding: 10px 0;
+        gap: 10px;
+        padding: 4px 8px 4px 0;
+        border-radius: 10px;
+        transition: background 0.12s;
     }
 
     .rides li + li {
         border-top: 1px solid var(--line);
+        border-radius: 0 0 10px 10px;
+    }
+
+    .rides li.hot {
+        background: color-mix(in srgb, var(--coral) 8%, transparent);
     }
 
     .rides li.missing .preview {
         opacity: 0.35;
+    }
+
+    .open {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 6px 0;
+        background: none;
+        border: 0;
+        text-align: left;
+        color: inherit;
+        font: inherit;
+    }
+
+    .open:disabled {
+        cursor: default;
     }
 
     .preview {
@@ -395,37 +505,29 @@
     }
 
     .what {
-        margin-right: auto;
         min-width: 0;
-    }
-
-    .what p {
-        margin: 0;
+        display: flex;
+        flex-direction: column;
     }
 
     .name {
         font-family: var(--serif);
         font-size: 16px;
-    }
-
-    .tag {
-        margin-left: 6px;
-        font-family: var(--sans);
-        font-size: 11px;
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
-        color: var(--ink-faint);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
     }
 
     .warn {
         color: var(--coral);
     }
 
-    .bulk {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        flex-wrap: wrap;
+    .chev {
+        flex: none;
+        color: var(--ink-faint);
+        font-size: 18px;
+        line-height: 1;
+        padding-right: 2px;
     }
 
     .disclosure {
@@ -433,7 +535,7 @@
     }
 
     .note {
-        margin: 8px 0 0;
+        margin: 8px 0;
     }
 
     .error {
