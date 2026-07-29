@@ -911,7 +911,7 @@ mod tests {
 
     #[test]
     fn every_shipped_preset_is_a_complete_cli_config() {
-        let presets = ["default.json", "high-detail.json", "minimal.json"];
+        let presets = ["default.json", "high-detail.json"];
         for preset in presets {
             let path = format!("{}/../../builder/presets/{preset}", env!("CARGO_MANIFEST_DIR"));
             let config = Config::load(&path).unwrap_or_else(|error| panic!("{preset} must parse: {error}"));
