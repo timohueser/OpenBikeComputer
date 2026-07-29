@@ -1024,15 +1024,15 @@ mod tests {
         }
         let n = |id: u8, poly: bool| counts.get(&(id, poly)).copied().unwrap_or(0);
 
-        // Style ids: forest=39, pedestrian=15, residential=12, primary=5,
-        // trunk=3, admin_level/2=42, water=32 (see config doc order).
-        assert_eq!(n(39, true), 3, "W5 closed forest + R2's two outer rings ⇒ 3 polygons");
+        // Style ids: forest=40, pedestrian=15, residential=12, primary=5,
+        // trunk=3, admin_level/2=50, water=32 (see config doc order).
+        assert_eq!(n(40, true), 3, "W5 closed forest + R2's two outer rings ⇒ 3 polygons");
         assert_eq!(n(32, true), 1, "R1 natural=water ⇒ 1 polygon (lake)");
         assert_eq!(n(15, true), 1, "W11 highway=pedestrian area=yes ⇒ 1 polygon");
         assert_eq!(n(12, false), 1, "W6 closed highway=residential ⇒ 1 line");
         assert_eq!(n(5, false), 1, "W7 highway=primary ⇒ 1 line");
         assert_eq!(n(3, false), 1, "W7b highway=trunk ⇒ 1 line");
-        assert_eq!(n(42, false), 1, "W9 admin_level=2 ⇒ 1 line");
+        assert_eq!(n(50, false), 1, "W9 admin_level=2 ⇒ 1 line");
         assert_eq!(n(32, false), 1, "W12 natural=water area=no ⇒ 1 line");
 
         // R1 is a lake WITH an island (one hole).
