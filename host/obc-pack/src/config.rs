@@ -72,7 +72,7 @@ pub fn config_schema() -> Value {
 }
 
 /// Stable pretty representation used to regenerate the checked-in web-builder
-/// fallback: `obc-pack schema --config > obc-pack/schema/config.schema.json`.
+/// fallback: `obc-pack schema --config > host/obc-pack/schema/config.schema.json`.
 pub fn config_schema_json() -> String {
     let mut text = serde_json::to_string_pretty(&config_schema()).expect("config schema serializes");
     text.push('\n');
@@ -1120,7 +1120,7 @@ mod tests {
     #[test]
     fn checked_in_schema_is_current_generated_schema() {
         let checked_in: Value = serde_json::from_str(CONFIG_SCHEMA_JSON).expect("checked-in schema is valid JSON");
-        assert_eq!(checked_in, config_schema(), "schema/config.schema.json is stale; regenerate with `cargo run -p obc-pack --bin obc-pack -- schema --config > obc-pack/schema/config.schema.json`");
+        assert_eq!(checked_in, config_schema(), "schema/config.schema.json is stale; regenerate with `cargo run -p obc-pack --bin obc-pack -- schema --config > host/obc-pack/schema/config.schema.json`");
     }
 
     #[test]

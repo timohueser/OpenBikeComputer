@@ -298,8 +298,8 @@ Python server mounts:
 | Script | Host | Output |
 | :-- | :-- | :-- |
 | `npm run build` | the local FastAPI dev server | `builder/server/static/dist/` |
-| `npm run build:web` | the static hosted site (no backend) | `frontend/dist/web/` |
-| `npm run build:desktop` | the Tauri desktop app | `frontend/dist/desktop/` |
+| `npm run build:web` | the static hosted site (no backend) | `builder/app/dist/web/` |
+| `npm run build:desktop` | the Tauri desktop app | `builder/app/dist/desktop/` |
 
 The static host has no API to call, so it reads two files instead: `regions.json`
 (the trimmed Geofabrik index the picker draws — the same document `/api/regions`

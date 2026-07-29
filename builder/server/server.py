@@ -21,8 +21,10 @@ USER_CONFIG = os.path.join(PROJECT_ROOT, "user_config.json")
 # default color picker. Editable, with a generated fallback if it's missing.
 PALETTE_FILE = os.path.join(PROJECT_ROOT, "palette.json")
 # Generated repo copy of obc-pack's config schema — the fallback for /api/schema
-# when the binary isn't built yet. A Rust stale-generation test pins this file.
-SCHEMA_FILE = os.path.join(paths.REPO_ROOT, "firmware", "obc-pack", "schema", "config.schema.json")
+# when the binary isn't built yet. A Rust stale-generation test pins the file's
+# *contents*; test_schema_source.py pins this path, because a string-built path
+# that stops resolving degrades silently (the fallback just never fires).
+SCHEMA_FILE = os.path.join(paths.REPO_ROOT, "host", "obc-pack", "schema", "config.schema.json")
 
 app = FastAPI(title="OBCM Web Builder")
 
@@ -134,8 +136,8 @@ def get_schema():
         })
     raise HTTPException(
         status_code=503,
-        detail="obc-pack is not built — run `cargo build --release -p obc-pack` in "
-               "firmware/ (or set OBC_PACK_BIN to its path).",
+        detail="obc-pack is not built — run `cargo build --release -p obc-pack` from "
+               "the repo root (or set OBC_PACK_BIN to its path).",
     )
 
 

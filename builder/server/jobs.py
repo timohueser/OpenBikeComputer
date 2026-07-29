@@ -244,7 +244,7 @@ def _run(job):
         if rust_bin is None:
             raise RuntimeError(
                 "obc-pack binary not found — build it with "
-                "`cargo build --release -p obc-pack` in firmware/ "
+                "`cargo build --release -p obc-pack` from the repo root "
                 "(or set OBC_PACK_BIN to its path)."
             )
 

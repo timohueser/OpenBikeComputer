@@ -10,7 +10,7 @@ import { defineConfig } from "vite";
 const HOSTS = {
     // The local FastAPI server, and the only one `python -m builder.server`
     // serves — hence the outDir it already mounts.
-    dev: { module: "dev", outDir: "../static/dist" },
+    dev: { module: "dev", outDir: "../server/static/dist" },
     web: { module: "web", outDir: "dist/web" },
     desktop: { module: "desktop", outDir: "dist/desktop" },
 } as const;
