@@ -1,10 +1,12 @@
 <!--
-  The ride library page: the managed folder, promoted from a card in the old device column to a
-  place of its own (#894 restructure). It works with no device attached — the folder and its GPX
-  exports are local — and gains the pull the moment the header chip goes green.
+  The ride library page — the logbook (#894 restructure + redesign): the list on the left, the
+  sticky all-rides map on the right, both drawn by `RideLibrary.svelte`. It works with no device
+  attached — the folder, the map and the GPX auto-repair are local — and gains the pull the moment
+  the header chip goes green.
 
   Loaded through a dynamic import (`App.svelte`) on the one tier with `caps.rideLibrary`, so the
-  Tauri-backed library and the codecs stay out of the entry chunk.
+  Tauri-backed library and the codecs stay out of the entry chunk. The cable ops stay here and in
+  the panel's pull path; row clicks open the chart-room preview from the archived object on disk.
 -->
 <script lang="ts">
     import PreviewModal from "../components/device/PreviewModal.svelte";
@@ -64,14 +66,12 @@
         {#if previewError}
             <p class="note error small" role="alert">{previewError}</p>
         {/if}
-        <section class="card">
-            <RideLibraryPanel
-                {library}
-                rides={connected?.client ? rideSyncAccess(connected.client) : null}
-                scope={connected ? rideScope(connected.info, connected.identity) : null}
-                onpreview={(ride) => void openPreview(library, ride)}
-            />
-        </section>
+        <RideLibraryPanel
+            {library}
+            rides={connected?.client ? rideSyncAccess(connected.client) : null}
+            scope={connected ? rideScope(connected.info, connected.identity) : null}
+            onpreview={(ride) => void openPreview(library, ride)}
+        />
     {:catch reason}
         <section class="card">
             <p class="note error small" role="alert">
@@ -93,7 +93,7 @@
 
 <style>
     article {
-        width: min(920px, 100%);
+        width: min(1280px, 100%);
         margin: 0 auto;
         display: flex;
         flex-direction: column;
