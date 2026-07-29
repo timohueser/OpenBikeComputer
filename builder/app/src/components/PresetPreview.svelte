@@ -180,6 +180,11 @@
 
     function wheel(e: WheelEvent) {
         if (!interactive || !preview) return;
+        // Never take the page's scroll uninvited. A small card halfway down a page that swallows
+        // the wheel is the single most irritating thing an embedded map does — so zoom only when
+        // the visitor has aimed at this card: it holds focus (a click or Tab puts it there), or a
+        // modifier says the gesture is meant for it. Otherwise the page scrolls, as it should.
+        if (!(e.ctrlKey || e.metaKey || document.activeElement === canvas)) return;
         e.preventDefault();
         preview.zoom_by(e.deltaY < 0 ? 1.15 : 1 / 1.15);
         schedulePaint();
