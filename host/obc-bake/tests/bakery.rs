@@ -124,6 +124,16 @@ fn fixture(name: &str, preset: &str) -> Fixture {
     Fixture { dir, regions, presets, source, tree }
 }
 
+/// The manifest a bake tree generates, at a pinned `generated_at`.
+fn manifest_of(tree: &Path) -> obc_pack::catalog::CatalogManifest {
+    obc_pack::catalog::generate(
+        tree,
+        &CatalogOptions { base_url: "https://maps.example/obc".into(), generated_at: "2026-07-29T00:00:00Z".into() },
+    )
+    .expect("the bake tree generates a manifest")
+    .manifest
+}
+
 impl Fixture {
     fn run(&self, packer: &dyn Packer, force: bool) -> RunSummary {
         Bakery {
@@ -283,19 +293,74 @@ fn an_artifact_that_rotted_on_disk_is_rebaked_even_though_its_inputs_did_not_cha
 }
 
 #[test]
-fn renaming_a_region_rewrites_the_sidecar_the_manifest_reads() {
+fn renaming_a_region_rewrites_the_sidecar_without_repacking_the_map() {
     let mut f = fixture("rename", "minimal");
     let packer = FixturePacker::new();
     f.run(&packer, false);
     assert_eq!(f.manifest().manifest.artifacts[0].region_name, "Alpha");
+    let packed = packer.calls.load(Ordering::SeqCst);
 
-    // The bytes of the map do not depend on the region's display name — but the
-    // sidecar does, and the sidecar is what the catalog reads back. A skip here
-    // would leave the published catalog advertising the old name forever.
+    // A display name cannot move a byte of the map — but it *is* what the manifest
+    // publishes, so a plain skip would leave the catalog advertising the old name
+    // forever, and a full re-bake would spend hours writing a string into a sidecar.
     f.regions[0].name = "Alpha (renamed)".into();
     let summary = f.run(&packer, false);
     assert!(summary.ok(), "{}", summary.render());
+    assert_eq!(packer.calls.load(Ordering::SeqCst), packed, "nothing was re-packed");
     assert_eq!(f.manifest().manifest.artifacts[0].region_name, "Alpha (renamed)");
+    assert!(
+        summary.jobs.iter().any(|j| matches!(j.status, JobStatus::SidecarRefreshed { .. })),
+        "and the run says so rather than reporting a silent skip: {}",
+        summary.render()
+    );
+}
+
+#[test]
+fn a_redated_but_identical_extract_refreshes_the_sidecar_and_packs_nothing() {
+    let dir = scratch("redate");
+    let root = extract_root(&dir);
+    let presets = obc_bake::presets::load(&presets_dir(&dir, "minimal"), None).expect("preset loads");
+    let regions = obc_bake::regions::parse(regions_toml()).expect("region list parses");
+    let tree = dir.join("tree");
+    let packer = FixturePacker::new();
+
+    let run = |snapshot: &str| {
+        Bakery {
+            regions: &regions,
+            presets: &presets,
+            source: &LocalExtracts::new(&root).with_snapshot(snapshot),
+            packer: &packer,
+            opts: BakeOptions { out: tree.clone(), force: false, fail_fast: false },
+        }
+        .run(&Progress::silent())
+        .expect("run completes")
+    };
+
+    run("2026-07-28");
+    let packed = packer.calls.load(Ordering::SeqCst);
+    let built_at_before = manifest_of(&tree).artifacts[0].built_at.clone();
+
+    // Geofabrik re-publishes the same bytes under a new date — the scenario the
+    // module doc promises will not cost a re-pack. The manifest must still tell the
+    // truth about the extract's date.
+    let summary = run("2026-07-29");
+    assert!(summary.ok(), "{}", summary.render());
+    assert_eq!(packer.calls.load(Ordering::SeqCst), packed, "a re-dated identical extract must not re-pack");
+    assert!(
+        summary.jobs.iter().all(|j| matches!(j.status, JobStatus::SidecarRefreshed { .. })),
+        "{}",
+        summary.render()
+    );
+
+    for artifact in &manifest_of(&tree).artifacts {
+        assert_eq!(artifact.source_snapshot, "2026-07-29", "the published date follows the extract");
+        assert_eq!(
+            artifact.built_at, built_at_before,
+            "built_at describes when the bytes were packed, and they were not re-packed"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

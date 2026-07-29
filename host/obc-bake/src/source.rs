@@ -14,6 +14,14 @@
 //!   a mirror that rewrites `Last-Modified` without changing a byte must not
 //!   trigger a twenty-hour re-bake, and a file mutated in place must not be missed.
 //!
+//! [`Extract::snapshot`] sits deliberately on the *far* side of that line. It is a
+//! fact about the data that the manifest publishes (`source_snapshot`), so it must
+//! not go stale — but it is derived from `Last-Modified`, so letting it force a
+//! re-pack would reintroduce exactly the timestamp sensitivity the paragraph above
+//! rules out. [`crate::bake`] therefore keeps it out of the pack key and compares it
+//! separately: a re-dated but byte-identical extract rewrites the sidecar and
+//! re-packs nothing.
+//!
 //! [`ExtractSource`] is a trait for one reason beyond tidiness: the tests must not
 //! touch the network. [`LocalExtracts`] resolves the same regions against a
 //! directory (or a `file://` URL), so every test in this crate runs offline against
