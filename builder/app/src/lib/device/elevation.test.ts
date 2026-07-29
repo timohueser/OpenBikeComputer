@@ -5,6 +5,7 @@ import {
     MIN_WINDOW_SPAN,
     clampWindow,
     cumulativeDistances,
+    elevationAtDistance,
     elevationProfile,
     isFullWindow,
     nearestPointIndex,
@@ -219,6 +220,49 @@ describe("pointAtDistance", () => {
         expect(pointAtDistance([ladder[0]], [0], 10)).toEqual({ lat: 48.0, lon: 7.82 });
         // A mismatched axis is a caller bug, answered with null rather than a wrong point.
         expect(pointAtDistance(ladder, [0, 1], 0.5)).toBeNull();
+    });
+});
+
+describe("elevationAtDistance", () => {
+    const cum = cumulativeDistances(ladder);
+
+    it("reads vertices exactly and interpolates within a segment", () => {
+        expect(elevationAtDistance(ladder, cum, 0)).toBe(100);
+        expect(elevationAtDistance(ladder, cum, cum[2])).toBe(300);
+        expect(elevationAtDistance(ladder, cum, (cum[1] + cum[2]) / 2)).toBeCloseTo(250, 6);
+    });
+
+    it("clamps past the ends", () => {
+        expect(elevationAtDistance(ladder, cum, -5)).toBe(100);
+        expect(elevationAtDistance(ladder, cum, cum[3] + 500)).toBe(400);
+    });
+
+    it("goes quiet inside a null gap instead of printing the profile's interpolated ramp", () => {
+        // The middle two points recorded no elevation: the drawn line spans them (samples at the
+        // outer two), but any hover between points 0→1, 1→2 or 2→3 has a null neighbour.
+        const gappy = [
+            { ...ladder[0], ele: 100 },
+            { ...ladder[1], ele: null },
+            { ...ladder[2], ele: null },
+            { ...ladder[3], ele: 400 },
+        ];
+        const gcum = cumulativeDistances(gappy);
+        expect(elevationAtDistance(gappy, gcum, gcum[1] / 2)).toBeNull();
+        expect(elevationAtDistance(gappy, gcum, (gcum[1] + gcum[2]) / 2)).toBeNull();
+        expect(elevationAtDistance(gappy, gcum, (gcum[2] + gcum[3]) / 2)).toBeNull();
+        // The real samples at the ends still read.
+        expect(elevationAtDistance(gappy, gcum, 0)).toBe(100);
+        expect(elevationAtDistance(gappy, gcum, gcum[3])).toBe(400);
+        // On a null vertex itself the answer is the vertex's: nothing.
+        expect(elevationAtDistance(gappy, gcum, gcum[3] + 1), "clamp lands on a real end").toBe(400);
+    });
+
+    it("degenerates safely", () => {
+        expect(elevationAtDistance([], [], 0)).toBeNull();
+        expect(elevationAtDistance([ladder[0]], [0], 10)).toBe(100);
+        expect(elevationAtDistance([{ ...ladder[0], ele: null }], [0], 0)).toBeNull();
+        // A mismatched axis is a caller bug, answered with null rather than a wrong number.
+        expect(elevationAtDistance(ladder, [0, 1], 0.5)).toBeNull();
     });
 });
 

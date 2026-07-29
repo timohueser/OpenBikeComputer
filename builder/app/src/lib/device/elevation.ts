@@ -161,6 +161,42 @@ export function pointAtDistance(
 }
 
 /**
+ * The elevation at distance `d` metres along the track, or null where there is no honest number:
+ * the hover cursor's readout. Interpolated between the two track points bracketing `d` — and
+ * **only** when both carry real elevation. A null-elevation neighbour means `d` falls in a gap
+ * the source recorded nothing for; the profile's *line* spans such a gap (it interpolates between
+ * the surrounding samples), but a readout that printed that ramp would be inventing a number, so
+ * the label goes quiet instead. Clamped to the track's ends; null on an empty track.
+ */
+export function elevationAtDistance(
+    points: readonly ProfilePoint[],
+    cum: readonly number[],
+    d: number,
+): number | null {
+    if (points.length === 0 || cum.length !== points.length) return null;
+    if (points.length === 1) return points[0].ele;
+    const target = Math.max(0, Math.min(d, cum[cum.length - 1]));
+    // The same binary search the map dot uses — hover runs per animation frame.
+    let lo = 0;
+    let hi = cum.length - 1;
+    while (lo + 1 < hi) {
+        const mid = (lo + hi) >> 1;
+        if (cum[mid] <= target) lo = mid;
+        else hi = mid;
+    }
+    const span = cum[hi] - cum[lo];
+    const t = span > 0 ? (target - cum[lo]) / span : 0;
+    // Exactly on a point (the clamped ends, mostly): that point's own value is the honest
+    // answer, whatever its neighbour recorded.
+    if (t <= 0) return points[lo].ele;
+    if (t >= 1) return points[hi].ele;
+    const a = points[lo].ele;
+    const b = points[hi].ele;
+    if (a === null || b === null) return null;
+    return a + (b - a) * t;
+}
+
+/**
  * The index of the track point nearest `(lat, lon)`, by the same equirectangular metric the
  * distance axis uses — the reverse hover: map cursor in, position along the track out
  * (`cum[index]`). A plain scan: preview tracks are thousands of points, and one pass per

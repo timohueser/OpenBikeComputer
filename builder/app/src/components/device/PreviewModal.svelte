@@ -41,6 +41,7 @@
     import {
         FULL_WINDOW,
         clampWindow,
+        elevationAtDistance,
         elevationProfile,
         isFullWindow,
         nearestPointIndex,
@@ -421,6 +422,37 @@
         return ((d - profile.startM) / span) * 100;
     });
 
+    /** The hovered point's elevation, for the cursor line's readout — null when the hovered span
+     *  has no honest number (`elevationAtDistance` refuses to print the interpolated ramp across
+     *  a null gap), and the chip simply stays away. Derived off `hoverT`, so it changes at most
+     *  once a frame, on the same rAF gate as everything else hover-driven. */
+    const hoverEle = $derived(hoverT === null ? null : elevationAtDistance(points, cum, hoverT * totalTrackM));
+
+    /** The strip's laid-out width — read once when the strip mounts, then kept fresh by a
+     *  ResizeObserver (never read per mousemove: the chip's flip must not force layout on the
+     *  hover path). */
+    let stripWidth = $state(0);
+    $effect(() => {
+        const el = profileEl;
+        if (!el) return;
+        stripWidth = el.clientWidth;
+        const observer = new ResizeObserver(() => (stripWidth = el.clientWidth));
+        observer.observe(el);
+        return () => observer.disconnect();
+    });
+
+    /** Room the chip needs right of the line: its widest realistic reading ("8,848 m" plus
+     *  padding, border and the 5px offset) — a fixed allowance, since measuring the chip itself
+     *  on every hover frame would reintroduce the layout read the ResizeObserver avoids. */
+    const CHIP_ALLOWANCE_PX = 72;
+
+    /** Mirror the chip to the line's left side when the room to the strip's right edge runs out
+     *  — measured against the real strip width, so a narrow window flips earlier than a wide
+     *  one and the reading never clips. */
+    const chipFlip = $derived(
+        hoverPct !== null && stripWidth > 0 && (1 - hoverPct / 100) * stripWidth < CHIP_ALLOWANCE_PX,
+    );
+
     /** An axis distance's x position across the profile strip for the current window, in
      *  percent — null when it falls outside the current zoom window. Waypoint ticks and stage
      *  boundary rules alike. (Waypoint distances arrive pre-clamped onto the drawn axis —
@@ -568,6 +600,14 @@
                 {/if}
                 {#if hoverPct !== null}
                     <div class="cursorline" style="left: {hoverPct}%"></div>
+                    {#if hoverEle !== null}
+                        <!-- The readout rides the line's top: absolutely positioned, moved by
+                             `left`/transform only, flipped to the line's other side when the
+                             room to the strip's right edge runs out so it never clips. -->
+                        <span class="elechip" class:flip={chipFlip} style="left: {hoverPct}%">
+                            {Math.round(hoverEle).toLocaleString()} m
+                        </span>
+                    {/if}
                 {/if}
                 {#if profile}
                     <p class="caption small faint">
@@ -828,6 +868,28 @@
         border-left: 1px solid var(--ink-soft);
         opacity: 0.65;
         pointer-events: none;
+    }
+
+    /* The cursor line's elevation readout — a field-guide tag: panel chip, hairline border,
+       tabular figures. Sits just right of the line; `.flip` mirrors it to the left side. */
+    .elechip {
+        position: absolute;
+        top: 4px;
+        padding: 1px 7px;
+        font-size: 10.5px;
+        line-height: 1.4;
+        font-variant-numeric: tabular-nums;
+        color: var(--ink-soft);
+        background: color-mix(in srgb, var(--panel) 90%, transparent);
+        border: 1px solid var(--line-strong);
+        border-radius: 999px;
+        transform: translateX(5px);
+        white-space: nowrap;
+        pointer-events: none;
+    }
+
+    .elechip.flip {
+        transform: translateX(calc(-100% - 5px));
     }
 
     /* The per-stage ribbon along the profile's top edge — the map's colors, quietly echoed. */
