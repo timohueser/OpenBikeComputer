@@ -265,11 +265,17 @@ public enum SampleRouteFile {
     }
 }
 
-/// A synthetic, fully valid OBCU update container (`OBCU_Spec.md` §1) for the
+/// A synthetic OBCU v2 update container (`OBCU_Spec.md` §1) for the
 /// `-OBCFirmwareDemo` launch hook and previews — the Files picker can't be driven
 /// from automation, so a demo/screenshot run needs a pre-staged file. Both CRCs
-/// are correct, so `StagedFirmware.validate` accepts it just like a real
-/// `UPDATE.BIN`. Not a real image — the raw body is a deterministic pattern.
+/// are correct and the signature marker is set, so `StagedFirmware.validate` accepts
+/// it just like a real `UPDATE.BIN`. Not a real image — the raw body is a
+/// deterministic pattern.
+///
+/// **Its signature is a placeholder.** The app deliberately does not verify signatures
+/// (the trusted key lives in the firmware — §1.4), so a demo fixture only needs a
+/// well-formed 64-byte trailer to exercise every app-side path. A real device would
+/// refuse this file at the arm, which is exactly correct: it isn't a real release.
 public enum SampleFirmwareFile {
     /// A ~0.9 MB container tagged `version`, sized to feel like a real firmware
     /// image so the transfer bar paces realistically.
@@ -280,13 +286,18 @@ public enum SampleFirmwareFile {
 
         var header = Data(count: 64)
         header.replaceSubrange(0..<4, with: Array("OBCU".utf8))
-        header[4] = 1 // header_version LE
+        header[4] = 1 // header_version LE — still 1 in a v2 container (§1.2)
         header.replaceSubrange(8..<12, with: withUnsafeBytes(of: UInt32(image.count).littleEndian, Array.init))
         header.replaceSubrange(12..<16, with: withUnsafeBytes(of: CRC32.checksum(image).littleEndian, Array.init))
         let v = Array(version.utf8.prefix(32))
         header.replaceSubrange(16..<16 + v.count, with: v)
+        // 48..52: sig_scheme = 1 (Ed25519), sig_len = 64 — the v2 marker (§1.1).
+        header.replaceSubrange(48..<50, with: withUnsafeBytes(of: UInt16(1).littleEndian, Array.init))
+        header.replaceSubrange(50..<52, with: withUnsafeBytes(of: UInt16(64).littleEndian, Array.init))
         header.replaceSubrange(60..<64, with: withUnsafeBytes(of: CRC32.checksum(header[0..<60]).littleEndian, Array.init))
-        return header + image
+        // A deterministic stand-in trailer (see the note above — not a valid signature).
+        let signature = Data((0..<64).map { UInt8(($0 &* 7 &+ 3) & 0xFF) })
+        return header + image + signature
     }
 }
 

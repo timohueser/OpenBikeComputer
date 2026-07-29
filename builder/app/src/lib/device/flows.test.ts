@@ -325,10 +325,14 @@ describe("firmware update", () => {
     it("stages a verified container and then asks — it never installs", async () => {
         const { client, device, close } = loopbackDevice();
         try {
-            const container = vector("update-container-v1.bin");
+            // The signed (v2) container — the only shape the device installs (`OBCU_Spec.md` §1.4),
+            // and the trailer must reach it intact or it refuses the file as truncated.
+            const container = vector("update-container-v2.bin");
             const ctx = context();
             const { image, result } = await stageFirmware(client, container, ctx);
             expect(image.version).toBe("1.2.0+abc1234");
+            expect(image.sigScheme).toBe(1);
+            expect(image.containerLen).toBe(container.length);
             // A fwImage upload is a singleton stage: id 0 in, id 0 back (§7.6).
             expect(result.objectId).toBe(SINGLETON_OBJECT_ID);
             expect(device.stagedFirmware).toEqual(container);
@@ -345,9 +349,14 @@ describe("firmware update", () => {
     it("refuses a damaged image locally, before spending a transfer on it", async () => {
         const { client, device, close } = loopbackDevice();
         try {
-            const broken = Uint8Array.from(vector("update-container-v1.bin"));
+            const broken = Uint8Array.from(vector("update-container-v2.bin"));
             broken[70] ^= 0xff;
             await expect(stageFirmware(client, broken, context())).rejects.toMatchObject({ code: "image-crc" });
+            expect(device.stagedFirmware).toBeNull();
+
+            // …and so is an intact but *unsigned* one, which the device would refuse anyway (§1.4).
+            const unsigned = vector("update-container-v1.bin");
+            await expect(stageFirmware(client, unsigned, context())).rejects.toMatchObject({ code: "unsigned" });
             expect(device.stagedFirmware).toBeNull();
         } finally {
             await close();
