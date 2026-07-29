@@ -173,12 +173,22 @@ whole-object checksum *and* the header have both checked out. The interrupted
 state is byte-for-byte the one the copy leaves — a magic-less file the map
 catalog refuses and a boot sweep reclaims.
 
-Three more rules fall out of the same size:
+Four more rules fall out of the same size:
 
 - **A map upload is new-only.** Writing into a stored map's file would destroy it
   as the replacement arrives, and "a failed checksum never touches the old copy"
   is not a promise to break on the one file the rider needs to see where they
-  are. Replacing a map is *send the new one, then delete the old one*.
+  are. Replacing a map is *send the new one and let the device retire the old
+  one*; there is no delete for a map on the wire at all.
+- **The device keeps one uploaded map.** It loads a single map and never switches
+  between them — the choice is made once at startup and the file stays open for
+  the session — so a second copy is a few hundred megabytes no reader will ever
+  open. The retirement happens at the boot that adopts the new map, and only once
+  that map has opened: the upload lands while its predecessor is still being
+  streamed from, so the instant of the commit is exactly when the old file cannot
+  be touched. Between the two, the card carries both. A map the rider copied on
+  themselves is never retired — it has no device-assigned id, and the rule is one
+  *uploaded* map, not one file.
 - **Free space is checked before the first byte**, not discovered at the last.
   A card that cannot fit the announced map is told so at the announce, with a
   reserve left over so a map can never take the last cluster and strand the ride
