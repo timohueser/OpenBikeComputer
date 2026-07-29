@@ -1,19 +1,18 @@
 /**
  * "Is there a newer firmware than the one running?" — the check, and the version dialect it needs.
  *
- * #773 locks the distribution end of this and C4 does not relitigate it: **GitHub Releases is the
- * update server**, the manifest lives at the stable non-API URL
- * `…/releases/latest/download/manifest.json`, and the request is an anonymous GET with no accounts
- * and nothing sent about the device. This page reads that manifest and compares it against the
- * running version; it never decides what an update *is*.
+ * #773 locks the distribution end of this and the builder does not relitigate it: the request is an
+ * anonymous GET with no accounts and nothing sent about the device, for the one manifest at
+ * {@link FIRMWARE_MANIFEST_URL}. This page reads that manifest and compares it against the running
+ * version; it never decides what an update *is*.
  *
  * ## Provisional, and honest about it
  *
- * U3 (#773) is the sub-issue that makes `release.yml` emit that manifest, and it has not landed —
- * so today the fetch 404s and the UI says there is nothing published yet, rather than pretending.
- * {@link parseFirmwareManifest} implements the shape U3's description names (version, size, sha256,
- * a notes URL) and rejects anything else loudly. When U3 publishes the real file, the only thing
- * that can need changing is this parser.
+ * U3 (#773) is the sub-issue that makes `release.yml` emit that manifest and mirror it to the
+ * bucket, and it has not landed — so today the fetch 404s and the UI says there is nothing
+ * published yet, rather than pretending. {@link parseFirmwareManifest} implements the shape U3's
+ * description names (version, size, sha256, a notes URL) and rejects anything else loudly. When U3
+ * publishes the real file, the only thing that can need changing is this parser.
  *
  * ## The version dialect, which is the part with teeth
  *
@@ -40,9 +39,23 @@ export interface FirmwareRelease {
     readonly notes?: string;
 }
 
-/** The stable, non-API URL #773 locked. Overridable so a test never touches the network. */
-export const FIRMWARE_MANIFEST_URL =
-    "https://github.com/timohueser/OpenBikeComputer/releases/latest/download/manifest.json";
+/**
+ * Where the manifest is served from, and deliberately **not** GitHub.
+ *
+ * A release asset's stable download URL 302s to blob storage that sends no
+ * `access-control-allow-origin` header, so a browser `fetch` for it fails — which kills the check
+ * in both hosts that have a browser in them, the static web builder and the desktop app's
+ * WKWebView. (The JSON API does send CORS headers, but it is the rate-limited surface #773's body
+ * set out to avoid.) So #773's 2026-07-29 planning comment locks the serving end: `release.yml`
+ * mirrors `manifest.json` + `UPDATE.BIN` to R2 behind this domain, under a per-channel `fw/`
+ * prefix, and **GitHub Releases stays the source of truth** — the publish trigger, the immutable
+ * archive, the release notes, the ELFs. Nothing about the trust chain moves with the bytes: the
+ * sha256 here (and the Ed25519 signature U3 adds) is what says an image is genuine, not the host
+ * that served it.
+ *
+ * Overridable so a test never touches the network.
+ */
+export const FIRMWARE_MANIFEST_URL = "https://updates.openbikecomputer.com/fw/manifest.json";
 
 export class FirmwareManifestError extends Error {
     constructor(message: string) {
@@ -172,11 +185,18 @@ export function compareVersions(a: string, b: string): number | null {
  *   update is offered; #773 locks that.
  * - `ahead` — the device is running something newer than what is published. Says so; does not
  *   offer to downgrade.
+ *
+ * An unparseable running version answers `unknown` **even when nothing is published**, and that
+ * ordering is deliberate: what makes a dev build undecidable is the version it reports, not the
+ * absence of a manifest. Answering `no-release` there would hide the state #773's U4/U5 amendment
+ * asks the apps to show — "development build, automatic updates paused" — behind whichever
+ * publication happens to exist that day.
  */
 export function updateStatus(
     running: string | null | undefined,
     latest: string | null,
 ): "no-release" | "unknown" | "current" | "available" | "ahead" {
+    if (running && !parseVersion(running)) return "unknown";
     if (!latest) return "no-release";
     if (!running) return "unknown";
     const order = compareVersions(running, latest);

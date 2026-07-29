@@ -1,6 +1,7 @@
 <script lang="ts">
     import ConfirmDialog from "./components/ConfirmDialog.svelte";
     import Header from "./components/Header.svelte";
+    import UpdatePrompt from "./components/UpdatePrompt.svelte";
     import Desktop from "./routes/Desktop.svelte";
     import Home from "./routes/Home.svelte";
     import { loadStyleEditor, platform, type StyleEditorModule } from "./lib/platform";
@@ -85,6 +86,10 @@
 <!-- Mounted once, at the root: the app's own "are you sure?", because the browser's does not exist
      in the desktop webview (lib/ui/confirm.svelte.ts). -->
 <ConfirmDialog />
+
+<!-- Also mounted once, for the same reason: a device can be plugged in from any page, and the
+     "there is newer firmware" note belongs to the device rather than to whichever page is open. -->
+<UpdatePrompt />
 
 <style>
     .backdrop {
