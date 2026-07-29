@@ -98,7 +98,7 @@
         disabled={busy || !openable}
         onclick={onopen}
     >
-        <TrackThumb {segments} width={240} height={150} corners="13px 0 0 13px">
+        <TrackThumb {segments} width={240} height={150} corners="13px 0 0 13px" fill>
             {#snippet tag()}
                 <span class="tag">trip</span>
             {/snippet}
