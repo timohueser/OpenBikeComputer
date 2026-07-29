@@ -20,7 +20,7 @@
 # ingest-time crop `apps/obc-sim/assets/repack.sh` switched to.
 #
 # Outputs, both committed:
-#   builder/app/public/preview/<preset-id>.obcm   the demo map, ~120 KB – 900 KB each
+#   builder/app/public/preview/<preset-id>.obcm   the demo map, ~200 KB – 300 KB each (OBCM v11)
 #   builder/app/public/preview/previews.json      the site's index: the focus bbox, and what got baked
 #
 # They are committed rather than built by the Pages deploy for the same reason the simulator
