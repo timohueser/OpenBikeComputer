@@ -46,6 +46,21 @@ pub(crate) struct UploadEvent {
     pub(crate) elevation: Option<[u8; obc_route::SPARKLINE_BUCKETS]>,
 }
 
+/// What the single pending-upload slot holds: a committed **route** upload or a committed **trip**
+/// upload. One slot for both kinds keeps the locked most-recent-wins rule across the whole popup
+/// family — and since a trip object always arrives *after* its member routes (it references their
+/// ids, so every client sends the routes first), a burst of route events capped by the trip event
+/// naturally collapses to the one "TRIP RECEIVED" prompt.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum PendingUpload {
+    Route(UploadEvent),
+    /// The committed trip's durable object id — validated against the (already re-fed) trip
+    /// catalog at delivery time.
+    Trip {
+        id: u16,
+    },
+}
+
 /// The UI-plane state + policy component. See the module docs; field-level invariants are on
 /// each field (they are `App`'s former fields, moved verbatim).
 pub(crate) struct UiRuntime {
@@ -153,13 +168,13 @@ pub(crate) struct UiRuntime {
     /// scan, fed by the host through [`set_sensor_scan_hits`](App::set_sensor_scan_hits). Empty
     /// outside a scan; replaced wholesale each pass while one runs.
     pub(crate) sensor_scan_hits: crate::sensors::SensorScanHits,
-    /// The one **pending route-upload prompt** (epic #447, P4), set by
-    /// [`notify_route_uploaded`](App::apply_event) and delivered (or dropped) by
-    /// [`reconcile_upload_prompt`](App::reconcile_upload_prompt). Deliberately a single slot:
-    /// consecutive uploads replace it — most recent wins, the popup rule. Carried by **durable
-    /// object id**, never a catalog index, so a rescan between arrival and a hold-deferred
-    /// delivery can't retarget it.
-    pub(crate) pending_upload: Option<UploadEvent>,
+    /// The one **pending upload prompt** (epic #447, P4) — a route *or* a trip commit
+    /// ([`PendingUpload`]), set by [`App::apply_event`](crate::App::apply_event) and delivered (or
+    /// dropped) by [`reconcile_upload_prompt`](App::reconcile_upload_prompt). Deliberately a single
+    /// slot: consecutive uploads replace it — most recent wins, the popup rule. Carried by
+    /// **durable object id**, never a catalog index, so a rescan between arrival and a
+    /// hold-deferred delivery can't retarget it.
+    pub(crate) pending_upload: Option<PendingUpload>,
     /// Device warnings **discovered but not yet shown** on the advisory card (issue #504) — a
     /// missing-sensor probe result, or the map-slow flag. Accumulated by
     /// [`notify_warning`](App::apply_event) and delivered (or deferred behind a passkey card /
@@ -685,7 +700,16 @@ impl UiRuntime {
     /// Queue a route-upload advisory event (single slot — most recent wins) and try to deliver
     /// it immediately — the tail of [`HostEvent::RouteUploaded`](crate::host::HostEvent) handling.
     pub(crate) fn post_upload_event(&mut self, ev: UploadEvent, catalogs: &CatalogState, tracking: bool) {
-        self.pending_upload = Some(ev);
+        self.pending_upload = Some(PendingUpload::Route(ev));
+        self.reconcile_upload_prompt(catalogs, tracking);
+    }
+
+    /// Queue a trip-upload advisory event into the same single slot (most recent wins) and try to
+    /// deliver it — the tail of [`HostEvent::TripUploaded`](crate::host::HostEvent) handling. The
+    /// trip commit always follows its member routes' commits, so this is what collapses the
+    /// per-route popup burst into the one "TRIP RECEIVED" card.
+    pub(crate) fn post_trip_upload_event(&mut self, id: u16, catalogs: &CatalogState, tracking: bool) {
+        self.pending_upload = Some(PendingUpload::Trip { id });
         self.reconcile_upload_prompt(catalogs, tracking);
     }
 
@@ -712,15 +736,29 @@ impl UiRuntime {
             return; // defer a tick; retried from `advance_animations`
         }
         self.pending_upload = None;
-        // Resolve the durable id in the (already rescanned) catalog; a vanished route drops the
-        // advisory prompt entirely.
-        let Some(idx) = catalogs.route_index_of(ev.id) else { return };
-        let screen = if ev.active_replace {
-            Screen::RouteUpdated(crate::screen::RouteUpdatedScreen::new(idx, self.now_ms))
-        } else if tracking {
-            Screen::RouteSwap(crate::screen::RouteSwapScreen::received(idx, self.now_ms))
-        } else {
-            Screen::RouteReceived(crate::screen::RouteReceivedScreen::new(idx, self.now_ms, ev.elevation))
+        let screen = match ev {
+            PendingUpload::Route(ev) => {
+                // Resolve the durable id in the (already rescanned) catalog; a vanished route
+                // drops the advisory prompt entirely.
+                let Some(idx) = catalogs.route_index_of(ev.id) else { return };
+                if ev.active_replace {
+                    Screen::RouteUpdated(crate::screen::RouteUpdatedScreen::new(idx, self.now_ms))
+                } else if tracking {
+                    Screen::RouteSwap(crate::screen::RouteSwapScreen::received(idx, self.now_ms))
+                } else {
+                    Screen::RouteReceived(crate::screen::RouteReceivedScreen::new(idx, self.now_ms, ev.elevation))
+                }
+            }
+            // The trip card is the same whether idle or tracking (there is nothing to swap onto —
+            // a trip is a folder, not a navigable route). Validate the id against the (already
+            // re-fed) trip catalog; a vanished trip drops the advisory prompt entirely. The screen
+            // keeps the durable id, so no remap is needed while it is up.
+            PendingUpload::Trip { id } => {
+                if !catalogs.trips().iter().any(|t| t.id == id) {
+                    return;
+                }
+                Screen::TripReceived(crate::screen::TripReceivedScreen::new(id, self.now_ms))
+            }
         };
         match self.upload_prompt_index() {
             Some(i) => self.stack[i] = screen,
@@ -736,9 +774,12 @@ impl UiRuntime {
     /// the manual Route-swap prompt (the locked "same rule when the manual swap is up"). `None`
     /// when the prompt should push fresh.
     fn upload_prompt_index(&self) -> Option<usize> {
-        self.stack
-            .iter()
-            .position(|s| matches!(s, Screen::RouteReceived(_) | Screen::RouteUpdated(_) | Screen::RouteSwap(_)))
+        self.stack.iter().position(|s| {
+            matches!(
+                s,
+                Screen::RouteReceived(_) | Screen::RouteUpdated(_) | Screen::TripReceived(_) | Screen::RouteSwap(_)
+            )
+        })
     }
 
     /// Remove every host-pushed upload popup from the stack (the passkey card just opened over
@@ -749,7 +790,7 @@ impl UiRuntime {
         let mut i = 0;
         while i < self.stack.len() {
             let popup = match &self.stack[i] {
-                Screen::RouteReceived(_) | Screen::RouteUpdated(_) => true,
+                Screen::RouteReceived(_) | Screen::RouteUpdated(_) | Screen::TripReceived(_) => true,
                 Screen::RouteSwap(s) => s.is_received(),
                 _ => false,
             };
@@ -777,6 +818,7 @@ impl UiRuntime {
             let expired = match &self.stack[i] {
                 Screen::RouteReceived(s) => s.expired(now),
                 Screen::RouteUpdated(s) => s.expired(now),
+                Screen::TripReceived(s) => s.expired(now),
                 Screen::RouteSwap(s) => s.expired(now),
                 _ => false,
             };
@@ -942,8 +984,8 @@ impl UiRuntime {
     }
 
     /// Whether the current top screen is **exempt** from the idle-return timeout — the modal cards
-    /// that must stay put until dismissed (the BLE passkey card, the three route-received /
-    /// -updated / -swap popups, the #504 sensor/storage warning card), the route-planning spinner (a
+    /// that must stay put until dismissed (the BLE passkey card, the route-received / -updated /
+    /// -swap / trip-received popups, the #504 sensor/storage warning card), the route-planning spinner (a
     /// multi-second wait that isn't idleness), and the whole SD-sideload update flow (a card/wait the
     /// rider is acting on — never yank it Home mid-flow). Reads the top screen's declared
     /// [`idle_exempt`](crate::screen::Caps::idle_exempt) capability, so a new modal card can't be

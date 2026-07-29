@@ -285,6 +285,12 @@ pub enum HostEvent {
     /// commit-time mini sparkline for the idle prompt. The advisory prompt keeps its documented
     /// single-slot **most-recent-wins** delivery.
     RouteUploaded { id: u16, replaced: bool, elevation: Option<[u8; obc_route::SPARKLINE_BUCKETS]> },
+    /// A **trip** upload committed to the store (epic #526): `id` is the trip's durable object id,
+    /// resolved against the **already re-fed** trip catalog (the same rescan-then-resolve ordering
+    /// contract as [`RouteUploaded`](HostEvent::RouteUploaded)). Raises the "TRIP RECEIVED" popup —
+    /// and, because a trip object always arrives *after* its member routes, replaces the last
+    /// per-route popup of the upload burst (the single-slot most-recent-wins delivery).
+    TripUploaded { id: u16 },
     /// One or more device warnings were discovered (issue #504); flags accumulate onto the single
     /// dismissable card, each surfaced once per boot.
     Warning(WarningFlags),

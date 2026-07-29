@@ -382,6 +382,7 @@ impl SimGui {
         // on-device delete until the TR3 folder UI wires it to a hold gesture. Deleting drops the
         // folder, so its member routes fall back to the unfiled top level on the next re-group.
         let mut delete_trip: Option<u16> = None;
+        let mut inject_trip: Option<u16> = None;
         {
             let trips = self.app.trips();
             if !trips.is_empty() {
@@ -399,11 +400,23 @@ impl SimGui {
                         }
                     },
                 );
-                if ui.button("Delete trip (removes the .obt)").clicked() {
-                    delete_trip = Some(trips[self.panel.trip_sel].id);
-                }
-                ui.weak("non-cascading: member routes stay as top-level routes");
+                ui.horizontal(|ui| {
+                    if ui.button("Inject trip upload").clicked() {
+                        inject_trip = Some(trips[self.panel.trip_sel].id);
+                    }
+                    if ui.button("Delete trip (removes the .obt)").clicked() {
+                        delete_trip = Some(trips[self.panel.trip_sel].id);
+                    }
+                });
+                ui.weak("upload → the TRIP RECEIVED popup (replaces any route popup) · delete is non-cascading");
             }
+        }
+        // The trip-commit event, exactly the board's order: the trip catalog is already fed (the
+        // scan above / the store-changed re-feed), then the event resolves the durable id — on the
+        // device the trip object always lands after its member routes, so this popup replaces the
+        // burst's last per-route popup (single most-recent-wins slot).
+        if let Some(id) = inject_trip {
+            self.app.apply_event(obc_app::HostEvent::TripUploaded { id });
         }
         if let Some(id) = delete_trip {
             // A trip delete doesn't move the *route* store, so no store-changed edge — the trip

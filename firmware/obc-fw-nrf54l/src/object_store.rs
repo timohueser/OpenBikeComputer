@@ -109,6 +109,23 @@ pub(crate) fn take_route_uploaded() -> Option<(u16, bool)> {
     (v & UPLOAD_EVENT_PRESENT != 0).then_some((v as u16, v & UPLOAD_EVENT_REPLACED != 0))
 }
 
+/// The latest **committed trip upload** for the app UI — the trip twin of [`UPLOAD_EVENT`], packed
+/// `present-bit | id` (a trip needs no replaced-bit: the popup is the same either way). Published by
+/// [`ObjectStore::upload_finish_trip`] **before** its revision bump, drained by the ride loop
+/// strictly *after* the route event so the pass's popup order matches the wire's routes-then-trip
+/// commit order — the trip popup then wins the app's single most-recent-wins prompt slot, which is
+/// exactly what collapses a trip transfer's per-route popup parade into one "TRIP RECEIVED" card.
+/// Same latest-wins single-slot + `Relaxed` hand-off rationale as [`UPLOAD_EVENT`].
+static TRIP_UPLOAD_EVENT: AtomicU32 = AtomicU32::new(0);
+
+/// Drain the latest committed trip upload since the last call: the trip's durable object id, or
+/// `None` when none landed. The ride loop calls this once per pass, after [`take_store_changed`]
+/// (the id must resolve against the freshly re-fed trip catalog) and after [`take_route_uploaded`].
+pub(crate) fn take_trip_uploaded() -> Option<u16> {
+    let v = TRIP_UPLOAD_EVENT.swap(0, Ordering::Relaxed);
+    (v & UPLOAD_EVENT_PRESENT != 0).then_some(v as u16)
+}
+
 /// Wakes the **event-driven** ride loop on a store movement (#450): a parked device (Home, GPS
 /// asleep) otherwise dozes up to the watchdog-feed cap (~12 s) before its next pass would notice
 /// [`STORE_CHANGED`] — an upload from the phone should hit the Route menu now, not "eventually". A
@@ -1119,6 +1136,10 @@ impl ObjectStore {
                 // Persist the verified whole-object CRC into the trip-CRC sidecar in the same movement,
                 // so the trip's `tripList` entry serves its fingerprint immediately (never lazily).
                 storage.set_trip_crc(id, whole_crc);
+                // The app-UI trip upload event: the committed id, published before the revision
+                // bump so the STORE_WAKE'd pass sees the rescan edge and this event together —
+                // the "TRIP RECEIVED" popup (see [`TRIP_UPLOAD_EVENT`]).
+                TRIP_UPLOAD_EVENT.store(UPLOAD_EVENT_PRESENT | id as u32, Ordering::Relaxed);
                 self.bump_trip_revision();
                 (id, TransferStatus::Committed)
             }
