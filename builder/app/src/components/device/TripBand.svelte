@@ -55,6 +55,10 @@
         }),
     );
 
+    /** The combined preview needs stages that still resolve to routes — not drawn thumbnails:
+     *  the page fetches the tracks itself (from cache, mostly) when the preview opens. */
+    const openable = $derived(stages.some((stage) => stage.route !== null));
+
     const name = $derived(trip.name || `Trip ${trip.objectId}`);
 
     /** The one name being edited inline. */
@@ -91,7 +95,7 @@
         type="button"
         class="preview"
         aria-label={`Preview the trip “${name}”`}
-        disabled={busy || segments.length === 0}
+        disabled={busy || !openable}
         onclick={onopen}
     >
         <TrackThumb {segments} width={240} height={150} corners="13px 0 0 13px">

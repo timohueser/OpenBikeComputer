@@ -28,6 +28,7 @@
         serialize = null,
         onsent = null,
         empty = false,
+        heading = "Route",
     }: {
         client: ProtocolClient;
         /** Take over when several files land at once (the trip dialog). Null keeps the
@@ -40,6 +41,10 @@
         onsent?: (() => void) | null;
         /** True when the card holds no routes at all: the tile carries the empty-state line. */
         empty?: boolean;
+        /** Non-null wraps the tile in the builder column's `section.block` + `h4` chrome
+         *  (`DeviceSurfaces` relies on the `.block` rhythm for its separators). The device
+         *  page passes null: there the grid is the chrome. */
+        heading?: string | null;
     } = $props();
 
     const job = new DeviceJob("route");
@@ -48,11 +53,14 @@
     let dragging = $state(false);
     /** The §4.4 cmd 6 level applied after a successful send. `0` = forever = send nothing. */
     let retention = $state(0);
+    /** The upload landed but the retention stamp did not — its own sentence, never the job's. */
+    let retentionNote = $state<string | null>(null);
     let picker = $state<HTMLInputElement>();
 
     async function accept(file: File) {
         route = null;
         readError = null;
+        retentionNote = null;
         job.reset();
         try {
             route = await prepareRoute(file);
@@ -86,21 +94,29 @@
     async function send(prepared: PreparedRoute) {
         const run = serialize ?? (<T,>(op: () => Promise<T>) => op());
         const keep = retention;
+        retentionNote = null;
+        // The job is the *upload*, alone: once the device has committed the route, the tile
+        // must say so and the page must re-list, whatever happens next — a retention stamp
+        // failing after the commit is an annotation problem, not a failed send.
         const result = await job.run(
-            async (ctx) => {
-                const sent = await run(() => sendRoute(client, prepared, ctx));
-                // Forever is the device's default for a fresh upload, so level 0 sends nothing;
-                // any other choice is stamped before the page re-lists. The id may be a dedupe's
-                // existing route — see the header.
-                if (keep !== 0) await run(() => client.setRouteRetention(sent.objectId, keep, ctx.signal));
-                return sent;
-            },
+            (ctx) => run(() => sendRoute(client, prepared, ctx)),
             (value) => `“${prepared.header.name}” is on the device (route ${value.objectId}).`,
         );
-        if (result) {
-            route = null;
-            onsent?.();
+        if (!result) return;
+        route = null;
+        // Forever is the device's default for a fresh upload, so level 0 sends nothing; any
+        // other choice is stamped before the refresh. The id may be a dedupe's existing route —
+        // see the header.
+        if (keep !== 0) {
+            try {
+                await run(() => client.setRouteRetention(result.objectId, keep));
+            } catch {
+                retentionNote =
+                    "The route is on the device, but the keep-on-device setting could not be " +
+                    "applied — set it from the route's ⋯ menu.";
+            }
         }
+        onsent?.();
     }
 
     /** True where the event came from an inner control the tile click must not speak over. */
@@ -135,6 +151,7 @@
     );
 </script>
 
+{#snippet tile()}
 <div
     class="ghost"
     class:over={dragging}
@@ -183,6 +200,10 @@
         <p class="note small" role="alert">{readError}</p>
     {/if}
 
+    {#if retentionNote}
+        <p class="note small" role="alert">{retentionNote}</p>
+    {/if}
+
     <label class="keep small" for="routedrop-keep">
         keep on device:
         <select id="routedrop-keep" bind:value={retention} onclick={(e) => e.stopPropagation()}>
@@ -205,8 +226,29 @@
 
     <TransferBar {job} />
 </div>
+{/snippet}
+
+{#if heading !== null}
+    <section class="block">
+        <h4>{heading}</h4>
+        {@render tile()}
+    </section>
+{:else}
+    {@render tile()}
+{/if}
 
 <style>
+    /* The builder column's chrome (`DeviceSurfaces`): the `.block` rhythm and the uppercase
+       heading every sibling surface carries. The device page skips both — heading = null. */
+    h4 {
+        margin: 0 0 6px;
+        font-size: 14px;
+        font-family: var(--sans);
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+        color: var(--ink-faint);
+    }
+
     .ghost {
         display: flex;
         flex-direction: column;
