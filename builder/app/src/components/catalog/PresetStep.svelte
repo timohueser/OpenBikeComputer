@@ -53,15 +53,26 @@
     {#each presets as preset (preset.id)}
         {@const status = statusOf(preset)}
         <div class="card" class:selected={presetId === preset.id} class:blocked={status.blocked}>
-            <!-- The picture sits outside the button: the selected card's map is draggable, and a
-                 drag inside a <button> is a click. The button keeps the name and the copy, which
-                 is the whole hit target on a card that is not yet chosen. -->
-            <PresetPreview
-                presetId={preset.id}
-                label={preset.name}
-                interactive={presetId === preset.id}
-                fallback={preset.preview}
-            />
+            <!-- The selected card's map is live, so it must not sit inside a button: a drag
+                 inside one is a click. Every other card's picture *is* a button — it is most of
+                 the card, and a picture you cannot click to choose reads as broken. -->
+            {#if presetId === preset.id}
+                <PresetPreview
+                    presetId={preset.id}
+                    label={preset.name}
+                    interactive
+                    fallback={preset.preview}
+                />
+            {:else}
+                <button
+                    type="button"
+                    class="shot"
+                    aria-label={`Choose ${preset.name}`}
+                    onclick={() => onpick(preset.id)}
+                >
+                    <PresetPreview presetId={preset.id} label={preset.name} fallback={preset.preview} />
+                </button>
+            {/if}
             <button type="button" class="pick" onclick={() => onpick(preset.id)}>
                 <span class="name">{preset.name}</span>
                 <span class="desc small muted">{presetTagline(preset.id, preset.description)}</span>
@@ -112,6 +123,19 @@
     .card.blocked .name,
     .card.blocked .desc {
         opacity: 0.6;
+    }
+
+    .shot {
+        display: block;
+        background: none;
+        border: none;
+        padding: 0;
+        border-radius: 8px;
+    }
+
+    .shot:focus-visible {
+        outline: 2px solid var(--forest);
+        outline-offset: 2px;
     }
 
     .pick {

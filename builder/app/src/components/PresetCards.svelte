@@ -28,13 +28,21 @@
 <div class="cards">
     {#each presets as preset (preset.id)}
         <div class="card" class:selected={basedOn === preset.id}>
-            <!-- Outside the button, like the catalog tier's card: the selected preview is
-                 draggable, and a drag inside a <button> is a click. -->
-            <PresetPreview
-                presetId={preset.id}
-                label={preset.name}
-                interactive={basedOn === preset.id}
-            />
+            <!-- Same shape as the catalog tier's card: the selected preview is live, so it must
+                 not sit inside a button (a drag inside one is a click); every other picture is
+                 the card's main hit target. -->
+            {#if basedOn === preset.id}
+                <PresetPreview presetId={preset.id} label={preset.name} interactive />
+            {:else}
+                <button
+                    type="button"
+                    class="shot"
+                    aria-label={`Choose ${preset.name}`}
+                    onclick={() => pick(preset)}
+                >
+                    <PresetPreview presetId={preset.id} label={preset.name} />
+                </button>
+            {/if}
             <button type="button" class="pick" onclick={() => pick(preset)}>
                 <span class="name">
                     {preset.name}
@@ -101,6 +109,19 @@
         border: 2px solid var(--forest);
         padding: 10px 11px;
         box-shadow: 0 2px 10px rgba(60, 107, 57, 0.16);
+    }
+
+    .shot {
+        display: block;
+        background: none;
+        border: none;
+        padding: 0;
+        border-radius: 8px;
+    }
+
+    .shot:focus-visible {
+        outline: 2px solid var(--forest);
+        outline-offset: 2px;
     }
 
     .pick {

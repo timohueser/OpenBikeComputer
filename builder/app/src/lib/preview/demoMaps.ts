@@ -110,10 +110,31 @@ export function parsePreviewIndex(body: string): PreviewIndex {
 }
 
 /**
+ * Fetched demo maps, kept for the life of the page. A card is re-created whenever the selection
+ * moves (the live preview and the still are different elements), and re-downloading three quarters
+ * of a megabyte to redraw a picture the visitor just looked at would be absurd — HTTP caching is
+ * the deploy's business, not something a re-render should depend on. Bounded by the preset count.
+ */
+const bytesByPreset = new Map<string, Promise<Uint8Array | null>>();
+
+/**
  * The demo map bytes for a preset, or `null` where that preset has no bake yet — which is a normal
  * state, not an error: a preset added since the last bake run simply has no card art.
  */
-export async function demoMapFor(presetId: string): Promise<Uint8Array | null> {
+export function demoMapFor(presetId: string): Promise<Uint8Array | null> {
+    let pending = bytesByPreset.get(presetId);
+    if (!pending) {
+        pending = fetchDemoMap(presetId);
+        bytesByPreset.set(presetId, pending);
+        // Drop a failure so a transient network error can be retried on the next look.
+        pending.catch(() => {
+            if (bytesByPreset.get(presetId) === pending) bytesByPreset.delete(presetId);
+        });
+    }
+    return pending;
+}
+
+async function fetchDemoMap(presetId: string): Promise<Uint8Array | null> {
     const { index, base } = await loaded();
     const entry = index.maps.find((m) => m.preset_id === presetId);
     if (!entry) return null;
