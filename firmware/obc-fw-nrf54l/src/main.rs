@@ -1216,6 +1216,12 @@ async fn main(_spawner: Spawner) {
         let boot_count = settings_store.bump_boot_count(reset_reas);
         defmt::info!("boot #{=u32}", boot_count);
 
+        // Snapshot the running image's version off the DFU boot-state page (#996) before any plane
+        // that publishes it exists: the BLE DIS strings are seeded inside `ble::run`, the USB plane
+        // answers `DEVICE_INFO_READ` from the same source, and both are spawned below. It is a
+        // one-shot read of a page this store already owns — see `dfu::seed_firmware_revision`.
+        dfu::seed_firmware_revision(&mut settings_store);
+
         // The hardware watchdog (#349): the last-resort net under both planes, fed by the ride
         // loop (gated on the input plane's heartbeat) in every build. 24 s is generous on purpose: the
         // dog must never fire on a slow frame or a long SD reconcile, only on a genuine wedge. It

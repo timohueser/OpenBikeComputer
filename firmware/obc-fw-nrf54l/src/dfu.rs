@@ -66,6 +66,26 @@ pub(crate) fn status(line: &str) {
     obc_platform::debug_link::dfu_status(line);
 }
 
+/// Capture the running image's OBCU version for the identity strings (#996, epic #773 U1) — called
+/// **once**, from `main`, as soon as the settings store exists and long before the BLE/USB planes
+/// are spawned.
+///
+/// The boot-state page is the only place the device learns what it actually *is*: the version an
+/// image was wrapped with lives in its OBCU header, and a confirmed install records that header
+/// here. This is the same page (and the same `read_boot_state` call) the confirm screen reads;
+/// reading it once at boot rather than per identity read is what keeps `firmware_revision()`
+/// non-blocking on the BLE and USB paths, and it loses nothing — the running image cannot change
+/// under a running app.
+///
+/// `#[inline(never)]`: the decoded [`BootState`] is a ~1.7 KB temporary, and it must live in this
+/// frame (which pops) rather than in `main`'s, per the crate's stack discipline.
+#[inline(never)]
+pub(crate) fn seed_firmware_revision(settings: &mut RramSettingsStore) {
+    let running = settings.read_boot_state().running_image();
+    crate::link::identity::seed_installed_version(running.as_ref());
+    defmt::info!("dfu: running image is {=str}", crate::link::identity::firmware_revision().as_str());
+}
+
 /// What a successful arm wrote — the drain's status-line material.
 struct ArmReport {
     generation: u32,
@@ -269,16 +289,13 @@ pub(crate) fn run_scan(
     let mut staged_version: heapless::String<32> = heapless::String::new();
     let _ = staged_version.push_str(staged.header.fw_version_str());
     // The installed side of the confirm screen — and its same-version equality check — must speak
-    // the same dialect as the staged side: the OBCU version string. After any confirmed install the
-    // boot-state page's `installed` header holds exactly the string the running image was wrapped
-    // with (a release tag like `v0.4.0`), so prefer it; `OBC_FW_GIT` — a bare `rev-parse` hash that
-    // can never equal a wrapped tag — is only the fallback for dev-flashed devices with no install
-    // history (where the README recipe wraps with a describe/hash string anyway).
-    let mut installed_version: heapless::String<32> = heapless::String::new();
-    let _ = installed_version.push_str(match installed.as_ref().map(|h| h.fw_version_str()) {
-        Some(v) if !v.is_empty() => v,
-        _ => env!("OBC_FW_GIT"),
-    });
+    // the same dialect as the staged side: the OBCU version string, with the build's git hash as the
+    // dev-device fallback. That is exactly the rule `link::identity` publishes over DIS / USB
+    // (#996), so the assembler is shared rather than repeated: what the glass says the device is
+    // running and what a host reads over the wire cannot drift apart. The record read here is the
+    // *live* page, though, not identity's boot snapshot — a confirm screen must show what the page
+    // says now.
+    let installed_version = obc_app::dfu::clamp(crate::link::identity::revision_from(installed.as_ref()).as_str());
     Ok((
         obc_app::DfuScanReport {
             installed: installed_version,
