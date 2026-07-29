@@ -79,7 +79,7 @@ pub use ride_start::RideStartScreen;
 pub use rides::RidesScreen;
 pub use route_menu::RouteMenuScreen;
 pub use route_overview::RouteOverviewScreen;
-pub use route_received::{RouteReceivedScreen, RouteUpdatedScreen};
+pub use route_received::{RouteReceivedScreen, RouteUpdatedScreen, TripReceivedScreen};
 pub use route_swap::RouteSwapScreen;
 pub use settings::{
     AddFieldScreen, BikeTypeScreen, BluetoothScreen, ConnectionsScreen, DateTimeScreen, DisplayScreen, FirmwareScreen,
@@ -751,6 +751,11 @@ screens! {
     /// opens (the app dropped the stale matcher/profile; the host reopened the geometry) — this
     /// only *tells* the rider. Dismiss on any press/Back, or the same auto-close.
     RouteUpdated(RouteUpdatedScreen) => Caps::modal().timed().remap(RemapKind::Route),
+    /// The trip-received popup: a committed trip upload — which always lands *after* its member
+    /// routes — replaces the last per-route popup of the burst with one "TRIP RECEIVED" card.
+    /// Same family rules (advisory, 30 s auto-close, passkey outranks). Holds the trip's durable
+    /// id, not a catalog index, so no rescan remap is needed.
+    TripReceived(TripReceivedScreen) => Caps::modal().timed(),
     /// The BLE pairing passkey card (epic #447, P2). **Host-pushed** by [`App::set_ble_status`]
     /// when the seam's passkey goes `Some`, popped when it clears. Opaque + non-dismissible.
     Passkey(PasskeyScreen) => Caps::modal(),
@@ -932,6 +937,7 @@ impl Screen {
             // sleep; the removal itself runs in `App::advance_animations`' popup sweep.
             Screen::RouteReceived(s) => s.tick_timers(now_ms),
             Screen::RouteUpdated(s) => s.tick_timers(now_ms),
+            Screen::TripReceived(s) => s.tick_timers(now_ms),
             Screen::RouteSwap(s) => s.tick_timers(now_ms),
             // The Route overview's content-paired pager (T3, re-paired in #678 rework 3): flips
             // track shape + DISTANCE ↔ elevation band + CLIMB + DESCENT every 5 s.

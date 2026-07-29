@@ -29,8 +29,8 @@ use crate::input::Gesture;
 use crate::Msg;
 
 use super::{
-    list, palette, title_frame, Ctx, MenuItem, Render, RouteOverviewScreen, Screen, ScreenTick, Transition,
-    UPLOAD_POPUP_TIMEOUT_MS,
+    list, palette, title_frame, Ctx, MenuItem, Render, RouteMenuScreen, RouteOverviewScreen, Screen, ScreenTick,
+    Transition, UPLOAD_POPUP_TIMEOUT_MS,
 };
 
 /// Whether a popup opened at `opened_ms` has outlived its auto-close window at `now_ms`.
@@ -223,6 +223,114 @@ fn draw_sparkline(cv: &mut impl Surface, x0: i32, y_top: i32, w_band: i32, h_ban
         let (y0, y1) = prev_top.map_or((top_y, top_y), |p| (p.min(top_y), p.max(top_y)));
         cv.vline(x, y0 - 1, (y1 - y0) + 2, 1, AMBER);
         prev_top = Some(top_y);
+    }
+}
+
+/// The "TRIP RECEIVED" prompt — the trip twin of [`RouteReceivedScreen`]. A committed trip object
+/// always arrives **after** its member routes (it references their ids, so every client sends the
+/// routes first), and the popup family's replace-not-stack rule means this card lands *over* — i.e.
+/// replaces — the last per-route popup of the burst: the rider is left with one "TRIP RECEIVED"
+/// card, not a parade. Same rules as the family: advisory (committed before the prompt), 30 s
+/// auto-close = dismiss, passkey outranks, never lands mid-hold.
+///
+/// Carries the trip's **durable id**, not a catalog index: the trip catalog re-resolves in place on
+/// a rescan (no index remap exists for trips, and none is needed) — a vanished trip turns *View
+/// trip* into a self-dismiss and the card body into the removed notice.
+#[derive(Debug)]
+pub struct TripReceivedScreen {
+    trip_id: u16,
+    selected: usize,
+    /// Map-plane millis when the popup opened — the 30 s auto-close anchor.
+    opened_ms: u32,
+}
+
+impl TripReceivedScreen {
+    /// A prompt for the trip with durable id `trip_id`, opened at `now_ms` (the auto-close anchor).
+    pub fn new(trip_id: u16, now_ms: u32) -> Self {
+        TripReceivedScreen { trip_id, selected: 0, opened_ms: now_ms }
+    }
+
+    /// Whether the 30 s auto-close deadline has passed — polled by the app's popup sweep.
+    pub(crate) fn expired(&self, now_ms: u32) -> bool {
+        popup_expired(self.opened_ms, now_ms)
+    }
+
+    /// The auto-close deadline's residual wake (see [`popup_tick`]).
+    pub(crate) fn tick_timers(&mut self, now_ms: u32) -> ScreenTick {
+        popup_tick(self.opened_ms, now_ms)
+    }
+
+    pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
+        match g {
+            Gesture::Step(n) => list::on_step(&mut self.selected, n, N_ITEMS),
+            // View trip — open the trip's folder exactly as pressing its row in the Route menu
+            // does (the same durable-id-scoped stage list), validated against the live trip
+            // catalog: a trip deleted while the popup was up dismisses instead of opening an empty
+            // stranger. The advisory popup gives way to the folder (`Replace`), so backing out
+            // returns to whatever the card covered, not the card.
+            Gesture::Press if self.selected == VIEW => {
+                if cx.trips.iter().any(|t| t.id == self.trip_id) {
+                    Transition::Replace(Screen::RouteMenu(RouteMenuScreen::trip(self.trip_id)))
+                } else {
+                    Transition::Pop
+                }
+            }
+            Gesture::Press => Transition::Pop, // Dismiss
+            Gesture::Back => Transition::Pop,  // Back = Dismiss (advisory — the trip is in the menu)
+            _ => Transition::None,
+        }
+    }
+
+    pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
+        use palette::*;
+        let (w, h) = (rx.w, rx.h);
+
+        title_frame(cv, w, h, rx.t(Msg::TripReceivedTitle), "");
+        match rx.trips.iter().find(|t| t.id == self.trip_id) {
+            Some(trip) => {
+                // Name first (names > metadata), the summed stats line under it — the route card's
+                // exact anatomy — then the member count, the "all N landed" confirmation the
+                // per-route parade never gave.
+                let max = (((w - 24) / Font::Body.char_width() as i32).max(6)) as usize;
+                let name = super::route_menu::fit_name(&trip.name, max);
+                cv.text(&name, Point::new(w / 2, super::TITLE_BAR_H + 14), Font::Body, TextAlign::Center, INK);
+                let mut stats: heapless::String<24> = heapless::String::new();
+                let _ = write!(stats, "{} km, +{} m", trip.distance_km, trip.climb_m);
+                cv.text(&stats, Point::new(w / 2, super::TITLE_BAR_H + 44), Font::Label, TextAlign::Center, SUBTEXT);
+                let n = trip.stage_indices.len();
+                let word = if n == 1 { rx.t(Msg::TripReceivedRouteOne) } else { rx.t(Msg::TripReceivedRoutes) };
+                let mut count: heapless::String<24> = heapless::String::new();
+                let _ = write!(count, "{n} {word}");
+                cv.text(&count, Point::new(w / 2, super::TITLE_BAR_H + 68), Font::Label, TextAlign::Center, SUBTEXT);
+            }
+            // Deleted from under the popup: say so — the View row will just dismiss.
+            None => {
+                cv.text(
+                    rx.t(Msg::TripReceivedTripRemoved),
+                    Point::new(w / 2, super::TITLE_BAR_H + 24),
+                    Font::Label,
+                    TextAlign::Center,
+                    SUBTEXT,
+                );
+            }
+        }
+
+        // The option rows sit under the three text lines — the route card's no-sparkline geometry,
+        // shifted down by the extra count line.
+        let geo = super::GuardedRowsGeometry {
+            x: 12,
+            w: w - 24,
+            top: super::TITLE_BAR_H + 96,
+            row_h: 46,
+            gap: 8,
+            label_dx: 16,
+            label_dy: 11,
+        };
+        let items = [
+            MenuItem { label: rx.t(Msg::TripReceivedViewTrip), guard: false },
+            MenuItem { label: rx.t(Msg::TripReceivedDismiss), guard: false },
+        ];
+        super::draw_guarded_rows(cv, &items, self.selected, rx.hold_progress, AMBER, geo);
     }
 }
 
