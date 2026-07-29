@@ -207,12 +207,27 @@
         markers[i]?.openPopup();
     }
 
-    /** A waypoint's x position across the profile strip for the current window, in percent. */
+    const totalTrackM = $derived(cum.length ? cum[cum.length - 1] : 0);
+
+    /**
+     * A waypoint's distance clamped onto the drawn axis. `distAlongM` was measured on the RAW
+     * pre-decimation track at pack time, so it can slightly exceed the decimated read-back
+     * polyline's total — an end-of-route waypoint must not fall off the strip (or read farther
+     * than the caption's total) over that difference.
+     */
+    function clampedDistM(w: RouteWaypoint): number {
+        return totalTrackM > 0 ? Math.max(0, Math.min(w.distAlongM, totalTrackM)) : w.distAlongM;
+    }
+
+    /** A waypoint's x position across the profile strip for the current window, in percent —
+     *  null only when it falls outside the current zoom window. */
     function tickPercent(w: RouteWaypoint): number | null {
         if (!profile) return null;
         const span = profile.endM - profile.startM;
-        if (span <= 0 || w.distAlongM < profile.startM || w.distAlongM > profile.endM) return null;
-        return ((w.distAlongM - profile.startM) / span) * 100;
+        if (span <= 0) return null;
+        const d = clampedDistM(w);
+        if (d < profile.startM || d > profile.endM) return null;
+        return ((d - profile.startM) / span) * 100;
     }
 
     const km = (m: number) => (m / 1000).toFixed(1);
@@ -268,7 +283,7 @@
                             >
                                 <span class="wpglyph" aria-hidden="true"></span>
                                 <span class="wpname">{w.name || "Waypoint"}</span>
-                                <span class="wpkm small faint">km {km(w.distAlongM)}</span>
+                                <span class="wpkm small faint">km {km(clampedDistM(w))}</span>
                             </button>
                         {/each}
                     </div>
