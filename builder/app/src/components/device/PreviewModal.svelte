@@ -231,6 +231,21 @@
                 L.polyline(latlngs.slice(a, b + 1), { color: DIM, weight: 4 }),
             );
             for (const gray of grays) gray.addTo(map);
+            // A jump between non-contiguous stages: the shared axis walks it (`segments.ts`), so
+            // the hover dot travels it too — give it a visible road. A thin dashed connector in
+            // the dim gray, under the colored lines and outside the window echo: a transfer leg,
+            // not ridden track. Contiguous stages (the normal tour) draw nothing here.
+            for (let i = 1; i < drawable.length; i++) {
+                const from = drawable[i - 1].b;
+                const to = drawable[i].a;
+                if (cum[to] - cum[from] < 1) continue;
+                L.polyline([latlngs[from], latlngs[to]], {
+                    color: DIM,
+                    weight: 2,
+                    dashArray: "5 7",
+                    interactive: false,
+                }).addTo(map);
+            }
             const colored = drawable.map(({ seg, a, b }) => ({
                 line: L.polyline(latlngs.slice(a, b + 1), { color: seg.color, weight: 5 }),
                 a,

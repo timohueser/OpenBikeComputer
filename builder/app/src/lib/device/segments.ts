@@ -12,6 +12,13 @@
  * between one stage's end and the next stage's start — usually zero for a tour, where each day
  * starts where the last ended — is part of the axis, exactly as it would be had the stages been
  * one recorded track.
+ *
+ * Deliberate tradeoff for a *discontinuous* trip (a real gap between stages): the map marks the
+ * jump with a thin dashed connector (the modal draws it from consecutive ranges here), so the
+ * hover dot visibly travels a transfer leg — but the elevation profile still draws one straight
+ * interpolated ramp across the jump's span. Masking that ramp would mean splitting the profile's
+ * SVG path per stage; the seam rules already say where the stages meet, so the ramp stays until a
+ * discontinuous trip is something riders actually build.
  */
 
 import type { RouteWaypoint } from "../convert/bridge";
