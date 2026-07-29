@@ -115,7 +115,7 @@ fn build_cancel(jobs: State<'_, Arc<Jobs>>, id: String) -> bool {
 /// Every place the app has put bytes on this disk, with sizes.
 #[tauri::command]
 fn storage_info(app: tauri::AppHandle) -> Vec<storage::Place> {
-    storage::places(&maps_dir(&app))
+    storage::places(&maps_dir(&app), &paths::ride_archive_dir(app.path().app_data_dir().ok()))
 }
 
 /// Delete one named cache. Returns the bytes freed.
@@ -174,16 +174,27 @@ fn reveal_file(app: tauri::AppHandle, path: String) -> Result<(), String> {
 
 // ============================ the ride library (E2 #912) ============================
 
-/// The library, and whether its folder is the default one.
+/// The library, and whether its visible GPX folder is the default one.
 ///
 /// Resolved per call rather than held in state: the folder can move while the app is running, and
-/// a cached root is the fact that would then be wrong exactly when a rider is looking at it.
+/// a cached root is the fact that would then be wrong exactly when a rider is looking at it. The
+/// archive (the `.obcride` objects and the index) lives in app data and never moves — see
+/// `rides.rs`'s module docs for the split.
 fn ride_library(app: &tauri::AppHandle) -> (rides::Library, bool) {
     let default = paths::rides_dir(app.path().document_dir().ok());
-    match app.path().app_config_dir().ok().and_then(|dir| rides::configured(&dir)) {
-        Some(chosen) if chosen != default => (rides::Library::new(chosen), false),
-        _ => (rides::Library::new(default), true),
+    let archive = paths::ride_archive_dir(app.path().app_data_dir().ok());
+    let (root, is_default) = match app.path().app_config_dir().ok().and_then(|dir| rides::configured(&dir)) {
+        Some(chosen) if chosen != default => (chosen, false),
+        _ => (default, true),
+    };
+    let library = rides::Library::new(root, archive);
+    // The one-time move of pre-split folders (then a cheap no-op). A failure is logged, not fatal:
+    // it leaves the old files where they were and the library reading the safe, empty direction —
+    // nothing is acked from a half-moved state.
+    if let Err(e) = library.migrate() {
+        eprintln!("ride library migration: {e}");
     }
+    (library, is_default)
 }
 
 /// The library folder and everything in it.
@@ -227,7 +238,8 @@ async fn rides_read(app: tauri::AppHandle, key: String) -> Result<tauri::ipc::Re
     Ok(tauri::ipc::Response::new(bytes))
 }
 
-/// (Re-)write one ride's GPX — the per-ride export button and the bulk one.
+/// (Re-)write one ride's GPX into the visible folder — the automatic repair for a GPX somebody
+/// deleted, and the "Show in folder" fallback when the file to show is not there yet.
 #[tauri::command]
 async fn rides_write_gpx(app: tauri::AppHandle, key: String, gpx: String) -> Result<String, String> {
     let (library, _) = ride_library(&app);
