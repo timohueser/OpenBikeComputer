@@ -194,7 +194,10 @@
     }
 </script>
 
-<div class="preview" class:live={interactive} bind:this={host}>
+<!-- `data-phase` is not styled: it is there so the loading state can be read from the DOM, which
+     is the only way to tell "still waiting to be scrolled into view" from "loading" apart — both
+     draw the same skeleton, and a background tab legitimately stays on the first one forever. -->
+<div class="preview" class:live={interactive} data-phase={phase} bind:this={host}>
     {#if phase === "ready"}
         <canvas
             bind:this={canvas}
