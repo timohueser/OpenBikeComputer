@@ -6,13 +6,14 @@
 //! run**. Not a re-implementation in TypeScript — the same bytes, by construction.
 //!
 //! Deliberately not a framework host like [`obc-web-demo`](../obc_web_demo/index.html): no frame
-//! loop, no canvas, no state. Two pure functions and an error vocabulary.
+//! loop, no canvas, no state. Four pure functions and an error vocabulary.
 //!
 //! | export | contract |
 //! | :-- | :-- |
 //! | `obc_convert_gpx_to_obcr(bytes, name) -> Uint8Array` | a GPX file's bytes → a `.obcr` route |
 //! | `obc_convert_track_to_gpx(bytes, name) -> string` | a recorded `.obct` log → a GPX 1.1 document |
 //! | `obc_convert_obcr_to_track(bytes) -> Float64Array` | a `.obcr` route → flat `[lat°, lon°, ele m]` triples |
+//! | `obc_convert_obcr_to_waypoints(bytes) -> Array` | a `.obcr` route's waypoint table → `{name, lat, lon, ele, category, distAlongM}` objects |
 //!
 //! A failure crosses to JS as a thrown `Error` whose `message` is written for a rider and whose
 //! `code` ([`ErrorCode`]) is the stable identifier a caller branches on. Every
@@ -25,7 +26,10 @@
 
 mod convert;
 
-pub use convert::{gpx_to_obcr, obcr_to_track, track_to_gpx, ConvertFailure, ErrorCode, MAX_STORED_POINTS};
+pub use convert::{
+    gpx_to_obcr, obcr_to_track, obcr_to_waypoints, track_to_gpx, ConvertFailure, ErrorCode, RouteWaypoint,
+    MAX_STORED_POINTS,
+};
 
 #[cfg(target_arch = "wasm32")]
 mod web {
@@ -65,6 +69,40 @@ mod web {
     #[wasm_bindgen]
     pub fn obc_convert_obcr_to_track(bytes: &[u8]) -> Result<Vec<f64>, JsValue> {
         crate::convert::obcr_to_track(bytes).map_err(to_js)
+    }
+
+    /// Decode a `.obcr` route's waypoint table (OBCR spec §4): an `Array` of plain
+    /// `{name, lat, lon, ele, category, distAlongM}` objects in route order (ascending
+    /// `distAlongM`). `ele` is `null` where the source carried none; `category` is the stored
+    /// byte raw (`0` generic, `1..=6` the OBCM §7.4 ids — render anything else as generic);
+    /// `distAlongM` is the **stored** placement-time distance in meters, not a recomputation
+    /// (see [`crate::convert::obcr_to_waypoints`]). A route without waypoints yields `[]`.
+    ///
+    /// Plain objects rather than a flat array because names are strings: ≤ 32 waypoints cross per
+    /// route (the converter's cap), so per-entry objects cost nothing that matters.
+    ///
+    /// Throws an `Error` carrying `code` + `message` on failure; see [`crate::ErrorCode`].
+    #[wasm_bindgen]
+    pub fn obc_convert_obcr_to_waypoints(bytes: &[u8]) -> Result<js_sys::Array, JsValue> {
+        let wps = crate::convert::obcr_to_waypoints(bytes).map_err(to_js)?;
+        let arr = js_sys::Array::new();
+        for w in wps {
+            let obj = js_sys::Object::new();
+            set(&obj, "name", &JsValue::from_str(&w.name));
+            set(&obj, "lat", &JsValue::from_f64(w.lat));
+            set(&obj, "lon", &JsValue::from_f64(w.lon));
+            set(&obj, "ele", &w.ele.map_or(JsValue::NULL, JsValue::from_f64));
+            set(&obj, "category", &JsValue::from_f64(f64::from(w.category)));
+            set(&obj, "distAlongM", &JsValue::from_f64(f64::from(w.dist_along_m)));
+            arr.push(&obj.into());
+        }
+        Ok(arr)
+    }
+
+    /// `Reflect::set` on a fresh plain object — which cannot fail (only frozen/exotic targets
+    /// can), so the result is ignored for the same reason it is in [`to_js`].
+    fn set(obj: &js_sys::Object, key: &str, value: &JsValue) {
+        let _ = js_sys::Reflect::set(obj, &JsValue::from_str(key), value);
     }
 
     /// Build the JS exception: a real `Error` instance (so it carries a stack and survives

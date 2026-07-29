@@ -3,7 +3,7 @@ name = "obc-web-convert"
 version = "0.1.0"
 edition = "2021"
 publish = false # internal firmware crate — not published to crates.io
-description = "The hosted builder's wasm conversion bridge (epic #894, A2): GPX → OBCR and recorded track → GPX in the browser, through the exact obc-route code the device and the CLI run. No framework — two functions and a typed error."
+description = "The hosted builder's wasm conversion bridge (epic #894, A2): GPX → OBCR, recorded track → GPX, and OBCR read-back (polyline + waypoints) in the browser, through the exact obc-route code the device and the CLI run. No framework — four functions and a typed error."
 
 # `cdylib` is what wasm-bindgen links; `rlib` keeps the crate a normal workspace library so
 # `cargo test`/`clippy` exercise the conversion core on the host target too.
