@@ -210,7 +210,9 @@ the exact bytes it will later stream, so a ride download is a verbatim file copy
 One object is not a stored file but a **firmware update**: a `fwImage` upload
 carries an [`OBCU`](src:specs/OBCU_Spec.md) `UPDATE.BIN` container, which the device
 writes to the card root verbatim — the transfer layer stays format-blind, exactly
-as with a route's OBCR bytes. **Staging is not installing.** A committed `fwImage`
+as with a route's OBCR bytes. That container is **signed**, and the *device* checks the
+signature before it will install anything, so a peer can only ever stage an image it
+obtained from a real release. **Staging is not installing.** A committed `fwImage`
 only *places* the file; the app then sends a separate `installFw` command to
 *request* an install, and the device runs its own scan and shows a **confirm card**
 that the rider must approve with a physical Select press. The phone can never arm
