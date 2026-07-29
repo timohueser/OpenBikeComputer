@@ -199,7 +199,7 @@ fn a_real_pack_lands_in_a_tree_the_catalog_generator_accepts() {
 
 #[test]
 fn a_corrupted_artifact_fails_verification_and_never_reaches_the_manifest() {
-    let f = fixture("corrupt", "minimal");
+    let f = fixture("corrupt", "default");
     let packer = CorruptingPacker { good: FixturePacker::new(), corrupt_region: "gamma" };
     let summary = f.run(&packer, false);
 
@@ -215,8 +215,8 @@ fn a_corrupted_artifact_fails_verification_and_never_reaches_the_manifest() {
 
     // The artifact was never installed — not a bad file in the tree, no file at all.
     let bad_dir = f.tree.join("regions/europe/beta/gamma");
-    assert!(!bad_dir.join("minimal.obcm").exists(), "a corrupt artifact must not exist under its real name");
-    assert!(!bad_dir.join("minimal.obcm.json").exists(), "and no sidecar advertising it");
+    assert!(!bad_dir.join("default.obcm").exists(), "a corrupt artifact must not exist under its real name");
+    assert!(!bad_dir.join("default.obcm.json").exists(), "and no sidecar advertising it");
     let leftovers: Vec<_> = std::fs::read_dir(&bad_dir)
         .map(|d| d.filter_map(Result::ok).map(|e| e.file_name().to_string_lossy().into_owned()).collect())
         .unwrap_or_default();
@@ -230,13 +230,13 @@ fn a_corrupted_artifact_fails_verification_and_never_reaches_the_manifest() {
 
 #[test]
 fn an_unchanged_rerun_skips_and_a_changed_preset_does_not() {
-    let f = fixture("idempotent", "minimal");
+    let f = fixture("idempotent", "default");
     let packer = FixturePacker::new();
 
     let first = f.run(&packer, false);
     assert!(first.ok(), "{}", first.render());
     assert_eq!(packer.calls.load(Ordering::SeqCst), 2);
-    let artifact = f.tree.join("regions/europe/alpha/minimal.obcm");
+    let artifact = f.tree.join("regions/europe/alpha/default.obcm");
     let (bytes, digest) = obc_bake::hash::file(&artifact).unwrap();
 
     // Same extract bytes, same preset bytes, same format version ⇒ no work, and the
@@ -256,12 +256,18 @@ fn an_unchanged_rerun_skips_and_a_changed_preset_does_not() {
     // A restyle changes the preset bytes, so the key changes and everything re-bakes
     // — which is the case a mtime-keyed cache would get wrong, since the artifact is
     // newer than the config it is now out of date with.
-    let mut restyled = fixture("idempotent-restyle", "minimal");
+    let mut restyled = fixture("idempotent-restyle", "default");
     restyled.run(&packer, false);
     let before = packer.calls.load(Ordering::SeqCst);
     let config_path = restyled.presets[0].path.clone();
-    let text = std::fs::read_to_string(&config_path).unwrap().replace("\"version\": 2", "\"version\": 3");
-    std::fs::write(&config_path, text).unwrap();
+    // Bump `_meta.version` from wherever it currently stands. Pinning the literal
+    // number couples the test to whichever preset ships today — the edit silently
+    // no-opped (and the test failed) when the fixture moved from a v2 preset to the
+    // v4 default.
+    let mut cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+    let bumped = u32::try_from(cfg["_meta"]["version"].as_u64().unwrap() + 1).unwrap();
+    cfg["_meta"]["version"] = bumped.into();
+    std::fs::write(&config_path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
     restyled.presets = obc_bake::presets::load(config_path.parent().unwrap(), None).unwrap();
     let after_restyle = restyled.run(&packer, false);
     assert_eq!(packer.calls.load(Ordering::SeqCst), before + 2, "a restyle re-bakes its own artifacts");
@@ -269,20 +275,20 @@ fn an_unchanged_rerun_skips_and_a_changed_preset_does_not() {
     // And the sidecar now records the new preset version, while the tree's preset
     // config carries it as the current one — §3's two numbers, from the same run.
     let generated = restyled.manifest();
-    assert_eq!(generated.manifest.presets[0].version, 3);
-    assert!(generated.manifest.artifacts.iter().all(|a| a.preset_version == 3));
+    assert_eq!(generated.manifest.presets[0].version, bumped);
+    assert!(generated.manifest.artifacts.iter().all(|a| a.preset_version == bumped));
 }
 
 #[test]
 fn an_artifact_that_rotted_on_disk_is_rebaked_even_though_its_inputs_did_not_change() {
-    let f = fixture("rot", "minimal");
+    let f = fixture("rot", "default");
     let packer = FixturePacker::new();
     f.run(&packer, false);
     assert_eq!(packer.calls.load(Ordering::SeqCst), 2);
 
     // Truncate an artifact behind the runner's back: inputs unchanged, key unchanged,
     // recorded digest no longer matches what is there.
-    let artifact = f.tree.join("regions/europe/alpha/minimal.obcm");
+    let artifact = f.tree.join("regions/europe/alpha/default.obcm");
     let mut bytes = std::fs::read(&artifact).unwrap();
     bytes.truncate(bytes.len() / 2);
     std::fs::write(&artifact, &bytes).unwrap();
@@ -294,7 +300,7 @@ fn an_artifact_that_rotted_on_disk_is_rebaked_even_though_its_inputs_did_not_cha
 
 #[test]
 fn renaming_a_region_rewrites_the_sidecar_without_repacking_the_map() {
-    let mut f = fixture("rename", "minimal");
+    let mut f = fixture("rename", "default");
     let packer = FixturePacker::new();
     f.run(&packer, false);
     assert_eq!(f.manifest().manifest.artifacts[0].region_name, "Alpha");
@@ -319,7 +325,7 @@ fn renaming_a_region_rewrites_the_sidecar_without_repacking_the_map() {
 fn a_redated_but_identical_extract_refreshes_the_sidecar_and_packs_nothing() {
     let dir = scratch("redate");
     let root = extract_root(&dir);
-    let presets = obc_bake::presets::load(&presets_dir(&dir, "minimal"), None).expect("preset loads");
+    let presets = obc_bake::presets::load(&presets_dir(&dir, "default"), None).expect("preset loads");
     let regions = obc_bake::regions::parse(regions_toml()).expect("region list parses");
     let tree = dir.join("tree");
     let packer = FixturePacker::new();
@@ -365,7 +371,7 @@ fn a_redated_but_identical_extract_refreshes_the_sidecar_and_packs_nothing() {
 
 #[test]
 fn a_missing_extract_fails_the_whole_region_loudly() {
-    let f = fixture("missing-extract", "minimal");
+    let f = fixture("missing-extract", "default");
     std::fs::remove_file(f.dir.join("extracts/europe/alpha-latest.osm.pbf")).unwrap();
     let summary = f.run(&FixturePacker::new(), false);
 

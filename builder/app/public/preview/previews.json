@@ -22,13 +22,6 @@
       "file": "high-detail.obcm",
       "bytes": 477308,
       "sha256": "3e4e87e2a5420f7bcf187684309e55775db4ebe9fc90895e04d47e051c2f30b5"
-    },
-    {
-      "preset_id": "minimal",
-      "preset_version": 2,
-      "file": "minimal.obcm",
-      "bytes": 119196,
-      "sha256": "facdc4619755e2236f184c38395d957e8ce7304fdaeee5081dee4fda8845bceb"
     }
   ]
 }
