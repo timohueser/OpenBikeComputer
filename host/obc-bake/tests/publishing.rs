@@ -44,18 +44,18 @@ fn tree_with(dir: &Path, regions: &[&str]) -> PathBuf {
     let tree = dir.join("tree");
     let _ = std::fs::remove_dir_all(&tree);
     std::fs::create_dir_all(tree.join("presets")).unwrap();
-    std::fs::copy(repo("builder/presets/minimal.json"), tree.join("presets/minimal.json")).unwrap();
+    std::fs::copy(repo("builder/presets/default.json"), tree.join("presets/default.json")).unwrap();
     for region in regions {
         let region_dir = region.split('/').fold(tree.join("regions"), |p, s| p.join(s));
         std::fs::create_dir_all(&region_dir).unwrap();
-        std::fs::copy(repo("apps/obc-sim/assets/monaco.obcm"), region_dir.join("minimal.obcm")).unwrap();
+        std::fs::copy(repo("apps/obc-sim/assets/monaco.obcm"), region_dir.join("default.obcm")).unwrap();
         std::fs::write(
-            region_dir.join("minimal.obcm.json"),
+            region_dir.join("default.obcm.json"),
             r#"{"region_name":"X","preset_version":2,"built_at":"2026-07-28T00:00:00Z","source_snapshot":"2026-07-28"}"#,
         )
         .unwrap();
         // Local bake bookkeeping — must never be published.
-        std::fs::write(region_dir.join(obc_bake::bake::state_file_name("minimal")), "{}").unwrap();
+        std::fs::write(region_dir.join(obc_bake::bake::state_file_name("default")), "{}").unwrap();
     }
     tree
 }
@@ -150,7 +150,7 @@ fn the_manifest_is_published_last_and_the_bake_state_is_not_published_at_all() {
         assert!(puts.contains(&key.to_string()), "{key} missing from {puts:?}");
         assert!(puts.contains(&format!("{key}.json")), "sidecar for {key} missing");
     }
-    assert!(puts.contains(&"presets/minimal.json".to_string()));
+    assert!(puts.contains(&"presets/default.json".to_string()));
     assert!(!puts.iter().any(|k| k.contains(".bake.json")), "bake state must stay local: {puts:?}");
     assert_eq!(puts.len(), 6, "2 artifacts + 2 sidecars + 1 preset + the manifest: {puts:?}");
 
@@ -161,10 +161,10 @@ fn the_manifest_is_published_last_and_the_bake_state_is_not_published_at_all() {
 fn a_failed_artifact_upload_never_swaps_the_manifest_in() {
     let dir = scratch("fail");
     let tree = bake_tree(&dir);
-    let store = RecordingStore::failing_on("regions/europe/beta/gamma/minimal.obcm");
+    let store = RecordingStore::failing_on("regions/europe/beta/gamma/default.obcm");
 
     let err = obc_bake::publish::publish(&tree, &store, &opts(), live()).unwrap_err();
-    assert!(err.contains("regions/europe/beta/gamma/minimal.obcm"), "{err}");
+    assert!(err.contains("regions/europe/beta/gamma/default.obcm"), "{err}");
     assert!(!store.puts().contains(&MANIFEST.to_string()), "the previous catalog stays the live one");
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -176,7 +176,7 @@ fn an_object_that_is_not_fetchable_after_upload_blocks_the_swap() {
     let tree = bake_tree(&dir);
     // The upload "succeeded" and the object is not there — a truncated multipart, a
     // bucket policy, a typo'd prefix. The manifest must not go out on top of it.
-    let store = RecordingStore::losing("regions/europe/alpha/minimal.obcm");
+    let store = RecordingStore::losing("regions/europe/alpha/default.obcm");
 
     let err = obc_bake::publish::publish(&tree, &store, &opts(), live()).unwrap_err();
     assert!(err.contains("not fetchable"), "{err}");
@@ -205,7 +205,7 @@ fn a_directory_publish_produces_a_servable_copy_of_the_tree() {
     }
     let published = std::fs::read_to_string(dest.join(MANIFEST)).unwrap();
     assert_eq!(published, obc_pack::catalog::manifest_json(&report.manifest), "byte-identical to what was generated");
-    assert!(!dest.join("regions/europe/alpha").join(obc_bake::bake::state_file_name("minimal")).exists());
+    assert!(!dest.join("regions/europe/alpha").join(obc_bake::bake::state_file_name("default")).exists());
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -243,7 +243,7 @@ fn publishing_a_partial_bake_over_a_full_catalog_is_refused() {
 
     let err = obc_bake::publish::publish(&partial, &store, &opts(), live()).unwrap_err();
     assert!(err.contains("would REMOVE"), "{err}");
-    assert!(err.contains("europe/beta/gamma [minimal]"), "the error must name what disappears: {err}");
+    assert!(err.contains("europe/beta/gamma [default]"), "the error must name what disappears: {err}");
     assert!(err.contains("--allow-shrink"), "and how to proceed deliberately: {err}");
     // Nothing moved: not the manifest, and not one artifact.
     assert!(store.puts().is_empty(), "a refused publish must not have started uploading: {:?}", store.puts());
@@ -266,7 +266,7 @@ fn a_deliberate_shrink_proceeds_loudly_with_allow_shrink() {
     )
     .expect("--allow-shrink permits it");
 
-    assert_eq!(report.coverage_lost, vec!["europe/beta/gamma [minimal]".to_string()]);
+    assert_eq!(report.coverage_lost, vec!["europe/beta/gamma [default]".to_string()]);
     assert!(
         report.warnings.iter().any(|w| w.contains("--allow-shrink") && w.contains("europe/beta/gamma")),
         "removing coverage is never silent, even when asked for: {:?}",
@@ -340,12 +340,12 @@ fn a_dir_publish_diffs_against_the_manifest_already_in_that_directory() {
 
     let partial = tree_with(&dir, &["europe/alpha"]);
     let err = obc_bake::publish::publish(&partial, &DirStore::new(&dest), &opts(), live()).unwrap_err();
-    assert!(err.contains("europe/beta/gamma [minimal]"), "{err}");
+    assert!(err.contains("europe/beta/gamma [default]"), "{err}");
 
     // The live directory is untouched: the old manifest and both artifacts remain.
     let served = std::fs::read_to_string(dest.join(MANIFEST)).unwrap();
     assert!(served.contains("europe/beta/gamma"), "the previous catalog is still the live one");
-    assert!(dest.join("regions/europe/beta/gamma/minimal.obcm").is_file());
+    assert!(dest.join("regions/europe/beta/gamma/default.obcm").is_file());
 
     let _ = std::fs::remove_dir_all(&dir);
 }
