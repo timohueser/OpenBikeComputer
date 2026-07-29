@@ -52,7 +52,7 @@
     import { planTripDelete } from "../lib/device/tripDelete";
     import { confirmAction, confirmChoice } from "../lib/ui/confirm.svelte";
     import { ObjectType } from "../lib/usb/protocol";
-    import type { ProtocolClient } from "../lib/usb/client";
+    import { DeviceError, type ProtocolClient } from "../lib/usb/client";
     import { decodeRideObject, type RideListEntry, type RouteListEntry } from "../lib/usb/objects";
     import { sendRoute } from "../lib/device/write";
 
@@ -128,14 +128,33 @@
     }
 
     /**
+     * Delete an object, treating the device's "not found" as success: an object already gone
+     * **is** the state the delete was asked to produce, so a stale plan (or a repeat click)
+     * must not abort a delete sequence or surface a banner about it. Real errors still throw.
+     * One transfer — callers run it through `mutate`/`enqueue` like any other cable operation.
+     */
+    const deleteIfPresent = (c: ProtocolClient, type: ObjectType, objectId: number) =>
+        c.deleteObject(type, objectId).catch((cause: unknown) => {
+            if (cause instanceof DeviceError && cause.code === "not-found") return;
+            throw cause;
+        });
+
+    /**
      * Delete a trip — and, when the card's state allows it, offer to take its routes with it.
      *
      * The offer is computed up front (`planTripDelete`): a route that is also a stage of another
      * trip is never deleted here, and if any other trip's stage list is unreadable the dialog
-     * degrades to the grouping-only delete rather than guessing. The deletions run sequentially
-     * through the page's queue — trip first, then each route — with **one** refresh at the end;
-     * a mid-sequence failure surfaces one error after that refresh, and whatever was already
-     * deleted stays deleted (the refresh shows exactly that).
+     * degrades to the grouping-only delete rather than guessing.
+     *
+     * The dialog can stay open for any amount of time, and the card can change under it — a
+     * paired phone editing trips over BLE, most plainly. So what is actually deleted is decided
+     * **after** the confirm, not before it: the lists are re-read, the plan recomputed from the
+     * fresh state, and (a) a shrunken deletable set simply proceeds — it is strictly safer than
+     * what was shown — while (b) a trip whose stage list grew or became unreadable aborts with a
+     * one-line note instead of deleting routes the rider was never shown. The deletions then run
+     * sequentially through the page's queue — trip first, then each route — with **one** refresh
+     * at the end; a mid-sequence failure surfaces one error after that refresh, and whatever was
+     * already deleted stays deleted (the refresh shows exactly that).
      */
     async function deleteTrip(trip: TripView) {
         const c = client;
@@ -152,7 +171,7 @@
                 destructive: true,
             });
             if (!ok) return;
-            await mutate((cl) => cl.deleteObject(ObjectType.Trip, trip.objectId));
+            await mutate(() => deleteIfPresent(c, ObjectType.Trip, trip.objectId));
             return;
         }
 
@@ -171,14 +190,25 @@
         });
         if (choice === "cancel") return;
         if (choice === "extra") {
-            await mutate((cl) => cl.deleteObject(ObjectType.Trip, trip.objectId));
+            await mutate(() => deleteIfPresent(c, ObjectType.Trip, trip.objectId));
             return;
         }
         let failure: unknown = null;
         try {
-            await dashboard.enqueue(() => c.deleteObject(ObjectType.Trip, trip.objectId));
-            for (const id of plan.deletable) {
-                await dashboard.enqueue(() => c.deleteObject(ObjectType.Route, id));
+            // Revalidate against the card as it is NOW, not as it was when the dialog opened.
+            await dashboard.refresh(c);
+            const fresh = dashboard.trips.find((t) => t.objectId === trip.objectId);
+            const known = new Set(trip.detail?.stages ?? []);
+            if (!fresh || fresh.detail === null || fresh.detail.stages.some((id) => !known.has(id))) {
+                dashboard.error =
+                    "The trip changed on the device while the dialog was open — nothing was deleted. Try again.";
+                return;
+            }
+            const freshPlan = planTripDelete(fresh, dashboard.trips, new Set(dashboard.routes.map((r) => r.objectId)));
+            const deletable = freshPlan.offer === "both" ? freshPlan.deletable : [];
+            await dashboard.enqueue(() => deleteIfPresent(c, ObjectType.Trip, trip.objectId));
+            for (const id of deletable) {
+                await dashboard.enqueue(() => deleteIfPresent(c, ObjectType.Route, id));
             }
         } catch (cause) {
             failure = cause;

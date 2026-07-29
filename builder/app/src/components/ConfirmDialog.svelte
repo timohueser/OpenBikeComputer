@@ -46,8 +46,9 @@
                     Cancel
                 </button>
                 {#if pending.extra}
-                    <!-- The second affirmative, between Cancel and the primary — reachable by
-                         Tab from the focused primary, never focused by default. -->
+                    <!-- The second affirmative, between Cancel and the primary — reached by
+                         Shift+Tab from the focused primary (there is no focus trap; plain Tab
+                         leaves the dialog, as it always has), never focused by default. -->
                     <button
                         type="button"
                         class="btn ghost"
