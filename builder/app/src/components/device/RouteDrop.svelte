@@ -1,15 +1,22 @@
 <!--
-  Drop a GPX on the page, look at what it is, then send it.
+  The GPX drop zone, as the routes grid's last, ghost tile: drop or click to choose, pick how long
+  the device keeps it, send.
 
   The conversion runs first and the *route* is what gets described — distance, ascent and point
   count read back out of the OBCR header the converter just wrote, not guessed from the GPX. So
-  what the panel shows is what the device will show, and a file that converts to something
+  what the tile shows is what the device will show, and a file that converts to something
   unexpected is caught before it is on the card rather than on a hill.
+
+  "Keep on device" is §4.4 cmd 6: the upload itself has no retention field, so a non-forever
+  choice is applied right after the commit, before the page refreshes its lists. The device
+  dedupes a re-dropped file by CRC and answers with the existing id — applying the chosen
+  retention to that id is the spec's case (b), an edit, which is exactly what re-dropping means.
 -->
 <script lang="ts">
     import { formatBytes } from "../../lib/format";
     import { DeviceJob } from "../../lib/device/job.svelte";
     import { prepareRoute, type PreparedRoute } from "../../lib/device/route";
+    import { RETENTION_LEVELS, retentionLabel } from "../../lib/device/retention";
     import { sendRoute } from "../../lib/device/write";
     import { initConvert } from "../../lib/convert/bridge";
     import type { ProtocolClient } from "../../lib/usb/client";
@@ -20,6 +27,7 @@
         onmultiple = null,
         serialize = null,
         onsent = null,
+        empty = false,
     }: {
         client: ProtocolClient;
         /** Take over when several files land at once (the trip dialog). Null keeps the
@@ -30,12 +38,16 @@
         serialize?: (<T>(op: () => Promise<T>) => Promise<T>) | null;
         /** A route landed — the device page refreshes its lists on this. */
         onsent?: (() => void) | null;
+        /** True when the card holds no routes at all: the tile carries the empty-state line. */
+        empty?: boolean;
     } = $props();
 
     const job = new DeviceJob("route");
     let route = $state<PreparedRoute | null>(null);
     let readError = $state<string | null>(null);
     let dragging = $state(false);
+    /** The §4.4 cmd 6 level applied after a successful send. `0` = forever = send nothing. */
+    let retention = $state(0);
     let picker = $state<HTMLInputElement>();
 
     async function accept(file: File) {
@@ -73,11 +85,42 @@
 
     async function send(prepared: PreparedRoute) {
         const run = serialize ?? (<T,>(op: () => Promise<T>) => op());
+        const keep = retention;
         const result = await job.run(
-            (ctx) => run(() => sendRoute(client, prepared, ctx)),
+            async (ctx) => {
+                const sent = await run(() => sendRoute(client, prepared, ctx));
+                // Forever is the device's default for a fresh upload, so level 0 sends nothing;
+                // any other choice is stamped before the page re-lists. The id may be a dedupe's
+                // existing route — see the header.
+                if (keep !== 0) await run(() => client.setRouteRetention(sent.objectId, keep, ctx.signal));
+                return sent;
+            },
             (value) => `“${prepared.header.name}” is on the device (route ${value.objectId}).`,
         );
-        if (result) onsent?.();
+        if (result) {
+            route = null;
+            onsent?.();
+        }
+    }
+
+    /** True where the event came from an inner control the tile click must not speak over. */
+    function fromInnerControl(event: Event): boolean {
+        return (
+            event.target instanceof Element &&
+            event.target.closest("button, input, select, label") !== null
+        );
+    }
+
+    function openPicker(event: Event) {
+        if (fromInnerControl(event)) return;
+        picker?.click();
+    }
+
+    function onKeydown(event: KeyboardEvent) {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        if (fromInnerControl(event)) return;
+        event.preventDefault();
+        picker?.click();
     }
 
     const summary = $derived(
@@ -92,50 +135,24 @@
     );
 </script>
 
-<section class="block">
-    <h4>Route</h4>
-
-    <!-- Dropping is a pointer-only affordance, so the group is *labelled* rather than made
-         focusable: a tab stop that only accepts a drag would be a keyboard trap with nothing
-         behind it. The button inside is the keyboard and screen-reader path, and it does the
-         same thing. -->
-    <div
-        class="drop"
-        role="group"
-        aria-label="Route file"
-        class:over={dragging}
-        ondragover={(e) => {
-            e.preventDefault();
-            dragging = true;
-            // The wasm module is ~95 KB and loads on demand; starting it on hover turns the
-            // conversion into a plain function call by the time the file lands.
-            void initConvert();
-        }}
-        ondragleave={() => (dragging = false)}
-        ondrop={onDrop}
-    >
-        <p class="small muted">
-            {onmultiple ? "Drop GPX files here — several at once can become a trip" : "Drop a GPX file here"}
-        </p>
-        <button type="button" class="btn" onclick={() => picker?.click()}>
-            {onmultiple ? "Choose files…" : "Choose a file…"}
-        </button>
-        <input
-            bind:this={picker}
-            type="file"
-            accept=".gpx,application/gpx+xml"
-            multiple={onmultiple !== null}
-            hidden
-            aria-hidden="true"
-            tabindex="-1"
-            onchange={onPick}
-        />
-    </div>
-
-    {#if readError}
-        <p class="note error small" role="alert">{readError}</p>
-    {/if}
-
+<div
+    class="ghost"
+    class:over={dragging}
+    role="button"
+    tabindex="0"
+    aria-label="Add a route: drop GPX files here or press to choose"
+    onclick={openPicker}
+    onkeydown={onKeydown}
+    ondragover={(e) => {
+        e.preventDefault();
+        dragging = true;
+        // The wasm module is ~95 KB and loads on demand; starting it on hover turns the
+        // conversion into a plain function call by the time the file lands.
+        void initConvert();
+    }}
+    ondragleave={() => (dragging = false)}
+    ondrop={onDrop}
+>
     {#if route}
         <div class="picked">
             <p class="name">{route.header.name}</p>
@@ -149,71 +166,140 @@
                 >
                     Send route to device
                 </button>
-                <button type="button" class="btn ghost" disabled={job.running} onclick={() => (route = null)}>
+                <button type="button" class="btn ghostbtn" disabled={job.running} onclick={() => (route = null)}>
                     Discard
                 </button>
             </div>
         </div>
+    {:else}
+        <div class="glyph" aria-hidden="true">⤓</div>
+        <p class="lead">{empty ? "No routes on the device yet — drop a GPX here" : "Drop GPX here"}</p>
+        <p class="small faint">
+            or click to choose{#if onmultiple}&nbsp;· several files become a trip{/if}
+        </p>
     {/if}
 
+    {#if readError}
+        <p class="note small" role="alert">{readError}</p>
+    {/if}
+
+    <label class="keep small" for="routedrop-keep">
+        keep on device:
+        <select id="routedrop-keep" bind:value={retention} onclick={(e) => e.stopPropagation()}>
+            {#each RETENTION_LEVELS as level (level)}
+                <option value={level}>{retentionLabel(level)}</option>
+            {/each}
+        </select>
+    </label>
+
+    <input
+        bind:this={picker}
+        type="file"
+        accept=".gpx,application/gpx+xml"
+        multiple={onmultiple !== null}
+        hidden
+        aria-hidden="true"
+        tabindex="-1"
+        onchange={onPick}
+    />
+
     <TransferBar {job} />
-</section>
+</div>
 
 <style>
-    h4 {
-        margin: 0 0 6px;
-        font-size: 14px;
-        font-family: var(--sans);
-        letter-spacing: 0.02em;
-        text-transform: uppercase;
-        color: var(--ink-faint);
-    }
-
-    .drop {
+    .ghost {
         display: flex;
+        flex-direction: column;
         align-items: center;
-        gap: 10px;
-        flex-wrap: wrap;
-        padding: 12px;
+        justify-content: center;
+        gap: 6px;
+        min-height: 176px;
+        padding: 14px;
         border: 1.5px dashed var(--line-strong);
-        border-radius: 10px;
-        background: color-mix(in srgb, var(--parchment) 55%, transparent);
+        border-radius: 14px;
+        color: var(--ink-faint);
+        cursor: pointer;
+        text-align: center;
     }
 
-    .drop.over {
+    .ghost:hover,
+    .ghost:focus-visible {
+        border-color: var(--forest);
+        color: var(--forest-deep);
+    }
+
+    .ghost:focus-visible {
+        outline: 2px solid var(--forest);
+        outline-offset: 2px;
+    }
+
+    .ghost.over {
         border-color: var(--forest);
         background: color-mix(in srgb, var(--forest) 8%, var(--parchment));
     }
 
-    .drop p {
+    .ghost p {
         margin: 0;
-        margin-right: auto;
+    }
+
+    .glyph {
+        font-size: 26px;
+        line-height: 1;
+    }
+
+    .lead {
+        font-weight: 600;
+        color: var(--ink-soft);
+    }
+
+    .keep {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+    }
+
+    .keep select {
+        font-size: 12.5px;
+        padding: 2px 6px;
+        border-radius: 7px;
     }
 
     .picked {
-        margin-top: 10px;
-    }
-
-    .picked p {
-        margin: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        align-items: center;
+        min-width: 0;
+        max-width: 100%;
     }
 
     .name {
         font-family: var(--serif);
-        font-size: 16px;
+        font-size: 15.5px;
+        color: var(--ink);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        max-width: 100%;
     }
 
     .actions {
         display: flex;
         gap: 8px;
-        margin-top: 8px;
+        margin-top: 6px;
+        flex-wrap: wrap;
+        justify-content: center;
+    }
+
+    /* Quiet secondary — `.ghost` is taken by the tile itself. */
+    .ghostbtn {
+        background: transparent;
+        color: var(--ink);
+        border-color: var(--wood);
     }
 
     .note {
-        margin: 8px 0 0;
-    }
-
-    .error {
         color: var(--coral);
+        max-width: 100%;
     }
 </style>
