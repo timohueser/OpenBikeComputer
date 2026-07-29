@@ -347,7 +347,9 @@ only object whose transfer is measured in minutes rather than frames.
    place would mean destroying the stored bytes as the new ones arrive, which
    forfeits the "a failed CRC never touches the old copy" guarantee below on the
    one object a device cannot rebuild for itself. Replacing a map is *upload the
-   new one, then delete the old one*.
+   new one; the device retires the old one itself* — see rule 5. A host has no
+   verb for it: `deleteObject` (§4.4) takes routes and trips, and no map
+   enumeration crosses the wire at all.
 2. **A free-space guard at announce.** A device SHOULD refuse with `storageFull`
    when the announced length plus a reserve it keeps for ride logs and sidecars
    exceeds free space, **before any byte streams** — a transfer that fails at
@@ -362,6 +364,17 @@ only object whose transfer is measured in minutes rather than frames.
    interrupted transfer therefore leaves a zero-magic file that every reader
    refuses and a boot sweep reclaims — the same durability the other types get
    from an invisible temp, reached without the copy.
+5. **One uploaded map.** A device that loads a single map SHOULD retire the
+   uploads that map supersedes, rather than accumulate copies no reader will ever
+   open. In the reference firmware this happens **at the same boot that selects
+   the new map**, and only once the selected map has opened: an upload commits
+   while its predecessor is held open for the session, so the moment of the commit
+   is precisely when the old file cannot be touched. Two consequences worth
+   stating, because a host cannot see either: between the upload and the next
+   restart the card carries **both** maps, so rule 2's guard can refuse a
+   replacement that does not fit alongside the copy it is about to replace; and a
+   map the rider placed on the card themselves is **never** retired — it carries
+   no device-assigned id, and the rule is one *uploaded* map, not one file.
 
 **Where an uploaded map lands** is a device convention, not a wire one, but the
 reference firmware's is worth stating because it follows the `RT{id}.OBR` rule

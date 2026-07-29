@@ -61,6 +61,35 @@ pub fn choose_map(maps: &[MapChoice]) -> Option<usize> {
     Some(0)
 }
 
+/// Whether the map at `i` is an **upload superseded** by the one at `keep` — the card-side half of
+/// the one-map rule (#992), and the companion to [`choose_map`]: that picks the survivor, this names
+/// the casualties.
+///
+/// The device loads one map and never switches: [`choose_map`] runs once at startup and the handle
+/// is held for the session. A second `MP{id}.OBM` is therefore not a feature without a UI, it is
+/// hundreds of megabytes the renderer will never open — and, before this, unreclaimable, because a
+/// map upload commits a fresh id and *nothing* deleted its predecessor: not the device (no picker,
+/// no delete), and not a host (§4.4's `deleteObject` takes routes and trips, and no map enumeration
+/// crosses the wire at all).
+///
+/// Two things it deliberately does **not** claim:
+///
+/// - **A side-loaded map is never superseded.** It has no `uploaded_id`, and a rider who copied a
+///   file onto the card by hand did something deliberate that no automatic sweep should undo. The
+///   rule is "one *uploaded* map", not "one file".
+/// - **Nothing is superseded while a side-loaded map is the one loaded.** `keep` having no
+///   `uploaded_id` disarms this entirely. That state is only reachable when no upload is readable
+///   (clauses 3–4 of [`choose_map`]), so the uploads present are ones this build cannot open — and
+///   "I can't read it" is a much weaker claim than "it is redundant". Left alone, they stay
+///   diagnosable; a firmware that can read them again would find them.
+pub fn is_superseded_upload(maps: &[MapChoice], keep: usize, i: usize) -> bool {
+    if i == keep {
+        return false;
+    }
+    let (Some(keeper), Some(candidate)) = (maps.get(keep), maps.get(i)) else { return false };
+    keeper.uploaded_id.is_some() && candidate.uploaded_id.is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,5 +146,55 @@ mod tests {
 
         let maps = [uploaded(5, false), side_loaded(false)];
         assert_eq!(choose_map(&maps), Some(0), "nothing readable → the first map, so the fault names the version");
+    }
+
+    /// The rule the card is swept by: after an upload, the map it replaced is the one that goes.
+    #[test]
+    fn a_newer_upload_supersedes_the_one_it_replaced() {
+        let maps = [uploaded(1, true), uploaded(2, true)];
+        let keep = choose_map(&maps).expect("a card with maps chooses one");
+        assert_eq!(keep, 1, "the newest upload is the survivor");
+        assert!(is_superseded_upload(&maps, keep, 0));
+        assert!(!is_superseded_upload(&maps, keep, keep), "the survivor is never its own casualty");
+    }
+
+    /// A hand-copied `.obcm` is not the device's to reclaim, even when an upload is what loaded.
+    #[test]
+    fn a_side_loaded_map_is_never_superseded() {
+        let maps = [side_loaded(true), uploaded(4, true)];
+        let keep = choose_map(&maps).expect("a card with maps chooses one");
+        assert_eq!(keep, 1);
+        assert!(!is_superseded_upload(&maps, keep, 0), "the rule is one *uploaded* map, not one file");
+    }
+
+    /// Running a side-loaded map disarms the sweep: the uploads present are ones this build cannot
+    /// read, and unreadable is not redundant.
+    #[test]
+    fn nothing_is_swept_while_a_side_loaded_map_is_loaded() {
+        let maps = [uploaded(7, false), uploaded(8, false), side_loaded(true)];
+        let keep = choose_map(&maps).expect("a card with maps chooses one");
+        assert_eq!(keep, 2, "nothing readable is uploaded, so the side-loaded map loads");
+        assert!(!is_superseded_upload(&maps, keep, 0));
+        assert!(!is_superseded_upload(&maps, keep, 1));
+    }
+
+    /// An unreadable *upload* still supersedes older uploads once one of them is what loaded —
+    /// clause 4's fault-screen case must not also mean "keep every wrong-version map forever".
+    #[test]
+    fn an_unreadable_upload_still_supersedes_older_uploads() {
+        let maps = [uploaded(3, false), uploaded(9, false)];
+        let keep = choose_map(&maps).expect("a card with maps chooses one");
+        assert_eq!(keep, 0, "nothing readable → the first map");
+        assert!(is_superseded_upload(&maps, keep, 1));
+    }
+
+    /// Out-of-range indices answer `false` rather than panicking: the board feeds this a live
+    /// directory scan, and a card that changed under it must not fault the boot.
+    #[test]
+    fn an_index_off_the_end_supersedes_nothing() {
+        let maps = [uploaded(1, true)];
+        assert!(!is_superseded_upload(&maps, 0, 7));
+        assert!(!is_superseded_upload(&maps, 7, 0));
+        assert!(!is_superseded_upload(&[], 0, 0));
     }
 }
