@@ -944,7 +944,7 @@ fn bound(props: &mut Map<String, Value>, field: &str, min: i64, max: i64) {
 }
 
 /// Stable pretty representation used to regenerate the checked-in schema:
-/// `obc-pack schema --catalog > obc-pack/schema/catalog.schema.json`.
+/// `obc-pack schema --catalog > host/obc-pack/schema/catalog.schema.json`.
 pub fn catalog_schema_json() -> String {
     let mut text = serde_json::to_string_pretty(&catalog_schema()).expect("catalog schema serializes");
     text.push('\n');
@@ -1629,7 +1629,7 @@ mod tests {
             checked_in,
             catalog_schema(),
             "schema/catalog.schema.json is stale; regenerate with `cargo run -p obc-pack --bin obc-pack -- schema \
-             --catalog > obc-pack/schema/catalog.schema.json`"
+             --catalog > host/obc-pack/schema/catalog.schema.json`"
         );
     }
 
