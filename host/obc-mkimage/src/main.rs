@@ -1,24 +1,33 @@
-//! `obc-mkimage` — the producer side of the SD-staged DFU pipeline (epic #615).
+//! `obc-mkimage` — the producer side of the SD-staged DFU pipeline (epic #615, signed in #997).
 //!
-//! Two subcommands over the shared [`obc_dfu`] OBCU codec:
+//! Four subcommands over the shared [`obc_dfu`] OBCU codec:
 //!
 //! ```text
-//! obc-mkimage wrap --bin app.bin --version "$(git describe --always --dirty)" --out UPDATE.BIN
+//! obc-mkimage keygen  --out-dir keys/ --name obcu-release
+//! obc-mkimage wrap    --bin app.bin --version "$(git describe --always --dirty)" \
+//!                     --out UPDATE.BIN --sign-seed-env OBCU_SIGNING_SEED
+//! obc-mkimage sign    --in UPDATE.BIN --out UPDATE.BIN --seed-env OBCU_SIGNING_SEED
 //! obc-mkimage inspect UPDATE.BIN
 //! ```
 //!
-//! `wrap` prepends the 64-byte OBCU header to a raw app image; `inspect` decodes and verifies both
-//! CRCs. See `firmware/README.md` (§Firmware update images) for how the raw `.bin` is produced.
+//! `wrap` prepends the 64-byte OBCU header to a raw app image (and, given a seed, signs it in the
+//! same step); `sign` attaches or replaces the Ed25519 trailer on an already-wrapped container;
+//! `inspect` decodes, verifies both CRCs **and** the signature, and exits non-zero on any failure —
+//! it is the release workflow's gate. See `firmware/README.md` (§Firmware update images) for how the
+//! raw `.bin` is produced, and `specs/OBCU_Spec.md` §1 for the bytes.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use obc_dfu::{looks_like_vector_table, ImageHeader, HEADER_LEN, MAX_IMAGE_LEN, RAM_END, RAM_START};
+use obc_dfu::sig::{public_key_of, sign_image, verify_image, PublicKey, PUBKEY_LEN, SEED_LEN, SIG_LEN};
+use obc_dfu::{looks_like_vector_table, ImageHeader, HEADER_LEN, MAX_IMAGE_LEN, RAM_END, RAM_START, RELEASE_PUBKEY};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
+        Some("keygen") => keygen(&args[1..]),
         Some("wrap") => wrap(&args[1..]),
+        Some("sign") => sign(&args[1..]),
         Some("inspect") => inspect(&args[1..]),
         Some("--help") | Some("-h") | None => {
             print_usage();
@@ -37,24 +46,77 @@ fn main() -> ExitCode {
 
 const USAGE: &str = "\
 usage:
-  obc-mkimage wrap --bin <app.bin> --version <str> --out <UPDATE.BIN>
-  obc-mkimage inspect <UPDATE.BIN>";
+  obc-mkimage keygen  --out-dir <dir> [--name <base>]
+  obc-mkimage wrap    --bin <app.bin> --version <str> --out <UPDATE.BIN>
+                      [--sign-seed <file> | --sign-seed-env <VAR>]
+  obc-mkimage sign    --in <UPDATE.BIN> --out <file> (--seed <file> | --seed-env <VAR>)
+  obc-mkimage inspect <UPDATE.BIN> [--pubkey <file>] [--allow-unsigned]
+
+Keys are 64 lowercase hex characters (32 raw bytes) on one line. `keygen` writes
+<base>.seed (SECRET) and <base>.pub. `inspect` verifies against the release key
+compiled into this build unless --pubkey overrides it.";
 
 fn print_usage() {
     println!("{USAGE}");
 }
 
-/// `wrap`: prepend the OBCU header to a raw image and write `<out>`.
+// ==================== keygen ====================
+
+/// `keygen`: a fresh Ed25519 keypair as two hex files — `<base>.seed` (secret, mode 0600) and
+/// `<base>.pub`. Entropy comes from the OS; nothing about the key is derived from the machine.
+fn keygen(args: &[String]) -> Result<(), String> {
+    let mut out_dir: Option<PathBuf> = None;
+    let mut name = String::from("obcu-signing");
+    let mut it = args.iter();
+    while let Some(flag) = it.next() {
+        match flag.as_str() {
+            "--out-dir" => out_dir = Some(next_value(&mut it, "--out-dir")?.into()),
+            "--name" => name = next_value(&mut it, "--name")?,
+            other => return Err(format!("unexpected argument `{other}`\n\n{USAGE}")),
+        }
+    }
+    let out_dir = out_dir.ok_or("keygen: missing --out-dir")?;
+
+    let mut seed = [0u8; SEED_LEN];
+    getrandom::fill(&mut seed).map_err(|e| format!("keygen: no OS entropy available ({e})"))?;
+    let public = public_key_of(&seed);
+
+    let seed_path = out_dir.join(format!("{name}.seed"));
+    let pub_path = out_dir.join(format!("{name}.pub"));
+    if seed_path.exists() || pub_path.exists() {
+        return Err(format!(
+            "keygen: {} or {} already exists — refusing to overwrite a key",
+            seed_path.display(),
+            pub_path.display()
+        ));
+    }
+    write_hex(&seed_path, &seed)?;
+    restrict(&seed_path)?;
+    write_hex(&pub_path, public.as_bytes())?;
+
+    println!("wrote {}  <-- SECRET, never commit this", seed_path.display());
+    println!("wrote {}", pub_path.display());
+    println!("  public key: {}", hex(public.as_bytes()));
+    Ok(())
+}
+
+// ==================== wrap ====================
+
+/// `wrap`: prepend the OBCU header to a raw image and write `<out>`; with a seed, sign it in the
+/// same pass (the release pipeline's one-shot path).
 fn wrap(args: &[String]) -> Result<(), String> {
     let mut bin: Option<PathBuf> = None;
     let mut version: Option<String> = None;
     let mut out: Option<PathBuf> = None;
+    let mut seed_src: Option<SeedSource> = None;
     let mut it = args.iter();
     while let Some(flag) = it.next() {
         match flag.as_str() {
             "--bin" => bin = Some(next_value(&mut it, "--bin")?.into()),
             "--version" => version = Some(next_value(&mut it, "--version")?),
             "--out" => out = Some(next_value(&mut it, "--out")?.into()),
+            "--sign-seed" => seed_src = Some(SeedSource::File(next_value(&mut it, "--sign-seed")?.into())),
+            "--sign-seed-env" => seed_src = Some(SeedSource::Env(next_value(&mut it, "--sign-seed-env")?)),
             other => return Err(format!("unexpected argument `{other}`\n\n{USAGE}")),
         }
     }
@@ -94,39 +156,116 @@ fn wrap(args: &[String]) -> Result<(), String> {
     }
 
     let header = ImageHeader::new(&image, &version);
-    let mut blob = Vec::with_capacity(HEADER_LEN + image.len());
-    blob.extend_from_slice(&header.encode());
-    blob.extend_from_slice(&image);
+    let blob = match &seed_src {
+        Some(src) => build_signed(header, &image, &src.read()?),
+        // Unsigned: byte-for-byte the v1 container. The device's armer rejects it (§1.4) — this is
+        // the local-experiment / `--allow-unsigned` shape, not something to publish.
+        None => {
+            eprintln!(
+                "warning: {} is UNSIGNED — a device running v2 firmware refuses to install it. \
+                 Pass --sign-seed/--sign-seed-env to sign.",
+                out.display()
+            );
+            let mut b = Vec::with_capacity(HEADER_LEN + image.len());
+            b.extend_from_slice(&header.encode());
+            b.extend_from_slice(&image);
+            b
+        }
+    };
     std::fs::write(&out, &blob).map_err(|e| format!("writing {}: {e}", out.display()))?;
 
     println!(
-        "wrote {} — version \"{}\", image {} bytes, image_crc32 {:#010X}",
+        "wrote {} — version \"{}\", image {} bytes, image_crc32 {:#010X}, {}",
         out.display(),
         header.fw_version_str(),
         header.image_len,
-        header.image_crc32
+        header.image_crc32,
+        if seed_src.is_some() { "Ed25519-signed (OBCU v2)" } else { "unsigned (OBCU v1)" }
     );
     Ok(())
 }
 
-/// `inspect`: decode + verify both CRCs, human-readable, non-zero exit on invalid.
-fn inspect(args: &[String]) -> Result<(), String> {
-    let path: PathBuf = match args {
-        [p] => p.into(),
-        _ => return Err(format!("inspect: expected exactly one file argument\n\n{USAGE}")),
-    };
-    let blob = std::fs::read(&path).map_err(|e| format!("reading {}: {e}", path.display()))?;
-    if blob.len() < HEADER_LEN {
-        return Err(format!("{} is only {} bytes — shorter than a 64-byte OBCU header", path.display(), blob.len()));
-    }
-    let header_bytes: &[u8; HEADER_LEN] = blob[..HEADER_LEN].try_into().expect("checked length");
-    let header = ImageHeader::decode(header_bytes)
-        .ok_or_else(|| format!("{}: not a valid OBCU image (bad magic, version, or header CRC)", path.display()))?;
+// ==================== sign ====================
 
-    let image = &blob[HEADER_LEN..];
+/// `sign`: attach (or replace) the Ed25519 trailer on an already-wrapped container. Same result as
+/// `wrap --sign-seed`; separate so a build artifact can be signed later, on a machine that holds the
+/// key, without re-running the build.
+fn sign(args: &[String]) -> Result<(), String> {
+    let mut input: Option<PathBuf> = None;
+    let mut out: Option<PathBuf> = None;
+    let mut seed_src: Option<SeedSource> = None;
+    let mut it = args.iter();
+    while let Some(flag) = it.next() {
+        match flag.as_str() {
+            "--in" => input = Some(next_value(&mut it, "--in")?.into()),
+            "--out" => out = Some(next_value(&mut it, "--out")?.into()),
+            "--seed" => seed_src = Some(SeedSource::File(next_value(&mut it, "--seed")?.into())),
+            "--seed-env" => seed_src = Some(SeedSource::Env(next_value(&mut it, "--seed-env")?)),
+            other => return Err(format!("unexpected argument `{other}`\n\n{USAGE}")),
+        }
+    }
+    let input = input.ok_or("sign: missing --in")?;
+    let out = out.ok_or("sign: missing --out")?;
+    let seed = seed_src.ok_or("sign: need --seed <file> or --seed-env <VAR>")?.read()?;
+
+    let Container { header, image, .. } = split_container(&input)?;
+    let blob = build_signed(header, image, &seed);
+    std::fs::write(&out, &blob).map_err(|e| format!("writing {}: {e}", out.display()))?;
+    println!(
+        "wrote {} — version \"{}\", image {} bytes, Ed25519-signed by {}",
+        out.display(),
+        header.fw_version_str(),
+        header.image_len,
+        hex(public_key_of(&seed).as_bytes())
+    );
+    Ok(())
+}
+
+/// Header (marked signed) ‖ raw image ‖ 64-byte signature — the OBCU v2 container (§1).
+fn build_signed(header: ImageHeader, image: &[u8], seed: &[u8; SEED_LEN]) -> Vec<u8> {
+    let header = header.signed();
+    let signature = sign_image(seed, &header, image);
+    let mut blob = Vec::with_capacity(HEADER_LEN + image.len() + SIG_LEN);
+    blob.extend_from_slice(&header.encode());
+    blob.extend_from_slice(image);
+    blob.extend_from_slice(&signature);
+    blob
+}
+
+// ==================== inspect ====================
+
+/// `inspect`: decode + verify both CRCs + the signature, human-readable, non-zero exit on anything
+/// invalid. This is CI's gate on a release artifact, so every check is fatal by default; the one
+/// escape hatch is `--allow-unsigned`, for looking at a v1 container or a device-written
+/// `ROLLBACK.BIN`.
+fn inspect(args: &[String]) -> Result<(), String> {
+    let mut path: Option<PathBuf> = None;
+    let mut pubkey_path: Option<PathBuf> = None;
+    let mut allow_unsigned = false;
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--pubkey" => pubkey_path = Some(next_value(&mut it, "--pubkey")?.into()),
+            "--allow-unsigned" => allow_unsigned = true,
+            other if other.starts_with("--") => return Err(format!("unexpected argument `{other}`\n\n{USAGE}")),
+            other if path.is_none() => path = Some(other.into()),
+            _ => return Err(format!("inspect: expected exactly one file argument\n\n{USAGE}")),
+        }
+    }
+    let path = path.ok_or_else(|| format!("inspect: expected exactly one file argument\n\n{USAGE}"))?;
+
+    let Container { header, image, trailer } = split_container(&path)?;
+    let blob = std::fs::read(&path).map_err(|e| format!("reading {}: {e}", path.display()))?;
+    let header_bytes: &[u8; HEADER_LEN] = blob[..HEADER_LEN].try_into().expect("checked length");
+
     let actual_image_crc = obc_dfu::crc32(image);
     let len_ok = header.image_len as usize == image.len();
     let crc_ok = header.image_crc32 == actual_image_crc;
+
+    let (key, key_src) = match &pubkey_path {
+        Some(p) => (read_pubkey(p)?, format!("{}", p.display())),
+        None => (RELEASE_PUBKEY, String::from("compiled-in release key")),
+    };
 
     println!("{}", path.display());
     println!("  version      : {}", header.fw_version_str());
@@ -144,7 +283,33 @@ fn inspect(args: &[String]) -> Result<(), String> {
         actual_image_crc
     );
 
-    if len_ok && crc_ok {
+    let sig_ok = match (header.is_signed(), trailer) {
+        (false, _) => {
+            println!("  signature    : NONE (OBCU v1 container — a v2 device refuses to install it)");
+            allow_unsigned
+        }
+        (true, None) => {
+            println!("  signature    : MISSING — the header claims a {}-byte trailer that isn't there", header.sig_len);
+            false
+        }
+        (true, Some(sig)) => {
+            let result = verify_image(&key, &header, image, sig);
+            println!("  signature    : Ed25519, {} bytes, scheme {}", sig.len(), header.sig_scheme);
+            println!("  verified vs  : {} ({})", hex(key.as_bytes()), key_src);
+            match result {
+                Ok(()) => {
+                    println!("  signature    : OK");
+                    true
+                }
+                Err(e) => {
+                    println!("  signature    : INVALID ({e:?})");
+                    false
+                }
+            }
+        }
+    };
+
+    if len_ok && crc_ok && sig_ok {
         println!("  => valid");
         Ok(())
     } else {
@@ -152,9 +317,117 @@ fn inspect(args: &[String]) -> Result<(), String> {
     }
 }
 
+// ==================== shared helpers ====================
+
+/// Where a secret seed comes from: a file (dev machines) or an environment variable (CI, so the
+/// secret never touches the filesystem).
+enum SeedSource {
+    File(PathBuf),
+    Env(String),
+}
+
+impl SeedSource {
+    fn read(&self) -> Result<[u8; SEED_LEN], String> {
+        let (raw, what) = match self {
+            SeedSource::File(p) => (
+                std::fs::read(p).map_err(|e| format!("reading seed {}: {e}", p.display()))?,
+                format!("{}", p.display()),
+            ),
+            SeedSource::Env(var) => (
+                std::env::var(var).map_err(|_| format!("${var} is not set (it must hold 64 hex characters)"))?.into(),
+                format!("${var}"),
+            ),
+        };
+        let mut out = [0u8; SEED_LEN];
+        unhex(&raw, &mut out).map_err(|e| format!("{what}: {e}"))?;
+        Ok(out)
+    }
+}
+
+/// A container read off disk, split into its three parts (§1). The byte slices are `'static`
+/// because `split_container` leaks the file into a process-lifetime allocation — `obc-mkimage` is a
+/// short-lived CLI, and this keeps the borrow shape trivial at every call site.
+struct Container {
+    header: ImageHeader,
+    /// Exactly `header.image_len` raw image bytes.
+    image: &'static [u8],
+    /// The signature trailer, when the header promises one *and* the file actually holds it.
+    trailer: Option<&'static [u8]>,
+}
+
+/// Read a container and split it into header / raw image / optional signature trailer. Rejects
+/// anything that isn't a decodable OBCU container, or that is shorter than its own header claims.
+fn split_container(path: &Path) -> Result<Container, String> {
+    let blob: &'static [u8] = Vec::leak(std::fs::read(path).map_err(|e| format!("reading {}: {e}", path.display()))?);
+    if blob.len() < HEADER_LEN {
+        return Err(format!("{} is only {} bytes — shorter than a 64-byte OBCU header", path.display(), blob.len()));
+    }
+    let header_bytes: &[u8; HEADER_LEN] = blob[..HEADER_LEN].try_into().expect("checked length");
+    let header = ImageHeader::decode(header_bytes)
+        .ok_or_else(|| format!("{}: not a valid OBCU image (bad magic, version, or header CRC)", path.display()))?;
+
+    let image_end = HEADER_LEN + header.image_len as usize;
+    if blob.len() < image_end {
+        return Err(format!(
+            "{}: truncated — the header claims {} image bytes but the file holds {}",
+            path.display(),
+            header.image_len,
+            blob.len().saturating_sub(HEADER_LEN)
+        ));
+    }
+    let image = &blob[HEADER_LEN..image_end];
+    let trailer = match header.sig_len as usize {
+        0 => None,
+        n if blob.len() >= image_end + n => Some(&blob[image_end..image_end + n]),
+        _ => None,
+    };
+    Ok(Container { header, image, trailer })
+}
+
 /// The header CRC as stored (decode already verified it matches; read it back for the report).
 fn header_crc(bytes: &[u8; HEADER_LEN]) -> u32 {
     u32::from_le_bytes([bytes[60], bytes[61], bytes[62], bytes[63]])
+}
+
+fn read_pubkey(path: &Path) -> Result<PublicKey, String> {
+    let raw = std::fs::read(path).map_err(|e| format!("reading pubkey {}: {e}", path.display()))?;
+    let mut out = [0u8; PUBKEY_LEN];
+    unhex(&raw, &mut out).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(PublicKey::from_bytes(out))
+}
+
+/// Parse `2 * out.len()` hex characters, ignoring surrounding whitespace. Strict about the length so
+/// a truncated paste can never silently produce a short key.
+fn unhex(raw: &[u8], out: &mut [u8]) -> Result<(), String> {
+    let text = std::str::from_utf8(raw).map_err(|_| "not UTF-8 (expected hex text)".to_string())?;
+    let text = text.trim();
+    if text.len() != out.len() * 2 {
+        return Err(format!("expected {} hex characters, found {}", out.len() * 2, text.len()));
+    }
+    for (i, slot) in out.iter_mut().enumerate() {
+        *slot = u8::from_str_radix(&text[i * 2..i * 2 + 2], 16).map_err(|_| "not hex".to_string())?;
+    }
+    Ok(())
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn write_hex(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    std::fs::write(path, format!("{}\n", hex(bytes))).map_err(|e| format!("writing {}: {e}", path.display()))
+}
+
+/// Owner-only permissions on a freshly written secret (best effort; a no-op off Unix).
+fn restrict(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("chmod {}: {e}", path.display()))?;
+    }
+    let _ = path;
+    Ok(())
 }
 
 fn next_value<'a>(it: &mut impl Iterator<Item = &'a String>, flag: &str) -> Result<String, String> {

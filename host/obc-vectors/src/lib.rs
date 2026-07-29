@@ -302,6 +302,46 @@ pub fn update_container_v1() -> Vec<u8> {
     v
 }
 
+/// A full **signed OBCU v2 update container** (`OBCU_Spec.md` §1, epic #773 / #997): the same
+/// 64-byte header table as [`update_container_v1`] — *including* `header_version` still `1`, the
+/// flash-once-bootloader guarantee — with v1's reserved bytes `48..52` now carrying the
+/// signature-scheme marker (`sig_scheme` = 1 · `sig_len` = 64), followed by [`update_raw_image`]
+/// and a **64-byte Ed25519 signature trailer**.
+///
+/// The header is hand-built from the spec's field table, like every other fixture here. The
+/// signature is the one part that cannot be: it comes from `obc_dfu::sign_image` over the
+/// domain-separated message of §1.3 (`"OBCUv2-sig\0" ‖ fw_version[32] ‖ image_len ‖ image`), signed
+/// with the **committed test key** (`firmware/obc-dfu/keys/test/`). That signing is deterministic
+/// (fixed zero noise), so this fixture is a stable file — a nondeterministic signer would re-cut it
+/// on every regeneration, which is exactly why `obc_dfu::sig` pins determinism with its own test.
+pub fn update_container_v2() -> Vec<u8> {
+    let image = update_raw_image();
+    let mut header = [0u8; 64];
+    header[0..4].copy_from_slice(b"OBCU");
+    header[4..6].copy_from_slice(&le16(1)); // header_version — still 1 in a v2 container
+                                            // 6..8 reserved (0)
+    header[8..12].copy_from_slice(&le32(image.len() as u32));
+    header[12..16].copy_from_slice(&le32(crc32(&image)));
+    let vbytes = UPDATE_FW_VERSION.as_bytes();
+    header[16..16 + vbytes.len()].copy_from_slice(vbytes); // NUL-padded to 32
+    header[48..50].copy_from_slice(&le16(1)); // sig_scheme = Ed25519
+    header[50..52].copy_from_slice(&le16(64)); // sig_len
+                                               // 52..60 still reserved (0)
+    let hcrc = crc32(&header[..60]);
+    header[60..64].copy_from_slice(&le32(hcrc));
+
+    // The signed message's own layout is asserted byte-for-byte in `obc-dfu`'s
+    // `signed_message_is_the_spec_bytes`; here we only need the resulting 64 bytes.
+    let decoded = obc_dfu::ImageHeader::decode(&header).expect("the hand-built header decodes");
+    let signature = obc_dfu::sign_image(&obc_dfu::sig::test_key::SEED, &decoded, &image);
+
+    let mut v = Vec::with_capacity(64 + image.len() + signature.len());
+    v.extend_from_slice(&header);
+    v.extend_from_slice(&image);
+    v.extend_from_slice(&signature);
+    v
+}
+
 /// A `transferControl` descriptor (spec §4.2): 12 bytes (protocol v2 — the `offset` field is gone).
 pub fn transfer_control(op: u8, ty: u8, object_id: u16, total_len: u32, crc: u32) -> Vec<u8> {
     let mut v = Vec::new();
@@ -597,6 +637,12 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         // §7.6, id 0): 64-byte header + a 128-byte raw image. Pinned on the device
         // side by `obc-dfu` and on the app side by the iOS `OBCUHeader` decoder.
         ("update-container-v1.bin", update_container_v1()),
+        // The **signed** OBCU v2 container (spec §1, epic #773 / #997): the same header table and the
+        // same 128-byte image, plus the scheme marker in v1's reserved bytes and a 64-byte Ed25519
+        // trailer under the committed test key. Kept alongside v1 rather than replacing it: v1 is
+        // still what a fielded bootloader and the device's own ROLLBACK.BIN look like, and the pair
+        // is what pins the offset-compatibility guarantee across implementations.
+        ("update-container-v2.bin", update_container_v2()),
         // Catalog for the stored route fixtures + a synthetic third entry: fields from their OBCR
         // headers (distance 2207 m, ascent 76 m, 9 points), ids continuing from 7, each with its
         // whole-object content CRC-32, and the epic #638 S4 auto-expiry tail spanning a spread of

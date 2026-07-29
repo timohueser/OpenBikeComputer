@@ -6,6 +6,12 @@
 //! confirm — lives here behind two small IO traits so the whole matrix runs on the host with mocks
 //! (`tests/armer.rs`). The mirror of the [`engine`](crate::engine)/`obc-boot` split.
 //!
+//! Since #997 the armer is also the **trust boundary**: [`scan`] verifies the container's Ed25519
+//! signature (`OBCU_Spec.md` §1.3) against a caller-supplied key before an arm is even possible, and
+//! rejects unsigned/v1 containers outright. The 32 KB bootloader deliberately does not verify — it is
+//! flashed once and can never be updated, so the trust root lives in the half that ships with every
+//! image (see [`crate::sig`]).
+//!
 //! Per `OBCU_Spec.md` §2.3 (normative, pinned in S3): the extent chain a [`StageIo`] resolves
 //! covers the **whole staged file** — the 64-byte OBCU header is part of the chain — while the
 //! [`StagedRef`]'s `len`/`crc32` stay **raw-image** values. [`scan`] validates exactly that shape;
@@ -16,6 +22,7 @@
 use crate::crc32::Crc32;
 use crate::engine::IoError;
 use crate::image::{ImageHeader, HEADER_LEN, MAX_IMAGE_LEN};
+use crate::sig::{PublicKey, Verifier, SIG_LEN, SIG_SCHEME_ED25519};
 use crate::state::{BootState, Extent, LastOutcome, OutcomeKind, StagedRef, MAX_EXTENTS};
 
 /// Why the staging scan rejected `UPDATE.BIN`. Surfaced **verbatim** by S5's UI (and, until then,
@@ -32,6 +39,15 @@ pub enum ScanError {
     BadHeader,
     /// The full CRC-32 pass over the image body didn't match the header — a corrupt copy.
     BadCrc,
+    /// The container carries **no signature this firmware can verify** (`OBCU_Spec.md` §1.3): either
+    /// a plain v1/unsigned image, or a `sig_scheme` from some future scheme. Rejected, not merely
+    /// warned about — accepting unsigned containers would make the signature bypassable by simply
+    /// re-wrapping a payload the v1 way.
+    Unsigned,
+    /// The container is signed, the CRC passed, and the **Ed25519 signature did not verify** against
+    /// the key this firmware trusts: a forged or tampered image, a re-labelled version/length, or an
+    /// image signed by a key that isn't ours.
+    BadSignature,
     /// `image_len` exceeds [`MAX_IMAGE_LEN`] (the app slot) — the image can never be flashed.
     Oversize,
     /// The file resolves to more than [`MAX_EXTENTS`] block runs. Carries the true count; the
@@ -54,6 +70,8 @@ impl ScanError {
             ScanError::Truncated => "UPDATE.BIN is shorter than its header claims (torn copy?)",
             ScanError::BadHeader => "UPDATE.BIN is not a valid update image (bad header)",
             ScanError::BadCrc => "UPDATE.BIN failed its CRC check (corrupt copy?)",
+            ScanError::Unsigned => "UPDATE.BIN is not signed — this device only installs signed updates",
+            ScanError::BadSignature => "UPDATE.BIN's signature is not valid for this device",
             ScanError::Oversize => "update image is too large for this device",
             ScanError::TooFragmented { .. } => "UPDATE.BIN is too fragmented — delete it and copy it again",
             ScanError::Io => "SD read failed — try again",
@@ -89,15 +107,27 @@ pub trait StageIo {
     fn stage_extents(&mut self, out: &mut [Extent; MAX_EXTENTS]) -> Result<usize, ExtentsError>;
 }
 
-/// The staging scan + validation (issue #619 §1): find the file, decode its header, gate the
-/// size, run the **full CRC-32 pass** over the image body, and resolve the whole-file extent
-/// chain — returning the [`StagedRef`] the arm records, or the first [`ScanError`] hit. Nothing
-/// is written anywhere; a failed scan costs nothing.
+/// The staging scan + validation (issue #619 §1, extended by #997): find the file, decode its
+/// header, gate the size, gate the **signature scheme**, run the **full CRC-32 pass** over the image
+/// body *and the Ed25519 verification in the same pass*, then resolve the whole-file extent chain —
+/// returning the [`StagedRef`] the arm records, or the first [`ScanError`] hit. Nothing is written
+/// anywhere; a failed scan costs nothing.
 ///
-/// `chunk` is the caller's CRC staging buffer (any non-empty size; the board passes a small
-/// stack buffer matching `sd.rs`'s 512-byte transfer idiom — no new resident statics).
-pub fn scan(io: &mut impl StageIo, chunk: &mut [u8]) -> Result<StagedRef, ScanError> {
-    debug_assert!(!chunk.is_empty(), "scan needs a non-empty CRC staging buffer");
+/// `chunk` is the caller's staging buffer (any non-empty size; the board passes a small stack buffer
+/// matching `sd.rs`'s 512-byte transfer idiom — no new resident statics). The image is read
+/// **once**: every byte is fed to the CRC and to the signature hash on the way past, so adding
+/// verification cost no extra card traffic.
+///
+/// `key` is the **verify-before-arm seam** (#997): the board passes
+/// [`RELEASE_PUBKEY`](crate::sig::RELEASE_PUBKEY), the host tests pass a test key. It is a plain
+/// parameter on purpose — the trusted key is never swapped behind a `cfg`/feature, so the code path
+/// the tests exercise is exactly the one that ships.
+///
+/// **Policy** (`OBCU_Spec.md` §1.4): an unsigned (v1) container is *rejected*, not merely flagged.
+/// CRC-32 remains the corruption check it always was — it runs first, so a corrupt copy still reads
+/// as "damaged", not "untrusted".
+pub fn scan(io: &mut impl StageIo, chunk: &mut [u8], key: &PublicKey) -> Result<StagedRef, ScanError> {
+    debug_assert!(!chunk.is_empty(), "scan needs a non-empty staging buffer");
     let file_len = io.stage_len().ok_or(ScanError::Missing)?;
     if (file_len as usize) < HEADER_LEN {
         return Err(ScanError::Truncated);
@@ -112,23 +142,38 @@ pub fn scan(io: &mut impl StageIo, chunk: &mut [u8]) -> Result<StagedRef, ScanEr
     if header.image_len == 0 || header.image_len > MAX_IMAGE_LEN {
         return Err(ScanError::Oversize);
     }
-    if (file_len as u64) < HEADER_LEN as u64 + header.image_len as u64 {
+    // The signature gate, before any bulk read: only the scheme we verify, at the length it must
+    // be. A v1/unsigned container and a future scheme both land here — this device cannot vouch
+    // for either, and "install it anyway" is precisely the bypass v2 exists to close.
+    if header.sig_scheme != SIG_SCHEME_ED25519 || header.sig_len as usize != SIG_LEN {
+        return Err(ScanError::Unsigned);
+    }
+    // `container_len` counts the signature trailer, so a file that stops before it is Truncated.
+    if (file_len as u64) < header.container_len() {
         return Err(ScanError::Truncated);
     }
 
-    // Full CRC-32 pass over the image body through the byte source — the armer-side half of
-    // "verify before erase" (the bootloader re-verifies over the raw extents).
+    // The trailer, read before the streaming pass so a malformed signature or key costs nothing.
+    let mut signature = [0u8; SIG_LEN];
+    io.read_stage(header.sig_offset() as u32, &mut signature).map_err(|_| ScanError::Io)?;
+    let mut verifier = Verifier::new(key, &header, &signature).map_err(|_| ScanError::BadSignature)?;
+
+    // One pass over the image body: the CRC-32 (the armer-side half of "verify before erase" —
+    // the bootloader re-CRCs over the raw extents) and the signature hash together.
     let mut crc = Crc32::new();
     let mut done = 0u32;
     while done < header.image_len {
         let n = chunk.len().min((header.image_len - done) as usize);
         io.read_stage(HEADER_LEN as u32 + done, &mut chunk[..n]).map_err(|_| ScanError::Io)?;
         crc.update(&chunk[..n]);
+        verifier.absorb(&chunk[..n]);
         done += n as u32;
     }
+    // Corruption first (it is the likelier failure and the more actionable message), then trust.
     if crc.finalize() != header.image_crc32 {
         return Err(ScanError::BadCrc);
     }
+    verifier.finish().map_err(|_| ScanError::BadSignature)?;
 
     // The whole-file extent chain (spec §2.3). The too-fragmented count gate has two real walls: the
     // fixed-capacity `[Extent; MAX_EXTENTS]` buffer physically caps what `stage_extents` can write
@@ -187,6 +232,11 @@ pub trait ArmIo {
     /// `/ROLLBACK.BIN` as a full OBCU container and extent-resolve it (whole-file chain, spec
     /// §2.3). `Ok(None)` = the slot's bytes no longer CRC-match `installed` (an SWD reflash) —
     /// arm without a rollback rather than record one the bootloader would reject.
+    ///
+    /// The snapshot is written as an **unsigned** container ([`ImageHeader::unsigned`]): the device
+    /// cannot re-create the original signature from slot bytes alone, and nothing verifies one —
+    /// the snapshot never passes through [`scan`], and the bootloader's rollback path checks it by
+    /// CRC. Marking it signed would be a lie in a file `obc-mkimage inspect` reads.
     fn snapshot(&mut self, installed: &ImageHeader) -> Result<Option<StagedRef>, ScanError>;
 
     /// Persist `state` to the BOOT_STATE page (encode + 16-byte-line RRAM writes).

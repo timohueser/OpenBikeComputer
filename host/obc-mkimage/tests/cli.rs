@@ -1,12 +1,18 @@
-//! `obc-mkimage` end-to-end tests: drive the built binary through the real `wrap`/`inspect` flow.
+//! `obc-mkimage` end-to-end tests: drive the built binary through the real
+//! `keygen`/`wrap`/`sign`/`inspect` flow, including the OBCU v2 signature (#997).
 
 use std::path::PathBuf;
 use std::process::Command;
 
-use obc_dfu::{ImageHeader, HEADER_LEN, MAX_IMAGE_LEN};
+use obc_dfu::{ImageHeader, HEADER_LEN, MAX_IMAGE_LEN, SIG_LEN, SIG_SCHEME_ED25519};
 
 fn bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_obc-mkimage"))
+}
+
+/// The committed test keypair (`firmware/obc-dfu/keys/test/`), resolved from this crate's root.
+fn test_key(ext: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../firmware/obc-dfu/keys/test").join(format!("obcu-test.{ext}"))
 }
 
 /// A unique scratch path under the target dir (no external tempdir dep). A process-local counter
@@ -30,8 +36,8 @@ fn fake_image(extra: &[u8]) -> Vec<u8> {
     v
 }
 
-/// wrap → inspect → decode the produced file and byte-compare the header fields against a header we
-/// build independently. Also asserts inspect exits 0 and prints "valid".
+/// wrap+sign → inspect → decode the produced file and byte-compare the header fields against a
+/// header we build independently. Also asserts inspect exits 0 and prints "valid".
 #[test]
 fn golden_roundtrip() {
     let bin_path = scratch("app.bin");
@@ -45,22 +51,27 @@ fn golden_roundtrip() {
         .arg(&bin_path)
         .args(["--version", version, "--out"])
         .arg(&out_path)
+        .arg("--sign-seed")
+        .arg(test_key("seed"))
         .output()
         .unwrap();
     assert!(w.status.success(), "wrap failed: {}", String::from_utf8_lossy(&w.stderr));
 
-    // The produced file: 64-byte header + the exact raw image.
+    // The produced file: 64-byte header + the exact raw image + the 64-byte signature trailer.
     let blob = std::fs::read(&out_path).unwrap();
-    assert_eq!(&blob[HEADER_LEN..], &image[..], "raw image preserved verbatim");
+    assert_eq!(blob.len(), HEADER_LEN + image.len() + SIG_LEN);
+    assert_eq!(&blob[HEADER_LEN..HEADER_LEN + image.len()], &image[..], "raw image preserved verbatim");
 
     let decoded = ImageHeader::decode(blob[..HEADER_LEN].try_into().unwrap()).expect("header decodes");
-    let expected = ImageHeader::new(&image, version);
+    let expected = ImageHeader::new(&image, version).signed();
     assert_eq!(decoded, expected, "header fields match an independent build");
     assert_eq!(decoded.fw_version_str(), version);
     assert_eq!(decoded.image_len as usize, image.len());
+    assert_eq!(decoded.sig_scheme, SIG_SCHEME_ED25519);
+    assert_eq!(decoded.sig_len as usize, SIG_LEN);
 
-    let i = bin().arg("inspect").arg(&out_path).output().unwrap();
-    assert!(i.status.success(), "inspect should pass a good image");
+    let i = bin().arg("inspect").arg(&out_path).arg("--pubkey").arg(test_key("pub")).output().unwrap();
+    assert!(i.status.success(), "inspect should pass a good image: {}", String::from_utf8_lossy(&i.stdout));
     let stdout = String::from_utf8_lossy(&i.stdout);
     assert!(stdout.contains("=> valid"), "inspect output: {stdout}");
     assert!(stdout.contains(version));
@@ -69,7 +80,170 @@ fn golden_roundtrip() {
     let _ = std::fs::remove_file(&out_path);
 }
 
-/// inspect exits non-zero and reports the mismatch when the image bytes are corrupted after wrapping.
+/// Signing is deterministic: the same seed + version + image always produces the same container.
+/// A release artifact is reproducible, and the committed spec vector can be a fixed file.
+#[test]
+fn signing_is_reproducible() {
+    let bin_path = scratch("repro.bin");
+    let a_path = scratch("REPRO-A.BIN");
+    let b_path = scratch("REPRO-B.BIN");
+    std::fs::write(&bin_path, fake_image(b"reproducible payload")).unwrap();
+
+    for out in [&a_path, &b_path] {
+        let w = bin()
+            .args(["wrap", "--bin"])
+            .arg(&bin_path)
+            .args(["--version", "v1.0.0", "--out"])
+            .arg(out)
+            .arg("--sign-seed")
+            .arg(test_key("seed"))
+            .output()
+            .unwrap();
+        assert!(w.status.success());
+    }
+    assert_eq!(std::fs::read(&a_path).unwrap(), std::fs::read(&b_path).unwrap());
+
+    let _ = std::fs::remove_file(&bin_path);
+    let _ = std::fs::remove_file(&a_path);
+    let _ = std::fs::remove_file(&b_path);
+}
+
+/// The `sign` subcommand attaches a trailer to an already-wrapped container, and the result is
+/// byte-identical to what `wrap --sign-seed` would have produced in one step.
+#[test]
+fn sign_matches_wrap_sign_seed() {
+    let bin_path = scratch("late.bin");
+    let unsigned_path = scratch("LATE-UNSIGNED.BIN");
+    let signed_path = scratch("LATE-SIGNED.BIN");
+    let one_shot_path = scratch("LATE-ONESHOT.BIN");
+    std::fs::write(&bin_path, fake_image(b"signed after the fact")).unwrap();
+
+    let w = bin()
+        .args(["wrap", "--bin"])
+        .arg(&bin_path)
+        .args(["--version", "v2.0.0", "--out"])
+        .arg(&unsigned_path)
+        .output()
+        .unwrap();
+    assert!(w.status.success());
+    assert!(String::from_utf8_lossy(&w.stderr).contains("UNSIGNED"), "an unsigned wrap warns loudly");
+
+    let s = bin()
+        .args(["sign", "--in"])
+        .arg(&unsigned_path)
+        .arg("--out")
+        .arg(&signed_path)
+        .arg("--seed")
+        .arg(test_key("seed"))
+        .output()
+        .unwrap();
+    assert!(s.status.success(), "sign failed: {}", String::from_utf8_lossy(&s.stderr));
+
+    let w2 = bin()
+        .args(["wrap", "--bin"])
+        .arg(&bin_path)
+        .args(["--version", "v2.0.0", "--out"])
+        .arg(&one_shot_path)
+        .arg("--sign-seed")
+        .arg(test_key("seed"))
+        .output()
+        .unwrap();
+    assert!(w2.status.success());
+    assert_eq!(std::fs::read(&signed_path).unwrap(), std::fs::read(&one_shot_path).unwrap());
+
+    let i = bin().arg("inspect").arg(&signed_path).arg("--pubkey").arg(test_key("pub")).output().unwrap();
+    assert!(i.status.success());
+
+    for p in [&bin_path, &unsigned_path, &signed_path, &one_shot_path] {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
+/// The seed can come from the environment instead of a file — how CI signs without ever writing the
+/// secret to disk.
+#[test]
+fn sign_seed_from_env() {
+    let bin_path = scratch("env.bin");
+    let out_path = scratch("ENV.BIN");
+    std::fs::write(&bin_path, fake_image(b"signed from the environment")).unwrap();
+    let seed_hex = std::fs::read_to_string(test_key("seed")).unwrap();
+
+    let w = bin()
+        .args(["wrap", "--bin"])
+        .arg(&bin_path)
+        .args(["--version", "v3.0.0", "--out"])
+        .arg(&out_path)
+        .args(["--sign-seed-env", "OBCU_TEST_SEED"])
+        .env("OBCU_TEST_SEED", seed_hex.trim())
+        .output()
+        .unwrap();
+    assert!(w.status.success(), "env-sourced seed: {}", String::from_utf8_lossy(&w.stderr));
+
+    let i = bin().arg("inspect").arg(&out_path).arg("--pubkey").arg(test_key("pub")).output().unwrap();
+    assert!(i.status.success());
+
+    // …and an unset variable is a clean error, not a silent unsigned build.
+    let miss = bin()
+        .args(["wrap", "--bin"])
+        .arg(&bin_path)
+        .args(["--version", "v3.0.0", "--out"])
+        .arg(&out_path)
+        .args(["--sign-seed-env", "OBCU_DEFINITELY_UNSET_SEED"])
+        .env_remove("OBCU_DEFINITELY_UNSET_SEED")
+        .output()
+        .unwrap();
+    assert!(!miss.status.success());
+    assert!(String::from_utf8_lossy(&miss.stderr).contains("is not set"));
+
+    let _ = std::fs::remove_file(&bin_path);
+    let _ = std::fs::remove_file(&out_path);
+}
+
+/// `keygen` produces a usable pair: sign with the new seed, verify with the new pubkey — and the
+/// committed test key must *not* verify it (the rotation story, end to end).
+#[test]
+fn keygen_produces_a_working_pair() {
+    let dir = scratch("keygen-dir");
+    std::fs::create_dir_all(&dir).unwrap();
+    let bin_path = scratch("kg.bin");
+    let out_path = scratch("KG.BIN");
+    std::fs::write(&bin_path, fake_image(b"signed with a fresh key")).unwrap();
+
+    let k = bin().args(["keygen", "--out-dir"]).arg(&dir).args(["--name", "fresh"]).output().unwrap();
+    assert!(k.status.success(), "keygen failed: {}", String::from_utf8_lossy(&k.stderr));
+    let seed = dir.join("fresh.seed");
+    let public = dir.join("fresh.pub");
+    assert_eq!(std::fs::read_to_string(&seed).unwrap().trim().len(), 64, "seed is 64 hex chars");
+    assert_eq!(std::fs::read_to_string(&public).unwrap().trim().len(), 64, "pubkey is 64 hex chars");
+
+    // A second keygen into the same names must refuse rather than clobber a key.
+    let again = bin().args(["keygen", "--out-dir"]).arg(&dir).args(["--name", "fresh"]).output().unwrap();
+    assert!(!again.status.success(), "keygen must never overwrite an existing key");
+
+    let w = bin()
+        .args(["wrap", "--bin"])
+        .arg(&bin_path)
+        .args(["--version", "v4.0.0", "--out"])
+        .arg(&out_path)
+        .arg("--sign-seed")
+        .arg(&seed)
+        .output()
+        .unwrap();
+    assert!(w.status.success());
+
+    let ok = bin().arg("inspect").arg(&out_path).arg("--pubkey").arg(&public).output().unwrap();
+    assert!(ok.status.success(), "the fresh pair verifies its own image");
+
+    let wrong = bin().arg("inspect").arg(&out_path).arg("--pubkey").arg(test_key("pub")).output().unwrap();
+    assert!(!wrong.status.success(), "a different key must not verify it");
+    assert!(String::from_utf8_lossy(&wrong.stdout).contains("INVALID"));
+
+    let _ = std::fs::remove_file(&bin_path);
+    let _ = std::fs::remove_file(&out_path);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// inspect is CI's gate: every way a container can be wrong exits non-zero.
 #[test]
 fn inspect_rejects_corrupted_image() {
     let bin_path = scratch("app2.bin");
@@ -81,17 +255,64 @@ fn inspect_rejects_corrupted_image() {
         .arg(&bin_path)
         .args(["--version", "v0", "--out"])
         .arg(&out_path)
+        .arg("--sign-seed")
+        .arg(test_key("seed"))
+        .output()
+        .unwrap();
+    assert!(w.status.success());
+    let good = std::fs::read(&out_path).unwrap();
+
+    // A flipped image byte: the image CRC breaks (and so would the signature).
+    let mut blob = good.clone();
+    blob[HEADER_LEN + 4] ^= 0xFF;
+    std::fs::write(&out_path, &blob).unwrap();
+    let i = bin().arg("inspect").arg(&out_path).arg("--pubkey").arg(test_key("pub")).output().unwrap();
+    assert!(!i.status.success(), "inspect must fail a corrupted image");
+
+    // A flipped signature byte: CRCs still fine, signature is not.
+    let mut blob = good.clone();
+    let last = blob.len() - 1;
+    blob[last] ^= 0xFF;
+    std::fs::write(&out_path, &blob).unwrap();
+    let i = bin().arg("inspect").arg(&out_path).arg("--pubkey").arg(test_key("pub")).output().unwrap();
+    assert!(!i.status.success(), "inspect must fail a broken signature");
+    assert!(String::from_utf8_lossy(&i.stdout).contains("INVALID"));
+
+    // The trailer cut off entirely — the header still promises one.
+    let mut blob = good;
+    blob.truncate(HEADER_LEN + image.len());
+    std::fs::write(&out_path, &blob).unwrap();
+    let i = bin().arg("inspect").arg(&out_path).arg("--pubkey").arg(test_key("pub")).output().unwrap();
+    assert!(!i.status.success(), "inspect must fail a missing trailer");
+    assert!(String::from_utf8_lossy(&i.stdout).contains("MISSING"));
+
+    let _ = std::fs::remove_file(&bin_path);
+    let _ = std::fs::remove_file(&out_path);
+}
+
+/// An unsigned (v1) container fails `inspect` by default — that default is what keeps an unsigned
+/// artifact from reaching a release — but is inspectable with the explicit escape hatch.
+#[test]
+fn inspect_rejects_unsigned_unless_allowed() {
+    let bin_path = scratch("v1.bin");
+    let out_path = scratch("V1.BIN");
+    std::fs::write(&bin_path, fake_image(b"an old-style container")).unwrap();
+    let w = bin()
+        .args(["wrap", "--bin"])
+        .arg(&bin_path)
+        .args(["--version", "v0.9.0", "--out"])
+        .arg(&out_path)
         .output()
         .unwrap();
     assert!(w.status.success());
 
-    let mut blob = std::fs::read(&out_path).unwrap();
-    let last = blob.len() - 1;
-    blob[last] ^= 0xFF; // flip an image byte; header CRC still valid, image CRC won't be
-    std::fs::write(&out_path, &blob).unwrap();
+    let strict = bin().arg("inspect").arg(&out_path).output().unwrap();
+    assert!(!strict.status.success(), "an unsigned container must not pass the gate");
+    assert!(String::from_utf8_lossy(&strict.stdout).contains("NONE"));
 
-    let i = bin().arg("inspect").arg(&out_path).output().unwrap();
-    assert!(!i.status.success(), "inspect must fail a corrupted image");
+    let lenient = bin().arg("inspect").arg(&out_path).arg("--allow-unsigned").output().unwrap();
+    assert!(lenient.status.success(), "…but --allow-unsigned still reports on it");
+    assert!(String::from_utf8_lossy(&lenient.stdout).contains("=> valid"));
 
     let _ = std::fs::remove_file(&bin_path);
     let _ = std::fs::remove_file(&out_path);
@@ -139,8 +360,8 @@ fn wrap_warns_on_tiny_image() {
     assert!(String::from_utf8_lossy(&w.stderr).contains("warning"), "expected a short-image warning");
     assert!(out_path.exists(), "file is still written");
 
-    // The wrapped file still inspects clean (the container itself is valid).
-    let i = bin().arg("inspect").arg(&out_path).output().unwrap();
+    // The wrapped file still inspects clean as a container (it is simply unsigned).
+    let i = bin().arg("inspect").arg(&out_path).arg("--allow-unsigned").output().unwrap();
     assert!(i.status.success());
 
     let _ = std::fs::remove_file(&bin_path);
