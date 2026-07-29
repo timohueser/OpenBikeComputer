@@ -32,9 +32,13 @@ use sha2::{Digest, Sha256};
 /// broke. `host/obc-pack`'s `the_cli_and_the_library_produce_the_same_bytes`
 /// packs the same fixture against system GEOS and is the control.
 /// Recorded on macOS arm64 against **both** the vendored static GEOS 3.14.1 and a
-/// Homebrew libgeos 3.14.1 dylib — they agree, which is why this is pinned rather
+/// system libgeos 3.14.1 dylib — they agree, which is why this is pinned rather
 /// than merely printed.
-const TINY_OBCM_SHA256: &str = "6bccac507afcd00304f37a3c9714d3326410cfaa68308beba788eb284c2faadb";
+///
+/// Re-pinned for default preset **v4** (the bikepacking restyle: 7-tier LOD
+/// pyramid + footprint culling + merge_lines), which legitimately changes the
+/// packed bytes; all three CI platforms produced this same digest (30 620 bytes).
+const TINY_OBCM_SHA256: &str = "9a5aacb147b731d9a8edc7bfef172850599b27500dcee6659c5034a69d2764a4";
 
 fn repo(rel: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(rel)
