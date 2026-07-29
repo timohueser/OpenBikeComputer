@@ -1621,6 +1621,14 @@ impl App {
         }
     }
 
+    /// [`HostEvent::TripUploaded`]: the "TRIP RECEIVED" advisory prompt. Nothing to adopt or
+    /// invalidate — a trip is a folder of already-committed routes (each of which raised its own
+    /// event when it landed); this popup replaces the burst's last per-route popup, so one card
+    /// announces the whole delivery.
+    fn on_trip_uploaded(&mut self, id: u16) {
+        self.ui.post_trip_upload_event(id, &self.catalogs, self.activity.is_tracking());
+    }
+
     /// [`HostEvent::Warning`]: accumulate the flags and deliver (or defer) the advisory card.
     fn on_warning(&mut self, flags: WarningFlags) {
         self.ui.post_warning(flags);
@@ -2420,6 +2428,7 @@ impl App {
         match event {
             HostEvent::StoreChanged => self.host.note_store_changed(),
             HostEvent::RouteUploaded { id, replaced, elevation } => self.on_route_uploaded(id, replaced, elevation),
+            HostEvent::TripUploaded { id } => self.on_trip_uploaded(id),
             HostEvent::Warning(flags) => self.on_warning(flags),
             HostEvent::NavPlanned(result) => self.on_nav_planned(result),
             HostEvent::DetourPlanned(result) => self.on_detour_planned(result),

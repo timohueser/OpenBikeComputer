@@ -388,6 +388,15 @@ active_route = "Parcours actif"
 nav_follows = "Le guidage suit"
 new_version = "la nouvelle version"
 
+# --- Trip-received popup (the trip twin of the route-received card) ---
+[trip_received]
+title = "VOYAGE REÇU"
+view_trip = "Voir voyage"
+dismiss = "Ignorer"
+route_one = "parcours"
+routes = "parcours"
+trip_removed = "Voyage retiré"
+
 # --- Route swap / active-route prompt ---
 [route_swap]
 received_title = "PARCOURS REÇU"

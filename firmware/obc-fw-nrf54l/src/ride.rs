@@ -1371,6 +1371,17 @@ pub(crate) async fn run_app(
                 app.apply_event(obc_app::HostEvent::RouteUploaded { id, replaced, elevation });
             }
 
+            // The trip twin, drained strictly **after** the route event: a trip object commits after
+            // its member routes (it references their ids), so posting its event last hands the app's
+            // single most-recent-wins prompt slot to the "TRIP RECEIVED" card — one popup for the
+            // whole routes-then-trip transfer instead of a per-route parade. The rescan above already
+            // re-fed the trip catalog (`load_trips`), so the id resolves; shared `ObjectStore` path,
+            // so BLE and USB uploads behave identically.
+            #[cfg(feature = "ble")]
+            if let Some(id) = crate::object_store::take_trip_uploaded() {
+                app.apply_event(obc_app::HostEvent::TripUploaded { id });
+            }
+
             // Settings coherence, phone → device (#456): a BLE Config write persisted units + name to
             // RRAM but the live `App` copy never learned. Reload the BLE-owned fields into it *before*
             // the change-detection save below, so (a) the UI re-captions same-session and (b) the app's
