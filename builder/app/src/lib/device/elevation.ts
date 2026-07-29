@@ -121,6 +121,66 @@ export function windowIndexRange(cum: readonly number[], window: ProfileWindow):
 }
 
 /**
+ * Slide the window along the track by `deltaT` (a fraction of the total distance), preserving its
+ * span — the Ctrl/⌘-drag pan. Clamped so the window never leaves `[0, 1]` and never resizes.
+ */
+export function panWindow(window: ProfileWindow, deltaT: number): ProfileWindow {
+    const [t0, t1] = window;
+    const span = t1 - t0;
+    const n0 = Math.max(0, Math.min(1 - span, t0 + deltaT));
+    return [n0, n0 + span];
+}
+
+/**
+ * The `[lat, lon]` at distance `d` metres along the track — interpolated within the segment that
+ * contains it, clamped to the ends. The hover cursor's map position: one distance axis
+ * ({@link cumulativeDistances}) in, one point on the drawn polyline out. Null on an empty track.
+ */
+export function pointAtDistance(
+    points: readonly ProfilePoint[],
+    cum: readonly number[],
+    d: number,
+): { lat: number; lon: number } | null {
+    if (points.length === 0 || cum.length !== points.length) return null;
+    if (points.length === 1) return { lat: points[0].lat, lon: points[0].lon };
+    const target = Math.max(0, Math.min(d, cum[cum.length - 1]));
+    // Binary search for the segment holding `target` — hover runs per animation frame.
+    let lo = 0;
+    let hi = cum.length - 1;
+    while (lo + 1 < hi) {
+        const mid = (lo + hi) >> 1;
+        if (cum[mid] <= target) lo = mid;
+        else hi = mid;
+    }
+    const span = cum[hi] - cum[lo];
+    const t = span > 0 ? (target - cum[lo]) / span : 0;
+    return {
+        lat: points[lo].lat + (points[hi].lat - points[lo].lat) * t,
+        lon: points[lo].lon + (points[hi].lon - points[lo].lon) * t,
+    };
+}
+
+/**
+ * The index of the track point nearest `(lat, lon)`, by the same equirectangular metric the
+ * distance axis uses — the reverse hover: map cursor in, position along the track out
+ * (`cum[index]`). A plain scan: preview tracks are thousands of points, and one pass per
+ * animation frame is nothing. `-1` on an empty track.
+ */
+export function nearestPointIndex(points: readonly ProfilePoint[], lat: number, lon: number): number {
+    const probe: ProfilePoint = { lat, lon, ele: null };
+    let best = -1;
+    let bestM = Infinity;
+    for (let i = 0; i < points.length; i++) {
+        const m = groundDistanceM(points[i], probe);
+        if (m < bestM) {
+            bestM = m;
+            best = i;
+        }
+    }
+    return best;
+}
+
+/**
  * Build the profile for the window, or null where there is nothing honest to draw — fewer than
  * two usable points in the window, or no elevation anywhere in it. A *flat* track still draws (a
  * flat line is a true statement); a track with no elevation data does not.

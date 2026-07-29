@@ -28,8 +28,10 @@ describe("expiryPhrase", () => {
         expect(expiryPhrase({ retention: 0, expiresAt: at(86_400) }, now)).toBe("kept forever");
     });
 
-    it("reads a level with no started countdown as not started", () => {
-        expect(expiryPhrase({ retention: 2, expiresAt: 0 }, now)).toBe("expiry not started");
+    it("reads a level with no started countdown as expiring after use", () => {
+        expect(expiryPhrase({ retention: 2, expiresAt: 0 }, now)).toBe("expires 1 week after use");
+        expect(expiryPhrase({ retention: 1, expiresAt: 0 }, now)).toBe("expires 1 day after use");
+        expect(expiryPhrase({ retention: 5, expiresAt: 0 }, now)).toBe("expires 2 months after use");
     });
 
     it("counts days, rounding up, with tomorrow special-cased", () => {

@@ -80,7 +80,9 @@
         <Tile label={`Preview “${nameOf(route)}”`} disabled={busy} onopen={() => onopen(route)}>
             {#snippet thumb()}
                 {@const track = trackFor(route.objectId)}
-                <TrackThumb segments={track ? [{ track }] : []}>
+                <!-- Coral, matching the detailed preview's track — rides draw forest, so the two
+                     galleries tell apart at a glance. -->
+                <TrackThumb segments={track ? [{ track, color: "var(--coral)" }] : []}>
                     {#snippet tag()}
                         <span class="tag" class:warn={expiryWarns(route)}>{expiryPhrase(route)}</span>
                     {/snippet}
