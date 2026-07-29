@@ -175,7 +175,22 @@ There are three ways it gets there, and **exactly one** way it gets installed.
   nothing — the device still verifies over what actually landed on the card. What
   it buys is that "that isn't a firmware update" arrives in a second instead of
   after an upload. A device running a development build reports a git hash rather
-  than a version, which does not parse, and no update is ever offered for it.
+  than a version, which does not parse: no update is ever offered for it, and the
+  page says exactly that — *development build, automatic updates paused* — rather
+  than going quiet. The file picker beside it still accepts an `UPDATE.BIN` by
+  hand, which is how such a device gets back onto a release.
+
+That check is one anonymous GET of a published manifest — no account, no query,
+nothing said about the device — made only **once a device is connected**, because
+with nothing to compare against the request would buy the rider nothing and cost
+them a connection they did not ask for. The manifest is served from the project's
+own domain, mirrored from the tagged GitHub release, which stays the source of
+truth; nothing about trust rides on that choice, since the SHA-256 in the manifest
+and the container's own CRC-32s are what say an image is genuine, not the host
+that served it. When the answer is *there is something newer*, the page says so
+where the rider already is — a small note, never a modal, naming the version and
+offering to show it. It stages nothing itself; it can only point at the one card
+that does, and it asks once per device and version.
 
 The crucial rule is shared by all three paths and stated plainly in the BLE spec's
 security posture: **installing always confirms on the glass.** A peer can
