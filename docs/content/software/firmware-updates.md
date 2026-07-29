@@ -185,9 +185,11 @@ nothing said about the device — made only **once a device is connected**, beca
 with nothing to compare against the request would buy the rider nothing and cost
 them a connection they did not ask for. The manifest is served from the project's
 own domain, mirrored from the tagged GitHub release, which stays the source of
-truth; nothing about trust rides on that choice, since the SHA-256 in the manifest
-and the container's own CRC-32s are what say an image is genuine, not the host
-that served it. When the answer is *there is something newer*, the page says so
+truth; nothing about trust rides on that choice, because what says an image is
+genuine is the signature the device verifies before it will arm anything — not the
+host that served it. The SHA-256 beside it answers a narrower question, and only
+that one: whether the download arrived whole, checked here before a byte goes over
+the cable. When the answer is *there is something newer*, the page says so
 where the rider already is — a small note, never a modal, naming the version and
 offering to show it. It stages nothing itself; it can only point at the one card
 that does, and it asks once per device and version.
