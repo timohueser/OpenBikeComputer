@@ -14,8 +14,9 @@ and the simulator + tests first-class.
     obc-route → obc-render → obc-app, the platform adapters, the
     `obc-fw-nrf54l` board crate and `obc-boot`.
   - `host/` — tools and oracles, never on the device: `obc-pack` (the std-host
-    map packer, OSM `.osm.pbf` → `.obcm`), `obc-mkimage`, `obc-bench`,
-    `obcm-testkit`, `obc-vectors`, `obc-host-core`, `obc-replay`,
+    map packer, OSM `.osm.pbf` → `.obcm`), `obc-bake` (the bakery: the curated
+    region list → a catalog tree → published objects), `obc-mkimage`,
+    `obc-bench`, `obcm-testkit`, `obc-vectors`, `obc-host-core`, `obc-replay`,
     `obc-usb-host`.
   - `apps/` — the shells: `obc-sim`, `obc-web-demo`, `obc-web-convert`,
     `obc-desktop`.
