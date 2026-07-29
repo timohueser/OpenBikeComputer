@@ -221,6 +221,13 @@ fn densify_extra(p1: (i64, i64), p2: (i64, i64)) -> usize {
 /// real bytes overflow the chunk gets features silently dropped at pack time.
 /// Always ≥ the packed size: deltas are budgeted at the 16-bit worst case, and
 /// the exterior's anchor vertex is counted although it packs into the header.
+///
+/// The leading `12` is now a deliberate **overestimate**: v11 writes a 7-byte compact header for
+/// the common feature (§5), and the budget must stay ≥ the feature's real bytes *plus its share of
+/// the chunk's one sentinel byte*. The 4-byte anchor-vertex overcount already covers that +1 per
+/// feature on its own, so the wide-header figure is kept as headroom rather than tightened. Under
+/// v10's padded chunks an overestimate wasted file bytes; with tight chunks it costs nothing but a
+/// marginally earlier leaf split.
 pub fn packed_size_budget(g: &Geom) -> usize {
     const NO_HOLES: &[Vec<(f64, f64)>] = &[];
     let (exterior, interiors) = match g {

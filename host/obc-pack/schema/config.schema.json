@@ -61,7 +61,7 @@
       "minimum": 256,
       "default": 4096,
       "description": "Quadtree chunk payload target in bytes. The maximum is the reader's per-feature vertex cap; the minimum guards against chunks so small that features are dropped wholesale. Values outside the range are rejected at pack time. Governs the geometry sections (LODs) only; the nav graph's chunks are pinned to 512 bytes.",
-      "maximum": 4106
+      "maximum": 4101
     },
     "merge_fills": {
       "type": [
