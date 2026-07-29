@@ -14,6 +14,23 @@
 //! as one object. A failure anywhere before that last step leaves the previous
 //! manifest — and therefore the previous, complete catalog — exactly as it was.
 //!
+//! ## The shrink guard
+//!
+//! Ordering protects a publish from being observed half-done. It does nothing about
+//! a publish that is complete and *smaller*, which is the likelier accident: the
+//! manifest is generated from one tree, so publishing a partial tree — a CI run that
+//! bakes only the small regions, a `--region`-narrowed local run — replaces the live
+//! catalog with a strictly smaller one. No error, no half-state, and fifteen regions
+//! quietly stop being offered. To a rider that is indistinguishable from a curation
+//! decision, which is the exact failure this crate is built to be loud about.
+//!
+//! So before the first byte moves, [`publish`] reads the manifest already at the
+//! destination and diffs its `(region, preset)` pairs against the new one. Anything
+//! that would disappear stops the publish, names the pairs, and suggests the usual
+//! cause; `allow_shrink` turns it into a loud warning for the deliberate case. See
+//! [`live_manifest`] for why the live copy is read through the store rather than
+//! fetched from the public URL, and why that keeps offline `dir:` publishes offline.
+//!
 //! ## Where the bytes go
 //!
 //! [`ObjectStore`] has two implementations, and the split is deliberate:
@@ -45,10 +62,25 @@ use obc_pack::catalog::{CatalogManifest, CatalogOptions, DEFAULT_MANIFEST_NAME};
 /// consumer cannot compensate for an over-cached manifest — a fresh bake stays
 /// invisible for as long as the cache says it is.
 pub const MANIFEST_CACHE_CONTROL: &str = "public, max-age=60, must-revalidate";
-/// Artifacts are never rewritten in place under a given content — they are verified
-/// against the manifest's `sha256` before they reach a device — so they may be
-/// cached for a long time.
-pub const ARTIFACT_CACHE_CONTROL: &str = "public, max-age=604800";
+/// Artifacts get a **short** TTL with mandatory revalidation, and the reason is the
+/// published layout: keys are stable paths (`regions/<id>/<preset>.obcm`, §8), not
+/// content-addressed names, so every re-bake **rewrites the same key with different
+/// bytes**.
+///
+/// Behind a CDN that is a correctness problem, not a freshness one. An edge holding
+/// last week's copy of a key serves those bytes against a manifest whose `sha256` now
+/// describes the new ones — and a consumer is *required* to check that digest before
+/// writing to a device (§7). The mismatch is not a stale map; it is a hard download
+/// failure, on every edge that cached the old object, for as long as its TTL runs.
+/// An hour with `must-revalidate` bounds that: revalidation against R2 is a
+/// conditional request that answers 304 in the common case, so the bytes only move
+/// when they actually changed.
+///
+/// The deeper fix is content-addressed keys, which would make an artifact immutable
+/// and cacheable forever — but the key *is* the manifest's `url`, and §8 fixes that
+/// layout ("`url` is `<base-url>/<path of the artifact relative to the tree root>`"),
+/// so it is a spec change rather than a knob. Left as a follow-up.
+pub const ARTIFACT_CACHE_CONTROL: &str = "public, max-age=3600, must-revalidate";
 
 /// What an object is, which is also what decides its cache policy and its order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,6 +129,20 @@ pub trait ObjectStore {
     /// Size of the object at `key`, or `None` if it is not there. Used to prove
     /// every artifact is fetchable *before* the manifest that references it lands.
     fn head(&self, key: &str) -> Result<Option<u64>, String>;
+    /// Read a small object back whole — the manifest currently in place. `None`
+    /// means there is none (a first publish). Only ever called for the manifest.
+    fn get(&self, key: &str) -> Result<Option<Vec<u8>>, String>;
+}
+
+/// How a publish is allowed to behave.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PublishOptions {
+    /// Generate the manifest and plan the upload; move no bytes.
+    pub dry_run: bool,
+    /// Permit a publish that removes coverage the live catalog has (§ the shrink
+    /// guard, [`coverage_lost`]). Off by default, because the normal way to lose a
+    /// region is by accident.
+    pub allow_shrink: bool,
 }
 
 /// What a publish did.
@@ -106,6 +152,9 @@ pub struct PublishReport {
     pub warnings: Vec<String>,
     pub objects: usize,
     pub bytes: u64,
+    /// `(region_id, preset_id)` pairs the live catalog served that this one does
+    /// not. Non-empty only when `allow_shrink` let the publish through.
+    pub coverage_lost: Vec<String>,
 }
 
 /// Walk the tree and list every object to publish, manifest last.
@@ -169,7 +218,7 @@ pub fn publish(
     tree: &Path,
     store: &dyn ObjectStore,
     opts: &CatalogOptions,
-    dry_run: bool,
+    publish_opts: PublishOptions,
 ) -> Result<PublishReport, String> {
     let generated = obc_pack::catalog::generate(tree, opts)?;
     let manifest_path = tree.join(DEFAULT_MANIFEST_NAME);
@@ -177,13 +226,39 @@ pub fn publish(
 
     let objects = plan(tree)?;
     let total: u64 = objects.iter().map(|o| o.bytes).sum();
-    if dry_run {
+    let mut warnings = generated.warnings;
+    if publish_opts.dry_run {
         return Ok(PublishReport {
             manifest: generated.manifest,
-            warnings: generated.warnings,
+            warnings,
             objects: objects.len(),
             bytes: total,
+            coverage_lost: Vec::new(),
         });
+    }
+
+    // Phase 0 — would this publish take coverage away? (see `coverage_lost`)
+    let coverage_lost = match live_manifest(store)? {
+        Some(live) => coverage_lost(&live, &generated.manifest),
+        None => Vec::new(),
+    };
+    if !coverage_lost.is_empty() {
+        if !publish_opts.allow_shrink {
+            return Err(format!(
+                "this publish would REMOVE {} artifact(s) the live catalog serves, and a region that stops being \
+                 offered reads to a user as \"not covered\".\n\nUsually this means the tree is a partial bake — a \
+                 CI run that bakes only the small regions, or a `--region`-narrowed run — being published over a \
+                 full one. Publish from the full tree, or pass --allow-shrink if the removal is \
+                 deliberate.\n\nWould disappear:\n{}",
+                coverage_lost.len(),
+                coverage_lost.iter().map(|p| format!("  {p}")).collect::<Vec<_>>().join("\n")
+            ));
+        }
+        warnings.push(format!(
+            "--allow-shrink: removing {} artifact(s) the live catalog serves: {}",
+            coverage_lost.len(),
+            coverage_lost.join(", ")
+        ));
     }
 
     let (manifest_object, content) = objects.split_last().ok_or("nothing to publish")?;
@@ -212,12 +287,47 @@ pub fn publish(
     // Phase 3 — one object replacement, and the new catalog exists.
     store.put(manifest_object).map_err(|e| format!("{}: {e}", manifest_object.key))?;
 
-    Ok(PublishReport {
-        manifest: generated.manifest,
-        warnings: generated.warnings,
-        objects: objects.len(),
-        bytes: total,
-    })
+    Ok(PublishReport { manifest: generated.manifest, warnings, objects: objects.len(), bytes: total, coverage_lost })
+}
+
+/// The manifest currently in place at the destination, if there is one.
+///
+/// Read **through the store**, from the destination itself, rather than fetched from
+/// the catalog's public `base_url`. Two reasons, and both matter:
+///
+/// - *Authority.* The public URL is served through a CDN, so it can hand back a
+///   cached manifest older than the bucket's. Diffing against that would invent
+///   coverage losses that are not real (and mask ones that are).
+/// - *No network where there need not be one.* A `dir:` publish — the offline
+///   workstation flow and every test in this crate — answers this question by
+///   reading a local file. Nothing hangs waiting for a timeout, and the guard is
+///   exercised by the same code path in tests as in production.
+///
+/// A manifest that is present but unreadable (wrong schema version, truncated,
+/// something else entirely at that key) yields `None`: it is not evidence that
+/// coverage exists, so it must not block a publish that would replace it.
+fn live_manifest(store: &dyn ObjectStore) -> Result<Option<CatalogManifest>, String> {
+    let Some(bytes) = store.get(DEFAULT_MANIFEST_NAME)? else { return Ok(None) };
+    let Ok(manifest) = serde_json::from_slice::<CatalogManifest>(&bytes) else { return Ok(None) };
+    if manifest.schema_version != obc_pack::catalog::CATALOG_SCHEMA_VERSION {
+        return Ok(None);
+    }
+    Ok(Some(manifest))
+}
+
+/// `(region, preset)` pairs the live catalog serves that the new one would not.
+///
+/// Pair-level rather than region-level because losing one preset of a region is the
+/// same class of silent regression as losing the region: the picker simply stops
+/// offering something it offered yesterday.
+pub fn coverage_lost(live: &CatalogManifest, new: &CatalogManifest) -> Vec<String> {
+    let incoming: std::collections::BTreeSet<(&str, &str)> =
+        new.artifacts.iter().map(|a| (a.region_id.as_str(), a.preset_id.as_str())).collect();
+    live.artifacts
+        .iter()
+        .filter(|a| !incoming.contains(&(a.region_id.as_str(), a.preset_id.as_str())))
+        .map(|a| format!("{} [{}]", a.region_id, a.preset_id))
+        .collect()
 }
 
 /// Publish into a local directory: the dry-run target, the test target, and a real
@@ -262,6 +372,14 @@ impl ObjectStore for DirStore {
     fn head(&self, key: &str) -> Result<Option<u64>, String> {
         match std::fs::metadata(self.dest(key)) {
             Ok(m) => Ok(Some(m.len())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(format!("{key}: {e}")),
+        }
+    }
+
+    fn get(&self, key: &str) -> Result<Option<Vec<u8>>, String> {
+        match std::fs::read(self.dest(key)) {
+            Ok(bytes) => Ok(Some(bytes)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(format!("{key}: {e}")),
         }
@@ -369,6 +487,22 @@ impl ObjectStore for RcloneStore {
         let json: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|e| format!("{key}: {e}"))?;
         Ok(json.get("bytes").and_then(serde_json::Value::as_i64).and_then(|b| u64::try_from(b).ok()))
     }
+
+    fn get(&self, key: &str) -> Result<Option<Vec<u8>>, String> {
+        // Straight from the bucket, not from the public URL: the shrink guard must
+        // diff against what is actually stored, not against whatever a CDN edge
+        // still has (see `live_manifest`).
+        let args = vec!["cat".to_string(), self.target(key)];
+        let out = self.run(&args)?;
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            if stderr.contains("not found") || stderr.contains("doesn't exist") {
+                return Ok(None);
+            }
+            return Err(redact(&stderr, &self.remote));
+        }
+        Ok(Some(out.stdout))
+    }
 }
 
 /// Never let a connection string reach a log, however rclone chose to quote it.
@@ -404,10 +538,18 @@ mod tests {
             bytes: 0,
             kind: ObjectKind::Artifact,
         };
-        // §7: the manifest is short-lived, the artifacts it names are not.
+        // §7: the manifest is short-lived. So are the artifacts, but for a different
+        // reason — their keys are stable paths that a re-bake rewrites, so an edge
+        // holding old bytes against a new manifest breaks the consumer's mandatory
+        // sha256 check. Both must revalidate.
         assert!(manifest.cache_control().contains("max-age=60"));
+        assert!(manifest.cache_control().contains("must-revalidate"));
         assert_eq!(manifest.content_type(), "application/json");
-        assert!(artifact.cache_control().contains("max-age=604800"));
+        assert!(artifact.cache_control().contains("max-age=3600"));
+        assert!(
+            artifact.cache_control().contains("must-revalidate"),
+            "a rewritten key must never be served from an edge without revalidating"
+        );
         assert_eq!(artifact.content_type(), "application/octet-stream");
     }
 }

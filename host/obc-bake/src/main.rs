@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use obc_bake::bake::{BakeOptions, Bakery, ObcPacker};
-use obc_bake::publish::{DirStore, ObjectStore, RcloneStore};
+use obc_bake::publish::{DirStore, ObjectStore, PublishOptions, RcloneStore};
 use obc_pack::catalog::CatalogOptions;
 use obc_pack::progress::Progress;
 
@@ -49,6 +49,9 @@ usage:
         --target TARGET      `dir:PATH` (default: dry run) or `r2` (env credentials)
         --generated-at TS    pin the manifest's generated_at (RFC 3339 UTC)
         --dry-run            generate + plan, upload nothing
+        --allow-shrink       permit dropping coverage the live catalog serves
+                             (refused by default — publishing a partial bake over a
+                             full one silently un-offers regions)
 
   obc-bake check-obcm-version [--catalog-url URL]
       Fail if the published catalog is not this build's OBCM version. Skips when no
@@ -190,7 +193,7 @@ fn run_bake(args: &[String]) -> Result<(), String> {
 }
 
 fn run_publish(args: &[String]) -> Result<(), String> {
-    let (flags, positional) = Flags::parse(args, &["dry-run"])?;
+    let (flags, positional) = Flags::parse(args, &["dry-run", "allow-shrink"])?;
     let tree = positional.first().ok_or_else(|| format!("publish needs a bake tree\n\n{USAGE}"))?;
     let base_url = flags
         .get("base-url")
@@ -210,10 +213,17 @@ fn run_publish(args: &[String]) -> Result<(), String> {
         generated_at: flags.get("generated-at").map_or_else(obc_pack::catalog::now_timestamp, str::to_string),
     };
     println!("publishing {tree} → {}{}", store.describe(), if dry_run { " (dry run)" } else { "" });
-    let report = obc_bake::publish::publish(Path::new(tree), store.as_ref(), &opts, dry_run)?;
+    let publish_opts = PublishOptions { dry_run, allow_shrink: flags.has("allow-shrink") };
+    let report = obc_bake::publish::publish(Path::new(tree), store.as_ref(), &opts, publish_opts)?;
     // A coverage hole is a warning in the generator and must stay visible here.
     for warning in &report.warnings {
         eprintln!("warning: {warning}");
+    }
+    if !report.coverage_lost.is_empty() {
+        eprintln!("\n!!! COVERAGE REMOVED ({} artifacts) !!!", report.coverage_lost.len());
+        for pair in &report.coverage_lost {
+            eprintln!("  {pair}");
+        }
     }
     println!(
         "{} artifacts across {} presets, {} objects, {} bytes{}",

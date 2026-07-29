@@ -223,6 +223,13 @@ jobs:
 
       # Only on an explicit dispatch. The credentials are never present on a
       # scheduled run, so a schedule cannot publish even by accident.
+      #
+      # Note what this job's tree is: SMALL_REGIONS, or whatever `regions` input was
+      # given — never the full DACH shelf, which does not fit here. Publishing it
+      # over a full catalog would un-offer every region it does not contain, so
+      # `obc-bake publish` refuses to shrink the live catalog unless it is told to
+      # (--allow-shrink). Do not add that flag here to make a red run go green; it
+      # means this tree is not the one to publish from.
       - name: Publish to R2
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
         env:
@@ -233,6 +240,9 @@ jobs:
           OBC_R2_SECRET_ACCESS_KEY: ${{ secrets.OBC_R2_SECRET_ACCESS_KEY }}
           OBC_MAPS_BASE_URL: ${{ vars.OBC_MAPS_BASE_URL }}
         run: |
+          # `update` first: a runner image whose package index has aged out 404s on
+          # the install otherwise, and it would do so at the last step of a long job.
+          sudo apt-get update
           sudo apt-get install -y rclone
           test -n "$OBC_MAPS_BASE_URL" || { echo "set the OBC_MAPS_BASE_URL variable first"; exit 1; }
           cargo run --release --locked -p obc-bake -- publish ~/bake \

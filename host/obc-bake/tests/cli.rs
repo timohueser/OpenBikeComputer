@@ -94,6 +94,73 @@ fn bake_then_publish_is_the_whole_loop() {
 }
 
 #[test]
+fn publishing_a_shrunken_catalog_is_refused_at_the_command_line() {
+    let dir = scratch("shrink");
+    let extracts = dir.join("extracts/europe");
+    std::fs::create_dir_all(&extracts).unwrap();
+    for region in ["alpha", "beta"] {
+        std::fs::copy(
+            repo("builder/tests/corpus/data/tiny.osm.pbf"),
+            extracts.join(format!("{region}-latest.osm.pbf")),
+        )
+        .unwrap();
+    }
+    let dest = dir.join("public");
+
+    let bake = |tree: &std::path::Path, regions: &str| {
+        let list = tree.with_extension("toml");
+        std::fs::write(&list, regions).unwrap();
+        let out = obc_bake()
+            .args(["bake", "--out"])
+            .arg(tree)
+            .arg("--regions")
+            .arg(&list)
+            .arg("--presets-dir")
+            .arg(repo("builder/presets"))
+            .args(["--preset", "minimal", "--source"])
+            .arg(dir.join("extracts"))
+            .arg("--no-land")
+            .output()
+            .expect("run bake");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    };
+    let publish = |tree: &std::path::Path, extra: &[&str]| {
+        obc_bake()
+            .arg("publish")
+            .arg(tree)
+            .args(["--base-url", "https://maps.example/obc", "--target"])
+            .arg(format!("dir:{}", dest.display()))
+            .args(extra)
+            .output()
+            .expect("run publish")
+    };
+
+    let full = dir.join("full-tree");
+    bake(
+        &full,
+        "regions = [ { id = \"europe/alpha\", name = \"Alpha\" }, { id = \"europe/beta\", name = \"Beta\" } ]\n",
+    );
+    assert!(publish(&full, &[]).status.success(), "the first publish establishes the catalog");
+
+    // The trap: a narrower tree published over it.
+    let partial = dir.join("partial-tree");
+    bake(&partial, "regions = [ { id = \"europe/alpha\", name = \"Alpha\" } ]\n");
+    let out = publish(&partial, &[]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "a shrinking publish must fail: {err}");
+    assert!(err.contains("europe/beta [minimal]"), "{err}");
+
+    // …and `--allow-shrink` parses as a switch (not as a value flag swallowing the
+    // next argument) and lets the deliberate case through, loudly.
+    let out = publish(&partial, &["--allow-shrink"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{err}");
+    assert!(err.contains("COVERAGE REMOVED"), "{err}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_region_outside_the_curated_list_is_refused() {
     let out = obc_bake().args(["bake", "--out", "/tmp/nope", "--region", "europe/france"]).output().expect("run");
     assert!(!out.status.success());

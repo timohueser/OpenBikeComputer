@@ -22,9 +22,9 @@
 //! a build failure into a coverage hole. The failure is loud in the summary and in
 //! the exit status instead.
 //!
-//! ## What "unchanged" means
+//! ## What "unchanged" means — two keys, because two things go stale
 //!
-//! The skip key is a hash of everything that can change the bytes:
+//! The **pack key** is a hash of everything that can change the artifact's bytes:
 //!
 //! ```text
 //! recipe version │ OBCM format version │ SHA-256 of the extract │ SHA-256 of the preset config │ pack options
@@ -32,10 +32,20 @@
 //!
 //! Content hashes, never mtimes. A mirror that re-uploads a byte-identical extract
 //! with a fresh `Last-Modified` must not cost a twenty-hour re-bake, and a file
-//! edited in place must not be missed because its timestamp was preserved. The
-//! recorded key sits in a dotfile beside the artifact (invisible to the catalog
-//! walk, §8), along with the artifact's own digest — which is re-checked on every
-//! run, so an artifact that rotted on disk re-bakes even though its inputs did not.
+//! edited in place must not be missed because its timestamp was preserved.
+//!
+//! The **sidecar facts** — the region's display name and the extract's snapshot
+//! date — are recorded separately and compared separately, because they change what
+//! the *manifest says* without changing a byte of the map. Folding them into the
+//! pack key would have made the paragraph above a lie: a re-dated but identical
+//! extract would re-pack a whole country to write a new date into a 4-line JSON
+//! file. So a drift in those rewrites the sidecar and nothing else
+//! ([`JobStatus::SidecarRefreshed`]), carrying `built_at` forward untouched — the
+//! bytes were packed when they were packed.
+//!
+//! Both live in a dotfile beside the artifact (invisible to the catalog walk, §8),
+//! along with the artifact's own digest — which is re-checked on every run, so an
+//! artifact that rotted on disk re-bakes even though its inputs did not.
 //!
 //! [`RECIPE_VERSION`] is the escape hatch for the case content hashing cannot see:
 //! the packer itself changed. Bump it when a packer change alters output bytes and
@@ -122,12 +132,21 @@ pub struct BakeOptions {
 
 /// The recorded bake, in a dotfile beside the artifact. Invisible to the catalog
 /// generator (`OBCC_Spec.md` §8 ignores dotfiles) and never published.
+///
+/// Two keys, not one, because two different things can go stale independently —
+/// see [`Bakery::pack_key`].
 #[derive(Debug, Serialize, Deserialize)]
 struct BakeState {
-    key: String,
+    /// Hash of everything that can change the artifact's *bytes*.
+    pack_key: String,
     artifact_sha256: String,
     bytes: u64,
+    /// When the artifact was packed. Survives a sidecar-only refresh: the bytes
+    /// were not rebuilt, so claiming they were would be a lie.
     built_at: String,
+    /// The sidecar facts as last written, so a change to one of them can be
+    /// noticed without re-packing.
+    region_name: String,
     source_snapshot: String,
 }
 
@@ -145,6 +164,12 @@ struct Sidecar<'a> {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum JobStatus {
+    /// The artifact was already current; only the sidecar needed rewriting.
+    ///
+    /// A distinct status rather than a flavour of `Unchanged` because it is the
+    /// one that would otherwise be invisible: the published catalog changed
+    /// (a region's name, an extract date) while not one byte was re-packed.
+    SidecarRefreshed { bytes: u64, changed: Vec<String> },
     /// Packed, verified, and installed in the tree this run.
     Baked { bytes: u64, seconds: f64, features: u64, lods: usize },
     /// Inputs unchanged and the artifact on disk still matches its recorded digest.
@@ -172,8 +197,10 @@ impl JobOutcome {
     /// Bytes this (region, preset) contributes to the published catalog, whether it
     /// was baked this run or left alone.
     pub fn published_bytes(&self) -> u64 {
-        match self.status {
-            JobStatus::Baked { bytes, .. } | JobStatus::Unchanged { bytes } => bytes,
+        match &self.status {
+            JobStatus::Baked { bytes, .. }
+            | JobStatus::Unchanged { bytes }
+            | JobStatus::SidecarRefreshed { bytes, .. } => *bytes,
             JobStatus::Failed { .. } => 0,
         }
     }
@@ -217,11 +244,16 @@ impl RunSummary {
         let _ = writeln!(s, "OBCM v{}, recipe v{}", self.obcm_version, self.recipe_version);
         let mut baked = 0;
         let mut unchanged = 0;
+        let mut refreshed = 0;
         for job in &self.jobs {
             let line = match &job.status {
                 JobStatus::Baked { bytes, seconds, features, lods } => {
                     baked += 1;
                     format!("baked      {:>10}  {:>7.1}s  {features} features, {lods} LODs", human(*bytes), seconds)
+                }
+                JobStatus::SidecarRefreshed { bytes, changed } => {
+                    refreshed += 1;
+                    format!("sidecar    {:>10}  (map unchanged; {})", human(*bytes), changed.join(", "))
                 }
                 JobStatus::Unchanged { bytes } => {
                     unchanged += 1;
@@ -233,7 +265,8 @@ impl RunSummary {
         }
         let _ = writeln!(
             s,
-            "\n{baked} baked, {unchanged} unchanged, {} failed — {} published across {} artifacts",
+            "\n{baked} baked, {refreshed} sidecar-only, {unchanged} unchanged, {} failed — {} published across {} \
+             artifacts",
             self.failures().len(),
             human(self.total_bytes()),
             self.jobs.len() - self.failures().len()
@@ -417,12 +450,35 @@ impl Bakery<'_> {
         let state_path = dir.join(format!(".{}{STATE_SUFFIX}", preset.id));
         let tmp = dir.join(format!(".{}.obcm.tmp", preset.id));
 
-        let key = self.bake_key(region, extract_sha, extract, preset);
+        let pack_key = self.pack_key(extract_sha, preset);
         if !self.opts.force {
-            if let Some(bytes) = unchanged(&state_path, &artifact, &sidecar, &key) {
-                progress.log("    unchanged — skipping");
+            if let Some(state) = reusable(&state_path, &artifact, &sidecar, &pack_key) {
+                // The bytes are current. The *sidecar* may not be: a region renamed in
+                // `regions.toml`, or a re-published extract with the same content and a
+                // new date, changes what the manifest says without changing the map.
+                let changed = sidecar_drift(&state, region, extract);
                 self.install_preset_config(preset)?;
-                return Ok(JobStatus::Unchanged { bytes });
+                if changed.is_empty() {
+                    progress.log("    unchanged — skipping");
+                    return Ok(JobStatus::Unchanged { bytes: state.bytes });
+                }
+                progress.log(format!("    map unchanged — rewriting the sidecar ({})", changed.join(", ")));
+                // `built_at` is carried over, not refreshed: these bytes were packed
+                // when they were packed, and a sidecar refresh must not claim otherwise.
+                write_json(
+                    &sidecar,
+                    &Sidecar {
+                        region_name: &region.name,
+                        preset_version: preset.version,
+                        built_at: &state.built_at,
+                        source_snapshot: &extract.snapshot,
+                    },
+                )?;
+                write_json(
+                    &state_path,
+                    &BakeState { region_name: region.name.clone(), source_snapshot: extract.snapshot.clone(), ..state },
+                )?;
+                return Ok(JobStatus::SidecarRefreshed { bytes: state.bytes, changed });
             }
         }
 
@@ -459,10 +515,11 @@ impl Bakery<'_> {
         write_json(
             &state_path,
             &BakeState {
-                key,
+                pack_key,
                 artifact_sha256: artifact_sha,
                 bytes,
                 built_at: built_at.clone(),
+                region_name: region.name.clone(),
                 source_snapshot: extract.snapshot.clone(),
             },
         )?;
@@ -484,28 +541,19 @@ impl Bakery<'_> {
         })
     }
 
-    /// Everything that can change the artifact's bytes **or its sidecar**, hashed
-    /// into one key.
+    /// Everything that can change the artifact's **bytes**, hashed into one key.
     ///
-    /// The region's name and the extract's snapshot date are in here even though
-    /// they cannot move a single byte of the `.obcm`: they are recorded in the
-    /// sidecar, which is what the manifest reads back, so renaming a region in
-    /// `regions.toml` has to re-write that sidecar rather than being skipped as
-    /// "unchanged" and leaving the catalog advertising the old name forever.
-    fn bake_key(
-        &self,
-        region: &Region,
-        extract_sha: &str,
-        extract: &crate::source::Extract,
-        preset: &Preset,
-    ) -> String {
+    /// Deliberately *not* in here: the region's display name and the extract's
+    /// snapshot date. Neither can move a byte of the `.obcm` — they are sidecar
+    /// facts — and folding them in would mean a mirror that re-publishes a
+    /// byte-identical extract under a new date costs a twenty-hour re-pack, which
+    /// is precisely what keying on content instead of timestamps exists to avoid.
+    /// They are still not allowed to go stale: they are recorded in [`BakeState`]
+    /// and compared by [`sidecar_drift`], which rewrites the sidecar alone.
+    fn pack_key(&self, extract_sha: &str, preset: &Preset) -> String {
         crate::hash::text(&format!(
-            "recipe={RECIPE_VERSION}\nobcm={}\nregion={}\nname={}\nsnapshot={}\nextract={extract_sha}\npreset={}\n\
-             pack={}\n",
+            "recipe={RECIPE_VERSION}\nobcm={}\nextract={extract_sha}\npreset={}\npack={}\n",
             obc_formats::obcm::VERSION,
-            region.id,
-            region.name,
-            extract.snapshot,
             preset.sha256,
             self.packer.recipe(),
         ))
@@ -526,19 +574,33 @@ impl Bakery<'_> {
     }
 }
 
-/// `Some(bytes)` when the recorded bake still describes what is on disk.
+/// The recorded state, when it still describes the artifact on disk.
 ///
-/// Three things must agree, and the third is the one that catches rot: the key
-/// (inputs unchanged), the presence of both artifact and sidecar, and the
-/// artifact's *current* digest against the recorded one. An artifact truncated by a
-/// full disk after a good bake therefore re-bakes rather than being skipped forever.
-fn unchanged(state_path: &Path, artifact: &Path, sidecar: &Path, key: &str) -> Option<u64> {
+/// Three things must agree, and the third is the one that catches rot: the pack key
+/// (byte-affecting inputs unchanged), the presence of both artifact and sidecar, and
+/// the artifact's *current* digest against the recorded one. An artifact truncated by
+/// a full disk after a good bake therefore re-bakes rather than being skipped forever.
+fn reusable(state_path: &Path, artifact: &Path, sidecar: &Path, pack_key: &str) -> Option<BakeState> {
     let state: BakeState = serde_json::from_str(&std::fs::read_to_string(state_path).ok()?).ok()?;
-    if state.key != key || !artifact.is_file() || !sidecar.is_file() {
+    if state.pack_key != pack_key || !artifact.is_file() || !sidecar.is_file() {
         return None;
     }
     let (bytes, sha) = crate::hash::file(artifact).ok()?;
-    (sha == state.artifact_sha256 && bytes == state.bytes).then_some(bytes)
+    (sha == state.artifact_sha256 && bytes == state.bytes).then_some(state)
+}
+
+/// Which sidecar facts the run disagrees with the recording about.
+///
+/// Empty means the published catalog would say exactly what it already says.
+fn sidecar_drift(state: &BakeState, region: &Region, extract: &crate::source::Extract) -> Vec<String> {
+    let mut changed = Vec::new();
+    if state.region_name != region.name {
+        changed.push(format!("region_name `{}` → `{}`", state.region_name, region.name));
+    }
+    if state.source_snapshot != extract.snapshot {
+        changed.push(format!("source_snapshot {} → {}", state.source_snapshot, extract.snapshot));
+    }
+    changed
 }
 
 fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
