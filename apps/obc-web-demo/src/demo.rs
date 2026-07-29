@@ -15,13 +15,11 @@ use embedded_graphics::pixelcolor::Rgb888;
 use obc_app::{App, AppState, CameraMode, Gesture};
 use obc_host_core::{
     fill_nav_preview, initial_camera, replay_step, HostLoop, MemRideStore, MemRouteStore, MemTrackStore, ReplaySensors,
-    TrackRepository,
+    RgbaFrame, TrackRepository,
 };
 use obc_reader::{rgb565_to_device64, MapCache, MapTables, Reader, SliceSource};
 use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 use obc_route::RouteReader;
-
-use crate::frame::RgbaFrame;
 
 /// The demo panel resolution — the one [`obc_display`] frame authority, not re-declared literals.
 pub const FRAME_W: u32 = obc_display::ls021::FRAME_W as u32;
