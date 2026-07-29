@@ -425,6 +425,10 @@ public final class FirmwareUpdateModel {
             return "That update file looks incomplete. Download it again, then reimport."
         case .imageCRCMismatch:
             return "That update file is corrupt. Download it again, then reimport."
+        case .unsigned:
+            // Intact, but not ours — a different problem with a different fix, so it gets
+            // its own sentence rather than being folded into "corrupt" (OBCU_Spec.md §1.4).
+            return "That update file isn't signed for this device. Use an official release download."
         }
     }
 
