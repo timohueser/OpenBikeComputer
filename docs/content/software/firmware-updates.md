@@ -163,7 +163,10 @@ There are three ways it gets there, and **exactly one** way it gets installed.
 - **BLE from the companion.** The [companion app](../companion-link/) can stage the
   same `UPDATE.BIN` over the link: it uploads a `fwImage` object (§7.6 of the BLE
   spec), the device writes it to the card verbatim, and then the app sends an
-  `installFw` command (§4.4) to *ask* the device to install it.
+  `installFw` command (§4.4) to *ask* the device to install it. The file is either
+  one you picked in Files or the published release the app checks for — downloaded
+  and verified against the manifest's size and SHA-256 on the phone, before a byte
+  goes over the link.
 - **USB from the browser.** The map builder's device step does the same two
   steps over the cable — the [object model is the transport's
   guest](../companion-link/), so this is the identical `fwImage` upload followed
