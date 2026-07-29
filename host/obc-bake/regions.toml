@@ -8,7 +8,7 @@
 # under a name Geofabrik does not serve, and the manifest's ids cannot drift from
 # the source tree they came from. `name` is what a human sees in the picker.
 #
-# Optional per-region `presets = ["minimal"]` restricts a region to a subset of the
+# Optional per-region `presets = ["high-detail"]` restricts a region to a subset of the
 # shipped presets; absent, every preset in `builder/presets/` is baked for it.
 #
 # ── Curation policy ────────────────────────────────────────────────────────────

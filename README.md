@@ -356,11 +356,12 @@ VITE_DATA_BASE=/data npm run dev -- --mode web   # then open /dev-harness/
 `VITE_DATA_BASE` is root-relative here because the harness is served from a
 sub-path, and the default `./data` would resolve under it.
 
-All of them — and `npm run check` and `npm test` — need the wasm conversion
-bridge built once first (`npm run build:wasm`, which wants a Rust toolchain and
-`wasm-pack`): route conversion runs client-side through the firmware's own
-converter, so the TypeScript imports bindings that don't exist until it's built.
-See [`firmware/README.md`](firmware/README.md#build-the-conversion-bridge-obc-web-convert).
+All of them — and `npm run check` and `npm test` — need the two wasm bridges
+built once first (`npm run build:wasm`, which wants a Rust toolchain and
+`wasm-pack`): route conversion and the preset previews both run client-side
+through the firmware's own code, so the TypeScript imports bindings that don't
+exist until they're built. See
+[`firmware/README.md`](firmware/README.md#build-the-web-builders-wasm-bridges-obc-web-convert-obc-web-preview).
 
 ---
 

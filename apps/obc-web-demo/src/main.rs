@@ -17,7 +17,7 @@
 //! | `obc_demo_ready() -> bool` | first frame rendered |
 //! | `obc_demo_screens() -> Vec<String>` | every `Screen::name()` — the tour drift-guard (S3) |
 //!
-//! The demo core ([`demo`], [`frame`]) is target-independent and unit-tested natively; only this
+//! The demo core ([`demo`]) is target-independent and unit-tested natively; only this
 //! bindgen shim is wasm-specific.
 
 // On the native build only the tests reference the demo core (the bindgen surface is wasm-only),
@@ -25,7 +25,6 @@
 #![cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 
 mod demo;
-mod frame;
 
 #[cfg(target_arch = "wasm32")]
 mod web {

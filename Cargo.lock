@@ -2542,6 +2542,7 @@ dependencies = [
 name = "obc-host-core"
 version = "0.1.0"
 dependencies = [
+ "embedded-graphics",
  "obc-app",
  "obc-formats",
  "obc-ports",
@@ -2737,6 +2738,20 @@ dependencies = [
  "obc-render",
  "obc-replay",
  "obc-route",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "obc-web-preview"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "embedded-graphics",
+ "js-sys",
+ "obc-display",
+ "obc-host-core",
+ "obc-reader",
+ "obc-render",
  "wasm-bindgen",
 ]
 

@@ -19,7 +19,7 @@ and the simulator + tests first-class.
     `obc-bench`, `obcm-testkit`, `obc-vectors`, `obc-host-core`, `obc-replay`,
     `obc-usb-host`.
   - `apps/` — the shells: `obc-sim`, `obc-web-demo`, `obc-web-convert`,
-    `obc-desktop`.
+    `obc-web-preview`, `obc-desktop`.
 
   Dev-deps deliberately cross the boundary (obc-render → obcm-testkit,
   obc-route → obc-pack); they never touch the `no_std` build. `obc-pack` also

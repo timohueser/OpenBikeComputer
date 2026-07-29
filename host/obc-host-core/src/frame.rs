@@ -5,6 +5,11 @@
 //! the replay cadence (240×320×4 ≈ 300 KB memcpy) is plenty on a browser — the device's
 //! dirty-row diff machinery stays in the hosts that protect glass (`obc-sim`'s `Present` + its
 //! exact-diff oracle), deliberately **not** duplicated here.
+//!
+//! Lives here rather than in one shell because **both** browser hosts draw into it: the landing
+//! demo (`obc-web-demo`, which renders the whole app) and the builder's preset previews
+//! (`obc-web-preview`, which renders the map alone). One framebuffer, one set of clipping and
+//! alpha invariants, one test.
 
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
 

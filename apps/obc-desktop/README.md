@@ -34,7 +34,7 @@ The Rust side embeds the built frontend, so the frontend is built first:
 ```sh
 cd builder/app
 npm ci
-npm run build:wasm        # the GPX↔OBCR bridge the app imports
+npm run build:wasm        # the GPX↔OBCR + preset-preview bridges the app imports
 npm run build:desktop     # → dist/desktop, which tauri.conf.json embeds
 
 cd ../../../apps/obc-desktop
