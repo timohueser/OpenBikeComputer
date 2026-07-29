@@ -50,9 +50,10 @@
 //!   binary on the publishing box; the bake box already needs 32 GB of RAM, so one
 //!   `apt install rclone` is not the constraint.
 //!
-//! Credentials never appear in a config file or in a log line: the remote is built
-//! as an rclone *connection string* from environment variables and passed as one
-//! argument, and [`RcloneStore::describe`] redacts it.
+//! Credentials never appear in a config file, in a log line, **or in argv**: the
+//! remote is defined by `RCLONE_CONFIG_*` variables in the child process's
+//! environment (see [`RcloneStore`]), so nothing secret is visible to `ps` and
+//! there is no connection-string parser to mis-split an `https://` endpoint.
 
 use std::path::{Path, PathBuf};
 
@@ -388,8 +389,15 @@ impl ObjectStore for DirStore {
 
 /// Publish to S3-compatible object storage (Cloudflare R2) through `rclone`.
 ///
-/// The remote is an rclone *connection string* built from the environment, so no
-/// credential is written to disk:
+/// The remote is defined entirely by `RCLONE_CONFIG_OBCR2_*` **environment
+/// variables on the child process** — an ephemeral remote named `obcr2` that
+/// exists only for that invocation. Nothing is written to disk, and nothing
+/// secret rides the argument list. Both halves matter, and this replaced a
+/// connection string that got neither right: argv is `ps`-visible to every
+/// process on the box, and rclone's connection-string parser splits on `:`, so
+/// an unquoted `endpoint=https://…` reached rclone as endpoint `https` — the
+/// first real publish failed on exactly that. Environment variables have no
+/// parser to appease and no process list to leak into.
 ///
 /// ```text
 /// OBC_R2_ACCOUNT_ID       Cloudflare account id (builds the endpoint)
@@ -400,11 +408,17 @@ impl ObjectStore for DirStore {
 /// OBC_R2_ENDPOINT         optional, overrides the derived endpoint (an S3 test double)
 /// ```
 pub struct RcloneStore {
-    remote: String,
+    bucket: String,
     prefix: String,
-    /// The remote with the secret elided, for logs.
-    redacted: String,
+    /// Not a credential (it names the account, not a key) — shown in `describe`.
+    endpoint: String,
+    /// The child's `RCLONE_CONFIG_OBCR2_*` remote definition. The secret lives
+    /// here and nowhere else.
+    envs: Vec<(&'static str, String)>,
 }
+
+/// The ephemeral remote's name — matches the `RCLONE_CONFIG_OBCR2_*` variables.
+const RCLONE_REMOTE: &str = "obcr2";
 
 impl RcloneStore {
     /// Build the store from the environment, or say exactly which variable is missing.
@@ -418,36 +432,55 @@ impl RcloneStore {
             Err(_) => format!("https://{}.r2.cloudflarestorage.com", var("OBC_R2_ACCOUNT_ID")?),
         };
         let prefix = std::env::var("OBC_R2_PREFIX").unwrap_or_default().trim_matches('/').to_string();
-        let common = format!(
-            ":s3,provider=Cloudflare,region=auto,endpoint={endpoint},access_key_id={access},no_check_bucket=true"
-        );
-        Ok(Self {
-            remote: format!("{common},secret_access_key={secret}:{bucket}"),
-            prefix,
-            redacted: format!("{common},secret_access_key=***:{bucket}"),
-        })
+        let envs = vec![
+            ("RCLONE_CONFIG_OBCR2_TYPE", "s3".to_string()),
+            ("RCLONE_CONFIG_OBCR2_PROVIDER", "Cloudflare".to_string()),
+            ("RCLONE_CONFIG_OBCR2_REGION", "auto".to_string()),
+            ("RCLONE_CONFIG_OBCR2_ENDPOINT", endpoint.clone()),
+            ("RCLONE_CONFIG_OBCR2_ACCESS_KEY_ID", access),
+            ("RCLONE_CONFIG_OBCR2_SECRET_ACCESS_KEY", secret),
+            ("RCLONE_CONFIG_OBCR2_NO_CHECK_BUCKET", "true".to_string()),
+        ];
+        Ok(Self { bucket, prefix, endpoint, envs })
     }
 
     fn target(&self, key: &str) -> String {
         if self.prefix.is_empty() {
-            format!("{}/{key}", self.remote)
+            format!("{RCLONE_REMOTE}:{}/{key}", self.bucket)
         } else {
-            format!("{}/{}/{key}", self.remote, self.prefix)
+            format!("{RCLONE_REMOTE}:{}/{}/{key}", self.bucket, self.prefix)
         }
     }
 
     fn run(&self, args: &[String]) -> Result<std::process::Output, String> {
         std::process::Command::new("rclone")
+            .envs(self.envs.iter().map(|(k, v)| (*k, v.as_str())))
             .args(args)
             .output()
             .map_err(|e| format!("rclone: {e} — the publish step needs rclone on PATH (https://rclone.org/install/)"))
+    }
+
+    /// Defensive backstop: the secret is not in argv, so rclone's output should
+    /// never contain it — but if a future rclone echoes its environment into an
+    /// error, it must not reach a log through us.
+    fn redact(&self, text: &str) -> String {
+        let secret = self
+            .envs
+            .iter()
+            .find(|(k, _)| k.ends_with("_SECRET_ACCESS_KEY"))
+            .map(|(_, v)| v.as_str())
+            .filter(|s| !s.is_empty());
+        match secret {
+            Some(s) => text.replace(s, "***"),
+            None => text.to_string(),
+        }
     }
 }
 
 impl ObjectStore for RcloneStore {
     fn describe(&self) -> String {
         let where_ = if self.prefix.is_empty() { String::new() } else { format!("/{}", self.prefix) };
-        format!("{}{where_}", self.redacted)
+        format!("r2 bucket {}{where_} via {}", self.bucket, self.endpoint)
     }
 
     fn put(&self, object: &PlannedObject) -> Result<(), String> {
@@ -467,7 +500,7 @@ impl ObjectStore for RcloneStore {
         ];
         let out = self.run(&args)?;
         if !out.status.success() {
-            return Err(redact(&String::from_utf8_lossy(&out.stderr), &self.remote));
+            return Err(self.redact(&String::from_utf8_lossy(&out.stderr)));
         }
         Ok(())
     }
@@ -482,7 +515,7 @@ impl ObjectStore for RcloneStore {
             if stderr.contains("not found") || stderr.contains("directory not found") {
                 return Ok(None);
             }
-            return Err(redact(&stderr, &self.remote));
+            return Err(self.redact(&stderr));
         }
         let json: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|e| format!("{key}: {e}"))?;
         Ok(json.get("bytes").and_then(serde_json::Value::as_i64).and_then(|b| u64::try_from(b).ok()))
@@ -499,32 +532,55 @@ impl ObjectStore for RcloneStore {
             if stderr.contains("not found") || stderr.contains("doesn't exist") {
                 return Ok(None);
             }
-            return Err(redact(&stderr, &self.remote));
+            return Err(self.redact(&stderr));
         }
         Ok(Some(out.stdout))
     }
-}
-
-/// Never let a connection string reach a log, however rclone chose to quote it.
-fn redact(text: &str, remote: &str) -> String {
-    let mut out = text.replace(remote, "<remote>");
-    if let Some(idx) = out.find("secret_access_key=") {
-        let tail = &out[idx + "secret_access_key=".len()..];
-        let end = tail.find([',', ':']).unwrap_or(tail.len());
-        out = format!("{}secret_access_key=***{}", &out[..idx], &tail[end..]);
-    }
-    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// A store as `from_env` would build it, without touching the process
+    /// environment (env vars are process-global and the test runner is parallel).
+    fn r2_store(endpoint: &str, secret: &str) -> RcloneStore {
+        RcloneStore {
+            bucket: "obc-maps".into(),
+            prefix: String::new(),
+            endpoint: endpoint.into(),
+            envs: vec![
+                ("RCLONE_CONFIG_OBCR2_TYPE", "s3".into()),
+                ("RCLONE_CONFIG_OBCR2_ENDPOINT", endpoint.into()),
+                ("RCLONE_CONFIG_OBCR2_ACCESS_KEY_ID", "abc".into()),
+                ("RCLONE_CONFIG_OBCR2_SECRET_ACCESS_KEY", secret.into()),
+            ],
+        }
+    }
+
     #[test]
-    fn a_secret_never_survives_into_an_error() {
-        let remote = ":s3,access_key_id=abc,secret_access_key=hunter2:bucket";
-        let text = format!("Failed to copy: {remote}/regions/x.obcm: 403");
-        let redacted = redact(&text, remote);
+    fn the_endpoint_rides_the_environment_whole() {
+        // The regression this store's shape exists to prevent: an `https://…`
+        // endpoint in a connection string is split at the colon by rclone's
+        // parser and arrives as endpoint `https`. As an environment value there
+        // is no parser — assert it is carried verbatim, scheme and all.
+        let store = r2_store("https://acct.r2.cloudflarestorage.com", "hunter2");
+        let endpoint = store.envs.iter().find(|(k, _)| *k == "RCLONE_CONFIG_OBCR2_ENDPOINT").map(|(_, v)| v.as_str());
+        assert_eq!(endpoint, Some("https://acct.r2.cloudflarestorage.com"));
+    }
+
+    #[test]
+    fn no_credential_reaches_argv_or_a_log() {
+        let store = r2_store("https://acct.r2.cloudflarestorage.com", "hunter2");
+        // The target — the only store-derived string that becomes an argument —
+        // names the ephemeral remote, never a credential.
+        assert_eq!(store.target("regions/x.obcm"), "obcr2:obc-maps/regions/x.obcm");
+        // `describe` is printed by the CLI; it carries the bucket and endpoint,
+        // and neither key.
+        assert!(!store.describe().contains("hunter2"), "{}", store.describe());
+        assert!(!store.describe().contains("abc"), "{}", store.describe());
+        // And the backstop: a secret echoed back by a future rclone dies here.
+        let redacted = store.redact("Failed to copy: secret_access_key=hunter2: 403");
         assert!(!redacted.contains("hunter2"), "{redacted}");
     }
 
