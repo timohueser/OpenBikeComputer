@@ -9,7 +9,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { confirmAction, confirmQueue } from "./confirm.svelte";
+import { confirmAction, confirmChoice, confirmQueue } from "./confirm.svelte";
 
 describe("confirmAction", () => {
     it("resolves true only when the affirmative button is pressed", async () => {
@@ -50,5 +50,43 @@ describe("confirmAction", () => {
         });
         confirmQueue.pending!.answer(false);
         await asked;
+    });
+});
+
+describe("confirmChoice", () => {
+    it("resolves each of the three answers by name", async () => {
+        for (const choice of ["confirm", "extra", "cancel"] as const) {
+            const asked = confirmChoice({
+                title: "Delete the trip “Traverse”?",
+                extra: { label: "Delete trip only", destructive: true },
+            });
+            expect(confirmQueue.pending?.extra?.label).toBe("Delete trip only");
+            confirmQueue.pending!.answer(choice);
+            expect(await asked).toBe(choice);
+            expect(confirmQueue.pending).toBeNull();
+        }
+    });
+
+    it("keeps the dialog's boolean answers meaning confirm/cancel", async () => {
+        const asked = confirmChoice({ title: "still yes/no", extra: { label: "third" } });
+        confirmQueue.pending!.answer(true);
+        expect(await asked).toBe("confirm");
+        const declined = confirmChoice({ title: "still yes/no" });
+        confirmQueue.pending!.answer(false);
+        expect(await declined).toBe("cancel");
+    });
+
+    it("never answers a boolean caller with the extra it could not have asked for", async () => {
+        // `confirmAction` maps only "confirm" to true — anything else is a no.
+        const asked = confirmAction({ title: "two buttons" });
+        confirmQueue.pending!.answer("extra");
+        expect(await asked).toBe(false);
+    });
+
+    it("declines a second question with cancel rather than stacking", async () => {
+        const first = confirmChoice({ title: "first" });
+        expect(await confirmChoice({ title: "second", extra: { label: "x" } })).toBe("cancel");
+        confirmQueue.pending!.answer("cancel");
+        expect(await first).toBe("cancel");
     });
 });

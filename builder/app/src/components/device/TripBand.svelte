@@ -98,7 +98,7 @@
         disabled={busy || !openable}
         onclick={onopen}
     >
-        <TrackThumb {segments} width={240} height={150} corners="13px 0 0 13px">
+        <TrackThumb {segments} width={240} height={150} corners="13px 0 0 13px" fill>
             {#snippet tag()}
                 <span class="tag">trip</span>
             {/snippet}
@@ -184,12 +184,6 @@
         box-shadow: 0 1px 2px rgba(36, 51, 28, 0.06);
     }
 
-    @media (max-width: 640px) {
-        .tripband {
-            grid-template-columns: 1fr;
-        }
-    }
-
     .preview {
         display: block;
         padding: 0;
@@ -198,6 +192,19 @@
         background: none;
         cursor: pointer;
         text-align: left;
+    }
+
+    /* Stacked (one-column) band: the preview sits ABOVE the stage list, so the seam between
+       them is a bottom hairline, not a right one. */
+    @media (max-width: 640px) {
+        .tripband {
+            grid-template-columns: 1fr;
+        }
+
+        .preview {
+            border-right: 0;
+            border-bottom: 1px solid var(--line);
+        }
     }
 
     .preview:disabled {
