@@ -247,8 +247,12 @@ jobs:
           - { name: "clippy (debug-uart)", cmd: "cargo clippy --locked --features debug-uart -- -D warnings" }
           # The real flashed default artifact (LS021/FLPR) under fat LTO + the N3 RAM-budget assert.
           - { name: "build (default = LS021/FLPR, release)", cmd: "cargo build --release --locked" }
-          # The BLE build (issue #270): the map plane cfg'd out, the nrf-sdc/MPSL/TrouBLE stack +
-          # status UI in. Needs --no-default-features (MPSL provides the critical-section impl).
+          # `ble` named explicitly. This leg used to be "the BLE build" against a map-only default,
+          # and later carried a --no-default-features that existed only to keep `cs-single-core` out
+          # of a BLE image. `ble` has been part of `default` since the LM20 retarget and
+          # `cs-single-core` is gone (#931), so what these two now cover is the crate **without
+          # `sd-bench`** — i.e. that nothing outside the SD-throughput diagnostic bin depends on that
+          # marker feature.
           - { name: "clippy (ble)", cmd: "cargo clippy --locked --no-default-features --features ble -- -D warnings" }
           - { name: "build (ble, release)", cmd: "cargo build --release --locked --no-default-features --features ble" }
     steps:
