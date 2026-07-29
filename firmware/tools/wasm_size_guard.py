@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Bundle-size budget for the browser conversion bridge (`apps/obc-web-convert`, #896).
+"""Bundle-size budgets for the hosted builder's wasm bridges.
 
-This artifact is what a visitor downloads the moment they drop a route on the hosted builder (the
-frontend loads it through a dynamic import, so it is its own chunk, not part of the initial page).
-A silent size regression is therefore a product regression: the first conversion stops feeling
-instant. CI runs this right after `wasm-pack build`, on the very bytes it then hands to the
-frontend job.
+Two modules, same argument. `apps/obc-web-convert` (#896) is what a visitor downloads the moment
+they drop a route; `apps/obc-web-preview` (#899) is what renders the preset cards. Both are
+reached through a dynamic import, so each is its own chunk rather than part of the initial page —
+and a silent size regression in either is a product regression: the thing stops feeling instant.
+CI runs this right after each `wasm-pack build`, on the very bytes it then hands to the frontend
+job.
 
 What is measured, and why:
 
@@ -28,7 +29,9 @@ import sys
 from pathlib import Path
 
 
-# Budgets in bytes. See the module docstring before changing either.
+# Budgets in bytes, per module. See the module docstring before changing any of them.
+#
+# --- obc-web-convert --------------------------------------------------------------------------
 #
 # Measured 2026-07-26 on the initial A2 artifact (wasm-pack 0.15.0 / wasm-bindgen 0.2.125 /
 # wasm-opt -Oz, rustc stable 1.96): 84,108 B raw wasm + 11,293 B glue → 47,235 B gzipped. Of the
@@ -47,8 +50,26 @@ from pathlib import Path
 # `RouteIndex`/`RouteReader`/`for_each_waypoint`, which had eaten the old headroom (101 KB raw at
 # the previous commit — 99 % of the 100 KB budget before this addition's ~2.8 KB). Budgets
 # re-based to ~10 % above the new measurement, same philosophy as before.
-BUDGET_GZIPPED = 62 * 1024  # wasm + JS glue, gzip -9
-BUDGET_RAW_WASM = 112 * 1024
+# --- obc-web-preview -------------------------------------------------------------------------
+#
+# Measured 2026-07-29 on the initial B2 artifact (same toolchain as above): 124,857 B raw wasm +
+# 13,798 B glue -> 59,556 B gzipped. Bigger than the conversion bridge and unsurprisingly so: this
+# one links the whole render path (`obc-render`'s painter, scanline fill and stroker, plus
+# `obc-reader`'s OBCM decoder and quadtree walk) rather than a file converter. It stays in the
+# same order of magnitude because it links no *app* — no screens, no replay, no planner.
+#
+# Same ~10 % headroom, same philosophy: a toolchain bump must not turn a green PR red, but linking
+# `obc-app` or a second renderer has to be argued for.
+BUDGETS = {
+    "convert": {"gzipped": 62 * 1024, "raw_wasm": 112 * 1024},
+    "preview": {"gzipped": 66 * 1024, "raw_wasm": 138 * 1024},
+}
+
+#: Where each module's wasm-pack output lands in the frontend.
+PKG_DIRS = {
+    "convert": Path("builder/app/src/lib/convert/pkg"),
+    "preview": Path("builder/app/src/lib/preview/pkg"),
+}
 
 
 def gzipped_len(data: bytes) -> int:
@@ -77,17 +98,24 @@ def measure(pkg: Path) -> tuple[list[tuple[str, int, int]], int, int]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "--module",
+        choices=sorted(BUDGETS),
+        default="convert",
+        help="which wasm bridge to measure (default: convert)",
+    )
+    parser.add_argument(
         "--pkg",
         type=Path,
-        default=Path("builder/app/src/lib/convert/pkg"),
-        help="the wasm-pack output directory (default: the frontend's checked-out location)",
+        default=None,
+        help="the wasm-pack output directory (default: the module's checked-out location)",
     )
     args = parser.parse_args()
 
-    if not args.pkg.is_dir():
-        raise SystemExit(f"{args.pkg} does not exist — run `wasm-pack build` first (see firmware/README.md)")
+    pkg = args.pkg or PKG_DIRS[args.module]
+    if not pkg.is_dir():
+        raise SystemExit(f"{pkg} does not exist — run `wasm-pack build` first (see firmware/README.md)")
 
-    rows, raw_wasm, total_gzipped = measure(args.pkg)
+    rows, raw_wasm, total_gzipped = measure(pkg)
     width = max(len(name) for name, _, _ in rows)
     print(f"{'file'.ljust(width)}  {'raw':>9}  {'gzipped':>9}")
     for name, raw, gz in rows:
@@ -95,16 +123,17 @@ def main() -> int:
     print(f"{'total'.ljust(width)}  {sum(r for _, r, _ in rows):>9,}  {total_gzipped:>9,}")
 
     failed = False
+    budgets = BUDGETS[args.module]
     for label, measured, budget in (
-        ("gzipped wasm + glue", total_gzipped, BUDGET_GZIPPED),
-        ("raw wasm", raw_wasm, BUDGET_RAW_WASM),
+        ("gzipped wasm + glue", total_gzipped, budgets["gzipped"]),
+        ("raw wasm", raw_wasm, budgets["raw_wasm"]),
     ):
         pct = 100 * measured / budget
         status = "over" if measured > budget else "ok"
         print(f"{label}: {measured:,} B / {budget:,} B budget ({pct:.0f}%) — {status}")
         if measured > budget:
             print(
-                f"::error::obc-web-convert {label} is {measured:,} B, over the {budget:,} B budget."
+                f"::error::obc-web-{args.module} {label} is {measured:,} B, over the {budget:,} B budget."
                 " This ships to every visitor: shrink it, or raise the budget in"
                 " firmware/tools/wasm_size_guard.py with the reason in the PR body."
             )
