@@ -296,9 +296,14 @@ there, not here. `src/ble/` implements it; the S0 descriptor codecs + transfer s
 host-tested `obc-ble` crate (`cargo test -p obc-ble`, pinned to `specs/vectors/`). What's
 **board/firmware-specific** and worth knowing:
 
-- **DIS identity** — Firmware Revision is `<crate-semver>+<git-short>` (`build.rs` emits
-  `OBC_FW_GIT`), Hardware Revision `nrf54l15-dk`, Serial Number the 16-hex FICR `DEVICEID` whose last
-  four digits are the `OBC-XXXX` advertised name.
+- **DIS identity** — Firmware Revision is the **installed OBCU container's version string**, read
+  off the DFU boot-state page at boot (`dfu::seed_firmware_revision` → `link::identity`), falling
+  back to `OBC_FW_GIT` — the bare git short hash `build.rs` emits — on a probe-flashed board that has
+  never installed a container. So a device you flashed over SWD reports `ca9b336`, not a version, and
+  no host offers it an auto-update (the dialect + why is in the BLE spec §3.1); to see a real version
+  on glass, install a wrapped `UPDATE.BIN` (`obc-mkimage`). The same string answers the USB
+  `DEVICE_INFO_READ` frame. Hardware Revision `nrf54l15-dk`, Serial Number the 16-hex FICR `DEVICEID`
+  whose last four digits are the `OBC-XXXX` advertised name.
 - **Storage lives on SD, ids are durable in filenames.** Uploaded routes land as 8.3 `RTnn.OBR`
   files (the `OBCR` magic held back as zeros until commit, so a power cut never leaves a half-route
   the boot scan accepts); the **map build's** catalog scan matches `*.OBR` beside `.obcr`, so an
