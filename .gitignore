@@ -66,8 +66,11 @@ tools/obc.local
 .venv/
 /maps/
 # Web builder frontend: dependencies + the Vite build output (CI builds it).
-# The dev host builds into static/dist/ (what the FastAPI server mounts); the
-# static-web and desktop hosts into frontend/dist/<host>/ — see #895.
+# The dev host builds into builder/server/static/dist/ (what the FastAPI server
+# mounts); the static-web and desktop hosts into builder/app/dist/<host>/ — see
+# #895. Both entries must keep matching vite.config.ts's outDirs: when they
+# drifted apart, `npm run build` wrote to an unignored path and 640 KB of bundle
+# got committed by accident (and the server mounted nothing).
 builder/app/node_modules/
 builder/app/dist/
 builder/server/static/dist/
