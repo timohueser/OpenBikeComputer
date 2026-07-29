@@ -147,9 +147,17 @@ struct FirmwareReleaseTests {
 
     @Test func saysNothingAtAllWhenThereIsNoPublishedRelease() {
         #expect(FirmwareVersion.updateStatus(running: "1.3.0", latest: nil) == .noRelease)
-        // Nothing published beats an unreadable running version — there is nothing to offer either
-        // way, and "no release" is the quieter of the two.
-        #expect(FirmwareVersion.updateStatus(running: "abc1234", latest: nil) == .noRelease)
+    }
+
+    /// The ordering the builder settled on in #1004, mirrored here: what makes a dev build
+    /// undecidable is the hash it reports, not whether anything is published. The other way round
+    /// would hide the "development build" state for as long as U3 hasn't published — which is
+    /// exactly today.
+    @Test func stillCallsADevBuildADevBuildWhenNothingIsPublished() {
+        #expect(FirmwareVersion.updateStatus(running: "abc1234", latest: nil) == .unknown)
+        // …but a device that has said nothing yet is not a dev build; there is simply no check.
+        #expect(FirmwareVersion.updateStatus(running: nil, latest: nil) == .noRelease)
+        #expect(FirmwareVersion.updateStatus(running: "", latest: nil) == .noRelease)
     }
 
     @Test func distinguishesOlderCurrentAndAhead() {
