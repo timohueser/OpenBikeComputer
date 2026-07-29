@@ -16,6 +16,7 @@
  * that no tier's build has as an input is a fact instead of a hope.
  */
 
+import { gpxToObcr } from "../src/lib/convert/bridge";
 import { ProtocolClient, type ObjectSource } from "../src/lib/usb/client";
 import { Crc32 } from "../src/lib/usb/crc32";
 import { WatchedDeviceSession } from "../src/lib/usb/session.svelte";
@@ -120,6 +121,73 @@ function seedRides(device: MockDevice): void {
     }
 }
 
+/**
+ * A route with named, categorized waypoints on the simulated card, so the chart-room preview
+ * (waypoint card, map diamonds, profile ticks) can be exercised end to end.
+ *
+ * The OBCR is **real**: generated at connect time by the same wasm bridge a dropped GPX goes
+ * through, from the deterministic inline GPX below — not hand-forged bytes, so the preview's
+ * read-back (`routeTrack` + `routeWaypoints`) decodes exactly what the converter stores, waypoint
+ * placement and all. The wasm module is local to the bundle, so this stays offline-safe; it is
+ * the same prerequisite the harness's route-drop flow already has. The catalog metrics are read
+ * out of the OBCR's own header (spec §1) rather than typed in twice.
+ */
+async function seedWaypointRoute(device: MockDevice): Promise<void> {
+    try {
+        const bytes = await gpxToObcr(new TextEncoder().encode(kaiserstuhlGpx()), "Kaiserstuhl loop");
+        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        device.seedRoute(
+            {
+                objectId: 1,
+                byteLen: bytes.length,
+                distanceM: view.getUint32(36, true),
+                ascentM: view.getUint32(40, true),
+                pointCount: view.getUint32(32, true),
+                waypointCount: view.getUint16(116, true),
+                name: "Kaiserstuhl loop",
+                crc32: Crc32.of(bytes),
+                expiresAt: 0,
+                retention: 0,
+            },
+            bytes,
+        );
+    } catch (cause) {
+        // A missing wasm artifact breaks route drops too; keep the rest of the harness usable.
+        console.warn("dev-harness: could not seed the waypoint route (is the wasm bridge built?)", cause);
+    }
+}
+
+/**
+ * A ~15 km loop around the Kaiserstuhl with a real elevation shape (so the profile zoom has
+ * something to zoom into) and four `<wpt>`s spanning the symbol table: resupply, water, a
+ * deliberately-unmapped Viewpoint (generic), and a campsite.
+ */
+function kaiserstuhlGpx(): string {
+    const points: string[] = [];
+    const n = 72;
+    for (let i = 0; i <= n; i++) {
+        const a = (i / n) * 2 * Math.PI;
+        const lat = 48.09 + 0.024 * Math.sin(a);
+        const lon = 7.66 + 0.036 * Math.cos(a);
+        const ele = 210 + 190 * Math.max(0, Math.sin(a * 1.5 + 0.4)) + 30 * Math.sin(a * 4);
+        points.push(`<trkpt lat="${lat.toFixed(6)}" lon="${lon.toFixed(6)}"><ele>${ele.toFixed(1)}</ele></trkpt>`);
+    }
+    const waypoints = [
+        { lat: 48.0902, lon: 7.6962, name: "Bäckerei Lieb", sym: "Bakery" },
+        { lat: 48.1128, lon: 7.6631, name: "Wasserstelle Vogtsburg", sym: "Drinking Water" },
+        { lat: 48.0932, lon: 7.6238, name: "Aussicht Totenkopf", sym: "Viewpoint" },
+        { lat: 48.0669, lon: 7.6489, name: "Zeltplatz option", sym: "Campground" },
+    ]
+        .map((w) => `<wpt lat="${w.lat}" lon="${w.lon}"><name>${w.name}</name><sym>${w.sym}</sym></wpt>`)
+        .join("\n  ");
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="obc-dev-harness">
+  ${waypoints}
+  <trk><name>Kaiserstuhl loop</name><trkseg>${points.join("")}</trkseg></trk>
+</gpx>
+`;
+}
+
 /** One second-per-point ride climbing gently out of Freiburg. */
 function syntheticRide(name: string, startTime: number, points: number, sensors: boolean): RideObject {
     const list: RidePoint[] = [];
@@ -212,6 +280,7 @@ class LoopbackWatcher implements DeviceWatcher {
         const link = loopbackLink();
         const device = new MockDevice(paced(link.device));
         seedRides(device);
+        await seedWaypointRoute(device);
         void device.run();
         const client = new ProtocolClient(link.host);
         this.open = {

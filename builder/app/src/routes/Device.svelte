@@ -23,7 +23,7 @@
     import TransferBar from "../components/device/TransferBar.svelte";
     import TripBand from "../components/device/TripBand.svelte";
     import TripDropDialog from "../components/device/TripDropDialog.svelte";
-    import { routeTrack } from "../lib/convert/bridge";
+    import { routeTrack, routeWaypoints, type RouteWaypoint } from "../lib/convert/bridge";
     import { dashboard, type TripView } from "../lib/device/dashboard.svelte";
     import type { ProfilePoint } from "../lib/device/elevation";
     import {
@@ -297,7 +297,9 @@
         title: string;
         points: ProfilePoint[];
         stats: Array<{ label: string; value: string }>;
-        /** Set for routes: the modal's footer offers Delete. */
+        /** The route's stored waypoints — the modal's floating card + map diamonds. */
+        waypoints: RouteWaypoint[];
+        /** Set for routes: the modal's header offers Delete. */
         route: RouteListEntry | null;
     } | null>(null);
     /** The object a preview download is running for, to mark the page busy. */
@@ -312,14 +314,14 @@
             preview = {
                 title: route.name || `Route ${route.objectId}`,
                 points: await routeTrack(obcr),
+                // The same downloaded bytes, decoded a second way — the modal's waypoint card,
+                // markers and profile ticks. (The modal adds its own "Waypoints" chip when any.)
+                waypoints: await routeWaypoints(obcr),
                 stats: [
                     { label: "Distance", value: `${(route.distanceM / 1000).toFixed(1)} km` },
                     { label: "Ascent", value: `${route.ascentM.toLocaleString()} m` },
-                    {
-                        label: "Points · waypoints",
-                        value: `${route.pointCount.toLocaleString()} · ${route.waypointCount}`,
-                    },
-                    { label: "Size on card", value: formatBytes(route.byteLen) },
+                    { label: "Points", value: route.pointCount.toLocaleString() },
+                    { label: "On card", value: formatBytes(route.byteLen) },
                 ],
                 route,
             };
@@ -347,6 +349,7 @@
                     { label: "Avg speed", value: `${((ride.avgSpeedCms / 100) * 3.6).toFixed(1)} km/h` },
                     { label: "Climb", value: `${ride.climbM.toLocaleString()} m` },
                 ],
+                waypoints: [],
                 route: null,
             };
         } catch (cause) {
@@ -387,6 +390,7 @@
                     { label: "Distance", value: `${(trip.totalDistanceM / 1000).toFixed(1)} km` },
                     { label: "Ascent", value: `${trip.totalAscentM.toLocaleString()} m` },
                 ],
+                waypoints: [],
                 route: null,
             };
         } catch (cause) {
@@ -548,6 +552,7 @@
                 title={open.title}
                 points={open.points}
                 stats={open.stats}
+                waypoints={open.waypoints}
                 onclose={() => (preview = null)}
             >
                 {#snippet actions()}

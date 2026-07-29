@@ -159,6 +159,48 @@ export async function routeTrack(obcr: Uint8Array): Promise<TrackPoint[]> {
     return points;
 }
 
+/**
+ * One waypoint of a route (OBCR spec §4): a point of interest pinned along the track, with the
+ * position it was pinned at.
+ */
+export interface RouteWaypoint {
+    /** The stored short name (≤ 24 UTF-8 bytes; may be empty). */
+    readonly name: string;
+    /** The waypoint's own coordinate, degrees — may sit off the polyline. */
+    readonly lat: number;
+    readonly lon: number;
+    /** Metres, or null where the source carried none. */
+    readonly ele: number | null;
+    /** The stored category byte raw: 0 = generic, 1..=6 the OBCM §7.4 POI category ids. Render
+     *  anything else as generic, per the spec. */
+    readonly category: number;
+    /** Metres from the route start to the waypoint's position on the track — the stored
+     *  placement-time distance (nearest raw track point at conversion), not a recomputation. */
+    readonly distAlongM: number;
+}
+
+/**
+ * Read a `.obcr` route's waypoint table back out, in route order (ascending {@link
+ * RouteWaypoint.distAlongM}). A route without waypoints resolves to `[]`.
+ *
+ * @throws {ConvertError} with an actionable message; see {@link ConvertErrorCode}.
+ */
+export async function routeWaypoints(obcr: Uint8Array): Promise<RouteWaypoint[]> {
+    const mod = await ensure();
+    let raw: unknown[];
+    try {
+        raw = mod.obc_convert_obcr_to_waypoints(obcr);
+    } catch (cause) {
+        throw asConvertError(cause);
+    }
+    // The wasm side builds these objects field by field (`lib.rs`), so the cast is a statement
+    // about that code, not about arbitrary input; the copy keeps the result plain-JS-owned.
+    return raw.map((entry) => {
+        const w = entry as RouteWaypoint;
+        return { name: w.name, lat: w.lat, lon: w.lon, ele: w.ele, category: w.category, distAlongM: w.distAlongM };
+    });
+}
+
 function ensure(): Promise<Bridge> {
     initConvert();
     // `initConvert` always assigns before returning; the assertion just tells TypeScript so.
