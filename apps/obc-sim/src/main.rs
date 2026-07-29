@@ -1304,7 +1304,7 @@ fn main() {
         // routes-then-trip commit order, so the trip card replaces any route popup (the single
         // most-recent-wins prompt slot). The `.obt` trips were scanned above, so the id resolves.
         if let Some(id) = args.inject_trip_upload {
-            app.apply_event(obc_app::HostEvent::TripUploaded { id });
+            app.apply_event(obc_app::HostEvent::TripUploaded { id, replaced: false });
         }
         // Raise device warnings (issue #504) through the real `Warning` event, so the advisory
         // card renders — the sim has no I²C probe / fragmented card to trip it for real.
