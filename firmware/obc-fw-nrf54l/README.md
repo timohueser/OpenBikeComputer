@@ -241,9 +241,11 @@ builds on it:
   anywhere. Its heapless 0.9 coexists with our 0.8 (no types cross the boundary).
 - **Critical section.** MPSL ships its own mandatory `critical-section` impl
   (`nrf-mpsl/critical-section-impl`) — global-interrupt-disable critical sections break its
-  radio timing, and two impls are a duplicate-symbol link error. So
-  `cortex-m/critical-section-single-core` moved behind the `cs-single-core` **default feature**,
-  and BLE builds pass `--no-default-features`.
+  radio timing, and two impls are a duplicate-symbol link error. It is the **only** impl in the
+  tree: `cortex-m/critical-section-single-core` lived behind a `cs-single-core` feature for a
+  radio-less build that stopped compiling and that nothing in CI built, and #931 removed it. `ble`
+  is a default feature, so the plain `cargo build --release` gets the right impl and there is no
+  invocation to remember.
 - **`central` is load-bearing.** trouble-host's Controller bound unconditionally requires
   `LeCreateConnCancel`, which only the multirole SDC lib variant exports — a peripheral-only
   `nrf-sdc` build is a link error. Costs flash only (the Builder never enables central roles).

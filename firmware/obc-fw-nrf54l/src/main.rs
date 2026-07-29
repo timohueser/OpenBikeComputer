@@ -175,16 +175,14 @@ mod link;
 #[cfg(feature = "ble")]
 mod object_store;
 
-// The `ble` feature-matrix guard. MPSL *provides* the critical-section impl (its radio timing
-// forbids global-interrupt-disable critical sections; two impls = duplicate link symbols), so the
-// default `cs-single-core` must be off — fail with the right invocation rather than a cryptic linker
-// error. `ble` now carries the map ride loop, so `debug-uart` (VCOM-fed ride) and `synth`
-// (synthetic ride) compose with it — a headless ride + a live BLE link is a useful combined-build
-// test rig.
-#[cfg(all(feature = "ble", feature = "cs-single-core"))]
-compile_error!(
-    "`ble` uses MPSL's critical-section impl — build with `cargo run --release --no-default-features --features ble`"
-);
+// The feature matrix, now that there is nothing to guard against. MPSL *provides* the
+// critical-section impl (its radio timing forbids global-interrupt-disable critical sections; two
+// impls = duplicate link symbols), and #931 removed the only other one — `cs-single-core`, the flag
+// for a radio-less shape that had not compiled for months and that nothing in CI built. `ble` is
+// therefore the shipping build and the only one: it carries the map ride loop, and `debug-uart`
+// (VCOM-fed ride) and `synth` (synthetic ride) compose with it — a headless ride beside a live BLE
+// link is a useful combined-build test rig. A radio-less image, if one is ever wanted, is the `link`
+// cfg rename described in Cargo.toml's `ble` note, not a feature flag to re-add.
 
 use defmt::info;
 use embassy_executor::Spawner;
