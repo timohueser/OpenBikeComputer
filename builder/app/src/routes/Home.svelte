@@ -3,7 +3,6 @@
     import BuildCard from "../components/BuildCard.svelte";
     import DeviceStep from "../components/device/DeviceStep.svelte";
     import MapSendStep from "../components/device/MapSendStep.svelte";
-    import Gated from "../components/Gated.svelte";
     import MapPanel from "../components/MapPanel.svelte";
     import PresetCards from "../components/PresetCards.svelte";
     import StorageCard from "../components/StorageCard.svelte";
@@ -22,9 +21,9 @@
 
     let { active = true }: { active?: boolean } = $props();
 
-    // Non-null exactly on a host with `caps.build`. Handed to `<Gated>`, which
-    // makes the one check and passes the narrowed value to the card — so step 3
-    // is present either way, live or dead-with-a-reason.
+    // Non-null exactly on a host with `caps.build` (A1 pins the two together),
+    // so this is also the check step 3 makes: a packer means the step builds a
+    // map, no packer means the catalog hands one over.
     const buildMap = platform.buildMap;
 
     // No packer means the maps come pre-baked, which is the same fact from the
@@ -226,18 +225,22 @@
             {/if}
         </section>
 
-        <!-- One step, two ways to end up with a map. Where there is a packer,
-             step 3 builds one; where there isn't, the catalog hands one over —
-             and the build stays on screen underneath, dead and with its reason,
-             because "you can't cut your own map here" is the thing worth
-             discovering at exactly this moment (#901). Deliberately not a
-             fourth numbered step: C3 (#902) owns the next number. -->
+        <!-- One step, two ways to end up with a map: where there is a packer it
+             builds one, where there isn't the catalog hands one over. Exactly
+             one of them is on screen. This step used to keep a dead "Build map"
+             underneath the download as a #901-style gate, and that was the wrong
+             read of the rule — the step already ends in a map, so the dead button
+             wasn't answering a question anyone had reached this point with; it
+             just sat there with a paragraph under it. The build's own gate now
+             lives on the desktop page, where "make your own" is the subject. -->
         <section class="card">
             <div class="step-head">
                 <span class="num">3</span>
                 <h3>{catalogMode ? "Download" : "Build"}</h3>
             </div>
-            {#if catalogMode}
+            {#if buildMap}
+                <BuildCard {selection} {buildMap} />
+            {:else}
                 <DownloadStep
                     {entry}
                     {artifact}
@@ -245,16 +248,6 @@
                     preset={presets.find((p) => p.id === presetId) ?? null}
                 />
             {/if}
-            <Gated need="build" value={buildMap}>
-                {#snippet children(start)}
-                    <BuildCard {selection} buildMap={start} />
-                {/snippet}
-                {#snippet unavailable(reason)}
-                    <button type="button" class="btn primary" disabled aria-describedby={reason}>
-                        Build map
-                    </button>
-                {/snippet}
-            </Gated>
         </section>
 
         <section class="card">

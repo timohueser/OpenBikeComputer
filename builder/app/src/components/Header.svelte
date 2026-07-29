@@ -10,7 +10,7 @@
     // links. Each tab exists exactly where its route does (`App.svelte` gates
     // the same way), so a tab can never point at a page that falls back home.
     const tabs: Array<{ route: Route; href: string; label: string }> = [
-        { route: "home", href: "#/", label: "Map builder" },
+        { route: "home", href: "#/", label: "Maps" },
         ...(available("styleEditor")
             ? [{ route: "advanced" as const, href: ADVANCED_ROUTE, label: "Style editor" }]
             : []),
@@ -46,7 +46,7 @@
             </svg>
             <span class="name">OpenBikeComputer</span>
             {#if !tabbed}
-                <span class="crumb mono">map builder</span>
+                <span class="crumb mono">maps</span>
             {/if}
         </div>
 

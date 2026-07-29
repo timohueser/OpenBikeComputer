@@ -8,19 +8,19 @@
   the whole interface, and `lib/platform/gating.ts` owns which ones hold and
   what each one says.
 
-  Usage — a control backed by a platform member, checked once:
+  Usage — a control backed by a platform member, checked once (and tier first,
+  browser second, so each failure gets its own sentence):
 
-      <Gated need="build" value={platform.buildMap}>
-          {#snippet children(buildMap)}<BuildCard {buildMap} />{/snippet}
+      <Gated need={["deviceUsb", "webUsb"]} value={platform.device}>
+          {#snippet children(device)}<Transfer {device} />{/snippet}
           {#snippet unavailable(reason)}
-              <button class="btn primary" disabled aria-describedby={reason}>Build map</button>
+              <button class="btn primary" disabled aria-describedby={reason}>Send to device</button>
           {/snippet}
       </Gated>
 
-  Usage — a plain gate, tier first and the browser second, so each failure gets
-  its own sentence:
+  Usage — a plain gate, where the reason line is the whole point:
 
-      <Gated need={["deviceUsb", "webUsb"]}>…</Gated>
+      <Gated need="rideLibrary" />
 
   `unavailable` is optional: omit it where there is no control worth showing
   dead and the reason line should simply take its place.
@@ -36,8 +36,8 @@
     * Apply `aria-describedby={reason}` to that control. The snippet's argument
       is the id of this instance's reason sentence (unique per instance, so
       several gates on one page don't collide), and the pairing is what turns
-      two adjacent things on screen into one utterance: *"Build map,
-      unavailable — Maps are built on your own machine."*
+      two adjacent things on screen into one utterance: *"Send to device,
+      unavailable — USB transfers live in the desktop app."*
     * A stand-in that **isn't** natively disable-able must still be
       unfocusable — a plain `<span>` rather than an `<a href>`, or failing that
       `tabindex="-1"` with `aria-disabled="true"`. Nothing here will do it for
