@@ -575,7 +575,7 @@ def fill(template, repl):
 
 
 def builder_link(site_root):
-    """The header's link to the static map builder, or '' when there isn't one.
+    """The header's link to the map app, or '' when there isn't one.
 
     The builder is a sibling app in the same published artifact (`/builder/`), not a
     rendered page — the site deploy sets OBC_BUILDER_PATH to its site-root-relative
@@ -586,7 +586,7 @@ def builder_link(site_root):
     path = os.environ.get("OBC_BUILDER_PATH", "").strip()
     if not path:
         return ""
-    return '<a href="%s%s">Map builder</a>' % (esc(site_root), esc(path))
+    return '<a href="%s%s">Maps</a>' % (esc(site_root), esc(path))
 
 
 def site_head(site_root, crumb, nav_toggle=""):
