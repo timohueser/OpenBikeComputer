@@ -1374,12 +1374,22 @@ pub(crate) async fn run_app(
             // The trip twin, drained strictly **after** the route event: a trip object commits after
             // its member routes (it references their ids), so posting its event last hands the app's
             // single most-recent-wins prompt slot to the "TRIP RECEIVED" card — one popup for the
-            // whole routes-then-trip transfer instead of a per-route parade. The rescan above already
+            // whole routes-then-trip transfer instead of a per-route parade. Only a *fresh* trip
+            // pops: the app suppresses `replaced` (a host-side trip edit — the desktop's rename /
+            // reorder replaces at the same id, one upload per click). The rescan above already
             // re-fed the trip catalog (`load_trips`), so the id resolves; shared `ObjectStore` path,
-            // so BLE and USB uploads behave identically.
+            // so BLE and USB uploads behave identically. (The `ble` gate matches the module's own —
+            // `object_store` only exists on `ble` builds, which every USB-carrying image is.)
+            //
+            // Known, accepted edge of the fixed route-then-trip drain order: arrival order inside
+            // one pass isn't recorded, so a fresh *route* commit landing in the same ~ms pass as a
+            // fresh trip commit gets its card buried under the trip's even if the route arrived
+            // later. Both cards are advisory and both objects are already in the menu, so the cost
+            // is a mis-ordered courtesy, not a lost object — not worth a cross-slot sequence
+            // counter.
             #[cfg(feature = "ble")]
-            if let Some(id) = crate::object_store::take_trip_uploaded() {
-                app.apply_event(obc_app::HostEvent::TripUploaded { id });
+            if let Some((id, replaced)) = crate::object_store::take_trip_uploaded() {
+                app.apply_event(obc_app::HostEvent::TripUploaded { id, replaced });
             }
 
             // Settings coherence, phone → device (#456): a BLE Config write persisted units + name to

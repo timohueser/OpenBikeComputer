@@ -416,7 +416,7 @@ impl SimGui {
         // device the trip object always lands after its member routes, so this popup replaces the
         // burst's last per-route popup (single most-recent-wins slot).
         if let Some(id) = inject_trip {
-            self.app.apply_event(obc_app::HostEvent::TripUploaded { id });
+            self.app.apply_event(obc_app::HostEvent::TripUploaded { id, replaced: false });
         }
         if let Some(id) = delete_trip {
             // A trip delete doesn't move the *route* store, so no store-changed edge — the trip

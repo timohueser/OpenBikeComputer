@@ -506,7 +506,7 @@ fn a_trip_upload_collapses_the_route_popup_burst_into_one_trip_card() {
     app.apply_event(crate::HostEvent::RouteUploaded { id: 10, replaced: false, elevation: None });
     app.apply_event(crate::HostEvent::RouteUploaded { id: 11, replaced: false, elevation: None });
     feed_trip(&mut app); // the trip commit's rescan re-feeds the trip catalog first…
-    app.apply_event(crate::HostEvent::TripUploaded { id: 5 }); // …then the event resolves the id
+    app.apply_event(crate::HostEvent::TripUploaded { id: 5, replaced: false }); // …then the event resolves the id
     assert!(matches!(app.top_screen(), Screen::TripReceived(_)), "the trip card replaced the route popup");
 
     app.apply_gesture(Gesture::Back); // dismiss the (single) popup
@@ -518,7 +518,7 @@ fn a_trip_upload_collapses_the_route_popup_burst_into_one_trip_card() {
 fn the_trip_card_view_trip_opens_the_folder() {
     let mut app = idle_app();
     feed_trip(&mut app);
-    app.apply_event(crate::HostEvent::TripUploaded { id: 5 });
+    app.apply_event(crate::HostEvent::TripUploaded { id: 5, replaced: false });
     assert!(matches!(app.top_screen(), Screen::TripReceived(_)));
 
     // View trip (row 0) = exactly the Route-menu folder press: the trip's stage list, scoped by
@@ -535,7 +535,7 @@ fn the_trip_card_shows_the_same_card_while_tracking() {
     let mut app = idle_app();
     start_riding(&mut app);
     feed_trip(&mut app);
-    app.apply_event(crate::HostEvent::TripUploaded { id: 5 });
+    app.apply_event(crate::HostEvent::TripUploaded { id: 5, replaced: false });
     assert!(matches!(app.top_screen(), Screen::TripReceived(_)), "no swap prompt for a trip");
     app.apply_gesture(Gesture::Back);
     assert!(matches!(app.top_screen(), Screen::Map(_)), "dismiss returns to the ride");
@@ -547,7 +547,7 @@ fn the_trip_card_auto_closes_like_the_family() {
     let mut app = idle_app();
     feed_trip(&mut app);
     app.advance_animations(InputClock(1_000)); // pin the popup's open anchor
-    app.apply_event(crate::HostEvent::TripUploaded { id: 5 });
+    app.apply_event(crate::HostEvent::TripUploaded { id: 5, replaced: false });
     app.advance_animations(InputClock(1_000 + UPLOAD_POPUP_TIMEOUT_MS - 1));
     assert!(matches!(app.top_screen(), Screen::TripReceived(_)), "still up just inside the window");
     app.advance_animations(InputClock(1_000 + UPLOAD_POPUP_TIMEOUT_MS));
@@ -559,7 +559,7 @@ fn a_trip_upload_for_an_unknown_id_is_dropped() {
     // Defensive, like the route twin: the trip catalog was re-fed first, so an unknown id means
     // the trip vanished again already — advisory, drop it.
     let mut app = idle_app();
-    app.apply_event(crate::HostEvent::TripUploaded { id: 99 });
+    app.apply_event(crate::HostEvent::TripUploaded { id: 99, replaced: false });
     assert!(matches!(app.top_screen(), Screen::Home(_)), "no popup for a trip the catalog doesn't hold");
 }
 
@@ -567,7 +567,7 @@ fn a_trip_upload_for_an_unknown_id_is_dropped() {
 fn a_trip_deleted_under_the_popup_dismisses_on_view() {
     let mut app = idle_app();
     feed_trip(&mut app);
-    app.apply_event(crate::HostEvent::TripUploaded { id: 5 });
+    app.apply_event(crate::HostEvent::TripUploaded { id: 5, replaced: false });
     assert!(matches!(app.top_screen(), Screen::TripReceived(_)));
 
     // The phone cascade-deletes the trip while the popup is open: the re-fed catalog no longer
@@ -583,7 +583,7 @@ fn the_passkey_card_outranks_the_trip_card_too() {
     feed_trip(&mut app);
     app.set_ble_status(BleStatus { link: BleLink::Connected, passkey: Some(123), paired: false });
     assert!(app.passkey_card_up());
-    app.apply_event(crate::HostEvent::TripUploaded { id: 5 });
+    app.apply_event(crate::HostEvent::TripUploaded { id: 5, replaced: false });
     assert!(matches!(app.top_screen(), Screen::Passkey(_)), "the card outranks — no trip popup lands");
     app.set_ble_status(BleStatus { link: BleLink::Connected, passkey: None, paired: false });
     app.advance_animations(InputClock(500));
@@ -595,7 +595,7 @@ fn a_charging_hold_defers_the_trip_card_a_tick() {
     let mut app = idle_app();
     feed_trip(&mut app);
     app.set_hold_progress(0.5);
-    app.apply_event(crate::HostEvent::TripUploaded { id: 5 });
+    app.apply_event(crate::HostEvent::TripUploaded { id: 5, replaced: false });
     assert!(matches!(app.top_screen(), Screen::Home(_)), "no host-pushed screen lands mid-hold");
     app.set_hold_progress(0.0);
     app.advance_animations(InputClock(100));
@@ -607,10 +607,46 @@ fn a_later_route_upload_replaces_the_trip_card_most_recent_wins() {
     // The single-slot rule is symmetric: whatever lands last owns the popup.
     let mut app = idle_app();
     feed_trip(&mut app);
-    app.apply_event(crate::HostEvent::TripUploaded { id: 5 });
+    app.apply_event(crate::HostEvent::TripUploaded { id: 5, replaced: false });
     assert!(matches!(app.top_screen(), Screen::TripReceived(_)));
     app.apply_event(crate::HostEvent::RouteUploaded { id: 12, replaced: false, elevation: None });
     assert!(matches!(app.top_screen(), Screen::RouteReceived(_)), "the newer route popup replaced the trip card");
     app.apply_gesture(Gesture::Back);
     assert!(matches!(app.top_screen(), Screen::Home(_)), "still nothing stacked");
+}
+
+#[test]
+fn a_trip_replace_is_silent() {
+    // A replace is a host-side trip *edit* (the desktop edits exclusively by replace-at-same-id —
+    // rename, add/remove/move stage, one upload per click): the user just made the change, so no
+    // card. Only a fresh trip — a delivery — announces itself.
+    let mut app = idle_app();
+    feed_trip(&mut app);
+    let _ = app.take_dirty(); // drain the catalog re-feed's repaint — the event itself is under test
+    app.apply_event(crate::HostEvent::TripUploaded { id: 5, replaced: true });
+    assert!(matches!(app.top_screen(), Screen::Home(_)), "a trip edit raises no popup");
+    assert!(!app.take_dirty().map, "…and dirties nothing");
+
+    // The desktop reorder sequence: several replace-commits in a row (one per reorder click) stay
+    // completely silent — the exact parade the fresh-trip popup exists to kill.
+    for _ in 0..4 {
+        app.apply_event(crate::HostEvent::TripUploaded { id: 5, replaced: true });
+    }
+    app.advance_animations(InputClock(200));
+    assert!(matches!(app.top_screen(), Screen::Home(_)), "a burst of edits is a burst of nothing");
+}
+
+#[test]
+fn a_trip_replace_does_not_disturb_an_open_popup() {
+    // An edit landing while the fresh-delivery card is still up must neither re-open, replace, nor
+    // dismiss it — the silent event leaves the popup slot alone entirely.
+    let mut app = idle_app();
+    feed_trip(&mut app);
+    app.apply_event(crate::HostEvent::TripUploaded { id: 5, replaced: false });
+    assert!(matches!(app.top_screen(), Screen::TripReceived(_)));
+    app.apply_gesture(Gesture::Step(1)); // move the highlight to Dismiss…
+    app.apply_event(crate::HostEvent::TripUploaded { id: 5, replaced: true }); // …an edit lands
+    assert!(matches!(app.top_screen(), Screen::TripReceived(_)), "the open card stays put");
+    app.apply_gesture(Gesture::Press); // still on Dismiss: the selection was not reset
+    assert!(matches!(app.top_screen(), Screen::Home(_)), "the untouched card still dismisses normally");
 }

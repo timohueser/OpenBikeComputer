@@ -110,20 +110,24 @@ pub(crate) fn take_route_uploaded() -> Option<(u16, bool)> {
 }
 
 /// The latest **committed trip upload** for the app UI — the trip twin of [`UPLOAD_EVENT`], packed
-/// `present-bit | id` (a trip needs no replaced-bit: the popup is the same either way). Published by
-/// [`ObjectStore::upload_finish_trip`] **before** its revision bump, drained by the ride loop
-/// strictly *after* the route event so the pass's popup order matches the wire's routes-then-trip
-/// commit order — the trip popup then wins the app's single most-recent-wins prompt slot, which is
-/// exactly what collapses a trip transfer's per-route popup parade into one "TRIP RECEIVED" card.
-/// Same latest-wins single-slot + `Relaxed` hand-off rationale as [`UPLOAD_EVENT`].
+/// identically (`present-bit | replaced-bit | id`). The replaced-bit matters more here than for
+/// routes: the desktop app *edits* a trip exclusively by replace-at-same-id (rename, add/remove/
+/// move stage — one upload per click), so the app **suppresses the popup on a replace** and only a
+/// *fresh* trip — a delivery — is announced. Published by [`ObjectStore::upload_finish_trip`]
+/// **before** its revision bump, drained by the ride loop strictly *after* the route event so the
+/// pass's popup order matches the wire's routes-then-trip commit order — the trip popup then wins
+/// the app's single most-recent-wins prompt slot, which is exactly what collapses a trip
+/// transfer's per-route popup parade into one "TRIP RECEIVED" card. Same latest-wins single-slot +
+/// `Relaxed` hand-off rationale as [`UPLOAD_EVENT`]: of two fresh trips committing between passes,
+/// only the newest pops — the same policy routes have always had.
 static TRIP_UPLOAD_EVENT: AtomicU32 = AtomicU32::new(0);
 
-/// Drain the latest committed trip upload since the last call: the trip's durable object id, or
+/// Drain the latest committed trip upload since the last call: `(trip_id, replaced_existing)`, or
 /// `None` when none landed. The ride loop calls this once per pass, after [`take_store_changed`]
 /// (the id must resolve against the freshly re-fed trip catalog) and after [`take_route_uploaded`].
-pub(crate) fn take_trip_uploaded() -> Option<u16> {
+pub(crate) fn take_trip_uploaded() -> Option<(u16, bool)> {
     let v = TRIP_UPLOAD_EVENT.swap(0, Ordering::Relaxed);
-    (v & UPLOAD_EVENT_PRESENT != 0).then_some(v as u16)
+    (v & UPLOAD_EVENT_PRESENT != 0).then_some((v as u16, v & UPLOAD_EVENT_REPLACED != 0))
 }
 
 /// Wakes the **event-driven** ride loop on a store movement (#450): a parked device (Home, GPS
@@ -1136,10 +1140,14 @@ impl ObjectStore {
                 // Persist the verified whole-object CRC into the trip-CRC sidecar in the same movement,
                 // so the trip's `tripList` entry serves its fingerprint immediately (never lazily).
                 storage.set_trip_crc(id, whole_crc);
-                // The app-UI trip upload event: the committed id, published before the revision
-                // bump so the STORE_WAKE'd pass sees the rescan edge and this event together —
-                // the "TRIP RECEIVED" popup (see [`TRIP_UPLOAD_EVENT`]).
-                TRIP_UPLOAD_EVENT.store(UPLOAD_EVENT_PRESENT | id as u32, Ordering::Relaxed);
+                // The app-UI trip upload event: the committed id + fresh-vs-replace, published
+                // before the revision bump so the STORE_WAKE'd pass sees the rescan edge and this
+                // event together. Only a *fresh* trip pops the "TRIP RECEIVED" card — the app
+                // suppresses the replace case, a host-side edit (see [`TRIP_UPLOAD_EVENT`]).
+                TRIP_UPLOAD_EVENT.store(
+                    UPLOAD_EVENT_PRESENT | ((replace_idx.is_some() as u32) << 16) | id as u32,
+                    Ordering::Relaxed,
+                );
                 self.bump_trip_revision();
                 (id, TransferStatus::Committed)
             }

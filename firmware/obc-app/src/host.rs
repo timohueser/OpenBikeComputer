@@ -287,10 +287,15 @@ pub enum HostEvent {
     RouteUploaded { id: u16, replaced: bool, elevation: Option<[u8; obc_route::SPARKLINE_BUCKETS]> },
     /// A **trip** upload committed to the store (epic #526): `id` is the trip's durable object id,
     /// resolved against the **already re-fed** trip catalog (the same rescan-then-resolve ordering
-    /// contract as [`RouteUploaded`](HostEvent::RouteUploaded)). Raises the "TRIP RECEIVED" popup —
-    /// and, because a trip object always arrives *after* its member routes, replaces the last
-    /// per-route popup of the upload burst (the single-slot most-recent-wins delivery).
-    TripUploaded { id: u16 },
+    /// contract as [`RouteUploaded`](HostEvent::RouteUploaded)). A **fresh** trip (`replaced ==
+    /// false`) raises the "TRIP RECEIVED" popup — and, because a trip object always arrives *after*
+    /// its member routes, replaces the last per-route popup of the upload burst (the single-slot
+    /// most-recent-wins delivery). A **replace** (`replaced == true`) is silent: hosts edit a trip
+    /// exclusively by replace-at-same-id (the desktop's rename / add / remove / reorder is one
+    /// upload *per click*), so announcing each would be a popup parade — the user just made the
+    /// change and needs no card. Deliberately not the route family's behavior: a route replace can
+    /// force adoption mid-ride, a trip replace changes no navigation state at all.
+    TripUploaded { id: u16, replaced: bool },
     /// One or more device warnings were discovered (issue #504); flags accumulate onto the single
     /// dismissable card, each surfaced once per boot.
     Warning(WarningFlags),
