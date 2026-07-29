@@ -49,7 +49,8 @@
         type ThumbRequest,
     } from "../lib/device/thumbs.svelte";
     import { platform } from "../lib/platform";
-    import { confirmAction } from "../lib/ui/confirm.svelte";
+    import { planTripDelete } from "../lib/device/tripDelete";
+    import { confirmAction, confirmChoice } from "../lib/ui/confirm.svelte";
     import { ObjectType } from "../lib/usb/protocol";
     import type { ProtocolClient } from "../lib/usb/client";
     import { decodeRideObject, type RideListEntry, type RouteListEntry } from "../lib/usb/objects";
@@ -126,16 +127,66 @@
         await mutate((c) => c.deleteObject(ObjectType.Route, route.objectId));
     }
 
+    /**
+     * Delete a trip — and, when the card's state allows it, offer to take its routes with it.
+     *
+     * The offer is computed up front (`planTripDelete`): a route that is also a stage of another
+     * trip is never deleted here, and if any other trip's stage list is unreadable the dialog
+     * degrades to the grouping-only delete rather than guessing. The deletions run sequentially
+     * through the page's queue — trip first, then each route — with **one** refresh at the end;
+     * a mid-sequence failure surfaces one error after that refresh, and whatever was already
+     * deleted stays deleted (the refresh shows exactly that).
+     */
     async function deleteTrip(trip: TripView) {
-        if (!client) return;
-        const ok = await confirmAction({
-            title: `Delete the trip “${trip.name || `Trip ${trip.objectId}`}”?`,
-            body: "Only the grouping is removed — its routes stay on the device as ordinary routes.",
-            confirmLabel: "Delete trip",
+        const c = client;
+        if (!c) return;
+        const name = trip.name || `Trip ${trip.objectId}`;
+        const plan = planTripDelete(trip, dashboard.trips, new Set(dashboard.routes.map((r) => r.objectId)));
+
+        if (plan.offer === "trip-only") {
+            const body = "Only the grouping is removed — its routes stay on the device as ordinary routes.";
+            const ok = await confirmAction({
+                title: `Delete the trip “${name}”?`,
+                body: plan.reason ? `${body}\n${plan.reason}` : body,
+                confirmLabel: "Delete trip",
+                destructive: true,
+            });
+            if (!ok) return;
+            await mutate((cl) => cl.deleteObject(ObjectType.Trip, trip.objectId));
+            return;
+        }
+
+        const n = plan.deletable.length;
+        const choice = await confirmChoice({
+            title: `Delete the trip “${name}”?`,
+            body: [
+                "Deleting the trip only removes the grouping — its routes stay on the device as ordinary routes.",
+                plan.note,
+            ]
+                .filter((line) => line !== null)
+                .join("\n"),
+            confirmLabel: `Delete trip and its ${n} route${n === 1 ? "" : "s"}`,
             destructive: true,
+            extra: { label: "Delete trip only", destructive: true },
         });
-        if (!ok) return;
-        await mutate((c) => c.deleteObject(ObjectType.Trip, trip.objectId));
+        if (choice === "cancel") return;
+        if (choice === "extra") {
+            await mutate((cl) => cl.deleteObject(ObjectType.Trip, trip.objectId));
+            return;
+        }
+        let failure: unknown = null;
+        try {
+            await dashboard.enqueue(() => c.deleteObject(ObjectType.Trip, trip.objectId));
+            for (const id of plan.deletable) {
+                await dashboard.enqueue(() => c.deleteObject(ObjectType.Route, id));
+            }
+        } catch (cause) {
+            failure = cause;
+        }
+        // One refresh either way — after it, the lists say what actually happened; the error
+        // (if any) is set after the refresh, which clears the slot on its way in.
+        await dashboard.refresh(c);
+        if (failure !== null) dashboard.error = failure instanceof Error ? failure.message : String(failure);
     }
 
     function retry() {

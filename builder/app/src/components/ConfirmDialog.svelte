@@ -45,6 +45,18 @@
                 <button type="button" class="btn ghost" onclick={() => pending.answer(false)}>
                     Cancel
                 </button>
+                {#if pending.extra}
+                    <!-- The second affirmative, between Cancel and the primary — reachable by
+                         Tab from the focused primary, never focused by default. -->
+                    <button
+                        type="button"
+                        class="btn ghost"
+                        class:destructive-ghost={pending.extra.destructive}
+                        onclick={() => pending.answer("extra")}
+                    >
+                        {pending.extra.label}
+                    </button>
+                {/if}
                 <button
                     type="button"
                     class="btn primary"
@@ -99,6 +111,13 @@
 
     .destructive {
         background: var(--coral);
+        border-color: var(--coral);
+    }
+
+    /* A destructive-but-not-primary choice: coral text on the quiet ghost chrome, so the filled
+       coral primary stays the loudest thing in the row. */
+    .btn.destructive-ghost {
+        color: var(--coral);
         border-color: var(--coral);
     }
 </style>
