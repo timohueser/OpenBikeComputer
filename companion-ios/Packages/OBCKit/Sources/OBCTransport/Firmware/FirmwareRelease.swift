@@ -211,7 +211,19 @@ public struct FirmwareVersion: Equatable, Sendable {
     }
 
     /// What to say about a device running `running` when the newest published build is `latest`.
+    ///
+    /// An unparseable running version answers ``FirmwareUpdateStatus/unknown`` **even when nothing
+    /// is published**, and that ordering is deliberate (it matches the builder's, PR #1004): what
+    /// makes a dev build undecidable is the version it reports, not the absence of a manifest.
+    /// Answering `noRelease` there would hide the "development build — automatic updates are
+    /// paused" line behind whichever publication happens to exist that day — i.e. hide it
+    /// entirely until U3 first publishes.
+    ///
+    /// A device that has said *nothing* yet is a different thing from a dev build: no running
+    /// version and no release is `noRelease` (there is simply no check to make), and no running
+    /// version against a published release is `unknown` (nothing to compare against yet).
     public static func updateStatus(running: String?, latest: String?) -> FirmwareUpdateStatus {
+        if let running, !running.isEmpty, parse(running) == nil { return .unknown }
         guard let latest, !latest.isEmpty else { return .noRelease }
         guard let running, !running.isEmpty else { return .unknown }
         guard let order = compare(running, latest) else { return .unknown }

@@ -202,6 +202,30 @@ struct FirmwareUpdateCheckTests {
         #expect(model.phase == .idle, "the manual Files path is the only way in for a dev build")
     }
 
+    /// The state that is true *today*, before U3 publishes anything: a probe-flashed device on a
+    /// git hash still reads as a development build, because what makes it undecidable is the
+    /// version it reports — not whether a manifest exists (the builder's #1004 ordering).
+    @Test func namesADevelopmentBuildEvenBeforeAnythingIsPublished() async {
+        let (model, _, fetcher, _) = makeModel(running: "abc1234")
+        fetcher.stub(UpdateChecker.manifestURL, status: 404)
+        model.start()
+        await waitFor { model.lastCheckedAt != nil && model.runningVersion != nil }
+
+        #expect(model.latestRelease == nil)
+        #expect(model.updateStatus == .unknown)
+        #expect(model.developmentBuild)
+        #expect(!model.canDownloadUpdate)
+    }
+
+    /// …and a device that hasn't reported its version yet is *not* that. The screen must not put
+    /// the dev-build line up while it's still waiting on DIS.
+    @Test func aSilentDeviceIsNotADevelopmentBuild() {
+        let (model, _, _, _) = makeModel()
+        #expect(model.runningVersion == nil)
+        #expect(!model.hasUpdateAnswer)
+        #expect(!model.developmentBuild, "no answer yet is not the same as an unreadable answer")
+    }
+
     @Test func saysAheadRatherThanOfferingADowngrade() async {
         let payload = container(version: "1.4.0")
         let (model, _, _, _) = makeModel(running: "1.5.0", published: ("1.4.0", payload, nil))
