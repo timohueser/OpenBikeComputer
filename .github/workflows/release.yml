@@ -5,8 +5,9 @@ name: Release
 # publishes an installable UPDATE.BIN, regardless of which paths changed.
 #
 # On a pushed `v*` tag it builds the two flashed images (the BLE board firmware — the shipping
-# shape — and the 32 KB obc-boot bootloader), wraps the app into an OBCU UPDATE.BIN tagged with
-# the tag, gates on `obc-mkimage inspect`, and attaches UPDATE.BIN + both ELFs + a SHA-256
+# shape — and the 32 KB obc-boot bootloader), wraps + **signs** the app into an OBCU v2
+# UPDATE.BIN tagged with the tag (Ed25519, #997 — an unsigned container is not installable),
+# gates on `obc-mkimage inspect`, and attaches UPDATE.BIN + both ELFs + a SHA-256
 # manifest to the GitHub release.
 #
 # `workflow_dispatch` is the dry-run path: it runs the whole build + wrap + inspect gate for a
@@ -95,17 +96,38 @@ jobs:
         working-directory: firmware/obc-boot
         run: cargo build --release --locked
 
-      # objcopy the app ELF → raw vector-table-first binary, wrap it into an OBCU container tagged
-      # with $VERSION, then INSPECT as the gate (non-zero exit on any header/CRC problem fails here).
-      - name: Wrap UPDATE.BIN (objcopy → obc-mkimage wrap → inspect gate)
+      # objcopy the app ELF → raw vector-table-first binary, wrap + SIGN it into an OBCU v2
+      # container tagged with $VERSION, then INSPECT as the gate (non-zero exit on any
+      # header/CRC/signature problem fails here).
+      #
+      # The signing seed comes from the `release` environment secret OBCU_SIGNING_SEED (64 hex
+      # chars). While `firmware/obc-dfu/keys/obcu-release.pub` still holds the committed *test*
+      # key — see obc-dfu/keys/README.md, this is the rotation still owed — the secret is
+      # optional and the build falls back to the test seed, so the pipeline stays exercisable.
+      # The moment the key is rotated, that fallback stops verifying against the compiled-in
+      # release key and `inspect` fails the job: rotation makes the secret mandatory by itself,
+      # with no extra gate to remember. (U3 replaces the fallback with a hard refusal.)
+      - name: Wrap + sign UPDATE.BIN (objcopy → obc-mkimage wrap --sign-seed → inspect gate)
+        env:
+          OBCU_SIGNING_SEED: ${{ secrets.OBCU_SIGNING_SEED }}
         run: |
           set -euo pipefail
           rustup component add llvm-tools
           OBJCOPY=$(find "$(rustc --print sysroot)" -name llvm-objcopy | head -1)
           APP_ELF=firmware/obc-fw-nrf54l/target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l
           "$OBJCOPY" -O binary "$APP_ELF" app.bin
+          if [ -n "${OBCU_SIGNING_SEED:-}" ]; then
+            echo "signing with the OBCU_SIGNING_SEED environment secret"
+            SIGN_ARGS=(--sign-seed-env OBCU_SIGNING_SEED)
+          else
+            echo "::warning::OBCU_SIGNING_SEED is not set — signing with the committed TEST key."
+            echo "::warning::Rotate keys/obcu-release.pub and set the secret before a real release."
+            SIGN_ARGS=(--sign-seed firmware/obc-dfu/keys/test/obcu-test.seed)
+          fi
           cargo run -p obc-mkimage --release --locked -- \
-            wrap --bin app.bin --version "$VERSION" --out UPDATE.BIN
+            wrap --bin app.bin --version "$VERSION" --out UPDATE.BIN "${SIGN_ARGS[@]}"
+          # The gate: verifies both CRCs AND the signature against the key compiled into this
+          # build's firmware. A container this firmware would not install cannot be published.
           echo "::group::obc-mkimage inspect UPDATE.BIN"
           cargo run -p obc-mkimage --release --locked -- \
             inspect UPDATE.BIN

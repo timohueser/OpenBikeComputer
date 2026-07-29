@@ -2732,11 +2732,16 @@ impl Storage {
         found
     }
 
-    /// The staging scan (#619 §1): find `UPDATE.BIN` in the card root, decode + validate its
-    /// OBCU header, run the **full CRC-32 pass** over the image body through the byte source,
-    /// gate the size, and resolve the whole-file extent chain (spec §2.3 — the header is part
-    /// of the chain). Typed errors surface verbatim to the debug link now and S5's UI later.
-    /// Read-only: a failed scan costs nothing.
+    /// The staging scan (#619 §1, signed in #997): find `UPDATE.BIN` in the card root, decode +
+    /// validate its OBCU header, run the **full CRC-32 pass and the Ed25519 verification** over the
+    /// image body in one pass through the byte source, gate the size, and resolve the whole-file
+    /// extent chain (spec §2.3 — the header is part of the chain). Typed errors surface verbatim to
+    /// the debug link now and S5's UI later. Read-only: a failed scan costs nothing.
+    ///
+    /// The trusted key is [`obc_dfu::RELEASE_PUBKEY`] — the production key compiled into this image
+    /// (`firmware/obc-dfu/keys/obcu-release.pub`). This is the *only* place the firmware names it;
+    /// `obc_dfu::armer::scan` takes it as a parameter so tests inject their own key without any
+    /// build-flag surgery on the shipping path.
     pub fn dfu_scan_update(&mut self) -> Result<obc_dfu::StagedRef, ScanError> {
         let name = ShortFileName::create_from_str(UPDATE_BIN).map_err(|_| ScanError::Io)?;
         let Some((entry_block, entry_offset, len)) = self.find_root_entry(&name) else {
@@ -2744,10 +2749,11 @@ impl Storage {
         };
         let file = self.vmgr.open_file_in_dir(self.root, UPDATE_BIN, Mode::ReadOnly).map_err(|_| ScanError::Io)?;
         let mut stage = SdStage { vmgr: &self.vmgr, card: self.card, file, len, entry_block, entry_offset };
-        // The CRC staging buffer matches this module's transfer idiom (`copy_with_held_magic`'s
-        // 512-byte stack chunk) — no new resident statics; the frame pops with the scan.
+        // The CRC/signature staging buffer matches this module's transfer idiom
+        // (`copy_with_held_magic`'s 512-byte stack chunk) — no new resident statics; the frame pops
+        // with the scan, verifier state (~200 B) included.
         let mut chunk = [0u8; 512];
-        let result = obc_dfu::armer::scan(&mut stage, &mut chunk);
+        let result = obc_dfu::armer::scan(&mut stage, &mut chunk, &obc_dfu::RELEASE_PUBKEY);
         let _ = self.vmgr.close_file(file);
         result
     }
@@ -2780,7 +2786,14 @@ impl Storage {
         // Header, then the raw image straight from the memory-mapped slot (embedded-sdmmc chunks
         // the long write into blocks itself). Flush before the extent resolve — the chain must
         // be final on card.
-        let ok = self.vmgr.write(file, &installed.encode()).is_ok()
+        // The snapshot is an **unsigned** container (`ImageHeader::unsigned`): the device cannot
+        // re-create the release signature from slot bytes, and nothing verifies this file — it never
+        // passes through `armer::scan`, and the bootloader's rollback path checks it by CRC. Writing
+        // a signed *marker* with no trailer behind it would be a lie in a file `obc-mkimage inspect`
+        // reads. The recorded `StagedRef` below carries the same unsigned header, so the installer's
+        // header-equality check still matches the bytes on card.
+        let snapshot_header = installed.unsigned();
+        let ok = self.vmgr.write(file, &snapshot_header.encode()).is_ok()
             && self.vmgr.write(file, image).is_ok()
             && self.vmgr.flush_file(file).is_ok();
         let _ = self.vmgr.close_file(file);
@@ -2805,7 +2818,7 @@ impl Storage {
             installed.image_len,
             count
         );
-        obc_dfu::StagedRef::new(*installed, installed.image_len, crc, &extents[..count])
+        obc_dfu::StagedRef::new(snapshot_header, installed.image_len, crc, &extents[..count])
             .map(Some)
             .ok_or(ScanError::TooFragmented { extents: count as u32 })
     }

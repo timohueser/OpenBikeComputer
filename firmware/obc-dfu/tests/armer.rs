@@ -7,8 +7,10 @@ use obc_dfu::armer::{
     arm, confirm_trial, scan, ArmError, ArmIo, ArmTicket, ExtentsError, Rollback, ScanError, StageIo,
 };
 use obc_dfu::engine::IoError;
+use obc_dfu::sig::test_key;
 use obc_dfu::{
     crc32, BootState, Extent, ImageHeader, LastOutcome, OutcomeKind, StagedRef, HEADER_LEN, MAX_EXTENTS, MAX_IMAGE_LEN,
+    SIG_LEN, SIG_SCHEME_ED25519,
 };
 
 // ==================== The staged-file fake ====================
@@ -25,11 +27,14 @@ struct FakeStage {
 }
 
 impl FakeStage {
-    /// A happy stage: `image` wrapped with a valid header, one whole-file extent at block 100.
+    /// A happy stage: `image` wrapped in a valid **signed** (OBCU v2) container under the committed
+    /// test key, one whole-file extent at block 100. Since #997 an unsigned container is not a happy
+    /// stage — `scan` rejects it (see `tests/signature.rs`).
     fn happy(image: &[u8], version: &str) -> (FakeStage, ImageHeader) {
-        let header = ImageHeader::new(image, version);
+        let header = ImageHeader::new(image, version).signed();
         let mut file = header.encode().to_vec();
         file.extend_from_slice(image);
+        file.extend_from_slice(&obc_dfu::sign_image(&test_key::SEED, &header, image));
         let blocks = (file.len() as u32).div_ceil(512);
         (
             FakeStage {
@@ -71,9 +76,9 @@ impl StageIo for FakeStage {
 }
 
 fn scan_with(stage: &mut FakeStage) -> Result<StagedRef, ScanError> {
-    // A deliberately awkward chunk size so the CRC pass exercises partial-chunk tails.
+    // A deliberately awkward chunk size so the CRC + signature pass exercises partial-chunk tails.
     let mut chunk = [0u8; 96];
-    scan(stage, &mut chunk)
+    scan(stage, &mut chunk, &test_key::PUBLIC)
 }
 
 // ==================== Scan matrix ====================
@@ -125,7 +130,13 @@ fn scan_rejects_bad_image_crc() {
 fn scan_rejects_oversize_before_any_bulk_read() {
     // Hand-build a header whose CRC is valid but whose image_len is over the slot cap; the file
     // carries no body at all — the scan must reject on the length gate, not try to read.
-    let header = ImageHeader { image_len: MAX_IMAGE_LEN + 1, image_crc32: 0, fw_version: [0; 32] };
+    let header = ImageHeader {
+        image_len: MAX_IMAGE_LEN + 1,
+        image_crc32: 0,
+        fw_version: [0; 32],
+        sig_scheme: SIG_SCHEME_ED25519,
+        sig_len: SIG_LEN as u16,
+    };
     let mut stage = FakeStage {
         file: Some(header.encode().to_vec()),
         extents: Ok(vec![]),

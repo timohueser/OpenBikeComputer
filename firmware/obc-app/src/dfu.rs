@@ -107,7 +107,7 @@ pub enum DfuInstallError {
 }
 
 /// Why the staging scan rejected `UPDATE.BIN`, phrased for the app's error card (issue #620 §2).
-/// The board folds `obc_dfu::ScanError`'s finer variants into these five user-facing buckets.
+/// The board folds `obc_dfu::ScanError`'s finer variants into these six user-facing buckets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DfuScanError {
     /// No `UPDATE.BIN` in the card root (`obc_dfu::ScanError::Missing`).
@@ -122,6 +122,13 @@ pub enum DfuScanError {
     /// The file resolves to too many block runs to install — the fix is deleting and re-copying it
     /// (`obc_dfu::ScanError::TooFragmented`).
     TooFragmented,
+    /// The file is intact but **not trusted**: it carries no signature this firmware verifies, or a
+    /// signature that doesn't check out against the release key
+    /// (`obc_dfu::ScanError::{Unsigned, BadSignature}`, OBCU v2 / #997). Deliberately its own bucket
+    /// rather than folded into [`Damaged`](Self::Damaged) — "this file is corrupt" and "this file is
+    /// not ours" are different problems with different fixes, and telling a rider to re-copy a
+    /// perfectly intact forged image would be a lie.
+    Untrusted,
 }
 
 // ==================== DFU arm marker (boot-outcome popup) ====================

@@ -316,6 +316,8 @@ DFU_PRE="B u p d d d d p d d d p p"
 "$SIM" "$MAP" --boot --script "$DFU_PRE" --dfu-error damaged    --png "$OUT/dfu-error-damaged.png"
 "$SIM" "$MAP" --boot --script "$DFU_PRE" --dfu-error toolarge   --png "$OUT/dfu-error-toolarge.png"
 "$SIM" "$MAP" --boot --script "$DFU_PRE" --dfu-error fragmented --png "$OUT/dfu-error-fragmented.png"
+# OBCU v2 (#997): the file is intact but not signed by us — its own card, not "damaged".
+"$SIM" "$MAP" --boot --script "$DFU_PRE" --dfu-error untrusted  --png "$OUT/dfu-error-untrusted.png"
 # The one-time post-update toast, raised through the real notify_update_confirmed seam. A
 # deliberately long git-describe tag exercises the version wrap to a second centred line.
 "$SIM" "$MAP" --boot --dfu-confirmed "v1.0.0-14-g0a1b2c3-dirty" --png "$OUT/dfu-updated.png"
