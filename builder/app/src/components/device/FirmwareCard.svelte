@@ -9,13 +9,21 @@
   The version check is #773's: an anonymous GET for the published manifest, compared against the
   running version the identity/DIS read reports. A device running a probe-flashed build reports a
   git hash rather than a version — that parses as nothing, and no update is offered, deliberately.
+  The card says so in as many words ("development build — automatic updates are paused") rather
+  than going quiet, and the file picker below stays the way such a device gets back onto releases.
+
+  The check itself is `lib/firmware/check.svelte.ts`, shared with the prompt that appears when a
+  device connects (#1002). This card remains the only surface that stages anything or asks the
+  device to install it; the prompt can only point here.
 -->
 <script lang="ts">
     import { onMount } from "svelte";
     import { formatBytes } from "../../lib/format";
     import { DeviceJob } from "../../lib/device/job.svelte";
     import { askToInstall, stageFirmware } from "../../lib/device/write";
-    import { fetchFirmwareRelease, updateStatus, type FirmwareRelease } from "../../lib/firmware/release";
+    import { firmwareCheck } from "../../lib/firmware/check.svelte";
+    import { updateStatus, type FirmwareRelease } from "../../lib/firmware/release";
+    import { FIRMWARE_ANCHOR } from "../../lib/routes";
     import { Sha256 } from "../../lib/device/sha256";
     import type { ProtocolClient } from "../../lib/usb/client";
     import type { DeviceInfo } from "../../lib/usb/transport";
@@ -24,27 +32,25 @@
     let { client, info }: { client: ProtocolClient; info: DeviceInfo | null } = $props();
 
     const job = new DeviceJob("firmware");
-    let release = $state<FirmwareRelease | null>(null);
-    let checkFailed = $state(false);
     let staged = $state<string | null>(null);
     let asked = $state(false);
     let askError = $state<string | null>(null);
     let picker = $state<HTMLInputElement>();
 
-    // Only once a device is connected: with nothing to compare against, a request to GitHub buys
-    // the visitor nothing and costs them a third-party connection they did not ask for.
-    onMount(async () => {
-        try {
-            release = await fetchFirmwareRelease();
-        } catch {
-            checkFailed = true;
-        }
-    });
+    // Only once a device is connected: with nothing to compare against, a request to the update
+    // host buys the visitor nothing and costs them a connection they did not ask for. This card
+    // only ever renders behind a live client, so mounting *is* that condition — and the shared
+    // check makes at most one request however many surfaces ask.
+    onMount(() => void firmwareCheck.ensure());
 
+    const release = $derived(firmwareCheck.release);
+    const checkFailed = $derived(firmwareCheck.failed);
     const running = $derived(info?.firmwareRevision ?? null);
     const status = $derived(updateStatus(running, release?.version ?? null));
 
     async function sendRelease(entry: FirmwareRelease) {
+        // Acting on it answers the question the prompt would otherwise ask about this version.
+        firmwareCheck.answer(info?.serialNumber, entry.version);
         staged = null;
         asked = false;
         askError = null;
@@ -96,7 +102,8 @@
     }
 </script>
 
-<section class="block">
+<!-- The id is where the update prompt scrolls to; `lib/routes.ts` spells it once. -->
+<section class="block" id={FIRMWARE_ANCHOR}>
     <h4>Firmware</h4>
 
     <p class="what small">
@@ -110,12 +117,15 @@
         <p class="small muted">Up to date.</p>
     {:else if status === "ahead" && release}
         <p class="small muted">This device is newer than the published {release.version}.</p>
+    {:else if status === "unknown" && running}
+        <!-- The third state, said out loud (#773's U4/U5 amendment): the version this device
+             reports is not a release version, so the check has nothing it can decide. The picker
+             below is how such a device gets back onto the release track. -->
+        <p class="small muted">Development build — automatic updates are paused.</p>
     {:else if status === "unknown"}
-        <p class="small muted">
-            This device reports a development build, so there is nothing to compare it against.
-        </p>
+        <p class="small muted">This device has not reported a firmware version yet.</p>
     {:else if checkFailed}
-        <p class="small muted">Couldn't reach the release list.</p>
+        <p class="small muted">Couldn't check for updates.</p>
     {:else}
         <p class="small muted">No published update to compare against.</p>
     {/if}

@@ -69,6 +69,16 @@ function offenders(files: Map<string, string>, needle: string | RegExp): string[
  */
 const ROOTED_SITE_PATH = /["'`(=,]\/OpenBikeComputer\//;
 
+/**
+ * The *site's own* origin — the thing a portable bundle must never contain, because the site is
+ * what moves. An origin match rather than a bare `openbikecomputer.com` substring, for the same
+ * reason {@link ROOTED_SITE_PATH} is not one: there is exactly one absolute URL this app is
+ * *supposed* to know, and since #1002 it lives on a subdomain. `updates.openbikecomputer.com` is
+ * the firmware-update host (#773) — a service endpoint the app fetches a manifest from, not a
+ * self-reference. None of the three hosts is served from it, and moving the site does not move it.
+ */
+const SITE_ORIGIN = /https?:\/\/(?:www\.)?openbikecomputer\.com/;
+
 describe("deployment portability", () => {
     it("references its own assets relatively", async () => {
         const html = (await buildWeb()).get("index.html") ?? "";
@@ -85,7 +95,10 @@ describe("deployment portability", () => {
         // Exactly what .github/workflows/deploy-site.yml passes.
         const files = await buildWeb({ VITE_SITE_BASE: "../" });
         expect(offenders(files, "timohueser.github.io")).toEqual([]);
-        expect(offenders(files, "openbikecomputer.com")).toEqual([]);
+        expect(offenders(files, SITE_ORIGIN)).toEqual([]);
         expect(offenders(files, ROOTED_SITE_PATH)).toEqual([]);
+        // …and the one carve-out above is not vacuous: the update host really is in the bundle,
+        // so a rule written to permit it is being exercised rather than merely stated.
+        expect(offenders(files, "https://updates.openbikecomputer.com/").length).toBeGreaterThan(0);
     }, 180_000);
 });

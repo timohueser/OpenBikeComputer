@@ -15,3 +15,12 @@ export const DEVICE_ROUTE = "#/device";
 
 /** The ride library — the managed folder. Tiers with `caps.rideLibrary`. */
 export const RIDES_ROUTE = "#/rides";
+
+/**
+ * The firmware card's DOM id — a destination inside a page rather than a page, and the only one
+ * the app navigates to on its own (#1002's update prompt scrolls the rider there). It lives with
+ * the routes because it is the same kind of thing: a target two modules have to agree on, spelled
+ * once. Not a hash route: the card is a section of whichever page carries the device surfaces, and
+ * making it a route would mean two ways to be in the same place.
+ */
+export const FIRMWARE_ANCHOR = "firmware-card";

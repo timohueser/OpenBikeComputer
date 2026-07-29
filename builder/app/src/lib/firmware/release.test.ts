@@ -10,6 +10,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+    FIRMWARE_MANIFEST_URL,
     FirmwareManifestError,
     compareVersions,
     fetchFirmwareRelease,
@@ -22,7 +23,7 @@ const MANIFEST = JSON.stringify({
     version: "1.4.0",
     size: 812_345,
     sha256: "a".repeat(64),
-    url: "https://github.com/timohueser/OpenBikeComputer/releases/download/v1.4.0/UPDATE.BIN",
+    url: "https://updates.openbikecomputer.com/fw/v1.4.0/UPDATE.BIN",
     notes: "https://github.com/timohueser/OpenBikeComputer/releases/tag/v1.4.0",
     signature: "ignored-by-this-parser",
 });
@@ -55,6 +56,23 @@ describe("parseFirmwareManifest", () => {
 describe("fetchFirmwareRelease", () => {
     const response = (status: number, body = "") =>
         ({ status, ok: status >= 200 && status < 300, text: async () => body }) as Response;
+
+    it("asks the mirror rather than GitHub", async () => {
+        // Not a style preference: a GitHub release asset 302s to storage that sends no CORS
+        // header, so this fetch fails in a browser and in the desktop webview — the two hosts that
+        // have a browser in them. #773 (2026-07-29) moved the manifest to R2 for exactly that.
+        expect(FIRMWARE_MANIFEST_URL).toBe("https://updates.openbikecomputer.com/fw/manifest.json");
+        expect(FIRMWARE_MANIFEST_URL).not.toContain("github");
+
+        let asked: string | null = null;
+        await fetchFirmwareRelease({
+            fetch: async (input) => {
+                asked = String(input);
+                return response(404);
+            },
+        });
+        expect(asked).toBe(FIRMWARE_MANIFEST_URL);
+    });
 
     it("treats a 404 as 'nothing published yet', not an error", async () => {
         const release = await fetchFirmwareRelease({ fetch: async () => response(404) });
@@ -104,6 +122,16 @@ describe("updateStatus", () => {
 
     it("says nothing at all when there is no published release", () => {
         expect(updateStatus("1.3.0", null)).toBe("no-release");
+    });
+
+    it("still calls a dev build a dev build when nothing is published", () => {
+        // The card renders `unknown` as "development build — automatic updates are paused", and
+        // that is true whether or not a release exists: what makes the version undecidable is the
+        // hash the device reports. Ordering this the other way round would hide the state for as
+        // long as U3 has not published (i.e. exactly today).
+        expect(updateStatus("abc1234", null)).toBe("unknown");
+        // …but a device that has said nothing yet is not a dev build; there is simply no check.
+        expect(updateStatus(null, null)).toBe("no-release");
     });
 
     it("distinguishes older, current and ahead", () => {
