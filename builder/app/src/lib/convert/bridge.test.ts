@@ -25,7 +25,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 
-import { ConvertError, gpxToObcr, initConvert, routeTrack, trackToGpx } from "./bridge";
+import { ConvertError, gpxToObcr, initConvert, routeTrack, routeWaypoints, trackToGpx } from "./bridge";
 
 /**
  * The OBCR header's name field, and the GPX `<trk><name>`, are inputs to the conversion — so they
@@ -145,6 +145,46 @@ describe("routeTrack", () => {
 
     it("refuses bytes that are not a route, with the stable code", async () => {
         const failure = await routeTrack(new Uint8Array(200)).catch((e: unknown) => e);
+        expect(failure).toBeInstanceOf(ConvertError);
+        expect((failure as ConvertError).code).toBe("not-route");
+    });
+});
+
+describe("routeWaypoints", () => {
+    it("reads back the fixture's waypoint table, decoded and in route order", async () => {
+        // `route-source.gpx` carries two `<wpt>`s: "Pass Summit" (`<type>Viewpoint</type>` —
+        // deliberately unmapped, so generic) and "Brunnen" (`<sym>Drinking Water</sym>` → water).
+        const wps = await routeWaypoints(vector("route-waypoints.obcr"));
+        expect(wps.map((w) => w.name).sort()).toEqual(["Brunnen", "Pass Summit"]);
+        for (let i = 1; i < wps.length; i++) {
+            expect(wps[i].distAlongM).toBeGreaterThanOrEqual(wps[i - 1].distAlongM);
+        }
+
+        const brunnen = wps.find((w) => w.name === "Brunnen")!;
+        expect(brunnen.category).toBe(1);
+        expect(brunnen.ele).toBe(238);
+        expect(brunnen.lat).toBeCloseTo(48.0001, 4);
+        expect(brunnen.lon).toBeCloseTo(7.8201, 4);
+
+        const summit = wps.find((w) => w.name === "Pass Summit")!;
+        expect(summit.category).toBe(0);
+        expect(summit.ele).toBeNull();
+    });
+
+    it("agrees with a fresh conversion of the same GPX", async () => {
+        // The other way the device gets waypoints: `gpxToObcr` on a GPX with `<wpt>`s. The
+        // fixture is byte-pinned to that conversion above, so the tables must agree exactly.
+        const gpx = text("host/obc-vectors/src/route-source.gpx");
+        const obcr = await gpxToObcr(new TextEncoder().encode(gpx), ROUTE_NAME);
+        expect(await routeWaypoints(obcr)).toEqual(await routeWaypoints(vector("route-waypoints.obcr")));
+    });
+
+    it("resolves to an empty list for a route without waypoints", async () => {
+        expect(await routeWaypoints(vector("route-plain.obcr"))).toEqual([]);
+    });
+
+    it("refuses bytes that are not a route, with the stable code", async () => {
+        const failure = await routeWaypoints(new Uint8Array(200)).catch((e: unknown) => e);
         expect(failure).toBeInstanceOf(ConvertError);
         expect((failure as ConvertError).code).toBe("not-route");
     });
