@@ -175,7 +175,8 @@ class RecordingLibrary implements RideLibrary {
             bytes: ride.object.length,
             crc32: ride.crc32,
             importedAt: 1_700_000_000 + this.rides.size,
-            ridePath: `${this.folder}/${ride.objectId}.obcride`,
+            // The split layout: the archive lives in app data, only the GPX in the visible folder.
+            ridePath: `/app-data/ride-archive/${ride.objectId}.obcride`,
             gpxPath: `${this.folder}/${ride.objectId}.gpx`,
             track: ride.track,
             present: true,

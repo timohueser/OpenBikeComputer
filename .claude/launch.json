@@ -22,6 +22,13 @@
       "port": 5173
     },
     {
+      "name": "web-builder-desktop",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--", "--mode", "desktop", "--port", "5173"],
+      "cwd": "builder/app",
+      "port": 5173
+    },
+    {
       "name": "landing-page",
       "runtimeExecutable": "trunk",
       "runtimeArgs": ["serve", "--config", "docs/Trunk.toml"],

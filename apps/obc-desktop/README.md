@@ -164,7 +164,8 @@ glue takes tens of seconds — and the ratio stops meaning anything.
 |---|---|
 | Built maps | `~/Documents/OpenBikeComputer/` |
 | Exported styles | `~/Documents/OpenBikeComputer/styles/` |
-| Pulled rides | `~/Documents/OpenBikeComputer/rides/` — **relocatable**, see below |
+| Pulled rides (GPX) | `~/Documents/OpenBikeComputer/rides/` — **relocatable**, see below |
+| Ride archive | `<app data>/ride-archive/` — internal, **not** relocatable |
 | `.pbf` extracts | `~/.cache/obcm/pbf/` |
 | Land-polygon dataset | `~/.cache/obcm/land/` |
 | Geofabrik index | `~/.cache/obcm/geofabrik/` |
@@ -179,13 +180,17 @@ button, in its "On this machine" card.
 Built maps go somewhere a person can find, back up and copy to a card — that a
 desktop app *has* a filesystem is most of the reason it exists (#894).
 
-The **ride library** (E2, #912) is the one folder the rider can move: "Change…" in
-the ride panel opens the OS directory chooser, moves the library's files, and
-remembers the choice in `ride-library.json` under the app's config directory (not
-in the library — a folder that named itself could not be found once it moved). The
-default is the row above. Inside it, per ride, a `.gpx` and the device's own ride
-object as `.obcride`, plus one `index.json`; `rides.rs`'s module docs say why both
-files and not one.
+The **ride library** (E2, #912) is split in two. The visible folder holds **only
+GPX** — one `.gpx` per ride, the thing other software reads — and it is the one
+folder the rider can move: "Change…" in the ride page opens the OS directory
+chooser, moves the GPX files, and remembers the choice in `ride-library.json`
+under the app's config directory (not in the library — a folder that named itself
+could not be found once it moved). The device's own ride objects (`.obcride`) and
+the `index.json` live in the internal **ride archive** under the app's data
+directory; that store never moves with the folder, and a library written by an
+older build (everything in the one visible folder) is migrated over — durably and
+idempotently — the first time the library is opened. `rides.rs`'s module docs own
+the layout, the migration and the reasons.
 
 ## Layout
 

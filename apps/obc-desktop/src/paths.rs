@@ -67,6 +67,17 @@ pub fn rides_dir(documents: Option<PathBuf>) -> PathBuf {
     maps_dir(documents).join("rides")
 }
 
+/// The internal ride **archive**: `index.json` plus the `.obcride` objects the ride library keeps
+/// behind the visible GPX folder (`rides.rs`'s module docs own the why). App data, not user files —
+/// and deliberately **not** relocatable: it does not follow the GPX folder when the rider moves it,
+/// because a store that follows another folder around is two ways to lose it.
+///
+/// `app_data` is Tauri's per-app data directory; the fallback only exists so a platform that cannot
+/// name one still gets a deterministic, private location rather than a panic.
+pub fn ride_archive_dir(app_data: Option<PathBuf>) -> PathBuf {
+    app_data.unwrap_or_else(|| home().join(".openbikecomputer")).join("ride-archive")
+}
+
 fn home() -> PathBuf {
     #[cfg(windows)]
     let var = "USERPROFILE";
