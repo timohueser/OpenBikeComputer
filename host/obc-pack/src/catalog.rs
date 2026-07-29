@@ -50,7 +50,7 @@ pub const CATALOG_EXAMPLE_JSON: &str = include_str!("../schema/catalog.example.j
 /// constant must *break* a test, because the bump invalidates every artifact already
 /// baked and published. See the `obcm_version_pin_is_deliberate` test for the
 /// checklist that failure prints.
-pub const PINNED_OBCM_VERSION: u8 = 10;
+pub const PINNED_OBCM_VERSION: u8 = 11;
 
 /// Default manifest filename inside a bake tree.
 pub const DEFAULT_MANIFEST_NAME: &str = "catalog.json";

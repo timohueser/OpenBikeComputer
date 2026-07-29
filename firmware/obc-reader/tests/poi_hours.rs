@@ -10,7 +10,7 @@
 use obc_formats::obcm::{POI_HOURS_BLOB_LEN, POI_HOURS_FLAG_TRUNCATED as HOURS_FLAG_TRUNCATED};
 use obc_reader::{Interval, MapCache, MapTables, PoiCategory, Reader, SliceSource, WeeklySchedule};
 use obcm_testkit::{
-    build_file, empty_nav_directory, hours_pool, pack_poi_chunk, pack_poi_record, pad, poi_dir_len, poi_directory,
+    build_file, empty_nav_directory, hours_pool, pack_poi_chunk, pack_poi_record, poi_dir_len, poi_directory, seal,
     LodSpec, PoiCat, Style,
 };
 
@@ -45,7 +45,7 @@ fn build_map_with_pool(blobs: &[[u8; POI_HOURS_BLOB_LEN]], ref_a: u16, ref_b: u1
     let base = build_file(
         GLOBAL,
         STYLES,
-        &[LodSpec { max_mpp: f32::INFINITY, index: vec![0], chunks: vec![pad(vec![0xFF; 1], CS)], chunk_size: CS }],
+        &[LodSpec { max_mpp: f32::INFINITY, index: vec![0], chunks: vec![seal(vec![], CS)], chunk_size: CS }],
     );
     let poi_off = u32::from_le_bytes(base[32..36].try_into().unwrap()) as usize;
 

@@ -34,12 +34,12 @@ use crate::{BBox, Error, Kind, Style, M_PER_DEG};
 use obc_formats::io::{rd_f32, rd_i16, rd_i32, rd_u16, rd_u32, ByteSource, Error as IoError};
 use obc_formats::obcm::PoiCategory;
 use obc_formats::obcm::{
-    BRANCH_BIT, EMPTY_LEAF, FEATURE_FLAG_16BIT, FEATURE_FLAG_HOLES, FEATURE_FLAG_POLYGON, STYLE_DASHED_BIT,
-    STYLE_HAS_COLOR2_BIT, STYLE_PRIORITY_MASK,
+    BRANCH_BIT, EMPTY_LEAF, FEATURE_FLAG_16BIT, FEATURE_FLAG_HOLES, FEATURE_FLAG_POLYGON, FEATURE_FLAG_WIDE,
+    STYLE_DASHED_BIT, STYLE_HAS_COLOR2_BIT, STYLE_PRIORITY_MASK,
 };
 use obc_formats::obcm::{
-    CHUNK_END, FEATURE_HEADER_LEN, MAGIC, NAV_DIR_LEN, POI_CAT_ENTRY_LEN, POI_HOURS_REF_NONE, POI_RECORD_LEN,
-    STYLE_RECORD_LEN, VERSION,
+    CHUNK_END, FEATURE_HEADER_COMPACT_LEN, FEATURE_HEADER_WIDE_LEN, MAGIC, NAV_DIR_LEN, POI_CAT_ENTRY_LEN,
+    POI_HOURS_REF_NONE, POI_RECORD_LEN, STYLE_RECORD_LEN, VERSION,
 };
 use obc_formats::obcm::{
     HEADER_LEN, LOD_ENTRY_LEN, NAV_CHUNK_SIZE, NAV_EDGE_FIXED_LEN, NAV_MAX_PROFILES, NAV_NEIGHBOR_LEN,
@@ -246,33 +246,46 @@ pub struct Lod {
     pub max_mpp: f32,
     pub index_offset: usize,
     pub node_count: usize,
+    /// The **capacity bound** on one chunk (v11 §3): the packer's leaf-split threshold and the
+    /// largest length any single chunk may have. No longer a stride — v11 chunks are packed tight
+    /// and addressed through the offset table.
     pub chunk_size: usize,
     pub chunk_count: usize,
+    /// Total bytes of this level's chunk-data region — `offsets[chunk_count]`, the last entry of
+    /// the offset table, read once in [`parse_lod_table`]. Resident so a per-chunk fetch can
+    /// bound its offset pair without a second read.
+    pub chunk_bytes_total: usize,
 }
 
 impl Lod {
-    /// Byte offset where this level's data chunks begin (right after its index).
-    /// `None` if the arithmetic overflows `usize` — reachable on the 32-bit MCU
-    /// from a corrupt `index_offset`/`node_count`.
+    /// Byte offset of the LOD's per-chunk **offset table** (v11 §5): `chunk_count + 1` `uint32`
+    /// entries sitting between the quadtree index and the chunk data. `None` on `usize` overflow —
+    /// reachable on the 32-bit MCU from a corrupt `index_offset`/`node_count`.
     #[inline]
-    fn data_start(&self) -> Option<usize> {
+    fn offset_table(&self) -> Option<usize> {
         self.node_count.checked_mul(4)?.checked_add(self.index_offset)
     }
 
-    /// Byte range `[start, end)` of chunk `chunk_id`, or `None` if `chunk_id` is out
-    /// of range or any offset overflows `usize`. `chunk_id` comes straight from a
-    /// quadtree leaf (arbitrary in a corrupt map), so validate against `chunk_count`
-    /// with checked arithmetic to keep the 32-bit device from wrapping past the
-    /// caller's file-length guard. The caller still bounds-checks `end` against the buffer.
+    /// Byte offset where this level's chunk **data** begins: after the index *and* the offset
+    /// table. `None` on `usize` overflow (see [`Lod::offset_table`]).
     #[inline]
-    fn chunk_range(&self, chunk_id: u32) -> Option<(usize, usize)> {
+    fn data_start(&self) -> Option<usize> {
+        let table_len = self.chunk_count.checked_add(1)?.checked_mul(4)?;
+        self.offset_table()?.checked_add(table_len)
+    }
+
+    /// Byte offset of chunk `chunk_id`'s entry in the offset table, or `None` if `chunk_id` is out
+    /// of range or the arithmetic overflows `usize`. `chunk_id` comes straight from a quadtree leaf
+    /// (arbitrary in a corrupt map), so it is validated against `chunk_count` with checked
+    /// arithmetic. Entries `k` and `k+1` are adjacent, which is what makes a chunk extent **one**
+    /// 8-byte read ([`Reader::chunk_range`]).
+    #[inline]
+    fn offset_entry(&self, chunk_id: u32) -> Option<usize> {
         let id = chunk_id as usize;
         if id >= self.chunk_count {
             return None;
         }
-        let start = id.checked_mul(self.chunk_size)?.checked_add(self.data_start()?)?;
-        let end = start.checked_add(self.chunk_size)?;
-        Some((start, end))
+        self.offset_table()?.checked_add(id.checked_mul(4)?)
     }
 }
 
@@ -1652,6 +1665,47 @@ impl<'a> Reader<'a> {
         Ok(u32::from_le_bytes(b))
     }
 
+    /// Byte range `[start, end)` of geometry chunk `chunk_id` in `l`, resolved through the LOD's
+    /// per-chunk offset table (v11 §5). `offsets[k]` and `offsets[k+1]` are adjacent, so this is a
+    /// single 8-byte read — routed through the **index** block cache, the same one `read_node`
+    /// uses: the table is index-like metadata and lies immediately after the index, so a walk's
+    /// node reads and its chunk lookups share blocks instead of hitting the card twice.
+    ///
+    /// `chunk_id` is unvalidated file data, so the pair is checked before it can address anything:
+    /// in range, monotonic, inside the region [`parse_lod_table`] bounded, and no longer than the
+    /// LOD's declared `chunk_size` (nor the decode scratch). A corrupt table therefore yields
+    /// [`MapReadError::Malformed`], never an out-of-region read.
+    ///
+    /// The cache borrow is taken and **released here**, before the caller borrows it again for
+    /// `load_chunk` — the same read-before-you-need-it discipline as `read_node` in `walk_leaves`.
+    fn chunk_range(&self, l: &Lod, chunk_id: u32) -> Result<(usize, usize), MapReadError> {
+        if !self.cache_ready {
+            return Err(MapReadError::Cache(CacheError::Busy));
+        }
+        let entry = l.offset_entry(chunk_id).ok_or(MapReadError::Malformed)?;
+        let entry = u32::try_from(entry).map_err(|_| MapReadError::Malformed)?;
+        let mut b = [0u8; 8];
+        self.cache
+            .try_borrow_mut()
+            .map_err(MapReadError::Cache)?
+            .index_read(self.src, entry, &mut b)
+            .map_err(MapReadError::Source)?;
+        let (off0, off1) = (rd_u32(&b, 0) as usize, rd_u32(&b, 4) as usize);
+        if off1 < off0 || off1 > l.chunk_bytes_total {
+            return Err(MapReadError::Malformed);
+        }
+        let len = off1 - off0;
+        if len > l.chunk_size || len > MAX_CHUNK_BYTES {
+            return Err(MapReadError::Malformed);
+        }
+        let start = l.data_start().and_then(|d| d.checked_add(off0)).ok_or(MapReadError::Malformed)?;
+        let end = start.checked_add(len).ok_or(MapReadError::Malformed)?;
+        if end > self.src.len() as usize {
+            return Err(MapReadError::Malformed);
+        }
+        Ok((start, end))
+    }
+
     /// Visit `(chunk_id, node_bbox)` for every non-empty leaf in `lod` overlapping `view`, in
     /// quadtree order. `lod` indexes [`Reader::lods`]; out-of-range visits nothing. Unlike a
     /// capacity-bounded collect, this streams through a callback with **no upper bound** on the
@@ -1772,21 +1826,12 @@ impl<'a> Reader<'a> {
             Some(l) => l,
             None => return Err(MapReadError::Malformed),
         };
-        // `chunk_id` is unvalidated file data: reject an out-of-range id or an offset overflowing
-        // `usize` (32-bit on device) instead of panicking or decoding an adjacent region.
-        let (start, end) = match l.chunk_range(chunk_id) {
-            Some(range) => range,
-            None => return Err(MapReadError::Malformed),
-        };
-        if end > self.src.len() as usize {
-            return Err(MapReadError::Malformed);
-        }
-        // `chunk_size` was capped at `MAX_CHUNK_BYTES` in `parse`; this defensive check keeps a
-        // corrupt LOD from indexing past the decode scratch.
+        // Resolve the chunk's extent from the offset table first — that read borrows the cache, so
+        // it must finish before the `load_chunk` borrow below. `chunk_range` validates the pair
+        // (range, monotonicity, `chunk_size`, `MAX_CHUNK_BYTES`, file length) so nothing here can
+        // index past the decode scratch or the file.
+        let (start, end) = self.chunk_range(l, chunk_id)?;
         let len = end - start;
-        if len > MAX_CHUNK_BYTES {
-            return Err(MapReadError::Malformed);
-        }
         // Pull the chunk through the cache, then decode from the resident bytes. The borrow is held
         // across `decode_chunk_into` — safe because `should_decode`/`visit` only touch
         // `self.tables.styles`, never the cache.
@@ -1838,13 +1883,17 @@ impl<'a> Reader<'a> {
         points.clear();
         ring_lens.clear();
         let l = self.tables.lods.get(lod).ok_or(FeatureReadError::Decode(FeatureDecodeError::Malformed))?;
-        let (start, end) = l.chunk_range(cid).ok_or(FeatureReadError::Decode(FeatureDecodeError::Malformed))?;
-        if end > self.src.len() as usize {
-            return Err(FeatureReadError::Decode(FeatureDecodeError::Malformed));
-        }
+        // Same offset-table lookup + validation as the full walk (and the same borrow-then-release
+        // ordering ahead of `load_chunk`); a read failure there is a read failure here.
+        let (start, end) = match self.chunk_range(l, cid) {
+            Ok(range) => range,
+            Err(MapReadError::Malformed) => return Err(FeatureReadError::Decode(FeatureDecodeError::Malformed)),
+            Err(error) => return Err(FeatureReadError::Read(error)),
+        };
         let len = end - start;
-        // Same corrupt-chunk guards as the full walk, plus the offset must land inside the chunk.
-        if len > MAX_CHUNK_BYTES || offset >= len {
+        // The re-decode offset must additionally land inside *this* chunk — `len` now comes from the
+        // offset table, so a stale offset from a differently-sized chunk is rejected here.
+        if offset >= len {
             return Err(FeatureReadError::Decode(FeatureDecodeError::Malformed));
         }
         if !self.cache_ready {
@@ -2034,9 +2083,15 @@ fn decode_chunk_into<const P: usize, const R: usize>(
     let cs = chunk.len();
     let mut off = 0usize;
     let mut status = DecodeStatus::default();
+    // A v11 chunk is `features ++ [CHUNK_END]` — exactly one sentinel, no padding. Running off the
+    // end without meeting it means the chunk was truncated or its offset-table length is wrong, so
+    // the walk owes the caller a malformed drop rather than a silent clean finish. `verdict` also
+    // covers the paths that already reported one and consumed the rest of the chunk.
+    let mut verdict = false;
 
-    while off + FEATURE_HEADER_LEN <= cs {
+    while off < cs {
         if chunk[off] == CHUNK_END {
+            verdict = true;
             break;
         }
         let style_id = chunk[off];
@@ -2053,6 +2108,7 @@ fn decode_chunk_into<const P: usize, const R: usize>(
                     points.clear();
                     ring_lens.clear();
                     status.dropped(error);
+                    verdict = true;
                     break;
                 }
             }
@@ -2065,16 +2121,75 @@ fn decode_chunk_into<const P: usize, const R: usize>(
                 status.complete = status.complete.saturating_add(1);
                 off = next;
             }
+            DecodeOne::Dropped(FeatureDecodeError::Malformed, _) => {
+                // Malformed framing consumes the whole rest of the chunk (there is no trustworthy
+                // next offset), so this drop *is* the chunk's verdict — don't also charge it for a
+                // missing sentinel it never got to.
+                status.dropped(FeatureDecodeError::Malformed);
+                verdict = true;
+                break;
+            }
             DecodeOne::Dropped(error, next) => {
                 status.dropped(error);
                 off = next;
             }
         }
     }
+    if !verdict {
+        status.dropped(FeatureDecodeError::Malformed);
+    }
     status
 }
 
-/// Decode the single feature whose 12-byte header starts at `off` in `chunk`, into `points`/
+/// One parsed v11 §5 feature header, in either layout, plus the header's own `len` so the caller
+/// knows where the deltas start. Built only by [`read_feature_header`], which is the single place
+/// that decides what "malformed framing" means — the decode and the skip path share it, so they can
+/// never disagree about which byte a feature ends on.
+struct FeatHeader {
+    style_id: u8,
+    flags: u8,
+    ext_pt_count: usize,
+    /// Anchor, leaf-relative µdeg. Compact headers zero-extend their `uint16` fields; wide ones
+    /// carry the full `int32`.
+    ax: i32,
+    ay: i32,
+    len: usize,
+}
+
+/// Read the feature header at `off`, or `None` for every malformed-framing case: the end-of-features
+/// sentinel, a header running past the chunk, an unknown flag bit, `pt_count == 0`, or holes on a
+/// line. `style` + `flags` are the fixed 2-byte prefix of both layouts, and the `WIDE` bit lives in
+/// `flags` — so v11 knows the header's width before it needs any field behind it (v10's trailing
+/// flags byte made that impossible, which is why the layout was reordered).
+#[inline]
+fn read_feature_header(chunk: &[u8], off: usize) -> Option<FeatHeader> {
+    if off.checked_add(2).is_none_or(|end| end > chunk.len()) || chunk[off] == CHUNK_END {
+        return None;
+    }
+    let style_id = chunk[off];
+    let flags = chunk[off + 1];
+    if flags & !(FEATURE_FLAG_16BIT | FEATURE_FLAG_POLYGON | FEATURE_FLAG_HOLES | FEATURE_FLAG_WIDE) != 0 {
+        return None;
+    }
+    let wide = flags & FEATURE_FLAG_WIDE != 0;
+    let len = if wide { FEATURE_HEADER_WIDE_LEN } else { FEATURE_HEADER_COMPACT_LEN };
+    if off.checked_add(len).is_none_or(|end| end > chunk.len()) {
+        return None;
+    }
+    let (ext_pt_count, ax, ay) = if wide {
+        (rd_u16(chunk, off + 2) as usize, rd_i32(chunk, off + 4), rd_i32(chunk, off + 8))
+    } else {
+        // Compact anchors are **unsigned** — zero-extended, not sign-extended: the packer only picks
+        // this layout when both fit `0..=65535`.
+        (chunk[off + 2] as usize, rd_u16(chunk, off + 3) as i32, rd_u16(chunk, off + 5) as i32)
+    };
+    if ext_pt_count == 0 || (flags & FEATURE_FLAG_HOLES != 0 && flags & FEATURE_FLAG_POLYGON == 0) {
+        return None;
+    }
+    Some(FeatHeader { style_id, flags, ext_pt_count, ax, ay, len })
+}
+
+/// Decode the single feature whose header starts at `off` in `chunk`, into `points`/
 /// `ring_lens` (cleared first), returning its [`FeatureRef`] (borrowing those buffers, with
 /// [`FeatureRef::offset`] set to `off`) plus the offset just past it. A malformed/capacity result
 /// also leaves both buffers empty, so it is safe to call with an untrusted `off` (issue #564's
@@ -2096,28 +2211,18 @@ fn decode_one_feature<'b, const P: usize, const R: usize>(
 ) -> DecodeOne<'b> {
     points.clear();
     ring_lens.clear();
-    if off + FEATURE_HEADER_LEN > chunk.len() || chunk[off] == CHUNK_END {
-        return dropped_feature(points, ring_lens, FeatureDecodeError::Malformed, chunk.len());
-    }
+    let head = match read_feature_header(chunk, off) {
+        Some(head) => head,
+        None => return dropped_feature(points, ring_lens, FeatureDecodeError::Malformed, chunk.len()),
+    };
+    let FeatHeader { style_id, flags, ext_pt_count, ax, ay, len } = head;
     let feat_off = off;
-    let style_id = chunk[off];
-    let ext_pt_count = rd_u16(chunk, off + 1) as usize;
-    let ax = rd_i32(chunk, off + 3);
-    let ay = rd_i32(chunk, off + 7);
-    let flags = chunk[off + 11];
-    let mut off = off + FEATURE_HEADER_LEN;
+    let mut off = off + len;
 
     let is_16 = flags & FEATURE_FLAG_16BIT != 0;
     let is_poly = flags & FEATURE_FLAG_POLYGON != 0;
     let has_holes = flags & FEATURE_FLAG_HOLES != 0;
     let dsize = if is_16 { 2 } else { 1 };
-
-    if ext_pt_count == 0 || flags & !(FEATURE_FLAG_16BIT | FEATURE_FLAG_POLYGON | FEATURE_FLAG_HOLES) != 0 {
-        return dropped_feature(points, ring_lens, FeatureDecodeError::Malformed, chunk.len());
-    }
-    if has_holes && !is_poly {
-        return dropped_feature(points, ring_lens, FeatureDecodeError::Malformed, chunk.len());
-    }
 
     let anchor = (node.min_lon.wrapping_add(ax), node.min_lat.wrapping_add(ay));
 
@@ -2209,22 +2314,12 @@ fn ring_end(chunk: &[u8], off: usize, pt_count: usize, is_hole: bool, dsize: usi
 }
 
 fn skip_feature(chunk: &[u8], off: usize) -> Result<usize, FeatureDecodeError> {
-    if off.checked_add(FEATURE_HEADER_LEN).is_none_or(|end| end > chunk.len()) || chunk[off] == CHUNK_END {
-        return Err(FeatureDecodeError::Malformed);
-    }
-    let ext_pt_count = rd_u16(chunk, off + 1) as usize;
-    let flags = chunk[off + 11];
+    let head = read_feature_header(chunk, off).ok_or(FeatureDecodeError::Malformed)?;
+    let FeatHeader { flags, ext_pt_count, len, .. } = head;
     let is_poly = flags & FEATURE_FLAG_POLYGON != 0;
     let has_holes = flags & FEATURE_FLAG_HOLES != 0;
-    if ext_pt_count == 0
-        || flags & !(FEATURE_FLAG_16BIT | FEATURE_FLAG_POLYGON | FEATURE_FLAG_HOLES) != 0
-        || (has_holes && !is_poly)
-    {
-        return Err(FeatureDecodeError::Malformed);
-    }
     let dsize = if flags & FEATURE_FLAG_16BIT != 0 { 2 } else { 1 };
-    let mut next =
-        ring_end(chunk, off + FEATURE_HEADER_LEN, ext_pt_count, false, dsize).ok_or(FeatureDecodeError::Malformed)?;
+    let mut next = ring_end(chunk, off + len, ext_pt_count, false, dsize).ok_or(FeatureDecodeError::Malformed)?;
     if is_poly && has_holes {
         let hole_count = *chunk.get(next).ok_or(FeatureDecodeError::Malformed)? as usize;
         next += 1;
@@ -2335,34 +2430,45 @@ fn parse_styles(
 }
 
 /// Parse the `lod_count` LOD-table entries (resident from `src`); validates each layer's
-/// index/chunk region lies within the file (`total` bytes) so `for_each_chunk`/`decode_chunk` can skip
-/// bounds math, and that its `chunk_size` fits the decode scratch ([`MAX_CHUNK_BYTES`]).
+/// index/table/chunk region lies within the file (`total` bytes) so `for_each_chunk`/`decode_chunk`
+/// can skip bounds math, and that its `chunk_size` fits the decode scratch ([`MAX_CHUNK_BYTES`]).
+///
+/// v11 costs one extra `uint32` read per LOD: the offset table's **last** entry is the layer's total
+/// chunk bytes ([`Lod::chunk_bytes_total`]), which both bounds the region here and bounds every
+/// later per-chunk offset pair in [`Reader::chunk_range`] with no further reads.
 fn parse_lod_table(src: &dyn ByteSource, offset: usize, lod_count: usize, total: usize) -> Result<Vec<Lod, 16>, Error> {
     let mut lods = Vec::new();
     let mut e = [0u8; LOD_ENTRY_LEN];
     for k in 0..lod_count {
         let o = offset + k * LOD_ENTRY_LEN;
         src.read_at(o as u32, &mut e).map_err(Error::Source)?;
-        let lod = Lod {
+        let mut lod = Lod {
             max_mpp: rd_f32(&e, 0),
             index_offset: rd_u32(&e, 4) as usize,
             node_count: rd_u32(&e, 8) as usize,
             chunk_size: rd_u16(&e, 12) as usize,
             chunk_count: rd_u32(&e, 14) as usize,
+            chunk_bytes_total: 0,
         };
-        // Checked: a corrupt entry's `node_count`/`chunk_count`/`chunk_size` products can wrap
-        // `usize` on the 32-bit target, so an unchecked `chunks_end` could land below `total` and
-        // admit a layer indexing out of the file.
-        let chunks_end = lod
-            .data_start()
-            .and_then(|start| lod.chunk_count.checked_mul(lod.chunk_size).and_then(|len| start.checked_add(len)))
-            .ok_or(Error::BadOffset)?;
-        if lod.index_offset < HEADER_LEN || chunks_end > total {
+        // Checked: a corrupt entry's `node_count`/`chunk_count` products can wrap `usize` on the
+        // 32-bit target, so an unchecked `data_start` could land below `total` and admit a layer
+        // indexing out of the file.
+        let data_start = lod.data_start().ok_or(Error::BadOffset)?;
+        if lod.index_offset < HEADER_LEN || data_start > total {
             return Err(Error::BadOffset);
         }
         // A chunk decodes into the resident scratch, so reject a `chunk_size` over
         // [`MAX_CHUNK_BYTES`] rather than silently dropping its geometry at render time.
         if lod.chunk_size > MAX_CHUNK_BYTES {
+            return Err(Error::BadOffset);
+        }
+        // `offsets[chunk_count]` sits in the last 4 bytes before the chunk data — in range by the
+        // `data_start` guard above, since the table always carries at least this one entry.
+        let last = data_start.checked_sub(4).ok_or(Error::BadOffset)?;
+        let mut t = [0u8; 4];
+        src.read_at(last as u32, &mut t).map_err(Error::Source)?;
+        lod.chunk_bytes_total = rd_u32(&t, 0) as usize;
+        if data_start.checked_add(lod.chunk_bytes_total).is_none_or(|end| end > total) {
             return Err(Error::BadOffset);
         }
         let _ = lods.push(lod);
@@ -3216,7 +3322,7 @@ mod tests {
     fn synth_header(min_lon: i32, min_lat: i32, max_lon: i32, max_lat: i32, marker: u16) -> [u8; HEADER_LEN] {
         let mut h = [0u8; HEADER_LEN];
         h[0..4].copy_from_slice(b"OBCM");
-        h[4] = 10;
+        h[4] = VERSION;
         h[5..9].copy_from_slice(&min_lat.to_le_bytes()); // field order is lat,lon,lat,lon
         h[9..13].copy_from_slice(&min_lon.to_le_bytes());
         h[13..17].copy_from_slice(&max_lat.to_le_bytes());
@@ -3234,7 +3340,7 @@ mod tests {
         assert_eq!(
             got,
             MapHeader {
-                version: 10,
+                version: VERSION,
                 bbox: BBox { min_lon: -34, min_lat: 12, max_lon: 78, max_lat: 56 },
                 marker_color: 0xBEEF
             }
