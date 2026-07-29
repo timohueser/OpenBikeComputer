@@ -94,6 +94,12 @@
         z-index: 5;
     }
 
+    /* And a tile with its menu actually open outranks a merely-hovered one, so a
+       keyboard-opened menu is never painted under the tile the mouse happens to rest on. */
+    .tile:has(:global(details[open])) {
+        z-index: 6;
+    }
+
     .tile:focus-visible {
         outline: 2px solid var(--forest);
         outline-offset: 2px;

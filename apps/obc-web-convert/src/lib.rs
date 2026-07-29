@@ -6,7 +6,7 @@
 //! run**. Not a re-implementation in TypeScript — the same bytes, by construction.
 //!
 //! Deliberately not a framework host like [`obc-web-demo`](../obc_web_demo/index.html): no frame
-//! loop, no canvas, no state. Two pure functions and an error vocabulary.
+//! loop, no canvas, no state. Four pure functions and an error vocabulary.
 //!
 //! | export | contract |
 //! | :-- | :-- |

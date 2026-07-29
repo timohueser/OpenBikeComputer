@@ -93,6 +93,21 @@ fn v3_route(wps: &[WpRec]) -> Vec<u8> {
     f
 }
 
+/// A forged `Waypoint Offset` near `u32::MAX` must come back as the truncated-file error, not
+/// wrap the per-record offset arithmetic back inside the buffer (or panic in debug builds).
+/// Browser-supplied bytes reach this walk through `obc-web-convert`, so the header is untrusted.
+#[test]
+fn a_forged_waypoint_offset_near_u32_max_reads_as_truncation() {
+    for forged in [u32::MAX, u32::MAX - WAYPOINT_LEN as u32 + 1, u32::MAX - 43] {
+        let mut bytes =
+            v3_route(&[(0, 1_000, 2_010, 213, 1, 8, 0, b"Fountain"), (70, 1_490, 2_500, 0, 0, 6, 0, b"Summit")]);
+        bytes[112..116].copy_from_slice(&forged.to_le_bytes()); // §1.1 Waypoint Offset
+        let err = for_each_waypoint(&SliceSource(&bytes), |_| panic!("no forged record may decode"))
+            .expect_err("a wrapped offset must be an error");
+        assert_eq!(err, obc_formats::io::Error::BadOffset, "offset {forged:#x}");
+    }
+}
+
 #[test]
 fn record_contract_reads_every_field() {
     let bytes = v3_route(&[

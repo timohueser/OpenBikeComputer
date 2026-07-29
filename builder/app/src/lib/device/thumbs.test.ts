@@ -61,9 +61,11 @@ describe("thumb keys", () => {
         expect(thumbKey({ ...SCOPE, epoch: null }, "route", 12, "c123")).toContain("no-store");
     });
 
-    it("fingerprints a route by CRC, falling back to length only when the CRC is absent", () => {
-        expect(routeFingerprint({ crc32: 0xdeadbeef, byteLen: 100 })).toBe(`c${0xdeadbeef}`);
-        expect(routeFingerprint({ crc32: 0, byteLen: 100 })).toBe("l100");
+    it("fingerprints a route by CRC — and refuses to invent one when the device reports none", () => {
+        expect(routeFingerprint({ crc32: 0xdeadbeef })).toBe(`c${0xdeadbeef}`);
+        // crc32 == 0 is a real state (side-loaded, not yet fingerprinted): a byte-length stand-in
+        // would pin a same-length replacement to a stale thumbnail forever, so it is null.
+        expect(routeFingerprint({ crc32: 0 })).toBeNull();
     });
 
     it("fingerprints a ride by start time and length", () => {
@@ -259,6 +261,72 @@ describe("DeviceThumbs", () => {
         expect(loaded).toEqual([2]);
         expect(thumbs.get("route", 1)).toBeNull();
         expect(thumbs.get("route", 4)).toBeNull();
+    });
+
+    it("keeps a null-fingerprint track in the session only, never the persistent cache", async () => {
+        const { storage, map } = recordedStorage();
+        const thumbs = new DeviceThumbs(storage);
+        let loads = 0;
+        const load = async (): Promise<Thumb> => {
+            loads += 1;
+            return TRACK;
+        };
+        const queue = <T,>(op: () => Promise<T>) => op();
+        const signal = new AbortController().signal;
+        await thumbs.fill(SCOPE, [{ ...request(1, load), fingerprint: null }], queue, signal);
+        expect(thumbs.get("route", 1)).not.toBeNull();
+        expect(map.size).toBe(0);
+
+        // A fresh store over the same storage — a reload — has nothing to find and loads again.
+        const second = new DeviceThumbs(storage);
+        await second.fill(SCOPE, [{ ...request(1, load), fingerprint: null }], queue, signal);
+        expect(loads).toBe(2);
+    });
+
+    it("drops a completion that crossed an abort and a scope change — the new scope refetches", async () => {
+        const thumbs = new DeviceThumbs(recordedStorage().storage);
+        const scopeB: RideScope = { serial: "OBC-0042", epoch: 8 };
+        let resolveA: ((track: Thumb) => void) | undefined;
+        const pendingA = new Promise<Thumb>((resolve) => (resolveA = resolve));
+        const aborter = new AbortController();
+
+        // Device A's fill parks on a slow download…
+        const fillA = thumbs.fill(SCOPE, [request(1, () => pendingA)], (op) => op(), aborter.signal);
+        // …the page aborts (card swap) and the store moves to device B's scope…
+        aborter.abort();
+        thumbs.ensureScope(scopeB);
+        // …and only then does A's download land. It must go nowhere: same id, different device.
+        resolveA!(TRACK);
+        await fillA;
+        expect(thumbs.get("route", 1)).toBeNull();
+
+        // B's own fill still finds the slot empty and fetches for itself.
+        let loadsB = 0;
+        await thumbs.fill(
+            scopeB,
+            [
+                request(1, async () => {
+                    loadsB += 1;
+                    return TRACK;
+                }),
+            ],
+            (op) => op(),
+            new AbortController().signal,
+        );
+        expect(loadsB).toBe(1);
+        expect(thumbs.get("route", 1)).not.toBeNull();
+    });
+
+    it("drops a completion that crossed a plain abort, even with no scope change", async () => {
+        const thumbs = new DeviceThumbs(recordedStorage().storage);
+        const aborter = new AbortController();
+        let resolveLoad: ((track: Thumb) => void) | undefined;
+        const pending = new Promise<Thumb>((resolve) => (resolveLoad = resolve));
+        const fill = thumbs.fill(SCOPE, [request(1, () => pending)], (op) => op(), aborter.signal);
+        aborter.abort();
+        resolveLoad!(TRACK);
+        await fill;
+        expect(thumbs.get("route", 1)).toBeNull();
     });
 
     it("forgets the in-memory map on a scope change — ids are recycled across cards", async () => {

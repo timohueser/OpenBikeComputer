@@ -11,9 +11,11 @@
  *   clicks — because the cable has one transfer slot and thumbnails are the least important thing
  *   on it. Tiles render immediately with an empty box and fill in as tracks land.
  * - {@link ThumbCache} — the persistence. `localStorage`, keyed by
- *   `(serial, epoch, kind, id, fingerprint)` so a renamed route keeps its thumbnail (the id and
- *   content stand still) while an edited or re-uploaded one refetches (the CRC moved). LRU-capped
- *   at {@link THUMB_CACHE_CAP} entries; a corrupt or evicted entry is simply refetched.
+ *   `(serial, epoch, kind, id, fingerprint)`: any change to the stored object — an edit, a
+ *   re-upload, and yes, a rename, which rewrites the object and moves its CRC — moves the key
+ *   and refetches. A rename refetching an unchanged track is a few KB once; a stale thumbnail
+ *   surviving a content change would be a lie forever. LRU-capped at {@link THUMB_CACHE_CAP}
+ *   entries; a corrupt or evicted entry is simply refetched.
  * - {@link ThumbStorage} — the five-line storage seam, so the cache's keying, LRU and round-trip
  *   behaviour are tested against a Map rather than a browser global.
  *
@@ -52,12 +54,14 @@ export interface ThumbStorage {
 }
 
 /**
- * A route's content fingerprint: the list entry's CRC-32, falling back to the byte length for a
- * device that reported none. Rename-stable — the CRC covers the object, and a rename rewrites it,
- * which is the right answer: the name is not drawn, but an edited route is a different track.
+ * A route's content fingerprint: the list entry's CRC-32, or **null** where the device reported
+ * none. `crc32 == 0` is a real state (a side-loaded or not-yet-fingerprinted object), not a
+ * fluke — and a byte-length stand-in would let a same-length, different-content replacement
+ * under a reused id keep a stale thumbnail forever. Null tells the store "no stable content
+ * identity": the thumbnail lives in the session's memory map only, never the persistent cache.
  */
-export function routeFingerprint(entry: { readonly crc32: number; readonly byteLen: number }): string {
-    return entry.crc32 !== 0 ? `c${entry.crc32 >>> 0}` : `l${entry.byteLen}`;
+export function routeFingerprint(entry: { readonly crc32: number }): string | null {
+    return entry.crc32 !== 0 ? `c${entry.crc32 >>> 0}` : null;
 }
 
 /** A ride's content fingerprint. The ride list carries no CRC; start time + length pin it well
@@ -182,7 +186,9 @@ function parseStored(raw: string): StoredThumb | null {
 export interface ThumbRequest {
     readonly kind: ThumbKind;
     readonly id: number;
-    readonly fingerprint: string;
+    /** The content identity, or null where the device has none to offer — then the track is
+     *  held for this session only and never written to the persistent cache. */
+    readonly fingerprint: string | null;
     /**
      * Produce the full-resolution `[lat, lon]` track — a cable download for most objects, a read
      * of the ride library's stored preview for a ride already pulled. Downsampling is the store's
@@ -223,14 +229,21 @@ export class DeviceThumbs {
     /**
      * One thumbnail: memory, then the persistent cache, then the loader — which is the only step
      * that can touch the cable, and it runs through `queue` so it never races a user action.
+     *
+     * The memory map is keyed by bare `kind:id` and ids are recycled across `(serial, epoch)`
+     * scopes, so a completion that crossed an abort or a scope change is **dropped**, not stored:
+     * device A's route 1 must never end up on device B's tile, and B's own fill must still find
+     * the slot empty and fetch for itself.
      */
     async ensure(scope: RideScope, request: ThumbRequest, queue: ThumbQueue, signal: AbortSignal): Promise<Thumb> {
         this.ensureScope(scope);
+        const started = this.scope;
         const key = memKey(request.kind, request.id);
         const held = this.tracks.get(key);
         if (held) return held;
-        const storageKey = thumbKey(scope, request.kind, request.id, request.fingerprint);
-        const stored = this.cache.get(storageKey);
+        const storageKey =
+            request.fingerprint === null ? null : thumbKey(scope, request.kind, request.id, request.fingerprint);
+        const stored = storageKey === null ? null : this.cache.get(storageKey);
         if (stored) {
             this.tracks.set(key, stored);
             return stored;
@@ -238,13 +251,16 @@ export class DeviceThumbs {
         const track = await queue(async () => {
             // Re-checked inside the queue slot: a preview click and the background fill can both
             // ask for the same object, and the second asker should find the first one's answer
-            // rather than paying for a second download.
-            const landed = this.tracks.get(key);
+            // rather than paying for a second download. Only within the same scope — under a new
+            // scope the slot holds a different device's track.
+            const landed = this.scope === started ? this.tracks.get(key) : null;
             if (landed) return landed;
             return downsampleTrack(await request.load(signal));
         });
-        this.cache.put(storageKey, track);
-        this.tracks.set(key, track);
+        if (!signal.aborted && this.scope === started) {
+            if (storageKey !== null) this.cache.put(storageKey, track);
+            this.tracks.set(key, track);
+        }
         return track;
     }
 

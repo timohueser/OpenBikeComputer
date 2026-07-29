@@ -169,6 +169,12 @@ describe("routeWaypoints", () => {
         const summit = wps.find((w) => w.name === "Pass Summit")!;
         expect(summit.category).toBe(0);
         expect(summit.ele).toBeNull();
+
+        // The absolute distances, not just their order — the modal's `km x.y` labels rest on
+        // this field. The fixture is byte-pinned, so these are exact stored `uint32` metres:
+        // Brunnen anchors at the first raw track point, the summit ~1.7 km in.
+        expect(brunnen.distAlongM).toBe(0);
+        expect(summit.distAlongM).toBe(1700);
     });
 
     it("agrees with a fresh conversion of the same GPX", async () => {
