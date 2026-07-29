@@ -15,6 +15,7 @@
         width = 300,
         height = 116,
         corners = "13px 13px 0 0",
+        fill = false,
         tag,
     }: {
         /** Tracks to draw, in order — each in its caller's color (routes coral, rides forest,
@@ -25,6 +26,11 @@
         height?: number;
         /** The box's `border-radius` — tiles round the top, the trip band rounds the left. */
         corners?: string;
+        /** Fill the parent instead of owning a fixed height: the box stretches to the whole
+         *  cell (its `--panel` background edge-to-edge, `height` demoted to a minimum) and the
+         *  track letterboxes inside it. The trip band's left cell, whose height the stage rows
+         *  set; tiles keep the default fixed-height look. */
+        fill?: boolean;
         /** Overlaid top-right — the expiry/status tag. */
         tag?: import("svelte").Snippet;
     } = $props();
@@ -52,7 +58,13 @@
         (multi ? segment?.color : null) ?? "var(--ink)";
 </script>
 
-<div class="thumb" style:height="{height}px" style:border-radius={corners}>
+<div
+    class="thumb"
+    class:fill
+    style:height={fill ? undefined : `${height}px`}
+    style:min-height={fill ? `${height}px` : undefined}
+    style:border-radius={corners}
+>
     {#if drawn.length > 0}
         <svg viewBox="0 0 {width} {height}" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
             {#each drawn as segment, i (i)}
@@ -91,6 +103,13 @@
         background: var(--panel);
         border-bottom: 1px solid var(--line);
         overflow: hidden;
+    }
+
+    /* Filling the cell: the height is the parent's, and the tiles' bottom hairline would sit
+       above the band's own border — the band draws its own seam (border-right). */
+    .thumb.fill {
+        height: 100%;
+        border-bottom: 0;
     }
 
     .thumb svg {
