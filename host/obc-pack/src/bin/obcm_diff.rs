@@ -9,12 +9,27 @@
 //! Exits non-zero on any difference. `a` is the reference, `b` the candidate:
 //! "only in A" means missing from B, "only in B" means extra in B.
 //!
+//! `--dump` takes **one** file and writes a canonical, sorted text listing of its
+//! *content* to stdout — the diffable form of the same comparison, for the case two
+//! maps cannot both be parsed by one binary: a **format migration**. Build the tool
+//! before and after the bump, dump the same extract with each, and `diff` the two
+//! listings; equal listings say the migration moved bytes and not content.
+//! Deliberately excluded from the listing, because a version bump is expected to
+//! change them: the version byte, the file length, and every *addressing* field
+//! (chunk ids, chunk byte offsets, feature offsets within a chunk, section offsets).
+//! Tree shape is content here — node/chunk counts are listed, since a change in how
+//! chunks are laid out must not move a leaf.
+//!
 //! Usage: `obcm_diff <a.obcm> <b.obcm> [--max-examples N]`
+//!        `obcm_diff <map.obcm> --dump`
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::process::ExitCode;
 
-use obc_reader::{BBox, Kind, MapCache, MapTables, Reader, SliceSource, Style, MAX_FEAT_PTS, MAX_FEAT_RINGS};
+use obc_reader::{
+    BBox, Kind, MapCache, MapTables, PoiCategory, Reader, SliceSource, Style, MAX_FEAT_PTS, MAX_FEAT_RINGS,
+    MAX_POI_RESULTS, NAV_MAX_CHUNK_BYTES,
+};
 
 /// Canonical, hashable identity of a decoded feature (geometry in microdegrees).
 type FeatureKey = (u8, bool, Vec<(i32, i32)>, Vec<Vec<(i32, i32)>>);
@@ -80,6 +95,146 @@ fn style_tuple(s: &Style) -> (u8, i8, u16, u8, u8) {
     (s.id, s.z_index, s.color, s.weight, s.priority)
 }
 
+/// Render one feature key as a single canonical line. Vertices are absolute microdegrees, so the
+/// line is independent of how the anchor was encoded — the whole point when the header layout is
+/// what changed.
+fn feature_line(key: &FeatureKey, count: usize) -> String {
+    let (style_id, is_poly, exterior, interiors) = key;
+    let pts =
+        |ring: &[(i32, i32)]| -> String { ring.iter().map(|(x, y)| format!("{x},{y}")).collect::<Vec<_>>().join(" ") };
+    let mut line = format!(
+        "  feat style={style_id} kind={} n={count} ext[{}]={}",
+        if *is_poly { "poly" } else { "line" },
+        exterior.len(),
+        pts(exterior)
+    );
+    for hole in interiors {
+        line.push_str(&format!(" hole[{}]={}", hole.len(), pts(hole)));
+    }
+    line
+}
+
+/// Write a canonical content listing of one map to stdout (see the module docs for what is
+/// deliberately left out). Every list is sorted, so the output is stable across runs and across
+/// packer versions that reorder chunks.
+fn dump(r: &Reader, path: &str) {
+    println!("== dump {path} ==");
+    println!("bbox {} {} {} {}", r.bbox.min_lon, r.bbox.min_lat, r.bbox.max_lon, r.bbox.max_lat);
+    println!("marker {:#06x}", r.marker_color);
+    for id in 0u16..=255 {
+        if let Some(s) = r.style(id as u8) {
+            println!(
+                "style id={} z={} color={:#06x} weight={} prio={} dashed={} color2={}",
+                s.id,
+                s.z_index,
+                s.color,
+                s.weight,
+                s.priority,
+                s.dashed as u8,
+                s.color2.map_or("-".into(), |c| format!("{c:#06x}"))
+            );
+        }
+    }
+
+    // Geometry: the tree shape plus the sorted feature multiset, per LOD.
+    for (i, l) in r.lods().iter().enumerate() {
+        println!(
+            "lod {i} max_mpp={} nodes={} chunks={} chunk_size={}",
+            l.max_mpp, l.node_count, l.chunk_count, l.chunk_size
+        );
+        let counts = collect_features(r, i, false);
+        let mut lines: Vec<String> = counts.iter().map(|(k, &n)| feature_line(k, n)).collect();
+        lines.sort();
+        let total: usize = counts.values().sum();
+        for line in &lines {
+            println!("{line}");
+        }
+        println!("lod {i} features={total} distinct={}", lines.len());
+    }
+
+    // POI section. There is no whole-section enumeration in the reader's API (the device only ever
+    // asks for nearest-N), so this lists the directory shape plus the nearest-16 of every category
+    // to the map's centre — a deterministic content probe over the records, not a full dump.
+    let dir = r.poi_directory();
+    println!("poi chunk_size={} hours_pool_count={}", dir.chunk_size, dir.hours_pool_count);
+    for e in dir.entries.iter() {
+        println!("poi cat={} nodes={} chunks={}", e.category_id, e.node_count, e.chunk_count);
+    }
+    let centre = ((r.bbox.min_lon + r.bbox.max_lon) / 2, (r.bbox.min_lat + r.bbox.max_lat) / 2);
+    let mut out = heapless::Vec::<_, MAX_POI_RESULTS>::new();
+    for cat in PoiCategory::ALL {
+        if r.nearest_pois(cat, centre, &mut out).is_err() {
+            println!("poi nearest cat={} ERROR", cat.id());
+            continue;
+        }
+        for p in out.iter() {
+            println!(
+                "poi nearest cat={} subtype={} lat={} lon={} hours_ref={} dist={} name={:?}",
+                cat.id(),
+                p.subtype,
+                p.lat,
+                p.lon,
+                p.hours_ref,
+                p.distance_m,
+                p.name.as_str()
+            );
+        }
+    }
+
+    // Nav graph: the directory shape, the profile table, and every junction record. Bin-packed
+    // chunks can hand the same record to several leaves (spec §8.3), so dedup by node id.
+    let nav = r.nav_directory();
+    println!("nav nodes={} chunks={} edge_chunks={}", nav.node_count, nav.chunk_count, nav.edge_chunk_count);
+    for p in r.nav_profiles() {
+        println!("nav profile name={:?} highway={:?} surface={:?}", p.name(), p.highway, p.surface);
+    }
+    let mut scratch = [0u8; NAV_MAX_CHUNK_BYTES];
+    let mut node_lines: Vec<String> = Vec::new();
+    let mut seen: HashSet<u32> = HashSet::new();
+    let mut edge_ids: Vec<u32> = Vec::new();
+    let view = r.bbox;
+    if let Err(e) = r.for_each_nav_node(&view, &mut scratch, |n| {
+        if !seen.insert(n.id) {
+            return;
+        }
+        let mut line = format!("nav node id={} lat={} lon={} deg={}", n.id, n.lat, n.lon, n.degree());
+        for nb in n.neighbors() {
+            line.push_str(&format!(" [{} {} {} {} {}]", nb.id, nb.lat, nb.lon, nb.cost_m, nb.way_kind));
+            edge_ids.push(nb.edge_id);
+        }
+        node_lines.push(line);
+    }) {
+        println!("nav walk ERROR {e:?}");
+    }
+    node_lines.sort();
+    for line in &node_lines {
+        println!("{line}");
+    }
+    println!("nav junctions={}", node_lines.len());
+
+    // Edge geometry, keyed by the pool-relative id the adjacency entries carry (the id is
+    // addressing, so it is not printed — only the polyline it resolves to).
+    edge_ids.sort_unstable();
+    edge_ids.dedup();
+    let mut edge_lines: Vec<String> = Vec::with_capacity(edge_ids.len());
+    let mut poly = heapless::Vec::<_, 256>::new();
+    for id in edge_ids {
+        match r.nav_edge(id, &mut poly) {
+            Some(length_m) => edge_lines.push(format!(
+                "nav edge len={length_m} pts={} {}",
+                poly.len(),
+                poly.iter().map(|(x, y)| format!("{x},{y}")).collect::<Vec<_>>().join(" ")
+            )),
+            None => edge_lines.push("nav edge UNRESOLVED".into()),
+        }
+    }
+    edge_lines.sort();
+    for line in &edge_lines {
+        println!("{line}");
+    }
+    println!("nav edges={}", edge_lines.len());
+}
+
 /// One direction of the per-LOD multiset difference: every key whose count in
 /// `src` exceeds its count in `other` (the excess present only in `src`). Prints up
 /// to `max_examples` of them with `symbol`/`label` (e.g. `-`/`only-in-A`) and
@@ -118,6 +273,7 @@ fn main() -> ExitCode {
     let mut b_path = None;
     let mut max_examples = 5usize;
     let mut canonical = false;
+    let mut dump_only = false;
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -127,11 +283,36 @@ fn main() -> ExitCode {
             // Compare polygons up to ring rotation + winding. Lines still compare
             // exactly. Strict (byte-order) mode is the default.
             "--canonical-polys" => canonical = true,
+            // One file in, a canonical content listing out (see the module docs).
+            "--dump" => dump_only = true,
             _ if a_path.is_none() => a_path = Some(arg),
             _ if b_path.is_none() => b_path = Some(arg),
             _ => {}
         }
     }
+
+    if dump_only {
+        let path = match a_path {
+            Some(p) => p,
+            None => {
+                eprintln!("usage: obcm_diff <map.obcm> --dump");
+                return ExitCode::FAILURE;
+            }
+        };
+        let bytes = std::fs::read(&path).expect("read map");
+        let cache = MapCache::new();
+        let src = SliceSource(&bytes);
+        let tables = match MapTables::parse(&src) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("parse {path}: {e:?}");
+                return ExitCode::FAILURE;
+            }
+        };
+        dump(&Reader::new(&src, &tables, &cache), &path);
+        return ExitCode::SUCCESS;
+    }
+
     let (a_path, b_path) = match (a_path, b_path) {
         (Some(a), Some(b)) => (a, b),
         _ => {
