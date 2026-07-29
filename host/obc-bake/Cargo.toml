@@ -1,0 +1,37 @@
+[package]
+name = "obc-bake"
+version = "0.1.0"
+edition = "2021"
+publish = false  # internal host tool — not published to crates.io
+description = "The bakery: bake the curated region list into a catalog tree and publish it"
+
+[dependencies]
+# The packer, linked rather than spawned: `pipeline::pack` is the one code path
+# both hosts already share (#906), and it hands back the byte count and a cancel
+# token instead of a subprocess whose stdout would have to be scraped. It also
+# brings the catalog generator (`obc_pack::catalog`) and the downloader
+# (`obc_pack::net`), so the bakery adds no second HTTP client or second manifest
+# writer to the tree.
+obc-pack = { path = "../obc-pack" }
+# Verification opens the artifact with the *real* reader — the same crate the
+# device runs — rather than sniffing the header. `alloc` is for `MapCache::new_boxed`:
+# the cache is ~277 KB and must not be built on the stack.
+obc-reader = { path = "../../firmware/obc-reader", features = ["alloc"] }
+# The normative OBCM version the bake and the published-catalog guard compare against.
+obc-formats = { path = "../../firmware/obc-formats" }
+# The reader decodes into caller-owned fixed-capacity scratch; verification has to
+# supply it in exactly the shape the device does.
+heapless = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+# The curated region list is TOML, not JSON, for one reason: it is the file whose
+# *comments* are the deliverable — why a region is on the shelf, and why its
+# neighbour is not. Everything else the bakery reads or writes stays JSON.
+toml = "0.9"
+# Content hashes: the idempotency key over the extract, and the artifact digests the
+# sidecar records. Same implementation the catalog generator publishes with.
+sha2 = "0.11"
+# One conditional-`HEAD` per extract (Last-Modified + Content-Length) to decide
+# whether a cached PBF is still current, and the guard's manifest fetch. The bulk
+# download itself goes through `obc_pack::net`.
+ureq = "3"

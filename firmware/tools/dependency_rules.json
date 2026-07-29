@@ -28,6 +28,7 @@
       "obc-storage"
     ],
     "host": [
+      "obc-bake",
       "obc-bench",
       "obc-desktop",
       "obc-host-core",
