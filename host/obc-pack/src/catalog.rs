@@ -1721,7 +1721,7 @@ mod tests {
     fn the_shipped_presets_describe_themselves() {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../builder/presets");
         let presets = read_presets(&dir).expect("builder/presets is a valid preset directory");
-        assert!(presets.contains_key("default") && presets.contains_key("minimal"));
+        assert!(presets.contains_key("default") && presets.contains_key("high-detail"));
         for (id, p) in &presets {
             assert_eq!(&p.id, id);
             assert!(!p.description.is_empty(), "{id} needs a one-line description");

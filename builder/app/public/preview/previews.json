@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "built_at": "2026-07-29T15:44:48Z",
+  "source": "https://download.geofabrik.de/europe/switzerland-latest.osm.pbf",
+  "bbox": {
+    "min_lon": 8183000,
+    "min_lat": 46717500,
+    "max_lon": 8198300,
+    "max_lat": 46731500
+  },
+  "maps": [
+    {
+      "preset_id": "default",
+      "preset_version": 4,
+      "file": "default.obcm",
+      "bytes": 825948,
+      "sha256": "66a5da39e4b13845f186f98b433cec4fc6a75a836dce675c13dbef5cfdb405e6"
+    },
+    {
+      "preset_id": "high-detail",
+      "preset_version": 3,
+      "file": "high-detail.obcm",
+      "bytes": 477308,
+      "sha256": "3e4e87e2a5420f7bcf187684309e55775db4ebe9fc90895e04d47e051c2f30b5"
+    }
+  ]
+}

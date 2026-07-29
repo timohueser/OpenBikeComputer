@@ -18,7 +18,7 @@ trees — one `Cargo.lock`, one `target/`:
 | :-- | :-- | :-- |
 | `firmware/` | `obc-formats`, `obc-ports`, `obc-map-scene`, `obc-reader`, `obc-route`, `obc-render`, `obc-app`, `obc-ble`, `obc-dfu`, the platform adapters | **yes** — that is the rule |
 | `../host/` | the packer (`obc-pack`), the bakery (`obc-bake`), `obc-mkimage`, `obc-bench`, the oracles (`obcm-testkit`, `obc-vectors`), `obc-host-core`, `obc-replay`, `obc-usb-host` | no |
-| `../apps/` | `obc-sim`, `obc-web-demo`, `obc-web-convert`, `obc-desktop` | no |
+| `../apps/` | `obc-sim`, `obc-web-demo`, `obc-web-convert`, `obc-web-preview`, `obc-desktop` | no |
 
 Dev-dependencies cross that boundary on purpose — `obc-render` and `obc-reader`
 test against `obcm-testkit`, `obc-route` against `obc-pack` — because a dev-dep
@@ -168,31 +168,39 @@ trunk build --release --config docs/Trunk.toml # → docs/dist/
 The demo core is target-independent, so its unit tests run in the plain
 `cargo test` above — no browser needed for the logic.
 
-## Build the conversion bridge (`obc-web-convert`)
+## Build the web builder's wasm bridges (`obc-web-convert`, `obc-web-preview`)
 
-The hosted web builder converts routes client-side: `obc-web-convert` is a thin
-wasm host over `obc-route`'s `gpx_to_obcr` / `track_to_gpx`, so a dropped GPX
-becomes the *same* `.obcr` the device and the CLI produce. It is a normal
-workspace member (its conversion core is target-independent and covered by the
-`cargo test` above); only the shipping artifact is wasm.
+The hosted web builder has no backend, so two things it needs run as wasm in the
+tab, each a thin host over shared firmware crates:
 
-Unlike the demo this is a **library** consumed by Vite, not an app Trunk
-bundles, so it builds with `wasm-pack` (`cargo install wasm-pack` once):
+- **`obc-web-convert`** — `obc-route`'s `gpx_to_obcr` / `track_to_gpx`, so a
+  dropped GPX becomes the *same* `.obcr` the device and the CLI produce.
+- **`obc-web-preview`** — `obc-reader` + `obc-render`, so a preset card renders a
+  small demo map at the panel's own 240×320 through the device's render path
+  (the maps come from `builder/bake-previews.sh`; see `builder/README.md`).
+
+Both are normal workspace members — their cores are target-independent and
+covered by the `cargo test` above; only the shipping artifacts are wasm.
+
+Unlike the demo these are **libraries** consumed by Vite, not apps Trunk
+bundles, so they build with `wasm-pack` (`cargo install wasm-pack` once):
 
 ```sh
-# From builder/app — writes src/lib/convert/pkg/ (gitignored).
-npm run build:wasm
+# From builder/app — writes src/lib/{convert,preview}/pkg/ (gitignored).
+npm run build:wasm            # both; :convert / :preview build one
 ```
 
 The frontend needs that output before `npm run check`, `npm test` or
-`npm run build` will work: the TypeScript wrapper imports the generated
+`npm run build` will work: the TypeScript wrappers import the generated
 bindings, and the vitest suite converts the checked-in `specs/vectors/`
 fixtures through the wasm module and compares them **byte-for-byte** against the
-native converter's checked-in output. CI does the same in its `wasm-convert`
-job, which also enforces the bundle-size budget:
+native converter's checked-in output. CI does the same in its `wasm-bridges`
+job, which also enforces the per-module bundle-size budgets:
 
 ```sh
-python3 firmware/tools/wasm_size_guard.py   # from the repo root; --pkg overrides the default
+# From the repo root; --pkg overrides the module's default location.
+python3 firmware/tools/wasm_size_guard.py --module convert
+python3 firmware/tools/wasm_size_guard.py --module preview
 ```
 
 ## Firmware update images (OBCU)

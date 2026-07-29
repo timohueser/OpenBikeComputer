@@ -40,6 +40,7 @@
       "obc-vectors",
       "obc-web-convert",
       "obc-web-demo",
+      "obc-web-preview",
       "obcm-testkit"
     ],
     "standalone": [

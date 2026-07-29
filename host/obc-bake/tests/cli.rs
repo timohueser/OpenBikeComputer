@@ -117,7 +117,7 @@ fn publishing_a_shrunken_catalog_is_refused_at_the_command_line() {
             .arg(&list)
             .arg("--presets-dir")
             .arg(repo("builder/presets"))
-            .args(["--preset", "minimal", "--source"])
+            .args(["--preset", "default", "--source"])
             .arg(dir.join("extracts"))
             .arg("--no-land")
             .output()
@@ -148,7 +148,7 @@ fn publishing_a_shrunken_catalog_is_refused_at_the_command_line() {
     let out = publish(&partial, &[]);
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success(), "a shrinking publish must fail: {err}");
-    assert!(err.contains("europe/beta [minimal]"), "{err}");
+    assert!(err.contains("europe/beta [default]"), "{err}");
 
     // …and `--allow-shrink` parses as a switch (not as a value flag swallowing the
     // next argument) and lets the deliberate case through, loudly.

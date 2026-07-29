@@ -14,6 +14,8 @@
 //!   bounded step per frame, the board's one-step-per-pass shape) and the shared commit/answer
 //!   tail, generic over a host's route store via [`RouteRepository`].
 //! - [`VecSink`] — the in-memory [`ByteSink`](obc_formats::io::ByteSink) OBCR/GPX output collects into.
+//! - [`RgbaFrame`] — the in-memory RGBA8888 `DrawTarget` the browser hosts blit to a `<canvas>`
+//!   (the app demo and the builder's preset previews both draw into it).
 //! - [`MemRouteStore`] / [`MemRideStore`] / [`MemTrackStore`] — the in-memory store family for a
 //!   host without a filesystem (the web demo; also handy in tests). Same surfaces as `obc-sim`'s
 //!   folder-backed stores, so host code drives either shape identically.
@@ -24,6 +26,7 @@
 
 pub mod conformance;
 mod dispatch;
+mod frame;
 mod nav;
 mod replay;
 mod repo;
@@ -32,6 +35,7 @@ mod sink;
 mod stores;
 
 pub use dispatch::HostLoop;
+pub use frame::RgbaFrame;
 pub use nav::{finish_detour_commit, finish_detour_plan, finish_nav_plan, DetourPlan, DetourReady, NavPlan};
 pub use replay::{initial_camera, replay_step, ReplaySensors};
 pub use repo::{RideRepository, RouteRepository, TrackRepository, TripCatalog};

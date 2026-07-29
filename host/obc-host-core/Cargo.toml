@@ -17,3 +17,6 @@ obc-formats = { path = "../../firmware/obc-formats" } # the byte-I/O seam (ByteS
 # Shared host GPX replay (the GpxPlayer / BaroSensor `replay_step` advances) — the same crate the
 # USB feeder (obc-usb-host) uses, so a recorded ride plays back identically on every host.
 obc-replay = { path = "../obc-replay" }
+# `DrawTarget` for `RgbaFrame` — the shared browser framebuffer. Same 0.8 the render path pins;
+# this crate adds no drawing of its own, only the buffer both wasm hosts draw into.
+embedded-graphics = "0.8"
