@@ -80,7 +80,7 @@
 <style>
     .cards {
         display: grid;
-        /* Wider than the old text-only cards: these hold a 3:4 portrait picture, and below
+        /* Wider than the old text-only cards: these hold a square picture, and below
            ~160 px the panel's own hairlines stop resolving. */
         grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
         gap: 10px;

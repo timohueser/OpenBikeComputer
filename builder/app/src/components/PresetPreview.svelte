@@ -255,9 +255,12 @@
 
 <style>
     .preview {
-        /* The panel's own shape, so the card reserves its space before the map arrives and
-           nothing reflows when it does. */
-        aspect-ratio: 240 / 320;
+        /* Square, not the panel's 3:4. A card is a swatch of a style, not a picture of the
+           device — and a column of tall cards pushed the step below it off the screen. The frame
+           is still fixed, so the card reserves its space before the map arrives and nothing
+           reflows when it does; the 240×320 frame is centre-cropped into it (`object-fit`
+           below), which costs the top and bottom of the demo view and no detail at all. */
+        aspect-ratio: 1;
         width: 100%;
         border-radius: 8px;
         overflow: hidden;

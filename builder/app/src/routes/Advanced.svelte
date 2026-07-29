@@ -154,7 +154,7 @@
 </script>
 
 <div class="head">
-    <a href="#/" class="small">← Map builder</a>
+    <a href="#/" class="small">← Maps</a>
     <h2>Advanced editor</h2>
     {#if env}
         <span class="badge small">

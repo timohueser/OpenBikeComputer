@@ -236,7 +236,23 @@
     <!-- The mode toggle, and the one control on this panel that a tier can
          lack. The pill is written twice rather than nested inside the gate,
          because `<Gated>` puts its reason sentence next to the stand-in and a
-         paragraph inside the pill would break it. -->
+         paragraph inside the pill would break it.
+
+         Here the reason is a *tooltip* rather than a line under the pill — the
+         one place in the app where it is. Everywhere else the gate sits in a
+         column of steps and reads as part of it; over the map it was a floating
+         paragraph on top of the thing the panel exists to show, permanently, for
+         a control most visitors never reach for. So it hangs off the dead "Draw
+         box" and appears when someone points at it: same sentence, same
+         association, only at the moment of intent.
+
+         What that costs is a sighted visitor with no pointer — a phone has no
+         hover, so this one sentence is not readable there. It is the only gate
+         in the app that is; the rest sit in the steps column and still say their
+         piece in place. Nothing is actually unreachable: `aria-describedby`
+         still carries it to a screen reader (a virtual cursor reaches a disabled
+         button without needing the tab order), and the desktop page the header
+         links lists "Crop to a box" with the same offer. -->
     <div class="overlay top-right modes">
         <Gated need="bboxCrop">
             <div class="seg">
@@ -260,7 +276,17 @@
                     <button type="button" class="active" onclick={() => setMode("regions")}>
                         Regions
                     </button>
-                    <button type="button" disabled aria-describedby={reason}>Draw box</button>
+                    <!-- A disabled button dispatches no pointer events, so the
+                         hover that reveals the tooltip has to be caught by a
+                         wrapper around it. The button stays natively `disabled`
+                         rather than becoming an `aria-disabled` one that could
+                         hold focus: `aria-describedby` is what carries the reason
+                         to a screen reader, and a virtual cursor reaches a
+                         disabled button to hear it without needing the tab
+                         order — so nothing is lost by keeping it out. -->
+                    <span class="dead">
+                        <button type="button" disabled aria-describedby={reason}>Draw box</button>
+                    </span>
                 </div>
             {/snippet}
         </Gated>
@@ -320,19 +346,27 @@
         right: 12px;
     }
 
-    /* The pill, and under it whatever the gate has to say — right-aligned so
-       both hang off the same corner. The reason belongs to `<Gated>`, so it is
-       reached with :global and given the same chip treatment as the pill;
-       without a background it would be text on map tiles. */
+    /* The pill, and hanging off its corner whatever the gate has to say. The
+       reason belongs to `<Gated>`, so it is reached with :global and given the
+       same chip treatment as the pill; without a background it would be text on
+       map tiles. */
     .modes {
+        position: relative;
         display: flex;
         flex-direction: column;
         align-items: flex-end;
-        gap: 6px;
     }
 
+    /* Out of flow, so the pill keeps its own size and the tooltip can overhang
+       the map. `visibility` and not opacity alone: a hidden-but-focusable link
+       is a tab stop into nothing, and this one has a live twin in the header
+       ("Desktop app"), so leaving it out of the tab order costs no reach. */
     .modes :global(p.reason) {
+        position: absolute;
+        top: calc(100% + 6px);
+        right: 0;
         margin: 0;
+        width: max-content;
         max-width: 260px;
         justify-content: flex-end;
         text-align: right;
@@ -341,11 +375,39 @@
         border-radius: 12px;
         padding: 5px 11px;
         box-shadow: 0 2px 8px rgba(36, 51, 28, 0.14);
+        opacity: 0;
+        visibility: hidden;
+        transform: translateY(-3px);
+        transition:
+            opacity 0.12s,
+            transform 0.12s,
+            visibility 0.12s;
+    }
+
+    /* Pointed at the dead control specifically, not at the pill: hovering
+       "Regions" — the mode that works — has no question to answer. */
+    .modes:has(.dead:hover) :global(p.reason) {
+        opacity: 1;
+        visibility: visible;
+        transform: none;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+        .modes :global(p.reason) {
+            transform: none;
+            transition: none;
+        }
+    }
+
+    /* The hover target the disabled button can't be. */
+    .seg .dead {
+        display: flex;
+        cursor: help;
     }
 
     .seg button:disabled {
         opacity: 0.5;
-        cursor: default;
+        cursor: help;
     }
 
     .bottom-left {
