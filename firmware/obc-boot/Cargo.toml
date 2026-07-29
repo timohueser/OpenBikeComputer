@@ -26,7 +26,8 @@ rtt = ["dep:defmt", "dep:defmt-rtt", "dep:panic-probe", "embassy-nrf/defmt"]
 # `SCB` (VTOR) + `NVIC` register access and `asm::{delay, bootload}` for the handoff jump.
 # `inline-asm` for the asm module; `critical-section-single-core` provides the
 # critical-section impl embassy-nrf/defmt need (no BLE/MPSL here, ever — the bootloader has
-# no radio, so the board crate's `cs-single-core` juggling doesn't apply).
+# no radio, so it cannot take the board crate's MPSL-provided impl, and this is the last place
+# in the tree that uses cortex-m's).
 # Same 0.7 pin as the board crate (cortex-m 0.7.7 in its lock).
 cortex-m = { version = "0.7", features = ["inline-asm", "critical-section-single-core"] }
 # Reset handler + vector table. Same 0.7 pin as the board crate (0.7.5 in its lock).
