@@ -62,6 +62,8 @@ class FakeChannel<T> {
 const calls: Call[] = [];
 /** Set per test: what `usb_watch` / `usb_list` report is attached. */
 let attached: Array<{ id: string; vendorId: number; productId: number; product: string | null; serialNumber: string | null }> = [];
+/** The hot-plug channel the watcher handed `usb_watch` — a test pushes plug events through it. */
+let watchChannel: FakeChannel<import("./invoke").UsbEvent> | null = null;
 let wire: LoopbackLink | null = null;
 let device: MockDevice | null = null;
 /** Whether `usb_open` should refuse, and with what. */
@@ -113,6 +115,8 @@ async function backend(cmd: string, args: unknown, options?: { headers?: Record<
     const a = (args ?? {}) as Record<string, unknown>;
     switch (cmd) {
         case "usb_watch":
+            watchChannel = a.onEvent as FakeChannel<import("./invoke").UsbEvent>;
+            return attached;
         case "usb_list":
             return attached;
         case "usb_open": {
@@ -263,6 +267,7 @@ async function connected(options: LoopbackOptions & MockDeviceOptions = {}) {
 beforeEach(() => {
     calls.length = 0;
     attached = [];
+    watchChannel = null;
     openFault = null;
     inFlight.clear();
     sendable = new Map();
@@ -435,6 +440,85 @@ describe("native discovery", () => {
         const watcher = new NativeWatcher();
         expect(await watcher.start()).toBe(false);
         expect(watcher.current.error).toContain("something else has it open");
+        await watcher.close();
+    });
+
+    it("connects by itself when the device is plugged in after start", async () => {
+        // The hot-plug contract on hardware: app open, nothing attached, cable in — the window
+        // lights up with no click. The event rides the channel `usb_watch` was given.
+        attached = [];
+        const watcher = new NativeWatcher();
+        await watcher.start();
+        expect(watcher.current.status).toBe("idle");
+
+        wire = loopbackLink();
+        device = new MockDevice(wire.device);
+        void device.run();
+        attached = [DEVICE];
+        watchChannel!.onmessage!({ type: "connected", device: DEVICE });
+
+        await vi.waitFor(() => expect(watcher.current.status).toBe("ready"));
+        await watcher.close();
+    });
+
+    it("retries when the OS announces the device before it is claimable", async () => {
+        // nusb's own hot-plug docs: a `Connected` event can precede the device being openable, so
+        // retry after a short delay. The failure that motivated this: one transient claim failure
+        // parked the session in `error` — which the chip renders as "No device" — forever.
+        attached = [];
+        const watcher = new NativeWatcher({ hotplugRetryDelayMs: 1 });
+        await watcher.start();
+
+        wire = loopbackLink();
+        device = new MockDevice(wire.device);
+        void device.run();
+        attached = [DEVICE];
+        openFault = { code: "device-error", message: "Interface 0 could not be claimed: busy." };
+        watchChannel!.onmessage!({ type: "connected", device: DEVICE });
+
+        // The first attempt has failed; between attempts the state stays `connecting`, not `error`.
+        await vi.waitFor(() => expect(calls.filter((c) => c.cmd === "usb_open").length).toBeGreaterThanOrEqual(1));
+        expect(watcher.current.status).toBe("connecting");
+
+        openFault = null; // the OS finished setting the device up
+        await vi.waitFor(() => expect(watcher.current.status).toBe("ready"));
+        await watcher.close();
+    });
+
+    it("settles back to idle when the device vanishes during the retries", async () => {
+        attached = [];
+        const watcher = new NativeWatcher({ hotplugRetryDelayMs: 1 });
+        await watcher.start();
+
+        attached = [DEVICE];
+        openFault = { code: "device-error", message: "busy" };
+        watchChannel!.onmessage!({ type: "connected", device: DEVICE });
+        await vi.waitFor(() => expect(calls.some((c) => c.cmd === "usb_open")).toBe(true));
+
+        // Unplugged again before any attempt succeeded: the truthful end state is idle, not an
+        // error about a device that is no longer there.
+        attached = [];
+        await vi.waitFor(() => expect(watcher.current.status).toBe("idle"));
+        expect(watcher.current.error).toBeNull();
+        await watcher.close();
+    });
+
+    it("gives up with the device's own error once the retries run out", async () => {
+        attached = [];
+        const watcher = new NativeWatcher({ hotplugRetryDelayMs: 1 });
+        await watcher.start();
+
+        attached = [DEVICE];
+        openFault = {
+            code: "device-error",
+            message: "Interface 0 could not be claimed: busy — something else has it open.",
+        };
+        watchChannel!.onmessage!({ type: "connected", device: DEVICE });
+
+        await vi.waitFor(() => expect(watcher.current.status).toBe("error"));
+        expect(watcher.current.error).toContain("something else has it open");
+        // Bounded: it tried its attempts and stopped, rather than polling forever.
+        expect(calls.filter((c) => c.cmd === "usb_open")).toHaveLength(5);
         await watcher.close();
     });
 

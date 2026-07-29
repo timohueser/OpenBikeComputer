@@ -322,7 +322,23 @@ async function sendNativeFile(handle: number, path: string, hooks: SendHooks): P
 export interface NativeWatcherOptions extends ClientOptions {
     /** Injected by tests; defaults to the real Tauri bridge. */
     bridge?: Bridge;
+    /** Pause between hot-plug connect attempts; tests shrink it. */
+    hotplugRetryDelayMs?: number;
 }
+
+/**
+ * How a hot-plug connect is allowed to fail before it is a real error.
+ *
+ * The OS announces a device the moment it enumerates, which can be *before* it is claimable:
+ * nusb's own hot-plug docs say to retry opening/claiming after a short delay, and macOS has the
+ * same window while IOKit is still matching drivers against the fresh device. One failed attempt
+ * at that instant must not park the session in a dead `error` state — that is exactly the
+ * "plugged it in and nothing happened" bug, because the error chip reads as "No device".
+ */
+const HOTPLUG_CONNECT_ATTEMPTS = 5;
+const HOTPLUG_RETRY_DELAY_MS = 400;
+
+const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /** The slice of the Tauri bridge discovery uses, named so a test can drive the real code paths. */
 export interface Bridge {
@@ -440,7 +456,7 @@ export class NativeWatcher implements DeviceWatcher {
         this.listeners.clear();
     }
 
-    private async connect(device: UsbDeviceSummary): Promise<boolean> {
+    private async connect(device: UsbDeviceSummary, retrying = false): Promise<boolean> {
         this.publish({ ...this.state, status: "connecting", error: null });
         let link: NativeLink | null = null;
         try {
@@ -459,8 +475,47 @@ export class NativeWatcher implements DeviceWatcher {
             // device instead of finding it busy.
             await link?.close().catch(() => undefined);
             this.link = null;
-            this.publish({ status: "error", client: null, identity: null, info: null, error: describe(cause) });
+            // While another attempt is still coming the state stays `connecting`: flashing `error`
+            // between attempts would make the chip stutter over a failure that usually heals.
+            this.publish(
+                retrying
+                    ? { status: "connecting", client: null, identity: null, info: null, error: null }
+                    : { status: "error", client: null, identity: null, info: null, error: describe(cause) },
+            );
             return false;
+        }
+    }
+
+    /** The device the hot-plug adopt loop is currently chasing — a newer `connected` event
+     *  re-points it, which is what tells a superseded loop to stand down. */
+    private adopting: string | null = null;
+
+    /**
+     * Connect to a freshly-announced device, retrying over the window in which the OS has
+     * announced it but not finished setting it up (see {@link HOTPLUG_CONNECT_ATTEMPTS}). Between
+     * attempts the loop re-checks that the device is still attached — a re-unplug ends in `idle`,
+     * not in an error about a device that is not there.
+     */
+    private async adopt(device: UsbDeviceSummary): Promise<void> {
+        this.adopting = device.id;
+        try {
+            for (let attempt = 1; attempt <= HOTPLUG_CONNECT_ATTEMPTS; attempt++) {
+                if (await this.connect(device, attempt < HOTPLUG_CONNECT_ATTEMPTS)) return;
+                if (attempt === HOTPLUG_CONNECT_ATTEMPTS) return; // the final failure published its error
+                await delay(this.options.hotplugRetryDelayMs ?? HOTPLUG_RETRY_DELAY_MS);
+                // Superseded (a newer event, a click on Connect that got through) — stop quietly
+                // rather than fighting the newer flow over the published state.
+                if (this.adopting !== device.id || this.state.status !== "connecting") return;
+                // Failing to list is not evidence the device is gone; keep trying in that case.
+                const attached = await this.bridge.usbList().catch(() => [device]);
+                if (this.adopting !== device.id) return;
+                if (!attached.some((d) => d.id === device.id)) {
+                    this.publish({ status: "idle", client: null, identity: null, info: null, error: null });
+                    return;
+                }
+            }
+        } finally {
+            if (this.adopting === device.id) this.adopting = null;
         }
     }
 
@@ -468,7 +523,7 @@ export class NativeWatcher implements DeviceWatcher {
         switch (event.type) {
             case "connected":
                 if (this.state.status === "ready") return;
-                void this.connect(event.device);
+                void this.adopt(event.device);
                 return;
             case "disconnected": {
                 if (!this.link || this.link.info.deviceId !== event.id) return;
