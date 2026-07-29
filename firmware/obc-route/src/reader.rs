@@ -1063,7 +1063,14 @@ pub fn for_each_waypoint<F: FnMut(&Waypoint)>(src: &dyn ByteSource, mut f: F) ->
 
     let mut rec = [0u8; WAYPOINT_LEN];
     for k in 0..count {
-        src.read_at(offset + k as u32 * WAYPOINT_LEN as u32, &mut rec)?;
+        // Checked: the header's offset is untrusted input (browser-supplied bytes reach this walk
+        // through obc-web-convert), and a forged offset near `u32::MAX` must surface as the same
+        // truncated-file error an oversized one does — never wrap back into the buffer.
+        let at = (k as u32)
+            .checked_mul(WAYPOINT_LEN as u32)
+            .and_then(|rel| offset.checked_add(rel))
+            .ok_or(Error::BadOffset)?;
+        src.read_at(at, &mut rec)?;
         let name_len = (rec[15] as usize).min(WAYPOINT_NAME_CAP);
         let mut name = String::new();
         if let Ok(s) = core::str::from_utf8(&rec[WAYPOINT_NAME_OFF..WAYPOINT_NAME_OFF + name_len]) {

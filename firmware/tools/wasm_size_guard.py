@@ -40,8 +40,15 @@ from pathlib import Path
 # few KB in either direction) never turns a green PR red, while anything structural — one more
 # shared crate linked in, a serializer, a second format — blows straight through it and has to be
 # argued for rather than absorbed.
-BUDGET_GZIPPED = 56 * 1024  # wasm + JS glue, gzip -9
-BUDGET_RAW_WASM = 100 * 1024
+#
+# Re-measured 2026-07-29 while adding the waypoint read-back (`obc_convert_obcr_to_waypoints`,
+# chart-room preview): 104,201 B raw + 14,219 B glue → 57,363 B gzipped. The route read-back
+# directions added since the A2 measurement (`obcr_to_track`, then the waypoint table) pull in
+# `RouteIndex`/`RouteReader`/`for_each_waypoint`, which had eaten the old headroom (101 KB raw at
+# the previous commit — 99 % of the 100 KB budget before this addition's ~2.8 KB). Budgets
+# re-based to ~10 % above the new measurement, same philosophy as before.
+BUDGET_GZIPPED = 62 * 1024  # wasm + JS glue, gzip -9
+BUDGET_RAW_WASM = 112 * 1024
 
 
 def gzipped_len(data: bytes) -> int:
