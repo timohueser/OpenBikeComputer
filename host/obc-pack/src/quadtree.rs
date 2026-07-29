@@ -16,9 +16,12 @@
 //! Overlap/containment tests and clipping run in **degree space** (bbox / 1e6), so
 //! leaf membership matches the node bounds the reader recomputes at render time.
 
-use crate::geom::{clip_to_box, packed_size_budget, to_feature, Bounds, Geom};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use crate::geom::{clip_to_box, packed_size_budget, to_feature, trim_excess_holes, Bounds, Geom};
 use crate::progress::Progress;
 use crate::serialize::Node;
+use obc_reader::MAX_FEAT_RINGS;
 
 /// Degree bounds `(min_lon, min_lat, max_lon, max_lat)` of an integer-µdeg box.
 type DegBox = (f64, f64, f64, f64);
@@ -89,16 +92,45 @@ fn flatten(style_id: u8, geom: Geom, out: &mut Vec<StoredFeature>) {
     }
 }
 
+/// Rings (exterior + holes) the reader must buffer to decode `g` as one feature.
+fn ring_count(g: &Geom) -> usize {
+    match g {
+        Geom::Polygon { interiors, .. } => 1 + interiors.len(),
+        _ => 1,
+    }
+}
+
 /// Build the subtree for `bbox` from `feats` (already clipped to `bbox`, in input
-/// order). Leaf iff the features fit the chunk or the box hit the 10 µdeg split
-/// floor; otherwise split four ways and build the children in parallel.
-fn build_node(bbox: (i64, i64, i64, i64), chunk_size: usize, feats: Vec<StoredFeature>) -> Node {
+/// order). Leaf iff the features fit the chunk — in bytes AND in the reader's
+/// per-feature ring cap — or the box hit the 10 µdeg split floor; otherwise split
+/// four ways and build the children in parallel.
+///
+/// The ring cap matters because bytes alone don't imply it: at a coarse LOD a
+/// merged fill (forest, farmland) can carry dozens of holes whose simplified rings
+/// fit a chunk easily, and the reader discards such a feature *whole*
+/// (`CapacityError::Rings`) — a corrupt artifact by `obc-bake verify`'s standard.
+/// Splitting clips it, spreading the holes across the children. `trimmed` counts
+/// holes dropped by the floor-guard fallback below.
+fn build_node(bbox: (i64, i64, i64, i64), chunk_size: usize, feats: Vec<StoredFeature>, trimmed: &AtomicUsize) -> Node {
     let (min_lon, min_lat, max_lon, max_lat) = bbox;
     // Recursion guard: don't split below 10 µdeg on either axis.
     let splittable = max_lon - min_lon >= 10 && max_lat - min_lat >= 10;
     let total: usize = feats.iter().map(|f| packed_size_budget(&f.geom)).sum();
-    if !splittable || total <= chunk_size {
-        let features = feats.iter().filter_map(|f| to_feature(f.style_id, &f.geom)).collect();
+    let fits = total <= chunk_size && feats.iter().all(|f| ring_count(&f.geom) <= MAX_FEAT_RINGS);
+    if !splittable || fits {
+        let features = feats
+            .into_iter()
+            .filter_map(|mut f| {
+                // Only reachable at the split floor: a sub-10-µdeg polygon still
+                // over the ring cap. Keeping its largest holes beats emitting a
+                // feature the reader is guaranteed to discard whole.
+                let n = trim_excess_holes(&mut f.geom, MAX_FEAT_RINGS);
+                if n > 0 {
+                    trimmed.fetch_add(n, Ordering::Relaxed);
+                }
+                to_feature(f.style_id, &f.geom)
+            })
+            .collect();
         return Node::Leaf { bbox, features };
     }
     let n_feats = feats.len();
@@ -146,16 +178,16 @@ fn build_node(bbox: (i64, i64, i64, i64), chunk_size: usize, feats: Vec<StoredFe
     // geometry on its own thread), small ones stay serial to dodge the join overhead.
     let children = if n_feats >= PARALLEL_MIN_FEATURES {
         let ((nw, ne), (sw, se)) = rayon::join(
-            || (build_node(boxes[0], chunk_size, nw), build_node(boxes[1], chunk_size, ne)),
-            || (build_node(boxes[2], chunk_size, sw), build_node(boxes[3], chunk_size, se)),
+            || (build_node(boxes[0], chunk_size, nw, trimmed), build_node(boxes[1], chunk_size, ne, trimmed)),
+            || (build_node(boxes[2], chunk_size, sw, trimmed), build_node(boxes[3], chunk_size, se, trimmed)),
         );
         [nw, ne, sw, se]
     } else {
         [
-            build_node(boxes[0], chunk_size, nw),
-            build_node(boxes[1], chunk_size, ne),
-            build_node(boxes[2], chunk_size, sw),
-            build_node(boxes[3], chunk_size, se),
+            build_node(boxes[0], chunk_size, nw, trimmed),
+            build_node(boxes[1], chunk_size, ne, trimmed),
+            build_node(boxes[2], chunk_size, sw, trimmed),
+            build_node(boxes[3], chunk_size, se, trimmed),
         ]
     };
     Node::Branch(Box::new(children))
@@ -199,7 +231,14 @@ pub fn build_lod_with(
             place_any(global_bbox, dbox, style_id, geom, &mut root);
         }
     }
-    build_node(global_bbox, chunk_size, root)
+    let trimmed = AtomicUsize::new(0);
+    let node = build_node(global_bbox, chunk_size, root, &trimmed);
+    let trimmed = trimmed.load(Ordering::Relaxed);
+    if trimmed > 0 {
+        progress
+            .log(format!("  dropped {trimmed} hole(s) past the reader's {MAX_FEAT_RINGS}-ring cap at the split floor"));
+    }
+    node
 }
 
 /// Root entry: flatten a raw input `geom` (possibly a `Multi`) to its simple parts
@@ -403,6 +442,62 @@ mod tests {
         assert!(poly_pieces >= 2, "a straddling polygon clips into ≥2 leaf pieces, got {poly_pieces}");
         assert!((min_x - x0).abs() < 1e-6, "left extent preserved: {min_x} vs {x0}");
         assert!((max_x - x1).abs() < 1e-6, "right extent preserved: {max_x} vs {x1}");
+    }
+
+    // --- Reader ring-cap enforcement -----------------------------------------
+
+    /// A closed square ring at `(x0, y0)` with side `s`, in degrees.
+    fn sq(x0: f64, y0: f64, s: f64) -> Vec<(f64, f64)> {
+        vec![(x0, y0), (x0 + s, y0), (x0 + s, y0 + s), (x0, y0 + s), (x0, y0)]
+    }
+
+    /// The bake-verify "oversized" shape: a merged fill whose simplified rings fit
+    /// any chunk by bytes but whose 40 holes exceed the reader's ring cap. Bytes
+    /// alone would make it a single leaf; the reader would then discard the whole
+    /// feature (`CapacityError::Rings`). The tree must split it instead, and every
+    /// emitted leaf feature must fit the cap.
+    #[test]
+    fn many_holed_polygon_splits_to_honor_ring_cap() {
+        let mut interiors = Vec::new();
+        for i in 0..8 {
+            for j in 0..5 {
+                interiors.push(sq(0.15 + 0.09 * i as f64, 0.15 + 0.13 * j as f64, 0.01));
+            }
+        }
+        assert!(1 + interiors.len() > MAX_FEAT_RINGS, "the fixture must exceed the cap");
+        let poly = Geom::Polygon { exterior: sq(0.1, 0.1, 0.8), interiors };
+        // chunk_size 100_000: the byte budget can never force a split — only the cap.
+        let tree = build_lod([(1u8, poly)], (0, 0, 1_000_000, 1_000_000), 100_000);
+        assert!(is_branch(&tree), "a feature over the ring cap must split even under the byte budget");
+        let mut holes = 0usize;
+        for (features, _) in leaves(&tree) {
+            for f in features {
+                assert!(f.rings.len() <= MAX_FEAT_RINGS, "every leaf feature fits the reader's ring cap");
+                holes += f.rings.len() - 1;
+            }
+        }
+        assert!(holes > 0, "clipping spreads the holes across children, it doesn't erase them");
+    }
+
+    /// At the 10-µdeg split floor a many-holed polygon can't be clipped apart, so
+    /// the leaf keeps the largest `MAX_FEAT_RINGS - 1` holes (original order) and
+    /// drops the rest — a trimmed feature beats one the reader discards whole.
+    #[test]
+    fn ring_cap_floor_guard_keeps_the_largest_holes() {
+        // Hole `i` sits at x = i·1e-7 with side (i+1)·1e-8: area grows with the
+        // index, so the smallest 9 (indices 0..9) are the ones that must go.
+        let interiors: Vec<_> = (0..40).map(|i| sq(i as f64 * 1e-7, 1e-6, (i + 1) as f64 * 1e-8)).collect();
+        let ext = sq(0.0, 0.0, 8e-6);
+        let poly = Geom::Polygon { exterior: ext, interiors };
+        let tree = build_lod([(1u8, poly)], (0, 0, 8, 8), 1);
+        assert!(!is_branch(&tree), "must not split below 10 µdeg");
+        let all = leaves(&tree);
+        let (features, _) = &all[0];
+        assert_eq!(features.len(), 1);
+        let f = &features[0];
+        assert_eq!(f.rings.len(), MAX_FEAT_RINGS, "trimmed to exactly the reader's ring cap");
+        // Kept holes keep their input order; the first survivor is original hole 9.
+        assert!((f.rings[1][0].0 - 9.0e-7).abs() < 1e-12, "the smallest holes are the ones dropped");
     }
 
     /// A 2-point line spanning 3° densifies to ~100 extra vertices at pack time,

@@ -265,3 +265,61 @@ fn query_finds_the_leaf() {
     let outside = BBox { min_lon: 9_000_000, min_lat: 9_000_000, max_lon: 9_001_000, max_lat: 9_001_000 };
     assert!(query_all(&r, 0, &outside).is_empty());
 }
+
+/// Regression for the bake-verify "oversized" failure (a coarse-LOD merged fill
+/// with more holes than the reader can buffer): built through the real quadtree,
+/// packed with the real serializer, every feature must decode with **zero**
+/// `capacity_dropped` — the counter `obc-bake verify` fails an artifact on. Before
+/// the quadtree enforced [`MAX_FEAT_RINGS`], this shape fit a single leaf by bytes
+/// and the reader discarded it whole.
+#[test]
+fn many_holed_polygon_survives_the_reader() {
+    use obc_pack::geom::Geom;
+    use obc_pack::quadtree::build_lod;
+
+    let sq = |x0: f64, y0: f64, s: f64| vec![(x0, y0), (x0 + s, y0), (x0 + s, y0 + s), (x0, y0 + s), (x0, y0)];
+    let mut interiors = Vec::new();
+    for i in 0..8 {
+        for j in 0..5 {
+            interiors.push(sq(0.15 + 0.09 * i as f64, 0.06 + 0.11 * j as f64, 0.008));
+        }
+    }
+    assert!(1 + interiors.len() > MAX_FEAT_RINGS, "the fixture must exceed the reader's ring cap");
+    let poly = Geom::Polygon { exterior: sq(0.05, 0.02, 0.9), interiors };
+
+    let root = build_lod([(12u8, poly)], GLOBAL, 4096);
+    let lod = LodLayer { max_mpp: None, chunk_size: 4096, root };
+    let (bytes, dropped) = serialize_lods(
+        &[lod],
+        &styles(),
+        MARKER,
+        GLOBAL,
+        &[],
+        &Default::default(),
+        &obc_pack::config::default_profiles(),
+    );
+    assert_eq!(dropped, 0, "every split piece fits its chunk");
+
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
+    let mut chunks: Vec<(u32, BBox)> = Vec::new();
+    r.for_each_chunk(0, &r.bbox, |cid, node| chunks.push((cid, node))).unwrap();
+    let mut points = heapless::Vec::<_, MAX_FEAT_PTS>::new();
+    let mut ring_lens = heapless::Vec::<_, MAX_FEAT_RINGS>::new();
+    let mut complete = 0u32;
+    let mut holes = 0usize;
+    for (cid, node) in chunks {
+        let status = r
+            .for_each_feature(0, cid, &node, &mut points, &mut ring_lens, |f| {
+                holes += f.ring_lens().len().saturating_sub(1);
+            })
+            .unwrap();
+        assert_eq!(status.malformed, 0, "no malformed features");
+        assert_eq!(status.capacity_dropped, 0, "the reader must never have to discard a packed feature");
+        complete += status.complete;
+    }
+    assert!(complete > 0, "the polygon's pieces all decoded");
+    assert!(holes > 0, "the clearings survived the split");
+}
