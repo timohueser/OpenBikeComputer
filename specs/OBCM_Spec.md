@@ -287,6 +287,15 @@ Lines use only the exterior ring (`Flags & 0x02 == 0`, no holes).
 > within the cap. `obc-pack` rejects a larger `Chunk Size` at build time rather than
 > emit a feature the reference buffer cannot hold.
 
+> **Per-feature ring cap:** although `Hole Count` is a `uint8`, a single feature
+> must not exceed **32 rings** (exterior + 31 holes). The reference reader's ring
+> scratch (`MAX_FEAT_RINGS`) is fixed at 32 and a feature past it is dropped whole,
+> with the same explicit capacity outcome as the vertex cap. Bytes do not imply
+> this bound — a heavily simplified polygon can carry dozens of holes on a handful
+> of vertices — so `obc-pack` enforces it structurally: a quadtree node holding an
+> over-cap polygon splits (clipping spreads the holes across the children), and at
+> the 10 µdeg split floor the smallest holes are dropped to fit.
+
 ### Polygon-with-holes byte layout
 
 ```
