@@ -201,6 +201,51 @@ The manifest layout, the sidecar, and the version law (an OBCM bump invalidates 
 baked artifact) are normative in [`OBCC_Spec.md`](specs/OBCC_Spec.md); pass
 `--generated-at` in CI to make a re-run byte-reproducible.
 
+### The bakery — filling that tree, and publishing it
+
+`obc-bake` is what produces the tree above. It crosses a curated region list
+([`host/obc-bake/regions.toml`](host/obc-bake/regions.toml) — Germany with all sixteen
+Bundesländer, Austria, Switzerland; one line per region, so adding coverage is a
+one-line PR) with the presets in `builder/presets/`:
+
+```sh
+cargo run --release -p obc-bake -- regions            # what would be baked
+cargo run --release -p obc-bake -- bake --out ~/bake \
+    --summary-json ~/bake/run.json                    # download, pack, verify, install
+cargo run --release -p obc-bake -- publish ~/bake \
+    --base-url https://maps.example.org --target r2   # artifacts first, manifest last
+```
+
+Per (region, preset) it downloads or reuses the Geofabrik extract, packs it with the
+linked-in packer, and **opens the result with the real `obc-reader`** — every LOD, every
+chunk, every feature — before renaming it into the tree. A corrupt artifact never gets a
+name, so it can never reach the manifest. Re-running is cheap: the skip is keyed on the
+SHA-256 of the extract and of the preset config plus the OBCM version, never on
+timestamps, and a run prints the real per-artifact sizes and a total (which is what the
+storage bill is actually made of). The sidecar-only facts — a region's display name, the
+extract's date — are keyed separately, so a re-dated but byte-identical extract rewrites
+the sidecar and packs nothing. A region that fails is loud — in the summary, and in the
+exit status.
+
+`publish` refuses to shrink the live catalog: before uploading anything it reads the
+manifest already at the destination and stops if this tree would drop coverage that is
+currently served, naming the artifacts that would disappear. That is the guard against
+the easy mistake — publishing a `--region`-narrowed or CI-sized tree over the full one,
+which succeeds atomically and un-offers everything it does not contain. `--allow-shrink`
+proceeds anyway, loudly, for the deliberate case.
+
+Useful flags: `--region <id>` / `--preset <id>` to narrow the matrix, `--source <dir>` to
+bake from local extracts, `--force` to re-bake regardless, `--no-land` to skip the
+~950 MB land dataset. `publish` defaults to a dry run; `--target dir:PATH` writes a
+servable copy, `--target r2` uploads through `rclone` with credentials taken from
+`OBC_R2_*` environment variables and never written to disk.
+
+`obc-bake check-obcm-version` is the other half of the version law: it fetches the
+*published* manifest (`--catalog-url`, or `OBC_CATALOG_URL`) and fails if what is being
+served is not the OBCM version this build writes. Scheduled + dispatchable bakes and that
+guard live in [`.github/workflows/bake.yml`](.github/workflows/bake.yml) — sized for small
+regions, because a country-scale bake does not fit a GitHub runner.
+
 ### Web builder
 
 For an interactive flow — select regions on a map, tweak styles against the live
