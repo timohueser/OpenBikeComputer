@@ -7,6 +7,9 @@ import {
     cumulativeDistances,
     elevationProfile,
     isFullWindow,
+    nearestPointIndex,
+    panWindow,
+    pointAtDistance,
     windowIndexRange,
     zoomWindow,
 } from "./elevation";
@@ -174,6 +177,60 @@ describe("windowIndexRange", () => {
     it("degenerates safely", () => {
         expect(windowIndexRange([], FULL_WINDOW)).toEqual([0, 0]);
         expect(windowIndexRange([0], FULL_WINDOW)).toEqual([0, 0]);
+    });
+});
+
+describe("panWindow", () => {
+    it("slides without resizing", () => {
+        const [t0, t1] = panWindow([0.2, 0.4], 0.3);
+        expect(t0).toBeCloseTo(0.5, 9);
+        expect(t1).toBeCloseTo(0.7, 9);
+    });
+
+    it("clamps at both ends, span preserved", () => {
+        expect(panWindow([0.2, 0.4], -1)).toEqual([0, 0.2]);
+        const [t0, t1] = panWindow([0.2, 0.4], 1);
+        expect(t0).toBeCloseTo(0.8, 9);
+        expect(t1).toBeCloseTo(1, 9);
+        // The full window has nowhere to go.
+        expect(panWindow([0, 1], 0.5)).toEqual([0, 1]);
+    });
+});
+
+describe("pointAtDistance", () => {
+    const cum = cumulativeDistances(ladder);
+
+    it("lands on vertices at their exact distances", () => {
+        expect(pointAtDistance(ladder, cum, 0)).toEqual({ lat: 48.0, lon: 7.82 });
+        expect(pointAtDistance(ladder, cum, cum[2])).toEqual({ lat: 48.02, lon: 7.82 });
+        expect(pointAtDistance(ladder, cum, cum[3])).toEqual({ lat: 48.03, lon: 7.82 });
+    });
+
+    it("interpolates within a segment", () => {
+        const mid = pointAtDistance(ladder, cum, (cum[1] + cum[2]) / 2)!;
+        expect(mid.lat).toBeCloseTo(48.015, 6);
+        expect(mid.lon).toBeCloseTo(7.82, 9);
+    });
+
+    it("clamps past the ends and degenerates safely", () => {
+        expect(pointAtDistance(ladder, cum, -5)).toEqual({ lat: 48.0, lon: 7.82 });
+        expect(pointAtDistance(ladder, cum, cum[3] + 500)).toEqual({ lat: 48.03, lon: 7.82 });
+        expect(pointAtDistance([], [], 0)).toBeNull();
+        expect(pointAtDistance([ladder[0]], [0], 10)).toEqual({ lat: 48.0, lon: 7.82 });
+        // A mismatched axis is a caller bug, answered with null rather than a wrong point.
+        expect(pointAtDistance(ladder, [0, 1], 0.5)).toBeNull();
+    });
+});
+
+describe("nearestPointIndex", () => {
+    it("finds the closest vertex, ends included", () => {
+        expect(nearestPointIndex(ladder, 48.001, 7.82)).toBe(0);
+        expect(nearestPointIndex(ladder, 48.014, 7.821)).toBe(1);
+        expect(nearestPointIndex(ladder, 48.9, 7.82)).toBe(3);
+    });
+
+    it("is -1 for an empty track", () => {
+        expect(nearestPointIndex([], 48, 7.82)).toBe(-1);
     });
 });
 

@@ -322,7 +322,23 @@ async function sendNativeFile(handle: number, path: string, hooks: SendHooks): P
 export interface NativeWatcherOptions extends ClientOptions {
     /** Injected by tests; defaults to the real Tauri bridge. */
     bridge?: Bridge;
+    /** Pause between hot-plug connect attempts; tests shrink it. */
+    hotplugRetryDelayMs?: number;
 }
+
+/**
+ * How a hot-plug connect is allowed to fail before it is a real error.
+ *
+ * The OS announces a device the moment it enumerates, which can be *before* it is claimable:
+ * nusb's own hot-plug docs say to retry opening/claiming after a short delay, and macOS has the
+ * same window while IOKit is still matching drivers against the fresh device. One failed attempt
+ * at that instant must not park the session in a dead `error` state — that is exactly the
+ * "plugged it in and nothing happened" bug, because the error chip reads as "No device".
+ */
+const HOTPLUG_CONNECT_ATTEMPTS = 5;
+const HOTPLUG_RETRY_DELAY_MS = 400;
+
+const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /** The slice of the Tauri bridge discovery uses, named so a test can drive the real code paths. */
 export interface Bridge {
@@ -364,7 +380,9 @@ export class NativeWatcher implements DeviceWatcher {
      *
      * No gesture and no prompt, ever — that restriction is WebUSB's, and it is the whole reason the
      * hosted tier has to draw a Connect button it can never retire. Returns whether a device
-     * connected; `false` just means nothing is plugged in.
+     * connected; `false` just means nothing is plugged in. The initial adopt runs through the same
+     * retrying flow the hot-plug path uses — an app launched moments after the cable went in hits
+     * the same not-yet-claimable window a `Connected` event does.
      */
     async start(): Promise<boolean> {
         const channel = new Channel<UsbEvent>();
@@ -376,7 +394,7 @@ export class NativeWatcher implements DeviceWatcher {
             this.publish({ ...this.state, status: "error", error: describe(cause) });
             return false;
         }
-        return devices.length > 0 ? this.connect(devices[0]) : false;
+        return devices.length > 0 ? this.adopt(devices[0]) : false;
     }
 
     /**
@@ -389,14 +407,21 @@ export class NativeWatcher implements DeviceWatcher {
      */
     async requestDevice(): Promise<boolean> {
         if (this.state.status === "ready") return true;
+        // Claim the flow before anything async: from here the click owns the published state, and
+        // an adopt loop sleeping between attempts stands down instead of racing this flow for the
+        // one interface claim.
+        const token = this.claimFlow();
         this.publish({ ...this.state, status: "connecting", error: null });
         let devices: UsbDeviceSummary[];
         try {
             devices = await this.bridge.usbList();
         } catch (cause) {
-            this.publish({ status: "error", client: null, identity: null, info: null, error: describe(cause) });
+            if (this.owns(token)) {
+                this.publish({ status: "error", client: null, identity: null, info: null, error: describe(cause) });
+            }
             return false;
         }
+        if (!this.owns(token)) return false;
         if (devices.length === 0) {
             this.publish({
                 status: "idle",
@@ -407,7 +432,7 @@ export class NativeWatcher implements DeviceWatcher {
             });
             return false;
         }
-        return this.connect(devices[0]);
+        return this.adopt(devices[0], token);
     }
 
     /**
@@ -427,6 +452,10 @@ export class NativeWatcher implements DeviceWatcher {
 
     /** Drop the link but keep watching, so re-plugging reconnects. */
     async disconnect(): Promise<void> {
+        // A deliberate disconnect outranks any connect flow still in flight: claim the flow so a
+        // sleeping adopt loop stands down and an in-flight attempt finishes into silence.
+        this.claimFlow();
+        this.chasing = null;
         const client = this.state.client;
         this.publish({ status: "idle", client: null, identity: null, info: null, error: null });
         this.link = null;
@@ -440,7 +469,39 @@ export class NativeWatcher implements DeviceWatcher {
         this.listeners.clear();
     }
 
-    private async connect(device: UsbDeviceSummary): Promise<boolean> {
+    // --- flow ownership ---------------------------------------------------------
+    //
+    // At most one connect flow may drive the published state and `this.link` at a time, but three
+    // things can start one — the hot-plug adopt loop, the Connect click, `start()`'s initial probe
+    // — and a running flow parks on awaits where any of the others (or a disconnect) can overtake
+    // it. So every flow claims a monotonically increasing token, claiming invalidates every older
+    // flow, and each older flow notices at its next step and stands down *silently*: it must not
+    // publish over the winner, must not null a link it no longer owns, and — the expensive one —
+    // must close any link it did open, because the Rust side holds the interface claim until it is
+    // closed and an orphaned claim makes every later open fail "busy" until a physical replug.
+
+    /** The current flow's token. Bump-to-claim; see the section comment. */
+    private flow = 0;
+    /** The device id the current flow is chasing while it has no link yet — how a `disconnected`
+     *  event can end a flow whose device vanished mid-attempt. */
+    private chasing: string | null = null;
+
+    private claimFlow(): number {
+        return ++this.flow;
+    }
+
+    private owns(token: number): boolean {
+        return this.flow === token;
+    }
+
+    /**
+     * One connect attempt: publish `connecting`, open, handshake, publish `ready` — with every
+     * publish and every `this.link` write gated on still owning `token`. A failure publishes
+     * nothing terminal (the state simply stays `connecting`) and returns the failure's sentence;
+     * the *caller* owns the verdict, because only it knows whether more attempts are coming.
+     */
+    private async connectOnce(device: UsbDeviceSummary, token: number): Promise<{ ok: boolean; error?: string }> {
+        if (!this.owns(token)) return { ok: false };
         this.publish({ ...this.state, status: "connecting", error: null });
         let link: NativeLink | null = null;
         try {
@@ -450,17 +511,72 @@ export class NativeWatcher implements DeviceWatcher {
             // mismatch is surfaced and stopped on rather than best-effort decoded (§1).
             const identity = await client.identity();
             const info = await client.deviceInfo();
+            if (!this.owns(token)) {
+                // A newer flow (or a disconnect) took the state while this handshake ran. The
+                // connection itself is real, so it must be closed, not dropped — see the section
+                // comment for what an orphaned interface claim costs.
+                await client.close().catch(() => undefined);
+                return { ok: false };
+            }
             this.link = link;
             this.publish({ status: "ready", client, identity, info, error: null });
-            return true;
+            return { ok: true };
         } catch (cause) {
             // A device claimed but never handshaken still holds its interface, and an interface can
             // be claimed once — so releasing it is what lets a retry, or another app, get at the
-            // device instead of finding it busy.
+            // device instead of finding it busy. `this.link` is deliberately not touched: this
+            // flow never set it, and a newer flow's may already be in there.
             await link?.close().catch(() => undefined);
-            this.link = null;
-            this.publish({ status: "error", client: null, identity: null, info: null, error: describe(cause) });
+            return { ok: false, error: describe(cause) };
+        }
+    }
+
+    /**
+     * Connect to a device, retrying over the window in which the OS has announced it but not
+     * finished setting it up (see {@link HOTPLUG_CONNECT_ATTEMPTS}) — the shared flow behind the
+     * hot-plug event, `start()`'s initial probe and the Connect click. Between attempts, and again
+     * before giving up, the loop re-checks that the device is still attached: a re-unplug ends in
+     * `idle`, not in an error about a device that is not there.
+     */
+    private async adopt(device: UsbDeviceSummary, token: number = this.claimFlow()): Promise<boolean> {
+        if (this.owns(token)) this.chasing = device.id;
+        try {
+            let lastError = "The device could not be opened.";
+            for (let attempt = 1; attempt <= HOTPLUG_CONNECT_ATTEMPTS; attempt++) {
+                const result = await this.connectOnce(device, token);
+                if (result.ok) return true;
+                // Superseded (a newer event, a Connect click, a disconnect) — stand down silently
+                // rather than fighting the newer flow over the published state. This covers the
+                // final attempt too: its failure must not bury a successor's `connecting`.
+                if (!this.owns(token)) return false;
+                if (result.error !== undefined) lastError = result.error;
+                if (attempt < HOTPLUG_CONNECT_ATTEMPTS) {
+                    await delay(this.options.hotplugRetryDelayMs ?? HOTPLUG_RETRY_DELAY_MS);
+                    if (!this.owns(token)) return false;
+                }
+                // Still attached? Between attempts this decides whether to keep trying; after the
+                // final one it decides between the honest `idle` and the device's own error. A
+                // probe that itself fails proves nothing, so the flow keeps its own course.
+                const present = await this.stillAttached(device.id);
+                if (!this.owns(token)) return false;
+                if (present === false) {
+                    this.publish({ status: "idle", client: null, identity: null, info: null, error: null });
+                    return false;
+                }
+            }
+            this.publish({ status: "error", client: null, identity: null, info: null, error: lastError });
             return false;
+        } finally {
+            if (this.owns(token)) this.chasing = null;
+        }
+    }
+
+    /** Whether `deviceId` is still listed; null when the probe itself failed (unknown). */
+    private async stillAttached(deviceId: string): Promise<boolean | null> {
+        try {
+            return (await this.bridge.usbList()).some((d) => d.id === deviceId);
+        } catch {
+            return null;
         }
     }
 
@@ -468,17 +584,28 @@ export class NativeWatcher implements DeviceWatcher {
         switch (event.type) {
             case "connected":
                 if (this.state.status === "ready") return;
-                void this.connect(event.device);
+                void this.adopt(event.device);
                 return;
             case "disconnected": {
-                if (!this.link || this.link.info.deviceId !== event.id) return;
-                // Fail the pipes *before* awaiting anything: every pending read and write settles
-                // now, so an in-flight transfer's UI reports "unplugged" instead of spinning.
-                this.link.disconnected();
-                const client = this.state.client;
-                this.link = null;
-                this.publish({ status: "idle", client: null, identity: null, info: null, error: null });
-                void client?.close();
+                if (this.link && this.link.info.deviceId === event.id) {
+                    // Fail the pipes *before* awaiting anything: every pending read and write
+                    // settles now, so an in-flight transfer's UI reports "unplugged" instead of
+                    // spinning.
+                    this.link.disconnected();
+                    const client = this.state.client;
+                    this.link = null;
+                    this.publish({ status: "idle", client: null, identity: null, info: null, error: null });
+                    void client?.close();
+                    return;
+                }
+                // No link yet, but a connect flow is chasing exactly this device: end it in the
+                // honest state now. The in-flight attempt fails on its own, sees a stale token,
+                // and says nothing.
+                if (this.chasing === event.id) {
+                    this.claimFlow();
+                    this.chasing = null;
+                    this.publish({ status: "idle", client: null, identity: null, info: null, error: null });
+                }
                 return;
             }
             case "watchFailed":

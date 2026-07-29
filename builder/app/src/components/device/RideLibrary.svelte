@@ -325,7 +325,22 @@
                                 disabled={revealing || (!ride.present && !ride.gpxPresent)}
                                 onclick={() => void showInFolder(ride)}
                             >
-                                📁
+                                <svg
+                                    viewBox="0 0 24 24"
+                                    width="16"
+                                    height="16"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    stroke-width="1.6"
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    aria-hidden="true"
+                                >
+                                    <path
+                                        d="M3.5 18.5v-12a1.6 1.6 0 0 1 1.6-1.6h4.1l2.1 2.2h7.2a1.6 1.6 0 0 1 1.6 1.6v9.8a1.6 1.6 0 0 1-1.6 1.6H5.1a1.6 1.6 0 0 1-1.6-1.6Z"
+                                    />
+                                    <path d="M3.5 10h17" />
+                                </svg>
                             </button>
                             <span class="chev" aria-hidden="true">›</span>
                         </li>
@@ -417,7 +432,9 @@
 
     .logbook {
         display: grid;
-        grid-template-columns: minmax(0, 1fr) minmax(320px, 42%);
+        /* The map earns real room — the tracks are the point of it. The list keeps a floor wide
+           enough for a row's facts line before the layout stacks (the 940px break below). */
+        grid-template-columns: minmax(0, 1fr) minmax(360px, 48%);
         gap: 14px;
         align-items: start;
     }
@@ -504,9 +521,10 @@
         height: 100%;
     }
 
+    /* Forest — the ride color everywhere (the device tiles draw it too; routes are coral). */
     .preview path {
         fill: none;
-        stroke: var(--ink);
+        stroke: var(--forest);
         stroke-width: 1.4;
         stroke-linejoin: round;
         stroke-linecap: round;

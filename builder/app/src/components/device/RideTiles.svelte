@@ -70,7 +70,9 @@
         <Tile label={`Preview “${nameOf(ride)}”`} disabled={busy} onopen={() => onopen(ride)}>
             {#snippet thumb()}
                 {@const track = trackFor(ride.objectId)}
-                <TrackThumb segments={track ? [{ track }] : []}>
+                <!-- Forest — the ride color, against the routes' coral (and the library rows'
+                     matching forest previews). -->
+                <TrackThumb segments={track ? [{ track, color: "var(--forest)" }] : []}>
                     {#snippet tag()}
                         {#if heldHere}
                             {#if held}

@@ -38,11 +38,22 @@
         event.stopPropagation();
         event.preventDefault();
     }
+
+    /**
+     * Whatever closed the menu — a pick, the outside click, Escape, the summary itself — the
+     * nested "Keep on device" `<details>` must not stay `[open]`, or the next open renders a pop
+     * sized for a submenu that is no longer expanded (ghost space under the items). `toggle` does
+     * not bubble, so this only ever fires for the root's own state.
+     */
+    function onRootToggle() {
+        if (!root || root.open) return;
+        for (const nested of root.querySelectorAll("details[open]")) nested.removeAttribute("open");
+    }
 </script>
 
 <svelte:window onclickcapture={onWindowClick} onkeydowncapture={onWindowKeydown} />
 
-<details class="menu" bind:this={root}>
+<details class="menu" bind:this={root} ontoggle={onRootToggle}>
     <summary class="iconbtn" aria-label={label} onclick={(e) => e.stopPropagation()}>⋯</summary>
     <div class="pop" role="menu">
         {@render children()}
