@@ -160,23 +160,39 @@
                 // re-dropped file by CRC and answers with the existing id, so the collected
                 // ids are correct even when half of these were already on the card — and the
                 // chosen retention lands on those too, which is the spec's case (b), an edit.
+                //
+                // The retention stamp is best-effort per stage: the uploads and the trip are
+                // the substance, and a failed annotation on stage k must not strand stages
+                // k+1…n off the card. Failures are counted and said once, in the result line.
                 const ids: number[] = [];
+                let retentionFailures = 0;
                 for (const route of routes) {
                     const { objectId } = await dashboard.enqueue(() => sendRoute(c, route, ctx));
-                    if (retention !== 0) {
-                        await dashboard.enqueue(() => c.setRouteRetention(objectId, retention, ctx.signal));
-                    }
                     ids.push(objectId);
+                    if (retention !== 0) {
+                        try {
+                            await dashboard.enqueue(() => c.setRouteRetention(objectId, retention, ctx.signal));
+                        } catch (cause) {
+                            // A cancel is the rider's, not a stamp failure — stop the whole job.
+                            if (ctx.signal.aborted) throw cause;
+                            retentionFailures += 1;
+                        }
+                    }
                 }
                 if (tripName !== null) {
                     await dashboard.enqueue(() => createTrip(c, tripName, ids, ctx.signal));
                 }
-                return { count: ids.length, tripName };
+                return { count: ids.length, tripName, retentionFailures };
             },
-            (r) =>
-                r.tripName !== null
-                    ? `“${r.tripName}” is on the device, ${r.count} stages.`
-                    : `${r.count} routes are on the device.`,
+            (r) => {
+                const landed =
+                    r.tripName !== null
+                        ? `“${r.tripName}” is on the device, ${r.count} stages.`
+                        : `${r.count} routes are on the device.`;
+                if (r.retentionFailures === 0) return landed;
+                const which = r.retentionFailures === 1 ? "one stage" : `${r.retentionFailures} stages`;
+                return `${landed} The keep-on-device setting could not be applied to ${which} — set it from the route's ⋯ menu.`;
+            },
         );
         await dashboard.refresh(c);
     }
@@ -293,6 +309,16 @@
 
     // --- previews: download the object, decode it, show it. Never acks. ----
 
+    /** Aborts preview-driven fetches when the device (or the page) goes away — the trip preview
+     *  walks stage tracks through the queue and must not keep walking a dead link. */
+    let pageLifetime = new AbortController();
+    $effect(() => {
+        void client;
+        const lifetime = new AbortController();
+        pageLifetime = lifetime;
+        return () => lifetime.abort();
+    });
+
     let preview = $state<{
         title: string;
         points: ProfilePoint[];
@@ -378,7 +404,7 @@
                     scope,
                     routeThumbRequest(c, stage.route),
                     serialize,
-                    new AbortController().signal,
+                    pageLifetime.signal,
                 );
                 for (const [lat, lon] of track) points.push({ lat, lon, ele: null });
             }
@@ -478,6 +504,7 @@
                 <RouteDrop
                     {client}
                     {serialize}
+                    heading={null}
                     empty={dashboard.topLevelRoutes.length === 0 && dashboard.trips.length === 0}
                     onmultiple={(files) => (tripDrop = files)}
                     onsent={() => client && void dashboard.refresh(client)}
