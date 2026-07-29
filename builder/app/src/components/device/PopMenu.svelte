@@ -14,9 +14,35 @@
         /** The menu items: buttons (and at most one sub-`<details>`), closed via `menuPick`. */
         children: import("svelte").Snippet;
     } = $props();
+
+    let root = $state<HTMLDetailsElement>();
+
+    /**
+     * Light dismiss, in the capture phase so the dismissing click goes no further: an open menu
+     * swallows the outside click that closes it — otherwise clicking the tile under an open menu
+     * would open the preview *over* it. This also means at most one menu is open at a time: the
+     * click that would open a second one first lands here and only closes the first.
+     */
+    function onWindowClick(event: MouseEvent) {
+        if (!root?.open) return;
+        if (event.target instanceof Node && root.contains(event.target)) return;
+        root.open = false;
+        event.stopPropagation();
+        event.preventDefault();
+    }
+
+    function onWindowKeydown(event: KeyboardEvent) {
+        if (event.key !== "Escape" || !root?.open) return;
+        root.open = false;
+        // The preview modal closes on the same key; an open menu takes the press for itself.
+        event.stopPropagation();
+        event.preventDefault();
+    }
 </script>
 
-<details class="menu">
+<svelte:window onclickcapture={onWindowClick} onkeydowncapture={onWindowKeydown} />
+
+<details class="menu" bind:this={root}>
     <summary class="iconbtn" aria-label={label} onclick={(e) => e.stopPropagation()}>⋯</summary>
     <div class="pop" role="menu">
         {@render children()}
