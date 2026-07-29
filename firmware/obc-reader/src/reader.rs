@@ -1,4 +1,4 @@
-//! OBCM **v10** format reader: header, style table, LOD table, per-LOD
+//! OBCM **v11** format reader: header, style table, LOD table, per-LOD
 //! quadtree query + chunk decode, the POI directory + hours-pool section, and
 //! the trailing nav-graph section (parse + leaf-walk/record-decode only here —
 //! the A* traversal over it is R3, #465).
@@ -2621,7 +2621,7 @@ fn parse_nav_directory(src: &dyn ByteSource, offset: usize, total: usize) -> Res
         profile_count: d[26] as usize,
     };
     // The nav chunk size is pinned to 512 (§8.1) — a v8 file, or any other value, is rejected. This
-    // is a distinct error from the header's version check, so an old file and a mis-sized v10 file
+    // is a distinct error from the header's version check, so an old file and a mis-sized v11 file
     // are told apart.
     if dir.chunk_size != NAV_CHUNK_SIZE {
         return Err(Error::BadOffset);
@@ -3356,7 +3356,7 @@ mod tests {
         h[0..4].copy_from_slice(b"NOPE");
         assert_eq!(read_header(&SliceSource(&h)), Err(Error::BadMagic));
         h[0..4].copy_from_slice(b"OBCM");
-        h[4] = 9; // v9 (and earlier) no longer supported — only v10 is read
+        h[4] = 9; // v9 (and earlier) no longer supported — only v11 is read
         assert_eq!(read_header(&SliceSource(&h)), Err(Error::BadVersion));
     }
 }
