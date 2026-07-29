@@ -205,14 +205,15 @@ python3 firmware/tools/wasm_size_guard.py --module preview
 
 ## Firmware update images (OBCU)
 
-Field firmware updates (epic #615) ship as an **OBCU** container — a 64-byte header
-plus the raw app image — dropped on the SD card as `/UPDATE.BIN`. The byte format is
+Field firmware updates (epic #615) ship as an **OBCU** container — a 64-byte header,
+the raw app image, and an Ed25519 signature trailer (OBCU v2, #997) — dropped on the SD
+card as `/UPDATE.BIN`. The byte format is
 [`OBCU_Spec.md`](../specs/OBCU_Spec.md); the shared codec + boot-decision logic live in
 `obc-dfu` (a `no_std` workspace member, host-tested by the `cargo test` above). The
 producer is `obc-mkimage`.
 
-The pipeline is **objcopy → wrap**. Strip the board ELF to a raw binary (vector table
-first), then wrap it:
+The pipeline is **objcopy → wrap+sign**. Strip the board ELF to a raw binary (vector
+table first), then wrap and sign it:
 
 ```sh
 # From the board crate — its .cargo/config.toml selects the nRF54L target (see its README).
@@ -221,13 +222,16 @@ cd obc-fw-nrf54l
 cargo objcopy --release -- -O binary app.bin
 # (equivalently, on the ELF: llvm-objcopy -O binary target/<triple>/release/obc-fw-nrf54l app.bin)
 
-# Wrap into an OBCU container tagged with the build's git describe.
+# Wrap into a signed OBCU container tagged with the build's git describe. On a dev machine
+# the committed test seed is the right key (the firmware trusts it until the release key is
+# rotated — see firmware/obc-dfu/keys/README.md); CI passes --sign-seed-env instead.
 cargo run -p obc-mkimage -- wrap \
     --bin app.bin \
     --version "$(git describe --always --dirty)" \
-    --out UPDATE.BIN
+    --out UPDATE.BIN \
+    --sign-seed ../obc-dfu/keys/test/obcu-test.seed
 
-# Inspect: decode + verify both CRCs (non-zero exit if invalid).
+# Inspect: decode + verify both CRCs AND the signature (non-zero exit if invalid).
 cargo run -p obc-mkimage -- inspect UPDATE.BIN
 ```
 
@@ -235,6 +239,15 @@ cargo run -p obc-mkimage -- inspect UPDATE.BIN
 and **warns** if the binary's first word isn't a plausible initial stack pointer in
 RAM (`0x2000_0000 … 0x2004_0000`) — a raw `.bin` starts with the vector table, so a
 failed check usually means an ELF or a wrong-section-order strip slipped through.
+
+**Signing is not optional on the device.** Without `--sign-seed`/`--sign-seed-env`,
+`wrap` emits a v1/unsigned container, warns loudly, and the armer **rejects** it
+("This update file is not signed for this device") — the signature would be pointless if
+an unsigned wrapper still installed. `obc-mkimage sign --in … --out …` attaches the
+trailer to an already-wrapped container, so an artifact can be built on one machine and
+signed on the one that holds the key; `keygen` makes a keypair. Everything about keys —
+the file format, the `OBCU_SIGNING_SEED` CI secret, and the **rotation still owed before
+the first real release** — is in [`obc-dfu/keys/README.md`](obc-dfu/keys/README.md).
 
 Installing a staged `UPDATE.BIN` on the device is the app-side armer (S4, #619): copy
 the file to the card root and trigger the install — from the S5 UI once it lands, or

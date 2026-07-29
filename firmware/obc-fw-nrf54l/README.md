@@ -466,7 +466,8 @@ enumerates serial ports; the VCOM is the J-Link CDC port.
 
 ### Triggering a firmware update over the VCOM (`dfu-install`, S4 #619)
 
-With an `UPDATE.BIN` (see `../README.md` §Firmware update images) in the card root, the
+With a **signed** `UPDATE.BIN` (see `../README.md` §Firmware update images — an unsigned
+container is refused since OBCU v2, #997) in the card root, the
 same link carries the DFU armer's trigger — no feeder GUI needed. Two hard-won gotchas
 (both bit for real): the J-Link exposes **two** CDC ports and only one is live — on macOS
 it's the `cu.usbmodem*133` one (`*131` silently swallows writes; and use `cu.*`, never
@@ -493,6 +494,7 @@ NOT clear it, only a physical DK power-cycle does.
 The device streams one `D` line per phase — scan result (staged version, size, extents),
 rollback snapshot, `armed gen=N` — then resets into `obc-boot`, which installs the image
 (LED codes: `../obc-boot/README.md`). Errors (`no UPDATE.BIN…`, `failed its CRC check…`,
-`too fragmented…`) come back the same way and the device keeps running. The trigger is
+`is not signed…`, `signature is not valid for this device`, `too fragmented…`) come back the
+same way and the device keeps running. The trigger is
 refused mid-recording. Concept + formats: `OBCU_Spec.md`; the byte-identical request path
 is what S5's on-device menu entry will post.
