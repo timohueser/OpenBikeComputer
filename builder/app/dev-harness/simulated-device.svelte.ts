@@ -21,7 +21,7 @@ import { ProtocolClient, type ObjectSource } from "../src/lib/usb/client";
 import { Crc32 } from "../src/lib/usb/crc32";
 import { WatchedDeviceSession } from "../src/lib/usb/session.svelte";
 import { MockDevice, loopbackLink } from "../src/lib/usb/loopback";
-import { encodeRideObject, type RideObject, type RidePoint } from "../src/lib/usb/objects";
+import { encodeRideObject, encodeTripObject, type RideObject, type RidePoint } from "../src/lib/usb/objects";
 import type { BytePipe, DeviceLink } from "../src/lib/usb/pipe";
 import type { DeviceSession, DeviceState, DeviceWatcher } from "../src/lib/usb/session";
 
@@ -134,27 +134,155 @@ function seedRides(device: MockDevice): void {
  */
 async function seedWaypointRoute(device: MockDevice): Promise<void> {
     try {
-        const bytes = await gpxToObcr(new TextEncoder().encode(kaiserstuhlGpx()), "Kaiserstuhl loop");
-        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-        device.seedRoute(
-            {
-                objectId: 1,
-                byteLen: bytes.length,
-                distanceM: view.getUint32(36, true),
-                ascentM: view.getUint32(40, true),
-                pointCount: view.getUint32(32, true),
-                waypointCount: view.getUint16(116, true),
-                name: "Kaiserstuhl loop",
-                crc32: Crc32.of(bytes),
-                expiresAt: 0,
-                retention: 0,
-            },
-            bytes,
-        );
+        await seedGpxRoute(device, 1, "Kaiserstuhl loop", kaiserstuhlGpx());
     } catch (cause) {
         // A missing wasm artifact breaks route drops too; keep the rest of the harness usable.
         console.warn("dev-harness: could not seed the waypoint route (is the wasm bridge built?)", cause);
     }
+}
+
+/** Convert one inline GPX through the real wasm bridge and put it on the card under `id`,
+ *  catalog metrics read out of the OBCR's own header (spec §1). Returns the header's totals. */
+async function seedGpxRoute(
+    device: MockDevice,
+    id: number,
+    name: string,
+    gpx: string,
+): Promise<{ distanceM: number; ascentM: number }> {
+    const bytes = await gpxToObcr(new TextEncoder().encode(gpx), name);
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const distanceM = view.getUint32(36, true);
+    const ascentM = view.getUint32(40, true);
+    device.seedRoute(
+        {
+            objectId: id,
+            byteLen: bytes.length,
+            distanceM,
+            ascentM,
+            pointCount: view.getUint32(32, true),
+            waypointCount: view.getUint16(116, true),
+            name,
+            crc32: Crc32.of(bytes),
+            expiresAt: 0,
+            retention: 0,
+        },
+        bytes,
+    );
+    return { distanceM, ascentM };
+}
+
+/**
+ * A three-stage tour on the simulated card, so the trip band and its combined preview — the
+ * multi-color map, the concatenated elevation profile with its stage seams, the merged waypoint
+ * card — can be exercised end to end without dropping three GPX files first.
+ *
+ * The stages are contiguous (each starts where the last ended), every stage has a real elevation
+ * shape, and two of the three carry waypoints — so the merged card shows cumulative distances
+ * across a stage that contributes none. The trip object and its catalog entry are seeded the way
+ * the device would serve them: totals summed over the resolvable stages.
+ */
+async function seedTour(device: MockDevice): Promise<void> {
+    try {
+        const stages: Array<{ id: number; spec: TourLeg }> = [
+            { id: 2, spec: TOUR_LEGS[0] },
+            { id: 3, spec: TOUR_LEGS[1] },
+            { id: 4, spec: TOUR_LEGS[2] },
+        ];
+        let distanceM = 0;
+        let ascentM = 0;
+        for (const { id, spec } of stages) {
+            const totals = await seedGpxRoute(device, id, spec.name, legGpx(spec));
+            distanceM += totals.distanceM;
+            ascentM += totals.ascentM;
+        }
+        const name = "Black Forest traverse";
+        const bytes = encodeTripObject({ name, stages: stages.map((s) => s.id) });
+        device.seedTrip(
+            {
+                objectId: 1,
+                byteLen: bytes.length,
+                totalDistanceM: distanceM,
+                totalAscentM: ascentM,
+                stageCount: stages.length,
+                name,
+                crc32: Crc32.of(bytes),
+            },
+            bytes,
+        );
+    } catch (cause) {
+        console.warn("dev-harness: could not seed the tour (is the wasm bridge built?)", cause);
+    }
+}
+
+/** One leg of the seeded tour: endpoints, an elevation shape over the leg, waypoints at
+ *  fractions of it. */
+interface TourLeg {
+    name: string;
+    from: [number, number];
+    to: [number, number];
+    /** Metres at `t` ∈ [0, 1] along the leg. */
+    ele: (t: number) => number;
+    wpts: Array<{ t: number; name: string; sym: string }>;
+}
+
+const TOUR_LEGS: TourLeg[] = [
+    {
+        name: "Freiburg → Belchen",
+        from: [47.995, 7.85],
+        to: [47.822, 7.836],
+        // Valley start, one foothill, then the long climb to the Belchen shoulder.
+        ele: (t) => 280 + 180 * Math.max(0, Math.sin(t * Math.PI * 2)) * (1 - t) + 1050 * t * t,
+        wpts: [
+            { t: 0.1, name: "Bäckerei Krachenfels", sym: "Bakery" },
+            { t: 0.62, name: "Brunnen Münstertal", sym: "Drinking Water" },
+        ],
+    },
+    {
+        name: "Belchen → Feldberg",
+        from: [47.822, 7.836],
+        to: [47.874, 8.004],
+        // Ridge riding: high the whole way, two saddles between three crests.
+        ele: (t) => 1150 + 240 * Math.sin(t * Math.PI * 3 + 0.3) * Math.sin(t * Math.PI),
+        wpts: [{ t: 0.5, name: "Aussicht Wiedener Eck", sym: "Viewpoint" }],
+    },
+    {
+        name: "Feldberg → Titisee",
+        from: [47.874, 8.004],
+        to: [47.903, 8.152],
+        // The long descent to the lake, one counter-climb midway. No waypoints on purpose.
+        ele: (t) => 1380 - 620 * t + 120 * Math.max(0, Math.sin(t * Math.PI * 2 + 0.5)) * (1 - t),
+        wpts: [],
+    },
+];
+
+/** Render one leg as GPX: 60 segments of a gently winding line between the endpoints, waypoints
+ *  snapped onto track points so their pinned `distAlongM` is exact. */
+function legGpx(leg: TourLeg): string {
+    const n = 60;
+    const coord = (t: number): [number, number] => [
+        leg.from[0] + (leg.to[0] - leg.from[0]) * t + 0.006 * Math.sin(t * Math.PI * 3),
+        leg.from[1] + (leg.to[1] - leg.from[1]) * t + 0.008 * Math.sin(t * Math.PI * 2 + 1),
+    ];
+    const points: string[] = [];
+    for (let i = 0; i <= n; i++) {
+        const t = i / n;
+        const [lat, lon] = coord(t);
+        points.push(
+            `<trkpt lat="${lat.toFixed(6)}" lon="${lon.toFixed(6)}"><ele>${leg.ele(t).toFixed(1)}</ele></trkpt>`,
+        );
+    }
+    const waypoints = leg.wpts
+        .map((w) => {
+            const [lat, lon] = coord(Math.round(w.t * n) / n);
+            return `<wpt lat="${lat.toFixed(6)}" lon="${lon.toFixed(6)}"><name>${w.name}</name><sym>${w.sym}</sym></wpt>`;
+        })
+        .join("\n  ");
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="obc-dev-harness">
+  ${waypoints}
+  <trk><name>${leg.name}</name><trkseg>${points.join("")}</trkseg></trk>
+</gpx>
+`;
 }
 
 /**
@@ -281,6 +409,7 @@ class LoopbackWatcher implements DeviceWatcher {
         const device = new MockDevice(paced(link.device));
         seedRides(device);
         await seedWaypointRoute(device);
+        await seedTour(device);
         void device.run();
         const client = new ProtocolClient(link.host);
         this.open = {

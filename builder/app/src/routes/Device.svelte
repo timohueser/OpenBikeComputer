@@ -26,6 +26,7 @@
     import { routeTrack, routeWaypoints, type RouteWaypoint } from "../lib/convert/bridge";
     import { dashboard, type TripView } from "../lib/device/dashboard.svelte";
     import type { ProfilePoint } from "../lib/device/elevation";
+    import type { TrackSegment } from "../lib/device/segments";
     import {
         previewTrack,
         pullRide,
@@ -43,6 +44,7 @@
         deviceThumbs,
         rideFingerprint,
         routeFingerprint,
+        STAGE_COLORS,
         type Thumb,
         type ThumbRequest,
     } from "../lib/device/thumbs.svelte";
@@ -321,6 +323,8 @@
     let preview = $state<{
         title: string;
         points: ProfilePoint[];
+        /** Set for trips: per-stage tracks in the band's colors; `points` is then empty. */
+        segments: TrackSegment[] | null;
         stats: Array<{ label: string; value: string }>;
         /** The route's stored waypoints — the modal's floating card + map diamonds. */
         waypoints: RouteWaypoint[];
@@ -339,6 +343,7 @@
             preview = {
                 title: route.name || `Route ${route.objectId}`,
                 points: await routeTrack(obcr),
+                segments: null,
                 // The same downloaded bytes, decoded a second way — the modal's waypoint card,
                 // markers and profile ticks. (The modal adds its own "Waypoints" chip when any.)
                 waypoints: await routeWaypoints(obcr),
@@ -370,6 +375,7 @@
             preview = {
                 title: ride.name || `Ride ${ride.objectId}`,
                 points: object.points.map((p) => ({ lat: p.lat1e7 / 1e7, lon: p.lon1e7 / 1e7, ele: p.eleM })),
+                segments: null,
                 stats: [
                     { label: "Distance", value: rideDistance(ride.distanceM) },
                     { label: "Moving time", value: rideDuration(ride.movingTimeS) },
@@ -387,41 +393,66 @@
     }
 
     /**
-     * Preview a whole trip: its stages' thumbnail tracks, concatenated, with the trip's totals as
-     * the stats. The tracks are the same downsampled ones the band draws — mostly already in the
-     * store or the cache, fetched through the queue where not — so this opens without downloading
-     * anything the tiles did not already need. No elevation: the profile simply stays away.
+     * Preview a whole trip: every stage's OBCR downloaded and decoded in full — real tracks with
+     * elevation, real waypoint tables — as one segment per stage in the band's colors, so the
+     * modal can draw the combined profile and the stage-colored map. Downloads run sequentially
+     * through the queue (they are small, a route polyline apiece) under the same `previewing`
+     * busy state the single-object previews use; the page-lifetime signal cuts the walk short
+     * when the device or the page goes away. Dangling stages are skipped, as the band skips them.
+     *
+     * The stat chips are sums over the downloaded stages' own headers — the same bytes the
+     * segments are drawn from — plus the stage count.
      */
     async function previewTrip(trip: TripView) {
         const c = client;
         if (!c || previewing) return;
-        const stages = dashboard.stagesOf(trip).filter((s): s is { id: number; route: RouteListEntry } => s.route !== null);
-        if (stages.length === 0) return;
+        const stages = dashboard.stagesOf(trip);
+        if (!stages.some((s) => s.route !== null)) return;
         previewing = `trip-${trip.objectId}`;
+        const signal = pageLifetime.signal;
         try {
-            const points: ProfilePoint[] = [];
-            for (const stage of stages) {
-                const track = await deviceThumbs.ensure(
-                    scope,
-                    routeThumbRequest(c, stage.route),
-                    serialize,
-                    pageLifetime.signal,
+            const segments: TrackSegment[] = [];
+            let distanceM = 0;
+            let ascentM = 0;
+            let descentM = 0;
+            for (const [index, stage] of stages.entries()) {
+                const route = stage.route;
+                if (!route) continue; // dangling: skipped, exactly as the band draws it
+                const obcr = await dashboard.enqueue(() =>
+                    c.download(ObjectType.Route, route.objectId, { signal }),
                 );
-                for (const [lat, lon] of track) points.push({ lat, lon, ele: null });
+                const header = decodeRouteHeader(obcr);
+                distanceM += header.distanceM;
+                ascentM += header.ascentM;
+                descentM += header.descentM;
+                segments.push({
+                    name: route.name || `Route ${stage.id}`,
+                    // By position in the FULL stage list, dangling included — the same cycle the
+                    // band's dots use, so a row's dot and its drawn segment always agree.
+                    color: STAGE_COLORS[index % STAGE_COLORS.length],
+                    points: await routeTrack(obcr),
+                    waypoints: await routeWaypoints(obcr),
+                });
             }
+            // The chip counts the FULL stage list, dangling included — the same count the trip
+            // band shows — and says plainly when some of it could not be drawn.
+            const missing = stages.length - segments.length;
             preview = {
                 title: trip.name || `Trip ${trip.objectId}`,
-                points,
+                points: [],
+                segments,
                 stats: [
-                    { label: "Stages", value: `${stages.length}` },
-                    { label: "Distance", value: `${(trip.totalDistanceM / 1000).toFixed(1)} km` },
-                    { label: "Ascent", value: `${trip.totalAscentM.toLocaleString()} m` },
+                    { label: "Distance", value: `${(distanceM / 1000).toFixed(1)} km` },
+                    { label: "Ascent", value: `${ascentM.toLocaleString()} m` },
+                    { label: "Descent", value: `${descentM.toLocaleString()} m` },
+                    { label: "Stages", value: missing > 0 ? `${stages.length} · ${missing} missing` : `${stages.length}` },
                 ],
                 waypoints: [],
                 route: null,
             };
         } catch (cause) {
-            dashboard.error = cause instanceof Error ? cause.message : String(cause);
+            // An abort is the page (or the cable) going away, not something to report.
+            if (!signal.aborted) dashboard.error = cause instanceof Error ? cause.message : String(cause);
         } finally {
             previewing = null;
         }
@@ -584,6 +615,7 @@
             <PreviewModal
                 title={open.title}
                 points={open.points}
+                segments={open.segments}
                 stats={open.stats}
                 waypoints={open.waypoints}
                 onclose={() => (preview = null)}
