@@ -27,7 +27,7 @@ and the simulator + tests first-class.
   builder's editor lies). Per-crate roles + build/run:
   [firmware/README.md](firmware/README.md).
 - `docs/` — the public docs site (below), published at
-  <https://timohueser.github.io/OpenBikeComputer/>: it's the **conceptual**
+  <https://openbikecomputer.com/>: it's the **conceptual**
   reference (architecture, formats, rendering, UI, display protocol). `docs/
   index.html` is the marketing landing, `docs/content/` the source. The blog
   ("expedition log", `/blog/`) lives in `docs/content/blog/<slug>/` — one folder

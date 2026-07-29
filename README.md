@@ -11,7 +11,7 @@ developed on the desktop today.
 
 **Docs & live demo:** the conceptual guide — system architecture, the render
 pipeline, the data formats, the UI, the display protocol — lives at
-<https://timohueser.github.io/OpenBikeComputer/>, which also runs the firmware's
+<https://openbikecomputer.com/>, which also runs the firmware's
 own render path **live in your browser** (compiled to wasm).
 
 ```
@@ -27,7 +27,7 @@ maps: a self-contained LOD pyramid of quadtree-indexed geometry) and **OBCR**
 (`.obcr`, routes: geometry + map-matching + an elevation profile) — designed to
 be read *directly* off flash by a microcontroller, with no JSON, reparsing, or
 heap churn. How they work: the
-[data-formats guide](https://timohueser.github.io/OpenBikeComputer/software/formats/);
+[data-formats guide](https://openbikecomputer.com/software/formats/);
 the normative byte layouts: [`OBCM_Spec.md`](specs/OBCM_Spec.md) /
 [`OBCR_Spec.md`](specs/OBCR_Spec.md).
 
@@ -38,7 +38,7 @@ the normative byte layouts: [`OBCM_Spec.md`](specs/OBCM_Spec.md) /
 | Path | What it is |
 | :-- | :-- |
 | `firmware/` | The crates the **device image actually reaches** — nothing else. See [`firmware/README.md`](firmware/README.md). |
-| `firmware/docs/` | Hardware notes that live nowhere else — the LS021 bring-up log, the FLPR blob's timing policy — plus the frozen resource baseline. Concepts belong on the [docs site](https://timohueser.github.io/OpenBikeComputer/), not here. |
+| `firmware/docs/` | Hardware notes that live nowhere else — the LS021 bring-up log, the FLPR blob's timing policy — plus the frozen resource baseline. Concepts belong on the [docs site](https://openbikecomputer.com/), not here. |
 | `firmware/obc-app/` | `no_std` — the **application layer**: camera, camera mode (follow-user / free), screen stack, input model, route tracking, plus compatibility re-exports of `obc-ports`. One per-frame entry point (`App::render_frame`) both hosts call. Builds for `thumbv8m.main-none-eabihf`. |
 | `firmware/obc-ble/` | `no_std` — the **BLE data-plane core** (epic #267): the S0 control-plane descriptor codecs, CRC-32, list objects, and the whole-object transfer state machine. Radio-free and host-tested; the board crate drives the L2CAP bytes through it. |
 | `firmware/obc-boot/` | The **32 KB nRF54L bootloader** — reads the `BOOT_STATE` page, runs `obc-dfu`'s install engine, flashes the app slot via RRAMC (LED codes, no display). Workspace-excluded + standalone like the board crate; flashed once. |
@@ -386,7 +386,7 @@ over **Bluetooth Low Energy** — push a route, pull a ride, rename the device,
 read diagnostics. The phone does all the format conversion (GPX/TCX → OBCR) and
 the device writes the bytes to its card verbatim. How the link is shaped — the
 GATT control plane, the L2CAP data plane, pairing and reconnect — is
-[the companion link](https://timohueser.github.io/OpenBikeComputer/software/companion-link/);
+[the companion link](https://openbikecomputer.com/software/companion-link/);
 the normative byte contract is
 [`obc-ble-interface-spec.md`](specs/obc-ble-interface-spec.md), and its host-tested
 core (descriptor codecs, CRC-32, the transfer state machine) is
@@ -408,7 +408,7 @@ The device updates itself in the field — no probe needed. An update ships as a
 single **`UPDATE.BIN`** file (an [`OBCU`](specs/OBCU_Spec.md) container: a 64-byte
 header plus the raw app image). The trust model — verify before erase, a single
 trial boot with rollback — is the
-[firmware updates](https://timohueser.github.io/OpenBikeComputer/software/firmware-updates/)
+[firmware updates](https://openbikecomputer.com/software/firmware-updates/)
 docs page.
 
 **Installing one (on the device):**
