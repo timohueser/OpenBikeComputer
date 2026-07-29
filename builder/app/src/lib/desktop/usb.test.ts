@@ -66,8 +66,11 @@ let attached: Array<{ id: string; vendorId: number; productId: number; product: 
 let watchChannel: FakeChannel<import("./invoke").UsbEvent> | null = null;
 let wire: LoopbackLink | null = null;
 let device: MockDevice | null = null;
-/** Whether `usb_open` should refuse, and with what. */
-let openFault: { code: string; message: string } | null = null;
+/** Whether `usb_open` should refuse, and with what. `onlyId` scopes the fault to one device. */
+let openFault: { code: string; message: string; onlyId?: string } | null = null;
+/** Gates shifted per `usb_open` call — an entry parks that open until its promise resolves,
+ *  which is how a test freezes one connect flow mid-open while another overtakes it. */
+let openGates: Array<(() => Promise<void>) | undefined> = [];
 /** In-flight reads/writes, so `usb_cancel` can settle them the way a cancelled URB does. */
 const inFlight = new Map<string, AbortController>();
 /**
@@ -120,7 +123,9 @@ async function backend(cmd: string, args: unknown, options?: { headers?: Record<
         case "usb_list":
             return attached;
         case "usb_open": {
-            if (openFault) throw openFault;
+            const gate = openGates.shift();
+            if (gate) await gate();
+            if (openFault && (!openFault.onlyId || openFault.onlyId === a.deviceId)) throw openFault;
             const found = attached.find((d) => d.id === a.deviceId);
             if (!found) throw { code: "closed", message: "That device is no longer attached." };
             return {
@@ -252,6 +257,7 @@ const ROOT = repoRoot();
 const vector = (name: string): Uint8Array => new Uint8Array(readFileSync(join(ROOT, "specs/vectors", name)));
 
 const DEVICE = { id: "usb#1", vendorId: 0x1209, productId: 0x0001, product: "OpenBikeComputer", serialNumber: "0011223344556677" };
+const DEVICE_B = { id: "usb#2", vendorId: 0x1209, productId: 0x0001, product: "OpenBikeComputer", serialNumber: "8877665544332211" };
 
 /** A live simulated device behind the fake backend, and a watcher already connected to it. */
 async function connected(options: LoopbackOptions & MockDeviceOptions = {}) {
@@ -269,6 +275,7 @@ beforeEach(() => {
     attached = [];
     watchChannel = null;
     openFault = null;
+    openGates = [];
     inFlight.clear();
     sendable = new Map();
     sendStallAfter = Number.POSITIVE_INFINITY;
@@ -426,7 +433,7 @@ describe("native discovery", () => {
         // claimed once — so a failed connect that kept it would lock out every retry.
         wire = loopbackLink();
         attached = [DEVICE];
-        const watcher = new NativeWatcher({ timeoutMs: 20 });
+        const watcher = new NativeWatcher({ timeoutMs: 20, hotplugRetryDelayMs: 1 });
         // No MockDevice running, so the identity read times out.
         expect(await watcher.start()).toBe(false);
         expect(watcher.current.status).toBe("error");
@@ -437,7 +444,7 @@ describe("native discovery", () => {
     it("surfaces a refused open as the sentence the backend wrote", async () => {
         attached = [DEVICE];
         openFault = { code: "device-error", message: "Interface 0 could not be claimed: busy — something else has it open." };
-        const watcher = new NativeWatcher();
+        const watcher = new NativeWatcher({ hotplugRetryDelayMs: 1 });
         expect(await watcher.start()).toBe(false);
         expect(watcher.current.error).toContain("something else has it open");
         await watcher.close();
@@ -519,6 +526,160 @@ describe("native discovery", () => {
         expect(watcher.current.error).toContain("something else has it open");
         // Bounded: it tried its attempts and stopped, rather than polling forever.
         expect(calls.filter((c) => c.cmd === "usb_open")).toHaveLength(5);
+        await watcher.close();
+    });
+
+    it("retries start()'s own initial adopt through the same window", async () => {
+        // App launched moments after the cable went in: the initial probe hits the exact same
+        // not-yet-claimable window a hot-plug event does, and used to park in `error` with no
+        // event ever coming to rescue it.
+        wire = loopbackLink();
+        device = new MockDevice(wire.device);
+        void device.run();
+        attached = [DEVICE];
+        openFault = { code: "device-error", message: "not ready yet" };
+        const watcher = new NativeWatcher({ hotplugRetryDelayMs: 1 });
+
+        let release1!: () => void;
+        let release2!: () => void;
+        openGates.push(() => new Promise<void>((resolve) => (release1 = resolve)));
+        const started = watcher.start();
+        await vi.waitFor(() => expect(calls.filter((c) => c.cmd === "usb_open")).toHaveLength(1));
+        openGates.push(() => new Promise<void>((resolve) => (release2 = resolve)));
+        release1(); // attempt 1 fails against the not-yet-claimable device
+        await vi.waitFor(() => expect(calls.filter((c) => c.cmd === "usb_open")).toHaveLength(2));
+        openFault = null; // the OS finished setting the device up
+        release2();
+
+        expect(await started).toBe(true);
+        expect(watcher.current.status).toBe("ready");
+        await watcher.close();
+    });
+
+    it("lets a Connect click win over an adopt loop parked between attempts", async () => {
+        // The wedge this guards against: the click and the loop both open the same device, the
+        // loop's late failure publishes `error` over the click's `ready`, and whichever link
+        // loses is dropped still holding the interface claim. The click claims the flow, so the
+        // loop must notice and stand down without another attempt.
+        attached = [];
+        const watcher = new NativeWatcher({ hotplugRetryDelayMs: 120 });
+        await watcher.start();
+
+        wire = loopbackLink();
+        device = new MockDevice(wire.device);
+        void device.run();
+        attached = [DEVICE];
+        openFault = { code: "device-error", message: "busy" };
+        watchChannel!.onmessage!({ type: "connected", device: DEVICE });
+        await vi.waitFor(() => expect(calls.filter((c) => c.cmd === "usb_open")).toHaveLength(1));
+
+        // The rider clicks Connect while the loop sleeps out its retry delay.
+        openFault = null;
+        expect(await watcher.requestDevice()).toBe(true);
+        expect(watcher.current.status).toBe("ready");
+
+        // The loop wakes, sees it lost the flow, and goes quietly: no third open, no late error,
+        // and the winner's client still works.
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        expect(watcher.current.status).toBe("ready");
+        expect(calls.filter((c) => c.cmd === "usb_open")).toHaveLength(2);
+        const routes = await watcher.current.client!.listRoutes();
+        expect(routes.truncated).toBe(false);
+        await watcher.close();
+    });
+
+    it("closes, not orphans, a link whose flow lost while the handshake ran", async () => {
+        // The expensive half of the same race: a flow that already *opened* the device loses
+        // while its handshake runs. The Rust side holds the interface claim until the link is
+        // closed, so dropping the client on the floor would make every later open fail "busy"
+        // until a physical replug. The loser must close what it opened and publish nothing.
+        attached = [];
+        const watcher = new NativeWatcher({ hotplugRetryDelayMs: 1 });
+        await watcher.start();
+
+        wire = loopbackLink();
+        device = new MockDevice(wire.device);
+        void device.run();
+        attached = [DEVICE];
+        let release!: () => void;
+        openGates.push(() => new Promise<void>((resolve) => (release = resolve)));
+        watchChannel!.onmessage!({ type: "connected", device: DEVICE });
+        await vi.waitFor(() => expect(calls.some((c) => c.cmd === "usb_open")).toBe(true));
+
+        // Overtaken while parked inside the open: a deliberate disconnect claims the flow.
+        await watcher.disconnect();
+        const seen: string[] = [];
+        const unsubscribe = watcher.subscribe((s) => seen.push(s.status));
+        release();
+
+        // The open and the handshake complete against the live device — and then the loser
+        // notices it lost: the link is closed at the backend, nothing is published.
+        await vi.waitFor(() => expect(calls.some((c) => c.cmd === "usb_close")).toBe(true));
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(watcher.current.status).toBe("idle");
+        expect(seen).not.toContain("ready");
+        expect(seen).not.toContain("error");
+        expect(calls.filter((c) => c.cmd === "usb_open")).toHaveLength(1);
+        unsubscribe();
+        await watcher.close();
+    });
+
+    it("keeps a successor alive when a superseded loop's final attempt fails late", async () => {
+        // A replugged device gets a new id and a new `Connected` event while the old id's loop is
+        // still failing its last attempt. That final failure must not publish `error` over the
+        // fresh loop's `connecting` — before the flow token, it did, and the fresh loop then saw
+        // the wrong status and stood down: the freshly plugged device never connected.
+        attached = [];
+        const watcher = new NativeWatcher({ hotplugRetryDelayMs: 1 });
+        await watcher.start();
+
+        wire = loopbackLink();
+        device = new MockDevice(wire.device);
+        void device.run();
+        attached = [DEVICE, DEVICE_B];
+        openFault = { code: "device-error", message: "gone", onlyId: DEVICE.id };
+        // Attempts 1–4 fail fast; the 5th parks in its open so the successor can overtake it.
+        let release!: () => void;
+        openGates = [undefined, undefined, undefined, undefined, () => new Promise<void>((resolve) => (release = resolve))];
+        watchChannel!.onmessage!({ type: "connected", device: DEVICE });
+        await vi.waitFor(() => expect(calls.filter((c) => c.cmd === "usb_open")).toHaveLength(5));
+
+        watchChannel!.onmessage!({ type: "connected", device: DEVICE_B });
+        await vi.waitFor(() => expect(watcher.current.status).toBe("ready"));
+        release(); // the old loop's final attempt now fails, late and superseded
+
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(watcher.current.status).toBe("ready");
+        expect(watcher.current.error).toBeNull();
+        // …and the connection that stands is the successor's, not a resurrected old one.
+        const opens = calls.filter((c) => c.cmd === "usb_open");
+        expect((opens.at(-1)?.args as { deviceId: string }).deviceId).toBe(DEVICE_B.id);
+        await watcher.close();
+    });
+
+    it("ends in idle when the unplug event lands mid-flow", async () => {
+        // The Disconnected event arrives while the flow has no link yet (so the link-based
+        // handler ignores it) and the device is even still *listed* by a stale probe. The flow
+        // chasing exactly this id is ended in the honest state, and its in-flight attempt's
+        // failure stays silent.
+        attached = [];
+        const watcher = new NativeWatcher({ hotplugRetryDelayMs: 1 });
+        await watcher.start();
+
+        attached = [DEVICE];
+        openFault = { code: "device-error", message: "busy" };
+        // Park the attempt inside its open, so the unplug event demonstrably lands mid-flight.
+        let release!: () => void;
+        openGates.push(() => new Promise<void>((resolve) => (release = resolve)));
+        watchChannel!.onmessage!({ type: "connected", device: DEVICE });
+        await vi.waitFor(() => expect(calls.some((c) => c.cmd === "usb_open")).toBe(true));
+
+        watchChannel!.onmessage!({ type: "disconnected", id: DEVICE.id });
+        await vi.waitFor(() => expect(watcher.current.status).toBe("idle"));
+        release(); // the parked attempt now fails, sees a stale token, and says nothing
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        expect(watcher.current.status).toBe("idle");
+        expect(watcher.current.error).toBeNull();
         await watcher.close();
     });
 

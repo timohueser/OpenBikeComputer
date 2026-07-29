@@ -104,16 +104,18 @@
     //
     // One rAF gate for both sources (profile pointermove, map polyline mousemove): the latest
     // report wins, `hoverT` changes at most once a frame, and everything downstream — the strip's
-    // cursor line, the map dot's `setLatLng` — hangs off that one state.
+    // cursor line, the map dot's `setLatLng` — hangs off that one state. A source may queue a
+    // thunk instead of a value, in which case its work (the map side's nearest-point scan) also
+    // runs at most once a frame, not once per raw mousemove.
 
     let hoverRaf = 0;
-    let hoverNext: number | null = null;
-    function queueHover(t: number | null) {
+    let hoverNext: number | null | (() => number | null) = null;
+    function queueHover(t: number | null | (() => number | null)) {
         hoverNext = t;
         if (hoverRaf) return;
         hoverRaf = requestAnimationFrame(() => {
             hoverRaf = 0;
-            hoverT = hoverNext;
+            hoverT = typeof hoverNext === "function" ? hoverNext() : hoverNext;
         });
     }
 
@@ -174,8 +176,12 @@
                 // track point and the profile draws its cursor line at that distance. Without a
                 // profile there is nothing to sync, so the map stays hover-quiet.
                 const report = (event: L.LeafletMouseEvent) => {
-                    const i = nearestPointIndex(points, event.latlng.lat, event.latlng.lng);
-                    if (i >= 0 && totalTrackM > 0) queueHover(cum[i] / totalTrackM);
+                    // Queued as a thunk: the O(n) scan runs inside the rAF gate, once a frame.
+                    const { lat, lng } = event.latlng;
+                    queueHover(() => {
+                        const i = nearestPointIndex(points, lat, lng);
+                        return i >= 0 && totalTrackM > 0 ? cum[i] / totalTrackM : null;
+                    });
                 };
                 const clear = () => queueHover(null);
                 for (const line of [gray, coral]) {
