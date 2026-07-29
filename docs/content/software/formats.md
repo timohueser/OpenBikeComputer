@@ -117,7 +117,7 @@ An OBCM file (current version **10**) opens with a fixed 40-byte header, then a 
   <text class="d-sub"   x="312" y="184" text-anchor="middle">flat u32 nodes</text>
   <rect class="d-panel" x="392" y="152" width="152" height="40" rx="7" />
   <text class="d-label" x="468" y="170" text-anchor="middle">data chunks</text>
-  <text class="d-sub"   x="468" y="184" text-anchor="middle">fixed-size blocks</text>
+  <text class="d-sub"   x="468" y="184" text-anchor="middle">tight, offset-addressed</text>
 </svg>
 <figcaption>The header, style table and LOD table are read once when the file opens — they're tiny. The bulk of the file is the LOD pyramid: each layer its own <b>(index + chunks)</b> pair, simplified to that zoom. Two tail sections are different beasts — not map layers: the <b>POI section</b> (coral), a nearest-list index covered <a href="#pois-a-nearest-list-not-a-map-layer">below</a>, and the <b>navigation graph</b> (teal), a routable network the device runs A\* over, covered <a href="#the-navigation-graph-a-routable-network">last</a>. Reaching any section is an explicit offset, so there is no scanning to "find" where a layer begins.</figcaption>
 </figure>
@@ -131,17 +131,35 @@ Each entry in the **LOD table** is the directory to one layer — the zoom it se
 | Max meters/pixel | `f32` | Upper bound of the zoom range this layer covers; the coarsest is `+∞`, strictly decreasing toward fine |
 | Index offset | `u32` | Byte offset to this layer's quadtree |
 | Node count | `u32` | Number of `u32` nodes in that index |
-| Chunk size | `u16` | Fixed byte size of every data chunk in this layer |
+| Chunk size | `u16` | The **most** bytes one data chunk in this layer may hold — a capacity bound, not a stride (v11) |
 | Chunk count | `u32` | Number of data chunks |
 
-Eighteen bytes per entry — the `N × 18 B` in the ribbon above. Because the index sits immediately before the chunks and every count is stored, the *k*-th chunk is reached by arithmetic alone — `index_offset + node_count·4 + k·chunk_size` — with no scanning and no length-prefix hunting. That's "no runtime discovery" made concrete: the table tells the reader exactly where every layer, and every chunk within it, begins.
+Eighteen bytes per entry — the `N × 18 B` in the ribbon above. Every count is stored, so the reader never walks anything to learn a size: that's "no runtime discovery" made concrete. Where the *k*-th chunk begins is one small table away, and that table is worth its own aside.
+
+#### Where a chunk lives: the offset table
+
+Between a layer's index and its chunk bytes sits a run of `chunk_count + 1` `u32` **offsets**. Chunk *k* is `offsets[k] … offsets[k+1]`, measured from the first chunk byte:
+
+```
+table_start = index_offset + node_count·4
+data_start  = table_start  + (chunk_count + 1)·4
+chunk k     = data_start + offsets[k] … data_start + offsets[k+1]
+```
+
+Still one multiplication and one read — but chunks no longer have to be all the same size, and that is the point. Until **v11** the *k*-th chunk was simply `data_start + k·chunk_size`, which is beautifully cheap and quietly expensive: a fixed stride means every chunk must be **padded** to `chunk_size` with `0xFF`. And because a quadtree node splits the moment its features overflow one chunk, leaves settle somewhere between a quarter and half full — so the padding isn't a mis-tuned knob, it's structural. Measured on real maps: **53% of a Freiburg map and 65% of a Grimsel map were trailing `0xFF`**, evenly across every layer.
+
+Shrinking `chunk_size` doesn't help (nodes split more often, so the slack per chunk halves while the chunk count doubles); growing it adds slack directly. One `u32` per chunk does help: on that Freiburg map, 1,534 chunks × 4 B = 6 KB of table in exchange for 3.8 MB of padding. Real maps come out **~2.3× smaller**, and the win is proportional — every map, every region.
+
+It pays a second time at read time. The device's bottleneck is the SD card, and a chunk miss used to read a fixed 4,096 B — eight 512-byte blocks — no matter how little of it was real. A tight chunk averages closer to 1,600 B, so a miss reads three or four blocks instead of eight. Unaligned reads cost nothing extra here: the reader's block-buffered source already handles them.
+
+The last table entry (`offsets[chunk_count]`) is the layer's total chunk bytes, which the reader keeps resident — one `u32` read when the file opens, and afterwards every chunk lookup is bounds-checked against it for free. That matters because a chunk id comes out of a quadtree leaf, which in a damaged file is an arbitrary number: the reader validates the pair (in range, non-decreasing, inside the region, no longer than `chunk_size`) before it addresses anything.
 
 ### The header
 
 The 40-byte header is the one fixed-size, always-present part of the file. Everything else is found through offsets it stores.
 
 <figure class="fig">
-<svg viewBox="0 0 720 170" role="img" aria-label="The 40-byte OBCM header drawn as a byte ruler: bytes 0 to 3 are the magic OBCM, byte 4 is the version (10), bytes 5 to 20 are the global bounding box as four 32-bit integers, bytes 21 to 24 are the style-table offset, byte 25 is the LOD count, bytes 26 to 29 are the LOD-table offset, bytes 30 to 31 are the marker colour, bytes 32 to 35 are the POI-section offset, and bytes 36 to 39 are the navigation-graph offset appended in version 8.">
+<svg viewBox="0 0 720 170" role="img" aria-label="The 40-byte OBCM header drawn as a byte ruler: bytes 0 to 3 are the magic OBCM, byte 4 is the version (11), bytes 5 to 20 are the global bounding box as four 32-bit integers, bytes 21 to 24 are the style-table offset, byte 25 is the LOD count, bytes 26 to 29 are the LOD-table offset, bytes 30 to 31 are the marker colour, bytes 32 to 35 are the POI-section offset, and bytes 36 to 39 are the navigation-graph offset appended in version 8.">
   <text class="d-tag" x="20" y="24">The 40-byte header, byte by byte</text>
 
   <!-- field names -->
@@ -182,7 +200,7 @@ The 40-byte header is the one fixed-size, always-present part of the file. Every
   </g>
   <!-- value + byte ranges -->
   <text class="d-label" x="74" y="93" text-anchor="middle" style="fill:#fff;font-size:11px">OBCM</text>
-  <text class="d-label" x="112" y="93" text-anchor="middle" style="font-size:11px">10</text>
+  <text class="d-label" x="112" y="93" text-anchor="middle" style="font-size:11px">11</text>
   <text class="d-sub" x="74"  y="122" text-anchor="middle" style="font-size:9px">0–3</text>
   <text class="d-sub" x="112" y="122" text-anchor="middle" style="font-size:9px">4</text>
   <text class="d-sub" x="239" y="122" text-anchor="middle" style="font-size:9px">5–20</text>
@@ -195,7 +213,7 @@ The 40-byte header is the one fixed-size, always-present part of the file. Every
 
   <text class="d-sub" x="44" y="150" style="font-size:11px">A short read here is the only "is this even a map?" check the reader needs.</text>
 </svg>
-<figcaption>Fixed offsets, no surprises. A few details a reader notices: the bbox is stored <b>lat, lon</b> (a packer ordering quirk); the <b>marker colour</b> — the you-are-here chevron — rides in the header because the marker isn't an OpenStreetMap feature; and the <b>POI</b> (coral) and <b>navigation-graph</b> (teal) offsets at the tail are the growth that carried the header from 32 → 36 → 40 bytes. Earlier fields never move — a v7 reader that stops at byte 36 still parses everything it knew — and v9/v10 changed section internals and the style record without touching the header, only ticking the version byte (now <code>10</code>).</figcaption>
+<figcaption>Fixed offsets, no surprises. A few details a reader notices: the bbox is stored <b>lat, lon</b> (a packer ordering quirk); the <b>marker colour</b> — the you-are-here chevron — rides in the header because the marker isn't an OpenStreetMap feature; and the <b>POI</b> (coral) and <b>navigation-graph</b> (teal) offsets at the tail are the growth that carried the header from 32 → 36 → 40 bytes. Earlier fields never move — a v7 reader that stops at byte 36 still parses everything it knew — and v9, v10 and v11 changed section internals, the style record and the chunk layout without touching the header, only ticking the version byte (now <code>11</code>).</figcaption>
 </figure>
 
 The **style table** that follows maps small numeric ids to how a feature looks. Each record is eight bytes (v10 grew it from six):
@@ -333,63 +351,82 @@ let (dx, dy) = if is_16 {
 px += dx;  py += dy;   // each delta steps to the next vertex
 ```
 
-A feature is introduced by a 12-byte header, and a flags byte in it says how to read the rest:
+A feature is introduced by a **7-byte header** — or a 12-byte one when it needs the room — and a flags byte in it says how to read the rest:
 
 <figure class="fig">
-<svg viewBox="0 0 720 250" role="img" aria-label="A feature header drawn as a byte ruler: one byte style id, two bytes exterior point count, four bytes anchor X, four bytes anchor Y, one byte flags. The flags byte expands into three bits: 16-bit deltas, polygon, and has-holes. Below, the polygon-with-holes byte layout as a ribbon: the header, the exterior deltas, a hole count, then each hole's point count and deltas.">
-  <text class="d-tag" x="20" y="24">A feature on disk</text>
+<svg viewBox="0 0 720 300" role="img" aria-label="Two feature-header byte rulers drawn to the same scale, forty pixels per byte, sharing a left edge so the seven-byte compact header is visibly shorter than the twelve-byte wide one. Compact: one byte style id, one byte flags, one byte exterior point count, two bytes unsigned anchor X, two bytes unsigned anchor Y. Wide: one byte style id, one byte flags, two bytes point count, four bytes signed anchor X, four bytes signed anchor Y. The flags byte expands into four bits: 16-bit deltas, polygon, has-holes, and wide, with the wide bit highlighted as the one that selects the layout. Below, the polygon-with-holes byte layout as a ribbon: the header, the exterior deltas, a hole count, then each hole's point count and deltas.">
+  <text class="d-tag" x="20" y="24">A feature on disk — both rulers to scale, 1 byte = 40 px</text>
 
-  <!-- header ruler -->
-  <text class="d-sub" x="140" y="54" text-anchor="middle" style="font-size:9.5px">style id</text>
-  <text class="d-sub" x="200" y="54" text-anchor="middle" style="font-size:9.5px">pt count</text>
-  <text class="d-sub" x="320" y="54" text-anchor="middle" style="font-size:9.5px">anchor X (i32)</text>
-  <text class="d-sub" x="480" y="54" text-anchor="middle" style="font-size:9.5px">anchor Y (i32)</text>
-  <text class="d-sub" x="580" y="54" text-anchor="middle" style="font-size:9.5px">flags</text>
+  <!-- compact header ruler: 7 B -->
+  <text class="d-sub" x="140" y="52" text-anchor="middle" style="font-size:9px">style</text>
+  <text class="d-sub" x="180" y="52" text-anchor="middle" style="font-size:9px">flags</text>
+  <text class="d-sub" x="220" y="52" text-anchor="middle" style="font-size:9px">pts</text>
+  <text class="d-sub" x="280" y="52" text-anchor="middle" style="font-size:9px">anchor X</text>
+  <text class="d-sub" x="360" y="52" text-anchor="middle" style="font-size:9px">anchor Y</text>
   <g stroke="#20301d" stroke-width="1">
-    <rect x="120" y="62" width="40"  height="30" class="d-forest" />
-    <rect x="160" y="62" width="80"  height="30" class="d-water" />
-    <rect x="240" y="62" width="160" height="30" class="d-muted" />
-    <rect x="400" y="62" width="160" height="30" class="d-muted" />
-    <rect x="560" y="62" width="40"  height="30" class="d-hot-fill" />
+    <rect x="120" y="60" width="40" height="32" class="d-forest" />
+    <rect x="160" y="60" width="40" height="32" class="d-hot-fill" />
+    <rect x="200" y="60" width="40" height="32" class="d-water" />
+    <rect x="240" y="60" width="80" height="32" class="d-muted" />
+    <rect x="320" y="60" width="80" height="32" class="d-muted" />
   </g>
-  <text class="d-sub" x="140" y="106" text-anchor="middle" style="font-size:9px">1 B</text>
-  <text class="d-sub" x="200" y="106" text-anchor="middle" style="font-size:9px">2 B</text>
-  <text class="d-sub" x="320" y="106" text-anchor="middle" style="font-size:9px">4 B</text>
-  <text class="d-sub" x="480" y="106" text-anchor="middle" style="font-size:9px">4 B</text>
-  <text class="d-sub" x="580" y="106" text-anchor="middle" style="font-size:9px">1 B</text>
+  <text class="d-tag" x="110" y="80" text-anchor="end" style="font-size:10px">compact · 7 B</text>
+  <text class="d-sub" x="280" y="80" text-anchor="middle" style="font-size:9px">u16 · 2 B</text>
+  <text class="d-sub" x="360" y="80" text-anchor="middle" style="font-size:9px">u16 · 2 B</text>
+  <text class="d-sub" x="140" y="106" text-anchor="middle" style="font-size:8.5px">1 B</text>
+  <text class="d-sub" x="180" y="106" text-anchor="middle" style="font-size:8.5px">1 B</text>
+  <text class="d-sub" x="220" y="106" text-anchor="middle" style="font-size:8.5px">1 B</text>
 
-  <!-- flags expand -->
-  <line x1="580" y1="92" x2="573" y2="124" stroke="#cf6a2a" stroke-width="1.2" />
-  <g>
-    <rect x="418" y="124" width="102" height="22" rx="4" class="d-panel-2" />
-    <text class="d-sub" x="469" y="139" text-anchor="middle" style="font-size:9px">bit 0 · 16-bit Δ</text>
-    <rect x="526" y="124" width="94" height="22" rx="4" class="d-panel-2" />
-    <text class="d-sub" x="573" y="139" text-anchor="middle" style="font-size:9px">bit 1 · polygon</text>
-    <rect x="626" y="124" width="80" height="22" rx="4" class="d-panel-2" />
-    <text class="d-sub" x="666" y="139" text-anchor="middle" style="font-size:9px">bit 2 · holes</text>
+  <!-- wide header ruler: 12 B, same scale, same left edge -->
+  <g stroke="#20301d" stroke-width="1">
+    <rect x="120" y="122" width="40"  height="32" class="d-forest" />
+    <rect x="160" y="122" width="40"  height="32" class="d-hot-fill" />
+    <rect x="200" y="122" width="80"  height="32" class="d-water" />
+    <rect x="280" y="122" width="160" height="32" class="d-muted" />
+    <rect x="440" y="122" width="160" height="32" class="d-muted" />
   </g>
+  <text class="d-tag" x="110" y="142" text-anchor="end" style="font-size:10px">wide · 12 B</text>
+  <text class="d-sub" x="240" y="142" text-anchor="middle" style="fill:#fff;font-size:9px">pts · 2 B</text>
+  <text class="d-sub" x="360" y="142" text-anchor="middle" style="font-size:9px">anchor X · i32 · 4 B</text>
+  <text class="d-sub" x="520" y="142" text-anchor="middle" style="font-size:9px">anchor Y · i32 · 4 B</text>
+
+  <!-- flags expand: the byte that decides which ruler you are reading -->
+  <line x1="180" y1="154" x2="112" y2="182" stroke="#cf6a2a" stroke-width="1.2" />
+  <g>
+    <rect x="60"  y="182" width="104" height="22" rx="4" class="d-panel-2" />
+    <text class="d-sub" x="112" y="197" text-anchor="middle" style="font-size:9px">bit 0 · 16-bit Δ</text>
+    <rect x="170" y="182" width="96"  height="22" rx="4" class="d-panel-2" />
+    <text class="d-sub" x="218" y="197" text-anchor="middle" style="font-size:9px">bit 1 · polygon</text>
+    <rect x="272" y="182" width="82"  height="22" rx="4" class="d-panel-2" />
+    <text class="d-sub" x="313" y="197" text-anchor="middle" style="font-size:9px">bit 2 · holes</text>
+    <rect x="360" y="182" width="80"  height="22" rx="4" class="d-hot-fill" />
+    <text class="d-sub" x="400" y="197" text-anchor="middle" style="fill:#fff;font-size:9px">bit 3 · wide</text>
+  </g>
+  <text class="d-sub" x="448" y="197" style="fill:#a9501c;font-size:9px">← picks the ruler</text>
 
   <!-- holes layout ribbon -->
-  <text class="d-tag" x="20" y="178">…and a polygon with holes, laid out</text>
+  <text class="d-tag" x="20" y="232">…and a polygon with holes, laid out</text>
   <g stroke="#3c6b39" stroke-width="1.2">
-    <rect x="24"  y="188" width="96"  height="34" class="d-hot-fill" />
-    <rect x="120" y="188" width="150" height="34" class="d-muted" />
-    <rect x="270" y="188" width="70"  height="34" class="d-amber" />
-    <rect x="340" y="188" width="64"  height="34" class="d-water" />
-    <rect x="404" y="188" width="130" height="34" class="d-muted" />
-    <rect x="534" y="188" width="64"  height="34" class="d-water" />
-    <rect x="598" y="188" width="98"  height="34" class="d-muted" />
+    <rect x="24"  y="242" width="96"  height="34" class="d-hot-fill" />
+    <rect x="120" y="242" width="150" height="34" class="d-muted" />
+    <rect x="270" y="242" width="70"  height="34" class="d-amber" />
+    <rect x="340" y="242" width="64"  height="34" class="d-water" />
+    <rect x="404" y="242" width="130" height="34" class="d-muted" />
+    <rect x="534" y="242" width="64"  height="34" class="d-water" />
+    <rect x="598" y="242" width="98"  height="34" class="d-muted" />
   </g>
-  <text class="d-sub" x="72"  y="209" text-anchor="middle" style="fill:#fff;font-size:9.5px">12 B header</text>
-  <text class="d-sub" x="195" y="209" text-anchor="middle" style="font-size:9.5px">exterior deltas</text>
-  <text class="d-sub" x="305" y="209" text-anchor="middle" style="fill:#3a2c10;font-size:9px">hole cnt</text>
-  <text class="d-sub" x="372" y="209" text-anchor="middle" style="fill:#fff;font-size:9px">h1 pts</text>
-  <text class="d-sub" x="469" y="209" text-anchor="middle" style="font-size:9.5px">hole 1 deltas</text>
-  <text class="d-sub" x="566" y="209" text-anchor="middle" style="fill:#fff;font-size:9px">h2 pts</text>
-  <text class="d-sub" x="647" y="209" text-anchor="middle" style="font-size:9.5px">hole 2 …</text>
+  <text class="d-sub" x="72"  y="263" text-anchor="middle" style="fill:#fff;font-size:9.5px">7 or 12 B hdr</text>
+  <text class="d-sub" x="195" y="263" text-anchor="middle" style="font-size:9.5px">exterior deltas</text>
+  <text class="d-sub" x="305" y="263" text-anchor="middle" style="fill:#3a2c10;font-size:9px">hole cnt</text>
+  <text class="d-sub" x="372" y="263" text-anchor="middle" style="fill:#fff;font-size:9px">h1 pts</text>
+  <text class="d-sub" x="469" y="263" text-anchor="middle" style="font-size:9.5px">hole 1 deltas</text>
+  <text class="d-sub" x="566" y="263" text-anchor="middle" style="fill:#fff;font-size:9px">h2 pts</text>
+  <text class="d-sub" x="647" y="263" text-anchor="middle" style="font-size:9.5px">hole 2 …</text>
 </svg>
-<figcaption>The exterior ring comes first; the hole count and each hole's deltas follow <b>only if</b> the holes flag is set, so a line or a simple polygon pays nothing for machinery it doesn't use. A <code>0xFF</code> style id — an impossible style — marks the end of features in a chunk, so the reader stops without needing a per-chunk feature count.</figcaption>
+<figcaption>Two layouts, one decision. <b>Flags sits at byte 1</b> in both, because its <b>wide</b> bit is what tells the reader how many bytes the header is — it has to be readable before anything behind it. The <b>compact</b> form spends one byte on the point count and two on each anchor; the <b>wide</b> form restores the <code>u16</code> count and signed <code>i32</code> anchors for the features that need them. Everything after the header is identical either way: the exterior ring first, then the hole count and each hole's deltas <b>only if</b> the holes flag is set, so a line or a simple polygon pays nothing for machinery it doesn't use. A <code>0xFF</code> style id — an impossible style — ends the features in a chunk.</figcaption>
 </figure>
+
+Why two forms? The 12-byte header was, at 66,910 features on that Freiburg map, **803 KB** — a third of the real data, for an average feature of 7.6 vertices, and eight of those twelve bytes were the anchor. But the anchor is already stored *relative to its leaf's corner*, and at fine zooms a leaf spans far less than the 65,535 µdeg (~7 km) a `u16` covers, so most of that width is zeroes. Hence the split: `u8` point count and `u16` anchors for the common feature, and a flag bit for the ones that genuinely don't fit — a feature with more than 255 vertices in its exterior, or a coarse-layer leaf big enough that its own corner is kilometres away. That is another ~335 KB, and it is why the reader must read flags first and derive the width, rather than assume it.
 
 There's a quiet payoff to the holes layout: a polygon's holes are just extra rings appended after the exterior. The [scanline fill](../rendering/#polygons-even-odd-scanline-fill) treats them as additional edges in the same crossing list, so holes "fall out" of the even-odd rule with no special case — the format and the rasteriser were designed to meet in the middle.
 
@@ -987,7 +1024,7 @@ The map's caches matter because the [stub-select collector](../rendering/#4-deco
 
 Everything above is read by the device. There is one more format in the family that the device never sees, and it exists because of a single number in the OBCM header: the **version byte**.
 
-The reader supports exactly one OBCM version at a time — v10 today, and the versions before it were hard cuts, not fallbacks. That's the right trade for a microcontroller (no branching parsers, no dead code paths in 512 KB), and it costs nothing while maps are built one at a time on the rider's own machine. But a distribution that **bakes maps centrally** — build the popular regions once, serve them as static files — turns that one byte into a hazard: the artifacts are large, cached at the edge, and the day the format moves, every one of them silently becomes a file the device will refuse.
+The reader supports exactly one OBCM version at a time — v11 today, and the versions before it were hard cuts, not fallbacks. That's the right trade for a microcontroller (no branching parsers, no dead code paths in 512 KB), and it costs nothing while maps are built one at a time on the rider's own machine. But a distribution that **bakes maps centrally** — build the popular regions once, serve them as static files — turns that one byte into a hazard: the artifacts are large, cached at the edge, and the day the format moves, every one of them silently becomes a file the device will refuse.
 
 The fix is to make the version *knowable before the download*. **OBCC** — the [catalog manifest](src:specs/OBCC_Spec.md) — is a single JSON document listing every baked artifact with its region, preset, coverage box, size, digest, and the OBCM version **read out of the artifact's own header** rather than taken from the build recipe. The other half of the comparison comes from the device itself: it reports the OBCM version its reader accepts in the same open, pre-pairing identity read that carries its [store epoch](../companion-link/#store-epochs-which-id-era-youre-talking-to) — one byte, taken straight from the constant the reader validates every header against, so what a device claims to read and what it does read can't drift apart. A site holding the manifest can then grey out a map the connected device can't read, instead of streaming two hundred megabytes and failing at the last byte.
 
@@ -1021,7 +1058,7 @@ The fix is to make the version *knowable before the download*. **OBCC** — the 
   <!-- device -->
   <rect class="d-panel-2" x="446" y="156" width="130" height="56" rx="10" />
   <text class="d-label" x="511" y="180" text-anchor="middle" style="font-size:10.5px">device</text>
-  <text class="d-sub" x="511" y="196" text-anchor="middle" style="font-size:9px">reads OBCM v10</text>
+  <text class="d-sub" x="511" y="196" text-anchor="middle" style="font-size:9px">reads OBCM v11</text>
   <line class="d-flow" x1="511" y1="154" x2="511" y2="122" marker-end="url(#aCC)" />
   <text class="d-sub" x="522" y="142" style="font-size:8.5px">identity read</text>
 
