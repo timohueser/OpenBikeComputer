@@ -54,6 +54,22 @@
 
     /** The blit target, allocated once. Reused so a drag does not churn a 300 kB `ImageData`. */
     let image: ImageData | null = null;
+    /** In-flight coalesced repaint, if any. */
+    let frameRequest: number | null = null;
+
+    /**
+     * Repaint at most once per display frame. A pointer can report 120 moves a second and one
+     * render of a dense preset is tens of milliseconds, so painting per event would queue renders
+     * behind a drag that has already moved on. The camera still moves per event — only the drawing
+     * is coalesced, so nothing is dropped, it is just drawn once.
+     */
+    function schedulePaint() {
+        if (frameRequest !== null) return;
+        frameRequest = requestAnimationFrame(() => {
+            frameRequest = null;
+            paint();
+        });
+    }
 
     /** Blit the current frame, if it changed. The renderer decides; this never repaints blindly. */
     function paint(force = false) {
@@ -123,6 +139,7 @@
         return () => {
             mounted = false;
             io?.disconnect();
+            if (frameRequest !== null) cancelAnimationFrame(frameRequest);
             preview?.free();
             preview = null;
         };
@@ -151,7 +168,7 @@
         const k = scale();
         preview.pan((e.clientX - last.x) * k, (e.clientY - last.y) * k);
         last = { x: e.clientX, y: e.clientY };
-        paint();
+        schedulePaint();
     }
 
     function up(e: PointerEvent) {
@@ -165,7 +182,7 @@
         if (!interactive || !preview) return;
         e.preventDefault();
         preview.zoom_by(e.deltaY < 0 ? 1.15 : 1 / 1.15);
-        paint();
+        schedulePaint();
     }
 
     /** Keyboard equivalent of the drag, so the live card is not pointer-only. */
@@ -190,7 +207,7 @@
         } else {
             return;
         }
-        paint();
+        schedulePaint();
     }
 </script>
 
@@ -217,7 +234,7 @@
             onkeydown={key}
             ondblclick={() => {
                 preview?.reset();
-                paint();
+                schedulePaint();
             }}
         ></canvas>
     {:else if fallback && (phase === "absent" || phase === "failed")}
