@@ -96,14 +96,27 @@ select:focus {
     border-radius: 11px;
     padding: 9px 16px;
     font-weight: 600;
-    border: 1px solid transparent;
+    background: var(--panel);
+    color: var(--ink);
+    border: 1px solid var(--line-strong);
     transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
 
+.btn:hover:not(:disabled) {
+    background: var(--parchment-2);
+    border-color: var(--wood);
+}
+
+.btn:disabled {
+    opacity: 0.55;
+    cursor: default;
+}
+
 .btn.primary {
-    background: var(--ink);
+    background: var(--forest);
     color: var(--parchment);
-    box-shadow: 0 6px 14px rgba(36, 51, 28, 0.22);
+    border-color: transparent;
+    box-shadow: 0 4px 10px rgba(44, 82, 48, 0.25);
 }
 
 .btn.primary:hover:not(:disabled) {
@@ -111,8 +124,6 @@ select:focus {
 }
 
 .btn.primary:disabled {
-    opacity: 0.55;
-    cursor: default;
     box-shadow: none;
 }
 
@@ -122,8 +133,38 @@ select:focus {
     border-color: var(--wood);
 }
 
-.btn.ghost:hover {
+.btn.ghost:hover:not(:disabled) {
     background: rgba(95, 125, 61, 0.1);
+}
+
+/* A small square control — the tiles' pull arrow and ⋯ trigger (device page, ride library). */
+.iconbtn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    flex: none;
+    border-radius: 9px;
+    border: 1px solid var(--line-strong);
+    background: var(--panel);
+    color: var(--ink-soft);
+    font-size: 15px;
+    line-height: 1;
+    transition: color 0.15s, border-color 0.15s;
+}
+
+.iconbtn:hover:not(:disabled) {
+    color: var(--ink);
+    border-color: var(--wood);
+}
+
+/* The gallery grid the device page's tiles sit in (~3 columns at the page's 920px width). */
+.tilegrid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 12px;
 }
 
 .chip {
