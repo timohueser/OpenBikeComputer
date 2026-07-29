@@ -247,9 +247,32 @@ Control service is encrypted once bonding lands (§8).
 
 | Characteristic | UUID | Value |
 |---|---|---|
-| Firmware Revision String | `0x2A26` | UTF-8 version of the **running** image, e.g. `0.4.0+abc1234`; after a confirmed DFU it reflects the newly-installed image (the app's device-version display, §7.6) |
+| Firmware Revision String | `0x2A26` | UTF-8 version of the **running** image — see the dialect below; after a confirmed DFU it reflects the newly-installed image (the app's device-version display, §7.6) |
 | Hardware Revision String | `0x2A27` | UTF-8 board id, e.g. `nrf54l15-dk`, `obc-lm20-r1` |
 | Serial Number String | `0x2A25` | 16 uppercase hex digits — the nRF `FICR.DEVICEID` |
+
+**The firmware-revision dialect** (#996, epic #773). The value is the version
+the running image was *wrapped* with, in this preference order:
+
+1. the **installed image's OBCU version string, verbatim** — the `fw_version`
+   field of the container the device installed (`OBCU_Spec.md` §1), which the
+   bootloader handoff page records as the installed image (§2). For a released
+   build that is the release tag, e.g. `v1.3.0`;
+2. otherwise the **build's bare git short hash**, e.g. `ca9b336` — a device
+   flashed over SWD, which has never installed a container and therefore has no
+   version to report.
+
+Case 1 is the one that matters to a host: it is the only string that can be
+compared against a published release ("is `v1.3.0` newer than this?"). Hosts
+parse it as a release version with an optional leading `v`.
+
+Case 2 is deliberately **not parseable as a version**, and the consequence is
+locked, not incidental: a host that cannot read a running version must never
+offer an automatic update. A development device stays on whatever its owner
+flashed, and gets back onto the release track through the manual install path.
+The value is ≤ 32 bytes (the OBCU `fw_version` field width) and is assembled in
+exactly one place in the firmware, so this characteristic and the USB
+device-information frame (§10) always carry identical bytes.
 
 ### 3.2 Battery Service — `0x180F` (SIG)
 
