@@ -1,0 +1,323 @@
+{
+  "schema_version": 2,
+  "generated_at": "2026-07-30T09:00:00Z",
+  "schema": {
+    "id": "bikepacking",
+    "revision": 7,
+    "name": "Bikepacking",
+    "description": "Three LOD rungs over four bands — the shape of the shipped bikepacking ladder at example scale.",
+    "obcm_version": 11,
+    "grid": {
+      "origin_udeg": -268435456,
+      "world_side_udeg": 536870912
+    },
+    "lods": [
+      {
+        "index": 0,
+        "max_mpp": null,
+        "band": "coarse"
+      },
+      {
+        "index": 1,
+        "max_mpp": 16.0,
+        "band": "mid"
+      },
+      {
+        "index": 2,
+        "max_mpp": 3.0,
+        "band": "fine"
+      }
+    ],
+    "bands": [
+      {
+        "id": "coarse",
+        "cell_log2": 20,
+        "lods": [
+          0
+        ],
+        "sections": [],
+        "role": "coarse"
+      },
+      {
+        "id": "mid",
+        "cell_log2": 19,
+        "lods": [
+          1
+        ],
+        "sections": [],
+        "role": "geometry"
+      },
+      {
+        "id": "fine",
+        "cell_log2": 18,
+        "lods": [
+          2
+        ],
+        "sections": [],
+        "role": "geometry"
+      },
+      {
+        "id": "network",
+        "cell_log2": 18,
+        "lods": [],
+        "sections": [
+          "nav",
+          "poi"
+        ],
+        "role": "core"
+      }
+    ],
+    "styles": [
+      {
+        "id": 1,
+        "feature_type": "highway.primary"
+      },
+      {
+        "id": 2,
+        "feature_type": "highway.track"
+      },
+      {
+        "id": 3,
+        "feature_type": "natural.water"
+      },
+      {
+        "id": 4,
+        "feature_type": "landuse.forest"
+      }
+    ],
+    "routing": {
+      "min_component_edges": 50,
+      "profiles": [
+        "Road",
+        "Gravel"
+      ]
+    },
+    "chunk_size": 4096
+  },
+  "skins": [
+    {
+      "id": "contrast",
+      "name": "High contrast",
+      "description": "High contrast: fewer greys, heavier strokes, for bright sun on the panel.",
+      "version": 1,
+      "marker_color": 31,
+      "styles": [
+        {
+          "feature_type": "highway.primary",
+          "color": 64160,
+          "weight": 3,
+          "z_index": 60,
+          "priority": 2,
+          "dashed": false,
+          "color2": null
+        },
+        {
+          "feature_type": "highway.track",
+          "color": 43648,
+          "weight": 1,
+          "z_index": 30,
+          "priority": 3,
+          "dashed": true,
+          "color2": null
+        },
+        {
+          "feature_type": "natural.water",
+          "color": 21983,
+          "weight": 1,
+          "z_index": 10,
+          "priority": 3,
+          "dashed": false,
+          "color2": null
+        },
+        {
+          "feature_type": "landuse.forest",
+          "color": 23365,
+          "weight": 1,
+          "z_index": 5,
+          "priority": 4,
+          "dashed": false,
+          "color2": null
+        }
+      ]
+    },
+    {
+      "id": "default",
+      "name": "Bikepacking",
+      "description": "The full touring look: warm through-roads, brown trails, indigo cycleways.",
+      "version": 4,
+      "marker_color": 63488,
+      "styles": [
+        {
+          "feature_type": "highway.primary",
+          "color": 64160,
+          "weight": 3,
+          "z_index": 60,
+          "priority": 2,
+          "dashed": false,
+          "color2": null
+        },
+        {
+          "feature_type": "highway.track",
+          "color": 43648,
+          "weight": 1,
+          "z_index": 30,
+          "priority": 3,
+          "dashed": true,
+          "color2": null
+        },
+        {
+          "feature_type": "natural.water",
+          "color": 21983,
+          "weight": 1,
+          "z_index": 10,
+          "priority": 3,
+          "dashed": false,
+          "color2": null
+        },
+        {
+          "feature_type": "landuse.forest",
+          "color": 23365,
+          "weight": 1,
+          "z_index": 5,
+          "priority": 4,
+          "dashed": false,
+          "color2": null
+        }
+      ],
+      "preview": "previews/default.png"
+    }
+  ],
+  "regions": [
+    {
+      "id": "europe/switzerland",
+      "name": "Switzerland",
+      "boundary": {
+        "tolerance_udeg": 2000,
+        "rings": [
+          [
+            [
+              45800000,
+              5900000
+            ],
+            [
+              47800000,
+              5900000
+            ],
+            [
+              47800000,
+              10500000
+            ],
+            [
+              45800000,
+              10500000
+            ],
+            [
+              45800000,
+              5900000
+            ]
+          ]
+        ]
+      },
+      "bytes": 4592,
+      "bytes_by_band": {
+        "coarse": 2088,
+        "fine": 976,
+        "mid": 1064,
+        "network": 464
+      },
+      "cell_count": {
+        "coarse": 1,
+        "fine": 2,
+        "mid": 1,
+        "network": 2
+      },
+      "partial_cell_count": 1,
+      "cells_url": "https://maps.example.org/catalog/v2/regions/europe/switzerland/cells.json",
+      "cells_bytes": 320,
+      "cells_sha256": "24e17cd54a60ad139d30541d11a37edc8964814fd20d499cda21e7d29527c563"
+    },
+    {
+      "id": "europe/switzerland/basel-stadt",
+      "name": "Basel-Stadt",
+      "parent": "europe/switzerland",
+      "boundary": {
+        "tolerance_udeg": 2000,
+        "rings": [
+          [
+            [
+              47500000,
+              7500000
+            ],
+            [
+              47600000,
+              7500000
+            ],
+            [
+              47600000,
+              7700000
+            ],
+            [
+              47500000,
+              7700000
+            ],
+            [
+              47500000,
+              7500000
+            ]
+          ]
+        ]
+      },
+      "bytes": 4000,
+      "bytes_by_band": {
+        "coarse": 2088,
+        "fine": 552,
+        "mid": 1064,
+        "network": 296
+      },
+      "cell_count": {
+        "coarse": 1,
+        "fine": 1,
+        "mid": 1,
+        "network": 1
+      },
+      "partial_cell_count": 0,
+      "cells_url": "https://maps.example.org/catalog/v2/regions/europe/switzerland/basel-stadt/cells.json",
+      "cells_bytes": 288,
+      "cells_sha256": "8dfcd49faffa13813c6226b1676215e49286e759f7e79505d096d71ac5f5c91a"
+    }
+  ],
+  "cell_index": [
+    {
+      "band": "coarse",
+      "cell_log2": 20,
+      "cell_count": 1,
+      "bytes": 507,
+      "sha256": "67fef658119daf4bc79a3e392260c4fdd2a4757afe50f79b703fda2b37c37aa4",
+      "url": "https://maps.example.org/catalog/v2/cells/coarse/index.json"
+    },
+    {
+      "band": "mid",
+      "cell_log2": 19,
+      "cell_count": 1,
+      "bytes": 501,
+      "sha256": "31fd309aa022f97fa4024ab13f7547e2b79df458817b44e82503e9f2fbb8dbb1",
+      "url": "https://maps.example.org/catalog/v2/cells/mid/index.json"
+    },
+    {
+      "band": "fine",
+      "cell_log2": 18,
+      "cell_count": 2,
+      "bytes": 1036,
+      "sha256": "8678404cfa4f448587162c7593f6be66004e7842178d0f1b3543b97632bc001d",
+      "url": "https://maps.example.org/catalog/v2/cells/fine/index.json"
+    },
+    {
+      "band": "network",
+      "cell_log2": 18,
+      "cell_count": 2,
+      "bytes": 927,
+      "sha256": "f4953fbcd612d15b0e311a13d778e4af04a096f01c5aa2aee49ca5e6e812db51",
+      "url": "https://maps.example.org/catalog/v2/cells/network/index.json"
+    }
+  ]
+}
