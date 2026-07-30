@@ -134,6 +134,16 @@ fn manifest_of(tree: &Path) -> obc_pack::catalog::CatalogManifest {
     .manifest
 }
 
+/// Every artifact's `built_at`, paired with the region it belongs to.
+///
+/// Paired, because `built_at` is stamped per artifact at the moment its own bytes
+/// land — two jobs in one run straddling a second boundary differ by design, and a
+/// twenty-hour bake's stamps are hours apart. An assertion that compares one
+/// region's stamp against another's is asserting a clock coincidence.
+fn built_at_by_region(tree: &Path) -> Vec<(String, String)> {
+    manifest_of(tree).artifacts.iter().map(|a| (a.region_id.clone(), a.built_at.clone())).collect()
+}
+
 impl Fixture {
     fn run(&self, packer: &dyn Packer, force: bool) -> RunSummary {
         Bakery {
@@ -344,7 +354,7 @@ fn a_redated_but_identical_extract_refreshes_the_sidecar_and_packs_nothing() {
 
     run("2026-07-28");
     let packed = packer.calls.load(Ordering::SeqCst);
-    let built_at_before = manifest_of(&tree).artifacts[0].built_at.clone();
+    let built_at_before = built_at_by_region(&tree);
 
     // Geofabrik re-publishes the same bytes under a new date — the scenario the
     // module doc promises will not cost a re-pack. The manifest must still tell the
@@ -360,11 +370,12 @@ fn a_redated_but_identical_extract_refreshes_the_sidecar_and_packs_nothing() {
 
     for artifact in &manifest_of(&tree).artifacts {
         assert_eq!(artifact.source_snapshot, "2026-07-29", "the published date follows the extract");
-        assert_eq!(
-            artifact.built_at, built_at_before,
-            "built_at describes when the bytes were packed, and they were not re-packed"
-        );
     }
+    assert_eq!(
+        built_at_by_region(&tree),
+        built_at_before,
+        "built_at describes when each region's bytes were packed, and they were not re-packed"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
