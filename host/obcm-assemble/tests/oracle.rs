@@ -58,6 +58,12 @@ const LAT: i64 = 47_300_000;
 /// then exactly the crossing coordinates, so any pixel difference is a real one rather than a
 /// tolerance artefact. `chunk_size` is deliberately small so the quadtrees genuinely subdivide and
 /// the graft has real subtrees to relocate.
+/// `highway.path` is deliberately **dashed with a `color2`**: the two v10 style-record flag bits
+/// (`0x04` / `0x08`) plus the trailing `uint16` are the part of §4.7's stamp a plain style never
+/// exercises, and a skin that lost them would ship a map whose lines are all solid. The feature that
+/// uses it is placed strictly inside one cell, because dash **phase** is one of the two cosmetic
+/// costs OBCA §2.4 books against cutting at a cell boundary — a dashed line across a seam would
+/// legitimately differ between the two paths and turn the pixel oracle into a fuzz test.
 const CONFIG: &str = r#"{
     "lods": [
         {"max_mpp": null, "simplify": 0},
@@ -70,7 +76,9 @@ const CONFIG: &str = r#"{
         "highway": {
             "primary":     {"color": "0xF800", "weight": 3, "z_index": 5, "min_lod": 0},
             "residential": {"color": "0xFFE0", "weight": 2, "z_index": 4, "min_lod": 1},
-            "track":       {"color": "0x8410", "weight": 1, "z_index": 3, "min_lod": 2}
+            "track":       {"color": "0x8410", "weight": 1, "z_index": 3, "min_lod": 2},
+            "path":        {"color": "0x780F", "weight": 2, "z_index": 6, "min_lod": 1,
+                            "line_style": "dashed", "color2": "0x07FF", "priority": 2}
         }
     },
     "marker": {"color": "0xF800"},
@@ -84,6 +92,19 @@ const BANDS: &str = r#"{"bands": [
     {"id": "coarse",  "cell_log2": 20, "lods": [0],    "role": "coarse"},
     {"id": "fine",    "cell_log2": 18, "lods": [1, 2], "role": "geometry"},
     {"id": "network", "cell_log2": 18, "lods": [],     "sections": ["nav", "poi"], "role": "core"}
+]}"#;
+
+/// The **v1 table's actual shape**: `mid` and `fine` are two bands at two cell sizes that share the
+/// one `geometry` role, which is the configuration the single-geometry-band table above cannot
+/// exercise. Kept permanently, because the set planner is defined by *role* and a per-band tiling
+/// looks correct until a schema names two bands of one role — at which point it emits two
+/// overlapping antichains of `Role == 1` shards and §5.3 refuses the set after every byte is
+/// written.
+const BANDS_TWO_GEOMETRY: &str = r#"{"bands": [
+    {"id": "coarse",  "cell_log2": 20, "lods": [0], "role": "coarse"},
+    {"id": "mid",     "cell_log2": 19, "lods": [1], "role": "geometry"},
+    {"id": "fine",    "cell_log2": 18, "lods": [2], "role": "geometry"},
+    {"id": "network", "cell_log2": 18, "lods": [],  "sections": ["nav", "poi"], "role": "core"}
 ]}"#;
 
 fn config() -> Config {
@@ -102,15 +123,45 @@ fn line(style_id: u8, min_lod: usize, pts: &[(i64, i64)]) -> IngestFeature {
     IngestFeature { style_id, min_lod, geom: Geom::Line(pts.iter().map(|&(lat, lon)| (deg(lon), deg(lat))).collect()) }
 }
 
-fn rect(style_id: u8, min_lod: usize, lat0: i64, lon0: i64, lat1: i64, lon1: i64) -> IngestFeature {
-    let ring = vec![
+fn ring(lat0: i64, lon0: i64, lat1: i64, lon1: i64) -> Vec<(f64, f64)> {
+    vec![
         (deg(lon0), deg(lat0)),
         (deg(lon1), deg(lat0)),
         (deg(lon1), deg(lat1)),
         (deg(lon0), deg(lat1)),
         (deg(lon0), deg(lat0)),
-    ];
-    IngestFeature { style_id, min_lod, geom: Geom::Polygon { exterior: ring, interiors: Vec::new() } }
+    ]
+}
+
+fn rect(style_id: u8, min_lod: usize, lat0: i64, lon0: i64, lat1: i64, lon1: i64) -> IngestFeature {
+    IngestFeature {
+        style_id,
+        min_lod,
+        geom: Geom::Polygon { exterior: ring(lat0, lon0, lat1, lon1), interiors: vec![] },
+    }
+}
+
+/// A polygon **with a hole** — the `FEATURE_FLAG_HOLES` path of `OBCM_Spec.md` §6, which is the one
+/// feature shape whose chunk bytes carry a ring table. It is copied verbatim like everything else,
+/// so what this proves is that the graft never has to understand it; but a hole is also the shape a
+/// clip at a cell edge most easily gets wrong, so the fixture has to contain one for the "every
+/// feature of every chunk decodes" half of §4.8 to mean anything.
+fn rect_with_hole(
+    style_id: u8,
+    min_lod: usize,
+    (lat0, lon0, lat1, lon1): (i64, i64, i64, i64),
+    inset: i64,
+) -> IngestFeature {
+    IngestFeature {
+        style_id,
+        min_lod,
+        geom: Geom::Polygon {
+            exterior: ring(lat0, lon0, lat1, lon1),
+            // Interior rings run the other way round; the packer normalises, but stating it here
+            // keeps the fixture honest about what it is handing in.
+            interiors: vec![ring(lat0 + inset, lon0 + inset, lat1 - inset, lon1 - inset).into_iter().rev().collect()],
+        },
+    }
 }
 
 /// A routable way from explicit `(osm node id, (lat, lon))` vertices. The ids are explicit because
@@ -129,6 +180,16 @@ fn poi(subtype: u8, lat: i64, lon: i64, name: &str) -> Poi {
     Poi { subtype, lon_udeg: lon as i32, lat_udeg: lat as i32, name: Some(name.into()), from_node: true, hours: None }
 }
 
+/// A POI **with opening hours**, so the §4.5.3 pool rebuild has something to rebuild. `HoursRef` is
+/// a file-local pool index — the one POI field that cannot travel verbatim — so a fixture with no
+/// hours leaves the whole remap untested.
+fn poi_with_hours(subtype: u8, lat: i64, lon: i64, name: &str, hours: &str) -> Poi {
+    Poi {
+        hours: Some(obc_pack::hours::parse(hours).expect("the fixture's opening_hours parses")),
+        ..poi(subtype, lat, lon, name)
+    }
+}
+
 /// The extract both paths consume: geometry and roads crossing three grid lines (two lon, one lat),
 /// features wholly inside single cells, and POIs spread across the network cells.
 fn fixture(cfg: &Config) -> (Ingested, Vec<RoutableWay>) {
@@ -137,6 +198,7 @@ fn fixture(cfg: &Config) -> (Ingested, Vec<RoutableWay>) {
     let primary = style_id(cfg, "highway", "primary");
     let residential = style_id(cfg, "highway", "residential");
     let track = style_id(cfg, "highway", "track");
+    let path = style_id(cfg, "highway", "path");
 
     let mut features = vec![
         // A long primary road crossing both lon seams — the line whose clipped halves must meet.
@@ -152,6 +214,14 @@ fn fixture(cfg: &Config) -> (Ingested, Vec<RoutableWay>) {
         // straddling it, so the graft's worst case has something to draw.
         line(residential, 1, &[(SEAM_N - 30_000, SEAM - 30_000), (SEAM_N + 30_000, SEAM + 30_000)]),
         rect(water, 0, SEAM_N - 12_000, SEAM - 12_000, SEAM_N + 12_000, SEAM + 12_000),
+        // A ring-shaped lake (polygon **with a hole**) straddling the first seam, so the clip and
+        // the verify pass both meet the `FEATURE_FLAG_HOLES` shape.
+        rect_with_hole(water, 0, (LAT + 80_000, SEAM - 50_000, LAT + 140_000, SEAM + 50_000), 15_000),
+        // …and one wholly inside the eastern cell, so a hole survives the graft uncut as well.
+        rect_with_hole(forest, 1, (LAT - 140_000, SEAM + 40_000, LAT - 80_000, SEAM + 140_000), 12_000),
+        // The dashed / `color2` style, strictly inside one cell (dash phase across a seam is a
+        // documented §2.4 cosmetic difference and would make the pixel oracle a fuzz test).
+        line(path, 1, &[(LAT + 100_000, SEAM + 90_000), (LAT + 130_000, SEAM + 150_000)]),
     ];
     // A grid of small tracks: enough features that the fine LOD's quadtree really subdivides.
     for k in 0..24i64 {
@@ -177,14 +247,24 @@ fn fixture(cfg: &Config) -> (Ingested, Vec<RoutableWay>) {
                 (8, (SEAM_N + 60_000, SEAM + 40_000)),
             ],
         ),
-        // A tiny interior islet: strictly inside one cell and below the threshold, so both paths
-        // prune it — the bake at cut time, the assembler at merge time.
+        // A tiny interior islet: strictly inside one cell and below the threshold, so the **bake**
+        // prunes it — §3.5 lets a cutter prune only what is strictly interior.
         way(7, &[(90, (LAT - 90_000, SEAM + 120_000)), (91, (LAT - 89_000, SEAM + 121_000))]),
+        // …and one that **crosses a cell boundary**, which is exactly what §3.5 forbids a bake from
+        // pruning (the piece on the other side might connect to the rest of the world). It reaches
+        // the assembler alive, in two cells, and §4.6.4 is the pass that must drop it — over the
+        // *merged* graph, where the threshold finally means what it says. Nothing else in this
+        // fixture exercises that pass, because everything else is one big component.
+        way(7, &[(92, (LAT - 60_000, SEAM - 20_000)), (93, (LAT - 60_000, SEAM + 20_000))]),
     ];
     let pois = vec![
         poi(1, LAT, SEAM - 20_000, "West water"),
-        poi(5, LAT + 5_000, SEAM + 15_000, "East camp"),
-        poi(13, LAT + 25_000, SEAM_E + 10_000, "Far shop"),
+        // Two POIs in **different cells sharing one schedule**, plus a third with its own: the
+        // rebuilt pool must therefore hold exactly two blobs and remap three `HoursRef`s across a
+        // seam (§4.5.3), which is the case a single-cell fixture cannot produce.
+        poi_with_hours(5, LAT + 5_000, SEAM + 15_000, "East camp", "Mo-Fr 08:00-18:00"),
+        poi_with_hours(5, LAT + 5_000, SEAM - 15_000, "West camp", "Mo-Fr 08:00-18:00"),
+        poi_with_hours(13, LAT + 25_000, SEAM_E + 10_000, "Far shop", "Mo-Sa 09:00-12:00,14:00-19:00"),
         poi(1, SEAM_N + 10_000, SEAM + 100_000, "North water"),
     ];
     (Ingested { features, coastlines: Vec::new(), pois, nav_graph: Default::default() }, ways)
@@ -236,8 +316,13 @@ fn scratch(name: &str) -> PathBuf {
 
 /// Cut the fixture into cells with the **real cutter**.
 fn cut(dir: &Path, cfg: &Config, ing: &Ingested, ways: &[RoutableWay]) -> CutSummary {
+    cut_with(dir, cfg, ing, ways, BANDS)
+}
+
+/// …at an explicit band table, so the same fixture can be cut at both shapes of the v1 schema.
+fn cut_with(dir: &Path, cfg: &Config, ing: &Ingested, ways: &[RoutableWay], bands: &str) -> CutSummary {
     let opts = CutOptions {
-        bands: BandTable::parse(BANDS).expect("band table"),
+        bands: BandTable::parse(bands).expect("band table"),
         sources: vec![SourceExtent::parse("fixture=6.9,46.9,8.1,47.9").expect("source")],
         ..Default::default()
     };
@@ -271,8 +356,12 @@ fn monolithic(cfg: &Config, ing: &Ingested, ways: &[RoutableWay], bbox: (i64, i6
 
 /// The engine's schema for this fixture: the cutter's band table plus the config's ladder.
 fn schema(cfg: &Config) -> Schema {
+    schema_with(cfg, BANDS)
+}
+
+fn schema_with(cfg: &Config, band_json: &str) -> Schema {
     let bands: Vec<obcm_assemble::Band> =
-        serde_json::from_value(serde_json::from_str::<serde_json::Value>(BANDS).unwrap()["bands"].clone())
+        serde_json::from_value(serde_json::from_str::<serde_json::Value>(band_json).unwrap()["bands"].clone())
             .expect("bands parse into the engine's own table");
     Schema {
         id: "fixture".into(),
@@ -297,8 +386,13 @@ fn schema(cfg: &Config) -> Schema {
 /// A skin that reproduces the config's own styling **exactly**, so the two files differ in layout
 /// and never in presentation — otherwise a pixel comparison would only be measuring the skin.
 fn skin(cfg: &Config) -> Skin {
-    let styles = cfg
-        .styles()
+    // §4.7 makes the *order* the skin author's responsibility — the engine refuses a table whose ids
+    // do not ascend rather than silently re-sorting one. `Config::styles()` walks a `HashMap`, so a
+    // document generated from it has to be put in order here, exactly as a hand-written skin would
+    // already be.
+    let mut cfg_styles = cfg.styles();
+    cfg_styles.sort_by_key(|s| s.id);
+    let styles = cfg_styles
         .iter()
         .map(|s| SkinStyle {
             id: Some(s.id),
@@ -331,6 +425,17 @@ fn assemble_with(
     summary: &CutSummary,
     opts: &Options,
 ) -> Result<(obcm_assemble::Summary, MemoryStore), obcm_assemble::Error> {
+    assemble_bands(dir, cfg, summary, opts, BANDS)
+}
+
+/// …against an explicit band table (the two-geometry-band variant needs one).
+fn assemble_bands(
+    dir: &Path,
+    cfg: &Config,
+    summary: &CutSummary,
+    opts: &Options,
+    band_json: &str,
+) -> Result<(obcm_assemble::Summary, MemoryStore), obcm_assemble::Error> {
     let sources: Vec<MemorySource> = summary
         .cells
         .iter()
@@ -343,7 +448,7 @@ fn assemble_with(
         .map(|(c, src)| CellInput { id: to_engine_cell(c.id), band: c.band.clone(), src, partial: c.partial })
         .collect();
     let mut store = MemoryStore::default();
-    let out = assemble(inputs, &schema(cfg), &skin(cfg), opts, &mut store, &NoClock)?;
+    let out = assemble(inputs, &schema_with(cfg, band_json), &skin(cfg), opts, &mut store, &NoClock)?;
     Ok((out, store))
 }
 
@@ -715,26 +820,56 @@ fn sha256(bytes: &[u8]) -> Vec<u8> {
     h.finalize().to_vec()
 }
 
-/// The POI and hours halves of §4.5: every POI of every cell survives the merge exactly once, and
-/// the assembly's POI set equals the monolithic pack's.
+/// The POI and hours halves of §4.5: every POI of every cell survives the merge exactly once, the
+/// assembly's POI set equals the monolithic pack's, and — the half the name promised — every
+/// **schedule** does too.
+///
+/// `HoursRef` is a file-local pool index, so it is the one POI field that cannot travel verbatim:
+/// §4.5.3 rebuilds the pool from the distinct 29-byte blobs and remaps every reference. The fixture
+/// puts one schedule on two POIs in *different cells* and a second on a third, so the rebuilt pool
+/// must hold exactly two blobs — a merge that kept per-cell pools, or that failed to deduplicate
+/// them, produces the right POIs with the wrong hours.
 #[test]
 fn pois_and_hours_survive_the_merge() {
     let (packed, grafted, _, _) = both("pois");
-    let list = |map: &[u8]| -> Vec<(i32, i32, u8)> {
+    /// `(lat, lon, subtype, name, the resolved schedule's own bytes)`.
+    type Row = (i32, i32, u8, String, Option<Vec<u8>>);
+    let list = |map: &[u8]| -> Vec<Row> {
         let src = SliceSource(map);
         let tables = MapTables::parse(&src).expect("parses");
         let cache = MapCache::new_boxed();
         let reader = Reader::new(&src, &tables, &cache);
-        let mut out = Vec::new();
+        let mut out: Vec<Row> = Vec::new();
         for cat in obc_formats::obcm::PoiCategory::ALL {
             let mut found: heapless::Vec<obc_reader::Poi, { obc_reader::MAX_POI_RESULTS }> = heapless::Vec::new();
             reader.nearest_pois(cat, (SEAM as i32, LAT as i32), &mut found).expect("the POI query runs");
-            out.extend(found.iter().map(|p| (p.lat, p.lon, p.subtype)));
+            out.extend(found.iter().map(|p| {
+                // The pool index itself is *expected* to differ between the two files; the schedule
+                // it resolves to is not. Comparing the resolved value is the whole point.
+                let hours = reader.poi_hours(p.hours_ref).map(|h| {
+                    let mut v: Vec<u8> = vec![h.flags()];
+                    for d in 0..7u8 {
+                        v.extend(h.today_intervals(d).iter().flat_map(|iv| [iv.open_q, iv.close_q]));
+                        v.push(0xFF); // day separator, so two days cannot alias into one sequence
+                    }
+                    v
+                });
+                (p.lat, p.lon, p.subtype, p.name.as_str().to_string(), hours)
+            }));
         }
         out.sort_unstable();
         out
     };
-    assert_eq!(list(&grafted), list(&packed), "the assembled POI set must equal the monolithic one");
+    let (a, b) = (list(&grafted), list(&packed));
+    assert_eq!(a, b, "the assembled POI set — schedules included — must equal the monolithic one");
+    assert!(a.iter().filter(|r| r.4.is_some()).count() >= 3, "the fixture must carry POIs with hours: {a:?}");
+
+    // The pool itself: distinct blobs only, and the two POIs that share a schedule share a slot.
+    let src = SliceSource(&grafted);
+    let tables = MapTables::parse(&src).expect("parses");
+    let cache = MapCache::new_boxed();
+    let reader = Reader::new(&src, &tables, &cache);
+    assert_eq!(reader.poi_directory().hours_pool_count, 2, "two distinct schedules over three POIs (§4.5.3)");
 }
 
 /// The engine restates OBCA's grid arithmetic because it may not depend on the packer (libGEOS is a
@@ -742,33 +877,78 @@ fn pois_and_hours_survive_the_merge() {
 /// only acceptable with: both copies must agree, cell for cell.
 #[test]
 fn the_engine_and_the_packer_agree_on_the_grid() {
-    for log2 in [18u32, 19, 20] {
+    use obcm_assemble::grid::{quad_children, quad_mid, GRID_ORIGIN, MAX_CELL_LOG2, MIN_CELL_LOG2};
+
+    // **Every** permitted cell size, not the three the fixture happens to use: the drift this guards
+    // against is a rounding step, and a rounding step is most likely to show up at the ends of the
+    // range — the smallest size (where the indices are largest) and the largest (where a cell spans
+    // an eighth of the world).
+    assert_eq!((MIN_CELL_LOG2, MAX_CELL_LOG2), (obc_pack::grid::MIN_CELL_LOG2, obc_pack::grid::MAX_CELL_LOG2));
+    assert_eq!(GRID_ORIGIN, obc_pack::grid::GRID_ORIGIN);
+    for log2 in MIN_CELL_LOG2..=MAX_CELL_LOG2 {
         let last = obc_pack::grid::axis_cells(log2) - 1;
-        for i in [0i64, 1, 1204.min(last), last] {
-            for j in [0i64, 1052.min(last), 1053.min(last), last] {
+        assert_eq!(obc_pack::grid::axis_cells(log2), obcm_assemble::grid::axis_cells(log2));
+        assert_eq!(obc_pack::grid::id_width(log2), obcm_assemble::grid::id_width(log2), "zero padding at 2^{log2}");
+        // The corners, the neighbours of the corners, and the middle of the axis — the indices where
+        // a `div_euclid` and a truncating `/` disagree, and the ones either side of them.
+        for i in [0i64, 1, last / 2, last / 2 + 1, last - 1, last] {
+            for j in [0i64, 1, last / 2, last / 2 + 1, last - 1, last] {
                 let p = obc_pack::grid::CellId::new(log2, i, j).expect("valid");
                 let e = CellId::new(log2, i, j).expect("valid");
                 assert_eq!(p.square(), e.square(), "cell {p} squares differ");
                 assert_eq!(p.to_string(), e.to_string(), "canonical ids differ");
+                // …and the square's own corners round-trip through `containing` in both copies.
+                let (min_lon, min_lat, max_lon, max_lat) = e.square();
+                for (lat, lon) in [(min_lat, min_lon), (max_lat - 1, max_lon - 1), (min_lat, max_lon - 1)] {
+                    let (pc, ec) =
+                        (obc_pack::grid::CellId::containing(log2, lat, lon), CellId::containing(log2, lat, lon));
+                    assert_eq!((pc.i, pc.j), (ec.i, ec.j), "containing({lat}, {lon}) at 2^{log2} differs");
+                    assert_eq!((ec.i, ec.j), (i, j), "…and must be the cell the square came from");
+                }
+                // The boundary predicate, on and just off every edge of this square.
+                for v in [min_lat, min_lat + 1, min_lat - 1, max_lat, min_lon, max_lon, max_lon - 1] {
+                    assert_eq!(
+                        obc_pack::grid::on_grid_line(v, log2),
+                        obcm_assemble::grid::on_grid_line(v, log2),
+                        "the boundary predicate differs at {v} (2^{log2})"
+                    );
+                }
             }
         }
     }
-    for v in [SEAM, SEAM_E, SEAM_N, LAT, SEAM + 1, obcm_assemble::grid::GRID_ORIGIN] {
-        for log2 in [18u32, 20] {
-            assert_eq!(
-                obc_pack::grid::on_grid_line(v, log2),
-                obcm_assemble::grid::on_grid_line(v, log2),
-                "the boundary predicate differs at {v} (2^{log2})"
-            );
-        }
+
+    // The **quadtree midpoint** is the other half of the alignment theorem: the engine's fresh upper
+    // tree and the packer's own trees must split at the same integer, or a depth-`d` node stops
+    // being a cell. Checked at the negative origin too, where a truncating division drifts.
+    for (min, max) in [
+        (0i64, 1i64),
+        (0, 2),
+        (-1, 1),
+        (-3, 0),
+        (GRID_ORIGIN, GRID_ORIGIN + (1 << 29)),
+        (SEAM, SEAM_E),
+        (SEAM - 1, SEAM_N),
+        (-7, -2),
+    ] {
+        assert_eq!(obc_pack::grid::quad_mid(min, max), quad_mid(min, max), "quad_mid({min}, {max}) differs");
     }
-    // The packer's `containing` and the engine's must place a coordinate in the same cell.
-    for lat in [LAT, SEAM_N, SEAM_N - 1, -33_900_000] {
-        for lon in [SEAM, SEAM - 1, SEAM_E, 18_400_000] {
-            let p = obc_pack::grid::CellId::containing(18, lat, lon);
-            let e = CellId::containing(18, lat, lon);
-            assert_eq!((p.i, p.j), (e.i, e.j), "containing({lat}, {lon}) differs");
-        }
+    // …and the four child boxes the midpoint produces, in the format's NW/NE/SW/SE order, for a box
+    // at the origin and one at the negative corner.
+    for b in [
+        (SEAM, LAT, SEAM_E, LAT + 262_144),
+        (GRID_ORIGIN, GRID_ORIGIN, GRID_ORIGIN + (1 << 22), GRID_ORIGIN + (1 << 22)),
+        (-5, -5, 6, 6),
+    ] {
+        let (min_lon, min_lat, max_lon, max_lat) = b;
+        let (mid_lon, mid_lat) =
+            (obc_pack::grid::quad_mid(min_lon, max_lon), obc_pack::grid::quad_mid(min_lat, max_lat));
+        let want = [
+            (min_lon, mid_lat, mid_lon, max_lat),
+            (mid_lon, mid_lat, max_lon, max_lat),
+            (min_lon, min_lat, mid_lon, mid_lat),
+            (mid_lon, min_lat, max_lon, mid_lat),
+        ];
+        assert_eq!(quad_children(b), want, "the child boxes of {b:?} are not the packer's midpoints");
     }
 }
 
@@ -838,6 +1018,434 @@ fn a_forced_split_produces_a_legal_volume_set() {
     let reader = Reader::new(&src, &tables, &cache);
     let expected: Vec<u64> = reader.lods().iter().map(|l| l.chunk_count as u64).collect();
     assert_eq!(totals, expected, "the shards' chunks must add up to the single file's, level by level");
+}
+
+/// **Two geometry bands, one tiling** — the shape of the real v1 schema, and the case a per-band
+/// split gets wrong.
+///
+/// §5.1 partitions a set by **role**, not by band: "geometry shards carry the `mid`- and
+/// `fine`-band LODs and nothing else", and "the shards of one role tile the assembly bbox". At the
+/// v1 table `mid` (`2^19`) and `fine` (`2^18`) are two bands of one role, so a planner that tiles
+/// per band emits two overlapping antichains of `Role == 1` shards whose areas sum to twice the
+/// assembly — which §5.3 rejects, *after* every shard has been written, leaving a directory of
+/// orphans and no manifest.
+///
+/// This test therefore asserts the property directly: with a one-byte target and two geometry bands,
+/// the `Role == 1` shards must be **one** antichain — pairwise disjoint, covering the assembly bbox
+/// exactly once — and each of them must carry both bands' LODs, with the whole set's chunk counts
+/// still adding up to the single file's level by level.
+#[test]
+fn two_geometry_bands_share_one_tiling() {
+    let cfg = config();
+    let (ing, ways) = fixture(&cfg);
+    let dir = scratch("two-geometry-bands");
+    let cut_summary = cut_with(&dir, &cfg, &ing, &ways, BANDS_TWO_GEOMETRY);
+    assert!(
+        cut_summary.cells.iter().any(|c| c.band == "mid") && cut_summary.cells.iter().any(|c| c.band == "fine"),
+        "the cutter must have written both geometry bands"
+    );
+
+    let base = Options { name: "TwoBands".into(), accept_partial: true, ..Default::default() };
+    let (one, _) = assemble_bands(&dir, &cfg, &cut_summary, &base, BANDS_TWO_GEOMETRY).expect("single file");
+    assert_eq!(one.shards.len(), 1, "the fixture still fits one file");
+
+    let split = Options { target_shard_bytes: 1, force_split: true, ..base };
+    let (set, store) =
+        assemble_bands(&dir, &cfg, &cut_summary, &split, BANDS_TWO_GEOMETRY).expect("the split assembly runs");
+
+    let geometry: Vec<&obcm_assemble::ShardSummary> =
+        set.shards.iter().filter(|s| s.role == obcm_assemble::BandRole::Geometry).collect();
+    assert!(geometry.len() > 1, "a one-byte target must split the geometry role into several shards");
+    // One antichain: the squares are pairwise disjoint and their areas add up to the assembly's
+    // exactly once. Two tilings would double the sum — the bug this test exists for.
+    let area = |b: obcm_assemble::grid::AlignedBox| 1u128 << (2 * b.span_log2);
+    assert_eq!(
+        geometry.iter().map(|s| area(s.bbox)).sum::<u128>(),
+        area(set.assembly_box),
+        "the geometry shards must tile the assembly bbox exactly once"
+    );
+    for (i, a) in geometry.iter().enumerate() {
+        for b in &geometry[i + 1..] {
+            let (a0, a1, a2, a3) = a.bbox.ubox();
+            let (b0, b1, b2, b3) = b.bbox.ubox();
+            assert!(!(a0 < b2 && b0 < a2 && a1 < b3 && b1 < a3), "geometry shards {} and {} overlap", a.index, b.index);
+        }
+    }
+
+    // Each geometry shard carries the **union** of the two bands' LODs (§5.1), and no shard of any
+    // other role carries either — checked through the reader, on the bytes.
+    let lods_present = |index: usize| -> Vec<usize> {
+        let src = SliceSource(&store.shards[index].0);
+        let tables = MapTables::parse(&src).expect("a shard parses");
+        let cache = MapCache::new_boxed();
+        let reader = Reader::new(&src, &tables, &cache);
+        assert_eq!(reader.lods().len(), cfg.lods.len(), "every shard lists the full ladder (§5.1)");
+        reader.lods().iter().enumerate().filter(|(_, l)| l.node_count > 0).map(|(i, _)| i).collect()
+    };
+    let carried: Vec<usize> = geometry.iter().flat_map(|s| lods_present(s.index)).collect();
+    assert!(carried.contains(&1) && carried.contains(&2), "the geometry shards carry both mid (LOD 1) and fine (2)");
+    for s in set.shards.iter().filter(|s| s.role != obcm_assemble::BandRole::Geometry) {
+        let other = lods_present(s.index);
+        assert!(!other.contains(&1) && !other.contains(&2), "shard {} carries geometry-role LODs", s.index);
+    }
+
+    // …and the split moved bytes, it did not invent or lose them.
+    let mut totals = vec![0u64; cfg.lods.len()];
+    for s in &set.shards {
+        s.verify.as_ref().expect("every shard is verified before the manifest");
+        let src = SliceSource(&store.shards[s.index].0);
+        let tables = MapTables::parse(&src).expect("parses");
+        let cache = MapCache::new_boxed();
+        let reader = Reader::new(&src, &tables, &cache);
+        for (i, l) in reader.lods().iter().enumerate() {
+            totals[i] += l.chunk_count as u64;
+        }
+    }
+    let single = {
+        let src = SliceSource(&store.shards[0].0);
+        let _ = &src;
+        let (single, single_store) = assemble_bands(
+            &dir,
+            &cfg,
+            &cut_summary,
+            &Options { accept_partial: true, ..Default::default() },
+            BANDS_TWO_GEOMETRY,
+        )
+        .expect("single file");
+        assert_eq!(single.shards.len(), 1);
+        single_store.shards[0].0.clone()
+    };
+    let src = SliceSource(&single);
+    let tables = MapTables::parse(&src).expect("parses");
+    let cache = MapCache::new_boxed();
+    let reader = Reader::new(&src, &tables, &cache);
+    let expected: Vec<u64> = reader.lods().iter().map(|l| l.chunk_count as u64).collect();
+    assert_eq!(totals, expected, "the set's chunks must add up to the single file's, level by level");
+    assert_eq!(store.manifest[6] as usize, set.shards.len(), "the manifest was written, so the set validated");
+}
+
+// --- input refusals and the degenerate selections (§4.1) ---------------------------------------
+
+/// Everything a `CellInput` needs, owned, so a test can reorder, duplicate or corrupt the list.
+struct Loaded {
+    cells: Vec<(CellId, String, bool)>,
+    bytes: Vec<MemorySource>,
+}
+
+fn load(dir: &Path, summary: &CutSummary) -> Loaded {
+    Loaded {
+        cells: summary.cells.iter().map(|c| (to_engine_cell(c.id), c.band.clone(), c.partial)).collect(),
+        bytes: summary.cells.iter().map(|c| MemorySource(std::fs::read(dir.join(&c.path)).expect("cell"))).collect(),
+    }
+}
+
+impl Loaded {
+    /// Run the engine over exactly the cells at `pick` (indices into the loaded list, repeats
+    /// allowed), with `opts`.
+    fn assemble(
+        &self,
+        cfg: &Config,
+        pick: &[usize],
+        opts: &Options,
+    ) -> Result<(obcm_assemble::Summary, MemoryStore), obcm_assemble::Error> {
+        let inputs: Vec<CellInput<'_>> = pick
+            .iter()
+            .map(|&k| CellInput {
+                id: self.cells[k].0,
+                band: self.cells[k].1.clone(),
+                src: &self.bytes[k],
+                partial: self.cells[k].2,
+            })
+            .collect();
+        let mut store = MemoryStore::default();
+        let out = assemble(inputs, &schema(cfg), &skin(cfg), opts, &mut store, &NoClock)?;
+        Ok((out, store))
+    }
+
+    fn index_of(&self, band: &str) -> usize {
+        self.cells.iter().position(|c| c.1 == band).unwrap_or_else(|| panic!("no {band} cell"))
+    }
+}
+
+/// The degenerate and mis-stated selections. Each is a case a caller can actually produce — a
+/// catalog listing a cell twice, a one-cell corridor, a `network` cell with no roads in it, a band
+/// id that does not exist — and each has a specific right answer that is not "assemble something".
+#[test]
+fn the_degenerate_selections_behave() {
+    let cfg = config();
+    let (ing, ways) = fixture(&cfg);
+    let dir = scratch("degenerate");
+    let summary = cut(&dir, &cfg, &ing, &ways);
+    let loaded = load(&dir, &summary);
+    let all: Vec<usize> = (0..loaded.cells.len()).collect();
+    let opts = Options { name: "Degenerate".into(), accept_partial: true, accept_holes: true, ..Default::default() };
+
+    // A cell listed twice. Geometry would survive it (the graft keys cells by grid slot), but the
+    // nav merge mints fresh ids per copy, so the interior graph would silently double — and §4.8
+    // would verify the result as correct.
+    let mut twice = all.clone();
+    twice.push(loaded.index_of("network"));
+    let err = format!("{}", loaded.assemble(&cfg, &twice, &opts).expect_err("a duplicate cell must be refused"));
+    assert!(err.contains("listed twice"), "got: {err}");
+
+    // One cell, on its own: the smallest legal assembly. The bbox snaps to `S_MAX` (2^20 here), so
+    // the single `2^18` cell sits in one corner and every other leaf is empty.
+    let one = loaded.index_of("network");
+    let (single, _) = loaded.assemble(&cfg, &[one], &opts).expect("a one-cell assembly is legal");
+    assert_eq!(single.shards.len(), 1);
+    assert_eq!(single.assembly_box.span_log2, 20, "the box snaps to S_MAX even for one 2^18 cell (§4.2)");
+    assert!(single.assembly_box.contains_cell(loaded.cells[one].0));
+
+    // A `network` cell with no nav at all — the fixture's roads do not reach every cell. The merge
+    // must skip it rather than trip over an empty directory, and the graph must still come out.
+    let empty_nav = loaded
+        .cells
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.1 == "network")
+        .find(|(k, _)| {
+            let src = SliceSource(&loaded.bytes[*k].0);
+            let tables = MapTables::parse(&src).expect("a cell parses");
+            let cache = MapCache::new_boxed();
+            Reader::new(&src, &tables, &cache).nav_directory().is_empty()
+        })
+        .map(|(k, _)| k);
+    if let Some(k) = empty_nav {
+        let with_roads = loaded.index_of("network");
+        let pick = if k == with_roads { vec![k] } else { vec![k, with_roads] };
+        let (out, _) = loaded.assemble(&cfg, &pick, &opts).expect("an empty-nav cell assembles");
+        assert!(out.shards[0].verify.is_some(), "…and verifies");
+    }
+
+    // A band the schema does not name: refused before a byte is read, because the band is what
+    // decides which LODs and sections a cell contributes (§3.1 — the bytes cannot say).
+    let mut store = MemoryStore::default();
+    let bogus =
+        vec![CellInput { id: loaded.cells[one].0, band: "not-a-band".into(), src: &loaded.bytes[one], partial: false }];
+    let err = format!(
+        "{}",
+        assemble(bogus, &schema(&cfg), &skin(&cfg), &opts, &mut store, &NoClock)
+            .expect_err("a band outside the schema must be refused")
+    );
+    assert!(err.contains("is not in the schema"), "got: {err}");
+}
+
+/// The malformed-cell paths. A cell is an **input**, not this crate's own output, so every one of
+/// these is reachable from a corrupt download or a bad bake — and each must come out as
+/// [`obcm_assemble::Error::Format`] naming the cell, never as a panic, a wrapped index, or a map
+/// that quietly draws the wrong thing.
+#[test]
+fn a_malformed_cell_is_a_format_error() {
+    let cfg = config();
+    let (ing, ways) = fixture(&cfg);
+    let dir = scratch("malformed");
+    let summary = cut(&dir, &cfg, &ing, &ways);
+    let opts = Options { accept_partial: true, accept_holes: true, ..Default::default() };
+
+    // Corrupt the first cell whose bytes `patch` can find something to break in — it returns
+    // `false` when this cell/LOD does not carry the shape it wants — then assemble everything.
+    let broken = |patch: &dyn Fn(&mut Vec<u8>, &obc_reader::Lod) -> bool| -> String {
+        let mut loaded = load(&dir, &summary);
+        let mut hit = false;
+        'outer: for k in 0..loaded.cells.len() {
+            let lods = {
+                let src = SliceSource(&loaded.bytes[k].0);
+                let tables = MapTables::parse(&src).expect("parses");
+                let cache = MapCache::new_boxed();
+                let reader = Reader::new(&src, &tables, &cache);
+                reader.lods().to_vec()
+            };
+            for lod in lods.iter().filter(|l| l.node_count > 0 && l.chunk_count > 0) {
+                if patch(&mut loaded.bytes[k].0, lod) {
+                    hit = true;
+                    break 'outer;
+                }
+            }
+        }
+        assert!(hit, "the fixture must contain the shape this case corrupts");
+        let all: Vec<usize> = (0..loaded.cells.len()).collect();
+        let err = loaded.assemble(&cfg, &all, &opts).expect_err("a corrupt cell must be refused");
+        assert!(matches!(err, obcm_assemble::Error::Format(_)), "expected Error::Format, got {err:?}");
+        format!("{err}")
+    };
+
+    // 1. Not an OBCM file at all.
+    let err = broken(&|b, _| {
+        b[0] = b'X';
+        true
+    });
+    assert!(err.contains("not a readable OBCM"), "got: {err}");
+
+    // 2. A header bbox that is not the cell's grid square — the fact the whole graft rests on
+    //    (§3.1), and the one the alignment theorem cannot survive being wrong about.
+    //    `Max Lat` is bytes 13..17 (`OBCM_Spec.md` §1); nudging its low byte keeps the file
+    //    parseable and every other invariant intact, so the grid-square check is the only thing
+    //    standing between this cell and a mis-aligned graft.
+    let err = broken(&|b, _| {
+        b[13] = b[13].wrapping_add(1);
+        true
+    });
+    assert!(err.contains("is not its grid square"), "got: {err}");
+
+    // 3. A leaf index word naming a chunk the cell does not have. Relocated blindly it would point
+    //    into the *next* cell's chunks — geometry from somewhere else, drawn without complaint.
+    let err = broken(&|b, lod| {
+        let Some(word) = (0..lod.node_count).map(|k| lod.index_offset + k * 4).find(|&at| {
+            let v = u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+            v & obc_formats::obcm::BRANCH_BIT == 0 && v != obc_formats::obcm::EMPTY_LEAF
+        }) else {
+            return false;
+        };
+        b[word..word + 4].copy_from_slice(&(lod.chunk_count as u32 + 7).to_le_bytes());
+        true
+    });
+    assert!(err.contains("names chunk"), "got: {err}");
+
+    // 4. A branch whose children fall outside the cell's index.
+    let err = broken(&|b, lod| {
+        let Some(word) = (0..lod.node_count)
+            .map(|k| lod.index_offset + k * 4)
+            .find(|&at| u32::from_le_bytes(b[at..at + 4].try_into().unwrap()) & obc_formats::obcm::BRANCH_BIT != 0)
+        else {
+            return false;
+        };
+        let v = obc_formats::obcm::BRANCH_BIT | (lod.node_count as u32 + 3);
+        b[word..word + 4].copy_from_slice(&v.to_le_bytes());
+        true
+    });
+    assert!(err.contains("children start at"), "got: {err}");
+
+    // 5. An offset table pair that spans more than the chunk capacity — §5.1's own bound,
+    //    re-checked on the way in because a copied violation would poison the assembly (§4.4.4).
+    let err = broken(&|b, lod| {
+        // The *last* entry is the region's byte total, which the reader itself validates, so break
+        // an interior pair instead — one the reader accepts and only §4.4.4 catches.
+        if lod.chunk_count < 2 {
+            return false;
+        }
+        let table = lod.index_offset + lod.node_count * 4;
+        b[table + 4..table + 8].copy_from_slice(&(lod.chunk_size as u32 + 1).to_le_bytes());
+        true
+    });
+    assert!(err.contains("spans") || err.contains("runs backwards"), "got: {err}");
+
+    // 6. …and `offsets[0]`, which the format fixes at 0.
+    let err = broken(&|b, lod| {
+        let table = lod.index_offset + lod.node_count * 4;
+        b[table..table + 4].copy_from_slice(&9u32.to_le_bytes());
+        true
+    });
+    assert!(err.contains("offsets[0]"), "got: {err}");
+}
+
+/// §4.7's stamp, end to end: the skin's values — including the two v10 flag bits and the trailing
+/// `color2` — are what the assembled file's style table carries, at the schema's own ids.
+#[test]
+fn the_skin_is_stamped_onto_the_output() {
+    let (packed, grafted, _, _) = both("skin");
+    let table = |map: &[u8]| -> Vec<u8> {
+        let style_offset = u32::from_le_bytes(map[21..25].try_into().unwrap()) as usize;
+        let count = map[style_offset] as usize;
+        map[style_offset..style_offset + 1 + count * obc_formats::obcm::STYLE_RECORD_LEN].to_vec()
+    };
+    // The skin reproduces the config's styling exactly, so the two tables must be byte-identical —
+    // which is also what makes the pixel oracle a comparison of *layout* and nothing else.
+    assert_eq!(table(&grafted), table(&packed), "the stamped style table must equal the packer's");
+    // The dashed / `color2` record specifically: both flag bits set and the second colour present.
+    let cfg = config();
+    let dashed = style_id(&cfg, "highway", "path");
+    let t = table(&grafted);
+    let at = 1 + t[1..]
+        .chunks_exact(obc_formats::obcm::STYLE_RECORD_LEN)
+        .position(|r| r[0] == dashed)
+        .expect("the dashed style is in the table")
+        * obc_formats::obcm::STYLE_RECORD_LEN;
+    let flags = t[at + 5];
+    assert_ne!(flags & obc_formats::obcm::STYLE_DASHED_BIT, 0, "the dash bit survived the stamp");
+    assert_ne!(flags & obc_formats::obcm::STYLE_HAS_COLOR2_BIT, 0, "…and so did the color2 bit");
+    assert_eq!(u16::from_le_bytes([t[at + 6], t[at + 7]]), 0x07FF, "…with the skin's own second colour");
+    assert_eq!(flags & obc_formats::obcm::STYLE_PRIORITY_MASK, 1, "priority 2 ⇒ bits 0-1 = 1");
+}
+
+/// What the §4.6 merge reports about itself, asserted rather than printed. The seam count and the
+/// island prune are the two numbers that say the merge did its job: a graph that unified nothing
+/// has severed every road at a cell edge, and one that pruned nothing never ran §4.6.4 at all.
+#[test]
+fn the_merge_reports_the_seams_it_unified_and_the_islands_it_pruned() {
+    let cfg = config();
+    let (ing, ways) = fixture(&cfg);
+    let dir = scratch("nav-stats");
+    let summary = cut(&dir, &cfg, &ing, &ways);
+    let loaded = load(&dir, &summary);
+    let all: Vec<usize> = (0..loaded.cells.len()).collect();
+    let opts = Options { accept_partial: true, ..Default::default() };
+    let (out, _) = loaded.assemble(&cfg, &all, &opts).expect("the assembly runs");
+    let nav = &out.stats.nav;
+
+    assert!(nav.unified > 0, "the fixture's roads cross three grid lines, so stubs must have unified: {nav:?}");
+    assert_eq!(
+        nav.cell_nodes - nav.unified,
+        nav.nodes + nav.pruned_nodes,
+        "every cell record is unified, kept or pruned"
+    );
+    // The islet way is strictly interior and below `min_component_edges`, so §4.6.4 must drop it —
+    // at merge time, over the *merged* graph, which is the only place the threshold means what it
+    // says (§3.5 defers it from the bake).
+    assert!(nav.pruned_nodes > 0, "the seam-crossing islet must be pruned at merge time: {nav:?}");
+    assert_eq!((nav.components_found, nav.components_kept), (2, 1), "the islet is the second component");
+    // The §4.8.5 report is taken *before* the prune, so the islet still counts against it here…
+    assert!(nav.largest_component_permille > 850, "the through network dominates the merged graph: {nav:?}");
+    // …and the shard that was actually written is one connected component, which is what a rider
+    // gets. A broken seam would show up as a much smaller number in exactly this field.
+    assert_eq!(out.shards[0].verify.as_ref().expect("verified").largest_component_permille, 1000);
+    assert_eq!((nav.degree_truncated, nav.dropped_nodes), (0, 0), "nothing hit a cap in a fixture this small");
+    assert_eq!(out.warnings, Vec::<String>::new(), "…so there is nothing to warn about either");
+}
+
+/// The graft's own arithmetic, seen from outside: a hole in the middle of a band's coverage is an
+/// **empty leaf**, not a missing subtree — the map still parses, still verifies, and the surviving
+/// cells' chunks are all still there.
+#[test]
+fn a_hole_becomes_an_empty_leaf_and_the_rest_still_grafts() {
+    let cfg = config();
+    let (ing, ways) = fixture(&cfg);
+    let dir = scratch("hole");
+    let summary = cut(&dir, &cfg, &ing, &ways);
+    let loaded = load(&dir, &summary);
+    let all: Vec<usize> = (0..loaded.cells.len()).collect();
+    let opts = Options { accept_partial: true, accept_holes: true, ..Default::default() };
+    let (whole, whole_store) = loaded.assemble(&cfg, &all, &opts).expect("the full assembly runs");
+
+    // The cell to drop has to be one that actually carries geometry, or "the hole is visible" is a
+    // statement about nothing.
+    let victim = all
+        .iter()
+        .copied()
+        .filter(|&k| loaded.cells[k].1 == "fine")
+        .find(|&k| {
+            let src = SliceSource(&loaded.bytes[k].0);
+            let tables = MapTables::parse(&src).expect("parses");
+            let cache = MapCache::new_boxed();
+            Reader::new(&src, &tables, &cache).lods().iter().any(|l| l.chunk_count > 0)
+        })
+        .expect("a fine cell with geometry");
+    let holed: Vec<usize> = all.iter().copied().filter(|&k| k != victim).collect();
+    let (out, store) = loaded.assemble(&cfg, &holed, &opts).expect("an accepted hole assembles");
+    assert_eq!(out.assembly_box, whole.assembly_box, "dropping a cell must not move the bbox (§4.2)");
+
+    let counts = |bytes: &[u8]| -> Vec<usize> {
+        let src = SliceSource(bytes);
+        let tables = MapTables::parse(&src).expect("parses");
+        let cache = MapCache::new_boxed();
+        let reader = Reader::new(&src, &tables, &cache);
+        reader.lods().iter().map(|l| l.chunk_count).collect()
+    };
+    let (with, without) = (counts(&whole_store.shards[0].0), counts(&store.shards[0].0));
+    assert_eq!(with.len(), without.len(), "the ladder is unchanged");
+    assert!(with.iter().zip(&without).any(|(a, b)| a > b), "the dropped cell's chunks are gone: {with:?} {without:?}");
+    assert!(with.iter().zip(&without).all(|(a, b)| a >= b), "…and nothing else was invented: {with:?} {without:?}");
+    // The §4.8 verify ran over the holed map and decoded every remaining feature.
+    assert!(out.shards[0].verify.as_ref().expect("verified").features > 0);
 }
 
 /// The §4.1 refusals. Each one is a case where proceeding quietly would ship a map that looks fine
