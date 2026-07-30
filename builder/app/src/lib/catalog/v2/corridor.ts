@@ -27,7 +27,7 @@
 // definition within the corridor width of it, so it shares the cell's latitude
 // to within a fraction of a degree.
 
-import { cellsIntersecting, cellSquare, type CellId, type UBox } from "./grid";
+import { cellsIntersecting, cellSize, cellSquare, type CellId, type UBox } from "./grid";
 
 /** A coordinate in integer microdegrees, `lat, lon` — the catalog's order. */
 export interface LatLon {
@@ -48,8 +48,19 @@ const M_PER_UDEG = M_PER_DEG / 1e6;
  *  test below still decides. */
 const MIN_COS = Math.cos((85 * Math.PI) / 180);
 
+/**
+ * The east–west scale factor at a latitude, and — this is the load-bearing part
+ * — a function that is **non-increasing in `|lat|` everywhere**.
+ *
+ * The latitude is clamped to ±90° before the cosine, so a coordinate outside the
+ * geographic domain (the grid's world box reaches ±268°, and a GPX file can say
+ * anything) cannot make the cosine climb back up towards 1 and hand out a
+ * *smaller* padding than a cell nearer the equator got. The prefilter below is
+ * only provably generous because this function never goes back up.
+ */
 function cosLat(latUdeg: number): number {
-    return Math.max(Math.cos((latUdeg / 1e6) * (Math.PI / 180)), MIN_COS);
+    const clamped = Math.min(Math.max(latUdeg, -90_000_000), 90_000_000);
+    return Math.max(Math.cos((clamped / 1e6) * (Math.PI / 180)), MIN_COS);
 }
 
 /** Squared distance from a point to an axis-aligned rectangle; zero inside. */
@@ -117,18 +128,48 @@ function polylineBox(points: readonly LatLon[]): UBox {
     return { minLat, minLon, maxLat, maxLon };
 }
 
-/** A box grown by `radius` metres, in µdeg. Generous on purpose: it only ever
- *  selects candidates for the exact test. */
-function grow(box: UBox, radiusM: number): UBox {
+/** How far, in µdeg, a cell can sit from the route and still be accepted. */
+interface Padding {
+    dLat: number;
+    dLon: number;
+}
+
+/**
+ * The padding the prefilter must use to be **provably at least** the exact
+ * test's acceptance region.
+ *
+ * The exact test below measures a cell's distance in a plane scaled at *that
+ * cell's centre* latitude, so a cell accepts a route point up to
+ * `R / (M_PER_UDEG · cosLat(φ_cell))` µdeg away in longitude. Padding by the
+ * *route's* latitude — which is what this used to do — is smaller than that
+ * whenever the cell sits poleward of the route, and a candidate the prefilter
+ * drops is never tested, never selected, and never reported as missing either:
+ * a silent hole in the corridor, worth ~600 µdeg of longitude at a 2^20 cell in
+ * the Alps (regression vector in `corridor.test.ts`).
+ *
+ * So the padding is computed at the worst latitude any *candidate cell centre*
+ * can have: the route's own extent, grown by the exact latitude padding (no
+ * candidate reaches further north or south than that), and then by a whole cell
+ * (a centre sits at most half a cell beyond its square's near edge). Because
+ * {@link cosLat} never increases with `|lat|`, the cosine at that latitude is
+ * ≤ the cosine at every candidate's centre, so `dLon` is ≥ every candidate's own
+ * requirement. Generous, and provably so.
+ */
+function paddingFor(box: UBox, radiusM: number, log2: number): Padding {
     const dLat = Math.ceil(radiusM / M_PER_UDEG);
-    // The widest longitude the box reaches, so the padding is never too small.
-    const worstLat = Math.max(Math.abs(box.minLat), Math.abs(box.maxLat));
-    const dLon = Math.ceil(dLat / cosLat(worstLat));
+    const worstLat =
+        Math.max(Math.abs(box.minLat - dLat), Math.abs(box.maxLat + dLat)) + cellSize(log2);
+    return { dLat, dLon: Math.ceil(dLat / cosLat(worstLat)) };
+}
+
+/** A box grown by a padding, in µdeg. Only ever selects candidates for the
+ *  exact test. */
+function grow(box: UBox, pad: Padding): UBox {
     return {
-        minLat: box.minLat - dLat,
-        minLon: box.minLon - dLon,
-        maxLat: box.maxLat + dLat,
-        maxLon: box.maxLon + dLon,
+        minLat: box.minLat - pad.dLat,
+        minLon: box.minLon - pad.dLon,
+        maxLat: box.maxLat + pad.dLat,
+        maxLon: box.maxLon + pad.dLon,
     };
 }
 
@@ -147,7 +188,12 @@ function boxesIntersect(a: UBox, b: UBox): boolean {
 export function corridorCells(log2: number, points: readonly LatLon[], radiusM: number): CellId[] {
     if (points.length === 0) return [];
     const radius = Math.max(radiusM, 0);
-    const candidates = cellsIntersecting(log2, grow(polylineBox(points), radius));
+    const box = polylineBox(points);
+    // One padding for the whole run, computed at the worst latitude any
+    // candidate can reach — see `paddingFor`. Using a per-segment latitude here
+    // would reintroduce exactly the under-selection it exists to prevent.
+    const pad = paddingFor(box, radius, log2);
+    const candidates = cellsIntersecting(log2, grow(box, pad));
     if (candidates.length === 0) return [];
 
     // One padded box per segment, in µdeg, so a cell nowhere near a segment costs
@@ -165,7 +211,7 @@ export function corridorCells(log2: number, points: readonly LatLon[], radiusM: 
                 maxLat: Math.max(s.a.lat, s.b.lat),
                 maxLon: Math.max(s.a.lon, s.b.lon),
             },
-            radius,
+            pad,
         ),
     );
 
