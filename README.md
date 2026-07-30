@@ -292,6 +292,45 @@ bake from local extracts, `--force` to re-bake regardless, `--no-land` to skip t
 servable copy, `--target r2` uploads through `rclone` with credentials taken from
 `OBC_R2_*` environment variables and never written to disk.
 
+### Baking cells, region-scoped
+
+`--cells` swaps the unit: the same curated regions, resolved to the **grid cells** their
+coverage polygons touch and published as an [`OBCC_Spec.md` §11](specs/OBCC_Spec.md)
+cell catalog. No planet extract is involved — the canonical testing flow is two
+neighbours at once:
+
+```sh
+cargo run --release -p obc-bake -- bake --cells --out ~/cells \
+    --base-url https://maps.example.org/cells \
+    europe/germany europe/switzerland                 # regions may be positional
+cargo run --release -p obc-bake -- verify ~/cells     # digests, headers, round-trips
+cargo run --release -p obc-bake -- publish ~/cells --v2 \
+    --base-url https://maps.example.org/cells --target r2
+```
+
+It downloads each region's extract **and its `.poly`**, resolves the polygon to a cell
+set per band, groups every cell by the set of co-baked extracts whose polygon touches it,
+and runs one cut per group — so the cells on the German/Swiss border are cut from *both*
+extracts at once and come out complete rather than half-empty. A cell is published as
+canonical only when its own sources cover its whole square; everything else is flagged
+`partial` in the catalog, and a canonical cell is never replaced by a partial one (so
+re-baking Switzerland alone afterwards keeps the joint border cells). Re-runs skip at
+**plan** granularity — a group whose every cell is current is never ingested — and the
+run prints the measured per-band byte density.
+
+Flags on top of the region bake's: `--base-url` (required — every cell's `url` is it plus
+the cell's path), `--schema-preset <id>` (the config the cells are cut with; default
+`default`), `--schema-id` / `--schema-revision` (what the catalog publishes; a revision
+bump invalidates the whole store), `--bands <file>` (the band table; default the
+[`OBCA_Spec.md`](specs/OBCA_Spec.md) §1.5 v1 one), `--skin <id>` (repeatable; default the
+schema preset).
+
+`obc-bake verify <tree>` is the cell store's own gate: it runs the lockstep guard (one
+schema revision, one OBCM version, no cell silently downgraded from canonical to
+`partial`), checks every satellite against the digest the root pinned, checks **every**
+cell's header bbox against its id, and opens one cell in fifty with the real reader
+(`--sample 1` for all of them).
+
 `obc-bake check-obcm-version` is the other half of the version law: it fetches the
 *published* manifest (`--catalog-url`, or `OBC_CATALOG_URL`) and fails if what is being
 served is not the OBCM version this build writes. Scheduled + dispatchable bakes and that
