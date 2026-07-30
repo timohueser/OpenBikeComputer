@@ -365,9 +365,23 @@ impl Skin {
                 }
             }
         }
-        out.sort_by_key(|r| r.id);
-        if out.windows(2).any(|w| w[0].id == w[1].id) {
-            return Err("the resolved style table has a duplicate id".into());
+        // §4.7: "write the style table with the schema's ids **in the schema's order**", and "the
+        // skin MUST NOT introduce, remove, reorder, or renumber ids". Silently sorting would make
+        // this crate the thing that decides the order — and the id set is compared against the
+        // cells' own style table right after, so a skin listed out of order would resolve to a table
+        // that matches by luck. The order is the caller's to get right, and a violation is a
+        // refusal.
+        for w in out.windows(2) {
+            if w[0].id == w[1].id {
+                return Err(format!("the resolved style table assigns id {} twice (OBCA §4.7)", w[0].id));
+            }
+            if w[0].id > w[1].id {
+                return Err(format!(
+                    "the resolved style table runs {} then {}: ids must ascend, in the schema's own order — a skin \
+                     may not reorder them (OBCA §4.7)",
+                    w[0].id, w[1].id
+                ));
+            }
         }
         Ok(out)
     }
@@ -521,13 +535,17 @@ mod tests {
         bare.styles.clear();
         let by_id = Skin {
             styles: vec![
-                SkinStyle { id: Some(2), ..style("", 0x00FF) },
                 SkinStyle { id: Some(1), ..style("", 0xFF00) },
+                SkinStyle { id: Some(2), ..style("", 0x00FF) },
             ],
             ..full.clone()
         };
         let recs = by_id.resolve(&bare).expect("id-keyed skins resolve");
         assert_eq!(recs.iter().map(|r| (r.id, r.color)).collect::<Vec<_>>(), vec![(1, 0xFF00), (2, 0x00FF)]);
+        // …but the order is the caller's to state, not this crate's to invent: §4.7 forbids a skin
+        // from reordering ids, so a mis-ordered table is a refusal rather than a silent re-sort.
+        let shuffled = Skin { styles: by_id.styles.iter().rev().cloned().collect(), ..by_id.clone() };
+        assert!(shuffled.resolve(&bare).unwrap_err().contains("ids must ascend"));
         let idless = Skin { styles: vec![style("natural.water", 1)], ..full };
         assert!(idless.resolve(&bare).unwrap_err().contains("must name its `id`"));
     }
