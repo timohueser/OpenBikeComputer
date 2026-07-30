@@ -162,10 +162,16 @@ pub fn plan_lod(
         if node_count > 1 {
             node_base += node_count as u64 - 1;
         }
-        if node_base > u32::MAX as u64 || chunk_id_base + l.chunk_count as u64 > u32::MAX as u64 {
+        // The index space is **not** `uint32`: a node index shares the word with `BRANCH_BIT` and a
+        // chunk id with `EMPTY_LEAF`, so the usable ranges stop one bit and one value short (§4).
+        if node_base >= BRANCH_BIT as u64 || chunk_id_base + l.chunk_count as u64 >= EMPTY_LEAF as u64 {
             return Err(Error::Capacity(format!(
-                "LOD {lod} exceeds the format's uint32 index space at cell {} — split the selection",
-                cells[c].id
+                "LOD {lod} exceeds the format's index space at cell {} ({node_base} node(s), {} chunk(s); the branch \
+                 bit caps nodes at {} and the empty-leaf sentinel caps chunk ids at {}) — split the selection",
+                cells[c].id,
+                chunk_id_base + l.chunk_count as u64,
+                BRANCH_BIT - 1,
+                EMPTY_LEAF - 1
             )));
         }
         plan_cells.push(GraftCell {
@@ -190,7 +196,7 @@ pub fn plan_lod(
             EMPTY_LEAF // a cell whose level is empty contributes an empty leaf, like an absent cell
         } else {
             let root = u32::from_le_bytes(cell.read(l.index_offset, 4)?[..4].try_into().expect("4 bytes"));
-            relocate(root, g.block_base, g.chunk_id_base)
+            relocate(root, g, cell.id, lod)?
         };
     }
 
@@ -210,16 +216,35 @@ pub fn plan_lod(
 
 /// Relocate one copied index node: a branch's child base by `block_base − 1`, a leaf's chunk id by
 /// `chunk_id_base`, an empty leaf not at all (§4.3).
+///
+/// **Every word is validated against the source cell first.** A cell is an input, not the
+/// assembler's own output, and an index word out of its cell's range relocates into a *plausible*
+/// index — a branch pointing into another cell's subtree, or a leaf naming a chunk that belongs to a
+/// neighbour. That is a cross-linked map, and §4.8's verify cannot tell it apart from a correct one:
+/// it decodes, it just draws someone else's geometry. So the bound is checked here, where the source
+/// cell's own counts are still in hand, and the arithmetic is checked rather than left to wrap in
+/// release and panic in debug.
 #[inline]
-fn relocate(value: u32, block_base: u32, chunk_id_base: u32) -> u32 {
+fn relocate(value: u32, g: &GraftCell, cell: CellId, lod: usize) -> Result<u32> {
+    let bad = |what: String| Error::Format(format!("cell {cell}: LOD {lod} index word {value:#010x} {what}"));
     if value & BRANCH_BIT != 0 {
         // The cell's node `k` lands at `block_base + k − 1`, so a child base relocates by the same
         // delta. The cell's root children are at `1..4`, which is why `−1` and not `+block_base`.
-        BRANCH_BIT | ((value & !BRANCH_BIT) + block_base - 1)
+        let child = value & !BRANCH_BIT;
+        // A branch's four children are a contiguous quadruple *after* it, inside the cell's index.
+        if child == 0 || child.saturating_add(3) >= g.node_count {
+            return Err(bad(format!(
+                "is a branch whose children start at {child}, outside the cell's {} index node(s) (OBCM §4)",
+                g.node_count
+            )));
+        }
+        Ok(BRANCH_BIT | (child - 1 + g.block_base))
     } else if value == EMPTY_LEAF {
-        EMPTY_LEAF
+        Ok(EMPTY_LEAF)
+    } else if value >= g.chunk_count {
+        Err(bad(format!("names chunk {value}, past the cell's {} chunk(s)", g.chunk_count)))
     } else {
-        value + chunk_id_base
+        Ok(value + g.chunk_id_base)
     }
 }
 
@@ -245,7 +270,7 @@ pub fn emit_lod(plan: &LodPlan, cells: &[Cell<'_>], out: &mut dyn FnMut(&[u8]) -
         let raw = cell.read(l.index_offset + 4, (g.node_count as usize - 1) * 4)?;
         let mut block = Vec::with_capacity(raw.len());
         for w in raw.chunks_exact(4) {
-            let v = relocate(u32::from_le_bytes([w[0], w[1], w[2], w[3]]), g.block_base, g.chunk_id_base);
+            let v = relocate(u32::from_le_bytes([w[0], w[1], w[2], w[3]]), g, cell.id, plan.lod)?;
             block.extend_from_slice(&v.to_le_bytes());
         }
         out(&block)?;
@@ -312,16 +337,52 @@ pub fn emit_lod(plan: &LodPlan, cells: &[Cell<'_>], out: &mut dyn FnMut(&[u8]) -
 mod tests {
     use super::*;
 
+    fn graft_cell(block_base: u32, chunk_id_base: u32, node_count: u32, chunk_count: u32) -> GraftCell {
+        GraftCell {
+            cell: 0,
+            slot: 0,
+            block_base,
+            chunk_id_base,
+            chunk_byte_base: 0,
+            node_count,
+            chunk_count,
+            chunk_bytes: 0,
+        }
+    }
+
+    fn cell_id() -> CellId {
+        CellId::new(18, 1204, 1052).expect("valid id")
+    }
+
     /// OBCA §7's worked example, in index values: A is a five-node subtree with two chunks, B a
     /// single leaf with one. The spec states the answer; this asserts it.
     #[test]
     fn worked_example_relocation() {
+        let a = graft_cell(5, 0, 5, 2);
+        let go = |v: u32, g: &GraftCell| relocate(v, g, cell_id(), 0).expect("a legal index word");
         // A's nodes 1.. land at 5, so its branch delta is `block_base − 1 = 4`.
-        assert_eq!(relocate(BRANCH_BIT | 1, 5, 0), BRANCH_BIT | 5, "A's root: children 1..4 → 5..8");
-        assert_eq!(relocate(0x0000_0000, 5, 0), 0x0000_0000, "A's NW leaf keeps chunk 0");
-        assert_eq!(relocate(0x0000_0001, 5, 0), 0x0000_0001, "A's NE leaf keeps chunk 1");
-        assert_eq!(relocate(EMPTY_LEAF, 5, 0), EMPTY_LEAF, "empty stays empty");
+        assert_eq!(go(BRANCH_BIT | 1, &a), BRANCH_BIT | 5, "A's root: children 1..4 → 5..8");
+        assert_eq!(go(0x0000_0000, &a), 0x0000_0000, "A's NW leaf keeps chunk 0");
+        assert_eq!(go(0x0000_0001, &a), 0x0000_0001, "A's NE leaf keeps chunk 1");
+        assert_eq!(go(EMPTY_LEAF, &a), EMPTY_LEAF, "empty stays empty");
         // B's root leaf: chunk 0 relocated by +2, because A owns chunks 0 and 1.
-        assert_eq!(relocate(0x0000_0000, 9, 2), 0x0000_0002);
+        assert_eq!(go(0x0000_0000, &graft_cell(9, 2, 1, 1)), 0x0000_0002);
+    }
+
+    /// An index word outside its own cell's range is refused, not relocated. Left unchecked each of
+    /// these produces a *plausible* index into another cell's block — the one graft failure §4.8's
+    /// verify cannot see, because the result still decodes.
+    #[test]
+    fn an_out_of_range_index_word_is_a_format_error() {
+        let g = graft_cell(5, 2, 5, 2);
+        let go = |v: u32| relocate(v, &g, cell_id(), 3);
+        let msg = |v: u32| format!("{}", go(v).expect_err("must be refused"));
+        assert!(msg(0x0000_0002).contains("names chunk 2"), "a leaf past the cell's chunk count");
+        assert!(msg(0x0000_00FF).contains("past the cell's 2 chunk(s)"));
+        assert!(msg(BRANCH_BIT | 2).contains("children start at 2"), "children 2..5 leave the 5-node index");
+        assert!(msg(BRANCH_BIT).contains("children start at 0"), "a branch may not point at the root");
+        assert!(msg(BRANCH_BIT | 0x7FFF_FFFE).contains("outside"), "…and the arithmetic never wraps getting there");
+        // The legal words either side of each bound still pass.
+        assert!(go(0x0000_0001).is_ok() && go(BRANCH_BIT | 1).is_ok());
     }
 }
