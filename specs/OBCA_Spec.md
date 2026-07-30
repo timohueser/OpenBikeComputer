@@ -119,17 +119,18 @@ Two rules are normative here:
 The canonical textual id of a cell is
 
 ```
-<log2(S)>/<i>/<j>          e.g.  18/0681/1024
+<log2(S)>/<i>/<j>          e.g.  18/1204/1052
 ```
 
-with `i` and `j` zero-padded to **four** decimal digits (`WORLD_SIDE / 2^10 = 2^19` exceeds four
-digits only for sizes below `2^10`, which §1.1 forbids; sizes at or above `2^15` never exceed four
-digits, and producers MUST widen the padding rather than truncate if a future size needs it).
-Catalog entries (§6) and object paths use this id, so a cell's URL is derivable from its id and a
-base URL.
+with `i` and `j` zero-padded to `max(4, decimal_width(WORLD_SIDE / S − 1))` digits — four for every
+size at or above `2^16`, which is every band the v1 table uses, and wider for the smaller sizes
+§1.1 still permits. Producers MUST widen rather than truncate. Catalog entries (§6) and object paths
+use this id, so a cell's URL is derivable from its id and a base URL, and its **square is derivable
+from its id alone** — which is why a catalog cell entry carries no bbox
+([`OBCC_Spec.md` §11.6](OBCC_Spec.md)).
 
-Implementations MAY use the packed convenience key `(log2(S) << 24) | (i << 12) | j`. It is not
-normative and MUST NOT appear in any published artifact.
+Implementations MAY use the packed convenience key `(log2(S) << 24) | (i << 12) | j`, valid for
+`S ≥ 2^18`. It is not normative and MUST NOT appear in any published artifact.
 
 ### 1.4 Domain edges: poles and the antimeridian
 
@@ -151,10 +152,10 @@ it **does not wrap**. Three consequences are normative:
 - **The poles are not special.** The grid rows nearest ±90° overhang the pole; no routable way
   reaches the overhang, so no boundary junction (§3.4) can be produced there.
 
-### 1.5 The v1 band table (schema revision `bikepacking-1`)
+### 1.5 The v1 band table (schema `bikepacking`, revision 1)
 
-These values are the measured recommendation of epic #1016 D1, taken over full-country bakes of
-`switzerland` and `freiburg-regbez` with the shipped 7-LOD bikepacking ladder
+These values are the measured recommendation of epic #1016 D1, taken over whole-extract bakes of
+`switzerland`, `austria`, and `freiburg-regbez` with the shipped 7-LOD bikepacking ladder
 ([`builder/presets/default.json`](../builder/presets/default.json)). They are **schema data**: a
 catalog states them (§6), a producer reads them from the catalog, and retuning them is a re-bake
 rather than a change to this document.
@@ -164,7 +165,7 @@ rather than a change to this document.
 | `coarse` | `2^20` µdeg (1.048576°) | 117 × 80 km | ladder LOD 0, 1, 2 | core file |
 | `mid` | `2^19` µdeg (0.524288°) | 58 × 40 km | ladder LOD 3, 4 | geometry shard |
 | `fine` | `2^18` µdeg (0.262144°) | 29 × 20 km | ladder LOD 5, 6 | geometry shard |
-| `network` | `2^18` µdeg (0.262144°) | 29 × 20 km | nav graph (§8), POIs (§7), hours pool (§7.5) | core file |
+| `network` | `2^18` µdeg (0.262144°) | 29 × 20 km | nav graph (OBCM §8), POIs (OBCM §7), hours pool (OBCM §7.5) | core file |
 
 The largest cell size in the table, `S_MAX = 2^20`, is the assembly bbox's alignment modulus
 (§2.1).
@@ -245,9 +246,10 @@ with no partial row or column. ∎
 Two corollaries worth stating because implementations lean on them:
 
 - `n ≥ s` for every band, so the cell depth is never negative — guaranteed by `2^n ≥ S_MAX`.
-- The four children are emitted **NW, NE, SW, SE** and the tree is flattened breadth-first
-  (`OBCM_Spec.md` §4), so the cell → node-index mapping at depth `d` is a pure function of
-  `(i, j)` and needs no search.
+- The four children are emitted **NW, NE, SW, SE**, and the assembler writes its own upper tree
+  (depths `0 .. d`) breadth-first, so the cell → depth-`d` slot mapping is a pure function of
+  `(i, j)` and needs no search. Below the cell depth the layout is per-cell blocks rather than
+  global breadth-first order, which is legal — see §7.
 
 ### 2.3 What the theorem buys
 
@@ -260,8 +262,8 @@ assembly*. Therefore:
 
 - **Chunk payload bytes are copied verbatim.** No decode, no re-encode, no simplification, no
   GEOS. This is what makes assembly a streaming concatenation that runs in wasm.
-- **Index nodes are relocated, not rebuilt.** A copied subtree's leaf values need one constant
-  added (the cell's chunk-id base) and its branch values need another (the node-index base) —
+- **Index nodes are relocated, not rebuilt.** A copied subtree needs exactly two constants added:
+  one to its leaf values (the cell's chunk-id base) and one to its branch child bases (§4.3, §7) —
   integer arithmetic on `uint32`s, no geometry involved.
 - **Offset-table entries are copied with one constant added** (the cell's base within the LOD's
   concatenated chunk region).
@@ -296,9 +298,9 @@ A baked cell MUST be a complete, valid OBCM file of the catalog's OBCM version, 
 - it MUST write the **complete ladder** in its LOD table — one entry per schema LOD, in ladder
   order, with each entry's `Max Meters/Pixel` taken from the schema (so LOD 0 is `+inf` and the
   sequence is strictly decreasing, exactly as `OBCM_Spec.md` §3 requires). LODs outside the cell's
-  band are written **empty**: `Index Node Count = 0`, `Chunk Count = 0`, and the single-entry
-  offset table §5.1 mandates for an empty region. A reader walks an empty LOD and finds nothing,
-  so a cell of any band stays a legal, openable map;
+  band are written **empty**: `Index Node Count = 0`, `Chunk Count = 0`, and the single-`0`-entry
+  offset table `OBCM_Spec.md` §5.1 mandates for an empty region. A reader walks an empty LOD and
+  finds nothing, so a cell of any band stays a legal, openable map;
 - the POI section and the nav section MUST be present, per `OBCM_Spec.md` §7/§8, and MUST be
   **empty** unless the cell's band carries them;
 - its style table MUST be the schema revision's **canonical table** (§6.2) — right ids, right
@@ -383,7 +385,7 @@ follows, and the computation MUST be used verbatim by both neighbours:
 classify junction-ness from the **source snapshot's** way set, not from the ways that survive
 inside the cell, and MUST NOT rely on any *interior* synthetic node coinciding with anything.
 Interior synthetic nodes are minted by the packer's own edge splits at a midpoint index of the
-edge *as that run sees it* (`nav.rs::split_edge`, plus the serializer's §8.4 chunk-fit and span
+edge *as that run sees it* (`nav.rs::split_edge`, plus the serializer's `OBCM_Spec.md` §8.4 chunk-fit and span
 splits), so two runs over a different set of ways place them metres apart.
 
 **Exact-coordinate unification only — an epsilon snap is forbidden.** At a cell seam, genuinely
@@ -465,7 +467,7 @@ table, a skin, and the cells the coverage rule (§1.2) selects. It MUST refuse t
 
 - the cells do not all carry the same OBCM version, or that version is not the one it writes; or
 - the cells do not all belong to the same schema revision; or
-- two cells disagree on the style table's id set or count, or on the §8.6 profile table; or
+- two cells disagree on the style table's id set or count, or on the `OBCM_Spec.md` §8.6 profile table; or
 - any selected cell is missing, and the caller has not accepted the resulting hole; or
 - any selected cell is `partial`, and the caller has not accepted the reduced coverage.
 
@@ -488,6 +490,10 @@ empty leaves; that costs one `uint32` per empty node and nothing else. The assem
 shrink the box to the content afterwards — that would destroy the alignment the whole scheme rests
 on.
 
+The box MAY extend past the far edge of the world box, which is treated exactly like §1.4's domain
+overhang: the cells out there do not exist, so their leaves are empty. It MUST NOT extend past the
+`int32` µdeg range, which `n ≤ 29` already guarantees.
+
 ### 4.3 Copied verbatim vs rebuilt
 
 | Part | Treatment |
@@ -501,7 +507,7 @@ on.
 | **Style table** | Rebuilt from the skin (§4.7) — same ids, same count, same order; values replaced. |
 | **POI section + hours pool** | Rebuilt (§4.5). |
 | **Nav section** (directory, node tree, node chunks, edge pool) | Rebuilt (§4.6). |
-| **Profile table** (§8.6) | Copied from the cells after checking every cell agrees; it is schema data. |
+| **Profile table** (`OBCM_Spec.md` §8.6) | Copied from the cells after checking every cell agrees; it is schema data. |
 
 An assembler MUST NOT decode a geometry chunk in the normal path. Decoding is for verification
 (§4.8), where it is the point.
@@ -544,22 +550,24 @@ fail loudly rather than wrap.
 
 This is the most involved rebuild, and its order matters.
 
-1. **Read the serialized node set.** Walk each `network` cell's §8 node quadtree through a real
+1. **Read the serialized node set.** Walk each `network` cell's `OBCM_Spec.md` §8 node quadtree through a real
    reader and collect junction records, keyed by `Node Id` (`OBCM_Spec.md` §8.2's bin-packing
    means one leaf walk can yield a record more than once, so the collection MUST be idempotent).
    The set to renumber is the **serialized** one, not the one a graph builder would produce: the
    serializer mints further synthetic degree-2 junctions after the builder finishes (measured
    +4 489 nodes and +2 957 edges on a country bake), and they are in the bytes.
 2. **Unify seam nodes, and only seam nodes.** Two records unify iff their coordinates are
-   **exactly** equal *and* the coordinate lies on a cell-boundary line of the band. Unification
+   **exactly** equal *and* the coordinate lies on a boundary line of the `network` band's grid
+   (a latitude or longitude congruent to `GRID_ORIGIN` modulo that band's cell size). Unification
    unions their adjacency. Restricting to boundary lines is not an optimisation: whole-map
    coordinate keying would also fuse the handful of *interior* coordinate collisions that exist in
    a single file — vertically stacked bridge/tunnel junctions, measured at 9 in one regional bake
    and 28 in a country bake — inventing a turn between a bridge and the road beneath it.
-3. **Deduplicate adjacency** on `(other endpoint, Cost M, Way Kind, Edge Id-equivalent geometry)`:
-   the two stubs of a unified boundary junction each contribute the same edge from their own side,
-   and both sides' stubs are distinct edges that must both survive, while a genuinely duplicated
-   edge (the same polyline written by both cells) must collapse to one.
+3. **Deduplicate adjacency** keyed on `(unified endpoint pair, Cost M, Way Kind, edge polyline)`.
+   The distinction that matters at a unified boundary junction: the two stubs meeting there run in
+   *opposite* directions and are different edges, so both MUST survive; only an edge two cells both
+   wrote in full — which the half-open ownership rules of §3.3 and §3.4(3) should already prevent —
+   collapses to one.
 4. **Prune islands** over the merged graph with the schema's `min_component_edges`, keeping the
    largest component plus every component at or above the threshold — the pass §3.5 deferred from
    bake time. This is the only place where the threshold means what it says: an island in the
@@ -571,7 +579,7 @@ This is the most involved rebuild, and its order matters.
    source record (they are self-contained: absolute anchor plus deltas), but their *placement* is
    new, and the no-straddle rule must be re-applied at the 512-byte chunk granularity.
 7. **Re-check the wire limits** (§4.8) and rebuild the node quadtree over the assembly bbox, with
-   §8.2 bin-packed 512-byte node chunks.
+   `OBCM_Spec.md` §8.2 bin-packed 512-byte node chunks.
 8. **Copy the profile table** after confirming every cell's is identical.
 
 An assembler MUST NOT create an edge between two nodes that no single cell joined. Unification
@@ -650,8 +658,9 @@ Every shard is an ordinary OBCM file whose header bbox is a grid-aligned power-o
 LODs it does not carry written empty (§3.1).
 
 - **The core shard** (exactly one per set) carries the style table, the `Marker Color`, the single
-  unified **nav graph**, the **POIs** and hours pool, and the `coarse`-band LODs. Its bbox is the
-  whole assembly bbox.
+  unified **nav graph**, the **POIs** and hours pool, and every LOD of a band whose schema `role`
+  is `core` — the `coarse` band at the v1 table, and *every* LOD in the single-file fast path
+  (§5.5). Its bbox is the whole assembly bbox.
 - **Geometry shards** (zero or more) carry the `mid`- and `fine`-band LODs and nothing else: empty
   nav directory, empty POI categories. Their bboxes **tile** the assembly bbox: they are an
   antichain of assembly-quadtree nodes at depths `0 .. n − s_min` whose squares are pairwise
@@ -727,21 +736,24 @@ allocation — the `OBCU_Spec.md` §1.1 conventions. It is `72 + 56 × Shard Cou
 root as
 
 ```
-M<id>S<kk>.OBM        e.g.  M7S00.OBM, M7S01.OBM      (id: 1..3 decimal digits, kk: 2 digits)
+MS<id>S<kk>.OBM       e.g.  MS7S00.OBM, MS7S01.OBM     (id: 1..3 digits, kk: 2 digits, 00..31)
 ```
 
 and the manifest itself at
 
 ```
-M<id>.OBS             e.g.  M7.OBS
+MS<id>.OBS            e.g.  MS7.OBS
 ```
 
-Both are 8.3-safe uppercase short names, because the firmware's FAT layer creates short names
-only. Deriving rather than storing them is deliberate: a stored name is a second source of truth
-that can disagree with the directory, and the device then has to decide which to believe. It also
-keeps the reader free of string handling — it formats one integer. The `.OBM` extension matches
-the existing device-received single-map convention, so the existing map scan already recognises a
-shard as a map file; the `.OBS` manifest is what tells it the shards are one map and not several
+`MS999S31.OBM` is eight characters, so every name is an 8.3-safe uppercase short name — required,
+because the firmware's FAT layer creates short names only. The `MS` prefix keeps sets clear of the
+existing single-map `MP<id>.OBM` convention, whose id parser matches on that exact prefix.
+
+Deriving rather than storing the names is deliberate: a stored name is a second source of truth
+that can disagree with the directory, and the device would then have to decide which to believe. It
+also keeps the reader free of string handling — it formats one integer. The `.OBM` extension is the
+same one a single received map uses, so the existing map scan already recognises a shard as *a map
+file*; the `.OBS` manifest is the only thing that says those files are **one** map and not several
 (§5.4).
 
 `Set Id` is a content identity, not a random one: two assemblies of the same cells with the same
