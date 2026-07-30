@@ -15,17 +15,17 @@
 //! region, so mounting a shard also avoids `parse_styles`'s 2 KiB stack scratch; the whole
 //! mount path stays shallow.
 //!
-//! The ≈277 KB [`MapCache`] is shared by the whole set. That is safe because
-//! [`MapTables::parse_member`] gives every shard the same parse generation (so no shard clears
-//! the cache the previous one filled) while [`Reader::new_in_set`] tags every cache key with
-//! the shard index (so no shard is served another's chunks).
+//! The ≈277 KB [`MapCache`] is shared by the whole set. That is safe because every per-shard
+//! reader borrows the **core's** [`MapTables`] — so the whole set presents one parse generation
+//! and no shard clears the cache the previous one filled — while the reader tags every cache key
+//! with the shard index, so no shard is served another's chunks.
 
 use heapless::Vec;
 use obc_formats::io::ByteSource;
 use obc_formats::obcs::{ManifestError, Role, SetBBox, SetManifest, MAX_SHARDS};
 use obc_map_scene::{
-    Candidate, CandidateReport, DecodeReport, Diagnostics, Feature, FeatureToken, MapScene, ReadError as SceneReadError,
-    SelectedFeatures,
+    Candidate, CandidateReport, DecodeReport, Diagnostics, Feature, FeatureToken, MapScene,
+    ReadError as SceneReadError, SelectedFeatures,
 };
 
 use crate::reader::{parse_header, parse_lod_table, Lod};
@@ -56,10 +56,9 @@ pub enum MountError {
     /// Shard `index`'s OBCM header bbox is not the bbox the manifest records for it.
     Bbox(u8),
     /// Shard `index` carries a different style table than the core. Shards of one set are
-    /// stamped from one skin (§4.7), so a mismatch means these files are not one map.
+    /// stamped from one skin (§4.7), so a mismatch means these files are not one map. Also
+    /// reported when the comparison itself could not read the bytes.
     Styles(u8),
-    /// The core's [`MapTables`] were not parsed from the core shard's source.
-    CoreMismatch,
 }
 
 impl From<ManifestError> for MountError {
@@ -204,7 +203,7 @@ impl<'a> MountedSet<'a> {
                 // §4.7: every shard is stamped from one skin, so the tables are byte-identical.
                 // Validating beats re-loading — a 4 KiB style table per shard is exactly the
                 // resident cost this design exists to avoid.
-                if !style_tables_match(sources[core_index], src)? {
+                if !style_tables_match(sources[core_index], src, at)? {
                     return Err(MountError::Styles(at));
                 }
                 Some(parsed)
@@ -272,16 +271,16 @@ impl<'a> MountedSet<'a> {
         }
         match &mounted.tables {
             Some(tables) => !tables.lod_is_empty(lod),
-            None => self.core.lod_is_empty(lod) == false,
+            None => !self.core.lod_is_empty(lod),
         }
     }
 }
 
 /// Compare two shards' style regions byte for byte, streaming through a 64-byte stack window.
 /// Runs once per shard at mount, never in the render loop.
-fn style_tables_match(core: &dyn ByteSource, other: &dyn ByteSource) -> Result<bool, MountError> {
-    let (core_offset, core_len) = style_region(core)?;
-    let (other_offset, other_len) = style_region(other)?;
+fn style_tables_match(core: &dyn ByteSource, other: &dyn ByteSource, at: u8) -> Result<bool, MountError> {
+    let (core_offset, core_len) = style_region(core, at)?;
+    let (other_offset, other_len) = style_region(other, at)?;
     if core_len != other_len {
         return Ok(false);
     }
@@ -290,8 +289,8 @@ fn style_tables_match(core: &dyn ByteSource, other: &dyn ByteSource) -> Result<b
     let mut done = 0usize;
     while done < core_len {
         let take = (core_len - done).min(64);
-        core.read_at((core_offset + done) as u32, &mut a[..take]).map_err(|_| MountError::Styles(0))?;
-        other.read_at((other_offset + done) as u32, &mut b[..take]).map_err(|_| MountError::Styles(0))?;
+        core.read_at((core_offset + done) as u32, &mut a[..take]).map_err(|_| MountError::Styles(at))?;
+        other.read_at((other_offset + done) as u32, &mut b[..take]).map_err(|_| MountError::Styles(at))?;
         if a[..take] != b[..take] {
             return Ok(false);
         }
@@ -301,12 +300,12 @@ fn style_tables_match(core: &dyn ByteSource, other: &dyn ByteSource) -> Result<b
 }
 
 /// `(offset, length)` of a file's style region: the count byte plus its `count × 8` records.
-fn style_region(src: &dyn ByteSource) -> Result<(usize, usize), MountError> {
+fn style_region(src: &dyn ByteSource, at: u8) -> Result<(usize, usize), MountError> {
     let mut header = [0u8; obc_formats::obcm::HEADER_LEN];
-    src.read_at(0, &mut header).map_err(|_| MountError::Styles(0))?;
+    src.read_at(0, &mut header).map_err(|_| MountError::Styles(at))?;
     let offset = obc_formats::io::rd_u32(&header, 21) as usize;
     let mut count = [0u8; 1];
-    src.read_at(offset as u32, &mut count).map_err(|_| MountError::Styles(0))?;
+    src.read_at(offset as u32, &mut count).map_err(|_| MountError::Styles(at))?;
     Ok((offset, 1 + count[0] as usize * obc_formats::obcm::STYLE_RECORD_LEN))
 }
 
