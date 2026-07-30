@@ -1351,7 +1351,8 @@ fn mixed_compact_and_wide_headers_decode_the_same_both_ways() {
     let node = r.bbox;
 
     // Pass A: the whole-chunk walk, collecting each feature's geometry *and* its offset.
-    let mut walked: Vec<(u8, usize, Vec<(i32, i32)>)> = Vec::new();
+    type Walked = (u8, usize, Vec<(i32, i32)>);
+    let mut walked: Vec<Walked> = Vec::new();
     let mut points = heapless::Vec::<_, MAX_FEAT_PTS>::new();
     let mut ring_lens = heapless::Vec::<_, MAX_FEAT_RINGS>::new();
     let status = r
