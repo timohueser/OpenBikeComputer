@@ -1391,6 +1391,11 @@ impl Storage {
     /// shards, and reclaiming only the manifest would leave gigabytes of orphans behind; the set
     /// goes through [`Storage::delete_set`], which removes the manifest first (§5.4) and then every
     /// derived shard name. The returned count is files, not maps, for the same reason.
+    ///
+    /// The never-delete-the-open-file guard still asks [`Storage::map_file_is`], which knows about
+    /// one handle. That is exact today because a set cannot be the open map (see `map_choices`);
+    /// when the device learns to mount one, the guard has to widen to "not any open shard" — the
+    /// cost of the two states disagreeing is a deleted file under a live handle.
     fn retire_superseded_maps(&mut self, maps: &[MapSummary], keep: usize) -> usize {
         let choices = map_choices(maps);
         // `(name, set id)` — a set is deleted by id (its shard names are derived), a single map by
@@ -1435,6 +1440,7 @@ impl Storage {
     /// A file whose magic isn't `OBCM` is **not a map**: that is precisely the signature a torn
     /// upload leaves (the held-back magic never patched in), so the scan is what makes an interrupted
     /// transfer invisible instead of a half-map the renderer would try to parse.
+    ///
     /// A volume set (`OBCA_Spec.md` §5) is listed as **one** map, keyed on its `MS{id}.OBS`
     /// manifest, and its `MS{id}S{kk}.OBM` shards are never listed at all — §5.4 is explicit that a
     /// shard opened alone is "exactly the kind of quiet wrongness a rider cannot diagnose" (a
@@ -1475,7 +1481,14 @@ impl Storage {
                 };
                 // The manifest carries a real display name; the 8.3 stem (`MS7`) is the fallback.
                 let display = if set.name.is_empty() { name } else { set.name };
-                (Some(id), Some(set.shard_count), display, set.total_bytes + byte_len as u64, set.obcm_version, set.bbox)
+                (
+                    Some(id),
+                    Some(set.shard_count),
+                    display,
+                    set.total_bytes + byte_len as u64,
+                    set.obcm_version,
+                    set.bbox,
+                )
             } else {
                 let Some((obcm_version, bbox)) = self.map_identity(&file) else { continue };
                 (uploaded_map_id(&file), None, name, byte_len as u64, obcm_version, bbox)
@@ -3223,9 +3236,7 @@ fn is_map_entry(e: &embedded_sdmmc::DirEntry, long: Option<&str>) -> bool {
 /// so the device creates it directly and there is no 4-character twin to accept. The id must parse
 /// too — `SET.OBS` is not a manifest, it is clutter.
 fn is_set_manifest_entry(e: &embedded_sdmmc::DirEntry, long: Option<&str>) -> bool {
-    !e.attributes.is_directory()
-        && !long.is_some_and(|n| n.starts_with('.'))
-        && set_manifest_id(&e.name).is_some()
+    !e.attributes.is_directory() && !long.is_some_and(|n| n.starts_with('.')) && set_manifest_id(&e.name).is_some()
 }
 
 /// A short name as the `BASE.EXT` bytes `obc_formats::obcs`' filename parsers take. Both halves
