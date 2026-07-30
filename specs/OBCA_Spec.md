@@ -185,9 +185,9 @@ German average — the Rhine plain carries more road and more building than the 
 
 > **Why these boundaries.** The `coarse` boundary is **forced, not chosen.** The core file carries
 > the whole unified nav graph (§5.1), which alone is 3.8–7.1 MiB per 1000 km², so an area-weighted
-> DACH core lands at **3.2–3.4 GiB with LOD 0–2, 3.6–3.8 GiB with LOD 3 added — ≤ 6 % under the
-> ceiling — and 4.4–4.7 GiB with LOD 4, past it.** LOD 3 and up therefore *must* live in the
-> geometry shards, and LOD 3's ≤ 6 % margin is not a margin worth spending.
+> DACH core lands at **3.0–3.3 GiB with LOD 0–2, 3.3–3.7 GiB with LOD 3 added — as little as 7 %
+> under the ceiling — and 4.1–4.7 GiB with LOD 4, past it.** LOD 3 and up therefore *must* live in
+> the geometry shards, and a 7 % margin is not a margin worth spending.
 >
 > The remaining boundary is chosen so cell size scales inversely with band density: each band's
 > fully-covered cell is 4–5 MiB, so one fetch costs about the same wherever it comes from. That is
@@ -639,8 +639,8 @@ it is an unmountable one (§5.4), which is the correct outcome.
 
 One *logical* map is a **set**: a small manifest plus 1..N physical OBCM files. This is not an
 optimisation — two independent 4 GiB ceilings make it necessary, and the headline selection
-(Germany + Austria + Switzerland, projected at **8–9 GiB**, of which Germany alone is 5–7 GiB) is
-past both:
+(Germany + Austria + Switzerland, projected at **7.6–8.9 GiB**, of which Germany alone is
+5.8–7.1 GiB) is past both:
 
 1. **FAT32** caps one file at `4 GiB − 1 B`, and FAT32 is the card format the firmware's FAT stack
    reads.
@@ -677,7 +677,7 @@ Two consequences shape the firmware work (P3b) and are worth stating as contract
   contributes nothing. Only a boundary-straddling viewport touches two readers.
 
 > **The ceiling this leaves.** The core shard is nav-dominated: at the v1 schema, nav plus POIs run
-> 3.8–7.1 MiB per 1000 km² (§1.5), so an area-weighted DACH core is **3.2–3.4 GiB** — inside the
+> 3.8–7.1 MiB per 1000 km² (§1.5), so an area-weighted DACH core is **3.0–3.3 GiB** — inside the
 > ceiling, but not comfortably, and that is already *with* LOD 3 and up excluded. One logical map is
 > therefore capped at roughly DACH scale. Going past it needs a **sharded nav graph** with
 > cross-file boundary nodes
@@ -807,9 +807,9 @@ assembly bbox, carrying every LOD, the nav graph, and the POIs. Nothing in §5.1
 device's dispatch loop simply runs over one shard.
 
 At the v1 schema this covers essentially every selection a rider makes below country-plus scale —
-a measured whole-Switzerland bake is 0.67 GiB (690 MiB), a Bundesland ≈ 0.6 GiB, and a 300 km
-corridor projects to ≈ 0.3 GiB — so multi-shard sets are the exception, reached at roughly Germany
-scale.
+a measured whole-Switzerland bake is 0.67 GiB (690 MiB), Baden-Württemberg projects to ≈ 0.71 GiB,
+and a 300 km corridor 10 km wide to ≈ 0.25 GiB — so multi-shard sets are the exception, reached at
+roughly Germany scale.
 
 ---
 
