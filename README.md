@@ -340,12 +340,13 @@ The desktop host has no back end yet (D1, #906).
 ### Driving the device step without a device
 
 The USB writes (map, route, firmware) need an OBC on the other end of a cable.
-The device half now ships in every firmware build (#889, `obc-fw-nrf54l/src/usb/`)
-but has not been verified on hardware yet. `dev-harness/` is a second
+The device half ships in every firmware build (#889, `obc-fw-nrf54l/src/usb/`)
+and is verified on hardware. `dev-harness/` is a second
 entry point that mounts the whole app against the **simulated device** —
 `lib/usb/loopback.ts`, the real protocol over an in-memory pipe, paced to the SD
-card's ~700 KB/s so progress, throughput and the remaining-time estimate behave
-the way they will on hardware. It lives outside `src/` because no build has it as
+card's measured **~0.5 MB/s write** ceiling so progress, throughput and the
+remaining-time estimate behave the way they do on hardware. (Reads are faster;
+uploads are write-bound — `sd_bench`'s `wr-*` shapes are the source of truth.) It lives outside `src/` because no build has it as
 an input, which is what keeps the simulated device out of every shipped bundle.
 
 ```sh
