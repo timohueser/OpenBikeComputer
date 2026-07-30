@@ -1,0 +1,163 @@
+// The client, against the real documents.
+//
+// `catalog.v2.example.json` pins its satellites by digest, and the two satellite
+// examples checked in beside it *are* those bytes — verified here rather than
+// assumed, since the whole §11.1 guarantee is that pin. So this suite serves the
+// real files over a fake fetch and lets the real SHA-256 decide, which means a
+// producer that regenerates one example and not the others fails here.
+
+import { describe, expect, it, vi } from "vitest";
+import { BytesVerificationError } from "../download";
+import { CatalogFormatError } from "./manifest";
+import { CatalogV2Client } from "./client";
+import { EXAMPLE_CELL_INDEX, EXAMPLE_REGION_CELLS, EXAMPLE_ROOT } from "./testdata";
+
+const ROOT_URL = "https://maps.example.org/catalog/v2/catalog.json";
+const FINE_INDEX_URL = "https://maps.example.org/catalog/v2/cells/fine/index.json";
+const SWISS_CELLS_URL = "https://maps.example.org/catalog/v2/regions/europe/switzerland/cells.json";
+
+async function sha256Hex(body: string): Promise<string> {
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body));
+    return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** A fetch over a fixed URL → body map, counting requests. */
+function serving(bodies: Record<string, string>) {
+    const calls: string[] = [];
+    const impl = vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        calls.push(url);
+        const body = bodies[url];
+        if (body === undefined) return new Response("no such object", { status: 404, statusText: "Not Found" });
+        return new Response(new TextEncoder().encode(body), { status: 200 });
+    }) as unknown as typeof fetch;
+    return { impl, calls };
+}
+
+function allBodies(over: Record<string, string> = {}): Record<string, string> {
+    return {
+        [ROOT_URL]: EXAMPLE_ROOT,
+        [FINE_INDEX_URL]: EXAMPLE_CELL_INDEX,
+        [SWISS_CELLS_URL]: EXAMPLE_REGION_CELLS,
+        ...over,
+    };
+}
+
+describe("CatalogV2Client.load", () => {
+    it("reads and validates the root", async () => {
+        const { impl } = serving(allBodies());
+        const client = await CatalogV2Client.load(ROOT_URL, { fetchImpl: impl });
+        expect(client.catalog.schema.id).toBe("bikepacking");
+        expect(client.baseUrl).toBe(ROOT_URL);
+    });
+
+    it("refuses a relative URL rather than guessing a base", async () => {
+        // Resolving one is a host's job: the web host has a `document.baseURI`,
+        // the desktop host does not, and a client that guessed would resolve a
+        // CDN path against a Tauri asset scheme.
+        await expect(CatalogV2Client.load("./data/catalog.json", { fetchImpl: serving({}).impl })).rejects.toThrow(
+            CatalogFormatError,
+        );
+    });
+
+    it("surfaces an HTTP failure as itself", async () => {
+        const { impl } = serving({});
+        await expect(CatalogV2Client.load(ROOT_URL, { fetchImpl: impl })).rejects.toThrow(/404/);
+    });
+
+    it("rejects a root of another envelope", async () => {
+        const { impl } = serving({ [ROOT_URL]: '{"schema_version": 1, "presets": [], "artifacts": []}' });
+        await expect(CatalogV2Client.load(ROOT_URL, { fetchImpl: impl })).rejects.toThrow(CatalogFormatError);
+    });
+});
+
+describe("cellIndex", () => {
+    it("verifies the satellite against the root's pin and parses it", async () => {
+        const { impl } = serving(allBodies());
+        const client = await CatalogV2Client.load(ROOT_URL, { fetchImpl: impl });
+        const fine = await client.cellIndex("fine");
+        expect(fine.cells.map((c) => c.id)).toEqual(["18/1204/1052", "18/1204/1053"]);
+        // Cell URLs are resolved once, here, so nothing downstream holds a
+        // reference that means different things depending on where it is read.
+        expect(fine.cells[0].url).toBe("https://maps.example.org/catalog/v2/cells/fine/1204/1052.obcm");
+    });
+
+    it("rejects a satellite whose bytes are not the ones the root hashed", async () => {
+        // A byte the digest did not cover — the failure §11.1 exists to catch.
+        const tampered = EXAMPLE_CELL_INDEX.replace('"bytes": 552', '"bytes": 553');
+        const { impl } = serving(allBodies({ [FINE_INDEX_URL]: tampered }));
+        const client = await CatalogV2Client.load(ROOT_URL, { fetchImpl: impl });
+        await expect(client.cellIndex("fine")).rejects.toThrow(BytesVerificationError);
+        // …and the root is retained rather than patched: the client is still
+        // usable, and a retry is a retry rather than a reload.
+        expect(client.catalog.schema.id).toBe("bikepacking");
+    });
+
+    it("rejects a satellite of the wrong length before hashing it", async () => {
+        const { impl } = serving(allBodies({ [FINE_INDEX_URL]: EXAMPLE_CELL_INDEX + " " }));
+        const client = await CatalogV2Client.load(ROOT_URL, { fetchImpl: impl });
+        await expect(client.cellIndex("fine")).rejects.toThrow(/longer than the manifest/);
+    });
+
+    it("fetches each satellite once, and pins nothing on failure", async () => {
+        const bodies = allBodies();
+        const { impl, calls } = serving(bodies);
+        const client = await CatalogV2Client.load(ROOT_URL, { fetchImpl: impl });
+        await Promise.all([client.cellIndex("fine"), client.cellIndex("fine")]);
+        expect(calls.filter((u) => u === FINE_INDEX_URL)).toHaveLength(1);
+
+        // A CDN hiccup must not make a band permanently unavailable for the life
+        // of the page, so a rejected load is not the cached one.
+        const failing = serving(allBodies({ [FINE_INDEX_URL]: "not json" }));
+        const client2 = await CatalogV2Client.load(ROOT_URL, { fetchImpl: failing.impl });
+        await expect(client2.cellIndex("fine")).rejects.toThrow();
+        await expect(client2.cellIndex("fine")).rejects.toThrow();
+        expect(failing.calls.filter((u) => u === FINE_INDEX_URL)).toHaveLength(2);
+    });
+
+    it("has nothing to say about a band the schema does not have", async () => {
+        const { impl } = serving(allBodies());
+        const client = await CatalogV2Client.load(ROOT_URL, { fetchImpl: impl });
+        await expect(client.cellIndex("vivid")).rejects.toThrow(/no cell index/);
+    });
+});
+
+describe("regionCellList", () => {
+    it("verifies, parses, and cross-checks against the indices already in hand", async () => {
+        const { impl } = serving(allBodies());
+        const client = await CatalogV2Client.load(ROOT_URL, { fetchImpl: impl });
+        await client.cellIndex("fine");
+        const cells = await client.regionCellList("europe/switzerland");
+        expect(cells.cells.fine).toEqual(["18/1204/1052", "18/1204/1053"]);
+    });
+
+    it("catches a region naming a cell its band's index does not have", async () => {
+        // §11.7's cross-document MUST, end to end: a bakery that published a
+        // region list one cell ahead of the index it points into. Both documents
+        // are internally valid and correctly pinned — the root is re-pinned here
+        // so they are — which is precisely why the check has to be a third one.
+        // Not a hole, either: a hole is ground with no cell, this is a named
+        // cell with no bytes, size or digest.
+        const thinned = JSON.parse(EXAMPLE_CELL_INDEX);
+        thinned.cells.pop();
+        const body = JSON.stringify(thinned);
+        const root = JSON.parse(EXAMPLE_ROOT);
+        const ref = root.cell_index.find((r: { band: string }) => r.band === "fine");
+        ref.cell_count = 1;
+        ref.bytes = new TextEncoder().encode(body).byteLength;
+        ref.sha256 = await sha256Hex(body);
+
+        const { impl } = serving(
+            allBodies({ [ROOT_URL]: JSON.stringify(root), [FINE_INDEX_URL]: body }),
+        );
+        const client = await CatalogV2Client.load(ROOT_URL, { fetchImpl: impl });
+        await client.cellIndex("fine");
+        await expect(client.regionCellList("europe/switzerland")).rejects.toThrow(/18\/1204\/1053/);
+    });
+
+    it("has nothing to say about a region the catalog does not have", async () => {
+        const { impl } = serving(allBodies());
+        const client = await CatalogV2Client.load(ROOT_URL, { fetchImpl: impl });
+        await expect(client.regionCellList("europe/atlantis")).rejects.toThrow(/no region/);
+    });
+});
