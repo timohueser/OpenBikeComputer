@@ -35,10 +35,14 @@ use sha2::{Digest, Sha256};
 /// system libgeos 3.14.1 dylib — they agree, which is why this is pinned rather
 /// than merely printed.
 ///
-/// Re-pinned for default preset **v4** (the bikepacking restyle: 7-tier LOD
-/// pyramid + footprint culling + merge_lines), which legitimately changes the
-/// packed bytes; all three CI platforms produced this same digest (30 620 bytes).
-const TINY_OBCM_SHA256: &str = "9a5aacb147b731d9a8edc7bfef172850599b27500dcee6659c5034a69d2764a4";
+/// Re-pinned for **OBCM v11** (#1009: tight chunks + the compact feature header),
+/// which legitimately changes every packed byte. The determinism claim is intact —
+/// all three CI platforms produced this one digest, and it reproduces locally on
+/// macOS arm64 against a system libgeos 3.14.1. This fixture shrank 30 620 → 3 305
+/// bytes (9.3×, far past the ~2.3× a real map sees): it is small enough that its
+/// few chunks were nearly all padding, which is the effect at its most extreme.
+/// Previously `9a5aacb1…` for default preset v4.
+const TINY_OBCM_SHA256: &str = "78bc67805da121cae44e248dd8ed5fe5f93c759cc458a51c648635865f108172";
 
 fn repo(rel: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(rel)

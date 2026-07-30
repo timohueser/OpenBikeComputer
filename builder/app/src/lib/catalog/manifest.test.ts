@@ -37,7 +37,7 @@ describe("parseCatalog", () => {
         const swiss = catalog.artifacts.find(
             (a) => a.region_id === "europe/switzerland" && a.preset_id === "default",
         )!;
-        expect(swiss.obcm_version).toBe(10);
+        expect(swiss.obcm_version).toBe(11);
         expect(swiss.sha256).toMatch(/^[0-9a-f]{64}$/);
         expect(swiss.bbox.min_lat).toBe(45817995);
     });
