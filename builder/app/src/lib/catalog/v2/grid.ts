@@ -141,8 +141,16 @@ export function cellSquare(cell: CellId): UBox {
 }
 
 /** Floor division — `Math.trunc` would round toward zero and drift a whole cell
- *  south/west of the origin, which is exactly the bug the negative-origin tests
- *  exist to catch. */
+ *  wherever the dividend is negative.
+ *
+ *  Which, to be honest about it, no catalog coordinate is: the origin is −2^28,
+ *  strictly outside the geographic domain on both axes, so `lat - GRID_ORIGIN`
+ *  and `lon - GRID_ORIGIN` are non-negative for every reachable input and
+ *  `Math.trunc` would agree with this everywhere a real map is. It stays
+ *  because the alternative is arithmetic that is only correct because of a fact
+ *  about the origin stated three definitions away, and it is pinned by an
+ *  explicitly *below*-origin vector in `grid.test.ts` rather than by a vector
+ *  that would pass either way. */
 function floorDiv(a: number, b: number): number {
     return Math.floor(a / b);
 }
