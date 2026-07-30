@@ -10,7 +10,12 @@ description = "OBCM map packer (OSM .osm.pbf -> .obcm)"
 obc-formats = { path = "../../firmware/obc-formats" }
 # High-level reader algorithms used for round-trip comparison, geometry capacity, POI distance,
 # and the obcm_diff tool. Format facts come from obc-formats, not this consumer.
-obc-reader = { path = "../../firmware/obc-reader" }
+#
+# `alloc` is on because this crate's own examples build the ~277 KB `MapCache` on the heap
+# (`MapCache::new_boxed`, host-only). Without it `cargo build -p obc-pack` fails while a
+# workspace build succeeds — the web demo enables the feature and cargo unifies it — so the
+# per-crate command in firmware/README.md silently stopped working.
+obc-reader = { path = "../../firmware/obc-reader", features = ["alloc"] }
 # `preserve_order` is load-bearing: the config assigns style IDs 1-based in
 # config.json document order, so the parsed map must keep insertion order.
 serde = { version = "1", features = ["derive"] }
