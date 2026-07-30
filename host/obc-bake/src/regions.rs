@@ -50,6 +50,17 @@ impl Region {
     pub fn cache_name(&self) -> String {
         format!("{}-latest.osm.pbf", self.id.replace('/', "_"))
     }
+
+    /// The region's Osmosis polygon under `base` — Geofabrik serves it beside the
+    /// extract, at the same path with a `.poly` extension.
+    pub fn poly_url(&self, base: &str) -> String {
+        format!("{}/{}.poly", base.trim_end_matches('/'), self.id)
+    }
+
+    /// Cache filename for that polygon, flattened like [`Region::cache_name`].
+    pub fn poly_cache_name(&self) -> String {
+        format!("{}.poly", self.id.replace('/', "_"))
+    }
 }
 
 #[derive(Debug, Deserialize)]
