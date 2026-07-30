@@ -2674,6 +2674,7 @@ dependencies = [
  "obc-render",
  "obc-replay",
  "obc-route",
+ "obcm-testkit",
  "pollster",
  "rfd",
 ]
