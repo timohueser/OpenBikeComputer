@@ -29,6 +29,27 @@
 //! - **The catalog is never half-published.** [`publish`] — artifacts first, their
 //!   presence re-checked at the destination, manifest last as one object swap.
 //!
+//! ## The cell path (#1016 P2)
+//!
+//! The same four properties, one unit smaller. `obc-bake bake --cells <region…>`
+//! resolves each curated region to the **grid cells** its coverage polygon touches
+//! ([`coverage`]), cuts exactly those from exactly the extracts that can complete
+//! them ([`cells`]), and writes the tree `obc-pack catalog --v2` turns into an
+//! [`OBCC_Spec.md`](../../../specs/OBCC_Spec.md) §11 cell catalog. Regions stop being
+//! artifacts and become selections; two regions that share ground share cells, and
+//! the store pays for that ground once.
+//!
+//! ```text
+//! regions.toml ─┐
+//!               ├─▶ bake --cells ──▶ <tree>/cells/<band>/<i>/<j>.obcm (+ sidecar)
+//! <id>.poly ────┘                    <tree>/regions/<id>/{region.json, boundary.poly}
+//!                                    <tree>/{schema.json, skins/<id>.json}
+//!                                     │
+//!                                     ├─▶ obc-pack catalog --v2 ──▶ catalog.json + satellites
+//!                                     ├─▶ obc-bake verify ──▶ digests, headers, reader round-trips
+//!                                     └─▶ publish --v2 ──▶ cells first, root last
+//! ```
+//!
 //! And one more that is not a property of the code but of the operation:
 //! **failures are loud** ([`bake::RunSummary`]). A region that quietly did not bake
 //! is indistinguishable, to a user, from a region deliberately not offered.
@@ -42,6 +63,8 @@
 //! nothing here assumes CI.
 
 pub mod bake;
+pub mod cells;
+pub mod coverage;
 pub mod guard;
 pub mod hash;
 pub mod presets;

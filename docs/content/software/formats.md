@@ -1088,7 +1088,7 @@ Publishing follows the same one-way order the spec demands: every artifact uploa
 
 ## Cells and assemblies — the shape the catalog is moving to
 
-*Designed and specified, not yet built: this section describes where the catalog is going, and the contract it will follow. The catalog on the site today is the region × preset one above.*
+*Half built. The grid, the cell cutter, the `schema_version 2` catalog and the bakery's cell path exist and produce real trees; the **assembler** and the builder's selection UI do not yet, so the catalog on the site today is still the region × preset one above.*
 
 The catalog above has a shape problem that no amount of care fixes. A bakery can only offer what it pre-baked, so **Germany + Switzerland in one file** does not exist unless somebody baked that exact pair — and pre-baking every plausible combination of neighbours explodes the store. It already pays double by design (Germany sits alongside its sixteen Bundesländer, covering the same ground twice), and every new style preset multiplies the whole pile again.
 
@@ -1200,6 +1200,14 @@ And the limit is never met at runtime. Every file's size is *computable from the
 
 The measurement behind all of these numbers — where the bytes actually are, per LOD, per cell, at candidate cell sizes — is [`cell_size_survey.rs`](src:host/obc-pack/examples/cell_size_survey.rs), and it is what settled the band sizes and the DACH shape above: a core of 2.8–3.0 GiB, one coarse shard of 225–296 MiB, and about six geometry shards holding 4.6–5.5 GiB.
 
+### Baking cells without a planet
+
+A cell store is planet-shaped in principle and a curated shelf in practice, so the bakery had to keep working from ordinary Geofabrik extracts. `obc-bake bake --cells europe/germany europe/switzerland` is the whole flow: each named region is resolved to the cells its **coverage polygon** touches — the region's own `.poly`, read at full resolution, not the simplified outline the catalog draws and not a bounding box, because a box around Germany reaches into four other countries and would bake a slab of empty cells in each.
+
+Which leaves the interesting question: who bakes the cells on a border? A cell cut from the German extract alone is missing every Swiss side road, and measured in the double-covered band only about half of each file's junctions exist in the other's — so publishing it as full coverage would be a quiet lie. The rule the bakery uses is that a cell's **source set** is every co-baked extract whose polygon touches its square, and the cell is cut **once, from exactly that set**. Two countries baked together therefore run three cuts — Germany-only cells, Switzerland-only cells, and the border cells cut from *both* extracts at once — and a cell is published as canonical only when the union of its own sources covers its whole square. Everything else is flagged `partial`, which the catalog carries per cell and the builder will draw as a warning inside the selection rather than as covered ground.
+
+Two properties make that safe rather than merely plausible. The source set is a **pure function** of the cell and the run's extracts — no ordering, no first-writer-wins — which is what the format's determinism requirement demands of a tie-break. And a canonical cell is **never** replaced by a partial one: baking Switzerland alone after a joint bake re-cuts the border cells, finds them thinner than what is already published, and keeps the published ones. The skip logic is the same two-key design as the region bakery, one unit smaller: a plan whose every cell is current is skipped *before* its extracts are read, and a re-dated but byte-identical extract rewrites sidecars and cuts nothing.
+
 The grid, the theorem, the seam rules, the assembly contract, the volume-set manifest bytes, and the provenance rule that stops a partially-covered border cell from passing as canonical are all normative in [`OBCA_Spec.md`](src:specs/OBCA_Spec.md); the catalog that publishes cells, skins, and cell-set regions is [`OBCC_Spec.md` §11](src:specs/OBCC_Spec.md).
 
 ---
@@ -1220,5 +1228,6 @@ The grid, the theorem, the seam rules, the assembly contract, the volume-set man
 - The cell grid, the assembly contract, and the volume-set manifest: [`OBCA_Spec.md`](src:specs/OBCA_Spec.md); the byte-density measurement its band sizes come from: [`cell_size_survey.rs`](src:host/obc-pack/examples/cell_size_survey.rs)
 - The cell cutter — the grid arithmetic, cell ids and band table in [`obc-pack/src/grid.rs`](src:host/obc-pack/src/grid.rs), the cut itself (clip at the edge, the deterministic boundary junctions, interior-only pruning, provenance) in [`obc-pack/src/cut.rs`](src:host/obc-pack/src/cut.rs)
 - The bakery that fills the tree the generator walks, and publishes it — the curated region list [`regions.toml`](src:host/obc-bake/regions.toml), the runner [`obc-bake/src/bake.rs`](src:host/obc-bake/src/bake.rs), the read-it-back gate [`obc-bake/src/verify.rs`](src:host/obc-bake/src/verify.rs), the ordered publish [`obc-bake/src/publish.rs`](src:host/obc-bake/src/publish.rs)
+- The bakery's **cell** path — region → cell sets and the co-baked source-set rule in [`obc-bake/src/cells.rs`](src:host/obc-bake/src/cells.rs), the `.poly` coverage geometry that decides both the selection and `partial` in [`obc-bake/src/coverage.rs`](src:host/obc-bake/src/coverage.rs), the lockstep guard in [`obc-bake/src/guard.rs`](src:host/obc-bake/src/guard.rs)
 
 Maps are produced by the packer and routes by the GPX converter — how those work, and how a route is matched to the map you're riding, is the subject of [packer & routing](../packer-routing/). For how these bytes become pixels, see the [rendering pipeline](../rendering/). Routes and rides also cross to a phone over Bluetooth as *these same bytes* — how that link is shaped is [the companion link](../companion-link/).
