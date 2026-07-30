@@ -128,6 +128,17 @@ fn dedup_consecutive<T: PartialEq>(points: &mut Vec<T>) {
     points.dedup();
 }
 
+/// The `.poly`'s rings at **full resolution**, `(lon, lat)` degrees, closed.
+///
+/// This is the parse without the reduction: [`simplified_rings`] is presentation
+/// and MUST NOT decide a cell set (`OBCC_Spec.md` §11.8), so the bakery — which
+/// *does* have to decide one, and has to decide whether a source covers a cell —
+/// reads the rings from here instead. One parser, two consumers, no chance of the
+/// drawn border and the baked coverage disagreeing about what the file said.
+pub fn poly_rings(poly_text: &str) -> Result<Vec<Vec<(f64, f64)>>, String> {
+    Ok(parse_poly(poly_text)?.into_iter().map(|r| r.points).collect())
+}
+
 /// A region's outline: assembled, simplified, rounded to microdegrees, ordered.
 ///
 /// `tolerance_udeg` is the GEOS `TopologyPreservingSimplifier` tolerance in

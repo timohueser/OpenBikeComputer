@@ -86,6 +86,12 @@ pub fn check(url: Option<&str>) -> Result<GuardOutcome, String> {
 pub fn evaluate(body: &str) -> Result<GuardOutcome, String> {
     // Whole body, one document, `schema_version` first — the consumer rules of §7
     // apply to the guard exactly as they do to the site.
+    let envelope: serde_json::Value = serde_json::from_str(body).map_err(|e| format!("catalog manifest: {e}"))?;
+    if envelope.get("schema_version").and_then(serde_json::Value::as_u64)
+        == Some(u64::from(obc_pack::catalog::v2::CATALOG_SCHEMA_VERSION))
+    {
+        return evaluate_v2(body);
+    }
     let manifest: CatalogManifest = serde_json::from_str(body).map_err(|e| format!("catalog manifest: {e}"))?;
     if manifest.schema_version != obc_pack::catalog::CATALOG_SCHEMA_VERSION {
         return Err(format!(
@@ -107,6 +113,220 @@ pub fn evaluate(body: &str) -> Result<GuardOutcome, String> {
     } else {
         Ok(GuardOutcome::Stale { expected, found, artifacts })
     }
+}
+
+/// A published **cell** catalog (`OBCC_Spec.md` §11) states its OBCM version once,
+/// in `schema.obcm_version`, because every cell agrees with it or the catalog could
+/// not have been generated. That single number is the whole check — and it is a
+/// harder cut than v1's, because a mismatch means no *assembly* is possible at all,
+/// not merely that some region is stale.
+fn evaluate_v2(body: &str) -> Result<GuardOutcome, String> {
+    let root: obc_pack::catalog::v2::CatalogV2 =
+        serde_json::from_str(body).map_err(|e| format!("catalog manifest (v2): {e}"))?;
+    let expected = obc_formats::obcm::VERSION;
+    let cells: usize = root.cell_index.iter().map(|b| b.cell_count as usize).collect::<Vec<_>>().iter().sum();
+    if root.schema.obcm_version == expected {
+        Ok(GuardOutcome::Current { artifacts: cells, obcm_version: expected })
+    } else {
+        Ok(GuardOutcome::Stale {
+            expected,
+            found: vec![(
+                format!("schema `{}` revision {} ({cells} cells)", root.schema.id, root.schema.revision),
+                root.schema.obcm_version,
+            )],
+            artifacts: cells,
+        })
+    }
+}
+
+// --- the cell-store lockstep guard (OBCA §6.3) ------------------------------------
+
+/// What the cell-store guard found in a bake tree.
+#[derive(Debug, Clone, Default)]
+pub struct CellStoreOutcome {
+    pub cells: usize,
+    pub revision: u32,
+    pub partial: Vec<String>,
+    /// Every violation, named. Empty means the store is in lockstep.
+    pub problems: Vec<String>,
+}
+
+impl CellStoreOutcome {
+    pub fn ok(&self) -> bool {
+        self.problems.is_empty()
+    }
+
+    pub fn render(&self) -> String {
+        use std::fmt::Write;
+        let mut s = String::new();
+        if self.problems.is_empty() {
+            let _ = writeln!(
+                s,
+                "cell-store guard: {} cells, all at schema revision {} and OBCM v{} — lockstep",
+                self.cells,
+                self.revision,
+                obc_formats::obcm::VERSION
+            );
+            if !self.partial.is_empty() {
+                let _ = writeln!(
+                    s,
+                    "  {} cell(s) are `partial` — co-bake the neighbouring extract to complete them \
+                     (OBCA_Spec.md §3.7):",
+                    self.partial.len()
+                );
+                for id in self.partial.iter().take(10) {
+                    let _ = writeln!(s, "    {id}");
+                }
+                if self.partial.len() > 10 {
+                    let _ = writeln!(s, "    … and {} more", self.partial.len() - 10);
+                }
+            }
+            return s;
+        }
+        let _ = writeln!(
+            s,
+            "cell-store guard: FAILED — {} problem(s).\n\nA cell store is lockstep: every cell in an assembly must \
+             share one OBCM version and one schema revision, because assembly copies chunk bytes between files and \
+             that is only meaningful within one revision (OBCA_Spec.md §5, §6.3). Re-bake the store:\n\n    \
+             obc-bake bake --cells --out <tree> --force <region…>\n",
+            self.problems.len()
+        );
+        for p in self.problems.iter().take(30) {
+            let _ = writeln!(s, "  {p}");
+        }
+        if self.problems.len() > 30 {
+            let _ = writeln!(s, "  … and {} more", self.problems.len() - 30);
+        }
+        s
+    }
+}
+
+/// Check a **cell bake tree** for the two things that make a store assemblable, and
+/// for the one thing D3 says a bake must never do.
+///
+/// - **Schema-revision lockstep.** Every cell sidecar states the revision it was cut
+///   at; they must all agree with each other *and* with `schema.json`'s `_meta`. A
+///   mixed store is not a store that is partly stale — it is one whose cells cannot be
+///   grafted into a single file at all, so this is fatal with no override
+///   (`OBCC_Spec.md` §11.9).
+/// - **OBCM lockstep.** Every cell's own header must carry this build's OBCM version.
+/// - **No silent downgrade (D3).** A cell whose recorded state says it was canonical
+///   but whose published sidecar now says `partial` means a narrower bake overwrote a
+///   covering one — the exact failure `OBCA_Spec.md` §3.7 forbids, and the reason
+///   [`crate::cells`] refuses it at install time. Checking it again here catches a
+///   store assembled by hand or merged from two machines.
+///
+/// Runs over a tree rather than a URL — unlike [`check`], which is about a deployment
+/// — so it needs no network and is what a bake box runs before it publishes.
+pub fn check_cell_store(tree: &std::path::Path) -> Result<CellStoreOutcome, String> {
+    #[derive(serde::Deserialize)]
+    struct Sidecar {
+        schema_revision: u32,
+        partial: bool,
+    }
+    #[derive(serde::Deserialize)]
+    struct State {
+        sidecar: Sidecar,
+    }
+    #[derive(serde::Deserialize)]
+    struct SchemaMeta {
+        revision: u32,
+    }
+    #[derive(serde::Deserialize)]
+    struct SchemaDoc {
+        #[serde(rename = "_meta")]
+        meta: SchemaMeta,
+    }
+
+    let schema_path = tree.join("schema.json");
+    let schema: SchemaDoc = serde_json::from_str(
+        &std::fs::read_to_string(&schema_path).map_err(|e| format!("{}: {e}", schema_path.display()))?,
+    )
+    .map_err(|e| format!("{}: {e}", schema_path.display()))?;
+
+    let mut out = CellStoreOutcome { revision: schema.meta.revision, ..Default::default() };
+    let cells_root = tree.join("cells");
+    if !cells_root.is_dir() {
+        return Err(format!("{}: no `cells/` directory — is this a cell bake tree?", cells_root.display()));
+    }
+    for band_dir in sorted_dir(&cells_root)? {
+        if !band_dir.is_dir() || name_of(&band_dir).starts_with('.') {
+            continue;
+        }
+        for i_dir in sorted_dir(&band_dir)? {
+            if !i_dir.is_dir() || name_of(&i_dir).starts_with('.') {
+                continue;
+            }
+            for path in sorted_dir(&i_dir)? {
+                let name = name_of(&path);
+                if name.starts_with('.') || !name.ends_with(".obcm") {
+                    continue;
+                }
+                out.cells += 1;
+                let sidecar_path = path.with_file_name(format!("{name}.json"));
+                let sidecar: Sidecar =
+                    match std::fs::read_to_string(&sidecar_path).ok().and_then(|t| serde_json::from_str(&t).ok()) {
+                        Some(s) => s,
+                        None => {
+                            out.problems.push(format!("{}: no readable sidecar", sidecar_path.display()));
+                            continue;
+                        }
+                    };
+                if sidecar.schema_revision != schema.meta.revision {
+                    out.problems.push(format!(
+                        "{}: cut at schema revision {} but the store is revision {}",
+                        path.display(),
+                        sidecar.schema_revision,
+                        schema.meta.revision
+                    ));
+                }
+                match crate::verify::header_of(&path) {
+                    Ok((version, _)) if version != obc_formats::obcm::VERSION => out.problems.push(format!(
+                        "{}: OBCM v{version}, this build writes v{}",
+                        path.display(),
+                        obc_formats::obcm::VERSION
+                    )),
+                    Ok(_) => {}
+                    Err(e) => out.problems.push(e),
+                }
+                if sidecar.partial {
+                    let id = format!("{}/{}/{}", name_of(&band_dir), name_of(&i_dir), name.trim_end_matches(".obcm"));
+                    out.partial.push(id);
+                    // D3: was this square covered before? Then a narrower bake took
+                    // coverage away, which no run is allowed to do.
+                    let state_path = path.with_file_name(format!(".{}.cell.json", name.trim_end_matches(".obcm")));
+                    if let Some(state) =
+                        std::fs::read_to_string(&state_path).ok().and_then(|t| serde_json::from_str::<State>(&t).ok())
+                    {
+                        if !state.sidecar.partial {
+                            out.problems.push(format!(
+                                "{}: published as `partial`, but this tree recorded it as canonical — a covering bake \
+                                 existed and was replaced by a narrower one (OBCA_Spec.md §3.7)",
+                                path.display()
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if out.cells == 0 {
+        return Err(format!("{}: no cells — refusing to call an empty store lockstep", cells_root.display()));
+    }
+    Ok(out)
+}
+
+fn name_of(path: &std::path::Path) -> String {
+    path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string()
+}
+
+fn sorted_dir(dir: &std::path::Path) -> Result<Vec<std::path::PathBuf>, String> {
+    let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .map_err(|e| format!("{}: {e}", dir.display()))?
+        .map(|e| e.map(|e| e.path()).map_err(|e| format!("{}: {e}", dir.display())))
+        .collect::<Result<_, _>>()?;
+    entries.sort();
+    Ok(entries)
 }
 
 #[cfg(test)]
