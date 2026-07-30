@@ -53,6 +53,19 @@ pub trait ExtractSource: Sync {
     fn describe(&self) -> String;
     /// Download or reuse the extract for `region`.
     fn fetch(&self, region: &Region, progress: &Progress) -> Result<Extract, String>;
+    /// The region's Osmosis polygon (`<id>.poly`), as text.
+    ///
+    /// This is the extract's own statement of what ground it covers, and the cell
+    /// bake needs it for two decisions a bbox cannot make: which cells a region
+    /// selects, and whether a baked cell is canonical or `partial`
+    /// ([`crate::coverage`]). It is also the file the catalog's drawable region
+    /// outline is reduced from (`OBCC_Spec.md` §11.8), so both readings come from
+    /// one download.
+    ///
+    /// Tiny (tens of KB) and unversioned by Geofabrik, so it is fetched fresh rather
+    /// than validator-cached — but written into the same cache directory, which is
+    /// what lets an offline re-bake work.
+    fn fetch_poly(&self, region: &Region, progress: &Progress) -> Result<String, String>;
 }
 
 /// Geofabrik's public download server (or any mirror laid out the same way).
@@ -128,6 +141,27 @@ impl ExtractSource for GeofabrikExtracts {
         std::fs::write(&meta_path, text).map_err(|e| format!("{}: {e}", meta_path.display()))?;
         Ok(Extract { path: dest, snapshot: head.snapshot, bytes, downloaded: true })
     }
+
+    fn fetch_poly(&self, region: &Region, progress: &Progress) -> Result<String, String> {
+        let url = region.poly_url(&self.base_url);
+        let cached = self.cache_dir.join(region.poly_cache_name());
+        match obc_pack::net::get_text(&url) {
+            Ok(text) => {
+                std::fs::create_dir_all(&self.cache_dir).map_err(|e| format!("{}: {e}", self.cache_dir.display()))?;
+                std::fs::write(&cached, &text).map_err(|e| format!("{}: {e}", cached.display()))?;
+                Ok(text)
+            }
+            // A cached copy is a better answer than a failed bake: the polygon
+            // changes about as often as a country's borders do.
+            Err(e) => match std::fs::read_to_string(&cached) {
+                Ok(text) => {
+                    progress.warn(format!("{}: {e} — using the cached {}", region.id, cached.display()));
+                    Ok(text)
+                }
+                Err(_) => Err(format!("{url}: {e}")),
+            },
+        }
+    }
 }
 
 /// Extracts already on disk: a directory of `.osm.pbf` files, or a `file://` URL.
@@ -195,6 +229,23 @@ impl ExtractSource for LocalExtracts {
             }
         };
         Ok(Extract { path, snapshot, bytes: meta.len(), downloaded: false })
+    }
+
+    fn fetch_poly(&self, region: &Region, _progress: &Progress) -> Result<String, String> {
+        let nested = self.root.join(format!("{}.poly", region.id));
+        let flat = self.root.join(region.poly_cache_name());
+        for path in [&nested, &flat] {
+            if path.is_file() {
+                return std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()));
+            }
+        }
+        Err(format!(
+            "no coverage polygon for `{}` — looked for {} and {}. A cell bake needs it: it is what decides which \
+             cells the region selects and whether a border cell is canonical (OBCA_Spec.md §3.7)",
+            region.id,
+            nested.display(),
+            flat.display()
+        ))
     }
 }
 
