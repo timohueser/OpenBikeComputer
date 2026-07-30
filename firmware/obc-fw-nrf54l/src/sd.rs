@@ -84,12 +84,20 @@ const SD_INIT_DIVISOR: u8 = 127;
 
 /// SD clock for bulk transfer once the card is initialised. SPIM00 is PLL-clocked (128 MHz base)
 /// and rated 32 Mbps on the extra-high-drive P2 pads (main.rs sets E0/E1 + max HS-pad slew).
-/// **M32 failed on-glass over the DK jumper harness (2026-07-24)**; this is the middle rung,
-/// [`Frequency::M16`] (÷8) — 2× the old SERIAL22 ceiling, which that instance could never reach
-/// at any setting. `sd_bench`'s FNV integrity guard is the referee if a card/harness combination
-/// misbehaves; drop to `M8` (proven) if so, and re-try `M32` on the production PCB's short
-/// matched traces.
+/// **M32 failed on-glass over the DK jumper harness (2026-07-24)**; [`Frequency::M16`] (÷8) is
+/// the proven `SetConfig` base — but the enum only names the powers of two, so [`init`]
+/// immediately overrides the prescaler to [`SD_FAST_DIVISOR`], the same raw-poke pattern the
+/// ~1 MHz acquire floor uses.
 pub const SD_FAST_HZ: Frequency = Frequency::M16;
+
+/// The bulk clock's true divisor: **÷6 ≈ 21.3 MHz**, inside the SD spec's 25 MHz SPI ceiling.
+/// Passed both of `sd_bench`'s integrity guards on the DK jumper harness (2026-07-30: whole-map
+/// FNV read + stamped 4 MB write verified at ÷8) for +12% reads / +14% writes over ÷8.
+/// ⚠️ **Even divisors only**: an odd divisor cannot produce a symmetric SCK, and ÷5 hard-wedged
+/// the bus on glass (a blocking spim spin, power-cycle to recover — same date). ÷4 = 32 MHz is
+/// the next rung, to be re-tried on the production PCB's short traces; ÷8 is the proven fallback
+/// if a card/harness combination misbehaves.
+pub const SD_FAST_DIVISOR: u8 = 6;
 
 /// The in-progress ride log on the card — a header-less array of fixed track records (8.3
 /// name). Truncated-and-reused per ride, converted to the `RD{id}.ORD` ride object, then
@@ -488,6 +496,9 @@ pub fn init(mut spi: SdSpi, mut cs: Output<'static>) -> Option<Storage> {
         fast.orc = 0xFF;
         let _ = dev.bus_mut().set_config(&fast);
     });
+    // Then the true bulk clock: `Frequency` only names the powers of two, so the ÷6 = 21.3 MHz
+    // rung is a raw prescaler poke over the config just set — see [`SD_FAST_DIVISOR`].
+    embassy_nrf::pac::SPIM00.prescaler().write(|w| w.set_divisor(SD_FAST_DIVISOR));
     Storage::mount(card, cs)
 }
 

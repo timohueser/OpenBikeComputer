@@ -34,6 +34,7 @@
 
 pub(crate) mod command;
 pub(crate) mod identity;
+pub(crate) mod stage;
 pub(crate) mod transfer;
 
 use core::cell::RefCell;

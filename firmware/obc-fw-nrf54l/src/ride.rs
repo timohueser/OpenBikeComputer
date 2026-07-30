@@ -680,6 +680,15 @@ pub(crate) async fn run_app(
     // that turns "the card is gone" into "the rider dismissed it". See the reconcile below.
     #[cfg(feature = "ble")]
     let mut map_card_shown = false;
+    // Map-upload pacing (#889, the WDT-reset episode): while bytes are landing, the card is the
+    // only thing on glass and every repaint is ~85 ms of render+push stolen from the SD write
+    // path — so `Receiving` progress is fed to the app at most once per this interval, and the
+    // loop's own timer is clamped up to it. Wakes still happen (gestures, sensors, the WDT feed
+    // cap), they just find an unchanged card and repaint nothing. Terminal states bypass the
+    // throttle: `Installed`/`Failed` must land on glass the pass they happen.
+    const MAP_XFER_PACE_MS: u32 = 2_000;
+    let mut map_uploading = false;
+    let mut map_xfer_fed_ms: u32 = 0;
 
     loop {
         let now = Instant::now().as_millis() as u32;
@@ -839,9 +848,19 @@ pub(crate) async fn run_app(
             if map_card_shown && !app.map_transfer_card_up() {
                 crate::link::clear_map_transfer();
                 map_card_shown = false;
+                map_uploading = false;
             } else {
-                app.set_map_transfer(crate::link::map_transfer_state());
-                map_card_shown = app.map_transfer_card_up();
+                let state = crate::link::map_transfer_state();
+                let receiving = state.is_some_and(|s| s.is_receiving());
+                // The throttle (see MAP_XFER_PACE_MS): a Receiving→Receiving pass inside the pace
+                // window skips the feed, so a sensor-paced wake doesn't turn a progress tick into
+                // a full repaint. Any transition — into, out of, or the first Receiving — feeds.
+                if !(receiving && map_uploading && now.wrapping_sub(map_xfer_fed_ms) < MAP_XFER_PACE_MS) {
+                    app.set_map_transfer(state);
+                    map_card_shown = app.map_transfer_card_up();
+                    map_xfer_fed_ms = now;
+                }
+                map_uploading = receiving && map_card_shown;
             }
         }
 
@@ -1915,6 +1934,14 @@ pub(crate) async fn run_app(
         // to feed the watchdog — the `None` (sleep-until-input/sensor) arm becomes a long timer.
         #[cfg(not(feature = "debug-uart"))]
         let ms = next_ms.unwrap_or(WDT_FEED_CAP_MS).min(WDT_FEED_CAP_MS);
+        // A map upload owns the device (#889): the card is the only thing on glass, so don't let
+        // an animation flag or a short app deadline wake the loop faster than the progress pace —
+        // every avoided repaint is ~85 ms handed back to the SD write path. Gestures and sensor
+        // events still wake the loop early; the feed throttle above makes those wakes repaint
+        // nothing. Well under the WDT feed cap, which is the ceiling this must never approach —
+        // the un-yielding upload loop starving this feed is exactly what reset the device on
+        // glass (2026-07-30).
+        let ms = if map_uploading { ms.max(MAP_XFER_PACE_MS) } else { ms };
         let _ = select5(
             GESTURES.ready_to_receive(),
             INPUT_WAKE.wait(),
