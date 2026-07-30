@@ -556,7 +556,7 @@ for i in 0..lods.len() {                              // coarse (0) → fine
 
 ### The quadtree: packing geometry into chunks
 
-Within a tier, features are bucketed into a quadtree over the global bounding box. A node holds every feature reaching it; if their combined packed size — budgeted at `12 + point_count·4` bytes each, a deliberate over-estimate of the [7-or-12-byte header](../formats/#features-an-anchor-then-deltas) and 16-bit-worst-case deltas — fits the chunk size it becomes a leaf, otherwise it **splits** into four (NW · NE · SW · SE), hands each child the features it reaches, and recurses. A feature that straddles a child boundary is **clipped** to each child's box. The four child subtrees are built **in parallel** — they share no state, and only plain geometry (never a live GEOS handle) crosses a thread — which is what keeps the per-LOD build, otherwise the packer's heaviest stage, off the critical path.
+Within a tier, features are bucketed into a quadtree over the global bounding box. A node holds every feature reaching it; if their combined packed size — budgeted at `12 + point_count·4` bytes each, a deliberate over-estimate of the [7-or-12-byte header](../formats/#features-an-anchor-then-deltas) and 16-bit-worst-case deltas — fits the chunk size **and** every feature fits the reader's per-feature ring cap (32 rings: exterior + 31 holes), it becomes a leaf, otherwise it **splits** into four (NW · NE · SW · SE), hands each child the features it reaches, and recurses. The ring test matters because bytes don't imply it: at a coarse tier a [merged](#building-the-lod-pyramid) forest can carry dozens of clearings on a handful of simplified vertices, and the device would drop such a feature whole rather than truncate it — splitting instead clips it, spreading the holes across the children. A feature that straddles a child boundary is **clipped** to each child's box. The four child subtrees are built **in parallel** — they share no state, and only plain geometry (never a live GEOS handle) crosses a thread — which is what keeps the per-LOD build, otherwise the packer's heaviest stage, off the critical path.
 
 <figure class="fig">
 <svg viewBox="0 0 720 290" role="img" aria-label="A region with features being bucketed into a quadtree. A dense corner has been subdivided into four smaller cells, one of them subdivided again. A line feature crossing a cell boundary is clipped into two pieces, one per cell.">
@@ -600,8 +600,9 @@ Within a tier, features are bucketed into a quadtree over the global bounding bo
 
 ```rust
 let total: usize = feats.iter().map(|f| 12 + pt_count(&f.geom) * 4).sum();
-if total <= chunk_size || !splittable {
-    return Node::Leaf { bbox, features: feats };   // fits the chunk → a leaf
+let fits = total <= chunk_size && feats.iter().all(|f| ring_count(&f.geom) <= MAX_FEAT_RINGS);
+if fits || !splittable {
+    return Node::Leaf { bbox, features: feats };   // fits the chunk + the reader's caps → a leaf
 }
 // too big → split NW/NE/SW/SE, clip straddlers into each child, recurse in parallel
 let (nw, ne, sw, se) = distribute_to_quadrants(feats, bbox);

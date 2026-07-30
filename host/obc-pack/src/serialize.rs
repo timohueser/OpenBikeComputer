@@ -316,6 +316,15 @@ pub fn pack_feature(f: &Feature, node_bbox: (i64, i64, i64, i64)) -> Vec<u8> {
         "feature vertex count exceeds the reader's MAX_FEAT_PTS — chunk_size too large?"
     );
 
+    // The reader buffers ring lengths in a `MAX_FEAT_RINGS` heapless vec and
+    // discards the whole feature past it; the quadtree splits (or floor-trims)
+    // features over the cap before they reach here. (Also keeps the hole-count
+    // byte below from ever wrapping u8.)
+    debug_assert!(
+        packed_rings.len() <= obc_reader::MAX_FEAT_RINGS,
+        "feature ring count exceeds the reader's MAX_FEAT_RINGS — quadtree cap enforcement missed it"
+    );
+
     debug_assert!(packed_rings[0].0 <= u16::MAX as usize, "exterior pt_count overflows the u16 field");
     let ext_pt_count = packed_rings[0].0;
     // Compact iff every compact field can hold its value; the anchor test is on the *packed* anchor,

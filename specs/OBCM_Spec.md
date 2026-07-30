@@ -392,6 +392,15 @@ Lines use only the exterior ring (`Flags & 0x02 == 0`, no holes).
 > genuinely 2048-vertex feature needs the wide header, so it packs to 4106 bytes and
 > could never fit a `4101`-byte chunk in the first place.)
 
+> **Per-feature ring cap:** although `Hole Count` is a `uint8`, a single feature
+> must not exceed **32 rings** (exterior + 31 holes). The reference reader's ring
+> scratch (`MAX_FEAT_RINGS`) is fixed at 32 and a feature past it is dropped whole,
+> with the same explicit capacity outcome as the vertex cap. Bytes do not imply
+> this bound — a heavily simplified polygon can carry dozens of holes on a handful
+> of vertices — so `obc-pack` enforces it structurally: a quadtree node holding an
+> over-cap polygon splits (clipping spreads the holes across the children), and at
+> the 10 µdeg split floor the smallest holes are dropped to fit.
+
 ### Polygon-with-holes byte layout
 
 ```

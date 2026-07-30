@@ -31,6 +31,7 @@ use embassy_usb::driver::{Endpoint as _, EndpointIn, EndpointOut};
 use obc_ble::{ObjectType, Receiver, StatusMessage, TransferControl, TransferStatus};
 
 use crate::link::identity;
+use crate::link::stage::Stage;
 use crate::link::{transfer_result, transfer_result_at, Armed, TRANSFER_ACTIVE};
 use crate::object_store::ObjectStore;
 use crate::SharedStoreMutex;
@@ -75,6 +76,7 @@ pub(crate) async fn run(
     mut ep_in: EpIn,
     mut ep_out: EpOut,
     buf: &'static mut [u8],
+    stage_buf: &'static mut [u8],
     store: &RefCell<ObjectStore>,
     shared: &SharedStoreMutex,
 ) -> ! {
@@ -101,7 +103,7 @@ pub(crate) async fn run(
             };
             let outcome = match armed {
                 Armed::Echo(desc) => run_echo(tx, &mut ep_in, &mut ep_out, &desc, buf).await,
-                Armed::Upload(desc, rx) => run_upload(tx, &mut ep_out, store, shared, &desc, rx, buf).await,
+                Armed::Upload(desc, rx) => run_upload(tx, &mut ep_out, store, shared, &desc, rx, buf, stage_buf).await,
                 Armed::Download(desc) => run_download(tx, &mut ep_in, store, shared, &desc, buf).await,
             };
             if let TransferOutcome::LinkDropped = outcome {
@@ -137,6 +139,7 @@ async fn run_upload(
     desc: &TransferControl,
     mut rx: Receiver,
     buf: &mut [u8],
+    stage_buf: &mut [u8],
 ) -> TransferOutcome {
     info!("usb: [bulk] upload start: {} bytes (type {})", desc.total_len, desc.ty.as_u8());
     // A **map** (#927) is the one type that does not stream into `/routes/UPLOAD.TMP`: at hundreds
@@ -178,6 +181,9 @@ async fn run_upload(
         // plane's own reads queue behind this transfer. Unexplained, that reads as a wedged device.
         crate::link::map_transfer_started(rx.total_len());
     }
+    // A map's placeholder magic is already on the card (`map_upload_begin`), so its payload starts
+    // at file offset 4 — the stage needs that or every flush of the transfer lands misaligned.
+    let mut stage = Stage::new(stage_buf, if is_map { obc_ble::MAGIC_LEN } else { 0 });
     let started = Instant::now();
     while !rx.is_complete() {
         let n = match select(ep.read(buf), TRANSFER_ABORT.wait()).await {
@@ -210,10 +216,9 @@ async fn run_upload(
         let consumed = rx.push(&buf[..n]);
         // The receiver's CRC always sees every payload byte; only the *write* skips the held magic.
         let write = if is_map { held.feed(&buf[..consumed]) } else { &buf[..consumed] };
-        let appended = write.is_empty() || {
-            let mut guard = shared.lock().await;
-            store.borrow_mut().upload_append(&mut guard, write)
-        };
+        // Into RAM, not onto the card: `stage` appends a batch at a time so the card gets one
+        // multi-block burst instead of a CMD24 per 512 B. It is what makes the fork worth having.
+        let appended = stage.push(write, store, shared).await;
         if !appended {
             {
                 let mut guard = shared.lock().await;
@@ -230,6 +235,21 @@ async fn run_upload(
         if is_map {
             crate::link::map_transfer_progress(rx.committed_offset());
         }
+    }
+    // The tail. An object almost never ends on a batch boundary, so the last flush is short by
+    // definition — and until it lands, those bytes exist only in RAM.
+    if !stage.flush(store, shared).await {
+        {
+            let mut guard = shared.lock().await;
+            discard_upload(&mut store.borrow_mut(), &mut guard, is_map, map_id);
+        }
+        warn!("usb: [bulk] SD append failed on the final flush — upload rejected");
+        if is_map {
+            crate::link::map_transfer_storage_failed();
+        }
+        close_transfer();
+        tx.send_status(transfer_result(rx.object_id(), TransferStatus::Error)).await;
+        return TransferOutcome::Answered;
     }
     // The commit target is the object type: a `fwImage` promotes to /UPDATE.BIN in the card root
     // (staging, no catalog id, no store-revision bump — spec §7.6); a `trip` commits into the trip
