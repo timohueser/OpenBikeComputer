@@ -7,7 +7,7 @@
 //! copied, not parsed, which is the whole point of §2.
 
 use obc_formats::io::ByteSource;
-use obc_formats::obcm::{HEADER_LEN, STYLE_RECORD_LEN};
+use obc_formats::obcm::{HEADER_LEN, NAV_PROFILE_LEN, STYLE_RECORD_LEN};
 use obc_reader::{Lod, MapCache, MapTables, NavDirectory, PoiDirectory, Reader};
 
 use crate::grid::CellId;
@@ -17,6 +17,10 @@ use crate::{Error, Result};
 /// of reads, small enough that the engine's peak working set stays independent of cell size — which
 /// is what lets a browser assemble a country.
 const COPY_BLOCK: usize = 256 * 1024;
+
+/// Byte offset of the header's `Style Offset` field (`OBCM_Spec.md` §1: magic 4, version 1, four
+/// `int32` bbox fields — `4 + 1 + 16`).
+const HEADER_STYLE_OFFSET_AT: usize = 21;
 
 /// One cell handed to the assembler: which cell it is, which band it belongs to, and where its bytes
 /// are. `band` is **not** inferable from the bytes (§3.1: a legitimately empty cell is
@@ -79,7 +83,7 @@ impl<'a> Cell<'a> {
             let reader = Reader::new(src, &tables, cache);
             (reader.lods().to_vec(), reader.poi_directory().clone(), *reader.nav_directory())
         };
-        let profile_table = read_at(src, nav.profile_table_offset, nav.profile_count * 52)?;
+        let profile_table = read_at(src, nav.profile_table_offset, nav.profile_count * NAV_PROFILE_LEN)?;
         let style_ids = read_style_ids(src)?;
         Ok(Cell {
             id: input.id,
@@ -139,7 +143,9 @@ pub fn read_at(src: &dyn ByteSource, offset: usize, len: usize) -> Result<Vec<u8
 /// **id set** is part of the §4.1 agreement, because the skin replaces everything else.
 fn read_style_ids(src: &dyn ByteSource) -> Result<Vec<u8>> {
     let header = read_at(src, 0, HEADER_LEN)?;
-    let style_offset = u32::from_le_bytes([header[21], header[22], header[23], header[24]]) as usize;
+    let style_offset = u32::from_le_bytes(
+        header[HEADER_STYLE_OFFSET_AT..HEADER_STYLE_OFFSET_AT + 4].try_into().expect("4 bytes inside the header"),
+    ) as usize;
     let count = read_at(src, style_offset, 1)?[0] as usize;
     let table = read_at(src, style_offset + 1, count * STYLE_RECORD_LEN)?;
     Ok(table.chunks_exact(STYLE_RECORD_LEN).map(|r| r[0]).collect())
@@ -151,6 +157,20 @@ pub fn check_agreement(cells: &[Cell<'_>], accept_partial: bool) -> Result<()> {
     let Some(first) = cells.first() else {
         return Err(Error::Input("an assembly needs at least one cell".into()));
     };
+    // One cell per (band, id). Geometry would survive a duplicate — the graft keys cells by their
+    // grid slot, so the second copy simply overwrites the first — but the nav merge would not: it
+    // mints fresh node ids per copy, so every interior junction of a duplicated `network` cell
+    // becomes two coincident nodes off a boundary line, which §4.6.2 refuses to unify. The result is
+    // a doubled interior graph that §4.8 verifies as correct, and the projected sizes double too.
+    let mut seen: std::collections::HashSet<(&str, CellId)> = std::collections::HashSet::new();
+    for c in cells {
+        if !seen.insert((c.band.as_str(), c.id)) {
+            return Err(Error::Input(format!(
+                "cell {} of band {:?} is listed twice — an assembly takes each cell once (OBCA §4.1)",
+                c.id, c.band
+            )));
+        }
+    }
     for c in cells {
         if c.style_ids != first.style_ids {
             return Err(Error::Input(format!(
