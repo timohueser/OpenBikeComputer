@@ -400,13 +400,13 @@ pub fn build_graph_with(ways: &[RoutableWay], min_component_edges: usize) -> (Na
             if !is_junction(w.node_ids[i], is_endpoint) {
                 continue;
             }
-            emit_edge(w, start, i, &mut intern, &mut seen, &mut edges);
+            emit_edge(&w.node_ids, &w.coords, w.kind, start, i, &mut intern, &mut seen, &mut edges);
             start = i;
         }
     }
 
     // --- Pass C: island pruning. ---
-    let (nodes, edges, stats) = prune_islands(nodes, edges, min_component_edges);
+    let (nodes, edges, stats) = prune_islands(nodes, edges, min_component_edges, None);
 
     // --- Pass D: split edges to hold N2's i16-delta / u16-cost guarantees. ---
     let mut nodes = nodes;
@@ -418,20 +418,119 @@ pub fn build_graph_with(ways: &[RoutableWay], min_component_edges: usize) -> (Na
     (NavGraph { nodes, edges: split }, stats)
 }
 
-/// Split out one edge `way[start..=end]` and push it (deduped). `start`/`end` are
+// --- the cell cutter's graph (OBCA §3.4/§3.5) --------------------------------------------------
+
+/// A junction's identity inside **one cell**.
+///
+/// A whole-extract pack identifies junctions by OSM node id and nothing else. A cell cannot: the
+/// junctions that carry a seam are minted *at the cell edge*, have no OSM id, and must come out
+/// identical in both neighbours — so they are identified by their **coordinate**, which both
+/// neighbours compute with the same integer formula ([`crate::grid::segment_crossing`]). Two ways
+/// leaving the cell at the same point therefore share one boundary junction, exactly as they would
+/// share a real crossroads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum JunctionKey {
+    /// A real OSM node.
+    Osm(i64),
+    /// A junction materialised on a cell-edge line, keyed by its `(lon, lat)` µdeg coordinate.
+    Boundary(i32, i32),
+}
+
+/// One routable way as a single cell sees it: the run of its polyline that this cell owns, with a
+/// junction key per vertex (parallel to `coords`) and the parent way's `kind`.
+///
+/// The caller ([`crate::cut`]) is responsible for the cutting itself — inserting the boundary
+/// vertices and slicing the way at cell edges — because that is grid work, not graph work.
+#[derive(Clone, Debug)]
+pub struct CutRun {
+    pub keys: Vec<JunctionKey>,
+    /// µdeg `(lon, lat)`, parallel to `keys`.
+    pub coords: Vec<(i32, i32)>,
+    pub kind: u8,
+}
+
+/// Build a **cell's** routable graph from the runs the cutter carved out of the source ways.
+///
+/// Same machinery as [`build_graph_with`] — junction split, dedup, prune, then the v9-bound edge
+/// splits — with the two rules that make a cell's graph assemble correctly (OBCA §3.4/§3.5):
+///
+/// - **`is_junction` is supplied by the caller**, because junction-ness must be classified from the
+///   *source snapshot's* whole way set (plus every vertex on a cell-edge line), never from the ways
+///   that happen to survive inside this cell. A run's first and last vertices are always junctions:
+///   a run ends only where the way leaves the cell (a boundary junction) or where the way itself
+///   ends.
+/// - **`on_boundary` protects components that touch the cell edge from pruning**, so a good road
+///   whose continuation is in the neighbour is never dropped as an island. The real pruning pass
+///   runs at assembly time, over the merged graph, where component sizes are finally true.
+///
+/// Interior synthetic nodes still appear (the split pass mints them, and so does the serializer's
+/// §8.4 split); they are *never* load-bearing at a seam, and nothing here assumes they coincide with
+/// anything in the neighbour.
+pub fn build_graph_cut(
+    runs: &[CutRun],
+    min_component_edges: usize,
+    is_junction: &dyn Fn(JunctionKey, (i32, i32)) -> bool,
+    on_boundary: &dyn Fn((i32, i32)) -> bool,
+) -> (NavGraph, NavStats) {
+    let mut dense_id: HashMap<JunctionKey, u32> = HashMap::new();
+    let mut nodes: Vec<Node> = Vec::new();
+    let mut intern = |key: JunctionKey, coord: (i32, i32)| -> u32 {
+        *dense_id.entry(key).or_insert_with(|| {
+            let id = nodes.len() as u32;
+            nodes.push(Node { id, coord });
+            id
+        })
+    };
+
+    let mut seen: HashSet<EdgeKey> = HashSet::new();
+    let mut edges: Vec<Edge> = Vec::new();
+    for r in runs {
+        debug_assert_eq!(r.keys.len(), r.coords.len(), "a run's keys are parallel to its coords");
+        let n = r.keys.len();
+        if n < 2 {
+            continue;
+        }
+        let mut start = 0usize;
+        for i in 1..n {
+            let is_endpoint = i == n - 1;
+            if !is_endpoint && !is_junction(r.keys[i], r.coords[i]) {
+                continue;
+            }
+            emit_edge(&r.keys, &r.coords, r.kind, start, i, &mut intern, &mut seen, &mut edges);
+            start = i;
+        }
+    }
+
+    let (nodes, edges, stats) = prune_islands(nodes, edges, min_component_edges, Some(on_boundary));
+    let mut nodes = nodes;
+    let mut split: Vec<Edge> = Vec::with_capacity(edges.len());
+    for e in edges {
+        split_edge(e, &mut nodes, &mut split);
+    }
+    (NavGraph { nodes, edges: split }, stats)
+}
+
+/// Split out one edge `keys/coords[start..=end]` and push it (deduped). `start`/`end` are
 /// both junctions; the interior nodes between them are not. The edge inherits the
-/// parent way's [`RoutableWay::kind`].
-fn emit_edge(
-    w: &RoutableWay,
+/// parent way's `kind`.
+///
+/// Generic over the junction-identity type so the whole-extract build (OSM node ids) and the cell
+/// cutter ([`build_graph_cut`], whose boundary junctions are identified by *coordinate*) share one
+/// dedup + interning path instead of two that can drift.
+#[allow(clippy::too_many_arguments)]
+fn emit_edge<K: Copy>(
+    keys: &[K],
+    coords: &[(i32, i32)],
+    kind: u8,
     start: usize,
     end: usize,
-    intern: &mut impl FnMut(i64, (i32, i32)) -> u32,
+    intern: &mut impl FnMut(K, (i32, i32)) -> u32,
     seen: &mut HashSet<EdgeKey>,
     edges: &mut Vec<Edge>,
 ) {
-    let a = intern(w.node_ids[start], w.coords[start]);
-    let b = intern(w.node_ids[end], w.coords[end]);
-    let polyline: Vec<(i32, i32)> = w.coords[start..=end].to_vec();
+    let a = intern(keys[start], coords[start]);
+    let b = intern(keys[end], coords[end]);
+    let polyline: Vec<(i32, i32)> = coords[start..=end].to_vec();
 
     // Canonicalize for dedup: orient the key by (min,max) endpoint id, reversing the
     // geometry to match, so a way and its reverse-order duplicate hash equal. Kind is
@@ -443,12 +542,12 @@ fn emit_edge(
         rev.reverse();
         (b, a, rev)
     };
-    if !seen.insert((ka, kb, kgeom, w.kind)) {
+    if !seen.insert((ka, kb, kgeom, kind)) {
         return; // exact duplicate (same pair + geometry + kind) — already have it.
     }
 
     let length_m = polyline_len_m(&polyline);
-    edges.push(Edge { a, b, polyline, length_m, kind: w.kind });
+    edges.push(Edge { a, b, polyline, length_m, kind });
 }
 
 /// A minimal union-find (path halving + union by size) over the dense node ids.
@@ -489,7 +588,17 @@ impl UnionFind {
 /// identity remap, so the untouched-topology tests still see id 0 first) and edges
 /// re-pointed at the new ids. Returns the pruned graph plus the [`NavStats`] the log
 /// summary reports (components found / kept / edges dropped).
-fn prune_islands(nodes: Vec<Node>, edges: Vec<Edge>, min_component_edges: usize) -> (Vec<Node>, Vec<Edge>, NavStats) {
+///
+/// `protected`, when given, names coordinates whose component MUST survive whatever its size. It is
+/// how a **cell** bake honours OBCA §3.5: a hard cut at a cell edge leaves fragments that are only
+/// small because their continuation lives in the neighbour, so a cell may prune only components
+/// **strictly interior** to it. Nothing an assembler does can recover bytes a bake never wrote.
+fn prune_islands(
+    nodes: Vec<Node>,
+    edges: Vec<Edge>,
+    min_component_edges: usize,
+    protected: Option<&dyn Fn((i32, i32)) -> bool>,
+) -> (Vec<Node>, Vec<Edge>, NavStats) {
     if nodes.is_empty() {
         return (nodes, edges, NavStats::default());
     }
@@ -520,10 +629,23 @@ fn prune_islands(nodes: Vec<Node>, edges: Vec<Edge>, min_component_edges: usize)
         .max_by_key(|r| (node_count[r], edge_count.get(r).copied().unwrap_or(0), std::cmp::Reverse(*r)))
         .expect("nonempty graph has ≥1 component");
 
+    // Components holding a protected coordinate (a cell-boundary node — OBCA §3.5) survive
+    // regardless of size; resolved once, up front, so the keep test stays a set lookup.
+    let protected_roots: HashSet<u32> = match protected {
+        None => HashSet::new(),
+        Some(is_protected) => {
+            nodes.iter().filter(|n| is_protected(n.coord)).map(|n| node_root[n.id as usize]).collect()
+        }
+    };
+
     let kept_roots: HashSet<u32> = node_count
         .keys()
         .copied()
-        .filter(|r| *r == largest || edge_count.get(r).copied().unwrap_or(0) >= min_component_edges)
+        .filter(|r| {
+            *r == largest
+                || protected_roots.contains(r)
+                || edge_count.get(r).copied().unwrap_or(0) >= min_component_edges
+        })
         .collect();
     let components_kept = kept_roots.len();
 
@@ -970,7 +1092,7 @@ mod tests {
         mk(9, 0); // giant: 10 nodes, 9 edges
         mk(3, 500_000); // 3-edge component (exactly the threshold)
         mk(2, 900_000); // 2-edge component (below)
-        let (nodes, edges, stats) = prune_islands(nodes, edges, 3);
+        let (nodes, edges, stats) = prune_islands(nodes, edges, 3, None);
         assert_eq!(stats.components_found, 3);
         // Kept: giant (largest) + the 3-edge component (≥ threshold). The 2-edge one drops.
         assert_eq!(stats.components_kept, 2);
@@ -978,6 +1100,40 @@ mod tests {
         assert_eq!(edges.len(), 12, "9 + 3 edges kept");
         // Surviving ids are re-densified 0..nodes.len().
         assert!(nodes.iter().enumerate().all(|(i, n)| n.id as usize == i), "node ids stay dense");
+    }
+
+    /// A protected coordinate keeps its whole component, however small — the OBCA §3.5 rule a cell
+    /// bake needs, because a fragment at a cell edge is only small until the neighbour is assembled.
+    #[test]
+    fn prune_islands_spares_protected_components() {
+        let mut nodes = Vec::new();
+        let mut edges = Vec::new();
+        let mut mk = |count: u32, x0: i32| {
+            let base = nodes.len() as u32;
+            for i in 0..=count {
+                nodes.push(Node { id: base + i, coord: (x0 + i as i32 * 1_000, 0) });
+            }
+            for i in 0..count {
+                edges.push(Edge {
+                    a: base + i,
+                    b: base + i + 1,
+                    polyline: vec![(x0 + i as i32 * 1_000, 0), (x0 + (i as i32 + 1) * 1_000, 0)],
+                    length_m: 100,
+                    kind: 7,
+                });
+            }
+        };
+        mk(9, 0); // the giant
+        mk(1, 500_000); // a one-edge fragment reaching the "boundary" at x = 501 000
+        mk(1, 900_000); // a one-edge fragment in the interior
+        let protect = |c: (i32, i32)| c.0 == 501_000;
+        let (kept_nodes, kept_edges, stats) = prune_islands(nodes, edges, 5, Some(&protect));
+        assert_eq!(stats.components_found, 3);
+        assert_eq!(stats.components_kept, 2, "giant + the protected fragment");
+        assert_eq!(stats.edges_dropped, 1, "only the interior fragment goes");
+        assert_eq!(kept_edges.len(), 10);
+        assert!(kept_nodes.iter().any(|n| n.coord.0 == 501_000), "the protected fragment survived");
+        assert!(!kept_nodes.iter().any(|n| n.coord.0 == 900_000), "the interior one did not");
     }
 
     // --- Edge splits for the v9 guarantees --------------------------------------
