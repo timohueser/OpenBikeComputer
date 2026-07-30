@@ -15,8 +15,10 @@
 //! is the order it expects. `obc-pack schema` prints the config's JSON Schema
 //! envelope — the web builder serves it so the editor's capability always matches
 //! the binary that packs (`schema --catalog` prints the catalog manifest's schema
-//! instead). `obc-pack catalog <bake-tree>` walks a bakery's output tree and writes
-//! the map-catalog manifest (`OBCC_Spec.md`).
+//! instead, `schema --catalog-v2` the cell catalog's). `obc-pack catalog <bake-tree>`
+//! walks a bakery's output tree and writes the map-catalog manifest (`OBCC_Spec.md`);
+//! with `--v2` it walks a **cell** tree instead and writes the `schema_version 2` root
+//! plus its digest-pinned satellites (`OBCC_Spec.md` §11).
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -87,16 +89,28 @@ fn run() -> Result<(), String> {
 /// bakery already has `obc-pack` on the box.
 fn run_catalog(args: &[String]) -> Result<(), String> {
     const USAGE: &str = "usage: obc-pack catalog <bake-tree> --base-url <url> [--out <path>|-] \
-                         [--generated-at <YYYY-MM-DDTHH:MM:SSZ>]";
+                         [--generated-at <YYYY-MM-DDTHH:MM:SSZ>]\n       \
+                         obc-pack catalog <cell-tree> --base-url <url> --v2 [--boundary-tolerance <udeg>] \
+                         [--generated-at <ts>]";
     let mut tree: Option<PathBuf> = None;
     let mut base_url: Option<String> = None;
     let mut out: Option<String> = None;
     let mut generated_at: Option<String> = None;
+    let mut v2 = false;
+    let mut tolerance: Option<i32> = None;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--base-url" => base_url = Some(it.next().ok_or("--base-url needs a URL")?.clone()),
             "--out" => out = Some(it.next().ok_or("--out needs a path (or `-` for stdout)")?.clone()),
+            "--v2" => v2 = true,
+            "--boundary-tolerance" => {
+                tolerance = Some(
+                    it.next()
+                        .and_then(|s| s.parse().ok())
+                        .ok_or("--boundary-tolerance needs a positive number of microdegrees")?,
+                );
+            }
             "--generated-at" => {
                 generated_at = Some(it.next().ok_or("--generated-at needs an RFC 3339 UTC instant")?.clone());
             }
@@ -110,6 +124,13 @@ fn run_catalog(args: &[String]) -> Result<(), String> {
     let tree = tree.ok_or_else(|| USAGE.to_string())?;
     let base_url =
         base_url.ok_or_else(|| format!("--base-url is required — it is where this tree gets published\n{USAGE}"))?;
+
+    if v2 {
+        return run_catalog_v2(&tree, base_url, out.as_deref(), generated_at, tolerance);
+    }
+    if tolerance.is_some() {
+        return Err(format!("--boundary-tolerance only applies to `--v2` (regions have no outline in v1)\n{USAGE}"));
+    }
 
     // No `--generated-at` ⇒ the system clock, the single wall-clock read on this path.
     // CI should pass it explicitly so a re-run of the same bake is byte-reproducible.
@@ -135,6 +156,57 @@ fn run_catalog(args: &[String]) -> Result<(), String> {
                 path.display(),
                 generated.manifest.artifacts.len(),
                 generated.manifest.presets.len()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// `obc-pack catalog <cell-tree> --base-url <url> --v2 …`
+///
+/// The `schema_version 2` catalog is several documents, not one: the root plus a cell
+/// index per band and a cell list per region, each pinned in the root by size and
+/// digest. They are therefore written **into the tree** (satellites first, root last)
+/// rather than to a single `--out` path — a root that named a satellite nobody had
+/// written yet would be exactly the half-published state §11.1 exists to prevent.
+/// `--out -` still prints the root for inspection.
+fn run_catalog_v2(
+    tree: &Path,
+    base_url: String,
+    out: Option<&str>,
+    generated_at: Option<String>,
+    tolerance: Option<i32>,
+) -> Result<(), String> {
+    let mut opts = obc_pack::catalog::v2::CatalogV2Options::new(
+        base_url,
+        generated_at.unwrap_or_else(obc_pack::catalog::now_timestamp),
+    );
+    if let Some(t) = tolerance {
+        opts.boundary_tolerance_udeg = t;
+    }
+    let generated = obc_pack::catalog::v2::generate(tree, &opts)?;
+    for w in &generated.warnings {
+        eprintln!("obc-pack catalog: warning: {w}");
+    }
+    match out {
+        Some("-") => print!("{}", obc_pack::catalog::v2::root_json(&generated.root)),
+        Some(other) => {
+            return Err(format!(
+                "--out {other}: a v2 catalog is a root plus {} satellite document(s) and is written into the tree; \
+                 only `--out -` (inspect the root on stdout) is available",
+                generated.satellites.len()
+            ))
+        }
+        None => {
+            obc_pack::catalog::v2::write_all_atomic(tree, &generated)?;
+            let cells: u32 = generated.root.cell_index.iter().map(|c| c.cell_count).sum();
+            println!(
+                "{}: {cells} cells across {} bands, {} region(s), {} skin(s), {} satellite document(s)",
+                tree.join(obc_pack::catalog::DEFAULT_MANIFEST_NAME).display(),
+                generated.root.cell_index.len(),
+                generated.root.regions.len(),
+                generated.root.skins.len(),
+                generated.satellites.len()
             );
         }
     }
@@ -209,6 +281,7 @@ fn main() -> ExitCode {
         match args.get(1).map(String::as_str) {
             Some("--config") => print!("{}", obc_pack::config::config_schema_json()),
             Some("--catalog") => print!("{}", obc_pack::catalog::catalog_schema_json()),
+            Some("--catalog-v2") => print!("{}", obc_pack::catalog::v2::catalog_schema_json()),
             _ => println!("{}", obc_pack::config::schema_envelope()),
         }
         return ExitCode::SUCCESS;

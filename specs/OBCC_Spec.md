@@ -414,6 +414,16 @@ twice over one tree is byte-identical.
   [`host/obc-pack/schema/catalog.schema.json`](../host/obc-pack/schema/catalog.schema.json)
 - Worked example manifest:
   [`host/obc-pack/schema/catalog.example.json`](../host/obc-pack/schema/catalog.example.json)
+- The `schema_version 2` producer of §11, and the `.poly` → outline reduction of §11.8:
+  [`host/obc-pack/src/catalog/v2.rs`](../host/obc-pack/src/catalog/v2.rs) and
+  [`host/obc-pack/src/catalog/boundary.rs`](../host/obc-pack/src/catalog/boundary.rs), generated
+  by `obc-pack catalog <cell-tree> --base-url <url> --v2`
+- Generated v2 JSON Schema — root plus both satellite documents, under `$defs`:
+  [`host/obc-pack/schema/catalog.v2.schema.json`](../host/obc-pack/schema/catalog.v2.schema.json)
+- Worked v2 examples, one per document:
+  [`catalog.v2.example.json`](../host/obc-pack/schema/catalog.v2.example.json),
+  [`cell-index.v2.example.json`](../host/obc-pack/schema/cell-index.v2.example.json),
+  [`region-cells.v2.example.json`](../host/obc-pack/schema/region-cells.v2.example.json)
 - The OBCM header the version and bbox are read from:
   [`OBCM_Spec.md` §1](OBCM_Spec.md); its code authority
   [`firmware/obc-formats/src/obcm.rs`](../firmware/obc-formats/src/obcm.rs)
@@ -443,10 +453,17 @@ A v2 catalog is a **small root document plus digest-pinned satellites**:
 
 ```
 catalog.json                        the root (§11.2) — schema, skins, regions, cell-index refs
-cells/<log2>/index.json             one per band: every published cell of that band (§11.6)
+cells/<band>/index.json             one per band: every published cell of that band (§11.6)
 regions/<region_id>/cells.json      one per named region: its cell ids per band (§11.7)
-cells/<log2>/<i>/<j>.obcm           the cell artifacts themselves
+cells/<band>/<i>/<j>.obcm           the cell artifacts themselves
 ```
+
+Object paths are keyed by **band**, not by `log2(S)`: two bands may share a cell size — `fine`
+and `network` are both `2^18` at the v1 band table
+([`OBCA_Spec.md` §1.5](OBCA_Spec.md)) — so a `<log2>`-keyed path is not a function of
+(band, cell) and the two bands' indices and artifacts would collide. Every `url` is published
+explicitly anyway (§11.6), with the band's `cell_log2` beside it, so nothing a consumer does
+depends on the spelling of a path.
 
 v1 kept everything in one document because everything fit. A cell catalog does not: DACH is
 ~2 000–4 000 cells across four bands, and a planet-scale store is two orders of magnitude more.

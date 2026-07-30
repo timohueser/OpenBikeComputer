@@ -132,8 +132,9 @@ The canonical textual id of a cell is
 with `i` and `j` zero-padded to `max(4, decimal_width(WORLD_SIDE / S − 1))` digits — four for every
 size at or above `2^16`, which is every band the v1 table uses, and wider for the smaller sizes
 §1.1 still permits. Producers MUST widen rather than truncate. Catalog entries (§6) and object paths
-use this id, so a cell's URL is derivable from its id and a base URL, and its **square is derivable
-from its id alone** — which is why a catalog cell entry carries no bbox
+use this id, so a cell's URL is derivable from its **band** and its id plus a base URL — the band,
+because two bands may share a cell size ([`OBCC_Spec.md` §11.1](OBCC_Spec.md)) — while its
+**square is derivable from its id alone**, which is why a catalog cell entry carries no bbox
 ([`OBCC_Spec.md` §11.6](OBCC_Spec.md)).
 
 Implementations MAY use the packed convenience key `(log2(S) << 24) | (i << 12) | j`, valid for

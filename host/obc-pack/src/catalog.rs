@@ -15,6 +15,17 @@
 //! reader either sees the whole previous file or the whole new one, and it is a
 //! single self-delimiting JSON document, so a truncated body cannot parse. Both
 //! halves are required; see [`write_atomic`] and `OBCC_Spec.md` §7.
+//!
+//! This module is `schema_version 1` — the (region × preset) artifact catalog.
+//! [`v2`] is the cell catalog of `OBCC_Spec.md` §11, where the bakery bakes grid
+//! cells once and the map a rider downloads is assembled client-side; the two
+//! envelopes coexist deliberately (§11.9's migration window), and everything in this
+//! module about atomicity, timestamps, determinism and the version law carries into
+//! v2 unchanged. [`boundary`] turns a region's Geofabrik `.poly` into the simplified
+//! outline a v2 region publishes.
+
+pub mod boundary;
+pub mod v2;
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};
@@ -262,7 +273,12 @@ pub fn manifest_json(manifest: &CatalogManifest) -> String {
 /// field. A single self-delimiting document is what makes that check sufficient —
 /// truncation cannot survive `JSON.parse`. `OBCC_Spec.md` §7 states both halves.
 pub fn write_atomic(path: &Path, manifest: &CatalogManifest) -> Result<(), String> {
-    let body = manifest_json(manifest);
+    write_atomic_bytes(path, &manifest_json(manifest))
+}
+
+/// The mechanism behind [`write_atomic`], for the other documents that need it: the
+/// v2 root and its satellites ([`v2::write_all_atomic`]).
+fn write_atomic_bytes(path: &Path, body: &str) -> Result<(), String> {
     let dir = path.parent().filter(|p| !p.as_os_str().is_empty()).map_or_else(|| PathBuf::from("."), Path::to_path_buf);
     // Unique per process so two generators pointed at one tree cannot corrupt each
     // other's temp file; the rename still makes the last writer win cleanly.
@@ -626,12 +642,32 @@ struct ObcmHeader {
     bbox: CoverageBBox,
 }
 
+/// Which box a header's bbox has to lie inside.
+///
+/// A whole-region artifact covers ground, so its box is inside the geographic domain.
+/// A **cell** is a grid square that may legally overhang ±90°/±180°, because clamping
+/// it would destroy the power-of-two span assembly depends on
+/// ([`OBCA_Spec.md` §1.4](../../../specs/OBCA_Spec.md)) — so a cell is checked against
+/// the wider world box instead, and the exact-square check in [`v2`] is what makes its
+/// bbox trustworthy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HeaderBounds {
+    /// ±90 000 000 / ±180 000 000 µdeg.
+    GeographicDomain,
+    /// `OBCA_Spec.md` §1.1's world box, ±2^28 µdeg on both axes.
+    WorldBox,
+}
+
 /// Read the OBCM version and coverage bbox out of the artifact's own 40-byte header.
 ///
 /// The whole point of the manifest's version field is that it describes the bytes that
 /// will be downloaded, so it is read from those bytes. The layout is `OBCM_Spec.md` §1
 /// (magic, version, then the bbox stored **lat, lon, lat, lon**).
 fn read_obcm_header(path: &Path) -> Result<ObcmHeader, String> {
+    read_obcm_header_in(path, HeaderBounds::GeographicDomain)
+}
+
+fn read_obcm_header_in(path: &Path, bounds: HeaderBounds) -> Result<ObcmHeader, String> {
     let mut f = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut h = [0u8; HEADER_LEN];
     f.read_exact(&mut h).map_err(|e| {
@@ -649,11 +685,11 @@ fn read_obcm_header(path: &Path) -> Result<ObcmHeader, String> {
     if bbox.min_lat > bbox.max_lat || bbox.min_lon > bbox.max_lon {
         return Err(format!("{}: header bbox is inverted ({bbox:?})", path.display()));
     }
-    if bbox.min_lat < -90_000_000
-        || bbox.max_lat > 90_000_000
-        || bbox.min_lon < -180_000_000
-        || bbox.max_lon > 180_000_000
-    {
+    let (lat_limit, lon_limit) = match bounds {
+        HeaderBounds::GeographicDomain => (90_000_000, 180_000_000),
+        HeaderBounds::WorldBox => (-v2::GRID_ORIGIN_UDEG, -v2::GRID_ORIGIN_UDEG),
+    };
+    if bbox.min_lat < -lat_limit || bbox.max_lat > lat_limit || bbox.min_lon < -lon_limit || bbox.max_lon > lon_limit {
         return Err(format!("{}: header bbox is outside the world ({bbox:?})", path.display()));
     }
     Ok(ObcmHeader { version: h[4], bbox })
@@ -1343,8 +1379,8 @@ mod tests {
              baked map catalog artifact (OBCC_Spec.md §6). Do all four, in order:\n  \
              1. re-bake the whole catalog with the new packer (B1) — every published .obcm is now unreadable;\n  \
              2. republish the manifest, so `obcm_version` reports v{OBCM_VERSION} before anyone downloads 200 MB;\n  \
-             3. regenerate the checked-in example: `OBC_UPDATE_CATALOG_EXAMPLE=1 cargo test -p obc-pack \
-             catalog_example_is_current`;\n  \
+             3. regenerate the checked-in examples, v1 and v2 both: `OBC_UPDATE_CATALOG_EXAMPLE=1 cargo test -p \
+             obc-pack catalog`;\n  \
              4. set catalog.rs's PINNED_OBCM_VERSION to {OBCM_VERSION}.\n\
              Changing only step 4 to make this test pass ships maps devices cannot open."
         );
