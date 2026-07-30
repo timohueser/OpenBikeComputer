@@ -1,9 +1,17 @@
-# OBCC Catalog Manifest Specification (schema_version 1)
+# OBCC Catalog Manifest Specification (schema_version 1, with the schema_version 2 delta in §11)
 
 OBCC (OpenBikeComputer Catalog) is the **map catalog manifest**: a single JSON
 document describing every pre-baked [`OBCM`](OBCM_Spec.md) map a distribution
 publishes — what regions exist, in which styles, how big they are, what they cover,
 what they were built from, and **which OBCM format version they are**.
+
+> **Two envelope versions live in this document.** §1–§10 define `schema_version 1`, the
+> region × preset artifact catalog. **§11 defines `schema_version 2`**, in which the unit of
+> baking becomes a grid **cell** ([`OBCA_Spec.md`](OBCA_Spec.md)), named regions become cell-set
+> selections, and presets split into a **schema** and **skins**. A consumer implements one or
+> both and rejects a `schema_version` it does not implement (§1). Everything §1–§10 says about
+> atomicity, timestamps, determinism, and the version law carries into v2 unchanged unless §11
+> says otherwise.
 
 It is the contract between the *bakery* (which builds artifacts once, centrally, and
 uploads them to object storage) and every *consumer* that hands one to a device (the
@@ -410,3 +418,274 @@ twice over one tree is byte-identical.
   [`OBCM_Spec.md` §1](OBCM_Spec.md); its code authority
   [`firmware/obc-formats/src/obcm.rs`](../firmware/obc-formats/src/obcm.rs)
 - The shipped style presets: [`builder/presets/`](../builder/presets)
+- The cell grid, assembly contract, and volume sets the `schema_version 2` catalog of §11
+  publishes: [`OBCA_Spec.md`](OBCA_Spec.md)
+
+---
+
+## 11. `schema_version 2` — cells, skins, and cell-set regions
+
+Epic #1016 changes what a catalog *contains*. In v1 the bakery pre-bakes a matrix of
+(region × preset) whole-map artifacts, so every combination a rider might want has to be on the
+shelf and every new preset multiplies the store. In v2 the bakery bakes **grid cells** once, and
+the map a rider downloads is an **assembly** of cells built client-side. Combinations stop being
+a storage problem; styling stops being a bake at all.
+
+This section is the delta. It reuses v1's principles verbatim — the artifact describes itself,
+knowable before the download, all-or-nothing, deterministic, loud not lenient — and its
+timestamp (§5), atomicity (§7), and generation (§9) rules. The byte-level meaning of a cell, a
+band, an assembly, and a volume set is [`OBCA_Spec.md`](OBCA_Spec.md); this section only
+publishes them.
+
+### 11.1 The documents
+
+A v2 catalog is a **small root document plus digest-pinned satellites**:
+
+```
+catalog.json                        the root (§11.2) — schema, skins, regions, cell-index refs
+cells/<log2>/index.json             one per band: every published cell of that band (§11.6)
+regions/<region_id>/cells.json      one per named region: its cell ids per band (§11.7)
+cells/<log2>/<i>/<j>.obcm           the cell artifacts themselves
+```
+
+v1 kept everything in one document because everything fit. A cell catalog does not: DACH is
+~2 000–4 000 cells across four bands, and a planet-scale store is two orders of magnitude more.
+Rather than weaken v1's *all-or-nothing* principle, v2 preserves it per document and **pins each
+satellite by `bytes` + `sha256` from the root**, so a consumer that has read a valid root and a
+matching satellite has exactly the same guarantee it had with one file: it either has the whole,
+consistent thing or it has nothing. A satellite whose digest does not match the root MUST be
+rejected, and the root retained rather than patched.
+
+Cache policy follows §7: the **root** is short-cached (≤ 60 s `max-age` or revalidation), while
+satellites and cell artifacts are content-addressed by `sha256`, never rewritten in place, and MAY
+be cached indefinitely.
+
+### 11.2 The root document
+
+```jsonc
+{
+  "schema_version": 2,
+  "generated_at": "2026-07-30T09:00:00Z",
+  "schema": { /* SchemaEntry (§11.3) */ },
+  "skins": [ /* SkinEntry, sorted by id (§11.4) */ ],
+  "regions": [ /* RegionEntry, sorted by id (§11.5) */ ],
+  "cell_index": [ /* CellIndexRef, sorted by cell_log2 descending (§11.6) */ ],
+  "artifacts": [ /* OPTIONAL — v1 ArtifactEntry, §11.9 */ ]
+}
+```
+
+| Field | Type | Required | Description |
+| :-- | :-- | :-- | :-- |
+| `schema_version` | integer | yes | `2`. |
+| `generated_at` | string | yes | §5 spelling; the only wall clock on the generation path. |
+| `schema` | object | yes | The catalog's **single** schema (§11.3). |
+| `skins` | array | yes | Every skin offered (§11.4). Non-empty, sorted by `id`. |
+| `regions` | array | yes | Named selections (§11.5). Sorted by `id`. |
+| `cell_index` | array | yes | One entry per band (§11.6). |
+| `artifacts` | array | no | Legacy whole-region artifacts during migration (§11.9). |
+
+There is **exactly one** `schema`, not an array. That is the D2 decision made concrete: the
+hosted catalog carries the 7-LOD bikepacking ladder and nothing else, because it is the ladder
+tested to render inside the device's RAM and map-complexity budget. A second schema would make
+the whole cell store exist twice, and a superset schema would make every map carry complexity the
+device cannot honour. Custom schemas remain a desktop local-bake affair and never appear in a
+hosted catalog.
+
+### 11.3 `SchemaEntry`
+
+Everything a consumer needs to price a selection and an assembler needs to stamp a skin, without
+any out-of-band constant.
+
+| Field | Type | Description |
+| :-- | :-- | :-- |
+| `id` | string | Stable id, `^[a-z0-9]+(-[a-z0-9]+)*$`, e.g. `bikepacking`. |
+| `revision` | integer | Monotone content revision. Every cell states the revision it was baked at; a bump invalidates the whole store ([`OBCA_Spec.md` §6.3](OBCA_Spec.md)). |
+| `name`, `description` | string | Display strings, non-empty. |
+| `obcm_version` | integer | OBCM format version, **read from the cells' own headers** (§6). Every cell MUST agree. |
+| `grid` | object | `{ "origin_udeg": -268435456, "world_side_udeg": 536870912 }` — [`OBCA_Spec.md` §1.1](OBCA_Spec.md)'s constants, restated so no consumer has to hard-code them. |
+| `lods` | array | One per ladder level, coarsest first: `{ "index", "max_mpp", "band" }`. `max_mpp` is `null` for the `+inf` coarsest level. |
+| `bands` | array | `{ "id", "cell_log2", "lods": [int], "sections": [string], "role": "core" \| "geometry" }`. `sections` may contain `"nav"` and `"poi"`. |
+| `styles` | array | The **canonical style-id assignment**: `{ "id", "feature_type" }` in schema order. |
+| `routing` | object | `{ "min_component_edges": int, "profiles": [string] }` — the island-prune threshold is schema data, never skin data. |
+| `chunk_size` | integer | The per-LOD chunk capacity bound the cells were written with (`OBCM_Spec.md` §3). |
+
+Producers MUST satisfy [`OBCA_Spec.md` §1.2](OBCA_Spec.md)'s partition rule — every ladder LOD in
+exactly one band, and the nav and POI sections in exactly one band — and MUST list exactly one
+band with `"role": "core"` carrying the nav and POI sections. A consumer MUST reject a schema that
+violates either: a LOD in no band is a map that is blank at that zoom, and a LOD in two bands is a
+map that carries it twice.
+
+`styles` is the load-bearing field for the skin split. `obc-pack` numbers feature types `1`-based
+in config document order and those ids are referenced by **every feature header in every chunk**
+(`OBCM_Spec.md` §2, §5.2), so the assignment is part of the cells' bytes and therefore part of the
+schema, not of any skin.
+
+### 11.4 `SkinEntry`
+
+| Field | Type | Required | Description |
+| :-- | :-- | :-- | :-- |
+| `id` | string | yes | `^[a-z0-9]+(-[a-z0-9]+)*$`, e.g. `default`. |
+| `name`, `description` | string | yes | Display strings, non-empty. |
+| `version` | integer | yes | The skin's content version. |
+| `marker_color` | integer | yes | RGB565 user-position marker color (`OBCM_Spec.md` §1). |
+| `styles` | array | yes | One entry per `schema.styles` feature type: `{ "feature_type", "color", "weight", "z_index", "priority", "dashed", "color2" }`. `color2` is `null` when absent. |
+| `preview` | string | no | Rendered preview asset, resolved like a `url`. |
+
+Skins are **inlined in the root**, not referenced: one is ≈ 2 KB, the builder needs all of them at
+once to draw a picker, and an assembler needs the chosen one at assembly time. A skin MUST cover
+every `feature_type` in `schema.styles` and MUST NOT name one the schema lacks — a missing style
+would ship a map with an invisible layer, and an unknown one is a stale skin claiming a feature
+that no longer exists.
+
+> **What v2 deletes.** v1's `preset_version` (§3) existed because a restyle invalidated baked
+> artifacts and a partial re-bake left some of them a revision behind. In v2 a skin is stamped at
+> **assembly** time onto ~2 KB of the output ([`OBCA_Spec.md` §4.7](OBCA_Spec.md)), so no artifact
+> can be a revision behind and there is nothing for the field to say. The whole
+> lagging-artifact apparatus of §3 and §8 disappears, and with it the class of bug where a map
+> silently claims styling it does not have.
+
+### 11.5 `RegionEntry`
+
+A named region is no longer an artifact — it is a **selection preset**: a boundary to draw and a
+cell set to fetch.
+
+| Field | Type | Required | Description |
+| :-- | :-- | :-- | :-- |
+| `id` | string | yes | Slash-separated, same grammar as v1's `region_id`, e.g. `europe/switzerland`. |
+| `name` | string | yes | Display name. |
+| `parent` | string | no | The enclosing region's `id`, when the curation nests. |
+| `boundary` | object | yes | Simplified outline (§11.8). |
+| `bytes` | integer | yes | Total bytes of every cell in this region's cell set, across all bands. |
+| `cell_count` | object | yes | Cells per band: `{ "<band_id>": integer }`. |
+| `partial_cell_count` | integer | yes | How many of those cells are `partial` (§11.6). `0` for fully covered curation. |
+| `cells_url` | string | yes | Where the region's cell-id list lives (§11.7). |
+| `cells_bytes` | integer | yes | Size of that document. |
+| `cells_sha256` | string | yes | Its digest, `^[0-9a-f]{64}$`. |
+
+`bytes`, `cell_count`, and `partial_cell_count` sit in the **root** on purpose: they are what a
+builder needs to price a region and to warn about coverage gaps, and pricing must not cost a
+second round trip. That is v1's *knowable before the download* principle applied to a selection
+rather than to a file.
+
+Regions still nest and a consumer MUST NOT assume a parent's cell set is the union of its
+children's, or vice versa — curation decides both independently. Unlike v1, though, overlap is now
+free: two regions that share ground share **the same cells**, and the store pays for them once.
+That is the epic's headline saving and the reason `europe/germany` alongside its sixteen
+Bundesländer stops costing double.
+
+### 11.6 `CellIndexRef` and `CellEntry`
+
+One `cell_index` entry per band in the schema:
+
+| Field | Type | Description |
+| :-- | :-- | :-- |
+| `band` | string | The band's `id` from `schema.bands`. |
+| `cell_log2` | integer | Its cell size, `log2(µdeg)`; matches the band. |
+| `cell_count` | integer | Cells in the referenced document. |
+| `bytes` | integer | Size of the referenced document. |
+| `sha256` | string | Its digest. |
+| `url` | string | Where it lives, resolved like v1's `url` (§3). |
+
+Each referenced document is:
+
+```jsonc
+{
+  "schema_version": 2,
+  "schema_revision": 7,
+  "band": "fine",
+  "cells": [ /* CellEntry, sorted by (i, j) */ ]
+}
+```
+
+A `CellEntry`:
+
+| Field | Type | Description |
+| :-- | :-- | :-- |
+| `id` | string | Canonical cell id, `^\d{1,2}/\d{4,}/\d{4,}$` ([`OBCA_Spec.md` §1.3](OBCA_Spec.md)). |
+| `bytes` | integer | Size of the cell artifact. |
+| `sha256` | string | Its digest. |
+| `url` | string | Where to fetch it. |
+| `built_at` | string | §5 timestamp, recorded by the bake job. |
+| `sources` | array | `[{ "extract_id": "europe/switzerland", "snapshot": "2026-07-19" }]`, sorted by `extract_id`. |
+| `partial` | boolean | `true` iff the sources do not fully cover the cell's square ([`OBCA_Spec.md` §3.7](OBCA_Spec.md)). |
+
+**There is no `bbox` on a cell entry, and that is deliberate.** A cell's coverage box is *exactly*
+its grid square, which the `id` determines to the microdegree, and [`OBCA_Spec.md` §3.1](OBCA_Spec.md)
+requires the artifact's own OBCM header bbox to equal it. A stored copy could only ever agree
+(redundant) or disagree (a lie), so the generator instead **verifies** header bbox == cell square at
+bake time and fails the bake on a mismatch. This is v1 §4's "the artifact describes itself" with the
+same intent and a stronger instrument: the *identifier* describes it, and the bytes are checked
+against the identifier.
+
+`partial` is the D3 guard made publishable. A consumer MUST NOT present a partial cell as canonical
+coverage; the builder shows the affected ground as a warning **inside** the selection rather than as
+covered. A generator MUST NOT publish a canonical cell and a partial cell for the same `id` at the
+same `schema_revision`, and MUST replace a partial cell when a covering source appears.
+
+### 11.7 A region's cell list
+
+```jsonc
+{
+  "schema_version": 2,
+  "schema_revision": 7,
+  "region_id": "europe/switzerland",
+  "cells": { "coarse": ["20/0301/0263", …], "mid": […], "fine": […], "network": […] }
+}
+```
+
+Cell ids only — every other fact is in the band's cell index (§11.6), keyed by the same id. Ids are
+sorted within each band. A consumer MUST reject a region cell list naming a cell absent from the
+band's index, or naming a band absent from the schema.
+
+The list is **stored, not derived from the boundary.** `boundary` is a *simplified* polygon for
+drawing; deriving a cell set from it would let a simplification error drop an edge cell, and a
+dropped fine cell is a silent hole in street detail. Deriving would also make two consumers with
+different point-in-polygon edge handling disagree about what a region *is*. The bakery knows the
+answer exactly, so it publishes it.
+
+### 11.8 `boundary` — an outline to draw, not a set to compute
+
+```jsonc
+"boundary": {
+  "tolerance_udeg": 2000,
+  "rings": [ [ [45720000, 5810000], [45730000, 5830000], … ] ]
+}
+```
+
+| Field | Type | Description |
+| :-- | :-- | :-- |
+| `tolerance_udeg` | integer | The simplification tolerance the outline was reduced at. |
+| `rings` | array | One or more closed rings of `[lat, lon]` integer **microdegree** pairs, first ring exterior, the rest holes. First and last point of each ring are equal. |
+
+Microdegrees and `[lat, lon]` order, matching v1 §4 and the OBCM header, so nothing in the family
+mixes conventions. A few KB per region: baked into the catalog because a region has to render as
+the outline a user expects, and deriving one from a cell set would draw a staircase instead of a
+border.
+
+The outline is **presentation only**. It MUST NOT be used to compute a cell set (§11.7), to price a
+selection (§11.5), or as a packer input bbox — the last for exactly v1 §4's reason.
+
+The **coverage outline** the builder draws for a live selection is a different object and is not in
+the catalog: it is the union of the selected cells' squares, computed client-side, and it is drawn
+honestly as its true stair-edged shape. Regions render as borders; coverage renders as coverage.
+
+### 11.9 Migration, and the version law
+
+`artifacts` MAY appear in a v2 root with exactly v1 §3 semantics, so a bakery can keep serving
+whole-region artifacts while a cell store is filled. When present it MUST satisfy v1's rules
+including §6's single-`obcm_version` requirement, and a v2 consumer MAY ignore it entirely. A
+catalog that has finished migrating omits it. `presets` MUST NOT appear in a v2 root — a preset is
+no longer a thing that exists; it is a schema and a skin.
+
+The version law (§6) extends rather than changes:
+
+- every cell's `obcm_version` is read from its own 40-byte header and every cell MUST agree with
+  `schema.obcm_version`; a mixed tree fails generation, with no override flag;
+- a **schema-revision** bump is the same kind of hard cut as an OBCM bump, because assembly copies
+  chunk bytes between files and that is only meaningful within one revision
+  ([`OBCA_Spec.md` §6.3](OBCA_Spec.md)). A generator MUST refuse a tree mixing revisions, and an
+  assembler MUST refuse a mixed input set;
+- at consumption time a consumer MUST NOT offer an assembly to a device whose reader does not
+  accept `schema.obcm_version`, and SHOULD say so with the reason rather than hide the coverage.
+
+One thing the law no longer has to cover: a **skin** change invalidates nothing. It is not baked.
