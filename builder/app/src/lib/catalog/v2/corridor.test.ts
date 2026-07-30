@@ -23,6 +23,25 @@ function lonUdegFor(metres: number): number {
     return Math.round(metres / perUdeg);
 }
 
+/** µdeg of latitude that span `metres` — no cosine, by definition. */
+function latUdegFor(metres: number): number {
+    return Math.round(metres / (M_PER_DEG / 1e6));
+}
+
+/** The radius at which `cell` first comes into a one-point route's corridor,
+ *  bisected to a metre. */
+function radiusAdmitting(point: LatLon, id: string): number {
+    const hits = (r: number) => corridorCells(18, [point], r).some((c) => formatCellId(c) === id);
+    let lo = 0;
+    let hi = 20_000;
+    for (let k = 0; k < 40; k++) {
+        const mid = (lo + hi) / 2;
+        if (hits(mid)) hi = mid;
+        else lo = mid;
+    }
+    return hi;
+}
+
 describe("corridorCells", () => {
     it("selects the cells a zero-width route crosses, and only those", () => {
         // A line inside one cell: a corridor of no width is still a corridor.
@@ -47,19 +66,28 @@ describe("corridorCells", () => {
         // Bisect for the radius at which the cell first comes in: the projection
         // is the same equirectangular one the module documents, so this pins the
         // constant and the unit handling rather than re-deriving geodesy.
-        const point = [{ lat: CENTRE.lat, lon: SQUARE.minLon - lonUdegFor(5000) }];
-        const hits = (r: number) => corridorCells(18, point, r).some((c) => formatCellId(c) === "18/1204/1052");
-        expect(hits(4000)).toBe(false);
-        expect(hits(6000)).toBe(true);
-        let lo = 0;
-        let hi = 20_000;
-        for (let k = 0; k < 40; k++) {
-            const mid = (lo + hi) / 2;
-            if (hits(mid)) hi = mid;
-            else lo = mid;
-        }
-        expect(hi).toBeGreaterThan(4950);
-        expect(hi).toBeLessThan(5050);
+        const point = { lat: CENTRE.lat, lon: SQUARE.minLon - lonUdegFor(5000) };
+        expect(corridorCells(18, [point], 4000).map(formatCellId)).not.toContain("18/1204/1052");
+        expect(corridorCells(18, [point], 6000).map(formatCellId)).toContain("18/1204/1052");
+        const admitted = radiusAdmitting(point, "18/1204/1052");
+        expect(admitted).toBeGreaterThan(4950);
+        expect(admitted).toBeLessThan(5050);
+    });
+
+    it("puts the same radius due south, which is where the latitude scale shows", () => {
+        // The mirror of the test above, and not redundant with it: the due-west
+        // probe multiplies the latitude scale by cos(φ) and divides by it again
+        // when the test converts back, so a wrong `sy` — 3× wrong, even —
+        // survives it untouched. Due south, `sy` is the only number in the
+        // arithmetic. 5 km of latitude is 5 km at every latitude, by definition.
+        const point = { lat: SQUARE.minLat - latUdegFor(5000), lon: CENTRE.lon };
+        const admitted = radiusAdmitting(point, "18/1204/1052");
+        expect(admitted).toBeGreaterThan(4950);
+        expect(admitted).toBeLessThan(5050);
+        // …and the two agree with each other, which is the statement that a
+        // scale error in either axis breaks.
+        const west = radiusAdmitting({ lat: CENTRE.lat, lon: SQUARE.minLon - lonUdegFor(5000) }, "18/1204/1052");
+        expect(Math.abs(admitted - west)).toBeLessThan(50);
     });
 
     it("buffers a single point into a disc", () => {
