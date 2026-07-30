@@ -155,6 +155,26 @@ static mut CTRL_RX: MaybeUninit<[u8; MAX_PACKET as usize]> = MaybeUninit::uninit
 /// One bulk chunk, in either direction — the USB analogue of the CoC's SDU scratch.
 static mut BULK_BUF: MaybeUninit<[u8; MAX_PACKET as usize]> = MaybeUninit::uninit();
 
+/// An upload's [`Stage`](crate::link::stage::Stage) buffer — how many bytes pile up in RAM before
+/// they reach the card as one batch.
+///
+/// **A RAM-against-minutes dial, and RAM is the scarce one.** From `sd_bench` on the shipping card,
+/// per 32 KB of map (one cluster, so one cluster-allocation's worth of FAT writes either way):
+/// 4 KB → 0.70 MB/s, 8 KB → 0.76, 16 KB → 0.81, 32 KB → 0.86, against 0.20 unstaged.
+///
+/// 16 KB takes 94% of what is on the table. The last 6% wants a full 32 KB cluster per flush, and
+/// that second 16 KB buys less than it costs: the deep-ride stack peak measured 35,808 B, and this
+/// build's residual is ~70 KB with 16 KB staged against ~54 KB with 32 KB. Doubling the margin over
+/// the measured peak is worth more than 6% of a transfer that is already minutes long — this is the
+/// crate where async frames overflow the stack silently. Raise it only against a fresh high-water
+/// measurement, never on the throughput arithmetic alone.
+const STAGE_LEN: usize = 16 * 1024;
+
+/// The staging buffer itself. One per plane rather than one shared: [`TRANSFER_ACTIVE`] does gate
+/// the two transports to one transfer at a time, but it gates *transfers*, not the `&'static mut`
+/// each plane's task holds for its whole life.
+static mut STAGE_BUF: MaybeUninit<[u8; STAGE_LEN]> = MaybeUninit::uninit();
+
 /// The `iSerialNumber` string, pinned for the `'static` life the descriptor borrows it for.
 static mut SERIAL: MaybeUninit<heapless::String<16>> = MaybeUninit::uninit();
 
@@ -168,6 +188,7 @@ pub const RESIDENT_BYTES: usize = EP_OUT_BUFFER_LEN
     + MSOS_DESC_LEN
     + CONTROL_BUF_LEN
     + 2 * MAX_PACKET as usize
+    + STAGE_LEN
     + core::mem::size_of::<heapless::String<16>>()
     // [`VBUS_WAKER`] — 8 B, and itemized rather than waved through so the whole of #937's resident
     // cost is a named term instead of an unexplained step in the linked `.bss` gate.
@@ -474,6 +495,7 @@ pub async fn run(usb_p: Peri<'static, peripherals::USBHS>, stores: crate::link::
     // SAFETY: sole writer of each buffer; `run` is spawned once.
     let ctrl_rx = unsafe { init_static(core::ptr::addr_of_mut!(CTRL_RX), [0u8; MAX_PACKET as usize]) };
     let bulk_buf = unsafe { init_static(core::ptr::addr_of_mut!(BULK_BUF), [0u8; MAX_PACKET as usize]) };
+    let stage_buf = unsafe { init_static(core::ptr::addr_of_mut!(STAGE_BUF), [0u8; STAGE_LEN]) };
 
     // Both planes send on the control IN endpoint — the control loop its replies, the data plane
     // its announces and terminal results — so it lives behind one async mutex. That serialisation
@@ -487,7 +509,7 @@ pub async fn run(usb_p: Peri<'static, peripherals::USBHS>, stores: crate::link::
     // polled*, which keeps their signatures — and their `.bss` footprint — unchanged.
     let planes = join(
         control::run(&tx, ctrl_out, ctrl_rx, store, shared, store_epoch),
-        data_plane::run(&tx, bulk_in, bulk_out, bulk_buf, store, shared),
+        data_plane::run(&tx, bulk_in, bulk_out, bulk_buf, stage_buf, store, shared),
     );
     let mut planes = core::pin::pin!(planes);
 
