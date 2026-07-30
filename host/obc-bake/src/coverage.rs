@@ -112,6 +112,26 @@ impl Coverage {
         self.bbox
     }
 
+    /// The ground this coverage encloses, km².
+    ///
+    /// The denominator of every density figure the bakery reports, so it is the
+    /// **spherical** polygon area rather than a shoelace scaled by one cosine:
+    /// Switzerland spans two degrees of latitude and a single-cosine approximation is
+    /// already 4 % out over that, which is the same order as the per-cell overhead
+    /// `OBCA_Spec.md` §1.5 asks a producer to budget for. Holes subtract.
+    pub fn area_km2(&self) -> f64 {
+        fn area_of(geom: &Geom) -> f64 {
+            match geom {
+                Geom::Polygon { exterior, interiors } => {
+                    ring_area_km2(exterior).abs() - interiors.iter().map(|r| ring_area_km2(r).abs()).sum::<f64>()
+                }
+                Geom::Multi(parts) => parts.iter().map(area_of).sum(),
+                Geom::Line(_) | Geom::Empty => 0.0,
+            }
+        }
+        self.polys.iter().map(area_of).sum::<f64>().max(0.0)
+    }
+
     /// Whether `(lat, lon)` is inside the coverage — even-odd ray casting, exact in
     /// `i128`, no float and no epsilon.
     pub fn contains(&self, lat: i64, lon: i64) -> bool {
@@ -284,6 +304,21 @@ fn segment_cells(a: (i64, i64), b: (i64, i64), log2: u32, out: &mut BTreeSet<Cel
     }
 }
 
+/// The signed spherical area of one closed ring of `(lon, lat)` degrees, km².
+///
+/// `A = R²/2 · Σ (λ₁ − λ₀)·(sin φ₀ + sin φ₁)` — the standard spherical-excess form,
+/// exact on a sphere for a ring of great-circle-ish edges at these scales.
+fn ring_area_km2(points: &[(f64, f64)]) -> f64 {
+    /// Mean Earth radius, km (IUGG R₁).
+    const R: f64 = 6371.0088;
+    let mut sum = 0.0;
+    for w in points.windows(2) {
+        let ((lon0, lat0), (lon1, lat1)) = (w[0], w[1]);
+        sum += (lon1 - lon0).to_radians() * (lat0.to_radians().sin() + lat1.to_radians().sin());
+    }
+    R * R / 2.0 * sum
+}
+
 /// Every grid line of size `2^log2` strictly between `v0` and `v1`, ascending.
 fn lines_strictly_between(v0: i64, v1: i64, log2: u32) -> impl Iterator<Item = i64> {
     let s = 1i64 << log2;
@@ -426,6 +461,30 @@ mod tests {
         let mut reversed = BTreeSet::new();
         segment_cells((min_lat + 2 * S + 10, min_lon + S / 2), (min_lat + 10, min_lon + 10), LOG2, &mut reversed);
         assert_eq!(out, reversed);
+    }
+
+    /// The density denominator. A one-degree square at 47°N is ≈ 111.3 km tall and
+    /// ≈ 76 km wide, so ≈ 8 460 km²; the union of two of them is twice that, and the
+    /// *overlap* of two overlapping ones is counted once.
+    #[test]
+    fn covered_ground_is_a_spherical_area() {
+        let one = Coverage::parse_poly(&box_poly(7.0, 47.0, 8.0, 48.0)).unwrap();
+        let area = one.area_km2();
+        assert!((8_300.0..8_600.0).contains(&area), "{area} km² for a 1° square at 47°N");
+
+        let disjoint = Coverage::parse_poly(&box_poly(10.0, 47.0, 11.0, 48.0)).unwrap();
+        let both = Coverage::union(&[&one, &disjoint]).expect("union");
+        assert!((both.area_km2() - 2.0 * area).abs() < 1.0, "two disjoint squares add up");
+
+        let overlapping = Coverage::parse_poly(&box_poly(7.5, 47.0, 8.5, 48.0)).unwrap();
+        let merged = Coverage::union(&[&one, &overlapping]).expect("union");
+        assert!((merged.area_km2() - 1.5 * area).abs() < 5.0, "shared ground is counted once: {}", merged.area_km2());
+
+        // A hole subtracts, so the coverage's area is the ground it really covers.
+        let hole = "region\n1\n   7.0 47.0\n   8.0 47.0\n   8.0 48.0\n   7.0 48.0\n   7.0 47.0\nEND\n!2\n   7.25 \
+                    47.25\n   7.75 47.25\n   7.75 47.75\n   7.25 47.75\n   7.25 47.25\nEND\nEND\n";
+        let punched = Coverage::parse_poly(hole).expect("poly");
+        assert!((punched.area_km2() - 0.75 * area).abs() < 5.0, "{}", punched.area_km2());
     }
 
     #[test]
