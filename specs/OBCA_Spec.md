@@ -56,6 +56,13 @@ cited only for the fixed-layout header conventions §5.2 follows.
 6. **Nothing self-made reaches a device unverified.** A catalog artifact was verified by the
    bakery; an assembly was made on the rider's own machine, outside the manifest. §4.8 therefore
    makes a full reader-based verify a *precondition* of writing a set, not an optional extra.
+7. **The core file's headroom is the scarcest resource, so nothing else may spend it.** A set's
+   geometry scales horizontally — more ground is more shards — but the core holds one unified nav
+   graph and is one file until the router learns sharded graphs. Its margin under `4 GiB − 1` is
+   therefore the design's hard limit, and every byte that *can* live in a splittable file does
+   (§5.1). The corollary is a robustness property, not a size optimisation: every file's size is
+   computable from the catalog before any download, so density growth degrades to a refusal in a
+   builder rather than to a malformed artifact (§5.7).
 
 ---
 
@@ -162,10 +169,10 @@ rather than a change to this document.
 
 | Band | Cell size | ≈ at 47°N | Carries | Assembly role (§5.1) |
 | :-- | :-- | :-- | :-- | :-- |
-| `coarse` | `2^20` µdeg (1.048576°) | 117 × 80 km | ladder LOD 0, 1, 2 | core file |
+| `coarse` | `2^20` µdeg (1.048576°) | 117 × 80 km | ladder LOD 0, 1, 2 | **coarse shard** |
 | `mid` | `2^19` µdeg (0.524288°) | 58 × 40 km | ladder LOD 3, 4 | geometry shard |
 | `fine` | `2^18` µdeg (0.262144°) | 29 × 20 km | ladder LOD 5, 6 | geometry shard |
-| `network` | `2^18` µdeg (0.262144°) | 29 × 20 km | nav graph (OBCM §8), POIs (OBCM §7), hours pool (OBCM §7.5) | core file |
+| `network` | `2^18` µdeg (0.262144°) | 29 × 20 km | nav graph (OBCM §8), POIs (OBCM §7), hours pool (OBCM §7.5) | **core file** |
 
 The largest cell size in the table, `S_MAX = 2^20`, is the assembly bbox's alignment modulus
 (§2.1).
@@ -183,18 +190,32 @@ German average — the Rhine plain carries more road and more building than the 
 | `network` — nav + POI | 6.30 | 3.80 | 7.06 | 3.7 / 5.3 / 19.5 MiB |
 | **whole map** | **16.7** | **13.4** | **20.3** | |
 
-> **Why these boundaries.** The `coarse` boundary is **forced, not chosen.** The core file carries
-> the whole unified nav graph (§5.1), which alone is 3.8–7.1 MiB per 1000 km², so an area-weighted
-> DACH core lands at **3.0–3.3 GiB with LOD 0–2, 3.3–3.7 GiB with LOD 3 added — as little as 7 %
-> under the ceiling — and 4.1–4.7 GiB with LOD 4, past it.** LOD 3 and up therefore *must* live in
-> the geometry shards, and a 7 % margin is not a margin worth spending.
+> **Why these boundaries.** **No ladder LOD lives in the core file.** The core carries the nav
+> graph, the POIs and the style table and nothing else (§5.1), because it is the one file of a set
+> that cannot be split by bbox — so every byte that *can* scale horizontally is kept out of it. The
+> band boundaries are therefore set by two properties that really are about geometry: the size of
+> one fetch, and the size of the single coarse shard.
 >
-> The remaining boundary is chosen so cell size scales inversely with band density: each band's
-> fully-covered cell is 4–5 MiB, so one fetch costs about the same wherever it comes from. That is
-> also why the fine band is `2^18` rather than `2^19` — the worst measured single cell is then
-> ~12 MiB of geometry (Zürich) instead of the ~33 MiB a `2^19` fine band produces. Note the p90 and
-> max columns: per-cell bytes run 30–45 % above the average in populated bands and 4–5× above it in
-> the worst urban cell, so a shard planner MUST size on the distribution, never on the mean. (The
+> **Fetch-unit uniformity.** Cell size scales inversely with band density, so a fully covered cell
+> of every band is 3.7–5.4 MiB and one fetch costs about the same wherever it comes from. That is
+> what keeps LOD 3 in `mid`: a `2^20` cell carrying LOD 0–3 measures **10.4–11.7 MiB** fully
+> covered, two and a half times every other band's object. The boundary is not a knife edge from the
+> other side — moving LOD 2 down into `mid` would add only 1.1–1.4 MiB to a `2^19` cell — so
+> `coarse` = LOD 0–2 is the cheap end of a shallow optimum, chosen rather than forced.
+>
+> **The coarse shard is one file spanning the whole assembly** (§5.1), which is what keeps a
+> zoomed-out viewport a single-file read. Its band's content must therefore stay small enough that
+> even a *continental* assembly's coarse layer fits `4 GiB − 1`: at 0.47–0.61 MiB per 1000 km²
+> (DACH-weighted, and sparser ground is cheaper) that is **≈ 6.7–8.8 M km²** — EU-27 would be a
+> 1.9–2.5 GiB single coarse
+> shard, geographic Europe 4.6–6.1 GiB and would have to split. Adding LOD 3 roughly doubles the band
+> and pulls that ceiling down to ≈ 2.9–3.6 M km², *below* EU-27, giving up the single-file zoomed-out
+> read exactly where it matters most.
+>
+> **Why the fine band is `2^18` rather than `2^19`:** the worst measured single cell is then ~12 MiB
+> of geometry (Zürich) instead of the ~33 MiB a `2^19` fine band produces. Note the p90 and max
+> columns: per-cell bytes run 30–45 % above the average in populated bands and 4–5× above it in the
+> worst urban cell, so a shard planner MUST size on the distribution, never on the mean. (The
 > *fully covered* column is `cell area × density`; the p90 and max columns are the measured per-cell
 > distribution over Switzerland, which includes partially covered cells and so sits below it at the
 > coarse sizes, where few whole cells exist.)
@@ -628,9 +649,12 @@ uses — and MUST cover, per file of the set:
 5. **Nav reachability, as a report.** Emit the merged component histogram. An assembler SHOULD
    surface a selection whose largest component covers an implausibly small share of the graph,
    because that is what a broken seam looks like; it MUST NOT silently repair it.
-6. **Set invariants** (§5): exactly one core shard; each file ≤ `4 GiB − 1 B`; the geometry shards'
-   bboxes tile the assembly bbox without overlap; every file's LOD table lists the full ladder;
-   nav and POI sections non-empty **only** in the core.
+6. **Set invariants** (§5): exactly one core shard, and its bbox is the assembly bbox; each file
+   ≤ `4 GiB − 1 B` (and, per §5.7, each file's size equals what the pre-download projection said it
+   would be, within the stated budget); the coarse shards' bboxes tile the assembly bbox without
+   overlap and so do the geometry shards'; every file's LOD table lists the full ladder; nav and POI
+   sections non-empty **only** in the core; each band's LODs non-empty **only** in shards of that
+   band's role — in particular the core carries **no** geometry outside the single-file fast path.
 7. **Digests.** SHA-256 per file, recorded in the manifest (§5.2).
 
 A failure at any step MUST abort the whole assembly. A partially written set is not a degraded map;
@@ -660,16 +684,48 @@ Every shard is an ordinary OBCM file whose header bbox is a grid-aligned power-o
 (§2.1) — a node of the assembly quadtree — and whose LOD table lists the **full ladder**, with the
 LODs it does not carry written empty (§3.1).
 
+Three roles are defined. The ordering principle is stated once and then obeyed everywhere:
+**the core file holds only what cannot be split by bbox, and everything that can be is moved out
+of it.**
+
 - **The core shard** (exactly one per set) carries the style table, the `Marker Color`, the single
-  unified **nav graph**, the **POIs** and hours pool, and every LOD of a band whose schema `role`
-  is `core` — the `coarse` band at the v1 table, and *every* LOD in the single-file fast path
-  (§5.5). Its bbox is the whole assembly bbox.
-- **Geometry shards** (zero or more) carry the `mid`- and `fine`-band LODs and nothing else: empty
-  nav directory, empty POI categories. Their bboxes **tile** the assembly bbox: they are an
-  antichain of assembly-quadtree nodes at depths `0 .. n − s_min` whose squares are pairwise
-  disjoint and whose union is the assembly bbox. An assembler produces them by recursive
-  quadtree splitting wherever a node's bytes exceed the target shard size, so balancing needs no
-  new geometry — only the theorem.
+  unified **nav graph**, and the **POIs** with their hours pool — the sections of a band whose
+  schema `role` is `core`, the `network` band at the v1 table. It carries **no ladder LOD at all**
+  (every LOD region is written empty, §3.1), except in the single-file fast path (§5.5), where the
+  one shard is the core and carries everything. Its bbox is the whole assembly bbox.
+- **Coarse shards** carry the LODs of the band whose schema `role` is `coarse` — LOD 0, 1, 2 at the
+  v1 table — and nothing else: empty nav directory, empty POI categories, every other LOD empty.
+  There is **exactly one** by default, its bbox the whole assembly bbox, because a zoomed-out
+  viewport covers the whole map and should be a single-file read. It MAY be split by bbox in the
+  ordinary way (below) if a continental selection ever brings it near the ceiling; §1.5 puts that at
+  ≈ 6.7–8.8 M km², about the size of geographic Europe.
+- **Geometry shards** carry the `mid`- and `fine`-band LODs and nothing else: empty nav directory,
+  empty POI categories. There are as many as the target shard size needs, and none at all only in
+  the single-file fast path.
+
+Coarse and geometry shards are split the same way. The shards of one role **tile** the assembly
+bbox: their bboxes are an antichain of assembly-quadtree nodes whose squares are pairwise disjoint
+and whose union is the assembly bbox. An assembler produces them by recursive quadtree splitting
+wherever a node's bytes exceed the target shard size, so balancing needs no new geometry — only the
+theorem (§2). With one shard the antichain is the root, i.e. the assembly bbox itself.
+
+> **Why the coarse band is a shard and not part of the core.** The core is the single component of a
+> set that **cannot scale horizontally**: it holds one unified nav graph, and until the router learns
+> sharded graphs (below) that graph is one file. Its headroom under `4 GiB − 1` is therefore the
+> scarcest resource in the whole design, and it MUST NOT be spent on bytes that have somewhere else
+> to go. Coarse geometry has somewhere else to go — it tiles, it splits, it is ordinary cell content
+> — so it goes there. At DACH this moves 225–296 MiB out of the core (§5.7). The property that
+> motivated putting coarse in the core in the first place survives intact: a zoomed-out viewport
+> still touches **exactly one** file, because the coarse shard spans the whole assembly.
+
+At the v1 schema and DACH densities (§1.5), the shape of the largest set v1 supports is:
+
+| DACH (482 760 km²), v1 schema | bytes | files |
+| :-- | --: | :-- |
+| core — nav + POI + style table | **2.8–3.0 GiB** | 1 |
+| coarse shard — LOD 0–2 | 225–296 MiB | 1 |
+| geometry shards — LOD 3–6 | 4.6–5.5 GiB | ~6 at a ~1 GiB target |
+| **the set** | **7.6–8.9 GiB** | **~8** |
 
 Two consequences shape the firmware work (P3b) and are worth stating as contract:
 
@@ -677,26 +733,17 @@ Two consequences shape the firmware work (P3b) and are worth stating as contract
   untouched. Nav and POI queries always go to the core shard.
 - **Viewport dispatch needs no role logic.** A viewport query goes to every shard whose bbox
   intersects it; a shard that does not carry the requested LOD has an empty index for it and
-  contributes nothing. Only a boundary-straddling viewport touches two readers.
+  contributes nothing. §5.6 makes that free rather than merely correct.
 
-> **The ceiling this leaves.** The core shard is nav-dominated: at the v1 schema, nav plus POIs run
-> 3.8–7.1 MiB per 1000 km² (§1.5), so an area-weighted DACH core is **3.0–3.3 GiB** — inside the
-> ceiling, but not comfortably, and that is already *with* LOD 3 and up excluded. One logical map is
-> therefore capped at roughly DACH scale. Going past it needs a **sharded nav graph** with
-> cross-file boundary nodes
-> — the same unification trick applied at query time — which is deliberately out of v1 scope,
-> because it is the one change that would touch the router.
-
-Because that ceiling is reachable by a selection a user can actually draw, it MUST be checked
-*before* the download, not discovered at write time:
-
-- A consumer MUST price the core shard from the catalog (the sum of the selection's `coarse` and
-  `network` cell sizes, §6.1) and MUST refuse a selection whose projected core exceeds
-  `4 GiB − 1 B`, naming the navigation graph as the reason and the coverage as the thing to reduce.
-  It SHOULD warn above ~3.5 GiB.
-- An assembler MUST fail rather than emit an over-size core, and MUST NOT "solve" it by splitting
-  the nav graph, dropping POIs, or omitting coarse LODs. Silently shipping a map that cannot route
-  across itself is the one failure mode this whole section exists to prevent.
+> **The ceiling this leaves.** The core is now nav plus POIs and nothing else: they run 3.8–7.1 MiB
+> per 1000 km² (§1.5), 5.9–6.4 area-weighted over DACH, so a DACH core is **2.8–3.0 GiB** and the
+> nav graph alone reaches `4 GiB − 1` at roughly **640–700 thousand km²** — about 1.3–1.45× DACH,
+> enough for DACH plus its northern and eastern neighbours and not enough for DACH plus France. One
+> logical map is therefore capped at that scale, and the cap is now a statement about the **nav graph
+> alone**: no geometry decision can move it. Going
+> past it needs a **sharded nav graph** with cross-file boundary nodes — the same unification trick
+> applied at query time — which is deliberately out of v1 scope, because it is the one change that
+> would touch the router.
 
 ### 5.2 The set manifest
 
@@ -725,7 +772,7 @@ allocation — the `OBCU_Spec.md` §1.1 conventions. It is `72 + 56 × Shard Cou
 
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
-| 0 | Role | 1 | `uint8` | `0` = core, `1` = geometry; readers reject any other value |
+| 0 | Role | 1 | `uint8` | `0` = core, `1` = geometry, `2` = coarse (§5.1); readers reject any other value |
 | 1 | Flags | 1 | `uint8` | Reserved; `0` |
 | 2 | Reserved | 2 | — | `0` |
 | 4 | Min Lat | 4 | `int32` | This shard's OBCM header bbox, verbatim |
@@ -769,10 +816,15 @@ A reader MUST reject a manifest unless all of the following hold. There is no pa
 a set that does not validate does not mount (§5.4).
 
 - length is exactly `72 + 56 × Shard Count`; magic is `OBCS`; `Version == 1`; `Flags == 0`;
-- `1 ≤ Shard Count ≤ 32`; `Core Shard < Shard Count`; the shard at `Core Shard` has `Role == 0`
-  and every other shard has `Role == 1`;
+- `1 ≤ Shard Count ≤ 32`; `Core Shard < Shard Count`; the shard at `Core Shard` has `Role == 0` and
+  is the **only** shard with `Role == 0`; every other shard has `Role == 1` or `Role == 2`;
+- if `Shard Count == 1` the single shard is the core (§5.5); otherwise there is **at least one**
+  shard of each role the schema's bands name — at least one `Role == 2` and at least one
+  `Role == 1` at the v1 table — because a role with no shard is a map missing whole zoom levels;
 - the assembly bbox has `min ≤ max` on both axes; every shard bbox has `min ≤ max` and lies inside
-  the assembly bbox; the core shard's bbox equals the assembly bbox;
+  the assembly bbox; the core shard's bbox equals the assembly bbox; the shards of each non-core
+  role have pairwise disjoint bboxes whose union is the assembly bbox (§5.1), which for a single
+  shard of that role means its bbox equals the assembly bbox;
 - every shard file named by §5.2 exists, has exactly the recorded `Bytes`, opens as OBCM with the
   recorded `OBCM Version`, and has a header bbox equal to its recorded bbox.
 
@@ -790,9 +842,9 @@ digest before the manifest is written.
   shards, so the window in which shards are mixed has no manifest pointing at them.
 - A reader MUST treat a manifest whose §5.3 validation fails as *no set at all* — it MUST NOT
   mount the shards that happen to be present, and it MUST NOT mount a shard individually as a
-  standalone map, even though each shard is a valid OBCM file. A geometry shard opened alone is a
-  map with no roads and no POIs, which is exactly the kind of quiet wrongness a rider cannot
-  diagnose.
+  standalone map, even though each shard is a valid OBCM file. A geometry or coarse shard opened
+  alone is a map with no roads and no POIs, and the core opened alone is a map that draws nothing at
+  all — exactly the kind of quiet wrongness a rider cannot diagnose.
 - Shard files with no manifest referencing them are **orphans** and MAY be deleted to reclaim
   space. A writer SHOULD do so when it replaces a set.
 - Every UI — device and builder alike — MUST present a set as **one map**. Shard count is an
@@ -806,13 +858,83 @@ touched all become possible later without a manifest change.
 
 When the whole assembly fits one OBCM file under `4 GiB − 1 B`, the assembler writes a set of
 **one**: `Shard Count = 1`, `Core Shard = 0`, that shard's `Role = 0` and its bbox equal to the
-assembly bbox, carrying every LOD, the nav graph, and the POIs. Nothing in §5.1–§5.4 changes; the
-device's dispatch loop simply runs over one shard.
+assembly bbox, carrying every LOD, the nav graph, and the POIs. It is the one case where geometry
+lives in the core, and it is safe by construction: the whole map already fits one file, so there is
+nothing to move out. Nothing else in §5 changes; the device's dispatch loop simply runs over one
+shard, and §5.6's empty-LOD cache finds nothing empty.
 
 At the v1 schema this covers essentially every selection a rider makes below country-plus scale —
 a measured whole-Switzerland bake is 0.67 GiB (690 MiB), Baden-Württemberg projects to ≈ 0.71 GiB,
 and a 300 km corridor 10 km wide to ≈ 0.25 GiB — so multi-shard sets are the exception, reached at
 roughly Germany scale.
+
+### 5.6 Mount-time LOD presence: why role-free dispatch is also free
+
+§5.1's dispatch rule is deliberately role-blind — a viewport query goes to every shard whose bbox
+intersects it, and a shard that does not carry the requested LOD contributes nothing. Two shards of
+a set have a bbox that intersects **every** query: the core and (unsplit) the coarse shard both span
+the whole assembly. So role-blind dispatch would, naively, walk into the core file at every zoom
+level and into every geometry shard at zoomed-out ones, to discover an empty index each time.
+
+That discovery costs nothing if it is made once:
+
+- A reader **SHOULD** cache, per mounted file, the per-LOD `Index Node Count == 0` predicate at
+  **mount** time, and skip a file's LOD without any I/O when the predicate says the region is empty.
+  The LOD table is already read resident at open (`OBCM_Spec.md` §3), so the cache is derived from
+  bytes the reader has in hand — at the v1 ladder it is **7 bits per file**, and a 32-shard set's
+  whole table is 32 bytes.
+- A reader MUST NOT infer band membership or a role from that cache (§3.1: a legitimately empty cell
+  is indistinguishable from an out-of-band one), and MUST NOT use it as a substitute for the
+  manifest's `Role`. It is a pure I/O-avoidance predicate over one file's own LOD table.
+- With the cache in place, a zoomed-out viewport reads exactly one file (the coarse shard), a
+  zoomed-in one reads the one or two geometry shards its box straddles, and the core is opened only
+  for nav and POI queries — with no role logic anywhere in the dispatch path.
+
+### 5.7 Robustness: every file's size is known before anything is downloaded
+
+This subsection is the design's safety property, and it is normative.
+
+Every physical file of a set is **exactly computable from the catalog before a single byte is
+fetched**. A shard's bytes are the sum of the sizes of the cells it will carry — `bytes` is published
+per cell ([`OBCC_Spec.md` §11.6](OBCC_Spec.md)) and, for a named region, per band in the catalog root
+(`bytes_by_band`, [`OBCC_Spec.md` §11.5](OBCC_Spec.md)), which is exactly the split the roles need
+(§6.1) — plus fixed
+overheads that do not depend on content: the 40-byte header, the schema's style table, the LOD table,
+the POI and nav directories, and the per-LOD offset tables, whose sizes follow from the cell count.
+A consumer computing that sum is not estimating; it is adding up numbers the catalog states.
+
+Therefore:
+
+- A consumer **MUST** project every file of the set — core, coarse shards, geometry shards — before
+  the download, and **MUST refuse the selection** if any projected file exceeds `4 GiB − 1 B`. It
+  MUST NOT begin fetching a set it cannot legally write.
+- For the **core** specifically it SHOULD warn above ≈ 3.5 GiB, and both the refusal and the warning
+  MUST name the **navigation graph** as the reason and the coverage as the thing to reduce — because
+  after this section's split the core is nav plus POIs and nothing else, so no other explanation is
+  true.
+- A consumer MUST apply the schema's own per-cell overhead budget (§1.5's +5–15 % for real cell
+  bakes) on the *pessimistic* side of that comparison, so the projection is an upper bound rather
+  than a hope.
+- An assembler **MUST** fail rather than emit an over-size file, and MUST NOT "solve" an over-size
+  core by splitting the nav graph, dropping POIs, or degrading coverage silently. It MAY split a
+  coarse or geometry shard further, since that is what those roles are for.
+- §4.8's verify then re-checks every file's actual size against the ceiling, so the pre-download
+  projection is bounded on both ends: refused before the fetch, and re-asserted before the write.
+
+The consequence is the point: **no runtime and no on-device path can ever encounter an over-limit
+file.** A device only ever sees a set that a host projected, assembled, verified and wrote, and each
+of those three stages independently rejects an over-size file. Density growth — a denser OSM
+snapshot, a schema that keeps more detail, a region that urbanises — therefore degrades to a clear
+pre-download refusal in a builder UI. It cannot degrade to a truncated `uint32` offset, a wrapped
+FAT32 write, or a map that opens and then misroutes.
+
+The honest capability cap follows from the same arithmetic. One logical map is limited to the ground
+whose **nav graph alone** approaches the ceiling: ≈ 640–700 thousand km² at v1 densities, or
+≈ 550–610 thousand km² carrying the pessimistic +15 % budget (§1.5) — comfortably past DACH, short of
+a continent. Lifting that cap is one specific future change, a **sharded nav graph** with cross-file
+boundary nodes, and it is deliberately not v1 because it is the only change here that would touch the
+router. Nothing else in the design needs to move: geometry already scales horizontally, and after
+§5.1's split the core holds nothing else.
 
 ---
 
@@ -827,8 +949,11 @@ define.
 For each published cell: its id (§1.3), its band, its schema revision, its OBCM version read from
 its own header, its size, its SHA-256, its URL, its source extents and snapshot dates, and whether
 it is **`partial`** (§3.7). A consumer must be able to price an assembly — cell count and total
-bytes — from the manifest alone, before fetching anything; that is OBCC's
-knowable-before-the-download guarantee applied to cells.
+bytes, **per band** — from the manifest alone, before fetching anything; that is OBCC's
+knowable-before-the-download guarantee applied to cells, and it is what makes §5.7's per-file
+projection arithmetic rather than estimation. Per band matters because the roles partition by band:
+the core's size is the `network` band's cell bytes plus fixed overheads, the coarse shard's is the
+`coarse` band's, and the geometry shards' is the `mid` and `fine` bands'.
 
 ### 6.2 Schema owns ids; skin owns values
 
