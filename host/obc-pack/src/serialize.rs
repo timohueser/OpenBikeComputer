@@ -1302,6 +1302,15 @@ pub fn serialize_lods(
 /// in order; each tree is dropped before the next call. The POI and nav sections
 /// are built in memory (small — point/junction records, not geometry) after the
 /// LODs stream out.
+///
+/// A `None` root writes an **empty region** for that level: `Index Node Count = 0`, `Chunk Count =
+/// 0`, and the single-`0`-entry offset table `OBCM_Spec.md` §5.1 mandates for a chunkless LOD — 4
+/// bytes of payload, and a reader walks it and finds nothing. That is not merely an optimisation of
+/// the "leaf with no features" case (which still costs an index node): it is what a **cell artifact**
+/// needs, because a cell writes the complete ladder with its out-of-band levels empty so that band
+/// membership never appears in the bytes ([`OBCA_Spec.md`](../../../specs/OBCA_Spec.md) §3.1), and
+/// `Index Node Count == 0` is the predicate a reader caches at mount to skip a level with no I/O at
+/// all (§5.6).
 #[allow(clippy::too_many_arguments)]
 pub fn serialize_lods_streaming<W, F>(
     w: &mut W,
@@ -1316,7 +1325,7 @@ pub fn serialize_lods_streaming<W, F>(
 ) -> io::Result<(u64, usize)>
 where
     W: Write + Seek,
-    F: FnMut(usize) -> (Node, usize, Option<f64>),
+    F: FnMut(usize) -> (Option<Node>, usize, Option<f64>),
 {
     let style_data = pack_style_dict(styles);
     let lod_table_offset = HEADER_LEN + style_data.len();
@@ -1337,8 +1346,15 @@ where
     let mut dropped = 0usize;
     for i in 0..lod_count {
         let (root, chunk_size, max_mpp) = build(i);
-        let (ib, nc, cb, cc, lod_dropped) = serialize_tree(&root, chunk_size);
-        drop(root); // free the tree before writing this LOD / building the next
+        let (ib, nc, cb, cc, lod_dropped) = match root {
+            Some(root) => {
+                let out = serialize_tree(&root, chunk_size);
+                drop(root); // free the tree before writing this LOD / building the next
+                out
+            }
+            // Empty region: no index, no chunk, and the mandatory single-`0` offset table.
+            None => (Vec::new(), 0u32, 0u32.to_le_bytes().to_vec(), 0u32, 0usize),
+        };
         dropped += lod_dropped;
         push_lod_entry(&mut table, max_mpp, cursor as u32, nc, chunk_size, cc);
         w.write_all(&ib)?;
@@ -1517,7 +1533,7 @@ mod tests {
         let mut cur = Cursor::new(Vec::new());
         let (total, dropped) =
             serialize_lods_streaming(&mut cur, lods.len(), &styles, 0xABCD, bbox, &pois, &nav, &profiles, |i| {
-                (lods[i].root.clone(), lods[i].chunk_size, lods[i].max_mpp)
+                (Some(lods[i].root.clone()), lods[i].chunk_size, lods[i].max_mpp)
             })
             .unwrap();
 

@@ -24,7 +24,9 @@
 
 pub mod catalog;
 pub mod config;
+pub mod cut;
 pub mod geom;
+pub mod grid;
 pub mod hours;
 pub mod ingest;
 pub mod land;
