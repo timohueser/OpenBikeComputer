@@ -572,13 +572,18 @@ fn lines_strictly_between(v0: i64, v1: i64, log2: u32) -> impl Iterator<Item = i
 /// principle push it across a *different* line by half a microdegree, so the segment is re-scanned
 /// until no proper crossing is left (or [`MAX_CUT_REFINE`] passes have run).
 fn segment_cuts(a: (i32, i32), b: (i32, i32), log2: u32) -> (Vec<(i32, i32)>, bool) {
-    // Fast path: the overwhelming majority of OSM segments are metres long and cross nothing.
-    if crossings(a, b, log2).is_empty() {
+    // Fast path, and it is the overwhelmingly common one: an OSM segment is metres long and crosses
+    // nothing, so the first pass is also the only pass and no chain is ever built.
+    let first = crossings(a, b, log2);
+    if first.is_empty() {
         return (Vec::new(), true);
     }
-    let mut chain = vec![a, b];
+    let mut chain = Vec::with_capacity(first.len() + 2);
+    chain.push(a);
+    chain.extend(first);
+    chain.push(b);
     let mut converged = false;
-    for _ in 0..MAX_CUT_REFINE {
+    for _ in 1..MAX_CUT_REFINE {
         let mut next: Vec<(i32, i32)> = Vec::with_capacity(chain.len() + 4);
         next.push(chain[0]);
         let mut added = 0usize;
@@ -601,9 +606,10 @@ fn segment_cuts(a: (i32, i32), b: (i32, i32), log2: u32) -> (Vec<(i32, i32)>, bo
 /// The proper crossings of one segment with the grid, ordered along the segment. Endpoints and
 /// duplicates are excluded: a vertex already on a line needs no interpolation (§3.4(1)).
 fn crossings(a: (i32, i32), b: (i32, i32), log2: u32) -> Vec<(i32, i32)> {
-    let (p, q) = ((a.1 as i64, a.0 as i64), (b.1 as i64, b.0 as i64)); // (lat, lon)
-                                                                       // Parameter along the segment as an exact rational, so crossings of both axes sort into one
-                                                                       // order without ever touching a float.
+    // §3.4's formula is written in (lat, lon); the packer's coordinates are (lon, lat).
+    let (p, q) = ((a.1 as i64, a.0 as i64), (b.1 as i64, b.0 as i64));
+    // Each crossing carries its position along the segment as an exact rational `num/den`, so
+    // crossings of the two axes sort into one order without a float anywhere.
     let mut found: Vec<(i128, i128, (i32, i32))> = Vec::new();
     for c in lines_strictly_between(p.0, q.0, log2) {
         if let Some((lat, lon)) = segment_crossing(p, q, Axis::Lat, c) {
