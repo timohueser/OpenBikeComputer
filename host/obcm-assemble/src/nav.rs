@@ -13,6 +13,17 @@
 //! 1. **Read the serialized node set** — not a graph builder's, the *serializer's*. The §8.4 splits
 //!    mint synthetic degree-2 junctions after `nav.rs` finishes (measured +4 489 nodes on a country
 //!    bake) and they are in the bytes.
+//!
+//!    *Deliberate deviation from §4.6.1's letter.* The spec says "walk each `network` cell's §8 node
+//!    quadtree through a real reader … the collection MUST be idempotent". This reads the cell's
+//!    **chunk run** instead, straight through, and the requirement it exists to satisfy is met more
+//!    strongly rather than less: §8.2's bin packing is what makes the *walk* hand a record back more
+//!    than once, and the chunk run visits each stored record exactly once, so idempotence is not
+//!    needed — a repeat is impossible, and a duplicate `Node Id` inside one cell is a
+//!    [`crate::Error::Format`] rather than a silently absorbed re-read. It also drops the quadtree
+//!    from the merge's cost entirely. The one thing it must not do is miss a record the walk would
+//!    reach, which is why an unreferenced chunk would still be read: the run is `Chunk Count`
+//!    chunks, not the leaves' union.
 //! 2. **Unify seam nodes, and only seam nodes** — exact coordinate equality, and only where the
 //!    coordinate lies on a boundary line of the `network` band's grid. There is no tolerance knob:
 //!    at a cell seam genuinely distinct junctions sit 3.9 m apart (measured), while a whole-map
@@ -47,6 +58,10 @@ struct MergedEdge {
     /// The §8.4 record exactly as its cell wrote it — `length_m`, `pt_count`, `way_kind`, anchor and
     /// deltas. Only its *placement* is new.
     rec: Vec<u8>,
+    /// FNV-1a over `rec`, computed **once** when the edge is interned. It is the content half of
+    /// both the §4.6.3 duplicate key and the §4.6.6 emission order, and re-hashing a 511-byte record
+    /// inside an `O(n log n)` comparator was measurable on a country-scale graph.
+    hash: u64,
 }
 
 /// One junction ready to serialize.
@@ -94,7 +109,13 @@ pub struct NavStats {
     /// Share of the merged graph in its largest component, in per-mille. An implausibly small value
     /// is what a broken seam looks like (§4.8.5); the assembler reports it and never repairs it.
     pub largest_component_permille: u32,
+    /// Adjacency entries refused at `OBCM_Spec.md` §8.3's degree cap of 24. The arc survives one-way
+    /// through the neighbour's own record, which §8.3 explicitly permits — but it is a lost turn, so
+    /// it is reported exactly as the packer reports its own.
     pub degree_truncated: usize,
+    /// Junction records the §8.3 chunk-capacity guard refused (co-located nodes past the quadtree's
+    /// recursion floor). Never silent: truncating the chunk instead would drop its `0xFF` sentinel.
+    pub dropped_nodes: usize,
 }
 
 /// The merged graph, **already laid out**: the node quadtree, its bin-packed chunks and the edge
@@ -219,12 +240,13 @@ pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, gl
                 let anchor_lat = i32::from_le_bytes(rec[7..11].try_into().expect("4 bytes"));
                 let anchor_lon = i32::from_le_bytes(rec[11..15].try_into().expect("4 bytes"));
                 let (a, b) = if (anchor_lat, anchor_lon) == (lat, lon) { (a, b) } else { (b, a) };
-                let key = (a.min(b), a.max(b), cost_m, way_kind, fnv(&rec));
+                let hash = fnv(&rec);
+                let key = (a.min(b), a.max(b), cost_m, way_kind, hash);
                 if seen_edges.insert(key, ()).is_some() {
                     stats.duplicate_edges += 1;
                     continue;
                 }
-                edges.push(MergedEdge { a, b, cost_m, kind: way_kind, rec });
+                edges.push(MergedEdge { a, b, cost_m, kind: way_kind, rec, hash });
             }
         }
     }
@@ -237,9 +259,26 @@ pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, gl
     // what it says — an island in the map, not in a cell (§3.5/§4.6.4). ---
     let (keep_node, keep_edge) = prune(coords.len(), &edges, min_component_edges, &mut stats);
 
-    // --- 5. Renumber densely by (lat, lon) ascending — deterministic and content-derived. ---
+    // --- 5. Renumber densely by (lat, lon) ascending — deterministic and content-derived (§4.6.5).
+    //
+    // Two *distinct* surviving nodes can share a coordinate: unification is restricted to boundary
+    // lines (§4.6.2), so the interior collisions a single file legitimately contains — stacked
+    // bridge/tunnel junctions — arrive here as separate nodes at one `(lat, lon)`. Their order must
+    // still come from content, not from which cell happened to be read first, or two assemblies of
+    // the same cells in a different order would produce different bytes. The tie-break is therefore
+    // an order-independent digest of the node's own incident edges. ---
+    let mut digest = vec![0u64; coords.len()];
+    for (e, &keep) in edges.iter().zip(&keep_edge) {
+        if !keep {
+            continue;
+        }
+        // Commutative accumulation: the sum does not depend on the order the edges were read in.
+        let h = e.hash ^ ((e.cost_m as u64) << 8) ^ e.kind as u64;
+        digest[e.a as usize] = digest[e.a as usize].wrapping_add(h);
+        digest[e.b as usize] = digest[e.b as usize].wrapping_add(h);
+    }
     let mut order: Vec<u32> = (0..coords.len() as u32).filter(|&i| keep_node[i as usize]).collect();
-    order.sort_by_key(|&i| (coords[i as usize].0, coords[i as usize].1, i));
+    order.sort_by_key(|&i| (coords[i as usize].0, coords[i as usize].1, digest[i as usize]));
     let mut new_id = vec![u32::MAX; coords.len()];
     for (dense, &old) in order.iter().enumerate() {
         new_id[old as usize] = dense as u32;
@@ -250,7 +289,7 @@ pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, gl
     let mut kept: Vec<&MergedEdge> = edges.iter().zip(&keep_edge).filter(|(_, &k)| k).map(|(e, _)| e).collect();
     kept.sort_by_key(|e| {
         let (a, b) = (new_id[e.a as usize], new_id[e.b as usize]);
-        (a.min(b), a.max(b), e.cost_m, e.kind, fnv(&e.rec))
+        (a.min(b), a.max(b), e.cost_m, e.kind, e.hash)
     });
     let mut pool: Vec<u8> = Vec::new();
     let mut edge_ids: Vec<u32> = Vec::with_capacity(kept.len());
@@ -318,11 +357,9 @@ pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, gl
     // --- 7 (cont.). The node quadtree over the **assembly** bbox, with §8.2's bin-packed 512-byte
     // chunks. Laid out here so a shard's size is known before its header is written. ---
     let tree = qtree::build(nodes, global_bbox, NAV_CHUNK_SIZE);
-    let (index, node_count, chunks, chunk_count) = qtree::flatten(&tree, NAV_CHUNK_SIZE, true, &|pts, out| {
-        for p in pts {
-            pack_record(p, out);
-        }
-    });
+    let (index, node_count, chunks, chunk_count, dropped) =
+        qtree::flatten(&tree, NAV_CHUNK_SIZE, true, &|p, out| pack_record(p, out));
+    stats.dropped_nodes = dropped;
     Ok(MergedNav { index, node_count, chunks, chunk_count, pool, stats })
 }
 

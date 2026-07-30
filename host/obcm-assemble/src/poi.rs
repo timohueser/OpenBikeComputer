@@ -170,12 +170,21 @@ pub struct PoiSection {
     blocks: Vec<Block>,
     pool: Vec<[u8; POI_HOURS_BLOB_LEN]>,
     len: usize,
+    /// Records the chunk-capacity guard refused (§7.3). Only co-located POIs past the quadtree's
+    /// recursion floor can produce one, and dedup makes that effectively impossible — but a drop is
+    /// data loss, so it is counted and surfaced rather than truncated into the chunk.
+    dropped: usize,
 }
 
 impl PoiSection {
     /// Bytes this section occupies.
     pub fn section_len(&self) -> usize {
         self.len
+    }
+
+    /// POI records the chunk-capacity guard dropped.
+    pub fn dropped(&self) -> usize {
+        self.dropped
     }
 }
 
@@ -192,6 +201,7 @@ pub fn layout(merged: &MergedPois, global_bbox: UBox) -> PoiSection {
 
     let capacity = POI_CHUNK_SIZE / POI_RECORD_LEN * POI_RECORD_LEN; // 14 records
     let mut blocks = Vec::with_capacity(POI_CATEGORY_COUNT as usize);
+    let mut dropped = 0usize;
     for cat_id in 1..=POI_CATEGORY_COUNT {
         let pts = std::mem::take(&mut by_cat[cat_id as usize]);
         if pts.is_empty() {
@@ -199,18 +209,16 @@ pub fn layout(merged: &MergedPois, global_bbox: UBox) -> PoiSection {
             continue;
         }
         let tree = qtree::build(pts, global_bbox, capacity);
-        let (index, node_count, chunks, chunk_count) = qtree::flatten(&tree, POI_CHUNK_SIZE, false, &|pts, out| {
-            for p in pts {
-                out.extend_from_slice(&pack_record(p));
-            }
-        });
+        let (index, node_count, chunks, chunk_count, lost) =
+            qtree::flatten(&tree, POI_CHUNK_SIZE, false, &|p, out| out.extend_from_slice(&pack_record(p)));
+        dropped += lost;
         blocks.push(Block { cat_id, index, node_count, chunks, chunk_count });
     }
     let len = POI_DIR_LEN
         + blocks.iter().map(|b| b.index.len() + b.chunks.len()).sum::<usize>()
         + 2
         + merged.pool.len() * POI_HOURS_BLOB_LEN;
-    PoiSection { blocks, pool: merged.pool.clone(), len }
+    PoiSection { blocks, pool: merged.pool.clone(), len, dropped }
 }
 
 /// Write the section at absolute byte `section_offset`: directory, then each category's index +
