@@ -848,18 +848,6 @@ impl MapTables {
         Ok(MapTables { version, bbox, marker_color, lods, pois, nav, profiles, styles, backdrop, generation })
     }
 
-    /// Parse a further shard of the **same mounted volume set** as `of`, adopting its parse
-    /// generation (`OBCA_Spec.md` §5). Generations are what [`MapCache::adopt`] keys the
-    /// "different map ⇒ drop everything resident" guard on, so a set whose shards each carried a
-    /// fresh generation would clear the shared cache on every dispatch hop. Sharing one is safe
-    /// precisely because [`Reader::new_in_set`] additionally tags every cache key with the shard
-    /// index — the set, not the file, is the identity the cache guards.
-    pub fn parse_member(src: &dyn ByteSource, of: &MapTables) -> Result<MapTables, Error> {
-        let mut tables = MapTables::parse(src)?;
-        tables.generation = of.generation;
-        Ok(tables)
-    }
-
     /// Whether LOD `lod` is written **empty** in this file's LOD table (`Index Node Count == 0`).
     /// The §5.6 mount-time predicate: pure I/O avoidance over one file's own table, never a
     /// statement about band membership or role.
@@ -921,6 +909,11 @@ pub struct Reader<'a> {
     /// one set can share a single ≈277 KB [`MapCache`] (and one parse generation) without
     /// cross-serving each other's chunks.
     file: u8,
+    /// A volume-set shard's **own** LOD table, borrowed from its [`crate::volume::ShardTables`].
+    /// `None` for a single map and for the core shard, whose ladder is `tables.lods`. A shard
+    /// carries the full ladder with the LODs it does not hold written empty (`OBCA_Spec.md`
+    /// §5.1), so this is what makes a per-shard reader address its own chunk offsets.
+    shard_lods: Option<&'a [Lod]>,
 }
 
 impl<'a> Reader<'a> {
@@ -947,11 +940,21 @@ impl<'a> Reader<'a> {
     }
 
     /// Build a reader over shard `file` of a mounted volume set. Identical to [`Reader::new`]
-    /// except that every cache key it writes is tagged with the shard index, which is what lets
-    /// a set's shards share one [`MapCache`]. `tables` must have been parsed with
-    /// [`MapTables::parse_member`] so the whole set shares one parse generation — otherwise each
-    /// per-shard reader would clear the cache the previous one just filled.
-    pub fn new_in_set(
+    /// except that every cache key it writes is tagged with the shard index, which is what lets a
+    /// set's shards share one ≈277 KB [`MapCache`] without cross-serving each other's chunks.
+    ///
+    /// `tables` is always the **core**'s: the whole set is stamped from one skin (`OBCA_Spec.md`
+    /// §4.7), so one style table serves every shard, and one parse generation means no shard
+    /// clears the cache the previous one filled. `shard` supplies the parts that are *not* shared
+    /// — the shard's own header bbox (the quadtree root) and its own LOD table (its chunk-offset
+    /// tables live at its own offsets); `None` means the core, whose bbox and ladder are already
+    /// `tables`'.
+    ///
+    /// Crate-private on purpose. Because `tables` is the core's, the POI and nav directories a
+    /// non-core reader would report are the *core file's* offsets against a *shard's* bytes —
+    /// meaningless. [`crate::volume::MountedSet`] therefore uses these readers for geometry only
+    /// and routes nav/POI/hours to [`crate::volume::MountedSet::core_reader`] (§5.1).
+    pub(crate) fn new_in_set(
         src: &'a dyn ByteSource,
         tables: &'a MapTables,
         cache: &'a MapCache,
@@ -1704,7 +1707,7 @@ impl<'a> Reader<'a> {
     /// valid index in `0..lods().len()`.
     pub fn select_lod_for_mpp(&self, mpp: f32) -> usize {
         let mut chosen = 0;
-        for (i, lod) in self.tables.lods.iter().enumerate() {
+        for (i, lod) in self.lods().iter().enumerate() {
             if lod.max_mpp >= mpp {
                 chosen = i;
             }
@@ -1784,7 +1787,7 @@ impl<'a> Reader<'a> {
         view: &BBox,
         mut visit: impl FnMut(u32, BBox),
     ) -> Result<(), MapReadError> {
-        if let Some(l) = self.tables.lods.get(lod) {
+        if let Some(l) = self.lods().get(lod) {
             if l.node_count > 0 {
                 self.walk_leaves(l, 0, self.bbox, view, 0, &mut visit)?;
             }
@@ -1888,7 +1891,7 @@ impl<'a> Reader<'a> {
         should_decode: impl Fn(u8) -> bool,
         visit: impl FnMut(FeatureRef),
     ) -> Result<DecodeStatus, MapReadError> {
-        let l = match self.tables.lods.get(lod) {
+        let l = match self.lods().get(lod) {
             Some(l) => l,
             None => return Err(MapReadError::Malformed),
         };
@@ -1948,7 +1951,7 @@ impl<'a> Reader<'a> {
         // success and no prefix decoded before a malformed hole may escape through these buffers.
         points.clear();
         ring_lens.clear();
-        let l = self.tables.lods.get(lod).ok_or(FeatureReadError::Decode(FeatureDecodeError::Malformed))?;
+        let l = self.lods().get(lod).ok_or(FeatureReadError::Decode(FeatureDecodeError::Malformed))?;
         // Same offset-table lookup + validation as the full walk (and the same borrow-then-release
         // ordering ahead of `load_chunk`); a read failure there is a read failure here.
         let (start, end) = match self.chunk_range(l, cid) {
@@ -2502,7 +2505,12 @@ fn parse_styles(
 /// v11 costs one extra `uint32` read per LOD: the offset table's **last** entry is the layer's total
 /// chunk bytes ([`Lod::chunk_bytes_total`]), which both bounds the region here and bounds every
 /// later per-chunk offset pair in [`Reader::chunk_range`] with no further reads.
-pub(crate) fn parse_lod_table(src: &dyn ByteSource, offset: usize, lod_count: usize, total: usize) -> Result<Vec<Lod, 16>, Error> {
+pub(crate) fn parse_lod_table(
+    src: &dyn ByteSource,
+    offset: usize,
+    lod_count: usize,
+    total: usize,
+) -> Result<Vec<Lod, 16>, Error> {
     let mut lods = Vec::new();
     let mut e = [0u8; LOD_ENTRY_LEN];
     for k in 0..lod_count {
