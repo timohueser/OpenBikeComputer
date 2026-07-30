@@ -44,6 +44,7 @@ pub mod geo;
 pub mod hours;
 pub mod reader;
 mod scene;
+pub mod volume;
 
 pub use color::rgb565_to_device64;
 pub use color::rgb565_to_rgb888;
@@ -61,6 +62,7 @@ pub use obc_formats::io::{ByteSink, ByteSource, SliceSource};
 // The POI category/subtype types the reader's `Poi` surfaces; the normative table + its
 // lookups (`poi_category_of` / `poi_label_of` / `poi_subtype_row`) are imported from `obc_formats`.
 pub use obc_formats::obcm::{PoiCategory, PoiSubtype};
+pub use volume::{MountError, MountedSet, ShardTables};
 pub use reader::{
     read_header, CacheError, CacheStats, CapacityError, DecodeStatus, FeatureDecodeError, FeatureReadError, FeatureRef,
     Lod, MapCache, MapHeader, MapProfile, MapReadError, MapTables, NavCacheStats, NavDirectory, NavNeighbor,
