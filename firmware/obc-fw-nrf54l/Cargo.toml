@@ -281,3 +281,17 @@ opt-level = 3
 lto = "fat"
 codegen-units = 1
 debug = 2
+
+# ---------------------------------------------------------------------------------------------
+# Our embedded-sdmmc fork, branched from the v0.9.0 tag: `VolumeManager::write` batches the
+# block-aligned run inside the current cluster into ONE `BlockDevice::write`, which `SdCard`
+# issues as ACMD23 + CMD25. Stock 0.9's one-block `BlockCache` can never hand the device more
+# than a block, so a map upload paid a CMD24 + the card's whole program cycle + CMD13 per 512 B.
+# Measured on the shipping card at M16 (`sd_bench`): 2458 us/block through the FAT layer against
+# 479 us/block at 64-block batches — the 5.3x behind #889's upload speed.
+#
+# **This stanza is per resolve root, and there are three.** The workspace root carries the same
+# patch so `obc-storage`'s host tests exercise the crate the device actually runs; `obc-boot`
+# does not (it only reads the card, so it gains nothing).
+[patch.crates-io]
+embedded-sdmmc = { git = "https://github.com/timohueser/embedded-sdmmc-rs", branch = "cmd25-multiblock-write" }
