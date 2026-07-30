@@ -221,10 +221,16 @@ German average — the Rhine plain carries more road and more building than the 
 > distribution over Switzerland, which includes partially covered cells and so sits below it at the
 > coarse sizes, where few whole cells exist.)
 >
-> These densities are measured on **whole-extract bakes**, not on cells. A real cell bake loses the
-> packer's cross-cell `merge_fills` / `merge_lines` unions, pays ~3 KB of fixed per-cell overhead,
-> and adds vertices where clipping meets an edge, so a producer SHOULD budget **+5–15 %** over the
-> figures above until P2 measures real cells.
+> These densities are measured on **whole-extract bakes**, not on cells, and a producer SHOULD still
+> budget **+5–15 %** over the figures above. That margin is deliberate slack rather than an expected
+> cost: P2 measured a real scoped bake (`freiburg-regbez + switzerland`, 314 cells) at **0–4 %
+> *smaller*** than these figures, band for band. The cutter runs the packer's `merge_fills` /
+> `merge_lines` passes once over the whole ingest and cuts the *merged* set, so the cross-cell union
+> loss this margin was first attributed to never happens; the ~3 KB of fixed per-cell overhead is
+> ~0.1 % at country scale; and the vertices clipping adds at a cell edge are outweighed by the
+> sub-pixel cull running on *clipped* geometry. The margin stays because §5.7 requires the
+> pre-download projection to be an **upper bound** on real cell bytes, and a budget that is never
+> exceeded is doing its job.
 
 ---
 
@@ -352,6 +358,14 @@ lets a re-bake be a no-op, and lets two independently baked neighbours agree on 
   result of the same integer rounding (`(deg * 1e6).round()`) the packer already uses;
 - the schema revision, not the machine, fixes every threshold — simplification tolerances, cull
   areas, merge passes, and the island-prune threshold of §3.5.
+
+Read "source snapshot" as the whole **source set**: a cell's bytes are a function of (source
+snapshot set, schema revision, crop), where the source set is every co-baked extract whose coverage
+intersects the cell — cut once from an ingest of exactly that set (§3.7) — and the crop is whatever
+box that ingest was reduced to, which drops edge-crossing relations exactly as an extract's own
+boundary does. Both belong to the determinism key, and neither may depend on the order the extracts
+were named: a producer MUST key its cut plans by the **sorted** source set, so that permuting the
+extracts on a command line cannot change a single output byte.
 
 A bakery MUST record the source extract identity and snapshot date per cell and MUST NOT publish
 two different byte sequences under one (cell, schema revision, snapshot) triple.
@@ -913,9 +927,9 @@ Therefore:
   MUST name the **navigation graph** as the reason and the coverage as the thing to reduce — because
   after this section's split the core is nav plus POIs and nothing else, so no other explanation is
   true.
-- A consumer MUST apply the schema's own per-cell overhead budget (§1.5's +5–15 % for real cell
-  bakes) on the *pessimistic* side of that comparison, so the projection is an upper bound rather
-  than a hope.
+- A consumer MUST apply the schema's own cell-bake budget (§1.5's +5–15 %, measured headroom rather
+  than an expected cost) on the *pessimistic* side of that comparison, so the projection is an upper
+  bound rather than a hope.
 - An assembler **MUST** fail rather than emit an over-size file, and MUST NOT "solve" an over-size
   core by splitting the nav graph, dropping POIs, or degrading coverage silently. It MAY split a
   coarse or geometry shard further, since that is what those roles are for.
