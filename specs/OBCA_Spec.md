@@ -175,7 +175,7 @@ per square degree. Three whole-extract bakes at this schema: `switzerland` (41 2
 `austria` (83 879 km²), `freiburg-regbez` (9 357 km², the densest, an upper bound rather than a
 German average — the Rhine plain carries more road and more building than the Alps do):
 
-| Band | switzerland | austria | freiburg-regbez | one fully covered cell (CH avg / p90 / max) |
+| Band | switzerland | austria | freiburg-regbez | one cell: fully covered / CH p90 / CH max |
 | :-- | --: | --: | --: | :-- |
 | `coarse` — LOD 0,1,2 | 0.45 | 0.54 | 0.65 | 4.2 / 2.9 / 3.9 MiB |
 | `mid` — LOD 3,4 | 2.32 | 2.34 | 3.05 | 5.4 / 5.9 / 9.5 MiB |
@@ -194,7 +194,10 @@ German average — the Rhine plain carries more road and more building than the 
 > also why the fine band is `2^18` rather than `2^19` — the worst measured single cell is then
 > ~12 MiB of geometry (Zürich) instead of the ~33 MiB a `2^19` fine band produces. Note the p90 and
 > max columns: per-cell bytes run 30–45 % above the average in populated bands and 4–5× above it in
-> the worst urban cell, so a shard planner MUST size on the distribution, never on the mean.
+> the worst urban cell, so a shard planner MUST size on the distribution, never on the mean. (The
+> *fully covered* column is `cell area × density`; the p90 and max columns are the measured per-cell
+> distribution over Switzerland, which includes partially covered cells and so sits below it at the
+> coarse sizes, where few whole cells exist.)
 >
 > These densities are measured on **whole-extract bakes**, not on cells. A real cell bake loses the
 > packer's cross-cell `merge_fills` / `merge_lines` unions, pays ~3 KB of fixed per-cell overhead,
