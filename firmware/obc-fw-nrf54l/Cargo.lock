@@ -775,8 +775,7 @@ dependencies = [
 [[package]]
 name = "embedded-sdmmc"
 version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce3c7f9ea039eeafc4a49597b7bd5ae3a1c8e51b2803a381cb0f29ce90fe1ec6"
+source = "git+https://github.com/timohueser/embedded-sdmmc-rs?branch=cmd25-multiblock-write#4cada7b388f4e4bf9f8de1fcdba33f22c1245aa7"
 dependencies = [
  "byteorder",
  "embedded-hal 1.0.0",
