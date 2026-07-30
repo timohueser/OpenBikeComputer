@@ -15,10 +15,17 @@
 use std::collections::HashMap;
 
 use obc_formats::io::ByteSource;
+use obc_formats::obcm::{NAV_CHUNK_SIZE, NAV_EDGE_FIXED_LEN};
 use obc_reader::{BBox, MapCache, MapTables, Reader, MAX_FEAT_PTS, MAX_FEAT_RINGS, NAV_MAX_CHUNK_BYTES};
 
 use crate::grid::AlignedBox;
 use crate::{Error, Result};
+
+/// Vertices the longest legal `OBCM_Spec.md` §8.4 edge record can hold. Derived, not chosen: a
+/// record never straddles a chunk, so `15 + (Pt Count − 1) × 4 ≤ 512` bounds it at 125. Sizing the
+/// verify buffer from the format means a record the format permits can never be reported as
+/// undecodable because the *checker* ran out of room.
+const MAX_EDGE_PTS: usize = 1 + (NAV_CHUNK_SIZE - NAV_EDGE_FIXED_LEN) / 4;
 
 /// What a verified file reports about itself. Counts, not opinions — the caller decides what an
 /// implausible number means (§4.8.5 forbids silently repairing one).
@@ -208,7 +215,7 @@ fn verify_nav(reader: &Reader<'_>, view: &BBox, report: &mut VerifyReport) -> Re
         e.2.push((from, coords[&from]));
     }
     report.nav_edges = by_edge.len() as u64;
-    let mut points: heapless::Vec<(i32, i32), 256> = heapless::Vec::new();
+    let mut points: heapless::Vec<(i32, i32), MAX_EDGE_PTS> = heapless::Vec::new();
     for (edge_id, (cost, _, ends)) in &by_edge {
         let length = reader
             .nav_edge(*edge_id, &mut points)
