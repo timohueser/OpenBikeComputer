@@ -423,6 +423,12 @@ jobs:
           tool: trunk@0.21.14
       - name: trunk build (obc-web-demo → wasm)
         run: trunk build --config docs/Trunk.toml
+      # The assembly engine (#1024) has to stay browser-shippable: P4 runs *this* code in a tab, so
+      # the library must carry no filesystem and no native dependency. Building it for wasm32 with
+      # the `cli` feature off is the guard — the CLI is the native driver and owns every std::fs call
+      # in the crate, so a stray `std::fs` in the engine fails here rather than in P4.
+      - name: cargo build -p obcm-assemble --lib (wasm32, engine only)
+        run: cargo build -p obcm-assemble --lib --no-default-features --locked --target wasm32-unknown-unknown
 
   # The hosted builder's two wasm bridges — the shared firmware crates compiled to wasm so the
   # hosted tier needs no backend at all:
