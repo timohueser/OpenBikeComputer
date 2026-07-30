@@ -360,8 +360,14 @@ struct LodSet<'a> {
 /// **not** run here, because it must run on the geometry a *cell* clips (also the module docs).
 fn prepare_lod<'a>(ing: &'a Ingested, config: &Config, lod: usize, cell_log2: u32, progress: &Progress) -> LodSet<'a> {
     let l = &config.lods[lod];
-    let mut feats: Vec<(u8, Cow<'a, Geom>)> =
-        ing.features.iter().filter(|f| f.min_lod <= lod).map(|f| (f.style_id, Cow::Borrowed(&f.geom))).collect();
+    // `Geom::bounds` panics on an empty geometry, and a merge pass can hand one back, so empties are
+    // dropped here — exactly where `build_lod_with` drops them on the whole-extract path.
+    let mut feats: Vec<(u8, Cow<'a, Geom>)> = ing
+        .features
+        .iter()
+        .filter(|f| f.min_lod <= lod && !f.geom.is_empty())
+        .map(|f| (f.style_id, Cow::Borrowed(&f.geom)))
+        .collect();
     if config.merge_fills || config.merge_lines {
         let styles = config.styles();
         let owned: Vec<(u8, Geom)> = feats.into_iter().map(|(s, g)| (s, g.into_owned())).collect();
@@ -376,7 +382,7 @@ fn prepare_lod<'a>(ing: &'a Ingested, config: &Config, lod: usize, cell_log2: u3
             crate::pipeline::report_merge(progress, m, "line fragment", "into");
             owned = merged;
         }
-        feats = owned.into_iter().map(|(s, g)| (s, Cow::Owned(g))).collect();
+        feats = owned.into_iter().filter(|(_, g)| !g.is_empty()).map(|(s, g)| (s, Cow::Owned(g))).collect();
     }
 
     let bounds: Vec<Bounds> = feats.iter().map(|(_, g)| g.bounds()).collect();
