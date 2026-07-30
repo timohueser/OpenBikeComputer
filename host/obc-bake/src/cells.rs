@@ -259,15 +259,19 @@ pub struct CellRunSummary {
     pub schema_id: String,
     pub schema_revision: u32,
     pub plans: Vec<PlanOutcome>,
-    /// Per band: cells, bytes, and the ground they cover — the density re-pin.
+    /// Per band: cells and bytes — the numerator of the density re-pin.
     pub bands: Vec<BandStats>,
+    /// The ground this run's sources cover, km² — the denominator, and the one number
+    /// that makes the table comparable with `OBCA_Spec.md` §1.5's.
+    pub covered_km2: f64,
+    /// Per region, the same denominator on its own.
+    pub regions: Vec<RegionCoverage>,
     /// Regions the run was asked to cover that ended without a complete cell set.
     pub uncovered_regions: Vec<String>,
     pub warnings: Vec<String>,
 }
 
-/// One band's published footprint, and the measured density `OBCA_Spec.md` §1.5 and
-/// §5.7 are argued from.
+/// One band's published footprint — the numerator of `OBCA_Spec.md` §1.5's density.
 #[derive(Debug, Clone, Serialize)]
 pub struct BandStats {
     pub band: String,
@@ -275,21 +279,34 @@ pub struct BandStats {
     pub cells: usize,
     pub partial_cells: usize,
     pub bytes: u64,
-    /// Bytes of the canonical (non-`partial`) cells only — a partial cell's bytes do
-    /// not correspond to its whole square, so mixing them in would understate density.
-    pub canonical_bytes: u64,
-    /// Ground those canonical cells cover, km².
-    pub canonical_km2: f64,
 }
 
 impl BandStats {
-    /// MiB per 1000 km² — the latitude-free unit `OBCA_Spec.md` §1.5 tabulates.
-    pub fn mib_per_1000km2(&self) -> f64 {
-        if self.canonical_km2 <= 0.0 {
+    /// MiB per 1000 km² of **covered ground** — the latitude-free unit
+    /// `OBCA_Spec.md` §1.5 tabulates, over the same denominator its whole-extract
+    /// bakes used.
+    ///
+    /// Deliberately *not* per canonical cell square. A partial cell's bytes are the
+    /// bytes of the part of its square the sources actually cover, so dividing the
+    /// band's whole byte count by the sources' own area counts each byte once against
+    /// the ground it describes. Dividing by canonical squares instead would throw
+    /// away every edge cell — and at a `2^20` coarse cell (≈ 9 100 km² at 47°N) a
+    /// region the size of Freiburg-Regierungsbezirk has **no** canonical cell at all,
+    /// so that estimator has no coarse band to measure.
+    pub fn mib_per_1000km2(&self, covered_km2: f64) -> f64 {
+        if covered_km2 <= 0.0 {
             return 0.0;
         }
-        (self.canonical_bytes as f64 / (1024.0 * 1024.0)) / (self.canonical_km2 / 1000.0)
+        (self.bytes as f64 / (1024.0 * 1024.0)) / (covered_km2 / 1000.0)
     }
+}
+
+/// One region's covered ground, so a per-region density can be computed from the
+/// catalog's own per-region byte counts.
+#[derive(Debug, Clone, Serialize)]
+pub struct RegionCoverage {
+    pub id: String,
+    pub km2: f64,
 }
 
 impl CellRunSummary {
@@ -303,6 +320,10 @@ impl CellRunSummary {
 
     pub fn total_bytes(&self) -> u64 {
         self.bands.iter().map(|b| b.bytes).sum()
+    }
+
+    fn region_areas(&self) -> String {
+        self.regions.iter().map(|r| format!("{} {:.0}", r.id, r.km2)).collect::<Vec<_>>().join(", ")
     }
 
     /// The run report, loud end first, density table included — the measurement
@@ -343,22 +364,22 @@ impl CellRunSummary {
             self.failures().len()
         );
 
-        let _ = writeln!(s, "\nband       size    cells  partial        bytes    canonical km²   MiB/1000km²");
+        let _ = writeln!(s, "\ncovered ground: {:.0} km² ({})", self.covered_km2, self.region_areas());
+        let _ = writeln!(s, "band       size    cells  partial        bytes   MiB/1000km²");
         for b in &self.bands {
             let _ = writeln!(
                 s,
-                "{:<10} 2^{:<3} {:>7}  {:>7}  {:>11}  {:>15.0}  {:>12.2}",
+                "{:<10} 2^{:<3} {:>7}  {:>7}  {:>11}  {:>12.2}",
                 b.band,
                 b.cell_log2,
                 b.cells,
                 b.partial_cells,
                 human(b.bytes),
-                b.canonical_km2,
-                b.mib_per_1000km2()
+                b.mib_per_1000km2(self.covered_km2)
             );
         }
-        let whole: f64 = self.bands.iter().map(BandStats::mib_per_1000km2).sum();
-        let _ = writeln!(s, "{:<10} {:>50}  {:>12.2}", "whole map", human(self.total_bytes()), whole);
+        let whole: f64 = self.bands.iter().map(|b| b.mib_per_1000km2(self.covered_km2)).sum();
+        let _ = writeln!(s, "{:<10} {:>32}  {:>12.2}", "whole map", human(self.total_bytes()), whole);
 
         for w in &self.warnings {
             let _ = writeln!(s, "\nwarning: {w}");
@@ -489,6 +510,10 @@ impl CellBakery<'_> {
         }
 
         let bands = self.measure(progress)?;
+        // The density denominator: the union of the run's coverage polygons, so ground
+        // two regions share is counted once, exactly as its cells are stored once.
+        let all: Vec<&Coverage> = resolved.iter().map(|r| &r.coverage).collect();
+        let covered_km2 = Coverage::union(&all).map(|c| c.area_km2()).unwrap_or(0.0);
         Ok(CellRunSummary {
             tree: self.opts.out.clone(),
             obcm_version: obc_formats::obcm::VERSION,
@@ -497,6 +522,11 @@ impl CellBakery<'_> {
             schema_revision: self.opts.schema_revision,
             plans: outcomes,
             bands,
+            covered_km2,
+            regions: resolved
+                .iter()
+                .map(|r| RegionCoverage { id: r.region.id.clone(), km2: r.coverage.area_km2() })
+                .collect(),
             uncovered_regions: uncovered,
             warnings,
         })
@@ -886,22 +916,14 @@ impl CellBakery<'_> {
         Ok(())
     }
 
-    /// Walk the finished tree and measure it: cells, bytes, and the ground the
-    /// canonical cells cover, per band.
+    /// Walk the finished tree and measure it: cells and bytes, per band.
     fn measure(&self, progress: &Progress) -> Result<Vec<BandStats>, String> {
         let mut out = Vec::new();
         for band in &self.opts.bands.bands {
             let dir = self.opts.out.join(CELLS_DIR).join(&band.id);
-            let mut stats = BandStats {
-                band: band.id.clone(),
-                cell_log2: band.cell_log2,
-                cells: 0,
-                partial_cells: 0,
-                bytes: 0,
-                canonical_bytes: 0,
-                canonical_km2: 0.0,
-            };
-            for (cell, path) in walk_cells(&dir, band.cell_log2)? {
+            let mut stats =
+                BandStats { band: band.id.clone(), cell_log2: band.cell_log2, cells: 0, partial_cells: 0, bytes: 0 };
+            for (_, path) in walk_cells(&dir, band.cell_log2)? {
                 let bytes = std::fs::metadata(&path).map_err(|e| format!("{}: {e}", path.display()))?.len();
                 let sidecar: CellSidecar = match std::fs::read_to_string(path.with_file_name(sidecar_name(&path)))
                     .ok()
@@ -915,12 +937,7 @@ impl CellBakery<'_> {
                 };
                 stats.cells += 1;
                 stats.bytes += bytes;
-                if sidecar.partial {
-                    stats.partial_cells += 1;
-                } else {
-                    stats.canonical_bytes += bytes;
-                    stats.canonical_km2 += cell_area_km2(cell);
-                }
+                stats.partial_cells += usize::from(sidecar.partial);
             }
             out.push(stats);
         }
@@ -987,7 +1004,12 @@ fn crop_box(cells: &BTreeSet<CellId>) -> Result<Option<String>, String> {
 /// The ground one cell covers, km². Cells are square in *microdegrees*, so their
 /// ground shape is latitude-dependent — which is exactly why `OBCA_Spec.md` §1.5
 /// tabulates density per 1000 km² rather than per square degree.
-fn cell_area_km2(cell: CellId) -> f64 {
+///
+/// Not on the density path (that divides by the sources' own covered ground, see
+/// [`BandStats::mib_per_1000km2`]); it is what a shard planner sizes a cell with, and
+/// it is here because the arithmetic belongs next to the grid rather than in a
+/// spreadsheet.
+pub fn cell_area_km2(cell: CellId) -> f64 {
     const KM_PER_DEG: f64 = 111.320;
     let (_, min_lat, _, max_lat) = cell.square();
     let side_deg = cell.size() as f64 / 1e6;
