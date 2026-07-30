@@ -1181,7 +1181,7 @@ Cells are stored per schema; the hosted catalog has exactly **one** (the seven-L
 
 ### One map, several files
 
-The last piece is a ceiling. Germany alone projects to 5–7 GiB at this schema and DACH to 8–9 GiB, and **two independent 4 GiB walls** stand in the way: FAT32 caps one file at 4 GiB − 1, and OBCM's own offsets — section offsets, per-LOD chunk offset tables, and `Edge Id` as a pool byte offset — are `uint32` throughout, so a single `.obcm` cannot address past 4 GiB on *any* filesystem.
+The last piece is a ceiling. Germany alone projects to 5.8–7.1 GiB at this schema and DACH to 7.6–8.9 GiB, and **two independent 4 GiB walls** stand in the way: FAT32 caps one file at 4 GiB − 1, and OBCM's own offsets — section offsets, per-LOD chunk offset tables, and `Edge Id` as a pool byte offset — are `uint32` throughout, so a single `.obcm` cannot address past 4 GiB on *any* filesystem.
 
 So a logical map is a **volume set**: a tiny fixed-layout manifest plus 1..N ordinary OBCM files, each inside the ceiling, and invisible in every interface — the device and the builder both show one map.
 
@@ -1189,9 +1189,9 @@ So a logical map is a **volume set**: a tiny fixed-layout manifest plus 1..N ord
 - **Geometry shards** carry the finer LODs and tile the assembly bbox. They are cell-aligned squares, so each one is a *valid* OBCM map in its own right and `uint32` offsets stay valid per file — no 64-bit bump anywhere.
 - **A viewport query goes to every shard whose box it touches.** A shard that does not carry the requested LOD has an empty index for it and contributes nothing, so the dispatch needs no notion of roles.
 - **The manifest is written last.** A half-uploaded set has no manifest and never mounts — and a shard on its own is never mounted as a standalone map, even though it would open, because a map with no roads is exactly the kind of quiet wrongness a rider cannot diagnose.
-- **A small map is a set of one**, which is nearly every selection: a country is under a gigabyte, a 300 km corridor around a trip's routes projects to about 0.3 GiB.
+- **A small map is a set of one**, which is nearly every selection: a country is under a gigabyte, a 300 km corridor around a trip's routes projects to about a quarter of one.
 
-The measurement behind all of the numbers here — where the bytes actually are, per LOD, per cell, at candidate cell sizes — is [`cell_size_survey.rs`](src:host/obc-pack/examples/cell_size_survey.rs), and it is what settled the band sizes. One boundary was not a choice at all: because the core file carries the whole navigation graph, and nav is a third of a map's bytes, a DACH core sits at 3.2–3.4 GiB with the three coarsest LODs and at 4.4–4.7 GiB with one more — past the ceiling. So the split fell where the arithmetic put it.
+The measurement behind all of the numbers here — where the bytes actually are, per LOD, per cell, at candidate cell sizes — is [`cell_size_survey.rs`](src:host/obc-pack/examples/cell_size_survey.rs), and it is what settled the band sizes. One boundary was not a choice at all: because the core file carries the whole navigation graph, and nav is a third of a map's bytes, a DACH core sits at 3.0–3.3 GiB with the three coarsest LODs and at 3.3–3.7 GiB with one more — inside the ceiling by as little as 7 %, and past it by the LOD after that. So the split fell where the arithmetic put it.
 
 The grid, the theorem, the seam rules, the assembly contract, the volume-set manifest bytes, and the provenance rule that stops a partially-covered border cell from passing as canonical are all normative in [`OBCA_Spec.md`](src:specs/OBCA_Spec.md); the catalog that publishes cells, skins, and cell-set regions is [`OBCC_Spec.md` §11](src:specs/OBCC_Spec.md).
 
