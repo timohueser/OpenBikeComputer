@@ -157,11 +157,23 @@ describe("resolveSelection", () => {
         expect(wide.cellsByBand.get("fine")).toEqual(["18/1204/1052", "18/1204/1053"]);
     });
 
-    it("contributes nothing for a region whose cell list has not arrived", () => {
+    it("contributes nothing for a region whose cell list has not arrived, and says so", () => {
         const pending: SelectionContext = { ...ctx, regionCells: new Map() };
         const r = resolveSelection({ parts: [region], corridorRadiusM: 0 }, pending);
         expect(r.cellsByBand.size).toBe(0);
         expect(r.parts[0].cellCount).toBe(0);
+        // 0 B is a perfectly ordinary number, and a card that prints it without
+        // this flag is a card that says "DACH — 0 B" a moment before it says
+        // "47 GB". Nothing about the total can tell those two apart.
+        expect(r.parts[0].pending).toBe(true);
+        expect(r.unresolvedParts).toEqual(["region-1"]);
+
+        // Once the list is in hand the flag clears, with no other change.
+        const arrived = resolveSelection({ parts: [region], corridorRadiusM: 0 }, ctx);
+        expect(arrived.parts[0].pending).toBe(false);
+        expect(arrived.unresolvedParts).toEqual([]);
+        // Boxes and corridors are never pending: their answer is arithmetic.
+        expect(resolveSelection({ parts: [insideA], corridorRadiusM: 0 }, pending).unresolvedParts).toEqual([]);
     });
 
     it("names the bands whose index is missing instead of pricing without them", () => {

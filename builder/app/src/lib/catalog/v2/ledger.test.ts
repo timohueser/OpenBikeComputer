@@ -9,7 +9,7 @@
 import { describe, expect, it } from "vitest";
 import { fitsOnCard, gib, ledgerFor, ledgerForRegion, MAX_FILE_BYTES, OVERHEAD_BUDGET } from "./ledger";
 import type { RegionEntry } from "./manifest";
-import { resolveSelection, type BoxPart, type SelectionContext } from "./selection";
+import { resolveSelection, type BoxPart, type RegionPart, type SelectionContext } from "./selection";
 import { cellSquare, parseCellId } from "./grid";
 import { exampleCatalog, fixtureIndices } from "./testdata";
 
@@ -111,6 +111,30 @@ describe("ledgerFor", () => {
             partial.indices,
         );
         expect(ledger.unresolvedBands).toEqual(["coarse", "mid", "network"]);
+        expect(ledger.isFinal).toBe(false);
+    });
+
+    it("says nothing is final while a region's cell list is still arriving", () => {
+        // The half-second in which the card would otherwise state, with total
+        // confidence and no holes, that DACH costs 0 B.
+        const region: RegionPart = {
+            kind: "region",
+            id: "region-1",
+            name: "Switzerland",
+            regionId: "europe/switzerland",
+        };
+        const ledger = ledgerFor(
+            resolveSelection({ parts: [region], corridorRadiusM: 0 }, ctx),
+            exampleCatalog,
+            indices,
+        );
+        expect(ledger.totalBytes).toBe(0);
+        expect(ledger.unresolvedParts).toEqual(["region-1"]);
+        expect(ledger.unresolvedBands).toEqual([]);
+        expect(ledger.isFinal).toBe(false);
+        // A selection of things that *are* resolved is final, so the flag means
+        // something rather than being permanently lit.
+        expect(ledgerOf(overA).isFinal).toBe(true);
     });
 
     it("passes a small selection", () => {

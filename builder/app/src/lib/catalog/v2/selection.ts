@@ -110,6 +110,17 @@ export interface PartResolution {
     /** Cell ids this part names that the catalog does not publish, per band. */
     missingByBand: Map<string, string[]>;
     missingCount: number;
+    /**
+     * True while this part's answer is still arriving — a `region` whose stored
+     * cell list has not been fetched.
+     *
+     * It exists because the alternative is indistinguishable from the truth: a
+     * pending region contributes no cells, which is exactly what an empty region
+     * contributes, so without this flag a summary card shows "0 B" for DACH
+     * with the same confidence it shows 0 B for a box drawn over the sea. One
+     * of those is a number and the other is a spinner.
+     */
+    pending: boolean;
 }
 
 export interface SelectionResolution {
@@ -125,6 +136,10 @@ export interface SelectionResolution {
     /** Bands named by the schema that have no loaded index. Empty in normal
      *  operation; non-empty means a price that is not yet the whole price. */
     unresolvedBands: string[];
+    /** Ids of the parts whose contribution has not arrived yet ({@link
+     *  PartResolution.pending}). The other half of "this price is not final":
+     *  `unresolvedBands` is a column missing, this is a row. */
+    unresolvedParts: string[];
 }
 
 /** A selection with nothing in it. */
@@ -224,7 +239,10 @@ export function resolveSelection(selection: Selection, ctx: SelectionContext): S
             if (published.length) cellsByBand.set(bandEntry.id, published.sort());
             if (missing.length) missingByBand.set(bandEntry.id, missing.sort());
         }
-        return { part, cellsByBand, missingByBand };
+        // A region whose list has not arrived contributes nothing *yet*, which
+        // on its own is indistinguishable from contributing nothing.
+        const pending = part.kind === "region" && !ctx.regionCells.has(part.regionId);
+        return { part, cellsByBand, missingByBand, pending };
     });
 
     // Pass two: the union, and how many parts contribute each cell — which is
@@ -251,7 +269,7 @@ export function resolveSelection(selection: Selection, ctx: SelectionContext): S
 
     const bytesOf = (band: string, id: string) => ctx.indices.get(band)?.byId.get(id)?.bytes ?? 0;
 
-    const parts: PartResolution[] = perPart.map(({ part, cellsByBand, missingByBand }) => {
+    const parts: PartResolution[] = perPart.map(({ part, cellsByBand, missingByBand, pending }) => {
         let bytes = 0;
         let marginalBytes = 0;
         let cellCount = 0;
@@ -265,7 +283,7 @@ export function resolveSelection(selection: Selection, ctx: SelectionContext): S
         }
         let missingCount = 0;
         for (const ids of missingByBand.values()) missingCount += ids.length;
-        return { part, cellsByBand, cellCount, bytes, marginalBytes, missingByBand, missingCount };
+        return { part, cellsByBand, cellCount, bytes, marginalBytes, missingByBand, missingCount, pending };
     });
 
     return {
@@ -273,6 +291,7 @@ export function resolveSelection(selection: Selection, ctx: SelectionContext): S
         cellsByBand: sortedLists(union),
         missingByBand: sortedLists(missingUnion),
         unresolvedBands,
+        unresolvedParts: parts.filter((p) => p.pending).map((p) => p.part.id),
     };
 }
 
