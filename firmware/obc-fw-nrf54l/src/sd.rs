@@ -213,16 +213,16 @@ const NAV_ROUTE_FILE: &str = "_NAV.OBR";
 pub(crate) const SIDELOAD_ID_BASE: u16 = 0xFF00;
 
 /// The concrete SD stack for this board: embassy-nrf's blocking `Spim` wrapped as the `SpiDevice`
-/// the card driver wants, an [`SdCard`], and a 6-file/4-dir [`VolumeManager`]. The chip-select is
+/// the card driver wants, an [`SdCard`], and a 16-file/4-dir [`VolumeManager`]. The chip-select is
 /// a no-op [`NoCs`] — the *real* CS (P1_12) is held low for the whole session (see [`NoCs`]/[`init`]).
 ///
-/// **Why 6 open files** (the default 4 loses mid-ride uploads): riding with tracking holds three
+/// **Why more than 4 open files** (the default 4 loses mid-ride uploads): riding with tracking holds three
 /// handles for the whole session — the map stream, the active route's geometry, and the ORD track
 /// log. A BLE route upload adds its temp (4), and `upload_commit`'s copy-promote (embedded-sdmmc
 /// can't rename, see the note above [`Storage::upload_commit`]) holds the reopened temp **and**
 /// the final `.OBR` at once — a 5-handle peak, which the 4-slot default answered with a failed
-/// commit exactly and only mid-ride. 6 = that peak + one slot of headroom; each slot is a few
-/// dozen bytes of `FileInfo`, so the RAM cost is noise.
+/// commit exactly and only mid-ride. A mounted volume set adds one handle per shard on top of
+/// that (see [`SD_MAX_FILES`]); each slot is 64 bytes of `FileInfo`, so the RAM cost is noise.
 type SdSpi = Spim<'static>;
 type SdDev = ExclusiveDevice<SdSpi, NoCs, Delay>;
 type Sd = SdCard<SdDev, Delay>;
@@ -232,10 +232,22 @@ type Sd = SdCard<SdDev, Delay>;
 /// the `TimeSource` type), so the share happens here, one level up. The card itself lives in
 /// [`SD_CARD`].
 type SdShared = SharedBlockDevice<'static, Sd>;
-/// The open-handle budget (see the 6-file note above) — one set of consts so the manager and the
-/// `obc-platform` wrapper aliases below can never drift apart.
+/// The open-handle budget (see the file-count note above) — one set of consts so the manager and
+/// the `obc-platform` wrapper aliases below can never drift apart.
 const SD_MAX_DIRS: usize = 4;
-const SD_MAX_FILES: usize = 6;
+/// **Why 16.** The pre-volume-set budget was 6: the 5-handle mid-ride peak documented above plus
+/// one slot of headroom. `OBCA_Spec.md` §5 makes one logical map 1..32 physical files, and the
+/// epic's device-cost review requires a mounted set to hold **every** shard's handle open for the
+/// mount lifetime — re-opening per query would put a FAT directory walk in the render loop. A DACH
+/// set is core + coarse + ~6 geometry = 8 handles, so the budget is that 8 plus the unchanged
+/// 5-handle peak (of which the map's own slot is now the set's), plus margin.
+///
+/// The cost is measured, not guessed: the fork's `FileInfo` (`filesystem/files.rs`) is `RawFile`
+/// 4 · `RawVolume` 4 · `current_cluster` 8 · `current_offset` 4 · `Mode` 1 · `DirEntry` 40 ·
+/// `dirty` 1, i.e. **64 B** at `align 4` on thumbv8m. `6 → 16` is ten slots, **+640 B of `.bss`**
+/// — the manager's `open_files` array is a `heapless::Vec<FileInfo, SD_MAX_FILES>` and nothing
+/// else scales with it. Nothing on the stack changes.
+const SD_MAX_FILES: usize = 16;
 const SD_MAX_VOLUMES: usize = 1;
 type Vmgr = VolumeManager<SdShared, NullTime, SD_MAX_DIRS, SD_MAX_FILES, SD_MAX_VOLUMES>;
 /// [`SdByteSource`] over this board's manager (the wrappers are generic over the handle budget).
@@ -272,26 +284,54 @@ static mut MAP_EXTENTS: core::mem::MaybeUninit<ExtentTable> = core::mem::MaybeUn
 /// notes on #914/#915.
 #[derive(Debug, Clone)]
 pub struct MapSummary {
-    /// The durable object id, for a map this device received (`MP{id}.OBM`). `None` for a
-    /// side-loaded `.obcm`, which carries no device-assigned identity — the filename is all it has.
+    /// The durable object id, for a map this device received (`MP{id}.OBM`, or `MS{id}.OBS` for a
+    /// volume set). `None` for a side-loaded `.obcm`, which carries no device-assigned identity —
+    /// the filename is all it has. The two conventions number **independently**, so an id is only
+    /// comparable with another of the same [`shards`](MapSummary::shards)-ness.
     pub id: Option<u16>,
-    /// The 8.3 filename, which is what [`MAP_SELECTED`] records and what reopens the file.
+    /// The 8.3 filename, which is what [`MAP_SELECTED`] records and what reopens the file. For a
+    /// volume set this is the **manifest** (`MS{id}.OBS`) — the one file that says the shards
+    /// beside it are one map (`OBCA_Spec.md` §5.4).
     pub file: ShortFileName,
+    /// `Some(count)` when this entry is an OBCA **volume set** (§5): one manifest plus `count`
+    /// shard files, presented as ONE map with one summed size. `None` for a single `MP{id}.OBM`
+    /// or side-loaded `.obcm`. Shard count is an implementation detail a rider never sees (§5.4);
+    /// it lives here only so a delete can reach the whole prefix.
+    pub shards: Option<u8>,
     /// The display name: the long filename's stem when the file has one, else the 8.3 stem. For an
     /// uploaded map that is `MP{id}` — the honest consequence of having no name on the wire.
     pub name: String<24>,
-    /// Size on the card, from the directory entry (no read).
-    pub byte_len: u32,
-    /// The OBCM format version from header byte 4. Reported, never filtered: a map built for another
-    /// version is still on the card, and a consumer that wants to *flag* it (#915) needs to see it.
+    /// Size on the card, from the directory entry (no read). For a volume set, the **sum** over
+    /// every shard plus the manifest — the only size figure a UI may show (§5.4), and `u64`
+    /// because a set is exactly the thing that outgrows one `u32` file.
+    pub byte_len: u64,
+    /// The OBCM format version from header byte 4 (from the manifest's `OBCM Version` for a set,
+    /// which §5.3 pins equal across every shard). Reported, never filtered: a map built for
+    /// another version is still on the card, and a consumer that wants to *flag* it (#915) needs
+    /// to see it.
     pub obcm_version: u8,
     /// The global bounding box from header bytes 5..21 — the map's footprint, for coverage checks.
+    /// For a set, the manifest's assembly bbox (§4.2), which §5.3 pins equal to the core's header.
     pub bbox: obc_reader::BBox,
     /// Whether [`MAP_SELECTED`] names this map.
     pub selected: bool,
     /// Directory-entry location, so a chosen map's extent table can be built without a second scan.
     entry_block: embedded_sdmmc::BlockIdx,
     entry_offset: u32,
+}
+
+/// What a validated `MS{id}.OBS` manifest contributes to the catalog — everything a
+/// [`MapSummary`] needs about a volume set, and nothing the mount would need later. Deliberately
+/// small: [`Storage::set_identity`] parses the manifest and drops it, because the catalog's job is
+/// to say *this is one map, this big, over this ground*, not to hold a mount open.
+struct SetIdentity {
+    shard_count: u8,
+    obcm_version: u8,
+    bbox: obc_reader::BBox,
+    /// Summed over the shards; the manifest's own bytes are added by the caller.
+    total_bytes: u64,
+    /// The manifest's display name (§5.2), empty when it carries none.
+    name: String<24>,
 }
 
 /// What [`Storage::map_source`] hands out: extent-mapped direct block reads when the map's chain
@@ -1291,10 +1331,22 @@ impl Storage {
         self.scan_maps_into(&mut maps);
         let keep = choose_map_index(&maps)?;
         let chosen = &maps[keep];
+        // A volume set reaches here only through `choose_map`'s clause 4 (nothing readable at all),
+        // and the file named is its *manifest* — 1864 bytes of OBCS, not a map. Opening it as one
+        // would parse garbage; refuse, and let the boot land on the MAP UNREADABLE fault, which is
+        // the honest report. See `map_choices` for why a set is not readable by this build yet.
+        if let Some(shards) = chosen.shards {
+            defmt::warn!(
+                "SD: the only map on the card is the volume set {} ({=u8} shards) — this build cannot mount a set yet",
+                defmt::Debug2Format(&chosen.file),
+                shards
+            );
+            return None;
+        }
         let (name, display, entry_block, entry_offset) =
             (chosen.file.clone(), chosen.name.clone(), chosen.entry_block, chosen.entry_offset);
         defmt::info!(
-            "SD: {=usize} map(s) on the card; loading {} (v{=u8}, {=u32} B)",
+            "SD: {=usize} map(s) on the card; loading {} (v{=u8}, {=u64} B)",
             maps.len(),
             defmt::Debug2Format(&name),
             chosen.obcm_version,
@@ -1334,16 +1386,27 @@ impl Storage {
     /// stated rather than discovered: between an upload and the next boot the card carries **both**
     /// maps, and the free-space guard at announce (§4.1 rule 2) sees it — a replacement whose old
     /// and new copies do not fit together is refused until the device is restarted once.
+    ///
+    /// **One delete removes the whole prefix.** A superseded volume set is a manifest plus up to 32
+    /// shards, and reclaiming only the manifest would leave gigabytes of orphans behind; the set
+    /// goes through [`Storage::delete_set`], which removes the manifest first (§5.4) and then every
+    /// derived shard name. The returned count is files, not maps, for the same reason.
     fn retire_superseded_maps(&mut self, maps: &[MapSummary], keep: usize) -> usize {
         let choices = map_choices(maps);
-        let mut doomed: Vec<ShortFileName, MAX_MAPS> = Vec::new();
+        // `(name, set id)` — a set is deleted by id (its shard names are derived), a single map by
+        // name. Collected first because the scan borrow and the delete `&mut` cannot overlap.
+        let mut doomed: Vec<(ShortFileName, Option<u16>), MAX_MAPS> = Vec::new();
         for (i, m) in maps.iter().enumerate() {
             if obc_app::is_superseded_upload(&choices, keep, i) && !self.map_file_is(&m.file) {
-                let _ = doomed.push(m.file.clone());
+                let _ = doomed.push((m.file.clone(), m.shards.and(m.id)));
             }
         }
         let mut retired = 0;
-        for name in doomed {
+        for (name, set) in doomed {
+            if let Some(id) = set {
+                retired += self.delete_set(id);
+                continue;
+            }
             match self.vmgr.delete_file_in_dir(self.root, &name) {
                 Ok(()) => {
                     defmt::info!("SD: retired superseded map {}", defmt::Debug2Format(&name));
@@ -1372,25 +1435,58 @@ impl Storage {
     /// A file whose magic isn't `OBCM` is **not a map**: that is precisely the signature a torn
     /// upload leaves (the held-back magic never patched in), so the scan is what makes an interrupted
     /// transfer invisible instead of a half-map the renderer would try to parse.
+    /// A volume set (`OBCA_Spec.md` §5) is listed as **one** map, keyed on its `MS{id}.OBS`
+    /// manifest, and its `MS{id}S{kk}.OBM` shards are never listed at all — §5.4 is explicit that a
+    /// shard opened alone is "exactly the kind of quiet wrongness a rider cannot diagnose" (a
+    /// geometry shard has no roads and no POIs; the core draws nothing). [`is_map_entry`] excludes
+    /// them by name, and [`Storage::set_identity`] refuses a set whose shards are not all present
+    /// at the recorded size — so a mid-copy set is invisible rather than half a map.
     pub fn scan_maps_into(&self, out: &mut Vec<MapSummary, MAX_MAPS>) {
         out.clear();
         let selected = self.load_selected_map();
-        let mut entries: Vec<(ShortFileName, String<24>, embedded_sdmmc::BlockIdx, u32, u32), MAX_MAPS> = Vec::new();
+        // `manifest` distinguishes the two arms; everything else is the same directory-entry facts.
+        // Two phases because the `iter_dir_lfn` callback borrows the manager and both identity
+        // reads open a file.
+        let mut entries: Vec<(ShortFileName, String<24>, embedded_sdmmc::BlockIdx, u32, u32, bool), MAX_MAPS> =
+            Vec::new();
         self.iter_dir_lfn(self.root, |e, long| {
-            if !is_map_entry(e, long) {
+            let manifest = is_set_manifest_entry(e, long);
+            if !manifest && !is_map_entry(e, long) {
                 return;
             }
-            let _ =
-                entries.push((e.name.clone(), map_display_name(&e.name, long), e.entry_block, e.entry_offset, e.size));
+            let _ = entries.push((
+                e.name.clone(),
+                map_display_name(&e.name, long),
+                e.entry_block,
+                e.entry_offset,
+                e.size,
+                manifest,
+            ));
         });
-        for (file, name, entry_block, entry_offset, byte_len) in entries {
-            let Some((obcm_version, bbox)) = self.map_identity(&file) else { continue };
+        for (file, name, entry_block, entry_offset, byte_len, manifest) in entries {
+            let (id, shards, name, byte_len, obcm_version, bbox) = if manifest {
+                let Some(id) = set_manifest_id(&file) else { continue };
+                let Some(set) = self.set_identity(&file, id) else {
+                    defmt::info!(
+                        "SD: {} names a volume set that does not validate — not listed (OBCA §5.4)",
+                        defmt::Debug2Format(&file)
+                    );
+                    continue;
+                };
+                // The manifest carries a real display name; the 8.3 stem (`MS7`) is the fallback.
+                let display = if set.name.is_empty() { name } else { set.name };
+                (Some(id), Some(set.shard_count), display, set.total_bytes + byte_len as u64, set.obcm_version, set.bbox)
+            } else {
+                let Some((obcm_version, bbox)) = self.map_identity(&file) else { continue };
+                (uploaded_map_id(&file), None, name, byte_len as u64, obcm_version, bbox)
+            };
             let selected = selected
                 .as_ref()
                 .is_some_and(|s| file.base_name() == s.base_name() && file.extension() == s.extension());
             let entry = MapSummary {
-                id: uploaded_map_id(&file),
+                id,
                 file,
+                shards,
                 name,
                 byte_len,
                 obcm_version,
@@ -1404,6 +1500,131 @@ impl Storage {
                 break;
             }
         }
+    }
+
+    /// The reader's half of `OBCA_Spec.md` §5.3 for a `MS{id}.OBS` manifest, at **scan** time:
+    /// parse and validate the manifest itself, then check that every shard it names exists, is
+    /// exactly the recorded `Bytes`, opens as OBCM at the recorded version, and carries the
+    /// recorded header bbox. `None` means *this is not a map* — §5.4 admits no partial acceptance,
+    /// so a set with a shard missing or still growing is simply absent from the catalog rather
+    /// than a map with holes in it.
+    ///
+    /// The SHA-256 digests are deliberately **not** checked: §5.3 lets a device defer them, and
+    /// hashing gigabytes off an SD card is minutes of work at boot.
+    ///
+    /// `#[inline(never)]` and called only from the boot-time scan: the manifest buffer is
+    /// [`obc_formats::obcs::MAX_MANIFEST_LEN`] = 1864 B of stack, which is fine here and would not
+    /// be anywhere near the render path (the ~36 KB stack rule).
+    #[inline(never)]
+    fn set_identity(&self, manifest: &ShortFileName, id: u16) -> Option<SetIdentity> {
+        let mut buf = [0u8; obc_formats::obcs::MAX_MANIFEST_LEN];
+        let file = self.vmgr.open_file_in_dir(self.root, manifest, Mode::ReadOnly).ok()?;
+        let len = self.vmgr.file_length(file).unwrap_or(0) as usize;
+        let read = if len >= obc_formats::obcs::HEADER_LEN && len <= buf.len() {
+            let mut done = 0usize;
+            while done < len {
+                match self.vmgr.read(file, &mut buf[done..len]) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => done += n,
+                }
+            }
+            done
+        } else {
+            0
+        };
+        let _ = self.vmgr.close_file(file);
+        let parsed = obc_formats::obcs::parse(buf.get(..read)?).ok()?;
+
+        let mut total = 0u64;
+        for (index, shard) in parsed.shards().iter().enumerate() {
+            let name = set_shard_name_for(id, index)?;
+            let (bytes, version, bbox) = self.shard_identity(&name)?;
+            if bytes != shard.bytes || version != parsed.obcm_version {
+                return None;
+            }
+            let recorded = obc_reader::BBox {
+                min_lat: shard.bbox.min_lat,
+                min_lon: shard.bbox.min_lon,
+                max_lat: shard.bbox.max_lat,
+                max_lon: shard.bbox.max_lon,
+            };
+            if bbox != recorded {
+                return None;
+            }
+            total += bytes as u64;
+        }
+
+        let mut name: String<24> = String::new();
+        for ch in parsed.name().unwrap_or("").chars() {
+            let _ = name.push(ch);
+        }
+        Some(SetIdentity {
+            shard_count: parsed.shard_count() as u8,
+            obcm_version: parsed.obcm_version,
+            bbox: obc_reader::BBox {
+                min_lat: parsed.bbox.min_lat,
+                min_lon: parsed.bbox.min_lon,
+                max_lat: parsed.bbox.max_lat,
+                max_lon: parsed.bbox.max_lon,
+            },
+            total_bytes: total,
+            name,
+        })
+    }
+
+    /// One shard's `(byte length, OBCM version, header bbox)`, or `None` when the file is absent,
+    /// unreadable, or not an OBCM file. A shard is never the open map (§5.4 forbids mounting one
+    /// standalone), so this always opens fresh — no [`Storage::map_file_is`] detour.
+    fn shard_identity(&self, name: &ShortFileName) -> Option<(u32, u8, obc_reader::BBox)> {
+        let file = self.vmgr.open_file_in_dir(self.root, name, Mode::ReadOnly).ok()?;
+        let len = self.vmgr.file_length(file).unwrap_or(0);
+        let mut header = [0u8; obc_formats::obcm::HEADER_LEN];
+        let src = SdByteSource::new(&self.vmgr, file, len);
+        let ok = (len as usize) >= header.len() && src.read_at(0, &mut header).is_ok();
+        let _ = self.vmgr.close_file(file);
+        if !ok || header[0..4] != obc_formats::obcm::MAGIC {
+            return None;
+        }
+        let rd = |o: usize| i32::from_le_bytes([header[o], header[o + 1], header[o + 2], header[o + 3]]);
+        Some((len, header[4], obc_reader::BBox { min_lat: rd(5), min_lon: rd(9), max_lat: rd(13), max_lon: rd(17) }))
+    }
+
+    /// Delete a whole volume set — the manifest **first**, then every shard name the derived
+    /// convention can produce (`OBCA_Spec.md` §5.2).
+    ///
+    /// The order is normative (§5.4): the manifest is the atomicity token, so removing it before
+    /// any shard means a power cut mid-delete leaves *orphans* — files no manifest references,
+    /// which are invisible as a map and reclaimable — never a manifest pointing at files that are
+    /// gone. The shard loop runs to [`MAX_SHARDS`](obc_formats::obcs::MAX_SHARDS) rather than the
+    /// set's own count, so replacing a set with a smaller one also sweeps the tail of the old one;
+    /// a name that isn't there fails harmlessly.
+    ///
+    /// Returns how many files were reclaimed.
+    fn delete_set(&mut self, id: u16) -> usize {
+        let mut removed = 0usize;
+        if let Some(name) = set_manifest_name_for(id) {
+            match self.vmgr.delete_file_in_dir(self.root, &name) {
+                Ok(()) => removed += 1,
+                Err(e) => {
+                    // The manifest is the one file that must go first. If it survives, stop: the
+                    // set is still a set, and half-deleting its shards would make it a broken one.
+                    defmt::warn!(
+                        "SD: could not delete the set manifest {} ({}) — leaving its shards alone",
+                        defmt::Debug2Format(&name),
+                        defmt::Debug2Format(&e)
+                    );
+                    return 0;
+                }
+            }
+        }
+        for index in 0..obc_formats::obcs::MAX_SHARDS {
+            let Some(name) = set_shard_name_for(id, index) else { continue };
+            if self.vmgr.delete_file_in_dir(self.root, &name).is_ok() {
+                removed += 1;
+            }
+        }
+        defmt::info!("SD: removed volume set MS{=u16} ({=usize} files)", id, removed);
+        removed
     }
 
     /// One map's `(obcm_version, bbox)` from its 40-byte header, or `None` when the file is shorter
@@ -2253,11 +2474,15 @@ impl Storage {
     /// RRAM floor)` allocation every durable id namespace uses (spec §4.1). A zero-magic torn upload
     /// is invisible to the scan, so a retried transfer re-derives the *same* id and truncates the
     /// file it abandoned, rather than leaking one id per interruption.
+    ///
+    /// Volume sets are skipped: `MP{id}.OBM` and `MS{id}.OBS` (`OBCA_Spec.md` §5.2) are separate
+    /// namespaces with separate allocators, so a set on the card must not push this counter — the
+    /// two conventions coexist precisely because neither constrains the other.
     pub fn next_map_id_from_scan(&self) -> u16 {
         let mut next: u32 = 0;
         let mut maps: Vec<MapSummary, MAX_MAPS> = Vec::new();
         self.scan_maps_into(&mut maps);
-        for m in &maps {
+        for m in maps.iter().filter(|m| m.shards.is_none()) {
             if let Some(id) = m.id {
                 next = next.max(id as u32 + 1);
             }
@@ -2977,11 +3202,63 @@ fn is_trip_entry(e: &embedded_sdmmc::DirEntry, long: Option<&str>) -> bool {
 ///
 /// Dot-prefixed clutter is excluded on both arms (a macOS `._x.OBM` AppleDouble also fails the
 /// header read, but why open it at all).
+///
+/// **A volume set's shards are not maps.** `MS{id}S{kk}.OBM` shares the `.OBM` extension with a
+/// received single map — deliberately, so the transfer path needs no new file type — and each
+/// shard *is* a valid OBCM file, which is exactly why the exclusion has to be here rather than in
+/// the header read. `OBCA_Spec.md` §5.4: a reader "MUST NOT mount a shard individually as a
+/// standalone map", because a geometry shard is a map with no roads and no POIs and the core is a
+/// map that draws nothing at all. The manifest ([`is_set_manifest_entry`]) is the only thing that
+/// says those files are one map, and it is what the catalog lists.
 fn is_map_entry(e: &embedded_sdmmc::DirEntry, long: Option<&str>) -> bool {
-    if e.attributes.is_directory() {
+    if e.attributes.is_directory() || set_shard_of_name(&e.name).is_some() {
         return false;
     }
     long_has_ext(long, b".obcm") || (e.name.extension() == b"OBM" && !long.is_some_and(|n| n.starts_with('.')))
+}
+
+/// Whether a card-root entry is a volume-set **manifest** (`MS{id}.OBS`, `OBCA_Spec.md` §5.2).
+///
+/// Pure 8.3, no long-name arm: unlike `.obcm`, the manifest's extension already fits an 8.3 name,
+/// so the device creates it directly and there is no 4-character twin to accept. The id must parse
+/// too — `SET.OBS` is not a manifest, it is clutter.
+fn is_set_manifest_entry(e: &embedded_sdmmc::DirEntry, long: Option<&str>) -> bool {
+    !e.attributes.is_directory()
+        && !long.is_some_and(|n| n.starts_with('.'))
+        && set_manifest_id(&e.name).is_some()
+}
+
+/// A short name as the `BASE.EXT` bytes `obc_formats::obcs`' filename parsers take. Both halves
+/// come back space-trimmed from embedded-sdmmc, so this is a straight join.
+fn short_name_bytes(name: &ShortFileName) -> heapless::Vec<u8, 12> {
+    let mut out: heapless::Vec<u8, 12> = heapless::Vec::new();
+    let _ = out.extend_from_slice(name.base_name());
+    let _ = out.push(b'.');
+    let _ = out.extend_from_slice(name.extension());
+    out
+}
+
+/// The set id in a `MS{id}.OBS` manifest name, or `None` for anything else. The strict parse
+/// (uppercase, no leading zeros, id ≤ 999) lives in the format authority.
+pub fn set_manifest_id(name: &ShortFileName) -> Option<u16> {
+    obc_formats::obcs::parse_manifest_name(&short_name_bytes(name))
+}
+
+/// `(set id, shard index)` for a `MS{id}S{kk}.OBM` shard name, or `None` for anything else —
+/// including the neighbouring single-map `MP{id}.OBM` convention.
+pub fn set_shard_of_name(name: &ShortFileName) -> Option<(u16, usize)> {
+    obc_formats::obcs::parse_shard_name(&short_name_bytes(name))
+}
+
+/// The 8.3 name of set `id`'s manifest — the inverse of [`set_manifest_id`].
+fn set_manifest_name_for(id: u16) -> Option<ShortFileName> {
+    ShortFileName::create_from_str(obc_formats::obcs::manifest_name(id)?.as_str()).ok()
+}
+
+/// The 8.3 name of shard `index` of set `id`. Filenames are **derived, not stored** (§5.2): a
+/// stored name is a second source of truth that can disagree with the directory.
+fn set_shard_name_for(id: u16, index: usize) -> Option<ShortFileName> {
+    ShortFileName::create_from_str(obc_formats::obcs::shard_name(id, index)?.as_str()).ok()
 }
 
 /// The **durable map object id** in a received map's filename — `MP{id}.OBM` → `id`, the same
@@ -3024,13 +3301,24 @@ fn map_display_name(short: &ShortFileName, long: Option<&str>) -> String<24> {
 
 /// The scanned catalog as the host-tested classifiers want it — one [`obc_app::MapChoice`] per map,
 /// in scan order, so an index into this is an index into `maps`.
+///
+/// **A volume set reports `readable: false` for now**, and the claim is literal rather than a
+/// dodge: this build's render path streams from one open file, so a set (`OBCA_Spec.md` §5) is a
+/// map that is genuinely on the card and genuinely cannot be opened by this firmware — exactly what
+/// `readable` means and exactly what the **MAP UNREADABLE** fault screen says. The shared-crate
+/// mount (`obc_reader::MountedSet`) is done and sim-validated; wiring it to the device needs the
+/// `Option<&Reader>` render seam genericised over `MapScene` and one extent table per shard, which
+/// is the second half of P3b. Until then a set still lists as one map, still supersedes the set it
+/// replaced, and still deletes as one — it just does not load, and it never hides a `MP{id}.OBM`
+/// that would (clauses 1–3 of [`obc_app::choose_map`] all filter on `readable`).
 fn map_choices(maps: &[MapSummary]) -> Vec<obc_app::MapChoice, MAX_MAPS> {
     let mut choices: Vec<obc_app::MapChoice, MAX_MAPS> = Vec::new();
     for m in maps.iter().take(MAX_MAPS) {
         let _ = choices.push(obc_app::MapChoice {
             selected: m.selected,
             uploaded_id: m.id,
-            readable: m.obcm_version == obc_formats::obcm::VERSION,
+            readable: m.obcm_version == obc_formats::obcm::VERSION && m.shards.is_none(),
+            set: m.shards.is_some(),
         });
     }
     choices

@@ -21,6 +21,11 @@ pub struct MapChoice {
     /// The map's OBCM version is the one this firmware's reader parses. A `false` here is still a
     /// map on the card — it just cannot be rendered by this build.
     pub readable: bool,
+    /// Whether this entry is an OBCA **volume set** (`MS{id}.OBS` + its shards, `OBCA_Spec.md` §5)
+    /// rather than a single `MP{id}.OBM` / side-loaded file. A set is *one map* everywhere a rider
+    /// can see it (§5.4) — this flag exists only so [`is_superseded_upload`] can refuse to compare
+    /// ids across the two naming conventions, which number independently.
+    pub set: bool,
 }
 
 /// The index of the map to load, or `None` for a card with no maps at all. In order:
@@ -82,12 +87,18 @@ pub fn choose_map(maps: &[MapChoice]) -> Option<usize> {
 ///   (clauses 3–4 of [`choose_map`]), so the uploads present are ones this build cannot open — and
 ///   "I can't read it" is a much weaker claim than "it is redundant". Left alone, they stay
 ///   diagnosable; a firmware that can read them again would find them.
+/// - **Nothing is superseded across the two naming conventions.** `MP{id}.OBM` and the volume
+///   set's `MS{id}` (`OBCA_Spec.md` §5.2) number *independently*, so `MS7` is not "newer than"
+///   `MP4` — the comparison has no meaning, and the casualty here is deleted. A set supersedes a
+///   set and a single map supersedes a single map; a card holding one of each keeps both until a
+///   later upload of the same kind replaces one. Erring toward a lingering file is the only
+///   direction that is recoverable.
 pub fn is_superseded_upload(maps: &[MapChoice], keep: usize, i: usize) -> bool {
     if i == keep {
         return false;
     }
     let (Some(keeper), Some(candidate)) = (maps.get(keep), maps.get(i)) else { return false };
-    keeper.uploaded_id.is_some() && candidate.uploaded_id.is_some()
+    keeper.set == candidate.set && keeper.uploaded_id.is_some() && candidate.uploaded_id.is_some()
 }
 
 #[cfg(test)]
@@ -95,10 +106,14 @@ mod tests {
     use super::*;
 
     fn side_loaded(readable: bool) -> MapChoice {
-        MapChoice { selected: false, uploaded_id: None, readable }
+        MapChoice { selected: false, uploaded_id: None, readable, set: false }
     }
     fn uploaded(id: u16, readable: bool) -> MapChoice {
-        MapChoice { selected: false, uploaded_id: Some(id), readable }
+        MapChoice { selected: false, uploaded_id: Some(id), readable, set: false }
+    }
+    /// An uploaded **volume set** (`MS{id}.OBS` + shards) — one map, `OBCA_Spec.md` §5.4.
+    fn uploaded_set(id: u16, readable: bool) -> MapChoice {
+        MapChoice { selected: false, uploaded_id: Some(id), readable, set: true }
     }
 
     #[test]
@@ -115,10 +130,10 @@ mod tests {
     /// The recorded selection wins over both a newer upload and directory order.
     #[test]
     fn the_recorded_selection_wins() {
-        let maps = [uploaded(9, true), MapChoice { selected: true, uploaded_id: Some(2), readable: true }];
+        let maps = [uploaded(9, true), MapChoice { selected: true, uploaded_id: Some(2), readable: true, set: false }];
         assert_eq!(choose_map(&maps), Some(1), "the selection beats a higher id");
 
-        let maps = [side_loaded(true), MapChoice { selected: true, uploaded_id: None, readable: true }];
+        let maps = [side_loaded(true), MapChoice { selected: true, uploaded_id: None, readable: true, set: false }];
         assert_eq!(choose_map(&maps), Some(1), "a side-loaded map can be the selection too");
     }
 
@@ -141,7 +156,7 @@ mod tests {
         let maps = [uploaded(99, false), uploaded(2, true)];
         assert_eq!(choose_map(&maps), Some(1), "a newer but unreadable upload loses to a readable one");
 
-        let maps = [MapChoice { selected: true, uploaded_id: Some(5), readable: false }, side_loaded(true)];
+        let maps = [MapChoice { selected: true, uploaded_id: Some(5), readable: false, set: false }, side_loaded(true)];
         assert_eq!(choose_map(&maps), Some(1), "an unreadable selection falls through to a readable map");
 
         let maps = [uploaded(5, false), side_loaded(false)];
@@ -186,6 +201,30 @@ mod tests {
         let keep = choose_map(&maps).expect("a card with maps chooses one");
         assert_eq!(keep, 0, "nothing readable → the first map");
         assert!(is_superseded_upload(&maps, keep, 1));
+    }
+
+    /// A volume set is one map like any other: a newer set supersedes the set it replaced.
+    #[test]
+    fn a_newer_set_supersedes_the_set_it_replaced() {
+        let maps = [uploaded_set(1, true), uploaded_set(2, true)];
+        let keep = choose_map(&maps).expect("a card with maps chooses one");
+        assert_eq!(keep, 1, "the newest set is the survivor");
+        assert!(is_superseded_upload(&maps, keep, 0));
+    }
+
+    /// …but `MP{id}` and `MS{id}` number independently, so neither convention may sweep the other.
+    /// The casualty here would be a deleted map the rider never replaced.
+    #[test]
+    fn a_set_and_a_single_map_never_supersede_each_other() {
+        let maps = [uploaded(4, true), uploaded_set(7, true)];
+        let keep = choose_map(&maps).expect("a card with maps chooses one");
+        assert_eq!(keep, 1, "the higher id loads");
+        assert!(!is_superseded_upload(&maps, keep, 0), "MS7 is not 'newer than' MP4 — the ids are unrelated");
+
+        let maps = [uploaded_set(7, true), uploaded(9, true)];
+        let keep = choose_map(&maps).expect("a card with maps chooses one");
+        assert_eq!(keep, 1);
+        assert!(!is_superseded_upload(&maps, keep, 0), "and not in the other direction either");
     }
 
     /// Out-of-range indices answer `false` rather than panicking: the board feeds this a live

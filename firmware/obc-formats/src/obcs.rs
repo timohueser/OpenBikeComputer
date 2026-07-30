@@ -13,6 +13,10 @@
 use crate::io::{checked_put_i32, checked_put_u32, checked_rd_i32, checked_rd_u32, validate_prefix, DecodeError};
 
 /// `b"OBCS"` — the manifest magic (§5.2).
+///
+/// Two unrelated card sidecars in `obc-app` happen to tag themselves with the same four bytes
+/// (`store_meta`'s `MAP.SEL` and `ride`'s `SYNCED.SET`). Different files, never fed to this
+/// parser — noted only so a `grep` for the magic does not read as a collision.
 pub const MAGIC: [u8; 4] = *b"OBCS";
 /// The one accepted manifest version; readers reject any other value (§5.2).
 pub const VERSION: u8 = 1;
