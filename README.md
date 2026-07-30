@@ -201,6 +201,32 @@ The manifest layout, the sidecar, and the version law (an OBCM bump invalidates 
 baked artifact) are normative in [`OBCC_Spec.md`](specs/OBCC_Spec.md); pass
 `--generated-at` in CI to make a re-run byte-reproducible.
 
+#### The cell catalog (`--v2`)
+
+The same subcommand walks a **cell** tree instead, and writes the `schema_version 2`
+catalog of [`OBCC_Spec.md` §11](specs/OBCC_Spec.md) — one schema, a set of skins, and
+named regions that are cell-set *selections* with a drawable boundary:
+
+```sh
+obc-pack catalog <cell-tree> --base-url https://maps.example.org/catalog/v2 --v2
+# → <cell-tree>/catalog.json, cells/<band>/index.json, regions/<id>/cells.json
+#   (satellites first, root last: the root pins each satellite by size + sha256)
+
+obc-pack catalog <cell-tree> --base-url … --v2 --boundary-tolerance 2000  # µdeg, default 2000
+obc-pack catalog <cell-tree> --base-url … --v2 --out -                    # print the root only
+obc-pack schema --catalog-v2                                              # the v2 JSON Schema
+```
+
+That tree is self-describing too: `schema.json` is the packer config the cells were
+baked with, plus a `_meta` block carrying the schema `revision` and the band table;
+`skins/<id>.json` is one config per skin (same feature types, same style ids, different
+values); `cells/<band>/<i>/<j>.obcm` is a cell with a `.obcm.json` sidecar recording its
+revision, build time, source extracts and whether it is `partial`; and
+`regions/<a>/<b>/region.json` names the region and **stores** its cell ids per band,
+beside the `boundary.poly` (the region's Geofabrik `.poly`) that the outline is
+simplified from. A cell carries no bbox anywhere — its id *is* its grid square, and the
+generator verifies the artifact's own header against it.
+
 ### The bakery — filling that tree, and publishing it
 
 `obc-bake` is what produces the tree above. It crosses a curated region list
