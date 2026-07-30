@@ -174,31 +174,65 @@ export function cellContains(cell: CellId, lat: number, lon: number): boolean {
 }
 
 /**
+ * How many cells one call will enumerate before it refuses.
+ *
+ * Not a format constant — a client one. The covering of a box is a product of
+ * two spans, so it grows quadratically as a map view zooms out: the whole world
+ * at `2^18` is 2048 × 2048 = 4.2 M cells, and at the grid's smallest size it is
+ * 2^38, a number no amount of patience helps with. The ceiling belongs here
+ * rather than in each caller because every caller would otherwise need to know
+ * the same arithmetic to guess a safe box, and one of them would guess wrong on
+ * a slow phone. 2^16 is far above any real selection — the whole of DACH at
+ * `2^18` is ≈ 1 500 cells, all of Europe ≈ 20 000 — and far below the point
+ * where building the array is what fails.
+ */
+export const MAX_ENUMERATED_CELLS = 65_536;
+
+/**
  * Every cell of size `2^log2` whose square intersects `box`, in ascending
  * `(i, j)` order.
  *
  * Intersection is decided on the **half-open** squares, so the `max` edges of
  * `box` are inclusive of the cell that owns them: a vertex sitting exactly on a
  * grid line belongs to the cell above / east of it, and that cell is therefore
- * part of the covering. Cells outside the world box are clamped away rather than
- * wrapped (§1.4).
+ * part of the covering. The grid does not wrap (§1.4): a box reaching past the
+ * world box is clamped to it, and a box lying entirely outside it covers
+ * nothing at all rather than a clamped strip of edge cells.
  *
  * This is OBCA §1.2's coverage rule in one function, and the *generous coarse*
  * behaviour the epic wants falls straight out of it: run it per band and a
  * corridor is covered precisely at `2^18` and generously — whole covering cells,
  * i.e. context beyond the selection — at `2^20`. There is no second rule and no
  * special case; the generosity is a consequence of cell size.
+ *
+ * Throws a {@link GridError} rather than enumerating more than `maxCells`
+ * (default {@link MAX_ENUMERATED_CELLS}). The count is worked out from the
+ * index spans before anything is allocated, so a world-sized box costs four
+ * divisions and a message, not a heap.
  */
-export function cellsIntersecting(log2: number, box: UBox): CellId[] {
+export function cellsIntersecting(log2: number, box: UBox, maxCells = MAX_ENUMERATED_CELLS): CellId[] {
     checkLog2(log2);
     if (box.minLon > box.maxLon || box.minLat > box.maxLat) return [];
     const s = cellSize(log2);
     const n = axisCells(log2);
+    const worldMax = GRID_ORIGIN + WORLD_SIDE;
+    // Wholly outside the world box on either axis: nothing, not the nearest
+    // edge cells. Clamping here would hand back a strip of cells covering
+    // ground the box never touched.
+    if (box.maxLat < GRID_ORIGIN || box.minLat >= worldMax) return [];
+    if (box.maxLon < GRID_ORIGIN || box.minLon >= worldMax) return [];
     const index = (v: number) => Math.min(Math.max(floorDiv(v - GRID_ORIGIN, s), 0), n - 1);
     const i0 = index(box.minLat);
     const i1 = index(box.maxLat);
     const j0 = index(box.minLon);
     const j1 = index(box.maxLon);
+    const count = (i1 - i0 + 1) * (j1 - j0 + 1);
+    if (count > maxCells) {
+        throw new GridError(
+            `this box covers ${count} cells of size 2^${log2} µdeg, more than the ${maxCells} ` +
+                "this client will enumerate at once — select a smaller area",
+        );
+    }
     const out: CellId[] = [];
     for (let i = i0; i <= i1; i++) {
         for (let j = j0; j <= j1; j++) out.push({ log2, i, j });

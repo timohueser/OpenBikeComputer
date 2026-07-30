@@ -27,7 +27,7 @@
 // definition within the corridor width of it, so it shares the cell's latitude
 // to within a fraction of a degree.
 
-import { cellsIntersecting, cellSize, cellSquare, type CellId, type UBox } from "./grid";
+import { cellsIntersecting, cellSize, cellSquare, GridError, type CellId, type UBox } from "./grid";
 
 /** A coordinate in integer microdegrees, `lat, lon` — the catalog's order. */
 export interface LatLon {
@@ -178,17 +178,38 @@ function boxesIntersect(a: UBox, b: UBox): boolean {
 }
 
 /**
+ * The widest a route may reach in longitude, µdeg: half the world.
+ *
+ * Past this a polyline is not a long route, it is a route written across the
+ * antimeridian — the seam the grid deliberately does not wrap over (OBCA §1.4).
+ * Buffering it as one box would select every cell from one side of the world to
+ * the other, silently, and price them. Two sides of the seam are two selections
+ * and two assemblies, so this refuses rather than guessing which one was meant.
+ */
+export const MAX_CORRIDOR_LON_SPAN = 180_000_000;
+
+/**
  * Every cell of size `2^log2` within `radiusM` of the polyline, in ascending
  * `(i, j)` order.
  *
  * A single-point "polyline" buffers to a disc, which is what a one-point GPX
  * track means. A zero or negative radius still selects the cells the line
  * crosses — a corridor of no width is still a corridor.
+ *
+ * Throws a {@link GridError} for a route spanning more than half the world in
+ * longitude ({@link MAX_CORRIDOR_LON_SPAN}), and for a corridor whose candidate
+ * box exceeds what `cellsIntersecting` will enumerate.
  */
 export function corridorCells(log2: number, points: readonly LatLon[], radiusM: number): CellId[] {
     if (points.length === 0) return [];
     const radius = Math.max(radiusM, 0);
     const box = polylineBox(points);
+    if (box.maxLon - box.minLon > MAX_CORRIDOR_LON_SPAN) {
+        throw new GridError(
+            `this route spans ${((box.maxLon - box.minLon) / 1e6).toFixed(1)}° of longitude — the cell grid does ` +
+                "not wrap at the antimeridian, so a route crossing it is two selections and two maps",
+        );
+    }
     // One padding for the whole run, computed at the worst latitude any
     // candidate can reach — see `paddingFor`. Using a per-segment latitude here
     // would reintroduce exactly the under-selection it exists to prevent.
