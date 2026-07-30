@@ -7,8 +7,9 @@
 //!
 //! 1. **Section budget** — per-LOD region bytes (index + offset table + chunk data, the three parts
 //!    of OBCM_Spec §3), plus the POI section, the hours pool, and the nav-graph section. This says
-//!    which LODs are worth cell-splitting at all and how big a *core file* (styles + nav + POIs +
-//!    the coarse LODs) would be.
+//!    which LODs are worth cell-splitting at all and how big a *core file* (styles + nav + POIs, and
+//!    no geometry at all — OBCA_Spec §5.1) would be, which is the one size in a volume set that
+//!    cannot be reduced by splitting.
 //! 2. **Per-cell byte distribution** — for each candidate cell size, the LOD's chunk bytes binned
 //!    into cells of the fixed global grid (`--grid-origin`, default −2^28 µdeg on both axes), so a
 //!    shard-count and fetch-count model has a measured distribution rather than an average.

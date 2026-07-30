@@ -504,16 +504,29 @@ any out-of-band constant.
 | `obcm_version` | integer | OBCM format version, **read from the cells' own headers** (§6). Every cell MUST agree. |
 | `grid` | object | `{ "origin_udeg": -268435456, "world_side_udeg": 536870912 }` — [`OBCA_Spec.md` §1.1](OBCA_Spec.md)'s constants, restated so no consumer has to hard-code them. |
 | `lods` | array | One per ladder level, coarsest first: `{ "index", "max_mpp", "band" }`. `max_mpp` is `null` for the `+inf` coarsest level. |
-| `bands` | array | `{ "id", "cell_log2", "lods": [int], "sections": [string], "role": "core" \| "geometry" }`. `sections` may contain `"nav"` and `"poi"`. |
+| `bands` | array | `{ "id", "cell_log2", "lods": [int], "sections": [string], "role": "core" \| "coarse" \| "geometry" }`. `sections` may contain `"nav"` and `"poi"`. The `role` names which file of a volume set the band's content is assembled into ([`OBCA_Spec.md` §5.1](OBCA_Spec.md)). |
 | `styles` | array | The **canonical style-id assignment**: `{ "id", "feature_type" }` in schema order. |
 | `routing` | object | `{ "min_component_edges": int, "profiles": [string] }` — the island-prune threshold is schema data, never skin data. |
 | `chunk_size` | integer | The per-LOD chunk capacity bound the cells were written with (`OBCM_Spec.md` §3). |
 
 Producers MUST satisfy [`OBCA_Spec.md` §1.2](OBCA_Spec.md)'s partition rule — every ladder LOD in
-exactly one band, and the nav and POI sections in exactly one band — and MUST list exactly one
-band with `"role": "core"` carrying the nav and POI sections. A consumer MUST reject a schema that
-violates either: a LOD in no band is a map that is blank at that zoom, and a LOD in two bands is a
+exactly one band, and the nav and POI sections in exactly one band. A consumer MUST reject a schema
+that violates it: a LOD in no band is a map that is blank at that zoom, and a LOD in two bands is a
 map that carries it twice.
+
+The `role` values are also constrained, because they decide which physical file each band's bytes end
+up in ([`OBCA_Spec.md` §5.1](OBCA_Spec.md)):
+
+- exactly **one** band has `"role": "core"`, it carries the nav and POI `sections`, and it carries
+  **no** `lods` — the core file is the one file of a set that cannot be split by bbox, so no geometry
+  may be assembled into it;
+- **at most one** band has `"role": "coarse"`, and it carries `lods` and no `sections` — its content
+  becomes the single whole-assembly coarse shard that keeps a zoomed-out viewport a one-file read;
+- every remaining band has `"role": "geometry"`, with `lods` and no `sections`.
+
+A consumer MUST reject a schema that breaks any of these — a `core` band carrying a LOD would put
+unsplittable bytes in the file whose headroom is the design's hard limit
+([`OBCA_Spec.md` §5.7](OBCA_Spec.md)).
 
 `styles` is the load-bearing field for the skin split. `obc-pack` numbers feature types `1`-based
 in config document order and those ids are referenced by **every feature header in every chunk**
@@ -556,16 +569,24 @@ cell set to fetch.
 | `parent` | string | no | The enclosing region's `id`, when the curation nests. |
 | `boundary` | object | yes | Simplified outline (§11.8). |
 | `bytes` | integer | yes | Total bytes of every cell in this region's cell set, across all bands. |
+| `bytes_by_band` | object | yes | Those bytes split per band: `{ "<band_id>": integer }`, summing to `bytes`. |
 | `cell_count` | object | yes | Cells per band: `{ "<band_id>": integer }`. |
 | `partial_cell_count` | integer | yes | How many of those cells are `partial` (§11.6). `0` for fully covered curation. |
 | `cells_url` | string | yes | Where the region's cell-id list lives (§11.7). |
 | `cells_bytes` | integer | yes | Size of that document. |
 | `cells_sha256` | string | yes | Its digest, `^[0-9a-f]{64}$`. |
 
-`bytes`, `cell_count`, and `partial_cell_count` sit in the **root** on purpose: they are what a
-builder needs to price a region and to warn about coverage gaps, and pricing must not cost a
-second round trip. That is v1's *knowable before the download* principle applied to a selection
+`bytes`, `bytes_by_band`, `cell_count`, and `partial_cell_count` sit in the **root** on purpose: they
+are what a builder needs to price a region and to warn about coverage gaps, and pricing must not cost
+a second round trip. That is v1's *knowable before the download* principle applied to a selection
 rather than to a file.
+
+`bytes_by_band` is what makes that pricing **per file** rather than merely per set. A volume set's
+roles partition by band ([`OBCA_Spec.md` §5.1](OBCA_Spec.md)), so the `core` band's bytes are the core
+file's bytes, the `coarse` band's are the coarse shard's, and the rest are the geometry shards'. The
+core is the one file with a hard ceiling it can realistically approach, and
+[`OBCA_Spec.md` §5.7](OBCA_Spec.md) requires a consumer to refuse an over-ceiling selection *before*
+downloading anything — which is only arithmetic if the split is published here.
 
 Regions still nest and a consumer MUST NOT assume a parent's cell set is the union of its
 children's, or vice versa — curation decides both independently. Unlike v1, though, overlap is now
