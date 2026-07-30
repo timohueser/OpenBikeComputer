@@ -226,6 +226,32 @@ revision, build time, source extracts and whether it is `partial`; and
 beside the `boundary.poly` (the region's Geofabrik `.poly`) that the outline is
 simplified from. A cell carries no bbox anywhere — its id *is* its grid square, and the
 generator verifies the artifact's own header against it.
+### Cutting an extract into grid cells
+
+The cell catalog ([`OBCA_Spec.md`](specs/OBCA_Spec.md)) bakes **grid cells** rather than
+whole regions, so any selection becomes an assembly of cells instead of another bake.
+`obc-pack cells` ingests the sources **once** and writes every cell of every band they
+touch:
+
+```sh
+obc-pack cells germany-latest.osm.pbf builder/presets/default.json ~/cells \
+    --source europe/germany@2026-07-01=5.8,47.2,15.1,55.1
+# → ~/cells/cells/<band>/<i>/<j>.obcm   one valid .obcm per cell
+# → ~/cells/cells.json                  the provenance sidecar, written last
+```
+
+Each cell's header bbox *is* its grid square, it carries the whole LOD ladder with the
+levels outside its band written empty, and the nav graph and POIs live only in the band
+that carries them — so band membership is never in the bytes. Useful flags:
+
+- `--bands <bands.json>` — the schema's band table (which LODs and sections live at which
+  cell size). Cell sizes are schema data; the default is the v1 table (`2^20` coarse /
+  `2^19` mid / `2^18` fine + network).
+- `--band <id>` / `--cell <log2/i/j>` — cut a subset. A cell is a function of the source,
+  not of the run that asked for it, so a narrowed run writes byte-identical cells.
+- `--source <id>[@<snapshot>][=W,S,E,N]` — what this run baked from. Without a coverage
+  box nothing can be shown to be fully covered, so every cell is marked `partial`.
+- `--bbox`, `--chunk-size`, `--no-land` — as for a normal pack.
 
 ### The bakery — filling that tree, and publishing it
 

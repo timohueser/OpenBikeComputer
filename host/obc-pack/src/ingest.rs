@@ -556,6 +556,16 @@ struct WayScan {
     claimed: Vec<i64>,
 }
 
+/// What an ingest does with the routable ways it collected.
+enum NavMode {
+    /// Build the whole-extract nav graph and drop the ways — the ordinary pack.
+    Graph,
+    /// Keep the ways and build no graph: the cell cutter builds **one graph per cell** from them
+    /// (OBCA §3.4), so a whole-extract graph would be wasted work whose island pruning is also the
+    /// wrong shape for a cell.
+    KeepWays,
+}
+
 /// Two-pass ingest of one or more `.osm.pbf`s (lines + closed-way polygons +
 /// relation-assembled area polygons), merged as described in the module docs.
 /// `bbox` crops the inputs to a box first (a third, id-only pass).
@@ -565,6 +575,29 @@ pub fn ingest_osm(
     bbox: Option<Bbox>,
     progress: &Progress,
 ) -> Result<Ingested, String> {
+    ingest_inner(paths, config, bbox, progress, NavMode::Graph).map(|(ing, _)| ing)
+}
+
+/// [`ingest_osm`], but returning the **routable ways** instead of a built nav graph — what
+/// [`crate::cut`] needs, because a cell classifies junctions from the source snapshot's whole way set
+/// and cuts the ways itself at the cell edges. The returned [`Ingested`] carries an empty
+/// `nav_graph`.
+pub fn ingest_osm_ways(
+    paths: &[String],
+    config: &Config,
+    bbox: Option<Bbox>,
+    progress: &Progress,
+) -> Result<(Ingested, Vec<RoutableWay>), String> {
+    ingest_inner(paths, config, bbox, progress, NavMode::KeepWays)
+}
+
+fn ingest_inner(
+    paths: &[String],
+    config: &Config,
+    bbox: Option<Bbox>,
+    progress: &Progress,
+    nav_mode: NavMode,
+) -> Result<(Ingested, Vec<RoutableWay>), String> {
     if paths.is_empty() {
         return Err("no .osm.pbf input given".into());
     }
@@ -651,10 +684,19 @@ pub fn ingest_osm(
     // island pruning (`routing.min_component_edges`) + v9-guarantee edge splits
     // ([`nav::build_graph_with`]). Serialized into the §8 nav section. Logged (with
     // component + kinds stats) alongside POIs.
-    let (nav_graph, nav_stats) = nav::build_graph_with(&routable_ways, config.routing.min_component_edges);
-    progress.log(nav::format_summary(&nav_graph, &nav_stats));
+    let (nav_graph, kept_ways) = match nav_mode {
+        NavMode::Graph => {
+            let (graph, stats) = nav::build_graph_with(&routable_ways, config.routing.min_component_edges);
+            progress.log(nav::format_summary(&graph, &stats));
+            (graph, Vec::new())
+        }
+        NavMode::KeepWays => {
+            progress.log(format!("routable ways: {} (graphs are built per cell)", routable_ways.len()));
+            (NavGraph::default(), routable_ways)
+        }
+    };
 
-    Ok(Ingested { features, coastlines, pois, nav_graph })
+    Ok((Ingested { features, coastlines, pois, nav_graph }, kept_ways))
 }
 
 /// **Pass 1**, one source: node-location store + node POIs + area relations.
