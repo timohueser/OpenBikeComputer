@@ -156,13 +156,17 @@ cargo run --release --no-default-features --features ble
 **There is no `usb` feature.** The USB device plane (#889) is in every build above — see the
 "USB device plane" section further down for the bring-up recipe.
 
-### SD read throughput diagnostic
+### SD throughput diagnostic
 
-`sd_bench` measures the real SERIAL22 → embedded-sdmmc → card path against the first `.obcm` its
+`sd_bench` measures the real SPIM00 → embedded-sdmmc → card path against the first `.obcm` its
 own scan finds in the card root — deliberately *not* the app's selected map (`/MAP.SEL`, #927): the
 benchmark wants a large file to read, not the one the renderer would pick. It compares
 CMD17-per-block reads with CMD18 batches across sequential, random 4 KB,
-and random 512-byte shapes, and checks sequential passes against an FNV integrity hash:
+and random 512-byte shapes, and checks sequential passes against an FNV integrity hash.
+It also prices **writes** (the map-upload path, #889): the FAT-layer single-block baseline
+against raw CMD25 batches into a scratch file, every block stamped and read back; plus a
+bulk-clock sweep over the even PRESCALER divisors (⚠️ odd divisors hard-wedge the bus — see
+`sd::SD_FAST_DIVISOR`), each rung integrity-guarded:
 
 ```sh
 cargo run --release --bin sd_bench
