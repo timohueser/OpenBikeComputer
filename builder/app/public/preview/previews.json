@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "built_at": "2026-07-29T15:44:48Z",
+  "built_at": "2026-07-29T22:55:18Z",
   "source": "https://download.geofabrik.de/europe/switzerland-latest.osm.pbf",
   "bbox": {
     "min_lon": 8183000,
@@ -13,15 +13,15 @@
       "preset_id": "default",
       "preset_version": 4,
       "file": "default.obcm",
-      "bytes": 825948,
-      "sha256": "66a5da39e4b13845f186f98b433cec4fc6a75a836dce675c13dbef5cfdb405e6"
+      "bytes": 292520,
+      "sha256": "7739cab360b35bf86f40532dbd940b5bf2ed6b385cdb4a78997c3775c18a7663"
     },
     {
       "preset_id": "high-detail",
       "preset_version": 3,
       "file": "high-detail.obcm",
-      "bytes": 477308,
-      "sha256": "3e4e87e2a5420f7bcf187684309e55775db4ebe9fc90895e04d47e051c2f30b5"
+      "bytes": 206761,
+      "sha256": "8de0486df161ec392297b56c9f07624f7abf8dd8545bd68510e007ee94fbe549"
     }
   ]
 }
