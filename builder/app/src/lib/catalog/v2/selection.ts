@@ -29,7 +29,7 @@
 import { corridorCells, type LatLon } from "./corridor";
 import { cellsIntersecting, formatCellId, type UBox } from "./grid";
 import type { BandEntry, CatalogV2 } from "./manifest";
-import type { CellIndexDocument, RegionCellsDocument } from "./satellites";
+import { assertRegionCellsIndexed, type CellIndexDocument, type RegionCellsDocument } from "./satellites";
 
 export type { LatLon } from "./corridor";
 
@@ -151,6 +151,31 @@ export function withCorridorRadius(selection: Selection, radiusM: number): Selec
 }
 
 /**
+ * §11.7's cross-document MUST, re-applied here over the full set of loaded
+ * indices — which is the set the client could not check when it fetched the
+ * region list one round trip earlier.
+ *
+ * It matters because without it a region cell the catalog does not index would
+ * fall through the published/missing split below into `missingByBand`, and
+ * `missingByBand` is drawn as a **hole**: ground with no published cell, legal
+ * by construction, priced at nothing, shown to the rider as coverage they are
+ * choosing to accept. But this is not that. A hole is ground nobody baked; this
+ * is a *named* cell with no bytes, no size and no digest — a broken publish,
+ * exactly what `assertRegionCellsIndexed` exists to refuse and what `client.ts`
+ * promises callers they will never be handed. Two different failures with two
+ * different remedies must not arrive as the same drawing.
+ */
+function assertRegionListsIndexed(selection: Selection, ctx: SelectionContext): void {
+    const checked = new Set<string>();
+    for (const part of selection.parts) {
+        if (part.kind !== "region" || checked.has(part.regionId)) continue;
+        checked.add(part.regionId);
+        const list = ctx.regionCells.get(part.regionId);
+        if (list) assertRegionCellsIndexed(list, ctx.indices);
+    }
+}
+
+/**
  * The cell ids one part contributes to one band, before any published/missing
  * distinction — pure geometry (or, for a region, pure lookup).
  */
@@ -182,6 +207,7 @@ function partCells(part: SelectionPart, bandEntry: BandEntry, ctx: SelectionCont
 export function resolveSelection(selection: Selection, ctx: SelectionContext): SelectionResolution {
     const bands = ctx.catalog.schema.bands;
     const unresolvedBands = bands.filter((b) => !ctx.indices.has(b.id)).map((b) => b.id);
+    assertRegionListsIndexed(selection, ctx);
 
     // Pass one: every part's raw cells per band, split into published and missing.
     const perPart = selection.parts.map((part) => {

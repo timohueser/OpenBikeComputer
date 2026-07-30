@@ -8,6 +8,7 @@
 
 import { describe, expect, it } from "vitest";
 import { cellSquare, parseCellId } from "./grid";
+import { CatalogFormatError } from "./parse";
 import { parseRegionCells } from "./satellites";
 import {
     emptySelection,
@@ -171,6 +172,46 @@ describe("resolveSelection", () => {
         const r = resolveSelection({ parts: [insideA], corridorRadiusM: 0 }, partial);
         expect(r.unresolvedBands).toEqual(["coarse", "mid", "network"]);
         expect(r.cellsByBand.get("fine")).toEqual(["18/1204/1052"]);
+    });
+
+    it("refuses a region cell its band does not index — that is not a hole", () => {
+        // The distinction the whole coverage drawing rests on. A hole is ground
+        // nobody baked: legal, priced at nothing, drawn so the rider can accept
+        // it. A region cell list naming a cell the band index does not carry is
+        // a *broken publish* — a named cell with no bytes, size or digest — and
+        // letting it fall into `missingByBand` would draw it as legal coverage
+        // and price the download short.
+        const broken: SelectionContext = {
+            ...ctx,
+            indices: fixtureIndices(exampleCatalog, {
+                coarse: [{ id: "20/0301/0263", bytes: 2088, partial: true }],
+                mid: [{ id: "19/0602/0526", bytes: 1064 }],
+                // …but the region's list names 18/1204/1053 too.
+                fine: [{ id: "18/1204/1052", bytes: 552 }],
+                network: [
+                    { id: "18/1204/1052", bytes: 296 },
+                    { id: "18/1204/1053", bytes: 168 },
+                ],
+            }),
+        };
+        expect(() => resolveSelection({ parts: [region], corridorRadiusM: 0 }, broken)).toThrow(
+            CatalogFormatError,
+        );
+        expect(() => resolveSelection({ parts: [region], corridorRadiusM: 0 }, broken)).toThrow(
+            /18\/1204\/1053 is not in band "fine"'s index/,
+        );
+        // Composed with other parts, and with the region second: still refused,
+        // rather than quietly counted once as a hole.
+        expect(() => resolveSelection({ parts: [insideA, region], corridorRadiusM: 0 }, broken)).toThrow(
+            CatalogFormatError,
+        );
+        // A band whose index has not loaded is not evidence of anything, so it
+        // is not judged — the check runs again when it arrives.
+        const stillLoading: SelectionContext = {
+            ...broken,
+            indices: new Map([["network", broken.indices.get("network")!]]),
+        };
+        expect(() => resolveSelection({ parts: [region], corridorRadiusM: 0 }, stillLoading)).not.toThrow();
     });
 
     it("has nothing to resolve for an empty selection", () => {
