@@ -1,0 +1,39 @@
+{
+  "schema_version": 2,
+  "schema_revision": 7,
+  "band": "fine",
+  "cells": [
+    {
+      "id": "18/1204/1052",
+      "bytes": 552,
+      "sha256": "8e2803c1749d16d151ec22abb5f541b06cfdc7c102b46ce080807f5cf0504f83",
+      "url": "https://maps.example.org/catalog/v2/cells/fine/1204/1052.obcm",
+      "built_at": "2026-07-30T02:12:55Z",
+      "sources": [
+        {
+          "extract_id": "europe/switzerland",
+          "snapshot": "2026-07-19"
+        }
+      ],
+      "partial": false
+    },
+    {
+      "id": "18/1204/1053",
+      "bytes": 424,
+      "sha256": "6207c92a7f967e8c557a4f2173e163ecef8b38d1e0d4807f51a1ca02fca207ee",
+      "url": "https://maps.example.org/catalog/v2/cells/fine/1204/1053.obcm",
+      "built_at": "2026-07-30T02:13:07Z",
+      "sources": [
+        {
+          "extract_id": "europe/germany/baden-wuerttemberg",
+          "snapshot": "2026-07-18"
+        },
+        {
+          "extract_id": "europe/switzerland",
+          "snapshot": "2026-07-19"
+        }
+      ],
+      "partial": false
+    }
+  ]
+}
