@@ -36,6 +36,21 @@ pub const MANIFEST_HEADER_LEN: usize = 72;
 pub const MANIFEST_SHARD_LEN: usize = 56;
 /// A set holds `1..=32` shards; readers reject `0` or more (§5.2/§5.3).
 pub const MAX_SHARDS: usize = 32;
+/// Largest card id the §5.2 filenames hold: `MS<id>S<kk>.OBM` is 8.3-safe only while `<id>` is at
+/// most three digits, because the firmware's FAT layer creates **short names only**. A four-digit id
+/// produces a nine-character basename, which a device silently mangles into a name the derived-name
+/// lookup no longer finds.
+pub const MAX_CARD_ID: u16 = 999;
+
+/// §5.2's card-id range, checked where the id enters rather than where the string is built.
+pub fn check_card_id(card_id: u16) -> Result<()> {
+    if card_id > MAX_CARD_ID {
+        return Err(Error::Input(format!(
+            "card id {card_id} needs four digits; `MS<id>S<kk>.OBM` is 8.3-safe only up to {MAX_CARD_ID} (OBCA §5.2)"
+        )));
+    }
+    Ok(())
+}
 
 /// One physical file of the set, planned before a byte is written.
 pub struct ShardPlan {
@@ -103,13 +118,13 @@ pub fn write(
     sink: &mut dyn FnMut(&[u8]) -> Result<()>,
 ) -> Result<(u64, [u8; 32])> {
     let style_bytes = pack_style_table(styles);
-    let poi_bytes_len =
-        if plan.core { poi.section_len() } else { crate::poi::empty_layout(plan.box_.ubox()).section_len() };
-    let nav_len = if plan.core {
-        nav.section_len(profile_table)
-    } else {
-        MergedNav::empty(Default::default()).section_len(profile_table)
-    };
+    // The empty pair a non-core shard carries (§5.1), built **once**: it is written at the end and
+    // its length is needed at the start, and building it twice was one section's worth of allocation
+    // per shard for no reason.
+    let empty_poi = if plan.core { None } else { Some(crate::poi::empty_layout(plan.box_.ubox())) };
+    let empty_nav = if plan.core { None } else { Some(MergedNav::empty(Default::default())) };
+    let poi_bytes_len = empty_poi.as_ref().map_or_else(|| poi.section_len(), |p| p.section_len());
+    let nav_len = empty_nav.as_ref().map_or(nav, |n| n).section_len(profile_table);
     let l = plan.layout(style_bytes.len(), poi_bytes_len, nav_len);
     if l.total > FILE_CEILING {
         return Err(Error::Capacity(format!(
@@ -128,32 +143,20 @@ pub fn write(
     };
 
     // 1. Header (bbox stored lat, lon, lat, lon — `OBCM_Spec.md` §1).
-    let (min_lon, min_lat, max_lon, max_lat) = plan.box_.ubox();
-    let mut head = Vec::with_capacity(HEADER_LEN);
-    head.extend_from_slice(&MAGIC);
-    head.push(VERSION);
-    head.extend_from_slice(&(min_lat as i32).to_le_bytes());
-    head.extend_from_slice(&(min_lon as i32).to_le_bytes());
-    head.extend_from_slice(&(max_lat as i32).to_le_bytes());
-    head.extend_from_slice(&(max_lon as i32).to_le_bytes());
-    head.extend_from_slice(&(HEADER_LEN as u32).to_le_bytes());
-    head.push(plan.lods.len() as u8);
-    head.extend_from_slice(&(l.lod_table_offset as u32).to_le_bytes());
-    head.extend_from_slice(&marker_color.to_le_bytes());
-    head.extend_from_slice(&(l.poi_offset as u32).to_le_bytes());
-    head.extend_from_slice(&(l.nav_offset as u32).to_le_bytes());
-    debug_assert_eq!(head.len(), HEADER_LEN);
-    out(&head)?;
+    out(&header_bytes(
+        plan.box_,
+        plan.lods.len(),
+        marker_color,
+        l.lod_table_offset as u32,
+        l.poi_offset as u32,
+        l.nav_offset as u32,
+    ))?;
 
     // 2. Style table (the skin, §4.7) and 3. the LOD table.
     out(&style_bytes)?;
     let mut table = Vec::with_capacity(plan.lods.len() * LOD_ENTRY_LEN);
     for (p, &offset) in plan.lods.iter().zip(&l.lod_offsets) {
-        table.extend_from_slice(&p.max_mpp.map_or(f32::INFINITY, |v| v as f32).to_le_bytes());
-        table.extend_from_slice(&(offset as u32).to_le_bytes());
-        table.extend_from_slice(&p.node_count.to_le_bytes());
-        table.extend_from_slice(&(p.chunk_size as u16).to_le_bytes());
-        table.extend_from_slice(&p.chunk_count.to_le_bytes());
+        push_lod_entry(&mut table, p.max_mpp, offset as u32, p.node_count, p.chunk_size, p.chunk_count);
     }
     out(&table)?;
 
@@ -163,16 +166,66 @@ pub fn write(
     }
 
     // 5/6. The POI and nav sections — the core's rebuilt ones, or a legal empty pair (§5.1).
-    if plan.core {
-        out(&crate::poi::serialize(poi, l.poi_offset))?;
-        out(&crate::nav::serialize(nav, profile_table, l.nav_offset))?;
-    } else {
-        out(&crate::poi::serialize(&crate::poi::empty_layout(plan.box_.ubox()), l.poi_offset))?;
-        out(&crate::nav::serialize(&MergedNav::empty(Default::default()), profile_table, l.nav_offset))?;
-    }
+    out(&crate::poi::serialize(empty_poi.as_ref().unwrap_or(poi), l.poi_offset))?;
+    out(&crate::nav::serialize(empty_nav.as_ref().unwrap_or(nav), profile_table, l.nav_offset))?;
 
-    debug_assert_eq!(written, l.total, "the projection and the write must agree byte for byte");
+    // §4.8.6: the write must land exactly where §5.7's projection said it would. A `debug_assert`
+    // would leave a release build emitting a file whose recorded `Bytes` and header offsets are a
+    // sentence about a different layout — and the manifest would be written over it.
+    if written != l.total {
+        return Err(Error::Verify(format!(
+            "shard {} projected to {} bytes but wrote {written} — the §5.7 projection and the write disagree",
+            plan.index, l.total
+        )));
+    }
     Ok((written, hasher.finalize().into()))
+}
+
+/// The 40-byte OBCM header (`OBCM_Spec.md` §1), byte-for-byte the packer's `header_bytes`. Split out
+/// because it is a **restatement** of `obc-pack`'s serializer, and `tests/pinning.rs` compares the
+/// two outputs directly rather than trusting that two copies of a table stay in step.
+pub fn header_bytes(
+    box_: AlignedBox,
+    lod_count: usize,
+    marker_color: u16,
+    lod_table_offset: u32,
+    poi_offset: u32,
+    nav_offset: u32,
+) -> Vec<u8> {
+    let (min_lon, min_lat, max_lon, max_lat) = box_.ubox();
+    let mut head = Vec::with_capacity(HEADER_LEN);
+    head.extend_from_slice(&MAGIC);
+    head.push(VERSION);
+    head.extend_from_slice(&(min_lat as i32).to_le_bytes());
+    head.extend_from_slice(&(min_lon as i32).to_le_bytes());
+    head.extend_from_slice(&(max_lat as i32).to_le_bytes());
+    head.extend_from_slice(&(max_lon as i32).to_le_bytes());
+    head.extend_from_slice(&(HEADER_LEN as u32).to_le_bytes());
+    head.push(lod_count as u8);
+    head.extend_from_slice(&lod_table_offset.to_le_bytes());
+    head.extend_from_slice(&marker_color.to_le_bytes());
+    head.extend_from_slice(&poi_offset.to_le_bytes());
+    head.extend_from_slice(&nav_offset.to_le_bytes());
+    debug_assert_eq!(head.len(), HEADER_LEN);
+    head
+}
+
+/// Append one 18-byte LOD-table entry (`OBCM_Spec.md` §3), byte-for-byte the packer's
+/// `push_lod_entry`: `Max Meters/Pixel` (`None` ⇒ `+inf`), index offset, node count, chunk capacity,
+/// chunk count. Pinned against the packer alongside the header.
+pub fn push_lod_entry(
+    table: &mut Vec<u8>,
+    max_mpp: Option<f64>,
+    index_offset: u32,
+    node_count: u32,
+    chunk_size: usize,
+    chunk_count: u32,
+) {
+    table.extend_from_slice(&max_mpp.map_or(f32::INFINITY, |v| v as f32).to_le_bytes());
+    table.extend_from_slice(&index_offset.to_le_bytes());
+    table.extend_from_slice(&node_count.to_le_bytes());
+    table.extend_from_slice(&(chunk_size as u16).to_le_bytes());
+    table.extend_from_slice(&chunk_count.to_le_bytes());
 }
 
 /// The style table (`OBCM_Spec.md` §2): `Count` then one 8-byte record per style, id ascending.
@@ -207,6 +260,20 @@ pub fn manifest(shards: &[ShardPlan], assembly: AlignedBox, schema_revision: u32
         .iter()
         .position(|s| s.core)
         .ok_or_else(|| Error::Verify("the set has no core shard (OBCA §5.3)".into()))?;
+    // §5.3: past the single-file fast path a set MUST carry at least one shard of each non-core
+    // role. A reader has no schema to consult, so "the schema names no coarse band" is not an
+    // excuse it can hear — it sees a manifest missing `Role == 2` and refuses to mount, and every
+    // shard the host wrote is dead weight on the card. Catch it here, where the set is still ours.
+    if shards.len() > 1 {
+        for (role, what) in [(BandRole::Geometry, "geometry"), (BandRole::Coarse, "coarse")] {
+            if !shards.iter().any(|s| !s.core && s.role == role) {
+                return Err(Error::Verify(format!(
+                    "a multi-shard set has no {what} shard, so no reader will mount it (OBCA §5.3). The schema's band \
+                     table must name a band with role {what:?} for selections past the single-file threshold."
+                )));
+            }
+        }
+    }
 
     // `Set Id` is a content identity: two assemblies of the same cells with the same skin produce
     // the same id, which is what lets an upload notice the set is already present.
@@ -287,14 +354,15 @@ mod tests {
 
     #[test]
     fn manifest_layout_is_the_spec_table() {
-        let shards = vec![plan(0, BandRole::Core, true), plan(1, BandRole::Coarse, false)];
+        let shards =
+            vec![plan(0, BandRole::Core, true), plan(1, BandRole::Coarse, false), plan(2, BandRole::Geometry, false)];
         let bx = AlignedBox { min_lat: 47_185_920, min_lon: 7_340_032, span_log2: 21 };
         let m = manifest(&shards, bx, 7, "Switzerland").expect("manifest");
-        assert_eq!(m.len(), MANIFEST_HEADER_LEN + 2 * MANIFEST_SHARD_LEN);
+        assert_eq!(m.len(), MANIFEST_HEADER_LEN + 3 * MANIFEST_SHARD_LEN);
         assert_eq!(&m[0..4], b"OBCS");
         assert_eq!(m[4], 1);
         assert_eq!(m[5], VERSION);
-        assert_eq!(m[6], 2, "shard count");
+        assert_eq!(m[6], 3, "shard count");
         assert_eq!(m[7], 0, "core shard index");
         assert_eq!(u32::from_le_bytes(m[8..12].try_into().unwrap()), 7, "schema revision");
         assert_eq!(u32::from_le_bytes(m[12..16].try_into().unwrap()), 0, "flags reserved");
@@ -315,12 +383,33 @@ mod tests {
         assert!(manifest(&shards, bx, 1, "x").is_err());
     }
 
+    /// §5.3: a reader has no schema, so a multi-shard set missing a whole role does not mount. The
+    /// host must not write one — a schema whose band table names no `coarse` band would otherwise
+    /// produce a manifest that looks valid and is not.
+    #[test]
+    fn a_multi_shard_set_missing_a_role_is_refused() {
+        let bx = AlignedBox { min_lat: 47_185_920, min_lon: 7_340_032, span_log2: 21 };
+        let no_coarse = vec![plan(0, BandRole::Core, true), plan(1, BandRole::Geometry, false)];
+        let err = format!("{}", manifest(&no_coarse, bx, 1, "x").expect_err("no coarse shard"));
+        assert!(err.contains("no coarse shard"), "got: {err}");
+        let no_geometry = vec![plan(0, BandRole::Core, true), plan(1, BandRole::Coarse, false)];
+        let err = format!("{}", manifest(&no_geometry, bx, 1, "x").expect_err("no geometry shard"));
+        assert!(err.contains("no geometry shard"), "got: {err}");
+        // …and the single-file fast path is exempt, because §5.5 says the one shard is the core.
+        manifest(&[plan(0, BandRole::Core, true)], bx, 1, "x").expect("a set of one is legal");
+    }
+
     #[test]
     fn filenames_are_eight_three_safe() {
         assert_eq!(shard_filename(7, 0), "MS7S00.OBM");
-        assert_eq!(shard_filename(999, 31), "MS999S31.OBM");
+        assert_eq!(shard_filename(MAX_CARD_ID, 31), "MS999S31.OBM");
         assert_eq!(manifest_filename(7), "MS7.OBS");
-        assert!(shard_filename(999, 31).split('.').next().unwrap().len() <= 8, "8.3 short name");
+        assert!(shard_filename(MAX_CARD_ID, 31).split('.').next().unwrap().len() <= 8, "8.3 short name");
+        // The bound itself, checked where the id enters: one more digit breaks the short name.
+        check_card_id(MAX_CARD_ID).expect("three digits fit");
+        let err = format!("{}", check_card_id(MAX_CARD_ID + 1).expect_err("four digits do not"));
+        assert!(err.contains("8.3-safe"), "got: {err}");
+        assert_eq!(shard_filename(1000, 0).split('.').next().unwrap().len(), 9, "…which is what it would look like");
     }
 
     #[test]
