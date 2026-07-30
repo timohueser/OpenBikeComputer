@@ -156,6 +156,26 @@ describe("the negative origin", () => {
         expect(cellContaining(20, GRID_ORIGIN + 2 ** 20 - 1, GRID_ORIGIN)).toEqual(c);
     });
 
+    it("floors *below* the origin, which is the only place trunc differs", () => {
+        // The vector that earns `floorDiv` its keep. Everything else in this
+        // describe block is at or above the origin, where the dividend is
+        // non-negative and `Math.trunc` gives the same answer — as it does for
+        // every coordinate a catalog can contain, the origin being −2^28 and the
+        // geographic domain ±180°. So this is defence-in-depth, deliberately
+        // reaching outside the world box to state what the division does there.
+        expect(cellContaining(20, GRID_ORIGIN - 1, GRID_ORIGIN - 1)).toEqual({ log2: 20, i: -1, j: -1 });
+        // One µdeg past a whole cell below the origin: floor says the second
+        // cell down, trunc says the first.
+        expect(cellContaining(18, GRID_ORIGIN - 2 ** 18 - 1, GRID_ORIGIN - 2 ** 18 - 1)).toEqual({
+            log2: 18,
+            i: -2,
+            j: -2,
+        });
+        // A negative index is not a cell: `cellId` refuses to mint one, so a
+        // below-origin answer cannot be mistaken for a published square.
+        expect(() => cellId(18, -1, 0)).toThrow(GridError);
+    });
+
     // Rust: `cells_south_of_the_equator`.
     it("puts Cape Town in a cell whose square really contains it", () => {
         const c = cellContaining(18, -33_900_000, 18_400_000);
