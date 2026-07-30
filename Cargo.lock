@@ -2755,6 +2755,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "obcm-assemble"
+version = "0.1.0"
+dependencies = [
+ "embedded-graphics",
+ "heapless 0.8.0",
+ "obc-display",
+ "obc-formats",
+ "obc-pack",
+ "obc-reader",
+ "obc-render",
+ "obc-route",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "obcm-testkit"
 version = "0.1.0"
 dependencies = [
