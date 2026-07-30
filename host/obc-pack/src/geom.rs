@@ -543,7 +543,7 @@ pub fn union_polygons(polys: &[&Geom]) -> Option<Vec<Geom>> {
                 return vec![polys[comp[0]].clone()];
             }
             let refs: Vec<&Geom> = comp.iter().map(|&i| polys[i]).collect();
-            union_polygons_serial(&refs).unwrap_or_else(|| refs.iter().map(|g| (*g).clone()).collect())
+            union_all(&refs).unwrap_or_else(|| refs.iter().map(|g| (*g).clone()).collect())
         })
         .flatten()
         .collect();
@@ -555,7 +555,15 @@ pub fn union_polygons(polys: &[&Geom]) -> Option<Vec<Geom>> {
 /// `None` on any GEOS failure or empty result. This is the per-component worker
 /// behind [`union_polygons`]; it builds, unions, and reads back wholly on the
 /// calling thread (`geos::Geometry` is `!Send`).
-fn union_polygons_serial(polys: &[&Geom]) -> Option<Vec<Geom>> {
+///
+/// Public because a caller that needs a *true* union must not go through
+/// [`union_polygons`]: that one clusters by shared vertices first, which is right
+/// for dissolving abutting map fills (they share OSM nodes) and wrong for polygons
+/// that genuinely overlap without touching a vertex — two such polygons would come
+/// back unmerged, and an even-odd reading of the result would count their overlap
+/// as a hole. The bakery's source-coverage test (`obc-bake`'s `coverage`) needs the
+/// real thing, over a handful of country outlines.
+pub fn union_all(polys: &[&Geom]) -> Option<Vec<Geom>> {
     let mut geoms = Vec::with_capacity(polys.len());
     for g in polys {
         geoms.push(try_polygon_to_geos(g)?);

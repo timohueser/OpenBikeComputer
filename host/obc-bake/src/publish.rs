@@ -291,6 +291,142 @@ pub fn publish(
     Ok(PublishReport { manifest: generated.manifest, warnings, objects: objects.len(), bytes: total, coverage_lost })
 }
 
+/// Generate the `schema_version 2` catalog into a **cell** tree, then publish it.
+///
+/// Structurally the same publish as v1's and for the same reason, with one extra
+/// ordering constraint folded in: a v2 catalog is a root plus digest-pinned
+/// satellites (`OBCC_Spec.md` §11.1), so the satellites are objects like any other
+/// and land in phase 1, while the root — the only document that claims they exist
+/// with a given digest — is the single object swapped in last. [`plan`] already puts
+/// `catalog.json` last by construction, so the satellites' ordering needs no new
+/// mechanism, only that they are on disk before the plan is built. The generator
+/// writes them there.
+///
+/// The shrink guard is per **region**: v2's unit of coverage is a named selection, and
+/// a region that stops being offered is the same silent regression v1 guards against.
+/// Cells are not diffed — a cell store only ever grows, and a re-bake that rewrites a
+/// cell under the same key is the normal operation.
+pub fn publish_v2(
+    tree: &Path,
+    store: &dyn ObjectStore,
+    opts: &obc_pack::catalog::v2::CatalogV2Options,
+    publish_opts: PublishOptions,
+) -> Result<PublishV2Report, String> {
+    let generated = obc_pack::catalog::v2::generate(tree, opts)?;
+    obc_pack::catalog::v2::write_all_atomic(tree, &generated)?;
+
+    let objects = plan_v2(tree)?;
+    let total: u64 = objects.iter().map(|o| o.bytes).sum();
+    let cells: u32 = generated.root.cell_index.iter().map(|c| c.cell_count).sum();
+    let mut warnings = generated.warnings;
+    let report = |warnings: Vec<String>, coverage_lost| PublishV2Report {
+        regions: generated.root.regions.iter().map(|r| r.id.clone()).collect(),
+        cells,
+        skins: generated.root.skins.len(),
+        objects: objects.len(),
+        bytes: total,
+        warnings,
+        coverage_lost,
+    };
+    if publish_opts.dry_run {
+        return Ok(report(warnings, Vec::new()));
+    }
+
+    let coverage_lost = match live_root_v2(store)? {
+        Some(live) => {
+            let incoming: std::collections::BTreeSet<&str> =
+                generated.root.regions.iter().map(|r| r.id.as_str()).collect();
+            live.regions.iter().map(|r| r.id.clone()).filter(|id| !incoming.contains(id.as_str())).collect()
+        }
+        None => Vec::new(),
+    };
+    if !coverage_lost.is_empty() {
+        if !publish_opts.allow_shrink {
+            return Err(format!(
+                "this publish would REMOVE {} region(s) the live catalog offers, and a region that stops being \
+                 offered reads to a user as \"not covered\". Publish from the full tree, or pass --allow-shrink if \
+                 the removal is deliberate.\n\nWould disappear:\n{}",
+                coverage_lost.len(),
+                coverage_lost.iter().map(|p| format!("  {p}")).collect::<Vec<_>>().join("\n")
+            ));
+        }
+        warnings.push(format!(
+            "--allow-shrink: removing {} region(s): {}",
+            coverage_lost.len(),
+            coverage_lost.join(", ")
+        ));
+    }
+
+    let (root_object, content) = objects.split_last().ok_or("nothing to publish")?;
+    debug_assert_eq!(root_object.kind, ObjectKind::Manifest);
+    for object in content {
+        store.put(object).map_err(|e| format!("{}: {e}", object.key))?;
+    }
+    for object in content {
+        match store.head(&object.key)? {
+            Some(bytes) if bytes == object.bytes => {}
+            Some(bytes) => {
+                return Err(format!(
+                    "{}: published as {bytes} bytes but the tree has {} — refusing to swap the root in",
+                    object.key, object.bytes
+                ))
+            }
+            None => return Err(format!("{}: not fetchable after upload — refusing to swap the root in", object.key)),
+        }
+    }
+    store.put(root_object).map_err(|e| format!("{}: {e}", root_object.key))?;
+    Ok(report(warnings, coverage_lost))
+}
+
+/// What a v2 publish did.
+#[derive(Debug, Clone)]
+pub struct PublishV2Report {
+    pub regions: Vec<String>,
+    pub cells: u32,
+    pub skins: usize,
+    pub objects: usize,
+    pub bytes: u64,
+    pub warnings: Vec<String>,
+    pub coverage_lost: Vec<String>,
+}
+
+/// Every object of a cell tree, root last.
+///
+/// Deliberately a whole-tree walk rather than v1's two named directories: a v2 tree's
+/// publishable set is `cells/`, `regions/`, `skins/` **and** `schema.json` — the last
+/// of which is not optional, because it is the document the generator reads the
+/// style-id assignment out of and the one a re-generation on another machine needs.
+/// Walking the tree means a future document cannot be forgotten here.
+pub fn plan_v2(tree: &Path) -> Result<Vec<PlannedObject>, String> {
+    let mut objects = Vec::new();
+    for dir in ["cells", "regions", "skins"] {
+        collect(tree, &tree.join(dir), ObjectKind::Artifact, &mut objects)?;
+    }
+    let schema = tree.join("schema.json");
+    if schema.is_file() {
+        let bytes = std::fs::metadata(&schema).map_err(|e| format!("{}: {e}", schema.display()))?.len();
+        objects.push(PlannedObject { key: "schema.json".into(), path: schema, bytes, kind: ObjectKind::Preset });
+    }
+    objects.sort_by(|a, b| a.key.cmp(&b.key));
+
+    let root = tree.join(DEFAULT_MANIFEST_NAME);
+    let bytes = std::fs::metadata(&root).map_err(|e| format!("{}: {e}", root.display()))?.len();
+    objects.push(PlannedObject {
+        key: DEFAULT_MANIFEST_NAME.to_string(),
+        path: root,
+        bytes,
+        kind: ObjectKind::Manifest,
+    });
+    Ok(objects)
+}
+
+fn live_root_v2(store: &dyn ObjectStore) -> Result<Option<obc_pack::catalog::v2::CatalogV2>, String> {
+    let Some(bytes) = store.get(DEFAULT_MANIFEST_NAME)? else { return Ok(None) };
+    Ok(serde_json::from_slice::<obc_pack::catalog::v2::CatalogV2>(&bytes)
+        .ok()
+        .filter(|r| r.schema_version == obc_pack::catalog::v2::CATALOG_SCHEMA_VERSION))
+}
+
 /// The manifest currently in place at the destination, if there is one.
 ///
 /// Read **through the store**, from the destination itself, rather than fetched from
