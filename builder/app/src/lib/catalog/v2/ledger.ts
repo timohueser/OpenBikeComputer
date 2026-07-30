@@ -50,13 +50,16 @@ export const CORE_WARN_BYTES = 3.5 * 1024 ** 3;
  * The pessimistic budget §5.7 requires on the comparison side: +15 %, from
  * `OBCA_Spec.md` §1.5's per-cell overhead allowance.
  *
- * #1025 measured that real cell bakes come in 0–4 % *smaller* than §1.5's
- * whole-extract figures, so this is headroom rather than measured cost — but it
- * is the right headroom to keep, because what a projection has to bound is the
- * *assembled* file, and assembly adds what the cells do not carry: fresh upper
- * index nodes, offset tables, directories, and the merged POI/hours and nav
- * sections (§5.7's "fixed overheads"). Sizing those exactly is the assembler's
- * job (P3); refusing a selection that would need them to be tiny is this one's.
+ * §1.5 is explicit that this is **measured headroom rather than an expected
+ * cost** — a real scoped bake came in 0–4 % *smaller* than the whole-extract
+ * figures — and equally explicit that it stays, because §5.7 requires the
+ * pre-download projection to be an upper bound and a budget that is never
+ * exceeded is doing its job. It is the right headroom for this consumer too:
+ * what a projection has to bound is the *assembled* file, and assembly adds
+ * what the cells do not carry — fresh upper index nodes, offset tables,
+ * directories, and the merged POI/hours and nav sections (§5.7's "fixed
+ * overheads"). Sizing those exactly is the assembler's job (P3); refusing a
+ * selection that would need them to be tiny is this one's.
  */
 export const OVERHEAD_BUDGET = 0.15;
 
