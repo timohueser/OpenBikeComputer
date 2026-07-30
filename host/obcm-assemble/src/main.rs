@@ -38,7 +38,17 @@ impl FileSource {
     fn open(path: &Path) -> std::io::Result<FileSource> {
         let file = File::open(path)?;
         let len = file.metadata()?.len();
-        Ok(FileSource { file: RefCell::new(file), len: len as u32 })
+        // OBCM addresses bytes with `uint32`, so a file past `4 GiB − 1` cannot be read at all —
+        // and a truncating cast would present its low 32 bits as the whole file, which reads as a
+        // valid-looking map made of the wrong bytes.
+        let len = u32::try_from(len).map_err(|_| {
+            std::io::Error::other(format!(
+                "{} is {len} bytes; OBCM offsets are uint32, so nothing past {} is addressable (OBCA §5)",
+                path.display(),
+                u32::MAX
+            ))
+        })?;
+        Ok(FileSource { file: RefCell::new(file), len })
     }
 }
 
@@ -100,6 +110,14 @@ impl ShardStore for FileStore {
         self.sealed.get(index).map(|s| s as &dyn ByteSource).ok_or(Error::Io(IoError::BadOffset))
     }
     fn manifest(&mut self, bytes: &[u8]) -> Result<()> {
+        // §5.4: shard files no manifest references are **orphans**, and a writer replacing a set
+        // SHOULD delete them. Replacing a 12-shard set with an 8-shard one otherwise leaves four
+        // stale files on the card — invisible as a map, but holding gigabytes the rider cannot
+        // account for. Done here, immediately before the manifest, so the delete window is still
+        // the manifest-less one §5.4 already requires.
+        for index in self.sealed.len()..obcm_assemble::shard::MAX_SHARDS {
+            let _ = std::fs::remove_file(self.dir.join(obcm_assemble::shard::shard_filename(self.card_id, index)));
+        }
         std::fs::write(&self.manifest_path, bytes).map_err(|_| Error::Io(IoError::Io))
     }
 }
@@ -155,10 +173,21 @@ OPTIONS:
     --band <id>             only assemble these bands (repeatable)
     --cell <id>             only assemble these cells (repeatable, `<log2>/<i>/<j>`)
     --name <text>           the set's display name (24 bytes on the card)
-    --card-id <n>           the id the derived filenames use (default 1)
-    --target-shard-bytes <n>  split a geometry shard above this (default 1 GiB)
-    --accept-holes          proceed although the selection has missing cells
-    --accept-partial        proceed although a cell is `partial` (OBCA §3.7)
+    --card-id <n>           the id the derived filenames use, 0..=999 (default 1). `MS<id>S<kk>.OBM`
+                            is 8.3-safe only up to three digits, and the device's FAT layer creates
+                            short names only (OBCA §5.2)
+    --target-shard-bytes <n>  split the geometry tiling wherever a node exceeds this (default 1 GiB).
+                            It only takes effect once the map needs a set at all; below the 4 GiB
+                            single-file threshold the fast path wins unless --force-split is given
+    --force-split           write a role-partitioned set even when the whole map would fit one file.
+                            What each shard *contains* is unchanged — this only changes which files
+                            it is written to (a smaller file is a better resumable upload unit)
+    --accept-holes          proceed although the selection has missing cells. The hole is legal — the
+                            quadtree writes an empty leaf and the renderer paints backdrop — but
+                            OBCA §4.1 requires the caller to say so rather than discover it
+    --accept-partial        proceed although a cell is `partial`: its sources did not cover its whole
+                            square, so the map ends inside that cell rather than at its edge, with no
+                            visible seam to warn the rider (OBCA §3.7)
     --skip-verify           skip the §4.8 verify pass — BENCHMARKS ONLY, never for a device
     --json                  print the summary as JSON
 ";
@@ -202,10 +231,14 @@ fn run() -> std::result::Result<(), String> {
             "--band" => only_bands.push(value(&mut i)?),
             "--cell" => only_cells.push(CellId::parse(&value(&mut i)?)?),
             "--name" => opts.name = value(&mut i)?,
-            "--card-id" => opts.card_id = value(&mut i)?.parse().map_err(|_| "--card-id takes a number")?,
+            "--card-id" => {
+                opts.card_id = value(&mut i)?.parse().map_err(|_| "--card-id takes a number")?;
+                obcm_assemble::shard::check_card_id(opts.card_id).map_err(|e| e.to_string())?;
+            }
             "--target-shard-bytes" => {
                 opts.target_shard_bytes = value(&mut i)?.parse().map_err(|_| "--target-shard-bytes takes a number")?
             }
+            "--force-split" => opts.force_split = true,
             "--accept-holes" => opts.accept_holes = true,
             "--accept-partial" => opts.accept_partial = true,
             "--skip-verify" => opts.skip_verify = true,
@@ -252,6 +285,11 @@ fn run() -> std::result::Result<(), String> {
     let clock = StdClock(Instant::now());
     let summary = assemble(inputs, &schema, &skin, &opts, &mut store, &clock).map_err(|e| e.to_string())?;
 
+    // The engine returns what the spec says to report; the CLI is what has a stderr (§4.5.2, §5.7,
+    // `OBCM_Spec.md` §8.3). Printed before the summary so a long JSON blob cannot bury them.
+    for w in &summary.warnings {
+        eprintln!("warning: {w}");
+    }
     if json {
         println!("{}", summary_json(&summary, &out_dir));
     } else {
@@ -298,15 +336,19 @@ fn print_summary(s: &obcm_assemble::Summary, out_dir: &Path) {
     );
     println!(
         "geometry copied: {} B · nav section: {} B ({} node(s), {} edge(s), {} unified at seams, {} island node(s) \
-         pruned) · POIs: {} ({} duplicate(s))",
+         pruned, {} adjacency entrie(s) at the degree cap, {} node record(s) dropped) · POIs: {} ({} duplicate(s), {} \
+         dropped)",
         st.geometry_bytes,
         st.nav_section_bytes,
         st.nav.nodes,
         st.nav.edges,
         st.nav.unified,
         st.nav.pruned_nodes,
+        st.nav.degree_truncated,
+        st.nav.dropped_nodes,
         st.poi_records,
-        st.poi_duplicates
+        st.poi_duplicates,
+        st.poi_dropped
     );
 }
 
@@ -352,8 +394,16 @@ fn summary_json(s: &obcm_assemble::Summary, out_dir: &Path) -> String {
             "pruned_nodes": st.nav.pruned_nodes,
             "pruned_edges": st.nav.pruned_edges,
             "largest_component_permille": st.nav.largest_component_permille,
+            "degree_truncated": st.nav.degree_truncated,
+            "dropped_nodes": st.nav.dropped_nodes,
         },
-        "poi": { "records": st.poi_records, "duplicates": st.poi_duplicates, "section_bytes": st.poi_section_bytes },
+        "poi": {
+            "records": st.poi_records,
+            "duplicates": st.poi_duplicates,
+            "dropped": st.poi_dropped,
+            "section_bytes": st.poi_section_bytes,
+        },
+        "warnings": s.warnings,
     }))
     .unwrap_or_else(|_| "{}".into())
 }

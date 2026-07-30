@@ -220,6 +220,8 @@ pub struct Stats {
     pub nav: NavStats,
     pub poi_records: usize,
     pub poi_duplicates: usize,
+    /// POI records the §7.3 chunk-capacity guard refused (see [`NavStats::dropped_nodes`]).
+    pub poi_dropped: usize,
     /// Bytes of geometry copied verbatim — the copy-bound half of the split.
     pub geometry_bytes: u64,
     pub nav_section_bytes: u64,
@@ -246,6 +248,14 @@ pub struct Summary {
     pub manifest_filename: String,
     pub bytes: u64,
     pub stats: Stats,
+    /// Everything the spec says a producer SHOULD *report* rather than refuse: §5.7's core-headroom
+    /// warning, §4.5.2's dropped duplicate POIs, `OBCM_Spec.md` §8.3's degree-cap truncations, and a
+    /// chunk-capacity drop from either quadtree.
+    ///
+    /// The engine has no stderr — it runs in a browser tab — so a warning is a value it returns and
+    /// the host decides what to do with. A caller that ignores this field ships the same bytes; a
+    /// caller that prints it tells the rider what the spec wanted them told.
+    pub warnings: Vec<String>,
 }
 
 /// Assemble `cells` into a volume set (§4, §5).
@@ -259,7 +269,9 @@ pub fn assemble(
 ) -> Result<Summary> {
     let t_start = clock.now_us();
     schema.validate().map_err(Error::Input)?;
+    shard::check_card_id(opts.card_id)?;
     let styles = skin.resolve(schema).map_err(Error::Input)?;
+    let mut warnings: Vec<String> = Vec::new();
 
     // --- 1. Open every cell through the real reader, and refuse the §4.1 disagreements. ---
     let cache = obc_reader::MapCache::new_boxed();
@@ -294,7 +306,7 @@ pub fn assemble(
     let ids: Vec<CellId> = cells.iter().map(|c| c.id).collect();
     let assembly = grid::assembly_box(&ids, schema.s_max_log2()).map_err(Error::Input)?;
     if !opts.accept_holes {
-        check_no_holes(schema, &cells, assembly)?;
+        check_no_holes(schema, &cells)?;
     }
 
     // --- 3. The two rebuilds. POIs are cheap; the nav graph is the assembler's real work. ---
@@ -332,10 +344,47 @@ pub fn assemble(
         nav: merged_nav.stats.clone(),
         poi_records: merged_pois.pois.len(),
         poi_duplicates: merged_pois.duplicates,
+        poi_dropped: poi_section.dropped(),
         nav_section_bytes: nav_len as u64,
         poi_section_bytes: poi_len as u64,
         ..Default::default()
     };
+
+    // Everything the spec says to report rather than refuse (§4.5.2, §5.7, `OBCM_Spec.md` §8.3).
+    if stats.poi_duplicates > 0 {
+        warnings.push(format!(
+            "{} POI record(s) were dropped as duplicates of a (lat, lon, subtype) already seen. §3.6 gives each POI \
+             exactly one cell, so a non-zero count means the selection overlaps itself or a cell was baked twice \
+             (OBCA §4.5.2).",
+            stats.poi_duplicates
+        ));
+    }
+    if stats.nav.degree_truncated > 0 {
+        warnings.push(format!(
+            "{} adjacency entrie(s) were dropped at the §8.3 degree cap of {}. Each dropped arc survives one-way \
+             through the neighbour's own record, which §8.3 permits, but the turn is gone in one direction.",
+            stats.nav.degree_truncated,
+            obc_formats::obcm::NAV_MAX_DEGREE
+        ));
+    }
+    for (count, what) in
+        [(stats.nav.dropped_nodes, "junction"), (stats.poi_dropped, "POI")].into_iter().filter(|(n, _)| *n > 0)
+    {
+        warnings.push(format!(
+            "{count} {what} record(s) exceeded their chunk's capacity and were dropped rather than written past it — \
+             co-located records past the quadtree's recursion floor."
+        ));
+    }
+    if let Some(core) = plans.iter().find(|p| p.core) {
+        if core.bytes >= shard::CORE_WARN {
+            warnings.push(format!(
+                "the core shard is {} bytes, past the ~3.5 GiB mark where OBCA §5.7 says to warn. The **navigation \
+                 graph** is what fills it — the core is nav plus POIs and nothing else, so the only thing that \
+                 reduces it is reducing the coverage. The hard ceiling is {FILE_CEILING} bytes.",
+                core.bytes
+            ));
+        }
+    }
     let mut summaries = Vec::with_capacity(plans.len());
     let mut verify_us = 0u64;
     let mut write_us = 0u64;
@@ -399,6 +448,7 @@ pub fn assemble(
         manifest_filename: shard::manifest_filename(opts.card_id),
         shards: summaries,
         stats,
+        warnings,
     })
 }
 
@@ -435,18 +485,27 @@ fn pick_chunk_size(schema: &Schema, cells: &[Cell<'_>]) -> Result<usize> {
 
 /// §4.1: every band's coverage must be the cells whose square intersects the selection. The
 /// assembler cannot know the caller's selection polygon, so it applies the checkable half — a band
-/// that covers strictly less ground than the finest band does has a hole in it, and a hole must be
-/// accepted, never discovered.
-fn check_no_holes(schema: &Schema, cells: &[Cell<'_>], assembly: AlignedBox) -> Result<()> {
-    // The union of the finest band's cells is the selection's own footprint; every other band must
-    // cover it. (Coarser bands cover *more* — that is §1.2's generosity, not a hole.)
-    let finest = schema.bands.iter().max_by_key(|b| std::cmp::Reverse(b.cell_log2));
-    let Some(finest) = finest else { return Ok(()) };
-    let footprint: Vec<CellId> = cells.iter().filter(|c| c.band == finest.id).map(|c| c.id).collect();
+/// that covers strictly less ground than the selection's finest cells do has a hole in it, and a
+/// hole must be accepted, never discovered.
+///
+/// The footprint is every cell of **every** band at the smallest cell size in the table, not one
+/// band picked from among them. At the v1 table `fine` and `network` share `2^18`, so "the finest
+/// band" is a tie that `max_by_key` would resolve by table position — which decides *which* of two
+/// under-covered bands gets reported, and can let the other one's hole through. Taking their union
+/// removes the tie-break and checks strictly more.
+fn check_no_holes(schema: &Schema, cells: &[Cell<'_>]) -> Result<()> {
+    let Some(finest_log2) = schema.bands.iter().map(|b| b.cell_log2).min() else { return Ok(()) };
+    let footprint: Vec<CellId> = {
+        let mut ids: Vec<CellId> = cells
+            .iter()
+            .filter(|c| schema.band(&c.band).is_some_and(|b| b.cell_log2 == finest_log2))
+            .map(|c| c.id)
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    };
     for band in &schema.bands {
-        if band.id == finest.id {
-            continue;
-        }
         let have: std::collections::HashSet<(i64, i64)> =
             cells.iter().filter(|c| c.band == band.id).map(|c| (c.id.i, c.id.j)).collect();
         for f in &footprint {
@@ -461,12 +520,21 @@ fn check_no_holes(schema: &Schema, cells: &[Cell<'_>], assembly: AlignedBox) -> 
             }
         }
     }
-    let _ = assembly;
     Ok(())
 }
 
 /// Plan the volume set (§5.1/§5.5): one file when everything fits, else a core shard, one coarse
 /// shard, and as many bbox-partitioned geometry shards as the target size needs.
+///
+/// # One tiling per role, not per band
+///
+/// §5.1 defines the split by **role**, and it says so in the plural: "geometry shards carry the
+/// `mid`- and `fine`-band LODs and nothing else", and "the shards of one role **tile** the assembly
+/// bbox". A tiling per *band* is therefore not a finer-grained version of the same thing — at the v1
+/// table, where `mid` and `fine` are both `role = geometry`, it emits two overlapping antichains of
+/// `Role == 1` shards whose areas sum to twice the assembly, which §5.3's own validation rejects.
+/// So the geometry role is planned **once**, over the combined bytes of every geometry band, and
+/// each shard it produces carries the union of those bands' LODs.
 fn plan_set(
     schema: &Schema,
     cells: &[Cell<'_>],
@@ -477,14 +545,15 @@ fn plan_set(
 ) -> Result<Vec<ShardPlan>> {
     let (style_len, poi_len, nav_len, empty_poi_len, empty_nav_len) = lens;
 
-    // The single-file fast path: try the whole map as one core shard (§5.5).
-    let all_lods: Vec<usize> = (0..schema.lods.len()).collect();
-    let single = build_shard(schema, cells, assembly, chunk_size, &all_lods, 0, BandRole::Core, true)?;
-    let bytes = shard::projected_bytes(&single, style_len, poi_len, nav_len);
-    if bytes <= FILE_CEILING && !opts.force_split {
-        let mut single = single;
-        single.bytes = bytes;
-        return Ok(vec![single]);
+    // The single-file fast path: try the whole map as one core shard (§5.5). Skipped outright under
+    // `force_split`, which would otherwise plan the whole map twice to throw the first one away.
+    if !opts.force_split {
+        let all_lods: Vec<usize> = (0..schema.lods.len()).collect();
+        let mut single = build_shard(schema, cells, assembly, chunk_size, &all_lods, 0, BandRole::Core, true)?;
+        single.bytes = shard::projected_bytes(&single, style_len, poi_len, nav_len);
+        if single.bytes <= FILE_CEILING {
+            return Ok(vec![single]);
+        }
     }
 
     // Otherwise: the core carries no geometry at all, so every byte that can scale horizontally
@@ -497,34 +566,56 @@ fn plan_set(
              graph** is what fills it — reduce the coverage (OBCA §5.7).",
         )));
     }
+    plans[0].bytes = core_bytes;
 
-    let mut index = 1usize;
-    for band in &schema.bands {
-        if band.role == BandRole::Core {
-            continue;
-        }
-        let boxes = if band.role == BandRole::Coarse {
-            // Exactly one by default, spanning the whole assembly, so a zoomed-out viewport is a
-            // single-file read (§5.1).
-            vec![assembly]
-        } else {
-            split_boxes(schema, cells, assembly, band, opts.target_shard_bytes)?
-        };
-        for b in boxes {
-            let plan = build_shard(schema, cells, b, chunk_size, &band.lods, index, band.role, false)?;
-            let bytes = shard::projected_bytes(&plan, style_len, empty_poi_len, empty_nav_len);
-            if bytes > FILE_CEILING {
-                return Err(Error::Capacity(format!(
-                    "a {} shard projects to {bytes} bytes, past the ceiling — lower the target shard size",
-                    band.role.as_str()
-                )));
-            }
-            let mut plan = plan;
-            plan.bytes = bytes;
-            plans.push(plan);
-            index += 1;
+    // §5.3, checked before a byte is written: a multi-shard set with a whole role missing does not
+    // mount, and the schema is the only place that can be wrong about it.
+    for role in [BandRole::Coarse, BandRole::Geometry] {
+        if !schema.bands.iter().any(|b| b.role == role) {
+            return Err(Error::Input(format!(
+                "the selection needs a volume set, but the schema's band table names no {} band — a set with no {} \
+                 shard is one no reader mounts (OBCA §5.3)",
+                role.as_str(),
+                role.as_str()
+            )));
         }
     }
+
+    let mut index = 1usize;
+    let mut push = |plans: &mut Vec<ShardPlan>, box_: AlignedBox, lods: &[usize], role: BandRole| -> Result<()> {
+        let mut plan = build_shard(schema, cells, box_, chunk_size, lods, index, role, false)?;
+        plan.bytes = shard::projected_bytes(&plan, style_len, empty_poi_len, empty_nav_len);
+        if plan.bytes > FILE_CEILING {
+            return Err(Error::Capacity(format!(
+                "a {} shard projects to {} bytes, past the ceiling — lower the target shard size",
+                role.as_str(),
+                plan.bytes
+            )));
+        }
+        plans.push(plan);
+        index += 1;
+        Ok(())
+    };
+
+    // The coarse role: exactly one shard spanning the whole assembly, so a zoomed-out viewport is a
+    // single-file read (§5.1). At most one band may claim it (the schema validates that).
+    for band in schema.bands.iter().filter(|b| b.role == BandRole::Coarse) {
+        push(&mut plans, assembly, &band.lods, BandRole::Coarse)?;
+    }
+
+    // The geometry role: one tiling over every geometry band at once (see the note above).
+    let geometry: Vec<&Band> = schema.bands.iter().filter(|b| b.role == BandRole::Geometry).collect();
+    if !geometry.is_empty() {
+        let mut lods: Vec<usize> = geometry.iter().flat_map(|b| b.lods.iter().copied()).collect();
+        lods.sort_unstable();
+        // A box below the *coarsest* geometry band's cell size would straddle one of its cells, so
+        // the recursion floor is that band's, not each band's own.
+        let floor = geometry.iter().map(|b| b.cell_log2).max().expect("non-empty");
+        for b in split_boxes(cells, assembly, &geometry, floor, opts.target_shard_bytes)? {
+            push(&mut plans, b, &lods, BandRole::Geometry)?;
+        }
+    }
+
     if plans.len() > shard::MAX_SHARDS {
         return Err(Error::Capacity(format!(
             "the selection needs {} shards; a set holds at most {} (OBCA §5.2) — raise the target shard size",
@@ -535,37 +626,38 @@ fn plan_set(
     Ok(plans)
 }
 
-/// Recursive quadtree split of one geometry band's ground until each node holds at most
-/// `target_bytes`, never below the band's own cell size (a smaller box would straddle a cell).
+/// Recursive quadtree split of the geometry role's ground until each node holds at most
+/// `target_bytes`, never below `floor_log2` (a smaller box would straddle a cell of the coarsest
+/// band being tiled).
 fn split_boxes(
-    schema: &Schema,
     cells: &[Cell<'_>],
     box_: AlignedBox,
-    band: &Band,
+    bands: &[&Band],
+    floor_log2: u32,
     target_bytes: u64,
 ) -> Result<Vec<AlignedBox>> {
-    let bytes = band_bytes_in(schema, cells, box_, band)?;
-    if bytes <= target_bytes || box_.span_log2 <= band.cell_log2 {
+    if bands_bytes_in(cells, box_, bands)? <= target_bytes || box_.span_log2 <= floor_log2 {
         return Ok(vec![box_]);
     }
     let mut out = Vec::new();
     for child in box_.children() {
-        out.extend(split_boxes(schema, cells, child, band, target_bytes)?);
+        out.extend(split_boxes(cells, child, bands, floor_log2, target_bytes)?);
     }
     Ok(out)
 }
 
-/// The bytes one band contributes inside `box_` — index nodes, offset table and chunks of the LODs
-/// it carries. Exactly the sum §5.7 says a consumer can compute before fetching anything.
-fn band_bytes_in(schema: &Schema, cells: &[Cell<'_>], box_: AlignedBox, band: &Band) -> Result<u64> {
+/// The bytes `bands` together contribute inside `box_` — index nodes, offset table and chunks of the
+/// LODs they carry. Exactly the sum §5.7 says a consumer can compute before fetching anything.
+fn bands_bytes_in(cells: &[Cell<'_>], box_: AlignedBox, bands: &[&Band]) -> Result<u64> {
     let mut total = 0u64;
-    for c in cells.iter().filter(|c| c.band == band.id && box_.contains_cell(c.id)) {
-        for &lod in &band.lods {
-            let l = c.lod(lod)?;
-            total += l.node_count as u64 * 4 + (l.chunk_count as u64 + 1) * 4 + l.chunk_bytes_total as u64;
+    for band in bands {
+        for c in cells.iter().filter(|c| c.band == band.id && box_.contains_cell(c.id)) {
+            for &lod in &band.lods {
+                let l = c.lod(lod)?;
+                total += l.node_count as u64 * 4 + (l.chunk_count as u64 + 1) * 4 + l.chunk_bytes_total as u64;
+            }
         }
     }
-    let _ = schema;
     Ok(total)
 }
 
