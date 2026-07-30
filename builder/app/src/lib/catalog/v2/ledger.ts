@@ -70,9 +70,10 @@ export interface BandLedger {
     cellCount: number;
     /** Summed real cell bytes — what the download costs for this band. */
     bytes: number;
-    /** The same, carrying §5.7's pessimistic budget: the number a ceiling is
-     *  compared against, never the number to show as "the size". */
-    pessimisticBytes: number;
+    /** The same, carrying §5.7's pessimistic budget: what the *assembled* file
+     *  is projected to come to, and therefore the number every ceiling is
+     *  compared against. Never the number to show as "the download size". */
+    projectedBytes: number;
     /** False only for the core, the one file of a set that cannot be split by
      *  bbox — which is why it is the only one with a ceiling it can hit. */
     splittable: boolean;
@@ -86,10 +87,33 @@ export interface BandLedger {
     missingCells: string[];
 }
 
+/**
+ * What was compared with what, and the sentence that says so.
+ *
+ * Both numbers, deliberately. §5.7 judges the **projected** size — the cells
+ * plus §1.5's budget for what assembly adds — and that is the only number whose
+ * relation to `limit` is meaningful: `projectedBytes > limit` holds in every
+ * `warn` and every `refuse`, so a meter drawn from this payload sits past the
+ * line exactly when the verdict says it does. `nominalBytes` is the summed cell
+ * bytes, the honest answer to "how big is the download", and it is here so a UI
+ * can show what it costs beside why it was refused rather than choosing one and
+ * contradicting the other. Quoting only the nominal figure is how a refusal
+ * ends up saying "about 3.6 GiB, past the 4 GiB limit".
+ */
+export interface LedgerJudgement {
+    band: string;
+    /** Summed real cell bytes for the core band. */
+    nominalBytes: number;
+    /** The same carrying §5.7's budget — the figure compared with `limit`. */
+    projectedBytes: number;
+    limit: number;
+    message: string;
+}
+
 export type LedgerVerdict =
     | { kind: "ok" }
-    | { kind: "warn"; band: string; bytes: number; limit: number; message: string }
-    | { kind: "refuse"; band: string; bytes: number; limit: number; message: string };
+    | ({ kind: "warn" } & LedgerJudgement)
+    | ({ kind: "refuse" } & LedgerJudgement);
 
 /** The coverage story, split so a UI can hatch exactly what deserves hatching. */
 export interface CoverageReport {
@@ -159,31 +183,44 @@ function coverageReport(
  * true, and "your map is too big" would send a rider to the wrong fix.
  */
 function judge(core: BandLedger): LedgerVerdict {
-    const shown = Math.round(core.bytes / 1024 ** 3 * 100) / 100;
-    if (core.pessimisticBytes > MAX_FILE_BYTES) {
+    const judged: Omit<LedgerJudgement, "limit" | "message"> = {
+        band: core.band,
+        nominalBytes: core.bytes,
+        projectedBytes: core.projectedBytes,
+    };
+    // Both figures in the sentence, in the order a rider reads them: what the
+    // download is, and what it becomes. The second is the one being judged, and
+    // a sentence that named only the first would spend the whole refuse band
+    // (3.48–4.0 GiB of cells) quoting a number below the limit it is citing.
+    const cells = `about ${gib(core.bytes)} GiB of cells, about ${gib(core.projectedBytes)} GiB once assembled`;
+    if (core.projectedBytes > MAX_FILE_BYTES) {
         return {
             kind: "refuse",
-            band: core.band,
-            bytes: core.bytes,
+            ...judged,
             limit: MAX_FILE_BYTES,
             message:
-                `This selection's navigation graph alone comes to about ${shown} GiB, past the 4 GiB a single ` +
-                "map file can hold. Reduce the coverage — fewer regions, a narrower corridor — and the rest of " +
-                "the map will follow.",
+                `This selection's navigation graph alone comes to ${cells} — past the 4 GiB a single map file ` +
+                "can hold. Reduce the coverage — fewer regions, a narrower corridor — and the rest of the map " +
+                "will follow.",
         };
     }
-    if (core.pessimisticBytes > CORE_WARN_BYTES) {
+    if (core.projectedBytes > CORE_WARN_BYTES) {
         return {
             kind: "warn",
-            band: core.band,
-            bytes: core.bytes,
+            ...judged,
             limit: CORE_WARN_BYTES,
             message:
-                `This selection's navigation graph is about ${shown} GiB, close to the 4 GiB one map file can ` +
-                "hold. A little less coverage would leave more room.",
+                `This selection's navigation graph is ${cells}, close to the 4 GiB one map file can hold. ` +
+                "A little less coverage would leave more room.",
         };
     }
     return { kind: "ok" };
+}
+
+/** GiB to two decimals — the spelling the messages and the tests share, so the
+ *  sentence and the payload cannot drift apart. */
+export function gib(bytes: number): string {
+    return (bytes / 1024 ** 3).toFixed(2);
 }
 
 /**
@@ -213,7 +250,7 @@ export function ledgerFor(
             role: band.role,
             cellCount: ids.length,
             bytes,
-            pessimisticBytes: Math.ceil(bytes * (1 + OVERHEAD_BUDGET)),
+            projectedBytes: Math.ceil(bytes * (1 + OVERHEAD_BUDGET)),
             splittable: band.role !== "core",
             contextOnly: band.role === "coarse",
             partialCells,
@@ -257,7 +294,7 @@ export function ledgerForRegion(catalog: CatalogV2, entry: RegionEntry): Ledger 
             role: band.role,
             cellCount: entry.cell_count[band.id] ?? 0,
             bytes,
-            pessimisticBytes: Math.ceil(bytes * (1 + OVERHEAD_BUDGET)),
+            projectedBytes: Math.ceil(bytes * (1 + OVERHEAD_BUDGET)),
             splittable: band.role !== "core",
             contextOnly: band.role === "coarse",
             partialCells: [],

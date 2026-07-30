@@ -7,7 +7,7 @@
 // its coarse cells are — normally, unavoidably — partial.
 
 import { describe, expect, it } from "vitest";
-import { fitsOnCard, ledgerFor, ledgerForRegion, MAX_FILE_BYTES, OVERHEAD_BUDGET } from "./ledger";
+import { fitsOnCard, gib, ledgerFor, ledgerForRegion, MAX_FILE_BYTES, OVERHEAD_BUDGET } from "./ledger";
 import type { RegionEntry } from "./manifest";
 import { resolveSelection, type BoxPart, type SelectionContext } from "./selection";
 import { cellSquare, parseCellId } from "./grid";
@@ -152,7 +152,9 @@ describe("the core file's ceiling (OBCA §5.7)", () => {
         expect(ledger.coverage.hasWarnings).toBe(true);
     });
 
-    it("refuses a core past 4 GiB − 1, naming the navigation graph", () => {
+    it("refuses a core whose projected file passes 4 GiB − 1, naming the navigation graph", () => {
+        // 3.8 GiB of cells: under the ceiling as bytes, over it as the file
+        // §5.7 makes us project (+15 %, 4.37 GiB).
         const verdict = ledgerForRegion(exampleCatalog, regionEntry(Math.round(3.8 * GIB))).verdict;
         expect(verdict.kind).toBe("refuse");
         if (verdict.kind !== "refuse") throw new Error("unreachable");
@@ -164,11 +166,39 @@ describe("the core file's ceiling (OBCA §5.7)", () => {
         expect(verdict.message).toMatch(/coverage/);
     });
 
-    it("warns above ≈ 3.5 GiB, still naming the navigation graph", () => {
+    it("warns when the projected file passes ≈ 3.5 GiB, still naming the navigation graph", () => {
+        // 3.2 GiB of cells → 3.68 GiB projected, over the warn line and well
+        // under the ceiling.
         const verdict = ledgerForRegion(exampleCatalog, regionEntry(Math.round(3.2 * GIB))).verdict;
         expect(verdict.kind).toBe("warn");
         if (verdict.kind !== "warn") throw new Error("unreachable");
         expect(verdict.message).toMatch(/navigation graph/);
+    });
+
+    it("quotes the figure it judged, so no meter can sit under a line it is refusing", () => {
+        // The failure this pins: judging the projected size and quoting the
+        // nominal one. Every refusal from 3.48 to 4.0 GiB of cells then said
+        // "about 3.x GiB … past the 4 GiB", and the payload's own bytes were
+        // under the limit it had just cited — a meter drawn from it would sit
+        // comfortably below the wall while the dialog refused to build.
+        for (const nominalGiB of [3.0, 3.05, 3.2, 3.48, 3.6, 3.9, 4.0, 5.0]) {
+            const nominal = Math.round(nominalGiB * GIB);
+            const projected = Math.ceil(nominal * (1 + OVERHEAD_BUDGET));
+            const verdict = ledgerForRegion(exampleCatalog, regionEntry(nominal)).verdict;
+            if (verdict.kind === "ok") {
+                expect(projected).toBeLessThanOrEqual(3.5 * GIB);
+                continue;
+            }
+            // The payload: the judged figure, past the limit it was judged on.
+            expect(verdict.nominalBytes).toBe(nominal);
+            expect(verdict.projectedBytes).toBe(projected);
+            expect(verdict.projectedBytes).toBeGreaterThan(verdict.limit);
+            // The sentence: the same two numbers, in that order, spelled the
+            // same way. A drift between the message and the payload fails here.
+            const quoted = [...verdict.message.matchAll(/([\d.]+) GiB/g)].map((m) => m[1]);
+            expect(quoted.slice(0, 2)).toEqual([gib(nominal), gib(projected)]);
+            expect(verdict.message).toContain("once assembled");
+        }
     });
 
     it("judges on the pessimistic side of the comparison", () => {
