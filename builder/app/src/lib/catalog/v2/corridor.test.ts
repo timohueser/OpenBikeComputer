@@ -8,7 +8,15 @@
 
 import { describe, expect, it } from "vitest";
 import { corridorCells, M_PER_DEG, type LatLon } from "./corridor";
-import { cellsIntersecting, cellSize, cellSquare, formatCellId, parseCellId, type CellId } from "./grid";
+import {
+    cellsIntersecting,
+    cellSize,
+    cellSquare,
+    formatCellId,
+    GridError,
+    parseCellId,
+    type CellId,
+} from "./grid";
 
 const CELL = parseCellId("18/1204/1052");
 const SQUARE = cellSquare(CELL);
@@ -147,6 +155,25 @@ describe("corridorCells", () => {
 
     it("has nothing to say about an empty route", () => {
         expect(corridorCells(18, [], 5000)).toEqual([]);
+    });
+
+    it("refuses a route that spans the antimeridian instead of buffering the world", () => {
+        // The grid does not wrap (OBCA §1.4), so a route written from one side
+        // of the seam to the other is two selections and two maps. Buffering it
+        // as one box would quietly select — and price — every cell in between.
+        const acrossTheSeam = [
+            { lat: 60_000_000, lon: 179_000_000 },
+            { lat: 60_000_000, lon: -179_000_000 },
+        ];
+        expect(() => corridorCells(18, acrossTheSeam, 5000)).toThrow(GridError);
+        expect(() => corridorCells(18, acrossTheSeam, 5000)).toThrow(/antimeridian/);
+        // A genuinely long route that does not cross it is fine.
+        expect(() =>
+            corridorCells(20, [
+                { lat: 47_000_000, lon: -10_000_000 },
+                { lat: 55_000_000, lon: 30_000_000 },
+            ], 5000),
+        ).not.toThrow();
     });
 
     it("treats a negative radius as zero", () => {

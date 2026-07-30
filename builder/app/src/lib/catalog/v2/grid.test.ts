@@ -27,6 +27,7 @@ import {
     GridError,
     idWidth,
     MAX_CELL_LOG2,
+    MAX_ENUMERATED_CELLS,
     MIN_CELL_LOG2,
     onGridLine,
     parseCellId,
@@ -240,6 +241,54 @@ describe("cellsIntersecting", () => {
 
     it("refuses a cell size the grid does not admit", () => {
         expect(() => cellsIntersecting(9, { minLat: 0, minLon: 0, maxLat: 1, maxLon: 1 })).toThrow(GridError);
+    });
+
+    it("refuses to enumerate more cells than it will hand back", () => {
+        // A zoomed-out map view is one drag away from asking for the world, and
+        // the answer is a product of two spans: 2048 × 2048 at 2^18. Refused
+        // before anything is allocated.
+        const world = {
+            minLat: GRID_ORIGIN,
+            minLon: GRID_ORIGIN,
+            maxLat: GRID_ORIGIN + WORLD_SIDE - 1,
+            maxLon: GRID_ORIGIN + WORLD_SIDE - 1,
+        };
+        expect(() => cellsIntersecting(18, world)).toThrow(GridError);
+        expect(() => cellsIntersecting(18, world)).toThrow(/smaller area/);
+        // The ceiling is the mirror's, not a caller's, and it is adjustable for
+        // the one caller that knows better (a test oracle, a batch job).
+        const s = 2 ** 18;
+        const wide = {
+            minLat: GRID_ORIGIN,
+            minLon: GRID_ORIGIN,
+            maxLat: GRID_ORIGIN + 299 * s,
+            maxLon: GRID_ORIGIN + 299 * s,
+        };
+        expect(() => cellsIntersecting(18, wide)).toThrow(GridError);
+        expect(cellsIntersecting(18, wide, 300 * 300)).toHaveLength(300 * 300);
+        // Right at the limit is fine: 256 × 256 cells.
+        const exactly = {
+            minLat: GRID_ORIGIN,
+            minLon: GRID_ORIGIN,
+            maxLat: GRID_ORIGIN + 255 * s,
+            maxLon: GRID_ORIGIN + 255 * s,
+        };
+        expect(cellsIntersecting(18, exactly)).toHaveLength(MAX_ENUMERATED_CELLS);
+    });
+
+    it("covers nothing for a box wholly outside the world box", () => {
+        // Clamping one of these would hand back a strip of edge cells covering
+        // ground the box never touched — a selection the user did not draw.
+        const s = 2 ** 18;
+        const past = GRID_ORIGIN + WORLD_SIDE;
+        expect(
+            cellsIntersecting(18, { minLat: GRID_ORIGIN - 4 * s, minLon: 0, maxLat: GRID_ORIGIN - s, maxLon: s }),
+        ).toEqual([]);
+        expect(cellsIntersecting(18, { minLat: 0, minLon: past, maxLat: s, maxLon: past + 4 * s })).toEqual([]);
+        // Touching the world box's own edge is still inside it.
+        expect(cellsIntersecting(18, { minLat: GRID_ORIGIN - s, minLon: GRID_ORIGIN, maxLat: GRID_ORIGIN, maxLon: GRID_ORIGIN })).toEqual([
+            { log2: 18, i: 0, j: 0 },
+        ]);
     });
 });
 
