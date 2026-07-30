@@ -1,4 +1,4 @@
-//! Hand-written OBCM v10 byte builder shared by the `obc-reader` and `obc-render`
+//! Hand-written OBCM v11 byte builder shared by the `obc-reader` and `obc-render`
 //! integration tests.
 //!
 //! Both crates need to synthesise `.obcm` byte buffers by hand (rather than checking
@@ -18,7 +18,10 @@
 //! junction records plus a chunked edge pool. **v9** reworked §8 (28-byte nav
 //! directory + profile table, 15-byte neighbor entries, pinned 512-byte nav chunks).
 //! **v10** grows the style record 6 → 8 bytes: a `dashed` flag bit + an optional
-//! `color2` u16 (spec §2, epic #556). [`build_file`]/[`build_priority_tree`]
+//! `color2` u16 (spec §2, epic #556). **v11** packs geometry chunks tight behind a
+//! per-LOD offset table ([`chunk_region`], [`seal`]) and reorders the feature header
+//! — `flags` to byte 1, then either the 7-byte compact or 12-byte wide layout
+//! (issue #1009). [`build_file`]/[`build_priority_tree`]
 //! write **empty** POI + nav sections so the reader accepts them; the directory,
 //! record, and pool builders ([`poi_directory`], [`pack_poi_record`], [`hours_pool`],
 //! [`nav_directory`], [`pack_nav_record`], [`pack_nav_edge_record`]) let the
@@ -35,7 +38,8 @@
 //!
 //! Style records are `(id, z_index, color_rgb565, weight, priority, dashed, color2)`; feature
 //! encoders ([`pack_line`], [`pack_line16`], [`pack_poly`], [`pack_poly_hole`]) return one
-//! packed feature, and [`pad`] right-pads a chunk to its `chunk_size` with `0xFF`.
+//! packed feature, [`seal`] closes a chunk with its single `0xFF` sentinel, and [`chunk_region`]
+//! lays sealed chunks out behind their offset table.
 
 /// A style record (OBCM v10, 8 bytes on the wire): `(id, z_index, color_rgb565, weight, priority,
 /// dashed, color2)`. `dashed` sets flag bit 2; `color2 = Some(_)` sets flag bit 3 and writes the
@@ -50,14 +54,15 @@ pub use obc_formats::obcm::{
     POI_CHUNK_SIZE, POI_DIR_POOL_FIELDS_LEN, POI_HOURS_BLOB_LEN, POI_NAME_LEN, POI_RECORD_LEN,
 };
 use obc_formats::obcm::{
-    FEATURE_FLAG_16BIT, FEATURE_FLAG_HOLES, FEATURE_FLAG_POLYGON, MAGIC, STYLE_DASHED_BIT, STYLE_HAS_COLOR2_BIT,
-    STYLE_PRIORITY_MASK, VERSION,
+    CHUNK_END, FEATURE_FLAG_16BIT, FEATURE_FLAG_HOLES, FEATURE_FLAG_POLYGON, FEATURE_FLAG_WIDE, MAGIC,
+    STYLE_DASHED_BIT, STYLE_HAS_COLOR2_BIT, STYLE_PRIORITY_MASK, VERSION,
 };
 /// Distinctive (non-default) marker color baked into [`build_file`]'s header, so the
 /// reader's round-trip test is meaningful.
 pub const MARKER: u16 = 0xABCD;
 
-/// One LOD layer: its quadtree index (flat u32 nodes) and padded data chunks.
+/// One LOD layer: its quadtree index (flat u32 nodes) and its data chunks. Each chunk is the tight
+/// v11 byte string [`seal`] produces — `chunk_size` bounds it, it no longer pads to it.
 pub struct LodSpec {
     pub max_mpp: f32,
     pub index: Vec<u32>,
@@ -462,7 +467,7 @@ pub fn build_poi_map_with_hours(
         &[LodSpec {
             max_mpp: f32::INFINITY,
             index: vec![0],
-            chunks: vec![pad(pack_line(1, bbox.0, bbox.1, &[(0, 0)]), 64)],
+            chunks: vec![seal(pack_line(1, bbox.0, bbox.1, &[(0, 0)]), 64)],
             chunk_size: 64,
         }],
     );
@@ -502,15 +507,29 @@ pub fn build_poi_map_with_hours(
     f
 }
 
-/// Start a feature record: `style_id`, the `uint16` exterior point count, the i32 anchor
-/// `(ax, ay)`, and the `flags` byte — the common prefix of every `pack_*` encoder.
+/// Start a feature record (OBCM v11 §5): `style_id`, `flags`, then either the **compact** fields
+/// (`point_count u8`, anchor `u16` ×2) or the **wide** ones (`point_count u16`, anchor `i32` ×2) with
+/// [`FEATURE_FLAG_WIDE`] set — the common prefix of every `pack_*` encoder.
+///
+/// The form is picked by the same rule the packer uses, so a caller's ordinary small-anchor feature
+/// exercises the compact path and one anchored on a real µdeg coordinate (or holding more than 255
+/// vertices) exercises the wide escape. Note `flags` moved to byte 1 in v11: a reader must know the
+/// `WIDE` bit before it can know the header's width.
 fn feature_header(style_id: u8, point_count: u16, ax: i32, ay: i32, flags: u8) -> Vec<u8> {
+    let compact = |v: i32| (0..=u16::MAX as i32).contains(&v);
+    let wide = point_count > u8::MAX as u16 || !compact(ax) || !compact(ay);
     let mut v = Vec::new();
     v.push(style_id);
-    v.extend_from_slice(&point_count.to_le_bytes());
-    v.extend_from_slice(&ax.to_le_bytes());
-    v.extend_from_slice(&ay.to_le_bytes());
-    v.push(flags);
+    v.push(if wide { flags | FEATURE_FLAG_WIDE } else { flags });
+    if wide {
+        v.extend_from_slice(&point_count.to_le_bytes());
+        v.extend_from_slice(&ax.to_le_bytes());
+        v.extend_from_slice(&ay.to_le_bytes());
+    } else {
+        v.push(point_count as u8);
+        v.extend_from_slice(&(ax as u16).to_le_bytes());
+        v.extend_from_slice(&(ay as u16).to_le_bytes());
+    }
     v
 }
 
@@ -550,11 +569,10 @@ pub fn build_file(bbox: (i32, i32, i32, i32), styles: &[Style], lods: &[LodSpec]
         for &node in &lod.index {
             idx_bytes.extend_from_slice(&node.to_le_bytes());
         }
-        let mut chunk_bytes = Vec::new();
         for c in &lod.chunks {
-            assert_eq!(c.len(), lod.chunk_size, "chunk must be padded to chunk_size");
-            chunk_bytes.extend_from_slice(c);
+            assert!(c.len() <= lod.chunk_size, "chunk {} exceeds chunk_size {}", c.len(), lod.chunk_size);
         }
+        let chunk_bytes = chunk_region(&lod.chunks);
         table.extend_from_slice(&lod.max_mpp.to_le_bytes());
         table.extend_from_slice(&(idx_off as u32).to_le_bytes());
         table.extend_from_slice(&(lod.index.len() as u32).to_le_bytes());
@@ -607,9 +625,11 @@ pub fn build_priority_tree(
     for node in index {
         idx_bytes.extend_from_slice(&node.to_le_bytes());
     }
-    // Chunk data in chunk-id order: 0..3 = NW leaves, 4 = NE.
+    // Chunk data in chunk-id order: 0..3 = NW leaves, 4 = NE. Sealed + laid out with their offset
+    // table, the v11 §5 region.
     let [nw0, nw1, nw2, nw3] = nw_chunks;
-    let chunks = [nw0, nw1, nw2, nw3, ne_chunk];
+    let chunks: Vec<Vec<u8>> = [nw0, nw1, nw2, nw3, ne_chunk].into_iter().map(|c| seal(c, chunk_size)).collect();
+    let chunk_bytes = chunk_region(&chunks);
 
     // LOD entry: max_mpp=+inf, index_off, node_count, chunk_size, chunk_count.
     let mut table = Vec::new();
@@ -619,9 +639,9 @@ pub fn build_priority_tree(
     table.extend_from_slice(&(chunk_size as u16).to_le_bytes());
     table.extend_from_slice(&(chunks.len() as u32).to_le_bytes());
 
-    // The POI section begins right after the index + all chunk bytes; the empty nav section
+    // The POI section begins right after the index + the chunk region; the empty nav section
     // follows it.
-    let poi_section_off = index_off + idx_bytes.len() + chunks.len() * chunk_size;
+    let poi_section_off = index_off + idx_bytes.len() + chunk_bytes.len();
     let poi_dir = empty_poi_directory(poi_section_off);
     let nav_section_off = poi_section_off + poi_dir.len();
     // marker unused here → 0
@@ -629,19 +649,51 @@ pub fn build_priority_tree(
     f.extend_from_slice(&style_bytes);
     f.extend_from_slice(&table);
     f.extend_from_slice(&idx_bytes);
-    for c in chunks {
-        f.extend_from_slice(&pad(c, chunk_size));
-    }
+    f.extend_from_slice(&chunk_bytes);
     f.extend_from_slice(&poi_dir);
     f.extend_from_slice(&empty_nav_directory(nav_section_off));
     f
 }
 
-/// Right-pad a chunk to `size` bytes with `0xFF` (the empty-byte filler the reader skips).
+/// Close a v11 geometry chunk: append the **one** trailing `0xFF` [`CHUNK_END`] sentinel that ends
+/// its feature stream (spec §5), asserting the sealed chunk still fits `capacity` — the LOD's
+/// declared `Chunk Size`, which v11 uses as a bound rather than a stride. v10's `pad` filled the rest
+/// of the chunk with `0xFF`; tight chunks make that padding the thing the format got rid of.
+///
+/// A test that wants an *unsealed* chunk (no sentinel — malformed in v11) simply skips this.
+///
+/// The still-fixed-stride sections (POI §7.3, nav §8.3/§8.4) keep [`pad`].
+pub fn seal(mut chunk: Vec<u8>, capacity: usize) -> Vec<u8> {
+    chunk.push(CHUNK_END);
+    assert!(chunk.len() <= capacity, "sealed chunk {} exceeds chunk_size {}", chunk.len(), capacity);
+    chunk
+}
+
+/// Right-pad a **fixed-stride** chunk to `size` bytes with `0xFF` (the filler the reader skips):
+/// the POI §7.3 and nav §8.3/§8.4 chunks, which v11 left alone. Geometry chunks are tight — they
+/// want [`seal`].
 pub fn pad(mut chunk: Vec<u8>, size: usize) -> Vec<u8> {
     assert!(chunk.len() <= size, "chunk {} exceeds chunk_size {}", chunk.len(), size);
-    chunk.resize(size, 0xFF);
+    chunk.resize(size, CHUNK_END);
     chunk
+}
+
+/// The v11 §5 chunk-data region for one LOD: the `chunks.len() + 1` entry `uint32` offset table
+/// (relative to the first chunk's byte, so `[0] == 0` and the last entry is the total chunk bytes)
+/// followed by the chunks back to back. Hand-assembled here exactly as the spec reads it, so the
+/// testkit stays an oracle independent of `serialize.rs`.
+pub fn chunk_region(chunks: &[Vec<u8>]) -> Vec<u8> {
+    let mut region = Vec::new();
+    let mut offset = 0u32;
+    region.extend_from_slice(&offset.to_le_bytes());
+    for c in chunks {
+        offset += c.len() as u32;
+        region.extend_from_slice(&offset.to_le_bytes());
+    }
+    for c in chunks {
+        region.extend_from_slice(c);
+    }
+    region
 }
 
 /// A line feature with 8-bit deltas. Exterior point count = `1 + deltas.len()`.
@@ -916,10 +968,10 @@ pub fn build_bench_map() -> Vec<u8> {
     let mut rng = BenchRng(0x0BC0_0327_D00D_F00D); // hard-coded seed — never change casually
     let (coarse_index, coarse_leaves) = uniform_quadtree(BENCH_BBOX, 2);
     let coarse_chunks: Vec<Vec<u8>> =
-        coarse_leaves.iter().map(|&leaf| pad(bench_coarse_chunk(&mut rng, leaf), CHUNK)).collect();
+        coarse_leaves.iter().map(|&leaf| seal(bench_coarse_chunk(&mut rng, leaf), CHUNK)).collect();
     let (fine_index, fine_leaves) = uniform_quadtree(BENCH_BBOX, 3);
     let fine_chunks: Vec<Vec<u8>> =
-        fine_leaves.iter().map(|&leaf| pad(bench_fine_chunk(&mut rng, leaf), CHUNK)).collect();
+        fine_leaves.iter().map(|&leaf| seal(bench_fine_chunk(&mut rng, leaf), CHUNK)).collect();
 
     build_file(
         BENCH_BBOX,

@@ -13,7 +13,7 @@ use obc_reader::{BBox, Error, Kind, MapCache, MapTables, Reader, SliceSource, MA
 use obcm_testkit::{
     build_file, default_nav_profile_table, empty_nav_directory, empty_poi_directory, hours_pool, nav_directory,
     pack_line, pack_line16, pack_nav_chunk, pack_nav_edge_record, pack_nav_record, pack_poi_chunk, pack_poi_record,
-    pack_poly_hole, pad, poi_dir_len, poi_directory, LodSpec, PoiCat, Style, MARKER,
+    pack_poly_hole, pad, poi_dir_len, poi_directory, seal, LodSpec, PoiCat, Style, MARKER,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,9 +75,11 @@ const GLOBAL: (i32, i32, i32, i32) = (0, 0, 1000, 1000);
 const STYLES: &[Style] = &[(1, 3, 0xF800, 2, 3, false, None), (2, -1, 0x07E0, 1, 3, false, None)];
 
 fn two_lod_file() -> Vec<u8> {
-    let line = pad(pack_line(1, 100, 200, &[(10, 0), (0, 10)]), CS);
-    let poly =
-        pad(pack_poly_hole(2, 100, 100, &[(100, 0), (0, 100), (-100, 0)], &[(25, 25), (50, 0), (0, 50), (-50, 0)]), CS);
+    let line = seal(pack_line(1, 100, 200, &[(10, 0), (0, 10)]), CS);
+    let poly = seal(
+        pack_poly_hole(2, 100, 100, &[(100, 0), (0, 100), (-100, 0)], &[(25, 25), (50, 0), (0, 50), (-50, 0)]),
+        CS,
+    );
     build_file(
         GLOBAL,
         STYLES,
@@ -96,7 +98,7 @@ fn header_and_lod_table() {
     let tables = MapTables::parse(&src).unwrap();
     let r = Reader::new(&src, &tables, &cache);
 
-    assert_eq!(r.version, 10);
+    assert_eq!(r.version, 11);
     assert_eq!(r.marker_color, MARKER);
     assert_eq!(r.bbox.min_lon, 0);
     assert_eq!(r.bbox.min_lat, 0);
@@ -160,7 +162,7 @@ fn style_record_round_trips_line_style_and_color2() {
         (3, 2, 0x07E0, 3, 3, false, Some(0x0000)), // solid + color2 — road casing (black casing)
         (4, 3, 0xFFFF, 2, 3, true, Some(0x8410)),  // dashed + color2 — railway stripe
     ];
-    let line = pad(pack_line(1, 10, 10, &[(1, 1)]), CS);
+    let line = seal(pack_line(1, 10, 10, &[(1, 1)]), CS);
     let bytes = build_file(
         GLOBAL,
         styles,
@@ -194,7 +196,7 @@ fn style_record_round_trips_line_style_and_color2() {
 #[test]
 fn color2_wire_bytes_ignored_when_flag_clear() {
     let styles: &[Style] = &[(7, 0, 0xF800, 2, 3, false, None)];
-    let line = pad(pack_line(7, 10, 10, &[(1, 1)]), CS);
+    let line = seal(pack_line(7, 10, 10, &[(1, 1)]), CS);
     let mut bytes = build_file(
         GLOBAL,
         styles,
@@ -338,7 +340,7 @@ fn visitor_matches_owned_decode() {
 fn decode_16bit_deltas() {
     // Deltas beyond the int8 range force the 16-bit path (flag bit 0).
     let bbox = (0, 0, 1_000_000, 1_000_000);
-    let line = pad(pack_line16(1, 0, 0, &[(300, 400), (-200, 0)]), CS);
+    let line = seal(pack_line16(1, 0, 0, &[(300, 400), (-200, 0)]), CS);
     let bytes = build_file(
         bbox,
         STYLES,
@@ -359,7 +361,7 @@ fn quadtree_subdivision_and_node_bbox() {
     // Exercises query_rec subdivision and the NW node-bbox math.
     // Global bbox (0,0,1000,1000); midpoints (500,500); NW = (0,500,500,1000).
     // Anchor is relative to the NW node's min corner (0,500): ax=10, ay=10.
-    let line = pad(pack_line(1, 10, 10, &[(5, 5)]), CS);
+    let line = seal(pack_line(1, 10, 10, &[(5, 5)]), CS);
     let index = vec![
         BRANCH_BIT | 1, // root: branch, children start at idx 1
         0,              // NW: leaf -> chunk 0
@@ -392,7 +394,7 @@ fn quadtree_subdivision_and_node_bbox() {
 
 #[test]
 fn empty_leaf_yields_nothing() {
-    let empty = pad(vec![], CS); // all 0xFF
+    let empty = seal(vec![], CS); // just the sentinel
     let bytes = build_file(
         GLOBAL,
         STYLES,
@@ -421,7 +423,7 @@ fn rejects_bad_input() {
     assert_eq!(err(&bytes), Error::BadMagic);
 
     let mut bytes = two_lod_file();
-    bytes[4] = 9; // v9 (and earlier) no longer supported — only v10 is read
+    bytes[4] = 10; // v10 (and earlier) no longer supported — only v11 is read
     assert_eq!(err(&bytes), Error::BadVersion);
 }
 
@@ -501,7 +503,7 @@ fn filtered_decode_skips_without_drifting() {
         &[(10, 10), (20, 0), (0, 20), (-20, 0)],
     ));
     chunk.extend_from_slice(&pack_line16(3, 0, 0, &[(300, 400), (-200, 0)]));
-    let chunk = pad(chunk, 128);
+    let chunk = seal(chunk, 128);
 
     let styles: &[Style] =
         &[(1, 3, 0xF800, 2, 3, false, None), (2, -1, 0x07E0, 1, 3, false, None), (3, 0, 0x001F, 1, 3, false, None)];
@@ -538,7 +540,7 @@ fn for_each_chunk_has_no_cap() {
     // every overlapping leaf through its callback with no upper bound — the exact
     // behaviour the renderer depends on so a wide viewport never silently loses
     // whole chunks.
-    let mk = || pad(pack_line(1, 1, 1, &[(1, 1)]), CS);
+    let mk = || seal(pack_line(1, 1, 1, &[(1, 1)]), CS);
     let index = vec![
         BRANCH_BIT | 1, // root branch, children start at idx 1
         0,              // NW -> chunk 0
@@ -590,7 +592,7 @@ fn walk_terminates_on_back_referencing_branch() {
     // never goes false — with no guard the walk recurses forever and stack-overflows (a HardFault
     // on the MCU, which has no MMU guard page). The `child > idx` guard rejects the back-edge, so
     // the walk must stop and explicitly report the malformed index.
-    let chunk = pad(pack_line(1, 0, 0, &[(1, 1)]), CS);
+    let chunk = seal(pack_line(1, 0, 0, &[(1, 1)]), CS);
     let bytes = build_file(
         GLOBAL,
         STYLES,
@@ -622,7 +624,7 @@ fn walk_caps_depth_on_forward_chain() {
     // first, pruning the over-cap leaf — so no chunk is reported. This pins the depth cap
     // independently of the `child > idx` guard.
     const LEVELS: usize = 50; // comfortably past the ~32 cap
-    let chunk = pad(pack_line(1, 0, 0, &[(1, 1)]), CS);
+    let chunk = seal(pack_line(1, 0, 0, &[(1, 1)]), CS);
     let bytes = build_file(
         GLOBAL,
         STYLES,
@@ -659,7 +661,7 @@ fn header_is_40_bytes_with_poi_and_nav_offsets() {
     // Version byte is 10; the style table follows the header, so the style offset equals the 40-byte
     // header length (v10 grows the style *record*, not the header).
     assert_eq!(HEADER_LEN, 40);
-    assert_eq!(bytes[4], 10);
+    assert_eq!(bytes[4], 11);
     assert_eq!(u32::from_le_bytes(bytes[21..25].try_into().unwrap()) as usize, HEADER_LEN);
 
     // The POI section offset lives at header byte 32 (right after the 2-byte marker at 30) and is
@@ -730,7 +732,7 @@ fn populated_poi_category_round_trips_with_record_layout() {
         &[LodSpec {
             max_mpp: f32::INFINITY,
             index: vec![0],
-            chunks: vec![pad(pack_line(1, 0, 0, &[(1, 1)]), CS)],
+            chunks: vec![seal(pack_line(1, 0, 0, &[(1, 1)]), CS)],
             chunk_size: CS,
         }],
     );
@@ -838,14 +840,14 @@ fn populated_poi_category_round_trips_with_record_layout() {
     assert_eq!(&bytes[blob1_at..blob1_at + POI_HOURS_BLOB_LEN], &blob1, "blob 1 at index 1");
 }
 
-/// An old file (version byte 9, the immediately-prior format) is rejected — the reader accepts v10
+/// An old file (version byte 10, the immediately-prior format) is rejected — the reader accepts v11
 /// only ("current version only": old maps get repacked). Forging the version byte alone is enough;
 /// the rest of the bytes never get parsed. This is a **distinct** error (`BadVersion`) from a
 /// mis-sized nav chunk (`BadOffset`, see `nav_directory_rejects_corrupt_fields`).
 #[test]
 fn old_version_file_is_rejected() {
     let mut bytes = two_lod_file();
-    bytes[4] = 9; // downgrade the version byte to v9 (the just-superseded format)
+    bytes[4] = 10; // downgrade the version byte to v10 (the just-superseded format)
     assert!(matches!(MapTables::parse(&SliceSource(&bytes)), Err(Error::BadVersion)));
 }
 
@@ -1136,4 +1138,270 @@ fn nav_directory_rejects_corrupt_fields() {
     let mut forged = bytes.clone();
     forged[nav_off + 16..nav_off + 20].copy_from_slice(&u32::MAX.to_le_bytes());
     assert!(matches!(MapTables::parse(&SliceSource(&forged)), Err(Error::BadOffset)), "edge pool overruns");
+}
+
+// === v11 chunk-offset table (§5, issue #1009) ================================
+// The offset table replaced the fixed `k * chunk_size` stride, so a corrupt table is a *new* way to
+// aim a read out of the chunk region. Every case below must come back as a typed error — never a
+// panic, never bytes from an adjacent region.
+
+/// Locate LOD `k`'s offset table: `(table_offset, chunk_count)`.
+fn offset_table_at(bytes: &[u8], k: usize) -> (usize, usize) {
+    let lod_tab_off = u32::from_le_bytes(bytes[26..30].try_into().unwrap()) as usize;
+    let entry = lod_tab_off + k * 18;
+    let index_off = u32::from_le_bytes(bytes[entry + 4..entry + 8].try_into().unwrap()) as usize;
+    let node_count = u32::from_le_bytes(bytes[entry + 8..entry + 12].try_into().unwrap()) as usize;
+    let chunk_count = u32::from_le_bytes(bytes[entry + 14..entry + 18].try_into().unwrap()) as usize;
+    (index_off + node_count * 4, chunk_count)
+}
+
+fn put_offset(bytes: &mut [u8], table: usize, k: usize, value: u32) {
+    bytes[table + k * 4..table + k * 4 + 4].copy_from_slice(&value.to_le_bytes());
+}
+
+fn fetch(bytes: &[u8], cid: u32) -> Result<(), obc_reader::MapReadError> {
+    let cache = MapCache::new();
+    let src = SliceSource(bytes);
+    let tables = MapTables::parse(&src).expect("the forged table still parses; the fetch is what fails");
+    let r = Reader::new(&src, &tables, &cache);
+    let node = r.bbox;
+    let mut points = heapless::Vec::<_, MAX_FEAT_PTS>::new();
+    let mut ring_lens = heapless::Vec::<_, MAX_FEAT_RINGS>::new();
+    r.for_each_feature(0, cid, &node, &mut points, &mut ring_lens, |_| {}).map(|_| ())
+}
+
+/// The table the packer writes: `chunk_count + 1` entries, `[0]` zero, strictly the running byte
+/// total, last entry the region size — and chunk `k` decodes from `offsets[k]..offsets[k+1]`.
+#[test]
+fn offset_table_addresses_every_chunk() {
+    let a = seal(pack_line(1, 100, 200, &[(10, 0), (0, 10)]), CS);
+    let b = seal(
+        pack_poly_hole(2, 100, 100, &[(100, 0), (0, 100), (-100, 0)], &[(25, 25), (50, 0), (0, 50), (-50, 0)]),
+        CS,
+    );
+    let (len_a, len_b) = (a.len(), b.len());
+    let bytes = build_file(
+        GLOBAL,
+        STYLES,
+        &[LodSpec {
+            max_mpp: f32::INFINITY,
+            index: vec![BRANCH_BIT | 1, 0, 1, EMPTY_LEAF, EMPTY_LEAF],
+            chunks: vec![a, b],
+            chunk_size: CS,
+        }],
+    );
+    let (table, chunk_count) = offset_table_at(&bytes, 0);
+    assert_eq!(chunk_count, 2);
+    let offsets: Vec<u32> = (0..=chunk_count)
+        .map(|k| u32::from_le_bytes(bytes[table + k * 4..table + k * 4 + 4].try_into().unwrap()))
+        .collect();
+    assert_eq!(offsets, vec![0, len_a as u32, (len_a + len_b) as u32], "monotonic, zero-based, total last");
+
+    // And the chunks the table points at are the chunks the reader decodes.
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
+    let node = r.bbox;
+    assert_eq!(decode_chunk(&r, 0, 0, &node)[0].kind, Kind::Line, "chunk 0 is the line");
+    assert_eq!(decode_chunk(&r, 0, 1, &node)[0].kind, Kind::Polygon, "chunk 1 is the polygon");
+}
+
+/// A chunkless LOD still carries its table — the single `0` entry — and the LOD after it starts
+/// right behind that, so the empty case is not a special case for the reader's arithmetic.
+#[test]
+fn a_chunkless_lod_still_writes_its_one_entry_table() {
+    let bytes = build_file(
+        GLOBAL,
+        STYLES,
+        &[
+            LodSpec { max_mpp: f32::INFINITY, index: vec![EMPTY_LEAF], chunks: vec![], chunk_size: CS },
+            LodSpec {
+                max_mpp: 50.0,
+                index: vec![0],
+                chunks: vec![seal(pack_line(1, 10, 10, &[(1, 1)]), CS)],
+                chunk_size: CS,
+            },
+        ],
+    );
+    let (table, chunk_count) = offset_table_at(&bytes, 0);
+    assert_eq!(chunk_count, 0);
+    assert_eq!(u32::from_le_bytes(bytes[table..table + 4].try_into().unwrap()), 0);
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
+    assert!(query_all(&r, 0, &r.bbox).is_empty(), "no leaf, so nothing to address");
+    assert_eq!(decode_chunk(&r, 1, 0, &r.bbox).len(), 1, "the next LOD is found right after that one entry");
+}
+
+/// A non-monotonic pair (`offsets[k] > offsets[k+1]`) would make the chunk length negative. Rejected
+/// per fetch, not trusted.
+#[test]
+fn non_monotonic_offset_pair_is_malformed() {
+    let mut bytes = two_lod_file();
+    let (table, _) = offset_table_at(&bytes, 0);
+    let total = u32::from_le_bytes(bytes[table + 4..table + 8].try_into().unwrap());
+    put_offset(&mut bytes, table, 0, total + 1); // start past the end
+    assert_eq!(fetch(&bytes, 0), Err(obc_reader::MapReadError::Malformed));
+}
+
+/// An interior entry pointing past the region's own total (`offsets[chunk_count]`, the bound
+/// `parse_lod_table` keeps resident) would read beyond the LOD's chunk bytes.
+#[test]
+fn offset_past_the_region_total_is_malformed() {
+    let a = seal(pack_line(1, 100, 200, &[(10, 0)]), CS);
+    let b = seal(pack_line(1, 120, 220, &[(10, 0)]), CS);
+    let mut bytes = build_file(
+        GLOBAL,
+        STYLES,
+        &[LodSpec {
+            max_mpp: f32::INFINITY,
+            index: vec![BRANCH_BIT | 1, 0, 1, EMPTY_LEAF, EMPTY_LEAF],
+            chunks: vec![a, b],
+            chunk_size: CS,
+        }],
+    );
+    let (table, chunk_count) = offset_table_at(&bytes, 0);
+    let total = u32::from_le_bytes(bytes[table + chunk_count * 4..table + chunk_count * 4 + 4].try_into().unwrap());
+    put_offset(&mut bytes, table, 1, total + 4); // chunk 0 would end past the region
+    assert_eq!(fetch(&bytes, 0), Err(obc_reader::MapReadError::Malformed));
+}
+
+/// A pair whose span exceeds the LOD's declared `chunk_size` — the v11 meaning of that field is the
+/// capacity bound, so this is exactly what it is for. (The reader's companion `MAX_CHUNK_BYTES`
+/// check on the same length is belt-and-braces: `parse_lod_table` already rejects a `chunk_size`
+/// above it, so `len ≤ chunk_size ≤ MAX_CHUNK_BYTES` holds for anything that parses — as the second
+/// half of this test shows.)
+#[test]
+fn chunk_longer_than_chunk_size_is_malformed() {
+    let mut bytes = two_lod_file();
+    let lod_tab_off = u32::from_le_bytes(bytes[26..30].try_into().unwrap()) as usize;
+    bytes[lod_tab_off + 12..lod_tab_off + 14].copy_from_slice(&4u16.to_le_bytes()); // < the real chunk
+    assert_eq!(fetch(&bytes, 0), Err(obc_reader::MapReadError::Malformed));
+
+    let mut bytes = two_lod_file();
+    let over = (obc_reader::MAX_CHUNK_BYTES + 1) as u16;
+    bytes[lod_tab_off + 12..lod_tab_off + 14].copy_from_slice(&over.to_le_bytes());
+    assert!(matches!(MapTables::parse(&SliceSource(&bytes)), Err(Error::BadOffset)), "never reaches a fetch");
+}
+
+/// A `chunk_count` whose table alone would run past EOF: the table is part of the region
+/// `parse_lod_table` bounds, so this is a corrupt header, not a lazily-discovered read failure.
+#[test]
+fn offset_table_running_past_eof_is_rejected_at_parse() {
+    let mut bytes = two_lod_file();
+    let lod_tab_off = u32::from_le_bytes(bytes[26..30].try_into().unwrap()) as usize;
+    let claimed = (bytes.len() / 4) as u32; // table = (claimed + 1) * 4 > the whole file
+    bytes[lod_tab_off + 14..lod_tab_off + 18].copy_from_slice(&claimed.to_le_bytes());
+    assert!(matches!(MapTables::parse(&SliceSource(&bytes)), Err(Error::BadOffset)));
+}
+
+/// A chunk whose feature stream never reaches the `0xFF` sentinel is truncated. The features that do
+/// decode are published, and the walk reports a malformed drop — the alternative, ending quietly at
+/// the offset-derived length, would hide a lost tail.
+#[test]
+fn chunk_without_its_sentinel_reports_a_malformed_drop() {
+    let chunk = pack_line(1, 100, 200, &[(10, 0), (0, 10)]); // deliberately not sealed
+    let cs = chunk.len();
+    let bytes = build_file(
+        GLOBAL,
+        STYLES,
+        &[LodSpec { max_mpp: f32::INFINITY, index: vec![0], chunks: vec![chunk], chunk_size: cs }],
+    );
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
+    let mut points = heapless::Vec::<_, MAX_FEAT_PTS>::new();
+    let mut ring_lens = heapless::Vec::<_, MAX_FEAT_RINGS>::new();
+    let mut seen = 0usize;
+    let status = r.for_each_feature(0, 0, &r.bbox, &mut points, &mut ring_lens, |_| seen += 1).unwrap();
+    assert_eq!(seen, 1, "the whole feature still decodes");
+    assert_eq!(status.complete, 1);
+    assert_eq!(status.malformed, 1, "the missing sentinel is reported");
+}
+
+// === v11 feature header: compact and wide (§5, issue #1009) =================
+
+/// A chunk holding both header forms decodes identically through the full-chunk walk **and** through
+/// the pass-B `decode_feature_at` refetch. The refetch takes a `FeatureRef::offset` from pass A, and
+/// v11 moved what those offsets mean (7 bytes per compact header instead of 12), so the two paths
+/// must be pinned to agree across a mixed chunk — a compact feature after a wide one only lands
+/// right if the wide one's width was read from its flags.
+#[test]
+fn mixed_compact_and_wide_headers_decode_the_same_both_ways() {
+    // `pack_line`'s anchors decide the form: 65 536 forces wide, 100 stays compact. The leaf bbox is
+    // the global one, so the anchors are absolute here.
+    const BIG: (i32, i32, i32, i32) = (0, 0, 200_000, 200_000);
+    let mut chunk = Vec::new();
+    chunk.extend_from_slice(&pack_line(1, 100, 200, &[(10, 0), (0, 10)])); // compact
+    chunk.extend_from_slice(&pack_line(2, 70_000, 80_000, &[(5, 5)])); // wide: anchor past u16
+    chunk.extend_from_slice(&pack_line(1, 300, 400, &[(-10, 0)])); // compact, after a wide one
+    let chunk = seal(chunk, 256);
+    let bytes = build_file(
+        BIG,
+        STYLES,
+        &[LodSpec { max_mpp: f32::INFINITY, index: vec![0], chunks: vec![chunk], chunk_size: 256 }],
+    );
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
+    let node = r.bbox;
+
+    // Pass A: the whole-chunk walk, collecting each feature's geometry *and* its offset.
+    type Walked = (u8, usize, Vec<(i32, i32)>);
+    let mut walked: Vec<Walked> = Vec::new();
+    let mut points = heapless::Vec::<_, MAX_FEAT_PTS>::new();
+    let mut ring_lens = heapless::Vec::<_, MAX_FEAT_RINGS>::new();
+    let status = r
+        .for_each_feature(0, 0, &node, &mut points, &mut ring_lens, |f| {
+            walked.push((f.style_id, f.offset(), f.exterior().to_vec()))
+        })
+        .unwrap();
+    assert_eq!(status, obc_reader::DecodeStatus { complete: 3, capacity_dropped: 0, malformed: 0 });
+    assert_eq!(
+        walked.iter().map(|(_, _, pts)| pts.clone()).collect::<Vec<_>>(),
+        vec![
+            vec![(100, 200), (110, 200), (110, 210)],
+            vec![(70_000, 80_000), (70_005, 80_005)],
+            vec![(300, 400), (290, 400)],
+        ]
+    );
+    // The offsets pin the two widths: the compact feature is 7 + 2 deltas × 2 = 11 bytes, the wide
+    // one 12 + 1 delta × 2 = 14. A reader that assumed one fixed width would land elsewhere.
+    assert_eq!(walked.iter().map(|(_, off, _)| *off).collect::<Vec<_>>(), vec![0, 11, 25]);
+
+    // Pass B: re-decode each one from its offset alone.
+    for (style_id, offset, exterior) in &walked {
+        let mut points = heapless::Vec::<_, MAX_FEAT_PTS>::new();
+        let mut ring_lens = heapless::Vec::<_, MAX_FEAT_RINGS>::new();
+        let f = r.decode_feature_at(0, 0, *offset, &node, &mut points, &mut ring_lens).expect("refetch");
+        assert_eq!(f.style_id, *style_id);
+        assert_eq!(f.exterior(), exterior.as_slice(), "refetch at offset {offset} must match the walk");
+    }
+}
+
+/// An unknown flag bit is still rejected — v11 widened the accepted mask to `0x0F` (the new `WIDE`
+/// bit), so `0x10` is the first invalid one, and it must not be mistaken for a header field.
+#[test]
+fn unknown_feature_flag_bit_is_malformed() {
+    let mut chunk = pack_line(1, 100, 200, &[(10, 0)]);
+    chunk[1] |= 0x10; // flags live at byte 1 in v11
+    let chunk = seal(chunk, CS);
+    let bytes = build_file(
+        GLOBAL,
+        STYLES,
+        &[LodSpec { max_mpp: f32::INFINITY, index: vec![0], chunks: vec![chunk], chunk_size: CS }],
+    );
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
+    let mut points = heapless::Vec::<_, MAX_FEAT_PTS>::new();
+    let mut ring_lens = heapless::Vec::<_, MAX_FEAT_RINGS>::new();
+    let status = r.for_each_feature(0, 0, &r.bbox, &mut points, &mut ring_lens, |_| unreachable!()).unwrap();
+    assert_eq!(status.malformed, 1);
+    assert_eq!(status.complete, 0);
 }

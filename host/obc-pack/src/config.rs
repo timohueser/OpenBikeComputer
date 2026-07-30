@@ -1236,7 +1236,7 @@ mod tests {
         let env: Value = serde_json::from_str(&schema_envelope()).expect("envelope is valid JSON");
         assert_eq!(env["schema_version"].as_u64(), Some(CONFIG_SCHEMA_VERSION as u64));
         assert_eq!(env["format_version"].as_u64(), Some(OBCM_VERSION as u64));
-        assert_eq!(env["format_version"].as_u64(), Some(10), "#557 bumps the OBCM format to v10");
+        assert_eq!(env["format_version"].as_u64(), Some(11), "#1009 bumps the OBCM format to v11");
         assert!(env["schema"]["$defs"]["style"].is_object(), "envelope embeds the schema");
     }
 

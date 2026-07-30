@@ -127,10 +127,13 @@ pub fn build_min_obcm_profiles(marker: u16, profiles: &[&str]) -> Vec<u8> {
     table.extend_from_slice(&16u16.to_le_bytes());
     table.extend_from_slice(&0u32.to_le_bytes());
 
-    // Index: a single empty leaf (no chunk).
-    let index = 0x7FFF_FFFFu32.to_le_bytes();
+    // Index: a single empty leaf (no chunk), then the v11 offset table — always written, here the
+    // one `chunk_count + 1` entry a chunkless LOD carries.
+    let mut index = Vec::new();
+    index.extend_from_slice(&0x7FFF_FFFFu32.to_le_bytes());
+    index.extend_from_slice(&0u32.to_le_bytes());
 
-    // POI section starts right after the index (no LOD chunks here). Empty directory:
+    // POI section starts right after the index + offset table (no LOD chunks here). Empty directory:
     // count=6, chunk_size=512, six 13-byte entries (all node_count/chunk_count 0), then the two
     // v7 pool fields (hours_pool_offset u32 + hours_pool_count u16), then an empty hours pool
     // (a bare `count 0`). The directory length is 3 + 6*13 + 6 = 87.
@@ -177,7 +180,7 @@ pub fn build_min_obcm_profiles(marker: u16, profiles: &[&str]) -> Vec<u8> {
 
     let mut f = Vec::new();
     f.extend_from_slice(b"OBCM");
-    f.push(10);
+    f.push(11);
     for v in [-1000i32, -1000, 1000, 1000] {
         f.extend_from_slice(&v.to_le_bytes()); // bbox: min_lat, min_lon, max_lat, max_lon
     }

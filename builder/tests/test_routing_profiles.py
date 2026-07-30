@@ -34,7 +34,7 @@ HIGHWAY_CLASSES = [
 SURFACE_CLASSES = ["unknown", "paved", "compacted", "gravel", "dirt", "rough", "cobbles", "grass"]
 NAME_LEN = 12
 PROFILE_RECORD_LEN = 52  # 12 name + 32 highway + 8 surface
-OBCM_VERSION = 10
+OBCM_VERSION = 11
 
 
 def _pack_bin():
