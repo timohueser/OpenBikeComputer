@@ -145,6 +145,19 @@ export interface Ledger {
     /** Bands with no loaded index: their bytes are missing from the total, so a
      *  UI must not present it as final. Empty in normal operation. */
     unresolvedBands: string[];
+    /** Parts whose cell list has not arrived: their bytes are missing from the
+     *  total too, and for the same reason it must not be presented as final.
+     *  Ids of `region` parts, mid-fetch. */
+    unresolvedParts: string[];
+    /**
+     * Whether every band and every part has reported in.
+     *
+     * The one thing a summary card must consult before it prints a total. A
+     * pending region contributes 0 B, which is a perfectly ordinary number, so
+     * "DACH — 0 B, no holes" is what a confident card says half a second before
+     * it says 47 GB. Nothing about the total itself can tell the two apart.
+     */
+    isFinal: boolean;
 }
 
 function coverageReport(
@@ -267,6 +280,8 @@ export function ledgerFor(
         coverage: coverageReport(resolution.missingByBand, bands),
         verdict: judge(core),
         unresolvedBands: resolution.unresolvedBands,
+        unresolvedParts: resolution.unresolvedParts,
+        isFinal: resolution.unresolvedBands.length === 0 && resolution.unresolvedParts.length === 0,
     };
 }
 
@@ -314,6 +329,10 @@ export function ledgerForRegion(catalog: CatalogV2, entry: RegionEntry): Ledger 
         },
         verdict: judge(core),
         unresolvedBands: [],
+        unresolvedParts: [],
+        // The root prices a region completely — that is §11.5's whole point —
+        // so this answer is final the moment the catalog is loaded.
+        isFinal: true,
     };
 }
 
