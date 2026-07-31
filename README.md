@@ -241,6 +241,8 @@ uploads cells and satellites first, verifies their remote sizes, and replaces
 obc bake publish
 
 # Publish to Cloudflare R2; requires rclone.
+# R2 publishes show every upload, cumulative bytes, ETA, remote verification,
+# and the final catalog-root swap automatically.
 obc bake publish --target r2
 
 # Once the deployed site uses the new prefix, preview and then apply removal of
