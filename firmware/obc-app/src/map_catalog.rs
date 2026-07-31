@@ -101,6 +101,97 @@ pub fn is_superseded_upload(maps: &[MapChoice], keep: usize, i: usize) -> bool {
     keeper.set == candidate.set && keeper.uploaded_id.is_some() && candidate.uploaded_id.is_some()
 }
 
+/// The index of the **newest volume set** on the card, or `None` if it holds none — the survivor of
+/// the `MS{id}` namespace, and the `keep` [`is_superseded_upload`] must be given when it is asked
+/// about a set.
+///
+/// Sets need a keeper of their own because in a build that cannot *mount* one they can never be the
+/// loaded map: [`choose_map`]'s clauses 1–3 all filter on `readable`, and a set reports
+/// `readable: false`. Keying set retirement on the loaded map would therefore make it unreachable —
+/// a card holding a replaced set plus its replacement would carry both forever, and a set is
+/// gigabytes, not megabytes, with no device surface that can delete it.
+///
+/// Naming a survivor without loading it is safe here in a way it would not be for a single map,
+/// and the difference is not readability but **proof**: a set is listed only after the scan
+/// validated the whole thing (`OBCA_Spec.md` §5.3 — every shard present, at the recorded size, with
+/// the recorded header bbox), so the newest set is known to be a complete map. A half-uploaded set
+/// has no manifest and is invisible (§5.4), so it can never take this role and can never retire the
+/// map it was going to replace.
+pub fn newest_set(maps: &[MapChoice]) -> Option<usize> {
+    maps.iter()
+        .enumerate()
+        .filter(|(_, m)| m.set && m.uploaded_id.is_some())
+        .max_by_key(|(_, m)| m.uploaded_id.unwrap_or(0))
+        .map(|(i, _)| i)
+}
+
+/// The boot fault to show when the loop ends up with no map to stream from.
+///
+/// **NO MAP is only honest when the card holds none.** [`choose_map`]'s clause 4 exists precisely to
+/// return a map this build cannot open, so that the rider sees *MAP UNREADABLE* — the screen that
+/// says "the file is there and I can't use it" — rather than being sent looking for a file that is
+/// sitting in the card root. A volume set is the sharp case: this build lists it, sizes it, and
+/// declines to mount it, so a rider with 8 GB of set on the card must never be told there is no map.
+pub fn boot_fault(maps: &[MapChoice]) -> crate::BootFault {
+    if maps.is_empty() {
+        crate::BootFault::NoMap
+    } else {
+        crate::BootFault::BadMap
+    }
+}
+
+/// What a card-root directory entry is, as far as the map catalog is concerned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MapEntry {
+    /// Not part of the catalog: a directory, dot-clutter, a wrong extension — or a volume-set
+    /// **shard**, which is a valid OBCM file that is nonetheless not a map (§5.4).
+    Other,
+    /// A single map: a side-loaded `.obcm` (long-filename arm) or a received `MP{id}.OBM`.
+    Map,
+    /// A volume-set manifest, `MS{id}.OBS` — the one file that says the shards beside it are one
+    /// map (`OBCA_Spec.md` §5.2/§5.4).
+    SetManifest,
+}
+
+/// Classify one card-root entry for the map scan. Pure over the three facts the decision turns on,
+/// so the board's `is_map_entry`/`is_set_manifest_entry` are one-line bindings and the rule itself
+/// is tested where tests run (the board crate has no CI harness — see the module docs).
+///
+/// `short` is the 8.3 name as `BASE.EXT`; `long` the entry's long filename if it has one.
+///
+/// The safety-critical clause is the shard exclusion. `MS{id}S{kk}.OBM` shares the `.OBM` extension
+/// with a received single map — deliberately, so the transfer path needs no new file type — and each
+/// shard *is* a valid OBCM file, which is why the exclusion has to live in the name test and cannot
+/// fall out of a header read. §5.4: a reader "MUST NOT mount a shard individually as a standalone
+/// map", because a geometry shard is a map with no roads and no POIs and the core is a map that
+/// draws nothing at all.
+pub fn classify_map_entry(short: &[u8], long: Option<&str>, is_directory: bool) -> MapEntry {
+    if is_directory || long.is_some_and(|n| n.starts_with('.')) {
+        return MapEntry::Other;
+    }
+    // A shard is never a map, and never a manifest either — it is part of one.
+    if obc_formats::obcs::parse_shard_name(short).is_some() {
+        return MapEntry::Other;
+    }
+    // Pure 8.3, no long-name arm: unlike `.obcm`, `.OBS` already fits an 8.3 name, so the device
+    // creates it directly and there is no 4-character twin to accept. The id must parse too —
+    // `SET.OBS` is clutter, not a manifest.
+    if obc_formats::obcs::parse_manifest_name(short).is_some() {
+        return MapEntry::SetManifest;
+    }
+    // The 8.3 arm is the whole answer to "the firmware reads long filenames but cannot create
+    // them": `OBM` is the 3-char twin of `.obcm`, unambiguous where a shortened `OBC` would also
+    // match a route.
+    let long_is_obcm = long.is_some_and(|n| {
+        let b = n.as_bytes();
+        b.len() >= 5 && b[b.len() - 5..].eq_ignore_ascii_case(b".obcm")
+    });
+    if long_is_obcm || short.ends_with(b".OBM") {
+        return MapEntry::Map;
+    }
+    MapEntry::Other
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,8 +203,12 @@ mod tests {
         MapChoice { selected: false, uploaded_id: Some(id), readable, set: false }
     }
     /// An uploaded **volume set** (`MS{id}.OBS` + shards) — one map, `OBCA_Spec.md` §5.4.
-    fn uploaded_set(id: u16, readable: bool) -> MapChoice {
-        MapChoice { selected: false, uploaded_id: Some(id), readable, set: true }
+    ///
+    /// `readable` is deliberately not a parameter: the board's `map_choices` cannot produce a
+    /// readable set (this build streams from one open file), so a test that constructed one would
+    /// be asserting over a state the device never reaches.
+    fn uploaded_set(id: u16) -> MapChoice {
+        MapChoice { selected: false, uploaded_id: Some(id), readable: false, set: true }
     }
 
     #[test]
@@ -203,28 +298,94 @@ mod tests {
         assert!(is_superseded_upload(&maps, keep, 1));
     }
 
-    /// A volume set is one map like any other: a newer set supersedes the set it replaced.
+    /// A volume set is one map like any other: a newer set supersedes the set it replaced. Its
+    /// keeper is [`newest_set`], not the loaded map — a set is never loaded in this build, so
+    /// keying its retirement on `choose_map`'s answer would make the whole pass unreachable.
     #[test]
     fn a_newer_set_supersedes_the_set_it_replaced() {
-        let maps = [uploaded_set(1, true), uploaded_set(2, true)];
+        // The reachable card: two sets plus a single map, which is the thing that actually loads.
+        let maps = [uploaded_set(1), uploaded_set(2), uploaded(5, true)];
         let keep = choose_map(&maps).expect("a card with maps chooses one");
-        assert_eq!(keep, 1, "the newest set is the survivor");
-        assert!(is_superseded_upload(&maps, keep, 0));
+        assert_eq!(keep, 2, "the readable single map loads — a set reports `readable: false`");
+        let survivor = newest_set(&maps).expect("a card with sets names a set survivor");
+        assert_eq!(survivor, 1, "the highest MS id is the survivor");
+        assert!(is_superseded_upload(&maps, survivor, 0), "MS1 was replaced by MS2");
+        assert!(!is_superseded_upload(&maps, survivor, 1), "the survivor is not its own casualty");
+        assert!(!is_superseded_upload(&maps, survivor, 2), "and a single map is never a set's casualty");
+
+        // …and on a card holding *only* sets, where `choose_map` lands on clause 4 (index 0, the
+        // older one). The set keeper is still the newest, so the retirement is right side up.
+        let maps = [uploaded_set(1), uploaded_set(2)];
+        assert_eq!(choose_map(&maps), Some(0), "clause 4 returns the first map, readable or not");
+        let survivor = newest_set(&maps).expect("a card with sets names a set survivor");
+        assert_eq!(survivor, 1);
+        assert!(is_superseded_upload(&maps, survivor, 0));
+        assert!(!is_superseded_upload(&maps, survivor, 1));
+
+        // A card with no sets names no set survivor, so the pass does nothing at all.
+        assert_eq!(newest_set(&[uploaded(1, true), side_loaded(true)]), None);
     }
 
     /// …but `MP{id}` and `MS{id}` number independently, so neither convention may sweep the other.
     /// The casualty here would be a deleted map the rider never replaced.
     #[test]
     fn a_set_and_a_single_map_never_supersede_each_other() {
-        let maps = [uploaded(4, true), uploaded_set(7, true)];
+        let maps = [uploaded(4, true), uploaded_set(7)];
         let keep = choose_map(&maps).expect("a card with maps chooses one");
-        assert_eq!(keep, 1, "the higher id loads");
-        assert!(!is_superseded_upload(&maps, keep, 0), "MS7 is not 'newer than' MP4 — the ids are unrelated");
+        assert_eq!(keep, 0, "the readable single map loads");
+        assert!(!is_superseded_upload(&maps, keep, 1), "MP4 does not retire MS7 — the ids are unrelated");
+        // And the set's own keeper is itself, so it retires nothing either.
+        let survivor = newest_set(&maps).expect("one set is its own survivor");
+        assert_eq!(survivor, 1);
+        assert!(!is_superseded_upload(&maps, survivor, 0), "and not in the other direction either");
+    }
 
-        let maps = [uploaded_set(7, true), uploaded(9, true)];
-        let keep = choose_map(&maps).expect("a card with maps chooses one");
-        assert_eq!(keep, 1);
-        assert!(!is_superseded_upload(&maps, keep, 0), "and not in the other direction either");
+    /// The fault a card with no streamable map deserves. Clause 4's whole purpose is to reach the
+    /// **MAP UNREADABLE** screen; only a card that really holds nothing gets **NO MAP**.
+    #[test]
+    fn a_card_holding_an_unusable_map_says_unreadable_not_absent() {
+        assert_eq!(boot_fault(&[]), crate::BootFault::NoMap, "an empty catalog is the only NO MAP");
+
+        // A card holding only a volume set: 8 GB that this build lists, sizes, and cannot mount.
+        let maps = [uploaded_set(7)];
+        assert_eq!(choose_map(&maps), Some(0), "clause 4 still returns it");
+        assert_eq!(boot_fault(&maps), crate::BootFault::BadMap);
+
+        // The pre-existing case the same rule already covered: a wrong-version single map.
+        assert_eq!(boot_fault(&[uploaded(3, false)]), crate::BootFault::BadMap);
+    }
+
+    /// The safety-critical classification: a shard is a valid OBCM file and must still never be
+    /// listed as a map (§5.4). Pure, so it is asserted here rather than only on a device.
+    #[test]
+    fn shards_are_never_maps_and_only_a_manifest_is_a_set() {
+        use MapEntry::*;
+        // Received single map, side-loaded long name, and the 8.3 twin.
+        assert_eq!(classify_map_entry(b"MP7.OBM", None, false), Map);
+        assert_eq!(classify_map_entry(b"BADENW~1.OBM", Some("baden-wuerttemberg.obcm"), false), Map);
+        assert_eq!(classify_map_entry(b"ALPS.OBM", Some("Alps.OBM"), false), Map);
+
+        // The manifest is the one file that says "these are one map".
+        assert_eq!(classify_map_entry(b"MS7.OBS", None, false), SetManifest);
+        assert_eq!(classify_map_entry(b"MS999.OBS", None, false), SetManifest);
+
+        // Every shard of every set, at both ends of the id and index ranges.
+        for name in [&b"MS7S00.OBM"[..], b"MS7S31.OBM", b"MS0S05.OBM", b"MS999S31.OBM"] {
+            assert_eq!(classify_map_entry(name, None, false), Other, "{:?} is a shard, not a map", name);
+        }
+
+        // Clutter that only looks like one of the two conventions.
+        assert_eq!(classify_map_entry(b"SET.OBS", None, false), Other, "an unparseable id is not a manifest");
+        assert_eq!(classify_map_entry(b"MS07.OBS", None, false), Other, "leading zeros are not the §5.2 name");
+        assert_eq!(
+            classify_map_entry(b"MS7.OBM", None, false),
+            Map,
+            "the manifest extension is .OBS, so this is a map"
+        );
+        assert_eq!(classify_map_entry(b"NOTES.TXT", None, false), Other);
+        assert_eq!(classify_map_entry(b"MAPS.OBM", None, true), Other, "a directory is never an entry");
+        assert_eq!(classify_map_entry(b"_MP7.OBM", Some("._MP7.OBM"), false), Other, "dot-clutter is excluded");
+        assert_eq!(classify_map_entry(b"MS7.OBS", Some(".MS7.OBS"), false), Other);
     }
 
     /// Out-of-range indices answer `false` rather than panicking: the board feeds this a live

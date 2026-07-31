@@ -68,7 +68,9 @@ pub use host::{DetourPreview, DrainStatus, HostCommand, HostEvent, HostMailbox, 
 pub use i18n::{t, Msg};
 pub use input::{Gesture, Gestures, DEFAULT_HOLD_MS, DEFAULT_TAP_MS};
 pub use input_plane::InputPlane;
-pub use map_catalog::{choose_map, is_superseded_upload, MapChoice};
+pub use map_catalog::{
+    boot_fault, choose_map, classify_map_entry, is_superseded_upload, newest_set, MapChoice, MapEntry,
+};
 pub use nav_profiles::NavProfiles;
 pub use next_ahead::{NextAhead, NextPoi, REFRESH_STEP_M};
 pub use retention::{
