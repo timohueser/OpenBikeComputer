@@ -1453,8 +1453,10 @@ fn repo_doc(rel: &str) -> String {
 
 /// The shipped schema, as this producer's `schema.json`.
 const SHIPPED_SCHEMA: &str = "../../builder/presets/schema.json";
-/// The one shipped skin.
+/// The schema's own look, restated as a skin.
 const SHIPPED_SKIN: &str = "../../builder/presets/skins/default.json";
+/// The night restyle (epic #1016 P5) — the first skin that legitimately differs.
+const SHIPPED_DUSK_SKIN: &str = "../../builder/presets/skins/dusk.json";
 /// The preset epic #1016 D2 retired, kept as a fixture so the negative test below
 /// keeps asserting against the real document rather than a convenient stand-in.
 const RETIRED_HIGH_DETAIL: &str = "tests/retired/high-detail.json";
@@ -1512,7 +1514,7 @@ fn the_shipped_schema_and_skin_generate_a_v2_catalog() {
     // enforces that — a skin is free to differ, which is the entire point of skins —
     // but `default` is the look the schema bakes into a v1 whole-region artifact and
     // into every preview map, so the two drifting apart would make one of them lie.
-    // The dark skin of a later round is where a skin legitimately differs.
+    // The `dusk` skin (next test) is where a skin legitimately differs.
     let schema_config = Config::parse(&repo_doc(SHIPPED_SCHEMA)).expect("the schema parses");
     let skin_config = Config::parse(&repo_doc(SHIPPED_SKIN)).expect("the skin parses");
     check_skin(&schema_config, &skin_config).expect("the shipped skin fits the shipped schema");
@@ -1545,6 +1547,105 @@ fn the_shipped_schema_and_skin_generate_a_v2_catalog() {
         "the `default` skin's swatch must be the schema's — the card is the only part of these documents a rider \
          sees before downloading"
     );
+}
+
+/// The second shipped skin (epic #1016 P5): `dusk`, the night restyle — the skin that
+/// legitimately differs from the schema, which is the entire point of skins. Three
+/// properties keep it honest, and each has a way to rot silently without a test:
+///
+/// 1. **It generates beside `default`** — same feature types, same ids, presentation
+///    only. (An edit that drifts it into schema territory should fail here, on data we
+///    ship, not on the first real bake.)
+/// 2. **It respects the bake's merges.** `merge_fills`/`merge_lines` union features
+///    whose *schema* styles render identically and retag the result to one canonical
+///    style id (`merge.rs`), so a skin giving two schema-merged feature types
+///    different values would style only the canonical id's share of the merged
+///    geometry — the other name's entry would be dead weight that looks like a
+///    design decision. Every group the schema merges must be restated uniformly.
+///    The groups are derived from the `default` skin (proved above to restate the
+///    schema's own values) by full render identity — the line-stitch key, which is
+///    identical to the line-stitch key, and — for the current schema, where no fill
+///    carries a weight or line style — a superset of the fill merge classes (verified
+///    empirically: 7 test groups cover all 5 real fill classes). A schema that gives a
+///    fill a weight/dash would open a gap here; widen the key to the union then.
+/// 3. **It survives the panel.** The LS021B7DD02 shows 64 colors (RGB222 — the top
+///    two bits of each channel, `OBCM_Spec.md` §2, `rgb565_to_device64`), so two
+///    RGB565 values in one RGB222 bucket are one color on glass. Every *distinct*
+///    RGB565 value in the document must land in its own bucket, the ground must
+///    quantize dark, and the marker light — a dark-ground skin whose marker
+///    quantizes into the ground is unusable at exactly the moment it exists for.
+#[test]
+fn the_shipped_dusk_skin_is_a_presentation_only_night_restyle() {
+    let t = TempTree::new("shipped-dusk");
+    write(&t.path().join(SCHEMA_DOC), &as_schema(SHIPPED_SCHEMA, V1_BAND_TABLE, 1));
+    write(&t.path().join(SKINS_DIR).join("default.json"), &repo_doc(SHIPPED_SKIN));
+    write(&t.path().join(SKINS_DIR).join("dusk.json"), &repo_doc(SHIPPED_DUSK_SKIN));
+    let ch = [("europe/switzerland", "2026-07-19")];
+    for (band, id) in [("coarse", coarse_cell()), ("mid", mid_cell()), ("fine", fine_west()), ("network", fine_west())]
+    {
+        write_cell_at(t.path(), band, id, OBCM_VERSION, id.square(), 16, 1, "2026-07-30T02:10:04Z", &ch, false);
+    }
+    let g = generate(t.path(), &opts()).expect("both shipped skins generate a v2 catalog");
+    assert_eq!(g.root.skins.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["default", "dusk"], "sorted by id");
+    let [default, dusk] = &g.root.skins[..] else { unreachable!() };
+    assert_eq!(dusk.styles.len(), default.styles.len(), "same feature types, schema id order");
+    assert_ne!(dusk.styles, default.styles, "a real restyle, not a copy");
+    assert_ne!(dusk.marker_color, default.marker_color, "red vanishes on a dark ground; dusk re-picks the marker");
+    for (d, s) in dusk.styles.iter().zip(&default.styles) {
+        assert_eq!(d.feature_type, s.feature_type);
+        // The skin split lets a skin restate all seven presentation bytes, but this one
+        // deliberately recolors only: geometry-shaping stays visually identical to the
+        // day map, so a rider switching skins at dusk sees the same map, re-lit.
+        assert_eq!(
+            (d.weight, d.z_index, d.priority, d.dashed),
+            (s.weight, s.z_index, s.priority, s.dashed),
+            "{}",
+            d.feature_type
+        );
+    }
+
+    // (2) — uniform within every group the schema's own look merges.
+    let mut groups: BTreeMap<_, Vec<&SkinStyle>> = BTreeMap::new();
+    for s in &default.styles {
+        groups.entry((s.z_index, s.color, s.weight, s.priority, s.dashed, s.color2)).or_default().push(s);
+    }
+    let dusk_by_type: BTreeMap<&str, &SkinStyle> = dusk.styles.iter().map(|s| (s.feature_type.as_str(), s)).collect();
+    let mut merged_groups = 0;
+    for members in groups.values().filter(|m| m.len() > 1) {
+        merged_groups += 1;
+        let first = dusk_by_type[members[0].feature_type.as_str()];
+        for member in &members[1..] {
+            let d = dusk_by_type[member.feature_type.as_str()];
+            assert_eq!(
+                (d.color, d.color2, d.weight, d.z_index, d.priority, d.dashed),
+                (first.color, first.color2, first.weight, first.z_index, first.priority, first.dashed),
+                "`{}` and `{}` render identically in the schema, so the bake may have merged their geometry under \
+                 one style id — a skin must restate them identically or the distinction is a lie",
+                members[0].feature_type,
+                member.feature_type,
+            );
+        }
+    }
+    assert!(merged_groups >= 5, "the shipped schema really does merge: {merged_groups} groups");
+
+    // (3) — the panel's quantization, through the renderer's OWN policy rather than a
+    // restated copy: a change to `obc_reader`'s color pipeline must move this test with it.
+    let bucket = |c: u16| obc_reader::rgb565_to_device64(c);
+    let colors: BTreeSet<u16> = dusk
+        .styles
+        .iter()
+        .flat_map(|s| [Some(s.color), s.color2].into_iter().flatten())
+        .chain([dusk.marker_color])
+        .collect();
+    let buckets: BTreeSet<_> = colors.iter().map(|&c| bucket(c)).collect();
+    assert_eq!(
+        buckets.len(),
+        colors.len(),
+        "two of the skin's RGB565 values share an RGB222 bucket — one color on glass"
+    );
+    let land = dusk_by_type["natural.land"];
+    assert_eq!(bucket(land.color), (0, 0, 0), "the dark ground the whole design stands on");
+    assert_eq!(bucket(dusk.marker_color), (255, 255, 0), "and a marker that reads against it");
 }
 
 /// Epic #1016 D2, as a test: `high-detail` is a different **schema**, not a skin. It
