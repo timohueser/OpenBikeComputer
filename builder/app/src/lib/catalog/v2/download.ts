@@ -18,6 +18,21 @@
 // half-fetched cell set cannot be assembled into anything, so continuing would
 // only buy a longer wait before the same error.
 //
+// **What "all-or-nothing" costs, stated rather than discovered.** There is no
+// resume: a run that fails at cell 900 of 1000 is restarted from cell 1, and on
+// a bikepacking-sized selection that is a real amount of somebody's bandwidth.
+// It is deliberate for now and it is *cheap to fix later* — cells are
+// content-addressed and immutable, so a caller that keeps what `onCell` handed
+// it can hand this a shorter plan next time and lose nothing. That belongs with
+// the assembler (P3/P4b), which is the thing that knows where the bytes went;
+// this module would have to invent a store to do it, and a store invented here
+// is a store the caller cannot see into.
+//
+// Two guarantees the rejection carries, because a sink is usually a file: once
+// the run has failed or been aborted, `onCell` is not called again — not even
+// for a cell whose bytes were already in hand — and no aborted body's partial
+// bytes stay counted in the progress a later report computes.
+//
 // Bytes are handed to `onCell` rather than accumulated into a return value on
 // purpose. A DACH selection is gigabytes; a function that resolved to a `Map` of
 // every cell's bytes would be a function that decides, on the caller's behalf, to
@@ -150,19 +165,34 @@ export async function downloadCells(
             const index = cursor++;
             if (index >= total) return;
             const item = plan.items[index];
-            const bytes = await fetchVerified(item.cell.url, item.cell, {
-                signal: controller.signal,
-                fetchImpl: opts.fetchImpl,
-                digest: opts.digest,
-                onProgress: (p) => {
-                    inflight.set(index, p.received);
-                    report();
-                },
-            });
-            inflight.delete(index);
+            let bytes: Uint8Array;
+            try {
+                bytes = await fetchVerified(item.cell.url, item.cell, {
+                    signal: controller.signal,
+                    fetchImpl: opts.fetchImpl,
+                    digest: opts.digest,
+                    onProgress: (p) => {
+                        inflight.set(index, p.received);
+                        report();
+                    },
+                });
+            } finally {
+                // `finally`, because a cell that failed or was aborted mid-body
+                // still has its partial byte count in `inflight`, and every
+                // other slot's progress report would keep adding it — a bar
+                // that creeps past what was actually received, for bytes that
+                // will never arrive.
+                inflight.delete(index);
+            }
             completedBytes += bytes.byteLength;
             completedCells += 1;
             report();
+            // A cell that arrives after another slot has failed belongs to a run
+            // that is already over. Handing it to `onCell` would write it into
+            // an assembly the caller is about to throw away — and the caller's
+            // sink is a file, a database, or a wasm assembler, none of which
+            // enjoy a write after the rejection.
+            if (controller.signal.aborted) throw abortReason(controller.signal);
             await opts.onCell(item, bytes, index);
         }
     };

@@ -53,6 +53,23 @@ async function fixtures() {
     return { indices, plan: planCells(resolution, exampleCatalog, indices) };
 }
 
+/** A response whose body arrives one chunk at a time, `delayMs` apart — so a
+ *  test can put one slot's progress reports firmly after another slot's
+ *  failure instead of hoping. */
+function slowStream(chunks: Uint8Array[], delayMs: number): Response {
+    return new Response(
+        new ReadableStream({
+            async start(controller) {
+                for (const chunk of chunks) {
+                    await new Promise((r) => setTimeout(r, delayMs));
+                    controller.enqueue(chunk);
+                }
+                controller.close();
+            },
+        }) as unknown as BodyInit,
+    );
+}
+
 /** Serves the body a cell's URL implies, so the digest matches by construction. */
 function serving(over: Record<string, Uint8Array> = {}, onFetch?: () => void) {
     return vi.fn(async (input: RequestInfo | URL) => {
@@ -186,6 +203,93 @@ describe("downloadCells", () => {
         await expect(
             downloadCells(plan, { fetchImpl: serving(), signal: controller.signal, onCell: () => {} }),
         ).rejects.toThrow();
+    });
+
+    it("stops mid-run when the caller aborts, and delivers nothing after that", async () => {
+        // The realistic abort: the rider changes the selection, or closes the
+        // dialog, halfway through 1 000 cells. Every cell delivered after that
+        // point is a write into an assembly nobody is waiting for.
+        const { plan } = await fixtures();
+        const controller = new AbortController();
+        const delivered: string[] = [];
+        const run = downloadCells(plan, {
+            fetchImpl: serving(),
+            concurrency: 1,
+            signal: controller.signal,
+            onCell: async (item) => {
+                delivered.push(item.cell.id);
+                if (delivered.length === 2) controller.abort(new Error("the rider changed their mind"));
+                await new Promise((r) => setTimeout(r, 1));
+            },
+        });
+        await expect(run).rejects.toThrow(/changed their mind/);
+        expect(delivered).toHaveLength(2);
+        expect(plan.items.length).toBeGreaterThan(2);
+    });
+
+    it("delivers nothing more once a cell has failed", async () => {
+        // Concurrency 2 with a bad cell in the first pair: the *other* slot's
+        // cell arrives verified after the failure, and it must not be written
+        // anywhere. A sink is usually a file, or a wasm assembler, and neither
+        // enjoys a write after the rejection it already reported.
+        const { plan } = await fixtures();
+        const first = plan.items[0].cell.url;
+        const second = plan.items[1].cell;
+        const impl = vi.fn(async (input: RequestInfo | URL) => {
+            const url = String(input);
+            if (url === first) return new Response(new TextEncoder().encode("wrong") as unknown as BodyInit);
+            if (url === second.url) {
+                // Arrives well after the failure has been reported.
+                return slowStream([bodyFor(`mid/19/0602/0526`)], 15);
+            }
+            return new Response("nope", { status: 404, statusText: "Not Found" });
+        }) as unknown as typeof fetch;
+        const delivered: string[] = [];
+        await expect(
+            downloadCells(plan, {
+                fetchImpl: impl,
+                concurrency: 2,
+                onCell: (item) => void delivered.push(item.cell.id),
+            }),
+        ).rejects.toThrow(BytesVerificationError);
+        // …and still nothing once the late body has finished arriving.
+        await new Promise((r) => setTimeout(r, 60));
+        expect(delivered).toEqual([]);
+    });
+
+    it("does not keep counting a body that never arrived", async () => {
+        // A cell that fails mid-body leaves its partial bytes in the in-flight
+        // table, and every later report from another slot adds them again — a
+        // bar that creeps past what was received, for bytes that will never
+        // come. The other slot's body is deliberately slow here so its reports
+        // land after the failure and would carry the leak.
+        const { plan } = await fixtures();
+        const first = plan.items[0].cell.url;
+        const secondBody = bodyFor(`mid/19/0602/0526`);
+        const truncated = 10;
+        const impl = vi.fn(async (input: RequestInfo | URL) => {
+            const url = String(input);
+            if (url === first) return slowStream([bodyFor(`coarse/20/0301/0263`).slice(0, truncated)], 1);
+            if (url === plan.items[1].cell.url) {
+                return slowStream([secondBody.slice(0, 20), secondBody.slice(20)], 15);
+            }
+            return new Response("nope", { status: 404, statusText: "Not Found" });
+        }) as unknown as typeof fetch;
+        const reports: number[] = [];
+        await expect(
+            downloadCells(plan, {
+                fetchImpl: impl,
+                concurrency: 2,
+                onCell: () => {},
+                onProgress: (p) => reports.push(p.receivedBytes),
+            }),
+        ).rejects.toThrow(BytesVerificationError);
+        await new Promise((r) => setTimeout(r, 60));
+        // Nothing ever reported more than the one body that was really being
+        // received. With the truncated cell's ten bytes still counted, every
+        // report after it would be ten too high.
+        expect(Math.max(...reports)).toBe(secondBody.byteLength);
+        expect(reports.some((r) => r > truncated && r <= secondBody.byteLength)).toBe(true);
     });
 
     it("has nothing to do for an empty plan", async () => {
