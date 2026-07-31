@@ -147,12 +147,22 @@ export function emptySelection(corridorRadiusM: number): Selection {
     return { parts: [], corridorRadiusM };
 }
 
-/** Add a part, or replace the one with the same id. Returns a new selection —
- *  nothing here mutates, so a Svelte `$state` holding one re-renders on
- *  assignment rather than on a deep proxy. */
+/**
+ * Add a part, or replace the one with the same id **in place**. Returns a new
+ * selection — nothing here mutates, so a Svelte `$state` holding one re-renders
+ * on assignment rather than on a deep proxy.
+ *
+ * In place matters: §8 U2's parts list is a ledger the user reads, and a row
+ * that jumped to the bottom every time its box was nudged or its corridor
+ * renamed would be a list that reorders itself while someone is looking at it.
+ * A new part still goes on the end, where it was just added.
+ */
 export function withPart(selection: Selection, part: SelectionPart): Selection {
-    const parts = selection.parts.filter((p) => p.id !== part.id);
-    return { ...selection, parts: [...parts, part] };
+    const at = selection.parts.findIndex((p) => p.id === part.id);
+    if (at < 0) return { ...selection, parts: [...selection.parts, part] };
+    const parts = [...selection.parts];
+    parts[at] = part;
+    return { ...selection, parts };
 }
 
 /** Remove a part by id. */
@@ -202,7 +212,11 @@ function partCells(part: SelectionPart, bandEntry: BandEntry, ctx: SelectionCont
             // Not an error: the UI adds the part and the list arrives a moment
             // later, and a resolution that threw would make that a crash rather
             // than a frame.
-            return list ? [...(list.cells[bandEntry.id] ?? [])] : [];
+            //
+            // `hasOwn`, because band ids are document strings and
+            // `"constructor"` is a legal one.
+            if (!list || !Object.hasOwn(list.cells, bandEntry.id)) return [];
+            return [...list.cells[bandEntry.id]];
         }
         case "box":
             return cellsIntersecting(bandEntry.cell_log2, part.box).map(formatCellId);

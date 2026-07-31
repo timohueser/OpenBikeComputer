@@ -169,4 +169,36 @@ describe("parseCatalogV2", () => {
         const half = EXAMPLE_ROOT.slice(0, Math.floor(EXAMPLE_ROOT.length / 2));
         expect(() => parseCatalogV2(half)).toThrow(CatalogFormatError);
     });
+
+    describe("§11.2's ordering, which is part of the document", () => {
+        it.each<[string, (d: LooseDoc) => void]>([
+            ["skins out of id order", (d) => d.skins.reverse()],
+            ["regions out of id order", (d) => d.regions.reverse()],
+        ])("rejects %s", (_what, edit) => {
+            // The cell index's ordering was already checked; these two are the
+            // same rule from the same section, and a stated order that is not
+            // kept is an order nothing downstream may rely on.
+            expect(() => parseCatalogV2(mutated(edit))).toThrow(CatalogFormatError);
+        });
+    });
+
+    it("accepts a coarsest LOD that simply omits max_mpp", () => {
+        // The JSON schema requires `index` and `band` and nothing else; a parser
+        // stricter than the schema refuses documents the generator is entitled
+        // to write, and "+inf" is exactly what an absent bound means.
+        const doc = mutated((d) => delete d.schema.lods[0].max_mpp);
+        expect(parseCatalogV2(doc).schema.lods[0].max_mpp).toBeNull();
+    });
+
+    it("keeps a band called `constructor` out of the prototype", () => {
+        // A kebab id, therefore legal, therefore something a bakery could mint
+        // one day. On an ordinary object literal `bytes_by_band["constructor"]`
+        // answers with a function for a band the document never mentioned —
+        // and `?? 0` does not catch a function, so the price becomes NaN.
+        const catalog = parseCatalogV2(EXAMPLE_ROOT);
+        const region = catalog.regions[0];
+        expect(region.bytes_by_band.constructor).toBeUndefined();
+        expect(region.cell_count.constructor).toBeUndefined();
+        expect(Object.getPrototypeOf(region.bytes_by_band)).toBeNull();
+    });
 });

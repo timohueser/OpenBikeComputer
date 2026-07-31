@@ -205,7 +205,10 @@ export function parseRegionCells(body: string, catalog: CatalogV2, entry: Region
 
     const bandsById = new Map(catalog.schema.bands.map((b) => [b.id, b]));
     const raw = obj(doc.cells, `${where}.cells`);
-    const cells: Record<string, string[]> = {};
+    // Null-prototype: band ids come from a document and `"constructor"` is a
+    // legal kebab id, so a plain literal would answer `cells["constructor"]`
+    // with a function for a band this list never named.
+    const cells: Record<string, string[]> = Object.create(null);
     for (const bandId of Object.keys(raw)) {
         const at = `${where}.cells.${bandId}`;
         const band = bandsById.get(bandId);

@@ -77,8 +77,11 @@ describe("selection composition", () => {
         selection = withPart(selection, insideA);
         selection = withPart(selection, region);
         expect(selection.parts.map((p) => p.id)).toEqual(["box-1", "region-1"]);
+        // An edit replaces the row where it is. A parts list that reordered
+        // itself every time a box was nudged is a list nobody can read.
         selection = withPart(selection, { ...insideA, name: "Renamed" });
-        expect(selection.parts.map((p) => p.name)).toEqual(["Switzerland", "Renamed"]);
+        expect(selection.parts.map((p) => p.name)).toEqual(["Renamed", "Switzerland"]);
+        expect(selection.parts.map((p) => p.id)).toEqual(["box-1", "region-1"]);
         expect(withoutPart(selection, "region-1").parts.map((p) => p.id)).toEqual(["box-1"]);
         // Nothing mutates: a stale reference is still the selection it was.
         expect(selection.parts).toHaveLength(2);
