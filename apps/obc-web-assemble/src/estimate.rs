@@ -71,7 +71,7 @@ pub const OUTPUT_PER_CELL_BYTE: f64 = 1.0;
 /// wasm32's hard address space. Nothing can be allocated past this, whatever the machine has.
 pub const WASM32_ADDRESS_SPACE: f64 = 4.0 * 1024.0 * 1024.0 * 1024.0;
 
-/// The budget this crate reports `fits` against: **3 GiB**, 75 % of the address space.
+/// The **default** budget this crate reports `fits` against: **3 GiB**, 75 % of the address space.
 ///
 /// Not a measurement — a judgement, and the reason is that the failure mode is unforgiving. A wasm
 /// allocation that cannot be served aborts the module: there is no `Err` to render, the tab has
@@ -79,6 +79,11 @@ pub const WASM32_ADDRESS_SPACE: f64 = 4.0 * 1024.0 * 1024.0 * 1024.0;
 /// also do not reliably grant the full 4 GiB (the limit is per-tab and platform-dependent), and the
 /// model above is a one-point extrapolation. A quarter of the space is the margin those three facts
 /// together are worth.
+///
+/// It is also a **desktop-shaped** judgement. A phone's per-tab limit is far lower and its tabs are
+/// evicted rather than merely slowed, so a caller that knows it is on a mobile UA should lower it —
+/// see [`estimate_memory_with_budget`], which is what the browser wrapper's `budgetBytes` override
+/// reaches.
 pub const PRACTICAL_BUDGET: f64 = 3.0 * 1024.0 * 1024.0 * 1024.0;
 
 /// What an assembly of this size would cost, and whether a browser can pay it.
@@ -92,7 +97,8 @@ pub struct MemoryEstimate {
     pub output_bytes: f64,
     /// The sum: what wasm32 has to hold at once.
     pub peak_bytes: f64,
-    /// [`PRACTICAL_BUDGET`].
+    /// The budget [`MemoryEstimate::fits`] was decided against — [`PRACTICAL_BUDGET`] unless the
+    /// caller supplied its own.
     pub budget_bytes: f64,
     /// [`WASM32_ADDRESS_SPACE`].
     pub ceiling_bytes: f64,
@@ -111,6 +117,21 @@ pub struct MemoryEstimate {
 /// they cross from JS, where a byte count past 2^53 is not representable anyway — and 9 PB of cells
 /// is not the case this function is for.
 pub fn estimate_memory(network_band_bytes: f64, total_cell_bytes: f64) -> MemoryEstimate {
+    estimate_memory_with_budget(network_band_bytes, total_cell_bytes, PRACTICAL_BUDGET)
+}
+
+/// [`estimate_memory`], against a budget the caller chooses.
+///
+/// [`PRACTICAL_BUDGET`] is a desktop-shaped judgement, and `fits` is a *verdict* — so the one knob
+/// worth exposing is the number the verdict is measured against. The case that needs it is a mobile
+/// UA, where the per-tab allowance is a fraction of a desktop's and the tab is killed rather than
+/// slowed; a caller that can detect that should pass what it believes the device will grant.
+///
+/// A non-finite or non-positive budget falls back to [`PRACTICAL_BUDGET`]: `fits` must always be a
+/// verdict about something, and silently answering "nothing fits" to a caller that passed `NaN`
+/// through from an unparsed setting would be the worst of both.
+pub fn estimate_memory_with_budget(network_band_bytes: f64, total_cell_bytes: f64, budget: f64) -> MemoryEstimate {
+    let budget_bytes = if budget.is_finite() && budget > 0.0 { budget } else { PRACTICAL_BUDGET };
     let nav = network_band_bytes.max(0.0);
     let cells = total_cell_bytes.max(nav);
     let engine_bytes = PEAK_PER_NAV_BYTE * nav;
@@ -121,10 +142,10 @@ pub fn estimate_memory(network_band_bytes: f64, total_cell_bytes: f64) -> Memory
         input_bytes: cells,
         output_bytes,
         peak_bytes,
-        budget_bytes: PRACTICAL_BUDGET,
+        budget_bytes,
         ceiling_bytes: WASM32_ADDRESS_SPACE,
-        fits: peak_bytes <= PRACTICAL_BUDGET,
-        headroom_bytes: PRACTICAL_BUDGET - peak_bytes,
+        fits: peak_bytes <= budget_bytes,
+        headroom_bytes: budget_bytes - peak_bytes,
     }
 }
 
@@ -180,5 +201,32 @@ mod tests {
         assert!(zero.fits);
         let nav_only = estimate_memory(100.0 * MB, 0.0);
         assert_eq!(nav_only.input_bytes, 100.0 * MB, "total_cell_bytes cannot be below the network band's own share");
+    }
+
+    /// `fits` is a verdict against a **desktop-shaped judgement**, so a caller that knows better —
+    /// a mobile UA, whose per-tab allowance is a fraction of this and whose tabs are evicted rather
+    /// than slowed — can lower the number the verdict is measured against. Nothing else moves: the
+    /// projection is a property of the selection, not of the device.
+    #[test]
+    fn a_caller_can_lower_the_budget_the_verdict_is_measured_against() {
+        let desktop = estimate_memory(271.0 * MB, 717.0 * MB);
+        let phone = estimate_memory_with_budget(271.0 * MB, 717.0 * MB, 1.0 * 1024.0 * 1024.0 * 1024.0);
+        assert!(desktop.fits && !phone.fits, "switzerland fits a desktop tab and not a 1 GiB one");
+        assert_eq!(desktop.peak_bytes, phone.peak_bytes, "the projection is about the selection, not the device");
+        assert_eq!(phone.budget_bytes, 1.0 * 1024.0 * 1024.0 * 1024.0, "the estimate reports what it judged against");
+        assert!(phone.headroom_bytes < 0.0);
+        assert_eq!(phone.ceiling_bytes, WASM32_ADDRESS_SPACE, "wasm32's own ceiling is not the caller's to move");
+    }
+
+    /// A budget that is not a number is a caller's bug (an unparsed setting, a missing field), and
+    /// the answer to it is the default verdict — never "nothing fits", which would refuse every
+    /// selection on the strength of a `NaN`.
+    #[test]
+    fn a_nonsense_budget_falls_back_to_the_default() {
+        for bad in [f64::NAN, 0.0, -1.0, f64::INFINITY] {
+            let e = estimate_memory_with_budget(20.0 * MB, 60.0 * MB, bad);
+            assert_eq!(e.budget_bytes, PRACTICAL_BUDGET, "budget {bad} should have fallen back");
+            assert!(e.fits);
+        }
     }
 }
