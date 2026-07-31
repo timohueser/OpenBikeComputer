@@ -20,7 +20,6 @@
 //! render interleaves between chunks. This is the property Mass Storage could not have offered.
 
 use core::cell::RefCell;
-use core::sync::atomic::Ordering;
 
 use defmt::{info, warn};
 use embassy_futures::select::{select, Either};
@@ -65,7 +64,7 @@ enum TransferOutcome {
 /// latched abort first; an abort arriving after the clear belongs to the next descriptor.
 fn close_transfer() {
     let _ = TRANSFER_ABORT.try_take();
-    TRANSFER_ACTIVE.store(false, Ordering::Relaxed);
+    TRANSFER_ACTIVE.release(crate::link::gate_owner(crate::link::Transport::Usb));
 }
 
 /// Serve the armed transfers forever. Parks on `wait_enabled` before configuration and after an
@@ -136,7 +135,7 @@ pub(crate) async fn run(
             store.borrow_mut().link_reset(&mut guard);
             store.borrow_mut().set_upload_abort(&mut guard);
         }
-        TRANSFER_ACTIVE.store(false, Ordering::Relaxed);
+        TRANSFER_ACTIVE.release(crate::link::gate_owner(crate::link::Transport::Usb));
         TRANSFER_ARM.reset();
         TRANSFER_ABORT.reset();
         // `wait_enabled` returns immediately while the endpoint is still up, so a *persistent*

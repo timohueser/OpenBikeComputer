@@ -259,15 +259,31 @@ pub fn clear_map_transfer() {
     }
 }
 
-/// One transfer at a time, **across every transport**: set by whichever control plane armed it,
-/// cleared by that transport's data plane when the transfer concludes (answered, aborted, or the
-/// channel dropped). While set, any further `transferControl` open — BLE or USB — is answered
+/// One transfer at a time, **across every transport**: claimed by whichever control plane armed it,
+/// released by that transport's data plane when the transfer concludes (answered, aborted, or the
+/// channel dropped). While held, any further `transferControl` open — BLE or USB — is answered
 /// `busy`.
 ///
 /// Shared rather than per-transport because the resource being arbitrated is the store, not the
-/// wire: [`ObjectStore`] holds exactly one upload temp file and one open download source. Two
-/// simultaneous uploads would interleave into the same temp and commit a corrupt object.
-pub(crate) static TRANSFER_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// wire: [`ObjectStore`] holds exactly one upload handle and one open download source. Two
+/// simultaneous uploads would interleave into the same file and commit a corrupt object.
+///
+/// It carries **who holds it** rather than merely whether it is held (issue #1039), because one
+/// transfer at a time is not one transport at a time: both links can be connected at once, and each
+/// tears its own state down when it drops. A bare flag meant a phone walking out of range released
+/// a gate the cable was holding mid-set. The rule — and the regression — live in
+/// [`obc_app::link_gate`], where they can be tested.
+pub(crate) static TRANSFER_ACTIVE: obc_app::TransferGate = obc_app::TransferGate::new();
+
+/// This wire's identity to the gate. [`Transport`] is the classifier's vocabulary and
+/// [`obc_app::GateOwner`] is the gate's; the two are the same fact and this is the one place they
+/// meet.
+pub(crate) const fn gate_owner(transport: Transport) -> obc_app::GateOwner {
+    match transport {
+        Transport::Ble => obc_app::GateOwner::Ble,
+        Transport::Usb => obc_app::GateOwner::Usb,
+    }
+}
 
 // ============================ Status-message vocabulary ============================
 

@@ -81,7 +81,6 @@ pub use sensors::{
 };
 
 use core::mem::MaybeUninit;
-use core::sync::atomic::Ordering;
 
 use defmt::{info, unwrap, warn};
 use embassy_executor::Spawner;
@@ -597,11 +596,17 @@ pub async fn run(
                     // The drop may have cancelled the data plane mid-transfer (at an await): discard any
                     // in-flight upload + release the store's open handles, clear the one-transfer gate, and
                     // drain any latched arm/abort so the next connection starts clean (uploads restart).
+                    //
+                    // Everything here is scoped to **this** wire, and none of it is incidental
+                    // (issue #1039): the cable can be uploading while the phone drops off. The gate
+                    // is released only if the radio was the one holding it, `TRANSFER_ARM` /
+                    // `TRANSFER_ABORT` are this plane's own signals (USB has its own pair), and
+                    // `link_reset` closes the temp handle only if the temp is what is open.
                     {
                         let mut guard = shared.lock().await;
                         store.borrow_mut().link_reset(&mut guard);
                     }
-                    TRANSFER_ACTIVE.store(false, Ordering::Relaxed);
+                    TRANSFER_ACTIVE.release(crate::link::gate_owner(crate::link::Transport::Ble));
                     TRANSFER_ARM.reset();
                     TRANSFER_ABORT.reset();
                     publish(|s| {

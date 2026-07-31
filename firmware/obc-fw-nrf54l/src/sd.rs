@@ -189,6 +189,29 @@ pub const MAP_FREE_HEADROOM: u64 = 16 << 20;
 /// promotes it. Truncated-and-reused per upload.
 const UPLOAD_TMP: &str = "UPLOAD.TMP";
 
+/// Which upload path owns [`Storage::open_upload`] (issue #1039).
+///
+/// There is exactly one streaming handle because there is exactly one transfer
+/// ([`crate::link::TRANSFER_ACTIVE`]), but "one transfer" is not "one transport": both links can be
+/// *connected* at once, and each tears its own state down when it drops. Before this tag, the temp
+/// path's [`upload_abort`](Storage::upload_abort) — which every link teardown runs, on **either**
+/// wire — closed whatever handle happened to be open. A phone walking out of range therefore closed
+/// the file the cable was streaming a map or a multi-gigabyte volume set into, and the next append
+/// failed into a discard that deleted it.
+///
+/// So the handle says who it belongs to, and a teardown only closes its own. The alternative —
+/// three handle slots — would encode the same fact with more state and one more way for the slots
+/// to disagree with the one-transfer gate.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum UploadOwner {
+    /// `/routes/UPLOAD.TMP`: routes, trips and firmware images, staged and then promoted.
+    Temp,
+    /// A single map streaming straight into its final `MP{id}.OBM` with the magic held back (#927).
+    Map,
+    /// One file of a volume set — a shard or the manifest (`OBCA_Spec.md` §5, #1039).
+    Set,
+}
+
 /// The staged firmware update in the **card root** (epic #615, locked: 8.3-safe, no LFN — the
 /// same file contract the future LM20 USB-MSC epic exposes). Sideloaded by the user (or, S6, the
 /// phone); the armer only ever reads it.
@@ -500,8 +523,11 @@ pub struct Storage {
     /// open file (`FileAlreadyOpen`, even ReadOnly), which would silently drop the route from
     /// the catalog (issue #480).
     open_object: Option<(ShortFileName, RawFile, u32)>,
-    /// The in-flight BLE upload's open [`UPLOAD_TMP`] handle.
-    open_upload: Option<RawFile>,
+    /// The in-flight upload's open file handle **and which path owns it** — the temp staging file,
+    /// a single map's final `MP{id}.OBM`, or one file of a volume set. See [`UploadOwner`]: the tag
+    /// is what stops one transport's teardown closing a handle the other transport is streaming
+    /// through (issue #1039).
+    open_upload: Option<(RawFile, UploadOwner)>,
     /// The loaded map's display name — its filename stem, captured in [`open_map`](Storage::open_map)
     /// (T8 item 6). Empty until a map opens; the System settings screen renders it (`grimsel · v10`)
     /// via [`App::set_map_info`](obc_app::App::set_map_info).
@@ -1713,6 +1739,14 @@ impl Storage {
     /// map and reclaimable — never a manifest pointing at files that are gone. Half-deleting the
     /// shards of a set whose manifest is still there would produce exactly that broken state.
     ///
+    /// **A manifest that is not there is not a manifest that survived.** `NotFound` is the one
+    /// failure that proves the opposite of the rule — there is nothing left to point at the shards —
+    /// so it continues rather than stopping (issue #1039). Treating it as a refusal made §5.4's
+    /// replace-clear a no-op in exactly the case it exists for: an id carrying shards and no
+    /// manifest. The upload that followed would write its own manifest over that id and the
+    /// previous occupant's higher-index shards would be stranded **permanently** — shielded from
+    /// the orphan sweep by the valid manifest beside them, and named by nothing.
+    ///
     /// Returns how many files were reclaimed.
     fn delete_set(&mut self, id: u16) -> usize {
         let Some(plan) = obc_formats::obcs::delete_plan(id) else {
@@ -1724,6 +1758,7 @@ impl Storage {
             let Some(name) = ShortFileName::create_from_str(derived.as_str()).ok() else { continue };
             match self.vmgr.delete_file_in_dir(self.root, &name) {
                 Ok(()) => removed += 1,
+                Err(embedded_sdmmc::Error::NotFound) => {}
                 Err(e) if step == 0 => {
                     defmt::warn!(
                         "SD: could not delete the set manifest {} ({}) — leaving its shards alone",
@@ -1732,12 +1767,17 @@ impl Storage {
                     );
                     return 0;
                 }
-                // A shard name that is not there is the ordinary case: the plan runs to the 32-shard
-                // cap so a smaller replacement also sweeps the old set's tail.
+                // Any other per-shard failure: the plan runs to the 32-shard cap, so most names are
+                // simply absent, and one that refuses to go is left for the next sweep rather than
+                // aborting the reclaim of the rest.
                 Err(_) => {}
             }
         }
-        defmt::info!("SD: removed volume set MS{=u16} ({=usize} files)", id, removed);
+        // Silent when there was nothing under this id — a first upload clears its freshly minted id
+        // before it writes, and "removed volume set MS7 (0 files)" describes nothing that happened.
+        if removed > 0 {
+            defmt::info!("SD: removed volume set MS{=u16} ({=usize} files)", id, removed);
+        }
         removed
     }
 
@@ -2378,7 +2418,7 @@ impl Storage {
         let Some(dir) = self.routes_dir_or_create() else { return false };
         match self.vmgr.open_file_in_dir(dir, UPLOAD_TMP, Mode::ReadWriteCreateOrTruncate) {
             Ok(file) => {
-                self.open_upload = Some(file);
+                self.open_upload = Some((file, UploadOwner::Temp));
                 true
             }
             Err(e) => {
@@ -2388,25 +2428,43 @@ impl Storage {
         }
     }
 
-    /// Append CoC payload bytes to the open temp.
+    /// Append streamed payload bytes to whichever file the in-flight upload opened — the temp, a
+    /// map, or one file of a set. The [`UploadOwner`] does not gate the *write*: the data plane
+    /// that opened the handle is the only thing that appends to it.
     pub fn upload_append(&mut self, bytes: &[u8]) -> bool {
-        let Some(file) = self.open_upload else { return false };
+        let Some((file, _)) = self.open_upload else { return false };
         self.vmgr.write(file, bytes).is_ok()
     }
 
-    /// Flush + close the temp handle, keeping the bytes on the card — the step [`upload_commit`]
-    /// runs before it re-opens the temp to validate + promote it.
+    /// Flush + close the streaming handle, keeping the bytes on the card — the step
+    /// [`upload_commit`] runs before it re-opens the temp to validate + promote it, and every map /
+    /// set commit runs before it re-opens its own file to patch the magic in.
     pub fn upload_close(&mut self) {
-        if let Some(file) = self.open_upload.take() {
+        if let Some((file, _)) = self.open_upload.take() {
             let _ = self.vmgr.flush_file(file);
             let _ = self.vmgr.close_file(file);
         }
     }
 
-    /// Abort: close and delete the partial.
+    /// Abort the **temp** upload: close and delete the partial.
+    ///
+    /// A handle owned by a map or a volume set is left strictly alone (issue #1039), and that is
+    /// the whole reason [`UploadOwner`] exists. This runs from `ObjectStore::link_reset`, which
+    /// runs on *either* transport's teardown — so without the check, a phone dropping off the
+    /// radio closed the file the cable was streaming a multi-gigabyte set into, and the failing
+    /// append that followed discarded the set. The cable's own teardown discards what the cable
+    /// owns; nothing else may.
     pub fn upload_abort(&mut self) {
-        if let Some(file) = self.open_upload.take() {
-            let _ = self.vmgr.close_file(file);
+        match self.open_upload {
+            Some((_, owner)) if owner != UploadOwner::Temp => {
+                defmt::debug!("SD: upload_abort ignored — the open handle belongs to a map/set stream");
+                return;
+            }
+            Some((file, _)) => {
+                self.open_upload = None;
+                let _ = self.vmgr.close_file(file);
+            }
+            None => {}
         }
         if let Some(dir) = self.routes_dir {
             let _ = self.vmgr.delete_file_in_dir(dir, UPLOAD_TMP);
@@ -2628,7 +2686,7 @@ impl Storage {
                     let _ = self.vmgr.close_file(file);
                     return false;
                 }
-                self.open_upload = Some(file);
+                self.open_upload = Some((file, UploadOwner::Map));
                 defmt::info!("SD: map upload streaming into /MP{=u16}.OBM (magic held back)", id);
                 true
             }
@@ -2696,7 +2754,7 @@ impl Storage {
     /// chain walk, not a rewrite — so the sweep is left to do only what nothing running can: clean up
     /// after a power cut.
     pub fn map_upload_abort(&mut self, id: u16) {
-        if let Some(file) = self.open_upload.take() {
+        if let Some((file, _)) = self.open_upload.take() {
             let _ = self.vmgr.close_file(file);
         }
         let Some(name) = map_file_name_for(id) else { return };
@@ -2748,19 +2806,29 @@ impl Storage {
     /// commit that never finished. The root twin of [`is_aborted_commit`](Self::is_aborted_commit);
     /// an unreadable file is **not** claimed (a bus glitch must never green-light a delete).
     fn is_zero_magic_root(&self, name: &ShortFileName) -> bool {
-        matches!(self.root_magic(name), Some([0, 0, 0, 0]))
+        matches!(self.root_magic(name), obc_app::RootMagic::Bytes([0, 0, 0, 0]))
     }
 
-    /// A card-root file's first four bytes, or `None` when it cannot be opened or is shorter than
-    /// four bytes. The raw read behind [`is_zero_magic_root`], kept separate because the set sweep
-    /// feeds it to a pure verdict (`obc_app::sweep_verdict`) that distinguishes "zeroed" from
-    /// "unreadable" and treats only the first as its own.
-    fn root_magic(&self, name: &ShortFileName) -> Option<[u8; 4]> {
-        let file = self.vmgr.open_file_in_dir(self.root, name, Mode::ReadOnly).ok()?;
+    /// What reading a card-root file's first four bytes produced. The raw read behind
+    /// [`is_zero_magic_root`], kept separate because the set sweep feeds it to a pure verdict
+    /// (`obc_app::sweep_verdict`) that needs all three answers apart.
+    ///
+    /// The distinction that matters is **short vs unopenable** (issue #1039): a file that opens and
+    /// holds fewer than four bytes is one this device created and did not get to write, and folding
+    /// it in with "the card refused" left that state on the card forever.
+    fn root_magic(&self, name: &ShortFileName) -> obc_app::RootMagic {
+        let Ok(file) = self.vmgr.open_file_in_dir(self.root, name, Mode::ReadOnly) else {
+            return obc_app::RootMagic::Unreadable;
+        };
         let mut magic = [0u8; 4];
-        let read = matches!(self.vmgr.read(file, &mut magic), Ok(4));
+        let read = self.vmgr.read(file, &mut magic);
         let _ = self.vmgr.close_file(file);
-        read.then_some(magic)
+        match read {
+            Ok(4) => obc_app::RootMagic::Bytes(magic),
+            // A short read is the file's whole length: `read` fills what there is and returns it.
+            Ok(_) => obc_app::RootMagic::Short,
+            Err(_) => obc_app::RootMagic::Unreadable,
+        }
     }
 
     // ==================== the volume-set upload (issue #1039) ====================
@@ -2797,10 +2865,22 @@ impl Storage {
     /// One past the highest volume-set id the card carries — the set twin of
     /// [`next_map_id_from_scan`](Self::next_map_id_from_scan), over the `MS{id}` namespace.
     ///
-    /// Counts only sets the scan **listed**, i.e. ones that validate whole (§5.3). A torn upload's
-    /// manifest is zero-magic and therefore invisible, so a retry re-derives the same id and
-    /// reclaims what the first attempt left — the same property that stops the map path leaking an
-    /// id per interruption, reached the same way.
+    /// Counts **every `MS`-named entry the card root holds** — manifests and shards alike, listed
+    /// or not (issue #1039). The obvious cheaper rule, "one past the highest set the catalog
+    /// listed", is wrong in the one case it has to be right about: a set arriving over a card
+    /// reader, shards first, has no manifest yet, so it is listed nowhere — and it is the exact
+    /// shape [`sweep_aborted_sets`](Self::sweep_aborted_sets) goes out of its way to spare. Minting
+    /// its id and then clearing it (§5.4's replace rule) would delete, at the next upload, the map
+    /// the sweep deliberately protected an hour earlier.
+    ///
+    /// So the allocator's question is not "which ids are maps" but "which ids are **spoken for**",
+    /// and a filename is the whole answer. That also makes it cheap: names come off the directory
+    /// entries, where the old rule opened and header-read every shard of every set.
+    ///
+    /// The cost, stated: an id occupied by debris stays occupied until something reclaims it — but
+    /// only until the *boot*, because the sweep runs before any upload can ask, and a torn upload
+    /// inside a session is deleted the moment the cable drops. No id is leaked across a restart,
+    /// which is the property the no-RRAM-floor decision rests on.
     ///
     /// Saturates at `MAX_SET_ID + 1`, which is deliberately **one past** the largest derivable name
     /// rather than at it: the caller's exhaustion test is `id > MAX_SET_ID`, so clamping to 999
@@ -2809,13 +2889,14 @@ impl Storage {
     /// ever be refused.
     pub fn next_set_id_from_scan(&self) -> u16 {
         let mut next: u32 = 0;
-        let mut maps: Vec<MapSummary, MAX_MAPS> = Vec::new();
-        self.scan_maps_into(&mut maps);
-        for m in maps.iter().filter(|m| m.shards.is_some()) {
-            if let Some(id) = m.id {
+        self.iter_dir_lfn(self.root, |e, _| {
+            let short = short_name_bytes(&e.name);
+            let id = obc_formats::obcs::parse_manifest_name(&short)
+                .or_else(|| obc_formats::obcs::parse_shard_name(&short).map(|(id, _)| id));
+            if let Some(id) = id {
                 next = next.max(id as u32 + 1);
             }
-        }
+        });
         next.min(obc_formats::obcs::MAX_SET_ID as u32 + 1) as u16
     }
 
@@ -2866,7 +2947,7 @@ impl Storage {
                     let _ = self.vmgr.close_file(file);
                     return false;
                 }
-                self.open_upload = Some(file);
+                self.open_upload = Some((file, UploadOwner::Set));
                 defmt::info!("SD: shard {=usize} of MS{=u16} streaming (magic held back)", index, id);
                 true
             }
@@ -2925,7 +3006,7 @@ impl Storage {
                     let _ = self.vmgr.close_file(file);
                     return false;
                 }
-                self.open_upload = Some(file);
+                self.open_upload = Some((file, UploadOwner::Set));
                 true
             }
             Err(e) => {
@@ -3014,7 +3095,7 @@ impl Storage {
     /// `MS{id}S{kk}.OBM`. The set's session survives — a shard that failed its CRC is one file the
     /// host can re-send, and the gigabytes already committed beside it are still good.
     pub fn set_shard_discard(&mut self, id: u16, index: usize) {
-        if let Some(file) = self.open_upload.take() {
+        if let Some((file, _)) = self.open_upload.take() {
             let _ = self.vmgr.close_file(file);
         }
         let Some(derived) = obc_formats::obcs::shard_name(id, index) else { return };
@@ -3038,7 +3119,7 @@ impl Storage {
     /// magnitude: a set is *gigabytes*, and a retry mints a fresh id only if this one is still
     /// occupied, so leaving the corpse would strand the card's whole free space in a few attempts.
     pub fn set_upload_abort(&mut self, id: u16) {
-        if let Some(file) = self.open_upload.take() {
+        if let Some((file, _)) = self.open_upload.take() {
             let _ = self.vmgr.close_file(file);
         }
         let removed = self.delete_set(id);
@@ -3052,11 +3133,12 @@ impl Storage {
     /// Two passes, both keyed on the same held-back-magic proof the map sweep uses, because a set
     /// leaves two distinguishable kinds of debris:
     ///
-    /// 1. **A zero-magic `MS{id}.OBS`** — the in-flight token [`set_upload_begin`](Self::set_upload_begin)
-    ///    writes before the first shard. It says "this device was writing set `id` and did not
+    /// 1. **An uncommitted `MS{id}.OBS`** — the in-flight token [`set_upload_begin`](Self::set_upload_begin)
+    ///    writes before the first shard: four zero bytes, a torn magic patch, or (its own create
+    ///    without its write) nothing at all. It says "this device was writing set `id` and did not
     ///    finish", so the whole set goes through `delete_plan`, shards included, magic-intact or
     ///    not. This is the case that reclaims the gigabytes.
-    /// 2. **A zero-magic orphan shard** — an `MS{id}S{kk}.OBM` with no `MS{id}.OBS` beside it at
+    /// 2. **An uncommitted orphan shard** — an `MS{id}S{kk}.OBM` with no `MS{id}.OBS` beside it at
     ///    all, whose own magic never landed. The residue of a torn transfer whose token delete
     ///    landed and whose shard delete did not.
     ///
@@ -3065,40 +3147,52 @@ impl Storage {
     /// mid-copy, and deleting it would destroy a map that was minutes from working, unrecoverably.
     /// The rule lives in `obc_app::orphan_shard_verdict` where it is tested; the cost of erring
     /// this way is some dead bytes the next upload's supersede pass reclaims.
+    ///
+    /// **The scan keeps ids, not entries.** A bounded list of directory entries is the wrong
+    /// structure here and was a real bug: it filled with the *valid* sets' names, dropped whatever
+    /// came after — the same entries every boot, since the directory order is stable — and the torn
+    /// set behind them was never examined at all. Ids fit a bitmap over the whole namespace (§5.2
+    /// caps it at 1,000, so 125 bytes covers every set that can exist), and every name is derivable
+    /// from an id, so nothing has to be remembered to be reclaimed.
     #[inline(never)]
     pub fn sweep_aborted_sets(&mut self) -> usize {
-        /// Orphan shards examined per sweep. The sweep runs every boot, so a card holding more
-        /// than this simply takes a second one; the cap is what keeps the frame bounded.
-        const MAX_ORPHANS: usize = 16;
-        let mut manifests: Vec<(ShortFileName, u16), MAX_MAPS> = Vec::new();
-        let mut shards: Vec<(ShortFileName, u16), MAX_ORPHANS> = Vec::new();
+        let mut manifests = SetIdBits::new();
+        let mut shard_ids = SetIdBits::new();
         self.iter_dir_lfn(self.root, |e, long| {
             if is_set_manifest_entry(e, long) {
                 if let Some(id) = set_manifest_id(&e.name) {
-                    let _ = manifests.push((e.name.clone(), id));
+                    manifests.set(id);
                 }
             } else if let Some((id, _)) = obc_formats::obcs::parse_shard_name(&short_name_bytes(&e.name)) {
-                let _ = shards.push((e.name.clone(), id));
+                shard_ids.set(id);
             }
         });
 
         let mut swept = 0usize;
-        for (name, id) in &manifests {
-            if obc_app::sweep_verdict(self.root_magic(name)) == obc_app::SweepVerdict::Reclaim {
+        for id in manifests.iter() {
+            let Some(name) = derived_short_name(obc_formats::obcs::manifest_name(id)) else { continue };
+            if obc_app::sweep_verdict(self.root_magic(&name)) == obc_app::SweepVerdict::Reclaim {
                 defmt::info!("SD: sweeping the abandoned volume set MS{=u16} (its manifest never committed)", id);
-                swept += self.delete_set(*id);
+                swept += self.delete_set(id);
             }
         }
-        for (name, id) in &shards {
-            if manifests.iter().any(|(_, m)| m == id) {
+        // Orphans: an id carrying shards and no manifest at all. Their names are derived from the
+        // id (§5.2), so the 32 possible ones are probed rather than remembered — the same thing
+        // `delete_set` does, and the reason neither needs a list that can overflow. Only ids the
+        // scan actually saw a shard for are probed, and a card in that state was hand-made.
+        for id in shard_ids.iter() {
+            if manifests.has(id) {
                 continue; // not an orphan: its set's manifest is (or was) there
             }
-            if obc_app::orphan_shard_verdict(self.root_magic(name)) != obc_app::SweepVerdict::Reclaim {
-                continue;
-            }
-            if self.vmgr.delete_file_in_dir(self.root, name).is_ok() {
-                defmt::info!("SD: swept the orphan shard {}", defmt::Debug2Format(name));
-                swept += 1;
+            for index in 0..obc_formats::obcs::MAX_SHARDS {
+                let Some(name) = derived_short_name(obc_formats::obcs::shard_name(id, index)) else { continue };
+                if obc_app::orphan_shard_verdict(self.root_magic(&name)) != obc_app::SweepVerdict::Reclaim {
+                    continue;
+                }
+                if self.vmgr.delete_file_in_dir(self.root, &name).is_ok() {
+                    defmt::info!("SD: swept the orphan shard {=usize} of MS{=u16}", index, id);
+                    swept += 1;
+                }
             }
         }
         swept
@@ -3688,6 +3782,44 @@ fn is_set_manifest_entry(e: &embedded_sdmmc::DirEntry, long: Option<&str>) -> bo
 /// Bind one FAT directory entry to the pure classifier.
 fn classify_entry(e: &embedded_sdmmc::DirEntry, long: Option<&str>) -> obc_app::MapEntry {
     obc_app::classify_map_entry(&short_name_bytes(&e.name), long, e.attributes.is_directory())
+}
+
+/// A derived `obcs` filename as a [`ShortFileName`], or `None` if it has neither (an id past the
+/// namespace, or a name FAT would refuse). The one-line bridge every set path needs, since §5.2
+/// derives all of them from `(id, index)` rather than storing them.
+fn derived_short_name(derived: Option<obc_formats::obcs::FileName>) -> Option<ShortFileName> {
+    ShortFileName::create_from_str(derived?.as_str()).ok()
+}
+
+/// One bit per volume-set id — the whole `0..=MAX_SET_ID` namespace in 125 bytes (issue #1039).
+///
+/// The card-root scan needs to remember *which set ids it saw* while it holds the directory
+/// iterator's borrow, and cannot open a file to decide anything until the iteration is over. A
+/// bounded list of entries was the first answer and the wrong one: it fills with whatever the
+/// directory yields first — stably, so the same entries every boot — and silently drops the rest.
+/// A bitmap over an id space this small cannot drop anything, and every filename is derivable from
+/// its id, so nothing else needs remembering.
+struct SetIdBits([u8; (obc_formats::obcs::MAX_SET_ID as usize + 8) / 8]);
+
+impl SetIdBits {
+    const fn new() -> SetIdBits {
+        SetIdBits([0; (obc_formats::obcs::MAX_SET_ID as usize + 8) / 8])
+    }
+
+    fn set(&mut self, id: u16) {
+        if let Some(byte) = self.0.get_mut(id as usize / 8) {
+            *byte |= 1 << (id % 8);
+        }
+    }
+
+    fn has(&self, id: u16) -> bool {
+        self.0.get(id as usize / 8).is_some_and(|byte| byte & (1 << (id % 8)) != 0)
+    }
+
+    /// The ids that are set, ascending.
+    fn iter(&self) -> impl Iterator<Item = u16> + '_ {
+        (0..=obc_formats::obcs::MAX_SET_ID).filter(|&id| self.has(id))
+    }
 }
 
 /// A short name as the `BASE.EXT` bytes `obc_formats::obcs`' filename parsers take. Both halves
