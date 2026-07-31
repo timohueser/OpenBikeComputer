@@ -15,10 +15,49 @@
  * message shape.
  *
  * **This file is plumbing, not UI.** It is the typed surface P4c builds the assembly screen on; it
- * holds no state beyond the memoized module load.
+ * holds no state beyond the memoized module load and a guard against two assemblies at once.
+ *
+ * ## Threading: this must run in a Web Worker
+ *
+ * {@link assembleCells} looks `async`, but the assembly itself is **one synchronous wasm call**.
+ * Nothing yields inside it: a country-scale run is ~20 s of straight-line compute (PR #1027's
+ * switzerland benchmark, 410 cells / 717 MB → 19.9 s), and the §4.6 nav rewrite alone is ~4 s. On
+ * the main thread that is a frozen tab — no repaint, no click handling, no spinner animation, and
+ * on some browsers a "page unresponsive" prompt. **Call this from a dedicated Worker.** (P4c owns
+ * the worker itself; this paragraph is the contract it is written against.)
+ *
+ * What follows from that, and it is the part a cancel button depends on:
+ *
+ * - **The UI's cancel is `worker.terminate()`.** The worker is blocked inside wasm for the whole
+ *   run, so it cannot receive a `postMessage` while the assembly is in flight — a cooperative flag
+ *   set from the main thread would only be read after the thing it was meant to stop had finished.
+ *   Terminating drops the worker's whole heap, which is exactly what an abandoned multi-gigabyte
+ *   assembly wants. Nothing is left half-written: the OBCS manifest is written last (OBCA §5.4), so
+ *   there is no set to clean up. (Reading a flag mid-run *is* possible with a `SharedArrayBuffer`,
+ *   but that needs the page served cross-origin-isolated — COOP `same-origin` + COEP
+ *   `require-corp` — which the hosted builder is not, and which would constrain every other asset
+ *   the page loads. Not worth it for a button that `terminate()` already implements.)
+ * - **The cooperative abort still has a job**, just not that one: it is for policies the worker runs
+ *   on *itself*, from inside the callback — a memory watchdog, a deadline, a "the tab went hidden
+ *   an hour ago" rule. That is why {@link AssembleProgress} returns `boolean | void`, and why an
+ *   abort surfaces as a clean `aborted` error rather than a dead worker.
+ * - **Progress crosses by `postMessage`.** The callback runs on the worker thread between wasm
+ *   steps, so posting `{phase, fraction}` from it is enough; the main thread renders. Structured
+ *   clone of a small object ~100 times a run costs nothing.
+ * - **Hand the finished files over as transfers.** `take()` returns a `Uint8Array` the worker owns;
+ *   post it with its buffer in the transfer list, one file at a time, or the set is copied.
  */
 
 import type { InitInput } from "./pkg/obc_web_assemble.js";
+
+/**
+ * Every code {@link AssembleErrorCode} can be, as a value — the runtime half of the same contract,
+ * so the type and the set that guards the boundary cannot drift apart.
+ *
+ * `bridge.test.ts` pins this list against `ErrorCode::as_str` in
+ * `apps/obc-web-assemble/src/driver.rs`, the way the phase list is pinned by running an assembly.
+ */
+export const ASSEMBLE_ERROR_CODES = ["input", "format", "capacity", "verify", "aborted", "io", "internal"] as const;
 
 /**
  * Why an assembly failed. Mirrors `ErrorCode::as_str` in `apps/obc-web-assemble/src/driver.rs` —
@@ -38,7 +77,7 @@ import type { InitInput } from "./pkg/obc_web_assemble.js";
  * - `io` — the byte source or sink failed.
  * - `internal` — a defect in the bridge, or the module failed to load. The message says so.
  */
-export type AssembleErrorCode = "input" | "format" | "capacity" | "verify" | "aborted" | "io" | "internal";
+export type AssembleErrorCode = (typeof ASSEMBLE_ERROR_CODES)[number];
 
 /** An assembly failure: a stable {@link AssembleErrorCode} plus the engine's own message. */
 export class AssembleError extends Error {
@@ -107,8 +146,16 @@ export interface AssembledFile {
     readonly role: "core" | "coarse" | "geometry" | "manifest";
     /** Lowercase-hex SHA-256 as the manifest records it; empty for the manifest itself. */
     readonly sha256: string;
+    /** The size at the moment the assembly finished — a transfer can be planned before it is paid
+     *  for. It does not change when the file is taken; the bytes do. */
     readonly byteLength: number;
-    /** Move the bytes to JS and free the wasm copy. A second call returns an empty array. */
+    /**
+     * Move the bytes to JS and free the wasm copy. **Once.** A second call throws `internal` rather
+     * than hand back an empty array: the natural retry shape (take, upload, catch, take again) would
+     * otherwise write a 0-byte shard to a card and call it a map. Keep what the first call returned.
+     *
+     * Also throws after {@link AssembleResult.release}.
+     */
     take(): Uint8Array;
 }
 
@@ -124,6 +171,11 @@ export interface AssembleResult {
      * Free everything still held in wasm memory: the assembler and any file whose bytes were not
      * taken. **Call this when you are done** — a set can be gigabytes, and wasm-bindgen objects are
      * not collected with their JS handles. `take()` on a released file throws.
+     *
+     * Idempotent. A result that is dropped without it is eventually freed by a
+     * `FinalizationRegistry` net (with a `console.warn`), but "eventually" is the garbage
+     * collector's word, not a plan: until then the set is still resident, and the next assembly is
+     * competing with it for the same 4 GiB.
      */
     release(): void;
 }
@@ -152,21 +204,34 @@ export interface AssembleSummary {
  * against the format's 4 GiB per-file ceiling; this prices the *run* against wasm32's 4 GiB address
  * space. A selection can pass one and fail the other. The model and its measured constants are
  * documented in `apps/obc-web-assemble/src/estimate.rs`.
+ *
+ * **How much to trust these numbers.** The model is a **linear extrapolation from a single measured
+ * run** (PR #1027's switzerland: 410 cells / 717 MB, peak RSS 1.73 GB), and {@link
+ * MemoryEstimate.budgetBytes} is a judgement rather than a measurement — browsers do not publish
+ * what they will grant, and an allocation wasm cannot serve aborts the module outright, with no
+ * error to render. So: a comfortable `fits: false` is reliable and is the case this exists for
+ * (refuse the impossible before a rider spends ten minutes downloading it); a `fits: true` with
+ * little headroom means "probably", not "yes". Present a near-budget verdict as a warning with the
+ * number, not as a green light — and never as a guarantee to the user.
  */
 export interface MemoryEstimate {
-    /** The engine's working set — dominated by the nav rewrite. */
+    /** The engine's working set — dominated by the nav rewrite. Measured 6.4 bytes resident per
+     *  byte of rebuilt nav section, on one run. */
     readonly engineBytes: number;
     /** The downloaded cells, resident for the whole run. */
     readonly inputBytes: number;
     /** The assembled set, resident until each file is taken (§4.8 needs it addressable). */
     readonly outputBytes: number;
+    /** The sum of the three. An estimate, not a measurement — see the interface docs. */
     readonly peakBytes: number;
-    /** The budget `fits` is measured against (3 GiB). */
+    /** The budget `fits` was measured against: 3 GiB unless `estimateMemory` was given an override.
+     *  A **desktop-shaped** default; a phone's per-tab allowance is far lower. */
     readonly budgetBytes: number;
-    /** wasm32's hard address space (4 GiB). */
+    /** wasm32's hard address space (4 GiB). Not the caller's to move. */
     readonly ceilingBytes: number;
     /** Negative when it does not fit — which is the number to show. */
     readonly headroomBytes: number;
+    /** `peakBytes <= budgetBytes`. A verdict, with the confidence the interface docs describe. */
     readonly fits: boolean;
 }
 
@@ -218,7 +283,45 @@ async function load(source?: InitInput): Promise<Bridge> {
 }
 
 /**
+ * Whether an assembly is in flight. One at a time, and the reason is arithmetic rather than
+ * correctness: each run holds its inputs *and* its outputs in the same 4 GiB linear memory, and the
+ * projection says a single country-scale assembly already spends three quarters of it. Two would
+ * abort the module — which is not an exception a caller can catch, but the whole worker dying.
+ *
+ * Set synchronously, before the first `await`, so a caller that fires two off without awaiting the
+ * first gets a diagnosable error rather than an interleaving.
+ */
+let assembling = false;
+
+/**
+ * The safety net under a forgotten {@link AssembleResult.release}. It holds the wasm handle (never
+ * the result object — that would keep it alive forever and defeat the point), so when a result is
+ * collected with files still in wasm memory, they are freed and the omission is reported once.
+ *
+ * A net, not a mechanism: collection happens whenever the engine feels like it, and until then a
+ * multi-gigabyte set is still resident. `release()` is still the contract.
+ */
+const abandoned =
+    typeof FinalizationRegistry === "undefined"
+        ? null
+        : new FinalizationRegistry<{ free: () => void; name: string }>((held) => {
+              console.warn(
+                  `obc-web-assemble: an AssembleResult (${held.name}) was dropped without release(). Freeing it now — ` +
+                      "but call release() when you are done with a set, or its bytes stay in wasm memory until a GC " +
+                      "that may never come.",
+              );
+              try {
+                  held.free();
+              } catch {
+                  // Already freed, or the module is gone. Either way there is nothing left to leak.
+              }
+          });
+
+/**
  * Assemble `cells` into one `.obcm` or a volume set.
+ *
+ * **Run this in a Web Worker** — the call blocks for the whole assembly. See the threading contract
+ * in this module's header, including why the UI's cancel button is `worker.terminate()`.
  *
  * Cells cross into wasm memory once, as they are added — the caller may drop its own references
  * immediately. The §4.8 verify pass runs before this resolves, so a result is a set the real reader
@@ -226,6 +329,8 @@ async function load(source?: InitInput): Promise<Bridge> {
  *
  * The result keeps its files in wasm memory until each is `take()`n; call {@link
  * AssembleResult.release} when done, or the set stays resident.
+ *
+ * Only one assembly may be in flight at a time; a second overlapping call throws `internal`.
  *
  * @throws {AssembleError} carrying the engine's own message; see {@link AssembleErrorCode}.
  */
@@ -236,9 +341,17 @@ export async function assembleCells(
     options: AssembleOptions = {},
     onProgress?: AssembleProgress,
 ): Promise<AssembleResult> {
-    const mod = await ensure();
+    if (assembling) {
+        throw new AssembleError(
+            "internal",
+            "An assembly is already running. Two at once do not fit in one wasm heap — wait for the first to " +
+                "resolve, or run the second in its own worker.",
+        );
+    }
+    assembling = true;
     let assembler: InstanceType<Bridge["Assembler"]> | null = null;
     try {
+        const mod = await ensure();
         assembler = new mod.Assembler(schemaJson, skinJson, JSON.stringify(options));
         for (const c of cells) {
             assembler.addCell(c.id, c.band, c.partial ?? false, c.bytes);
@@ -255,16 +368,39 @@ export async function assembleCells(
                 name: owner.fileName(i),
                 role: owner.fileRole(i) as AssembledFile["role"],
                 sha256: owner.fileSha256(i),
+                // Snapshotted here, so it keeps reporting the file's real size after `take()` has
+                // moved the bytes out and the wasm-side length has become 0.
                 byteLength: owner.fileByteLength(i),
-                take: () => owner.takeFile(i),
+                take: () => {
+                    try {
+                        return owner.takeFile(i);
+                    } catch (cause) {
+                        throw asAssembleError(cause);
+                    }
+                },
             });
         }
-        return { files, warnings, summary, release: () => owner.free() };
+        let freed = false;
+        const result: AssembleResult = {
+            files,
+            warnings,
+            summary,
+            release: () => {
+                if (freed) return;
+                freed = true;
+                abandoned?.unregister(result);
+                owner.free();
+            },
+        };
+        abandoned?.register(result, { free: () => owner.free(), name: summary.manifest }, result);
+        return result;
     } catch (cause) {
         // Only on the failure path: a successful assembly's `Assembler` stays alive because the
         // returned `take()` closures read from it.
         assembler?.free();
         throw asAssembleError(cause);
+    } finally {
+        assembling = false;
     }
 }
 
@@ -272,12 +408,28 @@ export async function assembleCells(
  * Project the peak memory of assembling a selection from the catalog's own byte totals, **before**
  * the download: the selected `network`-band cells (nav + POIs, no geometry) and every selected cell.
  *
- * Loads the wasm module, which is the only place the model's constants live — there is no second
- * copy of them here to drift.
+ * `budgetBytes` overrides the number the {@link MemoryEstimate.fits} verdict is measured against.
+ * The default is 3 GiB, a **desktop** judgement; a caller that knows it is on a phone should pass
+ * what that device will plausibly grant, because the mobile failure mode is worse than a slow tab —
+ * the browser evicts the whole page under memory pressure and the rider loses the download too, with
+ * no error to show for it. Anything non-finite or non-positive falls back to the default.
+ *
+ * **This loads the wasm module** — ~180 KB gzipped, for what is three multiplications. That is
+ * deliberate: the constants live in exactly one place (`estimate.rs`, next to the benchmark they
+ * were measured on) and a copy here is a copy that drifts silently, which for a *refusal threshold*
+ * is the expensive kind of wrong. The cost is also mostly not wasted — the call site is the
+ * selection screen, and a selection that fits is about to need this module anyway, so the fetch
+ * doubles as the prefetch {@link initAssemble} exists to encourage. A caller that wants the estimate
+ * without paying for it should gate on the catalog's byte totals first and only ask here once a
+ * selection is plausible.
  */
-export async function estimateMemory(networkBandBytes: number, totalCellBytes: number): Promise<MemoryEstimate> {
+export async function estimateMemory(
+    networkBandBytes: number,
+    totalCellBytes: number,
+    budgetBytes?: number,
+): Promise<MemoryEstimate> {
     const mod = await ensure();
-    return mod.obc_assemble_estimate(networkBandBytes, totalCellBytes) as unknown as MemoryEstimate;
+    return mod.obc_assemble_estimate(networkBandBytes, totalCellBytes, budgetBytes) as unknown as MemoryEstimate;
 }
 
 function ensure(): Promise<Bridge> {
@@ -286,15 +438,12 @@ function ensure(): Promise<Bridge> {
     return loading as Promise<Bridge>;
 }
 
-const CODES: ReadonlySet<string> = new Set<AssembleErrorCode>([
-    "input",
-    "format",
-    "capacity",
-    "verify",
-    "aborted",
-    "io",
-    "internal",
-]);
+const CODES: ReadonlySet<AssembleErrorCode> = new Set(ASSEMBLE_ERROR_CODES);
+
+/** Whether a string the wasm side sent is one of the codes this module promises to throw. */
+function isAssembleErrorCode(value: string): value is AssembleErrorCode {
+    return (CODES as ReadonlySet<string>).has(value);
+}
 
 /**
  * Normalize whatever crossed the wasm boundary into an {@link AssembleError}.
@@ -307,8 +456,8 @@ function asAssembleError(cause: unknown): AssembleError {
     if (cause instanceof AssembleError) return cause;
     if (typeof cause === "object" && cause !== null) {
         const { code, message } = cause as { code?: unknown; message?: unknown };
-        if (typeof code === "string" && CODES.has(code) && typeof message === "string") {
-            return new AssembleError(code as AssembleErrorCode, message);
+        if (typeof code === "string" && isAssembleErrorCode(code) && typeof message === "string") {
+            return new AssembleError(code, message);
         }
     }
     return new AssembleError(
