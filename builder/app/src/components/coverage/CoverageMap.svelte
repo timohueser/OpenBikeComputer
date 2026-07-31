@@ -183,17 +183,26 @@
 
     // --- tools ------------------------------------------------------------
 
-    function setTool(next: Tool) {
+    let corridorPanel = $state<{ requestClose(): Promise<boolean> }>();
+
+    async function setTool(next: Tool) {
         const target = tool === next ? "none" : next;
+        if (tool === "corridor" && target !== "corridor") {
+            // The corridor panel may be holding uploaded routes — the one
+            // kind of tool state a user cannot get back by re-arming the tool
+            // — so leaving it asks first (#1041 A7). Declining keeps the
+            // panel; everything below only runs on a real close.
+            if (corridorPanel && !(await corridorPanel.requestClose())) return;
+            store.previewParts = [];
+        }
         if (tool === "box" && target !== "box") view?.cancelBoxDraw();
-        if (tool === "corridor" && target !== "corridor") store.previewParts = [];
         tool = target;
         if (target === "box") view?.armBoxDraw();
     }
 
     function onKey(e: KeyboardEvent) {
         if (e.key === "Escape" && tool !== "none") {
-            setTool("none");
+            void setTool("none");
         }
     }
 
@@ -288,7 +297,7 @@
 
     {#if tool === "corridor"}
         <div class="overlay corridor">
-            <CorridorPanel {store} onclose={() => setTool("none")} />
+            <CorridorPanel bind:this={corridorPanel} {store} onclose={() => void setTool("none")} />
         </div>
     {/if}
 
