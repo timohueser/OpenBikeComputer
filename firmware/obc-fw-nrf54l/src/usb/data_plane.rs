@@ -125,9 +125,16 @@ pub(crate) async fn run(
         // The endpoint went away (an unplug, or the host re-configured). Discard any in-flight
         // upload, release the store's open handles, clear the one-transfer gate, and drain any
         // latched arm/abort so the next enumeration starts clean.
+        //
+        // The set teardown is **here** rather than inside `link_reset`, because this is the one
+        // place that knows the *cable* is what went away: `link_reset` also runs on a BLE
+        // disconnect, and a phone walking out of range must not delete gigabytes the cable is
+        // mid-way through writing. Nothing survives an unplug — the set has no manifest, so it is
+        // not a map, and there is no way to resume it on the next enumeration (spec §1 principle 4).
         {
             let mut guard = shared.lock().await;
             store.borrow_mut().link_reset(&mut guard);
+            store.borrow_mut().set_upload_abort(&mut guard);
         }
         TRANSFER_ACTIVE.store(false, Ordering::Relaxed);
         TRANSFER_ARM.reset();
