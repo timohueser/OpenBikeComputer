@@ -326,7 +326,13 @@ host-tested `obc-ble` crate (`cargo test -p obc-ble`, pinned to `specs/vectors/`
   `set_upload_begin()` then runs the whole `delete_plan` first, which is §5.4's own replace-a-set
   rule. `/MAP.SEL` records which map
   the renderer streams from; a committed upload — single map or set — becomes that choice, effective
-  at the next boot (the map's tables are parsed once at startup and held for the session). Every ride Finish on the map build
+  at the next boot (the map's tables are parsed once at startup and held for the session). A set
+  mount opens and retains every shard, resolves one direct-read FAT extent table per shard, and
+  places `SetShards<11>` in `.bss`; the board therefore mounts at most **11 shards** even though the
+  file format permits 32. A larger set, or one whose shard extent table cannot be built and verified,
+  is shown as **MAP UNREADABLE** rather than partially mounted. Geometry renders through the same
+  app `MapScene` path as one `.obcm`; POIs, hours, the navigation graph and on-device routing stay on
+  the set's core shard. Every ride Finish on the map build
   writes `/tracks/RDnn.ORD` (byte-for-byte the S0 §7.2 ride object) — the only save artifact; the `ble`
   build just serves those. The id in each filename is recovered at boot and is what the app's
   synced-set keys on. A ride is deleted **only on the device** (its Rides screen, hold-to-delete);
@@ -355,6 +361,15 @@ host-tested `obc-ble` crate (`cargo test -p obc-ble`, pinned to `specs/vectors/`
   the map build (`synth` is fine indoors), reflash `ble`, sync pulls them; spot-check a decoded ride's
   totals in the app against the device's Paused ledger. Ids must survive a power cycle; the boot
   counter must increment across them.
+- **Volume-set map path (#1033)** — put a valid `MS{id}.OBS` plus all derived shards on the card (or
+  upload the set), ensure `/MAP.SEL` names the manifest, and boot the default image. RTT must report
+  one mounted set and retain every shard; ride a route across a geometry-shard boundary at fine zoom,
+  then zoom out onto the coarse shard. Roads, route ink, rider marker and guidance must remain
+  continuous through both transitions. Repeat with a missing shard and with a set over 11 shards:
+  both must stop at **MAP UNREADABLE**, never render the remaining files as a smaller map. This run
+  is also the RAM acceptance for #1033: the guarded release ELF leaves 41,952 B above linked
+  residents versus the last measured 35,808 B deep-path peak, so complete the ordinary
+  route-load → ride → finish/save path while watching for `STKOF`/HardFault.
 - **Pairing** — passkey card on the panel typed on the phone → bond lands; power-cycle / app
   restart / walk-away → silent reconnect, no dialog; reflash `ble` → still no dialog. A **second
   phone** is rejected while bonded (no passkey card, generic failure on the stranger). Re-pair path:
