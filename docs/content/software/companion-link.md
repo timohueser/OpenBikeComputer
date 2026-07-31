@@ -200,6 +200,51 @@ Four more rules fall out of the same size:
   cannot say where any of them came from. That is a gap in the protocol, not in
   the filesystem, and closing it means a new command rather than a new object.
 
+### A big map arrives in pieces, and the last one is the one that counts
+
+Past roughly Germany scale a map stops being a file. FAT32 caps one file at 4 GiB
+and the map format's own offsets are 32-bit, so a logical map becomes a **volume
+set**: a small manifest plus one to thirty-two ordinary map files ([more on the
+shape](../formats/#one-map-several-files)). Every interface still shows
+one map — that part is a rule, not a convention.
+
+Sending one is therefore several transfers instead of one, and the order matters
+in a way nothing else on this link does. The manifest is what says those files
+are one map, so it goes **last**: until it lands there is no map, only some large
+files no reader will open. That is the whole atomicity story, and it is the same
+held-back-magic trick a single map uses, one level up — a file whose first four
+bytes are missing is not a map, and a *set* whose manifest is missing is not one
+either.
+
+The interesting part is what the device does with that rule, because a rule
+addressed to the sender is not a guarantee. So the device enforces it:
+
+- **A manifest sent early is refused, not stored.** If any shard the manifest
+  will name has not arrived and checked out, the device says no at the announce —
+  before a single byte of it streams. A host that gets the order wrong finds out
+  in milliseconds rather than after several gigabytes.
+- **Each piece says which piece it is, and how many there are.** The count rides
+  every one of them, not just the first, and that buys the refusal that matters
+  most: a device that cannot hold enough files open for a set that large says so
+  at *shard zero*. Learning it at the manifest would mean learning it after the
+  whole upload.
+- **An interrupted set leaves nothing to explain.** The device writes the
+  manifest's name as a four-zero-byte placeholder before the first shard and fills
+  it in only at the very end, so a manifest with no magic is proof it was the one
+  writing — and a set copied on with a card reader never looks like that, because
+  a card reader copies a manifest that is already complete. A pulled cable deletes
+  the set immediately; a power cut is cleaned up at the next start-up. A rider
+  half-way through copying a set by hand is left strictly alone, which is the
+  direction to be wrong in: the alternative is deleting a map that was minutes
+  from working.
+
+Because each piece is its own file, re-sending one that failed costs that one
+piece rather than the set — the only kind of resume this link offers, and the one
+that matches what actually goes wrong. Resuming after the cable is pulled is a
+different thing and is not pretended at: the device would have to be able to say
+which pieces of which set it already holds, and that is a question the protocol
+does not yet have.
+
 Because the FAT layer the firmware uses creates 8.3 filenames only, a received
 map lands as `MP7.OBM` — the same trick the [reserved computed-route
 file](../architecture/#on-device-routing-the-router-seam) plays with `.OBR`, and the
