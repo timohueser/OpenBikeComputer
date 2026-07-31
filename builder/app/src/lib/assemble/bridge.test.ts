@@ -116,6 +116,9 @@ describe("assembleCells", () => {
         }
         expect(result.files.at(-1)?.role).toBe("manifest");
         expect(result.warnings).toEqual([]);
+        result.release();
+        // Released means released: a set can be gigabytes, so the handle must genuinely be dead.
+        expect(() => result.files[0].take()).toThrow();
     });
 
     it("reproduces the native CLI's bytes for a volume set, manifest last", async () => {
