@@ -60,6 +60,16 @@ impl MapScene for Reader<'_> {
     }
 
     #[inline]
+    fn marker_color(&self) -> u16 {
+        self.marker_color
+    }
+
+    #[inline]
+    fn backdrop_style(&self) -> Option<&obc_map_scene::Style> {
+        Reader::backdrop_style(self)
+    }
+
+    #[inline]
     fn diagnostics(&self) -> Result<Option<Diagnostics>, SceneReadError> {
         self.try_chunk_cache_stats()
             .map(|s| {

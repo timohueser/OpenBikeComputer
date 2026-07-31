@@ -509,6 +509,16 @@ impl MapScene for MountedSet<'_> {
         self.core.styles()[id as usize].as_ref()
     }
 
+    #[inline]
+    fn marker_color(&self) -> u16 {
+        self.core.marker_color
+    }
+
+    #[inline]
+    fn backdrop_style(&self) -> Option<&Style> {
+        self.core.backdrop_style()
+    }
+
     fn diagnostics(&self) -> Result<Option<Diagnostics>, SceneReadError> {
         self.core_reader()
             .try_chunk_cache_stats()

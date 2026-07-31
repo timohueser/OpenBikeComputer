@@ -72,7 +72,8 @@ pub use input::{Gesture, Gestures, DEFAULT_HOLD_MS, DEFAULT_TAP_MS};
 pub use input_plane::InputPlane;
 pub use link_gate::{GateOwner, TransferGate};
 pub use map_catalog::{
-    boot_fault, choose_map, classify_map_entry, is_superseded_upload, newest_set, MapChoice, MapEntry,
+    boot_fault, choose_map, classify_map_entry, is_superseded_upload, newest_set, set_retirement_keeper, MapChoice,
+    MapEntry,
 };
 pub use nav_profiles::NavProfiles;
 pub use next_ahead::{NextAhead, NextPoi, REFRESH_STEP_M};
