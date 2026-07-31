@@ -17,23 +17,46 @@
 //!   a test instead of silently mislabelling a bar.
 //! * Once the write loop starts, the store's own calls are unambiguous and take over:
 //!   [`ShardStore::write`] means bytes of geometry are moving, [`ShardStore::source`] means the §4.8
-//!   verify pass is reading a sealed shard back, and [`ShardStore::manifest`] means the set is done.
+//!   verify pass is about to read a sealed shard back, and [`ShardStore::manifest`] means the set is
+//!   done.
+//! * The verify pass itself is observed one level deeper. [`ShardStore::source`] is called **once
+//!   per shard** and everything after it happens inside the engine, so a bar driven by store calls
+//!   alone would sit still through §4.8 — which is **74 % of a measured country-scale run**, 14.7 s
+//!   of switzerland's 19.9 s. [`VerifySource`] therefore wraps the sealed shard the engine reads
+//!   back and reports from [`ByteSource::read_at`], which is the read-back's own inner loop.
 //!
 //! # Abort granularity
 //!
-//! [`Hooks::progress`] returns `true` to abort. It is called at every phase boundary and every time
-//! the accumulated write crosses [`PROGRESS_STEP`] of the projected output, i.e. roughly a hundred
-//! times over the write, and the abort takes effect at the **next store call**. A phase with no
-//! store calls in it — notably the nav rewrite, the engine's one long single-threaded stretch —
-//! therefore runs to completion before an abort requested inside it is honoured. Making that
-//! interruptible needs a seam inside the engine, not here.
+//! [`Hooks::progress`] returns `true` to abort. It is called at every phase boundary, every time the
+//! accumulated write crosses [`PROGRESS_STEP`] of the projected output, and every time the verify
+//! read-back crosses the same step — i.e. roughly a hundred times over write+verify, which together
+//! are ~80 % of a run.
+//!
+//! The request takes effect at the **next store call or verify read**, whichever comes first. Two
+//! consequences worth stating plainly, because a UI's cancel button depends on them:
+//!
+//! * **Inside write or verify, cancellation is prompt** — the very next `write`/`read_at` refuses,
+//!   and the refusal is reported as [`ErrorCode::Aborted`], never as a §4.8 [`ErrorCode::Verify`]
+//!   defect ([`map_error`] reads the abort flag before it reads the engine's error class, because
+//!   `verify_shard` turns any read failure into `Error::Verify` and a cancelled run must never look
+//!   like a broken assembler).
+//! * **Inside the nav rewrite it is not.** §4.6 makes no store calls at all, so an abort requested
+//!   during it is honoured when the phase ends. That is now the *only* uninterruptible stretch, and
+//!   at a measured 19.9 % of the run it is the shorter of the two the bridge used to be blind to.
+//!   Making it finer needs a seam inside the engine (see the PR's engine-API follow-ups).
+//!
+//! And the constraint that outranks all of this: [`assemble_cells`] **blocks**. A country-scale
+//! assembly is ~20 s of straight-line compute, so it must run in a **Web Worker** — see the contract
+//! paragraph in `builder/app/src/lib/assemble/bridge.ts`. A cooperative abort cannot be observed
+//! from a main thread that is itself blocked; the UI's cancel is `worker.terminate()`, and this seam
+//! is for the policies the worker runs *itself* (a memory watchdog, a deadline).
 
 use std::cell::RefCell;
 
-use obc_formats::io::ByteSource;
+use obc_formats::io::{ByteSource, SliceSource};
 use obcm_assemble::grid::CellId;
 use obcm_assemble::schema::{Schema, Skin};
-use obcm_assemble::{assemble, CellInput, Clock, Error, MemorySource, MemoryStore, Options, ShardPlan, ShardStore};
+use obcm_assemble::{assemble, CellInput, Clock, Error, MemorySource, Options, ShardPlan, ShardStore};
 
 /// One downloaded cell, as the caller hands it over: the catalog's identity plus the verified bytes.
 ///
@@ -194,7 +217,8 @@ impl Phase {
 }
 
 /// Emit progress when the overall fraction has advanced by at least this much — about a hundred
-/// callbacks over a whole assembly, plus one per phase boundary. Also the abort poll interval.
+/// callbacks over a whole assembly, plus one per phase boundary. Also the abort poll interval: the
+/// flag can only be *set* by a callback, so polling it wherever one might have fired is exhaustive.
 const PROGRESS_STEP: f64 = 0.01;
 
 /// The host's side of the two seams: a clock the engine can read, and a progress sink that doubles
@@ -348,6 +372,8 @@ struct Progress<'h> {
     ticks: u32,
     /// Bytes handed to [`ShardStore::write`] so far.
     written: u64,
+    /// Bytes the §4.8 read-back has pulled through [`VerifySource::read_at`] so far.
+    verified: u64,
     /// Projected output size — the sum of the input cells' bytes. Measured 717 MB in → 716 692 620
     /// B out on switzerland (PR #1027), i.e. 1.00: geometry is copied verbatim and the nav section
     /// is rewritten to about the size the cells' own nav sections had.
@@ -361,8 +387,13 @@ struct Progress<'h> {
 impl Progress<'_> {
     /// Emit `(phase, fraction)` unless it is within [`PROGRESS_STEP`] of the last one, and record an
     /// abort request. A phase change always emits.
+    ///
+    /// The reported fraction never goes below the last one. Both terms of
+    /// [`Progress::write_verify_fraction`] are individually monotone, so this only bites if a future
+    /// phase weight is re-tuned into an inconsistency — but a bar that goes backwards is the one
+    /// thing a caller may never be shown, so it is enforced here rather than reasoned about.
     fn emit(&mut self, phase: Phase, fraction: f64) {
-        let fraction = fraction.clamp(0.0, 1.0);
+        let fraction = fraction.clamp(0.0, 1.0).max(self.last);
         if phase == self.phase && (fraction - self.last).abs() < PROGRESS_STEP {
             return;
         }
@@ -373,11 +404,29 @@ impl Progress<'_> {
         }
     }
 
-    /// The write/verify loop's shared bar: both stages are driven by the same bytes, because verify
-    /// re-reads exactly what write just wrote.
-    fn write_fraction(&self) -> f64 {
-        let done = if self.projected == 0 { 1.0 } else { self.written as f64 / self.projected as f64 };
-        Phase::Write.prefix() + (Phase::Write.weight() + Phase::Verify.weight()) * done.clamp(0.0, 1.0)
+    /// The write/verify loop's bar. Two independent terms over one shared span, because the engine
+    /// **interleaves** the two — it writes shard *i*, verifies shard *i*, then writes shard *i+1* —
+    /// so a single counter would have to run backwards at every shard boundary.
+    ///
+    /// Both are measured against the same denominator, the input cells' byte count: geometry is
+    /// copied verbatim and the nav section is rewritten to about the size the cells' own had, so
+    /// output ≈ input (measured 1.00 on switzerland, PR #1027), and §4.8 reads that output back in
+    /// full through the real reader. Each term is a ratio of a counter that only grows to a constant,
+    /// hence monotone; both are clamped, so a projection that is off by a little costs bar accuracy
+    /// near the end of a phase and nothing else — the boundaries themselves are pinned by the store's
+    /// own calls, and `manifest` lands on exactly 1.0.
+    fn write_verify_fraction(&self) -> f64 {
+        Phase::Write.prefix()
+            + Phase::Write.weight() * self.ratio(self.written)
+            + Phase::Verify.weight() * self.ratio(self.verified)
+    }
+
+    /// `n` against the projected output, clamped into 0..=1. An assembly of nothing is complete.
+    fn ratio(&self, n: u64) -> f64 {
+        if self.projected == 0 {
+            return 1.0;
+        }
+        (n as f64 / self.projected as f64).clamp(0.0, 1.0)
     }
 }
 
@@ -410,6 +459,42 @@ impl Clock for HookedClock<'_, '_> {
     }
 }
 
+/// A sealed shard as the §4.8 verify pass reads it back — an owned buffer, plus the progress and
+/// abort seam **inside the read-back's own loop**.
+///
+/// This is [`obcm_assemble::MemorySource`] with two lines added, and those two lines are the reason
+/// this crate keeps its own store instead of delegating to [`obcm_assemble::MemoryStore`]:
+/// [`ShardStore::source`] hands the engine a `&dyn ByteSource` and everything §4.8 does happens
+/// behind it, so `read_at` is the only place a browser can learn that verify is moving — or tell it
+/// to stop.
+struct VerifySource<'a, 'h> {
+    bytes: Vec<u8>,
+    p: &'a RefCell<Progress<'h>>,
+}
+
+impl ByteSource for VerifySource<'_, '_> {
+    fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), obc_formats::io::Error> {
+        {
+            let mut p = self.p.borrow_mut();
+            p.verified += buf.len() as u64;
+            let at = p.write_verify_fraction();
+            // Throttled by `emit` to [`PROGRESS_STEP`], so the callback fires on the order of a
+            // hundred times over the pass however many reads the reader makes.
+            p.emit(Phase::Verify, at);
+            if p.aborted {
+                // The read-back's own error channel is all there is down here. `verify_shard` turns
+                // it into `Error::Verify`, which is why `map_error` reads the abort flag first.
+                return Err(obc_formats::io::Error::Io);
+            }
+        }
+        SliceSource(&self.bytes).read_at(offset, buf)
+    }
+
+    fn len(&self) -> u32 {
+        self.bytes.len() as u32
+    }
+}
+
 /// The in-memory [`ShardStore`], plus the progress and abort seam.
 ///
 /// In memory is not a shortcut: OBCA §4.8 requires every shard to be **read back through the real
@@ -417,7 +502,8 @@ impl Clock for HookedClock<'_, '_> {
 /// the browser has nowhere else to put it. It is also why the memory estimate below counts the
 /// output as resident.
 struct HookedStore<'a, 'h> {
-    inner: MemoryStore,
+    shards: Vec<VerifySource<'a, 'h>>,
+    manifest: Vec<u8>,
     p: &'a RefCell<Progress<'h>>,
 }
 
@@ -433,43 +519,56 @@ impl HookedStore<'_, '_> {
     }
 }
 
-impl ShardStore for HookedStore<'_, '_> {
+impl<'a, 'h> ShardStore for HookedStore<'a, 'h> {
     fn begin(&mut self, plan: &ShardPlan) -> obcm_assemble::Result<()> {
         self.check_abort()?;
         {
             let mut p = self.p.borrow_mut();
-            let at = p.write_fraction();
+            let at = p.write_verify_fraction();
             p.emit(Phase::Write, at);
         }
-        self.inner.begin(plan)
+        debug_assert_eq!(plan.index, self.shards.len());
+        let mut bytes = Vec::new();
+        // §5 computes a shard's exact size before a byte of it is written, so the browser can have
+        // the buffer it needs in one allocation instead of a doubling ladder whose last step
+        // transiently holds 1.5× a gigabyte-scale shard — memory the estimate does not model and a
+        // tab may not have contiguously. `try_` because a refusal here is recoverable: the write
+        // path would then grow the vector itself and fail (or not) exactly as it used to, whereas a
+        // plain `reserve_exact` would abort the whole module on a capacity a shard might never
+        // actually reach.
+        let _ = bytes.try_reserve_exact(usize::try_from(plan.bytes).unwrap_or(0));
+        self.shards.push(VerifySource { bytes, p: self.p });
+        Ok(())
     }
 
     fn write(&mut self, buf: &[u8]) -> obcm_assemble::Result<()> {
         {
             let mut p = self.p.borrow_mut();
             p.written += buf.len() as u64;
-            let at = p.write_fraction();
+            let at = p.write_verify_fraction();
             p.emit(Phase::Write, at);
         }
         // Checked *after* accounting so the callback that observes the abort request is the one
         // that also reports where it got to.
         self.check_abort()?;
-        self.inner.write(buf)
+        self.shards.last_mut().expect("a shard is open").bytes.extend_from_slice(buf);
+        Ok(())
     }
 
     fn seal(&mut self) -> obcm_assemble::Result<()> {
-        self.check_abort()?;
-        self.inner.seal()
+        self.check_abort()
     }
 
     fn source(&self, index: usize) -> obcm_assemble::Result<&dyn ByteSource> {
-        // The engine asks for a sealed shard for exactly one reason: the §4.8 verify pass.
+        // The engine asks for a sealed shard for exactly one reason: the §4.8 verify pass. This is
+        // the phase boundary; the reads that follow are what report the pass's own progress.
         {
             let mut p = self.p.borrow_mut();
-            let at = p.write_fraction();
+            let at = p.write_verify_fraction();
             p.emit(Phase::Verify, at);
         }
-        self.inner.source(index)
+        self.check_abort()?;
+        self.shards.get(index).map(|s| s as &dyn ByteSource).ok_or(Error::Io(obc_formats::io::Error::BadOffset))
     }
 
     fn manifest(&mut self, bytes: &[u8]) -> obcm_assemble::Result<()> {
@@ -478,7 +577,8 @@ impl ShardStore for HookedStore<'_, '_> {
             let mut p = self.p.borrow_mut();
             p.emit(Phase::Manifest, 1.0);
         }
-        self.inner.manifest(bytes)
+        self.manifest = bytes.to_vec();
+        Ok(())
     }
 }
 
@@ -538,12 +638,13 @@ pub fn assemble_cells(
         phase: Phase::Open,
         ticks: 0,
         written: 0,
+        verified: 0,
         projected,
         last: -1.0,
         aborted: false,
     });
     let clock = HookedClock { p: &progress };
-    let mut store = HookedStore { inner: MemoryStore::default(), p: &progress };
+    let mut store = HookedStore { shards: Vec::new(), manifest: Vec::new(), p: &progress };
     let summary = match assemble(inputs, &schema, &skin, &options, &mut store, &clock) {
         Ok(s) => s,
         Err(e) => return Err(map_error(e, progress.borrow().aborted)),
@@ -553,21 +654,21 @@ pub fn assemble_cells(
         p.emit(Phase::Done, 1.0);
     }
 
-    let mut shards = store.inner.shards;
+    let mut shards = store.shards;
     let mut files = Vec::with_capacity(shards.len() + 1);
     for (s, buf) in summary.shards.iter().zip(shards.drain(..)) {
         files.push(OutputFile {
             name: s.filename.clone(),
             role: s.role.as_str(),
             sha256: s.sha256.iter().map(|b| format!("{b:02x}")).collect(),
-            bytes: buf.0,
+            bytes: buf.bytes,
         });
     }
     files.push(OutputFile {
         name: summary.manifest_filename.clone(),
         role: "manifest",
         sha256: String::new(),
-        bytes: store.inner.manifest,
+        bytes: store.manifest,
     });
 
     let summary_json = summary_json(&summary);
@@ -577,25 +678,29 @@ pub fn assemble_cells(
 /// Map an engine refusal onto the bridge's vocabulary, keeping the engine's own message. The match
 /// is exhaustive on purpose: a new [`Error`] variant must break this build rather than quietly
 /// inherit someone else's code.
+///
+/// `aborted` is read **first**, before the error's own class. The abort path raises whatever error
+/// channel it was standing in — the sink's `Error::Io` from a store call, but `Error::Verify` from a
+/// [`VerifySource::read_at`] refusal, because `verify_shard` reports every read failure as a §4.8
+/// defect. A cancelled run must never be reported as "the assembler wrote a set the reader cannot
+/// read": that is the one code a caller is told never to retry past, and it would turn a cancel
+/// button into a bug report.
 fn map_error(e: Error, aborted: bool) -> AssembleFailure {
+    if aborted {
+        return AssembleFailure::new(
+            ErrorCode::Aborted,
+            "The assembly was cancelled. Nothing was written — the OBCS manifest is written last, so a cancelled run \
+             leaves no set (OBCA §5.4).",
+        );
+    }
     let message = e.to_string();
     let code = match e {
         Error::Input(_) => ErrorCode::Input,
         Error::Format(_) => ErrorCode::Format,
         Error::Capacity(_) => ErrorCode::Capacity,
         Error::Verify(_) => ErrorCode::Verify,
-        // The abort path raises the sink's own error, because that is the only refusal the store
-        // contract has. This is where it is read back as what it was.
-        Error::Io(_) if aborted => ErrorCode::Aborted,
         Error::Io(_) => ErrorCode::Io,
     };
-    if code == ErrorCode::Aborted {
-        return AssembleFailure::new(
-            code,
-            "The assembly was cancelled. Nothing was written — the OBCS manifest is written last, so a cancelled run \
-             leaves no set (OBCA §5.4).",
-        );
-    }
     AssembleFailure::new(code, message)
 }
 
@@ -701,15 +806,23 @@ mod tests {
         assert_eq!(map_error(Error::Verify("chunk 3".into()), false).message, "verify failed: chunk 3");
     }
 
-    /// An abort raises the sink's own error because that is the only refusal the store contract has;
-    /// the driver is what knows it was a cancellation and says so.
+    /// An abort raises whatever error channel it was standing in; the driver is what knows it was a
+    /// cancellation and says so.
+    ///
+    /// Both directions matter, and the second is the sharper one: an abort taken during the §4.8
+    /// read-back comes back as `Error::Verify`, because `verify_shard` reports *any* read failure as
+    /// a §4.8 defect. Reporting that as [`ErrorCode::Verify`] would tell the caller the assembler is
+    /// broken — the one code the docs say never to retry past — because they pressed cancel.
     #[test]
-    fn an_abort_is_not_reported_as_an_io_failure() {
+    fn an_abort_is_not_reported_as_an_io_failure_or_a_verify_defect() {
         let f = map_error(Error::Io(obc_formats::io::Error::Io), true);
         assert_eq!(f.code, ErrorCode::Aborted);
         assert!(f.message.contains("cancelled"), "{}", f.message);
-        // …and a genuine I/O failure with no abort pending still reads as one.
+        let v = map_error(Error::Verify("the output does not parse: Io".into()), true);
+        assert_eq!(v.code, ErrorCode::Aborted, "a cancelled read-back is a cancellation, not a §4.8 defect");
+        // …and both classes with no abort pending still read as themselves.
         assert_eq!(map_error(Error::Io(obc_formats::io::Error::Io), false).code, ErrorCode::Io);
+        assert_eq!(map_error(Error::Verify("chunk 3 does not decode".into()), false).code, ErrorCode::Verify);
     }
 
     /// The phase weights are a probability distribution over the run, or the bar goes backwards.

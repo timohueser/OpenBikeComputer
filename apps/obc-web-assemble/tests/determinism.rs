@@ -153,13 +153,27 @@ fn the_order_cells_arrive_in_does_not_reach_the_output() {
     }
 }
 
-/// The recorded (phase, fraction) stream, plus a clock that ticks so the summary's split is real.
+/// The recorded (phase, fraction) stream, plus a clock that ticks **once per call** — so a
+/// `phases_us` figure in the summary is literally the number of times the engine read the clock
+/// during that phase, which is what `the_clock_is_read_exactly_once_per_phase_boundary` pins.
 #[derive(Default)]
 struct Recorder {
     ticks: u64,
     seen: Vec<(Phase, f64)>,
-    /// Abort the moment this phase is reported.
-    abort_at: Option<Phase>,
+    /// Abort on the `n`-th report of this phase (1 = the phase boundary itself).
+    abort_at: Option<(Phase, usize)>,
+}
+
+impl Recorder {
+    /// Abort the moment `phase` is first reported — its boundary callback.
+    fn aborting_at(phase: Phase) -> Recorder {
+        Recorder { abort_at: Some((phase, 1)), ..Default::default() }
+    }
+
+    /// The fractions reported for `phase`, in order.
+    fn fractions(&self, phase: Phase) -> Vec<f64> {
+        self.seen.iter().filter(|(p, _)| *p == phase).map(|(_, f)| *f).collect()
+    }
 }
 
 impl Hooks for Recorder {
@@ -169,7 +183,10 @@ impl Hooks for Recorder {
     }
     fn progress(&mut self, phase: Phase, fraction: f64) -> bool {
         self.seen.push((phase, fraction));
-        self.abort_at == Some(phase)
+        match self.abort_at {
+            Some((p, n)) => p == phase && self.seen.iter().filter(|(q, _)| *q == p).count() == n,
+            None => false,
+        }
     }
 }
 
@@ -212,17 +229,110 @@ fn the_phase_sequence_is_the_one_the_engine_calls() {
     assert_eq!(rec.seen.last().expect("progress was reported").1, 1.0);
 }
 
+/// **The tick-count pin**, and the reason the sequence test above is not enough on its own.
+///
+/// The phase names are read off a *count* of clock calls, so an innocent extra `clock.now_us()`
+/// anywhere in the engine shifts every mapping by one boundary — `Poi` would be announced while
+/// `open` is still running — while leaving the deduplicated order this file already asserts exactly
+/// as it was. That mutation is invisible to the sequence test and fails here, because the counting
+/// clock makes each `phases_us` figure the number of clock reads that phase contains.
+///
+/// One read per boundary, four per shard (write start/end, verify start/end), one final total:
+/// `5 + 4·shards + 1`. A single-file assembly is 10.
+#[test]
+fn the_clock_is_read_exactly_once_per_phase_boundary() {
+    let mut rec = Recorder::default();
+    let out = assemble_cells(cells(), &sidecar(), &skin(), &options(), &mut rec).expect("the assembly runs");
+    let s: serde_json::Value = serde_json::from_str(&out.summary_json).expect("the summary is JSON");
+    let us = &s["phases_us"];
+    // Each of these is `t_next − t_this` over a clock that advances by exactly 1 per read: a 2
+    // anywhere means the engine now reads the clock twice in that phase, and every phase name this
+    // bridge reports after it is off by one.
+    for phase in ["open", "poi", "nav", "plan", "write", "verify"] {
+        assert_eq!(us[phase], 1, "{phase} spans {} clock reads, not 1 — the phase mapping has shifted", us[phase]);
+    }
+    assert_eq!(us["total"], 9, "the whole run spans 9 clock reads (10 reads, first to last)");
+    assert_eq!(rec.ticks, 10, "the engine read the clock {} times, not the 10 the phase mapping assumes", rec.ticks);
+}
+
+/// **The verify-progress pin.** §4.8 is 74 % of a measured country-scale run (14.7 s of
+/// switzerland's 19.9 s), and the engine makes exactly *one* store call for the whole pass — so a
+/// bar driven by store calls alone reaches its write-phase maximum and then freezes for three
+/// quarters of the wait. `VerifySource::read_at` is what stops that, and this is the test that says
+/// so: the pass reports many times, strictly forward, over a wide span of the bar.
+///
+/// The inverted form is the shipped-then-fixed defect: before the wrapper, the write's own emits ran
+/// to a fraction of **1.0** and every one after it repeated it. Both halves are asserted.
+#[test]
+fn the_verify_pass_reports_its_own_progress_instead_of_freezing_the_bar() {
+    let mut rec = Recorder::default();
+    assemble_cells(cells(), &sidecar(), &skin(), &options(), &mut rec).expect("the assembly runs");
+
+    // Nothing before the read-back may claim the run is nearly done. The write phase ends at
+    // 0.261 + 0.057 = 0.318 of the bar by construction (`Phase::weight`); the defect this pins had
+    // it arriving at 1.0.
+    for (p, f) in rec.seen.iter().take_while(|(p, _)| *p != Phase::Verify) {
+        assert!(*f <= 0.32, "{p:?} reported {f} before verify even started — the bar is spending verify's budget");
+    }
+
+    let verify = rec.fractions(Phase::Verify);
+    assert!(verify.len() >= 8, "the §4.8 pass reported {} times; a bar needs more than that", verify.len());
+    for pair in verify.windows(2) {
+        assert!(pair[1] > pair[0], "verify reported {} after {} — the bar stalled or went backwards", pair[1], pair[0]);
+    }
+    let (first, last) = (verify[0], verify[verify.len() - 1]);
+    assert!(
+        last - first > 0.3,
+        "the §4.8 pass moved the bar from {first} to {last} — less than a third of it, for the phase that is three \
+         quarters of the run"
+    );
+    // …and the boundaries still land where the phases say: verify opens where the write left the bar
+    // (0.204 + the write term) and the manifest is the 1.0. This fixture's output is 0.63× its input
+    // bytes — the projection both terms are measured against — so neither term reaches its full span
+    // and the manifest closes the gap. At the scale the 1.00 ratio was measured on (PR #1027's
+    // switzerland), output ≈ input and they do.
+    assert!((0.20..=0.27).contains(&first), "verify started at {first}, not where the write phase ends");
+    assert_eq!(rec.seen.last().expect("progress was reported"), &(Phase::Done, 1.0));
+}
+
 /// A truthy return from the progress callback stops the assembly, and it stops it as a
 /// *cancellation* rather than as an I/O failure — the distinction a UI needs to decide between
 /// "you cancelled" and "something broke".
 #[test]
 fn a_progress_callback_can_abort_the_run() {
-    let mut rec = Recorder { abort_at: Some(Phase::Write), ..Default::default() };
+    let mut rec = Recorder::aborting_at(Phase::Write);
     let e = assemble_cells(cells(), &sidecar(), &skin(), &options(), &mut rec).expect_err("aborted");
     assert_eq!(e.code, ErrorCode::Aborted);
     assert!(e.message.contains("manifest is written last"), "{}", e.message);
     // Nothing past the write was reported: the abort is honoured at the next store call.
     assert!(!rec.seen.iter().any(|(p, _)| *p == Phase::Done));
+}
+
+/// **The verify-abort pin**, and the sharper half of the same defect: with §4.8 making one store
+/// call and reporting nothing, an abort armed anywhere inside it was a **no-op** — the run went on
+/// to produce the whole set, so a cancel button pressed during the longest phase of the run did
+/// nothing at all.
+///
+/// Both moments are checked: the boundary callback (`n = 1`, the review's own probe) and one from
+/// inside the read loop (`n = 4`), which only the `read_at` poll can honour. And in both, the
+/// failure must read as `aborted` — `verify_shard` turns any read refusal into `Error::Verify`, so
+/// the naive mapping would tell the rider the assembler is broken because they pressed cancel.
+#[test]
+fn an_abort_armed_inside_the_verify_pass_stops_the_run() {
+    for n in [1, 4] {
+        let mut rec = Recorder { abort_at: Some((Phase::Verify, n)), ..Default::default() };
+        let e = match assemble_cells(cells(), &sidecar(), &skin(), &options(), &mut rec) {
+            // The pre-fix behaviour, exactly: cancel during §4.8 and the full set is produced anyway.
+            Ok(out) => panic!("cancelled at verify callback {n}, and it still produced {:?}", out.files),
+            Err(e) => e,
+        };
+        assert_eq!(e.code, ErrorCode::Aborted, "cancelled at verify callback {n}: {}", e.message);
+        assert!(e.message.contains("cancelled"), "{}", e.message);
+        // The abort is honoured on the very next read: no manifest was ever asked for, so §5.4's
+        // "a set with no manifest is not a map" holds and nothing is left half-usable.
+        assert!(!rec.seen.iter().any(|(p, _)| matches!(p, Phase::Manifest | Phase::Done)));
+        assert_eq!(rec.fractions(Phase::Verify).len(), n, "the pass kept reporting after it was told to stop");
+    }
 }
 
 /// A `partial` cell is an OBCA §3.7 refusal unless the caller accepted it — an **input** problem,
@@ -265,4 +375,27 @@ fn the_summary_is_the_clis_json() {
     assert!(s["nav"]["pruned_nodes"].as_u64().expect("a prune count") > 0, "the fixture's islet must be pruned");
     assert_eq!(s["poi"]["records"], 4);
     assert_eq!(out.warnings, Vec::<String>::new(), "this fixture is clean; a warning here is a real finding");
+}
+
+/// The write and verify phases **interleave** — the engine writes shard *i*, verifies shard *i*,
+/// then writes shard *i+1* — so a set is where a single write/verify counter would have run
+/// backwards at every shard boundary. Two independent terms over one span is what stops it, and this
+/// is the shape that would catch a regression to one.
+#[test]
+fn the_bar_stays_monotone_across_an_interleaved_volume_set() {
+    let opts = BridgeOptions { force_split: true, ..options() };
+    let mut rec = Recorder::default();
+    assemble_cells(cells(), &sidecar(), &skin(), &opts, &mut rec).expect("the assembly runs");
+
+    // The set really does interleave: write appears again after verify has already been reported.
+    let phases: Vec<Phase> = rec.seen.iter().map(|(p, _)| *p).collect();
+    let first_verify = phases.iter().position(|p| *p == Phase::Verify).expect("a verify phase");
+    assert!(phases[first_verify..].contains(&Phase::Write), "this fixture no longer exercises the interleaving");
+
+    let mut last = -1.0;
+    for (p, f) in &rec.seen {
+        assert!(*f >= last, "{p:?} reported {f} after {last} — the bar went backwards at a shard boundary");
+        last = *f;
+    }
+    assert_eq!(rec.seen.last().expect("progress was reported"), &(Phase::Done, 1.0));
 }
