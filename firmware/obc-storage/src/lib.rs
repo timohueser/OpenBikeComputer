@@ -18,5 +18,5 @@
 pub mod fat_extents;
 pub mod sd;
 
-pub use fat_extents::{ExtentSource, ExtentTable};
+pub use fat_extents::{ExtentSource, ExtentSourceWithCapacity, ExtentTable, ExtentTableWithCapacity};
 pub use sd::{SdByteSink, SdByteSource, SdTrackSink};

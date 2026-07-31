@@ -17,10 +17,11 @@ use crate::render_res::RenderResources;
 use crate::ride::RideSummary;
 use crate::ride_engine::RideEngine;
 use crate::route::RouteSummary;
-use crate::screen::{self, Ctx, MapScreen, Render, Screen, WarningFlags};
+use crate::screen::{self, Ctx, MapScreen, Render, RenderFrame, Screen, WarningFlags};
 use crate::settings::{DateTime, Settings};
 use crate::ui_runtime::{UiRuntime, UploadEvent};
 use crate::wall_clock::WallClock;
+use obc_map_scene::MapScene;
 use obc_ports::{Fix, InputClock, InputSource, LocationSource, RideClock, Sensors, TrackPoint};
 
 /// How the camera relates to the user's position.
@@ -2128,6 +2129,31 @@ impl App {
         stats
     }
 
+    /// Render a frame whose geometry comes from any [`MapScene`], while POI/hours acquisition
+    /// reads the set's core [`Reader`]. For a single OBCM both arguments are the same `Reader`;
+    /// for an OBCA volume set `scene` is its `MountedSet` and `core_reader` is
+    /// `MountedSet::core_reader()`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_scene_frame<D, F, S>(
+        &mut self,
+        target: &mut D,
+        scene: &S,
+        core_reader: &Reader,
+        route: Option<&RouteReader>,
+        w: f32,
+        h: f32,
+        color_fn: F,
+    ) -> RenderStats
+    where
+        D: DrawTarget,
+        F: Fn(u16) -> D::Color,
+        S: MapScene,
+    {
+        let stats = self.render_scene_map(target, scene, core_reader, route, w, h, &color_fn);
+        self.render_overlay(target, w, h, &color_fn);
+        stats
+    }
+
     /// Render **only the map plane** — the screen stack from the topmost opaque screen upward, but
     /// **excluding** the global hold-hint chrome. Returns the map [`RenderStats`].
     ///
@@ -2149,7 +2175,28 @@ impl App {
     {
         // Untimed: `NoopClock` leaves the per-stage `*_us` fields at 0 (the device uses
         // `render_map_timed` with a real clock for the benchmark). Always draws the map, so `Some`.
-        self.render_map_timed(target, Some(reader), route, w, h, color_fn, &NoopClock)
+        self.render_scene_map_timed(target, Some(reader), Some(reader), route, w, h, color_fn, &NoopClock)
+    }
+
+    /// Render only the map plane from any [`MapScene`]. `core_reader` remains the authority for
+    /// POIs and hours, which live only in a volume set's core shard.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_scene_map<D, F, S>(
+        &mut self,
+        target: &mut D,
+        scene: &S,
+        core_reader: &Reader,
+        route: Option<&RouteReader>,
+        w: f32,
+        h: f32,
+        color_fn: F,
+    ) -> RenderStats
+    where
+        D: DrawTarget,
+        F: Fn(u16) -> D::Color,
+        S: MapScene,
+    {
+        self.render_scene_map_timed(target, Some(scene), Some(core_reader), route, w, h, color_fn, &NoopClock)
     }
 
     /// Like [`render_map`](App::render_map) but threads `clock` to the Map screen's
@@ -2171,6 +2218,29 @@ impl App {
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
+        self.render_scene_map_timed(target, reader, reader, route, w, h, color_fn, clock)
+    }
+
+    /// Generic timed map-plane render. `scene` drives geometry through [`MapScene`];
+    /// `core_reader` drives the core-only POI/hours preparation. They are independently optional
+    /// so chrome-only frames can skip every map source.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_scene_map_timed<D, F, S>(
+        &mut self,
+        target: &mut D,
+        scene: Option<&S>,
+        core_reader: Option<&Reader>,
+        route: Option<&RouteReader>,
+        w: f32,
+        h: f32,
+        color_fn: F,
+        clock: &dyn Clock,
+    ) -> RenderStats
+    where
+        D: DrawTarget,
+        F: Fn(u16) -> D::Color,
+        S: MapScene,
+    {
         // Record the panel size for the screen ticks' region reporting (`advance_animations`) —
         // the one place every host states its real frame dimensions.
         self.ui.frame_size = (w as i16, h as i16);
@@ -2190,7 +2260,7 @@ impl App {
         // snapshot / hours or Detour route geometry) before the draw loop, so `Render` carries
         // the POI scratch read-only and every screen's `draw` is side-effect-free.
         self.ui.prepare_base(
-            reader,
+            core_reader,
             route,
             self.state.user_fix,
             self.activity.active_route,
@@ -2238,8 +2308,7 @@ impl App {
             .active_climb
             .and_then(|i| ride.climbs.as_slice().get(i))
             .map(|seg| screen::ActiveClimb { seg, profile: &ride.climb_profile });
-        let mut rx = Render {
-            reader,
+        let rx = Render {
             renderer: &mut render_res.renderer,
             state,
             activity,
@@ -2279,6 +2348,7 @@ impl App {
             map_obcm_version: *map_obcm_version,
             card_free_bytes: *card_free_bytes,
         };
+        let mut rx = RenderFrame { scene, render: rx };
         // The one Canvas of the frame: every screen draws through it (the base screen — the only
         // possible Map — writes `rx.stats`; the overlays above it leave the stats untouched).
         // A drained region clip makes it reject whole out-of-region primitives — the half of a
