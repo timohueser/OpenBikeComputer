@@ -60,6 +60,7 @@ the normative byte layouts: [`OBCM_Spec.md`](specs/OBCM_Spec.md) /
 | `apps/obc-desktop/` | The **Tauri desktop app**: the builder UI in a native window with `obc-pack` linked in and a vendored GEOS, plus the thumbdrive device page. Its own cargo root, like the board crate. |
 | `apps/obc-sim/` | Desktop **simulator host** (eframe/egui, pure Rust — no SDL): renders `obc-app` into a framebuffer at the device's 240×320 / 64-color look, plus a control panel, GPX replay, and headless capture. |
 | `apps/obc-web-convert/` | The web builder's **conversion bridge**: `obc-route`'s GPX → OBCR and track → GPX compiled to wasm behind two functions and a typed error, so route conversion runs in the visitor's browser instead of on a server. |
+| `apps/obc-web-assemble/` | The web builder's **assembly bridge**: `obcm-assemble` compiled to wasm, so downloaded OBCA map cells become one `.obcm` (or a volume set) in the tab — spec-verified before anything leaves it, and byte-identical to the CLI's output. |
 | `apps/obc-web-demo/` | The website's **live-demo host**: the same shared crates compiled to wasm behind a small `obc_demo_*` API — the landing page's JS owns the frame loop and canvas, no GUI framework in the tree. |
 | `builder/` | The **map builder** — one Svelte app in `app/`, three hosts (static web, Tauri desktop, and the FastAPI dev server in `server/`). Nothing here packs anything: they all drive `host/obc-pack`. |
 | `builder/app/` | The shared **Svelte UI**. `vite.config.ts` resolves `$host` at build time to exactly one of `web.ts` / `desktop.ts` / `dev.ts`, so the hosts you didn't build have no path into the bundle. |
@@ -448,12 +449,12 @@ VITE_DATA_BASE=/data npm run dev -- --mode web   # then open /dev-harness/
 `VITE_DATA_BASE` is root-relative here because the harness is served from a
 sub-path, and the default `./data` would resolve under it.
 
-All of them — and `npm run check` and `npm test` — need the two wasm bridges
+All of them — and `npm run check` and `npm test` — need the three wasm bridges
 built once first (`npm run build:wasm`, which wants a Rust toolchain and
-`wasm-pack`): route conversion and the preset previews both run client-side
-through the firmware's own code, so the TypeScript imports bindings that don't
-exist until they're built. See
-[`firmware/README.md`](firmware/README.md#build-the-web-builders-wasm-bridges-obc-web-convert-obc-web-preview).
+`wasm-pack`): route conversion, the preset previews and cell assembly all run
+client-side through the project's own code, so the TypeScript imports bindings
+that don't exist until they're built. See
+[`firmware/README.md`](firmware/README.md#build-the-web-builders-wasm-bridges-obc-web-convert-obc-web-preview-obc-web-assemble).
 
 ---
 
