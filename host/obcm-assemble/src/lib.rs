@@ -178,9 +178,14 @@ pub struct Options {
     /// Proceed although a cell is `partial` (§3.7).
     pub accept_partial: bool,
     /// Split into a role-partitioned set **even when the whole assembly would fit one file**, which
-    /// §5.5's fast path would otherwise take. Two callers want it: a test that has to exercise the
-    /// shard planner at fixture scale, and (later) an upload path that prefers several resumable
-    /// files to one big one. It changes which files are written, never what they contain.
+    /// §5.5's fast path would otherwise take. Three callers want it: a test that has to exercise the
+    /// shard planner at fixture scale, an operator reaching for `--force-split` to see what a set of
+    /// this selection looks like, and (later) an upload path that prefers several resumable files to
+    /// one big one. It changes which files are written, never what they contain.
+    ///
+    /// It is also the only way to reach the multi-shard planner below the 4 GiB threshold, which is
+    /// why it is on the CLI: [`Options::target_shard_bytes`] alone does nothing until the map needs
+    /// a set at all.
     pub force_split: bool,
     /// Skip the §4.8 verify pass. The spec makes verification a **precondition of writing a set**,
     /// so this exists only to measure the phase split in a benchmark; a set written with it must not
