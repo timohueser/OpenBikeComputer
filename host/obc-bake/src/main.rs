@@ -52,6 +52,7 @@ usage:
         --target TARGET      `dir:PATH` (default: dry run) or `r2`
         --generated-at TS    pin generated_at (RFC 3339 UTC)
         --dry-run            generate + plan, upload nothing
+        --verbose            report per-object upload and verification progress
 
   obc-bake verify TREE [--sample N]
       Verify catalog pins, cell header bboxes, reader round-trips and lockstep.
@@ -311,7 +312,7 @@ fn run_verify(args: &[String]) -> Result<(), String> {
 }
 
 fn run_publish(args: &[String]) -> Result<(), String> {
-    let (flags, positional) = Flags::parse(args, &["dry-run"], &["base-url", "target", "generated-at"])?;
+    let (flags, positional) = Flags::parse(args, &["dry-run", "verbose"], &["base-url", "target", "generated-at"])?;
     let tree = positional.first().ok_or_else(|| format!("publish needs a bake tree\n\n{USAGE}"))?;
     let base_url = flags
         .get("base-url")
@@ -334,7 +335,10 @@ fn run_publish(args: &[String]) -> Result<(), String> {
 
     let generated_at = flags.get("generated-at").map_or_else(obc_pack::catalog::now_timestamp, str::to_string);
     println!("publishing {tree} → {}{}", store.describe(), if dry_run { " (dry run)" } else { "" });
-    let publish_opts = PublishOptions { dry_run };
+    // R2 publishes are long enough that silence looks like a hang. Keep local
+    // directory publishes quiet unless explicitly requested, but always report
+    // progress for the real operator path.
+    let publish_opts = PublishOptions { dry_run, verbose: flags.has("verbose") || target == "r2" };
     let opts = CatalogOptions::new(&base_url, generated_at);
     let report = obc_bake::publish::publish(Path::new(tree), store.as_ref(), &opts, publish_opts)?;
     for warning in &report.warnings {

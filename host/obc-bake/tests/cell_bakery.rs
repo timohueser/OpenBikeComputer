@@ -785,9 +785,13 @@ fn a_cell_tree_publishes_its_root_last() {
     let dest = f.dir.join("published");
     let store = obc_bake::publish::DirStore::new(&dest);
     let opts = obc_pack::catalog::CatalogOptions::new(BASE_URL, GENERATED_AT);
-    let report =
-        obc_bake::publish::publish(&f.tree, &store, &opts, obc_bake::publish::PublishOptions { dry_run: false })
-            .expect("publish");
+    let report = obc_bake::publish::publish(
+        &f.tree,
+        &store,
+        &opts,
+        obc_bake::publish::PublishOptions { dry_run: false, verbose: true },
+    )
+    .expect("publish");
     assert_eq!(report.cells, 30);
     assert!(dest.join("catalog.json").is_file());
     assert!(dest.join("cells/coarse/1204/1052.obcm").is_file());
@@ -796,8 +800,12 @@ fn a_cell_tree_publishes_its_root_last() {
     let narrowed = fixture_dirs("publish-narrow");
     narrowed.bake(&FixtureCutter::new(), &["europe/west"], SNAPSHOT, false);
     narrowed.catalog();
-    let narrowed_report =
-        obc_bake::publish::publish(&narrowed.tree, &store, &opts, obc_bake::publish::PublishOptions { dry_run: false })
-            .expect("scoped publish");
+    let narrowed_report = obc_bake::publish::publish(
+        &narrowed.tree,
+        &store,
+        &opts,
+        obc_bake::publish::PublishOptions { dry_run: false, verbose: false },
+    )
+    .expect("scoped publish");
     assert_eq!(narrowed_report.regions, vec!["europe/west"]);
 }

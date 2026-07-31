@@ -120,6 +120,8 @@ pub trait ObjectStore {
 pub struct PublishOptions {
     /// Generate the manifest and plan the upload; move no bytes.
     pub dry_run: bool,
+    /// Report every upload and remote verification with cumulative progress.
+    pub verbose: bool,
 }
 
 /// What a publish did.
@@ -202,10 +204,39 @@ pub fn publish(
 
     let (root_object, content) = objects.split_last().ok_or("nothing to publish")?;
     debug_assert_eq!(root_object.kind, ObjectKind::Manifest);
-    for object in content {
-        store.put(object).map_err(|e| format!("{}: {e}", object.key))?;
+    let content_bytes: u64 = content.iter().map(|object| object.bytes).sum();
+    let started = std::time::Instant::now();
+    if publish_opts.verbose {
+        eprintln!(
+            "uploading {} content objects ({}) before the catalog root",
+            content.len(),
+            human_bytes(content_bytes)
+        );
     }
-    for object in content {
+    let mut completed_bytes = 0_u64;
+    for (index, object) in content.iter().enumerate() {
+        if publish_opts.verbose {
+            eprintln!("upload [{:>3}/{}] {}  {}", index + 1, content.len(), human_bytes(object.bytes), object.key);
+        }
+        store.put(object).map_err(|e| format!("{}: {e}", object.key))?;
+        completed_bytes = completed_bytes.saturating_add(object.bytes);
+        if publish_opts.verbose {
+            eprintln!(
+                "       done  {} / {}  {}  ETA {}",
+                human_bytes(completed_bytes),
+                human_bytes(content_bytes),
+                percent(completed_bytes, content_bytes),
+                eta(started.elapsed(), completed_bytes, content_bytes)
+            );
+        }
+    }
+    if publish_opts.verbose {
+        eprintln!("verifying {} remote objects before replacing catalog.json", content.len());
+    }
+    for (index, object) in content.iter().enumerate() {
+        if publish_opts.verbose {
+            eprintln!("verify [{:>3}/{}] {}", index + 1, content.len(), object.key);
+        }
         match store.head(&object.key)? {
             Some(bytes) if bytes == object.bytes => {}
             Some(bytes) => {
@@ -217,8 +248,62 @@ pub fn publish(
             None => return Err(format!("{}: not fetchable after upload — refusing to swap the root in", object.key)),
         }
     }
+    if publish_opts.verbose {
+        eprintln!("root             {}  {}", human_bytes(root_object.bytes), root_object.key);
+    }
     store.put(root_object).map_err(|e| format!("{}: {e}", root_object.key))?;
+    if publish_opts.verbose {
+        eprintln!("published catalog root last; total elapsed {}", duration(started.elapsed()));
+    }
     Ok(report(warnings))
+}
+
+fn human_bytes(bytes: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = 1024 * KIB;
+    const GIB: u64 = 1024 * MIB;
+    if bytes >= GIB {
+        format!("{:.1} GiB", bytes as f64 / GIB as f64)
+    } else if bytes >= MIB {
+        format!("{:.1} MiB", bytes as f64 / MIB as f64)
+    } else if bytes >= KIB {
+        format!("{:.1} KiB", bytes as f64 / KIB as f64)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+fn percent(done: u64, total: u64) -> String {
+    if total == 0 {
+        return "100%".to_string();
+    }
+    format!("{}%", done.saturating_mul(100) / total)
+}
+
+fn eta(elapsed: std::time::Duration, done: u64, total: u64) -> String {
+    if done == 0 || done >= total {
+        return if done >= total { "0s".to_string() } else { "—".to_string() };
+    }
+    if elapsed.as_secs() < 3 {
+        return "calculating…".to_string();
+    }
+    let elapsed_secs = elapsed.as_secs().max(1);
+    let bytes_per_second = done / elapsed_secs;
+    match (total - done).checked_div(bytes_per_second) {
+        Some(seconds) => duration(std::time::Duration::from_secs(seconds)),
+        None => "—".to_string(),
+    }
+}
+
+fn duration(value: std::time::Duration) -> String {
+    let seconds = value.as_secs();
+    if seconds >= 3600 {
+        format!("{}h{:02}m", seconds / 3600, seconds % 3600 / 60)
+    } else if seconds >= 60 {
+        format!("{}m{:02}s", seconds / 60, seconds % 60)
+    } else {
+        format!("{seconds}s")
+    }
 }
 
 /// Every object of a cell tree, root last.
