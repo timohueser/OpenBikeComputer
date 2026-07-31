@@ -994,9 +994,15 @@ impl ObjectStore {
     /// The whole link dropped, or the CoC dropped mid-upload, or the app aborted (op 3): discard
     /// the partial upload and release any open storage handles a cancelled future couldn't.
     /// Uploads don't resume, so nothing is kept — the app re-sends from the start.
+    /// A volume set is deliberately **not** torn down here, and the reason is the same one that
+    /// keeps `map_upload_abort` out of this function: this runs on *either* transport's teardown,
+    /// and a BLE disconnect — a phone that walked out of range — must not delete a multi-gigabyte
+    /// set the cable is still uploading. `UPLOAD.TMP` is cheap enough that discarding it across
+    /// transports is harmless; a set is not. The USB data plane owns that cleanup, at both the
+    /// points where it knows the *cable* is what went away (`discard_upload` mid-transfer, and
+    /// `set_upload_abort` beside this call on endpoint disable).
     pub fn link_reset(&mut self, shared: &mut SharedStore) {
         self.upload_discard(shared);
-        self.set_upload_abort(shared);
         if let Some(storage) = &mut shared.storage {
             storage.close_object();
         }
