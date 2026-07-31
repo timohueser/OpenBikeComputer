@@ -1,5 +1,5 @@
-//! The three static documents the app serves to its own frontend: the style
-//! presets, the device palette, and `obc-pack`'s config schema.
+//! The three static documents the app serves to its own frontend: the shipped
+//! packer config(s), the device palette, and `obc-pack`'s config schema.
 //!
 //! All three are *baked in*, and that is the substantive difference from the dev
 //! server. It reads presets off disk, the palette off disk, and shells out to
@@ -31,8 +31,10 @@ pub struct Preset {
     config: Value,
 }
 
-/// The shipped presets, default first then by name — the dev server's ordering,
-/// because the first card is the one a new user gets applied for them.
+/// The shipped presets — since #1036 the one `schema.json`, the config every hosted
+/// artifact is baked with. Sorted by name, so the order depends on the documents
+/// rather than on the filesystem; the first card is the one a new user gets applied
+/// for them.
 pub fn presets() -> Vec<Preset> {
     let mut out: Vec<Preset> = PRESETS
         .iter()
@@ -54,7 +56,7 @@ pub fn presets() -> Vec<Preset> {
             })
         })
         .collect();
-    out.sort_by(|a, b| (a.id != "default", &a.name).cmp(&(b.id != "default", &b.name)));
+    out.sort_by(|a, b| a.name.cmp(&b.name));
     out
 }
 
@@ -105,7 +107,7 @@ mod tests {
     #[test]
     fn every_shipped_preset_is_a_packer_config() {
         let presets = presets();
-        assert!(presets.len() >= 2, "expected the shipped presets to be embedded, got {}", presets.len());
+        assert!(!presets.is_empty(), "expected the shipped schema to be embedded");
         for p in &presets {
             // The claim that matters: what the app hands the build command parses
             // as a config for the packer that is linked into this same binary.
@@ -115,9 +117,14 @@ mod tests {
         }
     }
 
+    /// The one bakeable style document is the bikepacking schema, and the skins beside
+    /// it are **not** embedded: a skin carries no ladder and no routing table, so
+    /// handing one to the build command would pack a one-level map (#1036).
     #[test]
-    fn the_default_preset_is_offered_first() {
-        assert_eq!(presets().first().map(|p| p.id.as_str()), Some("default"));
+    fn the_offered_config_is_the_bikepacking_schema_and_no_skin() {
+        let presets = presets();
+        assert_eq!(presets.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), ["bikepacking"]);
+        assert_eq!(presets[0].name, "Bikepacking");
     }
 
     #[test]

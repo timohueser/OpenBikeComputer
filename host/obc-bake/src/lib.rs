@@ -10,12 +10,18 @@
 //!
 //! ```text
 //! regions.toml ─┐
-//!               ├─▶ bake ──▶ <tree>/regions/<id>/<preset>.obcm (+ sidecar)
-//! presets/*.json┘             <tree>/presets/<preset>.json
+//!               ├─▶ bake ──▶ <tree>/regions/<id>/<schema>.obcm (+ sidecar)
+//! schema.json ──┘             <tree>/presets/<schema>.json
 //!                              │
 //!                              ├─▶ obc-pack catalog ──▶ catalog.json
 //!                              └─▶ publish ──▶ artifacts first, manifest last
 //! ```
+//!
+//! `builder/presets/` is one **schema** plus its **skins** since #1036 ([`presets`]):
+//! the schema is the config everything is baked with, and a skin is presentation
+//! stamped onto an assembled map's style table. The v1 path above therefore bakes one
+//! artifact per region rather than a (region × preset) matrix — a whole-region `.obcm`
+//! has its styling in its bytes, so it can only ever carry the schema's own look.
 //!
 //! Four properties are the point of the whole thing, and each has a module:
 //!
@@ -25,7 +31,7 @@
 //!   with the real `obc-reader` and walked whole before it is allowed into the tree.
 //!   Not a header sniff; a full decode of every feature in every chunk.
 //! - **Re-running is cheap and honest.** [`bake`] — the skip decision is a hash of
-//!   the extract, the preset and the format version, never a timestamp.
+//!   the extract, the schema and the format version, never a timestamp.
 //! - **The catalog is never half-published.** [`publish`] — artifacts first, their
 //!   presence re-checked at the destination, manifest last as one object swap.
 //!

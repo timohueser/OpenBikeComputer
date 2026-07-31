@@ -10,8 +10,9 @@
 # apps/obc-sim/assets/grimsel-climb.gpx is used.
 #OBC_GPX="tracks/my-favourite-loop.gpx"
 
-# Default packer preset for `obc pack`. If unset, builder/presets/default.json.
-#OBC_PRESET="builder/presets/high-detail.json"
+# Default packer config for `obc pack`. If unset, builder/presets/schema.json —
+# the one shipped schema. Point this at your own config to pack with that instead.
+#OBC_PRESET="my-style.json"
 
 # Extra directories to scan for maps (colon-separated) — overrides the default
 # root : maps/ : ~/.cache/obcm/builds search.

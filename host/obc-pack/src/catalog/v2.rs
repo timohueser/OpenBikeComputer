@@ -936,31 +936,160 @@ fn ladder(config: &Config, bands: &[BandEntry], path: &Path) -> Result<Vec<LodEn
     Ok(out)
 }
 
-/// The canonical style-id assignment, read out of the config that assigned it.
+/// The canonical style-id assignment, read out of the config that assigned it —
+/// [`feature_type_ids`], plus the duplicate-id check and the id-keyed view of it.
 ///
 /// Returned sorted by id, which is also the order a style table is written in
 /// (`OBCM_Spec.md` §2) and the order a skin's entries follow.
 fn style_assignment(config: &Config, path: &Path) -> Result<(Vec<StyleAssignment>, BTreeMap<String, u8>), String> {
-    let mut by_type = BTreeMap::new();
-    let mut by_id: BTreeMap<u8, String> = BTreeMap::new();
-    for (tag_key, values) in &config.features {
-        for (tag_value, style) in values {
-            let feature_type = format!("{tag_key}.{tag_value}");
-            if let Some(other) = by_id.insert(style.id, feature_type.clone()) {
-                return Err(format!(
-                    "{}: style id {} is assigned to both `{other}` and `{feature_type}`",
-                    path.display(),
-                    style.id
-                ));
-            }
-            by_type.insert(feature_type, style.id);
-        }
-    }
+    let by_type = feature_type_ids(config);
     if by_type.is_empty() {
         return Err(format!("{}: no feature types — a schema with no styles draws nothing", path.display()));
     }
+    // The same assignment read the other way round, which is also where a collision
+    // shows up: two feature types on one id would make the published style table
+    // ambiguous about which one a chunk's feature header meant.
+    let mut by_id: BTreeMap<u8, String> = BTreeMap::new();
+    for (feature_type, &id) in &by_type {
+        if let Some(other) = by_id.insert(id, feature_type.clone()) {
+            return Err(format!(
+                "{}: style id {id} is assigned to both `{other}` and `{feature_type}`",
+                path.display()
+            ));
+        }
+    }
     let styles = by_id.into_iter().map(|(id, feature_type)| StyleAssignment { id, feature_type }).collect();
     Ok((styles, by_type))
+}
+
+/// A config's `feature_type → style id` assignment: `highway.primary → 3`, and so on
+/// for every `(tag key, tag value)` pair it styles.
+///
+/// Public because it is the thing a **producer** has to agree with this generator
+/// about. `obc-pack` numbers feature types 1-based in config document order and those
+/// ids are referenced by every feature header in every chunk (`OBCM_Spec.md` §5.2), so
+/// the assignment is part of the cells' bytes.
+///
+/// The one place this walk lives: [`style_assignment`] and [`check_skin`] both read
+/// the assignment through here, so the generator and the producer-side check cannot
+/// come to disagree about what a config assigns.
+pub fn feature_type_ids(config: &Config) -> BTreeMap<String, u8> {
+    let mut by_type = BTreeMap::new();
+    for (tag_key, values) in &config.features {
+        for (tag_value, style) in values {
+            by_type.insert(format!("{tag_key}.{tag_value}"), style.id);
+        }
+    }
+    by_type
+}
+
+/// Prove a config **is a skin over** `schema`: same feature types, same style ids
+/// (`OBCC_Spec.md` §11.4, `OBCA_Spec.md` §4.7).
+///
+/// This is the check [`generate`] applies to every document in a tree's `skins/`, and
+/// it is public so a producer can apply the *same* one before it spends hours cutting
+/// cells a skin turns out not to fit. A skin may change only the presentation values
+/// of a style record: introducing, dropping, reordering or renumbering a feature type
+/// is a new schema and therefore a re-bake, because those ids are already baked into
+/// every chunk of every cell.
+pub fn check_skin(schema: &Config, skin: &Config) -> Result<(), String> {
+    check_skin_ids(&feature_type_ids(schema), &feature_type_ids(skin))
+}
+
+/// The presentation-only keys a style record in a skin may carry (`OBCC_Spec.md`
+/// §11.4). Everything else in a packer config decides which bytes get written, and a
+/// skin is stamped onto bytes that already exist.
+const SKIN_STYLE_KEYS: &[&str] = &["color", "color2", "weight", "z_index", "priority", "line_style"];
+
+/// Prove a skin **document** is presentation only: no schema keys, at either level.
+///
+/// [`check_skin`] compares two parsed [`Config`]s and therefore cannot see this at
+/// all — by the time a config exists, a missing `lods` and a `lods` restating the
+/// defaults are the same value, so a skin carrying a whole LOD ladder parses into
+/// something that looks exactly like a skin that carries none. The keys have to be
+/// caught in the JSON, before that information is thrown away.
+///
+/// Silently dropping them would be the worse failure: a skin is stamped onto cells
+/// that were cut at the *schema's* ladder, tolerances, merge passes and routing table,
+/// so a skin that thinks it changes any of those is a document whose author believes
+/// something false. The values would have no effect, the author would have no way to
+/// find that out, and the map would quietly not be the one they wrote. That is a new
+/// schema revision and a re-bake (epic #1016 D2), and the error says so — naming every
+/// offending key rather than the first, so one edit fixes the document.
+///
+/// `min_lod` is in the list for the same reason `lods` is: it decides the level a
+/// feature is first written at, which is a decision already baked into every cell.
+pub fn check_skin_document(json: &str, at: &str) -> Result<(), String> {
+    let doc: serde_json::Value = serde_json::from_str(json).map_err(|e| format!("{at}: {e}"))?;
+    let obj = doc.as_object().ok_or_else(|| format!("{at}: a skin document is a JSON object"))?;
+
+    let mut offenders: Vec<String> = obj
+        .keys()
+        .filter(|k| !matches!(k.as_str(), "_meta" | "features" | "marker"))
+        .map(|k| format!("`{k}`"))
+        .collect();
+    // `min_lod` hides one level down, per style record, and is the one a hand-written
+    // skin picks up most easily — it is on nearly every line of the schema it was
+    // copied from.
+    let mut culled: BTreeSet<&str> = BTreeSet::new();
+    if let Some(features) = obj.get("features").and_then(serde_json::Value::as_object) {
+        for values in features.values().filter_map(serde_json::Value::as_object) {
+            for style in values.values().filter_map(serde_json::Value::as_object) {
+                for key in style.keys() {
+                    if !SKIN_STYLE_KEYS.contains(&key.as_str()) {
+                        culled.insert(key.as_str());
+                    }
+                }
+            }
+        }
+    }
+    offenders.extend(culled.into_iter().map(|k| format!("`features.*.*.{k}`")));
+
+    if offenders.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "{at}: a skin is presentation only, and this one carries schema key(s): {}. A skin is stamped onto cells \
+         already cut at the schema's ladder, tolerances, merge passes and routing table, so these would have no \
+         effect — changing any of them is a new schema revision and a re-bake (OBCC_Spec.md §11.4). Remove them; a \
+         style record may carry {}.",
+        offenders.join(", "),
+        SKIN_STYLE_KEYS.iter().map(|k| format!("`{k}`")).collect::<Vec<_>>().join(", ")
+    ))
+}
+
+/// [`check_skin`] against the assignments themselves, so the generator can reuse it
+/// with the one it already read out of the tree's `schema.json`.
+fn check_skin_ids(want: &BTreeMap<String, u8>, have: &BTreeMap<String, u8>) -> Result<(), String> {
+    let unknown: Vec<&str> = have.keys().filter(|t| !want.contains_key(*t)).map(String::as_str).collect();
+    if !unknown.is_empty() {
+        return Err(format!(
+            "this skin styles feature type(s) the schema does not have: {}. A skin is a recolor of one schema — a new \
+             feature type is a new schema revision and a re-bake.",
+            joined(unknown.into_iter())
+        ));
+    }
+    let missing: Vec<&str> = want.keys().filter(|t| !have.contains_key(*t)).map(String::as_str).collect();
+    if !missing.is_empty() {
+        return Err(format!(
+            "this skin has no style for {}. A missing style would ship a map with an invisible layer \
+             (OBCC_Spec.md §11.4).",
+            joined(missing.into_iter())
+        ));
+    }
+    let renumbered: Vec<String> = have
+        .iter()
+        .filter(|(feature_type, id)| want[*feature_type] != **id)
+        .map(|(feature_type, id)| format!("`{feature_type}` is id {id} here but {} in the schema", want[feature_type]))
+        .collect();
+    if !renumbered.is_empty() {
+        return Err(format!(
+            "a skin MUST NOT renumber style ids — every feature header in every baked chunk references them \
+             (OBCA_Spec.md §4.7): {}",
+            renumbered.join("; ")
+        ));
+    }
+    Ok(())
 }
 
 // --- skins --------------------------------------------------------------------------------
@@ -1005,6 +1134,7 @@ fn read_skins(dir: &Path, schema: &SchemaDoc) -> Result<Vec<SkinEntry>, String> 
         if meta.name.trim().is_empty() || meta.description.trim().is_empty() {
             return Err(format!("{}: `_meta.name` and `_meta.description` must be non-empty", path.display()));
         }
+        check_skin_document(&text, &path.display().to_string())?;
         let config = Config::parse(&text).map_err(|e| format!("{}: {e}", path.display()))?;
         let styles = skin_styles(&config, schema, &path)?;
         skins.push(SkinEntry {
@@ -1023,11 +1153,8 @@ fn read_skins(dir: &Path, schema: &SchemaDoc) -> Result<Vec<SkinEntry>, String> 
     Ok(skins)
 }
 
-/// A skin's style values, in the schema's id order, after proving the skin is a skin:
-/// same feature types, same ids. `OBCA_Spec.md` §4.7 — a skin may change only the
-/// seven presentation bytes of a style record, never introduce, remove, reorder or
-/// renumber an id, because those ids are referenced by every feature header in every
-/// chunk already baked.
+/// A skin's style values, in the schema's id order, after [`check_skin`] has proved
+/// the skin is a skin: same feature types, same ids.
 fn skin_styles(config: &Config, schema: &SchemaDoc, path: &Path) -> Result<Vec<SkinStyle>, String> {
     let mut by_type = BTreeMap::new();
     for (tag_key, values) in &config.features {
@@ -1035,40 +1162,7 @@ fn skin_styles(config: &Config, schema: &SchemaDoc, path: &Path) -> Result<Vec<S
             by_type.insert(format!("{tag_key}.{tag_value}"), style.clone());
         }
     }
-    let unknown: Vec<&String> = by_type.keys().filter(|t| !schema.feature_types.contains_key(*t)).collect();
-    if !unknown.is_empty() {
-        return Err(format!(
-            "{}: this skin styles feature type(s) the schema does not have: {}. A skin is a recolor of one schema — a \
-             new feature type is a new schema revision and a re-bake.",
-            path.display(),
-            joined(unknown.iter().map(|t| t.as_str()))
-        ));
-    }
-    let missing: Vec<&str> =
-        schema.feature_types.keys().filter(|t| !by_type.contains_key(*t)).map(String::as_str).collect();
-    if !missing.is_empty() {
-        return Err(format!(
-            "{}: this skin has no style for {}. A missing style would ship a map with an invisible layer \
-             (OBCC_Spec.md §11.4).",
-            path.display(),
-            joined(missing.into_iter())
-        ));
-    }
-    let mut renumbered = Vec::new();
-    for (feature_type, style) in &by_type {
-        let want = schema.feature_types[feature_type];
-        if style.id != want {
-            renumbered.push(format!("`{feature_type}` is id {} here but {want} in the schema", style.id));
-        }
-    }
-    if !renumbered.is_empty() {
-        return Err(format!(
-            "{}: a skin MUST NOT renumber style ids — every feature header in every baked chunk references them \
-             (OBCA_Spec.md §4.7): {}",
-            path.display(),
-            renumbered.join("; ")
-        ));
-    }
+    check_skin_ids(&schema.feature_types, &feature_type_ids(config)).map_err(|e| format!("{}: {e}", path.display()))?;
 
     // Schema order, so `skins[].styles[k]` and `schema.styles[k]` describe the same
     // feature type without a consumer having to join on the name.

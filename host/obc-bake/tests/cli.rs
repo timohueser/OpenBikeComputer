@@ -52,7 +52,7 @@ fn bake_then_publish_is_the_whole_loop() {
         .arg(&regions)
         .arg("--presets-dir")
         .arg(repo("builder/presets"))
-        .args(["--preset", "default", "--source"])
+        .args(["--source"])
         .arg(dir.join("extracts"))
         .arg("--no-land")
         .output()
@@ -60,7 +60,7 @@ fn bake_then_publish_is_the_whole_loop() {
     let log = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(out.status.success(), "{log}");
     assert!(log.contains("bake summary"), "{log}");
-    assert!(tree.join("regions/europe/testland/default.obcm").is_file(), "{log}");
+    assert!(tree.join("regions/europe/testland/bikepacking.obcm").is_file(), "{log}");
 
     // A second run says so rather than re-packing.
     let out = obc_bake()
@@ -70,7 +70,7 @@ fn bake_then_publish_is_the_whole_loop() {
         .arg(&regions)
         .arg("--presets-dir")
         .arg(repo("builder/presets"))
-        .args(["--preset", "default", "--source"])
+        .args(["--source"])
         .arg(dir.join("extracts"))
         .arg("--no-land")
         .output()
@@ -117,7 +117,7 @@ fn publishing_a_shrunken_catalog_is_refused_at_the_command_line() {
             .arg(&list)
             .arg("--presets-dir")
             .arg(repo("builder/presets"))
-            .args(["--preset", "default", "--source"])
+            .args(["--source"])
             .arg(dir.join("extracts"))
             .arg("--no-land")
             .output()
@@ -148,7 +148,7 @@ fn publishing_a_shrunken_catalog_is_refused_at_the_command_line() {
     let out = publish(&partial, &[]);
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success(), "a shrinking publish must fail: {err}");
-    assert!(err.contains("europe/beta [default]"), "{err}");
+    assert!(err.contains("europe/beta [bikepacking]"), "{err}");
 
     // …and `--allow-shrink` parses as a switch (not as a value flag swallowing the
     // next argument) and lets the deliberate case through, loudly.
@@ -166,6 +166,34 @@ fn a_region_outside_the_curated_list_is_refused() {
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("not in the curated region list"), "{err}");
+}
+
+/// The two style-selection flags #1036 retired are refused **on both paths**.
+///
+/// `--preset` was the v1 spelling and `--schema-preset` the cell path's (#1025), and
+/// the callers that pass them are scripts and workflow inputs — the readers least
+/// likely to notice a flag that quietly stopped meaning anything. The `--cells` case
+/// is the one that regressed once already: the guard sat *below* the branch, so the
+/// path that had its own retired flag was the path with no guard at all.
+#[test]
+fn the_retired_style_flags_are_refused_on_both_bake_paths() {
+    for (flag, path) in [
+        ("--preset", &[][..]),
+        ("--schema-preset", &[][..]),
+        ("--preset", &["--cells", "--base-url", "https://maps.example/obc"][..]),
+        ("--schema-preset", &["--cells", "--base-url", "https://maps.example/obc"][..]),
+    ] {
+        let out = obc_bake()
+            .args(["bake", "--out", "/tmp/nope"])
+            .args(path)
+            .args([flag, "high-detail"])
+            .output()
+            .expect("run");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "`{flag}` {path:?} must not be swallowed: {err}");
+        assert!(err.contains(&format!("`{flag}` retired with the preset shelf")), "{err}");
+        assert!(err.contains("--skin ID"), "the error has to say what to use instead: {err}");
+    }
 }
 
 #[test]

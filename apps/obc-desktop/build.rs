@@ -1,12 +1,17 @@
 //! Two jobs: let `tauri-build` generate the app context (which embeds the built
-//! frontend named by `tauri.conf.json`), and bake `builder/presets/*.json` into the
+//! frontend named by `tauri.conf.json`), and bake the shipped **packer configs** —
+//! `builder/presets/*.json`, which since #1036 is the one `schema.json` — into the
 //! binary.
 //!
-//! The presets have to be *embedded* rather than read at runtime: a shipped app
-//! has no repo checkout next to it, and the style presets are the app's own
-//! content, not user data. Generating the table here rather than listing the files
-//! by hand means adding a preset is one file, not two edits — and the
-//! `rerun-if-changed` below makes a preset edit rebuild the app.
+//! They have to be *embedded* rather than read at runtime: a shipped app has no repo
+//! checkout next to it, and the shipped styling is the app's own content, not user
+//! data. Generating the table here rather than listing the files by hand means adding
+//! one is a file rather than two edits — and the `rerun-if-changed` below makes an
+//! edit rebuild the app.
+//!
+//! Only the top level of that directory is read, which is what keeps `skins/` out:
+//! a skin is presentation stamped onto already-baked bytes at assembly time
+//! (`OBCC_Spec.md` §11.4), not something this app can hand the packer.
 
 use std::path::{Path, PathBuf};
 
@@ -28,8 +33,10 @@ fn embed_presets() {
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.extension().is_some_and(|x| x == "json"))
         .collect();
-    // Sorted so the generated table — and therefore the app's preset order before
-    // the default-first sort — does not depend on the filesystem's directory order.
+    // Sorted so the generated table — and therefore the order the app offers these in
+    // — does not depend on the filesystem's directory order. (There is no longer a
+    // default-first sort downstream to re-impose one: since #1036 the top level holds
+    // exactly one document, the schema.)
     entries.sort();
     assert!(!entries.is_empty(), "no presets found in {}", dir.display());
 

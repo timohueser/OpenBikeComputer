@@ -58,6 +58,24 @@ const FEATURES: &str = r#""features": {
     }
   }"#;
 
+/// The same four feature types, in the same document order — so the same ids — with
+/// only the presentation values a **skin** is allowed to state. `min_lod` is missing
+/// on purpose: it decides the level a feature is first written at, which is a decision
+/// already baked into every cell a skin gets stamped onto, so a skin carrying it is
+/// refused ([`super::check_skin_document`]).
+const SKIN_FEATURES: &str = r#""features": {
+    "highway": {
+      "primary": { "color": "0xFAA0", "z_index": 60, "weight": 3, "priority": 2 },
+      "track": { "color": "0xAA80", "z_index": 30, "weight": 1, "priority": 3, "line_style": "dashed" }
+    },
+    "natural": {
+      "water": { "color": "0x55DF", "z_index": 10, "weight": 1, "priority": 3 }
+    },
+    "landuse": {
+      "forest": { "color": "0x5B45", "z_index": 5, "weight": 1, "priority": 4 }
+    }
+  }"#;
+
 const BANDS: &str = r#""bands": [
       { "id": "coarse", "cell_log2": 20, "lods": [0], "role": "coarse" },
       { "id": "mid", "cell_log2": 19, "lods": [1], "role": "geometry" },
@@ -112,7 +130,7 @@ fn skin_doc(id: &str, name: &str, description: &str, version: u32, marker: &str,
     "version": {version}{preview}
   }},
   "marker": {{ "color": "{marker}" }},
-  {FEATURES}
+  {SKIN_FEATURES}
 }}
 "#
     )
@@ -564,6 +582,70 @@ fn a_skin_is_the_schema_recolored() {
     let body = root_json(&g.root);
     assert!(!body.contains("preset_version"), "v2 deletes the lagging-artifact apparatus");
     assert!(!body.contains("\"presets\""), "§11.9: `presets` must not appear in a v2 root");
+}
+
+/// A skin document carrying schema keys is **refused**, and the error names them.
+///
+/// Dropping them quietly is the tempting behaviour and the wrong one. A skin is
+/// stamped onto cells already cut at the schema's ladder, tolerances, merge passes and
+/// routing table, so a `lods` block in a skin has no effect whatsoever — and an author
+/// who wrote one believes something false about the map they are shipping, with
+/// nothing anywhere to tell them otherwise. Every offending key is named, not the
+/// first, so one edit fixes the document.
+///
+/// This has to be checked against the JSON rather than the parsed [`Config`]: once
+/// parsed, a config that omits `lods` and one that restates the defaults are the same
+/// value, so `check_skin` cannot see the difference at all.
+#[test]
+fn a_skin_carrying_schema_keys_is_refused_by_name() {
+    for (key, body, expect) in [
+        ("lods", r#""lods": [{"max_mpp": null, "simplify": 200, "min_area_px": 50}],"#, "`lods`"),
+        ("routing", r#""routing": {"min_component_edges": 50},"#, "`routing`"),
+        ("merge_fills", r#""merge_fills": true,"#, "`merge_fills`"),
+        ("merge_lines", r#""merge_lines": true,"#, "`merge_lines`"),
+        ("chunk_size", r#""chunk_size": 4096,"#, "`chunk_size`"),
+    ] {
+        let doc = format!(
+            r#"{{
+  "_meta": {{ "id": "bad", "name": "Bad", "description": "Carries schema data.", "version": 1 }},
+  {body}
+  "marker": {{ "color": "0xF800" }},
+  {SKIN_FEATURES}
+}}
+"#
+        );
+        let err = super::check_skin_document(&doc, "bad.json").expect_err("`{key}` is schema data");
+        assert!(err.contains(expect), "the error must name `{key}`: {err}");
+        assert!(err.contains("presentation only"), "{err}");
+        assert!(err.contains("re-bake"), "and say what the real answer is: {err}");
+
+        // And the generator refuses the whole tree, rather than publishing a skin whose
+        // author's intent it silently discarded.
+        let t = TempTree::new(&format!("skin-schema-key-{key}"));
+        example_tree(t.path());
+        write(&t.path().join(SKINS_DIR).join("bad.json"), &doc);
+        let err = generate(t.path(), &opts()).expect_err("the tree is unpublishable");
+        assert!(err.contains(expect), "{err}");
+    }
+
+    // The style-level one: `min_lod` is on nearly every line of the schema a skin gets
+    // copied from, and it decides which level a feature is first written at.
+    let doc = format!(
+        r#"{{
+  "_meta": {{ "id": "bad", "name": "Bad", "description": "Carries schema data.", "version": 1 }},
+  "marker": {{ "color": "0xF800" }},
+  {FEATURES}
+}}
+"#
+    );
+    let err = super::check_skin_document(&doc, "bad.json").expect_err("`min_lod` is schema data");
+    assert!(err.contains("`features.*.*.min_lod`"), "{err}");
+
+    // The shipped documents are the ones this all has to hold for.
+    super::check_skin_document(&repo_doc(SHIPPED_SKIN), SHIPPED_SKIN).expect("the shipped skin is presentation only");
+    let err = super::check_skin_document(&repo_doc(SHIPPED_SCHEMA), SHIPPED_SCHEMA)
+        .expect_err("and the schema is emphatically not a skin");
+    assert!(err.contains("`lods`") && err.contains("`routing`"), "{err}");
 }
 
 // --- determinism ---------------------------------------------------------------------------
@@ -1349,19 +1431,33 @@ fn v2_examples_are_current() {
     assert_eq!(parsed.schema.obcm_version, super::super::PINNED_OBCM_VERSION, "and the pin covers v2 too");
 }
 
-// --- the shipped presets -------------------------------------------------------------------
+// --- the shipped schema and skins -----------------------------------------------------------
 
-/// Inject a `_meta.revision` + band table into a shipped preset config, so the real
-/// file can be used as this producer's `schema.json`.
-fn shipped_as_schema(preset: &str, bands: &str, revision: u32) -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../builder/presets").join(format!("{preset}.json"));
-    let text = fs::read_to_string(&path).expect("shipped preset");
-    let mut doc: serde_json::Value = serde_json::from_str(&text).expect("shipped preset is valid JSON");
+/// The shipped schema (`builder/presets/schema.json`) or, with a `../` path, one of
+/// the retired preset documents kept as a fixture — with a `_meta.revision` and band
+/// table injected, so the real file can be used as this producer's `schema.json`.
+fn as_schema(rel: &str, bands: &str, revision: u32) -> String {
+    let text = repo_doc(rel);
+    let mut doc: serde_json::Value = serde_json::from_str(&text).expect("the document is valid JSON");
     let meta = doc.get_mut("_meta").expect("_meta").as_object_mut().expect("object");
     meta.insert("revision".into(), Value::from(revision));
     meta.insert("bands".into(), serde_json::from_str(bands).expect("band table"));
     serde_json::to_string_pretty(&doc).expect("serializes")
 }
+
+/// A checked-in document, read relative to this crate.
+fn repo_doc(rel: &str) -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
+    fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+/// The shipped schema, as this producer's `schema.json`.
+const SHIPPED_SCHEMA: &str = "../../builder/presets/schema.json";
+/// The one shipped skin.
+const SHIPPED_SKIN: &str = "../../builder/presets/skins/default.json";
+/// The preset epic #1016 D2 retired, kept as a fixture so the negative test below
+/// keeps asserting against the real document rather than a convenient stand-in.
+const RETIRED_HIGH_DETAIL: &str = "tests/retired/high-detail.json";
 
 /// `OBCA_Spec.md` §1.5's v1 band table, against the shipped bikepacking ladder: LOD
 /// 0–2 coarse, 3–4 mid, 5–6 fine, nav + POI in `network`.
@@ -1372,15 +1468,15 @@ const V1_BAND_TABLE: &str = r#"[
     { "id": "network", "cell_log2": 18, "sections": ["nav", "poi"], "role": "core" }
 ]"#;
 
-/// The shipped `default` preset is the hosted schema *and* a skin over itself, and the
-/// band table of `OBCA_Spec.md` §1.5 partitions its ladder exactly. If either stops
+/// The shipped documents are what a real bake hands this generator: `schema.json` is
+/// the hosted schema, `skins/default.json` is a skin over it, and the band table of
+/// `OBCA_Spec.md` §1.5 partitions the schema's ladder exactly. If any of that stops
 /// being true, the first real bake fails on data we control.
 #[test]
-fn the_shipped_bikepacking_preset_is_a_schema_and_a_skin() {
+fn the_shipped_schema_and_skin_generate_a_v2_catalog() {
     let t = TempTree::new("shipped");
-    let schema = shipped_as_schema("default", V1_BAND_TABLE, 1);
-    write(&t.path().join(SCHEMA_DOC), &schema);
-    write(&t.path().join(SKINS_DIR).join("default.json"), &schema);
+    write(&t.path().join(SCHEMA_DOC), &as_schema(SHIPPED_SCHEMA, V1_BAND_TABLE, 1));
+    write(&t.path().join(SKINS_DIR).join("default.json"), &repo_doc(SHIPPED_SKIN));
     let ch = [("europe/switzerland", "2026-07-19")];
     for (band, id) in [("coarse", coarse_cell()), ("mid", mid_cell()), ("fine", fine_west())] {
         write_cell_at(t.path(), band, id, OBCM_VERSION, id.square(), 16, 1, "2026-07-30T02:10:04Z", &ch, false);
@@ -1398,7 +1494,8 @@ fn the_shipped_bikepacking_preset_is_a_schema_and_a_skin() {
         false,
     );
 
-    let g = generate(t.path(), &opts()).expect("the shipped preset generates a v2 catalog");
+    let g = generate(t.path(), &opts()).expect("the shipped documents generate a v2 catalog");
+    assert_eq!(g.root.schema.id, "bikepacking", "the shipped schema names itself");
     assert_eq!(g.root.schema.lods.len(), 7, "the shipped ladder is 7 rungs");
     assert_eq!(
         g.root.schema.lods.iter().map(|l| l.band.as_str()).collect::<Vec<_>>(),
@@ -1406,25 +1503,77 @@ fn the_shipped_bikepacking_preset_is_a_schema_and_a_skin() {
         "OBCA_Spec.md §1.5's band table partitions the shipped ladder"
     );
     let skin = &g.root.skins[0];
+    assert_eq!(skin.id, "default");
     assert_eq!(skin.styles.len(), g.root.schema.styles.len());
-    assert!(skin.styles.len() > 30, "the shipped preset carries a real style table: {}", skin.styles.len());
+    assert!(skin.styles.len() > 30, "the shipped schema carries a real style table: {}", skin.styles.len());
     assert!(skin.styles.iter().any(|s| s.dashed), "and at least one dashed style");
+
+    // The shipped skin is the schema's *own* look, restated. Nothing else in the tree
+    // enforces that — a skin is free to differ, which is the entire point of skins —
+    // but `default` is the look the schema bakes into a v1 whole-region artifact and
+    // into every preview map, so the two drifting apart would make one of them lie.
+    // The dark skin of a later round is where a skin legitimately differs.
+    let schema_config = Config::parse(&repo_doc(SHIPPED_SCHEMA)).expect("the schema parses");
+    let skin_config = Config::parse(&repo_doc(SHIPPED_SKIN)).expect("the skin parses");
+    check_skin(&schema_config, &skin_config).expect("the shipped skin fits the shipped schema");
+    assert_eq!(skin.marker_color, schema_config.marker_color, "same marker color");
+    let schema_styles =
+        skin_styles(&schema_config, &read_schema_doc(&t.path().join(SCHEMA_DOC)).expect("schema"), Path::new("schema"))
+            .expect("the schema's own values, in skin shape");
+    assert_eq!(skin.styles, schema_styles, "the `default` skin restates the schema's own presentation values");
+
+    // And the swatch with them. It is `_meta`, so nothing above reaches it — but it is
+    // the six colours the builder paints a style card with, i.e. the *only* part of
+    // either document a user ever sees before downloading a map. A skin whose styles
+    // match the schema while its swatch advertises something else is a card that lies,
+    // and the two documents restating the same values by hand is exactly the setup in
+    // which one of them gets edited alone.
+    let swatch = |doc: &str| -> Vec<String> {
+        let v: Value = serde_json::from_str(&repo_doc(doc)).expect("valid JSON");
+        v["_meta"]["swatch"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{doc}: `_meta.swatch` is what the builder paints a card with"))
+            .iter()
+            .map(|c| c.as_str().expect("a swatch entry is a hex string").to_string())
+            .collect()
+    };
+    let schema_swatch = swatch(SHIPPED_SCHEMA);
+    assert_eq!(schema_swatch.len(), 6, "six colours, as every card expects");
+    assert_eq!(
+        swatch(SHIPPED_SKIN),
+        schema_swatch,
+        "the `default` skin's swatch must be the schema's — the card is the only part of these documents a rider \
+         sees before downloading"
+    );
 }
 
 /// Epic #1016 D2, as a test: `high-detail` is a different **schema**, not a skin. It
-/// has feature types `default` lacks and vice versa, so it cannot be stamped onto
-/// cells baked at the bikepacking schema — which is exactly why the hosted catalog
+/// has feature types the bikepacking schema lacks and vice versa, so it cannot be
+/// stamped onto cells baked at that schema — which is exactly why the hosted catalog
 /// retires it rather than shipping a second cell store.
+///
+/// The document under test is the retired preset itself, kept verbatim at
+/// `tests/retired/high-detail.json` when #1036 removed it from the shelf. A
+/// hand-written mismatch would test the same two error branches while quietly
+/// dropping the claim that matters: that the thing we retired really could not have
+/// been kept as a skin.
 #[test]
 fn the_retired_high_detail_preset_is_a_different_schema_not_a_skin() {
     let t = TempTree::new("high-detail");
-    write(&t.path().join(SCHEMA_DOC), &shipped_as_schema("default", V1_BAND_TABLE, 1));
-    write(&t.path().join(SKINS_DIR).join("high-detail.json"), &shipped_as_schema("high-detail", V1_BAND_TABLE, 1));
+    write(&t.path().join(SCHEMA_DOC), &as_schema(SHIPPED_SCHEMA, V1_BAND_TABLE, 1));
+    write(&t.path().join(SKINS_DIR).join("high-detail.json"), &as_schema(RETIRED_HIGH_DETAIL, V1_BAND_TABLE, 1));
     let ch = [("europe/switzerland", "2026-07-19")];
     for (band, id) in [("coarse", coarse_cell()), ("mid", mid_cell()), ("fine", fine_west()), ("network", fine_west())]
     {
         write_cell_at(t.path(), band, id, OBCM_VERSION, id.square(), 16, 1, "2026-07-30T02:10:04Z", &ch, false);
     }
     let err = generate(t.path(), &opts()).expect_err("high-detail is not a skin over the bikepacking schema");
+    assert!(err.contains("new schema revision") || err.contains("invisible layer"), "{err}");
+
+    // The same verdict from the check a *producer* calls, before it has a tree at all
+    // — one implementation, two callers (`obc-bake`'s cell bakery is the other).
+    let schema = Config::parse(&repo_doc(SHIPPED_SCHEMA)).expect("the schema parses");
+    let high_detail = Config::parse(&repo_doc(RETIRED_HIGH_DETAIL)).expect("the retired preset parses");
+    let err = check_skin(&schema, &high_detail).expect_err("and the producer-side check agrees");
     assert!(err.contains("new schema revision") || err.contains("invisible layer"), "{err}");
 }

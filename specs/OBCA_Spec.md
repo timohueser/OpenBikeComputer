@@ -164,7 +164,7 @@ it **does not wrap**. Three consequences are normative:
 
 These values are the measured recommendation of epic #1016 D1, taken over whole-extract bakes of
 `switzerland`, `austria`, and `freiburg-regbez` with the shipped 7-LOD bikepacking ladder
-([`builder/presets/default.json`](../builder/presets/default.json)). They are **schema data**: a
+([`builder/presets/schema.json`](../builder/presets/schema.json)). They are **schema data**: a
 catalog states them (§6), a producer reads them from the catalog, and retuning them is a re-bake
 rather than a change to this document.
 

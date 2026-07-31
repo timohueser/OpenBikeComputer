@@ -358,7 +358,7 @@ fn a_seam_of_one_band_is_interior_to_another() {
 /// the equality below would become a near-miss — the crack OBCA §3.3 exists to rule out.
 #[test]
 fn the_shipped_preset_still_meets_at_the_seam() {
-    const PRESET: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/presets/default.json");
+    const PRESET: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/presets/schema.json");
     let cfg = Config::load(PRESET).expect("the shipped preset loads");
     assert!(cfg.merge_fills && cfg.merge_lines, "the preset really does run the merge passes");
     let (ing, ways) = fixture(&cfg);
@@ -384,6 +384,104 @@ fn the_shipped_preset_still_meets_at_the_seam() {
         let (sa, sb) = (seam_coords_per_lod(&a, seam), seam_coords_per_lod(&b, seam));
         assert!(sa.values().any(|v| !v.is_empty()), "{band} {i}/{j}: something clips on the seam: {sa:?}");
         assert_eq!(sa, sb, "{band} {i}/{j}: the two neighbours' seam vertices differ");
+    }
+}
+
+/// **The #1036 migration pin.** `builder/presets/schema.json` cuts the corpus fixture into cells
+/// that are byte-for-byte what the retired `builder/presets/default.json` cut.
+///
+/// The schema/skin split moved the shipped style documents around: `default.json` became
+/// `schema.json` with a rewritten `_meta` and its presentation values restated in
+/// `skins/default.json`. Nothing about that was supposed to reach the packer — `_meta` is an
+/// unknown field the config loader ignores, and a skin is stamped on at assembly time — so the cells
+/// must come out identical, and "must" is worth a test rather than an argument. The retired document
+/// is kept verbatim at `tests/retired/default.json` for exactly this comparison.
+///
+/// The whole shipped ladder is exercised (7 LODs, the real simplify tolerances, both merge passes)
+/// against the small band sizes [`a_real_pbf_cuts_into_cells`] uses, so the fixture spans several
+/// cells per band rather than landing in one.
+///
+/// **When the schema is deliberately restyled, this test and its fixture go with the change** — it
+/// pins a migration, not a design. Until then it is the cheapest possible guard against the split
+/// having quietly moved a byte.
+///
+/// To check it is not vacuous, perturb one presentation value in the frozen fixture — e.g.
+/// `features.highway.primary.color` — and re-run: all 177 files differ, the sidecar and every cell.
+/// Do **not** reach for a different retired document to prove the same thing: pointing `RETIRED` at
+/// `high-detail.json` fails in `cut_with`, on `band "fine" claims LOD 3, past the ladder's 3
+/// level(s)` — that document has a shorter ladder than this test's band table, so the run dies
+/// before a single byte is compared and demonstrates nothing about the comparison.
+#[test]
+fn the_schema_cuts_the_corpus_byte_identically_to_the_retired_default_preset() {
+    const TINY: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/tests/corpus/data/tiny.osm.pbf");
+    const SCHEMA: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/presets/schema.json");
+    const RETIRED: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/retired/default.json");
+    // The shipped ladder is 7 rungs, so every one of them needs a band (OBCA §1.2).
+    const BANDS: &str = r#"{"bands": [
+        {"id": "coarse",  "cell_log2": 14, "lods": [0, 1, 2],    "role": "coarse"},
+        {"id": "fine",    "cell_log2": 12, "lods": [3, 4, 5, 6], "role": "geometry"},
+        {"id": "network", "cell_log2": 12, "lods": [],           "sections": ["nav", "poi"], "role": "core"}
+    ]}"#;
+
+    let cut_with = |config: &str, tag: &str| -> (BTreeMap<String, Vec<u8>>, usize) {
+        let cfg = Config::load(config).unwrap_or_else(|e| panic!("{config}: {e}"));
+        let out = Scratch::new(tag);
+        let opts =
+            CutOptions { bands: BandTable::parse(BANDS).expect("band table"), no_land: true, ..Default::default() };
+        let summary = obc_pack::cut::cut(&[TINY.to_string()], &cfg, out.path(), &opts, &Progress::silent())
+            .unwrap_or_else(|e| panic!("cutting with {config}: {e:?}"));
+        (tree(out.path()), summary.cells.len())
+    };
+
+    let (new, cells) = cut_with(SCHEMA, "split-schema");
+    let (old, retired_cells) = cut_with(RETIRED, "split-retired");
+    assert!(cells > 1, "the pin is only worth something if the fixture produced cells: {cells}");
+    assert_eq!(cells, retired_cells, "the same cells, before and after the split");
+    assert_eq!(new.keys().collect::<Vec<_>>(), old.keys().collect::<Vec<_>>(), "the same tree of paths");
+    let differing: Vec<&str> = new.iter().filter(|(p, b)| *b != &old[*p]).map(|(p, _)| p.as_str()).collect();
+    assert!(
+        differing.is_empty(),
+        "{} of {} files differ, starting with {:?}: the schema/skin split changed what the packer sees, which it must not",
+        differing.len(),
+        new.len(),
+        &differing[..differing.len().min(5)]
+    );
+}
+
+/// The two retired preset documents are **frozen**, and their digests say so.
+///
+/// Both are load-bearing precisely because they are the real documents #1036 removed
+/// from the shelf, not stand-ins:
+///
+/// - `default.json` is the byte-identity reference above. Re-syncing it to whatever
+///   `schema.json` happens to say would turn that pin into a tautology — it would
+///   compare the schema against itself and pass no matter what the split had moved.
+/// - `high-detail.json` is the evidence behind "it could not have been a skin"
+///   (`catalog::v2::tests::the_retired_high_detail_preset_is_a_different_schema_not_a_skin`).
+///   Softened into something that *is* a skin, that test would keep passing while
+///   asserting nothing about the decision it documents.
+///
+/// Neither is a design anybody edits any more, so the only edits these files can
+/// receive are accidental — a repo-wide restyle, a formatter, an over-eager sync. The
+/// digest makes touching them a deliberate act with a failing test attached, and the
+/// only correct way past it is to say, in the commit, why the historical record moved.
+#[test]
+fn the_retired_preset_fixtures_are_frozen() {
+    for (name, digest) in [
+        ("default.json", "c8bda6265bb1422133132f590b00eb5a9c7e7814bc43350b184b1913176dda8f"),
+        ("high-detail.json", "deaaeb770677e3e67bf5784460c0c2fba5e48ec98f51b3eab795724be9061c77"),
+    ] {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/retired").join(name);
+        let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let mut hasher = <sha2::Sha256 as sha2::Digest>::new();
+        sha2::Digest::update(&mut hasher, &bytes);
+        let got = sha2::Digest::finalize(hasher).iter().map(|b| format!("{b:02x}")).collect::<String>();
+        assert_eq!(
+            got, digest,
+            "tests/retired/{name} changed. It is a frozen copy of a document #1036 retired, and the tests that read \
+             it are only worth anything while it stays verbatim — re-pin this digest only alongside a stated reason \
+             for moving the historical record."
+        );
     }
 }
 

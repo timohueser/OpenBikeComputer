@@ -1052,7 +1052,7 @@ mod tests {
              builder/tests/corpus/build_corpus.sh"
         );
         let cfg =
-            Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/presets/default.json")).expect("config");
+            Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/presets/schema.json")).expect("config");
         let ing = ingest_osm(&sources(&[TINY_PBF]), &cfg, None, &quiet()).expect("ingest");
 
         // W8 (way 109) is the only coastline; nodes 29,30 ⇒ 2 points.
@@ -1103,7 +1103,7 @@ mod tests {
              builder/tests/corpus/build_corpus.sh"
         );
         let cfg =
-            Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/presets/default.json")).expect("config");
+            Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/presets/schema.json")).expect("config");
         let ing = ingest_osm(&sources(&[POI_PBF]), &cfg, None, &quiet()).expect("ingest");
 
         // 7 candidates (5 nodes + 2 way-centroids), 2 dedup-dropped ⇒ 5 kept.
@@ -1178,7 +1178,7 @@ mod tests {
     #[test]
     fn bbox_crop_keeps_ways_whole_and_relations_all_or_nothing() {
         let cfg =
-            Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/presets/default.json")).expect("config");
+            Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/presets/schema.json")).expect("config");
         // lon 7.798..7.809, lat 47.979..47.995 — see tiny.osm's node grid.
         let bbox = Bbox::parse("7.798,47.979,7.809,47.995").expect("box");
         let ing = ingest_osm(&sources(&[TINY_PBF]), &cfg, Some(bbox), &quiet()).expect("ingest");
@@ -1221,7 +1221,7 @@ mod tests {
     #[test]
     fn bbox_covering_everything_is_a_no_op() {
         let cfg =
-            Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/presets/default.json")).expect("config");
+            Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/presets/schema.json")).expect("config");
         let plain = ingest_osm(&sources(&[TINY_PBF]), &cfg, None, &quiet()).expect("ingest");
         let boxed =
             ingest_osm(&sources(&[TINY_PBF]), &cfg, Some(Bbox::parse("-180,-90,180,90").expect("world")), &quiet())
@@ -1239,7 +1239,7 @@ mod tests {
     #[test]
     fn bbox_missing_the_data_is_an_error() {
         let cfg =
-            Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/presets/default.json")).expect("config");
+            Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/presets/schema.json")).expect("config");
         let Err(err) =
             ingest_osm(&sources(&[TINY_PBF]), &cfg, Some(Bbox::parse("10,10,11,11").expect("box")), &quiet())
         else {
@@ -1261,7 +1261,7 @@ mod tests {
              builder/tests/corpus/build_corpus.sh"
         );
         let cfg =
-            Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/presets/default.json")).expect("config");
+            Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/presets/schema.json")).expect("config");
         // The box covers both nodes, so a sorted file would have kept the way.
         let bbox = Bbox::parse("7.79,47.98,7.81,48.0").expect("box");
         let Err(err) = ingest_osm(&sources(&[UNSORTED_PBF]), &cfg, Some(bbox), &quiet()) else {
@@ -1282,7 +1282,7 @@ mod tests {
     #[test]
     fn merging_a_source_with_itself_changes_nothing() {
         let cfg =
-            Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/presets/default.json")).expect("config");
+            Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/presets/schema.json")).expect("config");
         let once = ingest_osm(&sources(&[TINY_PBF]), &cfg, None, &quiet()).expect("ingest");
         let twice = ingest_osm(&sources(&[TINY_PBF, TINY_PBF]), &cfg, None, &quiet()).expect("ingest");
         assert_eq!(shape(&once), shape(&twice), "a source merged with itself must be that source");
@@ -1310,7 +1310,7 @@ mod tests {
             );
         }
         let cfg =
-            Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/presets/default.json")).expect("config");
+            Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/presets/schema.json")).expect("config");
         let whole = ingest_osm(&sources(&[TINY_PBF]), &cfg, None, &quiet()).expect("ingest");
         let halves = ingest_osm(&sources(&[WEST, EAST]), &cfg, None, &quiet()).expect("ingest");
         assert_eq!(shape(&whole), shape(&halves), "west + east must rebuild tiny.osm exactly");
@@ -1333,7 +1333,7 @@ mod tests {
         const WEST: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/tests/corpus/data/tiny_west.osm.pbf");
         const EAST: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/tests/corpus/data/tiny_east.osm.pbf");
         let cfg =
-            Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/presets/default.json")).expect("config");
+            Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/presets/schema.json")).expect("config");
         let style_of_107 = |paths: &[&str]| {
             let ing = ingest_osm(&sources(paths), &cfg, None, &quiet()).expect("ingest");
             // Way 107 is the only feature spanning lon 7.800..7.812 at lat 47.988.

@@ -329,9 +329,9 @@ mod tests {
         std::fs::write(dir.join("europe_austria-latest.osm.pbf"), b"y").unwrap();
 
         let src = LocalExtracts::new(&dir).with_snapshot("2026-07-28");
-        let bayern = Region { id: "europe/germany/bayern".into(), name: "Bayern".into(), presets: None };
-        let austria = Region { id: "europe/austria".into(), name: "Austria".into(), presets: None };
-        let missing = Region { id: "europe/france".into(), name: "France".into(), presets: None };
+        let bayern = Region { id: "europe/germany/bayern".into(), name: "Bayern".into() };
+        let austria = Region { id: "europe/austria".into(), name: "Austria".into() };
+        let missing = Region { id: "europe/france".into(), name: "France".into() };
         let p = Progress::silent();
         assert_eq!(src.fetch(&bayern, &p).unwrap().snapshot, "2026-07-28");
         assert_eq!(src.fetch(&austria, &p).unwrap().bytes, 1);
