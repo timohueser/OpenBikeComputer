@@ -546,6 +546,11 @@ impl CellBakery<'_> {
     /// is a schema revision and a re-bake (epic #1016 D2), not a retry.
     fn check_skins(&self) -> Result<(), String> {
         for skin in self.skins {
+            // Two different questions, and a document can fail either. First: is it
+            // presentation only? That is a question about the *text*, because a config
+            // cannot tell an absent `lods` from one restating the defaults. Second:
+            // does it style exactly the schema's feature types, with exactly its ids?
+            obc_pack::catalog::v2::check_skin_document(&skin.json, &skin.path.display().to_string())?;
             obc_pack::catalog::v2::check_skin(&self.schema.config, &skin.config).map_err(|e| {
                 format!(
                     "skin `{}` ({}) is not a skin over schema `{}` ({}): {e}",
@@ -923,6 +928,14 @@ impl CellBakery<'_> {
     /// block carrying the schema's id, revision and band table — one document rather
     /// than two, so the style-id assignment the catalog publishes and the one baked
     /// into the chunks cannot disagree (`OBCC_Spec.md` §11.3).
+    ///
+    /// The id is **checked**, not written. `--schema-id` and the document's own
+    /// `_meta.id` are two statements of one fact, and overwriting the document with
+    /// the flag makes the disagreement unobservable: a typo in `--schema-id` would
+    /// publish the bikepacking schema's cells under some other name, and a store's id
+    /// is the identity a rider's already-downloaded cells are matched against. Both
+    /// spellings exist because the flag scopes the run and the document ships in the
+    /// repo, so the only safe relationship between them is agreement.
     fn write_schema_and_skins(&self) -> Result<(), String> {
         let mut doc: serde_json::Value =
             serde_json::from_str(&self.schema.json).map_err(|e| format!("{}: {e}", self.schema.path.display()))?;
@@ -930,13 +943,37 @@ impl CellBakery<'_> {
             .get_mut("_meta")
             .and_then(serde_json::Value::as_object_mut)
             .ok_or_else(|| format!("{}: no `_meta` block", self.schema.path.display()))?;
-        meta.insert("id".into(), serde_json::Value::String(self.opts.schema_id.clone()));
+        let declared = meta.get("id").and_then(serde_json::Value::as_str).unwrap_or_default();
+        if declared != self.opts.schema_id {
+            return Err(format!(
+                "{}: `_meta.id` is `{declared}` but --schema-id says `{}`. The document's id and the run's are the \
+                 same fact stated twice — fix whichever is wrong rather than letting the bake publish this schema's \
+                 cells under another schema's name.",
+                self.schema.path.display(),
+                self.opts.schema_id
+            ));
+        }
         meta.insert("revision".into(), serde_json::json!(self.opts.schema_revision));
         meta.insert("bands".into(), serde_json::to_value(&self.opts.bands.bands).map_err(|e| e.to_string())?);
         write_json(&self.opts.out.join(SCHEMA_DOC), &doc)?;
 
         let skins = self.opts.out.join(SKINS_DIR);
         std::fs::create_dir_all(&skins).map_err(|e| format!("{}: {e}", skins.display()))?;
+        // A skin this run does not publish must not survive in the tree from an earlier
+        // one. The generator walks `skins/` and publishes whatever it finds, so a
+        // leftover would be offered to riders as a current look over a store it may no
+        // longer fit — and `--skin` narrowing the set is exactly how an operator says
+        // "not that one any more". Pruned before the tree is generated from, so the
+        // catalog and the directory can never disagree.
+        for path in std::fs::read_dir(&skins).map_err(|e| format!("{}: {e}", skins.display()))? {
+            let path = path.map_err(|e| format!("{}: {e}", skins.display()))?.path();
+            let Some(stem) = path.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_suffix(".json")) else {
+                continue;
+            };
+            if !self.skins.iter().any(|s| s.id == stem) {
+                std::fs::remove_file(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            }
+        }
         for skin in self.skins {
             let dest = skins.join(format!("{}.json", skin.id));
             if std::fs::read_to_string(&dest).ok().as_deref() == Some(skin.json.as_str()) {

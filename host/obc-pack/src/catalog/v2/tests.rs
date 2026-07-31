@@ -58,6 +58,24 @@ const FEATURES: &str = r#""features": {
     }
   }"#;
 
+/// The same four feature types, in the same document order — so the same ids — with
+/// only the presentation values a **skin** is allowed to state. `min_lod` is missing
+/// on purpose: it decides the level a feature is first written at, which is a decision
+/// already baked into every cell a skin gets stamped onto, so a skin carrying it is
+/// refused ([`super::check_skin_document`]).
+const SKIN_FEATURES: &str = r#""features": {
+    "highway": {
+      "primary": { "color": "0xFAA0", "z_index": 60, "weight": 3, "priority": 2 },
+      "track": { "color": "0xAA80", "z_index": 30, "weight": 1, "priority": 3, "line_style": "dashed" }
+    },
+    "natural": {
+      "water": { "color": "0x55DF", "z_index": 10, "weight": 1, "priority": 3 }
+    },
+    "landuse": {
+      "forest": { "color": "0x5B45", "z_index": 5, "weight": 1, "priority": 4 }
+    }
+  }"#;
+
 const BANDS: &str = r#""bands": [
       { "id": "coarse", "cell_log2": 20, "lods": [0], "role": "coarse" },
       { "id": "mid", "cell_log2": 19, "lods": [1], "role": "geometry" },
@@ -112,7 +130,7 @@ fn skin_doc(id: &str, name: &str, description: &str, version: u32, marker: &str,
     "version": {version}{preview}
   }},
   "marker": {{ "color": "{marker}" }},
-  {FEATURES}
+  {SKIN_FEATURES}
 }}
 "#
     )
@@ -564,6 +582,70 @@ fn a_skin_is_the_schema_recolored() {
     let body = root_json(&g.root);
     assert!(!body.contains("preset_version"), "v2 deletes the lagging-artifact apparatus");
     assert!(!body.contains("\"presets\""), "§11.9: `presets` must not appear in a v2 root");
+}
+
+/// A skin document carrying schema keys is **refused**, and the error names them.
+///
+/// Dropping them quietly is the tempting behaviour and the wrong one. A skin is
+/// stamped onto cells already cut at the schema's ladder, tolerances, merge passes and
+/// routing table, so a `lods` block in a skin has no effect whatsoever — and an author
+/// who wrote one believes something false about the map they are shipping, with
+/// nothing anywhere to tell them otherwise. Every offending key is named, not the
+/// first, so one edit fixes the document.
+///
+/// This has to be checked against the JSON rather than the parsed [`Config`]: once
+/// parsed, a config that omits `lods` and one that restates the defaults are the same
+/// value, so `check_skin` cannot see the difference at all.
+#[test]
+fn a_skin_carrying_schema_keys_is_refused_by_name() {
+    for (key, body, expect) in [
+        ("lods", r#""lods": [{"max_mpp": null, "simplify": 200, "min_area_px": 50}],"#, "`lods`"),
+        ("routing", r#""routing": {"min_component_edges": 50},"#, "`routing`"),
+        ("merge_fills", r#""merge_fills": true,"#, "`merge_fills`"),
+        ("merge_lines", r#""merge_lines": true,"#, "`merge_lines`"),
+        ("chunk_size", r#""chunk_size": 4096,"#, "`chunk_size`"),
+    ] {
+        let doc = format!(
+            r#"{{
+  "_meta": {{ "id": "bad", "name": "Bad", "description": "Carries schema data.", "version": 1 }},
+  {body}
+  "marker": {{ "color": "0xF800" }},
+  {SKIN_FEATURES}
+}}
+"#
+        );
+        let err = super::check_skin_document(&doc, "bad.json").expect_err("`{key}` is schema data");
+        assert!(err.contains(expect), "the error must name `{key}`: {err}");
+        assert!(err.contains("presentation only"), "{err}");
+        assert!(err.contains("re-bake"), "and say what the real answer is: {err}");
+
+        // And the generator refuses the whole tree, rather than publishing a skin whose
+        // author's intent it silently discarded.
+        let t = TempTree::new(&format!("skin-schema-key-{key}"));
+        example_tree(t.path());
+        write(&t.path().join(SKINS_DIR).join("bad.json"), &doc);
+        let err = generate(t.path(), &opts()).expect_err("the tree is unpublishable");
+        assert!(err.contains(expect), "{err}");
+    }
+
+    // The style-level one: `min_lod` is on nearly every line of the schema a skin gets
+    // copied from, and it decides which level a feature is first written at.
+    let doc = format!(
+        r#"{{
+  "_meta": {{ "id": "bad", "name": "Bad", "description": "Carries schema data.", "version": 1 }},
+  "marker": {{ "color": "0xF800" }},
+  {FEATURES}
+}}
+"#
+    );
+    let err = super::check_skin_document(&doc, "bad.json").expect_err("`min_lod` is schema data");
+    assert!(err.contains("`features.*.*.min_lod`"), "{err}");
+
+    // The shipped documents are the ones this all has to hold for.
+    super::check_skin_document(&repo_doc(SHIPPED_SKIN), SHIPPED_SKIN).expect("the shipped skin is presentation only");
+    let err = super::check_skin_document(&repo_doc(SHIPPED_SCHEMA), SHIPPED_SCHEMA)
+        .expect_err("and the schema is emphatically not a skin");
+    assert!(err.contains("`lods`") && err.contains("`routing`"), "{err}");
 }
 
 // --- determinism ---------------------------------------------------------------------------
