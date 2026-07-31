@@ -10,8 +10,7 @@
     // part, worth computing once per distinct cell set rather than once per
     // resolution object identity.
 
-    import { onDestroy, onMount } from "svelte";
-    import { cellsIntersecting, formatCellId } from "../../lib/catalog/v2/grid";
+    import { onDestroy, onMount, tick } from "svelte";
     import { coverageRings, mergeCellRects } from "../../lib/catalog/v2/outline";
     import {
         degreesToUbox,
@@ -91,15 +90,12 @@
 
     onDestroy(() => view?.destroy());
 
-    // The pane lives inside a display-toggled route and a viewport-locked
-    // layout — same two reasons the v1 panel rechecks its size.
+    // The pane lives inside a display-toggled route, so a re-activation
+    // rechecks the size. Element resizes are the view's own ResizeObserver's
+    // job — a second one here was watching the same element for the same call
+    // (#1041 low sweep).
     $effect(() => {
         if (active) view?.invalidateSize();
-    });
-    $effect(() => {
-        const observer = new ResizeObserver(() => view?.invalidateSize());
-        observer.observe(mapEl);
-        return () => observer.disconnect();
     });
 
     // --- selection → drawing ---------------------------------------------
@@ -184,10 +180,12 @@
     // --- tools ------------------------------------------------------------
 
     let corridorPanel = $state<{ requestClose(): Promise<boolean> }>();
+    let corridorBtn = $state<HTMLButtonElement>();
 
     async function setTool(next: Tool) {
         const target = tool === next ? "none" : next;
-        if (tool === "corridor" && target !== "corridor") {
+        const leavingCorridor = tool === "corridor" && target !== "corridor";
+        if (leavingCorridor) {
             // The corridor panel may be holding uploaded routes — the one
             // kind of tool state a user cannot get back by re-arming the tool
             // — so leaving it asks first (#1041 A7). Declining keeps the
@@ -198,6 +196,14 @@
         if (tool === "box" && target !== "box") view?.cancelBoxDraw();
         tool = target;
         if (target === "box") view?.armBoxDraw();
+        if (leavingCorridor) {
+            // The panel held focus (it takes it on open); its unmount dropped
+            // focus on <body>. Hand it back to the tool that opened it — but
+            // only when nothing else claimed it, e.g. the rail button a click
+            // just landed on.
+            await tick();
+            if (document.activeElement === document.body) corridorBtn?.focus();
+        }
     }
 
     function onKey(e: KeyboardEvent) {
@@ -206,30 +212,38 @@
         }
     }
 
-    /** The live pricing chip under a box being drawn: real published bytes
-     *  across every band, the same numbers the part will cost once released. */
+    // The rail is a toolbar, and a toolbar is ONE tab stop: Tab lands on the
+    // remembered tool, arrows walk the tools, Tab leaves (#1041 low sweep,
+    // WAI-APG toolbar pattern). Vertical rail, so Up/Down are the axis.
+    let railEl = $state<HTMLDivElement>();
+    let railAt = $state(0);
+
+    function onRailKey(e: KeyboardEvent) {
+        const keys = ["ArrowDown", "ArrowUp", "Home", "End"];
+        if (!keys.includes(e.key) || !railEl) return;
+        const buttons = [...railEl.querySelectorAll("button")];
+        const at = buttons.indexOf(document.activeElement as HTMLButtonElement);
+        const next =
+            e.key === "ArrowDown"
+                ? Math.min(buttons.length - 1, at + 1)
+                : e.key === "ArrowUp"
+                  ? Math.max(0, at - 1)
+                  : e.key === "Home"
+                    ? 0
+                    : buttons.length - 1;
+        buttons[next]?.focus();
+        e.preventDefault();
+    }
+
+    /** The live pricing chip under a box being drawn: the store prices the
+     *  drag through the same resolver + ledger as the released part, so the
+     *  chip's number is the row's number by construction (#1041 low sweep). */
     function priceBox(south: number, west: number, north: number, east: number): string {
-        const indices = store.indices;
-        if (!indices) return "";
-        const box = degreesToUbox(south, west, north, east);
-        let bytes = 0;
-        let count = 0;
-        try {
-            for (const b of store.catalog.schema.bands) {
-                const index = indices.get(b.id);
-                if (!index) continue;
-                for (const cell of cellsIntersecting(b.cell_log2, box)) {
-                    const entry = index.byId.get(formatCellId(cell));
-                    if (entry) {
-                        bytes += entry.bytes;
-                        count += 1;
-                    }
-                }
-            }
-        } catch {
-            return "too large for one map";
-        }
-        return count ? `≈ ${formatBytes(bytes)} · ${count} cells` : "nothing baked here yet";
+        const priced = store.priceDraggedBox(degreesToUbox(south, west, north, east));
+        if (!priced) return "";
+        if ("refused" in priced) return "too large for one map";
+        if (priced.cells === 0) return "nothing baked here yet";
+        return `≈ ${formatBytes(priced.bytes)} · ${priced.cells} ${priced.cells === 1 ? "cell" : "cells"}`;
     }
 
     const partCount = $derived(store.selection.parts.length);
@@ -244,12 +258,22 @@
          not a hidden one — the rail is the one place tools live, and showing
          where the next one goes costs a single quiet button. -->
     <div class="overlay rail-wrap">
-        <div class="rail" role="toolbar" aria-label="Selection tools">
+        <div
+            class="rail"
+            role="toolbar"
+            aria-label="Selection tools"
+            aria-orientation="vertical"
+            bind:this={railEl}
+        >
             <button
                 type="button"
                 class:active={tool === "region"}
                 aria-pressed={tool === "region"}
                 title="Add a region"
+                aria-label="Add a region"
+                tabindex={railAt === 0 ? 0 : -1}
+                onkeydown={onRailKey}
+                onfocus={() => (railAt = 0)}
                 onclick={() => setTool("region")}>◧</button
             >
             <button
@@ -257,16 +281,38 @@
                 class:active={tool === "box"}
                 aria-pressed={tool === "box"}
                 title="Draw a box"
+                aria-label="Draw a box"
+                tabindex={railAt === 1 ? 0 : -1}
+                onkeydown={onRailKey}
+                onfocus={() => (railAt = 1)}
                 onclick={() => setTool("box")}>▭</button
             >
             <button
                 type="button"
+                bind:this={corridorBtn}
                 class:active={tool === "corridor"}
                 aria-pressed={tool === "corridor"}
                 title="Add a corridor around a route"
+                aria-label="Add a corridor around a route"
+                tabindex={railAt === 2 ? 0 : -1}
+                onkeydown={onRailKey}
+                onfocus={() => (railAt = 2)}
                 onclick={() => setTool("corridor")}>◠</button
             >
-            <button type="button" class="ghosted" disabled title="Lasso — later">◌</button>
+            <!-- aria-disabled, not disabled: a disabled button is unfocusable,
+                 so its "later" tooltip was unreachable by keyboard and its
+                 existence invisible to a screen reader (#1041 low sweep). It
+                 stays in the arrow-walk, announces itself, and does nothing. -->
+            <button
+                type="button"
+                class="ghosted"
+                aria-disabled="true"
+                title="Lasso — later"
+                aria-label="Lasso — later"
+                tabindex={railAt === 3 ? 0 : -1}
+                onkeydown={onRailKey}
+                onfocus={() => (railAt = 3)}>◌</button
+            >
         </div>
         <span class="rail-hint small faint">regions · box · corridor</span>
     </div>
@@ -372,7 +418,7 @@
             color 0.15s;
     }
 
-    .rail button:hover:not(:disabled):not(.active) {
+    .rail button:hover:not(.ghosted):not(.active) {
         background: var(--parchment-2);
         color: var(--ink);
     }
