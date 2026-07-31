@@ -21,12 +21,12 @@ use obc_app::{App, AppState, CameraMode, Dirty, HostCommand, HostEvent};
 use obc_display::FbDevice64;
 use obc_host_core::{fill_nav_preview, HostLoop};
 use obc_ports::{Button, Fix, InputClock, RideClock, Sensors, SettingsStore};
-use obc_reader::{MapCache, MapTables, Reader, SliceSource};
 use obc_route::RouteReader;
 
 use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 
 use crate::device_input::DeviceInput;
+use crate::map_set::LoadedMap;
 use crate::present::Present;
 use crate::rides::RideStore;
 use crate::routes::RouteStore;
@@ -115,9 +115,10 @@ impl obc_ports::ClockSource for SimClock {
     }
 }
 
-/// Launch the simulator window. Owns the map bytes for the process lifetime; the
-/// [`Reader`] is a cheap view rebuilt each frame over them.
-pub fn run(bytes: Vec<u8>, args: Args) -> Result<(), eframe::Error> {
+/// Launch the simulator window. `map` is opened and, for a volume set, **mounted** once before
+/// this — for the process lifetime, as the device mounts once at boot — and the per-frame
+/// [`Reader`] is a cheap view over it.
+pub fn run(map: LoadedMap, args: Args) -> Result<(), eframe::Error> {
     // The window wraps the whole device (housing + screen + a little backdrop) at `--scale`,
     // so the body has room around the framebuffer.
     let dev = housing::HousingStyle::default().window_size_px(egui::vec2(args.width as f32, args.height as f32));
@@ -129,7 +130,7 @@ pub fn run(bytes: Vec<u8>, args: Args) -> Result<(), eframe::Error> {
     eframe::run_native(
         "OBC Simulator",
         options,
-        Box::new(move |_cc| Ok(Box::new(SimGui::new(bytes, args)) as Box<dyn eframe::App>)),
+        Box::new(move |_cc| Ok(Box::new(SimGui::new(map, args)) as Box<dyn eframe::App>)),
     )
 }
 
@@ -152,15 +153,16 @@ struct DeviceHit {
 }
 
 struct SimGui {
-    /// Map file bytes; `Reader` borrows these each frame.
-    bytes: Vec<u8>,
-    /// The immutable map tables (style table + LOD pyramid), parsed once at startup and borrowed
-    /// by the cheap per-frame `Reader` — mirroring the device, which parses them once at boot.
-    map_tables: MapTables,
-    /// The streamed-map cache, kept for the whole session and reused across frames (as the device
-    /// holds one in its reserved region). Cross-frame reuse lets a panned-into view warm to 100%
-    /// hit, so the "Map SD" stats track real device behaviour rather than a cold ≤75%.
-    map_cache: MapCache,
+    /// The opened map: one `.obcm`, or a volume set **already mounted** (see
+    /// [`LoadedMap`]) — the mount is held for the session, like the device's, and only the cheap
+    /// `Reader` view is rebuilt per frame. It carries the immutable tables (style table + LOD
+    /// pyramid, parsed once at startup as the device parses them once at boot) and the session-long
+    /// chunk cache, whose cross-frame reuse lets a panned-into view warm to 100% hit so the
+    /// "Map SD" stats track real device behaviour rather than a cold ≤75%.
+    map: LoadedMap,
+    /// The set's own map-plane renderer (`map_set::SetPlane`); `None` for a single map, which draws
+    /// entirely through the app's.
+    set_renderer: Option<Box<obc_render::MapRenderer>>,
     app: App,
     /// The routes folder (the device-SD stand-in): the menu catalog + active geometry.
     store: RouteStore,
@@ -249,14 +251,14 @@ struct SimGui {
 }
 
 impl SimGui {
-    fn new(bytes: Vec<u8>, args: Args) -> Self {
-        let map_tables = MapTables::parse(&SliceSource(&bytes)).expect("map validated in main()");
-        let (cx, cy, zoom) = {
-            let cache = MapCache::new();
-            let src = SliceSource(&bytes);
-            let reader = Reader::new(&src, &map_tables, &cache);
-            crate::initial_camera(&reader, args.width)
-        };
+    fn new(map: LoadedMap, args: Args) -> Self {
+        // For a set these are the **core** shard's tables (§5.1): the one style table the whole set
+        // shares (§4.7), and the tables every per-shard reader borrows.
+        let map_tables = map.tables();
+        let (cx, cy, zoom) = crate::initial_camera(&map.reader(), args.width);
+        // A set's map plane draws through its own renderer (`map_set::SetPlane`); a single map has
+        // no second plane and allocates nothing.
+        let set_renderer = map.set().map(|_| Box::new(obc_render::MapRenderer::new()));
         let mut state = AppState::new(cx, cy, zoom);
         if let Some(b) = args.battery {
             state.battery_pct = b;
@@ -322,8 +324,9 @@ impl SimGui {
         // sim's crate version) + the loaded map's name (filename stem) & OBCM version. The card-free
         // scan is answered per-frame in `update` when the screen posts its on-entry request.
         app.set_fw_version(env!("CARGO_PKG_VERSION"));
-        let map_stem = std::path::Path::new(&args.map).file_stem().and_then(|s| s.to_str()).unwrap_or("map");
-        app.set_map_info(map_stem, map_tables.version);
+        // A set lists as **one** map under its manifest's display name (§5.4), never as its shards.
+        let map_name = map.source.display_name();
+        app.set_map_info(&map_name, map_tables.version);
         // `--physical` only takes effect with a saved calibration; `--calibrate` opens the screen.
         let points_per_mm = crate::calib::load();
         let physical = args.physical && points_per_mm.is_some();
@@ -358,9 +361,8 @@ impl SimGui {
             texture: None,
             screenshot: args.screenshot,
             screenshot_requested: false,
-            bytes,
-            map_tables,
-            map_cache: MapCache::new(),
+            map,
+            set_renderer,
             last_stats: obc_render::RenderStats::default(),
             last_dirty: Dirty::CLEAN,
             host: HostLoop::new(),
@@ -404,9 +406,12 @@ impl SimGui {
     /// Run the shared app for one frame into the backend's device-64 frame, present it through the
     /// seam, then upload the reconstructed texture.
     fn render_to_texture(&mut self, ctx: &egui::Context) {
-        // Reuse the session-long cache (see the field doc) so the "Map SD" stats mirror glass.
-        let map_src = SliceSource(&self.bytes);
-        let reader = Reader::new(&map_src, &self.map_tables, &self.map_cache);
+        // Reuse the session-long cache and the session-long **mount** (see the field docs): a set
+        // is mounted once at startup exactly as the device mounts once at boot, so a frame costs
+        // one cheap `Reader` view and no re-validation.
+        // Nav, POI, hours and routing read the **core** shard and only it (§5.1), never a geometry
+        // shard — so this is the reader the whole app path gets, set or not.
+        let reader = self.map.reader();
 
         // Feed the host→app BLE seam (epic #447): the control panel's injected link state, pushed
         // every frame exactly as the board's ride loop feeds its `ble::state` snapshot. Cheap and
@@ -445,8 +450,6 @@ impl SimGui {
         // panel flag), settings persistence (the RRAM stand-in file), and DFU (no real flash in the
         // desktop sim, so a no-op). Everything else — the sequencing — lives in the dispatcher.
         {
-            let map_src = SliceSource(&self.bytes);
-            let reader = Reader::new(&map_src, &self.map_tables, &self.map_cache);
             let settings_store = &mut self.settings_store;
             let panel = &mut self.panel;
             self.host.reconcile(
@@ -570,9 +573,12 @@ impl SimGui {
         let t0 = std::time::Instant::now();
         let (dev_w, dev_h) = (self.dev_w, self.dev_h);
         let mut fbdev = FbDevice64::new(&mut self.fb, dev_w, dev_h);
-        let mut stats = self.app.render_frame(&mut fbdev, &reader, route.as_ref(), dev_w as f32, dev_h as f32, |c| {
-            Rgb565::from(RawU16::new(c))
-        });
+        let set = self.map.set().zip(self.set_renderer.as_mut()).map(|(set, r)| (set, &mut **r));
+        let scene = crate::map_set::Scene { set, reader: &reader, route: route.as_ref() };
+        let mut stats =
+            crate::map_set::render_frame(&mut self.app, &mut fbdev, scene, (dev_w as f32, dev_h as f32), |c| {
+                Rgb565::from(RawU16::new(c))
+            });
         stats.render_us = t0.elapsed().as_micros() as u32;
         self.last_stats = stats;
         // Drain the shared dirty signal for the stats readout (the sim always redraws, so this
