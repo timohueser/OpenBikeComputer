@@ -46,7 +46,7 @@
 /// are pixel-identical.
 pub mod set;
 
-/// A style record (OBCM v10, 8 bytes on the wire): `(id, z_index, color_rgb565, weight, priority,
+/// A style record (OBCM §2, 8 bytes on the wire): `(id, z_index, color_rgb565, weight, priority,
 /// dashed, color2)`. `dashed` sets flag bit 2; `color2 = Some(_)` sets flag bit 3 and writes the
 /// secondary color, `None` writes `0x0000` with the bit clear.
 pub type Style = (u8, i8, u16, u8, u8, bool, Option<u16>);
@@ -75,7 +75,7 @@ pub struct LodSpec {
     pub chunk_size: usize,
 }
 
-/// Pack the style table (OBCM v10): a count byte followed by one 8-byte record per style
+/// Pack the style table (OBCM §2): a count byte followed by one 8-byte record per style
 /// (`id, z, color_le, weight, flags, color2_le`). `flags` = `(priority-1) & STYLE_PRIORITY_MASK`,
 /// plus bit 2 when `dashed` and bit 3 when `color2` is `Some`. `color2` writes its RGB565 value when
 /// present, else `0x0000` (ignored by the reader when bit 3 is clear). Shared by both file builders.
@@ -99,7 +99,9 @@ fn style_table(styles: &[Style]) -> Vec<u8> {
     style_bytes
 }
 
-/// The 40-byte OBCM v10 header, shared by both file builders.
+/// The 40-byte OBCM header (§1), shared by both file builders. The version byte is `VERSION`,
+/// so this builds whatever the reader currently reads — the length is asserted against
+/// `HEADER_LEN` below rather than trusted to this comment.
 ///
 /// `<4sBiiiiIBIHII`: magic, ver, min_lat, min_lon, max_lat, max_lon, style_off, lod_count,
 /// lod_table_off, marker_color, poi_section_off, nav_section_off. `bbox` is
