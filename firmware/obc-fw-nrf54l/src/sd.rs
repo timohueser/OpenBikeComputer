@@ -470,13 +470,15 @@ pub struct Storage {
     /// [`MAP_EXTENTS`] `.bss` slot — see its doc for why the table must not live in here by value.
     map_extents: Option<&'static ExtentTable>,
     /// The fault the boot must show when [`map_source`](Storage::map_source) has nothing to hand
-    /// out — `None` until [`open_map`](Storage::open_map) has run, and set only where this build
-    /// **finds a map and declines it**, which today is exactly the volume-set refusal.
+    /// out — `None` until [`open_map`](Storage::open_map) has run, then whatever
+    /// [`obc_app::boot_fault`] answers for the card that was actually scanned.
     ///
     /// It exists because *NO MAP* and *MAP UNREADABLE* are different sentences to a rider, and the
-    /// card cannot tell them apart from a failed `map_source` alone. Every other early return in
-    /// `open_map` is an I/O failure and is deliberately left reporting *NO MAP* exactly as before —
-    /// this PR changes no single-map path.
+    /// card cannot tell them apart from a failed `map_source` alone. Every path in `open_map` that
+    /// gives up **with a map-named file on the card** records it — the volume-set refusal, a chosen
+    /// map the FAT layer will not open, a zero-length one, and the scan's own rejects (a torn
+    /// magic, a file too short to hold a header). A card that genuinely holds nothing leaves the
+    /// answer at *NO MAP*.
     map_boot_fault: Option<obc_app::BootFault>,
     /// The open ride log for the current tracking session.
     open_track: Option<OpenTrack>,
@@ -1355,13 +1357,25 @@ impl Storage {
     /// 3. else the first readable map of any kind (a side-loaded `.obcm`);
     /// 4. else the first map at all — so a card holding only a wrong-version map still reaches the
     ///    **MAP UNREADABLE** fault screen rather than the indistinguishable **NO MAP** one.
+    ///
+    /// Every way this returns `None` also records [`boot_fault`](Self::boot_fault), by the one rule
+    /// in [`obc_app::boot_fault`]: giving up is not the same as an empty card, and a rider whose map
+    /// is sitting in the root must not be told to go and add one. That covers the volume-set refusal
+    /// below, both open failures, and — via `scan_maps_into`'s count — the files the catalog never
+    /// saw because their header would not parse.
     pub fn open_map(&mut self) -> Option<u32> {
         if let Some((_, len)) = self.open_map {
             return Some(len);
         }
         let mut maps: Vec<MapSummary, MAX_MAPS> = Vec::new();
-        self.scan_maps_into(&mut maps);
-        let keep = choose_map_index(&maps)?;
+        let unlistable = self.scan_maps_into(&mut maps);
+        let Some(keep) = choose_map_index(&maps) else {
+            // An empty *catalog* is not an empty *card*: a torn or unopenable map file is dropped by
+            // the scan and still sits in the root under a name the rider recognises. The rule gives
+            // NO MAP only when nothing at all was found, exactly as before.
+            self.map_boot_fault = Some(obc_app::boot_fault(&map_choices(&maps), unlistable));
+            return None;
+        };
         let chosen = &maps[keep];
         // A volume set reaches here only through `choose_map`'s clause 4 (nothing readable at all),
         // and the file named is its *manifest* — 1864 bytes of OBCS, not a map. Opening it as one
@@ -1376,7 +1390,7 @@ impl Storage {
                 defmt::Debug2Format(&chosen.file),
                 shards
             );
-            self.map_boot_fault = Some(obc_app::boot_fault(&map_choices(&maps)));
+            self.map_boot_fault = Some(obc_app::boot_fault(&map_choices(&maps), unlistable));
             // Nothing is open, so nothing is at risk — and this is the one path on which a card
             // holding only sets reaches the retire pass at all (`keep` is `None`: with no loaded
             // map, no *single* map is superseded, exactly as before).
@@ -1393,10 +1407,21 @@ impl Storage {
             chosen.byte_len
         );
         self.map_name = display;
-        let file = self.vmgr.open_file_in_dir(self.root, &name, Mode::ReadOnly).ok()?;
+        // Both failures below are about a map the catalog *listed*: its header read fine minutes ago
+        // and the file is in the root under a name the rider knows. **MAP UNREADABLE** is the honest
+        // report — NO MAP would send them looking for a file that is right there. (The volume-set
+        // refusal above learned this first; these are the single-map paths it deliberately left
+        // alone.)
+        let Ok(file) = self.vmgr.open_file_in_dir(self.root, &name, Mode::ReadOnly) else {
+            defmt::warn!("SD: the chosen map {} is on the card but will not open", defmt::Debug2Format(&name));
+            self.map_boot_fault = Some(obc_app::boot_fault(&map_choices(&maps), unlistable));
+            return None;
+        };
         let len = self.vmgr.file_length(file).unwrap_or(0);
         if len == 0 {
+            defmt::warn!("SD: the chosen map {} opened with zero length", defmt::Debug2Format(&name));
             let _ = self.vmgr.close_file(file);
+            self.map_boot_fault = Some(obc_app::boot_fault(&map_choices(&maps), unlistable));
             return None;
         }
         self.open_map = Some((file, len));
@@ -1412,9 +1437,9 @@ impl Storage {
 
     /// Which boot fault to put on glass when [`map_source`](Storage::map_source) hands out nothing.
     ///
-    /// **NO MAP** unless [`open_map`](Storage::open_map) found a map and declined it — see
-    /// [`map_boot_fault`](Storage::map_boot_fault) and `obc_app::boot_fault`, where the rule lives
-    /// and is tested.
+    /// **NO MAP** unless [`open_map`](Storage::open_map) found a map-named file and could not stream
+    /// from it — see [`map_boot_fault`](Storage::map_boot_fault) and `obc_app::boot_fault`, where the
+    /// rule lives and is tested.
     pub fn boot_fault(&self) -> obc_app::BootFault {
         self.map_boot_fault.unwrap_or(obc_app::BootFault::NoMap)
     }
@@ -1505,6 +1530,13 @@ impl Storage {
     /// upload leaves (the held-back magic never patched in), so the scan is what makes an interrupted
     /// transfer invisible instead of a half-map the renderer would try to parse.
     ///
+    /// Returns how many map-named entries were dropped that way — the count
+    /// [`obc_app::boot_fault`] needs, and the *only* thing that looks at them. They stay out of the
+    /// catalog for every other consumer (the renderer must not parse one; `next_map_id_from_scan`
+    /// must stay free to reuse a torn upload's id), but a dropped entry is still a file the rider
+    /// sees in the card root, so a boot that finds nothing to stream from must say **MAP
+    /// UNREADABLE** rather than **NO MAP**.
+    ///
     /// A volume set (`OBCA_Spec.md` §5) is listed as **one** map, keyed on its `MS{id}.OBS`
     /// manifest, and its `MS{id}S{kk}.OBM` shards are never listed at all — §5.4 is explicit that a
     /// shard opened alone is "exactly the kind of quiet wrongness a rider cannot diagnose" (a
@@ -1524,8 +1556,9 @@ impl Storage {
     ///   boot and at each `next_map_id_from_scan`, so a 32-shard set is ~33 opens — bounded, but not
     ///   free, and the reason `set_identity` is the *only* thing that reads a shard at scan time
     ///   (no LOD tables, no style tables, no digests).
-    pub fn scan_maps_into(&self, out: &mut Vec<MapSummary, MAX_MAPS>) {
+    pub fn scan_maps_into(&self, out: &mut Vec<MapSummary, MAX_MAPS>) -> usize {
         out.clear();
+        let mut unlistable = 0usize;
         let selected = self.load_selected_map();
         // `manifest` distinguishes the two arms; everything else is the same directory-entry facts.
         // Two phases because the `iter_dir_lfn` callback borrows the manager and both identity
@@ -1548,12 +1581,16 @@ impl Storage {
         });
         for (file, name, entry_block, entry_offset, byte_len, manifest) in entries {
             let (id, shards, name, byte_len, obcm_version, bbox) = if manifest {
-                let Some(id) = set_manifest_id(&file) else { continue };
+                let Some(id) = set_manifest_id(&file) else {
+                    unlistable += 1;
+                    continue;
+                };
                 let Some(set) = self.set_identity(&file, id) else {
                     defmt::info!(
                         "SD: {} names a volume set that does not validate — not listed (OBCA §5.4)",
                         defmt::Debug2Format(&file)
                     );
+                    unlistable += 1;
                     continue;
                 };
                 // The manifest carries a real display name; the 8.3 stem (`MS7`) is the fallback.
@@ -1567,7 +1604,10 @@ impl Storage {
                     set.bbox,
                 )
             } else {
-                let Some((obcm_version, bbox)) = self.map_identity(&file) else { continue };
+                let Some((obcm_version, bbox)) = self.map_identity(&file) else {
+                    unlistable += 1;
+                    continue;
+                };
                 (uploaded_map_id(&file), None, name, byte_len as u64, obcm_version, bbox)
             };
             let selected = selected
@@ -1590,6 +1630,7 @@ impl Storage {
                 break;
             }
         }
+        unlistable
     }
 
     /// The reader's half of `OBCA_Spec.md` §5.3 for a `MS{id}.OBS` manifest, at **scan** time:
@@ -2581,6 +2622,9 @@ impl Storage {
     pub fn next_map_id_from_scan(&self) -> u16 {
         let mut next: u32 = 0;
         let mut maps: Vec<MapSummary, MAX_MAPS> = Vec::new();
+        // The scan's unlistable count is the fault card's business, not the allocator's: a torn
+        // upload has to stay invisible *here* so a retry re-derives the same id and truncates the
+        // file it abandoned (see the paragraph above).
         self.scan_maps_into(&mut maps);
         for m in maps.iter().filter(|m| m.shards.is_none()) {
             if let Some(id) = m.id {

@@ -1114,11 +1114,12 @@ async fn main(_spawner: Spawner) {
         // ends with this block, so the loop can rebuild a fresh source each redraw AND reconcile the card
         // (`&mut storage`) between frames.
         // SAFETY: sole owner of MAP_TABLES; single executor → no aliasing; written exactly once here.
-        // Which fault a map-less boot deserves is the *catalog's* answer, not `map_source`'s: a card
-        // holding a volume set has a map on it that this build declines to mount, and NO MAP would
-        // send the rider looking for a file that is right there. `Storage::boot_fault` is NO MAP
-        // unless `open_map` found a map and refused it; the rule itself is `obc_app::boot_fault`,
-        // tested where tests run. Read before the `map_source` borrow so the `else` arm is free of it.
+        // Which fault a map-less boot deserves is the *card's* answer, not `map_source`'s: a volume
+        // set this build declines to mount, a listed map that will not open, a torn `MP{id}.OBM` the
+        // scan could not parse — each leaves a map on the card, and NO MAP would send the rider
+        // looking for a file that is right there. `Storage::boot_fault` is NO MAP only when the card
+        // held nothing; the rule itself is `obc_app::boot_fault`, tested where tests run. Read before
+        // the `map_source` borrow so the `else` arm is free of it.
         let map_fault = storage.boot_fault();
         let map_tables: &MapTables = unsafe {
             let Some(init_src) = storage.map_source() else {
