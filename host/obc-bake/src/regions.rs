@@ -126,14 +126,17 @@ mod tests {
     fn the_checked_in_list_is_the_curated_dach_coverage() {
         let regions = parse(BUILTIN_REGIONS_TOML).expect("the shipped region list parses");
         let ids: Vec<&str> = regions.iter().map(|r| r.id.as_str()).collect();
-        // Germany + its sixteen Bundesländer + Austria + Switzerland (#898, locked
-        // 2026-07-29). The count is pinned so a dropped line is a failed test rather
-        // than a region that silently stops being offered.
-        assert_eq!(ids.len(), 19, "DACH is 19 regions: {ids:?}");
+        // Germany + its sixteen Bundesländer + Austria + Switzerland (#898), plus
+        // the deliberately curated Freiburg government-region extract. The count
+        // is pinned so a dropped line is a failed test rather than a region that
+        // silently stops being offered.
+        assert_eq!(ids.len(), 20, "DACH plus the Freiburg sub-extract is 20 regions: {ids:?}");
         assert!(ids.contains(&"europe/germany"));
         assert!(ids.contains(&"europe/austria"));
         assert!(ids.contains(&"europe/switzerland"));
-        let laender = ids.iter().filter(|id| id.starts_with("europe/germany/")).count();
+        assert!(ids.contains(&"europe/germany/baden-wuerttemberg/freiburg-regbez"));
+        let laender =
+            ids.iter().filter_map(|id| id.strip_prefix("europe/germany/")).filter(|rest| !rest.contains('/')).count();
         assert_eq!(laender, 16, "all sixteen Bundesländer");
     }
 
