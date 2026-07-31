@@ -115,6 +115,30 @@ describe("cellIndex", () => {
         expect(failing.calls.filter((u) => u === FINE_INDEX_URL)).toHaveLength(2);
     });
 
+    it("refuses a satellite that is not text, without letting the decoder guess", async () => {
+        // The digest can only prove the bytes are the ones the root hashed. It
+        // cannot prove they are a document — a mis-served object, a truncated
+        // gzip, a CDN error page in some other encoding all hash to something.
+        // The decoder is `fatal: true` precisely so this arrives as "not a
+        // catalog" rather than as a JSON parse error about `�`.
+        const notText = new Uint8Array([0x7b, 0xff, 0xfe, 0x7d]);
+        const digest = await crypto.subtle.digest("SHA-256", notText as unknown as BufferSource);
+        const root = JSON.parse(EXAMPLE_ROOT);
+        const ref = root.cell_index.find((r: { band: string }) => r.band === "fine");
+        ref.bytes = notText.byteLength;
+        ref.sha256 = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+
+        const impl = vi.fn(async (input: RequestInfo | URL) => {
+            if (String(input) === ROOT_URL) return new Response(JSON.stringify(root));
+            if (String(input) === FINE_INDEX_URL) return new Response(notText as unknown as BodyInit);
+            return new Response("no such object", { status: 404, statusText: "Not Found" });
+        }) as unknown as typeof fetch;
+
+        const client = await CatalogV2Client.load(ROOT_URL, { fetchImpl: impl });
+        await expect(client.cellIndex("fine")).rejects.toThrow(CatalogFormatError);
+        await expect(client.cellIndex("fine")).rejects.toThrow(/not valid UTF-8/);
+    });
+
     it("has nothing to say about a band the schema does not have", async () => {
         const { impl } = serving(allBodies());
         const client = await CatalogV2Client.load(ROOT_URL, { fetchImpl: impl });
