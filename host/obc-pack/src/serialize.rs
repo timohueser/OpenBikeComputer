@@ -215,7 +215,7 @@ fn push_deltas(data: &mut Vec<u8>, deltas: &[i64], is16: bool) {
     }
 }
 
-/// Pack the style table (OBCM v10): `Count(u8)` then, sorted by id, `<BbHBBH>` per style — `id,
+/// Pack the style table (OBCM §2): `Count(u8)` then, sorted by id, `<BbHBBH>` per style — `id,
 /// z_index, color, weight, flags, color2`. `flags = (priority-1) & STYLE_PRIORITY_MASK`, plus
 /// `STYLE_DASHED_BIT` when `dashed` and `STYLE_HAS_COLOR2_BIT` when `color2` is `Some`. `color2`
 /// writes its RGB565 value when present, else `0x0000` (which the reader ignores, bit 3 being clear).

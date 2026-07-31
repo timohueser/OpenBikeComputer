@@ -231,8 +231,9 @@ re-running the generator over an unchanged tree changes nothing but that one fie
 > **An OBCM format bump invalidates every baked artifact.**
 
 An OBCM version bump is a hard cut: the reader supports exactly one version
-([`OBCM_Spec.md`](OBCM_Spec.md) — *"v10 is the only supported version; earlier maps
-get repacked"*). Every `.obcm` in the catalog is therefore unreadable the moment the
+([`OBCM_Spec.md`](OBCM_Spec.md) names which, and says *"earlier maps get repacked"* —
+quoting the number here would just be one more place to bump). Every `.obcm` in the
+catalog is therefore unreadable the moment the
 format moves, and a catalog is a large, cached, globally-distributed pile of files
 that nobody re-checks by hand.
 

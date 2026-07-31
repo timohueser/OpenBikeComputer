@@ -58,7 +58,7 @@ const LAT: i64 = 47_300_000;
 /// then exactly the crossing coordinates, so any pixel difference is a real one rather than a
 /// tolerance artefact. `chunk_size` is deliberately small so the quadtrees genuinely subdivide and
 /// the graft has real subtrees to relocate.
-/// `highway.path` is deliberately **dashed with a `color2`**: the two v10 style-record flag bits
+/// `highway.path` is deliberately **dashed with a `color2`**: the two OBCM style-record flag bits
 /// (`0x04` / `0x08`) plus the trailing `uint16` are the part of §4.7's stamp a plain style never
 /// exercises, and a skin that lost them would ship a map whose lines are all solid. The feature that
 /// uses it is placed strictly inside one cell, because dash **phase** is one of the two cosmetic
@@ -1338,7 +1338,7 @@ fn a_malformed_cell_is_a_format_error() {
     assert!(err.contains("offsets[0]"), "got: {err}");
 }
 
-/// §4.7's stamp, end to end: the skin's values — including the two v10 flag bits and the trailing
+/// §4.7's stamp, end to end: the skin's values — including the two style-record flag bits and the trailing
 /// `color2` — are what the assembled file's style table carries, at the schema's own ids.
 #[test]
 fn the_skin_is_stamped_onto_the_output() {

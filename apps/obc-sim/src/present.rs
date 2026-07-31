@@ -666,7 +666,7 @@ mod tests {
     }
 
     /// Real-data pack→parse of the POI section (#423): the committed `monaco.obcm` — a POI-dense
-    /// coastal fixture the packer produced from a real OSM extract — must parse as v10 and expose a
+    /// coastal fixture the packer produced from a real OSM extract — must parse at the current format version and expose a
     /// full six-category POI directory with several **non-empty** categories, each carrying a real
     /// quadtree (non-zero node + chunk counts), plus a populated §8 nav graph (#464). This
     /// complements the reader's hand-built byte pins (`obc-reader/tests/format.rs`) by exercising

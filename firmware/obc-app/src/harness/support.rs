@@ -93,7 +93,7 @@ impl DrawTarget for Buf {
 
 // Minimal OBCM fixture.
 
-/// A minimal valid v10 `.obcm`: one sea-backdrop style, one LOD with a single empty leaf and no
+/// A minimal valid `.obcm`: one sea-backdrop style, one LOD with a single empty leaf and no
 /// chunks, an empty POI directory (six empty categories), and an empty hours pool. It renders as a
 /// flat backdrop, so the only non-backdrop pixels come from whatever is drawn on top — making
 /// overlays/markers trivial to detect. `marker` is the header's marker color (pass `0` when ignored).
@@ -106,7 +106,7 @@ pub fn build_min_obcm(marker: u16) -> Vec<u8> {
 pub fn build_min_obcm_profiles(marker: u16, profiles: &[&str]) -> Vec<u8> {
     // v8 header is 40 bytes; the style table follows immediately.
     let style_off: u32 = 40;
-    // Style table (v10, 8-byte record): count=1, then (id=1, z=0, color=0x001F blue sea, weight=1,
+    // Style table (8-byte style record): count=1, then (id=1, z=0, color=0x001F blue sea, weight=1,
     // flags=0, color2=0x0000 — solid, no secondary color).
     let mut styles = vec![1u8];
     styles.push(1);

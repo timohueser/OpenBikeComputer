@@ -1,9 +1,11 @@
 //! OBCM map format reader and renderer.
 //!
 //! `no_std`, zero-alloc (heapless) so the exact same code runs in the desktop
-//! simulator and in the nRF54L firmware. Parses format **v10** (the LOD pyramid,
-//! a header marker color, a per-style priority level, the POI directory + hours
-//! pool, and the trailing nav-graph section with its profile table — see
+//! simulator and in the nRF54L firmware. Parses the **one** OBCM version named by
+//! `obc_formats::obcm::VERSION` — earlier maps get repacked, so the number lives in
+//! that constant rather than in this sentence (the LOD pyramid, a header marker
+//! color, a per-style priority level, the POI directory + hours pool, and the
+//! trailing nav-graph section with its profile table — see
 //! OBCM_Spec.md): a file holds N
 //! levels of detail, each its own quadtree + chunk set, selected at render time
 //! from the current meters-per-pixel, plus a per-category POI index, a
