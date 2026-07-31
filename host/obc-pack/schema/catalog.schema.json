@@ -509,6 +509,19 @@
           "format": "uint32",
           "minimum": 0
         },
+        "partial_cell_count_by_band": {
+          "description": "The same count per band. This additive v2 field lets a root-only consumer distinguish normal coarse-context partials from detail-band warnings. Old v2 roots may omit it, so deserialization defaults to an empty map.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "default": {},
+          "propertyNames": {
+            "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+          }
+        },
         "cells_url": {
           "description": "Where the region's cell-id list lives (§6).",
           "type": "string",

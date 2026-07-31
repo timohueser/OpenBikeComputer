@@ -37,6 +37,12 @@ describe("parseRoot", () => {
             "europe/switzerland",
             "europe/switzerland/basel-stadt",
         ]);
+        expect(catalog.regions[0].partial_cell_count_by_band).toEqual({
+            coarse: 0,
+            fine: 0,
+            mid: 0,
+            network: 1,
+        });
         expect(catalog.cell_index.map((r) => r.band)).toEqual(["coarse", "mid", "fine", "network"]);
     });
 
@@ -130,7 +136,16 @@ describe("parseRoot", () => {
             ["bytes_by_band that does not sum to bytes", (d) => (d.regions[0].bytes_by_band.fine += 1)],
             ["a band in bytes_by_band that the schema lacks", (d) => (d.regions[0].bytes_by_band.vivid = 0)],
             ["a band in cell_count that the schema lacks", (d) => (d.regions[0].cell_count.vivid = 1)],
+            ["a band in partial_cell_count_by_band that the schema lacks", (d) => (d.regions[0].partial_cell_count_by_band.vivid = 0)],
             ["more partial cells than cells", (d) => (d.regions[0].partial_cell_count = 99)],
+            ["per-band partials that do not sum to the total", (d) => (d.regions[0].partial_cell_count_by_band.fine = 1)],
+            [
+                "more partials than cells in one band",
+                (d) => {
+                    d.regions[0].partial_cell_count = 3;
+                    d.regions[0].partial_cell_count_by_band.network = 3;
+                },
+            ],
             ["two regions sharing an id", (d) => (d.regions[1].id = d.regions[0].id)],
             ["a parent that is not in the catalog", (d) => (d.regions[1].parent = "europe/atlantis")],
             ["a truncated cells_sha256", (d) => (d.regions[0].cells_sha256 = "abc")],
@@ -144,6 +159,11 @@ describe("parseRoot", () => {
 
         it("accepts a region with no parent", () => {
             expect(parseRoot(EXAMPLE_ROOT).regions[0].parent).toBeNull();
+        });
+
+        it("accepts an older v2 root without the additive per-band partial split", () => {
+            const catalog = parseRoot(mutated((d) => delete d.regions[0].partial_cell_count_by_band));
+            expect(catalog.regions[0].partial_cell_count_by_band).toBeNull();
         });
     });
 
@@ -194,6 +214,8 @@ describe("parseRoot", () => {
         const region = catalog.regions[0];
         expect(region.bytes_by_band.constructor).toBeUndefined();
         expect(region.cell_count.constructor).toBeUndefined();
+        expect(region.partial_cell_count_by_band?.constructor).toBeUndefined();
         expect(Object.getPrototypeOf(region.bytes_by_band)).toBeNull();
+        expect(Object.getPrototypeOf(region.partial_cell_count_by_band)).toBeNull();
     });
 });
