@@ -64,7 +64,7 @@ the normative byte layouts: [`OBCM_Spec.md`](specs/OBCM_Spec.md) /
 | `builder/` | The **map builder** — one Svelte app in `app/`, three hosts (static web, Tauri desktop, and the FastAPI dev server in `server/`). Nothing here packs anything: they all drive `host/obc-pack`. |
 | `builder/app/` | The shared **Svelte UI**. `vite.config.ts` resolves `$host` at build time to exactly one of `web.ts` / `desktop.ts` / `dev.ts`, so the hosts you didn't build have no path into the bundle. |
 | `builder/palette.json` | The device's 64-color (RGB222) gamut, offered as the web builder's default color picker so the editor and the panel agree. |
-| `builder/presets/` | Style presets — complete packer configs (features + LODs + marker, plus a `_meta` block). `default.json` ("Bikepacking") is the read-only factory default; `minimal.json` and `high-detail.json` ship alongside. |
+| `builder/presets/` | The shipped style documents. `schema.json` ("Bikepacking") is the one **schema** — a complete packer config (features + LODs + marker, plus a `_meta` block) and the read-only factory default; `skins/<id>.json` are **skins**, presentation-only documents stamped onto an assembled map's style table rather than packed ([`OBCC_Spec.md` §11.3/§11.4](specs/OBCC_Spec.md)). |
 | `builder/server/` | **Web builder** (FastAPI): pick regions on a map, edit styles, and build an `.obcm` in the browser — shells out to `obc-pack`. |
 | `companion-ios/` | The **iOS companion app** (SwiftUI + the `OBCKit` package): import GPX/TCX, encode OBCR, and sync routes/rides with the device over BLE. |
 | `specs/vectors/` | The **executable half of the specs** — shared binary fixtures pinning the BLE wire contract, the OBCR route format and the recorded-track log + its GPX export — asserted byte-exact by `cargo test`, `swift test`, and the web builder's wasm conversion tests. |
@@ -131,7 +131,7 @@ Download an OSM extract (e.g. from [Geofabrik](https://download.geofabrik.de/)),
 then:
 
 ```sh
-target/release/obc-pack region.osm.pbf builder/presets/default.json region.obcm
+target/release/obc-pack region.osm.pbf builder/presets/schema.json region.obcm
 ```
 
 ```
@@ -159,7 +159,7 @@ usage: obc-pack <pbf...> <config.json> <out.obcm> [--bbox W,S,E,N] [--chunk-size
 
 ### The config — features, styles, and LODs
 
-The config JSON (any preset under `builder/presets/`, or your own file) is the
+The config JSON (the shipped `builder/presets/schema.json`, or your own file) is the
 single source of truth for *what* gets packed and *how it looks*
 (`obc-pack schema` prints its JSON Schema):
 
@@ -234,7 +234,7 @@ whole regions, so any selection becomes an assembly of cells instead of another 
 touch:
 
 ```sh
-obc-pack cells germany-latest.osm.pbf builder/presets/default.json ~/cells \
+obc-pack cells germany-latest.osm.pbf builder/presets/schema.json ~/cells \
     --source europe/germany@2026-07-01=5.8,47.2,15.1,55.1
 # → ~/cells/cells/<band>/<i>/<j>.obcm   one valid .obcm per cell
 # → ~/cells/cells.json                  the provenance sidecar, written last
@@ -258,7 +258,7 @@ that carries them — so band membership is never in the bytes. Useful flags:
 `obc-bake` is what produces the tree above. It crosses a curated region list
 ([`host/obc-bake/regions.toml`](host/obc-bake/regions.toml) — Germany with all sixteen
 Bundesländer, Austria, Switzerland; one line per region, so adding coverage is a
-one-line PR) with the presets in `builder/presets/`:
+one-line PR) with the shipped schema, `builder/presets/schema.json`:
 
 ```sh
 cargo run --release -p obc-bake -- regions            # what would be baked
@@ -268,11 +268,14 @@ cargo run --release -p obc-bake -- publish ~/bake \
     --base-url https://maps.example.org --target r2   # artifacts first, manifest last
 ```
 
-Per (region, preset) it downloads or reuses the Geofabrik extract, packs it with the
-linked-in packer, and **opens the result with the real `obc-reader`** — every LOD, every
-chunk, every feature — before renaming it into the tree. A corrupt artifact never gets a
-name, so it can never reach the manifest. Re-running is cheap: the skip is keyed on the
-SHA-256 of the extract and of the preset config plus the OBCM version, never on
+Per region it downloads or reuses the Geofabrik extract, packs it with the linked-in
+packer, and **opens the result with the real `obc-reader`** — every LOD, every chunk,
+every feature — before renaming it into the tree. A corrupt artifact never gets a name,
+so it can never reach the manifest. (One artifact per region, not a matrix: a
+whole-region `.obcm` carries its styling in its bytes, so it can only ever be the
+schema's own look — a *skin* is chosen at assembly time on the cell path below.)
+Re-running is cheap: the skip is keyed on the
+SHA-256 of the extract and of the schema config plus the OBCM version, never on
 timestamps, and a run prints the real per-artifact sizes and a total (which is what the
 storage bill is actually made of). The sidecar-only facts — a region's display name, the
 extract's date — are keyed separately, so a re-dated but byte-identical extract rewrites
@@ -286,7 +289,7 @@ the easy mistake — publishing a `--region`-narrowed or CI-sized tree over the 
 which succeeds atomically and un-offers everything it does not contain. `--allow-shrink`
 proceeds anyway, loudly, for the deliberate case.
 
-Useful flags: `--region <id>` / `--preset <id>` to narrow the matrix, `--source <dir>` to
+Useful flags: `--region <id>` to narrow the run, `--source <dir>` to
 bake from local extracts, `--force` to re-bake regardless, `--no-land` to skip the
 ~950 MB land dataset. `publish` defaults to a dry run; `--target dir:PATH` writes a
 servable copy, `--target r2` uploads through `rclone` with credentials taken from
@@ -319,11 +322,12 @@ re-baking Switzerland alone afterwards keeps the joint border cells). Re-runs sk
 run prints the measured per-band byte density.
 
 Flags on top of the region bake's: `--base-url` (required — every cell's `url` is it plus
-the cell's path), `--schema-preset <id>` (the config the cells are cut with; default
-`default`), `--schema-id` / `--schema-revision` (what the catalog publishes; a revision
-bump invalidates the whole store), `--bands <file>` (the band table; default the
-[`OBCA_Spec.md`](specs/OBCA_Spec.md) §1.5 v1 one), `--skin <id>` (repeatable; default the
-schema preset).
+the cell's path), `--schema-id` / `--schema-revision` (what the catalog publishes; a
+revision bump invalidates the whole store), `--bands <file>` (the band table; default the
+[`OBCA_Spec.md`](specs/OBCA_Spec.md) §1.5 v1 one), `--skin <id>` (repeatable; default
+every skin in `builder/presets/skins/`). The cells are always cut with
+`builder/presets/schema.json`, and a skin that does not fit it — different feature types,
+or renumbered style ids — refuses the bake before the first extract is fetched.
 
 `obc-bake verify <tree>` is the cell store's own gate: it runs the lockstep guard (one
 schema revision, one OBCM version, no cell silently downgraded from canonical to
@@ -355,8 +359,8 @@ It drives the `obc-pack` binary you built above (override its path with the
   live progress over server-sent events and finish with a download link.
 - **Bounding-box build mode** — draw a crop box on the map and the selected PBFs
   are cropped to it before packing, so you can target a small area precisely.
-- **Style presets** — pick Bikepacking / Minimal / High detail on the main page
-  (the files under `builder/presets/`); the **advanced editor** exposes every
+- **Style presets** — the shipped Bikepacking schema
+  (`builder/presets/schema.json`) on the main page; the **advanced editor** exposes every
   knob: per-feature colors / z-order / weights / per-LOD detail, LOD tiers, and
   output settings, with the color picker defaulting to the device's 64-color
   gamut (`palette.json`).

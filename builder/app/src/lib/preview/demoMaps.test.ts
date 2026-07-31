@@ -1,10 +1,14 @@
 /**
  * The preview index, checked against the document `builder/bake-previews.sh` actually writes.
  *
- * The interesting assertion is the last one: every preset in `builder/presets/` has a demo map in
- * the index, and the file it names exists. That is #899's "a new preset gets a preview from a
- * single bake run" — a preset added without re-running the bake, or a bake run that half-failed,
+ * The interesting assertion is the last one: every bakeable config in `builder/presets/` has a demo
+ * map in the index, and the file it names exists. That is #899's "a new style gets a preview from a
+ * single bake run" — a config added without re-running the bake, or a bake run that half-failed,
  * fails here rather than showing a visitor an empty card.
+ *
+ * Since #1036 that directory holds one bakeable document (`schema.json`, id `bikepacking`) plus a
+ * `skins/` subdirectory. Ids come from `_meta.id`, not from filenames, because the id is what the
+ * hosts serve and therefore what a card looks its map up by.
  */
 
 import { readFileSync, existsSync, readdirSync } from "node:fs";
@@ -16,6 +20,22 @@ import { presetTagline, presetsWithCopy } from "./copy";
 
 const PREVIEW_DIR = join(import.meta.dirname, "../../../public/preview");
 const PRESETS_DIR = join(import.meta.dirname, "../../../../presets");
+
+/** The `_meta.id` of every bakeable config in `builder/presets/` — skins/ is not a `*.json`. */
+function presetIds(): string[] {
+    return readdirSync(PRESETS_DIR)
+        .filter((f) => f.endsWith(".json"))
+        .map((f) => JSON.parse(readFileSync(join(PRESETS_DIR, f), "utf8"))._meta.id as string);
+}
+
+/** A preset's `_meta`, by the id it publishes. */
+function presetMeta(id: string): { version: number } {
+    const file = readdirSync(PRESETS_DIR)
+        .filter((f) => f.endsWith(".json"))
+        .find((f) => JSON.parse(readFileSync(join(PRESETS_DIR, f), "utf8"))._meta.id === id);
+    if (!file) throw new Error(`no shipped config with _meta.id ${id}`);
+    return JSON.parse(readFileSync(join(PRESETS_DIR, file), "utf8"))._meta as { version: number };
+}
 
 function index() {
     return parsePreviewIndex(readFileSync(join(PREVIEW_DIR, "previews.json"), "utf8"));
@@ -44,9 +64,7 @@ describe("parsePreviewIndex", () => {
 
 describe("the committed preview index", () => {
     const doc = index();
-    const presets = readdirSync(PRESETS_DIR)
-        .filter((f) => f.endsWith(".json"))
-        .map((f) => f.slice(0, -".json".length));
+    const presets = presetIds();
 
     it("covers every preset, with the file it names on disk", () => {
         expect(doc.maps.map((m) => m.preset_id).sort()).toEqual([...presets].sort());
@@ -62,9 +80,7 @@ describe("the committed preview index", () => {
         // the catalog's lagging artifacts (OBCC §3) there is no reason to tolerate it: re-baking
         // is one local command, not a matrix of regions.
         for (const m of doc.maps) {
-            const meta = JSON.parse(readFileSync(join(PRESETS_DIR, `${m.preset_id}.json`), "utf8"))._meta as {
-                version: number;
-            };
+            const meta = presetMeta(m.preset_id);
             expect(m.preset_version, `${m.preset_id}'s demo map is stale — re-run builder/bake-previews.sh`).toBe(
                 meta.version,
             );
@@ -86,14 +102,12 @@ describe("the committed preview index", () => {
 
 describe("preset copy", () => {
     it("names presets that exist", () => {
-        const presets = readdirSync(PRESETS_DIR)
-            .filter((f) => f.endsWith(".json"))
-            .map((f) => f.slice(0, -".json".length));
+        const presets = presetIds();
         for (const id of presetsWithCopy()) expect(presets).toContain(id);
     });
 
     it("falls back to the preset's own description, so every card says something", () => {
         expect(presetTagline("no-such-preset", "What the style draws.")).toBe("What the style draws.");
-        expect(presetTagline("default", "What the style draws.")).not.toBe("What the style draws.");
+        expect(presetTagline("bikepacking", "What the style draws.")).not.toBe("What the style draws.");
     });
 });

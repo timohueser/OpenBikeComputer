@@ -34,7 +34,7 @@ set -euo pipefail
 
 ASSETS_DIR="$(cd "$(dirname "$0")" && pwd)"
 FIRMWARE_DIR="$(cd "$ASSETS_DIR/../.." && pwd)"
-PRESET="$FIRMWARE_DIR/../builder/presets/default.json"
+PRESET="$FIRMWARE_DIR/../builder/presets/schema.json"
 
 # --- Pinned provenance (canonical — do not derive from fixture headers) -----
 GRIMSEL_SOURCE_URL="https://download.geofabrik.de/europe/switzerland-latest.osm.pbf"

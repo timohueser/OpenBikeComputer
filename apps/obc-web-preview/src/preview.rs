@@ -261,7 +261,7 @@ mod tests {
     /// The committed demo map for the default preset — the same bytes the site fetches. Its
     /// presence is itself part of the contract: `bake-previews.sh` produces one per preset, and a
     /// deleted or unbuilt asset fails this build rather than a visitor's page.
-    const DEMO: &[u8] = include_bytes!("../../../builder/app/public/preview/default.obcm");
+    const DEMO: &[u8] = include_bytes!("../../../builder/app/public/preview/bikepacking.obcm");
 
     fn demo() -> MapPreview {
         MapPreview::open(DEMO.to_vec()).expect("the committed demo map is a valid OBCM")

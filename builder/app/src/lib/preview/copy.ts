@@ -16,8 +16,7 @@
  * style table already says.
  */
 const TAGLINES: Readonly<Record<string, string>> = {
-    default: "Long tours on mixed surfaces — the map to ride a week off.",
-    "high-detail": "Dense towns and cities, where the turn you want is one of six.",
+    bikepacking: "Long tours on mixed surfaces — the map to ride a week off.",
 };
 
 /**
