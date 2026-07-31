@@ -326,7 +326,7 @@ desktop *args:
     # assembly, and the live skin preview. Build them before type-checking or bundling.
     if [[ ! -f "$fe/src/lib/convert/pkg/obc_web_convert_bg.wasm" || \
           ! -f "$fe/src/lib/assemble/pkg/obc_web_assemble_bg.wasm" || \
-          ! -f "$fe/src/lib/skin/pkg/obc_web_preview_bg.wasm" ]]; then
+          ! -f "$fe/src/lib/skin/pkg/obc_skin_preview_bg.wasm" ]]; then
       _say "building the wasm bridges…"; ( cd "$fe" && _run npm run build:wasm )
     fi
     if [[ "$mode" == dev ]]; then
@@ -363,7 +363,7 @@ site *args:
     [[ -d "$fe/node_modules" ]] || { _say "installing frontend deps…"; ( cd "$fe" && _run npm ci ); }
     if [[ ! -f "$fe/src/lib/convert/pkg/obc_web_convert_bg.wasm" || \
           ! -f "$fe/src/lib/assemble/pkg/obc_web_assemble_bg.wasm" || \
-          ! -f "$fe/src/lib/skin/pkg/obc_web_preview_bg.wasm" ]]; then
+          ! -f "$fe/src/lib/skin/pkg/obc_skin_preview_bg.wasm" ]]; then
       _say "building the wasm bridges…"; ( cd "$fe" && _run npm run build:wasm )
     fi
     _say "building the static web tier…"

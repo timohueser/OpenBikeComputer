@@ -20,7 +20,7 @@ name: CI
 #     //rust-toolchain.toml and shared with local dev. It intentionally tracks floating stable.
 #   * obc-boot (the 32 KB DFU bootloader, #617) is excluded + standalone the same way as the
 #     board crate; its job adds a flash-size guard against the 32 KB slot.
-#   * obc-web-convert (#896), obc-web-assemble (#1034), and obc-web-preview (#1045) are normal
+#   * obc-web-convert (#896), obc-web-assemble (#1034), and obc-skin-preview (#1045) are normal
 #     workspace members (so fmt/clippy/test/deny already cover them) whose *shipping* artifacts are
 #     wasm32 builds the web builder imports — hence the extra `wasm-bridges` job, its three
 #     bundle-size guards, and the artifact hand-off into `web`.
@@ -102,7 +102,7 @@ jobs:
               # The Tauri shell embeds the same published-cell frontend, so either
               # half can break the packaged app.
               - 'apps/obc-desktop/**'
-              - 'apps/obc-web-preview/**'
+              - 'apps/obc-skin-preview/**'
               - 'builder/app/**'
               - 'rust-toolchain.toml'
               - '.github/workflows/ci.yml'
@@ -437,7 +437,7 @@ jobs:
   #   * obc-web-assemble (#1034) — the obcm-assemble OBCA engine, so downloaded map cells become a
   #     map in the tab. This is the one that makes the cell catalog's promise true (epic #1016):
   #     any selection is an assembly, not a bake, and nothing has to be pre-baked or server-side.
-  #   * obc-web-preview (#1045) — the firmware reader + renderer over the canonical Teningen map,
+  #   * obc-skin-preview (#1045) — the firmware reader + renderer over the canonical Teningen map,
   #     loaded only while the skin-space editor is open.
   #
   # Two things happen per module and the order matters:
@@ -486,7 +486,7 @@ jobs:
           retention-days: 1
       - uses: actions/upload-artifact@v4
         with:
-          name: obc-web-preview-pkg
+          name: obc-skin-preview-pkg
           path: builder/app/src/lib/skin/pkg
           retention-days: 1
 
@@ -603,7 +603,7 @@ jobs:
           path: builder/app/src/lib/assemble/pkg
       - uses: actions/download-artifact@v4
         with:
-          name: obc-web-preview-pkg
+          name: obc-skin-preview-pkg
           path: builder/app/src/lib/skin/pkg
       - uses: actions/setup-node@v4
         with:
@@ -653,7 +653,7 @@ jobs:
           path: builder/app/src/lib/assemble/pkg
       - uses: actions/download-artifact@v4
         with:
-          name: obc-web-preview-pkg
+          name: obc-skin-preview-pkg
           path: builder/app/src/lib/skin/pkg
       - uses: actions/setup-node@v4
         with:

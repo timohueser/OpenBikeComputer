@@ -1,4 +1,4 @@
-//! `obc-web-preview` — the product skin editor's live, device-honest preview.
+//! `obc-skin-preview` — the product skin editor's live, device-honest preview.
 //!
 //! The browser hands this bridge the bakery's canonical Teningen OBCM plus the
 //! catalog schema and a skin. The bridge resolves the skin with the same

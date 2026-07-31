@@ -34,7 +34,7 @@ members = [
     "apps/obc-web-demo",
     "apps/obc-web-convert",
     "apps/obc-web-assemble",
-    "apps/obc-web-preview",
+    "apps/obc-skin-preview",
 ]
 # obc-fw-nrf54l is a standalone board crate (own target + .cargo/config.toml, own empty
 # [workspace]); it's built on its own, not as part of this host workspace (which builds its
