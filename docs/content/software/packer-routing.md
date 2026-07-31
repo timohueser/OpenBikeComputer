@@ -642,7 +642,7 @@ Feature types, style ids, LODs, routing, and the inherited overflow priority are
 not editable there, so a product restyle cannot turn into a new cell schema.
 
 The editor lazy-loads one canonical Teningen `.obcm` and
-[`obc-web-preview`](src:apps/obc-web-preview) only while it is open. Every edit
+[`obc-skin-preview`](src:apps/obc-skin-preview) only while it is open. Every edit
 restamps the resident style table and renders the fixed 240×240 scene at
 5 m/px through `obc-reader` and `obc-render`; the preview therefore uses the
 device palette and renderer rather than a browser approximation. Closing the
