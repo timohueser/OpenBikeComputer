@@ -1093,6 +1093,13 @@ async fn main(_spawner: Spawner) {
         // `open_map` so the selection never lands on a corpse.
         storage.sweep_aborted_maps();
 
+        // The same reclaim for a torn **volume set** (issue #1039): a set is `1..=32` shard files
+        // plus a manifest, so its abandoned upload is gigabytes rather than hundreds of megabytes,
+        // and the file that identifies it is the zero-magic `MS{id}.OBS` token the upload writes
+        // before the first shard. Runs before `open_map` for the same reason the map sweep does —
+        // and after it, so a card carrying both kinds of corpse is clean in one boot.
+        storage.sweep_aborted_sets();
+
         // Open the selected `.obcm` and hold it open for the session — the map **streams** from it,
         // never read resident into the 256 KB part. (The `/routes/*.obcr` catalog is scanned into the
         // app's Route menu by `load_routes` *after* the app is built — in its own frame, so the ~5 KB
