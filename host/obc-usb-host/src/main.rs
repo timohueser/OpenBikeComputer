@@ -14,6 +14,11 @@
 //! the per-stage render breakdown + the frame's camera scale. ASCII, newline-terminated.
 //!
 //! Usage: `obc-usb-host [--gpx FILE] [--port NAME] [--baud N] [--list]`.
+//!
+//! It also carries the protocol half that is not a window: `--check-set DIR [--card-id N]` proves an
+//! assembled volume set against `OBCA_Spec.md` §5.3 and prints the order §5.4 requires it be sent in
+//! (see [`obc_usb_host::set_transfer`]). The bytes themselves go over the builder tiers' own pipes;
+//! this crate deliberately does not open a second one.
 
 use std::io::{self, Read as _, Write as _};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -190,7 +195,7 @@ fn check_set(dir: &str, card_id: u16) -> i32 {
         plan.shard_count,
         if plan.shard_count == 1 { "" } else { "s" },
         plan.total_bytes(),
-        plan.name.as_deref().map(|n| format!(" — “{n}”")).unwrap_or_default()
+        plan.name.as_deref().filter(|n| !n.is_empty()).map(|n| format!(" — “{n}”")).unwrap_or_default()
     );
     println!("send order (OBCA §5.4: the manifest is last):");
     for (step, file) in plan.files.iter().enumerate() {
