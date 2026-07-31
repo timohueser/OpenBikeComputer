@@ -364,6 +364,21 @@ pub struct NavDirectory {
 }
 
 impl NavDirectory {
+    /// The directory a reader with no graph of its own reports — every offset zero and
+    /// `node_count == 0`, so [`NavDirectory::is_empty`] is true and no walk starts. It is what a
+    /// **volume-set shard** reader answers: the nav graph lives in the core file alone (`OBCA_Spec`
+    /// §5.1), and the core's offsets mean nothing against a shard's bytes.
+    pub const EMPTY: NavDirectory = NavDirectory {
+        index_offset: 0,
+        node_count: 0,
+        chunk_count: 0,
+        edge_pool_offset: 0,
+        edge_chunk_count: 0,
+        chunk_size: 0,
+        profile_table_offset: 0,
+        profile_count: 0,
+    };
+
     /// The map carries no routable graph (no quadtree, no chunks, no edges).
     #[inline]
     pub fn is_empty(&self) -> bool {
@@ -637,6 +652,20 @@ pub struct PoiDirectory {
     pub hours_pool_count: usize,
 }
 
+/// The one shared empty POI directory a shard reader hands out — a `static` rather than a
+/// promoted temporary because [`PoiDirectory`] holds a `heapless::Vec` and does not const-promote.
+static EMPTY_POI_DIRECTORY: PoiDirectory = PoiDirectory::EMPTY;
+/// The nav twin of [`EMPTY_POI_DIRECTORY`], kept a `static` for symmetry with it.
+static EMPTY_NAV_DIRECTORY: NavDirectory = NavDirectory::EMPTY;
+
+impl PoiDirectory {
+    /// The directory a reader with no POI section of its own reports — no categories, no chunks,
+    /// no hours pool. The POI twin of [`NavDirectory::EMPTY`], and what a **volume-set shard**
+    /// reader answers (`OBCA_Spec` §5.1: POIs live in the core file alone).
+    pub const EMPTY: PoiDirectory =
+        PoiDirectory { chunk_size: 0, entries: Vec::new(), hours_pool_offset: 0, hours_pool_count: 0 };
+}
+
 /// A feature decoded into caller-owned scratch buffers, borrowed for one
 /// [`Reader::for_each_feature`] callback. No per-feature allocation: `points`
 /// holds every ring's vertices concatenated, `ring_lens[0]` is the exterior
@@ -730,7 +759,7 @@ pub struct MapHeader {
 /// Decode + validate the fixed 40-byte OBCM header (magic, version, bbox, marker color).
 /// Shared by [`read_header`] and [`MapTables::parse`] so the byte layout lives in one place.
 /// Offsets follow `obc-pack`'s header pack (see OBCM_Spec.md).
-fn parse_header(h: &[u8; HEADER_LEN]) -> Result<MapHeader, Error> {
+pub(crate) fn parse_header(h: &[u8; HEADER_LEN]) -> Result<MapHeader, Error> {
     if h[0..4] != MAGIC {
         return Err(Error::BadMagic);
     }
@@ -848,6 +877,27 @@ impl MapTables {
         Ok(MapTables { version, bbox, marker_color, lods, pois, nav, profiles, styles, backdrop, generation })
     }
 
+    /// Whether LOD `lod` is written **empty** in this file's LOD table (`Index Node Count == 0`).
+    /// The §5.6 mount-time predicate: pure I/O avoidance over one file's own table, never a
+    /// statement about band membership or role.
+    pub fn lod_is_empty(&self, lod: usize) -> bool {
+        self.lods.get(lod).is_none_or(|entry| entry.node_count() == 0)
+    }
+
+    /// The parsed LOD pyramid (coarsest first) — the same slice [`Reader::lods`] returns, reachable
+    /// without building a per-frame reader.
+    #[inline]
+    pub fn lods(&self) -> &[Lod] {
+        &self.lods
+    }
+
+    /// The style table, indexed by id. Shards of one set carry byte-identical tables (they are the
+    /// skin, §4.7), so a mount validates rather than re-loads.
+    #[inline]
+    pub fn styles(&self) -> &[Option<Style>; 256] {
+        &self.styles
+    }
+
     /// The map's §8.6 routing profiles (1..=8, always present). Lets a host mirror the profile
     /// **names** into the app UI (`App::set_nav_profiles`) straight off the parsed tables, without
     /// building a per-frame [`Reader`] — the same slice [`Reader::nav_profiles`] returns.
@@ -883,6 +933,16 @@ pub struct Reader<'a> {
     /// False only when construction legally re-entered an already borrowed cache. Streamed calls
     /// then return `CacheError::Busy`; reconstructing the cheap reader is the retry.
     cache_ready: bool,
+    /// Which file of a mounted map this reader reads — `0` for a single `.obcm`, the shard index
+    /// for a member of a volume set (`OBCA_Spec.md` §5). It tags every cache key so the shards of
+    /// one set can share a single ≈277 KB [`MapCache`] (and one parse generation) without
+    /// cross-serving each other's chunks.
+    file: u8,
+    /// A volume-set shard's **own** LOD table, borrowed from its [`crate::volume::ShardTables`].
+    /// `None` for a single map and for the core shard, whose ladder is `tables.lods`. A shard
+    /// carries the full ladder with the LODs it does not hold written empty (`OBCA_Spec.md`
+    /// §5.1), so this is what makes a per-shard reader address its own chunk offsets.
+    shard_lods: Option<&'a [Lod]>,
 }
 
 impl<'a> Reader<'a> {
@@ -903,7 +963,63 @@ impl<'a> Reader<'a> {
             tables,
             cache,
             cache_ready,
+            file: 0,
+            shard_lods: None,
         }
+    }
+
+    /// Build a reader over shard `file` of a mounted volume set. Identical to [`Reader::new`]
+    /// except that every cache key it writes is tagged with the shard index, which is what lets a
+    /// set's shards share one ≈277 KB [`MapCache`] without cross-serving each other's chunks.
+    ///
+    /// `tables` is always the **core**'s: the whole set is stamped from one skin (`OBCA_Spec.md`
+    /// §4.7), so one style table serves every shard, and one parse generation means no shard
+    /// clears the cache the previous one filled. `shard` supplies the parts that are *not* shared
+    /// — the shard's own header bbox (the quadtree root) and its own LOD table (its chunk-offset
+    /// tables live at its own offsets); `None` means the core, whose bbox and ladder are already
+    /// `tables`'.
+    ///
+    /// Crate-private on purpose. Because `tables` is the core's, the POI and nav directories a
+    /// non-core reader would report are the *core file's* offsets against a *shard's* bytes —
+    /// meaningless. [`crate::volume::MountedSet`] therefore uses these readers for geometry only
+    /// and routes nav/POI/hours to [`crate::volume::MountedSet::core_reader`] (§5.1).
+    pub(crate) fn new_in_set(
+        src: &'a dyn ByteSource,
+        tables: &'a MapTables,
+        cache: &'a MapCache,
+        file: u8,
+        shard: Option<&'a crate::volume::ShardTables>,
+    ) -> Reader<'a> {
+        let mut reader = Reader { file, ..Reader::new(src, tables, cache) };
+        if let Some(shard) = shard {
+            reader.bbox = shard.bbox();
+            reader.shard_lods = Some(shard.lods());
+        }
+        reader
+    }
+
+    /// Which file of the mounted map this reader reads (`0` for a single `.obcm`).
+    #[inline]
+    pub fn file(&self) -> u8 {
+        self.file
+    }
+
+    /// Whether this reader reads a **non-core shard** of a volume set (`OBCA_Spec.md` §5).
+    ///
+    /// It is the one structural fact that separates the geometry path from the nav/POI/hours one.
+    /// A shard reader borrows the **core's** [`MapTables`] — that is the whole RAM argument of a
+    /// set — so its `pois`/`nav` directories describe offsets into the *core file* while `self.src`
+    /// is the shard's bytes. Reading one against the other is not a degraded answer, it is a read
+    /// at an unrelated offset. Every nav, POI and hours accessor below therefore answers **empty**
+    /// on a shard rather than trusting a doc comment to keep callers away; `MountedSet` routes
+    /// those queries to [`crate::volume::MountedSet::core_reader`] (§5.1).
+    ///
+    /// Deliberately not a `debug_assert`: the empty answer *is* the contract (a set's dispatch is
+    /// role-blind, so a caller reaching a shard is normal), and an assertion would make the tests
+    /// that pin the contract unrunnable.
+    #[inline]
+    pub fn is_set_shard(&self) -> bool {
+        self.shard_lods.is_some()
     }
 
     /// Snapshot of the chunk-cache + streaming counters. Cumulative over the cache's life, so the
@@ -926,7 +1042,7 @@ impl<'a> Reader<'a> {
     /// The parsed LOD pyramid (coarsest first).
     #[inline]
     pub fn lods(&self) -> &[Lod] {
-        &self.tables.lods
+        self.shard_lods.unwrap_or(&self.tables.lods)
     }
 
     /// The parsed POI directory (spec §7): the shared chunk size, one entry per category, and the
@@ -934,8 +1050,13 @@ impl<'a> Reader<'a> {
     /// [`Reader::nearest_pois`] walks the per-category quadtrees; P3 (#443) reads
     /// [`PoiDirectory::hours_pool_offset`]/[`PoiDirectory::hours_pool_count`] to resolve a POI's
     /// pooled schedule.
+    ///
+    /// [`PoiDirectory::EMPTY`] on a volume-set shard — see [`Reader::is_set_shard`].
     #[inline]
     pub fn poi_directory(&self) -> &PoiDirectory {
+        if self.is_set_shard() {
+            return &EMPTY_POI_DIRECTORY;
+        }
         &self.tables.pois
     }
 
@@ -955,6 +1076,10 @@ impl<'a> Reader<'a> {
     /// Unlike [`Reader::nearest_pois`], this does **not** touch the [`MapCache`] — it's a plain
     /// stack read, safe to call from anywhere (including inside a `for_each_*` callback).
     pub fn poi_hours(&self, hours_ref: u16) -> Option<crate::hours::WeeklySchedule> {
+        // A volume-set shard carries no hours pool (see `is_set_shard`).
+        if self.is_set_shard() {
+            return None;
+        }
         // The no-hours sentinel and any index past the pool ⇒ no schedule.
         let dir = &self.tables.pois;
         if hours_ref == POI_HOURS_REF_NONE || (hours_ref as usize) >= dir.hours_pool_count {
@@ -1003,6 +1128,10 @@ impl<'a> Reader<'a> {
         out: &mut Vec<Poi, MAX_POI_RESULTS>,
     ) -> Result<(), Error> {
         out.clear();
+        // A volume-set shard carries no POI section (see `is_set_shard`).
+        if self.is_set_shard() {
+            return Ok(());
+        }
         let dir = &self.tables.pois;
         let entry = match dir.entries.iter().find(|e| e.category_id == category.id()) {
             // An absent or empty category is a valid "no POIs here" answer, not an error.
@@ -1196,6 +1325,10 @@ impl<'a> Reader<'a> {
         out: &mut Vec<CorridorPoi, MAX_CORRIDOR_RESULTS>,
     ) -> Result<(), Error> {
         out.clear();
+        // A volume-set shard carries no POI section (see `is_set_shard`).
+        if self.is_set_shard() {
+            return Ok(());
+        }
         let dir = &self.tables.pois;
         // `chunk_size / POI_RECORD_LEN` is the per-chunk record cap; a corrupt 0 would divide by
         // zero, so treat the whole (unwalkable) section as empty — same guard as `nearest_pois`.
@@ -1352,17 +1485,26 @@ impl<'a> Reader<'a> {
     }
 
     /// The parsed nav directory (spec §8.1). Always present in v9; `is_empty()` for a map with no
-    /// routable ways.
+    /// routable ways, and [`NavDirectory::EMPTY`] on a volume-set shard (see
+    /// [`Reader::is_set_shard`]) — the graph lives in the core file alone.
     #[inline]
     pub fn nav_directory(&self) -> &NavDirectory {
+        if self.is_set_shard() {
+            return &EMPTY_NAV_DIRECTORY;
+        }
         &self.tables.nav
     }
 
     /// The map's §8.6 routing profiles (1..=8, always present even for an empty graph). N5 exposes
     /// their names on the device; N3 selects one by index and weights edges by
-    /// [`MapProfile::multiplier`].
+    /// [`MapProfile::multiplier`]. Empty on a volume-set shard, which has no graph to profile —
+    /// the set's profiles are the core's, through
+    /// [`crate::volume::MountedSet::core_reader`].
     #[inline]
     pub fn nav_profiles(&self) -> &[MapProfile] {
+        if self.is_set_shard() {
+            return &[];
+        }
         &self.tables.profiles
     }
 
@@ -1387,7 +1529,8 @@ impl<'a> Reader<'a> {
         scratch: &mut [u8],
         mut visit: impl FnMut(NavNodeRef),
     ) -> Result<(), Error> {
-        let dir = self.tables.nav;
+        // A volume-set shard carries no nav graph (see `is_set_shard`).
+        let dir = *self.nav_directory();
         if dir.is_empty() {
             return Ok(());
         }
@@ -1432,7 +1575,8 @@ impl<'a> Reader<'a> {
     /// to call from anywhere.
     pub fn nav_edge<const P: usize>(&self, edge_id: u32, points: &mut Vec<(i32, i32), P>) -> Option<u32> {
         points.clear();
-        let dir = &self.tables.nav;
+        // A volume-set shard carries no edge pool (see `is_set_shard`).
+        let dir = self.nav_directory();
         let cs = dir.chunk_size;
         if dir.edge_chunk_count == 0 || cs == 0 {
             return None;
@@ -1502,7 +1646,8 @@ impl<'a> Reader<'a> {
         tiles: &mut NavTileCache,
         mut visit: impl FnMut(NavNodeRef),
     ) -> Result<(), Error> {
-        let dir = self.tables.nav;
+        // A volume-set shard carries no nav graph (see `is_set_shard`).
+        let dir = *self.nav_directory();
         if dir.is_empty() {
             return Ok(());
         }
@@ -1555,7 +1700,8 @@ impl<'a> Reader<'a> {
         start: (i32, i32),
         mut emit: impl FnMut((i32, i32)),
     ) -> Option<u32> {
-        let dir = &self.tables.nav;
+        // A volume-set shard carries no edge pool (see `is_set_shard`).
+        let dir = self.nav_directory();
         let cs = dir.chunk_size;
         if dir.edge_chunk_count == 0 || cs == 0 {
             return None;
@@ -1638,7 +1784,7 @@ impl<'a> Reader<'a> {
     /// valid index in `0..lods().len()`.
     pub fn select_lod_for_mpp(&self, mpp: f32) -> usize {
         let mut chosen = 0;
-        for (i, lod) in self.tables.lods.iter().enumerate() {
+        for (i, lod) in self.lods().iter().enumerate() {
             if lod.max_mpp >= mpp {
                 chosen = i;
             }
@@ -1660,7 +1806,7 @@ impl<'a> Reader<'a> {
         self.cache
             .try_borrow_mut()
             .map_err(MapReadError::Cache)?
-            .index_read(self.src, off, &mut b)
+            .index_read(self.src, self.file, off, &mut b)
             .map_err(MapReadError::Source)?;
         Ok(u32::from_le_bytes(b))
     }
@@ -1688,7 +1834,7 @@ impl<'a> Reader<'a> {
         self.cache
             .try_borrow_mut()
             .map_err(MapReadError::Cache)?
-            .index_read(self.src, entry, &mut b)
+            .index_read(self.src, self.file, entry, &mut b)
             .map_err(MapReadError::Source)?;
         let (off0, off1) = (rd_u32(&b, 0) as usize, rd_u32(&b, 4) as usize);
         if off1 < off0 || off1 > l.chunk_bytes_total {
@@ -1718,7 +1864,7 @@ impl<'a> Reader<'a> {
         view: &BBox,
         mut visit: impl FnMut(u32, BBox),
     ) -> Result<(), MapReadError> {
-        if let Some(l) = self.tables.lods.get(lod) {
+        if let Some(l) = self.lods().get(lod) {
             if l.node_count > 0 {
                 self.walk_leaves(l, 0, self.bbox, view, 0, &mut visit)?;
             }
@@ -1822,7 +1968,7 @@ impl<'a> Reader<'a> {
         should_decode: impl Fn(u8) -> bool,
         visit: impl FnMut(FeatureRef),
     ) -> Result<DecodeStatus, MapReadError> {
-        let l = match self.tables.lods.get(lod) {
+        let l = match self.lods().get(lod) {
             Some(l) => l,
             None => return Err(MapReadError::Malformed),
         };
@@ -1839,7 +1985,7 @@ impl<'a> Reader<'a> {
             return Err(MapReadError::Cache(CacheError::Busy));
         }
         let mut cache = self.cache.try_borrow_mut().map_err(MapReadError::Cache)?;
-        let loc = match cache.load_chunk(self.src, lod as u8, chunk_id, start as u32, len) {
+        let loc = match cache.load_chunk(self.src, self.file, lod as u8, chunk_id, start as u32, len) {
             Ok(loc) => loc,
             Err(error) => return Err(MapReadError::Source(error)),
         };
@@ -1882,7 +2028,7 @@ impl<'a> Reader<'a> {
         // success and no prefix decoded before a malformed hole may escape through these buffers.
         points.clear();
         ring_lens.clear();
-        let l = self.tables.lods.get(lod).ok_or(FeatureReadError::Decode(FeatureDecodeError::Malformed))?;
+        let l = self.lods().get(lod).ok_or(FeatureReadError::Decode(FeatureDecodeError::Malformed))?;
         // Same offset-table lookup + validation as the full walk (and the same borrow-then-release
         // ordering ahead of `load_chunk`); a read failure there is a read failure here.
         let (start, end) = match self.chunk_range(l, cid) {
@@ -1902,7 +2048,7 @@ impl<'a> Reader<'a> {
         let mut cache =
             self.cache.try_borrow_mut().map_err(|error| FeatureReadError::Read(MapReadError::Cache(error)))?;
         let loc = cache
-            .load_chunk(self.src, lod as u8, cid, start as u32, len)
+            .load_chunk(self.src, self.file, lod as u8, cid, start as u32, len)
             .map_err(|error| FeatureReadError::Read(MapReadError::Source(error)))?;
         let chunk = match loc {
             ChunkLoc::Slot(i) => &cache.chunks[i].buf[..len],
@@ -2436,7 +2582,12 @@ fn parse_styles(
 /// v11 costs one extra `uint32` read per LOD: the offset table's **last** entry is the layer's total
 /// chunk bytes ([`Lod::chunk_bytes_total`]), which both bounds the region here and bounds every
 /// later per-chunk offset pair in [`Reader::chunk_range`] with no further reads.
-fn parse_lod_table(src: &dyn ByteSource, offset: usize, lod_count: usize, total: usize) -> Result<Vec<Lod, 16>, Error> {
+pub(crate) fn parse_lod_table(
+    src: &dyn ByteSource,
+    offset: usize,
+    lod_count: usize,
+    total: usize,
+) -> Result<Vec<Lod, 16>, Error> {
     let mut lods = Vec::new();
     let mut e = [0u8; LOD_ENTRY_LEN];
     for k in 0..lod_count {
@@ -2736,6 +2887,11 @@ enum ChunkLoc {
 /// all-zero state a valid *empty* slot, so [`MapCacheInner::new`] can zero-init the whole cache.
 struct ChunkSlot {
     valid: bool,
+    /// Which mounted file the bytes came from (a volume set's shard index, `0` for a single
+    /// map). Part of the key, not decoration: a set shares one cache and one parse generation
+    /// across its shards, so `(lod, cid)` alone would cross-serve one shard's chunk for
+    /// another's. Sits in the padding after `valid`, so it costs no RAM.
+    file: u8,
     lod: u8,
     cid: u32,
     len: usize,
@@ -2747,6 +2903,9 @@ struct ChunkSlot {
 /// plays the same all-zero-is-empty role as in [`ChunkSlot`].
 struct IndexBlock {
     valid: bool,
+    /// The mounted file this block belongs to — see [`ChunkSlot::file`]. Free: it lands in the
+    /// padding between `valid` and `off`.
+    file: u8,
     off: u32,
     len: usize,
     used: u32,
@@ -2912,6 +3071,7 @@ impl MapCacheInner {
     fn load_chunk(
         &mut self,
         src: &dyn ByteSource,
+        file: u8,
         lod: u8,
         cid: u32,
         start: u32,
@@ -2923,7 +3083,9 @@ impl MapCacheInner {
             self.count_read(len);
             return Ok(ChunkLoc::Scratch);
         }
-        if let Some(i) = self.chunks.iter().position(|s| s.valid && s.lod == lod && s.cid == cid && s.len == len) {
+        if let Some(i) =
+            self.chunks.iter().position(|s| s.valid && s.file == file && s.lod == lod && s.cid == cid && s.len == len)
+        {
             self.chunk_hits = self.chunk_hits.saturating_add(1);
             let t = self.touch();
             self.chunks[i].used = t;
@@ -2936,6 +3098,7 @@ impl MapCacheInner {
         self.chunks[i].valid = false;
         src.read_at(start, &mut self.chunks[i].buf[..len])?;
         self.chunks[i].valid = true;
+        self.chunks[i].file = file;
         self.chunks[i].lod = lod;
         self.chunks[i].cid = cid;
         self.chunks[i].len = len;
@@ -2949,12 +3112,12 @@ impl MapCacheInner {
     /// Fill `out` from index-region offset `off`, assembling from cached blocks (reading any
     /// missing block from the source). A node read is 4 bytes and may straddle a block edge, so
     /// this loops over blocks.
-    fn index_read(&mut self, src: &dyn ByteSource, off: u32, out: &mut [u8]) -> Result<(), IoError> {
+    fn index_read(&mut self, src: &dyn ByteSource, file: u8, off: u32, out: &mut [u8]) -> Result<(), IoError> {
         let mut filled = 0usize;
         while filled < out.len() {
             let cur = off + filled as u32;
             let block_off = cur - cur % INDEX_BLOCK as u32;
-            let slot = self.index_block(src, block_off)?;
+            let slot = self.index_block(src, file, block_off)?;
             let within = (cur - block_off) as usize;
             let blen = self.index[slot].len;
             if within >= blen {
@@ -2968,8 +3131,8 @@ impl MapCacheInner {
     }
 
     /// Ensure the `INDEX_BLOCK`-aligned block at `block_off` is resident, returning its slot.
-    fn index_block(&mut self, src: &dyn ByteSource, block_off: u32) -> Result<usize, IoError> {
-        if let Some(i) = self.index.iter().position(|b| b.valid && b.off == block_off) {
+    fn index_block(&mut self, src: &dyn ByteSource, file: u8, block_off: u32) -> Result<usize, IoError> {
+        if let Some(i) = self.index.iter().position(|b| b.valid && b.file == file && b.off == block_off) {
             let t = self.touch();
             self.index[i].used = t;
             return Ok(i);
@@ -2984,6 +3147,7 @@ impl MapCacheInner {
         self.index[i].valid = false;
         src.read_at(block_off, &mut self.index[i].buf[..want])?;
         self.index[i].valid = true;
+        self.index[i].file = file;
         self.index[i].off = block_off;
         self.index[i].len = want;
         let t = self.touch();
@@ -3108,7 +3272,7 @@ mod tests {
 
         // Prime all slots, oldest first — so the LRU victim of the next miss is slot 0 (cid 0).
         for cid in 0..MAP_CHUNK_SLOTS as u32 {
-            let loc = inner.load_chunk(&src, 0, cid, cid * LEN as u32, LEN).unwrap();
+            let loc = inner.load_chunk(&src, 0, 0, cid, cid * LEN as u32, LEN).unwrap();
             assert!(matches!(loc, ChunkLoc::Slot(_)));
         }
         let primed = inner.stats();
@@ -3120,11 +3284,11 @@ mod tests {
         src.read_at(0, &mut k_old).unwrap();
 
         // Eviction read of K_new fails partway through filling slot 0's buffer.
-        assert!(matches!(inner.load_chunk(&src, 0, 99, fail_at, LEN), Err(IoError::Io)));
+        assert!(matches!(inner.load_chunk(&src, 0, 0, 99, fail_at, LEN), Err(IoError::Io)));
 
         // Request K_old again: it must be a *miss* (re-read), not a hit on the poisoned slot.
         let before = inner.stats();
-        let loc = inner.load_chunk(&src, 0, 0, 0, LEN).unwrap();
+        let loc = inner.load_chunk(&src, 0, 0, 0, 0, LEN).unwrap();
         let after = inner.stats();
         assert_eq!(after.chunk_hits, before.chunk_hits, "K_old must not hit the poisoned slot");
         assert_eq!(after.chunk_misses, before.chunk_misses + 1, "K_old must be re-read");
@@ -3151,7 +3315,7 @@ mod tests {
         const LEN: usize = 64;
         let data = [0xA5u8; LEN];
         let src = SliceSource(&data);
-        let loc = inner.load_chunk(&src, 0, 0, 0, LEN).unwrap();
+        let loc = inner.load_chunk(&src, 0, 0, 0, 0, LEN).unwrap();
         match loc {
             ChunkLoc::Slot(i) => assert_eq!(&inner.chunks[i].buf[..LEN], &data[..]),
             ChunkLoc::Scratch => panic!("a slot-sized chunk should land in a slot"),
@@ -3303,9 +3467,9 @@ mod tests {
         let mut inner = cache.inner.borrow_mut();
 
         // Resident, then a hit (no source read).
-        inner.index_block(&src, 0).unwrap();
+        inner.index_block(&src, 0, 0).unwrap();
         let before = inner.stats();
-        inner.index_block(&src, 0).unwrap();
+        inner.index_block(&src, 0, 0).unwrap();
         assert_eq!(inner.stats().sd_reads, before.sd_reads, "a resident block must hit, not re-read");
         drop(inner);
 
@@ -3313,7 +3477,7 @@ mod tests {
         cache.clear().unwrap();
         let mut inner = cache.inner.borrow_mut();
         let before = inner.stats();
-        inner.index_block(&src, 0).unwrap();
+        inner.index_block(&src, 0, 0).unwrap();
         assert_eq!(inner.stats().sd_reads, before.sd_reads + 1, "post-clear index read must re-read");
     }
 

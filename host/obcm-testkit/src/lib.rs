@@ -41,6 +41,11 @@
 //! packed feature, [`seal`] closes a chunk with its single `0xFF` sentinel, and [`chunk_region`]
 //! lays sealed chunks out behind their offset table.
 
+/// Hand-split OBCA volume-set fixtures (`OBCA_Spec.md` §5) — a monolithic file and the byte-level
+/// split of the same data into a manifest plus shards, so a differential render can assert the two
+/// are pixel-identical.
+pub mod set;
+
 /// A style record (OBCM v10, 8 bytes on the wire): `(id, z_index, color_rgb565, weight, priority,
 /// dashed, color2)`. `dashed` sets flag bit 2; `color2 = Some(_)` sets flag bit 3 and writes the
 /// secondary color, `None` writes `0x0000` with the bit clear.
