@@ -5,10 +5,9 @@
     // dashed, the adds-line prices them live, and the one global width slider
     // (§8 U3's decided shape) re-buffers every checked route as it moves.
     //
-    // The "From device" side ships as the decided affordance with an honest
-    // stub behind it: §8 Q3 settled that connecting in step 1 is fine, but the
-    // USB route listing itself is the send step's work (P4d). The tab exists,
-    // the panel says exactly what is missing, and nothing pretends to connect.
+    // "From device" uses the same shared USB session as step 4. The chooser is
+    // opened directly from its click (WebUSB's user-gesture rule), list entries
+    // stay cheap, and an OBCR is downloaded/decoded only when selected.
 
     import { onDestroy, onMount } from "svelte";
     import { GpxError, parseGpx, type GpxRoute } from "../../lib/coverage/gpx";
@@ -20,6 +19,9 @@
     } from "../../lib/coverage/store.svelte";
     import { formatBytes } from "../../lib/format";
     import { confirmAction } from "../../lib/ui/confirm.svelte";
+    import { deviceHolder } from "../../lib/device/session.svelte";
+    import type { RouteListEntry } from "../../lib/usb/objects";
+    import { MAX_ROUTE_POINTS } from "../../lib/coverage/gpx";
 
     let { store, onclose }: { store: CoverageStore; onclose: () => void } = $props();
 
@@ -40,10 +42,10 @@
             return await confirmAction({
                 title: one
                     ? `Discard “${routes[0].route.name}”?`
-                    : `Discard ${routes.length} uploaded routes?`,
+                    : `Discard ${routes.length} uncommitted routes?`,
                 body: one
-                    ? "It was uploaded but hasn't been added to the map."
-                    : "They were uploaded but haven't been added to the map.",
+                    ? "It hasn't been added to the map."
+                    : "They haven't been added to the map.",
                 confirmLabel: "Discard",
                 destructive: true,
             });
@@ -57,11 +59,17 @@
         id: string;
         route: GpxRoute;
         checked: boolean;
+        origin: "gpx" | "device";
     }
 
     let routes = $state<PanelRoute[]>([]);
     let uploadError = $state<string | null>(null);
-    let deviceNote = $state<string | null>(null);
+    let deviceEntries = $state<RouteListEntry[]>([]);
+    let deviceError = $state<string | null>(null);
+    let deviceLoading = $state(false);
+    let deviceRouteLoading = $state<Set<number>>(new Set());
+    let prompting = $state(false);
+    let listedClient: object | null = null;
     let source = $state<"gpx" | "device">("gpx");
     let dragOver = $state(false);
     let fileInput: HTMLInputElement | undefined = $state();
@@ -90,7 +98,10 @@
     // walks the panel's own controls and out again, like the app's other
     // dialog.
     let panelEl = $state<HTMLDivElement>();
-    onMount(() => panelEl?.focus());
+    onMount(() => {
+        panelEl?.focus();
+        void deviceHolder.open();
+    });
 
     async function addFiles(files: Iterable<File>) {
         uploadError = null;
@@ -98,7 +109,7 @@
         for (const file of files) {
             try {
                 const route = parseGpx(await file.text(), file.name.replace(/\.gpx$/i, ""));
-                routes.push({ id: `r${nextRouteId++}`, route, checked: true });
+                routes.push({ id: `r${nextRouteId++}`, route, checked: true, origin: "gpx" });
             } catch (e) {
                 problems.push(`${file.name}: ${e instanceof GpxError ? e.message : "could not be read"}`);
             }
@@ -130,6 +141,76 @@
 
     function removeRoute(id: string) {
         routes = routes.filter((r) => r.id !== id);
+    }
+
+    async function listDeviceRoutes() {
+        const client = deviceHolder.session?.client;
+        if (!client || deviceLoading) return;
+        deviceLoading = true;
+        deviceError = null;
+        try {
+            deviceEntries = (await client.listRoutes()).entries;
+            listedClient = client;
+        } catch (cause) {
+            deviceError = cause instanceof Error ? cause.message : String(cause);
+        } finally {
+            deviceLoading = false;
+        }
+    }
+
+    $effect(() => {
+        const session = deviceHolder.session;
+        if (source === "device" && session?.status === "ready" && session.client && listedClient !== session.client) {
+            void listDeviceRoutes();
+        }
+    });
+
+    function connectDevice() {
+        const session = deviceHolder.session;
+        if (!session) return;
+        prompting = true;
+        // No await before this call: Chromium requires the chooser to open in
+        // the click's own call stack.
+        void session.requestDevice().finally(() => (prompting = false));
+    }
+
+    const deviceRouteId = (objectId: number) => `device-${objectId}`;
+
+    async function toggleDeviceRoute(entry: RouteListEntry, checked: boolean) {
+        const id = deviceRouteId(entry.objectId);
+        if (!checked) {
+            removeRoute(id);
+            return;
+        }
+        const client = deviceHolder.session?.client;
+        if (!client || routes.some((route) => route.id === id) || deviceRouteLoading.has(entry.objectId)) return;
+        deviceRouteLoading = new Set(deviceRouteLoading).add(entry.objectId);
+        deviceError = null;
+        try {
+            const [{ routeTrack }, { ObjectType }] = await Promise.all([
+                import("../../lib/convert/bridge"),
+                import("../../lib/usb/protocol"),
+            ]);
+            const decoded = await routeTrack(await client.download(ObjectType.Route, entry.objectId));
+            if (decoded.length < 2) throw new Error("The stored route contains fewer than two points.");
+            const step = decoded.length <= MAX_ROUTE_POINTS ? 1 : (decoded.length - 1) / (MAX_ROUTE_POINTS - 1);
+            const points = Array.from(
+                { length: Math.min(decoded.length, MAX_ROUTE_POINTS) },
+                (_, k) => decoded[Math.min(decoded.length - 1, Math.round(k * step))],
+            ).map((point) => ({ lat: Math.round(point.lat * 1e6), lon: Math.round(point.lon * 1e6) }));
+            routes.push({
+                id,
+                origin: "device",
+                checked: true,
+                route: { name: entry.name, points, distanceKm: entry.distanceM / 1000 },
+            });
+        } catch (cause) {
+            deviceError = cause instanceof Error ? cause.message : String(cause);
+        } finally {
+            const pending = new Set(deviceRouteLoading);
+            pending.delete(entry.objectId);
+            deviceRouteLoading = pending;
+        }
     }
 
     // --- the adds-line ----------------------------------------------------
@@ -184,7 +265,9 @@
         <!-- The mock's state-B tag was "web · no device yet"; the tier name is
              dropped because this panel also renders in the desktop app, where
              "web" would be a lie about where it is running (#1041 A12). -->
-        <span class="small faint">no device yet</span>
+        <span class="small faint">
+            {deviceHolder.session?.status === "ready" ? "device connected" : "device optional"}
+        </span>
         <button type="button" class="close" aria-label="Close the corridor panel" onclick={onclose}>✕</button>
     </div>
 
@@ -213,31 +296,48 @@
     </div>
 
     {#if source === "device"}
-        <div class="device-stub">
-            <!-- Future tense on purpose (#1041 A13): the mock's "Connect your
-                 OBC to list the routes saved on it" was written for a working
-                 flow, and above a stub it invited an action the button cannot
-                 pay off. The mock's "one browser prompt" reassurance returns
-                 with the real flow (P4d, recorded on the epic). -->
-            <p class="small muted">The routes saved on your OBC will list here.</p>
-            <!-- The affordance §8 Q3 decided (early connect is fine), with an
-                 honest stub behind it: the USB route listing lands with the
-                 send-to-device work, and this button says so rather than
-                 opening a browser prompt it cannot yet pay off. -->
-            <button
-                type="button"
-                class="btn primary connect"
-                onclick={() =>
-                    (deviceNote =
-                        "Listing the routes saved on the device isn't wired up yet — it lands together " +
-                        "with the send-to-device step. Upload a GPX of the same route meanwhile.")}
-            >
-                Connect device
-            </button>
-            {#if deviceNote}
-                <p class="small stub-note">{deviceNote}</p>
+        {#if deviceHolder.session?.status === "ready" && deviceHolder.session.client}
+            {#if deviceLoading}
+                <p class="small muted">Reading routes from the device…</p>
+            {:else if deviceEntries.length === 0 && !deviceError}
+                <p class="small muted">No routes are saved on this device.</p>
+            {:else}
+                <ul class="routes device-routes">
+                    {#each deviceEntries as entry (entry.objectId)}
+                        <li>
+                            <label>
+                                <input
+                                    type="checkbox"
+                                    disabled={deviceRouteLoading.has(entry.objectId)}
+                                    checked={routes.some((route) => route.id === deviceRouteId(entry.objectId))}
+                                    onchange={(event) =>
+                                        void toggleDeviceRoute(
+                                            entry,
+                                            (event.currentTarget as HTMLInputElement).checked,
+                                        )}
+                                />
+                                <span class="name">{entry.name}</span>
+                            </label>
+                            <span class="mono faint small">{Math.round(entry.distanceM / 1000)} km</span>
+                        </li>
+                    {/each}
+                </ul>
             {/if}
-        </div>
+        {:else if deviceHolder.error || deviceHolder.session?.status === "unsupported"}
+            <p class="small error" role="alert">
+                {deviceHolder.error ?? deviceHolder.session?.error ?? "This browser cannot connect to the device."}
+            </p>
+        {:else}
+            <div class="device-stub">
+                <p class="small muted">Connect once to choose from the routes saved on your OBC.</p>
+                <button type="button" class="btn primary connect" disabled={prompting} onclick={connectDevice}>
+                    {prompting ? "Connecting…" : "Connect device"}
+                </button>
+            </div>
+        {/if}
+        {#if deviceError}
+            <p class="small error" role="alert">{deviceError}</p>
+        {/if}
     {/if}
 
     {#if uploadError}
@@ -255,24 +355,26 @@
          rows, the width slider and the commit belong to the GPX side, and
          rendering them under the device stub conflated where the routes came
          from. Switching tabs keeps the rows — only the view changes. -->
-    {#if routes.length && source === "gpx"}
-        <ul class="routes">
-            {#each routes as r (r.id)}
-                <li>
-                    <label>
-                        <input type="checkbox" bind:checked={r.checked} />
-                        <span class="name">{r.route.name}</span>
-                    </label>
-                    <span class="mono faint small">{Math.round(r.route.distanceKm)} km</span>
-                    <button
-                        type="button"
-                        class="drop"
-                        aria-label="Remove {r.route.name} from the panel"
-                        onclick={() => removeRoute(r.id)}>✕</button
-                    >
-                </li>
-            {/each}
-        </ul>
+    {#if routes.some((route) => route.origin === source)}
+        {#if source === "gpx"}
+            <ul class="routes">
+                {#each routes.filter((route) => route.origin === source) as r (r.id)}
+                    <li>
+                        <label>
+                            <input type="checkbox" bind:checked={r.checked} />
+                            <span class="name">{r.route.name}</span>
+                        </label>
+                        <span class="mono faint small">{Math.round(r.route.distanceKm)} km</span>
+                        <button
+                            type="button"
+                            class="drop"
+                            aria-label="Remove {r.route.name} from the panel"
+                            onclick={() => removeRoute(r.id)}>✕</button
+                        >
+                    </li>
+                {/each}
+            </ul>
+        {/if}
 
         <div class="slider">
             <div class="slider-head">
@@ -399,13 +501,6 @@
 
     .device-stub .connect {
         align-self: center;
-    }
-
-    .stub-note {
-        color: var(--ink);
-        background: rgba(227, 173, 51, 0.18);
-        border-radius: 7px;
-        padding: 6px 9px;
     }
 
     .empty {

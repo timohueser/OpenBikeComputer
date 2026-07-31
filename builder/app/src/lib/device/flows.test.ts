@@ -19,12 +19,21 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
-import { DeviceError } from "../usb/client";
+import { DeviceError, type ProtocolClient } from "../usb/client";
 import { loopbackDevice } from "../usb/loopback";
 import { ObjectType, SINGLETON_OBJECT_ID } from "../usb/protocol";
 import { initConvert } from "../convert/bridge";
 import { prepareRoute } from "./route";
-import { askToInstall, sendCatalogMap, sendMapFile, sendRoute, stageFirmware } from "./write";
+import {
+    abandonAssembledSet,
+    askToInstall,
+    sendAssembledSetFile,
+    sendCatalogMap,
+    sendMapFile,
+    sendRoute,
+    setSendState,
+    stageFirmware,
+} from "./write";
 import type { JobContext, JobPhase } from "./progress";
 import { syntheticBody, syntheticBytes, tempStaging } from "./testing";
 
@@ -96,6 +105,98 @@ function serving(total: number, chunk = 16 * 1024): void {
 }
 
 // --- the flows ----------------------------------------------------------------
+
+describe("assembled volume-set upload", () => {
+    it("verifies and commits shards in order, with the manifest last", async () => {
+        const { client, device, close } = loopbackDevice();
+        try {
+            const shard = syntheticBytes(4096);
+            const manifest = syntheticBytes(128);
+            const state = setSendState(1, shard.length + manifest.length);
+            const ctx = context();
+            await sendAssembledSetFile(
+                client,
+                state,
+                { name: "MS1S00.OBM", role: "core", sha256: digest(shard), byteLength: shard.length, bytes: shard },
+                ctx,
+            );
+            expect(device.stagedMapShardCount).toBe(1);
+            await sendAssembledSetFile(
+                client,
+                state,
+                { name: "MS1.OBS", role: "manifest", sha256: "", byteLength: manifest.length, bytes: manifest },
+                ctx,
+            );
+            expect(state.setId).toBe(1);
+            expect(state.committedBytes).toBe(state.totalBytes);
+            expect(device.stagedMapShardCount).toBe(0);
+        } finally {
+            await close();
+        }
+    });
+
+    it("abandons already committed shards when assembly stops between files", async () => {
+        const { client, device, close } = loopbackDevice();
+        try {
+            const shard = syntheticBytes(1024);
+            const state = setSendState(2, 4096);
+            await sendAssembledSetFile(
+                client,
+                state,
+                { name: "MS1S00.OBM", role: "core", sha256: digest(shard), byteLength: shard.length, bytes: shard },
+                context(),
+            );
+            expect(device.stagedMapShardCount).toBe(1);
+            await abandonAssembledSet(client, state);
+            expect(device.stagedMapShardCount).toBe(0);
+        } finally {
+            await close();
+        }
+    });
+
+    it("refuses a worker buffer whose SHA-256 no longer matches", async () => {
+        const { client, device, close } = loopbackDevice();
+        try {
+            const shard = syntheticBytes(512);
+            const state = setSendState(1, shard.length);
+            await expect(
+                sendAssembledSetFile(
+                    client,
+                    state,
+                    {
+                        name: "MS1S00.OBM",
+                        role: "core",
+                        sha256: "0".repeat(64),
+                        byteLength: shard.length,
+                        bytes: shard,
+                    },
+                    context(),
+                ),
+            ).rejects.toThrow("SHA-256");
+            expect(device.stagedMapShardCount).toBe(0);
+        } finally {
+            await close();
+        }
+    });
+
+    it("retries one whole shard after a device CRC refusal", async () => {
+        const shard = syntheticBytes(512);
+        const upload = vi
+            .fn()
+            .mockRejectedValueOnce(new DeviceError("crc-mismatch", "bad wire CRC"))
+            .mockResolvedValue({ objectId: 0x0100, committedOffset: shard.length });
+        const client = { upload } as unknown as ProtocolClient;
+        const state = setSendState(1, shard.length);
+        await sendAssembledSetFile(
+            client,
+            state,
+            { name: "MS1S00.OBM", role: "core", sha256: digest(shard), byteLength: shard.length, bytes: shard },
+            context(),
+        );
+        expect(upload).toHaveBeenCalledTimes(2);
+        expect(state.nextShard).toBe(1);
+    });
+});
 
 describe("map upload from the catalog", () => {
     const SIZE = 512 * 1024;

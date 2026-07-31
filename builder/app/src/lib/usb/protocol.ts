@@ -68,6 +68,10 @@ export const ObjectType = {
      * owns both.
      */
     Map: 16,
+    /** One OBCM shard in a manifest-committed volume set (USB only). */
+    MapShard: 17,
+    /** The OBCA manifest that commits a previously uploaded shard set (USB only). */
+    MapSet: 18,
 } as const;
 export type ObjectType = (typeof ObjectType)[keyof typeof ObjectType];
 
@@ -82,6 +86,17 @@ export const NEW_OBJECT_ID = 0xffff;
 
 /** Object id of the singletons: the list objects, diagnostics, and the `fwImage` staging slot. */
 export const SINGLETON_OBJECT_ID = 0;
+
+/** Pack a volume-set shard's `(shard_count, index)` into the descriptor's object id (§4.2). */
+export function setPartId(shardCount: number, index: number): number {
+    if (!Number.isInteger(shardCount) || shardCount < 1 || shardCount > 32) {
+        throw new RangeError(`a map set must contain 1–32 shards, got ${shardCount}.`);
+    }
+    if (!Number.isInteger(index) || index < 0 || index >= shardCount) {
+        throw new RangeError(`shard index ${index} is outside a ${shardCount}-shard set.`);
+    }
+    return (shardCount << 8) | index;
+}
 
 /**
  * The fixed **12-byte** transfer descriptor (§4.2) — one shape for upload, download request,
