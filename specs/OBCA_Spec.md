@@ -869,6 +869,14 @@ This composes with the resumable-upload work rather than competing with it: shar
 files, so per-shard resume, parallel transfer, and re-uploading only the shards a selection change
 touched all become possible later without a manifest change.
 
+> **Transferring a set to a device.** The rules above address a *writer*, and a device cannot hold a
+> host to them by reading them. The receiving half — the `mapShard` / `mapSet` object types, the
+> packed `(shard_count, index)` a shard announces itself with, the **refusal** of a manifest sent
+> before every shard it names has committed, a device's own shard ceiling, and the cleanup a torn
+> upload gets — is normative in
+> [`obc-ble-interface-spec.md` §4.1](obc-ble-interface-spec.md), "Volume sets: several transfers, one
+> map". Nothing there changes this section; it is what makes it enforceable.
+
 ### 5.5 Single-file fast path
 
 When the whole assembly fits one OBCM file under `4 GiB − 1 B`, the assembler writes a set of

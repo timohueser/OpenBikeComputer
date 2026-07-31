@@ -33,6 +33,7 @@ pub mod host;
 pub mod i18n;
 pub mod input;
 pub mod input_plane;
+pub mod link_gate;
 pub mod map_catalog;
 pub mod nav_profiles;
 pub mod next_ahead;
@@ -43,6 +44,7 @@ pub(crate) mod ride_engine;
 pub mod route;
 pub mod screen;
 pub mod sensors;
+pub mod set_upload;
 pub mod settings;
 pub mod stat_fields;
 pub mod store_meta;
@@ -68,6 +70,7 @@ pub use host::{DetourPreview, DrainStatus, HostCommand, HostEvent, HostMailbox, 
 pub use i18n::{t, Msg};
 pub use input::{Gesture, Gestures, DEFAULT_HOLD_MS, DEFAULT_TAP_MS};
 pub use input_plane::InputPlane;
+pub use link_gate::{GateOwner, TransferGate};
 pub use map_catalog::{
     boot_fault, choose_map, classify_map_entry, is_superseded_upload, newest_set, MapChoice, MapEntry,
 };
@@ -81,6 +84,10 @@ pub use ride::{RideCatalog, RideSummary, MAX_RIDES, UI_RIDES_CAP};
 pub use route::{Catalog, RouteSummary, MAX_ROUTES};
 pub use screen::{Screen, ScreenKind, Transition, WarningFlags, WarningScreen};
 pub use sensors::{SensorPhase, SensorScanHit, SensorScanHits, SensorStatus};
+pub use set_upload::{
+    manifest_announce, orphan_shard_verdict, shard_announce, sweep_verdict, RootMagic, SetReject, SetUpload,
+    SweepVerdict,
+};
 pub use settings::{
     decode_route_crcs, decode_selected_map, decode_store_epoch, decode_synced_rides, encode_route_crcs,
     encode_selected_map, encode_store_epoch, encode_synced_rides, route_crcs_len, synced_rides_len, ClimbMode,
