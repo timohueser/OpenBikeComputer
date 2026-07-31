@@ -17,7 +17,22 @@
 
 import { formatCellId, parseCellId, type CellId } from "./grid";
 import type { CatalogV2, CellIndexRef, RegionEntry } from "./manifest";
-import { arr, bool, DATE, fail, instant, int, json, KEBAB, obj, PATH_ID, realDate, SHA256, str } from "./parse";
+import {
+    arr,
+    bool,
+    DATE,
+    fail,
+    instant,
+    int,
+    json,
+    KEBAB,
+    obj,
+    PATH_ID,
+    realDate,
+    SHA256,
+    str,
+    urlStr,
+} from "./parse";
 
 /** One source extract behind a cell. */
 export interface CellSource {
@@ -65,6 +80,24 @@ export interface RegionCellsDocument {
     cells: Record<string, string[]>;
 }
 
+/**
+ * `parseCellId`, with the grid's refusal re-thrown as a document error.
+ *
+ * A `GridError` is a statement about a *string*; from inside a parser the
+ * caller's contract is `CatalogFormatError`, a statement about a *document*
+ * (§7). The distinction is not pedantry: a consumer catches the document error
+ * to say "this catalog is malformed" and let the user retry or report it, and
+ * a `GridError` escaping through the same call would sail past that handler and
+ * land as a blank screen — for a case that is precisely a bad document.
+ */
+function parseCellIdIn(id: string, at: string): CellId {
+    try {
+        return parseCellId(id);
+    } catch (e) {
+        return fail(`${at}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+}
+
 function checkEnvelope(o: Record<string, unknown>, catalog: CatalogV2, where: string): void {
     if (o.schema_version !== catalog.schema_version) {
         fail(`${where}: schema_version ${JSON.stringify(o.schema_version)} is not ${catalog.schema_version}`);
@@ -105,7 +138,7 @@ export function parseCellIndex(body: string, catalog: CatalogV2, ref: CellIndexR
         const at = `${where}.cells[${k}]`;
         const o = obj(entry, at);
         const id = str(o, "id", at);
-        const cell = parseCellId(id);
+        const cell = parseCellIdIn(id, at);
         if (formatCellId(cell) !== id) fail(`${at}: id ${JSON.stringify(id)} is not canonically padded`);
         if (cell.log2 !== ref.cell_log2) {
             fail(`${at}: cell size 2^${cell.log2} is not band "${ref.band}"'s 2^${ref.cell_log2}`);
@@ -136,7 +169,10 @@ export function parseCellIndex(body: string, catalog: CatalogV2, ref: CellIndexR
             cell,
             bytes: int(o, "bytes", at, 0),
             sha256: str(o, "sha256", at, SHA256),
-            url: str(o, "url", at),
+            // §11.6: "resolved like v1's `url` (§3)" — so the same rule, from
+            // the same function, rather than a second spelling of it that
+            // happens to accept a relative path.
+            url: urlStr(o, "url", at),
             built_at: instant(o, "built_at", at),
             sources,
             partial: bool(o, "partial", at),
@@ -178,7 +214,7 @@ export function parseRegionCells(body: string, catalog: CatalogV2, entry: Region
         if (!band) fail(`${at}: band ${JSON.stringify(bandId)} is not in schema.bands`);
         const ids = arr(raw[bandId], at).map((v, k) => {
             if (typeof v !== "string") fail(`${at}[${k}]: expected a cell id`);
-            const cell = parseCellId(v as string);
+            const cell = parseCellIdIn(v as string, `${at}[${k}]`);
             if (formatCellId(cell) !== v) fail(`${at}[${k}]: id ${JSON.stringify(v)} is not canonically padded`);
             if (cell.log2 !== band.cell_log2) {
                 fail(`${at}[${k}]: cell size 2^${cell.log2} is not band "${bandId}"'s 2^${band.cell_log2}`);

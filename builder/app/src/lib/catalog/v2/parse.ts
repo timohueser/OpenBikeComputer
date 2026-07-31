@@ -61,6 +61,25 @@ export function bool(o: Obj, key: string, where: string): boolean {
     return v;
 }
 
+/**
+ * A URL field, under §3's rule: absolute `https://…`/`http://…`, or
+ * root-relative `/…`.
+ *
+ * One implementation for every document that carries one — the root's satellite
+ * refs, a region's `cells_url`, and every cell artifact in a band index — because
+ * §11.6 says a cell's `url` is "resolved like v1's `url` (§3)" and a second
+ * spelling of that rule is a second chance to accept a relative path. Resolution
+ * itself is the client's, never a parser's: a parser reaching for a base URL
+ * would be making up a fact the document does not contain.
+ */
+export function urlStr(o: Obj, key: string, where: string): string {
+    const v = str(o, key, where);
+    if (!/^(https?:\/\/|\/)/.test(v)) {
+        fail(`${where}: ${key} must be absolute or root-relative (${JSON.stringify(v)})`);
+    }
+    return v;
+}
+
 /** An optional string that may also be spelled as an explicit `null`; both mean
  *  absent, which is how the generator writes "no preview yet" and "no parent". */
 export function optionalStr(o: Obj, key: string, where: string, pattern?: RegExp): string | null {

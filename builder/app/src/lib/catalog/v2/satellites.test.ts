@@ -58,6 +58,12 @@ describe("parseCellIndex", () => {
         ["a snapshot date that does not exist", (d) => (d.cells[0].sources[0].snapshot = "2026-02-30")],
         ["a missing partial flag", (d) => delete d.cells[0].partial],
         ["a truncated sha256", (d) => (d.cells[0].sha256 = "abc")],
+        // A malformed id is a malformed *document*, and must arrive as one: the
+        // grid's own `GridError` would sail straight past the handler that
+        // catches a bad catalog and land as a blank screen instead.
+        ["an id the grid does not admit", (d) => (d.cells[0].id = "18/2048/1052")],
+        ["an id that is not three numbers", (d) => (d.cells[0].id = "fine/1204/1052")],
+        ["a url that is neither absolute nor root-relative", (d) => (d.cells[0].url = "cells/x.obcm")],
     ])("rejects %s", (_what, edit) => {
         expect(() => parseCellIndex(mutatedIndex(edit), exampleCatalog, fineRef)).toThrow(CatalogFormatError);
     });
@@ -82,6 +88,7 @@ describe("parseRegionCells", () => {
         // the price shown before the download is not the download's price.
         ["a band with more cells than the root priced", (d) => d.cells.mid.push("19/0602/0527")],
         ["a priced band that is absent", (d) => delete d.cells.mid],
+        ["an id the grid does not admit", (d) => (d.cells.fine[0] = "18/9999/1052")],
     ])("rejects %s", (_what, edit) => {
         expect(() => parseRegionCells(mutatedRegion(edit), exampleCatalog, swiss)).toThrow(CatalogFormatError);
     });

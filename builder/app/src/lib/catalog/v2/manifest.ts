@@ -33,6 +33,7 @@ import {
     PATH_ID,
     SHA256,
     str,
+    urlStr,
     type Obj,
 } from "./parse";
 
@@ -167,18 +168,6 @@ const SECTIONS: readonly BandSection[] = ["nav", "poi"];
 
 const U8 = 255;
 const U16 = 65_535;
-
-function url(o: Obj, key: string, where: string): string {
-    // The schema's own pattern: absolute, or root-relative. Either is resolved
-    // against the root document's location by the client, never here — a parser
-    // that reached for a base URL would be making up a fact the document does
-    // not contain.
-    const v = str(o, key, where);
-    if (!/^(https?:\/\/|\/)/.test(v)) {
-        fail(`${where}: ${key} must be absolute or root-relative (${JSON.stringify(v)})`);
-    }
-    return v;
-}
 
 function parseGrid(v: unknown, where: string): GridConstants {
     const o = obj(v, where);
@@ -457,7 +446,7 @@ function parseRegions(v: unknown, where: string, bandIds: Set<string>): RegionEn
             bytes_by_band: bytesByBand,
             cell_count: cellCount,
             partial_cell_count: partial,
-            cells_url: url(o, "cells_url", at),
+            cells_url: urlStr(o, "cells_url", at),
             cells_bytes: int(o, "cells_bytes", at, 0),
             cells_sha256: str(o, "cells_sha256", at, SHA256),
         };
@@ -495,7 +484,7 @@ function parseCellIndexRefs(v: unknown, where: string, bands: BandEntry[]): Cell
             cell_count: int(o, "cell_count", at, 0),
             bytes: int(o, "bytes", at, 0),
             sha256: str(o, "sha256", at, SHA256),
-            url: url(o, "url", at),
+            url: urlStr(o, "url", at),
         };
     });
     for (const band of bands) {
