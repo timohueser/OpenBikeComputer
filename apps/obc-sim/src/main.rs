@@ -1034,9 +1034,6 @@ fn main() {
         // Nav, POI, hours and routing read the **core** shard and only it (§5.1) — never a
         // geometry shard — so this is the reader the whole app path gets, set or not.
         let reader = map.reader();
-        // The set's map plane needs a renderer of its own (see `map_set::SetPlane`); a single map
-        // draws entirely through the app's, so it pays nothing.
-        let mut set_renderer = map.set().map(|_| Box::new(obc_render::MapRenderer::new()));
         let (mut cx, mut cy, mut zoom) = initial_camera(&reader, args.width);
         if let Some((lon, lat)) = args.center {
             cx = lon;
@@ -1511,7 +1508,7 @@ fn main() {
         // Time the whole frame draw into `render_us` (the no_std renderer has no clock, so
         // the host fills it) — same field the live panel shows.
         let t0 = Instant::now();
-        let set = map.set().zip(set_renderer.as_mut()).map(|(set, r)| (set, &mut **r));
+        let set = map.set();
         let scene = map_set::Scene { set, reader: &reader, route: route.as_ref() };
         let mut stats = map_set::render_frame(&mut app, &mut fb, scene, (args.width as f32, args.height as f32), |c| {
             color_of(c, tc)

@@ -17,6 +17,7 @@ obc-formats = { path = "../obc-formats" }
 # simulator re-enables std on `obc-reader` through its own dependency edge. `render`
 # brings the `Viewport` + `MapRenderer` the app drives; it's no_std.
 obc-reader = { path = "../obc-reader" }
+obc-map-scene = { path = "../obc-map-scene" }
 obc-render = { path = "../obc-render" }
 # The route format + reader (RouteSummary for the menu catalog, RouteReader the Map
 # draws). no_std, shared with the firmware exactly like the map reader.

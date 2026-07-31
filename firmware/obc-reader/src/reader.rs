@@ -905,6 +905,12 @@ impl MapTables {
         &self.profiles
     }
 
+    /// The pre-resolved bottom-most style shared by every reader over these tables.
+    #[inline]
+    pub fn backdrop_style(&self) -> Option<&Style> {
+        self.backdrop.as_ref()
+    }
+
     /// Whether the map carries a non-empty §8 nav graph — the once-per-map-load feed behind
     /// `App::set_map_nav_graph` (#882: a graph-less map dims the Detour station instead of
     /// failing a plan). Same parsed-tables convenience rationale as [`nav_profiles`](Self::nav_profiles).
