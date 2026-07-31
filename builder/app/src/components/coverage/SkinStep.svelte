@@ -2,13 +2,18 @@
     // Step 2 on the cell catalog: which skin the assembly is stamped with
     // (#1038; epic #1016 §4). A skin is ~2 KB of style table applied at
     // assembly time — the one fact worth a line here is that choosing one
-    // never changes the download (mock R2·3's note), because riders coming
-    // while leaving the downloaded cells unchanged.
+    // never changes the downloaded cells.
 
     import type { CoverageStore } from "../../lib/coverage/store.svelte";
+    import SkinEditor from "../skin/SkinEditor.svelte";
+    import { rgb565ToDeviceHex } from "../../lib/color/rgb565";
+    import type { SkinEntry } from "../../lib/catalog/manifest";
+    import { isCustomSkinId } from "../../lib/skin/custom";
+    import { confirmAction } from "../../lib/ui/confirm.svelte";
 
     let { store }: { store: CoverageStore } = $props();
     let previewUrls = $state<Record<string, string>>({});
+    let editing = $state<SkinEntry | null>(null);
 
     $effect(() => {
         let live = true;
@@ -35,17 +40,30 @@
             for (const url of objectUrls) URL.revokeObjectURL(url);
         };
     });
+
+    async function removeSelected() {
+        if (!isCustomSkinId(store.skin.id)) return;
+        const doomed = store.skin;
+        const ok = await confirmAction({
+            title: `Delete “${doomed.name}”?`,
+            body: "This removes the custom skin from this browser. Hosted skins and downloaded maps are unchanged.",
+            confirmLabel: "Delete skin",
+            destructive: true,
+        });
+        if (ok) store.deleteCustomSkin(doomed.id);
+    }
 </script>
 
 <div class="cards">
-    {#each store.catalog.skins as skin (skin.id)}
-        <button
-            type="button"
-            class="skin"
-            class:selected={store.skinId === skin.id}
-            onclick={() => (store.skinId = skin.id)}
-        >
-            {#if previewUrls[skin.id]}
+    {#each store.skins as skin (skin.id)}
+        <button type="button" class="skin" class:selected={store.skinId === skin.id} onclick={() => (store.skinId = skin.id)}>
+            {#if isCustomSkinId(skin.id)}
+                <span class="shot custom-shot" aria-label={`${skin.name} device-color palette`}>
+                    {#each skin.styles.slice(0, 36) as style, index (`${style.feature_type}-${index}`)}
+                        <span style:background={rgb565ToDeviceHex(style.color)}></span>
+                    {/each}
+                </span>
+            {:else if previewUrls[skin.id]}
                 <img
                     class="shot"
                     src={previewUrls[skin.id]}
@@ -57,13 +75,26 @@
             {:else}
                 <span class="shot placeholder" aria-hidden="true"></span>
             {/if}
-            <span class="name">{skin.name}</span>
+            <span class="label-line">
+                <span class="name">{skin.name}</span>
+                {#if isCustomSkinId(skin.id)}<span class="custom-tag">custom</span>{/if}
+            </span>
         </button>
     {/each}
 </div>
-<p class="small faint note">
-    Skins restyle the same cells — changing one never re-downloads anything.
-</p>
+<div class="actions">
+    <p class="small faint note">Skins restyle the same cells — changing one never re-downloads anything.</p>
+    {#if isCustomSkinId(store.skin.id)}
+        <button type="button" class="text-action danger" onclick={removeSelected}>Delete</button>
+    {/if}
+    <button type="button" class="btn ghost customize" onclick={() => (editing = store.skin)}>
+        {isCustomSkinId(store.skin.id) ? "Edit skin" : "Customize"}
+    </button>
+</div>
+
+{#if editing}
+    <SkinEditor {store} base={editing} onclose={() => (editing = null)} />
+{/if}
 
 <style>
     .cards {
@@ -111,6 +142,26 @@
         background: linear-gradient(135deg, var(--parchment-2), var(--parchment-3));
     }
 
+    .custom-shot {
+        display: grid;
+        grid-template-columns: repeat(6, 1fr);
+        grid-template-rows: repeat(6, 1fr);
+        overflow: hidden;
+    }
+
+    .custom-shot span {
+        min-width: 0;
+        min-height: 0;
+    }
+
+    .label-line {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        width: 100%;
+        gap: 6px;
+    }
+
     .name {
         font-weight: 600;
         font-size: 14px;
@@ -118,7 +169,42 @@
         padding: 0 5px;
     }
 
+    .custom-tag {
+        margin-right: 5px;
+        padding: 2px 5px;
+        color: var(--forest);
+        background: rgba(60, 107, 57, 0.1);
+        border-radius: 5px;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+    }
+
+    .actions {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-top: 8px;
+    }
+
     .note {
-        margin: 8px 0 0;
+        flex: 1;
+        margin: 0;
+    }
+
+    .customize {
+        padding: 7px 12px;
+    }
+
+    .text-action {
+        padding: 5px;
+        border: 0;
+        background: transparent;
+        color: var(--ink-faint);
+    }
+
+    .text-action.danger:hover {
+        color: var(--coral);
     }
 </style>

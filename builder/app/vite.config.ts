@@ -62,6 +62,10 @@ export default defineConfig(({ mode }) => {
             format: "es",
         },
         server: {
+            // The product skin editor imports the bakery's canonical Teningen
+            // OBCM from `host/obc-bake/assets`. Keep one fixture, and let the
+            // dev server expose files only as far as this repository root.
+            fs: { allow: ["../.."] },
             // Dev mode: `python -m builder.server --no-browser` on :8000 serves
             // the API; Vite proxies it (plain http-proxy streams SSE fine).
             proxy: {

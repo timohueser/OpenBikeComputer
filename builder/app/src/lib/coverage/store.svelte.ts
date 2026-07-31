@@ -18,6 +18,14 @@ import { ledgerFor, type Ledger } from "../catalog/ledger";
 import type { Catalog, RegionEntry, SkinEntry } from "../catalog/manifest";
 import type { CellIndexDocument, RegionCellsDocument } from "../catalog/satellites";
 import {
+    browserSkinStorage,
+    loadCustomSkins,
+    persistCustomSkins,
+    prepareCustomSkin,
+    type CustomSkinRecord,
+    type SkinStorage,
+} from "../skin/custom";
+import {
     emptySelection,
     SelectionResolver,
     withCorridorRadius,
@@ -89,6 +97,7 @@ export class CoverageStore {
 
     selection = $state<Selection>(emptySelection(CORRIDOR_RADIUS_DEFAULT_M));
     skinId = $state<string>("");
+    customSkinRecords = $state<CustomSkinRecord[]>([]);
 
     /** The corridor panel's checked-but-not-yet-added routes, drawn dashed on
      *  the map and priced by {@link previewSummary}. */
@@ -106,13 +115,16 @@ export class CoverageStore {
     /** Prices the box being dragged, apart from the other two so a drag never
      *  evicts the committed selection's warm cache. */
     private readonly dragResolver = new SelectionResolver();
+    private readonly skinStorage: SkinStorage | null;
     private nextPartId = 1;
     private boxCount = 0;
 
-    constructor(client: CatalogClient, rootBody: string) {
+    constructor(client: CatalogClient, rootBody: string, skinStorage: SkinStorage | null = browserSkinStorage()) {
         this.client = client;
         this.catalog = client.catalog;
         this.rootBody = rootBody;
+        this.skinStorage = skinStorage;
+        this.customSkinRecords = loadCustomSkins(skinStorage, client.catalog.schema);
         this.skinId = client.catalog.skins[0].id;
         void this.loadIndices();
     }
@@ -194,9 +206,40 @@ export class CoverageStore {
         return this.previewed.resolution;
     }
 
+    readonly skins = $derived.by<SkinEntry[]>(() => [
+        ...this.catalog.skins,
+        ...this.customSkinRecords.map((record) => record.skin),
+    ]);
+
     readonly skin = $derived.by<SkinEntry>(() => {
-        return this.catalog.skins.find((s) => s.id === this.skinId) ?? this.catalog.skins[0];
+        return this.skins.find((s) => s.id === this.skinId) ?? this.catalog.skins[0];
     });
+
+    saveCustomSkin(draft: SkinEntry, name: string, basedOn: string): SkinEntry {
+        const existing = this.customSkinRecords.find((record) => record.skin.id === draft.id) ?? null;
+        const skin = prepareCustomSkin(draft, this.catalog.schema, name, existing?.skin ?? null);
+        const record: CustomSkinRecord = {
+            skin,
+            based_on: existing?.based_on ?? basedOn,
+        };
+        const next = existing
+            ? this.customSkinRecords.map((candidate) => (candidate.skin.id === skin.id ? record : candidate))
+            : [...this.customSkinRecords, record];
+        // Persist first: a denied/quota-full browser must not render a "saved"
+        // skin that disappears on refresh.
+        persistCustomSkins(this.skinStorage, this.catalog.schema, next);
+        this.customSkinRecords = next;
+        this.skinId = skin.id;
+        return skin;
+    }
+
+    deleteCustomSkin(id: string): void {
+        const next = this.customSkinRecords.filter((record) => record.skin.id !== id);
+        if (next.length === this.customSkinRecords.length) return;
+        persistCustomSkins(this.skinStorage, this.catalog.schema, next);
+        this.customSkinRecords = next;
+        if (this.skinId === id) this.skinId = this.catalog.skins[0].id;
+    }
 
     /** What the panel's candidate would add to the committed map. */
     previewSummary(patches: number): PreviewSummary | null {
