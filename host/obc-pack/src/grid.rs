@@ -152,8 +152,9 @@ impl fmt::Display for CellId {
 ///
 /// Intersection is decided on the **half-open** squares, so the `max` edges of `bbox` are inclusive
 /// of the cell that owns them: a vertex sitting exactly on a grid line belongs to the cell above /
-/// east of it, and that cell is therefore part of the covering. Cells outside the world box are
-/// skipped rather than clamped (OBCA §1.4).
+/// east of it, and that cell is therefore part of the covering. A bbox reaching past the world box
+/// is clamped to it rather than wrapped (OBCA §1.4) — the grid has no wrap, so there is nothing on
+/// the other side to reach.
 pub fn cells_intersecting(log2: u32, bbox: UBox) -> Vec<CellId> {
     let (min_lon, min_lat, max_lon, max_lat) = bbox;
     if min_lon > max_lon || min_lat > max_lat {
