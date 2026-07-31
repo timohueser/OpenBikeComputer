@@ -2767,6 +2767,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "obc-web-preview"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "embedded-graphics",
+ "js-sys",
+ "obc-formats",
+ "obc-host-core",
+ "obc-pack",
+ "obc-reader",
+ "obc-render",
+ "obcm-assemble",
+ "serde_json",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "obcm-assemble"
 version = "0.1.0"
 dependencies = [
