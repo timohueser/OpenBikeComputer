@@ -38,6 +38,7 @@
       "obc-sim",
       "obc-usb-host",
       "obc-vectors",
+      "obc-web-assemble",
       "obc-web-convert",
       "obc-web-demo",
       "obc-web-preview",
