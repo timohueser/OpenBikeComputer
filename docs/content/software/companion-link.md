@@ -1057,6 +1057,20 @@ real product rather than a demo:
   so a read left waiting on it would hold the endpoint forever and the link would
   be dead while still looking alive.
 
+The map builder uses one small USB-only read beside those shared objects: the
+device reports the mounted card's free-byte count from FAT32's cached FSInfo
+sector. Step 4 compares that number with the selected assembly plus its safety
+allowance before enabling Send; no guessed card capacity and no stale desktop
+setting stands in for the card that is actually connected.
+
+A cell-built map then crosses as the volume set it really is. The assembler
+hands the page **one file at a time**, the page verifies each shard's SHA-256,
+and the worker does not release the next buffer until the device has committed
+the current one. Shards go in index order and the manifest goes last, so an
+interrupted set is never visible as a map; Cancel sends the set-abandon edge
+even when it lands between two whole-file transfers. The progress line stays
+set-wide (`shard 3 of 8 · 62%`) rather than jumping back to zero per file.
+
 Everything else about the link is unchanged by the choice of wire: the same
 objects, the same restart-don't-resume rule, the same change signal, the same
 `status` ordering domain. Pairing is the one genuine exception — encryption and
