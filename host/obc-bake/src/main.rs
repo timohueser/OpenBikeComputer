@@ -211,6 +211,9 @@ fn run_cell_bake(
         .or_else(|| std::env::var("OBC_MAPS_BASE_URL").ok().filter(|value| !value.trim().is_empty()))
         .unwrap_or_else(|| "/obc-bake".into());
     let schema = obc_bake::presets::load_schema(presets_dir)?;
+    // Keep the small canonical renderer input locked to the schema before a
+    // potentially hours-long bake starts.
+    obc_bake::previews::check_source(&schema.config)?;
     let skin_ids = flags.all("skin");
     // Default: every skin in the directory. A hosted catalog's whole point is that the
     // skins are free — publishing a subset by accident is the mistake worth avoiding,
@@ -266,6 +269,8 @@ fn run_cell_bake(
         &base_url,
         flags.get("generated-at").map_or_else(obc_pack::catalog::now_timestamp, str::to_string),
     );
+    let seed = obc_pack::catalog::generate(&out, &opts)?;
+    let previews = obc_bake::previews::generate(&out, &seed.root)?;
     let generated = obc_pack::catalog::generate(&out, &opts)?;
     for w in &generated.warnings {
         eprintln!("warning: {w}");
@@ -273,11 +278,12 @@ fn run_cell_bake(
     obc_pack::catalog::write_all_atomic(&out, &generated)?;
     let cells: u32 = generated.root.cell_index.iter().map(|c| c.cell_count).sum();
     println!(
-        "\n{}: {cells} cells across {} bands, {} region(s), {} skin(s), {} satellite document(s)",
+        "\n{}: {cells} cells across {} bands, {} region(s), {} skin(s), {} preview(s), {} satellite document(s)",
         out.join(obc_pack::catalog::DEFAULT_MANIFEST_NAME).display(),
         generated.root.cell_index.len(),
         generated.root.regions.len(),
         generated.root.skins.len(),
+        previews.skins,
         generated.satellites.len()
     );
 

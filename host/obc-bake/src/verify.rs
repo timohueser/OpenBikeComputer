@@ -224,8 +224,8 @@ impl CellTreeReport {
 /// The catalog is the thing a consumer trusts, so it is the thing this checks
 /// *against* — every claim in it, back to the bytes:
 ///
-/// 1. **The satellites are the ones the root pinned.** `bytes` and `sha256` per cell
-///    index and per region cell list (`OBCC_Spec.md` §9). A satellite that does not
+/// 1. **The satellites and previews are the ones the root pinned.** `bytes` and
+///    `sha256` per object (`OBCC_Spec.md` §9). A referenced object that does not
 ///    match is the failure the pinning exists to make impossible to miss.
 /// 2. **Every cell's header bbox is its id.** Cheap and total, because it is the check
 ///    the catalog deliberately has no field for (§8): the identifier states the
@@ -266,6 +266,23 @@ pub fn verify_cell_tree(tree: &Path, opts: CellTreeVerifyOptions) -> Result<Cell
             ),
             &mut report.problems,
         );
+    }
+
+    // 1, per optional skin preview.
+    for skin in &root.skins {
+        let Some(pin) = &skin.preview else { continue };
+        let path = tree.join(crate::previews::PREVIEWS_DIR).join(format!("{}.png", skin.id));
+        match crate::hash::file(&path) {
+            Ok((bytes, _)) if bytes != pin.bytes => problem(
+                format!("{}: {bytes} bytes on disk, {} pinned in the root", path.display(), pin.bytes),
+                &mut report.problems,
+            ),
+            Ok((_, sha)) if sha != pin.sha256 => {
+                problem(format!("{}: sha256 {sha}, root pinned {}", path.display(), pin.sha256), &mut report.problems)
+            }
+            Ok(_) => {}
+            Err(e) => problem(format!("{e} — the root pins this skin preview"), &mut report.problems),
+        }
     }
 
     // 1 + 2 + 3, per band.

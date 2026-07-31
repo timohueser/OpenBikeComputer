@@ -102,6 +102,12 @@ export interface SkinStyle {
     color2: number | null;
 }
 
+export interface SkinPreview {
+    url: string;
+    bytes: number;
+    sha256: string;
+}
+
 export interface SkinEntry {
     id: string;
     name: string;
@@ -109,6 +115,8 @@ export interface SkinEntry {
     version: number;
     marker_color: number;
     styles: SkinStyle[];
+    /** A digest-pinned canonical rendering, or null for older/generic catalogs. */
+    preview: SkinPreview | null;
 }
 
 /** A region's simplified outline: rings of `[lat, lon]` integer microdegrees
@@ -385,6 +393,18 @@ function parseSkins(v: unknown, where: string, schema: SchemaEntry): SkinEntry[]
             version: int(o, "version", at, 0),
             marker_color: int(o, "marker_color", at, 0, U16),
             styles,
+            preview:
+                o.preview === undefined
+                    ? null
+                    : (() => {
+                          const pat = `${at}.preview`;
+                          const p = obj(o.preview, pat);
+                          return {
+                              url: urlStr(p, "url", pat),
+                              bytes: int(p, "bytes", pat, 0),
+                              sha256: str(p, "sha256", pat, SHA256),
+                          };
+                      })(),
         };
         return skin;
     });
