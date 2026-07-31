@@ -221,8 +221,9 @@ Several positional ids are baked together. This matters at borders: neighbouring
 extracts are co-ingested for shared edge cells, so canonical cells are complete
 instead of being clipped independently. Re-running is resumable and skips plans
 whose source, schema, and output are already current. The tree is self-contained:
-cells, sidecars, region metadata and outlines, `schema.json`, skins, satellites,
-and `catalog.json` all live below the output directory.
+cells, sidecars, region metadata and outlines, `schema.json`, skins, their
+production-rendered Teningen previews, satellites, and `catalog.json` all live
+below the output directory.
 
 No selector and `--all` deliberately mean different things. Omitting selectors
 bakes the curated TOML list. `--all` is reserved for a true whole-planet bake and
@@ -230,8 +231,9 @@ currently exits with an explanation; planet publication needs a global source an
 sharding plan, not a Geofabrik region loop disguised as one.
 
 Publishing is a separate operation. It regenerates URLs for the public origin,
-uploads cells and satellites first, verifies their remote sizes, and replaces
-`catalog.json` last:
+regenerates the square preview for every skin, uploads content first, verifies
+remote sizes, and replaces `catalog.json` last. Updating preview code therefore
+needs only another publish, not a cell rebake:
 
 ```sh
 # Copy tools/obc.local.example to the gitignored tools/obc.local and add the
@@ -253,9 +255,9 @@ obc bake remove-old-r2 --apply
 
 When `OBC_R2_PREFIX` is set, `OBC_MAPS_BASE_URL` must be the public URL of that
 same prefix. For example, `OBC_R2_PREFIX=cell-catalog` pairs with
-`OBC_MAPS_BASE_URL=https://maps.openbikecomputer.org/cell-catalog`; the root to put
+`OBC_MAPS_BASE_URL=https://maps.openbikecomputer.com/cell-catalog`; the root to put
 in `OBC_CATALOG_URL` is then
-`https://maps.openbikecomputer.org/cell-catalog/catalog.json`.
+`https://maps.openbikecomputer.com/cell-catalog/catalog.json`.
 
 Set `OBC_BAKE_TREE` in `tools/obc.local` to move the operator tree. An explicit
 tree may also follow `verify` or `publish`. `--source DIR` uses local Geofabrik-shaped
