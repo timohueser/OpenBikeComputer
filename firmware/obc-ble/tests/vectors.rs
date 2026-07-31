@@ -624,6 +624,62 @@ fn map_object_type_and_reserved_band() {
     assert_eq!(TransferControl::decode(&desc.encode()).unwrap(), desc);
 }
 
+/// The volume-set upload types (#1039, `OBCA_Spec.md` §5): `mapShard` 17 and `mapSet` 18, the two
+/// types that join `map` in the USB-only band. Pins the bytes, that the reserved sensor band still
+/// rejects, and that all three classify as map payload — the property the board's held-back-magic
+/// streaming path keys on.
+#[test]
+fn volume_set_object_types() {
+    assert_eq!(ObjectType::from_u8(17).unwrap(), ObjectType::MapShard);
+    assert_eq!(ObjectType::MapShard.as_u8(), 17);
+    assert_eq!(ObjectType::from_u8(18).unwrap(), ObjectType::MapSet);
+    assert_eq!(ObjectType::MapSet.as_u8(), 18);
+    assert!(ObjectType::from_u8(19).is_err(), "19 is not a type yet");
+
+    for ty in [ObjectType::Map, ObjectType::MapShard, ObjectType::MapSet] {
+        assert!(ty.is_map_payload(), "{ty:?} streams into its final file with the magic held back");
+    }
+    for ty in [ObjectType::Route, ObjectType::Trip, ObjectType::FwImage, ObjectType::Echo] {
+        assert!(!ty.is_map_payload(), "{ty:?} stages through UPLOAD.TMP");
+    }
+}
+
+/// The `mapShard` descriptor's repurposed `object_id`: `shard_count` high, `index` low. Pins the
+/// packing on the wire (the host and the device must agree on the byte order without a spec
+/// re-read) and the two structural refusals — a set of zero shards, and an index at or past the
+/// count.
+#[test]
+fn set_part_packs_the_shard_count_and_index() {
+    use obc_ble::SetPart;
+
+    // The DACH-shaped case from `OBCA_Spec.md` §5.1: eight shards, this one the third.
+    let part = SetPart { shard_count: 8, index: 2 };
+    assert_eq!(part.encode(), 0x0802, "count in the high byte, index in the low one");
+    assert_eq!(SetPart::decode(0x0802), Some(part));
+
+    // Both ends of the spec's range, and the single-file fast path (§5.5).
+    for (count, index) in [(1u8, 0u8), (32, 0), (32, 31), (11, 10)] {
+        let part = SetPart { shard_count: count, index };
+        assert_eq!(SetPart::decode(part.encode()), Some(part), "{count}/{index}");
+    }
+
+    assert_eq!(SetPart::decode(0x0000), None, "a set of zero shards names no file");
+    assert_eq!(SetPart::decode(0x0303), None, "index == count is off the end");
+    assert_eq!(SetPart::decode(0x03FF), None);
+    // …and the value a plain map upload sends is not accidentally a legal part.
+    assert_eq!(SetPart::decode(TransferControl::NEW_OBJECT_ID), None, "0xFFFF is index 255 of 255");
+
+    // A shard descriptor round-trips whole through the production codec.
+    let desc = TransferControl {
+        op: Op::Upload,
+        ty: ObjectType::MapShard,
+        object_id: SetPart { shard_count: 8, index: 7 }.encode(),
+        total_len: 1_073_741_824,
+        crc32: 0xDEAD_BEEF,
+    };
+    assert_eq!(TransferControl::decode(&desc.encode()).unwrap(), desc);
+}
+
 /// The `routeList` fixture decodes through the production list codec, its first two entries agree
 /// with the stored route fixtures they describe, its auto-expiry tail spans the epic #638 S4 spread
 /// (a live countdown, a not-yet-started clock, a Never route), and re-encoding reproduces the file
