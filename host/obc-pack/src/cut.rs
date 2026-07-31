@@ -122,7 +122,7 @@ pub struct CutOptions {
     /// The schema's band table (OBCA §1.2). Cell sizes are **schema data**, never format constants.
     pub bands: BandTable,
     /// Cut exactly these cells rather than everything the extract touches. A cell id names a *size*,
-    /// and two bands may share one (`fine` and `network` are both `2^18` at the v1 table), so a
+    /// and two bands may share one (`fine` and `network` are both `2^18` in the recommended table), so a
     /// selection is cut for every band of that size unless [`CutOptions::only_bands`] narrows it.
     pub select: Vec<CellId>,
     /// Restrict the run to these band ids. Empty ⇒ every band in the table.
@@ -140,7 +140,7 @@ pub struct CutOptions {
 impl Default for CutOptions {
     fn default() -> Self {
         CutOptions {
-            bands: BandTable::v1(),
+            bands: BandTable::recommended(),
             select: Vec::new(),
             only_bands: Vec::new(),
             sources: Vec::new(),
@@ -768,7 +768,7 @@ fn write_cell(
 /// A cell artifact's path inside the run's output directory.
 ///
 /// Keyed by **band**, not by `log2`: two bands may legitimately share a cell size (`fine` and
-/// `network` are both `2^18` at the v1 table), and `OBCC_Spec.md` §11.1's `cells/<log2>/<i>/<j>.obcm`
+/// `network` are both `2^18` in the recommended table), and `OBCC_Spec.md` §2's cell path
 /// sketch collides for exactly that pair. Every cell's path is stated explicitly in the manifest, so
 /// a publisher never has to infer it.
 fn cell_path(band: &Band, cell: &CellId) -> String {
@@ -1168,7 +1168,7 @@ mod tests {
 
     #[test]
     fn cell_paths_are_band_keyed_and_padded() {
-        let band = BandTable::v1();
+        let band = BandTable::recommended();
         let fine = band.band("fine").unwrap();
         let network = band.band("network").unwrap();
         let c = CellId::new(18, 7, 9).unwrap();

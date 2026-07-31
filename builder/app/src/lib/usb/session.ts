@@ -58,7 +58,7 @@ export type LocalFileSource = (path: string) => Promise<ObjectSource>;
  * A connection to one device, followed over its lifetime.
  *
  * The fields are read reactively by the UI, so an implementation makes them `$state` — the
- * interface only promises they are observable, not how, exactly as `BuildSession` does for builds.
+ * interface only promises they are observable, not how.
  */
 export interface DeviceSession {
     /** Diagnostics only: `"webusb"` on the hosted tier, `"native"` in the desktop app (D4 #909). */

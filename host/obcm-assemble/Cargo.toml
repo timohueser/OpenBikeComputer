@@ -30,7 +30,7 @@ sha2 = "0.11"
 # `obc-reader`'s feature-decode API fills caller-owned fixed-capacity buffers, so the verify pass
 # traffics in the same `heapless` version the reader and the firmware do.
 heapless = "0.8"
-# The schema (OBCC §11.3) and skin (§11.4) documents the assembler is driven by.
+# The schema (OBCC §4) and skin (§5) documents the assembler is driven by.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

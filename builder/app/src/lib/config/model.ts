@@ -64,35 +64,22 @@ export interface PackConfig {
     routing?: RoutingConfig;
 }
 
-/**
- * A style preset, as the picker offers it. The identity fields are what every
- * tier can state; the last two exist only where there is a packer to run.
- *
- * On the hosted tier a preset is a *choice of pre-baked artifact*, not a recipe
- * — its list comes from the catalog manifest (`presets[]`, OBCC §2), which has
- * no config in it and never will: the config lives with the bakery that used
- * it. So `config` and `swatch` are optional here rather than faked with an
- * empty object, and every caller that needs a config has to say so.
- */
+/** One checked-in schema document offered by the maintainer editor. */
 export interface Preset {
     id: string;
     name: string;
     description: string;
     version: number;
-    /** A rendered preview of what this preset draws (B2 #899), resolved to a
-     *  URL by the host that served it. Absent until one is published. */
-    preview?: string;
     /** Representative colors, read out of the config. */
     swatch?: string[];
     /** The packer config to build with. */
     config?: PackConfig;
 }
 
-/** A preset that carries its config — what the build card and the style editor
- *  need, and what `applyPreset` snapshots. */
+/** A preset that carries its config — what the style editor applies. */
 export type BuildablePreset = Preset & { config: PackConfig };
 
-/** Narrow a preset list to the ones a build tier can actually use. */
+/** Narrow a schema document to one the editor can actually apply. */
 export function isBuildable(preset: Preset): preset is BuildablePreset {
     return preset.config !== undefined;
 }

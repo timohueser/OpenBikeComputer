@@ -19,14 +19,6 @@
     let importError = $state<string | null>(null);
     let legacyConfig = $state<Record<string, unknown> | null>(null);
     let fileInput: HTMLInputElement;
-    /** Where the last export landed, on a host that saves files rather than downloading them. */
-    let exported = $state<string | null>(null);
-    let exportError = $state<string | null>(null);
-
-    // Read once: neither changes while the app runs. Both absent in a browser tab, where an
-    // `<a download>` is the whole story and there is no file manager to point at.
-    const saveText = platform.saveText;
-    const revealFile = platform.revealFile;
 
     const env = $derived(working.envelope);
     const basedOnName = $derived(
@@ -44,8 +36,8 @@
 
     onMount(async () => {
         if (!working.envelope) working.restore();
-        // Non-null wherever this route can load — `schema` is gated on
-        // `caps.build || caps.styleEditor` and the editor is the latter.
+        // Non-null wherever this route can load: only the maintainer dev host
+        // includes the editor.
         platform.schema?.().then((s) => (schema = s)).catch(() => (schema = null));
         platform.presets().then((p) => (presets = p)).catch(() => {});
         // The OSM tag-key catalog for the category rail — a static asset on
@@ -72,7 +64,7 @@
     async function resetToPreset() {
         const preset = presets.find((p) => p.id === env?.based_on?.id);
         // This editor only exists on a tier that serves config-carrying presets
-        // (`caps.styleEditor`), so the guard is the type system's, not a case
+        // (the dev host), so the guard is the type system's, not a case
         // that happens: there is nothing to reset to without a config.
         if (!preset || !isBuildable(preset)) return;
         // The explicit re-copy the envelope's semantics are built around: a preset never reaches a
@@ -92,40 +84,19 @@
     /**
      * Write the working config out as a plain, CLI-usable packer config.
      *
-     * Two ways, because the two hosts disagree about what "save a file" is — not about the
-     * document, which is byte-identical either way. A browser gets the anchor it has always had;
-     * the desktop app gets a Rust write, because that anchor is silently inert inside a Tauri
-     * webview (see `Platform.saveText`). Nothing here branches on a host name: the seam being
-     * present *is* the statement that the fallback would not work.
+     * This route exists only on the localhost maintainer host, where an ordinary
+     * browser download is the right export mechanism.
      */
     async function exportNow() {
         if (!env) return;
-        exported = null;
-        exportError = null;
         const name = `obcm-style-${env.based_on?.id ?? "custom"}.json`;
         const text = exportFile(env);
-        if (saveText) {
-            try {
-                exported = await saveText(name, text);
-            } catch (e) {
-                exportError = e instanceof Error ? e.message : String(e);
-            }
-            return;
-        }
         const blob = new Blob([text], { type: "application/json" });
         const a = document.createElement("a");
         a.href = URL.createObjectURL(blob);
         a.download = name;
         a.click();
         URL.revokeObjectURL(a.href);
-    }
-
-    async function revealExport(path: string) {
-        try {
-            await revealFile?.(path);
-        } catch (e) {
-            exportError = e instanceof Error ? e.message : String(e);
-        }
     }
 
     async function importPicked(files: FileList | null) {
@@ -184,20 +155,6 @@
 
 {#if importError}
     <p class="error small">{importError}</p>
-{/if}
-
-{#if exportError}
-    <p class="error small">{exportError}</p>
-{/if}
-
-{#if exported}
-    <p class="small muted saved">
-        Saved to <span class="mono">{exported}</span>
-        {#if revealFile}
-            {@const path = exported}
-            <button type="button" class="btn ghost" onclick={() => revealExport(path)}>Show</button>
-        {/if}
-    </p>
 {/if}
 
 {#if legacyConfig}
@@ -291,15 +248,6 @@
     .error {
         color: var(--coral);
         margin: 0 0 10px;
-    }
-
-    .saved {
-        margin: 0 0 10px;
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        flex-wrap: wrap;
-        word-break: break-all;
     }
 
     .legacy {

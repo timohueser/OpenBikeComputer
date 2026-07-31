@@ -129,7 +129,7 @@ mod web {
 
     #[wasm_bindgen]
     impl Assembler {
-        /// Start an assembly at a schema and a skin (OBCC §11.3 / §11.4 documents, as JSON text).
+        /// Start an assembly at a schema and a skin (OBCC §4 / §5 documents, as JSON text).
         ///
         /// `options_json` is an optional object: `{name, cardId, targetShardBytes, acceptHoles,
         /// acceptPartial, forceSplit}`, every field optional. Unknown keys are ignored, so a newer

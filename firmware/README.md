@@ -18,7 +18,7 @@ trees — one `Cargo.lock`, one `target/`:
 | :-- | :-- | :-- |
 | `firmware/` | `obc-formats`, `obc-ports`, `obc-map-scene`, `obc-reader`, `obc-route`, `obc-render`, `obc-app`, `obc-ble`, `obc-dfu`, the platform adapters | **yes** — that is the rule |
 | `../host/` | the packer (`obc-pack`), the bakery (`obc-bake`), the cell assembler (`obcm-assemble`), `obc-mkimage`, `obc-bench`, the oracles (`obcm-testkit`, `obc-vectors`), `obc-host-core`, `obc-replay`, `obc-usb-host` | no |
-| `../apps/` | `obc-sim`, `obc-web-demo`, `obc-web-convert`, `obc-web-preview`, `obc-web-assemble`, `obc-desktop` | no |
+| `../apps/` | `obc-sim`, `obc-web-demo`, `obc-web-convert`, `obc-web-assemble`, `obc-desktop` | no |
 
 Dev-dependencies cross that boundary on purpose — `obc-render` and `obc-reader`
 test against `obcm-testkit`, `obc-route` against `obc-pack` — because a dev-dep
@@ -168,29 +168,26 @@ trunk build --release --config docs/Trunk.toml # → docs/dist/
 The demo core is target-independent, so its unit tests run in the plain
 `cargo test` above — no browser needed for the logic.
 
-## Build the web builder's wasm bridges (`obc-web-convert`, `obc-web-preview`, `obc-web-assemble`)
+## Build the web builder's wasm bridges (`obc-web-convert`, `obc-web-assemble`)
 
-The hosted web builder has no backend, so three things it needs run as wasm in
+The hosted web builder has no backend, so two things it needs run as wasm in
 the tab, each a thin host over a shared crate:
 
 - **`obc-web-convert`** — `obc-route`'s `gpx_to_obcr` / `track_to_gpx`, so a
   dropped GPX becomes the *same* `.obcr` the device and the CLI produce.
-- **`obc-web-preview`** — `obc-reader` + `obc-render`, so a preset card renders a
-  small demo map at the panel's own 240×320 through the device's render path
-  (the maps come from `builder/bake-previews.sh`; see `builder/README.md`).
 - **`obc-web-assemble`** — `obcm-assemble`, so downloaded OBCA cells become one
   map in the tab, verified (spec §4.8) before anything leaves it. The only one
   wrapping a `host/` crate rather than a firmware one.
 
-All three are normal workspace members — their cores are target-independent and
+Both are normal workspace members — their cores are target-independent and
 covered by the `cargo test` above; only the shipping artifacts are wasm.
 
 Unlike the demo these are **libraries** consumed by Vite, not apps Trunk
 bundles, so they build with `wasm-pack` (`cargo install wasm-pack` once):
 
 ```sh
-# From builder/app — writes src/lib/{convert,preview,assemble}/pkg/ (gitignored).
-npm run build:wasm            # all three; :convert / :preview / :assemble build one
+# From builder/app — writes src/lib/{convert,assemble}/pkg/ (gitignored).
+npm run build:wasm            # both; :convert / :assemble build one
 ```
 
 The frontend needs that output before `npm run check`, `npm test` or

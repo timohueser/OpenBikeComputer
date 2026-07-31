@@ -4,9 +4,9 @@
 // outline is drawn from, what counts as "one patch") are testable without a
 // browser.
 
-import { parseCellId, type CellId, type UBox } from "../catalog/v2/grid";
-import type { CatalogV2 } from "../catalog/v2/manifest";
-import { coverageRings, mergeCellRects, type RingPoint } from "../catalog/v2/outline";
+import { parseCellId, type CellId, type UBox } from "../catalog/grid";
+import type { Catalog } from "../catalog/manifest";
+import { coverageRings, mergeCellRects, type RingPoint } from "../catalog/outline";
 
 /**
  * The band whose cells *are* "the selection's coverage" on screen — the finest
@@ -20,7 +20,7 @@ import { coverageRings, mergeCellRects, type RingPoint } from "../catalog/v2/out
  * geometry band is the honest outline for everything the rider will actually
  * see drawn on glass.
  */
-export function detailBandId(catalog: CatalogV2): string {
+export function detailBandId(catalog: Catalog): string {
     const geometry = catalog.schema.bands.filter((b) => b.lods.length > 0 && b.role !== "coarse");
     const candidates = geometry.length ? geometry : catalog.schema.bands;
     return candidates.reduce((a, b) => (b.cell_log2 < a.cell_log2 ? b : a)).id;

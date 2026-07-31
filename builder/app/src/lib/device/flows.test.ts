@@ -13,11 +13,11 @@
  * wrong: a cancelled write and an unplug mid-transfer.
  */
 
-import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { DeviceError, type ProtocolClient } from "../usb/client";
 import { loopbackDevice } from "../usb/loopback";
@@ -28,14 +28,12 @@ import {
     abandonAssembledSet,
     askToInstall,
     sendAssembledSetFile,
-    sendCatalogMap,
     sendMapFile,
     sendRoute,
     setSendState,
     stageFirmware,
 } from "./write";
 import type { JobContext, JobPhase } from "./progress";
-import { syntheticBody, syntheticBytes, tempStaging } from "./testing";
 
 // --- fixtures -----------------------------------------------------------------
 
@@ -58,10 +56,6 @@ beforeAll(async () => {
         throw new Error(`the wasm bridge is not built (${wasm} missing). Run \`npm run build:wasm\`.`);
     }
     await initConvert(readFileSync(wasm));
-});
-
-afterEach(() => {
-    vi.unstubAllGlobals();
 });
 
 // --- a job context a test can watch -------------------------------------------
@@ -91,17 +85,6 @@ function context(options: { signal?: AbortSignal; at?: (done: number, phase: Job
             options.at?.(done, phase);
         },
     };
-}
-
-/** A `fetch` that serves `bytes` as a real streamed response. */
-function serving(total: number, chunk = 16 * 1024): void {
-    vi.stubGlobal("fetch", async (_url: string, init?: { signal?: AbortSignal }) => {
-        const body = syntheticBody(total, chunk);
-        // The abort has to reach the body, exactly as a real fetch's does — otherwise a cancelled
-        // download would look cancelled to the caller while the transfer kept running.
-        init?.signal?.addEventListener("abort", () => void body.cancel().catch(() => undefined), { once: true });
-        return new Response(body, { status: 200 });
-    });
 }
 
 // --- the flows ----------------------------------------------------------------
@@ -195,98 +178,6 @@ describe("assembled volume-set upload", () => {
         );
         expect(upload).toHaveBeenCalledTimes(2);
         expect(state.nextShard).toBe(1);
-    });
-});
-
-describe("map upload from the catalog", () => {
-    const SIZE = 512 * 1024;
-
-    it("streams the artifact through a scratch file and commits it", async () => {
-        const { client, device, close } = loopbackDevice();
-        const { area, cleanup, dir } = tempStaging();
-        serving(SIZE);
-        try {
-            const ctx = context();
-            const result = await sendCatalogMap(
-                client,
-                {
-                    filename: "switzerland-default.obcm",
-                    url: "https://cdn.example/switzerland-default.obcm",
-                    bytes: SIZE,
-                    sha256: digest(syntheticBytes(SIZE)),
-                },
-                area,
-                ctx,
-            );
-            expect(result.committedOffset).toBe(SIZE);
-            // "Uploaded" means the device holds a valid file: the mock verified the announced
-            // whole-object CRC before committing, and these are the bytes it kept.
-            expect(device.stored(ObjectType.Map, result.objectId)).toEqual(syntheticBytes(SIZE));
-            expect(ctx.phases).toEqual(["downloading", "sending"]);
-            expect(readdirSyncSafe(dir), "the scratch copy is deleted once it has been sent").toEqual([]);
-        } finally {
-            cleanup();
-            await close();
-        }
-    });
-
-    it("never opens a transfer when the artifact fails its checksum", async () => {
-        const { client, device, close } = loopbackDevice();
-        const { area, cleanup, dir } = tempStaging();
-        serving(SIZE);
-        try {
-            await expect(
-                sendCatalogMap(
-                    client,
-                    {
-                        filename: "switzerland-default.obcm",
-                        url: "https://cdn.example/switzerland-default.obcm",
-                        bytes: SIZE,
-                        sha256: "b".repeat(64),
-                    },
-                    area,
-                    context(),
-                ),
-            ).rejects.toMatchObject({ code: "digest-mismatch" });
-            expect(device.stored(ObjectType.Map, 1)).toBeNull();
-            expect(readdirSyncSafe(dir)).toEqual([]);
-        } finally {
-            cleanup();
-            await close();
-        }
-    });
-
-    it("cancels mid-download and leaves the device untouched", async () => {
-        const { client, device, close } = loopbackDevice();
-        const { area, cleanup, dir } = tempStaging();
-        serving(SIZE * 8, 4096);
-        const controller = new AbortController();
-        try {
-            const ctx = context({
-                signal: controller.signal,
-                at: (done) => {
-                    if (done > SIZE) controller.abort();
-                },
-            });
-            await expect(
-                sendCatalogMap(
-                    client,
-                    {
-                        filename: "big.obcm",
-                        url: "https://cdn.example/big.obcm",
-                        bytes: SIZE * 8,
-                        sha256: digest(syntheticBytes(SIZE * 8)),
-                    },
-                    area,
-                    ctx,
-                ),
-            ).rejects.toMatchObject({ code: "aborted" });
-            expect(device.stored(ObjectType.Map, 1)).toBeNull();
-            expect(readdirSyncSafe(dir)).toEqual([]);
-        } finally {
-            cleanup();
-            await close();
-        }
     });
 });
 
@@ -465,11 +356,8 @@ describe("firmware update", () => {
     });
 });
 
-/** `readdirSync`, tolerating a directory a test already cleaned up. */
-function readdirSyncSafe(dir: string): string[] {
-    try {
-        return readdirSync(dir);
-    } catch {
-        return [];
-    }
+function syntheticBytes(total: number): Uint8Array<ArrayBuffer> {
+    const bytes = new Uint8Array(total);
+    for (let i = 0; i < bytes.length; i++) bytes[i] = i & 0xff;
+    return bytes;
 }

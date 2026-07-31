@@ -1,11 +1,8 @@
 <script lang="ts">
     // What the app has put on this disk, and the button that takes it back.
     //
-    // This is not a settings screen: it is here because the numbers are large
-    // enough to be someone's problem. A country extract is hundreds of megabytes
-    // and the shared land-polygon dataset is over two gigabytes, and neither was
-    // ever chosen by the user — they are the price of a build. So each row states
-    // a real path, a real size, and what deleting it costs on the next build.
+    // This is not a settings screen: it reports the app's maps, ride archive and
+    // eventually its published-cell cache with real paths and sizes.
     //
     // Mounted only where `platform.storage` exists (see `DiskStorage`), which is
     // a member check, not a host name.
@@ -33,9 +30,7 @@
     onMount(load);
 
     async function clear(place: StoragePlace) {
-        // Deleting the land dataset means a ~950 MB re-download; deleting an
-        // extract means one region. The confirm carries the size so the answer
-        // isn't guesswork.
+        // The confirm carries the size so the answer isn't guesswork.
         const ok = await confirmAction({
             title: `Delete ${formatBytes(place.bytes)} from ${place.path}?`,
             body: place.note,

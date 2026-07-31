@@ -63,9 +63,6 @@ describe("the reason table", () => {
 
 describe("tier gating", () => {
     it("blocks the locked web-tier features and names which one", () => {
-        expect(unmetIn(chromium, "build")).toBe("build");
-        expect(unmetIn(chromium, "bboxCrop")).toBe("bboxCrop");
-        expect(unmetIn(chromium, "styleEditor")).toBe("styleEditor");
         expect(unmetIn(chromium, "rideLibrary")).toBe("rideLibrary");
         expect(unmetIn(chromium, "deviceDashboard")).toBe("deviceDashboard");
     });
@@ -74,9 +71,7 @@ describe("tier gating", () => {
         for (const need of REQUIREMENTS) expect(unmetIn(desktopApp, need)).toBeNull();
     });
 
-    it("lets the dev server build and style, but not reach a device", () => {
-        expect(unmetIn(devServer, "build")).toBeNull();
-        expect(unmetIn(devServer, "styleEditor")).toBeNull();
+    it("keeps device features out of the maintainer dev server", () => {
         expect(unmetIn(devServer, "deviceUsb")).toBe("deviceUsb");
     });
 
@@ -87,11 +82,11 @@ describe("tier gating", () => {
     it("blocks a control whose platform member is null even where the cap says yes", () => {
         // Only reachable if a host breaks A1's `caps.X === (member !== null)`
         // invariant — better a reason on screen than a live control over null.
-        expect(unmetIn(desktopApp, "build", null)).toBe("build");
-        expect(unmetIn(desktopApp, "build", () => undefined)).toBeNull();
+        expect(unmetIn(desktopApp, "deviceUsb", null)).toBe("deviceUsb");
+        expect(unmetIn(desktopApp, "deviceUsb", () => undefined)).toBeNull();
         // `undefined` means "this gate has no member", not "the member is
         // missing" — otherwise every value-less gate would fail.
-        expect(unmetIn(desktopApp, "build", undefined)).toBeNull();
+        expect(unmetIn(desktopApp, "deviceUsb", undefined)).toBeNull();
     });
 });
 
@@ -124,9 +119,6 @@ describe("the browser question is not the tier question", () => {
 describe("what the desktop page lists", () => {
     it("is what this visitor is actually missing", () => {
         expect(desktopAddsIn(chromium)).toEqual([
-            "build",
-            "bboxCrop",
-            "styleEditor",
             "rideLibrary",
             "deviceDashboard",
         ]);

@@ -12,7 +12,7 @@
             "#55AA55",
             "#AAAAAA"
         ],
-        "skin_note": "Presentation only. Every feature type and every style id comes from `schema.json` and is referenced by the feature headers of every baked chunk (OBCM_Spec.md §5.2), so a skin may restate the seven presentation values and nothing else — the catalog generator refuses one that adds, drops, reorders or renumbers a feature type (OBCC_Spec.md §11.4). The values below are the schema's own, which is what makes this the default look; `min_lod`, the LOD ladder, the merge passes and the routing profiles are schema data and are deliberately absent."
+        "skin_note": "Presentation only. Every feature type and every style id comes from `schema.json` and is referenced by the feature headers of every baked chunk (OBCM_Spec.md §5.2), so a skin may restate the seven presentation values and nothing else — the catalog generator refuses one that adds, drops, reorders or renumbers a feature type (OBCC_Spec.md §5). The values below are the schema's own, which is what makes this the default look; `min_lod`, the LOD ladder, the merge passes and the routing profiles are schema data and are deliberately absent."
     },
     "features": {
         "highway": {

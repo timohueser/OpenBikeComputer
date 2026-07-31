@@ -22,8 +22,8 @@
 // metres; keeping them would only make the width slider stutter. The ends are
 // always kept.
 
-import type { LatLon } from "../catalog/v2/corridor";
-import { M_PER_DEG } from "../catalog/v2/corridor";
+import type { LatLon } from "../catalog/corridor";
+import { M_PER_DEG } from "../catalog/corridor";
 
 /** One route as the corridor panel lists it. */
 export interface GpxRoute {

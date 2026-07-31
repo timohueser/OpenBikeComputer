@@ -29,11 +29,9 @@ interface BuiltChunks {
  */
 const DESKTOP_ONLY = {
     "the FastAPI client": /\/src\/lib\/api\/client\.ts$/,
-    "the SSE job tracker": /\/src\/lib\/api\/jobs\.svelte\.ts$/,
     "the dev host": /\/src\/lib\/platform\/dev\.ts$/,
     "the desktop host": /\/src\/lib\/platform\/desktop\.ts$/,
     "the Tauri command bridge": /\/src\/lib\/desktop\/invoke\.ts$/,
-    "the Tauri build tracker": /\/src\/lib\/desktop\/build\.svelte\.ts$/,
     "the native USB transport": /\/src\/lib\/desktop\/usb\.ts$/,
     "the native USB session": /\/src\/lib\/desktop\/usb\.svelte\.ts$/,
     "the ride library's Tauri backing": /\/src\/lib\/desktop\/library\.ts$/,
@@ -48,7 +46,6 @@ const DESKTOP_ONLY = {
 const DESKTOP_TARGET_ONLY = {
     "the desktop host": /\/src\/lib\/platform\/desktop\.ts$/,
     "the Tauri command bridge": /\/src\/lib\/desktop\/invoke\.ts$/,
-    "the Tauri build tracker": /\/src\/lib\/desktop\/build\.svelte\.ts$/,
     // D4 (#909): the desktop tier drives USB natively, so the Rust-backed byte
     // pipe must be in this bundle and nowhere else. Its presence here is also
     // what proves the dynamic `import()` in `desktop.ts` still resolves —
@@ -87,25 +84,9 @@ async function bundledModules(mode: string): Promise<{ all: string[]; entry: str
     return { all, entry };
 }
 
-/**
- * The coverage flow (#1038), which must ride a **lazy** chunk on the web tier
- * (#1041 A1): today's live catalog is v1, so every one of these modules would
- * be dead weight on the entry chunk every visitor downloads — +19.2 kB gzip
- * measured when `CoverageHome` was imported statically. The one deliberate
- * exception is `lib/coverage/detect.ts`: the envelope peek is what *decides*
- * whether to load the rest, so it alone belongs up front.
- */
-const COVERAGE_LAZY_ONLY = {
-    "the coverage components": /\/src\/components\/coverage\//,
-    "the v2 catalog client": /\/src\/lib\/catalog\/v2\//,
-    "the coverage map glue": /\/src\/lib\/map\/coverageMap\.ts$/,
-    "the coverage store and adapters": /\/src\/lib\/coverage\/(?!detect\.ts)/,
-    "the assembly worker plumbing": /\/src\/lib\/assemble\//,
-};
-
 describe("bundle split", () => {
     it("keeps build and style-editor code out of the web target", async () => {
-        const { all: modules, entry } = await bundledModules("web");
+        const { all: modules } = await bundledModules("web");
         // An empty build, or one that quietly picked another host, would pass
         // every assertion below.
         expect(modules.some((id) => id.endsWith("/src/lib/platform/web.ts"))).toBe(true);
@@ -116,21 +97,14 @@ describe("bundle split", () => {
         );
         expect(found).toEqual([]);
 
-        // #1041 A1: the coverage flow is split, not gone. Its presence in
-        // *some* chunk is what proves Home's dynamic `import()` still
-        // resolves; its absence from the entry chunk is the doctrine, and the
-        // peek that chooses the flow is the one coverage module allowed there.
+        // The cell composer is now the hosted builder rather than a lazily
+        // loaded alternative selected by a manifest probe.
         expect(modules.some((id) => id.includes("/src/components/coverage/CoverageHome.svelte"))).toBe(
             true,
         );
-        expect(entry.some((id) => id.endsWith("/src/lib/coverage/detect.ts"))).toBe(true);
-        const heavy = Object.entries(COVERAGE_LAZY_ONLY).flatMap(([what, re]) =>
-            entry.filter((id) => re.test(id)).map((id) => `${what}: ${id}`),
-        );
-        expect(heavy).toEqual([]);
     }, 180_000);
 
-    it("still ships the build and style-editor code in the dev target", async () => {
+    it("ships the maintainer style editor only in the dev target", async () => {
         // The dev host's own set: everything in DESKTOP_ONLY except the three
         // rows that name the *desktop* host, which the dev target must not have
         // either — one alias picks exactly one host.
@@ -153,9 +127,7 @@ describe("bundle split", () => {
             .filter(([, re]) => !modules.some((id) => re.test(id)))
             .map(([what]) => what);
         expect(missing).toEqual([]);
-        // …and not to the dev server's, which is the failure this catches: both
-        // hosts can build, so a wrong alias produces an app that looks right and
-        // POSTs to a localhost that isn't there.
+        // …and not to the maintainer dev server.
         expect(modules.some((id) => /\/src\/lib\/api\/client\.ts$/.test(id))).toBe(false);
     }, 180_000);
 });

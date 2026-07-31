@@ -17,7 +17,7 @@
 //!                       regions/<a>/…/{region.json, boundary.poly}
 //!                       schema.json, skins/<id>.json
 //!                                     │
-//!                                     ▼   obc-pack catalog --v2
+//!                                     ▼   obc-pack catalog
 //!                            catalog.json + satellites
 //! ```
 //!
@@ -34,7 +34,7 @@
 //! > intersects the cell's square.
 //!
 //! and then cuts each cell exactly once, from an ingest of exactly that source set.
-//! `obc-bake bake --cells europe/germany europe/switzerland` therefore runs three cut
+//! `obc-bake bake europe/germany europe/switzerland` therefore runs three cut
 //! plans — Germany-only cells, Switzerland-only cells, and the border cells both
 //! touch, cut from **both** extracts together so the seam is complete in one file.
 //!
@@ -46,7 +46,7 @@
 //!   plans themselves are keyed by the sorted source set and executed in that order.
 //! - **It never writes a cell twice.** One (band, i, j) is one path, and exactly one
 //!   plan owns it, so the "canonical *and* partial for the same id" state
-//!   `OBCC_Spec.md` §11.6 forbids cannot arise from a single run.
+//!   `OBCC_Spec.md` §8 forbids cannot arise from a single run.
 //! - **It cannot silently downgrade.** Across runs it can: baking Switzerland alone
 //!   after a DE+CH bake would re-cut a border cell from one source. [`install_cell`]
 //!   refuses that — a canonical cell on disk is never replaced by a partial one — which
@@ -61,7 +61,7 @@
 //!
 //! # What "unchanged" means
 //!
-//! The same two keys [`crate::bake`] uses, for the same reasons, at cell granularity.
+//! The skip state uses two keys, for different reasons, at cell granularity.
 //! The **pack key** hashes everything that can move a byte — recipe version, OBCM
 //! version, schema config and revision, the band table, the cutter's own description,
 //! the plan's crop, and the sorted `(extract id, extract SHA-256)` pairs of the source
@@ -87,7 +87,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use obc_pack::catalog::v2::CellSource;
+use obc_pack::catalog::CellSource;
 use obc_pack::cut::{CellArtifact, CutOptions, CutSummary, SourceExtent};
 use obc_pack::grid::{BandTable, CellId};
 use obc_pack::ingest::Bbox;
@@ -140,7 +140,7 @@ pub trait CellCutter: Sync {
 }
 
 /// The real thing: `obc_pack::cut::cut`, linked in rather than spawned, for the same
-/// reasons [`crate::bake::ObcPacker`] links the pipeline.
+/// reasons the bakery links the pipeline directly.
 pub struct ObcCutter {
     /// Skip land generation (a ~950 MB dataset a real bake wants and no test does).
     pub no_land: bool,
@@ -189,8 +189,8 @@ pub struct CellBakeOptions {
     pub schema_revision: u32,
 }
 
-/// The facts a cell's bytes cannot state (`OBCC_Spec.md` §11.6). Written beside the
-/// artifact, read by the v2 catalog generator, and never re-derived afterwards.
+/// The facts a cell's bytes cannot state (`OBCC_Spec.md` §8). Written beside the
+/// artifact, read by the catalog generator, and never re-derived afterwards.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct CellSidecar {
     schema_revision: u32,
@@ -441,11 +441,11 @@ struct Plan {
 pub struct CellBakery<'a> {
     pub regions: &'a [Region],
     /// The packer config the cells are baked with — the schema, in `OBCC_Spec.md`
-    /// §11.3's sense. Its style-id assignment is baked into every chunk.
+    /// §4's sense. Its style-id assignment is baked into every chunk.
     pub schema: &'a StyleDoc,
     /// The skins published beside it. Each must style exactly the schema's feature
     /// types with exactly the schema's ids; [`CellBakery::run`] proves that before it
-    /// cuts anything, and the v2 generator proves it again on the finished tree.
+    /// cuts anything, and the catalog generator proves it again on the finished tree.
     pub skins: &'a [&'a StyleDoc],
     pub source: &'a dyn ExtractSource,
     pub cutter: &'a dyn CellCutter,
@@ -453,7 +453,7 @@ pub struct CellBakery<'a> {
 }
 
 impl CellBakery<'_> {
-    /// Bake every named region's cells, then write the tree the v2 catalog generator
+    /// Bake every named region's cells, then write the tree the catalog generator
     /// walks.
     pub fn run(&self, progress: &Progress) -> Result<CellRunSummary, String> {
         self.opts.bands.validate(self.schema.config.lods.len())?;
@@ -537,8 +537,8 @@ impl CellBakery<'_> {
     /// Every skin must fit the schema — checked **before** the first extract is
     /// fetched.
     ///
-    /// The v2 generator makes the same check on the finished tree
-    /// ([`obc_pack::catalog::v2::check_skin`] is literally the same function), so this
+    /// The catalog generator makes the same check on the finished tree
+    /// ([`obc_pack::catalog::check_skin`] is literally the same function), so this
     /// one buys nothing but the moment it fails at: a run that publishes a skin the
     /// generator will refuse has otherwise spent hours cutting cells first, and ends
     /// with a tree that has no catalog. A skin that does not fit is never a small
@@ -550,8 +550,8 @@ impl CellBakery<'_> {
             // presentation only? That is a question about the *text*, because a config
             // cannot tell an absent `lods` from one restating the defaults. Second:
             // does it style exactly the schema's feature types, with exactly its ids?
-            obc_pack::catalog::v2::check_skin_document(&skin.json, &skin.path.display().to_string())?;
-            obc_pack::catalog::v2::check_skin(&self.schema.config, &skin.config).map_err(|e| {
+            obc_pack::catalog::check_skin_document(&skin.json, &skin.path.display().to_string())?;
+            obc_pack::catalog::check_skin(&self.schema.config, &skin.config).map_err(|e| {
                 format!(
                     "skin `{}` ({}) is not a skin over schema `{}` ({}): {e}",
                     skin.id,
@@ -797,7 +797,7 @@ impl CellBakery<'_> {
 
     /// Verify a freshly cut cell and move it into the tree.
     ///
-    /// The order is the contract, exactly as [`crate::bake`]'s is: read the artifact
+    /// The order is the contract: read the artifact
     /// back with the **real reader** first, refuse to downgrade a canonical cell
     /// second, write the sidecar third, and rename last — so nothing unverified and
     /// nothing less covered than what is already published ever exists under a name
@@ -854,7 +854,7 @@ impl CellBakery<'_> {
         }
         write_json(&sidecar_path, sidecar)?;
         // A sidecar with no cell fails generation just as loudly as a cell with no
-        // sidecar (`OBCC_Spec.md` §11.6 rejects both), so a failed rename must not
+        // sidecar (`OBCC_Spec.md` §8 rejects both), so a failed rename must not
         // leave one behind. Dropping the state file too makes the next run re-cut
         // rather than trust a record of bytes that never landed.
         if let Err(e) = std::fs::rename(&src, &dest) {
@@ -886,7 +886,7 @@ impl CellBakery<'_> {
     ///
     /// The cell list is what the region **selects** and what exists: a cell the run
     /// failed to produce is dropped from the list and reported, rather than named in a
-    /// document the generator would then refuse whole (`OBCC_Spec.md` §11.7). Returns
+    /// document the generator would then refuse whole (`OBCC_Spec.md` §10). Returns
     /// whether the region's selection came out complete.
     fn write_region(&self, r: &Resolved, progress: &Progress) -> Result<bool, String> {
         let dir = r.region.segments().iter().fold(self.opts.out.join(REGIONS_DIR), |p, seg| p.join(seg));
@@ -927,7 +927,7 @@ impl CellBakery<'_> {
     /// `schema.json` is the packer config the cells were cut with, with a `_meta`
     /// block carrying the schema's id, revision and band table — one document rather
     /// than two, so the style-id assignment the catalog publishes and the one baked
-    /// into the chunks cannot disagree (`OBCC_Spec.md` §11.3).
+    /// into the chunks cannot disagree (`OBCC_Spec.md` §4).
     ///
     /// The id is **checked**, not written. `--schema-id` and the document's own
     /// `_meta.id` are two statements of one fact, and overwriting the document with
