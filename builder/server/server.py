@@ -12,7 +12,9 @@ from . import geofabrik, jobs, paths
 
 PROJECT_ROOT = paths.BUILDER_ROOT
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
-# Shipped style presets: complete packer configs + a _meta block, default first.
+# The shipped style documents. Since #1036 this directory is one schema.json (a
+# complete packer config + a _meta block) plus a skins/ subdirectory; only the schema
+# can be handed to the packer, so only the top level is listed.
 PRESETS_DIR = os.path.join(PROJECT_ROOT, "presets")
 # user_config.json: the retired editor's server-side persistence. Served once
 # via /api/config/legacy so the new app can offer a one-shot import.
@@ -80,8 +82,11 @@ def get_palette():
 
 @app.get("/api/presets")
 def get_presets():
-    """List the shipped style presets, default first. Each entry carries the
-    _meta fields plus the bare packer config (directly submittable / CLI-usable)."""
+    """List the shipped, bakeable style documents — since #1036 the one schema.
+    Each entry carries the _meta fields plus the bare packer config (directly
+    submittable / CLI-usable). Skins live in presets/skins/ and are deliberately
+    absent: a skin is presentation stamped onto already-baked bytes and carries no
+    LOD ladder, so it is not something this endpoint's consumer can build with."""
     presets = []
     for fn in sorted(os.listdir(PRESETS_DIR)):
         if not fn.endswith(".json"):
@@ -99,7 +104,7 @@ def get_presets():
             "swatch": meta.get("swatch", []),
             "config": data,
         })
-    presets.sort(key=lambda p: (p["id"] != "default", p["name"]))
+    presets.sort(key=lambda p: p["name"])
     return JSONResponse(presets)
 
 

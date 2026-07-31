@@ -431,7 +431,7 @@ mod tests {
     #[ignore = "needs a cached monaco extract, the Geofabrik index and the land dataset"]
     fn the_app_and_the_cli_produce_the_same_bytes() {
         let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let preset = repo.join("builder/presets/default.json");
+        let preset = repo.join("builder/presets/schema.json");
         let out_dir = std::env::temp_dir().join(format!("obc-desktop-parity-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&out_dir);
 
@@ -498,7 +498,7 @@ mod tests {
 
         // Start from the preset, as the editor does: picking one *copies* it, and
         // everything after is an edit to that copy.
-        let preset = repo.join("builder/presets/default.json");
+        let preset = repo.join("builder/presets/schema.json");
         let mut config: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&preset).expect("preset")).expect("preset json");
         edit_like_the_editor(&mut config);
@@ -688,7 +688,7 @@ mod tests {
     #[ignore = "needs a cached extract, the Geofabrik index and the land dataset; run with --release"]
     fn cancelling_actually_stops_the_work() {
         let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let preset = repo.join("builder/presets/default.json");
+        let preset = repo.join("builder/presets/schema.json");
         let config: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&preset).expect("preset")).expect("preset json");
 

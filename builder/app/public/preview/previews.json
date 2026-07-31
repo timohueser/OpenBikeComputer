@@ -10,18 +10,11 @@
   },
   "maps": [
     {
-      "preset_id": "default",
+      "preset_id": "bikepacking",
       "preset_version": 4,
-      "file": "default.obcm",
+      "file": "bikepacking.obcm",
       "bytes": 292520,
       "sha256": "7739cab360b35bf86f40532dbd940b5bf2ed6b385cdb4a78997c3775c18a7663"
-    },
-    {
-      "preset_id": "high-detail",
-      "preset_version": 3,
-      "file": "high-detail.obcm",
-      "bytes": 206761,
-      "sha256": "8de0486df161ec392297b56c9f07624f7abf8dd8545bd68510e007ee94fbe549"
     }
   ]
 }

@@ -2,10 +2,10 @@
 //!
 //! ```text
 //! obc-bake regions [--regions FILE]
-//! obc-bake bake --out TREE [--regions FILE] [--presets-dir DIR] [--preset ID]… [--region ID]…
+//! obc-bake bake --out TREE [--regions FILE] [--presets-dir DIR] [--region ID]…
 //!               [--source BASE] [--cache DIR] [--force] [--no-land] [--fail-fast]
 //!               [--summary-json FILE]
-//! obc-bake bake --cells --out TREE --base-url URL [REGION…] [--schema-preset ID] [--skin ID]…
+//! obc-bake bake --cells --out TREE --base-url URL [REGION…] [--skin ID]…
 //!               [--schema-revision N] [--bands FILE] [flags as above]
 //! obc-bake publish TREE --base-url URL [--v2] [--target dir:PATH|r2] [--generated-at TS] [--dry-run]
 //! obc-bake verify TREE [--sample N]
@@ -19,7 +19,7 @@
 //!
 //! `--cells` selects the cell path (#1016 P2): the same curated regions, resolved to
 //! grid cells and published as an `OBCC_Spec.md` §11 catalog rather than as one
-//! artifact per (region × preset). It is a flag rather than a separate command
+//! whole-region artifact apiece. It is a flag rather than a separate command
 //! because the scoping — which regions, from which source, with which cache — is
 //! identical, and because the two paths will overlap for exactly as long as the
 //! migration does.
@@ -38,24 +38,23 @@ usage:
       List the curated regions this binary would bake.
 
   obc-bake bake --out TREE [flags]
-      Bake (region × preset) into a tree `obc-pack catalog` accepts.
+      Bake one whole-region artifact per region, against the one schema, into a
+      tree `obc-pack catalog` accepts (the v1 path, kept for the migration).
         --cells              bake GRID CELLS instead (OBCA/OBCC v2, epic #1016):
                              regions become selections, cells become the artifacts.
                              Regions may be named positionally, e.g.
                                obc-bake bake --cells --out t --base-url U \\
                                  europe/germany europe/switzerland
                              --base-url URL      required: where the tree is published
-                             --schema-preset ID  the config the cells are cut with
-                                                 (default: default)
                              --schema-id ID      the published schema id (bikepacking)
                              --schema-revision N the store's revision (default: 1)
                              --bands FILE        the band table (default: OBCA §1.5 v1)
                              --skin ID           a skin to publish (repeatable;
-                                                 default: the schema preset)
+                                                 default: every skin in skins/)
                              --generated-at TS   pin the catalog's generated_at
         --regions FILE       region list (default: the built-in curated list)
-        --presets-dir DIR    style presets (default: builder/presets)
-        --preset ID          bake only this preset (repeatable)
+        --presets-dir DIR    the style documents: `schema.json` + `skins/<id>.json`
+                             (default: builder/presets)
         --region ID          bake only this region (repeatable)
         --source BASE        extract source: an https:// base, or a local directory
                              (default: https://download.geofabrik.de)
@@ -157,8 +156,7 @@ fn run_regions(args: &[String]) -> Result<(), String> {
     let (flags, _) = Flags::parse(args, &[])?;
     let regions = obc_bake::regions::load(flags.get("regions").map(Path::new))?;
     for region in &regions {
-        let presets = region.presets.as_ref().map_or_else(|| "all presets".to_string(), |p| p.join(", "));
-        println!("{:<44} {:<28} {presets}", region.id, region.name);
+        println!("{:<44} {}", region.id, region.name);
     }
     println!("\n{} regions", regions.len());
     Ok(())
@@ -188,11 +186,20 @@ fn run_bake(args: &[String]) -> Result<(), String> {
     };
 
     let presets_dir = PathBuf::from(flags.get("presets-dir").unwrap_or("builder/presets"));
+    // Both retired flags are refused **before** the path split, because both paths used
+    // to accept one of them and a caller that keeps passing one would otherwise get a
+    // bake of *something else* with no hint that its flag stopped meaning anything:
+    // `--preset <id>` picked from the v1 preset shelf, and `--schema-preset <id>` (the
+    // #1025 cell-path spelling) picked which shelf entry was the schema. Neither has an
+    // answer any more — there is one schema, and a look is a skin stamped at assembly
+    // time — so both are an error rather than a no-op, on `--cells` as much as on v1.
+    check_retired_style_flags(&flags)?;
     if flags.has("cells") {
         return run_cell_bake(&flags, out, regions, &presets_dir);
     }
-    let only = flags.all("preset");
-    let presets = obc_bake::presets::load(&presets_dir, (!only.is_empty()).then_some(&only))?;
+    // One document, one artifact per region: the schema is the only style document
+    // that can pack anything (a skin has no ladder and no routing table).
+    let presets = vec![obc_bake::presets::load_schema(&presets_dir)?];
 
     let cache = flags.get("cache").map(PathBuf::from).unwrap_or_else(default_cache_dir);
     let source_spec = flags.get("source").unwrap_or(obc_bake::source::GeofabrikExtracts::DEFAULT_BASE_URL);
@@ -232,6 +239,27 @@ fn run_bake(args: &[String]) -> Result<(), String> {
     }
 }
 
+/// Refuse the two style-selection flags the schema/skin split retired (#1036).
+///
+/// Named separately from the flag walk so the two paths cannot drift apart again: a
+/// guard that lives inside one branch is a guard the other branch does not have.
+fn check_retired_style_flags(flags: &Flags) -> Result<(), String> {
+    for (flag, was) in
+        [("preset", "picked one of the shipped style presets"), ("schema-preset", "picked which preset was the schema")]
+    {
+        if !flags.all(flag).is_empty() {
+            return Err(format!(
+                "`--{flag}` retired with the preset shelf (#1036): it {was}, and there is now exactly one schema \
+                 (`<presets-dir>/{}`) plus a set of skins in `<presets-dir>/{}/`. Drop the flag; on the cell path \
+                 pick a look with `--skin ID` instead.",
+                obc_bake::presets::SCHEMA_DOC,
+                obc_bake::presets::SKINS_DIR,
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// `obc-bake bake --cells …` — the cell path (#1016 P2).
 ///
 /// Everything up to here is shared with the v1 matrix bake (which regions, from where,
@@ -249,21 +277,13 @@ fn run_cell_bake(
     let base_url = flags.get("base-url").ok_or_else(|| {
         format!("bake --cells needs --base-url URL — every cell's `url` is it plus the cell's path\n\n{USAGE}")
     })?;
-    let schema_preset = flags.get("schema-preset").unwrap_or("default").to_string();
-    let mut skin_ids = flags.all("skin");
-    if skin_ids.is_empty() {
-        skin_ids.push(schema_preset.clone());
-    }
-    let mut wanted = skin_ids.clone();
-    if !wanted.contains(&schema_preset) {
-        wanted.push(schema_preset.clone());
-    }
-    let presets = obc_bake::presets::load(presets_dir, Some(&wanted))?;
-    let schema = presets
-        .iter()
-        .find(|p| p.id == schema_preset)
-        .ok_or_else(|| format!("no preset named `{schema_preset}` in {}", presets_dir.display()))?;
-    let skins: Vec<&obc_bake::presets::Preset> = presets.iter().filter(|p| skin_ids.contains(&p.id)).collect();
+    let schema = obc_bake::presets::load_schema(presets_dir)?;
+    let skin_ids = flags.all("skin");
+    // Default: every skin in the directory. A hosted catalog's whole point is that the
+    // skins are free — publishing a subset by accident is the mistake worth avoiding,
+    // not publishing one too many.
+    let loaded = obc_bake::presets::load_skins(presets_dir, (!skin_ids.is_empty()).then_some(&skin_ids))?;
+    let skins: Vec<&obc_bake::presets::StyleDoc> = loaded.iter().collect();
 
     let bands = match flags.get("bands") {
         Some(path) => obc_pack::grid::BandTable::load(path)?,
@@ -287,7 +307,7 @@ fn run_cell_bake(
 
     let bakery = obc_bake::cells::CellBakery {
         regions: &regions,
-        schema,
+        schema: &schema,
         skins: &skins,
         source: source.as_ref(),
         cutter: &cutter,

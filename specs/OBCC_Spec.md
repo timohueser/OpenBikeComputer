@@ -427,7 +427,8 @@ twice over one tree is byte-identical.
 - The OBCM header the version and bbox are read from:
   [`OBCM_Spec.md` §1](OBCM_Spec.md); its code authority
   [`firmware/obc-formats/src/obcm.rs`](../firmware/obc-formats/src/obcm.rs)
-- The shipped style presets: [`builder/presets/`](../builder/presets)
+- The shipped style documents — the one schema of §11.3 and the skins of §11.4:
+  [`builder/presets/`](../builder/presets)
 - The cell grid, assembly contract, and volume sets the `schema_version 2` catalog of §11
   publishes: [`OBCA_Spec.md`](OBCA_Spec.md)
 

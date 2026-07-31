@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use obc_bake::bake::{BakeOptions, Bakery, JobStatus, ObcPacker, Packer, RunSummary};
-use obc_bake::presets::Preset;
+use obc_bake::presets::StyleDoc;
 use obc_bake::regions::Region;
 use obc_bake::source::LocalExtracts;
 use obc_pack::catalog::CatalogOptions;
@@ -48,11 +48,11 @@ fn extract_root(dir: &Path) -> PathBuf {
     root
 }
 
-/// A presets directory holding one real shipped preset, copied so a test can edit it.
-fn presets_dir(dir: &Path, preset: &str) -> PathBuf {
+/// A style directory holding the real shipped schema, copied so a test can edit it.
+fn presets_dir(dir: &Path) -> PathBuf {
     let out = dir.join("presets-src");
     std::fs::create_dir_all(&out).unwrap();
-    std::fs::copy(repo(&format!("builder/presets/{preset}.json")), out.join(format!("{preset}.json"))).unwrap();
+    std::fs::copy(repo("builder/presets/schema.json"), out.join(obc_bake::presets::SCHEMA_DOC)).unwrap();
     out
 }
 
@@ -73,7 +73,7 @@ impl Packer for FixturePacker {
         "fixture-copy".into()
     }
 
-    fn pack(&self, _pbf: &Path, _preset: &Preset, out: &Path, _p: &Progress) -> Result<u64, String> {
+    fn pack(&self, _pbf: &Path, _preset: &StyleDoc, out: &Path, _p: &Progress) -> Result<u64, String> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         std::fs::copy(&self.source, out).map_err(|e| e.to_string())
     }
@@ -92,7 +92,7 @@ impl Packer for CorruptingPacker {
         "fixture-copy-with-one-corrupt".into()
     }
 
-    fn pack(&self, pbf: &Path, preset: &Preset, out: &Path, p: &Progress) -> Result<u64, String> {
+    fn pack(&self, pbf: &Path, preset: &StyleDoc, out: &Path, p: &Progress) -> Result<u64, String> {
         self.good.pack(pbf, preset, out, p)?;
         if out.to_string_lossy().contains(self.corrupt_region) {
             // Keep the header, wreck everything after it: the file still "is" an
@@ -110,15 +110,15 @@ impl Packer for CorruptingPacker {
 struct Fixture {
     dir: PathBuf,
     regions: Vec<Region>,
-    presets: Vec<Preset>,
+    presets: Vec<StyleDoc>,
     source: LocalExtracts,
     tree: PathBuf,
 }
 
-fn fixture(name: &str, preset: &str) -> Fixture {
+fn fixture(name: &str) -> Fixture {
     let dir = scratch(name);
     let source = LocalExtracts::new(extract_root(&dir)).with_snapshot(SNAPSHOT);
-    let presets = obc_bake::presets::load(&presets_dir(&dir, preset), None).expect("preset loads");
+    let presets = vec![obc_bake::presets::load_schema(&presets_dir(&dir)).expect("the schema loads")];
     let regions = obc_bake::regions::parse(regions_toml()).expect("region list parses");
     let tree = dir.join("tree");
     Fixture { dir, regions, presets, source, tree }
@@ -177,7 +177,7 @@ impl Drop for Fixture {
 
 #[test]
 fn a_real_pack_lands_in_a_tree_the_catalog_generator_accepts() {
-    let f = fixture("real", "default");
+    let f = fixture("real");
     // The real pipeline, exactly as the CLI runs it. `no_land` because land
     // generation is a ~950 MB download, and nothing here is about land.
     let summary = f.run(&ObcPacker { no_land: true, chunk_size: None }, false);
@@ -193,23 +193,23 @@ fn a_real_pack_lands_in_a_tree_the_catalog_generator_accepts() {
 
     let alpha = &generated.manifest.artifacts[0];
     assert_eq!(alpha.region_name, "Alpha", "the sidecar's name, recorded at bake time");
-    assert_eq!(alpha.preset_id, "default");
+    assert_eq!(alpha.preset_id, "bikepacking");
     assert_eq!(alpha.preset_version, f.presets[0].version, "recorded, not re-derived");
     assert_eq!(alpha.obcm_version, obc_formats::obcm::VERSION, "read out of the artifact's own header");
     assert_eq!(alpha.source_snapshot, SNAPSHOT);
-    assert_eq!(alpha.url, "https://maps.example/obc/regions/europe/alpha/default.obcm");
+    assert_eq!(alpha.url, "https://maps.example/obc/regions/europe/alpha/bikepacking.obcm");
     assert!(alpha.bytes > 0);
 
     // The bake state is local bookkeeping and stays out of the published tree — the
     // generator would refuse a stray file, so this is also what keeps it walkable.
-    let state = f.tree.join("regions/europe/alpha").join(obc_bake::bake::state_file_name("default"));
+    let state = f.tree.join("regions/europe/alpha").join(obc_bake::bake::state_file_name("bikepacking"));
     assert!(state.is_file(), "the state dotfile is written beside the artifact");
     assert!(generated.warnings.is_empty(), "{:?}", generated.warnings);
 }
 
 #[test]
 fn a_corrupted_artifact_fails_verification_and_never_reaches_the_manifest() {
-    let f = fixture("corrupt", "default");
+    let f = fixture("corrupt");
     let packer = CorruptingPacker { good: FixturePacker::new(), corrupt_region: "gamma" };
     let summary = f.run(&packer, false);
 
@@ -225,8 +225,8 @@ fn a_corrupted_artifact_fails_verification_and_never_reaches_the_manifest() {
 
     // The artifact was never installed — not a bad file in the tree, no file at all.
     let bad_dir = f.tree.join("regions/europe/beta/gamma");
-    assert!(!bad_dir.join("default.obcm").exists(), "a corrupt artifact must not exist under its real name");
-    assert!(!bad_dir.join("default.obcm.json").exists(), "and no sidecar advertising it");
+    assert!(!bad_dir.join("bikepacking.obcm").exists(), "a corrupt artifact must not exist under its real name");
+    assert!(!bad_dir.join("bikepacking.obcm.json").exists(), "and no sidecar advertising it");
     let leftovers: Vec<_> = std::fs::read_dir(&bad_dir)
         .map(|d| d.filter_map(Result::ok).map(|e| e.file_name().to_string_lossy().into_owned()).collect())
         .unwrap_or_default();
@@ -240,13 +240,13 @@ fn a_corrupted_artifact_fails_verification_and_never_reaches_the_manifest() {
 
 #[test]
 fn an_unchanged_rerun_skips_and_a_changed_preset_does_not() {
-    let f = fixture("idempotent", "default");
+    let f = fixture("idempotent");
     let packer = FixturePacker::new();
 
     let first = f.run(&packer, false);
     assert!(first.ok(), "{}", first.render());
     assert_eq!(packer.calls.load(Ordering::SeqCst), 2);
-    let artifact = f.tree.join("regions/europe/alpha/default.obcm");
+    let artifact = f.tree.join("regions/europe/alpha/bikepacking.obcm");
     let (bytes, digest) = obc_bake::hash::file(&artifact).unwrap();
 
     // Same extract bytes, same preset bytes, same format version ⇒ no work, and the
@@ -263,22 +263,22 @@ fn an_unchanged_rerun_skips_and_a_changed_preset_does_not() {
     assert_eq!(packer.calls.load(Ordering::SeqCst), 4);
     assert!(forced.jobs.iter().all(|j| matches!(j.status, JobStatus::Baked { .. })));
 
-    // A restyle changes the preset bytes, so the key changes and everything re-bakes
-    // — which is the case a mtime-keyed cache would get wrong, since the artifact is
-    // newer than the config it is now out of date with.
-    let mut restyled = fixture("idempotent-restyle", "default");
+    // A real restyle changes what the packer reads, so the key changes and everything
+    // re-bakes — which is the case a mtime-keyed cache would get wrong, since the
+    // artifact is newer than the config it is now out of date with.
+    let mut restyled = fixture("idempotent-restyle");
     restyled.run(&packer, false);
     let before = packer.calls.load(Ordering::SeqCst);
     let config_path = restyled.presets[0].path.clone();
-    // Bump `_meta.version` from wherever it currently stands. Pinning the literal
-    // number couples the test to whichever preset ships today — the edit silently
-    // no-opped (and the test failed) when the fixture moved from a v2 preset to the
-    // v4 default.
     let mut cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+    // Recolour one feature type and bump the version with it, exactly as a restyle
+    // would. Editing the body rather than pinning a literal keeps the test off
+    // whichever schema ships today.
     let bumped = u32::try_from(cfg["_meta"]["version"].as_u64().unwrap() + 1).unwrap();
     cfg["_meta"]["version"] = bumped.into();
+    cfg["features"]["highway"]["primary"]["color"] = "0x0000".into();
     std::fs::write(&config_path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
-    restyled.presets = obc_bake::presets::load(config_path.parent().unwrap(), None).unwrap();
+    restyled.presets = vec![obc_bake::presets::load_schema(config_path.parent().unwrap()).unwrap()];
     let after_restyle = restyled.run(&packer, false);
     assert_eq!(packer.calls.load(Ordering::SeqCst), before + 2, "a restyle re-bakes its own artifacts");
     assert!(after_restyle.jobs.iter().all(|j| matches!(j.status, JobStatus::Baked { .. })));
@@ -289,16 +289,134 @@ fn an_unchanged_rerun_skips_and_a_changed_preset_does_not() {
     assert!(generated.manifest.artifacts.iter().all(|a| a.preset_version == bumped));
 }
 
+/// A style edit confined to `_meta` costs a sidecar rewrite, not a re-pack.
+///
+/// The bake key hashes the document's **body**, so metadata — the id, the display
+/// name, the description, the swatch, `version` — cannot invalidate an artifact whose
+/// bytes it demonstrably cannot change. This is the property #1036's own migration
+/// depends on: the shipped schema's `_meta` was rewritten wholesale (`default` →
+/// `bikepacking`) without one packer input moving, and keying on the file's text would
+/// have billed that rename as a full re-pack of every region on the live shelf.
+///
+/// The metadata is still not allowed to go stale. `_meta.version` is what a v1
+/// consumer reads to see a region is a restyle behind, so the run notices the drift
+/// and rewrites the four lines of JSON that carry it — the same treatment a renamed
+/// region and a re-dated extract already get.
+#[test]
+fn a_metadata_only_style_edit_refreshes_the_sidecar_without_repacking() {
+    let mut f = fixture("meta-only");
+    let packer = FixturePacker::new();
+    f.run(&packer, false);
+    let packed = packer.calls.load(Ordering::SeqCst);
+    let artifact = f.tree.join("regions/europe/alpha/bikepacking.obcm");
+    let before = obc_bake::hash::file(&artifact).unwrap();
+
+    let config_path = f.presets[0].path.clone();
+    let mut cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+    let bumped = u32::try_from(cfg["_meta"]["version"].as_u64().unwrap() + 1).unwrap();
+    cfg["_meta"]["version"] = bumped.into();
+    cfg["_meta"]["description"] = "A description nobody packs.".into();
+    std::fs::write(&config_path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
+    f.presets = vec![obc_bake::presets::load_schema(config_path.parent().unwrap()).unwrap()];
+
+    let summary = f.run(&packer, false);
+    assert!(summary.ok(), "{}", summary.render());
+    assert_eq!(packer.calls.load(Ordering::SeqCst), packed, "a `_meta` edit must not re-pack anything");
+    assert!(
+        summary.jobs.iter().all(|j| matches!(j.status, JobStatus::SidecarRefreshed { .. })),
+        "and it must not be a silent skip either — the published version moved: {}",
+        summary.render()
+    );
+    assert_eq!(obc_bake::hash::file(&artifact).unwrap(), before, "the artifact on disk is untouched");
+
+    // The catalog nevertheless publishes the new number, from both places §3 wants it.
+    let generated = f.manifest();
+    assert_eq!(generated.manifest.presets[0].version, bumped);
+    assert!(generated.manifest.artifacts.iter().all(|a| a.preset_version == bumped));
+}
+
+/// **The #1036 shelf migration, as a test.** Renaming the schema's `_meta.id` renames
+/// every file the v1 path names after it — and after the rename, an existing tree
+/// re-bakes *nothing*.
+///
+/// This is the property that decides whether the live shelf's migration costs a
+/// minute or twenty hours, so it is pinned rather than asserted in a runbook. Two
+/// things have to hold together and neither is sufficient alone:
+///
+/// 1. the bake key ignores `_meta`, so the id change does not invalidate the bytes
+///    ([`a_metadata_only_style_edit_refreshes_the_sidecar_without_repacking`]); and
+/// 2. the *state* file is found again, which it is not automatically — it is named
+///    `.<id>.bake.json`, so it moves with the id.
+///
+/// The rename below is exactly what the PR's runbook tells an operator to run, over
+/// the four names an id owns: the artifact, its sidecar, its state dotfile, and the
+/// tree's copy of the config. If this test needs a fifth line, so does the runbook.
+#[test]
+fn renaming_the_schemas_id_repacks_nothing_once_the_tree_is_renamed_with_it() {
+    let mut f = fixture("id-rename");
+    let packer = FixturePacker::new();
+    let config_path = f.presets[0].path.clone();
+    let set_id = |id: &str| {
+        let mut cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+        cfg["_meta"]["id"] = id.into();
+        std::fs::write(&config_path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
+        vec![obc_bake::presets::load_schema(config_path.parent().unwrap()).unwrap()]
+    };
+
+    // The shelf as it was: one preset named `default`.
+    f.presets = set_id("default");
+    f.run(&packer, false);
+    let packed = packer.calls.load(Ordering::SeqCst);
+    assert_eq!(packed, 2);
+    assert!(f.tree.join("regions/europe/alpha/default.obcm").is_file());
+    let before = obc_bake::hash::file(&f.tree.join("regions/europe/alpha/default.obcm")).unwrap();
+
+    // The rename, as the runbook spells it.
+    f.presets = set_id("bikepacking");
+    for region in ["regions/europe/alpha", "regions/europe/beta/gamma"] {
+        let dir = f.tree.join(region);
+        for (from, to) in [
+            ("default.obcm", "bikepacking.obcm"),
+            ("default.obcm.json", "bikepacking.obcm.json"),
+            (".default.bake.json", ".bikepacking.bake.json"),
+        ] {
+            std::fs::rename(dir.join(from), dir.join(to)).unwrap_or_else(|e| panic!("{region}/{from}: {e}"));
+        }
+    }
+    std::fs::rename(f.tree.join("presets/default.json"), f.tree.join("presets/bikepacking.json")).unwrap();
+
+    let summary = f.run(&packer, false);
+    assert!(summary.ok(), "{}", summary.render());
+    assert_eq!(
+        packer.calls.load(Ordering::SeqCst),
+        packed,
+        "the rename must cost a rename, not a re-pack: {}",
+        summary.render()
+    );
+    assert!(summary.jobs.iter().all(|j| matches!(j.status, JobStatus::Unchanged { .. })), "{}", summary.render());
+    assert_eq!(
+        obc_bake::hash::file(&f.tree.join("regions/europe/alpha/bikepacking.obcm")).unwrap(),
+        before,
+        "same bytes under the new name"
+    );
+
+    // And the renamed tree is one the generator accepts, under the new preset id.
+    let generated = f.manifest();
+    assert_eq!(generated.manifest.presets.len(), 1);
+    assert_eq!(generated.manifest.presets[0].id, "bikepacking");
+    assert!(generated.manifest.artifacts.iter().all(|a| a.preset_id == "bikepacking"));
+}
+
 #[test]
 fn an_artifact_that_rotted_on_disk_is_rebaked_even_though_its_inputs_did_not_change() {
-    let f = fixture("rot", "default");
+    let f = fixture("rot");
     let packer = FixturePacker::new();
     f.run(&packer, false);
     assert_eq!(packer.calls.load(Ordering::SeqCst), 2);
 
     // Truncate an artifact behind the runner's back: inputs unchanged, key unchanged,
     // recorded digest no longer matches what is there.
-    let artifact = f.tree.join("regions/europe/alpha/default.obcm");
+    let artifact = f.tree.join("regions/europe/alpha/bikepacking.obcm");
     let mut bytes = std::fs::read(&artifact).unwrap();
     bytes.truncate(bytes.len() / 2);
     std::fs::write(&artifact, &bytes).unwrap();
@@ -310,7 +428,7 @@ fn an_artifact_that_rotted_on_disk_is_rebaked_even_though_its_inputs_did_not_cha
 
 #[test]
 fn renaming_a_region_rewrites_the_sidecar_without_repacking_the_map() {
-    let mut f = fixture("rename", "default");
+    let mut f = fixture("rename");
     let packer = FixturePacker::new();
     f.run(&packer, false);
     assert_eq!(f.manifest().manifest.artifacts[0].region_name, "Alpha");
@@ -335,7 +453,7 @@ fn renaming_a_region_rewrites_the_sidecar_without_repacking_the_map() {
 fn a_redated_but_identical_extract_refreshes_the_sidecar_and_packs_nothing() {
     let dir = scratch("redate");
     let root = extract_root(&dir);
-    let presets = obc_bake::presets::load(&presets_dir(&dir, "default"), None).expect("preset loads");
+    let presets = vec![obc_bake::presets::load_schema(&presets_dir(&dir)).expect("the schema loads")];
     let regions = obc_bake::regions::parse(regions_toml()).expect("region list parses");
     let tree = dir.join("tree");
     let packer = FixturePacker::new();
@@ -382,7 +500,7 @@ fn a_redated_but_identical_extract_refreshes_the_sidecar_and_packs_nothing() {
 
 #[test]
 fn a_missing_extract_fails_the_whole_region_loudly() {
-    let f = fixture("missing-extract", "default");
+    let f = fixture("missing-extract");
     std::fs::remove_file(f.dir.join("extracts/europe/alpha-latest.osm.pbf")).unwrap();
     let summary = f.run(&FixturePacker::new(), false);
 

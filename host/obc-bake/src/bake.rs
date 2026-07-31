@@ -1,4 +1,6 @@
-//! The bake runner: (region × preset) → a tree `obc-pack catalog` accepts.
+//! The bake runner: one region, packed against the one schema, into a tree
+//! `obc-pack catalog` accepts. (It still loops over a list of style documents, which
+//! is what the v1 catalog's shape is — but since #1036 that list has one entry.)
 //!
 //! One job is: resolve the extract, decide whether anything changed, pack, **verify
 //! the artifact opens with the real reader**, and only then move it into the tree
@@ -57,7 +59,7 @@ use std::time::Instant;
 use obc_pack::progress::Progress;
 use serde::{Deserialize, Serialize};
 
-use crate::presets::Preset;
+use crate::presets::StyleDoc;
 use crate::regions::Region;
 use crate::source::ExtractSource;
 use crate::verify::Verified;
@@ -79,7 +81,7 @@ pub trait Packer: Sync {
     /// themselves differently must not reuse each other's artifacts.
     fn recipe(&self) -> String;
     /// Pack `pbf` into `out`, returning the bytes written.
-    fn pack(&self, pbf: &Path, preset: &Preset, out: &Path, progress: &Progress) -> Result<u64, String>;
+    fn pack(&self, pbf: &Path, preset: &StyleDoc, out: &Path, progress: &Progress) -> Result<u64, String>;
 }
 
 /// The real thing: `obc_pack::pipeline::pack`, linked in rather than spawned.
@@ -100,7 +102,7 @@ impl Packer for ObcPacker {
         format!("obc-pack no_land={} chunk_size={:?}", self.no_land, self.chunk_size)
     }
 
-    fn pack(&self, pbf: &Path, preset: &Preset, out: &Path, progress: &Progress) -> Result<u64, String> {
+    fn pack(&self, pbf: &Path, preset: &StyleDoc, out: &Path, progress: &Progress) -> Result<u64, String> {
         let opts = obc_pack::PackOptions {
             no_land: self.no_land,
             chunk_size: self.chunk_size,
@@ -148,6 +150,18 @@ struct BakeState {
     /// noticed without re-packing.
     region_name: String,
     source_snapshot: String,
+    /// The style document's `_meta.version` as last published. Recorded rather than
+    /// keyed, because it is metadata: it cannot move a byte of the artifact, but it
+    /// is what a v1 consumer reads to see that a region is a restyle behind, so it
+    /// must not silently keep the old number after the document is bumped.
+    ///
+    /// `default` so a state file written before this field existed still parses —
+    /// otherwise the very migration this exists to make cheap would begin by
+    /// invalidating every state file in the tree. Version `0` never occurs in a
+    /// real document, so an old state file reads as drift and costs one sidecar
+    /// rewrite.
+    #[serde(default)]
+    preset_version: u32,
 }
 
 /// The four facts the artifact's bytes cannot state (`OBCC_Spec.md` §8). Written by
@@ -311,7 +325,11 @@ fn human(bytes: u64) -> String {
 /// A configured run.
 pub struct Bakery<'a> {
     pub regions: &'a [Region],
-    pub presets: &'a [Preset],
+    /// The style documents this run bakes **whole maps** with. Since #1036 the shelf
+    /// holds exactly one such document — the schema — and a v1 artifact's `preset_id`
+    /// is its id; a skin is presentation over already-baked bytes and cannot pack
+    /// anything, so it never appears here.
+    pub presets: &'a [StyleDoc],
     pub source: &'a dyn ExtractSource,
     pub packer: &'a dyn Packer,
     pub opts: BakeOptions,
@@ -335,16 +353,12 @@ impl Bakery<'_> {
         let mut uncovered: Vec<String> = Vec::new();
 
         for region in self.regions {
-            let presets: Vec<&Preset> = self
-                .presets
-                .iter()
-                .filter(|p| region.presets.as_ref().is_none_or(|only| only.contains(&p.id)))
-                .collect();
+            let presets: Vec<&StyleDoc> = self.presets.iter().collect();
             if presets.is_empty() {
-                // Not a failure — the caller narrowed the matrix, or the region asks
-                // for a preset this run does not have — but never silent: "no preset
-                // applied" and "baked nothing" look identical in the tree afterwards.
-                progress.warn(format!("{}: no preset in this run applies — skipped", region.id));
+                // Not a failure — the caller narrowed the run to nothing — but never
+                // silent: "nothing applied" and "baked nothing" look identical in the
+                // tree afterwards.
+                progress.warn(format!("{}: no style document in this run applies — skipped", region.id));
                 continue;
             }
 
@@ -415,7 +429,7 @@ impl Bakery<'_> {
     fn run_job(
         &self,
         region: &Region,
-        preset: &Preset,
+        preset: &StyleDoc,
         extract: &crate::source::Extract,
         extract_sha: &str,
         progress: &Progress,
@@ -437,7 +451,7 @@ impl Bakery<'_> {
     fn bake_one(
         &self,
         region: &Region,
-        preset: &Preset,
+        preset: &StyleDoc,
         extract: &crate::source::Extract,
         extract_sha: &str,
         started: Instant,
@@ -456,7 +470,7 @@ impl Bakery<'_> {
                 // The bytes are current. The *sidecar* may not be: a region renamed in
                 // `regions.toml`, or a re-published extract with the same content and a
                 // new date, changes what the manifest says without changing the map.
-                let changed = sidecar_drift(&state, region, extract);
+                let changed = sidecar_drift(&state, region, extract, preset);
                 self.install_preset_config(preset)?;
                 if changed.is_empty() {
                     progress.log("    unchanged — skipping");
@@ -476,7 +490,12 @@ impl Bakery<'_> {
                 )?;
                 write_json(
                     &state_path,
-                    &BakeState { region_name: region.name.clone(), source_snapshot: extract.snapshot.clone(), ..state },
+                    &BakeState {
+                        region_name: region.name.clone(),
+                        source_snapshot: extract.snapshot.clone(),
+                        preset_version: preset.version,
+                        ..state
+                    },
                 )?;
                 return Ok(JobStatus::SidecarRefreshed { bytes: state.bytes, changed });
             }
@@ -521,6 +540,7 @@ impl Bakery<'_> {
                 built_at: built_at.clone(),
                 region_name: region.name.clone(),
                 source_snapshot: extract.snapshot.clone(),
+                preset_version: preset.version,
             },
         )?;
         self.install_preset_config(preset)?;
@@ -543,18 +563,21 @@ impl Bakery<'_> {
 
     /// Everything that can change the artifact's **bytes**, hashed into one key.
     ///
-    /// Deliberately *not* in here: the region's display name and the extract's
-    /// snapshot date. Neither can move a byte of the `.obcm` — they are sidecar
-    /// facts — and folding them in would mean a mirror that re-publishes a
-    /// byte-identical extract under a new date costs a twenty-hour re-pack, which
-    /// is precisely what keying on content instead of timestamps exists to avoid.
-    /// They are still not allowed to go stale: they are recorded in [`BakeState`]
-    /// and compared by [`sidecar_drift`], which rewrites the sidecar alone.
-    fn pack_key(&self, extract_sha: &str, preset: &Preset) -> String {
+    /// Deliberately *not* in here: the region's display name, the extract's snapshot
+    /// date, and the style document's `_meta` block (its id, name, description,
+    /// swatch and `version` — see [`crate::presets`]). None of them can move a byte
+    /// of the `.obcm` — they are sidecar and catalog facts — and folding them in
+    /// would mean a mirror that re-publishes a byte-identical extract under a new
+    /// date, or an editor who fixes a typo in a description, costs a twenty-hour
+    /// re-pack, which is precisely what keying on content instead of timestamps
+    /// exists to avoid. They are still not allowed to go stale: all three are
+    /// recorded in [`BakeState`] and compared by [`sidecar_drift`], which rewrites
+    /// the sidecar alone.
+    fn pack_key(&self, extract_sha: &str, preset: &StyleDoc) -> String {
         crate::hash::text(&format!(
             "recipe={RECIPE_VERSION}\nobcm={}\nextract={extract_sha}\npreset={}\npack={}\n",
             obc_formats::obcm::VERSION,
-            preset.sha256,
+            preset.body_sha256,
             self.packer.recipe(),
         ))
     }
@@ -563,7 +586,7 @@ impl Bakery<'_> {
     /// catalog's description of the preset *as it is now* (§8). Written only for
     /// presets that have an artifact, so a preset whose every job failed does not
     /// make the whole catalog unpublishable ("a preset nobody built").
-    fn install_preset_config(&self, preset: &Preset) -> Result<(), String> {
+    fn install_preset_config(&self, preset: &StyleDoc) -> Result<(), String> {
         let dir = self.opts.out.join("presets");
         std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let dest = dir.join(format!("{}.json", preset.id));
@@ -592,13 +615,21 @@ fn reusable(state_path: &Path, artifact: &Path, sidecar: &Path, pack_key: &str) 
 /// Which sidecar facts the run disagrees with the recording about.
 ///
 /// Empty means the published catalog would say exactly what it already says.
-fn sidecar_drift(state: &BakeState, region: &Region, extract: &crate::source::Extract) -> Vec<String> {
+fn sidecar_drift(
+    state: &BakeState,
+    region: &Region,
+    extract: &crate::source::Extract,
+    preset: &StyleDoc,
+) -> Vec<String> {
     let mut changed = Vec::new();
     if state.region_name != region.name {
         changed.push(format!("region_name `{}` → `{}`", state.region_name, region.name));
     }
     if state.source_snapshot != extract.snapshot {
         changed.push(format!("source_snapshot {} → {}", state.source_snapshot, extract.snapshot));
+    }
+    if state.preset_version != preset.version {
+        changed.push(format!("preset_version {} → {}", state.preset_version, preset.version));
     }
     changed
 }
