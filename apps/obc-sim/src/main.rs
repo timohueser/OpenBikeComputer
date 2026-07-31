@@ -12,11 +12,10 @@ use std::time::Instant;
 
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
 use obc_app::{App, AppState, TrackAction};
-use obc_formats::io::ByteSource;
 use obc_ports::{
     Button, ButtonEvent, Fix, InputClock, InputEvent, InputSource, LocationSource, TrackError, TrackPoint, TrackSink,
 };
-use obc_reader::{rgb565_to_device64, rgb565_to_rgb888, MapCache, MapTables, Reader};
+use obc_reader::{rgb565_to_device64, rgb565_to_rgb888, Reader};
 use obc_render::text::{draw_text, Font, TextAlign};
 
 mod calib;
@@ -1001,31 +1000,19 @@ fn main() {
         std::process::exit(1);
     });
 
-    // Validate + log once up front; the borrows end with this block so `map` can move
-    // into the GUI (which rebuilds the cheap `Reader` / `MountedSet` view per frame).
+    // Parse the core's tables and mount the set **once**, here, for the process lifetime — the
+    // shape the device uses (mount at boot, hold for the session), not a per-frame rebuild. §5.4
+    // admits no partial mount: a set that does not validate whole is refused before a single frame
+    // renders, and the sim exits non-zero saying which shard and why.
+    let map = map_set::LoadedMap::open(map).unwrap_or_else(|e| {
+        eprintln!("{e}");
+        std::process::exit(1);
+    });
     {
-        let cache = MapCache::new();
-        let sources = map.sources();
-        let refs: Vec<&dyn ByteSource> = sources.iter().map(|s| s as &dyn ByteSource).collect();
-        let tables = MapTables::parse(&sources[map.core_index()]).unwrap_or_else(|e| {
-            eprintln!("invalid OBCM file: {e:?}");
-            std::process::exit(1);
-        });
-        // §5.4 admits no partial mount: a set that does not validate whole is refused *here*,
-        // before a single frame renders, and the sim exits non-zero saying which shard and why.
-        let mounted = map.manifest().map(|_| {
-            map.mount(&refs, &tables, &cache).unwrap_or_else(|e| {
-                eprintln!("{e}");
-                std::process::exit(1);
-            })
-        });
-        if let Some(set) = &mounted {
-            eprintln!("{}", map.describe_set(set));
+        if let Some(set) = map.set() {
+            eprintln!("{}", map.source.describe_set(set));
         }
-        let reader = match &mounted {
-            Some(set) => set.core_reader(),
-            None => Reader::new(&sources[0], &tables, &cache),
-        };
+        let reader = map.reader();
         eprintln!(
             "OBCM v{} | bbox {:?} | {} LODs | {} styles",
             reader.version,
@@ -1043,20 +1030,13 @@ fn main() {
 
     // Headless mode: render one frame through the shared app, save PNG, exit.
     if let Some(path) = &args.png {
-        let cache = MapCache::new();
-        let sources = map.sources();
-        let refs: Vec<&dyn ByteSource> = sources.iter().map(|s| s as &dyn ByteSource).collect();
-        let tables = MapTables::parse(&sources[map.core_index()]).expect("validated above");
-        let mounted = map.manifest().map(|_| map.mount(&refs, &tables, &cache).expect("mounted above"));
+        let tables = map.tables();
         // Nav, POI, hours and routing read the **core** shard and only it (§5.1) — never a
         // geometry shard — so this is the reader the whole app path gets, set or not.
-        let reader = match &mounted {
-            Some(set) => set.core_reader(),
-            None => Reader::new(&sources[0], &tables, &cache),
-        };
+        let reader = map.reader();
         // The set's map plane needs a renderer of its own (see `map_set::SetPlane`); a single map
         // draws entirely through the app's, so it pays nothing.
-        let mut set_renderer = mounted.as_ref().map(|_| Box::new(obc_render::MapRenderer::new()));
+        let mut set_renderer = map.set().map(|_| Box::new(obc_render::MapRenderer::new()));
         let (mut cx, mut cy, mut zoom) = initial_camera(&reader, args.width);
         if let Some((lon, lat)) = args.center {
             cx = lon;
@@ -1176,7 +1156,7 @@ fn main() {
         // is answered after the script (below), mirroring the on-entry FAT scan seam.
         app.set_fw_version(env!("CARGO_PKG_VERSION"));
         // A set lists as **one** map under its manifest's display name (§5.4), never as its shards.
-        let map_name = map.display_name();
+        let map_name = map.source.display_name();
         app.set_map_info(&map_name, tables.version);
         // Load the routes folder so the Route menu has real entries and a picked route
         // can be drawn.
@@ -1531,7 +1511,7 @@ fn main() {
         // Time the whole frame draw into `render_us` (the no_std renderer has no clock, so
         // the host fills it) — same field the live panel shows.
         let t0 = Instant::now();
-        let set = mounted.as_ref().zip(set_renderer.as_mut()).map(|(set, r)| (set, &mut **r));
+        let set = map.set().zip(set_renderer.as_mut()).map(|(set, r)| (set, &mut **r));
         let scene = map_set::Scene { set, reader: &reader, route: route.as_ref() };
         let mut stats = map_set::render_frame(&mut app, &mut fb, scene, (args.width as f32, args.height as f32), |c| {
             color_of(c, tc)
