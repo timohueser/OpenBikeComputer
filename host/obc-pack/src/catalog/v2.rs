@@ -952,7 +952,10 @@ fn style_assignment(config: &Config, path: &Path) -> Result<(Vec<StyleAssignment
     let mut by_id: BTreeMap<u8, String> = BTreeMap::new();
     for (feature_type, &id) in &by_type {
         if let Some(other) = by_id.insert(id, feature_type.clone()) {
-            return Err(format!("{}: style id {id} is assigned to both `{other}` and `{feature_type}`", path.display()));
+            return Err(format!(
+                "{}: style id {id} is assigned to both `{other}` and `{feature_type}`",
+                path.display()
+            ));
         }
     }
     let styles = by_id.into_iter().map(|(id, feature_type)| StyleAssignment { id, feature_type }).collect();
@@ -1017,8 +1020,7 @@ const SKIN_STYLE_KEYS: &[&str] = &["color", "color2", "weight", "z_index", "prio
 /// `min_lod` is in the list for the same reason `lods` is: it decides the level a
 /// feature is first written at, which is a decision already baked into every cell.
 pub fn check_skin_document(json: &str, at: &str) -> Result<(), String> {
-    let doc: serde_json::Value =
-        serde_json::from_str(json).map_err(|e| format!("{at}: {e}"))?;
+    let doc: serde_json::Value = serde_json::from_str(json).map_err(|e| format!("{at}: {e}"))?;
     let obj = doc.as_object().ok_or_else(|| format!("{at}: a skin document is a JSON object"))?;
 
     let mut offenders: Vec<String> = obj
