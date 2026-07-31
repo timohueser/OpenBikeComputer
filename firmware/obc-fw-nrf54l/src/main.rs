@@ -213,7 +213,7 @@ use obc_app::InputPlane;
 use obc_app::{App, AppState};
 use obc_display::ls021::{RowDiff, FRAME_H, FRAME_W};
 use obc_platform::ButtonInput;
-use obc_reader::{ByteSource, MapCache, MapTables, MountedSet};
+use obc_reader::{MapCache, MapTables, MountedSet};
 use obc_render::zoom_for_mpp;
 // The decoded-route-geometry cache — resident in `.bss`, handed to the ride loop.
 use obc_route::RouteCache;
@@ -284,9 +284,10 @@ bind_interrupts!(struct SensorIrqs {
 //                  earlier by-value `RouteIndex::read` build put the ~6.7 KB on the stack at the ride
 //                  pass's deepest point, and the post-upload rescan's rebuild overflowed the main
 //                  stack the moment `.bss` crept 216 B (STKOF HardFault, 2026-07-12).
-//   - volume set   caller-placed `SetShards<11>`, one FAT extent table/source per possible shard,
-//                  and the parsed manifest. These remain resident even for a single-file map so a
-//                  later refactor cannot silently move the cost into the async task frame.
+//   - volume set   caller-placed `SetShards<11>` and one FAT extent table/source per possible
+//                  shard. These remain resident even for a single-file map so a later refactor
+//                  cannot silently move the cost into the async task frame. The parsed manifest is
+//                  mount-time-only and is dropped in a synchronous helper before the next await.
 // plus `STACK_RESERVE` headroom for the main stack + embassy's executor/task arenas. The stack must
 // also absorb a per-redraw `Reader::new` (the OBCM style table → a ~2.4 KB `Reader` value built as a
 // stack temporary, plus its own ~4 KB read scratch): the ride loop rebuilds it each frame, so the
@@ -325,11 +326,9 @@ const MAP_RESIDENT: usize = core::mem::size_of::<obc_app::App>()
     + SET_RESIDENT
     + NAV_RESIDENT;
 /// Device-native volume-set residents (#1033): the mount records are caller-placed here, while
-/// `sd.rs` owns the board-private direct-read tables/sources and parsed manifest.
-const SET_RESIDENT: usize = core::mem::size_of::<sd::SetShardStore>()
-    + sd::SET_EXTENT_TABLES_BYTES
-    + sd::SET_SOURCES_BYTES
-    + sd::SET_MANIFEST_BYTES;
+/// `sd.rs` owns the board-private direct-read tables/sources.
+const SET_RESIDENT: usize =
+    core::mem::size_of::<sd::SetShardStore>() + sd::SET_EXTENT_TABLES_BYTES + sd::SET_SOURCES_BYTES;
 /// The on-device router's residents (epic #116, R4): the fixed A* scratch + graph-tile cache
 /// (~14.3 KB, the `NAV_*` statics below). Zero on the `ble` build — `has_nav` gates the router
 /// out of the combined image because these two statics push its stack region ~1.9 KB below the
@@ -426,7 +425,7 @@ mod resource_report {
         entry("ble_sensor_manager", 0),
     ];
 
-    const ENTRIES: usize = 28;
+    const ENTRIES: usize = 27;
 
     #[used]
     #[no_mangle]
@@ -441,7 +440,6 @@ mod resource_report {
         entry("set_shards", core::mem::size_of::<sd::SetShardStore>()),
         entry("set_extent_tables", sd::SET_EXTENT_TABLES_BYTES),
         entry("set_sources", sd::SET_SOURCES_BYTES),
-        entry("set_manifest", sd::SET_MANIFEST_BYTES),
         entry("route_cache", core::mem::size_of::<RouteCache>()),
         entry("route_index", core::mem::size_of::<obc_route::RouteIndex>()),
         entry("renderer", core::mem::size_of::<obc_render::MapRenderer>()),
@@ -1184,32 +1182,20 @@ async fn main(_spawner: Spawner) {
         // handle remains owned by `Storage::open_set`; the large per-shard records go straight into
         // the caller-placed `SET_SHARDS` static. A single map leaves this `None` and keeps its
         // existing per-frame reader path.
-        let mounted_set: Option<MountedSet<'static>> = if let Some(manifest) = storage.set_manifest() {
-            let mut sources: heapless::Vec<&'static dyn ByteSource, { sd::SD_SET_MAX_SHARDS }> = heapless::Vec::new();
-            for index in 0..manifest.shard_count() {
-                let Some(source) = storage.set_source(index) else {
-                    defmt::error!("map: mounted-set source {=usize} vanished before mount", index);
-                    show_boot_fault(&mut display, obc_app::BootFault::BadMap).await;
-                    idle_blink(&mut led).await
-                };
-                let _ = sources.push(source);
+        // SAFETY: sole writer/borrower for the program lifetime. `mount_set` fills the static in
+        // place and returns only a small view over it; its parsed manifest remains in the
+        // synchronous helper's shallow frame rather than becoming part of this async task.
+        let store: &'static mut sd::SetShardStore = unsafe { &mut *core::ptr::addr_of_mut!(SET_SHARDS) };
+        let mounted_set: Option<MountedSet<'static>> = match storage.mount_set(store, map_tables, map_cache) {
+            Ok(set) => set,
+            Err(error) => {
+                defmt::error!(
+                    "map: volume set failed mount ({}) — showing MAP UNREADABLE",
+                    defmt::Debug2Format(&error)
+                );
+                show_boot_fault(&mut display, obc_app::BootFault::BadMap).await;
+                idle_blink(&mut led).await
             }
-            // SAFETY: sole writer/borrower for the program lifetime. `MountedSet::mount` fills the
-            // static in place and returns only a small view over it.
-            let store: &'static mut sd::SetShardStore = unsafe { &mut *core::ptr::addr_of_mut!(SET_SHARDS) };
-            match MountedSet::mount(store, manifest, sources.as_slice(), map_tables, map_cache) {
-                Ok(set) => Some(set),
-                Err(error) => {
-                    defmt::error!(
-                        "map: volume set failed mount ({}) — showing MAP UNREADABLE",
-                        defmt::Debug2Format(&error)
-                    );
-                    show_boot_fault(&mut display, obc_app::BootFault::BadMap).await;
-                    idle_blink(&mut led).await
-                }
-            }
-        } else {
-            None
         };
 
         // Boot to **Home**: the user drives Home → Route menu → Map with the buttons. Built **in place**
