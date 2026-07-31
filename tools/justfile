@@ -215,7 +215,7 @@ bake *args:
           prefix="${OBC_R2_PREFIX:-cell-catalog}"; prefix="${prefix#/}"; prefix="${prefix%/}"
           [[ -n "$prefix" ]] || { _err "OBC_R2_PREFIX may not be empty"; exit 1; }
           export OBC_R2_PREFIX="$prefix"
-          maps_base="https://maps.openbikecomputer.org/$prefix"
+          maps_base="https://maps.openbikecomputer.com/$prefix"
           _say "using production catalog base: $maps_base"
         fi
         export OBC_MAPS_BASE_URL="$maps_base"
