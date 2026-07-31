@@ -123,6 +123,7 @@ number does not change.
 | `version` | integer | Skin content version. |
 | `marker_color` | integer | RGB565 position-marker color. |
 | `styles` | array | One presentation record per schema feature type. |
+| `preview` | object | Optional digest-pinned canonical rendering (§5.1). |
 
 A style record contains `feature_type`, `color`, `weight`, `z_index`,
 `priority`, `dashed`, and nullable `color2`. A skin MUST cover every
@@ -132,6 +133,19 @@ A skin MUST NOT carry feature selection, LOD thresholds, simplification,
 routing, merge passes, chunk size, or any other geometry-producing setting.
 Changing a skin never invalidates a cell because the selected skin is stamped
 into the assembled output.
+
+### 5.1 Skin preview
+
+`preview`, when present, contains `url`, exact `bytes`, and lowercase `sha256`
+for a PNG image. The image is presentation-only: a consumer MUST NOT use it to
+select cells, price a map, or assemble output. Producers SHOULD render every
+skin over the same geometry, camera, dimensions, and renderer so the images are
+an honest visual comparison. `obc-bake` uses a fixed 240×240 Teningen scene and
+the production map renderer.
+
+The object is optional so a conforming generic catalog producer need not carry
+a rendering fixture. A consumer that displays it MUST apply the same origin and
+digest restrictions as every other pinned artifact (§9).
 
 ## 6. RegionEntry and region satellite
 
@@ -279,7 +293,7 @@ best-effort compatibility between revisions.
 A publish MUST make all referenced content available before replacing the root:
 
 1. generate the satellites and root from the verified tree;
-2. upload cells, sidecars, schema, skins, regions, and satellites;
+2. upload cells, sidecars, schema, skins, previews, regions, and satellites;
 3. verify that every uploaded object is fetchable at the expected size;
 4. replace `catalog.json` last.
 

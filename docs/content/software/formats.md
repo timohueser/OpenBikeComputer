@@ -1026,6 +1026,9 @@ Everything above is read by the device. **OBCC**, the
 [catalog manifest](src:specs/OBCC_Spec.md), is read by the website and desktop
 app instead. It publishes one schema, presentation-only skins, named region
 selections, per-band cell indexes, and the OBCM cells those indexes describe.
+Each skin may also carry a digest-pinned square preview: the bakery stamps it
+onto one fixed Teningen map and draws it through the production renderer, so the
+chooser compares the real device styles rather than hand-made approximations.
 
 The root is deliberately small. It pins every region cell list and band index by
 exact byte length and SHA-256; those indexes pin every cell the same way. A
@@ -1045,7 +1048,8 @@ band layout, routing parameters, and chunk size all live there and determine the
 cell bytes. Skins carry only colours, weights, dashes, z-order, priority, and the
 marker colour; the assembler stamps the chosen skin onto its output. A skin
 change is therefore free, while a schema-revision or OBCM-version change is a
-hard cut requiring one consistent new store.
+hard cut requiring one consistent new store. The preview is presentation only;
+its bytes cannot affect selection, pricing, or assembled output.
 
 [`obc-bake`](src:host/obc-bake) fills that store from ordinary Geofabrik
 extracts. Positional region ids select a subset; no ids means every entry in
