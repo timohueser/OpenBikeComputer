@@ -159,8 +159,6 @@ impl Default for Shard {
 pub struct SetManifest {
     /// The OBCM version of **every** shard.
     pub obcm_version: u8,
-    /// Index of the core shard; always `< shard_count`.
-    pub core_shard: u8,
     /// The schema revision every cell was baked at (§6.3).
     pub schema_revision: u32,
     /// The assembly bbox (§4.2).
@@ -169,6 +167,11 @@ pub struct SetManifest {
     pub set_id: [u8; SET_ID_LEN],
     /// Display name, `0xFF`-padded; read it through [`SetManifest::name`].
     pub name: [u8; NAME_LEN],
+    /// Index of the core shard. **Private on purpose**: it is an index into `shards`, and a public
+    /// field would let a caller move it out of range between construction and use, turning every
+    /// `core*` accessor and [`validate`] into a panic site. Both constructors range-check it, and
+    /// [`SetManifest::core_shard`] reads it back.
+    core_shard: u8,
     shard_count: u8,
     shards: [Shard; MAX_SHARDS],
 }
@@ -185,10 +188,23 @@ impl SetManifest {
         self.shard_count as usize
     }
 
+    /// Index of the core shard (§5.1); always `< shard_count`, by construction.
+    #[inline]
+    pub fn core_shard(&self) -> usize {
+        self.core_shard as usize
+    }
+
     /// The core shard's record (§5.1) — nav and POI queries always go here.
+    ///
+    /// Total by construction *and* by code: `core_shard` is private and both constructors reject
+    /// an out-of-range value, and the lookup still goes through `get` so no future edit can turn
+    /// the accessor into a panic on the device.
     #[inline]
     pub fn core(&self) -> &Shard {
-        &self.shards[self.core_shard as usize]
+        match self.shards.get(self.core_shard as usize) {
+            Some(shard) => shard,
+            None => &self.shards[0],
+        }
     }
 
     /// The display name with its `0xFF` padding trimmed, or `None` if it is not printable ASCII.
@@ -271,22 +287,46 @@ fn write_bbox(bytes: &mut [u8], offset: usize, bbox: &SetBBox) -> Result<(), Dec
     checked_put_i32(bytes, offset + 12, bbox.max_lon)
 }
 
+/// One byte at `offset`, or [`ManifestError::Layout`] when the buffer is shorter than that.
+///
+/// Every fixed field goes through this or a `checked_rd_*`: the manifest arrives from an SD card,
+/// where a short read is the ordinary shape of a torn write, and a panic in `no_std` is a reset on
+/// every boot. [`validate_prefix`] only guarantees five bytes, so bytes 5..8 are *not* implied by
+/// it — that is exactly the gap a 5-, 6- or 7-byte file falls through.
+#[inline]
+fn byte_at(bytes: &[u8], offset: usize) -> Result<u8, ManifestError> {
+    bytes.get(offset).copied().ok_or(ManifestError::Layout)
+}
+
+/// A fixed-width array field at `offset`, or [`ManifestError::Layout`] for a short buffer.
+#[inline]
+fn array_at<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], ManifestError> {
+    let end = offset.checked_add(N).ok_or(ManifestError::Layout)?;
+    let field: &[u8; N] =
+        bytes.get(offset..end).ok_or(ManifestError::Layout)?.try_into().ok().ok_or(ManifestError::Layout)?;
+    Ok(*field)
+}
+
 /// Parse and fully validate a manifest per §5.3.
+///
+/// **Total**: every read is bounds-checked and every rejection is a typed [`ManifestError`]. No
+/// input — truncated, mid-copy, or actively hostile — makes this panic, which is the whole reason
+/// the format authority owns the parse rather than each consumer.
 ///
 /// The caller owns `bytes` (at most [`MAX_MANIFEST_LEN`]); nothing here allocates and nothing
 /// borrows, so the returned value outlives the buffer.
 pub fn parse(bytes: &[u8]) -> Result<SetManifest, ManifestError> {
     validate_prefix(bytes, &MAGIC, VERSION, VERSION)?;
 
-    let obcm_version = bytes[5];
-    let shard_count = bytes[6] as usize;
+    let obcm_version = byte_at(bytes, 5)?;
+    let shard_count = byte_at(bytes, 6)? as usize;
     if shard_count == 0 || shard_count > MAX_SHARDS {
         return Err(ManifestError::ShardCount);
     }
     if bytes.len() != manifest_len(shard_count) {
         return Err(ManifestError::Length);
     }
-    let core_shard = bytes[7];
+    let core_shard = byte_at(bytes, 7)?;
     if core_shard as usize >= shard_count {
         return Err(ManifestError::ShardCount);
     }
@@ -296,16 +336,14 @@ pub fn parse(bytes: &[u8]) -> Result<SetManifest, ManifestError> {
     }
     let bbox = read_bbox(bytes, 16)?;
 
-    let mut set_id = [0u8; SET_ID_LEN];
-    set_id.copy_from_slice(&bytes[32..32 + SET_ID_LEN]);
-    let mut name = [0xFFu8; NAME_LEN];
-    name.copy_from_slice(&bytes[48..48 + NAME_LEN]);
+    let set_id: [u8; SET_ID_LEN] = array_at(bytes, 32)?;
+    let name: [u8; NAME_LEN] = array_at(bytes, 48)?;
 
     let mut shards = [Shard::default(); MAX_SHARDS];
     for (index, shard) in shards.iter_mut().enumerate().take(shard_count) {
         let base = HEADER_LEN + index * SHARD_RECORD_LEN;
-        let role = Role::from_id(bytes[base]).ok_or(ManifestError::Roles)?;
-        if bytes[base + 1] != 0 || bytes[base + 2] != 0 || bytes[base + 3] != 0 {
+        let role = Role::from_id(byte_at(bytes, base)?).ok_or(ManifestError::Roles)?;
+        if array_at::<3>(bytes, base + 1)? != [0, 0, 0] {
             return Err(ManifestError::Layout);
         }
         *shard = Shard { role, bbox: read_bbox(bytes, base + 4)?, bytes: checked_rd_u32(bytes, base + 20)? };
@@ -330,10 +368,13 @@ pub fn parse(bytes: &[u8]) -> Result<SetManifest, ManifestError> {
 pub fn validate(manifest: &SetManifest) -> Result<(), ManifestError> {
     let shards = manifest.shards();
     let core_index = manifest.core_shard as usize;
+    // Bounds-checked rather than indexed: `validate` is the *authority*, so it may not assume the
+    // invariant it exists to establish.
+    let core = shards.get(core_index).ok_or(ManifestError::ShardCount)?;
 
     // Exactly one core, and it is the one the header names.
     let cores = shards.iter().filter(|shard| shard.role == Role::Core).count();
-    if cores != 1 || shards[core_index].role != Role::Core {
+    if cores != 1 || core.role != Role::Core {
         return Err(ManifestError::Roles);
     }
     // A role with no shard is a map missing whole zoom levels — unless this is the §5.5
@@ -346,15 +387,20 @@ pub fn validate(manifest: &SetManifest) -> Result<(), ManifestError> {
         }
     }
 
-    if !manifest.bbox.is_ordered() {
+    // Ordered **and** non-degenerate. A zero-area box is not merely useless: it is invisible to
+    // both halves of the tiling proof below — `overlaps_interior` is strict, so it collides with
+    // nothing, and it contributes 0 to the area sum — so a manifest could otherwise pair a
+    // full-assembly shard with any number of degenerate ones and still "tile". Ground with no
+    // area is not ground.
+    if !manifest.bbox.is_ordered() || manifest.bbox.area() == 0 {
         return Err(ManifestError::Geometry);
     }
     for shard in shards {
-        if !shard.bbox.is_ordered() || !shard.bbox.is_inside(&manifest.bbox) {
+        if !shard.bbox.is_ordered() || shard.bbox.area() == 0 || !shard.bbox.is_inside(&manifest.bbox) {
             return Err(ManifestError::Geometry);
         }
     }
-    if shards[core_index].bbox != manifest.bbox {
+    if core.bbox != manifest.bbox {
         return Err(ManifestError::Geometry);
     }
 
@@ -534,6 +580,36 @@ pub fn shard_name(id: u16, index: usize) -> Option<FileName> {
     push(&mut buf, &mut len, SHARD_EXT.as_bytes());
     Some(FileName { buf, len: len as u8 })
 }
+
+/// Every filename a whole-set delete must remove, **in the order it must remove them**: the
+/// manifest first, then every derived shard name up to the [`MAX_SHARDS`] cap.
+///
+/// This is the plan, not the execution — a caller runs it against its own filesystem. It is a pure
+/// function so the *ordering*, which is normative, can be asserted where tests run rather than only
+/// on a device:
+///
+/// - **The manifest goes first** (§5.4). It is the atomicity token, so a power cut after it is gone
+///   leaves *orphans* — files no manifest references, invisible as a map and reclaimable. The
+///   reverse order would leave a manifest pointing at files that are gone, which is a broken map
+///   rather than an absent one. A caller that cannot delete the manifest MUST stop and leave the
+///   shards alone.
+/// - **The shard sweep runs to the cap, not to the set's own `Shard Count`**, so replacing a set
+///   with a smaller one also reclaims the tail of the old one. Names that are not there fail
+///   harmlessly; there is no state in which a stale `MS7S09.OBM` should survive a delete of `MS7`.
+///
+/// `None` when `id` has no derived 8.3 name at all (above [`MAX_SET_ID`]). The plain array keeps
+/// the format floor free of `heapless` (see [`SetManifest`]); at 13 B per name it is 429 B, paid
+/// once on a boot-time retire.
+pub fn delete_plan(id: u16) -> Option<[FileName; DELETE_PLAN_LEN]> {
+    let mut plan = [manifest_name(id)?; DELETE_PLAN_LEN];
+    for index in 0..MAX_SHARDS {
+        plan[index + 1] = shard_name(id, index)?;
+    }
+    Some(plan)
+}
+
+/// Length of [`delete_plan`]'s list: the manifest plus every shard name the cap can express.
+pub const DELETE_PLAN_LEN: usize = MAX_SHARDS + 1;
 
 /// Recover the set id from a `MS<id>.OBS` manifest filename, or `None` if `name` is not one.
 /// Deliberately strict: no lowercase, no leading zeros beyond a bare `0`, id `≤ 999`.
@@ -718,6 +794,112 @@ mod tests {
         // Length must be exactly `72 + 56 × Shard Count`.
         assert_eq!(parse(&good[..len - 1]), Err(ManifestError::Length));
         assert_eq!(parse(&good[..len + 1]), Err(ManifestError::Length));
+    }
+
+    /// Every prefix of a valid manifest must come back as a typed error. The 5-, 6- and 7-byte
+    /// cases are the ones `validate_prefix` does *not* cover — it guarantees five bytes, and the
+    /// header reads `OBCM Version`, `Shard Count` and `Core Shard` above that. On the device this
+    /// buffer comes off an SD card, where a short read is the ordinary shape of a torn write, and a
+    /// `no_std` panic is a reset on every boot.
+    #[test]
+    fn every_truncation_is_an_error_and_never_a_panic() {
+        let manifest = split_set();
+        let good = encode(&manifest);
+        for len in 0..=manifest.encoded_len() + 8 {
+            let parsed = parse(&good[..len.min(good.len())]);
+            if len == manifest.encoded_len() {
+                assert!(parsed.is_ok(), "the exact length parses");
+            } else {
+                assert!(parsed.is_err(), "length {len} must be rejected, not accepted");
+            }
+        }
+        // Named explicitly, because these three are the reported crash and a range test could
+        // drift past them silently.
+        assert_eq!(parse(&good[..5]), Err(ManifestError::Layout));
+        assert_eq!(parse(&good[..6]), Err(ManifestError::Layout));
+        assert_eq!(parse(&good[..7]), Err(ManifestError::Length));
+
+        // A header that claims one shard but carries no record: the length check catches it before
+        // any record read, and `Core Shard` is never indexed against a record that is not there.
+        let mut header = [0u8; HEADER_LEN];
+        header[..4].copy_from_slice(&MAGIC);
+        header[4] = VERSION;
+        header[6] = 1;
+        assert_eq!(parse(&header), Err(ManifestError::Length));
+    }
+
+    /// `Core Shard` can no longer be moved out of range after construction — it is private, and
+    /// both constructors range-check it. The reachable mutation is a *public* field, and `validate`
+    /// must answer it with an error rather than an index panic.
+    #[test]
+    fn an_out_of_range_core_index_cannot_outlive_construction() {
+        let manifest = split_set();
+        assert_eq!(manifest.core_shard(), 0);
+        assert_eq!(manifest.core().role, Role::Core);
+        // Every rejected core index, through both constructors.
+        for bad in [4u8, 32, 255] {
+            let mut bytes = encode(&manifest);
+            bytes[7] = bad;
+            assert_eq!(parse(&bytes[..manifest.encoded_len()]), Err(ManifestError::ShardCount));
+        }
+        assert_eq!(
+            build(11, 9, 1, WORLD, [0; SET_ID_LEN], name_field("x"), &[core(WORLD, 1)]),
+            Err(ManifestError::ShardCount)
+        );
+        // The pub fields that *are* mutable post-parse still go through `validate` without panicking.
+        let mut mutated = manifest;
+        mutated.bbox = SetBBox { min_lat: 1, min_lon: 1, max_lat: 0, max_lon: 0 };
+        assert_eq!(validate(&mutated), Err(ManifestError::Geometry));
+    }
+
+    /// A zero-area box is invisible to both halves of the tiling proof — it overlaps nothing and
+    /// adds nothing to the area sum — so it would let a "tiling" hide any number of empty shards.
+    #[test]
+    fn degenerate_boxes_are_refused() {
+        let line = SetBBox { max_lat: WORLD.min_lat, ..WORLD };
+        assert_eq!(line.area(), 0);
+        assert!(line.is_ordered(), "ordered but degenerate is exactly the gap");
+
+        // A degenerate assembly.
+        assert_eq!(
+            build(11, 0, 1, line, [0; SET_ID_LEN], name_field("x"), &[core(line, 1)]),
+            Err(ManifestError::Geometry)
+        );
+        // A degenerate geometry shard riding along with one that really does tile the assembly.
+        assert_eq!(
+            build(
+                11,
+                0,
+                1,
+                WORLD,
+                [0; SET_ID_LEN],
+                name_field("x"),
+                &[
+                    core(WORLD, 1),
+                    Shard { role: Role::Coarse, bbox: WORLD, bytes: 1 },
+                    Shard { role: Role::Geometry, bbox: WORLD, bytes: 1 },
+                    Shard { role: Role::Geometry, bbox: line, bytes: 1 },
+                ],
+            ),
+            Err(ManifestError::Geometry)
+        );
+    }
+
+    /// §5.4's delete ordering, asserted where tests run: the manifest first (it is the atomicity
+    /// token), then every derived shard name to the cap so a smaller replacement still sweeps the
+    /// old set's tail.
+    #[test]
+    fn the_delete_plan_removes_the_manifest_first_then_the_whole_tail() {
+        let plan = delete_plan(7).expect("set 7 has derived names");
+        assert_eq!(plan.len(), DELETE_PLAN_LEN);
+        assert_eq!(plan.len(), MAX_SHARDS + 1);
+        assert_eq!(plan[0].as_str(), "MS7.OBS", "the manifest goes first (§5.4)");
+        assert_eq!(plan[1].as_str(), "MS7S00.OBM");
+        assert_eq!(plan[MAX_SHARDS].as_str(), "MS7S31.OBM", "the sweep runs to the cap, not the set's count");
+        for (index, name) in plan[1..].iter().enumerate() {
+            assert_eq!(parse_shard_name(name.as_bytes()), Some((7, index)));
+        }
+        assert!(delete_plan(1000).is_none(), "an id with no derived name has no plan");
     }
 
     #[test]
