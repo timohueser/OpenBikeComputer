@@ -202,6 +202,23 @@ bake *args:
         shift
         publish_tree="$tree"
         if (( $# )) && [[ "$1" != -* ]]; then publish_tree="$1"; shift; fi
+        maps_base="${OBC_MAPS_BASE_URL:-}"
+        if [[ -z "$maps_base" && -n "${OBC_CATALOG_URL:-}" ]]; then
+          case "$OBC_CATALOG_URL" in
+            */catalog.json) maps_base="${OBC_CATALOG_URL%/catalog.json}" ;;
+            *)
+              _err "OBC_CATALOG_URL must end in /catalog.json: $OBC_CATALOG_URL"
+              exit 1 ;;
+          esac
+        fi
+        if [[ -z "$maps_base" ]]; then
+          prefix="${OBC_R2_PREFIX:-cell-catalog}"; prefix="${prefix#/}"; prefix="${prefix%/}"
+          [[ -n "$prefix" ]] || { _err "OBC_R2_PREFIX may not be empty"; exit 1; }
+          export OBC_R2_PREFIX="$prefix"
+          maps_base="https://maps.openbikecomputer.org/$prefix"
+          _say "using production catalog base: $maps_base"
+        fi
+        export OBC_MAPS_BASE_URL="$maps_base"
         _run "$bin" publish "$publish_tree" "$@" ;;
       remove-old-r2)
         shift
