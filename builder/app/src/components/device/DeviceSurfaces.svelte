@@ -18,7 +18,8 @@
     import type { VersionRead } from "../../lib/usb/protocol";
     import type { LocalFileSource } from "../../lib/usb/session";
     import type { DeviceInfo } from "../../lib/usb/transport";
-    import type { MapArtifact } from "../../lib/device/write";
+    import type { MapArtifact, SendAssembledMap } from "../../lib/device/write";
+    import type { Ledger } from "../../lib/catalog/v2/ledger";
     import { rideAccess, rideScope } from "../../lib/device/rides";
     import FirmwareCard from "./FirmwareCard.svelte";
     import MapSend from "./MapSend.svelte";
@@ -31,6 +32,8 @@
         identity = null,
         artifact = null,
         localFileSource = null,
+        ledger = null,
+        sendAssembled = null,
     }: {
         client: ProtocolClient;
         info: DeviceInfo | null;
@@ -40,6 +43,8 @@
          *  local file to send. A route or a firmware image is kilobytes and arrives from a drop,
          *  so neither has anything to gain from it. */
         localFileSource?: LocalFileSource | null;
+        ledger?: Ledger | null;
+        sendAssembled?: SendAssembledMap | null;
     } = $props();
 
     const rides = $derived(rideAccess(client));
@@ -48,7 +53,7 @@
     const scope = $derived(rideScope(info, identity));
 </script>
 
-<MapSend {client} {artifact} {localFileSource} />
+<MapSend {client} {artifact} {localFileSource} {ledger} {sendAssembled} />
 <RouteDrop {client} />
 <RideExport {rides} {scope} />
 <FirmwareCard {client} {info} />

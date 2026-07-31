@@ -52,6 +52,7 @@ import {
     encodeStatusMessage,
     encodeTransferControl,
     encodeVersionRead,
+    setPartId,
     viewOf,
 } from "./protocol";
 
@@ -164,6 +165,19 @@ describe("control-plane codecs", () => {
         const abort = decodeTransferControl(vector("transfer-abort.bin"));
         expect(abort.op).toBe(Op.Abort);
         expectSameBytes(encodeTransferControl(abort), vector("transfer-abort.bin"), "abort descriptor");
+
+        const shard = decodeTransferControl(vector("transfer-set-shard.bin"));
+        expect(shard).toMatchObject({ op: Op.Upload, type: ObjectType.MapShard, objectId: 0x0802 });
+        expect(setPartId(8, 2)).toBe(shard.objectId);
+        expectSameBytes(encodeTransferControl(shard), vector("transfer-set-shard.bin"), "set shard descriptor");
+
+        const manifest = decodeTransferControl(vector("transfer-set-manifest.bin"));
+        expect(manifest).toMatchObject({ op: Op.Upload, type: ObjectType.MapSet, objectId: NEW_OBJECT_ID });
+        expectSameBytes(
+            encodeTransferControl(manifest),
+            vector("transfer-set-manifest.bin"),
+            "set manifest descriptor",
+        );
     });
 
     it("round-trips every status message", () => {

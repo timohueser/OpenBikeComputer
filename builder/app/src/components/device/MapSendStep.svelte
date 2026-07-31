@@ -12,8 +12,18 @@
 <script lang="ts">
     import { deviceHolder } from "../../lib/device/session.svelte";
     import type { MapArtifact } from "../../lib/device/write";
+    import type { SendAssembledMap } from "../../lib/device/write";
+    import type { Ledger } from "../../lib/catalog/v2/ledger";
 
-    let { artifact = null }: { artifact?: MapArtifact | null } = $props();
+    let {
+        artifact = null,
+        ledger = null,
+        sendAssembled = null,
+    }: {
+        artifact?: MapArtifact | null;
+        ledger?: Ledger | null;
+        sendAssembled?: SendAssembledMap | null;
+    } = $props();
 
     let mapSend: Promise<typeof import("./MapSend.svelte")> | undefined;
     const loadMapSend = () => (mapSend ??= import("./MapSend.svelte"));
@@ -32,6 +42,8 @@
         <MapSend
             client={session.client}
             {artifact}
+            {ledger}
+            {sendAssembled}
             localFileSource={session.localFileSource ?? null}
         />
     {:catch}

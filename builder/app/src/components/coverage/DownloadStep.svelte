@@ -14,8 +14,8 @@
     // The run: verified per-cell download (abortable) → assembly **in a Web
     // Worker** (the bridge's threading contract: one synchronous wasm call, so
     // cancel is `worker.terminate()`, progress crosses by postMessage, files
-    // come back one at a time as transfers and go straight to the browser's
-    // downloader).
+    // come back one at a time as transfers and go either to the browser's
+    // downloader or, with per-file backpressure, straight to the device).
 
     import { onDestroy } from "svelte";
     import type { AssemblePhase, MemoryEstimate } from "../../lib/assemble/bridge";
@@ -36,6 +36,9 @@
     import { detailBandId, mergeMixedCellRects, parseCells, patchCount } from "../../lib/coverage/shape";
     import type { CoverageStore } from "../../lib/coverage/store.svelte";
     import { formatBytes } from "../../lib/format";
+    import type { JobContext } from "../../lib/device/progress";
+    import type { SetSendState } from "../../lib/device/write";
+    import type { ProtocolClient, UploadResult } from "../../lib/usb/client";
 
     let { store }: { store: CoverageStore } = $props();
 
@@ -92,6 +95,21 @@
     let errorMessage = $state<string | null>(null);
     let abortCtl: AbortController | null = null;
 
+    interface DeviceOutput {
+        kind: "device";
+        client: ProtocolClient;
+        ctx: JobContext;
+        state: SetSendState | null;
+        resolve: (result: UploadResult) => void;
+        reject: (cause: unknown) => void;
+        settled: boolean;
+        failing: boolean;
+        removeAbort: () => void;
+    }
+    type Output = { kind: "download" } | DeviceOutput;
+    let output = $state<Output | null>(null);
+    let lastRunKind = $state<Output["kind"]>("download");
+
     const ASM_PHASE_LABEL: Record<AssemblePhase, string> = {
         open: "reading cells",
         poi: "merging places",
@@ -110,7 +128,7 @@
         manifest: "set manifest",
     };
 
-    function onWorkerMessage(e: MessageEvent) {
+    async function onWorkerMessage(e: MessageEvent) {
         const msg = e.data as unknown;
         if (!isWorkerResponse(msg)) return;
         switch (msg.type) {
@@ -123,15 +141,46 @@
                 asmPhase = msg.phase;
                 asmFraction = msg.fraction;
                 break;
+            case "planned":
+                runWarnings = msg.warnings;
+                if (output?.kind === "device") {
+                    output.state = {
+                        shardCount: msg.shardCount,
+                        totalBytes: msg.totalBytes,
+                        committedBytes: 0,
+                        nextShard: 0,
+                        setId: null,
+                    };
+                    output.ctx.phase("sending", msg.totalBytes);
+                }
+                break;
             case "file":
-                // Straight to the browser's downloader, one file at a time —
-                // nothing accumulates on this side of the boundary.
-                saveBytes(msg.bytes, msg.name);
-                savedFiles.push({ name: msg.name, role: msg.role, byteLength: msg.byteLength });
+                try {
+                    if (output?.kind === "device") {
+                        if (!output.state) throw new Error("The assembler sent a file before its set plan.");
+                        const { sendAssembledSetFile } = await import("../../lib/device/write");
+                        await sendAssembledSetFile(output.client, output.state, msg, output.ctx);
+                    } else {
+                        saveBytes(msg.bytes, msg.name);
+                    }
+                    savedFiles.push({ name: msg.name, role: msg.role, byteLength: msg.byteLength });
+                    worker?.postMessage({ type: "file-ack" } satisfies AssembleWorkerRequest);
+                } catch (cause) {
+                    await failRun(cause);
+                }
                 break;
             case "done":
                 runWarnings = msg.warnings;
                 phase = "done";
+                if (output?.kind === "device") {
+                    const state = output.state;
+                    if (!state || state.setId === null) {
+                        await failRun(new Error("The device did not commit the assembled map's manifest."));
+                    } else {
+                        settleDevice({ objectId: state.setId, committedOffset: state.totalBytes });
+                    }
+                }
+                output = null;
                 break;
             case "error":
                 // Two conversations share this worker, and their failures are
@@ -142,14 +191,39 @@
                 // its own retry, and never wedges the button behind a pending
                 // flag nothing will clear.
                 if (phase === "assembling") {
-                    errorMessage = msg.message;
-                    phase = "error";
+                    await failRun(new Error(msg.message));
                 } else {
                     estimateError = msg.message;
                 }
                 estimatePending = false;
                 break;
         }
+    }
+
+    function settleDevice(result: UploadResult | unknown, failed = false) {
+        if (output?.kind !== "device" || output.settled) return;
+        output.settled = true;
+        output.removeAbort();
+        if (failed) output.reject(result);
+        else output.resolve(result as UploadResult);
+    }
+
+    async function failRun(cause: unknown) {
+        if (output?.kind === "device") {
+            if (output.failing || output.settled) return;
+            output.failing = true;
+        }
+        abortCtl?.abort();
+        worker?.terminate();
+        worker = null;
+        if (output?.kind === "device" && output.state) {
+            const { abandonAssembledSet } = await import("../../lib/device/write");
+            await abandonAssembledSet(output.client, output.state);
+        }
+        errorMessage = cause instanceof Error ? cause.message : String(cause);
+        phase = output?.kind === "device" && output.ctx.signal.aborted ? "cancelled" : "error";
+        settleDevice(cause, true);
+        output = null;
     }
 
     /** The set's 24-wire-byte display name, from the parts that made it. */
@@ -166,17 +240,29 @@
         return out;
     }
 
-    async function run() {
+    async function begin(out: Output) {
         const resolution = store.resolution;
         const indices = store.indices;
         const l = ledger;
-        if (!resolution || !indices || !l || phase === "downloading" || phase === "assembling") return;
+        if (
+            !resolution ||
+            !indices ||
+            !l ||
+            phase === "downloading" ||
+            phase === "assembling" ||
+            (out.kind === "device" && !ready)
+        ) {
+            throw new Error("This map is not ready to assemble yet.");
+        }
+        output = out;
+        lastRunKind = out.kind;
         errorMessage = null;
         savedFiles = [];
         runWarnings = [];
         dlProgress = null;
         asmFraction = 0;
         phase = "downloading";
+        if (out.kind === "device") out.ctx.phase("downloading", l.totalBytes);
 
         const plan = planCells(resolution, store.catalog, indices);
         const cells: WorkerCell[] = [];
@@ -186,7 +272,10 @@
                 onCell: (item, bytes) => {
                     cells.push({ id: item.cell.id, band: item.band, partial: item.cell.partial, bytes });
                 },
-                onProgress: (p) => (dlProgress = p),
+                onProgress: (p) => {
+                    dlProgress = p;
+                    if (out.kind === "device") out.ctx.progress(p.receivedBytes, p.totalBytes);
+                },
                 signal: abortCtl.signal,
             });
         } catch (e) {
@@ -196,11 +285,14 @@
                 errorMessage = e instanceof Error ? e.message : String(e);
                 phase = "error";
             }
+            settleDevice(e, true);
+            output = null;
             return;
         }
 
         phase = "assembling";
         asmPhase = "open";
+        if (out.kind === "device") out.ctx.phase("assembling", 0);
         const req: AssembleWorkerRequest = {
             type: "assemble",
             cells,
@@ -220,6 +312,31 @@
             },
         };
         ensureWorker().postMessage(req, { transfer: requestTransferList(req) });
+    }
+
+    function run() {
+        void begin({ kind: "download" }).catch((cause) => failRun(cause));
+    }
+
+    /** Assemble the current selection and stream its files directly to a connected device. */
+    export function sendToDevice(client: ProtocolClient, ctx: JobContext): Promise<UploadResult> {
+        return new Promise((resolve, reject) => {
+            const out: DeviceOutput = {
+                kind: "device",
+                client,
+                ctx,
+                state: null,
+                resolve,
+                reject,
+                settled: false,
+                failing: false,
+                removeAbort: () => {},
+            };
+            const abort = () => void failRun(ctx.signal.reason ?? new DOMException("cancelled", "AbortError"));
+            out.removeAbort = () => ctx.signal.removeEventListener("abort", abort);
+            ctx.signal.addEventListener("abort", abort, { once: true });
+            void begin(out).catch((cause) => failRun(cause));
+        });
     }
 
     function cancel() {
@@ -497,7 +614,9 @@
                 </button>
             {:else}
                 <div class="runrow">
-                    <button type="button" class="btn" onclick={cancel}>Cancel</button>
+                    {#if output?.kind === "download"}
+                        <button type="button" class="btn" onclick={cancel}>Cancel</button>
+                    {/if}
                     {#if phase === "downloading" && dlProgress}
                         <span class="small muted">
                             downloading cells — {dlProgress.completedCells}/{dlProgress.totalCells} ·
@@ -519,12 +638,14 @@
 
             {#if phase === "done"}
                 <div class="done">
-                    <p class="line small">
-                        Saved {savedFiles.length}
-                        {savedFiles.length === 1 ? "file" : "files"} — copy
-                        {savedFiles.length === 1 ? "it" : "all of them"} to the top level of the device's
-                        card.
-                    </p>
+                    {#if lastRunKind === "download"}
+                        <p class="line small">
+                            Saved {savedFiles.length}
+                            {savedFiles.length === 1 ? "file" : "files"} — copy
+                            {savedFiles.length === 1 ? "it" : "all of them"} to the top level of the device's
+                            card.
+                        </p>
+                    {/if}
                     <ul class="files mono small">
                         {#each savedFiles as f (f.name)}
                             <li>
