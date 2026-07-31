@@ -298,6 +298,15 @@ pub enum SendError {
         filename: String,
         status: TransferStatus,
     },
+    /// A shard's `transferResult` did not echo the part that was sent — spec §4.1's correlation
+    /// rule for a set. The transfer is stopped rather than counted, because a result that names a
+    /// different file cannot be read as "this file committed", and going on would build a manifest
+    /// over a set whose contents the device and the host disagree about.
+    Uncorrelated {
+        filename: String,
+        expected: u16,
+        echoed: u16,
+    },
 }
 
 impl fmt::Display for SendError {
@@ -306,6 +315,9 @@ impl fmt::Display for SendError {
             SendError::Io(path, e) => write!(f, "{}: {e}", path.display()),
             SendError::Link(e) => write!(f, "the link failed: {e}"),
             SendError::Refused { filename, status } => write!(f, "the device refused {filename}: {status:?}"),
+            SendError::Uncorrelated { filename, expected, echoed } => {
+                write!(f, "the device answered {filename} with part {echoed:#06X}, not the {expected:#06X} it was sent")
+            }
         }
     }
 }
@@ -358,7 +370,21 @@ pub fn send(
         if result.status != TransferStatus::Committed {
             return Err(SendError::Refused { filename: planned.filename.clone(), status: result.status });
         }
-        if planned.part == Part::Manifest {
+        // §4.1 rule 4: a shard's result echoes its **part**, and that is what a host correlates its
+        // slot against. Checking it is the difference between "a file committed" and "*this* file
+        // committed" — and the only thing standing between a device that answers out of step and a
+        // manifest written over a set neither side agrees on.
+        if let Part::Shard(part) = planned.part {
+            if result.object_id != part.encode() {
+                return Err(SendError::Uncorrelated {
+                    filename: planned.filename.clone(),
+                    expected: part.encode(),
+                    echoed: result.object_id,
+                });
+            }
+        } else {
+            // The manifest's result carries the device-assigned set id — the one moment a set's
+            // identity crosses the wire, and the answer to "what did my upload become".
             device_set_id = result.object_id;
         }
         sent += planned.len;
