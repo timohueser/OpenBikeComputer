@@ -20,10 +20,10 @@ name: CI
 #     //rust-toolchain.toml and shared with local dev. It intentionally tracks floating stable.
 #   * obc-boot (the 32 KB DFU bootloader, #617) is excluded + standalone the same way as the
 #     board crate; its job adds a flash-size guard against the 32 KB slot.
-#   * obc-web-convert (#896) and obc-web-preview (#899) are normal workspace members (so
-#     fmt/clippy/test/deny already cover them) whose *shipping* artifacts are wasm32 builds the
-#     web builder imports — hence the extra `wasm-bridges` job, its two bundle-size guards, and
-#     the artifact hand-off into `web`.
+#   * obc-web-convert (#896), obc-web-preview (#899) and obc-web-assemble (#1034) are normal
+#     workspace members (so fmt/clippy/test/deny already cover them) whose *shipping* artifacts are
+#     wasm32 builds the web builder imports — hence the extra `wasm-bridges` job, its three
+#     bundle-size guards, and the artifact hand-off into `web`.
 #   * obc-desktop (#906) is the third excluded + standalone crate: a Tauri app, so it brings a
 #     platform webview with it (WebKitGTK on Linux) and would otherwise put those headers in
 #     every renderer test's way. Its job is also the only Rust one that needs Node — the shell
@@ -116,11 +116,12 @@ jobs:
               - '.github/workflows/ci.yml'
             web:
               - 'builder/app/**'
-              # The frontend now embeds firmware code: obc-web-convert (#896) compiles the shared
-              # obc-route conversion path to wasm and obc-web-preview (#899) the obc-render map
-              # path, so any shared-crate change can move those bytes. The conversion bridge's
-              # byte-identity guard reads specs/vectors/, and the toolchain file picks the
-              # compiler that produces both modules.
+              # The frontend now embeds firmware and host code: obc-web-convert (#896) compiles the
+              # shared obc-route conversion path to wasm, obc-web-preview (#899) the obc-render map
+              # path, and obc-web-assemble (#1034) the obcm-assemble OBCA engine — so any shared-
+              # crate change can move those bytes. The conversion bridge's byte-identity guard reads
+              # specs/vectors/ and the assembly bridge's reads its own checked-in cell fixture under
+              # apps/, and the toolchain file picks the compiler that produces all three modules.
               - 'firmware/**'
               - 'host/**'
               - 'apps/**'
@@ -430,18 +431,21 @@ jobs:
       - name: cargo build -p obcm-assemble --lib (wasm32, engine only)
         run: cargo build -p obcm-assemble --lib --no-default-features --locked --target wasm32-unknown-unknown
 
-  # The hosted builder's two wasm bridges — the shared firmware crates compiled to wasm so the
-  # hosted tier needs no backend at all:
+  # The hosted builder's three wasm bridges — the shared crates compiled to wasm so the hosted tier
+  # needs no backend at all:
   #
   #   * obc-web-convert (#896) — the obc-route GPX↔OBCR path, so route conversion runs client-side.
   #   * obc-web-preview (#899) — the obc-reader/obc-render map path, so a preset card shows what
   #     that preset actually draws.
+  #   * obc-web-assemble (#1034) — the obcm-assemble OBCA engine, so downloaded map cells become a
+  #     map in the tab. This is the one that makes the cell catalog's promise true (epic #1016):
+  #     any selection is an assembly, not a bake, and nothing has to be pre-baked or server-side.
   #
   # Two things happen per module and the order matters:
   #
   #   1. wasm-pack builds it (wasm-bindgen + wasm-opt in one step — the demo's Trunk is an app
   #      bundler and has no place here; these are libraries consumed by Vite).
-  #   2. The bundle-size budget gates it. Both artifacts are downloaded by real visitors, so a
+  #   2. The bundle-size budget gates it. All three artifacts are downloaded by real visitors, so a
   #      silent size regression must fail the build, not land quietly.
   #
   # The exact bytes that pass the budget are then handed to the `web` job, which type-checks
@@ -477,6 +481,13 @@ jobs:
             --out-name obc_web_preview
       - name: bundle-size budget (preview)
         run: python3 firmware/tools/wasm_size_guard.py --module preview
+      - name: wasm-pack build (obc-web-assemble → wasm)
+        run: |
+          wasm-pack build apps/obc-web-assemble --release --target web \
+            --out-dir ../../builder/app/src/lib/assemble/pkg \
+            --out-name obc_web_assemble
+      - name: bundle-size budget (assemble)
+        run: python3 firmware/tools/wasm_size_guard.py --module assemble
       - uses: actions/upload-artifact@v4
         with:
           name: obc-web-convert-pkg
@@ -486,6 +497,11 @@ jobs:
         with:
           name: obc-web-preview-pkg
           path: builder/app/src/lib/preview/pkg
+          retention-days: 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: obc-web-assemble-pkg
+          path: builder/app/src/lib/assemble/pkg
           retention-days: 1
 
   # Render the docs site (stdlib-only Python, no pip) and fail on error, plus the cross-page
@@ -574,11 +590,13 @@ jobs:
   # tries to ship it. The *contents* of the web bundle (no job polling, no style
   # editor) are asserted by vitest, which builds and inspects the emitted chunks.
   #
-  # The two wasm bridges come from `wasm-bridges` rather than being rebuilt here, so the
+  # The three wasm bridges come from `wasm-bridges` rather than being rebuilt here, so the
   # module the byte-identity tests run against is literally the one the size budget passed. It is
-  # a hard dependency, not an optimisation, and it is why the download lands before `npm ci`:
-  # every step below needs it — the TS wrapper imports the generated bindings, so `npm run check`
-  # type-checks against them, and both vitest suites and `build:all` fail without the artifact.
+  # a hard dependency, not an optimisation, and it is why the downloads land before `npm ci`:
+  # every step below needs them — the TS wrappers import the generated bindings, so `npm run check`
+  # type-checks against them, and the vitest suites and `build:all` fail without the artifacts.
+  # The assembly bridge's suite is also the *headless smoke* for #1034: it assembles the checked-in
+  # cell fixture in Node and compares the result to the bytes the native CLI wrote.
   # The two jobs share one path filter so they are always skipped or run together.
   web:
     needs: [changes, wasm-bridges]
@@ -597,6 +615,10 @@ jobs:
         with:
           name: obc-web-preview-pkg
           path: builder/app/src/lib/preview/pkg
+      - uses: actions/download-artifact@v4
+        with:
+          name: obc-web-assemble-pkg
+          path: builder/app/src/lib/assemble/pkg
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -665,6 +687,13 @@ jobs:
         with:
           name: obc-web-preview-pkg
           path: builder/app/src/lib/preview/pkg
+      # Not reachable from the desktop entry point *today* (#1034 lands the bridge, #1034's P4c
+      # lands the screen that imports it), but it is checked out alongside the other two so the
+      # bundle keeps building the moment it is.
+      - uses: actions/download-artifact@v4
+        with:
+          name: obc-web-assemble-pkg
+          path: builder/app/src/lib/assemble/pkg
       - uses: actions/setup-node@v4
         with:
           node-version: 22
