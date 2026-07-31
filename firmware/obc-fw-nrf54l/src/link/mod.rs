@@ -155,6 +155,12 @@ pub(crate) enum Armed {
     Echo(TransferControl),
     Upload(TransferControl, Receiver),
     Download(TransferControl),
+    /// One shard of a volume set (#1039). Streams exactly as an `Upload` of a map does; the
+    /// [`obc_ble::SetPart`] rides along because `object_id` is not an id here — it says *which file
+    /// of the set this is*, and the data plane needs it to name the file at the first byte.
+    SetShard(TransferControl, Receiver, obc_ble::SetPart),
+    /// The set manifest — the last file of a set, and its commit point (`OBCA_Spec.md` §5.4).
+    SetManifest(TransferControl, Receiver),
 }
 
 /// Which wire a descriptor arrived on — the *only* place transport identity crosses into the shared

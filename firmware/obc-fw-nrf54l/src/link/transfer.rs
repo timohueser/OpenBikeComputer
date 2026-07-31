@@ -142,10 +142,51 @@ pub(crate) fn classify_transfer(
                 }
             }
         }
-        (Op::Upload, ObjectType::Map) => {
+        // One **shard** of a volume set (#1039, `OBCA_Spec.md` §5.1): the same streaming shape as a
+        // map, so it arms the same `Armed::Upload`; what the store checks here is the set session —
+        // a part field that names a real file, a shard count inside this board's ceiling, and
+        // agreement with the set already in flight. The part travels with the arm because the data
+        // plane needs it to name the file at the first byte.
+        (Op::Upload, ObjectType::MapShard) if transport == Transport::Usb => {
+            match store.borrow_mut().set_shard_open(shared, &desc) {
+                Ok((rx, part)) => {
+                    log_transfer_arm(&desc);
+                    TransferDisposition::Arm(Armed::SetShard(desc, rx, part))
+                }
+                Err(status) => {
+                    log_transfer_reject(&desc, status);
+                    TransferDisposition::Answer(transfer_result(desc.object_id, status))
+                }
+            }
+        }
+        // The set **manifest** — `OBCA_Spec.md` §5.4's manifest-last rule, enforced here rather
+        // than trusted: a manifest announced before every shard it will name has committed is
+        // refused *before a byte streams*, so a host that gets the order wrong learns in
+        // milliseconds instead of after gigabytes.
+        (Op::Upload, ObjectType::MapSet) if transport == Transport::Usb => {
+            match store.borrow_mut().set_manifest_open(shared, &desc) {
+                Ok(rx) => {
+                    log_transfer_arm(&desc);
+                    TransferDisposition::Arm(Armed::SetManifest(desc, rx))
+                }
+                Err(status) => {
+                    log_transfer_reject(&desc, status);
+                    TransferDisposition::Answer(transfer_result(desc.object_id, status))
+                }
+            }
+        }
+        // A map, a shard or a manifest on the radio. All three are refused by the same rule and for
+        // the same reason: §10 makes a map USB-only because BLE could never move one in a rider's
+        // lifetime, and a **set** is strictly larger than the map that argument was made about — a
+        // DACH-shaped set is 7.6–8.9 GiB (`OBCA_Spec.md` §5.1). No new argument is needed and none
+        // is made; the reject is typed and logged rather than a silent fall-through, so a host that
+        // tries gets a diagnosable "no".
+        (Op::Upload, ObjectType::Map | ObjectType::MapShard | ObjectType::MapSet) => {
             warn!(
-                "link: [ctl] map upload rejected: maps are USB-only (spec §10) — id {} len {}",
-                desc.object_id, desc.total_len
+                "link: [ctl] map upload rejected: maps and volume sets are USB-only (spec §10) — type {} id {} len {}",
+                desc.ty.as_u8(),
+                desc.object_id,
+                desc.total_len
             );
             TransferDisposition::Answer(transfer_result(desc.object_id, TransferStatus::Error))
         }
