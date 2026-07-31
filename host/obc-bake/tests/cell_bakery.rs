@@ -595,10 +595,7 @@ fn a_schema_id_that_disagrees_with_the_document_is_refused_not_overwritten() {
     .run(&Progress::silent())
     .expect_err("the run must not publish this schema under another name");
     assert!(err.contains("testschema") && err.contains("typoschema"), "the error names both: {err}");
-    assert!(
-        !f.tree.join(obc_bake::presets::SCHEMA_DOC).exists(),
-        "and no document was written claiming the wrong id"
-    );
+    assert!(!f.tree.join(obc_bake::presets::SCHEMA_DOC).exists(), "and no document was written claiming the wrong id");
 }
 
 /// A skin dropped from the run is **pruned** from a pre-existing tree.

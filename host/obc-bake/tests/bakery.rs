@@ -357,8 +357,7 @@ fn renaming_the_schemas_id_repacks_nothing_once_the_tree_is_renamed_with_it() {
     let packer = FixturePacker::new();
     let config_path = f.presets[0].path.clone();
     let set_id = |id: &str| {
-        let mut cfg: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+        let mut cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
         cfg["_meta"]["id"] = id.into();
         std::fs::write(&config_path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
         vec![obc_bake::presets::load_schema(config_path.parent().unwrap()).unwrap()]
