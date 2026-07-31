@@ -1564,7 +1564,10 @@ fn the_shipped_schema_and_skin_generate_a_v2_catalog() {
 ///    design decision. Every group the schema merges must be restated uniformly.
 ///    The groups are derived from the `default` skin (proved above to restate the
 ///    schema's own values) by full render identity — the line-stitch key, which is
-///    strictly finer than the fill key, so it is conservative for both passes.
+///    identical to the line-stitch key, and — for the current schema, where no fill
+///    carries a weight or line style — a superset of the fill merge classes (verified
+///    empirically: 7 test groups cover all 5 real fill classes). A schema that gives a
+///    fill a weight/dash would open a gap here; widen the key to the union then.
 /// 3. **It survives the panel.** The LS021B7DD02 shows 64 colors (RGB222 — the top
 ///    two bits of each channel, `OBCM_Spec.md` §2, `rgb565_to_device64`), so two
 ///    RGB565 values in one RGB222 bucket are one color on glass. Every *distinct*
@@ -1625,13 +1628,9 @@ fn the_shipped_dusk_skin_is_a_presentation_only_night_restyle() {
     }
     assert!(merged_groups >= 5, "the shipped schema really does merge: {merged_groups} groups");
 
-    // (3) — the panel's quantization (`rgb565_to_device64`: RGB565 → RGB888 → top two
-    // bits per channel, each step 85).
-    let bucket = |c: u16| {
-        let (r5, g6, b5) = ((c >> 11) & 0x1F, (c >> 5) & 0x3F, c & 0x1F);
-        let (r, g, b) = ((r5 << 3) | (r5 >> 2), (g6 << 2) | (g6 >> 4), (b5 << 3) | (b5 >> 2));
-        ((r >> 6) * 85, (g >> 6) * 85, (b >> 6) * 85)
-    };
+    // (3) — the panel's quantization, through the renderer's OWN policy rather than a
+    // restated copy: a change to `obc_reader`'s color pipeline must move this test with it.
+    let bucket = |c: u16| obc_reader::rgb565_to_device64(c);
     let colors: BTreeSet<u16> = dusk
         .styles
         .iter()
