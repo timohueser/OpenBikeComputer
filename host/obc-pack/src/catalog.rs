@@ -388,6 +388,11 @@ pub struct RegionEntry {
     pub cell_count: BTreeMap<String, u32>,
     /// How many of those cells are `partial` (§8). `0` for fully covered curation.
     pub partial_cell_count: u32,
+    /// The same count per band. This additive v2 field lets a root-only consumer
+    /// distinguish normal coarse-context partials from detail-band warnings. Old
+    /// v2 roots may omit it, so deserialization defaults to an empty map.
+    #[serde(default)]
+    pub partial_cell_count_by_band: BTreeMap<String, u32>,
     /// Where the region's cell-id list lives (§6).
     pub cells_url: String,
     /// Size of that document, in bytes.
@@ -1522,12 +1527,14 @@ fn read_region(
     let mut bytes_by_band = BTreeMap::new();
     let mut cell_count = BTreeMap::new();
     let mut partial_cell_count = 0u32;
+    let mut partial_cell_count_by_band = BTreeMap::new();
     let mut total = 0u64;
     for band in &schema.bands {
         let listed = doc.cells.get(&band.id).map_or(&[][..], Vec::as_slice);
         let index = by_band.get(band.id.as_str()).expect("every band has an index");
         let mut ids = BTreeSet::new();
         let mut band_bytes = 0u64;
+        let mut band_partial_cell_count = 0u32;
         for text in listed {
             let cell = CellId::parse(text).map_err(|e| format!("{}: {e}", doc_path.display()))?;
             if cell.log2 != band.cell_log2 {
@@ -1559,7 +1566,7 @@ fn read_region(
             })?;
             band_bytes += entry.bytes;
             if entry.partial {
-                partial_cell_count += 1;
+                band_partial_cell_count += 1;
             }
         }
         if ids.is_empty() {
@@ -1570,8 +1577,10 @@ fn read_region(
             ));
         }
         total += band_bytes;
+        partial_cell_count += band_partial_cell_count;
         bytes_by_band.insert(band.id.clone(), band_bytes);
         cell_count.insert(band.id.clone(), ids.len() as u32);
+        partial_cell_count_by_band.insert(band.id.clone(), band_partial_cell_count);
         cells.insert(band.id.clone(), ids.into_iter().collect());
     }
     for band in doc.cells.keys() {
@@ -1619,6 +1628,7 @@ fn read_region(
         bytes_by_band,
         cell_count,
         partial_cell_count,
+        partial_cell_count_by_band,
         cells_url: format!("{base_url}/{rel_path}"),
         cells_bytes,
         cells_sha256,
@@ -1989,6 +1999,7 @@ pub fn catalog_schema() -> Value {
     region["cells_url"]["pattern"] = Value::from(URL_PATTERN);
     band_keyed_map(&mut defs["RegionEntry"]["properties"]["bytes_by_band"]);
     band_keyed_map(&mut defs["RegionEntry"]["properties"]["cell_count"]);
+    band_keyed_map(&mut defs["RegionEntry"]["properties"]["partial_cell_count_by_band"]);
 
     defs["Boundary"]["description"] = Value::from(BOUNDARY_DESCRIPTION);
     defs["Boundary"]["properties"]["rings"]["minItems"] = Value::from(1);

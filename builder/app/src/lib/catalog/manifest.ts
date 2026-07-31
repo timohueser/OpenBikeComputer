@@ -138,6 +138,9 @@ export interface RegionEntry {
     bytes_by_band: Record<string, number>;
     cell_count: Record<string, number>;
     partial_cell_count: number;
+    /** Additive-v2 per-band split. `null` only for an older v2 root that predates
+     *  the field; current producers always publish it. */
+    partial_cell_count_by_band: Record<string, number> | null;
     cells_url: string;
     cells_bytes: number;
     cells_sha256: string;
@@ -451,7 +454,14 @@ function parseRegions(v: unknown, where: string, bandIds: Set<string>): RegionEn
 
         const bytesByBand = intMap(o.bytes_by_band, `${at}.bytes_by_band`);
         const cellCount = intMap(o.cell_count, `${at}.cell_count`);
-        for (const band of [...Object.keys(bytesByBand), ...Object.keys(cellCount)]) {
+        const partialByBand = Object.hasOwn(o, "partial_cell_count_by_band")
+            ? intMap(o.partial_cell_count_by_band, `${at}.partial_cell_count_by_band`)
+            : null;
+        for (const band of [
+            ...Object.keys(bytesByBand),
+            ...Object.keys(cellCount),
+            ...Object.keys(partialByBand ?? {}),
+        ]) {
             if (!bandIds.has(band)) fail(`${at}: band ${JSON.stringify(band)} is not in schema.bands`);
         }
         const bytes = int(o, "bytes", at, 0);
@@ -465,6 +475,18 @@ function parseRegions(v: unknown, where: string, bandIds: Set<string>): RegionEn
         const cells = Object.values(cellCount).reduce((a, b) => a + b, 0);
         const partial = int(o, "partial_cell_count", at, 0);
         if (partial > cells) fail(`${at}: partial_cell_count ${partial} exceeds the region's ${cells} cells`);
+        if (partialByBand) {
+            const partialSum = Object.values(partialByBand).reduce((a, b) => a + b, 0);
+            if (partialSum !== partial) {
+                fail(`${at}: partial_cell_count_by_band sums to ${partialSum}, but partial_cell_count is ${partial}`);
+            }
+            for (const [band, count] of Object.entries(partialByBand)) {
+                const bandCells = Object.hasOwn(cellCount, band) ? cellCount[band] : 0;
+                if (count > bandCells) {
+                    fail(`${at}: partial_cell_count_by_band.${band} ${count} exceeds that band's ${bandCells} cells`);
+                }
+            }
+        }
 
         return {
             id,
@@ -475,6 +497,7 @@ function parseRegions(v: unknown, where: string, bandIds: Set<string>): RegionEn
             bytes_by_band: bytesByBand,
             cell_count: cellCount,
             partial_cell_count: partial,
+            partial_cell_count_by_band: partialByBand,
             cells_url: urlStr(o, "cells_url", at),
             cells_bytes: int(o, "cells_bytes", at, 0),
             cells_sha256: str(o, "cells_sha256", at, SHA256),
