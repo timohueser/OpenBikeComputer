@@ -329,8 +329,12 @@ host-tested `obc-ble` crate (`cargo test -p obc-ble`, pinned to `specs/vectors/`
   at the next boot (the map's tables are parsed once at startup and held for the session). A set
   mount opens and retains every shard, resolves one direct-read FAT extent table per shard, and
   places `SetShards<11>` in `.bss`; the board therefore mounts at most **11 shards** even though the
-  file format permits 32. A larger set, or one whose shard extent table cannot be built and verified,
-  is shown as **MAP UNREADABLE** rather than partially mounted. Geometry renders through the same
+  file format permits 32. Set-shard tables admit up to **64 FAT runs** (the standalone-map path
+  keeps its 128-run cap); a more fragmented shard is fixed by re-copying the publish tree to the
+  card. The parsed manifest is dropped after a synchronous mount, and the standalone/set extent
+  tables share one size/alignment-guarded `.bss` union because boot chooses exactly one map kind.
+  A larger set, or one whose shard extent table cannot be built and verified, is shown as
+  **MAP UNREADABLE** rather than partially mounted. Geometry renders through the same
   app `MapScene` path as one `.obcm`; POIs, hours, the navigation graph and on-device routing stay on
   the set's core shard. Every ride Finish on the map build
   writes `/tracks/RDnn.ORD` (byte-for-byte the S0 §7.2 ride object) — the only save artifact; the `ble`
@@ -367,8 +371,8 @@ host-tested `obc-ble` crate (`cargo test -p obc-ble`, pinned to `specs/vectors/`
   then zoom out onto the coarse shard. Roads, route ink, rider marker and guidance must remain
   continuous through both transitions. Repeat with a missing shard and with a set over 11 shards:
   both must stop at **MAP UNREADABLE**, never render the remaining files as a smaller map. This run
-  is also the RAM acceptance for #1033: the guarded release ELF leaves 41,952 B above linked
-  residents versus the last measured 35,808 B deep-path peak, so complete the ordinary
+  is also the RAM acceptance for #1033: the guarded release ELF leaves 53,392 B above linked
+  residents, 17,584 B beyond the last measured 35,808 B deep-path peak, so complete the ordinary
   route-load → ride → finish/save path while watching for `STKOF`/HardFault.
 - **Pairing** — passkey card on the panel typed on the phone → bond lands; power-cycle / app
   restart / walk-away → silent reconnect, no dialog; reflash `ble` → still no dialog. A **second
