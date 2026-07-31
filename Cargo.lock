@@ -2694,12 +2694,19 @@ name = "obc-usb-host"
 version = "0.1.0"
 dependencies = [
  "eframe",
+ "embedded-graphics",
  "obc-app",
+ "obc-ble",
+ "obc-formats",
  "obc-platform",
  "obc-ports",
+ "obc-reader",
+ "obc-render",
  "obc-replay",
+ "obcm-testkit",
  "rfd",
  "serialport",
+ "sha2",
 ]
 
 [[package]]
