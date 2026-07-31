@@ -259,7 +259,7 @@ impl Fixture {
                 force,
                 fail_fast: false,
                 bands: BandTable::parse(BANDS_JSON).expect("band table"),
-                schema_id: "bikepacking".into(),
+                schema_id: "testschema".into(),
                 schema_revision: 1,
             },
         }
@@ -505,7 +505,7 @@ fn a_skin_that_does_not_fit_the_schema_refuses_the_bake_before_any_cutting() {
             force: false,
             fail_fast: false,
             bands: BandTable::parse(BANDS_JSON).expect("band table"),
-            schema_id: "bikepacking".into(),
+            schema_id: "testschema".into(),
             schema_revision: 1,
         },
     }
@@ -514,6 +514,143 @@ fn a_skin_that_does_not_fit_the_schema_refuses_the_bake_before_any_cutting() {
     assert!(err.contains("stray") && err.contains("aeroway.runway"), "the error names the skin and the type: {err}");
     assert_eq!(cutter.calls.load(Ordering::SeqCst), 0, "and nothing was cut");
     assert!(!f.tree.exists(), "not even a tree");
+}
+
+/// A skin carrying **schema** keys is refused too, before any cutting, naming them.
+///
+/// `check_skin` cannot catch this: a parsed config that omits `lods` and one that
+/// restates the defaults are the same value. So the document's text is checked, and
+/// the alternative — quietly dropping the keys — is the failure worth avoiding: the
+/// skin's author would go on believing their document changes a ladder that was fixed
+/// when the cells were cut.
+#[test]
+fn a_skin_carrying_schema_data_refuses_the_bake_before_any_cutting() {
+    let f = fixture_dirs("skin-schema-keys");
+    let bossy = r#"{
+        "_meta": {"id": "bossy", "name": "Bossy", "description": "Thinks it sets the ladder.", "version": 1},
+        "lods": [{"max_mpp": null, "simplify": 0}, {"max_mpp": 20, "simplify": 0}, {"max_mpp": 4, "simplify": 0}],
+        "routing": {"min_component_edges": 4},
+        "features": {
+            "highway": { "residential": {"color": "0xF800", "weight": 2, "min_lod": 1} },
+            "natural": { "water": {"color": "0x001F", "weight": 1, "min_lod": 0} }
+        },
+        "marker": {"color": "0xF800"}
+    }"#;
+    let dir = f.dir.join("presets");
+    std::fs::write(dir.join("skins/bossy.json"), bossy).unwrap();
+    let skins = obc_bake::presets::load_skins(&dir, None).expect("both skins load as configs");
+    let refs: Vec<&StyleDoc> = skins.iter().collect();
+    let cutter = FixtureCutter::new();
+    let err = CellBakery {
+        regions: &f.regions,
+        schema: &f.schema,
+        skins: &refs,
+        source: &LocalExtracts::new(&f.extracts).with_snapshot(SNAPSHOT),
+        cutter: &cutter,
+        opts: CellBakeOptions {
+            out: f.tree.clone(),
+            force: false,
+            fail_fast: false,
+            bands: BandTable::parse(BANDS_JSON).expect("band table"),
+            schema_id: "testschema".into(),
+            schema_revision: 1,
+        },
+    }
+    .run(&Progress::silent())
+    .expect_err("a skin that states schema data must not be baked against");
+    assert!(err.contains("bossy.json"), "the error names the document: {err}");
+    for key in ["`lods`", "`routing`", "`features.*.*.min_lod`"] {
+        assert!(err.contains(key), "and every offending key, not just the first — missing {key}: {err}");
+    }
+    assert_eq!(cutter.calls.load(Ordering::SeqCst), 0, "and nothing was cut");
+}
+
+/// `--schema-id` and the document's `_meta.id` are one fact stated twice, so they are
+/// **checked against each other** rather than one overwriting the other.
+///
+/// The old behaviour stamped the flag into the tree's copy of the document, which made
+/// the disagreement unobservable: a typo in `--schema-id` published the bikepacking
+/// schema's cells under some other name, and a store's id is the identity a rider's
+/// already-downloaded cells get matched against.
+#[test]
+fn a_schema_id_that_disagrees_with_the_document_is_refused_not_overwritten() {
+    let f = fixture_dirs("schema-id");
+    let skins: Vec<&StyleDoc> = f.skins.iter().collect();
+    let cutter = FixtureCutter::new();
+    let err = CellBakery {
+        regions: &f.regions,
+        schema: &f.schema,
+        skins: &skins,
+        source: &LocalExtracts::new(&f.extracts).with_snapshot(SNAPSHOT),
+        cutter: &cutter,
+        opts: CellBakeOptions {
+            out: f.tree.clone(),
+            force: false,
+            fail_fast: false,
+            bands: BandTable::parse(BANDS_JSON).expect("band table"),
+            schema_id: "typoschema".into(),
+            schema_revision: 1,
+        },
+    }
+    .run(&Progress::silent())
+    .expect_err("the run must not publish this schema under another name");
+    assert!(err.contains("testschema") && err.contains("typoschema"), "the error names both: {err}");
+    assert!(
+        !f.tree.join(obc_bake::presets::SCHEMA_DOC).exists(),
+        "and no document was written claiming the wrong id"
+    );
+}
+
+/// A skin dropped from the run is **pruned** from a pre-existing tree.
+///
+/// The generator publishes whatever it finds in `skins/`, so a leftover from an
+/// earlier bake would be offered to riders as a current look over a store it may no
+/// longer fit — and narrowing `--skin` is exactly how an operator says "not that one
+/// any more". The directory and the catalog must not be able to disagree.
+#[test]
+fn a_skin_the_run_no_longer_publishes_is_pruned_from_the_tree() {
+    let f = fixture_dirs("skin-prune");
+    let second = r#"{
+        "_meta": {"id": "retiring", "name": "Retiring", "description": "Shipped once, then dropped.", "version": 1},
+        "features": {
+            "highway": { "residential": {"color": "0x001F", "weight": 2} },
+            "natural": { "water": {"color": "0xF800", "weight": 1} }
+        },
+        "marker": {"color": "0x001F"}
+    }"#;
+    let dir = f.dir.join("presets");
+    std::fs::write(dir.join("skins/retiring.json"), second).unwrap();
+    let both = obc_bake::presets::load_skins(&dir, None).expect("both skins load");
+    let bake = |skins: &[&StyleDoc]| {
+        CellBakery {
+            regions: &f.regions,
+            schema: &f.schema,
+            skins,
+            source: &LocalExtracts::new(&f.extracts).with_snapshot(SNAPSHOT),
+            cutter: &FixtureCutter::new(),
+            opts: CellBakeOptions {
+                out: f.tree.clone(),
+                force: false,
+                fail_fast: false,
+                bands: BandTable::parse(BANDS_JSON).expect("band table"),
+                schema_id: "testschema".into(),
+                schema_revision: 1,
+            },
+        }
+        .run(&Progress::silent())
+        .expect("the run completes")
+    };
+
+    bake(&both.iter().collect::<Vec<_>>());
+    let published = f.tree.join(obc_bake::presets::SKINS_DIR);
+    assert!(published.join("retiring.json").is_file(), "both skins land the first time");
+
+    // The second run publishes one — as `--skin testskin` would.
+    let kept: Vec<&StyleDoc> = both.iter().filter(|s| s.id == "testskin").collect();
+    bake(&kept);
+    assert!(published.join("testskin.json").is_file());
+    assert!(!published.join("retiring.json").exists(), "the dropped skin must not survive in the tree");
+    assert_eq!(f.catalog().root.skins.len(), 1, "and the catalog offers exactly what the directory holds");
 }
 
 /// The tree a bake leaves is one the v2 generator accepts and the verifier passes.
@@ -525,7 +662,7 @@ fn the_tree_generates_a_v2_catalog_that_verifies() {
 
     let generated = f.catalog();
     let root = &generated.root;
-    assert_eq!(root.schema.id, "bikepacking");
+    assert_eq!(root.schema.id, "testschema", "the published id is the schema document's own");
     assert_eq!(root.schema.revision, 1);
     assert_eq!(root.schema.obcm_version, obc_formats::obcm::VERSION, "read out of the cells' own headers");
     assert_eq!(root.cell_index.len(), 2, "one index per band");

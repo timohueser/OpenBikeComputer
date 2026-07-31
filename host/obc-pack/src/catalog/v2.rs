@@ -993,6 +993,69 @@ pub fn check_skin(schema: &Config, skin: &Config) -> Result<(), String> {
     check_skin_ids(&feature_type_ids(schema), &feature_type_ids(skin))
 }
 
+/// The presentation-only keys a style record in a skin may carry (`OBCC_Spec.md`
+/// §11.4). Everything else in a packer config decides which bytes get written, and a
+/// skin is stamped onto bytes that already exist.
+const SKIN_STYLE_KEYS: &[&str] = &["color", "color2", "weight", "z_index", "priority", "line_style"];
+
+/// Prove a skin **document** is presentation only: no schema keys, at either level.
+///
+/// [`check_skin`] compares two parsed [`Config`]s and therefore cannot see this at
+/// all — by the time a config exists, a missing `lods` and a `lods` restating the
+/// defaults are the same value, so a skin carrying a whole LOD ladder parses into
+/// something that looks exactly like a skin that carries none. The keys have to be
+/// caught in the JSON, before that information is thrown away.
+///
+/// Silently dropping them would be the worse failure: a skin is stamped onto cells
+/// that were cut at the *schema's* ladder, tolerances, merge passes and routing table,
+/// so a skin that thinks it changes any of those is a document whose author believes
+/// something false. The values would have no effect, the author would have no way to
+/// find that out, and the map would quietly not be the one they wrote. That is a new
+/// schema revision and a re-bake (epic #1016 D2), and the error says so — naming every
+/// offending key rather than the first, so one edit fixes the document.
+///
+/// `min_lod` is in the list for the same reason `lods` is: it decides the level a
+/// feature is first written at, which is a decision already baked into every cell.
+pub fn check_skin_document(json: &str, at: &str) -> Result<(), String> {
+    let doc: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| format!("{at}: {e}"))?;
+    let obj = doc.as_object().ok_or_else(|| format!("{at}: a skin document is a JSON object"))?;
+
+    let mut offenders: Vec<String> = obj
+        .keys()
+        .filter(|k| !matches!(k.as_str(), "_meta" | "features" | "marker"))
+        .map(|k| format!("`{k}`"))
+        .collect();
+    // `min_lod` hides one level down, per style record, and is the one a hand-written
+    // skin picks up most easily — it is on nearly every line of the schema it was
+    // copied from.
+    let mut culled: BTreeSet<&str> = BTreeSet::new();
+    if let Some(features) = obj.get("features").and_then(serde_json::Value::as_object) {
+        for values in features.values().filter_map(serde_json::Value::as_object) {
+            for style in values.values().filter_map(serde_json::Value::as_object) {
+                for key in style.keys() {
+                    if !SKIN_STYLE_KEYS.contains(&key.as_str()) {
+                        culled.insert(key.as_str());
+                    }
+                }
+            }
+        }
+    }
+    offenders.extend(culled.into_iter().map(|k| format!("`features.*.*.{k}`")));
+
+    if offenders.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "{at}: a skin is presentation only, and this one carries schema key(s): {}. A skin is stamped onto cells \
+         already cut at the schema's ladder, tolerances, merge passes and routing table, so these would have no \
+         effect — changing any of them is a new schema revision and a re-bake (OBCC_Spec.md §11.4). Remove them; a \
+         style record may carry {}.",
+        offenders.join(", "),
+        SKIN_STYLE_KEYS.iter().map(|k| format!("`{k}`")).collect::<Vec<_>>().join(", ")
+    ))
+}
+
 /// [`check_skin`] against the assignments themselves, so the generator can reuse it
 /// with the one it already read out of the tree's `schema.json`.
 fn check_skin_ids(want: &BTreeMap<String, u8>, have: &BTreeMap<String, u8>) -> Result<(), String> {
@@ -1069,6 +1132,7 @@ fn read_skins(dir: &Path, schema: &SchemaDoc) -> Result<Vec<SkinEntry>, String> 
         if meta.name.trim().is_empty() || meta.description.trim().is_empty() {
             return Err(format!("{}: `_meta.name` and `_meta.description` must be non-empty", path.display()));
         }
+        check_skin_document(&text, &path.display().to_string())?;
         let config = Config::parse(&text).map_err(|e| format!("{}: {e}", path.display()))?;
         let styles = skin_styles(&config, schema, &path)?;
         skins.push(SkinEntry {
