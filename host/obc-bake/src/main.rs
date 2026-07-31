@@ -19,7 +19,7 @@
 //!
 //! `--cells` selects the cell path (#1016 P2): the same curated regions, resolved to
 //! grid cells and published as an `OBCC_Spec.md` §11 catalog rather than as one
-//! artifact per (region × preset). It is a flag rather than a separate command
+//! whole-region artifact apiece. It is a flag rather than a separate command
 //! because the scoping — which regions, from which source, with which cache — is
 //! identical, and because the two paths will overlap for exactly as long as the
 //! migration does.

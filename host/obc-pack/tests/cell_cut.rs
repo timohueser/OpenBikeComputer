@@ -404,6 +404,13 @@ fn the_shipped_preset_still_meets_at_the_seam() {
 /// **When the schema is deliberately restyled, this test and its fixture go with the change** — it
 /// pins a migration, not a design. Until then it is the cheapest possible guard against the split
 /// having quietly moved a byte.
+///
+/// To check it is not vacuous, perturb one presentation value in the frozen fixture — e.g.
+/// `features.highway.primary.color` — and re-run: all 177 files differ, the sidecar and every cell.
+/// Do **not** reach for a different retired document to prove the same thing: pointing `RETIRED` at
+/// `high-detail.json` fails in `cut_with`, on `band "fine" claims LOD 3, past the ladder's 3
+/// level(s)` — that document has a shorter ladder than this test's band table, so the run dies
+/// before a single byte is compared and demonstrates nothing about the comparison.
 #[test]
 fn the_schema_cuts_the_corpus_byte_identically_to_the_retired_default_preset() {
     const TINY: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/tests/corpus/data/tiny.osm.pbf");
@@ -431,10 +438,49 @@ fn the_schema_cuts_the_corpus_byte_identically_to_the_retired_default_preset() {
     assert!(cells > 1, "the pin is only worth something if the fixture produced cells: {cells}");
     assert_eq!(cells, retired_cells, "the same cells, before and after the split");
     assert_eq!(new.keys().collect::<Vec<_>>(), old.keys().collect::<Vec<_>>(), "the same tree of paths");
-    for (path, bytes) in &new {
+    let differing: Vec<&str> = new.iter().filter(|(p, b)| *b != &old[*p]).map(|(p, _)| p.as_str()).collect();
+    assert!(
+        differing.is_empty(),
+        "{} of {} files differ, starting with {:?}: the schema/skin split changed what the packer sees, which it must not",
+        differing.len(),
+        new.len(),
+        &differing[..differing.len().min(5)]
+    );
+}
+
+/// The two retired preset documents are **frozen**, and their digests say so.
+///
+/// Both are load-bearing precisely because they are the real documents #1036 removed
+/// from the shelf, not stand-ins:
+///
+/// - `default.json` is the byte-identity reference above. Re-syncing it to whatever
+///   `schema.json` happens to say would turn that pin into a tautology — it would
+///   compare the schema against itself and pass no matter what the split had moved.
+/// - `high-detail.json` is the evidence behind "it could not have been a skin"
+///   (`catalog::v2::tests::the_retired_high_detail_preset_is_a_different_schema_not_a_skin`).
+///   Softened into something that *is* a skin, that test would keep passing while
+///   asserting nothing about the decision it documents.
+///
+/// Neither is a design anybody edits any more, so the only edits these files can
+/// receive are accidental — a repo-wide restyle, a formatter, an over-eager sync. The
+/// digest makes touching them a deliberate act with a failing test attached, and the
+/// only correct way past it is to say, in the commit, why the historical record moved.
+#[test]
+fn the_retired_preset_fixtures_are_frozen() {
+    for (name, digest) in [
+        ("default.json", "c8bda6265bb1422133132f590b00eb5a9c7e7814bc43350b184b1913176dda8f"),
+        ("high-detail.json", "deaaeb770677e3e67bf5784460c0c2fba5e48ec98f51b3eab795724be9061c77"),
+    ] {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/retired").join(name);
+        let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let mut hasher = <sha2::Sha256 as sha2::Digest>::new();
+        sha2::Digest::update(&mut hasher, &bytes);
+        let got = sha2::Digest::finalize(hasher).iter().map(|b| format!("{b:02x}")).collect::<String>();
         assert_eq!(
-            bytes, &old[path],
-            "{path} differs: the schema/skin split changed what the packer sees, which it must not"
+            got, digest,
+            "tests/retired/{name} changed. It is a frozen copy of a document #1036 retired, and the tests that read \
+             it are only worth anything while it stays verbatim — re-pin this digest only alongside a stated reason \
+             for moving the historical record."
         );
     }
 }

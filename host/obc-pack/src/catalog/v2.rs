@@ -936,28 +936,24 @@ fn ladder(config: &Config, bands: &[BandEntry], path: &Path) -> Result<Vec<LodEn
     Ok(out)
 }
 
-/// The canonical style-id assignment, read out of the config that assigned it.
+/// The canonical style-id assignment, read out of the config that assigned it —
+/// [`feature_type_ids`], plus the duplicate-id check and the id-keyed view of it.
 ///
 /// Returned sorted by id, which is also the order a style table is written in
 /// (`OBCM_Spec.md` §2) and the order a skin's entries follow.
 fn style_assignment(config: &Config, path: &Path) -> Result<(Vec<StyleAssignment>, BTreeMap<String, u8>), String> {
-    let mut by_type = BTreeMap::new();
-    let mut by_id: BTreeMap<u8, String> = BTreeMap::new();
-    for (tag_key, values) in &config.features {
-        for (tag_value, style) in values {
-            let feature_type = format!("{tag_key}.{tag_value}");
-            if let Some(other) = by_id.insert(style.id, feature_type.clone()) {
-                return Err(format!(
-                    "{}: style id {} is assigned to both `{other}` and `{feature_type}`",
-                    path.display(),
-                    style.id
-                ));
-            }
-            by_type.insert(feature_type, style.id);
-        }
-    }
+    let by_type = feature_type_ids(config);
     if by_type.is_empty() {
         return Err(format!("{}: no feature types — a schema with no styles draws nothing", path.display()));
+    }
+    // The same assignment read the other way round, which is also where a collision
+    // shows up: two feature types on one id would make the published style table
+    // ambiguous about which one a chunk's feature header meant.
+    let mut by_id: BTreeMap<u8, String> = BTreeMap::new();
+    for (feature_type, &id) in &by_type {
+        if let Some(other) = by_id.insert(id, feature_type.clone()) {
+            return Err(format!("{}: style id {id} is assigned to both `{other}` and `{feature_type}`", path.display()));
+        }
     }
     let styles = by_id.into_iter().map(|(id, feature_type)| StyleAssignment { id, feature_type }).collect();
     Ok((styles, by_type))
@@ -970,6 +966,10 @@ fn style_assignment(config: &Config, path: &Path) -> Result<(Vec<StyleAssignment
 /// about. `obc-pack` numbers feature types 1-based in config document order and those
 /// ids are referenced by every feature header in every chunk (`OBCM_Spec.md` §5.2), so
 /// the assignment is part of the cells' bytes.
+///
+/// The one place this walk lives: [`style_assignment`] and [`check_skin`] both read
+/// the assignment through here, so the generator and the producer-side check cannot
+/// come to disagree about what a config assigns.
 pub fn feature_type_ids(config: &Config) -> BTreeMap<String, u8> {
     let mut by_type = BTreeMap::new();
     for (tag_key, values) in &config.features {

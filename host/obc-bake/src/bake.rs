@@ -1,4 +1,6 @@
-//! The bake runner: (region × preset) → a tree `obc-pack catalog` accepts.
+//! The bake runner: one region, packed against the one schema, into a tree
+//! `obc-pack catalog` accepts. (It still loops over a list of style documents, which
+//! is what the v1 catalog's shape is — but since #1036 that list has one entry.)
 //!
 //! One job is: resolve the extract, decide whether anything changed, pack, **verify
 //! the artifact opens with the real reader**, and only then move it into the tree
