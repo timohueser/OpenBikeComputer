@@ -1037,6 +1037,14 @@ publish, truncated response, or stale cache can never be mistaken for a map.
 The root also states the OBCM version read from the cells themselves, making an
 unsupported device visible before a large download.
 
+Named regions carry their byte totals, cell counts, and partial-cell counts per
+band in that root. The builder can therefore price a region and distinguish a
+normal partial coarse-context cell from an incomplete detail or routing cell
+before fetching the region's satellite. The per-band partial split was added
+compatibly within OBCC v2: current bakeries publish it and its values sum to the
+region's total partial count, while both product hosts still accept an older v2
+root and defer that distinction until its pinned cell lists resolve.
+
 A region is not a prebuilt map. It is a drawable outline plus stored cell ids.
 The outline is presentation-only: the stored list avoids a simplification error
 or point-in-polygon disagreement dropping an edge cell. Boxes and GPX corridors
