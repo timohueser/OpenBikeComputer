@@ -230,13 +230,19 @@ addressed to the sender is not a guarantee. So the device enforces it:
   whole upload.
 - **An interrupted set leaves nothing to explain.** The device writes the
   manifest's name as a four-zero-byte placeholder before the first shard and fills
-  it in only at the very end, so a manifest with no magic is proof it was the one
-  writing — and a set copied on with a card reader never looks like that, because
-  a card reader copies a manifest that is already complete. A pulled cable deletes
-  the set immediately; a power cut is cleaned up at the next start-up. A rider
-  half-way through copying a set by hand is left strictly alone, which is the
-  direction to be wrong in: the alternative is deleting a map that was minutes
-  from working.
+  it in only at the very end, so a manifest whose first four bytes are *not* a
+  finished signature — all zeros, half-written, or not there yet — is proof the
+  device was the one writing it. A card reader never leaves that, because it
+  copies a manifest that is already complete, front to back. A pulled cable
+  deletes the set immediately; a power cut is cleaned up at the next start-up. A
+  rider half-way through copying a set by hand is left strictly alone — right
+  down to the id the next upload picks, which skips any name their copy has
+  already used. That is the direction to be wrong in: the alternative is deleting
+  a map that was minutes from working.
+- **Cancelling really cancels.** Because a set is several transfers, "stop" nearly
+  always arrives in the gap between two of them, where there is nothing in flight
+  to interrupt. The device takes it as abandoning the set: the staged pieces go
+  immediately, and the next set can start on the same connection.
 
 Because each piece is its own file, re-sending one that failed costs that one
 piece rather than the set — the only kind of resume this link offers, and the one
@@ -244,6 +250,15 @@ that matches what actually goes wrong. Resuming after the cable is pulled is a
 different thing and is not pretended at: the device would have to be able to say
 which pieces of which set it already holds, and that is a question the protocol
 does not yet have.
+
+One limit is worth stating rather than leaving to be discovered. Each piece
+announces how many pieces there are, which is what catches a sender that changes
+its mind mid-upload — but only when the new set is a *different* size. Two sets
+of the same size look identical piece by piece, because nothing in a piece's
+announcement says which set it belongs to. What catches that is the manifest at
+the end, which is checked against the files actually on the card and refused if it
+does not describe them; the set is then deleted whole. Later than an announcement,
+but still before anything becomes a map.
 
 Because the FAT layer the firmware uses creates 8.3 filenames only, a received
 map lands as `MP7.OBM` — the same trick the [reserved computed-route

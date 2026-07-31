@@ -389,7 +389,7 @@ A **volume set** ([`OBCA_Spec.md` §5](OBCA_Spec.md)) is one logical map spread
 over `1..=32` OBCM shards plus an OBCS manifest, so it is the first object on
 this link whose correctness lives *between* transfers. Each file is an ordinary
 upload — its own descriptor, its own whole-object CRC-32, its own commit — and
-the five map rules above apply to each of them unchanged. Four rules govern the
+the five map rules above apply to each of them unchanged. Six rules govern the
 sequence, and they are **normative**:
 
 1. **The `object_id` of a `mapShard` is not an object id.** It carries the set's
@@ -399,10 +399,23 @@ sequence, and they are **normative**:
    every filename from the set id and the index, and §5.4 makes the whole set one
    map with one identity — so the field is repurposed rather than the descriptor
    widened. A device MUST answer a pair outside those ranges with `notFound`.
-   Restating `shard_count` in **every** shard rather than only the first is what
-   lets a device refuse an over-large set at the first announce (rule 3) and what
-   makes a host switching sets mid-transfer a named error rather than a set
-   silently assembled out of two.
+   Restating `shard_count` in **every** shard rather than only the first buys two
+   things, and it is worth being exact about the second:
+   - a device can refuse an over-large set at the **first** announce (rule 3)
+     rather than after the whole upload;
+   - a `mapShard` whose `shard_count` **differs** from the set already in flight
+     MUST be refused with `error`, so a host that starts sending a
+     differently-shaped set mid-transfer is named rather than merged.
+
+   What the announce **cannot** see is a switch between two sets with the *same*
+   shard count: the pair names a file, not a set, and no field in the descriptor
+   identifies which set a shard belongs to. That case is caught at the manifest's
+   commit instead — rule 6 — which is later but is still before anything is a
+   map. Closing it at the announce would need a set identifier on the wire, i.e.
+   a descriptor change; it is left open deliberately, because §5.3 already
+   obliges a host to have proven its own set before offering a byte of it, and
+   the failure mode of a host that has not is an unmountable set rather than a
+   damaged one.
 2. **The manifest is new-only and last, and the device enforces it.** A `mapSet`
    upload sends `object_id = 0xFFFF`; a named id is answered `notFound`. A
    `mapSet` announced when **any** shard of the set in flight has not yet
@@ -417,13 +430,34 @@ sequence, and they are **normative**:
    the same "this catalog cannot take another entry" meaning `storageFull`
    already carries for routes and trips. Refusing at the manifest instead would
    cost the rider the whole upload. The reference firmware's ceiling is **11**
-   (its FAT handle budget); the format's is 32.
+   (its FAT handle budget); the format's is 32. A device with no id left to name
+   a new set answers the same `storageFull` at the same moment, for the same
+   reason: it is a catalog refusal, not a storage failure discovered mid-write.
 4. **`transferResult` correlation.** A shard's result echoes its **part**
    (`object_id` = the same packed pair), because that is what a host correlates
-   its transfer slot against and what says *which* file committed. The
-   **manifest's** result carries the **device-assigned set id** — the one moment a
-   set's identity crosses the wire, and the answer to "what did my upload
-   become".
+   its transfer slot against and what says *which* file committed. A host MUST
+   check it: a result naming a different part is not "this file committed", and
+   continuing past it would write a manifest over a set the two sides disagree
+   about. The **manifest's** result carries the **device-assigned set id** — the
+   one moment a set's identity crosses the wire, and the answer to "what did my
+   upload become".
+5. **A staged set can be abandoned, and `op=3` is how.** A set spans several
+   descriptors, so an abort most often arrives when *nothing is in flight* — in
+   the gap between two of them. A device MUST treat an `op=3` there as
+   abandoning the set in flight, not merely as a confirmed no-op: the session
+   closes and every file of the set is deleted, exactly as a dropped link would.
+   Without it a host that cancelled would be told `aborted` while gigabytes
+   stayed staged and every differently-shaped set went on being refused (rule 1)
+   until the transport was torn down. The answer is `aborted`, as it already is.
+6. **A shard after a committed manifest begins a new set.** Once a `mapSet` has
+   committed, the set it completed is closed: a later `mapShard` MUST NOT be
+   added to it, because its manifest names exactly the files it names and any
+   addition would make that manifest false. Such a shard opens a **new** set,
+   with a new device-assigned id, and is staged and reclaimed like any other.
+   This is also where a same-count set switch (rule 1) is caught: at the
+   manifest's commit a device re-checks every shard against the manifest's own
+   record of it, and MUST refuse a manifest that does not describe the files
+   beside it — deleting the whole set rather than leaving it half-present.
 
 **Atomicity, and what an interrupted set leaves.** A device MUST NOT let a
 half-received set be mountable, which §5.4 already guarantees (no manifest ⇒ no
@@ -431,13 +465,25 @@ map). What this section adds is the *cleanup* obligation: a device SHOULD
 reclaim a set whose upload it abandoned, and MUST NOT delete files it cannot
 prove are its own. The reference firmware does both with one mechanism — it
 creates `MS{id}.OBS` holding four zero bytes *before the first shard streams* and
-patches the `OBCS` magic in as the very last write of the set, so a zero-magic
-manifest is a torn upload and nothing else (a set arriving over a card reader is
-copied from a host that already holds a whole manifest, so its `.OBS` is either
-absent or complete). A dropped link or an `op=3` abort deletes the whole set
-immediately; a power cut is reclaimed by the boot sweep. Complete shard files
-with no manifest at all are left alone: §5.4 makes deleting orphans a MAY, and
-that shape is a rider mid-copy.
+patches the `OBCS` magic in as the very last write of the set. A manifest whose
+magic is **not whole** is therefore its own torn upload: all zeros (the
+placeholder), a strict prefix of `OBCS` (the commit's four-byte write split by a
+power cut), or shorter than four bytes at all (the token's create without its
+write). A set arriving over a card reader is copied from a host that already
+holds a finished manifest and writes it front to back, so its `.OBS` carries the
+whole magic from its first block — the shapes above are, to within one block of a
+copy that was itself interrupted, unreachable any other way, and a manifest in
+one of them cannot be read as a map by anyone regardless. A dropped link or an
+`op=3` abort deletes the whole set immediately; a power cut is reclaimed by the
+boot sweep. Complete shard files with no manifest at all are left alone: §5.4
+makes deleting orphans a MAY, and that shape is a rider mid-copy.
+
+A device MUST NOT let a set's *id allocation* undo that care. Whatever scheme
+assigns the `{id}` of the derived filenames, an id must be treated as taken while
+**any** file naming it is on the card — a manifest-less pile of shards included,
+since that is precisely the mid-copy shape the paragraph above protects. Minting
+such an id and then clearing it (§5.4's replace rule) would delete, at the next
+upload, the map the sweep deliberately spared.
 
 **Resume.** Per **file**, and free: shards are independent files, so a shard
 whose CRC failed is re-sent on its own while the rest stand. Across a
