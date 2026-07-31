@@ -205,17 +205,16 @@ in [`host/obc-bake/regions.toml`](host/obc-bake/regions.toml):
 
 ```sh
 # Inspect the curated list.
-cargo run --release --locked -p obc-bake -- regions
+obc bake regions
 
-# Bake one region into ./obc-bake.
-cargo run --release --locked -p obc-bake -- \
-    bake europe/germany/baden-wuerttemberg
+# Bake one region into $OBC_BAKE_TREE (default: ~/obc-bake).
+obc bake europe/germany/baden-wuerttemberg
 
 # With no region ids, bake every regions.toml entry into the same tree.
-cargo run --release --locked -p obc-bake -- bake
+obc bake
 
 # Verify catalog pins, cell headers, lockstep, and reader round-trips.
-cargo run --release --locked -p obc-bake -- verify obc-bake
+obc bake verify
 ```
 
 Several positional ids are baked together. This matters at borders: neighbouring
@@ -235,20 +234,19 @@ uploads cells and satellites first, verifies their remote sizes, and replaces
 `catalog.json` last:
 
 ```sh
-export OBC_MAPS_BASE_URL=https://maps.openbikecomputer.org
-export OBC_R2_ACCOUNT_ID=…
-export OBC_R2_BUCKET=…
-export OBC_R2_ACCESS_KEY_ID=…
-export OBC_R2_SECRET_ACCESS_KEY=…
-# Optional key prefix inside the bucket:
-export OBC_R2_PREFIX=…
+# Put OBC_MAPS_BASE_URL and OBC_R2_* in the gitignored tools/obc.local;
+# tools/obc.local.example contains the complete block.
 
 # Plan only (the default target is a dry run).
-cargo run --release --locked -p obc-bake -- publish obc-bake
+obc bake publish
 
 # Publish to Cloudflare R2; requires rclone.
-cargo run --release --locked -p obc-bake -- \
-    publish obc-bake --target r2
+obc bake publish --target r2
+
+# Once the deployed site uses the new prefix, preview and then apply removal of
+# the obsolete bucket-root catalog.json, regions/, and presets/ objects.
+obc bake remove-old-r2
+obc bake remove-old-r2 --apply
 ```
 
 When `OBC_R2_PREFIX` is set, `OBC_MAPS_BASE_URL` must be the public URL of that
@@ -257,10 +255,10 @@ same prefix. For example, `OBC_R2_PREFIX=cell-catalog` pairs with
 in `OBC_CATALOG_URL` is then
 `https://maps.openbikecomputer.org/cell-catalog/catalog.json`.
 
-Use `--out PATH` on `bake` or pass that path instead of `obc-bake` to
-`verify` and `publish`. `--source DIR` uses local Geofabrik-shaped
+Set `OBC_BAKE_TREE` in `tools/obc.local` to move the operator tree. An explicit
+tree may also follow `verify` or `publish`. `--source DIR` uses local Geofabrik-shaped
 `.osm.pbf` and `.poly` inputs, while the default downloads and caches them.
-Run `obc-bake help` for the complete operator surface.
+Run `obc bake help` for the complete operator surface.
 
 ### Web builder and desktop app
 
