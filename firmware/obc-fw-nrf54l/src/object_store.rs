@@ -395,6 +395,27 @@ const LIST_BUF_LEN: usize = {
 // (the ride loop's catalog scan assigns the *same* session ids — see `Storage::sideload_id`).
 use crate::sd::SIDELOAD_ID_BASE;
 
+/// The one place a volume-set refusal becomes a wire status (issue #1039). `obc_app::set_upload`
+/// names the *reason* so its rules can be tested without a wire vocabulary; this maps each onto the
+/// §4.3 status a host already knows how to read:
+///
+/// - a part field that names no file, or a manifest with no set in flight, is a client error about
+///   an object that does not exist → `notFound` / `error`, the same pair a bad id gets;
+/// - a set past this board's shard ceiling is a **catalog** it cannot index another entry in, which
+///   is exactly what `storageFull` means in §4.3 (the route cap, the trip cap) — and like those, it
+///   is refused at descriptor-open before a byte streams, so the host can say "this device cannot
+///   take a map that large" instead of failing at the end of a multi-gigabyte upload;
+/// - a manifest sent before its shards is a protocol-order error, not a storage one → `error`.
+const fn set_reject_status(reject: obc_app::SetReject) -> TransferStatus {
+    match reject {
+        obc_app::SetReject::Part => TransferStatus::NotFound,
+        obc_app::SetReject::Shards => TransferStatus::StorageFull,
+        obc_app::SetReject::Mismatch | obc_app::SetReject::ManifestEarly | obc_app::SetReject::Length => {
+            TransferStatus::Error
+        }
+    }
+}
+
 pub struct ObjectStore {
     /// The persisted settings, loaded once at boot — the config plane's read/modify cache. The SD
     /// card and the RRAM store themselves are **not** owned here: they live in the shared
@@ -433,6 +454,18 @@ pub struct ObjectStore {
     trip_total: u16,
     /// The built list / diagnostics object a download streams from.
     list_buf: [u8; LIST_BUF_LEN],
+    /// The **volume set** being received, if any (issue #1039). A set is several transfers, so
+    /// unlike every other object type it needs state that outlives one descriptor: which set id
+    /// this device minted, how many shards it will have, and which of them have committed. That is
+    /// what makes `OBCA_Spec.md` §5.4's manifest-last rule enforceable rather than merely
+    /// documented — see `obc_app::set_upload`. Eight bytes.
+    ///
+    /// Deliberately **not** dropped by [`link_reset`](Self::link_reset), which runs on either
+    /// transport's teardown. It is closed by [`set_manifest_finish`](Self::set_manifest_finish)
+    /// (the set committed, or its manifest was refused and the set deleted with it) and by
+    /// [`set_upload_abort`](Self::set_upload_abort) — the cable's own teardown, and the `op=3`
+    /// abort that reaches it.
+    set_upload: Option<obc_app::SetUpload>,
 }
 
 impl ObjectStore {
@@ -454,6 +487,7 @@ impl ObjectStore {
             ride_total: 0,
             trip_total: 0,
             list_buf: [0; LIST_BUF_LEN],
+            set_upload: None,
         };
         store.rescan(shared);
         store.rescan_rides(shared);
@@ -966,6 +1000,20 @@ impl ObjectStore {
     /// The whole link dropped, or the CoC dropped mid-upload, or the app aborted (op 3): discard
     /// the partial upload and release any open storage handles a cancelled future couldn't.
     /// Uploads don't resume, so nothing is kept — the app re-sends from the start.
+    ///
+    /// **This runs on *either* transport's teardown**, which is the fact everything below turns on:
+    /// a phone walking out of range must not disturb a transfer the cable is running. Two things
+    /// follow, and both are load-bearing rather than tidy (issue #1039):
+    ///
+    /// - A volume set is **not** torn down here, for the same reason `map_upload_abort` is not: it
+    ///   is gigabytes, and only the cable's own teardown knows the cable went away. The USB data
+    ///   plane owns that cleanup at the two points that know it — `discard_upload` mid-transfer,
+    ///   and `set_upload_abort` beside this call on endpoint disable.
+    /// - `upload_discard` no longer *means* "close whatever file is open". The storage handle
+    ///   carries its owner (`sd::UploadOwner`), so this closes the temp and only the temp; a map or
+    ///   a set streaming on the other wire keeps its handle. Before that, this call closed the
+    ///   cable's file and the next append failed into a discard that deleted the whole upload —
+    ///   the same bug the set teardown above was moved out of here to avoid, one layer down.
     pub fn link_reset(&mut self, shared: &mut SharedStore) {
         self.upload_discard(shared);
         if let Some(storage) = &mut shared.storage {
@@ -973,7 +1021,8 @@ impl ObjectStore {
         }
     }
 
-    /// Abort/interrupt: discard the in-flight temp.
+    /// Abort/interrupt: discard the in-flight **temp**. A map or set stream owns its own handle and
+    /// its own teardown (`sd::UploadOwner`) — see [`link_reset`](Self::link_reset).
     pub fn upload_discard(&mut self, shared: &mut SharedStore) {
         if let Some(storage) = &mut shared.storage {
             storage.upload_abort();
@@ -1314,6 +1363,192 @@ impl ObjectStore {
             storage.save_selected_map(&name);
         }
         TransferStatus::Committed
+    }
+
+    // ==================== the volume-set upload (issue #1039) ====================
+    //
+    // The set path is the map path with one thing added: memory between transfers. Each file — every
+    // shard, then the manifest — streams exactly as a single map does (straight into its final 8.3
+    // name, format magic held back, patched in at commit). What the session holds is the *order*,
+    // because `OBCA_Spec.md` §5.4's rule is about order and a device that only saw one transfer at a
+    // time could not check it.
+
+    /// Validate + arm a **shard** upload (`OBCA_Spec.md` §5.1). The map guards run unchanged —
+    /// long enough to be an OBCM, and a card with room to spare — plus the three the session owns
+    /// (`obc_app::shard_announce`): a part field that names a real file of a set, a shard count
+    /// inside this board's [`SD_SET_MAX_SHARDS`](crate::sd::SD_SET_MAX_SHARDS) ceiling, and
+    /// agreement with the set already in flight.
+    ///
+    /// The free-space guard is necessarily **per file**: the device is not told the set's total
+    /// until the manifest, which by §5.4 is last. A host has the whole projection before it starts
+    /// (§5.7 makes that mandatory) and is the right place to refuse a set that cannot fit; this is
+    /// the backstop, and it is the same backstop a single map gets.
+    ///
+    /// Note what is *not* checked: `object_id` is not an object id here (see `obc_ble::SetPart`),
+    /// so `map_announce_reject`'s new-only clause would be nonsense and is deliberately not reused.
+    /// A shard has no id to target, and the set it belongs to is the one in flight.
+    pub fn set_shard_open(
+        &self,
+        shared: &SharedStore,
+        desc: &TransferControl,
+    ) -> Result<(Receiver, obc_ble::SetPart), TransferStatus> {
+        let Some(storage) = shared.storage.as_ref() else { return Err(TransferStatus::Error) };
+        let Some(part) = obc_ble::SetPart::decode(desc.object_id) else {
+            return Err(TransferStatus::NotFound);
+        };
+        let fresh = obc_app::shard_announce(
+            self.set_upload.as_ref(),
+            part.shard_count,
+            part.index,
+            crate::sd::SD_SET_MAX_SHARDS as u8,
+        )
+        .map_err(set_reject_status)?;
+        // A set with no id left to mint is refused **here**, at the announce, rather than at the
+        // first byte: the answer is the same `storageFull` the shard ceiling gets — a catalog that
+        // cannot take another entry, §4.3's own meaning — and the host is told before it opens the
+        // pipe instead of after a red storage-failed card. `set_shard_begin` keeps the check as a
+        // backstop, because the id is minted there and the card can change under a slow host.
+        if fresh && storage.next_set_id_from_scan() > obc_formats::obcs::MAX_SET_ID {
+            return Err(TransferStatus::StorageFull);
+        }
+        if desc.total_len < obc_formats::obcm::HEADER_LEN as u32 {
+            return Err(TransferStatus::Error);
+        }
+        if let Some(free) = storage.card_free_bytes() {
+            if desc.total_len as u64 + crate::sd::MAP_FREE_HEADROOM > free {
+                return Err(TransferStatus::StorageFull);
+            }
+        }
+        Receiver::new(desc).map(|rx| (rx, part)).map_err(|_| TransferStatus::Error)
+    }
+
+    /// Validate + arm the **manifest** upload — `OBCA_Spec.md` §5.4's manifest-last rule, enforced
+    /// before a byte streams (`obc_app::manifest_announce`). New-only like a map, so a named
+    /// `object_id` is `notFound`: the manifest is the set's identity, not a slot to write into.
+    pub fn set_manifest_open(&self, shared: &SharedStore, desc: &TransferControl) -> Result<Receiver, TransferStatus> {
+        if shared.storage.is_none() {
+            return Err(TransferStatus::Error);
+        }
+        if desc.object_id != TransferControl::NEW_OBJECT_ID {
+            return Err(TransferStatus::NotFound);
+        }
+        obc_app::manifest_announce(self.set_upload.as_ref(), desc.total_len).map_err(set_reject_status)?;
+        Receiver::new(desc).map_err(|_| TransferStatus::Error)
+    }
+
+    /// Open the card file for one armed shard — called by the data plane at the first streamed
+    /// byte, exactly like [`map_upload_begin`](Self::map_upload_begin). Mints the set id and writes
+    /// the in-flight token on the *first* shard of a set; joins the open session otherwise.
+    /// Returns the set id, which the data plane carries to the commit.
+    pub fn set_shard_begin(&mut self, shared: &mut SharedStore, part: obc_ble::SetPart) -> Option<u16> {
+        let id = match self.set_upload {
+            Some(session) => session.id(),
+            None => {
+                let id = shared.storage.as_ref()?.next_set_id_from_scan();
+                // The backstop behind `set_shard_open`'s announce-time refusal: the host was
+                // already told `storageFull` before the pipe opened, so reaching this means the
+                // card changed under a slow host.
+                if id > obc_formats::obcs::MAX_SET_ID {
+                    defmt::warn!("store: volume-set id space exhausted — refusing the upload");
+                    return None;
+                }
+                if !shared.storage.as_mut()?.set_upload_begin(id) {
+                    return None;
+                }
+                self.set_upload = Some(obc_app::SetUpload::new(id, part.shard_count));
+                id
+            }
+        };
+        shared.storage.as_mut()?.set_shard_begin(id, part.index as usize).then_some(id)
+    }
+
+    /// One shard's bytes have all arrived: verify the whole-object CRC, patch the held-back OBCM
+    /// magic in, and record the shard as committed in the session — the fact
+    /// `obc_app::manifest_announce` later reads to decide whether the manifest may be sent.
+    ///
+    /// A failed shard leaves the **session** open. Shards are independent files (§5.4), so the
+    /// honest recovery is for the host to re-send this one rather than the gigabytes beside it.
+    pub fn set_shard_finish(
+        &mut self,
+        shared: &mut SharedStore,
+        rx: &Receiver,
+        id: u16,
+        part: obc_ble::SetPart,
+        magic: [u8; 4],
+    ) -> TransferStatus {
+        let outcome = match rx.outcome() {
+            Some(o) => o,
+            None => return TransferStatus::Error, // caller bug: not complete
+        };
+        if outcome.status != TransferStatus::Committed {
+            if let Some(storage) = &mut shared.storage {
+                storage.set_shard_discard(id, part.index as usize);
+            }
+            return outcome.status;
+        }
+        let Some(storage) = &mut shared.storage else { return TransferStatus::Error };
+        if storage.set_shard_commit(id, part.index as usize, magic).is_none() {
+            return TransferStatus::Error;
+        }
+        if let Some(session) = &mut self.set_upload {
+            session.mark(part.index);
+        }
+        TransferStatus::Committed
+    }
+
+    /// Open the card file for the armed manifest — the same `MS{id}.OBS` the session's token
+    /// already occupies, truncated back to its four zero bytes.
+    pub fn set_manifest_begin(&mut self, shared: &mut SharedStore) -> Option<u16> {
+        let id = self.set_upload.as_ref()?.id();
+        shared.storage.as_mut()?.set_manifest_begin(id).then_some(id)
+    }
+
+    /// **The set's commit point.** Verify the whole-object CRC, then hand the held-back `OBCS`
+    /// magic to the card, which re-reads the manifest, validates it against §5.3 *and* against the
+    /// shards actually present, and only then writes those four bytes. On success the set becomes
+    /// the card's selected map, exactly as a committed single map does.
+    ///
+    /// Either way the session closes: a set that committed is finished, and one whose manifest was
+    /// refused has already been deleted whole — leaving it half-present is the state §5.4 exists to
+    /// make impossible.
+    pub fn set_manifest_finish(
+        &mut self,
+        shared: &mut SharedStore,
+        rx: &Receiver,
+        id: u16,
+        magic: [u8; 4],
+    ) -> TransferStatus {
+        let outcome = match rx.outcome() {
+            Some(o) => o,
+            None => return TransferStatus::Error, // caller bug: not complete
+        };
+        self.set_upload = None;
+        if outcome.status != TransferStatus::Committed {
+            if let Some(storage) = &mut shared.storage {
+                storage.set_upload_abort(id);
+            }
+            return outcome.status;
+        }
+        let Some(storage) = &mut shared.storage else { return TransferStatus::Error };
+        if storage.set_manifest_commit(id, magic).is_none() {
+            return TransferStatus::Error;
+        }
+        if let Some(name) = obc_formats::obcs::manifest_name(id) {
+            if let Ok(short) = ShortFileName::create_from_str(name.as_str()) {
+                storage.save_selected_map(&short);
+            }
+        }
+        TransferStatus::Committed
+    }
+
+    /// Abandon the set in flight: close the session and delete every file of it, token first
+    /// (`OBCA_Spec.md` §5.4's ordering, executed by `obc_formats::obcs::delete_plan`). A no-op when
+    /// no set is open, so the link-reset path can call it unconditionally.
+    pub fn set_upload_abort(&mut self, shared: &mut SharedStore) {
+        let Some(session) = self.set_upload.take() else { return };
+        if let Some(storage) = &mut shared.storage {
+            storage.set_upload_abort(session.id());
+        }
     }
 
     // ==================== downloads ====================

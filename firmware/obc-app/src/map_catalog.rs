@@ -125,15 +125,31 @@ pub fn newest_set(maps: &[MapChoice]) -> Option<usize> {
         .map(|(i, _)| i)
 }
 
-/// The boot fault to show when the loop ends up with no map to stream from.
+/// The boot fault to show when the loop ends up with no map to stream from, from the catalog plus
+/// `unlistable` — how many map-named files in the card root the scan could **not** turn into catalog
+/// entries (no `OBCM` magic, too short to hold a header, unopenable, or a volume set whose shards do
+/// not validate).
 ///
-/// **NO MAP is only honest when the card holds none.** [`choose_map`]'s clause 4 exists precisely to
-/// return a map this build cannot open, so that the rider sees *MAP UNREADABLE* — the screen that
-/// says "the file is there and I can't use it" — rather than being sent looking for a file that is
-/// sitting in the card root. A volume set is the sharp case: this build lists it, sizes it, and
-/// declines to mount it, so a rider with 8 GB of set on the card must never be told there is no map.
-pub fn boot_fault(maps: &[MapChoice]) -> crate::BootFault {
-    if maps.is_empty() {
+/// **NO MAP is only honest when the card holds nothing that names a map.** [`choose_map`]'s clause 4
+/// exists precisely to return a map this build cannot open, so that the rider sees *MAP UNREADABLE* —
+/// the screen that says "the file is there and I can't use it" — rather than being sent looking for a
+/// file that is sitting in the card root. A volume set is the sharp case: this build lists it, sizes
+/// it, and declines to mount it, so a rider with 8 GB of set on the card must never be told there is
+/// no map.
+///
+/// `unlistable` extends that same honesty to the files the catalog never sees. Dropping them from the
+/// catalog is right — the renderer must not try to parse half a map, and the id allocator must be
+/// free to reuse a torn upload's name — but each one still leaves a map-named file in the root that
+/// the rider *can* see. Counting them changes exactly one thing: which sentence the fault card puts
+/// on glass.
+///
+/// The consequence, stated rather than discovered: an **interrupted upload** — the device's own
+/// held-back-magic placeholder — now reports *MAP UNREADABLE* rather than *NO MAP*. That is the
+/// honest report of it. There is a several-hundred-megabyte `MP{id}.OBM` on the card, this build
+/// cannot open it, and "re-copy it to the card" is the right instruction for a transfer that has to
+/// be repeated. An empty card is still the only *NO MAP*.
+pub fn boot_fault(maps: &[MapChoice], unlistable: usize) -> crate::BootFault {
+    if maps.is_empty() && unlistable == 0 {
         crate::BootFault::NoMap
     } else {
         crate::BootFault::BadMap
@@ -344,15 +360,33 @@ mod tests {
     /// **MAP UNREADABLE** screen; only a card that really holds nothing gets **NO MAP**.
     #[test]
     fn a_card_holding_an_unusable_map_says_unreadable_not_absent() {
-        assert_eq!(boot_fault(&[]), crate::BootFault::NoMap, "an empty catalog is the only NO MAP");
+        assert_eq!(boot_fault(&[], 0), crate::BootFault::NoMap, "an empty card is the only NO MAP");
 
         // A card holding only a volume set: 8 GB that this build lists, sizes, and cannot mount.
         let maps = [uploaded_set(7)];
         assert_eq!(choose_map(&maps), Some(0), "clause 4 still returns it");
-        assert_eq!(boot_fault(&maps), crate::BootFault::BadMap);
+        assert_eq!(boot_fault(&maps, 0), crate::BootFault::BadMap);
 
         // The pre-existing case the same rule already covered: a wrong-version single map.
-        assert_eq!(boot_fault(&[uploaded(3, false)]), crate::BootFault::BadMap);
+        assert_eq!(boot_fault(&[uploaded(3, false)], 0), crate::BootFault::BadMap);
+    }
+
+    /// The catalog can be empty while the card is not: a map file that never parsed is dropped by
+    /// the scan, and it is still a file the rider can see in the root. *NO MAP* would send them
+    /// hunting for it.
+    #[test]
+    fn a_map_file_the_scan_could_not_list_is_still_a_map_on_the_card() {
+        assert_eq!(
+            boot_fault(&[], 1),
+            crate::BootFault::BadMap,
+            "one unparseable MP{{id}}.OBM and an otherwise empty catalog is MAP UNREADABLE"
+        );
+        assert_eq!(boot_fault(&[], 32), crate::BootFault::BadMap, "…and so is a whole card of them");
+
+        // It never flips the answer the other way: a catalog with maps in it was already BadMap by
+        // the time this rule is consulted at all (the loop only asks when nothing streams).
+        assert_eq!(boot_fault(&[uploaded(3, false)], 2), crate::BootFault::BadMap);
+        assert_eq!(boot_fault(&[uploaded_set(7)], 1), crate::BootFault::BadMap);
     }
 
     /// The safety-critical classification: a shard is a valid OBCM file and must still never be
