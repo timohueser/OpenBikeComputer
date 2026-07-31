@@ -186,19 +186,16 @@ fn run_bake(args: &[String]) -> Result<(), String> {
     };
 
     let presets_dir = PathBuf::from(flags.get("presets-dir").unwrap_or("builder/presets"));
+    // Both retired flags are refused **before** the path split, because both paths used
+    // to accept one of them and a caller that keeps passing one would otherwise get a
+    // bake of *something else* with no hint that its flag stopped meaning anything:
+    // `--preset <id>` picked from the v1 preset shelf, and `--schema-preset <id>` (the
+    // #1025 cell-path spelling) picked which shelf entry was the schema. Neither has an
+    // answer any more — there is one schema, and a look is a skin stamped at assembly
+    // time — so both are an error rather than a no-op, on `--cells` as much as on v1.
+    check_retired_style_flags(&flags)?;
     if flags.has("cells") {
         return run_cell_bake(&flags, out, regions, &presets_dir);
-    }
-    // Loud rather than ignored: `--preset <id>` used to pick one of several shipped
-    // presets, and a caller still passing it (a script, a workflow input) would
-    // otherwise get a bake of *something else* and no hint that its flag stopped
-    // meaning anything.
-    if !flags.all("preset").is_empty() {
-        return Err(
-            "`--preset` retired with the preset shelf (#1036): there is one schema, and a look is a skin stamped at \
-             assembly time. Drop the flag to bake against `<presets-dir>/schema.json`."
-                .to_string(),
-        );
     }
     // One document, one artifact per region: the schema is the only style document
     // that can pack anything (a skin has no ladder and no routing table).
@@ -240,6 +237,27 @@ fn run_bake(args: &[String]) -> Result<(), String> {
             summary.uncovered_regions.len()
         ))
     }
+}
+
+/// Refuse the two style-selection flags the schema/skin split retired (#1036).
+///
+/// Named separately from the flag walk so the two paths cannot drift apart again: a
+/// guard that lives inside one branch is a guard the other branch does not have.
+fn check_retired_style_flags(flags: &Flags) -> Result<(), String> {
+    for (flag, was) in
+        [("preset", "picked one of the shipped style presets"), ("schema-preset", "picked which preset was the schema")]
+    {
+        if !flags.all(flag).is_empty() {
+            return Err(format!(
+                "`--{flag}` retired with the preset shelf (#1036): it {was}, and there is now exactly one schema \
+                 (`<presets-dir>/{}`) plus a set of skins in `<presets-dir>/{}/`. Drop the flag; on the cell path \
+                 pick a look with `--skin ID` instead.",
+                obc_bake::presets::SCHEMA_DOC,
+                obc_bake::presets::SKINS_DIR,
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// `obc-bake bake --cells …` — the cell path (#1016 P2).
