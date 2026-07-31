@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Bundle-size budgets for the hosted builder's wasm bridges.
 
-Two modules, same argument. `apps/obc-web-convert` (#896) is what a visitor downloads the moment
-they drop a route; `apps/obc-web-preview` (#899) is what renders the preset cards. Both are
+Three modules, same argument. `apps/obc-web-convert` (#896) is what a visitor downloads the moment
+they drop a route; `apps/obc-web-preview` (#899) is what renders the preset cards;
+`apps/obc-web-assemble` (#1034) is what turns downloaded map cells into a map. All three are
 reached through a dynamic import, so each is its own chunk rather than part of the initial page —
-and a silent size regression in either is a product regression: the thing stops feeling instant.
-CI runs this right after each `wasm-pack build`, on the very bytes it then hands to the frontend
-job.
+and a silent size regression in either of the first two is a product regression: the thing stops
+feeling instant. CI runs this right after each `wasm-pack build`, on the very bytes it then hands
+to the frontend job.
 
 What is measured, and why:
 
@@ -60,15 +61,33 @@ from pathlib import Path
 #
 # Same ~10 % headroom, same philosophy: a toolchain bump must not turn a green PR red, but linking
 # `obc-app` or a second renderer has to be argued for.
+#
+# --- obc-web-assemble ------------------------------------------------------------------------
+#
+# Measured 2026-07-31 on the initial P4b artifact (wasm-pack 0.15.0 / wasm-opt -Oz): 434,476 B raw
+# wasm + 20,474 B glue -> 184,441 B gzipped. Three times the other two, and it should be: this one
+# links the whole OBCA assembly engine (`obcm-assemble`'s graft, POI merge, nav rewrite, shard
+# planner and §4.8 verify pass) plus `obc-reader`'s decoder, SHA-256, and serde/serde_json for the
+# schema and skin documents. It is a *program*, not a converter.
+#
+# The budget is set differently from the other two on purpose. Those are latency budgets — they
+# guard the moment a visitor drops a file or hovers a preset card, where tens of KB are felt. This
+# module is fetched when someone has already chosen to assemble a map they are about to download
+# hundreds of MB of cells for, so 180 KB is not the cost that matters. What the budget is here for
+# is the *structural* regression: linking `obc-pack` (libGEOS), a second renderer, or the whole app.
+# Hence ~10 % headroom over the measurement, same as the others: enough that a toolchain bump never
+# turns a green PR red, far too little to absorb another crate.
 BUDGETS = {
     "convert": {"gzipped": 62 * 1024, "raw_wasm": 112 * 1024},
     "preview": {"gzipped": 66 * 1024, "raw_wasm": 138 * 1024},
+    "assemble": {"gzipped": 200 * 1024, "raw_wasm": 480 * 1024},
 }
 
 #: Where each module's wasm-pack output lands in the frontend.
 PKG_DIRS = {
     "convert": Path("builder/app/src/lib/convert/pkg"),
     "preview": Path("builder/app/src/lib/preview/pkg"),
+    "assemble": Path("builder/app/src/lib/assemble/pkg"),
 }
 
 
