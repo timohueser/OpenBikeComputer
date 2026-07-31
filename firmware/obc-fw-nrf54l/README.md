@@ -371,8 +371,8 @@ host-tested `obc-ble` crate (`cargo test -p obc-ble`, pinned to `specs/vectors/`
   then zoom out onto the coarse shard. Roads, route ink, rider marker and guidance must remain
   continuous through both transitions. Repeat with a missing shard and with a set over 11 shards:
   both must stop at **MAP UNREADABLE**, never render the remaining files as a smaller map. This run
-  is also the RAM acceptance for #1033: the guarded release ELF leaves 53,392 B above linked
-  residents, 17,584 B beyond the last measured 35,808 B deep-path peak, so complete the ordinary
+  is also the RAM acceptance for #1033: the guarded release ELF leaves 53,400 B above linked
+  residents, 17,592 B beyond the last measured 35,808 B deep-path peak, so complete the ordinary
   route-load → ride → finish/save path while watching for `STKOF`/HardFault.
 - **Pairing** — passkey card on the panel typed on the phone → bond lands; power-cycle / app
   restart / walk-away → silent reconnect, no dialog; reflash `ble` → still no dialog. A **second
