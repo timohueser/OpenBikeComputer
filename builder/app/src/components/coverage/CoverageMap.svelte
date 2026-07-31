@@ -11,7 +11,7 @@
     // resolution object identity.
 
     import { onDestroy, onMount, tick } from "svelte";
-    import { coverageRings, mergeCellRects } from "../../lib/catalog/v2/outline";
+    import { coverageRings, mergeCellRects } from "../../lib/catalog/outline";
     import {
         degreesToUbox,
         detailBandId,
@@ -515,7 +515,7 @@
         color: var(--coral);
     }
 
-    /* app.css drops Leaflet's zoom control 58px for the v1 panel's search bar;
+    /* app.css drops Leaflet's zoom control 58px for the old panel's search bar;
        this pane has the tool rail there instead. The offset tucks the control
        directly under the rail (4 × 32px buttons + gaps + padding + 12px top
        ≈ 160px) rather than parking it mid-pane — which is where a fixed

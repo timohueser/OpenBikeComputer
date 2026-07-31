@@ -1,7 +1,7 @@
 name: Bake
 
-# The bakery (B1 #898): build the curated regions once, centrally, and publish them
-# as static files an unbacked site can hand to a device.
+# Build catalog cells once, centrally, so the website and desktop app can select,
+# download, and assemble the same verified inputs.
 #
 # ── READ THIS BEFORE ADDING A COUNTRY TO THE MATRIX ────────────────────────────────
 #
@@ -12,26 +12,26 @@ name: Bake
 # each. There is no flag that fixes that.
 #
 # So this workflow is **one caller** of `obc-bake`, deliberately sized for the small
-# end of the shelf: city-states and small Bundesländer (Bremen, Hamburg, Berlin,
+# end of the curated list: city-states and small Bundesländer (Bremen, Hamburg, Berlin,
 # Saarland), refreshes of already-cached regions, and — the job that runs on every
 # schedule regardless — the published-catalog version guard. The CLI is the product;
 # it runs the same way on a workstation, which is where Germany, Bayern, NRW,
 # Austria and Switzerland are baked:
 #
 #     cargo run --release -p obc-bake -- bake --out ~/bake --summary-json ~/bake/run.json
-#     cargo run --release -p obc-bake -- publish ~/bake \
-#         --base-url https://maps.openbikecomputer.org --target r2
+#     OBC_MAPS_BASE_URL=https://maps.openbikecomputer.org/cell-catalog \
+#       cargo run --release -p obc-bake -- publish ~/bake --target r2
 #
 # Nothing in `obc-bake` assumes CI: no runner-only paths, no GitHub-specific output,
-# and the tree it writes merges across machines by copying files (one job writes only
-# its own artifact + sidecar, `OBCC_Spec.md` §8).
+# and its self-contained tree can be retained across runs: cells, sidecars, regions,
+# schema, skins, satellites, and the root all live below one directory.
 #
 # ── Publishing ────────────────────────────────────────────────────────────────────
 #
 # Publishing needs R2 credentials, which live in repository secrets and are only
 # passed on an explicit `workflow_dispatch` with `publish: true`. A scheduled run
-# bakes and reports; it never uploads. Artifacts first, manifest last, is the
-# publisher's own invariant (`OBCC_Spec.md` §7) and is enforced in `obc-bake`, not
+# bakes and reports; it never uploads. Content first, root last, is the publisher's
+# own invariant (`OBCC_Spec.md` §11) and is enforced in `obc-bake`, not
 # here — this file only decides *whether* to publish.
 
 on:
@@ -75,13 +75,13 @@ env:
   # The regions small enough to bake on a hosted runner. Everything else in
   # regions.toml is a workstation job — see the header.
   SMALL_REGIONS: >-
-    --region europe/germany/bremen
-    --region europe/germany/hamburg
-    --region europe/germany/berlin
-    --region europe/germany/saarland
+    europe/germany/bremen,
+    europe/germany/hamburg,
+    europe/germany/berlin,
+    europe/germany/saarland
 
 jobs:
-  # ── The mandatory re-bake guard (OBCC_Spec.md §6c) ────────────────────────────────
+  # ── The mandatory re-bake guard (OBCC_Spec.md §10) ────────────────────────────────
   #
   # Three mechanisms enforce "an OBCM bump invalidates every baked artifact". Two are
   # in the repository and already exist: the generator refuses a mixed tree, and
@@ -167,22 +167,24 @@ jobs:
         env:
           INPUT_REGIONS: ${{ inputs.regions }}
           INPUT_FORCE: ${{ inputs.force }}
+          OBC_MAPS_BASE_URL: ${{ vars.OBC_MAPS_BASE_URL }}
         run: |
-          regions=""
+          regions=()
           if [ -n "$INPUT_REGIONS" ]; then
             IFS=',' read -ra ids <<< "$INPUT_REGIONS"
-            for id in "${ids[@]}"; do regions="$regions --region ${id// /}"; done
+            for id in "${ids[@]}"; do regions+=("${id// /}"); done
           else
-            regions="$SMALL_REGIONS"
+            IFS=',' read -ra ids <<< "$SMALL_REGIONS"
+            for id in "${ids[@]}"; do regions+=("${id// /}"); done
           fi
-          force=""
-          if [ "$INPUT_FORCE" = "true" ]; then force="--force"; fi
+          force=()
+          if [ "$INPUT_FORCE" = "true" ]; then force+=("--force"); fi
           # No `set -e` games: obc-bake exits non-zero if any job failed or any region
           # ended with no artifact, and that is exactly the signal this step wants.
           cargo run --release --locked -p obc-bake -- bake \
             --out ~/bake \
             --summary-json ~/bake-summary.json \
-            $regions $force
+            "${regions[@]}" "${force[@]}"
 
       # `if: always()` — the summary is most valuable exactly when the step above
       # failed, because it names which regions did not bake and why.
@@ -194,10 +196,15 @@ jobs:
           import json, pathlib
           data = json.loads(pathlib.Path.home().joinpath("bake-summary.json").read_text())
           print(f"### Bake — OBCM v{data['obcm_version']}, recipe v{data['recipe_version']}\n")
-          print("| region | schema | status | bytes |")
+          print("| band | cells | partial | bytes |")
           print("| --- | --- | --- | --- |")
-          for job in data["jobs"]:
-              print(f"| {job['region_id']} | {job['preset_id']} | {job['status']} | {job.get('bytes', '')} |")
+          for band in data["bands"]:
+              print(f"| {band['band']} | {band['cells']} | {band['partial_cells']} | {band['bytes']} |")
+          failures = [plan for plan in data["plans"] if plan.get("error")]
+          if failures:
+              print("\n**Failed source sets:**")
+              for plan in failures:
+                  print(f"- {', '.join(plan['sources'])}: {plan['error']}")
           if data["uncovered_regions"]:
               print("\n**Regions with no artifact:** " + ", ".join(data["uncovered_regions"]))
           PY
@@ -214,12 +221,8 @@ jobs:
       # Only on an explicit dispatch. The credentials are never present on a
       # scheduled run, so a schedule cannot publish even by accident.
       #
-      # Note what this job's tree is: SMALL_REGIONS, or whatever `regions` input was
-      # given — never the full DACH shelf, which does not fit here. Publishing it
-      # over a full catalog would un-offer every region it does not contain, so
-      # `obc-bake publish` refuses to shrink the live catalog unless it is told to
-      # (--allow-shrink). Do not add that flag here to make a red run go green; it
-      # means this tree is not the one to publish from.
+      # Note what this job's tree is: the cached tree plus any regions refreshed in
+      # this run. The generated root offers exactly what is complete in that tree.
       - name: Publish to R2
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
         env:

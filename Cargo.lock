@@ -2484,10 +2484,14 @@ dependencies = [
 name = "obc-bake"
 version = "0.1.0"
 dependencies = [
+ "embedded-graphics",
  "heapless 0.8.0",
+ "image",
  "obc-formats",
  "obc-pack",
  "obc-reader",
+ "obc-render",
+ "obcm-assemble",
  "serde",
  "serde_json",
  "sha2",
@@ -2759,20 +2763,6 @@ dependencies = [
  "obc-render",
  "obc-replay",
  "obc-route",
- "wasm-bindgen",
-]
-
-[[package]]
-name = "obc-web-preview"
-version = "0.1.0"
-dependencies = [
- "console_error_panic_hook",
- "embedded-graphics",
- "js-sys",
- "obc-display",
- "obc-host-core",
- "obc-reader",
- "obc-render",
  "wasm-bindgen",
 ]
 

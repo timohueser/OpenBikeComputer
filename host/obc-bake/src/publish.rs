@@ -1,7 +1,7 @@
-//! Publishing a bake tree: artifacts first, manifest last, never in between.
+//! Publishing a cell bake tree: cells and satellites first, catalog root last.
 //!
 //! The manifest is the only file a consumer reads before it knows what exists, so
-//! the publish order is the whole contract (`OBCC_Spec.md` §7): every object the
+//! the publish order is the whole contract (`OBCC_Spec.md` §11): every object the
 //! manifest references must be fetchable *before* the manifest that references it
 //! becomes visible. Get that backwards and a rider's browser lists a region whose
 //! bytes are still uploading — a 404 in the middle of a 300 MB download, on a file
@@ -13,23 +13,6 @@
 //! uploaded object's size at the destination**, and only then replaces the manifest
 //! as one object. A failure anywhere before that last step leaves the previous
 //! manifest — and therefore the previous, complete catalog — exactly as it was.
-//!
-//! ## The shrink guard
-//!
-//! Ordering protects a publish from being observed half-done. It does nothing about
-//! a publish that is complete and *smaller*, which is the likelier accident: the
-//! manifest is generated from one tree, so publishing a partial tree — a CI run that
-//! bakes only the small regions, a `--region`-narrowed local run — replaces the live
-//! catalog with a strictly smaller one. No error, no half-state, and fifteen regions
-//! quietly stop being offered. To a rider that is indistinguishable from a curation
-//! decision, which is the exact failure this crate is built to be loud about.
-//!
-//! So before the first byte moves, [`publish`] reads the manifest already at the
-//! destination and diffs its `(region, preset)` pairs against the new one. Anything
-//! that would disappear stops the publish, names the pairs, and suggests the usual
-//! cause; `allow_shrink` turns it into a loud warning for the deliberate case. See
-//! [`live_manifest`] for why the live copy is read through the store rather than
-//! fetched from the public URL, and why that keeps offline `dir:` publishes offline.
 //!
 //! ## Where the bytes go
 //!
@@ -57,14 +40,14 @@
 
 use std::path::{Path, PathBuf};
 
-use obc_pack::catalog::{CatalogManifest, CatalogOptions, DEFAULT_MANIFEST_NAME};
+use obc_pack::catalog::{CatalogOptions, DEFAULT_MANIFEST_NAME};
 
-/// Cache lifetime for the manifest. `OBCC_Spec.md` §7: at most 60 s, because a
+/// Cache lifetime for the manifest. `OBCC_Spec.md` §11: at most 60 s, because a
 /// consumer cannot compensate for an over-cached manifest — a fresh bake stays
 /// invisible for as long as the cache says it is.
 pub const MANIFEST_CACHE_CONTROL: &str = "public, max-age=60, must-revalidate";
 /// Artifacts get a **short** TTL with mandatory revalidation, and the reason is the
-/// published layout: keys are stable paths (`regions/<id>/<preset>.obcm`, §8), not
+/// published layout: keys are stable paths (`cells/<band>/<i>/<j>.obcm`, §8), not
 /// content-addressed names, so every re-bake **rewrites the same key with different
 /// bytes**.
 ///
@@ -86,7 +69,7 @@ pub const ARTIFACT_CACHE_CONTROL: &str = "public, max-age=3600, must-revalidate"
 /// What an object is, which is also what decides its cache policy and its order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ObjectKind {
-    Preset,
+    Schema,
     Artifact,
     Sidecar,
     /// Exactly one, and always last.
@@ -115,6 +98,8 @@ impl PlannedObject {
     pub fn content_type(&self) -> &'static str {
         if self.key.ends_with(".json") {
             "application/json"
+        } else if self.key.ends_with(".png") {
+            "image/png"
         } else {
             "application/octet-stream"
         }
@@ -130,9 +115,6 @@ pub trait ObjectStore {
     /// Size of the object at `key`, or `None` if it is not there. Used to prove
     /// every artifact is fetchable *before* the manifest that references it lands.
     fn head(&self, key: &str) -> Result<Option<u64>, String>;
-    /// Read a small object back whole — the manifest currently in place. `None`
-    /// means there is none (a first publish). Only ever called for the manifest.
-    fn get(&self, key: &str) -> Result<Option<Vec<u8>>, String>;
 }
 
 /// How a publish is allowed to behave.
@@ -140,22 +122,19 @@ pub trait ObjectStore {
 pub struct PublishOptions {
     /// Generate the manifest and plan the upload; move no bytes.
     pub dry_run: bool,
-    /// Permit a publish that removes coverage the live catalog has (§ the shrink
-    /// guard, [`coverage_lost`]). Off by default, because the normal way to lose a
-    /// region is by accident.
-    pub allow_shrink: bool,
+    /// Report every upload and remote verification with cumulative progress.
+    pub verbose: bool,
 }
 
 /// What a publish did.
 #[derive(Debug, Clone)]
 pub struct PublishReport {
-    pub manifest: CatalogManifest,
+    pub regions: Vec<String>,
+    pub cells: u32,
+    pub skins: usize,
     pub warnings: Vec<String>,
     pub objects: usize,
     pub bytes: u64,
-    /// `(region_id, preset_id)` pairs the live catalog served that this one does
-    /// not. Non-empty only when `allow_shrink` let the publish through.
-    pub coverage_lost: Vec<String>,
 }
 
 /// Walk the tree and list every object to publish, manifest last.
@@ -163,25 +142,8 @@ pub struct PublishReport {
 /// The manifest is appended by this function rather than found in the tree, so
 /// "last" is a property of the plan's construction and not of a sort order someone
 /// could change. Dotfiles are skipped — the bake state files live beside the
-/// artifacts and are local bookkeeping, never published (`OBCC_Spec.md` §8 ignores
+/// artifacts and are local bookkeeping, never published (`OBCC_Spec.md` §2 ignores
 /// them for the same reason).
-pub fn plan(tree: &Path) -> Result<Vec<PlannedObject>, String> {
-    let mut objects = Vec::new();
-    collect(tree, &tree.join("presets"), ObjectKind::Preset, &mut objects)?;
-    collect(tree, &tree.join("regions"), ObjectKind::Artifact, &mut objects)?;
-    objects.sort_by(|a, b| a.key.cmp(&b.key));
-
-    let manifest = tree.join(DEFAULT_MANIFEST_NAME);
-    let bytes = std::fs::metadata(&manifest).map_err(|e| format!("{}: {e}", manifest.display()))?.len();
-    objects.push(PlannedObject {
-        key: DEFAULT_MANIFEST_NAME.to_string(),
-        path: manifest,
-        bytes,
-        kind: ObjectKind::Manifest,
-    });
-    Ok(objects)
-}
-
 fn collect(tree: &Path, dir: &Path, kind: ObjectKind, out: &mut Vec<PlannedObject>) -> Result<(), String> {
     if !dir.is_dir() {
         return Ok(());
@@ -209,160 +171,84 @@ fn collect(tree: &Path, dir: &Path, kind: ObjectKind, out: &mut Vec<PlannedObjec
     Ok(())
 }
 
-/// Generate the manifest into the tree, then publish the tree.
+/// Generate the catalog into a cell tree, then publish it.
 ///
-/// The manifest is generated here rather than taken from the tree so a publish
-/// cannot ship a manifest that describes an older bake: `obc-pack catalog`'s laws
-/// (every artifact's OBCM version read from its own header, every sidecar present,
-/// no stray files) run on the way out, every time.
+/// The catalog is a root plus digest-pinned satellites, so the satellites are objects like any other
+/// and land in phase 1, while the root — the only document that claims they exist
+/// with a given digest — is the single object swapped in last. [`plan`] already puts
+/// `catalog.json` last by construction, so the satellites' ordering needs no new
+/// mechanism, only that they are on disk before the plan is built. The generator
+/// writes them there.
 pub fn publish(
     tree: &Path,
     store: &dyn ObjectStore,
     opts: &CatalogOptions,
     publish_opts: PublishOptions,
 ) -> Result<PublishReport, String> {
+    // Publishing an existing tree is enough to pick up a new preview renderer:
+    // previews contain no cell data, so requiring a multi-hour rebake would only
+    // couple presentation to geometry by accident.
+    let seed = obc_pack::catalog::generate(tree, opts)?;
+    // `obc-bake`'s supported production schema owns the canonical Teningen
+    // scene. Keep the lower-level library useful for synthetic/test catalogs;
+    // OBCC deliberately makes previews optional for those producers.
+    if seed.root.schema.id == "bikepacking" {
+        crate::previews::generate(tree, &seed.root)?;
+    }
     let generated = obc_pack::catalog::generate(tree, opts)?;
-    let manifest_path = tree.join(DEFAULT_MANIFEST_NAME);
-    obc_pack::catalog::write_atomic(&manifest_path, &generated.manifest)?;
+    obc_pack::catalog::write_all_atomic(tree, &generated)?;
 
     let objects = plan(tree)?;
     let total: u64 = objects.iter().map(|o| o.bytes).sum();
-    let mut warnings = generated.warnings;
-    if publish_opts.dry_run {
-        return Ok(PublishReport {
-            manifest: generated.manifest,
-            warnings,
-            objects: objects.len(),
-            bytes: total,
-            coverage_lost: Vec::new(),
-        });
-    }
-
-    // Phase 0 — would this publish take coverage away? (see `coverage_lost`)
-    let coverage_lost = match live_manifest(store)? {
-        Some(live) => coverage_lost(&live, &generated.manifest),
-        None => Vec::new(),
-    };
-    if !coverage_lost.is_empty() {
-        if !publish_opts.allow_shrink {
-            return Err(format!(
-                "this publish would REMOVE {} artifact(s) the live catalog serves, and a region that stops being \
-                 offered reads to a user as \"not covered\".\n\nUsually this means the tree is a partial bake — a \
-                 CI run that bakes only the small regions, or a `--region`-narrowed run — being published over a \
-                 full one. Publish from the full tree, or pass --allow-shrink if the removal is \
-                 deliberate.\n\nWould disappear:\n{}",
-                coverage_lost.len(),
-                coverage_lost.iter().map(|p| format!("  {p}")).collect::<Vec<_>>().join("\n")
-            ));
-        }
-        warnings.push(format!(
-            "--allow-shrink: removing {} artifact(s) the live catalog serves: {}",
-            coverage_lost.len(),
-            coverage_lost.join(", ")
-        ));
-    }
-
-    let (manifest_object, content) = objects.split_last().ok_or("nothing to publish")?;
-    debug_assert_eq!(manifest_object.kind, ObjectKind::Manifest);
-
-    // Phase 1 — everything the manifest will reference.
-    for object in content {
-        store.put(object).map_err(|e| format!("{}: {e}", object.key))?;
-    }
-    // Phase 2 — prove it is all there. An upload that "succeeded" but left a
-    // truncated object would otherwise be discovered by a rider, mid-download.
-    for object in content {
-        match store.head(&object.key)? {
-            Some(bytes) if bytes == object.bytes => {}
-            Some(bytes) => {
-                return Err(format!(
-                    "{}: published as {bytes} bytes but the tree has {} — refusing to swap the manifest in",
-                    object.key, object.bytes
-                ))
-            }
-            None => {
-                return Err(format!("{}: not fetchable after upload — refusing to swap the manifest in", object.key))
-            }
-        }
-    }
-    // Phase 3 — one object replacement, and the new catalog exists.
-    store.put(manifest_object).map_err(|e| format!("{}: {e}", manifest_object.key))?;
-
-    Ok(PublishReport { manifest: generated.manifest, warnings, objects: objects.len(), bytes: total, coverage_lost })
-}
-
-/// Generate the `schema_version 2` catalog into a **cell** tree, then publish it.
-///
-/// Structurally the same publish as v1's and for the same reason, with one extra
-/// ordering constraint folded in: a v2 catalog is a root plus digest-pinned
-/// satellites (`OBCC_Spec.md` §11.1), so the satellites are objects like any other
-/// and land in phase 1, while the root — the only document that claims they exist
-/// with a given digest — is the single object swapped in last. [`plan`] already puts
-/// `catalog.json` last by construction, so the satellites' ordering needs no new
-/// mechanism, only that they are on disk before the plan is built. The generator
-/// writes them there.
-///
-/// The shrink guard is per **region**: v2's unit of coverage is a named selection, and
-/// a region that stops being offered is the same silent regression v1 guards against.
-/// Cells are not diffed — a cell store only ever grows, and a re-bake that rewrites a
-/// cell under the same key is the normal operation.
-pub fn publish_v2(
-    tree: &Path,
-    store: &dyn ObjectStore,
-    opts: &obc_pack::catalog::v2::CatalogV2Options,
-    publish_opts: PublishOptions,
-) -> Result<PublishV2Report, String> {
-    let generated = obc_pack::catalog::v2::generate(tree, opts)?;
-    obc_pack::catalog::v2::write_all_atomic(tree, &generated)?;
-
-    let objects = plan_v2(tree)?;
-    let total: u64 = objects.iter().map(|o| o.bytes).sum();
     let cells: u32 = generated.root.cell_index.iter().map(|c| c.cell_count).sum();
-    let mut warnings = generated.warnings;
-    let report = |warnings: Vec<String>, coverage_lost| PublishV2Report {
+    let warnings = generated.warnings;
+    let report = |warnings: Vec<String>| PublishReport {
         regions: generated.root.regions.iter().map(|r| r.id.clone()).collect(),
         cells,
         skins: generated.root.skins.len(),
         objects: objects.len(),
         bytes: total,
         warnings,
-        coverage_lost,
     };
     if publish_opts.dry_run {
-        return Ok(report(warnings, Vec::new()));
-    }
-
-    let coverage_lost = match live_root_v2(store)? {
-        Some(live) => {
-            let incoming: std::collections::BTreeSet<&str> =
-                generated.root.regions.iter().map(|r| r.id.as_str()).collect();
-            live.regions.iter().map(|r| r.id.clone()).filter(|id| !incoming.contains(id.as_str())).collect()
-        }
-        None => Vec::new(),
-    };
-    if !coverage_lost.is_empty() {
-        if !publish_opts.allow_shrink {
-            return Err(format!(
-                "this publish would REMOVE {} region(s) the live catalog offers, and a region that stops being \
-                 offered reads to a user as \"not covered\". Publish from the full tree, or pass --allow-shrink if \
-                 the removal is deliberate.\n\nWould disappear:\n{}",
-                coverage_lost.len(),
-                coverage_lost.iter().map(|p| format!("  {p}")).collect::<Vec<_>>().join("\n")
-            ));
-        }
-        warnings.push(format!(
-            "--allow-shrink: removing {} region(s): {}",
-            coverage_lost.len(),
-            coverage_lost.join(", ")
-        ));
+        return Ok(report(warnings));
     }
 
     let (root_object, content) = objects.split_last().ok_or("nothing to publish")?;
     debug_assert_eq!(root_object.kind, ObjectKind::Manifest);
-    for object in content {
-        store.put(object).map_err(|e| format!("{}: {e}", object.key))?;
+    let content_bytes: u64 = content.iter().map(|object| object.bytes).sum();
+    let started = std::time::Instant::now();
+    if publish_opts.verbose {
+        eprintln!(
+            "uploading {} content objects ({}) before the catalog root",
+            content.len(),
+            human_bytes(content_bytes)
+        );
     }
-    for object in content {
+    let mut completed_bytes = 0_u64;
+    for (index, object) in content.iter().enumerate() {
+        if publish_opts.verbose {
+            eprintln!("upload [{:>3}/{}] {}  {}", index + 1, content.len(), human_bytes(object.bytes), object.key);
+        }
+        store.put(object).map_err(|e| format!("{}: {e}", object.key))?;
+        completed_bytes = completed_bytes.saturating_add(object.bytes);
+        if publish_opts.verbose {
+            eprintln!(
+                "       done  {} / {}  {}  ETA {}",
+                human_bytes(completed_bytes),
+                human_bytes(content_bytes),
+                percent(completed_bytes, content_bytes),
+                eta(started.elapsed(), completed_bytes, content_bytes)
+            );
+        }
+    }
+    if publish_opts.verbose {
+        eprintln!("verifying {} remote objects before replacing catalog.json", content.len());
+    }
+    for (index, object) in content.iter().enumerate() {
+        if publish_opts.verbose {
+            eprintln!("verify [{:>3}/{}] {}", index + 1, content.len(), object.key);
+        }
         match store.head(&object.key)? {
             Some(bytes) if bytes == object.bytes => {}
             Some(bytes) => {
@@ -374,38 +260,80 @@ pub fn publish_v2(
             None => return Err(format!("{}: not fetchable after upload — refusing to swap the root in", object.key)),
         }
     }
+    if publish_opts.verbose {
+        eprintln!("root             {}  {}", human_bytes(root_object.bytes), root_object.key);
+    }
     store.put(root_object).map_err(|e| format!("{}: {e}", root_object.key))?;
-    Ok(report(warnings, coverage_lost))
+    if publish_opts.verbose {
+        eprintln!("published catalog root last; total elapsed {}", duration(started.elapsed()));
+    }
+    Ok(report(warnings))
 }
 
-/// What a v2 publish did.
-#[derive(Debug, Clone)]
-pub struct PublishV2Report {
-    pub regions: Vec<String>,
-    pub cells: u32,
-    pub skins: usize,
-    pub objects: usize,
-    pub bytes: u64,
-    pub warnings: Vec<String>,
-    pub coverage_lost: Vec<String>,
+fn human_bytes(bytes: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = 1024 * KIB;
+    const GIB: u64 = 1024 * MIB;
+    if bytes >= GIB {
+        format!("{:.1} GiB", bytes as f64 / GIB as f64)
+    } else if bytes >= MIB {
+        format!("{:.1} MiB", bytes as f64 / MIB as f64)
+    } else if bytes >= KIB {
+        format!("{:.1} KiB", bytes as f64 / KIB as f64)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+fn percent(done: u64, total: u64) -> String {
+    if total == 0 {
+        return "100%".to_string();
+    }
+    format!("{}%", done.saturating_mul(100) / total)
+}
+
+fn eta(elapsed: std::time::Duration, done: u64, total: u64) -> String {
+    if done == 0 || done >= total {
+        return if done >= total { "0s".to_string() } else { "—".to_string() };
+    }
+    if elapsed.as_secs() < 3 {
+        return "calculating…".to_string();
+    }
+    let elapsed_secs = elapsed.as_secs().max(1);
+    let bytes_per_second = done / elapsed_secs;
+    match (total - done).checked_div(bytes_per_second) {
+        Some(seconds) => duration(std::time::Duration::from_secs(seconds)),
+        None => "—".to_string(),
+    }
+}
+
+fn duration(value: std::time::Duration) -> String {
+    let seconds = value.as_secs();
+    if seconds >= 3600 {
+        format!("{}h{:02}m", seconds / 3600, seconds % 3600 / 60)
+    } else if seconds >= 60 {
+        format!("{}m{:02}s", seconds / 60, seconds % 60)
+    } else {
+        format!("{seconds}s")
+    }
 }
 
 /// Every object of a cell tree, root last.
 ///
-/// Deliberately a whole-tree walk rather than v1's two named directories: a v2 tree's
-/// publishable set is `cells/`, `regions/`, `skins/` **and** `schema.json` — the last
+/// Deliberately a whole-tree walk: a cell tree's
+/// publishable set is `cells/`, `regions/`, `skins/`, `previews/` **and** `schema.json` — the last
 /// of which is not optional, because it is the document the generator reads the
 /// style-id assignment out of and the one a re-generation on another machine needs.
 /// Walking the tree means a future document cannot be forgotten here.
-pub fn plan_v2(tree: &Path) -> Result<Vec<PlannedObject>, String> {
+pub fn plan(tree: &Path) -> Result<Vec<PlannedObject>, String> {
     let mut objects = Vec::new();
-    for dir in ["cells", "regions", "skins"] {
+    for dir in ["cells", "regions", "skins", crate::previews::PREVIEWS_DIR] {
         collect(tree, &tree.join(dir), ObjectKind::Artifact, &mut objects)?;
     }
     let schema = tree.join("schema.json");
     if schema.is_file() {
         let bytes = std::fs::metadata(&schema).map_err(|e| format!("{}: {e}", schema.display()))?.len();
-        objects.push(PlannedObject { key: "schema.json".into(), path: schema, bytes, kind: ObjectKind::Preset });
+        objects.push(PlannedObject { key: "schema.json".into(), path: schema, bytes, kind: ObjectKind::Schema });
     }
     objects.sort_by(|a, b| a.key.cmp(&b.key));
 
@@ -418,53 +346,6 @@ pub fn plan_v2(tree: &Path) -> Result<Vec<PlannedObject>, String> {
         kind: ObjectKind::Manifest,
     });
     Ok(objects)
-}
-
-fn live_root_v2(store: &dyn ObjectStore) -> Result<Option<obc_pack::catalog::v2::CatalogV2>, String> {
-    let Some(bytes) = store.get(DEFAULT_MANIFEST_NAME)? else { return Ok(None) };
-    Ok(serde_json::from_slice::<obc_pack::catalog::v2::CatalogV2>(&bytes)
-        .ok()
-        .filter(|r| r.schema_version == obc_pack::catalog::v2::CATALOG_SCHEMA_VERSION))
-}
-
-/// The manifest currently in place at the destination, if there is one.
-///
-/// Read **through the store**, from the destination itself, rather than fetched from
-/// the catalog's public `base_url`. Two reasons, and both matter:
-///
-/// - *Authority.* The public URL is served through a CDN, so it can hand back a
-///   cached manifest older than the bucket's. Diffing against that would invent
-///   coverage losses that are not real (and mask ones that are).
-/// - *No network where there need not be one.* A `dir:` publish — the offline
-///   workstation flow and every test in this crate — answers this question by
-///   reading a local file. Nothing hangs waiting for a timeout, and the guard is
-///   exercised by the same code path in tests as in production.
-///
-/// A manifest that is present but unreadable (wrong schema version, truncated,
-/// something else entirely at that key) yields `None`: it is not evidence that
-/// coverage exists, so it must not block a publish that would replace it.
-fn live_manifest(store: &dyn ObjectStore) -> Result<Option<CatalogManifest>, String> {
-    let Some(bytes) = store.get(DEFAULT_MANIFEST_NAME)? else { return Ok(None) };
-    let Ok(manifest) = serde_json::from_slice::<CatalogManifest>(&bytes) else { return Ok(None) };
-    if manifest.schema_version != obc_pack::catalog::CATALOG_SCHEMA_VERSION {
-        return Ok(None);
-    }
-    Ok(Some(manifest))
-}
-
-/// `(region, preset)` pairs the live catalog serves that the new one would not.
-///
-/// Pair-level rather than region-level because losing one preset of a region is the
-/// same class of silent regression as losing the region: the picker simply stops
-/// offering something it offered yesterday.
-pub fn coverage_lost(live: &CatalogManifest, new: &CatalogManifest) -> Vec<String> {
-    let incoming: std::collections::BTreeSet<(&str, &str)> =
-        new.artifacts.iter().map(|a| (a.region_id.as_str(), a.preset_id.as_str())).collect();
-    live.artifacts
-        .iter()
-        .filter(|a| !incoming.contains(&(a.region_id.as_str(), a.preset_id.as_str())))
-        .map(|a| format!("{} [{}]", a.region_id, a.preset_id))
-        .collect()
 }
 
 /// Publish into a local directory: the dry-run target, the test target, and a real
@@ -509,14 +390,6 @@ impl ObjectStore for DirStore {
     fn head(&self, key: &str) -> Result<Option<u64>, String> {
         match std::fs::metadata(self.dest(key)) {
             Ok(m) => Ok(Some(m.len())),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(format!("{key}: {e}")),
-        }
-    }
-
-    fn get(&self, key: &str) -> Result<Option<Vec<u8>>, String> {
-        match std::fs::read(self.dest(key)) {
-            Ok(bytes) => Ok(Some(bytes)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(format!("{key}: {e}")),
         }
@@ -656,22 +529,6 @@ impl ObjectStore for RcloneStore {
         let json: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|e| format!("{key}: {e}"))?;
         Ok(json.get("bytes").and_then(serde_json::Value::as_i64).and_then(|b| u64::try_from(b).ok()))
     }
-
-    fn get(&self, key: &str) -> Result<Option<Vec<u8>>, String> {
-        // Straight from the bucket, not from the public URL: the shrink guard must
-        // diff against what is actually stored, not against whatever a CDN edge
-        // still has (see `live_manifest`).
-        let args = vec!["cat".to_string(), self.target(key)];
-        let out = self.run(&args)?;
-        if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            if stderr.contains("not found") || stderr.contains("doesn't exist") {
-                return Ok(None);
-            }
-            return Err(self.redact(&stderr));
-        }
-        Ok(Some(out.stdout))
-    }
 }
 
 #[cfg(test)]
@@ -710,7 +567,7 @@ mod tests {
         let store = r2_store("https://acct.r2.cloudflarestorage.com", "hunter2");
         // The target — the only store-derived string that becomes an argument —
         // names the ephemeral remote, never a credential.
-        assert_eq!(store.target("regions/x.obcm"), "obcr2:obc-maps/regions/x.obcm");
+        assert_eq!(store.target("cells/fine/1204/1052.obcm"), "obcr2:obc-maps/cells/fine/1204/1052.obcm");
         // `describe` is printed by the CLI; it carries the bucket and endpoint,
         // and neither key.
         assert!(!store.describe().contains("hunter2"), "{}", store.describe());
@@ -725,7 +582,13 @@ mod tests {
         let manifest =
             PlannedObject { key: "catalog.json".into(), path: PathBuf::new(), bytes: 0, kind: ObjectKind::Manifest };
         let artifact = PlannedObject {
-            key: "regions/europe/austria/minimal.obcm".into(),
+            key: "cells/fine/1204/1052.obcm".into(),
+            path: PathBuf::new(),
+            bytes: 0,
+            kind: ObjectKind::Artifact,
+        };
+        let preview = PlannedObject {
+            key: "previews/default.png".into(),
             path: PathBuf::new(),
             bytes: 0,
             kind: ObjectKind::Artifact,
@@ -743,5 +606,6 @@ mod tests {
             "a rewritten key must never be served from an edge without revalidating"
         );
         assert_eq!(artifact.content_type(), "application/octet-stream");
+        assert_eq!(preview.content_type(), "image/png");
     }
 }

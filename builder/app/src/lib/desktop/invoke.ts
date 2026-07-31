@@ -1,5 +1,5 @@
-// The desktop host's transport: Tauri commands. Only platform/desktop.ts and
-// the desktop build tracker import it, so it never reaches the other two
+// The desktop host's transport: Tauri commands. Only the desktop platform and
+// native device/library adapters import it, so it never reaches the other two
 // bundles — the same containment `api/client.ts` has on the dev side.
 //
 // Every function here is one `invoke()`. The names are the Rust command names in
@@ -8,31 +8,18 @@
 // file so a rename is one place on each side.
 
 import { invoke, type Channel } from "@tauri-apps/api/core";
-import type { Palette, RegionFeature, StoragePlace } from "../platform/types";
-import type { Preset, SchemaEnvelope } from "../config/model";
+import type { StoragePlace } from "../platform/types";
 
-/** The catalog manifest, plus the URL it came from — §2 resolves preview
- *  references against the manifest's own location. */
+/** The catalog manifest, plus the URL relative references resolve against. */
 export interface FetchedCatalog {
     url: string;
     body: string;
 }
 
-/** `build_active`'s answer: the running (or most recent) build. */
-export interface JobSnapshot {
-    id: string;
-    state: "running" | "done" | "error" | "cancelled";
+export interface OpenedMapOutput {
+    id: number;
+    path: string;
 }
-
-/** What a build reports. Mirrors the dev server's SSE events, deliberately —
- *  see `lib/build/phases.ts`. */
-export type BuildEvent =
-    | { type: "status"; status: string; detail: string }
-    | { type: "progress"; phase: string; region: string; pct: number }
-    | { type: "log"; line: string }
-    | { type: "done"; path: string; filename: string; size: number }
-    | { type: "error"; message: string }
-    | { type: "cancelled" };
 
 // --- USB (D4 #909) ------------------------------------------------------------
 //
@@ -95,19 +82,21 @@ export interface UsbSendProgress {
 }
 
 export const desktop = {
-    regions: () => invoke<{ features: RegionFeature[] }>("regions").then((fc) => fc.features),
-    presets: () => invoke<Preset[]>("presets"),
-    schema: () => invoke<SchemaEnvelope>("schema"),
-    palette: () => invoke<Palette>("palette"),
     catalog: () => invoke<FetchedCatalog>("catalog"),
-
-    buildActive: () => invoke<JobSnapshot | null>("build_active"),
-    buildCancel: (id: string) => invoke<boolean>("build_cancel", { id }),
+    /** Raw response path: catalog cells can be hundreds of MB, so a JSON byte
+     *  array is not an acceptable transport. Rust restricts this to the
+     *  configured catalog origin. */
+    catalogGet: (url: string) => invoke<ArrayBuffer>("catalog_get", { url }),
+    mapOutputBegin: (name: string) => invoke<OpenedMapOutput>("map_output_begin", { name }),
+    mapOutputWrite: (id: number, name: string, bytes: Uint8Array) =>
+        invoke<string>("map_output_write", bytes, {
+            headers: { "output-id": String(id), filename: name },
+        }),
+    mapOutputFinish: (id: number) => invoke<void>("map_output_finish", { id }),
 
     storagePlaces: () => invoke<StoragePlace[]>("storage_info"),
     storageClear: (id: string) => invoke<number>("storage_clear", { id }),
 
-    saveStyle: (name: string, body: string) => invoke<string>("save_style", { name, body }),
     revealFile: (path: string) => invoke<void>("reveal_file", { path }),
 
     usbWatch: (onEvent: Channel<UsbEvent>) => invoke<UsbDeviceSummary[]>("usb_watch", { onEvent }),

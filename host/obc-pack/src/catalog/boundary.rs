@@ -1,8 +1,8 @@
 //! Region **outlines** for the `schema_version 2` catalog: an Osmosis/Geofabrik
 //! `.poly` file in, a handful of simplified microdegree rings out
-//! ([`OBCC_Spec.md` §11.8](../../../../specs/OBCC_Spec.md)).
+//! ([`OBCC_Spec.md` §7](../../../../specs/OBCC_Spec.md)).
 //!
-//! A v2 region is a cell-set selection, and a cell set draws as a staircase. Users
+//! A region is a cell-set selection, and a cell set draws as a staircase. Users
 //! expect a border, so each named region ships the border — simplified hard, because
 //! the catalog is fetched before anything else and a full-resolution Germany outline
 //! is megabytes. The source is the region's own Geofabrik `.poly` (the same file that
@@ -12,7 +12,7 @@
 //! Two properties are load-bearing:
 //!
 //! - **Presentation only.** The outline never decides a cell set (that is stored,
-//!   `OBCC_Spec.md` §11.7), never prices a selection, and is never a packer input
+//!   `OBCC_Spec.md` §6), never prices a selection, and is never a packer input
 //!   bbox. A simplification error here must not be able to drop a cell, which is why
 //!   it cannot be in the derivation path of one.
 //! - **Deterministic.** Same `.poly`, same tolerance, same bytes: rings are ordered
@@ -27,7 +27,7 @@ pub type Ring = Vec<[i32; 2]>;
 
 /// Default simplification tolerance, in microdegrees (0.002° ≈ 150–220 m at DACH
 /// latitudes). Chosen so a country outline lands in the low single-digit kilobytes —
-/// the budget `OBCC_Spec.md` §11.8 sets — while still reading as that country's
+/// the budget `OBCC_Spec.md` §7 sets — while still reading as that country's
 /// border at every zoom the builder draws it at.
 pub const DEFAULT_TOLERANCE_UDEG: i32 = 2_000;
 
@@ -131,7 +131,7 @@ fn dedup_consecutive<T: PartialEq>(points: &mut Vec<T>) {
 /// The `.poly`'s rings at **full resolution**, `(lon, lat)` degrees, closed.
 ///
 /// This is the parse without the reduction: [`simplified_rings`] is presentation
-/// and MUST NOT decide a cell set (`OBCC_Spec.md` §11.8), so the bakery — which
+/// and MUST NOT decide a cell set (`OBCC_Spec.md` §7), so the bakery — which
 /// *does* have to decide one, and has to decide whether a source covers a cell —
 /// reads the rings from here instead. One parser, two consumers, no chance of the
 /// drawn border and the baked coverage disagreeing about what the file said.
@@ -146,10 +146,8 @@ pub fn poly_rings(poly_text: &str) -> Result<Vec<Vec<(f64, f64)>>, String> {
 /// simplified border cannot cross itself and an island cannot swallow its neighbour.
 ///
 /// Ring order is `[exterior, its holes…]` per polygon, polygons ordered by their
-/// own minimum corner. For the single-exterior case that is exactly
-/// `OBCC_Spec.md` §11.8's "first ring exterior, the rest holes"; a region that is
-/// genuinely several pieces (islands, exclaves) repeats the pattern, which draws
-/// correctly under both stroke-every-ring and even-odd fill.
+/// own minimum corner. OBCC §7 interprets the flattened list with even-odd fill,
+/// so regions with several pieces, islands, or exclaves need no extra role marker.
 pub fn simplified_rings(poly_text: &str, tolerance_udeg: i32) -> Result<Vec<Ring>, String> {
     if tolerance_udeg <= 0 {
         return Err(format!("boundary tolerance {tolerance_udeg} µdeg must be positive"));
@@ -312,7 +310,7 @@ END
     fn a_hole_stays_a_hole_and_an_island_stays_a_ring() {
         let rings = simplified_rings(SQUARE_WITH_HOLE_AND_ISLAND, 100).expect("outline");
         assert_eq!(rings.len(), 3, "exterior + hole + island: {rings:?}");
-        // Rings are `[lat, lon]`, matching the OBCM header and v1's bbox.
+        // Rings are `[lat, lon]`, matching the OBCM header.
         assert!(rings.iter().all(|r| r.first() == r.last()), "every ring is closed");
         let island = rings.iter().find(|r| r.iter().all(|p| p[0] >= 49_000_000)).expect("the island");
         assert_eq!(island.len(), 4, "a triangle is 3 points plus the closing repeat");

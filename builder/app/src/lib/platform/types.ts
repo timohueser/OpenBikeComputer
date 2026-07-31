@@ -9,9 +9,8 @@
 // is the point of the shapes below:
 //
 //   * **Absent by design.** A host without a capability has `null` where the
-//     member would be. `caps.build === false` and `buildMap === null` are the
-//     same fact, so starting a build on a host that cannot run one is a type
-//     error rather than a runtime one — there is no call to write.
+//     member would be, so reaching for it is a type error rather than a dead
+//     runtime control.
 //   * **Not written yet.** A capability the tier is *meant* to have but whose
 //     implementation lands in a later sub-issue throws
 //     `PlatformNotImplemented`, naming the issue that fills it in. Loud,
@@ -21,19 +20,11 @@
 // is deliberately no `isWeb`.
 
 import type { Component } from "svelte";
-import type { Catalog } from "../catalog/manifest";
 import type { Preset, SchemaEnvelope } from "../config/model";
 import type { DeviceSession } from "../usb/session";
 import type { RideLibrary } from "../device/library";
 
 export type PlatformName = "web" | "desktop" | "dev";
-
-/** One Geofabrik download region: the picker's unit of selection. */
-export interface RegionFeature {
-    type: "Feature";
-    properties: { id: string; name: string; parent: string | null; has_children: boolean };
-    geometry: { type: "Polygon" | "MultiPolygon"; coordinates: unknown };
-}
 
 /** The device's color gamut, laid out for the picker grid. */
 export interface Palette {
@@ -48,12 +39,6 @@ export interface Palette {
  * makes the call work. C2 (#901) turns these into inline disabled affordances.
  */
 export interface Caps {
-    /** Runs obc-pack locally, so a map can be built from raw OSM extracts. */
-    readonly build: boolean;
-    /** Crops a build to a drawn box; whole regions only when false. */
-    readonly bboxCrop: boolean;
-    /** Ships the advanced style editor (`components/advanced/`). */
-    readonly styleEditor: boolean;
     /** Keeps pulled rides in a managed folder the user can see and back up. */
     readonly rideLibrary: boolean;
     /** Can reach a device over USB at all. */
@@ -62,71 +47,6 @@ export interface Caps {
     readonly deviceDashboard: boolean;
 }
 
-// --- building ---------------------------------------------------------------
-
-/** A map build, in the app's own terms. Hosts translate to their transport. */
-export interface BuildRequest {
-    regionIds: string[];
-    config: unknown;
-    chunkSize?: number;
-    outputName: string;
-    /** [west, south, east, north] degrees; only hosts with `caps.bboxCrop`. */
-    bbox?: [number, number, number, number];
-}
-
-export interface BuildResult {
-    downloadUrl: string;
-    filename: string;
-    size: number;
-    /**
-     * Where the map landed, when it landed somewhere real. Present only on a
-     * host with a filesystem: the dev server keeps its output behind a download
-     * URL, while the desktop app writes into a folder the user chose to have
-     * and `revealFile` can open. Absent, not empty — "no path" and "the empty
-     * path" must not be the same value.
-     */
-    path?: string;
-}
-
-/**
- * `cancelled` is its own state, not an error. A build the user stopped is the
- * thing they just asked for, and reporting it in red next to a stack of real
- * failures would be a lie about what happened.
- */
-export type BuildState = "idle" | "starting" | "running" | "done" | "error" | "cancelled";
-
-/**
- * One build, followed to completion. The fields are read reactively by the UI,
- * so an implementation makes them `$state` — the interface only promises they
- * are observable, not how (the dev host follows an SSE log; the desktop host
- * bridges a Tauri channel into the same shape).
- */
-export interface BuildSession {
-    readonly state: BuildState;
-    readonly phase: string;
-    readonly pct: number;
-    readonly logLines: readonly string[];
-    readonly transientLine: string | null;
-    readonly result: BuildResult | null;
-    readonly error: string | null;
-    start(req: BuildRequest): Promise<void>;
-    /** Re-attach to a build started before a page reload; false if none. */
-    reattach(): Promise<boolean>;
-    /**
-     * Stop the running build, or `null` where a build cannot be stopped.
-     *
-     * Null on the dev host, and that is a statement about it rather than a gap:
-     * it runs the packer as a subprocess behind an HTTP job queue with no
-     * cancel endpoint, so there is nothing to call. The desktop host runs the
-     * pack in-process against a cancel token that reaches inside the ingest and
-     * simplify loops, so there it is a real button.
-     */
-    readonly cancel: (() => Promise<void>) | null;
-}
-
-/** Opens a build session. Present only on a host with `caps.build`. */
-export type StartBuild = () => BuildSession;
-
 // --- seams whose payloads are not designed yet -------------------------------
 //
 // These are real seams with no backing implementation anywhere yet. The honest
@@ -134,17 +54,6 @@ export type StartBuild = () => BuildSession;
 // nothing and costs a breaking change when the issue that owns it lands. Each
 // alias is one line to fill in — `DeviceSession` below was one of them until
 // C3 (#902) defined it.
-
-/**
- * The catalog of pre-baked maps: the OBCC manifest, whole and validated. A3
- * (#897) owns the format (`OBCC_Spec.md`) and the version law that binds it to
- * OBCM; a host implementing this method has already read one entire body and
- * parsed it as one document, because §7 admits nothing partial.
- *
- * Not to be confused with `public/osm_catalog.json`, which is the OSM tag-key
- * catalog the style editor's category rail reads.
- */
-export type MapCatalog = Catalog;
 
 /**
  * A device connection, followed over its lifetime — C3 (#902) defines it, over
@@ -200,6 +109,14 @@ export interface DiskStorage {
     clear(id: string): Promise<number>;
 }
 
+/** One verified assembly's native output folder. Browser hosts use their own
+ * downloader and therefore have no session. */
+export interface MapOutputSession {
+    readonly path: string;
+    write(name: string, bytes: Uint8Array): Promise<string>;
+    finish(): Promise<void>;
+}
+
 // --- the style editor, as a lazily loaded module -----------------------------
 
 /**
@@ -209,8 +126,8 @@ export interface DiskStorage {
  */
 export type StyleEditorModule = { default: Component<Record<string, never>> };
 
-/** Loads the style editor. Present only on a host with `caps.styleEditor`; a
- *  host that lacks it has no `import()` of the route anywhere in its graph, so
+/** Loads the maintainer-only style editor. A product host has no `import()` of
+ *  the route anywhere in its graph, so
  *  the chunk cannot be emitted rather than merely going unused. */
 export type LoadStyleEditor = () => Promise<StyleEditorModule>;
 
@@ -238,52 +155,31 @@ export interface Platform {
      */
     readonly usbViaWebUsb: boolean;
 
-    /** Geofabrik's download-region tree, for the area picker. */
-    regions(): Promise<RegionFeature[]>;
-    /** The shipped style presets, default first. */
+    /** The shipped schema presets, used only by the maintainer editor. */
     presets(): Promise<Preset[]>;
-    /** The pre-baked map catalog (see `MapCatalog`). */
-    catalog(): Promise<MapCatalog>;
-
     /**
-     * The catalog root exactly as fetched — resolved URL plus raw body — for
-     * consumers that must see the document before an envelope is chosen.
-     *
-     * This is the seam envelope detection (#1038) stands on: one hosted URL
-     * serves either a v1 manifest or a v2 cell-catalog root, the app peeks at
-     * `schema_version` and commits to the matching flow, and the body it peeked
-     * at is the body that flow parses — never a second fetch of a document that
-     * could have changed in between. Implementations share the fetch with
-     * `catalog()`, so a v1 root costs one request however it is read.
-     *
-     * Optional because only tiers whose catalog arrives as a fetched document
-     * have anything to hand over; the dev host builds maps and has no catalog
-     * at all (its `catalog()` is a named not-implemented, not a document).
+     * The cell catalog root exactly as fetched: resolved URL plus raw body. The
+     * catalog client owns validation so every host exposes one root-fetch seam.
      */
-    readonly catalogRoot?: () => Promise<{ url: string; body: string }>;
+    catalog(): Promise<{ url: string; body: string }>;
+    /** Transport for digest-pinned catalog satellites and cells. The web/dev
+     *  hosts use fetch; desktop uses its same-origin native command. */
+    readonly catalogFetch: typeof fetch;
+    /** Open one grouped native output. Null on browser hosts. */
+    readonly openMapOutput: ((name: string) => Promise<MapOutputSession>) | null;
 
-    /** Non-null exactly when `caps.build`. */
-    readonly buildMap: StartBuild | null;
     /** Non-null exactly when `caps.deviceUsb`. */
     readonly device: (() => Promise<DeviceSession>) | null;
     /** Non-null exactly when `caps.rideLibrary`. */
     readonly rides: (() => Promise<RideLibrary>) | null;
 
     /**
-     * obc-pack's config JSON Schema envelope — what the editor and the build
-     * card derive their capability from.
-     *
-     * The only member whose gate is a disjunction: non-null exactly when
-     * `caps.build || caps.styleEditor`, its two callers. A tier with neither
-     * has no config to validate and no packer to validate it against, so there
-     * is nothing for it to serve — which is a permanent fact about that tier,
-     * not a seam anyone is going to fill in. Hence `null`, like the rest.
+     * obc-pack's config JSON Schema envelope for the maintainer editor. Non-null
+     * exactly when this host exports `loadStyleEditor`.
      */
     readonly schema: (() => Promise<SchemaEnvelope>) | null;
 
-    /** The device's color gamut for the picker grid. Non-null exactly when
-     *  `caps.styleEditor`: the color picker is its only caller, and it lives
-     *  inside the editor's code-split chunk. */
+    /** The device's color gamut for the maintainer editor's picker grid. */
     readonly palette: (() => Promise<Palette>) | null;
 
     /**
@@ -298,28 +194,8 @@ export interface Platform {
      *  Optional for the same reason as `legacyConfig` — see [`DiskStorage`]. */
     readonly storage?: DiskStorage;
 
-    /**
-     * Show a produced file in the OS file manager. Present only where a build
-     * result has a `path` at all: this is the desktop app's answer to the
-     * hosted tier's download link, and a browser has no file manager to point
-     * at.
-     */
+    /** Show a managed file in the OS file manager. */
     readonly revealFile?: (path: string) => Promise<void>;
-
-    /**
-     * Save a small text document — a style export — and resolve with where it
-     * went (E3 #913).
-     *
-     * Optional rather than a capability, and not because the tiers disagree
-     * about *whether* you can export a style: all three can. They disagree
-     * about **how a file leaves the app**. A browser has `<a download>`, which
-     * is the right answer there and needs nothing from the host. Inside the
-     * Tauri webview that same anchor does nothing at all — wry installs a
-     * download delegate only when the embedder asks for one — so the desktop
-     * app has to write the file itself, through a command that decides the
-     * folder. Present exactly where the fallback does not work.
-     */
-    readonly saveText?: (name: string, text: string) => Promise<string>;
 
     /**
      * The site's outbound chrome — docs, the landing page's simulator, GitHub.

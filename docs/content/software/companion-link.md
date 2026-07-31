@@ -702,12 +702,12 @@ with the card-resident decision in
 [#776](https://github.com/timohueser/OpenBikeComputer/issues/776).
 
 **One more field, and why it isn't a version bump.** The read carries a third value:
-`obcm_version`, the [OBCM map-format version](../formats/#the-catalog-a-third-format-for-finding-the-first-two)
+`obcm_version`, the [OBCM map-format version](../formats/#the-catalog-the-map-builders-source-of-truth)
 this firmware's reader reads. It is a *different number in a different sequence* from
 the protocol version beside it — one is this wire contract, the other is the file
 format on the card — and neither can be derived from the other, nor from the firmware
 revision string, which maps to a format version only through a table nobody keeps. A
-site that hands out pre-baked maps needs it, and had nothing to read it from.
+catalog builder needs it before offering assembled map bytes, and had nothing to read it from.
 
 Appending it changed the read's length, and a read whose length changed sounds like a
 protocol break. It isn't, because **the length has always been the version mechanism

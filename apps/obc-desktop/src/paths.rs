@@ -1,63 +1,21 @@
 //! Where the app keeps things.
 //!
-//! Two decisions worth stating, because both are visible to the user:
-//!
-//! * **The cache is the *shared* one, `~/.cache/obcm`** (overridable with
-//!   `OBCM_CACHE_DIR`, exactly as `builder/server/paths.py` reads it) — not a
-//!   per-app directory under `~/Library/Caches`. A `.pbf` is hundreds of megabytes
-//!   and the land-polygon dataset is over two gigabytes; a developer who has
-//!   already downloaded Switzerland from the CLI should not download it again
-//!   because they opened the app. `obc-pack`'s own land cache is anchored here
-//!   too, so a private app cache would have split the two halves of one dataset.
-//! * **Built maps go somewhere the user can find them.** The whole reason the
-//!   desktop tier exists is that it has a real filesystem (#894); a build that
-//!   landed in an opaque app-support directory would be a download manager with
-//!   extra steps. `Documents/OpenBikeComputer` is a folder a person can back up,
-//!   point Finder at, and copy to an SD card.
+//! Two locations are visible to the user. **Assembled maps go somewhere the user
+//! can find them.** The whole reason the desktop tier exists is that it has a real
+//! filesystem (#894); a build that landed in an opaque app-support directory would
+//! be a download manager with extra steps. `Documents/OpenBikeComputer` is a folder
+//! a person can back up, point Finder at, and copy to an SD card. Pulled rides live
+//! beside them in a relocatable GPX folder, with their durable archive in app data.
 
 use std::path::PathBuf;
-
-/// Shared with the CLI and the dev server — see the module docs.
-pub fn cache_dir() -> PathBuf {
-    if let Some(dir) = std::env::var_os("OBCM_CACHE_DIR") {
-        return PathBuf::from(dir);
-    }
-    home().join(".cache/obcm")
-}
-
-/// Downloaded Geofabrik `.pbf` extracts, keyed by region id.
-pub fn pbf_cache() -> PathBuf {
-    cache_dir().join("pbf")
-}
-
-/// The Geofabrik download index (raw + simplified).
-pub fn geofabrik_cache() -> PathBuf {
-    cache_dir().join("geofabrik")
-}
-
-/// `obc-pack`'s land-polygon dataset. Not written by this crate — reported and
-/// cleared by it, because at ~2.3 GB unpacked it is by far the largest thing the
-/// app puts on someone's disk and "where did my space go" must have an answer.
-pub fn land_cache() -> PathBuf {
-    cache_dir().join("land")
-}
 
 /// The visible output folder for built maps.
 pub fn maps_dir(documents: Option<PathBuf>) -> PathBuf {
     documents.unwrap_or_else(home).join("OpenBikeComputer")
 }
 
-/// Exported style configs, beside the maps they build.
-///
-/// A subdirectory rather than a second top-level folder, so `reveal_file`'s
-/// "under the maps folder" rule covers it without widening, and so one folder is
-/// the whole answer to "where does this app put my things".
-pub fn styles_dir(documents: Option<PathBuf>) -> PathBuf {
-    maps_dir(documents).join("styles")
-}
-
-/// The **default** home of the managed ride library (E2 #912) — beside the maps, for the same
-/// reason the styles are: one folder is the whole answer to "where does this app put my things",
+/// The **default** home of the managed ride library (E2 #912) — beside the maps, because one
+/// folder is the whole answer to "where does this app put my things",
 /// and `reveal_file`'s "under the maps folder" rule covers it without widening.
 ///
 /// Only the default. A rider whose rides belong on an external drive relocates it, and the choice
@@ -84,13 +42,6 @@ fn home() -> PathBuf {
     #[cfg(not(windows))]
     let var = "HOME";
     std::env::var_os(var).map(PathBuf::from).unwrap_or_else(std::env::temp_dir)
-}
-
-/// A filesystem-friendly `.obcm` basename, mirroring the dev server's
-/// `_sanitize_output_name`: the name comes from a text field, and it becomes a
-/// real path here rather than a URL.
-pub fn sanitize_output_name(name: &str) -> String {
-    sanitize_basename(name, ".obcm", "output")
 }
 
 /// The same rule for any suffix: strip every path separator, keep only characters
@@ -160,16 +111,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn output_names_become_safe_basenames() {
-        assert_eq!(sanitize_output_name("alps"), "alps.obcm");
-        assert_eq!(sanitize_output_name("  my map.obcm "), "my map.obcm");
-        assert_eq!(sanitize_output_name("../../etc/passwd"), "passwd.obcm");
-        assert_eq!(sanitize_output_name(""), "output.obcm");
-        assert_eq!(sanitize_output_name("/"), "output.obcm");
-        assert_eq!(sanitize_output_name("a/b\\c.obcm"), "c.obcm");
-    }
-
-    #[test]
     fn the_same_rule_forces_any_other_suffix() {
         assert_eq!(sanitize_basename("bikepacking", ".json", "style"), "bikepacking.json");
         assert_eq!(sanitize_basename("../../.ssh/config", ".json", "style"), "config.json");
@@ -179,7 +120,7 @@ mod tests {
     }
 
     #[test]
-    fn a_second_build_of_the_same_name_does_not_overwrite_the_first() {
+    fn a_second_file_of_the_same_name_does_not_overwrite_the_first() {
         let dir = std::env::temp_dir().join(format!("obc-desktop-unique-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir");
         let first = unique_in(&dir, "map.obcm");

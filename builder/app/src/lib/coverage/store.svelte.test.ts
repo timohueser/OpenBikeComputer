@@ -7,13 +7,13 @@
 // corridor slider smooth.
 
 import { describe, expect, it } from "vitest";
-import { CatalogV2Client } from "../catalog/v2/client";
-import { parseRegionCells } from "../catalog/v2/satellites";
-import { EXAMPLE_REGION_CELLS, EXAMPLE_ROOT, exampleCatalog, fixtureIndices } from "../catalog/v2/testdata";
+import { CatalogClient } from "../catalog/client";
+import { parseRegionCells } from "../catalog/satellites";
+import { EXAMPLE_REGION_CELLS, EXAMPLE_ROOT, exampleCatalog, fixtureIndices } from "../catalog/testdata";
 import { CoverageStore } from "./store.svelte";
 import { degreesToUbox } from "./shape";
 
-const ROOT_URL = "https://maps.example.org/catalog/v2/catalog.json";
+const ROOT_URL = "https://maps.example.org/catalog/catalog.json";
 
 /** No network anywhere: the constructor's index load fails quietly and the test
  *  injects documents built through the real parsers. */
@@ -37,7 +37,7 @@ function indices() {
 }
 
 function makeStore(): CoverageStore {
-    const client = CatalogV2Client.fromBody(EXAMPLE_ROOT, ROOT_URL, { fetchImpl: offline });
+    const client = CatalogClient.fromBody(EXAMPLE_ROOT, ROOT_URL, { fetchImpl: offline });
     const store = new CoverageStore(client, EXAMPLE_ROOT);
     store.indices = indices();
     return store;

@@ -40,9 +40,6 @@ export type Requirement = TierRequirement | BrowserRequirement;
  * then what you keep, then how you reach the device.
  */
 export const REQUIREMENTS: readonly Requirement[] = [
-    "build",
-    "bboxCrop",
-    "styleEditor",
     "rideLibrary",
     "deviceUsb",
     "deviceDashboard",
@@ -60,21 +57,6 @@ export interface Gate {
 }
 
 export const GATES: Record<Requirement, Gate> = {
-    build: {
-        reason: "Maps are built on your own machine.",
-        title: "Custom maps",
-        offer: "Build any region from raw OpenStreetMap data, not only the ones this site ships.",
-    },
-    bboxCrop: {
-        reason: "The site serves whole regions.",
-        title: "Crop to a box",
-        offer: "Draw a box on the map and build only what falls inside it.",
-    },
-    styleEditor: {
-        reason: "Custom styles are built on your own machine.",
-        title: "The style editor",
-        offer: "Per-feature colors, line styles, detail levels, and the routing profiles baked into the map.",
-    },
     rideLibrary: {
         reason: "Your ride library lives in the desktop app.",
         title: "A ride library",
@@ -141,8 +123,8 @@ function satisfied(env: GateEnv, need: Requirement): boolean {
  * `["deviceUsb", "webUsb"]`, so a tier that has no USB at all says so, and only
  * a tier that does gets as far as blaming the browser.
  *
- * `value` is the platform member the control needs — `platform.buildMap`,
- * `platform.device`. A1 pins `caps.X === (member !== null)`, so passing it lets
+ * `value` is the platform member the control needs, such as `platform.device`.
+ * A1 pins `caps.X === (member !== null)`, so passing it lets
  * a call site make one check instead of two and hand the narrowed value
  * straight to the control.
  */

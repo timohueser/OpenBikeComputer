@@ -1,5 +1,5 @@
 //! The two documents an assembly is driven by: the **schema** (what the cells were baked at) and
-//! the **skin** (what the output looks like) — [`OBCC_Spec.md`](../../../specs/OBCC_Spec.md) §11.3
+//! the **skin** (what the output looks like) — [`OBCC_Spec.md`](../../../specs/OBCC_Spec.md) §4
 //! and §11.4, restated as the engine's input types.
 //!
 //! The split is the whole point of the epic and is byte-level, not editorial
@@ -45,7 +45,7 @@ impl BandRole {
 }
 
 /// One band: a named class of cell content with one cell size (OBCA §1.2). The JSON shape is
-/// OBCC §11.3's `bands` entry verbatim, so a catalog's own schema can be handed straight in.
+/// OBCC §4's `bands` entry verbatim, so a catalog's own schema can be handed straight in.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Band {
     pub id: String,
@@ -69,7 +69,7 @@ impl Band {
     }
 }
 
-/// One ladder level (OBCC §11.3): its index, its `Max Meters/Pixel` (`null` ⇒ the `+inf` coarsest
+/// One ladder level (OBCC §4): its index, its `Max Meters/Pixel` (`null` ⇒ the `+inf` coarsest
 /// level), and the band that carries it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LodEntry {
@@ -104,7 +104,7 @@ impl Default for Routing {
 }
 
 /// A schema revision: everything a producer must agree on for chunk bytes to mean the same thing in
-/// two files (OBCC §11.3).
+/// two files (OBCC §4).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Schema {
     #[serde(default)]
@@ -264,7 +264,7 @@ impl Schema {
     }
 }
 
-/// One feature type's presentation, as a skin states it (OBCC §11.4).
+/// One feature type's presentation, as a skin states it (OBCC §5).
 ///
 /// Two spellings are accepted, because two callers exist. A hosted skin names the **feature type**
 /// and the schema's canonical assignment turns it into an id — that is the OBCC shape and the one

@@ -5,7 +5,7 @@ description: OBCM maps and OBCR routes — the binary, table-driven formats a mi
 
 # Data formats
 
-The device reads two kinds of file: an **OBCM** map and an **OBCR** route. Both are binary, and both exist for the same reason — a microcontroller should read them *directly off flash*, with no JSON to parse, no structure to rebuild in RAM, and no heap to churn. A host produces them once; the device just points at the bytes and draws. (A third format, the [catalog manifest](#the-catalog-a-third-format-for-finding-the-first-two), never reaches the device at all — it's how a host decides *which* map to hand it.)
+The device reads two kinds of file: an **OBCM** map and an **OBCR** route. Both are binary, and both exist for the same reason — a microcontroller should read them *directly off flash*, with no JSON to parse, no structure to rebuild in RAM, and no heap to churn. A host produces them once; the device just points at the bytes and draws. (A third format, the [catalog manifest](#the-catalog-the-map-builders-source-of-truth), never reaches the device at all — it is how a builder finds verified cells.)
 
 This page is the guided tour of what's actually in those files. The exhaustive byte-level tables live in the repo specs — [`OBCM_Spec.md`](src:specs/OBCM_Spec.md) and [`OBCR_Spec.md`](src:specs/OBCR_Spec.md) — so here we focus on *why* the bytes are shaped the way they are. Those root specifications remain the normative contracts; the dependency-free [`obc-formats`](src:firmware/obc-formats) crate is the code authority beneath them for version numbers, fixed record lengths, flags, sentinels, endian primitives, and the shared byte-I/O seam. Parsing, caching, conversion, and file assembly stay in the reader, route, and packer crates.
 
@@ -1020,82 +1020,67 @@ On the host that's a slice of memory; on the device it's a file on the SD card. 
 
 The map's caches matter because the [stub-select collector](../rendering/#4-decode-by-priority) walks the same visible chunks twice per frame — once in pass A to pick the surviving features, once in pass B to re-decode the winners; without a cache, pass B would re-read every winner chunk off the SD. With it, pass B's winner chunks are already resident, and a slow pan re-hits last frame's chunks. The cache changes *when* a byte is read, never *what* decodes — so a render stays byte-identical whether the whole file was resident or streamed one chunk at a time.
 
-## The catalog — a third format, for finding the first two
+## The catalog — the map builder's source of truth
 
-Everything above is read by the device. There is one more format in the family that the device never sees, and it exists because of a single number in the OBCM header: the **version byte**.
+Everything above is read by the device. **OBCC**, the
+[catalog manifest](src:specs/OBCC_Spec.md), is read by the website and desktop
+app instead. It publishes one schema, presentation-only skins, named region
+selections, per-band cell indexes, and the OBCM cells those indexes describe.
+Each skin may also carry a digest-pinned square preview: the bakery stamps it
+onto one fixed Teningen map and draws it through the production renderer, so the
+chooser compares the real device styles rather than hand-made approximations.
 
-The reader supports exactly one OBCM version at a time — v11 today, and the versions before it were hard cuts, not fallbacks. That's the right trade for a microcontroller (no branching parsers, no dead code paths in 512 KB), and it costs nothing while maps are built one at a time on the rider's own machine. But a distribution that **bakes maps centrally** — build the popular regions once, serve them as static files — turns that one byte into a hazard: the artifacts are large, cached at the edge, and the day the format moves, every one of them silently becomes a file the device will refuse.
+The root is deliberately small. It pins every region cell list and band index by
+exact byte length and SHA-256; those indexes pin every cell the same way. A
+consumer verifies each object before parsing or assembling it, so a partial
+publish, truncated response, or stale cache can never be mistaken for a map.
+The root also states the OBCM version read from the cells themselves, making an
+unsupported device visible before a large download.
 
-The fix is to make the version *knowable before the download*. **OBCC** — the [catalog manifest](src:specs/OBCC_Spec.md) — is a single JSON document listing every baked artifact with its region, preset, coverage box, size, digest, and the OBCM version **read out of the artifact's own header** rather than taken from the build recipe. The other half of the comparison comes from the device itself: it reports the OBCM version its reader accepts in the same open, pre-pairing identity read that carries its [store epoch](../companion-link/#store-epochs-which-id-era-youre-talking-to) — one byte, taken straight from the constant the reader validates every header against, so what a device claims to read and what it does read can't drift apart. A site holding the manifest can then grey out a map the connected device can't read, instead of streaming two hundred megabytes and failing at the last byte.
+A region is not a prebuilt map. It is a drawable outline plus stored cell ids.
+The outline is presentation-only: the stored list avoids a simplification error
+or point-in-polygon disagreement dropping an edge cell. Boxes and GPX corridors
+resolve through the same grid arithmetic, and unions deduplicate overlapping
+parts before the builder prices or downloads them.
 
-<figure class="fig">
-<svg viewBox="0 0 720 232" role="img" aria-label="The catalog flow. A bake job packs regions into .obcm artifacts and generates the OBCC manifest, recording each artifact's obcm version read from its own header plus its size, digest and coverage box. A static site reads the manifest. A connected device reports the obcm version its reader accepts in its open identity read. The site compares the two versions per map and either offers the download or greys it out with the reason.">
-  <defs>
-    <marker id="aCC" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
-    <marker id="aCC2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
-  </defs>
-  <text class="d-tag" x="20" y="24">Both versions known before a byte moves</text>
+The catalog has exactly one schema. Feature selection, style ids, the LOD ladder,
+band layout, routing parameters, and chunk size all live there and determine the
+cell bytes. Skins carry only colours, weights, dashes, z-order, priority, and the
+marker colour; the assembler stamps the chosen skin onto its output. A skin
+change is therefore free, while a schema-revision or OBCM-version change is a
+hard cut requiring one consistent new store. The preview is presentation only;
+its bytes cannot affect selection, pricing, or assembled output.
 
-  <!-- bakery -->
-  <rect class="d-panel-2" x="24" y="60" width="140" height="56" rx="10" />
-  <text class="d-label" x="94" y="84" text-anchor="middle">bake job</text>
-  <text class="d-sub" x="94" y="100" text-anchor="middle">packs regions</text>
+[`obc-bake`](src:host/obc-bake) fills that store from ordinary Geofabrik
+extracts. Positional region ids select a subset; no ids means every entry in
+[`regions.toml`](src:host/obc-bake/regions.toml). Several neighbouring extracts
+are co-ingested for the cells they share, so border cells contain both sides.
+A cell whose source polygons do not cover its complete square is explicitly
+`partial`, never silently canonical.
 
-  <!-- manifest -->
-  <line class="d-flow" x1="164" y1="88" x2="204" y2="88" marker-end="url(#aCC)" />
-  <rect class="d-panel" x="210" y="48" width="190" height="80" rx="10" />
-  <text class="d-label" x="305" y="70" text-anchor="middle">OBCC manifest</text>
-  <text class="d-sub" x="305" y="88" text-anchor="middle" style="font-size:9px">per artifact: region · preset</text>
-  <text class="d-sub" x="305" y="102" text-anchor="middle" style="font-size:9px">bbox · size · SHA-256</text>
-  <text class="d-sub" x="305" y="118" text-anchor="middle" style="font-size:9px;fill:#a9501c">obcm_version — from the header</text>
+Publishing uploads cells and satellites first, checks that every object is
+fetchable at the expected size, and replaces `catalog.json` last. A failure
+before that final swap leaves the previous complete root authoritative. The
+normative envelope, validation rules, URL restrictions, and publish order are
+in [`OBCC_Spec.md`](src:specs/OBCC_Spec.md).
 
-  <!-- site -->
-  <line class="d-flow" x1="400" y1="88" x2="440" y2="88" marker-end="url(#aCC)" />
-  <rect class="d-hot" x="446" y="56" width="130" height="64" rx="11" style="fill:#f8efe4" />
-  <text class="d-label" x="511" y="82" text-anchor="middle" style="fill:#a9501c">static site</text>
-  <text class="d-sub" x="511" y="100" text-anchor="middle" style="font-size:9px">compares per map</text>
+## Cells and assemblies
 
-  <!-- device -->
-  <rect class="d-panel-2" x="446" y="156" width="130" height="56" rx="10" />
-  <text class="d-label" x="511" y="180" text-anchor="middle" style="font-size:10.5px">device</text>
-  <text class="d-sub" x="511" y="196" text-anchor="middle" style="font-size:9px">reads OBCM v11</text>
-  <line class="d-flow" x1="511" y1="154" x2="511" y2="122" marker-end="url(#aCC)" />
-  <text class="d-sub" x="522" y="142" style="font-size:8.5px">identity read</text>
+The grid, cell cutter, catalog, schema/skin split, native assembler, browser wasm
+bridge, and coverage-selection UI are the current map-building path. Both the
+website and desktop app use them: regions, drawn boxes, and corridors buffered
+around GPX routes all become cell sets, and the same worker assembles identical
+volume-set bytes. The desktop host differs only at the edge, where it fetches
+through a native same-origin HTTPS transport and saves the files atomically into
+one local folder.
 
-  <!-- outcomes -->
-  <line class="d-flow" x1="576" y1="76" x2="612" y2="66" marker-end="url(#aCC)" />
-  <text class="d-sub" x="620" y="62" style="font-size:9px;fill:#2c5230">match → offered,</text>
-  <text class="d-sub" x="620" y="75" style="font-size:9px;fill:#2c5230">digest-verified</text>
-  <line x1="576" y1="100" x2="612" y2="110" stroke="#cf6a2a" stroke-width="1.6" marker-end="url(#aCC2)" />
-  <text class="d-sub" x="620" y="108" style="font-size:9px;fill:#c0492e">mismatch → greyed</text>
-  <text class="d-sub" x="620" y="121" style="font-size:9px;fill:#c0492e">out, with reason</text>
-</svg>
-<figcaption>The manifest states each artifact's version as read from its own bytes; the device states the version its reader accepts in its open identity read. The site compares the two per map — a mismatch is shown as unsupported with the reason, never hidden (that would read as a coverage hole) and never offered (the download would be refused).</figcaption>
-</figure>
+The device's multi-file reader and direct send of an assembled set remain part
+of Epic #1016. Until that lands, the builder downloads or saves the set and the
+device surface retains only the temporary manual single-file compatibility
+action.
 
-The generator keeps the manifest honest in a few deliberate ways:
-
-- **All-or-nothing versioning.** It refuses to emit a manifest whose artifacts aren't all at the packer's current OBCM version, so a half-re-baked catalog is a failed build rather than a published one; and it writes temp-file-then-rename, so a consumer sees the whole previous manifest or the whole new one — a truncated catalog can't parse.
-- **The `bbox` is the coverage box** copied from the artifact header, not the extract box it was cut from — completing partially-in-box ways pushes the packed box outward, so the header box is the honest answer to *what does this download cover?* (and must never be fed back in as an extract box, or it ratchets wider on every re-pack).
-- **Facts the bytes can't state** — region name, build time, source extract, the style-preset revision it was packed with — are recorded by the bake job in a sidecar and read back verbatim, never re-derived at generation time. A preset restyle invalidates only that preset's artifacts, so partial re-bakes are normal; recording the preset revision at bake time lets the manifest say plainly that a map is a revision behind.
-- **Deterministic output.** The generator reads a wall clock exactly once (`generated_at`); build times come from the bake and ordering is content-derived, so the same tree produces byte-identical output.
-
-The manifest layout, the bake-tree shape, the sidecar, and the version law are normative in [`OBCC_Spec.md`](src:specs/OBCC_Spec.md); it is generated by `obc-pack catalog`.
-
-The "bake job" in all of that is [`obc-bake`](src:host/obc-bake): a curated list of regions ([`regions.toml`](src:host/obc-bake/regions.toml) — DACH to start, one line per region so adding coverage is a one-line change) crossed with the shipped [schema](#schema-and-skin). Per region it fetches or reuses the Geofabrik extract, packs, and — before the artifact is allowed to exist under a name the generator would walk — **opens it with the real `obc-reader` and walks every feature of every chunk**. A corrupt or truncated artifact therefore never reaches the manifest, because it never reaches the tree; a re-run skips whatever is unchanged, keyed on the content hashes of the extract and the schema rather than on timestamps; and a region that fails is loud in the summary and in the exit status, because a silently missing region reads to a rider as *not covered*, which is indistinguishable from a curation choice. (The facts that live only in the *sidecar* — a region's display name, the extract's date, the style document's own version — are keyed separately, so re-dating an otherwise identical extract rewrites four lines of JSON instead of re-packing a country. The schema's hash is of its **body**, with the `_meta` block stripped: the packer never reads that block, so an id, a description or a version moving there is a sidecar rewrite too. Not a detail — renaming the shipped schema is exactly such an edit, and under a file-text hash it would have billed a rename as a full re-pack of the shelf.)
-
-Publishing follows the same one-way order the spec demands: every artifact uploaded and re-checked at the destination first, the manifest swapped in last. It also refuses, by default, to publish a catalog *smaller* than the one already live — ordering makes a publish atomic, but nothing about it stops a partial bake from completing successfully and quietly un-offering fifteen regions, which is the same coverage hole arriving by a different road.
-
-## Cells and assemblies — the shape the catalog is moving to
-
-*Mostly built. The grid, the cell cutter, the `schema_version 2` catalog, the bakery's cell path, the **assembler** — including the wasm bridge that runs it in a browser tab — the [schema/skin split](#schema-and-skin) of the shipped style documents, and the builder's **coverage-selection UI** (parts composed on the map, priced live from the catalog, downloaded per cell and assembled in a Web Worker) all exist and produce real assembled maps end to end. The device's multi-file reader and the direct send of an assembled set are still in flight, so the catalog on the site today is still the whole-region one above; the builder detects which catalog it was handed and serves the matching flow.*
-
-The catalog above has a shape problem that no amount of care fixes. A bakery can only offer what it pre-baked, so **Germany + Switzerland in one file** does not exist unless somebody baked that exact pair — and pre-baking every plausible combination of neighbours explodes the store. It already pays double by design (Germany sits alongside its sixteen Bundesländer, covering the same ground twice), and every new style preset multiplies the whole pile again.
-
-The fix is to change the **unit of baking** from a region to a **grid cell**, and to make the map a rider downloads an **assembly** of cells built on their own machine. N cells cover the coverage area exactly once; every selection — a country, two countries, a drawn box, a corridor buffered around a trip's routes — becomes an assembly rather than a bake. Combinations cost bandwidth and stop costing storage.
-
-That only works if assembling is nearly free, and the reason it is nearly free is a piece of arithmetic already sitting in the format.
-
+That only works if assembling is nearly free, and the reason it is nearly free
+is a piece of arithmetic already sitting in the format.
 ### The alignment trick
 
 Recall two facts from further up this page: an OBCM [quadtree](#the-quadtree-index) subdivides its header bbox at **integer floor-midpoints**, and a feature's [anchor](#features-an-anchor-then-deltas) is stored relative to its **leaf's** minimum corner. Now put cells on a fixed global lattice of **power-of-two microdegree squares** sharing one origin, and give an assembly a bbox that is a grid-aligned power-of-two square.
@@ -1177,9 +1162,9 @@ The other seam rule is about what a cell is allowed to throw away. The packer dr
 
 A style preset mixed two very different things. **Schema** — which feature types exist, at which LOD, the ladder, the simplification tolerances — is baked into chunk bytes, and in particular it fixes the [style *ids*](#the-header) every feature header references. **Skin** — the colours, weights, dashes, z-order, and the marker colour — is the ~2 KB style table and nothing else.
 
-Cells are stored per schema; the hosted catalog has exactly **one** (the seven-LOD bikepacking ladder, the one measured to render inside the device's RAM and complexity budget), so the planet-shaped store exists once. Skins are then free: stamping one onto an assembly rewrites two kilobytes. That is what brings a style editor back to a browser with no server behind it — and it is also the reason a restyle can no longer leave an artifact a revision behind, because nothing is baked to be behind.
+Cells are stored per schema; the hosted catalog has exactly **one** (the seven-LOD bikepacking ladder, the one measured to render inside the device's RAM and complexity budget), so the planet-shaped store exists once. Skins are then free: stamping one onto an assembly rewrites two kilobytes. The product builders expose those safe presentation choices; the separate maintainer editor remains the place to change the baked schema and LODs. A restyle can no longer leave an artifact a revision behind, because nothing is baked to be behind.
 
-The shipped documents now say which half they are. [`builder/presets/`](src:builder/presets) holds one `schema.json` — a complete packer config, id `bikepacking` — and a `skins/` set beside it, each skin a small document that restates the presentation values for the schema's feature types and nothing else. Two ship today: `default`, the schema's own look restated (the two documents are pinned equal by test, because the same values are also what a v1 whole-region artifact bakes in), and `dusk`, the night skin — light features on a dark ground, the first skin that uses the split for what it exists for. `dusk` also shows the one discipline the rules above don't force: the packer's merge passes union features whose *schema* styles render identically and retag them to a single style id, so feature types the schema merges have to be restated with identical values — a skin that recolored `path` away from `track` would restyle only the canonical id's share of the merged geometry. Three rules make that safe rather than merely tidy, and all three are checked by the catalog generator *and* by the bakery before it cuts anything: a skin must cover **every** feature type the schema has (a missing one would ship a map with an invisible layer); it must not add, drop or renumber one (those ids are already in the bytes of every chunk); and it must carry **nothing but presentation** — no ladder, no tolerances, no merge passes, no routing table, not even a per-style `min_lod`. The third is the one worth spelling out, because the tempting implementation is to ignore those keys rather than refuse them: a skin is stamped onto cells that were already cut at the schema's ladder, so the keys genuinely have no effect, and dropping them quietly leaves an author confidently shipping a map that is not the one they wrote. The check reads the document's JSON rather than its parsed config, because parsing is where the evidence disappears — an absent `lods` and a `lods` restating the defaults become the same value. A document that breaks any of the three is not a skin but a different schema, which is exactly what retired the old second preset, `high-detail`: it styles feature types the bikepacking ladder does not carry, so it could only ever have been a second cell store.
+The shipped documents say which half they are. [`builder/presets/`](src:builder/presets) holds one `schema.json` — a complete packer config, id `bikepacking` — and a `skins/` set beside it. Each skin restates the presentation values for the schema's feature types and nothing else. Merge passes can retag several identically rendered feature types to one canonical style id, so a skin must keep those merged styles identical too. Three rules make that safe rather than merely tidy, and all three are checked by the catalog generator and bakery before the first cut: a skin covers **every** schema feature type, cannot add, drop, or renumber one, and carries **nothing but presentation** — no ladder, tolerances, merge passes, routing table, or per-style `min_lod`. A document that breaks those rules describes a different schema and therefore a different cell store.
 
 ### One map, several files
 
@@ -1219,13 +1204,13 @@ The measurement behind all of these numbers — where the bytes actually are, pe
 
 ### Baking cells without a planet
 
-A cell store is planet-shaped in principle and a curated shelf in practice, so the bakery had to keep working from ordinary Geofabrik extracts. `obc-bake bake --cells europe/germany europe/switzerland` is the whole flow: each named region is resolved to the cells its **coverage polygon** touches — the region's own `.poly`, read at full resolution, not the simplified outline the catalog draws and not a bounding box, because a box around Germany reaches into four other countries and would bake a slab of empty cells in each.
+A cell store is planet-shaped in principle and curated coverage in practice, so the bakery works from ordinary Geofabrik extracts. `obc-bake bake europe/germany europe/switzerland` is the whole flow: each named region is resolved to the cells its **coverage polygon** touches — the region's own `.poly`, read at full resolution, not the simplified outline the catalog draws and not a bounding box, because a box around Germany reaches into four other countries and would bake a slab of empty cells in each.
 
 Which leaves the interesting question: who bakes the cells on a border? A cell cut from the German extract alone is missing every Swiss side road, and measured in the double-covered band only about half of each file's junctions exist in the other's — so publishing it as full coverage would be a quiet lie. The rule the bakery uses is that a cell's **source set** is every co-baked extract whose polygon touches its square, and the cell is cut **once, from exactly that set**. Two countries baked together therefore run three cuts — Germany-only cells, Switzerland-only cells, and the border cells cut from *both* extracts at once — and a cell is published as canonical only when the union of its own sources covers its whole square. Everything else is flagged `partial`, which the catalog carries per cell and the builder will draw as a warning inside the selection rather than as covered ground.
 
-Two properties make that safe rather than merely plausible. The source set is a **pure function** of the cell and the run's extracts — no ordering, no first-writer-wins — which is what the format's determinism requirement demands of a tie-break. And a canonical cell is **never** replaced by a partial one: baking Switzerland alone after a joint bake re-cuts the border cells, finds them thinner than what is already published, and keeps the published ones. The skip logic is the same two-key design as the region bakery, one unit smaller: a plan whose every cell is current is skipped *before* its extracts are read, and a re-dated but byte-identical extract rewrites sidecars and cuts nothing.
+Two properties make that safe rather than merely plausible. The source set is a **pure function** of the cell and the run's extracts — no ordering, no first-writer-wins — which is what the format's determinism requirement demands of a tie-break. And a canonical cell is **never** replaced by a partial one: baking Switzerland alone after a joint bake re-cuts the border cells, finds them thinner than what is already published, and keeps the published ones. The skip state has two keys: a plan whose every cell is current is skipped *before* its extracts are read, while a re-dated but byte-identical extract rewrites sidecars and cuts nothing.
 
-The grid, the theorem, the seam rules, the assembly contract, the volume-set manifest bytes, and the provenance rule that stops a partially-covered border cell from passing as canonical are all normative in [`OBCA_Spec.md`](src:specs/OBCA_Spec.md); the catalog that publishes cells, skins, and cell-set regions is [`OBCC_Spec.md` §11](src:specs/OBCC_Spec.md).
+The grid, theorem, seam rules, assembly contract, volume-set manifest bytes, and provenance rule that stops a partially covered border cell from passing as canonical are normative in [`OBCA_Spec.md`](src:specs/OBCA_Spec.md); the catalog that publishes cells, skins, and cell-set regions is [`OBCC_Spec.md`](src:specs/OBCC_Spec.md).
 
 ---
 
@@ -1241,12 +1226,12 @@ The grid, the theorem, the seam rules, the assembly contract, the volume-set man
 - Normative OBCM / OBCR / ride / track constants, primitive codecs, and the shared byte seam: [`obc-formats`](src:firmware/obc-formats)
 - The byte-level specs: [`OBCM_Spec.md`](src:specs/OBCM_Spec.md) · [`OBCR_Spec.md`](src:specs/OBCR_Spec.md) · [`obc-ble-interface-spec.md`](src:specs/obc-ble-interface-spec.md) (the wire contract routes/rides cross to the companion app)
 - The catalog manifest — spec [`OBCC_Spec.md`](src:specs/OBCC_Spec.md), generator [`obc-pack/src/catalog.rs`](src:host/obc-pack/src/catalog.rs), JSON Schema [`catalog.schema.json`](src:host/obc-pack/schema/catalog.schema.json)
-- The cell catalog the section above describes — the `schema_version 2` producer [`catalog/v2.rs`](src:host/obc-pack/src/catalog/v2.rs), the region-outline reduction [`catalog/boundary.rs`](src:host/obc-pack/src/catalog/boundary.rs), JSON Schema [`catalog.v2.schema.json`](src:host/obc-pack/schema/catalog.v2.schema.json)
+- The cell catalog the section above describes — producer [`catalog.rs`](src:host/obc-pack/src/catalog.rs), region-outline reduction [`catalog/boundary.rs`](src:host/obc-pack/src/catalog/boundary.rs), and JSON Schema [`catalog.schema.json`](src:host/obc-pack/schema/catalog.schema.json)
 - The cell grid, the assembly contract, and the volume-set manifest: [`OBCA_Spec.md`](src:specs/OBCA_Spec.md); the byte-density measurement its band sizes come from: [`cell_size_survey.rs`](src:host/obc-pack/examples/cell_size_survey.rs)
 - The cell cutter — the grid arithmetic, cell ids and band table in [`obc-pack/src/grid.rs`](src:host/obc-pack/src/grid.rs), the cut itself (clip at the edge, the deterministic boundary junctions, interior-only pruning, provenance) in [`obc-pack/src/cut.rs`](src:host/obc-pack/src/cut.rs)
 - The assembler that puts the cells back together — [`obcm-assemble`](src:host/obcm-assemble): the verbatim graft in [`graft.rs`](src:host/obcm-assemble/src/graft.rs), the POI/hours merge in [`poi.rs`](src:host/obcm-assemble/src/poi.rs), the seam unification and graph rewrite in [`nav.rs`](src:host/obcm-assemble/src/nav.rs), the volume set and its manifest in [`shard.rs`](src:host/obcm-assemble/src/shard.rs), and the read-it-back gate in [`verify.rs`](src:host/obcm-assemble/src/verify.rs). It carries no geometry library and compiles for the browser, which is the whole point. The proof that a grafted map is the map: [`tests/oracle.rs`](src:host/obcm-assemble/tests/oracle.rs) renders and routes `assemble(cut(X))` against `pack(X)`
 - The browser running exactly that engine — [`obc-web-assemble`](src:apps/obc-web-assemble), the wasm bridge the hosted builder assembles through. It adds no format knowledge: a byte-buffer adapter, a typed error vocabulary, and a progress/abort seam built out of the engine's own clock and shard-store traits. Its output is pinned byte-for-byte against the native CLI's from both sides — natively in `tests/determinism.rs`, and from Node against the wasm build in `bridge.test.ts`
-- The bakery that fills the tree the generator walks, and publishes it — the curated region list [`regions.toml`](src:host/obc-bake/regions.toml), the runner [`obc-bake/src/bake.rs`](src:host/obc-bake/src/bake.rs), the read-it-back gate [`obc-bake/src/verify.rs`](src:host/obc-bake/src/verify.rs), the ordered publish [`obc-bake/src/publish.rs`](src:host/obc-bake/src/publish.rs)
+- The bakery that fills the tree and publishes it — curated region list [`regions.toml`](src:host/obc-bake/regions.toml), cell runner [`obc-bake/src/cells.rs`](src:host/obc-bake/src/cells.rs), read-it-back gate [`obc-bake/src/verify.rs`](src:host/obc-bake/src/verify.rs), and ordered publish [`obc-bake/src/publish.rs`](src:host/obc-bake/src/publish.rs)
 - The bakery's **cell** path — region → cell sets and the co-baked source-set rule in [`obc-bake/src/cells.rs`](src:host/obc-bake/src/cells.rs), the `.poly` coverage geometry that decides both the selection and `partial` in [`obc-bake/src/coverage.rs`](src:host/obc-bake/src/coverage.rs), the lockstep guard in [`obc-bake/src/guard.rs`](src:host/obc-bake/src/guard.rs)
 
 Maps are produced by the packer and routes by the GPX converter — how those work, and how a route is matched to the map you're riding, is the subject of [packer & routing](../packer-routing/). For how these bytes become pixels, see the [rendering pipeline](../rendering/). Routes and rides also cross to a phone over Bluetooth as *these same bytes* — how that link is shaped is [the companion link](../companion-link/).

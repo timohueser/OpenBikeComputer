@@ -25,14 +25,16 @@
         type AssembleWorkerRequest,
         type WorkerCell,
     } from "../../lib/assemble/workerProtocol";
-    import { saveBytes } from "../../lib/catalog/download";
+    import { saveBytes } from "../../lib/download";
+    import { platform } from "../../lib/platform";
+    import type { MapOutputSession } from "../../lib/platform/types";
     import {
         downloadCells,
         planCells,
         type CellDownloadProgress,
-    } from "../../lib/catalog/v2/download";
-    import { coverageRings, type RingPoint } from "../../lib/catalog/v2/outline";
-    import type { UBox } from "../../lib/catalog/v2/grid";
+    } from "../../lib/catalog/download";
+    import { coverageRings, type RingPoint } from "../../lib/catalog/outline";
+    import type { UBox } from "../../lib/catalog/grid";
     import { detailBandId, mergeMixedCellRects, parseCells, patchCount } from "../../lib/coverage/shape";
     import type { CoverageStore } from "../../lib/coverage/store.svelte";
     import { formatBytes } from "../../lib/format";
@@ -81,7 +83,14 @@
         );
     }
 
-    onDestroy(() => worker?.terminate());
+    onDestroy(() => {
+        if (output?.kind === "device") {
+            void failRun(new DOMException("The builder was closed.", "AbortError"));
+        } else {
+            worker?.terminate();
+            void closeDownloadOutput();
+        }
+    });
 
     // --- the run ----------------------------------------------------------
 
@@ -90,10 +99,13 @@
     let dlProgress = $state<CellDownloadProgress | null>(null);
     let asmPhase = $state<AssemblePhase>("open");
     let asmFraction = $state(0);
-    let savedFiles = $state<{ name: string; role: string; byteLength: number }[]>([]);
+    let savedFiles = $state<{ name: string; role: string; byteLength: number; path?: string }[]>([]);
+    let outputPath = $state<string | null>(null);
     let runWarnings = $state<string[]>([]);
     let errorMessage = $state<string | null>(null);
     let abortCtl: AbortController | null = null;
+    let downloadOutput: MapOutputSession | null = null;
+    let runMapName = "OBC map";
 
     interface DeviceOutput {
         kind: "device";
@@ -160,10 +172,21 @@
                         if (!output.state) throw new Error("The assembler sent a file before its set plan.");
                         const { sendAssembledSetFile } = await import("../../lib/device/write");
                         await sendAssembledSetFile(output.client, output.state, msg, output.ctx);
+                    } else if (platform.openMapOutput) {
+                        // The desktop writes every part into one new folder. The
+                        // worker waits for this ack, so the next shard never
+                        // competes for memory or arrives before this write ends.
+                        downloadOutput ??= await platform.openMapOutput(runMapName);
+                        outputPath = downloadOutput.path;
+                        const path = await downloadOutput.write(msg.name, msg.bytes);
+                        savedFiles.push({ name: msg.name, role: msg.role, byteLength: msg.byteLength, path });
                     } else {
                         saveBytes(msg.bytes, msg.name);
+                        savedFiles.push({ name: msg.name, role: msg.role, byteLength: msg.byteLength });
                     }
-                    savedFiles.push({ name: msg.name, role: msg.role, byteLength: msg.byteLength });
+                    if (output?.kind === "device") {
+                        savedFiles.push({ name: msg.name, role: msg.role, byteLength: msg.byteLength });
+                    }
                     worker?.postMessage({ type: "file-ack" } satisfies AssembleWorkerRequest);
                 } catch (cause) {
                     await failRun(cause);
@@ -178,6 +201,13 @@
                         await failRun(new Error("The device did not commit the assembled map's manifest."));
                     } else {
                         settleDevice({ objectId: state.setId, committedOffset: state.totalBytes });
+                    }
+                } else {
+                    try {
+                        await closeDownloadOutput();
+                    } catch (cause) {
+                        await failRun(cause);
+                        break;
                     }
                 }
                 output = null;
@@ -200,6 +230,12 @@
         }
     }
 
+    async function closeDownloadOutput() {
+        const current = downloadOutput;
+        downloadOutput = null;
+        await current?.finish();
+    }
+
     function settleDevice(result: UploadResult | unknown, failed = false) {
         if (output?.kind !== "device" || output.settled) return;
         output.settled = true;
@@ -213,15 +249,20 @@
             if (output.failing || output.settled) return;
             output.failing = true;
         }
+        const cancelled =
+            (output?.kind === "device" && output.ctx.signal.aborted) ||
+            (cause instanceof DOMException && cause.name === "AbortError");
         abortCtl?.abort();
         worker?.terminate();
         worker = null;
         if (output?.kind === "device" && output.state) {
             const { abandonAssembledSet } = await import("../../lib/device/write");
             await abandonAssembledSet(output.client, output.state);
+        } else {
+            await closeDownloadOutput().catch(() => {});
         }
         errorMessage = cause instanceof Error ? cause.message : String(cause);
-        phase = output?.kind === "device" && output.ctx.signal.aborted ? "cancelled" : "error";
+        phase = cancelled ? "cancelled" : "error";
         settleDevice(cause, true);
         output = null;
     }
@@ -258,6 +299,8 @@
         lastRunKind = out.kind;
         errorMessage = null;
         savedFiles = [];
+        outputPath = null;
+        downloadOutput = null;
         runWarnings = [];
         dlProgress = null;
         asmFraction = 0;
@@ -269,6 +312,7 @@
         abortCtl = new AbortController();
         try {
             await downloadCells(plan, {
+                fetchImpl: store.client.fetchImpl,
                 onCell: (item, bytes) => {
                     cells.push({ id: item.cell.id, band: item.band, partial: item.cell.partial, bytes });
                 },
@@ -291,6 +335,7 @@
         }
 
         phase = "assembling";
+        runMapName = mapName();
         asmPhase = "open";
         if (out.kind === "device") out.ctx.phase("assembling", 0);
         const req: AssembleWorkerRequest = {
@@ -299,7 +344,7 @@
             schemaJson: store.rootBody,
             skinJson: JSON.stringify(store.skin),
             options: {
-                name: mapName(),
+                name: runMapName,
                 // Both were shown before this button unlocked. `acceptHoles`
                 // is derived from the *shown* set, not the ledger's raw count
                 // (#1041 A5): `store.holeCells()` is every band's holes — the
@@ -346,9 +391,7 @@
             // The worker is blocked inside one synchronous wasm call and cannot
             // read a message — terminate IS the cancel (bridge threading
             // contract). Nothing is half-written: the set manifest goes last.
-            worker?.terminate();
-            worker = null;
-            phase = "cancelled";
+            void failRun(new DOMException("cancelled", "AbortError"));
         }
     }
 
@@ -401,7 +444,7 @@
         return (
             `Assembling this selection needs about ${formatBytes(estimate.peakBytes)} of browser memory — more than ` +
             `${isMobileUa ? "a phone's tab" : "a browser tab"} can be trusted with ` +
-            `(${formatBytes(estimate.budgetBytes)}). The desktop app assembles the same selection natively.`
+            `(${formatBytes(estimate.budgetBytes)}). Use a smaller coverage area or split it into two maps.`
         );
     });
 
@@ -641,7 +684,8 @@
                     {#if lastRunKind === "download"}
                         <p class="line small">
                             Saved {savedFiles.length}
-                            {savedFiles.length === 1 ? "file" : "files"} — copy
+                            {savedFiles.length === 1 ? "file" : "files"}{#if outputPath} in
+                                <span class="mono">{outputPath}</span>{/if} — copy
                             {savedFiles.length === 1 ? "it" : "all of them"} to the top level of the device's
                             card.
                         </p>
@@ -656,7 +700,7 @@
                             </li>
                         {/each}
                     </ul>
-                    {#if savedFiles.length > 1}
+                    {#if lastRunKind === "download" && !outputPath && savedFiles.length > 1}
                         <p class="line faint small">
                             Your browser may ask to allow multiple downloads — the map is a set, and every
                             file of it matters.
