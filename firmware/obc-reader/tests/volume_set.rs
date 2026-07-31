@@ -8,7 +8,9 @@ use std::cell::Cell;
 
 use obc_formats::io::{ByteSource, Error as IoError};
 use obc_formats::obcs::{self, ManifestError, Role};
-use obc_reader::{BBox, MapCache, MapTables, MountError, MountedSet, ShardTables, SliceSource};
+use obc_reader::{
+    BBox, FullSetShards, MapCache, MapTables, MountError, MountedSet, SetShards, ShardTables, SliceSource,
+};
 use obcm_testkit::set::{build_set, empty_lod, matched_pair, quadrants, ShardSpec};
 use obcm_testkit::{pack_line, seal, LodSpec, Style};
 
@@ -62,15 +64,39 @@ fn pair() -> (Vec<u8>, obcm_testkit::set::SetFixture) {
     matched_pair(ASSEMBLY, STYLES, (COARSE_MPP, coarse_chunk(), 4096), (FINE_MPP, fine_chunks(), 4096))
 }
 
+/// A manifest for `files`, keeping the fixture's roles and bboxes but re-recording each shard's
+/// `Bytes`. Rebuilding a shard file changes its length, and §5.3 checks the size **first** — so
+/// without this the size check would fire and mask whatever the test is actually about.
+fn rebuilt_manifest(files: &[Vec<u8>], fixture: &obcm_testkit::set::SetFixture) -> obcs::SetManifest {
+    let original = obcs::parse(&fixture.manifest).expect("the fixture's manifest is valid");
+    let shards: Vec<obcs::Shard> = original
+        .shards()
+        .iter()
+        .zip(files)
+        .map(|(shard, bytes)| obcs::Shard { bytes: bytes.len() as u32, ..*shard })
+        .collect();
+    obcs::build(
+        original.obcm_version,
+        original.core_shard() as u8,
+        original.schema_revision,
+        original.bbox,
+        original.set_id,
+        original.name,
+        &shards,
+    )
+    .expect("the re-recorded manifest still satisfies §5.3")
+}
+
 /// Mount a fixture's shards, running `body` with the mounted set. Keeps the borrow chain
 /// (sources → `&dyn ByteSource` slice → tables → set) in one place.
 fn with_set<T>(fixture: &obcm_testkit::set::SetFixture, body: impl FnOnce(&MountedSet<'_>) -> T) -> T {
     let sources: Vec<SliceSource> = fixture.sources().into_iter().map(SliceSource).collect();
     let refs: Vec<&dyn ByteSource> = sources.iter().map(|s| s as &dyn ByteSource).collect();
     let manifest = obcs::parse(&fixture.manifest).expect("hand-built manifest is valid");
-    let core = MapTables::parse(&sources[manifest.core_shard as usize]).expect("core parses");
+    let core = MapTables::parse(&sources[manifest.core_shard()]).expect("core parses");
     let cache = MapCache::new();
-    let set = MountedSet::mount(manifest, &refs, &core, &cache).expect("a complete set mounts");
+    let mut store = FullSetShards::new();
+    let set = MountedSet::mount(&mut store, &manifest, &refs, &core, &cache).expect("a complete set mounts");
     body(&set)
 }
 
@@ -147,7 +173,7 @@ fn a_missing_shard_refuses_the_whole_set() {
     // Everything but the last geometry shard.
     let short: Vec<&dyn ByteSource> = all[..5].iter().map(|s| s as &dyn ByteSource).collect();
     assert_eq!(
-        MountedSet::mount(manifest, &short, &core, &cache).err(),
+        MountedSet::mount(&mut FullSetShards::new(), &manifest, &short, &core, &cache).err(),
         Some(MountError::ShardCount),
         "a set with a shard missing must read as incomplete, never as a smaller map"
     );
@@ -198,7 +224,7 @@ fn a_size_mismatch_refuses_the_whole_set() {
         let refs: Vec<&dyn ByteSource> = sources.iter().map(|s| s as &dyn ByteSource).collect();
         let core = MapTables::parse(&sources[0]).expect("the core still parses");
         assert_eq!(
-            MountedSet::mount(manifest, &refs, &core, &cache).err(),
+            MountedSet::mount(&mut FullSetShards::new(), &manifest, &refs, &core, &cache).err(),
             Some(MountError::Size(index as u8)),
             "shard {index} is not the recorded Bytes"
         );
@@ -229,7 +255,10 @@ fn a_header_bbox_mismatch_refuses_the_whole_set() {
     let refs: Vec<&dyn ByteSource> = sources.iter().map(|s| s as &dyn ByteSource).collect();
     let core = MapTables::parse(&sources[0]).unwrap();
     let cache = MapCache::new();
-    assert_eq!(MountedSet::mount(manifest, &refs, &core, &cache).err(), Some(MountError::Bbox(2)));
+    assert_eq!(
+        MountedSet::mount(&mut FullSetShards::new(), &manifest, &refs, &core, &cache).err(),
+        Some(MountError::Bbox(2))
+    );
 }
 
 /// §4.7 stamps one skin into every shard of a set, so a differing style table means these files
@@ -255,7 +284,10 @@ fn a_differing_style_table_refuses_the_whole_set() {
     let refs: Vec<&dyn ByteSource> = sources.iter().map(|s| s as &dyn ByteSource).collect();
     let core = MapTables::parse(&sources[0]).unwrap();
     let cache = MapCache::new();
-    assert_eq!(MountedSet::mount(manifest, &refs, &core, &cache).err(), Some(MountError::Styles(2)));
+    assert_eq!(
+        MountedSet::mount(&mut FullSetShards::new(), &manifest, &refs, &core, &cache).err(),
+        Some(MountError::Styles(2))
+    );
 }
 
 /// Shard files no manifest references are **orphans** (§5.4): the mount opens exactly the
@@ -275,14 +307,19 @@ fn dangling_shards_are_ignored() {
 
     // Handing the mount the orphan too is a count mismatch, not a bigger set.
     let all: Vec<&dyn ByteSource> = sources.iter().map(|s| s as &dyn ByteSource).collect();
-    assert_eq!(MountedSet::mount(manifest, &all, &core, &cache).err(), Some(MountError::ShardCount));
+    assert_eq!(
+        MountedSet::mount(&mut FullSetShards::new(), &manifest, &all, &core, &cache).err(),
+        Some(MountError::ShardCount)
+    );
 
     // Mounting the manifest's own shards succeeds and never touches the orphan's bytes.
     for source in &sources {
         let _ = source.take();
     }
     let named: Vec<&dyn ByteSource> = sources[..6].iter().map(|s| s as &dyn ByteSource).collect();
-    let set = MountedSet::mount(manifest, &named, &core, &cache).expect("the named shards are a complete set");
+    let mut store = FullSetShards::new();
+    let set =
+        MountedSet::mount(&mut store, &manifest, &named, &core, &cache).expect("the named shards are a complete set");
     assert_eq!(set.shard_count(), 6);
     assert_eq!(sources[6].take(), 0, "the orphan is never read");
 
@@ -291,6 +328,132 @@ fn dangling_shards_are_ignored() {
     assert!(obcs::parse_shard_name(b"MS7S06.OBM").unwrap().1 >= set.shard_count(), "index 6 is dangling here");
     // …and the neighbouring single-map convention is not a shard at all (§5.2).
     assert_eq!(obcs::parse_shard_name(b"MP7.OBM"), None);
+}
+
+/// §5.1 requires every shard to list the **full ladder**, with the rungs it does not carry written
+/// empty — and dispatch indexes the *core*'s chosen LOD into each shard's own table. A shard whose
+/// ladder disagrees is therefore not "missing detail": it answers a different question at every
+/// rung, with reads that look perfectly valid.
+///
+/// Two shapes, both of which mounted cleanly before this check existed: a **reversed** ladder
+/// (rung 1 means the coarse scale) and a **shorter** one (the shard silently contributes nothing).
+#[test]
+fn a_shard_whose_ladder_is_not_the_cores_refuses_the_whole_set() {
+    let (_, fixture) = pair();
+    let quads = quadrants(ASSEMBLY);
+    let chunk = || fine_chunks()[0].clone();
+
+    // Reversed: the same two rungs, swapped, so LOD 1 is the coarse scale.
+    let reversed = vec![
+        LodSpec { max_mpp: FINE_MPP, index: vec![0], chunks: vec![chunk()], chunk_size: 4096 },
+        empty_lod(COARSE_MPP),
+    ];
+    // Shorter: one rung where the core lists two.
+    let shorter = vec![LodSpec { max_mpp: FINE_MPP, index: vec![0], chunks: vec![chunk()], chunk_size: 4096 }];
+
+    for (what, lods) in [("a reversed ladder", reversed), ("a shorter ladder", shorter)] {
+        let mut files = fixture.shards.clone();
+        files[2] = obcm_testkit::build_file(quads[0], STYLES, &lods);
+        let manifest = rebuilt_manifest(&files, &fixture);
+        let sources: Vec<SliceSource> = files.iter().map(|f| SliceSource(f.as_slice())).collect();
+        let refs: Vec<&dyn ByteSource> = sources.iter().map(|s| s as &dyn ByteSource).collect();
+        let core = MapTables::parse(&sources[0]).expect("the core still parses");
+        let cache = MapCache::new();
+        assert_eq!(
+            MountedSet::mount(&mut FullSetShards::new(), &manifest, &refs, &core, &cache).err(),
+            Some(MountError::Ladder(2)),
+            "{what} must refuse the set"
+        );
+    }
+}
+
+/// A caller can only mount as many shards as its [`SetShards`] holds, and a device's store is
+/// smaller than the format's 32 — a mount holds every shard's file handle open. The refusal names
+/// **the caller's** cap, because "this device mounts 4" is the sentence a rider needs; "the format
+/// allows 32" is not.
+#[test]
+fn a_set_larger_than_the_callers_store_is_refused_with_the_cap() {
+    let (_, fixture) = pair();
+    let sources: Vec<SliceSource> = fixture.sources().into_iter().map(SliceSource).collect();
+    let refs: Vec<&dyn ByteSource> = sources.iter().map(|s| s as &dyn ByteSource).collect();
+    let manifest = obcs::parse(&fixture.manifest).unwrap();
+    let core = MapTables::parse(&sources[0]).unwrap();
+    let cache = MapCache::new();
+
+    // A store for four shards, handed a set of six.
+    let mut small: SetShards<4> = SetShards::new();
+    assert_eq!(small.capacity(), 4);
+    assert_eq!(
+        MountedSet::mount(&mut small, &manifest, &refs, &core, &cache).err(),
+        Some(MountError::Handles(4)),
+        "the cap in the error is the caller's, not the format's"
+    );
+    // Exactly enough is enough.
+    let mut exact: SetShards<6> = SetShards::new();
+    assert!(MountedSet::mount(&mut exact, &manifest, &refs, &core, &cache).is_ok());
+}
+
+/// `MountError::Manifest` is reachable, and this is how: `SetManifest`'s remaining public fields
+/// can be moved after it parsed, so the mount re-runs §5.3 rather than trusting its argument.
+/// (`core_shard` is *not* among them — it is private precisely so an index cannot go out of range.)
+#[test]
+fn a_manifest_mutated_after_parsing_refuses_at_mount() {
+    let (_, fixture) = pair();
+    let sources: Vec<SliceSource> = fixture.sources().into_iter().map(SliceSource).collect();
+    let refs: Vec<&dyn ByteSource> = sources.iter().map(|s| s as &dyn ByteSource).collect();
+    let core = MapTables::parse(&sources[0]).unwrap();
+    let cache = MapCache::new();
+
+    let mut manifest = obcs::parse(&fixture.manifest).unwrap();
+    manifest.bbox = obcs::SetBBox { min_lat: 1, min_lon: 1, max_lat: 0, max_lon: 0 };
+    assert_eq!(
+        MountedSet::mount(&mut FullSetShards::new(), &manifest, &refs, &core, &cache).err(),
+        Some(MountError::Manifest(ManifestError::Geometry))
+    );
+}
+
+/// §5.3 pins one `OBCM Version` across the whole set, and the mount checks it **per shard** — the
+/// same subset the board's scan checks, so the two cannot disagree about what a valid set is.
+/// Today this build parses exactly one OBCM version, so the property is also transitively true;
+/// that is a reason to state it, not a reason to leave it implicit.
+#[test]
+fn the_manifests_obcm_version_is_checked_against_every_shard() {
+    let (_, fixture) = pair();
+    let sources: Vec<SliceSource> = fixture.sources().into_iter().map(SliceSource).collect();
+    let refs: Vec<&dyn ByteSource> = sources.iter().map(|s| s as &dyn ByteSource).collect();
+    let core = MapTables::parse(&sources[0]).unwrap();
+    let cache = MapCache::new();
+
+    // Every shard's own header carries the version the reader parses…
+    for bytes in &fixture.shards {
+        assert_eq!(ShardTables::parse(&SliceSource(bytes)).unwrap().version(), obc_formats::obcm::VERSION);
+    }
+    // …so a manifest claiming another one is refused at the *core* (index 0), the first shard the
+    // mount reaches.
+    let mut manifest = obcs::parse(&fixture.manifest).unwrap();
+    manifest.obcm_version = obc_formats::obcm::VERSION - 1;
+    assert_eq!(
+        MountedSet::mount(&mut FullSetShards::new(), &manifest, &refs, &core, &cache).err(),
+        Some(MountError::Header(0))
+    );
+}
+
+/// A mixed-depth antichain is §5.1-legal — the shards of a role are quadtree nodes, not a grid — and
+/// it must mount. Seven geometry shards at two depths, tiling the assembly exactly.
+#[test]
+fn a_mixed_depth_antichain_mounts() {
+    let deep = obcm_testkit::set::deep_matched_pair(
+        ASSEMBLY,
+        STYLES,
+        (COARSE_MPP, coarse_chunk(), 4096),
+        (FINE_MPP, core::array::from_fn(|_| fine_chunks()[0].clone()), 4096),
+    );
+    with_set(&deep.antichain, |set| {
+        assert_eq!(set.shard_count(), 9, "core + coarse + NW's four + three siblings");
+        assert_eq!(set.role_of(2), Some(Role::Geometry));
+        assert_eq!(set.role_of(8), Some(Role::Geometry));
+    });
+    with_set(&deep.subdivided, |set| assert_eq!(set.shard_count(), 6));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -331,7 +494,8 @@ fn dispatch_touches_only_the_files_a_viewport_needs() {
     let manifest = obcs::parse(&fixture.manifest).unwrap();
     let core = MapTables::parse(&sources[0]).unwrap();
     let cache = MapCache::new();
-    let set = MountedSet::mount(manifest, &refs, &core, &cache).unwrap();
+    let mut store = FullSetShards::new();
+    let set = MountedSet::mount(&mut store, &manifest, &refs, &core, &cache).unwrap();
 
     let mut points: heapless::Vec<(i32, i32), 512> = heapless::Vec::new();
     let mut rings: heapless::Vec<usize, 16> = heapless::Vec::new();
@@ -377,13 +541,81 @@ fn nav_and_poi_always_go_to_the_core() {
     let manifest = obcs::parse(&fixture.manifest).unwrap();
     let core = MapTables::parse(&sources[0]).unwrap();
     let cache = MapCache::new();
-    let set = MountedSet::mount(manifest, &refs, &core, &cache).unwrap();
+    let mut store = FullSetShards::new();
+    let set = MountedSet::mount(&mut store, &manifest, &refs, &core, &cache).unwrap();
 
     let reader = set.core_reader();
     assert_eq!(reader.file(), 0, "the core reader reads the core file");
+    assert!(!reader.is_set_shard(), "the core is not a shard reader");
     assert_eq!(reader.bbox, set.bbox(), "and spans the whole assembly");
     // The fixture's core carries an empty nav graph + empty POI directory, which is what a
     // testkit-built file writes; the contract under test is *which file* answers.
     assert_eq!(reader.poi_directory().entries.len(), obc_formats::obcm::POI_CATEGORY_COUNT as usize);
     assert!(reader.nav_directory().is_empty());
+}
+
+/// The other half of §5.1, and the one a doc comment used to be the only guard for: a **shard**
+/// reader borrows the core's `MapTables`, so its POI and nav directories are the *core file's*
+/// offsets pointed at a *shard's* bytes. That is not a degraded answer, it is a read at an
+/// unrelated offset — so every one of those accessors answers empty instead.
+///
+/// Every accessor is checked against the **core** reader over the same tables, so "empty" is a
+/// decision this code made and not the fixture being empty anyway.
+#[test]
+fn nav_and_poi_accessors_are_empty_on_a_shard_reader() {
+    use obc_formats::obcm::PoiCategory;
+    use obc_reader::corridor::PoiCategorySet;
+
+    let (_, fixture) = pair();
+    with_set(&fixture, |set| {
+        let core = set.core_reader();
+        let shard = set.shard_reader(2).expect("shard 2 is a geometry shard");
+        assert!(!core.is_set_shard() && shard.is_set_shard());
+
+        // The three table accessors: the core's are the map's, the shard's are empty.
+        assert_eq!(core.poi_directory().entries.len(), obc_formats::obcm::POI_CATEGORY_COUNT as usize);
+        assert!(shard.poi_directory().entries.is_empty(), "poi_directory");
+        assert!(core.poi_directory().chunk_size > 0 && shard.poi_directory().chunk_size == 0);
+        assert!(core.nav_directory().chunk_size > 0 && shard.nav_directory().chunk_size == 0, "nav_directory");
+        assert!(!core.nav_profiles().is_empty() && shard.nav_profiles().is_empty(), "nav_profiles");
+
+        // …and the seven query paths, which are the ones that would otherwise read the core's
+        // offsets against a shard's bytes.
+        assert_eq!(shard.poi_hours(0), None, "poi_hours");
+        let mut found: heapless::Vec<obc_reader::Poi, { obc_reader::MAX_POI_RESULTS }> = heapless::Vec::new();
+        shard.nearest_pois(PoiCategory::Water, (2000, 2000), &mut found).unwrap();
+        assert!(found.is_empty(), "nearest_pois");
+        let mut corridor: heapless::Vec<obc_reader::CorridorPoi, { obc_reader::MAX_CORRIDOR_RESULTS }> =
+            heapless::Vec::new();
+        shard.corridor_pois(PoiCategorySet::ALL, &NoPath, 0, &mut corridor).unwrap();
+        assert!(corridor.is_empty(), "corridor_pois");
+
+        let view = BBox { min_lon: ASSEMBLY.0, min_lat: ASSEMBLY.1, max_lon: ASSEMBLY.2, max_lat: ASSEMBLY.3 };
+        let mut scratch = [0u8; obc_reader::NAV_MAX_CHUNK_BYTES];
+        let mut visited = 0usize;
+        shard.for_each_nav_node(&view, &mut scratch, |_| visited += 1).unwrap();
+        assert_eq!(visited, 0, "for_each_nav_node");
+        let mut tiles = obc_reader::NavTileCache::new();
+        shard.for_each_nav_node_cached(&view, &mut tiles, |_| visited += 1).unwrap();
+        assert_eq!(visited, 0, "for_each_nav_node_cached");
+        let mut points: heapless::Vec<(i32, i32), 8> = heapless::Vec::new();
+        assert_eq!(shard.nav_edge(0, &mut points), None, "nav_edge");
+        assert_eq!(shard.nav_edge_oriented(&mut tiles, 0, (0, 0), |_| {}), None, "nav_edge_oriented");
+    });
+}
+
+/// A zero-chunk route path — `corridor_pois` needs one and this test is not about routing.
+struct NoPath;
+
+impl obc_reader::corridor::RoutePath for NoPath {
+    fn chunk_count(&self) -> usize {
+        0
+    }
+    fn chunk_start_m(&self, _k: usize) -> u32 {
+        0
+    }
+    fn chunk_bbox(&self, _k: usize) -> BBox {
+        BBox { min_lon: 0, min_lat: 0, max_lon: 0, max_lat: 0 }
+    }
+    fn visit_chunk_points(&self, _k: usize, _visit: &mut dyn FnMut(&[(i32, i32)])) {}
 }

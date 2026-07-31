@@ -144,3 +144,117 @@ pub fn matched_pair(
     let set = build_set(assembly, styles, 0, &shards);
     (monolith, set)
 }
+
+/// A monolith whose fine rung is **two levels deep** in one quadrant, plus the two legal splits of
+/// it — the cases [`matched_pair`] cannot express, because every shard it builds is a single-leaf
+/// quadtree.
+///
+/// Both matter, and for different reasons:
+///
+/// - [`DeepPair::subdivided`] is what a real assembler produces. A shard is a node of the assembly
+///   quadtree carrying *everything below it*, so a shard of any size has a quadtree of its own and
+///   its leaves sit **below its own root**. That is the case where a reader indexing a shard's
+///   chunk-offset table through the wrong LOD table, or descending from the wrong root bbox, stops
+///   being invisible: with single-leaf shards the root *is* the leaf, so a whole class of
+///   subdivision bugs cannot show up.
+/// - [`DeepPair::antichain`] is §5.1's tiling rule at its actual generality: the shards of one role
+///   are an **antichain** of quadtree nodes, not a uniform grid, so a dense quadrant may be split
+///   further than a sparse one. Seven shards at two different depths, pairwise disjoint, union the
+///   assembly.
+///
+/// The three files draw the same map: same chunk bytes, same leaf bboxes, so the same anchors
+/// (`OBCM_Spec.md` §5 stores a feature's anchor relative to its **leaf**).
+///
+/// `fine` supplies seven chunks in quadtree order: `NW·NW, NW·NE, NW·SW, NW·SE, NE, SW, SE`.
+pub struct DeepPair {
+    /// One file: the fine rung's quadtree is `root → [NW branch → 4 leaves, NE, SW, SE]`.
+    pub monolith: Vec<u8>,
+    /// Four geometry shards, one per quadrant — the NW shard subdividing below its own root.
+    pub subdivided: SetFixture,
+    /// Seven geometry shards at mixed depth: NW's four sub-quadrants plus the three siblings.
+    pub antichain: SetFixture,
+}
+
+pub fn deep_matched_pair(
+    assembly: Bbox,
+    styles: &[Style],
+    coarse: (f32, Vec<u8>, usize),
+    fine: (f32, [Vec<u8>; 7], usize),
+) -> DeepPair {
+    let (coarse_mpp, coarse_chunk, coarse_size) = coarse;
+    let (fine_mpp, fine_chunks, fine_size) = fine;
+    let quads = quadrants(assembly);
+    let sub = quadrants(quads[0]);
+
+    let coarse_lod =
+        |chunk: Vec<u8>| LodSpec { max_mpp: coarse_mpp, index: vec![0], chunks: vec![chunk], chunk_size: coarse_size };
+    let fine_lod =
+        |index: Vec<u32>, chunks: Vec<Vec<u8>>| LodSpec { max_mpp: fine_mpp, index, chunks, chunk_size: fine_size };
+    let leaf = |chunk: &Vec<u8>| fine_lod(vec![0], vec![chunk.clone()]);
+
+    // BFS: 0 = root branch (children 1..5), 1 = NW branch (children 5..9), 2..5 = NE/SW/SE leaves
+    // carrying chunks 0..2, 5..9 = NW's four leaves carrying chunks 3..6. The chunk vector is in
+    // chunk-id order, which is why the ids below are not the caller's argument order.
+    let monolith_chunks = vec![
+        fine_chunks[4].clone(), // 0 — NE
+        fine_chunks[5].clone(), // 1 — SW
+        fine_chunks[6].clone(), // 2 — SE
+        fine_chunks[0].clone(), // 3 — NW·NW
+        fine_chunks[1].clone(), // 4 — NW·NE
+        fine_chunks[2].clone(), // 5 — NW·SW
+        fine_chunks[3].clone(), // 6 — NW·SE
+    ];
+    let monolith_index = vec![crate::BRANCH_BIT | 1, crate::BRANCH_BIT | 5, 0, 1, 2, 3, 4, 5, 6];
+    let monolith =
+        build_file(assembly, styles, &[coarse_lod(coarse_chunk.clone()), fine_lod(monolith_index, monolith_chunks)]);
+
+    // The two role shards every split shares: a core with no ladder at all, and one coarse shard
+    // spanning the assembly (§5.1).
+    let common = |shards: &mut Vec<ShardSpec>| {
+        shards.push(ShardSpec {
+            role: Role::Core,
+            bbox: assembly,
+            lods: vec![empty_lod(coarse_mpp), empty_lod(fine_mpp)],
+        });
+        shards.push(ShardSpec {
+            role: Role::Coarse,
+            bbox: assembly,
+            lods: vec![coarse_lod(coarse_chunk.clone()), empty_lod(fine_mpp)],
+        });
+    };
+
+    // Split A — one shard per quadrant. The NW shard's own quadtree is `root branch → 4 leaves`
+    // over the NW square, which reproduces the monolith's depth-2 leaf bboxes exactly.
+    let mut subdivided = Vec::new();
+    common(&mut subdivided);
+    subdivided.push(ShardSpec {
+        role: Role::Geometry,
+        bbox: quads[0],
+        lods: vec![
+            empty_lod(coarse_mpp),
+            fine_lod(
+                vec![crate::BRANCH_BIT | 1, 0, 1, 2, 3],
+                vec![fine_chunks[0].clone(), fine_chunks[1].clone(), fine_chunks[2].clone(), fine_chunks[3].clone()],
+            ),
+        ],
+    });
+    for (bbox, chunk) in [quads[1], quads[2], quads[3]].into_iter().zip(&fine_chunks[4..]) {
+        subdivided.push(ShardSpec { role: Role::Geometry, bbox, lods: vec![empty_lod(coarse_mpp), leaf(chunk)] });
+    }
+
+    // Split B — the mixed-depth antichain: NW's four sub-quadrants, then its three siblings.
+    let mut antichain = Vec::new();
+    common(&mut antichain);
+    for (bbox, chunk) in sub.into_iter().zip(&fine_chunks[..4]) {
+        antichain.push(ShardSpec { role: Role::Geometry, bbox, lods: vec![empty_lod(coarse_mpp), leaf(chunk)] });
+    }
+    for (bbox, chunk) in [quads[1], quads[2], quads[3]].into_iter().zip(&fine_chunks[4..]) {
+        antichain.push(ShardSpec { role: Role::Geometry, bbox, lods: vec![empty_lod(coarse_mpp), leaf(chunk)] });
+    }
+
+    DeepPair {
+        monolith,
+        subdivided: build_set(assembly, styles, 0, &subdivided),
+        antichain: build_set(assembly, styles, 0, &antichain),
+    }
+}
