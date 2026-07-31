@@ -458,7 +458,13 @@ pub struct ObjectStore {
     /// unlike every other object type it needs state that outlives one descriptor: which set id
     /// this device minted, how many shards it will have, and which of them have committed. That is
     /// what makes `OBCA_Spec.md` §5.4's manifest-last rule enforceable rather than merely
-    /// documented — see `obc_app::set_upload`. Eight bytes; dropped by [`link_reset`](Self::link_reset).
+    /// documented — see `obc_app::set_upload`. Eight bytes.
+    ///
+    /// Deliberately **not** dropped by [`link_reset`](Self::link_reset), which runs on either
+    /// transport's teardown. It is closed by [`set_manifest_finish`](Self::set_manifest_finish)
+    /// (the set committed, or its manifest was refused and the set deleted with it) and by
+    /// [`set_upload_abort`](Self::set_upload_abort) — the cable's own teardown, and the `op=3`
+    /// abort that reaches it.
     set_upload: Option<obc_app::SetUpload>,
 }
 
@@ -994,13 +1000,20 @@ impl ObjectStore {
     /// The whole link dropped, or the CoC dropped mid-upload, or the app aborted (op 3): discard
     /// the partial upload and release any open storage handles a cancelled future couldn't.
     /// Uploads don't resume, so nothing is kept — the app re-sends from the start.
-    /// A volume set is deliberately **not** torn down here, and the reason is the same one that
-    /// keeps `map_upload_abort` out of this function: this runs on *either* transport's teardown,
-    /// and a BLE disconnect — a phone that walked out of range — must not delete a multi-gigabyte
-    /// set the cable is still uploading. `UPLOAD.TMP` is cheap enough that discarding it across
-    /// transports is harmless; a set is not. The USB data plane owns that cleanup, at both the
-    /// points where it knows the *cable* is what went away (`discard_upload` mid-transfer, and
-    /// `set_upload_abort` beside this call on endpoint disable).
+    ///
+    /// **This runs on *either* transport's teardown**, which is the fact everything below turns on:
+    /// a phone walking out of range must not disturb a transfer the cable is running. Two things
+    /// follow, and both are load-bearing rather than tidy (issue #1039):
+    ///
+    /// - A volume set is **not** torn down here, for the same reason `map_upload_abort` is not: it
+    ///   is gigabytes, and only the cable's own teardown knows the cable went away. The USB data
+    ///   plane owns that cleanup at the two points that know it — `discard_upload` mid-transfer,
+    ///   and `set_upload_abort` beside this call on endpoint disable.
+    /// - `upload_discard` no longer *means* "close whatever file is open". The storage handle
+    ///   carries its owner (`sd::UploadOwner`), so this closes the temp and only the temp; a map or
+    ///   a set streaming on the other wire keeps its handle. Before that, this call closed the
+    ///   cable's file and the next append failed into a discard that deleted the whole upload —
+    ///   the same bug the set teardown above was moved out of here to avoid, one layer down.
     pub fn link_reset(&mut self, shared: &mut SharedStore) {
         self.upload_discard(shared);
         if let Some(storage) = &mut shared.storage {
@@ -1008,7 +1021,8 @@ impl ObjectStore {
         }
     }
 
-    /// Abort/interrupt: discard the in-flight temp.
+    /// Abort/interrupt: discard the in-flight **temp**. A map or set stream owns its own handle and
+    /// its own teardown (`sd::UploadOwner`) — see [`link_reset`](Self::link_reset).
     pub fn upload_discard(&mut self, shared: &mut SharedStore) {
         if let Some(storage) = &mut shared.storage {
             storage.upload_abort();
@@ -1374,7 +1388,7 @@ impl ObjectStore {
     /// so `map_announce_reject`'s new-only clause would be nonsense and is deliberately not reused.
     /// A shard has no id to target, and the set it belongs to is the one in flight.
     pub fn set_shard_open(
-        &mut self,
+        &self,
         shared: &SharedStore,
         desc: &TransferControl,
     ) -> Result<(Receiver, obc_ble::SetPart), TransferStatus> {
@@ -1382,13 +1396,21 @@ impl ObjectStore {
         let Some(part) = obc_ble::SetPart::decode(desc.object_id) else {
             return Err(TransferStatus::NotFound);
         };
-        obc_app::shard_announce(
+        let fresh = obc_app::shard_announce(
             self.set_upload.as_ref(),
             part.shard_count,
             part.index,
             crate::sd::SD_SET_MAX_SHARDS as u8,
         )
         .map_err(set_reject_status)?;
+        // A set with no id left to mint is refused **here**, at the announce, rather than at the
+        // first byte: the answer is the same `storageFull` the shard ceiling gets — a catalog that
+        // cannot take another entry, §4.3's own meaning — and the host is told before it opens the
+        // pipe instead of after a red storage-failed card. `set_shard_begin` keeps the check as a
+        // backstop, because the id is minted there and the card can change under a slow host.
+        if fresh && storage.next_set_id_from_scan() > obc_formats::obcs::MAX_SET_ID {
+            return Err(TransferStatus::StorageFull);
+        }
         if desc.total_len < obc_formats::obcm::HEADER_LEN as u32 {
             return Err(TransferStatus::Error);
         }
@@ -1403,11 +1425,7 @@ impl ObjectStore {
     /// Validate + arm the **manifest** upload — `OBCA_Spec.md` §5.4's manifest-last rule, enforced
     /// before a byte streams (`obc_app::manifest_announce`). New-only like a map, so a named
     /// `object_id` is `notFound`: the manifest is the set's identity, not a slot to write into.
-    pub fn set_manifest_open(
-        &mut self,
-        shared: &SharedStore,
-        desc: &TransferControl,
-    ) -> Result<Receiver, TransferStatus> {
+    pub fn set_manifest_open(&self, shared: &SharedStore, desc: &TransferControl) -> Result<Receiver, TransferStatus> {
         if shared.storage.is_none() {
             return Err(TransferStatus::Error);
         }
@@ -1427,6 +1445,9 @@ impl ObjectStore {
             Some(session) => session.id(),
             None => {
                 let id = shared.storage.as_ref()?.next_set_id_from_scan();
+                // The backstop behind `set_shard_open`'s announce-time refusal: the host was
+                // already told `storageFull` before the pipe opened, so reaching this means the
+                // card changed under a slow host.
                 if id > obc_formats::obcs::MAX_SET_ID {
                     defmt::warn!("store: volume-set id space exhausted — refusing the upload");
                     return None;

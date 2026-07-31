@@ -25,7 +25,6 @@
 //! shared with the control plane as a `RefCell` that is **never borrowed across an `await`**.
 
 use core::cell::RefCell;
-use core::sync::atomic::Ordering;
 
 use defmt::{info, warn};
 use embassy_futures::select::{select, Either};
@@ -144,7 +143,7 @@ enum TransferOutcome {
 /// arriving after the clear belongs to the next armed descriptor.
 fn close_transfer() {
     let _ = TRANSFER_ABORT.try_take();
-    TRANSFER_ACTIVE.store(false, Ordering::Relaxed);
+    TRANSFER_ACTIVE.release(crate::link::gate_owner(crate::link::Transport::Ble));
 }
 
 /// Notify the store movement after a commit/delete: the `storeChanged` status message (which store,

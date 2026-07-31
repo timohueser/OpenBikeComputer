@@ -22,8 +22,12 @@
 //!   descriptor states the set's shard count in every part (`obc_ble::SetPart`). Refusing a
 //!   12-shard set at shard 0 costs the rider nothing; refusing it when the manifest arrives costs
 //!   them the whole upload.
-//! - Every announce re-states the set it belongs to, so two interleaved sets are a named mismatch
-//!   rather than a chimera assembled out of both.
+//! - Every announce re-states the set's **shard count**, so a host that starts sending a
+//!   differently-shaped set mid-transfer is a named mismatch rather than a chimera assembled out of
+//!   both. Two sets of the *same* count are not distinguishable here — the descriptor carries
+//!   nothing else that identifies a set — and that limit is stated in [`shard_announce`] rather
+//!   than papered over: what catches it is the manifest commit's cross-check against the shards
+//!   actually on the card, which is later but is still before anything mounts.
 //!
 //! ## The token, and what makes the cleanup safe
 //!
@@ -140,9 +144,18 @@ pub fn shard_announce(open: Option<&SetUpload>, shard_count: u8, index: u8, max_
         // purpose: shards are independent files (§5.4), so re-sending one is the cheapest possible
         // recovery from a single bad transfer and costs the set nothing.
         Some(session) if session.shard_count == shard_count => Ok(false),
-        // A different set, mid-set. Answering `Mismatch` rather than silently re-opening is what
-        // keeps a set from being assembled out of two — the shards already on the card belong to
-        // the id this session minted, and abandoning them here would strand gigabytes unnamed.
+        // A differently-shaped set, mid-set. Answering `Mismatch` rather than silently re-opening
+        // is what keeps a set from being assembled out of two — the shards already on the card
+        // belong to the id this session minted, and abandoning them here would strand gigabytes
+        // unnamed.
+        //
+        // **What this cannot see** is a switch between two sets with the *same* shard count: the
+        // descriptor carries a count and an index, and neither identifies a set. Such a mix is
+        // caught at the manifest's commit instead, where every shard is re-checked against the
+        // manifest's own record of it (length, OBCM version, header bbox) — later than here, but
+        // still before the set is a map, and a host is required by §5.3 to have proven its set
+        // before it offered a byte of it. Closing the gap at the announce would need a set
+        // identifier on the wire, i.e. a descriptor change; see `obc-ble-interface-spec.md` §4.1.
         Some(_) => Err(SetReject::Mismatch),
         None => Ok(true),
     }
@@ -182,6 +195,50 @@ pub enum SweepVerdict {
     Reclaim,
 }
 
+/// What a card file's leading four bytes turned out to be — the sweep's only evidence.
+///
+/// The three cases are **not** collapsible into `Option<[u8; 4]>`, which is what the first cut of
+/// this did and what left a whole class of torn upload on the card forever: "the file holds fewer
+/// than four bytes" is not "the file could not be read". The first is a state only *this device*
+/// produces (a create-then-write that did not reach its write), and the second is a bus glitch,
+/// which must never green-light a delete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RootMagic {
+    /// The first four bytes, as read.
+    Bytes([u8; 4]),
+    /// The file opened, and holds fewer than four bytes.
+    Short,
+    /// The file could not be opened or read at all.
+    Unreadable,
+}
+
+/// Whether `magic` is a magic **this device was in the middle of writing**: all zeros (the
+/// placeholder), or a strict prefix of `full` zero-padded (a magic patch that tore part-way — the
+/// four bytes are one `write`, but a `write` is not one sector and a power cut splits it).
+///
+/// Nothing else produces those shapes. A file that arrived any other way — a card reader, another
+/// device — carries its whole magic from the first block that reaches the card, because the host
+/// copying it holds the finished file and writes it front to back.
+const fn is_torn_magic(magic: [u8; 4], full: [u8; 4]) -> bool {
+    let mut prefix = 0;
+    while prefix < 4 {
+        let mut i = 0;
+        let mut matches = true;
+        while i < 4 {
+            let expect = if i < prefix { full[i] } else { 0 };
+            if magic[i] != expect {
+                matches = false;
+            }
+            i += 1;
+        }
+        if matches {
+            return true;
+        }
+        prefix += 1;
+    }
+    false
+}
+
 /// The boot sweep's rule for a volume set, and the reason it needs no age or grace timer.
 ///
 /// The single-map sweep already reclaims exactly one signature — a `MP{id}.OBM` whose held-back
@@ -203,11 +260,31 @@ pub enum SweepVerdict {
 /// is never zeroed. The sweep therefore cannot see a half-copied set as its own abandoned one, and
 /// does not need to wait a boot, an hour, or a heuristic to find out.
 ///
-/// `magic` is the manifest file's first four bytes as read back, or `None` if they could not be
-/// read — an unreadable file is never claimed, exactly as the map sweep refuses to claim one.
-pub fn sweep_verdict(magic: Option<[u8; 4]>) -> SweepVerdict {
+/// `magic` is what reading the manifest file's first four bytes produced ([`RootMagic`]). An
+/// **unreadable** file is never claimed, exactly as the map sweep refuses to claim one.
+///
+/// Three shapes are the sweep's, and the two beyond the plain placeholder are the ones a first cut
+/// left on the card forever:
+///
+/// - **Four zero bytes** — the token, written and never patched.
+/// - **Shorter than four bytes** ([`RootMagic::Short`]) — the token's own `create` landed and its
+///   4-byte write did not, so the card holds a size-0 (or size-1..3) `.OBS`. That is *more*
+///   certainly ours than four zeros: a manifest is at least 72 bytes by construction (§5.2), so no
+///   complete one is ever this short, and no reader will ever accept it. Keeping it was the worse
+///   half of the trade — the name is what shields its shards from the orphan pass, so a zero-byte
+///   file froze gigabytes with nothing left to name them.
+/// - **A torn magic patch** — `OBC\0` and friends: the commit's four-byte write split by a power
+///   cut. The set is invisible either way, so leaving it costs the same gigabytes.
+///
+/// The residual, stated rather than buried: a rider whose *own* card-reader copy was interrupted
+/// inside the manifest's first four bytes loses that set to the sweep. It is a set that could not
+/// mount and would have to be re-copied whole regardless, and the shape is far rarer than the power
+/// cut this reclaims — a copy writes the manifest's magic in its first block, so the window is one
+/// block wide against a whole transfer's.
+pub fn sweep_verdict(magic: RootMagic) -> SweepVerdict {
     match magic {
-        Some([0, 0, 0, 0]) => SweepVerdict::Reclaim,
+        RootMagic::Short => SweepVerdict::Reclaim,
+        RootMagic::Bytes(bytes) if is_torn_magic(bytes, obcs::MAGIC) => SweepVerdict::Reclaim,
         _ => SweepVerdict::Keep,
     }
 }
@@ -227,13 +304,23 @@ pub fn sweep_verdict(magic: Option<[u8; 4]>) -> SweepVerdict {
 ///   yet. Deleting those would destroy a map mid-copy — the single worst thing this sweep could
 ///   do, and unrecoverable without the whole download again.
 ///
-/// So an orphan is reclaimed **only** on the zero-magic signature, and a complete-looking orphan is
-/// left for the manifest that is probably still coming. The cost of being wrong in this direction
-/// is some dead bytes a later upload's supersede pass reclaims (§5.4's writer SHOULD, which the
-/// device honours by deleting the set it replaces); the cost of being wrong in the other direction
-/// is the rider's map.
-pub fn orphan_shard_verdict(magic: Option<[u8; 4]>) -> SweepVerdict {
-    sweep_verdict(magic)
+/// So an orphan is reclaimed **only** on a magic this device was mid-write on — zero, or a torn
+/// `OBC\0`-shaped patch — and a complete-looking orphan is left for the manifest that is probably
+/// still coming. The cost of being wrong in this direction is some dead bytes a later upload's
+/// supersede pass reclaims (§5.4's writer SHOULD, which the device honours by deleting the set it
+/// replaces); the cost of being wrong in the other direction is the rider's map.
+///
+/// **A shard shorter than four bytes is kept**, and that is the one place this deliberately differs
+/// from [`sweep_verdict`]. The two rules weigh the same risk against different stakes: a manifest's
+/// mere *name* shields a whole set's shards from this pass, so a truncated one strands gigabytes and
+/// is worth reclaiming; a truncated shard **is** the three bytes it holds, so reclaiming it buys
+/// nothing measurable and can only be wrong — a card-reader copy that has just begun looks exactly
+/// like this.
+pub fn orphan_shard_verdict(magic: RootMagic) -> SweepVerdict {
+    match magic {
+        RootMagic::Bytes(bytes) if is_torn_magic(bytes, obc_formats::obcm::MAGIC) => SweepVerdict::Reclaim,
+        _ => SweepVerdict::Keep,
+    }
 }
 
 #[cfg(test)]
@@ -356,21 +443,95 @@ mod tests {
         assert!(!session.has(32), "an index off the end is never held");
     }
 
-    /// The sweep claims exactly one signature, and it is the one only this device can produce.
+    /// The sweep claims the signatures only this device can produce, and refuses everything else.
     #[test]
     fn only_a_zero_magic_manifest_is_the_sweeps_to_reclaim() {
-        assert_eq!(sweep_verdict(Some([0, 0, 0, 0])), SweepVerdict::Reclaim);
-        assert_eq!(sweep_verdict(Some(obcs::MAGIC)), SweepVerdict::Keep, "a real manifest is a map");
-        assert_eq!(sweep_verdict(Some(*b"OBCM")), SweepVerdict::Keep, "so is anything else intact");
-        assert_eq!(sweep_verdict(None), SweepVerdict::Keep, "an unreadable file is never claimed");
+        assert_eq!(sweep_verdict(RootMagic::Bytes([0, 0, 0, 0])), SweepVerdict::Reclaim);
+        assert_eq!(sweep_verdict(RootMagic::Bytes(obcs::MAGIC)), SweepVerdict::Keep, "a real manifest is a map");
+        assert_eq!(sweep_verdict(RootMagic::Bytes(*b"OBCM")), SweepVerdict::Keep, "so is anything else intact");
+        assert_eq!(sweep_verdict(RootMagic::Unreadable), SweepVerdict::Keep, "an unreadable file is never claimed");
     }
 
-    /// …and the same proof governs an orphan shard, so a set mid-copy over a card reader survives
-    /// the boot it is interrupted by.
+    /// **A manifest too short to hold a magic is the sweep's** — the case that used to be
+    /// indistinguishable from "unreadable" and therefore kept forever. The window is real: the
+    /// token's directory entry is committed by the `create`, and the four bytes are a second write.
+    /// A `.OBS` of 0–3 bytes cannot be a manifest (§5.2 puts the floor at 72), so nothing is being
+    /// guessed at.
+    #[test]
+    fn a_manifest_too_short_to_hold_a_magic_is_reclaimed() {
+        assert_eq!(sweep_verdict(RootMagic::Short), SweepVerdict::Reclaim);
+        assert_ne!(
+            sweep_verdict(RootMagic::Short),
+            sweep_verdict(RootMagic::Unreadable),
+            "short and unreadable are different facts and must not share a verdict"
+        );
+    }
+
+    /// **A magic patch that tore is the sweep's too.** The commit is one four-byte write, and one
+    /// write is not one sector: a power cut inside it leaves a strict prefix of `OBCS`. The set is
+    /// invisible to every reader either way, so keeping it froze the gigabytes beside it.
+    #[test]
+    fn a_half_patched_manifest_magic_is_reclaimed() {
+        for magic in [*b"O\0\0\0", *b"OB\0\0", *b"OBC\0"] {
+            assert_eq!(sweep_verdict(RootMagic::Bytes(magic)), SweepVerdict::Reclaim, "{magic:?}");
+        }
+        assert_eq!(sweep_verdict(RootMagic::Bytes(*b"OBCS")), SweepVerdict::Keep, "…and the whole magic is a map");
+        // Not a prefix — a different file that happens to start with an O.
+        assert_eq!(sweep_verdict(RootMagic::Bytes(*b"OBS\0")), SweepVerdict::Keep);
+        assert_eq!(sweep_verdict(RootMagic::Bytes(*b"O\0C\0")), SweepVerdict::Keep, "a prefix is contiguous");
+    }
+
+    /// …and the same proof governs an orphan shard against **its** magic, so a set mid-copy over a
+    /// card reader survives the boot it is interrupted by.
     #[test]
     fn a_complete_orphan_shard_survives_the_sweep() {
-        assert_eq!(orphan_shard_verdict(Some(*b"OBCM")), SweepVerdict::Keep, "the rider's mid-copy set");
-        assert_eq!(orphan_shard_verdict(None), SweepVerdict::Keep);
-        assert_eq!(orphan_shard_verdict(Some([0, 0, 0, 0])), SweepVerdict::Reclaim, "our abandoned stream");
+        assert_eq!(orphan_shard_verdict(RootMagic::Bytes(*b"OBCM")), SweepVerdict::Keep, "the rider's mid-copy set");
+        assert_eq!(orphan_shard_verdict(RootMagic::Unreadable), SweepVerdict::Keep);
+        assert_eq!(orphan_shard_verdict(RootMagic::Bytes([0, 0, 0, 0])), SweepVerdict::Reclaim, "our abandoned stream");
+        assert_eq!(orphan_shard_verdict(RootMagic::Bytes(*b"OBC\0")), SweepVerdict::Reclaim, "a torn shard patch");
+        // A shard's magic is OBCM, not OBCS: a `.OBS` prefix is not a torn shard, it is a foreign file.
+        assert_eq!(orphan_shard_verdict(RootMagic::Bytes(*b"OBCS")), SweepVerdict::Keep);
+    }
+
+    /// The one place the two verdicts diverge, asserted so it cannot be "simplified" back into an
+    /// alias: a truncated shard is kept, because it *is* its three bytes, while a truncated
+    /// manifest is reclaimed, because its name shields a whole set's worth of them.
+    #[test]
+    fn a_truncated_shard_is_kept_where_a_truncated_manifest_is_not() {
+        assert_eq!(orphan_shard_verdict(RootMagic::Short), SweepVerdict::Keep);
+        assert_eq!(sweep_verdict(RootMagic::Short), SweepVerdict::Reclaim);
+    }
+
+    /// **What the announce cannot see** (`obc-ble-interface-spec.md` §4.1 rule 1). The session is
+    /// re-stated by the shard count and nothing else, so a host that switches to a *different* set
+    /// with the same count is not detectable here — the mismatch it names is a count mismatch. The
+    /// claim is pinned honestly rather than left as prose the code does not back: the switch is
+    /// caught at the manifest's commit, by the cross-check against the shards actually on the card.
+    #[test]
+    fn a_same_count_switch_is_not_visible_at_the_announce() {
+        let session = SetUpload::new(4, 6);
+        assert_eq!(
+            shard_announce(Some(&session), 6, 1, DEVICE_MAX),
+            Ok(false),
+            "a shard of another six-shard set joins this session — the announce has nothing to tell them apart"
+        );
+        assert_eq!(
+            shard_announce(Some(&session), 7, 1, DEVICE_MAX),
+            Err(SetReject::Mismatch),
+            "a different count is what the announce *can* see"
+        );
+    }
+
+    /// A shard arriving **after** the set's manifest committed starts a new set rather than
+    /// re-opening the finished one (`obc-ble-interface-spec.md` §4.1). The committed set has a
+    /// manifest naming exactly the files it names; appending to it would make that manifest a lie,
+    /// so the only safe reading of a shard with no session is "this is a new set".
+    #[test]
+    fn a_shard_after_a_committed_manifest_opens_a_new_set() {
+        let mut session = SetUpload::new(3, 1);
+        session.mark(0);
+        assert_eq!(manifest_announce(Some(&session), session.manifest_len()), Ok(()));
+        // The commit closes the session (`ObjectStore::set_manifest_finish` clears it).
+        assert_eq!(shard_announce(None, 1, 0, DEVICE_MAX), Ok(true), "a fresh set, a fresh id");
     }
 }

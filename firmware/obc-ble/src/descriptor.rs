@@ -133,8 +133,11 @@ impl ObjectType {
 /// - The device can refuse a set past its own shard ceiling at the **first** announce, before the
 ///   rider spends minutes uploading shards it will never mount. The alternative — discovering the
 ///   count when the manifest arrives — refuses after the whole set has moved.
-/// - Every announce re-states the set it belongs to, so a host that switches sets mid-transfer is
-///   a mismatch the device names, not a set silently assembled out of two.
+/// - Every announce re-states the set's **shape**, so a host that switches to a set with a
+///   different shard count mid-transfer is a mismatch the device names, not a set silently
+///   assembled out of two. A switch between two sets of the *same* count is not visible here — the
+///   pair names a file, not a set — and is caught at the manifest's commit instead, when every
+///   shard is checked against the manifest's record of it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SetPart {
     /// How many shards the set has in total (`1..=32`, `OBCA_Spec.md` §5.2).
