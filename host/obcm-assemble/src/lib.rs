@@ -29,6 +29,27 @@
 //!    lets every later offset be computed instead of back-patched.
 //! 4. Plan the set: one file if it fits (§5.5), else core + coarse + geometry shards (§5.1).
 //! 5. Write each shard, verify it through the reader (§4.8), and write the manifest **last** (§5.4).
+//!
+//! # Which half of §5.7 lives here
+//!
+//! §5.7 is the design's safety property and it names **two** actors. This crate is only one of them,
+//! and the split is worth stating because half of that section reads like an obligation this code is
+//! shirking:
+//!
+//! - **The consumer** MUST project every file of the set *before the download*, from the catalog's
+//!   published per-cell and per-band `bytes`, apply the schema's pessimistic per-cell overhead
+//!   budget, refuse a selection whose projection exceeds `4 GiB − 1 B`, and warn above ≈ 3.5 GiB for
+//!   the core. **None of that can happen here.** The assembler is handed cells that have already
+//!   been fetched; by the time it can compute anything, the download it was supposed to prevent has
+//!   happened. Those MUSTs belong to whatever holds the catalog — the builder, #1028.
+//! - **The assembler** MUST fail rather than emit an over-size file, MUST NOT "solve" an over-size
+//!   core by splitting the nav graph or dropping coverage, and SHOULD surface the core warning. That
+//!   is `plan_set`'s ceiling refusals (which name the navigation graph, because after §5.1's split
+//!   no other explanation is true), [`shard::write`]'s own re-check, [`Summary::warnings`], and
+//!   §4.8's re-assertion of every file's actual size.
+//!
+//! So the projection is bounded at both ends, by two programs: refused before the fetch by the
+//! catalog consumer, and re-asserted before the write here.
 
 use std::collections::HashMap;
 
