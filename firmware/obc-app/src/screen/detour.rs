@@ -31,7 +31,7 @@ use crate::Msg;
 
 use super::map::{draw_map_scene, DetourMapOverlay};
 use super::nav_route::NavPlanningScreen;
-use super::{Ctx, Prepare, Render, Screen, Transition};
+use super::{Ctx, Prepare, Render, RenderFrame, Screen, Transition};
 
 /// One Up/Down step changes the requested along-route rejoin distance by 100 m. A detour is for
 /// nearby closures and trail problems, so finer control matters more than spanning many
@@ -231,10 +231,11 @@ impl DetourScreen {
         self.prepared = Some(PreparedDetour { target_m, candidate: (candidate.lon, candidate.lat), bounds });
     }
 
-    pub fn draw<D, F>(&self, cv: &mut Canvas<D, F>, rx: &mut Render)
+    pub fn draw<D, F, S>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, S>)
     where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
+        S: obc_map_scene::MapScene,
     {
         let selected = self.prepared.filter(|_| self.available(rx.activity, rx.state.has_nav_graph));
         let vp = selected.map_or_else(
@@ -404,10 +405,11 @@ impl DetourPreviewScreen {
             Some(PreparedDetour { target_m: self.target_m, candidate: (candidate.lon, candidate.lat), bounds });
     }
 
-    pub fn draw<D, F>(&self, cv: &mut Canvas<D, F>, rx: &mut Render)
+    pub fn draw<D, F, S>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, S>)
     where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
+        S: obc_map_scene::MapScene,
     {
         let vp = self
             .prepared

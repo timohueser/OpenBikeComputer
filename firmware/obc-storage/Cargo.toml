@@ -23,6 +23,6 @@ obc-ports = { path = "../obc-ports" }
 # defmt/RTT itself); the adapters add no logging of their own.
 embedded-sdmmc = { version = "0.9", default-features = false }
 
-# The bounded `Vec<Run, MAX_EXTENTS>` the FAT-extent table stores the resolved map chain in.
+# The bounded `Vec<Run, N>` a FAT-extent table stores the resolved map chain in.
 # Same 0.8 the rest of the OBC stack uses.
 heapless = "0.8"

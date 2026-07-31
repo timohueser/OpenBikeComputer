@@ -38,7 +38,7 @@ use obc_platform::SynthLocation;
 use obc_display::ls021::{FRAME_H, FRAME_W};
 use obc_display::FbDevice64;
 use obc_platform::StubFuelGauge;
-use obc_reader::{MapCache, MapTables, Reader};
+use obc_reader::{MapCache, MapTables, MountedSet, Reader};
 // The ride loop's route types: the decoded-route-geometry cache, the resident per-route chunk
 // index, and the streamed route reader the matcher + map render share.
 use obc_route::{RouteCache, RouteIndex, RouteReader};
@@ -535,6 +535,7 @@ pub(crate) async fn run_app(
     shared: &SharedStoreMutex,
     map_tables: &MapTables,
     map_cache: &MapCache,
+    mounted_set: Option<MountedSet<'static>>,
     route_cache: &RouteCache,
     // The router's fixed A* table + graph-tile cache (epic #116, R4): `.bss` statics threaded
     // from `main` (never locals — the #270/#419 discipline), reset per plan inside `plan_route`.
@@ -1694,13 +1695,22 @@ pub(crate) async fn run_app(
                 // style-table parse, no `Reader` build (so no stack spike), no map render — that screen
                 // draws just its own chrome. Such a frame costs only its own draw + the push.
                 let needs_map = app.base_needs_reader();
-                // Build the streamed `Reader` **only** on a map frame, `None` otherwise. A *cheap* borrow of
-                // the boot-parsed `MapTables` + a fresh `src` + the session-long `MapCache` — no style-table
-                // SD read, no parse, no stack spike (what kept this deep path inside the 256 KB stack). The
-                // only per-frame failure left is the source handle being momentarily unavailable (a flaky SD
-                // link); skip the redraw, keep the last frame, latch a retry.
-                let map_src = if needs_map { storage.as_ref().and_then(|s| s.map_source()) } else { None };
-                let reader = map_src.as_ref().map(|s| Reader::new(s, map_tables, map_cache));
+                // A single map rebuilds its cheap Reader view from the held-open handle. A volume
+                // set was mounted once at boot: geometry uses the MountedSet directly and
+                // POI/hours use its core reader. Both are skipped on chrome-only frames.
+                let map_src = if needs_map && mounted_set.is_none() {
+                    storage.as_ref().and_then(|s| s.map_source())
+                } else {
+                    None
+                };
+                let reader = if needs_map {
+                    mounted_set
+                        .as_ref()
+                        .map(MountedSet::core_reader)
+                        .or_else(|| map_src.as_ref().map(|source| Reader::new(source, map_tables, map_cache)))
+                } else {
+                    None
+                };
                 if needs_map && reader.is_none() {
                     pending_map_redraw = true;
                     defmt::warn!(
@@ -1728,15 +1738,27 @@ pub(crate) async fn run_app(
                         if let Some(r) = clip {
                             fbdev.set_clip(r);
                         }
-                        app.render_map_timed(
-                            &mut fbdev,
-                            reader.as_ref(),
-                            route.as_ref(),
-                            FRAME_W as f32,
-                            FRAME_H as f32,
-                            color_fn,
-                            &InstantClock,
-                        )
+                        match mounted_set.as_ref() {
+                            Some(set) => app.render_scene_map_timed(
+                                &mut fbdev,
+                                needs_map.then_some(set),
+                                reader.as_ref(),
+                                route.as_ref(),
+                                FRAME_W as f32,
+                                FRAME_H as f32,
+                                color_fn,
+                                &InstantClock,
+                            ),
+                            None => app.render_map_timed(
+                                &mut fbdev,
+                                reader.as_ref(),
+                                route.as_ref(),
+                                FRAME_W as f32,
+                                FRAME_H as f32,
+                                color_fn,
+                                &InstantClock,
+                            ),
+                        }
                     });
                     Some(RenderedFrame { needs_map, stats, render_us })
                 }

@@ -15,8 +15,9 @@
 pub struct MapChoice {
     /// The card's recorded selection (`MAP.SEL`) names this map.
     pub selected: bool,
-    /// The durable object id, for a map the device received (`MP{id}.OBM`); `None` for a side-loaded
-    /// file, which has no id. Higher = more recently uploaded, because ids are minted monotonically.
+    /// The durable filename id, for a map the device received (`MP{id}.OBM` or `MS{id}.OBS`);
+    /// `None` for a side-loaded file, which has no id. Higher = more recently uploaded **within
+    /// that filename family**; MP and MS ids are independent and must never be compared.
     pub uploaded_id: Option<u16>,
     /// The map's OBCM version is the one this firmware's reader parses. A `false` here is still a
     /// map on the card — it just cannot be rendered by this build.
@@ -32,17 +33,19 @@ pub struct MapChoice {
 ///
 /// 1. **The recorded selection**, if it is still on the card and readable. This is what makes the
 ///    choice durable and, later, steerable from outside.
-/// 2. **The newest readable upload** — the highest `MP{id}.OBM` id. A rider who just sent a map
-///    gets that map on the next boot without a second step, which is the entire point of the
-///    one-click flow; and because ids are monotonic within a store epoch, "newest" is exactly
-///    "highest id", with no timestamps involved (the card has none to offer).
-/// 3. **The first readable map of any kind** — a side-loaded `.obcm`, the pre-#927 case.
-/// 4. **The first map at all.** Deliberately not `None`: a card holding only a wrong-version map
+/// 2. **The newest readable volume-set upload**, when one exists — the highest `MS{id}.OBS` id.
+///    A set is the complete modern map package, so it is the deterministic no-selection fallback;
+///    its id is compared only with other sets.
+/// 3. **The newest readable single-file upload** — the highest `MP{id}.OBM` id. A committed upload
+///    records itself as the selection, so clauses 2–3 are the recovery path for an absent/torn
+///    `MAP.SEL`, not a timestamp comparison between the independent MP and MS namespaces.
+/// 4. **The first readable map of any kind** — a side-loaded `.obcm`, the pre-#927 case.
+/// 5. **The first map at all.** Deliberately not `None`: a card holding only a wrong-version map
 ///    must reach the *MAP UNREADABLE* fault screen, which names the actual problem, rather than the
 ///    *NO MAP* one, which would send the rider looking for a file that is right there.
 ///
 /// A selection that names a map which is present but **unreadable** does not win outright — it
-/// falls through to a readable one if the card has any, and only lands back on itself via clause 4
+/// falls through to a readable one if the card has any, and only lands back on itself via clause 5
 /// if it doesn't. Honouring it blindly would let one stale selection hide a perfectly good map.
 pub fn choose_map(maps: &[MapChoice]) -> Option<usize> {
     if maps.is_empty() {
@@ -51,13 +54,22 @@ pub fn choose_map(maps: &[MapChoice]) -> Option<usize> {
     if let Some(i) = maps.iter().position(|m| m.selected && m.readable) {
         return Some(i);
     }
-    let newest_upload = maps
+    let newest_set = maps
         .iter()
         .enumerate()
-        .filter(|(_, m)| m.readable && m.uploaded_id.is_some())
+        .filter(|(_, m)| m.readable && m.set && m.uploaded_id.is_some())
         .max_by_key(|(_, m)| m.uploaded_id.unwrap_or(0))
         .map(|(i, _)| i);
-    if let Some(i) = newest_upload {
+    if let Some(i) = newest_set {
+        return Some(i);
+    }
+    let newest_single = maps
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| m.readable && !m.set && m.uploaded_id.is_some())
+        .max_by_key(|(_, m)| m.uploaded_id.unwrap_or(0))
+        .map(|(i, _)| i);
+    if let Some(i) = newest_single {
         return Some(i);
     }
     if let Some(i) = maps.iter().position(|m| m.readable) {
@@ -84,7 +96,7 @@ pub fn choose_map(maps: &[MapChoice]) -> Option<usize> {
 ///   rule is "one *uploaded* map", not "one file".
 /// - **Nothing is superseded while a side-loaded map is the one loaded.** `keep` having no
 ///   `uploaded_id` disarms this entirely. That state is only reachable when no upload is readable
-///   (clauses 3–4 of [`choose_map`]), so the uploads present are ones this build cannot open — and
+///   (clauses 4–5 of [`choose_map`]), so the uploads present are ones this build cannot open — and
 ///   "I can't read it" is a much weaker claim than "it is redundant". Left alone, they stay
 ///   diagnosable; a firmware that can read them again would find them.
 /// - **Nothing is superseded across the two naming conventions.** `MP{id}.OBM` and the volume
@@ -105,11 +117,10 @@ pub fn is_superseded_upload(maps: &[MapChoice], keep: usize, i: usize) -> bool {
 /// the `MS{id}` namespace, and the `keep` [`is_superseded_upload`] must be given when it is asked
 /// about a set.
 ///
-/// Sets need a keeper of their own because in a build that cannot *mount* one they can never be the
-/// loaded map: [`choose_map`]'s clauses 1–3 all filter on `readable`, and a set reports
-/// `readable: false`. Keying set retirement on the loaded map would therefore make it unreachable —
-/// a card holding a replaced set plus its replacement would carry both forever, and a set is
-/// gigabytes, not megabytes, with no device surface that can delete it.
+/// Sets need a keeper of their own when a selected single-file map is loaded: MP and MS ids number
+/// independently, so that single cannot prove which set is the survivor. A mounted selected set is
+/// its own keeper instead; callers must use the loaded index in that case so an explicit selection
+/// is never deleted from underneath its retained shard handles.
 ///
 /// Naming a survivor without loading it is safe here in a way it would not be for a single map,
 /// and the difference is not readability but **proof**: a set is listed only after the scan
@@ -125,17 +136,25 @@ pub fn newest_set(maps: &[MapChoice]) -> Option<usize> {
         .map(|(i, _)| i)
 }
 
+/// The set survivor a boot cleanup may safely use. A loaded set is authoritative—even when an
+/// explicit selection chose an older id—because its shard handles are retained for the session.
+/// When a single-file map loaded (or nothing did), the independent MS namespace keeps its newest
+/// complete set.
+pub fn set_retirement_keeper(maps: &[MapChoice], loaded: Option<usize>) -> Option<usize> {
+    loaded.filter(|&index| maps.get(index).is_some_and(|choice| choice.set)).or_else(|| newest_set(maps))
+}
+
 /// The boot fault to show when the loop ends up with no map to stream from, from the catalog plus
 /// `unlistable` — how many map-named files in the card root the scan could **not** turn into catalog
 /// entries (no `OBCM` magic, too short to hold a header, unopenable, or a volume set whose shards do
 /// not validate).
 ///
-/// **NO MAP is only honest when the card holds nothing that names a map.** [`choose_map`]'s clause 4
+/// **NO MAP is only honest when the card holds nothing that names a map.** [`choose_map`]'s clause 5
 /// exists precisely to return a map this build cannot open, so that the rider sees *MAP UNREADABLE* —
 /// the screen that says "the file is there and I can't use it" — rather than being sent looking for a
-/// file that is sitting in the card root. A volume set is the sharp case: this build lists it, sizes
-/// it, and declines to mount it, so a rider with 8 GB of set on the card must never be told there is
-/// no map.
+/// file that is sitting in the card root. An unsupported volume set is the sharp case: this build
+/// lists and sizes it but may refuse its version or device-specific shard count, so a rider with
+/// gigabytes of set on the card must never be told there is no map.
 ///
 /// `unlistable` extends that same honesty to the files the catalog never sees. Dropping them from the
 /// catalog is right — the renderer must not try to parse half a map, and the id allocator must be
@@ -219,12 +238,8 @@ mod tests {
         MapChoice { selected: false, uploaded_id: Some(id), readable, set: false }
     }
     /// An uploaded **volume set** (`MS{id}.OBS` + shards) — one map, `OBCA_Spec.md` §5.4.
-    ///
-    /// `readable` is deliberately not a parameter: the board's `map_choices` cannot produce a
-    /// readable set (this build streams from one open file), so a test that constructed one would
-    /// be asserting over a state the device never reaches.
-    fn uploaded_set(id: u16) -> MapChoice {
-        MapChoice { selected: false, uploaded_id: Some(id), readable: false, set: true }
+    fn uploaded_set(id: u16, readable: bool) -> MapChoice {
+        MapChoice { selected: false, uploaded_id: Some(id), readable, set: true }
     }
 
     #[test]
@@ -246,6 +261,9 @@ mod tests {
 
         let maps = [side_loaded(true), MapChoice { selected: true, uploaded_id: None, readable: true, set: false }];
         assert_eq!(choose_map(&maps), Some(1), "a side-loaded map can be the selection too");
+
+        let maps = [uploaded(99, true), MapChoice { selected: true, uploaded_id: Some(2), readable: true, set: true }];
+        assert_eq!(choose_map(&maps), Some(1), "a selected mounted set wins too");
     }
 
     /// With no selection, the newest upload wins — the one-click flow's whole promise. Note it beats
@@ -257,6 +275,9 @@ mod tests {
 
         let maps = [side_loaded(true), uploaded(1, true)];
         assert_eq!(choose_map(&maps), Some(1), "an upload outranks a side-loaded map");
+
+        let maps = [uploaded(999, true), uploaded_set(2, true), uploaded_set(7, true)];
+        assert_eq!(choose_map(&maps), Some(2), "MS ids compare only with MS ids; a readable set is the fallback");
     }
 
     /// Version-readability filters every preference tier, so one wrong-version map can never hide a
@@ -305,7 +326,7 @@ mod tests {
     }
 
     /// An unreadable *upload* still supersedes older uploads once one of them is what loaded —
-    /// clause 4's fault-screen case must not also mean "keep every wrong-version map forever".
+    /// clause 5's fault-screen case must not also mean "keep every wrong-version map forever".
     #[test]
     fn an_unreadable_upload_still_supersedes_older_uploads() {
         let maps = [uploaded(3, false), uploaded(9, false)];
@@ -314,29 +335,42 @@ mod tests {
         assert!(is_superseded_upload(&maps, keep, 1));
     }
 
-    /// A volume set is one map like any other: a newer set supersedes the set it replaced. Its
-    /// keeper is [`newest_set`], not the loaded map — a set is never loaded in this build, so
-    /// keying its retirement on `choose_map`'s answer would make the whole pass unreachable.
+    /// A volume set is one map like any other: a newer set supersedes the set it replaced. A set
+    /// keeper is still needed when a selected single-file map is loaded alongside several sets.
     #[test]
     fn a_newer_set_supersedes_the_set_it_replaced() {
-        // The reachable card: two sets plus a single map, which is the thing that actually loads.
-        let maps = [uploaded_set(1), uploaded_set(2), uploaded(5, true)];
+        // The no-selection recovery path prefers the newest readable set without comparing its
+        // independent id namespace to the single file's.
+        let maps = [uploaded_set(1, true), uploaded_set(2, true), uploaded(5, true)];
         let keep = choose_map(&maps).expect("a card with maps chooses one");
-        assert_eq!(keep, 2, "the readable single map loads — a set reports `readable: false`");
+        assert_eq!(keep, 1, "the newest readable set loads when MAP.SEL is absent");
         let survivor = newest_set(&maps).expect("a card with sets names a set survivor");
         assert_eq!(survivor, 1, "the highest MS id is the survivor");
         assert!(is_superseded_upload(&maps, survivor, 0), "MS1 was replaced by MS2");
         assert!(!is_superseded_upload(&maps, survivor, 1), "the survivor is not its own casualty");
         assert!(!is_superseded_upload(&maps, survivor, 2), "and a single map is never a set's casualty");
 
-        // …and on a card holding *only* sets, where `choose_map` lands on clause 4 (index 0, the
+        // …and on a card holding *only* unreadable sets, where `choose_map` lands on clause 5 (index 0, the
         // older one). The set keeper is still the newest, so the retirement is right side up.
-        let maps = [uploaded_set(1), uploaded_set(2)];
-        assert_eq!(choose_map(&maps), Some(0), "clause 4 returns the first map, readable or not");
+        let maps = [uploaded_set(1, false), uploaded_set(2, false)];
+        assert_eq!(choose_map(&maps), Some(0), "clause 5 returns the first map, readable or not");
         let survivor = newest_set(&maps).expect("a card with sets names a set survivor");
         assert_eq!(survivor, 1);
         assert!(is_superseded_upload(&maps, survivor, 0));
         assert!(!is_superseded_upload(&maps, survivor, 1));
+
+        // An explicit selection can deliberately keep an older set. Once that set has mounted,
+        // cleanup must use it—not the numeric newest set—or it deletes files under live handles.
+        let maps =
+            [MapChoice { selected: true, uploaded_id: Some(1), readable: true, set: true }, uploaded_set(2, true)];
+        let loaded = choose_map(&maps);
+        assert_eq!(loaded, Some(0));
+        assert_eq!(set_retirement_keeper(&maps, loaded), Some(0), "the mounted set is the survivor");
+        assert!(is_superseded_upload(&maps, 0, 1), "the unselected peer is the same-kind casualty");
+
+        // A loaded single cannot be compared with MS ids; the set namespace retains its own newest.
+        let maps = [uploaded_set(1, true), uploaded_set(2, true), uploaded(7, true)];
+        assert_eq!(set_retirement_keeper(&maps, Some(2)), Some(1));
 
         // A card with no sets names no set survivor, so the pass does nothing at all.
         assert_eq!(newest_set(&[uploaded(1, true), side_loaded(true)]), None);
@@ -346,7 +380,7 @@ mod tests {
     /// The casualty here would be a deleted map the rider never replaced.
     #[test]
     fn a_set_and_a_single_map_never_supersede_each_other() {
-        let maps = [uploaded(4, true), uploaded_set(7)];
+        let maps = [uploaded(4, true), uploaded_set(7, false)];
         let keep = choose_map(&maps).expect("a card with maps chooses one");
         assert_eq!(keep, 0, "the readable single map loads");
         assert!(!is_superseded_upload(&maps, keep, 1), "MP4 does not retire MS7 — the ids are unrelated");
@@ -356,15 +390,15 @@ mod tests {
         assert!(!is_superseded_upload(&maps, survivor, 0), "and not in the other direction either");
     }
 
-    /// The fault a card with no streamable map deserves. Clause 4's whole purpose is to reach the
+    /// The fault a card with no streamable map deserves. Clause 5's whole purpose is to reach the
     /// **MAP UNREADABLE** screen; only a card that really holds nothing gets **NO MAP**.
     #[test]
     fn a_card_holding_an_unusable_map_says_unreadable_not_absent() {
         assert_eq!(boot_fault(&[], 0), crate::BootFault::NoMap, "an empty card is the only NO MAP");
 
-        // A card holding only a volume set: 8 GB that this build lists, sizes, and cannot mount.
-        let maps = [uploaded_set(7)];
-        assert_eq!(choose_map(&maps), Some(0), "clause 4 still returns it");
+        // A card holding only a volume set that exceeds this build's version/handle support.
+        let maps = [uploaded_set(7, false)];
+        assert_eq!(choose_map(&maps), Some(0), "clause 5 still returns it");
         assert_eq!(boot_fault(&maps, 0), crate::BootFault::BadMap);
 
         // The pre-existing case the same rule already covered: a wrong-version single map.
@@ -386,7 +420,7 @@ mod tests {
         // It never flips the answer the other way: a catalog with maps in it was already BadMap by
         // the time this rule is consulted at all (the loop only asks when nothing streams).
         assert_eq!(boot_fault(&[uploaded(3, false)], 2), crate::BootFault::BadMap);
-        assert_eq!(boot_fault(&[uploaded_set(7)], 1), crate::BootFault::BadMap);
+        assert_eq!(boot_fault(&[uploaded_set(7, false)], 1), crate::BootFault::BadMap);
     }
 
     /// The safety-critical classification: a shard is a valid OBCM file and must still never be
