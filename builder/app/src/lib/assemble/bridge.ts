@@ -120,6 +120,12 @@ export interface AssembleResult {
     readonly warnings: readonly string[];
     /** The engine's summary, in the shape `obcm-assemble --json` prints. */
     readonly summary: AssembleSummary;
+    /**
+     * Free everything still held in wasm memory: the assembler and any file whose bytes were not
+     * taken. **Call this when you are done** — a set can be gigabytes, and wasm-bindgen objects are
+     * not collected with their JS handles. `take()` on a released file throws.
+     */
+    release(): void;
 }
 
 /** The summary document, as far as callers rely on it. Additional fields exist; see the CLI. */
@@ -218,6 +224,9 @@ async function load(source?: InitInput): Promise<Bridge> {
  * immediately. The §4.8 verify pass runs before this resolves, so a result is a set the real reader
  * has already read back; there is deliberately no way to skip it.
  *
+ * The result keeps its files in wasm memory until each is `take()`n; call {@link
+ * AssembleResult.release} when done, or the set stays resident.
+ *
  * @throws {AssembleError} carrying the engine's own message; see {@link AssembleErrorCode}.
  */
 export async function assembleCells(
@@ -250,7 +259,7 @@ export async function assembleCells(
                 take: () => owner.takeFile(i),
             });
         }
-        return { files, warnings, summary };
+        return { files, warnings, summary, release: () => owner.free() };
     } catch (cause) {
         // Only on the failure path: a successful assembly's `Assembler` stays alive because the
         // returned `take()` closures read from it.
