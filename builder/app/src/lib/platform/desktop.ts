@@ -32,13 +32,44 @@ import { parseCatalog, type Catalog } from "../catalog/manifest";
 // name here, exactly as it does on the web host.
 
 /**
+ * The root document as the Rust side fetched it, shared by `catalog()` and
+ * `catalogRoot` — the same memo the web host keeps (#1041 A2), because the two
+ * views of the root must not come from different responses: envelope detection
+ * (#1038) peeks at this body and the flow it picks then parses the same body.
+ * Without this member the desktop tier could never enter the v2 flow at all,
+ * and a catalog cutover would greet it with v1's "schema_version 2 is not
+ * supported" — the exact wrong-side error `detect.ts` exists to prevent.
+ *
+ * Same two rules as the web memo: only a *fulfilled* fetch is pinned, and a
+ * body the v1 parser then refuses is un-pinned by `catalog()` below, so a
+ * retry re-fetches instead of re-refusing the same bytes.
+ */
+let rootInflight: Promise<{ url: string; body: string }> | null = null;
+
+function rootOnce(): Promise<{ url: string; body: string }> {
+    rootInflight ??= desktop.catalog().catch((e: unknown) => {
+        rootInflight = null;
+        throw e;
+    });
+    return rootInflight;
+}
+
+/**
  * OBCC §7: the whole body, parsed as one document — the Rust side read it whole
  * for exactly that reason. Preview references resolve against the manifest's own
  * location (§2), which is why the command hands back the URL beside the body.
  */
 async function catalog(): Promise<Catalog> {
-    const { url, body } = await desktop.catalog();
-    const parsed = parseCatalog(body);
+    const { url, body } = await rootOnce();
+    let parsed: Catalog;
+    try {
+        parsed = parseCatalog(body);
+    } catch (e) {
+        // The body is not a catalog this flow accepts: un-pin it, so the next
+        // call re-reads instead of re-refusing the same bytes.
+        rootInflight = null;
+        throw e;
+    }
     return {
         ...parsed,
         presets: parsed.presets.map((p) =>
@@ -65,6 +96,7 @@ export const platform: Platform = {
     regions: () => desktop.regions(),
     presets: () => desktop.presets(),
     catalog,
+    catalogRoot: rootOnce,
 
     schema: () => desktop.schema(),
     palette: () => desktop.palette(),
