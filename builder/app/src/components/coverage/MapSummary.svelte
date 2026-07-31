@@ -21,10 +21,14 @@
 
     const ledger = $derived(store.ledger);
     const hasParts = $derived(store.selection.parts.length > 0);
-    // Detail-band counts, matching the hatched squares on the map one for one
-    // (`store.warnedCells` explains the band choice).
-    const holeCount = $derived(store.warnedCells("hole").length);
-    const partialCount = $derived(store.warnedCells("partial").length);
+    // Holes from every band, matching the hatched squares one for one (#1041
+    // A5 — `store.holeCells` explains the dedup). The partial sentence keeps
+    // the detail band's full count while the map hatches only the
+    // hole-adjacent subset (#1041 A9), so the line is a zoom target exactly
+    // when there is hatch to zoom to.
+    const holeCount = $derived(store.holeCells().length);
+    const partialCount = $derived(store.partialDetailCells().length);
+    const partialHatchCount = $derived(store.partialHatchCells().length);
 </script>
 
 <div class="ledger">
@@ -61,11 +65,22 @@
             </button>
         {/if}
         {#if partialCount > 0}
-            <button type="button" class="warnline small" onclick={() => store.focusWarnings("partial")}>
-                ⚠ {partialCount}
-                {partialCount === 1 ? "cell is" : "cells are"} only partly baked — detail may stop at the
-                extract's edge
-            </button>
+            {#if partialHatchCount > 0}
+                <button type="button" class="warnline small" onclick={() => store.focusWarnings("partial")}>
+                    ⚠ {partialCount}
+                    {partialCount === 1 ? "cell is" : "cells are"} only partly baked — detail may stop at
+                    the extract's edge
+                </button>
+            {:else}
+                <!-- Same sentence, not a button: nothing is hatched (no partial
+                     cell abuts a hole, #1041 A9), so there is nothing on the
+                     map for a click to fly to. -->
+                <p class="warnline small">
+                    ⚠ {partialCount}
+                    {partialCount === 1 ? "cell is" : "cells are"} only partly baked — detail may stop at
+                    the extract's edge
+                </p>
+            {/if}
         {/if}
 
         <p class="small faint fit">
@@ -140,7 +155,7 @@
         text-decoration: none;
     }
 
-    .warnline:hover {
+    button.warnline:hover {
         text-decoration: underline;
     }
 

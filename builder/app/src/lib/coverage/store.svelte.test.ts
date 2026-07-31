@@ -131,6 +131,107 @@ describe("box parts", () => {
         expect(store.focus!.minLat).toBeLessThanOrEqual(46_000_000);
         expect(store.focus!.maxLat).toBeGreaterThanOrEqual(46_100_000);
     });
+
+    it("shows holes from every band, deduplicated — never a hole the UI keeps to itself (#1041 A5)", () => {
+        const store = makeStore();
+        // Detail ground fully published across a wider column, but the mid
+        // band's index still ends at j=0526 — so a box reaching past 7.87°E
+        // has a hole *only* outside the detail band.
+        store.indices = fixtureIndices(exampleCatalog, {
+            coarse: [{ id: "20/0301/0263", bytes: 2088, partial: true }],
+            mid: [{ id: "19/0602/0526", bytes: 1064 }],
+            fine: [
+                { id: "18/1204/1052", bytes: 552 },
+                { id: "18/1204/1053", bytes: 424 },
+                { id: "18/1204/1054", bytes: 300 },
+            ],
+            network: [
+                { id: "18/1204/1052", bytes: 296 },
+                { id: "18/1204/1053", bytes: 168 },
+                { id: "18/1204/1054", bytes: 100 },
+            ],
+        });
+        store.addBox(degreesToUbox(47.2, 7.35, 47.4, 8.05));
+
+        // The detail band is whole; the mid band is not. The old detail-only
+        // selector answered [] here while `acceptHoles` consulted the ledger's
+        // full count — accepting a hole no square had shown.
+        expect(store.partialDetailCells()).toEqual([]);
+        expect(store.holeCells()).toEqual(["19/0602/0527"]);
+
+        // The shown set covers every hole the ledger counts, in every band —
+        // that identity is what makes deriving `acceptHoles` from it honest.
+        const ledger = store.ledger!;
+        const counted = [...ledger.coverage.holesByBand.values()].flat();
+        expect(new Set(store.holeCells())).toEqual(new Set(counted));
+
+        // …and the warning line can point the map at it.
+        store.focusWarnings("hole");
+        expect(store.focus).not.toBeNull();
+        expect(store.focus!.maxLon).toBeGreaterThanOrEqual(7_870_000);
+    });
+
+    it("counts a square missed by two same-size bands once", () => {
+        const store = makeStore();
+        // 46°N 6°E is baked in no band: fine and network share a cell size, so
+        // their missing ids coincide and must not double the count.
+        store.addBox(degreesToUbox(46.0, 6.0, 46.05, 6.05));
+        const ledger = store.ledger!;
+        const counted = [...ledger.coverage.holesByBand.values()].flat();
+        expect(counted.length).toBeGreaterThan(store.holeCells().length);
+        expect(new Set(store.holeCells())).toEqual(new Set(counted));
+    });
+});
+
+describe("partial-detail hatching (#1041 A9)", () => {
+    /** The fixture indices with both fine cells flagged partial — the shape of
+     *  a real extract, where border cells are partial as a matter of course. */
+    function partialIndices() {
+        return fixtureIndices(exampleCatalog, {
+            coarse: [{ id: "20/0301/0263", bytes: 2088, partial: true }],
+            mid: [{ id: "19/0602/0526", bytes: 1064 }],
+            fine: [
+                { id: "18/1204/1052", bytes: 552, partial: true },
+                { id: "18/1204/1053", bytes: 424, partial: true },
+            ],
+            network: [
+                { id: "18/1204/1052", bytes: 296 },
+                { id: "18/1204/1053", bytes: 168 },
+            ],
+        });
+    }
+
+    it("a plain region pick hatches nothing: the sentence keeps the count, the map stays quiet", () => {
+        // The review's Freiburg-pick pin, on the example catalog: a curated
+        // region's border cells are partial (extract-edge normality, #1025),
+        // and the region's own cell list has no holes — so the full count is
+        // sentenced but not one square hatches.
+        const store = makeStore();
+        store.indices = partialIndices();
+        withSwissList(store);
+        store.addRegion("europe/switzerland");
+        expect(store.ledger!.coverage.holeCount).toBe(0);
+        expect(store.partialDetailCells()).toEqual(["18/1204/1052", "18/1204/1053"]);
+        expect(store.partialHatchCells()).toEqual([]);
+    });
+
+    it("a partial cell hatches exactly where it abuts a hole", () => {
+        const store = makeStore();
+        store.indices = partialIndices();
+        withSwissList(store);
+        store.addRegion("europe/switzerland");
+        // A box past the published column: fine 18/1204/1054 is a hole, and it
+        // shares an edge with partial 18/1204/1053 — but not with ...1052,
+        // which stays unhatched while the sentence still counts both.
+        store.addBox(degreesToUbox(47.2, 7.35, 47.4, 7.9));
+        expect(store.holeCells()).toContain("18/1204/1054");
+        expect(store.partialDetailCells()).toEqual(["18/1204/1052", "18/1204/1053"]);
+        expect(store.partialHatchCells()).toEqual(["18/1204/1053"]);
+        // The hatched subset is the zoom target; the full-count sentence is
+        // only clickable when it exists.
+        store.focusWarnings("partial");
+        expect(store.focus).not.toBeNull();
+    });
 });
 
 describe("corridor previews", () => {
