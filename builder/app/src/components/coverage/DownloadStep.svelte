@@ -31,9 +31,9 @@
         planCells,
         type CellDownloadProgress,
     } from "../../lib/catalog/v2/download";
-    import { coverageRings, mergeCellRects, type RingPoint } from "../../lib/catalog/v2/outline";
+    import { coverageRings, type RingPoint } from "../../lib/catalog/v2/outline";
     import type { UBox } from "../../lib/catalog/v2/grid";
-    import { detailBandId, parseCells, patchCount } from "../../lib/coverage/shape";
+    import { detailBandId, mergeMixedCellRects, parseCells, patchCount } from "../../lib/coverage/shape";
     import type { CoverageStore } from "../../lib/coverage/store.svelte";
     import { formatBytes } from "../../lib/format";
 
@@ -208,11 +208,14 @@
             skinJson: JSON.stringify(store.skin),
             options: {
                 name: mapName(),
-                // Both were shown before this button unlocked: holes are the
-                // hatched patches the rider chose to accept, and partial cells
-                // exist in essentially every real map (every coarse cell of a
-                // country is partial, #1025).
-                acceptHoles: l.coverage.holeCount > 0,
+                // Both were shown before this button unlocked. `acceptHoles`
+                // is derived from the *shown* set, not the ledger's raw count
+                // (#1041 A5): `store.holeCells()` is every band's holes — the
+                // squares hatched on the map, the proof and the summary line —
+                // so the assembly is never told to accept a hole the UI kept
+                // to itself. Partial cells exist in essentially every real map
+                // (every coarse cell of a country is partial, #1025).
+                acceptHoles: store.holeCells().length > 0,
                 acceptPartial: true,
             },
         };
@@ -314,9 +317,10 @@
         if (cellIds.length === 0) return null;
         const cells = parseCells(cellIds);
         const rings = coverageRings(cells);
-        // Detail-band holes, the same squares the map hatches (store.warnedCells).
-        const holeCells = store.warnedCells("hole");
-        const holeRects: UBox[] = mergeCellRects(parseCells(holeCells));
+        // Every band's holes, the same squares the map hatches (#1041 A5 —
+        // `store.holeCells` owns the dedup and the reasoning).
+        const holeCells = store.holeCells();
+        const holeRects: UBox[] = mergeMixedCellRects(holeCells);
         const routes = store.selection.parts.flatMap((p) => (p.kind === "corridor" ? [p.points] : []));
 
         // Frame everything in an equirectangular plane, east-west corrected at

@@ -6,7 +6,7 @@
 
 import { parseCellId, type CellId, type UBox } from "../catalog/v2/grid";
 import type { CatalogV2 } from "../catalog/v2/manifest";
-import { coverageRings, type RingPoint } from "../catalog/v2/outline";
+import { coverageRings, mergeCellRects, type RingPoint } from "../catalog/v2/outline";
 
 /**
  * The band whose cells *are* "the selection's coverage" on screen — the finest
@@ -29,6 +29,60 @@ export function detailBandId(catalog: CatalogV2): string {
 /** Canonical id strings → parsed cells, the shape `outline.ts` takes. */
 export function parseCells(ids: readonly string[]): CellId[] {
     return ids.map(parseCellId);
+}
+
+/**
+ * {@link mergeCellRects} over a set that may span cell sizes — the hole set
+ * does, now that holes are drawn from every band (#1041 A5), and the merge
+ * itself takes cells of one size. One merge per size; the rectangles of
+ * different sizes may overlap on the ground, which for a hatch is simply the
+ * same warning twice in the same place.
+ */
+export function mergeMixedCellRects(ids: readonly string[]): UBox[] {
+    const bySize = new Map<number, CellId[]>();
+    for (const cell of parseCells(ids)) {
+        const group = bySize.get(cell.log2);
+        if (group) group.push(cell);
+        else bySize.set(cell.log2, [cell]);
+    }
+    return [...bySize.values()].flatMap((cells) => mergeCellRects(cells));
+}
+
+/**
+ * The cells of `candidates` that touch a cell of `holes` — edge or corner —
+ * on the same-size lattice.
+ *
+ * This is #1041 A9's decided hatch rule for partial detail cells: a partial
+ * cell is only *news* where it abuts a hole, because there the detail visibly
+ * stops and bare backdrop begins. A partial cell along the outline with
+ * nothing missing beside it is border-overhang normality (#1025 measured most
+ * fine-band border cells partial for every real extract), and hatching it
+ * would re-impose exactly the noise tax §8 U1 rejected. Corner adjacency
+ * counts: a diagonal staircase step reads as "next to the hole" on screen.
+ *
+ * Both arguments are detail-band cells, so one size: adjacency is judged on
+ * the candidates' own lattice, and ids of any other size in `holes` are
+ * ignored rather than approximated across lattices.
+ */
+export function cellsTouchingHoles(candidates: readonly string[], holes: readonly string[]): string[] {
+    if (candidates.length === 0 || holes.length === 0) return [];
+    const stride = 2 ** 19; // unique for every in-world index, exact in a double
+    const log2 = parseCellId(candidates[0]).log2;
+    const holeKeys = new Set<number>();
+    for (const id of holes) {
+        const cell = parseCellId(id);
+        if (cell.log2 === log2) holeKeys.add(cell.i * stride + cell.j);
+    }
+    if (holeKeys.size === 0) return [];
+    return candidates.filter((id) => {
+        const { i, j } = parseCellId(id);
+        for (let di = -1; di <= 1; di++) {
+            for (let dj = -1; dj <= 1; dj++) {
+                if ((di || dj) && holeKeys.has((i + di) * stride + (j + dj))) return true;
+            }
+        }
+        return false;
+    });
 }
 
 /** Signed shoelace area of a ring in (lon, lat) axes: positive for the

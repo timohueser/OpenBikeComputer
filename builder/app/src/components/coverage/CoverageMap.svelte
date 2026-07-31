@@ -16,6 +16,7 @@
     import {
         degreesToUbox,
         detailBandId,
+        mergeMixedCellRects,
         parseCells,
         ringToDegrees,
         uboxToDegrees,
@@ -129,22 +130,22 @@
         view.setParts(parts);
     });
 
-    // Warnings: holes and partial *detail* cells, hatched inside the selection —
-    // the detail band's squares, the same squares the outline snapped to
-    // (`store.warnedCells` says why only that band). Partial cells in the
-    // coarse context band are deliberately absent — the ledger keeps them out
-    // of `partialDetailByBand`, and drawing them would hatch a whole country
-    // for its border cells (#1025's measurement).
+    // Warnings, hatched inside the selection. Holes come from **every** band
+    // (#1041 A5): a missing coarse cell is a map with no zoomed-out context
+    // there, as real as a missing street grid, so its square hatches too.
+    // Partial cells stay the detail band's — and only where they abut a hole
+    // (#1041 A9): `store.partialHatchCells` owns that rule and says why. The
+    // hole hatch stays the louder of the two (solid ring, denser fill); the
+    // partial hatch reads as its quieter margin.
     $effect(() => {
         if (!view) return;
         const warnings: RenderedWarning[] = [];
-        const add = (ids: string[], kind: RenderedWarning["kind"]) => {
-            for (const rect of mergeCellRects(parseCells(ids))) {
-                warnings.push({ bounds: uboxToDegrees(rect), kind });
-            }
-        };
-        add(store.warnedCells("hole"), "hole");
-        add(store.warnedCells("partial"), "partial");
+        for (const rect of mergeMixedCellRects(store.holeCells())) {
+            warnings.push({ bounds: uboxToDegrees(rect), kind: "hole" });
+        }
+        for (const rect of mergeCellRects(parseCells(store.partialHatchCells()))) {
+            warnings.push({ bounds: uboxToDegrees(rect), kind: "partial" });
+        }
         view.setWarnings(warnings);
     });
 

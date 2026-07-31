@@ -13,7 +13,7 @@
 
 import { CatalogV2Client } from "../catalog/v2/client";
 import { cellsIntersecting, coverageBbox, parseCellId, type UBox } from "../catalog/v2/grid";
-import { detailBandId } from "./shape";
+import { cellsTouchingHoles, detailBandId } from "./shape";
 import { ledgerFor, type Ledger } from "../catalog/v2/ledger";
 import type { CatalogV2, RegionEntry, SkinEntry } from "../catalog/v2/manifest";
 import type { CellIndexDocument, RegionCellsDocument } from "../catalog/v2/satellites";
@@ -190,31 +190,72 @@ export class CoverageStore {
     }
 
     /**
-     * The warned ground, as the UI presents it: the **detail band's** cells.
+     * The selection's holes, from **every** band, deduplicated (#1041 A5).
      *
-     * The ledger reports holes and partial cells per band, and the bands
-     * overlap on the ground — the network band shares the fine band's squares
-     * and the mid band's squares each cover four of them. Summing across bands
-     * therefore counts the same ground two or three times, and drawing every
-     * band's squares hatches patches that jut past the outline the rider was
-     * shown. The finest detail band is the band the outline is drawn from and
-     * the band street detail lives in, so its cells are the warning — one
-     * number, one set of rectangles, both matching the shape on the map.
+     * A hole is ground with no published cell, and it is real in whichever
+     * band it occurs: a missing mid or coarse cell means the assembled map has
+     * no zoomed-out context there, which is exactly the kind of surprise the
+     * hatch exists to show *before* the download. So holes are counted,
+     * sentenced and hatched from every band — only the partial hatch below is
+     * band-restricted. The dedup is by canonical id, which also collapses the
+     * network band's squares onto the fine band's where both miss (they share
+     * a cell size by design).
+     *
+     * This selector is also what `acceptHoles` must be derived from: the
+     * assembly may only be told to accept holes the UI has actually shown, and
+     * this is the set it shows.
      */
-    warnedCells(kind: "hole" | "partial"): string[] {
+    holeCells(): string[] {
         const coverage = this.ledger?.coverage;
         if (!coverage) return [];
-        const byBand = kind === "hole" ? coverage.holesByBand : coverage.partialDetailByBand;
-        return byBand.get(detailBandId(this.catalog)) ?? [];
+        const seen = new Set<string>();
+        for (const ids of coverage.holesByBand.values()) {
+            for (const id of ids) seen.add(id);
+        }
+        return [...seen].sort();
+    }
+
+    /**
+     * Partial cells in the **detail band** — the warning sentence's full count.
+     *
+     * Detail band only, unlike the holes: the bands overlap on the ground (the
+     * mid band's squares each cover four of the fine band's), so a cross-band
+     * partial count would count the same ground two or three times, and the
+     * detail band is the band the outline is drawn from and street detail
+     * lives in. The coarse context band never appears here at all — the
+     * ledger's `partialDetailByBand` keeps it out (#1025's rule).
+     */
+    partialDetailCells(): string[] {
+        const coverage = this.ledger?.coverage;
+        if (!coverage) return [];
+        return coverage.partialDetailByBand.get(detailBandId(this.catalog)) ?? [];
+    }
+
+    /**
+     * The partial detail cells that **hatch** (#1041 A9, decided): only those
+     * abutting a hole in the same band. At extract scale most fine-band
+     * partials are border-overhang normality, and hatching a curated pick's
+     * whole border would be §8 U1's rejected noise tax through another door —
+     * where a partial cell meets a hole, though, the detail visibly stops, and
+     * that edge is worth the ink. The warning sentence keeps the full count
+     * ({@link partialDetailCells}); this set is what the map draws.
+     */
+    partialHatchCells(): string[] {
+        const detailHoles =
+            this.ledger?.coverage.holesByBand.get(detailBandId(this.catalog)) ?? [];
+        return cellsTouchingHoles(this.partialDetailCells(), detailHoles);
     }
 
     /**
      * Point the map at the selection's warned ground — the ledger's warning
      * line and the map's hatched patches are the same fact in two places, and
-     * clicking either zooms to it (mock R2·1 interaction note).
+     * clicking either zooms to it (mock R2·1 interaction note). For partials
+     * that is the *hatched* subset: with nothing hatched there is nothing on
+     * the map to fly to, and the summary renders the sentence unclickable.
      */
     focusWarnings(kind: "hole" | "partial"): void {
-        const box = coverageBbox(this.warnedCells(kind).map((id) => parseCellId(id)));
+        const ids = kind === "hole" ? this.holeCells() : this.partialHatchCells();
+        const box = coverageBbox(ids.map((id) => parseCellId(id)));
         if (box) this.focus = box;
     }
 
