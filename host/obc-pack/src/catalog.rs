@@ -1751,17 +1751,33 @@ mod tests {
         assert_eq!(sha.len(), 64);
     }
 
-    /// The shipped presets are real inputs to the bakery: their `_meta` must satisfy
-    /// the catalog's requirements, or B1's first bake fails on data we control.
+    /// The shipped **schema** is a real input to the bakery: its `_meta` must satisfy
+    /// this catalog's requirements, or the first bake fails on data we control.
+    ///
+    /// It is copied here under its own id rather than read in place, because that is
+    /// what the bakery does with it (`presets/<preset_id>.json`, §3.2) — since #1036
+    /// `builder/presets/` is a *source* directory shaped like a v2 bake tree
+    /// (`schema.json` + `skins/`), not a v1 tree's preset directory.
     #[test]
-    fn the_shipped_presets_describe_themselves() {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../builder/presets");
-        let presets = read_presets(&dir).expect("builder/presets is a valid preset directory");
-        assert!(presets.contains_key("default") && presets.contains_key("high-detail"));
-        for (id, p) in &presets {
-            assert_eq!(&p.id, id);
-            assert!(!p.description.is_empty(), "{id} needs a one-line description");
-            assert!(p.version >= 1, "{id} needs a _meta.version");
-        }
+    fn the_shipped_schema_describes_itself() {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../builder/presets/schema.json");
+        let text = fs::read_to_string(&source).expect("the shipped schema");
+        let id = serde_json::from_str::<Value>(&text).expect("valid JSON")["_meta"]["id"]
+            .as_str()
+            .expect("_meta.id")
+            .to_string();
+
+        let dir = std::env::temp_dir().join(format!("obc-shipped-schema-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("scratch");
+        fs::write(dir.join(format!("{id}.json")), &text).expect("write");
+
+        let presets = read_presets(&dir).expect("the shipped schema is a valid v1 preset config");
+        let entry = presets.get(&id).unwrap_or_else(|| panic!("`{id}` describes itself"));
+        assert_eq!(entry.id, id);
+        assert!(!entry.name.is_empty(), "{id} needs a display name");
+        assert!(!entry.description.is_empty(), "{id} needs a one-line description");
+        assert!(entry.version >= 1, "{id} needs a _meta.version");
+        let _ = fs::remove_dir_all(&dir);
     }
 }

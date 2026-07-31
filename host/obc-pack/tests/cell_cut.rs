@@ -358,7 +358,7 @@ fn a_seam_of_one_band_is_interior_to_another() {
 /// the equality below would become a near-miss — the crack OBCA §3.3 exists to rule out.
 #[test]
 fn the_shipped_preset_still_meets_at_the_seam() {
-    const PRESET: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/presets/default.json");
+    const PRESET: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/presets/schema.json");
     let cfg = Config::load(PRESET).expect("the shipped preset loads");
     assert!(cfg.merge_fills && cfg.merge_lines, "the preset really does run the merge passes");
     let (ing, ways) = fixture(&cfg);
@@ -384,6 +384,58 @@ fn the_shipped_preset_still_meets_at_the_seam() {
         let (sa, sb) = (seam_coords_per_lod(&a, seam), seam_coords_per_lod(&b, seam));
         assert!(sa.values().any(|v| !v.is_empty()), "{band} {i}/{j}: something clips on the seam: {sa:?}");
         assert_eq!(sa, sb, "{band} {i}/{j}: the two neighbours' seam vertices differ");
+    }
+}
+
+/// **The #1036 migration pin.** `builder/presets/schema.json` cuts the corpus fixture into cells
+/// that are byte-for-byte what the retired `builder/presets/default.json` cut.
+///
+/// The schema/skin split moved the shipped style documents around: `default.json` became
+/// `schema.json` with a rewritten `_meta` and its presentation values restated in
+/// `skins/default.json`. Nothing about that was supposed to reach the packer — `_meta` is an
+/// unknown field the config loader ignores, and a skin is stamped on at assembly time — so the cells
+/// must come out identical, and "must" is worth a test rather than an argument. The retired document
+/// is kept verbatim at `tests/retired/default.json` for exactly this comparison.
+///
+/// The whole shipped ladder is exercised (7 LODs, the real simplify tolerances, both merge passes)
+/// against the small band sizes [`a_real_pbf_cuts_into_cells`] uses, so the fixture spans several
+/// cells per band rather than landing in one.
+///
+/// **When the schema is deliberately restyled, this test and its fixture go with the change** — it
+/// pins a migration, not a design. Until then it is the cheapest possible guard against the split
+/// having quietly moved a byte.
+#[test]
+fn the_schema_cuts_the_corpus_byte_identically_to_the_retired_default_preset() {
+    const TINY: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/tests/corpus/data/tiny.osm.pbf");
+    const SCHEMA: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/presets/schema.json");
+    const RETIRED: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/retired/default.json");
+    // The shipped ladder is 7 rungs, so every one of them needs a band (OBCA §1.2).
+    const BANDS: &str = r#"{"bands": [
+        {"id": "coarse",  "cell_log2": 14, "lods": [0, 1, 2],    "role": "coarse"},
+        {"id": "fine",    "cell_log2": 12, "lods": [3, 4, 5, 6], "role": "geometry"},
+        {"id": "network", "cell_log2": 12, "lods": [],           "sections": ["nav", "poi"], "role": "core"}
+    ]}"#;
+
+    let cut_with = |config: &str, tag: &str| -> (BTreeMap<String, Vec<u8>>, usize) {
+        let cfg = Config::load(config).unwrap_or_else(|e| panic!("{config}: {e}"));
+        let out = Scratch::new(tag);
+        let opts =
+            CutOptions { bands: BandTable::parse(BANDS).expect("band table"), no_land: true, ..Default::default() };
+        let summary = obc_pack::cut::cut(&[TINY.to_string()], &cfg, out.path(), &opts, &Progress::silent())
+            .unwrap_or_else(|e| panic!("cutting with {config}: {e:?}"));
+        (tree(out.path()), summary.cells.len())
+    };
+
+    let (new, cells) = cut_with(SCHEMA, "split-schema");
+    let (old, retired_cells) = cut_with(RETIRED, "split-retired");
+    assert!(cells > 1, "the pin is only worth something if the fixture produced cells: {cells}");
+    assert_eq!(cells, retired_cells, "the same cells, before and after the split");
+    assert_eq!(new.keys().collect::<Vec<_>>(), old.keys().collect::<Vec<_>>(), "the same tree of paths");
+    for (path, bytes) in &new {
+        assert_eq!(
+            bytes, &old[path],
+            "{path} differs: the schema/skin split changed what the packer sees, which it must not"
+        );
     }
 }
 
