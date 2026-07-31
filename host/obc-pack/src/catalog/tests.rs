@@ -265,6 +265,10 @@ fn example_tree(tree: &Path) {
     write_schema(tree, EXAMPLE_REVISION);
     write_skin(tree, "default", "Bikepacking", DEFAULT_SKIN_BLURB, 4, "0xF800");
     write_skin(tree, "contrast", "High contrast", CONTRAST_SKIN_BLURB, 1, "0x001F");
+    // Preview images are optional at the generic catalog layer. The bakery
+    // generates one for every shipped skin; one here exercises both shapes.
+    fs::create_dir_all(tree.join(PREVIEWS_DIR)).expect("preview dir");
+    fs::write(tree.join(PREVIEWS_DIR).join("default.png"), b"example preview png").expect("preview");
 
     let ch = [("europe/switzerland", "2026-07-19")];
     write_cell(tree, "coarse", coarse_cell(), 2_048, "2026-07-30T02:10:04Z", &ch, false);
@@ -428,6 +432,11 @@ fn walks_a_tree_into_a_root_and_its_satellites() {
     );
 
     assert_eq!(g.root.skins.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["contrast", "default"], "sorted by id");
+    assert_eq!(g.root.skins[0].preview, None, "a generic catalog may omit a preview");
+    let preview = g.root.skins[1].preview.as_ref().expect("default preview");
+    assert_eq!(preview.url, "https://maps.example.org/catalog/previews/default.png");
+    assert_eq!(preview.bytes, 19);
+    assert_eq!(preview.sha256.len(), 64);
     assert_eq!(
         g.root.regions.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
         ["europe/switzerland", "europe/switzerland/basel-stadt"],
@@ -700,6 +709,8 @@ fn generation_is_deterministic_for_a_given_tree() {
         (45.8, 47.8),
     );
     write_skin(b.path(), "default", "Bikepacking", DEFAULT_SKIN_BLURB, 4, "0xF800");
+    fs::create_dir_all(b.path().join(PREVIEWS_DIR)).expect("preview dir");
+    fs::write(b.path().join(PREVIEWS_DIR).join("default.png"), b"example preview png").expect("preview");
     write_schema(b.path(), EXAMPLE_REVISION);
 
     let other = generated(b.path());
@@ -1287,6 +1298,9 @@ fn the_catalog_schema_pins_the_envelope_version_and_the_field_patterns() {
         Some(i64::from(GRID_ORIGIN_UDEG))
     );
     assert_eq!(s["$defs"]["SkinStyle"]["properties"]["priority"]["maximum"].as_u64(), Some(4));
+    assert_eq!(s["$defs"]["SkinPreview"]["properties"]["url"]["pattern"].as_str(), Some(URL_PATTERN));
+    let skin_required = s["$defs"]["SkinEntry"]["required"].as_array().expect("skin required");
+    assert!(!skin_required.iter().any(|v| v == "preview"), "preview remains optional");
     // Both satellites are in the one checked-in file, so a consumer validates all
     // three documents against a single resource.
     for doc in ["CellIndexDocument", "RegionCellsDocument"] {

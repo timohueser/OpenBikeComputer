@@ -183,7 +183,12 @@
           "dashed": false,
           "color2": null
         }
-      ]
+      ],
+      "preview": {
+        "url": "https://maps.example.org/catalog/previews/default.png",
+        "bytes": 19,
+        "sha256": "a006d15f4bc15671408b6e2f1b9bddc98e589151972cff251dcd4d86faadce67"
+      }
     }
   ],
   "regions": [

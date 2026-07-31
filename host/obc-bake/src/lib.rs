@@ -38,6 +38,7 @@ pub mod coverage;
 pub mod guard;
 pub mod hash;
 pub mod presets;
+pub mod previews;
 pub mod publish;
 pub mod regions;
 pub mod source;

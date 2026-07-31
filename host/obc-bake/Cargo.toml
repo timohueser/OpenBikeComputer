@@ -19,6 +19,14 @@ obc-pack = { path = "../obc-pack" }
 obc-reader = { path = "../../firmware/obc-reader", features = ["alloc"] }
 # The normative OBCM version the bake and the published-catalog guard compare against.
 obc-formats = { path = "../../firmware/obc-formats" }
+# Skin previews are not screenshots of a second renderer. The bakery restamps a
+# canonical tiny OBCM through the assembly engine's production skin resolver and
+# renders it through the same `MapRenderer` the device runs.
+obcm-assemble = { path = "../obcm-assemble", default-features = false }
+obc-render = { path = "../../firmware/obc-render" }
+embedded-graphics = "0.8"
+# Deterministic RGB PNG encoding for the catalog's square skin previews.
+image = { version = "0.25", default-features = false, features = ["png"] }
 # The reader decodes into caller-owned fixed-capacity scratch; verification has to
 # supply it in exactly the shape the device does.
 heapless = "0.8"

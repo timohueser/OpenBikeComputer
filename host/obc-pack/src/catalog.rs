@@ -336,6 +336,18 @@ pub struct SkinEntry {
     /// misses one would ship a map with an invisible layer; one that names a feature
     /// type the schema lacks is stale (§5).
     pub styles: Vec<SkinStyle>,
+    /// Optional digest-pinned rendered sample. It is presentation only and never
+    /// participates in cell selection or assembly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<SkinPreview>,
+}
+
+/// One skin rendered over the bakery's canonical map scene.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SkinPreview {
+    pub url: String,
+    pub bytes: u64,
+    pub sha256: String,
 }
 
 /// One feature type's presentation values — the seven bytes of a style record a skin
@@ -514,6 +526,7 @@ const BOUNDARY_WARN_BYTES: usize = 16 * 1024;
 const CELLS_DIR: &str = "cells";
 const REGIONS_DIR: &str = "regions";
 const SKINS_DIR: &str = "skins";
+const PREVIEWS_DIR: &str = "previews";
 const SCHEMA_DOC: &str = "schema.json";
 const CELL_EXT: &str = ".obcm";
 const CELL_SIDECAR_EXT: &str = ".obcm.json";
@@ -551,7 +564,7 @@ pub fn generate(tree: &Path, opts: &CatalogOptions) -> Result<GeneratedCatalog, 
     let cells = read_cells(tree, &schema, &base_url)?;
     let obcm_version = cells.obcm_version;
 
-    let skins = read_skins(&tree.join(SKINS_DIR), &schema)?;
+    let skins = read_skins(&tree.join(SKINS_DIR), &tree.join(PREVIEWS_DIR), &schema, &base_url)?;
 
     let mut satellites = Vec::new();
     let mut cell_index = Vec::new();
@@ -1093,7 +1106,7 @@ struct SkinMeta {
     version: u32,
 }
 
-fn read_skins(dir: &Path, schema: &SchemaDoc) -> Result<Vec<SkinEntry>, String> {
+fn read_skins(dir: &Path, previews_dir: &Path, schema: &SchemaDoc, base_url: &str) -> Result<Vec<SkinEntry>, String> {
     if !dir.is_dir() {
         return Err(format!("{}: no `{SKINS_DIR}/` directory — a catalog offers at least one skin", dir.display()));
     }
@@ -1120,6 +1133,13 @@ fn read_skins(dir: &Path, schema: &SchemaDoc) -> Result<Vec<SkinEntry>, String> 
         check_skin_document(&text, &path.display().to_string())?;
         let config = Config::parse(&text).map_err(|e| format!("{}: {e}", path.display()))?;
         let styles = skin_styles(&config, schema, &path)?;
+        let preview_path = previews_dir.join(format!("{}.png", meta.id));
+        let preview = if preview_path.exists() {
+            let (bytes, sha256) = hash_file(&preview_path)?;
+            Some(SkinPreview { url: format!("{base_url}/{PREVIEWS_DIR}/{}.png", meta.id), bytes, sha256 })
+        } else {
+            None
+        };
         skins.push(SkinEntry {
             id: meta.id,
             name: meta.name,
@@ -1127,6 +1147,7 @@ fn read_skins(dir: &Path, schema: &SchemaDoc) -> Result<Vec<SkinEntry>, String> 
             version: meta.version,
             marker_color: config.marker_color,
             styles,
+            preview,
         });
     }
     if skins.is_empty() {
@@ -1954,6 +1975,9 @@ pub fn catalog_schema() -> Value {
     skin["name"]["minLength"] = Value::from(1);
     skin["description"]["minLength"] = Value::from(1);
     skin["styles"]["minItems"] = Value::from(1);
+    let preview = defs["SkinPreview"]["properties"].as_object_mut().expect("preview properties");
+    preview["url"]["pattern"] = Value::from(URL_PATTERN);
+    preview["sha256"]["pattern"] = Value::from(SHA256_PATTERN);
     defs["SkinStyle"]["properties"]["feature_type"]["minLength"] = Value::from(1);
     defs["SkinStyle"]["properties"]["priority"]["minimum"] = Value::from(1);
     defs["SkinStyle"]["properties"]["priority"]["maximum"] = Value::from(4);

@@ -25,6 +25,7 @@ import {
     type Catalog,
     type CellIndexRef,
     type RegionEntry,
+    type SkinEntry,
 } from "./manifest";
 import { fail } from "./parse";
 import {
@@ -77,6 +78,7 @@ export class CatalogClient {
      *  promise settled?" dance, which JS cannot ask without awaiting. */
     private readonly loaded = new Map<string, CellIndexDocument>();
     private readonly regionCells = new Map<string, Promise<RegionCellsDocument>>();
+    private readonly previews = new Map<string, Promise<Uint8Array>>();
 
     private constructor(catalog: Catalog, baseUrl: string, opts: CatalogClientOptions) {
         this.catalog = catalog;
@@ -132,6 +134,22 @@ export class CatalogClient {
     /** Absolute URL of a `url` field in the root or a satellite. */
     resolve(url: string): string {
         return new URL(url, this.baseUrl).toString();
+    }
+
+    /** A skin's canonical PNG, admitted only after its root pin matches. */
+    skinPreview(skinId: string): Promise<Uint8Array | null> {
+        const skin: SkinEntry | undefined = this.catalog.skins.find((entry) => entry.id === skinId);
+        if (!skin) return Promise.reject(new Error(`no skin "${skinId}" in this catalog`));
+        if (!skin.preview) return Promise.resolve(null);
+        const cached = this.previews.get(skinId);
+        if (cached) return cached;
+        const url = this.resolve(skin.preview.url);
+        const inflight = fetchVerified(url, skin.preview, this.downloadOptions()).catch((e: unknown) => {
+            this.previews.delete(skinId);
+            throw e;
+        });
+        this.previews.set(skinId, inflight);
+        return inflight;
     }
 
     /** One band's cell index, verified against the root's pin and memoised. */

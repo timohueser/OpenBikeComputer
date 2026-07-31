@@ -346,6 +346,17 @@
             "$ref": "#/$defs/SkinStyle"
           },
           "minItems": 1
+        },
+        "preview": {
+          "description": "Optional digest-pinned rendered sample. It is presentation only and never participates in cell selection or assembly.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SkinPreview"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -412,6 +423,30 @@
         "z_index",
         "priority",
         "dashed"
+      ]
+    },
+    "SkinPreview": {
+      "description": "One skin rendered over the bakery's canonical map scene.",
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "pattern": "^(https?://|/)"
+        },
+        "bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "url",
+        "bytes",
+        "sha256"
       ]
     },
     "RegionEntry": {

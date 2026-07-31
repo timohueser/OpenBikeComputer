@@ -2483,10 +2483,14 @@ dependencies = [
 name = "obc-bake"
 version = "0.1.0"
 dependencies = [
+ "embedded-graphics",
  "heapless 0.8.0",
+ "image",
  "obc-formats",
  "obc-pack",
  "obc-reader",
+ "obc-render",
+ "obcm-assemble",
  "serde",
  "serde_json",
  "sha2",

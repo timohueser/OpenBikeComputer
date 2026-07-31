@@ -28,6 +28,11 @@ describe("parseRoot", () => {
         expect(catalog.schema.obcm_version).toBe(11);
         expect(catalog.schema.bands.map((b) => b.id)).toEqual(["coarse", "mid", "fine", "network"]);
         expect(catalog.skins.map((s) => s.id)).toEqual(["contrast", "default"]);
+        expect(catalog.skins[0].preview).toBeNull();
+        expect(catalog.skins[1].preview).toMatchObject({
+            url: "https://maps.example.org/catalog/previews/default.png",
+            bytes: 19,
+        });
         expect(catalog.regions.map((r) => r.id)).toEqual([
             "europe/switzerland",
             "europe/switzerland/basel-stadt",
@@ -109,6 +114,9 @@ describe("parseRoot", () => {
             ["a colour outside RGB565", (d) => (d.skins[0].styles[0].color = 70_000)],
             ["two skins sharing an id", (d) => (d.skins[1].id = d.skins[0].id)],
             ["no skins at all", (d) => (d.skins = [])],
+            ["a preview URL that cannot be resolved", (d) => (d.skins[1].preview.url = "default.png")],
+            ["a truncated preview digest", (d) => (d.skins[1].preview.sha256 = "abc")],
+            ["a negative preview size", (d) => (d.skins[1].preview.bytes = -1)],
         ])("rejects %s", (_what, edit) => {
             expect(() => parseRoot(mutated(edit))).toThrow(CatalogFormatError);
         });

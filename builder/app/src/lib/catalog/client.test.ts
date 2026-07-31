@@ -15,6 +15,8 @@ import { EXAMPLE_CELL_INDEX, EXAMPLE_REGION_CELLS, EXAMPLE_ROOT } from "./testda
 const ROOT_URL = "https://maps.example.org/catalog/catalog.json";
 const FINE_INDEX_URL = "https://maps.example.org/catalog/cells/fine/index.json";
 const SWISS_CELLS_URL = "https://maps.example.org/catalog/regions/europe/switzerland/cells.json";
+const DEFAULT_PREVIEW_URL = "https://maps.example.org/catalog/previews/default.png";
+const DEFAULT_PREVIEW = "example preview png";
 
 async function sha256Hex(body: string): Promise<string> {
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body));
@@ -39,6 +41,7 @@ function allBodies(over: Record<string, string> = {}): Record<string, string> {
         [ROOT_URL]: EXAMPLE_ROOT,
         [FINE_INDEX_URL]: EXAMPLE_CELL_INDEX,
         [SWISS_CELLS_URL]: EXAMPLE_REGION_CELLS,
+        [DEFAULT_PREVIEW_URL]: DEFAULT_PREVIEW,
         ...over,
     };
 }
@@ -165,6 +168,29 @@ describe("cellIndex", () => {
         const { impl } = serving(allBodies());
         const client = await CatalogClient.load(ROOT_URL, { fetchImpl: impl });
         await expect(client.cellIndex("vivid")).rejects.toThrow(/no cell index/);
+    });
+});
+
+describe("skinPreview", () => {
+    it("verifies and memoises the optional PNG bytes", async () => {
+        const { impl, calls } = serving(allBodies());
+        const client = await CatalogClient.load(ROOT_URL, { fetchImpl: impl });
+        const [first, second] = await Promise.all([client.skinPreview("default"), client.skinPreview("default")]);
+        expect(new TextDecoder().decode(first!)).toBe(DEFAULT_PREVIEW);
+        expect(second).toBe(first);
+        expect(calls.filter((url) => url === DEFAULT_PREVIEW_URL)).toHaveLength(1);
+        expect(await client.skinPreview("contrast")).toBeNull();
+    });
+
+    it("refuses preview bytes that do not match the root pin", async () => {
+        const { impl } = serving(allBodies({ [DEFAULT_PREVIEW_URL]: `${DEFAULT_PREVIEW}!` }));
+        const client = await CatalogClient.load(ROOT_URL, { fetchImpl: impl });
+        await expect(client.skinPreview("default")).rejects.toThrow(BytesVerificationError);
+    });
+
+    it("rejects a skin the catalog does not offer", async () => {
+        const client = await CatalogClient.load(ROOT_URL, { fetchImpl: serving(allBodies()).impl });
+        await expect(client.skinPreview("moonlight")).rejects.toThrow(/no skin/);
     });
 });
 

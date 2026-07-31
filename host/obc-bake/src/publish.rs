@@ -98,6 +98,8 @@ impl PlannedObject {
     pub fn content_type(&self) -> &'static str {
         if self.key.ends_with(".json") {
             "application/json"
+        } else if self.key.ends_with(".png") {
+            "image/png"
         } else {
             "application/octet-stream"
         }
@@ -183,6 +185,16 @@ pub fn publish(
     opts: &CatalogOptions,
     publish_opts: PublishOptions,
 ) -> Result<PublishReport, String> {
+    // Publishing an existing tree is enough to pick up a new preview renderer:
+    // previews contain no cell data, so requiring a multi-hour rebake would only
+    // couple presentation to geometry by accident.
+    let seed = obc_pack::catalog::generate(tree, opts)?;
+    // `obc-bake`'s supported production schema owns the canonical Teningen
+    // scene. Keep the lower-level library useful for synthetic/test catalogs;
+    // OBCC deliberately makes previews optional for those producers.
+    if seed.root.schema.id == "bikepacking" {
+        crate::previews::generate(tree, &seed.root)?;
+    }
     let generated = obc_pack::catalog::generate(tree, opts)?;
     obc_pack::catalog::write_all_atomic(tree, &generated)?;
 
@@ -309,13 +321,13 @@ fn duration(value: std::time::Duration) -> String {
 /// Every object of a cell tree, root last.
 ///
 /// Deliberately a whole-tree walk: a cell tree's
-/// publishable set is `cells/`, `regions/`, `skins/` **and** `schema.json` — the last
+/// publishable set is `cells/`, `regions/`, `skins/`, `previews/` **and** `schema.json` — the last
 /// of which is not optional, because it is the document the generator reads the
 /// style-id assignment out of and the one a re-generation on another machine needs.
 /// Walking the tree means a future document cannot be forgotten here.
 pub fn plan(tree: &Path) -> Result<Vec<PlannedObject>, String> {
     let mut objects = Vec::new();
-    for dir in ["cells", "regions", "skins"] {
+    for dir in ["cells", "regions", "skins", crate::previews::PREVIEWS_DIR] {
         collect(tree, &tree.join(dir), ObjectKind::Artifact, &mut objects)?;
     }
     let schema = tree.join("schema.json");
@@ -575,6 +587,12 @@ mod tests {
             bytes: 0,
             kind: ObjectKind::Artifact,
         };
+        let preview = PlannedObject {
+            key: "previews/default.png".into(),
+            path: PathBuf::new(),
+            bytes: 0,
+            kind: ObjectKind::Artifact,
+        };
         // §7: the manifest is short-lived. So are the artifacts, but for a different
         // reason — their keys are stable paths that a re-bake rewrites, so an edge
         // holding old bytes against a new manifest breaks the consumer's mandatory
@@ -588,5 +606,6 @@ mod tests {
             "a rewritten key must never be served from an edge without revalidating"
         );
         assert_eq!(artifact.content_type(), "application/octet-stream");
+        assert_eq!(preview.content_type(), "image/png");
     }
 }
