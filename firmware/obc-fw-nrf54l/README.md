@@ -317,11 +317,14 @@ host-tested `obc-ble` crate (`cargo test -p obc-ble`, pinned to `specs/vectors/`
   (`OBCA_Spec.md` §5) — and the same trick one level up: `set_upload_begin()` writes the manifest as
   four zero bytes *before the first shard streams* and `set_manifest_commit()` patches `OBCS` in
   last, after re-reading it and checking it against the shards on the card. So the manifest is the
-  set's commit point **and** its abandoned-upload signature: `sweep_aborted_sets()` reclaims a
-  zero-magic set whole at the next boot and can never mistake a card-reader copy for its own (that
-  one's manifest is either absent or complete, never zeroed). Set ids are card-derived with no RRAM
-  floor — they name files, they are not durable protocol object ids — and `set_upload_begin()` runs
-  the whole `delete_plan` first, which is §5.4's own replace-a-set rule. `/MAP.SEL` records which map
+  set's commit point **and** its abandoned-upload signature: `sweep_aborted_sets()` reclaims a set
+  whose manifest magic is not *whole* — zeroed, half-patched, or shorter than four bytes — and can
+  never mistake a card-reader copy for its own (that one is written front to back from a finished
+  manifest, so its magic is there from the first block). Set ids are card-derived with no RRAM floor
+  — they name files, they are not durable protocol object ids — and are taken from **every** `MS`
+  name on the card, listed or not, so a rider's half-copied set is never minted over;
+  `set_upload_begin()` then runs the whole `delete_plan` first, which is §5.4's own replace-a-set
+  rule. `/MAP.SEL` records which map
   the renderer streams from; a committed upload — single map or set — becomes that choice, effective
   at the next boot (the map's tables are parsed once at startup and held for the session). Every ride Finish on the map build
   writes `/tracks/RDnn.ORD` (byte-for-byte the S0 §7.2 ride object) — the only save artifact; the `ble`
