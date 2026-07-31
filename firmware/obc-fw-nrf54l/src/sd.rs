@@ -3345,17 +3345,6 @@ pub fn set_manifest_id(name: &ShortFileName) -> Option<u16> {
     obc_formats::obcs::parse_manifest_name(&short_name_bytes(name))
 }
 
-/// `(set id, shard index)` for a `MS{id}S{kk}.OBM` shard name, or `None` for anything else —
-/// including the neighbouring single-map `MP{id}.OBM` convention.
-pub fn set_shard_of_name(name: &ShortFileName) -> Option<(u16, usize)> {
-    obc_formats::obcs::parse_shard_name(&short_name_bytes(name))
-}
-
-/// The 8.3 name of set `id`'s manifest — the inverse of [`set_manifest_id`].
-fn set_manifest_name_for(id: u16) -> Option<ShortFileName> {
-    ShortFileName::create_from_str(obc_formats::obcs::manifest_name(id)?.as_str()).ok()
-}
-
 /// The 8.3 name of shard `index` of set `id`. Filenames are **derived, not stored** (§5.2): a
 /// stored name is a second source of truth that can disagree with the directory.
 fn set_shard_name_for(id: u16, index: usize) -> Option<ShortFileName> {
