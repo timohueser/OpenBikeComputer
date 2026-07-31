@@ -682,9 +682,13 @@ impl CellBakery<'_> {
 
     /// Everything that can change a cell's **bytes**, hashed into one key.
     ///
-    /// Deliberately *not* in here: the extracts' snapshot dates. They are published
-    /// facts that must not go stale, but they cannot move a byte — see the module
-    /// docs and [`sidecar_drift`].
+    /// Deliberately *not* in here: the extracts' snapshot dates, and the schema
+    /// document's `_meta` block. Both are published facts that must not go stale, and
+    /// neither can move a byte — see the module docs, [`sidecar_drift`], and
+    /// [`crate::presets`] on why the key is the document's body rather than its file
+    /// text. (The schema's `_meta.revision` and band table *are* in the key, but as
+    /// the run's own `--schema-revision` and `--bands`, which is where they come from
+    /// on this path.)
     fn pack_key(&self, sources: &[&Resolved], crop: Option<&str>) -> String {
         let ids: Vec<String> = sources
             .iter()
@@ -697,7 +701,7 @@ impl CellBakery<'_> {
             "recipe={CELL_RECIPE_VERSION}\nobcm={}\ncutter={}\nschema={}\nrevision={}\nbands={bands}\ncrop={}\nsources={}\n",
             obc_formats::obcm::VERSION,
             self.cutter.recipe(),
-            self.schema.sha256,
+            self.schema.body_sha256,
             self.opts.schema_revision,
             crop.unwrap_or("none"),
             ids.join(","),

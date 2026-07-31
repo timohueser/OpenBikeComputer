@@ -55,8 +55,9 @@ pub struct StyleDoc {
     pub path: PathBuf,
     /// The file's bytes, copied verbatim into the bake tree.
     pub json: String,
-    /// SHA-256 of `json` — an ingredient of the bake key.
-    pub sha256: String,
+    /// SHA-256 of the document's **body** — everything except `_meta` — and an
+    /// ingredient of the bake key. See [`body_sha256`] for why it is not the file's.
+    pub body_sha256: String,
     /// Parsed with the packer's own loader. For a skin this is *not* a bakeable
     /// config (it carries no ladder and no routing); it is the style values, and the
     /// only thing that reads it is the schema-fit check.
@@ -142,6 +143,123 @@ fn read(path: &Path, stem: Option<&str>) -> Result<StyleDoc, String> {
     // Parse with the packer's own loader: a document that does not parse must fail
     // now, not per region, and not after the extract download.
     let config = Config::load(&path.to_string_lossy())?;
-    let sha256 = crate::hash::text(&json);
-    Ok(StyleDoc { id, version, path: path.to_path_buf(), json, sha256, config })
+    let body_sha256 = body_sha256(&doc, path)?;
+    Ok(StyleDoc { id, version, path: path.to_path_buf(), json, body_sha256, config })
+}
+
+/// SHA-256 of a style document with `_meta` **stripped** — its packer-visible body.
+///
+/// The bake key exists to answer one question: *would re-packing produce different
+/// bytes?* `_meta` cannot change that answer. The config loader treats it as an
+/// unknown field and ignores it, so a document's id, display name, description,
+/// swatch or `version` moving is, to the packer, no change at all — and hashing the
+/// file's *text* said otherwise, which made a one-word description fix cost a full
+/// re-pack of every region. #1036 is the case that made this concrete: the rename
+/// `default` → `bikepacking` is a `_meta.id` edit and nothing else, and it must not
+/// be an excuse to re-cut the store.
+///
+/// Everything *outside* `_meta` still counts, key order included: `obc-pack` numbers
+/// feature types in document order and those ids are baked into every feature header
+/// (`OBCM_Spec.md` §5.2), so a reordering really is a different bake. (`serde_json`
+/// is built here with `preserve_order`, so the round-trip below keeps that order.)
+///
+/// The metadata is not thereby allowed to go stale: `_meta.version` is published in
+/// every sidecar, and [`crate::bake`] records it in the bake state and rewrites the
+/// sidecar alone when it drifts — four lines of JSON instead of twenty hours.
+fn body_sha256(doc: &serde_json::Value, path: &Path) -> Result<String, String> {
+    let mut body = doc.clone();
+    body.as_object_mut()
+        .ok_or_else(|| format!("{}: a style document is a JSON object", path.display()))?
+        .shift_remove("_meta");
+    let text = serde_json::to_string(&body).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(crate::hash::text(&text))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A minimal but real style document: `_meta` plus a body the packer would see.
+    fn doc(meta: &str, features: &str) -> serde_json::Value {
+        serde_json::from_str(&format!(
+            r#"{{"_meta": {meta}, "chunk_size": 4096, "features": {{"highway": {features}}}}}"#
+        ))
+        .expect("valid JSON")
+    }
+
+    fn key(meta: &str, features: &str) -> String {
+        body_sha256(&doc(meta, features), Path::new("doc.json")).expect("hashes")
+    }
+
+    const PRIMARY: &str = r#"{"primary": {"color": "0xFD40", "z_index": 50, "weight": 3}}"#;
+
+    /// The property the whole #1036 migration rests on: `_meta` is not packer input,
+    /// so every edit confined to it leaves the bake key alone. The id rename that
+    /// turned `default` into `bikepacking` is the first case, and the one that would
+    /// otherwise have cost a re-pack of the live shelf for no change in bytes.
+    #[test]
+    fn a_metadata_only_edit_does_not_move_the_bake_key() {
+        let baseline = key(r#"{"id": "default", "name": "Default", "version": 1}"#, PRIMARY);
+        for edited in [
+            // the rename itself
+            r#"{"id": "bikepacking", "name": "Default", "version": 1}"#,
+            // a display-name fix
+            r#"{"id": "default", "name": "Bikepacking", "version": 1}"#,
+            // a version bump (published in the sidecar, not baked into a byte)
+            r#"{"id": "default", "name": "Default", "version": 9}"#,
+            // a whole new metadata field
+            r##"{"id": "default", "name": "Default", "version": 1, "swatch": ["#FF5500"]}"##,
+            // and `_meta` gone entirely
+            r#"{}"#,
+        ] {
+            assert_eq!(baseline, key(edited, PRIMARY), "`_meta` reached the bake key: {edited}");
+        }
+    }
+
+    /// The other half, or the first half would be a way to publish stale maps: a
+    /// change to anything the packer reads must change the key.
+    #[test]
+    fn a_body_edit_moves_the_bake_key() {
+        const META: &str = r#"{"id": "default", "name": "Default", "version": 1}"#;
+        let baseline = key(META, PRIMARY);
+        for edited in [
+            // a recolor
+            r#"{"primary": {"color": "0x0000", "z_index": 50, "weight": 3}}"#,
+            // a weight
+            r#"{"primary": {"color": "0xFD40", "z_index": 50, "weight": 1}}"#,
+            // a new feature type — which also renumbers style ids
+            r#"{"primary": {"color": "0xFD40", "z_index": 50, "weight": 3}, "track": {"color": "0xAAA0", "z_index": 24, "weight": 1}}"#,
+        ] {
+            assert_ne!(baseline, key(META, edited), "a body edit left the bake key alone: {edited}");
+        }
+    }
+
+    /// Document order outside `_meta` still counts. `obc-pack` numbers feature types
+    /// in the order it reads them and those ids are referenced by every feature header
+    /// in every baked chunk (`OBCM_Spec.md` §5.2), so two documents that differ only
+    /// in the order of their feature types genuinely bake to different bytes.
+    #[test]
+    fn reordering_feature_types_moves_the_bake_key() {
+        const META: &str = r#"{"id": "default", "name": "Default", "version": 1}"#;
+        let a = r#"{"primary": {"color": "0xFD40", "z_index": 50}, "track": {"color": "0xAAA0", "z_index": 24}}"#;
+        let b = r#"{"track": {"color": "0xAAA0", "z_index": 24}, "primary": {"color": "0xFD40", "z_index": 50}}"#;
+        assert_ne!(key(META, a), key(META, b));
+    }
+
+    /// The shipped schema is the document this all has to hold for, and it is the one
+    /// that just had its `_meta` rewritten.
+    #[test]
+    fn the_shipped_schema_hashes_its_body_not_its_metadata() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../builder/presets");
+        let schema = load_schema(&dir).expect("the shipped schema loads");
+        let mut doc: serde_json::Value = serde_json::from_str(&schema.json).expect("valid JSON");
+        assert_ne!(schema.body_sha256, crate::hash::text(&schema.json), "the key is not the file's text");
+        doc["_meta"]["id"] = "something-else".into();
+        doc["_meta"]["version"] = 999.into();
+        assert_eq!(
+            schema.body_sha256,
+            body_sha256(&doc, &schema.path).expect("hashes"),
+            "renaming the shipped schema must not invalidate a single baked artifact"
+        );
+    }
 }

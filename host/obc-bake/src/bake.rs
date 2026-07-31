@@ -148,6 +148,18 @@ struct BakeState {
     /// noticed without re-packing.
     region_name: String,
     source_snapshot: String,
+    /// The style document's `_meta.version` as last published. Recorded rather than
+    /// keyed, because it is metadata: it cannot move a byte of the artifact, but it
+    /// is what a v1 consumer reads to see that a region is a restyle behind, so it
+    /// must not silently keep the old number after the document is bumped.
+    ///
+    /// `default` so a state file written before this field existed still parses —
+    /// otherwise the very migration this exists to make cheap would begin by
+    /// invalidating every state file in the tree. Version `0` never occurs in a
+    /// real document, so an old state file reads as drift and costs one sidecar
+    /// rewrite.
+    #[serde(default)]
+    preset_version: u32,
 }
 
 /// The four facts the artifact's bytes cannot state (`OBCC_Spec.md` §8). Written by
@@ -456,7 +468,7 @@ impl Bakery<'_> {
                 // The bytes are current. The *sidecar* may not be: a region renamed in
                 // `regions.toml`, or a re-published extract with the same content and a
                 // new date, changes what the manifest says without changing the map.
-                let changed = sidecar_drift(&state, region, extract);
+                let changed = sidecar_drift(&state, region, extract, preset);
                 self.install_preset_config(preset)?;
                 if changed.is_empty() {
                     progress.log("    unchanged — skipping");
@@ -476,7 +488,12 @@ impl Bakery<'_> {
                 )?;
                 write_json(
                     &state_path,
-                    &BakeState { region_name: region.name.clone(), source_snapshot: extract.snapshot.clone(), ..state },
+                    &BakeState {
+                        region_name: region.name.clone(),
+                        source_snapshot: extract.snapshot.clone(),
+                        preset_version: preset.version,
+                        ..state
+                    },
                 )?;
                 return Ok(JobStatus::SidecarRefreshed { bytes: state.bytes, changed });
             }
@@ -521,6 +538,7 @@ impl Bakery<'_> {
                 built_at: built_at.clone(),
                 region_name: region.name.clone(),
                 source_snapshot: extract.snapshot.clone(),
+                preset_version: preset.version,
             },
         )?;
         self.install_preset_config(preset)?;
@@ -543,18 +561,21 @@ impl Bakery<'_> {
 
     /// Everything that can change the artifact's **bytes**, hashed into one key.
     ///
-    /// Deliberately *not* in here: the region's display name and the extract's
-    /// snapshot date. Neither can move a byte of the `.obcm` — they are sidecar
-    /// facts — and folding them in would mean a mirror that re-publishes a
-    /// byte-identical extract under a new date costs a twenty-hour re-pack, which
-    /// is precisely what keying on content instead of timestamps exists to avoid.
-    /// They are still not allowed to go stale: they are recorded in [`BakeState`]
-    /// and compared by [`sidecar_drift`], which rewrites the sidecar alone.
+    /// Deliberately *not* in here: the region's display name, the extract's snapshot
+    /// date, and the style document's `_meta` block (its id, name, description,
+    /// swatch and `version` — see [`crate::presets`]). None of them can move a byte
+    /// of the `.obcm` — they are sidecar and catalog facts — and folding them in
+    /// would mean a mirror that re-publishes a byte-identical extract under a new
+    /// date, or an editor who fixes a typo in a description, costs a twenty-hour
+    /// re-pack, which is precisely what keying on content instead of timestamps
+    /// exists to avoid. They are still not allowed to go stale: all three are
+    /// recorded in [`BakeState`] and compared by [`sidecar_drift`], which rewrites
+    /// the sidecar alone.
     fn pack_key(&self, extract_sha: &str, preset: &StyleDoc) -> String {
         crate::hash::text(&format!(
             "recipe={RECIPE_VERSION}\nobcm={}\nextract={extract_sha}\npreset={}\npack={}\n",
             obc_formats::obcm::VERSION,
-            preset.sha256,
+            preset.body_sha256,
             self.packer.recipe(),
         ))
     }
@@ -592,13 +613,21 @@ fn reusable(state_path: &Path, artifact: &Path, sidecar: &Path, pack_key: &str) 
 /// Which sidecar facts the run disagrees with the recording about.
 ///
 /// Empty means the published catalog would say exactly what it already says.
-fn sidecar_drift(state: &BakeState, region: &Region, extract: &crate::source::Extract) -> Vec<String> {
+fn sidecar_drift(
+    state: &BakeState,
+    region: &Region,
+    extract: &crate::source::Extract,
+    preset: &StyleDoc,
+) -> Vec<String> {
     let mut changed = Vec::new();
     if state.region_name != region.name {
         changed.push(format!("region_name `{}` → `{}`", state.region_name, region.name));
     }
     if state.source_snapshot != extract.snapshot {
         changed.push(format!("source_snapshot {} → {}", state.source_snapshot, extract.snapshot));
+    }
+    if state.preset_version != preset.version {
+        changed.push(format!("preset_version {} → {}", state.preset_version, preset.version));
     }
     changed
 }
