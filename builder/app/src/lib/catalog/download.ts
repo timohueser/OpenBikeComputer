@@ -17,6 +17,25 @@
 
 import type { CatalogArtifact } from "./manifest";
 
+/** What a document or an artifact has to match before it is believed: the size
+ *  and the digest the catalog published for it. */
+export interface BytePin {
+    bytes: number;
+    sha256: string;
+}
+
+/** Fetched bytes disagreed with the pin the catalog published. Nothing has been
+ *  saved, and the caller holds nothing it could be tempted to use. */
+export class BytesVerificationError extends Error {
+    constructor(
+        readonly url: string,
+        readonly detail: string,
+    ) {
+        super(`${url}: ${detail}`);
+        this.name = "BytesVerificationError";
+    }
+}
+
 /** The artifact's bytes disagreed with the manifest. Nothing has been saved. */
 export class ArtifactVerificationError extends Error {
     constructor(
@@ -61,19 +80,25 @@ function toHex(digest: ArrayBuffer): string {
 }
 
 /**
- * Fetch one artifact and return its bytes, or throw. The returned buffer has
- * been checked against the manifest's `bytes` and `sha256`; nothing else in
- * this module hands out unverified bytes.
+ * Fetch one pinned object and return its bytes, or throw.
+ *
+ * This is the whole verification discipline in one function — buffer the body,
+ * check the length as it arrives, check the digest over the complete bytes — and
+ * it is deliberately generic over *what* was pinned. A v1 artifact and a v2 cell
+ * or satellite document (`OBCC_Spec.md` §11.1) make the same promise and deserve
+ * the same enforcement; two copies of this would be two chances to weaken one of
+ * them.
  */
-export async function fetchArtifact(
-    artifact: CatalogArtifact,
+export async function fetchVerified(
+    url: string,
+    pin: BytePin,
     opts: DownloadOptions = {},
 ): Promise<Uint8Array> {
     const doFetch = opts.fetchImpl ?? globalThis.fetch;
-    const res = await doFetch(artifact.url, { signal: opts.signal });
-    if (!res.ok) throw new Error(`${artifact.url}: ${res.status} ${res.statusText}`);
+    const res = await doFetch(url, { signal: opts.signal });
+    if (!res.ok) throw new Error(`${url}: ${res.status} ${res.statusText}`);
 
-    const total = artifact.bytes;
+    const total = pin.bytes;
     let bytes: Uint8Array;
     if (res.body) {
         const reader = res.body.getReader();
@@ -88,8 +113,8 @@ export async function fetchArtifact(
             // rather than buffering an unbounded stream on the way to failing.
             if (received > total) {
                 reader.cancel().catch(() => {});
-                throw new ArtifactVerificationError(
-                    artifact,
+                throw new BytesVerificationError(
+                    url,
                     `the download is longer than the manifest's ${total} bytes`,
                 );
             }
@@ -106,23 +131,41 @@ export async function fetchArtifact(
         opts.onProgress?.({ received: bytes.byteLength, total });
     }
 
-    if (bytes.byteLength !== artifact.bytes) {
-        throw new ArtifactVerificationError(
-            artifact,
-            `expected ${artifact.bytes} bytes, got ${bytes.byteLength}`,
-        );
+    if (bytes.byteLength !== total) {
+        throw new BytesVerificationError(url, `expected ${total} bytes, got ${bytes.byteLength}`);
     }
     const actual = toHex(await (opts.digest ?? subtleDigest)(bytes));
-    if (actual !== artifact.sha256) {
+    if (actual !== pin.sha256) {
         // Enough digest to tell two files apart in a bug report, not so much
         // that the sentence stops being readable.
-        throw new ArtifactVerificationError(
-            artifact,
-            `checksum mismatch — the catalog says ${artifact.sha256.slice(0, 12)}…, ` +
+        throw new BytesVerificationError(
+            url,
+            `checksum mismatch — the catalog says ${pin.sha256.slice(0, 12)}…, ` +
                 `the download is ${actual.slice(0, 12)}…`,
         );
     }
     return bytes;
+}
+
+/**
+ * Fetch one artifact and return its bytes, or throw. The returned buffer has
+ * been checked against the manifest's `bytes` and `sha256`; nothing else in
+ * this module hands out unverified bytes.
+ *
+ * The verification failure is re-thrown as an `ArtifactVerificationError` so it
+ * still carries the artifact a caller was asking for — a URL is not something a
+ * rider can be shown.
+ */
+export async function fetchArtifact(
+    artifact: CatalogArtifact,
+    opts: DownloadOptions = {},
+): Promise<Uint8Array> {
+    try {
+        return await fetchVerified(artifact.url, artifact, opts);
+    } catch (e) {
+        if (e instanceof BytesVerificationError) throw new ArtifactVerificationError(artifact, e.detail);
+        throw e;
+    }
 }
 
 /**
