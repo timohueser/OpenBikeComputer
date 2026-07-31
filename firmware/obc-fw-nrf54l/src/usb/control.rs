@@ -247,10 +247,10 @@ async fn serve_frame(
             match classify_transfer(payload, store, &mut guard, crate::link::Transport::Usb) {
                 TransferDisposition::Arm(armed) => {
                     info!("usb: [ctl] transfer armed");
-                    // Set the gate *before* the data plane can observe the arm, exactly as the GATT
-                    // path does: the cross-transport `TRANSFER_ACTIVE` is what turns a second open —
-                    // from either wire — into a typed `busy`.
-                    TRANSFER_ACTIVE.store(true, core::sync::atomic::Ordering::Relaxed);
+                    // Claim the gate *before* the data plane can observe the arm, exactly as the
+                    // GATT path does: the cross-transport `TRANSFER_ACTIVE` is what turns a second
+                    // open — from either wire — into a typed `busy`.
+                    TRANSFER_ACTIVE.claim(crate::link::gate_owner(crate::link::Transport::Usb));
                     TRANSFER_ARM.signal(armed);
                 }
                 TransferDisposition::AbortActive => {

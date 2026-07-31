@@ -155,6 +155,12 @@ pub(crate) enum Armed {
     Echo(TransferControl),
     Upload(TransferControl, Receiver),
     Download(TransferControl),
+    /// One shard of a volume set (#1039). Streams exactly as an `Upload` of a map does; the
+    /// [`obc_ble::SetPart`] rides along because `object_id` is not an id here — it says *which file
+    /// of the set this is*, and the data plane needs it to name the file at the first byte.
+    SetShard(TransferControl, Receiver, obc_ble::SetPart),
+    /// The set manifest — the last file of a set, and its commit point (`OBCA_Spec.md` §5.4).
+    SetManifest(TransferControl, Receiver),
 }
 
 /// Which wire a descriptor arrived on — the *only* place transport identity crosses into the shared
@@ -253,15 +259,31 @@ pub fn clear_map_transfer() {
     }
 }
 
-/// One transfer at a time, **across every transport**: set by whichever control plane armed it,
-/// cleared by that transport's data plane when the transfer concludes (answered, aborted, or the
-/// channel dropped). While set, any further `transferControl` open — BLE or USB — is answered
+/// One transfer at a time, **across every transport**: claimed by whichever control plane armed it,
+/// released by that transport's data plane when the transfer concludes (answered, aborted, or the
+/// channel dropped). While held, any further `transferControl` open — BLE or USB — is answered
 /// `busy`.
 ///
 /// Shared rather than per-transport because the resource being arbitrated is the store, not the
-/// wire: [`ObjectStore`] holds exactly one upload temp file and one open download source. Two
-/// simultaneous uploads would interleave into the same temp and commit a corrupt object.
-pub(crate) static TRANSFER_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// wire: [`ObjectStore`] holds exactly one upload handle and one open download source. Two
+/// simultaneous uploads would interleave into the same file and commit a corrupt object.
+///
+/// It carries **who holds it** rather than merely whether it is held (issue #1039), because one
+/// transfer at a time is not one transport at a time: both links can be connected at once, and each
+/// tears its own state down when it drops. A bare flag meant a phone walking out of range released
+/// a gate the cable was holding mid-set. The rule — and the regression — live in
+/// [`obc_app::link_gate`], where they can be tested.
+pub(crate) static TRANSFER_ACTIVE: obc_app::TransferGate = obc_app::TransferGate::new();
+
+/// This wire's identity to the gate. [`Transport`] is the classifier's vocabulary and
+/// [`obc_app::GateOwner`] is the gate's; the two are the same fact and this is the one place they
+/// meet.
+pub(crate) const fn gate_owner(transport: Transport) -> obc_app::GateOwner {
+    match transport {
+        Transport::Ble => obc_app::GateOwner::Ble,
+        Transport::Usb => obc_app::GateOwner::Usb,
+    }
+}
 
 // ============================ Status-message vocabulary ============================
 
