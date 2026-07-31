@@ -157,6 +157,11 @@ impl SimCard {
     /// `Storage::next_set_id_from_scan`: one past the highest **listed** set, i.e. one that
     /// validates whole. A torn set's manifest has no magic, so it is invisible and its id is
     /// re-derived — the same property that stops the map path leaking an id per interruption.
+    ///
+    /// Note it can return `MAX_SET_ID + 1`, which has no derivable 8.3 name. That is the point:
+    /// the exhaustion test is `> MAX_SET_ID`, so saturating *at* 999 would hand back an id a card
+    /// holding `MS999` is already using — and since a set upload clears its id before writing to
+    /// it, that would delete a good map to make room for a new one.
     fn next_set_id(&self) -> u16 {
         let mut next = 0u16;
         for entry in std::fs::read_dir(&self.root).expect("read the card root").flatten() {
@@ -316,6 +321,11 @@ impl SimCard {
         }
         if fresh {
             let id = self.next_set_id();
+            if id > obcs::MAX_SET_ID {
+                // `ObjectStore::set_shard_begin`: no derivable 8.3 name is left, so there is no set
+                // to open. Refusing is the only safe answer — reusing the top id would delete a map.
+                return TransferResult::new(desc.object_id, TransferStatus::Error, 0);
+            }
             self.begin_set(id);
             self.session = Some(obc_app::SetUpload::new(id, part.shard_count));
         }
@@ -633,6 +643,36 @@ fn a_set_past_the_device_ceiling_is_refused_before_any_bytes() {
     let result = device.send_object(&first.descriptor(), &mut bytes).expect("the link is fine");
     assert_eq!(result.status, TransferStatus::StorageFull);
     assert_eq!(std::fs::read_dir(&card).unwrap().count(), 0, "not one byte, and no token");
+
+    let _ = std::fs::remove_dir_all(&host);
+    let _ = std::fs::remove_dir_all(&card);
+}
+
+/// The top of the id namespace. `MS999` is the last set `OBCA_Spec.md` §5.2's 8.3 names can
+/// express, so a card already holding one leaves nowhere to put a new set — and the upload must be
+/// **refused** rather than handed id 999 again. A set upload clears its id before it writes to it
+/// (§5.4's replace rule), so re-issuing the top id would delete the rider's map to make room for
+/// the one replacing it, and a failed transfer would leave them with neither.
+#[test]
+fn a_full_set_id_namespace_refuses_rather_than_reusing_the_last_id() {
+    let host = tempdir("exhaust-host");
+    let card = tempdir("exhaust-card");
+    let (_, fixture) = pair();
+    write_set(&host, 1, &fixture);
+    // The card already holds the highest set the naming scheme can express.
+    write_set(&card, obcs::MAX_SET_ID, &fixture);
+    let plan = planned(&host, 1);
+
+    let mut device = SimCard::new(card.clone());
+    assert!(device.scan_set(obcs::MAX_SET_ID).is_some(), "MS999 is a real map on this card");
+    assert_eq!(device.next_set_id(), obcs::MAX_SET_ID + 1, "one past the last derivable name");
+
+    let first = &plan.files[0];
+    let mut bytes = std::fs::File::open(&first.path).expect("open shard 0");
+    let result = device.send_object(&first.descriptor(), &mut bytes).expect("the link is fine");
+    assert_eq!(result.status, TransferStatus::Error, "there is no id left to mint");
+    assert!(device.session.is_none(), "and no session was opened");
+    assert!(device.scan_set(obcs::MAX_SET_ID).is_some(), "the map that was already there is untouched");
 
     let _ = std::fs::remove_dir_all(&host);
     let _ = std::fs::remove_dir_all(&card);
