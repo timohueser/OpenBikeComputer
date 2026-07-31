@@ -1,4 +1,4 @@
-//! Format-contract tests for the OBCM v10 reader.
+//! Format-contract tests for the OBCM reader.
 //!
 //! Each test builds a synthetic `.obcm` with the shared `obcm-testkit` builder (which mirrors the
 //! Rust packer's `serialize.rs`), then asserts the reader parses it back. Building the bytes rather
@@ -150,7 +150,7 @@ fn styles_parse() {
     assert!(r.style(200).is_none());
 }
 
-/// The v10 8-byte style record round-trips `line_style` (flag bit 2) and the optional `color2`
+/// The 8-byte style record round-trips `line_style` (flag bit 2) and the optional `color2`
 /// (flag bit 3 + the u16 at record offset 6) across every (dashed, color2) combination the epic
 /// #556 semantics use. `color2 == Some(0x0000)` on the casing style pins that **black is a legit
 /// secondary color**, not a "no color2" sentinel.
@@ -650,7 +650,7 @@ fn walk_caps_depth_on_forward_chain() {
 // directory, the populated-directory test hand-assembles the section so the record +
 // index + pool bytes are pinned, not derived.
 
-/// `build_file` (empty-POI, empty-nav) is a valid v10 map: 40-byte header, a POI-section
+/// `build_file` (empty-POI, empty-nav) is a valid map: 40-byte header, a POI-section
 /// offset pointing just past the LOD payload, a six-category empty directory, an empty
 /// hours pool, and an empty nav section (28-byte directory + the always-present profile table)
 /// at the tail.
@@ -715,7 +715,7 @@ fn empty_poi_directory_parses_six_empty_categories() {
     assert_eq!(u16::from_le_bytes(bytes[dir.hours_pool_offset..dir.hours_pool_offset + 2].try_into().unwrap()), 0);
 }
 
-/// Hand-assemble a v10 file whose POI section carries **one populated category** (id
+/// Hand-assemble a file whose POI section carries **one populated category** (id
 /// 3, Accommodation) with a two-record chunk plus a **two-blob hours pool**: the two
 /// records reference blob 0 and blob 1 respectively. Pins the 36-byte record layout
 /// (each field at its offset, incl. the `hours_ref` at [34..36]), the 24-byte name,

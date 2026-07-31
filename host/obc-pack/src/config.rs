@@ -99,7 +99,7 @@ const MARKER_DESCRIPTION: &str =
 const CHUNK_SIZE_DESCRIPTION: &str = "Quadtree chunk payload target in bytes. The maximum is the reader's per-feature vertex cap; the minimum guards against chunks so small that features are dropped wholesale. Values outside the range are rejected at pack time. Governs the geometry sections (LODs) only; the nav graph's chunks are pinned to 512 bytes.";
 const MERGE_FILLS_DESCRIPTION: &str = "Dissolve fill polygons that render pixel-identically - same z_index, color, and priority, with no color2 - into one union per LOD. A pure map-size/render-cost optimization with no intended visual change; false (the default) packs byte-identically to before.";
 const MERGE_LINES_DESCRIPTION: &str = "Stitch same-styled connected line fragments into maximal polylines per LOD. No intended visual change for solid lines; a dashed or cased line's pattern runs continuously across a former join. false (the default) packs byte-identically to before.";
-const ROUTING_DESCRIPTION: &str = "Nav-graph routing config (OBCM v10 §8): the island-pruning threshold plus the bike profiles baked into the map's profile table. Absent means the four shipped profiles (Road / Gravel / MTB / Touring).";
+const ROUTING_DESCRIPTION: &str = "Nav-graph routing config (OBCM §8): the island-pruning threshold plus the bike profiles baked into the map's profile table. Absent means the four shipped profiles (Road / Gravel / MTB / Touring).";
 
 fn annotate_property(properties: &mut Map<String, Value>, name: &str, description: &str) {
     properties[name]["description"] = Value::String(description.into());
@@ -434,7 +434,7 @@ impl JsonSchema for MultiplierValue {
     }
 }
 
-/// A line's stroke style (OBCM v10 style-record flag bit 2). The config value is `"solid"` (the
+/// A line's stroke style (OBCM §2 style-record flag bit 2). The config value is `"solid"` (the
 /// default) or `"dashed"`; the renderer draws dashes for `Dashed` lines and ignores it for polygons
 /// (#557 only carries the bit end to end — later sub-issues render it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema)]

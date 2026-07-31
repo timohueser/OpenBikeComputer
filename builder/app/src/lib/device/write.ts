@@ -26,16 +26,107 @@
  * `flows.test.ts` retries on the same link and expects it to just work.
  */
 
-import type { ProtocolClient, UploadResult } from "../usb/client";
+import { DeviceError, bytesSource, type ProtocolClient, type UploadResult } from "../usb/client";
 import { blobSource } from "../usb/client";
-import { NEW_OBJECT_ID, ObjectType, SINGLETON_OBJECT_ID } from "../usb/protocol";
+import { NEW_OBJECT_ID, ObjectType, SINGLETON_OBJECT_ID, setPartId } from "../usb/protocol";
 import { readUpdateImage, type UpdateImage } from "../firmware/obcu";
 import type { JobContext } from "./progress";
 import type { PreparedRoute } from "./route";
+import { Sha256 } from "./sha256";
 
 /** Bytes handed to the bulk pipe at a time. A map is minutes long either way; this only decides
  *  how often progress moves and how much is in flight, so it stays modest. */
 const MAP_CHUNK = 32 * 1024;
+
+/** One file streamed out of the assembler worker. Shards precede the manifest. */
+export interface AssembledSetFile {
+    readonly name: string;
+    readonly role: "core" | "coarse" | "geometry" | "manifest";
+    readonly sha256: string;
+    readonly byteLength: number;
+    readonly bytes: Uint8Array;
+}
+
+/** State kept across the independent whole-file transfers that form one set. */
+export interface SetSendState {
+    readonly shardCount: number;
+    readonly totalBytes: number;
+    committedBytes: number;
+    nextShard: number;
+    setId: number | null;
+}
+
+/** The coverage assembler's device sink, passed across the step-3/step-4 component seam. */
+export type SendAssembledMap = (client: ProtocolClient, ctx: JobContext) => Promise<UploadResult>;
+
+export function setSendState(shardCount: number, totalBytes: number): SetSendState {
+    if (!Number.isInteger(shardCount) || shardCount < 1 || shardCount > 32) {
+        throw new Error(`The assembled map contains ${shardCount} shards; a set must contain 1–32.`);
+    }
+    return { shardCount, totalBytes, committedBytes: 0, nextShard: 0, setId: null };
+}
+
+/** Verify and send one worker-produced file, retrying one whole-file CRC refusal. */
+export async function sendAssembledSetFile(
+    client: ProtocolClient,
+    state: SetSendState,
+    file: AssembledSetFile,
+    ctx: JobContext,
+): Promise<void> {
+    if (file.bytes.byteLength !== file.byteLength) {
+        throw new Error(
+            `${file.name} arrived as ${file.bytes.byteLength} bytes; the assembler announced ${file.byteLength}.`,
+        );
+    }
+    const manifest = file.role === "manifest";
+    if (!manifest) {
+        if (state.nextShard >= state.shardCount) {
+            throw new Error("The assembler produced more shards than its summary.");
+        }
+        const digest = new Sha256().update(file.bytes).hex();
+        if (digest !== file.sha256.toLowerCase()) {
+            throw new Error(`${file.name} failed its SHA-256 check before it reached the device.`);
+        }
+        ctx.part?.(state.nextShard + 1, state.shardCount);
+    } else {
+        if (state.nextShard !== state.shardCount) {
+            throw new Error(`The set manifest arrived after ${state.nextShard} of ${state.shardCount} shards.`);
+        }
+        ctx.part?.(state.shardCount, state.shardCount, "sealing map");
+    }
+
+    const type = manifest ? ObjectType.MapSet : ObjectType.MapShard;
+    const objectId = manifest ? NEW_OBJECT_ID : setPartId(state.shardCount, state.nextShard);
+    let result: UploadResult | null = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+            result = await client.upload(type, objectId, bytesSource(file.bytes), {
+                signal: ctx.signal,
+                chunkSize: MAP_CHUNK,
+                onProgress: (done) => ctx.progress(state.committedBytes + done, state.totalBytes),
+            });
+            break;
+        } catch (cause) {
+            if (!(cause instanceof DeviceError) || cause.code !== "crc-mismatch" || attempt === 1) throw cause;
+        }
+    }
+    if (!result) throw new Error(`${file.name} did not receive a transfer result.`);
+    state.committedBytes += file.byteLength;
+    ctx.progress(state.committedBytes, state.totalBytes);
+    if (manifest) state.setId = result.objectId;
+    else state.nextShard += 1;
+}
+
+/** Delete every shard staged for an incomplete set. Safe after active-transfer cancellation too. */
+export async function abandonAssembledSet(client: ProtocolClient, state: SetSendState): Promise<void> {
+    if (state.nextShard === 0 || state.setId !== null) return;
+    try {
+        await client.abandonMapSet(setPartId(state.shardCount, Math.min(state.nextShard, state.shardCount - 1)));
+    } catch {
+        // Best effort: preserve the original assembly/transport failure. A disconnect also makes
+        // firmware delete the staged set when its USB plane tears down.
+    }
+}
 
 /**
  * Send a `.obcm` the rider already has.

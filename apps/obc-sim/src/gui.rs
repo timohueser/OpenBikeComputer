@@ -160,9 +160,6 @@ struct SimGui {
     /// chunk cache, whose cross-frame reuse lets a panned-into view warm to 100% hit so the
     /// "Map SD" stats track real device behaviour rather than a cold ≤75%.
     map: LoadedMap,
-    /// The set's own map-plane renderer (`map_set::SetPlane`); `None` for a single map, which draws
-    /// entirely through the app's.
-    set_renderer: Option<Box<obc_render::MapRenderer>>,
     app: App,
     /// The routes folder (the device-SD stand-in): the menu catalog + active geometry.
     store: RouteStore,
@@ -256,9 +253,6 @@ impl SimGui {
         // shares (§4.7), and the tables every per-shard reader borrows.
         let map_tables = map.tables();
         let (cx, cy, zoom) = crate::initial_camera(&map.reader(), args.width);
-        // A set's map plane draws through its own renderer (`map_set::SetPlane`); a single map has
-        // no second plane and allocates nothing.
-        let set_renderer = map.set().map(|_| Box::new(obc_render::MapRenderer::new()));
         let mut state = AppState::new(cx, cy, zoom);
         if let Some(b) = args.battery {
             state.battery_pct = b;
@@ -362,7 +356,6 @@ impl SimGui {
             screenshot: args.screenshot,
             screenshot_requested: false,
             map,
-            set_renderer,
             last_stats: obc_render::RenderStats::default(),
             last_dirty: Dirty::CLEAN,
             host: HostLoop::new(),
@@ -573,7 +566,7 @@ impl SimGui {
         let t0 = std::time::Instant::now();
         let (dev_w, dev_h) = (self.dev_w, self.dev_h);
         let mut fbdev = FbDevice64::new(&mut self.fb, dev_w, dev_h);
-        let set = self.map.set().zip(self.set_renderer.as_mut()).map(|(set, r)| (set, &mut **r));
+        let set = self.map.set();
         let scene = crate::map_set::Scene { set, reader: &reader, route: route.as_ref() };
         let mut stats =
             crate::map_set::render_frame(&mut self.app, &mut fbdev, scene, (dev_w as f32, dev_h as f32), |c| {

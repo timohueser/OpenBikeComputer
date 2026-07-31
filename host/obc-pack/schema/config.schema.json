@@ -230,7 +230,7 @@
           }
         ]
       },
-      "description": "Nav-graph routing config (OBCM v10 §8): the island-pruning threshold plus the bike profiles baked into the map's profile table. Absent means the four shipped profiles (Road / Gravel / MTB / Touring)."
+      "description": "Nav-graph routing config (OBCM §8): the island-pruning threshold plus the bike profiles baked into the map's profile table. Absent means the four shipped profiles (Road / Gravel / MTB / Touring)."
     }
   },
   "$defs": {
@@ -321,7 +321,7 @@
       ]
     },
     "line_style": {
-      "description": "A line's stroke style (OBCM v10 style-record flag bit 2). The config value is `\"solid\"` (the\ndefault) or `\"dashed\"`; the renderer draws dashes for `Dashed` lines and ignores it for polygons\n(#557 only carries the bit end to end — later sub-issues render it).",
+      "description": "A line's stroke style (OBCM §2 style-record flag bit 2). The config value is `\"solid\"` (the\ndefault) or `\"dashed\"`; the renderer draws dashes for `Dashed` lines and ignores it for polygons\n(#557 only carries the bit end to end — later sub-issues render it).",
       "type": "string",
       "enum": [
         "solid",

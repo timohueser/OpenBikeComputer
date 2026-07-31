@@ -664,10 +664,11 @@ country-scale compile.
 
 ### Device and ride surfaces
 
-Direct transfer of an assembled multi-file set is the next Epic #1016 slice. For
-now the download step saves the complete set and tells the rider to copy it to
-the card; the device surface keeps a temporary manual single-file compatibility
-action. There is no old whole-region catalog fallback hiding behind that button.
+The assembled multi-file set can either be saved or streamed directly to a
+connected device. Direct send keeps one verified shard in flight, waits for the
+device before releasing it, and commits the manifest last; cancellation abandons
+an incomplete set. Manual single-file upload remains for maps obtained elsewhere.
+There is no old whole-region catalog fallback hiding behind that button.
 
 Routes and firmware still use the shared object protocol. The cable also runs in
 the other direction: the desktop app maintains a durable ride library, writes a

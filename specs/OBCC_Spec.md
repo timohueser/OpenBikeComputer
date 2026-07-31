@@ -323,3 +323,10 @@ exact serialized coordinates, and the resulting mounted volume set follows
 The website and desktop app MUST use the same selection arithmetic, verified
 cell bytes, skin, and assembler. Host-specific file saving MUST NOT alter the
 assembled bytes.
+
+A consumer MAY stream assembler output directly to a connected device instead
+of first saving it. It MUST accept at most one emitted file at a time, verify
+that file's announced length and SHA-256 before transfer, preserve assembler
+order, and commit the volume-set manifest last. Cancellation or failure after
+one or more shards have been staged MUST abandon the incomplete set; it MUST NOT
+leave those shards selectable as a map.
