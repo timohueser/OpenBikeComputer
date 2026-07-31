@@ -107,6 +107,26 @@ export class CatalogV2Client {
         return new CatalogV2Client(parseCatalogV2(await res.text()), base, opts);
     }
 
+    /**
+     * Build a client from a root body already in hand.
+     *
+     * This exists for envelope detection (#1038): the app fetches the catalog
+     * root once, peeks at `schema_version` to pick the v1 or v2 flow, and must
+     * not fetch the same document again just to construct the client for the
+     * flow it picked. `url` is where the body actually came from — every
+     * relative satellite `url` resolves against it, so handing a body with the
+     * wrong origin would fetch satellites from the wrong place.
+     */
+    static fromBody(body: string, url: string, opts: CatalogV2ClientOptions = {}): CatalogV2Client {
+        let base: string;
+        try {
+            base = new URL(url).toString();
+        } catch {
+            return fail(`catalog: ${JSON.stringify(url)} is not an absolute URL`);
+        }
+        return new CatalogV2Client(parseCatalogV2(body), base, opts);
+    }
+
     /** Absolute URL of a `url` field in the root or a satellite. */
     resolve(url: string): string {
         return new URL(url, this.baseUrl).toString();

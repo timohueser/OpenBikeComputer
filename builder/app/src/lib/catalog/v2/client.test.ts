@@ -71,6 +71,28 @@ describe("CatalogV2Client.load", () => {
     });
 });
 
+describe("CatalogV2Client.fromBody", () => {
+    it("builds a client from a body already in hand, fetching nothing", async () => {
+        // Envelope detection's whole point (#1038): the root was fetched once
+        // to be peeked at, and constructing the client must not fetch it again.
+        const { impl, calls } = serving(allBodies());
+        const client = CatalogV2Client.fromBody(EXAMPLE_ROOT, ROOT_URL, { fetchImpl: impl });
+        expect(calls).toHaveLength(0);
+        expect(client.catalog.schema.id).toBe("bikepacking");
+        // …and the satellites still resolve against where the body came from.
+        const fine = await client.cellIndex("fine");
+        expect(fine.cells[0].url).toBe("https://maps.example.org/catalog/v2/cells/fine/1204/1052.obcm");
+    });
+
+    it("refuses a relative URL exactly as load does", () => {
+        expect(() => CatalogV2Client.fromBody(EXAMPLE_ROOT, "./data/catalog.json")).toThrow(CatalogFormatError);
+    });
+
+    it("rejects an invalid body whole, like any other parse", () => {
+        expect(() => CatalogV2Client.fromBody('{"schema_version": 1}', ROOT_URL)).toThrow(CatalogFormatError);
+    });
+});
+
 describe("cellIndex", () => {
     it("verifies the satellite against the root's pin and parses it", async () => {
         const { impl } = serving(allBodies());

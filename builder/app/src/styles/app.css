@@ -322,3 +322,15 @@ select:focus {
 .bbox-cursor {
     cursor: crosshair !important;
 }
+
+/* The coverage map's not-baked hatch (#1038). Leaflet's SVG renderer sets fill
+   as a presentation attribute; CSS wins over attributes, which is how these
+   rectangles pick up the injected <pattern> (coverageMap.ts owns the defs). */
+.coverage-hatch {
+    fill: url(#obc-unbaked-hatch);
+    fill-opacity: 0.5;
+}
+
+.coverage-hatch.faintly {
+    fill-opacity: 0.3;
+}
