@@ -521,6 +521,17 @@ fn a_region_prices_its_cell_set_per_band() {
     let fine = cell_index_doc(&g, "fine");
     assert_eq!(ch.bytes_by_band["fine"], fine.cells.iter().map(|c| c.bytes).sum::<u64>());
     assert_eq!(ch.partial_cell_count, 1, "the partial network cell is counted, and only once");
+    assert_eq!(
+        ch.partial_cell_count_by_band,
+        BTreeMap::from([
+            ("coarse".to_string(), 0),
+            ("mid".to_string(), 0),
+            ("fine".to_string(), 0),
+            ("network".to_string(), 1),
+        ]),
+        "the root splits partials by band without fetching the cell list"
+    );
+    assert_eq!(ch.partial_cell_count_by_band.values().sum::<u32>(), ch.partial_cell_count);
 
     assert_eq!(ch.cells_url, "https://maps.example.org/catalog/regions/europe/switzerland/cells.json");
     let cells: RegionCellsDocument =
@@ -533,6 +544,7 @@ fn a_region_prices_its_cell_set_per_band() {
     assert_eq!(basel.parent.as_deref(), Some("europe/switzerland"), "parent is the nearest enclosing region");
     assert!(basel.bytes < ch.bytes, "a sub-selection is cheaper");
     assert_eq!(basel.partial_cell_count, 0);
+    assert!(basel.partial_cell_count_by_band.values().all(|&count| count == 0));
 
     // Overlap is free: two regions that share ground share the same cells, and
     // the store pays for them once. That is the epic's headline saving.
@@ -1312,6 +1324,13 @@ fn the_catalog_schema_pins_the_envelope_version_and_the_field_patterns() {
     for field in ["boundary", "bytes", "bytes_by_band", "cell_count", "partial_cell_count", "cells_url"] {
         assert!(region_required.iter().any(|v| v == field), "`{field}` is required on a region");
     }
+    assert!(
+        !region_required.iter().any(|v| v == "partial_cell_count_by_band"),
+        "the additive v2 field stays optional so already-published v2 roots remain valid"
+    );
+    let partial_by_band = &s["$defs"]["RegionEntry"]["properties"]["partial_cell_count_by_band"];
+    assert_eq!(partial_by_band["propertyNames"]["pattern"].as_str(), Some(ID_PATTERN));
+    assert_eq!(partial_by_band["default"], serde_json::json!({}));
 }
 
 /// The documents a real tree produces must validate against the schema consumers will

@@ -127,18 +127,9 @@ export interface CoverageReport {
     /** Partial cells in the coarse context band. Normal at country scale, kept
      *  separate so nothing hatches a whole map over them. */
     partialContextCount: number;
-    /**
-     * The root's single `partial_cell_count` for a region, unsplit — set only
-     * by {@link ledgerForRegion}, `null` everywhere else.
-     *
-     * It cannot be turned into a warning and is not one. §6 publishes one
-     * number for the whole region, and #1025 measured that *every* coarse cell
-     * of a country is partial, so the count is above zero for essentially every
-     * region ever published: a flag lit for everything tells a rider nothing
-     * and hatches every map on the picker. Reported for a UI that wants to show
-     * the number, never as `hasWarnings`, until **#1032** adds the per-band
-     * split that would make the coarse-context rule applicable to it.
-     */
+    /** The root's legacy unsplit count, set only when an older additive-v2
+     *  catalog omits `partial_cell_count_by_band`. It is reported but cannot be
+     *  classified as context or detail, so it never becomes a warning. */
     unsplitPartialCount: number | null;
     /** Whether there is anything to draw a warning for at all — holes anywhere,
      *  or partial cells in a detail band. Never true for context alone. */
@@ -176,6 +167,7 @@ export interface Ledger {
 function coverageReport(
     holesByBand: Map<string, string[]>,
     bands: BandLedger[],
+    partialCountByBand?: Record<string, number>,
 ): CoverageReport {
     let holeCount = 0;
     for (const ids of holesByBand.values()) holeCount += ids.length;
@@ -183,13 +175,19 @@ function coverageReport(
     let partialDetailCount = 0;
     let partialContextCount = 0;
     for (const band of bands) {
-        if (!band.partialCells.length) continue;
+        const partialCount = partialCountByBand && Object.hasOwn(partialCountByBand, band.band)
+            ? partialCountByBand[band.band]
+            : band.partialCells.length;
+        if (!partialCount) continue;
         if (band.contextOnly) {
-            partialContextCount += band.partialCells.length;
+            partialContextCount += partialCount;
             continue;
         }
-        partialDetailByBand.set(band.band, band.partialCells);
-        partialDetailCount += band.partialCells.length;
+        // A root-only price knows the count but not the cell ids. Keep the id
+        // map honest (nothing can be hatched yet) while still applying the
+        // coarse-context rule to the summary/warning count.
+        if (band.partialCells.length) partialDetailByBand.set(band.band, band.partialCells);
+        partialDetailCount += partialCount;
     }
     return {
         holesByBand,
@@ -308,15 +306,10 @@ export function ledgerFor(
  * The result is the same shape as {@link ledgerFor} and the same verdict
  * arithmetic runs on it.
  *
- * One thing it cannot do: split the partial count by band. The root publishes a
- * single `partial_cell_count` for the whole region, so the coarse-context rule
- * this module exists to apply has nothing to apply itself to until the cell
- * lists load. Treating that number as a warning would light the flag for
- * essentially every region ever published — #1025 measured that every coarse
- * cell of a country is partial — so it is carried as
- * `coverage.unsplitPartialCount`, reported and never warned about, until
- * **#1032** adds the per-band split. A real resolution has the split answer and
- * uses the ordinary rule.
+ * Current roots split partial counts by band, so the same coarse-context rule
+ * applies before the satellite fetch. An older additive-v2 root may omit that
+ * split; its total is preserved as `coverage.unsplitPartialCount` and cannot be
+ * classified as a warning until the cell lists load.
  */
 export function ledgerForRegion(catalog: Catalog, entry: RegionEntry): Ledger {
     // `hasOwn`, not `?? 0`: a band id is a document string and `"constructor"`
@@ -338,19 +331,15 @@ export function ledgerForRegion(catalog: Catalog, entry: RegionEntry): Ledger {
         };
     });
     const core = bands.find((b) => b.role === "core")!;
+    const splitPartials = entry.partial_cell_count_by_band;
     return {
         bands,
         totalBytes: entry.bytes,
         cellCount: bands.reduce((sum, b) => sum + b.cellCount, 0),
         core,
         coverage: {
-            ...coverageReport(new Map(), bands),
-            // Reported, not warned about, and not counted as detail: see
-            // `CoverageReport.unsplitPartialCount`. A `partialDetailCount`
-            // with no ids behind it would also force a UI to grow a branch for
-            // "a count I cannot point at", which is the shape of thing that
-            // gets rendered as a hatch over everything.
-            unsplitPartialCount: entry.partial_cell_count,
+            ...coverageReport(new Map(), bands, splitPartials ?? undefined),
+            unsplitPartialCount: splitPartials ? null : entry.partial_cell_count,
         },
         verdict: judge(core),
         unresolvedBands: [],

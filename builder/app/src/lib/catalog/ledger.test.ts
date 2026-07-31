@@ -152,6 +152,7 @@ function regionEntry(coreBytes: number): RegionEntry {
         bytes_by_band: { coarse: 0, mid: 0, fine: 0, network: coreBytes },
         cell_count: { network: 1 },
         partial_cell_count: 0,
+        partial_cell_count_by_band: { coarse: 0, mid: 0, fine: 0, network: 0 },
         cells_url: "/cells.json",
         cells_bytes: 0,
         cells_sha256: "0".repeat(64),
@@ -167,25 +168,33 @@ describe("the core file's ceiling (OBCA §5.7)", () => {
         expect(ledger.verdict.kind).toBe("ok");
     });
 
-    it("reports the root's single partial count without warning about it (#1032)", () => {
-        // The root cannot split `partial_cell_count` by band, so the coarse rule
-        // has nothing to apply itself to until the cell lists load. Warning on
-        // it would light the flag for essentially every region ever published —
-        // #1025 measured that every coarse cell of a country is partial — and a
-        // hatch over every entry in the picker tells a rider nothing. It is a
-        // number a card may print, and nothing else, until #1032 splits it.
-        const entry = { ...exampleCatalog.regions[0], partial_cell_count: 3 };
+    it("applies the coarse-context rule to the root's per-band partial counts (#1032)", () => {
+        const entry = {
+            ...exampleCatalog.regions[0],
+            partial_cell_count: 2,
+            partial_cell_count_by_band: { coarse: 1, fine: 1, mid: 0, network: 0 },
+        };
+        const ledger = ledgerForRegion(exampleCatalog, entry);
+        expect(ledger.coverage.unsplitPartialCount).toBeNull();
+        expect(ledger.coverage.partialContextCount).toBe(1);
+        expect(ledger.coverage.partialDetailCount).toBe(1);
+        expect(ledger.coverage.hasWarnings).toBe(true);
+        // The root has counts, not ids: warn in the summary now, hatch only
+        // once the pinned cell list and indexes identify the cells.
+        expect(ledger.coverage.partialDetailByBand.size).toBe(0);
+    });
+
+    it("keeps an older v2 root's unsplit partial total non-warning", () => {
+        const entry = {
+            ...exampleCatalog.regions[0],
+            partial_cell_count: 3,
+            partial_cell_count_by_band: null,
+        };
         const ledger = ledgerForRegion(exampleCatalog, entry);
         expect(ledger.coverage.unsplitPartialCount).toBe(3);
-        expect(ledger.coverage.hasWarnings).toBe(false);
-        // …and it is not passed off as a detail count with no cells behind it,
-        // which would force a UI to grow a branch for "a count I cannot point
-        // at".
         expect(ledger.coverage.partialDetailCount).toBe(0);
-        expect(ledger.coverage.partialDetailByBand.size).toBe(0);
-        // A real resolution has the split answer and uses the ordinary rule.
-        expect(ledgerOf(overAB).coverage.unsplitPartialCount).toBeNull();
-        expect(ledgerOf(overAB).coverage.partialDetailCount).toBe(1);
+        expect(ledger.coverage.partialContextCount).toBe(0);
+        expect(ledger.coverage.hasWarnings).toBe(false);
     });
 
     it("refuses a core whose projected file passes 4 GiB − 1, naming the navigation graph", () => {
