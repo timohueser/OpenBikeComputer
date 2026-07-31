@@ -19,8 +19,39 @@
         type CoverageStore,
     } from "../../lib/coverage/store.svelte";
     import { formatBytes } from "../../lib/format";
+    import { confirmAction } from "../../lib/ui/confirm.svelte";
 
     let { store, onclose }: { store: CoverageStore; onclose: () => void } = $props();
+
+    /**
+     * Whether the panel may close (#1041 A7). The corridor tool is the one
+     * tool holding user data the map cannot restore — files someone chose,
+     * uploaded, maybe renamed their ride after — so Esc or a stray click on
+     * another tool must not silently discard them. Committed parts are safe in
+     * the selection; this guards only the panel's own uploaded rows, checked
+     * or not.
+     */
+    export async function requestClose(): Promise<boolean> {
+        if (routes.length === 0) return true;
+        if (asking) return false; // one question at a time; a second Esc answered the first
+        asking = true;
+        try {
+            const one = routes.length === 1;
+            return await confirmAction({
+                title: one
+                    ? `Discard “${routes[0].route.name}”?`
+                    : `Discard ${routes.length} uploaded routes?`,
+                body: one
+                    ? "It was uploaded but hasn't been added to the map."
+                    : "They were uploaded but haven't been added to the map.",
+                confirmLabel: "Discard",
+                destructive: true,
+            });
+        } finally {
+            asking = false;
+        }
+    }
+    let asking = false;
 
     interface PanelRoute {
         id: string;
