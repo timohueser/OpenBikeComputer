@@ -9,7 +9,10 @@
     import DownloadStep from "../components/catalog/DownloadStep.svelte";
     import PresetStep from "../components/catalog/PresetStep.svelte";
     import RegionStep from "../components/catalog/RegionStep.svelte";
+    import CoverageHome from "../components/coverage/CoverageHome.svelte";
     import { regionState } from "../lib/catalog/availability";
+    import { CatalogV2Client } from "../lib/catalog/v2/client";
+    import { peekSchemaVersion } from "../lib/coverage/detect";
     import { artifactFilename } from "../lib/catalog/download";
     import { catalogStore } from "../lib/catalog/store.svelte";
     import { platform } from "../lib/platform";
@@ -45,8 +48,44 @@
     const PRESET_KEY = "obcm.catalogPreset";
     let presetId = $state<string | null>(null);
 
+    // Envelope detection (#1038): the hosted catalog root is either a v1
+    // manifest or a v2 cell-catalog root, decided by the bakery's cutover
+    // rather than by a deploy of this app. One fetch, one peek at
+    // `schema_version`, and the home commits to the matching flow — the v1
+    // flow below stays exactly what it was, and runs whenever the root is v1.
+    let v2 = $state<{ client: CatalogV2Client; body: string } | null>(null);
+    let v2Error = $state<string | null>(null);
+    // True until detection settles, so the v1 layout is not mounted for a
+    // moment and then torn down under a v2 catalog.
+    let probing = $state(catalogMode && platform.catalogRoot !== undefined);
+
     onMount(async () => {
         if (catalogMode) {
+            if (platform.catalogRoot) {
+                try {
+                    const { url, body } = await platform.catalogRoot();
+                    if (peekSchemaVersion(body) === 2) {
+                        try {
+                            // The same body the peek saw — never a second fetch.
+                            v2 = { client: CatalogV2Client.fromBody(body, url), body };
+                        } catch (e) {
+                            // A root that says v2 and then fails the v2 parser is
+                            // a broken publish, not a v1 catalog: reporting it as
+                            // "schema_version 2 is not supported" (which is what
+                            // the v1 parser would say) would blame the wrong side.
+                            v2Error = e instanceof Error ? e.message : String(e);
+                        }
+                        probing = false;
+                        return;
+                    }
+                } catch {
+                    // A failed probe falls through to the v1 store, which
+                    // refetches (the memo keeps only fulfilled fetches), owns
+                    // the error sentence, and keeps its cached-manifest
+                    // fallback.
+                }
+                probing = false;
+            }
             // The catalog failing is one failure, reported once, in step 1 —
             // the styles come out of the same document, so a second copy of the
             // same sentence in step 2 would just be noise.
@@ -144,14 +183,23 @@
     );
 </script>
 
-<div class="layout">
-    <MapPanel
-        {active}
-        {hints}
-        singleSelect={catalogMode}
-        bind:this={mapPanel}
-        onchange={(sel) => (selection = sel)}
-    />
+{#if v2}
+    <CoverageHome client={v2.client} rootBody={v2.body} {active} />
+{:else if probing}
+    <p class="probe muted small">Loading the map catalog…</p>
+{:else if v2Error}
+    <p class="probe small" style:color="var(--coral)">
+        The published map catalog couldn't be read: {v2Error}
+    </p>
+{:else}
+    <div class="layout">
+        <MapPanel
+            {active}
+            {hints}
+            singleSelect={catalogMode}
+            bind:this={mapPanel}
+            onchange={(sel) => (selection = sel)}
+        />
 
     <div class="steps">
         {#if catalogMode && catalogStore.staleReason}
@@ -276,9 +324,15 @@
             <StorageCard {storage} />
         {/if}
     </div>
-</div>
+    </div>
+{/if}
 
 <style>
+    .probe {
+        margin: 0;
+        padding: 14px 2px;
+    }
+
     .layout {
         flex: 1; /* fills main's column so the map absorbs tall screens */
         min-height: 0; /* …and never grows past them: the column scrolls instead */

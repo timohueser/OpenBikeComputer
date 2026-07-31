@@ -47,6 +47,12 @@ export default defineConfig(({ mode }) => {
             outDir: host.outDir,
             emptyOutDir: true,
         },
+        worker: {
+            // The assembly worker (#1038) dynamically imports the wasm bridge,
+            // so its bundle code-splits — and rollup only code-splits ES
+            // output. Vite's default worker format is still "iife".
+            format: "es",
+        },
         server: {
             // Dev mode: `python -m builder.server --no-browser` on :8000 serves
             // the API; Vite proxies it (plain http-proxy streams SSE fine).

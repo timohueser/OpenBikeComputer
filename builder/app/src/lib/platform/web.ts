@@ -68,7 +68,31 @@ async function fetchRegions(): Promise<RegionFeature[]> {
 }
 
 /**
- * OBCC §7: read the entire body, then parse it as one document. `res.text()`
+ * The root document as fetched, shared by `catalog()` and `catalogRoot` so the
+ * two views of it cannot come from different responses — envelope detection
+ * (#1038) peeks at this body and the flow it picks then parses the same body.
+ *
+ * Its memo has one subtlety the generic `once` cannot express: a fetch that
+ * *succeeded* but delivered a body the parser then refuses must also be
+ * dropped, or one bad response would be pinned until a reload and the catalog
+ * store's retry would re-parse the same bytes forever. `fetchCatalog` below
+ * owns that drop, because only it knows the parse failed.
+ */
+let rootInflight: Promise<{ url: string; body: string }> | null = null;
+
+function rootOnce(): Promise<{ url: string; body: string }> {
+    rootInflight ??= (async () => {
+        const url = resolve(CATALOG_URL);
+        return { url, body: await (await get(CATALOG_URL)).text() };
+    })().catch((e: unknown) => {
+        rootInflight = null;
+        throw e;
+    });
+    return rootInflight;
+}
+
+/**
+ * OBCC §7: read the entire body, then parse it as one document. The whole body
  * before `parseCatalog` is that rule spelled out — a truncated manifest cannot
  * survive a whole-document parse, and nothing here consumes the response
  * incrementally.
@@ -82,8 +106,16 @@ async function fetchRegions(): Promise<RegionFeature[]> {
  * depending on where it is read.
  */
 async function fetchCatalog(): Promise<Catalog> {
-    const base = resolve(CATALOG_URL);
-    const catalog = parseCatalog(await (await get(CATALOG_URL)).text());
+    const { url: base, body } = await rootOnce();
+    let catalog: Catalog;
+    try {
+        catalog = parseCatalog(body);
+    } catch (e) {
+        // The body is not a catalog this flow accepts: un-pin it, so the next
+        // call fetches fresh instead of re-refusing the same bytes.
+        rootInflight = null;
+        throw e;
+    }
     return {
         ...catalog,
         presets: catalog.presets.map((p) =>
@@ -124,6 +156,7 @@ export const platform: Platform = {
     // recipe, and it arrives on the same fetch the catalog does.
     presets: () => catalogOnce().then(catalogPresets),
     catalog: catalogOnce,
+    catalogRoot: rootOnce,
 
     buildMap: null,
     // WebUSB, loaded on demand. The import is dynamic so the transport, the
