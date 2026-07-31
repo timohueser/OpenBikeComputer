@@ -15,8 +15,8 @@ import type { RegionEntry } from "./regions";
  * What the catalog needs to know about a connected device: the OBCM format
  * version its firmware reads. One fact, because that is the whole of §6(c).
  *
- * The reader supports exactly one OBCM version at a time (OBCM_Spec.md: v10 is
- * the only supported version; earlier maps get repacked), so this is a single
+ * The reader supports exactly one OBCM version at a time (OBCM_Spec.md names
+ * which one; earlier maps get repacked), so this is a single
  * number rather than a range, and `supports()` is the one place that assumption
  * lives if a future device ever reads two.
  *
