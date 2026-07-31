@@ -37,7 +37,7 @@ use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::Rectangle;
 use obc_formats::io::ByteSource;
 use obc_formats::obcs::{self, ManifestError, Role, SetManifest};
-use obc_reader::{MapCache, MapTables, MountError, MountedSet, SliceSource};
+use obc_reader::{MapCache, MapTables, MountError, MountedSet, Reader, SetShards, SliceSource};
 use obc_render::{MapRenderer, RenderStats, Viewport};
 
 /// Why a map (single file or set) could not be opened. Every variant is fatal — see §5.4.
@@ -51,6 +51,8 @@ pub enum LoadError {
     Manifest(ManifestError),
     /// The manifest's own id/shard count cannot express a derived §5.2 filename.
     UnnameableShard(u16, usize),
+    /// The core file (a single map, or a set's core shard) is not a parseable OBCM.
+    NotObcm(obc_reader::Error),
     /// The set did not mount (§5.3's reader half); the message names the offending file.
     Mount(MountError, String),
 }
@@ -68,6 +70,7 @@ impl fmt::Display for LoadError {
             LoadError::UnnameableShard(id, index) => {
                 write!(f, "set {id} cannot name shard {index}: no derived 8.3 filename (OBCA §5.2)")
             }
+            LoadError::NotObcm(err) => write!(f, "invalid OBCM file: {err:?}"),
             LoadError::Mount(err, what) => write!(f, "map incomplete: {what} ({err:?}, OBCA §5.3/§5.4)"),
         }
     }
@@ -125,12 +128,7 @@ impl MapSource {
     /// Index of the file nav, POI, hours and routing read (§5.1) — the core shard, or the only
     /// file of a single map.
     pub fn core_index(&self) -> usize {
-        self.manifest().map_or(0, |manifest| manifest.core_shard as usize)
-    }
-
-    /// The core file's bytes: what `MapTables::parse` must be fed, for a set as for a single map.
-    pub fn core_bytes(&self) -> &[u8] {
-        &self.files[self.core_index()]
+        self.manifest().map_or(0, |manifest| manifest.core_shard())
     }
 
     /// A [`SliceSource`] per file, in manifest index order. Keep the returned vector alive for as
@@ -150,22 +148,6 @@ impl MapSource {
         }
     }
 
-    /// Mount the set (§5.3's reader half). `sources` must be [`sources`](MapSource::sources)'
-    /// output and `core` the [`MapTables`] parsed from `sources[core_index()]`.
-    ///
-    /// There is no partial success: a mid-copy set — a shard missing, a shard still growing —
-    /// fails here, and the caller reports *map incomplete* rather than drawing a map with holes
-    /// in it (§5.4).
-    pub fn mount<'a>(
-        &self,
-        sources: &[&'a dyn ByteSource],
-        core: &'a MapTables,
-        cache: &'a MapCache,
-    ) -> Result<MountedSet<'a>, LoadError> {
-        let manifest = *self.manifest().expect("mount is only called for a set");
-        MountedSet::mount(manifest, sources, core, cache).map_err(|err| LoadError::Mount(err, self.explain(err)))
-    }
-
     /// Human text for a [`MountError`], naming the file it is about — the difference between
     /// "map incomplete" and a user who knows which shard to re-copy.
     fn explain(&self, err: MountError) -> String {
@@ -173,6 +155,9 @@ impl MapSource {
         match err {
             MountError::Manifest(inner) => format!("the manifest does not validate ({inner:?})"),
             MountError::ShardCount => "the manifest names more shards than were read".to_string(),
+            MountError::Handles(cap) => {
+                format!("the set names {} shards; this host mounts at most {cap}", self.files.len())
+            }
             MountError::Size(at) => {
                 let want = self.manifest().and_then(|m| m.shards().get(at as usize)).map_or(0, |s| s.bytes);
                 let got = self.files.get(at as usize).map_or(0, |f| f.len());
@@ -180,6 +165,9 @@ impl MapSource {
             }
             MountError::Header(at) => format!("{} does not open as OBCM at the set's version", named(at)),
             MountError::Bbox(at) => format!("{}'s header bbox is not the bbox the manifest records", named(at)),
+            MountError::Ladder(at) => {
+                format!("{}'s LOD ladder is not the core's (OBCA §5.1: every shard lists the full ladder)", named(at))
+            }
             MountError::Styles(at) => {
                 format!("{} carries a different style table than the core (OBCA §4.7)", named(at))
             }
@@ -219,17 +207,78 @@ impl MapSource {
     }
 }
 
-/// Read one derived shard name from `dir`. The §5.2 names are upper-case 8.3; a case-sensitive
-/// filesystem holding a lower-cased copy (what a host tool that ignored the spec's casing writes)
-/// is tried second, so the sim opens it rather than reporting a missing shard that is right there.
+/// Read one derived shard name from `dir`.
+///
+/// The §5.2 name is **exact**: upper-case 8.3, derived and never stored. There is deliberately no
+/// case-insensitive fallback — the device's FAT layer creates short names only, so a lower-cased
+/// `ms7s00.obm` is a file the firmware would not find, and a simulator that opened it anyway would
+/// report a set works when on glass it does not.
 fn read_shard(dir: &Path, name: &str) -> Result<Vec<u8>, LoadError> {
-    let upper = dir.join(name);
-    match std::fs::read(&upper) {
-        Ok(bytes) => Ok(bytes),
-        Err(err) => match std::fs::read(dir.join(name.to_ascii_lowercase())) {
-            Ok(bytes) => Ok(bytes),
-            Err(_) => Err(LoadError::Read(upper, err)),
-        },
+    let path = dir.join(name);
+    std::fs::read(&path).map_err(|err| LoadError::Read(path, err))
+}
+
+/// A map opened once and held for the process lifetime: its bytes, the readers' inputs, and — for
+/// a volume set — the **mount**.
+///
+/// The sim mounts a set exactly once, at startup, like the device does at boot. That matters
+/// beyond the wasted work: §5.3's checks stream each shard's whole style region, and holding the
+/// mount for the session is precisely the shape a device must use (its shard file handles are open
+/// for the mount's lifetime). A simulator that re-mounted per frame would quietly model a pattern
+/// no device can afford.
+///
+/// Everything here is leaked on purpose. The simulator owns its map for the whole run either way,
+/// and `'static` is what lets a [`MountedSet`] live in a struct field rather than be rebuilt inside
+/// every borrow — the borrow chain (bytes → sources → tables → mount) is otherwise self-referential.
+pub struct LoadedMap {
+    pub source: &'static MapSource,
+    sources: &'static [SliceSource<'static>],
+    tables: &'static MapTables,
+    cache: &'static MapCache,
+    set: Option<MountedSet<'static>>,
+}
+
+impl LoadedMap {
+    /// Parse the core's tables and, for a set, mount it — §5.4's "no partial mount" applies here,
+    /// before a single frame renders.
+    pub fn open(source: MapSource) -> Result<LoadedMap, LoadError> {
+        let source: &'static MapSource = Box::leak(Box::new(source));
+        let sources: &'static [SliceSource<'static>] = Box::leak(source.sources().into_boxed_slice());
+        let tables: &'static MapTables =
+            Box::leak(Box::new(MapTables::parse(&sources[source.core_index()]).map_err(LoadError::NotObcm)?));
+        let cache: &'static MapCache = Box::leak(Box::new(MapCache::new()));
+        let set = match source.manifest() {
+            Some(manifest) => {
+                let refs: &'static [&'static dyn ByteSource] =
+                    Box::leak(sources.iter().map(|s| s as &dyn ByteSource).collect::<Vec<_>>().into_boxed_slice());
+                let store: &'static mut SetShards<'static> = Box::leak(Box::new(SetShards::new()));
+                Some(
+                    MountedSet::mount(store, manifest, refs, tables, cache)
+                        .map_err(|err| LoadError::Mount(err, source.explain(err)))?,
+                )
+            }
+            None => None,
+        };
+        Ok(LoadedMap { source, sources, tables, cache, set })
+    }
+
+    /// The core's parsed tables — one style table for the whole set (§4.7).
+    pub fn tables(&self) -> &'static MapTables {
+        self.tables
+    }
+
+    /// The mounted set, or `None` for a single map.
+    pub fn set(&self) -> Option<&MountedSet<'static>> {
+        self.set.as_ref()
+    }
+
+    /// The reader the whole app path takes: a set's **core** shard (§5.1 — nav, POI, hours and
+    /// routing read it and only it), or the single map's one file.
+    pub fn reader(&self) -> Reader<'_> {
+        match &self.set {
+            Some(set) => set.core_reader(),
+            None => Reader::new(&self.sources[0], self.tables, self.cache),
+        }
     }
 }
 
@@ -365,7 +414,10 @@ where
             stats.route_points_drawn = app_stats.route_points_drawn;
             stats
         }
-        // No map plane this frame (a menu, Statistics, Home): nothing was spliced in.
+        // The base screen declared it draws a map but never cleared, so no plane was painted and
+        // the set's figures do not exist. Not reachable through today's screens — the renderer's
+        // first act on a map frame is the clear — but the app owns that ordering, not this
+        // wrapper, so the honest answer is the app's own stats rather than a panic.
         None => app_stats,
     }
 }
@@ -442,12 +494,9 @@ mod tests {
         }
     }
 
-    fn mounts(source: &MapSource) -> Result<(), LoadError> {
-        let sources = source.sources();
-        let refs: Vec<&dyn ByteSource> = sources.iter().map(|s| s as &dyn ByteSource).collect();
-        let core = MapTables::parse(&sources[source.core_index()]).expect("core parses");
-        let cache = MapCache::new();
-        source.mount(&refs, &core, &cache).map(|_| ())
+    /// Open the map exactly as `main` does — parse the core's tables and mount the set once.
+    fn mounts(source: MapSource) -> Result<(), LoadError> {
+        LoadedMap::open(source).map(|_| ())
     }
 
     #[test]
@@ -458,9 +507,17 @@ mod tests {
         let source = MapSource::load_set(&dir.path("MS7.OBS")).expect("a complete set loads");
         assert_eq!(source.manifest().expect("a set").shard_count(), 3);
         assert_eq!(source.core_index(), 0);
-        assert_eq!(source.core_bytes(), fixture.shards[0].as_slice());
-        mounts(&source).expect("a complete set mounts");
+        let map = LoadedMap::open(source).expect("a complete set mounts");
+        let set = map.set().expect("a set");
+        assert_eq!(set.shard_count(), 3);
+        // The reader the app path gets is the **core**'s (§5.1), never a geometry shard's.
+        assert!(!map.reader().is_set_shard());
     }
+
+    // (There is no test for the removed lower-case filename fallback: §5.2's names are exact, but
+    // the two dominant dev filesystems — APFS and NTFS — are case-insensitive, so a test that
+    // staged `ms7s01.obm` would pass on Linux and fail on a Mac for reasons unrelated to the code.
+    // The property is structural instead: `read_shard` joins the derived name and nothing else.)
 
     /// §5.4: a shard that is not there yet is *map incomplete*, and the message names the file.
     #[test]
@@ -484,7 +541,7 @@ mod tests {
         let truncated = &fixture.shards[1][..fixture.shards[1].len() / 2];
         dir.write("MS7S01.OBM", truncated);
         let source = MapSource::load_set(&dir.path("MS7.OBS")).expect("the files are all present");
-        let err = mounts(&source).expect_err("a short shard does not mount");
+        let err = mounts(source).expect_err("a short shard does not mount");
         assert!(matches!(err, LoadError::Mount(MountError::Size(1), _)), "{err}");
         assert!(err.to_string().contains("MS7S01.OBM"), "{err}");
     }
@@ -554,18 +611,10 @@ mod tests {
     /// mounted set's plane spliced into the app's own render for a set, plain `App::render_frame`
     /// for a single file. `press` taps Select first, so the caller can compare a frame whose base
     /// screen is *not* the map.
-    fn app_frame_after(map: &MapSource, cam: (i32, i32, f32), press: bool) -> Vec<u8> {
+    fn app_frame_after(map: &LoadedMap, cam: (i32, i32, f32), press: bool) -> Vec<u8> {
         let (w, h) = (obc_display::ls021::FRAME_W as u32, obc_display::ls021::FRAME_H as u32);
-        let cache = MapCache::new();
-        let sources = map.sources();
-        let refs: Vec<&dyn ByteSource> = sources.iter().map(|s| s as &dyn ByteSource).collect();
-        let tables = MapTables::parse(&sources[map.core_index()]).expect("the core parses");
-        let mounted = map.manifest().map(|_| map.mount(&refs, &tables, &cache).expect("a complete set mounts"));
-        let reader = match &mounted {
-            Some(set) => set.core_reader(),
-            None => obc_reader::Reader::new(&sources[0], &tables, &cache),
-        };
-        let mut renderer = mounted.as_ref().map(|_| Box::new(MapRenderer::new()));
+        let reader = map.reader();
+        let mut renderer = map.set().map(|_| Box::new(MapRenderer::new()));
         let mut app = obc_app::App::new(obc_app::AppState::new(cam.0, cam.1, cam.2));
         if press {
             use obc_ports::{Button, ButtonEvent, InputEvent};
@@ -573,7 +622,7 @@ mod tests {
             crate::feed(&mut app, 500_080, vec![InputEvent::Button(ButtonEvent::Up(Button::Select))]);
         }
         let mut fb = crate::framebuffer::Framebuffer::new(w, h);
-        let set = mounted.as_ref().zip(renderer.as_mut()).map(|(set, r)| (set, &mut **r));
+        let set = map.set().zip(renderer.as_mut()).map(|(set, r)| (set, &mut **r));
         let scene = Scene { set, reader: &reader, route: None };
         render_frame(&mut app, &mut fb, scene, (w as f32, h as f32), |c| crate::color_of(c, true));
         fb.as_rgb888().to_vec()
@@ -589,9 +638,11 @@ mod tests {
         let (monolith, fixture) = pair();
         dir.write("MAP.OBCM", &monolith);
         stage(&dir, 3, &fixture);
-        let single = MapSource::load_single(&dir.path("MAP.OBCM")).expect("the monolith loads");
-        let set = MapSource::load_set(&dir.path("MS3.OBS")).expect("the set loads");
-        assert_eq!(set.manifest().expect("a set").shard_count(), 6, "core + coarse + four quadrants");
+        let single = LoadedMap::open(MapSource::load_single(&dir.path("MAP.OBCM")).expect("the monolith loads"))
+            .expect("the monolith opens");
+        let set =
+            LoadedMap::open(MapSource::load_set(&dir.path("MS3.OBS")).expect("the set loads")).expect("the set mounts");
+        assert_eq!(set.set().expect("a set").shard_count(), 6, "core + coarse + four quadrants");
 
         for (zoom, what) in [(0.2f32, "the split fine rung"), (0.02, "the whole-assembly coarse shard")] {
             let cam = (2000, 2000, zoom);
@@ -613,8 +664,10 @@ mod tests {
         let (monolith, fixture) = pair();
         dir.write("MAP.OBCM", &monolith);
         stage(&dir, 4, &fixture);
-        let single = MapSource::load_single(&dir.path("MAP.OBCM")).expect("the monolith loads");
-        let set = MapSource::load_set(&dir.path("MS4.OBS")).expect("the set loads");
+        let single = LoadedMap::open(MapSource::load_single(&dir.path("MAP.OBCM")).expect("the monolith loads"))
+            .expect("the monolith opens");
+        let set =
+            LoadedMap::open(MapSource::load_set(&dir.path("MS4.OBS")).expect("the set loads")).expect("the set mounts");
         let cam = (2000, 2000, 0.2);
         assert_eq!(
             app_frame_after(&single, cam, true),
@@ -640,6 +693,6 @@ mod tests {
         stage(&dir, 12, &fixture);
         let source = MapSource::load_set(&dir.path("MS12.OBS")).expect("a set of one loads");
         assert!(source.manifest().expect("a set").is_single_file());
-        mounts(&source).expect("a set of one mounts");
+        mounts(source).expect("a set of one mounts");
     }
 }

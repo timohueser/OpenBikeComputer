@@ -19,16 +19,14 @@ use eframe::egui;
 use embedded_graphics::pixelcolor::{raw::RawU16, Rgb565};
 use obc_app::{App, AppState, CameraMode, Dirty, HostCommand, HostEvent};
 use obc_display::FbDevice64;
-use obc_formats::io::ByteSource;
 use obc_host_core::{fill_nav_preview, HostLoop};
 use obc_ports::{Button, Fix, InputClock, RideClock, Sensors, SettingsStore};
-use obc_reader::{MapCache, MapTables, Reader, SliceSource};
 use obc_route::RouteReader;
 
 use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 
 use crate::device_input::DeviceInput;
-use crate::map_set::MapSource;
+use crate::map_set::LoadedMap;
 use crate::present::Present;
 use crate::rides::RideStore;
 use crate::routes::RouteStore;
@@ -117,10 +115,10 @@ impl obc_ports::ClockSource for SimClock {
     }
 }
 
-/// Launch the simulator window. Owns the map bytes for the process lifetime — one `.obcm`, or
-/// every shard of a volume set; the [`Reader`] / [`obc_reader::MountedSet`] is a cheap view rebuilt
-/// each frame over them.
-pub fn run(map: MapSource, args: Args) -> Result<(), eframe::Error> {
+/// Launch the simulator window. `map` is opened and, for a volume set, **mounted** once before
+/// this — for the process lifetime, as the device mounts once at boot — and the per-frame
+/// [`Reader`] is a cheap view over it.
+pub fn run(map: LoadedMap, args: Args) -> Result<(), eframe::Error> {
     // The window wraps the whole device (housing + screen + a little backdrop) at `--scale`,
     // so the body has room around the framebuffer.
     let dev = housing::HousingStyle::default().window_size_px(egui::vec2(args.width as f32, args.height as f32));
@@ -155,19 +153,16 @@ struct DeviceHit {
 }
 
 struct SimGui {
-    /// The map's file bytes — one `.obcm`, or every shard of a volume set in manifest index order.
-    /// The per-frame `Reader` / `MountedSet` borrows these.
-    map: MapSource,
+    /// The opened map: one `.obcm`, or a volume set **already mounted** (see
+    /// [`LoadedMap`]) — the mount is held for the session, like the device's, and only the cheap
+    /// `Reader` view is rebuilt per frame. It carries the immutable tables (style table + LOD
+    /// pyramid, parsed once at startup as the device parses them once at boot) and the session-long
+    /// chunk cache, whose cross-frame reuse lets a panned-into view warm to 100% hit so the
+    /// "Map SD" stats track real device behaviour rather than a cold ≤75%.
+    map: LoadedMap,
     /// The set's own map-plane renderer (`map_set::SetPlane`); `None` for a single map, which draws
     /// entirely through the app's.
     set_renderer: Option<Box<obc_render::MapRenderer>>,
-    /// The immutable map tables (style table + LOD pyramid), parsed once at startup and borrowed
-    /// by the cheap per-frame `Reader` — mirroring the device, which parses them once at boot.
-    map_tables: MapTables,
-    /// The streamed-map cache, kept for the whole session and reused across frames (as the device
-    /// holds one in its reserved region). Cross-frame reuse lets a panned-into view warm to 100%
-    /// hit, so the "Map SD" stats track real device behaviour rather than a cold ≤75%.
-    map_cache: MapCache,
     app: App,
     /// The routes folder (the device-SD stand-in): the menu catalog + active geometry.
     store: RouteStore,
@@ -256,19 +251,14 @@ struct SimGui {
 }
 
 impl SimGui {
-    fn new(map: MapSource, args: Args) -> Self {
-        // For a set this is the **core** shard's tables (§5.1): the one style table the whole set
+    fn new(map: LoadedMap, args: Args) -> Self {
+        // For a set these are the **core** shard's tables (§5.1): the one style table the whole set
         // shares (§4.7), and the tables every per-shard reader borrows.
-        let map_tables = MapTables::parse(&SliceSource(map.core_bytes())).expect("map validated in main()");
-        let (cx, cy, zoom) = {
-            let cache = MapCache::new();
-            let src = SliceSource(map.core_bytes());
-            let reader = Reader::new(&src, &map_tables, &cache);
-            crate::initial_camera(&reader, args.width)
-        };
+        let map_tables = map.tables();
+        let (cx, cy, zoom) = crate::initial_camera(&map.reader(), args.width);
         // A set's map plane draws through its own renderer (`map_set::SetPlane`); a single map has
         // no second plane and allocates nothing.
-        let set_renderer = map.manifest().map(|_| Box::new(obc_render::MapRenderer::new()));
+        let set_renderer = map.set().map(|_| Box::new(obc_render::MapRenderer::new()));
         let mut state = AppState::new(cx, cy, zoom);
         if let Some(b) = args.battery {
             state.battery_pct = b;
@@ -335,7 +325,7 @@ impl SimGui {
         // scan is answered per-frame in `update` when the screen posts its on-entry request.
         app.set_fw_version(env!("CARGO_PKG_VERSION"));
         // A set lists as **one** map under its manifest's display name (§5.4), never as its shards.
-        let map_name = map.display_name();
+        let map_name = map.source.display_name();
         app.set_map_info(&map_name, map_tables.version);
         // `--physical` only takes effect with a saved calibration; `--calibrate` opens the screen.
         let points_per_mm = crate::calib::load();
@@ -373,8 +363,6 @@ impl SimGui {
             screenshot_requested: false,
             map,
             set_renderer,
-            map_tables,
-            map_cache: MapCache::new(),
             last_stats: obc_render::RenderStats::default(),
             last_dirty: Dirty::CLEAN,
             host: HostLoop::new(),
@@ -418,22 +406,12 @@ impl SimGui {
     /// Run the shared app for one frame into the backend's device-64 frame, present it through the
     /// seam, then upload the reconstructed texture.
     fn render_to_texture(&mut self, ctx: &egui::Context) {
-        // Reuse the session-long cache (see the field doc) so the "Map SD" stats mirror glass.
-        // A set re-mounts each frame from the same resident bytes + tables — the same shape as the
-        // single map's per-frame `Reader`, and just as cheap (§5.3's checks are a size compare and
-        // a style-table memcmp per shard; `main` already refused anything that does not mount).
-        let sources = self.map.sources();
-        let refs: Vec<&dyn ByteSource> = sources.iter().map(|s| s as &dyn ByteSource).collect();
-        let mounted = self
-            .map
-            .manifest()
-            .map(|_| self.map.mount(&refs, &self.map_tables, &self.map_cache).expect("mounted in main()"));
+        // Reuse the session-long cache and the session-long **mount** (see the field docs): a set
+        // is mounted once at startup exactly as the device mounts once at boot, so a frame costs
+        // one cheap `Reader` view and no re-validation.
         // Nav, POI, hours and routing read the **core** shard and only it (§5.1), never a geometry
         // shard — so this is the reader the whole app path gets, set or not.
-        let reader = match &mounted {
-            Some(set) => set.core_reader(),
-            None => Reader::new(&sources[0], &self.map_tables, &self.map_cache),
-        };
+        let reader = self.map.reader();
 
         // Feed the host→app BLE seam (epic #447): the control panel's injected link state, pushed
         // every frame exactly as the board's ride loop feeds its `ble::state` snapshot. Cheap and
@@ -595,7 +573,7 @@ impl SimGui {
         let t0 = std::time::Instant::now();
         let (dev_w, dev_h) = (self.dev_w, self.dev_h);
         let mut fbdev = FbDevice64::new(&mut self.fb, dev_w, dev_h);
-        let set = mounted.as_ref().zip(self.set_renderer.as_mut()).map(|(set, r)| (set, &mut **r));
+        let set = self.map.set().zip(self.set_renderer.as_mut()).map(|(set, r)| (set, &mut **r));
         let scene = crate::map_set::Scene { set, reader: &reader, route: route.as_ref() };
         let mut stats =
             crate::map_set::render_frame(&mut self.app, &mut fbdev, scene, (dev_w as f32, dev_h as f32), |c| {
