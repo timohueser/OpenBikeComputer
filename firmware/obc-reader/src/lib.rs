@@ -68,7 +68,7 @@ pub use reader::{
     NavNodeRef, NavTileCache, Poi, PoiCatEntry, PoiDirectory, Reader, MAX_CHUNK_BYTES, MAX_FEAT_PTS, MAX_FEAT_RINGS,
     MAX_POI_RESULTS, NAV_MAX_CHUNK_BYTES, NAV_TILE_SLOTS, POI_MAX_CATEGORIES, POI_MAX_CHUNK_BYTES,
 };
-pub use volume::{MountError, MountedSet, ShardTables};
+pub use volume::{FullSetShards, MountError, MountedSet, SetShards, ShardTables};
 
 // Compatibility paths: neutral scene/geometry primitives now live below the concrete OBCM reader.
 pub use obc_map_scene::{BBox, Kind, Style, M_PER_DEG};

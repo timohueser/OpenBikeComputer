@@ -364,6 +364,21 @@ pub struct NavDirectory {
 }
 
 impl NavDirectory {
+    /// The directory a reader with no graph of its own reports — every offset zero and
+    /// `node_count == 0`, so [`NavDirectory::is_empty`] is true and no walk starts. It is what a
+    /// **volume-set shard** reader answers: the nav graph lives in the core file alone (`OBCA_Spec`
+    /// §5.1), and the core's offsets mean nothing against a shard's bytes.
+    pub const EMPTY: NavDirectory = NavDirectory {
+        index_offset: 0,
+        node_count: 0,
+        chunk_count: 0,
+        edge_pool_offset: 0,
+        edge_chunk_count: 0,
+        chunk_size: 0,
+        profile_table_offset: 0,
+        profile_count: 0,
+    };
+
     /// The map carries no routable graph (no quadtree, no chunks, no edges).
     #[inline]
     pub fn is_empty(&self) -> bool {
@@ -635,6 +650,20 @@ pub struct PoiDirectory {
     /// Number of 29-byte blobs in the hours pool (spec §7.5); `0` ⇒ no hours in this map. Equals the
     /// `count u16` written at `hours_pool_offset`, validated equal at parse.
     pub hours_pool_count: usize,
+}
+
+/// The one shared empty POI directory a shard reader hands out — a `static` rather than a
+/// promoted temporary because [`PoiDirectory`] holds a `heapless::Vec` and does not const-promote.
+static EMPTY_POI_DIRECTORY: PoiDirectory = PoiDirectory::EMPTY;
+/// The nav twin of [`EMPTY_POI_DIRECTORY`], kept a `static` for symmetry with it.
+static EMPTY_NAV_DIRECTORY: NavDirectory = NavDirectory::EMPTY;
+
+impl PoiDirectory {
+    /// The directory a reader with no POI section of its own reports — no categories, no chunks,
+    /// no hours pool. The POI twin of [`NavDirectory::EMPTY`], and what a **volume-set shard**
+    /// reader answers (`OBCA_Spec` §5.1: POIs live in the core file alone).
+    pub const EMPTY: PoiDirectory =
+        PoiDirectory { chunk_size: 0, entries: Vec::new(), hours_pool_offset: 0, hours_pool_count: 0 };
 }
 
 /// A feature decoded into caller-owned scratch buffers, borrowed for one
@@ -975,6 +1004,24 @@ impl<'a> Reader<'a> {
         self.file
     }
 
+    /// Whether this reader reads a **non-core shard** of a volume set (`OBCA_Spec.md` §5).
+    ///
+    /// It is the one structural fact that separates the geometry path from the nav/POI/hours one.
+    /// A shard reader borrows the **core's** [`MapTables`] — that is the whole RAM argument of a
+    /// set — so its `pois`/`nav` directories describe offsets into the *core file* while `self.src`
+    /// is the shard's bytes. Reading one against the other is not a degraded answer, it is a read
+    /// at an unrelated offset. Every nav, POI and hours accessor below therefore answers **empty**
+    /// on a shard rather than trusting a doc comment to keep callers away; `MountedSet` routes
+    /// those queries to [`crate::volume::MountedSet::core_reader`] (§5.1).
+    ///
+    /// Deliberately not a `debug_assert`: the empty answer *is* the contract (a set's dispatch is
+    /// role-blind, so a caller reaching a shard is normal), and an assertion would make the tests
+    /// that pin the contract unrunnable.
+    #[inline]
+    pub fn is_set_shard(&self) -> bool {
+        self.shard_lods.is_some()
+    }
+
     /// Snapshot of the chunk-cache + streaming counters. Cumulative over the cache's life, so the
     /// renderer reports the per-frame delta.
     #[inline]
@@ -1003,8 +1050,13 @@ impl<'a> Reader<'a> {
     /// [`Reader::nearest_pois`] walks the per-category quadtrees; P3 (#443) reads
     /// [`PoiDirectory::hours_pool_offset`]/[`PoiDirectory::hours_pool_count`] to resolve a POI's
     /// pooled schedule.
+    ///
+    /// [`PoiDirectory::EMPTY`] on a volume-set shard — see [`Reader::is_set_shard`].
     #[inline]
     pub fn poi_directory(&self) -> &PoiDirectory {
+        if self.is_set_shard() {
+            return &EMPTY_POI_DIRECTORY;
+        }
         &self.tables.pois
     }
 
@@ -1024,6 +1076,10 @@ impl<'a> Reader<'a> {
     /// Unlike [`Reader::nearest_pois`], this does **not** touch the [`MapCache`] — it's a plain
     /// stack read, safe to call from anywhere (including inside a `for_each_*` callback).
     pub fn poi_hours(&self, hours_ref: u16) -> Option<crate::hours::WeeklySchedule> {
+        // A volume-set shard carries no hours pool (see `is_set_shard`).
+        if self.is_set_shard() {
+            return None;
+        }
         // The no-hours sentinel and any index past the pool ⇒ no schedule.
         let dir = &self.tables.pois;
         if hours_ref == POI_HOURS_REF_NONE || (hours_ref as usize) >= dir.hours_pool_count {
@@ -1072,6 +1128,10 @@ impl<'a> Reader<'a> {
         out: &mut Vec<Poi, MAX_POI_RESULTS>,
     ) -> Result<(), Error> {
         out.clear();
+        // A volume-set shard carries no POI section (see `is_set_shard`).
+        if self.is_set_shard() {
+            return Ok(());
+        }
         let dir = &self.tables.pois;
         let entry = match dir.entries.iter().find(|e| e.category_id == category.id()) {
             // An absent or empty category is a valid "no POIs here" answer, not an error.
@@ -1265,6 +1325,10 @@ impl<'a> Reader<'a> {
         out: &mut Vec<CorridorPoi, MAX_CORRIDOR_RESULTS>,
     ) -> Result<(), Error> {
         out.clear();
+        // A volume-set shard carries no POI section (see `is_set_shard`).
+        if self.is_set_shard() {
+            return Ok(());
+        }
         let dir = &self.tables.pois;
         // `chunk_size / POI_RECORD_LEN` is the per-chunk record cap; a corrupt 0 would divide by
         // zero, so treat the whole (unwalkable) section as empty — same guard as `nearest_pois`.
@@ -1421,17 +1485,26 @@ impl<'a> Reader<'a> {
     }
 
     /// The parsed nav directory (spec §8.1). Always present in v9; `is_empty()` for a map with no
-    /// routable ways.
+    /// routable ways, and [`NavDirectory::EMPTY`] on a volume-set shard (see
+    /// [`Reader::is_set_shard`]) — the graph lives in the core file alone.
     #[inline]
     pub fn nav_directory(&self) -> &NavDirectory {
+        if self.is_set_shard() {
+            return &EMPTY_NAV_DIRECTORY;
+        }
         &self.tables.nav
     }
 
     /// The map's §8.6 routing profiles (1..=8, always present even for an empty graph). N5 exposes
     /// their names on the device; N3 selects one by index and weights edges by
-    /// [`MapProfile::multiplier`].
+    /// [`MapProfile::multiplier`]. Empty on a volume-set shard, which has no graph to profile —
+    /// the set's profiles are the core's, through
+    /// [`crate::volume::MountedSet::core_reader`].
     #[inline]
     pub fn nav_profiles(&self) -> &[MapProfile] {
+        if self.is_set_shard() {
+            return &[];
+        }
         &self.tables.profiles
     }
 
@@ -1456,7 +1529,8 @@ impl<'a> Reader<'a> {
         scratch: &mut [u8],
         mut visit: impl FnMut(NavNodeRef),
     ) -> Result<(), Error> {
-        let dir = self.tables.nav;
+        // A volume-set shard carries no nav graph (see `is_set_shard`).
+        let dir = *self.nav_directory();
         if dir.is_empty() {
             return Ok(());
         }
@@ -1501,7 +1575,8 @@ impl<'a> Reader<'a> {
     /// to call from anywhere.
     pub fn nav_edge<const P: usize>(&self, edge_id: u32, points: &mut Vec<(i32, i32), P>) -> Option<u32> {
         points.clear();
-        let dir = &self.tables.nav;
+        // A volume-set shard carries no edge pool (see `is_set_shard`).
+        let dir = self.nav_directory();
         let cs = dir.chunk_size;
         if dir.edge_chunk_count == 0 || cs == 0 {
             return None;
@@ -1571,7 +1646,8 @@ impl<'a> Reader<'a> {
         tiles: &mut NavTileCache,
         mut visit: impl FnMut(NavNodeRef),
     ) -> Result<(), Error> {
-        let dir = self.tables.nav;
+        // A volume-set shard carries no nav graph (see `is_set_shard`).
+        let dir = *self.nav_directory();
         if dir.is_empty() {
             return Ok(());
         }
@@ -1624,7 +1700,8 @@ impl<'a> Reader<'a> {
         start: (i32, i32),
         mut emit: impl FnMut((i32, i32)),
     ) -> Option<u32> {
-        let dir = &self.tables.nav;
+        // A volume-set shard carries no edge pool (see `is_set_shard`).
+        let dir = self.nav_directory();
         let cs = dir.chunk_size;
         if dir.edge_chunk_count == 0 || cs == 0 {
             return None;
