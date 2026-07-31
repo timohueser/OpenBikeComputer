@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { onMount } from "svelte";
+    import { onMount, type Component } from "svelte";
     import BuildCard from "../components/BuildCard.svelte";
     import DeviceStep from "../components/device/DeviceStep.svelte";
     import MapSendStep from "../components/device/MapSendStep.svelte";
@@ -9,9 +9,8 @@
     import DownloadStep from "../components/catalog/DownloadStep.svelte";
     import PresetStep from "../components/catalog/PresetStep.svelte";
     import RegionStep from "../components/catalog/RegionStep.svelte";
-    import CoverageHome from "../components/coverage/CoverageHome.svelte";
     import { regionState } from "../lib/catalog/availability";
-    import { CatalogV2Client } from "../lib/catalog/v2/client";
+    import type { CatalogV2Client } from "../lib/catalog/v2/client";
     import { peekSchemaVersion } from "../lib/coverage/detect";
     import { artifactFilename } from "../lib/catalog/download";
     import { catalogStore } from "../lib/catalog/store.svelte";
@@ -51,13 +50,28 @@
     // Envelope detection (#1038): the hosted catalog root is either a v1
     // manifest or a v2 cell-catalog root, decided by the bakery's cutover
     // rather than by a deploy of this app. One fetch, one peek at
-    // `schema_version`, and the home commits to the matching flow — the v1
-    // flow below stays exactly what it was, and runs whenever the root is v1.
-    let v2 = $state<{ client: CatalogV2Client; body: string } | null>(null);
+    // `schema_version`, and the home commits to the matching flow.
+    //
+    // The v1 flow below is on screen from the first frame and the probe
+    // resolves *into* it (#1041 A1): today's live catalog is v1, and blanking
+    // its first paint behind "Loading the map catalog…" taxed every visitor
+    // for a cutover that hasn't happened. The coverage flow — component, v2
+    // parsers, worker plumbing — rides a lazy chunk behind the `import()`s in
+    // `onMount`, so a v1 visitor never downloads a byte of it
+    // (`platform/bundle.test.ts` pins the entry chunk); on a v2 root the v1
+    // skeleton is simply replaced before its own catalog load has been asked
+    // for anything.
+    type CoverageHomeComponent = Component<{
+        client: CatalogV2Client;
+        rootBody: string;
+        active?: boolean;
+    }>;
+    let coverage = $state<{
+        component: CoverageHomeComponent;
+        client: CatalogV2Client;
+        body: string;
+    } | null>(null);
     let v2Error = $state<string | null>(null);
-    // True until detection settles, so the v1 layout is not mounted for a
-    // moment and then torn down under a v2 catalog.
-    let probing = $state(catalogMode && platform.catalogRoot !== undefined);
 
     onMount(async () => {
         if (catalogMode) {
@@ -65,9 +79,27 @@
                 try {
                     const { url, body } = await platform.catalogRoot();
                     if (peekSchemaVersion(body) === 2) {
+                        // Two imports, one lazy chunk between them (they share
+                        // it): the flow's UI and the parser that admits the
+                        // root into it.
+                        let clientModule: typeof import("../lib/catalog/v2/client");
+                        let component: CoverageHomeComponent;
+                        try {
+                            [clientModule, { default: component }] = await Promise.all([
+                                import("../lib/catalog/v2/client"),
+                                import("../components/coverage/CoverageHome.svelte"),
+                            ]);
+                        } catch {
+                            // The chunk, not the catalog: an app asset failed
+                            // to arrive (deploy skew, lost connection). Not a
+                            // publish problem, and the remedy is a reload.
+                            v2Error = "this app's coverage flow failed to load — reload the page";
+                            return;
+                        }
                         try {
                             // The same body the peek saw — never a second fetch.
-                            v2 = { client: CatalogV2Client.fromBody(body, url), body };
+                            const client = clientModule.CatalogV2Client.fromBody(body, url);
+                            coverage = { component, client, body };
                         } catch (e) {
                             // A root that says v2 and then fails the v2 parser is
                             // a broken publish, not a v1 catalog: reporting it as
@@ -75,7 +107,6 @@
                             // the v1 parser would say) would blame the wrong side.
                             v2Error = e instanceof Error ? e.message : String(e);
                         }
-                        probing = false;
                         return;
                     }
                 } catch {
@@ -84,7 +115,6 @@
                     // the error sentence, and keeps its cached-manifest
                     // fallback.
                 }
-                probing = false;
             }
             // The catalog failing is one failure, reported once, in step 1 —
             // the styles come out of the same document, so a second copy of the
@@ -183,10 +213,8 @@
     );
 </script>
 
-{#if v2}
-    <CoverageHome client={v2.client} rootBody={v2.body} {active} />
-{:else if probing}
-    <p class="probe muted small">Loading the map catalog…</p>
+{#if coverage}
+    <coverage.component client={coverage.client} rootBody={coverage.body} {active} />
 {:else if v2Error}
     <p class="probe small" style:color="var(--coral)">
         The published map catalog couldn't be read: {v2Error}
