@@ -2712,6 +2712,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "obc-web-assemble"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "js-sys",
+ "obc-formats",
+ "obc-pack",
+ "obcm-assemble",
+ "serde_json",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "obc-web-convert"
 version = "0.1.0"
 dependencies = [
