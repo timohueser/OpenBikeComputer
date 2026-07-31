@@ -46,6 +46,13 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 const { platform } = await import("./desktop");
 
+/** A fresh copy of the host, with its memoized catalog root reset — the
+ *  catalog tests need one each, exactly like web.wire.test.ts's freshHost. */
+async function freshHost() {
+    vi.resetModules();
+    return (await import("./desktop")).platform;
+}
+
 beforeEach(() => {
     calls.length = 0;
     channels.length = 0;
@@ -72,14 +79,41 @@ describe("desktop host commands", () => {
         // artifact's `url`, and the manifest's location is that base — which is
         // why the command hands back the URL beside the body.
         reply = () => ({ url: "https://example.invalid/data/catalog.json", body: EXAMPLE });
-        const catalog = await platform.catalog();
+        const catalog = await (await freshHost()).catalog();
         expect(catalog.schema_version).toBe(1);
         expect(catalog.presets[0].preview).toBe("https://example.invalid/data/previews/default.png");
     });
 
     it("refuses a malformed manifest rather than returning part of one", async () => {
         reply = () => ({ url: "https://example.invalid/catalog.json", body: '{"schema_version": 2}' });
-        await expect(platform.catalog()).rejects.toThrow();
+        await expect((await freshHost()).catalog()).rejects.toThrow();
+    });
+
+    it("shares one catalog read between catalogRoot and catalog (#1041 A2)", async () => {
+        // Envelope detection peeks at `catalogRoot`'s body and the chosen flow
+        // parses the same body — so the two must come from one invoke, and a
+        // second caller must not cost a second read.
+        reply = () => ({ url: "https://example.invalid/data/catalog.json", body: EXAMPLE });
+        const host = await freshHost();
+        const root = await host.catalogRoot!();
+        expect(root.body).toBe(EXAMPLE);
+        await host.catalog();
+        await host.catalogRoot!();
+        expect(calls.map((c) => c.cmd)).toEqual(["catalog"]);
+    });
+
+    it("does not pin a refused body: after a parse refusal the next call re-reads", async () => {
+        // Same rule as the web memo: a fulfilled read whose body the v1 parser
+        // then refuses is un-pinned — it may be a v2 root the coverage flow
+        // will accept, or a bad publish that gets fixed — so a retry re-reads
+        // instead of re-refusing the same bytes.
+        let body = "{oh no";
+        reply = () => ({ url: "https://example.invalid/catalog.json", body });
+        const host = await freshHost();
+        await expect(host.catalog()).rejects.toThrow();
+        body = EXAMPLE;
+        await expect(host.catalog()).resolves.toMatchObject({ schema_version: 1 });
+        expect(calls.map((c) => c.cmd)).toEqual(["catalog", "catalog"]);
     });
 
     it("starts a build with the request under `request` and a channel under `onEvent`", async () => {
