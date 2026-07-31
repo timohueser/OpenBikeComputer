@@ -632,6 +632,28 @@ downloaded with byte-length and SHA-256 checks, then passed to
 [`obc-web-assemble`](src:apps/obc-web-assemble) in a worker. Cancelling
 terminates the worker; there is no verification bypass.
 
+### Editing a skin
+
+Default and Dusk remain catalog objects with digest-pinned Teningen preview
+images. **Customize** clones either one into the product skin editor shared by
+the website and desktop app. It exposes only colours (including the optional
+second colour), line widths, dashes, drawing order, and the route-marker colour.
+Feature types, style ids, LODs, routing, and the inherited overflow priority are
+not editable there, so a product restyle cannot turn into a new cell schema.
+
+The editor lazy-loads one canonical Teningen `.obcm` and
+[`obc-web-preview`](src:apps/obc-web-preview) only while it is open. Every edit
+restamps the resident style table and renders the fixed 240×240 scene at
+5 m/px through `obc-reader` and `obc-render`; the preview therefore uses the
+device palette and renderer rather than a browser approximation. Closing the
+editor releases the map, renderer, and frame.
+
+Saving creates a browser-local custom skin. Its record is pinned to the current
+catalog schema id and revision and must still cover the exact schema-ordered
+feature list when reloaded; stale or malformed records are ignored. The custom
+skin is handed to the same assembler as a hosted skin, so it changes the stamped
+presentation bytes without changing which cells are fetched.
+
 ### One source, three hosts
 
 One Svelte source is compiled for the static website, the Tauri desktop app, and
@@ -644,6 +666,7 @@ or assembly algorithms.
 | Catalog coverage UI | yes | yes | yes |
 | Regions, boxes, GPX corridors | yes | yes | yes |
 | Shared wasm assembly | yes | yes | yes |
+| Product skin editor | yes | yes | yes |
 | Output | browser downloads | atomic local folder | browser downloads |
 | Advanced schema editor | no | no | yes |
 | Product PBF build | no | no | no |
