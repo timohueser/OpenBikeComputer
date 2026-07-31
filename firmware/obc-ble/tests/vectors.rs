@@ -32,6 +32,10 @@ fn transfer_control_vectors_round_trip() {
         ("transfer-upload-start.bin", Op::Upload, ObjectType::Route, 0xFFFF),
         ("transfer-download-request.bin", Op::Download, ObjectType::RideList, 0),
         ("transfer-abort.bin", Op::Abort, ObjectType::Route, 0xFFFF),
+        // The volume-set pair (#1039). The shard's id is a packed part, not an id; the manifest's
+        // is `new`, because a set's identity is the id the *device* mints for it.
+        ("transfer-set-shard.bin", Op::Upload, ObjectType::MapShard, 0x0802),
+        ("transfer-set-manifest.bin", Op::Upload, ObjectType::MapSet, 0xFFFF),
     ] {
         let bytes = fixture(name);
         assert_eq!(bytes.len(), TransferControl::ENCODED_LEN, "{name} is a 12-byte v2 descriptor");
@@ -678,6 +682,15 @@ fn set_part_packs_the_shard_count_and_index() {
         crc32: 0xDEAD_BEEF,
     };
     assert_eq!(TransferControl::decode(&desc.encode()).unwrap(), desc);
+
+    // …and the shared fixture decodes to the same part through the same codec, which is what makes
+    // the packing a contract the Swift and TypeScript sides can be held to rather than prose each
+    // of them re-derives.
+    let shard = TransferControl::decode(&fixture("transfer-set-shard.bin")).unwrap();
+    assert_eq!(SetPart::decode(shard.object_id), Some(SetPart { shard_count: 8, index: 2 }));
+    let manifest = TransferControl::decode(&fixture("transfer-set-manifest.bin")).unwrap();
+    assert_eq!(manifest.object_id, TransferControl::NEW_OBJECT_ID, "a manifest is new-only");
+    assert_eq!(manifest.total_len, obc_formats::obcs::manifest_len(8) as u32);
 }
 
 /// The `routeList` fixture decodes through the production list codec, its first two entries agree

@@ -190,6 +190,38 @@ fn upload_transcript_is_self_consistent() {
     assert_eq!(u32::from_le_bytes([result[4], result[5], result[6], result[7]]) as usize, route.len());
 }
 
+/// The **volume-set** descriptors (§4.1, #1039): the two new type bytes, and the one field on this
+/// wire whose meaning is not an object id.
+///
+/// `mapShard`'s `object_id` is a packed `(shard_count, index)` — count in the **high** byte — and
+/// that packing is exactly the kind of thing three implementations derive from prose and get
+/// mirrored. A fixture is cheaper than the bug: a host that reads it the other way round announces
+/// "shard 8 of 2" and is answered `notFound` with nothing to point at.
+#[test]
+fn volume_set_descriptors_pin_the_part_packing() {
+    let route = fixture("route-waypoints.obcr");
+    let shard = fixture("transfer-set-shard.bin");
+    let manifest = fixture("transfer-set-manifest.bin");
+
+    assert_eq!(shard.len(), 12, "no descriptor change — a set rides the same 12 bytes");
+    assert_eq!(shard[0], 1, "op = upload");
+    assert_eq!(shard[1], 17, "type = mapShard");
+    let part = u16::from_le_bytes([shard[2], shard[3]]);
+    assert_eq!(part, 0x0802);
+    assert_eq!(part >> 8, 8, "the high byte is the shard count");
+    assert_eq!(part & 0xFF, 2, "and the low byte is this shard's index");
+    assert_eq!(u32::from_le_bytes([shard[4], shard[5], shard[6], shard[7]]) as usize, route.len());
+    assert_eq!(u32::from_le_bytes([shard[8], shard[9], shard[10], shard[11]]), crc32(&route));
+
+    assert_eq!(manifest.len(), 12);
+    assert_eq!(manifest[0], 1, "op = upload");
+    assert_eq!(manifest[1], 18, "type = mapSet");
+    assert_eq!(u16::from_le_bytes([manifest[2], manifest[3]]), 0xFFFF, "the manifest is new-only");
+    let total_len = u32::from_le_bytes([manifest[4], manifest[5], manifest[6], manifest[7]]);
+    assert_eq!(total_len, 72 + 56 * 8, "a manifest's length is fixed by its shard count (OBCA §5.2)");
+    assert_eq!(total_len, obc_formats::obcs::manifest_len(8) as u32, "…as the format authority computes it");
+}
+
 /// Each ride object's length is fully determined by its header + version (spec §7.2).
 #[test]
 fn ride_vector_length_is_self_describing() {
