@@ -142,6 +142,11 @@ export class CoverageMapView {
         this.map.on("mousedown", (e) => this.onDrawStart(e));
         this.map.on("mousemove", (e) => this.onDrawMove(e));
         this.map.on("mouseup", () => this.onDrawFinish());
+        // Leaflet only hears a mouseup inside its container: a drag released
+        // over the steps column (or outside the window) used to leave the
+        // rubber band armed and drawing (#1041 low sweep). The document hears
+        // every release; finishing twice is harmless — `drawing` gates it.
+        document.addEventListener("pointerup", this.onDocPointerUp);
 
         // Any gesture on the pane hands the camera to the user for good.
         el.addEventListener("pointerdown", () => (this.userMoved = true), { capture: true });
@@ -152,7 +157,23 @@ export class CoverageMapView {
             this.tryShelfFit();
         });
         this.resizeObs.observe(el);
+        // Defensive (#1041 watch item): one unreproduced sighting of a
+        // zero-width SVG viewBox surviving a viewport change — recheck the
+        // size whenever the tab becomes visible again, where a stale layout
+        // pass would otherwise go unnoticed until a resize.
+        document.addEventListener("visibilitychange", this.onVisibility);
     }
+
+    private readonly onDocPointerUp = (): void => {
+        if (this.drawing) this.onDrawFinish();
+    };
+
+    private readonly onVisibility = (): void => {
+        if (document.visibilityState === "visible") {
+            this.map.invalidateSize();
+            this.tryShelfFit();
+        }
+    };
 
     private tryShelfFit(): void {
         if (this.userMoved || !this.shelfBounds) return;
@@ -163,6 +184,8 @@ export class CoverageMapView {
 
     destroy(): void {
         this.resizeObs.disconnect();
+        document.removeEventListener("pointerup", this.onDocPointerUp);
+        document.removeEventListener("visibilitychange", this.onVisibility);
         this.map.remove();
     }
 

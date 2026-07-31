@@ -383,8 +383,13 @@
     function proofCaption(p: Proof): string {
         const bits: string[] = [];
         if (p.holeCount) bits.push(`${p.holeCount} ${p.holeCount === 1 ? "hole" : "holes"}`);
-        if (p.gapCount) bits.push(`${p.gapCount} ${p.gapCount === 1 ? "gap" : "gaps"}`);
-        return bits.length ? `your map's coverage — ${bits.join(", ")}` : "your map's coverage";
+        // Disjoint parts are a choice, not a defect (#1041 low sweep / A21):
+        // someone who added Freiburg and Bremen knows they are apart, and "1
+        // gap" tallied next to the holes read as a warning about it. The
+        // mock's own tone — "gaps are fine — holes stay visible" — is the
+        // caption's tone: reassure about the gaps, stay honest about holes.
+        if (p.gapCount) bits.push("separate parts — that's fine");
+        return bits.length ? `your map's coverage — ${bits.join(" · ")}` : "your map's coverage";
     }
 
     // --- gating -----------------------------------------------------------
@@ -465,7 +470,8 @@
             </p>
             <p class="line mono small">
                 {#if ledger.isFinal}
-                    {formatBytes(ledger.totalBytes)} · {ledger.cellCount} cells · assembled on this computer
+                    {formatBytes(ledger.totalBytes)} · {ledger.cellCount}
+                    {ledger.cellCount === 1 ? "cell" : "cells"} · assembled on this computer
                 {:else}
                     pricing…
                 {/if}

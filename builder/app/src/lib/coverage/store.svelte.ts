@@ -48,6 +48,25 @@ export interface PreviewSummary {
     patches: number;
 }
 
+/**
+ * Even-odd point-in-polygon over a boundary's rings (`[lat, lon]` µdeg, closed
+ * per `OBCC_Spec.md` §11.8). Every ring toggles — outer rings admit, holes
+ * excise — which is the same rule the map's even-odd fill draws them with.
+ */
+function pointInRings(lat: number, lon: number, rings: [number, number][][]): boolean {
+    let inside = false;
+    for (const ring of rings) {
+        for (let k = 1; k < ring.length; k++) {
+            const [aLat, aLon] = ring[k - 1];
+            const [bLat, bLon] = ring[k];
+            if (aLat > lat === bLat > lat) continue;
+            const crossLon = aLon + ((lat - aLat) / (bLat - aLat)) * (bLon - aLon);
+            if (lon < crossLon) inside = !inside;
+        }
+    }
+    return inside;
+}
+
 export class CoverageStore {
     readonly client: CatalogV2Client;
     readonly catalog: CatalogV2;
@@ -84,6 +103,9 @@ export class CoverageStore {
 
     private readonly resolver = new SelectionResolver();
     private readonly previewResolver = new SelectionResolver();
+    /** Prices the box being dragged, apart from the other two so a drag never
+     *  evicts the committed selection's warm cache. */
+    private readonly dragResolver = new SelectionResolver();
     private nextPartId = 1;
     private boxCount = 0;
 
@@ -310,6 +332,31 @@ export class CoverageStore {
      *  draw. */
     boxError = $state<string | null>(null);
 
+    /**
+     * Price a box mid-drag — the live chip under the rubber band.
+     *
+     * Through the same resolver + ledger arithmetic as everything else (#1041
+     * low sweep): the chip used to sum index bytes by hand, a second pricing
+     * path that could drift from the one the part would actually cost on
+     * release. Now the drag is priced as a one-part selection, so the number
+     * under the cursor *is* `ledgerFor`'s number, by construction.
+     */
+    priceDraggedBox(box: UBox): { bytes: number; cells: number } | { refused: true } | null {
+        const ctx = this.ctx;
+        if (!ctx || !this.indices) return null;
+        const candidate: Selection = {
+            parts: [{ kind: "box", id: "drag", name: "", box }],
+            corridorRadiusM: this.selection.corridorRadiusM,
+        };
+        try {
+            const ledger = ledgerFor(this.dragResolver.resolve(candidate, ctx), this.catalog, this.indices);
+            return { bytes: ledger.totalBytes, cells: ledger.cellCount };
+        } catch {
+            // The grid refused to enumerate it — same refusal `addBox` gives.
+            return { refused: true };
+        }
+    }
+
     addBox(box: UBox): void {
         // Refuse a box the grid cannot enumerate *before* it becomes a part —
         // as a part it would make every resolution throw, taking the whole
@@ -331,14 +378,17 @@ export class CoverageStore {
     }
 
     /** "Box — <the smallest catalog region under its centre>", because "Box 3"
-     *  tells nobody which box to remove. Falls back to a counter off-catalog. */
+     *  tells nobody which box to remove. Containment is tested against the
+     *  region's actual boundary rings, not its bounding box (#1041 low sweep):
+     *  a box centred in the sea inside Italy's bbox is not "Box — Italy".
+     *  Falls back to a counter off-catalog. */
     private boxName(box: UBox): string {
         const midLat = (box.minLat + box.maxLat) / 2;
         const midLon = (box.minLon + box.maxLon) / 2;
         let best: RegionEntry | null = null;
         let bestSpan = Infinity;
         for (const region of this.catalog.regions) {
-            let contains = false;
+            if (!pointInRings(midLat, midLon, region.boundary.rings)) continue;
             let minLat = Infinity;
             let maxLat = -Infinity;
             let minLon = Infinity;
@@ -351,9 +401,8 @@ export class CoverageStore {
                     if (lon > maxLon) maxLon = lon;
                 }
             }
-            contains = midLat >= minLat && midLat <= maxLat && midLon >= minLon && midLon <= maxLon;
             const span = (maxLat - minLat) * (maxLon - minLon);
-            if (contains && span < bestSpan) {
+            if (span < bestSpan) {
                 best = region;
                 bestSpan = span;
             }

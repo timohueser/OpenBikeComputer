@@ -47,7 +47,10 @@
         <p class="small muted">Nothing selected yet — the summary keeps score as you add parts.</p>
     {:else}
         {#if ledger.isFinal}
-            <p class="mono total">{formatBytes(ledger.totalBytes)} · {ledger.cellCount} cells</p>
+            <p class="mono total">
+                {formatBytes(ledger.totalBytes)} · {ledger.cellCount}
+                {ledger.cellCount === 1 ? "cell" : "cells"}
+            </p>
         {:else}
             <p class="mono total faint">pricing…</p>
         {/if}
