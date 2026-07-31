@@ -237,7 +237,7 @@ describe("control-plane codecs", () => {
 
     it("round-trips the identity read at all three lengths", () => {
         // 7 bytes: the full read. `obcmVersion` is the OBCM *map-format* version the device's
-        // reader reads — the fact `OBCC_Spec.md` §6(c) filters the catalog on, and a different
+        // reader reads — the fact `OBCC_Spec.md` §10 filters the catalog on, and a different
         // number in a different sequence from the protocol `version` beside it.
         const full = decodeVersionRead(vector("version-read.bin"));
         expect(full).toEqual({ version: 2, storeEpoch: hex("0xA1B2C3D4"), obcmVersion: 11 });

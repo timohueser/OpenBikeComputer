@@ -25,14 +25,16 @@
         type AssembleWorkerRequest,
         type WorkerCell,
     } from "../../lib/assemble/workerProtocol";
-    import { saveBytes } from "../../lib/catalog/download";
+    import { saveBytes } from "../../lib/download";
+    import { platform } from "../../lib/platform";
+    import type { MapOutputSession } from "../../lib/platform/types";
     import {
         downloadCells,
         planCells,
         type CellDownloadProgress,
-    } from "../../lib/catalog/v2/download";
-    import { coverageRings, type RingPoint } from "../../lib/catalog/v2/outline";
-    import type { UBox } from "../../lib/catalog/v2/grid";
+    } from "../../lib/catalog/download";
+    import { coverageRings, type RingPoint } from "../../lib/catalog/outline";
+    import type { UBox } from "../../lib/catalog/grid";
     import { detailBandId, mergeMixedCellRects, parseCells, patchCount } from "../../lib/coverage/shape";
     import type { CoverageStore } from "../../lib/coverage/store.svelte";
     import { formatBytes } from "../../lib/format";
@@ -78,7 +80,10 @@
         );
     }
 
-    onDestroy(() => worker?.terminate());
+    onDestroy(() => {
+        worker?.terminate();
+        void closeOutput();
+    });
 
     // --- the run ----------------------------------------------------------
 
@@ -87,10 +92,15 @@
     let dlProgress = $state<CellDownloadProgress | null>(null);
     let asmPhase = $state<AssemblePhase>("open");
     let asmFraction = $state(0);
-    let savedFiles = $state<{ name: string; role: string; byteLength: number }[]>([]);
+    let savedFiles = $state<{ name: string; role: string; byteLength: number; path?: string }[]>([]);
+    let outputPath = $state<string | null>(null);
     let runWarnings = $state<string[]>([]);
     let errorMessage = $state<string | null>(null);
     let abortCtl: AbortController | null = null;
+    let output: MapOutputSession | null = null;
+    let saveQueue: Promise<void> = Promise.resolve();
+    let saveError: unknown = null;
+    let runMapName = "OBC map";
 
     const ASM_PHASE_LABEL: Record<AssemblePhase, string> = {
         open: "reading cells",
@@ -124,14 +134,25 @@
                 asmFraction = msg.fraction;
                 break;
             case "file":
-                // Straight to the browser's downloader, one file at a time —
-                // nothing accumulates on this side of the boundary.
-                saveBytes(msg.bytes, msg.name);
-                savedFiles.push({ name: msg.name, role: msg.role, byteLength: msg.byteLength });
+                // Preserve worker order. Desktop writes every part into one new
+                // folder; browsers hand each verified file to their downloader.
+                saveQueue = saveQueue.then(async () => {
+                    if (saveError) return;
+                    if (platform.openMapOutput) {
+                        output ??= await platform.openMapOutput(runMapName);
+                        outputPath = output.path;
+                        const path = await output.write(msg.name, msg.bytes);
+                        savedFiles.push({ name: msg.name, role: msg.role, byteLength: msg.byteLength, path });
+                    } else {
+                        saveBytes(msg.bytes, msg.name);
+                        savedFiles.push({ name: msg.name, role: msg.role, byteLength: msg.byteLength });
+                    }
+                }).catch((cause: unknown) => {
+                    saveError = cause;
+                });
                 break;
             case "done":
-                runWarnings = msg.warnings;
-                phase = "done";
+                void finishSaves(msg.warnings);
                 break;
             case "error":
                 // Two conversations share this worker, and their failures are
@@ -142,14 +163,41 @@
                 // its own retry, and never wedges the button behind a pending
                 // flag nothing will clear.
                 if (phase === "assembling") {
-                    errorMessage = msg.message;
-                    phase = "error";
+                    void failAssembly(msg.message);
                 } else {
                     estimateError = msg.message;
                 }
                 estimatePending = false;
                 break;
         }
+    }
+
+    async function closeOutput() {
+        await saveQueue;
+        const current = output;
+        output = null;
+        await current?.finish();
+    }
+
+    async function failAssembly(message: string) {
+        await closeOutput().catch((cause: unknown) => {
+            saveError ??= cause;
+        });
+        errorMessage = saveError instanceof Error ? saveError.message : saveError ? String(saveError) : message;
+        phase = "error";
+    }
+
+    async function finishSaves(warnings: string[]) {
+        await closeOutput().catch((cause: unknown) => {
+            saveError ??= cause;
+        });
+        if (saveError) {
+            errorMessage = saveError instanceof Error ? saveError.message : String(saveError);
+            phase = "error";
+            return;
+        }
+        runWarnings = warnings;
+        phase = "done";
     }
 
     /** The set's 24-wire-byte display name, from the parts that made it. */
@@ -173,6 +221,10 @@
         if (!resolution || !indices || !l || phase === "downloading" || phase === "assembling") return;
         errorMessage = null;
         savedFiles = [];
+        outputPath = null;
+        output = null;
+        saveQueue = Promise.resolve();
+        saveError = null;
         runWarnings = [];
         dlProgress = null;
         asmFraction = 0;
@@ -183,6 +235,7 @@
         abortCtl = new AbortController();
         try {
             await downloadCells(plan, {
+                fetchImpl: store.client.fetchImpl,
                 onCell: (item, bytes) => {
                     cells.push({ id: item.cell.id, band: item.band, partial: item.cell.partial, bytes });
                 },
@@ -200,6 +253,7 @@
         }
 
         phase = "assembling";
+        runMapName = mapName();
         asmPhase = "open";
         const req: AssembleWorkerRequest = {
             type: "assemble",
@@ -207,7 +261,7 @@
             schemaJson: store.rootBody,
             skinJson: JSON.stringify(store.skin),
             options: {
-                name: mapName(),
+                name: runMapName,
                 // Both were shown before this button unlocked. `acceptHoles`
                 // is derived from the *shown* set, not the ledger's raw count
                 // (#1041 A5): `store.holeCells()` is every band's holes — the
@@ -231,7 +285,14 @@
             // contract). Nothing is half-written: the set manifest goes last.
             worker?.terminate();
             worker = null;
-            phase = "cancelled";
+            void closeOutput()
+                .then(() => {
+                    phase = "cancelled";
+                })
+                .catch((cause: unknown) => {
+                    errorMessage = cause instanceof Error ? cause.message : String(cause);
+                    phase = "error";
+                });
         }
     }
 
@@ -284,7 +345,7 @@
         return (
             `Assembling this selection needs about ${formatBytes(estimate.peakBytes)} of browser memory — more than ` +
             `${isMobileUa ? "a phone's tab" : "a browser tab"} can be trusted with ` +
-            `(${formatBytes(estimate.budgetBytes)}). The desktop app assembles the same selection natively.`
+            `(${formatBytes(estimate.budgetBytes)}). Use a smaller coverage area or split it into two maps.`
         );
     });
 
@@ -521,7 +582,8 @@
                 <div class="done">
                     <p class="line small">
                         Saved {savedFiles.length}
-                        {savedFiles.length === 1 ? "file" : "files"} — copy
+                        {savedFiles.length === 1 ? "file" : "files"}{#if outputPath} in
+                            <span class="mono">{outputPath}</span>{/if} — copy
                         {savedFiles.length === 1 ? "it" : "all of them"} to the top level of the device's
                         card.
                     </p>

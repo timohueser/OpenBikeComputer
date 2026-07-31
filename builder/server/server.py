@@ -1,14 +1,13 @@
-"""FastAPI app for the OBCM Web Builder."""
+"""Local maintainer host for the schema editor."""
 import json
 import os
 import subprocess
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
 
-from . import geofabrik, jobs, paths
+from . import paths
 
 PROJECT_ROOT = paths.BUILDER_ROOT
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
@@ -28,18 +27,7 @@ PALETTE_FILE = os.path.join(PROJECT_ROOT, "palette.json")
 # that stops resolving degrades silently (the fallback just never fires).
 SCHEMA_FILE = os.path.join(paths.REPO_ROOT, "host", "obc-pack", "schema", "config.schema.json")
 
-app = FastAPI(title="OBCM Web Builder")
-
-
-class JobRequest(BaseModel):
-    region_ids: list[str]
-    config: dict
-    chunk_size: int = 4096
-    output_name: str
-    # Optional [west, south, east, north] crop box (degrees). When present the
-    # selected PBFs are cropped to it (bounding-box build mode); the region_ids
-    # are then just the source regions that cover the box.
-    bbox: list[float] | None = None
+app = FastAPI(title="OBC Schema Editor")
 
 
 def _default_palette():
@@ -54,14 +42,6 @@ def _default_palette():
             b = levels[col % 4]
             colors.append(f"#{r:02X}{g:02X}{b:02X}")
     return {"columns": 8, "colors": colors}
-
-
-@app.get("/api/regions")
-def get_regions():
-    try:
-        return JSONResponse(geofabrik.get_regions())
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Failed to load Geofabrik index: {exc}")
 
 
 def _read_config(path: str):
@@ -153,56 +133,6 @@ def get_legacy_config():
     if not os.path.exists(USER_CONFIG):
         raise HTTPException(status_code=404, detail="No legacy config")
     return JSONResponse(_read_config(USER_CONFIG))
-
-
-@app.post("/api/jobs")
-def post_job(req: JobRequest):
-    if not req.region_ids:
-        raise HTTPException(status_code=400, detail="No regions selected")
-    if not req.output_name.strip():
-        raise HTTPException(status_code=400, detail="Output name is required")
-    if req.bbox is not None and len(req.bbox) != 4:
-        raise HTTPException(status_code=400, detail="bbox must be [west, south, east, north]")
-    try:
-        job = jobs.create_job(
-            req.region_ids, req.config, req.chunk_size, req.output_name.strip(), req.bbox
-        )
-    except jobs.QueueFull as exc:
-        raise HTTPException(status_code=429, detail=str(exc))
-    return {"job_id": job.id}
-
-
-@app.get("/api/jobs/{job_id}")
-def job_state(job_id: str):
-    """State snapshot — lets a reloaded page re-attach to a running build."""
-    job = jobs.get_job(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="Unknown job")
-    return JSONResponse(job.public_state())
-
-
-@app.get("/api/jobs/{job_id}/download")
-def job_download(job_id: str):
-    job = jobs.get_job(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="Unknown job")
-    if job.state != "done" or not os.path.exists(job.out_path):
-        raise HTTPException(status_code=409, detail=f"Build is not finished (state: {job.state})")
-    return FileResponse(
-        job.out_path, filename=job.download_name, media_type="application/octet-stream"
-    )
-
-
-@app.get("/api/jobs/{job_id}/events")
-def job_events(job_id: str):
-    job = jobs.get_job(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="Unknown job")
-    return StreamingResponse(
-        jobs.event_iterator(job),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
 
 
 # The SPA (builder/app/, built by Vite into static/dist/ —

@@ -9,8 +9,8 @@
 //!
 //! Two things are constants here and never change: the origin ([`GRID_ORIGIN`]) and the *shape* of
 //! the grid (square, power-of-two, one origin for every band and size). The actual **cell sizes and
-//! band membership are schema data** — [`BandTable`] carries them, [`BandTable::v1`] is the measured
-//! v1 recommendation of OBCA §1.5, and a bakery is expected to hand in the table its catalog
+//! band membership are schema data** — [`BandTable`] carries them, [`BandTable::recommended`] is the measured
+//! recommendation of OBCA §1.5, and a bakery is expected to hand in the table its catalog
 //! publishes rather than trust a default. Retuning a band is a re-bake, not a format bump (§1.2).
 
 use std::collections::HashSet;
@@ -296,7 +296,7 @@ impl BandRole {
 
 /// One band: a named class of cell content with one cell size (OBCA §1.2).
 ///
-/// The JSON shape is `OBCC_Spec.md` §11.3's `bands` entry verbatim, so a bakery can hand the
+/// The JSON shape is `OBCC_Spec.md` §4's `bands` entry verbatim, so a bakery can hand the
 /// catalog's own schema straight to the cutter.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Band {
@@ -332,7 +332,7 @@ pub struct BandTable {
 }
 
 impl BandTable {
-    /// The **v1 band table** — OBCA §1.5, the measured D1 recommendation for schema `bikepacking`
+    /// The **recommended band table** — OBCA §1.5, measured for schema `bikepacking`
     /// revision 1 over the shipped 7-LOD ladder:
     ///
     /// | band | size | carries |
@@ -344,7 +344,7 @@ impl BandTable {
     ///
     /// These are *values*, not format constants: a catalog states them, a producer reads them from
     /// the catalog, and this default exists so the CLI and the tests have something to run with.
-    pub fn v1() -> Self {
+    pub fn recommended() -> Self {
         let band = |id: &str, cell_log2: u32, lods: &[usize], sections: &[&str], role: BandRole| Band {
             id: id.to_string(),
             cell_log2,
@@ -694,9 +694,9 @@ mod tests {
     // --- the band table -----------------------------------------------------------------------
 
     #[test]
-    fn v1_band_table_is_the_spec_table() {
-        let t = BandTable::v1();
-        t.validate(7).expect("the v1 table partitions the 7-LOD ladder");
+    fn recommended_band_table_is_the_spec_table() {
+        let t = BandTable::recommended();
+        t.validate(7).expect("the recommended table partitions the 7-LOD ladder");
         assert_eq!(t.max_cell_log2(), 20, "S_MAX = 2^20");
         let by = |id: &str| t.band(id).expect("band").clone();
         assert_eq!((by("coarse").cell_log2, by("coarse").lods), (20, vec![0, 1, 2]));
@@ -714,43 +714,43 @@ mod tests {
     #[test]
     fn band_table_validation_catches_the_partition_and_role_traps() {
         let err = |t: &BandTable| t.validate(7).expect_err("must be rejected");
-        let mut t = BandTable::v1();
+        let mut t = BandTable::recommended();
         // A LOD in two bands.
         t.bands[1].lods.push(2);
         assert!(err(&t).contains("in two bands"), "got {}", err(&t));
         // A LOD in no band.
-        let mut t = BandTable::v1();
+        let mut t = BandTable::recommended();
         t.bands[2].lods = vec![5];
         assert!(err(&t).contains("LOD 6 is in no band"));
         // Geometry in the core file.
-        let mut t = BandTable::v1();
+        let mut t = BandTable::recommended();
         t.bands[3].lods = vec![6];
         t.bands[2].lods = vec![5];
         assert!(err(&t).contains("core band"));
         // Two nav bands.
-        let mut t = BandTable::v1();
+        let mut t = BandTable::recommended();
         t.bands[2].sections = vec!["nav".into()];
         assert!(err(&t).contains("nav section must be in exactly one band"));
         // A section on a geometry band.
-        let mut t = BandTable::v1();
+        let mut t = BandTable::recommended();
         t.bands[1].sections = vec!["poi".into()];
         assert!(!err(&t).is_empty());
         // Duplicate ids.
-        let mut t = BandTable::v1();
+        let mut t = BandTable::recommended();
         t.bands[1].id = "fine".into();
         assert!(err(&t).contains("appears twice"));
         // An unsupported cell size.
-        let mut t = BandTable::v1();
+        let mut t = BandTable::recommended();
         t.bands[0].cell_log2 = 30;
         assert!(err(&t).contains("outside the grid"));
     }
 
     #[test]
     fn band_table_json_round_trip() {
-        let t = BandTable::v1();
+        let t = BandTable::recommended();
         let json = serde_json::to_string(&t).expect("serialize");
         assert_eq!(BandTable::parse(&json).expect("parse"), t);
-        // A bare array is accepted too — that is the shape `OBCC_Spec.md` §11.3 nests.
+        // A bare array is accepted too — that is the shape `OBCC_Spec.md` §4 nests.
         let bare = serde_json::to_string(&t.bands).expect("serialize bands");
         assert_eq!(BandTable::parse(&bare).expect("parse bare"), t);
         // Roles are lowercase strings on the wire.

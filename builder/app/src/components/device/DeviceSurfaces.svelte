@@ -10,15 +10,12 @@
   The ride panel here is always the no-folder one: a `RideSource` — two reads, no ack — so "the
   browser never acks" is a property of what the panel has rather than of what it remembers not to
   call (#894, C5 #904). The tier with a managed folder (`caps.rideLibrary`) does not render these
-  surfaces at all any more: its device features live on the Device and Ride-library *pages*, and
-  its builder column keeps only the map send (`MapSendStep`).
+  surfaces at all any more: its device features live on the Device and Ride-library pages.
 -->
 <script lang="ts">
     import type { ProtocolClient } from "../../lib/usb/client";
     import type { VersionRead } from "../../lib/usb/protocol";
-    import type { LocalFileSource } from "../../lib/usb/session";
     import type { DeviceInfo } from "../../lib/usb/transport";
-    import type { MapArtifact } from "../../lib/device/write";
     import { rideAccess, rideScope } from "../../lib/device/rides";
     import FirmwareCard from "./FirmwareCard.svelte";
     import MapSend from "./MapSend.svelte";
@@ -29,17 +26,10 @@
         client,
         info,
         identity = null,
-        artifact = null,
-        localFileSource = null,
     }: {
         client: ProtocolClient;
         info: DeviceInfo | null;
         identity?: VersionRead | null;
-        artifact?: MapArtifact | null;
-        /** The session's disk-to-endpoint path (E3 #913), narrowed to the one surface that has a
-         *  local file to send. A route or a firmware image is kilobytes and arrives from a drop,
-         *  so neither has anything to gain from it. */
-        localFileSource?: LocalFileSource | null;
     } = $props();
 
     const rides = $derived(rideAccess(client));
@@ -48,7 +38,7 @@
     const scope = $derived(rideScope(info, identity));
 </script>
 
-<MapSend {client} {artifact} {localFileSource} />
+<MapSend {client} />
 <RouteDrop {client} />
 <RideExport {rides} {scope} />
 <FirmwareCard {client} {info} />

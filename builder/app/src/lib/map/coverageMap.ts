@@ -1,6 +1,4 @@
-// Leaflet glue for the coverage map (#1038) — the v2 counterpart of
-// `regionPicker.ts`, kept as its own class because the two panes draw different
-// worlds: the picker paints Geofabrik polygons and one bbox; this paints the
+// Leaflet glue for the coverage map (#1038). This paints the
 // cell catalog's own region boundaries as quiet affordances, each selection
 // part's true stair-edged outline, hatched not-baked patches inside the
 // selection, and the corridor panel's dashed preview. No grid is ever drawn —

@@ -4,12 +4,11 @@
     import Desktop from "./routes/Desktop.svelte";
     import Home from "./routes/Home.svelte";
     import { loadStyleEditor, platform, type StyleEditorModule } from "./lib/platform";
-    import { available, DESKTOP_ADDS } from "./lib/platform/gating";
+    import { DESKTOP_ADDS } from "./lib/platform/gating";
     import { router } from "./lib/router.svelte";
 
-    // The advanced editor is desktop-only (the locked decision in #894), so it
-    // is reached through an `import()` that only the hosts with
-    // `caps.styleEditor` declare — the web host has no reference to the route
+    // The advanced editor is maintainer tooling, reached through an `import()`
+    // only the dev host declares — product hosts have no reference to the route
     // anywhere in its graph, so Rollup can't emit the chunk at all rather than
     // emitting one nothing loads. Copied to a local const so the narrowing
     // survives into the closure; the promise is memoized so re-renders don't
@@ -78,8 +77,7 @@
 </main>
 
 <footer class="faint small">
-    Map data © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors ·
-    extracts by <a href="https://download.geofabrik.de/">Geofabrik</a>{#if available("build")}{" · builds run locally on this machine"}{/if}
+    Map data © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors
 </footer>
 
 <!-- Mounted once, at the root: the app's own "are you sure?", because the browser's does not exist

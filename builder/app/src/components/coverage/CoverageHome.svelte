@@ -1,16 +1,16 @@
 <script lang="ts">
     // The builder's home when the catalog is a cell store (#1038): the approved
-    // R2·1 frame. Same architecture as the v1 home — the steps column is the
-    // narrative spine, the map pane responds, only the column scrolls — but
-    // step 1 is now a ledger of composed parts and the map owns selection
+    // R2·1 frame. The steps column is the narrative spine, the map pane
+    // responds, and only the column scrolls. Step 1 is a ledger of composed
+    // parts and the map owns selection
     // through its tool rail.
     //
-    // Step 4 is deliberately v1's device step, unchanged: sending an assembled
+    // Step 4 uses the existing device step: sending an assembled
     // volume set over USB is the next slice (P4d), and until it lands the step
     // says what it can honestly do — manage the device, and take a map file the
     // rider already saved.
 
-    import type { CatalogV2Client } from "../../lib/catalog/v2/client";
+    import type { CatalogClient } from "../../lib/catalog/client";
     import { CoverageStore } from "../../lib/coverage/store.svelte";
     import { available } from "../../lib/platform/gating";
     import DeviceStep from "../device/DeviceStep.svelte";
@@ -25,7 +25,7 @@
         client,
         rootBody,
         active = true,
-    }: { client: CatalogV2Client; rootBody: string; active?: boolean } = $props();
+    }: { client: CatalogClient; rootBody: string; active?: boolean } = $props();
 
     // Constructed once for the component's lifetime, from props that never
     // change after mount (the home remounts this component per catalog).
@@ -82,16 +82,16 @@
                 the card.
             </p>
             {#if available("deviceDashboard")}
-                <MapSendStep artifact={null} />
+                <MapSendStep />
             {:else}
-                <DeviceStep artifact={null} />
+                <DeviceStep />
             {/if}
         </section>
     </div>
 </div>
 
 <style>
-    /* Same layout contract as the v1 home: the pane takes what the viewport
+    /* The pane takes what the viewport
        gives, the steps column is the one thing that scrolls (narrow screens
        trade the lock back for page scrolling). */
     .layout {

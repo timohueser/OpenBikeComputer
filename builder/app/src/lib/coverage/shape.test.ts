@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { cellId, GRID_ORIGIN } from "../catalog/v2/grid";
-import { exampleCatalog } from "../catalog/v2/testdata";
+import { cellId, GRID_ORIGIN } from "../catalog/grid";
+import { exampleCatalog } from "../catalog/testdata";
 import {
     cellsTouchingHoles,
     degreesToUbox,

@@ -1,13 +1,9 @@
 //! The shipped style documents, as the bakery sees them: **one schema and its
 //! skins**.
 //!
-//! `builder/presets/` used to hold a flat set of style *presets*, each a complete
-//! packer config that produced its own whole store. Epic #1016 D2 split that in two
-//! ([`OBCC_Spec.md` §11.3/§11.4](../../../specs/OBCC_Spec.md)):
-//!
 //! ```text
 //! builder/presets/
-//!   schema.json          the packer config every artifact is baked with
+//!   schema.json          the packer config every cell is baked with
 //!   skins/<id>.json      presentation over that schema — colors, weights, dashes
 //! ```
 //!
@@ -22,15 +18,9 @@
 //! schema's to pack with, a skin's to check that it fits the schema), the
 //! `_meta.version` to **record**, and the file's bytes — both to copy verbatim into
 //! the bake tree (where `obc-pack catalog` reads its `_meta`) and to hash into the
-//! idempotency key, so a schema edit re-bakes exactly the artifacts it invalidates
+//! idempotency key, so a schema edit re-bakes exactly the cells it invalidates
 //! and nothing else.
 //!
-//! Note the asymmetry the v1 catalog spec insists on (`OBCC_Spec.md` §3): the version
-//! copied into the tree describes the document *now*, the version written into a
-//! sidecar describes the document *that artifact was packed with*. They are the same
-//! number only until the next restyle, and the difference is the only signal a v1
-//! consumer has that a region has not been re-baked yet. Both come from here, at
-//! different moments, and neither is ever re-derived later.
 
 use std::path::{Path, PathBuf};
 
@@ -50,7 +40,8 @@ pub struct StyleDoc {
     /// also be its filename stem — a skin is addressed by id at assembly time, and
     /// two names for one document is one name too many.
     pub id: String,
-    /// `_meta.version` at load time. Recorded into every sidecar this run writes.
+    /// `_meta.version` at load time. The schema version becomes the cell-store revision;
+    /// a skin version is published in that skin's catalog entry.
     pub version: u32,
     pub path: PathBuf,
     /// The file's bytes, copied verbatim into the bake tree.
@@ -64,7 +55,7 @@ pub struct StyleDoc {
     pub config: Config,
 }
 
-/// Load `<dir>/schema.json` — the one config every artifact is baked with.
+/// Load `<dir>/schema.json` — the one config every cell is baked with.
 pub fn load_schema(dir: &Path) -> Result<StyleDoc, String> {
     let path = dir.join(SCHEMA_DOC);
     if !path.is_file() {
@@ -164,7 +155,7 @@ fn read(path: &Path, stem: Option<&str>) -> Result<StyleDoc, String> {
 /// is built here with `preserve_order`, so the round-trip below keeps that order.)
 ///
 /// The metadata is not thereby allowed to go stale: `_meta.version` is published in
-/// every sidecar, and [`crate::bake`] records it in the bake state and rewrites the
+/// every sidecar, and the bakery records it in the bake state and rewrites the
 /// sidecar alone when it drifts — four lines of JSON instead of twenty hours.
 fn body_sha256(doc: &serde_json::Value, path: &Path) -> Result<String, String> {
     let mut body = doc.clone();
@@ -193,7 +184,7 @@ mod tests {
 
     const PRIMARY: &str = r#"{"primary": {"color": "0xFD40", "z_index": 50, "weight": 3}}"#;
 
-    /// The property the whole #1036 migration rests on: `_meta` is not packer input,
+    /// The property the schema/skin split rests on: `_meta` is not packer input,
     /// so every edit confined to it leaves the bake key alone. The id rename that
     /// turned `default` into `bikepacking` is the first case, and the one that would
     /// otherwise have cost a re-pack of the live shelf for no change in bytes.

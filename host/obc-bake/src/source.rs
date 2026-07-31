@@ -10,7 +10,7 @@
 //!   is a *cache-freshness* decision and may use metadata, because being wrong only
 //!   costs a re-download.
 //! - **Did the input change since the last bake?** Answered with the file's SHA-256,
-//!   in [`crate::bake`]. That is the *idempotency key* and it is never a timestamp:
+//!   in the cell bakery. That is the *idempotency key* and it is never a timestamp:
 //!   a mirror that rewrites `Last-Modified` without changing a byte must not
 //!   trigger a twenty-hour re-bake, and a file mutated in place must not be missed.
 //!
@@ -18,7 +18,7 @@
 //! fact about the data that the manifest publishes (`source_snapshot`), so it must
 //! not go stale — but it is derived from `Last-Modified`, so letting it force a
 //! re-pack would reintroduce exactly the timestamp sensitivity the paragraph above
-//! rules out. [`crate::bake`] therefore keeps it out of the pack key and compares it
+//! rules out. The bakery therefore keeps it out of the pack key and compares it
 //! separately: a re-dated but byte-identical extract rewrites the sidecar and
 //! re-packs nothing.
 //!
@@ -59,7 +59,7 @@ pub trait ExtractSource: Sync {
     /// bake needs it for two decisions a bbox cannot make: which cells a region
     /// selects, and whether a baked cell is canonical or `partial`
     /// ([`crate::coverage`]). It is also the file the catalog's drawable region
-    /// outline is reduced from (`OBCC_Spec.md` §11.8), so both readings come from
+    /// outline is reduced from (`OBCC_Spec.md` §7), so both readings come from
     /// one download.
     ///
     /// Tiny (tens of KB) and unversioned by Geofabrik, so it is fetched fresh rather

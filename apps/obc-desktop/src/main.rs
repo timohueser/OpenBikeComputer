@@ -1,24 +1,10 @@
-//! The OpenBikeComputer desktop app: the same web builder, in a Tauri shell, with
-//! `obc-pack` linked in instead of a FastAPI server in front of a subprocess
-//! (#906, part of #894's phase D).
+//! The OpenBikeComputer desktop app: the same published-cell map builder as the
+//! website, in a Tauri shell with native storage and device access.
 //!
-//! ## What this replaces
-//!
-//! The dev server is Python: six HTTP endpoints, a job queue, and a `subprocess`
-//! whose stdout it reads a byte at a time to guess which stage the packer is in.
-//! Every one of those is a Rust command here, and the guessing is gone — the
-//! packer *names* its phases now ([`obc_pack::progress::Phase`]), so the progress
-//! bar reads a value instead of a prefix. Nothing in the shipped app is Python;
-//! nothing in it spawns the packer.
-//!
-//! | dev server | here |
+//! | capability | command |
 //! |---|---|
-//! | `GET /api/regions` | [`regions`] |
-//! | `GET /api/presets` | [`presets`] |
-//! | `GET /api/schema` (spawns `obc-pack schema`) | [`schema`] (the linked library) |
-//! | `GET /api/palette` | [`palette`] |
-//! | `POST /api/jobs` + SSE + `GET .../download` | [`build_start`] + a channel + a real path |
-//! | — | [`storage_info`] / [`storage_clear`], because caches this large need a door |
+//! | published map catalog | [`catalog`] |
+//! | app storage | [`storage_info`] / [`storage_clear`] |
 //! | — | [`usb`], because the webview has no WebUSB and this tier is the universal USB path |
 //! | — | [`rides`], because a durable copy of a ride is what a browser cannot promise |
 //!
@@ -26,90 +12,77 @@
 //!
 //! The window is granted `core:default` and nothing else: no filesystem, no shell,
 //! no HTTP. Every one of those policies is written in Rust, where it can be read —
-//! `storage_clear` takes an id from a fixed table rather than a path, the build
-//! command writes only into the maps folder, and the only URLs the app fetches are
-//! the Geofabrik index, the extracts that index names, and the catalog.
+//! `storage_clear` takes an id from a fixed table rather than a path, and catalog
+//! object reads are restricted to the configured catalog origin.
 
-mod build_job;
 mod catalog;
-mod content;
 mod http;
+mod map_output;
 mod paths;
-mod regions;
 mod rides;
 mod storage;
 mod usb;
 
 use std::sync::Arc;
 
-use build_job::{BuildEvent, BuildRequest, JobSnapshot, Jobs};
-use serde_json::Value;
-use tauri::ipc::Channel;
-use tauri::{Manager, State};
+use tauri::Manager;
 
-/// The Geofabrik download-region tree for the area picker.
-#[tauri::command]
-async fn regions() -> Result<Value, String> {
-    // On the blocking pool: a cold index is an HTTP fetch plus a GEOS simplify
-    // over a few hundred boundaries, and the window must stay alive through it.
-    tauri::async_runtime::spawn_blocking(regions::regions).await.map_err(|e| e.to_string())?
-}
-
-/// The shipped style presets, default first.
-#[tauri::command]
-fn presets() -> Vec<content::Preset> {
-    content::presets()
-}
-
-/// `obc-pack`'s config JSON Schema envelope, from the packer linked into this
-/// binary — so the editor's capability cannot disagree with what packs.
-#[tauri::command]
-fn schema() -> Result<Value, String> {
-    content::schema()
-}
-
-/// The device's color gamut, laid out for the picker grid.
-#[tauri::command]
-fn palette() -> Value {
-    content::palette()
-}
-
-/// The published catalog of pre-baked maps, body and base URL.
+/// The published cell catalog, body and base URL.
 #[tauri::command]
 async fn catalog() -> Result<catalog::FetchedCatalog, String> {
     tauri::async_runtime::spawn_blocking(catalog::fetch).await.map_err(|e| e.to_string())?
 }
 
+/// One catalog satellite or cell, restricted to the catalog root's origin.
+#[tauri::command]
+async fn catalog_get(url: String) -> Result<tauri::ipc::Response, String> {
+    let bytes = tauri::async_runtime::spawn_blocking(move || http::get_catalog_object(&url))
+        .await
+        .map_err(|e| e.to_string())??;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+#[tauri::command]
+fn map_output_begin(
+    app: tauri::AppHandle,
+    outputs: tauri::State<'_, Arc<map_output::Outputs>>,
+    name: String,
+) -> Result<map_output::Opened, String> {
+    outputs.begin(&maps_dir(&app), &name)
+}
+
+#[tauri::command]
+async fn map_output_write(
+    outputs: tauri::State<'_, Arc<map_output::Outputs>>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<String, String> {
+    let header = |name: &str| {
+        request
+            .headers()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .ok_or_else(|| format!("a map output write is missing its `{name}` header"))
+    };
+    let id: u64 = header("output-id")?.parse().map_err(|_| "a map output write has an invalid id".to_string())?;
+    let name = header("filename")?.to_owned();
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("a map output write must carry raw bytes".into());
+    };
+    let bytes = bytes.clone();
+    let root = outputs.root(id)?;
+    tauri::async_runtime::spawn_blocking(move || map_output::write_file(&root, &name, &bytes))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn map_output_finish(outputs: tauri::State<'_, Arc<map_output::Outputs>>, id: u64) -> Result<(), String> {
+    outputs.finish(id)
+}
+
 /// Where built maps go. Shown in the UI, so it is a fact the user can act on.
 fn maps_dir(app: &tauri::AppHandle) -> std::path::PathBuf {
     paths::maps_dir(app.path().document_dir().ok())
-}
-
-#[tauri::command]
-fn build_start(
-    app: tauri::AppHandle,
-    jobs: State<'_, Arc<Jobs>>,
-    request: BuildRequest,
-    on_event: Channel<BuildEvent>,
-) -> Result<String, String> {
-    build_job::start(Arc::clone(&jobs), request, maps_dir(&app), on_event)
-}
-
-/// The active (or most recent) build, for a window that reloaded mid-build.
-#[tauri::command]
-fn build_active(jobs: State<'_, Arc<Jobs>>) -> Option<JobSnapshot> {
-    jobs.snapshot()
-}
-
-/// Re-point a build's events at a new channel, replaying what it already said.
-#[tauri::command]
-fn build_attach(jobs: State<'_, Arc<Jobs>>, id: String, on_event: Channel<BuildEvent>) -> bool {
-    jobs.attach(&id, on_event)
-}
-
-#[tauri::command]
-fn build_cancel(jobs: State<'_, Arc<Jobs>>, id: String) -> bool {
-    jobs.cancel(&id)
 }
 
 /// Every place the app has put bytes on this disk, with sizes.
@@ -122,37 +95,6 @@ fn storage_info(app: tauri::AppHandle) -> Vec<storage::Place> {
 #[tauri::command]
 async fn storage_clear(id: String) -> Result<u64, String> {
     tauri::async_runtime::spawn_blocking(move || storage::clear(&id)).await.map_err(|e| e.to_string())?
-}
-
-/// Largest style export this command will write.
-///
-/// A working config with every feature type spelled out is tens of kilobytes; a
-/// megabyte is two orders of magnitude of headroom and still a bound. It is here
-/// because "the window may write a file" needs one — not because anything
-/// legitimate approaches it.
-const MAX_STYLE_BYTES: usize = 1024 * 1024;
-
-/// Write an exported style config where the user can find it (E3 #913).
-///
-/// **The webview cannot save a file itself, and its usual trick does not work
-/// here.** A browser exports by clicking an `<a download>` at a blob URL; inside
-/// this app that is silently a no-op, because wry only installs a download
-/// delegate when the embedder supplies a handler and Tauri supplies one only if
-/// the application asks. So the export is a command, and it is the same shape as
-/// every other filesystem policy in this crate: a fixed folder, a sanitised
-/// basename, a size ceiling, and a path handed back so the UI can say where the
-/// file went and offer to reveal it. The frontend names a file; it never names a
-/// place.
-#[tauri::command]
-fn save_style(app: tauri::AppHandle, name: String, body: String) -> Result<String, String> {
-    if body.len() > MAX_STYLE_BYTES {
-        return Err(format!("that config is {} bytes; the limit is {MAX_STYLE_BYTES}", body.len()));
-    }
-    let dir = paths::styles_dir(app.path().document_dir().ok());
-    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-    let path = paths::unique_in(&dir, &paths::sanitize_basename(&name, ".json", "style"));
-    std::fs::write(&path, body).map_err(|e| format!("write {}: {e}", path.display()))?;
-    Ok(path.to_string_lossy().into_owned())
 }
 
 /// Show a produced file in the platform's file manager.
@@ -308,21 +250,16 @@ fn main() {
         // Registered for its Rust API only — `rides_choose_folder` calls it. No JS permission is
         // granted, so the webview cannot open a picker of its own.
         .plugin(tauri_plugin_dialog::init())
-        .manage(Arc::new(Jobs::default()))
         .manage(Arc::new(usb::UsbState::default()))
+        .manage(Arc::new(map_output::Outputs::default()))
         .invoke_handler(tauri::generate_handler![
-            regions,
-            presets,
-            schema,
-            palette,
             catalog,
-            build_start,
-            build_active,
-            build_attach,
-            build_cancel,
+            catalog_get,
+            map_output_begin,
+            map_output_write,
+            map_output_finish,
             storage_info,
             storage_clear,
-            save_style,
             reveal_file,
             // E2 (#912). The library is a folder plus an index; the ack follows `rides_import`.
             rides_index,

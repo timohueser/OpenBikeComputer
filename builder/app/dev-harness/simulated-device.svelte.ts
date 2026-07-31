@@ -17,7 +17,7 @@
  */
 
 import { gpxToObcr } from "../src/lib/convert/bridge";
-import { ProtocolClient, type ObjectSource } from "../src/lib/usb/client";
+import { ProtocolClient } from "../src/lib/usb/client";
 import { Crc32 } from "../src/lib/usb/crc32";
 import { WatchedDeviceSession } from "../src/lib/usb/session.svelte";
 import { MockDevice, loopbackLink } from "../src/lib/usb/loopback";
@@ -347,43 +347,6 @@ function syntheticRide(name: string, startTime: number, points: number, sensors:
     };
 }
 
-// --- the desktop tier's disk-to-endpoint path, without a disk -------------------
-//
-// E3 (#913) puts a map the app just built on the device without its bytes entering the page:
-// `MapSend` offers the row only when the *session* has a `localFileSource`, and `sendLocalMap`
-// hands the resulting source to the client, which streams it through `sendTo` instead of its own
-// chunk loop. None of that is reachable in a browser — the real one is `nusb` behind Tauri — so the
-// harness supplies the same seam over a generated "file". Every line of UI and protocol above it is
-// the shipping code; the fiction is the disk, exactly as the fiction elsewhere here is the cable.
-
-/**
- * How big the harness's pretend build is.
- *
- * A real map is hundreds of megabytes, and a faithful one here would be unusable: the pacing above
- * is per *packet*, so a megabyte is thousands of promise round-trips and a background tab's clamped
- * timers slow it by another order of magnitude. One megabyte is a couple of seconds in a focused
- * tab — long enough to watch the bar, the rate and Cancel actually work, short enough to sit
- * through twice.
- */
-const BUILT_MAP_BYTES = 1024 * 1024;
-
-/** The pretend build, and where it pretends to live. */
-export const BUILT_MAP = {
-    path: "/Users/you/Documents/OpenBikeComputer/black-forest.obcm",
-    filename: "black-forest.obcm",
-    bytes: BUILT_MAP_BYTES,
-};
-
-/** Its bytes, made once and position-dependent so a mis-ordered send fails the device's CRC. */
-const builtMapBytes = (() => {
-    const out = new Uint8Array(BUILT_MAP_BYTES);
-    for (let i = 0; i < out.length; i++) out[i] = (i * 31) & 0xff;
-    return out;
-})();
-
-/** Bytes handed to the pipe per write, mirroring the Rust side's 64 KB transfers. */
-const NATIVE_CHUNK = 64 * 1024;
-
 /** A watcher whose "device" is an in-memory one. The same three methods the WebUSB watcher has. */
 class LoopbackWatcher implements DeviceWatcher {
     private state: DeviceState = IDLE;
@@ -437,40 +400,6 @@ class LoopbackWatcher implements DeviceWatcher {
         await this.disconnect();
         this.listeners.clear();
     }
-
-    /**
-     * The seam `NativeWatcher` fills with `nusb` (D4 #909, E3 #913).
-     *
-     * `chunks()` throws for the same reason the real one does: falling back to reading the object
-     * through the page is the exact thing this path exists to avoid, so it must fail loudly rather
-     * than quietly work. `sendTo` honours the hooks the chunk loop would have honoured — the
-     * caller's signal and the device's own mid-stream reject — because a source that replaces the
-     * loop inherits the loop's obligations.
-     */
-    localFileSource = async (path: string): Promise<ObjectSource> => {
-        if (!this.open) throw new Error("No device is connected.");
-        if (path !== BUILT_MAP.path) throw new Error(`${path} is outside the folders this app streams from.`);
-        return {
-            totalLen: builtMapBytes.length,
-            crc32: Crc32.of(builtMapBytes),
-            // eslint-disable-next-line require-yield
-            async *chunks(): AsyncGenerator<Uint8Array> {
-                throw new Error(`${path} streams natively; its bytes are not available to the page.`);
-            },
-            sendTo: async (pipe, hooks) => {
-                hooks.check();
-                let sent = 0;
-                while (sent < builtMapBytes.length) {
-                    const slice = builtMapBytes.subarray(sent, sent + NATIVE_CHUNK);
-                    await pipe.write(slice, hooks.signal);
-                    sent += slice.length;
-                    hooks.onProgress?.(sent);
-                    hooks.check();
-                }
-                return sent;
-            },
-        };
-    };
 
     private publish(state: DeviceState): void {
         this.state = state;

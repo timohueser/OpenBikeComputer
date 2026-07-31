@@ -367,7 +367,7 @@ export function encodeSetRouteRetention(objectId: number, retention: number): Ui
  *
  * `obcmVersion` is the OBCM **map-format** version this device's firmware reads — a different
  * number in a different sequence from `version`, which is the wire contract. It is the one fact
- * `OBCC_Spec.md` §6(c) turns on: don't offer a map artifact the connected device cannot read. A
+ * `OBCC_Spec.md` §10 turns on: don't offer an assembly the connected device cannot read. A
  * trailing field the read did not carry is `null`, **never** a fabricated `0`: `obcmVersion: 0`
  * would read as "this device supports OBCM v0" and refuse every real map, where `null` correctly
  * means "unknown" and takes §6(c)'s no-known-target-firmware branch (offer it, stating the

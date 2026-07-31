@@ -267,11 +267,11 @@ impl Fixture {
         .expect("the run itself completes; per-plan failures are in the summary")
     }
 
-    /// Generate the v2 catalog into the tree, as the CLI does after a bake.
-    fn catalog(&self) -> obc_pack::catalog::v2::GeneratedCatalogV2 {
-        let opts = obc_pack::catalog::v2::CatalogV2Options::new(BASE_URL, GENERATED_AT);
-        let generated = obc_pack::catalog::v2::generate(&self.tree, &opts).expect("the cell tree generates a catalog");
-        obc_pack::catalog::v2::write_all_atomic(&self.tree, &generated).expect("write");
+    /// Generate the catalog into the tree, as the CLI does after a bake.
+    fn catalog(&self) -> obc_pack::catalog::GeneratedCatalog {
+        let opts = obc_pack::catalog::CatalogOptions::new(BASE_URL, GENERATED_AT);
+        let generated = obc_pack::catalog::generate(&self.tree, &opts).expect("the cell tree generates a catalog");
+        obc_pack::catalog::write_all_atomic(&self.tree, &generated).expect("write");
         generated
     }
 
@@ -424,7 +424,7 @@ fn an_unchanged_rerun_cuts_nothing_and_a_force_cuts_everything() {
 }
 
 /// A re-dated but byte-identical extract publishes the new date and re-cuts nothing —
-/// the same two-key design [`obc_bake::bake`] uses, at cell granularity.
+/// the bakery's two-key design, at cell granularity.
 #[test]
 fn a_redated_but_identical_extract_refreshes_the_sidecar_and_cuts_nothing() {
     let f = fixture_dirs("redate");
@@ -650,9 +650,9 @@ fn a_skin_the_run_no_longer_publishes_is_pruned_from_the_tree() {
     assert_eq!(f.catalog().root.skins.len(), 1, "and the catalog offers exactly what the directory holds");
 }
 
-/// The tree a bake leaves is one the v2 generator accepts and the verifier passes.
+/// The tree a bake leaves is one the catalog generator accepts and the verifier passes.
 #[test]
-fn the_tree_generates_a_v2_catalog_that_verifies() {
+fn the_tree_generates_a_catalog_that_verifies() {
     let f = fixture_dirs("catalog");
     let summary = f.bake(&FixtureCutter::new(), &[], SNAPSHOT, false);
     assert!(summary.ok(), "{}", summary.render());
@@ -739,15 +739,15 @@ fn a_mixed_revision_store_fails_the_guard() {
     let text = guard.render();
     assert!(text.contains("FAILED"), "{text}");
     assert!(text.contains("schema revision 2"), "{text}");
-    assert!(text.contains("obc-bake bake --cells"), "the failure must say what to do: {text}");
+    assert!(text.contains("obc-bake bake --out"), "the failure must say what to do: {text}");
     // And the generator refuses the same tree, for the same reason.
-    let opts = obc_pack::catalog::v2::CatalogV2Options::new(BASE_URL, GENERATED_AT);
-    let err = obc_pack::catalog::v2::generate(&f.tree, &opts).expect_err("a mixed-revision tree is unpublishable");
+    let opts = obc_pack::catalog::CatalogOptions::new(BASE_URL, GENERATED_AT);
+    let err = obc_pack::catalog::generate(&f.tree, &opts).expect_err("a mixed-revision tree is unpublishable");
     assert!(err.contains("schema revision"), "{err}");
 }
 
 /// A satellite that does not match the digest the root pinned MUST be rejected —
-/// `OBCC_Spec.md` §11.1's all-or-nothing guarantee, per document.
+/// `OBCC_Spec.md` §9's all-or-nothing guarantee, per document.
 #[test]
 fn a_tampered_satellite_fails_verification() {
     let f = fixture_dirs("satellite");
@@ -765,7 +765,7 @@ fn a_tampered_satellite_fails_verification() {
     assert!(report.problems.iter().any(|p| p.contains("cells/coarse/index.json")), "{:?}", report.problems);
 }
 
-/// A cell tree publishes root-last, exactly as a v1 tree does — the satellites are
+/// A cell tree publishes root-last — the satellites are
 /// ordinary objects and must all be fetchable before the document naming them is.
 #[test]
 fn a_cell_tree_publishes_its_root_last() {
@@ -773,7 +773,7 @@ fn a_cell_tree_publishes_its_root_last() {
     f.bake(&FixtureCutter::new(), &[], SNAPSHOT, false);
     f.catalog();
 
-    let objects = obc_bake::publish::plan_v2(&f.tree).expect("plan");
+    let objects = obc_bake::publish::plan(&f.tree).expect("plan");
     let keys: Vec<&str> = objects.iter().map(|o| o.key.as_str()).collect();
     assert_eq!(*keys.last().unwrap(), "catalog.json", "the root is last by construction");
     assert!(keys.contains(&"schema.json"), "the schema document is published too: {keys:?}");
@@ -784,28 +784,20 @@ fn a_cell_tree_publishes_its_root_last() {
 
     let dest = f.dir.join("published");
     let store = obc_bake::publish::DirStore::new(&dest);
-    let opts = obc_pack::catalog::v2::CatalogV2Options::new(BASE_URL, GENERATED_AT);
-    let report = obc_bake::publish::publish_v2(
-        &f.tree,
-        &store,
-        &opts,
-        obc_bake::publish::PublishOptions { dry_run: false, allow_shrink: false },
-    )
-    .expect("publish");
+    let opts = obc_pack::catalog::CatalogOptions::new(BASE_URL, GENERATED_AT);
+    let report =
+        obc_bake::publish::publish(&f.tree, &store, &opts, obc_bake::publish::PublishOptions { dry_run: false })
+            .expect("publish");
     assert_eq!(report.cells, 30);
     assert!(dest.join("catalog.json").is_file());
     assert!(dest.join("cells/coarse/1204/1052.obcm").is_file());
 
-    // Publishing a west-only tree over it would un-offer East: refused by default.
+    // A later scoped publish replaces only the objects its new root references.
     let narrowed = fixture_dirs("publish-narrow");
     narrowed.bake(&FixtureCutter::new(), &["europe/west"], SNAPSHOT, false);
     narrowed.catalog();
-    let err = obc_bake::publish::publish_v2(
-        &narrowed.tree,
-        &store,
-        &opts,
-        obc_bake::publish::PublishOptions { dry_run: false, allow_shrink: false },
-    )
-    .expect_err("the shrink guard refuses it");
-    assert!(err.contains("europe/east"), "{err}");
+    let narrowed_report =
+        obc_bake::publish::publish(&narrowed.tree, &store, &opts, obc_bake::publish::PublishOptions { dry_run: false })
+            .expect("scoped publish");
+    assert_eq!(narrowed_report.regions, vec!["europe/west"]);
 }
