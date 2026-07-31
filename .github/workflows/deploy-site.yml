@@ -74,6 +74,7 @@ on:
       - "builder/**"
       - "apps/obc-web-assemble/**"
       - "apps/obc-web-convert/**"
+      - "apps/obc-skin-preview/**"
       - "host/obcm-assemble/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -134,9 +135,10 @@ jobs:
           OBC_BUILDER_PATH: ${{ vars.OBC_CATALOG_URL != '' && 'builder/' || '' }}
         run: trunk build --release --config docs/Trunk.toml --public-url "./"
 
-      # The builder imports the shared obc-route GPX↔OBCR path (#896) and the cell
-      # assembler (#1034). The shared script is also used by CI so the lists cannot drift.
-      # Neither is optional: the frontend imports the generated bindings, so a missing
+      # The builder imports the shared obc-route GPX↔OBCR path (#896), the cell
+      # assembler (#1034), and the production-rendered skin preview (#1045). The shared
+      # script is also used by CI so the lists cannot drift.
+      # None is optional: the frontend imports the generated bindings, so a missing
       # pkg/ is a build failure, not a degraded site.
       - name: Build the wasm bridges
         run: bash builder/build-wasm-bridges.sh

@@ -322,10 +322,11 @@ desktop *args:
     esac; done
     fe="$OBC_ROOT/builder/app"
     [[ -d "$fe/node_modules" ]] || { _say "installing frontend deps…"; ( cd "$fe" && _run npm ci ); }
-    # Both wasm bridges are imported by the app: GPX↔OBCR conversion and cell
-    # assembly. Build them before type-checking or bundling needs their bindings.
+    # All three wasm bridges are imported by the app: GPX↔OBCR conversion, cell
+    # assembly, and the live skin preview. Build them before type-checking or bundling.
     if [[ ! -f "$fe/src/lib/convert/pkg/obc_web_convert_bg.wasm" || \
-          ! -f "$fe/src/lib/assemble/pkg/obc_web_assemble_bg.wasm" ]]; then
+          ! -f "$fe/src/lib/assemble/pkg/obc_web_assemble_bg.wasm" || \
+          ! -f "$fe/src/lib/skin/pkg/obc_skin_preview_bg.wasm" ]]; then
       _say "building the wasm bridges…"; ( cd "$fe" && _run npm run build:wasm )
     fi
     if [[ "$mode" == dev ]]; then
@@ -361,7 +362,8 @@ site *args:
     fe="$OBC_ROOT/builder/app"
     [[ -d "$fe/node_modules" ]] || { _say "installing frontend deps…"; ( cd "$fe" && _run npm ci ); }
     if [[ ! -f "$fe/src/lib/convert/pkg/obc_web_convert_bg.wasm" || \
-          ! -f "$fe/src/lib/assemble/pkg/obc_web_assemble_bg.wasm" ]]; then
+          ! -f "$fe/src/lib/assemble/pkg/obc_web_assemble_bg.wasm" || \
+          ! -f "$fe/src/lib/skin/pkg/obc_skin_preview_bg.wasm" ]]; then
       _say "building the wasm bridges…"; ( cd "$fe" && _run npm run build:wasm )
     fi
     _say "building the static web tier…"
@@ -475,7 +477,7 @@ check *args:
         [[ -d node_modules ]] || step "frontend deps (npm ci)" npm ci
         # Not optional: the TS wrapper imports the generated bindings, so svelte-check
         # and the byte-identity drift guard both fail without the module present. CI
-        # gets both packages from the `wasm-bridges` job; locally we build them.
+        # gets all three packages from the `wasm-bridges` job; locally we build them.
         step "wasm bridges"          npm run build:wasm
         step "frontend svelte-check" npm run check
         step "frontend vitest"       npm test
