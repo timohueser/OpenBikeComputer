@@ -161,9 +161,18 @@ A region id is a slash-separated Geofabrik-style id such as
 | `bytes_by_band` | object | Per-band sums; MUST sum to `bytes`. |
 | `cell_count` | object | Per-band cell counts. |
 | `partial_cell_count` | integer | Selected cells whose square is not fully covered. |
+| `partial_cell_count_by_band` | object | Optional additive-v2 per-band split of `partial_cell_count`. |
 | `cells_url` | string | Region satellite URL. |
 | `cells_bytes` | integer | Exact satellite byte length. |
 | `cells_sha256` | string | Lowercase SHA-256 of the exact satellite bytes. |
+
+New v2 producers MUST publish `partial_cell_count_by_band`, including zeroes for
+bands with no partial cells. Its keys MUST be band ids, each value MUST be no
+greater than that band's `cell_count`, and its values MUST sum to
+`partial_cell_count`. Consumers MUST accept an older v2 root that omits the
+additive field; without it they cannot distinguish normal coarse-context
+partials from detail-band partials until the region satellite and cell indexes
+have resolved.
 
 The pinned satellite has this shape:
 
