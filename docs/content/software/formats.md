@@ -1074,10 +1074,11 @@ volume-set bytes. The desktop host differs only at the edge, where it fetches
 through a native same-origin HTTPS transport and saves the files atomically into
 one local folder.
 
-The device's multi-file reader and direct send of an assembled set remain part
-of Epic #1016. Until that lands, the builder downloads or saves the set and the
-device surface retains only the temporary manual single-file compatibility
-action.
+The device's multi-file reader and direct send consume that same assembled set.
+The builder can save every file or stream them to a connected device one
+verified shard at a time, committing the manifest last so an interrupted send
+never mounts as a partial map. Manual single-file upload remains only for maps
+obtained elsewhere.
 
 That only works if assembling is nearly free, and the reason it is nearly free
 is a piece of arithmetic already sitting in the format.
@@ -1162,7 +1163,7 @@ The other seam rule is about what a cell is allowed to throw away. The packer dr
 
 A style preset mixed two very different things. **Schema** — which feature types exist, at which LOD, the ladder, the simplification tolerances — is baked into chunk bytes, and in particular it fixes the [style *ids*](#the-header) every feature header references. **Skin** — the colours, weights, dashes, z-order, and the marker colour — is the ~2 KB style table and nothing else.
 
-Cells are stored per schema; the hosted catalog has exactly **one** (the seven-LOD bikepacking ladder, the one measured to render inside the device's RAM and complexity budget), so the planet-shaped store exists once. Skins are then free: stamping one onto an assembly rewrites two kilobytes. The product builders expose those safe presentation choices; the separate maintainer editor remains the place to change the baked schema and LODs. A restyle can no longer leave an artifact a revision behind, because nothing is baked to be behind.
+Cells are stored per schema; the hosted catalog has exactly **one** (the seven-LOD bikepacking ladder, the one measured to render inside the device's RAM and complexity budget), so the planet-shaped store exists once. Skins are then free: stamping one onto an assembly rewrites two kilobytes. The product builders can clone Default or Dusk and edit colours, widths, dashes, z-order, and the marker colour; a fixed Teningen scene is redrawn through the production renderer as those values change. Custom skins stay in browser storage under the catalog's schema id and revision, while the separate maintainer editor remains the place to change the baked schema and LODs. A restyle can no longer leave an artifact a revision behind, because nothing is baked to be behind.
 
 The shipped documents say which half they are. [`builder/presets/`](src:builder/presets) holds one `schema.json` — a complete packer config, id `bikepacking` — and a `skins/` set beside it. Each skin restates the presentation values for the schema's feature types and nothing else. Merge passes can retag several identically rendered feature types to one canonical style id, so a skin must keep those merged styles identical too. Three rules make that safe rather than merely tidy, and all three are checked by the catalog generator and bakery before the first cut: a skin covers **every** schema feature type, cannot add, drop, or renumber one, and carries **nothing but presentation** — no ladder, tolerances, merge passes, routing table, or per-style `min_lod`. A document that breaks those rules describes a different schema and therefore a different cell store.
 
