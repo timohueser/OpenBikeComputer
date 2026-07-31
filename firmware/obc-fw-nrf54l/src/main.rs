@@ -213,7 +213,7 @@ use obc_app::InputPlane;
 use obc_app::{App, AppState};
 use obc_display::ls021::{RowDiff, FRAME_H, FRAME_W};
 use obc_platform::ButtonInput;
-use obc_reader::{MapCache, MapTables};
+use obc_reader::{MapCache, MapTables, MountedSet};
 use obc_render::zoom_for_mpp;
 // The decoded-route-geometry cache — resident in `.bss`, handed to the ride loop.
 use obc_route::RouteCache;
@@ -284,6 +284,10 @@ bind_interrupts!(struct SensorIrqs {
 //                  earlier by-value `RouteIndex::read` build put the ~6.7 KB on the stack at the ride
 //                  pass's deepest point, and the post-upload rescan's rebuild overflowed the main
 //                  stack the moment `.bss` crept 216 B (STKOF HardFault, 2026-07-12).
+//   - volume set   caller-placed `SetShards<11>` and one FAT extent table/source per possible
+//                  shard. These remain resident even for a single-file map so a later refactor
+//                  cannot silently move the cost into the async task frame. The parsed manifest is
+//                  mount-time-only and is dropped in a synchronous helper before the next await.
 // plus `STACK_RESERVE` headroom for the main stack + embassy's executor/task arenas. The stack must
 // also absorb a per-redraw `Reader::new` (the OBCM style table → a ~2.4 KB `Reader` value built as a
 // stack temporary, plus its own ~4 KB read scratch): the ride loop rebuilds it each frame, so the
@@ -319,7 +323,12 @@ const MAP_RESIDENT: usize = core::mem::size_of::<obc_app::App>()
     + core::mem::size_of::<obc_reader::MapTables>()
     + core::mem::size_of::<obc_route::RouteCache>()
     + core::mem::size_of::<obc_route::RouteIndex>()
+    + SET_RESIDENT
     + NAV_RESIDENT;
+/// Device-native volume-set residents (#1033): the mount records are caller-placed here, while
+/// `sd.rs` owns the board-private direct-read tables/sources.
+const SET_RESIDENT: usize =
+    core::mem::size_of::<sd::SetShardStore>() + sd::SET_EXTENT_TABLES_BYTES + sd::SET_SOURCES_BYTES;
 /// The on-device router's residents (epic #116, R4): the fixed A* scratch + graph-tile cache
 /// (~14.3 KB, the `NAV_*` statics below). Zero on the `ble` build — `has_nav` gates the router
 /// out of the combined image because these two statics push its stack region ~1.9 KB below the
@@ -353,7 +362,7 @@ const RESIDENT_BYTES: usize = FB_BYTES
     + USB_RESIDENT;
 const _: () = assert!(
     RESIDENT_BYTES + STACK_RESERVE <= NRF_RAM_BYTES,
-    "nRF resident set (framebuffer + RowDiff + map plane [App/MapCache/MapTables/RouteCache/RouteIndex] + BLE stack [MPSL/SDC mem/host arena]) + stack reserve overruns RAM — re-trim the `nrf-mem` caps (#270 culled them so map + BLE share the 256 KB DK; the LM20 relaxes everything)"
+    "nRF resident set (framebuffer + RowDiff + map plane [App/MapCache/MapTables/RouteCache/RouteIndex/volume-set tables] + BLE stack [MPSL/SDC mem/host arena]) + stack reserve overruns RAM — re-trim the `nrf-mem` caps (#270 culled them so map + BLE share the 256 KB DK; the LM20 relaxes everything)"
 );
 
 // A report-only table of exact target-side allocation sizes. Keeping the table in this crate gives
@@ -416,7 +425,7 @@ mod resource_report {
         entry("ble_sensor_manager", 0),
     ];
 
-    const ENTRIES: usize = 24;
+    const ENTRIES: usize = 27;
 
     #[used]
     #[no_mangle]
@@ -428,6 +437,9 @@ mod resource_report {
         entry("app", core::mem::size_of::<App>()),
         entry("map_cache", core::mem::size_of::<MapCache>()),
         entry("map_tables", core::mem::size_of::<MapTables>()),
+        entry("set_shards", core::mem::size_of::<sd::SetShardStore>()),
+        entry("set_extent_tables", sd::SET_EXTENT_TABLES_BYTES),
+        entry("set_sources", sd::SET_SOURCES_BYTES),
         entry("route_cache", core::mem::size_of::<RouteCache>()),
         entry("route_index", core::mem::size_of::<obc_route::RouteIndex>()),
         entry("renderer", core::mem::size_of::<obc_render::MapRenderer>()),
@@ -478,6 +490,9 @@ static mut MAP_CACHE: MaybeUninit<MapCache> = MaybeUninit::uninit();
 /// no styles/LODs of its own — no per-frame style-table SD read, no ~4 KB parse stack spike on the deep
 /// render path (the lever that kept that path inside the 256 KB stack).
 static mut MAP_TABLES: MaybeUninit<MapTables> = MaybeUninit::uninit();
+/// The per-shard mount records for a volume set, caller-placed in `.bss` so the board never moves
+/// the ~5 KiB `SetShards<11>` through `main`'s async frame.
+static mut SET_SHARDS: sd::SetShardStore = sd::SetShardStore::new();
 static mut APP: MaybeUninit<App> = MaybeUninit::uninit();
 /// The decoded-route-geometry cache, placed in `.bss` and built in place like [`MAP_CACHE`]
 /// ([`RouteCache::new`](obc_route::RouteCache) is an all-zero `MaybeUninit::zeroed`). The session-long
@@ -1162,6 +1177,27 @@ async fn main(_spawner: Spawner) {
             (((b.min_lon as i64 + b.max_lon as i64) / 2) as i32, ((b.min_lat as i64 + b.max_lat as i64) / 2) as i32)
         };
 
+        // Mount a volume set exactly once, after the core tables/cache exist and before `storage`
+        // moves behind the shared-store mutex. Every source is a `'static` extent source whose FAT
+        // handle remains owned by `Storage::open_set`; the large per-shard records go straight into
+        // the caller-placed `SET_SHARDS` static. A single map leaves this `None` and keeps its
+        // existing per-frame reader path.
+        // SAFETY: sole writer/borrower for the program lifetime. `mount_set` fills the static in
+        // place and returns only a small view over it; its parsed manifest remains in the
+        // synchronous helper's shallow frame rather than becoming part of this async task.
+        let store: &'static mut sd::SetShardStore = unsafe { &mut *core::ptr::addr_of_mut!(SET_SHARDS) };
+        let mounted_set: Option<MountedSet<'static>> = match storage.mount_set(store, map_tables, map_cache) {
+            Ok(set) => set,
+            Err(error) => {
+                defmt::error!(
+                    "map: volume set failed mount ({}) — showing MAP UNREADABLE",
+                    defmt::Debug2Format(&error)
+                );
+                show_boot_fault(&mut display, obc_app::BootFault::BadMap).await;
+                idle_blink(&mut led).await
+            }
+        };
+
         // Boot to **Home**: the user drives Home → Route menu → Map with the buttons. Built **in place**
         // in `.bss` (`init_idle` writes each field where it sits; the 8,352 B renderer scratch is zeroed
         // in place), never on the stack. The Route menu is filled from the card's catalog scanned above;
@@ -1462,6 +1498,7 @@ async fn main(_spawner: Spawner) {
             shared_store,
             map_tables,
             map_cache,
+            mounted_set,
             route_cache,
             nav,
             &mut led,
@@ -1479,6 +1516,7 @@ async fn main(_spawner: Spawner) {
             shared_store,
             map_tables,
             map_cache,
+            mounted_set,
             route_cache,
             nav,
             &mut led,

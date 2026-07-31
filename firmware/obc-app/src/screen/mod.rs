@@ -8,8 +8,10 @@
 //! `Reader`, the reusable `MapRenderer`, and the in-flight hold-progress for the confirm ring).
 
 use core::fmt::Write;
+use core::ops::{Deref, DerefMut};
 
 use embedded_graphics::{draw_target::DrawTarget, prelude::Point, primitives::Rectangle};
+use obc_map_scene::MapScene;
 use obc_ports::Fix;
 use obc_reader::Reader;
 use obc_render::{
@@ -207,13 +209,7 @@ pub struct ActiveClimb<'a> {
 /// Render context handed to [`Screen::draw`]: the read-only state plus the map
 /// `Reader`, the reusable `MapRenderer`, and the in-flight Select hold-progress
 /// (0.0–1.0) the guarded-action confirm ring fills with.
-pub struct Render<'a, 'd> {
-    /// The streamed-map `Reader` — `None` when the base screen doesn't draw the map (a menu, the
-    /// Statistics view, Home). Map-base screens read it, so a host can skip building the `Reader`
-    /// (its SD style-table parse + stack spike) on a non-map frame and pass `None`.
-    /// [`render_map`](crate::App::render_map) / [`render_frame`](crate::App::render_frame) always
-    /// pass `Some`.
-    pub reader: Option<&'a Reader<'d>>,
+pub struct Render<'a> {
     pub renderer: &'a mut MapRenderer,
     pub state: &'a AppState,
     pub activity: &'a Activity,
@@ -351,7 +347,7 @@ pub struct Render<'a, 'd> {
     pub card_free_bytes: Option<u64>,
 }
 
-impl Render<'_, '_> {
+impl Render<'_> {
     /// The narrow live-data view the stat-field catalogue formats from — the one constructor of
     /// [`Readout`](crate::stat_fields::Readout), so `stat_fields` stays decoupled from the full
     /// draw context (and its `MapRenderer`).
@@ -370,6 +366,32 @@ impl Render<'_, '_> {
             language: self.settings.language,
             next_ahead: self.next_ahead,
         }
+    }
+}
+
+/// One frame's draw context plus the base-map scene it streams.
+///
+/// Keeping the scene in this thin wrapper is what lets only the map-bearing screens be generic
+/// over [`MapScene`]. Every chrome screen still receives `&mut Render` through `Deref`, so the
+/// generic source does not infect the whole screen catalogue. A volume set supplies its
+/// [`MountedSet`](obc_reader::MountedSet) here while POI, hours and routing keep using the core
+/// [`Reader`] in [`Prepare`].
+pub struct RenderFrame<'a, S: MapScene> {
+    pub scene: Option<&'a S>,
+    pub render: Render<'a>,
+}
+
+impl<'a, S: MapScene> Deref for RenderFrame<'a, S> {
+    type Target = Render<'a>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.render
+    }
+}
+
+impl<S: MapScene> DerefMut for RenderFrame<'_, S> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.render
     }
 }
 
@@ -636,10 +658,11 @@ macro_rules! screens {
             /// Draw the screen into the frame's [`Canvas`]. The two host generics stop here: every
             /// screen below draws through `&mut impl Surface`, except the Map, which reaches the raw
             /// target via [`Canvas::split`] for its `MapRenderer` calls (and writes [`Render::stats`]).
-            pub fn draw<D, F>(&self, cv: &mut Canvas<D, F>, rx: &mut Render)
+            pub fn draw<D, F, S>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, S>)
             where
                 D: DrawTarget,
                 F: Fn(u16) -> D::Color,
+                S: MapScene,
             {
                 match self {
                     $( Screen::$variant(s) => s.draw(cv, rx), )+

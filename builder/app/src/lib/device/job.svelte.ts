@@ -50,6 +50,10 @@ export class DeviceJob {
     result = $state<string | null>(null);
     /** Bytes per second over the last few seconds, or null before there is enough to say. */
     rate = $state<number | null>(null);
+    /** Current file in a volume-set write. Zero means this job is not multipart. */
+    partCurrent = $state(0);
+    partTotal = $state(0);
+    partLabel = $state<string | null>(null);
 
     /** `$state` because {@link running} is read from the markup — a plain field would leave the
      *  progress bar and the disabled buttons frozen at whatever they were on first render. */
@@ -90,6 +94,9 @@ export class DeviceJob {
         this.total = 0;
         this.rate = null;
         this.samples = [];
+        this.partCurrent = 0;
+        this.partTotal = 0;
+        this.partLabel = null;
         this.phase = "reading";
         try {
             const value = await task({
@@ -104,6 +111,11 @@ export class DeviceJob {
                     this.rate = null;
                 },
                 progress: (done, total) => this.sample(done, total),
+                part: (current, total, label) => {
+                    this.partCurrent = current;
+                    this.partTotal = total;
+                    this.partLabel = label ?? null;
+                },
             });
             this.phase = "done";
             this.done = this.total;
@@ -146,6 +158,9 @@ export class DeviceJob {
         this.total = 0;
         this.error = null;
         this.result = null;
+        this.partCurrent = 0;
+        this.partTotal = 0;
+        this.partLabel = null;
     }
 
     private sample(done: number, total: number): void {

@@ -31,8 +31,9 @@
 //!
 //! So the array is [`SetShards`], which the caller places — a `static`/`.bss` cell on the device,
 //! an ordinary local on a host — and [`MountedSet::mount`] fills **in place**. What comes back is
-//! four pointers ([`MountedSet`] is 20 B on the device), and the const assertions at the bottom of
-//! this file pin every one of those numbers on both targets.
+//! four machine words plus a compact core index ([`MountedSet`] is 20 B on the device), and the
+//! const assertions at the bottom of this file pin every one of those numbers on both targets.
+//! The parsed manifest is needed only while validating the mount; it is not retained afterwards.
 //!
 //! [`SetShards`] is generic over how many shards it can hold, which is how a device states its own
 //! ceiling: the manifest's cap is 32, but a board can only mount as many shards as it has FAT file
@@ -233,14 +234,15 @@ impl<const N: usize> Default for SetShards<'_, N> {
     }
 }
 
-/// A mounted volume set, ready to render — four pointers into things the caller owns (the
-/// manifest, the core's tables, the shared cache, and the [`SetShards`] store). See the module
-/// docs for why none of it is held by value.
+/// A mounted volume set, ready to render — pointers into the core's tables, shared cache and the
+/// caller's [`SetShards`] store, plus the validated core index. The manifest is deliberately not
+/// retained: all dispatch metadata was copied into the shard records at mount, total bytes remain
+/// available from the retained sources, and keeping an ~832 B manifest resident buys nothing.
 pub struct MountedSet<'a> {
-    manifest: &'a SetManifest,
     core: &'a MapTables,
     cache: &'a MapCache,
     shards: &'a [Mounted<'a>],
+    core_index: u8,
 }
 
 impl<'a> MountedSet<'a> {
@@ -263,7 +265,7 @@ impl<'a> MountedSet<'a> {
     /// on a host. `'s` ends with the mount.
     pub fn mount<'s, const N: usize>(
         store: &'s mut SetShards<'a, N>,
-        manifest: &'a SetManifest,
+        manifest: &SetManifest,
         sources: &[&'a dyn ByteSource],
         core: &'a MapTables,
         cache: &'a MapCache,
@@ -276,13 +278,7 @@ impl<'a> MountedSet<'a> {
             store.inner.clear();
             return Err(error);
         }
-        Ok(MountedSet { manifest, core, cache, shards: &store.inner })
-    }
-
-    /// The manifest this set mounted from.
-    #[inline]
-    pub fn manifest(&self) -> &SetManifest {
-        self.manifest
+        Ok(MountedSet { core, cache, shards: &store.inner, core_index: manifest.core_shard() as u8 })
     }
 
     /// The number of physical files held open for this mount.
@@ -295,7 +291,7 @@ impl<'a> MountedSet<'a> {
     /// (§5.1) — the nav graph is whole, in one file, so A\* is untouched by sharding.
     #[inline]
     pub fn core_reader(&self) -> Reader<'_> {
-        let index = self.manifest.core_shard();
+        let index = self.core_index as usize;
         Reader::new_in_set(self.shards[index].src, self.core, self.cache, index as u8, None)
     }
 
@@ -308,7 +304,7 @@ impl<'a> MountedSet<'a> {
     /// Total bytes across every shard — the only size figure a UI may show (§5.4).
     #[inline]
     pub fn total_bytes(&self) -> u64 {
-        self.manifest.total_bytes()
+        self.shards.iter().map(|shard| shard.src.len() as u64).sum()
     }
 
     /// Roles, for diagnostics. Dispatch is deliberately role-blind (§5.1/§5.6).
@@ -509,6 +505,16 @@ impl MapScene for MountedSet<'_> {
         self.core.styles()[id as usize].as_ref()
     }
 
+    #[inline]
+    fn marker_color(&self) -> u16 {
+        self.core.marker_color
+    }
+
+    #[inline]
+    fn backdrop_style(&self) -> Option<&Style> {
+        self.core.backdrop_style()
+    }
+
     fn diagnostics(&self) -> Result<Option<Diagnostics>, SceneReadError> {
         self.core_reader()
             .try_chunk_cache_stats()
@@ -670,8 +676,8 @@ mod device_sizes {
     const _: () = assert!(size_of::<ShardTables>() == 408);
     const _: () = assert!(size_of::<Mounted>() == 440);
     const _: () = assert!(size_of::<SetShards>() == 14_084);
-    // Four pointers. The point of the whole `SetShards` split: a mount is cheap to move, and the
-    // 14 KB is somewhere the caller chose.
+    // Four machine words plus a compact core index. The point of the whole `SetShards` split: a
+    // mount is cheap to move, and the 14 KB is somewhere the caller chose.
     const _: () = assert!(size_of::<MountedSet>() == 20);
 }
 

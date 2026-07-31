@@ -87,16 +87,20 @@ fn rebuilt_manifest(files: &[Vec<u8>], fixture: &obcm_testkit::set::SetFixture) 
     .expect("the re-recorded manifest still satisfies §5.3")
 }
 
-/// Mount a fixture's shards, running `body` with the mounted set. Keeps the borrow chain
-/// (sources → `&dyn ByteSource` slice → tables → set) in one place.
+/// Mount a fixture's shards, running `body` with the mounted set. Keeps the source borrow chain in
+/// one place and deliberately drops the manifest first: a successful mount retains compact
+/// metadata, not the parsed manifest.
 fn with_set<T>(fixture: &obcm_testkit::set::SetFixture, body: impl FnOnce(&MountedSet<'_>) -> T) -> T {
     let sources: Vec<SliceSource> = fixture.sources().into_iter().map(SliceSource).collect();
     let refs: Vec<&dyn ByteSource> = sources.iter().map(|s| s as &dyn ByteSource).collect();
-    let manifest = obcs::parse(&fixture.manifest).expect("hand-built manifest is valid");
-    let core = MapTables::parse(&sources[manifest.core_shard()]).expect("core parses");
+    let core_index = obcs::parse(&fixture.manifest).expect("hand-built manifest is valid").core_shard();
+    let core = MapTables::parse(&sources[core_index]).expect("core parses");
     let cache = MapCache::new();
     let mut store = FullSetShards::new();
-    let set = MountedSet::mount(&mut store, &manifest, &refs, &core, &cache).expect("a complete set mounts");
+    let set = {
+        let manifest = obcs::parse(&fixture.manifest).expect("hand-built manifest is valid");
+        MountedSet::mount(&mut store, &manifest, &refs, &core, &cache).expect("a complete set mounts")
+    };
     body(&set)
 }
 
@@ -152,7 +156,6 @@ fn the_single_file_fast_path_mounts() {
     assert_eq!(fixture.shards[0], monolith, "the §5.5 fast path's one shard IS the monolithic map");
     with_set(&fixture, |set| {
         assert_eq!(set.shard_count(), 1);
-        assert!(set.manifest().is_single_file());
     });
 }
 

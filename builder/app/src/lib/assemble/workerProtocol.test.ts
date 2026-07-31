@@ -64,6 +64,13 @@ describe("isWorkerResponse", () => {
         const messages: AssembleWorkerResponse[] = [
             { type: "progress", phase: "verify", fraction: 0.9 },
             {
+                type: "planned",
+                totalBytes: 129,
+                shardCount: 1,
+                warnings: [],
+                summary: { cells: 1, bytes: 1, manifest: "MS1.OBS", shards: [] },
+            },
+            {
                 type: "file",
                 name: "MS1.OBS",
                 role: "manifest",

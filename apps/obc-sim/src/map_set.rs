@@ -10,35 +10,17 @@
 //! non-zero — a missing shard, a shard that is not the recorded size, a manifest that does not
 //! validate all read as *map incomplete*, never as a smaller map.
 //!
-//! # The map plane, until `obc-app` takes a scene
-//!
-//! [`obc_render::MapRenderer::render`] is generic over `S: MapScene` and a `MountedSet` is a
-//! `MapScene`, so the renderer needs nothing. The *app* is the holdout: `App::render_frame` and the
-//! `Render`/`Prepare` screen contexts name `obc_reader::Reader` by type, so a mounted set cannot be
-//! handed to it yet. Genericising that seam is P3b's second half, together with the per-shard
-//! extent tables the device would need; it is deliberately not #1026's scope.
-//!
-//! [`SetPlane`] bridges that without a second render path. It wraps the frame's `DrawTarget` and
-//! intercepts exactly one call: the **first** `clear(bg)` of a frame whose base screen draws the
-//! map (`App::base_draws_map`). That call is the map plane's — the base screen draws first, and a
-//! map-base screen's first act is the renderer's clear-to-backdrop. On it the wrapper paints the
-//! **set's** geometry — same `MapRenderer`, same [`Viewport`] (`AppState::viewport`, the one the
-//! map screen itself builds), same backdrop colour the app just asked for — and then lets the app
-//! draw everything above it: the core shard's own (empty) ladder, the route line, the rider, the
-//! chrome. Every later `clear` (an overlay wiping to its own background) passes straight through,
-//! and a frame that draws no map at all (a menu, Statistics, Home) is never wrapped.
-//!
-//! When the app's render seam takes `S: MapScene`, delete [`SetPlane`] and pass the `MountedSet`.
+//! `obc-app` consumes the mounted set directly through its generic `MapScene` map-plane seam. POI,
+//! hours and routing still receive [`LoadedMap::reader`], which is the core shard by construction.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
 
 use embedded_graphics::prelude::*;
-use embedded_graphics::primitives::Rectangle;
 use obc_formats::io::ByteSource;
 use obc_formats::obcs::{self, ManifestError, Role, SetManifest};
 use obc_reader::{MapCache, MapTables, MountError, MountedSet, Reader, SetShards, SliceSource};
-use obc_render::{MapRenderer, RenderStats, Viewport};
+use obc_render::RenderStats;
 
 /// Why a map (single file or set) could not be opened. Every variant is fatal — see §5.4.
 #[derive(Debug)]
@@ -286,105 +268,15 @@ fn file_name(path: &Path) -> String {
     path.file_name().unwrap_or(path.as_os_str()).to_string_lossy().into_owned()
 }
 
-/// The frame target with a mounted set's map plane spliced in at the app's own `clear` boundary.
-/// See the module docs for why this exists and when it goes away.
-pub struct SetPlane<'a, 'm, D, F> {
-    target: &'a mut D,
-    set: &'a MountedSet<'m>,
-    renderer: &'a mut MapRenderer,
-    vp: Viewport,
-    color_fn: F,
-    stats: RenderStats,
-    painted: bool,
-}
-
-impl<'a, 'm, D, F> SetPlane<'a, 'm, D, F>
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
-    /// Wrap `target`. `vp` must be the viewport the app's map screen builds for this frame —
-    /// `app.state.viewport(w, h)`, the same call `MapScreen::draw` makes.
-    pub fn new(
-        target: &'a mut D,
-        set: &'a MountedSet<'m>,
-        renderer: &'a mut MapRenderer,
-        vp: Viewport,
-        color_fn: F,
-    ) -> SetPlane<'a, 'm, D, F> {
-        SetPlane { target, set, renderer, vp, color_fn, stats: RenderStats::default(), painted: false }
-    }
-
-    /// The set plane's own [`RenderStats`], and whether the frame drew a map plane at all.
-    pub fn finish(self) -> Option<RenderStats> {
-        self.painted.then_some(self.stats)
-    }
-}
-
-impl<D: DrawTarget, F> Dimensions for SetPlane<'_, '_, D, F> {
-    fn bounding_box(&self) -> Rectangle {
-        self.target.bounding_box()
-    }
-}
-
-impl<D, F> DrawTarget for SetPlane<'_, '_, D, F>
-where
-    D: DrawTarget,
-    F: Fn(u16) -> D::Color,
-{
-    type Color = D::Color;
-    type Error = D::Error;
-
-    fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
-    where
-        I: IntoIterator<Item = Pixel<Self::Color>>,
-    {
-        self.target.draw_iter(pixels)
-    }
-
-    fn fill_contiguous<I>(&mut self, area: &Rectangle, colors: I) -> Result<(), Self::Error>
-    where
-        I: IntoIterator<Item = Self::Color>,
-    {
-        self.target.fill_contiguous(area, colors)
-    }
-
-    fn fill_solid(&mut self, area: &Rectangle, color: Self::Color) -> Result<(), Self::Error> {
-        self.target.fill_solid(area, color)
-    }
-
-    /// The frame's **first** clear is the map plane's: the app's `MapRenderer` clearing to the
-    /// backdrop (this wrapper is only ever installed on a frame whose base screen draws the map).
-    /// Paint the whole **set** instead — `MapRenderer::render` clears to the same `color` first —
-    /// and let the app draw its own (core-only, empty) ladder, the route, the rider and the chrome
-    /// on top. Later clears are an overlay wiping to its own background, and pass straight through.
-    fn clear(&mut self, color: Self::Color) -> Result<(), Self::Error> {
-        if self.painted {
-            return self.target.clear(color);
-        }
-        self.stats = self.renderer.render(self.target, self.set, &self.vp, color, &self.color_fn);
-        self.painted = true;
-        Ok(())
-    }
-}
-
-/// Everything a frame draws its map from: the streamed reader the app path takes (a single map's,
-/// or a set's **core** — §5.1), the active route, and, for a set, the mount plus the renderer its
-/// map plane draws through.
+/// Everything a frame draws its map from: the scene (a mounted set when present), the core reader
+/// for POI/hours, and the active route.
 pub struct Scene<'a, 'm, 'd> {
-    /// `None` for a single map, which draws entirely through the app's own renderer.
-    pub set: Option<(&'a MountedSet<'m>, &'a mut MapRenderer)>,
+    pub set: Option<&'a MountedSet<'m>>,
     pub reader: &'a obc_reader::Reader<'d>,
     pub route: Option<&'a obc_route::RouteReader<'a>>,
 }
 
-/// Draw one whole frame: the app's own render path, with a mounted set's map plane spliced in at
-/// the `clear` boundary when there is one ([`SetPlane`]). Without a set this is exactly
-/// `App::render_frame`.
-///
-/// The returned [`RenderStats`] are the *set's* map figures (the app's would be the core shard's,
-/// which carries no ladder) with the app's route figures kept — so the sim's stats line and live
-/// panel read the same quantities they always did.
+/// Draw one whole frame through the app's real generic scene seam.
 pub fn render_frame<D, F>(
     app: &mut obc_app::App,
     target: &mut D,
@@ -394,38 +286,21 @@ pub fn render_frame<D, F>(
 ) -> RenderStats
 where
     D: DrawTarget,
-    F: Fn(u16) -> D::Color + Copy,
+    F: Fn(u16) -> D::Color,
 {
     let Scene { set, reader, route } = scene;
-    // No set, or a frame that draws no map plane at all (a menu, Home, Statistics — the app's own
-    // declared fact): nothing to splice, and the frame is byte-identical to a single map's.
-    let Some((set, renderer)) = set.filter(|_| app.base_draws_map()) else {
-        return app.render_frame(target, reader, route, w, h, color_fn);
-    };
-    // The map screen builds this exact viewport from the same state (`MapScreen::draw`), so the
-    // set plane and the app agree on the projection to the pixel.
-    let vp = app.state.viewport(w, h);
-    let mut plane = SetPlane::new(target, set, renderer, vp, color_fn);
-    let app_stats = app.render_frame(&mut plane, reader, route, w, h, color_fn);
-    match plane.finish() {
-        Some(mut stats) => {
-            stats.route_chunks = app_stats.route_chunks;
-            stats.route_points = app_stats.route_points;
-            stats.route_points_drawn = app_stats.route_points_drawn;
-            stats
-        }
-        // The base screen declared it draws a map but never cleared, so no plane was painted and
-        // the set's figures do not exist. Not reachable through today's screens — the renderer's
-        // first act on a map frame is the clear — but the app owns that ordering, not this
-        // wrapper, so the honest answer is the app's own stats rather than a panic.
-        None => app_stats,
+    match set {
+        Some(set) => app.render_scene_frame(target, set, reader, route, w, h, color_fn),
+        None => app.render_frame(target, reader, route, w, h, color_fn),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use obc_formats::io::ByteSink;
     use obc_formats::obcs::Role;
+    use obc_route::{RouteIndex, RouteReader};
     use obcm_testkit::set::{build_set, empty_lod, ShardSpec};
     use obcm_testkit::{pack_line, seal, LodSpec, Style};
 
@@ -607,23 +482,56 @@ mod tests {
         )
     }
 
+    #[derive(Default)]
+    struct VecSink(Vec<u8>);
+
+    impl ByteSink for VecSink {
+        fn write(&mut self, bytes: &[u8]) -> Result<(), obc_formats::io::Error> {
+            self.0.extend_from_slice(bytes);
+            Ok(())
+        }
+
+        fn patch_at(&mut self, offset: u32, bytes: &[u8]) -> Result<(), obc_formats::io::Error> {
+            let start = offset as usize;
+            self.0[start..start + bytes.len()].copy_from_slice(bytes);
+            Ok(())
+        }
+    }
+
+    /// A route that crosses the four-shard junction at the fixture's centre.
+    fn seam_route() -> Vec<u8> {
+        let gpx = br#"<gpx><trk><trkseg>
+            <trkpt lat="0.0010" lon="0.0005"><ele>100</ele></trkpt>
+            <trkpt lat="0.0015" lon="0.0010"><ele>110</ele></trkpt>
+            <trkpt lat="0.0020" lon="0.0020"><ele>120</ele></trkpt>
+            <trkpt lat="0.0025" lon="0.0030"><ele>130</ele></trkpt>
+            <trkpt lat="0.0030" lon="0.0035"><ele>140</ele></trkpt>
+        </trkseg></trk></gpx>"#;
+        let mut sink = VecSink::default();
+        obc_route::gpx_to_obcr(&SliceSource(gpx), "Seam", &mut sink).expect("route fixture converts");
+        sink.0
+    }
+
     /// One whole app frame at `cam`, through exactly the path the simulator renders with: the
-    /// mounted set's plane spliced into the app's own render for a set, plain `App::render_frame`
-    /// for a single file. `press` taps Select first, so the caller can compare a frame whose base
-    /// screen is *not* the map.
-    fn app_frame_after(map: &LoadedMap, cam: (i32, i32, f32), press: bool) -> Vec<u8> {
+    /// mounted set passed through the app's generic scene seam, or plain `App::render_frame` for a
+    /// single file. `press` taps Select first, so the caller can compare a frame whose base screen
+    /// is *not* the map.
+    fn app_frame_after(map: &LoadedMap, cam: (i32, i32, f32), press: bool, route_bytes: Option<&[u8]>) -> Vec<u8> {
         let (w, h) = (obc_display::ls021::FRAME_W as u32, obc_display::ls021::FRAME_H as u32);
         let reader = map.reader();
-        let mut renderer = map.set().map(|_| Box::new(MapRenderer::new()));
         let mut app = obc_app::App::new(obc_app::AppState::new(cam.0, cam.1, cam.2));
         if press {
             use obc_ports::{Button, ButtonEvent, InputEvent};
             crate::feed(&mut app, 500_000, vec![InputEvent::Button(ButtonEvent::Down(Button::Select))]);
             crate::feed(&mut app, 500_080, vec![InputEvent::Button(ButtonEvent::Up(Button::Select))]);
         }
+        let route_source = route_bytes.map(SliceSource);
+        let route_index = route_source.as_ref().map(|source| RouteIndex::read(source).expect("valid route fixture"));
+        let route =
+            route_source.as_ref().zip(route_index.as_ref()).map(|(source, index)| RouteReader::new(index, source));
         let mut fb = crate::framebuffer::Framebuffer::new(w, h);
-        let set = map.set().zip(renderer.as_mut()).map(|(set, r)| (set, &mut **r));
-        let scene = Scene { set, reader: &reader, route: None };
+        let set = map.set();
+        let scene = Scene { set, reader: &reader, route: route.as_ref() };
         render_frame(&mut app, &mut fb, scene, (w as f32, h as f32), |c| crate::color_of(c, true));
         fb.as_rgb888().to_vec()
     }
@@ -646,13 +554,34 @@ mod tests {
 
         for (zoom, what) in [(0.2f32, "the split fine rung"), (0.02, "the whole-assembly coarse shard")] {
             let cam = (2000, 2000, zoom);
-            let mono = app_frame_after(&single, cam, false);
-            let split = app_frame_after(&set, cam, false);
+            let mono = app_frame_after(&single, cam, false, None);
+            let split = app_frame_after(&set, cam, false, None);
             // A frame of pure chrome would pass trivially; both sides must actually draw map ink.
             let ink = |frame: &[u8]| frame.chunks_exact(3).filter(|px| px != &[0xFF, 0xFF, 0xFF]).count();
             assert!(ink(&mono) > 500, "{what}: the monolith's frame must carry map ink to be meaningful");
             assert_eq!(mono, split, "{what}: the set's frame differs from the monolith's, pixel for pixel");
         }
+    }
+
+    /// The on-glass acceptance shape in pixels: map geometry dispatches across the four-shard
+    /// junction while the ordinary core route remains overlaid through the same app frame.
+    #[test]
+    fn a_route_crossing_the_shard_junction_matches_the_monolith() {
+        let dir = Dir::new("route-diff");
+        let (monolith, fixture) = pair();
+        dir.write("MAP.OBCM", &monolith);
+        stage(&dir, 13, &fixture);
+        let single = LoadedMap::open(MapSource::load_single(&dir.path("MAP.OBCM")).expect("the monolith loads"))
+            .expect("the monolith opens");
+        let set = LoadedMap::open(MapSource::load_set(&dir.path("MS13.OBS")).expect("the set loads"))
+            .expect("the set mounts");
+        let route = seam_route();
+        let cam = (2000, 2000, 0.2);
+        let without_route = app_frame_after(&single, cam, false, None);
+        let mono = app_frame_after(&single, cam, false, Some(&route));
+        let split = app_frame_after(&set, cam, false, Some(&route));
+        assert_ne!(mono, without_route, "the route must contribute pixels for the differential to be meaningful");
+        assert_eq!(mono, split, "mounted-set geometry + core route must match the monolith frame pixel for pixel");
     }
 
     /// The other half of the splice: a frame whose base screen is **not** the map (Select opens the
@@ -670,8 +599,8 @@ mod tests {
             LoadedMap::open(MapSource::load_set(&dir.path("MS4.OBS")).expect("the set loads")).expect("the set mounts");
         let cam = (2000, 2000, 0.2);
         assert_eq!(
-            app_frame_after(&single, cam, true),
-            app_frame_after(&set, cam, true),
+            app_frame_after(&single, cam, true, None),
+            app_frame_after(&set, cam, true, None),
             "a non-map base screen must render identically from a set and from its monolith"
         );
     }

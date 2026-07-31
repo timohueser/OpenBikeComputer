@@ -1418,14 +1418,22 @@ exactly filling a packet would need a ZLP to be delimited).
 | 4 | host → device | identity read (§1) — no payload |
 | 5 | host → device | device-information read (§3.1) — no payload |
 | 6 | host → device | `config` read (§7.3) — no payload |
+| 7 | host → device | mounted-card free-space read — no payload (USB only) |
 | 1 | device → host | `status` (§4.3), verbatim, discriminator included |
 | 2 | device → host | the §1 identity bytes (7 with a store, 2 without — the same length-driven read, verbatim) |
 | 3 | device → host | device information: `len u8 · UTF-8` ×3, firmware · hardware · serial |
 | 4 | device → host | the §7.3 config blob |
+| 5 | device → host | mounted-card free bytes as little-endian `u64`; empty when no readable card is mounted |
 
 Device → host selector 1 is the **sole unsolicited channel**, exactly as the
 `status` CCCD is on BLE: one ordering domain for every device → host edge,
 including a download's `downloadAnnounce`.
+
+The free-space read is deliberately an envelope query rather than a new object
+or command. It is USB-only UI telemetry, has no persistent effect, and is
+answered from FAT32's cached FSInfo count (a bounded three-sector read, never a
+FAT walk). A host uses it immediately before a map-set send; an empty reply is
+"space unavailable", not zero bytes free.
 
 **Every §4.4 command is reachable over USB, `ackRides` included**, and not as a
 per-command decision: selector 1 carries the `command` bytes into the *same*

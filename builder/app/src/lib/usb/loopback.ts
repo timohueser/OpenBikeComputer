@@ -58,7 +58,15 @@ import {
     type StatusMessage,
     type TransferControl,
 } from "./protocol";
-import { DeviceFrame, HostFrame, decodeFrame, encodeDeviceInfo, encodeFrame, type DeviceInfo } from "./transport";
+import {
+    DeviceFrame,
+    HostFrame,
+    decodeFrame,
+    encodeCardFree,
+    encodeDeviceInfo,
+    encodeFrame,
+    type DeviceInfo,
+} from "./transport";
 
 // --- the pipe ----------------------------------------------------------------
 
@@ -325,6 +333,8 @@ export interface MockDeviceOptions {
      * the memory rather than the code under test.
      */
     sinkUploads?: boolean;
+    /** Free bytes reported by the mounted card; `null` models no readable card. */
+    cardFreeBytes?: number | null;
 }
 
 /**
@@ -340,6 +350,7 @@ export class MockDevice {
     private readonly maxRoutes: number;
     private readonly maxTrips: number;
     private readonly sinkUploads: boolean;
+    private readonly cardFreeBytes: number | null;
 
     private storeEpoch: number | null;
     private readonly protocolVersion: number;
@@ -353,6 +364,9 @@ export class MockDevice {
     /** Maps (`ObjectType.Map`, provisional — see `protocol.ts`). No list object exists for them,
      *  so this is a plain store with no catalog entry beside it. */
     private readonly maps = new Map<number, Stored>();
+    /** Staged volume-set shards, keyed by packed `(count,index)`; invisible until a manifest. */
+    private readonly mapShards = new Map<number, Stored>();
+    private readonly mapSets = new Map<number, Stored>();
     private readonly routeEntries = new Map<number, RouteListEntry>();
     private readonly rideEntries = new Map<number, RideListEntry>();
     private readonly tripEntries = new Map<number, TripListEntry>();
@@ -383,10 +397,16 @@ export class MockDevice {
     /** Non-transport failures from detached work — a real defect, not a disconnect. */
     readonly faults: unknown[] = [];
 
+    /** Test/dev-harness visibility into the otherwise invisible staged set. */
+    get stagedMapShardCount(): number {
+        return this.mapShards.size;
+    }
+
     private running = false;
 
     constructor(link: DeviceLink, options: MockDeviceOptions = {}) {
         this.link = link;
+        this.cardFreeBytes = options.cardFreeBytes === undefined ? 8 * 1024 ** 3 : options.cardFreeBytes;
         this.storeEpoch = options.storeEpoch === undefined ? 0xa1b2c3d4 : options.storeEpoch;
         this.protocolVersion = options.protocolVersion ?? PROTOCOL_VERSION;
         this.obcmVersion = options.obcmVersion === undefined ? REFERENCE_OBCM_VERSION : options.obcmVersion;
@@ -536,6 +556,9 @@ export class MockDevice {
             case HostFrame.ConfigRead:
                 await this.send(DeviceFrame.Config, encodeConfig(this.config));
                 return;
+            case HostFrame.CardFreeRead:
+                await this.send(DeviceFrame.CardFree, encodeCardFree(this.cardFreeBytes));
+                return;
             case HostFrame.ConfigWrite:
                 this.config = decodeConfig(frame.payload);
                 return;
@@ -567,6 +590,16 @@ export class MockDevice {
         if (d.op === Op.Abort) {
             const active = this.active;
             if (!active) {
+                if (d.type === ObjectType.MapShard || d.type === ObjectType.MapSet) {
+                    this.mapShards.clear();
+                    await this.status({
+                        msg: "transferResult",
+                        objectId: d.objectId,
+                        status: TransferStatus.Aborted,
+                        committedOffset: 0,
+                    });
+                    return;
+                }
                 // Nothing to abort. A real device answers the descriptor rather than staying
                 // silent, so a peer that aborts a transfer the device already closed still settles.
                 await this.status({
@@ -654,6 +687,14 @@ export class MockDevice {
         if (d.type === ObjectType.FwImage) {
             return d.totalLen > this.maxFwImageLen ? TransferStatus.Error : null;
         }
+        if (d.type === ObjectType.MapShard) {
+            const count = d.objectId >>> 8;
+            const index = d.objectId & 0xff;
+            return count >= 1 && count <= 32 && index < count ? null : TransferStatus.NotFound;
+        }
+        if (d.type === ObjectType.MapSet) {
+            return d.objectId === NEW_OBJECT_ID && this.mapShards.size > 0 ? null : TransferStatus.NotFound;
+        }
         const store = this.storeFor(d.type);
         if (!store) return TransferStatus.NotFound;
         const known = store.has(d.objectId);
@@ -671,6 +712,16 @@ export class MockDevice {
             // the singleton slot means the result echoes id 0 rather than assigning one.
             this.staged = bytes;
             return SINGLETON_OBJECT_ID;
+        }
+        if (d.type === ObjectType.MapShard) {
+            this.mapShards.set(d.objectId, { bytes, crc32: d.crc32, byteLen });
+            return d.objectId;
+        }
+        if (d.type === ObjectType.MapSet) {
+            const id = this.nextMapId++;
+            this.mapSets.set(id, { bytes, crc32: d.crc32, byteLen });
+            this.mapShards.clear();
+            return id;
         }
         const store = this.storeFor(d.type);
         if (!store) return d.objectId;

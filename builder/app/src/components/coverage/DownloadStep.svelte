@@ -14,8 +14,8 @@
     // The run: verified per-cell download (abortable) → assembly **in a Web
     // Worker** (the bridge's threading contract: one synchronous wasm call, so
     // cancel is `worker.terminate()`, progress crosses by postMessage, files
-    // come back one at a time as transfers and go straight to the browser's
-    // downloader).
+    // come back one at a time as transfers and go either to the browser's
+    // downloader or, with per-file backpressure, straight to the device).
 
     import { onDestroy } from "svelte";
     import type { AssemblePhase, MemoryEstimate } from "../../lib/assemble/bridge";
@@ -38,6 +38,9 @@
     import { detailBandId, mergeMixedCellRects, parseCells, patchCount } from "../../lib/coverage/shape";
     import type { CoverageStore } from "../../lib/coverage/store.svelte";
     import { formatBytes } from "../../lib/format";
+    import type { JobContext } from "../../lib/device/progress";
+    import type { SetSendState } from "../../lib/device/write";
+    import type { ProtocolClient, UploadResult } from "../../lib/usb/client";
 
     let { store }: { store: CoverageStore } = $props();
 
@@ -81,8 +84,12 @@
     }
 
     onDestroy(() => {
-        worker?.terminate();
-        void closeOutput();
+        if (output?.kind === "device") {
+            void failRun(new DOMException("The builder was closed.", "AbortError"));
+        } else {
+            worker?.terminate();
+            void closeDownloadOutput();
+        }
     });
 
     // --- the run ----------------------------------------------------------
@@ -97,10 +104,23 @@
     let runWarnings = $state<string[]>([]);
     let errorMessage = $state<string | null>(null);
     let abortCtl: AbortController | null = null;
-    let output: MapOutputSession | null = null;
-    let saveQueue: Promise<void> = Promise.resolve();
-    let saveError: unknown = null;
+    let downloadOutput: MapOutputSession | null = null;
     let runMapName = "OBC map";
+
+    interface DeviceOutput {
+        kind: "device";
+        client: ProtocolClient;
+        ctx: JobContext;
+        state: SetSendState | null;
+        resolve: (result: UploadResult) => void;
+        reject: (cause: unknown) => void;
+        settled: boolean;
+        failing: boolean;
+        removeAbort: () => void;
+    }
+    type Output = { kind: "download" } | DeviceOutput;
+    let output = $state<Output | null>(null);
+    let lastRunKind = $state<Output["kind"]>("download");
 
     const ASM_PHASE_LABEL: Record<AssemblePhase, string> = {
         open: "reading cells",
@@ -120,7 +140,7 @@
         manifest: "set manifest",
     };
 
-    function onWorkerMessage(e: MessageEvent) {
+    async function onWorkerMessage(e: MessageEvent) {
         const msg = e.data as unknown;
         if (!isWorkerResponse(msg)) return;
         switch (msg.type) {
@@ -133,26 +153,64 @@
                 asmPhase = msg.phase;
                 asmFraction = msg.fraction;
                 break;
+            case "planned":
+                runWarnings = msg.warnings;
+                if (output?.kind === "device") {
+                    output.state = {
+                        shardCount: msg.shardCount,
+                        totalBytes: msg.totalBytes,
+                        committedBytes: 0,
+                        nextShard: 0,
+                        setId: null,
+                    };
+                    output.ctx.phase("sending", msg.totalBytes);
+                }
+                break;
             case "file":
-                // Preserve worker order. Desktop writes every part into one new
-                // folder; browsers hand each verified file to their downloader.
-                saveQueue = saveQueue.then(async () => {
-                    if (saveError) return;
-                    if (platform.openMapOutput) {
-                        output ??= await platform.openMapOutput(runMapName);
-                        outputPath = output.path;
-                        const path = await output.write(msg.name, msg.bytes);
+                try {
+                    if (output?.kind === "device") {
+                        if (!output.state) throw new Error("The assembler sent a file before its set plan.");
+                        const { sendAssembledSetFile } = await import("../../lib/device/write");
+                        await sendAssembledSetFile(output.client, output.state, msg, output.ctx);
+                    } else if (platform.openMapOutput) {
+                        // The desktop writes every part into one new folder. The
+                        // worker waits for this ack, so the next shard never
+                        // competes for memory or arrives before this write ends.
+                        downloadOutput ??= await platform.openMapOutput(runMapName);
+                        outputPath = downloadOutput.path;
+                        const path = await downloadOutput.write(msg.name, msg.bytes);
                         savedFiles.push({ name: msg.name, role: msg.role, byteLength: msg.byteLength, path });
                     } else {
                         saveBytes(msg.bytes, msg.name);
                         savedFiles.push({ name: msg.name, role: msg.role, byteLength: msg.byteLength });
                     }
-                }).catch((cause: unknown) => {
-                    saveError = cause;
-                });
+                    if (output?.kind === "device") {
+                        savedFiles.push({ name: msg.name, role: msg.role, byteLength: msg.byteLength });
+                    }
+                    worker?.postMessage({ type: "file-ack" } satisfies AssembleWorkerRequest);
+                } catch (cause) {
+                    await failRun(cause);
+                }
                 break;
             case "done":
-                void finishSaves(msg.warnings);
+                runWarnings = msg.warnings;
+                phase = "done";
+                if (output?.kind === "device") {
+                    const state = output.state;
+                    if (!state || state.setId === null) {
+                        await failRun(new Error("The device did not commit the assembled map's manifest."));
+                    } else {
+                        settleDevice({ objectId: state.setId, committedOffset: state.totalBytes });
+                    }
+                } else {
+                    try {
+                        await closeDownloadOutput();
+                    } catch (cause) {
+                        await failRun(cause);
+                        break;
+                    }
+                }
+                output = null;
                 break;
             case "error":
                 // Two conversations share this worker, and their failures are
@@ -163,7 +221,7 @@
                 // its own retry, and never wedges the button behind a pending
                 // flag nothing will clear.
                 if (phase === "assembling") {
-                    void failAssembly(msg.message);
+                    await failRun(new Error(msg.message));
                 } else {
                     estimateError = msg.message;
                 }
@@ -172,32 +230,41 @@
         }
     }
 
-    async function closeOutput() {
-        await saveQueue;
-        const current = output;
-        output = null;
+    async function closeDownloadOutput() {
+        const current = downloadOutput;
+        downloadOutput = null;
         await current?.finish();
     }
 
-    async function failAssembly(message: string) {
-        await closeOutput().catch((cause: unknown) => {
-            saveError ??= cause;
-        });
-        errorMessage = saveError instanceof Error ? saveError.message : saveError ? String(saveError) : message;
-        phase = "error";
+    function settleDevice(result: UploadResult | unknown, failed = false) {
+        if (output?.kind !== "device" || output.settled) return;
+        output.settled = true;
+        output.removeAbort();
+        if (failed) output.reject(result);
+        else output.resolve(result as UploadResult);
     }
 
-    async function finishSaves(warnings: string[]) {
-        await closeOutput().catch((cause: unknown) => {
-            saveError ??= cause;
-        });
-        if (saveError) {
-            errorMessage = saveError instanceof Error ? saveError.message : String(saveError);
-            phase = "error";
-            return;
+    async function failRun(cause: unknown) {
+        if (output?.kind === "device") {
+            if (output.failing || output.settled) return;
+            output.failing = true;
         }
-        runWarnings = warnings;
-        phase = "done";
+        const cancelled =
+            (output?.kind === "device" && output.ctx.signal.aborted) ||
+            (cause instanceof DOMException && cause.name === "AbortError");
+        abortCtl?.abort();
+        worker?.terminate();
+        worker = null;
+        if (output?.kind === "device" && output.state) {
+            const { abandonAssembledSet } = await import("../../lib/device/write");
+            await abandonAssembledSet(output.client, output.state);
+        } else {
+            await closeDownloadOutput().catch(() => {});
+        }
+        errorMessage = cause instanceof Error ? cause.message : String(cause);
+        phase = cancelled ? "cancelled" : "error";
+        settleDevice(cause, true);
+        output = null;
     }
 
     /** The set's 24-wire-byte display name, from the parts that made it. */
@@ -214,21 +281,31 @@
         return out;
     }
 
-    async function run() {
+    async function begin(out: Output) {
         const resolution = store.resolution;
         const indices = store.indices;
         const l = ledger;
-        if (!resolution || !indices || !l || phase === "downloading" || phase === "assembling") return;
+        if (
+            !resolution ||
+            !indices ||
+            !l ||
+            phase === "downloading" ||
+            phase === "assembling" ||
+            (out.kind === "device" && !ready)
+        ) {
+            throw new Error("This map is not ready to assemble yet.");
+        }
+        output = out;
+        lastRunKind = out.kind;
         errorMessage = null;
         savedFiles = [];
         outputPath = null;
-        output = null;
-        saveQueue = Promise.resolve();
-        saveError = null;
+        downloadOutput = null;
         runWarnings = [];
         dlProgress = null;
         asmFraction = 0;
         phase = "downloading";
+        if (out.kind === "device") out.ctx.phase("downloading", l.totalBytes);
 
         const plan = planCells(resolution, store.catalog, indices);
         const cells: WorkerCell[] = [];
@@ -239,7 +316,10 @@
                 onCell: (item, bytes) => {
                     cells.push({ id: item.cell.id, band: item.band, partial: item.cell.partial, bytes });
                 },
-                onProgress: (p) => (dlProgress = p),
+                onProgress: (p) => {
+                    dlProgress = p;
+                    if (out.kind === "device") out.ctx.progress(p.receivedBytes, p.totalBytes);
+                },
                 signal: abortCtl.signal,
             });
         } catch (e) {
@@ -249,12 +329,15 @@
                 errorMessage = e instanceof Error ? e.message : String(e);
                 phase = "error";
             }
+            settleDevice(e, true);
+            output = null;
             return;
         }
 
         phase = "assembling";
         runMapName = mapName();
         asmPhase = "open";
+        if (out.kind === "device") out.ctx.phase("assembling", 0);
         const req: AssembleWorkerRequest = {
             type: "assemble",
             cells,
@@ -276,6 +359,31 @@
         ensureWorker().postMessage(req, { transfer: requestTransferList(req) });
     }
 
+    function run() {
+        void begin({ kind: "download" }).catch((cause) => failRun(cause));
+    }
+
+    /** Assemble the current selection and stream its files directly to a connected device. */
+    export function sendToDevice(client: ProtocolClient, ctx: JobContext): Promise<UploadResult> {
+        return new Promise((resolve, reject) => {
+            const out: DeviceOutput = {
+                kind: "device",
+                client,
+                ctx,
+                state: null,
+                resolve,
+                reject,
+                settled: false,
+                failing: false,
+                removeAbort: () => {},
+            };
+            const abort = () => void failRun(ctx.signal.reason ?? new DOMException("cancelled", "AbortError"));
+            out.removeAbort = () => ctx.signal.removeEventListener("abort", abort);
+            ctx.signal.addEventListener("abort", abort, { once: true });
+            void begin(out).catch((cause) => failRun(cause));
+        });
+    }
+
     function cancel() {
         if (phase === "downloading") {
             abortCtl?.abort();
@@ -283,16 +391,7 @@
             // The worker is blocked inside one synchronous wasm call and cannot
             // read a message — terminate IS the cancel (bridge threading
             // contract). Nothing is half-written: the set manifest goes last.
-            worker?.terminate();
-            worker = null;
-            void closeOutput()
-                .then(() => {
-                    phase = "cancelled";
-                })
-                .catch((cause: unknown) => {
-                    errorMessage = cause instanceof Error ? cause.message : String(cause);
-                    phase = "error";
-                });
+            void failRun(new DOMException("cancelled", "AbortError"));
         }
     }
 
@@ -558,7 +657,9 @@
                 </button>
             {:else}
                 <div class="runrow">
-                    <button type="button" class="btn" onclick={cancel}>Cancel</button>
+                    {#if output?.kind === "download"}
+                        <button type="button" class="btn" onclick={cancel}>Cancel</button>
+                    {/if}
                     {#if phase === "downloading" && dlProgress}
                         <span class="small muted">
                             downloading cells — {dlProgress.completedCells}/{dlProgress.totalCells} ·
@@ -580,13 +681,15 @@
 
             {#if phase === "done"}
                 <div class="done">
-                    <p class="line small">
-                        Saved {savedFiles.length}
-                        {savedFiles.length === 1 ? "file" : "files"}{#if outputPath} in
-                            <span class="mono">{outputPath}</span>{/if} — copy
-                        {savedFiles.length === 1 ? "it" : "all of them"} to the top level of the device's
-                        card.
-                    </p>
+                    {#if lastRunKind === "download"}
+                        <p class="line small">
+                            Saved {savedFiles.length}
+                            {savedFiles.length === 1 ? "file" : "files"}{#if outputPath} in
+                                <span class="mono">{outputPath}</span>{/if} — copy
+                            {savedFiles.length === 1 ? "it" : "all of them"} to the top level of the device's
+                            card.
+                        </p>
+                    {/if}
                     <ul class="files mono small">
                         {#each savedFiles as f (f.name)}
                             <li>
@@ -597,7 +700,7 @@
                             </li>
                         {/each}
                     </ul>
-                    {#if savedFiles.length > 1}
+                    {#if lastRunKind === "download" && !outputPath && savedFiles.length > 1}
                         <p class="line faint small">
                             Your browser may ask to allow multiple downloads — the map is a set, and every
                             file of it matters.
