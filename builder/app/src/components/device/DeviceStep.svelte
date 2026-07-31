@@ -16,8 +16,18 @@
     import { catalogStore } from "../../lib/catalog/store.svelte";
     import { deviceHolder } from "../../lib/device/session.svelte";
     import type { MapArtifact } from "../../lib/device/write";
+    import type { SendAssembledMap } from "../../lib/device/write";
+    import type { Ledger } from "../../lib/catalog/v2/ledger";
 
-    let { artifact = null }: { artifact?: MapArtifact | null } = $props();
+    let {
+        artifact = null,
+        ledger = null,
+        sendAssembled = null,
+    }: {
+        artifact?: MapArtifact | null;
+        ledger?: Ledger | null;
+        sendAssembled?: SendAssembledMap | null;
+    } = $props();
 
     // The write surfaces reach the protocol client, the codecs and the transport — the ~24 kB C3
     // code-split out of the entry bundle. Loading them on connect keeps that split: a visitor who
@@ -90,6 +100,8 @@
                     info={session.info}
                     identity={session.identity}
                     {artifact}
+                    {ledger}
+                    {sendAssembled}
                     localFileSource={session.localFileSource ?? null}
                 />
             {:catch}

@@ -75,6 +75,8 @@ mod host_frame {
     pub const DEVICE_INFO_READ: u8 = 5;
     /// `config` read (§7.3). No payload.
     pub const CONFIG_READ: u8 = 6;
+    /// Read free bytes on the mounted SD card. No payload; USB only (§10).
+    pub const CARD_FREE_READ: u8 = 7;
 }
 
 /// Device → host selectors.
@@ -87,6 +89,8 @@ pub(crate) mod device_frame {
     pub const DEVICE_INFO: u8 = 3;
     /// The answer to a config read: the §7.3 blob.
     pub const CONFIG: u8 = 4;
+    /// The answer to a card-space read: empty = unavailable, otherwise little-endian `u64`.
+    pub const CARD_FREE: u8 = 5;
 }
 
 /// Timeout on one control-frame send. A USB IN transfer completes when the host reads it, so a host
@@ -291,6 +295,16 @@ async fn serve_frame(
             let mut out = [0u8; MAX_CONTROL_PAYLOAD];
             out[..len].copy_from_slice(&bytes[..len]);
             reply = Some((device_frame::CONFIG, out, len));
+        }
+        host_frame::CARD_FREE_READ => {
+            let mut out = [0u8; MAX_CONTROL_PAYLOAD];
+            let len = if let Some(bytes) = guard.storage.as_ref().and_then(|storage| storage.card_free_bytes()) {
+                out[..8].copy_from_slice(&bytes.to_le_bytes());
+                8
+            } else {
+                0
+            };
+            reply = Some((device_frame::CARD_FREE, out, len));
         }
         other => warn!("usb: [ctl] unknown selector {} ({} B) — ignored", other, payload.len()),
     }

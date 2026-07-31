@@ -3,7 +3,8 @@
 // `bridge.ts`'s header is the contract this implements: the assembly is one
 // synchronous wasm call, so it runs in a dedicated Worker; the UI's cancel is
 // `worker.terminate()`; progress crosses by `postMessage`; finished files are
-// transferred one at a time. This module is the *words* of that conversation —
+// transferred one at a time and acknowledged before the next. This module is
+// the *words* of that conversation —
 // types, guards, and transfer-list builders — kept apart from the worker's entry
 // point so the protocol is testable in Node, where `Worker` does not exist.
 //
@@ -13,7 +14,9 @@
 //     every shard on both sides of the boundary until one big result message
 //     would double the set's residency at its peak. Each `file` is posted with
 //     its buffer in the transfer list, so the bytes *move* rather than copy and
-//     the worker's copy is gone the moment the message is queued.
+//     the worker's copy is gone the moment the message is queued. The worker
+//     then waits for `file-ack`, so the message port cannot become a second
+//     gigabyte-sized queue when the consumer is an SD card.
 //   * **Every failure is one `error` message carrying the bridge's own code.**
 //     The worker never rethrows into the void: an uncaught error in a worker is
 //     a console line the UI cannot read. `AssembleError`'s code survives the
@@ -55,7 +58,8 @@ export type AssembleWorkerRequest =
           /** The chosen skin entry, as JSON. */
           skinJson: string;
           options: AssembleOptions;
-      };
+      }
+    | { type: "file-ack" };
 
 /** One finished file, bytes transferred. Mirrors `AssembledFile` minus `take()`,
  *  which has already happened on the worker side. */
@@ -69,6 +73,7 @@ export interface WorkerFile {
 
 export type AssembleWorkerResponse =
     | { type: "progress"; phase: AssemblePhase; fraction: number }
+    | { type: "planned"; totalBytes: number; shardCount: number; warnings: string[]; summary: AssembleSummary }
     | ({ type: "file" } & WorkerFile)
     | { type: "done"; warnings: string[]; summary: AssembleSummary }
     | { type: "estimate-result"; estimate: MemoryEstimate }
@@ -124,6 +129,16 @@ export function isWorkerResponse(v: unknown): v is AssembleWorkerResponse {
     switch (m.type) {
         case "progress":
             return typeof m.phase === "string" && PHASES.has(m.phase) && typeof m.fraction === "number";
+        case "planned":
+            return (
+                Number.isSafeInteger(m.totalBytes) &&
+                (m.totalBytes as number) >= 0 &&
+                Number.isInteger(m.shardCount) &&
+                (m.shardCount as number) >= 1 &&
+                Array.isArray(m.warnings) &&
+                typeof m.summary === "object" &&
+                m.summary !== null
+            );
         case "file":
             return (
                 typeof m.name === "string" &&

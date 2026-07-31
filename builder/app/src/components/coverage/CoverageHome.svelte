@@ -20,6 +20,7 @@
     import MapSummary from "./MapSummary.svelte";
     import PartsList from "./PartsList.svelte";
     import SkinStep from "./SkinStep.svelte";
+    import type { SendAssembledMap } from "../../lib/device/write";
 
     let {
         client,
@@ -33,6 +34,11 @@
     const store = new CoverageStore(client, rootBody);
 
     const partCount = $derived(store.selection.parts.length);
+    let downloadStep = $state<{ sendToDevice: SendAssembledMap }>();
+    const sendAssembled: SendAssembledMap = (client, ctx) => {
+        if (!downloadStep) throw new Error("The map assembler is not ready yet.");
+        return downloadStep.sendToDevice(client, ctx);
+    };
 </script>
 
 <div class="layout">
@@ -69,7 +75,7 @@
                 <span class="num">3</span>
                 <h3>Download</h3>
             </div>
-            <DownloadStep {store} />
+            <DownloadStep bind:this={downloadStep} {store} />
         </section>
 
         <section class="card">
@@ -77,14 +83,10 @@
                 <span class="num">4</span>
                 <h3>{available("deviceDashboard") ? "Send to device" : "Device"}</h3>
             </div>
-            <p class="small faint sendnote">
-                Direct send of an assembled map is coming — until then, copy the downloaded files onto
-                the card.
-            </p>
             {#if available("deviceDashboard")}
-                <MapSendStep artifact={null} />
+                <MapSendStep artifact={null} ledger={store.ledger} {sendAssembled} />
             {:else}
-                <DeviceStep artifact={null} />
+                <DeviceStep artifact={null} ledger={store.ledger} {sendAssembled} />
             {/if}
         </section>
     </div>
@@ -147,10 +149,6 @@
         display: inline-flex;
         align-items: center;
         justify-content: center;
-    }
-
-    .sendnote {
-        margin: 0 0 10px;
     }
 
     @media (max-width: 940px) {
