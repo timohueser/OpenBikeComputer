@@ -2801,6 +2801,12 @@ impl Storage {
     /// manifest is zero-magic and therefore invisible, so a retry re-derives the same id and
     /// reclaims what the first attempt left — the same property that stops the map path leaking an
     /// id per interruption, reached the same way.
+    ///
+    /// Saturates at `MAX_SET_ID + 1`, which is deliberately **one past** the largest derivable name
+    /// rather than at it: the caller's exhaustion test is `id > MAX_SET_ID`, so clamping to 999
+    /// would hand back an id a card holding `MS999` is *already using* — and the caller clears an id
+    /// before it writes to it, which would delete a good map. `1000` has no 8.3 name, so it can only
+    /// ever be refused.
     pub fn next_set_id_from_scan(&self) -> u16 {
         let mut next: u32 = 0;
         let mut maps: Vec<MapSummary, MAX_MAPS> = Vec::new();
@@ -2810,7 +2816,7 @@ impl Storage {
                 next = next.max(id as u32 + 1);
             }
         }
-        next.min(obc_formats::obcs::MAX_SET_ID as u32) as u16
+        next.min(obc_formats::obcs::MAX_SET_ID as u32 + 1) as u16
     }
 
     /// Open a set-upload session on the card: clear anything already stored under `id` (§5.4's
