@@ -1349,19 +1349,33 @@ fn v2_examples_are_current() {
     assert_eq!(parsed.schema.obcm_version, super::super::PINNED_OBCM_VERSION, "and the pin covers v2 too");
 }
 
-// --- the shipped presets -------------------------------------------------------------------
+// --- the shipped schema and skins -----------------------------------------------------------
 
-/// Inject a `_meta.revision` + band table into a shipped preset config, so the real
-/// file can be used as this producer's `schema.json`.
-fn shipped_as_schema(preset: &str, bands: &str, revision: u32) -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../builder/presets").join(format!("{preset}.json"));
-    let text = fs::read_to_string(&path).expect("shipped preset");
-    let mut doc: serde_json::Value = serde_json::from_str(&text).expect("shipped preset is valid JSON");
+/// The shipped schema (`builder/presets/schema.json`) or, with a `../` path, one of
+/// the retired preset documents kept as a fixture — with a `_meta.revision` and band
+/// table injected, so the real file can be used as this producer's `schema.json`.
+fn as_schema(rel: &str, bands: &str, revision: u32) -> String {
+    let text = repo_doc(rel);
+    let mut doc: serde_json::Value = serde_json::from_str(&text).expect("the document is valid JSON");
     let meta = doc.get_mut("_meta").expect("_meta").as_object_mut().expect("object");
     meta.insert("revision".into(), Value::from(revision));
     meta.insert("bands".into(), serde_json::from_str(bands).expect("band table"));
     serde_json::to_string_pretty(&doc).expect("serializes")
 }
+
+/// A checked-in document, read relative to this crate.
+fn repo_doc(rel: &str) -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
+    fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+/// The shipped schema, as this producer's `schema.json`.
+const SHIPPED_SCHEMA: &str = "../../builder/presets/schema.json";
+/// The one shipped skin.
+const SHIPPED_SKIN: &str = "../../builder/presets/skins/default.json";
+/// The preset epic #1016 D2 retired, kept as a fixture so the negative test below
+/// keeps asserting against the real document rather than a convenient stand-in.
+const RETIRED_HIGH_DETAIL: &str = "tests/retired/high-detail.json";
 
 /// `OBCA_Spec.md` §1.5's v1 band table, against the shipped bikepacking ladder: LOD
 /// 0–2 coarse, 3–4 mid, 5–6 fine, nav + POI in `network`.
@@ -1372,15 +1386,15 @@ const V1_BAND_TABLE: &str = r#"[
     { "id": "network", "cell_log2": 18, "sections": ["nav", "poi"], "role": "core" }
 ]"#;
 
-/// The shipped `default` preset is the hosted schema *and* a skin over itself, and the
-/// band table of `OBCA_Spec.md` §1.5 partitions its ladder exactly. If either stops
+/// The shipped documents are what a real bake hands this generator: `schema.json` is
+/// the hosted schema, `skins/default.json` is a skin over it, and the band table of
+/// `OBCA_Spec.md` §1.5 partitions the schema's ladder exactly. If any of that stops
 /// being true, the first real bake fails on data we control.
 #[test]
-fn the_shipped_bikepacking_preset_is_a_schema_and_a_skin() {
+fn the_shipped_schema_and_skin_generate_a_v2_catalog() {
     let t = TempTree::new("shipped");
-    let schema = shipped_as_schema("default", V1_BAND_TABLE, 1);
-    write(&t.path().join(SCHEMA_DOC), &schema);
-    write(&t.path().join(SKINS_DIR).join("default.json"), &schema);
+    write(&t.path().join(SCHEMA_DOC), &as_schema(SHIPPED_SCHEMA, V1_BAND_TABLE, 1));
+    write(&t.path().join(SKINS_DIR).join("default.json"), &repo_doc(SHIPPED_SKIN));
     let ch = [("europe/switzerland", "2026-07-19")];
     for (band, id) in [("coarse", coarse_cell()), ("mid", mid_cell()), ("fine", fine_west())] {
         write_cell_at(t.path(), band, id, OBCM_VERSION, id.square(), 16, 1, "2026-07-30T02:10:04Z", &ch, false);
@@ -1398,7 +1412,8 @@ fn the_shipped_bikepacking_preset_is_a_schema_and_a_skin() {
         false,
     );
 
-    let g = generate(t.path(), &opts()).expect("the shipped preset generates a v2 catalog");
+    let g = generate(t.path(), &opts()).expect("the shipped documents generate a v2 catalog");
+    assert_eq!(g.root.schema.id, "bikepacking", "the shipped schema names itself");
     assert_eq!(g.root.schema.lods.len(), 7, "the shipped ladder is 7 rungs");
     assert_eq!(
         g.root.schema.lods.iter().map(|l| l.band.as_str()).collect::<Vec<_>>(),
@@ -1406,25 +1421,53 @@ fn the_shipped_bikepacking_preset_is_a_schema_and_a_skin() {
         "OBCA_Spec.md §1.5's band table partitions the shipped ladder"
     );
     let skin = &g.root.skins[0];
+    assert_eq!(skin.id, "default");
     assert_eq!(skin.styles.len(), g.root.schema.styles.len());
-    assert!(skin.styles.len() > 30, "the shipped preset carries a real style table: {}", skin.styles.len());
+    assert!(skin.styles.len() > 30, "the shipped schema carries a real style table: {}", skin.styles.len());
     assert!(skin.styles.iter().any(|s| s.dashed), "and at least one dashed style");
+
+    // The shipped skin is the schema's *own* look, restated. Nothing else in the tree
+    // enforces that — a skin is free to differ, which is the entire point of skins —
+    // but `default` is the look the schema bakes into a v1 whole-region artifact and
+    // into every preview map, so the two drifting apart would make one of them lie.
+    // The dark skin of a later round is where a skin legitimately differs.
+    let schema_config = Config::parse(&repo_doc(SHIPPED_SCHEMA)).expect("the schema parses");
+    let skin_config = Config::parse(&repo_doc(SHIPPED_SKIN)).expect("the skin parses");
+    check_skin(&schema_config, &skin_config).expect("the shipped skin fits the shipped schema");
+    assert_eq!(skin.marker_color, schema_config.marker_color, "same marker color");
+    let schema_styles =
+        skin_styles(&schema_config, &read_schema_doc(&t.path().join(SCHEMA_DOC)).expect("schema"), Path::new("schema"))
+            .expect("the schema's own values, in skin shape");
+    assert_eq!(skin.styles, schema_styles, "the `default` skin restates the schema's own presentation values");
 }
 
 /// Epic #1016 D2, as a test: `high-detail` is a different **schema**, not a skin. It
-/// has feature types `default` lacks and vice versa, so it cannot be stamped onto
-/// cells baked at the bikepacking schema — which is exactly why the hosted catalog
+/// has feature types the bikepacking schema lacks and vice versa, so it cannot be
+/// stamped onto cells baked at that schema — which is exactly why the hosted catalog
 /// retires it rather than shipping a second cell store.
+///
+/// The document under test is the retired preset itself, kept verbatim at
+/// `tests/retired/high-detail.json` when #1036 removed it from the shelf. A
+/// hand-written mismatch would test the same two error branches while quietly
+/// dropping the claim that matters: that the thing we retired really could not have
+/// been kept as a skin.
 #[test]
 fn the_retired_high_detail_preset_is_a_different_schema_not_a_skin() {
     let t = TempTree::new("high-detail");
-    write(&t.path().join(SCHEMA_DOC), &shipped_as_schema("default", V1_BAND_TABLE, 1));
-    write(&t.path().join(SKINS_DIR).join("high-detail.json"), &shipped_as_schema("high-detail", V1_BAND_TABLE, 1));
+    write(&t.path().join(SCHEMA_DOC), &as_schema(SHIPPED_SCHEMA, V1_BAND_TABLE, 1));
+    write(&t.path().join(SKINS_DIR).join("high-detail.json"), &as_schema(RETIRED_HIGH_DETAIL, V1_BAND_TABLE, 1));
     let ch = [("europe/switzerland", "2026-07-19")];
     for (band, id) in [("coarse", coarse_cell()), ("mid", mid_cell()), ("fine", fine_west()), ("network", fine_west())]
     {
         write_cell_at(t.path(), band, id, OBCM_VERSION, id.square(), 16, 1, "2026-07-30T02:10:04Z", &ch, false);
     }
     let err = generate(t.path(), &opts()).expect_err("high-detail is not a skin over the bikepacking schema");
+    assert!(err.contains("new schema revision") || err.contains("invisible layer"), "{err}");
+
+    // The same verdict from the check a *producer* calls, before it has a tree at all
+    // — one implementation, two callers (`obc-bake`'s cell bakery is the other).
+    let schema = Config::parse(&repo_doc(SHIPPED_SCHEMA)).expect("the schema parses");
+    let high_detail = Config::parse(&repo_doc(RETIRED_HIGH_DETAIL)).expect("the retired preset parses");
+    let err = check_skin(&schema, &high_detail).expect_err("and the producer-side check agrees");
     assert!(err.contains("new schema revision") || err.contains("invisible layer"), "{err}");
 }

@@ -905,20 +905,24 @@ mod tests {
     }
 
     fn corpus_config() -> Config {
-        Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/presets/default.json"))
+        Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/presets/schema.json"))
             .expect("load corpus config")
     }
 
+    /// The shipped **schema** is a complete, CLI-usable packer config.
+    ///
+    /// It is the one document in `builder/presets/` that has to be: the skins beside
+    /// it are presentation over already-baked bytes (`OBCC_Spec.md` §11.4) and carry
+    /// no ladder and no routing table on purpose, so "every file in the directory is
+    /// a bakeable config" stopped being true with #1036 and this checks the file that
+    /// still is.
     #[test]
-    fn every_shipped_preset_is_a_complete_cli_config() {
-        let presets = ["default.json", "high-detail.json"];
-        for preset in presets {
-            let path = format!("{}/../../builder/presets/{preset}", env!("CARGO_MANIFEST_DIR"));
-            let config = Config::load(&path).unwrap_or_else(|error| panic!("{preset} must parse: {error}"));
-            assert!(!config.features.is_empty(), "{preset} must carry feature styles");
-            assert!(!config.lods.is_empty(), "{preset} must carry an LOD pyramid");
-            assert!(!config.routing.profiles.is_empty(), "{preset} must carry routing profiles");
-        }
+    fn the_shipped_schema_is_a_complete_cli_config() {
+        let path = format!("{}/../../builder/presets/schema.json", env!("CARGO_MANIFEST_DIR"));
+        let config = Config::load(&path).unwrap_or_else(|error| panic!("the schema must parse: {error}"));
+        assert!(!config.features.is_empty(), "the schema must carry feature styles");
+        assert!(!config.lods.is_empty(), "the schema must carry an LOD pyramid");
+        assert!(!config.routing.profiles.is_empty(), "the schema must carry routing profiles");
     }
 
     #[test]
