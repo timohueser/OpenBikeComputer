@@ -8,8 +8,13 @@
 # under a name Geofabrik does not serve, and the manifest's ids cannot drift from
 # the source tree they came from. `name` is what a human sees in the picker.
 #
-# Optional per-region `presets = ["high-detail"]` restricts a region to a subset of the
-# shipped presets; absent, every preset in `builder/presets/` is baked for it.
+# `id` and `name` are the only fields. A region used to be able to carry
+# `presets = [...]` to restrict itself to a subset of the shipped style presets;
+# #1036 retired that along with the presets themselves. The shelf now has **one**
+# schema (`builder/presets/schema.json`) — every region is baked with it — and a look
+# is a *skin* stamped on at assembly time, which is a choice the rider makes in the
+# builder rather than one this file makes on their behalf. A leftover `presets` line
+# fails the parse; there is nothing left for it to select.
 #
 # ── Curation policy ────────────────────────────────────────────────────────────
 #

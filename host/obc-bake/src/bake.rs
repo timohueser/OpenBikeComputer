@@ -57,7 +57,7 @@ use std::time::Instant;
 use obc_pack::progress::Progress;
 use serde::{Deserialize, Serialize};
 
-use crate::presets::Preset;
+use crate::presets::StyleDoc;
 use crate::regions::Region;
 use crate::source::ExtractSource;
 use crate::verify::Verified;
@@ -79,7 +79,7 @@ pub trait Packer: Sync {
     /// themselves differently must not reuse each other's artifacts.
     fn recipe(&self) -> String;
     /// Pack `pbf` into `out`, returning the bytes written.
-    fn pack(&self, pbf: &Path, preset: &Preset, out: &Path, progress: &Progress) -> Result<u64, String>;
+    fn pack(&self, pbf: &Path, preset: &StyleDoc, out: &Path, progress: &Progress) -> Result<u64, String>;
 }
 
 /// The real thing: `obc_pack::pipeline::pack`, linked in rather than spawned.
@@ -100,7 +100,7 @@ impl Packer for ObcPacker {
         format!("obc-pack no_land={} chunk_size={:?}", self.no_land, self.chunk_size)
     }
 
-    fn pack(&self, pbf: &Path, preset: &Preset, out: &Path, progress: &Progress) -> Result<u64, String> {
+    fn pack(&self, pbf: &Path, preset: &StyleDoc, out: &Path, progress: &Progress) -> Result<u64, String> {
         let opts = obc_pack::PackOptions {
             no_land: self.no_land,
             chunk_size: self.chunk_size,
@@ -311,7 +311,11 @@ fn human(bytes: u64) -> String {
 /// A configured run.
 pub struct Bakery<'a> {
     pub regions: &'a [Region],
-    pub presets: &'a [Preset],
+    /// The style documents this run bakes **whole maps** with. Since #1036 the shelf
+    /// holds exactly one such document — the schema — and a v1 artifact's `preset_id`
+    /// is its id; a skin is presentation over already-baked bytes and cannot pack
+    /// anything, so it never appears here.
+    pub presets: &'a [StyleDoc],
     pub source: &'a dyn ExtractSource,
     pub packer: &'a dyn Packer,
     pub opts: BakeOptions,
@@ -335,16 +339,12 @@ impl Bakery<'_> {
         let mut uncovered: Vec<String> = Vec::new();
 
         for region in self.regions {
-            let presets: Vec<&Preset> = self
-                .presets
-                .iter()
-                .filter(|p| region.presets.as_ref().is_none_or(|only| only.contains(&p.id)))
-                .collect();
+            let presets: Vec<&StyleDoc> = self.presets.iter().collect();
             if presets.is_empty() {
-                // Not a failure — the caller narrowed the matrix, or the region asks
-                // for a preset this run does not have — but never silent: "no preset
-                // applied" and "baked nothing" look identical in the tree afterwards.
-                progress.warn(format!("{}: no preset in this run applies — skipped", region.id));
+                // Not a failure — the caller narrowed the run to nothing — but never
+                // silent: "nothing applied" and "baked nothing" look identical in the
+                // tree afterwards.
+                progress.warn(format!("{}: no style document in this run applies — skipped", region.id));
                 continue;
             }
 
@@ -415,7 +415,7 @@ impl Bakery<'_> {
     fn run_job(
         &self,
         region: &Region,
-        preset: &Preset,
+        preset: &StyleDoc,
         extract: &crate::source::Extract,
         extract_sha: &str,
         progress: &Progress,
@@ -437,7 +437,7 @@ impl Bakery<'_> {
     fn bake_one(
         &self,
         region: &Region,
-        preset: &Preset,
+        preset: &StyleDoc,
         extract: &crate::source::Extract,
         extract_sha: &str,
         started: Instant,
@@ -550,7 +550,7 @@ impl Bakery<'_> {
     /// is precisely what keying on content instead of timestamps exists to avoid.
     /// They are still not allowed to go stale: they are recorded in [`BakeState`]
     /// and compared by [`sidecar_drift`], which rewrites the sidecar alone.
-    fn pack_key(&self, extract_sha: &str, preset: &Preset) -> String {
+    fn pack_key(&self, extract_sha: &str, preset: &StyleDoc) -> String {
         crate::hash::text(&format!(
             "recipe={RECIPE_VERSION}\nobcm={}\nextract={extract_sha}\npreset={}\npack={}\n",
             obc_formats::obcm::VERSION,
@@ -563,7 +563,7 @@ impl Bakery<'_> {
     /// catalog's description of the preset *as it is now* (§8). Written only for
     /// presets that have an artifact, so a preset whose every job failed does not
     /// make the whole catalog unpublishable ("a preset nobody built").
-    fn install_preset_config(&self, preset: &Preset) -> Result<(), String> {
+    fn install_preset_config(&self, preset: &StyleDoc) -> Result<(), String> {
         let dir = self.opts.out.join("presets");
         std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let dest = dir.join(format!("{}.json", preset.id));

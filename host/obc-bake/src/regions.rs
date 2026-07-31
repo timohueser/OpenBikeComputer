@@ -27,10 +27,6 @@ pub struct Region {
     /// Human-readable name, recorded verbatim into every sidecar this region
     /// produces (`region_name`).
     pub name: String,
-    /// Restrict this region to a subset of the shipped presets. Absent (the normal
-    /// case) means every preset in the presets directory.
-    #[serde(default)]
-    pub presets: Option<Vec<String>>,
 }
 
 impl Region {
@@ -88,11 +84,6 @@ pub fn parse(toml_text: &str) -> Result<Vec<Region>, String> {
         if !seen.insert(r.id.as_str()) {
             return Err(format!("region `{}` is listed twice", r.id));
         }
-        if let Some(presets) = &r.presets {
-            if presets.is_empty() {
-                return Err(format!("region `{}`: `presets = []` bakes nothing — remove the region instead", r.id));
-            }
-        }
     }
     Ok(doc.regions)
 }
@@ -149,7 +140,7 @@ mod tests {
 
     #[test]
     fn an_extract_url_is_the_id_plus_latest() {
-        let r = Region { id: "europe/germany/bayern".into(), name: "Bayern".into(), presets: None };
+        let r = Region { id: "europe/germany/bayern".into(), name: "Bayern".into() };
         assert_eq!(
             r.extract_url("https://download.geofabrik.de/"),
             "https://download.geofabrik.de/europe/germany/bayern-latest.osm.pbf"
@@ -174,7 +165,20 @@ mod tests {
 
     #[test]
     fn an_unknown_key_in_the_list_is_a_typo_not_metadata() {
-        let toml = "regions = [ { id = \"europe/austria\", name = \"Austria\", presetz = [\"minimal\"] } ]";
+        let toml = "regions = [ { id = \"europe/austria\", name = \"Austria\", styel = \"x\" } ]";
         assert!(parse(toml).is_err(), "a misspelled key must fail rather than silently bake everything");
+    }
+
+    /// #1036 retired the per-region `presets = [...]` restriction: the catalog ships
+    /// **one** schema and a skin is stamped at assembly rather than baked, so there is
+    /// no subset of styles left for a region to be restricted to. A leftover line has
+    /// to fail the parse rather than be ignored — a region baked against something
+    /// other than what its own line says is exactly the silence this list exists to
+    /// prevent.
+    #[test]
+    fn the_retired_per_region_preset_restriction_is_refused_not_ignored() {
+        let toml = "regions = [ { id = \"europe/austria\", name = \"Austria\", presets = [\"default\"] } ]";
+        let err = parse(toml).expect_err("a retired field must not be silently ignored");
+        assert!(err.contains("presets"), "the error must name the retired field: {err}");
     }
 }

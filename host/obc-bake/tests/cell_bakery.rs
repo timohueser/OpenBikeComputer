@@ -28,7 +28,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use obc_bake::cells::{CellBakeOptions, CellBakery, CellCutter, CellRunSummary, CellStatus};
-use obc_bake::presets::Preset;
+use obc_bake::presets::StyleDoc;
 use obc_bake::regions::Region;
 use obc_bake::source::LocalExtracts;
 use obc_pack::config::Config;
@@ -45,7 +45,7 @@ const BASE_URL: &str = "https://maps.example/cells";
 const GENERATED_AT: &str = "2026-07-30T00:00:00Z";
 
 /// A three-level ladder with no simplification, and a `_meta` block so the bakery can
-/// load it as a preset and publish it as both the schema and a skin.
+/// load it as the schema: the config every cell in these tests is cut with.
 const SCHEMA_JSON: &str = r#"{
     "_meta": {
         "id": "testschema",
@@ -65,6 +65,24 @@ const SCHEMA_JSON: &str = r#"{
     "marker": {"color": "0xF800"},
     "chunk_size": 4096,
     "routing": {"min_component_edges": 4}
+}"#;
+
+/// A **skin** over that schema, shaped the way the shipped ones are: the same feature
+/// types in the same document order (which is what fixes the style ids), carrying only
+/// presentation. No ladder, no `min_lod`, no routing — those are schema data, and a
+/// skin that restated them would be claiming to change bytes it is stamped on top of.
+const SKIN_JSON: &str = r#"{
+    "_meta": {
+        "id": "testskin",
+        "name": "Test skin",
+        "description": "The test schema's own look, restated as a skin.",
+        "version": 1
+    },
+    "features": {
+        "highway": { "residential": {"color": "0xF800", "weight": 2} },
+        "natural": { "water": {"color": "0x001F", "weight": 1} }
+    },
+    "marker": {"color": "0xF800"}
 }"#;
 
 /// One geometry band and one core band, both `2^18` — the smallest table that still
@@ -200,7 +218,8 @@ fn fixture(cfg: &Config) -> (Ingested, Vec<RoutableWay>) {
 struct Fixture {
     dir: PathBuf,
     regions: Vec<Region>,
-    presets: Vec<Preset>,
+    schema: StyleDoc,
+    skins: Vec<StyleDoc>,
     tree: PathBuf,
     extracts: PathBuf,
 }
@@ -215,21 +234,23 @@ fn fixture_dirs(name: &str) -> Fixture {
         std::fs::write(extracts.join(format!("europe/{id}.poly")), poly).unwrap();
     }
     let presets_dir = dir.join("presets");
-    std::fs::create_dir_all(&presets_dir).unwrap();
-    std::fs::write(presets_dir.join("testschema.json"), SCHEMA_JSON).unwrap();
-    let presets = obc_bake::presets::load(&presets_dir, None).expect("the test schema loads as a preset");
+    std::fs::create_dir_all(presets_dir.join(obc_bake::presets::SKINS_DIR)).unwrap();
+    std::fs::write(presets_dir.join(obc_bake::presets::SCHEMA_DOC), SCHEMA_JSON).unwrap();
+    std::fs::write(presets_dir.join("skins/testskin.json"), SKIN_JSON).unwrap();
+    let schema = obc_bake::presets::load_schema(&presets_dir).expect("the test schema loads");
+    let skins = obc_bake::presets::load_skins(&presets_dir, None).expect("the test skin loads");
     let regions = obc_bake::regions::parse(regions_toml()).expect("region list parses");
-    Fixture { tree: dir.join("tree"), dir, regions, presets, extracts }
+    Fixture { tree: dir.join("tree"), dir, regions, schema, skins, extracts }
 }
 
 impl Fixture {
     fn bake(&self, cutter: &dyn CellCutter, only: &[&str], snapshot: &str, force: bool) -> CellRunSummary {
         let regions: Vec<Region> =
             self.regions.iter().filter(|r| only.is_empty() || only.contains(&r.id.as_str())).cloned().collect();
-        let skins: Vec<&Preset> = self.presets.iter().collect();
+        let skins: Vec<&StyleDoc> = self.skins.iter().collect();
         CellBakery {
             regions: &regions,
-            schema: &self.presets[0],
+            schema: &self.schema,
             skins: &skins,
             source: &LocalExtracts::new(&self.extracts).with_snapshot(snapshot),
             cutter,
@@ -448,6 +469,53 @@ fn a_canonical_cell_is_never_replaced_by_a_partial_one() {
     assert_eq!(seam.get(&format!("{WEST_CORE} [coarse]")), Some(&CellStatus::Unchanged));
 }
 
+/// A skin that is not a skin over the schema stops the run **before** the first
+/// extract is fetched (#1036).
+///
+/// The generator would refuse the finished tree anyway, so what this buys is the
+/// moment of failure: without it a DACH bake spends hours cutting cells and then ends
+/// with a tree that has no catalog. The mismatch below is the shape epic #1016 D2
+/// retired `high-detail` for — a document that styles a feature type the schema does
+/// not have is a different *schema*, and the answer is a revision and a re-bake.
+#[test]
+fn a_skin_that_does_not_fit_the_schema_refuses_the_bake_before_any_cutting() {
+    let f = fixture_dirs("skin-mismatch");
+    let stray = r#"{
+        "_meta": {"id": "stray", "name": "Stray", "description": "Styles a type the schema lacks.", "version": 1},
+        "features": {
+            "highway": { "residential": {"color": "0xF800", "weight": 2} },
+            "natural": { "water": {"color": "0x001F", "weight": 1} },
+            "aeroway": { "runway": {"color": "0x0000", "weight": 2} }
+        },
+        "marker": {"color": "0xF800"}
+    }"#;
+    let dir = f.dir.join("presets");
+    std::fs::write(dir.join("skins/stray.json"), stray).unwrap();
+    let skins = obc_bake::presets::load_skins(&dir, None).expect("both skins load as configs");
+    let refs: Vec<&StyleDoc> = skins.iter().collect();
+    let cutter = FixtureCutter::new();
+    let err = CellBakery {
+        regions: &f.regions,
+        schema: &f.schema,
+        skins: &refs,
+        source: &LocalExtracts::new(&f.extracts).with_snapshot(SNAPSHOT),
+        cutter: &cutter,
+        opts: CellBakeOptions {
+            out: f.tree.clone(),
+            force: false,
+            fail_fast: false,
+            bands: BandTable::parse(BANDS_JSON).expect("band table"),
+            schema_id: "bikepacking".into(),
+            schema_revision: 1,
+        },
+    }
+    .run(&Progress::silent())
+    .expect_err("a skin the generator would reject must not be baked against");
+    assert!(err.contains("stray") && err.contains("aeroway.runway"), "the error names the skin and the type: {err}");
+    assert_eq!(cutter.calls.load(Ordering::SeqCst), 0, "and nothing was cut");
+    assert!(!f.tree.exists(), "not even a tree");
+}
+
 /// The tree a bake leaves is one the v2 generator accepts and the verifier passes.
 #[test]
 fn the_tree_generates_a_v2_catalog_that_verifies() {
@@ -463,6 +531,16 @@ fn the_tree_generates_a_v2_catalog_that_verifies() {
     assert_eq!(root.cell_index.len(), 2, "one index per band");
     assert!(root.cell_index.iter().all(|b| b.cell_count == 15), "{:?}", root.cell_index);
     assert_eq!(root.skins.len(), 1);
+    // The published skin is the presentation-only document the bake copied in, and its
+    // styles line up one-for-one with the schema's id assignment (§11.4) — which is
+    // what lets an assembler stamp `skins[k].styles` straight into the style table.
+    let skin = &root.skins[0];
+    assert_eq!(skin.id, "testskin");
+    assert_eq!(
+        skin.styles.iter().map(|s| s.feature_type.as_str()).collect::<Vec<_>>(),
+        root.schema.styles.iter().map(|s| s.feature_type.as_str()).collect::<Vec<_>>(),
+        "a skin covers exactly the schema's feature types, in the schema's own id order"
+    );
 
     let ids: Vec<&str> = root.regions.iter().map(|r| r.id.as_str()).collect();
     assert_eq!(ids, vec!["europe/east", "europe/west"], "sorted, and both are selections now");
