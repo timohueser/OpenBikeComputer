@@ -95,7 +95,7 @@ use obc_pack::progress::Progress;
 use serde::{Deserialize, Serialize};
 
 use crate::coverage::Coverage;
-use crate::presets::Preset;
+use crate::presets::StyleDoc;
 use crate::regions::Region;
 use crate::source::{Extract, ExtractSource};
 
@@ -442,10 +442,11 @@ pub struct CellBakery<'a> {
     pub regions: &'a [Region],
     /// The packer config the cells are baked with — the schema, in `OBCC_Spec.md`
     /// §11.3's sense. Its style-id assignment is baked into every chunk.
-    pub schema: &'a Preset,
+    pub schema: &'a StyleDoc,
     /// The skins published beside it. Each must style exactly the schema's feature
-    /// types with exactly the schema's ids, which the v2 generator enforces.
-    pub skins: &'a [&'a Preset],
+    /// types with exactly the schema's ids; [`CellBakery::run`] proves that before it
+    /// cuts anything, and the v2 generator proves it again on the finished tree.
+    pub skins: &'a [&'a StyleDoc],
     pub source: &'a dyn ExtractSource,
     pub cutter: &'a dyn CellCutter,
     pub opts: CellBakeOptions,
@@ -459,6 +460,7 @@ impl CellBakery<'_> {
         if self.opts.schema_revision == 0 {
             return Err("--schema-revision starts at 1 — a cell store has no revision zero".into());
         }
+        self.check_skins()?;
         progress.log(format!("cell bakery: {} region(s), schema `{}`", self.regions.len(), self.opts.schema_id));
         progress.log(format!("  source:  {}", self.source.describe()));
         progress.log(format!("  tree:    {}", self.opts.out.display()));
@@ -530,6 +532,31 @@ impl CellBakery<'_> {
             uncovered_regions: uncovered,
             warnings,
         })
+    }
+
+    /// Every skin must fit the schema — checked **before** the first extract is
+    /// fetched.
+    ///
+    /// The v2 generator makes the same check on the finished tree
+    /// ([`obc_pack::catalog::v2::check_skin`] is literally the same function), so this
+    /// one buys nothing but the moment it fails at: a run that publishes a skin the
+    /// generator will refuse has otherwise spent hours cutting cells first, and ends
+    /// with a tree that has no catalog. A skin that does not fit is never a small
+    /// mistake either — it means the document is a different *schema*, and the answer
+    /// is a schema revision and a re-bake (epic #1016 D2), not a retry.
+    fn check_skins(&self) -> Result<(), String> {
+        for skin in self.skins {
+            obc_pack::catalog::v2::check_skin(&self.schema.config, &skin.config).map_err(|e| {
+                format!(
+                    "skin `{}` ({}) is not a skin over schema `{}` ({}): {e}",
+                    skin.id,
+                    skin.path.display(),
+                    self.opts.schema_id,
+                    self.schema.path.display()
+                )
+            })?;
+        }
+        Ok(())
     }
 
     /// Fetch each region's extract and polygon, and derive its per-size cell sets.

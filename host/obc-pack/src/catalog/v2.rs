@@ -963,6 +963,70 @@ fn style_assignment(config: &Config, path: &Path) -> Result<(Vec<StyleAssignment
     Ok((styles, by_type))
 }
 
+/// A config's `feature_type → style id` assignment: `highway.primary → 3`, and so on
+/// for every `(tag key, tag value)` pair it styles.
+///
+/// Public because it is the thing a **producer** has to agree with this generator
+/// about. `obc-pack` numbers feature types 1-based in config document order and those
+/// ids are referenced by every feature header in every chunk (`OBCM_Spec.md` §5.2), so
+/// the assignment is part of the cells' bytes.
+pub fn feature_type_ids(config: &Config) -> BTreeMap<String, u8> {
+    let mut by_type = BTreeMap::new();
+    for (tag_key, values) in &config.features {
+        for (tag_value, style) in values {
+            by_type.insert(format!("{tag_key}.{tag_value}"), style.id);
+        }
+    }
+    by_type
+}
+
+/// Prove a config **is a skin over** `schema`: same feature types, same style ids
+/// (`OBCC_Spec.md` §11.4, `OBCA_Spec.md` §4.7).
+///
+/// This is the check [`generate`] applies to every document in a tree's `skins/`, and
+/// it is public so a producer can apply the *same* one before it spends hours cutting
+/// cells a skin turns out not to fit. A skin may change only the presentation values
+/// of a style record: introducing, dropping, reordering or renumbering a feature type
+/// is a new schema and therefore a re-bake, because those ids are already baked into
+/// every chunk of every cell.
+pub fn check_skin(schema: &Config, skin: &Config) -> Result<(), String> {
+    check_skin_ids(&feature_type_ids(schema), &feature_type_ids(skin))
+}
+
+/// [`check_skin`] against the assignments themselves, so the generator can reuse it
+/// with the one it already read out of the tree's `schema.json`.
+fn check_skin_ids(want: &BTreeMap<String, u8>, have: &BTreeMap<String, u8>) -> Result<(), String> {
+    let unknown: Vec<&str> = have.keys().filter(|t| !want.contains_key(*t)).map(String::as_str).collect();
+    if !unknown.is_empty() {
+        return Err(format!(
+            "this skin styles feature type(s) the schema does not have: {}. A skin is a recolor of one schema — a new \
+             feature type is a new schema revision and a re-bake.",
+            joined(unknown.into_iter())
+        ));
+    }
+    let missing: Vec<&str> = want.keys().filter(|t| !have.contains_key(*t)).map(String::as_str).collect();
+    if !missing.is_empty() {
+        return Err(format!(
+            "this skin has no style for {}. A missing style would ship a map with an invisible layer \
+             (OBCC_Spec.md §11.4).",
+            joined(missing.into_iter())
+        ));
+    }
+    let renumbered: Vec<String> = have
+        .iter()
+        .filter(|(feature_type, id)| want[*feature_type] != **id)
+        .map(|(feature_type, id)| format!("`{feature_type}` is id {id} here but {} in the schema", want[feature_type]))
+        .collect();
+    if !renumbered.is_empty() {
+        return Err(format!(
+            "a skin MUST NOT renumber style ids — every feature header in every baked chunk references them \
+             (OBCA_Spec.md §4.7): {}",
+            renumbered.join("; ")
+        ));
+    }
+    Ok(())
+}
+
 // --- skins --------------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
@@ -1023,11 +1087,8 @@ fn read_skins(dir: &Path, schema: &SchemaDoc) -> Result<Vec<SkinEntry>, String> 
     Ok(skins)
 }
 
-/// A skin's style values, in the schema's id order, after proving the skin is a skin:
-/// same feature types, same ids. `OBCA_Spec.md` §4.7 — a skin may change only the
-/// seven presentation bytes of a style record, never introduce, remove, reorder or
-/// renumber an id, because those ids are referenced by every feature header in every
-/// chunk already baked.
+/// A skin's style values, in the schema's id order, after [`check_skin`] has proved
+/// the skin is a skin: same feature types, same ids.
 fn skin_styles(config: &Config, schema: &SchemaDoc, path: &Path) -> Result<Vec<SkinStyle>, String> {
     let mut by_type = BTreeMap::new();
     for (tag_key, values) in &config.features {
@@ -1035,40 +1096,7 @@ fn skin_styles(config: &Config, schema: &SchemaDoc, path: &Path) -> Result<Vec<S
             by_type.insert(format!("{tag_key}.{tag_value}"), style.clone());
         }
     }
-    let unknown: Vec<&String> = by_type.keys().filter(|t| !schema.feature_types.contains_key(*t)).collect();
-    if !unknown.is_empty() {
-        return Err(format!(
-            "{}: this skin styles feature type(s) the schema does not have: {}. A skin is a recolor of one schema — a \
-             new feature type is a new schema revision and a re-bake.",
-            path.display(),
-            joined(unknown.iter().map(|t| t.as_str()))
-        ));
-    }
-    let missing: Vec<&str> =
-        schema.feature_types.keys().filter(|t| !by_type.contains_key(*t)).map(String::as_str).collect();
-    if !missing.is_empty() {
-        return Err(format!(
-            "{}: this skin has no style for {}. A missing style would ship a map with an invisible layer \
-             (OBCC_Spec.md §11.4).",
-            path.display(),
-            joined(missing.into_iter())
-        ));
-    }
-    let mut renumbered = Vec::new();
-    for (feature_type, style) in &by_type {
-        let want = schema.feature_types[feature_type];
-        if style.id != want {
-            renumbered.push(format!("`{feature_type}` is id {} here but {want} in the schema", style.id));
-        }
-    }
-    if !renumbered.is_empty() {
-        return Err(format!(
-            "{}: a skin MUST NOT renumber style ids — every feature header in every baked chunk references them \
-             (OBCA_Spec.md §4.7): {}",
-            path.display(),
-            renumbered.join("; ")
-        ));
-    }
+    check_skin_ids(&schema.feature_types, &feature_type_ids(config)).map_err(|e| format!("{}: {e}", path.display()))?;
 
     // Schema order, so `skins[].styles[k]` and `schema.styles[k]` describe the same
     // feature type without a consumer having to join on the name.

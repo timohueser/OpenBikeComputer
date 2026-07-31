@@ -1,0 +1,86 @@
+{
+    "_meta": {
+        "id": "default",
+        "name": "Default",
+        "description": "The shipped look: cream paper, warm through-roads, indigo cycleways, green vegetation.",
+        "version": 1,
+        "swatch": [
+            "#FF5500",
+            "#FFAA00",
+            "#5500FF",
+            "#55AAFF",
+            "#55AA55",
+            "#AAAAAA"
+        ],
+        "skin_note": "Presentation only. Every feature type and every style id comes from `schema.json` and is referenced by the feature headers of every baked chunk (OBCM_Spec.md §5.2), so a skin may restate the seven presentation values and nothing else — the catalog generator refuses one that adds, drops, reorders or renumbers a feature type (OBCC_Spec.md §11.4). The values below are the schema's own, which is what makes this the default look; `min_lod`, the LOD ladder, the merge passes and the routing profiles are schema data and are deliberately absent."
+    },
+    "features": {
+        "highway": {
+            "motorway": {"color": "0xFAA0", "z_index": 60, "weight": 3, "priority": 2},
+            "motorway_link": {"color": "0xFAA0", "z_index": 58, "weight": 2, "priority": 2},
+            "trunk": {"color": "0xFAA0", "z_index": 55, "weight": 3, "priority": 2},
+            "trunk_link": {"color": "0xFAA0", "z_index": 53, "weight": 2, "priority": 2},
+            "primary": {"color": "0xFD40", "z_index": 50, "weight": 3, "priority": 2},
+            "primary_link": {"color": "0xFD40", "z_index": 48, "weight": 2, "priority": 2},
+            "secondary": {"color": "0xFD40", "z_index": 44, "weight": 2, "priority": 2},
+            "secondary_link": {"color": "0xFD40", "z_index": 43, "weight": 1, "priority": 2},
+            "tertiary": {"color": "0xFD40", "z_index": 34, "weight": 2, "priority": 2},
+            "tertiary_link": {"color": "0xFD40", "z_index": 33, "weight": 1, "priority": 2},
+            "unclassified": {"color": "0xFFFF", "z_index": 30, "weight": 1, "priority": 3, "color2": "0x52AA"},
+            "residential": {"color": "0xFFFF", "z_index": 30, "weight": 1, "priority": 3, "color2": "0x52AA"},
+            "living_street": {"color": "0xFFFF", "z_index": 29, "weight": 1, "priority": 3, "color2": "0x52AA"},
+            "service": {"color": "0xFFFF", "z_index": 28, "weight": 1, "priority": 3, "color2": "0x52AA"},
+            "pedestrian": {"color": "0xFFFF", "z_index": 28, "weight": 1, "priority": 3, "color2": "0x52AA"},
+            "track": {"color": "0xAAA0", "z_index": 24, "weight": 1, "priority": 3},
+            "path": {"color": "0xAAA0", "z_index": 24, "weight": 1, "priority": 3},
+            "footway": {"color": "0xAAA0", "z_index": 24, "weight": 1, "priority": 3},
+            "cycleway": {"color": "0x501F", "z_index": 26, "weight": 2, "priority": 3}
+        },
+        "railway": {
+            "rail": {"color": "0x0000", "z_index": 40, "weight": 2, "priority": 2, "line_style": "dashed", "color2": "0xAD55"},
+            "light_rail": {"color": "0x0000", "z_index": 36, "weight": 1, "priority": 3, "line_style": "dashed", "color2": "0xAD55"},
+            "subway": {"color": "0x52AA", "z_index": 35, "weight": 1, "priority": 3},
+            "tram": {"color": "0x52AA", "z_index": 31, "weight": 1, "priority": 3}
+        },
+        "waterway": {
+            "river": {"color": "0x555F", "z_index": 16, "weight": 2, "priority": 2},
+            "canal": {"color": "0x555F", "z_index": 16, "weight": 2, "priority": 3},
+            "stream": {"color": "0x555F", "z_index": 15, "weight": 1, "priority": 3},
+            "drain": {"color": "0x555F", "z_index": 12, "weight": 1, "priority": 3},
+            "ditch": {"color": "0x555F", "z_index": 12, "weight": 1, "priority": 3}
+        },
+        "building": {
+            "*": {"color": "0x52AA", "z_index": 10, "weight": 1, "priority": 4}
+        },
+        "natural": {
+            "sea": {"color": "0x555F", "z_index": 0, "weight": 1, "priority": 1},
+            "land": {"color": "0xFFF5", "z_index": 1, "weight": 1, "priority": 1},
+            "water": {"color": "0x555F", "z_index": 14, "weight": 1, "priority": 2},
+            "wood": {"color": "0x554A", "z_index": 4, "weight": 1, "priority": 2},
+            "scrub": {"color": "0xAFF5", "z_index": 6, "weight": 1, "priority": 2},
+            "grassland": {"color": "0xAFF5", "z_index": 6, "weight": 1, "priority": 2}
+        },
+        "landuse": {
+            "residential": {"color": "0xAD55", "z_index": 2, "weight": 1, "priority": 2},
+            "commercial": {"color": "0xAD55", "z_index": 2, "weight": 1, "priority": 2},
+            "industrial": {"color": "0xAD55", "z_index": 2, "weight": 1, "priority": 2},
+            "retail": {"color": "0xAD55", "z_index": 2, "weight": 1, "priority": 2},
+            "forest": {"color": "0x554A", "z_index": 4, "weight": 1, "priority": 2},
+            "grass": {"color": "0xAFF5", "z_index": 6, "weight": 1, "priority": 2},
+            "farmland": {"color": "0xAFF5", "z_index": 6, "weight": 1, "priority": 2},
+            "meadow": {"color": "0xAFF5", "z_index": 6, "weight": 1, "priority": 2},
+            "grassland": {"color": "0xAFF5", "z_index": 6, "weight": 1, "priority": 2},
+            "farmyard": {"color": "0xAFF5", "z_index": 6, "weight": 1, "priority": 2},
+            "orchard": {"color": "0xAFF5", "z_index": 6, "weight": 1, "priority": 2},
+            "vineyard": {"color": "0xAFF5", "z_index": 6, "weight": 1, "priority": 2},
+            "allotments": {"color": "0xAFF5", "z_index": 6, "weight": 1, "priority": 2}
+        },
+        "leisure": {
+            "park": {"color": "0xAFF5", "z_index": 6, "weight": 1, "priority": 4}
+        },
+        "admin_level": {
+            "2": {"color": "0xAAB5", "z_index": 100, "weight": 2, "priority": 3, "line_style": "dashed"}
+        }
+    },
+    "marker": {"color": "0xF800"}
+}

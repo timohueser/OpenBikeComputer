@@ -52,7 +52,7 @@ fn bake_then_publish_is_the_whole_loop() {
         .arg(&regions)
         .arg("--presets-dir")
         .arg(repo("builder/presets"))
-        .args(["--preset", "default", "--source"])
+        .args(["--source"])
         .arg(dir.join("extracts"))
         .arg("--no-land")
         .output()
@@ -60,7 +60,7 @@ fn bake_then_publish_is_the_whole_loop() {
     let log = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(out.status.success(), "{log}");
     assert!(log.contains("bake summary"), "{log}");
-    assert!(tree.join("regions/europe/testland/default.obcm").is_file(), "{log}");
+    assert!(tree.join("regions/europe/testland/bikepacking.obcm").is_file(), "{log}");
 
     // A second run says so rather than re-packing.
     let out = obc_bake()
@@ -70,7 +70,7 @@ fn bake_then_publish_is_the_whole_loop() {
         .arg(&regions)
         .arg("--presets-dir")
         .arg(repo("builder/presets"))
-        .args(["--preset", "default", "--source"])
+        .args(["--source"])
         .arg(dir.join("extracts"))
         .arg("--no-land")
         .output()
@@ -117,7 +117,7 @@ fn publishing_a_shrunken_catalog_is_refused_at_the_command_line() {
             .arg(&list)
             .arg("--presets-dir")
             .arg(repo("builder/presets"))
-            .args(["--preset", "default", "--source"])
+            .args(["--source"])
             .arg(dir.join("extracts"))
             .arg("--no-land")
             .output()
@@ -148,7 +148,7 @@ fn publishing_a_shrunken_catalog_is_refused_at_the_command_line() {
     let out = publish(&partial, &[]);
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success(), "a shrinking publish must fail: {err}");
-    assert!(err.contains("europe/beta [default]"), "{err}");
+    assert!(err.contains("europe/beta [bikepacking]"), "{err}");
 
     // …and `--allow-shrink` parses as a switch (not as a value flag swallowing the
     // next argument) and lets the deliberate case through, loudly.
