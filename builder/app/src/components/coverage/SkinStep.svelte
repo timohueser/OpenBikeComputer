@@ -57,10 +57,7 @@
             {:else}
                 <span class="shot placeholder" aria-hidden="true"></span>
             {/if}
-            <span class="copy">
-                <span class="name">{skin.name}</span>
-                <span class="desc small muted">{skin.description}</span>
-            </span>
+            <span class="name">{skin.name}</span>
         </button>
     {/each}
 </div>
@@ -114,22 +111,11 @@
         background: linear-gradient(135deg, var(--parchment-2), var(--parchment-3));
     }
 
-    .copy {
-        display: flex;
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 5px;
-        padding: 0 5px;
-    }
-
     .name {
         font-weight: 600;
         font-size: 14px;
         color: var(--ink);
-    }
-
-    .desc {
-        line-height: 1.35;
+        padding: 0 5px;
     }
 
     .note {
