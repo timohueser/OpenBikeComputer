@@ -912,7 +912,7 @@ mod tests {
     /// The shipped **schema** is a complete, CLI-usable packer config.
     ///
     /// It is the one document in `builder/presets/` that has to be: the skins beside
-    /// it are presentation over already-baked bytes (`OBCC_Spec.md` §11.4) and carry
+    /// it are presentation over already-baked bytes (`OBCC_Spec.md` §5) and carry
     /// no ladder and no routing table on purpose, so "every file in the directory is
     /// a bakeable config" stopped being true with #1036 and this checks the file that
     /// still is.

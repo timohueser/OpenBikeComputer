@@ -21,7 +21,7 @@
     import { onMount } from "svelte";
     import Gated from "../Gated.svelte";
     import TransferBar from "./TransferBar.svelte";
-    import { saveBytes } from "../../lib/catalog/download";
+    import { saveBytes } from "../../lib/download";
     import { DeviceJob } from "../../lib/device/job.svelte";
     import {
         exportRide,

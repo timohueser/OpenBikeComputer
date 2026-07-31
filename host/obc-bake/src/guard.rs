@@ -1,15 +1,13 @@
 //! The mandatory re-bake guard: is the *published* catalog still readable?
 //!
-//! `OBCC_Spec.md` §6 states the law — an OBCM format bump invalidates every baked
-//! artifact — and names three mechanisms. Two already exist: the generator refuses a
-//! mixed or stale tree (a), and `catalog.rs`'s `PINNED_OBCM_VERSION` breaks the
-//! packer's test suite when the format constant moves (b). Both are about the
+//! `OBCC_Spec.md` §10 states the law — an OBCM format bump invalidates every baked
+//! cell — and the generator already refuses a mixed or stale tree. That protects the
 //! repository and the tree on the bake box.
 //!
 //! Neither can see the thing that actually matters to a rider: **what is on the CDN
 //! right now**. A format bump can be merged, tested, and released with the pin
 //! moved and the re-bake honestly intended — and the published catalog still serves
-//! v10 artifacts to a v11 firmware for as long as nobody re-runs the bake. That is
+//! old cells to newer firmware for as long as nobody re-runs the bake. That is
 //! the gap this module closes, and it is why the check lives here rather than in
 //! `obc-pack`: it is a fact about a deployment, not about a tree, so it needs a URL
 //! and a network — neither of which belongs in the packer's own test suite.
@@ -19,17 +17,17 @@
 //! not published a catalog yet must not have a red CI check about it. Wired into
 //! `.github/workflows/bake.yml`, where `vars.OBC_CATALOG_URL` supplies the URL.
 
-use obc_pack::catalog::CatalogManifest;
+use obc_pack::catalog::Catalog;
 
 /// What the guard found.
 #[derive(Debug, Clone)]
 pub enum GuardOutcome {
     /// No URL configured — nothing to check.
     Skipped { reason: String },
-    /// Every published artifact matches this build's OBCM version.
-    Current { artifacts: usize, obcm_version: u8 },
-    /// Artifacts this firmware cannot read are being served right now.
-    Stale { expected: u8, found: Vec<(String, u8)>, artifacts: usize },
+    /// Every published cell matches this build's OBCM version.
+    Current { cells: usize, obcm_version: u8 },
+    /// Cells this firmware cannot read are being served right now.
+    Stale { expected: u8, found: Vec<(String, u8)>, cells: usize },
 }
 
 impl GuardOutcome {
@@ -42,16 +40,16 @@ impl GuardOutcome {
             GuardOutcome::Skipped { reason } => {
                 format!("obcm-version guard: skipped — {reason}")
             }
-            GuardOutcome::Current { artifacts, obcm_version } => {
-                format!("obcm-version guard: {artifacts} published artifacts, all OBCM v{obcm_version} — current")
+            GuardOutcome::Current { cells, obcm_version } => {
+                format!("obcm-version guard: {cells} published cells, all OBCM v{obcm_version} — current")
             }
-            GuardOutcome::Stale { expected, found, artifacts } => {
+            GuardOutcome::Stale { expected, found, cells } => {
                 let mut s = format!(
-                    "obcm-version guard: FAILED — this build writes OBCM v{expected}, but {} of {artifacts} \
-                     published artifacts are a different version.\n\nAn OBCM bump invalidates every baked artifact \
-                     (OBCC_Spec.md §6): every map in the catalog is unreadable to this firmware until the bakery \
+                    "obcm-version guard: FAILED — this build writes OBCM v{expected}, but {} of {cells} \
+                     published cells are a different version.\n\nAn OBCM bump invalidates every baked cell \
+                     (OBCC_Spec.md §10): every assembly from the catalog is unreadable to this firmware until the bakery \
                      re-runs. Re-bake and re-publish:\n\n    obc-bake bake --out <tree> --force\n    obc-bake \
-                     publish <tree> --base-url <url> --target r2\n\nStale artifacts:\n",
+                     publish <tree> --base-url <url> --target r2\n\nStale schemas:\n",
                     found.len()
                 );
                 for (region, version) in found.iter().take(20) {
@@ -84,58 +82,24 @@ pub fn check(url: Option<&str>) -> Result<GuardOutcome, String> {
 
 /// The pure half, so the interesting cases are testable without a network.
 pub fn evaluate(body: &str) -> Result<GuardOutcome, String> {
-    // Whole body, one document, `schema_version` first — the consumer rules of §7
-    // apply to the guard exactly as they do to the site.
-    let envelope: serde_json::Value = serde_json::from_str(body).map_err(|e| format!("catalog manifest: {e}"))?;
-    if envelope.get("schema_version").and_then(serde_json::Value::as_u64)
-        == Some(u64::from(obc_pack::catalog::v2::CATALOG_SCHEMA_VERSION))
-    {
-        return evaluate_v2(body);
-    }
-    let manifest: CatalogManifest = serde_json::from_str(body).map_err(|e| format!("catalog manifest: {e}"))?;
-    if manifest.schema_version != obc_pack::catalog::CATALOG_SCHEMA_VERSION {
+    let root: Catalog = serde_json::from_str(body).map_err(|e| format!("catalog: {e}"))?;
+    if root.schema_version != obc_pack::catalog::CATALOG_SCHEMA_VERSION {
         return Err(format!(
-            "catalog manifest: schema_version {} — this build implements {}",
-            manifest.schema_version,
+            "catalog: schema_version {} — this build implements {}",
+            root.schema_version,
             obc_pack::catalog::CATALOG_SCHEMA_VERSION
         ));
     }
     let expected = obc_formats::obcm::VERSION;
-    let found: Vec<(String, u8)> = manifest
-        .artifacts
-        .iter()
-        .filter(|a| a.obcm_version != expected)
-        .map(|a| (format!("{} [{}]", a.region_id, a.preset_id), a.obcm_version))
-        .collect();
-    let artifacts = manifest.artifacts.len();
-    if found.is_empty() {
-        Ok(GuardOutcome::Current { artifacts, obcm_version: expected })
-    } else {
-        Ok(GuardOutcome::Stale { expected, found, artifacts })
-    }
-}
-
-/// A published **cell** catalog (`OBCC_Spec.md` §11) states its OBCM version once,
-/// in `schema.obcm_version`, because every cell agrees with it or the catalog could
-/// not have been generated. That single number is the whole check — and it is a
-/// harder cut than v1's, because a mismatch means no *assembly* is possible at all,
-/// not merely that some region is stale.
-fn evaluate_v2(body: &str) -> Result<GuardOutcome, String> {
-    let root: obc_pack::catalog::v2::CatalogV2 =
-        serde_json::from_str(body).map_err(|e| format!("catalog manifest (v2): {e}"))?;
-    let expected = obc_formats::obcm::VERSION;
-    let cells: usize = root.cell_index.iter().map(|b| b.cell_count as usize).collect::<Vec<_>>().iter().sum();
+    let cells: usize = root.cell_index.iter().map(|band| band.cell_count as usize).sum();
     if root.schema.obcm_version == expected {
-        Ok(GuardOutcome::Current { artifacts: cells, obcm_version: expected })
+        Ok(GuardOutcome::Current { cells, obcm_version: expected })
     } else {
-        Ok(GuardOutcome::Stale {
-            expected,
-            found: vec![(
-                format!("schema `{}` revision {} ({cells} cells)", root.schema.id, root.schema.revision),
-                root.schema.obcm_version,
-            )],
-            artifacts: cells,
-        })
+        let found = vec![(
+            format!("schema `{}` revision {} ({cells} cells)", root.schema.id, root.schema.revision),
+            root.schema.obcm_version,
+        )];
+        Ok(GuardOutcome::Stale { expected, found, cells })
     }
 }
 
@@ -188,7 +152,7 @@ impl CellStoreOutcome {
             "cell-store guard: FAILED — {} problem(s).\n\nA cell store is lockstep: every cell in an assembly must \
              share one OBCM version and one schema revision, because assembly copies chunk bytes between files and \
              that is only meaningful within one revision (OBCA_Spec.md §5, §6.3). Re-bake the store:\n\n    \
-             obc-bake bake --cells --out <tree> --force <region…>\n",
+             obc-bake bake --out <tree> --base-url <url> --force <region…>\n",
             self.problems.len()
         );
         for p in self.problems.iter().take(30) {
@@ -208,7 +172,7 @@ impl CellStoreOutcome {
 ///   at; they must all agree with each other *and* with `schema.json`'s `_meta`. A
 ///   mixed store is not a store that is partly stale — it is one whose cells cannot be
 ///   grafted into a single file at all, so this is fatal with no override
-///   (`OBCC_Spec.md` §11.9).
+///   (`OBCC_Spec.md` §10).
 /// - **OBCM lockstep.** Every cell's own header must carry this build's OBCM version.
 /// - **No silent downgrade (D3).** A cell whose recorded state says it was canonical
 ///   but whose published sidecar now says `partial` means a narrower bake overwrote a
@@ -333,19 +297,17 @@ fn sorted_dir(dir: &std::path::Path) -> Result<Vec<std::path::PathBuf>, String> 
 mod tests {
     use super::*;
 
-    fn manifest_with(version: u8) -> String {
+    fn catalog_with(version: u8) -> String {
         let example: serde_json::Value =
             serde_json::from_str(obc_pack::catalog::CATALOG_EXAMPLE_JSON).expect("the checked-in example parses");
         let mut example = example;
-        for artifact in example["artifacts"].as_array_mut().expect("artifacts") {
-            artifact["obcm_version"] = serde_json::json!(version);
-        }
+        example["schema"]["obcm_version"] = serde_json::json!(version);
         example.to_string()
     }
 
     #[test]
     fn a_catalog_at_this_builds_version_passes() {
-        let outcome = evaluate(&manifest_with(obc_formats::obcm::VERSION)).unwrap();
+        let outcome = evaluate(&catalog_with(obc_formats::obcm::VERSION)).unwrap();
         assert!(outcome.ok(), "{}", outcome.render());
         assert!(matches!(outcome, GuardOutcome::Current { .. }));
     }
@@ -353,7 +315,7 @@ mod tests {
     #[test]
     fn a_catalog_one_version_behind_fails_with_the_re_bake_instruction() {
         let stale = obc_formats::obcm::VERSION - 1;
-        let outcome = evaluate(&manifest_with(stale)).unwrap();
+        let outcome = evaluate(&catalog_with(stale)).unwrap();
         assert!(!outcome.ok());
         let text = outcome.render();
         assert!(text.contains("FAILED"), "{text}");
@@ -364,7 +326,7 @@ mod tests {
     fn an_unreadable_manifest_is_an_error_not_a_pass() {
         assert!(evaluate("<html>404</html>").is_err());
         assert!(evaluate(
-            "{\"schema_version\": 99, \"generated_at\": \"2026-07-26T09:00:00Z\", \"presets\": [], \"artifacts\": []}"
+            "{\"schema_version\": 99, \"generated_at\": \"2026-07-26T09:00:00Z\", \"schema\": {}, \"skins\": [], \"regions\": [], \"cell_index\": []}"
         )
         .is_err());
     }

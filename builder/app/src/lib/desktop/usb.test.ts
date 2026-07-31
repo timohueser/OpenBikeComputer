@@ -43,8 +43,6 @@ import { PipeError, type BytePipe } from "../usb/pipe";
 import { NEW_OBJECT_ID, ObjectType, PROTOCOL_VERSION, SINGLETON_OBJECT_ID } from "../usb/protocol";
 import type { DeviceState, DeviceWatcher } from "../usb/session";
 import { WatchedDeviceSession } from "../usb/session.svelte";
-import { builtMap } from "../device/built.svelte";
-import { sendLocalMap } from "../device/write";
 
 // --- the fake backend ----------------------------------------------------------
 
@@ -818,49 +816,10 @@ describe("a file streamed natively", () => {
     }, 300_000);
 });
 
-// --- build → send to device (E3, #913) -------------------------------------------
+// --- native file sources -------------------------------------------------------
 
-describe("the map this app just built", () => {
-    it("goes from the maps folder to the device in one call", async () => {
-        // The flow the whole epic aims at (#894): a build finishes, the rider plugs in, one click.
-        // Everything here is the shipping path — `builtMap` is what the build card publishes,
-        // `sendLocalMap` is what the Map surface calls, `localFileSource` is the session's, and the
-        // object lands in C3's simulated device. Only the Tauri boundary is faked.
-        const { watcher } = await connected();
-        const session = new WatchedDeviceSession(watcher, "native");
-        const map = new Uint8Array(96 * 1024).map((_, i) => (i * 7) & 0xff);
-        sendable.set("/maps/black-forest.obcm", heldFile(map));
-        builtMap.clear();
-        builtMap.note({ path: "/maps/black-forest.obcm", filename: "black-forest.obcm", bytes: map.length });
-
-        const open = session.localFileSource;
-        expect(open, "a native session must offer the disk-to-endpoint path").toBeTruthy();
-        const phases: string[] = [];
-        const result = await sendLocalMap(
-            watcher.current.client!,
-            builtMap.current!,
-            open!,
-            {
-                signal: new AbortController().signal,
-                phase: (phase) => phases.push(phase),
-                progress: () => undefined,
-            },
-        );
-
-        expect(result.committedOffset).toBe(map.length);
-        expect(device!.stored(ObjectType.Map, result.objectId)).toEqual(map);
-        // "Reading" is the Rust-side fingerprint pass, which on a real map is seconds of disk and
-        // would otherwise look like a stalled send.
-        expect(phases).toEqual(["reading", "sending"]);
-        // The acceptance criterion, stated as an assertion: no staging, no copy, and not one byte
-        // of the map over the IPC. The webview wrote a descriptor and watched a progress channel.
-        expect(calls.filter((c) => c.cmd === "usb_write" && c.options?.headers?.plane === "bulk")).toEqual([]);
-        expect(calls.filter((c) => c.cmd === "usb_send_file")).toHaveLength(1);
-        expect(calls.filter((c) => c.cmd === "usb_file_digest")).toHaveLength(1);
-        await session.close();
-    });
-
-    it("addresses whatever link is open now, not the one it was built against", async () => {
+describe("a native file source", () => {
+    it("addresses whatever link is open now", async () => {
         // Handles are per-open. A source bound to the handle a session had at page load would, after
         // an unplug and re-plug, stream into an endpoint that no longer exists — so the factory
         // reads the link at call time, and says so when there isn't one.
@@ -883,9 +842,8 @@ describe("the map this app just built", () => {
     });
 
     it("is absent on a watcher that has no disk under it", () => {
-        // The gate is a property of the transport, not a host name — and this is the assertion that
-        // keeps it that way, because `MapSend` renders the built-map row on exactly this check. A
-        // browser's `WebUsbWatcher` has no `localFileSource`, so neither does the session over it.
+        // The gate is a property of the transport, not a host name. A browser's `WebUsbWatcher`
+        // has no `localFileSource`, so neither does the session over it.
         const idle: DeviceState = { status: "idle", client: null, identity: null, info: null, error: null };
         const pathless: DeviceWatcher = {
             current: idle,

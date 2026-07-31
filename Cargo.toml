@@ -33,7 +33,6 @@ members = [
     "apps/obc-sim",
     "apps/obc-web-demo",
     "apps/obc-web-convert",
-    "apps/obc-web-preview",
     "apps/obc-web-assemble",
 ]
 # obc-fw-nrf54l is a standalone board crate (own target + .cargo/config.toml, own empty

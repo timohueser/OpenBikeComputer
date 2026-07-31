@@ -11,7 +11,7 @@ let cached: Promise<Palette> | null = null;
 /**
  * The device's 64-color gamut for the picker grid (fetched once, shared).
  *
- * `platform.palette` is non-null exactly when `caps.styleEditor`, and the color
+ * `platform.palette` is non-null exactly on the maintainer editor host, and the color
  * control that calls this sits inside the editor's code-split chunk — so on
  * every host that can reach this module the call is there. The null arm is
  * unreachable rather than a real fallback path, and takes the OS picker instead

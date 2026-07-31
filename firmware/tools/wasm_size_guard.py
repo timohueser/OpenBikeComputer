@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 """Bundle-size budgets for the hosted builder's wasm bridges.
 
-Three modules, same argument. `apps/obc-web-convert` (#896) is what a visitor downloads the moment
-they drop a route; `apps/obc-web-preview` (#899) is what renders the preset cards;
-`apps/obc-web-assemble` (#1034) is what turns downloaded map cells into a map. All three are
+Two modules, same argument. `apps/obc-web-convert` (#896) is what a visitor downloads the moment
+they drop a route; `apps/obc-web-assemble` (#1034) is what turns downloaded map cells into a map. Both are
 reached through a dynamic import, so each is its own chunk rather than part of the initial page —
-and a silent size regression in either of the first two is a product regression: the thing stops
-feeling instant. CI runs this right after each `wasm-pack build`, on the very bytes it then hands
-to the frontend job.
+and a silent size regression is a product regression. CI runs this right after each
+`wasm-pack build`, on the very bytes it then hands to the frontend job.
 
 What is measured, and why:
 
@@ -51,17 +49,6 @@ from pathlib import Path
 # `RouteIndex`/`RouteReader`/`for_each_waypoint`, which had eaten the old headroom (101 KB raw at
 # the previous commit — 99 % of the 100 KB budget before this addition's ~2.8 KB). Budgets
 # re-based to ~10 % above the new measurement, same philosophy as before.
-# --- obc-web-preview -------------------------------------------------------------------------
-#
-# Measured 2026-07-29 on the initial B2 artifact (same toolchain as above): 124,857 B raw wasm +
-# 13,798 B glue -> 59,556 B gzipped. Bigger than the conversion bridge and unsurprisingly so: this
-# one links the whole render path (`obc-render`'s painter, scanline fill and stroker, plus
-# `obc-reader`'s OBCM decoder and quadtree walk) rather than a file converter. It stays in the
-# same order of magnitude because it links no *app* — no screens, no replay, no planner.
-#
-# Same ~10 % headroom, same philosophy: a toolchain bump must not turn a green PR red, but linking
-# `obc-app` or a second renderer has to be argued for.
-#
 # --- obc-web-assemble ------------------------------------------------------------------------
 #
 # Measured 2026-07-31 on the initial P4b artifact (wasm-pack 0.15.0 / wasm-opt -Oz): 434,476 B raw
@@ -84,22 +71,17 @@ from pathlib import Path
 # error prose and a handful of branches, no new crate. Budgets unchanged (89 % / 91 %).
 BUDGETS = {
     "convert": {"gzipped": 62 * 1024, "raw_wasm": 112 * 1024},
-    "preview": {"gzipped": 66 * 1024, "raw_wasm": 138 * 1024},
     "assemble": {"gzipped": 200 * 1024, "raw_wasm": 480 * 1024},
 }
 
 # What to *do* about an over-budget module, which is not the same advice for all three — and a guard
-# that gives the wrong advice gets obeyed anyway. The first two are latency budgets: the number is
-# what a visitor waits for, so "make it smaller" is the literal fix. The third is a structural guard
+# that gives the wrong advice gets obeyed anyway. Convert is a latency budget: the number is
+# what a visitor waits for, so "make it smaller" is the literal fix. Assemble is a structural guard
 # on a module nobody is waiting on, so the fix is almost never "shrink it" — it is to find out what
 # got linked in that should not have been.
 ADVICE = {
     "convert": (
         "This is the moment a visitor drops a route, and it ships to every one of them:"
-        " shrink it, or raise the budget in firmware/tools/wasm_size_guard.py with the reason in the PR body."
-    ),
-    "preview": (
-        "This is what renders the preset cards on hover, and it ships to every visitor:"
         " shrink it, or raise the budget in firmware/tools/wasm_size_guard.py with the reason in the PR body."
     ),
     "assemble": (
@@ -115,7 +97,6 @@ ADVICE = {
 #: Where each module's wasm-pack output lands in the frontend.
 PKG_DIRS = {
     "convert": Path("builder/app/src/lib/convert/pkg"),
-    "preview": Path("builder/app/src/lib/preview/pkg"),
     "assemble": Path("builder/app/src/lib/assemble/pkg"),
 }
 

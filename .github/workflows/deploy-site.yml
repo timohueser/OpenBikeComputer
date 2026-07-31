@@ -6,13 +6,11 @@ name: Deploy site
 #   /                     landing page + the live device demo   trunk (obc-web-demo → wasm)
 #   /docs/  /blog/        docs site + expedition log            build_docs.py (trunk pre_build hook)
 #   /builder/             the static map builder (#894 phase C) vite --mode web
-#   /builder/data/…       the Geofabrik region index            builder.server.static_data
 #
 # Because the demo is the firmware's own render path compiled to wasm, every push
 # rebuilds it — the site can never show a stale screenshot. And everything here is
 # static files: there is no backend on this tier at all. Route conversion runs as wasm
-# in the tab (#896), the preset previews render as wasm in the tab too (#899), maps are
-# pre-baked artifacts listed in a catalog manifest (#898), and the only server involved
+# in the tab (#896), maps are cell artifacts listed in a catalog manifest, and the only server involved
 # is whoever serves the bytes.
 #
 # ── What GitHub Pages can and cannot do (C6 #905; measured 2026-07-26) ──────────────
@@ -36,7 +34,7 @@ name: Deploy site
 #    only change by redeploying the site, which is exactly what #905 says a fresh bake
 #    must not require. So the manifest lives **with the artifacts**, on whatever object
 #    storage the bakery (B1 #898) publishes to, where its cache policy is that host's
-#    to set (OBCC_Spec.md §7 states the ≤ 60 s expectation). This workflow carries only
+#    to set (OBCC_Spec.md §11 states the ≤ 60 s expectation). This workflow carries only
 #    its URL — see OBC_CATALOG_URL below.
 #
 # 2. **No cross-origin isolation, ever, on this host.** Setting
@@ -44,10 +42,10 @@ name: Deploy site
 #    require-corp` is the only way to reach `crossOriginIsolated === true`, and with it
 #    `SharedArrayBuffer` — which is what wasm *threads* need (wasm-bindgen-rayon,
 #    Emscripten pthreads). Pages cannot set them, so anything needing threads (the
-#    hypothetical in-browser packer, which #894 lists as out of scope) forces a move to
+#    hypothetical in-browser packer) forces a move to
 #    a host with header control. The service-worker shim that fakes isolation on static
 #    hosts is not a way out here: under `require-corp` every cross-origin subresource
-#    needs CORP/CORS headers, and this tier's whole point is fetching map artifacts
+#    needs CORP/CORS headers, and this tier's whole point is fetching catalog cells
 #    from another origin. Nothing shipped today wants isolation — obc-web-convert and
 #    obc-web-demo are both single-threaded — so this is a recorded constraint, not a
 #    present problem.
@@ -73,7 +71,12 @@ on:
     paths:
       - "docs/**"
       - "firmware/**"
-      - "packer/**"
+      - "builder/**"
+      - "apps/obc-web-assemble/**"
+      - "apps/obc-web-convert/**"
+      - "host/obcm-assemble/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
       - ".github/workflows/deploy-site.yml"
   workflow_dispatch:
 
@@ -131,22 +134,12 @@ jobs:
           OBC_BUILDER_PATH: ${{ vars.OBC_CATALOG_URL != '' && 'builder/' || '' }}
         run: trunk build --release --config docs/Trunk.toml --public-url "./"
 
-      # The builder imports all three: the shared obc-route GPX↔OBCR path (#896), the
-      # shared obc-reader/obc-render map path (#899), and the cell assembler (#1034). Same
-      # invocations as ci.yml's wasm-bridges job — keep the two lists in step, since this is
-      # the only job that builds the shipped site. None is optional: the frontend imports the
-      # generated bindings, so a missing pkg/ is a build failure, not a degraded site.
+      # The builder imports the shared obc-route GPX↔OBCR path (#896) and the cell
+      # assembler (#1034). The shared script is also used by CI so the lists cannot drift.
+      # Neither is optional: the frontend imports the generated bindings, so a missing
+      # pkg/ is a build failure, not a degraded site.
       - name: Build the wasm bridges
-        run: |
-          wasm-pack build apps/obc-web-convert --release --target web \
-            --out-dir ../../builder/app/src/lib/convert/pkg \
-            --out-name obc_web_convert
-          wasm-pack build apps/obc-web-preview --release --target web \
-            --out-dir ../../builder/app/src/lib/preview/pkg \
-            --out-name obc_web_preview
-          wasm-pack build apps/obc-web-assemble --release --target web \
-            --out-dir ../../builder/app/src/lib/assemble/pkg \
-            --out-name obc_web_assemble
+        run: bash builder/build-wasm-bridges.sh
 
       - uses: actions/setup-node@v4
         with:
@@ -166,23 +159,6 @@ jobs:
         run: |
           npm ci
           npm run build:web
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      # The region picker's polygons. The FastAPI dev host computes this per request
-      # from the Geofabrik index; a tier with no backend needs it as a file, and
-      # without it the picker draws nothing at all — a hard dependency of a working
-      # site, not a nice-to-have. static_data.py refuses to write an index below its
-      # feature floor, which turns "Geofabrik changed shape" into a failed deploy
-      # rather than an empty map. Deliberately uncached: deploys are rare and the index
-      # is ~4 MB, so fetching it fresh is cheaper than reasoning about staleness.
-      - name: Bake the region index
-        run: |
-          pip install -r builder/requirements-static.txt
-          python -m builder.server.static_data \
-            --out builder/app/dist/web/data
 
       - name: Assemble the site
         run: |
@@ -243,11 +219,6 @@ jobs:
           check "$base/"
           check "$base/builder/"
           check "$base/docs/"
-          if curl -sf -o /dev/null "$base/builder/data/regions.json"; then
-            echo "  ok builder/data/regions.json"
-          else
-            echo "  x builder/data/regions.json"; fail=1
-          fi
           [ "$fail" = 0 ] || { echo "::error::the artifact is not mountable at a sub-path"; exit 1; }
 
       - name: Upload Pages artifact

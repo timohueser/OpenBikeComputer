@@ -41,7 +41,6 @@
       "obc-web-assemble",
       "obc-web-convert",
       "obc-web-demo",
-      "obc-web-preview",
       "obcm-assemble",
       "obcm-testkit"
     ],

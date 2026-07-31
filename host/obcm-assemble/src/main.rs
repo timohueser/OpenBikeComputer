@@ -165,7 +165,7 @@ USAGE:
 
 REQUIRED:
     --cells <path>          the cutter's provenance sidecar (obc-pack cut)
-    --skin <path>           the skin to stamp (OBCC §11.4, or an id-keyed style table)
+    --skin <path>           the skin to stamp (OBCC §5, or an id-keyed style table)
     --out <dir>             where the shards and the manifest are written
 
 OPTIONS:

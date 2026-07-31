@@ -18,7 +18,7 @@
 //! The coverage geometry is the region's Geofabrik `.poly`, read at **full
 //! resolution** through [`obc_pack::catalog::boundary::poly_rings`]. The catalog's
 //! drawable outline comes from the same file simplified hard, and `OBCC_Spec.md`
-//! §11.8 forbids *that* one from deciding a cell set — a simplification error must
+//! §7 forbids *that* one from deciding a cell set — a simplification error must
 //! not be able to drop an edge cell. Same source file, two readings, and only the
 //! unsimplified one is load-bearing.
 //!

@@ -1,12 +1,12 @@
 //! The curated region list: what the bakery bakes.
 //!
 //! The list itself is [`regions.toml`](../regions.toml), compiled into the binary
-//! with `include_str!` so an `obc-bake` copied onto a build box carries the shelf it
+//! with `include_str!` so an `obc-bake` copied onto a build box carries the list it
 //! is supposed to bake, and overridable with `--regions <file>` (which is how the
 //! tests get a two-region list without touching the real one).
 //!
 //! A region's `id` does double duty: it is the catalog's `region_id`
-//! (`OBCC_Spec.md` §3) *and* the Geofabrik path the extract is downloaded from. One
+//! (`OBCC_Spec.md` §6) *and* the Geofabrik path the extract is downloaded from. One
 //! string rather than two because the two can only ever disagree by mistake — a
 //! separate `geofabrik = …` field would let a region be published under an id whose
 //! extract came from somewhere else, which is exactly the confusion the manifest
@@ -22,10 +22,9 @@ pub const BUILTIN_REGIONS_TOML: &str = include_str!("../regions.toml");
 #[serde(deny_unknown_fields)]
 pub struct Region {
     /// Slash-separated Geofabrik path, e.g. `europe/germany/bayern`. Also the
-    /// catalog's `region_id` and the artifact's directory path in the bake tree.
+    /// catalog's `region_id` and the selection-metadata path in the bake tree.
     pub id: String,
-    /// Human-readable name, recorded verbatim into every sidecar this region
-    /// produces (`region_name`).
+    /// Human-readable name, recorded verbatim in the region document.
     pub name: String,
 }
 
@@ -99,7 +98,7 @@ pub fn load(path: Option<&std::path::Path>) -> Result<Vec<Region>, String> {
     }
 }
 
-/// The id rules of `OBCC_Spec.md` §3/§8: slash-separated lowercase kebab-case
+/// The id rules of `OBCC_Spec.md` §6/§8: slash-separated lowercase kebab-case
 /// segments. The catalog generator enforces the same rules on the tree it walks;
 /// checking here means the failure names the region list line, not a directory.
 fn validate_id(id: &str) -> Result<(), String> {
@@ -124,7 +123,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_checked_in_list_is_the_locked_dach_shelf() {
+    fn the_checked_in_list_is_the_curated_dach_coverage() {
         let regions = parse(BUILTIN_REGIONS_TOML).expect("the shipped region list parses");
         let ids: Vec<&str> = regions.iter().map(|r| r.id.as_str()).collect();
         // Germany + its sixteen Bundesländer + Austria + Switzerland (#898, locked
@@ -167,18 +166,5 @@ mod tests {
     fn an_unknown_key_in_the_list_is_a_typo_not_metadata() {
         let toml = "regions = [ { id = \"europe/austria\", name = \"Austria\", styel = \"x\" } ]";
         assert!(parse(toml).is_err(), "a misspelled key must fail rather than silently bake everything");
-    }
-
-    /// #1036 retired the per-region `presets = [...]` restriction: the catalog ships
-    /// **one** schema and a skin is stamped at assembly rather than baked, so there is
-    /// no subset of styles left for a region to be restricted to. A leftover line has
-    /// to fail the parse rather than be ignored — a region baked against something
-    /// other than what its own line says is exactly the silence this list exists to
-    /// prevent.
-    #[test]
-    fn the_retired_per_region_preset_restriction_is_refused_not_ignored() {
-        let toml = "regions = [ { id = \"europe/austria\", name = \"Austria\", presets = [\"default\"] } ]";
-        let err = parse(toml).expect_err("a retired field must not be silently ignored");
-        assert!(err.contains("presets"), "the error must name the retired field: {err}");
     }
 }

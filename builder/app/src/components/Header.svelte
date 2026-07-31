@@ -1,6 +1,6 @@
 <script lang="ts">
     import DeviceChip from "./DeviceChip.svelte";
-    import { platform } from "../lib/platform";
+    import { loadStyleEditor, platform } from "../lib/platform";
     import { available, DESKTOP_ADDS } from "../lib/platform/gating";
     import { router, type Route } from "../lib/router.svelte";
     import { ADVANCED_ROUTE, DESKTOP_ROUTE, DEVICE_ROUTE, RIDES_ROUTE } from "../lib/routes";
@@ -11,7 +11,7 @@
     // the same way), so a tab can never point at a page that falls back home.
     const tabs: Array<{ route: Route; href: string; label: string }> = [
         { route: "home", href: "#/", label: "Maps" },
-        ...(available("styleEditor")
+        ...(loadStyleEditor
             ? [{ route: "advanced" as const, href: ADVANCED_ROUTE, label: "Style editor" }]
             : []),
         ...(available("deviceDashboard")

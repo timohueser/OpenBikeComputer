@@ -59,7 +59,7 @@ pub fn verify(path: &Path) -> Result<Verified, String> {
 ///
 /// Two differences from [`verify`], and both are about what a cell legitimately is.
 /// A cell may be **empty**: open sea, or a `network`-band cell in a square with no
-/// roads. A whole-region artifact with no features is a failed bake; a cell with no
+/// roads. A map covering a populated area with no features is a failed bake; a cell with no
 /// features is a fact about the ground. And the bbox is checked against the id rather
 /// than merely for sanity, because that identity is what lets an assembler graft the
 /// cell's chunk bytes in without decoding them — a cell whose header disagrees with
@@ -160,7 +160,7 @@ pub fn header_of(path: &Path) -> Result<(u8, BBox), String> {
     Ok((reader.version, reader.bbox))
 }
 
-// --- verifying a whole cell tree (OBCA §3, OBCC §11) ------------------------------
+// --- verifying a whole cell tree (OBCA §3, OBCC) ------------------------------
 
 /// How much of a cell store to open.
 #[derive(Debug, Clone, Copy)]
@@ -225,10 +225,10 @@ impl CellTreeReport {
 /// *against* — every claim in it, back to the bytes:
 ///
 /// 1. **The satellites are the ones the root pinned.** `bytes` and `sha256` per cell
-///    index and per region cell list (`OBCC_Spec.md` §11.1). A satellite that does not
+///    index and per region cell list (`OBCC_Spec.md` §9). A satellite that does not
 ///    match is the failure the pinning exists to make impossible to miss.
 /// 2. **Every cell's header bbox is its id.** Cheap and total, because it is the check
-///    the catalog deliberately has no field for (§11.6): the identifier states the
+///    the catalog deliberately has no field for (§8): the identifier states the
 ///    coverage and the bytes are made to agree with the identifier.
 /// 3. **Spot reader round-trips.** A sampled cell is opened with the real reader and
 ///    walked whole — every chunk, every feature — and re-hashed against the manifest.
@@ -239,32 +239,28 @@ impl CellTreeReport {
 /// Problems are collected rather than thrown, so one run names everything wrong with
 /// a store instead of the first thing.
 pub fn verify_cell_tree(tree: &Path, opts: CellTreeVerifyOptions) -> Result<CellTreeReport, String> {
-    use obc_pack::catalog::v2::{CatalogV2, CellId, CellIndexDocument, RegionCellsDocument};
+    use obc_pack::catalog::{Catalog, CellId, CellIndexDocument, RegionCellsDocument};
     use std::collections::{BTreeMap, BTreeSet};
 
     let root_path = tree.join(obc_pack::catalog::DEFAULT_MANIFEST_NAME);
     let text = std::fs::read_to_string(&root_path).map_err(|e| {
         format!(
-            "{}: {e} — verify reads a tree's generated catalog; run the bake or `obc-pack catalog --v2` first",
+            "{}: {e} — verify reads a tree's generated catalog; run the bake or `obc-pack catalog` first",
             root_path.display()
         )
     })?;
-    let root: CatalogV2 = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", root_path.display()))?;
+    let root: Catalog = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", root_path.display()))?;
     let mut report = CellTreeReport::default();
     let problem = |s: String, into: &mut Vec<String>| into.push(s);
 
-    if root.schema_version != obc_pack::catalog::v2::CATALOG_SCHEMA_VERSION {
-        return Err(format!(
-            "{}: schema_version {} — this is not a v2 cell catalog",
-            root_path.display(),
-            root.schema_version
-        ));
+    if root.schema_version != obc_pack::catalog::CATALOG_SCHEMA_VERSION {
+        return Err(format!("{}: unsupported catalog schema_version {}", root_path.display(), root.schema_version));
     }
     if root.schema.obcm_version != obc_formats::obcm::VERSION {
         problem(
             format!(
                 "the catalog publishes OBCM v{} but this build reads v{} — every cell in the store is unreadable to \
-                 it (OBCC_Spec.md §11.9)",
+                 it (OBCC_Spec.md §10)",
                 root.schema.obcm_version,
                 obc_formats::obcm::VERSION
             ),
@@ -421,9 +417,7 @@ pub fn verify_cell_tree(tree: &Path, opts: CellTreeVerifyOptions) -> Result<Cell
             for id in ids {
                 if !index.contains(id) {
                     problem(
-                        format!(
-                            "{rel}: names cell `{id}` in band `{band}`, which is not published (OBCC_Spec.md §11.7)"
-                        ),
+                        format!("{rel}: names cell `{id}` in band `{band}`, which is not published (OBCC_Spec.md §6)"),
                         &mut report.problems,
                     );
                 }
@@ -458,7 +452,7 @@ fn satellite<T: serde::de::DeserializeOwned>(
     if sha != sha256 {
         problems.push(format!(
             "{rel}: sha256 {sha}, root pinned {sha256} — a satellite that does not match its pin MUST be rejected \
-             and the root retained (OBCC_Spec.md §11.1)"
+             and the root retained (OBCC_Spec.md §9)"
         ));
         return None;
     }

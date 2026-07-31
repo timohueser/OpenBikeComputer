@@ -28,7 +28,7 @@ pub fn file(path: &Path) -> Result<(u64, String), String> {
     Ok((total, hex(&hasher.finalize())))
 }
 
-/// Hash of a string — used for preset configs and for the composed bake key.
+/// Hash of a string — used for schema/skin documents and for the composed bake key.
 pub fn text(s: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(s.as_bytes());

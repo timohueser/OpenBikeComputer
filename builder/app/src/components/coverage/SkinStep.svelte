@@ -3,7 +3,7 @@
     // (#1038; epic #1016 §4). A skin is ~2 KB of style table applied at
     // assembly time — the one fact worth a line here is that choosing one
     // never changes the download (mock R2·3's note), because riders coming
-    // from the v1 flow are used to styles being separate artifacts.
+    // while leaving the downloaded cells unchanged.
 
     import type { CoverageStore } from "../../lib/coverage/store.svelte";
 
@@ -18,9 +18,6 @@
             class:selected={store.skinId === skin.id}
             onclick={() => (store.skinId = skin.id)}
         >
-            {#if skin.preview}
-                <img src={skin.preview} alt="" class="shot" />
-            {/if}
             <span class="name">{skin.name}</span>
             <span class="desc small muted">{skin.description}</span>
         </button>
@@ -60,11 +57,6 @@
         border: 2px solid var(--forest);
         padding: 10px 11px;
         box-shadow: 0 2px 10px rgba(60, 107, 57, 0.16);
-    }
-
-    .shot {
-        width: 100%;
-        border-radius: 8px;
     }
 
     .name {

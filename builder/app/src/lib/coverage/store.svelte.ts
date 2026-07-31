@@ -1,7 +1,7 @@
 // The coverage flow's one store (#1038): the selection, its resolution, and the
 // ledger, held reactively for the map pane and the steps column to share.
 //
-// The arithmetic all lives in `lib/catalog/v2/` — this class owns *state and
+// The arithmetic all lives in `lib/catalog/` — this class owns *state and
 // lifetime*: which parts exist, which satellite documents have arrived, which
 // skin is picked, and the two `SelectionResolver`s that keep the corridor
 // slider smooth. Two resolvers, deliberately: each prunes cache entries that
@@ -11,12 +11,12 @@
 // answers only the committed selection; the preview resolver answers the
 // superset and keeps both warm.
 
-import { CatalogV2Client } from "../catalog/v2/client";
-import { cellsIntersecting, coverageBbox, parseCellId, type UBox } from "../catalog/v2/grid";
+import { CatalogClient } from "../catalog/client";
+import { cellsIntersecting, coverageBbox, parseCellId, type UBox } from "../catalog/grid";
 import { cellsTouchingHoles, detailBandId } from "./shape";
-import { ledgerFor, type Ledger } from "../catalog/v2/ledger";
-import type { CatalogV2, RegionEntry, SkinEntry } from "../catalog/v2/manifest";
-import type { CellIndexDocument, RegionCellsDocument } from "../catalog/v2/satellites";
+import { ledgerFor, type Ledger } from "../catalog/ledger";
+import type { Catalog, RegionEntry, SkinEntry } from "../catalog/manifest";
+import type { CellIndexDocument, RegionCellsDocument } from "../catalog/satellites";
 import {
     emptySelection,
     SelectionResolver,
@@ -28,7 +28,7 @@ import {
     type Selection,
     type SelectionContext,
     type SelectionResolution,
-} from "../catalog/v2/selection";
+} from "../catalog/selection";
 
 /** The slider's range and default, metres. The default is a day-ride's "what if
  *  I take the other valley" allowance — wide enough that a detour stays on the
@@ -50,7 +50,7 @@ export interface PreviewSummary {
 
 /**
  * Even-odd point-in-polygon over a boundary's rings (`[lat, lon]` µdeg, closed
- * per `OBCC_Spec.md` §11.8). Every ring toggles — outer rings admit, holes
+ * per `OBCC_Spec.md` §7). Every ring toggles — outer rings admit, holes
  * excise — which is the same rule the map's even-odd fill draws them with.
  */
 function pointInRings(lat: number, lon: number, rings: [number, number][][]): boolean {
@@ -68,8 +68,8 @@ function pointInRings(lat: number, lon: number, rings: [number, number][][]): bo
 }
 
 export class CoverageStore {
-    readonly client: CatalogV2Client;
-    readonly catalog: CatalogV2;
+    readonly client: CatalogClient;
+    readonly catalog: Catalog;
     /** The root document verbatim — the assembly engine takes it as the schema
      *  document, and re-serialising a parsed copy would hand it different bytes
      *  than the ones the catalog's digests admitted. */
@@ -109,7 +109,7 @@ export class CoverageStore {
     private nextPartId = 1;
     private boxCount = 0;
 
-    constructor(client: CatalogV2Client, rootBody: string) {
+    constructor(client: CatalogClient, rootBody: string) {
         this.client = client;
         this.catalog = client.catalog;
         this.rootBody = rootBody;
