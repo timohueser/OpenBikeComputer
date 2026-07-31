@@ -58,7 +58,7 @@ const LAT: i64 = 47_300_000;
 /// coordinates and nothing depends on a tolerance. `chunk_size` is small on purpose: the quadtrees
 /// must genuinely subdivide, or the graft has no subtrees to relocate and the pin proves nothing.
 ///
-/// `highway.path` is dashed with a `color2` because those are the two OBCM v10 style-record flag
+/// `highway.path` is dashed with a `color2` because those are the two OBCM style-record flag
 /// bits (`0x04` / `0x08`) plus a trailing `uint16` — the part of OBCA §4.7's skin stamp a plain
 /// style never exercises.
 const CONFIG: &str = r#"{
