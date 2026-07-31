@@ -15,20 +15,23 @@
 # ── Curation policy ────────────────────────────────────────────────────────────
 #
 # DACH first (locked 2026-07-29, #898): Germany with all sixteen Bundesländer,
-# Austria, Switzerland. With no region arguments, `obc-bake bake` processes every
-# line. Positional ids select a subset; `--all` is reserved for the future planet
-# source pipeline rather than meaning this curated list.
+# Austria, Switzerland, plus the Freiburg government-region test excerpt. With no
+# region arguments, `obc-bake bake` processes every line. Positional ids select a
+# subset; `--all` is reserved for the future planet source pipeline rather than
+# meaning this curated list.
 #
 # Germany is listed **alongside** its Bundesländer, not instead of them: they are
 # convenient named selections over the same shared cells, so overlap costs no
 # duplicate cell storage.
 #
-# Every path below was verified against download.geofabrik.de on 2026-07-29.
+# Every path below was verified against download.geofabrik.de on 2026-07-29;
+# `freiburg-regbez` was verified on 2026-07-31.
 
 regions = [
   # Germany — the whole country, then each Bundesland.
   { id = "europe/germany", name = "Germany" },
   { id = "europe/germany/baden-wuerttemberg", name = "Baden-Württemberg" },
+  { id = "europe/germany/baden-wuerttemberg/freiburg-regbez", name = "Regierungsbezirk Freiburg" },
   { id = "europe/germany/bayern", name = "Bayern" },
   { id = "europe/germany/berlin", name = "Berlin" },
   { id = "europe/germany/brandenburg", name = "Brandenburg" },
