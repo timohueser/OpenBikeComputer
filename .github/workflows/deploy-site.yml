@@ -131,10 +131,11 @@ jobs:
           OBC_BUILDER_PATH: ${{ vars.OBC_CATALOG_URL != '' && 'builder/' || '' }}
         run: trunk build --release --config docs/Trunk.toml --public-url "./"
 
-      # The builder imports both of these: the shared obc-route GPX↔OBCR path (#896) and
-      # the shared obc-reader/obc-render map path (#899), each as wasm. Same invocations as
-      # ci.yml's wasm-bridges job. Neither is optional — the frontend imports the generated
-      # bindings, so a missing pkg/ is a build failure, not a degraded site.
+      # The builder imports all three: the shared obc-route GPX↔OBCR path (#896), the
+      # shared obc-reader/obc-render map path (#899), and the cell assembler (#1034). Same
+      # invocations as ci.yml's wasm-bridges job — keep the two lists in step, since this is
+      # the only job that builds the shipped site. None is optional: the frontend imports the
+      # generated bindings, so a missing pkg/ is a build failure, not a degraded site.
       - name: Build the wasm bridges
         run: |
           wasm-pack build apps/obc-web-convert --release --target web \
@@ -143,6 +144,9 @@ jobs:
           wasm-pack build apps/obc-web-preview --release --target web \
             --out-dir ../../builder/app/src/lib/preview/pkg \
             --out-name obc_web_preview
+          wasm-pack build apps/obc-web-assemble --release --target web \
+            --out-dir ../../builder/app/src/lib/assemble/pkg \
+            --out-name obc_web_assemble
 
       - uses: actions/setup-node@v4
         with:
