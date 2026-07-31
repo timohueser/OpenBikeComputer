@@ -20,9 +20,9 @@ name: CI
 #     //rust-toolchain.toml and shared with local dev. It intentionally tracks floating stable.
 #   * obc-boot (the 32 KB DFU bootloader, #617) is excluded + standalone the same way as the
 #     board crate; its job adds a flash-size guard against the 32 KB slot.
-#   * obc-web-convert (#896) and obc-web-assemble (#1034) are normal
+#   * obc-web-convert (#896), obc-web-assemble (#1034), and obc-web-preview (#1045) are normal
 #     workspace members (so fmt/clippy/test/deny already cover them) whose *shipping* artifacts are
-#     wasm32 builds the web builder imports — hence the extra `wasm-bridges` job, its two
+#     wasm32 builds the web builder imports — hence the extra `wasm-bridges` job, its three
 #     bundle-size guards, and the artifact hand-off into `web`.
 #   * obc-desktop (#906) is the third excluded + standalone crate: a Tauri app, so it brings a
 #     platform webview with it (WebKitGTK on Linux) and would otherwise put those headers in
@@ -68,7 +68,7 @@ jobs:
               # host/ holds the packer, the bench + its golden hashes, and the test oracles
               # (obcm-testkit, obc-vectors) that firmware crates dev-depend on.
               - 'host/**'
-              # apps/ holds the four shells: the simulator, both wasm hosts, and the Tauri app.
+              # apps/ holds the shells: the simulator, the wasm hosts, and the Tauri app.
               - 'apps/**'
               - 'builder/presets/**'
               # builder/tests/ drives the real obc-pack binary and the builder's pure API
@@ -102,6 +102,7 @@ jobs:
               # The Tauri shell embeds the same published-cell frontend, so either
               # half can break the packaged app.
               - 'apps/obc-desktop/**'
+              - 'apps/obc-web-preview/**'
               - 'builder/app/**'
               - 'rust-toolchain.toml'
               - '.github/workflows/ci.yml'
@@ -429,13 +430,15 @@ jobs:
       - name: cargo build -p obcm-assemble --lib (wasm32, engine only)
         run: cargo build -p obcm-assemble --lib --no-default-features --locked --target wasm32-unknown-unknown
 
-  # The hosted builder's two wasm bridges — the shared crates compiled to wasm so the hosted tier
+  # The hosted builder's three wasm bridges — the shared crates compiled to wasm so the hosted tier
   # needs no backend at all:
   #
   #   * obc-web-convert (#896) — the obc-route GPX↔OBCR path, so route conversion runs client-side.
   #   * obc-web-assemble (#1034) — the obcm-assemble OBCA engine, so downloaded map cells become a
   #     map in the tab. This is the one that makes the cell catalog's promise true (epic #1016):
   #     any selection is an assembly, not a bake, and nothing has to be pre-baked or server-side.
+  #   * obc-web-preview (#1045) — the firmware reader + renderer over the canonical Teningen map,
+  #     loaded only while the skin-space editor is open.
   #
   # Two things happen per module and the order matters:
   #
@@ -463,12 +466,14 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: wasm-pack@0.15.0
-      - name: Build both wasm bridges
+      - name: Build all wasm bridges
         run: bash builder/build-wasm-bridges.sh
       - name: bundle-size budget (convert)
         run: python3 firmware/tools/wasm_size_guard.py --module convert
       - name: bundle-size budget (assemble)
         run: python3 firmware/tools/wasm_size_guard.py --module assemble
+      - name: bundle-size budget (preview)
+        run: python3 firmware/tools/wasm_size_guard.py --module preview
       - uses: actions/upload-artifact@v4
         with:
           name: obc-web-convert-pkg
@@ -478,6 +483,11 @@ jobs:
         with:
           name: obc-web-assemble-pkg
           path: builder/app/src/lib/assemble/pkg
+          retention-days: 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: obc-web-preview-pkg
+          path: builder/app/src/lib/skin/pkg
           retention-days: 1
 
   # Render the docs site (stdlib-only Python, no pip) and fail on error, plus the cross-page
@@ -566,7 +576,7 @@ jobs:
   # tries to ship it. The *contents* of the web bundle (no job polling, no style
   # editor) are asserted by vitest, which builds and inspects the emitted chunks.
   #
-  # The two wasm bridges come from `wasm-bridges` rather than being rebuilt here, so the
+  # The three wasm bridges come from `wasm-bridges` rather than being rebuilt here, so the
   # module the byte-identity tests run against is literally the one the size budget passed. It is
   # a hard dependency, not an optimisation, and it is why the downloads land before `npm ci`:
   # every step below needs them — the TS wrappers import the generated bindings, so `npm run check`
@@ -591,6 +601,10 @@ jobs:
         with:
           name: obc-web-assemble-pkg
           path: builder/app/src/lib/assemble/pkg
+      - uses: actions/download-artifact@v4
+        with:
+          name: obc-web-preview-pkg
+          path: builder/app/src/lib/skin/pkg
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -637,6 +651,10 @@ jobs:
         with:
           name: obc-web-assemble-pkg
           path: builder/app/src/lib/assemble/pkg
+      - uses: actions/download-artifact@v4
+        with:
+          name: obc-web-preview-pkg
+          path: builder/app/src/lib/skin/pkg
       - uses: actions/setup-node@v4
         with:
           node-version: 22
