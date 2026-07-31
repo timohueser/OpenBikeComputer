@@ -114,10 +114,18 @@ export function json(body: string, where: string): unknown {
     }
 }
 
-/** A `{ "<kebab id>": integer }` map, as `bytes_by_band` and `cell_count` are. */
+/**
+ * A `{ "<kebab id>": integer }` map, as `bytes_by_band` and `cell_count` are.
+ *
+ * Null-prototype, because the keys are band ids from a document and
+ * `"constructor"` is a perfectly legal kebab id. On an ordinary object literal
+ * `bytesByBand["constructor"]` would answer with a *function* for a band the
+ * document never mentioned, and `?? 0` does not catch a function — the price of
+ * that band would come out as `NaN` and take the total with it.
+ */
 export function intMap(v: unknown, where: string): Record<string, number> {
     const o = obj(v, where);
-    const out: Record<string, number> = {};
+    const out: Record<string, number> = Object.create(null);
     for (const key of Object.keys(o)) {
         if (!KEBAB.test(key)) fail(`${where}: ${JSON.stringify(key)} is not a band id`);
         out[key] = int(o, key, where, 0);

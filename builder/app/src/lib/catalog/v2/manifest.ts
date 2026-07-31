@@ -274,7 +274,10 @@ function parseSchema(v: unknown, where: string): SchemaEntry {
         // band table is keyed by these indices, so a gap or a reorder would make
         // "LOD 3" mean two different rungs in one document.
         const index = int(e, "index", at, k, k);
-        const maxMpp = e.max_mpp;
+        // Absent and `null` both mean the `+inf` coarsest level: the JSON schema
+        // does not require the key, and a parser stricter than the schema
+        // refuses documents the generator is entitled to write.
+        const maxMpp = e.max_mpp === undefined ? null : e.max_mpp;
         if (maxMpp !== null && (typeof maxMpp !== "number" || !Number.isFinite(maxMpp))) {
             fail(`${at}: max_mpp must be a number or null`);
         }
@@ -370,6 +373,14 @@ function parseSkins(v: unknown, where: string, schema: SchemaEntry): SkinEntry[]
             fail(`${at}: skin "${id}" styles nothing for ${missing.join(", ")}`);
         }
 
+        // §11.2: sorted by id. Enforced for the same reason the cell index's
+        // ordering is: a document whose order is stated and not kept is a
+        // document a consumer cannot binary-search or diff, and every other
+        // ordering rule in §11 is checked here.
+        if (k > 0 && id <= str(obj(raw[k - 1], at), "id", at)) {
+            fail(`${at}: skins must be sorted by id`);
+        }
+
         const skin: SkinEntry = {
             id,
             name: str(o, "name", at),
@@ -417,6 +428,10 @@ function parseRegions(v: unknown, where: string, bandIds: Set<string>): RegionEn
         const o = obj(entry, at);
         const id = str(o, "id", at, PATH_ID);
         if (seen.has(id)) fail(`${at}: two regions share the id ${JSON.stringify(id)}`);
+        // §11.2, as for the skins: the order is part of the document.
+        if (k > 0 && id <= str(obj(raw[k - 1], at), "id", at)) {
+            fail(`${at}: regions must be sorted by id`);
+        }
         seen.add(id);
 
         const bytesByBand = intMap(o.bytes_by_band, `${at}.bytes_by_band`);
