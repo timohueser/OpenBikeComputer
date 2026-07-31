@@ -211,18 +211,52 @@ function partCells(part: SelectionPart, bandEntry: BandEntry, ctx: SelectionCont
     }
 }
 
+/** One part's contribution to one band, split — the unit the resolver caches. */
+interface BandCells {
+    published: string[];
+    missing: string[];
+}
+
+/** {@link partCells}, split against the band's index and sorted. Canonical ids
+ *  sort lexicographically into `(i, j)` order (the padding width is fixed per
+ *  band, `OBCA_Spec.md` §1.3), so a plain string compare matches the order the
+ *  catalog publishes. */
+function classify(
+    part: SelectionPart,
+    bandEntry: BandEntry,
+    ctx: SelectionContext,
+    radiusM: number,
+    index: CellIndexDocument,
+): BandCells {
+    const published: string[] = [];
+    const missing: string[] = [];
+    for (const id of new Set(partCells(part, bandEntry, ctx, radiusM))) {
+        (index.byId.has(id) ? published : missing).push(id);
+    }
+    return { published: published.sort(), missing: missing.sort() };
+}
+
+/** What a resolution needs from a (part, band) pair, however it is obtained. */
+type CellSource = (part: SelectionPart, bandEntry: BandEntry, index: CellIndexDocument) => BandCells;
+
 /**
  * Resolve a selection into the cells it names, per band, with per-part
  * attribution.
  *
- * Canonical ids sort lexicographically into `(i, j)` order — the padding width
- * is fixed per band (`OBCA_Spec.md` §1.3) — so every list here is sorted with a
- * plain string compare and matches the order the catalog publishes.
+ * This is the one-shot path: it computes every part from scratch. A UI holding
+ * a slider does not want that sixty times a second — see {@link
+ * SelectionResolver}.
  */
 export function resolveSelection(selection: Selection, ctx: SelectionContext): SelectionResolution {
+    assertRegionListsIndexed(selection, ctx);
+    return resolveWith(selection, ctx, (part, bandEntry, index) =>
+        classify(part, bandEntry, ctx, selection.corridorRadiusM, index),
+    );
+}
+
+function resolveWith(selection: Selection, ctx: SelectionContext, cellsFor: CellSource): SelectionResolution {
     const bands = ctx.catalog.schema.bands;
     const unresolvedBands = bands.filter((b) => !ctx.indices.has(b.id)).map((b) => b.id);
-    assertRegionListsIndexed(selection, ctx);
 
     // Pass one: every part's raw cells per band, split into published and missing.
     const perPart = selection.parts.map((part) => {
@@ -231,13 +265,11 @@ export function resolveSelection(selection: Selection, ctx: SelectionContext): S
         for (const bandEntry of bands) {
             const index = ctx.indices.get(bandEntry.id);
             if (!index) continue;
-            const published: string[] = [];
-            const missing: string[] = [];
-            for (const id of new Set(partCells(part, bandEntry, ctx, selection.corridorRadiusM))) {
-                (index.byId.has(id) ? published : missing).push(id);
-            }
-            if (published.length) cellsByBand.set(bandEntry.id, published.sort());
-            if (missing.length) missingByBand.set(bandEntry.id, missing.sort());
+            const { published, missing } = cellsFor(part, bandEntry, index);
+            // Copies: the lists may be a cache's, and a resolution is handed to
+            // a UI that is entitled to sort or splice what it was given.
+            if (published.length) cellsByBand.set(bandEntry.id, [...published]);
+            if (missing.length) missingByBand.set(bandEntry.id, [...missing]);
         }
         // A region whose list has not arrived contributes nothing *yet*, which
         // on its own is indistinguishable from contributing nothing.
@@ -299,4 +331,105 @@ function sortedLists(source: Map<string, Set<string>>): Map<string, string[]> {
     const out = new Map<string, string[]>();
     for (const [band, ids] of source) out.set(band, [...ids].sort());
     return out;
+}
+
+/** One cached answer, with everything it depended on, so staleness is a
+ *  comparison rather than a convention. */
+interface CachedBand {
+    part: SelectionPart;
+    radiusM: number;
+    index: CellIndexDocument;
+    regionList: RegionCellsDocument | undefined;
+    cells: BandCells;
+}
+
+/**
+ * `resolveSelection`, but remembering what it worked out.
+ *
+ * The reason this exists is the corridor slider. Resolving a bikepacking-sized
+ * selection is tens of milliseconds — the geometry is per band, per part, per
+ * segment — and a slider asks for a new answer on every frame it moves. Almost
+ * none of that work is new: a global corridor width (§8 U3) changes what the
+ * *corridor* parts cover and nothing else, so a map of two regions and a drawn
+ * box recomputes three parts to answer a question about none of them.
+ *
+ * So the cache is keyed per **(part, band)** — the finest grain at which an
+ * answer is reusable — and an entry is reused only when everything it was
+ * computed from is still the same object: the part itself, the band's index
+ * document, the region's cell list, and (for corridors) the radius. Parts are
+ * values here, replaced rather than edited by `withPart`, so identity is the
+ * right test and a caller that does edit one in place can say so with
+ * {@link invalidate}.
+ *
+ * Deliberately UI-free: no store, no `$state`, no framework. It is a data
+ * structure with a lifetime, and the component that owns one is the component
+ * that decides when it dies.
+ */
+export class SelectionResolver {
+    private readonly cache = new Map<string, CachedBand>();
+    /** The last index set a region's list was checked against, so §11.7's
+     *  cross-document check is not re-walked on every frame either. */
+    private readonly checked = new WeakMap<RegionCellsDocument, ReadonlyMap<string, CellIndexDocument>>();
+    /** Cache hits and misses, for tests and for anyone wondering where a frame
+     *  went. Not load-bearing. */
+    readonly stats = { computed: 0, reused: 0 };
+
+    /** Drop everything remembered about one part — the escape hatch for a
+     *  caller that mutates a part in place instead of replacing it. */
+    invalidate(partId: string): void {
+        for (const key of [...this.cache.keys()]) {
+            if (key.slice(0, key.indexOf(" ")) === partId) this.cache.delete(key);
+        }
+    }
+
+    /** Drop everything. */
+    invalidateAll(): void {
+        this.cache.clear();
+    }
+
+    /** How many (part, band) answers are currently remembered. */
+    get size(): number {
+        return this.cache.size;
+    }
+
+    resolve(selection: Selection, ctx: SelectionContext): SelectionResolution {
+        this.assertRegionLists(selection, ctx);
+        const live = new Set<string>();
+        const resolution = resolveWith(selection, ctx, (part, bandEntry, index) => {
+            const key = `${part.id} ${bandEntry.id}`;
+            live.add(key);
+            const regionList = part.kind === "region" ? ctx.regionCells.get(part.regionId) : undefined;
+            const hit = this.cache.get(key);
+            if (
+                hit &&
+                hit.part === part &&
+                hit.index === index &&
+                hit.regionList === regionList &&
+                (part.kind !== "corridor" || hit.radiusM === selection.corridorRadiusM)
+            ) {
+                this.stats.reused += 1;
+                return hit.cells;
+            }
+            this.stats.computed += 1;
+            const cells = classify(part, bandEntry, ctx, selection.corridorRadiusM, index);
+            this.cache.set(key, { part, radiusM: selection.corridorRadiusM, index, regionList, cells });
+            return cells;
+        });
+        // A removed part must not keep its answers alive: a session that adds
+        // and removes fifty boxes should not be holding fifty answers.
+        for (const key of [...this.cache.keys()]) {
+            if (!live.has(key)) this.cache.delete(key);
+        }
+        return resolution;
+    }
+
+    private assertRegionLists(selection: Selection, ctx: SelectionContext): void {
+        for (const part of selection.parts) {
+            if (part.kind !== "region") continue;
+            const list = ctx.regionCells.get(part.regionId);
+            if (!list || this.checked.get(list) === ctx.indices) continue;
+            assertRegionCellsIndexed(list, ctx.indices);
+            this.checked.set(list, ctx.indices);
+        }
+    }
 }

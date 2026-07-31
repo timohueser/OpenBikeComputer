@@ -13,6 +13,7 @@ import { parseRegionCells } from "./satellites";
 import {
     emptySelection,
     resolveSelection,
+    SelectionResolver,
     withCorridorRadius,
     withoutPart,
     withPart,
@@ -230,5 +231,138 @@ describe("resolveSelection", () => {
         const r = resolveSelection(emptySelection(5000), ctx);
         expect(r.parts).toEqual([]);
         expect(r.cellsByBand.size).toBe(0);
+    });
+});
+
+describe("SelectionResolver", () => {
+    const route: CorridorPart = {
+        kind: "corridor",
+        id: "route-1",
+        name: "Day 3",
+        points: [
+            { lat: (A.minLat + A.maxLat) / 2, lon: A.maxLon - 200 },
+            { lat: (A.minLat + A.maxLat) / 2, lon: A.maxLon - 100 },
+        ],
+    };
+    const selection = { parts: [insideA, region, route], corridorRadiusM: 2000 };
+    const bands = exampleCatalog.schema.bands.length;
+
+    /** Every list in a resolution, flattened, so two answers can be compared
+     *  without caring which object they came from. */
+    function shape(r: ReturnType<typeof resolveSelection>) {
+        return {
+            union: [...r.cellsByBand].map(([b, ids]) => [b, ids]),
+            missing: [...r.missingByBand].map(([b, ids]) => [b, ids]),
+            parts: r.parts.map((p) => ({
+                id: p.part.id,
+                bytes: p.bytes,
+                marginal: p.marginalBytes,
+                cells: [...p.cellsByBand].map(([b, ids]) => [b, ids]),
+                pending: p.pending,
+            })),
+            unresolvedBands: r.unresolvedBands,
+            unresolvedParts: r.unresolvedParts,
+        };
+    }
+
+    it("gives the same answer as resolving from scratch", () => {
+        const resolver = new SelectionResolver();
+        expect(shape(resolver.resolve(selection, ctx))).toEqual(shape(resolveSelection(selection, ctx)));
+        // …and again from the cache, which is the assertion that matters.
+        expect(shape(resolver.resolve(selection, ctx))).toEqual(shape(resolveSelection(selection, ctx)));
+        expect(resolver.stats.computed).toBe(3 * bands);
+        expect(resolver.stats.reused).toBe(3 * bands);
+    });
+
+    it("recomputes only the corridors when the one global width moves", () => {
+        // The slider case, and the whole reason this class exists: a map of a
+        // region and a box recomputing three parts to answer a question about
+        // none of them is tens of milliseconds per frame.
+        const resolver = new SelectionResolver();
+        resolver.resolve(selection, ctx);
+        resolver.stats.computed = 0;
+        resolver.stats.reused = 0;
+        const wider = withCorridorRadius(selection, 6000);
+        const memoised = resolver.resolve(wider, ctx);
+        expect(resolver.stats.computed).toBe(bands);
+        expect(resolver.stats.reused).toBe(2 * bands);
+        expect(shape(memoised)).toEqual(shape(resolveSelection(wider, ctx)));
+    });
+
+    it("recomputes only the part that was edited", () => {
+        const resolver = new SelectionResolver();
+        resolver.resolve(selection, ctx);
+        resolver.stats.computed = 0;
+        resolver.stats.reused = 0;
+        const moved = withPart(selection, {
+            ...insideA,
+            box: { ...insideA.box, maxLon: insideA.box.maxLon + 1_000_000 },
+        });
+        const memoised = resolver.resolve(moved, ctx);
+        expect(resolver.stats.computed).toBe(bands);
+        expect(resolver.stats.reused).toBe(2 * bands);
+        expect(shape(memoised)).toEqual(shape(resolveSelection(moved, ctx)));
+    });
+
+    it("recomputes a band when its index is replaced, and only that band", () => {
+        // A cell index arriving (or being re-fetched) changes what "published"
+        // means, and an answer computed against the old one is not an answer.
+        const resolver = new SelectionResolver();
+        resolver.resolve(selection, ctx);
+        resolver.stats.computed = 0;
+        const withNewFine: SelectionContext = {
+            ...ctx,
+            indices: new Map([
+                ...indices,
+                [
+                    "fine",
+                    // The same cells, re-published at different sizes: a new
+                    // document, so every answer computed against the old one is
+                    // stale even though the cell ids did not move.
+                    fixtureIndices(exampleCatalog, {
+                        fine: [
+                            { id: "18/1204/1052", bytes: 999 },
+                            { id: "18/1204/1053", bytes: 424, partial: true },
+                            { id: "18/1205/1052", bytes: 600 },
+                        ],
+                    }).get("fine")!,
+                ],
+            ]),
+        };
+        const r = resolver.resolve(selection, withNewFine);
+        expect(resolver.stats.computed).toBe(3);
+        expect(shape(r)).toEqual(shape(resolveSelection(selection, withNewFine)));
+    });
+
+    it("forgets a part that has been removed, and can be told to forget one", () => {
+        const resolver = new SelectionResolver();
+        resolver.resolve(selection, ctx);
+        expect(resolver.size).toBe(3 * bands);
+        resolver.resolve(withoutPart(selection, "route-1"), ctx);
+        expect(resolver.size).toBe(2 * bands);
+
+        resolver.stats.computed = 0;
+        resolver.invalidate("box-1");
+        resolver.resolve(withoutPart(selection, "route-1"), ctx);
+        expect(resolver.stats.computed).toBe(bands);
+
+        resolver.invalidateAll();
+        expect(resolver.size).toBe(0);
+    });
+
+    it("still refuses a region cell no band index publishes", () => {
+        const broken: SelectionContext = {
+            ...ctx,
+            indices: fixtureIndices(exampleCatalog, {
+                coarse: [{ id: "20/0301/0263", bytes: 2088 }],
+                mid: [{ id: "19/0602/0526", bytes: 1064 }],
+                fine: [{ id: "18/1204/1052", bytes: 552 }],
+                network: [{ id: "18/1204/1052", bytes: 296 }],
+            }),
+        };
+        const resolver = new SelectionResolver();
+        expect(() => resolver.resolve({ parts: [region], corridorRadiusM: 0 }, broken)).toThrow(
+            CatalogFormatError,
+        );
     });
 });

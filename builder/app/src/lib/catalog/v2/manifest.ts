@@ -34,7 +34,6 @@ import {
     SHA256,
     str,
     urlStr,
-    type Obj,
 } from "./parse";
 
 export { CatalogFormatError };
