@@ -263,20 +263,20 @@ fn an_unchanged_rerun_skips_and_a_changed_preset_does_not() {
     assert_eq!(packer.calls.load(Ordering::SeqCst), 4);
     assert!(forced.jobs.iter().all(|j| matches!(j.status, JobStatus::Baked { .. })));
 
-    // A restyle changes the preset bytes, so the key changes and everything re-bakes
-    // — which is the case a mtime-keyed cache would get wrong, since the artifact is
-    // newer than the config it is now out of date with.
+    // A real restyle changes what the packer reads, so the key changes and everything
+    // re-bakes — which is the case a mtime-keyed cache would get wrong, since the
+    // artifact is newer than the config it is now out of date with.
     let mut restyled = fixture("idempotent-restyle");
     restyled.run(&packer, false);
     let before = packer.calls.load(Ordering::SeqCst);
     let config_path = restyled.presets[0].path.clone();
-    // Bump `_meta.version` from wherever it currently stands. Pinning the literal
-    // number couples the test to whichever schema ships today — the edit silently
-    // no-opped (and the test failed) when the fixture moved from a v2 preset to the
-    // v4 default.
     let mut cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+    // Recolour one feature type and bump the version with it, exactly as a restyle
+    // would. Editing the body rather than pinning a literal keeps the test off
+    // whichever schema ships today.
     let bumped = u32::try_from(cfg["_meta"]["version"].as_u64().unwrap() + 1).unwrap();
     cfg["_meta"]["version"] = bumped.into();
+    cfg["features"]["highway"]["primary"]["color"] = "0x0000".into();
     std::fs::write(&config_path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
     restyled.presets = vec![obc_bake::presets::load_schema(config_path.parent().unwrap()).unwrap()];
     let after_restyle = restyled.run(&packer, false);
@@ -287,6 +287,125 @@ fn an_unchanged_rerun_skips_and_a_changed_preset_does_not() {
     let generated = restyled.manifest();
     assert_eq!(generated.manifest.presets[0].version, bumped);
     assert!(generated.manifest.artifacts.iter().all(|a| a.preset_version == bumped));
+}
+
+/// A style edit confined to `_meta` costs a sidecar rewrite, not a re-pack.
+///
+/// The bake key hashes the document's **body**, so metadata — the id, the display
+/// name, the description, the swatch, `version` — cannot invalidate an artifact whose
+/// bytes it demonstrably cannot change. This is the property #1036's own migration
+/// depends on: the shipped schema's `_meta` was rewritten wholesale (`default` →
+/// `bikepacking`) without one packer input moving, and keying on the file's text would
+/// have billed that rename as a full re-pack of every region on the live shelf.
+///
+/// The metadata is still not allowed to go stale. `_meta.version` is what a v1
+/// consumer reads to see a region is a restyle behind, so the run notices the drift
+/// and rewrites the four lines of JSON that carry it — the same treatment a renamed
+/// region and a re-dated extract already get.
+#[test]
+fn a_metadata_only_style_edit_refreshes_the_sidecar_without_repacking() {
+    let mut f = fixture("meta-only");
+    let packer = FixturePacker::new();
+    f.run(&packer, false);
+    let packed = packer.calls.load(Ordering::SeqCst);
+    let artifact = f.tree.join("regions/europe/alpha/bikepacking.obcm");
+    let before = obc_bake::hash::file(&artifact).unwrap();
+
+    let config_path = f.presets[0].path.clone();
+    let mut cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+    let bumped = u32::try_from(cfg["_meta"]["version"].as_u64().unwrap() + 1).unwrap();
+    cfg["_meta"]["version"] = bumped.into();
+    cfg["_meta"]["description"] = "A description nobody packs.".into();
+    std::fs::write(&config_path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
+    f.presets = vec![obc_bake::presets::load_schema(config_path.parent().unwrap()).unwrap()];
+
+    let summary = f.run(&packer, false);
+    assert!(summary.ok(), "{}", summary.render());
+    assert_eq!(packer.calls.load(Ordering::SeqCst), packed, "a `_meta` edit must not re-pack anything");
+    assert!(
+        summary.jobs.iter().all(|j| matches!(j.status, JobStatus::SidecarRefreshed { .. })),
+        "and it must not be a silent skip either — the published version moved: {}",
+        summary.render()
+    );
+    assert_eq!(obc_bake::hash::file(&artifact).unwrap(), before, "the artifact on disk is untouched");
+
+    // The catalog nevertheless publishes the new number, from both places §3 wants it.
+    let generated = f.manifest();
+    assert_eq!(generated.manifest.presets[0].version, bumped);
+    assert!(generated.manifest.artifacts.iter().all(|a| a.preset_version == bumped));
+}
+
+/// **The #1036 shelf migration, as a test.** Renaming the schema's `_meta.id` renames
+/// every file the v1 path names after it — and after the rename, an existing tree
+/// re-bakes *nothing*.
+///
+/// This is the property that decides whether the live shelf's migration costs a
+/// minute or twenty hours, so it is pinned rather than asserted in a runbook. Two
+/// things have to hold together and neither is sufficient alone:
+///
+/// 1. the bake key ignores `_meta`, so the id change does not invalidate the bytes
+///    ([`a_metadata_only_style_edit_refreshes_the_sidecar_without_repacking`]); and
+/// 2. the *state* file is found again, which it is not automatically — it is named
+///    `.<id>.bake.json`, so it moves with the id.
+///
+/// The rename below is exactly what the PR's runbook tells an operator to run, over
+/// the four names an id owns: the artifact, its sidecar, its state dotfile, and the
+/// tree's copy of the config. If this test needs a fifth line, so does the runbook.
+#[test]
+fn renaming_the_schemas_id_repacks_nothing_once_the_tree_is_renamed_with_it() {
+    let mut f = fixture("id-rename");
+    let packer = FixturePacker::new();
+    let config_path = f.presets[0].path.clone();
+    let set_id = |id: &str| {
+        let mut cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+        cfg["_meta"]["id"] = id.into();
+        std::fs::write(&config_path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
+        vec![obc_bake::presets::load_schema(config_path.parent().unwrap()).unwrap()]
+    };
+
+    // The shelf as it was: one preset named `default`.
+    f.presets = set_id("default");
+    f.run(&packer, false);
+    let packed = packer.calls.load(Ordering::SeqCst);
+    assert_eq!(packed, 2);
+    assert!(f.tree.join("regions/europe/alpha/default.obcm").is_file());
+    let before = obc_bake::hash::file(&f.tree.join("regions/europe/alpha/default.obcm")).unwrap();
+
+    // The rename, as the runbook spells it.
+    f.presets = set_id("bikepacking");
+    for region in ["regions/europe/alpha", "regions/europe/beta/gamma"] {
+        let dir = f.tree.join(region);
+        for (from, to) in [
+            ("default.obcm", "bikepacking.obcm"),
+            ("default.obcm.json", "bikepacking.obcm.json"),
+            (".default.bake.json", ".bikepacking.bake.json"),
+        ] {
+            std::fs::rename(dir.join(from), dir.join(to)).unwrap_or_else(|e| panic!("{region}/{from}: {e}"));
+        }
+    }
+    std::fs::rename(f.tree.join("presets/default.json"), f.tree.join("presets/bikepacking.json")).unwrap();
+
+    let summary = f.run(&packer, false);
+    assert!(summary.ok(), "{}", summary.render());
+    assert_eq!(
+        packer.calls.load(Ordering::SeqCst),
+        packed,
+        "the rename must cost a rename, not a re-pack: {}",
+        summary.render()
+    );
+    assert!(summary.jobs.iter().all(|j| matches!(j.status, JobStatus::Unchanged { .. })), "{}", summary.render());
+    assert_eq!(
+        obc_bake::hash::file(&f.tree.join("regions/europe/alpha/bikepacking.obcm")).unwrap(),
+        before,
+        "same bytes under the new name"
+    );
+
+    // And the renamed tree is one the generator accepts, under the new preset id.
+    let generated = f.manifest();
+    assert_eq!(generated.manifest.presets.len(), 1);
+    assert_eq!(generated.manifest.presets[0].id, "bikepacking");
+    assert!(generated.manifest.artifacts.iter().all(|a| a.preset_id == "bikepacking"));
 }
 
 #[test]
