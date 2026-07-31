@@ -686,8 +686,11 @@ fn the_tree_generates_a_catalog_that_verifies() {
     // seam cell the co-bake completed — which is the epic's saving made visible, since
     // that cell is the *same* cell East's selection names.
     assert_eq!(west.partial_cell_count, 14, "18 cells, 4 of them canonical");
+    assert_eq!(west.partial_cell_count_by_band.values().copied().collect::<Vec<_>>(), vec![7, 7]);
+    assert_eq!(west.partial_cell_count_by_band.values().sum::<u32>(), west.partial_cell_count);
     let east = root.regions.iter().find(|r| r.id == "europe/east").expect("east");
     assert_eq!(east.partial_cell_count, 14);
+    assert_eq!(east.partial_cell_count_by_band.values().copied().collect::<Vec<_>>(), vec![7, 7]);
     assert!(!west.boundary.rings.is_empty(), "and it carries a drawable outline (§11.8)");
 
     let guard = obc_bake::guard::check_cell_store(&f.tree).expect("guard runs");
