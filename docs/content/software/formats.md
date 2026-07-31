@@ -1194,6 +1194,17 @@ So a logical map is a **volume set**: a tiny fixed-layout manifest plus 1..N ord
 - **The manifest is written last.** A half-uploaded set has no manifest and never mounts — and a shard on its own is never mounted as a standalone map, even though it would open, because a map with no roads is exactly the kind of quiet wrongness a rider cannot diagnose.
 - **A small map is a set of one**, which is nearly every selection: a country is under a gigabyte, a 300 km corridor around a trip's routes projects to about a quarter of one.
 
+Mounting preserves that one-map illusion all the way through the UI. The runtime opens every shard
+for the mount lifetime, parses the full style and LOD tables once from the core, and keeps only each
+other shard's bbox, LOD ladder and empty-LOD mask. The app then renders either a single-file reader
+or the mounted set through the same `MapScene` seam: viewport geometry fans out, while POIs, opening
+hours and routing continue to use the core reader; route overlays and the rest of the UI are unchanged.
+On the device each open shard also
+gets a resident FAT extent table, so panning across a shard boundary is bbox dispatch plus direct
+block reads—not a directory lookup or FAT-chain walk in the render loop. A missing shard, mismatched
+size/bbox/LOD ladder/style table, unsupported version, or target-specific handle limit refuses the
+whole mount before a pixel is drawn; it never degrades into a map with a quiet hole.
+
 The reason the coarse LODs are a shard and not part of the core is that the core is the **one component of a set that cannot be split by box**. Every shard tiles: more ground means more shards, each one comfortably inside the ceiling. But the navigation graph is *one* graph, in one file, until the router learns to route across a seam — so the core's remaining headroom under 4 GiB − 1 is the scarcest number in the design, and nothing that has somewhere else to go may spend it. Coarse geometry has somewhere else to go.
 
 What that leaves is a map whose limit is a single sentence: **one map reaches the ceiling when its navigation graph alone does.** Nav plus POIs measure 3.8–7.1 MiB per 1000 km², so a DACH core is 2.8–3.0 GiB, and the graph alone hits the wall at roughly 640–700 thousand km² — enough for DACH and its northern and eastern neighbours, not enough for DACH plus France. No geometry decision can move that number in either direction, which is exactly the property worth having.
