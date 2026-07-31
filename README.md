@@ -234,8 +234,8 @@ uploads cells and satellites first, verifies their remote sizes, and replaces
 `catalog.json` last:
 
 ```sh
-# Put OBC_MAPS_BASE_URL and OBC_R2_* in the gitignored tools/obc.local;
-# tools/obc.local.example contains the complete block.
+# Copy tools/obc.local.example to the gitignored tools/obc.local and add the
+# credential values. The production URL, prefix, and bake-tree defaults are ready.
 
 # Plan only (the default target is a dry run).
 obc bake publish
