@@ -65,7 +65,9 @@ use obc_route::{
     ride_elevation_profile, ride_preview_polyline, track_to_ride, Profile, RideInfo, RideStats, RouteIndex,
     RouteObjectInfo, RouteSummary, TripMeta, TripSummary,
 };
-use obc_storage::fat_extents::{BuildError, ExtentSource, ExtentTable, SharedBlockDevice};
+use obc_storage::fat_extents::{
+    BuildError, ExtentSource, ExtentSourceWithCapacity, ExtentTable, ExtentTableWithCapacity, SharedBlockDevice,
+};
 use obc_storage::{SdByteSink, SdByteSource, SdTrackSink};
 
 /// SD clock config during the init handshake. ⚠️ **SPIM00 cannot reach the SD spec's ≤400 kHz
@@ -290,6 +292,12 @@ const SD_RIDE_PEAK_FILES: usize = 5;
 /// larger set with `MountError::Handles(11)` — an error that names *this device's* cap, which is
 /// the number a rider needs, rather than the format's.
 pub(crate) const SD_SET_MAX_SHARDS: usize = SD_MAX_FILES - SD_RIDE_PEAK_FILES;
+/// A set shard's FAT-run budget. Shards are generated and uploaded as a sequential publish tree,
+/// and are smaller than the standalone maps for which [`obc_storage::fat_extents::MAX_EXTENTS`]
+/// was sized. 64 still exceeds the reference card's worst measured map (46 runs) while avoiding
+/// eleven unnecessarily large 128-run tables in resident RAM. A more fragmented shard is refused
+/// with its true run count and can be fixed by re-copying the publish tree onto the card.
+const SET_MAX_EXTENTS: usize = 64;
 /// The per-shard mount records, sized to this board's ceiling. A device mount places one of these
 /// in `.bss` (never on a frame — 14 KB of `heapless::Vec` inside an embassy task frame is the #270
 /// trap) and mounts into it; see `obc_reader::volume`'s module docs.
@@ -297,6 +305,10 @@ pub(crate) type SetShardStore = obc_reader::SetShards<'static, SD_SET_MAX_SHARDS
 type Vmgr = VolumeManager<SdShared, NullTime, SD_MAX_DIRS, SD_MAX_FILES, SD_MAX_VOLUMES>;
 /// [`SdByteSource`] over this board's manager (the wrappers are generic over the handle budget).
 type Source<'a> = SdByteSource<'a, SdShared, NullTime, SD_MAX_DIRS, SD_MAX_FILES, SD_MAX_VOLUMES>;
+/// The smaller resident extent table used only for published set shards; standalone maps retain
+/// [`ExtentTable`]'s 128-run default.
+type SetExtentTable = ExtentTableWithCapacity<SET_MAX_EXTENTS>;
+type SetExtentSource<'a> = ExtentSourceWithCapacity<'a, Sd, SET_MAX_EXTENTS>;
 /// [`SdByteSink`] over this board's manager — the router's OBCR emit writes through it.
 type Sink<'a> = SdByteSink<'a, SdShared, NullTime, SD_MAX_DIRS, SD_MAX_FILES, SD_MAX_VOLUMES>;
 /// [`SdTrackSink`] over this board's manager.
@@ -307,28 +319,41 @@ type TrackSinkT<'a> = SdTrackSink<'a, SdShared, NullTime, SD_MAX_DIRS, SD_MAX_FI
 /// extent read path can borrow it for `'static`.
 static mut SD_CARD: core::mem::MaybeUninit<Sd> = core::mem::MaybeUninit::uninit();
 
-/// The map's resolved [`ExtentTable`]'s home (#500) — its own `.bss` slot rather than a field
-/// *inside* [`Storage`], because `Storage` transits `main`'s async frame **by value** on its way
-/// into the shared store, and an async frame allocates every local at entry (#270): carrying the
-/// ~2 KB table inside `Storage` measurably cost the main-task future ~4 KB (two resident copies)
-/// and the ride stack region shrank by the same RAM. `Storage` holds `Option<&'static _>`.
-static mut MAP_EXTENTS: core::mem::MaybeUninit<ExtentTable> = core::mem::MaybeUninit::uninit();
+/// The mutually-exclusive homes of either one standalone map table or every mounted-set table.
+/// `open_map` makes that choice once per boot and never switches it: a single map initialises only
+/// `map`, while [`open_volume_set`](Storage::open_volume_set) initialises distinct `set` slots and
+/// retains their handles for the session. A union therefore saves the otherwise permanently idle
+/// standalone table without introducing reuse or lifetime transitions under a live reference.
+///
+/// This remains outside [`Storage`] because that value crosses `main`'s async frame by value; the
+/// old inline table measurably produced two extra resident copies (#270/#500). `ManuallyDrop` is
+/// only a union-field requirement — extent tables own no resources and are written once in place.
+union ExtentSlots {
+    map: core::mem::ManuallyDrop<core::mem::MaybeUninit<ExtentTable>>,
+    set: core::mem::ManuallyDrop<[core::mem::MaybeUninit<SetExtentTable>; SD_SET_MAX_SHARDS]>,
+}
 
-/// One resolved FAT extent table and immutable direct-read source per mounted set shard. Both live
-/// in `.bss`: moving eleven ~2 KiB tables through `Storage`/the async main frame would duplicate
-/// them, and rebuilding one per viewport query would put a FAT walk in the render loop. The open
-/// file handles in [`OpenSet`] pin the chains these tables describe for the whole mount lifetime.
-static mut SET_EXTENTS: [core::mem::MaybeUninit<ExtentTable>; SD_SET_MAX_SHARDS] =
+const _: () =
+    assert!(core::mem::size_of::<[SetExtentTable; SD_SET_MAX_SHARDS]>() >= core::mem::size_of::<ExtentTable>());
+const _: () = assert!(core::mem::align_of::<SetExtentTable>() >= core::mem::align_of::<ExtentTable>());
+const _: () =
+    assert!(core::mem::size_of::<ExtentSlots>() == core::mem::size_of::<[SetExtentTable; SD_SET_MAX_SHARDS]>());
+const _: () = assert!(core::mem::align_of::<ExtentSlots>() == core::mem::align_of::<SetExtentTable>());
+
+static mut EXTENT_SLOTS: ExtentSlots =
+    ExtentSlots { set: core::mem::ManuallyDrop::new([const { core::mem::MaybeUninit::uninit() }; SD_SET_MAX_SHARDS]) };
+
+/// One immutable direct-read source per mounted set shard. The source records stay separate from
+/// [`EXTENT_SLOTS`] because every one is needed together; their table pointers target distinct
+/// `set` slots for the session. Rebuilding one per viewport query would put a FAT walk in the
+/// render loop, and the open handles in [`OpenSet`] pin the chains they describe.
+static mut SET_SOURCES: [core::mem::MaybeUninit<SetExtentSource<'static>>; SD_SET_MAX_SHARDS] =
     [const { core::mem::MaybeUninit::uninit() }; SD_SET_MAX_SHARDS];
-static mut SET_SOURCES: [core::mem::MaybeUninit<ExtentSource<'static, Sd>>; SD_SET_MAX_SHARDS] =
-    [const { core::mem::MaybeUninit::uninit() }; SD_SET_MAX_SHARDS];
-static mut SET_MANIFEST: core::mem::MaybeUninit<obc_formats::obcs::SetManifest> = core::mem::MaybeUninit::uninit();
 
 /// Exact target-side bytes of the board-private volume-set statics, exported numerically for the
 /// compile-time RAM budget and resource report in `main.rs` without exposing their concrete types.
-pub(crate) const SET_EXTENT_TABLES_BYTES: usize = core::mem::size_of::<[ExtentTable; SD_SET_MAX_SHARDS]>();
-pub(crate) const SET_SOURCES_BYTES: usize = core::mem::size_of::<[ExtentSource<'static, Sd>; SD_SET_MAX_SHARDS]>();
-pub(crate) const SET_MANIFEST_BYTES: usize = core::mem::size_of::<obc_formats::obcs::SetManifest>();
+pub(crate) const SET_EXTENT_TABLES_BYTES: usize = core::mem::size_of::<ExtentSlots>();
+pub(crate) const SET_SOURCES_BYTES: usize = core::mem::size_of::<[SetExtentSource<'static>; SD_SET_MAX_SHARDS]>();
 
 /// One map on the card, as [`Storage::scan_maps_into`] reports it (issue #927) — **the map
 /// catalog**, and the reason there is no catalog *file*.
@@ -404,7 +429,7 @@ pub enum MapSource<'a> {
     /// The plain seek path — correct on any card, O(offset) on backward seeks.
     Seek(Source<'a>),
     /// A core shard of a mounted set. Its source is resident beside its per-shard extent table.
-    Set(&'a ExtentSource<'static, Sd>),
+    Set(&'a SetExtentSource<'static>),
 }
 
 impl ByteSource for MapSource<'_> {
@@ -432,7 +457,7 @@ impl ByteSource for MapSource<'_> {
 struct OpenSetShard {
     file: RawFile,
     len: u32,
-    source: &'static ExtentSource<'static, Sd>,
+    source: &'static SetExtentSource<'static>,
 }
 
 /// A mounted set's session-long storage ownership. Every shard handle stays open, pinning its FAT
@@ -440,8 +465,18 @@ struct OpenSetShard {
 struct OpenSet {
     id: u16,
     manifest_name: ShortFileName,
-    manifest: &'static obc_formats::obcs::SetManifest,
+    core_index: u8,
     shards: Vec<OpenSetShard, SD_SET_MAX_SHARDS>,
+}
+
+/// Why the board could not turn its already-open shard handles into a reader mount. Kept separate
+/// from [`obc_reader::MountError`] because re-reading the small manifest from FAT is board policy,
+/// not part of the format reader.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum DeviceMountError {
+    Manifest,
+    Sources,
+    Reader(obc_reader::MountError),
 }
 
 /// FAT timestamps need a clock; the device has none yet (see [`obc_ports::TrackPoint::t_ms`]),
@@ -1432,7 +1467,7 @@ impl Storage {
             return Some(len);
         }
         if let Some(open) = &self.open_set {
-            return open.shards.get(open.manifest.core_shard()).map(|shard| shard.len);
+            return open.shards.get(open.core_index as usize).map(|shard| shard.len);
         }
         let mut maps: Vec<MapSummary, MAX_MAPS> = Vec::new();
         let unlistable = self.scan_maps_into(&mut maps);
@@ -1539,7 +1574,7 @@ impl Storage {
                 self.close_set_shards(&mut opened);
                 return None;
             }
-            let table = match ExtentTable::build(self.card, entry_block, entry_offset, len) {
+            let table = match SetExtentTable::build(self.card, entry_block, entry_offset, len) {
                 Ok(table) => table,
                 Err(error) => {
                     defmt::warn!(
@@ -1556,11 +1591,12 @@ impl Storage {
             // written exactly once before any reference escapes. The retained handle pins the FAT
             // chain for the lifetime of both references.
             let (table, source) = unsafe {
-                let table_slots = core::ptr::addr_of_mut!(SET_EXTENTS).cast::<core::mem::MaybeUninit<ExtentTable>>();
+                let table_slots =
+                    core::ptr::addr_of_mut!(EXTENT_SLOTS.set).cast::<core::mem::MaybeUninit<SetExtentTable>>();
                 let table = crate::init_static(table_slots.add(index), table);
                 let source_slots =
-                    core::ptr::addr_of_mut!(SET_SOURCES).cast::<core::mem::MaybeUninit<ExtentSource<'static, Sd>>>();
-                let source = crate::init_static(source_slots.add(index), ExtentSource::new(self.card, table));
+                    core::ptr::addr_of_mut!(SET_SOURCES).cast::<core::mem::MaybeUninit<SetExtentSource<'static>>>();
+                let source = crate::init_static(source_slots.add(index), SetExtentSource::new(self.card, table));
                 (&*table, &*source)
             };
             if !self.verify_extents(table, file, len) {
@@ -1580,11 +1616,8 @@ impl Storage {
             }
         }
 
-        // SAFETY: the same once-per-boot static discipline as the per-shard slots above. The
-        // parsed value owns all manifest fields; it does not borrow the transient byte buffer.
-        let manifest: &'static obc_formats::obcs::SetManifest =
-            unsafe { &*crate::init_static(core::ptr::addr_of_mut!(SET_MANIFEST), parsed) };
-        let Some(core_len) = opened.get(manifest.core_shard()).map(|shard| shard.len) else {
+        let core_index = parsed.core_shard();
+        let Some(core_len) = opened.get(core_index).map(|shard| shard.len) else {
             self.close_set_shards(&mut opened);
             return None;
         };
@@ -1592,10 +1625,11 @@ impl Storage {
         defmt::info!(
             "SD: mounting set {} ({=usize} shards, {=u64} B)",
             defmt::Debug2Format(&chosen.file),
-            manifest.shard_count(),
-            manifest.total_bytes()
+            parsed.shard_count(),
+            parsed.total_bytes()
         );
-        self.open_set = Some(OpenSet { id, manifest_name: chosen.file.clone(), manifest, shards: opened });
+        self.open_set =
+            Some(OpenSet { id, manifest_name: chosen.file.clone(), core_index: core_index as u8, shards: opened });
         Some(core_len)
     }
 
@@ -1605,14 +1639,28 @@ impl Storage {
         }
     }
 
-    /// The manifest retained for the mounted set, if the open map is a set.
-    pub fn set_manifest(&self) -> Option<&'static obc_formats::obcs::SetManifest> {
-        self.open_set.as_ref().map(|set| set.manifest)
-    }
-
-    /// One set shard's session-resident direct source in manifest order.
-    pub fn set_source(&self, index: usize) -> Option<&'static dyn ByteSource> {
-        self.open_set.as_ref()?.shards.get(index).map(|shard| shard.source as &dyn ByteSource)
+    /// Mount the already-open set into the caller-placed reader store. The manifest and source-ref
+    /// vector live only in this synchronous frame and are gone before `main` reaches another
+    /// `.await`; [`obc_reader::MountedSet`] retains only the compact metadata it needs afterwards.
+    #[inline(never)]
+    pub(crate) fn mount_set(
+        &self,
+        store: &'static mut SetShardStore,
+        tables: &'static obc_reader::MapTables,
+        cache: &'static obc_reader::MapCache,
+    ) -> Result<Option<obc_reader::MountedSet<'static>>, DeviceMountError> {
+        let Some(open) = &self.open_set else { return Ok(None) };
+        let manifest = self.read_set_manifest(&open.manifest_name).ok_or(DeviceMountError::Manifest)?;
+        if manifest.core_shard() != open.core_index as usize {
+            return Err(DeviceMountError::Manifest);
+        }
+        let mut sources: Vec<&'static dyn ByteSource, SD_SET_MAX_SHARDS> = Vec::new();
+        for shard in &open.shards {
+            sources.push(shard.source as &dyn ByteSource).map_err(|_| DeviceMountError::Sources)?;
+        }
+        obc_reader::MountedSet::mount(store, &manifest, sources.as_slice(), tables, cache)
+            .map(Some)
+            .map_err(DeviceMountError::Reader)
     }
 
     /// Which boot fault to put on glass when [`map_source`](Storage::map_source) hands out nothing.
@@ -1820,10 +1868,14 @@ impl Storage {
     /// be anywhere near the render path (the ~36 KB stack rule).
     #[inline(never)]
     fn set_identity(&self, manifest: &ShortFileName, id: u16) -> Option<SetIdentity> {
-        if let Some(open) = self.open_set.as_ref().filter(|open| open.id == id && &open.manifest_name == manifest) {
-            return Some(set_identity_from_manifest(open.manifest));
-        }
         let parsed = self.read_set_manifest(manifest)?;
+        // A mounted set already owns one open handle per shard, and embedded-sdmmc deliberately
+        // refuses opening the same file twice. Its manifest and every recorded size/header/bbox
+        // were validated immediately before those handles were retained, so later catalog scans
+        // may re-parse the small manifest but must not try to reopen its pinned shard files.
+        if self.open_set.as_ref().is_some_and(|open| open.id == id && &open.manifest_name == manifest) {
+            return Some(set_identity_from_manifest(&parsed));
+        }
         // Listed, not hidden — it is a real map on the card and the rider must be able to see it —
         // but say now why it will never load, rather than at the failed open of shard 12.
         if parsed.shard_count() > SD_SET_MAX_SHARDS {
@@ -2117,11 +2169,15 @@ impl Storage {
         self.map_extents = None;
         match ExtentTable::build(self.card, entry_block, entry_offset, len) {
             Ok(table) => {
-                // Into the `.bss` slot before it can be captured anywhere by value (see
-                // `MAP_EXTENTS`). SAFETY: sole writer, same once-per-boot discipline as `SD_CARD`
-                // (a re-open overwrites in place; no `Drop`), the `init_static` contract.
-                let table: &'static ExtentTable =
-                    unsafe { crate::init_static(core::ptr::addr_of_mut!(MAP_EXTENTS), table) };
+                // Into the union's `.bss` slot before it can be captured anywhere by value (see
+                // `EXTENT_SLOTS`). SAFETY: `open_map` makes one map-kind choice once per boot, so
+                // this is the sole write to the union and no set-slot reference can exist. It must
+                // never be overwritten after the `'static` reference escapes.
+                let table: &'static ExtentTable = unsafe {
+                    let table_slot =
+                        core::ptr::addr_of_mut!(EXTENT_SLOTS.map).cast::<core::mem::MaybeUninit<ExtentTable>>();
+                    crate::init_static(table_slot, table)
+                };
                 if self.verify_extents(table, file, len) {
                     defmt::info!(
                         "SD: map is {=usize} extent(s) over {=u32} bytes — direct block reads on",
@@ -2144,9 +2200,9 @@ impl Storage {
     /// window at the head and at the tail through **both** paths must agree byte-for-byte. Cheap
     /// (one-time, four short reads), and it turns any geometry slip into a loud fallback instead
     /// of wrong map bytes.
-    fn verify_extents(&self, table: &ExtentTable, file: RawFile, len: u32) -> bool {
+    fn verify_extents<const N: usize>(&self, table: &ExtentTableWithCapacity<N>, file: RawFile, len: u32) -> bool {
         let slow = Source::new(&self.vmgr, file, len);
-        let fast = ExtentSource::new(self.card, table);
+        let fast = ExtentSourceWithCapacity::new(self.card, table);
         let mut a = [0u8; 64];
         let mut b = [0u8; 64];
         for off in [0, len.saturating_sub(a.len() as u32)] {
@@ -2166,7 +2222,7 @@ impl Storage {
     /// manager's seek path otherwise.
     pub fn map_source(&self) -> Option<MapSource<'_>> {
         if let Some(set) = &self.open_set {
-            let core = set.shards.get(set.manifest.core_shard())?;
+            let core = set.shards.get(set.core_index as usize)?;
             return Some(MapSource::Set(core.source));
         }
         let (f, len) = self.open_map?;
