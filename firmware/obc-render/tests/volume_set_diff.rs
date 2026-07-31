@@ -16,9 +16,9 @@ use embedded_graphics::pixelcolor::Rgb888;
 use embedded_graphics::prelude::*;
 use obc_formats::io::ByteSource;
 use obc_formats::obcs;
-use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, MountedSet, Reader, SliceSource};
+use obc_reader::{rgb565_to_rgb888, FullSetShards, MapCache, MapTables, MountedSet, Reader, SliceSource};
 use obc_render::{MapRenderer, Viewport};
-use obcm_testkit::set::{matched_pair, quadrants, SetFixture};
+use obcm_testkit::set::{deep_matched_pair, matched_pair, quadrants, DeepPair, SetFixture};
 use obcm_testkit::{pack_line16, pack_poly16, seal, Style};
 
 mod common;
@@ -100,9 +100,10 @@ fn render_set(fixture: &SetFixture, vp: &Viewport) -> Buf {
     let sources: Vec<SliceSource> = fixture.sources().into_iter().map(SliceSource).collect();
     let refs: Vec<&dyn ByteSource> = sources.iter().map(|s| s as &dyn ByteSource).collect();
     let manifest = obcs::parse(&fixture.manifest).expect("the manifest is valid");
-    let core = MapTables::parse(&sources[manifest.core_shard as usize]).expect("the core parses");
+    let core = MapTables::parse(&sources[manifest.core_shard()]).expect("the core parses");
     let cache = MapCache::new();
-    let set = MountedSet::mount(manifest, &refs, &core, &cache).expect("a complete set mounts");
+    let mut store = FullSetShards::new();
+    let set = MountedSet::mount(&mut store, &manifest, &refs, &core, &cache).expect("a complete set mounts");
     MapRenderer::new().render(&mut buf, &set, vp, Rgb888::BLACK, color);
     buf
 }
@@ -249,6 +250,91 @@ fn the_differential_detects_a_cross_served_shard() {
         render_set(&fixture, &vp).px,
         "a cross-served shard must change the frame — otherwise the differential proves nothing"
     );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Shards with quadtrees of their own
+// ---------------------------------------------------------------------------------------------
+
+/// Seven fine chunks for the deeper monolith, in quadtree order: NW's four sub-quadrants, then
+/// NE, SW, SE. The NW four use one style each so a mis-served sub-leaf lands a *wrong colour*, not
+/// merely a differently-shaped region.
+fn deep_fine_chunks() -> [Vec<u8>; 7] {
+    // (style, anchor within the leaf, the overhang past the leaf's own corner)
+    let spec = [
+        (1u8, (200i32, 200i32), (500i16, 500i16)),
+        (2, (200, 200), (-500, 500)),
+        (3, (200, 200), (500, -500)),
+        (4, (200, 200), (-500, -500)),
+        (2, (400, 400), (900, 900)),
+        (3, (400, 400), (-900, 900)),
+        (4, (400, 400), (900, -900)),
+    ];
+    let mut out = Vec::new();
+    for (style, (ax, ay), over) in spec {
+        // A filled triangle sized to sit inside the leaf, plus a line that overhangs it.
+        let mut chunk = pack_poly16(style, ax, ay, &[(300, 0), (0, 300), (-300, 0)]);
+        chunk.extend_from_slice(&pack_line16(style, ax + 100, ay + 100, &[(over.0, 0), (0, over.1)]));
+        out.push(seal(chunk, CHUNK));
+    }
+    core::array::from_fn(|i| out[i].clone())
+}
+
+fn deep_pair() -> DeepPair {
+    deep_matched_pair(ASSEMBLY, STYLES, (COARSE_MPP, coarse_chunk(), CHUNK), (FINE_MPP, deep_fine_chunks(), CHUNK))
+}
+
+/// **The case every other fixture here misses.** A real assembler's shard is a node of the assembly
+/// quadtree carrying everything below it, so its leaves sit *below its own root* — but every
+/// geometry shard above is a single-leaf tree, where the root **is** the leaf. A reader that
+/// descended a shard from the wrong root bbox, or resolved a shard's chunk offsets through the
+/// core's LOD table, cannot be caught by a one-leaf shard: there is only one chunk to get wrong.
+///
+/// Here the NW shard subdivides once more, so its four chunks are addressed through its own
+/// offset table and drawn against four leaf bboxes its own root produced.
+#[test]
+fn a_shard_that_subdivides_below_its_own_root_renders_identically() {
+    let deep = deep_pair();
+    // The camera walks NW's *interior* seams — the ones that exist only inside that one shard.
+    let views = [
+        ("NW's own four-way centre", Viewport::new(220.0, 220.0, 1000, 3000, 0.09)),
+        ("inside NW·NW", Viewport::new(220.0, 220.0, 500, 3500, 0.12)),
+        ("inside NW·SE", Viewport::new(220.0, 220.0, 1500, 2500, 0.12)),
+        ("NW's seam with NE", Viewport::new(220.0, 220.0, 2000, 3000, 0.1)),
+        ("the assembly centre", Viewport::new(220.0, 220.0, 2000, 2000, 0.09)),
+    ];
+    for (what, vp) in views {
+        assert_identical(&deep.monolith, &deep.subdivided, &vp, what);
+    }
+}
+
+/// §5.1's tiling rule at its real generality: the shards of a role are an **antichain** of quadtree
+/// nodes, not a grid — a dense quadrant may be split further than a sparse one. Seven geometry
+/// shards at two different depths, and the same map.
+///
+/// It also pins that the split is a *layout* choice and nothing else: the four-shard and the
+/// seven-shard sets are the same pixels as each other, not merely each the same as the monolith.
+#[test]
+fn a_mixed_depth_antichain_of_shards_renders_identically() {
+    let deep = deep_pair();
+    assert_eq!(deep.antichain.shards.len(), 9, "core + coarse + NW's four + three siblings");
+    assert_eq!(deep.subdivided.shards.len(), 6, "core + coarse + one shard per quadrant");
+
+    let views = [
+        ("mixed-depth: NW's own centre", Viewport::new(220.0, 220.0, 1000, 3000, 0.09)),
+        ("mixed-depth: the assembly centre", Viewport::new(220.0, 220.0, 2000, 2000, 0.09)),
+        ("mixed-depth: inside NW·NE", Viewport::new(220.0, 220.0, 1500, 3500, 0.12)),
+        ("mixed-depth: the coarse rung", Viewport::new(220.0, 220.0, 2000, 2000, 0.02)),
+    ];
+    for (what, vp) in &views {
+        assert_identical(&deep.monolith, &deep.antichain, vp, what);
+        // …and the two splits agree with each other, which is the layout-independence claim.
+        assert_eq!(
+            render_set(&deep.subdivided, vp).px,
+            render_set(&deep.antichain, vp).px,
+            "{what}: two legal splits of one assembly must be the same map"
+        );
+    }
 }
 
 /// The §5.5 single-file fast path is the same map: a set of one renders identically to the
