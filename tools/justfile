@@ -146,9 +146,10 @@ rtt:
 
 # ── Map packing & the web builder ────────────────────────────────────────────
 
-# Pack an OSM extract into a .obcm map. Args: <region.osm.pbf> [preset.json] [out.obcm]
-# [-- --chunk-size N | --no-land]. Preset defaults to builder/presets/default.json; the
-# output defaults to <region>.obcm in the repo root (so `obc sim` picks it up next).
+# Pack an OSM extract into a .obcm map. Args: <region.osm.pbf> [config.json] [out.obcm]
+# [-- --chunk-size N | --no-land]. The config defaults to builder/presets/schema.json —
+# the one shipped schema; the output defaults to <region>.obcm in the repo root (so
+# `obc sim` picks it up next).
 # Pack an OSM extract to a .obcm map. Args: <region.osm.pbf> [preset.json] [out.obcm]
 pack *args:
     #!/usr/bin/env bash
@@ -158,7 +159,7 @@ pack *args:
     pbf="${_POS[0]:-}"
     [[ -n "$pbf" ]] || { _err "usage: obc pack <region.osm.pbf> [preset.json] [out.obcm]"; exit 1; }
     pbf="$(_abspath "$pbf")"
-    preset="${_POS[1]:-${OBC_PRESET:-$OBC_ROOT/builder/presets/default.json}}"; preset="$(_abspath "$preset")"
+    preset="${_POS[1]:-${OBC_PRESET:-$OBC_ROOT/builder/presets/schema.json}}"; preset="$(_abspath "$preset")"
     out="${_POS[2]:-}"
     if [[ -n "$out" ]]; then out="$(_abspath "$out")"
     else base="$(basename "$pbf")"; base="${base%.osm.pbf}"; base="${base%.pbf}"; out="$OBC_ROOT/${base}.obcm"; fi
@@ -168,14 +169,14 @@ pack *args:
     _run "${cmd[@]}"
     _say "wrote $out"
 
-# Run the bakery (#898): the curated shelf (host/obc-bake/regions.toml × builder/presets)
+# Run the bakery (#898): the curated shelf (host/obc-bake/regions.toml × the shipped schema)
 # into a tree. `obc bake` bakes into $OBC_BAKE_TREE (default ~/obc-bake); narrow a run
 # with obc-bake's own flags (`obc bake --region europe/austria --force`). An explicit
 # subcommand passes straight through: `obc bake regions` lists the shelf,
 # `obc bake publish <tree> --base-url <url> --target r2` publishes it (R2 creds from
 # OBC_R2_* env vars; the shrink guard refuses a partial tree over a full catalog),
 # `obc bake check-obcm-version` checks the published catalog against this build.
-# Bake the curated region×preset shelf into $OBC_BAKE_TREE (or pass a subcommand)
+# Bake the curated region shelf into $OBC_BAKE_TREE (or pass a subcommand)
 bake *args:
     #!/usr/bin/env bash
     set -euo pipefail

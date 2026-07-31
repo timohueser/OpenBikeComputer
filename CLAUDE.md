@@ -38,8 +38,10 @@ and the simulator + tests first-class.
   selected at build time by vite's `$host` alias (static web, Tauri desktop,
   and the FastAPI dev server in `server/`; `npm run build`, CI runs the `web`
   job). Nothing here packs anything — all three drive `host/obc-pack`. Style
-  presets live in `builder/presets/` (each a complete, CLI-usable packer
-  config). The user's working config lives in the browser, not on disk.
+  documents live in `builder/presets/`: **one** `schema.json` (the complete,
+  CLI-usable packer config everything is baked with) plus `skins/<id>.json`
+  (presentation only, stamped onto an assembled map — never handed to the
+  packer). The user's working config lives in the browser, not on disk.
 - `tools/` — the dev scripts: `justfile` (behind `obc <task>`), the GEOS and
   RISC-V installers, shell completion.
 

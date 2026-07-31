@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
-# Bake one small demo map per style preset — the maps the hosted site renders on its preset cards
+# Bake one small demo map per shipped packer config — the maps the site renders on its style cards
 # (epic #894, B2 / issue #899).
 #
-# The rule that makes a preset card mean anything: **one source extract, one box, every preset**.
-# A preset that got a prettier valley would win the comparison without being a better style, so
-# the only variable here is `builder/presets/<id>.json`. Everything else — the Geofabrik snapshot,
-# the crop, the packer, the camera the site opens on — is identical across the row.
+# The rule that makes a card mean anything: **one source extract, one box, every config**. A style
+# that got a prettier valley would win the comparison without being a better style, so the only
+# variable here is the config in `builder/presets/`. Everything else — the Geofabrik snapshot, the
+# crop, the packer, the camera the site opens on — is identical across the row.
+#
+# Since #1036 that directory holds **one** bakeable document, `schema.json` (id `bikepacking`), so
+# the row is currently one card. Its skins (`presets/skins/`) are not baked here and cannot be: a
+# skin is stamped onto an assembled map's two-kilobyte style table, not packed — a per-skin card
+# comes with the assembler-backed preview, not with this script.
 #
 # Usage:
 #   ./bake-previews.sh                       # use the cached/downloaded Switzerland extract
@@ -15,20 +20,21 @@
 # (${OBCM_CACHE_DIR:-~/.cache/obcm}/pbf/switzerland.osm.pbf, the same file the dev server fills)
 # and downloaded there if missing — ~600 MB, once.
 #
-# Every preset in `builder/presets/` is baked; adding a preset needs no edit here. Needs only the
-# workspace toolchain (obc-pack builds with system GEOS); the crop is `obc-pack --bbox`, the same
-# ingest-time crop `apps/obc-sim/assets/repack.sh` switched to.
+# Every `*.json` at the top level of `builder/presets/` is baked (the `skins/` subdirectory is not
+# a `*.json` and is skipped); adding a config needs no edit here. Needs only the workspace toolchain
+# (obc-pack builds with system GEOS); the crop is `obc-pack --bbox`, the same ingest-time crop
+# `apps/obc-sim/assets/repack.sh` switched to.
 #
 # Outputs, both committed:
-#   builder/app/public/preview/<preset-id>.obcm   the demo map, ~200 KB – 300 KB each (OBCM v11)
+#   builder/app/public/preview/<_meta.id>.obcm    the demo map, ~200 KB – 300 KB each (OBCM v11)
 #   builder/app/public/preview/previews.json      the site's index: the focus bbox, and what got baked
 #
 # They are committed rather than built by the Pages deploy for the same reason the simulator
 # fixtures are: baking needs GEOS, a 600 MB download and minutes of CPU, none of which belongs in
 # a static-site workflow. See the PR for #899.
 #
-# After baking, run `cargo test -p obc-web-preview` (the default preset's map is a compiled-in
-# fixture there) and check the numbers below against `previews.json`.
+# After baking, run `cargo test -p obc-web-preview` (the schema's map is a compiled-in fixture
+# there) and check the numbers below against `previews.json`.
 
 set -euo pipefail
 
@@ -107,7 +113,10 @@ echo "building obc-pack ..."
 PACK="$REPO_DIR/target/release/obc-pack"
 
 for preset in "${presets[@]}"; do
-    id="$(basename "$preset" .json)"
+    # Named by `_meta.id`, not by the filename: the id is what the tiers serve in
+    # `platform.presets()` and therefore what the card looks a demo map up by. Since
+    # #1036 the filename is `schema.json` and the id is `bikepacking`.
+    id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["_meta"]["id"])' "$preset")"
     echo "baking $id.obcm (crop $PACK_BBOX, framed on $FOCUS_BBOX) ..."
     "$PACK" "$src" "$preset" "$OUT_DIR/$id.obcm" --bbox "$PACK_BBOX"
 done
@@ -125,10 +134,10 @@ udeg = lambda v: int(round(v * 1_000_000))
 
 maps = []
 for preset in sorted(presets):
-    pid = os.path.basename(preset)[: -len(".json")]
+    meta = json.load(open(preset)).get("_meta", {})
+    pid = meta["id"]
     path = os.path.join(out_dir, f"{pid}.obcm")
     blob = open(path, "rb").read()
-    meta = json.load(open(preset)).get("_meta", {})
     maps.append(
         {
             "preset_id": pid,

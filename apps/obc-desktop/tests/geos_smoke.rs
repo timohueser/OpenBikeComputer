@@ -20,7 +20,7 @@ use obc_pack::pipeline::{pack, PackOptions};
 use obc_pack::progress::Progress;
 use sha2::{Digest, Sha256};
 
-/// The `.obcm` that `builder/tests/corpus/data/tiny.osm.pbf` + `presets/default.json`
+/// The `.obcm` that `builder/tests/corpus/data/tiny.osm.pbf` + `presets/schema.json`
 /// must produce, byte for byte, on every platform the app ships to.
 ///
 /// Pinning this is a *cross-platform determinism* assertion, which is worth more
@@ -42,6 +42,12 @@ use sha2::{Digest, Sha256};
 /// bytes (9.3×, far past the ~2.3× a real map sees): it is small enough that its
 /// few chunks were nearly all padding, which is the effect at its most extreme.
 /// Previously `9a5aacb1…` for default preset v4.
+///
+/// **Not** re-pinned for the schema/skin split (#1036), and that is the point: the
+/// retired `default.json` became `schema.json` with a rewritten `_meta` and a
+/// byte-identical packer body, so this digest holding is one of the proofs that the
+/// split changed nothing a packer sees. (`_meta` never reached the packer — it is an
+/// unknown field the config loader ignores.)
 const TINY_OBCM_SHA256: &str = "78bc67805da121cae44e248dd8ed5fe5f93c759cc458a51c648635865f108172";
 
 fn repo(rel: &str) -> PathBuf {
@@ -74,7 +80,7 @@ fn out_dir(name: &str) -> PathBuf {
 fn the_linked_geos_packs_the_fixture_to_the_expected_bytes() {
     let dir = out_dir("pack");
     let out = dir.join("tiny.obcm");
-    let config = Config::load(&repo("builder/presets/default.json").to_string_lossy()).expect("preset parses");
+    let config = Config::load(&repo("builder/presets/schema.json").to_string_lossy()).expect("preset parses");
     let summary = pack(
         &[repo("builder/tests/corpus/data/tiny.osm.pbf").to_string_lossy().into_owned()],
         &config,

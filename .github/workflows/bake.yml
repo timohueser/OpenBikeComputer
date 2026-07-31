@@ -41,10 +41,6 @@ on:
         description: "Regions to bake (comma-separated ids from host/obc-bake/regions.toml; blank = the small-region set)"
         required: false
         default: ""
-      presets:
-        description: "Presets to bake (comma-separated; blank = all)"
-        required: false
-        default: ""
       force:
         description: "Re-bake even when nothing changed"
         type: boolean
@@ -170,7 +166,6 @@ jobs:
         # is a string a human typed.
         env:
           INPUT_REGIONS: ${{ inputs.regions }}
-          INPUT_PRESETS: ${{ inputs.presets }}
           INPUT_FORCE: ${{ inputs.force }}
         run: |
           regions=""
@@ -180,11 +175,6 @@ jobs:
           else
             regions="$SMALL_REGIONS"
           fi
-          presets=""
-          if [ -n "$INPUT_PRESETS" ]; then
-            IFS=',' read -ra ps <<< "$INPUT_PRESETS"
-            for p in "${ps[@]}"; do presets="$presets --preset ${p// /}"; done
-          fi
           force=""
           if [ "$INPUT_FORCE" = "true" ]; then force="--force"; fi
           # No `set -e` games: obc-bake exits non-zero if any job failed or any region
@@ -192,7 +182,7 @@ jobs:
           cargo run --release --locked -p obc-bake -- bake \
             --out ~/bake \
             --summary-json ~/bake-summary.json \
-            $regions $presets $force
+            $regions $force
 
       # `if: always()` — the summary is most valuable exactly when the step above
       # failed, because it names which regions did not bake and why.
@@ -204,7 +194,7 @@ jobs:
           import json, pathlib
           data = json.loads(pathlib.Path.home().joinpath("bake-summary.json").read_text())
           print(f"### Bake — OBCM v{data['obcm_version']}, recipe v{data['recipe_version']}\n")
-          print("| region | preset | status | bytes |")
+          print("| region | schema | status | bytes |")
           print("| --- | --- | --- | --- |")
           for job in data["jobs"]:
               print(f"| {job['region_id']} | {job['preset_id']} | {job['status']} | {job.get('bytes', '')} |")
