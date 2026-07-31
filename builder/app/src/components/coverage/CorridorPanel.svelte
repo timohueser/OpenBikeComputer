@@ -10,7 +10,7 @@
     // USB route listing itself is the send step's work (P4d). The tab exists,
     // the panel says exactly what is missing, and nothing pretends to connect.
 
-    import { onDestroy } from "svelte";
+    import { onDestroy, onMount } from "svelte";
     import { GpxError, parseGpx, type GpxRoute } from "../../lib/coverage/gpx";
     import { detailBandId, parseCells, patchCount } from "../../lib/coverage/shape";
     import {
@@ -84,6 +84,14 @@
         store.previewParts = [];
     });
 
+    // A dialog receives focus when it opens (#1041 low sweep): the keyboard
+    // and a screen reader arrive where the conversation moved, instead of
+    // being left on the rail button behind it. Non-modal on purpose — Tab
+    // walks the panel's own controls and out again, like the app's other
+    // dialog.
+    let panelEl = $state<HTMLDivElement>();
+    onMount(() => panelEl?.focus());
+
     async function addFiles(files: Iterable<File>) {
         uploadError = null;
         const problems: string[] = [];
@@ -108,8 +116,16 @@
         e.preventDefault();
         dragOver = false;
         const files = [...(e.dataTransfer?.files ?? [])].filter((f) => /\.gpx$/i.test(f.name));
-        if (files.length) void addFiles(files);
-        else uploadError = "Only .gpx files can become corridors.";
+        if (files.length) {
+            // A drop is a GPX act wherever it lands: switch the panel to the
+            // side that shows the rows it just gained, or they would arrive
+            // invisibly behind the device stub (the two sources are exclusive
+            // layouts, #1041 low sweep).
+            source = "gpx";
+            void addFiles(files);
+        } else {
+            uploadError = "Only .gpx files can become corridors.";
+        }
     }
 
     function removeRoute(id: string) {
@@ -150,6 +166,7 @@
 </script>
 
 <div
+    bind:this={panelEl}
     class="panel card"
     class:drag-over={dragOver}
     role="dialog"
@@ -164,7 +181,10 @@
 >
     <div class="head">
         <h4>Add corridor</h4>
-        <span class="small faint">web · no device yet</span>
+        <!-- The mock's state-B tag was "web · no device yet"; the tier name is
+             dropped because this panel also renders in the desktop app, where
+             "web" would be a lie about where it is running (#1041 A12). -->
+        <span class="small faint">no device yet</span>
         <button type="button" class="close" aria-label="Close the corridor panel" onclick={onclose}>✕</button>
     </div>
 
@@ -194,7 +214,12 @@
 
     {#if source === "device"}
         <div class="device-stub">
-            <p class="small muted">Connect your OBC to list the routes saved on it.</p>
+            <!-- Future tense on purpose (#1041 A13): the mock's "Connect your
+                 OBC to list the routes saved on it" was written for a working
+                 flow, and above a stub it invited an action the button cannot
+                 pay off. The mock's "one browser prompt" reassurance returns
+                 with the real flow (P4d, recorded on the epic). -->
+            <p class="small muted">The routes saved on your OBC will list here.</p>
             <!-- The affordance §8 Q3 decided (early connect is fine), with an
                  honest stub behind it: the USB route listing lands with the
                  send-to-device work, and this button says so rather than
@@ -212,7 +237,6 @@
             {#if deviceNote}
                 <p class="small stub-note">{deviceNote}</p>
             {/if}
-            <p class="small faint">The same USB connection step 4 uses — one browser prompt.</p>
         </div>
     {/if}
 
@@ -227,7 +251,11 @@
         </p>
     {/if}
 
-    {#if routes.length}
+    <!-- The two sources are exclusive layouts (#1041 low sweep): the uploaded
+         rows, the width slider and the commit belong to the GPX side, and
+         rendering them under the device stub conflated where the routes came
+         from. Switching tabs keeps the rows — only the view changes. -->
+    {#if routes.length && source === "gpx"}
         <ul class="routes">
             {#each routes as r (r.id)}
                 <li>
@@ -248,16 +276,19 @@
 
         <div class="slider">
             <div class="slider-head">
-                <span class="small muted">Corridor width — all routes</span>
+                <!-- A real label, so the accessible name IS the visible text —
+                     the old aria-label paraphrased it, which is the mismatch
+                     WCAG 2.5.3 exists to forbid (#1041 low sweep). -->
+                <label class="small muted" for="corridor-width-panel">Corridor width — all routes</label>
                 <span class="mono small">± {radiusKm} km</span>
             </div>
             <input
+                id="corridor-width-panel"
                 type="range"
                 min={CORRIDOR_RADIUS_MIN_M / 1000}
                 max={CORRIDOR_RADIUS_MAX_M / 1000}
                 step="1"
                 value={radiusKm}
-                aria-label="Corridor width, kilometres each side, for every route in the map"
                 oninput={onRadius}
             />
         </div>
@@ -266,7 +297,8 @@
             <p class="small error">{previewError}</p>
         {:else if adds && checkedCount}
             <p class="mono small adds">
-                adds {formatBytes(adds.addsBytes)} · {adds.addsCells} cells{adds.patches > 1
+                adds {formatBytes(adds.addsBytes)} · {adds.addsCells}
+                {adds.addsCells === 1 ? "cell" : "cells"}{adds.patches > 1
                     ? ` · ${adds.patches - 1} ${adds.patches === 2 ? "gap" : "gaps"} between routes`
                     : ""}
             </p>
