@@ -47,6 +47,20 @@ export default defineConfig(({ mode }) => {
             outDir: host.outDir,
             emptyOutDir: true,
         },
+        worker: {
+            // The assembly worker (#1038) dynamically imports the wasm bridge,
+            // so its bundle code-splits — and rollup only code-splits ES
+            // output. Vite's default worker format is still "iife".
+            //
+            // Browser floor (#1041 low sweep): module workers are Chrome 80,
+            // Safari 15, Firefox 114 — Firefox is the effective floor, and it
+            // is comfortably below what the app already needs elsewhere
+            // (wasm-bindgen output, `<dialog>`-era CSS; WebUSB is
+            // Chromium-only regardless). A browser under the floor loses the
+            // in-browser assembly, not the site: the worker only spawns from
+            // the v2 download step.
+            format: "es",
+        },
         server: {
             // Dev mode: `python -m builder.server --no-browser` on :8000 serves
             // the API; Vite proxies it (plain http-proxy streams SSE fine).

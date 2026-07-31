@@ -245,6 +245,23 @@ export interface Platform {
     /** The pre-baked map catalog (see `MapCatalog`). */
     catalog(): Promise<MapCatalog>;
 
+    /**
+     * The catalog root exactly as fetched — resolved URL plus raw body — for
+     * consumers that must see the document before an envelope is chosen.
+     *
+     * This is the seam envelope detection (#1038) stands on: one hosted URL
+     * serves either a v1 manifest or a v2 cell-catalog root, the app peeks at
+     * `schema_version` and commits to the matching flow, and the body it peeked
+     * at is the body that flow parses — never a second fetch of a document that
+     * could have changed in between. Implementations share the fetch with
+     * `catalog()`, so a v1 root costs one request however it is read.
+     *
+     * Optional because only tiers whose catalog arrives as a fetched document
+     * have anything to hand over; the dev host builds maps and has no catalog
+     * at all (its `catalog()` is a named not-implemented, not a document).
+     */
+    readonly catalogRoot?: () => Promise<{ url: string; body: string }>;
+
     /** Non-null exactly when `caps.build`. */
     readonly buildMap: StartBuild | null;
     /** Non-null exactly when `caps.deviceUsb`. */

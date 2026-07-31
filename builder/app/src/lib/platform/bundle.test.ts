@@ -13,7 +13,7 @@ import { describe, expect, it } from "vitest";
 /** The single-input slice of Rollup's result we need — vite re-exports the
  *  builder but not this type. */
 interface BuiltChunks {
-    output: Array<{ type: string; modules?: Record<string, unknown> }>;
+    output: Array<{ type: string; isEntry?: boolean; modules?: Record<string, unknown> }>;
 }
 
 /**
@@ -70,23 +70,42 @@ const DESKTOP_TARGET_ONLY = {
  * false` keeps this off disk; outDir is redirected anyway so a future Vite that
  * prepares the directory before writing can't wipe a real build.
  */
-async function bundledModules(mode: string): Promise<string[]> {
+async function bundledModules(mode: string): Promise<{ all: string[]; entry: string[] }> {
     const out = await build({
         mode,
         logLevel: "error",
         build: { write: false, outDir: "dist/.bundle-test" },
     });
     const result = (Array.isArray(out) ? out[0] : out) as unknown as BuiltChunks;
-    const ids: string[] = [];
+    const all: string[] = [];
+    const entry: string[] = [];
     for (const chunk of result.output) {
-        if (chunk.type === "chunk") ids.push(...Object.keys(chunk.modules ?? {}));
+        if (chunk.type !== "chunk") continue;
+        all.push(...Object.keys(chunk.modules ?? {}));
+        if (chunk.isEntry) entry.push(...Object.keys(chunk.modules ?? {}));
     }
-    return ids;
+    return { all, entry };
 }
+
+/**
+ * The coverage flow (#1038), which must ride a **lazy** chunk on the web tier
+ * (#1041 A1): today's live catalog is v1, so every one of these modules would
+ * be dead weight on the entry chunk every visitor downloads — +19.2 kB gzip
+ * measured when `CoverageHome` was imported statically. The one deliberate
+ * exception is `lib/coverage/detect.ts`: the envelope peek is what *decides*
+ * whether to load the rest, so it alone belongs up front.
+ */
+const COVERAGE_LAZY_ONLY = {
+    "the coverage components": /\/src\/components\/coverage\//,
+    "the v2 catalog client": /\/src\/lib\/catalog\/v2\//,
+    "the coverage map glue": /\/src\/lib\/map\/coverageMap\.ts$/,
+    "the coverage store and adapters": /\/src\/lib\/coverage\/(?!detect\.ts)/,
+    "the assembly worker plumbing": /\/src\/lib\/assemble\//,
+};
 
 describe("bundle split", () => {
     it("keeps build and style-editor code out of the web target", async () => {
-        const modules = await bundledModules("web");
+        const { all: modules, entry } = await bundledModules("web");
         // An empty build, or one that quietly picked another host, would pass
         // every assertion below.
         expect(modules.some((id) => id.endsWith("/src/lib/platform/web.ts"))).toBe(true);
@@ -96,13 +115,26 @@ describe("bundle split", () => {
             modules.filter((id) => re.test(id)).map((id) => `${what}: ${id}`),
         );
         expect(found).toEqual([]);
+
+        // #1041 A1: the coverage flow is split, not gone. Its presence in
+        // *some* chunk is what proves Home's dynamic `import()` still
+        // resolves; its absence from the entry chunk is the doctrine, and the
+        // peek that chooses the flow is the one coverage module allowed there.
+        expect(modules.some((id) => id.includes("/src/components/coverage/CoverageHome.svelte"))).toBe(
+            true,
+        );
+        expect(entry.some((id) => id.endsWith("/src/lib/coverage/detect.ts"))).toBe(true);
+        const heavy = Object.entries(COVERAGE_LAZY_ONLY).flatMap(([what, re]) =>
+            entry.filter((id) => re.test(id)).map((id) => `${what}: ${id}`),
+        );
+        expect(heavy).toEqual([]);
     }, 180_000);
 
     it("still ships the build and style-editor code in the dev target", async () => {
         // The dev host's own set: everything in DESKTOP_ONLY except the three
         // rows that name the *desktop* host, which the dev target must not have
         // either — one alias picks exactly one host.
-        const modules = await bundledModules("production");
+        const { all: modules } = await bundledModules("production");
         const missing = Object.entries(DESKTOP_ONLY)
             .filter(([what]) => !(what in DESKTOP_TARGET_ONLY))
             .filter(([, re]) => !modules.some((id) => re.test(id)))
@@ -116,7 +148,7 @@ describe("bundle split", () => {
     }, 180_000);
 
     it("wires the desktop target to the Tauri backend", async () => {
-        const modules = await bundledModules("desktop");
+        const { all: modules } = await bundledModules("desktop");
         const missing = Object.entries(DESKTOP_TARGET_ONLY)
             .filter(([, re]) => !modules.some((id) => re.test(id)))
             .map(([what]) => what);

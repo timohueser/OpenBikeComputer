@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { onMount } from "svelte";
+    import { onMount, type Component } from "svelte";
     import BuildCard from "../components/BuildCard.svelte";
     import DeviceStep from "../components/device/DeviceStep.svelte";
     import MapSendStep from "../components/device/MapSendStep.svelte";
@@ -10,6 +10,8 @@
     import PresetStep from "../components/catalog/PresetStep.svelte";
     import RegionStep from "../components/catalog/RegionStep.svelte";
     import { regionState } from "../lib/catalog/availability";
+    import type { CatalogV2Client } from "../lib/catalog/v2/client";
+    import { peekSchemaVersion } from "../lib/coverage/detect";
     import { artifactFilename } from "../lib/catalog/download";
     import { catalogStore } from "../lib/catalog/store.svelte";
     import { platform } from "../lib/platform";
@@ -45,8 +47,75 @@
     const PRESET_KEY = "obcm.catalogPreset";
     let presetId = $state<string | null>(null);
 
+    // Envelope detection (#1038): the hosted catalog root is either a v1
+    // manifest or a v2 cell-catalog root, decided by the bakery's cutover
+    // rather than by a deploy of this app. One fetch, one peek at
+    // `schema_version`, and the home commits to the matching flow.
+    //
+    // The v1 flow below is on screen from the first frame and the probe
+    // resolves *into* it (#1041 A1): today's live catalog is v1, and blanking
+    // its first paint behind "Loading the map catalog…" taxed every visitor
+    // for a cutover that hasn't happened. The coverage flow — component, v2
+    // parsers, worker plumbing — rides a lazy chunk behind the `import()`s in
+    // `onMount`, so a v1 visitor never downloads a byte of it
+    // (`platform/bundle.test.ts` pins the entry chunk); on a v2 root the v1
+    // skeleton is simply replaced before its own catalog load has been asked
+    // for anything.
+    type CoverageHomeComponent = Component<{
+        client: CatalogV2Client;
+        rootBody: string;
+        active?: boolean;
+    }>;
+    let coverage = $state<{
+        component: CoverageHomeComponent;
+        client: CatalogV2Client;
+        body: string;
+    } | null>(null);
+    let v2Error = $state<string | null>(null);
+
     onMount(async () => {
         if (catalogMode) {
+            if (platform.catalogRoot) {
+                try {
+                    const { url, body } = await platform.catalogRoot();
+                    if (peekSchemaVersion(body) === 2) {
+                        // Two imports, one lazy chunk between them (they share
+                        // it): the flow's UI and the parser that admits the
+                        // root into it.
+                        let clientModule: typeof import("../lib/catalog/v2/client");
+                        let component: CoverageHomeComponent;
+                        try {
+                            [clientModule, { default: component }] = await Promise.all([
+                                import("../lib/catalog/v2/client"),
+                                import("../components/coverage/CoverageHome.svelte"),
+                            ]);
+                        } catch {
+                            // The chunk, not the catalog: an app asset failed
+                            // to arrive (deploy skew, lost connection). Not a
+                            // publish problem, and the remedy is a reload.
+                            v2Error = "this app's coverage flow failed to load — reload the page";
+                            return;
+                        }
+                        try {
+                            // The same body the peek saw — never a second fetch.
+                            const client = clientModule.CatalogV2Client.fromBody(body, url);
+                            coverage = { component, client, body };
+                        } catch (e) {
+                            // A root that says v2 and then fails the v2 parser is
+                            // a broken publish, not a v1 catalog: reporting it as
+                            // "schema_version 2 is not supported" (which is what
+                            // the v1 parser would say) would blame the wrong side.
+                            v2Error = e instanceof Error ? e.message : String(e);
+                        }
+                        return;
+                    }
+                } catch {
+                    // A failed probe falls through to the v1 store, which
+                    // refetches (the memo keeps only fulfilled fetches), owns
+                    // the error sentence, and keeps its cached-manifest
+                    // fallback.
+                }
+            }
             // The catalog failing is one failure, reported once, in step 1 —
             // the styles come out of the same document, so a second copy of the
             // same sentence in step 2 would just be noise.
@@ -144,14 +213,21 @@
     );
 </script>
 
-<div class="layout">
-    <MapPanel
-        {active}
-        {hints}
-        singleSelect={catalogMode}
-        bind:this={mapPanel}
-        onchange={(sel) => (selection = sel)}
-    />
+{#if coverage}
+    <coverage.component client={coverage.client} rootBody={coverage.body} {active} />
+{:else if v2Error}
+    <p class="probe small" style:color="var(--coral)">
+        The published map catalog couldn't be read: {v2Error}
+    </p>
+{:else}
+    <div class="layout">
+        <MapPanel
+            {active}
+            {hints}
+            singleSelect={catalogMode}
+            bind:this={mapPanel}
+            onchange={(sel) => (selection = sel)}
+        />
 
     <div class="steps">
         {#if catalogMode && catalogStore.staleReason}
@@ -276,9 +352,15 @@
             <StorageCard {storage} />
         {/if}
     </div>
-</div>
+    </div>
+{/if}
 
 <style>
+    .probe {
+        margin: 0;
+        padding: 14px 2px;
+    }
+
     .layout {
         flex: 1; /* fills main's column so the map absorbs tall screens */
         min-height: 0; /* …and never grows past them: the column scrolls instead */

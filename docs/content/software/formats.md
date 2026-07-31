@@ -1088,7 +1088,7 @@ Publishing follows the same one-way order the spec demands: every artifact uploa
 
 ## Cells and assemblies — the shape the catalog is moving to
 
-*Half built. The grid, the cell cutter, the `schema_version 2` catalog, the bakery's cell path, the **assembler** — including the wasm bridge that runs it in a browser tab — and the [schema/skin split](#schema-and-skin) of the shipped style documents exist and produce real cell trees and real assembled maps; the builder's selection UI and the device's multi-file reader do not yet, so the catalog on the site today is still the whole-region one above.*
+*Mostly built. The grid, the cell cutter, the `schema_version 2` catalog, the bakery's cell path, the **assembler** — including the wasm bridge that runs it in a browser tab — the [schema/skin split](#schema-and-skin) of the shipped style documents, and the builder's **coverage-selection UI** (parts composed on the map, priced live from the catalog, downloaded per cell and assembled in a Web Worker) all exist and produce real assembled maps end to end. The device's multi-file reader and the direct send of an assembled set are still in flight, so the catalog on the site today is still the whole-region one above; the builder detects which catalog it was handed and serves the matching flow.*
 
 The catalog above has a shape problem that no amount of care fixes. A bakery can only offer what it pre-baked, so **Germany + Switzerland in one file** does not exist unless somebody baked that exact pair — and pre-baking every plausible combination of neighbours explodes the store. It already pays double by design (Germany sits alongside its sixteen Bundesländer, covering the same ground twice), and every new style preset multiplies the whole pile again.
 
