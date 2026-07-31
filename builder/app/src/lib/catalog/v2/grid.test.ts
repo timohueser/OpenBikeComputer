@@ -320,4 +320,68 @@ describe("coverageBbox", () => {
             maxLon: 7_864_320,
         });
     });
+
+    it("is a viewport, not a cell set — it does not round-trip", () => {
+        // Worth pinning, because the trap is inviting. Two diagonal cells have
+        // a bounding box spanning four — and re-resolving it yields *nine*,
+        // because the box's `max` edges sit exactly on grid lines and a vertex
+        // on the line belongs to the cell above and east of it. A caller that
+        // stored the box instead of the set would widen a two-cell selection
+        // into nine cells' worth of download.
+        const diagonal = [parseCellId("18/1204/1052"), parseCellId("18/1205/1053")];
+        expect(cellsIntersecting(18, coverageBbox(diagonal)!)).toHaveLength(9);
+    });
+});
+
+describe("the properties the vectors above are examples of", () => {
+    /** mulberry32: seeded, so a red run names a case. */
+    function seededRandom(seed: number): () => number {
+        let s = seed;
+        return () => {
+            s = (s + 0x6d2b_79f5) | 0;
+            let t = Math.imul(s ^ (s >>> 15), 1 | s);
+            t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+            return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
+        };
+    }
+
+    it("round-trips every id through format and parse", () => {
+        // The canonical spelling is this app's map key, so `parse ∘ format` not
+        // being the identity would be two entries for one cell — in an index,
+        // in a union, in a download plan.
+        const rnd = seededRandom(0x1203_1052);
+        for (let n = 0; n < 500; n++) {
+            const log2 = MIN_CELL_LOG2 + Math.floor(rnd() * (MAX_CELL_LOG2 - MIN_CELL_LOG2 + 1));
+            const axis = axisCells(log2);
+            const cell = cellId(log2, Math.floor(rnd() * axis), Math.floor(rnd() * axis));
+            const spelling = formatCellId(cell);
+            expect(parseCellId(spelling)).toEqual(cell);
+            expect(formatCellId(parseCellId(spelling))).toBe(spelling);
+            // …and the spelling is the width §1.3 fixes for that size, which is
+            // what makes a plain string sort the same as an (i, j) sort.
+            expect(spelling.split("/")[1]).toHaveLength(idWidth(log2));
+        }
+    });
+
+    it("puts every point's own cell inside the covering of any box around it", () => {
+        // `cellContaining ⊆ cellsIntersecting`: the one relation a selection
+        // depends on, since a box is resolved with the second and a route point
+        // is reasoned about with the first. A drift between them is a hole
+        // exactly where the user pointed.
+        const rnd = seededRandom(0x4718_5920);
+        const between = (lo: number, hi: number) => Math.round(lo + rnd() * (hi - lo));
+        for (let n = 0; n < 500; n++) {
+            const log2 = 10 + Math.floor(rnd() * 11);
+            const lat = between(-85_000_000, 85_000_000);
+            const lon = between(-179_000_000, 179_000_000);
+            const box = {
+                minLat: lat - between(0, 4 * 2 ** log2),
+                minLon: lon - between(0, 4 * 2 ** log2),
+                maxLat: lat + between(0, 4 * 2 ** log2),
+                maxLon: lon + between(0, 4 * 2 ** log2),
+            };
+            const own = formatCellId(cellContaining(log2, lat, lon));
+            expect(cellsIntersecting(log2, box).map(formatCellId)).toContain(own);
+        }
+    });
 });

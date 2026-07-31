@@ -103,7 +103,7 @@ export function cellId(log2: number, i: number, j: number): CellId {
     const bad = (v: number) => !Number.isInteger(v) || v < 0 || v >= n;
     if (bad(i) || bad(j)) {
         throw new GridError(
-            `cell 2^${log2}/${i}/${j} is outside the world box (indices must be 0..${n})`,
+            `cell 2^${log2}/${i}/${j} is outside the world box (indices must be 0..${n - 1})`,
         );
     }
     return { log2, i, j };
@@ -251,10 +251,16 @@ export function onGridLine(v: number, log2: number): boolean {
 /**
  * The bounding box of a set of cells' squares.
  *
- * Not the coverage outline — that is the union of the squares and is drawn as
- * its true stair-edged shape (`OBCC_Spec.md` §11.8). This is only what a map
- * view has to fit, and it is `null` for an empty set rather than a degenerate
- * box at the origin.
+ * Not the coverage outline — that is the union of the squares, drawn as its true
+ * stair-edged shape (`OBCC_Spec.md` §11.8, and `outline.ts` here). This is only
+ * what a map view has to fit, and it is `null` for an empty set rather than a
+ * degenerate box at the origin.
+ *
+ * **Not a re-resolvable box.** Feeding it back to {@link cellsIntersecting}
+ * returns the whole rectangle of cells it spans, which for anything but a solid
+ * block is a strict superset of the set it came from — an L-shaped selection
+ * round-trips into the square that encloses it. A cell set is the answer; this
+ * is a viewport.
  */
 export function coverageBbox(cells: Iterable<CellId>): UBox | null {
     let box: UBox | null = null;
