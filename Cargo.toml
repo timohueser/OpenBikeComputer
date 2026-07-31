@@ -25,6 +25,7 @@ members = [
     "host/obc-mkimage",
     "host/obc-bench",
     "host/obc-vectors",
+    "host/obcm-assemble",
     "host/obcm-testkit",
     "host/obc-replay",
     "host/obc-usb-host",

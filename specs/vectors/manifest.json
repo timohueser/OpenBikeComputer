@@ -310,7 +310,7 @@
       "byte_len": 7,
       "version": 2,
       "store_epoch": "0xA1B2C3D4",
-      "obcm_version": 10,
+      "obcm_version": 11,
       "_note": "obcm_version is the OBCM map-format version the reader reads (obc_formats::obcm::VERSION), NOT the protocol version beside it. The builder self-sources it, so an OBCM bump re-cuts this fixture and this number on purpose."
     },
     "version-read-noobcm.bin": {

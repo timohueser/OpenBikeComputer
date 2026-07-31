@@ -1,0 +1,49 @@
+[package]
+name = "obcm-assemble"
+version = "0.1.0"
+edition = "2021"
+publish = false # internal host tool — not published to crates.io
+description = "The OBCA cell assembly engine: baked grid cells → one .obcm or a volume set (GEOS-free, wasm-capable)"
+
+# The engine is a library first: `lib` is what the P4 wasm bridge will wrap, and the CLI below is a
+# thin native driver over it. `default = ["cli"]` keeps `cargo build --release` producing the binary
+# while `--no-default-features --lib` is the surface the wasm32 guard compiles (see CI's `wasm` job).
+[features]
+default = ["cli"]
+cli = []
+
+[[bin]]
+name = "obcm-assemble"
+path = "src/main.rs"
+required-features = ["cli"]
+
+[dependencies]
+# Normative OBCM constants and the neutral byte-source/sink seam. The engine's I/O never touches a
+# filesystem: everything crosses `obc_formats::io`.
+obc-formats = { path = "../../firmware/obc-formats" }
+# The real reader — the same crate the firmware runs. Used to parse every input cell's directories
+# and, in the verify pass, to walk the finished output exactly as a device would (OBCA §4.8). `alloc`
+# is on for `MapCache::new_boxed`: the ~277 KB cache must not land on a small (wasm) stack.
+obc-reader = { path = "../../firmware/obc-reader", features = ["alloc"] }
+# Shard digests + the set id (OBCA §5.2). Pure Rust, so it follows the engine to wasm.
+sha2 = "0.11"
+# `obc-reader`'s feature-decode API fills caller-owned fixed-capacity buffers, so the verify pass
+# traffics in the same `heapless` version the reader and the firmware do.
+heapless = "0.8"
+# The schema (OBCC §11.3) and skin (§11.4) documents the assembler is driven by.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+# The differential oracle (#1024's acceptance bar) packs and cuts the SAME synthetic extract with
+# the real packer, then compares `pack(X)` against `assemble(cut(X))`. A dev-dep only: obc-pack
+# carries libGEOS and never enters the engine's build graph (the same boundary obc-route ↔ obc-pack
+# already crosses).
+obc-pack = { path = "../obc-pack" }
+# The oracle's pixel half: the real renderer over the real device framebuffer.
+obc-render = { path = "../../firmware/obc-render" }
+obc-display = { path = "../../firmware/obc-display" }
+# The oracle's route half: the real A* the device runs.
+obc-route = { path = "../../firmware/obc-route", features = ["alloc"] }
+embedded-graphics = "0.8"
+heapless = "0.8"
