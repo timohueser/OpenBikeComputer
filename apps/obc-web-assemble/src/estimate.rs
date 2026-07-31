@@ -32,6 +32,13 @@
 //!    principled rather than coincidental: geometry is copied verbatim (§2.3) and the nav section is
 //!    rewritten to about the size the cells' own nav sections had.
 //!
+//!    The coefficient is **1.00 and not 1.5** because the driver's store allocates each shard buffer
+//!    once, at its planned size (`HookedStore::begin` — §5 computes a shard's bytes before the write
+//!    starts). A `Vec` grown by doubling would instead hold the old and the new allocation together
+//!    for the copy, so the last doubling on a 717 MB shard would transiently want ~1.59 GB and a
+//!    gigabyte-scale *contiguous* block. That is memory this model does not count and a tab may not
+//!    be able to give, and on switzerland it is more than the whole 1.55 % headroom below.
+//!
 //! ```text
 //! peak ≈ 6.4 × nav_bytes  +  cell_bytes  +  1.0 × cell_bytes
 //! ```
