@@ -77,10 +77,39 @@ from pathlib import Path
 # is the *structural* regression: linking `obc-pack` (libGEOS), a second renderer, or the whole app.
 # Hence ~10 % headroom over the measurement, same as the others: enough that a toolchain bump never
 # turns a green PR red, far too little to absorb another crate.
+#
+# Re-measured 2026-07-31 after the review round (the §4.8 progress/abort wrapper, the double-take
+# refusal, the budget override, the warn-once console binding): 435,990 B raw + 24,452 B glue ->
+# 186,601 B gzipped. +1,514 B raw / +2,160 B gzipped, which is the shape a fix round should have —
+# error prose and a handful of branches, no new crate. Budgets unchanged (89 % / 91 %).
 BUDGETS = {
     "convert": {"gzipped": 62 * 1024, "raw_wasm": 112 * 1024},
     "preview": {"gzipped": 66 * 1024, "raw_wasm": 138 * 1024},
     "assemble": {"gzipped": 200 * 1024, "raw_wasm": 480 * 1024},
+}
+
+# What to *do* about an over-budget module, which is not the same advice for all three — and a guard
+# that gives the wrong advice gets obeyed anyway. The first two are latency budgets: the number is
+# what a visitor waits for, so "make it smaller" is the literal fix. The third is a structural guard
+# on a module nobody is waiting on, so the fix is almost never "shrink it" — it is to find out what
+# got linked in that should not have been.
+ADVICE = {
+    "convert": (
+        "This is the moment a visitor drops a route, and it ships to every one of them:"
+        " shrink it, or raise the budget in firmware/tools/wasm_size_guard.py with the reason in the PR body."
+    ),
+    "preview": (
+        "This is what renders the preset cards on hover, and it ships to every visitor:"
+        " shrink it, or raise the budget in firmware/tools/wasm_size_guard.py with the reason in the PR body."
+    ),
+    "assemble": (
+        "This budget is a structural guard, not a latency one — nobody waits on this module, so the question is"
+        " not 'how do I make it smaller' but 'what got linked in'. Diff the dependency graph"
+        " (`cargo tree -p obc-web-assemble --target wasm32-unknown-unknown`) against the base branch and look for a"
+        " new crate: obc-pack (libGEOS), a renderer, or the app itself would each land in this range. If the growth"
+        " really is the engine getting bigger for a good reason, raise the budget in"
+        " firmware/tools/wasm_size_guard.py with the reason in the PR body."
+    ),
 }
 
 #: Where each module's wasm-pack output lands in the frontend.
@@ -153,8 +182,7 @@ def main() -> int:
         if measured > budget:
             print(
                 f"::error::obc-web-{args.module} {label} is {measured:,} B, over the {budget:,} B budget."
-                " This ships to every visitor: shrink it, or raise the budget in"
-                " firmware/tools/wasm_size_guard.py with the reason in the PR body."
+                f" {ADVICE[args.module]}"
             )
             failed = True
     return 1 if failed else 0
