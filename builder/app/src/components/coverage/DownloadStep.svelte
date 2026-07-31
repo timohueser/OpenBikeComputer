@@ -52,8 +52,30 @@
                 type: "module",
             });
             worker.onmessage = onWorkerMessage;
+            // The worker's own code answers every failure with an `error`
+            // message — these two fire for what that code never sees: the
+            // script failing to boot at all (a lost chunk after a deploy) and
+            // a message that could not be deserialized. Both arrive as the
+            // protocol's `{code: "internal"}` shape so one switch handles
+            // every failure, and the worker is dropped — a worker that could
+            // not boot stays broken, so the next request must spawn fresh.
+            worker.onerror = (e) => {
+                workerFailed(e.message || "the assembly worker failed to start");
+            };
+            worker.onmessageerror = () => {
+                workerFailed("a message to the assembly worker could not be delivered");
+            };
         }
         return worker;
+    }
+
+    /** A worker-level failure (#1041 A4), routed like a posted `error`. */
+    function workerFailed(message: string) {
+        worker?.terminate();
+        worker = null;
+        onWorkerMessage(
+            new MessageEvent("message", { data: { type: "error", code: "internal", message } }),
+        );
     }
 
     onDestroy(() => worker?.terminate());
@@ -95,6 +117,7 @@
             case "estimate-result":
                 estimate = msg.estimate;
                 estimatePending = false;
+                estimateError = null;
                 break;
             case "progress":
                 asmPhase = msg.phase;
@@ -111,8 +134,20 @@
                 phase = "done";
                 break;
             case "error":
-                errorMessage = msg.message;
-                phase = "error";
+                // Two conversations share this worker, and their failures are
+                // different facts (#1041 A3): an error during a run belongs to
+                // the run, but an error answering the background *estimate*
+                // must not paint the screen with "Nothing was saved" about a
+                // download that never started — it gets its own channel and
+                // its own retry, and never wedges the button behind a pending
+                // flag nothing will clear.
+                if (phase === "assembling") {
+                    errorMessage = msg.message;
+                    phase = "error";
+                } else {
+                    estimateError = msg.message;
+                }
+                estimatePending = false;
                 break;
         }
     }
@@ -201,6 +236,10 @@
 
     let estimate = $state<MemoryEstimate | null>(null);
     let estimatePending = $state(false);
+    /** The estimate's own failure channel (#1041 A3) — never mixed into the
+     *  run's. Cleared by the next request; retried by bumping the nonce. */
+    let estimateError = $state<string | null>(null);
+    let estimateNonce = $state(0);
 
     /** A phone's tab gets nowhere near a desktop's 3 GiB before the browser
      *  evicts the page — and eviction loses the download with no error to
@@ -209,15 +248,21 @@
     const MOBILE_BUDGET = 1024 ** 3;
 
     $effect(() => {
+        void estimateNonce; // the retry button's lever
         const l = ledger;
         const idle = phase === "idle" || phase === "done" || phase === "cancelled" || phase === "error";
         if (!l || !l.isFinal || l.cellCount === 0 || !idle) {
+            // Every exit clears the pending flag (#1041 A3): a selection that
+            // empties or a run that starts must not leave "waiting for an
+            // estimate" latched with nothing left to answer it.
             estimate = null;
+            estimatePending = false;
             return;
         }
         const networkBandBytes = l.core.bytes;
         const totalCellBytes = l.totalBytes;
         estimatePending = true;
+        estimateError = null;
         // Debounced: a slider mid-drag changes the figures every frame, and the
         // projection only matters once the selection settles.
         const timer = setTimeout(() => {
@@ -349,7 +394,17 @@
     });
     const ready = $derived.by(() => {
         const l = ledger;
-        return l !== null && l.isFinal && l.cellCount > 0 && refusal === null && !running && !estimatePending;
+        return (
+            l !== null &&
+            l.isFinal &&
+            l.cellCount > 0 &&
+            refusal === null &&
+            !running &&
+            !estimatePending &&
+            // An unanswered projection keeps the mandatory pre-download check
+            // honest: the button waits for the retry, not forever (A3).
+            estimateError === null
+        );
     });
 
     const dlPct = $derived(
@@ -414,6 +469,14 @@
 
             {#if refusal}
                 <p class="line warn small">{refusal}</p>
+            {:else if estimateError}
+                <p class="line warn small">
+                    Couldn't project the memory this assembly needs — the check runs before any
+                    download: {estimateError}
+                    <button type="button" class="retry" onclick={() => (estimateNonce += 1)}
+                        >retry</button
+                    >
+                </p>
             {:else if memoryCaution}
                 <p class="line caution small">{memoryCaution}</p>
             {/if}
@@ -533,6 +596,15 @@
 
     .line.warn {
         color: var(--coral);
+    }
+
+    .retry {
+        background: none;
+        border: none;
+        color: var(--forest);
+        text-decoration: underline;
+        padding: 0;
+        font-size: inherit;
     }
 
     .line.caution {
