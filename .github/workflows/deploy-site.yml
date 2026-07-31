@@ -74,7 +74,7 @@ on:
       - "builder/**"
       - "apps/obc-web-assemble/**"
       - "apps/obc-web-convert/**"
-      - "apps/obc-web-preview/**"
+      - "apps/obc-skin-preview/**"
       - "host/obcm-assemble/**"
       - "Cargo.toml"
       - "Cargo.lock"

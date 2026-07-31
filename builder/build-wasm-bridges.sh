@@ -12,6 +12,6 @@ wasm-pack build apps/obc-web-assemble --release --target web \
   --out-dir ../../builder/app/src/lib/assemble/pkg \
   --out-name obc_web_assemble
 
-wasm-pack build apps/obc-web-preview --release --target web \
+wasm-pack build apps/obc-skin-preview --release --target web \
   --out-dir ../../builder/app/src/lib/skin/pkg \
-  --out-name obc_web_preview
+  --out-name obc_skin_preview

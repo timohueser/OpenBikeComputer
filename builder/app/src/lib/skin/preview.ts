@@ -7,11 +7,11 @@
  * skin picking continues to use the small digest-pinned PNGs from R2.
  */
 
-import type { InitInput } from "./pkg/obc_web_preview.js";
+import type { InitInput } from "./pkg/obc_skin_preview.js";
 
 const MAP_URL = new URL("../../../../../host/obc-bake/assets/teningen-preview.obcm", import.meta.url);
 
-type Bridge = typeof import("./pkg/obc_web_preview.js");
+type Bridge = typeof import("./pkg/obc_skin_preview.js");
 type WasmPreview = InstanceType<Bridge["SkinPreview"]>;
 
 export interface LiveSkinPreview {
@@ -32,7 +32,7 @@ function describe(cause: unknown): string {
 async function module(source?: InitInput): Promise<Bridge> {
     if (!loading) {
         const pending = (async () => {
-            const mod = await import("./pkg/obc_web_preview.js");
+            const mod = await import("./pkg/obc_skin_preview.js");
             await mod.default(source === undefined ? undefined : { module_or_path: source });
             return mod;
         })();

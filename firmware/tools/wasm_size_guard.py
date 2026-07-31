@@ -3,7 +3,7 @@
 
 Three modules, same argument. `apps/obc-web-convert` (#896) is what a visitor downloads the moment
 they drop a route; `apps/obc-web-assemble` (#1034) is what turns downloaded map cells into a map. Both are
-reached through a dynamic import. `apps/obc-web-preview` (#1045) is the firmware reader + renderer
+reached through a dynamic import. `apps/obc-skin-preview` (#1045) is the firmware reader + renderer
 opened only by the skin editor. Each is its own chunk rather than part of the initial page, and a
 silent size regression is a product regression. CI runs this right after each `wasm-pack build`,
 on the very bytes it then hands to the frontend job.
@@ -70,7 +70,7 @@ from pathlib import Path
 # refusal, the budget override, the warn-once console binding): 435,990 B raw + 24,452 B glue ->
 # 186,601 B gzipped. +1,514 B raw / +2,160 B gzipped, which is the shape a fix round should have —
 # error prose and a handful of branches, no new crate. Budgets unchanged (89 % / 91 %).
-# --- obc-web-preview -------------------------------------------------------------------------
+# --- obc-skin-preview ------------------------------------------------------------------------
 #
 # Measured 2026-08-01 on #1045 (wasm-pack 0.15.0 / wasm-opt -Oz): 240,227 B raw wasm + 11,859 B
 # glue -> 112,275 B gzipped. It intentionally links `obc-reader`, `obc-render`, and just enough of
@@ -104,7 +104,7 @@ ADVICE = {
     ),
     "preview": (
         "This module should contain the reader, renderer, and skin resolver only. Diff the dependency graph"
-        " (`cargo tree -p obc-web-preview --target wasm32-unknown-unknown`) and make sure obc-pack, GEOS,"
+        " (`cargo tree -p obc-skin-preview --target wasm32-unknown-unknown`) and make sure obc-pack, GEOS,"
         " or the full assembly driver did not get linked. If renderer growth is intentional, raise the budget"
         " in firmware/tools/wasm_size_guard.py with the reason in the PR body."
     ),
