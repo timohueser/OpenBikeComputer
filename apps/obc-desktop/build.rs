@@ -33,8 +33,10 @@ fn embed_presets() {
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.extension().is_some_and(|x| x == "json"))
         .collect();
-    // Sorted so the generated table — and therefore the app's preset order before
-    // the default-first sort — does not depend on the filesystem's directory order.
+    // Sorted so the generated table — and therefore the order the app offers these in
+    // — does not depend on the filesystem's directory order. (There is no longer a
+    // default-first sort downstream to re-impose one: since #1036 the top level holds
+    // exactly one document, the schema.)
     entries.sort();
     assert!(!entries.is_empty(), "no presets found in {}", dir.display());
 

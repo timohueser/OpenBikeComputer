@@ -1521,6 +1521,30 @@ fn the_shipped_schema_and_skin_generate_a_v2_catalog() {
         skin_styles(&schema_config, &read_schema_doc(&t.path().join(SCHEMA_DOC)).expect("schema"), Path::new("schema"))
             .expect("the schema's own values, in skin shape");
     assert_eq!(skin.styles, schema_styles, "the `default` skin restates the schema's own presentation values");
+
+    // And the swatch with them. It is `_meta`, so nothing above reaches it — but it is
+    // the six colours the builder paints a style card with, i.e. the *only* part of
+    // either document a user ever sees before downloading a map. A skin whose styles
+    // match the schema while its swatch advertises something else is a card that lies,
+    // and the two documents restating the same values by hand is exactly the setup in
+    // which one of them gets edited alone.
+    let swatch = |doc: &str| -> Vec<String> {
+        let v: Value = serde_json::from_str(&repo_doc(doc)).expect("valid JSON");
+        v["_meta"]["swatch"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{doc}: `_meta.swatch` is what the builder paints a card with"))
+            .iter()
+            .map(|c| c.as_str().expect("a swatch entry is a hex string").to_string())
+            .collect()
+    };
+    let schema_swatch = swatch(SHIPPED_SCHEMA);
+    assert_eq!(schema_swatch.len(), 6, "six colours, as every card expects");
+    assert_eq!(
+        swatch(SHIPPED_SKIN),
+        schema_swatch,
+        "the `default` skin's swatch must be the schema's — the card is the only part of these documents a rider \
+         sees before downloading"
+    );
 }
 
 /// Epic #1016 D2, as a test: `high-detail` is a different **schema**, not a skin. It
