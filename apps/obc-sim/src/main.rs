@@ -498,6 +498,7 @@ fn parse_args() -> Result<Args, String> {
                     "damaged" => obc_app::DfuScanError::Damaged,
                     "toolarge" => obc_app::DfuScanError::TooLarge,
                     "fragmented" => obc_app::DfuScanError::TooFragmented,
+                    "untrusted" => obc_app::DfuScanError::Untrusted,
                     other => return Err(format!("--dfu-error: unknown variant `{other}`")),
                 });
             }

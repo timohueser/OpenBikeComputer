@@ -1223,12 +1223,12 @@ impl ObjectStore {
     /// catalog slot: [`fwimage_finish`](Self::fwimage_finish) promotes it to `/UPDATE.BIN` in the card
     /// root, not into the route catalog.
     pub fn fwimage_open(&mut self, shared: &SharedStore, desc: &TransferControl) -> Result<Receiver, TransferStatus> {
-        // `total_len` is the whole OBCU container (64-byte header + raw image), so the ceiling must be
-        // container-sized too: the raw-image cap plus the header. Gating at the bare `MAX_IMAGE_LEN`
-        // would spuriously reject a raw image in `MAX_IMAGE_LEN-HEADER_LEN+1 ..= MAX_IMAGE_LEN` that the
-        // armer/engine (which gate the raw `image_len` only) would happily flash (DR5, #733).
-        let max_container_len = obc_dfu::MAX_IMAGE_LEN + obc_dfu::HEADER_LEN as u32;
-        if let Some(status) = TransferStatus::fwimage_announce_reject(desc.total_len, max_container_len) {
+        // `total_len` is the whole OBCU container (64-byte header + raw image + — since v2, #997 —
+        // the 64-byte signature trailer), so the ceiling must be container-sized too. Gating at the
+        // bare `MAX_IMAGE_LEN` would spuriously reject a raw image the armer/engine (which gate the
+        // raw `image_len` only) would happily flash (DR5, #733); `MAX_CONTAINER_LEN` carries the
+        // arithmetic so the two can't drift apart again.
+        if let Some(status) = TransferStatus::fwimage_announce_reject(desc.total_len, obc_dfu::MAX_CONTAINER_LEN) {
             return Err(status);
         }
         // No card ⇒ nowhere to stage; answer now rather than after the CoC opens.

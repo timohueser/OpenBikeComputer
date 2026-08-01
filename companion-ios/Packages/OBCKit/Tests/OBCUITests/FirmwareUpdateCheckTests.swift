@@ -18,8 +18,10 @@ struct FirmwareUpdateCheckTests {
 
     private static let containerURL = URL(string: "https://updates.openbikecomputer.com/fw/UPDATE.BIN")!
 
-    /// A valid OBCU container tagged with `version` — both CRCs correct, so `StagedFirmware`
-    /// accepts it (the same builder the S7 state-machine tests use).
+    /// A phone-acceptable OBCU v2 container tagged with `version`: both CRCs are correct and the
+    /// signed-container marker/trailer are present, so `StagedFirmware` accepts it (the same
+    /// structural gate a download uses). The phone intentionally treats the signature as opaque;
+    /// device-side cryptographic verification is pinned by the shared Rust vectors/tests.
     private func container(version: String, imageLen: Int = 96) -> Data {
         var image = Data()
         image.append(contentsOf: le32(0x2002_0000))
@@ -31,10 +33,13 @@ struct FirmwareUpdateCheckTests {
         header.replaceSubrange(12..<16, with: le32(CRC32.checksum(image)))
         let v = Array(version.utf8.prefix(32))
         header.replaceSubrange(16..<16 + v.count, with: v)
+        header.replaceSubrange(48..<50, with: le16(OBCUHeader.sigSchemeEd25519))
+        header.replaceSubrange(50..<52, with: le16(UInt16(OBCUHeader.sigLength)))
         header.replaceSubrange(60..<64, with: le32(CRC32.checksum(header[0..<60])))
-        return header + image
+        return header + image + Data(repeating: 0xA5, count: OBCUHeader.sigLength)
     }
 
+    private func le16(_ v: UInt16) -> [UInt8] { withUnsafeBytes(of: v.littleEndian, Array.init) }
     private func le32(_ v: UInt32) -> [UInt8] { withUnsafeBytes(of: v.littleEndian, Array.init) }
 
     /// The manifest body describing `payload` as `version`.

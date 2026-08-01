@@ -413,6 +413,7 @@ impl DfuErrorScreen {
             DfuScanError::Damaged => Msg::DfuDamaged,
             DfuScanError::TooLarge => Msg::DfuTooLarge,
             DfuScanError::TooFragmented => Msg::DfuFragmented,
+            DfuScanError::Untrusted => Msg::DfuUntrusted,
         };
         let key = match self.reason {
             DfuErrorReason::Scan(e) => scan_msg(e),

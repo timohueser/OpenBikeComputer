@@ -24,7 +24,7 @@ cover the design and the trust model.
 
 ## The trust model
 
-Everything below hangs off four invariants. They are not aspirations — each is a
+Everything below hangs off five invariants. They are not aspirations — each is a
 host test in the shared [`obc-dfu`](src:firmware/obc-dfu) crate, the same
 `no_std` code the app's *armer* and the bootloader's *install engine* both run.
 
@@ -52,6 +52,11 @@ host test in the shared [`obc-dfu`](src:firmware/obc-dfu) crate, the same
   a blank page, a half-written line, a caught bit-flip — means "no pending update,
   run the app", never a garbage install. Safety is the *default* outcome of
   corruption, not a case that has to be handled.
+- **Nothing unsigned gets armed.** The app verifies an Ed25519 signature over the
+  staged image before an install is even possible, and an *unsigned* container is
+  refused just as firmly as a badly-signed one — otherwise the check would be
+  trivially skippable. See [Signed images](#signed-images-and-the-one-thing-the-bootloader-deliberately-cant-do)
+  below for why the bootloader is deliberately left out of this.
 
 Read as a state machine, the update is a short cycle through three states, with
 the bootloader doing the dangerous work in the middle and every failure edge
@@ -141,18 +146,68 @@ the arm was abandoned, and boots the old firmware. The rider sees a one-time
 instead of staring at a device that is holding perfectly good firmware hostage to a
 card that never returns.
 
-> **CRC-32, no signatures — on purpose (v1).** Integrity is a CRC-32/IEEE over the
-> whole image, end to end. There is no cryptographic signature: physical access to
-> the card is already root on an open device, so the meaningful gate is the human
-> at the install step, not a key. The [`OBCU`](src:specs/OBCU_Spec.md) header reserves
-> bytes for a signature scheme if internet-sourced OTA ever lands.
+## Signed images, and the one thing the bootloader deliberately can't do
+
+v1 of the format shipped with a CRC-32 and nothing else, on the honest reasoning that
+physical access to the card is already root on an open device. It also reserved twelve
+header bytes "for a future signature-scheme marker if internet-sourced OTA ever lands".
+It landed — updates are published as GitHub releases now, and a file fetched over the
+internet is a different threat from a file you copied yourself. So **OBCU v2 signs the
+image**, and those reserved bytes are what it spends.
+
+The two checks answer different questions, and both stay:
+
+- The **CRC-32** asks *did these bytes arrive intact?* It catches a truncated download
+  or a bit-flipped card, and the answer the rider gets is "this file is damaged, copy
+  it again".
+- The **signature** asks *are these bytes ours?* It catches a forged or tampered image,
+  and the answer is "this update is not signed for this device". Telling someone to
+  re-copy a perfectly intact forgery would be a lie, so these are two separate error
+  cards, not one.
+
+The signature is **Ed25519** over a deliberately narrow message: a fixed context string
+`"OBCUv2-sig\0"`, then the header's version string and image length, then the image
+itself. Every piece is doing a job. The context string means an OBCU signature can
+never be valid in some other protocol that signs raw bytes. Covering the *version
+string* is what stops re-labelling — without it, a genuinely signed v1.4.0 image could
+be re-announced as v9.9.9, or as something older to walk a device backwards into a
+build with a known bug, and the signature would still check out. Covering the *length*
+stops a lie about how much to read and flash. The signature itself sits in a trailer
+after the image, in bytes v1 had already declared ignorable.
+
+Verification happens in the **app**, before an update can be armed — and it is a hard
+gate: an unsigned container is rejected outright, not merely flagged. That last part is
+the whole design. If a v1-style unsigned wrapper still installed, nobody would ever
+bother forging a signature; they would just leave it off.
+
+The bootloader, notably, does **not** verify. That looks like the wrong half to leave
+out until you remember what the bootloader is: 32 KB, flashed once by probe, and never
+updated by DFU. Whatever key it trusted would be frozen into the device for its entire
+life, unrotatable. Putting the trust root in the half that ships with every image is
+what makes rotation possible at all — a device trusts exactly the key its own firmware
+was built with.
+
+Which raises the awkward constraint that shaped the whole format change: **bootloaders
+already in the field have to keep installing images built years later.** The v1 header
+decoder they run rejects any header-version value but `1`, so a "v2" container cannot
+actually bump that field — a bumped version would be unparseable to every boot chain
+already out there, and every future update would fail the same way. So it doesn't bump.
+A v2 container still says version `1`, keeps every field the bootloader reads at its
+original offset, puts the scheme marker in the reserved space that was set aside for
+precisely this, and hides the signature past the end of the image where v1 already
+ignored bytes. The old bootloader reads a v2 file and sees exactly what it saw before;
+it flashes the same bytes from the same offsets. The
+[format spec](src:specs/OBCU_Spec.md) states that argument field by field, and
+`obc-dfu`'s tests prove it by re-implementing the old decoder from the spec text and
+running the real install engine over a v2 container.
 
 ## Three ways an update arrives
 
 A staged update is one file, `/UPDATE.BIN`, in the card's root — an
 [`OBCU`](src:specs/OBCU_Spec.md) container (a 64-byte header with the image length,
-CRC-32, and a `git describe` version string, then the raw application image).
-There are three ways it gets there, and **exactly one** way it gets installed.
+CRC-32, a `git describe` version string and the signature-scheme marker, then the raw
+application image, then the signature). There are three ways it gets there, and
+**exactly one** way it gets installed.
 
 - **Card sideload.** Copy `UPDATE.BIN` onto the card from any computer, put the
   card back, and choose **Settings → System → Firmware → "Install update from card"**. The
@@ -179,7 +234,8 @@ There are three ways it gets there, and **exactly one** way it gets installed.
   checks the container *before* spending the transfer on it: magic, header
   version, header CRC-32, the image CRC-32 over the bytes that follow, and the
   slot ceiling. That is the same decode rule the armer applies and it replaces
-  nothing — the device still verifies over what actually landed on the card. What
+  nothing — the device still verifies over what actually landed on the card, and the
+  *signature* check is the device's alone. What
   it buys is that "that isn't a firmware update" arrives in a second instead of
   after an upload. A device running a development build reports a git hash rather
   than a version, which does not parse, and no update is ever offered for it.

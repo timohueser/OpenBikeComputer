@@ -4,8 +4,9 @@
 //! ([`App::apply_event`](obc_app::App::apply_event)). To drive the confirm /
 //! error screens headlessly the sim fakes that result — but faithfully: it builds a valid in-memory
 //! OBCU container with `obc-dfu`'s encoder and runs the **real** [`armer::scan`] over it (header
-//! decode + full CRC-32 + extent resolve), exactly the validation the board's `run_scan` performs,
-//! then maps the answer into the app-native [`DfuScanReport`] / [`DfuScanError`].
+//! decode + full CRC-32 + Ed25519 signature verify + extent resolve), exactly the validation the
+//! board's `run_scan` performs, then maps the answer into the app-native [`DfuScanReport`] /
+//! [`DfuScanError`].
 
 use obc_app::{DfuScanError, DfuScanReport};
 use obc_dfu::armer::{self, ExtentsError, ScanError, StageIo};
@@ -57,13 +58,18 @@ struct SliceStage {
 }
 
 impl SliceStage {
-    /// Encode a valid container tagged `version` over a small dummy body.
+    /// Encode a valid **signed** (OBCU v2) container tagged `version` over a small dummy body. It is
+    /// signed with the committed *test* key, and [`sim_scan`] verifies against that same key — the
+    /// sim exercises the real signature path without ever needing the release seed (which does not
+    /// exist in this repo).
     fn build(version: &str) -> Self {
         let body = vec![0xA5u8; 4096];
-        let header = ImageHeader::new(&body, version);
-        let mut bytes = Vec::with_capacity(HEADER_LEN + body.len());
+        let header = ImageHeader::new(&body, version).signed();
+        let signature = obc_dfu::sign_image(&obc_dfu::sig::test_key::SEED, &header, &body);
+        let mut bytes = Vec::with_capacity(HEADER_LEN + body.len() + signature.len());
         bytes.extend_from_slice(&header.encode());
         bytes.extend_from_slice(&body);
+        bytes.extend_from_slice(&signature);
         SliceStage { bytes }
     }
 }
@@ -94,7 +100,7 @@ impl StageIo for SliceStage {
 pub fn sim_scan(staged_version: &str, first_install: bool) -> Result<(DfuScanReport, StagedRef), DfuScanError> {
     let mut stage = SliceStage::build(staged_version);
     let mut chunk = [0u8; 512];
-    let staged = armer::scan(&mut stage, &mut chunk).map_err(map_scan_error)?;
+    let staged = armer::scan(&mut stage, &mut chunk, &obc_dfu::sig::test_key::PUBLIC).map_err(map_scan_error)?;
     let report = DfuScanReport::new(SIM_INSTALLED_VERSION, staged.header.fw_version_str(), first_install);
     Ok((report, staged))
 }
@@ -113,6 +119,7 @@ fn map_scan_error(e: ScanError) -> DfuScanError {
         ScanError::BadHeader | ScanError::BadCrc | ScanError::Truncated => DfuScanError::Damaged,
         ScanError::Oversize => DfuScanError::TooLarge,
         ScanError::TooFragmented { .. } => DfuScanError::TooFragmented,
+        ScanError::Unsigned | ScanError::BadSignature => DfuScanError::Untrusted,
     }
 }
 

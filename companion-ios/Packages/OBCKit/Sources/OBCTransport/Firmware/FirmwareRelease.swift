@@ -210,13 +210,13 @@ public struct FirmwareVersion: Equatable, Sendable {
         if left.minor != right.minor { return left.minor < right.minor ? -1 : 1 }
         if left.patch != right.patch { return left.patch < right.patch ? -1 : 1 }
         if left.pre == right.pre { return 0 }
-        // A pre-release precedes its release; between two pre-releases, plain lexicographic order
-        // over the bytes is enough for the one thing this decides ("is the published one newer
-        // than mine") — and matching the builder's JS string comparison is what keeps the two
-        // parsers from drifting on `rc1` vs `rc2`.
+        // A pre-release precedes its release. Between two pre-releases, use SemVer identifier
+        // precedence: numeric identifiers compare numerically and sort before non-numeric ones;
+        // otherwise ASCII lexical order applies. This matters at rc.10 vs rc.2 and is mirrored by
+        // the builder's TypeScript parser.
         if left.pre == nil { return 1 }
         if right.pre == nil { return -1 }
-        return left.pre!.utf8.lexicographicallyPrecedes(right.pre!.utf8) ? -1 : 1
+        return comparePrerelease(left.pre!, right.pre!)
     }
 
     /// What to say about a device running `running` when the newest published build is `latest`.
@@ -243,6 +243,31 @@ public struct FirmwareVersion: Equatable, Sendable {
     private static func isVersionTagCharacter(_ c: Character) -> Bool {
         guard c.isASCII else { return false }
         return c.isNumber || c.isLetter || c == "." || c == "-"
+    }
+
+    private static func comparePrerelease(_ left: String, _ right: String) -> Int {
+        let lhs = left.split(separator: ".", omittingEmptySubsequences: false)
+        let rhs = right.split(separator: ".", omittingEmptySubsequences: false)
+        for index in 0 ..< min(lhs.count, rhs.count) {
+            let a = lhs[index]
+            let b = rhs[index]
+            if a == b { continue }
+            let aNumeric = a.allSatisfy({ $0.isASCII && $0.isNumber })
+            let bNumeric = b.allSatisfy({ $0.isASCII && $0.isNumber })
+            if aNumeric, bNumeric {
+                let aDigits = a.drop { $0 == "0" }
+                let bDigits = b.drop { $0 == "0" }
+                if aDigits.count != bDigits.count { return aDigits.count < bDigits.count ? -1 : 1 }
+                if aDigits != bDigits {
+                    return aDigits.utf8.lexicographicallyPrecedes(bDigits.utf8) ? -1 : 1
+                }
+                continue
+            }
+            if aNumeric != bNumeric { return aNumeric ? -1 : 1 }
+            return a.utf8.lexicographicallyPrecedes(b.utf8) ? -1 : 1
+        }
+        if lhs.count == rhs.count { return 0 }
+        return lhs.count < rhs.count ? -1 : 1
     }
 }
 

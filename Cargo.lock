@@ -1018,6 +1018,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "ed25519-compact"
+version = "2.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c24599140dc39d7a81e4476e7573d41bbc18e07c803900298e522a5fbcfbfb6"
+
+[[package]]
 name = "eframe"
 version = "0.29.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2527,6 +2533,9 @@ dependencies = [
 [[package]]
 name = "obc-dfu"
 version = "0.1.0"
+dependencies = [
+ "ed25519-compact",
+]
 
 [[package]]
 name = "obc-display"
@@ -2570,6 +2579,7 @@ dependencies = [
 name = "obc-mkimage"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.4.2",
  "obc-dfu",
 ]
 
@@ -2742,6 +2752,7 @@ name = "obc-vectors"
 version = "0.1.0"
 dependencies = [
  "heapless 0.8.0",
+ "obc-dfu",
  "obc-formats",
  "obc-route",
 ]
