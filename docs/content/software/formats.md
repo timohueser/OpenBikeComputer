@@ -1043,15 +1043,15 @@ region lists, and skin previews follow the same rule. Publishing a new root neve
 overwrites bytes an older browser root still names, so an edge cache cannot pair
 a new digest with an old stable-path response. Unchanged cells keep the same key,
 which preserves resumable, upload-skipping planet publishes without copying a
-whole generation into a new directory.
+whole generation into a new directory. The consumer also verifies that every URL
+contains the digest stated beside it before making the request.
 
 Named regions carry their byte totals, cell counts, and partial-cell counts per
 band in that root. The builder can therefore price a region and distinguish a
 normal partial coarse-context cell from an incomplete detail or routing cell
 before fetching the region's satellite. The per-band partial split was added
-compatibly within OBCC v2: current bakeries publish it and its values sum to the
-region's total partial count, while both product hosts still accept an older v2
-root and defer that distinction until its pinned cell lists resolve.
+directly to the current OBCC v2 contract: it is required, includes zeroes, and
+replaces a redundant aggregate partial count.
 
 Planet coverage introduces a second, deliberately byte-free index entry:
 **known-empty** cells. The bakery records compact same-row ranges when a covering
