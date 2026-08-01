@@ -455,7 +455,26 @@ are three ways it gets there, and
   *signature* check is the device's alone. What
   it buys is that "that isn't a firmware update" arrives in a second instead of
   after an upload. A device running a development build reports a git hash rather
-  than a version, which does not parse, and no update is ever offered for it.
+  than a version, which does not parse: no update is ever offered for it, and the
+  page says exactly that — *development build, automatic updates paused* — rather
+  than going quiet. The file picker beside it still accepts an `UPDATE.BIN` by
+  hand, which is how such a device gets back onto a release.
+
+That check is one anonymous GET of a published manifest — no account, no query,
+nothing said about the device — made only **once a device is connected**, because
+with nothing to compare against the request would buy the rider nothing and cost
+them a connection they did not ask for. The manifest is served from the project's
+own domain, mirrored from the tagged GitHub release, which stays the source of
+truth; nothing about trust rides on that choice, because what says an image is
+genuine is the signature the device verifies before it will arm anything — not the
+host that served it. The SHA-256 beside it answers a narrower question, and only
+that one: whether the download arrived whole, checked here before a byte goes over
+the cable. When the answer is *there is something newer*, the page says so
+where the rider already is — a small note, never a modal, naming the version and
+offering to show it. It stages nothing itself; it can only point at the one card
+that does, and it asks once per device and release. A channel pointer moving
+backward does not turn an older release into a new question; only a genuinely
+newer version can raise the note again.
 
 The crucial rule is shared by all three paths and stated plainly in the BLE spec's
 security posture: **installing always confirms on the glass.** A peer can
