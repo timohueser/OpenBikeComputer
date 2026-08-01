@@ -38,8 +38,6 @@ export const platform: Platform = {
     device: null,
     rides: null,
 
-    legacyConfig: () => api.legacyConfig(),
-
     // A localhost stand-in for the hosted site keeps the site's chrome.
     siteNav: LINKS,
 };

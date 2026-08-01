@@ -180,7 +180,6 @@ function regionEntry(coreBytes: number): RegionEntry {
         bytes: coreBytes,
         bytes_by_band: { coarse: 0, mid: 0, fine: 0, network: coreBytes },
         cell_count: { network: 1 },
-        partial_cell_count: 0,
         partial_cell_count_by_band: { coarse: 0, mid: 0, fine: 0, network: 0 },
         cells_url: "/cells.json",
         cells_bytes: 0,
@@ -200,30 +199,15 @@ describe("the core file's ceiling (OBCA §5.7)", () => {
     it("applies the coarse-context rule to the root's per-band partial counts (#1032)", () => {
         const entry = {
             ...exampleCatalog.regions[0],
-            partial_cell_count: 2,
             partial_cell_count_by_band: { coarse: 1, fine: 1, mid: 0, network: 0 },
         };
         const ledger = ledgerForRegion(exampleCatalog, entry);
-        expect(ledger.coverage.unsplitPartialCount).toBeNull();
         expect(ledger.coverage.partialContextCount).toBe(1);
         expect(ledger.coverage.partialDetailCount).toBe(1);
         expect(ledger.coverage.hasWarnings).toBe(true);
         // The root has counts, not ids: warn in the summary now, hatch only
         // once the pinned cell list and indexes identify the cells.
         expect(ledger.coverage.partialDetailByBand.size).toBe(0);
-    });
-
-    it("keeps an older v2 root's unsplit partial total non-warning", () => {
-        const entry = {
-            ...exampleCatalog.regions[0],
-            partial_cell_count: 3,
-            partial_cell_count_by_band: null,
-        };
-        const ledger = ledgerForRegion(exampleCatalog, entry);
-        expect(ledger.coverage.unsplitPartialCount).toBe(3);
-        expect(ledger.coverage.partialDetailCount).toBe(0);
-        expect(ledger.coverage.partialContextCount).toBe(0);
-        expect(ledger.coverage.hasWarnings).toBe(false);
     });
 
     it("refuses a core whose projected file passes 4 GiB − 1, naming the navigation graph", () => {

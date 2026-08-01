@@ -93,13 +93,18 @@ use obc_pack::cut::{CellArtifact, CutOptions, CutSummary, SourceExtent};
 use obc_pack::grid::{BandTable, CellId};
 use obc_pack::ingest::Bbox;
 use obc_pack::progress::Progress;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
+use crate::cell_store::{
+    paths as cell_paths, read_current as read_current_cell, CellSidecar, CellState, ARTIFACT_EXT as CELL_EXT,
+    SIDECAR_EXT as CELL_SIDECAR_EXT,
+};
 use crate::coverage::Coverage;
 use crate::known_empty::KnownEmptyIndex;
 use crate::presets::StyleDoc;
 use crate::regions::Region;
 use crate::source::{Extract, ExtractSource};
+use crate::util::{human_bytes, write_json};
 
 /// Bumped when a cutter change alters cell bytes for unchanged inputs, forcing a
 /// re-cut that content hashing alone would not.
@@ -125,8 +130,6 @@ const SKINS_DIR: &str = "skins";
 const SCHEMA_DOC: &str = "schema.json";
 const REGION_DOC: &str = "region.json";
 const REGION_POLY: &str = "boundary.poly";
-const CELL_EXT: &str = ".obcm";
-const CELL_SIDECAR_EXT: &str = ".obcm.json";
 
 /// What actually cuts. A trait so the tests can drive plan building, the ownership
 /// rule, installation, the D3 guard and the skip logic without libGEOS and without a
@@ -194,31 +197,6 @@ pub struct CellBakeOptions {
     pub schema_id: String,
     /// The schema revision every cell is baked at. A bump invalidates the whole store.
     pub schema_revision: u32,
-}
-
-/// The facts a cell's bytes cannot state (`OBCC_Spec.md` §8). Written beside the
-/// artifact, read by the catalog generator, and never re-derived afterwards.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct CellSidecar {
-    schema_revision: u32,
-    built_at: String,
-    sources: Vec<CellSource>,
-    partial: bool,
-}
-
-/// The recorded cut, in a dotfile beside the cell. Invisible to the catalog generator
-/// (which skips dotfiles in a cell row) and never published.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct CellState {
-    /// Hash of everything that can change the cell's **bytes**.
-    pack_key: String,
-    sha256: String,
-    bytes: u64,
-    /// When the bytes were cut. Survives a sidecar-only refresh.
-    built_at: String,
-    /// The sidecar as last written, so a snapshot-date drift can be noticed without
-    /// re-cutting — and so [`install_cell`] can see that a cell on disk is canonical.
-    sidecar: CellSidecar,
 }
 
 /// How one cell ended.
@@ -381,12 +359,12 @@ impl CellRunSummary {
                 b.cell_log2,
                 b.cells,
                 b.partial_cells,
-                human(b.bytes),
+                human_bytes(b.bytes),
                 b.mib_per_1000km2(self.covered_km2)
             );
         }
         let whole: f64 = self.bands.iter().map(|b| b.mib_per_1000km2(self.covered_km2)).sum();
-        let _ = writeln!(s, "{:<10} {:>32}  {:>12.2}", "whole map", human(self.total_bytes()), whole);
+        let _ = writeln!(s, "{:<10} {:>32}  {:>12.2}", "whole map", human_bytes(self.total_bytes()), whole);
 
         for w in &self.warnings {
             let _ = writeln!(s, "\nwarning: {w}");
@@ -408,21 +386,6 @@ impl CellRunSummary {
             }
         }
         s
-    }
-}
-
-fn human(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit + 1 < UNITS.len() {
-        value /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{bytes} B")
-    } else {
-        format!("{value:.1} {}", UNITS[unit])
     }
 }
 
@@ -605,7 +568,7 @@ impl CellBakery<'_> {
             let counts: Vec<String> = cells.iter().map(|(log2, set)| format!("2^{log2}: {}", set.len())).collect();
             progress.log(format!(
                 "  extract {} ({}); cells — {}",
-                human(extract.bytes),
+                human_bytes(extract.bytes),
                 extract.snapshot,
                 counts.join(", ")
             ));
@@ -793,30 +756,13 @@ impl CellBakery<'_> {
         }
     }
 
-    fn cell_paths(&self, cell: CellId, band: &str) -> (PathBuf, PathBuf, PathBuf) {
-        let w = obc_pack::grid::id_width(cell.log2);
-        let dir = self.opts.out.join(CELLS_DIR).join(band).join(format!("{:0w$}", cell.i, w = w));
-        let stem = format!("{:0w$}", cell.j, w = w);
-        (
-            dir.join(format!("{stem}{CELL_EXT}")),
-            dir.join(format!("{stem}{CELL_SIDECAR_EXT}")),
-            dir.join(format!(".{stem}.cell.json")),
-        )
-    }
-
     /// The recorded state, when it still describes the cell on disk.
     ///
     /// Three things must agree, and the third is what catches rot: the pack key, the
     /// presence of both artifact and sidecar, and the artifact's *current* digest
     /// against the recorded one.
     fn reusable(&self, cell: CellId, band: &str, pack_key: &str) -> Option<CellState> {
-        let (artifact, sidecar, state_path) = self.cell_paths(cell, band);
-        let state: CellState = serde_json::from_str(&std::fs::read_to_string(state_path).ok()?).ok()?;
-        if state.pack_key != pack_key || !artifact.is_file() || !sidecar.is_file() {
-            return None;
-        }
-        let (bytes, sha) = crate::hash::file(&artifact).ok()?;
-        (sha == state.sha256 && bytes == state.bytes).then_some(state)
+        read_current_cell(&self.opts.out, band, cell, pack_key).ok().flatten()
     }
 
     /// A current cell whose published snapshot dates moved: rewrite four lines of
@@ -838,7 +784,7 @@ impl CellBakery<'_> {
         if !sidecar_drift(&state.sidecar, want) {
             return Ok(outcome(CellStatus::Unchanged));
         }
-        let (_, sidecar_path, state_path) = self.cell_paths(cell, band);
+        let (_, sidecar_path, state_path) = cell_paths(&self.opts.out, band, cell);
         // `built_at` describes when the bytes were cut, and they were not re-cut.
         let refreshed =
             CellSidecar { built_at: state.sidecar.built_at.clone(), sources: want.sources.clone(), ..state.sidecar };
@@ -864,7 +810,7 @@ impl CellBakery<'_> {
     ) -> Result<CellOutcome, String> {
         let src = obc_pack::cut::artifact_path(tmp, artifact);
         let verified = crate::verify::verify_cell(&src, artifact.id.square())?;
-        let (dest, sidecar_path, state_path) = self.cell_paths(artifact.id, &artifact.band);
+        let (dest, sidecar_path, state_path) = cell_paths(&self.opts.out, &artifact.band, artifact.id);
 
         // D3: a covering bake already happened here. Publishing a thinner cell over it
         // would take coverage away silently, which is the failure `OBCA_Spec.md` §3.7
@@ -920,7 +866,6 @@ impl CellBakery<'_> {
                 pack_key: pack_key.to_string(),
                 sha256: artifact.sha256.clone(),
                 bytes: artifact.bytes,
-                built_at: sidecar.built_at.clone(),
                 sidecar: sidecar.clone(),
             },
         )?;
@@ -950,7 +895,7 @@ impl CellBakery<'_> {
             let selected = r.cells.get(&band.cell_log2).map(BTreeSet::len).unwrap_or(0);
             let mut ids = Vec::new();
             for cell in r.cells.get(&band.cell_log2).into_iter().flatten() {
-                if self.cell_paths(*cell, &band.id).0.is_file() {
+                if cell_paths(&self.opts.out, &band.id, *cell).0.is_file() {
                     ids.push(cell.to_string());
                 }
             }
@@ -1197,15 +1142,6 @@ fn sorted_dir(dir: &Path) -> Result<Vec<PathBuf>, String> {
         .collect::<Result<_, _>>()?;
     entries.sort();
     Ok(entries)
-}
-
-fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    }
-    let mut text = serde_json::to_string_pretty(value).map_err(|e| format!("{}: {e}", path.display()))?;
-    text.push('\n');
-    std::fs::write(path, text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// The tree's per-cell state files, for a caller that wants to list them.

@@ -159,10 +159,11 @@ describe("cellIndex", () => {
         const ref = root.cell_index.find((r: { band: string }) => r.band === "fine");
         ref.bytes = notText.byteLength;
         ref.sha256 = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+        ref.url = ref.url.replace(/[0-9a-f]{64}(?=\.json$)/, ref.sha256);
 
         const impl = vi.fn(async (input: RequestInfo | URL) => {
             if (String(input) === ROOT_URL) return new Response(JSON.stringify(root));
-            if (String(input) === FINE_INDEX_URL) return new Response(notText as unknown as BodyInit);
+            if (String(input) === ref.url) return new Response(notText as unknown as BodyInit);
             return new Response("no such object", { status: 404, statusText: "Not Found" });
         }) as unknown as typeof fetch;
 
@@ -225,10 +226,9 @@ describe("regionCellList", () => {
         ref.cell_count = 1;
         ref.bytes = new TextEncoder().encode(body).byteLength;
         ref.sha256 = await sha256Hex(body);
+        ref.url = ref.url.replace(/[0-9a-f]{64}(?=\.json$)/, ref.sha256);
 
-        const { impl } = serving(
-            allBodies({ [ROOT_URL]: JSON.stringify(root), [FINE_INDEX_URL]: body }),
-        );
+        const { impl } = serving(allBodies({ [ROOT_URL]: JSON.stringify(root), [ref.url]: body }));
         const client = await CatalogClient.load(ROOT_URL, { fetchImpl: impl });
         await client.cellIndex("fine");
         await expect(client.regionCellList("europe/switzerland")).rejects.toThrow(/18\/1204\/1053/);

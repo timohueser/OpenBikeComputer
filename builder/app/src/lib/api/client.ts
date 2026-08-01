@@ -74,10 +74,4 @@ export const api = {
             diagnostics,
         };
     },
-
-    /** 404 (no user_config.json on the server) is the common case, not an error. */
-    async legacyConfig(): Promise<Record<string, unknown> | null> {
-        const res = await fetch(`${API_BASE}/config/legacy`);
-        return res.ok ? ((await res.json()) as Record<string, unknown>) : null;
-    },
 };

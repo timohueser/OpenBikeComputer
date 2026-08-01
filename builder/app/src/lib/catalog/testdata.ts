@@ -64,7 +64,7 @@ export function fixtureIndex(
             id: c.id,
             bytes: c.bytes,
             sha256: c.sha256 ?? ZERO_DIGEST,
-            url: `https://maps.example.org/catalog/cells/${bandId}/${c.id.split("/").slice(1).join("/")}.obcm`,
+            url: `https://maps.example.org/catalog/cells/${bandId}/${c.id.split("/").slice(1).join("/")}.${c.sha256 ?? ZERO_DIGEST}.obcm`,
             built_at: "2026-07-30T02:12:55Z",
             sources: [{ extract_id: "europe/switzerland", snapshot: "2026-07-19" }],
             partial: c.partial ?? false,
@@ -81,7 +81,7 @@ export function fixtureIndex(
         }, 0),
         bytes: 0,
         sha256: ZERO_DIGEST,
-        url: `/catalog/cells/${bandId}/index.json`,
+        url: `/catalog/cells/${bandId}/index.${ZERO_DIGEST}.json`,
     };
     return parseCellIndex(JSON.stringify(doc), catalog, ref);
 }

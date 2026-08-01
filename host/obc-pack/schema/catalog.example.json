@@ -235,7 +235,6 @@
         "mid": 1,
         "network": 2
       },
-      "partial_cell_count": 1,
       "partial_cell_count_by_band": {
         "coarse": 0,
         "fine": 0,
@@ -290,7 +289,6 @@
         "mid": 1,
         "network": 1
       },
-      "partial_cell_count": 0,
       "partial_cell_count_by_band": {
         "coarse": 0,
         "fine": 0,

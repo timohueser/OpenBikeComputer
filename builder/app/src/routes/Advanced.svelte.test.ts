@@ -7,14 +7,12 @@ import type { Preset, SchemaEnvelope } from "../lib/config/model";
 const host = vi.hoisted(() => ({
     presets: vi.fn(),
     schema: vi.fn(),
-    legacyConfig: vi.fn(),
 }));
 
 vi.mock("../lib/platform", () => ({
     platform: {
         presets: host.presets,
         schema: host.schema,
-        legacyConfig: host.legacyConfig,
         schemaPreview: null,
     },
 }));
@@ -85,7 +83,6 @@ beforeEach(() => {
     working.envelope = null;
     host.presets.mockReset();
     host.schema.mockReset().mockResolvedValue(schema);
-    host.legacyConfig.mockReset().mockResolvedValue(null);
     globalThis.fetch = vi.fn(async () => Response.json({ keys: {} })) as typeof fetch;
 });
 

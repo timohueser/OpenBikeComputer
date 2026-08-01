@@ -1,13 +1,8 @@
 <!--
-  Step 4 on a tier with a device page: manual single-file compatibility until #1044.
-
   The connection state lives in the header chip and routes/rides/firmware live on the Device tab,
-  so this card is what remains of `DeviceStep` once everything with a better home has moved there —
-  the send-the-map-you-just-built moment, kept beside the build button on purpose (the flow the
-  desktop tier will replace with direct assembled-set transfer).
+  so this card keeps the direct send action beside the build flow.
 
-  Same chunk discipline as `DeviceStep`: this component is in the entry graph, `MapSend` drags the
-  protocol client, so `MapSend` arrives through a memoized dynamic import once a device is ready.
+  `MapSend` brings in the protocol client and is loaded only once a device is ready.
 -->
 <script lang="ts">
     import { deviceHolder } from "../../lib/device/session.svelte";

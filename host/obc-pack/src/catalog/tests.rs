@@ -548,7 +548,6 @@ fn a_region_prices_its_cell_set_per_band() {
     let fine_ref = g.root.cell_index.iter().find(|entry| entry.band == "fine").expect("fine ref");
     assert_eq!(fine_ref.cell_count, 2, "only downloadable artifacts count here");
     assert_eq!(fine_ref.known_empty_count, 1, "verified-empty coverage is priced separately at zero bytes");
-    assert_eq!(ch.partial_cell_count, 1, "the partial network cell is counted, and only once");
     assert_eq!(
         ch.partial_cell_count_by_band,
         BTreeMap::from([
@@ -559,7 +558,6 @@ fn a_region_prices_its_cell_set_per_band() {
         ]),
         "the root splits partials by band without fetching the cell list"
     );
-    assert_eq!(ch.partial_cell_count_by_band.values().sum::<u32>(), ch.partial_cell_count);
 
     assert_eq!(
         ch.cells_url,
@@ -578,7 +576,6 @@ fn a_region_prices_its_cell_set_per_band() {
     let basel = region(&g, "europe/switzerland/basel-stadt");
     assert_eq!(basel.parent.as_deref(), Some("europe/switzerland"), "parent is the nearest enclosing region");
     assert!(basel.bytes < ch.bytes, "a sub-selection is cheaper");
-    assert_eq!(basel.partial_cell_count, 0);
     assert!(basel.partial_cell_count_by_band.values().all(|&count| count == 0));
 
     // Overlap is free: two regions that share ground share the same cells, and
@@ -1218,20 +1215,6 @@ fn known_empty_ranges_are_canonical_and_never_overlap_artifacts() {
 }
 
 #[test]
-fn older_v2_documents_default_known_empty_coverage_to_none() {
-    let mut root_value: Value = serde_json::from_str(CATALOG_EXAMPLE_JSON).expect("root JSON");
-    for index in root_value["cell_index"].as_array_mut().expect("cell refs") {
-        index.as_object_mut().expect("cell ref").remove("known_empty_count");
-    }
-    let root: Catalog = serde_json::from_value(root_value).expect("an older additive-v2 root parses");
-    assert!(root.cell_index.iter().all(|index| index.known_empty_count == 0));
-    let mut index_value: Value = serde_json::from_str(CELL_INDEX_EXAMPLE_JSON).expect("index JSON");
-    index_value.as_object_mut().expect("cell index").remove("known_empty");
-    let index: CellIndexDocument = serde_json::from_value(index_value).expect("an older additive-v2 index parses");
-    assert!(index.known_empty.is_empty());
-}
-
-#[test]
 fn a_cell_sidecar_typo_fails_rather_than_defaulting() {
     let t = TempTree::new("sidecar-typo");
     example_tree(t.path());
@@ -1436,7 +1419,14 @@ fn the_catalog_schema_pins_the_envelope_version_and_the_field_patterns() {
         Some(i64::from(GRID_ORIGIN_UDEG))
     );
     assert_eq!(s["$defs"]["SkinStyle"]["properties"]["priority"]["maximum"].as_u64(), Some(4));
-    assert_eq!(s["$defs"]["SkinPreview"]["properties"]["url"]["pattern"].as_str(), Some(URL_PATTERN));
+    assert_eq!(s["$defs"]["SkinPreview"]["properties"]["url"]["pattern"].as_str(), Some(PINNED_URL_PATTERN));
+    for (definition, field) in [("RegionEntry", "cells_url"), ("CellIndexRef", "url"), ("CellEntry", "url")] {
+        assert_eq!(
+            s["$defs"][definition]["properties"][field]["pattern"].as_str(),
+            Some(PINNED_URL_PATTERN),
+            "{definition}.{field}"
+        );
+    }
     let skin_required = s["$defs"]["SkinEntry"]["required"].as_array().expect("skin required");
     assert!(!skin_required.iter().any(|v| v == "preview"), "preview remains optional");
     // Both satellites are in the one checked-in file, so a consumer validates all
@@ -1447,16 +1437,17 @@ fn the_catalog_schema_pins_the_envelope_version_and_the_field_patterns() {
     // `parent` is optional.
     let region_required = s["$defs"]["RegionEntry"]["required"].as_array().expect("region required");
     assert!(!region_required.iter().any(|v| v == "parent"));
-    for field in ["boundary", "bytes", "bytes_by_band", "cell_count", "partial_cell_count", "cells_url"] {
+    for field in ["boundary", "bytes", "bytes_by_band", "cell_count", "partial_cell_count_by_band", "cells_url"] {
         assert!(region_required.iter().any(|v| v == field), "`{field}` is required on a region");
     }
-    assert!(
-        !region_required.iter().any(|v| v == "partial_cell_count_by_band"),
-        "the additive v2 field stays optional so already-published v2 roots remain valid"
-    );
     let partial_by_band = &s["$defs"]["RegionEntry"]["properties"]["partial_cell_count_by_band"];
     assert_eq!(partial_by_band["propertyNames"]["pattern"].as_str(), Some(ID_PATTERN));
-    assert_eq!(partial_by_band["default"], serde_json::json!({}));
+    for field in ["known_empty_count", "url"] {
+        let required = s["$defs"]["CellIndexRef"]["required"].as_array().expect("cell ref required");
+        assert!(required.iter().any(|v| v == field), "`{field}` is required on a cell index ref");
+    }
+    let index_required = s["$defs"]["CellIndexDocument"]["required"].as_array().expect("cell index required");
+    assert!(index_required.iter().any(|v| v == "known_empty"));
 }
 
 /// The documents a real tree produces must validate against the schema consumers will

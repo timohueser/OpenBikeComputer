@@ -77,8 +77,8 @@ function serving(over: Record<string, Uint8Array> = {}, onFetch?: () => void) {
         const url = String(input);
         const override = over[url];
         if (override) return new Response(override as unknown as BodyInit, { status: 200 });
-        // …/cells/<band>/<i>/<j>.obcm → "<band>/<log2>/<i>/<j>"
-        const m = /\/cells\/([a-z]+)\/(\d+)\/(\d+)\.obcm$/.exec(url);
+        // …/cells/<band>/<i>/<j>.<sha256>.obcm → "<band>/<log2>/<i>/<j>"
+        const m = /\/cells\/([a-z]+)\/(\d+)\/(\d+)\.[0-9a-f]{64}\.obcm$/.exec(url);
         if (!m) return new Response("nope", { status: 404, statusText: "Not Found" });
         const log2 = m[1] === "coarse" ? 20 : m[1] === "mid" ? 19 : 18;
         return new Response(bodyFor(`${m[1]}/${log2}/${m[2]}/${m[3]}`) as unknown as BodyInit, { status: 200 });

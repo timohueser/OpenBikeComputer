@@ -1,21 +1,6 @@
-// The cell catalog client: one root, its digest-pinned satellites, and nothing
-// else. Host-neutral by construction — `fetch` and the digest arrive as
-// arguments, no `$host` import, no store, no DOM — because all three builder
-// hosts (static web, Tauri desktop, dev server) drive the same catalog and only
-// one of them has a `document.baseURI` to resolve against.
-//
-// The shape of the guarantee (`OBCC_Spec.md` §9): the **root** is the only
-// document fetched on trust, and it is short-cached rather than
-// content-addressed. Everything below it — a band's cell index, a region's cell
-// list, and later every cell artifact — carries a `bytes` + `sha256` pin *in the
-// root*, so a consumer that has read a valid root and a matching satellite has
-// exactly the guarantee a monolithic document has: the whole consistent thing, or
-// nothing. A satellite whose digest does not match is rejected and **the root is
-// retained**, never patched.
-//
-// Satellites are therefore also safe to hold forever: they are content-addressed
-// by the digest that admitted them, so this client memoises each one for its
-// lifetime and a failed load pins nothing.
+// Host-neutral catalog client. The short-cached root pins every satellite by
+// length and digest; matching content-addressed satellites are memoized, while
+// failed loads never alter the accepted root.
 
 import { fetchVerified, type DownloadOptions } from "../download";
 import {
