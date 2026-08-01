@@ -693,7 +693,10 @@ Its Maps tab resolves `OBC_CATALOG_URL` at server runtime and proxies only the
 configured catalog tree, avoiding both a stale build-time `./data/catalog.json`
 fallback and a dependency on object-storage CORS. Its Advanced route reads the
 real packer JSON Schema, exports a complete config, and keeps working state in
-the browser.
+the browser. On a new browser profile, the route snapshots the sole buildable
+schema preset once; a restored or imported working config always wins, and a
+future shelf with multiple buildable schemas requires an explicit choice rather
+than silently picking one.
 
 That route also provides a deliberately **semi-live schema lab**. One setup
 command reuses or downloads Freiburg-regbez and has Osmium atomically prepare a
