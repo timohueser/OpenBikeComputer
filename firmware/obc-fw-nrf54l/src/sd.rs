@@ -38,11 +38,6 @@
 //! — most microSD breakouts include this; if not, add a 10 kΩ from MISO (P2_09) to 3V3. (DO
 //! floating low during init reads `0x00`, which looks like a hung card.)
 
-// The route-selection + ride-save half of this module (`reconcile_route`/`reconcile_track`,
-// `track_sink`, the ride-object namer, `TRACK_TMP`) is the SD `Storage`'s full API; let the write
-// path sit unused rather than carve up a module that ports as one piece.
-#![allow(dead_code)]
-
 use embassy_embedded_hal::SetConfig;
 use embassy_nrf::gpio::Output;
 use embassy_nrf::spim::{Config as SpiConfig, Frequency, Spim};
@@ -52,15 +47,17 @@ use embedded_sdmmc::{
     LfnBuffer, Mode, RawDirectory, RawFile, SdCard, ShortFileName, TimeSource, Timestamp, VolumeIdx, VolumeManager,
 };
 use heapless::{String, Vec};
-use obc_app::{
-    decode_route_crcs, decode_route_retention, decode_store_epoch, decode_synced_rides, encode_route_crcs,
-    encode_route_retention, encode_store_epoch, encode_synced_rides, Retention, RouteCrcs, RouteRetentionMeta,
-    RouteRetentionStore, SyncedRides, TripInput, MAX_RIDES, MAX_ROUTES, MAX_TRIPS, ROUTE_CRCS_MAX_LEN,
-    ROUTE_RETENTION_MAX_LEN, STORE_EPOCH_LEN, SYNCED_RIDES_MAX_LEN, UI_RIDES_CAP,
+use obc_app::retention::{
+    decode_route_retention, encode_route_retention, RouteRetentionMeta, RouteRetentionStore, ROUTE_RETENTION_MAX_LEN,
 };
+use obc_app::ride::{decode_synced_rides, encode_synced_rides, SyncedRides, SYNCED_RIDES_MAX_LEN};
+use obc_app::route::{decode_route_crcs, encode_route_crcs, RouteCrcs, ROUTE_CRCS_MAX_LEN};
+use obc_app::store_meta::{decode_store_epoch, encode_store_epoch, STORE_EPOCH_LEN};
+use obc_app::{Retention, TripInput, MAX_RIDES, MAX_ROUTES, MAX_TRIPS, UI_RIDES_CAP};
 use obc_dfu::armer::{ExtentsError, ScanError, StageIo};
 use obc_formats::io::ByteSource;
 use obc_formats::obcr::NAME_CAP;
+use obc_map_scene::BBox;
 use obc_route::{
     ride_elevation_profile, ride_preview_polyline, track_to_ride, Profile, RideInfo, RideStats, RouteIndex,
     RouteObjectInfo, RouteSummary, TripMeta, TripSummary,
@@ -398,7 +395,7 @@ pub struct MapSummary {
     pub obcm_version: u8,
     /// The global bounding box from header bytes 5..21 — the map's footprint, for coverage checks.
     /// For a set, the manifest's assembly bbox (§4.2), which §5.3 pins equal to the core's header.
-    pub bbox: obc_reader::BBox,
+    pub bbox: BBox,
     /// Whether [`MAP_SELECTED`] names this map.
     pub selected: bool,
     /// Directory-entry location, so a chosen map's extent table can be built without a second scan.
@@ -413,7 +410,7 @@ pub struct MapSummary {
 struct SetIdentity {
     shard_count: u8,
     obcm_version: u8,
-    bbox: obc_reader::BBox,
+    bbox: BBox,
     /// Summed over the shards; the manifest's own bytes are added by the caller.
     total_bytes: u64,
     /// The manifest's display name (§5.2), empty when it carries none.
@@ -476,7 +473,7 @@ struct OpenSet {
 pub(crate) enum DeviceMountError {
     Manifest,
     Sources,
-    Reader(obc_reader::MountError),
+    Reader(#[allow(dead_code)] obc_reader::MountError),
 }
 
 /// FAT timestamps need a clock; the device has none yet (see [`obc_ports::TrackPoint::t_ms`]),
@@ -512,7 +509,7 @@ pub struct Storage {
     route_ids: Vec<u16, MAX_ROUTES>,
     /// 8.3 filename of each *ride* catalog entry, parallel to the ride order
     /// [`scan_rides`](Storage::scan_rides) last returned — so a ride's durable object id resolves back
-    /// to the `RD{id}.ORD` file for a hold-to-delete (`delete_ride_by_id`, map-only build).
+    /// to the `RD{id}.ORD` file for detail reads and object-store deletes.
     ride_files: Vec<ShortFileName, UI_RIDES_CAP>,
     /// Each ride catalog entry's **durable object id**, parallel to [`ride_files`](Storage::ride_files)
     /// — filename-encoded (`RD{id}.ORD`), the identity the app's ride-menu remap and the phone's
@@ -524,8 +521,7 @@ pub struct Storage {
     /// (TR3) remap by this id across rescans.
     trip_ids: Vec<u16, MAX_TRIPS>,
     /// The 8.3 filename of each scanned trip, parallel to [`trip_ids`](Storage::trip_ids) — so a
-    /// trip's durable id resolves back to its `TP{id}.OBT` file for a hold-to-delete cascade on the
-    /// map-only build (`delete_trip_cascade_by_id`), the trip twin of
+    /// trip's durable id resolves back to its `TP{id}.OBT` file, the trip twin of
     /// [`ride_files`](Storage::ride_files).
     trip_files: Vec<ShortFileName, MAX_TRIPS>,
     /// The scanned trips' decoded metadata (name + stage route ids in ride order), fed to
@@ -1097,8 +1093,7 @@ impl Storage {
     }
 
     /// Retire ride `id`'s synced flag from the sidecar (a deleted ride — ids never reuse, so this is
-    /// belt-and-braces tidiness). Rewrites the sidecar only when the flag was present. The `ble`
-    /// build's `ObjectStore::delete_ride` calls this (the map-only [`delete_ride_by_id`] inlines it).
+    /// belt-and-braces tidiness). Rewrites the sidecar only when the flag was present.
     pub fn forget_ride_synced(&mut self, id: u16) {
         let mut set = self.load_synced_set();
         if set.remove(id) {
@@ -1280,7 +1275,7 @@ impl Storage {
 
     /// Read the card-resident store-epoch nonce (`/EPOCH.OBE`, protocol v2 #632 item 5 / #776), or
     /// `None` when the file is **absent** (a fresh/foreign-formatted card) or torn/foreign — "no
-    /// epoch", which the boot mint rule ([`obc_app::settings::store_epoch_mint`]) treats as clause 1
+    /// epoch", which the boot mint rule ([`obc_app::store_meta::store_epoch_mint`]) treats as clause 1
     /// (draw a fresh nonce). Never panics on malformed input (the codec is host-tested). One file
     /// read; the card **root** is always open on a mounted card.
     pub fn load_card_epoch(&self) -> Option<u32> {
@@ -1337,26 +1332,6 @@ impl Storage {
         let mut buf = [0u8; SYNCED_RIDES_MAX_LEN];
         let n = encode_synced_rides(set, &mut buf);
         self.rewrite_sidecar(self.tracks_dir, SYNCED_SET, &buf[..n])
-    }
-
-    /// Delete the stored ride with durable object id `id` (the map-only build's hold-to-delete, epic
-    /// #447 P7 / #454): resolve the id → `RD{id}.ORD` file via the scan-parallel
-    /// [`ride_ids`](Storage::ride_ids)/[`ride_files`](Storage::ride_files) tables, close it if this
-    /// `Storage` holds it open, delete it, and retire its flag from the synced sidecar. `true` =
-    /// deleted. The `ble` build routes deletes through `ObjectStore` instead (see `object_store.rs`).
-    pub fn delete_ride_by_id(&mut self, id: u16) -> bool {
-        let Some(pos) = self.ride_ids.iter().position(|&x| x == id) else { return false };
-        let name = self.ride_files[pos].clone();
-        // An open detail-download handle on this ride must be closed before the delete — embedded-sdmmc
-        // refuses to delete an open file (#485).
-        if matches!(&self.open_object, Some((on, ..)) if *on == name) {
-            self.close_object();
-        }
-        if !self.delete_ride_file(&name) {
-            return false;
-        }
-        self.forget_ride_synced(id); // tidy the sidecar (ids never reuse, so belt-and-braces)
-        true
     }
 
     /// Build the stored ride `id`'s recorded-track elevation [`Profile`] — the Ride detail's band
@@ -1933,7 +1908,7 @@ impl Storage {
             if bytes != shard.bytes || version != parsed.obcm_version {
                 return None;
             }
-            let recorded = obc_reader::BBox {
+            let recorded = BBox {
                 min_lat: shard.bbox.min_lat,
                 min_lon: shard.bbox.min_lon,
                 max_lat: shard.bbox.max_lat,
@@ -1950,7 +1925,7 @@ impl Storage {
     /// One shard's `(byte length, OBCM version, header bbox)`, or `None` when the file is absent,
     /// unreadable, or not an OBCM file. A shard is never the open map (§5.4 forbids mounting one
     /// standalone), so this always opens fresh — no [`Storage::map_file_is`] detour.
-    fn shard_identity(&self, name: &ShortFileName) -> Option<(u32, u8, obc_reader::BBox)> {
+    fn shard_identity(&self, name: &ShortFileName) -> Option<(u32, u8, BBox)> {
         let file = self.vmgr.open_file_in_dir(self.root, name, Mode::ReadOnly).ok()?;
         let len = self.vmgr.file_length(file).unwrap_or(0);
         let mut header = [0u8; obc_formats::obcm::HEADER_LEN];
@@ -1961,7 +1936,7 @@ impl Storage {
             return None;
         }
         let rd = |o: usize| i32::from_le_bytes([header[o], header[o + 1], header[o + 2], header[o + 3]]);
-        Some((len, header[4], obc_reader::BBox { min_lat: rd(5), min_lon: rd(9), max_lat: rd(13), max_lon: rd(17) }))
+        Some((len, header[4], BBox { min_lat: rd(5), min_lon: rd(9), max_lat: rd(13), max_lon: rd(17) }))
     }
 
     /// Delete a whole volume set: execute `obc_formats::obcs::delete_plan`, which is the ordered
@@ -2030,7 +2005,7 @@ impl Storage {
     /// The currently-open map is read **through its existing handle**: embedded-sdmmc refuses every
     /// second open of an open file (`FileAlreadyOpen`), which would otherwise drop the loaded map out
     /// of its own catalog — the same trap `route_object_info` documents (issue #480).
-    fn map_identity(&self, name: &ShortFileName) -> Option<(u8, obc_reader::BBox)> {
+    fn map_identity(&self, name: &ShortFileName) -> Option<(u8, BBox)> {
         let mut header = [0u8; obc_formats::obcm::HEADER_LEN];
         let read_through = |src: &dyn ByteSource, header: &mut [u8; obc_formats::obcm::HEADER_LEN]| {
             (src.len() as usize >= header.len()) && src.read_at(0, header).is_ok()
@@ -2052,7 +2027,7 @@ impl Storage {
         }
         let rd = |o: usize| i32::from_le_bytes([header[o], header[o + 1], header[o + 2], header[o + 3]]);
         // Header field order is lat, lon, lat, lon (OBCM_Spec.md §1) — not the order bbox code expects.
-        let bbox = obc_reader::BBox { min_lat: rd(5), min_lon: rd(9), max_lat: rd(13), max_lon: rd(17) };
+        let bbox = BBox { min_lat: rd(5), min_lon: rd(9), max_lat: rd(13), max_lon: rd(17) };
         Some((header[4], bbox))
     }
 
@@ -2068,10 +2043,10 @@ impl Storage {
     pub fn load_selected_map(&self) -> Option<ShortFileName> {
         let name = ShortFileName::create_from_str(MAP_SELECTED).ok()?;
         let file = self.vmgr.open_file_in_dir(self.root, &name, Mode::ReadOnly).ok()?;
-        let mut buf = [0u8; obc_app::settings::SELECTED_MAP_LEN];
+        let mut buf = [0u8; obc_app::store_meta::SELECTED_MAP_LEN];
         let n = self.vmgr.read(file, &mut buf).unwrap_or(0);
         let _ = self.vmgr.close_file(file);
-        ShortFileName::create_from_str(obc_app::settings::decode_selected_map(&buf[..n])?).ok()
+        ShortFileName::create_from_str(obc_app::store_meta::decode_selected_map(&buf[..n])?).ok()
     }
 
     /// Record which map the renderer should stream from, as a truncating rewrite of
@@ -2090,7 +2065,7 @@ impl Storage {
                 let _ = text.push(b as char);
             }
         }
-        let Some(bytes) = obc_app::settings::encode_selected_map(text.as_str()) else {
+        let Some(bytes) = obc_app::store_meta::encode_selected_map(text.as_str()) else {
             defmt::warn!(
                 "SD: map selection {} is not a writable 8.3 name — selection unchanged",
                 defmt::Debug2Format(name)
@@ -2502,7 +2477,7 @@ impl Storage {
     /// object. The ride loop checks this once per pass and raises the store edge from it — on `ble`
     /// by posting [`crate::object_store::note_ride_saved`] (the BLE plane re-scans its catalog and
     /// bumps the revision, so the phone's `storeChanged`/digest and the Rides menu learn from the
-    /// same edge), map-only by re-feeding the Rides menu directly.
+    /// same edge).
     pub fn take_ride_saved(&mut self) -> bool {
         core::mem::take(&mut self.ride_saved)
     }
@@ -2647,17 +2622,6 @@ impl Storage {
                 false
             }
         }
-    }
-
-    /// Delete a stored route by its **object id** — the map-only (non-`ble`) build's on-device
-    /// hold-to-delete path (epic #447, P6). Resolves the id to its 8.3 filename through the
-    /// scan-parallel [`route_ids`](Storage::route_ids)/[`route_files`](Storage::route_files) tables,
-    /// then deletes the file. `true` = deleted; the caller re-scans the catalog. (The `ble` build
-    /// routes deletes through the shared `ObjectStore` instead, keeping the wire revision coherent.)
-    pub fn delete_route_by_id(&mut self, id: u16) -> bool {
-        let Some(pos) = self.route_ids.iter().position(|&x| x == id) else { return false };
-        let name = self.route_files[pos].clone();
-        self.delete_route_file(&name)
     }
 
     /// Open (truncating) the upload temp for a fresh transfer, dropping any stale handle.
@@ -3648,28 +3612,6 @@ impl Storage {
         }
     }
 
-    /// The on-device long-press **cascade** delete (epic #526 TR3/TR4), map-only build: delete the
-    /// trip's member route files *and* the trip file itself, resolving the trip's stage route ids from
-    /// its resident [`TripMeta`] (parallel to [`trip_files`](Storage::trip_files)). `true` = the trip
-    /// file was deleted; the caller re-scans routes + trips. The `ble` build routes the cascade through
-    /// [`ObjectStore::delete_trip_cascade`](crate::object_store::ObjectStore::delete_trip_cascade)
-    /// instead, so the wire revision + `storeChanged` stay coherent. A dangling stage id (no such route
-    /// file) is simply skipped.
-    pub fn delete_trip_cascade_by_id(&mut self, id: u16) -> bool {
-        let Some(pos) = self.trip_ids.iter().position(|&x| x == id) else { return false };
-        // Snapshot the stage ids + the trip file before mutating (the scan tables are rebuilt after).
-        let stages: Vec<u16, { obc_route::MAX_TRIP_STAGES }> = self.trip_metas[pos].stage_ids.clone();
-        let trip_file = self.trip_files[pos].clone();
-        // Release any active route geometry once up front — `delete_route_file` also closes the handle
-        // on the specific file it deletes, but a member being previewed must not block the sweep.
-        self.reconcile_route(None);
-        for stage_id in &stages {
-            // Delete the member route by id (a no-op if the stage id is dangling — already gone).
-            let _ = self.delete_route_by_id(*stage_id);
-        }
-        self.delete_trip_file(&trip_file)
-    }
-
     /// Read the trip-CRC sidecar (`/routes/TRIPS.CRC`) — the trip twin of
     /// [`load_route_crcs`](Self::load_route_crcs); reuses the [`RouteCrcs`] `u16 → u32` codec. A
     /// missing/torn file = the empty map (every trip serves `0 = unknown`).
@@ -4141,7 +4083,7 @@ fn set_identity_from_manifest(parsed: &obc_formats::obcs::SetManifest) -> SetIde
     SetIdentity {
         shard_count: parsed.shard_count() as u8,
         obcm_version: parsed.obcm_version,
-        bbox: obc_reader::BBox {
+        bbox: BBox {
             min_lat: parsed.bbox.min_lat,
             min_lon: parsed.bbox.min_lon,
             max_lat: parsed.bbox.max_lat,

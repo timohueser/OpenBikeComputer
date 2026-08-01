@@ -10,8 +10,9 @@
 
 use embedded_graphics::pixelcolor::Rgb888;
 use obc_app::screen::Screen;
-use obc_app::{App, AppState, Fix, Gesture};
+use obc_app::{App, AppState, Gesture};
 use obc_formats::obcm::POI_HOURS_BLOB_LEN;
+use obc_ports::Fix;
 use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader, SliceSource};
 use obcm_testkit::{build_poi_map, build_poi_map_with_hours, PoiSpec};
 

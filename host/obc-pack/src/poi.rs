@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 
 use obc_formats::obcm::{poi_category_of, poi_label_of};
-use obc_reader::M_PER_DEG;
+use obc_map_scene::M_PER_DEG;
 
 use crate::hours::Schedule;
 

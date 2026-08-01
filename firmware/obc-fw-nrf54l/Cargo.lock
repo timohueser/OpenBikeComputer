@@ -1311,6 +1311,7 @@ dependencies = [
  "obc-dfu",
  "obc-display",
  "obc-formats",
+ "obc-map-scene",
  "obc-platform",
  "obc-ports",
  "obc-reader",
@@ -1341,8 +1342,8 @@ dependencies = [
  "embedded-hal 1.0.0",
  "embedded-hal-async",
  "heapless 0.8.0",
+ "obc-map-scene",
  "obc-ports",
- "obc-route",
 ]
 
 [[package]]
@@ -1376,6 +1377,7 @@ dependencies = [
  "heapless 0.8.0",
  "libm",
  "obc-formats",
+ "obc-map-scene",
  "obc-ports",
  "obc-reader",
 ]

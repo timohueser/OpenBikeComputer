@@ -68,15 +68,20 @@ async fn map_output_write(
         return Err("a map output write must carry raw bytes".into());
     };
     let bytes = bytes.clone();
-    let root = outputs.root(id)?;
-    tauri::async_runtime::spawn_blocking(move || map_output::write_file(&root, &name, &bytes))
-        .await
-        .map_err(|e| e.to_string())?
+    let outputs = outputs.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || outputs.write(id, &name, &bytes)).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn map_output_finish(outputs: tauri::State<'_, Arc<map_output::Outputs>>, id: u64) -> Result<(), String> {
-    outputs.finish(id)
+async fn map_output_finish(outputs: tauri::State<'_, Arc<map_output::Outputs>>, id: u64) -> Result<(), String> {
+    let outputs = outputs.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || outputs.finish(id)).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn map_output_discard(outputs: tauri::State<'_, Arc<map_output::Outputs>>, id: u64) -> Result<(), String> {
+    let outputs = outputs.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || outputs.discard(id)).await.map_err(|e| e.to_string())?
 }
 
 /// Where built maps go. Shown in the UI, so it is a fact the user can act on.
@@ -223,6 +228,7 @@ fn main() {
             map_output_begin,
             map_output_write,
             map_output_finish,
+            map_output_discard,
             storage_info,
             reveal_file,
             // E2 (#912). The library is a folder plus an index; the ack follows `rides_import`.

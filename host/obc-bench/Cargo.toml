@@ -6,6 +6,7 @@ publish = false # host-only bench harness — never shipped or published
 description = "Host render benchmark harness + CI pixel-hash tripwire over the real obc-reader → obc-render pipeline (issue #327)"
 
 [dependencies]
+obc-map-scene = { path = "../../firmware/obc-map-scene" }
 obc-reader = { path = "../../firmware/obc-reader" }
 obc-render = { path = "../../firmware/obc-render" }
 # The OBCR route reader — the corridor bench (epic #946 U2) drives `Reader::corridor_pois` against a

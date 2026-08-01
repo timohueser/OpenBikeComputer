@@ -25,6 +25,7 @@ obc-formats = { path = "../../firmware/obc-formats" }
 # and, in the verify pass, to walk the finished output exactly as a device would (OBCA §4.8). `alloc`
 # is on for `MapCache::new_boxed`: the ~277 KB cache must not land on a small (wasm) stack.
 obc-reader = { path = "../../firmware/obc-reader", features = ["alloc"] }
+obc-map-scene = { path = "../../firmware/obc-map-scene" }
 # Shard digests + the set id (OBCA §5.2). Pure Rust, so it follows the engine to wasm.
 sha2 = "0.11"
 # `obc-reader`'s feature-decode API fills caller-owned fixed-capacity buffers, so the verify pass
@@ -46,4 +47,3 @@ obc-display = { path = "../../firmware/obc-display" }
 # The oracle's route half: the real A* the device runs.
 obc-route = { path = "../../firmware/obc-route", features = ["alloc"] }
 embedded-graphics = "0.8"
-heapless = "0.8"

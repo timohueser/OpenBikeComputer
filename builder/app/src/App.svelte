@@ -3,7 +3,7 @@
     import Header from "./components/Header.svelte";
     import Desktop from "./routes/Desktop.svelte";
     import Home from "./routes/Home.svelte";
-    import { loadStyleEditor, platform, type StyleEditorModule } from "./lib/platform";
+    import { platform, type StyleEditorModule } from "./lib/platform";
     import { DESKTOP_ADDS } from "./lib/platform/gating";
     import { router } from "./lib/router.svelte";
 
@@ -13,7 +13,7 @@
     // emitting one nothing loads. Copied to a local const so the narrowing
     // survives into the closure; the promise is memoized so re-renders don't
     // restart the await block.
-    const load = loadStyleEditor;
+    const load = platform.styleEditor?.load;
     let editor: Promise<StyleEditorModule> | undefined;
     const openEditor = load ? () => (editor ??= load()) : null;
 

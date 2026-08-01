@@ -74,7 +74,7 @@
             void failRun(new DOMException("The builder was closed.", "AbortError"));
         } else {
             worker?.terminate();
-            void closeDownloadOutput();
+            void closeDownloadOutput(true);
         }
     });
 
@@ -91,6 +91,7 @@
     let errorMessage = $state<string | null>(null);
     let abortCtl: AbortController | null = null;
     let downloadOutput: MapOutputSession | null = null;
+    let outputCleanupFailed = $state(false);
     let runMapName = "OBC map";
 
     interface DeviceOutput {
@@ -190,7 +191,7 @@
                     }
                 } else {
                     try {
-                        await closeDownloadOutput();
+                        await closeDownloadOutput(false);
                     } catch (cause) {
                         await failRun(cause);
                         break;
@@ -216,10 +217,10 @@
         }
     }
 
-    async function closeDownloadOutput() {
+    async function closeDownloadOutput(discard: boolean) {
         const current = downloadOutput;
         downloadOutput = null;
-        await current?.finish();
+        if (current) await (discard ? current.discard() : current.finish());
     }
 
     function settleDevice(result: UploadResult | unknown, failed = false) {
@@ -245,7 +246,7 @@
             const { abandonAssembledSet } = await import("../../lib/device/write");
             await abandonAssembledSet(output.client, output.state);
         } else {
-            await closeDownloadOutput().catch(() => {});
+            await closeDownloadOutput(true).catch(() => (outputCleanupFailed = true));
         }
         errorMessage = cause instanceof Error ? cause.message : String(cause);
         phase = cancelled ? "cancelled" : "error";
@@ -280,6 +281,7 @@
         savedFiles = [];
         outputPath = null;
         downloadOutput = null;
+        outputCleanupFailed = false;
         runWarnings = [];
         dlProgress = null;
         asmFraction = 0;
@@ -555,6 +557,9 @@
             estimateError === null
         );
     });
+    const incompleteFilesRemain = $derived(
+        lastRunKind === "download" && savedFiles.length > 0 && (!platform.openMapOutput || outputCleanupFailed),
+    );
 
     const dlPct = $derived(
         dlProgress && dlProgress.totalBytes > 0
@@ -691,9 +696,23 @@
                     {/each}
                 </div>
             {:else if phase === "error"}
-                <p class="line warn small">Nothing was saved: {errorMessage}</p>
+                <p class="line warn small">
+                    {#if incompleteFilesRemain}
+                        The map was not completed. Discard the {savedFiles.length} downloaded
+                        {savedFiles.length === 1 ? "file" : "files"}: {errorMessage}
+                    {:else}
+                        Nothing was saved: {errorMessage}
+                    {/if}
+                </p>
             {:else if phase === "cancelled"}
-                <p class="line faint small">Cancelled — nothing was saved.</p>
+                <p class="line faint small">
+                    {#if incompleteFilesRemain}
+                        Cancelled — discard the {savedFiles.length} incomplete
+                        {savedFiles.length === 1 ? "file" : "files"} already downloaded.
+                    {:else}
+                        Cancelled — nothing was saved.
+                    {/if}
+                </p>
             {:else if phase === "idle"}
                 <p class="line faint small">
                     Cells are verified against the catalog (SHA-256), then assembled and read back in full

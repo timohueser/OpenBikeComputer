@@ -6,8 +6,9 @@
 //! the multi-block index assembly, and negative microdegrees. Each test asserts a concrete decoded
 //! value (whole-feature drop status, bbox, cache hit/miss counts) rather than "didn't panic".
 
+use obc_map_scene::BBox;
 use obc_reader::{
-    BBox, DecodeStatus, Error, MapCache, MapTables, Reader, SliceSource, MAX_CHUNK_BYTES, MAX_FEAT_PTS, MAX_FEAT_RINGS,
+    DecodeStatus, Error, MapCache, MapTables, Reader, SliceSource, MAX_CHUNK_BYTES, MAX_FEAT_PTS, MAX_FEAT_RINGS,
 };
 use obcm_testkit::{build_file, pack_line, pack_line_decl, pack_poly_decl, pack_poly_holes, seal, LodSpec, Style};
 

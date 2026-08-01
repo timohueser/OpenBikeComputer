@@ -11,7 +11,7 @@ use crate::i18n::{t, Msg};
 use crate::retention::RideRetention;
 use crate::stat_fields::{StatFieldList, MAX_STAT_FIELDS};
 
-pub use obc_ports::DateTime;
+pub(crate) use obc_ports::DateTime;
 
 /// First year accepted by the settings codec and Date & Time editor.
 pub const DATETIME_MIN_YEAR: u16 = 2020;
@@ -1061,20 +1061,6 @@ fn decode_saved_sensors(b: &[u8]) -> [SavedSensor; SENSOR_SLOTS] {
     }
     slots
 }
-
-// ==================== compatibility re-exports (FAR-09, #802) ====================
-//
-// The independent store-metadata codecs used to live in this module; they moved beside the
-// invariants they protect (store identity → `store_meta`, DFU arm → `dfu`, ride sync → `ride`,
-// route identity → `route`). Every name stays importable as `settings::*` — the board, BLE, and
-// vector crates address them through this path — so the move is invisible to callers.
-pub use crate::dfu::{decode_arm_marker, encode_arm_marker, ArmMarker, ARM_MARKER_LEN};
-pub use crate::ride::{decode_synced_rides, encode_synced_rides, synced_rides_len, SyncedRides, SYNCED_RIDES_MAX_LEN};
-pub use crate::route::{decode_route_crcs, encode_route_crcs, route_crcs_len, RouteCrcs, ROUTE_CRCS_MAX_LEN};
-pub use crate::store_meta::{
-    decode_id_marks, decode_selected_map, decode_store_epoch, encode_id_marks, encode_selected_map, encode_store_epoch,
-    store_epoch_mint, IdMarks, ID_MARKS_LEN, SELECTED_MAP_LEN, SELECTED_MAP_NAME_MAX, STORE_EPOCH_LEN,
-};
 
 #[cfg(test)]
 mod tests {

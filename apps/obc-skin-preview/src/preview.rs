@@ -4,7 +4,8 @@ use embedded_graphics::pixelcolor::Rgb888;
 use obc_formats::io::SliceSource;
 use obc_formats::obcm::{HEADER_LEN, STYLE_RECORD_LEN};
 use obc_host_core::RgbaFrame;
-use obc_reader::{rgb565_to_device64, BBox, Error as ReadError, MapCache, MapTables, Reader};
+use obc_map_scene::BBox;
+use obc_reader::{rgb565_to_device64, Error as ReadError, MapCache, MapTables, Reader};
 use obc_render::{zoom_for_mpp, MapRenderer, RenderStats, Viewport};
 use obcm_assemble::schema::{Schema, Skin};
 use obcm_assemble::shard::pack_style_table;
@@ -454,7 +455,7 @@ fn add_delta(value: i32, delta: i64) -> i32 {
     (value as i64 + delta).clamp(i32::MIN as i64, i32::MAX as i64) as i32
 }
 
-fn maximum_fitting_mpp(bbox: obc_reader::BBox, camera_bounds: obc_reader::BBox) -> f32 {
+fn maximum_fitting_mpp(bbox: BBox, camera_bounds: BBox) -> f32 {
     let lon =
         (((bbox.min_lon as i64 + bbox.max_lon as i64) / 2) as i32).clamp(camera_bounds.min_lon, camera_bounds.max_lon);
     let lat =

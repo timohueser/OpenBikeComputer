@@ -21,6 +21,7 @@
     let presetsError = $state<string | null>(null);
     let importError = $state<string | null>(null);
     let fileInput: HTMLInputElement;
+    const editor = platform.styleEditor!;
 
     const env = $derived(working.envelope);
     const basedOnName = $derived(
@@ -39,10 +40,8 @@
 
     onMount(async () => {
         if (!working.envelope) working.restore();
-        // Non-null wherever this route can load: only the maintainer dev host
-        // includes the editor.
-        platform.schema?.().then((s) => (schema = s)).catch(() => (schema = null));
-        platform
+        editor.schema().then((s) => (schema = s)).catch(() => (schema = null));
+        editor
             .presets()
             .then((loaded) => {
                 presets = loaded;
@@ -172,9 +171,7 @@
         {/if}
     </div>
 {:else}
-    {#if platform.schemaPreview}
-        <SchemaLab {env} {schema} />
-    {/if}
+    <SchemaLab {env} {schema} service={editor.preview} />
     <div class="tabs">
         <button type="button" class:active={tab === "features"} onclick={() => (tab = "features")}>
             Features &amp; styling

@@ -10,7 +10,7 @@
 // "/" or under a sub-path without a rebuild.
 
 import { LINKS } from "../constants";
-import type { LoadStyleEditor, Platform } from "./types";
+import type { Platform } from "./types";
 
 // `||`, not `??`: a deployment that has no catalog to point at yet (the site deploy
 // passes the repository variable straight through, and an unset variable arrives as
@@ -88,9 +88,6 @@ export const platform: Platform = {
     // unaffected and stays open (#901).
     usbViaWebUsb: true,
 
-    // No local config picker exists on this tier; skins live in the catalog and
-    // are read by the coverage flow.
-    presets: async () => [],
     catalog: catalogOnce,
     catalogFetch: globalThis.fetch,
     openMapOutput: null,
@@ -107,16 +104,8 @@ export const platform: Platform = {
     },
     rides: null,
 
-    // Both absent by design, not pending: `schema` has no caller without
-    // a maintainer editor and `palette` none without the color
-    // picker, and this tier has neither — permanently, because having neither
-    // is what makes it serverless. Nothing to serve, and no issue that owes it.
-    schema: null,
-    palette: null,
-    schemaPreview: null,
+    styleEditor: null,
 
     // This host *is* the site, so its header links back out to the rest of it.
     siteNav: LINKS,
 };
-
-export const loadStyleEditor: LoadStyleEditor | null = null;
