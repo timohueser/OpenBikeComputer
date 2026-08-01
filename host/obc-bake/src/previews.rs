@@ -345,9 +345,23 @@ mod tests {
         let dusk = render(&schema, &shipped_skin("dusk")).expect("dusk preview renders");
 
         assert_eq!(&default[..8], b"\x89PNG\r\n\x1a\n");
-        assert_eq!(image::load_from_memory(&default).unwrap().width(), WIDTH);
-        assert_eq!(image::load_from_memory(&default).unwrap().height(), HEIGHT);
+        let default_image = image::load_from_memory(&default).unwrap().to_rgb8();
+        assert_eq!(default_image.width(), WIDTH);
+        assert_eq!(default_image.height(), HEIGHT);
         assert_ne!(default, dusk, "two color schemes should not produce the same preview");
         assert_eq!(default, render(&schema, &shipped_skin("default")).unwrap());
+
+        // Teningen's lower half is predominantly residential landuse. This is a
+        // deliberately broad coverage assertion rather than a PNG hash: it
+        // catches an ingest crop dropping the town's multipolygon while allowing
+        // unrelated renderer or compression changes.
+        let (r, g, b) = rgb565_to_rgb888(0xAD55);
+        let residential = [r, g, b];
+        let lower_residential =
+            default_image.enumerate_pixels().filter(|(_, y, pixel)| *y >= 140 && pixel.0 == residential).count();
+        assert!(
+            lower_residential > 10_000,
+            "Teningen residential coverage regressed: only {lower_residential} pixels in the lower preview"
+        );
     }
 }

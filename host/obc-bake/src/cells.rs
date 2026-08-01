@@ -62,12 +62,13 @@
 //! # What "unchanged" means
 //!
 //! The skip state uses two keys, for different reasons, at cell granularity.
-//! The **pack key** hashes everything that can move a byte — recipe version, OBCM
-//! version, schema config and revision, the band table, the cutter's own description,
-//! the plan's crop, and the sorted `(extract id, extract SHA-256)` pairs of the source
-//! set. Content hashes, never mtimes. The **sidecar facts** — the sources' snapshot
-//! dates — are compared separately, so a mirror re-publishing byte-identical extracts
-//! under a new date rewrites four-line JSON files and re-cuts nothing.
+//! The **pack key** hashes everything that can move a byte — cell and crop recipe
+//! versions, OBCM version, schema config and revision, the band table, the cutter's
+//! own description, the plan's crop, and the sorted `(extract id, extract SHA-256)`
+//! pairs of the source set. Content hashes, never mtimes. The **sidecar facts** — the
+//! sources' snapshot dates — are compared separately, so a mirror re-publishing
+//! byte-identical extracts under a new date rewrites four-line JSON files and re-cuts
+//! nothing.
 //!
 //! A plan whose every cell is current is skipped **before its extracts are ingested**,
 //! which is the property that makes a re-run of a DACH bake minutes rather than hours.
@@ -75,13 +76,13 @@
 //! # The crop, and the one determinism caveat
 //!
 //! A multi-source plan ingests two whole-country extracts, so it crops them to the
-//! union of its own cells widened by [`CROP_MARGIN_UDEG`] — the ordinary `--bbox`
-//! `complete_ways` crop, which keeps every way touching the area and therefore every
-//! junction inside it. The crop is part of the pack key, so it is part of the cell's
-//! recipe rather than an invisible variable. It is also the one place where "same
-//! source snapshot ⇒ byte-identical cell" (§3.2) needs reading as "same source *set*
-//! and crop": a multipolygon relation whose members reach past the crop is dropped by
-//! the ingest, exactly as it would be dropped at an extract's own edge.
+//! union of its own cells widened by [`CROP_MARGIN_UDEG`] — the relation-complete
+//! `--bbox` crop, which keeps every way touching the area, every renderable area
+//! relation reached by those ways, and therefore every junction and polygon inside
+//! it. The crop is part of the pack key, so it is part of the cell's recipe rather
+//! than an invisible variable. A relation can still be incomplete at a Geofabrik
+//! extract's own edge; those genuinely missing members remain an input limitation,
+//! not something the crop guesses around.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -104,13 +105,18 @@ use crate::source::{Extract, ExtractSource};
 /// re-cut that content hashing alone would not.
 pub const CELL_RECIPE_VERSION: u32 = 1;
 
+/// Bumped only when the in-process bbox selection changes. Single-source region
+/// plans and planet leaves do not crop in the cutter, so folding this into
+/// [`CELL_RECIPE_VERSION`] would force a vast re-cut whose bytes cannot change.
+const CROP_RECIPE_VERSION: u32 = 2;
+
 /// How far past its own cells a multi-source plan crops its extracts, µdeg
 /// (0.25° ≈ 28 km at DACH latitudes).
 ///
 /// Comfortably past Geofabrik's complete-ways overhang and past any single way, so
 /// the crop cannot change what is a junction inside the plan's cells: a way touching
-/// a node in the cell area has that node inside the box, and `complete_ways` keeps
-/// the whole way.
+/// a node in the cell area has that node inside the box, and relation-complete
+/// selection keeps both the whole way and every renderable polygon it reaches.
 pub const CROP_MARGIN_UDEG: i64 = 250_000;
 
 const CELLS_DIR: &str = "cells";
@@ -747,8 +753,9 @@ impl CellBakery<'_> {
             .into_iter()
             .collect();
         let bands = serde_json::to_string(&self.opts.bands).unwrap_or_default();
+        let crop_recipe = crop.map(|_| format!("crop-recipe={CROP_RECIPE_VERSION}\n")).unwrap_or_default();
         crate::hash::text(&format!(
-            "recipe={CELL_RECIPE_VERSION}\nobcm={}\ncutter={}\nschema={}\nrevision={}\nbands={bands}\ncrop={}\nsources={}\n",
+            "recipe={CELL_RECIPE_VERSION}\n{crop_recipe}obcm={}\ncutter={}\nschema={}\nrevision={}\nbands={bands}\ncrop={}\nsources={}\n",
             obc_formats::obcm::VERSION,
             self.cutter.recipe(),
             self.schema.body_sha256,
