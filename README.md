@@ -101,7 +101,7 @@ has no use for: `obc-fw-nrf54l`, `obc-boot`, and `obc-desktop`.
 | The packer (`obc-pack`) | System **GEOS ≥ 3.14** (`brew install geos`; `tools/install-geos.sh` builds it if your distro's is older) — linked for multipolygon area assembly, and the packer's only native dependency. |
 | The desktop app (`obc-desktop`) | **Node 22+** for the embedded frontend plus the platform webview dependencies listed in [its README](apps/obc-desktop/README.md). It does not link the packer or GEOS. |
 | The desktop simulator | Just Rust — the GUI is pure eframe/egui, **no SDL/Homebrew setup**. |
-| The web builder (optional) | Python 3.13 + the deps in `builder/requirements.txt`, and **Node 22+** for the one-time UI build (`npm ci && npm run build` in `builder/app/`). |
+| The web builder (optional) | Python 3.13 + the deps in `builder/requirements.txt`, and **Node 22+** for the UI. The maintainer schema lab also uses `osmium-tool` once to prepare its small reference-complete preview source (`obc doctor` checks it). |
 | Checking the shared crates build for the device | `rustup target add thumbv8m.main-none-eabihf`. |
 
 ---
@@ -328,15 +328,32 @@ HTTPS transport and are restricted to that configured origin. Assembled files ar
 written atomically into one uniquely named folder under
 `Documents/OpenBikeComputer`; the web host offers the same bytes as downloads.
 
-The local Python server remains a maintainer tool for the advanced schema editor:
+The local Python server remains the maintainer host for the shared Maps UI and
+the advanced schema editor. Prepare its small preview source once, then start it:
 
 ```sh
-.venv/bin/python -m builder.server
+obc web preview-source
+obc web
 ```
 
-It serves palette, schema, and preset data but no map-build queue. Edits live in
-the browser and export as a complete packer config for an explicit maintainer
-`obc-pack`/`obc-bake` run. Build the frontend and its two wasm bridges with:
+The first command reuses the bakery's cached Freiburg-regbez extract when
+available (downloads it otherwise), then atomically asks Osmium for one
+reference-complete Teningen crop. `OBC_SCHEMA_PREVIEW_PBF` in `tools/obc.local`
+may instead name an already-prepared absolute `.osm.pbf`; that maintainer-owned
+path is never downloaded to or overwritten.
+
+The Maps tab reads `OBC_CATALOG_URL` at server runtime and moves catalog objects
+through a same-origin, catalog-tree-restricted proxy, so an old Vite bundle or an
+R2 CORS policy cannot redirect the local host to `./data/catalog.json`. Advanced
+edits live in the browser and debounce into one native pack of only the prepared
+Teningen source—normally about 5–15 seconds, never a region or planet bake. The
+result renders on a real 240×320 device map plane through `obc-reader` and
+`obc-render`, with the full LOD ladder and the production feature/span/point/ring
+limits visible. The exported complete config becomes public only through an
+explicit maintainer bake.
+
+`obc web` refreshes the native packer, frontend, and all three wasm bridges. The lower-level
+equivalent remains:
 
 ```sh
 cd builder/app
@@ -345,8 +362,9 @@ npm run build:wasm
 npm run build:all
 ```
 
-`obc-web-convert` handles GPX/route conversion and `obc-web-assemble` assembles
-cell sets. There is no separate product preview renderer or desktop PBF build path.
+`obc-web-convert` handles GPX/route conversion, `obc-web-assemble` assembles cell
+sets, and `obc-skin-preview` exposes the production renderer to both preview
+surfaces. There is no separate product preview renderer or desktop PBF build path.
 
 ### Driving the device step without a device
 
@@ -368,11 +386,11 @@ VITE_DATA_BASE=/data npm run dev -- --mode web   # then open /dev-harness/
 `VITE_DATA_BASE` is root-relative here because the harness is served from a
 sub-path, and the default `./data` would resolve under it.
 
-All of them — and `npm run check` and `npm test` — need the two wasm bridges
+All of them — and `npm run check` and `npm test` — need the three wasm bridges
 built once first (`npm run build:wasm`, which wants a Rust toolchain and
-`wasm-pack`): route conversion and cell assembly run
+`wasm-pack`): route conversion, cell assembly, and production previews run
 client-side through the project's own code, so the TypeScript imports bindings
-that don't exist until they're built. See
+that do not exist until they are built. See
 [`firmware/README.md`](firmware/README.md#build-the-web-builders-wasm-bridges-obc-web-convert-obc-web-assemble).
 
 ---

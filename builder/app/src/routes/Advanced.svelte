@@ -5,6 +5,7 @@
     import OutputTab from "../components/advanced/OutputTab.svelte";
     import ProfilesTab from "../components/advanced/ProfilesTab.svelte";
     import StyleTable from "../components/advanced/StyleTable.svelte";
+    import SchemaLab from "../components/advanced/SchemaLab.svelte";
     import { platform } from "../lib/platform";
     import { exportFile, importFile } from "../lib/config/edit";
     import { isBuildable, type Preset, type SchemaEnvelope } from "../lib/config/model";
@@ -16,6 +17,8 @@
     let catalog = $state<{ keys: Record<string, string[]> }>({ keys: {} });
     let schema = $state<SchemaEnvelope | null>(null);
     let presets = $state<Preset[]>([]);
+    let presetsLoaded = $state(false);
+    let presetsError = $state<string | null>(null);
     let importError = $state<string | null>(null);
     let legacyConfig = $state<Record<string, unknown> | null>(null);
     let fileInput: HTMLInputElement;
@@ -24,6 +27,7 @@
     const basedOnName = $derived(
         presets.find((p) => p.id === env?.based_on?.id)?.name ?? env?.based_on?.id ?? null,
     );
+    const buildablePresetCount = $derived(presets.filter(isBuildable).length);
 
     // Fields the table renders bespoke columns for; everything else the schema
     // declares becomes an extra column via SchemaField (v6 line_style/color2).
@@ -39,7 +43,21 @@
         // Non-null wherever this route can load: only the maintainer dev host
         // includes the editor.
         platform.schema?.().then((s) => (schema = s)).catch(() => (schema = null));
-        platform.presets().then((p) => (presets = p)).catch(() => {});
+        platform
+            .presets()
+            .then((loaded) => {
+                presets = loaded;
+                const buildable = loaded.filter(isBuildable);
+                // A hosted skin is presentation-only and cannot seed this
+                // schema editor. On first use, the one shipped buildable schema
+                // is deterministic; restore/import always wins, and a future
+                // shelf with multiple schemas requires an explicit choice.
+                if (!working.envelope && buildable.length === 1) working.applyPreset(buildable[0]);
+            })
+            .catch((cause) => {
+                presetsError = cause instanceof Error ? cause.message : String(cause);
+            })
+            .finally(() => (presetsLoaded = true));
         // The OSM tag-key catalog for the category rail — a static asset on
         // every host, and unrelated to the platform's `catalog()` (baked maps).
         fetch(`${import.meta.env.BASE_URL}osm_catalog.json`)
@@ -172,9 +190,24 @@
 
 {#if !env}
     <div class="card">
-        <p>No working config yet — pick a map style on the <a href="#/">main page</a> first.</p>
+        {#if !presetsLoaded}
+            <p>Loading the maintainer schema preset…</p>
+        {:else if presetsError}
+            <p>
+                The maintainer schema presets could not be loaded: {presetsError}
+                Restart <code>obc web</code>, or import a complete packer config above.
+            </p>
+        {:else}
+            <p>
+                Automatic first-use setup requires exactly one buildable schema preset, but this host provided
+                {buildablePresetCount}. Import a complete packer config above.
+            </p>
+        {/if}
     </div>
 {:else}
+    {#if platform.schemaPreview}
+        <SchemaLab {env} {schema} />
+    {/if}
     <div class="tabs">
         <button type="button" class:active={tab === "features"} onclick={() => (tab = "features")}>
             Features &amp; styling

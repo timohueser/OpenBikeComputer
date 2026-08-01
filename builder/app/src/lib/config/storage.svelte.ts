@@ -4,8 +4,9 @@ import { deepCopy, normalizeConfig, type BuildablePreset, type PackConfig } from
 // The working config lives in the browser (localStorage), never on the server
 // — that keeps the backend stateless (no accounts needed) and survives
 // reloads. Snapshot semantics: picking a preset COPIES it; edits mark the
-// envelope modified ("Custom — based on X"); preset updates never silently
-// change a user's maps — "Reset to preset" re-copies explicitly.
+// envelope modified ("Custom — based on X"). The maintainer route may seed an
+// empty browser from its sole buildable schema once; preset updates never
+// silently change an existing map — "Reset to preset" re-copies explicitly.
 
 export interface WorkingEnvelope {
     schema_version: number;

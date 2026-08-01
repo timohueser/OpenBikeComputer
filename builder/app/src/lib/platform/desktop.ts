@@ -79,6 +79,7 @@ export const platform: Platform = {
 
     schema: null,
     palette: null,
+    schemaPreview: null,
 
     // Native USB (D4 #909), loaded on demand for the same reason the web host
     // does it: the protocol client, the codecs and the transport are their own
