@@ -1,11 +1,11 @@
-//! Target-independent core for the skin editor's fixed Teningen scene.
+//! Target-independent core for the skin editor's production-rendered scene.
 
 use embedded_graphics::pixelcolor::Rgb888;
 use obc_formats::io::SliceSource;
 use obc_formats::obcm::{HEADER_LEN, STYLE_RECORD_LEN};
 use obc_host_core::RgbaFrame;
-use obc_reader::{rgb565_to_device64, Error as ReadError, MapCache, MapTables, Reader};
-use obc_render::{zoom_for_mpp, MapRenderer, Viewport};
+use obc_reader::{rgb565_to_device64, BBox, Error as ReadError, MapCache, MapTables, Reader};
+use obc_render::{zoom_for_mpp, MapRenderer, RenderStats, Viewport};
 use obcm_assemble::schema::{Schema, Skin};
 use obcm_assemble::shard::pack_style_table;
 
@@ -14,7 +14,14 @@ pub const FRAME_H: u32 = 240;
 
 const CAMERA_LON: i32 = 7_814_000;
 const CAMERA_LAT: i32 = 48_130_000;
-const METERS_PER_PIXEL: f32 = 5.0;
+// The packer's requested crop. Complete OSM ways may legally extend the OBCM
+// header beyond it; those overhangs are not evidence of dense preview coverage
+// and must never become pannable just because their coordinates are present.
+const TENINGEN_COVERAGE: BBox =
+    BBox { min_lon: 7_798_000, min_lat: 48_119_000, max_lon: 7_830_000, max_lat: 48_141_000 };
+const DEFAULT_METERS_PER_PIXEL: f32 = 5.0;
+const MIN_METERS_PER_PIXEL: f32 = 0.5;
+const MAX_MPP_SEARCH: f32 = 100_000.0;
 
 const HEADER_STYLE_OFFSET_AT: usize = 21;
 const HEADER_MARKER_COLOR_AT: usize = 30;
@@ -40,6 +47,32 @@ impl PreviewErrorCode {
 pub struct PreviewFailure {
     pub code: PreviewErrorCode,
     pub message: String,
+}
+
+/// Camera and production-renderer diagnostics for the last requested frame.
+///
+/// Kept in the Rust bridge so every browser surface reports the exact LOD and
+/// budget accounting chosen by `obc-render`, not a TypeScript approximation.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PreviewStats {
+    pub camera_lon: i32,
+    pub camera_lat: i32,
+    pub meters_per_pixel: f32,
+    pub lod_index: usize,
+    pub lod_count: usize,
+    pub features_drawn: usize,
+    pub features_dropped: usize,
+    pub points_drawn: usize,
+    pub span_utilization: f32,
+    pub point_utilization: f32,
+    pub ring_utilization: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Camera {
+    lon: i32,
+    lat: i32,
+    meters_per_pixel: f32,
 }
 
 impl PreviewFailure {
@@ -68,6 +101,12 @@ pub struct MapPreview {
     cache: Box<MapCache>,
     renderer: Box<MapRenderer>,
     frame: RgbaFrame,
+    camera: Camera,
+    default_camera: Camera,
+    min_mpp: f32,
+    max_mpp: f32,
+    camera_bounds: BBox,
+    render_stats: RenderStats,
     dirty: bool,
 }
 
@@ -76,6 +115,28 @@ impl MapPreview {
         let tables = MapTables::parse(&SliceSource(&bytes)).map_err(read_failure)?;
         let schema = Schema::parse(schema_json).map_err(PreviewFailure::input)?;
         schema.validate().map_err(PreviewFailure::input)?;
+        let bbox = tables.bbox;
+        let camera_bounds = if contains_bbox(bbox, TENINGEN_COVERAGE) { TENINGEN_COVERAGE } else { bbox };
+        let center = (
+            (camera_bounds.min_lon as i64 + camera_bounds.max_lon as i64) / 2,
+            (camera_bounds.min_lat as i64 + camera_bounds.max_lat as i64) / 2,
+        );
+        let preferred = if camera_bounds.min_lon <= CAMERA_LON
+            && CAMERA_LON <= camera_bounds.max_lon
+            && camera_bounds.min_lat <= CAMERA_LAT
+            && CAMERA_LAT <= camera_bounds.max_lat
+        {
+            (CAMERA_LON, CAMERA_LAT)
+        } else {
+            (center.0 as i32, center.1 as i32)
+        };
+        let max_mpp = maximum_fitting_mpp(bbox, camera_bounds);
+        let min_mpp = MIN_METERS_PER_PIXEL.min(max_mpp);
+        let camera = Camera {
+            lon: preferred.0,
+            lat: preferred.1,
+            meters_per_pixel: DEFAULT_METERS_PER_PIXEL.clamp(min_mpp, max_mpp),
+        };
         let mut preview = Self {
             bytes,
             tables,
@@ -83,8 +144,16 @@ impl MapPreview {
             cache: MapCache::new_boxed(),
             renderer: Box::new(MapRenderer::new()),
             frame: RgbaFrame::new(FRAME_W, FRAME_H),
+            camera,
+            default_camera: camera,
+            min_mpp,
+            max_mpp,
+            camera_bounds,
+            render_stats: RenderStats::default(),
             dirty: true,
         };
+        preview.clamp_camera();
+        preview.default_camera = preview.camera;
         preview.set_skin(skin_json)?;
         Ok(preview)
     }
@@ -135,18 +204,195 @@ impl MapPreview {
         Ok(())
     }
 
+    /// Move the rendered map by a logical-frame pixel delta. Invalid deltas are
+    /// ignored at this trust boundary; valid moves are clamped to the map bbox.
+    pub fn pan_by(&mut self, dx: f32, dy: f32) {
+        if !dx.is_finite() || !dy.is_finite() || (dx == 0.0 && dy == 0.0) {
+            return;
+        }
+        // Pointer capture can report a coordinate far outside the element. One
+        // event never needs to move more than a whole frame; bounding it also
+        // keeps `Viewport::to_map` away from hostile float-to-i32 saturation.
+        let dx = dx.clamp(-(FRAME_W as f32), FRAME_W as f32);
+        let dy = dy.clamp(-(FRAME_H as f32), FRAME_H as f32);
+        let viewport = self.viewport();
+        let (lon, lat) = viewport.to_map(FRAME_W as f32 / 2.0 - dx, FRAME_H as f32 / 2.0 - dy);
+        let before = self.camera;
+        self.camera.lon = lon;
+        self.camera.lat = lat;
+        self.clamp_camera();
+        self.dirty |= self.camera != before;
+    }
+
+    /// Zoom around `(x, y)` in logical-frame pixels. `factor > 1` zooms in.
+    /// The point under the cursor stays under it unless a coverage edge clamps
+    /// the camera. Non-finite and non-positive input is ignored.
+    pub fn zoom_at(&mut self, factor: f32, x: f32, y: f32) {
+        if !factor.is_finite() || factor <= 0.0 || !x.is_finite() || !y.is_finite() {
+            return;
+        }
+        let x = x.clamp(0.0, FRAME_W as f32);
+        let y = y.clamp(0.0, FRAME_H as f32);
+        let anchor = self.viewport().to_map(x, y);
+        let before = self.camera;
+        self.camera.meters_per_pixel = (self.camera.meters_per_pixel / factor).clamp(self.min_mpp, self.max_mpp);
+
+        let after = self.viewport().to_map(x, y);
+        self.camera.lon = add_delta(self.camera.lon, anchor.0 as i64 - after.0 as i64);
+        self.camera.lat = add_delta(self.camera.lat, anchor.1 as i64 - after.1 as i64);
+        self.clamp_camera();
+        self.dirty |= self.camera != before;
+    }
+
+    pub fn reset_camera(&mut self) {
+        if self.camera != self.default_camera {
+            self.camera = self.default_camera;
+            self.dirty = true;
+        }
+    }
+
+    pub fn stats(&self) -> PreviewStats {
+        let source = SliceSource(&self.bytes);
+        let reader = Reader::new(&source, &self.tables, &self.cache);
+        let lod_index = reader.select_lod_for_mpp(self.camera.meters_per_pixel);
+        PreviewStats {
+            camera_lon: self.camera.lon,
+            camera_lat: self.camera.lat,
+            meters_per_pixel: self.camera.meters_per_pixel,
+            lod_index,
+            lod_count: self.tables.lods().len(),
+            features_drawn: self.render_stats.features_drawn,
+            features_dropped: self.render_stats.features_dropped,
+            points_drawn: self.render_stats.points_drawn,
+            span_utilization: self.render_stats.span_utilization,
+            point_utilization: self.render_stats.point_utilization,
+            ring_utilization: self.render_stats.ring_utilization,
+        }
+    }
+
     pub fn frame(&mut self) -> &[u8] {
         if self.dirty {
             let source = SliceSource(&self.bytes);
             let reader = Reader::new(&source, &self.tables, &self.cache);
             let background = reader.backdrop_style().map_or(0xFFFF, |style| style.color);
-            let viewport =
-                Viewport::new(FRAME_W as f32, FRAME_H as f32, CAMERA_LON, CAMERA_LAT, zoom_for_mpp(METERS_PER_PIXEL));
-            self.renderer.render(&mut self.frame, &reader, &viewport, device_color(background), device_color);
+            let viewport = self.viewport();
+            self.render_stats =
+                self.renderer.render(&mut self.frame, &reader, &viewport, device_color(background), device_color);
             self.dirty = false;
         }
         self.frame.as_rgba()
     }
+
+    fn viewport(&self) -> Viewport {
+        Viewport::new(
+            FRAME_W as f32,
+            FRAME_H as f32,
+            self.camera.lon,
+            self.camera.lat,
+            zoom_for_mpp(self.camera.meters_per_pixel),
+        )
+    }
+
+    fn clamp_camera(&mut self) {
+        // First keep the whole viewport within the real header bbox. Then keep
+        // a small view within the dense requested crop; once the viewport is
+        // wider than that crop, keep its *centre* in the crop instead. This
+        // reaches the complete LOD ladder without turning complete-way header
+        // overhang into a sparse pannable region.
+        for _ in 0..3 {
+            let view = self.viewport().visible_bbox();
+            let header = self.tables.bbox;
+            self.camera.lon =
+                add_delta(self.camera.lon, axis_shift(view.min_lon, view.max_lon, header.min_lon, header.max_lon));
+            self.camera.lat =
+                add_delta(self.camera.lat, axis_shift(view.min_lat, view.max_lat, header.min_lat, header.max_lat));
+
+            let view = self.viewport().visible_bbox();
+            let lon_shift = coverage_shift(
+                self.camera.lon,
+                view.min_lon,
+                view.max_lon,
+                self.camera_bounds.min_lon,
+                self.camera_bounds.max_lon,
+            );
+            let lat_shift = coverage_shift(
+                self.camera.lat,
+                view.min_lat,
+                view.max_lat,
+                self.camera_bounds.min_lat,
+                self.camera_bounds.max_lat,
+            );
+            self.camera.lon = add_delta(self.camera.lon, lon_shift);
+            self.camera.lat = add_delta(self.camera.lat, lat_shift);
+        }
+    }
+}
+
+fn axis_shift(view_min: i32, view_max: i32, map_min: i32, map_max: i32) -> i64 {
+    let view_span = view_max as i64 - view_min as i64;
+    let map_span = map_max as i64 - map_min as i64;
+    if view_span >= map_span {
+        return (map_min as i64 + map_max as i64) / 2 - (view_min as i64 + view_max as i64) / 2;
+    }
+    if view_min < map_min {
+        map_min as i64 - view_min as i64
+    } else if view_max > map_max {
+        map_max as i64 - view_max as i64
+    } else {
+        0
+    }
+}
+
+fn coverage_shift(camera: i32, view_min: i32, view_max: i32, dense_min: i32, dense_max: i32) -> i64 {
+    let view_span = view_max as i64 - view_min as i64;
+    let dense_span = dense_max as i64 - dense_min as i64;
+    if view_span > dense_span {
+        camera.clamp(dense_min, dense_max) as i64 - camera as i64
+    } else {
+        axis_shift(view_min, view_max, dense_min, dense_max)
+    }
+}
+
+fn contains_bbox(outer: BBox, inner: BBox) -> bool {
+    outer.min_lon <= inner.min_lon
+        && outer.min_lat <= inner.min_lat
+        && outer.max_lon >= inner.max_lon
+        && outer.max_lat >= inner.max_lat
+}
+
+fn add_delta(value: i32, delta: i64) -> i32 {
+    (value as i64 + delta).clamp(i32::MIN as i64, i32::MAX as i64) as i32
+}
+
+fn maximum_fitting_mpp(bbox: obc_reader::BBox, camera_bounds: obc_reader::BBox) -> f32 {
+    let lon =
+        (((bbox.min_lon as i64 + bbox.max_lon as i64) / 2) as i32).clamp(camera_bounds.min_lon, camera_bounds.max_lon);
+    let lat =
+        (((bbox.min_lat as i64 + bbox.max_lat as i64) / 2) as i32).clamp(camera_bounds.min_lat, camera_bounds.max_lat);
+    let fits = |mpp| {
+        let visible = Viewport::new(FRAME_W as f32, FRAME_H as f32, lon, lat, zoom_for_mpp(mpp)).visible_bbox();
+        visible.min_lon >= bbox.min_lon
+            && visible.max_lon <= bbox.max_lon
+            && visible.min_lat >= bbox.min_lat
+            && visible.max_lat <= bbox.max_lat
+    };
+
+    let mut low = f32::EPSILON;
+    let mut high = MIN_METERS_PER_PIXEL;
+    while high < MAX_MPP_SEARCH && fits(high) {
+        low = high;
+        high *= 2.0;
+    }
+    high = high.min(MAX_MPP_SEARCH);
+    for _ in 0..32 {
+        let middle = (low + high) / 2.0;
+        if fits(middle) {
+            low = middle;
+        } else {
+            high = middle;
+        }
+    }
+    low.max(f32::EPSILON)
 }
 
 fn device_color(color: u16) -> Rgb888 {
@@ -252,5 +498,139 @@ mod tests {
         skin["styles"].as_array_mut().unwrap().remove(0);
         let err = preview.set_skin(&skin.to_string()).expect_err("missing schema type is refused");
         assert_eq!(err.code, PreviewErrorCode::Input);
+    }
+
+    fn opened() -> MapPreview {
+        MapPreview::open(MAP.to_vec(), &schema_json(), &skin_json("default")).expect("preview opens")
+    }
+
+    #[test]
+    fn reports_the_production_lod_at_every_exact_threshold() {
+        let mut preview = opened();
+        let thresholds = [(31.0, 0), (30.0, 1), (16.0, 2), (10.0, 3), (5.0, 4), (3.0, 5), (1.2, 6), (0.5, 6)];
+        assert_eq!(preview.tables.lods().len(), 7, "fixture must exercise the complete shipped ladder");
+        for (mpp, expected) in thresholds {
+            preview.camera.meters_per_pixel = mpp;
+            assert_eq!(preview.stats().lod_index, expected, "wrong LOD at {mpp} m/px");
+        }
+        preview.camera.meters_per_pixel = f32::from_bits(30.0_f32.to_bits() + 1);
+        assert_eq!(preview.stats().lod_index, 0, "one float above the 30 m/px ceiling must fall back coarse");
+    }
+
+    #[test]
+    fn wheel_scale_can_reach_every_lod_but_never_expose_blank_coverage() {
+        let mut preview = opened();
+        preview.zoom_at(1.0e-6, FRAME_W as f32 / 2.0, FRAME_H as f32 / 2.0);
+        assert!(preview.stats().meters_per_pixel > 30.0, "fixture is already wide enough for the coarsest LOD");
+        assert_eq!(preview.stats().lod_index, 0);
+        assert_view_inside_map(&preview);
+
+        preview.zoom_at(1.0e6, FRAME_W as f32 / 2.0, FRAME_H as f32 / 2.0);
+        assert_eq!(preview.stats().meters_per_pixel, MIN_METERS_PER_PIXEL);
+        assert_eq!(preview.stats().lod_index, 6);
+        assert_view_inside_map(&preview);
+    }
+
+    #[test]
+    fn pan_and_cursor_anchored_zoom_clamp_all_edges() {
+        let mut preview = opened();
+        let anchor_xy = (37.0, 191.0);
+        let anchor_before = preview.viewport().to_map(anchor_xy.0, anchor_xy.1);
+        preview.zoom_at(2.0, anchor_xy.0, anchor_xy.1);
+        let anchor_after = preview.viewport().to_map(anchor_xy.0, anchor_xy.1);
+        assert!((anchor_before.0 - anchor_after.0).abs() <= 1);
+        assert!((anchor_before.1 - anchor_after.1).abs() <= 1);
+
+        for (dx, dy) in [(1.0e9, 0.0), (-1.0e9, 0.0), (0.0, 1.0e9), (0.0, -1.0e9)] {
+            preview.pan_by(dx, dy);
+            assert_view_inside_map(&preview);
+        }
+    }
+
+    #[test]
+    fn edge_clamps_use_the_requested_dense_crop_and_keep_a_meaningful_scene() {
+        let mut preview = opened();
+        assert_eq!(preview.camera_bounds, TENINGEN_COVERAGE);
+        for (dx, dy) in [(1.0e9, 1.0e9), (-1.0e9, 1.0e9), (1.0e9, -1.0e9), (-1.0e9, -1.0e9)] {
+            preview.reset_camera();
+            preview.pan_by(dx, dy);
+            assert_view_inside_bounds(&preview, TENINGEN_COVERAGE);
+            let pixels = preview.frame().to_vec();
+            let stats = preview.stats();
+            let colored = non_modal_pixels(&pixels);
+            assert!(stats.features_drawn >= 20, "edge view is too sparse to be a useful preview: {stats:?}");
+            assert!(colored >= 1_000, "edge view is effectively blank: only {colored} non-modal pixels");
+        }
+
+        preview.reset_camera();
+        preview.zoom_at(1.0e-6, 120.0, 120.0);
+        let pixels = preview.frame().to_vec();
+        let stats = preview.stats();
+        let colored = non_modal_pixels(&pixels);
+        assert_eq!(stats.lod_index, 0);
+        assert!(stats.features_drawn >= 3, "coarsest rung must retain useful Teningen context: {stats:?}");
+        assert!(colored >= 1_000, "coarsest rung is effectively blank: only {colored} non-modal pixels");
+    }
+
+    #[test]
+    fn invalid_camera_input_is_a_noop_and_reset_is_exact() {
+        let mut preview = opened();
+        let original = preview.camera;
+        preview.pan_by(f32::NAN, 4.0);
+        preview.pan_by(4.0, f32::INFINITY);
+        preview.zoom_at(0.0, 1.0, 1.0);
+        preview.zoom_at(f32::NAN, 1.0, 1.0);
+        preview.zoom_at(2.0, f32::INFINITY, 1.0);
+        assert_eq!(preview.camera, original);
+
+        preview.pan_by(20.0, -10.0);
+        preview.zoom_at(1.4, 120.0, 120.0);
+        assert_ne!(preview.camera, original);
+        preview.reset_camera();
+        assert_eq!(preview.camera, original);
+    }
+
+    #[test]
+    fn skin_restamping_keeps_the_interactive_camera_and_real_stats() {
+        let mut preview = opened();
+        preview.pan_by(23.0, -17.0);
+        preview.zoom_at(1.7, 40.0, 80.0);
+        let camera = preview.camera;
+        let day = preview.frame().to_vec();
+        let day_stats = preview.stats();
+        assert_eq!(day_stats.lod_index, preview.render_stats.lod);
+        assert!(day_stats.features_drawn > 0);
+
+        preview.set_skin(&skin_json("dusk")).expect("dusk restamps");
+        let dusk = preview.frame().to_vec();
+        assert_eq!(preview.camera, camera, "presentation changes must not reset the user's view");
+        assert_eq!(preview.stats().lod_index, day_stats.lod_index);
+        assert_ne!(day, dusk);
+    }
+
+    fn assert_view_inside_map(preview: &MapPreview) {
+        let view = preview.viewport().visible_bbox();
+        let map = preview.tables.bbox;
+        assert!(view.min_lon >= map.min_lon, "west edge escaped: {view:?} vs {map:?}");
+        assert!(view.max_lon <= map.max_lon, "east edge escaped: {view:?} vs {map:?}");
+        assert!(view.min_lat >= map.min_lat, "south edge escaped: {view:?} vs {map:?}");
+        assert!(view.max_lat <= map.max_lat, "north edge escaped: {view:?} vs {map:?}");
+    }
+
+    fn assert_view_inside_bounds(preview: &MapPreview, bounds: BBox) {
+        let view = preview.viewport().visible_bbox();
+        assert!(view.min_lon >= bounds.min_lon, "west edge escaped dense crop: {view:?}");
+        assert!(view.max_lon <= bounds.max_lon, "east edge escaped dense crop: {view:?}");
+        assert!(view.min_lat >= bounds.min_lat, "south edge escaped dense crop: {view:?}");
+        assert!(view.max_lat <= bounds.max_lat, "north edge escaped dense crop: {view:?}");
+    }
+
+    fn non_modal_pixels(rgba: &[u8]) -> usize {
+        let mut counts = std::collections::HashMap::<[u8; 3], usize>::new();
+        for pixel in rgba.chunks_exact(4) {
+            *counts.entry([pixel[0], pixel[1], pixel[2]]).or_default() += 1;
+        }
+        let modal = counts.values().copied().max().unwrap_or(0);
+        (FRAME_W * FRAME_H) as usize - modal
     }
 }

@@ -8,6 +8,7 @@
  */
 
 import type { InitInput } from "./pkg/obc_skin_preview.js";
+import type { SkinEntry } from "../catalog/manifest";
 
 const MAP_URL = new URL("../../../../../host/obc-bake/assets/teningen-preview.obcm", import.meta.url);
 
@@ -18,8 +19,36 @@ export interface LiveSkinPreview {
     readonly width: number;
     readonly height: number;
     setSkin(skinJson: string): void;
+    panBy(dx: number, dy: number): void;
+    zoomAt(factor: number, x: number, y: number): void;
+    resetCamera(): void;
+    stats(): LivePreviewStats;
     frame(): Uint8ClampedArray;
     free(): void;
+}
+
+export interface LivePreviewStats {
+    metersPerPixel: number;
+    lodIndex: number;
+    lodCount: number;
+    featuresDrawn: number;
+    featuresDropped: number;
+    pointsDrawn: number;
+    spanUtilization: number;
+    pointUtilization: number;
+    ringUtilization: number;
+}
+
+export interface SkinPreviewFrame {
+    readonly width: number;
+    readonly height: number;
+    readonly pixels: Uint8ClampedArray;
+}
+
+interface ThumbnailOptions {
+    open?: typeof openLiveSkinPreview;
+    signal?: AbortSignal;
+    yieldToBrowser?: () => Promise<void>;
 }
 
 let loading: Promise<Bridge> | null = null;
@@ -74,10 +103,61 @@ export async function openLiveSkinPreview(
             width: preview.width,
             height: preview.height,
             setSkin: (next) => preview.set_skin(next),
+            panBy: (dx, dy) => preview.pan_by(dx, dy),
+            zoomAt: (factor, x, y) => preview.zoom_at(factor, x, y),
+            resetCamera: () => preview.reset_camera(),
+            stats: () => ({
+                metersPerPixel: preview.meters_per_pixel,
+                lodIndex: preview.lod_index,
+                lodCount: preview.lod_count,
+                featuresDrawn: preview.features_drawn,
+                featuresDropped: preview.features_dropped,
+                pointsDrawn: preview.points_drawn,
+                spanUtilization: preview.span_utilization,
+                pointUtilization: preview.point_utilization,
+                ringUtilization: preview.ring_utilization,
+            }),
             frame: () => preview.frame(),
             free: () => preview.free(),
         };
     } catch (cause) {
         throw new Error(`The live Teningen preview could not be opened (${describe(cause)}).`);
     }
+}
+
+/**
+ * Render saved skins with one resident fixture/renderer, copying only each final
+ * RGBA frame. Callers keep no wasm map/cache per card and persist no stale PNG.
+ */
+export async function renderSkinPreviewFrames(
+    schemaJson: string,
+    skins: readonly SkinEntry[],
+    options: ThumbnailOptions = {},
+): Promise<Record<string, SkinPreviewFrame>> {
+    if (skins.length === 0) return {};
+    const open = options.open ?? openLiveSkinPreview;
+    const preview = await open(schemaJson, JSON.stringify(skins[0]));
+    try {
+        const frames: Record<string, SkinPreviewFrame> = {};
+        for (const [index, skin] of skins.entries()) {
+            if (options.signal?.aborted) break;
+            preview.setSkin(JSON.stringify(skin));
+            // wasm exposes a transient memory view. Each card needs an owned
+            // snapshot before the next restamp overwrites that same frame.
+            const pixels = new Uint8ClampedArray(preview.frame());
+            frames[skin.id] = { width: preview.width, height: preview.height, pixels };
+            if (index + 1 < skins.length) {
+                const yieldToBrowser = options.yieldToBrowser ?? nextAnimationFrame;
+                await yieldToBrowser();
+            }
+        }
+        return frames;
+    } finally {
+        preview.free();
+    }
+}
+
+function nextAnimationFrame(): Promise<void> {
+    if (typeof globalThis.requestAnimationFrame !== "function") return Promise.resolve();
+    return new Promise((resolve) => globalThis.requestAnimationFrame(() => resolve()));
 }
