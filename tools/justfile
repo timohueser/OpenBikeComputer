@@ -189,6 +189,9 @@ bake *args:
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{lib}}"; obc_init; ensure_geos
+    if [[ -z "${OBC_PYOSMIUM_UP_TO_DATE:-}" && -x "$OBC_ROOT/.venv/bin/pyosmium-up-to-date" ]]; then
+      export OBC_PYOSMIUM_UP_TO_DATE="$OBC_ROOT/.venv/bin/pyosmium-up-to-date"
+    fi
     ( cd "$OBC_ROOT" && _run cargo build --release -p obc-bake )
     bin="$OBC_ROOT/target/release/obc-bake"
     tree="${OBC_BAKE_TREE:-$HOME/obc-bake}"
@@ -505,7 +508,7 @@ check *args:
 # ── Meta ─────────────────────────────────────────────────────────────────────
 
 # Check your toolchain and report what's missing. Add --install to fix what it can
-# (rustup targets, just, probe-rs, the venv, and GEOS / RISC-V gcc via scripts/).
+# (rustup targets, just, probe-rs, the venv, replication client, and GEOS / RISC-V gcc via scripts/).
 doctor *args:
     #!/usr/bin/env bash
     set -uo pipefail
@@ -521,10 +524,12 @@ doctor *args:
     ck thumbv8m "device target (thumbv8m)"  'rustup target list --installed | grep -q thumbv8m.main-none-eabihf' 'obc doctor --install'
     ck wasm     "wasm target (docs demo)"   'rustup target list --installed | grep -q wasm32-unknown-unknown'     'obc doctor --install'
     ck geos     "GEOS (obc-pack, workspace)" '[[ -f "$HOME/.obc-geos-env.sh" ]] && { source "$HOME/.obc-geos-env.sh"; command -v geos-config; }' 'obc doctor --install (builds GEOS ≥3.14 from source)'
+    ck osmium   "Osmium (planet sharding)"   'command -v osmium' 'install osmium-tool with your system package manager'
     ck riscv    "RISC-V gcc (board FLPR)"   'command -v riscv64-elf-gcc || command -v riscv-none-elf-gcc || command -v riscv64-unknown-elf-gcc || { [[ -n "${RISCV_GCC:-}" && -x "${RISCV_GCC:-/nonexistent}" ]]; }' 'obc doctor --install (fetches an xPack toolchain)'
     ck probe    "probe-rs (flashing)"       'command -v probe-rs' 'obc doctor --install'
     ck node     "node + npm (web builder)"  'command -v node && command -v npm' 'install Node 22+ (system package — needs sudo)'
     ck venv     "python venv (web builder)" '[[ -x "$OBC_ROOT/.venv/bin/python" ]]' 'obc doctor --install (or run obc web)'
+    ck replication "OSM replication client" 'command -v pyosmium-up-to-date || [[ -x "$OBC_ROOT/.venv/bin/pyosmium-up-to-date" ]]' 'obc doctor --install'
     m="$(_all_maps | head -n1 || true)"
     if [[ -n "$m" ]]; then _ok "default sim map → ${m##*/}"
     elif [[ -f "$OBC_ROOT/apps/obc-sim/assets/grimsel.obcm" ]]; then _ok "default sim map → bundled grimsel.obcm"
@@ -544,8 +549,12 @@ doctor *args:
       riscv)    _run bash "$OBC_TOOLS/install-riscv.sh" ;;
       geos)     _run bash "$OBC_TOOLS/install-geos.sh" ;;
       venv)     _run python3 -m venv "$OBC_ROOT/.venv" && _run "$OBC_ROOT/.venv/bin/pip" install -q -r "$OBC_ROOT/builder/requirements.txt" ;;
+      replication)
+        [[ -x "$OBC_ROOT/.venv/bin/python" ]] || _run python3 -m venv "$OBC_ROOT/.venv"
+        _run "$OBC_ROOT/.venv/bin/pip" install -q -r "$OBC_ROOT/tools/requirements-bake.txt" ;;
       cargo)    _err "install Rust yourself: https://rustup.rs" ;;
       node)     _err "install Node 22+ via your system package manager (needs sudo)" ;;
+      osmium)   _err "install osmium-tool via your system package manager" ;;
     esac; done
     printf '\n'; _say "done — re-run 'obc doctor' to confirm"
 
