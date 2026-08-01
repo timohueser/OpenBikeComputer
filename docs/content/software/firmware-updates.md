@@ -166,7 +166,11 @@ There are three ways it gets there, and **exactly one** way it gets installed.
   `installFw` command (§4.4) to *ask* the device to install it. The file is either
   one you picked in Files or the published release the app checks for — downloaded
   and verified against the manifest's size and SHA-256 on the phone, before a byte
-  goes over the link.
+  goes over the link. The app also *raises* a published update without being asked:
+  a sheet the next time you open it, or a local notification from a periodic
+  background check. Both are one switch away (on by default), both go quiet for a
+  device whose running version isn't a release version, and both ask each version
+  once — the check itself is an anonymous request for one public file.
 - **USB from the browser.** The map builder's device step does the same two
   steps over the cable — the [object model is the transport's
   guest](../companion-link/), so this is the identical `fwImage` upload followed
