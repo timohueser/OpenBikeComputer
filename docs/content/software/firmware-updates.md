@@ -312,8 +312,9 @@ disagree about whether a rider is up to date.
 The dialect is deliberately small: an optional leading `v`, a three-part numeric core,
 an optional `-pre` tag, and `+build` metadata that is parsed only to be discarded, so
 `1.2.0+abc1234` and `1.2.0` are one version. A pre-release sorts *before* the release
-sharing its triple. A device running something newer than what is published is told so
-and never offered a downgrade.
+sharing its triple; its dot-separated identifiers use SemVer precedence, so `rc.10`
+follows `rc.2`. A device running something newer than what is published is told so and
+never offered a downgrade.
 
 And a string that is not a release version parses as **nothing at all**, which is where
 the one locked rule lives: a client that cannot read the running version never offers an
