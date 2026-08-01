@@ -17,8 +17,8 @@
 # DACH first (locked 2026-07-29, #898): Germany with all sixteen Bundesländer,
 # Austria, Switzerland, plus the Freiburg government-region test excerpt. With no
 # region arguments, `obc-bake bake` processes every line. Positional ids select a
-# subset; `--all` is reserved for the future planet source pipeline rather than
-# meaning this curated list.
+# subset. `--all` bakes the planet instead; these same entries then become named
+# selection presets, derived from their polygons without baking regional extracts.
 #
 # Germany is listed **alongside** its Bundesländer, not instead of them: they are
 # convenient named selections over the same shared cells, so overlap costs no

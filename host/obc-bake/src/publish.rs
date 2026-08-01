@@ -185,6 +185,7 @@ pub fn publish(
     opts: &CatalogOptions,
     publish_opts: PublishOptions,
 ) -> Result<PublishReport, String> {
+    crate::planet::check_publishable_tree(tree)?;
     // Publishing an existing tree is enough to pick up a new preview renderer:
     // previews contain no cell data, so requiring a multi-hour rebake would only
     // couple presentation to geometry by accident.
