@@ -347,7 +347,7 @@ result renders on a real 240×320 device map plane through `obc-reader` and
 limits visible. The exported complete config becomes public only through an
 explicit maintainer bake.
 
-`obc web` builds the frontend and its three wasm bridges as needed. The lower-level
+`obc web` refreshes the native packer, frontend, and all three wasm bridges. The lower-level
 equivalent remains:
 
 ```sh
