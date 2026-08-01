@@ -171,19 +171,14 @@ A region id is a slash-separated Geofabrik-style id such as
 | `bytes` | integer | Sum of real cell bytes across all bands. |
 | `bytes_by_band` | object | Per-band sums; MUST sum to `bytes`. |
 | `cell_count` | object | Per-band cell counts. |
-| `partial_cell_count` | integer | Selected cells whose square is not fully covered. |
-| `partial_cell_count_by_band` | object | Optional additive-v2 per-band split of `partial_cell_count`. |
+| `partial_cell_count_by_band` | object | Per-band counts of selected cells whose square is not fully covered. |
 | `cells_url` | string | Region satellite URL. |
 | `cells_bytes` | integer | Exact satellite byte length. |
 | `cells_sha256` | string | Lowercase SHA-256 of the exact satellite bytes. |
 
-New v2 producers MUST publish `partial_cell_count_by_band`, including zeroes for
-bands with no partial cells. Its keys MUST be band ids, each value MUST be no
-greater than that band's `cell_count`, and its values MUST sum to
-`partial_cell_count`. Consumers MUST accept an older v2 root that omits the
-additive field; without it they cannot distinguish normal coarse-context
-partials from detail-band partials until the region satellite and cell indexes
-have resolved.
+`partial_cell_count_by_band` is required and includes zeroes for bands with no
+partial cells. Its keys MUST be band ids and each value MUST be no greater than
+that band's `cell_count`. There is no redundant aggregate partial count.
 
 The pinned satellite has this shape:
 
@@ -236,7 +231,7 @@ Each root reference contains:
 | `band` | string | Schema band id. |
 | `cell_log2` | integer | That band's grid size. |
 | `cell_count` | integer | Number of downloadable `cells` entries in the satellite. |
-| `known_empty_count` | integer | Cells covered by `known_empty` ranges. Optional additive-v2; absent means zero. |
+| `known_empty_count` | integer | Cells covered by `known_empty` ranges. |
 | `bytes` | integer | Exact satellite byte length. |
 | `sha256` | string | Lowercase SHA-256 of its exact bytes. |
 | `url` | string | Satellite URL. |
@@ -287,8 +282,8 @@ square. Consumers MUST expose partial coverage rather than presenting it as
 canonical. A canonical cell MUST NOT be replaced by a partial bake of the same
 schema revision.
 
-`known_empty` is an optional additive-v2 array; its absence means `[]`.
-Each entry is an inclusive run from `start` through `end`. Both ids MUST be
+`known_empty` is required; an empty list means the band has no verified-empty
+coverage. Each entry is an inclusive run from `start` through `end`. Both ids MUST be
 canonical cells of this band, MUST have the same latitude index `i`, and the
 runs MUST be sorted by `(i, j)`, non-overlapping, and non-empty. Adjacent runs
 with identical `built_at` and `sources` MUST be merged. The inclusive cell total
@@ -301,8 +296,6 @@ artifact. Consumers MUST include its id in selection coverage, region
 cross-checks, assembly-bbox calculation, and hole detection, but MUST NOT fetch
 or graft an object for it. `cell_count` continues to count downloadable
 artifacts only; `known_empty_count` counts the expanded ranges separately.
-Consumers of an older v2 root or satellite MUST default the absent additive
-fields to zero and an empty array respectively.
 
 ## 9. URLs and integrity
 
@@ -311,12 +304,11 @@ consumer MUST restrict all satellite and cell requests to the configured catalog
 origin; it MUST NOT follow the catalog to an unrelated origin. Plain HTTP is
 permitted only for loopback development.
 
-New v2 producers MUST place the pinned object's lowercase SHA-256 immediately
-before the URL's final extension. The path is immutable: producers MUST NOT later
-serve different bytes at that key and MUST retain an object while a previously
-published root may still reference it. Consumers use the explicit URL and digest;
-they MUST continue to accept older v2 catalogs whose URLs used stable unsuffixed
-keys, but MUST NOT derive a URL from an id or digest themselves.
+Producers MUST place the pinned object's lowercase SHA-256 immediately before
+the URL's final extension. The path is immutable: producers MUST NOT later serve
+different bytes at that key and MUST retain an object while a published root may
+still reference it. Consumers MUST verify that the URL contains the exact stated
+digest in that position and MUST NOT derive a URL from an id or digest themselves.
 
 For every pinned object, consumers MUST:
 
@@ -355,9 +347,7 @@ A publish MUST make all referenced content available before replacing the root:
 A failure before step 4 leaves the previously published root authoritative.
 `catalog.json` SHOULD use a short cache lifetime (at most 60 seconds or
 revalidation). Digest-addressed cells, satellites, and previews SHOULD use a long
-immutable cache lifetime. A publisher MUST NOT overwrite the stable referenced
-keys used by legacy v2 roots during the transition to content-addressed keys;
-those roots must remain readable until their cache lifetime has elapsed.
+immutable cache lifetime.
 
 Generation is deterministic for a fixed tree and `generated_at`: objects and
 entries are sorted by their specified ids, JSON spelling is stable, and the root
