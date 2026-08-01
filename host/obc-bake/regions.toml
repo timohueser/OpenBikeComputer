@@ -2,35 +2,36 @@
 # builder offers. Reviewable, in-repo, and **one line per region** on purpose:
 # adding coverage is a one-line PR, and removing it is a one-line revert.
 #
-# `id` is both the catalog's `region_id` (OBCC_Spec.md §3 — "slash-separated,
+# `id` is both the catalog's `region_id` (OBCC_Spec.md §6 — "slash-separated,
 # mirroring the Geofabrik hierarchy") and the Geofabrik download path: the extract
 # URL is `<base>/<id>-latest.osm.pbf`. One string, so a region cannot be listed
 # under a name Geofabrik does not serve, and the manifest's ids cannot drift from
 # the source tree they came from. `name` is what a human sees in the picker.
 #
-# Optional per-region `presets = ["high-detail"]` restricts a region to a subset of the
-# shipped presets; absent, every preset in `builder/presets/` is baked for it.
+# `id` and `name` are the only fields. Every region uses the one schema in
+# `builder/presets/schema.json`; presentation skins are stamped at assembly time.
+# Unknown fields fail the parse instead of silently changing what gets baked.
 #
 # ── Curation policy ────────────────────────────────────────────────────────────
 #
 # DACH first (locked 2026-07-29, #898): Germany with all sixteen Bundesländer,
-# Austria, Switzerland. Not planet coverage — the catalog is a curated shelf, and a
-# region missing from it is a deliberate choice a user can read off this file.
-# Expansion follows demand, one line at a time.
+# Austria, Switzerland, plus the Freiburg government-region test excerpt. With no
+# region arguments, `obc-bake bake` processes every line. Positional ids select a
+# subset. `--all` bakes the planet instead; these same entries then become named
+# selection presets, derived from their polygons without baking regional extracts.
 #
-# Germany is listed **alongside** its Bundesländer, not instead of them: the whole
-# country is one download for a long tour, a Bundesland is a tenth of the bytes for
-# a weekend. The double-storage is the point, and it is why this file is where the
-# storage bill is decided. `obc-bake bake` prints the real per-artifact sizes and
-# a total, so the estimate corrects itself after the first full run rather than
-# being guessed here.
+# Germany is listed **alongside** its Bundesländer, not instead of them: they are
+# convenient named selections over the same shared cells, so overlap costs no
+# duplicate cell storage.
 #
-# Every path below was verified against download.geofabrik.de on 2026-07-29.
+# Every path below was verified against download.geofabrik.de on 2026-07-29;
+# `freiburg-regbez` was verified on 2026-07-31.
 
 regions = [
   # Germany — the whole country, then each Bundesland.
   { id = "europe/germany", name = "Germany" },
   { id = "europe/germany/baden-wuerttemberg", name = "Baden-Württemberg" },
+  { id = "europe/germany/baden-wuerttemberg/freiburg-regbez", name = "Regierungsbezirk Freiburg" },
   { id = "europe/germany/bayern", name = "Bayern" },
   { id = "europe/germany/berlin", name = "Berlin" },
   { id = "europe/germany/brandenburg", name = "Brandenburg" },

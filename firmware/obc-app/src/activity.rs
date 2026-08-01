@@ -8,9 +8,10 @@
 //! "Actually-ridden": `done`/`climbed` reflect what the rider did, not the route-relative position
 //! — so they keep counting off-route, while `to go`/`to climb` stay route-relative. Distance comes
 //! from the GPS [`Fix`] stream and climb from the **separate** barometric
-//! [`AltimeterSource`](crate::AltimeterSource); the two integrate independently.
+//! [`AltimeterSource`](obc_ports::AltimeterSource); the two integrate independently.
 
-use obc_route::{ground_dist_m, DeadBand, Match};
+use obc_map_scene::ground_dist_m;
+use obc_route::{DeadBand, Match};
 
 use obc_ports::Fix;
 
@@ -387,7 +388,7 @@ impl Activity {
 
     /// Live heart rate (bpm) for the tile, or `None` when none has arrived or the last sample is
     /// older than [`SENSOR_STALE_MS`] — a dropped strap reads `--`, never its frozen last value.
-    /// `now_ms` is the current [`RideClock`](crate::RideClock) already threaded through `tick`.
+    /// `now_ms` is the current [`RideClock`](obc_ports::RideClock) already threaded through `tick`.
     pub fn live_hr(&self, now_ms: u32) -> Option<u16> {
         self.hr_last.filter(|_| now_ms.saturating_sub(self.hr_at_ms) <= SENSOR_STALE_MS)
     }
@@ -456,7 +457,7 @@ impl Activity {
     }
 
     /// Store a fresh heart-rate sample, timestamped for the staleness gate. Called from `App::tick`
-    /// when [`HeartRateSource::poll`](crate::HeartRateSource::poll) yields `Some`.
+    /// when [`HeartRateSource::poll`](obc_ports::HeartRateSource::poll) yields `Some`.
     pub(crate) fn record_hr(&mut self, bpm: u16, now_ms: u32) {
         self.hr_last = Some(bpm);
         self.hr_at_ms = now_ms;
@@ -743,7 +744,7 @@ impl Activity {
     /// from the planning screen of the *latest* request, so a request still latched at
     /// cancel-post time was confirmed and cancelled inside one input batch — the net intent is
     /// "no plan", and executing it anyway would commit a ghost route whose answer nobody is
-    /// showing (both legacy host drain orders net no plan here). The cancel itself still
+    /// showing. The cancel itself still
     /// latches: with nothing in flight it is a harmless host-side no-op, and a plan the host
     /// already drained is still aborted.
     pub(crate) fn request_nav_cancel(&mut self) {
@@ -814,7 +815,7 @@ impl Activity {
     }
 
     /// Integrate one position fix into the ridden distance + moving time. By the
-    /// [`LocationSource`](crate::LocationSource) contract this is called once per fresh GPS sample,
+    /// [`LocationSource`](obc_ports::LocationSource) contract this is called once per fresh GPS sample,
     /// so consecutive calls are a GPS period apart — the interval the gate below is sized for. Only
     /// accumulates while [`Riding`](Mode::Riding); a sane-interval gate drops dropouts and
     /// teleports. Pausing drops the anchor so resuming doesn't book the gap.

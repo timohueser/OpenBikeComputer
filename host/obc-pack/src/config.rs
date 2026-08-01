@@ -99,7 +99,7 @@ const MARKER_DESCRIPTION: &str =
 const CHUNK_SIZE_DESCRIPTION: &str = "Quadtree chunk payload target in bytes. The maximum is the reader's per-feature vertex cap; the minimum guards against chunks so small that features are dropped wholesale. Values outside the range are rejected at pack time. Governs the geometry sections (LODs) only; the nav graph's chunks are pinned to 512 bytes.";
 const MERGE_FILLS_DESCRIPTION: &str = "Dissolve fill polygons that render pixel-identically - same z_index, color, and priority, with no color2 - into one union per LOD. A pure map-size/render-cost optimization with no intended visual change; false (the default) packs byte-identically to before.";
 const MERGE_LINES_DESCRIPTION: &str = "Stitch same-styled connected line fragments into maximal polylines per LOD. No intended visual change for solid lines; a dashed or cased line's pattern runs continuously across a former join. false (the default) packs byte-identically to before.";
-const ROUTING_DESCRIPTION: &str = "Nav-graph routing config (OBCM v10 §8): the island-pruning threshold plus the bike profiles baked into the map's profile table. Absent means the four shipped profiles (Road / Gravel / MTB / Touring).";
+const ROUTING_DESCRIPTION: &str = "Nav-graph routing config (OBCM §8): the island-pruning threshold plus the bike profiles baked into the map's profile table. Absent means the four shipped profiles (Road / Gravel / MTB / Touring).";
 
 fn annotate_property(properties: &mut Map<String, Value>, name: &str, description: &str) {
     properties[name]["description"] = Value::String(description.into());
@@ -434,7 +434,7 @@ impl JsonSchema for MultiplierValue {
     }
 }
 
-/// A line's stroke style (OBCM v10 style-record flag bit 2). The config value is `"solid"` (the
+/// A line's stroke style (OBCM §2 style-record flag bit 2). The config value is `"solid"` (the
 /// default) or `"dashed"`; the renderer draws dashes for `Dashed` lines and ignores it for polygons
 /// (#557 only carries the bit end to end — later sub-issues render it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema)]
@@ -905,20 +905,24 @@ mod tests {
     }
 
     fn corpus_config() -> Config {
-        Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/presets/default.json"))
+        Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/presets/schema.json"))
             .expect("load corpus config")
     }
 
+    /// The shipped **schema** is a complete, CLI-usable packer config.
+    ///
+    /// It is the one document in `builder/presets/` that has to be: the skins beside
+    /// it are presentation over already-baked bytes (`OBCC_Spec.md` §5) and carry
+    /// no ladder and no routing table on purpose, so "every file in the directory is
+    /// a bakeable config" stopped being true with #1036 and this checks the file that
+    /// still is.
     #[test]
-    fn every_shipped_preset_is_a_complete_cli_config() {
-        let presets = ["default.json", "high-detail.json"];
-        for preset in presets {
-            let path = format!("{}/../../builder/presets/{preset}", env!("CARGO_MANIFEST_DIR"));
-            let config = Config::load(&path).unwrap_or_else(|error| panic!("{preset} must parse: {error}"));
-            assert!(!config.features.is_empty(), "{preset} must carry feature styles");
-            assert!(!config.lods.is_empty(), "{preset} must carry an LOD pyramid");
-            assert!(!config.routing.profiles.is_empty(), "{preset} must carry routing profiles");
-        }
+    fn the_shipped_schema_is_a_complete_cli_config() {
+        let path = format!("{}/../../builder/presets/schema.json", env!("CARGO_MANIFEST_DIR"));
+        let config = Config::load(&path).unwrap_or_else(|error| panic!("the schema must parse: {error}"));
+        assert!(!config.features.is_empty(), "the schema must carry feature styles");
+        assert!(!config.lods.is_empty(), "the schema must carry an LOD pyramid");
+        assert!(!config.routing.profiles.is_empty(), "the schema must carry routing profiles");
     }
 
     #[test]
@@ -1236,7 +1240,7 @@ mod tests {
         let env: Value = serde_json::from_str(&schema_envelope()).expect("envelope is valid JSON");
         assert_eq!(env["schema_version"].as_u64(), Some(CONFIG_SCHEMA_VERSION as u64));
         assert_eq!(env["format_version"].as_u64(), Some(OBCM_VERSION as u64));
-        assert_eq!(env["format_version"].as_u64(), Some(10), "#557 bumps the OBCM format to v10");
+        assert_eq!(env["format_version"].as_u64(), Some(11), "#1009 bumps the OBCM format to v11");
         assert!(env["schema"]["$defs"]["style"].is_object(), "envelope embeds the schema");
     }
 

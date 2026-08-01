@@ -1,14 +1,14 @@
-import { migrateEnvelope, ENVELOPE_VERSION } from "./migrations";
 import { deepCopy, normalizeConfig, type BuildablePreset, type PackConfig } from "./model";
 
 // The working config lives in the browser (localStorage), never on the server
 // — that keeps the backend stateless (no accounts needed) and survives
 // reloads. Snapshot semantics: picking a preset COPIES it; edits mark the
-// envelope modified ("Custom — based on X"); preset updates never silently
-// change a user's maps — "Reset to preset" re-copies explicitly.
+// envelope modified ("Custom — based on X"). The maintainer route may seed an
+// empty browser from its sole buildable schema once; preset updates never
+// silently change an existing map — "Reset to preset" re-copies explicitly.
 
 export interface WorkingEnvelope {
-    schema_version: number;
+    schema_version: typeof WORKING_SCHEMA_VERSION;
     based_on: { id: string; version: number } | null;
     modified: boolean;
     config: PackConfig;
@@ -16,16 +16,38 @@ export interface WorkingEnvelope {
 }
 
 const STORAGE_KEY = "obcm.working";
+export const WORKING_SCHEMA_VERSION = 1;
+
+function currentEnvelope(raw: unknown): WorkingEnvelope | null {
+    if (typeof raw !== "object" || raw === null) return null;
+    const env = raw as Record<string, unknown>;
+    if (env.schema_version !== WORKING_SCHEMA_VERSION) return null;
+    if (typeof env.config !== "object" || env.config === null || Array.isArray(env.config)) return null;
+    if (typeof env.modified !== "boolean") return null;
+    if (!Array.isArray(env.disabled) || !env.disabled.every((key) => typeof key === "string")) return null;
+    const basedOn = env.based_on;
+    if (
+        basedOn !== null &&
+        (typeof basedOn !== "object" ||
+            Array.isArray(basedOn) ||
+            typeof (basedOn as Record<string, unknown>).id !== "string" ||
+            !Number.isInteger((basedOn as Record<string, unknown>).version) ||
+            Number((basedOn as Record<string, unknown>).version) < 0)
+    ) {
+        return null;
+    }
+    return env as unknown as WorkingEnvelope;
+}
 
 export class WorkingConfig {
     envelope = $state<WorkingEnvelope | null>(null);
 
-    /** Restore from localStorage (migrating old envelopes); null if none. */
+    /** Restore the current localStorage envelope; false for absent or invalid data. */
     restore(): boolean {
         try {
             const raw = localStorage.getItem(STORAGE_KEY);
             if (!raw) return false;
-            const env = migrateEnvelope(JSON.parse(raw));
+            const env = currentEnvelope(JSON.parse(raw));
             if (!env) return false;
             const { config, disabled } = normalizeConfig(
                 env.config as unknown as Record<string, unknown>,
@@ -45,7 +67,7 @@ export class WorkingConfig {
             preset.config as unknown as Record<string, unknown>,
         );
         this.envelope = {
-            schema_version: ENVELOPE_VERSION,
+            schema_version: WORKING_SCHEMA_VERSION,
             based_on: { id: preset.id, version: preset.version },
             modified: false,
             config: deepCopy(config),

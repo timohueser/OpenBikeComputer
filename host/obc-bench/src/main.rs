@@ -27,9 +27,9 @@ use embedded_graphics::pixelcolor::raw::RawU16;
 use embedded_graphics::pixelcolor::Rgb565;
 use obc_display::Framebuffer565;
 use obc_formats::io::{ByteSink, ByteSource};
+use obc_map_scene::{ground_dist_m, BBox};
 use obc_reader::{
-    ground_dist_m, BBox, CorridorPoi, MapCache, MapTables, PoiCategorySet, Reader, RoutePath, SliceSource,
-    MAX_CORRIDOR_RESULTS,
+    CorridorPoi, MapCache, MapTables, PoiCategorySet, Reader, RoutePath, SliceSource, MAX_CORRIDOR_RESULTS,
 };
 use obc_render::{zoom_for_mpp, Clock, MapRenderer, OverlayChunk, RenderStats, RouteOverlaySource, Viewport};
 

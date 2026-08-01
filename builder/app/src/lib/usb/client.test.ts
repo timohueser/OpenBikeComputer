@@ -37,6 +37,15 @@ async function withDevice(
 }
 
 describe("streaming", () => {
+    it("reads free space from the connected card, including no-card", async () => {
+        await withDevice({ cardFreeBytes: 3_456_789 }, async ({ client }) => {
+            expect(await client.cardFreeBytes()).toBe(3_456_789);
+        });
+        await withDevice({ cardFreeBytes: null }, async ({ client }) => {
+            expect(await client.cardFreeBytes()).toBeNull();
+        });
+    });
+
     it("reassembles an object delivered in packet-sized pieces", async () => {
         // The single most important property to get right: a bulk endpoint hands over 64 bytes at a
         // time, and a client that treats one read as one logical unit works on a naive mock and

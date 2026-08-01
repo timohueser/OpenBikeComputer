@@ -6,9 +6,12 @@
 //! deliver them. `ble::gatt` wraps the results into trouble-host's heapless-0.9 attribute types;
 //! `usb::control` copies them straight into a frame.
 
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use obc_ble::Config;
+use obc_dfu::{ImageHeader, FW_VERSION_LEN};
 
 use crate::object_store::ObjectStore;
 use crate::SharedStore;
@@ -61,14 +64,67 @@ pub(crate) fn serial_string() -> heapless::String<16> {
     s
 }
 
-/// The **Firmware Revision** string: crate semver + git short hash, e.g. `0.1.0+ca9b336`
-/// (`OBC_FW_GIT` is emitted by `build.rs`; `unknown` when git wasn't reachable at build time). This
-/// is the *only* place the running image's version is published — never duplicated into the Config
-/// object, where the two could disagree.
-pub(crate) fn firmware_revision() -> heapless::String<24> {
+/// The running image's version as the DFU boot-state page recorded it, captured once at boot by
+/// [`seed_installed_version`]. The live prefix is `bytes[..len]`; `len == 0` means *no installed
+/// record*, which is a fact (a probe-flashed device), not a missing read.
+///
+/// A `Cell` behind a critical section, like `ble::state`'s cells: written once from `main` before
+/// anything else runs, then read from the BLE task, the USB task and the ride loop, none of which
+/// may block for it.
+static INSTALLED_VERSION: BlockingMutex<CriticalSectionRawMutex, Cell<([u8; FW_VERSION_LEN], u8)>> =
+    BlockingMutex::new(Cell::new(([0; FW_VERSION_LEN], 0)));
+
+/// Capture the running image's OBCU version for [`firmware_revision`] — called **once**, from
+/// `main`, before the BLE/USB tasks are spawned (see `dfu::seed_firmware_revision`, which does the
+/// boot-state read).
+///
+/// A snapshot is enough because the answer cannot change while this image runs: the states that
+/// name a *different* running image ([`BootState::running_image`](obc_dfu::BootState::running_image))
+/// are all resolved by a reboot, and the two page writes the app itself performs — the trial confirm
+/// and the stray-arm downgrade — both carry this very header into `Idle { installed }`.
+pub(crate) fn seed_installed_version(installed: Option<&ImageHeader>) {
+    let version = installed.map(|h| h.fw_version_str()).unwrap_or("");
+    let mut buf = [0u8; FW_VERSION_LEN];
+    let n = version.len().min(FW_VERSION_LEN);
+    buf[..n].copy_from_slice(&version.as_bytes()[..n]);
+    INSTALLED_VERSION.lock(|cell| cell.set((buf, n as u8)));
+}
+
+/// **The** firmware-revision assembler: the one preference order, so every screen and every
+/// transport says the same thing about the same device (#996, epic #773 U1).
+///
+/// 1. the **installed OBCU container's version**, verbatim (a release tag like `v1.3.0`: what the
+///    image was wrapped with, and the only dialect a host can compare against a published release);
+/// 2. otherwise `OBC_FW_GIT`, the build's bare git short hash (`unknown` when git wasn't reachable
+///    at build time) — a probe-flashed device with no install history.
+///
+/// The fallback is deliberately **unparseable as a release version** (#773's locked dialect): a
+/// host that cannot read a version never offers an auto-update, which is exactly what a dev build
+/// should get. It is deliberately *not* `CARGO_PKG_VERSION+hash` — that parses as a release version
+/// whose `+build` metadata a host ignores, so dev devices would be offered updates against whatever
+/// the crate's semver happens to say.
+fn revision_of(installed_version: &str) -> heapless::String<FW_VERSION_LEN> {
     let mut s = heapless::String::new();
-    let _ = core::fmt::write(&mut s, format_args!("{}+{}", env!("CARGO_PKG_VERSION"), env!("OBC_FW_GIT")));
+    let _ = s.push_str(if installed_version.is_empty() { env!("OBC_FW_GIT") } else { installed_version });
     s
+}
+
+/// [`revision_of`] for a caller holding a live boot-state record — the DFU confirm screen, which
+/// reads the page itself (it must show what the page says *now*, not the boot snapshot).
+pub(crate) fn revision_from(installed: Option<&ImageHeader>) -> heapless::String<FW_VERSION_LEN> {
+    revision_of(installed.map(|h| h.fw_version_str()).unwrap_or(""))
+}
+
+/// The **Firmware Revision** string of the running image, e.g. `v1.3.0` after an installed update
+/// and `ca9b336` on a probe-flashed build — [`revision_of`] applied to the boot-state snapshot
+/// [`seed_installed_version`] took. This is the *only* place the running image's version is
+/// published: BLE DIS `0x2A26` and the USB `DEVICE_INFO_READ` frame are the same bytes, and it is
+/// never duplicated into the Config object, where the two could disagree.
+pub(crate) fn firmware_revision() -> heapless::String<FW_VERSION_LEN> {
+    let (buf, len) = INSTALLED_VERSION.lock(|cell| cell.get());
+    // The bytes came out of a decoded header's `fw_version_str`, so they are valid UTF-8; stay
+    // total anyway — an identity read must never panic.
+    revision_of(core::str::from_utf8(&buf[..len as usize]).unwrap_or(""))
 }
 
 /// The **Hardware Revision** string: the board id.

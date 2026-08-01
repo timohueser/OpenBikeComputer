@@ -2,7 +2,8 @@
 //! follow/free camera logic. These run on the host (std test harness) against the
 //! same `no_std` code the firmware links.
 
-use obc_app::{AppState, CameraMode, Fix};
+use obc_app::{AppState, CameraMode};
+use obc_ports::Fix;
 
 mod common;
 use common::ReplayFix;

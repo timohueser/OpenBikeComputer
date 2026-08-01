@@ -39,7 +39,7 @@ the normative byte layouts: [`OBCM_Spec.md`](specs/OBCM_Spec.md) /
 | :-- | :-- |
 | `firmware/` | The crates the **device image actually reaches** — nothing else. See [`firmware/README.md`](firmware/README.md). |
 | `firmware/docs/` | Hardware notes that live nowhere else — the LS021 bring-up log, the FLPR blob's timing policy — plus the frozen resource baseline. Concepts belong on the [docs site](https://openbikecomputer.com/), not here. |
-| `firmware/obc-app/` | `no_std` — the **application layer**: camera, camera mode (follow-user / free), screen stack, input model, route tracking, plus compatibility re-exports of `obc-ports`. One per-frame entry point (`App::render_frame`) both hosts call. Builds for `thumbv8m.main-none-eabihf`. |
+| `firmware/obc-app/` | `no_std` — the **application layer**: camera, camera mode (follow-user / free), screen stack, input model, and route tracking over the semantic `obc-ports` boundary. One per-frame entry point (`App::render_frame`) both hosts call. Builds for `thumbv8m.main-none-eabihf`. |
 | `firmware/obc-ble/` | `no_std` — the **BLE data-plane core** (epic #267): the S0 control-plane descriptor codecs, CRC-32, list objects, and the whole-object transfer state machine. Radio-free and host-tested; the board crate drives the L2CAP bytes through it. |
 | `firmware/obc-boot/` | The **32 KB nRF54L bootloader** — reads the `BOOT_STATE` page, runs `obc-dfu`'s install engine, flashes the app slot via RRAMC (LED codes, no display). Workspace-excluded + standalone like the board crate; flashed once. |
 | `firmware/obc-dfu/` | `no_std` — the **SD-staged DFU core** (epic #615): the `OBCU` update-image container + boot-state page codecs, the bootloader's install engine (verify → flash → readback → trial/rollback), and the app-side armer. Host-tested with mock IO; both `obc-boot` and the board crate are thin drivers over it. |
@@ -48,7 +48,7 @@ the normative byte layouts: [`OBCM_Spec.md`](specs/OBCM_Spec.md) /
 | `firmware/obc-map-scene/` | Dependency-light `no_std` streamed map-scene seam — neutral bounds/styles plus allocation-free candidate/decode visitors shared by map sources and the renderer. |
 | `firmware/obc-platform/`, `obc-display/`, `obc-sensors/`, `obc-storage/` | The **platform adapters** beneath the app facade: concrete implementations of the semantic ports, the display seam and its `ls021` geometry, sensor plumbing, and the SD/RRAM stores. |
 | `firmware/obc-ports/` | Dependency-free `no_std` semantic ports — fixes, sensor/input/settings traits, clocks, and recorded-track points shared without depending upward on app, platform, or host policy. |
-| `firmware/obc-reader/` | `no_std + alloc` — pure OBCM **v5** parsing (header, style table, LOD table, per-LOD quadtree query + chunk decode). Dependency-light. |
+| `firmware/obc-reader/` | `no_std + alloc` — current OBCM parsing (header, style table, LOD table, per-LOD quadtree query + chunk decode). Dependency-light. |
 | `firmware/obc-render/` | `no_std` — the **shared rendering path**: `Viewport` projection, meters-per-pixel LOD selection, painter z-ordering, even-odd scanline polygon fill, weighted polylines, text. Generic over an `embedded-graphics` `DrawTarget` so host and MCU run identical drawing code. |
 | `firmware/obc-route/` | `no_std` — the OBCR route reader **and** the GPX → OBCR converter. |
 | `host/obc-bench/` | The **render benchmark + pixel-hash tripwire**: seven fixed scenes through the real pipeline, timings printed and frame hashes gated against `hashes.txt` in CI. |
@@ -57,15 +57,16 @@ the normative byte layouts: [`OBCM_Spec.md`](specs/OBCM_Spec.md) /
 | `host/obc-pack/` | The **map packer** (Rust): OSM `.osm.pbf` → `.obcm` — ingest, multipolygon assembly, land generation, quadtree build, streaming serialize. |
 | `host/obc-replay/`, `host/obc-usb-host/` | GPX replay stepping shared by the simulator hosts, and the VCOM feeder that drives a debug-uart board from a recorded ride. |
 | `host/obcm-testkit/`, `host/obc-vectors/` | The **test oracles**. `obcm-testkit` hand-assembles OBCM bytes from the spec's constants — deliberately independent of the production serializer, so reader tests prove agreement with the *format* rather than with the writer. `obc-vectors` builds the shared `specs/vectors/` fixtures. |
-| `apps/obc-desktop/` | The **Tauri desktop app**: the builder UI in a native window with `obc-pack` linked in and a vendored GEOS, plus the thumbdrive device page. Its own cargo root, like the board crate. |
+| `apps/obc-desktop/` | The **Tauri desktop app**: the shared catalog builder UI in a native window, native same-origin downloads and atomic map-set output, plus the thumbdrive device page. Its own cargo root, like the board crate. |
 | `apps/obc-sim/` | Desktop **simulator host** (eframe/egui, pure Rust — no SDL): renders `obc-app` into a framebuffer at the device's 240×320 / 64-color look, plus a control panel, GPX replay, and headless capture. |
 | `apps/obc-web-convert/` | The web builder's **conversion bridge**: `obc-route`'s GPX → OBCR and track → GPX compiled to wasm behind two functions and a typed error, so route conversion runs in the visitor's browser instead of on a server. |
+| `apps/obc-web-assemble/` | The web builder's **assembly bridge**: `obcm-assemble` compiled to wasm, so downloaded OBCA map cells become one `.obcm` (or a volume set) in the tab — spec-verified before anything leaves it, and byte-identical to the CLI's output. |
 | `apps/obc-web-demo/` | The website's **live-demo host**: the same shared crates compiled to wasm behind a small `obc_demo_*` API — the landing page's JS owns the frame loop and canvas, no GUI framework in the tree. |
-| `builder/` | The **map builder** — one Svelte app in `app/`, three hosts (static web, Tauri desktop, and the FastAPI dev server in `server/`). Nothing here packs anything: they all drive `host/obc-pack`. |
+| `builder/` | The **map builder** — one Svelte app in `app/`, three hosts (static web, Tauri desktop, and the FastAPI maintainer server in `server/`). All consume the same published cell catalog and shared assembler. |
 | `builder/app/` | The shared **Svelte UI**. `vite.config.ts` resolves `$host` at build time to exactly one of `web.ts` / `desktop.ts` / `dev.ts`, so the hosts you didn't build have no path into the bundle. |
 | `builder/palette.json` | The device's 64-color (RGB222) gamut, offered as the web builder's default color picker so the editor and the panel agree. |
-| `builder/presets/` | Style presets — complete packer configs (features + LODs + marker, plus a `_meta` block). `default.json` ("Bikepacking") is the read-only factory default; `minimal.json` and `high-detail.json` ship alongside. |
-| `builder/server/` | **Web builder** (FastAPI): pick regions on a map, edit styles, and build an `.obcm` in the browser — shells out to `obc-pack`. |
+| `builder/presets/` | The shipped style documents. `schema.json` ("Bikepacking") is the one **schema** — a complete packer config (features + LODs + marker, plus a `_meta` block); `skins/<id>.json` are presentation-only documents stamped onto an assembled map's style table rather than packed ([`OBCC_Spec.md` §4–§5](specs/OBCC_Spec.md)). |
+| `builder/server/` | **Maintainer server** (FastAPI): serves the advanced schema editor, palette, JSON Schema, and presets. It does not build product maps. |
 | `companion-ios/` | The **iOS companion app** (SwiftUI + the `OBCKit` package): import GPX/TCX, encode OBCR, and sync routes/rides with the device over BLE. |
 | `specs/vectors/` | The **executable half of the specs** — shared binary fixtures pinning the BLE wire contract, the OBCR route format and the recorded-track log + its GPX export — asserted byte-exact by `cargo test`, `swift test`, and the web builder's wasm conversion tests. |
 | `tools/` | Dev scripts: the `justfile` behind `obc <task>`, the GEOS and RISC-V toolchain installers, and shell completion. |
@@ -98,9 +99,9 @@ has no use for: `obc-fw-nrf54l`, `obc-boot`, and `obc-desktop`.
 | :-- | :-- |
 | Building anything Rust | A stable Rust toolchain (`rustup`). |
 | The packer (`obc-pack`) | System **GEOS ≥ 3.14** (`brew install geos`; `tools/install-geos.sh` builds it if your distro's is older) — linked for multipolygon area assembly, and the packer's only native dependency. |
-| The desktop app (`obc-desktop`) | **No GEOS** — it compiles a vendored one into the binary. It wants **CMake** (to build that) and **Node 22+** (it embeds the built frontend) instead. See [its README](apps/obc-desktop/README.md). |
+| The desktop app (`obc-desktop`) | **Node 22+** for the embedded frontend plus the platform webview dependencies listed in [its README](apps/obc-desktop/README.md). It does not link the packer or GEOS. |
 | The desktop simulator | Just Rust — the GUI is pure eframe/egui, **no SDL/Homebrew setup**. |
-| The web builder (optional) | Python 3.13 + the deps in `builder/requirements.txt`, and **Node 22+** for the one-time UI build (`npm ci && npm run build` in `builder/app/`). |
+| The web builder (optional) | Python 3.13 + the deps in `builder/requirements.txt`, and **Node 22+** for the UI. The maintainer schema lab also uses `osmium-tool` once to prepare its small reference-complete preview source (`obc doctor` checks it). |
 | Checking the shared crates build for the device | `rustup target add thumbv8m.main-none-eabihf`. |
 
 ---
@@ -131,7 +132,7 @@ Download an OSM extract (e.g. from [Geofabrik](https://download.geofabrik.de/)),
 then:
 
 ```sh
-target/release/obc-pack region.osm.pbf builder/presets/default.json region.obcm
+target/release/obc-pack region.osm.pbf builder/presets/schema.json region.obcm
 ```
 
 ```
@@ -147,9 +148,12 @@ usage: obc-pack <pbf...> <config.json> <out.obcm> [--bbox W,S,E,N] [--chunk-size
   as far as any merge can tell.
 - `--bbox W,S,E,N` crops the sources to a box (degrees) **during ingest** — no
   `osmium extract` step and no temporary cropped `.pbf`. Ways crossing the
-  boundary are kept whole (osmium's `complete_ways` strategy), so the map and
-  the nav graph don't fray at the edge. Cropping needs each input type-sorted
-  (nodes, then ways, then relations); every Geofabrik extract is.
+  boundary are kept whole, and renderable area relations reached by those ways
+  pull in all of their member ways. Roads and the nav graph therefore do not
+  fray at the edge, while residential, forest, and farmland multipolygons do
+  not disappear because one ring segment lies outside the box. Cropping needs
+  each input type-sorted (nodes, then ways, then relations); every Geofabrik
+  extract is.
 - `--chunk-size N` sets the quadtree chunk payload target (default `4096`).
 - `--no-land` skips coastline/land-polygon generation.
 - LOD tiers and feature styling come from `config.json`. When `natural.land` is
@@ -159,7 +163,7 @@ usage: obc-pack <pbf...> <config.json> <out.obcm> [--bbox W,S,E,N] [--chunk-size
 
 ### The config — features, styles, and LODs
 
-The config JSON (any preset under `builder/presets/`, or your own file) is the
+The config JSON (the shipped `builder/presets/schema.json`, or your own file) is the
 single source of truth for *what* gets packed and *how it looks*
 (`obc-pack schema` prints its JSON Schema):
 
@@ -170,182 +174,211 @@ single source of truth for *what* gets packed and *how it looks*
   `weight` (line thickness), `min_lod` (the finest tier it first appears in), and
   `priority` (drop order when a chunk overflows).
 
-### The catalog manifest — describing a pile of baked maps
+### The published cell catalog
 
-A distribution that bakes maps centrally and serves them as static files needs one
-JSON document saying what exists. `obc-pack catalog` walks a bake output tree and
-writes it:
+The hosted builder and desktop app consume the same [OBCC](specs/OBCC_Spec.md)
+catalog. The bakery publishes one schema, a set of presentation-only skins, named
+region selections, digest-pinned per-band cell indexes, and the cells themselves.
+A selected region, box, or GPX corridor is resolved to cells and assembled locally
+by the same `obc-web-assemble` bridge in both products. The resulting volume-set
+bytes are therefore identical for the same catalog root, coverage, and skin.
 
-```sh
-obc-pack catalog <bake-tree> --base-url https://maps.example.org/catalog/v1
-# → <bake-tree>/catalog.json           (written atomically: temp file, fsync, rename)
+`catalog.json` is intentionally small. It pins the region cell lists and band
+indexes by byte length and SHA-256; those indexes pin every cell. Consumers reject
+a missing, truncated, or mismatched object instead of assembling a mixed publish.
+Referenced cells, satellites, and previews carry that digest in their R2 key, so
+an older cached root remains readable while a replacement propagates; unchanged
+planet cells retain their key and are skipped on later publishes.
+The byte-level cell and assembly rules are normative in
+[OBCA_Spec.md](specs/OBCA_Spec.md), and the catalog envelope is normative in
+[OBCC_Spec.md](specs/OBCC_Spec.md).
 
-obc-pack catalog <bake-tree> --base-url … --out -   # print instead, for inspection
-obc-pack schema --catalog                           # the manifest's JSON Schema
-```
-
-The tree is self-describing — `presets/<id>.json` (the preset's current definition) and
-`regions/<a>/<b>/<preset>.obcm` next to a small `<preset>.obcm.json` sidecar. The
-sidecar records what the *bake* knew and the bytes can't state: region name, the preset
-version it was packed with, build time, and the Geofabrik snapshot date. Everything
-else is read out of the artifact itself, including the **OBCM version**, which is what
-lets a consumer refuse a map a device can't read before downloading a few hundred
-megabytes.
-
-Nothing in the sidecar is re-derived at generation time, which is what lets the manifest
-stay honest across a *partial* re-bake: restyle one preset, re-bake half the regions,
-and the untouched artifacts keep reporting the version they were actually built with
-instead of being relabelled with the new one.
-
-The manifest layout, the sidecar, and the version law (an OBCM bump invalidates every
-baked artifact) are normative in [`OBCC_Spec.md`](specs/OBCC_Spec.md); pass
-`--generated-at` in CI to make a re-run byte-reproducible.
-
-### The bakery — filling that tree, and publishing it
-
-`obc-bake` is what produces the tree above. It crosses a curated region list
-([`host/obc-bake/regions.toml`](host/obc-bake/regions.toml) — Germany with all sixteen
-Bundesländer, Austria, Switzerland; one line per region, so adding coverage is a
-one-line PR) with the presets in `builder/presets/`:
+For maintainer work, `obc-pack cells` can cut an extract directly:
 
 ```sh
-cargo run --release -p obc-bake -- regions            # what would be baked
-cargo run --release -p obc-bake -- bake --out ~/bake \
-    --summary-json ~/bake/run.json                    # download, pack, verify, install
-cargo run --release -p obc-bake -- publish ~/bake \
-    --base-url https://maps.example.org --target r2   # artifacts first, manifest last
+obc-pack cells germany-latest.osm.pbf builder/presets/schema.json ./obc-bake \
+    --source europe/germany@2026-07-01=5.8,47.2,15.1,55.1
 ```
 
-Per (region, preset) it downloads or reuses the Geofabrik extract, packs it with the
-linked-in packer, and **opens the result with the real `obc-reader`** — every LOD, every
-chunk, every feature — before renaming it into the tree. A corrupt artifact never gets a
-name, so it can never reach the manifest. Re-running is cheap: the skip is keyed on the
-SHA-256 of the extract and of the preset config plus the OBCM version, never on
-timestamps, and a run prints the real per-artifact sizes and a total (which is what the
-storage bill is actually made of). The sidecar-only facts — a region's display name, the
-extract's date — are keyed separately, so a re-dated but byte-identical extract rewrites
-the sidecar and packs nothing. A region that fails is loud — in the summary, and in the
-exit status.
+That low-level command is useful while developing the schema and LOD ladder.
+Product users do not run it: the web builder and desktop app both use the
+published catalog.
 
-`publish` refuses to shrink the live catalog: before uploading anything it reads the
-manifest already at the destination and stops if this tree would drop coverage that is
-currently served, naming the artifacts that would disappear. That is the guard against
-the easy mistake — publishing a `--region`-narrowed or CI-sized tree over the full one,
-which succeeds atomically and un-offers everything it does not contain. `--allow-shrink`
-proceeds anyway, loudly, for the deliberate case.
+### Baking and publishing the catalog
 
-Useful flags: `--region <id>` / `--preset <id>` to narrow the matrix, `--source <dir>` to
-bake from local extracts, `--force` to re-bake regardless, `--no-land` to skip the
-~950 MB land dataset. `publish` defaults to a dry run; `--target dir:PATH` writes a
-servable copy, `--target r2` uploads through `rclone` with credentials taken from
-`OBC_R2_*` environment variables and never written to disk.
-
-`obc-bake check-obcm-version` is the other half of the version law: it fetches the
-*published* manifest (`--catalog-url`, or `OBC_CATALOG_URL`) and fails if what is being
-served is not the OBCM version this build writes. Scheduled + dispatchable bakes and that
-guard live in [`.github/workflows/bake.yml`](.github/workflows/bake.yml) — sized for small
-regions, because a country-scale bake does not fit a GitHub runner.
-
-### Web builder
-
-For an interactive flow — select regions on a map, tweak styles against the live
-device palette, watch build progress:
+`obc-bake` is the operator-facing compiler. Region ids are Geofabrik ids curated
+in [`host/obc-bake/regions.toml`](host/obc-bake/regions.toml):
 
 ```sh
-# from the repo root
-.venv/bin/python -m builder.server        # http://localhost:8000
+# Inspect the curated list.
+obc bake regions
+
+# Bake one region into $OBC_BAKE_TREE (default: ~/obc-bake).
+obc bake europe/germany/baden-wuerttemberg
+
+# With no region ids, bake every regions.toml entry into the same tree.
+obc bake
+
+# Verify catalog pins, cell headers, lockstep, and reader round-trips.
+obc bake verify
 ```
 
-It drives the `obc-pack` binary you built above (override its path with the
-`OBC_PACK_BIN` env var). The UI is a Svelte app compiled once with Node
-(`cd builder/app && npm ci && npm run build`). Features:
+Several positional ids are baked together. This matters at borders: neighbouring
+extracts are co-ingested for shared edge cells, so canonical cells are complete
+instead of being clipped independently. Re-running is resumable and skips plans
+whose source, schema, and output are already current. The tree is self-contained:
+cells, sidecars, region metadata and outlines, `schema.json`, skins, their
+production-rendered Teningen previews, satellites, and `catalog.json` all live
+below the output directory.
 
-- **Region picker** — click regions or search the Geofabrik tree; builds stream
-  live progress over server-sent events and finish with a download link.
-- **Bounding-box build mode** — draw a crop box on the map and the selected PBFs
-  are cropped to it before packing, so you can target a small area precisely.
-- **Style presets** — pick Bikepacking / Minimal / High detail on the main page
-  (the files under `builder/presets/`); the **advanced editor** exposes every
-  knob: per-feature colors / z-order / weights / per-LOD detail, LOD tiers, and
-  output settings, with the color picker defaulting to the device's 64-color
-  gamut (`palette.json`).
-- **Your edits live in the browser** (localStorage) as "Custom — based on
-  &lt;preset&gt;"; **Reset to preset** re-applies the shipped version. Nothing
-  is stored server-side.
-- **Export / Import** — the exported `.json` is a complete packer config,
-  directly usable with the `obc-pack` CLI; old stylesheet exports import fine.
-- Feature/category fields autocomplete from a curated OSM tag catalog; any
-  freeform tag still works.
+No selector and `--all` deliberately mean different things. Omitting selectors
+bakes the curated TOML list; `obc bake --all` bakes a planet snapshot while retaining
+those entries as named catalog selections. Planet mode requires `osmium` and the
+official Pyosmium replication client; `obc doctor --install` installs the latter in
+the repository venv. The first run downloads and caches `planet-latest.osm.pbf`.
+Later runs advance that same file through its embedded OSM replication state in
+atomic, bounded batches; a cache older than 90 days is replaced by a fresh snapshot
+instead of replaying months of diffs.
 
-Downloads, caches, and the build queue are env-configurable (all optional):
+Every snapshot is split through a binary hierarchy of grid-aligned source leaves,
+with only one bounded leaf handed to the Rust cutter at a time. The new leaf bytes
+are compared with the preceding generation: byte-identical leaves refresh
+provenance without a cell re-bake, while changed leaves replace their complete cell
+set. This post-update comparison, rather than diff bounding boxes, also handles
+deletions and relation membership changes. An interrupted run reuses hash-verified
+source leaves and current cells. Every geographic cell ends as either an OBCM
+artifact or a zero-byte known-empty claim, and an incomplete cell transition cannot
+pass `verify` or `publish`.
 
-| Variable | Default | Meaning |
-| :-- | :-- | :-- |
-| `OBCM_CACHE_DIR` | `~/.cache/obcm` | Geofabrik index, PBF downloads, land polygons. |
-| `OBCM_OUTPUT_DIR` | `<cache>/builds` | Per-job build outputs, served by the download endpoint. |
-| `OBC_PACK_BIN` | `target/{release,debug}/obc-pack` | Path to the packer binary. |
-| `OBCM_MAX_CONCURRENT_JOBS` | `1` | Parallel packs (obc-pack is memory-hungry). |
-| `OBCM_KEEP_JOBS` | `20` | Finished builds kept before the sweeper evicts by count/age. |
+```sh
+# Install/check Osmium, Pyosmium, and the rest of the maintainer toolchain.
+obc doctor --install
 
-For frontend development, run the API (`.venv/bin/python -m builder.server
---no-browser`) and `npm run dev` in `builder/app/` side by side —
-Vite proxies `/api` to port 8000.
+# Bake a complete planet snapshot. This is intentionally separate from publish.
+obc bake --all
 
-The same Svelte source builds for three hosts, chosen by Vite mode (issue #895).
-`npm run build` is the local FastAPI one described above and the only one the
-Python server mounts:
+# Run the same command later: it applies replication updates and only re-bakes
+# source leaves whose canonical content changed.
+obc bake --all
+
+# The same pipeline from an already-downloaded planet PBF.
+# A local source is treated as a fixed snapshot and is never modified.
+obc bake --all --source /data/planet-latest.osm.pbf
+```
+
+Publishing is a separate operation. It regenerates URLs for the public origin,
+regenerates the square preview for every skin, uploads content first, verifies
+remote sizes, and replaces `catalog.json` last. Root-referenced objects use
+immutable digest-suffixed keys; old objects are retained so a browser holding the
+previous root never receives mixed-generation bytes. Updating preview code
+therefore needs only another publish, not a cell rebake:
+
+```sh
+# Copy tools/obc.local.example to the gitignored tools/obc.local and add the
+# credential values. The production URL, prefix, and bake-tree defaults are ready.
+
+# Plan only (the default target is a dry run).
+obc bake publish
+
+# Publish to Cloudflare R2; requires rclone.
+# R2 publishes show every upload, cumulative bytes, ETA, remote verification,
+# and the final catalog-root swap automatically.
+obc bake publish --target r2
+
+# Once the deployed site uses the new prefix, preview and then apply removal of
+# the obsolete bucket-root catalog.json, regions/, and presets/ objects.
+obc bake remove-old-r2
+obc bake remove-old-r2 --apply
+```
+
+When `OBC_R2_PREFIX` is set, `OBC_MAPS_BASE_URL` must be the public URL of that
+same prefix. For example, `OBC_R2_PREFIX=cell-catalog` pairs with
+`OBC_MAPS_BASE_URL=https://maps.openbikecomputer.com/cell-catalog`; the root to put
+in `OBC_CATALOG_URL` is then
+`https://maps.openbikecomputer.com/cell-catalog/catalog.json`.
+
+Set `OBC_BAKE_TREE` in `tools/obc.local` to move the operator tree. An explicit
+tree may also follow `verify` or `publish`. For curated bakes, `--source DIR` uses
+local Geofabrik-shaped `.osm.pbf` and `.poly` inputs. With `--all`, `--source`
+accepts a planet PBF URL, a local `planet-latest.osm.pbf`, or its containing
+directory. The default/URL source is cached and replication-updated; a local file is
+read-only. Planet updates need temporary disk for one additional full PBF while
+Pyosmium writes its atomic replacement. Downloads, source shards, and replication
+state live in the shared cache. The terminal and `--summary-json` report the
+replication sequence range, source leaves that were current/byte-identical/changed,
+and cell leaves that were cut/refreshed/unchanged.
+Run `obc bake help` for the complete operator surface.
+
+### Web builder and desktop app
+
+The Svelte builder has one coverage UI and one assembly pipeline. It supports named
+regions, drawn boxes, and corridors around GPX routes, prices the exact selected
+cells, downloads digest-verified inputs, and runs assembly in a worker. A skin
+changes only presentation; schema and LOD changes require a maintainer bake.
+
+The same source is built for three hosts:
 
 | Script | Host | Output |
 | :-- | :-- | :-- |
-| `npm run build` | the local FastAPI dev server | `builder/server/static/dist/` |
-| `npm run build:web` | the static hosted site (no backend) | `builder/app/dist/web/` |
-| `npm run build:desktop` | the Tauri desktop app | `builder/app/dist/desktop/` |
+| `npm run build` | local maintainer server | `builder/server/static/dist/` |
+| `npm run build:web` | static website | `builder/app/dist/web/` |
+| `npm run build:desktop` | Tauri desktop app | `builder/app/dist/desktop/` |
 
-The static host has no API to call, so it reads two files instead: `regions.json`
-(the trimmed Geofabrik index the picker draws — the same document `/api/regions`
-returns) and `catalog.json` (the [OBCC](specs/OBCC_Spec.md) manifest of pre-baked maps,
-produced by `obc-pack catalog`). Both default to `./data/` beside the app;
-`VITE_DATA_BASE` and `VITE_CATALOG_URL` move them. To run that host locally:
+The hosted build reads the catalog from `VITE_CATALOG_URL` (or the deployed
+default). The desktop URL is compiled with `OBC_CATALOG_URL` and defaults to the
+OpenBikeComputer map origin. Desktop catalog and cell reads go through its native
+HTTPS transport and are restricted to that configured origin. Assembled files are
+written atomically into one uniquely named folder under
+`Documents/OpenBikeComputer`; the web host offers the same bytes as downloads.
+
+The local Python server remains the maintainer host for the shared Maps UI and
+the advanced schema editor. Prepare its small preview source once, then start it:
 
 ```sh
-# regions.json — needs the packer venv (Geofabrik index + shapely)
-.venv/bin/python -m builder.server.static_data \
-    --out builder/app/public/data
-
-# catalog.json — from a bake tree (OBCC_Spec.md §8), pointed at where it is served
-target/release/obc-pack catalog <bake-tree> \
-    --base-url http://localhost:5173/data
-
-cd builder/app && npm run dev -- --mode web
+obc web preview-source
+obc web
 ```
 
-`obc site [PORT]` does the built version of all of that in one command: builds the
-web host, bakes `regions.json` beside it, and serves it on `:4173`
-(`OBC_CATALOG_URL=…` points it at a real manifest).
+The first command reuses the bakery's cached Freiburg-regbez extract when
+available (downloads it otherwise), then atomically asks Osmium for one
+reference-complete Teningen crop. `OBC_SCHEMA_PREVIEW_PBF` in `tools/obc.local`
+may instead name an already-prepared absolute `.osm.pbf`; that maintainer-owned
+path is never downloaded to or overwritten.
 
-**Published** by [`deploy-site.yml`](.github/workflows/deploy-site.yml) on every push
-to `develop`, as one GitHub Pages artifact holding four surfaces: the landing page
-and live demo at `/`, `/docs/`, `/blog/`, and this host at `/builder/` with its
-`regions.json` beside it. Two things the workflow's header comment explains in full
-and are worth knowing before changing anything there: every URL in the artifact is
-**relative** (`trunk --public-url ./`, Vite `base: "./"`) so the site can move to a
-custom domain without a rebuild — the deploy re-proves that each run by serving the
-artifact from a deep sub-path; and Pages **cannot set response headers**, which is
-why the catalog manifest is published with the artifacts rather than beside the site
-(a manifest here could only change by redeploying the site) and why cross-origin
-isolation — hence threaded wasm — is unavailable on this host.
+The Maps tab reads `OBC_CATALOG_URL` at server runtime and moves catalog objects
+through a same-origin, catalog-tree-restricted proxy, so an old Vite bundle or an
+R2 CORS policy cannot redirect the local host to `./data/catalog.json`. Advanced
+edits live in the browser and debounce into one native pack of only the prepared
+Teningen source—normally about 5–15 seconds, never a region or planet bake. The
+result renders on a real 240×320 device map plane through `obc-reader` and
+`obc-render`, with the full LOD ladder and the production feature/span/point/ring
+limits visible. The exported complete config becomes public only through an
+explicit maintainer bake.
 
-The desktop host has no back end yet (D1, #906).
+`obc web` refreshes the native packer, frontend, and all three wasm bridges. The lower-level
+equivalent remains:
+
+```sh
+cd builder/app
+npm ci
+npm run build:wasm
+npm run build:all
+```
+
+`obc-web-convert` handles GPX/route conversion, `obc-web-assemble` assembles cell
+sets, and `obc-skin-preview` exposes the production renderer to both preview
+surfaces. There is no separate product preview renderer or desktop PBF build path.
 
 ### Driving the device step without a device
 
 The USB writes (map, route, firmware) need an OBC on the other end of a cable.
-The device half now ships in every firmware build (#889, `obc-fw-nrf54l/src/usb/`)
-but has not been verified on hardware yet. `dev-harness/` is a second
+The device half ships in every firmware build (#889, `obc-fw-nrf54l/src/usb/`)
+and is verified on hardware. `dev-harness/` is a second
 entry point that mounts the whole app against the **simulated device** —
 `lib/usb/loopback.ts`, the real protocol over an in-memory pipe, paced to the SD
-card's ~700 KB/s so progress, throughput and the remaining-time estimate behave
-the way they will on hardware. It lives outside `src/` because no build has it as
+card's measured **~0.5 MB/s write** ceiling so progress, throughput and the
+remaining-time estimate behave the way they do on hardware. (Reads are faster;
+uploads are write-bound — `sd_bench`'s `wr-*` shapes are the source of truth.) It lives outside `src/` because no build has it as
 an input, which is what keeps the simulated device out of every shipped bundle.
 
 ```sh
@@ -356,12 +389,12 @@ VITE_DATA_BASE=/data npm run dev -- --mode web   # then open /dev-harness/
 `VITE_DATA_BASE` is root-relative here because the harness is served from a
 sub-path, and the default `./data` would resolve under it.
 
-All of them — and `npm run check` and `npm test` — need the two wasm bridges
+All of them — and `npm run check` and `npm test` — need the three wasm bridges
 built once first (`npm run build:wasm`, which wants a Rust toolchain and
-`wasm-pack`): route conversion and the preset previews both run client-side
-through the firmware's own code, so the TypeScript imports bindings that don't
-exist until they're built. See
-[`firmware/README.md`](firmware/README.md#build-the-web-builders-wasm-bridges-obc-web-convert-obc-web-preview).
+`wasm-pack`): route conversion, cell assembly, and production previews run
+client-side through the project's own code, so the TypeScript imports bindings
+that do not exist until they are built. See
+[`firmware/README.md`](firmware/README.md#build-the-web-builders-wasm-bridges-obc-web-convert-obc-web-assemble).
 
 ---
 

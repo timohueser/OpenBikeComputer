@@ -24,7 +24,6 @@
 //! Store borrows stay inside the synchronous `with_data` closures — never held across an `await`.
 
 use core::cell::RefCell;
-use core::sync::atomic::Ordering;
 
 use defmt::{info, warn};
 use nrf_sdc::{self as sdc};
@@ -103,7 +102,7 @@ pub(crate) async fn serve_connection(
                             }) {
                                 TransferDisposition::Arm(armed) => {
                                     info!("ble: [gatt] transfer_control: transfer armed");
-                                    TRANSFER_ACTIVE.store(true, Ordering::Relaxed);
+                                    TRANSFER_ACTIVE.claim(crate::link::gate_owner(crate::link::Transport::Ble));
                                     TRANSFER_ARM.signal(armed);
                                 }
                                 TransferDisposition::AbortActive => {

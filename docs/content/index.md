@@ -142,7 +142,7 @@ The whole project is built around two ideas: **compact binary formats a microcon
 | Simulator host | [`obc-sim`](src:apps/obc-sim) | Desktop shell: window, control panel, colour policy, GPX replay, headless capture |
 | Web demo host | [`obc-web-demo`](src:apps/obc-web-demo) | The landing page's thin wasm host — same crates, a JS-driven frame loop, no GUI framework (shared host glue: [`obc-host-core`](src:host/obc-host-core)) |
 | Conversion bridge | [`obc-web-convert`](src:apps/obc-web-convert) | The web builder's wasm shim over the same GPX ↔ OBCR routines — route conversion runs in the tab, no server |
-| Preview renderer | [`obc-web-preview`](src:apps/obc-web-preview) | The web builder's wasm shim over the same reader + renderer — a style preset's card draws its own demo map, at the panel's resolution |
+| Assembly bridge | [`obc-web-assemble`](src:apps/obc-web-assemble) | The web builder's wasm shim over the same cell assembler — downloaded map cells become one map in the tab, verified before anything leaves it |
 
 > **New here?** Start with **[System architecture](software/architecture/)** for the lay of the land, then the **[Rendering pipeline](software/rendering/)**. The **[data formats](software/formats/)** page is the reference the other two lean on.
 

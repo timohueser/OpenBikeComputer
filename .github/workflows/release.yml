@@ -69,11 +69,11 @@ jobs:
           cache: false
 
       # Cache each cargo root separately — the board crate and the bootloader are standalone
-      # (own target dir + Cargo.lock), the host workspace builds obc-mkimage.
+      # (own target dir + Cargo.lock), while the host workspace now lives at the repository root.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
-            firmware
+            .
             firmware/obc-fw-nrf54l
             firmware/obc-boot
           key: release

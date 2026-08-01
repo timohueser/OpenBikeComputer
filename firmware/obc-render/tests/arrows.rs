@@ -5,7 +5,7 @@
 //! end-to-end `draw_route` gate.
 
 use embedded_graphics::pixelcolor::Rgb888;
-use obc_reader::{ground_dist_m, BBox};
+use obc_map_scene::{ground_dist_m, BBox};
 use obc_render::{MapRenderer, OverlayChunk, RouteOverlaySource, Viewport};
 
 mod common;

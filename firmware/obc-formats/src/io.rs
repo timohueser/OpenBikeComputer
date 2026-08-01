@@ -150,7 +150,7 @@ pub fn checked_put_u32(b: &mut [u8], o: usize, v: u32) -> Result<(), DecodeError
     Ok(())
 }
 
-/// Legacy compatibility wrapper that reads a little-endian `i16` after caller-side validation.
+/// Read a little-endian `i16` after caller-side validation.
 ///
 /// Panics for an invalid range; new primitive decoders should use [`checked_rd_i16`].
 #[inline]
@@ -158,7 +158,7 @@ pub fn rd_i16(d: &[u8], o: usize) -> i16 {
     i16::from_le_bytes([d[o], d[o + 1]])
 }
 
-/// Legacy compatibility wrapper that reads a little-endian `u16` after caller-side validation.
+/// Read a little-endian `u16` after caller-side validation.
 ///
 /// Panics for an invalid range; new primitive decoders should use [`checked_rd_u16`].
 #[inline]
@@ -166,7 +166,7 @@ pub fn rd_u16(d: &[u8], o: usize) -> u16 {
     u16::from_le_bytes([d[o], d[o + 1]])
 }
 
-/// Legacy compatibility wrapper that reads a little-endian `i32` after caller-side validation.
+/// Read a little-endian `i32` after caller-side validation.
 ///
 /// Panics for an invalid range; new primitive decoders should use [`checked_rd_i32`].
 #[inline]
@@ -174,7 +174,7 @@ pub fn rd_i32(d: &[u8], o: usize) -> i32 {
     i32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]])
 }
 
-/// Legacy compatibility wrapper that reads a little-endian `u32` after caller-side validation.
+/// Read a little-endian `u32` after caller-side validation.
 ///
 /// Panics for an invalid range; new primitive decoders should use [`checked_rd_u32`].
 #[inline]
@@ -182,7 +182,7 @@ pub fn rd_u32(d: &[u8], o: usize) -> u32 {
     u32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]])
 }
 
-/// Legacy compatibility wrapper that reads a little-endian `f32` after caller-side validation.
+/// Read a little-endian `f32` after caller-side validation.
 ///
 /// Panics for an invalid range; new primitive decoders should use [`checked_rd_f32`].
 #[inline]
@@ -190,7 +190,7 @@ pub fn rd_f32(d: &[u8], o: usize) -> f32 {
     f32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]])
 }
 
-/// Legacy compatibility wrapper that writes a little-endian `i16` after caller-side validation.
+/// Write a little-endian `i16` after caller-side validation.
 ///
 /// Panics for an invalid range; new primitive encoders should use [`checked_put_i16`].
 #[inline]
@@ -198,7 +198,7 @@ pub fn put_i16(b: &mut [u8], o: usize, v: i16) {
     b[o..o + 2].copy_from_slice(&v.to_le_bytes());
 }
 
-/// Legacy compatibility wrapper that writes a little-endian `u16` after caller-side validation.
+/// Write a little-endian `u16` after caller-side validation.
 ///
 /// Panics for an invalid range; new primitive encoders should use [`checked_put_u16`].
 #[inline]
@@ -206,7 +206,7 @@ pub fn put_u16(b: &mut [u8], o: usize, v: u16) {
     b[o..o + 2].copy_from_slice(&v.to_le_bytes());
 }
 
-/// Legacy compatibility wrapper that writes a little-endian `i32` after caller-side validation.
+/// Write a little-endian `i32` after caller-side validation.
 ///
 /// Panics for an invalid range; new primitive encoders should use [`checked_put_i32`].
 #[inline]
@@ -214,7 +214,7 @@ pub fn put_i32(b: &mut [u8], o: usize, v: i32) {
     b[o..o + 4].copy_from_slice(&v.to_le_bytes());
 }
 
-/// Legacy compatibility wrapper that writes a little-endian `u32` after caller-side validation.
+/// Write a little-endian `u32` after caller-side validation.
 ///
 /// Panics for an invalid range; new primitive encoders should use [`checked_put_u32`].
 #[inline]
