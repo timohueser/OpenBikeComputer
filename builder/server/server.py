@@ -2,12 +2,14 @@
 import json
 import os
 import subprocess
+from urllib.parse import urlsplit
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import paths
+from . import schema_preview
 
 PROJECT_ROOT = paths.BUILDER_ROOT
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
@@ -28,6 +30,31 @@ PALETTE_FILE = os.path.join(PROJECT_ROOT, "palette.json")
 SCHEMA_FILE = os.path.join(paths.REPO_ROOT, "host", "obc-pack", "schema", "config.schema.json")
 
 app = FastAPI(title="OBC Schema Editor")
+
+
+def _catalog_url() -> str:
+    value = os.environ.get(
+        "OBC_CATALOG_URL",
+        "https://maps.openbikecomputer.com/cell-catalog/catalog.json",
+    )
+    parsed = urlsplit(value)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc or parsed.username or parsed.password:
+        raise HTTPException(
+            status_code=503,
+            detail="OBC_CATALOG_URL must be an absolute http(s) URL without embedded credentials.",
+        )
+    return value
+
+
+@app.get("/api/runtime")
+def get_runtime():
+    """Runtime-only settings for the local bundle.
+
+    Deliberately not a Vite define: ``obc web`` may reuse or rebuild an asset,
+    while tools/obc.local is operator state read by this process right now.
+    """
+
+    return JSONResponse({"catalog_url": _catalog_url()})
 
 
 def _default_palette():
@@ -133,6 +160,44 @@ def get_legacy_config():
     if not os.path.exists(USER_CONFIG):
         raise HTTPException(status_code=404, detail="No legacy config")
     return JSONResponse(_read_config(USER_CONFIG))
+
+
+@app.get("/api/schema-preview/status")
+def get_schema_preview_status():
+    status = schema_preview.source_status()
+    return JSONResponse({
+        "available": status.available,
+        "label": status.label,
+        "configured": status.configured,
+        "detail": status.detail,
+        "bbox": schema_preview.TENINGEN_BBOX,
+    })
+
+
+@app.post("/api/schema-preview")
+async def build_schema_preview(request: Request):
+    # Read one byte beyond the cap so an exact-limit body is accepted without
+    # allowing an unbounded request to be decoded first.
+    body = b""
+    async for chunk in request.stream():
+        body += chunk
+        if len(body) > schema_preview.MAX_CONFIG_BYTES:
+            raise HTTPException(status_code=413, detail="Schema preview config is too large.")
+    try:
+        config = schema_preview.validate_config(body)
+        result = await schema_preview.pack_config(config, request.is_disconnected)
+    except schema_preview.PreviewCancelled:
+        return Response(status_code=499)
+    except schema_preview.PreviewError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return Response(
+        content=result.body,
+        media_type="application/vnd.openbikecomputer.obcm",
+        headers={
+            "X-OBC-Pack-Duration-Ms": str(result.duration_ms),
+            "X-OBC-Pack-Bytes": str(len(result.body)),
+        },
+    )
 
 
 # The SPA (builder/app/, built by Vite into static/dist/ —
