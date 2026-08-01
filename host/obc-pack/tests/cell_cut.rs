@@ -24,6 +24,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
+use obc_map_scene::BBox;
 use obc_pack::config::Config;
 use obc_pack::cut::{cut_ingested, CutOptions, CutSummary, SourceExtent};
 use obc_pack::geom::Geom;
@@ -32,7 +33,7 @@ use obc_pack::ingest::{IngestFeature, Ingested};
 use obc_pack::nav::RoutableWay;
 use obc_pack::poi::Poi;
 use obc_pack::progress::Progress;
-use obc_reader::{BBox, MapCache, MapTables, Reader, SliceSource, MAX_FEAT_PTS, MAX_FEAT_RINGS};
+use obc_reader::{MapCache, MapTables, Reader, SliceSource, MAX_FEAT_PTS, MAX_FEAT_RINGS};
 
 /// The band-`2^18` lon line between cells `j = 1052` and `j = 1053` — OBCA §7's worked-example seam.
 const SEAM: i64 = 7_602_176;

@@ -240,7 +240,7 @@ pub(crate) async fn wait_trip_cascade() -> u16 {
 /// rescans the whole directory, so a burst of saves needs no queue and no payload.
 static RIDE_SAVED: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
-/// Post the saved-ride edge from the ride loop (`ble` builds; map-only re-feeds its menu directly).
+/// Post the saved-ride edge from the ride loop.
 pub(crate) fn note_ride_saved() {
     RIDE_SAVED.signal(());
 }
@@ -836,8 +836,7 @@ impl ObjectStore {
     ///
     /// Driven by the ride loop's TR3 drain: `App::drain_host_commands` → [`request_trip_cascade`] →
     /// the BLE plane's `trip_cascade_task`, mirroring the `request_route_delete` →
-    /// [`delete_route`](Self::delete_route) seam (the map-only build routes through
-    /// [`Storage::delete_trip_cascade_by_id`](crate::sd::Storage::delete_trip_cascade_by_id) instead).
+    /// [`delete_route`](Self::delete_route) seam.
     pub fn delete_trip_cascade(&mut self, shared: &mut SharedStore, id: u16) -> bool {
         let Some(idx) = self.trip_index(id) else { return false };
         // Resolve the member stage ids from the stored trip file before deleting anything.

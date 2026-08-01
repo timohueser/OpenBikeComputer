@@ -1,51 +1,8 @@
 /**
- * The browser side of the **assembly bridge** (epic #1016, P4b — issue #1034).
- *
- * Downloaded OBCA cells in, one `.obcm` — or a volume set's shards plus its OBCS manifest — out,
- * assembled client-side by `apps/obc-web-assemble` compiled to wasm. There is no TypeScript
- * re-implementation here on purpose: the bytes a visitor ends up putting on a card are produced by
- * the same `obcm-assemble` engine the CLI runs, and `bridge.test.ts` pins that equality against the
- * checked-in fixture the native CLI produced.
- *
- * The wasm module is fetched through a **dynamic import**, so its ~180 KB (gzipped) of glue +
- * module land in their own bundle chunk and cost nothing until someone actually assembles a map.
- *
- * Everything this module throws is an {@link AssembleError} — including a failed load or an
- * unexpected wasm trap, which arrive as `code: "internal"`. Callers never have to guess at a
- * message shape.
- *
- * **This file is plumbing, not UI.** It is the typed surface P4c builds the assembly screen on; it
- * holds no state beyond the memoized module load and a guard against two assemblies at once.
- *
- * ## Threading: this must run in a Web Worker
- *
- * {@link assembleCells} looks `async`, but the assembly itself is **one synchronous wasm call**.
- * Nothing yields inside it: a country-scale run is ~20 s of straight-line compute (PR #1027's
- * switzerland benchmark, 410 cells / 717 MB → 19.9 s), and the §4.6 nav rewrite alone is ~4 s. On
- * the main thread that is a frozen tab — no repaint, no click handling, no spinner animation, and
- * on some browsers a "page unresponsive" prompt. **Call this from a dedicated Worker.** (P4c owns
- * the worker itself; this paragraph is the contract it is written against.)
- *
- * What follows from that, and it is the part a cancel button depends on:
- *
- * - **The UI's cancel is `worker.terminate()`.** The worker is blocked inside wasm for the whole
- *   run, so it cannot receive a `postMessage` while the assembly is in flight — a cooperative flag
- *   set from the main thread would only be read after the thing it was meant to stop had finished.
- *   Terminating drops the worker's whole heap, which is exactly what an abandoned multi-gigabyte
- *   assembly wants. Nothing is left half-written: the OBCS manifest is written last (OBCA §5.4), so
- *   there is no set to clean up. (Reading a flag mid-run *is* possible with a `SharedArrayBuffer`,
- *   but that needs the page served cross-origin-isolated — COOP `same-origin` + COEP
- *   `require-corp` — which the hosted builder is not, and which would constrain every other asset
- *   the page loads. Not worth it for a button that `terminate()` already implements.)
- * - **The cooperative abort still has a job**, just not that one: it is for policies the worker runs
- *   on *itself*, from inside the callback — a memory watchdog, a deadline, a "the tab went hidden
- *   an hour ago" rule. That is why {@link AssembleProgress} returns `boolean | void`, and why an
- *   abort surfaces as a clean `aborted` error rather than a dead worker.
- * - **Progress crosses by `postMessage`.** The callback runs on the worker thread between wasm
- *   steps, so posting `{phase, fraction}` from it is enough; the main thread renders. Structured
- *   clone of a small object ~100 times a run costs nothing.
- * - **Hand the finished files over as transfers.** `take()` returns a `Uint8Array` the worker owns;
- *   post it with its buffer in the transfer list, one file at a time, or the set is copied.
+ * Lazy wasm bridge to the shared Rust assembler. Assembly is one synchronous
+ * wasm call and must run in a Worker; UI cancellation terminates that worker.
+ * Progress posts between engine phases, and completed files should cross back
+ * as transferable buffers. All failures use {@link AssembleError}.
  */
 
 import type { InitInput } from "./pkg/obc_web_assemble.js";

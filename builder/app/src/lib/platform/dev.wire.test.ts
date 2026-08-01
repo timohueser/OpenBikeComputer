@@ -25,12 +25,13 @@ afterEach(() => {
 });
 
 describe("dev host requests", () => {
+    const editor = platform.styleEditor!;
+
     it.each([
-        ["presets", () => platform.presets(), "/api/presets"],
-        ["schema", () => platform.schema!(), "/api/schema"],
-        ["palette", () => platform.palette!(), "/api/palette"],
-        ["legacyConfig", () => platform.legacyConfig!(), "/api/config/legacy"],
-        ["preview status", () => platform.schemaPreview!.status(), "/api/schema-preview/status"],
+        ["presets", () => editor.presets(), "/api/presets"],
+        ["schema", () => editor.schema(), "/api/schema"],
+        ["palette", () => editor.palette(), "/api/palette"],
+        ["preview status", () => editor.preview.status(), "/api/schema-preview/status"],
     ])("%s GETs %s", async (_name, call, url) => {
         await call();
         expect(calls).toEqual([{ url, method: "GET" }]);
@@ -80,7 +81,7 @@ describe("dev host requests", () => {
         }) as typeof fetch;
 
         await expect(
-            platform.schemaPreview!.pack({ lods: [], features: {} }, controller.signal),
+            editor.preview.pack({ lods: [], features: {} }, controller.signal),
         ).resolves.toEqual({ bytes: new Uint8Array([79, 66, 67, 77]), packDurationMs: 42, diagnostics: [] });
         expect(calls).toEqual([{ url: "/api/schema-preview", method: "POST" }]);
     });

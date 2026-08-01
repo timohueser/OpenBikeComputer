@@ -29,8 +29,7 @@ use crate::corridor::{
     inflate_bbox, project_onto_chunk, CorridorPoi, PoiCategorySet, RoutePath, CORRIDOR_HALF_WIDTH_M,
     MAX_CORRIDOR_RESULTS,
 };
-use crate::geo::{cos_lat, ground_dist_m_cl};
-use crate::{BBox, Error, Kind, Style, M_PER_DEG};
+use crate::Error;
 use obc_formats::io::{rd_f32, rd_i16, rd_i32, rd_u16, rd_u32, ByteSource, Error as IoError};
 use obc_formats::obcm::PoiCategory;
 use obc_formats::obcm::{
@@ -45,6 +44,7 @@ use obc_formats::obcm::{
     HEADER_LEN, LOD_ENTRY_LEN, NAV_CHUNK_SIZE, NAV_EDGE_FIXED_LEN, NAV_MAX_PROFILES, NAV_NEIGHBOR_LEN,
     NAV_NODE_FIXED_LEN, NAV_PROFILE_LEN, NAV_PROFILE_NAME_LEN, POI_HOURS_BLOB_LEN, POI_NAME_LEN,
 };
+use obc_map_scene::{cos_lat, ground_dist_m_cl, BBox, Kind, Style, M_PER_DEG};
 
 /// Upper bound on the vertices of a single decoded feature — the capacity a caller
 /// sizes the `points` scratch buffer to for [`Reader::for_each_feature`].
@@ -1198,7 +1198,7 @@ impl<'a> Reader<'a> {
     /// non-empty leaf, decode its 36-byte records through a single 512-byte stack scratch, folding
     /// every valid record into the nearest-16 `out` set (deduped by `(lat, lon, subtype)`). `cl` is
     /// the hoisted `cos_lat`; distances are equirectangular ground meters via the shared
-    /// [`crate::geo`] core.
+    /// shared `obc-map-scene` distance core.
     ///
     /// The chunk decode runs **inside** the walk callback: `walk_leaves` releases its index-cache
     /// borrow before invoking the callback, and the POI chunk read goes through a plain

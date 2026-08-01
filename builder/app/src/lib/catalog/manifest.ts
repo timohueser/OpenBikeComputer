@@ -30,9 +30,9 @@ import {
     obj,
     optionalStr,
     PATH_ID,
+    pinnedUrlStr,
     SHA256,
     str,
-    urlStr,
 } from "./parse";
 
 export { CatalogFormatError };
@@ -137,10 +137,7 @@ export interface RegionEntry {
     /** Those bytes per band — the per-file split a volume set needs (§5.7). */
     bytes_by_band: Record<string, number>;
     cell_count: Record<string, number>;
-    partial_cell_count: number;
-    /** Additive-v2 per-band split. `null` only for an older v2 root that predates
-     *  the field; current producers always publish it. */
-    partial_cell_count_by_band: Record<string, number> | null;
+    partial_cell_count_by_band: Record<string, number>;
     cells_url: string;
     cells_bytes: number;
     cells_sha256: string;
@@ -151,8 +148,7 @@ export interface CellIndexRef {
     cell_log2: number;
     /** Downloadable OBCM artifacts in the satellite. */
     cell_count: number;
-    /** Canonical zero-byte cells represented by compact ranges. Additive-v2;
-     *  zero for an older root that predates the field. */
+    /** Canonical zero-byte cells represented by compact ranges. */
     known_empty_count: number;
     bytes: number;
     sha256: string;
@@ -388,8 +384,7 @@ function parseSkins(v: unknown, where: string, schema: SchemaEntry): SkinEntry[]
 
         // §3: sorted by id. Enforced for the same reason the cell index's
         // ordering is: a document whose order is stated and not kept is a
-        // document a consumer cannot binary-search or diff, and every other
-        // The specified ordering rule is checked here.
+        // document a consumer cannot binary-search or diff.
         if (k > 0 && id <= str(obj(raw[k - 1], at), "id", at)) {
             fail(`${at}: skins must be sorted by id`);
         }
@@ -407,11 +402,8 @@ function parseSkins(v: unknown, where: string, schema: SchemaEntry): SkinEntry[]
                     : (() => {
                           const pat = `${at}.preview`;
                           const p = obj(o.preview, pat);
-                          return {
-                              url: urlStr(p, "url", pat),
-                              bytes: int(p, "bytes", pat, 0),
-                              sha256: str(p, "sha256", pat, SHA256),
-                          };
+                          const sha256 = str(p, "sha256", pat, SHA256);
+                          return { url: pinnedUrlStr(p, "url", sha256, pat), bytes: int(p, "bytes", pat, 0), sha256 };
                       })(),
         };
         return skin;
@@ -459,13 +451,11 @@ function parseRegions(v: unknown, where: string, bandIds: Set<string>): RegionEn
 
         const bytesByBand = intMap(o.bytes_by_band, `${at}.bytes_by_band`);
         const cellCount = intMap(o.cell_count, `${at}.cell_count`);
-        const partialByBand = Object.hasOwn(o, "partial_cell_count_by_band")
-            ? intMap(o.partial_cell_count_by_band, `${at}.partial_cell_count_by_band`)
-            : null;
+        const partialByBand = intMap(o.partial_cell_count_by_band, `${at}.partial_cell_count_by_band`);
         for (const band of [
             ...Object.keys(bytesByBand),
             ...Object.keys(cellCount),
-            ...Object.keys(partialByBand ?? {}),
+            ...Object.keys(partialByBand),
         ]) {
             if (!bandIds.has(band)) fail(`${at}: band ${JSON.stringify(band)} is not in schema.bands`);
         }
@@ -477,21 +467,13 @@ function parseRegions(v: unknown, where: string, bandIds: Set<string>): RegionEn
         if (summed !== bytes) {
             fail(`${at}: bytes_by_band sums to ${summed}, but bytes is ${bytes}`);
         }
-        const cells = Object.values(cellCount).reduce((a, b) => a + b, 0);
-        const partial = int(o, "partial_cell_count", at, 0);
-        if (partial > cells) fail(`${at}: partial_cell_count ${partial} exceeds the region's ${cells} cells`);
-        if (partialByBand) {
-            const partialSum = Object.values(partialByBand).reduce((a, b) => a + b, 0);
-            if (partialSum !== partial) {
-                fail(`${at}: partial_cell_count_by_band sums to ${partialSum}, but partial_cell_count is ${partial}`);
-            }
-            for (const [band, count] of Object.entries(partialByBand)) {
-                const bandCells = Object.hasOwn(cellCount, band) ? cellCount[band] : 0;
-                if (count > bandCells) {
-                    fail(`${at}: partial_cell_count_by_band.${band} ${count} exceeds that band's ${bandCells} cells`);
-                }
+        for (const [band, count] of Object.entries(partialByBand)) {
+            const bandCells = Object.hasOwn(cellCount, band) ? cellCount[band] : 0;
+            if (count > bandCells) {
+                fail(`${at}: partial_cell_count_by_band.${band} ${count} exceeds that band's ${bandCells} cells`);
             }
         }
+        const cellsSha256 = str(o, "cells_sha256", at, SHA256);
 
         return {
             id,
@@ -501,11 +483,10 @@ function parseRegions(v: unknown, where: string, bandIds: Set<string>): RegionEn
             bytes,
             bytes_by_band: bytesByBand,
             cell_count: cellCount,
-            partial_cell_count: partial,
             partial_cell_count_by_band: partialByBand,
-            cells_url: urlStr(o, "cells_url", at),
+            cells_url: pinnedUrlStr(o, "cells_url", cellsSha256, at),
             cells_bytes: int(o, "cells_bytes", at, 0),
-            cells_sha256: str(o, "cells_sha256", at, SHA256),
+            cells_sha256: cellsSha256,
         };
     });
     for (const region of regions) {
@@ -535,16 +516,15 @@ function parseCellIndexRefs(v: unknown, where: string, bands: BandEntry[]): Cell
         if (cellLog2 !== owner.cell_log2) {
             fail(`${at}: cell_log2 ${cellLog2} disagrees with band "${band}"'s ${owner.cell_log2}`);
         }
+        const sha256 = str(o, "sha256", at, SHA256);
         return {
             band,
             cell_log2: cellLog2,
             cell_count: int(o, "cell_count", at, 0, U32),
-            known_empty_count: Object.hasOwn(o, "known_empty_count")
-                ? int(o, "known_empty_count", at, 0, U32)
-                : 0,
+            known_empty_count: int(o, "known_empty_count", at, 0, U32),
             bytes: int(o, "bytes", at, 0),
-            sha256: str(o, "sha256", at, SHA256),
-            url: urlStr(o, "url", at),
+            sha256,
+            url: pinnedUrlStr(o, "url", sha256, at),
         };
     });
     for (const band of bands) {

@@ -5,11 +5,9 @@
 //! `take_dirty` resets the accumulator, so every test drains the construction-time frame first and
 //! then asserts about the next frame.
 
-use obc_app::{
-    App, AppState, Button, Dirty, Fix, FuelGauge, InputClock, InputEvent, LocationSource, RideClock, RouteSummary,
-    Sensors,
-};
-use obc_reader::BBox;
+use obc_app::{App, AppState, Dirty, RouteSummary};
+use obc_map_scene::BBox;
+use obc_ports::{Button, Fix, FuelGauge, InputClock, InputEvent, LocationSource, RideClock, Sensors};
 
 mod common;
 use common::{down, keys, step, tap, NoFix, OnceFix};

@@ -27,10 +27,10 @@ import {
     KEBAB,
     obj,
     PATH_ID,
+    pinnedUrlStr,
     realDate,
     SHA256,
     str,
-    urlStr,
 } from "./parse";
 
 /** One source extract behind a cell. */
@@ -212,14 +212,13 @@ export function parseCellIndex(body: string, catalog: Catalog, ref: CellIndexRef
         }
         previous = cell;
 
+        const sha256 = str(o, "sha256", at, SHA256);
         const cellEntry: CellEntry = {
             id,
             cell,
             bytes: int(o, "bytes", at, 0),
-            sha256: str(o, "sha256", at, SHA256),
-            // The same rule comes from the same function, rather than a second spelling that
-            // happens to accept a relative path.
-            url: urlStr(o, "url", at),
+            sha256,
+            url: pinnedUrlStr(o, "url", sha256, at),
             built_at: instant(o, "built_at", at),
             sources: parseSources(o.sources, at),
             partial: bool(o, "partial", at),
@@ -228,9 +227,7 @@ export function parseCellIndex(body: string, catalog: Catalog, ref: CellIndexRef
         return cellEntry;
     });
 
-    const rawEmpty = Object.hasOwn(doc, "known_empty")
-        ? arr(doc.known_empty, `${where}.known_empty`)
-        : [];
+    const rawEmpty = arr(doc.known_empty, `${where}.known_empty`);
     const emptyByRow = new Map<number, KnownEmptyRun[]>();
     let previousEmpty: KnownEmptyRun | null = null;
     let knownEmptyCount = 0;

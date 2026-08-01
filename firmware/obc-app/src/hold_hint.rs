@@ -31,22 +31,9 @@ const CANCEL_MS: u32 = 150;
 /// and reaches full depth at the threshold. `0.30` ≈ 150 ms of the 500 ms hold.
 const DEAD: f32 = 0.30;
 
-/// Which screen edge a bulge erupts from. Both controls live on [`Right`](Edge::Right)
-/// today; the other three are supported relocations (change a [`Style::anchor`]).
-#[allow(dead_code)] // Left / Top / Bottom are the relocation options, not dead.
-#[derive(Clone, Copy)]
-enum Edge {
-    Right,
-    Left,
-    Top,
-    Bottom,
-}
-
-/// Where a bulge sits: an [`Edge`] plus a `0.0..=1.0` position along it (0 = top/left
-/// end, 1 = bottom/right end).
+/// A bulge's `0.0..=1.0` position down the screen's right edge.
 #[derive(Clone, Copy)]
 struct Anchor {
-    edge: Edge,
     pos: f32,
 }
 
@@ -54,26 +41,16 @@ impl Anchor {
     /// Resolve to a concrete [`Place`] for a `w`×`h` screen, clamping the centre so
     /// the `base_half`-wide base stays on-panel along the edge.
     fn place(self, w: i32, h: i32, base_half: i32) -> Place {
-        let vertical = matches!(self.edge, Edge::Right | Edge::Left);
-        let along = if vertical { h } else { w };
         let lo = base_half + 1;
-        let hi = (along - base_half - 1).max(lo);
-        let cc = ((self.pos * along as f32) as i32).clamp(lo, hi);
-        match self.edge {
-            Edge::Right => Place { vertical, outer: w, inward: -1, cc },
-            Edge::Left => Place { vertical, outer: 0, inward: 1, cc },
-            Edge::Bottom => Place { vertical, outer: h, inward: -1, cc },
-            Edge::Top => Place { vertical, outer: 0, inward: 1, cc },
-        }
+        let hi = (h - base_half - 1).max(lo);
+        let cc = ((self.pos * h as f32) as i32).clamp(lo, hi);
+        Place { outer: w, cc }
     }
 }
 
-/// A resolved placement: orientation, the edge coordinate (`outer`), the inward
-/// growth direction (`±1`), and the centre along the edge.
+/// A resolved placement: the right-edge coordinate and the centre along it.
 struct Place {
-    vertical: bool,
     outer: i32,
-    inward: i32,
     cc: i32,
 }
 
@@ -82,13 +59,7 @@ impl Place {
     /// `depth` px inward from the edge. The bulge is the union of these across the
     /// fixed base width.
     fn strip(&self, along_off: i32, depth: i32) -> Rectangle {
-        let a = self.cc + along_off;
-        let near = if self.inward < 0 { self.outer - depth } else { self.outer };
-        if self.vertical {
-            rect(near, a, depth, 1)
-        } else {
-            rect(a, near, 1, depth)
-        }
+        rect(self.outer - depth, self.cc + along_off, depth, 1)
     }
 }
 
@@ -241,23 +212,11 @@ struct Style {
 
 /// Select hint — upper-right edge, under the Select button; the taller of the two, echoing
 /// Select's role as the primary control.
-const SELECT: Style = Style {
-    anchor: Anchor { edge: Edge::Right, pos: 0.36 },
-    base_half: 56,
-    flat_half: 20,
-    depth: 7.0,
-    pop_depth: 12.0,
-};
+const SELECT: Style = Style { anchor: Anchor { pos: 0.36 }, base_half: 56, flat_half: 20, depth: 7.0, pop_depth: 12.0 };
 
 /// Back hint — lower-right edge, under the Back button (which sits below Select); shorter
 /// than the Select bulge.
-const BACK: Style = Style {
-    anchor: Anchor { edge: Edge::Right, pos: 0.67 },
-    base_half: 32,
-    flat_half: 10,
-    depth: 7.0,
-    pop_depth: 12.0,
-};
+const BACK: Style = Style { anchor: Anchor { pos: 0.67 }, base_half: 32, flat_half: 10, depth: 7.0, pop_depth: 12.0 };
 
 /// The global long-press overlay: one [`Hint`] per control, drawn above every screen.
 ///
@@ -291,22 +250,14 @@ impl HoldHints {
 
     /// The bounding **rows** `[y0, y0 + rows)` of every hint live at `now` — the dirty region a
     /// partial-overlay host re-presents, so it re-pushes only the active bulge's rows instead of the
-    /// whole hint band. `None` exactly when [`active`](HoldHints::active) is `false`. Right-edge
-    /// (vertical) bulges span `cc ± base_half` rows; a horizontal relocation maps to `pop_depth`
-    /// rows instead, kept correct here so the region tracks the bulge if an anchor moves.
+    /// whole hint band. `None` exactly when [`active`](HoldHints::active) is `false`.
     pub fn active_rows(&self, now: u32, w: i32, h: i32) -> Option<(u16, u16)> {
         let span = |hint: &Hint, style: &Style| -> Option<(i32, i32)> {
             if !hint.active(now) {
                 return None;
             }
             let place = style.anchor.place(w, h, style.base_half);
-            Some(if place.vertical {
-                (place.cc - style.base_half, place.cc + style.base_half)
-            } else {
-                let depth = style.pop_depth as i32;
-                let near = if place.inward < 0 { place.outer - depth } else { place.outer };
-                (near, near + depth)
-            })
+            Some((place.cc - style.base_half, place.cc + style.base_half))
         };
         let merged = match (span(&self.select, &SELECT), span(&self.back, &BACK)) {
             (Some((a0, a1)), Some((b0, b1))) => Some((a0.min(b0), a1.max(b1))),

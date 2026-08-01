@@ -117,7 +117,7 @@ pub struct AppState {
     /// map, so the orientation follows the compass instead of snapping to north; only
     /// adopted on ticks where it would actually drive the rotation (see [`App::tick`]).
     pub compass_deg: Option<f32>,
-    /// Battery charge, 0–100 %. [`App::tick`] writes it from the [`FuelGauge`](crate::FuelGauge);
+    /// Battery charge, 0–100 %. [`App::tick`] writes it from the [`FuelGauge`](obc_ports::FuelGauge);
     /// the Home screen draws the gauge from it (filled bars coloured by level, empty bars dim grey).
     pub battery_pct: u8,
     /// The BLE link phase (Off / Advertising / Connected). [`App::set_ble_status`] writes it from
@@ -157,7 +157,7 @@ impl AppState {
             user_fix: None,
             pan: None,
             compass_deg: None,
-            // Stand-in until a [`FuelGauge`](crate::FuelGauge) feeds a real reading on the first tick.
+            // Stand-in until a [`FuelGauge`](obc_ports::FuelGauge) feeds a real reading on the first tick.
             battery_pct: 75,
             // No phone linked until the host feeds the first [`BleStatus`](crate::BleStatus).
             ble_link: crate::BleLink::Advertising,
@@ -2452,8 +2452,7 @@ impl App {
 // One vocabulary, one pending state. Every host-directed one-shot/counter is drained here as a
 // typed [`HostCommand`] through `drain_host_commands`, and every host fact/answer lands here as a
 // typed [`HostEvent`] through `apply_event` — the only two doors, with the per-class pending state
-// living once inside `App` (a typed slot, a counter, or a derived predicate). The legacy per-latch
-// `take_*` / `has_*` / `notify_*` compatibility adapters were removed in FAR-19 (#812).
+// living once inside `App` (a typed slot, a counter, or a derived predicate).
 
 impl App {
     /// Drain every pending host-directed command into the caller-owned mailbox, in the canonical
@@ -2490,16 +2489,14 @@ impl App {
 
     /// Whether any host-directed command is currently pending — what a
     /// [`drain_host_commands`](App::drain_host_commands) call would emit at least one command for.
-    /// The typed twin of the per-class `has_*` peeks: it consumes nothing.
+    /// This consumes nothing.
     pub fn has_pending_host_command(&self) -> bool {
         HostCommand::DRAIN_ORDER.iter().any(|&c| self.peek_host_command(c))
     }
 
-    /// Apply one host answer/fact to the app — the single typed entry every `notify_*`
-    /// compatibility adapter delegates to. Events are owned values, so a host can hold one across
-    /// however many passes its asynchronous work takes and apply it late; each arm keeps the
-    /// documented drop/defer rule of the seam it replaces (a late answer whose screen is gone is
-    /// dropped, advisory prompts defer behind the passkey card / a charging hold, and so on).
+    /// Apply one host answer or fact. Events are owned, so a host can hold one across asynchronous
+    /// work and apply it later; a late answer whose screen is gone is dropped, while advisory
+    /// prompts defer behind the passkey card or a charging hold.
     pub fn apply_event(&mut self, event: HostEvent) {
         match event {
             HostEvent::StoreChanged => self.host.note_store_changed(),
@@ -2539,10 +2536,9 @@ impl App {
         self.on_warning(WarningFlags::SETTINGS_ERROR);
     }
 
-    /// Non-consuming per-class pendency — the shared predicate behind the `has_*` compatibility
-    /// peeks and the drain's backpressure check. For the delete classes this reports the request
-    /// slot itself (matching the legacy `has_*` semantics): a request whose subject vanished in a
-    /// racing rescan still peeks `true` and then drains to nothing.
+    /// Non-consuming per-class pendency for the drain's backpressure check. For delete classes this
+    /// reports the request slot itself: a request whose subject vanished in a racing rescan still
+    /// peeks `true` and then drains to nothing.
     fn peek_host_command(&self, class: HostCommandClass) -> bool {
         match class {
             HostCommandClass::RescanStore => self.host.store_changed_pending() > 0,
@@ -2572,10 +2568,8 @@ impl App {
         }
     }
 
-    /// Drain one command class from its single pending slot — the shared consumer behind both
-    /// [`drain_host_commands`](App::drain_host_commands) and every `take_*` compatibility adapter,
-    /// so a command drained through either door is gone through both. Preserves each latch's exact
-    /// semantics: one-shots drain exactly once, the store counter drains whole,
+    /// Drain one command class from its single pending slot. One-shots drain exactly once, the store
+    /// counter drains whole,
     /// `PersistSettings` fires only once an edited value has left the settings subtree, the
     /// delete indices resolve to durable ids at drain (a vanished subject consumes the slot and
     /// yields nothing), and the derived fill cues consume nothing (they clear when answered).
@@ -2789,11 +2783,7 @@ mod tests {
         }
     }
 
-    // ── Typed-protocol test helpers (FAR-19, #812): the former `take_*` compat adapters these
-    // tests exercised are gone, so each helper drains its one class through the crate-internal
-    // per-class `drain_host_command` — exactly what the deleted adapter did, so per-class isolation
-    // (a test that drains nav then cancel separately) is preserved (a whole-mailbox drain would
-    // consume both at once).
+    // Per-class drain helpers keep tests focused on one command without consuming the whole mailbox.
     use crate::host::HostCommandClass;
 
     /// The drained [`DfuAction`], if a `Dfu` command was pending (the `take_dfu_request` successor).
@@ -5229,7 +5219,7 @@ mod tests {
             name: n,
             distance_km: 10,
             climb_m: 100,
-            bbox: obc_route::BBox { min_lon: 0, min_lat: 0, max_lon: 1000, max_lat: 1000 },
+            bbox: obc_map_scene::BBox { min_lon: 0, min_lat: 0, max_lon: 1000, max_lat: 1000 },
             start_lon: 100,
             start_lat: 100,
         }
@@ -5408,8 +5398,7 @@ mod tests {
     }
 
     /// `PersistSettings` stays gated on leaving the settings subtree — a dirty value under an open
-    /// settings screen is not yet a command (the per-step debounce), through both the typed
-    /// drain and the compat adapter, which consume the same single flag.
+    /// settings screen is not yet a command.
     #[test]
     fn persist_settings_waits_for_subtree_exit_and_is_single_sourced() {
         use crate::host::{HostCommand, HostMailbox};
@@ -5418,7 +5407,7 @@ mod tests {
         let _ = app.ui.stack.push(Screen::Settings(crate::screen::SettingsScreen::new()));
         app.arm_settings_save(); // rev → 1
         assert!(!app.has_pending_host_command(), "still editing — no command yet");
-        assert!(!settings_dirty(&mut app), "the compat adapter agrees");
+        assert!(!settings_dirty(&mut app), "the per-class drain agrees");
 
         app.ui.stack.pop(); // leave the subtree
         let mut mailbox: HostMailbox = HostMailbox::new();
@@ -5560,35 +5549,9 @@ mod tests {
         assert_eq!(drain_persist(&mut app), None, "a seeded boot value is already persisted");
     }
 
-    /// Compat adapters and the typed drain consume the **same** pending slot, in both directions:
-    /// whichever door drains first empties the protocol for the other.
-    #[test]
-    fn compat_adapters_share_the_typed_pending_state() {
-        use crate::activity::NavRequest;
-        use crate::host::HostMailbox;
-
-        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        let mut mailbox: HostMailbox = HostMailbox::new();
-
-        // Compat first → typed drain sees nothing.
-        app.activity.request_nav(NavRequest::new((0, 0), (1, 1), "A"));
-        assert!(drain_nav(&mut app).is_some());
-        let _ = app.drain_host_commands(&mut mailbox);
-        assert!(mailbox.is_empty(), "the compat take consumed the typed slot");
-
-        // Typed first → compat adapter sees nothing.
-        app.activity.request_nav(NavRequest::new((0, 0), (1, 1), "B"));
-        let _ = app.drain_host_commands(&mut mailbox);
-        assert_eq!(mailbox.len(), 1);
-        assert!(drain_nav(&mut app).is_none(), "the typed drain consumed the compat slot");
-    }
-
     /// Same-batch confirm→Back (review F1): a cancel posted while the plan request is still
     /// undrained **annihilates** it — the rider's net intent is "no plan", matching what both
-    /// legacy host drain orders net, so the host can never execute a dismissed plan and commit a
-    /// ghost route with a dropped answer. The cancel still latches (a no-op with nothing in
-    /// flight), and the three-gesture batch (cancel A, confirm B, Back on B) also nets exactly
-    /// one cancel — the host aborts the in-flight A and B never runs.
+    /// per-class and whole-mailbox drains observe, so the host cannot execute a dismissed plan.
     #[test]
     fn a_cancel_annihilates_an_undrained_plan_request() {
         use crate::activity::NavRequest;
@@ -5603,7 +5566,7 @@ mod tests {
         assert_eq!(mailbox.pop(), Some(HostCommand::CancelRoutePlan));
         assert!(mailbox.is_empty(), "the cancelled plan never reaches the mailbox");
 
-        // The compat doors agree — same single pending state.
+        // Per-class drains observe the same pending state.
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         app.activity.request_nav(NavRequest::new((0, 0), (1, 1), "A"));
         app.activity.request_nav_cancel();

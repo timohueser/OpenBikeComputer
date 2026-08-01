@@ -65,16 +65,13 @@ describe("parseRoot", () => {
         expect(parseRoot(doc).regions).toHaveLength(2);
     });
 
-    it("keeps accepting catalogs published with stable object URLs", () => {
+    it("rejects mutable or incorrectly pinned object URLs", () => {
         const body = mutated((d) => {
             d.cell_index[0].url = "https://maps.example.org/catalog/cells/coarse/index.json";
             d.regions[0].cells_url = "https://maps.example.org/catalog/regions/europe/switzerland/cells.json";
             d.skins[1].preview.url = "https://maps.example.org/catalog/previews/default.png";
         });
-        const catalog = parseRoot(body);
-        expect(catalog.cell_index[0].url.endsWith("/cells/coarse/index.json")).toBe(true);
-        expect(catalog.regions[0].cells_url.endsWith("/regions/europe/switzerland/cells.json")).toBe(true);
-        expect(catalog.skins[1].preview?.url.endsWith("/previews/default.png")).toBe(true);
+        expect(() => parseRoot(body)).toThrow(CatalogFormatError);
     });
 
     it.each<[string, (d: LooseDoc) => void]>([
@@ -137,6 +134,7 @@ describe("parseRoot", () => {
             ["no skins at all", (d) => (d.skins = [])],
             ["a preview URL that cannot be resolved", (d) => (d.skins[1].preview.url = "default.png")],
             ["a truncated preview digest", (d) => (d.skins[1].preview.sha256 = "abc")],
+            ["a preview URL carrying another digest", (d) => (d.skins[1].preview.sha256 = "0".repeat(64))],
             ["a negative preview size", (d) => (d.skins[1].preview.bytes = -1)],
         ])("rejects %s", (_what, edit) => {
             expect(() => parseRoot(mutated(edit))).toThrow(CatalogFormatError);
@@ -152,19 +150,19 @@ describe("parseRoot", () => {
             ["a band in bytes_by_band that the schema lacks", (d) => (d.regions[0].bytes_by_band.vivid = 0)],
             ["a band in cell_count that the schema lacks", (d) => (d.regions[0].cell_count.vivid = 1)],
             ["a band in partial_cell_count_by_band that the schema lacks", (d) => (d.regions[0].partial_cell_count_by_band.vivid = 0)],
-            ["more partial cells than cells", (d) => (d.regions[0].partial_cell_count = 99)],
-            ["per-band partials that do not sum to the total", (d) => (d.regions[0].partial_cell_count_by_band.fine = 1)],
             [
                 "more partials than cells in one band",
                 (d) => {
-                    d.regions[0].partial_cell_count = 3;
                     d.regions[0].partial_cell_count_by_band.network = 3;
                 },
             ],
             ["two regions sharing an id", (d) => (d.regions[1].id = d.regions[0].id)],
             ["a parent that is not in the catalog", (d) => (d.regions[1].parent = "europe/atlantis")],
             ["a truncated cells_sha256", (d) => (d.regions[0].cells_sha256 = "abc")],
+            ["a cells URL carrying another digest", (d) => (d.regions[0].cells_sha256 = "0".repeat(64))],
             ["a cells_url that is neither absolute nor root-relative", (d) => (d.regions[0].cells_url = "cells.json")],
+            ["a cells_url with a query", (d) => (d.regions[0].cells_url += "?download=1")],
+            ["a missing partial-cell split", (d) => delete d.regions[0].partial_cell_count_by_band],
             ["an unclosed boundary ring", (d) => d.regions[0].boundary.rings[0].pop()],
             ["a boundary point that is not [lat, lon]", (d) => (d.regions[0].boundary.rings[0][0] = [1, 2, 3])],
             ["a fractional boundary coordinate", (d) => (d.regions[0].boundary.rings[0][0] = [45.5, 5.9])],
@@ -174,11 +172,6 @@ describe("parseRoot", () => {
 
         it("accepts a region with no parent", () => {
             expect(parseRoot(EXAMPLE_ROOT).regions[0].parent).toBeNull();
-        });
-
-        it("accepts an older v2 root without the additive per-band partial split", () => {
-            const catalog = parseRoot(mutated((d) => delete d.regions[0].partial_cell_count_by_band));
-            expect(catalog.regions[0].partial_cell_count_by_band).toBeNull();
         });
     });
 
@@ -190,15 +183,12 @@ describe("parseRoot", () => {
             ["a cell_log2 that disagrees with its band", (d) => (d.cell_index[0].cell_log2 = 18)],
             ["entries out of descending cell_log2 order", (d) => d.cell_index.reverse()],
             ["a truncated sha256", (d) => (d.cell_index[0].sha256 = "abc")],
+            ["an index URL carrying another digest", (d) => (d.cell_index[0].sha256 = "0".repeat(64))],
             ["a negative known-empty count", (d) => (d.cell_index[0].known_empty_count = -1)],
             ["a known-empty count larger than uint32", (d) => (d.cell_index[0].known_empty_count = 2 ** 32)],
+            ["a missing known-empty count", (d) => delete d.cell_index[2].known_empty_count],
         ])("rejects %s", (_what, edit) => {
             expect(() => parseRoot(mutated(edit))).toThrow(CatalogFormatError);
-        });
-
-        it("accepts an older v2 root without the additive known-empty count", () => {
-            const catalog = parseRoot(mutated((d) => delete d.cell_index[2].known_empty_count));
-            expect(catalog.cell_index[2].known_empty_count).toBe(0);
         });
     });
 
@@ -236,7 +226,7 @@ describe("parseRoot", () => {
         const region = catalog.regions[0];
         expect(region.bytes_by_band.constructor).toBeUndefined();
         expect(region.cell_count.constructor).toBeUndefined();
-        expect(region.partial_cell_count_by_band?.constructor).toBeUndefined();
+        expect(region.partial_cell_count_by_band.constructor).toBeUndefined();
         expect(Object.getPrototypeOf(region.bytes_by_band)).toBeNull();
         expect(Object.getPrototypeOf(region.partial_cell_count_by_band)).toBeNull();
     });

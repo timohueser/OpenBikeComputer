@@ -33,6 +33,7 @@
 //! regions and refreshes — the big bakes are an overnight run on a real machine, and
 //! nothing here assumes CI.
 
+mod cell_store;
 pub mod cells;
 pub mod coverage;
 pub mod guard;
@@ -44,4 +45,5 @@ pub mod previews;
 pub mod publish;
 pub mod regions;
 pub mod source;
+mod util;
 pub mod verify;

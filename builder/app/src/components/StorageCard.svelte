@@ -1,22 +1,12 @@
 <script lang="ts">
-    // What the app has put on this disk, and the button that takes it back.
-    //
-    // This is not a settings screen: it reports the app's maps, ride archive and
-    // eventually its published-cell cache with real paths and sizes.
-    //
-    // Mounted only where `platform.storage` exists (see `DiskStorage`), which is
-    // a member check, not a host name.
-
     import { onMount } from "svelte";
     import { formatBytes } from "../lib/format";
-    import { confirmAction } from "../lib/ui/confirm.svelte";
     import type { DiskStorage, StoragePlace } from "../lib/platform/types";
 
     let { storage }: { storage: DiskStorage } = $props();
 
     let places = $state<StoragePlace[]>([]);
     let error = $state<string | null>(null);
-    let busy = $state<string | null>(null);
 
     async function load() {
         try {
@@ -28,26 +18,6 @@
     }
 
     onMount(load);
-
-    async function clear(place: StoragePlace) {
-        // The confirm carries the size so the answer isn't guesswork.
-        const ok = await confirmAction({
-            title: `Delete ${formatBytes(place.bytes)} from ${place.path}?`,
-            body: place.note,
-            confirmLabel: "Delete",
-            destructive: true,
-        });
-        if (!ok) return;
-        busy = place.id;
-        try {
-            await storage.clear(place.id);
-            await load();
-        } catch (e) {
-            error = e instanceof Error ? e.message : String(e);
-        } finally {
-            busy = null;
-        }
-    }
 
     const total = $derived(places.reduce((sum, p) => sum + p.bytes, 0));
 </script>
@@ -68,16 +38,6 @@
                 <div class="line">
                     <span class="label">{place.label}</span>
                     <span class="small faint size">{formatBytes(place.bytes)}</span>
-                    {#if place.clearable}
-                        <button
-                            type="button"
-                            class="btn small-btn"
-                            disabled={busy !== null || place.bytes === 0}
-                            onclick={() => clear(place)}
-                        >
-                            {busy === place.id ? "Clearing…" : "Clear"}
-                        </button>
-                    {/if}
                 </div>
                 <p class="small faint mono path">{place.path}</p>
                 <p class="small muted note">{place.note}</p>
@@ -123,11 +83,6 @@
 
     .size {
         margin-left: auto;
-    }
-
-    .small-btn {
-        padding: 2px 10px;
-        font-size: 12.5px;
     }
 
     .path,

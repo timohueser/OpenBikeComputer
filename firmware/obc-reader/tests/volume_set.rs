@@ -8,9 +8,8 @@ use std::cell::Cell;
 
 use obc_formats::io::{ByteSource, Error as IoError};
 use obc_formats::obcs::{self, ManifestError, Role};
-use obc_reader::{
-    BBox, FullSetShards, MapCache, MapTables, MountError, MountedSet, SetShards, ShardTables, SliceSource,
-};
+use obc_map_scene::BBox;
+use obc_reader::{FullSetShards, MapCache, MapTables, MountError, MountedSet, SetShards, ShardTables, SliceSource};
 use obcm_testkit::set::{build_set, empty_lod, matched_pair, quadrants, ShardSpec};
 use obcm_testkit::{pack_line, seal, LodSpec, Style};
 

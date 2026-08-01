@@ -45,22 +45,39 @@ impl Outputs {
         Ok(Opened { id, path: path.display().to_string() })
     }
 
-    pub fn root(&self, id: u64) -> Result<PathBuf, String> {
-        self.open
-            .lock()
-            .map_err(|_| "map output registry is poisoned".to_string())?
-            .get(&id)
-            .cloned()
-            .ok_or_else(|| "that map output session is not open".into())
+    pub fn write(&self, id: u64, name: &str, bytes: &[u8]) -> Result<String, String> {
+        let open = self.open.lock().map_err(|_| "map output registry is poisoned".to_string())?;
+        let root = open.get(&id).ok_or_else(|| "that map output session is not open".to_string())?;
+        write_file(root, name, bytes)
     }
 
     pub fn finish(&self, id: u64) -> Result<(), String> {
-        self.open.lock().map_err(|_| "map output registry is poisoned".to_string())?.remove(&id);
+        self.take(id)?;
         Ok(())
+    }
+
+    pub fn discard(&self, id: u64) -> Result<(), String> {
+        let mut open = self.open.lock().map_err(|_| "map output registry is poisoned".to_string())?;
+        let path = open.get(&id).ok_or_else(|| "that map output session is not open".to_string())?;
+        match std::fs::remove_dir_all(path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("discard {}: {e}", path.display())),
+        }
+        open.remove(&id);
+        Ok(())
+    }
+
+    fn take(&self, id: u64) -> Result<PathBuf, String> {
+        self.open
+            .lock()
+            .map_err(|_| "map output registry is poisoned".to_string())?
+            .remove(&id)
+            .ok_or_else(|| "that map output session is not open".into())
     }
 }
 
-pub fn write_file(root: &Path, name: &str, bytes: &[u8]) -> Result<String, String> {
+fn write_file(root: &Path, name: &str, bytes: &[u8]) -> Result<String, String> {
     validate_filename(name)?;
     let final_path = root.join(name);
     let part_path = root.join(format!(".{name}.part"));
@@ -113,13 +130,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(&maps);
         let outputs = Outputs::default();
         let opened = outputs.begin(&maps, "Baden-Württemberg / tour").unwrap();
-        let root = outputs.root(opened.id).unwrap();
-        let path = write_file(&root, "MS1.OBS", b"set").unwrap();
+        let path = outputs.write(opened.id, "MS1.OBS", b"set").unwrap();
         assert!(Path::new(&path).starts_with(&maps));
         assert_eq!(std::fs::read(path).unwrap(), b"set");
-        assert!(write_file(&root, "../escape", b"no").is_err());
+        assert!(outputs.write(opened.id, "../escape", b"no").is_err());
         outputs.finish(opened.id).unwrap();
-        assert!(outputs.root(opened.id).is_err());
+        assert!(outputs.write(opened.id, "MS1.OBS", b"late").is_err());
+        let discarded = outputs.begin(&maps, "Discarded").unwrap();
+        outputs.write(discarded.id, "MS1.OBS", b"partial").unwrap();
+        outputs.discard(discarded.id).unwrap();
+        assert!(!Path::new(&discarded.path).exists());
         let _ = std::fs::remove_dir_all(&maps);
     }
 }

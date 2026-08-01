@@ -1,43 +1,8 @@
-// Fetching the cells of a selection: a plan whose size is known before the first
-// request, and a bounded-concurrency run over it that verifies every object.
-//
-// A selection downloads hundreds of small cells — DACH is thousands
-// of cells across four bands — and that changes two things and nothing else:
-//
-//   * **The verification does not soften.** Every cell carries `bytes` +
-//     `sha256` in its band's index (`OBCC_Spec.md` §8) and every cell goes
-//     through the same `fetchVerified` an artifact does. A corrupt cell is not a
-//     visible failure later; it is a device that faults halfway up a mountain,
-//     and there are now many more chances to ship one.
-//   * **Progress becomes an aggregate.** The total is known up front — it is the
-//     sum of the plan's `bytes`, the same summed-real-cell-bytes number the
-//     ledger prices with — so progress is honest from the first byte rather than
-//     a bar that discovers its length as it goes.
-//
-// The run is all-or-nothing: the first failure aborts the rest and rejects. A
-// half-fetched cell set cannot be assembled into anything, so continuing would
-// only buy a longer wait before the same error.
-//
-// **What "all-or-nothing" costs, stated rather than discovered.** There is no
-// resume: a run that fails at cell 900 of 1000 is restarted from cell 1, and on
-// a bikepacking-sized selection that is a real amount of somebody's bandwidth.
-// It is deliberate for now and it is *cheap to fix later* — cells are
-// content-addressed and immutable, so a caller that keeps what `onCell` handed
-// it can hand this a shorter plan next time and lose nothing. That belongs with
-// the assembler (P3/P4b), which is the thing that knows where the bytes went;
-// this module would have to invent a store to do it, and a store invented here
-// is a store the caller cannot see into.
-//
-// Two guarantees the rejection carries, because a sink is usually a file: once
-// the run has failed or been aborted, `onCell` is not called again — not even
-// for a cell whose bytes were already in hand — and no aborted body's partial
-// bytes stay counted in the progress a later report computes.
-//
-// Bytes are handed to `onCell` rather than accumulated into a return value on
-// purpose. A DACH selection is gigabytes; a function that resolved to a `Map` of
-// every cell's bytes would be a function that decides, on the caller's behalf, to
-// hold the whole map in memory. The caller (P4b's wasm assembler, or a test)
-// decides.
+// Plans and downloads a selection with bounded concurrency, exact aggregate
+// progress, and per-cell length/digest verification. Verified bytes stream to
+// `onCell` so a country-scale map is never accumulated here. The first failure
+// aborts the remaining requests and prevents further sink calls. Downloads are
+// not persisted or resumed; that belongs in a host-level content cache.
 
 import { fetchVerified } from "../download";
 import type { Catalog } from "./manifest";

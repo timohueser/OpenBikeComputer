@@ -32,7 +32,8 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 use obc_formats::io::{ByteSource, Error as IoError};
-use obc_reader::{BBox, MapCache, MapTables, Reader, MAX_FEAT_PTS, MAX_FEAT_RINGS};
+use obc_map_scene::BBox;
+use obc_reader::{MapCache, MapTables, Reader, MAX_FEAT_PTS, MAX_FEAT_RINGS};
 
 /// What a verified artifact turned out to contain. Logged per artifact so a bake
 /// that produces a *readable but empty* map is still visible.

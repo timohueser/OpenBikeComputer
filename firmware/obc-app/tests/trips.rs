@@ -3,7 +3,7 @@
 //! and re-resolution across a route rescan.
 
 use obc_app::{App, AppState, RouteSummary, TripInput, MAX_TRIPS};
-use obc_reader::BBox;
+use obc_map_scene::BBox;
 
 fn route(name: &str, distance_km: u32, climb_m: u32) -> RouteSummary {
     let mut n = heapless::String::<48>::new();

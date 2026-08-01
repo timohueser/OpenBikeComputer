@@ -92,7 +92,7 @@ At the bottom, [`obc-formats`](src:firmware/obc-formats) is deliberately smaller
 
 [`obc-map-scene`](src:firmware/obc-map-scene) is the equally small boundary between a map source and rasterisation: neutral bounds, geometry/style metadata, LOD selection, candidate visitation, and selected-feature decode into caller-owned buffers. The normal [`obc-reader` adapter](src:firmware/obc-reader/src/scene.rs) is monomorphised into the renderer's hot path; a static test scene can implement the same contract with no map file at all. Opaque six-byte candidate tokens let a source find winners again without leaking byte offsets.
 
-Beside it, [`obc-ports`](src:firmware/obc-ports) owns the dependency-free values and traits that cross the app/host boundary. The app and every implementation — platform, board, simulator, replay, browser host, USB — bind to it directly; `obc-app::hal` remains only a compatibility re-export. `SettingsStore` uses an associated value type so the foundation never depends upward on the app's `Settings` model.
+Beside it, [`obc-ports`](src:firmware/obc-ports) owns the dependency-free values and traits that cross the app/host boundary. The app and every implementation — platform, board, simulator, replay, browser host, USB — bind to it directly. `SettingsStore` uses an associated value type so the foundation never depends upward on the app's `Settings` model.
 
 ## Two hosts, one core — and the seams between them
 
@@ -420,7 +420,7 @@ The split is a behaviour-preserving relocation: the same `InputPlane` either run
 ## Where this lives
 
 - The per-frame driver, the screen stack, and the dirty tracking: [`obc-app/src/app.rs`](src:firmware/obc-app/src/app.rs)
-- The semantic hardware/host ports: [`obc-ports/src/lib.rs`](src:firmware/obc-ports/src/lib.rs); direct platform implementations: [`obc-platform/src/`](src:firmware/obc-platform/src); app compatibility re-exports: [`obc-app/src/hal.rs`](src:firmware/obc-app/src/hal.rs)
+- The semantic hardware/host ports: [`obc-ports/src/lib.rs`](src:firmware/obc-ports/src/lib.rs); direct platform implementations: [`obc-platform/src/`](src:firmware/obc-platform/src)
 - The two-plane input model: [`obc-app/src/input_plane.rs`](src:firmware/obc-app/src/input_plane.rs)
 - The on-device router (snap · weighted A\* · OBCR emit): [`obc-route/src/nav.rs`](src:firmware/obc-route/src/nav.rs)
 - Persistent-format constants, primitive codecs, and the byte-streaming seam: [`obc-formats`](src:firmware/obc-formats)

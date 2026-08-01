@@ -39,7 +39,7 @@
         "nav_tile_cache": 4140,
         "nav_planner": 15728,
         "stack_reserve": 65536,
-        "ble_total": 37582,
+        "ble_total": 37570,
         "ble_mpsl": 0,
         "ble_sdc_memory": 11336,
         "ble_host_resources": 6120,
@@ -48,7 +48,7 @@
         "ble_object_store": 13540,
         "ble_server": 2128,
         "ble_gap_name": 52,
-        "ble_sensor_manager": 370,
+        "ble_sensor_manager": 358,
         "usb_named": 19036
       },
       "full_frame_sized_writable_count": 2
@@ -95,7 +95,7 @@
         "nav_tile_cache": 4140,
         "nav_planner": 15728,
         "stack_reserve": 65536,
-        "ble_total": 37582,
+        "ble_total": 37570,
         "ble_mpsl": 0,
         "ble_sdc_memory": 11336,
         "ble_host_resources": 6120,
@@ -104,7 +104,7 @@
         "ble_object_store": 13540,
         "ble_server": 2128,
         "ble_gap_name": 52,
-        "ble_sensor_manager": 370,
+        "ble_sensor_manager": 358,
         "usb_named": 19036
       },
       "full_frame_sized_writable_count": 2

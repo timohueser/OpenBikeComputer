@@ -19,9 +19,6 @@ STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 # complete packer config + a _meta block) plus a skins/ subdirectory; only the schema
 # can be handed to the packer, so only the top level is listed.
 PRESETS_DIR = os.path.join(PROJECT_ROOT, "presets")
-# user_config.json: the retired editor's server-side persistence. Served once
-# via /api/config/legacy so the new app can offer a one-shot import.
-USER_CONFIG = os.path.join(PROJECT_ROOT, "user_config.json")
 # palette.json ships with the repo: the device's 64-color gamut offered as the
 # default color picker. Editable, with a generated fallback if it's missing.
 PALETTE_FILE = os.path.join(PROJECT_ROOT, "palette.json")
@@ -203,15 +200,6 @@ def get_schema():
         detail="The native packer and checked-in schema are unavailable. Restart with `obc web`; "
                "maintainers may alternatively set OBC_PACK_BIN to an executable path.",
     )
-
-
-@app.get("/api/config/legacy")
-def get_legacy_config():
-    """The retired editor's user_config.json, if it exists — the new app offers
-    to import it into the browser-held working config once."""
-    if not os.path.exists(USER_CONFIG):
-        raise HTTPException(status_code=404, detail="No legacy config")
-    return JSONResponse(_read_config(USER_CONFIG))
 
 
 @app.get("/api/schema-preview/status")

@@ -72,6 +72,24 @@ export function urlStr(o: Obj, key: string, where: string): string {
     return v;
 }
 
+/** A pinned URL whose filename embeds the exact digest before its extension. */
+export function pinnedUrlStr(o: Obj, key: string, sha256: string, where: string): string {
+    const value = urlStr(o, key, where);
+    let url: URL;
+    try {
+        url = new URL(value, "https://catalog.invalid");
+    } catch {
+        return fail(`${where}: ${key} is not a valid URL`);
+    }
+    if (url.search || url.hash) fail(`${where}: ${key} must not contain a query or fragment`);
+    const pathname = url.pathname;
+    const extension = pathname.lastIndexOf(".");
+    if (extension < 0 || !pathname.slice(0, extension).endsWith(`.${sha256}`)) {
+        fail(`${where}: ${key} must contain its sha256 immediately before the final extension`);
+    }
+    return value;
+}
+
 /** An optional string that may also be spelled as an explicit `null`; both mean
  *  absent, which is how the generator writes "no parent". */
 export function optionalStr(o: Obj, key: string, where: string, pattern?: RegExp): string | null {

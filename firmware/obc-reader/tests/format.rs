@@ -9,7 +9,8 @@ use obc_formats::obcm::{
     BRANCH_BIT, EMPTY_LEAF, HEADER_LEN, NAV_CHUNK_SIZE, NAV_DIR_LEN, NAV_EDGE_FIXED_LEN, NAV_NEIGHBOR_LEN,
     NAV_NODE_FIXED_LEN, POI_HOURS_BLOB_LEN, POI_RECORD_LEN,
 };
-use obc_reader::{BBox, Error, Kind, MapCache, MapTables, Reader, SliceSource, MAX_FEAT_PTS, MAX_FEAT_RINGS};
+use obc_map_scene::{BBox, Kind};
+use obc_reader::{Error, MapCache, MapTables, Reader, SliceSource, MAX_FEAT_PTS, MAX_FEAT_RINGS};
 use obcm_testkit::{
     build_file, default_nav_profile_table, empty_nav_directory, empty_poi_directory, hours_pool, nav_directory,
     pack_line, pack_line16, pack_nav_chunk, pack_nav_edge_record, pack_nav_record, pack_poi_chunk, pack_poi_record,
@@ -258,13 +259,13 @@ fn query_single_leaf() {
     let r = Reader::new(&src, &tables, &cache);
 
     // A view overlapping the global bbox hits the single leaf (chunk 0).
-    let hits = query_all(&r, 0, &obc_reader::BBox { min_lon: 100, min_lat: 100, max_lon: 200, max_lat: 200 });
+    let hits = query_all(&r, 0, &BBox { min_lon: 100, min_lat: 100, max_lon: 200, max_lat: 200 });
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].0, 0);
     assert_eq!(hits[0].1, r.bbox); // leaf node bbox == global bbox
 
     // A view entirely outside the global bbox hits nothing.
-    let miss = query_all(&r, 0, &obc_reader::BBox { min_lon: 5000, min_lat: 5000, max_lon: 6000, max_lat: 6000 });
+    let miss = query_all(&r, 0, &BBox { min_lon: 5000, min_lat: 5000, max_lon: 6000, max_lat: 6000 });
     assert!(miss.is_empty());
 }
 
@@ -376,14 +377,14 @@ fn quadtree_subdivision_and_node_bbox() {
     let tables = MapTables::parse(&src).unwrap();
     let r = Reader::new(&src, &tables, &cache);
 
-    let nw = obc_reader::BBox { min_lon: 0, min_lat: 500, max_lon: 500, max_lat: 1000 };
+    let nw = BBox { min_lon: 0, min_lat: 500, max_lon: 500, max_lat: 1000 };
 
     // View inside the NW quadrant hits the leaf, with the NW node bbox.
-    let hits = query_all(&r, 0, &obc_reader::BBox { min_lon: 50, min_lat: 600, max_lon: 150, max_lat: 700 });
+    let hits = query_all(&r, 0, &BBox { min_lon: 50, min_lat: 600, max_lon: 150, max_lat: 700 });
     assert_eq!(hits.as_slice(), &[(0, nw)]);
 
     // View inside the (empty) SE quadrant hits nothing.
-    let se = query_all(&r, 0, &obc_reader::BBox { min_lon: 600, min_lat: 100, max_lon: 700, max_lat: 200 });
+    let se = query_all(&r, 0, &BBox { min_lon: 600, min_lat: 100, max_lon: 700, max_lat: 200 });
     assert!(se.is_empty());
 
     // The feature's anchor is computed from the NW node's min corner (0,500):

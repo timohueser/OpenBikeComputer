@@ -74,9 +74,4 @@ describe("static documents", () => {
         await expect(platform.catalog()).resolves.toMatchObject({ body: EXAMPLE });
         expect(urls).toHaveLength(2);
     });
-
-    it("has no local preset shelf", async () => {
-        await expect((await freshHost()).presets()).resolves.toEqual([]);
-        expect(urls).toEqual([]);
-    });
 });

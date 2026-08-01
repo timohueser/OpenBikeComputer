@@ -45,26 +45,25 @@ use std::path::{Path, PathBuf};
 use obc_pack::catalog::{CatalogOptions, DEFAULT_MANIFEST_NAME};
 use sha2::{Digest, Sha256};
 
+use crate::util::human_bytes;
+
 /// Cache lifetime for the manifest. `OBCC_Spec.md` §11: at most 60 s, because a
 /// consumer cannot compensate for an over-cached manifest — a fresh bake stays
 /// invisible for as long as the cache says it is.
 pub const MANIFEST_CACHE_CONTROL: &str = "public, max-age=60, must-revalidate";
 /// Mutable producer metadata is not referenced by a catalog root, but it keeps a
 /// short TTL so direct inspection never presents an old sidecar as current.
-pub const ARTIFACT_CACHE_CONTROL: &str = "public, max-age=3600, must-revalidate";
+pub const MUTABLE_CACHE_CONTROL: &str = "public, max-age=3600, must-revalidate";
 /// Every root-referenced object carries its SHA-256 in the published key. Such a key
 /// is immutable: a later root points at a different key, while a browser still using
 /// the previous root can finish against the previous bytes without a mixed-generation
 /// digest failure.
 pub const PINNED_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
 
-/// What an object is, which is also what decides its cache policy and its order.
+/// Object category, used to select its cache policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ObjectKind {
-    Schema,
-    /// Mutable producer metadata that no catalog root references directly.
-    Artifact,
-    Sidecar,
+    Mutable,
     /// Digest-addressed content referenced and pinned by the root.
     Pinned,
     /// Exactly one, and always last.
@@ -87,7 +86,7 @@ impl PlannedObject {
         match self.kind {
             ObjectKind::Manifest => MANIFEST_CACHE_CONTROL,
             ObjectKind::Pinned => PINNED_CACHE_CONTROL,
-            _ => ARTIFACT_CACHE_CONTROL,
+            ObjectKind::Mutable => MUTABLE_CACHE_CONTROL,
         }
     }
 
@@ -170,7 +169,6 @@ fn collect(
             continue;
         }
         let bytes = std::fs::metadata(&path).map_err(|e| format!("{}: {e}", path.display()))?.len();
-        let kind = if name.ends_with(".obcm.json") { ObjectKind::Sidecar } else { kind };
         out.push(PlannedObject { key, path, bytes, kind });
     }
     Ok(())
@@ -276,21 +274,6 @@ pub fn publish(
     Ok(report(warnings))
 }
 
-fn human_bytes(bytes: u64) -> String {
-    const KIB: u64 = 1024;
-    const MIB: u64 = 1024 * KIB;
-    const GIB: u64 = 1024 * MIB;
-    if bytes >= GIB {
-        format!("{:.1} GiB", bytes as f64 / GIB as f64)
-    } else if bytes >= MIB {
-        format!("{:.1} MiB", bytes as f64 / MIB as f64)
-    } else if bytes >= KIB {
-        format!("{:.1} KiB", bytes as f64 / KIB as f64)
-    } else {
-        format!("{bytes} B")
-    }
-}
-
 fn percent(done: u64, total: u64) -> String {
     if total == 0 {
         return "100%".to_string();
@@ -342,7 +325,7 @@ pub fn plan(tree: &Path, generated: &obc_pack::catalog::GeneratedCatalog) -> Res
         .chain(generated.satellites.iter().map(|satellite| satellite.rel_path.clone()))
         .collect();
     for dir in ["cells", "regions", "skins", crate::previews::PREVIEWS_DIR] {
-        collect(tree, &tree.join(dir), ObjectKind::Artifact, &skipped, &mut objects)?;
+        collect(tree, &tree.join(dir), ObjectKind::Mutable, &skipped, &mut objects)?;
     }
     for artifact in &generated.pinned_artifacts {
         let path = tree.join(artifact.rel_path.replace('/', std::path::MAIN_SEPARATOR_STR));
@@ -362,7 +345,7 @@ pub fn plan(tree: &Path, generated: &obc_pack::catalog::GeneratedCatalog) -> Res
     let schema = tree.join("schema.json");
     if schema.is_file() {
         let bytes = std::fs::metadata(&schema).map_err(|e| format!("{}: {e}", schema.display()))?.len();
-        objects.push(PlannedObject { key: "schema.json".into(), path: schema, bytes, kind: ObjectKind::Schema });
+        objects.push(PlannedObject { key: "schema.json".into(), path: schema, bytes, kind: ObjectKind::Mutable });
     }
     objects.sort_by(|a, b| a.key.cmp(&b.key));
 
@@ -643,7 +626,7 @@ mod tests {
             key: "cells/fine/1204/1052.obcm".into(),
             path: PathBuf::new(),
             bytes: 0,
-            kind: ObjectKind::Artifact,
+            kind: ObjectKind::Mutable,
         };
         let preview = PlannedObject {
             key: format!("previews/default.{}.png", "a".repeat(64)),

@@ -8,7 +8,7 @@
 //! **Raised as each fault is discovered**, coalesced onto one card: the host calls
 //! [`App::apply_event`](crate::App::apply_event) for the boot-time faults (sensor presence
 //! lands a moment after boot, the map-slow flag at open), and the app raises the recording-error
-//! flag itself the first time [`TrackSink::record`](crate::TrackSink::record) fails. Each distinct
+//! flag itself the first time [`TrackSink::record`](obc_ports::TrackSink::record) fails. Each distinct
 //! flag is shown **once per boot** — a dismissed notice doesn't nag, but a *new* flag arriving
 //! later re-opens the card (see `App::apply_event`). The absent sensors are listed by name so
 //! the rider knows which module to check.
@@ -42,7 +42,7 @@ impl WarningFlags {
     /// failed verification), so reads fall back to the FAT-seek path (issue #504).
     pub const MAP_SLOW: WarningFlags = WarningFlags(1 << 3);
     /// A ride-log append failed mid-ride, so at least one track point was dropped and the log is
-    /// now incomplete. Raised by the app the first time [`TrackSink::record`](crate::TrackSink::record)
+    /// now incomplete. Raised by the app the first time [`TrackSink::record`](obc_ports::TrackSink::record)
     /// returns an error (a card pull, a write error, a full medium) — issue #11.
     pub const REC_ERROR: WarningFlags = WarningFlags(1 << 4);
     /// A settings write to the persistent store failed, so an edit did not reach RRAM/the file. The

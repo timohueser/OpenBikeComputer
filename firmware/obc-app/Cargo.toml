@@ -3,11 +3,10 @@ name = "obc-app"
 version = "0.1.0"
 edition = "2021"
 publish = false  # internal firmware crate — not published to crates.io
-description = "OBC device application and compatibility facade (no_std) — shared by the desktop simulator and the nRF54L firmware"
+description = "OBC device application (no_std) — shared by the desktop simulator and the nRF54L firmware"
 
 [dependencies]
-# Dependency-light semantic hardware/host ports. obc-app re-exports these names during the staged
-# migration so existing board and simulator imports remain source-compatible.
+# Dependency-light semantic hardware/host ports.
 obc-ports = { path = "../obc-ports" }
 # The persistent-format authority: OBCM/ride format constants, the POI category/subtype table, and
 # its lookups (`poi_label_of` / `poi_category_of`). no_std foundation crate — a downward edge.

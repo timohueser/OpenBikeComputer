@@ -10,6 +10,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 obc-formats = { path = "../../firmware/obc-formats" }
+obc-map-scene = { path = "../../firmware/obc-map-scene" }
 obc-reader = { path = "../../firmware/obc-reader", features = ["alloc"] }
 obc-render = { path = "../../firmware/obc-render" }
 obc-host-core = { path = "../../host/obc-host-core" }

@@ -107,7 +107,7 @@ struct Args {
     /// the default `+00:00` offset `local_clock()` returns it verbatim, pinning the POI-detail
     /// "today's hours" weekday + the OPEN/CLOSED-now badge for a reproducible render. Defaults to the
     /// device default (2025-01-01 12:00, a Wednesday noon).
-    clock: Option<obc_app::settings::DateTime>,
+    clock: Option<obc_ports::DateTime>,
     /// Headless `--png` only: the UI language `en` | `de` | `fr` | `es` (epic #602). Seeded into
     /// `Settings.language` before the render, so a scripted screen draws its de/fr/es copy from the
     /// i18n catalog — the per-language snapshot mechanism. Defaults to `en` (the device default), so
@@ -301,10 +301,10 @@ impl Args {
     }
 }
 
-/// Parse a `--clock` value `YYYY-MM-DDTHH:MM` into a [`DateTime`](obc_app::settings::DateTime).
+/// Parse a `--clock` value `YYYY-MM-DDTHH:MM` into an [`obc_ports::DateTime`].
 /// Rejects a malformed stamp with a message (out-of-range fields are clamped by `Settings::decode`'s
 /// sanitiser when seeded, but the format itself must be well-formed).
-fn parse_clock(s: &str) -> Result<obc_app::settings::DateTime, String> {
+fn parse_clock(s: &str) -> Result<obc_ports::DateTime, String> {
     let (date, time) = s.split_once('T').ok_or("--clock format is YYYY-MM-DDTHH:MM")?;
     let mut d = date.split('-');
     let mut t = time.split(':');
@@ -313,7 +313,7 @@ fn parse_clock(s: &str) -> Result<obc_app::settings::DateTime, String> {
     let day = d.next().and_then(|v| v.parse().ok()).ok_or("bad --clock day")?;
     let hour = t.next().and_then(|v| v.parse().ok()).ok_or("bad --clock hour")?;
     let minute = t.next().and_then(|v| v.parse().ok()).ok_or("bad --clock minute")?;
-    Ok(obc_app::settings::DateTime { year, month, day, hour, minute })
+    Ok(obc_ports::DateTime { year, month, day, hour, minute })
 }
 
 /// Parse a `--route-retention LEVEL:AGE` value (epic #638 S5). `LEVEL` is the retention `u8`; `AGE`

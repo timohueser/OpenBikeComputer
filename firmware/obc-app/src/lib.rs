@@ -1,4 +1,4 @@
-//! OBC device application layer + compatibility re-exports for semantic ports.
+//! OBC device application layer.
 //!
 //! `no_std`, so the **same** logic runs in the desktop simulator and on the nRF54L
 //! firmware. It owns *what the device is doing* and leaves *how pixels reach a screen* to
@@ -8,7 +8,7 @@
 //! The boundary is the dependency-light [`obc_ports`] layer: the app reads position from a
 //! [`LocationSource`] and buttons from an [`InputSource`], oblivious to whether those are a
 //! real GPS chip + GPIO or the simulator's control panel + GPX replay. The host injects an
-//! implementation; the app stays identical. This crate re-exports those names for compatibility.
+//! implementation; the app stays identical.
 
 // `no_std` for every real target (board + sim build `not(test)`); the crate's own in-crate test
 // build re-enables `std` so the relocated screen/upload staging harnesses (FAR-19, #812) — which
@@ -25,7 +25,6 @@ pub mod corridor;
 pub mod dfu;
 pub mod dirty;
 pub mod fault;
-pub mod hal;
 #[cfg(test)]
 mod harness;
 pub mod hold_hint;
@@ -60,11 +59,6 @@ pub use corridor::{CorridorKey, CorridorScratch};
 pub use dfu::{DfuFailure, DfuInstallError, DfuScanError, DfuScanReport};
 pub use dirty::Dirty;
 pub use fault::{draw_boot_fault, BootFault};
-pub use hal::{
-    AltimeterSource, Button, ButtonEvent, CadenceSource, ClockSource, CompassSource, Fix, FuelGauge, GpsTime,
-    HeartRateSource, InputClock, InputEvent, InputSource, LocationSource, PowerSource, RideClock, Sensors,
-    SettingsStore, TemperatureSource, TrackError, TrackSink,
-};
 pub use hold_hint::HoldHints;
 pub use host::{DetourPreview, DrainStatus, HostCommand, HostEvent, HostMailbox, HOST_COMMAND_CLASSES};
 pub use i18n::{t, Msg};
@@ -90,11 +84,8 @@ pub use set_upload::{
     SweepVerdict,
 };
 pub use settings::{
-    decode_route_crcs, decode_selected_map, decode_store_epoch, decode_synced_rides, encode_route_crcs,
-    encode_selected_map, encode_store_epoch, encode_synced_rides, route_crcs_len, synced_rides_len, ClimbMode,
-    DateTime, DateTimeEditorExt, IdleReturn, RouteCrcs, SavedSensor, Settings, SyncedRides, Units, WaypointMode,
-    DATETIME_MAX_YEAR, DATETIME_MIN_YEAR, ROUTE_CRCS_MAX_LEN, SELECTED_MAP_LEN, SELECTED_MAP_NAME_MAX, SENSOR_SLOTS,
-    STORE_EPOCH_LEN, SYNCED_RIDES_MAX_LEN,
+    ClimbMode, DateTimeEditorExt, IdleReturn, SavedSensor, Settings, Units, WaypointMode, DATETIME_MAX_YEAR,
+    DATETIME_MIN_YEAR, SENSOR_SLOTS,
 };
 pub use stat_fields::{StatField, StatFieldList};
 pub use trip::{TripInput, TripSummary, Trips, MAX_TRIPS};
