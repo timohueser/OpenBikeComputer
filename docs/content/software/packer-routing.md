@@ -643,16 +643,24 @@ not editable there, so a product restyle cannot turn into a new cell schema.
 
 The editor lazy-loads one canonical Teningen `.obcm` and
 [`obc-skin-preview`](src:apps/obc-skin-preview) only while it is open. Every edit
-restamps the resident style table and renders the fixed 240×240 scene at
-5 m/px through `obc-reader` and `obc-render`; the preview therefore uses the
-device palette and renderer rather than a browser approximation. Closing the
-editor releases the map, renderer, and frame.
+restamps the resident style table and renders a 240×240 scene through
+`obc-reader` and `obc-render`; the preview therefore uses the device palette and
+renderer rather than a browser approximation. It opens over Teningen at
+5 m/px, then supports pointer-drag panning, cursor-centred wheel zoom, keyboard
+camera controls, and a reset button. The camera stays inside the fixture while
+the production LOD selector moves across the complete published ladder; the
+caption reports its actual m/px and selected LOD. Closing the editor releases
+the map, renderer, and frame.
 
 Saving creates a browser-local custom skin. Its record is pinned to the current
 catalog schema id and revision and must still cover the exact schema-ordered
 feature list when reloaded; stale or malformed records are ignored. The custom
 skin is handed to the same assembler as a hosted skin, so it changes the stamped
-presentation bytes without changing which cells are fetched.
+presentation bytes without changing which cells are fetched. Its picker card is
+also a real Teningen render: on load, one temporary preview instance restamps
+all saved skins in turn and keeps only their RGBA frames. PNG/base64 thumbnails
+are not persisted in browser storage, so they cannot consume the storage quota
+or outlive a renderer/schema update.
 
 ### One source, three hosts
 
