@@ -61,7 +61,12 @@ struct FirmwareUpdateScreen: View {
     ) {
         _model = State(initialValue: FirmwareUpdateModel(
             transport: transport, deviceName: deviceName,
-            activity: activity, prestage: prestage, autoSend: autoSend
+            activity: activity,
+            // #773 U4: the published-release check. The composition root is where
+            // the concrete network + UserDefaults seams are picked, exactly as it
+            // picks the transport — the model itself only knows the protocol.
+            updateChecker: UpdateChecker(),
+            prestage: prestage, autoSend: autoSend
         ))
     }
 
