@@ -17,8 +17,9 @@
 //! like the relation path, then styled `natural.land` by [`crate::pipeline`]).
 
 use std::fs::File;
-use std::io::{BufReader, ErrorKind, Read};
+use std::io::{BufReader, ErrorKind, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use geos::{Geom as _, Geometry};
 
@@ -28,6 +29,7 @@ use crate::progress::Progress;
 
 /// EPSG:3857 auxiliary-sphere radius = WGS84 semi-major axis (see the `.prj`).
 const R: f64 = 6_378_137.0;
+const WEB_MERCATOR_MAX_LAT: f64 = 85.051_128_78;
 
 const LAND_URL: &str = "https://osmdata.openstreetmap.de/download/land-polygons-split-3857.zip";
 
@@ -83,6 +85,14 @@ fn reproject_geom(g: &mut Geom) {
 pub fn get_land_polygons(bbox_deg: (f64, f64, f64, f64), progress: &Progress) -> Result<Vec<Geom>, String> {
     let shp = ensure_dataset(progress)?;
     let (min_lon, min_lat, max_lon, max_lat) = bbox_deg;
+    // EPSG:3857 has no finite representation at the poles. The source dataset
+    // itself ends at the Web-Mercator limit, so the geographic overhang of the
+    // outermost OBCA cells is provably empty in this layer.
+    if max_lat < -WEB_MERCATOR_MAX_LAT || min_lat > WEB_MERCATOR_MAX_LAT {
+        return Ok(Vec::new());
+    }
+    let min_lat = min_lat.max(-WEB_MERCATOR_MAX_LAT);
+    let max_lat = max_lat.min(WEB_MERCATOR_MAX_LAT);
     // Project the bbox corners to 3857 for the filter + clip box. Mercator is
     // monotone in both axes, so corners stay corners (min→min, max→max).
     let (qminx, qminy) = merc_forward(min_lon, min_lat);
@@ -91,7 +101,8 @@ pub fn get_land_polygons(bbox_deg: (f64, f64, f64, f64), progress: &Progress) ->
     let box_geom = box_polygon(qbox).map_err(|e| format!("clip box: {e}"))?;
 
     let mut out = Vec::new();
-    read_shapefile(&shp, qbox, &box_geom, &mut out, progress)?;
+    let index = LAND_INDEX.get_or_init(|| index_shapefile(&shp, progress)).as_ref().map_err(Clone::clone)?;
+    read_shapefile(&shp, index, qbox, &box_geom, &mut out, progress)?;
     Ok(out)
 }
 
@@ -116,31 +127,33 @@ const SHP_POLYGON: i32 = 5;
 /// Scan `shp`, decode every polygon record whose MBR meets `qbox` (EPSG:3857),
 /// clip it, reproject, and push the resulting polygons to `out`. Records outside
 /// the box are skipped after reading only their 36-byte header+MBR.
-fn read_shapefile(
-    shp: &Path,
-    qbox: (f64, f64, f64, f64),
-    box_geom: &Geometry,
-    out: &mut Vec<Geom>,
-    progress: &Progress,
-) -> Result<(), String> {
-    let file = File::open(shp).map_err(|e| format!("open {}: {e}", shp.display()))?;
-    // Large buffer so the scan is ~one sequential pass over the (~1.3 GB) file.
-    let mut r = BufReader::with_capacity(1 << 20, file);
+#[derive(Clone, Copy, Debug)]
+struct ShapeRecord {
+    body_offset: u64,
+    body_len: usize,
+    bbox: (f64, f64, f64, f64),
+}
 
+static LAND_INDEX: OnceLock<Result<Vec<ShapeRecord>, String>> = OnceLock::new();
+
+/// Scan the record headers once per process. A planet bake calls the land clip
+/// hundreds of times; re-reading the 1.3 GB shapefile for every source leaf would
+/// dominate the entire pipeline even though almost every record is rejected by
+/// its MBR. The compact offset/MBR table is tens of MiB and makes later queries
+/// seek directly to the handful of intersecting polygon bodies.
+fn index_shapefile(shp: &Path, progress: &Progress) -> Result<Vec<ShapeRecord>, String> {
+    let file = File::open(shp).map_err(|e| format!("open {}: {e}", shp.display()))?;
+    let mut r = BufReader::with_capacity(1 << 20, file);
     let mut header = [0u8; 100];
     r.read_exact(&mut header).map_err(|e| format!("read shp header: {e}"))?;
     if be_i32(&header[0..4]) != 9994 {
         return Err(format!("{}: not a shapefile (bad file code)", shp.display()));
     }
-    let (qminx, qminy, qmaxx, qmaxy) = qbox;
 
+    progress.log("Indexing land polygons for repeated spatial clips...");
+    let mut out = Vec::new();
     loop {
-        // One shapefile record is this phase's cancellation checkpoint: the scan is
-        // a single sequential pass over ~1.3 GB, so there is no coarser unit, and a
-        // record is small enough that a cancel is felt immediately.
         progress.check()?;
-        // Record header: 8 bytes big-endian (record number, content length in
-        // 16-bit words). A clean EOF here ends the file.
         let mut rh = [0u8; 8];
         if let Err(e) = r.read_exact(&mut rh) {
             if e.kind() == ErrorKind::UnexpectedEof {
@@ -148,39 +161,51 @@ fn read_shapefile(
             }
             return Err(format!("read record header: {e}"));
         }
-        // Content length (16-bit words → bytes). Shorter than the shape-type field
-        // would make the skip seeks below go BACKWARDS and loop forever — reject.
         let content_len = (be_i32(&rh[4..8]) as i64) * 2;
         if content_len < 4 {
             return Err(format!("{}: malformed record (content length {content_len})", shp.display()));
         }
-
-        // Shape type (little-endian) leads the content.
-        let mut t = [0u8; 4];
-        r.read_exact(&mut t).map_err(|e| format!("read shape type: {e}"))?;
-        let mut consumed = 4i64;
-        if le_i32(&t) != SHP_POLYGON {
-            // Null (0) or other (the land dataset is all polygons) → skip body.
-            r.seek_relative(content_len - consumed).map_err(|e| format!("skip record: {e}"))?;
+        let mut kind = [0u8; 4];
+        r.read_exact(&mut kind).map_err(|e| format!("read shape type: {e}"))?;
+        if le_i32(&kind) != SHP_POLYGON {
+            r.seek_relative(content_len - 4).map_err(|e| format!("skip record: {e}"))?;
             continue;
         }
-
-        // Record MBR (4 doubles) — the bounding-box skip filter.
-        if content_len < 4 + 32 {
+        if content_len < 36 {
             return Err(format!("{}: polygon record too short ({content_len} bytes)", shp.display()));
         }
         let mut bbuf = [0u8; 32];
         r.read_exact(&mut bbuf).map_err(|e| format!("read record bbox: {e}"))?;
-        consumed += 32;
-        let (bxmin, bymin) = (le_f64(&bbuf[0..8]), le_f64(&bbuf[8..16]));
-        let (bxmax, bymax) = (le_f64(&bbuf[16..24]), le_f64(&bbuf[24..32]));
+        let bbox = (le_f64(&bbuf[0..8]), le_f64(&bbuf[8..16]), le_f64(&bbuf[16..24]), le_f64(&bbuf[24..32]));
+        let body_offset = r.stream_position().map_err(|e| format!("record offset: {e}"))?;
+        let body_len = (content_len - 36) as usize;
+        out.push(ShapeRecord { body_offset, body_len, bbox });
+        r.seek_relative(body_len as i64).map_err(|e| format!("skip record: {e}"))?;
+    }
+    progress.log(format!("  indexed {} land polygon record(s)", out.len()));
+    Ok(out)
+}
+
+fn read_shapefile(
+    shp: &Path,
+    index: &[ShapeRecord],
+    qbox: (f64, f64, f64, f64),
+    box_geom: &Geometry,
+    out: &mut Vec<Geom>,
+    progress: &Progress,
+) -> Result<(), String> {
+    let file = File::open(shp).map_err(|e| format!("open {}: {e}", shp.display()))?;
+    let mut r = BufReader::with_capacity(1 << 20, file);
+    let (qminx, qminy, qmaxx, qmaxy) = qbox;
+
+    for record in index {
+        progress.check()?;
+        let (bxmin, bymin, bxmax, bymax) = record.bbox;
         if bxmax < qminx || bxmin > qmaxx || bymax < qminy || bymin > qmaxy {
-            r.seek_relative(content_len - consumed).map_err(|e| format!("skip record: {e}"))?;
             continue;
         }
-
-        // In range: read the rest (parts + points) and decode the rings.
-        let mut body = vec![0u8; (content_len - consumed) as usize];
+        r.seek(SeekFrom::Start(record.body_offset)).map_err(|e| format!("seek land record: {e}"))?;
+        let mut body = vec![0u8; record.body_len];
         r.read_exact(&mut body).map_err(|e| format!("read record body: {e}"))?;
         let rings = parse_polygon_rings(&body)?;
         let fully_inside = bxmin >= qminx && bxmax <= qmaxx && bymin >= qminy && bymax <= qmaxy;
@@ -402,6 +427,57 @@ mod tests {
         assert_eq!(rings.len(), 1);
         assert_eq!(rings[0].len(), 5);
         assert_eq!(rings[0][2], (10.0, 10.0));
+    }
+
+    /// The cached record table points at the bytes after each shape type + MBR,
+    /// and a later spatial query seeks only to records whose MBR intersects it.
+    #[test]
+    fn indexed_shapefile_queries_the_matching_record_body() {
+        fn body(points: &[(f64, f64)]) -> Vec<u8> {
+            let mut out = Vec::new();
+            out.extend_from_slice(&1i32.to_le_bytes());
+            out.extend_from_slice(&(points.len() as i32).to_le_bytes());
+            out.extend_from_slice(&0i32.to_le_bytes());
+            for (x, y) in points {
+                out.extend_from_slice(&x.to_le_bytes());
+                out.extend_from_slice(&y.to_le_bytes());
+            }
+            out
+        }
+        fn record(number: i32, bbox: (f64, f64, f64, f64), points: &[(f64, f64)]) -> Vec<u8> {
+            let body = body(points);
+            let content_len = 4 + 32 + body.len();
+            let mut out = Vec::new();
+            out.extend_from_slice(&number.to_be_bytes());
+            out.extend_from_slice(&((content_len / 2) as i32).to_be_bytes());
+            out.extend_from_slice(&SHP_POLYGON.to_le_bytes());
+            for value in [bbox.0, bbox.1, bbox.2, bbox.3] {
+                out.extend_from_slice(&value.to_le_bytes());
+            }
+            out.extend_from_slice(&body);
+            out
+        }
+
+        let dir = std::env::temp_dir().join(format!("obc-land-index-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("fixture.shp");
+        let near = box3857(1000.0, 1000.0, 1000.0);
+        let far = box3857(100_000.0, 100_000.0, 1000.0);
+        let mut bytes = vec![0u8; 100];
+        bytes[0..4].copy_from_slice(&9994i32.to_be_bytes());
+        bytes.extend_from_slice(&record(1, (1000.0, 1000.0, 2000.0, 2000.0), &near));
+        bytes.extend_from_slice(&record(2, (100_000.0, 100_000.0, 101_000.0, 101_000.0), &far));
+        std::fs::write(&path, bytes).unwrap();
+
+        let index = index_shapefile(&path, &Progress::silent()).unwrap();
+        assert_eq!(index.len(), 2);
+        let query = (500.0, 500.0, 2500.0, 2500.0);
+        let clip = box_polygon(query).unwrap();
+        let mut out = Vec::new();
+        read_shapefile(&path, &index, query, &clip, &mut out, &Progress::silent()).unwrap();
+        assert_eq!(out.len(), 1, "the far record is rejected from its cached MBR");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // --- geos_polygon_from_rings + process_record ---------------------------

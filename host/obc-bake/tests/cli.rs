@@ -110,12 +110,24 @@ fn a_region_outside_the_curated_list_is_refused() {
 }
 
 #[test]
-fn all_is_reserved_until_the_planet_pipeline_exists() {
-    let out = obc_bake().args(["bake", "--all"]).output().expect("run");
+fn all_checks_osmium_before_touching_the_planet_source() {
+    let out = obc_bake()
+        .env("OBC_OSMIUM", "/definitely/not/an/osmium-binary")
+        .args(["bake", "--all", "--source", "http://127.0.0.1:1/planet.osm.pbf", "--presets-dir"])
+        .arg(repo("builder/presets"))
+        .output()
+        .expect("run");
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("whole-planet pipeline"), "{err}");
-    assert!(err.contains("regions.toml"), "the error must explain the current no-selector behavior: {err}");
+    assert!(err.contains("is required for `obc bake --all`"), "{err}");
+    assert!(!err.contains("HEAD http"), "the prerequisite check must happen before network I/O: {err}");
+}
+
+#[test]
+fn all_and_a_curated_selector_are_mutually_exclusive() {
+    let out = obc_bake().args(["bake", "--all", "europe/germany"]).output().expect("run");
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("cannot be combined with region selectors"));
 }
 
 #[test]

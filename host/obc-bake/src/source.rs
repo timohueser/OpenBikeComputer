@@ -258,10 +258,10 @@ pub fn from_spec(spec: &str, cache_dir: &Path) -> Box<dyn ExtractSource> {
     }
 }
 
-struct Head {
-    last_modified: String,
-    content_length: u64,
-    snapshot: String,
+pub(crate) struct Head {
+    pub(crate) last_modified: String,
+    pub(crate) content_length: u64,
+    pub(crate) snapshot: String,
 }
 
 /// One `HEAD` for the validators and the extract's date.
@@ -270,7 +270,7 @@ struct Head {
 /// target's `…-260728.osm.pbf` filename: `-latest` for some regions redirects to a
 /// mirror that keeps no date in the name, and a `source_snapshot` guessed wrong is
 /// worse than a failed bake — the manifest is trusted.
-fn head(url: &str) -> Result<Head, String> {
+pub(crate) fn head(url: &str) -> Result<Head, String> {
     let resp = ureq::head(url).call().map_err(|e| format!("HEAD {url}: {e}"))?;
     let get = |name: &str| resp.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_owned);
     let last_modified = get("last-modified")
