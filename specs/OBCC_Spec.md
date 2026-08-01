@@ -224,7 +224,8 @@ Each root reference contains:
 | :-- | :-- | :-- |
 | `band` | string | Schema band id. |
 | `cell_log2` | integer | That band's grid size. |
-| `cell_count` | integer | Number of entries in the satellite. |
+| `cell_count` | integer | Number of downloadable `cells` entries in the satellite. |
+| `known_empty_count` | integer | Cells covered by `known_empty` ranges. Optional additive-v2; absent means zero. |
 | `bytes` | integer | Exact satellite byte length. |
 | `sha256` | string | Lowercase SHA-256 of its exact bytes. |
 | `url` | string | Satellite URL. |
@@ -248,11 +249,21 @@ The pinned cell index has this shape:
       ],
       "partial": false
     }
+  ],
+  "known_empty": [
+    {
+      "start": "18/1204/1055",
+      "end": "18/1204/1058",
+      "built_at": "2026-07-30T02:13:11Z",
+      "sources": [
+        { "extract_id": "planet", "snapshot": "2026-07-19" }
+      ]
+    }
   ]
 }
 ```
 
-Entries are sorted by cell id. `id` is `<cell_log2>/<i>/<j>`. `built_at` is
+Artifact entries are sorted by cell id. `id` is `<cell_log2>/<i>/<j>`. `built_at` is
 RFC 3339 UTC. Every source records its extract id and `YYYY-MM-DD` snapshot.
 
 There is no stored cell bbox. The id defines the exact grid square, and the
@@ -264,6 +275,23 @@ recipe or sidecar.
 square. Consumers MUST expose partial coverage rather than presenting it as
 canonical. A canonical cell MUST NOT be replaced by a partial bake of the same
 schema revision.
+
+`known_empty` is an optional additive-v2 array; its absence means `[]`.
+Each entry is an inclusive run from `start` through `end`. Both ids MUST be
+canonical cells of this band, MUST have the same latitude index `i`, and the
+runs MUST be sorted by `(i, j)`, non-overlapping, and non-empty. Adjacent runs
+with identical `built_at` and `sources` MUST be merged. The inclusive cell total
+MUST equal the root reference's `known_empty_count`. An artifact entry and a
+known-empty run MUST NOT cover the same `(band, cell)`.
+
+A known-empty cell is canonical zero-byte coverage established against its
+recorded source set. It is not a missing cell, a partial cell, or an empty OBCM
+artifact. Consumers MUST include its id in selection coverage, region
+cross-checks, assembly-bbox calculation, and hole detection, but MUST NOT fetch
+or graft an object for it. `cell_count` continues to count downloadable
+artifacts only; `known_empty_count` counts the expanded ranges separately.
+Consumers of an older v2 root or satellite MUST default the absent additive
+fields to zero and an empty array respectively.
 
 ## 9. URLs and integrity
 
@@ -324,8 +352,9 @@ route corridors all reduce to cell-id sets. Set union deduplicates overlapping
 parts before pricing and downloading.
 
 The displayed byte estimate MUST sum the real `bytes` values of the deduplicated
-cell entries. After digest verification, cells and the selected skin are passed
-to the OBCA assembler. Island pruning happens at assembly, seams unify only
+artifact entries; known-empty cells contribute zero. After digest verification,
+artifact bytes, selected known-empty identities, and the selected skin are
+passed to the OBCA assembler. Island pruning happens at assembly, seams unify only
 exact serialized coordinates, and the resulting mounted volume set follows
 [OBCA_Spec.md](OBCA_Spec.md).
 

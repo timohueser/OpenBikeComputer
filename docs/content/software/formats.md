@@ -1031,7 +1031,7 @@ onto one fixed Teningen map and draws it through the production renderer, so the
 chooser compares the real device styles rather than hand-made approximations.
 
 The root is deliberately small. It pins every region cell list and band index by
-exact byte length and SHA-256; those indexes pin every cell the same way. A
+exact byte length and SHA-256; those indexes pin every cell artifact the same way. A
 consumer verifies each object before parsing or assembling it, so a partial
 publish, truncated response, or stale cache can never be mistaken for a map.
 The root also states the OBCM version read from the cells themselves, making an
@@ -1044,6 +1044,16 @@ before fetching the region's satellite. The per-band partial split was added
 compatibly within OBCC v2: current bakeries publish it and its values sum to the
 region's total partial count, while both product hosts still accept an older v2
 root and defer that distinction until its pinned cell lists resolve.
+
+Planet coverage introduces a second, deliberately byte-free index entry:
+**known-empty** cells. The bakery records compact same-row ranges when a covering
+source proves that a band's canonical payload is empty. They count as coverage,
+so the builder does not hatch them as holes, but they cost zero and trigger no
+R2 request. Their identities still reach the shared assembler, which includes
+them in its bbox and hole arithmetic and emits empty leaves at their positions.
+This keeps a selected empty edge square without storing millions of empty OBCM
+objects. Absence from both the artifact list and these ranges remains a real
+coverage hole.
 
 A region is not a prebuilt map. It is a drawable outline plus stored cell ids.
 The outline is presentation-only: the stored list avoids a simplification error
