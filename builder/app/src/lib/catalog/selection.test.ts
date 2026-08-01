@@ -40,7 +40,7 @@ const indices = fixtureIndices(exampleCatalog, {
         { id: "18/1204/1053", bytes: 168 },
         { id: "18/1205/1052", bytes: 300 },
     ],
-});
+}, { fine: [{ start: "18/1204/1055", end: "18/1204/1055" }] });
 
 const swissCells = parseRegionCells(
     EXAMPLE_REGION_CELLS,
@@ -55,6 +55,7 @@ const ctx: SelectionContext = {
 };
 
 const A = cellSquare(parseCellId("18/1204/1052"));
+const EMPTY = cellSquare(parseCellId("18/1204/1055"));
 
 /** A box strictly inside cell A, so it names exactly one fine cell. */
 const insideA: BoxPart = {
@@ -106,13 +107,31 @@ describe("resolveSelection", () => {
 
     it("reads a region's stored cell list rather than deriving one", () => {
         const r = resolveSelection({ parts: [region], corridorRadiusM: 0 }, ctx);
-        expect(r.cellsByBand.get("fine")).toEqual(["18/1204/1052", "18/1204/1053"]);
+        expect(r.cellsByBand.get("fine")).toEqual(["18/1204/1052", "18/1204/1053", "18/1204/1055"]);
         expect(r.parts[0].bytes).toBe(2088 + 1064 + 552 + 424 + 296 + 168);
+    });
+
+    it("treats verified-empty ground as zero-byte coverage rather than a hole", () => {
+        const emptyBox: BoxPart = {
+            kind: "box",
+            id: "empty",
+            name: "Verified empty",
+            box: {
+                minLat: EMPTY.minLat + 1,
+                minLon: EMPTY.minLon + 1,
+                maxLat: EMPTY.maxLat - 1,
+                maxLon: EMPTY.maxLon - 1,
+            },
+        };
+        const r = resolveSelection({ parts: [emptyBox], corridorRadiusM: 0 }, ctx);
+        expect(r.cellsByBand.get("fine")).toEqual(["18/1204/1055"]);
+        expect(r.missingByBand.get("fine")).toBeUndefined();
+        expect(r.parts[0].cellsByBand.get("fine")).toEqual(["18/1204/1055"]);
     });
 
     it("counts a shared cell once in the union and in both parts' gross bytes", () => {
         const r = resolveSelection({ parts: [insideA, region], corridorRadiusM: 0 }, ctx);
-        expect(r.cellsByBand.get("fine")).toEqual(["18/1204/1052", "18/1204/1053"]);
+        expect(r.cellsByBand.get("fine")).toEqual(["18/1204/1052", "18/1204/1053", "18/1204/1055"]);
         const [box, whole] = r.parts;
         // Gross: everything the part covers, shared or not — so these overlap.
         expect(box.bytes).toBe(2088 + 1064 + 552 + 296);
@@ -328,7 +347,7 @@ describe("SelectionResolver", () => {
                             { id: "18/1204/1053", bytes: 424, partial: true },
                             { id: "18/1205/1052", bytes: 600 },
                         ],
-                    }).get("fine")!,
+                    }, { fine: [{ start: "18/1204/1055", end: "18/1204/1055" }] }).get("fine")!,
                 ],
             ]),
         };

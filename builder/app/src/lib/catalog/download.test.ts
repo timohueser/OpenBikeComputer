@@ -118,6 +118,46 @@ describe("planCells", () => {
         expect(resolution.missingByBand.get("fine")).toEqual(["18/1204/1051"]);
         expect(plan.items.map((i) => i.cell.id)).not.toContain("18/1204/1051");
     });
+
+    it("does not download a known-empty cell", async () => {
+        const { indices: artifactIndices } = await fixtures();
+        const indices = new Map(artifactIndices);
+        indices.set(
+            "fine",
+            fixtureIndices(
+                exampleCatalog,
+                {
+                    fine: IDS.fine.map((id) => artifactIndices.get("fine")!.byId.get(id)!).map((cell) => ({
+                        id: cell.id,
+                        bytes: cell.bytes,
+                        sha256: cell.sha256,
+                    })),
+                },
+                { fine: [{ start: "18/1204/1055", end: "18/1204/1055" }] },
+            ).get("fine")!,
+        );
+        const empty = cellSquare(parseCellId("18/1204/1055"));
+        const part: BoxPart = {
+            kind: "box",
+            id: "empty",
+            name: "Known empty",
+            box: {
+                minLat: empty.minLat + 1,
+                minLon: empty.minLon + 1,
+                maxLat: empty.maxLat - 1,
+                maxLon: empty.maxLon - 1,
+            },
+        };
+        const resolution = resolveSelection(
+            { parts: [part], corridorRadiusM: 0 },
+            { catalog: exampleCatalog, indices, regionCells: new Map() },
+        );
+        const plan = planCells(resolution, exampleCatalog, indices);
+        expect(resolution.cellsByBand.get("fine")).toEqual(["18/1204/1055"]);
+        expect(resolution.missingByBand.get("fine")).toBeUndefined();
+        expect(plan.items.some((item) => item.band === "fine")).toBe(false);
+        expect(plan.knownEmpty).toContainEqual({ band: "fine", id: "18/1204/1055" });
+    });
 });
 
 describe("downloadCells", () => {
@@ -294,7 +334,7 @@ describe("downloadCells", () => {
 
     it("has nothing to do for an empty plan", async () => {
         const impl = serving();
-        expect(await downloadCells({ items: [], totalBytes: 0 }, { fetchImpl: impl, onCell: () => {} })).toEqual({
+        expect(await downloadCells({ items: [], knownEmpty: [], totalBytes: 0 }, { fetchImpl: impl, onCell: () => {} })).toEqual({
             cells: 0,
             bytes: 0,
         });

@@ -492,6 +492,30 @@ in the other, because each extract lacks the side roads that create the neighbou
   a border cell from every extract that touches it is the sanctioned way to make it canonical
   without a planet source.
 
+### 3.8 Known-empty coverage
+
+A covering source can prove that a band's canonical payload for a cell is
+empty. Publishing a complete empty OBCM for every such square would turn oceans
+and other sparse planet coverage into millions of fixed-overhead objects, so
+OBCC may represent those cells as compact **known-empty** row ranges instead.
+
+- The assertion is per `(schema revision, band, cell)` and carries the same
+  source-set identities, snapshot dates, and bake timestamp as an artifact.
+- It is canonical coverage: a partial source MUST NOT produce a known-empty
+  assertion. Absence from both the artifact list and the known-empty ranges
+  remains a coverage hole.
+- A catalog MUST NOT publish an artifact and a known-empty assertion for the
+  same `(band, cell)`. The assertion contributes zero bytes and no partial flag.
+- A consumer includes selected known-empty identities in coverage, hole, and
+  assembly-bbox arithmetic, but downloads and grafts no bytes for them. At the
+  cell depth the assembler emits the same empty leaf the corresponding empty
+  artifact would have contributed.
+
+An assembly containing no artifact at all has no cell from which to verify the
+schema revision's binary style and routing-profile tables. An assembler MUST
+refuse that all-known-empty input rather than borrow an unselected artifact as
+an implicit metadata source.
+
 ---
 
 ## 4. The assembly contract
@@ -502,7 +526,8 @@ selection and one skin. This section defines what an assembler does.
 ### 4.1 Inputs and preconditions
 
 An assembler takes a selection (any set of areas, holes allowed), a schema revision with its band
-table, a skin, and the cells the coverage rule (§1.2) selects. It MUST refuse to proceed if:
+table, a skin, the artifacts the coverage rule (§1.2) selects, and any selected
+known-empty identities (§3.8). It MUST refuse to proceed if:
 
 - the cells do not all carry the same OBCM version, or that version is not the one it writes; or
 - the cells do not all belong to the same schema revision; or
@@ -511,13 +536,15 @@ table, a skin, and the cells the coverage rule (§1.2) selects. It MUST refuse t
 - any selected cell is `partial`, and the caller has not accepted the reduced coverage.
 
 Missing cells are legal and produce **empty leaves**; the renderer already paints backdrop there,
-so a selection with holes is well-formed by construction. What is not legal is a *silent* hole.
+so a selection with holes is well-formed by construction. Known-empty cells
+also produce empty leaves but are explicit canonical coverage, not holes. What
+is not legal is a *silent* hole.
 
 ### 4.2 Choosing the assembly bbox
 
 The assembler computes the minimal grid-aligned box (§2.1) containing every selected cell:
 
-1. Let `B` be the union of the selected cells' squares.
+1. Let `B` be the union of every selected artifact and known-empty cell square.
 2. Snap `A_lat = GRID_ORIGIN + floor((B.min_lat − GRID_ORIGIN) / S_MAX) · S_MAX`, and likewise
    `A_lon`.
 3. Choose the smallest `n` with `2^n ≥ S_MAX` and `A_lat + 2^n ≥ B.max_lat` and

@@ -29,7 +29,12 @@
 import { corridorCells, type LatLon } from "./corridor";
 import { cellsIntersecting, formatCellId, type UBox } from "./grid";
 import type { BandEntry, Catalog } from "./manifest";
-import { assertRegionCellsIndexed, type CellIndexDocument, type RegionCellsDocument } from "./satellites";
+import {
+    assertRegionCellsIndexed,
+    cellIndexHas,
+    type CellIndexDocument,
+    type RegionCellsDocument,
+} from "./satellites";
 
 export type { LatLon } from "./corridor";
 
@@ -125,8 +130,9 @@ export interface PartResolution {
 
 export interface SelectionResolution {
     parts: PartResolution[];
-    /** The union, band id → sorted canonical cell ids that the catalog
-     *  publishes. This is what gets downloaded and assembled. */
+    /** The union, band id → sorted canonical cell ids that the catalog covers.
+     *  Artifact entries contribute downloaded payloads; known-empty identities
+     *  reach assembly without a payload. */
     cellsByBand: Map<string, string[]>;
     /** Ground the selection covers for which no cell is published, per band —
      *  the holes. Legal by construction (a missing cell is an empty leaf and the
@@ -245,7 +251,7 @@ function classify(
     const published: string[] = [];
     const missing: string[] = [];
     for (const id of new Set(partCells(part, bandEntry, ctx, radiusM))) {
-        (index.byId.has(id) ? published : missing).push(id);
+        (cellIndexHas(index, id) ? published : missing).push(id);
     }
     return { published: published.sort(), missing: missing.sort() };
 }

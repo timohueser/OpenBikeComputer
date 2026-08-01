@@ -8,8 +8,8 @@ import {
     type WorkerCell,
 } from "./workerProtocol";
 
-function assembleReq(cells: WorkerCell[]): AssembleWorkerRequest {
-    return { type: "assemble", cells, schemaJson: "{}", skinJson: "{}", options: {} };
+function assembleReq(cells: WorkerCell[]): Extract<AssembleWorkerRequest, { type: "assemble" }> {
+    return { type: "assemble", cells, knownEmpty: [], schemaJson: "{}", skinJson: "{}", options: {} };
 }
 
 describe("requestTransferList", () => {
@@ -40,6 +40,12 @@ describe("requestTransferList", () => {
 
     it("transfers nothing for an estimate — there are no bytes in it", () => {
         expect(requestTransferList({ type: "estimate", networkBandBytes: 1, totalCellBytes: 2 })).toEqual([]);
+    });
+
+    it("does not invent a transferable for a known-empty identity", () => {
+        const req = assembleReq([]);
+        req.knownEmpty.push({ id: "18/0001/0001", band: "fine" });
+        expect(requestTransferList(req)).toEqual([]);
     });
 });
 

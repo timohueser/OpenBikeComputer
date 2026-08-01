@@ -56,7 +56,9 @@ use std::cell::RefCell;
 use obc_formats::io::{ByteSource, SliceSource};
 use obcm_assemble::grid::CellId;
 use obcm_assemble::schema::{Schema, Skin};
-use obcm_assemble::{assemble, CellInput, Clock, Error, MemorySource, Options, ShardPlan, ShardStore};
+use obcm_assemble::{
+    assemble_with_known_empty, CellInput, Clock, Error, KnownEmptyInput, MemorySource, Options, ShardPlan, ShardStore,
+};
 
 /// One downloaded cell, as the caller hands it over: the catalog's identity plus the verified bytes.
 ///
@@ -69,6 +71,13 @@ pub struct CellBytes {
     /// The catalog's `partial` flag (OBCA §3.7).
     pub partial: bool,
     pub bytes: Vec<u8>,
+}
+
+/// One selected cell which the pinned catalog asserts has canonical empty
+/// content. It has an identity but deliberately no payload buffer.
+pub struct KnownEmptyCell {
+    pub id: String,
+    pub band: String,
 }
 
 /// What an assembly can be told to do differently — [`obcm_assemble::Options`] minus `skip_verify`.
@@ -595,11 +604,24 @@ pub fn assemble_cells(
     opts: &BridgeOptions,
     hooks: &mut dyn Hooks,
 ) -> Result<Outcome, AssembleFailure> {
+    assemble_cells_with_known_empty(cells, Vec::new(), schema_json, skin_json, opts, hooks)
+}
+
+/// Assemble downloaded artifacts while retaining selected canonical-empty
+/// cells in coverage and bbox arithmetic.
+pub fn assemble_cells_with_known_empty(
+    cells: Vec<CellBytes>,
+    known_empty: Vec<KnownEmptyCell>,
+    schema_json: &str,
+    skin_json: &str,
+    opts: &BridgeOptions,
+    hooks: &mut dyn Hooks,
+) -> Result<Outcome, AssembleFailure> {
     if cells.is_empty() {
         return Err(AssembleFailure::new(
             ErrorCode::Input,
-            "No cells were handed to the assembler. Select an area first — an assembly of nothing has no bbox to \
-             snap and no schema revision to agree on (OBCA §4.1).",
+            "No OBCM cell artifact was handed to the assembler. An assembly needs at least one artifact to verify \
+             the schema revision's binary style and routing-profile tables (OBCA §3.8).",
         ));
     }
     let schema = Schema::parse(schema_json).map_err(|e| AssembleFailure::new(ErrorCode::Internal, e))?;
@@ -621,6 +643,17 @@ pub fn assemble_cells(
         .zip(&sources)
         .map(|((id, band, partial), src)| CellInput { id: *id, band: band.clone(), src, partial: *partial })
         .collect();
+    let known_empty: Vec<KnownEmptyInput> = known_empty
+        .into_iter()
+        .map(|cell| {
+            CellId::parse(&cell.id).map(|id| KnownEmptyInput { id, band: cell.band }).map_err(|e| {
+                AssembleFailure::new(
+                    ErrorCode::Internal,
+                    format!("known-empty cell id {:?} is not a `<log2>/<i>/<j>` id: {e}", cell.id),
+                )
+            })
+        })
+        .collect::<Result<_, _>>()?;
 
     let options = Options {
         name: opts.name.clone(),
@@ -645,7 +678,7 @@ pub fn assemble_cells(
     });
     let clock = HookedClock { p: &progress };
     let mut store = HookedStore { shards: Vec::new(), manifest: Vec::new(), p: &progress };
-    let summary = match assemble(inputs, &schema, &skin, &options, &mut store, &clock) {
+    let summary = match assemble_with_known_empty(inputs, known_empty, &schema, &skin, &options, &mut store, &clock) {
         Ok(s) => s,
         Err(e) => return Err(map_error(e, progress.borrow().aborted)),
     };
@@ -891,6 +924,17 @@ mod tests {
         let e = assemble_cells(Vec::new(), "{}", "{}", &BridgeOptions::default(), &mut NoHooks)
             .expect_err("nothing to assemble");
         assert_eq!(e.code, ErrorCode::Input);
+    }
+
+    /// Known-empty coverage carries no binary tables, so it cannot make an
+    /// otherwise artifact-free selection assembleable (§3.8).
+    #[test]
+    fn an_all_known_empty_selection_is_an_input_refusal() {
+        let empty = vec![KnownEmptyCell { id: "18/1204/1055".into(), band: "fine".into() }];
+        let e = assemble_cells_with_known_empty(Vec::new(), empty, "{}", "{}", &BridgeOptions::default(), &mut NoHooks)
+            .expect_err("known-empty coverage cannot supply binary tables");
+        assert_eq!(e.code, ErrorCode::Input);
+        assert!(e.message.contains("at least one artifact"), "{}", e.message);
     }
 
     /// A cell id that is not `<log2>/<i>/<j>` is this bridge's problem, not the catalog's format.

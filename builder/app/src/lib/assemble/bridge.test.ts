@@ -121,6 +121,31 @@ describe("assembleCells", () => {
         expect(() => result.files[0].take()).toThrow();
     });
 
+    it("keeps known-empty edge cells in bbox and coverage arithmetic without buffers", async () => {
+        const base = await assembleCells(cells(), sidecar, skin, OPTIONS);
+        const baseBox = base.summary.assembly_bbox_udeg as { span_log2: number };
+        const baseCells = base.summary.cells;
+        base.release();
+
+        const result = await assembleCells(cells(), sidecar, skin, OPTIONS, undefined, [
+            { id: "20/0301/0264", band: "coarse" },
+            { id: "18/1204/1056", band: "fine" },
+            { id: "18/1204/1056", band: "network" },
+        ]);
+        const expanded = result.summary.assembly_bbox_udeg as { span_log2: number };
+        expect(expanded.span_log2).toBeGreaterThan(baseBox.span_log2);
+        expect(result.summary.cells).toBe(baseCells + 3);
+        result.release();
+    });
+
+    it("rejects a known-empty identity that duplicates an artifact", async () => {
+        await expect(
+            assembleCells(cells(), sidecar, skin, OPTIONS, undefined, [
+                { id: "18/1204/1052", band: "fine" },
+            ]),
+        ).rejects.toMatchObject({ code: "input" });
+    });
+
     it("reproduces the native CLI's bytes for a volume set, manifest last", async () => {
         const result = await assembleCells(cells(), sidecar, skin, { ...OPTIONS, forceSplit: true });
         const want = expected("expected-split");

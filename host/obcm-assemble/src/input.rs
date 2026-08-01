@@ -155,7 +155,9 @@ fn read_style_ids(src: &dyn ByteSource) -> Result<Vec<u8>> {
 /// style-id assignment, one profile table. A hole or a partial cell is legal — silently is not.
 pub fn check_agreement(cells: &[Cell<'_>], accept_partial: bool) -> Result<()> {
     let Some(first) = cells.first() else {
-        return Err(Error::Input("an assembly needs at least one cell".into()));
+        return Err(Error::Input(
+            "an assembly needs at least one OBCM cell artifact to verify its binary tables".into(),
+        ));
     };
     // One cell per (band, id). Geometry would survive a duplicate — the graft keys cells by their
     // grid slot, so the second copy simply overwrites the first — but the nav merge would not: it

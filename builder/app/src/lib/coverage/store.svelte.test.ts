@@ -20,7 +20,8 @@ const ROOT_URL = "https://maps.example.org/catalog/catalog.json";
 const offline = (async () => new Response("offline", { status: 503 })) as unknown as typeof fetch;
 
 /** The example's four bands, with cell bytes that sum to the root's own
- *  region pricing (Switzerland 4 592 across 6 cells). */
+ *  region pricing (Switzerland 4 592 across 6 artifacts plus one known-empty
+ *  coverage cell). */
 function indices() {
     return fixtureIndices(exampleCatalog, {
         coarse: [{ id: "20/0301/0263", bytes: 2088, partial: true }],
@@ -33,7 +34,7 @@ function indices() {
             { id: "18/1204/1052", bytes: 296 },
             { id: "18/1204/1053", bytes: 168 },
         ],
-    });
+    }, { fine: [{ start: "18/1204/1055", end: "18/1204/1055" }] });
 }
 
 function makeStore(): CoverageStore {
@@ -64,7 +65,7 @@ describe("region parts", () => {
         const ledger = store.ledger!;
         expect(ledger.isFinal).toBe(true);
         expect(ledger.totalBytes).toBe(4592);
-        expect(ledger.cellCount).toBe(6);
+        expect(ledger.cellCount).toBe(7);
     });
 
     it("adds a region once — a second click is a no-op, not a duplicate row", () => {
@@ -198,7 +199,7 @@ describe("partial-detail hatching (#1041 A9)", () => {
                 { id: "18/1204/1052", bytes: 296 },
                 { id: "18/1204/1053", bytes: 168 },
             ],
-        });
+        }, { fine: [{ start: "18/1204/1055", end: "18/1204/1055" }] });
     }
 
     it("a plain region pick hatches nothing: the sentence keeps the count, the map stays quiet", () => {
@@ -306,7 +307,7 @@ describe("refusals arrive as sentences", () => {
                 { id: "18/1204/1052", bytes: 296 },
                 { id: "18/1204/1053", bytes: 168 },
             ],
-        });
+        }, { fine: [{ start: "18/1204/1055", end: "18/1204/1055" }] });
         expect(store.resolution).toBeNull();
         expect(store.resolutionError).toMatch(/18\/1204\/1053/);
         expect(store.ledger).toBeNull();
