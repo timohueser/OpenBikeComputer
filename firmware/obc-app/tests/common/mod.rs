@@ -13,7 +13,8 @@
 use std::collections::VecDeque;
 
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
-use obc_app::{App, Button, ButtonEvent, Fix, InputEvent, InputSource, LocationSource, RideClock, Sensors};
+use obc_app::App;
+use obc_ports::{Button, ButtonEvent, Fix, InputEvent, InputSource, LocationSource, RideClock, Sensors};
 use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader, SliceSource};
 
 // Recording DrawTarget.

@@ -2,8 +2,7 @@
     import { onMount } from "svelte";
     import { buildConfigForSubmit, type SchemaEnvelope } from "../../lib/config/model";
     import type { WorkingEnvelope } from "../../lib/config/storage.svelte";
-    import { platform } from "../../lib/platform";
-    import type { SchemaPreviewMap, SchemaPreviewStatus } from "../../lib/platform/types";
+    import type { SchemaPreviewMap, SchemaPreviewService, SchemaPreviewStatus } from "../../lib/platform/types";
     import { representativeMpp } from "../../lib/schema/lods";
     import {
         openSchemaRenderer,
@@ -12,9 +11,11 @@
     } from "../../lib/schema/render";
     import { PreviewController, type PreviewPhase } from "../../lib/schema/previewController";
 
-    let { env, schema }: { env: WorkingEnvelope; schema: SchemaEnvelope | null } = $props();
-
-    const service = platform.schemaPreview;
+    let { env, schema, service }: {
+        env: WorkingEnvelope;
+        schema: SchemaEnvelope | null;
+        service: SchemaPreviewService;
+    } = $props();
     let source = $state<SchemaPreviewStatus | null>(null);
     let phase = $state<PreviewPhase<SchemaPreviewMap>>({ kind: "idle" });
     let renderer = $state<SchemaRenderer | null>(null);
@@ -27,7 +28,6 @@
 
     const controller = new PreviewController(
         (config: Record<string, unknown>, signal) => {
-            if (!service) throw new Error("The schema lab is unavailable in this host.");
             return service.pack(config, signal);
         },
         (next) => {
@@ -81,7 +81,6 @@
     }
 
     async function refreshSource() {
-        if (!service) return;
         try {
             source = await service.status();
         } catch (cause) {

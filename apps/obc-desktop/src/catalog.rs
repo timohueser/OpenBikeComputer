@@ -16,7 +16,7 @@
 
 use serde::Serialize;
 
-const DEFAULT_CATALOG_URL: &str = "https://maps.openbikecomputer.org/catalog.json";
+const DEFAULT_CATALOG_URL: &str = "https://maps.openbikecomputer.com/cell-catalog/catalog.json";
 const COMPILED_CATALOG_URL: Option<&str> = option_env!("OBC_CATALOG_URL");
 
 /// The manifest body plus the URL it was read from — relative references resolve
@@ -52,7 +52,7 @@ mod tests {
     #[test]
     fn the_catalog_url_is_absolute_and_overridable() {
         // Absolute matters: the frontend resolves catalog references against it.
-        assert!(selected_url(None).starts_with("https://"), "the compiled catalog URL must be absolute");
+        assert_eq!(selected_url(None), "https://maps.openbikecomputer.com/cell-catalog/catalog.json");
         assert_eq!(
             selected_url(Some("https://example.invalid/catalog.json".into())),
             "https://example.invalid/catalog.json"

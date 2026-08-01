@@ -37,7 +37,8 @@
 use std::collections::{HashMap, HashSet};
 use std::process::ExitCode;
 
-use obc_reader::{BBox, MapCache, MapTables, Reader, SliceSource};
+use obc_map_scene::BBox;
+use obc_reader::{MapCache, MapTables, Reader, SliceSource};
 
 /// Origin of the fixed global cell grid, in microdegrees, on **both** axes (epic #1016 §1). A
 /// power of two so that every candidate cell size divides the origin offset exactly, and negative

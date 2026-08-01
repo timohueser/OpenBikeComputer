@@ -31,7 +31,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use obc_reader::ground_dist_m;
+use obc_map_scene::ground_dist_m;
 
 /// Dedup key for an edge: the unordered endpoint pair (canonicalized to `min <=
 /// max`), its geometry oriented to match, **and its way-kind**, so a way and its

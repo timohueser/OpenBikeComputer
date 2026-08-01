@@ -7,15 +7,17 @@ import type { Preset, SchemaEnvelope } from "../lib/config/model";
 const host = vi.hoisted(() => ({
     presets: vi.fn(),
     schema: vi.fn(),
-    legacyConfig: vi.fn(),
+    previewStatus: vi.fn(),
+    previewPack: vi.fn(),
 }));
 
 vi.mock("../lib/platform", () => ({
     platform: {
-        presets: host.presets,
-        schema: host.schema,
-        legacyConfig: host.legacyConfig,
-        schemaPreview: null,
+        styleEditor: {
+            presets: host.presets,
+            schema: host.schema,
+            preview: { status: host.previewStatus, pack: host.previewPack },
+        },
     },
 }));
 
@@ -85,7 +87,14 @@ beforeEach(() => {
     working.envelope = null;
     host.presets.mockReset();
     host.schema.mockReset().mockResolvedValue(schema);
-    host.legacyConfig.mockReset().mockResolvedValue(null);
+    host.previewStatus.mockReset().mockResolvedValue({
+        available: false,
+        label: "unavailable",
+        configured: false,
+        detail: "",
+        bbox: "",
+    });
+    host.previewPack.mockReset();
     globalThis.fetch = vi.fn(async () => Response.json({ keys: {} })) as typeof fetch;
 });
 

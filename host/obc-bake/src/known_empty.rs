@@ -7,6 +7,8 @@ use obc_pack::catalog::{CellSource, KnownEmptyRun};
 use obc_pack::grid::{BandTable, CellId};
 use serde::{Deserialize, Serialize};
 
+use crate::util::write_json;
+
 const STATE_FILE: &str = ".known-empty.json";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -181,17 +183,6 @@ fn run_from(
         built_at,
         sources,
     })
-}
-
-fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
-    }
-    let mut text = serde_json::to_string_pretty(value).map_err(|e| format!("{}: {e}", path.display()))?;
-    text.push('\n');
-    let tmp = path.with_extension("json.part");
-    std::fs::write(&tmp, text).map_err(|e| format!("{}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, path).map_err(|e| format!("{} -> {}: {e}", tmp.display(), path.display()))
 }
 
 #[cfg(test)]

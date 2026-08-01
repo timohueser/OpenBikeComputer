@@ -210,7 +210,7 @@ pub(crate) async fn run_install(
             // The armer's breadcrumb for the next boot's outcome reconcile (best-effort — a
             // failed or torn write only costs the verdict card its precision, never the install:
             // a power cut anywhere past the page write is exactly the armed-install path).
-            let marker = obc_app::settings::ArmMarker { generation: report.generation, staged: report.staged_version };
+            let marker = obc_app::dfu::ArmMarker { generation: report.generation, staged: report.staged_version };
             settings.write_arm_marker(&marker);
             // The beat: nothing else may run between here and the reset except this flush
             // (issue #619 §3).
@@ -333,7 +333,7 @@ pub(crate) fn confirm_trial(settings: &mut RramSettingsStore) -> Option<ImageHea
 }
 
 /// The **boot-outcome reconcile**: called once per boot, before the ride loop runs, to turn the
-/// boot-state page + the armer's breadcrumb ([`ArmMarker`](obc_app::settings::ArmMarker)) into the
+/// boot-state page + the armer's breadcrumb ([`ArmMarker`](obc_app::dfu::ArmMarker)) into the
 /// one-time post-update verdict the UI shows.
 ///
 /// The decision itself is the pure, host-tested [`obc_dfu::verdict`] — it reads the boot state's

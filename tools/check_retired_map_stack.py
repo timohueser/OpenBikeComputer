@@ -25,6 +25,7 @@ RETIRED = [
     re.compile(r"--catalog-" + r"v2\b"),
     re.compile(r"--" + r"v2\b"),
     re.compile(r"\bcatalog" + r"Root\b"),
+    re.compile(r"maps\.openbikecomputer\." + r"org/catalog\.json"),
 ]
 
 

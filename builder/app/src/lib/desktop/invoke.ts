@@ -93,9 +93,9 @@ export const desktop = {
             headers: { "output-id": String(id), filename: name },
         }),
     mapOutputFinish: (id: number) => invoke<void>("map_output_finish", { id }),
+    mapOutputDiscard: (id: number) => invoke<void>("map_output_discard", { id }),
 
     storagePlaces: () => invoke<StoragePlace[]>("storage_info"),
-    storageClear: (id: string) => invoke<number>("storage_clear", { id }),
 
     revealFile: (path: string) => invoke<void>("reveal_file", { path }),
 
@@ -179,8 +179,6 @@ export interface RideIndexView {
     folder: string;
     isDefault: boolean;
     rides: RideIndexEntry[];
-    /** Non-null when the backend's pre-split migration failed on this open — see rides.rs. */
-    migrationWarning: string | null;
 }
 
 export interface RideImportRequest {

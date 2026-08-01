@@ -1,65 +1,13 @@
-//! The memory model: **can this selection be assembled in a tab at all?**
+//! Pre-download wasm memory projection.
 //!
-//! OBCA §5.7 already makes the catalog consumer refuse a selection whose *files* would exceed the
-//! format's `4 GiB − 1 B` per-file ceiling (that is #1028's ledger, and it prices the output). This
-//! prices something else and stricter: the **address space the assembly itself needs while it runs**.
-//! An assembly can be far below the file ceiling and still be impossible in a browser, because
-//! wasm32 has a hard 4 GiB address space and the engine's nav rewrite is the memory-hungry part of
-//! the run.
+//! The model comes from PR #1027's Switzerland benchmark (717 MB of cells,
+//! 271 MB of nav, 1.73 GB peak RSS):
 //!
-//! Both checks belong *before the download*, which is why this takes catalog byte counts rather than
-//! cells: by the time the assembler is holding cells, the gigabytes it was supposed to refuse have
-//! already been fetched.
+//! `peak ≈ 6.4 × nav_bytes + input_cell_bytes + output_cell_bytes`
 //!
-//! # The model, and where its constants come from
-//!
-//! Everything is measured on PR #1027's benchmark: **switzerland**, 410 cells / 717 MB, assembled
-//! natively into one 716 692 620 B file in 19.9 s, **peak RSS 1.73 GB**, of which the rebuilt nav
-//! section is **271 MB** (258.4 MiB) and the verbatim geometry copy 440 MB. Three terms:
-//!
-//! 1. **The engine's working set** — dominated by the nav rewrite (§4.6): the merged node set, its
-//!    adjacency, the rebuilt edge pool, the renumbering maps. Measured
-//!    `1.73 GB / 271 MB =` [`PEAK_PER_NAV_BYTE`] **≈ 6.4 bytes resident per byte of nav section**.
-//!    PR #1027's own DACH projection (nav 11.1–11.9× switzerland's ⇒ peak ≈ 19–21 GB) is exactly
-//!    this linear scaling, so the model here is the same one that decided the epic's verdict.
-//! 2. **The input cells**, resident for the whole run. The native benchmark does **not** pay this —
-//!    its `FileSource` reads cells from disk 256 KB at a time — but the browser does: cells arrive
-//!    over the network as `Uint8Array`s and cross into wasm linear memory once.
-//! 3. **The output**, also resident for the whole run, and also not paid natively. §4.8 requires
-//!    every sealed shard to be **read back through the real reader before the manifest is written**,
-//!    so a shard has to be randomly addressable, and a tab has nowhere but linear memory to put it.
-//!    Measured 717 MB of cells → 716 692 620 B of output, i.e. [`OUTPUT_PER_CELL_BYTE`] ≈ 1.00 —
-//!    principled rather than coincidental: geometry is copied verbatim (§2.3) and the nav section is
-//!    rewritten to about the size the cells' own nav sections had.
-//!
-//!    The coefficient is **1.00 and not 1.5** because the driver's store allocates each shard buffer
-//!    once, at its planned size (`HookedStore::begin` — §5 computes a shard's bytes before the write
-//!    starts). A `Vec` grown by doubling would instead hold the old and the new allocation together
-//!    for the copy, so the last doubling on a 717 MB shard would transiently want ~1.59 GB and a
-//!    gigabyte-scale *contiguous* block. That is memory this model does not count and a tab may not
-//!    be able to give, and on switzerland it is more than the whole 1.55 % headroom below.
-//!
-//! ```text
-//! peak ≈ 6.4 × nav_bytes  +  cell_bytes  +  1.0 × cell_bytes
-//! ```
-//!
-//! `nav_bytes` is the **`network` band's** share of the selection, because a `network` cell carries
-//! the nav graph and the POIs and no geometry at all (`obc-pack`'s cutter, OBCA §1.2/§3.1) — so the
-//! catalog's per-band byte totals already state it, with no extra field to publish.
-//!
-//! Where that lands, for scale: **the whole of switzerland as one map projects to 3.17 GB**, which
-//! passes the budget below with under 2 % to spare, and DACH — PR #1027's own 11.1–11.9× nav
-//! scaling — projects past wasm32's address space entirely. A country is the knife edge; a corridor
-//! or a Bundesland is nowhere near it.
-//!
-//! # What the model is not
-//!
-//! It is a **linear extrapolation from one measured point**, and it is deliberately summed rather
-//! than max'd — the three terms genuinely coexist (the cells are still being read from during the
-//! write, and the merged nav graph is still alive while shards are written), but the nav coefficient
-//! was measured on a run whose peak already included some of the same allocator slack. Treat a
-//! verdict near the budget as "probably not", not as a number. What it is *for* is refusing the
-//! selections that are obviously impossible before a rider spends ten minutes downloading them.
+//! Browser input and output remain resident while the nav graph is rebuilt.
+//! This is a conservative linear extrapolation intended to reject clearly
+//! impossible selections before downloading them, not a precise RSS forecast.
 
 /// Peak resident bytes per byte of rebuilt nav section: `1.73 GB / 271 MB`, measured on the
 /// switzerland run in PR #1027.

@@ -681,7 +681,7 @@ or assembly algorithms.
 | Regions, boxes, GPX corridors | yes | yes | yes |
 | Shared wasm assembly | yes | yes | yes |
 | Product skin editor | yes | yes | yes |
-| Output | browser downloads | atomic local folder | browser downloads |
+| Output | browser downloads | grouped local folder | browser downloads |
 | Advanced schema editor | no | no | yes |
 | Native fixed-crop schema preview | no | no | yes |
 | Product PBF build | no | no | no |
@@ -691,8 +691,12 @@ The website uses browser fetch. The desktop root, satellites, and cells use its
 native HTTP client and are restricted to the configured catalog origin; this is
 how the same catalog works without widening the webview's content-security
 policy. The desktop writes every file of one assembled volume set into a unique
-folder under `Documents/OpenBikeComputer`, using temporary files and atomic
-renames. Saving changes where bytes land, never what the assembler emitted.
+folder under `Documents/OpenBikeComputer`, using a temporary file and atomic
+rename for each part. It closes the folder only after the assembler emits and
+verifies the manifest; cancellation or failure discards the incomplete folder.
+In a browser, files already handed to the download manager cannot be recalled,
+so the failure card names how many incomplete downloads the user should discard.
+Saving changes where bytes land, never what the assembler emitted.
 
 The local Python server remains useful while developing the one hosted schema.
 Its Maps tab resolves `OBC_CATALOG_URL` at server runtime and proxies only the

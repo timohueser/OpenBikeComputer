@@ -17,7 +17,7 @@
 //     WebUSB — which is also what makes this the only tier a Safari or Firefox
 //     user can plug a device into at all.
 
-import type { LoadStyleEditor, MapOutputSession, Platform } from "./types";
+import type { MapOutputSession, Platform } from "./types";
 import { desktop } from "../desktop/invoke";
 
 // Every seam this host declares is implemented now — D1 (#906) filled in the
@@ -57,6 +57,7 @@ async function openMapOutput(name: string): Promise<MapOutputSession> {
         path: opened.path,
         write: (filename, bytes) => desktop.mapOutputWrite(opened.id, filename, bytes),
         finish: () => desktop.mapOutputFinish(opened.id),
+        discard: () => desktop.mapOutputDiscard(opened.id),
     };
 }
 
@@ -72,14 +73,11 @@ export const platform: Platform = {
     // the universal USB path, including for the browsers WebUSB never reaches.
     usbViaWebUsb: false,
 
-    presets: async () => [],
     catalog,
     catalogFetch,
     openMapOutput,
 
-    schema: null,
-    palette: null,
-    schemaPreview: null,
+    styleEditor: null,
 
     // Native USB (D4 #909), loaded on demand for the same reason the web host
     // does it: the protocol client, the codecs and the transport are their own
@@ -100,9 +98,6 @@ export const platform: Platform = {
 
     storage: {
         places: () => desktop.storagePlaces(),
-        clear: (id: string) => desktop.storageClear(id),
     },
     revealFile: (path: string) => desktop.revealFile(path),
 };
-
-export const loadStyleEditor: LoadStyleEditor | null = null;

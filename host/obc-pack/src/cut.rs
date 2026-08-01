@@ -49,7 +49,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use obc_formats::obcm::VERSION as OBCM_VERSION;
-use obc_reader::M_PER_DEG;
+use obc_map_scene::M_PER_DEG;
 
 use crate::config::Config;
 use crate::geom::{clip_to_box, footprint_below, strip_small_holes, topology_preserve_simplify, Bounds, Geom};

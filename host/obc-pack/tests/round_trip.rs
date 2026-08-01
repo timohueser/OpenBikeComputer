@@ -11,8 +11,9 @@
 //! `to_udeg` recovers it exactly) and every segment stays under the 30 000-µdeg
 //! densify threshold, so no midpoints are inserted and point counts are preserved.
 
+use obc_map_scene::{BBox, Kind as ReadKind};
 use obc_pack::{serialize_lods, Feature, Kind as PackKind, LodLayer, Node, Style};
-use obc_reader::{BBox, Kind as ReadKind, MapCache, MapTables, Reader, SliceSource, MAX_FEAT_PTS, MAX_FEAT_RINGS};
+use obc_reader::{MapCache, MapTables, Reader, SliceSource, MAX_FEAT_PTS, MAX_FEAT_RINGS};
 
 /// Global bbox (min_lon, min_lat, max_lon, max_lat) in microdegrees. min corner
 /// is (0,0) so each single-leaf node's anchor base is the origin and decoded

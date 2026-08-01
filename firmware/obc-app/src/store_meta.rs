@@ -1,10 +1,8 @@
 //! Store **identity metadata** — the durable object-id floors and the id-era epoch nonce.
 //!
-//! Split out of the settings module by FAR-09 (#802): these codecs protect the *object store's
-//! identity* invariants (ids never reuse; an id-era reset is phone-detectable), not the rider's
-//! settings. They live here beside each other because the mint rule couples them; the settings
-//! module re-exports every name as a compatibility path (the board addresses them as
-//! `settings::*`).
+//! These codecs protect the *object store's identity* invariants (ids never reuse; an id-era reset
+//! is phone-detectable), not the rider's settings. They live together because the mint rule couples
+//! them.
 //!
 //! Also home to the shared [`crc16`] the persistent sidecar/line codecs guard themselves with
 //! (settings blob, arm marker, synced-ride and route-CRC sidecars included).

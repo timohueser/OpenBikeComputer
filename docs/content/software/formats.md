@@ -1043,15 +1043,15 @@ region lists, and skin previews follow the same rule. Publishing a new root neve
 overwrites bytes an older browser root still names, so an edge cache cannot pair
 a new digest with an old stable-path response. Unchanged cells keep the same key,
 which preserves resumable, upload-skipping planet publishes without copying a
-whole generation into a new directory.
+whole generation into a new directory. The consumer also verifies that every URL
+contains the digest stated beside it before making the request.
 
 Named regions carry their byte totals, cell counts, and partial-cell counts per
 band in that root. The builder can therefore price a region and distinguish a
 normal partial coarse-context cell from an incomplete detail or routing cell
 before fetching the region's satellite. The per-band partial split was added
-compatibly within OBCC v2: current bakeries publish it and its values sum to the
-region's total partial count, while both product hosts still accept an older v2
-root and defer that distinction until its pinned cell lists resolve.
+directly to the current OBCC v2 contract: it is required, includes zeroes, and
+replaces a redundant aggregate partial count.
 
 Planet coverage introduces a second, deliberately byte-free index entry:
 **known-empty** cells. The bakery records compact same-row ranges when a covering
@@ -1255,7 +1255,7 @@ The grid, theorem, seam rules, assembly contract, volume-set manifest bytes, and
 - The canonical POI category/subtype ids and fallback labels (shared by reader + packer): [`obc-formats/src/obcm.rs`](src:firmware/obc-formats/src/obcm.rs); the packer's OSM-tag classifier stays in [`obc-pack/src/poi.rs`](src:host/obc-pack/src/poi.rs)
 - The route-corridor POI query, its `RoutePath` seam and the projection maths: [`obc-reader/src/corridor.rs`](src:firmware/obc-reader/src/corridor.rs)
 - Route reader, index, and decode: [`obc-route/src/reader.rs`](src:firmware/obc-route/src/reader.rs); the GPX `<sym>`/`<type>` → category table: [`obc-route/src/symbol.rs`](src:firmware/obc-route/src/symbol.rs)
-- The recorded-track log + its GPX export: [`obc-route/src/track.rs`](src:firmware/obc-route/src/track.rs); the ride object (v1/v2) codec + the Finish-time converter: [`obc-route/src/ride.rs`](src:firmware/obc-route/src/ride.rs)
+- The recorded-track record layout and codec: [`obc-formats/src/track.rs`](src:firmware/obc-formats/src/track.rs); its streaming GPX export: [`obc-route/src/track.rs`](src:firmware/obc-route/src/track.rs); the ride object (v1/v2) codec: [`obc-formats/src/ride.rs`](src:firmware/obc-formats/src/ride.rs); the Finish-time converter: [`obc-route/src/ride.rs`](src:firmware/obc-route/src/ride.rs)
 - The browser's copy of both converters — a thin wasm shim over the same routines, plus the error vocabulary a dropped file needs: [`obc-web-convert`](src:apps/obc-web-convert)
 - Checked-in bytes both directions are held to (a route and its OBCR, a track log and its GPX export): [`specs/vectors/`](src:specs/vectors)
 - Normative OBCM / OBCR / ride / track constants, primitive codecs, and the shared byte seam: [`obc-formats`](src:firmware/obc-formats)

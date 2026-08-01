@@ -44,12 +44,12 @@ use heapless::Vec;
 use obc_formats::io::ByteSource;
 use obc_formats::obcs::{ManifestError, Role, SetBBox, SetManifest, MAX_SHARDS};
 use obc_map_scene::{
-    Candidate, CandidateReport, DecodeReport, Diagnostics, Feature, FeatureToken, MapScene,
-    ReadError as SceneReadError, SelectedFeatures,
+    BBox, Candidate, CandidateReport, DecodeReport, Diagnostics, Feature, FeatureToken, MapScene,
+    ReadError as SceneReadError, SelectedFeatures, Style,
 };
 
 use crate::reader::{parse_header, parse_lod_table, Lod};
-use crate::{BBox, Error, MapCache, MapTables, Reader, Style};
+use crate::{Error, MapCache, MapTables, Reader};
 
 /// Highest shard index a [`FeatureToken`] can carry — the five bits stolen from the token's
 /// chunk-id high word (see [`tag_token`]). Exactly the §5.2 shard cap.

@@ -255,11 +255,6 @@
 
     <div class="logbook">
         <div class="listcol">
-            {#if view?.migrationWarning}
-                <!-- The backend could not move a pre-split library into app data. Persistent, not
-                     dismissible: until it is fixed those rides read as absent and will not sync. -->
-                <p class="note error small" role="alert">{view.migrationWarning}</p>
-            {/if}
             {#if error}
                 <p class="note error small" role="alert">{error}</p>
             {/if}

@@ -16,6 +16,7 @@ obc-formats = { path = "../../firmware/obc-formats" }
 # workspace build succeeds — the web demo enables the feature and cargo unifies it — so the
 # per-crate command in firmware/README.md silently stopped working.
 obc-reader = { path = "../../firmware/obc-reader", features = ["alloc"] }
+obc-map-scene = { path = "../../firmware/obc-map-scene" }
 # `preserve_order` is load-bearing: the config assigns style IDs 1-based in
 # config.json document order, so the parsed map must keep insertion order.
 serde = { version = "1", features = ["derive"] }

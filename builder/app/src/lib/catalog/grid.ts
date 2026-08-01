@@ -1,28 +1,6 @@
-// The OBCA cell grid, mirrored in TypeScript.
-//
-// This is a *mirror*, not a second design: every constant, every rounding
-// direction and every half-open edge here is normative in `OBCA_Spec.md` §1 and
-// implemented on the producer side in `host/obc-pack/src/grid.rs`. The builder
-// needs the same arithmetic — a box drawn on the map has to resolve to exactly
-// the cell ids the bakery published, and a coverage outline has to be drawn from
-// exactly the squares those ids name — so the two implementations must agree to
-// the microdegree. `grid.test.ts` therefore pins the *same concrete vectors* the
-// Rust tests pin, and that pinning is the only thing standing between us and a
-// silent drift that shows up as a one-cell hole in someone's map.
-//
-// Two conventions differ from the Rust side on purpose:
-//
-//   * Rust's `UBox` is `(min_lon, min_lat, max_lon, max_lat)` because it is
-//     handed straight to the serializer. Nothing here talks to a serializer, so
-//     a box is a named object in `lat, lon` order — the order the catalog, the
-//     OBCM header and every boundary ring use.
-//   * Wire shapes in this app keep their snake_case field names (they are the
-//     document). A box computed here is not a wire shape, so it is camelCase.
-//
-// Everything is integer microdegrees and every value stays far inside the range
-// a double represents exactly: the world box is ±2^28 µdeg and the largest
-// intermediate is 2^29, against a 2^53 exact-integer limit. No coordinate in
-// this module is ever a float.
+// TypeScript mirror of the normative OBCA §1 grid. Shared test vectors pin it to
+// the Rust producer. Boxes use named lat/lon fields; all arithmetic is exact
+// integer microdegrees within JavaScript's safe range.
 
 /** Origin of the fixed global cell grid, µdeg, on **both** axes (§1.1).
  *

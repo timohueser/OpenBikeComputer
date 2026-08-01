@@ -5,7 +5,7 @@
 
 import { api } from "../api/client";
 import { LINKS } from "../constants";
-import type { LoadStyleEditor, Platform } from "./types";
+import type { Platform } from "./types";
 
 async function catalog(): Promise<{ url: string; body: string }> {
     return api.publishedCatalog();
@@ -24,12 +24,15 @@ export const platform: Platform = {
     // Moot: no USB at all here, so there is no transport to name.
     usbViaWebUsb: false,
 
-    presets: () => api.presets(),
-    schema: () => api.schema(),
-    palette: () => api.palette(),
-    schemaPreview: {
-        status: () => api.previewStatus(),
-        pack: (config, signal) => api.packPreview(config, signal),
+    styleEditor: {
+        load: () => import("../../routes/Advanced.svelte"),
+        presets: () => api.presets(),
+        schema: () => api.schema(),
+        palette: () => api.palette(),
+        preview: {
+            status: () => api.previewStatus(),
+            pack: (config, signal) => api.packPreview(config, signal),
+        },
     },
     catalog,
     catalogFetch: (input, init) => api.catalogFetch(input, init),
@@ -38,10 +41,6 @@ export const platform: Platform = {
     device: null,
     rides: null,
 
-    legacyConfig: () => api.legacyConfig(),
-
     // A localhost stand-in for the hosted site keeps the site's chrome.
     siteNav: LINKS,
 };
-
-export const loadStyleEditor: LoadStyleEditor | null = () => import("../../routes/Advanced.svelte");

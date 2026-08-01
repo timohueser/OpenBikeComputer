@@ -1,5 +1,4 @@
-<!-- The current selection streams through the assembler and onto the card one verified file at a
-     time (#1044). Manual .obcm upload remains as compatibility for maps obtained elsewhere. -->
+<!-- Direct set transfer plus standalone .obcm files obtained elsewhere. -->
 <script lang="ts">
     import { onMount } from "svelte";
     import { formatBytes } from "../../lib/format";

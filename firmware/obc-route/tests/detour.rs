@@ -213,7 +213,7 @@ fn route_points(obcr: &[u8]) -> Vec<RoutePoint> {
 
 /// Measured polyline length of a stitched point list (the same metric the emitter uses).
 fn measured_len(pts: &[RoutePoint]) -> f32 {
-    pts.windows(2).map(|w| obc_route::ground_dist_m((w[0].lon, w[0].lat), (w[1].lon, w[1].lat))).sum()
+    pts.windows(2).map(|w| obc_map_scene::ground_dist_m((w[0].lon, w[0].lat), (w[1].lon, w[1].lat))).sum()
 }
 
 // ---------------------------------------------------------------------------- corridor unit
@@ -550,7 +550,7 @@ fn splice_head_length_equals_split_progress() {
 
     let a = orig.position_at(600).unwrap();
     let b = spl.position_at(600).unwrap();
-    let d = obc_route::ground_dist_m((a.lon, a.lat), (b.lon, b.lat));
+    let d = obc_map_scene::ground_dist_m((a.lon, a.lat), (b.lon, b.lat));
     assert!(d < 5.0, "the spliced head must measure split_m at the seam (drift {d} m)");
 }
 

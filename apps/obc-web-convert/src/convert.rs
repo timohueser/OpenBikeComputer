@@ -524,7 +524,7 @@ mod tests {
     #[test]
     fn track_conversion_matches_the_shared_converter_byte_for_byte() {
         let log = [
-            obc_formats::track::encode_record(&obc_route::TrackPoint {
+            obc_formats::track::encode_record(&obc_ports::TrackPoint {
                 lon: 7_842_000,
                 lat: 47_995_000,
                 ele: 300,
@@ -534,7 +534,7 @@ mod tests {
                 cadence: None,
                 power: None,
             }),
-            obc_formats::track::encode_record(&obc_route::TrackPoint {
+            obc_formats::track::encode_record(&obc_ports::TrackPoint {
                 lon: -7_843_500,
                 lat: -47_996_000,
                 ele: 305,
@@ -594,7 +594,7 @@ mod tests {
         // lon ≡ 0x3C (mod 256): 7_842_000 - 0xD0 + 0x3C = 7_841_852, whose LE encoding starts 0x3C.
         let lon: i32 = 7_841_852;
         assert_eq!(lon.to_le_bytes()[0], b'<', "the fixture only tests what it claims to");
-        let log = obc_formats::track::encode_record(&obc_route::TrackPoint {
+        let log = obc_formats::track::encode_record(&obc_ports::TrackPoint {
             lon,
             lat: 47_995_000,
             ele: 300,

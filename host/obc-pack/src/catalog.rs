@@ -387,12 +387,7 @@ pub struct RegionEntry {
     pub bytes_by_band: BTreeMap<String, u64>,
     /// Cells per band.
     pub cell_count: BTreeMap<String, u32>,
-    /// How many of those cells are `partial` (§8). `0` for fully covered curation.
-    pub partial_cell_count: u32,
-    /// The same count per band. This additive v2 field lets a root-only consumer
-    /// distinguish normal coarse-context partials from detail-band warnings. Old
-    /// v2 roots may omit it, so deserialization defaults to an empty map.
-    #[serde(default)]
+    /// Partial cells per band, including zeroes for fully covered bands.
     pub partial_cell_count_by_band: BTreeMap<String, u32>,
     /// Where the region's cell-id list lives (§6).
     pub cells_url: String,
@@ -421,9 +416,7 @@ pub struct CellIndexRef {
     pub cell_log2: u8,
     /// Downloadable OBCM artifact entries in the referenced document.
     pub cell_count: u32,
-    /// Canonical cells represented as verified-empty ranges rather than OBCM
-    /// artifacts. Additive in v2; older roots deserialize this as zero.
-    #[serde(default)]
+    /// Canonical cells represented as verified-empty ranges rather than OBCM artifacts.
     pub known_empty_count: u32,
     /// Size of the referenced document.
     pub bytes: u64,
@@ -442,8 +435,6 @@ pub struct CellIndexDocument {
     /// Sorted by `(i, j)`.
     pub cells: Vec<CellEntry>,
     /// Canonical, non-overlapping row runs that carry no bytes for this band.
-    /// Additive in v2; older satellites deserialize this as an empty list.
-    #[serde(default)]
     pub known_empty: Vec<KnownEmptyRun>,
 }
 
@@ -1798,7 +1789,6 @@ fn read_region(
     let mut cells: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut bytes_by_band = BTreeMap::new();
     let mut cell_count = BTreeMap::new();
-    let mut partial_cell_count = 0u32;
     let mut partial_cell_count_by_band = BTreeMap::new();
     let mut total = 0u64;
     for band in &schema.bands {
@@ -1852,7 +1842,6 @@ fn read_region(
             ));
         }
         total += band_bytes;
-        partial_cell_count += band_partial_cell_count;
         bytes_by_band.insert(band.id.clone(), band_bytes);
         cell_count.insert(band.id.clone(), ids.len() as u32);
         partial_cell_count_by_band.insert(band.id.clone(), band_partial_cell_count);
@@ -1905,7 +1894,6 @@ fn read_region(
         bytes: total,
         bytes_by_band,
         cell_count,
-        partial_cell_count,
         partial_cell_count_by_band,
         cells_url,
         cells_bytes,
@@ -2163,7 +2151,7 @@ fn flatten_descriptions(value: &mut Value) {
 
 const CELL_ID_PATTERN: &str = r"^\d{1,2}/\d{4,}/\d{4,}$";
 const SHA256_PATTERN: &str = "^[0-9a-f]{64}$";
-const URL_PATTERN: &str = "^(https?://|/)";
+const PINNED_URL_PATTERN: &str = r"^(https?://|/).+\.[0-9a-f]{64}\.[^/?#]+$";
 const DATE_PATTERN: &str = "^[0-9]{4}-[0-9]{2}-[0-9]{2}$";
 const TIMESTAMP_PATTERN: &str = "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$";
 const ID_PATTERN: &str = "^[a-z0-9]+(-[a-z0-9]+)*$";
@@ -2264,7 +2252,7 @@ pub fn catalog_schema() -> Value {
     skin["description"]["minLength"] = Value::from(1);
     skin["styles"]["minItems"] = Value::from(1);
     let preview = defs["SkinPreview"]["properties"].as_object_mut().expect("preview properties");
-    preview["url"]["pattern"] = Value::from(URL_PATTERN);
+    preview["url"]["pattern"] = Value::from(PINNED_URL_PATTERN);
     preview["sha256"]["pattern"] = Value::from(SHA256_PATTERN);
     defs["SkinStyle"]["properties"]["feature_type"]["minLength"] = Value::from(1);
     defs["SkinStyle"]["properties"]["priority"]["minimum"] = Value::from(1);
@@ -2274,7 +2262,7 @@ pub fn catalog_schema() -> Value {
     region["id"]["pattern"] = Value::from(REGION_ID_PATTERN);
     region["name"]["minLength"] = Value::from(1);
     region["cells_sha256"]["pattern"] = Value::from(SHA256_PATTERN);
-    region["cells_url"]["pattern"] = Value::from(URL_PATTERN);
+    region["cells_url"]["pattern"] = Value::from(PINNED_URL_PATTERN);
     band_keyed_map(&mut defs["RegionEntry"]["properties"]["bytes_by_band"]);
     band_keyed_map(&mut defs["RegionEntry"]["properties"]["cell_count"]);
     band_keyed_map(&mut defs["RegionEntry"]["properties"]["partial_cell_count_by_band"]);
@@ -2289,7 +2277,7 @@ pub fn catalog_schema() -> Value {
     cell_ref["cell_log2"]["minimum"] = Value::from(MIN_CELL_LOG2);
     cell_ref["cell_log2"]["maximum"] = Value::from(MAX_CELL_LOG2);
     cell_ref["sha256"]["pattern"] = Value::from(SHA256_PATTERN);
-    cell_ref["url"]["pattern"] = Value::from(URL_PATTERN);
+    cell_ref["url"]["pattern"] = Value::from(PINNED_URL_PATTERN);
 
     let empty = defs["KnownEmptyRun"]["properties"].as_object_mut().expect("known-empty properties");
     empty["start"]["pattern"] = Value::from(CELL_ID_PATTERN);
@@ -2301,7 +2289,7 @@ pub fn catalog_schema() -> Value {
     let cell = defs["CellEntry"]["properties"].as_object_mut().expect("cell properties");
     cell["id"]["pattern"] = Value::from(CELL_ID_PATTERN);
     cell["sha256"]["pattern"] = Value::from(SHA256_PATTERN);
-    cell["url"]["pattern"] = Value::from(URL_PATTERN);
+    cell["url"]["pattern"] = Value::from(PINNED_URL_PATTERN);
     cell["built_at"]["pattern"] = Value::from(TIMESTAMP_PATTERN);
     cell["sources"]["minItems"] = Value::from(1);
 

@@ -1362,7 +1362,7 @@ async fn main(_spawner: Spawner) {
                     let mut cracen = embassy_nrf::cracen::Cracen::new_blocking(cracen_p.reborrow());
                     cracen.blocking_next_u32()
                 };
-                match obc_app::settings::store_epoch_mint(card_epoch, marks, fresh) {
+                match obc_app::store_meta::store_epoch_mint(card_epoch, marks, fresh) {
                     Some((new_epoch, new_marks)) => {
                         // ORDERING: card epoch FIRST, id-marks only on its success. The epoch persist
                         // is a FAT write — categorically more tearable than the RRAM line it replaced —

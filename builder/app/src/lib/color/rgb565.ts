@@ -1,6 +1,5 @@
-// RGB565 <-> CSS-hex helpers, ported unchanged from the legacy app.js. The
-// device panel shows only 64 colors (RGB222), so swatches always render the
-// quantized color — the UI never promises a color the glass can't show.
+// The device panel shows only 64 colors (RGB222), so swatches render the
+// quantized color rather than promising a color the glass cannot show.
 
 /** "0xFAA0" | "FAA0" | number -> numeric RGB565 value. */
 export function parseRgb565(value: string | number): number {
