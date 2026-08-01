@@ -66,6 +66,15 @@ pub mod shard;
 pub mod verify;
 
 pub use input::CellInput;
+
+/// One selected cell whose canonical band content is empty, as asserted by the
+/// pinned catalog. It contributes coverage and therefore participates in bbox
+/// and hole checks, but has no OBCM payload to open or graft.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KnownEmptyInput {
+    pub id: CellId,
+    pub band: String,
+}
 pub use nav::NavStats;
 pub use schema::{Band, BandRole, Schema, Skin, StyleRecord};
 pub use shard::{ShardPlan, FILE_CEILING};
@@ -293,6 +302,23 @@ pub fn assemble(
     store: &mut dyn ShardStore,
     clock: &dyn Clock,
 ) -> Result<Summary> {
+    assemble_with_known_empty(cells, Vec::new(), schema, skin, opts, store, clock)
+}
+
+/// Assemble artifacts plus explicit zero-byte coverage from a pinned catalog.
+///
+/// Kept beside [`assemble`] so native callers that only have artifacts retain
+/// the small API, while hosted builders can preserve selected empty ground
+/// without manufacturing an empty OBCM object for every such cell.
+pub fn assemble_with_known_empty(
+    cells: Vec<CellInput<'_>>,
+    known_empty: Vec<KnownEmptyInput>,
+    schema: &Schema,
+    skin: &Skin,
+    opts: &Options,
+    store: &mut dyn ShardStore,
+    clock: &dyn Clock,
+) -> Result<Summary> {
     let t_start = clock.now_us();
     schema.validate().map_err(Error::Input)?;
     shard::check_card_id(opts.card_id)?;
@@ -310,6 +336,27 @@ pub fn assemble(
     }
     input::check_agreement(&open, opts.accept_partial)?;
     let cells = open;
+
+    let mut coverage: Vec<(String, CellId)> = cells.iter().map(|c| (c.band.clone(), c.id)).collect();
+    let mut seen: std::collections::HashSet<(String, CellId)> = coverage.iter().cloned().collect();
+    for empty in known_empty {
+        let band = schema.band(&empty.band).ok_or_else(|| {
+            Error::Input(format!("known-empty cell {}: band {:?} is not in the schema", empty.id, empty.band))
+        })?;
+        if empty.id.log2 != band.cell_log2 {
+            return Err(Error::Input(format!(
+                "known-empty cell {} is not band {:?}'s 2^{} grid",
+                empty.id, empty.band, band.cell_log2
+            )));
+        }
+        if !seen.insert((empty.band.clone(), empty.id)) {
+            return Err(Error::Input(format!(
+                "cell {} of band {:?} is listed more than once across artifacts and known-empty coverage",
+                empty.id, empty.band
+            )));
+        }
+        coverage.push((empty.band, empty.id));
+    }
     // The skin may only restyle ids the cells' chunk bytes actually reference (§4.7/§6.2): the
     // schema owns the assignment, the skin owns the values, and a mismatch here would ship a map
     // with an invisible layer or a style nothing draws.
@@ -329,10 +376,10 @@ pub fn assemble(
     let chunk_size = pick_chunk_size(schema, &cells)?;
 
     // --- 2. The assembly bbox: the minimal grid-aligned power-of-two box (§4.2). ---
-    let ids: Vec<CellId> = cells.iter().map(|c| c.id).collect();
+    let ids: Vec<CellId> = coverage.iter().map(|(_, id)| *id).collect();
     let assembly = grid::assembly_box(&ids, schema.s_max_log2()).map_err(Error::Input)?;
     if !opts.accept_holes {
-        check_no_holes(schema, &cells)?;
+        check_no_holes(schema, &coverage)?;
     }
 
     // --- 3. The two rebuilds. POIs are cheap; the nav graph is the assembler's real work. ---
@@ -362,7 +409,7 @@ pub fn assemble(
 
     // --- 5. Write, verify, then the manifest — in that order, always (§5.4). ---
     let mut stats = Stats {
-        cells: cells.len(),
+        cells: coverage.len(),
         open_us: t_open - t_start,
         poi_us: t_poi - t_open,
         nav_us: t_nav - t_poi,
@@ -519,13 +566,13 @@ fn pick_chunk_size(schema: &Schema, cells: &[Cell<'_>]) -> Result<usize> {
 /// band" is a tie that `max_by_key` would resolve by table position — which decides *which* of two
 /// under-covered bands gets reported, and can let the other one's hole through. Taking their union
 /// removes the tie-break and checks strictly more.
-fn check_no_holes(schema: &Schema, cells: &[Cell<'_>]) -> Result<()> {
+fn check_no_holes(schema: &Schema, coverage: &[(String, CellId)]) -> Result<()> {
     let Some(finest_log2) = schema.bands.iter().map(|b| b.cell_log2).min() else { return Ok(()) };
     let footprint: Vec<CellId> = {
-        let mut ids: Vec<CellId> = cells
+        let mut ids: Vec<CellId> = coverage
             .iter()
-            .filter(|c| schema.band(&c.band).is_some_and(|b| b.cell_log2 == finest_log2))
-            .map(|c| c.id)
+            .filter(|(band, _)| schema.band(band).is_some_and(|b| b.cell_log2 == finest_log2))
+            .map(|(_, id)| *id)
             .collect();
         ids.sort_unstable();
         ids.dedup();
@@ -533,7 +580,7 @@ fn check_no_holes(schema: &Schema, cells: &[Cell<'_>]) -> Result<()> {
     };
     for band in &schema.bands {
         let have: std::collections::HashSet<(i64, i64)> =
-            cells.iter().filter(|c| c.band == band.id).map(|c| (c.id.i, c.id.j)).collect();
+            coverage.iter().filter(|(band_id, _)| *band_id == band.id).map(|(_, id)| (id.i, id.j)).collect();
         for f in &footprint {
             let (min_lon, min_lat, _, _) = f.square();
             let covering = CellId::containing(band.cell_log2, min_lat, min_lon);

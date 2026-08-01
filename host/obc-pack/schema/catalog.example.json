@@ -231,7 +231,7 @@
       },
       "cell_count": {
         "coarse": 1,
-        "fine": 2,
+        "fine": 3,
         "mid": 1,
         "network": 2
       },
@@ -243,8 +243,8 @@
         "network": 1
       },
       "cells_url": "https://maps.example.org/catalog/regions/europe/switzerland/cells.json",
-      "cells_bytes": 320,
-      "cells_sha256": "24e17cd54a60ad139d30541d11a37edc8964814fd20d499cda21e7d29527c563"
+      "cells_bytes": 342,
+      "cells_sha256": "8a29713d62450f8655ede3e90f734707375f86df7aab4bdecfd1ff5c77efad27"
     },
     {
       "id": "europe/switzerland/basel-stadt",
@@ -307,32 +307,36 @@
       "band": "coarse",
       "cell_log2": 20,
       "cell_count": 1,
-      "bytes": 504,
-      "sha256": "007f38ea39e25ad702853ec494325c84569204b466476aef131883cec47cac54",
+      "known_empty_count": 0,
+      "bytes": 525,
+      "sha256": "4a4d8e047e24caa3c335ed77f6993f84b8178a90238c2504b8a9230ead68de49",
       "url": "https://maps.example.org/catalog/cells/coarse/index.json"
     },
     {
       "band": "mid",
       "cell_log2": 19,
       "cell_count": 1,
-      "bytes": 498,
-      "sha256": "cf4ada77aac32232b7f4f2d48585e6bd09049f79953fd6e870507a012289c13a",
+      "known_empty_count": 0,
+      "bytes": 519,
+      "sha256": "d22e824630471e8a9528ffda4e8dd8ca0168c1ee475155ea740940a314ee766e",
       "url": "https://maps.example.org/catalog/cells/mid/index.json"
     },
     {
       "band": "fine",
       "cell_log2": 18,
       "cell_count": 2,
-      "bytes": 1030,
-      "sha256": "10b44696690eede016bc49baa31022d66501e7a076b9a9fc97e88b2114190af7",
+      "known_empty_count": 1,
+      "bytes": 1284,
+      "sha256": "81d657fb871f9d2a8db964ae3b5f6715b617882dc7f9446b295ae80f5a46ec97",
       "url": "https://maps.example.org/catalog/cells/fine/index.json"
     },
     {
       "band": "network",
       "cell_log2": 18,
       "cell_count": 2,
-      "bytes": 921,
-      "sha256": "75d91d01679d6744e7a11cd4e9e732e9221ee253e416e75265ec242367d652aa",
+      "known_empty_count": 0,
+      "bytes": 942,
+      "sha256": "11f1ff0421fe06987a77b7dc2a5878aa95b287aa4383baffede1310f2e6b970a",
       "url": "https://maps.example.org/catalog/cells/network/index.json"
     }
   ]

@@ -44,6 +44,7 @@ describe("parseRoot", () => {
             network: 1,
         });
         expect(catalog.cell_index.map((r) => r.band)).toEqual(["coarse", "mid", "fine", "network"]);
+        expect(catalog.cell_index.find((r) => r.band === "fine")?.known_empty_count).toBe(1);
     });
 
     it("names the one band whose bytes become the core file", () => {
@@ -175,8 +176,15 @@ describe("parseRoot", () => {
             ["a cell_log2 that disagrees with its band", (d) => (d.cell_index[0].cell_log2 = 18)],
             ["entries out of descending cell_log2 order", (d) => d.cell_index.reverse()],
             ["a truncated sha256", (d) => (d.cell_index[0].sha256 = "abc")],
+            ["a negative known-empty count", (d) => (d.cell_index[0].known_empty_count = -1)],
+            ["a known-empty count larger than uint32", (d) => (d.cell_index[0].known_empty_count = 2 ** 32)],
         ])("rejects %s", (_what, edit) => {
             expect(() => parseRoot(mutated(edit))).toThrow(CatalogFormatError);
+        });
+
+        it("accepts an older v2 root without the additive known-empty count", () => {
+            const catalog = parseRoot(mutated((d) => delete d.cell_index[2].known_empty_count));
+            expect(catalog.cell_index[2].known_empty_count).toBe(0);
         });
     });
 

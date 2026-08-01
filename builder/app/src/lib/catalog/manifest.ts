@@ -149,7 +149,11 @@ export interface RegionEntry {
 export interface CellIndexRef {
     band: string;
     cell_log2: number;
+    /** Downloadable OBCM artifacts in the satellite. */
     cell_count: number;
+    /** Canonical zero-byte cells represented by compact ranges. Additive-v2;
+     *  zero for an older root that predates the field. */
+    known_empty_count: number;
     bytes: number;
     sha256: string;
     url: string;
@@ -175,6 +179,7 @@ const SECTIONS: readonly BandSection[] = ["nav", "poi"];
 
 const U8 = 255;
 const U16 = 65_535;
+const U32 = 4_294_967_295;
 
 function parseGrid(v: unknown, where: string): GridConstants {
     const o = obj(v, where);
@@ -533,7 +538,10 @@ function parseCellIndexRefs(v: unknown, where: string, bands: BandEntry[]): Cell
         return {
             band,
             cell_log2: cellLog2,
-            cell_count: int(o, "cell_count", at, 0),
+            cell_count: int(o, "cell_count", at, 0, U32),
+            known_empty_count: Object.hasOwn(o, "known_empty_count")
+                ? int(o, "known_empty_count", at, 0, U32)
+                : 0,
             bytes: int(o, "bytes", at, 0),
             sha256: str(o, "sha256", at, SHA256),
             url: urlStr(o, "url", at),

@@ -36,7 +36,8 @@ pub mod driver;
 pub mod estimate;
 
 pub use driver::{
-    assemble_cells, AssembleFailure, BridgeOptions, CellBytes, ErrorCode, Hooks, NoHooks, Outcome, OutputFile, Phase,
+    assemble_cells, assemble_cells_with_known_empty, AssembleFailure, BridgeOptions, CellBytes, ErrorCode, Hooks,
+    KnownEmptyCell, NoHooks, Outcome, OutputFile, Phase,
 };
 pub use estimate::{
     estimate_memory, estimate_memory_with_budget, MemoryEstimate, OUTPUT_PER_CELL_BYTE, PEAK_PER_NAV_BYTE,
@@ -48,7 +49,8 @@ mod web {
     use wasm_bindgen::prelude::*;
 
     use crate::driver::{
-        assemble_cells, AssembleFailure, BridgeOptions, CellBytes, ErrorCode, Hooks, OutputFile, Phase,
+        assemble_cells_with_known_empty, AssembleFailure, BridgeOptions, CellBytes, ErrorCode, Hooks, KnownEmptyCell,
+        OutputFile, Phase,
     };
 
     /// Module start (wasm-bindgen runs this during instantiation): surface Rust panics in the console
@@ -119,6 +121,7 @@ mod web {
         skin_json: String,
         options: BridgeOptions,
         cells: Vec<CellBytes>,
+        known_empty: Vec<KnownEmptyCell>,
         files: Vec<OutputFile>,
         /// Which files have already been moved out to JS. An emptied buffer is indistinguishable
         /// from a legitimately empty one, and the difference decides between handing back an
@@ -145,6 +148,7 @@ mod web {
                 skin_json,
                 options,
                 cells: Vec::new(),
+                known_empty: Vec::new(),
                 files: Vec::new(),
                 taken: Vec::new(),
                 warnings: Vec::new(),
@@ -162,10 +166,17 @@ mod web {
             self.cells.push(CellBytes { id, band, partial, bytes });
         }
 
-        /// How many cells are waiting.
+        /// Add one selected, canonical zero-byte cell. It affects the output
+        /// bbox and coverage checks but has no buffer to transfer or graft.
+        #[wasm_bindgen(js_name = addKnownEmpty)]
+        pub fn add_known_empty(&mut self, id: String, band: String) {
+            self.known_empty.push(KnownEmptyCell { id, band });
+        }
+
+        /// How many selected cells are waiting, including zero-byte coverage.
         #[wasm_bindgen(getter, js_name = cellCount)]
         pub fn cell_count(&self) -> usize {
-            self.cells.len()
+            self.cells.len() + self.known_empty.len()
         }
 
         /// Assemble, and return the summary as JSON — the same document `obcm-assemble --json`
@@ -186,8 +197,16 @@ mod web {
         pub fn run(&mut self, on_progress: Option<js_sys::Function>) -> Result<String, JsValue> {
             let mut hooks = JsHooks { on_progress, last_us: 0, warned: false };
             let cells = core::mem::take(&mut self.cells);
-            let out =
-                assemble_cells(cells, &self.schema_json, &self.skin_json, &self.options, &mut hooks).map_err(to_js)?;
+            let known_empty = core::mem::take(&mut self.known_empty);
+            let out = assemble_cells_with_known_empty(
+                cells,
+                known_empty,
+                &self.schema_json,
+                &self.skin_json,
+                &self.options,
+                &mut hooks,
+            )
+            .map_err(to_js)?;
             self.taken = vec![false; out.files.len()];
             self.files = out.files;
             self.warnings = out.warnings;
@@ -273,6 +292,7 @@ mod web {
         #[wasm_bindgen(js_name = releaseCells)]
         pub fn release_cells(&mut self) {
             self.cells = Vec::new();
+            self.known_empty = Vec::new();
         }
 
         fn file(&self, index: usize) -> Result<&OutputFile, JsValue> {
