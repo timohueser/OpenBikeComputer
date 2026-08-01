@@ -8,11 +8,10 @@
 
 use embedded_graphics::pixelcolor::Rgb888;
 use obc_app::screen::{needle_region, Screen};
-use obc_app::{
-    App, AppState, Fix, Gesture, HostCommand, HostMailbox, IdleReturn, InputClock, Mode, NavRequest, RouteSummary,
-    Settings,
-};
-use obc_reader::{rgb565_to_rgb888, BBox, MapCache, MapTables, Reader, SliceSource};
+use obc_app::{App, AppState, Gesture, HostCommand, HostMailbox, IdleReturn, Mode, NavRequest, RouteSummary, Settings};
+use obc_map_scene::BBox;
+use obc_ports::{Fix, InputClock};
+use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader, SliceSource};
 use obc_route::NavError;
 use obcm_testkit::{build_poi_map, PoiSpec};
 

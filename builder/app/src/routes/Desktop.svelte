@@ -14,8 +14,8 @@
 <article>
     <h1>The desktop app</h1>
     <p class="lead muted">
-        The same builder, running on your own machine — with the parts that need real CPU, a real
-        folder, or a USB driver a browser doesn't have.
+        The same cell-catalog builder and corridor tools as the website, plus the parts that need a
+        real folder or a native USB driver. Both builders assemble the same downloaded cells.
     </p>
 
     <section class="card">

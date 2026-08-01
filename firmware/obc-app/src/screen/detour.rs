@@ -17,12 +17,12 @@
 //! reads the host-fed decimated detour polyline through [`Render::detour_preview`].
 
 use embedded_graphics::{draw_target::DrawTarget, prelude::Point};
+use obc_map_scene::{cos_lat, BBox};
 use obc_render::{
     rect,
     text::{Font, TextAlign},
     Canvas, Surface, Viewport,
 };
-use obc_route::BBox;
 
 use crate::activity::{Activity, DetourRequest};
 use crate::host::DetourPreview;
@@ -31,7 +31,7 @@ use crate::Msg;
 
 use super::map::{draw_map_scene, DetourMapOverlay};
 use super::nav_route::NavPlanningScreen;
-use super::{Ctx, Prepare, Render, Screen, Transition};
+use super::{Ctx, Prepare, Render, RenderFrame, Screen, Transition};
 
 /// One Up/Down step changes the requested along-route rejoin distance by 100 m. A detour is for
 /// nearby closures and trail problems, so finer control matters more than spanning many
@@ -231,10 +231,11 @@ impl DetourScreen {
         self.prepared = Some(PreparedDetour { target_m, candidate: (candidate.lon, candidate.lat), bounds });
     }
 
-    pub fn draw<D, F>(&self, cv: &mut Canvas<D, F>, rx: &mut Render)
+    pub fn draw<D, F, S>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, S>)
     where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
+        S: obc_map_scene::MapScene,
     {
         let selected = self.prepared.filter(|_| self.available(rx.activity, rx.state.has_nav_graph));
         let vp = selected.map_or_else(
@@ -404,10 +405,11 @@ impl DetourPreviewScreen {
             Some(PreparedDetour { target_m: self.target_m, candidate: (candidate.lon, candidate.lat), bounds });
     }
 
-    pub fn draw<D, F>(&self, cv: &mut Canvas<D, F>, rx: &mut Render)
+    pub fn draw<D, F, S>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, S>)
     where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
+        S: obc_map_scene::MapScene,
     {
         let vp = self
             .prepared
@@ -464,7 +466,7 @@ fn extend_bounds(b: &mut BBox, lon: i32, lat: i32) {
 fn fit_viewport(w: i32, h: i32, b: BBox) -> Viewport {
     let cam_lon = b.min_lon + (b.max_lon - b.min_lon) / 2;
     let centre_lat = b.min_lat + (b.max_lat - b.min_lat) / 2;
-    let aspect = obc_route::cos_lat(centre_lat).abs().max(0.01);
+    let aspect = cos_lat(centre_lat).abs().max(0.01);
     let span_x = (b.max_lon - b.min_lon).unsigned_abs() as f32 * aspect;
     let span_y = (b.max_lat - b.min_lat).unsigned_abs() as f32;
     let usable_w = (w as f32 - 2.0 * FIT_MARGIN).max(1.0);

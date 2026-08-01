@@ -11,14 +11,14 @@ let cached: Promise<Palette> | null = null;
 /**
  * The device's 64-color gamut for the picker grid (fetched once, shared).
  *
- * `platform.palette` is non-null exactly when `caps.styleEditor`, and the color
+ * The palette is present exactly on the maintainer editor host, and the color
  * control that calls this sits inside the editor's code-split chunk — so on
  * every host that can reach this module the call is there. The null arm is
  * unreachable rather than a real fallback path, and takes the OS picker instead
  * of throwing because a missing swatch grid is not worth failing a render over.
  */
 export function getPalette(): Promise<Palette> {
-    const fetchPalette = platform.palette;
+    const fetchPalette = platform.styleEditor?.palette;
     cached ??= fetchPalette
         ? fetchPalette()
               .then((p) => ({ columns: p.columns > 0 ? p.columns : 8, colors: p.colors ?? [] }))

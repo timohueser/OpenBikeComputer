@@ -8,12 +8,11 @@ associated `Value` keeps the foundation independent of the app's settings
 model. It owns no drivers, buses, executor primitives, global mailboxes,
 UI/render policy, or allocation.
 
-`obc-app` and `obc-route` retain compatibility re-exports for existing callers.
-Platform adapters and the board, simulator, shared host, replay, and USB
-implementations now import their semantic contracts directly from this crate
-and declare direct `obc-ports` dependencies. In particular, `obc-platform`
-depends on `obc-ports` instead of `obc-app`, and `obc-replay` no longer imports
-the application/UI layer.
+The app, route algorithms, platform adapters, board, simulator, shared host,
+replay, and USB implementations import their semantic contracts directly from
+this crate and declare direct `obc-ports` dependencies. Foundation values have
+one owning path; `obc-app` exposes app policy and `obc-route` exposes route
+algorithms rather than forwarding port types.
 
 `DateTime` exposes semantic Gregorian arithmetic (`add_minutes`, signed UTC
 offsets, Unix conversion) without an app year range. OpenBikeComputer's

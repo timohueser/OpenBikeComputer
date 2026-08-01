@@ -16,8 +16,8 @@ pub type Version = heapless::String<32>;
 
 /// Copy `s` into a [`Version`], truncating to the buffer's cap on a char boundary. `pub` so a
 /// fully-typed host constructing [`HostEvent::UpdateConfirmed`](crate::HostEvent::UpdateConfirmed) /
-/// [`UpdateFailed`](crate::HostEvent::UpdateFailed) from its `&str` boot-outcome versions clamps
-/// them the same way the retired `notify_update_*` adapters did (#812).
+/// [`UpdateFailed`](crate::HostEvent::UpdateFailed) from its `&str` boot-outcome versions applies
+/// the same bound.
 pub fn clamp(s: &str) -> Version {
     let mut v = Version::new();
     let mut end = s.len().min(v.capacity());

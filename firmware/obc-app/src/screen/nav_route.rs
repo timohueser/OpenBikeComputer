@@ -116,7 +116,7 @@ impl NavConfirmScreen {
         // committing to a plan. Current fix → POI; the browser required a fix to get here, so it's
         // essentially always present (a fix-less confirm just omits the line).
         if let Some(fix) = rx.state.user_fix {
-            let d_m = obc_route::ground_dist_m((fix.lon, fix.lat), self.to) as u32;
+            let d_m = obc_map_scene::ground_dist_m((fix.lon, fix.lat), self.to) as u32;
             let mut away: heapless::String<20> = heapless::String::new();
             write_away(&mut away, d_m, rx.settings.units, rx.t(Msg::NavRouteAway));
             cv.text(&away, Point::new(w / 2, name_y + 24), Font::Label, TextAlign::Center, SUBTEXT);

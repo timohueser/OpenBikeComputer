@@ -45,6 +45,8 @@ _obc_gpx() {
   find "$root/apps/obc-sim/assets" "$root/tracks" -maxdepth 1 -name '*.gpx' 2>/dev/null
 }
 
+# The shipped packer configs. `-maxdepth 1` is doing real work: it keeps
+# builder/presets/skins/ out, and a skin is not something `obc pack` can use.
 _obc_presets() {
   local root; root="$(_obc_root)" || return
   find "$root/builder/presets" -maxdepth 1 -name '*.json' 2>/dev/null

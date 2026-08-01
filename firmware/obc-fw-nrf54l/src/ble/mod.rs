@@ -42,11 +42,6 @@ mod lifecycle;
 mod sensors;
 mod state;
 
-// The ride loop publishes its stack high-water mark here (#277/A9) so the diagnostics blob can post it
-// over the link; the map plane owns the stackmeter. The cell itself is transport-free (`crate::link`)
-// — re-exported under the historical `ble::` path so the ride loop's call sites are unchanged.
-pub use crate::link::publish_stack_high_water;
-
 // The app-facing link snapshot (epic #447): the ride loop feeds it into `App::set_ble_status` each
 // pass. The only BLE state that crosses into the app seam, already distilled to `obc_app` vocabulary.
 pub use state::app_ble_status;
@@ -60,28 +55,19 @@ pub use state::wait_status_change;
 // and rings the Bluetooth screen's Forget-phone request; the lifecycle loop below honours both.
 pub use state::{request_forget_bond, set_radio_enabled};
 
-// The ride-recording mirror (S6, #621): the ride loop pushes `is_tracking()` each pass; the
-// `installFw` command handler reads it as the `busy` gate's "a ride is recording" input. Also
-// transport-free — re-exported here so the ride loop's call site is unchanged.
-pub use crate::link::set_recording;
-
 // The radio link's lifetime counters, for the §7.5 diagnostics blob any transport can serve.
 pub(crate) use state::link_counters;
 
 // The BLE sensor manager's app-facing seam (SE6, epic #707): the per-quantity status snapshot the
 // ride loop feeds the Sensors screen, and the scan/save/forget one-shot requests flowing back — the
 // central-role analogue of the phone link's `app_ble_status` + `request_forget_bond`. SE7 (the
-// Sensors screen + saved-sensor persistence, #714) consumes these; SE6 provides the plumbing + a
-// hardcoded-address seed hook so the on-glass HR bring-up runs before SE7 exists — so they are
-// re-exported but not yet referenced.
-#[allow(unused_imports)]
+// Sensors screen + saved-sensor persistence, #714) consumes these.
 pub use sensors::{
     cancel_scan, request_forget_sensor, request_save_sensor, request_scan, sensor_scan_hits, sensor_slot_status,
-    SensorScanHit, SensorSlotState, SensorSlotStatus,
+    SensorSlotState,
 };
 
 use core::mem::MaybeUninit;
-use core::sync::atomic::Ordering;
 
 use defmt::{info, unwrap, warn};
 use embassy_executor::Spawner;
@@ -597,11 +583,17 @@ pub async fn run(
                     // The drop may have cancelled the data plane mid-transfer (at an await): discard any
                     // in-flight upload + release the store's open handles, clear the one-transfer gate, and
                     // drain any latched arm/abort so the next connection starts clean (uploads restart).
+                    //
+                    // Everything here is scoped to **this** wire, and none of it is incidental
+                    // (issue #1039): the cable can be uploading while the phone drops off. The gate
+                    // is released only if the radio was the one holding it, `TRANSFER_ARM` /
+                    // `TRANSFER_ABORT` are this plane's own signals (USB has its own pair), and
+                    // `link_reset` closes the temp handle only if the temp is what is open.
                     {
                         let mut guard = shared.lock().await;
                         store.borrow_mut().link_reset(&mut guard);
                     }
-                    TRANSFER_ACTIVE.store(false, Ordering::Relaxed);
+                    TRANSFER_ACTIVE.release(crate::link::gate_owner(crate::link::Transport::Ble));
                     TRANSFER_ARM.reset();
                     TRANSFER_ABORT.reset();
                     publish(|s| {

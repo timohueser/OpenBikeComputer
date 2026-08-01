@@ -5,9 +5,8 @@
 //! reader's expanding-ring scan returns exactly the brute-force nearest-16 — same set, same order,
 //! same distances. The last test runs the query against the committed real Monaco map.
 
-use obc_reader::{
-    cos_lat, ground_dist_m_cl, MapCache, MapTables, Poi, PoiCategory, Reader, SliceSource, MAX_POI_RESULTS,
-};
+use obc_map_scene::{cos_lat, ground_dist_m_cl};
+use obc_reader::{MapCache, MapTables, Poi, PoiCategory, Reader, SliceSource, MAX_POI_RESULTS};
 use obcm_testkit::{build_poi_map, PoiSpec};
 
 /// Ground distance (m) from `pos` (lon, lat µdeg) to a POI, the same equirectangular metric the

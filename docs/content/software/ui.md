@@ -1271,6 +1271,6 @@ The UI is styled like a weatherproof field map — a wood frame, a parchment pan
 - The gesture recognizer: [`obc-app/src/input.rs`](src:firmware/obc-app/src/input.rs)
 - The input + overlay plane: [`obc-app/src/input_plane.rs`](src:firmware/obc-app/src/input_plane.rs)
 - The app driver (frame loop, render-on-demand, compositing): [`obc-app/src/app.rs`](src:firmware/obc-app/src/app.rs)
-- The injected-hardware traits, settings persistence seam, and input types: [`obc-ports/src/lib.rs`](src:firmware/obc-ports/src/lib.rs); platform adapters: [`obc-platform/src/`](src:firmware/obc-platform/src); compatibility-only app re-exports: [`obc-app/src/hal.rs`](src:firmware/obc-app/src/hal.rs)
+- The injected-hardware traits, settings persistence seam, and input types: [`obc-ports/src/lib.rs`](src:firmware/obc-ports/src/lib.rs); platform adapters: [`obc-platform/src/`](src:firmware/obc-platform/src)
 
 For how the two planes keep input responsive under a long render, and where the HAL fits, see [system architecture](../architecture/). For how a screen's `draw` actually puts pixels on the panel, see the [rendering pipeline](../rendering/).

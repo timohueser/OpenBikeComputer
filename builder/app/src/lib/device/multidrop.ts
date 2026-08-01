@@ -5,7 +5,7 @@
  * only what a test can hold still — the ordering and the suggested trip name.
  */
 
-import { truncateUtf8 } from "./route";
+import { truncateUtf8 } from "../format";
 import { TRIP_NAME_MAX } from "./manage";
 
 /**
