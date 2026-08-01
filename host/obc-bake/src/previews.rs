@@ -341,7 +341,14 @@ mod tests {
     #[test]
     fn shipped_skins_render_distinct_deterministic_square_pngs() {
         let schema = shipped_schema();
-        let default = render(&schema, &shipped_skin("default")).expect("default preview renders");
+        let default_skin = shipped_skin("default");
+        let residential_color = default_skin
+            .styles
+            .iter()
+            .find(|style| style.feature_type.as_deref() == Some("landuse.residential"))
+            .expect("default skin carries residential landuse")
+            .color;
+        let default = render(&schema, &default_skin).expect("default preview renders");
         let dusk = render(&schema, &shipped_skin("dusk")).expect("dusk preview renders");
 
         assert_eq!(&default[..8], b"\x89PNG\r\n\x1a\n");
@@ -355,7 +362,7 @@ mod tests {
         // deliberately broad coverage assertion rather than a PNG hash: it
         // catches an ingest crop dropping the town's multipolygon while allowing
         // unrelated renderer or compression changes.
-        let (r, g, b) = rgb565_to_rgb888(0xAD55);
+        let (r, g, b) = rgb565_to_rgb888(residential_color);
         let residential = [r, g, b];
         let lower_residential =
             default_image.enumerate_pixels().filter(|(_, y, pixel)| *y >= 140 && pixel.0 == residential).count();
