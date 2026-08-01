@@ -423,6 +423,38 @@ fn an_unchanged_rerun_cuts_nothing_and_a_force_cuts_everything() {
     }
 }
 
+/// A curated bake may target the same tree after a planet bake. Its real artifacts
+/// replace any earlier proof that those cells were empty; leaving both claims in the
+/// store would make the catalog deliberately unpublishable.
+#[test]
+fn a_curated_bake_clears_overlapping_known_empty_claims() {
+    let f = fixture_dirs("curated-replaces-empty");
+    let cutter = FixtureCutter::new();
+    let first = f.bake(&cutter, &[], SNAPSHOT, false);
+    assert!(first.ok(), "{}", first.render());
+
+    let state = serde_json::json!({
+        "schema_revision": 1,
+        "band": "coarse",
+        "known_empty": [{
+            "start": WEST_CORE,
+            "end": WEST_CORE,
+            "built_at": GENERATED_AT,
+            "sources": [{"extract_id": "planet", "snapshot": SNAPSHOT}]
+        }]
+    });
+    let state_path = f.tree.join("cells/coarse/.known-empty.json");
+    std::fs::write(&state_path, serde_json::to_string_pretty(&state).unwrap()).unwrap();
+
+    let second = f.bake(&cutter, &[], SNAPSHOT, false);
+    assert!(second.ok(), "{}", second.render());
+    assert_eq!(cutter.calls.load(Ordering::SeqCst), 3, "current artifacts do not need another cut");
+    let rewritten: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).expect("known-empty state parses");
+    assert_eq!(rewritten["known_empty"], serde_json::json!([]), "the artifact is now the only coverage claim");
+    assert!(f.catalog().root.cell_index.iter().all(|band| band.known_empty_count == 0));
+}
+
 /// A re-dated but byte-identical extract publishes the new date and re-cuts nothing —
 /// the bakery's two-key design, at cell granularity.
 #[test]
@@ -595,6 +627,7 @@ fn a_schema_id_that_disagrees_with_the_document_is_refused_not_overwritten() {
     .run(&Progress::silent())
     .expect_err("the run must not publish this schema under another name");
     assert!(err.contains("testschema") && err.contains("typoschema"), "the error names both: {err}");
+    assert_eq!(cutter.calls.load(Ordering::SeqCst), 0, "schema identity is a preflight check");
     assert!(!f.tree.join(obc_bake::presets::SCHEMA_DOC).exists(), "and no document was written claiming the wrong id");
 }
 
