@@ -95,6 +95,7 @@ use obc_pack::progress::Progress;
 use serde::{Deserialize, Serialize};
 
 use crate::coverage::Coverage;
+use crate::known_empty::KnownEmptyIndex;
 use crate::presets::StyleDoc;
 use crate::regions::Region;
 use crate::source::{Extract, ExtractSource};
@@ -461,6 +462,7 @@ impl CellBakery<'_> {
             return Err("--schema-revision starts at 1 — a cell store has no revision zero".into());
         }
         self.check_skins()?;
+        check_schema_id(self.schema, &self.opts)?;
         progress.log(format!("cell bakery: {} region(s), schema `{}`", self.regions.len(), self.opts.schema_id));
         progress.log(format!("  source:  {}", self.source.describe()));
         progress.log(format!("  tree:    {}", self.opts.out.display()));
@@ -474,13 +476,14 @@ impl CellBakery<'_> {
 
         let plans = build_plans(&resolved, &self.opts.bands);
         progress.log(format!("  {} cut plan(s) over {} resolved region(s)", plans.len(), resolved.len()));
+        let mut known_empty = KnownEmptyIndex::load(&self.opts.out, &self.opts.bands, self.opts.schema_revision)?;
 
         let mut outcomes = Vec::new();
         for plan in &plans {
             let started = Instant::now();
             let names: Vec<String> = plan.sources.iter().map(|&k| resolved[k].region.id.clone()).collect();
             progress.log(format!("\n--- {} ({} cells) ---", names.join(" + "), plan.cells.len()));
-            let mut outcome = match self.run_plan(plan, &resolved, progress) {
+            let mut outcome = match self.run_plan(plan, &resolved, &mut known_empty, progress) {
                 Ok(cells) => {
                     PlanOutcome { sources: names, cells_planned: plan.cells.len(), cells, seconds: 0.0, error: None }
                 }
@@ -606,7 +609,13 @@ impl CellBakery<'_> {
     }
 
     /// Cut (or skip) one plan and install what it produced.
-    fn run_plan(&self, plan: &Plan, resolved: &[Resolved], progress: &Progress) -> Result<Vec<CellOutcome>, String> {
+    fn run_plan(
+        &self,
+        plan: &Plan,
+        resolved: &[Resolved],
+        known_empty: &mut KnownEmptyIndex,
+        progress: &Progress,
+    ) -> Result<Vec<CellOutcome>, String> {
         let sources: Vec<&Resolved> = plan.sources.iter().map(|&k| &resolved[k]).collect();
         let coverage = Coverage::union(&sources.iter().map(|r| &r.coverage).collect::<Vec<_>>());
         // The edge set of the plan's combined coverage, once per cell size rather than
@@ -645,6 +654,7 @@ impl CellBakery<'_> {
         stale.sort_unstable();
         stale.dedup();
         if stale.is_empty() {
+            self.clear_known_empty(plan, known_empty)?;
             progress.log("    every cell current — not ingesting");
             return Ok(done);
         }
@@ -670,10 +680,32 @@ impl CellBakery<'_> {
             chunk_size: None,
             no_land: false,
             bbox: crop.as_deref().map(Bbox::parse).transpose()?,
+            source_extent: None,
         };
         let summary = self.cutter.cut(&pbfs, &self.schema.config, &tmp, &opts, progress).inspect_err(|_| {
             let _ = std::fs::remove_dir_all(&tmp);
         })?;
+        let expected: BTreeSet<(String, CellId)> = self
+            .opts
+            .bands
+            .bands
+            .iter()
+            .flat_map(|band| {
+                stale.iter().filter(move |cell| cell.log2 == band.cell_log2).map(|cell| (band.id.clone(), *cell))
+            })
+            .collect();
+        let produced: BTreeSet<(String, CellId)> =
+            summary.cells.iter().map(|artifact| (artifact.band.clone(), artifact.id)).collect();
+        if produced != expected || summary.cells.len() != expected.len() {
+            let _ = std::fs::remove_dir_all(&tmp);
+            return Err(format!(
+                "cutter returned {} distinct cell-band output(s) for {} expected ({} raw); refusing a tree with \
+                 silent holes or duplicates",
+                produced.len(),
+                expected.len(),
+                summary.cells.len()
+            ));
+        }
 
         let mut installed = Vec::new();
         for artifact in &summary.cells {
@@ -682,7 +714,20 @@ impl CellBakery<'_> {
         }
         let _ = std::fs::remove_dir_all(&tmp);
         done.extend(installed);
+        self.clear_known_empty(plan, known_empty)?;
         Ok(done)
+    }
+
+    fn clear_known_empty(&self, plan: &Plan, known_empty: &mut KnownEmptyIndex) -> Result<(), String> {
+        let mut by_band: BTreeMap<String, BTreeSet<CellId>> = BTreeMap::new();
+        for band in &self.opts.bands.bands {
+            by_band.insert(
+                band.id.clone(),
+                plan.cells.iter().filter(|cell| cell.log2 == band.cell_log2).copied().collect(),
+            );
+        }
+        known_empty.clear_cells(&by_band)?;
+        known_empty.write_all(&self.opts.out, self.opts.schema_revision)
     }
 
     /// Everything that can change a cell's **bytes**, hashed into one key.
@@ -912,13 +957,7 @@ impl CellBakery<'_> {
             ));
         }
 
-        #[derive(Serialize)]
-        struct RegionDoc<'a> {
-            name: &'a str,
-            cells: BTreeMap<String, Vec<String>>,
-        }
-        write_json(&dir.join(REGION_DOC), &RegionDoc { name: &r.region.name, cells })?;
-        std::fs::write(dir.join(REGION_POLY), &r.poly).map_err(|e| format!("{}: {e}", dir.display()))?;
+        write_region_selection(&self.opts.out, &r.region, &r.poly, cells)?;
         Ok(missing == 0)
     }
 
@@ -937,51 +976,7 @@ impl CellBakery<'_> {
     /// spellings exist because the flag scopes the run and the document ships in the
     /// repo, so the only safe relationship between them is agreement.
     fn write_schema_and_skins(&self) -> Result<(), String> {
-        let mut doc: serde_json::Value =
-            serde_json::from_str(&self.schema.json).map_err(|e| format!("{}: {e}", self.schema.path.display()))?;
-        let meta = doc
-            .get_mut("_meta")
-            .and_then(serde_json::Value::as_object_mut)
-            .ok_or_else(|| format!("{}: no `_meta` block", self.schema.path.display()))?;
-        let declared = meta.get("id").and_then(serde_json::Value::as_str).unwrap_or_default();
-        if declared != self.opts.schema_id {
-            return Err(format!(
-                "{}: `_meta.id` is `{declared}` but --schema-id says `{}`. The document's id and the run's are the \
-                 same fact stated twice — fix whichever is wrong rather than letting the bake publish this schema's \
-                 cells under another schema's name.",
-                self.schema.path.display(),
-                self.opts.schema_id
-            ));
-        }
-        meta.insert("revision".into(), serde_json::json!(self.opts.schema_revision));
-        meta.insert("bands".into(), serde_json::to_value(&self.opts.bands.bands).map_err(|e| e.to_string())?);
-        write_json(&self.opts.out.join(SCHEMA_DOC), &doc)?;
-
-        let skins = self.opts.out.join(SKINS_DIR);
-        std::fs::create_dir_all(&skins).map_err(|e| format!("{}: {e}", skins.display()))?;
-        // A skin this run does not publish must not survive in the tree from an earlier
-        // one. The generator walks `skins/` and publishes whatever it finds, so a
-        // leftover would be offered to riders as a current look over a store it may no
-        // longer fit — and `--skin` narrowing the set is exactly how an operator says
-        // "not that one any more". Pruned before the tree is generated from, so the
-        // catalog and the directory can never disagree.
-        for path in std::fs::read_dir(&skins).map_err(|e| format!("{}: {e}", skins.display()))? {
-            let path = path.map_err(|e| format!("{}: {e}", skins.display()))?.path();
-            let Some(stem) = path.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_suffix(".json")) else {
-                continue;
-            };
-            if !self.skins.iter().any(|s| s.id == stem) {
-                std::fs::remove_file(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-            }
-        }
-        for skin in self.skins {
-            let dest = skins.join(format!("{}.json", skin.id));
-            if std::fs::read_to_string(&dest).ok().as_deref() == Some(skin.json.as_str()) {
-                continue;
-            }
-            std::fs::write(&dest, &skin.json).map_err(|e| format!("{}: {e}", dest.display()))?;
-        }
-        Ok(())
+        write_schema_and_skins(&self.opts.out, self.schema, self.skins, &self.opts)
     }
 
     /// Walk the finished tree and measure it: cells and bytes, per band.
@@ -1011,6 +1006,79 @@ impl CellBakery<'_> {
         }
         Ok(out)
     }
+}
+
+/// Shared final tree metadata for curated and planet bakes.
+pub(crate) fn write_schema_and_skins(
+    out: &Path,
+    schema: &StyleDoc,
+    selected_skins: &[&StyleDoc],
+    opts: &CellBakeOptions,
+) -> Result<(), String> {
+    check_schema_id(schema, opts)?;
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&schema.json).map_err(|e| format!("{}: {e}", schema.path.display()))?;
+    let meta = doc
+        .get_mut("_meta")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or_else(|| format!("{}: no `_meta` block", schema.path.display()))?;
+    meta.insert("revision".into(), serde_json::json!(opts.schema_revision));
+    meta.insert("bands".into(), serde_json::to_value(&opts.bands.bands).map_err(|e| e.to_string())?);
+    write_json(&out.join(SCHEMA_DOC), &doc)?;
+
+    let skins = out.join(SKINS_DIR);
+    std::fs::create_dir_all(&skins).map_err(|e| format!("{}: {e}", skins.display()))?;
+    for path in std::fs::read_dir(&skins).map_err(|e| format!("{}: {e}", skins.display()))? {
+        let path = path.map_err(|e| format!("{}: {e}", skins.display()))?.path();
+        let Some(stem) = path.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_suffix(".json")) else {
+            continue;
+        };
+        if !selected_skins.iter().any(|s| s.id == stem) {
+            std::fs::remove_file(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        }
+    }
+    for skin in selected_skins {
+        let dest = skins.join(format!("{}.json", skin.id));
+        if std::fs::read_to_string(&dest).ok().as_deref() == Some(skin.json.as_str()) {
+            continue;
+        }
+        std::fs::write(&dest, &skin.json).map_err(|e| format!("{}: {e}", dest.display()))?;
+    }
+    Ok(())
+}
+
+pub(crate) fn check_schema_id(schema: &StyleDoc, opts: &CellBakeOptions) -> Result<(), String> {
+    let doc: serde_json::Value =
+        serde_json::from_str(&schema.json).map_err(|e| format!("{}: {e}", schema.path.display()))?;
+    let declared =
+        doc.get("_meta").and_then(|meta| meta.get("id")).and_then(serde_json::Value::as_str).unwrap_or_default();
+    if declared != opts.schema_id {
+        return Err(format!(
+            "{}: `_meta.id` is `{declared}` but --schema-id says `{}`. The document's id and the run's are the \
+             same fact stated twice — fix whichever is wrong rather than letting the bake publish this schema's \
+             cells under another schema's name.",
+            schema.path.display(),
+            opts.schema_id
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn write_region_selection(
+    out: &Path,
+    region: &Region,
+    poly: &str,
+    cells: BTreeMap<String, Vec<String>>,
+) -> Result<(), String> {
+    let dir = region.segments().iter().fold(out.join(REGIONS_DIR), |path, segment| path.join(segment));
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    #[derive(Serialize)]
+    struct RegionDoc<'a> {
+        name: &'a str,
+        cells: BTreeMap<String, Vec<String>>,
+    }
+    write_json(&dir.join(REGION_DOC), &RegionDoc { name: &region.name, cells })?;
+    std::fs::write(dir.join(REGION_POLY), poly).map_err(|e| format!("{}: {e}", dir.display()))
 }
 
 /// Whether the published facts drifted — the only thing that can change without the

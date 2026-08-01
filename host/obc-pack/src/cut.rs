@@ -135,6 +135,12 @@ pub struct CutOptions {
     pub no_land: bool,
     /// Crop the sources to this box during ingest.
     pub bbox: Option<Bbox>,
+    /// Logical source extent used for land generation and the cut manifest.
+    ///
+    /// Ordinarily the ingest derives this from the retained features. Planet
+    /// leaves state it explicitly: a featureless ocean shard still owns cells,
+    /// and a quiet corner of a leaf still needs the global land layer considered.
+    pub source_extent: Option<UBox>,
 }
 
 impl Default for CutOptions {
@@ -147,6 +153,7 @@ impl Default for CutOptions {
             chunk_size: None,
             no_land: false,
             bbox: None,
+            source_extent: None,
         }
     }
 }
@@ -167,6 +174,11 @@ pub struct CellArtifact {
     pub pois: usize,
     pub nav_nodes: usize,
     pub nav_edges: usize,
+    /// The serialized band carries no geometry, POIs, or navigation content.
+    ///
+    /// `dropped > 0` always makes this false: losing oversized source content is
+    /// not proof that the canonical cell is semantically empty.
+    pub empty: bool,
 }
 
 /// What a finished cut run produced.
@@ -211,12 +223,12 @@ fn run(
 ) -> Result<CutSummary, String> {
     // The ways, not a graph: the cutter builds one graph per cell (OBCA §3.4).
     let (mut ingested, ways) = crate::ingest::ingest_osm_ways(pbfs, config, opts.bbox, progress)?;
-    if ingested.features.is_empty() && ingested.coastlines.is_empty() {
+    if ingested.features.is_empty() && ingested.coastlines.is_empty() && opts.source_extent.is_none() {
         return Err("no features found matching config".into());
     }
     progress.check()?;
     progress.stage(Phase::Bbox, "Calculating BBox...");
-    let extract = crate::pipeline::compute_bbox(&ingested);
+    let extract = opts.source_extent.unwrap_or_else(|| crate::pipeline::compute_bbox(&ingested));
     crate::pipeline::add_land(&mut ingested, config, extract, opts.no_land, progress)?;
     progress.check()?;
     cut_ingested(&ingested, &ways, config, out_dir, opts, progress)
@@ -251,7 +263,7 @@ pub fn cut_ingested(
             return Err(format!("--cell {c}: no band in the table uses cell size 2^{}", c.log2));
         }
     }
-    let extract = crate::pipeline::compute_bbox(ing);
+    let extract = opts.source_extent.unwrap_or_else(|| crate::pipeline::compute_bbox(ing));
     let styles = config.styles();
     let mut artifacts: Vec<CellArtifact> = Vec::new();
 
@@ -728,6 +740,7 @@ fn write_cell(
     }
     let file = std::fs::File::create(&path).map_err(|e| format!("create {}: {e}", path.display()))?;
     let mut w = std::io::BufWriter::new(file);
+    let had_geometry = trees.iter().any(|(_, tree)| node_has_features(tree));
     let mut trees: Vec<Option<(usize, Node)>> = trees.into_iter().map(Some).collect();
     let (bytes, dropped) = serialize_lods_streaming(
         &mut w,
@@ -762,7 +775,15 @@ fn write_cell(
         pois: pois.len(),
         nav_nodes: graph.nodes.len(),
         nav_edges: graph.edges.len(),
+        empty: !had_geometry && pois.is_empty() && graph.nodes.is_empty() && dropped == 0,
     })
+}
+
+fn node_has_features(node: &Node) -> bool {
+    match node {
+        Node::Leaf { features, .. } => !features.is_empty(),
+        Node::Branch(children) => children.iter().any(node_has_features),
+    }
 }
 
 /// A cell artifact's path inside the run's output directory.
@@ -874,6 +895,7 @@ struct ManifestCell<'a> {
     pois: usize,
     nav_nodes: usize,
     nav_edges: usize,
+    empty: bool,
 }
 
 #[derive(Serialize)]
@@ -940,6 +962,7 @@ fn write_manifest(
                 pois: c.pois,
                 nav_nodes: c.nav_nodes,
                 nav_edges: c.nav_edges,
+                empty: c.empty,
             })
             .collect(),
     };

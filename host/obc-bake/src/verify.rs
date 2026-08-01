@@ -242,6 +242,7 @@ pub fn verify_cell_tree(tree: &Path, opts: CellTreeVerifyOptions) -> Result<Cell
     use obc_pack::catalog::{Catalog, CellId, CellIndexDocument, RegionCellsDocument};
     use std::collections::{BTreeMap, BTreeSet};
 
+    crate::planet::check_publishable_tree(tree)?;
     let root_path = tree.join(obc_pack::catalog::DEFAULT_MANIFEST_NAME);
     let text = std::fs::read_to_string(&root_path).map_err(|e| {
         format!(

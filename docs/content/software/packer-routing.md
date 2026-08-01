@@ -196,7 +196,7 @@ Memory tracks the box, not the source: nothing is re-written to disk and nothing
 
 OSM ways draw the *coast*, but not the sea or the land fill. Those come from a separate global dataset of land polygons, clipped to the map's bounding box and added as features styled `natural.land`. The sea needs no geometry at all: it's the **backdrop** the renderer clears to before drawing, and land is simply painted on top.
 
-That dataset is ~950 MB, downloaded and unpacked once into the packer's shared cache, so CLI and bakery runs reuse one copy. Both steps are the packer's own code rather than a `curl` and an `unzip` it hopes are installed, which keeps the operation portable, cancellable, and able to report progress.
+That dataset is ~950 MB, downloaded and unpacked once into the packer's shared cache, so CLI and bakery runs reuse one copy. Both steps are the packer's own code rather than a `curl` and an `unzip` it hopes are installed, which keeps the operation portable, cancellable, and able to report progress. The first clip in a process scans the shapefile's record headers into a compact offset-and-bounds index; later planet leaves seek straight to intersecting polygon bodies instead of rescanning more than a gigabyte for every leaf.
 
 <figure class="fig">
 <svg viewBox="0 0 720 230" role="img" aria-label="The global land-polygons dataset, a world map of land shapes, is clipped to the map's bounding box, producing land faces. On the device these are drawn over a sea-coloured backdrop, so land sits on top of sea.">
