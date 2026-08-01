@@ -842,11 +842,16 @@ image on the card, nothing more. **Installing** is gated on **physical
 confirmation at the device** — the Select press on the confirm card, symmetric
 with the pairing-passkey pattern (the phone can request, only the rider at the
 device acts). `installFw` therefore never arms or reboots on its own; it posts a
-request the on-device confirm flow must approve. Image authenticity beyond the
-link is out of scope for v1 (CRC-32 integrity only, no signature — matching the
-SD-sideload contract): physical possession of the card is already root on an open
-device, so the install-time gate is the human, not a cryptographic signature
-(`OBCU_Spec.md` reserves header bytes for a future signature scheme).
+request the on-device confirm flow must approve. Image **authenticity** is no longer
+out of scope: since OBCU v2 (`OBCU_Spec.md` §1.3, epic #773) a staged container carries
+an Ed25519 signature over a domain-separated message, and the device's armer verifies it
+— and refuses an *unsigned* container — before an install can be armed
+(`OBCU_Spec.md` §1.4). This is orthogonal to the link and identical on every delivery
+path: a bonded phone, a USB cable, and a hand-copied card all end at the same scan. The
+physical-confirmation gate above is unchanged and still the *authorization* step; the
+signature answers a different question (are these bytes ours?) from the CRC-32 (did
+they arrive intact?), and both are checked. A peer therefore cannot stage an installable
+image it did not obtain from a release; the worst it can do is waste a transfer.
 
 **`forgetBond` — dissolve the device-side bond (#756).** The app's "Forget device" clears only the
 phone's own bond record; the device keeps its bond, and the reject-when-bonded posture (§8) then

@@ -1,13 +1,14 @@
-# OBCU File Format Specification (v1)
+# OBCU File Format Specification (v2)
 
 OBCU (OpenBikeComputer Update) is the byte format of a **field firmware update** —
-the SD-staged DFU foundation (epic #615). It has two parts, both defined here and
-both implemented by the shared `no_std` crate `firmware/obc-dfu` (host-tested to the
-same bar as the settings codec, and linked by the `obc-boot` bootloader,
-`firmware/obc-boot`):
+the SD-staged DFU foundation (epic #615), signed since **v2** (epic #773, issue
+#997). It has two parts, both defined here and both implemented by the shared
+`no_std` crate `firmware/obc-dfu` (host-tested to the same bar as the settings codec,
+and linked by the `obc-boot` bootloader, `firmware/obc-boot`):
 
 1. **The update-image container** (§1) — the `UPDATE.BIN` file on the SD card: a
-   fixed **64-byte header** followed by the raw application image.
+   fixed **64-byte header**, the raw application image, and (v2) a **signature
+   trailer**.
 2. **The boot-state page** (§2) — the CRC-framed blob in a dedicated **4 KB RRAM
    page**, the sole handoff channel between the app (the *armer*) and the bootloader
    (the *installer*).
@@ -30,9 +31,19 @@ It shares the conventions of the [`OBCM`](OBCM_Spec.md) map and
 3. **The bootloader has no FAT.** Extents in the boot-state page are **absolute
    512-byte SD block runs**, pre-resolved by the app-side armer, so the installer
    reads raw SPI blocks with no filesystem in the 32 KB bootloader budget.
-4. **CRC-32/IEEE only, no signatures in v1** (locked). Physical card access is
-   already root on an open device. The header reserves space (§1) for a future
-   signature-scheme marker if internet-sourced OTA ever lands.
+4. **CRC-32 is the corruption check; the signature is the trust check.** v1 shipped
+   with the CRC alone (physical card access is already root on an open device) and
+   reserved header space for "a future signature-scheme marker if internet-sourced OTA
+   ever lands". v2 spends it: an image is **Ed25519-signed over a domain-separated
+   message** (§1.3) and the app-side armer verifies it **before arming** (§1.4). The
+   two checks answer different questions and both remain: the CRC catches a torn
+   download and says "damaged"; the signature catches a forged one and says "not
+   ours". Nothing about the CRC's role, polynomial, or coverage changed.
+5. **A fielded bootloader must keep installing new images.** `obc-boot` is 32 KB,
+   flashed once by probe, and never updated by DFU — so the v2 container is designed
+   so that a bootloader compiled before v2 existed parses and installs it unchanged
+   (§1.2). This is why the signature lives in the reserved region and a trailer rather
+   than in a bumped header layout, and why the bootloader does not verify signatures.
 
 All multi-byte integers are **little-endian**. The integrity check everywhere is
 **CRC-32/IEEE** (reflected polynomial `0xEDB88320`, init/xor-out `0xFFFFFFFF`, check
@@ -45,29 +56,50 @@ value `crc32("123456789") == 0xCBF43926`).
 ```
 [OBCU header]   (64 bytes, fixed)
 [raw image]     (image_len bytes — the app's objcopy -O binary output, vector table first)
+[signature]     (sig_len bytes — v2 only; 64 for Ed25519, absent when sig_scheme = 0)
 ```
 
 The file lives at the **card root** as `UPDATE.BIN` (8.3-safe, locked). It is
-produced by the `obc-mkimage wrap` host tool and consumed by the app-side armer,
-which validates the header + full image CRC before staging.
+produced by the `obc-mkimage wrap` / `obc-mkimage sign` host tool and consumed by the
+app-side armer, which validates the header, the full image CRC, **and the signature**
+before staging.
+
+Two container shapes exist, distinguished by the header's `Sig Scheme` field — **not**
+by Header Version, which stays `1` forever (§1.2):
+
+| Shape | `Sig Scheme` | Bytes | Produced by | Armer verdict |
+| :-- | :-- | :-- | :-- | :-- |
+| **v1**, unsigned | `0` | `64 + image_len` | `obc-mkimage wrap` with no seed; the device's own `ROLLBACK.BIN` snapshot | **rejected** (§1.4) |
+| **v2**, Ed25519 | `1` | `64 + image_len + 64` | `obc-mkimage wrap --sign-seed` / `sign` | accepted iff the signature verifies |
 
 ### 1.1 Header (64 bytes)
 
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
 | 0 | Magic | 4 | `char[4]` | Must be `b"OBCU"` |
-| 4 | Header Version | 2 | `uint16` | `0x0001` (readers reject any other value) |
+| 4 | Header Version | 2 | `uint16` | `0x0001` — **in v2 too** (§1.2); readers reject any other value |
 | 6 | Reserved | 2 | — | `0` |
 | 8 | Image Len | 4 | `uint32` | Bytes of the raw image following the header |
 | 12 | Image CRC-32 | 4 | `uint32` | CRC-32/IEEE over the raw image **only** |
 | 16 | FW Version | 32 | `char[32]` | UTF-8 `git describe` string, NUL-padded |
-| 48 | Reserved | 12 | — | `0` — space for a future signature-scheme marker |
+| 48 | Sig Scheme | 2 | `uint16` | `0` unsigned (v1) · `1` Ed25519 (v2, §1.3). The v1/v2 discriminator |
+| 50 | Sig Len | 2 | `uint16` | Bytes of the signature trailer: `0` when Sig Scheme = 0, `64` for Ed25519 |
+| 52 | Reserved | 8 | — | `0` |
 | 60 | Header CRC-32 | 4 | `uint32` | CRC-32/IEEE over header bytes `0..60` |
+
+`Sig Scheme` and `Sig Len` occupy the first four bytes of the 12-byte region v1
+reserved "for a future signature-scheme marker"; the remaining eight stay reserved and
+MUST be zero. An unsigned v2-era container (both fields `0`) is therefore **byte-identical
+to a v1 container** — including its Header CRC-32.
 
 **Decode rule** (`ImageHeader::decode(&[u8; 64]) -> Option`): return `None` on bad
 magic, a Header Version other than `1`, or a Header CRC-32 that doesn't match bytes
 `0..60`; otherwise `Some`. This is the settings-store convention — a **valid CRC ⇒
-`Some`**, and a version change is a hard reject, never a silent migration. The
+`Some`**, and a version change is a hard reject, never a silent migration. The rule is
+**unchanged from v1 and MUST stay unchanged**: `Sig Scheme`/`Sig Len` are decoded but
+never validated here, because a decoder that started rejecting unfamiliar scheme values
+would no longer read v1 and v2 alike (§1.2). Whether a decoded container may be
+*installed* is the armer's policy call (§1.4), not the codec's. The
 raw-image CRC (offset 12) is verified **separately**, against the staged image
 bytes, by whoever is about to trust them (the armer over the file, the bootloader
 over the resolved extents).
@@ -78,10 +110,124 @@ truncated to 32 bytes on a UTF-8 char boundary at wrap time (never mid-codepoint
 `Image Len` must not exceed **`MAX_IMAGE_LEN` = 1,480,000** bytes — the L15 DK app
 slot (`0x8000 … 0x17B000`) minus a small margin. `obc-mkimage wrap` refuses a larger
 image. (The LM20's larger slot is a future mechanical bump.) The **whole container**
-is `64 + Image Len` bytes; the BLE `fwImage` transfer (protocol §7.6) announces that
-container size, so its announce-time reject gates at the **container** ceiling
-`MAX_IMAGE_LEN + 64` = 1,480,064 — a raw image at the cap must not be refused for its
-64-byte header. Bytes past `64 + Image Len` in the delivered file are ignored (§2.3).
+is `64 + Image Len + Sig Len` bytes; the BLE/USB `fwImage` transfer (protocol §7.6)
+announces that container size, so its announce-time reject gates at the **container**
+ceiling `MAX_CONTAINER_LEN` = `MAX_IMAGE_LEN + 64 + 64` = 1,480,128 — a raw image at
+the cap must not be refused for its own framing. Bytes past
+`64 + Image Len + Sig Len` in the delivered file are ignored (FAT cluster slack, §2.3).
+
+### 1.2 Header Version stays 1 — the flash-once bootloader guarantee (normative)
+
+`obc-boot` lives in a 32 KB region, is flashed **once by SWD probe**, and is **never
+updated by DFU** (that is what makes it the dependable half of the boot chain). Its
+copy of the header decoder therefore never changes, and it hard-rejects any Header
+Version but `1`. A v2 container that bumped that field would be unparseable to every
+bootloader already in the field: the device would decode `Armed`, fail the install's
+header check, and fall back to the old app — forever, on every future update.
+
+So it does not bump. **A v2 container MUST carry Header Version `0x0001`.** The
+compatibility argument, field by field — this is the complete set the bootloader's
+install engine consumes (it decodes the container header off the card, compares it
+against the `ImageHeader` embedded in the boot-state page's `StagedRef`, CRCs the next
+`Image Len` bytes, and flashes exactly those):
+
+| What the fielded bootloader reads | Offset | v1 | v2 |
+| :-- | :-- | :-- | :-- |
+| Magic | `0..4` | `OBCU` | **identical** |
+| Header Version | `4..6` | `1` | **identical** |
+| Image Len | `8..12` | raw image bytes | **identical** |
+| Image CRC-32 | `12..16` | over the raw image | **identical** |
+| FW Version | `16..48` | NUL-padded string | **identical** |
+| Header CRC-32 | `60..64` | over bytes `0..60` | recomputed — it now covers the marker |
+| Image bytes | `64 .. 64+Image Len` | the raw image | **identical, same offset** |
+| Anything past the image | — | "ignored" | the signature trailer — still ignored |
+
+Only two regions differ: bytes `48..52`, which v1 pinned to zero and explicitly
+reserved for exactly this, and the header CRC that covers them. A v1 decoder never
+looks at `48..60`, so a v2 header decodes to precisely the same `(Image Len, Image
+CRC-32, FW Version)` triple; the bootloader's header-equality check still matches
+because the app writes the same 64 bytes into the boot-state page that sit on the card;
+and nothing the bootloader flashes moved. Consequently **the bootloader needs no change
+to install v2 images, and MUST NOT be required to verify signatures.**
+
+Pinned by `obc-dfu`'s `tests/signature.rs`
+(`a_fielded_v1_decoder_accepts_a_v2_header_with_identical_fields`, which reimplements
+the v1 decoder straight from the table above rather than calling the current code, plus
+`the_install_engine_flashes_a_v2_container_unchanged` and
+`the_install_engine_treats_v1_and_v2_identically`) and cross-implementation by the
+`update-container-v1.bin` / `update-container-v2.bin` fixture pair in `specs/vectors/`.
+
+### 1.3 The signature (normative)
+
+`Sig Scheme` = `1` means **Ed25519** (RFC 8032, the standard SHA-512 / Curve25519
+parameters) and `Sig Len` = `64`. The trailer at file offset `64 + Image Len` holds the
+signature's 64 bytes, `R ‖ S`, exactly as RFC 8032 encodes them.
+
+The signed message is **domain-separated** and **binds the labelling**:
+
+```
+signed_message =
+      "OBCUv2-sig\0"            11 bytes — the context, ASCII, trailing NUL included:
+                                  4F 42 43 55 76 32 2D 73 69 67 00
+   || FW Version                 32 bytes — header bytes 16..48, raw and NUL-padded
+   || Image Len                   4 bytes — header bytes  8..12, uint32 little-endian
+   || image[0 .. Image Len]      the raw application image, unmodified
+```
+
+Total length `47 + Image Len`. Every part is load-bearing:
+
+- The **context string** makes an OBCU signature useless anywhere else. A key that also
+  signs in some other protocol can never produce a cross-valid signature, because no
+  other message format begins with these eleven bytes. The NUL terminates the context
+  unambiguously, so no `FW Version` value can extend or spoof it.
+- **`FW Version`** stops **re-labelling**: without it, a genuinely signed v1.4.0 image
+  could be re-announced as v9.9.9 — or as an *older* version, to walk a device backwards
+  into a known-bad build — with the signature still checking out.
+- **`Image Len`** stops a length lie: the announced length is what the installer reads
+  and flashes, so it must be covered.
+- `Image CRC-32` is deliberately **not** covered — it is a pure function of the image
+  bytes, which *are* covered, so signing it would add nothing. `Sig Scheme` is not
+  covered either: any rewritten scheme value only moves the container into a bucket the
+  armer rejects outright (§1.4).
+
+Signing MUST be **deterministic**: no per-signature randomness beyond RFC 8032's own
+seed-derived nonce. That makes a release artifact byte-reproducible and lets a signed
+container be a committed test vector.
+
+The trusted **public key** is compiled into the firmware image
+(`firmware/obc-dfu/keys/obcu-release.pub`, one line of 64 hex characters). Key rotation
+is therefore a firmware change by construction: a device trusts exactly the key its own
+build carries. See `firmware/obc-dfu/keys/README.md`.
+
+### 1.4 Armer acceptance rules (normative)
+
+The app-side armer's staging scan MUST reject a container unless **all** of the
+following hold. The order is normative — each check is cheap relative to the next, and
+it determines which message the rider sees:
+
+1. The 64-byte header decodes per §1.1 → else *bad header*.
+2. `0 < Image Len ≤ MAX_IMAGE_LEN` → else *oversize*.
+3. `Sig Scheme` = `1` **and** `Sig Len` = `64` → else ***unsigned***. This one bucket
+   covers a plain v1 container, a marker-cleared v2 container, and any future scheme
+   this firmware cannot verify. **An unsigned container is rejected, not merely
+   flagged**: if a v1 wrapper were still installable, an attacker would never bother
+   forging a signature — they would omit it, and the whole scheme would be decorative.
+4. The file is at least `64 + Image Len + Sig Len` bytes → else *truncated*.
+5. The trailer parses as an Ed25519 signature under the trusted key → else *bad
+   signature*. (Checked before the image is read, so a junk trailer costs nothing.)
+6. CRC-32 over the image body matches `Image CRC-32` → else *bad CRC*.
+7. Ed25519 verification over §1.3's message succeeds → else *bad signature*.
+
+Steps 6 and 7 run over a **single streaming pass** of the image: the same bytes feed
+the CRC and the signature hash, so verification adds no second read of the card and no
+image-sized buffer. Corruption (6) is reported **before** trust (7) on purpose — a torn
+copy is the likelier failure and "the file is damaged, copy it again" is the actionable
+message, whereas telling a rider to re-copy an intact but forged image would be a lie.
+
+The bootloader performs **no signature check** (§1.2). Its guarantee is unchanged and
+independent: verify-before-erase by CRC over the raw extents, and always leave a
+bootable image. Signature verification is an *authorization* gate on arming, not a
+second integrity gate on flashing.
 
 ---
 
@@ -225,13 +371,23 @@ and `Image CRC-32` (so the installer reads them without re-decoding the header) 
 
 **What the extents cover.** The chain locates the **whole staged file**: the armer
 resolves `UPDATE.BIN` as-is, so the chain's byte stream begins with the file's own
-64-byte OBCU header (§1.1) followed by the raw image; any tail of the final block
-past `64 + Len` is FAT cluster slack and is ignored. `Len` / `Image CRC-32` remain
-**raw-image** values: the installer's verify pass reads the leading 64 bytes only to
-check they decode to exactly the `Header` recorded above, then CRCs the next `Len`
-bytes — and its flash pass writes those same `Len` bytes (the container header is
-skipped, never flashed) to the app slot. This is normative for both the armer (S4)
-and the bootloader; the skip arithmetic lives once, in `obc-dfu`'s install engine.
+64-byte OBCU header (§1.1) followed by the raw image; everything past `64 + Len` — the
+v2 signature trailer (§1.3) and then FAT cluster slack — is ignored by the installer.
+`Len` / `Image CRC-32` remain **raw-image** values: the installer's verify pass reads
+the leading 64 bytes only to check they decode to exactly the `Header` recorded above,
+then CRCs the next `Len` bytes — and its flash pass writes those same `Len` bytes (the
+container header is skipped, never flashed; the trailer is never even read) to the app
+slot. This is normative for both the armer (S4) and the bootloader; the skip arithmetic
+lives once, in `obc-dfu`'s install engine, and is unchanged by v2.
+
+**The rollback snapshot is unsigned.** `ROLLBACK.BIN` — the armer's copy of the running
+image, written from the app slot before an install — is a **v1/unsigned** container
+(`Sig Scheme` = `0`). The device cannot reconstruct the original release signature from
+slot bytes alone, and nothing needs one: the snapshot never passes through the armer's
+scan (§1.4), and the bootloader's rollback path validates it by CRC like everything
+else. Marking it signed with no trailer behind it would make the file lie to
+`obc-mkimage inspect`. The `StagedRef` the armer records for the snapshot carries the
+same unsigned header, so the installer's header-equality check still matches.
 
 ### 2.4 Decode rule and boot decision
 
@@ -289,14 +445,30 @@ strands a device that holds perfectly good firmware.
 
 ## Reference implementation
 
-`firmware/obc-dfu` (`no_std`, `core`-only): `image.rs` (`ImageHeader`,
-`MAX_IMAGE_LEN`, the vector-table SP check), `state.rs` (`BootState`, `StagedRef`,
-`Extent`, `MAX_EXTENTS`, `decide`, the 16-byte-line-aligned page codec), `crc32.rs`
-(the canonical DFU-side CRC-32/IEEE), `engine.rs` (the bootloader's install engine —
-the verify → flash → readback → state-transition sequencing over a small `InstallIo`
-trait, host-tested with mock IO in `tests/engine.rs`, including the §2.3 header-skip
-arithmetic). The host tool `host/obc-mkimage` produces
-and inspects §1 containers (`wrap` / `inspect`). Format-contract tests build blobs by
-hand and round-trip every variant (`obc-dfu/tests/boot_state.rs`, the unit tests in
-`image.rs`, `obc-mkimage/tests/cli.rs`); see `firmware/README.md` for the
-`objcopy → wrap` pipeline.
+`firmware/obc-dfu` (`no_std`, `core`-only apart from the Ed25519 verifier): `image.rs`
+(`ImageHeader`, `MAX_IMAGE_LEN`, `MAX_CONTAINER_LEN`, the vector-table SP check),
+`state.rs` (`BootState`, `StagedRef`, `Extent`, `MAX_EXTENTS`, `decide`, the
+16-byte-line-aligned page codec), `crc32.rs` (the canonical DFU-side CRC-32/IEEE),
+`engine.rs` (the bootloader's install engine — the verify → flash → readback →
+state-transition sequencing over a small `InstallIo` trait, host-tested with mock IO in
+`tests/engine.rs`, including the §2.3 header-skip arithmetic), `sig.rs` (§1.3: the
+`signing_prefix` message layout — the single definition both the host signer and the
+device verifier go through — the embedded `RELEASE_PUBKEY`, and a **streaming**
+`Verifier` so §1.4's steps 6–7 share one pass), and `armer.rs` (§1.4's ordered
+acceptance matrix; the trusted key is a **parameter**, never a build flag, so the tests
+exercise the shipping path with a test key).
+
+The Ed25519 implementation is [`ed25519-compact`](https://crates.io/crates/ed25519-compact)
+with `default-features = false, features = ["opt_size"]`: `core`-only, no transitive
+dependencies, and the only lean choice that offers *incremental* verification. `obc-boot`
+links `obc-dfu` but never calls into `sig`, so the crate is dropped entirely from the
+32 KB bootloader image (zero `ed25519_compact` symbols in its ELF).
+
+The host tool `host/obc-mkimage` generates keys, produces and signs §1 containers, and
+verifies them (`keygen` / `wrap [--sign-seed]` / `sign` / `inspect`); `inspect` exits
+non-zero on any failure, which is what makes it the release pipeline's gate.
+Format-contract tests build blobs by hand and round-trip every variant
+(`obc-dfu/tests/boot_state.rs`, `obc-dfu/tests/signature.rs` — the §1.2 compatibility
+proof and §1.4's reject matrix — `obc-dfu/tests/vectors.rs` for the shared fixture pair,
+the unit tests in `image.rs` and `sig.rs`, and `obc-mkimage/tests/cli.rs`); see
+`firmware/README.md` for the `objcopy → wrap → sign` pipeline.

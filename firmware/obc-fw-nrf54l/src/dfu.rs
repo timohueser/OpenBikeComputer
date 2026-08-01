@@ -306,8 +306,9 @@ pub(crate) fn run_scan(
     ))
 }
 
-/// Fold `obc_dfu`'s finer [`ScanError`] variants into the five user-facing
-/// [`DfuScanError`](obc_app::DfuScanError) buckets the app's error card shows (issue #620 §2).
+/// Fold `obc_dfu`'s finer [`ScanError`] variants into the six user-facing
+/// [`DfuScanError`](obc_app::DfuScanError) buckets the app's error card shows (issue #620 §2,
+/// `Untrusted` added with OBCU v2 in #997).
 fn map_scan_error(e: ScanError) -> obc_app::DfuScanError {
     use obc_app::DfuScanError as U;
     match e {
@@ -316,6 +317,8 @@ fn map_scan_error(e: ScanError) -> obc_app::DfuScanError {
         ScanError::BadHeader | ScanError::BadCrc | ScanError::Truncated => U::Damaged,
         ScanError::Oversize => U::TooLarge,
         ScanError::TooFragmented { .. } => U::TooFragmented,
+        // Intact but not ours: an unsigned/v1 container or a signature that doesn't verify.
+        ScanError::Unsigned | ScanError::BadSignature => U::Untrusted,
     }
 }
 

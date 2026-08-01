@@ -310,16 +310,30 @@ imports an `UPDATE.BIN` (a Files pick — the whole OBCU container, `OBCU_Spec.m
 streams it as a `fwImage` (type 5, `object_id 0`) exactly like a route upload
 (progress, cancel, whole-object restart).
 
+**Signed containers (OBCU v2, #997).** A container carries an Ed25519 signature in a
+64-byte trailer after the image, and the *device* verifies it before arming
+(`OBCU_Spec.md` §1.3/§1.4). The app does **not** verify it — the trusted key lives in
+the firmware, not on the phone, and an app-side verdict would mean nothing the device
+doesn't re-establish over what actually landed on the card. Two app-side obligations
+follow. It must **carry the trailer intact** (trimming at `64 + Image Len` would stage a
+file whose signature the device can't find, and the device would refuse it as
+truncated), and it **refuses an unsigned container up front** — `FirmwareImageError`
+gains `.unsigned` for exactly that — because the device will refuse it too, and finding
+out before the transfer is the point of validating at all. The header's *version* field
+is still `1` in a v2 container by design (§1.2 — a fielded bootloader rejects anything
+else), so the discriminator is `sigScheme`.
+
 The **size/tail contract** matches the SD sideload path (`OBCU_Spec.md`
 §1.1 / §2.3) on both bounds. **Ceiling:** the header's `Image Len` is the raw
 image, capped at `MAX_IMAGE_LEN` = 1,480,000; the streamed `fwImage` is the
-*whole container*, so its `total_len` is `64 + Image Len`, and the device's
-announce guard rejects at the **container** ceiling `MAX_IMAGE_LEN + 64` =
-1,480,064 — not the raw cap, so an image in the top 64 bytes of the range still
-stages. **Tail:** any bytes in the picked file past `64 + Image Len` are FAT
-cluster slack and **ignored** (the armer accepts `file_len >= 64 + Len`); the app
-trims to exactly `64 + Image Len` and streams only those bytes — a genuinely
-*short* file (that can't hold header + image) is still rejected.
+*whole container*, so its `total_len` is `64 + Image Len + Sig Len`, and the device's
+announce guard rejects at the **container** ceiling `MAX_CONTAINER_LEN` =
+`MAX_IMAGE_LEN + 64 + 64` = 1,480,128 — not the raw cap, so an image at the top of the
+range still stages. **Tail:** any bytes in the picked file past
+`64 + Image Len + Sig Len` are FAT cluster slack and **ignored** (the armer accepts
+`file_len >= container_len`); the app trims to exactly the container length — signature
+included — and streams only those bytes. A genuinely *short* file (one that can't hold
+header + image + signature) is still rejected.
 
 On commit the app sends `installFw`
 (cmd 3, no args); its `commandResult.status` maps to plain UI copy: `ok`(0) →
