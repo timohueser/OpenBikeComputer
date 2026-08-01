@@ -19,7 +19,8 @@
 
 use embedded_graphics::prelude::Point;
 use obc_formats::obcm::poi_label_of;
-use obc_reader::{cos_lat, Poi, PoiCategory, MAX_POI_RESULTS};
+use obc_map_scene::cos_lat;
+use obc_reader::{Poi, PoiCategory, MAX_POI_RESULTS};
 use obc_render::{
     text::{Font, TextAlign},
     Surface,

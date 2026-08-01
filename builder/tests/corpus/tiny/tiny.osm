@@ -8,7 +8,7 @@
   construction. Coordinates sit near Freiburg (inland) on a tidy ~0.002 deg grid;
   exact positions are irrelevant, only the topology and tags are.
 
-  Expected ingest result (with builder/presets/default.json), all geometries in 4326 —
+  Expected ingest result (with builder/presets/schema.json), all geometries in 4326 —
   11 features + 1 coastline, verified against the oracle (obcm/ingest.py):
     R1  (rel 201) -> 1 Polygon, natural=water, WITH one hole   (lake + island)
     R2  (rel 202) -> 2 Polygons, landuse=forest                (two outer rings)

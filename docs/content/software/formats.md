@@ -5,7 +5,7 @@ description: OBCM maps and OBCR routes — the binary, table-driven formats a mi
 
 # Data formats
 
-The device reads two kinds of file: an **OBCM** map and an **OBCR** route. Both are binary, and both exist for the same reason — a microcontroller should read them *directly off flash*, with no JSON to parse, no structure to rebuild in RAM, and no heap to churn. A host produces them once; the device just points at the bytes and draws. (A third format, the [catalog manifest](#the-catalog-a-third-format-for-finding-the-first-two), never reaches the device at all — it's how a host decides *which* map to hand it.)
+The device reads two kinds of file: an **OBCM** map and an **OBCR** route. Both are binary, and both exist for the same reason — a microcontroller should read them *directly off flash*, with no JSON to parse, no structure to rebuild in RAM, and no heap to churn. A host produces them once; the device just points at the bytes and draws. (A third format, the [catalog manifest](#the-catalog-the-map-builders-source-of-truth), never reaches the device at all — it is how a builder finds verified cells.)
 
 This page is the guided tour of what's actually in those files. The exhaustive byte-level tables live in the repo specs — [`OBCM_Spec.md`](src:specs/OBCM_Spec.md) and [`OBCR_Spec.md`](src:specs/OBCR_Spec.md) — so here we focus on *why* the bytes are shaped the way they are. Those root specifications remain the normative contracts; the dependency-free [`obc-formats`](src:firmware/obc-formats) crate is the code authority beneath them for version numbers, fixed record lengths, flags, sentinels, endian primitives, and the shared byte-I/O seam. Parsing, caching, conversion, and file assembly stay in the reader, route, and packer crates.
 
@@ -117,7 +117,7 @@ An OBCM file (current version **10**) opens with a fixed 40-byte header, then a 
   <text class="d-sub"   x="312" y="184" text-anchor="middle">flat u32 nodes</text>
   <rect class="d-panel" x="392" y="152" width="152" height="40" rx="7" />
   <text class="d-label" x="468" y="170" text-anchor="middle">data chunks</text>
-  <text class="d-sub"   x="468" y="184" text-anchor="middle">fixed-size blocks</text>
+  <text class="d-sub"   x="468" y="184" text-anchor="middle">tight, offset-addressed</text>
 </svg>
 <figcaption>The header, style table and LOD table are read once when the file opens — they're tiny. The bulk of the file is the LOD pyramid: each layer its own <b>(index + chunks)</b> pair, simplified to that zoom. Two tail sections are different beasts — not map layers: the <b>POI section</b> (coral), a nearest-list index covered <a href="#pois-a-nearest-list-not-a-map-layer">below</a>, and the <b>navigation graph</b> (teal), a routable network the device runs A\* over, covered <a href="#the-navigation-graph-a-routable-network">last</a>. Reaching any section is an explicit offset, so there is no scanning to "find" where a layer begins.</figcaption>
 </figure>
@@ -131,17 +131,35 @@ Each entry in the **LOD table** is the directory to one layer — the zoom it se
 | Max meters/pixel | `f32` | Upper bound of the zoom range this layer covers; the coarsest is `+∞`, strictly decreasing toward fine |
 | Index offset | `u32` | Byte offset to this layer's quadtree |
 | Node count | `u32` | Number of `u32` nodes in that index |
-| Chunk size | `u16` | Fixed byte size of every data chunk in this layer |
+| Chunk size | `u16` | The **most** bytes one data chunk in this layer may hold — a capacity bound, not a stride (v11) |
 | Chunk count | `u32` | Number of data chunks |
 
-Eighteen bytes per entry — the `N × 18 B` in the ribbon above. Because the index sits immediately before the chunks and every count is stored, the *k*-th chunk is reached by arithmetic alone — `index_offset + node_count·4 + k·chunk_size` — with no scanning and no length-prefix hunting. That's "no runtime discovery" made concrete: the table tells the reader exactly where every layer, and every chunk within it, begins.
+Eighteen bytes per entry — the `N × 18 B` in the ribbon above. Every count is stored, so the reader never walks anything to learn a size: that's "no runtime discovery" made concrete. Where the *k*-th chunk begins is one small table away, and that table is worth its own aside.
+
+#### Where a chunk lives: the offset table
+
+Between a layer's index and its chunk bytes sits a run of `chunk_count + 1` `u32` **offsets**. Chunk *k* is `offsets[k] … offsets[k+1]`, measured from the first chunk byte:
+
+```
+table_start = index_offset + node_count·4
+data_start  = table_start  + (chunk_count + 1)·4
+chunk k     = data_start + offsets[k] … data_start + offsets[k+1]
+```
+
+Still one multiplication and one read — but chunks no longer have to be all the same size, and that is the point. Until **v11** the *k*-th chunk was simply `data_start + k·chunk_size`, which is beautifully cheap and quietly expensive: a fixed stride means every chunk must be **padded** to `chunk_size` with `0xFF`. And because a quadtree node splits the moment its features overflow one chunk, leaves settle somewhere between a quarter and half full — so the padding isn't a mis-tuned knob, it's structural. Measured on real maps: **53% of a Freiburg map and 65% of a Grimsel map were trailing `0xFF`**, evenly across every layer.
+
+Shrinking `chunk_size` doesn't help (nodes split more often, so the slack per chunk halves while the chunk count doubles); growing it adds slack directly. One `u32` per chunk does help: on that Freiburg map, 1,534 chunks × 4 B = 6 KB of table in exchange for 3.8 MB of padding. Real maps come out **~2.3× smaller**, and the win is proportional — every map, every region.
+
+It pays a second time at read time. The device's bottleneck is the SD card, and a chunk miss used to read a fixed 4,096 B — eight 512-byte blocks — no matter how little of it was real. A tight chunk averages closer to 1,600 B, so a miss reads three or four blocks instead of eight. Unaligned reads cost nothing extra here: the reader's block-buffered source already handles them.
+
+The last table entry (`offsets[chunk_count]`) is the layer's total chunk bytes, which the reader keeps resident — one `u32` read when the file opens, and afterwards every chunk lookup is bounds-checked against it for free. That matters because a chunk id comes out of a quadtree leaf, which in a damaged file is an arbitrary number: the reader validates the pair (in range, non-decreasing, inside the region, no longer than `chunk_size`) before it addresses anything.
 
 ### The header
 
 The 40-byte header is the one fixed-size, always-present part of the file. Everything else is found through offsets it stores.
 
 <figure class="fig">
-<svg viewBox="0 0 720 170" role="img" aria-label="The 40-byte OBCM header drawn as a byte ruler: bytes 0 to 3 are the magic OBCM, byte 4 is the version (10), bytes 5 to 20 are the global bounding box as four 32-bit integers, bytes 21 to 24 are the style-table offset, byte 25 is the LOD count, bytes 26 to 29 are the LOD-table offset, bytes 30 to 31 are the marker colour, bytes 32 to 35 are the POI-section offset, and bytes 36 to 39 are the navigation-graph offset appended in version 8.">
+<svg viewBox="0 0 720 170" role="img" aria-label="The 40-byte OBCM header drawn as a byte ruler: bytes 0 to 3 are the magic OBCM, byte 4 is the version (11), bytes 5 to 20 are the global bounding box as four 32-bit integers, bytes 21 to 24 are the style-table offset, byte 25 is the LOD count, bytes 26 to 29 are the LOD-table offset, bytes 30 to 31 are the marker colour, bytes 32 to 35 are the POI-section offset, and bytes 36 to 39 are the navigation-graph offset appended in version 8.">
   <text class="d-tag" x="20" y="24">The 40-byte header, byte by byte</text>
 
   <!-- field names -->
@@ -182,7 +200,7 @@ The 40-byte header is the one fixed-size, always-present part of the file. Every
   </g>
   <!-- value + byte ranges -->
   <text class="d-label" x="74" y="93" text-anchor="middle" style="fill:#fff;font-size:11px">OBCM</text>
-  <text class="d-label" x="112" y="93" text-anchor="middle" style="font-size:11px">10</text>
+  <text class="d-label" x="112" y="93" text-anchor="middle" style="font-size:11px">11</text>
   <text class="d-sub" x="74"  y="122" text-anchor="middle" style="font-size:9px">0–3</text>
   <text class="d-sub" x="112" y="122" text-anchor="middle" style="font-size:9px">4</text>
   <text class="d-sub" x="239" y="122" text-anchor="middle" style="font-size:9px">5–20</text>
@@ -195,7 +213,7 @@ The 40-byte header is the one fixed-size, always-present part of the file. Every
 
   <text class="d-sub" x="44" y="150" style="font-size:11px">A short read here is the only "is this even a map?" check the reader needs.</text>
 </svg>
-<figcaption>Fixed offsets, no surprises. A few details a reader notices: the bbox is stored <b>lat, lon</b> (a packer ordering quirk); the <b>marker colour</b> — the you-are-here chevron — rides in the header because the marker isn't an OpenStreetMap feature; and the <b>POI</b> (coral) and <b>navigation-graph</b> (teal) offsets at the tail are the growth that carried the header from 32 → 36 → 40 bytes. Earlier fields never move — a v7 reader that stops at byte 36 still parses everything it knew — and v9/v10 changed section internals and the style record without touching the header, only ticking the version byte (now <code>10</code>).</figcaption>
+<figcaption>Fixed offsets, no surprises. A few details a reader notices: the bbox is stored <b>lat, lon</b> (a packer ordering quirk); the <b>marker colour</b> — the you-are-here chevron — rides in the header because the marker isn't an OpenStreetMap feature; and the <b>POI</b> (coral) and <b>navigation-graph</b> (teal) offsets at the tail are the growth that carried the header from 32 → 36 → 40 bytes. Earlier fields never move — a v7 reader that stops at byte 36 still parses everything it knew — and v9, v10 and v11 changed section internals, the style record and the chunk layout without touching the header, only ticking the version byte (now <code>11</code>).</figcaption>
 </figure>
 
 The **style table** that follows maps small numeric ids to how a feature looks. Each record is eight bytes (v10 grew it from six):
@@ -333,63 +351,82 @@ let (dx, dy) = if is_16 {
 px += dx;  py += dy;   // each delta steps to the next vertex
 ```
 
-A feature is introduced by a 12-byte header, and a flags byte in it says how to read the rest:
+A feature is introduced by a **7-byte header** — or a 12-byte one when it needs the room — and a flags byte in it says how to read the rest:
 
 <figure class="fig">
-<svg viewBox="0 0 720 250" role="img" aria-label="A feature header drawn as a byte ruler: one byte style id, two bytes exterior point count, four bytes anchor X, four bytes anchor Y, one byte flags. The flags byte expands into three bits: 16-bit deltas, polygon, and has-holes. Below, the polygon-with-holes byte layout as a ribbon: the header, the exterior deltas, a hole count, then each hole's point count and deltas.">
-  <text class="d-tag" x="20" y="24">A feature on disk</text>
+<svg viewBox="0 0 720 300" role="img" aria-label="Two feature-header byte rulers drawn to the same scale, forty pixels per byte, sharing a left edge so the seven-byte compact header is visibly shorter than the twelve-byte wide one. Compact: one byte style id, one byte flags, one byte exterior point count, two bytes unsigned anchor X, two bytes unsigned anchor Y. Wide: one byte style id, one byte flags, two bytes point count, four bytes signed anchor X, four bytes signed anchor Y. The flags byte expands into four bits: 16-bit deltas, polygon, has-holes, and wide, with the wide bit highlighted as the one that selects the layout. Below, the polygon-with-holes byte layout as a ribbon: the header, the exterior deltas, a hole count, then each hole's point count and deltas.">
+  <text class="d-tag" x="20" y="24">A feature on disk — both rulers to scale, 1 byte = 40 px</text>
 
-  <!-- header ruler -->
-  <text class="d-sub" x="140" y="54" text-anchor="middle" style="font-size:9.5px">style id</text>
-  <text class="d-sub" x="200" y="54" text-anchor="middle" style="font-size:9.5px">pt count</text>
-  <text class="d-sub" x="320" y="54" text-anchor="middle" style="font-size:9.5px">anchor X (i32)</text>
-  <text class="d-sub" x="480" y="54" text-anchor="middle" style="font-size:9.5px">anchor Y (i32)</text>
-  <text class="d-sub" x="580" y="54" text-anchor="middle" style="font-size:9.5px">flags</text>
+  <!-- compact header ruler: 7 B -->
+  <text class="d-sub" x="140" y="52" text-anchor="middle" style="font-size:9px">style</text>
+  <text class="d-sub" x="180" y="52" text-anchor="middle" style="font-size:9px">flags</text>
+  <text class="d-sub" x="220" y="52" text-anchor="middle" style="font-size:9px">pts</text>
+  <text class="d-sub" x="280" y="52" text-anchor="middle" style="font-size:9px">anchor X</text>
+  <text class="d-sub" x="360" y="52" text-anchor="middle" style="font-size:9px">anchor Y</text>
   <g stroke="#20301d" stroke-width="1">
-    <rect x="120" y="62" width="40"  height="30" class="d-forest" />
-    <rect x="160" y="62" width="80"  height="30" class="d-water" />
-    <rect x="240" y="62" width="160" height="30" class="d-muted" />
-    <rect x="400" y="62" width="160" height="30" class="d-muted" />
-    <rect x="560" y="62" width="40"  height="30" class="d-hot-fill" />
+    <rect x="120" y="60" width="40" height="32" class="d-forest" />
+    <rect x="160" y="60" width="40" height="32" class="d-hot-fill" />
+    <rect x="200" y="60" width="40" height="32" class="d-water" />
+    <rect x="240" y="60" width="80" height="32" class="d-muted" />
+    <rect x="320" y="60" width="80" height="32" class="d-muted" />
   </g>
-  <text class="d-sub" x="140" y="106" text-anchor="middle" style="font-size:9px">1 B</text>
-  <text class="d-sub" x="200" y="106" text-anchor="middle" style="font-size:9px">2 B</text>
-  <text class="d-sub" x="320" y="106" text-anchor="middle" style="font-size:9px">4 B</text>
-  <text class="d-sub" x="480" y="106" text-anchor="middle" style="font-size:9px">4 B</text>
-  <text class="d-sub" x="580" y="106" text-anchor="middle" style="font-size:9px">1 B</text>
+  <text class="d-tag" x="110" y="80" text-anchor="end" style="font-size:10px">compact · 7 B</text>
+  <text class="d-sub" x="280" y="80" text-anchor="middle" style="font-size:9px">u16 · 2 B</text>
+  <text class="d-sub" x="360" y="80" text-anchor="middle" style="font-size:9px">u16 · 2 B</text>
+  <text class="d-sub" x="140" y="106" text-anchor="middle" style="font-size:8.5px">1 B</text>
+  <text class="d-sub" x="180" y="106" text-anchor="middle" style="font-size:8.5px">1 B</text>
+  <text class="d-sub" x="220" y="106" text-anchor="middle" style="font-size:8.5px">1 B</text>
 
-  <!-- flags expand -->
-  <line x1="580" y1="92" x2="573" y2="124" stroke="#cf6a2a" stroke-width="1.2" />
-  <g>
-    <rect x="418" y="124" width="102" height="22" rx="4" class="d-panel-2" />
-    <text class="d-sub" x="469" y="139" text-anchor="middle" style="font-size:9px">bit 0 · 16-bit Δ</text>
-    <rect x="526" y="124" width="94" height="22" rx="4" class="d-panel-2" />
-    <text class="d-sub" x="573" y="139" text-anchor="middle" style="font-size:9px">bit 1 · polygon</text>
-    <rect x="626" y="124" width="80" height="22" rx="4" class="d-panel-2" />
-    <text class="d-sub" x="666" y="139" text-anchor="middle" style="font-size:9px">bit 2 · holes</text>
+  <!-- wide header ruler: 12 B, same scale, same left edge -->
+  <g stroke="#20301d" stroke-width="1">
+    <rect x="120" y="122" width="40"  height="32" class="d-forest" />
+    <rect x="160" y="122" width="40"  height="32" class="d-hot-fill" />
+    <rect x="200" y="122" width="80"  height="32" class="d-water" />
+    <rect x="280" y="122" width="160" height="32" class="d-muted" />
+    <rect x="440" y="122" width="160" height="32" class="d-muted" />
   </g>
+  <text class="d-tag" x="110" y="142" text-anchor="end" style="font-size:10px">wide · 12 B</text>
+  <text class="d-sub" x="240" y="142" text-anchor="middle" style="fill:#fff;font-size:9px">pts · 2 B</text>
+  <text class="d-sub" x="360" y="142" text-anchor="middle" style="font-size:9px">anchor X · i32 · 4 B</text>
+  <text class="d-sub" x="520" y="142" text-anchor="middle" style="font-size:9px">anchor Y · i32 · 4 B</text>
+
+  <!-- flags expand: the byte that decides which ruler you are reading -->
+  <line x1="180" y1="154" x2="112" y2="182" stroke="#cf6a2a" stroke-width="1.2" />
+  <g>
+    <rect x="60"  y="182" width="104" height="22" rx="4" class="d-panel-2" />
+    <text class="d-sub" x="112" y="197" text-anchor="middle" style="font-size:9px">bit 0 · 16-bit Δ</text>
+    <rect x="170" y="182" width="96"  height="22" rx="4" class="d-panel-2" />
+    <text class="d-sub" x="218" y="197" text-anchor="middle" style="font-size:9px">bit 1 · polygon</text>
+    <rect x="272" y="182" width="82"  height="22" rx="4" class="d-panel-2" />
+    <text class="d-sub" x="313" y="197" text-anchor="middle" style="font-size:9px">bit 2 · holes</text>
+    <rect x="360" y="182" width="80"  height="22" rx="4" class="d-hot-fill" />
+    <text class="d-sub" x="400" y="197" text-anchor="middle" style="fill:#fff;font-size:9px">bit 3 · wide</text>
+  </g>
+  <text class="d-sub" x="448" y="197" style="fill:#a9501c;font-size:9px">← picks the ruler</text>
 
   <!-- holes layout ribbon -->
-  <text class="d-tag" x="20" y="178">…and a polygon with holes, laid out</text>
+  <text class="d-tag" x="20" y="232">…and a polygon with holes, laid out</text>
   <g stroke="#3c6b39" stroke-width="1.2">
-    <rect x="24"  y="188" width="96"  height="34" class="d-hot-fill" />
-    <rect x="120" y="188" width="150" height="34" class="d-muted" />
-    <rect x="270" y="188" width="70"  height="34" class="d-amber" />
-    <rect x="340" y="188" width="64"  height="34" class="d-water" />
-    <rect x="404" y="188" width="130" height="34" class="d-muted" />
-    <rect x="534" y="188" width="64"  height="34" class="d-water" />
-    <rect x="598" y="188" width="98"  height="34" class="d-muted" />
+    <rect x="24"  y="242" width="96"  height="34" class="d-hot-fill" />
+    <rect x="120" y="242" width="150" height="34" class="d-muted" />
+    <rect x="270" y="242" width="70"  height="34" class="d-amber" />
+    <rect x="340" y="242" width="64"  height="34" class="d-water" />
+    <rect x="404" y="242" width="130" height="34" class="d-muted" />
+    <rect x="534" y="242" width="64"  height="34" class="d-water" />
+    <rect x="598" y="242" width="98"  height="34" class="d-muted" />
   </g>
-  <text class="d-sub" x="72"  y="209" text-anchor="middle" style="fill:#fff;font-size:9.5px">12 B header</text>
-  <text class="d-sub" x="195" y="209" text-anchor="middle" style="font-size:9.5px">exterior deltas</text>
-  <text class="d-sub" x="305" y="209" text-anchor="middle" style="fill:#3a2c10;font-size:9px">hole cnt</text>
-  <text class="d-sub" x="372" y="209" text-anchor="middle" style="fill:#fff;font-size:9px">h1 pts</text>
-  <text class="d-sub" x="469" y="209" text-anchor="middle" style="font-size:9.5px">hole 1 deltas</text>
-  <text class="d-sub" x="566" y="209" text-anchor="middle" style="fill:#fff;font-size:9px">h2 pts</text>
-  <text class="d-sub" x="647" y="209" text-anchor="middle" style="font-size:9.5px">hole 2 …</text>
+  <text class="d-sub" x="72"  y="263" text-anchor="middle" style="fill:#fff;font-size:9.5px">7 or 12 B hdr</text>
+  <text class="d-sub" x="195" y="263" text-anchor="middle" style="font-size:9.5px">exterior deltas</text>
+  <text class="d-sub" x="305" y="263" text-anchor="middle" style="fill:#3a2c10;font-size:9px">hole cnt</text>
+  <text class="d-sub" x="372" y="263" text-anchor="middle" style="fill:#fff;font-size:9px">h1 pts</text>
+  <text class="d-sub" x="469" y="263" text-anchor="middle" style="font-size:9.5px">hole 1 deltas</text>
+  <text class="d-sub" x="566" y="263" text-anchor="middle" style="fill:#fff;font-size:9px">h2 pts</text>
+  <text class="d-sub" x="647" y="263" text-anchor="middle" style="font-size:9.5px">hole 2 …</text>
 </svg>
-<figcaption>The exterior ring comes first; the hole count and each hole's deltas follow <b>only if</b> the holes flag is set, so a line or a simple polygon pays nothing for machinery it doesn't use. A <code>0xFF</code> style id — an impossible style — marks the end of features in a chunk, so the reader stops without needing a per-chunk feature count.</figcaption>
+<figcaption>Two layouts, one decision. <b>Flags sits at byte 1</b> in both, because its <b>wide</b> bit is what tells the reader how many bytes the header is — it has to be readable before anything behind it. The <b>compact</b> form spends one byte on the point count and two on each anchor; the <b>wide</b> form restores the <code>u16</code> count and signed <code>i32</code> anchors for the features that need them. Everything after the header is identical either way: the exterior ring first, then the hole count and each hole's deltas <b>only if</b> the holes flag is set, so a line or a simple polygon pays nothing for machinery it doesn't use. A <code>0xFF</code> style id — an impossible style — ends the features in a chunk.</figcaption>
 </figure>
+
+Why two forms? The 12-byte header was, at 66,910 features on that Freiburg map, **803 KB** — a third of the real data, for an average feature of 7.6 vertices, and eight of those twelve bytes were the anchor. But the anchor is already stored *relative to its leaf's corner*, and at fine zooms a leaf spans far less than the 65,535 µdeg (~7 km) a `u16` covers, so most of that width is zeroes. Hence the split: `u8` point count and `u16` anchors for the common feature, and a flag bit for the ones that genuinely don't fit — a feature with more than 255 vertices in its exterior, or a coarse-layer leaf big enough that its own corner is kilometres away. That is another ~335 KB, and it is why the reader must read flags first and derive the width, rather than assume it.
 
 There's a quiet payoff to the holes layout: a polygon's holes are just extra rings appended after the exterior. The [scanline fill](../rendering/#polygons-even-odd-scanline-fill) treats them as additional edges in the same crossing list, so holes "fall out" of the even-odd rule with no special case — the format and the rasteriser were designed to meet in the middle.
 
@@ -983,71 +1020,232 @@ On the host that's a slice of memory; on the device it's a file on the SD card. 
 
 The map's caches matter because the [stub-select collector](../rendering/#4-decode-by-priority) walks the same visible chunks twice per frame — once in pass A to pick the surviving features, once in pass B to re-decode the winners; without a cache, pass B would re-read every winner chunk off the SD. With it, pass B's winner chunks are already resident, and a slow pan re-hits last frame's chunks. The cache changes *when* a byte is read, never *what* decodes — so a render stays byte-identical whether the whole file was resident or streamed one chunk at a time.
 
-## The catalog — a third format, for finding the first two
+## The catalog — the map builder's source of truth
 
-Everything above is read by the device. There is one more format in the family that the device never sees, and it exists because of a single number in the OBCM header: the **version byte**.
+Everything above is read by the device. **OBCC**, the
+[catalog manifest](src:specs/OBCC_Spec.md), is read by the website and desktop
+app instead. It publishes one schema, presentation-only skins, named region
+selections, per-band cell indexes, and the OBCM cells those indexes describe.
+Each skin may also carry a digest-pinned square preview: the bakery stamps it
+onto one fixed Teningen map and draws it through the production renderer, so the
+chooser compares the real device styles rather than hand-made approximations.
 
-The reader supports exactly one OBCM version at a time — v10 today, and the versions before it were hard cuts, not fallbacks. That's the right trade for a microcontroller (no branching parsers, no dead code paths in 512 KB), and it costs nothing while maps are built one at a time on the rider's own machine. But a distribution that **bakes maps centrally** — build the popular regions once, serve them as static files — turns that one byte into a hazard: the artifacts are large, cached at the edge, and the day the format moves, every one of them silently becomes a file the device will refuse.
+The root is deliberately small. It pins every region cell list and band index by
+exact byte length and SHA-256; those indexes pin every cell artifact the same way. A
+consumer verifies each object before parsing or assembling it, so a partial
+publish, truncated response, or stale cache can never be mistaken for a map.
+The root also states the OBCM version read from the cells themselves, making an
+unsupported device visible before a large download.
 
-The fix is to make the version *knowable before the download*. **OBCC** — the [catalog manifest](src:specs/OBCC_Spec.md) — is a single JSON document listing every baked artifact with its region, preset, coverage box, size, digest, and the OBCM version **read out of the artifact's own header** rather than taken from the build recipe. The other half of the comparison comes from the device itself: it reports the OBCM version its reader accepts in the same open, pre-pairing identity read that carries its [store epoch](../companion-link/#store-epochs-which-id-era-youre-talking-to) — one byte, taken straight from the constant the reader validates every header against, so what a device claims to read and what it does read can't drift apart. A site holding the manifest can then grey out a map the connected device can't read, instead of streaming two hundred megabytes and failing at the last byte.
+The pin is also part of every referenced object's R2 key. A cell named locally
+as `1052.obcm`, for example, is published as `1052.<sha256>.obcm`; band indexes,
+region lists, and skin previews follow the same rule. Publishing a new root never
+overwrites bytes an older browser root still names, so an edge cache cannot pair
+a new digest with an old stable-path response. Unchanged cells keep the same key,
+which preserves resumable, upload-skipping planet publishes without copying a
+whole generation into a new directory. The consumer also verifies that every URL
+contains the digest stated beside it before making the request.
+
+Named regions carry their byte totals, cell counts, and partial-cell counts per
+band in that root. The builder can therefore price a region and distinguish a
+normal partial coarse-context cell from an incomplete detail or routing cell
+before fetching the region's satellite. The per-band partial split was added
+directly to the current OBCC v2 contract: it is required, includes zeroes, and
+replaces a redundant aggregate partial count.
+
+Planet coverage introduces a second, deliberately byte-free index entry:
+**known-empty** cells. The bakery records compact same-row ranges when a covering
+source proves that a band's canonical payload is empty. They count as coverage,
+so the builder does not hatch them as holes, but they cost zero and trigger no
+R2 request. Their identities still reach the shared assembler, which includes
+them in its bbox and hole arithmetic and emits empty leaves at their positions.
+This keeps a selected empty edge square without storing millions of empty OBCM
+objects. Absence from both the artifact list and these ranges remains a real
+coverage hole.
+
+A region is not a prebuilt map. It is a drawable outline plus stored cell ids.
+The outline is presentation-only: the stored list avoids a simplification error
+or point-in-polygon disagreement dropping an edge cell. Boxes and GPX corridors
+resolve through the same grid arithmetic, and unions deduplicate overlapping
+parts before the builder prices or downloads them.
+
+The catalog has exactly one schema. Feature selection, style ids, the LOD ladder,
+band layout, routing parameters, and chunk size all live there and determine the
+cell bytes. Skins carry only colours, weights, dashes, z-order, priority, and the
+marker colour; the assembler stamps the chosen skin onto its output. A skin
+change is therefore free, while a schema-revision or OBCM-version change is a
+hard cut requiring one consistent new store. The preview is presentation only;
+its bytes cannot affect selection, pricing, or assembled output.
+
+[`obc-bake`](src:host/obc-bake) fills that store from ordinary Geofabrik
+extracts. Positional region ids select a subset; no ids means every entry in
+[`regions.toml`](src:host/obc-bake/regions.toml). Several neighbouring extracts
+are co-ingested for the cells they share, so border cells contain both sides.
+A cell whose source polygons do not cover its complete square is explicitly
+`partial`, never silently canonical.
+
+Publishing uploads cells and satellites first, checks that every object is
+fetchable at the expected size, and replaces `catalog.json` last. A failure
+before that final swap leaves the previous complete root authoritative. The
+normative envelope, validation rules, URL restrictions, and publish order are
+in [`OBCC_Spec.md`](src:specs/OBCC_Spec.md).
+
+## Cells and assemblies
+
+The grid, cell cutter, catalog, schema/skin split, native assembler, browser wasm
+bridge, and coverage-selection UI are the current map-building path. Both the
+website and desktop app use them: regions, drawn boxes, and corridors buffered
+around GPX routes all become cell sets, and the same worker assembles identical
+volume-set bytes. The desktop host differs only at the edge, where it fetches
+through a native same-origin HTTPS transport and saves the files atomically into
+one local folder.
+
+The device's multi-file reader and direct send consume that same assembled set.
+The builder can save every file or stream them to a connected device one
+verified shard at a time, committing the manifest last so an interrupted send
+never mounts as a partial map. Manual single-file upload remains only for maps
+obtained elsewhere.
+
+That only works if assembling is nearly free, and the reason it is nearly free
+is a piece of arithmetic already sitting in the format.
+### The alignment trick
+
+Recall two facts from further up this page: an OBCM [quadtree](#the-quadtree-index) subdivides its header bbox at **integer floor-midpoints**, and a feature's [anchor](#features-an-anchor-then-deltas) is stored relative to its **leaf's** minimum corner. Now put cells on a fixed global lattice of **power-of-two microdegree squares** sharing one origin, and give an assembly a bbox that is a grid-aligned power-of-two square.
+
+Halving a power of two is exact, so the assembly's quadtree lands on cell boundaries *to the microdegree* — at one specific depth, the tree's nodes **are** the cells. And because anchors are leaf-relative and the leaf boxes are bit-identical in the cell file and in the assembly, every byte of a cell's chunks decodes to the same absolute geometry in both. The assembler copies chunk payloads **verbatim**.
 
 <figure class="fig">
-<svg viewBox="0 0 720 232" role="img" aria-label="The catalog flow. A bake job packs regions into .obcm artifacts and generates the OBCC manifest, recording each artifact's obcm version read from its own header plus its size, digest and coverage box. A static site reads the manifest. A connected device reports the obcm version its reader accepts in its open identity read. The site compares the two versions per map and either offers the download or greys it out with the reason.">
+<svg viewBox="0 0 720 268" role="img" aria-label="The alignment trick. On the left, a fixed lattice of power-of-two microdegree cells with a selection drawn across four of them; each selected cell is a separately baked .obcm file. On the right, the assembled file's quadtree: a root over a grid-aligned power-of-two square, subdividing by floor midpoints until, at one depth, its nodes are exactly the cells. An arrow between them is labelled chunk bytes copied verbatim, while the header, style table, POIs and navigation graph are rebuilt.">
   <defs>
-    <marker id="aCC" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
-    <marker id="aCC2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
+    <marker id="aCA" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
   </defs>
-  <text class="d-tag" x="20" y="24">Both versions known before a byte moves</text>
+  <text class="d-tag" x="20" y="24">Subdivision lands on cell boundaries</text>
 
-  <!-- bakery -->
-  <rect class="d-panel-2" x="24" y="60" width="140" height="56" rx="10" />
-  <text class="d-label" x="94" y="84" text-anchor="middle">bake job</text>
-  <text class="d-sub" x="94" y="100" text-anchor="middle">packs regions</text>
+  <!-- left: the lattice -->
+  <text class="d-label" x="30" y="52">the catalog</text>
+  <text class="d-sub" x="30" y="67">one cell = one baked .obcm</text>
+  <g>
+    <rect class="d-panel-2" x="30" y="80" width="72" height="72" />
+    <rect class="d-panel-2" x="102" y="80" width="72" height="72" />
+    <rect class="d-panel-2" x="30" y="152" width="72" height="72" />
+    <rect class="d-panel-2" x="102" y="152" width="72" height="72" />
+    <rect class="d-panel-2" x="174" y="80" width="72" height="72" style="fill:#f2efe2" />
+    <rect class="d-panel-2" x="174" y="152" width="72" height="72" style="fill:#f2efe2" />
+    <!-- the selection -->
+    <path class="d-hot" d="M46 96 L152 96 L152 138 L128 138 L128 200 L46 200 Z" stroke-dasharray="5 3" />
+    <text class="d-sub" x="38" y="118" style="font-size:9px">18/1204/1052</text>
+    <text class="d-sub" x="110" y="118" style="font-size:9px">…/1053</text>
+    <text class="d-sub" x="182" y="118" style="font-size:9px;fill:#b9b09a">not selected</text>
+  </g>
+  <text class="d-sub" x="30" y="243" style="font-size:9px;fill:#a9501c">selection (dashed) → the cells it touches</text>
 
-  <!-- manifest -->
-  <line class="d-flow" x1="164" y1="88" x2="204" y2="88" marker-end="url(#aCC)" />
-  <rect class="d-panel" x="210" y="48" width="190" height="80" rx="10" />
-  <text class="d-label" x="305" y="70" text-anchor="middle">OBCC manifest</text>
-  <text class="d-sub" x="305" y="88" text-anchor="middle" style="font-size:9px">per artifact: region · preset</text>
-  <text class="d-sub" x="305" y="102" text-anchor="middle" style="font-size:9px">bbox · size · SHA-256</text>
-  <text class="d-sub" x="305" y="118" text-anchor="middle" style="font-size:9px;fill:#a9501c">obcm_version — from the header</text>
+  <!-- arrow -->
+  <line class="d-flow" x1="256" y1="150" x2="360" y2="150" marker-end="url(#aCA)" />
+  <text class="d-sub" x="308" y="132" text-anchor="middle" style="fill:#a9501c;font-size:9.5px">chunk bytes</text>
+  <text class="d-sub" x="308" y="145" text-anchor="middle" style="fill:#a9501c;font-size:9.5px">copied verbatim</text>
+  <text class="d-sub" x="308" y="172" text-anchor="middle" style="font-size:9px">no decode</text>
+  <text class="d-sub" x="308" y="184" text-anchor="middle" style="font-size:9px">no GEOS</text>
 
-  <!-- site -->
-  <line class="d-flow" x1="400" y1="88" x2="440" y2="88" marker-end="url(#aCC)" />
-  <rect class="d-hot" x="446" y="56" width="130" height="64" rx="11" style="fill:#f8efe4" />
-  <text class="d-label" x="511" y="82" text-anchor="middle" style="fill:#a9501c">static site</text>
-  <text class="d-sub" x="511" y="100" text-anchor="middle" style="font-size:9px">compares per map</text>
-
-  <!-- device -->
-  <rect class="d-panel-2" x="446" y="156" width="130" height="56" rx="10" />
-  <text class="d-label" x="511" y="180" text-anchor="middle" style="font-size:10.5px">device</text>
-  <text class="d-sub" x="511" y="196" text-anchor="middle" style="font-size:9px">reads OBCM v10</text>
-  <line class="d-flow" x1="511" y1="154" x2="511" y2="122" marker-end="url(#aCC)" />
-  <text class="d-sub" x="522" y="142" style="font-size:8.5px">identity read</text>
-
-  <!-- outcomes -->
-  <line class="d-flow" x1="576" y1="76" x2="612" y2="66" marker-end="url(#aCC)" />
-  <text class="d-sub" x="620" y="62" style="font-size:9px;fill:#2c5230">match → offered,</text>
-  <text class="d-sub" x="620" y="75" style="font-size:9px;fill:#2c5230">digest-verified</text>
-  <line x1="576" y1="100" x2="612" y2="110" stroke="#cf6a2a" stroke-width="1.6" marker-end="url(#aCC2)" />
-  <text class="d-sub" x="620" y="108" style="font-size:9px;fill:#c0492e">mismatch → greyed</text>
-  <text class="d-sub" x="620" y="121" style="font-size:9px;fill:#c0492e">out, with reason</text>
+  <!-- right: the assembled tree -->
+  <text class="d-label" x="392" y="52">the assembly</text>
+  <text class="d-sub" x="392" y="67">bbox = grid-aligned 2ⁿ square</text>
+  <circle cx="470" cy="92" r="11" class="d-forest" />
+  <text class="d-sub" x="490" y="96" style="font-size:9px">root — rebuilt</text>
+  <line class="d-flow" x1="463" y1="101" x2="432" y2="126" />
+  <line class="d-flow" x1="477" y1="101" x2="508" y2="126" />
+  <circle cx="426" cy="136" r="10" class="d-forest" />
+  <circle cx="514" cy="136" r="10" class="d-forest" />
+  <line class="d-flow" x1="420" y1="145" x2="400" y2="170" />
+  <line class="d-flow" x1="432" y1="145" x2="452" y2="170" />
+  <line class="d-flow" x1="508" y1="145" x2="488" y2="170" />
+  <line class="d-flow" x1="520" y1="145" x2="540" y2="170" />
+  <rect class="d-panel" x="376" y="176" width="48" height="30" rx="5" />
+  <rect class="d-panel" x="432" y="176" width="48" height="30" rx="5" />
+  <rect class="d-panel" x="488" y="176" width="48" height="30" rx="5" />
+  <rect class="d-panel-2" x="544" y="176" width="48" height="30" rx="5" style="fill:#f2efe2" />
+  <text class="d-sub" x="400" y="196" text-anchor="middle" style="font-size:9px">cell</text>
+  <text class="d-sub" x="456" y="196" text-anchor="middle" style="font-size:9px">cell</text>
+  <text class="d-sub" x="512" y="196" text-anchor="middle" style="font-size:9px">cell</text>
+  <text class="d-sub" x="568" y="196" text-anchor="middle" style="font-size:9px;fill:#b9b09a">empty</text>
+  <path class="d-hot" d="M370 170 L598 170" stroke-dasharray="4 3" />
+  <text class="d-sub" x="604" y="174" style="font-size:9px;fill:#a9501c">cell depth</text>
+  <text class="d-sub" x="392" y="228" style="font-size:9.5px">rebuilt: header · style table · upper index</text>
+  <text class="d-sub" x="392" y="243" style="font-size:9.5px">rebuilt: POIs + hours · the navigation graph</text>
 </svg>
-<figcaption>The manifest states each artifact's version as read from its own bytes; the device states the version its reader accepts in its open identity read. The site compares the two per map — a mismatch is shown as unsupported with the reason, never hidden (that would read as a coverage hole) and never offered (the download would be refused).</figcaption>
+<figcaption>The cells are the quadtree's own nodes at one depth, so the assembler writes fresh index nodes above them and <b>copies</b> everything below. A missing cell is an empty leaf, which the renderer already paints backdrop over — so a selection with holes is legal by construction, not a special case. What it cannot copy is anything addressed absolutely or file-locally: POI coordinates, the hours pool's indices, and every id in the navigation graph.</figcaption>
 </figure>
 
-The generator keeps the manifest honest in a few deliberate ways:
+So assembly is a streaming concatenation plus a handful of rebuilds — no GEOS, no re-simplification, nothing decoded — which is exactly the budget a browser tab has. The [`OBCA_Spec.md`](src:specs/OBCA_Spec.md) §2 states this as a theorem and proves it in integer arithmetic, because "the midpoints happen to line up" is not something to leave to a comment.
 
-- **All-or-nothing versioning.** It refuses to emit a manifest whose artifacts aren't all at the packer's current OBCM version, so a half-re-baked catalog is a failed build rather than a published one; and it writes temp-file-then-rename, so a consumer sees the whole previous manifest or the whole new one — a truncated catalog can't parse.
-- **The `bbox` is the coverage box** copied from the artifact header, not the extract box it was cut from — completing partially-in-box ways pushes the packed box outward, so the header box is the honest answer to *what does this download cover?* (and must never be fed back in as an extract box, or it ratchets wider on every re-pack).
-- **Facts the bytes can't state** — region name, build time, source extract, the style-preset revision it was packed with — are recorded by the bake job in a sidecar and read back verbatim, never re-derived at generation time. A preset restyle invalidates only that preset's artifacts, so partial re-bakes are normal; recording the preset revision at bake time lets the manifest say plainly that a map is a revision behind.
-- **Deterministic output.** The generator reads a wall clock exactly once (`generated_at`); build times come from the bake and ordering is content-derived, so the same tree produces byte-identical output.
+### Seams that are correct, not close
 
-The manifest layout, the bake-tree shape, the sidecar, and the version law are normative in [`OBCC_Spec.md`](src:specs/OBCC_Spec.md); it is generated by `obc-pack catalog`.
+Every cell edge is a border, so the navigation graph is where this gets interesting. A cell cuts routable ways at the **exact** edge and materialises a junction on the boundary line, computed the same way by both neighbours — canonically ordered endpoints, integer interpolation, banker's rounding — so the two cells produce the *same integer coordinate* and the assembler joins the stubs by exact equality.
 
-The "bake job" in all of that is [`obc-bake`](src:host/obc-bake): a curated list of regions ([`regions.toml`](src:host/obc-bake/regions.toml) — DACH to start, one line per region so adding coverage is a one-line change) crossed with the shipped style presets. Per (region, preset) it fetches or reuses the Geofabrik extract, packs, and — before the artifact is allowed to exist under a name the generator would walk — **opens it with the real `obc-reader` and walks every feature of every chunk**. A corrupt or truncated artifact therefore never reaches the manifest, because it never reaches the tree; a re-run skips whatever is unchanged, keyed on the content hashes of the extract and the preset rather than on timestamps; and a region that fails is loud in the summary and in the exit status, because a silently missing region reads to a rider as *not covered*, which is indistinguishable from a curation choice. (The facts that live only in the *sidecar* — a region's display name, the extract's date — are keyed separately, so re-dating an otherwise identical extract rewrites four lines of JSON instead of re-packing a country.)
+Exact equality is not a simplification; it is the only safe rule, and that came out of measurement. Across two independently packed extracts, 21 144 junctions matched **bit-identically** and *nothing* fell in the 1 m / 10 m / 100 m near-miss buckets: the whole graph path is integer and deterministic, so a junction is either the same pair of integers or it is not there. But at a *cell* seam cut from one source, genuinely different junctions sit as close as **3.9 metres** — because a node is only a junction if two of the ways *that run saw* touch it. An epsilon snap of any useful size would fuse a bridge to the road beneath it. So there is no tolerance knob, and the spec says there must never be one.
 
-Publishing follows the same one-way order the spec demands: every artifact uploaded and re-checked at the destination first, the manifest swapped in last. It also refuses, by default, to publish a catalog *smaller* than the one already live — ordering makes a publish atomic, but nothing about it stops a partial bake from completing successfully and quietly un-offering fifteen regions, which is the same coverage hole arriving by a different road.
+The other seam rule is about what a cell is allowed to throw away. The packer drops tiny disconnected components as "islands", and at cell scale that judgement is wrong: a good road can look like a stub in *each* of two cells while being continuous once assembled. So a cell bake prunes only components **strictly interior** to it, and the real pruning pass runs at assembly, where component sizes are finally true.
+
+### Schema and skin
+
+A style preset mixed two very different things. **Schema** — which feature types exist, at which LOD, the ladder, the simplification tolerances — is baked into chunk bytes, and in particular it fixes the [style *ids*](#the-header) every feature header references. **Skin** — the colours, weights, dashes, z-order, and the marker colour — is the ~2 KB style table and nothing else.
+
+Cells are stored per schema; the hosted catalog has exactly **one** (the seven-LOD bikepacking ladder, the one measured to render inside the device's RAM and complexity budget), so the planet-shaped store exists once. Skins are then free: stamping one onto an assembly rewrites two kilobytes. The product builders can clone Default or Dusk and edit colours, widths, dashes, z-order, and the marker colour; an interactive Teningen viewport is redrawn through the production renderer as those values or its camera change. Its scale readout and LOD come from that renderer path, while the camera is clamped to the fixture's baked coverage. Custom skins stay in browser storage under the catalog's schema id and revision; their picker images are regenerated in memory through that same renderer instead of adding PNG/base64 data to the saved records. The separate maintainer editor remains the place to change the baked schema and LODs. A restyle can no longer leave an artifact a revision behind, because nothing is baked to be behind.
+
+The shipped documents say which half they are. [`builder/presets/`](src:builder/presets) holds one `schema.json` — a complete packer config, id `bikepacking` — and a `skins/` set beside it. Each skin restates the presentation values for the schema's feature types and nothing else. Merge passes can retag several identically rendered feature types to one canonical style id, so a skin must keep those merged styles identical too. Three rules make that safe rather than merely tidy, and all three are checked by the catalog generator and bakery before the first cut: a skin covers **every** schema feature type, cannot add, drop, or renumber one, and carries **nothing but presentation** — no ladder, tolerances, merge passes, routing table, or per-style `min_lod`. A document that breaks those rules describes a different schema and therefore a different cell store.
+
+### One map, several files
+
+The last piece is a ceiling. Germany alone projects to 5.8–7.1 GiB at this schema and DACH to 7.6–8.9 GiB, and **two independent 4 GiB walls** stand in the way: FAT32 caps one file at 4 GiB − 1, and OBCM's own offsets — section offsets, per-LOD chunk offset tables, and `Edge Id` as a pool byte offset — are `uint32` throughout, so a single `.obcm` cannot address past 4 GiB on *any* filesystem.
+
+So a logical map is a **volume set**: a tiny fixed-layout manifest plus 1..N ordinary OBCM files, each inside the ceiling, and invisible in every interface — the device and the builder both show one map.
+
+- **One core file** carries the style table, the single unified navigation graph, and the POIs — and *no map geometry whatsoever*. Routing therefore never crosses a file, and the router is untouched.
+- **One coarse shard** spans the whole map and carries the three coarsest LODs, so a zoomed-out view is still a single-file read. It is a shard rather than part of the core for one reason, below.
+- **Geometry shards** carry the finer LODs and tile the assembly bbox. They are cell-aligned squares, so each one is a *valid* OBCM map in its own right and `uint32` offsets stay valid per file — no 64-bit bump anywhere.
+- **A viewport query goes to every shard whose box it touches.** A shard that does not carry the requested LOD has an empty index for it and contributes nothing, so the dispatch needs no notion of roles. Each file's "which LODs am I empty at" answer is cached at mount from its own LOD table — seven bits per file — so the role-free dispatch costs no reads either.
+- **The manifest is written last.** A half-uploaded set has no manifest and never mounts — and a shard on its own is never mounted as a standalone map, even though it would open, because a map with no roads is exactly the kind of quiet wrongness a rider cannot diagnose.
+- **A small map is a set of one**, which is nearly every selection: a country is under a gigabyte, a 300 km corridor around a trip's routes projects to about a quarter of one.
+
+Mounting preserves that one-map illusion all the way through the UI. The runtime opens every shard
+for the mount lifetime, parses the full style and LOD tables once from the core, and keeps only each
+other shard's bbox, LOD ladder and empty-LOD mask. The app then renders either a single-file reader
+or the mounted set through the same `MapScene` seam: viewport geometry fans out, while POIs, opening
+hours and routing continue to use the core reader; route overlays and the rest of the UI are unchanged.
+On the device each open shard also
+gets a resident FAT extent table, so panning across a shard boundary is bbox dispatch plus direct
+block reads—not a directory lookup or FAT-chain walk in the render loop. A missing shard, mismatched
+size/bbox/LOD ladder/style table, unsupported version, or target-specific handle limit refuses the
+whole mount before a pixel is drawn; it never degrades into a map with a quiet hole.
+
+The reason the coarse LODs are a shard and not part of the core is that the core is the **one component of a set that cannot be split by box**. Every shard tiles: more ground means more shards, each one comfortably inside the ceiling. But the navigation graph is *one* graph, in one file, until the router learns to route across a seam — so the core's remaining headroom under 4 GiB − 1 is the scarcest number in the design, and nothing that has somewhere else to go may spend it. Coarse geometry has somewhere else to go.
+
+What that leaves is a map whose limit is a single sentence: **one map reaches the ceiling when its navigation graph alone does.** Nav plus POIs measure 3.8–7.1 MiB per 1000 km², so a DACH core is 2.8–3.0 GiB, and the graph alone hits the wall at roughly 640–700 thousand km² — enough for DACH and its northern and eastern neighbours, not enough for DACH plus France. No geometry decision can move that number in either direction, which is exactly the property worth having.
+
+And the limit is never met at runtime. Every file's size is *computable from the catalog before a single byte is downloaded* — the sum of the cell sizes it will carry plus fixed overheads — so a builder refuses an over-ceiling selection up front, naming the navigation graph, and the assembler and its verify pass reject one again before writing. Density growth degrades to a sentence in a dialog, never to a truncated offset on a card.
+
+There is a *second* ceiling when the assembly happens in a browser, and it is the tighter one: wasm32 has a 4 GiB address space, and a run has to hold the cells, the finished set and the graph rewrite's working memory at once. That last term is the expensive one — measured at about 6.4 bytes resident per byte of rebuilt navigation graph — so it is projected from the same catalog numbers, the same way, before the download. Switzerland as one map lands at roughly 3.2 GB and is about the largest thing a tab can do; DACH does not fit at all, and says so up front rather than by crashing after ten minutes of downloading.
+
+That second projection deserves a wider error bar than the file-size one above it, and the builder shows it as one. A file's size is *arithmetic* — the cells it carries plus fixed overheads, exact before anything is downloaded. The memory model is a straight-line extrapolation from a **single measured run**, and the budget it is compared against (3 GiB of the 4) is a judgement rather than a limit anyone publishes: browsers do not promise how much of the address space a tab gets, and an allocation wasm cannot serve kills the module outright, with no error left to render. So a comfortable "does not fit" is trustworthy, and that is the verdict worth acting on; a "fits" with two per cent to spare — which is exactly where Switzerland lands — means *probably*, and reads as a warning rather than a green light.
+
+The measurement behind all of these numbers — where the bytes actually are, per LOD, per cell, at candidate cell sizes — is [`cell_size_survey.rs`](src:host/obc-pack/examples/cell_size_survey.rs), and it is what settled the band sizes and the DACH shape above: a core of 2.8–3.0 GiB, one coarse shard of 225–296 MiB, and about six geometry shards holding 4.6–5.5 GiB.
+
+### Baking cells from regions or the planet
+
+The same cell tree has two source paths. A scoped bake works from ordinary Geofabrik extracts: each named region is resolved to the cells its **coverage polygon** touches — the region's own `.poly`, read at full resolution, not the simplified outline the catalog draws and not a bounding box, because a box around Germany reaches into four other countries and would bake a slab of empty cells in each.
+
+Which leaves the interesting question: who bakes the cells on a border? A cell cut from the German extract alone is missing every Swiss side road, and measured in the double-covered band only about half of each file's junctions exist in the other's — so publishing it as full coverage would be a quiet lie. The rule the bakery uses is that a cell's **source set** is every co-baked extract whose polygon touches its square, and the cell is cut **once, from exactly that set**. Two countries baked together therefore run three cuts — Germany-only cells, Switzerland-only cells, and the border cells cut from *both* extracts at once — and a cell is published as canonical only when the union of its own sources covers its whole square. Everything else is flagged `partial`, which the catalog carries per cell and the builder will draw as a warning inside the selection rather than as covered ground.
+
+Two properties make that safe rather than merely plausible. The source set is a **pure function** of the cell and the run's extracts — no ordering, no first-writer-wins — which is what the format's determinism requirement demands of a tie-break. And a canonical cell is **never** replaced by a partial one: baking Switzerland alone after a joint bake re-cuts the border cells, finds them thinner than what is already published, and keeps the published ones. The skip state has two keys: a plan whose every cell is current is skipped *before* its extracts are read, while a re-dated but byte-identical extract rewrites sidecars and cuts nothing.
+
+The whole-planet path cannot hand the planet PBF to that same retained ingest: peak memory would be the planet. It first uses Osmium's reference-complete `smart` extraction in a **binary hierarchy**, so one extraction call owns at most two outputs, and stops at source leaves aligned to every published cell band. The Rust cutter then ingests exactly one leaf at a time. Source-leaf hashes, per-leaf recipe state, and cell hashes make an interrupted run resumable without trusting a merely present file.
+
+After the bootstrap snapshot, the cached planet advances through the official OSM replication state embedded in its PBF header. Pyosmium applies bounded batches through its own temporary output and replaces the cached source only after a successful batch, so a network failure leaves a complete sequence that the next run can resume. A source older than the replication tool's 90-day safety window is refreshed from `planet-latest` instead. Local `--source` files are fixed inputs and are never modified.
+
+The replication stream says which OSM objects changed, but it is deliberately **not** the cell invalidation oracle. A deleted node has no useful new bounding box, and changing a relation's members can affect geometry far from the relation record. The bakery therefore re-extracts the complete post-update source leaves and compares their canonical bytes with the previous generation. Osmium does not carry the planet's replication header into these extracts, so a sequence-only header change leaves every geographic hash stable. Byte-identical leaves only refresh source provenance; a different hash re-cuts that leaf's complete cell set, including removal of old artifacts when a cell has become empty. This costs a sequential planet re-shard but avoids the much more expensive retained Rust ingest and OBCM encode for every unchanged leaf, without guessing about deletion or relation reach.
+
+Featureless output is still coverage. Rather than retain millions of empty OBCM files, the bakery removes those artifacts and folds their identities into the catalog's known-empty row ranges; ordinary artifacts and those zero-byte claims together must cover every geographic cell. A local planet-completion record stays false until every expected leaf succeeds. The verifier and publisher consult it because a catalog can validate every claim it contains, but cannot infer a global cell that was never written. The curated region list remains useful in planet mode: its polygons produce the same named selections without downloading or ingesting the regional PBFs.
+
+The grid, theorem, seam rules, assembly contract, volume-set manifest bytes, and provenance rule that stops a partially covered border cell from passing as canonical are normative in [`OBCA_Spec.md`](src:specs/OBCA_Spec.md); the catalog that publishes cells, skins, and cell-set regions is [`OBCC_Spec.md`](src:specs/OBCC_Spec.md).
 
 ---
 
@@ -1057,12 +1255,18 @@ Publishing follows the same one-way order the spec demands: every artifact uploa
 - The canonical POI category/subtype ids and fallback labels (shared by reader + packer): [`obc-formats/src/obcm.rs`](src:firmware/obc-formats/src/obcm.rs); the packer's OSM-tag classifier stays in [`obc-pack/src/poi.rs`](src:host/obc-pack/src/poi.rs)
 - The route-corridor POI query, its `RoutePath` seam and the projection maths: [`obc-reader/src/corridor.rs`](src:firmware/obc-reader/src/corridor.rs)
 - Route reader, index, and decode: [`obc-route/src/reader.rs`](src:firmware/obc-route/src/reader.rs); the GPX `<sym>`/`<type>` → category table: [`obc-route/src/symbol.rs`](src:firmware/obc-route/src/symbol.rs)
-- The recorded-track log + its GPX export: [`obc-route/src/track.rs`](src:firmware/obc-route/src/track.rs); the ride object (v1/v2) codec + the Finish-time converter: [`obc-route/src/ride.rs`](src:firmware/obc-route/src/ride.rs)
+- The recorded-track record layout and codec: [`obc-formats/src/track.rs`](src:firmware/obc-formats/src/track.rs); its streaming GPX export: [`obc-route/src/track.rs`](src:firmware/obc-route/src/track.rs); the ride object (v1/v2) codec: [`obc-formats/src/ride.rs`](src:firmware/obc-formats/src/ride.rs); the Finish-time converter: [`obc-route/src/ride.rs`](src:firmware/obc-route/src/ride.rs)
 - The browser's copy of both converters — a thin wasm shim over the same routines, plus the error vocabulary a dropped file needs: [`obc-web-convert`](src:apps/obc-web-convert)
 - Checked-in bytes both directions are held to (a route and its OBCR, a track log and its GPX export): [`specs/vectors/`](src:specs/vectors)
 - Normative OBCM / OBCR / ride / track constants, primitive codecs, and the shared byte seam: [`obc-formats`](src:firmware/obc-formats)
 - The byte-level specs: [`OBCM_Spec.md`](src:specs/OBCM_Spec.md) · [`OBCR_Spec.md`](src:specs/OBCR_Spec.md) · [`obc-ble-interface-spec.md`](src:specs/obc-ble-interface-spec.md) (the wire contract routes/rides cross to the companion app)
 - The catalog manifest — spec [`OBCC_Spec.md`](src:specs/OBCC_Spec.md), generator [`obc-pack/src/catalog.rs`](src:host/obc-pack/src/catalog.rs), JSON Schema [`catalog.schema.json`](src:host/obc-pack/schema/catalog.schema.json)
-- The bakery that fills the tree the generator walks, and publishes it — the curated region list [`regions.toml`](src:host/obc-bake/regions.toml), the runner [`obc-bake/src/bake.rs`](src:host/obc-bake/src/bake.rs), the read-it-back gate [`obc-bake/src/verify.rs`](src:host/obc-bake/src/verify.rs), the ordered publish [`obc-bake/src/publish.rs`](src:host/obc-bake/src/publish.rs)
+- The cell catalog the section above describes — producer [`catalog.rs`](src:host/obc-pack/src/catalog.rs), region-outline reduction [`catalog/boundary.rs`](src:host/obc-pack/src/catalog/boundary.rs), and JSON Schema [`catalog.schema.json`](src:host/obc-pack/schema/catalog.schema.json)
+- The cell grid, the assembly contract, and the volume-set manifest: [`OBCA_Spec.md`](src:specs/OBCA_Spec.md); the byte-density measurement its band sizes come from: [`cell_size_survey.rs`](src:host/obc-pack/examples/cell_size_survey.rs)
+- The cell cutter — the grid arithmetic, cell ids and band table in [`obc-pack/src/grid.rs`](src:host/obc-pack/src/grid.rs), the cut itself (clip at the edge, the deterministic boundary junctions, interior-only pruning, provenance) in [`obc-pack/src/cut.rs`](src:host/obc-pack/src/cut.rs)
+- The assembler that puts the cells back together — [`obcm-assemble`](src:host/obcm-assemble): the verbatim graft in [`graft.rs`](src:host/obcm-assemble/src/graft.rs), the POI/hours merge in [`poi.rs`](src:host/obcm-assemble/src/poi.rs), the seam unification and graph rewrite in [`nav.rs`](src:host/obcm-assemble/src/nav.rs), the volume set and its manifest in [`shard.rs`](src:host/obcm-assemble/src/shard.rs), and the read-it-back gate in [`verify.rs`](src:host/obcm-assemble/src/verify.rs). It carries no geometry library and compiles for the browser, which is the whole point. The proof that a grafted map is the map: [`tests/oracle.rs`](src:host/obcm-assemble/tests/oracle.rs) renders and routes `assemble(cut(X))` against `pack(X)`
+- The browser running exactly that engine — [`obc-web-assemble`](src:apps/obc-web-assemble), the wasm bridge the hosted builder assembles through. It adds no format knowledge: a byte-buffer adapter, a typed error vocabulary, and a progress/abort seam built out of the engine's own clock and shard-store traits. Its output is pinned byte-for-byte against the native CLI's from both sides — natively in `tests/determinism.rs`, and from Node against the wasm build in `bridge.test.ts`
+- The bakery that fills the tree and publishes it — curated region list [`regions.toml`](src:host/obc-bake/regions.toml), scoped cell runner [`obc-bake/src/cells.rs`](src:host/obc-bake/src/cells.rs), hierarchical planet runner [`obc-bake/src/planet.rs`](src:host/obc-bake/src/planet.rs), read-it-back gate [`obc-bake/src/verify.rs`](src:host/obc-bake/src/verify.rs), and ordered publish [`obc-bake/src/publish.rs`](src:host/obc-bake/src/publish.rs)
+- The bakery's **cell** path — region → cell sets and the co-baked source-set rule in [`obc-bake/src/cells.rs`](src:host/obc-bake/src/cells.rs), the `.poly` coverage geometry that decides both the selection and `partial` in [`obc-bake/src/coverage.rs`](src:host/obc-bake/src/coverage.rs), the lockstep guard in [`obc-bake/src/guard.rs`](src:host/obc-bake/src/guard.rs)
 
 Maps are produced by the packer and routes by the GPX converter — how those work, and how a route is matched to the map you're riding, is the subject of [packer & routing](../packer-routing/). For how these bytes become pixels, see the [rendering pipeline](../rendering/). Routes and rides also cross to a phone over Bluetooth as *these same bytes* — how that link is shaped is [the companion link](../companion-link/).

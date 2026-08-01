@@ -25,7 +25,6 @@
 //! shared with the control plane as a `RefCell` that is **never borrowed across an `await`**.
 
 use core::cell::RefCell;
-use core::sync::atomic::Ordering;
 
 use defmt::{info, warn};
 use embassy_futures::select::{select, Either};
@@ -111,6 +110,16 @@ pub(crate) async fn serve_coc(
                 Armed::Echo(desc) => run_echo(stack, server, &mut ch, &desc, &mut buf).await,
                 Armed::Upload(desc, rx) => run_upload(stack, server, store, shared, &mut ch, &desc, rx, &mut buf).await,
                 Armed::Download(desc) => run_download(stack, server, store, shared, &mut ch, &desc, &mut buf).await,
+                // Unreachable by construction: `classify_transfer` refuses every map-payload type
+                // on the radio (spec §10 — a DACH-shaped volume set is 7.6–8.9 GiB), so a set
+                // descriptor never arms a BLE data plane. Answered rather than `unreachable!()`,
+                // because a panic here would be a reset on a link a peer can drive.
+                Armed::SetShard(desc, ..) | Armed::SetManifest(desc, ..) => {
+                    warn!("ble: [coc] a volume-set transfer reached the radio — refusing (spec §10)");
+                    close_transfer();
+                    notify_status(server, stack, transfer_result(desc.object_id, TransferStatus::Error)).await;
+                    TransferOutcome::Answered
+                }
             };
             if let TransferOutcome::ChannelDropped = outcome {
                 warn!("ble: [coc] channel dropped mid-transfer — re-accepting (uploads restart)");
@@ -134,7 +143,7 @@ enum TransferOutcome {
 /// arriving after the clear belongs to the next armed descriptor.
 fn close_transfer() {
     let _ = TRANSFER_ABORT.try_take();
-    TRANSFER_ACTIVE.store(false, Ordering::Relaxed);
+    TRANSFER_ACTIVE.release(crate::link::gate_owner(crate::link::Transport::Ble));
 }
 
 /// Notify the store movement after a commit/delete: the `storeChanged` status message (which store,

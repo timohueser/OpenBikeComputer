@@ -8,16 +8,17 @@ use crate::screen::{
     RouteOverviewScreen, RouteSwapScreen, Screen, ScreenTick, Stack, StatisticsScreen, Transition,
 };
 use crate::{
-    App, AppState, Button, ButtonEvent, CameraMode, Fix, Gesture, HostCommand, HostMailbox, InputClock, InputEvent,
-    Mode, PanAxis, RouteSummary, Settings, TrackAction, MAX_ROUTES,
+    App, AppState, CameraMode, Gesture, HostCommand, HostMailbox, Mode, PanAxis, RouteSummary, Settings, TrackAction,
+    MAX_ROUTES,
 };
 use embedded_graphics::prelude::RgbColor; // for `Rgb888::r()` in the compositing snapshot
-use obc_reader::{BBox, MapTables, SliceSource};
+use obc_map_scene::BBox;
+use obc_ports::{Button, ButtonEvent, Fix, InputClock, InputEvent};
+use obc_reader::{MapTables, SliceSource};
 
 use super::support::{build_min_obcm, build_min_obcm_profiles, keys, render_120, ReplayFix};
 
-/// The drained `DeleteRoute` id, if pending (the `take_route_delete` successor). FAR-19, #812. A
-/// co-pending derived preview cue re-emits, so discarding it in the drain is harmless.
+/// The drained `DeleteRoute` id, if pending.
 fn took_route_delete(app: &mut App) -> Option<u16> {
     let mut mb: HostMailbox = HostMailbox::new();
     let _ = app.drain_host_commands(&mut mb);

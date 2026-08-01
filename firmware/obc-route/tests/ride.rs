@@ -10,7 +10,9 @@ use obc_formats::ride::{
     POINT_LEN_V1 as RIDE_POINT_LEN_V1, POINT_LEN_V2 as RIDE_POINT_LEN_V2, PWR_NONE as RIDE_PWR_NONE,
     VERSION as RIDE_VERSION,
 };
-use obc_route::{encode_record, track_to_ride, RideInfo, RideStats, TrackPoint};
+use obc_formats::track::encode_record;
+use obc_ports::TrackPoint;
+use obc_route::{track_to_ride, RideInfo, RideStats};
 
 mod common;
 use common::VecSink;

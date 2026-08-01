@@ -15,8 +15,8 @@
 //! stepped `NavScratch<1536>` (the sim), and one-shot `plan_route` at 768.
 
 use obc_formats::io::{ByteSink, Error};
+use obc_map_scene::ground_dist_m;
 use obc_reader::{MapCache, MapTables, NavTileCache, PoiCategory, Reader, SliceSource};
-use obc_route::ground_dist_m;
 use obc_route::nav::{NavPhase, NavPlanner, NavScratch, Step};
 
 struct VecSink(Vec<u8>);

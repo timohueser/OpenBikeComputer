@@ -90,4 +90,14 @@ unknown-git = "deny"
 # nrf-sdc/nrf-mpsl (BLE controller, issue #269): the crates.io releases predate nRF54L support
 # and pin embassy-nrf 0.7, so the board crate rev-pins git main (the same rev TrouBLE's nrf54
 # example pins — see the crate README's BLE section). Drop when a ≥0.4 release ships.
-allow-git = ["https://github.com/alexmoon/nrf-sdc"]
+#
+# embedded-sdmmc (map-upload speed, #889): our fork of the v0.9.0 tag, teaching
+# `VolumeManager::write` to hand the device a whole cluster of contiguous blocks in one call so
+# `SdCard` can issue ACMD23 + CMD25. Stock 0.9's one-block `BlockCache` makes that path
+# unreachable from above, which cost the upload ~5x (2458 vs 478 µs/block, measured — see
+# `sd_bench`'s `wr-*` shapes). The patch is in both resolve roots' `[patch.crates-io]`; drop this
+# entry if the change ever lands upstream and a release carries it.
+allow-git = [
+    "https://github.com/alexmoon/nrf-sdc",
+    "https://github.com/timohueser/embedded-sdmmc-rs",
+]

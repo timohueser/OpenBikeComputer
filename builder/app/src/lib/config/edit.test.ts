@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { addLodTier, autoSimplify, editLodTier, exportFile, importFile, newStyleDef, removeCategory, removeLodTier, reorderCategory } from "./edit";
-import { ENVELOPE_VERSION } from "./migrations";
 import type { PackConfig } from "./model";
-import type { WorkingEnvelope } from "./storage.svelte";
+import { WORKING_SCHEMA_VERSION, type WorkingEnvelope } from "./storage.svelte";
 
 function config(): PackConfig {
     return {
@@ -121,7 +120,7 @@ describe("category/type edits", () => {
 
 describe("export / import round-trip", () => {
     const env: WorkingEnvelope = {
-        schema_version: ENVELOPE_VERSION,
+        schema_version: WORKING_SCHEMA_VERSION,
         based_on: { id: "default", version: 1 },
         modified: true,
         config: config(),
@@ -145,14 +144,14 @@ describe("export / import round-trip", () => {
         expect(Object.keys(back!.config.features.highway)).toEqual(["motorway", "track", "path"]);
     });
 
-    it("imports a legacy stylesheet (bare config + disabled)", () => {
-        const legacy = JSON.stringify({
+    it("imports a bare CLI config with disabled entries", () => {
+        const bare = JSON.stringify({
             lods: [{ max_mpp: null, simplify: 0 }],
             features: { highway: { motorway: { color: "0xFAA0" } } },
             marker: { color: "0xF800" },
             disabled: ["highway/motorway"],
         });
-        const env2 = importFile(legacy);
+        const env2 = importFile(bare);
         expect(env2).not.toBeNull();
         expect(env2!.based_on).toBeNull();
         expect(env2!.disabled).toEqual(["highway/motorway"]);
@@ -162,5 +161,18 @@ describe("export / import round-trip", () => {
         expect(importFile("42")).toBeNull();
         expect(importFile('{"hello": "world"}')).toBeNull();
         expect(importFile("not json")).toBeNull();
+    });
+
+    it("rejects an internal storage envelope", () => {
+        expect(importFile(JSON.stringify(env))).toBeNull();
+    });
+
+    it("rejects unsupported or malformed builder metadata", () => {
+        const exported = JSON.parse(exportFile(env));
+        exported._meta.schema_version = 2;
+        expect(importFile(JSON.stringify(exported))).toBeNull();
+        exported._meta.schema_version = WORKING_SCHEMA_VERSION;
+        exported._meta.based_on = { id: "default", version: -1 };
+        expect(importFile(JSON.stringify(exported))).toBeNull();
     });
 });

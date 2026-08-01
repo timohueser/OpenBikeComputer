@@ -15,7 +15,7 @@ use obc_app::{App, AppState, TrackAction};
 use obc_ports::{
     Button, ButtonEvent, Fix, InputClock, InputEvent, InputSource, LocationSource, TrackError, TrackPoint, TrackSink,
 };
-use obc_reader::{rgb565_to_device64, rgb565_to_rgb888, MapCache, MapTables, Reader, SliceSource};
+use obc_reader::{rgb565_to_device64, rgb565_to_rgb888, Reader};
 use obc_render::text::{draw_text, Font, TextAlign};
 
 mod calib;
@@ -23,6 +23,7 @@ mod device_input;
 mod dfu;
 mod framebuffer;
 mod gui;
+mod map_set;
 mod palette;
 mod present;
 mod rides;
@@ -44,6 +45,10 @@ use trips::TripStore;
 
 struct Args {
     map: String,
+    /// `--set MS<id>.OBS`: open an OBCA **volume set** (`specs/OBCA_Spec.md` §5) instead of a single
+    /// `.obcm` — the manifest plus every `MS<id>S<kk>.OBM` shard beside it, mounted as one map.
+    /// Mutually exclusive with the positional map path.
+    set: Option<String>,
     width: u32,
     height: u32,
     scale: u32,
@@ -102,7 +107,7 @@ struct Args {
     /// the default `+00:00` offset `local_clock()` returns it verbatim, pinning the POI-detail
     /// "today's hours" weekday + the OPEN/CLOSED-now badge for a reproducible render. Defaults to the
     /// device default (2025-01-01 12:00, a Wednesday noon).
-    clock: Option<obc_app::settings::DateTime>,
+    clock: Option<obc_ports::DateTime>,
     /// Headless `--png` only: the UI language `en` | `de` | `fr` | `es` (epic #602). Seeded into
     /// `Settings.language` before the render, so a scripted screen draws its de/fr/es copy from the
     /// i18n catalog — the per-language snapshot mechanism. Defaults to `en` (the device default), so
@@ -227,6 +232,7 @@ impl Default for Args {
     fn default() -> Self {
         Args {
             map: String::new(),
+            set: None,
             width: obc_display::ls021::FRAME_W as u32,
             height: obc_display::ls021::FRAME_H as u32,
             scale: 1,
@@ -295,10 +301,10 @@ impl Args {
     }
 }
 
-/// Parse a `--clock` value `YYYY-MM-DDTHH:MM` into a [`DateTime`](obc_app::settings::DateTime).
+/// Parse a `--clock` value `YYYY-MM-DDTHH:MM` into an [`obc_ports::DateTime`].
 /// Rejects a malformed stamp with a message (out-of-range fields are clamped by `Settings::decode`'s
 /// sanitiser when seeded, but the format itself must be well-formed).
-fn parse_clock(s: &str) -> Result<obc_app::settings::DateTime, String> {
+fn parse_clock(s: &str) -> Result<obc_ports::DateTime, String> {
     let (date, time) = s.split_once('T').ok_or("--clock format is YYYY-MM-DDTHH:MM")?;
     let mut d = date.split('-');
     let mut t = time.split(':');
@@ -307,7 +313,7 @@ fn parse_clock(s: &str) -> Result<obc_app::settings::DateTime, String> {
     let day = d.next().and_then(|v| v.parse().ok()).ok_or("bad --clock day")?;
     let hour = t.next().and_then(|v| v.parse().ok()).ok_or("bad --clock hour")?;
     let minute = t.next().and_then(|v| v.parse().ok()).ok_or("bad --clock minute")?;
-    Ok(obc_app::settings::DateTime { year, month, day, hour, minute })
+    Ok(obc_ports::DateTime { year, month, day, hour, minute })
 }
 
 /// Parse a `--route-retention LEVEL:AGE` value (epic #638 S5). `LEVEL` is the retention `u8`; `AGE`
@@ -426,6 +432,7 @@ fn parse_args() -> Result<Args, String> {
                 a.width = w.parse().map_err(|_| "bad width")?;
                 a.height = h.parse().map_err(|_| "bad height")?;
             }
+            "--set" => a.set = Some(it.next().ok_or("--set needs a path to MS<id>.OBS")?),
             "--scale" => a.scale = it.next().and_then(|s| s.parse().ok()).ok_or("bad --scale")?,
             "--png" => a.png = Some(it.next().ok_or("--png needs a path")?),
             "--screenshot" => a.screenshot = Some(it.next().ok_or("--screenshot needs a path")?),
@@ -565,9 +572,14 @@ fn parse_args() -> Result<Args, String> {
             }
         }
     }
+    // `--set` names the whole map by its manifest, so a positional path alongside it is
+    // ambiguous — refuse rather than silently ignoring one of them.
+    if a.set.is_some() && !a.map.is_empty() {
+        return Err("--set and a positional map path are mutually exclusive".into());
+    }
     // `--text-demo`, `--palette` and `--import` need no map file.
-    if a.map.is_empty() && !a.text_demo && !a.palette && a.import.is_none() {
-        return Err("missing map path".into());
+    if a.map.is_empty() && a.set.is_none() && !a.text_demo && !a.palette && a.import.is_none() {
+        return Err("missing map path (a single .obcm, or --set MS<id>.OBS for a volume set)".into());
     }
     Ok(a)
 }
@@ -918,7 +930,7 @@ fn main() {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: obc-sim <map.obcm> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--home-seed N] [--clock YYYY-MM-DDTHH:MM] [--route-retention LEVEL:AGE] [--lang en|de|fr|es] [--stat-fields LIST] [--ble-connected] [--ble-passkey N] [--ble-paired] [--sensors-screen] [--inject-upload ID] [--inject-upload-replace ID] [--inject-trip-upload ID] [--nav-hold] [--inject-nav-fail exhausted|nopath] [--detour-hold] [--inject-detour-fail exhausted|nopath] [--inject-warning gps,altimeter,compass,map] [--boot-fault nocard|nomap|badmap] [--open-climb]");
+            eprintln!("error: {e}\nusage: obc-sim <map.obcm> | --set <MS7.OBS> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--home-seed N] [--clock YYYY-MM-DDTHH:MM] [--route-retention LEVEL:AGE] [--lang en|de|fr|es] [--stat-fields LIST] [--ble-connected] [--ble-passkey N] [--ble-paired] [--sensors-screen] [--inject-upload ID] [--inject-upload-replace ID] [--inject-trip-upload ID] [--nav-hold] [--inject-nav-fail exhausted|nopath] [--detour-hold] [--inject-detour-fail exhausted|nopath] [--inject-warning gps,altimeter,compass,map] [--boot-fault nocard|nomap|badmap] [--open-climb]\n\n  --set <MS7.OBS>  open an OBCA volume set (specs/OBCA_Spec.md §5): the manifest plus every\n                   MS7S<kk>.OBM shard beside it, mounted as one map. Every shard must be\n                   present and exactly its recorded size, or the set is refused whole (§5.4).");
             std::process::exit(2);
         }
     };
@@ -977,21 +989,30 @@ fn main() {
         return;
     }
 
-    let bytes = std::fs::read(&args.map).unwrap_or_else(|e| {
-        eprintln!("cannot read {}: {e}", args.map);
+    // One file (`<map.obcm>`) or a whole volume set (`--set MS<id>.OBS`) — from here down the two
+    // are the same thing: a list of shard bytes plus, for a set, the manifest that mounts them.
+    let map = match &args.set {
+        Some(path) => map_set::MapSource::load_set(path),
+        None => map_set::MapSource::load_single(&args.map),
+    }
+    .unwrap_or_else(|e| {
+        eprintln!("{e}");
         std::process::exit(1);
     });
 
-    // Validate + log once up front; the borrow ends with this block so `bytes` can move
-    // into the GUI (which rebuilds the cheap `Reader` view per frame).
+    // Parse the core's tables and mount the set **once**, here, for the process lifetime — the
+    // shape the device uses (mount at boot, hold for the session), not a per-frame rebuild. §5.4
+    // admits no partial mount: a set that does not validate whole is refused before a single frame
+    // renders, and the sim exits non-zero saying which shard and why.
+    let map = map_set::LoadedMap::open(map).unwrap_or_else(|e| {
+        eprintln!("{e}");
+        std::process::exit(1);
+    });
     {
-        let cache = MapCache::new();
-        let src = SliceSource(&bytes);
-        let tables = MapTables::parse(&src).unwrap_or_else(|e| {
-            eprintln!("invalid OBCM file: {e:?}");
-            std::process::exit(1);
-        });
-        let reader = Reader::new(&src, &tables, &cache);
+        if let Some(set) = map.set() {
+            eprintln!("{}", map.source.describe_set(set));
+        }
+        let reader = map.reader();
         eprintln!(
             "OBCM v{} | bbox {:?} | {} LODs | {} styles",
             reader.version,
@@ -1009,10 +1030,10 @@ fn main() {
 
     // Headless mode: render one frame through the shared app, save PNG, exit.
     if let Some(path) = &args.png {
-        let cache = MapCache::new();
-        let src = SliceSource(&bytes);
-        let tables = MapTables::parse(&src).expect("validated above");
-        let reader = Reader::new(&src, &tables, &cache);
+        let tables = map.tables();
+        // Nav, POI, hours and routing read the **core** shard and only it (§5.1) — never a
+        // geometry shard — so this is the reader the whole app path gets, set or not.
+        let reader = map.reader();
         let (mut cx, mut cy, mut zoom) = initial_camera(&reader, args.width);
         if let Some((lon, lat)) = args.center {
             cx = lon;
@@ -1131,8 +1152,9 @@ fn main() {
         // loaded map's name (filename stem) + OBCM version from the parsed header. The card-free scan
         // is answered after the script (below), mirroring the on-entry FAT scan seam.
         app.set_fw_version(env!("CARGO_PKG_VERSION"));
-        let map_stem = std::path::Path::new(&args.map).file_stem().and_then(|s| s.to_str()).unwrap_or("map");
-        app.set_map_info(map_stem, tables.version);
+        // A set lists as **one** map under its manifest's display name (§5.4), never as its shards.
+        let map_name = map.source.display_name();
+        app.set_map_info(&map_name, tables.version);
         // Load the routes folder so the Route menu has real entries and a picked route
         // can be drawn.
         let mut store = RouteStore::open(args.routes_dir());
@@ -1486,10 +1508,11 @@ fn main() {
         // Time the whole frame draw into `render_us` (the no_std renderer has no clock, so
         // the host fills it) — same field the live panel shows.
         let t0 = Instant::now();
-        let mut stats =
-            app.render_frame(&mut fb, &reader, route.as_ref(), args.width as f32, args.height as f32, |c| {
-                color_of(c, tc)
-            });
+        let set = map.set();
+        let scene = map_set::Scene { set, reader: &reader, route: route.as_ref() };
+        let mut stats = map_set::render_frame(&mut app, &mut fb, scene, (args.width as f32, args.height as f32), |c| {
+            color_of(c, tc)
+        });
         stats.render_us = t0.elapsed().as_micros() as u32;
         let cache_reqs = stats.map_chunk_hits + stats.map_chunk_misses;
         let hit_pct = if cache_reqs == 0 { 0.0 } else { 100.0 * stats.map_chunk_hits as f32 / cache_reqs as f32 };
@@ -1534,7 +1557,7 @@ fn main() {
     }
 
     // Interactive: hand the map to the eframe host window.
-    if let Err(e) = gui::run(bytes, args) {
+    if let Err(e) = gui::run(map, args) {
         eprintln!("gui error: {e}");
         std::process::exit(1);
     }

@@ -23,10 +23,10 @@
 use heapless::Vec;
 
 use crate::deadband::DeadBand;
-use crate::geo::seg_dist_m;
 use crate::reader::{decode_chunk_from, parse_chunk_meta, read_header, RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
 use obc_formats::io::{ByteSource, Error};
 use obc_formats::obcr::CHUNK_META_LEN;
+use obc_map_scene::ground_dist_m;
 
 /// Columns in the **finest** (base) level — the resolution one load-time sweep fills, and the
 /// cap on zoom-in depth. Coarser levels halve from here, so keep this a power of two (each level
@@ -253,7 +253,7 @@ impl RouteReader<'_> {
             let mut prev: Option<(i32, i32)> = None;
             for p in &buf {
                 if let Some(pr) = prev {
-                    dist += seg_dist_m(pr, (p.lon, p.lat)) as f64;
+                    dist += ground_dist_m(pr, (p.lon, p.lat)) as f64;
                 }
                 prev = Some((p.lon, p.lat));
                 let frac = dist / total;
@@ -351,7 +351,7 @@ pub fn ride_elevation_profile(src: &dyn ByteSource) -> Result<Profile, Error> {
             // centimetres — under a band column's reach).
             let p = (lon / 10, lat / 10);
             if let Some(pr) = prev {
-                dist += seg_dist_m(pr, p) as f64;
+                dist += ground_dist_m(pr, p) as f64;
             }
             prev = Some(p);
             if ele == RIDE_ELE_NONE {
@@ -496,7 +496,7 @@ pub fn elevation_sparkline(src: &dyn ByteSource) -> Option<[u8; SPARKLINE_BUCKET
         let mut prev: Option<(i32, i32)> = None;
         for p in &buf {
             if let Some(pr) = prev {
-                dist += seg_dist_m(pr, (p.lon, p.lat)) as f64;
+                dist += ground_dist_m(pr, (p.lon, p.lat)) as f64;
             }
             prev = Some((p.lon, p.lat));
             let b = ((dist / total) * last as f64) as usize;

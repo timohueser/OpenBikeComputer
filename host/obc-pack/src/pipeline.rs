@@ -28,7 +28,7 @@ use crate::serialize::serialize_lods_streaming;
 
 // Meters → degrees divisor for simplify tolerance; shared so the packer's scale
 // matches the Earth model everything else uses.
-use obc_reader::M_PER_DEG;
+use obc_map_scene::M_PER_DEG;
 
 /// Everything a pack run can be told to do differently. The defaults are the
 /// plain `obc-pack <pbf> <config> <out>` build.
@@ -121,24 +121,7 @@ fn run(
 
     // --- Land: clip the global land-polygon dataset to the bbox and add the
     // faces as features, styled by `natural.land`. ---
-    if !opts.no_land {
-        if let Some(land) = config.land_style() {
-            let (lid, lmin) = (land.id, land.min_lod);
-            progress.stage(Phase::Land, "Generating land...");
-            let bbox_deg = (
-                global_bbox.0 as f64 / 1e6,
-                global_bbox.1 as f64 / 1e6,
-                global_bbox.2 as f64 / 1e6,
-                global_bbox.3 as f64 / 1e6,
-            );
-            let polys = land::get_land_polygons(bbox_deg, progress)?;
-            let n = polys.len();
-            for geom in polys {
-                ingested.features.push(IngestFeature { style_id: lid, min_lod: lmin, geom });
-            }
-            progress.log(format!("Successfully added {n} land polygons."));
-        }
-    }
+    add_land(&mut ingested, config, global_bbox, opts.no_land, progress)?;
     progress.check()?;
 
     // --- Build + serialize the LOD pyramid in one streaming pass: each LOD's tree
@@ -173,7 +156,7 @@ fn run(
             // lands in a minute. The empty level still goes through the same
             // build+serialize so the streaming serializer's contract is unchanged.
             if progress.is_cancelled() {
-                return (build_lod_with(Vec::new(), global_bbox, chunk_size, progress), chunk_size, lod.max_mpp);
+                return (Some(build_lod_with(Vec::new(), global_bbox, chunk_size, progress)), chunk_size, lod.max_mpp);
             }
             let tol = if lod.simplify_m > 0.0 { lod.simplify_m / M_PER_DEG } else { 0.0 };
             // Coarse-LOD footprint cull: after simplify, drop features too small to
@@ -251,7 +234,9 @@ fn run(
             if holes_stripped > 0 {
                 progress.log(format!("  stripped {holes_stripped} sub-pixel hole(s) from surviving polygons"));
             }
-            (build_lod_with(level, global_bbox, chunk_size, progress), chunk_size, lod.max_mpp)
+            // Always `Some`: a whole-extract pack writes every ladder level as a real (possibly
+            // featureless) tree. `None` is the cell cutter's empty out-of-band region (§3.1).
+            (Some(build_lod_with(level, global_bbox, chunk_size, progress)), chunk_size, lod.max_mpp)
         },
     )
     .map_err(|e| format!("write {out_name}: {e}"))?;
@@ -274,10 +259,44 @@ fn run(
     Ok(PackSummary { bytes: total, dropped })
 }
 
+/// Clip the global land-polygon dataset to `global_bbox` and append the faces to `ingested` as
+/// `natural.land` features. A no-op when the config has no land style or `no_land` is set.
+///
+/// Shared with the cell cutter ([`crate::cut`]): land is generated **once** over the whole extract
+/// and then cut like any other feature, so a cell's coastline geometry cannot depend on which cell
+/// asked for it.
+pub(crate) fn add_land(
+    ingested: &mut Ingested,
+    config: &Config,
+    global_bbox: (i64, i64, i64, i64),
+    no_land: bool,
+    progress: &Progress,
+) -> Result<(), String> {
+    if no_land {
+        return Ok(());
+    }
+    let Some(land) = config.land_style() else { return Ok(()) };
+    let (lid, lmin) = (land.id, land.min_lod);
+    progress.stage(Phase::Land, "Generating land...");
+    let bbox_deg = (
+        global_bbox.0 as f64 / 1e6,
+        global_bbox.1 as f64 / 1e6,
+        global_bbox.2 as f64 / 1e6,
+        global_bbox.3 as f64 / 1e6,
+    );
+    let polys = land::get_land_polygons(bbox_deg, progress)?;
+    let n = polys.len();
+    for geom in polys {
+        ingested.features.push(IngestFeature { style_id: lid, min_lod: lmin, geom });
+    }
+    progress.log(format!("Successfully added {n} land polygons."));
+    Ok(())
+}
+
 /// One-line per-LOD merge report (fills or lines), reported only when something
 /// actually merged. `noun` names the consumed input ("fill polygon" / "line
 /// fragment"); `verb` bridges to the output count ("into").
-fn report_merge(progress: &Progress, m: MergeStats, noun: &str, verb: &str) {
+pub(crate) fn report_merge(progress: &Progress, m: MergeStats, noun: &str, verb: &str) {
     if m.merged_inputs == 0 && m.fallbacks == 0 {
         return;
     }
@@ -295,7 +314,7 @@ fn report_merge(progress: &Progress, m: MergeStats, noun: &str, verb: &str) {
 /// coords are the exact osmium f64s, so the bbox is stable across runs. Truncation
 /// pulls the max edges (and, for negative coordinates, the min edges) inward by
 /// under 1 µdeg (~0.11 m); vertices past the shrunken edge are clipped at the root.
-fn compute_bbox(ing: &Ingested) -> (i64, i64, i64, i64) {
+pub(crate) fn compute_bbox(ing: &Ingested) -> (i64, i64, i64, i64) {
     let (mut minx, mut miny, mut maxx, mut maxy) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
     let mut widen = |x: f64, y: f64| {
         minx = minx.min(x);

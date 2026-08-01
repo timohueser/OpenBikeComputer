@@ -146,9 +146,10 @@ rtt:
 
 # ── Map packing & the web builder ────────────────────────────────────────────
 
-# Pack an OSM extract into a .obcm map. Args: <region.osm.pbf> [preset.json] [out.obcm]
-# [-- --chunk-size N | --no-land]. Preset defaults to builder/presets/default.json; the
-# output defaults to <region>.obcm in the repo root (so `obc sim` picks it up next).
+# Pack an OSM extract into a .obcm map. Args: <region.osm.pbf> [config.json] [out.obcm]
+# [-- --chunk-size N | --no-land]. The config defaults to builder/presets/schema.json —
+# the one shipped schema; the output defaults to <region>.obcm in the repo root (so
+# `obc sim` picks it up next).
 # Pack an OSM extract to a .obcm map. Args: <region.osm.pbf> [preset.json] [out.obcm]
 pack *args:
     #!/usr/bin/env bash
@@ -158,7 +159,7 @@ pack *args:
     pbf="${_POS[0]:-}"
     [[ -n "$pbf" ]] || { _err "usage: obc pack <region.osm.pbf> [preset.json] [out.obcm]"; exit 1; }
     pbf="$(_abspath "$pbf")"
-    preset="${_POS[1]:-${OBC_PRESET:-$OBC_ROOT/builder/presets/default.json}}"; preset="$(_abspath "$preset")"
+    preset="${_POS[1]:-${OBC_PRESET:-$OBC_ROOT/builder/presets/schema.json}}"; preset="$(_abspath "$preset")"
     out="${_POS[2]:-}"
     if [[ -n "$out" ]]; then out="$(_abspath "$out")"
     else base="$(basename "$pbf")"; base="${base%.osm.pbf}"; base="${base%.pbf}"; out="$OBC_ROOT/${base}.obcm"; fi
@@ -168,27 +169,119 @@ pack *args:
     _run "${cmd[@]}"
     _say "wrote $out"
 
-# Run the bakery (#898): the curated shelf (host/obc-bake/regions.toml × builder/presets)
-# into a tree. `obc bake` bakes into $OBC_BAKE_TREE (default ~/obc-bake); narrow a run
-# with obc-bake's own flags (`obc bake --region europe/austria --force`). An explicit
-# subcommand passes straight through: `obc bake regions` lists the shelf,
-# `obc bake publish <tree> --base-url <url> --target r2` publishes it (R2 creds from
-# OBC_R2_* env vars; the shrink guard refuses a partial tree over a full catalog),
-# `obc bake check-obcm-version` checks the published catalog against this build.
-# Bake the curated region×preset shelf into $OBC_BAKE_TREE (or pass a subcommand)
+# Bake the published cell catalog. `obc bake` processes every regions.toml entry;
+# positional ids narrow it (`obc bake europe/austria --force`). Output goes to
+# $OBC_BAKE_TREE (default ~/obc-bake). `verify` and `publish` use that same tree
+# automatically, while an explicit tree remains available as their first argument:
+#
+#   obc bake europe/germany/baden-wuerttemberg
+#   obc bake verify
+#   obc bake publish                  # plan only
+#   obc bake publish --target r2      # upload content first, catalog root last
+#   obc bake remove-old-r2            # dry-run old whole-region removal
+#   obc bake remove-old-r2 --apply    # perform that exact removal
+#
+# Publish reads its public URL and R2 credentials from tools/obc.local or the
+# environment. The removal command requires a non-root OBC_R2_PREFIX and verifies
+# that prefix contains the replacement catalog before touching old root objects.
+# Bake, verify, publish, or retire old R2 objects using $OBC_BAKE_TREE
 bake *args:
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{lib}}"; obc_init; ensure_geos
+    if [[ -z "${OBC_PYOSMIUM_UP_TO_DATE:-}" && -x "$OBC_ROOT/.venv/bin/pyosmium-up-to-date" ]]; then
+      export OBC_PYOSMIUM_UP_TO_DATE="$OBC_ROOT/.venv/bin/pyosmium-up-to-date"
+    fi
     ( cd "$OBC_ROOT" && _run cargo build --release -p obc-bake )
     bin="$OBC_ROOT/target/release/obc-bake"
+    tree="${OBC_BAKE_TREE:-$HOME/obc-bake}"
     case "${1:-}" in
-      regions|publish|check-obcm-version|help|-h|--help)
+      verify)
+        shift
+        verify_tree="$tree"
+        if (( $# )) && [[ "$1" != -* ]]; then verify_tree="$1"; shift; fi
+        _run "$bin" verify "$verify_tree" "$@" ;;
+      publish)
+        shift
+        publish_tree="$tree"
+        if (( $# )) && [[ "$1" != -* ]]; then publish_tree="$1"; shift; fi
+        maps_base="${OBC_MAPS_BASE_URL:-}"
+        if [[ -z "$maps_base" && -n "${OBC_CATALOG_URL:-}" ]]; then
+          case "$OBC_CATALOG_URL" in
+            */catalog.json) maps_base="${OBC_CATALOG_URL%/catalog.json}" ;;
+            *)
+              _err "OBC_CATALOG_URL must end in /catalog.json: $OBC_CATALOG_URL"
+              exit 1 ;;
+          esac
+        fi
+        if [[ -z "$maps_base" ]]; then
+          prefix="${OBC_R2_PREFIX:-cell-catalog}"; prefix="${prefix#/}"; prefix="${prefix%/}"
+          [[ -n "$prefix" ]] || { _err "OBC_R2_PREFIX may not be empty"; exit 1; }
+          export OBC_R2_PREFIX="$prefix"
+          maps_base="https://maps.openbikecomputer.com/$prefix"
+          _say "using production catalog base: $maps_base"
+        fi
+        export OBC_MAPS_BASE_URL="$maps_base"
+        _run "$bin" publish "$publish_tree" "$@" ;;
+      remove-old-r2)
+        shift
+        apply=0
+        for arg in "$@"; do case "$arg" in
+          --apply) apply=1 ;;
+          *) _err "unknown remove-old-r2 option: '$arg'  (want: --apply)"; exit 1 ;;
+        esac; done
+        command -v rclone >/dev/null 2>&1 || { _err "rclone is required for R2 cleanup"; exit 1; }
+        missing=()
+        [[ -n "${OBC_R2_BUCKET:-}" ]] || missing+=(OBC_R2_BUCKET)
+        [[ -n "${OBC_R2_ACCESS_KEY_ID:-}" ]] || missing+=(OBC_R2_ACCESS_KEY_ID)
+        [[ -n "${OBC_R2_SECRET_ACCESS_KEY:-}" ]] || missing+=(OBC_R2_SECRET_ACCESS_KEY)
+        [[ -n "${OBC_R2_ENDPOINT:-}" || -n "${OBC_R2_ACCOUNT_ID:-}" ]] || missing+=(OBC_R2_ACCOUNT_ID)
+        if (( ${#missing[@]} )); then
+          _err "missing R2 settings: ${missing[*]}"
+          _hint "put them in the gitignored tools/obc.local (see tools/obc.local.example)"
+          exit 1
+        fi
+        prefix="${OBC_R2_PREFIX:-}"; prefix="${prefix#/}"; prefix="${prefix%/}"
+        [[ -n "$prefix" && "$prefix" != . ]] || {
+          _err "OBC_R2_PREFIX must name the fresh replacement prefix (for example: cell-catalog)"
+          exit 1
+        }
+        case "$prefix" in
+          catalog.json|regions|regions/*|presets|presets/*)
+            _err "unsafe replacement prefix '$prefix' overlaps an old root target"; exit 1 ;;
+        esac
+        endpoint="${OBC_R2_ENDPOINT:-https://${OBC_R2_ACCOUNT_ID}.r2.cloudflarestorage.com}"
+        export RCLONE_CONFIG_OBCR2_TYPE=s3
+        export RCLONE_CONFIG_OBCR2_PROVIDER=Cloudflare
+        export RCLONE_CONFIG_OBCR2_REGION=auto
+        export RCLONE_CONFIG_OBCR2_ENDPOINT="$endpoint"
+        export RCLONE_CONFIG_OBCR2_ACCESS_KEY_ID="$OBC_R2_ACCESS_KEY_ID"
+        export RCLONE_CONFIG_OBCR2_SECRET_ACCESS_KEY="$OBC_R2_SECRET_ACCESS_KEY"
+        export RCLONE_CONFIG_OBCR2_NO_CHECK_BUCKET=true
+        root="obcr2:${OBC_R2_BUCKET}"
+        replacement="$root/$prefix/catalog.json"
+        _say "checking replacement catalog: $replacement"
+        rclone lsjson "$replacement" --stat >/dev/null || {
+          _err "replacement catalog is not readable; refusing to touch old R2 data"
+          exit 1
+        }
+        if (( apply )); then
+          _warn "deleting only the obsolete bucket-root catalog.json, regions/, and presets/"
+          _run rclone deletefile "$root/catalog.json"
+          _run rclone purge "$root/regions"
+          _run rclone purge "$root/presets"
+          _ok "old whole-region objects removed; $prefix was untouched"
+        else
+          _say "dry run — review this list, then repeat with: obc bake remove-old-r2 --apply"
+          _run rclone deletefile "$root/catalog.json" --dry-run
+          _run rclone purge "$root/regions" --dry-run
+          _run rclone purge "$root/presets" --dry-run
+        fi ;;
+      regions|check-obcm-version|help|-h|--help)
         _run "$bin" "$@" ;;
       *)
-        tree="${OBC_BAKE_TREE:-$HOME/obc-bake}"
         _run "$bin" bake --out "$tree" "$@"
-        _say "bake tree: $tree — publish with: obc bake publish $tree --base-url <url> --target r2" ;;
+        _say "bake tree: $tree — verify with: obc bake verify" ;;
     esac
 
 # Run the web map builder at http://localhost:8000 (bootstraps the venv, obc-pack,
@@ -206,25 +299,38 @@ web *args:
       _run .venv/bin/pip install -q --upgrade pip
       _run .venv/bin/pip install -q -r builder/requirements.txt
     fi
-    [[ -x "$OBC_PACK_BIN" ]] || { _say "building obc-pack…"; ( cd "$OBC_ROOT" && _run cargo build --release -p obc-pack ); }
-    if [[ ! -d builder/server/static/dist ]]; then
-      _say "building the frontend…"; ( cd builder/app && _run npm ci && _run npm run build )
+    if [[ "${1:-}" == preview-source ]]; then
+      shift
+      (( $# == 0 )) || { _err "usage: obc web preview-source"; exit 1; }
+      _say "preparing the small reference-complete source for the Teningen schema lab…"
+      _run .venv/bin/python -m builder.server.schema_preview --download-source
+      exit 0
     fi
+    # This is the maintainer schema host: a present binary may still predate the
+    # config/parser source the editor is showing. Cargo's no-op rebuild is cheap
+    # and makes the served schema and every preview use this checkout exactly.
+    _say "refreshing obc-pack…"; ( cd "$OBC_ROOT" && _run cargo build --release -p obc-pack )
+    [[ -d builder/app/node_modules ]] || { _say "installing frontend dependencies…"; ( cd builder/app && _run npm ci ); }
+    # Generated bindings are gitignored; existence cannot prove that any bridge
+    # matches its Rust source. Warm wasm-pack builds are incremental.
+    _say "refreshing the wasm bridges…"; ( cd builder/app && _run npm run build:wasm )
+    # Always rebuild this small local bundle: tools/obc.local is runtime state,
+    # but a source checkout must never keep serving yesterday's platform adapter.
+    _say "building the maintainer frontend…"; ( cd builder/app && _run npm run build )
     _run .venv/bin/python -m builder.server "$@"
 
-# Run the desktop app (Tauri + obc-pack linked in as a library, #906). The Rust side
-# embeds the built frontend, so the frontend is built first. Opts: dev (live-reload
-# against Vite), build (compile only, don't open the window).
+# Run the desktop app (Tauri + the shared published-cell frontend). The Rust side
+# embeds the built frontend. Opts: dev (live reload against Vite), build (compile
+# only, don't open the window).
 #   obc desktop         obc desktop dev        obc desktop build
-# Every mode compiles a vendored static GEOS (#907), so cmake is the only native
-# prerequisite; `dev` drops *only* `custom-protocol`, because that feature is the one
-# about embedding the frontend and dropping more would make one flag mean two things.
-# `ensure_geos` stays for the workspace commands this file also runs.
+# The desktop app consumes published cells and no longer links the packer or GEOS.
+# `dev` drops `custom-protocol`, the feature that embeds the frontend, so the window
+# follows Vite instead.
 # Build & run the desktop app. Opts: dev (live-reload) build (compile only)
 desktop *args:
     #!/usr/bin/env bash
     set -euo pipefail
-    source "{{lib}}"; obc_init; ensure_geos
+    source "{{lib}}"; obc_init
     mode=run
     for o in "$@"; do case "$o" in
       dev)              mode=dev ;;
@@ -233,16 +339,19 @@ desktop *args:
     esac; done
     fe="$OBC_ROOT/builder/app"
     [[ -d "$fe/node_modules" ]] || { _say "installing frontend deps…"; ( cd "$fe" && _run npm ci ); }
-    # The wasm GPX↔OBCR bridge (#896) is imported by the app, and `npm run check`/
-    # `test`/`build` all fail without it — build it before anything else needs it.
-    [[ -f "$fe/src/lib/convert/pkg/obc_web_convert_bg.wasm" ]] || \
-      { _say "building the wasm convert bridge…"; ( cd "$fe" && _run npm run build:wasm ); }
+    # All three wasm bridges are imported by the app: GPX↔OBCR conversion, cell
+    # assembly, and the live skin preview. Build them before type-checking or bundling.
+    if [[ ! -f "$fe/src/lib/convert/pkg/obc_web_convert_bg.wasm" || \
+          ! -f "$fe/src/lib/assemble/pkg/obc_web_assemble_bg.wasm" || \
+          ! -f "$fe/src/lib/skin/pkg/obc_skin_preview_bg.wasm" ]]; then
+      _say "building the wasm bridges…"; ( cd "$fe" && _run npm run build:wasm )
+    fi
     if [[ "$mode" == dev ]]; then
       # `custom-protocol` is a default feature here, which is what makes plain
       # `cargo run` embed dist/desktop; opt out of it and the window follows Vite.
       _say "starting Vite (desktop mode) on :5173 — leave it running, then this window follows it"
       ( cd "$fe" && npm run dev -- --mode desktop & )
-      cd "$OBC_ROOT/apps/obc-desktop"; _run cargo run --no-default-features --features vendored-geos
+      cd "$OBC_ROOT/apps/obc-desktop"; _run cargo run --no-default-features
     else
       _say "building the desktop frontend bundle…"
       ( cd "$fe" && _run npm run build:desktop )
@@ -252,9 +361,9 @@ desktop *args:
     fi
 
 # Serve the static hosted tier — the no-backend site (phase C of #894), as deployed.
-# Builds it, writes regions.json beside it, and serves on :4173. Args: [PORT].
-# A catalog.json is the bakery's output (B1 #898); without one the site says so and
-# shows no styles — that is OBCC_Spec.md §7 refusing a manifest it hasn't got, not a bug.
+# Builds and serves it on :4173. Args: [PORT]. A catalog.json is the bakery's
+# output; without one the site says so and shows no coverage — that is OBCC_Spec.md
+# §7 refusing a manifest it has not got, not a bug.
 # Point it at a real one with OBC_CATALOG_URL=… (the deploy passes the same value as
 # VITE_CATALOG_URL from a repository variable — .github/workflows/deploy-site.yml).
 # Two deliberate differences from the deploy: this mounts the builder at the server
@@ -269,8 +378,11 @@ site *args:
     port="${1:-4173}"
     fe="$OBC_ROOT/builder/app"
     [[ -d "$fe/node_modules" ]] || { _say "installing frontend deps…"; ( cd "$fe" && _run npm ci ); }
-    [[ -f "$fe/src/lib/convert/pkg/obc_web_convert_bg.wasm" ]] || \
-      { _say "building the wasm convert bridge…"; ( cd "$fe" && _run npm run build:wasm ); }
+    if [[ ! -f "$fe/src/lib/convert/pkg/obc_web_convert_bg.wasm" || \
+          ! -f "$fe/src/lib/assemble/pkg/obc_web_assemble_bg.wasm" || \
+          ! -f "$fe/src/lib/skin/pkg/obc_skin_preview_bg.wasm" ]]; then
+      _say "building the wasm bridges…"; ( cd "$fe" && _run npm run build:wasm )
+    fi
     _say "building the static web tier…"
     ( cd "$fe" && export VITE_CATALOG_URL="${OBC_CATALOG_URL:-}" && _run npm run build:web )
     cd "$OBC_ROOT"
@@ -382,8 +494,8 @@ check *args:
         [[ -d node_modules ]] || step "frontend deps (npm ci)" npm ci
         # Not optional: the TS wrapper imports the generated bindings, so svelte-check
         # and the byte-identity drift guard both fail without the module present. CI
-        # gets it as an artifact from the `wasm-convert` job; locally we build it.
-        step "wasm convert bridge"   npm run build:wasm
+        # gets all three packages from the `wasm-bridges` job; locally we build them.
+        step "wasm bridges"          npm run build:wasm
         step "frontend svelte-check" npm run check
         step "frontend vitest"       npm test
         step "frontend builds (dev + web + desktop)" npm run build:all
@@ -410,7 +522,7 @@ check *args:
 # ── Meta ─────────────────────────────────────────────────────────────────────
 
 # Check your toolchain and report what's missing. Add --install to fix what it can
-# (rustup targets, just, probe-rs, the venv, and GEOS / RISC-V gcc via scripts/).
+# (rustup targets, just, probe-rs, the venv, replication client, and GEOS / RISC-V gcc via scripts/).
 doctor *args:
     #!/usr/bin/env bash
     set -uo pipefail
@@ -426,14 +538,12 @@ doctor *args:
     ck thumbv8m "device target (thumbv8m)"  'rustup target list --installed | grep -q thumbv8m.main-none-eabihf' 'obc doctor --install'
     ck wasm     "wasm target (docs demo)"   'rustup target list --installed | grep -q wasm32-unknown-unknown'     'obc doctor --install'
     ck geos     "GEOS (obc-pack, workspace)" '[[ -f "$HOME/.obc-geos-env.sh" ]] && { source "$HOME/.obc-geos-env.sh"; command -v geos-config; }' 'obc doctor --install (builds GEOS ≥3.14 from source)'
-    # The desktop app does not use that one — it compiles a vendored GEOS in (#907),
-    # which is why CMake is now a gate rather than a coincidence. Not auto-installable:
-    # it is a system package everywhere and `obc doctor --install` does not use sudo.
-    ck cmake    "cmake (obc-desktop's GEOS)" 'command -v cmake' 'install cmake (brew install cmake · apt install cmake · winget install Kitware.CMake)'
+    ck osmium   "Osmium (planet sharding)"   'command -v osmium' 'install osmium-tool with your system package manager'
     ck riscv    "RISC-V gcc (board FLPR)"   'command -v riscv64-elf-gcc || command -v riscv-none-elf-gcc || command -v riscv64-unknown-elf-gcc || { [[ -n "${RISCV_GCC:-}" && -x "${RISCV_GCC:-/nonexistent}" ]]; }' 'obc doctor --install (fetches an xPack toolchain)'
     ck probe    "probe-rs (flashing)"       'command -v probe-rs' 'obc doctor --install'
     ck node     "node + npm (web builder)"  'command -v node && command -v npm' 'install Node 22+ (system package — needs sudo)'
     ck venv     "python venv (web builder)" '[[ -x "$OBC_ROOT/.venv/bin/python" ]]' 'obc doctor --install (or run obc web)'
+    ck replication "OSM replication client" 'command -v pyosmium-up-to-date || [[ -x "$OBC_ROOT/.venv/bin/pyosmium-up-to-date" ]]' 'obc doctor --install'
     m="$(_all_maps | head -n1 || true)"
     if [[ -n "$m" ]]; then _ok "default sim map → ${m##*/}"
     elif [[ -f "$OBC_ROOT/apps/obc-sim/assets/grimsel.obcm" ]]; then _ok "default sim map → bundled grimsel.obcm"
@@ -452,10 +562,13 @@ doctor *args:
       probe)    _run cargo install probe-rs-tools --locked ;;
       riscv)    _run bash "$OBC_TOOLS/install-riscv.sh" ;;
       geos)     _run bash "$OBC_TOOLS/install-geos.sh" ;;
-      cmake)    _err "install cmake via your system package manager (needs sudo)" ;;
       venv)     _run python3 -m venv "$OBC_ROOT/.venv" && _run "$OBC_ROOT/.venv/bin/pip" install -q -r "$OBC_ROOT/builder/requirements.txt" ;;
+      replication)
+        [[ -x "$OBC_ROOT/.venv/bin/python" ]] || _run python3 -m venv "$OBC_ROOT/.venv"
+        _run "$OBC_ROOT/.venv/bin/pip" install -q -r "$OBC_ROOT/tools/requirements-bake.txt" ;;
       cargo)    _err "install Rust yourself: https://rustup.rs" ;;
       node)     _err "install Node 22+ via your system package manager (needs sudo)" ;;
+      osmium)   _err "install osmium-tool via your system package manager" ;;
     esac; done
     printf '\n'; _say "done — re-run 'obc doctor' to confirm"
 

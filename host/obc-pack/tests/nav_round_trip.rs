@@ -227,7 +227,7 @@ fn over_long_edge_splits_at_a_synthetic_node() {
     assert_eq!(rebuilt, polyline, "the pieces concatenate to the original polyline");
     // Piece costs are re-measured over their sub-polylines; the sum matches a
     // whole-polyline great-circle measure within per-piece rounding.
-    let whole: f64 = polyline.windows(2).map(|w| obc_reader::ground_dist_m(w[0], w[1]) as f64).sum();
+    let whole: f64 = polyline.windows(2).map(|w| obc_map_scene::ground_dist_m(w[0], w[1]) as f64).sum();
     assert!(
         (len0 as i64 + len1 as i64 - whole.round() as i64).abs() <= 2,
         "piece costs sum to the whole: {len0} + {len1} vs {whole:.1}"
@@ -326,7 +326,7 @@ fn dense_graph_subdivides_and_point_query_descends() {
     // Point descent: a degenerate view at one junction's coord visits its leaf
     // only — the node is found, and far fewer than all 144 decode.
     let target = at(7, 7);
-    let view = obc_reader::BBox { min_lon: target.0, min_lat: target.1, max_lon: target.0, max_lat: target.1 };
+    let view = obc_map_scene::BBox { min_lon: target.0, min_lat: target.1, max_lon: target.0, max_lat: target.1 };
     let mut scratch = [0u8; 512];
     let mut hit = false;
     let mut visited = 0;

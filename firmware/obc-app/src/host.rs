@@ -2,22 +2,13 @@
 //!
 //! `App` asks its host to do exactly one kind of thing — run a bounded piece of I/O it cannot do
 //! itself (store scans, file deletes, the router, the DFU armer, settings persistence) — and the
-//! host answers with facts. Historically that conversation grew as one independent `take_*` /
-//! `has_*` / `notify_*` latch per feature; this module names the whole vocabulary in two bounded
-//! enums so every host speaks the same protocol instead of re-deriving it latch by latch:
+//! host answers with facts. Two bounded enums define that shared vocabulary:
 //!
 //! - [`HostCommand`] — everything the app can ask of a host, drained through
 //!   [`App::drain_host_commands`](crate::App::drain_host_commands) into a caller-owned
 //!   [`HostMailbox`].
 //! - [`HostEvent`] — every host answer/fact, applied through
 //!   [`App::apply_event`](crate::App::apply_event).
-//!
-//! The legacy per-feature `take_*` / `has_*` / `notify_*` latch methods that this protocol
-//! superseded have been **removed** (FAR-19, #812): every host — the board ride loop, the sim, the
-//! `obc-host-core` dispatcher, and the tests — drains [`HostCommand`]s through
-//! [`App::drain_host_commands`](crate::App::drain_host_commands) and applies [`HostEvent`]s through
-//! [`App::apply_event`](crate::App::apply_event). The per-class pending state lives once inside
-//! `App` (a typed slot, a counter, or a derived predicate — no second copy anywhere).
 //!
 //! ## What is deliberately *not* in the protocol
 //!
@@ -216,9 +207,8 @@ impl HostCommand {
     /// cancellations before new work (`CancelRoutePlan` strictly before `PlanRoute`), then
     /// destructive/persistence one-shots, then new work, then idempotent refreshes, then the
     /// derived fill cues. Within one input batch this order — not gesture arrival — is what a
-    /// typed host observes; the per-class latches never encoded a cross-class arrival order to
-    /// begin with (every legacy host imposed its own). The one arrival-order fact that *does*
-    /// matter — a plan confirmed and cancelled inside the same batch must net "no plan" — is
+    /// typed host observes. The one arrival-order fact that matters — a plan confirmed and
+    /// cancelled inside the same batch must net "no plan" — is
     /// enforced at **post time**, not here: the cancel annihilates the undrained request (see
     /// [`HostCommand::CancelRoutePlan`]), so this order alone never hands the host a
     /// dead-on-arrival plan.
@@ -327,12 +317,11 @@ pub enum HostEvent {
     UpdateFailed { why: DfuFailure, staged: Option<Version> },
     /// The answer to a drained [`HostCommand::PersistSettings`]: the host wrote `revision` to durable
     /// storage (#810). Clears the app's dirty state **iff `revision` is still the latest** — a stale
-    /// ack (a newer edit already bumped the revision) leaves the newer content pending. No compat
-    /// adapter: settings persistence moved straight to the typed protocol.
+    /// ack (a newer edit already bumped the revision) leaves the newer content pending.
     SettingsPersisted { revision: u16 },
     /// The answer to a drained [`HostCommand::PersistSettings`] whose write failed (#810): the app
     /// keeps `revision` dirty and re-arms a bounded backoff retry, and surfaces the failure on the
-    /// shared advisory warning card. `error` is the bounded reason. No compat adapter.
+    /// shared advisory warning card. `error` is the bounded reason.
     SettingsPersistFailed { revision: u16, error: SettingsSaveError },
 }
 

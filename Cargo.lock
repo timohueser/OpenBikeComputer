@@ -1269,8 +1269,7 @@ dependencies = [
 [[package]]
 name = "embedded-sdmmc"
 version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce3c7f9ea039eeafc4a49597b7bd5ae3a1c8e51b2803a381cb0f29ce90fe1ec6"
+source = "git+https://github.com/timohueser/embedded-sdmmc-rs?branch=cmd25-multiblock-write#4cada7b388f4e4bf9f8de1fcdba33f22c1245aa7"
 dependencies = [
  "byteorder",
  "embedded-hal 1.0.0",
@@ -2473,6 +2472,7 @@ dependencies = [
  "heapless 0.8.0",
  "libm",
  "obc-formats",
+ "obc-map-scene",
  "obc-ports",
  "obc-reader",
  "obc-render",
@@ -2484,10 +2484,15 @@ dependencies = [
 name = "obc-bake"
 version = "0.1.0"
 dependencies = [
+ "embedded-graphics",
  "heapless 0.8.0",
+ "image",
  "obc-formats",
+ "obc-map-scene",
  "obc-pack",
  "obc-reader",
+ "obc-render",
+ "obcm-assemble",
  "serde",
  "serde_json",
  "sha2",
@@ -2504,6 +2509,7 @@ dependencies = [
  "obc-app",
  "obc-display",
  "obc-formats",
+ "obc-map-scene",
  "obc-reader",
  "obc-render",
  "obc-route",
@@ -2545,6 +2551,7 @@ dependencies = [
  "embedded-graphics",
  "obc-app",
  "obc-formats",
+ "obc-map-scene",
  "obc-ports",
  "obc-reader",
  "obc-replay",
@@ -2575,6 +2582,7 @@ dependencies = [
  "heapless 0.8.0",
  "indexmap",
  "obc-formats",
+ "obc-map-scene",
  "obc-reader",
  "osmpbf",
  "rayon",
@@ -2598,8 +2606,8 @@ dependencies = [
  "embedded-hal 1.0.0",
  "embedded-hal-async",
  "heapless 0.8.0",
+ "obc-map-scene",
  "obc-ports",
- "obc-route",
 ]
 
 [[package]]
@@ -2644,6 +2652,7 @@ dependencies = [
  "heapless 0.8.0",
  "libm",
  "obc-formats",
+ "obc-map-scene",
  "obc-pack",
  "obc-ports",
  "obc-reader",
@@ -2675,8 +2684,27 @@ dependencies = [
  "obc-render",
  "obc-replay",
  "obc-route",
+ "obcm-testkit",
  "pollster",
  "rfd",
+]
+
+[[package]]
+name = "obc-skin-preview"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "embedded-graphics",
+ "js-sys",
+ "obc-formats",
+ "obc-host-core",
+ "obc-map-scene",
+ "obc-pack",
+ "obc-reader",
+ "obc-render",
+ "obcm-assemble",
+ "serde_json",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -2694,12 +2722,19 @@ name = "obc-usb-host"
 version = "0.1.0"
 dependencies = [
  "eframe",
+ "embedded-graphics",
  "obc-app",
+ "obc-ble",
+ "obc-formats",
  "obc-platform",
  "obc-ports",
+ "obc-reader",
+ "obc-render",
  "obc-replay",
+ "obcm-testkit",
  "rfd",
  "serialport",
+ "sha2",
 ]
 
 [[package]]
@@ -2712,6 +2747,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "obc-web-assemble"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "js-sys",
+ "obc-formats",
+ "obc-pack",
+ "obcm-assemble",
+ "serde_json",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "obc-web-convert"
 version = "0.1.0"
 dependencies = [
@@ -2719,6 +2767,7 @@ dependencies = [
  "heapless 0.8.0",
  "js-sys",
  "obc-formats",
+ "obc-ports",
  "obc-route",
  "wasm-bindgen",
 ]
@@ -2742,17 +2791,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "obc-web-preview"
+name = "obcm-assemble"
 version = "0.1.0"
 dependencies = [
- "console_error_panic_hook",
  "embedded-graphics",
- "js-sys",
+ "heapless 0.8.0",
  "obc-display",
- "obc-host-core",
+ "obc-formats",
+ "obc-map-scene",
+ "obc-pack",
  "obc-reader",
  "obc-render",
- "wasm-bindgen",
+ "obc-route",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

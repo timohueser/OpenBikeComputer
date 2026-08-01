@@ -52,6 +52,8 @@ export const HostFrame = {
     DeviceInfoRead: 5,
     /** `config` read (§7.3). No payload. */
     ConfigRead: 6,
+    /** Read free bytes on the mounted SD card. No payload; USB only (§10). */
+    CardFreeRead: 7,
 } as const;
 export type HostFrame = (typeof HostFrame)[keyof typeof HostFrame];
 
@@ -66,6 +68,8 @@ export const DeviceFrame = {
     DeviceInfo: 3,
     /** The answer to {@link HostFrame.ConfigRead}: the §7.3 blob. */
     Config: 4,
+    /** The answer to {@link HostFrame.CardFreeRead}: empty = unavailable, otherwise LE `u64`. */
+    CardFree: 5,
 } as const;
 export type DeviceFrame = (typeof DeviceFrame)[keyof typeof DeviceFrame];
 
@@ -86,6 +90,26 @@ export function encodeFrame(selector: number, payload?: Uint8Array): Uint8Array 
 export function decodeFrame(data: Uint8Array): ControlFrame {
     if (data.length < 1) throw new DecodeError("truncated", "an empty control frame arrived.");
     return { selector: data[0], payload: data.subarray(1) };
+}
+
+/** Encode the SD card's free-byte count as the USB envelope's little-endian `u64`. */
+export function encodeCardFree(bytes: number | null): Uint8Array {
+    if (bytes === null) return new Uint8Array();
+    if (!Number.isSafeInteger(bytes) || bytes < 0) throw new RangeError(`invalid card free-byte count ${bytes}.`);
+    const out = new Uint8Array(8);
+    new DataView(out.buffer).setBigUint64(0, BigInt(bytes), true);
+    return out;
+}
+
+/** Decode a free-space reply. An empty payload means no mounted/readable card. */
+export function decodeCardFree(data: Uint8Array): number | null {
+    if (data.length === 0) return null;
+    if (data.length !== 8) throw new DecodeError("truncated", `card-free reply is ${data.length} bytes, expected 8.`);
+    const value = new DataView(data.buffer, data.byteOffset, data.byteLength).getBigUint64(0, true);
+    if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
+        throw new DecodeError("unknown-status", "card-free reply exceeds JavaScript's exact integer range.");
+    }
+    return Number(value);
 }
 
 /**

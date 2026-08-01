@@ -14,6 +14,11 @@
 //! the per-stage render breakdown + the frame's camera scale. ASCII, newline-terminated.
 //!
 //! Usage: `obc-usb-host [--gpx FILE] [--port NAME] [--baud N] [--list]`.
+//!
+//! It also carries the protocol half that is not a window: `--check-set DIR [--card-id N]` proves an
+//! assembled volume set against `OBCA_Spec.md` §5.3 and prints the order §5.4 requires it be sent in
+//! (see [`obc_usb_host::set_transfer`]). The bytes themselves go over the builder tiers' own pipes;
+//! this crate deliberately does not open a second one.
 
 use std::io::{self, Read as _, Write as _};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -141,10 +146,12 @@ struct Args {
     port: Option<String>,
     baud: u32,
     list: bool,
+    check_set: Option<String>,
+    card_id: u16,
 }
 
 fn parse_args() -> Result<Args, String> {
-    let mut a = Args { gpx: None, port: None, baud: 115_200, list: false };
+    let mut a = Args { gpx: None, port: None, baud: 115_200, list: false, check_set: None, card_id: 1 };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -152,10 +159,62 @@ fn parse_args() -> Result<Args, String> {
             "--port" => a.port = Some(it.next().ok_or("--port needs a name")?),
             "--baud" => a.baud = it.next().and_then(|s| s.parse().ok()).ok_or("bad --baud")?,
             "--list" => a.list = true,
+            "--check-set" => a.check_set = Some(it.next().ok_or("--check-set needs a directory")?),
+            "--card-id" => a.card_id = it.next().and_then(|s| s.parse().ok()).ok_or("bad --card-id")?,
             other => return Err(format!("unexpected arg: {other}")),
         }
     }
     Ok(a)
+}
+
+/// `--check-set <dir>`: run the volume-set send plan over an assembled set and print it, without a
+/// device attached (issue #1039).
+///
+/// This is the half of "sending a set" that has no cable in it, and it is the half that can be
+/// wrong: `OBCA_Spec.md` §5.3 makes verifying every shard's SHA-256 a **host** obligation the device
+/// is explicitly allowed to skip, and §5.4 makes the send order — shards first, manifest last —
+/// load-bearing. Both are checked here, so `obcm-assemble` output can be proven before it is offered
+/// to a device that would otherwise spend gigabytes discovering the same thing.
+///
+/// The bytes themselves go over whichever pipe the builder's tiers own (WebUSB in the browser, nusb
+/// in the desktop app) — `obc_usb_host::set_transfer::send` is the driver they bind, and this feeder
+/// deliberately does not open a second one.
+fn check_set(dir: &str, card_id: u16) -> i32 {
+    use obc_usb_host::set_transfer::{plan, Part};
+
+    let plan = match plan(std::path::Path::new(dir), card_id) {
+        Ok(plan) => plan,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    println!(
+        "volume set MS{} — {} shard{} + manifest, {} bytes{}",
+        plan.card_id,
+        plan.shard_count,
+        if plan.shard_count == 1 { "" } else { "s" },
+        plan.total_bytes(),
+        plan.name.as_deref().filter(|n| !n.is_empty()).map(|n| format!(" — “{n}”")).unwrap_or_default()
+    );
+    println!("send order (OBCA §5.4: the manifest is last):");
+    for (step, file) in plan.files.iter().enumerate() {
+        let desc = file.descriptor();
+        let what = match file.part {
+            Part::Shard(part) => format!("shard {}/{}", part.index, part.shard_count),
+            Part::Manifest => "manifest".to_string(),
+        };
+        println!(
+            "  {step:>2}. {:<13} {what:<12} type {:>2}  id 0x{:04X}  {:>12} B  crc 0x{:08X}",
+            file.filename,
+            desc.ty.as_u8(),
+            desc.object_id,
+            file.len,
+            file.crc32
+        );
+    }
+    println!("every shard matches the size and SHA-256 the manifest records (OBCA §5.3)");
+    0
 }
 
 fn list_ports() -> Vec<String> {
@@ -166,10 +225,17 @@ fn main() -> eframe::Result<()> {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: obc-usb-host [--gpx FILE] [--port NAME] [--baud N] [--list]");
+            eprintln!(
+                "error: {e}\nusage: obc-usb-host [--gpx FILE] [--port NAME] [--baud N] [--list]\n       \
+                 obc-usb-host --check-set DIR [--card-id N]"
+            );
             std::process::exit(2);
         }
     };
+
+    if let Some(dir) = &args.check_set {
+        std::process::exit(check_set(dir, args.card_id));
+    }
 
     if args.list {
         let ports = list_ports();

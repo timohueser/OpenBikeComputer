@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 
 use geos::{CoordSeq, Geom as _, Geometry, GeometryTypes};
-use obc_reader::M_PER_DEG;
+use obc_map_scene::M_PER_DEG;
 use rayon::prelude::*;
 
 use crate::serialize::{Feature, Kind};
@@ -187,6 +187,42 @@ pub fn strip_small_holes(g: &mut Geom, mpp: f64, min_area_px: f64) -> usize {
     }
 }
 
+/// Drop a polygon's smallest holes until it fits `max_rings` rings (exterior +
+/// holes) total, returning the count removed. The reader decodes a feature's rings
+/// into a fixed `heapless` buffer and discards the whole feature past its capacity
+/// ([`obc_reader::MAX_FEAT_RINGS`]) — so shipping the largest `max_rings - 1` holes
+/// keeps the feature (and its most visible clearings) instead of losing all of it.
+/// Kept holes stay in their original order, so emission is deterministic. Lines and
+/// within-cap polygons pass through untouched; `Multi` recurses per part.
+pub fn trim_excess_holes(g: &mut Geom, max_rings: usize) -> usize {
+    let cap = max_rings.saturating_sub(1);
+    match g {
+        Geom::Empty | Geom::Line(_) => 0,
+        Geom::Multi(parts) => parts.iter_mut().map(|p| trim_excess_holes(p, max_rings)).sum(),
+        Geom::Polygon { interiors, .. } => {
+            if interiors.len() <= cap {
+                return 0;
+            }
+            // Rank holes by area, largest first (stable, so equal areas keep input
+            // order), and keep the top `cap` at their original positions.
+            let mut order: Vec<usize> = (0..interiors.len()).collect();
+            order.sort_by(|&a, &b| ring_area_deg2(&interiors[b]).total_cmp(&ring_area_deg2(&interiors[a])));
+            let mut keep = vec![false; interiors.len()];
+            for &i in order.iter().take(cap) {
+                keep[i] = true;
+            }
+            let dropped = interiors.len() - cap;
+            let mut i = 0;
+            interiors.retain(|_| {
+                let k = keep[i];
+                i += 1;
+                k
+            });
+            dropped
+        }
+    }
+}
+
 /// Only `Line`/`Polygon` reach here (post-flatten).
 pub fn to_feature(style_id: u8, g: &Geom) -> Option<Feature> {
     match g {
@@ -221,6 +257,13 @@ fn densify_extra(p1: (i64, i64), p2: (i64, i64)) -> usize {
 /// real bytes overflow the chunk gets features silently dropped at pack time.
 /// Always ≥ the packed size: deltas are budgeted at the 16-bit worst case, and
 /// the exterior's anchor vertex is counted although it packs into the header.
+///
+/// The leading `12` is now a deliberate **overestimate**: v11 writes a 7-byte compact header for
+/// the common feature (§5), and the budget must stay ≥ the feature's real bytes *plus its share of
+/// the chunk's one sentinel byte*. The 4-byte anchor-vertex overcount already covers that +1 per
+/// feature on its own, so the wide-header figure is kept as headroom rather than tightened. Under
+/// v10's padded chunks an overestimate wasted file bytes; with tight chunks it costs nothing but a
+/// marginally earlier leaf split.
 pub fn packed_size_budget(g: &Geom) -> usize {
     const NO_HOLES: &[Vec<(f64, f64)>] = &[];
     let (exterior, interiors) = match g {
@@ -500,7 +543,7 @@ pub fn union_polygons(polys: &[&Geom]) -> Option<Vec<Geom>> {
                 return vec![polys[comp[0]].clone()];
             }
             let refs: Vec<&Geom> = comp.iter().map(|&i| polys[i]).collect();
-            union_polygons_serial(&refs).unwrap_or_else(|| refs.iter().map(|g| (*g).clone()).collect())
+            union_all(&refs).unwrap_or_else(|| refs.iter().map(|g| (*g).clone()).collect())
         })
         .flatten()
         .collect();
@@ -512,7 +555,15 @@ pub fn union_polygons(polys: &[&Geom]) -> Option<Vec<Geom>> {
 /// `None` on any GEOS failure or empty result. This is the per-component worker
 /// behind [`union_polygons`]; it builds, unions, and reads back wholly on the
 /// calling thread (`geos::Geometry` is `!Send`).
-fn union_polygons_serial(polys: &[&Geom]) -> Option<Vec<Geom>> {
+///
+/// Public because a caller that needs a *true* union must not go through
+/// [`union_polygons`]: that one clusters by shared vertices first, which is right
+/// for dissolving abutting map fills (they share OSM nodes) and wrong for polygons
+/// that genuinely overlap without touching a vertex — two such polygons would come
+/// back unmerged, and an even-odd reading of the result would count their overlap
+/// as a hole. The bakery's source-coverage test (`obc-bake`'s `coverage`) needs the
+/// real thing, over a handful of country outlines.
+pub fn union_all(polys: &[&Geom]) -> Option<Vec<Geom>> {
     let mut geoms = Vec::with_capacity(polys.len());
     for g in polys {
         geoms.push(try_polygon_to_geos(g)?);
@@ -930,6 +981,26 @@ mod tests {
             exterior: ring(&[(0.0, 0.0), (side, 0.0), (side, side), (0.0, side), (0.0, 0.0)]),
             interiors: vec![],
         }
+    }
+
+    /// `trim_excess_holes` keeps the largest `max_rings - 1` holes in their
+    /// original order and reports the drop count; within-cap polygons and lines
+    /// pass through untouched.
+    #[test]
+    fn trim_excess_holes_drops_smallest_keeps_order() {
+        let hole = |x0: f64, s: f64| ring(&[(x0, 0.0), (x0 + s, 0.0), (x0 + s, s), (x0, s), (x0, 0.0)]);
+        // Areas: mid, small, big — with cap 3 (exterior + 2 holes) the small one goes.
+        let mut g = Geom::Polygon {
+            exterior: hole(0.0, 1.0),
+            interiors: vec![hole(0.1, 0.02), hole(0.2, 0.01), hole(0.3, 0.03)],
+        };
+        assert_eq!(trim_excess_holes(&mut g, 3), 1);
+        let Geom::Polygon { interiors, .. } = &g else { panic!("still a polygon") };
+        assert_eq!(interiors.len(), 2);
+        assert_eq!((interiors[0][0].0, interiors[1][0].0), (0.1, 0.3), "survivors keep input order");
+        assert_eq!(trim_excess_holes(&mut g, 3), 0, "a within-cap polygon is untouched");
+        let mut l = Geom::Line(ring(&[(0.0, 0.0), (1.0, 1.0)]));
+        assert_eq!(trim_excess_holes(&mut l, 3), 0, "lines pass through");
     }
 
     /// `ring_area_deg2` is the plain shoelace area and ignores winding /
