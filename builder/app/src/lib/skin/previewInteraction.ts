@@ -43,6 +43,12 @@ export function wheelZoomFactor(deltaY: number, deltaMode: number): number {
     return Math.exp(Math.max(-500, Math.min(500, -pixels)) * 0.0015);
 }
 
+/** Combine a trackpad burst for one animation frame without overflowing the wasm boundary. */
+export function combineWheelZoom(current: number, next: number): number {
+    if (!Number.isFinite(next) || next <= 0) return current;
+    return Math.max(1e-6, Math.min(1e6, current * next));
+}
+
 export type KeyboardCameraAction =
     | { kind: "pan"; dx: number; dy: number }
     | { kind: "zoom"; factor: number }
