@@ -3,13 +3,16 @@
 //! The browser hands this bridge the bakery's canonical Teningen OBCM plus the
 //! catalog schema and a skin. The bridge resolves the skin with the same
 //! `obcm-assemble` code used for a real map, replaces only the style table and
-//! marker color, then draws the fixed 240×240, 5 m/px scene through the same
-//! `obc-reader` + `obc-render` path as the nRF54L firmware. No geometry or LOD
-//! setting is editable here: this is intentionally a skin-space surface.
+//! marker color, then draws a 240×240 scene through the same `obc-reader` +
+//! `obc-render` path as the nRF54L firmware. Camera changes stay in this bridge:
+//! browser callers ask to pan or zoom in screen pixels and receive the actual
+//! renderer LOD and frame-budget statistics rather than duplicating projection
+//! or LOD-selection policy in TypeScript. No geometry or LOD setting is editable
+//! here: this is intentionally a skin-space surface.
 
 mod preview;
 
-pub use preview::{MapPreview, PreviewErrorCode, PreviewFailure, FRAME_H, FRAME_W};
+pub use preview::{MapPreview, PreviewErrorCode, PreviewFailure, PreviewStats, FRAME_H, FRAME_W};
 
 #[cfg(target_arch = "wasm32")]
 mod web {
@@ -49,6 +52,21 @@ mod web {
             self.0.set_skin(skin_json).map_err(to_js)
         }
 
+        /// Move the map by a screen-space drag delta. Positive x/y moves the
+        /// rendered map right/down, like a physical sheet under the pointer.
+        pub fn pan_by(&mut self, dx: f32, dy: f32) {
+            self.0.pan_by(dx, dy);
+        }
+
+        /// Zoom around one logical-frame point. A factor above one zooms in.
+        pub fn zoom_at(&mut self, factor: f32, x: f32, y: f32) {
+            self.0.zoom_at(factor, x, y);
+        }
+
+        pub fn reset_camera(&mut self) {
+            self.0.reset_camera();
+        }
+
         /// A transient RGBA view over wasm memory. The caller copies it into
         /// `ImageData` before making another wasm call.
         pub fn frame(&mut self) -> js_sys::Uint8ClampedArray {
@@ -60,6 +78,51 @@ mod web {
                 buf.as_ptr() as u32,
                 buf.len() as u32,
             )
+        }
+
+        #[wasm_bindgen(getter)]
+        pub fn meters_per_pixel(&self) -> f32 {
+            self.0.stats().meters_per_pixel
+        }
+
+        #[wasm_bindgen(getter)]
+        pub fn lod_index(&self) -> u32 {
+            self.0.stats().lod_index as u32
+        }
+
+        #[wasm_bindgen(getter)]
+        pub fn lod_count(&self) -> u32 {
+            self.0.stats().lod_count as u32
+        }
+
+        #[wasm_bindgen(getter)]
+        pub fn features_drawn(&self) -> u32 {
+            self.0.stats().features_drawn as u32
+        }
+
+        #[wasm_bindgen(getter)]
+        pub fn features_dropped(&self) -> u32 {
+            self.0.stats().features_dropped as u32
+        }
+
+        #[wasm_bindgen(getter)]
+        pub fn points_drawn(&self) -> u32 {
+            self.0.stats().points_drawn as u32
+        }
+
+        #[wasm_bindgen(getter)]
+        pub fn span_utilization(&self) -> f32 {
+            self.0.stats().span_utilization
+        }
+
+        #[wasm_bindgen(getter)]
+        pub fn point_utilization(&self) -> f32 {
+            self.0.stats().point_utilization
+        }
+
+        #[wasm_bindgen(getter)]
+        pub fn ring_utilization(&self) -> f32 {
+            self.0.stats().ring_utilization
         }
     }
 
