@@ -330,8 +330,14 @@ pub struct PlanetSharder<'a> {
     pub runner: &'a dyn ShardRunner,
 }
 
+pub struct PlanetShardRun {
+    pub leaves: Vec<PlanetLeaf>,
+    pub reused: usize,
+    pub created: usize,
+}
+
 impl PlanetSharder<'_> {
-    pub fn run(&self, progress: &Progress) -> Result<Vec<PlanetLeaf>, String> {
+    pub fn run(&self, progress: &Progress) -> Result<PlanetShardRun, String> {
         self.runner.check()?;
         let root = LeafRect::root();
         let mut expected = Vec::new();
@@ -342,6 +348,7 @@ impl PlanetSharder<'_> {
                 current.insert(*id);
             }
         }
+        let current_at_start = current.len();
         progress.log(format!(
             "planet source shards: {} current, {} to create (2^{} µdeg leaves)",
             current.len(),
@@ -354,13 +361,14 @@ impl PlanetSharder<'_> {
             self.ensure(root, &self.input.path, false, &mut current, progress)?;
         }
 
-        expected
+        let leaves = expected
             .into_iter()
             .map(|id| {
                 self.read_current(id, false)?
                     .ok_or_else(|| format!("planet source leaf {}/{} is missing after sharding", id.i, id.j))
             })
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(PlanetShardRun { created: leaves.len() - current_at_start, reused: current_at_start, leaves })
     }
 
     fn ensure(
@@ -490,6 +498,8 @@ pub struct PlanetRunSummary {
     pub source_snapshot: String,
     pub source_bytes: u64,
     pub leaves: usize,
+    pub source_leaves_reused: usize,
+    pub source_leaves_created: usize,
     pub leaves_cut: usize,
     pub leaves_unchanged: usize,
     pub leaves_refreshed: usize,
@@ -548,6 +558,11 @@ impl PlanetRunSummary {
             writeln!(out, "source {} ({}; {})", self.source.display(), self.source_snapshot, human(self.source_bytes));
         let _ = writeln!(
             out,
+            "source shards: {} reused, {} created",
+            self.source_leaves_reused, self.source_leaves_created
+        );
+        let _ = writeln!(
+            out,
             "{} leaves: {} cut, {} metadata-only, {} unchanged",
             self.leaves, self.leaves_cut, self.leaves_refreshed, self.leaves_unchanged
         );
@@ -572,6 +587,8 @@ pub struct PlanetBake<'a> {
     pub schema: &'a StyleDoc,
     pub skins: &'a [&'a StyleDoc],
     pub cutter: &'a dyn CellCutter,
+    pub source_leaves_reused: usize,
+    pub source_leaves_created: usize,
     pub opts: CellBakeOptions,
 }
 
@@ -596,6 +613,8 @@ impl PlanetBake<'_> {
             source_snapshot: self.input.snapshot.clone(),
             source_bytes: self.input.bytes,
             leaves: self.leaves.len(),
+            source_leaves_reused: self.source_leaves_reused,
+            source_leaves_created: self.source_leaves_created,
             leaves_cut: 0,
             leaves_unchanged: 0,
             leaves_refreshed: 0,
@@ -695,6 +714,14 @@ impl PlanetBake<'_> {
                 actual.len(),
                 self.leaves.len(),
                 expected.len()
+            ));
+        }
+        if self.source_leaves_reused + self.source_leaves_created != self.leaves.len() {
+            return Err(format!(
+                "planet source-shard summary says {} reused + {} created, but the bakery received {} leaves",
+                self.source_leaves_reused,
+                self.source_leaves_created,
+                self.leaves.len()
             ));
         }
         for leaf in self.leaves {
@@ -1193,11 +1220,14 @@ mod tests {
         assert!(runner.calls.lock().unwrap().iter().all(|count| *count <= 2));
         let calls = runner.calls.lock().unwrap().len();
         let second = sharder.run(&Progress::silent()).unwrap();
-        assert_eq!(first.len(), second.len());
+        assert_eq!(first.leaves.len(), second.leaves.len());
+        assert_eq!(first.created, first.leaves.len());
+        assert_eq!(second.reused, second.leaves.len());
         assert_eq!(runner.calls.lock().unwrap().len(), calls, "a current hierarchy performs no extraction");
 
-        std::fs::write(&first[0].path, b"corrupt").unwrap();
-        sharder.run(&Progress::silent()).unwrap();
+        std::fs::write(&first.leaves[0].path, b"corrupt").unwrap();
+        let repaired = sharder.run(&Progress::silent()).unwrap();
+        assert_eq!(repaired.created, 1);
         assert!(runner.calls.lock().unwrap().len() > calls, "a changed leaf is recreated through its branch");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1256,6 +1286,8 @@ mod tests {
             schema: &schema,
             skins: &[],
             cutter: &cutter,
+            source_leaves_reused: 0,
+            source_leaves_created: 1,
             opts: CellBakeOptions {
                 out: dir.clone(),
                 force: false,
@@ -1337,6 +1369,8 @@ mod tests {
             schema: &schema,
             skins: &[],
             cutter: &cutter,
+            source_leaves_reused: leaves.len(),
+            source_leaves_created: 0,
             opts: CellBakeOptions {
                 out: dir.clone(),
                 force: false,
