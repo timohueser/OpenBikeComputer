@@ -4,16 +4,22 @@ import OBCDomain
 import OBCTransport
 
 /// The firmware-update screen (S7) — pushed from Settings' Firmware group. Shows
-/// the running version, the staged file (version + size), and a single action:
-/// "Send to bike computer". After sending, the rider confirms on the device and
-/// it restarts; the screen tracks that through to the reconnect.
+/// the running version, what's published, the staged file (version + size), and a
+/// single action: send it. After sending, the rider confirms on the device and it
+/// restarts; the screen tracks that through to the reconnect.
 ///
-/// Import is Files-only (`UPDATE.BIN` / `.bin`), validated in the picker — a
-/// corrupt file is refused here, never streamed to the device. No release feed,
-/// no auto-update: the trust model is "the user chose this file".
+/// Two ways in, one way out. The **published release** (#773 U4) is checked on
+/// appear — an anonymous GET for a public manifest, nothing about the device sent —
+/// and a newer build offers "Download & Install": the container is downloaded and
+/// proved against the manifest's size + SHA-256, then handed to the *same* staging
+/// path the picker feeds. The **Files picker** (`UPDATE.BIN` / `.bin`) stays, and
+/// is the only path for a device whose running version can't be parsed. Either
+/// way a corrupt file is refused on the phone, never streamed to the device, and
+/// nothing installs until the rider confirms it on the glass.
 public struct FirmwareUpdateView: View {
     @Bindable private var model: FirmwareUpdateModel
     @State private var pickerShown = false
+    @Environment(\.openURL) private var openURL
 
     public init(model: FirmwareUpdateModel) {
         self.model = model
@@ -29,7 +35,11 @@ public struct FirmwareUpdateView: View {
         ScrollView {
             VStack(spacing: 26) {
                 runningGroup
+                availableGroup
                 stagedGroup
+                #if DEBUG
+                developerGroup
+                #endif
             }
             .padding(.horizontal, 20)
             .padding(.top, 18)
@@ -68,18 +78,129 @@ public struct FirmwareUpdateView: View {
         .onDisappear { model.stop() }
     }
 
-    // MARK: Running version
+    // MARK: Running version + the check
 
     private var runningGroup: some View {
-        OBCGroupedSection("On the device") {
+        OBCGroupedSection("On the device", footer: statusFooter) {
             OBCListRow(
                 icon: "cpu",
                 iconColor: OBCTheme.forest,
                 label: "Firmware version",
                 value: model.connection == .connected ? model.runningVersionLine : "—",
-                showsDivider: false
+                showsDivider: model.supportsUpdateCheck
             )
+            if model.supportsUpdateCheck {
+                OBCListRow(
+                    icon: "arrow.clockwise",
+                    iconColor: OBCTheme.water,
+                    label: "Check for updates",
+                    value: model.checkState == .checking ? nil : model.lastCheckedLine,
+                    showsDivider: false,
+                    action: { model.checkForUpdate(manual: true) }
+                ) {
+                    if model.checkState == .checking {
+                        ProgressView().controlSize(.small)
+                    }
+                }
+                .accessibilityIdentifier("firmware.checkForUpdates")
+            }
         }
+    }
+
+    /// The quiet answers live in the section footer — up to date, ahead of the
+    /// published build, or a development build that isn't offered updates at all.
+    /// `available` gets its own section instead, and `noRelease` says nothing.
+    private var statusFooter: String? {
+        guard model.supportsUpdateCheck, model.hasUpdateAnswer else { return nil }
+        switch model.updateStatus {
+        case .available, .noRelease:
+            return nil
+        case .current:
+            return "Up to date."
+        case .unknown:
+            return "Development build — automatic updates are paused."
+        case .ahead:
+            return "\(model.deviceName) is newer than the published \(model.latestVersionLine)."
+        }
+    }
+
+    // MARK: Available update (#773 U4)
+
+    /// A newer published build: what it is, where to read about it, and the one
+    /// action. The failure lines for a check or a download the rider asked for
+    /// live here too — a download that fails its own verification never staged
+    /// anything, so this is the only place it can be said.
+    @ViewBuilder
+    private var availableGroup: some View {
+        if case .failed(let message) = model.checkState {
+            noticeCard(icon: "exclamationmark.triangle", tint: OBCTheme.warning, text: message)
+        }
+        if model.updateStatus == .available {
+            VStack(spacing: 16) {
+                OBCGroupedSection(
+                    "Update available",
+                    footer: "Downloaded and checked on this phone, then sent over Bluetooth. "
+                        + "Nothing is installed until you confirm it on \(model.deviceName)."
+                ) {
+                    releaseRow
+                    if let notes = model.releaseNotesURL {
+                        OBCListRow(
+                            icon: "doc.text",
+                            iconColor: OBCTheme.wood,
+                            label: "Release notes",
+                            showsChevron: true,
+                            showsDivider: false,
+                            action: { openURL(notes) }
+                        )
+                        .accessibilityIdentifier("firmware.releaseNotes")
+                    }
+                }
+
+                if case .failed(let message) = model.downloadState {
+                    noticeCard(icon: "exclamationmark.triangle", tint: OBCTheme.warning, text: message)
+                }
+
+                if model.downloadState == .downloading {
+                    HStack(spacing: 10) {
+                        ProgressView().controlSize(.small)
+                        Text("Downloading update…")
+                            .font(.system(size: 13.5))
+                            .foregroundStyle(OBCTheme.inkSoft)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .center)
+                } else {
+                    Button("Download & Install") { model.downloadUpdate() }
+                        .buttonStyle(.obcPrimary)
+                        .disabled(!model.canDownloadUpdate)
+                        .accessibilityIdentifier("firmware.downloadAndInstall")
+                }
+            }
+        }
+    }
+
+    /// The published build: version over size, matching the staged-file row.
+    private var releaseRow: some View {
+        HStack(spacing: 12) {
+            OBCIconTile(systemImage: "sparkles", color: OBCTheme.amber)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(model.latestVersionLine)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(OBCTheme.ink)
+                Text(model.latestSizeLine)
+                    .font(.obcMono(size: 12))
+                    .foregroundStyle(OBCTheme.inkFaint)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.vertical, 14)
+        .padding(.horizontal, 16)
+        .frame(minHeight: 52)
+        .overlay(alignment: .bottom) {
+            if model.releaseNotesURL != nil {
+                OBCTheme.screenLine.frame(height: 1).padding(.leading, 56)
+            }
+        }
+        .accessibilityIdentifier("firmware.availableUpdate")
     }
 
     // MARK: Staged file + action
@@ -251,6 +372,40 @@ public struct FirmwareUpdateView: View {
             .padding(.horizontal, 18)
         }
     }
+
+    #if DEBUG
+    /// The pre-release channel opt-in — a Debug-only developer switch, never part
+    /// of the shipped screen. On, the check also reads the pre-release manifest and
+    /// offers whichever channel is newer.
+    @ViewBuilder
+    private var developerGroup: some View {
+        if model.supportsUpdateCheck {
+            OBCGroupedSection(
+                "Developer",
+                footer: "Pre-release builds are unfinished by definition. Leave this off unless "
+                    + "you're testing one."
+            ) {
+                OBCListRow(
+                    icon: "hammer",
+                    iconColor: OBCTheme.parchment3,
+                    label: "Include pre-releases",
+                    showsDivider: false
+                ) {
+                    Toggle(
+                        "Include pre-releases",
+                        isOn: Binding(
+                            get: { model.includePrereleases },
+                            set: { model.setIncludePrereleases($0) }
+                        )
+                    )
+                    .labelsHidden()
+                    .tint(OBCTheme.forest)
+                }
+                .accessibilityIdentifier("firmware.includePrereleases")
+            }
+        }
+    }
+    #endif
 
     private func noticeCard(icon: String, tint: Color, text: String) -> some View {
         HStack(alignment: .top, spacing: 10) {
