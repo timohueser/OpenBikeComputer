@@ -183,6 +183,9 @@ bytes are therefore identical for the same catalog root, coverage, and skin.
 `catalog.json` is intentionally small. It pins the region cell lists and band
 indexes by byte length and SHA-256; those indexes pin every cell. Consumers reject
 a missing, truncated, or mismatched object instead of assembling a mixed publish.
+Referenced cells, satellites, and previews carry that digest in their R2 key, so
+an older cached root remains readable while a replacement propagates; unchanged
+planet cells retain their key and are skipped on later publishes.
 The byte-level cell and assembly rules are normative in
 [OBCA_Spec.md](specs/OBCA_Spec.md), and the catalog envelope is normative in
 [OBCC_Spec.md](specs/OBCC_Spec.md).
@@ -262,8 +265,10 @@ obc bake --all --source /data/planet-latest.osm.pbf
 
 Publishing is a separate operation. It regenerates URLs for the public origin,
 regenerates the square preview for every skin, uploads content first, verifies
-remote sizes, and replaces `catalog.json` last. Updating preview code therefore
-needs only another publish, not a cell rebake:
+remote sizes, and replaces `catalog.json` last. Root-referenced objects use
+immutable digest-suffixed keys; old objects are retained so a browser holding the
+previous root never receives mixed-generation bytes. Updating preview code
+therefore needs only another publish, not a cell rebake:
 
 ```sh
 # Copy tools/obc.local.example to the gitignored tools/obc.local and add the

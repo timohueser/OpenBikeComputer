@@ -1037,6 +1037,14 @@ publish, truncated response, or stale cache can never be mistaken for a map.
 The root also states the OBCM version read from the cells themselves, making an
 unsupported device visible before a large download.
 
+The pin is also part of every referenced object's R2 key. A cell named locally
+as `1052.obcm`, for example, is published as `1052.<sha256>.obcm`; band indexes,
+region lists, and skin previews follow the same rule. Publishing a new root never
+overwrites bytes an older browser root still names, so an edge cache cannot pair
+a new digest with an old stable-path response. Unchanged cells keep the same key,
+which preserves resumable, upload-skipping planet publishes without copying a
+whole generation into a new directory.
+
 Named regions carry their byte totals, cell counts, and partial-cell counts per
 band in that root. The builder can therefore price a region and distinguish a
 normal partial coarse-context cell from an incomplete detail or routing cell

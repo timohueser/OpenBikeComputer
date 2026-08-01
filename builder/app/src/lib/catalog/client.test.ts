@@ -10,12 +10,19 @@ import { describe, expect, it, vi } from "vitest";
 import { BytesVerificationError } from "../download";
 import { CatalogFormatError } from "./manifest";
 import { CatalogClient } from "./client";
-import { EXAMPLE_CELL_INDEX, EXAMPLE_REGION_CELLS, EXAMPLE_ROOT } from "./testdata";
+import { EXAMPLE_CELL_INDEX, EXAMPLE_REGION_CELLS, EXAMPLE_ROOT, exampleCatalog } from "./testdata";
 
 const ROOT_URL = "https://maps.example.org/catalog/catalog.json";
-const FINE_INDEX_URL = "https://maps.example.org/catalog/cells/fine/index.json";
-const SWISS_CELLS_URL = "https://maps.example.org/catalog/regions/europe/switzerland/cells.json";
-const DEFAULT_PREVIEW_URL = "https://maps.example.org/catalog/previews/default.png";
+const FINE_INDEX_URL = new URL(exampleCatalog.cell_index.find((ref) => ref.band === "fine")!.url, ROOT_URL).href;
+const SWISS_CELLS_URL = new URL(
+    exampleCatalog.regions.find((region) => region.id === "europe/switzerland")!.cells_url,
+    ROOT_URL,
+).href;
+const DEFAULT_PREVIEW_URL = new URL(
+    exampleCatalog.skins.find((skin) => skin.id === "default")!.preview!.url,
+    ROOT_URL,
+).href;
+const FIRST_FINE_CELL_URL = (JSON.parse(EXAMPLE_CELL_INDEX) as { cells: Array<{ url: string }> }).cells[0].url;
 const DEFAULT_PREVIEW = "example preview png";
 
 async function sha256Hex(body: string): Promise<string> {
@@ -84,7 +91,7 @@ describe("CatalogClient.fromBody", () => {
         expect(client.catalog.schema.id).toBe("bikepacking");
         // …and the satellites still resolve against where the body came from.
         const fine = await client.cellIndex("fine");
-        expect(fine.cells[0].url).toBe("https://maps.example.org/catalog/cells/fine/1204/1052.obcm");
+        expect(fine.cells[0].url).toBe(FIRST_FINE_CELL_URL);
     });
 
     it("refuses a relative URL exactly as load does", () => {
@@ -104,7 +111,7 @@ describe("cellIndex", () => {
         expect(fine.cells.map((c) => c.id)).toEqual(["18/1204/1052", "18/1204/1053"]);
         // Cell URLs are resolved once, here, so nothing downstream holds a
         // reference that means different things depending on where it is read.
-        expect(fine.cells[0].url).toBe("https://maps.example.org/catalog/cells/fine/1204/1052.obcm");
+        expect(fine.cells[0].url).toBe(FIRST_FINE_CELL_URL);
     });
 
     it("rejects a satellite whose bytes are not the ones the root hashed", async () => {
