@@ -6,11 +6,11 @@ table, and renders the fixed Teningen camera through the production map renderer
 It is never published itself.
 
 Provenance: Geofabrik `europe/germany/baden-wuerttemberg/freiburg-regbez`,
-snapshot `2026-06-18`, packed as OBCM v11 with
+snapshot `2026-07-30`, packed as OBCM v11 with
 `builder/presets/schema.json` (Bikepacking v4) and this padded crop:
 
 ```text
-obc pack freiburg-regbez-260618.osm.pbf builder/presets/schema.json \
+obc pack freiburg-regbez-260730.osm.pbf builder/presets/schema.json \
   /tmp/teningen-preview.obcm -- \
   --bbox 7.798,48.119,7.830,48.141
 ```
@@ -22,10 +22,12 @@ OBCM header beyond the requested bbox; those overhanging coordinates are not a
 licence to pan into sparse space. At wide scales the camera remains centred in
 the requested crop while the full viewport stays within the file header.
 
-The crop is wider than the initial frame so land-cover polygons whose vertices
-lie just outside the view survive the packer's ingest-time crop. It is already
-large enough for the interactive preview to select all seven LODs, so no second
-browser fixture is needed.
+The crop is wider than the initial frame, while the packer's relation-complete
+selection also pulls in every member of a land-cover multipolygon reached from
+inside it. That keeps residential, forest, and farmland fills whole even when a
+ring segment lies outside the crop. It is already large enough for the
+interactive preview to select all seven LODs, so no second browser fixture is
+needed.
 
 Refresh this fixture whenever the schema's style-id assignment or OBCM version
 changes. `obc-bake` checks the assignment before starting a region bake and

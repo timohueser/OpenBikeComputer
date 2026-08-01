@@ -22,10 +22,12 @@ All three maps are packed with `builder/presets/schema.json` via
 the Switzerland snapshot with `grimsel.obcm` (`./repack.sh grimsel-demo`).
 
 The crop used to be a separate `osmium extract` step; since #910 the packer does
-it during ingest, reproducing osmium's default *complete_ways* strategy, so
-regenerating a fixture needs no `osmium-tool`. All three pinned bboxes were
-checked byte-for-byte across the two paths before the switch — **the fixtures
-were not re-packed for it**, and none of the pinned bboxes changed.
+it during ingest, so regenerating a fixture needs no `osmium-tool`. The initial
+implementation reproduced osmium's default *complete_ways* strategy byte for
+byte. It now also completes renderable area relations, preventing a polygon
+inside the bbox from disappearing when one member lies outside it. The current
+simulator fixtures were not re-packed for that correction; expect polygon and
+byte changes the next time their pinned snapshots are deliberately refreshed.
 
 ## The bbox-ratchet trap (read before re-packing)
 
