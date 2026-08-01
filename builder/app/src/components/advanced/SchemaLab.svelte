@@ -157,7 +157,7 @@
                         min="0.5"
                         max="100000"
                         step="0.1"
-                        value={metersPerPixel}
+                        value={metersPerPixel.toFixed(1)}
                         oninput={(event) => selectScale(event.currentTarget.valueAsNumber)}
                     />
                     <span>m/px</span>
