@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { keyboardCameraAction, PreviewDragSession, wheelZoomFactor } from "./previewInteraction";
+import { combineWheelZoom, keyboardCameraAction, PreviewDragSession, wheelZoomFactor } from "./previewInteraction";
 
 describe("PreviewDragSession", () => {
     it("owns exactly one pointer and reports incremental deltas", () => {
@@ -37,6 +37,9 @@ describe("preview camera controls", () => {
         expect(wheelZoomFactor(-1, 2)).toBeCloseTo(wheelZoomFactor(-240, 0));
         expect(wheelZoomFactor(-Infinity, 0)).toBeCloseTo(Math.exp(0.75));
         expect(wheelZoomFactor(Infinity, 0)).toBeCloseTo(Math.exp(-0.75));
+        expect(combineWheelZoom(2, 3)).toBe(6);
+        expect(combineWheelZoom(1e6, 2), "a burst cannot overflow the Rust factor").toBe(1e6);
+        expect(combineWheelZoom(4, Number.NaN), "one hostile event does not poison the burst").toBe(4);
     });
 
     it("maps only documented keys to camera actions", () => {

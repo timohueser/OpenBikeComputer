@@ -2,7 +2,12 @@
     import { onMount } from "svelte";
     import type { SkinEntry } from "../../lib/catalog/manifest";
     import { openLiveSkinPreview, type LivePreviewStats, type LiveSkinPreview } from "../../lib/skin/preview";
-    import { keyboardCameraAction, PreviewDragSession, wheelZoomFactor } from "../../lib/skin/previewInteraction";
+    import {
+        combineWheelZoom,
+        keyboardCameraAction,
+        PreviewDragSession,
+        wheelZoomFactor,
+    } from "../../lib/skin/previewInteraction";
 
     let { schemaJson, skin }: { schemaJson: string; skin: SkinEntry } = $props();
 
@@ -11,8 +16,13 @@
     let loading = $state(true);
     let error = $state<string | null>(null);
     let stats = $state<LivePreviewStats | null>(null);
+    let announcedStatus = $state("");
     let dragging = $state(false);
     let renderRaf = 0;
+    let wheelRaf = 0;
+    let wheelFactor = 1;
+    let wheelPoint = { x: 120, y: 120 };
+    let announceTimer: ReturnType<typeof setTimeout> | undefined;
     const drag = new PreviewDragSession();
 
     function paint() {
@@ -24,7 +34,9 @@
             return;
         }
         context.putImageData(new ImageData(pixels, preview.width, preview.height), 0, 0);
-        stats = preview.stats();
+        const nextStats = preview.stats();
+        stats = nextStats;
+        scheduleAnnouncement(nextStats);
     }
 
     function queuePaint(nextSkin: string) {
@@ -64,6 +76,7 @@
         event.currentTarget instanceof HTMLElement && event.currentTarget.focus();
         canvas?.setPointerCapture(event.pointerId);
         dragging = true;
+        clearTimeout(announceTimer);
         event.preventDefault();
     }
 
@@ -79,6 +92,7 @@
         if (!drag.end(event.pointerId)) return;
         if (canvas?.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
         dragging = false;
+        if (stats) scheduleAnnouncement(stats);
     }
 
     function cancelPointer() {
@@ -89,8 +103,15 @@
     function wheel(event: WheelEvent) {
         if (!preview) return;
         event.preventDefault();
-        const point = logicalPoint(event);
-        renderCamera(() => preview?.zoomAt(wheelZoomFactor(event.deltaY, event.deltaMode), point.x, point.y));
+        wheelPoint = logicalPoint(event);
+        wheelFactor = combineWheelZoom(wheelFactor, wheelZoomFactor(event.deltaY, event.deltaMode));
+        if (wheelRaf) return;
+        wheelRaf = requestAnimationFrame(() => {
+            wheelRaf = 0;
+            const factor = wheelFactor;
+            wheelFactor = 1;
+            renderCamera(() => preview?.zoomAt(factor, wheelPoint.x, wheelPoint.y));
+        });
     }
 
     function zoom(factor: number) {
@@ -98,7 +119,21 @@
     }
 
     function resetCamera() {
+        cancelAnimationFrame(wheelRaf);
+        wheelRaf = 0;
+        wheelFactor = 1;
         renderCamera(() => preview?.resetCamera());
+    }
+
+    function statusText(value: LivePreviewStats): string {
+        const mpp = value.metersPerPixel < 10 ? value.metersPerPixel.toFixed(1) : value.metersPerPixel.toFixed(0);
+        return `Teningen preview: ${mpp} meters per pixel, LOD ${value.lodIndex} of ${Math.max(value.lodCount - 1, 0)}`;
+    }
+
+    function scheduleAnnouncement(value: LivePreviewStats) {
+        clearTimeout(announceTimer);
+        if (dragging) return;
+        announceTimer = setTimeout(() => (announcedStatus = statusText(value)), 300);
     }
 
     function keydown(event: KeyboardEvent) {
@@ -130,6 +165,8 @@
         return () => {
             live = false;
             cancelAnimationFrame(renderRaf);
+            cancelAnimationFrame(wheelRaf);
+            clearTimeout(announceTimer);
             cancelPointer();
             preview?.free();
             preview = null;
@@ -167,7 +204,7 @@
 </div>
 <div class="controls" aria-label="Preview camera controls">
     <button type="button" class="camera-button" aria-label="Zoom preview out" onclick={() => zoom(0.8)}>−</button>
-    <p id="skin-preview-status" class="caption small faint" aria-live="polite">
+    <p id="skin-preview-status" class="caption small faint">
         Teningen
         {#if stats}
             · {stats.metersPerPixel < 10 ? stats.metersPerPixel.toFixed(1) : stats.metersPerPixel.toFixed(0)} m/px
@@ -175,6 +212,7 @@
         {/if}
         · device colors
     </p>
+    <span class="sr-only" aria-live="polite">{announcedStatus}</span>
     <button type="button" class="camera-button" aria-label="Zoom preview in" onclick={() => zoom(1.25)}>+</button>
     <button type="button" class="reset-button small" onclick={resetCamera}>Reset view</button>
 </div>
@@ -245,5 +283,17 @@
     .reset-button {
         grid-column: 1 / -1;
         justify-self: center;
+    }
+
+    .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
     }
 </style>

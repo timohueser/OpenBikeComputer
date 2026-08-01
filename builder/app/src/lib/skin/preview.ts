@@ -8,6 +8,7 @@
  */
 
 import type { InitInput } from "./pkg/obc_skin_preview.js";
+import type { SkinEntry } from "../catalog/manifest";
 
 const MAP_URL = new URL("../../../../../host/obc-bake/assets/teningen-preview.obcm", import.meta.url);
 
@@ -36,6 +37,18 @@ export interface LivePreviewStats {
     spanUtilization: number;
     pointUtilization: number;
     ringUtilization: number;
+}
+
+export interface SkinPreviewFrame {
+    readonly width: number;
+    readonly height: number;
+    readonly pixels: Uint8ClampedArray;
+}
+
+interface ThumbnailOptions {
+    open?: typeof openLiveSkinPreview;
+    signal?: AbortSignal;
+    yieldToBrowser?: () => Promise<void>;
 }
 
 let loading: Promise<Bridge> | null = null;
@@ -110,4 +123,41 @@ export async function openLiveSkinPreview(
     } catch (cause) {
         throw new Error(`The live Teningen preview could not be opened (${describe(cause)}).`);
     }
+}
+
+/**
+ * Render saved skins with one resident fixture/renderer, copying only each final
+ * RGBA frame. Callers keep no wasm map/cache per card and persist no stale PNG.
+ */
+export async function renderSkinPreviewFrames(
+    schemaJson: string,
+    skins: readonly SkinEntry[],
+    options: ThumbnailOptions = {},
+): Promise<Record<string, SkinPreviewFrame>> {
+    if (skins.length === 0) return {};
+    const open = options.open ?? openLiveSkinPreview;
+    const preview = await open(schemaJson, JSON.stringify(skins[0]));
+    try {
+        const frames: Record<string, SkinPreviewFrame> = {};
+        for (const [index, skin] of skins.entries()) {
+            if (options.signal?.aborted) break;
+            preview.setSkin(JSON.stringify(skin));
+            // wasm exposes a transient memory view. Each card needs an owned
+            // snapshot before the next restamp overwrites that same frame.
+            const pixels = new Uint8ClampedArray(preview.frame());
+            frames[skin.id] = { width: preview.width, height: preview.height, pixels };
+            if (index + 1 < skins.length) {
+                const yieldToBrowser = options.yieldToBrowser ?? nextAnimationFrame;
+                await yieldToBrowser();
+            }
+        }
+        return frames;
+    } finally {
+        preview.free();
+    }
+}
+
+function nextAnimationFrame(): Promise<void> {
+    if (typeof globalThis.requestAnimationFrame !== "function") return Promise.resolve();
+    return new Promise((resolve) => globalThis.requestAnimationFrame(() => resolve()));
 }
