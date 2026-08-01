@@ -471,6 +471,8 @@ fn select_crop(
     // --- Phase A: the in-box node ids, from every source. ---
     let scans = par_sources(paths, |_, path| {
         let mut ids: Vec<i64> = Vec::new();
+        let mut saw_relation = false;
+        let mut out_of_order = false;
         let mut in_box = |lon: i32, lat: i32, id: i64| {
             if bbox.contains(lon, lat) {
                 ids.push(id);
@@ -487,9 +489,21 @@ fn select_crop(
             }
             // The first way: the node section is behind us and phase B takes over
             // from this blob. (A file with no ways at all just runs to the end.)
-            Element::Way(_) => Scan::StopAtThisBlob,
-            Element::Relation(_) => Scan::Continue,
+            Element::Way(_) => {
+                out_of_order |= saw_relation;
+                Scan::StopAtThisBlob
+            }
+            Element::Relation(_) => {
+                saw_relation = true;
+                Scan::Continue
+            }
         })?;
+        if out_of_order {
+            return Err(format!(
+                "{path} is not sorted (a way follows a relation), so --bbox cannot select its areas — sort it \
+                 first (e.g. `osmium sort`)"
+            ));
+        }
         Ok((ids, ways_at))
     })?;
     let mut inside = IdSet::default();
