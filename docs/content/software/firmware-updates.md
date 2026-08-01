@@ -210,7 +210,9 @@ stating the boundary up front, because it *is* the shape of the
 design — the automation covers **delivery**, end to end, and it stops at the glass.
 Nothing described in this section can install anything.
 
-Pushing a `v*` tag runs [`release.yml`](src:.github/workflows/release.yml). It builds
+Pushing a SemVer-shaped `v*` tag runs [`release.yml`](src:.github/workflows/release.yml).
+The workflow rejects malformed version input before using it in a path or command, and a
+real tag's numeric core must match the board crate's version. It then builds
 both flashed images in their shipping shape, `objcopy`s the app to a raw binary, and
 wraps it into an OBCU container stamped with the tag and signed with the release key.
 Then, before anything is published, it runs `obc-mkimage inspect` over the result as a
@@ -225,8 +227,8 @@ test key, for the single reason that makes it safe: it publishes nothing.
 
 ### Two homes for the same bytes, and why
 
-The tagged **GitHub release** is the source of truth. It is the trigger, the immutable
-archive, the release notes a rider actually reads, and where both ELFs and the
+The tagged **GitHub release** is the source of truth. It is the versioned archive, the
+release notes a rider actually reads, and where both ELFs and the
 `SHA256SUMS.txt` live — the things you want years later when the question is *what
 exactly was `v1.3.0`?*
 
@@ -237,7 +239,7 @@ response — which kills the check in both hosts that have a browser inside them
 builder and the desktop app's webview. (GitHub's JSON API *does* send CORS headers, but
 it is the rate-limited surface the design set out to stay off.) So the workflow mirrors
 two objects into the project's own R2 bucket — the same object storage the
-[map bakery](../formats/#the-catalog-a-third-format-for-finding-the-first-two)
+[map bakery](../formats/#the-catalog-the-map-builders-source-of-truth)
 publishes its catalog into, under its own prefix — and that bucket is the **serving
 edge**.
 
@@ -285,10 +287,11 @@ Three object names carry all of it:
 |---|---|---|
 | `fw/<tag>/UPDATE.BIN` | every tag | the image itself — versioned, and never rewritten |
 | `fw/manifest.json` | **stable** tags only | the "latest" pointer, the one every client polls by default |
-| `fw/prerelease/manifest.json` | **hyphenated** tags only | the opt-in channel |
+| `fw/prerelease/manifest.json` | SemVer **pre-release** tags only | the opt-in channel |
 
-A hyphenated tag — `v1.3.0-rc.1` — is a pre-release: it publishes its image and moves
-the pre-release pointer, and it **never touches** `fw/manifest.json`. That single
+A SemVer pre-release tag — `v1.3.0-rc.1` — publishes its image and moves the
+pre-release pointer, and it **never touches** `fw/manifest.json`. The channel decision
+looks only before optional `+build` metadata, so `v1.3.0+build-2` remains stable. That single
 refusal is the staged rollout. A rider on the default channel cannot be shown a release
 candidate at all; a client that offers the opt-in fetches both pointers and takes
 whichever names the newer version; and a specific build can still be handed to a
@@ -322,7 +325,7 @@ refuses instead of guessing, and nobody's work-in-progress gets overwritten by a
 there.
 
 <figure class="fig">
-<svg viewBox="0 0 720 512" role="img" aria-label="How a tagged release reaches a device, drawn top to bottom. At the top left, a pushed git tag v1.3.0 feeds the release.yml workflow, which builds, objcopies, wraps and signs the image and then runs inspect as a gate — the signature must verify under the key compiled into the build. From the workflow one arrow goes right to the GitHub Release, labelled the source of truth: notes, ELFs, checksums, immutable. A second arrow goes down, labelled mirror, into a band for updates.openbikecomputer.com, the serving edge, which lists three objects: fw slash tag slash UPDATE.BIN, immutable and written for every tag; fw slash manifest.json, the latest pointer, written by stable tags only; and fw slash prerelease slash manifest.json, the opt-in channel that never moves latest. A note in the band explains that a GitHub release asset sends no CORS header, so a browser fetch cannot read it. Below, two arrows leave the manifest for two clients — the companion app, which downloads and checks the sha256 on the phone before sending over BLE, and the map builder, one parser across web and desktop, which does the same over USB — while a third dashed arrow runs from the GitHub Release straight to any computer, the by-hand path that copies UPDATE.BIN onto the card with no manifest and no network. All three converge on a band reading UPDATE.BIN on the card: staged, not installed. Under that a dashed coral line with a single gap marks the boundary: staging is not installing, and the one way through is the rider's Select press. A green arrow passes through the gap into the device, which confirms, arms and installs.">
+<svg viewBox="0 0 720 512" role="img" aria-label="How a tagged release reaches a device, drawn top to bottom. At the top left, a pushed git tag v1.3.0 feeds the release.yml workflow, which builds, objcopies, wraps and signs the image and then runs inspect as a gate — the signature must verify under the key compiled into the build. From the workflow one arrow goes right to the GitHub Release, labelled the source of truth: notes, ELFs, checksums, versioned archive. A second arrow goes down, labelled mirror, into a band for updates.openbikecomputer.com, the serving edge, which lists three objects: fw slash tag slash UPDATE.BIN, immutable and written for every tag; fw slash manifest.json, the latest pointer, written by stable tags only; and fw slash prerelease slash manifest.json, the opt-in channel that never moves latest. A note in the band explains that a GitHub release asset sends no CORS header, so a browser fetch cannot read it. Below, two arrows leave the manifest for two clients — the companion app, which downloads and checks the sha256 on the phone before sending over BLE, and the map builder, one parser across web and desktop, which does the same over USB — while a third dashed arrow runs from the GitHub Release straight to any computer, the by-hand path that copies UPDATE.BIN onto the card with no manifest and no network. All three converge on a band reading UPDATE.BIN on the card: staged, not installed. Under that a dashed coral line with a single gap marks the boundary: staging is not installing, and the one way through is the rider's Select press. A green arrow passes through the gap into the device, which confirms, arms and installs.">
   <defs>
     <marker id="ota-a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
     <marker id="ota-g" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#9aa884" /></marker>
@@ -348,7 +351,7 @@ there.
   <text class="d-title" x="587" y="58" text-anchor="middle">GitHub Release</text>
   <text class="d-sub" x="587" y="76" text-anchor="middle">the source of truth</text>
   <text class="d-sub" x="587" y="91" text-anchor="middle">notes · ELFs · SHA256SUMS</text>
-  <text class="d-sub" x="587" y="105" text-anchor="middle" style="fill:#3c6b39">immutable</text>
+  <text class="d-sub" x="587" y="105" text-anchor="middle" style="fill:#3c6b39">versioned archive</text>
 
   <!-- mirror -->
   <line x1="311" y1="108" x2="311" y2="142" class="d-flow" marker-end="url(#ota-a)" />
@@ -544,12 +547,14 @@ a trust chain gets long without getting stronger.
 
 Read downwards the chain narrows: transport, then provenance, then a particular file,
 then particular bytes, then a person. Read as a set of failures it is easier to check.
-A tampered transport is caught by the signature. A hostile serving host cannot produce a
-container the device will install, only refuse to serve one. A forged image with a
+A tampered transport is caught by the signature. Without the signing key, a hostile
+serving host cannot produce a container the device will install, only refuse to serve
+one. A forged image with a
 perfect CRC dies at the signature; a genuine image with a broken CRC dies before the
 erase. A signed, intact, genuinely-newer image still does nothing until someone presses
-Select — and if it then fails to boot, it is gone by the next power-on. The worst thing
-any layer of this can produce is an update that doesn't happen.
+Select — and if it then fails its trial boot, the snapshot comes back. These checks
+bound delivery and install failures; they do not claim that an authorized, signed
+release is free of application bugs, which remains the job of release testing.
 
 ## The RRAM layout
 
