@@ -4,8 +4,9 @@
 //! the single-call [`App::handle_input`] the simulator uses, with the firmware's own-plane overlay
 //! staying in lock-step with the gestures the map plane applies.
 
-use obc_app::{App, AppState, Button, Gesture, InputClock, InputEvent, InputPlane, RouteSummary};
-use obc_reader::BBox;
+use obc_app::{App, AppState, Gesture, InputPlane, RouteSummary};
+use obc_map_scene::BBox;
+use obc_ports::{Button, InputClock, InputEvent};
 
 mod common;
 use common::{down, keys, step, up};

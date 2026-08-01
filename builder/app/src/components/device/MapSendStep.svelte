@@ -1,20 +1,21 @@
 <!--
-  Step 4 on a tier with a device *page*: only the map leaves from here.
-
   The connection state lives in the header chip and routes/rides/firmware live on the Device tab,
-  so this card is what remains of `DeviceStep` once everything with a better home has moved there —
-  the send-the-map-you-just-built moment, kept beside the build button on purpose (the flow the
-  desktop tier exists to make one click).
+  so this card keeps the direct send action beside the build flow.
 
-  Same chunk discipline as `DeviceStep`: this component is in the entry graph, `MapSend` drags the
-  protocol client, so `MapSend` arrives through a memoized dynamic import once a device is ready.
+  `MapSend` brings in the protocol client and is loaded only once a device is ready.
 -->
 <script lang="ts">
     import { deviceHolder } from "../../lib/device/session.svelte";
-    import type { MapArtifact } from "../../lib/device/write";
+    import type { SendAssembledMap } from "../../lib/device/write";
+    import type { Ledger } from "../../lib/catalog/ledger";
 
-    let { artifact = null }: { artifact?: MapArtifact | null } = $props();
-
+    let {
+        ledger = null,
+        sendAssembled = null,
+    }: {
+        ledger?: Ledger | null;
+        sendAssembled?: SendAssembledMap | null;
+    } = $props();
     let mapSend: Promise<typeof import("./MapSend.svelte")> | undefined;
     const loadMapSend = () => (mapSend ??= import("./MapSend.svelte"));
 
@@ -29,11 +30,7 @@
     {#await loadMapSend()}
         <p class="small muted">Loading…</p>
     {:then { default: MapSend }}
-        <MapSend
-            client={session.client}
-            {artifact}
-            localFileSource={session.localFileSource ?? null}
-        />
+        <MapSend client={session.client} {ledger} {sendAssembled} />
     {:catch}
         <p class="note error small" role="alert">
             The device tools could not be loaded. Check your connection and reload the page.

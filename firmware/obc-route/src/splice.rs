@@ -28,13 +28,14 @@ use heapless::Vec;
 
 use crate::convert::{EmitStats, ObcrEmitter, RouteStats, WpPlace};
 use crate::deadband::DeadBand;
-use crate::geo::{cos_lat, ground_dist_m, ground_dist_m_cl, project_to_segment};
+use crate::geo::project_to_segment;
 use crate::reader::{
     decode_route_points_between, for_each_waypoint, RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK, MAX_WAYPOINTS,
 };
 use obc_formats::io::{ByteSink, Error};
 use obc_formats::obcr::NAME_CAP;
-use obc_reader::{BBox, M_PER_DEG};
+use obc_map_scene::{cos_lat, ground_dist_m, ground_dist_m_cl};
+use obc_map_scene::{BBox, M_PER_DEG};
 
 /// Source chunks decoded per [`Splicer::step`] — the splice's pacing unit (one chunk ≈ one
 /// bounded decode + a burst of emitter pushes), mirroring the search's miss budget philosophy.

@@ -1,155 +1,188 @@
-// Fetching a baked map, and refusing to hand over one that doesn't match the
-// manifest.
-//
-// OBCC §7 puts the obligation plainly: a consumer verifies a downloaded
-// artifact against `bytes` and `sha256` *before* writing it to a device, and
-// surfaces a mismatch as an error rather than a corrupt file on the rider's
-// card. A corrupt `.obcm` is not a visible failure later — it is a device that
-// boots to a fault screen halfway up a mountain — so the check is not optional
-// and not deferred.
-//
-// That is why the whole artifact is buffered in memory before anything is
-// saved: a digest can only be checked over the complete bytes, and the one
-// browser API that could stream to disk and truncate afterwards (File System
-// Access) is Chromium-only — the same reach problem that makes the desktop app
-// the universal path (#894). Buffering costs RAM proportional to the map, which
-// is the honest price of never writing an unverified file.
+// Plans and downloads a selection with bounded concurrency, exact aggregate
+// progress, and per-cell length/digest verification. Verified bytes stream to
+// `onCell` so a country-scale map is never accumulated here. The first failure
+// aborts the remaining requests and prevents further sink calls. Downloads are
+// not persisted or resumed; that belongs in a host-level content cache.
 
-import type { CatalogArtifact } from "./manifest";
+import { fetchVerified } from "../download";
+import type { Catalog } from "./manifest";
+import { knownEmptyAt, type CellEntry, type CellIndexDocument } from "./satellites";
+import type { SelectionResolution } from "./selection";
 
-/** The artifact's bytes disagreed with the manifest. Nothing has been saved. */
-export class ArtifactVerificationError extends Error {
-    constructor(
-        readonly artifact: CatalogArtifact,
-        readonly detail: string,
-    ) {
-        super(`${artifact.region_id} / ${artifact.preset_id}: ${detail}`);
-        this.name = "ArtifactVerificationError";
-    }
+export interface CellDownloadItem {
+    band: string;
+    cell: CellEntry;
 }
 
-export interface DownloadProgress {
-    /** Bytes received so far. */
-    received: number;
-    /** The manifest's size — known before the first byte arrives (§2). */
-    total: number;
+export interface CellDownloadPlan {
+    /** In schema band order, then canonical cell id. The plan is the ordering
+     *  authority; completion order is whatever the network does. */
+    items: CellDownloadItem[];
+    /** Selected canonical-empty cells. They have no request or byte buffer,
+     *  but the assembler needs their identities for bbox and coverage math. */
+    knownEmpty: { band: string; id: string }[];
+    /** Summed `bytes` of every item — knowable before the fetch (§6). */
+    totalBytes: number;
 }
 
-export interface DownloadOptions {
-    onProgress?: (p: DownloadProgress) => void;
+export interface CellDownloadProgress {
+    completedCells: number;
+    totalCells: number;
+    /** Bytes received, including the partial bodies of cells still in flight. */
+    receivedBytes: number;
+    totalBytes: number;
+}
+
+export interface CellDownloadOptions {
+    /**
+     * Called with each cell's verified bytes, in completion order. May return a
+     * promise, and the run waits for it before starting another cell in that
+     * slot — so a slow consumer applies backpressure instead of queueing
+     * gigabytes behind itself.
+     */
+    onCell: (item: CellDownloadItem, bytes: Uint8Array, index: number) => void | Promise<void>;
+    onProgress?: (p: CellDownloadProgress) => void;
+    /** How many cells are in flight at once. Small objects over one HTTP/2
+     *  connection: enough to keep the pipe full, not so many that a hundred
+     *  buffers coexist. */
+    concurrency?: number;
     signal?: AbortSignal;
-    /** Injected by the tests; defaults to the global. */
     fetchImpl?: typeof fetch;
-    /** Injected by the tests; defaults to `crypto.subtle`. */
     digest?: (bytes: Uint8Array) => Promise<ArrayBuffer>;
 }
 
-async function subtleDigest(bytes: Uint8Array): Promise<ArrayBuffer> {
-    if (!globalThis.crypto?.subtle) {
-        // WebCrypto is secure-context only. Rather than skip the check, refuse:
-        // an unverifiable download is exactly what §7 forbids handing on.
-        throw new Error(
-            "this browser exposes no WebCrypto (a secure context is required), " +
-                "so the download cannot be verified",
-        );
-    }
-    return globalThis.crypto.subtle.digest("SHA-256", bytes as unknown as BufferSource);
-}
+export const DEFAULT_CONCURRENCY = 6;
 
-function toHex(digest: ArrayBuffer): string {
-    return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+/** Whatever the abort carried, as something a caller can catch and print. */
+function abortReason(signal: AbortSignal): unknown {
+    return signal.reason ?? new Error("the cell download was aborted");
 }
 
 /**
- * Fetch one artifact and return its bytes, or throw. The returned buffer has
- * been checked against the manifest's `bytes` and `sha256`; nothing else in
- * this module hands out unverified bytes.
- */
-export async function fetchArtifact(
-    artifact: CatalogArtifact,
-    opts: DownloadOptions = {},
-): Promise<Uint8Array> {
-    const doFetch = opts.fetchImpl ?? globalThis.fetch;
-    const res = await doFetch(artifact.url, { signal: opts.signal });
-    if (!res.ok) throw new Error(`${artifact.url}: ${res.status} ${res.statusText}`);
-
-    const total = artifact.bytes;
-    let bytes: Uint8Array;
-    if (res.body) {
-        const reader = res.body.getReader();
-        const chunks: Uint8Array[] = [];
-        let received = 0;
-        for (;;) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            chunks.push(value);
-            received += value.byteLength;
-            // A body longer than the manifest says is already a mismatch; stop
-            // rather than buffering an unbounded stream on the way to failing.
-            if (received > total) {
-                reader.cancel().catch(() => {});
-                throw new ArtifactVerificationError(
-                    artifact,
-                    `the download is longer than the manifest's ${total} bytes`,
-                );
-            }
-            opts.onProgress?.({ received, total });
-        }
-        bytes = new Uint8Array(received);
-        let at = 0;
-        for (const chunk of chunks) {
-            bytes.set(chunk, at);
-            at += chunk.byteLength;
-        }
-    } else {
-        bytes = new Uint8Array(await res.arrayBuffer());
-        opts.onProgress?.({ received: bytes.byteLength, total });
-    }
-
-    if (bytes.byteLength !== artifact.bytes) {
-        throw new ArtifactVerificationError(
-            artifact,
-            `expected ${artifact.bytes} bytes, got ${bytes.byteLength}`,
-        );
-    }
-    const actual = toHex(await (opts.digest ?? subtleDigest)(bytes));
-    if (actual !== artifact.sha256) {
-        // Enough digest to tell two files apart in a bug report, not so much
-        // that the sentence stops being readable.
-        throw new ArtifactVerificationError(
-            artifact,
-            `checksum mismatch — the catalog says ${artifact.sha256.slice(0, 12)}…, ` +
-                `the download is ${actual.slice(0, 12)}…`,
-        );
-    }
-    return bytes;
-}
-
-/**
- * What the file is called once it lands. The device loads the first `*.obcm` it
- * finds in the card root (any name), so this is for the rider's own filesystem:
- * the region's last path segment and the preset, which is what tells two
- * downloads apart in a Downloads folder.
- */
-export function artifactFilename(artifact: CatalogArtifact): string {
-    const leaf = artifact.region_id.split("/").pop() ?? artifact.region_id;
-    return `${leaf}-${artifact.preset_id}.obcm`;
-}
-
-/**
- * Hand verified bytes to the browser's downloader.
+ * The cells a resolved selection needs, in a stable order, with the total the
+ * ledger already showed.
  *
- * `type` defaults to the opaque one a map is; a ride export passes `application/gpx+xml` so the OS
- * files it as what it is (C5 #904). One implementation rather than two, because the revoke timing
- * below is the kind of detail a second copy gets subtly wrong.
+ * A cell the selection names but the catalog does not publish is *not* in the
+ * plan and is not an error here: a hole is legal by construction (a missing cell
+ * is an empty leaf and the renderer paints backdrop there) and the ledger has
+ * already reported it as coverage the rider is choosing to accept.
  */
-export function saveBytes(bytes: Uint8Array, filename: string, type = "application/octet-stream"): void {
-    const url = URL.createObjectURL(new Blob([bytes as unknown as BlobPart], { type }));
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    a.click();
-    // Revoked on a turn of the event loop: Safari needs the element to have
-    // been clicked with a live URL before it is released.
-    setTimeout(() => URL.revokeObjectURL(url), 0);
+export function planCells(
+    resolution: SelectionResolution,
+    catalog: Catalog,
+    indices: ReadonlyMap<string, CellIndexDocument>,
+): CellDownloadPlan {
+    const items: CellDownloadItem[] = [];
+    const knownEmpty: { band: string; id: string }[] = [];
+    let totalBytes = 0;
+    for (const band of catalog.schema.bands) {
+        const index = indices.get(band.id);
+        if (!index) continue;
+        for (const id of resolution.cellsByBand.get(band.id) ?? []) {
+            const cell = index.byId.get(id);
+            if (cell) {
+                items.push({ band: band.id, cell });
+                totalBytes += cell.bytes;
+            } else if (knownEmptyAt(index, id)) {
+                knownEmpty.push({ band: band.id, id });
+            }
+        }
+    }
+    return { items, knownEmpty, totalBytes };
+}
+
+/**
+ * Run a plan: fetch, verify and hand over every cell, at most `concurrency` at a
+ * time. Resolves once every cell has been delivered; rejects on the first
+ * failure, having aborted the rest.
+ */
+export async function downloadCells(
+    plan: CellDownloadPlan,
+    opts: CellDownloadOptions,
+): Promise<{ cells: number; bytes: number }> {
+    const total = plan.items.length;
+    if (total === 0) return { cells: 0, bytes: 0 };
+
+    // One controller for the whole run, chained to the caller's signal: a
+    // failure in any slot cancels the others' in-flight bodies rather than
+    // leaving them to finish into a run nobody is waiting for.
+    const controller = new AbortController();
+    const abort = () => controller.abort(opts.signal?.reason);
+    if (opts.signal) {
+        if (opts.signal.aborted) abort();
+        else opts.signal.addEventListener("abort", abort, { once: true });
+    }
+
+    let completedCells = 0;
+    let completedBytes = 0;
+    const inflight = new Map<number, number>();
+    const report = () => {
+        let received = completedBytes;
+        for (const n of inflight.values()) received += n;
+        opts.onProgress?.({
+            completedCells,
+            totalCells: total,
+            receivedBytes: received,
+            totalBytes: plan.totalBytes,
+        });
+    };
+
+    let cursor = 0;
+    const worker = async (): Promise<void> => {
+        for (;;) {
+            // Checked here rather than left to the transport: an abort must stop
+            // the *plan*, and a `fetch` that ignores its signal would otherwise
+            // let every remaining slot start one more cell first.
+            if (controller.signal.aborted) throw abortReason(controller.signal);
+            const index = cursor++;
+            if (index >= total) return;
+            const item = plan.items[index];
+            let bytes: Uint8Array;
+            try {
+                bytes = await fetchVerified(item.cell.url, item.cell, {
+                    signal: controller.signal,
+                    fetchImpl: opts.fetchImpl,
+                    digest: opts.digest,
+                    onProgress: (p) => {
+                        inflight.set(index, p.received);
+                        report();
+                    },
+                });
+            } finally {
+                // `finally`, because a cell that failed or was aborted mid-body
+                // still has its partial byte count in `inflight`, and every
+                // other slot's progress report would keep adding it — a bar
+                // that creeps past what was actually received, for bytes that
+                // will never arrive.
+                inflight.delete(index);
+            }
+            completedBytes += bytes.byteLength;
+            completedCells += 1;
+            report();
+            // A cell that arrives after another slot has failed belongs to a run
+            // that is already over. Handing it to `onCell` would write it into
+            // an assembly the caller is about to throw away — and the caller's
+            // sink is a file, a database, or a wasm assembler, none of which
+            // enjoy a write after the rejection.
+            if (controller.signal.aborted) throw abortReason(controller.signal);
+            await opts.onCell(item, bytes, index);
+        }
+    };
+
+    const slots = Math.max(1, Math.min(opts.concurrency ?? DEFAULT_CONCURRENCY, total));
+    try {
+        // `all`, not `allSettled`: the first rejection is the answer, and the
+        // abort in the catch is what stops the other slots from carrying on.
+        await Promise.all(
+            Array.from({ length: slots }, () =>
+                worker().catch((e: unknown) => {
+                    controller.abort(e);
+                    throw e;
+                }),
+            ),
+        );
+    } finally {
+        opts.signal?.removeEventListener("abort", abort);
+    }
+    return { cells: completedCells, bytes: completedBytes };
 }

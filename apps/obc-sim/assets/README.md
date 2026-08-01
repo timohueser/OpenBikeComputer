@@ -16,16 +16,18 @@ way to regenerate them.
 | `vector-loop-replay.gpx` | Synthetic replay tracing `specs/vectors/route-waypoints.obcr` ("Vector Loop") — 6 trackpoints at that route's own vertices (from `obc-vectors/src/route-source.gpx`), timestamped at a constant ~6 m/s, ending at vertex 6 (~1.40 km, ~300 m short of the "Pass Summit" waypoint). Lies *on* the route so the matcher locks and progress drives the waypoint chip/ticks; the `ui-snapshots.sh` waypoint frames use it (the Grimsel climb GPX is far off that 48°N route). Regenerate: re-derive from the route vertices — no packer step (a hand-made GPX, not an `.obcm`, so the repack-provenance rules don't apply) | authored, not extracted | — |
 | `TP1.OBT` | Fixture **trip** object (epic #526, TR2): "Alpen Traverse", stage ids `[0, 1, 99]` — the first two are the sorted-scan session ids of any two routes in the same folder, 99 a deliberate dangling ref (read-tolerance, spec §7.7). **Copy it into your `--routes-dir` beside two or more routes and rescan** to get a groupable menu: one folder (the first two routes filed) + the rest loose. TR3's snapshot harness stages exactly this file. Pinned byte-for-byte against `obc_route::write_trip` by `trips.rs`'s `committed_trip_asset_matches_the_production_writer`; regenerate with `write_trip("Alpen Traverse", &[0, 1, 99], …)` (not an `.obcm`, so the repack-provenance rules don't apply) | authored via `obc_route::write_trip` | — |
 
-All three maps are packed with `builder/presets/default.json` via
+All three maps are packed with `builder/presets/schema.json` via
 `cargo run --release --bin obc-pack -- <source> <preset> <out> --bbox <bbox>` —
 `repack.sh` runs the whole chain (download → pack). `grimsel-demo.obcm` shares
 the Switzerland snapshot with `grimsel.obcm` (`./repack.sh grimsel-demo`).
 
 The crop used to be a separate `osmium extract` step; since #910 the packer does
-it during ingest, reproducing osmium's default *complete_ways* strategy, so
-regenerating a fixture needs no `osmium-tool`. All three pinned bboxes were
-checked byte-for-byte across the two paths before the switch — **the fixtures
-were not re-packed for it**, and none of the pinned bboxes changed.
+it during ingest, so regenerating a fixture needs no `osmium-tool`. The initial
+implementation reproduced osmium's default *complete_ways* strategy byte for
+byte. It now also completes renderable area relations, preventing a polygon
+inside the bbox from disappearing when one member lies outside it. The current
+simulator fixtures were not re-packed for that correction; expect polygon and
+byte changes the next time their pinned snapshots are deliberately refreshed.
 
 ## The bbox-ratchet trap (read before re-packing)
 
@@ -57,3 +59,4 @@ fixture, update the log below.
 | 2026-07-08 | `grimsel.obcm` | v10; polygon outlines (#560). `default.json` `building.yes` gained a darker-grey `color2` (`0x52AA`) for the finest-LOD building-ring outline. Same snapshot, so size is unchanged (3.80 MB, 3797843 B → 3797843 B, 0 net bytes — records are already 8 bytes); only the `building.yes` style-table record's `color2` bytes + flag bit differ. |
 | 2026-07-08 | `monaco.obcm` | v10; polygon outlines (#560). Same preset change; unchanged size (1.10 MB, 1098449 B → 1098449 B, 0 net bytes), `building.yes` `color2` bytes + flag bit differ. |
 | 2026-07-09 | `grimsel-demo.obcm` | v10; **new** demo-only map (epic #624 S4, #629). Canonical corridor bbox `8.26,46.54,8.37,46.67` from the `europe/switzerland-latest.osm.pbf` 2026-06-20 snapshot. 751518 B (734 KB) raw / 241 KB gzip vs `grimsel.obcm` 3797843 B (3.62 MB) / 1.20 MB gzip — ~5× smaller. 10 Lodging POIs, single 236 km / 1007-node routable nav component. |
+| 2026-07-30 | all three | v11; tight chunks + compact feature header (#1009), on top of the ring-cap split fix (#1007). `grimsel.obcm` 3797843 B → 2618777 B, `monaco.obcm` 1098449 B → 683532 B, `grimsel-demo.obcm` 751518 B → 639262 B. **These deltas are three changes, not one**: the committed files predate `default.json`'s preset v4 (#984, 2026-07-29), so the re-pack carries that restyle, and it also carries #1007's ring cap, which forces extra splits in the two Switzerland cuts (grimsel 2614924 → 2618777 B, grimsel-demo 635216 → 639262 B when #1007 merged in; monaco is byte-identical either side, being too small to hold an over-cap polygon). The **format** alone, measured by packing one extract with both packers: monaco 1597945 B → 683532 B (2.34×), grimsel 6189979 B → 2614924 B (2.37×), `grimsel-demo` 1567286 B → 635216 B (2.47×) — `obcm_diff --dump` identical across the bump in all three. Switzerland snapshot 2026-06-21, Monaco 2026-06-16. |

@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use obc_dfu::{ImageHeader, HEADER_LEN, MAX_IMAGE_LEN, SIG_LEN, SIG_SCHEME_ED25519};
+use obc_dfu::{crc32, ImageHeader, HEADER_LEN, MAX_IMAGE_LEN, SIG_LEN, SIG_SCHEME_ED25519};
 
 fn bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_obc-mkimage"))
@@ -285,6 +285,49 @@ fn inspect_rejects_corrupted_image() {
     let i = bin().arg("inspect").arg(&out_path).arg("--pubkey").arg(test_key("pub")).output().unwrap();
     assert!(!i.status.success(), "inspect must fail a missing trailer");
     assert!(String::from_utf8_lossy(&i.stdout).contains("MISSING"));
+
+    let _ = std::fs::remove_file(&bin_path);
+    let _ = std::fs::remove_file(&out_path);
+}
+
+/// `inspect` is the release gate, so it must implement the device's exact scheme policy rather
+/// than treating every non-zero marker as if it meant Ed25519.
+#[test]
+fn inspect_rejects_unknown_or_inconsistent_signature_markers() {
+    let bin_path = scratch("scheme.bin");
+    let out_path = scratch("SCHEME.BIN");
+    std::fs::write(&bin_path, fake_image(b"a correctly signed image")).unwrap();
+    let w = bin()
+        .args(["wrap", "--bin"])
+        .arg(&bin_path)
+        .args(["--version", "v5.0.0", "--out"])
+        .arg(&out_path)
+        .arg("--sign-seed")
+        .arg(test_key("seed"))
+        .output()
+        .unwrap();
+    assert!(w.status.success());
+    let good = std::fs::read(&out_path).unwrap();
+
+    for (scheme, sig_len) in [(99u16, SIG_LEN as u16), (0, SIG_LEN as u16), (SIG_SCHEME_ED25519, 0)] {
+        let mut blob = good.clone();
+        blob[48..50].copy_from_slice(&scheme.to_le_bytes());
+        blob[50..52].copy_from_slice(&sig_len.to_le_bytes());
+        let header_crc = crc32(&blob[..60]);
+        blob[60..64].copy_from_slice(&header_crc.to_le_bytes());
+        std::fs::write(&out_path, &blob).unwrap();
+
+        let i = bin()
+            .arg("inspect")
+            .arg(&out_path)
+            .arg("--pubkey")
+            .arg(test_key("pub"))
+            .arg("--allow-unsigned")
+            .output()
+            .unwrap();
+        assert!(!i.status.success(), "scheme {scheme}, length {sig_len} must not pass the release gate");
+        assert!(String::from_utf8_lossy(&i.stdout).contains("UNSUPPORTED"));
+    }
 
     let _ = std::fs::remove_file(&bin_path);
     let _ = std::fs::remove_file(&out_path);
