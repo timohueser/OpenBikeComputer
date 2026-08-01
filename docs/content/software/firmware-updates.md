@@ -472,7 +472,9 @@ that one: whether the download arrived whole, checked here before a byte goes ov
 the cable. When the answer is *there is something newer*, the page says so
 where the rider already is — a small note, never a modal, naming the version and
 offering to show it. It stages nothing itself; it can only point at the one card
-that does, and it asks once per device and version.
+that does, and it asks once per device and release. A channel pointer moving
+backward does not turn an older release into a new question; only a genuinely
+newer version can raise the note again.
 
 The crucial rule is shared by all three paths and stated plainly in the BLE spec's
 security posture: **installing always confirms on the glass.** A peer can
