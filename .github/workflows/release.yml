@@ -87,18 +87,29 @@ jobs:
       # IS_REAL_RELEASE separates the publishing tag path from the dry run; IS_PRERELEASE routes a
       # hyphenated tag (`v1.2.0-beta.1`) to the pre-release channel — never the 'latest' pointer.
       - name: Resolve the version string
+        env:
+          # Keep workflow input out of the generated shell source. The tag path uses the runner's
+          # GITHUB_REF_NAME for the same reason: both values are data, never shell syntax.
+          DISPATCH_VERSION: ${{ github.event.inputs.version }}
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ github.event.inputs.version }}"
+            VERSION="$DISPATCH_VERSION"
             echo "IS_REAL_RELEASE=false" >> "$GITHUB_ENV"
             echo "This is a DRY RUN — no release will be published."
           else
-            VERSION="${{ github.ref_name }}"
+            VERSION="$GITHUB_REF_NAME"
             echo "IS_REAL_RELEASE=true" >> "$GITHUB_ENV"
           fi
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "::error::version must be vMAJOR.MINOR.PATCH with optional SemVer pre-release/build metadata; got '$VERSION'"
+            exit 1
+          fi
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-          case "$VERSION" in
+          # A hyphen in build metadata does not make a release a pre-release. Strip `+...` before
+          # routing the channel, then look for SemVer's pre-release separator.
+          VERSION_WITHOUT_BUILD="${VERSION%%+*}"
+          case "$VERSION_WITHOUT_BUILD" in
             *-*) echo "IS_PRERELEASE=true"  >> "$GITHUB_ENV"; echo "pre-release tag: $VERSION" ;;
             *)   echo "IS_PRERELEASE=false" >> "$GITHUB_ENV" ;;
           esac
@@ -134,7 +145,11 @@ jobs:
         if: github.event_name == 'push'
         run: |
           set -euo pipefail
-          if cmp -s firmware/obc-dfu/keys/obcu-release.pub firmware/obc-dfu/keys/test/obcu-test.pub; then
+          # The key parser accepts LF and CRLF. Compare the parsed hex content too, so changing only
+          # line endings cannot make the same public key appear "rotated" to this gate.
+          RELEASE_KEY=$(tr -d '\r\n' < firmware/obc-dfu/keys/obcu-release.pub)
+          TEST_KEY=$(tr -d '\r\n' < firmware/obc-dfu/keys/test/obcu-test.pub)
+          if [ "$RELEASE_KEY" = "$TEST_KEY" ]; then
             echo "::error::obcu-release.pub still holds the committed TEST key — anyone can sign an image this firmware installs."
             echo "::error::Rotate it and set OBCU_SIGNING_SEED before publishing a real release (firmware/obc-dfu/keys/README.md)."
             exit 1
@@ -304,8 +319,9 @@ jobs:
           export RCLONE_CONFIG_OBCR2_ACCESS_KEY_ID="$OBC_R2_ACCESS_KEY_ID"
           export RCLONE_CONFIG_OBCR2_SECRET_ACCESS_KEY="$OBC_R2_SECRET_ACCESS_KEY"
           export RCLONE_CONFIG_OBCR2_NO_CHECK_BUCKET=true
-          # Immutable versioned image — always written under the tag.
-          rclone copyto dist/UPDATE.BIN "obcr2:${OBC_R2_BUCKET}/fw/${VERSION}/UPDATE.BIN"
+          # Immutable versioned image — a retry may confirm the same checksum, but a force-moved
+          # tag can never replace bytes already served under this versioned URL.
+          rclone copyto --checksum --immutable dist/UPDATE.BIN "obcr2:${OBC_R2_BUCKET}/fw/${VERSION}/UPDATE.BIN"
           if [ "$IS_PRERELEASE" = "true" ]; then
             rclone copyto dist/manifest.json "obcr2:${OBC_R2_BUCKET}/fw/prerelease/manifest.json"
             echo "pre-release: wrote fw/prerelease/manifest.json; left the 'latest' fw/manifest.json untouched"
