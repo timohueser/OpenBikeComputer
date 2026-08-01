@@ -30,8 +30,58 @@ describe("dev host requests", () => {
         ["schema", () => platform.schema!(), "/api/schema"],
         ["palette", () => platform.palette!(), "/api/palette"],
         ["legacyConfig", () => platform.legacyConfig!(), "/api/config/legacy"],
+        ["preview status", () => platform.schemaPreview!.status(), "/api/schema-preview/status"],
     ])("%s GETs %s", async (_name, call, url) => {
         await call();
         expect(calls).toEqual([{ url, method: "GET" }]);
+    });
+
+    it("reads the configured published catalog through the runtime host instead of baking it into Vite", async () => {
+        globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+            const url = String(input);
+            calls.push({ url, method: init?.method ?? "GET" });
+            return new Response("catalog-body", {
+                status: 200,
+                headers: { "X-OBC-Catalog-Url": "https://maps.example.test/live/catalog.json" },
+            });
+        }) as typeof fetch;
+
+        await expect(platform.catalog()).resolves.toEqual({
+            url: "https://maps.example.test/live/catalog.json",
+            body: "catalog-body",
+        });
+        expect(calls).toEqual([{ url: "/api/catalog/root", method: "GET" }]);
+    });
+
+    it("moves satellites and cells through the same-origin bounded proxy", async () => {
+        globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+            calls.push({ url: String(input), method: init?.method ?? "GET" });
+            return new Response(new Uint8Array([1, 2, 3]), { status: 200 });
+        }) as typeof fetch;
+        const object = "https://maps.example.test/live/cells/12/3/4.obcm";
+        const response = await platform.catalogFetch(object);
+        expect(new Uint8Array(await response.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]));
+        expect(calls).toEqual([{
+            url: `/api/catalog/object?url=${encodeURIComponent(object)}`,
+            method: "GET",
+        }]);
+    });
+
+    it("posts only config JSON and propagates cancellation", async () => {
+        const controller = new AbortController();
+        globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+            calls.push({ url: String(input), method: init?.method ?? "GET" });
+            expect(init?.body).toBe(JSON.stringify({ lods: [], features: {} }));
+            expect(init?.signal).toBe(controller.signal);
+            return new Response(new Uint8Array([79, 66, 67, 77]), {
+                status: 200,
+                headers: { "X-OBC-Pack-Duration-Ms": "42" },
+            });
+        }) as typeof fetch;
+
+        await expect(
+            platform.schemaPreview!.pack({ lods: [], features: {} }, controller.signal),
+        ).resolves.toEqual({ bytes: new Uint8Array([79, 66, 67, 77]), packDurationMs: 42, diagnostics: [] });
+        expect(calls).toEqual([{ url: "/api/schema-preview", method: "POST" }]);
     });
 });

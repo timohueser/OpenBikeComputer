@@ -2,12 +2,16 @@
 import json
 import os
 import subprocess
+from urllib.error import HTTPError, URLError
+from urllib.parse import unquote, urlsplit
+import urllib.request
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import paths
+from . import schema_preview
 
 PROJECT_ROOT = paths.BUILDER_ROOT
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
@@ -28,6 +32,81 @@ PALETTE_FILE = os.path.join(PROJECT_ROOT, "palette.json")
 SCHEMA_FILE = os.path.join(paths.REPO_ROOT, "host", "obc-pack", "schema", "config.schema.json")
 
 app = FastAPI(title="OBC Schema Editor")
+
+MAX_CATALOG_OBJECT_BYTES = 128 * 1024 * 1024
+
+
+def _catalog_url() -> str:
+    value = os.environ.get(
+        "OBC_CATALOG_URL",
+        "https://maps.openbikecomputer.com/cell-catalog/catalog.json",
+    )
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme not in ("http", "https")
+        or not parsed.netloc
+        or parsed.username
+        or parsed.password
+        or parsed.fragment
+        or not parsed.path.endswith("/catalog.json")
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail="OBC_CATALOG_URL must be an absolute http(s) URL ending in /catalog.json, without credentials.",
+        )
+    return value
+
+
+def _catalog_object_url(value: str) -> str:
+    root = urlsplit(_catalog_url())
+    target = urlsplit(value)
+    root_dir = root.path.rsplit("/", 1)[0].rstrip("/") + "/"
+    decoded_path = unquote(target.path)
+    if (
+        target.scheme != root.scheme
+        or target.netloc != root.netloc
+        or target.username
+        or target.password
+        or target.fragment
+        or not decoded_path.startswith(root_dir)
+        or any(part == ".." for part in decoded_path.split("/"))
+    ):
+        raise HTTPException(status_code=400, detail="Catalog object URL is outside the configured catalog tree.")
+    return value
+
+
+def _fetch_catalog_object(url: str) -> tuple[bytes, str]:
+    request = urllib.request.Request(url, headers={"User-Agent": "OpenBikeComputer maintainer host"})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            _catalog_object_url(response.geturl())
+            length = response.headers.get("Content-Length")
+            if length and int(length) > MAX_CATALOG_OBJECT_BYTES:
+                raise HTTPException(status_code=413, detail="Catalog object exceeds the local proxy limit.")
+            body = response.read(MAX_CATALOG_OBJECT_BYTES + 1)
+            if len(body) > MAX_CATALOG_OBJECT_BYTES:
+                raise HTTPException(status_code=413, detail="Catalog object exceeds the local proxy limit.")
+            return body, response.headers.get_content_type()
+    except HTTPException:
+        raise
+    except HTTPError as error:
+        raise HTTPException(status_code=error.code, detail=f"Published catalog returned HTTP {error.code}.") from error
+    except (OSError, URLError, ValueError) as error:
+        raise HTTPException(status_code=502, detail=f"Published catalog could not be read: {error}.") from error
+
+
+@app.get("/api/catalog/root")
+def get_catalog_root():
+    url = _catalog_url()
+    body, content_type = _fetch_catalog_object(url)
+    return Response(content=body, media_type=content_type, headers={"X-OBC-Catalog-Url": url})
+
+
+@app.get("/api/catalog/object")
+def get_catalog_object(url: str):
+    resolved = _catalog_object_url(url)
+    body, content_type = _fetch_catalog_object(resolved)
+    return Response(content=body, media_type=content_type)
 
 
 def _default_palette():
@@ -121,8 +200,8 @@ def get_schema():
         })
     raise HTTPException(
         status_code=503,
-        detail="obc-pack is not built — run `cargo build --release -p obc-pack` from "
-               "the repo root (or set OBC_PACK_BIN to its path).",
+        detail="The native packer and checked-in schema are unavailable. Restart with `obc web`; "
+               "maintainers may alternatively set OBC_PACK_BIN to an executable path.",
     )
 
 
@@ -133,6 +212,45 @@ def get_legacy_config():
     if not os.path.exists(USER_CONFIG):
         raise HTTPException(status_code=404, detail="No legacy config")
     return JSONResponse(_read_config(USER_CONFIG))
+
+
+@app.get("/api/schema-preview/status")
+def get_schema_preview_status():
+    status = schema_preview.source_status()
+    return JSONResponse({
+        "available": status.available,
+        "label": status.label,
+        "configured": status.configured,
+        "detail": status.detail,
+        "bbox": schema_preview.TENINGEN_BBOX,
+    })
+
+
+@app.post("/api/schema-preview")
+async def build_schema_preview(request: Request):
+    # Read one byte beyond the cap so an exact-limit body is accepted without
+    # allowing an unbounded request to be decoded first.
+    body = b""
+    async for chunk in request.stream():
+        body += chunk
+        if len(body) > schema_preview.MAX_CONFIG_BYTES:
+            raise HTTPException(status_code=413, detail="Schema preview config is too large.")
+    try:
+        config = schema_preview.validate_config(body)
+        result = await schema_preview.pack_config(config, request.is_disconnected)
+    except schema_preview.PreviewCancelled:
+        return Response(status_code=499)
+    except schema_preview.PreviewError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return Response(
+        content=result.body,
+        media_type="application/vnd.openbikecomputer.obcm",
+        headers={
+            "X-OBC-Pack-Duration-Ms": str(result.duration_ms),
+            "X-OBC-Pack-Bytes": str(len(result.body)),
+            "X-OBC-Pack-Diagnostics": schema_preview.encode_diagnostics(result.diagnostics),
+        },
+    )
 
 
 # The SPA (builder/app/, built by Vite into static/dist/ —
