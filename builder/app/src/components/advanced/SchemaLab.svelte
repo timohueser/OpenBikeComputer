@@ -52,6 +52,7 @@
             opened.setMetersPerPixel(metersPerPixel);
             paint();
         } catch (cause) {
+            if (generation !== installGeneration) return;
             phase = { kind: "error", message: cause instanceof Error ? cause.message : String(cause) };
         }
     }
@@ -121,7 +122,7 @@
                 product builders. Expect roughly 5–15 seconds depending on the machine and cache, not an instant restyle.
             </p>
         </div>
-        <span class="state small" class:error={phase.kind === "error"}>
+        <span class="state small" class:error={phase.kind === "error"} aria-live="polite">
             {#if phase.kind === "waiting"}Waiting for edits…
             {:else if phase.kind === "packing"}Packing Teningen…
             {:else if phase.kind === "ready" && renderer}Packed in {(packDurationMs / 1000).toFixed(1)} s
@@ -151,7 +152,7 @@
                     <input
                         type="number"
                         min="0.5"
-                        max="100"
+                        max="100000"
                         step="0.1"
                         value={metersPerPixel}
                         oninput={(event) => selectScale(event.currentTarget.valueAsNumber)}
@@ -172,15 +173,15 @@
 
             <div class="metrics">
                 <h4>Production frame stats</h4>
-                {#if stats}
+                {#if stats && renderer}
                     <dl>
                         <dt>Scale / LOD</dt><dd>{stats.metersPerPixel.toFixed(1)} m/px · {stats.lodIndex}/{stats.lodCount - 1}</dd>
                         <dt>Features</dt><dd>{stats.featuresDrawn}/{stats.featuresTried} drawn</dd>
                         <dt>Dropped</dt><dd class:warn={stats.featuresDropped > 0}>{stats.featuresDropped}</dd>
                         <dt>Chunks</dt><dd>{stats.chunksVisited}</dd>
-                        <dt>Spans</dt><dd>{stats.spansUsed}/1,152</dd>
-                        <dt>Frame points</dt><dd>{stats.pointsDrawn}/4,768</dd>
-                        <dt>Frame rings</dt><dd>{stats.ringsUsed}/1,024</dd>
+                        <dt>Spans</dt><dd>{stats.spansUsed}/{renderer.limits.maxSpans.toLocaleString()}</dd>
+                        <dt>Frame points</dt><dd>{stats.pointsDrawn}/{renderer.limits.maxFramePoints.toLocaleString()}</dd>
+                        <dt>Frame rings</dt><dd>{stats.ringsUsed}/{renderer.limits.maxFrameRings.toLocaleString()}</dd>
                         <dt>Points tried</dt><dd>{stats.pointsTried}</dd>
                         <dt>Decode overflows</dt><dd class:warn={stats.featureDecodeCapacityDrops > 0}>{stats.featureDecodeCapacityDrops}</dd>
                         <dt>Malformed / map errors</dt><dd class:warn={stats.malformedFeatures + stats.mapErrors > 0}>{stats.malformedFeatures} / {stats.mapErrors}</dd>
@@ -188,9 +189,12 @@
                 {:else}
                     <p class="small faint">Stats appear after the first production render.</p>
                 {/if}
-                <p class="limits small">
-                    Per feature: <strong>2,048 points · 32 rings</strong>. Frame: <strong>1,152 spans · 4,768 points · 1,024 rings</strong>.
-                </p>
+                {#if renderer}
+                    <p class="limits small">
+                        Per feature: <strong>{renderer.limits.maxFeaturePoints.toLocaleString()} points · {renderer.limits.maxFeatureRings.toLocaleString()} rings</strong>.
+                        Frame: <strong>{renderer.limits.maxSpans.toLocaleString()} spans · {renderer.limits.maxFramePoints.toLocaleString()} points · {renderer.limits.maxFrameRings.toLocaleString()} rings</strong>.
+                    </p>
+                {/if}
                 {#if diagnostics.length}
                     <div class="diagnostics" role="alert">
                         <strong>Pack diagnostics</strong>

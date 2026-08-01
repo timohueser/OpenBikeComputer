@@ -42,10 +42,17 @@ def _catalog_url() -> str:
         "https://maps.openbikecomputer.com/cell-catalog/catalog.json",
     )
     parsed = urlsplit(value)
-    if parsed.scheme not in ("http", "https") or not parsed.netloc or parsed.username or parsed.password:
+    if (
+        parsed.scheme not in ("http", "https")
+        or not parsed.netloc
+        or parsed.username
+        or parsed.password
+        or parsed.fragment
+        or not parsed.path.endswith("/catalog.json")
+    ):
         raise HTTPException(
             status_code=503,
-            detail="OBC_CATALOG_URL must be an absolute http(s) URL without embedded credentials.",
+            detail="OBC_CATALOG_URL must be an absolute http(s) URL ending in /catalog.json, without credentials.",
         )
     return value
 
@@ -72,6 +79,7 @@ def _fetch_catalog_object(url: str) -> tuple[bytes, str]:
     request = urllib.request.Request(url, headers={"User-Agent": "OpenBikeComputer maintainer host"})
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
+            _catalog_object_url(response.geturl())
             length = response.headers.get("Content-Length")
             if length and int(length) > MAX_CATALOG_OBJECT_BYTES:
                 raise HTTPException(status_code=413, detail="Catalog object exceeds the local proxy limit.")
@@ -85,17 +93,6 @@ def _fetch_catalog_object(url: str) -> tuple[bytes, str]:
         raise HTTPException(status_code=error.code, detail=f"Published catalog returned HTTP {error.code}.") from error
     except (OSError, URLError, ValueError) as error:
         raise HTTPException(status_code=502, detail=f"Published catalog could not be read: {error}.") from error
-
-
-@app.get("/api/runtime")
-def get_runtime():
-    """Runtime-only settings for the local bundle.
-
-    Deliberately not a Vite define: ``obc web`` may reuse or rebuild an asset,
-    while tools/obc.local is operator state read by this process right now.
-    """
-
-    return JSONResponse({"catalog_url": _catalog_url()})
 
 
 @app.get("/api/catalog/root")

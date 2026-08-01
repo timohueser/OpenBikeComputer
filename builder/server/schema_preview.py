@@ -71,7 +71,13 @@ def _cache_root() -> Path:
 
 
 def _full_source() -> Path:
-    return _cache_root() / "geofabrik" / FULL_SOURCE_NAME
+    bakery = _cache_root() / "geofabrik" / FULL_SOURCE_NAME
+    if bakery.is_file() and bakery.stat().st_size >= 1024:
+        return bakery
+    # Do not place a metadata-less download in the bakery's validator cache:
+    # obc-bake would correctly distrust and re-download it. The schema lab owns
+    # this fallback instead, while still reusing a real bakery download above.
+    return _cache_root() / "schema-preview" / FULL_SOURCE_NAME
 
 
 def _default_source() -> Path:
@@ -121,8 +127,11 @@ def source_status() -> SourceStatus:
         return SourceStatus(False, candidate.name, configured, f"Preview source cannot be opened: {error}.")
     if not resolved.is_file():
         return SourceStatus(False, candidate.name, configured, "Preview source is not a regular file.")
-    if resolved.stat().st_size < 1024:
-        return SourceStatus(False, candidate.name, configured, "Preview source is unexpectedly short.")
+    try:
+        if resolved.stat().st_size < 1024:
+            return SourceStatus(False, candidate.name, configured, "Preview source is unexpectedly short.")
+    except OSError as error:
+        return SourceStatus(False, candidate.name, configured, f"Preview source cannot be inspected: {error}.")
     return SourceStatus(True, resolved.name, configured, "Ready to pack the fixed Teningen crop.")
 
 
@@ -210,21 +219,24 @@ async def pack_config(
             # paths.  stdout/stderr go to files so a chatty failure cannot fill a
             # pipe and deadlock the bounded poll loop.
             with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
-                process = subprocess.Popen(
-                    [
-                        os.fspath(binary),
-                        os.fspath(source),
-                        os.fspath(config_path),
-                        os.fspath(output_path),
-                        "--bbox",
-                        TENINGEN_BBOX,
-                    ],
-                    cwd=paths.REPO_ROOT,
-                    stdin=subprocess.DEVNULL,
-                    stdout=stdout,
-                    stderr=stderr,
-                    shell=False,
-                )
+                try:
+                    process = subprocess.Popen(
+                        [
+                            os.fspath(binary),
+                            os.fspath(source),
+                            os.fspath(config_path),
+                            os.fspath(output_path),
+                            "--bbox",
+                            TENINGEN_BBOX,
+                        ],
+                        cwd=paths.REPO_ROOT,
+                        stdin=subprocess.DEVNULL,
+                        stdout=stdout,
+                        stderr=stderr,
+                        shell=False,
+                    )
+                except OSError as error:
+                    raise PreviewError(f"The native preview packer could not start: {error}.") from error
                 while process.poll() is None:
                     if await disconnected():
                         await _stop(process)
@@ -253,7 +265,7 @@ async def pack_config(
     diagnostics = tuple(
         line.strip()
         for line in log.splitlines()
-        if "exceeded chunk_size" in line or "reader's 32-ring cap" in line
+        if "exceeded chunk_size" in line or "ring cap" in line
     )[:8]
     return PackResult(result, round((time.monotonic() - started) * 1000), log, diagnostics)
 
@@ -267,7 +279,9 @@ def _download_full_source(target: Path) -> None:
     """Atomically download the fixed upstream extract when the bakery has not."""
 
     if target.is_file():
-        return
+        if target.stat().st_size >= 1024:
+            return
+        raise PreviewError(f"Cached Freiburg source {target} is unexpectedly short; remove it and retry.")
     if target.exists():
         raise PreviewError(f"Refusing to replace non-file source cache {target}.")
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -300,6 +314,8 @@ def prepare_source() -> Path:
         raise PreviewError("OBC_SCHEMA_PREVIEW_PBF must end in .osm.pbf.")
     if target.exists():
         if target.is_file():
+            if target.stat().st_size < 1024:
+                raise PreviewError(f"Prepared source {target} is unexpectedly short; remove it and retry.")
             return target.resolve(strict=True)
         raise PreviewError(f"Refusing to replace non-file preview source {target}.")
     if configured:

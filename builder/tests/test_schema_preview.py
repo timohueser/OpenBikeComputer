@@ -1,26 +1,27 @@
 """Security and cancellation boundaries of the localhost schema lab."""
 
 import asyncio
-import json
 from pathlib import Path
 import subprocess
 
 import pytest
 
 
-def test_runtime_catalog_url_is_read_from_process_state(monkeypatch):
+def test_runtime_catalog_url_is_validated_from_process_state(monkeypatch):
     pytest.importorskip("fastapi")
     from builder.server import server
 
     monkeypatch.setenv("OBC_CATALOG_URL", "https://maps.example.test/revision/catalog.json")
-    body = json.loads(bytes(server.get_runtime().body))
-    assert body == {"catalog_url": "https://maps.example.test/revision/catalog.json"}
+    assert server._catalog_url() == "https://maps.example.test/revision/catalog.json"
 
     monkeypatch.setenv("OBC_CATALOG_URL", "https://token:secret@maps.example.test/catalog.json")
     with pytest.raises(server.HTTPException) as excinfo:
-        server.get_runtime()
+        server._catalog_url()
     assert excinfo.value.status_code == 503
     assert "credentials" in excinfo.value.detail
+    monkeypatch.setenv("OBC_CATALOG_URL", "https://maps.example.test/not-a-root.json")
+    with pytest.raises(server.HTTPException, match="catalog.json"):
+        server._catalog_url()
 
 
 def test_runtime_catalog_proxy_rejects_other_origins_credentials_and_path_escape(monkeypatch):
@@ -46,6 +47,7 @@ def test_runtime_catalog_proxy_rejects_other_origins_credentials_and_path_escape
 def test_runtime_catalog_proxy_bounds_reads(monkeypatch):
     pytest.importorskip("fastapi")
     from builder.server import server
+    monkeypatch.setenv("OBC_CATALOG_URL", "https://maps.example.test/cell-catalog/catalog.json")
 
     class Headers:
         def get(self, _name):
@@ -66,6 +68,9 @@ def test_runtime_catalog_proxy_bounds_reads(monkeypatch):
         def read(self, limit):
             assert limit == server.MAX_CATALOG_OBJECT_BYTES + 1
             return b"catalog-object"
+
+        def geturl(self):
+            return "https://maps.example.test/cell-catalog/object"
 
     seen = []
 

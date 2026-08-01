@@ -238,6 +238,31 @@ mod web {
             let stats = self.0.stats();
             stats.map_structure_failures + stats.map_read_failures + stats.map_cache_contentions
         }
+
+        #[wasm_bindgen(getter)]
+        pub fn max_feature_points(&self) -> u32 {
+            obc_reader::MAX_FEAT_PTS as u32
+        }
+
+        #[wasm_bindgen(getter)]
+        pub fn max_feature_rings(&self) -> u32 {
+            obc_reader::MAX_FEAT_RINGS as u32
+        }
+
+        #[wasm_bindgen(getter)]
+        pub fn max_spans(&self) -> u32 {
+            obc_render::MAX_SPANS as u32
+        }
+
+        #[wasm_bindgen(getter)]
+        pub fn max_frame_points(&self) -> u32 {
+            obc_render::MAX_FRAME_POINTS as u32
+        }
+
+        #[wasm_bindgen(getter)]
+        pub fn max_frame_rings(&self) -> u32 {
+            obc_render::MAX_FRAME_RINGS as u32
+        }
     }
 
     fn to_js(failure: PreviewFailure) -> JsValue {

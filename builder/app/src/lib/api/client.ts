@@ -36,7 +36,6 @@ export const api = {
     presets: () => getJson<Preset[]>("/presets"),
     schema: () => getJson<SchemaEnvelope>("/schema"),
     palette: () => getJson<Palette>("/palette"),
-    runtime: () => getJson<{ catalog_url: string }>("/runtime"),
     async catalogRoot(): Promise<{ url: string; body: string }> {
         const res = await fetch(`${API_BASE}/catalog/root`);
         if (!res.ok) throw new Error(await errorDetail(res));

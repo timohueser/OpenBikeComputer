@@ -13,4 +13,9 @@ describe("schema preview LOD scales", () => {
         expect(representativeMpp(malformed, 0)).toBe(40);
         expect(representativeMpp(malformed, 1)).toBeGreaterThanOrEqual(0.5);
     });
+
+    it("does not hide a valid custom coarse threshold behind a display-only clamp", () => {
+        const custom = [{ max_mpp: null, simplify: 0 }, { max_mpp: 500, simplify: 0 }];
+        expect(representativeMpp(custom, 0)).toBe(600);
+    });
 });

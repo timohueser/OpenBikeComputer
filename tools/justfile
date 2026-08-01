@@ -306,17 +306,14 @@ web *args:
       _run .venv/bin/python -m builder.server.schema_preview --download-source
       exit 0
     fi
-    [[ -x "$OBC_PACK_BIN" ]] || { _say "building obc-pack…"; ( cd "$OBC_ROOT" && _run cargo build --release -p obc-pack ); }
+    # This is the maintainer schema host: a present binary may still predate the
+    # config/parser source the editor is showing. Cargo's no-op rebuild is cheap
+    # and makes the served schema and every preview use this checkout exactly.
+    _say "refreshing obc-pack…"; ( cd "$OBC_ROOT" && _run cargo build --release -p obc-pack )
     [[ -d builder/app/node_modules ]] || { _say "installing frontend dependencies…"; ( cd builder/app && _run npm ci ); }
-    if [[ ! -f builder/app/src/lib/convert/pkg/obc_web_convert_bg.wasm || \
-          ! -f builder/app/src/lib/assemble/pkg/obc_web_assemble_bg.wasm || \
-          ! -f builder/app/src/lib/skin/pkg/obc_skin_preview_bg.wasm ]]; then
-      _say "building the wasm bridges…"; ( cd builder/app && _run npm run build:wasm )
-    else
-      # The local schema lab adds a raw-map API to this bridge. Existence alone
-      # cannot prove a gitignored generated binding matches the Rust source.
-      _say "refreshing the production preview bridge…"; ( cd builder/app && _run npm run build:wasm:preview )
-    fi
+    # Generated bindings are gitignored; existence cannot prove that any bridge
+    # matches its Rust source. Warm wasm-pack builds are incremental.
+    _say "refreshing the wasm bridges…"; ( cd builder/app && _run npm run build:wasm )
     # Always rebuild this small local bundle: tools/obc.local is runtime state,
     # but a source checkout must never keep serving yesterday's platform adapter.
     _say "building the maintainer frontend…"; ( cd builder/app && _run npm run build )
