@@ -60,9 +60,16 @@ self.onmessage = async (event: MessageEvent<AssembleWorkerRequest>) => {
             });
             return;
         }
-        const result = await assembleCells(req.cells, req.schemaJson, req.skinJson, req.options, (phase, fraction) => {
-            post({ type: "progress", phase, fraction });
-        });
+        const result = await assembleCells(
+            req.cells,
+            req.schemaJson,
+            req.skinJson,
+            req.options,
+            (phase, fraction) => {
+                post({ type: "progress", phase, fraction });
+            },
+            req.knownEmpty,
+        );
         try {
             post({
                 type: "planned",

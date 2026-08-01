@@ -8,7 +8,7 @@
 
 import { describe, expect, it } from "vitest";
 import { CatalogFormatError, cellIndexRef, region } from "./manifest";
-import { assertRegionCellsIndexed, parseCellIndex, parseRegionCells } from "./satellites";
+import { assertRegionCellsIndexed, cellIndexHas, knownEmptyAt, parseCellIndex, parseRegionCells } from "./satellites";
 import { EXAMPLE_CELL_INDEX, EXAMPLE_REGION_CELLS, exampleCatalog, fixtureIndex } from "./testdata";
 
 type LooseDoc = any;
@@ -40,6 +40,12 @@ describe("parseCellIndex", () => {
             "europe/switzerland",
         ]);
         expect(doc.byId.get("18/1204/1052")).toBe(doc.cells[0]);
+        expect(doc.known_empty.map((run) => [run.start, run.end])).toEqual([
+            ["18/1204/1055", "18/1204/1055"],
+        ]);
+        expect(knownEmptyAt(doc, "18/1204/1055")?.sources[0].extract_id).toBe("planet");
+        expect(cellIndexHas(doc, "18/1204/1055")).toBe(true);
+        expect(cellIndexHas(doc, "18/1204/1054")).toBe(false);
     });
 
     it.each<[string, (d: LooseDoc) => void]>([
@@ -64,8 +70,41 @@ describe("parseCellIndex", () => {
         ["an id the grid does not admit", (d) => (d.cells[0].id = "18/2048/1052")],
         ["an id that is not three numbers", (d) => (d.cells[0].id = "fine/1204/1052")],
         ["a url that is neither absolute nor root-relative", (d) => (d.cells[0].url = "cells/x.obcm")],
+        ["a known-empty range in another band size", (d) => (d.known_empty[0].start = "19/0602/0527")],
+        ["a known-empty range crossing rows", (d) => (d.known_empty[0].end = "18/1205/1055")],
+        ["a backwards known-empty range", (d) => (d.known_empty[0].end = "18/1204/1053")],
+        ["a known-empty range with a noncanonical id", (d) => (d.known_empty[0].start = "18/1204/054")],
+        ["a known-empty range overlapping an artifact", (d) => (d.known_empty[0].start = "18/1204/1053")],
+        ["a known-empty range with no source", (d) => (d.known_empty[0].sources = [])],
+        ["a known-empty count that disagrees with the root", (d) => (d.known_empty[0].end = "18/1204/1056")],
     ])("rejects %s", (_what, edit) => {
         expect(() => parseCellIndex(mutatedIndex(edit), exampleCatalog, fineRef)).toThrow(CatalogFormatError);
+    });
+
+    it("accepts an older v2 satellite without additive known-empty coverage", () => {
+        const olderRoot = JSON.parse(JSON.stringify(exampleCatalog)) as LooseDoc;
+        olderRoot.cell_index.find((ref: LooseDoc) => ref.band === "fine").known_empty_count = 0;
+        const body = mutatedIndex((d) => delete d.known_empty);
+        const doc = parseCellIndex(body, olderRoot, olderRoot.cell_index.find((ref: LooseDoc) => ref.band === "fine"));
+        expect(doc.known_empty).toEqual([]);
+        expect(doc.emptyByRow.size).toBe(0);
+    });
+
+    it("rejects overlapping, out-of-order, and needlessly split ranges", () => {
+        const base = (edit: (d: LooseDoc) => void) => {
+            const catalog = JSON.parse(JSON.stringify(exampleCatalog)) as LooseDoc;
+            catalog.cell_index.find((ref: LooseDoc) => ref.band === "fine").known_empty_count = 2;
+            return () => parseCellIndex(mutatedIndex(edit), catalog, catalog.cell_index.find((ref: LooseDoc) => ref.band === "fine"));
+        };
+        expect(
+            base((d) => d.known_empty.push({ ...d.known_empty[0], start: "18/1204/1055", end: "18/1204/1055" })),
+        ).toThrow(CatalogFormatError);
+        expect(
+            base((d) => d.known_empty.push({ ...d.known_empty[0], start: "18/1203/1056", end: "18/1203/1056" })),
+        ).toThrow(CatalogFormatError);
+        expect(
+            base((d) => d.known_empty.push({ ...d.known_empty[0], start: "18/1204/1056", end: "18/1204/1056" })),
+        ).toThrow(/must be merged/);
     });
 });
 
@@ -74,7 +113,7 @@ describe("parseRegionCells", () => {
         const doc = parseRegionCells(EXAMPLE_REGION_CELLS, exampleCatalog, swiss);
         expect(doc.region_id).toBe("europe/switzerland");
         expect(Object.keys(doc.cells).sort()).toEqual(["coarse", "fine", "mid", "network"]);
-        expect(doc.cells.fine).toEqual(["18/1204/1052", "18/1204/1053"]);
+        expect(doc.cells.fine).toEqual(["18/1204/1052", "18/1204/1053", "18/1204/1055"]);
     });
 
     it.each<[string, (d: LooseDoc) => void]>([
@@ -104,7 +143,7 @@ describe("assertRegionCellsIndexed", () => {
                 fixtureIndex(exampleCatalog, "fine", [
                     { id: "18/1204/1052", bytes: 552 },
                     { id: "18/1204/1053", bytes: 424 },
-                ]),
+                ], [{ start: "18/1204/1055", end: "18/1204/1055" }]),
             ],
         ]);
         expect(() => assertRegionCellsIndexed(doc, indices)).not.toThrow();
@@ -115,6 +154,24 @@ describe("assertRegionCellsIndexed", () => {
             ["fine", fixtureIndex(exampleCatalog, "fine", [{ id: "18/1204/1052", bytes: 552 }])],
         ]);
         expect(() => assertRegionCellsIndexed(doc, indices)).toThrow(/18\/1204\/1053/);
+    });
+
+    it("accepts a named cell covered by a known-empty range", () => {
+        const indices = new Map([
+            [
+                "fine",
+                fixtureIndex(
+                    exampleCatalog,
+                    "fine",
+                    [
+                        { id: "18/1204/1052", bytes: 552 },
+                        { id: "18/1204/1053", bytes: 424 },
+                    ],
+                    [{ start: "18/1204/1055", end: "18/1204/1055" }],
+                ),
+            ],
+        ]);
+        expect(() => assertRegionCellsIndexed(doc, indices)).not.toThrow();
     });
 
     it("says nothing about bands whose index is not loaded", () => {

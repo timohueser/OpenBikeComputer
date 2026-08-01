@@ -18,7 +18,10 @@
 
 use std::path::{Path, PathBuf};
 
-use obc_web_assemble::{assemble_cells, BridgeOptions, CellBytes, ErrorCode, Hooks, NoHooks, Phase};
+use obc_web_assemble::{
+    assemble_cells, assemble_cells_with_known_empty, BridgeOptions, CellBytes, ErrorCode, Hooks, KnownEmptyCell,
+    NoHooks, Phase,
+};
 
 fn fixture_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixture")
@@ -108,6 +111,22 @@ fn the_bridge_reproduces_the_native_clis_bytes() {
     assert_eq!(out.files.iter().filter(|f| f.role == "manifest").count(), 1);
     assert_eq!(out.files.last().expect("a manifest").role, "manifest");
     assert_eq!(out.files[0].role, "core");
+}
+
+#[test]
+fn known_empty_cells_expand_coverage_without_payloads() {
+    let base = assemble_cells(cells(), &sidecar(), &skin(), &options(), &mut NoHooks).expect("base assembly");
+    let base_json: serde_json::Value = serde_json::from_str(&base.summary_json).expect("base summary");
+    let known_empty = vec![
+        KnownEmptyCell { id: "20/0301/0264".into(), band: "coarse".into() },
+        KnownEmptyCell { id: "18/1204/1056".into(), band: "fine".into() },
+        KnownEmptyCell { id: "18/1204/1056".into(), band: "network".into() },
+    ];
+    let out = assemble_cells_with_known_empty(cells(), known_empty, &sidecar(), &skin(), &options(), &mut NoHooks)
+        .expect("known-empty coverage assembles");
+    let json: serde_json::Value = serde_json::from_str(&out.summary_json).expect("summary");
+    assert!(json["assembly_bbox_udeg"]["span_log2"].as_u64() > base_json["assembly_bbox_udeg"]["span_log2"].as_u64());
+    assert_eq!(json["cells"].as_u64(), base_json["cells"].as_u64().map(|n| n + 3));
 }
 
 /// …and the multi-file shape, which is what a resumable upload actually hands on: shards in index

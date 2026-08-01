@@ -35,5 +35,18 @@
       ],
       "partial": false
     }
+  ],
+  "known_empty": [
+    {
+      "start": "18/1204/1055",
+      "end": "18/1204/1055",
+      "built_at": "2026-07-30T02:13:11Z",
+      "sources": [
+        {
+          "extract_id": "planet",
+          "snapshot": "2026-07-19"
+        }
+      ]
+    }
   ]
 }

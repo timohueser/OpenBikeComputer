@@ -601,10 +601,17 @@
           "maximum": 28
         },
         "cell_count": {
-          "description": "Cells in the referenced document.",
+          "description": "Downloadable OBCM artifact entries in the referenced document.",
           "type": "integer",
           "format": "uint32",
           "minimum": 0
+        },
+        "known_empty_count": {
+          "description": "Canonical cells represented as verified-empty ranges rather than OBCM artifacts. Additive in v2; older roots deserialize this as zero.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "default": 0
         },
         "bytes": {
           "description": "Size of the referenced document.",
@@ -701,6 +708,41 @@
         "snapshot"
       ]
     },
+    "KnownEmptyRun": {
+      "description": "An inclusive row run of cells proven to carry no content for one band. Empty coverage is explicit because absence means a coverage hole. Runs avoid publishing both an OBCM object and one JSON entry for every empty ocean or network cell in a planet catalog.",
+      "type": "object",
+      "properties": {
+        "start": {
+          "description": "First canonical cell id in the run.",
+          "type": "string",
+          "pattern": "^\\d{1,2}/\\d{4,}/\\d{4,}$"
+        },
+        "end": {
+          "description": "Last canonical cell id in the run (inclusive, same row as `start`).",
+          "type": "string",
+          "pattern": "^\\d{1,2}/\\d{4,}/\\d{4,}$"
+        },
+        "built_at": {
+          "description": "RFC 3339 UTC, recorded by the bake job.",
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+        },
+        "sources": {
+          "description": "Every source extract against which emptiness was established.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CellSource"
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "start",
+        "end",
+        "built_at",
+        "sources"
+      ]
+    },
     "CellIndexDocument": {
       "properties": {
         "schema_version": {
@@ -724,6 +766,14 @@
           "items": {
             "$ref": "#/$defs/CellEntry"
           }
+        },
+        "known_empty": {
+          "description": "Canonical, non-overlapping row runs that carry no bytes for this band. Additive in v2; older satellites deserialize this as an empty list.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/KnownEmptyRun"
+          },
+          "default": []
         }
       },
       "required": [

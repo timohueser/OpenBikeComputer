@@ -341,6 +341,7 @@
         const req: AssembleWorkerRequest = {
             type: "assemble",
             cells,
+            knownEmpty: plan.knownEmpty,
             schemaJson: store.rootBody,
             skinJson: JSON.stringify(store.skin),
             options: {

@@ -119,6 +119,12 @@ export interface AssembleCell {
     readonly bytes: Uint8Array;
 }
 
+/** A selected cell with canonical empty content and therefore no OBCM bytes. */
+export interface AssembleKnownEmpty {
+    readonly id: string;
+    readonly band: string;
+}
+
 /** What an assembly can be told to do differently. Every field optional. */
 export interface AssembleOptions {
     /** The set's display name, 24 bytes on the wire (OBCA §5.2). */
@@ -340,6 +346,7 @@ export async function assembleCells(
     skinJson: string,
     options: AssembleOptions = {},
     onProgress?: AssembleProgress,
+    knownEmpty: readonly AssembleKnownEmpty[] = [],
 ): Promise<AssembleResult> {
     if (assembling) {
         throw new AssembleError(
@@ -356,6 +363,7 @@ export async function assembleCells(
         for (const c of cells) {
             assembler.addCell(c.id, c.band, c.partial ?? false, c.bytes);
         }
+        for (const cell of knownEmpty) assembler.addKnownEmpty(cell.id, cell.band);
         const summary = JSON.parse(assembler.run(onProgress)) as AssembleSummary;
         const warnings = assembler.warnings().map((w) => String(w));
         // Bound to the live assembler on purpose: `take()` is what frees the wasm-side copy, so the

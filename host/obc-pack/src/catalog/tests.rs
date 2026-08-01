@@ -217,6 +217,15 @@ fn write_cell_at(
     );
 }
 
+fn write_known_empty(tree: &Path, band: &str, runs: Vec<KnownEmptyRun>) {
+    let dir = tree.join(CELLS_DIR).join(band);
+    fs::create_dir_all(&dir).expect("known-empty dir");
+    let state = KnownEmptyState { schema_revision: EXAMPLE_REVISION, band: band.to_string(), known_empty: runs };
+    let mut text = serde_json::to_string_pretty(&state).expect("known-empty JSON");
+    text.push('\n');
+    write(&dir.join(KNOWN_EMPTY_STATE_NAME), &text);
+}
+
 /// A rectangular Osmosis `.poly`, which is all a fixture outline needs to be.
 fn poly(name: &str, lon: (f64, f64), lat: (f64, f64)) -> String {
     format!(
@@ -256,6 +265,9 @@ fn fine_west() -> CellId {
 fn fine_east() -> CellId {
     cell(18, 1204, 1053)
 }
+fn fine_empty() -> CellId {
+    cell(18, 1204, 1055)
+}
 
 const DEFAULT_SKIN_BLURB: &str = "The full touring look: warm through-roads, brown trails, indigo cycleways.";
 const CONTRAST_SKIN_BLURB: &str = "High contrast: fewer greys, heavier strokes, for bright sun on the panel.";
@@ -285,6 +297,16 @@ fn example_tree(tree: &Path) {
         &[("europe/germany/baden-wuerttemberg", "2026-07-18"), ("europe/switzerland", "2026-07-19")],
         false,
     );
+    write_known_empty(
+        tree,
+        "fine",
+        vec![KnownEmptyRun {
+            start: fine_empty().to_string(),
+            end: fine_empty().to_string(),
+            built_at: "2026-07-30T02:13:11Z".into(),
+            sources: vec![CellSource { extract_id: "planet".into(), snapshot: "2026-07-19".into() }],
+        }],
+    );
     write_cell(tree, "network", fine_west(), 256, "2026-07-30T02:14:41Z", &ch, false);
     // Baked from one side only: the sources do not cover the square, so it is partial
     // and a consumer must not present it as canonical coverage.
@@ -297,7 +319,7 @@ fn example_tree(tree: &Path) {
         &[
             ("coarse", vec![coarse_cell()]),
             ("mid", vec![mid_cell()]),
-            ("fine", vec![fine_west(), fine_east()]),
+            ("fine", vec![fine_west(), fine_east(), fine_empty()]),
             ("network", vec![fine_west(), fine_east()]),
         ],
         (5.9, 10.5),
@@ -510,7 +532,7 @@ fn a_region_prices_its_cell_set_per_band() {
         BTreeMap::from([
             ("coarse".to_string(), 1),
             ("mid".to_string(), 1),
-            ("fine".to_string(), 2),
+            ("fine".to_string(), 3),
             ("network".to_string(), 2),
         ])
     );
@@ -520,6 +542,12 @@ fn a_region_prices_its_cell_set_per_band() {
     assert_eq!(ch.bytes_by_band.values().sum::<u64>(), ch.bytes);
     let fine = cell_index_doc(&g, "fine");
     assert_eq!(ch.bytes_by_band["fine"], fine.cells.iter().map(|c| c.bytes).sum::<u64>());
+    assert_eq!(fine.known_empty.len(), 1);
+    assert_eq!(fine.known_empty[0].start, fine_empty().to_string());
+    assert_eq!(fine.known_empty[0].end, fine_empty().to_string());
+    let fine_ref = g.root.cell_index.iter().find(|entry| entry.band == "fine").expect("fine ref");
+    assert_eq!(fine_ref.cell_count, 2, "only downloadable artifacts count here");
+    assert_eq!(fine_ref.known_empty_count, 1, "verified-empty coverage is priced separately at zero bytes");
     assert_eq!(ch.partial_cell_count, 1, "the partial network cell is counted, and only once");
     assert_eq!(
         ch.partial_cell_count_by_band,
@@ -538,7 +566,11 @@ fn a_region_prices_its_cell_set_per_band() {
         serde_json::from_str(&satellite(&g, "regions/europe/switzerland/cells.json").body).expect("cells doc");
     assert_eq!(cells.region_id, "europe/switzerland");
     assert_eq!(cells.schema_revision, 7);
-    assert_eq!(cells.cells["fine"], ["18/1204/1052", "18/1204/1053"], "ids only, sorted");
+    assert_eq!(
+        cells.cells["fine"],
+        ["18/1204/1052", "18/1204/1053", "18/1204/1055"],
+        "real and known-empty ids share the stored sorted selection"
+    );
 
     let basel = region(&g, "europe/switzerland/basel-stadt");
     assert_eq!(basel.parent.as_deref(), Some("europe/switzerland"), "parent is the nearest enclosing region");
@@ -705,6 +737,16 @@ fn generation_is_deterministic_for_a_given_tree() {
         false,
     );
     write_cell(b.path(), "fine", fine_west(), 512, "2026-07-30T02:12:55Z", &ch, false);
+    write_known_empty(
+        b.path(),
+        "fine",
+        vec![KnownEmptyRun {
+            start: fine_empty().to_string(),
+            end: fine_empty().to_string(),
+            built_at: "2026-07-30T02:13:11Z".into(),
+            sources: vec![CellSource { extract_id: "planet".into(), snapshot: "2026-07-19".into() }],
+        }],
+    );
     write_cell(b.path(), "mid", mid_cell(), 1_024, "2026-07-30T02:11:38Z", &ch, false);
     write_cell(b.path(), "coarse", coarse_cell(), 2_048, "2026-07-30T02:10:04Z", &ch, false);
     write_region(
@@ -712,7 +754,7 @@ fn generation_is_deterministic_for_a_given_tree() {
         "europe/switzerland",
         "Switzerland",
         &[
-            ("fine", vec![fine_east(), fine_west()]),
+            ("fine", vec![fine_empty(), fine_east(), fine_west()]),
             ("network", vec![fine_east(), fine_west()]),
             ("coarse", vec![coarse_cell()]),
             ("mid", vec![mid_cell()]),
@@ -1113,6 +1155,79 @@ fn a_missing_or_orphaned_cell_sidecar_fails() {
 }
 
 #[test]
+fn known_empty_ranges_are_canonical_and_never_overlap_artifacts() {
+    let sources = vec![CellSource { extract_id: "planet".into(), snapshot: "2026-07-19".into() }];
+
+    let t = TempTree::new("empty-overlap");
+    example_tree(t.path());
+    write_known_empty(
+        t.path(),
+        "fine",
+        vec![KnownEmptyRun {
+            start: fine_east().to_string(),
+            end: fine_empty().to_string(),
+            built_at: "2026-07-30T02:13:11Z".into(),
+            sources: sources.clone(),
+        }],
+    );
+    let err = generate(t.path(), &opts()).expect_err("a range may not cover an artifact");
+    assert!(err.contains("both an OBCM artifact and known empty"), "{err}");
+
+    let u = TempTree::new("empty-cross-row");
+    example_tree(u.path());
+    write_known_empty(
+        u.path(),
+        "fine",
+        vec![KnownEmptyRun {
+            start: fine_empty().to_string(),
+            end: cell(18, fine_empty().i + 1, fine_empty().j).to_string(),
+            built_at: "2026-07-30T02:13:11Z".into(),
+            sources: sources.clone(),
+        }],
+    );
+    let err = generate(u.path(), &opts()).expect_err("a run stays on one row");
+    assert!(err.contains("one non-empty inclusive row range"), "{err}");
+
+    let v = TempTree::new("empty-unmerged");
+    example_tree(v.path());
+    let next = cell(18, fine_empty().i, fine_empty().j + 1);
+    write_known_empty(
+        v.path(),
+        "fine",
+        vec![
+            KnownEmptyRun {
+                start: fine_empty().to_string(),
+                end: fine_empty().to_string(),
+                built_at: "2026-07-30T02:13:11Z".into(),
+                sources: sources.clone(),
+            },
+            KnownEmptyRun {
+                start: next.to_string(),
+                end: next.to_string(),
+                built_at: "2026-07-30T02:13:11Z".into(),
+                sources,
+            },
+        ],
+    );
+    let err = generate(v.path(), &opts()).expect_err("identical adjacent provenance has one canonical run");
+    assert!(err.contains("merge them"), "{err}");
+}
+
+#[test]
+fn older_v2_documents_default_known_empty_coverage_to_none() {
+    let mut root_value: Value = serde_json::from_str(CATALOG_EXAMPLE_JSON).expect("root JSON");
+    for index in root_value["cell_index"].as_array_mut().expect("cell refs") {
+        index.as_object_mut().expect("cell ref").remove("known_empty_count");
+    }
+    let root: Catalog = serde_json::from_value(root_value).expect("an older additive-v2 root parses");
+    assert!(root.cell_index.iter().all(|index| index.known_empty_count == 0));
+    let mut index_value: Value = serde_json::from_str(CELL_INDEX_EXAMPLE_JSON).expect("index JSON");
+    index_value.as_object_mut().expect("cell index").remove("known_empty");
+    let index: CellIndexDocument = serde_json::from_value(index_value).expect("an older additive-v2 index parses");
+    assert!(index.known_empty.is_empty());
+}
+
+#[test]
 fn a_cell_sidecar_typo_fails_rather_than_defaulting() {
     let t = TempTree::new("sidecar-typo");
     example_tree(t.path());
@@ -1243,7 +1358,11 @@ fn a_band_with_no_cells_is_reported() {
         (47.5, 47.6),
     );
     let g = generated(t.path());
-    assert!(g.warnings.iter().any(|w| w.contains("band `mid` has no published cells")), "{:?}", g.warnings);
+    assert!(
+        g.warnings.iter().any(|w| w.contains("band `mid` has no published or known-empty cells")),
+        "{:?}",
+        g.warnings
+    );
     // The band still gets an index — one entry per band in the schema (§11.6) — so a
     // consumer's band loop does not have to handle a missing document.
     assert_eq!(g.root.cell_index.iter().find(|c| c.band == "mid").expect("mid").cell_count, 0);
@@ -1301,6 +1420,9 @@ fn the_catalog_schema_pins_the_envelope_version_and_the_field_patterns() {
     assert_eq!(s["properties"]["schema_version"]["const"].as_u64(), Some(u64::from(CATALOG_SCHEMA_VERSION)));
     assert_eq!(s["$defs"]["CellEntry"]["properties"]["id"]["pattern"].as_str(), Some(CELL_ID_PATTERN));
     assert_eq!(s["$defs"]["CellEntry"]["properties"]["sha256"]["pattern"].as_str(), Some(SHA256_PATTERN));
+    assert_eq!(s["$defs"]["KnownEmptyRun"]["properties"]["start"]["pattern"].as_str(), Some(CELL_ID_PATTERN));
+    assert_eq!(s["$defs"]["KnownEmptyRun"]["properties"]["end"]["pattern"].as_str(), Some(CELL_ID_PATTERN));
+    assert_eq!(s["$defs"]["KnownEmptyRun"]["properties"]["built_at"]["pattern"].as_str(), Some(TIMESTAMP_PATTERN));
     assert!(
         s["$defs"]["CellEntry"]["properties"].get("bbox").is_none(),
         "§11.6: a cell entry has no bbox — the id determines the square"
