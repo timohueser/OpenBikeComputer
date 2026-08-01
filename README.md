@@ -148,9 +148,12 @@ usage: obc-pack <pbf...> <config.json> <out.obcm> [--bbox W,S,E,N] [--chunk-size
   as far as any merge can tell.
 - `--bbox W,S,E,N` crops the sources to a box (degrees) **during ingest** — no
   `osmium extract` step and no temporary cropped `.pbf`. Ways crossing the
-  boundary are kept whole (osmium's `complete_ways` strategy), so the map and
-  the nav graph don't fray at the edge. Cropping needs each input type-sorted
-  (nodes, then ways, then relations); every Geofabrik extract is.
+  boundary are kept whole, and renderable area relations reached by those ways
+  pull in all of their member ways. Roads and the nav graph therefore do not
+  fray at the edge, while residential, forest, and farmland multipolygons do
+  not disappear because one ring segment lies outside the box. Cropping needs
+  each input type-sorted (nodes, then ways, then relations); every Geofabrik
+  extract is.
 - `--chunk-size N` sets the quadtree chunk payload target (default `4096`).
 - `--no-land` skips coastline/land-polygon generation.
 - LOD tiers and feature styling come from `config.json`. When `natural.land` is
