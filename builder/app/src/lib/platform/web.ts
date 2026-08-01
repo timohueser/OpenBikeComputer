@@ -113,6 +113,7 @@ export const platform: Platform = {
     // is what makes it serverless. Nothing to serve, and no issue that owes it.
     schema: null,
     palette: null,
+    schemaPreview: null,
 
     // This host *is* the site, so its header links back out to the rest of it.
     siteNav: LINKS,

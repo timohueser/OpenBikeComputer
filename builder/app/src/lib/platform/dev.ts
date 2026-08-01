@@ -7,12 +7,11 @@ import { api } from "../api/client";
 import { LINKS } from "../constants";
 import type { LoadStyleEditor, Platform } from "./types";
 
-const CATALOG_URL: string = import.meta.env.VITE_CATALOG_URL || "./data/catalog.json";
-
 async function catalog(): Promise<{ url: string; body: string }> {
-    const url = new URL(CATALOG_URL, document.baseURI).toString();
+    const runtime = await api.runtime();
+    const url = new URL(runtime.catalog_url, document.baseURI).toString();
     const response = await fetch(url);
-    if (!response.ok) throw new Error(`${CATALOG_URL}: ${response.status} ${response.statusText}`);
+    if (!response.ok) throw new Error(`${runtime.catalog_url}: ${response.status} ${response.statusText}`);
     return { url, body: await response.text() };
 }
 
@@ -32,6 +31,10 @@ export const platform: Platform = {
     presets: () => api.presets(),
     schema: () => api.schema(),
     palette: () => api.palette(),
+    schemaPreview: {
+        status: () => api.previewStatus(),
+        pack: (config, signal) => api.packPreview(config, signal),
+    },
     catalog,
     catalogFetch: globalThis.fetch,
     openMapOutput: null,

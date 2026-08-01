@@ -32,6 +32,26 @@ export interface Palette {
     colors: string[];
 }
 
+/** The localhost-only source state for the maintainer schema lab. */
+export interface SchemaPreviewStatus {
+    available: boolean;
+    label: string;
+    configured: boolean;
+    detail: string;
+    bbox: string;
+}
+
+/** One native crop pack. Rendering remains in the production wasm renderer. */
+export interface SchemaPreviewMap {
+    bytes: Uint8Array;
+    packDurationMs: number;
+}
+
+export interface SchemaPreviewService {
+    status(): Promise<SchemaPreviewStatus>;
+    pack(config: Record<string, unknown>, signal: AbortSignal): Promise<SchemaPreviewMap>;
+}
+
 /**
  * What the UI knows how to ask for. Every flag is a statement about the *tier*,
  * not about how far its implementation has got: `deviceUsb` is true on the web
@@ -181,6 +201,10 @@ export interface Platform {
 
     /** The device's color gamut for the maintainer editor's picker grid. */
     readonly palette: (() => Promise<Palette>) | null;
+
+    /** Native fixed-crop packer behind the maintainer-only Advanced route.
+     * Null in both product hosts: neither accepts local PBF/schema input. */
+    readonly schemaPreview: SchemaPreviewService | null;
 
     /**
      * The retired editor's server-side `user_config.json`, offered once for

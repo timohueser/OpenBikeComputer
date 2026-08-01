@@ -25,6 +25,10 @@ OBC_BAKE_TREE="$HOME/obc-bake"
 OBC_MAPS_BASE_URL="https://maps.openbikecomputer.com/cell-catalog"
 OBC_CATALOG_URL="$OBC_MAPS_BASE_URL/catalog.json"
 OBC_R2_PREFIX="cell-catalog"
+# Local maintainer schema-lab source. Leave unset to reuse/download the canonical
+# Freiburg-regbez extract in ~/.cache/obcm/geofabrik. An override must be an
+# absolute .osm.pbf path; the browser can never supply a source path.
+#OBC_SCHEMA_PREVIEW_PBF="$HOME/Downloads/freiburg-regbez-latest.osm.pbf"
 #OBC_R2_ACCOUNT_ID="..."
 #OBC_R2_BUCKET="..."
 #OBC_R2_ACCESS_KEY_ID="..."
