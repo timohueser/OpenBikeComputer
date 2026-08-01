@@ -20,7 +20,6 @@
     let presetsLoaded = $state(false);
     let presetsError = $state<string | null>(null);
     let importError = $state<string | null>(null);
-    let legacyConfig = $state<Record<string, unknown> | null>(null);
     let fileInput: HTMLInputElement;
 
     const env = $derived(working.envelope);
@@ -64,14 +63,6 @@
             .then((r) => (r.ok ? r.json() : { keys: {} }))
             .then((c) => (catalog = c?.keys ? c : { keys: {} }))
             .catch(() => {});
-        // One-shot migration offer for pre-redesign server-side edits. Only the
-        // dev host ever had a server-side config, hence the optional call.
-        if (!localStorage.getItem("obcm.legacyPromptDismissed")) {
-            platform
-                .legacyConfig?.()
-                .then((cfg) => (legacyConfig = cfg))
-                .catch(() => {});
-        }
     });
 
     $effect(() => {
@@ -129,17 +120,6 @@
         working.adopt(imported);
     }
 
-    function importLegacy() {
-        if (!legacyConfig) return;
-        const imported = importFile(JSON.stringify(legacyConfig));
-        if (imported) working.adopt(imported);
-        dismissLegacy();
-    }
-
-    function dismissLegacy() {
-        legacyConfig = null;
-        localStorage.setItem("obcm.legacyPromptDismissed", "1");
-    }
 </script>
 
 <div class="head">
@@ -173,19 +153,6 @@
 
 {#if importError}
     <p class="error small">{importError}</p>
-{/if}
-
-{#if legacyConfig}
-    <div class="legacy card">
-        <span class="small">
-            Found edits from the previous editor (<span class="mono">user_config.json</span>).
-            Import them as your working config?
-        </span>
-        <span class="legacy-actions">
-            <button type="button" class="btn ghost" onclick={importLegacy}>Import</button>
-            <button type="button" class="btn ghost" onclick={dismissLegacy}>Dismiss</button>
-        </span>
-    </div>
 {/if}
 
 {#if !env}
@@ -281,22 +248,6 @@
     .error {
         color: var(--coral);
         margin: 0 0 10px;
-    }
-
-    .legacy {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 14px;
-        margin-bottom: 12px;
-        border-left: 4px solid var(--amber);
-        border-radius: 0 16px 16px 0;
-    }
-
-    .legacy-actions {
-        display: flex;
-        gap: 8px;
-        flex: none;
     }
 
     .tabs {

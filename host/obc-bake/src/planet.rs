@@ -18,12 +18,14 @@ use obc_pack::grid::{BandTable, CellId, UBox, GRID_ORIGIN};
 use obc_pack::progress::Progress;
 use serde::{Deserialize, Serialize};
 
+use crate::cell_store::{paths as cell_paths, read_current as read_cell_state, CellSidecar, CellState};
 use crate::cells::{CellBakeOptions, CellCutter};
 use crate::coverage::Coverage;
 use crate::known_empty::{EmptyChange, EmptyFact, KnownEmptyIndex};
 use crate::presets::StyleDoc;
 use crate::regions::Region;
 use crate::source::ExtractSource;
+use crate::util::{human_bytes, write_json};
 
 /// An 8.39° leaf contains at most 32×32 fine cells. Dense leaves remain practical
 /// for the retained Rust ingest while the source shard count stays below one
@@ -103,7 +105,7 @@ pub fn resolve_planet_with(
 
     progress.log(format!("Hashing planet source {}...", path.display()));
     let (bytes, sha256) = crate::hash::file(&path)?;
-    progress.log(format!("  planet source: {} ({snapshot}, sha256 {}…)", human(bytes), &sha256[..12]));
+    progress.log(format!("  planet source: {} ({snapshot}, sha256 {}…)", human_bytes(bytes), &sha256[..12]));
     Ok(PlanetInput { path, bytes, sha256, snapshot, replication })
 }
 
@@ -865,8 +867,13 @@ impl PlanetRunSummary {
         use std::fmt::Write;
         let mut out = String::new();
         let _ = writeln!(out, "\n=== planet bake summary ({}) ===", self.tree.display());
-        let _ =
-            writeln!(out, "source {} ({}; {})", self.source.display(), self.source_snapshot, human(self.source_bytes));
+        let _ = writeln!(
+            out,
+            "source {} ({}; {})",
+            self.source.display(),
+            self.source_snapshot,
+            human_bytes(self.source_bytes)
+        );
         if let Some(replication) = &self.replication {
             let _ = writeln!(
                 out,
@@ -893,7 +900,7 @@ impl PlanetRunSummary {
             "{} artifact cell(s), {} known-empty cell(s), {} written",
             self.artifacts_cut,
             self.known_empty_cut,
-            human(self.bytes_written)
+            human_bytes(self.bytes_written)
         );
         for failure in &self.failures {
             let _ = writeln!(out, "  FAILED: {failure}");
@@ -963,7 +970,7 @@ impl PlanetBake<'_> {
                 self.leaves.len(),
                 leaf.id.i,
                 leaf.id.j,
-                human(leaf.bytes),
+                human_bytes(leaf.bytes),
                 cells.values().map(Vec::len).sum::<usize>()
             ));
             match self.reuse_leaf(leaf, &cells, &pack_key, &mut empties) {
@@ -1321,37 +1328,6 @@ struct LeafStats {
     bytes: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct CellSidecar {
-    schema_revision: u32,
-    built_at: String,
-    sources: Vec<CellSource>,
-    partial: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct CellState {
-    pack_key: String,
-    sha256: String,
-    bytes: u64,
-    built_at: String,
-    sidecar: CellSidecar,
-}
-
-fn read_cell_state(out: &Path, band: &str, id: CellId, pack_key: &str) -> Result<Option<CellState>, String> {
-    let (artifact, sidecar, state_path) = cell_paths(out, band, id);
-    let Ok(text) = std::fs::read_to_string(&state_path) else { return Ok(None) };
-    let Ok(state) = serde_json::from_str::<CellState>(&text) else { return Ok(None) };
-    if state.pack_key != pack_key || !artifact.is_file() || !sidecar.is_file() {
-        return Ok(None);
-    }
-    let (bytes, hash) = crate::hash::file(&artifact)?;
-    if bytes != state.bytes || hash != state.sha256 {
-        return Ok(None);
-    }
-    Ok(Some(state))
-}
-
 fn install_artifact(
     out: &Path,
     tmp: &Path,
@@ -1372,13 +1348,7 @@ fn install_artifact(
     std::fs::rename(&src, &dest).map_err(|e| format!("{} -> {}: {e}", src.display(), dest.display()))?;
     write_json(
         &state_path,
-        &CellState {
-            pack_key: pack_key.to_string(),
-            sha256: artifact.sha256.clone(),
-            bytes: artifact.bytes,
-            built_at: fact.built_at.clone(),
-            sidecar,
-        },
+        &CellState { pack_key: pack_key.to_string(), sha256: artifact.sha256.clone(), bytes: artifact.bytes, sidecar },
     )
 }
 
@@ -1390,13 +1360,6 @@ fn remove_artifact(out: &Path, band: &str, id: CellId) -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-fn cell_paths(out: &Path, band: &str, id: CellId) -> (PathBuf, PathBuf, PathBuf) {
-    let width = obc_pack::grid::id_width(id.log2);
-    let dir = out.join("cells").join(band).join(format!("{:0width$}", id.i));
-    let stem = format!("{:0width$}", id.j);
-    (dir.join(format!("{stem}.obcm")), dir.join(format!("{stem}.obcm.json")), dir.join(format!(".{stem}.cell.json")))
 }
 
 fn leaf_cells(id: LeafId, bands: &BandTable) -> BTreeMap<String, Vec<CellId>> {
@@ -1414,32 +1377,6 @@ fn leaf_cells(id: LeafId, bands: &BandTable) -> BTreeMap<String, Vec<CellId>> {
             (band.id.clone(), cells)
         })
         .collect()
-}
-
-fn human(bytes: u64) -> String {
-    let mut value = bytes as f64;
-    let mut unit = 0usize;
-    let units = ["B", "KiB", "MiB", "GiB", "TiB"];
-    while value >= 1024.0 && unit + 1 < units.len() {
-        value /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{bytes} B")
-    } else {
-        format!("{value:.1} {}", units[unit])
-    }
-}
-
-fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
-    }
-    let mut text = serde_json::to_string_pretty(value).map_err(|e| format!("{}: {e}", path.display()))?;
-    text.push('\n');
-    let tmp = path.with_extension("json.part");
-    std::fs::write(&tmp, text).map_err(|e| format!("{}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, path).map_err(|e| format!("{} -> {}: {e}", tmp.display(), path.display()))
 }
 
 #[cfg(test)]

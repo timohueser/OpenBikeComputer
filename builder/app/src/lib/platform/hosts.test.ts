@@ -66,14 +66,6 @@ describe("the hosts as a set", () => {
         }
     });
 
-    it("offers a legacy-config import only on the host that could have one", () => {
-        // user_config.json was the retired editor's server-side persistence;
-        // only the FastAPI host ever wrote one.
-        expect(typeof dev.platform.legacyConfig).toBe("function");
-        expect(web.platform.legacyConfig).toBeUndefined();
-        expect(desktop.platform.legacyConfig).toBeUndefined();
-    });
-
     it("links back to the site only where there is a site around the app", () => {
         // The desktop app is a standalone window: no docs/simulator/GitHub in
         // its chrome, tabs instead. Optional member, not a cap — a nav link has
@@ -83,10 +75,7 @@ describe("the hosts as a set", () => {
         expect(desktop.platform.siteNav).toBeUndefined();
     });
 
-    it("reports and clears caches only where the app owns a filesystem", () => {
-        // The same shape as `legacyConfig`: optional, not a capability, because
-        // a tier without a disk has nothing to report and no gate sentence worth
-        // writing. The desktop app's caches reach gigabytes (#906), so it does.
+    it("reports app storage only where the app owns a filesystem", () => {
         expect(desktop.platform.storage).toBeDefined();
         expect(web.platform.storage).toBeUndefined();
         expect(dev.platform.storage).toBeUndefined();

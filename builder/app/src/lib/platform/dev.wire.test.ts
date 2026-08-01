@@ -29,7 +29,6 @@ describe("dev host requests", () => {
         ["presets", () => platform.presets(), "/api/presets"],
         ["schema", () => platform.schema!(), "/api/schema"],
         ["palette", () => platform.palette!(), "/api/palette"],
-        ["legacyConfig", () => platform.legacyConfig!(), "/api/config/legacy"],
         ["preview status", () => platform.schemaPreview!.status(), "/api/schema-preview/status"],
     ])("%s GETs %s", async (_name, call, url) => {
         await call();

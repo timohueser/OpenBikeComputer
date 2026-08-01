@@ -100,7 +100,6 @@ export const platform: Platform = {
 
     storage: {
         places: () => desktop.storagePlaces(),
-        clear: (id: string) => desktop.storageClear(id),
     },
     revealFile: (path: string) => desktop.revealFile(path),
 };

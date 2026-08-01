@@ -431,7 +431,7 @@
       "properties": {
         "url": {
           "type": "string",
-          "pattern": "^(https?://|/)"
+          "pattern": "^(https?://|/).+\\.[0-9a-f]{64}\\.[^/?#]+$"
         },
         "bytes": {
           "type": "integer",
@@ -503,21 +503,14 @@
             "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
           }
         },
-        "partial_cell_count": {
-          "description": "How many of those cells are `partial` (§8). `0` for fully covered curation.",
-          "type": "integer",
-          "format": "uint32",
-          "minimum": 0
-        },
         "partial_cell_count_by_band": {
-          "description": "The same count per band. This additive v2 field lets a root-only consumer distinguish normal coarse-context partials from detail-band warnings. Old v2 roots may omit it, so deserialization defaults to an empty map.",
+          "description": "Partial cells per band, including zeroes for fully covered bands.",
           "type": "object",
           "additionalProperties": {
             "type": "integer",
             "format": "uint32",
             "minimum": 0
           },
-          "default": {},
           "propertyNames": {
             "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
           }
@@ -525,7 +518,7 @@
         "cells_url": {
           "description": "Where the region's cell-id list lives (§6).",
           "type": "string",
-          "pattern": "^(https?://|/)"
+          "pattern": "^(https?://|/).+\\.[0-9a-f]{64}\\.[^/?#]+$"
         },
         "cells_bytes": {
           "description": "Size of that document, in bytes.",
@@ -546,7 +539,7 @@
         "bytes",
         "bytes_by_band",
         "cell_count",
-        "partial_cell_count",
+        "partial_cell_count_by_band",
         "cells_url",
         "cells_bytes",
         "cells_sha256"
@@ -607,11 +600,10 @@
           "minimum": 0
         },
         "known_empty_count": {
-          "description": "Canonical cells represented as verified-empty ranges rather than OBCM artifacts. Additive in v2; older roots deserialize this as zero.",
+          "description": "Canonical cells represented as verified-empty ranges rather than OBCM artifacts.",
           "type": "integer",
           "format": "uint32",
-          "minimum": 0,
-          "default": 0
+          "minimum": 0
         },
         "bytes": {
           "description": "Size of the referenced document.",
@@ -626,13 +618,14 @@
         },
         "url": {
           "type": "string",
-          "pattern": "^(https?://|/)"
+          "pattern": "^(https?://|/).+\\.[0-9a-f]{64}\\.[^/?#]+$"
         }
       },
       "required": [
         "band",
         "cell_log2",
         "cell_count",
+        "known_empty_count",
         "bytes",
         "sha256",
         "url"
@@ -658,7 +651,7 @@
         },
         "url": {
           "type": "string",
-          "pattern": "^(https?://|/)"
+          "pattern": "^(https?://|/).+\\.[0-9a-f]{64}\\.[^/?#]+$"
         },
         "built_at": {
           "description": "RFC 3339 UTC, recorded by the bake job.",
@@ -768,19 +761,19 @@
           }
         },
         "known_empty": {
-          "description": "Canonical, non-overlapping row runs that carry no bytes for this band. Additive in v2; older satellites deserialize this as an empty list.",
+          "description": "Canonical, non-overlapping row runs that carry no bytes for this band.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/KnownEmptyRun"
-          },
-          "default": []
+          }
         }
       },
       "required": [
         "schema_version",
         "schema_revision",
         "band",
-        "cells"
+        "cells",
+        "known_empty"
       ],
       "description": "A band's cell index: the satellite the root pins (§8).",
       "type": "object"

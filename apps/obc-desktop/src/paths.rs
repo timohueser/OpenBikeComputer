@@ -64,27 +64,6 @@ pub fn sanitize_basename(name: &str, ext: &str, fallback: &str) -> String {
     cleaned
 }
 
-/// `dir/name`, or `dir/name-2`, `dir/name-3`… if that is taken.
-///
-/// Overwriting is the wrong default here and the dev server never had to decide:
-/// its builds went into a per-job directory behind a download link. A desktop
-/// build lands in the user's own folder, where the previous `mymap.obcm` may be
-/// the one already copied onto a card.
-pub fn unique_in(dir: &std::path::Path, name: &str) -> PathBuf {
-    let candidate = dir.join(name);
-    if !candidate.exists() {
-        return candidate;
-    }
-    let (stem, ext) = name.rsplit_once('.').unwrap_or((name, "obcm"));
-    for n in 2..10_000 {
-        let candidate = dir.join(format!("{stem}-{n}.{ext}"));
-        if !candidate.exists() {
-            return candidate;
-        }
-    }
-    dir.join(name)
-}
-
 /// Total bytes and file count under `dir`, or `(0, 0)` if it isn't there.
 pub fn dir_size(dir: &std::path::Path) -> (u64, usize) {
     let mut bytes = 0;
@@ -117,16 +96,5 @@ mod tests {
         assert_eq!(sanitize_basename("", ".json", "style"), "style.json");
         assert_eq!(sanitize_basename(".json", ".json", "style"), "style.json");
         assert_eq!(sanitize_basename("obcm-style-default.json", ".json", "style"), "obcm-style-default.json");
-    }
-
-    #[test]
-    fn a_second_file_of_the_same_name_does_not_overwrite_the_first() {
-        let dir = std::env::temp_dir().join(format!("obc-desktop-unique-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("temp dir");
-        let first = unique_in(&dir, "map.obcm");
-        assert_eq!(first.file_name().unwrap(), "map.obcm");
-        std::fs::write(&first, b"x").expect("write");
-        assert_eq!(unique_in(&dir, "map.obcm").file_name().unwrap(), "map-2.obcm");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

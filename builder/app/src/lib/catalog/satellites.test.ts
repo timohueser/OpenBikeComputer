@@ -64,6 +64,7 @@ describe("parseCellIndex", () => {
         ["a snapshot date that does not exist", (d) => (d.cells[0].sources[0].snapshot = "2026-02-30")],
         ["a missing partial flag", (d) => delete d.cells[0].partial],
         ["a truncated sha256", (d) => (d.cells[0].sha256 = "abc")],
+        ["a cell URL carrying another digest", (d) => (d.cells[0].sha256 = "0".repeat(64))],
         // A malformed id is a malformed *document*, and must arrive as one: the
         // grid's own `GridError` would sail straight past the handler that
         // catches a bad catalog and land as a blank screen instead.
@@ -77,17 +78,9 @@ describe("parseCellIndex", () => {
         ["a known-empty range overlapping an artifact", (d) => (d.known_empty[0].start = "18/1204/1053")],
         ["a known-empty range with no source", (d) => (d.known_empty[0].sources = [])],
         ["a known-empty count that disagrees with the root", (d) => (d.known_empty[0].end = "18/1204/1056")],
+        ["a missing known-empty list", (d) => delete d.known_empty],
     ])("rejects %s", (_what, edit) => {
         expect(() => parseCellIndex(mutatedIndex(edit), exampleCatalog, fineRef)).toThrow(CatalogFormatError);
-    });
-
-    it("accepts an older v2 satellite without additive known-empty coverage", () => {
-        const olderRoot = JSON.parse(JSON.stringify(exampleCatalog)) as LooseDoc;
-        olderRoot.cell_index.find((ref: LooseDoc) => ref.band === "fine").known_empty_count = 0;
-        const body = mutatedIndex((d) => delete d.known_empty);
-        const doc = parseCellIndex(body, olderRoot, olderRoot.cell_index.find((ref: LooseDoc) => ref.band === "fine"));
-        expect(doc.known_empty).toEqual([]);
-        expect(doc.emptyByRow.size).toBe(0);
     });
 
     it("rejects overlapping, out-of-order, and needlessly split ranges", () => {

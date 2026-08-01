@@ -1,21 +1,7 @@
 <script lang="ts">
-    // Step 3 on the cell catalog (#1038; mock R2·3): the coverage proof, the
-    // final numbers, and the download-and-assemble run itself.
-    //
-    // Order of honesty, before a byte moves: the thumbnail shows the outline
-    // the rider will live with — holes included — the figures show what it
-    // costs, and two refusals can lock the button: the ledger's core-file
-    // ceiling (§5.7, the sentence naming the navigation graph with both
-    // figures), and the wasm memory projection (`estimateMemory`, run through
-    // the worker *before* the download so an impossible assembly is refused
-    // before anyone spends ten minutes fetching it — with a phone-sized budget
-    // on a phone, where the failure mode is the browser evicting the page).
-    //
-    // The run: verified per-cell download (abortable) → assembly **in a Web
-    // Worker** (the bridge's threading contract: one synchronous wasm call, so
-    // cancel is `worker.terminate()`, progress crosses by postMessage, files
-    // come back one at a time as transfers and go either to the browser's
-    // downloader or, with per-file backpressure, straight to the device).
+    // Final coverage proof and verified download/assembly. File and wasm-memory
+    // limits are checked before transfer. Synchronous wasm runs in a Worker;
+    // files return one at a time for browser, desktop, or device output.
 
     import { onDestroy } from "svelte";
     import type { AssemblePhase, MemoryEstimate } from "../../lib/assemble/bridge";
@@ -37,7 +23,7 @@
     import type { UBox } from "../../lib/catalog/grid";
     import { detailBandId, mergeMixedCellRects, parseCells, patchCount } from "../../lib/coverage/shape";
     import type { CoverageStore } from "../../lib/coverage/store.svelte";
-    import { formatBytes } from "../../lib/format";
+    import { formatBytes, truncateUtf8 } from "../../lib/format";
     import type { JobContext } from "../../lib/device/progress";
     import type { SetSendState } from "../../lib/device/write";
     import type { ProtocolClient, UploadResult } from "../../lib/usb/client";
@@ -267,18 +253,11 @@
         output = null;
     }
 
-    /** The set's 24-wire-byte display name, from the parts that made it. */
     function mapName(): string {
         const parts = store.selection.parts;
         const base = parts.length === 0 ? "OBC map" : parts[0].name;
         const name = parts.length > 1 ? `${base} +${parts.length - 1}` : base;
-        let out = "";
-        const encoder = new TextEncoder();
-        for (const ch of name) {
-            if (encoder.encode(out + ch).length > 24) break;
-            out += ch;
-        }
-        return out;
+        return truncateUtf8(name, 24);
     }
 
     async function begin(out: Output) {

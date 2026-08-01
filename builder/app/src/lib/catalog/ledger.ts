@@ -1,38 +1,7 @@
-// The size ledger: what a selection costs, which file the cost lands in, and
-// whether it can legally be built at all.
-//
-// This is epic #1016 §8 U4 — the always-visible "Map summary" card — as
-// arithmetic. Three rules shape every line of it.
-//
-// **1. Totals are summed real cell bytes. Never an estimate.** PR #1025 measured
-// the trap: a selection's cell squares cover 1.5–1.8× the ground its region
-// does, because border cells carry the neighbour's side as well. Priced by area
-// × density that would overstate Freiburg by 50 %; priced by summing the cells'
-// own published `bytes` it is exact, because the over-covered ground is outside
-// the extract and carries no bytes. `OBCC_Spec.md` §6 publishes `bytes` per
-// cell and `bytes_by_band` per region precisely so a consumer never has to
-// estimate, and this module never does.
-//
-// **2. The ceiling is a per-file ceiling, and only one file has it.** A map is a
-// volume set (`OBCA_Spec.md` §5.1): the **core** file carries the nav graph and
-// the POIs and cannot be split by bbox, while coarse and geometry shards split
-// as needed. §5.7 makes the projection mandatory *before* the download and the
-// refusal absolute — and after the split the only file that can approach the
-// ceiling without a remedy is the core. So the core band's bytes are judged
-// against `4 GiB − 1` (refuse) and ≈ 3.5 GiB (warn), and both sentences name the
-// navigation graph as the reason, because after §5.1 no other explanation is
-// true.
-//
-// **3. A partial coarse cell is not a hole, and at country scale it is not even
-// news.** #1025 again: a `2^20` cell is ≈ 9 100 km², so *no* coarse cell is fully
-// interior to Switzerland — all sixteen are `partial`. Hatching those under §8
-// U1's "loud warnings inside the selection" would hatch the entire map for a
-// single-country catalog. So this ledger separates three things that a naive
-// count would merge: **holes** (ground with no published cell — real, any band),
-// **partial detail cells** (a published cell whose sources do not cover its whole
-// square, in a band a rider reads detail from — worth warning about), and
-// **partial context cells** (the same thing in the coarse band, which is context
-// rather than content — counted, exposed, and not a warning).
+// Exact selection pricing and coverage warnings. Totals sum published cell
+// bytes; only the unsplittable core band is judged against the per-file ceiling.
+// Missing cells are holes, while partial coarse cells are tracked as normal
+// context rather than warning-hatched detail.
 
 import type { BandRole, Catalog, RegionEntry } from "./manifest";
 import type { CellIndexDocument } from "./satellites";
@@ -127,10 +96,6 @@ export interface CoverageReport {
     /** Partial cells in the coarse context band. Normal at country scale, kept
      *  separate so nothing hatches a whole map over them. */
     partialContextCount: number;
-    /** The root's legacy unsplit count, set only when an older additive-v2
-     *  catalog omits `partial_cell_count_by_band`. It is reported but cannot be
-     *  classified as context or detail, so it never becomes a warning. */
-    unsplitPartialCount: number | null;
     /** Whether there is anything to draw a warning for at all — holes anywhere,
      *  or partial cells in a detail band. Never true for context alone. */
     hasWarnings: boolean;
@@ -195,7 +160,6 @@ function coverageReport(
         partialDetailByBand,
         partialDetailCount,
         partialContextCount,
-        unsplitPartialCount: null,
         hasWarnings: holeCount > 0 || partialDetailCount > 0,
     };
 }
@@ -306,10 +270,8 @@ export function ledgerFor(
  * The result is the same shape as {@link ledgerFor} and the same verdict
  * arithmetic runs on it.
  *
- * Current roots split partial counts by band, so the same coarse-context rule
- * applies before the satellite fetch. An older additive-v2 root may omit that
- * split; its total is preserved as `coverage.unsplitPartialCount` and cannot be
- * classified as a warning until the cell lists load.
+ * Per-band partial counts apply the same coarse-context rule before the
+ * satellite fetch.
  */
 export function ledgerForRegion(catalog: Catalog, entry: RegionEntry): Ledger {
     // `hasOwn`, not `?? 0`: a band id is a document string and `"constructor"`
@@ -331,16 +293,12 @@ export function ledgerForRegion(catalog: Catalog, entry: RegionEntry): Ledger {
         };
     });
     const core = bands.find((b) => b.role === "core")!;
-    const splitPartials = entry.partial_cell_count_by_band;
     return {
         bands,
         totalBytes: entry.bytes,
         cellCount: bands.reduce((sum, b) => sum + b.cellCount, 0),
         core,
-        coverage: {
-            ...coverageReport(new Map(), bands, splitPartials ?? undefined),
-            unsplitPartialCount: splitPartials ? null : entry.partial_cell_count,
-        },
+        coverage: coverageReport(new Map(), bands, entry.partial_cell_count_by_band),
         verdict: judge(core),
         unresolvedBands: [],
         unresolvedParts: [],

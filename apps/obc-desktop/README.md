@@ -46,7 +46,7 @@ cargo run --no-default-features
 ```
 
 Packaged builds compile their catalog root from `OBC_CATALOG_URL`; it defaults to
-`https://maps.openbikecomputer.org/catalog.json`. A runtime environment variable
+`https://maps.openbikecomputer.com/cell-catalog/catalog.json`. A runtime environment variable
 with the same name overrides it for testing an unpublished catalog:
 
 ```sh
@@ -95,8 +95,8 @@ Catalog cells are currently held only for the assembly run; the desktop app does
 not maintain `.pbf`, land-polygon, Geofabrik-index, or persistent cell caches.
 
 The visible ride folder contains GPX files only. Device ride objects and the index
-live in the internal archive; `src/rides.rs` documents the durable import, migration,
-and relocation rules.
+live in the internal archive; `src/rides.rs` documents the durable import and
+relocation rules.
 
 ## Layout
 
@@ -129,8 +129,8 @@ The device protocol remains the shared TypeScript implementation in
 `builder/app/src/lib/usb/`; Rust only supplies the native pipes. Large app-owned
 files can stream directly from the maps folder without entering the webview.
 
-Direct manifest-last transfer of a newly assembled volume set is follow-up #1044.
-Until then, the device page retains the temporary manual single-file upload action.
+Newly assembled volume sets stream directly to the device with the manifest last.
+The device page also accepts a standalone `.obcm` obtained elsewhere.
 
 ## Not here yet
 
