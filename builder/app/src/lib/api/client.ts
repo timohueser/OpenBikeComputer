@@ -36,7 +36,7 @@ export const api = {
     presets: () => getJson<Preset[]>("/presets"),
     schema: () => getJson<SchemaEnvelope>("/schema"),
     palette: () => getJson<Palette>("/palette"),
-    async catalogRoot(): Promise<{ url: string; body: string }> {
+    async publishedCatalog(): Promise<{ url: string; body: string }> {
         const res = await fetch(`${API_BASE}/catalog/root`);
         if (!res.ok) throw new Error(await errorDetail(res));
         const url = res.headers.get("X-OBC-Catalog-Url");
