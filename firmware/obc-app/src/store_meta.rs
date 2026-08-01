@@ -1,10 +1,8 @@
 //! Store **identity metadata** — the durable object-id floors and the id-era epoch nonce.
 //!
-//! Split out of the settings module by FAR-09 (#802): these codecs protect the *object store's
-//! identity* invariants (ids never reuse; an id-era reset is phone-detectable), not the rider's
-//! settings. They live here beside each other because the mint rule couples them; the settings
-//! module re-exports every name as a compatibility path (the board addresses them as
-//! `settings::*`).
+//! These codecs protect the *object store's identity* invariants (ids never reuse; an id-era reset
+//! is phone-detectable), not the rider's settings. They live together because the mint rule couples
+//! them.
 //!
 //! Also home to the shared [`crc16`] the persistent sidecar/line codecs guard themselves with
 //! (settings blob, arm marker, synced-ride and route-CRC sidecars included).
@@ -227,6 +225,11 @@ pub fn store_epoch_mint(epoch: Option<u32>, marks: Option<IdMarks>, fresh: u32) 
 pub const SELECTED_MAP_LEN: usize = 24;
 /// The selected-map file's tag; anything else there (absent, torn, older layout) decodes to `None`
 /// — "no preference", and the loader falls back to the first valid map on the card.
+///
+/// **Not** the OBCA volume-set manifest magic, which is the same four bytes (`OBCA_Spec.md` §5.2,
+/// `obc_formats::obcs::MAGIC`). Different files — `MAP.SEL` here, `MS{id}.OBS` there — and neither
+/// parser is ever pointed at the other's bytes, but a grep for `b"OBCS"` finds three sites and only
+/// one of them is the format.
 const SELECTED_MAP_MAGIC: [u8; 4] = *b"OBCS";
 /// Selected-map layout version — bump on any field change (an old version reads as no preference).
 const SELECTED_MAP_VERSION: u8 = 1;

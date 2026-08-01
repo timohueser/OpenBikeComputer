@@ -28,7 +28,7 @@ const NO_FIX_FLOOR_MS: u32 = 5_000;
 /// How many configured fix intervals of silence count as "lost" before the floor takes over.
 const NO_FIX_INTERVALS: u32 = 3;
 
-/// How often the tick reads the battery [`FuelGauge`](crate::FuelGauge). Charge drifts over
+/// How often the tick reads the battery [`FuelGauge`](obc_ports::FuelGauge). Charge drifts over
 /// minutes, so a ~30 s cadence keeps the Home gauge fresh while reading the PMIC a few times a
 /// minute at most. Independent of redraws: an unchanged reading repaints nothing.
 const BATTERY_POLL_MS: u32 = 30_000;
@@ -174,7 +174,7 @@ pub(crate) struct RideEngine {
     /// The travelled-path breadcrumb (RAM, bounded), fed each logged fix and drawn on the Map;
     /// cleared when [`ride_session`](RideEngine::ride_session) changes.
     pub(crate) breadcrumb: Breadcrumb,
-    /// Millis of the last battery [`FuelGauge`](crate::FuelGauge) poll, or `None` before the
+    /// Millis of the last battery [`FuelGauge`](obc_ports::FuelGauge) poll, or `None` before the
     /// first. Read on a slow cadence ([`BATTERY_POLL_MS`]) — *not* every tick — so a real PMIC
     /// read never spins the I²C bus at the frame rate.
     last_battery_poll_ms: Option<u32>,
@@ -365,7 +365,7 @@ impl RideEngine {
     }
 
     /// Whether the ~30 s battery-poll cadence is due at `now_ms` — and if so, stamp it consumed.
-    /// The caller (the tick) does the actual [`FuelGauge`](crate::FuelGauge) read + the Home-only
+    /// The caller (the tick) does the actual [`FuelGauge`](obc_ports::FuelGauge) read + the Home-only
     /// repaint gate.
     pub(crate) fn battery_poll_due(&mut self, now_ms: u32) -> bool {
         let due = self.last_battery_poll_ms.is_none_or(|last| now_ms.wrapping_sub(last) >= BATTERY_POLL_MS);

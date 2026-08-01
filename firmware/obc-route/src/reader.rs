@@ -13,7 +13,7 @@ use core::{
 use heapless::{String, Vec};
 
 use obc_formats::io::{rd_i16, rd_i32, rd_u16, rd_u32, ByteSource, Error};
-use obc_reader::BBox;
+use obc_map_scene::BBox;
 
 // The OBCR format constants this reader parses against are owned by `obc-formats`; imported here.
 // Not re-exported — consumers reach the format authority via `obc_formats::obcr`.
@@ -426,12 +426,12 @@ impl<'a> RouteReader<'a> {
             return Some((first, k, 0));
         }
 
-        let cl = crate::geo::cos_lat(first.lat);
+        let cl = obc_map_scene::cos_lat(first.lat);
         let mut s = cm.cum_distance_m as f32;
         for i in 0..buf.len() - 1 {
             let a = buf[i];
             let b = buf[i + 1];
-            let dl = crate::geo::seg_dist_m_cl((a.lon, a.lat), (b.lon, b.lat), cl);
+            let dl = obc_map_scene::ground_dist_m_cl((a.lon, a.lat), (b.lon, b.lat), cl);
             let last = i + 2 == buf.len();
             if target as f32 <= s + dl || last {
                 let t = if dl > 1e-3 { ((target as f32 - s) / dl).clamp(0.0, 1.0) } else { 0.0 };
@@ -629,14 +629,14 @@ pub(crate) fn decode_route_points_between(
     if buf.len() < 2 {
         return None;
     }
-    let cl = crate::geo::cos_lat(buf[0].lat);
+    let cl = obc_map_scene::cos_lat(buf[0].lat);
     let mut s = cm.cum_distance_m as f32;
     let mut first: Option<(usize, RoutePoint)> = None;
     let mut last: Option<(usize, RoutePoint)> = None;
     for i in 0..buf.len() - 1 {
         let a = buf[i];
         let b = buf[i + 1];
-        let dl = crate::geo::seg_dist_m_cl((a.lon, a.lat), (b.lon, b.lat), cl);
+        let dl = obc_map_scene::ground_dist_m_cl((a.lon, a.lat), (b.lon, b.lat), cl);
         let seg_hi = s + dl;
         if seg_hi >= lo as f32 && s <= hi as f32 {
             let t0 = if dl > 1e-3 { ((lo as f32 - s) / dl).clamp(0.0, 1.0) } else { 0.0 };

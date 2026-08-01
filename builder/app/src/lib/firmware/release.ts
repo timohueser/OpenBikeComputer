@@ -55,7 +55,7 @@ export class FirmwareManifestError extends Error {
  * Parse a whole manifest body.
  *
  * Whole, not streamed, and every required field checked before any of it is used — the same posture
- * `OBCC_Spec.md` §7 takes for the map catalog, for the same reason: a half-understood manifest that
+ * `OBCC_Spec.md` §11 takes for the map catalog, for the same reason: a half-understood manifest that
  * offers a download is worse than no manifest.
  */
 export function parseFirmwareManifest(body: string): FirmwareRelease {

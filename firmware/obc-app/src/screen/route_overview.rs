@@ -514,7 +514,7 @@ pub(super) fn draw_route_preview(cv: &mut impl Surface, w: i32, top: i32, bot: i
     }
     // Aspect-fit: one scale for both axes (the smaller of the two fits), the fitted shape
     // centred in the box. `max(1.0)` guards a degenerate straight north-south / east-west line.
-    let clat = obc_route::cos_lat((min_lat / 2) + (max_lat / 2));
+    let clat = obc_map_scene::cos_lat((min_lat / 2) + (max_lat / 2));
     let geo_w = ((max_lon - min_lon) as f32 * clat).max(1.0);
     let geo_h = ((max_lat - min_lat) as f32).max(1.0);
     let scale = (fit_w as f32 / geo_w).min(fit_h as f32 / geo_h);
@@ -566,7 +566,7 @@ mod tests {
     use crate::screen::PoiScratch;
     use crate::settings::Settings;
     use crate::AppState;
-    use obc_route::BBox;
+    use obc_map_scene::BBox;
 
     fn summary() -> RouteSummary {
         RouteSummary {

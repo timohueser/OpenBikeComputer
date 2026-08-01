@@ -428,13 +428,13 @@ fn visible_chunk_query() {
     let r = RouteReader::new(&ridx, &src);
 
     // A view around (10,10) overlaps only chunk 0 (bbox 10..40).
-    let view = obc_route::BBox { min_lon: 0, min_lat: 0, max_lon: 30, max_lat: 30 };
+    let view = obc_map_scene::BBox { min_lon: 0, min_lat: 0, max_lon: 30, max_lat: 30 };
     let mut hit = Vec::new();
     r.for_each_visible_chunk(&view, |k, _| hit.push(k));
     assert_eq!(hit, vec![0]);
 
     // A view around (80,60) overlaps only chunk 1 (bbox 40..90).
-    let view = obc_route::BBox { min_lon: 70, min_lat: 50, max_lon: 100, max_lat: 80 };
+    let view = obc_map_scene::BBox { min_lon: 70, min_lat: 50, max_lon: 100, max_lat: 80 };
     let mut hit = Vec::new();
     r.for_each_visible_chunk(&view, |k, _| hit.push(k));
     assert_eq!(hit, vec![1]);

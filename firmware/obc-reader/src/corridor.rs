@@ -18,10 +18,11 @@
 //! `RouteReader`, over the **resident chunk index** the breadcrumb/progress machinery already reads
 //! — no full-route re-read per snapshot.
 
-use crate::geo::delta_m;
 use crate::reader::Poi;
-use crate::BBox;
 use obc_formats::obcm::{PoiCategory, POI_CATEGORY_COUNT};
+#[cfg(test)]
+use obc_map_scene::ground_dist_m_cl;
+use obc_map_scene::{cos_lat, delta_m, BBox, M_PER_DEG};
 
 /// Lateral half-width of the route corridor, in ground meters (epic #946, locked): a POI farther
 /// than this from the route line is not "up ahead on my route", it's somewhere else. **Tunable** —
@@ -182,7 +183,7 @@ pub fn project_onto_chunk(
     }
     // One `cos_lat` for the whole chunk, taken at its first point — the convention `obc-route`'s
     // own along-route walks use, so the two agree meter for meter.
-    let cl = crate::geo::cos_lat(pts[0].1).max(1e-3);
+    let cl = cos_lat(pts[0].1).max(1e-3);
     // The prune window in µdeg, from `limit_m`. Saturated to `i32::MAX` for an infinite limit, so
     // the bbox test then always passes.
     let lat_pad = udeg_pad(limit_m);
@@ -228,7 +229,7 @@ pub fn project_onto_chunk(
 /// so a bbox test against it always passes).
 #[inline]
 fn udeg_pad(m: f32) -> i32 {
-    let ud = m / (crate::M_PER_DEG as f32 * 1e-6);
+    let ud = m / (M_PER_DEG as f32 * 1e-6);
     if ud >= i32::MAX as f32 {
         i32::MAX
     } else {
@@ -253,9 +254,9 @@ fn within_pad(a: (i32, i32), b: (i32, i32), p: (i32, i32), lon_pad: i32, lat_pad
 /// distance; every step saturates so a corrupt/extreme box can't wrap `i32`.
 pub(crate) fn inflate_bbox(bbox: BBox, pad_m: f32) -> BBox {
     // Meters → latitude µdeg, then longitude µdeg via the box's mid-latitude cos.
-    let lat_pad = (pad_m / (crate::M_PER_DEG as f32 * 1e-6)) as i32;
+    let lat_pad = (pad_m / (M_PER_DEG as f32 * 1e-6)) as i32;
     let mid_lat = bbox.min_lat.saturating_add(bbox.max_lat) / 2;
-    let cl = crate::geo::cos_lat(mid_lat).max(1e-3);
+    let cl = cos_lat(mid_lat).max(1e-3);
     let lon_pad = ((lat_pad as f32 / cl) as i32).max(1);
     BBox {
         min_lon: bbox.min_lon.saturating_sub(lon_pad),
@@ -298,7 +299,7 @@ mod tests {
         let pts = chunk();
         let mid = project_onto_chunk(&pts, 500, (7_015_000, LAT), f32::INFINITY).unwrap();
         // Segment one is a full 10 000 µdeg of longitude; the projection sits halfway along two.
-        let seg = crate::geo::ground_dist_m_cl(pts[0], pts[1], crate::geo::cos_lat(LAT));
+        let seg = ground_dist_m_cl(pts[0], pts[1], cos_lat(LAT));
         assert!((mid.dist_along_m - (500.0 + seg * 1.5)).abs() < 0.5, "cum start + 1.5 segments");
         assert!(mid.offset_m.abs() < 0.01, "a point on the line has no offset");
     }
@@ -313,7 +314,7 @@ mod tests {
         let p = project_onto_chunk(&pts, 0, (7_005_000, LAT + 200), f32::INFINITY).unwrap();
         assert!(p.offset_m.abs() < 25.0, "the near leg's offset, not the far leg's ~200 m");
         assert!(p.offset_m < 0.0, "north of the eastbound leg ⇒ left");
-        let leg = crate::geo::ground_dist_m_cl(pts[0], pts[1], crate::geo::cos_lat(LAT));
+        let leg = ground_dist_m_cl(pts[0], pts[1], cos_lat(LAT));
         assert!(p.dist_along_m < leg, "it lands on the first leg, not the return");
     }
 
@@ -365,7 +366,7 @@ mod tests {
         let g = inflate_bbox(b, CORRIDOR_HALF_WIDTH_M);
         let lat_pad = b.min_lat - g.min_lat;
         let lon_pad = b.min_lon - g.min_lon;
-        assert!((lat_pad as f32 * 1e-6 * crate::M_PER_DEG as f32 - 300.0).abs() < 1.0);
+        assert!((lat_pad as f32 * 1e-6 * M_PER_DEG as f32 - 300.0).abs() < 1.0);
         assert!(lon_pad > lat_pad, "at 43° N a metre of easting is more µdeg than a metre of northing");
     }
 }

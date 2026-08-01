@@ -14,6 +14,7 @@
  */
 
 import { gpxToObcr } from "../convert/bridge";
+import { truncateUtf8 } from "../format";
 import { viewOf } from "../usb/protocol";
 
 /** The route name field's cap, and the OBCR header's own (`Name Len`, §1). */
@@ -101,19 +102,4 @@ export async function prepareRoute(file: File): Promise<PreparedRoute> {
 export function routeNameFrom(filename: string): string {
     const stem = filename.replace(/\.[^./\\]+$/, "").replace(/^.*[\\/]/, "").trim();
     return truncateUtf8(stem || "Route", ROUTE_NAME_MAX);
-}
-
-/** Trim to `maxBytes` of UTF-8 without splitting a codepoint — the rule `obc-route` applies too. */
-export function truncateUtf8(text: string, maxBytes: number): string {
-    const encoder = new TextEncoder();
-    if (encoder.encode(text).length <= maxBytes) return text;
-    let out = "";
-    let used = 0;
-    for (const ch of text) {
-        const size = encoder.encode(ch).length;
-        if (used + size > maxBytes) break;
-        out += ch;
-        used += size;
-    }
-    return out;
 }

@@ -403,7 +403,7 @@ mod tests {
     use crate::activity::{Activity, Mode};
     use crate::trip::TripInput;
     use crate::{AppState, Settings};
-    use obc_route::BBox;
+    use obc_map_scene::BBox;
 
     /// A minimal named route summary — the Route menu only reads `name` in `handle`.
     fn summary(name: &str) -> RouteSummary {

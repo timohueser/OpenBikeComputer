@@ -25,6 +25,7 @@ members = [
     "host/obc-mkimage",
     "host/obc-bench",
     "host/obc-vectors",
+    "host/obcm-assemble",
     "host/obcm-testkit",
     "host/obc-replay",
     "host/obc-usb-host",
@@ -32,7 +33,8 @@ members = [
     "apps/obc-sim",
     "apps/obc-web-demo",
     "apps/obc-web-convert",
-    "apps/obc-web-preview",
+    "apps/obc-web-assemble",
+    "apps/obc-skin-preview",
 ]
 # obc-fw-nrf54l is a standalone board crate (own target + .cargo/config.toml, own empty
 # [workspace]); it's built on its own, not as part of this host workspace (which builds its
@@ -40,3 +42,9 @@ members = [
 # which excludes them automatically for the same reason.
 exclude = ["firmware/obc-fw-nrf54l"]
 resolver = "2"
+
+# The embedded-sdmmc fork the device build runs (see firmware/obc-fw-nrf54l/Cargo.toml for what it
+# changes and why). Repeated here because `[patch.crates-io]` applies per resolve root: without it
+# `obc-storage`'s host tests would exercise stock 0.9 while the board runs the fork.
+[patch.crates-io]
+embedded-sdmmc = { git = "https://github.com/timohueser/embedded-sdmmc-rs", branch = "cmd25-multiblock-write" }

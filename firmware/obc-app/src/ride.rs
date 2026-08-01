@@ -98,7 +98,9 @@ impl RideSummary {
 // (id-only) still decodes: every entry reads `synced_at = 0` ("legacy synced", which the sweep
 // stamps `now` rather than deleting on sight), so upgrading a device never surprise-deletes a ride.
 
-/// The sidecar magic tag; anything else there decodes to the empty synced set.
+/// The sidecar magic tag; anything else there decodes to the empty synced set. Shares its four
+/// bytes with `MAP.SEL` and with the OBCA set manifest (`obc_formats::obcs::MAGIC`) — three
+/// unrelated files, no shared parser; see the note on `store_meta::SELECTED_MAP_MAGIC`.
 const SYNCED_MAGIC: [u8; 4] = *b"OBCS";
 /// The v1 layout version — id-only entries (2 bytes each). Still decoded (with `synced_at = 0`) for
 /// backward compatibility; never written.

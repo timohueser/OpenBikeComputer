@@ -8,7 +8,8 @@
 
 use embedded_graphics::pixelcolor::Rgb888;
 use obc_app::screen::palette;
-use obc_app::{App, AppState, Button, InputClock};
+use obc_app::{App, AppState};
+use obc_ports::{Button, InputClock};
 use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader, SliceSource};
 
 mod common;

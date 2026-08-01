@@ -38,7 +38,7 @@ use obc_platform::SynthLocation;
 use obc_display::ls021::{FRAME_H, FRAME_W};
 use obc_display::FbDevice64;
 use obc_platform::StubFuelGauge;
-use obc_reader::{MapCache, MapTables, Reader};
+use obc_reader::{MapCache, MapTables, MountedSet, Reader};
 // The ride loop's route types: the decoded-route-geometry cache, the resident per-route chunk
 // index, and the streamed route reader the matcher + map render share.
 use obc_route::{RouteCache, RouteIndex, RouteReader};
@@ -281,7 +281,7 @@ fn sensor_kind_slot(kind: obc_ble::SensorKind) -> u8 {
     }
 }
 
-/// Distil the central manager's per-quantity [`SensorSlotStatus`](crate::ble::SensorSlotStatus) into
+/// Distil the central manager's per-quantity sensor status into
 /// the app-vocabulary [`SensorStatus`](obc_app::SensorStatus) the Sensors screen renders (SE7, #714):
 /// `NotSet` when nothing is saved, else the connection phase, carrying battery + the freshest-value
 /// tick.
@@ -295,8 +295,7 @@ fn sensor_status_of(q: usize) -> obc_app::SensorStatus {
         match s.state {
             SensorSlotState::Connected => obc_app::SensorPhase::Connected,
             SensorSlotState::Connecting => obc_app::SensorPhase::Connecting,
-            // Idle / Scanning both read as searching for the saved sensor.
-            _ => obc_app::SensorPhase::Searching,
+            SensorSlotState::Idle => obc_app::SensorPhase::Searching,
         }
     };
     obc_app::SensorStatus { phase, battery: s.battery, last_value_ms: s.last_value_ms }
@@ -535,6 +534,7 @@ pub(crate) async fn run_app(
     shared: &SharedStoreMutex,
     map_tables: &MapTables,
     map_cache: &MapCache,
+    mounted_set: Option<MountedSet<'static>>,
     route_cache: &RouteCache,
     // The router's fixed A* table + graph-tile cache (epic #116, R4): `.bss` statics threaded
     // from `main` (never locals — the #270/#419 discipline), reset per plan inside `plan_route`.
@@ -680,6 +680,15 @@ pub(crate) async fn run_app(
     // that turns "the card is gone" into "the rider dismissed it". See the reconcile below.
     #[cfg(feature = "ble")]
     let mut map_card_shown = false;
+    // Map-upload pacing (#889, the WDT-reset episode): while bytes are landing, the card is the
+    // only thing on glass and every repaint is ~85 ms of render+push stolen from the SD write
+    // path — so `Receiving` progress is fed to the app at most once per this interval, and the
+    // loop's own timer is clamped up to it. Wakes still happen (gestures, sensors, the WDT feed
+    // cap), they just find an unchanged card and repaint nothing. Terminal states bypass the
+    // throttle: `Installed`/`Failed` must land on glass the pass they happen.
+    const MAP_XFER_PACE_MS: u32 = 2_000;
+    let mut map_uploading = false;
+    let mut map_xfer_fed_ms: u32 = 0;
 
     loop {
         let now = Instant::now().as_millis() as u32;
@@ -689,7 +698,7 @@ pub(crate) async fn run_app(
             // Surface the peak in the diagnostics blob for the A9 soak rig (#277) — the ride loop owns the
             // stackmeter, so on a `ble` build it publishes the mark into the BLE state the blob reads.
             #[cfg(feature = "ble")]
-            crate::ble::publish_stack_high_water(hw);
+            crate::link::publish_stack_high_water(hw);
             defmt::info!("stack high-water {=usize} / {=usize} B (new peak)", hw, stackmeter::total());
         }
 
@@ -800,7 +809,7 @@ pub(crate) async fn run_app(
             // request stays pending, retries next pass, and keeps the BLE edge's `dfu_install_pending()`
             // busy-gate accurate while it waits. The Scan posted here is drained by the DFU match below
             // in this same pass, so the wait card swaps to the confirm/error promptly.
-            crate::ble::set_recording(app.activity.is_tracking());
+            crate::link::set_recording(app.activity.is_tracking());
             if crate::object_store::dfu_install_pending() && app.open_remote_dfu_check() {
                 let _ = crate::object_store::take_dfu_install_ble();
             }
@@ -839,9 +848,19 @@ pub(crate) async fn run_app(
             if map_card_shown && !app.map_transfer_card_up() {
                 crate::link::clear_map_transfer();
                 map_card_shown = false;
+                map_uploading = false;
             } else {
-                app.set_map_transfer(crate::link::map_transfer_state());
-                map_card_shown = app.map_transfer_card_up();
+                let state = crate::link::map_transfer_state();
+                let receiving = state.is_some_and(|s| s.is_receiving());
+                // The throttle (see MAP_XFER_PACE_MS): a Receiving→Receiving pass inside the pace
+                // window skips the feed, so a sensor-paced wake doesn't turn a progress tick into
+                // a full repaint. Any transition — into, out of, or the first Receiving — feeds.
+                if !(receiving && map_uploading && now.wrapping_sub(map_xfer_fed_ms) < MAP_XFER_PACE_MS) {
+                    app.set_map_transfer(state);
+                    map_card_shown = app.map_transfer_card_up();
+                    map_xfer_fed_ms = now;
+                }
+                map_uploading = receiving && map_card_shown;
             }
         }
 
@@ -1170,36 +1189,18 @@ pub(crate) async fn run_app(
             // phone-initiated delete does — then the store-changed edge (next pass) brings the live
             // rescan + P3 remap around, so `active_route` and the menu highlight follow by identity.
             //
-            // `ble` builds: the `ObjectStore` lives behind the BLE task's `RefCell`, unreachable from
-            // here (they're separate thread-mode tasks; there is no shared handle). Post the id to the
-            // BLE plane (`request_route_delete`), which owns that `RefCell` and drains it whether the
-            // phone is connected or the device is parked advertising — that keeps the whole delete on the
-            // one `ObjectStore`, revision-and-notify coherent, and RefCell-legal (the ride loop never
-            // borrows the store). The rescan comes back on the resulting `STORE_CHANGED` edge above.
-            if let Some(_id) = host_pass.delete_route {
+            // `ObjectStore` lives behind the BLE task's `RefCell`, so post the id to that plane. It
+            // owns the coherent catalog revision, notification, and rescan path.
+            if let Some(id) = host_pass.delete_route {
                 // A full channel DROPS the id (not observed backpressure — the app's dispatch
                 // bookkeeping already ran): warn, and rely on the app's retain-until-rescan
                 // candidate to re-dispatch it after the bounded backoff (finding #876-3).
                 #[cfg(feature = "ble")]
-                if !crate::object_store::request_route_delete(_id) {
+                if !crate::object_store::request_route_delete(id) {
                     defmt::warn!(
                         "ride: route-delete channel full — id {} dropped; the app's retained candidate retries",
-                        _id
+                        id
                     );
-                }
-                // Map-only build: no `ObjectStore`/radio, so delete the file directly and re-scan the
-                // catalog locally (the same `load_routes` machinery the store-changed edge runs).
-                // Geometry handle closed FIRST, for the same two reasons as the store-changed
-                // rescan above: an open file can't be deleted, and a scan that meets it silently
-                // drops it from the catalog (#480).
-                #[cfg(not(feature = "ble"))]
-                if let Some(s) = storage.as_mut() {
-                    s.reconcile_route(None);
-                    if s.delete_route_by_id(_id) {
-                        load_routes(s, app);
-                    }
-                    prev_active = None; // force the reconcile below to re-derive off the new indexing
-                    index_route = None;
                 }
             }
 
@@ -1207,22 +1208,11 @@ pub(crate) async fn run_app(
             // The Route menu's long-press → confirm recorded the trip's durable object id; the cascade
             // deletes the trip AND every member route (locked: post-trip cleanup). Same seam shape as the
             // route delete above: `ble` builds post to the BLE plane (`request_trip_cascade` →
-            // `ObjectStore::delete_trip_cascade`, so both store revisions + both `storeChanged` edges move
-            // coherently and the rescan returns on the STORE_CHANGED edge); map-only builds sweep the
-            // files directly and re-feed both catalogs locally. A member route may be the actively-open
-            // one, so the map-only arm resets the active-route reconcile exactly like a route delete.
-            if let Some(_id) = host_pass.delete_trip {
+            // `ObjectStore::delete_trip_cascade`, so both store revisions + both `storeChanged` edges
+            // move coherently and the rescan returns on the STORE_CHANGED edge).
+            if let Some(id) = host_pass.delete_trip {
                 #[cfg(feature = "ble")]
-                crate::object_store::request_trip_cascade(_id);
-                #[cfg(not(feature = "ble"))]
-                if let Some(s) = storage.as_mut() {
-                    if s.delete_trip_cascade_by_id(_id) {
-                        load_routes(s, app);
-                        load_trips(s, app);
-                    }
-                    prev_active = None; // a deleted member may have been the active route
-                    index_route = None;
-                }
+                crate::object_store::request_trip_cascade(id);
             }
 
             // The System settings screen's card-free scan (T8 item 6): a drained on-entry request runs
@@ -1239,24 +1229,17 @@ pub(crate) async fn run_app(
             // ride's durable object id. On `ble`, post it to the BLE plane (it owns the `ObjectStore`
             // `RefCell`) so the delete goes through the store — revision bump + `storeChanged`, coherent
             // with a phone-initiated delete; the rescan returns on the resulting store-changed edge above.
-            // Map-only: delete the `RD{id}.ORD` directly (retiring its synced-set flag) and re-feed the
-            // Rides menu locally. The greying while recording already keeps the delete legal (no open
-            // TRACK.OBT / pending save collides).
-            if let Some(_id) = host_pass.delete_ride {
+            // The greying while recording already keeps the delete legal (no open TRACK.OBT / pending
+            // save collides).
+            if let Some(id) = host_pass.delete_ride {
                 // Same contract as the route delete above: a full channel drops the id — warn and
                 // rely on the app's retained candidate to re-dispatch after the backoff.
                 #[cfg(feature = "ble")]
-                if !crate::object_store::request_ride_delete(_id) {
+                if !crate::object_store::request_ride_delete(id) {
                     defmt::warn!(
                         "ride: ride-delete channel full — id {} dropped; the app's retained candidate retries",
-                        _id
+                        id
                     );
-                }
-                #[cfg(not(feature = "ble"))]
-                if let Some(s) = storage.as_mut() {
-                    if s.delete_ride_by_id(_id) {
-                        load_rides(s, app);
-                    }
                 }
             }
 
@@ -1416,7 +1399,7 @@ pub(crate) async fn run_app(
                         app.apply_event(obc_app::HostEvent::SettingsPersisted { revision });
                         // Settings coherence, device → phone (#456): the RRAM blob just moved, so the BLE
                         // config-read cache is stale — flag it so the BLE plane refreshes from RRAM before
-                        // its next Config read / advertised-name read. One relaxed store; no-op non-BLE.
+                        // its next Config read / advertised-name read. One relaxed store.
                         #[cfg(feature = "ble")]
                         crate::object_store::mark_device_settings_changed();
                         // Push a changed GPS fix interval to the sensor task → it re-VALSETs the M10's rate.
@@ -1675,13 +1658,22 @@ pub(crate) async fn run_app(
                 // style-table parse, no `Reader` build (so no stack spike), no map render — that screen
                 // draws just its own chrome. Such a frame costs only its own draw + the push.
                 let needs_map = app.base_needs_reader();
-                // Build the streamed `Reader` **only** on a map frame, `None` otherwise. A *cheap* borrow of
-                // the boot-parsed `MapTables` + a fresh `src` + the session-long `MapCache` — no style-table
-                // SD read, no parse, no stack spike (what kept this deep path inside the 256 KB stack). The
-                // only per-frame failure left is the source handle being momentarily unavailable (a flaky SD
-                // link); skip the redraw, keep the last frame, latch a retry.
-                let map_src = if needs_map { storage.as_ref().and_then(|s| s.map_source()) } else { None };
-                let reader = map_src.as_ref().map(|s| Reader::new(s, map_tables, map_cache));
+                // A single map rebuilds its cheap Reader view from the held-open handle. A volume
+                // set was mounted once at boot: geometry uses the MountedSet directly and
+                // POI/hours use its core reader. Both are skipped on chrome-only frames.
+                let map_src = if needs_map && mounted_set.is_none() {
+                    storage.as_ref().and_then(|s| s.map_source())
+                } else {
+                    None
+                };
+                let reader = if needs_map {
+                    mounted_set
+                        .as_ref()
+                        .map(MountedSet::core_reader)
+                        .or_else(|| map_src.as_ref().map(|source| Reader::new(source, map_tables, map_cache)))
+                } else {
+                    None
+                };
                 if needs_map && reader.is_none() {
                     pending_map_redraw = true;
                     defmt::warn!(
@@ -1709,15 +1701,27 @@ pub(crate) async fn run_app(
                         if let Some(r) = clip {
                             fbdev.set_clip(r);
                         }
-                        app.render_map_timed(
-                            &mut fbdev,
-                            reader.as_ref(),
-                            route.as_ref(),
-                            FRAME_W as f32,
-                            FRAME_H as f32,
-                            color_fn,
-                            &InstantClock,
-                        )
+                        match mounted_set.as_ref() {
+                            Some(set) => app.render_scene_map_timed(
+                                &mut fbdev,
+                                needs_map.then_some(set),
+                                reader.as_ref(),
+                                route.as_ref(),
+                                FRAME_W as f32,
+                                FRAME_H as f32,
+                                color_fn,
+                                &InstantClock,
+                            ),
+                            None => app.render_map_timed(
+                                &mut fbdev,
+                                reader.as_ref(),
+                                route.as_ref(),
+                                FRAME_W as f32,
+                                FRAME_H as f32,
+                                color_fn,
+                                &InstantClock,
+                            ),
+                        }
                     });
                     Some(RenderedFrame { needs_map, stats, render_us })
                 }
@@ -1915,6 +1919,14 @@ pub(crate) async fn run_app(
         // to feed the watchdog — the `None` (sleep-until-input/sensor) arm becomes a long timer.
         #[cfg(not(feature = "debug-uart"))]
         let ms = next_ms.unwrap_or(WDT_FEED_CAP_MS).min(WDT_FEED_CAP_MS);
+        // A map upload owns the device (#889): the card is the only thing on glass, so don't let
+        // an animation flag or a short app deadline wake the loop faster than the progress pace —
+        // every avoided repaint is ~85 ms handed back to the SD write path. Gestures and sensor
+        // events still wake the loop early; the feed throttle above makes those wakes repaint
+        // nothing. Well under the WDT feed cap, which is the ceiling this must never approach —
+        // the un-yielding upload loop starving this feed is exactly what reset the device on
+        // glass (2026-07-30).
+        let ms = if map_uploading { ms.max(MAP_XFER_PACE_MS) } else { ms };
         let _ = select5(
             GESTURES.ready_to_receive(),
             INPUT_WAKE.wait(),
