@@ -220,12 +220,12 @@
 
     /* scenario dots — the carousel nav, inside the card. Numbered pips + labels;
        the labels drop on phones (numbered pips + the card title carry it). */
-    .dots { display: flex; gap: 6px; border-top: 1px solid var(--parchment-3); padding-top: 12px; }
+    .dots { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; border-top: 1px solid var(--parchment-3); padding-top: 12px; }
     .dot {
-      display: inline-flex; align-items: center; gap: 8px;
+      display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-width: 0;
       font-family: var(--sans); font-size: 13px; font-weight: 600; color: var(--ink-soft);
       background: transparent; border: 1px solid transparent; border-radius: 9px;
-      cursor: pointer; padding: 6px 10px 6px 6px; min-height: 36px;
+      cursor: pointer; padding: 6px; min-height: 36px;
       user-select: none; -webkit-user-select: none;
       transition: background .12s ease, color .12s ease, border-color .12s ease;
     }
@@ -582,7 +582,7 @@
         <!-- The feature-tour card: what the device is showing and why it matters.
              The dots switch scenarios; the step strip tracks the confirmed device screen. -->
         <div class="card tour" id="tour_card">
-          <span class="kicker"><span id="tour_tag">Navigation</span><span class="n" id="tour_n">· 1 / 3</span></span>
+          <span class="kicker"><span id="tour_tag">Navigation</span><span class="n" id="tour_n">· 1 / 4</span></span>
           <h2 id="tour_title">Ride it yourself</h2>
           <p class="blurb" id="tour_blurb"></p>
           <ul class="highlights" id="tour_highlights"></ul>
@@ -594,7 +594,8 @@
           <div class="dots" id="scenarios" role="tablist" aria-label="Guided demos">
             <button class="dot" type="button" role="tab" data-scn="0" disabled><span class="pip">1</span><span class="dot-label">Ride it</span></button>
             <button class="dot" type="button" role="tab" data-scn="1" disabled><span class="pip">2</span><span class="dot-label">Climb ahead</span></button>
-            <button class="dot" type="button" role="tab" data-scn="2" disabled><span class="pip">3</span><span class="dot-label">Reroute</span></button>
+            <button class="dot" type="button" role="tab" data-scn="2" disabled><span class="pip">3</span><span class="dot-label">Up ahead</span></button>
+            <button class="dot" type="button" role="tab" data-scn="3" disabled><span class="pip">4</span><span class="dot-label">Reroute</span></button>
           </div>
         </div>
 
@@ -657,8 +658,7 @@
       </div>
     </section>
 
-    <!-- FEATURES — hardware & philosophy only; anything the tour demonstrates live
-         (navigation, the climb view, rerouting) stays out of this grid. -->
+    <!-- FEATURES — hardware & philosophy only; software demonstrated by the tour stays above. -->
     <section class="band" id="features">
       <div class="wrap">
         <div class="section-head">
@@ -804,8 +804,8 @@
       // rename fails `cargo test` instead of silently turning a tour into a timeout march. Keep each
       // `until:` array on ONE line with plain "String" literals (no comments, no expressions).
       //
-      // Scenario order tells the story: basic navigation → the climb ahead → route planning.
-      // Each scenario's `id` is its shareable deep link: #demo/ride, #demo/climb, #demo/reroute.
+      // Scenario order tells the story: navigation → climbing → ride awareness → route planning.
+      // Each scenario's `id` is its shareable #demo/<id> deep link.
       // ------------------------------------------------------------------------------------------
       var SCENARIOS = [
         {
@@ -835,6 +835,23 @@
           ]
         },
         {
+          id: 'ahead', tag: 'Ride awareness', title: 'Know what’s up ahead',
+          blurb: '<b>Plan the next stop without leaving the ride.</b> Up ahead merges your route’s waypoints with nearby map POIs into one distance-ordered timeline.',
+          highlights: [
+            'Water, food, lodging and your own waypoints',
+            'Distance, climbing and off-route side at a glance',
+            'Hold Select to filter the timeline by category'
+          ],
+          staged: true,
+          steps: [
+            { cmds: ['enter'], until: ["Map"], label: 'Riding the Grimsel climb' },
+            { cmds: ['backhold'], until: ["RideMenu"], label: 'Hold Back for mid-ride tools' },
+            { cmds: ['press'], until: ["UpAhead"], label: 'Waypoints and map POIs, in ride order' },
+            { cmds: ['back'], until: ["RideMenu"], label: 'Back to the ride menu' },
+            { cmds: ['back'], until: ["Map"], label: 'Back on the route' }
+          ]
+        },
+        {
           id: 'reroute', tag: 'Route planning', title: 'Reroute to a point of interest',
           blurb: '<b>Reroute on the spot.</b> Open the map’s points of interest, pick the nearest, and the device plans a route there — fully offline.',
           highlights: [
@@ -845,7 +862,8 @@
           staged: true,
           steps: [
             { cmds: ['enter'], until: ["Map"], label: 'Riding the Grimsel climb' },
-            { cmds: ['backhold'], until: ["Menu"], label: 'Hold Back to open the menu' },
+            { cmds: ['backhold'], until: ["RideMenu"], label: 'Hold Back for mid-ride tools' },
+            { cmds: ['step:-1', 'press'], until: ["Menu"], label: 'Open the full main menu' },
             { cmds: ['step:2', 'press'], until: ["PoiMenu"], label: 'Open Points of Interest' },
             { cmds: ['step:2', 'press'], until: ["PoiList"], label: 'Browse to a category' },
             { cmds: ['press'], until: ["PoiDetail"], label: 'Open the nearest place' },

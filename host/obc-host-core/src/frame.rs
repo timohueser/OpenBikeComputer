@@ -8,7 +8,7 @@
 //!
 //! Lives here rather than in one shell because **both** browser hosts draw into it: the landing
 //! demo (`obc-web-demo`, which renders the whole app) and the builder's preset previews
-//! (`obc-web-preview`, which renders the map alone). One framebuffer, one set of clipping and
+//! (for example, the simulator). One framebuffer, one set of clipping and
 //! alpha invariants, one test.
 
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};

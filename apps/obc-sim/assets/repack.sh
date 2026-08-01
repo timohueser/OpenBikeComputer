@@ -20,11 +20,11 @@
 #
 # With no source argument the current Geofabrik snapshot is downloaded (the
 # Switzerland file is ~600 MB). Needs only the workspace toolchain (obc-pack
-# builds with system GEOS) — the crop is `obc-pack --bbox`, which reproduces
-# `osmium extract`'s default complete_ways strategy during ingest (#910), so
-# osmium-tool is no longer required to regenerate a fixture. The three bboxes
-# below were verified to pack byte-for-byte identically either way before the
-# switch; the fixtures were NOT re-packed for it.
+# builds with system GEOS) — the crop is `obc-pack --bbox`, which keeps complete
+# ways and completes renderable area relations during ingest, so osmium-tool is
+# no longer required to regenerate a fixture. The three bboxes below remain the
+# canonical camera coverage. Relation completion can recover polygons (and
+# therefore change bytes) when a fixture is next deliberately refreshed.
 #
 # After re-packing, run the full workspace test suite — a few sim/reader tests
 # exercise fixture content (they are written content-agnostic, but verify) —
@@ -34,7 +34,7 @@ set -euo pipefail
 
 ASSETS_DIR="$(cd "$(dirname "$0")" && pwd)"
 FIRMWARE_DIR="$(cd "$ASSETS_DIR/../.." && pwd)"
-PRESET="$FIRMWARE_DIR/../builder/presets/default.json"
+PRESET="$FIRMWARE_DIR/../builder/presets/schema.json"
 
 # --- Pinned provenance (canonical — do not derive from fixture headers) -----
 GRIMSEL_SOURCE_URL="https://download.geofabrik.de/europe/switzerland-latest.osm.pbf"

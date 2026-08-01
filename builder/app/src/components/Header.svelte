@@ -11,7 +11,7 @@
     // the same way), so a tab can never point at a page that falls back home.
     const tabs: Array<{ route: Route; href: string; label: string }> = [
         { route: "home", href: "#/", label: "Maps" },
-        ...(available("styleEditor")
+        ...(platform.styleEditor
             ? [{ route: "advanced" as const, href: ADVANCED_ROUTE, label: "Style editor" }]
             : []),
         ...(available("deviceDashboard")

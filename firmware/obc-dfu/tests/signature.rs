@@ -8,7 +8,7 @@
 //! 1. **[Armer vectors](#armer-vectors)** — one signed container, then one mutation per attack:
 //!    a flipped payload byte, a re-labelled version, a re-labelled length, a truncated trailer, a
 //!    plain v1/unsigned wrapper, a signature by the wrong key, a garbage signature.
-//! 2. **[v1 ↔ v2 offset compatibility](#v1--v2-offset-compatibility)** — a **from-the-spec-text**
+//! 2. **v1 ↔ v2 offset compatibility** — a **from-the-spec-text**
 //!    reimplementation of the v1 header decoder (the one a bootloader flashed before #997 is
 //!    running) decodes a v2 header to byte-identical values, and the real install engine flashes a
 //!    v2 container end to end. This is an executable form of the compatibility argument, not a

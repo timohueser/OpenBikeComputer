@@ -7,7 +7,7 @@
 
 use obc_app::screen::Screen;
 use obc_app::{App, AppState, DrainStatus, Gesture, HostCommand, HostEvent, HostMailbox, RouteSummary};
-use obc_reader::BBox;
+use obc_map_scene::BBox;
 
 /// A one-route catalog under durable id 7 — the rescan the host performs before answering a plan.
 fn nav_catalog(app: &mut App) {
@@ -33,7 +33,7 @@ fn drain(app: &mut App) -> HostMailbox {
 
 /// A drained [`HostCommand::PlanRoute`] is an **owned** value: the host can park it, keep driving
 /// the app, and answer many passes later with an owned [`HostEvent`] — no borrow into `App` at any
-/// point, and the late answer lands exactly like the legacy `notify_nav_result`.
+/// point, and the late answer still lands on the active planning screen.
 #[test]
 fn a_host_defers_the_answer_without_borrowing_the_app() {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
@@ -73,7 +73,7 @@ fn same_batch_confirm_and_back_net_no_plan() {
 /// Back mid-plan pops the spinner and posts the cancel; a plan posted **after** the cancel
 /// survives it (annihilation only kills a request the cancel's Back was aimed at), the typed
 /// drain yields `CancelRoutePlan` before that `PlanRoute` (the canonical order), and a defensive
-/// post-cancel answer through the typed door is dropped exactly like the legacy seam.
+/// post-cancel answer is dropped.
 #[test]
 fn cancel_drains_before_a_new_plan_and_a_late_answer_is_dropped() {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));

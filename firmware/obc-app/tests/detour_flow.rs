@@ -13,10 +13,10 @@
 
 use obc_app::screen::Screen;
 use obc_app::{
-    App, AppState, DetourPreview, DetourRequest, Fix, Gesture, HostCommand, HostEvent, HostMailbox, LocationSource,
-    RideClock, RouteSummary, Sensors,
+    App, AppState, DetourPreview, DetourRequest, Gesture, HostCommand, HostEvent, HostMailbox, RouteSummary,
 };
 use obc_formats::io::SliceSource;
+use obc_ports::{Fix, LocationSource, RideClock, Sensors};
 use obc_route::{gpx_to_obcr, NavError, RouteIndex, RouteReader};
 
 /// The straight test road: lat 43.5°, lon 7.50° → 7.54° (~3 230 m ground). One `<trkpt>` per
@@ -91,7 +91,7 @@ fn summary(name: &str) -> RouteSummary {
         name: n,
         distance_km: 3,
         climb_m: 0,
-        bbox: obc_route::BBox {
+        bbox: obc_map_scene::BBox {
             min_lon: (LON0 * 1e6) as i32,
             min_lat: (LAT * 1e6) as i32,
             max_lon: ((LON0 + 0.04) * 1e6) as i32,

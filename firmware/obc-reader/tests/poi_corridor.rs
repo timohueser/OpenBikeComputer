@@ -14,9 +14,9 @@
 use std::cell::Cell;
 
 use obc_formats::io::ByteSource;
+use obc_map_scene::{cos_lat, ground_dist_m_cl, BBox};
 use obc_reader::{
-    cos_lat, ground_dist_m_cl, BBox, CorridorPoi, MapCache, MapTables, PoiCategory, PoiCategorySet, Reader, RoutePath,
-    SliceSource, MAX_CORRIDOR_RESULTS,
+    CorridorPoi, MapCache, MapTables, PoiCategory, PoiCategorySet, Reader, RoutePath, SliceSource, MAX_CORRIDOR_RESULTS,
 };
 use obcm_testkit::{build_poi_map, PoiSpec};
 

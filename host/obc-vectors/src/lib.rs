@@ -609,6 +609,17 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         ("version-read-nostore.bin", version_read_nostore(2)),
         // op=1 upload, type=1 route, id 0xFFFF (new) — 12 bytes (no offset in v2).
         ("transfer-upload-start.bin", transfer_control(1, 1, 0xFFFF, len, crc)),
+        // op=1 upload, type=17 mapShard (§4.1, #1039): one shard of a volume set. `object_id` is
+        // **not** an object id here — it is the packed part, `(shard_count << 8) | index`, so
+        // `0x0802` is shard 2 of an 8-shard set (`OBCA_Spec.md` §5.1's DACH shape). The byte order
+        // is the thing worth pinning: a host that reads the prose the other way round would send
+        // "shard 8 of 2" and be answered `notFound`. len/crc are the waypoint route's, so this is a
+        // complete decodable descriptor rather than a stub.
+        ("transfer-set-shard.bin", transfer_control(1, 17, 0x0802, len, crc)),
+        // op=1 upload, type=18 mapSet: the manifest that makes those shards one map, and the last
+        // file of the set (§5.4). New-only, so `object_id` is 0xFFFF; `total_len` is the length its
+        // shard count fixes, `72 + 56 × 8`, which a device checks at the announce.
+        ("transfer-set-manifest.bin", transfer_control(1, 18, 0xFFFF, 72 + 56 * 8, 0x8B2C_4E17)),
         // op=2 download request: type=7 rideList, id 0, len/crc unknown.
         ("transfer-download-request.bin", transfer_control(2, 7, 0, 0, 0)),
         // op=3 abort of the active route upload.

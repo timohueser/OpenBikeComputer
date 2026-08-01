@@ -255,7 +255,7 @@ mod tests {
             name: Default::default(),
             distance_km: 0,
             climb_m: 0,
-            bbox: obc_route::BBox { min_lon: 0, min_lat: 0, max_lon: 0, max_lat: 0 },
+            bbox: obc_map_scene::BBox { min_lon: 0, min_lat: 0, max_lon: 0, max_lat: 0 },
             start_lon: 0,
             start_lat: 0,
         };

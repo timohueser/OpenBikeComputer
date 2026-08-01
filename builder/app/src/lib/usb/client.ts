@@ -59,7 +59,15 @@ import {
     type TransferControl,
     type VersionRead,
 } from "./protocol";
-import { DeviceFrame, HostFrame, decodeDeviceInfo, decodeFrame, encodeFrame, type DeviceInfo } from "./transport";
+import {
+    DeviceFrame,
+    HostFrame,
+    decodeCardFree,
+    decodeDeviceInfo,
+    decodeFrame,
+    encodeFrame,
+    type DeviceInfo,
+} from "./transport";
 
 /**
  * Why a device operation failed.
@@ -255,6 +263,7 @@ export class ProtocolClient {
     private readonly identities = new Mailbox<Uint8Array>();
     private readonly deviceInfos = new Mailbox<Uint8Array>();
     private readonly configs = new Mailbox<Uint8Array>();
+    private readonly cardFreeReplies = new Mailbox<Uint8Array>();
 
     private readonly storeListeners = new Set<(type: number, revision: number) => void>();
 
@@ -316,6 +325,12 @@ export class ProtocolClient {
     /** Write the Config object whole (§7.3). Renaming the device *is* a Config write. */
     async writeConfig(config: DeviceConfig, signal?: AbortSignal): Promise<void> {
         await this.sendControl(encodeFrame(HostFrame.ConfigWrite, encodeConfig(config)), signal);
+    }
+
+    /** Free bytes on the currently mounted SD card, or `null` when no readable card is present. */
+    async cardFreeBytes(signal?: AbortSignal): Promise<number | null> {
+        await this.sendControl(encodeFrame(HostFrame.CardFreeRead), signal);
+        return decodeCardFree(await this.cardFreeReplies.take(this.timeoutMs, signal, "the card-space read"));
     }
 
     // --- transfers ------------------------------------------------------------
@@ -390,6 +405,31 @@ export class ProtocolClient {
             }
             return { objectId: result.objectId, committedOffset: result.committedOffset };
         }, options.signal);
+    }
+
+    /**
+     * Abandon a volume set between whole-file transfers.
+     *
+     * Cancelling an active shard already sends `op=abort`; this is the other
+     * edge: the worker or host can fail after one shard committed and before
+     * the next descriptor opens. Naming any valid part of the in-flight shape
+     * asks the device to delete every staged shard.
+     */
+    async abandonMapSet(shardObjectId: number): Promise<void> {
+        await this.withTransferSlot(
+            () => ({ type: ObjectType.MapShard, objectId: shardObjectId }),
+            async () => {
+                await this.sendDescriptor({
+                    op: Op.Abort,
+                    type: ObjectType.MapShard,
+                    objectId: shardObjectId,
+                    totalLen: 0,
+                    crc32: 0,
+                });
+                await this.awaitTransferResult(undefined, "set-abandon");
+                this.transferClosed = true;
+            },
+        );
     }
 
     /**
@@ -625,13 +665,18 @@ export class ProtocolClient {
             case DeviceFrame.Config:
                 this.configs.push(frame.payload);
                 return;
+            case DeviceFrame.CardFree:
+                this.cardFreeReplies.push(frame.payload);
+                return;
             default:
                 return; // unknown selector — same forward-compat posture
         }
     }
 
     private failWaiters(error: DeviceError): void {
-        for (const box of [this.statuses, this.identities, this.deviceInfos, this.configs]) box.fail(error);
+        for (const box of [this.statuses, this.identities, this.deviceInfos, this.configs, this.cardFreeReplies]) {
+            box.fail(error);
+        }
     }
 
     // --- transfer plumbing ----------------------------------------------------
