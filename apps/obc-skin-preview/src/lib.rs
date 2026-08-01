@@ -12,13 +12,16 @@
 
 mod preview;
 
-pub use preview::{MapPreview, PreviewErrorCode, PreviewFailure, PreviewStats, FRAME_H, FRAME_W};
+pub use preview::{
+    MapPreview, PreviewErrorCode, PreviewFailure, PreviewStats, SchemaMapPreview, FRAME_H, FRAME_W, SCHEMA_FRAME_H,
+    SCHEMA_FRAME_W,
+};
 
 #[cfg(target_arch = "wasm32")]
 mod web {
     use wasm_bindgen::prelude::*;
 
-    use crate::preview::{MapPreview, PreviewFailure};
+    use crate::preview::{MapPreview, PreviewFailure, SchemaMapPreview};
 
     #[wasm_bindgen(start)]
     pub fn start() {
@@ -123,6 +126,117 @@ mod web {
         #[wasm_bindgen(getter)]
         pub fn ring_utilization(&self) -> f32 {
             self.0.stats().ring_utilization
+        }
+    }
+
+    /// Raw native-packed map for the localhost maintainer schema lab. It has no
+    /// skin mutation API: every edit must pass through obc-pack first.
+    #[wasm_bindgen(js_name = SchemaPreview)]
+    pub struct JsSchemaPreview(SchemaMapPreview);
+
+    #[wasm_bindgen(js_class = SchemaPreview)]
+    impl JsSchemaPreview {
+        #[wasm_bindgen(constructor)]
+        pub fn new(map: Vec<u8>) -> Result<JsSchemaPreview, JsValue> {
+            SchemaMapPreview::open(map).map(JsSchemaPreview).map_err(to_js)
+        }
+
+        #[wasm_bindgen(getter)]
+        pub fn width(&self) -> u32 {
+            crate::SCHEMA_FRAME_W
+        }
+
+        #[wasm_bindgen(getter)]
+        pub fn height(&self) -> u32 {
+            crate::SCHEMA_FRAME_H
+        }
+
+        pub fn set_meters_per_pixel(&mut self, value: f32) {
+            self.0.set_meters_per_pixel(value);
+        }
+
+        pub fn frame(&mut self) -> js_sys::Uint8ClampedArray {
+            use wasm_bindgen::JsCast as _;
+            let buf = self.0.frame();
+            let mem = wasm_bindgen::memory().unchecked_into::<js_sys::WebAssembly::Memory>();
+            js_sys::Uint8ClampedArray::new_with_byte_offset_and_length(
+                &mem.buffer(),
+                buf.as_ptr() as u32,
+                buf.len() as u32,
+            )
+        }
+
+        #[wasm_bindgen(getter)]
+        pub fn meters_per_pixel(&self) -> f32 {
+            self.0.meters_per_pixel()
+        }
+
+        #[wasm_bindgen(getter)]
+        pub fn lod_index(&self) -> u32 {
+            self.0.lod_index() as u32
+        }
+
+        #[wasm_bindgen(getter)]
+        pub fn lod_count(&self) -> u32 {
+            self.0.lod_count() as u32
+        }
+
+        #[wasm_bindgen(getter)]
+        pub fn chunks_visited(&self) -> u32 {
+            self.0.stats().chunks_visited as u32
+        }
+
+        #[wasm_bindgen(getter)]
+        pub fn features_tried(&self) -> u32 {
+            self.0.stats().features_tried as u32
+        }
+
+        #[wasm_bindgen(getter)]
+        pub fn features_drawn(&self) -> u32 {
+            self.0.stats().features_drawn as u32
+        }
+
+        #[wasm_bindgen(getter)]
+        pub fn features_dropped(&self) -> u32 {
+            self.0.stats().features_dropped as u32
+        }
+
+        #[wasm_bindgen(getter)]
+        pub fn points_tried(&self) -> u32 {
+            self.0.stats().points_tried as u32
+        }
+
+        #[wasm_bindgen(getter)]
+        pub fn points_drawn(&self) -> u32 {
+            self.0.stats().points_drawn as u32
+        }
+
+        #[wasm_bindgen(getter)]
+        pub fn spans_used(&self) -> u32 {
+            let stats = self.0.stats();
+            (stats.line_spans + stats.poly_spans) as u32
+        }
+
+        #[wasm_bindgen(getter)]
+        pub fn rings_used(&self) -> u32 {
+            let stats = self.0.stats();
+            (stats.line_rings + stats.poly_rings) as u32
+        }
+
+        #[wasm_bindgen(getter)]
+        pub fn feature_decode_capacity_drops(&self) -> u32 {
+            self.0.stats().feature_decode_capacity_drops
+        }
+
+        #[wasm_bindgen(getter)]
+        pub fn malformed_features(&self) -> u32 {
+            self.0.stats().malformed_features
+        }
+
+        #[wasm_bindgen(getter)]
+        pub fn map_errors(&self) -> u32 {
+            let stats = self.0.stats();
+            stats.map_structure_failures + stats.map_read_failures + stats.map_cache_contentions
         }
     }
 

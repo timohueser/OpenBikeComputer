@@ -2,7 +2,9 @@
 import json
 import os
 import subprocess
-from urllib.parse import urlsplit
+from urllib.error import HTTPError, URLError
+from urllib.parse import unquote, urlsplit
+import urllib.request
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
@@ -31,6 +33,8 @@ SCHEMA_FILE = os.path.join(paths.REPO_ROOT, "host", "obc-pack", "schema", "confi
 
 app = FastAPI(title="OBC Schema Editor")
 
+MAX_CATALOG_OBJECT_BYTES = 128 * 1024 * 1024
+
 
 def _catalog_url() -> str:
     value = os.environ.get(
@@ -46,6 +50,43 @@ def _catalog_url() -> str:
     return value
 
 
+def _catalog_object_url(value: str) -> str:
+    root = urlsplit(_catalog_url())
+    target = urlsplit(value)
+    root_dir = root.path.rsplit("/", 1)[0].rstrip("/") + "/"
+    decoded_path = unquote(target.path)
+    if (
+        target.scheme != root.scheme
+        or target.netloc != root.netloc
+        or target.username
+        or target.password
+        or target.fragment
+        or not decoded_path.startswith(root_dir)
+        or any(part == ".." for part in decoded_path.split("/"))
+    ):
+        raise HTTPException(status_code=400, detail="Catalog object URL is outside the configured catalog tree.")
+    return value
+
+
+def _fetch_catalog_object(url: str) -> tuple[bytes, str]:
+    request = urllib.request.Request(url, headers={"User-Agent": "OpenBikeComputer maintainer host"})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            length = response.headers.get("Content-Length")
+            if length and int(length) > MAX_CATALOG_OBJECT_BYTES:
+                raise HTTPException(status_code=413, detail="Catalog object exceeds the local proxy limit.")
+            body = response.read(MAX_CATALOG_OBJECT_BYTES + 1)
+            if len(body) > MAX_CATALOG_OBJECT_BYTES:
+                raise HTTPException(status_code=413, detail="Catalog object exceeds the local proxy limit.")
+            return body, response.headers.get_content_type()
+    except HTTPException:
+        raise
+    except HTTPError as error:
+        raise HTTPException(status_code=error.code, detail=f"Published catalog returned HTTP {error.code}.") from error
+    except (OSError, URLError, ValueError) as error:
+        raise HTTPException(status_code=502, detail=f"Published catalog could not be read: {error}.") from error
+
+
 @app.get("/api/runtime")
 def get_runtime():
     """Runtime-only settings for the local bundle.
@@ -55,6 +96,20 @@ def get_runtime():
     """
 
     return JSONResponse({"catalog_url": _catalog_url()})
+
+
+@app.get("/api/catalog/root")
+def get_catalog_root():
+    url = _catalog_url()
+    body, content_type = _fetch_catalog_object(url)
+    return Response(content=body, media_type=content_type, headers={"X-OBC-Catalog-Url": url})
+
+
+@app.get("/api/catalog/object")
+def get_catalog_object(url: str):
+    resolved = _catalog_object_url(url)
+    body, content_type = _fetch_catalog_object(resolved)
+    return Response(content=body, media_type=content_type)
 
 
 def _default_palette():
@@ -148,8 +203,8 @@ def get_schema():
         })
     raise HTTPException(
         status_code=503,
-        detail="obc-pack is not built — run `cargo build --release -p obc-pack` from "
-               "the repo root (or set OBC_PACK_BIN to its path).",
+        detail="The native packer and checked-in schema are unavailable. Restart with `obc web`; "
+               "maintainers may alternatively set OBC_PACK_BIN to an executable path.",
     )
 
 
@@ -196,6 +251,7 @@ async def build_schema_preview(request: Request):
         headers={
             "X-OBC-Pack-Duration-Ms": str(result.duration_ms),
             "X-OBC-Pack-Bytes": str(len(result.body)),
+            "X-OBC-Pack-Diagnostics": schema_preview.encode_diagnostics(result.diagnostics),
         },
     )
 

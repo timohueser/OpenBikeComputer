@@ -37,6 +37,18 @@ export const api = {
     schema: () => getJson<SchemaEnvelope>("/schema"),
     palette: () => getJson<Palette>("/palette"),
     runtime: () => getJson<{ catalog_url: string }>("/runtime"),
+    async catalogRoot(): Promise<{ url: string; body: string }> {
+        const res = await fetch(`${API_BASE}/catalog/root`);
+        if (!res.ok) throw new Error(await errorDetail(res));
+        const url = res.headers.get("X-OBC-Catalog-Url");
+        if (!url) throw new Error("The maintainer host omitted the catalog URL.");
+        return { url, body: await res.text() };
+    },
+
+    async catalogFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+        const url = input instanceof Request ? input.url : String(input);
+        return fetch(`${API_BASE}/catalog/object?url=${encodeURIComponent(url)}`, init);
+    },
     previewStatus: () => getJson<SchemaPreviewStatus>("/schema-preview/status"),
 
     async packPreview(config: Record<string, unknown>, signal: AbortSignal): Promise<SchemaPreviewMap> {
@@ -47,9 +59,20 @@ export const api = {
             signal,
         });
         if (!res.ok) throw new Error(await errorDetail(res));
+        let diagnostics: string[] = [];
+        const encoded = res.headers.get("X-OBC-Pack-Diagnostics");
+        if (encoded) {
+            try {
+                const parsed: unknown = JSON.parse(atob(encoded.replaceAll("-", "+").replaceAll("_", "/")));
+                if (Array.isArray(parsed) && parsed.every((line) => typeof line === "string")) diagnostics = parsed;
+            } catch {
+                // Diagnostics are advisory; never reject a valid map for a bad header.
+            }
+        }
         return {
             bytes: new Uint8Array(await res.arrayBuffer()),
             packDurationMs: Number(res.headers.get("X-OBC-Pack-Duration-Ms") ?? 0),
+            diagnostics,
         };
     },
 
