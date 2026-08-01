@@ -1,16 +1,6 @@
-//! Route-side local-equirectangular geometry, on top of the shared distance core.
-//!
-//! The core — microdegrees → ground meters ([`ground_dist_m`], [`cos_lat`], the private
-//! `delta_m`/`seg_dist_m*` helpers — lives in [`obc_reader::geo`], the bottom of the shared
-//! stack, so the renderer's chevron walk measures segments with the *same* metric the
-//! [converter](crate::convert) stored in [`ChunkMeta::cum_distance_m`](crate::ChunkMeta) and
-//! the [elevation profile](crate::profile) buckets by. This module re-exports that core for
-//! the route crate's callers and keeps the two *derived* projections only the route path
-//! needs: the matcher's clamped on-segment projection and the decimators'
-//! Visvalingam–Whyatt triangle area.
+//! Route-specific projections over the shared local-equirectangular metric.
 
-pub use obc_reader::geo::{cos_lat, ground_dist_m, ground_dist_m_cl};
-pub(crate) use obc_reader::geo::{delta_m, seg_dist_m, seg_dist_m_cl};
+use obc_map_scene::{cos_lat, delta_m};
 
 /// Project point `p` onto the segment `a → b`, **clamped** to the segment's ends, in the
 /// local-equirectangular metric for a band with precomputed `cl = cos_lat`. Returns

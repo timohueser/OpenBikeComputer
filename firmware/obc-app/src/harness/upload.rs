@@ -7,14 +7,13 @@
 use super::support::{down, keys, up};
 use crate::screen::UPLOAD_POPUP_TIMEOUT_MS;
 use crate::{
-    App, AppState, BleLink, BleStatus, Button, Gesture, HostCommand, HostMailbox, IdleReturn, InputClock, Mode,
-    RouteSummary, Screen, Settings,
+    App, AppState, BleLink, BleStatus, Gesture, HostCommand, HostMailbox, IdleReturn, Mode, RouteSummary, Screen,
+    Settings,
 };
-use obc_reader::BBox;
+use obc_map_scene::BBox;
+use obc_ports::{Button, InputClock};
 
-/// The drained `DeleteRoute` id, if one is pending (the `take_route_delete` successor): drain the
-/// typed protocol and pick the delete out of the mailbox (the co-pending derived preview cue
-/// re-emits, so discarding it here is harmless). FAR-19, #812.
+/// The drained `DeleteRoute` id, if one is pending.
 fn took_route_delete(app: &mut App) -> Option<u16> {
     let mut mb: HostMailbox = HostMailbox::new();
     let _ = app.drain_host_commands(&mut mb);

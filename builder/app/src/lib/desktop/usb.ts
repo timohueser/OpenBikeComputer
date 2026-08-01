@@ -256,7 +256,7 @@ export async function openNativeLink(deviceId: string): Promise<NativeLink> {
  * `blobSource` reads a `Blob` twice: §4.2 announces the whole-object CRC-32 before the first byte
  * moves, and a checksum of bytes you have not seen does not exist. Both passes happen in Rust.
  *
- * The path must be one the backend will stream (its maps folder or its cache — see
+ * The path must be one the backend will stream (its maps folder — see
  * `usb::sendable_path`); anything else is refused there rather than trusted here.
  */
 export async function nativeFileSource(handle: number, path: string): Promise<ObjectSource> {

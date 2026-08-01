@@ -125,13 +125,6 @@ export interface LibraryView {
     /** False once the rider has relocated it. Only affects what the UI says. */
     readonly isDefault: boolean;
     readonly rides: readonly LibraryRide[];
-    /**
-     * Set when the backend's one-time migration (pre-split folders → GPX-only + internal archive)
-     * failed on this open: legacy files are still in the visible folder and are not being read.
-     * Shown as a persistent warning — a migration that fails silently on a read-only folder would
-     * otherwise read as an empty library forever.
-     */
-    readonly migrationWarning?: string | null;
 }
 
 /**
@@ -553,4 +546,3 @@ export function trackPath(
 ): string | null {
     return fitTracks([track], width, height, pad)[0]?.d ?? null;
 }
-

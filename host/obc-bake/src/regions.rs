@@ -1,12 +1,12 @@
 //! The curated region list: what the bakery bakes.
 //!
 //! The list itself is [`regions.toml`](../regions.toml), compiled into the binary
-//! with `include_str!` so an `obc-bake` copied onto a build box carries the shelf it
+//! with `include_str!` so an `obc-bake` copied onto a build box carries the list it
 //! is supposed to bake, and overridable with `--regions <file>` (which is how the
 //! tests get a two-region list without touching the real one).
 //!
 //! A region's `id` does double duty: it is the catalog's `region_id`
-//! (`OBCC_Spec.md` §3) *and* the Geofabrik path the extract is downloaded from. One
+//! (`OBCC_Spec.md` §6) *and* the Geofabrik path the extract is downloaded from. One
 //! string rather than two because the two can only ever disagree by mistake — a
 //! separate `geofabrik = …` field would let a region be published under an id whose
 //! extract came from somewhere else, which is exactly the confusion the manifest
@@ -22,15 +22,10 @@ pub const BUILTIN_REGIONS_TOML: &str = include_str!("../regions.toml");
 #[serde(deny_unknown_fields)]
 pub struct Region {
     /// Slash-separated Geofabrik path, e.g. `europe/germany/bayern`. Also the
-    /// catalog's `region_id` and the artifact's directory path in the bake tree.
+    /// catalog's `region_id` and the selection-metadata path in the bake tree.
     pub id: String,
-    /// Human-readable name, recorded verbatim into every sidecar this region
-    /// produces (`region_name`).
+    /// Human-readable name, recorded verbatim in the region document.
     pub name: String,
-    /// Restrict this region to a subset of the shipped presets. Absent (the normal
-    /// case) means every preset in the presets directory.
-    #[serde(default)]
-    pub presets: Option<Vec<String>>,
 }
 
 impl Region {
@@ -49,6 +44,17 @@ impl Region {
     /// `europe/germany/bayern` and a hypothetical `europe/bayern` cannot collide.
     pub fn cache_name(&self) -> String {
         format!("{}-latest.osm.pbf", self.id.replace('/', "_"))
+    }
+
+    /// The region's Osmosis polygon under `base` — Geofabrik serves it beside the
+    /// extract, at the same path with a `.poly` extension.
+    pub fn poly_url(&self, base: &str) -> String {
+        format!("{}/{}.poly", base.trim_end_matches('/'), self.id)
+    }
+
+    /// Cache filename for that polygon, flattened like [`Region::cache_name`].
+    pub fn poly_cache_name(&self) -> String {
+        format!("{}.poly", self.id.replace('/', "_"))
     }
 }
 
@@ -77,11 +83,6 @@ pub fn parse(toml_text: &str) -> Result<Vec<Region>, String> {
         if !seen.insert(r.id.as_str()) {
             return Err(format!("region `{}` is listed twice", r.id));
         }
-        if let Some(presets) = &r.presets {
-            if presets.is_empty() {
-                return Err(format!("region `{}`: `presets = []` bakes nothing — remove the region instead", r.id));
-            }
-        }
     }
     Ok(doc.regions)
 }
@@ -97,7 +98,7 @@ pub fn load(path: Option<&std::path::Path>) -> Result<Vec<Region>, String> {
     }
 }
 
-/// The id rules of `OBCC_Spec.md` §3/§8: slash-separated lowercase kebab-case
+/// The id rules of `OBCC_Spec.md` §6/§8: slash-separated lowercase kebab-case
 /// segments. The catalog generator enforces the same rules on the tree it walks;
 /// checking here means the failure names the region list line, not a directory.
 fn validate_id(id: &str) -> Result<(), String> {
@@ -122,23 +123,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_checked_in_list_is_the_locked_dach_shelf() {
+    fn the_checked_in_list_is_the_curated_dach_coverage() {
         let regions = parse(BUILTIN_REGIONS_TOML).expect("the shipped region list parses");
         let ids: Vec<&str> = regions.iter().map(|r| r.id.as_str()).collect();
-        // Germany + its sixteen Bundesländer + Austria + Switzerland (#898, locked
-        // 2026-07-29). The count is pinned so a dropped line is a failed test rather
-        // than a region that silently stops being offered.
-        assert_eq!(ids.len(), 19, "DACH is 19 regions: {ids:?}");
+        // Germany + its sixteen Bundesländer + Austria + Switzerland (#898), plus
+        // the deliberately curated Freiburg government-region extract. The count
+        // is pinned so a dropped line is a failed test rather than a region that
+        // silently stops being offered.
+        assert_eq!(ids.len(), 20, "DACH plus the Freiburg sub-extract is 20 regions: {ids:?}");
         assert!(ids.contains(&"europe/germany"));
         assert!(ids.contains(&"europe/austria"));
         assert!(ids.contains(&"europe/switzerland"));
-        let laender = ids.iter().filter(|id| id.starts_with("europe/germany/")).count();
+        assert!(ids.contains(&"europe/germany/baden-wuerttemberg/freiburg-regbez"));
+        let laender =
+            ids.iter().filter_map(|id| id.strip_prefix("europe/germany/")).filter(|rest| !rest.contains('/')).count();
         assert_eq!(laender, 16, "all sixteen Bundesländer");
     }
 
     #[test]
     fn an_extract_url_is_the_id_plus_latest() {
-        let r = Region { id: "europe/germany/bayern".into(), name: "Bayern".into(), presets: None };
+        let r = Region { id: "europe/germany/bayern".into(), name: "Bayern".into() };
         assert_eq!(
             r.extract_url("https://download.geofabrik.de/"),
             "https://download.geofabrik.de/europe/germany/bayern-latest.osm.pbf"
@@ -163,7 +167,7 @@ mod tests {
 
     #[test]
     fn an_unknown_key_in_the_list_is_a_typo_not_metadata() {
-        let toml = "regions = [ { id = \"europe/austria\", name = \"Austria\", presetz = [\"minimal\"] } ]";
+        let toml = "regions = [ { id = \"europe/austria\", name = \"Austria\", styel = \"x\" } ]";
         assert!(parse(toml).is_err(), "a misspelled key must fail rather than silently bake everything");
     }
 }

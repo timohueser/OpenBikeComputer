@@ -139,7 +139,7 @@ fn position_lookup_and_clipped_interval_are_exact_and_end_clamped() {
 
     let mid = r.position_at(total / 2).unwrap();
     assert_eq!(mid.progress_m, total / 2);
-    let walked = obc_route::ground_dist_m((p0.lon, p0.lat), (mid.lon, mid.lat));
+    let walked = obc_map_scene::ground_dist_m((p0.lon, p0.lat), (mid.lon, mid.lat));
     assert!((walked - total as f32 / 2.0).abs() <= 2.0, "midpoint walked {walked} m of {total} m");
     assert_eq!(r.position_at(total + 10_000).unwrap().progress_m, total, "lookup clamps to route end");
 

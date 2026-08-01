@@ -7,7 +7,6 @@
 //! wire and lives here.
 
 use core::cell::RefCell;
-use core::sync::atomic::Ordering;
 
 use defmt::{info, warn};
 use obc_ble::{ObjectType, Op, TransferControl, TransferStatus};
@@ -51,12 +50,33 @@ pub(crate) fn classify_transfer(
         return TransferDisposition::Answer(transfer_result(0, TransferStatus::Error));
     };
     if desc.op == Op::Abort {
-        if TRANSFER_ACTIVE.load(Ordering::Relaxed) {
-            info!("link: [ctl] transfer_control abort active: type {} id {}", desc.ty.as_u8(), desc.object_id);
-            return TransferDisposition::AbortActive;
+        match TRANSFER_ACTIVE.holder() {
+            Some(owner) if owner == super::gate_owner(transport) => {
+                info!("link: [ctl] transfer_control abort active: type {} id {}", desc.ty.as_u8(), desc.object_id);
+                return TransferDisposition::AbortActive;
+            }
+            // A transfer is in flight on the *other* wire. Forwarding the abort would signal a data
+            // plane that is not in a transfer, so nothing would ever answer it and the peer would
+            // wait forever; the honest answer is that this link is not the one transferring
+            // (issue #1039).
+            Some(_) => {
+                warn!("link: [ctl] transfer_control abort ignored: the transfer belongs to the other transport");
+                return TransferDisposition::Answer(transfer_result(desc.object_id, TransferStatus::Busy));
+            }
+            None => {}
         }
         // Nothing in flight: discard any stray temp and confirm the abort.
         store.borrow_mut().upload_discard(shared);
+        // …and, on the cable, abandon a **volume set** staged between transfers (issue #1039). A
+        // set lives across several descriptors, so the gap between them is exactly where an `op=3`
+        // lands — and before this, an abort there was confirmed while gigabytes stayed staged and
+        // every set with a different shard count was refused as a mismatch until the cable was
+        // unplugged. Scoped to USB because a set is only ever received there (spec §10), and
+        // because this classifier runs on the radio too: an abort from the phone must not delete
+        // the set the cable is between shards of.
+        if transport == Transport::Usb {
+            store.borrow_mut().set_upload_abort(shared);
+        }
         info!(
             "link: [ctl] transfer_control answer: op {} type {} id {} len {} -> status {}",
             desc.op.as_u8(),
@@ -67,7 +87,7 @@ pub(crate) fn classify_transfer(
         );
         return TransferDisposition::Answer(transfer_result(desc.object_id, TransferStatus::Aborted));
     }
-    if TRANSFER_ACTIVE.load(Ordering::Relaxed) {
+    if TRANSFER_ACTIVE.in_flight() {
         warn!(
             "link: [ctl] transfer_control reject: op {} type {} id {} len {} -> status {} (active)",
             desc.op.as_u8(),
@@ -142,10 +162,55 @@ pub(crate) fn classify_transfer(
                 }
             }
         }
-        (Op::Upload, ObjectType::Map) => {
+        // One **shard** of a volume set (#1039, `OBCA_Spec.md` §5.1): the same streaming shape as a
+        // map, so it arms the same `Armed::Upload`; what the store checks here is the set session —
+        // a part field that names a real file, a shard count inside this board's ceiling, and
+        // agreement with the set already in flight. The part travels with the arm because the data
+        // plane needs it to name the file at the first byte.
+        (Op::Upload, ObjectType::MapShard) if transport == Transport::Usb => {
+            match store.borrow().set_shard_open(shared, &desc) {
+                Ok((rx, part)) => {
+                    log_transfer_arm(&desc);
+                    TransferDisposition::Arm(Armed::SetShard(desc, rx, part))
+                }
+                Err(status) => {
+                    log_transfer_reject(&desc, status);
+                    TransferDisposition::Answer(transfer_result(desc.object_id, status))
+                }
+            }
+        }
+        // The set **manifest** — `OBCA_Spec.md` §5.4's manifest-last rule, enforced here rather
+        // than trusted: a manifest announced before every shard it will name has committed is
+        // refused *before a byte streams*, so a host that gets the order wrong learns in
+        // milliseconds instead of after gigabytes.
+        (Op::Upload, ObjectType::MapSet) if transport == Transport::Usb => {
+            match store.borrow().set_manifest_open(shared, &desc) {
+                Ok(rx) => {
+                    log_transfer_arm(&desc);
+                    TransferDisposition::Arm(Armed::SetManifest(desc, rx))
+                }
+                Err(status) => {
+                    log_transfer_reject(&desc, status);
+                    TransferDisposition::Answer(transfer_result(desc.object_id, status))
+                }
+            }
+        }
+        // A map, a shard or a manifest on the radio. All three are refused by the same rule and for
+        // the same reason: §10 makes a map USB-only because BLE could never move one in a rider's
+        // lifetime, and a **set** is strictly larger than the map that argument was made about — a
+        // DACH-shaped set is 7.6–8.9 GiB (`OBCA_Spec.md` §5.1). No new argument is needed and none
+        // is made; the reject is typed and logged rather than a silent fall-through, so a host that
+        // tries gets a diagnosable "no".
+        //
+        // Reached only when the arms above did not match, i.e. on BLE — `is_map_payload` is the
+        // wire's own name for "these three types stream into their final file, and only the cable
+        // carries them", so the two lists cannot drift apart.
+        (Op::Upload, ty) if ty.is_map_payload() => {
             warn!(
-                "link: [ctl] map upload rejected: maps are USB-only (spec §10) — id {} len {}",
-                desc.object_id, desc.total_len
+                "link: [ctl] map upload rejected: maps and volume sets are USB-only (spec §10) — type {} id {} len {}",
+                desc.ty.as_u8(),
+                desc.object_id,
+                desc.total_len
             );
             TransferDisposition::Answer(transfer_result(desc.object_id, TransferStatus::Error))
         }

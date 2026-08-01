@@ -194,6 +194,7 @@ embedded-graphics = "0.8"
 obc-app = { path = "../obc-app" } # App/init_map + render_map (#125); MAX_ROUTES / TrackAction / TrackSink for the SD `Storage`; the budget assert's App/cache sizes
 obc-ports = { path = "../obc-ports" } # Semantic sensor/input/track/settings contracts implemented by board composition.
 obc-formats = { path = "../obc-formats" } # OBCR `NAME_CAP` (route/ride name cap) for the SD store's resident name buffers.
+obc-map-scene = { path = "../obc-map-scene" } # Shared map bounds used by the streamed map catalog.
 obc-reader = { path = "../obc-reader" } # the streamed `Reader` + `.bss` `MapCache` the N4 map path renders from (#125)
 obc-route = { path = "../obc-route" } # RouteSummary / RouteIndex / track_to_gpx for the `/routes` catalog + GPX (SD `Storage`)
 # The SD-staged DFU foundation (epic #615): the OBCU container + boot-state codec the app-side
@@ -281,3 +282,17 @@ opt-level = 3
 lto = "fat"
 codegen-units = 1
 debug = 2
+
+# ---------------------------------------------------------------------------------------------
+# Our embedded-sdmmc fork, branched from the v0.9.0 tag: `VolumeManager::write` batches the
+# block-aligned run inside the current cluster into ONE `BlockDevice::write`, which `SdCard`
+# issues as ACMD23 + CMD25. Stock 0.9's one-block `BlockCache` can never hand the device more
+# than a block, so a map upload paid a CMD24 + the card's whole program cycle + CMD13 per 512 B.
+# Measured on the shipping card at M16 (`sd_bench`): 2458 us/block through the FAT layer against
+# 479 us/block at 64-block batches — the 5.3x behind #889's upload speed.
+#
+# **This stanza is per resolve root, and there are three.** The workspace root carries the same
+# patch so `obc-storage`'s host tests exercise the crate the device actually runs; `obc-boot`
+# does not (it only reads the card, so it gains nothing).
+[patch.crates-io]
+embedded-sdmmc = { git = "https://github.com/timohueser/embedded-sdmmc-rs", branch = "cmd25-multiblock-write" }

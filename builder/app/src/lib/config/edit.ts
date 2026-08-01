@@ -1,10 +1,5 @@
-// Pure edit operations over a pack config, ported from the legacy editor.
-// Everything that rebuilds the features tree copies keys in order — the
-// packer assigns style IDs from document order (see model.ts).
-
-import { ENVELOPE_VERSION } from "./migrations";
 import { deepCopy, normalizeConfig, type PackConfig, type StyleDef } from "./model";
-import type { WorkingEnvelope } from "./storage.svelte";
+import { WORKING_SCHEMA_VERSION, type WorkingEnvelope } from "./storage.svelte";
 
 /**
  * The pixel-accurate simplify default for tier `i`: one pixel at the finest
@@ -85,7 +80,7 @@ export function reorderCategory(config: PackConfig, cat: string, orderedNames: s
     config.features[cat] = reordered;
 }
 
-/** The legacy editor's defaults for a freshly added feature type. */
+/** Defaults for a freshly added feature type. */
 export function newStyleDef(config: PackConfig): StyleDef {
     return { z_index: 10, color: "0xFFFF", weight: 1, min_lod: config.lods.length - 1, priority: 3 };
 }
@@ -118,9 +113,7 @@ export function exportFile(env: WorkingEnvelope): string {
 }
 
 /**
- * Accept any historical shape — a builder export (`_meta` + features), a
- * legacy stylesheet / bare CLI config (`features`, maybe `disabled`), or a
- * raw localStorage envelope — and normalize it into a working envelope.
+ * Accept a builder export or bare CLI config and normalize it into a working envelope.
  * Returns null when the JSON isn't a config at all.
  */
 export function importFile(text: string): WorkingEnvelope | null {
@@ -133,20 +126,29 @@ export function importFile(text: string): WorkingEnvelope | null {
     if (typeof raw !== "object" || raw === null) return null;
     const obj = raw as Record<string, unknown>;
 
-    // A stored envelope pasted whole: {schema_version, config: {...}}.
-    const source =
-        typeof obj.config === "object" && obj.config !== null && !("features" in obj)
-            ? (obj.config as Record<string, unknown>)
-            : obj;
-    if (typeof source.features !== "object" || source.features === null) return null;
+    if (typeof obj.features !== "object" || obj.features === null) return null;
 
-    const meta = (obj._meta ?? source._meta) as Record<string, unknown> | undefined;
-    const basedOn = meta?.based_on as WorkingEnvelope["based_on"] | undefined;
-    const { config, disabled } = normalizeConfig(source);
+    const metaValue = obj._meta;
+    if (metaValue !== undefined && (typeof metaValue !== "object" || metaValue === null || Array.isArray(metaValue))) {
+        return null;
+    }
+    const meta = metaValue as Record<string, unknown> | undefined;
+    if (meta?.schema_version !== undefined && meta.schema_version !== WORKING_SCHEMA_VERSION) return null;
+    const basedOnValue = meta?.based_on;
+    let basedOn: WorkingEnvelope["based_on"] = null;
+    if (basedOnValue !== undefined && basedOnValue !== null) {
+        if (typeof basedOnValue !== "object" || Array.isArray(basedOnValue)) return null;
+        const candidate = basedOnValue as Record<string, unknown>;
+        if (typeof candidate.id !== "string" || !Number.isInteger(candidate.version) || Number(candidate.version) < 0) {
+            return null;
+        }
+        basedOn = { id: candidate.id, version: Number(candidate.version) };
+    }
+    const { config, disabled } = normalizeConfig(obj);
     const extraDisabled = Array.isArray(obj.disabled) ? (obj.disabled as string[]) : [];
     return {
-        schema_version: ENVELOPE_VERSION,
-        based_on: basedOn ?? null,
+        schema_version: WORKING_SCHEMA_VERSION,
+        based_on: basedOn,
         modified: true, // an import is by definition not a pristine preset
         config,
         disabled: [...new Set([...disabled, ...extraDisabled])],

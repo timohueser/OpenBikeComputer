@@ -27,9 +27,10 @@
 //! mismatch — a geometry bug must degrade to *slow*, never to *wrong bytes*.
 //!
 //! Bounded RAM by design (the alternative — caching the whole chain — was measured, rejected,
-//! and reverted in #500): [`MAX_EXTENTS`] runs. A file fragmented past the cap fails the build
-//! with [`BuildError::TooFragmented`] and the caller keeps the plain [`SdByteSource`] path; the
-//! fix for such a card is re-copying the map onto it (fresh FAT allocation is contiguous).
+//! and reverted in #500): [`MAX_EXTENTS`] runs by default, or a caller-selected smaller budget
+//! through [`ExtentTableWithCapacity`]. A file fragmented past its table's cap fails the
+//! build with [`BuildError::TooFragmented`] and the caller keeps the plain [`SdByteSource`] path;
+//! the fix for such a card is re-copying the map onto it (fresh FAT allocation is contiguous).
 
 use core::cell::RefCell;
 
@@ -87,9 +88,9 @@ pub enum BuildError {
     /// The FAT chain didn't cover the file's byte length (truncated chain, reserved/bad cluster
     /// id mid-chain, or a dir-entry size disagreeing with the open handle's length).
     Mismatch,
-    /// More than [`MAX_EXTENTS`] runs — the bounded table refuses rather than growing. Carries
-    /// the file's **true** extent count (the walk finishes for the count even once storage is
-    /// full), so the refusal log states exactly how fragmented the file is.
+    /// More runs than the table's const capacity — the bounded table refuses rather than growing.
+    /// Carries the file's **true** extent count (the walk finishes for the count even once storage
+    /// is full), so the refusal log states exactly how fragmented the file is.
     TooFragmented(u32),
 }
 
@@ -137,13 +138,18 @@ const _: () = assert!(core::mem::offset_of!(Block, contents) == 0, "Block conten
 /// frames, where the tight ride-stack budget has no spare 512 bytes (see the board crate's stack
 /// notes). For the same reason the board keeps the whole table in a `.bss` slot and never moves it
 /// by value.
-pub struct ExtentTable {
-    runs: heapless::Vec<Run, MAX_EXTENTS>,
+pub struct ExtentTableWithCapacity<const N: usize> {
+    runs: heapless::Vec<Run, N>,
     len: u32,
     bounce: RefCell<Block>,
 }
 
-impl ExtentTable {
+/// The normal 128-run table used by standalone maps and DFU files. Keeping this as a concrete
+/// alias preserves the original construction API (`ExtentTable::build`) while set shards can opt
+/// into a smaller, explicitly named [`ExtentTableWithCapacity`].
+pub type ExtentTable = ExtentTableWithCapacity<MAX_EXTENTS>;
+
+impl<const N: usize> ExtentTableWithCapacity<N> {
     /// Resolve the file's FAT chain into an extent table, reading raw blocks off `dev` (the
     /// shared twin of the manager's [`SharedBlockDevice`]). `entry_block`/`entry_offset` locate
     /// the file's 32-byte directory entry (absolute, from the public
@@ -220,7 +226,7 @@ impl ExtentTable {
         // ── One walk of the chain, compressed into runs ──
         let bytes_per_cluster = geo.spc * 512;
         let clusters_needed = expected_len.div_ceil(bytes_per_cluster);
-        let mut runs: heapless::Vec<Run, MAX_EXTENTS> = heapless::Vec::new();
+        let mut runs: heapless::Vec<Run, N> = heapless::Vec::new();
         let mut file_block = 0u32;
         // Run bookkeeping independent of storage, so an overflowing walk still finishes and
         // reports the file's *true* extent count — the actionable number in the refusal (and
@@ -271,10 +277,10 @@ impl ExtentTable {
                 };
             }
         }
-        if run_count as usize > MAX_EXTENTS {
+        if run_count as usize > N {
             return Err(BuildError::TooFragmented(run_count));
         }
-        Ok(ExtentTable { runs, len: expected_len, bounce: RefCell::new(Block::new()) })
+        Ok(ExtentTableWithCapacity { runs, len: expected_len, bounce: RefCell::new(Block::new()) })
     }
 
     /// How many extent runs the file resolved to — 1 = fully contiguous. The number #500's open
@@ -315,20 +321,23 @@ impl ExtentTable {
 /// A [`ByteSource`] serving `read_at` straight off the card through an [`ExtentTable`] — the
 /// fast twin of [`SdByteSource`](crate::SdByteSource), same construction pattern (borrow, rebuild
 /// per use, hold no seek state).
-pub struct ExtentSource<'a, D: BlockDevice> {
+pub struct ExtentSourceWithCapacity<'a, D: BlockDevice, const N: usize> {
     dev: &'a D,
-    table: &'a ExtentTable,
+    table: &'a ExtentTableWithCapacity<N>,
 }
 
-impl<'a, D: BlockDevice> ExtentSource<'a, D> {
+/// Direct-read source for the default-capacity [`ExtentTable`].
+pub type ExtentSource<'a, D> = ExtentSourceWithCapacity<'a, D, MAX_EXTENTS>;
+
+impl<'a, D: BlockDevice, const N: usize> ExtentSourceWithCapacity<'a, D, N> {
     /// A source over `table`, reading raw blocks off `dev`. The caller keeps the underlying file
     /// open for the table's lifetime (an open handle is what pins the chain).
-    pub fn new(dev: &'a D, table: &'a ExtentTable) -> Self {
-        ExtentSource { dev, table }
+    pub fn new(dev: &'a D, table: &'a ExtentTableWithCapacity<N>) -> Self {
+        ExtentSourceWithCapacity { dev, table }
     }
 }
 
-impl<D: BlockDevice> ByteSource for ExtentSource<'_, D> {
+impl<D: BlockDevice, const N: usize> ByteSource for ExtentSourceWithCapacity<'_, D, N> {
     // `inline(never)`: called from the deepest render/nav frames — keep this body's locals out
     // of them permanently, whatever the inliner decides later (deep-frame discipline; on-glass
     // stack peaks have moved with inlining before). Measured free: one out-of-line call per
@@ -636,6 +645,20 @@ mod tests {
             ExtentTable::build(fs.disk, eb, eo, len).err().expect("build should refuse"),
             BuildError::TooFragmented((MAX_EXTENTS + 3) as u32),
             "the refusal reports the file's true extent count, not just 'past the cap'"
+        );
+    }
+
+    #[test]
+    fn caller_selected_extent_cap_is_enforced_with_the_true_count() {
+        const SMALL_CAP: usize = 4;
+        let fs = setup(mkfs_fat32(), &["MAP.BIN", "OTHER.BIN"], SMALL_CAP + 2);
+        let (eb, eo, len) = fs.entry_facts("MAP.BIN");
+        assert_eq!(
+            ExtentTableWithCapacity::<SMALL_CAP>::build(fs.disk, eb, eo, len)
+                .err()
+                .expect("build should enforce the selected cap"),
+            BuildError::TooFragmented((SMALL_CAP + 2) as u32),
+            "a smaller resident table must still report the file's true extent count"
         );
     }
 

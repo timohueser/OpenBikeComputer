@@ -52,6 +52,7 @@ import {
     encodeStatusMessage,
     encodeTransferControl,
     encodeVersionRead,
+    setPartId,
     viewOf,
 } from "./protocol";
 
@@ -164,6 +165,19 @@ describe("control-plane codecs", () => {
         const abort = decodeTransferControl(vector("transfer-abort.bin"));
         expect(abort.op).toBe(Op.Abort);
         expectSameBytes(encodeTransferControl(abort), vector("transfer-abort.bin"), "abort descriptor");
+
+        const shard = decodeTransferControl(vector("transfer-set-shard.bin"));
+        expect(shard).toMatchObject({ op: Op.Upload, type: ObjectType.MapShard, objectId: 0x0802 });
+        expect(setPartId(8, 2)).toBe(shard.objectId);
+        expectSameBytes(encodeTransferControl(shard), vector("transfer-set-shard.bin"), "set shard descriptor");
+
+        const manifest = decodeTransferControl(vector("transfer-set-manifest.bin"));
+        expect(manifest).toMatchObject({ op: Op.Upload, type: ObjectType.MapSet, objectId: NEW_OBJECT_ID });
+        expectSameBytes(
+            encodeTransferControl(manifest),
+            vector("transfer-set-manifest.bin"),
+            "set manifest descriptor",
+        );
     });
 
     it("round-trips every status message", () => {
@@ -237,10 +251,10 @@ describe("control-plane codecs", () => {
 
     it("round-trips the identity read at all three lengths", () => {
         // 7 bytes: the full read. `obcmVersion` is the OBCM *map-format* version the device's
-        // reader reads — the fact `OBCC_Spec.md` §6(c) filters the catalog on, and a different
+        // reader reads — the fact `OBCC_Spec.md` §10 filters the catalog on, and a different
         // number in a different sequence from the protocol `version` beside it.
         const full = decodeVersionRead(vector("version-read.bin"));
-        expect(full).toEqual({ version: 2, storeEpoch: hex("0xA1B2C3D4"), obcmVersion: 10 });
+        expect(full).toEqual({ version: 2, storeEpoch: hex("0xA1B2C3D4"), obcmVersion: 11 });
         expectSameBytes(encodeVersionRead(full), vector("version-read.bin"), "version-read");
 
         // 6 bytes: a firmware predating the field. Unknown, not zero — `obcmVersion: 0` would read
@@ -267,7 +281,7 @@ describe("control-plane codecs", () => {
         expect(decodeVersionRead(future)).toEqual({
             version: 2,
             storeEpoch: hex("0xA1B2C3D4"),
-            obcmVersion: 10,
+            obcmVersion: 11,
         });
     });
 

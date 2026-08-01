@@ -10,7 +10,7 @@
 //!   is a *cache-freshness* decision and may use metadata, because being wrong only
 //!   costs a re-download.
 //! - **Did the input change since the last bake?** Answered with the file's SHA-256,
-//!   in [`crate::bake`]. That is the *idempotency key* and it is never a timestamp:
+//!   in the cell bakery. That is the *idempotency key* and it is never a timestamp:
 //!   a mirror that rewrites `Last-Modified` without changing a byte must not
 //!   trigger a twenty-hour re-bake, and a file mutated in place must not be missed.
 //!
@@ -18,7 +18,7 @@
 //! fact about the data that the manifest publishes (`source_snapshot`), so it must
 //! not go stale — but it is derived from `Last-Modified`, so letting it force a
 //! re-pack would reintroduce exactly the timestamp sensitivity the paragraph above
-//! rules out. [`crate::bake`] therefore keeps it out of the pack key and compares it
+//! rules out. The bakery therefore keeps it out of the pack key and compares it
 //! separately: a re-dated but byte-identical extract rewrites the sidecar and
 //! re-packs nothing.
 //!
@@ -53,6 +53,19 @@ pub trait ExtractSource: Sync {
     fn describe(&self) -> String;
     /// Download or reuse the extract for `region`.
     fn fetch(&self, region: &Region, progress: &Progress) -> Result<Extract, String>;
+    /// The region's Osmosis polygon (`<id>.poly`), as text.
+    ///
+    /// This is the extract's own statement of what ground it covers, and the cell
+    /// bake needs it for two decisions a bbox cannot make: which cells a region
+    /// selects, and whether a baked cell is canonical or `partial`
+    /// ([`crate::coverage`]). It is also the file the catalog's drawable region
+    /// outline is reduced from (`OBCC_Spec.md` §7), so both readings come from
+    /// one download.
+    ///
+    /// Tiny (tens of KB) and unversioned by Geofabrik, so it is fetched fresh rather
+    /// than validator-cached — but written into the same cache directory, which is
+    /// what lets an offline re-bake work.
+    fn fetch_poly(&self, region: &Region, progress: &Progress) -> Result<String, String>;
 }
 
 /// Geofabrik's public download server (or any mirror laid out the same way).
@@ -128,6 +141,27 @@ impl ExtractSource for GeofabrikExtracts {
         std::fs::write(&meta_path, text).map_err(|e| format!("{}: {e}", meta_path.display()))?;
         Ok(Extract { path: dest, snapshot: head.snapshot, bytes, downloaded: true })
     }
+
+    fn fetch_poly(&self, region: &Region, progress: &Progress) -> Result<String, String> {
+        let url = region.poly_url(&self.base_url);
+        let cached = self.cache_dir.join(region.poly_cache_name());
+        match obc_pack::net::get_text(&url) {
+            Ok(text) => {
+                std::fs::create_dir_all(&self.cache_dir).map_err(|e| format!("{}: {e}", self.cache_dir.display()))?;
+                std::fs::write(&cached, &text).map_err(|e| format!("{}: {e}", cached.display()))?;
+                Ok(text)
+            }
+            // A cached copy is a better answer than a failed bake: the polygon
+            // changes about as often as a country's borders do.
+            Err(e) => match std::fs::read_to_string(&cached) {
+                Ok(text) => {
+                    progress.warn(format!("{}: {e} — using the cached {}", region.id, cached.display()));
+                    Ok(text)
+                }
+                Err(_) => Err(format!("{url}: {e}")),
+            },
+        }
+    }
 }
 
 /// Extracts already on disk: a directory of `.osm.pbf` files, or a `file://` URL.
@@ -196,6 +230,23 @@ impl ExtractSource for LocalExtracts {
         };
         Ok(Extract { path, snapshot, bytes: meta.len(), downloaded: false })
     }
+
+    fn fetch_poly(&self, region: &Region, _progress: &Progress) -> Result<String, String> {
+        let nested = self.root.join(format!("{}.poly", region.id));
+        let flat = self.root.join(region.poly_cache_name());
+        for path in [&nested, &flat] {
+            if path.is_file() {
+                return std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()));
+            }
+        }
+        Err(format!(
+            "no coverage polygon for `{}` — looked for {} and {}. A cell bake needs it: it is what decides which \
+             cells the region selects and whether a border cell is canonical (OBCA_Spec.md §3.7)",
+            region.id,
+            nested.display(),
+            flat.display()
+        ))
+    }
 }
 
 /// Build the source a CLI `--source` spec asks for.
@@ -207,10 +258,10 @@ pub fn from_spec(spec: &str, cache_dir: &Path) -> Box<dyn ExtractSource> {
     }
 }
 
-struct Head {
-    last_modified: String,
-    content_length: u64,
-    snapshot: String,
+pub(crate) struct Head {
+    pub(crate) last_modified: String,
+    pub(crate) content_length: u64,
+    pub(crate) snapshot: String,
 }
 
 /// One `HEAD` for the validators and the extract's date.
@@ -219,7 +270,7 @@ struct Head {
 /// target's `…-260728.osm.pbf` filename: `-latest` for some regions redirects to a
 /// mirror that keeps no date in the name, and a `source_snapshot` guessed wrong is
 /// worse than a failed bake — the manifest is trusted.
-fn head(url: &str) -> Result<Head, String> {
+pub(crate) fn head(url: &str) -> Result<Head, String> {
     let resp = ureq::head(url).call().map_err(|e| format!("HEAD {url}: {e}"))?;
     let get = |name: &str| resp.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_owned);
     let last_modified = get("last-modified")
@@ -278,9 +329,9 @@ mod tests {
         std::fs::write(dir.join("europe_austria-latest.osm.pbf"), b"y").unwrap();
 
         let src = LocalExtracts::new(&dir).with_snapshot("2026-07-28");
-        let bayern = Region { id: "europe/germany/bayern".into(), name: "Bayern".into(), presets: None };
-        let austria = Region { id: "europe/austria".into(), name: "Austria".into(), presets: None };
-        let missing = Region { id: "europe/france".into(), name: "France".into(), presets: None };
+        let bayern = Region { id: "europe/germany/bayern".into(), name: "Bayern".into() };
+        let austria = Region { id: "europe/austria".into(), name: "Austria".into() };
+        let missing = Region { id: "europe/france".into(), name: "France".into() };
         let p = Progress::silent();
         assert_eq!(src.fetch(&bayern, &p).unwrap().snapshot, "2026-07-28");
         assert_eq!(src.fetch(&austria, &p).unwrap().bytes, 1);

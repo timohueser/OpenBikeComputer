@@ -247,9 +247,32 @@ Control service is encrypted once bonding lands (§8).
 
 | Characteristic | UUID | Value |
 |---|---|---|
-| Firmware Revision String | `0x2A26` | UTF-8 version of the **running** image, e.g. `0.4.0+abc1234`; after a confirmed DFU it reflects the newly-installed image (the app's device-version display, §7.6) |
+| Firmware Revision String | `0x2A26` | UTF-8 version of the **running** image — see the dialect below; after a confirmed DFU it reflects the newly-installed image (the app's device-version display, §7.6) |
 | Hardware Revision String | `0x2A27` | UTF-8 board id, e.g. `nrf54l15-dk`, `obc-lm20-r1` |
 | Serial Number String | `0x2A25` | 16 uppercase hex digits — the nRF `FICR.DEVICEID` |
+
+**The firmware-revision dialect** (#996, epic #773). The value is the version
+the running image was *wrapped* with, in this preference order:
+
+1. the **installed image's OBCU version string, verbatim** — the `fw_version`
+   field of the container the device installed (`OBCU_Spec.md` §1), which the
+   bootloader handoff page records as the installed image (§2). For a released
+   build that is the release tag, e.g. `v1.3.0`;
+2. otherwise the **build's bare git short hash**, e.g. `ca9b336` — a device
+   flashed over SWD, which has never installed a container and therefore has no
+   version to report.
+
+Case 1 is the one that matters to a host: it is the only string that can be
+compared against a published release ("is `v1.3.0` newer than this?"). Hosts
+parse it as a release version with an optional leading `v`.
+
+Case 2 is deliberately **not parseable as a version**, and the consequence is
+locked, not incidental: a host that cannot read a running version must never
+offer an automatic update. A development device stays on whatever its owner
+flashed, and gets back onto the release track through the manual install path.
+The value is ≤ 32 bytes (the OBCU `fw_version` field width) and is assembled in
+exactly one place in the firmware, so this characteristic and the USB
+device-information frame (§10) always carry identical bytes.
 
 ### 3.2 Battery Service — `0x180F` (SIG)
 
@@ -330,6 +353,8 @@ Every bulk payload is a typed **object**:
 | `10` | `tripList` | device → app | list object, §7.4 |
 | `11`–`15` | — | — | reserved (sensors, M4) |
 | `16` | `map` | host → device (upload) | an `.obcm` map — **USB only** (§10), see below |
+| `17` | `mapShard` | host → device (upload) | one OBCM shard of a volume set ([`OBCA_Spec.md` §5.1](OBCA_Spec.md)) — **USB only** |
+| `18` | `mapSet` | host → device (upload) | the OBCS set manifest ([`OBCA_Spec.md` §5.2](OBCA_Spec.md)) — **USB only** |
 
 `map` is the one type BLE could never have carried: a map is hundreds of
 megabytes, so the type would have been dead weight until a USB bulk endpoint
@@ -337,6 +362,11 @@ existed (#889). It sits at `16` rather than at the next free number because
 `11`–`15` are already spoken for; the byte is a `u8` and there is no reason to
 crowd a reserved band. Like `fwImage`, the transfer layer is **format-blind** —
 the payload is opaque bytes.
+
+`mapShard` and `mapSet` (#1039) are the same argument at a larger scale, so they
+join `map` in the USB-only band without a new one: a DACH-shaped **volume set**
+is 7.6–8.9 GiB across ~8 files ([`OBCA_Spec.md` §5.1](OBCA_Spec.md)). A device
+MUST answer any of the three with `error` on the radio.
 
 A map upload carries **four rules the other upload types do not** (#927). All of
 them follow from one fact: a map is hundreds of megabytes, which makes it the
@@ -347,7 +377,9 @@ only object whose transfer is measured in minutes rather than frames.
    place would mean destroying the stored bytes as the new ones arrive, which
    forfeits the "a failed CRC never touches the old copy" guarantee below on the
    one object a device cannot rebuild for itself. Replacing a map is *upload the
-   new one, then delete the old one*.
+   new one; the device retires the old one itself* — see rule 5. A host has no
+   verb for it: `deleteObject` (§4.4) takes routes and trips, and no map
+   enumeration crosses the wire at all.
 2. **A free-space guard at announce.** A device SHOULD refuse with `storageFull`
    when the announced length plus a reserve it keeps for ride logs and sidecars
    exceeds free space, **before any byte streams** — a transfer that fails at
@@ -362,6 +394,125 @@ only object whose transfer is measured in minutes rather than frames.
    interrupted transfer therefore leaves a zero-magic file that every reader
    refuses and a boot sweep reclaims — the same durability the other types get
    from an invisible temp, reached without the copy.
+5. **One uploaded map.** A device that loads a single map SHOULD retire the
+   uploads that map supersedes, rather than accumulate copies no reader will ever
+   open. In the reference firmware this happens **at the same boot that selects
+   the new map**, and only once the selected map has opened: an upload commits
+   while its predecessor is held open for the session, so the moment of the commit
+   is precisely when the old file cannot be touched. Two consequences worth
+   stating, because a host cannot see either: between the upload and the next
+   restart the card carries **both** maps, so rule 2's guard can refuse a
+   replacement that does not fit alongside the copy it is about to replace; and a
+   map the rider placed on the card themselves is **never** retired — it carries
+   no device-assigned id, and the rule is one *uploaded* map, not one file.
+
+### Volume sets: several transfers, one map (#1039)
+
+A **volume set** ([`OBCA_Spec.md` §5](OBCA_Spec.md)) is one logical map spread
+over `1..=32` OBCM shards plus an OBCS manifest, so it is the first object on
+this link whose correctness lives *between* transfers. Each file is an ordinary
+upload — its own descriptor, its own whole-object CRC-32, its own commit — and
+the five map rules above apply to each of them unchanged. Six rules govern the
+sequence, and they are **normative**:
+
+1. **The `object_id` of a `mapShard` is not an object id.** It carries the set's
+   `Shard Count` in the **high** byte and this shard's `index` in the **low**
+   one: `object_id = (shard_count << 8) | index`, with `1 ≤ shard_count ≤ 32` and
+   `index < shard_count`. A shard has no durable id to target — §5.2 *derives*
+   every filename from the set id and the index, and §5.4 makes the whole set one
+   map with one identity — so the field is repurposed rather than the descriptor
+   widened. A device MUST answer a pair outside those ranges with `notFound`.
+   Restating `shard_count` in **every** shard rather than only the first buys two
+   things, and it is worth being exact about the second:
+   - a device can refuse an over-large set at the **first** announce (rule 3)
+     rather than after the whole upload;
+   - a `mapShard` whose `shard_count` **differs** from the set already in flight
+     MUST be refused with `error`, so a host that starts sending a
+     differently-shaped set mid-transfer is named rather than merged.
+
+   What the announce **cannot** see is a switch between two sets with the *same*
+   shard count: the pair names a file, not a set, and no field in the descriptor
+   identifies which set a shard belongs to. That case is caught at the manifest's
+   commit instead — rule 6 — which is later but is still before anything is a
+   map. Closing it at the announce would need a set identifier on the wire, i.e.
+   a descriptor change; it is left open deliberately, because §5.3 already
+   obliges a host to have proven its own set before offering a byte of it, and
+   the failure mode of a host that has not is an unmountable set rather than a
+   damaged one.
+2. **The manifest is new-only and last, and the device enforces it.** A `mapSet`
+   upload sends `object_id = 0xFFFF`; a named id is answered `notFound`. A
+   `mapSet` announced when **any** shard of the set in flight has not yet
+   committed — or when no set is in flight at all — MUST be refused with `error`
+   **before any byte streams**. §5.4 addresses the writer; this is the receiver's
+   half of the same sentence, and it exists because a device cannot hold a host
+   to a MUST it merely read. An announced `total_len` that is not
+   `72 + 56 × Shard Count` is likewise refused at the descriptor.
+3. **A device's own shard ceiling is announced-time, not commit-time.** A device
+   that can hold fewer than 32 shards open MUST refuse a set whose declared
+   `shard_count` exceeds its ceiling with `storageFull`, at the **first** shard —
+   the same "this catalog cannot take another entry" meaning `storageFull`
+   already carries for routes and trips. Refusing at the manifest instead would
+   cost the rider the whole upload. The reference firmware's ceiling is **11**
+   (its FAT handle budget); the format's is 32. A device with no id left to name
+   a new set answers the same `storageFull` at the same moment, for the same
+   reason: it is a catalog refusal, not a storage failure discovered mid-write.
+4. **`transferResult` correlation.** A shard's result echoes its **part**
+   (`object_id` = the same packed pair), because that is what a host correlates
+   its transfer slot against and what says *which* file committed. A host MUST
+   check it: a result naming a different part is not "this file committed", and
+   continuing past it would write a manifest over a set the two sides disagree
+   about. The **manifest's** result carries the **device-assigned set id** — the
+   one moment a set's identity crosses the wire, and the answer to "what did my
+   upload become".
+5. **A staged set can be abandoned, and `op=3` is how.** A set spans several
+   descriptors, so an abort most often arrives when *nothing is in flight* — in
+   the gap between two of them. A device MUST treat an `op=3` there as
+   abandoning the set in flight, not merely as a confirmed no-op: the session
+   closes and every file of the set is deleted, exactly as a dropped link would.
+   Without it a host that cancelled would be told `aborted` while gigabytes
+   stayed staged and every differently-shaped set went on being refused (rule 1)
+   until the transport was torn down. The answer is `aborted`, as it already is.
+6. **A shard after a committed manifest begins a new set.** Once a `mapSet` has
+   committed, the set it completed is closed: a later `mapShard` MUST NOT be
+   added to it, because its manifest names exactly the files it names and any
+   addition would make that manifest false. Such a shard opens a **new** set,
+   with a new device-assigned id, and is staged and reclaimed like any other.
+   This is also where a same-count set switch (rule 1) is caught: at the
+   manifest's commit a device re-checks every shard against the manifest's own
+   record of it, and MUST refuse a manifest that does not describe the files
+   beside it — deleting the whole set rather than leaving it half-present.
+
+**Atomicity, and what an interrupted set leaves.** A device MUST NOT let a
+half-received set be mountable, which §5.4 already guarantees (no manifest ⇒ no
+map). What this section adds is the *cleanup* obligation: a device SHOULD
+reclaim a set whose upload it abandoned, and MUST NOT delete files it cannot
+prove are its own. The reference firmware does both with one mechanism — it
+creates `MS{id}.OBS` holding four zero bytes *before the first shard streams* and
+patches the `OBCS` magic in as the very last write of the set. A manifest whose
+magic is **not whole** is therefore its own torn upload: all zeros (the
+placeholder), a strict prefix of `OBCS` (the commit's four-byte write split by a
+power cut), or shorter than four bytes at all (the token's create without its
+write). A set arriving over a card reader is copied from a host that already
+holds a finished manifest and writes it front to back, so its `.OBS` carries the
+whole magic from its first block — the shapes above are, to within one block of a
+copy that was itself interrupted, unreachable any other way, and a manifest in
+one of them cannot be read as a map by anyone regardless. A dropped link or an
+`op=3` abort deletes the whole set immediately; a power cut is reclaimed by the
+boot sweep. Complete shard files with no manifest at all are left alone: §5.4
+makes deleting orphans a MAY, and that shape is a rider mid-copy.
+
+A device MUST NOT let a set's *id allocation* undo that care. Whatever scheme
+assigns the `{id}` of the derived filenames, an id must be treated as taken while
+**any** file naming it is on the card — a manifest-less pile of shards included,
+since that is precisely the mid-copy shape the paragraph above protects. Minting
+such an id and then clearing it (§5.4's replace rule) would delete, at the next
+upload, the map the sweep deliberately spared.
+
+**Resume.** Per **file**, and free: shards are independent files, so a shard
+whose CRC failed is re-sent on its own while the rest stand. Across a
+**disconnect**, no — the set is gone, and resuming would need a device → host
+query for "which shards of which set do you hold", which is a new §4.4 command
+rather than a change to this section.
 
 **Where an uploaded map lands** is a device convention, not a wire one, but the
 reference firmware's is worth stating because it follows the `RT{id}.OBR` rule
@@ -1231,6 +1382,12 @@ The USB transport (§10, #889) and the identity read's `obcm_version` byte (§1,
 - **USB is a second transport, not a second protocol** — it re-binds §3's GATT
   routing to a leading selector byte and carries §4's bytes unchanged, so nothing
   in this document's object model moved.
+- **The volume-set types** `mapShard` (`17`) and `mapSet` (`18`, §4.1, #1039) are
+  additive in the same sense `map` was, and for a stronger version of the same
+  reason: a set is *larger* than the map BLE could not carry. Two `ObjectType`
+  values out of the 237 still free, no descriptor change (a shard's part rides
+  the existing `object_id`), no new status, no new command. A peer that does not
+  know them simply never sends them.
 - **`protocolVersion` read 6 → 7 bytes** (§1): a trailing `obcm_version u8` on a
   read that was already decoded by length. Bytes 0–5 keep their meaning and their
   offsets, absent trailing fields have defined "unknown" behaviour on both sides,
@@ -1284,14 +1441,22 @@ exactly filling a packet would need a ZLP to be delimited).
 | 4 | host → device | identity read (§1) — no payload |
 | 5 | host → device | device-information read (§3.1) — no payload |
 | 6 | host → device | `config` read (§7.3) — no payload |
+| 7 | host → device | mounted-card free-space read — no payload (USB only) |
 | 1 | device → host | `status` (§4.3), verbatim, discriminator included |
 | 2 | device → host | the §1 identity bytes (7 with a store, 2 without — the same length-driven read, verbatim) |
 | 3 | device → host | device information: `len u8 · UTF-8` ×3, firmware · hardware · serial |
 | 4 | device → host | the §7.3 config blob |
+| 5 | device → host | mounted-card free bytes as little-endian `u64`; empty when no readable card is mounted |
 
 Device → host selector 1 is the **sole unsolicited channel**, exactly as the
 `status` CCCD is on BLE: one ordering domain for every device → host edge,
 including a download's `downloadAnnounce`.
+
+The free-space read is deliberately an envelope query rather than a new object
+or command. It is USB-only UI telemetry, has no persistent effect, and is
+answered from FAT32's cached FSInfo count (a bounded three-sector read, never a
+FAT walk). A host uses it immediately before a map-set send; an empty reply is
+"space unavailable", not zero bytes free.
 
 **Every §4.4 command is reachable over USB, `ackRides` included**, and not as a
 per-command decision: selector 1 carries the `command` bytes into the *same*
