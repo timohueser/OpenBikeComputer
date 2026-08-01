@@ -18,8 +18,24 @@ export interface LiveSkinPreview {
     readonly width: number;
     readonly height: number;
     setSkin(skinJson: string): void;
+    panBy(dx: number, dy: number): void;
+    zoomAt(factor: number, x: number, y: number): void;
+    resetCamera(): void;
+    stats(): LivePreviewStats;
     frame(): Uint8ClampedArray;
     free(): void;
+}
+
+export interface LivePreviewStats {
+    metersPerPixel: number;
+    lodIndex: number;
+    lodCount: number;
+    featuresDrawn: number;
+    featuresDropped: number;
+    pointsDrawn: number;
+    spanUtilization: number;
+    pointUtilization: number;
+    ringUtilization: number;
 }
 
 let loading: Promise<Bridge> | null = null;
@@ -74,6 +90,20 @@ export async function openLiveSkinPreview(
             width: preview.width,
             height: preview.height,
             setSkin: (next) => preview.set_skin(next),
+            panBy: (dx, dy) => preview.pan_by(dx, dy),
+            zoomAt: (factor, x, y) => preview.zoom_at(factor, x, y),
+            resetCamera: () => preview.reset_camera(),
+            stats: () => ({
+                metersPerPixel: preview.meters_per_pixel,
+                lodIndex: preview.lod_index,
+                lodCount: preview.lod_count,
+                featuresDrawn: preview.features_drawn,
+                featuresDropped: preview.features_dropped,
+                pointsDrawn: preview.points_drawn,
+                spanUtilization: preview.span_utilization,
+                pointUtilization: preview.point_utilization,
+                ringUtilization: preview.ring_utilization,
+            }),
             frame: () => preview.frame(),
             free: () => preview.free(),
         };
