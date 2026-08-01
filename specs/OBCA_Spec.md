@@ -459,7 +459,7 @@ Therefore:
   pruned at different thresholds do not assemble into a graph with consistent semantics.
 
 This is a decision taken on the mechanism, not on a measured failure: in every configuration
-measurable with today's `complete_ways` cropping, bake-time pruning destroyed nothing unification
+measurable with today's relation-complete cropping, bake-time pruning destroyed nothing unification
 wanted (merge-rescued components = 0 in all runs, including an adjacent-cell pair). The cost of
 getting it wrong is small but real, and the assembler already renumbers nodes and rewrites the
 edge pool, so a union-find on top is nearly free.
