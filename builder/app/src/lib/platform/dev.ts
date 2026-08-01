@@ -8,7 +8,7 @@ import { LINKS } from "../constants";
 import type { LoadStyleEditor, Platform } from "./types";
 
 async function catalog(): Promise<{ url: string; body: string }> {
-    return api.catalogRoot();
+    return api.publishedCatalog();
 }
 
 export const platform: Platform = {
