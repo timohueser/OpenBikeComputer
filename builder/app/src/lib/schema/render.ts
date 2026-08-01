@@ -20,10 +20,19 @@ export interface SchemaRenderStats {
     mapErrors: number;
 }
 
+export interface SchemaRenderLimits {
+    maxFeaturePoints: number;
+    maxFeatureRings: number;
+    maxSpans: number;
+    maxFramePoints: number;
+    maxFrameRings: number;
+}
+
 export interface SchemaRenderer {
     readonly width: number;
     readonly height: number;
     setMetersPerPixel(value: number): void;
+    readonly limits: SchemaRenderLimits;
     frame(): Uint8ClampedArray;
     stats(): SchemaRenderStats;
     free(): void;
@@ -52,6 +61,13 @@ export async function openSchemaRenderer(bytes: Uint8Array, wasm?: InitInput): P
     return {
         width: preview.width,
         height: preview.height,
+        limits: {
+            maxFeaturePoints: preview.max_feature_points,
+            maxFeatureRings: preview.max_feature_rings,
+            maxSpans: preview.max_spans,
+            maxFramePoints: preview.max_frame_points,
+            maxFrameRings: preview.max_frame_rings,
+        },
         setMetersPerPixel: (value) => preview.set_meters_per_pixel(value),
         frame: () => preview.frame(),
         stats: () => ({
