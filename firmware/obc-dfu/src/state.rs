@@ -404,6 +404,32 @@ impl BootState {
         }
     }
 
+    /// The OBCU header of the image **that is running right now**, when the page records one.
+    ///
+    /// Every state names the running image in its own place, and getting the mapping wrong would
+    /// misreport the device's version to a host (#996 / epic #773), so it lives here beside the
+    /// codec rather than in each reader:
+    ///
+    /// - `Idle` — the `installed` record, i.e. what the last confirmed install left behind. `None`
+    ///   on a device that has never installed an update (probe-flashed), which is the whole reason
+    ///   this returns an `Option`.
+    /// - `Trial` — `installed` *is* what's running: the bootloader wrote this page on its way into
+    ///   the freshly-installed image's single trial boot, before the app confirms it.
+    /// - `Armed` — an arm that the bootloader never consumed, so the **old** image is still
+    ///   running, and its header is the one the armer snapshotted into `rollback` (absent on a
+    ///   first install, exactly as the arm recorded it). The same mapping the app's stray-arm
+    ///   downgrade uses when it rewrites this page as `Idle`.
+    ///
+    /// Never the *staged* image: `Armed { update }` is a request, not a fact about the running
+    /// image, and reporting it would claim a version the device may never boot.
+    pub fn running_image(&self) -> Option<ImageHeader> {
+        match self {
+            BootState::Idle { installed, .. } => *installed,
+            BootState::Trial { installed, .. } => Some(*installed),
+            BootState::Armed { rollback, .. } => rollback.map(|r| r.header),
+        }
+    }
+
     /// Encode into the CRC-framed, 16-byte-line-aligned blob (see the module doc + `OBCU_Spec.md` §2).
     /// Never fails: every [`BootState`] fits [`MAX_ENCODED_LEN`] by construction.
     pub fn encode(&self) -> EncodedPage {

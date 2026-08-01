@@ -170,15 +170,15 @@ OSM is nodes, ways and relations, stored in that order. The ingester reads the `
 
 ### Cropping to a box
 
-You rarely want a whole country. `--bbox W,S,E,N` crops the source **during ingest**, in a **pass 0** that reads only ids: the nodes inside the box, the ways touching one of them, and — the part that matters — the nodes those ways still need *outside* the box.
+You rarely want a whole country. `--bbox W,S,E,N` crops the source **during ingest**, in a **pass 0** that reads only ids: the nodes inside the box, the ways touching one of them, the renderable area relations reached by those ways, and — the part that matters — every member way and node those selected objects still need *outside* the box.
 
 That last clause is the whole design. The naive filter is "drop everything outside the box", and it fails in a way you'd only notice on the road. A way that leaves the box would be missing node positions, and the ingester drops a way it cannot fully resolve rather than guess at half of it — so every road crossing the boundary would vanish back to its last node inside. The map would fray inwards from its own edge, and the [navigation graph](#building-the-navigation-graph) would lose real exits: not a road drawn short, an exit the router doesn't know exists.
 
-So a way is kept **whole** or not at all. An edge ends where the *way* ends, a little outside the box, rather than at an arbitrary vertex on the box edge — no phantom junction, no invented dead-end at the border. Relations follow the same all-or-nothing rule they already follow: one member way missing and the relation is dropped, never assembled from the survivors into a shape that was never there.
+So a way is kept **whole** or not at all. An edge ends where the *way* ends, a little outside the box, rather than at an arbitrary vertex on the box edge — no phantom junction, no invented dead-end at the border. A renderable area relation touched by one of those ways is completed too: all of its member ways and their nodes are selected before assembly. This is crucial for OSM land cover, where one residential or forest multipolygon can be split across many ways. Dropping one out-of-box member would otherwise make the ingester reject the relation whole and leave an apparently random hole *inside* the requested map.
 
-Two consequences worth expecting. The finished map's header bounding box is always a little **wider** than the box you asked for, because it's measured from the packed content and complete ways stick out — which is why an extract box must never be re-derived from a packed map's header, or it ratchets outward on every re-pack. And peak memory tracks the *box*, not the source file: the id sets and the coordinate store only ever hold what the box selected, so cropping a 500 MB country costs about what packing the resulting small map costs.
+Two consequences worth expecting. The finished map's header bounding box is always a little **wider** than the box you asked for, because it is measured from the packed content and complete ways or relation members stick out — which is why an extract box must never be re-derived from a packed map's header, or it ratchets outward on every re-pack. And peak memory tracks the *selection*, not the source file: relation ids are streamed and the coordinate store holds only the box plus the complete objects it reached, so cropping a 500 MB country remains close to the cost of packing the resulting small map.
 
-This is exactly the strategy [`osmium extract`](https://osmcode.org/osmium-tool/) calls `complete_ways`, and it's deliberately the same one — down to the integer grid the edge test runs on — so the packer grew a crop rather than the toolchain growing a second C++ dependency.
+This begins with the strategy [`osmium extract`](https://osmcode.org/osmium-tool/) calls `complete_ways`, down to the integer grid used by its edge test, then applies the relation completion associated with osmium's `smart` strategy only to area relations the active schema can render. Route and administrative-boundary relations therefore cannot pull continent-scale geometry into a small map. A relation already missing members at the source extract's own edge is still rejected rather than guessed from an incomplete shape.
 
 ### Merging several regions
 
@@ -196,7 +196,7 @@ Memory tracks the box, not the source: nothing is re-written to disk and nothing
 
 OSM ways draw the *coast*, but not the sea or the land fill. Those come from a separate global dataset of land polygons, clipped to the map's bounding box and added as features styled `natural.land`. The sea needs no geometry at all: it's the **backdrop** the renderer clears to before drawing, and land is simply painted on top.
 
-That dataset is ~950 MB, downloaded and unpacked once into a shared cache that every host points at — the CLI, the dev server and the desktop app between them keep one copy, not three. Both steps are the packer's own code rather than a `curl` and an `unzip` it hopes are installed: it is the same binary inside a shipped app, where neither is a safe assumption and where a subprocess could not be cancelled or asked how far along it is.
+That dataset is ~950 MB, downloaded and unpacked once into the packer's shared cache, so CLI and bakery runs reuse one copy. Both steps are the packer's own code rather than a `curl` and an `unzip` it hopes are installed, which keeps the operation portable, cancellable, and able to report progress. The first clip in a process scans the shapefile's record headers into a compact offset-and-bounds index; later planet leaves seek straight to intersecting polygon bodies instead of rescanning more than a gigabyte for every leaf.
 
 <figure class="fig">
 <svg viewBox="0 0 720 230" role="img" aria-label="The global land-polygons dataset, a world map of land shapes, is clipped to the map's bounding box, producing land faces. On the device these are drawn over a sea-coloured backdrop, so land sits on top of sea.">
@@ -448,7 +448,7 @@ The graph so far is bike-*legal* but undifferentiated: every edge costs its metr
 
 **Way-kind** is one byte per edge, `way_kind = (surface_class << 5) | highway_class` — a 5-bit **highway class** (0 `cycleway`, 1 `path`, 2 `track`, 3 `footway`, … 10 `tertiary`, 11 `secondary`, 12 `primary`, and 13 `trunk_cycl` for a bike-legal trunk) and a 3-bit **surface class** (`paved`, `compacted`, `gravel`, `dirt`, `rough`, `cobbles`, `grass`, plus `unknown`). Both tables are **locked** and config-free — the same OSM extract always yields the same bytes — and they are the *single vocabulary* profiles are written against. The full canonical table is [`OBCM_Spec.md` §8.6](src:specs/OBCM_Spec.md) (mirrored from the one source of truth, `nav.rs`); the device never sees a raw OSM tag, only this byte.
 
-A **profile** is a display name plus a multiplier for every highway class and every surface class, stored in `1/16` fixed-point (so `16` = 1.0×, and `0` means **forbidden** — that class is dropped from the profile's graph entirely). The map carries 1–8 of them (the default pack ships four); the device's effective weight for an edge is `(highway_mult × surface_mult) >> 4`. Here are the four default profiles' highway weights for a handful of classes (the [preset](src:builder/presets/default.json) has the rest, plus the surface axis):
+A **profile** is a display name plus a multiplier for every highway class and every surface class, stored in `1/16` fixed-point (so `16` = 1.0×, and `0` means **forbidden** — that class is dropped from the profile's graph entirely). The map carries 1–8 of them (the default pack ships four); the device's effective weight for an edge is `(highway_mult × surface_mult) >> 4`. Here are the four default profiles' highway weights for a handful of classes (the [shipped schema](src:builder/presets/schema.json) has the rest, plus the surface axis):
 
 | highway class | Road | Gravel | MTB | Touring |
 |---|---|---|---|---|
@@ -556,7 +556,7 @@ for i in 0..lods.len() {                              // coarse (0) → fine
 
 ### The quadtree: packing geometry into chunks
 
-Within a tier, features are bucketed into a quadtree over the global bounding box. A node holds every feature reaching it; if their combined packed size — `12 + point_count·4` bytes each — fits the chunk size it becomes a leaf, otherwise it **splits** into four (NW · NE · SW · SE), hands each child the features it reaches, and recurses. A feature that straddles a child boundary is **clipped** to each child's box. The four child subtrees are built **in parallel** — they share no state, and only plain geometry (never a live GEOS handle) crosses a thread — which is what keeps the per-LOD build, otherwise the packer's heaviest stage, off the critical path.
+Within a tier, features are bucketed into a quadtree over the global bounding box. A node holds every feature reaching it; if their combined packed size — budgeted at `12 + point_count·4` bytes each, a deliberate over-estimate of the [7-or-12-byte header](../formats/#features-an-anchor-then-deltas) and 16-bit-worst-case deltas — fits the chunk size **and** every feature fits the reader's per-feature ring cap (32 rings: exterior + 31 holes), it becomes a leaf, otherwise it **splits** into four (NW · NE · SW · SE), hands each child the features it reaches, and recurses. The ring test matters because bytes don't imply it: at a coarse tier a [merged](#building-the-lod-pyramid) forest can carry dozens of clearings on a handful of simplified vertices, and the device would drop such a feature whole rather than truncate it — splitting instead clips it, spreading the holes across the children. A feature that straddles a child boundary is **clipped** to each child's box. The four child subtrees are built **in parallel** — they share no state, and only plain geometry (never a live GEOS handle) crosses a thread — which is what keeps the per-LOD build, otherwise the packer's heaviest stage, off the critical path.
 
 <figure class="fig">
 <svg viewBox="0 0 720 290" role="img" aria-label="A region with features being bucketed into a quadtree. A dense corner has been subdivided into four smaller cells, one of them subdivided again. A line feature crossing a cell boundary is clipped into two pieces, one per cell.">
@@ -600,8 +600,9 @@ Within a tier, features are bucketed into a quadtree over the global bounding bo
 
 ```rust
 let total: usize = feats.iter().map(|f| 12 + pt_count(&f.geom) * 4).sum();
-if total <= chunk_size || !splittable {
-    return Node::Leaf { bbox, features: feats };   // fits the chunk → a leaf
+let fits = total <= chunk_size && feats.iter().all(|f| ring_count(&f.geom) <= MAX_FEAT_RINGS);
+if fits || !splittable {
+    return Node::Leaf { bbox, features: feats };   // fits the chunk + the reader's caps → a leaf
 }
 // too big → split NW/NE/SW/SE, clip straddlers into each child, recurse in parallel
 let (nw, ne, sw, se) = distribute_to_quadrants(feats, bbox);
@@ -612,77 +613,153 @@ That this is the *same* quadtree the device walks closes the loop with the other
 
 ### The builder
 
-Everything above hides behind an app that turns *"I want a map of the Black Forest"* into an `.obcm` — pick an area on a map (whole [Geofabrik](https://download.geofabrik.de/) regions, or a [drawn box](#cropping-to-a-box) the sources are cropped to), pick a style, build, and then either take the file or [put it on the device](#build-plug-in-send). Four ideas shape it:
+The builder no longer runs the packer as a product feature. The expensive,
+schema-dependent work happens once in the bakery; both shipping products consume
+the same published cell catalog. That removes a second map pipeline and makes
+"same coverage + same skin" mean identical assembled bytes on the web and
+desktop.
 
-- **Presets over knobs.** The main page offers complete style presets — Bikepacking and High detail — each a full packer config shipped in [`builder/presets/`](src:builder/presets) and directly usable with the CLI. An advanced editor still exposes every field the packer accepts (per-feature styling, LOD tiers, the bike-type routing profiles baked into the map, output settings), so nothing is lost for fine-grained work; exports are, again, plain CLI configs.
-- **A preset shows what it draws.** Every preset card renders a small demo map, packed from *that preset's own config*, through the device's own renderer at the panel's 240×320 — a picture of the styling rather than a description of it, and the selected card can be dragged and zoomed. Every preset's demo map is cut from **one source extract at one bounding box** ([`bake-previews.sh`](src:builder/bake-previews.sh)), so the cards differ by style and by nothing else; the camera frames that same box on each, never a map's own header bounds, which the packer's complete-ways crop widens by a different amount per preset. This matters most where there is no editor to fall back on: on the hosted site, presets *are* the styling.
-- **The binary is the schema authority.** The same typed serde model owns the config's field names, types, optionality, and defaults; `schemars` derives its structural JSON Schema, then the packer adds the few semantic rules Rust types cannot express alone (serializer capacities, routing vocabularies, and UTF-8 byte limits). `obc-pack schema` serves that generated contract, and the editor derives its capability from it. When the format grows — as v10's line styles (`line_style`, `color2`) did — the new fields appear because the *model* changed, rather than through a second hand-maintained frontend contract. A deterministic checked-in schema lets the local dev server start without a built binary, and a Rust test rejects that fallback if regeneration was forgotten; the desktop app has no fallback to reach for, because there the schema comes out of the packer it is linked against.
-- **No state anywhere.** The working config lives in the browser ("Custom — based on Bikepacking"), never on a server; builds stream their progress live. That shape survives having no server at all, which is what the two shipping tiers below actually do.
-- **The firmware's own code runs in the tab.** The GPX→OBCR converter is `no_std` Rust, so it compiles to wasm ([`obc-web-convert`](src:apps/obc-web-convert)) — the same routine the device runs, producing the same bytes, held to the [shared fixtures](src:specs/vectors). Dropping a route on the builder uploads nothing; the same shim also turns a recorded `.obct` ride log back into a GPX. The reader and renderer compile the same way ([`obc-web-preview`](src:apps/obc-web-preview)), which is what makes the preset previews above real renderings rather than screenshots someone has to remember to retake. Both modules load only when something needs them. Map building is the part that still needs real CPU.
+Coverage is composed from three kinds of parts:
+
+- named regions, whose exact per-band cell ids are stored in the catalog;
+- boxes, resolved directly against the global cell grid;
+- corridors, formed by buffering dropped GPX routes and resolving the resulting
+  shape against that same grid.
+
+The parts are unioned before pricing, so overlaps never charge or download a
+cell twice. Partial cells remain visible as warnings. The selected cells are
+downloaded with byte-length and SHA-256 checks, then passed to
+[`obc-web-assemble`](src:apps/obc-web-assemble) in a worker. Cancelling
+terminates the worker; there is no verification bypass.
+
+The same digest appears in each referenced object's published key. Cells,
+per-band indexes, region cell lists, and previews are therefore immutable below
+one root: a CDN can keep serving an older root and its objects while a new root
+propagates, and unchanged planet cells keep their existing keys instead of being
+uploaded into a duplicate generation directory.
+
+### Editing a skin
+
+Default and Dusk remain catalog objects with digest-pinned Teningen preview
+images. **Customize** clones either one into the product skin editor shared by
+the website and desktop app. It exposes only colours (including the optional
+second colour), line widths, dashes, drawing order, and the route-marker colour.
+Feature types, style ids, LODs, routing, and the inherited overflow priority are
+not editable there, so a product restyle cannot turn into a new cell schema.
+
+The editor lazy-loads one canonical Teningen `.obcm` and
+[`obc-skin-preview`](src:apps/obc-skin-preview) only while it is open. Every edit
+restamps the resident style table and renders a 240×240 scene through
+`obc-reader` and `obc-render`; the preview therefore uses the device palette and
+renderer rather than a browser approximation. It opens over Teningen at
+5 m/px, then supports pointer-drag panning, cursor-centred wheel zoom, keyboard
+camera controls, and a reset button. The camera stays inside the fixture while
+the production LOD selector moves across the complete published ladder; the
+caption reports its actual m/px and selected LOD. Closing the editor releases
+the map, renderer, and frame.
+
+Saving creates a browser-local custom skin. Its record is pinned to the current
+catalog schema id and revision and must still cover the exact schema-ordered
+feature list when reloaded; stale or malformed records are ignored. The custom
+skin is handed to the same assembler as a hosted skin, so it changes the stamped
+presentation bytes without changing which cells are fetched. Its picker card is
+also a real Teningen render: on load, one temporary preview instance restamps
+all saved skins in turn and keeps only their RGBA frames. PNG/base64 thumbnails
+are not persisted in browser storage, so they cannot consume the storage quota
+or outlive a renderer/schema update.
 
 ### One source, three hosts
 
-Map building is memory-hungry, runs one job at a time, and costs a country's worth of CPU per user — so it cannot be *hosted*, and the builder is built three ways from one Svelte source. Which host is compiled in is a build-time alias, so the two you didn't build never enter the bundle.
+One Svelte source is compiled for the static website, the Tauri desktop app, and
+the local maintainer server. Host modules provide only capabilities at the
+edges—catalog transport, file output, USB, ride storage—not alternate selection
+or assembly algorithms.
 
-| | serves a map by | runs the packer |
-| :-- | :-- | :-- |
-| **Static site** | handing over an artifact baked once, centrally | no — see below |
-| **Desktop app** | building it on your machine | yes, in-process |
-| **`python -m builder.server`** | building it on your machine | yes, as a subprocess |
+| | Static website | Desktop app | Maintainer server |
+| :-- | :-- | :-- | :-- |
+| Catalog coverage UI | yes | yes | yes |
+| Regions, boxes, GPX corridors | yes | yes | yes |
+| Shared wasm assembly | yes | yes | yes |
+| Product skin editor | yes | yes | yes |
+| Output | browser downloads | grouped local folder | browser downloads |
+| Advanced schema editor | no | no | yes |
+| Native fixed-crop schema preview | no | no | yes |
+| Product PBF build | no | no | no |
+| Managed ride library and device dashboard | no | yes | no |
 
-The Python server is the local development host; the two the world sees are the other two. What the desktop app adds is the two things a browser tab does not have — real CPU and a real filesystem — plus universal USB reach (WebUSB is Chromium-only). Custom styles, [cropping to a box](#cropping-to-a-box), a rides folder and the cable path for Safari/Firefox users all follow from those:
+The website uses browser fetch. The desktop root, satellites, and cells use its
+native HTTP client and are restricted to the configured catalog origin; this is
+how the same catalog works without widening the webview's content-security
+policy. The desktop writes every file of one assembled volume set into a unique
+folder under `Documents/OpenBikeComputer`, using a temporary file and atomic
+rename for each part. It closes the folder only after the assembler emits and
+verifies the manifest; cancellation or failure discards the incomplete folder.
+In a browser, files already handed to the download manager cannot be recalled,
+so the failure card names how many incomplete downloads the user should discard.
+Saving changes where bytes land, never what the assembler emitted.
 
-| | Hosted site | Desktop app |
-| :-- | :-- | :-- |
-| Prebuilt regional maps, in a few preset styles | yes | yes |
-| Custom styles, the style editor | no | yes |
-| Cropping to a box | no — whole regions only | yes |
-| Drag-and-drop route conversion | yes | yes |
-| Writing a map, route or firmware over USB | Chromium only | every OS |
-| A map you just built, straight onto the device | — nothing is built here | [one click](#build-plug-in-send) |
-| Ride export | one-shot GPX, no record kept | a managed library |
-| Device dashboard, settings editor | no | yes |
+The local Python server remains useful while developing the one hosted schema.
+Its Maps tab resolves `OBC_CATALOG_URL` at server runtime and proxies only the
+configured catalog tree, avoiding both a stale build-time `./data/catalog.json`
+fallback and a dependency on object-storage CORS. Its Advanced route reads the
+real packer JSON Schema, exports a complete config, and keeps working state in
+the browser. On a new browser profile, the route snapshots the sole buildable
+schema preset once; a restored or imported working config always wins, and a
+future shelf with multiple buildable schemas requires an explicit choice rather
+than silently picking one.
 
-The hosted site covers the whole *"pick a region, pick a style, put a map and a route on the device"* loop for someone who does not want to install anything. What it cannot do, it says at the moment you reach for it — a disabled control that explains itself, never a hidden feature.
+That route also provides a deliberately **semi-live schema lab**. One setup
+command reuses or downloads Freiburg-regbez and has Osmium atomically prepare a
+small, reference-complete crop around Teningen. Schema edits are debounced and
+cancel the superseded request; the server gives only that fixed source, one
+temporary config, and one temporary output to the exact native `obc-pack`
+binary. There is no request-controlled path or command, only one pack process
+at a time, and a timeout terminates it. Packing the small crop typically takes
+5–15 seconds, so this is feedback after an edit rather than a frame-by-frame
+restyle.
 
-*Reaching for it* is the load-bearing half, and it decides both how the explanation appears and whether the dead control is there at all. A disabled control in the column of steps keeps its sentence underneath, where it reads as part of the step; the map's greyed-out **Draw box** instead holds its reason until it is pointed at, because a paragraph parked over the map is something every visitor reads and almost none of them were asking. And where the step already ends in a map, nothing is greyed: the hosted **Download** step hands one over, so *"build your own"* is a thing to go and find on the desktop page rather than a dead button underneath the file you just got.
+The resulting OBCM is opened without restamping and rendered through the same
+`obc-reader` + `obc-render` bridge on a 240×320 device map plane. Controls visit
+every authored LOD by its real m/px dispatch. The panel reports features tried,
+drawn and dropped; chunks and points; the 2,048-point/32-ring per-feature decode
+limits; and the production 1,152-span/4,768-point/1,024-ring frame limits and
+errors. It is therefore honest about the device's selection pressure, not a
+browser drawing of what the schema might mean.
 
-**The packer is a library, not a subprocess.** The dev server spawns `obc-pack` and reads its stdout to guess which stage it is in; the app links the crate and calls [`pipeline::pack`](src:host/obc-pack/src/pipeline.rs) — the same function the CLI's `main` calls, which is what makes "the app and the CLI produce the same bytes" a property rather than a hope. Two consequences are visible in the UI. The packer *names* its phases now instead of printing them for something else to match, so the progress bar reads a value; and a build can be **cancelled**, because the flag that stops it is read inside the ingest passes, the land clip, and the per-feature simplify, rather than between them.
+This remains a maintainer-only preview, not a fourth product build path. It
+never cuts published cells, bakes a region, or teaches the website or desktop
+app to accept a local PBF. An exported schema becomes published only through an
+explicit maintainer bake; riders never accidentally trigger a country-scale
+compile.
 
-#### Build, plug in, send
+### Device and ride surfaces
 
-A build lands as a real file in a folder you can back up, and the device step then offers it directly — putting a fresh map on the computer is a click rather than a trip through a card reader. The bytes never enter the webview: the map is already on the same disk as the process that owns the USB endpoint, so the window hands over a **path**, and the several hundred megabytes go disk → endpoint inside Rust. The browser tier cannot do this — a page has no paths — so the same surface there streams a scratch file through the tab. One protocol, two ways of feeding it.
+The assembled multi-file set can either be saved or streamed directly to a
+connected device. Direct send keeps one verified shard in flight, waits for the
+device before releasing it, and commits the manifest last; cancellation abandons
+an incomplete set. Manual single-file upload remains for maps obtained elsewhere.
+There is no old whole-region catalog fallback hiding behind that button.
 
-A build is never streamed straight into the cable with no file in between: the transfer descriptor announces the object's length and CRC-32 **before the first byte moves**, and neither is known until the packer has written its last chunk — so the `.obcm` has to exist first.
+Routes and firmware still use the shared object protocol. The cable also runs in
+the other direction: the desktop app maintains a durable ride library, writes a
+GPX plus the device's original ride object, and acknowledges a ride only after
+the files and index are fsynced. The browser offers one-shot export and does not
+acknowledge it as durable.
 
-#### The rides come back the same way
-
-The cable runs both directions, and the return trip is the one an Android or no-phone rider has no other answer for: without a companion app, a recorded ride has nowhere to go. The app keeps a **managed folder** — a real directory you can relocate, back up and open in Finder — with one small `index.json` and, per ride, two files: a **GPX** (what everything else reads) and the device's own **ride object**, byte for byte (the GPX export omits `<time>`, and the original bytes let a better exporter be re-run over an old ride).
-
-What makes this more than a download folder is that the device is *told*. A ride the app holds is flagged `synced`, which lets the rider delete it on the device without a warning — and starts its [auto-delete countdown](../companion-link/#synced-rides-reconciled-state-not-event-inference). That flag is a durability claim, so the app earns it in order: write, `fsync`, rename, `fsync` the directory, commit the index, *then* ack. It is also why the browser tier keeps a one-shot export and no library: a download the rider can cancel at the save dialog is not a durable copy, so the hosted ride panel never acks.
-
-#### The card, in the open
-
-With a cable that lists as well as writes, the app can treat the device like the storage it is. Its **Device page** shows what the card holds: every route with the facts its list entry carries — including the retention clock — and every trip as the group of routes the device's own menu shows. Routes can be previewed (the stored polyline read back through the same [`obc-route`](src:firmware/obc-route) reader the device draws from), renamed, deleted, and gathered into trips; dropping several GPX files at once offers to make the stages of a named trip in one motion. None of it needed a protocol feature: an upload to an existing id **replaces the object atomically**, so a rename is download-patch-replace under the same id, and a trip edit rewrites an object of a few dozen bytes. Rides are the deliberate exception — over the cable they are read-only, because deletion is the one act the [sync semantics](../companion-link/#synced-rides-reconciled-state-not-event-inference) reserve for the device itself: a ride that only exists on the card must never be losable from a desk.
-
-**The app brings its own dependencies.** Linking the packer means inheriting its one native dependency — libGEOS, the C++ library behind [area assembly](#ingest-two-passes-then-assemble), the simplify, and the [quadtree clip](#the-quadtree-packing-geometry-into-chunks). A developer can `brew install geos`; someone who downloads an app must not have to. So the desktop build compiles GEOS **from vendored sources, statically, into the binary**, while the workspace build keeps using the system library — and that the two agree is asserted, not assumed: the same fixture packed through each produces the same digest on all three platforms. The same reasoning removed the last two shell-outs (`curl` and `unzip` for the land dataset — `unzip` is not a Windows program); both are Rust now, which also made the download cancellable and gave it a progress percentage.
-
-### The static tier, with no packer behind it
-
-The site with no back end serves maps that were baked once and listed in a [catalog manifest](../formats/#the-catalog-a-third-format-for-finding-the-first-two). The region picker is the same map; what changes is where a region's contents come from.
-
-Three states, and the interesting one is the third. A region the bakery has built is shaded and clickable, and says what the download is: size, build date, and the date of the OSM extract it was packed from. A region nobody has baked is greyed with the reason and a way forward rather than a dead click. And a map whose `obcm_version` the *connected device* cannot read is shown as **unsupported with the reason** — not hidden, because hiding it would make a rider's out-of-date firmware look like a hole in the coverage, and not offered either, because the download would be a file the device refuses. That is [OBCC §6(c)](src:specs/OBCC_Spec.md) as a UI state; with nothing plugged in there is no such judgement to make, so the map is offered and its version stated.
-
-Regions **nest** — a country and its states can be baked independently — and the manifest is explicit that neither substitutes for the other: they cover different areas at very different sizes. So the picker never quietly swaps one for the other. An unbaked region instead *names* the baked region that contains it and the baked regions inside it, each with its own size, and the rider chooses. What it cannot offer is a smaller piece of one: there is no packer here to crop with, so the download is the whole region, and the panel says so at the moment of selection rather than in a footnote.
-
-The last step is the one that protects the card. A downloaded artifact is checked against the manifest's byte count and SHA-256 **before** it is written anywhere, so a truncated response or a bad publish is an error message in the browser rather than a map that fails on a mountain. That is why the whole file is buffered first: a digest can only be checked over complete bytes.
+With a connected device, the desktop Device page lists routes and trips, supports
+rename/delete/group operations, and keeps rides read-only so a ride that exists
+only on the card cannot be lost from a desk.
 
 ### Where the hosted tier lives
 
-There is no backend: the site is a directory of files, built from `develop` on every push as a **single artifact with four surfaces** — the landing page and its live device demo at the root (the firmware's own render path [compiled to wasm](../architecture/)), `/docs/` and `/blog/`, and the builder at `/builder/` with the region index baked in beside it ([`deploy-site.yml`](src:.github/workflows/deploy-site.yml)).
+The website has no map-building backend. It is deployed as static assets, while
+the catalog and cells live on separately published object storage. The catalog
+root can therefore change without redeploying the site, and the bakery can keep
+its essential content-first, root-last publish order.
 
-Two properties are worth keeping. **Nothing in the artifact knows where it is mounted** — every asset URL is relative, so the same bytes work under a project-Pages sub-path or at the root of a domain, and the deploy proves it each time by serving the artifact from a deep prefix. And **a static host will not set your headers**: GitHub Pages serves one fixed cache policy, which is why the [catalog manifest](../formats/#the-catalog-a-third-format-for-finding-the-first-two) is published *with the map artifacts*, on storage the bakery writes to, rather than beside the site — a manifest baked into the site could only change by redeploying it. (The same restriction means no COOP/COEP headers, so no `SharedArrayBuffer` and no threaded wasm; everything shipped today is single-threaded and unaffected.)
-
+All frontend asset URLs remain mount-relative, so the same site artifact works
+at a domain root or under a project-pages prefix. Catalog object URLs come from
+the catalog root and are digest-verified before use.
 ## Following a route
 
 You plan a route elsewhere and upload a GPX. Converting it to an `.obcr` — decimating the geometry for drawing while keeping the stats exact, then chunking it with shared seams — is covered on the [data formats](../formats/#obcr-the-route) page. The converter is one portable `no_std` routine, so it runs on the device, in the simulator, or in a browser tab.
@@ -801,7 +878,7 @@ let (back, fwd) = if !self.started {
 - The packer pipeline, end to end and callable from either host: [`obc-pack/src/pipeline.rs`](src:host/obc-pack/src/pipeline.rs); the phase vocabulary and the cancel token it carries: [`obc-pack/src/progress.rs`](src:host/obc-pack/src/progress.rs); the CLI around it: [`obc-pack/src/main.rs`](src:host/obc-pack/src/main.rs)
 - Config + first-match styling: [`obc-pack/src/config.rs`](src:host/obc-pack/src/config.rs)
 - The config's generated JSON Schema fallback (served from the live model by `obc-pack schema`): [`obc-pack/schema/config.schema.json`](src:host/obc-pack/schema/config.schema.json)
-- The builder's Svelte source and its local FastAPI dev host: [`builder/server/`](src:builder/server); the desktop app that links the packer instead of spawning it: [`obc-desktop`](src:apps/obc-desktop); the browser-side GPX↔OBCR conversion (wasm over `obc-route`): [`obc-web-convert`](src:apps/obc-web-convert)
+- The shared catalog builder UI and maintainer FastAPI host: [`builder/`](src:builder); the desktop shell and native transport: [`obc-desktop`](src:apps/obc-desktop); browser-side GPX↔OBCR conversion and cell assembly: [`obc-web-convert`](src:apps/obc-web-convert) and [`obc-web-assemble`](src:apps/obc-web-assemble)
 - OSM ingest + relation assembly: [`obc-pack/src/ingest.rs`](src:host/obc-pack/src/ingest.rs)
 - The quadtree build: [`obc-pack/src/quadtree.rs`](src:host/obc-pack/src/quadtree.rs)
 - Land generation: [`obc-pack/src/land.rs`](src:host/obc-pack/src/land.rs)

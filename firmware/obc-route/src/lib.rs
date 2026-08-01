@@ -20,7 +20,7 @@
 //!   table the converter categorises imported waypoints with.
 //!
 //! Coordinates are integer microdegrees (1e-6 degrees) like the map; distances and
-//! elevations are whole meters. [`obc_reader::BBox`] is reused for bounding boxes so
+//! elevations are whole meters. [`obc_map_scene::BBox`] is reused for bounding boxes so
 //! the renderer can compare a route chunk against the map [`Viewport`]'s bbox without
 //! conversion.
 //!
@@ -58,16 +58,10 @@ pub use climb_profile::{ClimbProfile, COLS as CLIMB_PROFILE_COLS};
 pub use convert::{gpx_to_obcr, RouteStats};
 pub use corridor::{Corridor, CORRIDOR_WIDTH_M, MIN_DETOUR_SPAN_M};
 pub use deadband::{DeadBand, Elev, ELE_DEADBAND_M};
-pub use geo::{cos_lat, ground_dist_m, ground_dist_m_cl, tri_area_m2, tri_area_m2_cl};
+pub use geo::{tri_area_m2, tri_area_m2_cl};
 pub use gpx::{GpxScanner, RawPoint, RawWaypoint, WptScanner, WAYPOINT_SYMBOL_CAP};
 pub use matcher::{Match, RouteMatch};
 pub use nav::{plan_detour, plan_route, NavError, NavPhase, NavPlanner, NavScratch, Step, NAV_MAX_NODES};
-// `obc-formats` owns the byte-I/O seam. `Error` is re-exported here **solely** so obc-route's own
-// public GPX/OBCR writer signatures (`track_to_gpx` and the `ByteSink::{write, patch_at}` helpers)
-// can name it as `obc_route::Error` — it is not a downstream byte-I/O path. Every consumer, obc-route
-// included, imports the seam (`ByteSource` / `ByteSink` / `SliceSource` / `Error`) from
-// `obc_formats::io` directly.
-pub use obc_formats::io::Error;
 pub use profile::{
     elevation_sparkline, ride_elevation_profile, ride_preview_polyline, Profile, Window, PROFILE_COLS,
     SPARKLINE_BUCKETS,
@@ -81,7 +75,5 @@ pub use splice::{
     splice_detour, trim_detour_to_tail, SpliceStep, Splicer, TrimOutcome, TRIM_CONTACT_M, TRIM_LOOKAHEAD_M,
 };
 pub use symbol::category_for_symbol;
-pub use track::{decode_record, encode_record, track_to_gpx, TrackPoint};
+pub use track::track_to_gpx;
 pub use trip::{trip_object_len, write_trip, TripMeta, TripSummary, MAX_TRIP_STAGES, TRIP_HEADER_LEN, TRIP_VERSION};
-
-pub use obc_reader::BBox;

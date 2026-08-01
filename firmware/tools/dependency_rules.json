@@ -36,11 +36,13 @@
       "obc-pack",
       "obc-replay",
       "obc-sim",
+      "obc-skin-preview",
       "obc-usb-host",
       "obc-vectors",
+      "obc-web-assemble",
       "obc-web-convert",
       "obc-web-demo",
-      "obc-web-preview",
+      "obcm-assemble",
       "obcm-testkit"
     ],
     "standalone": [

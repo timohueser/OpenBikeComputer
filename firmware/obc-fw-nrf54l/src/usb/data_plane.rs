@@ -20,7 +20,6 @@
 //! render interleaves between chunks. This is the property Mass Storage could not have offered.
 
 use core::cell::RefCell;
-use core::sync::atomic::Ordering;
 
 use defmt::{info, warn};
 use embassy_futures::select::{select, Either};
@@ -31,6 +30,7 @@ use embassy_usb::driver::{Endpoint as _, EndpointIn, EndpointOut};
 use obc_ble::{ObjectType, Receiver, StatusMessage, TransferControl, TransferStatus};
 
 use crate::link::identity;
+use crate::link::stage::Stage;
 use crate::link::{transfer_result, transfer_result_at, Armed, TRANSFER_ACTIVE};
 use crate::object_store::ObjectStore;
 use crate::SharedStoreMutex;
@@ -64,7 +64,7 @@ enum TransferOutcome {
 /// latched abort first; an abort arriving after the clear belongs to the next descriptor.
 fn close_transfer() {
     let _ = TRANSFER_ABORT.try_take();
-    TRANSFER_ACTIVE.store(false, Ordering::Relaxed);
+    TRANSFER_ACTIVE.release(crate::link::gate_owner(crate::link::Transport::Usb));
 }
 
 /// Serve the armed transfers forever. Parks on `wait_enabled` before configuration and after an
@@ -75,6 +75,7 @@ pub(crate) async fn run(
     mut ep_in: EpIn,
     mut ep_out: EpOut,
     buf: &'static mut [u8],
+    stage_buf: &'static mut [u8],
     store: &RefCell<ObjectStore>,
     shared: &SharedStoreMutex,
 ) -> ! {
@@ -101,7 +102,18 @@ pub(crate) async fn run(
             };
             let outcome = match armed {
                 Armed::Echo(desc) => run_echo(tx, &mut ep_in, &mut ep_out, &desc, buf).await,
-                Armed::Upload(desc, rx) => run_upload(tx, &mut ep_out, store, shared, &desc, rx, buf).await,
+                Armed::Upload(desc, rx) => {
+                    let target = if desc.ty == ObjectType::Map { MapTarget::Map } else { MapTarget::Object };
+                    run_upload(tx, &mut ep_out, store, shared, &desc, rx, target, buf, stage_buf).await
+                }
+                Armed::SetShard(desc, rx, part) => {
+                    let target = MapTarget::Shard(part);
+                    run_upload(tx, &mut ep_out, store, shared, &desc, rx, target, buf, stage_buf).await
+                }
+                Armed::SetManifest(desc, rx) => {
+                    let target = MapTarget::Manifest;
+                    run_upload(tx, &mut ep_out, store, shared, &desc, rx, target, buf, stage_buf).await
+                }
                 Armed::Download(desc) => run_download(tx, &mut ep_in, store, shared, &desc, buf).await,
             };
             if let TransferOutcome::LinkDropped = outcome {
@@ -112,17 +124,47 @@ pub(crate) async fn run(
         // The endpoint went away (an unplug, or the host re-configured). Discard any in-flight
         // upload, release the store's open handles, clear the one-transfer gate, and drain any
         // latched arm/abort so the next enumeration starts clean.
+        //
+        // The set teardown is **here** rather than inside `link_reset`, because this is the one
+        // place that knows the *cable* is what went away: `link_reset` also runs on a BLE
+        // disconnect, and a phone walking out of range must not delete gigabytes the cable is
+        // mid-way through writing. Nothing survives an unplug — the set has no manifest, so it is
+        // not a map, and there is no way to resume it on the next enumeration (spec §1 principle 4).
         {
             let mut guard = shared.lock().await;
             store.borrow_mut().link_reset(&mut guard);
+            store.borrow_mut().set_upload_abort(&mut guard);
         }
-        TRANSFER_ACTIVE.store(false, Ordering::Relaxed);
+        TRANSFER_ACTIVE.release(crate::link::gate_owner(crate::link::Transport::Usb));
         TRANSFER_ARM.reset();
         TRANSFER_ABORT.reset();
         // `wait_enabled` returns immediately while the endpoint is still up, so a *persistent*
         // driver-level error would hot-spin this loop — and on a cooperative executor that starves
         // the ride loop, freezing the map. Back off a beat, like the BLE CoC accept loop.
         Timer::after_millis(200).await;
+    }
+}
+
+/// Which final file a map-shaped upload streams into. All three of these hold their format magic
+/// back and stream straight into the file they will commit as; everything else stages through
+/// `/routes/UPLOAD.TMP` and is copied.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MapTarget {
+    /// Not a map at all: the ordinary temp-then-promote path.
+    Object,
+    /// A single map — `MP{id}.OBM`, id minted at the first byte (#927).
+    Map,
+    /// One shard of the volume set in flight — `MS{id}S{kk}.OBM` (#1039). The part says which.
+    Shard(obc_ble::SetPart),
+    /// The set manifest — `MS{id}.OBS`, and the commit point of the whole set (`OBCA_Spec.md` §5.4).
+    Manifest,
+}
+
+impl MapTarget {
+    /// Whether this target withholds its leading four magic bytes (and therefore whether the
+    /// stream's file offset starts at [`obc_ble::MAGIC_LEN`] rather than 0).
+    fn holds_magic(self) -> bool {
+        !matches!(self, MapTarget::Object)
     }
 }
 
@@ -136,7 +178,9 @@ async fn run_upload(
     shared: &SharedStoreMutex,
     desc: &TransferControl,
     mut rx: Receiver,
+    target: MapTarget,
     buf: &mut [u8],
+    stage_buf: &mut [u8],
 ) -> TransferOutcome {
     info!("usb: [bulk] upload start: {} bytes (type {})", desc.total_len, desc.ty.as_u8());
     // A **map** (#927) is the one type that does not stream into `/routes/UPLOAD.TMP`: at hundreds
@@ -144,7 +188,12 @@ async fn run_upload(
     // space required, so a map streams straight into its final `MP{id}.OBM` with its first four bytes
     // — the OBCM magic — withheld here and patched in at commit. `map_id` is the assigned object id,
     // carried in this frame because a map holds no slot in the store to remember it in.
-    let is_map = desc.ty == ObjectType::Map;
+    //
+    // A volume set (#1039) is the same shape N+1 times over: every shard and the manifest stream
+    // into their own final name with their own magic held back, and `map_id` carries the **set** id
+    // the store minted at the first shard. The one difference that matters is *between* the
+    // transfers, and it lives in the store's session, not here.
+    let holds_magic = target.holds_magic();
     let mut held = obc_ble::HeldMagic::new();
     let mut map_id = 0u16;
     // Open the SD file here — at the first real byte — rather than when the control plane armed it:
@@ -152,32 +201,41 @@ async fn run_upload(
     // wedges its own one-transfer gate until it unplugs).
     let began = {
         let mut guard = shared.lock().await;
-        if is_map {
-            match store.borrow_mut().map_upload_begin(&mut guard) {
-                Some(id) => {
-                    map_id = id;
-                    true
-                }
-                None => false,
+        let opened: Option<u16> = match target {
+            // The temp path has no id to hand back; `0` stands in and is never reported (the
+            // commit's own `upload_finish` returns the assigned one).
+            MapTarget::Object => store.borrow_mut().upload_begin(&mut guard).then_some(0),
+            MapTarget::Map => store.borrow_mut().map_upload_begin(&mut guard),
+            MapTarget::Shard(part) => store.borrow_mut().set_shard_begin(&mut guard, part),
+            MapTarget::Manifest => store.borrow_mut().set_manifest_begin(&mut guard),
+        };
+        match opened {
+            Some(id) => {
+                map_id = id;
+                true
             }
-        } else {
-            store.borrow_mut().upload_begin(&mut guard)
+            None => false,
         }
     };
     if !began {
         warn!("usb: [bulk] cannot open the upload target — rejecting");
-        if is_map {
+        if holds_magic {
             crate::link::map_transfer_storage_failed();
         }
         close_transfer();
         tx.send_status(transfer_result(rx.object_id(), TransferStatus::Error)).await;
         return TransferOutcome::Answered;
     }
-    if is_map {
+    if holds_magic {
         // Raise the on-glass card now: from here the SD bus is saturated for minutes and the map
         // plane's own reads queue behind this transfer. Unexplained, that reads as a wedged device.
+        // A set raises it once per file rather than once per set — the card tracks the transfer in
+        // flight, and per-set aggregation needs a UI that knows a set is one map (P4d).
         crate::link::map_transfer_started(rx.total_len());
     }
+    // A map's placeholder magic is already on the card (`map_upload_begin` and its set twins), so
+    // its payload starts at file offset 4 — the stage needs that or every flush lands misaligned.
+    let mut stage = Stage::new(stage_buf, if holds_magic { obc_ble::MAGIC_LEN } else { 0 });
     let started = Instant::now();
     while !rx.is_complete() {
         let n = match select(ep.read(buf), TRANSFER_ABORT.wait()).await {
@@ -189,7 +247,7 @@ async fn run_upload(
                 // answer, and a late `aborted` could be consumed as the next descriptor's result.
                 {
                     let mut guard = shared.lock().await;
-                    discard_upload(&mut store.borrow_mut(), &mut guard, is_map, map_id);
+                    discard_upload(&mut store.borrow_mut(), &mut guard, target, map_id);
                 }
                 info!("usb: [bulk] upload interrupted ({:?}) — discarded", defmt::Debug2Format(&e));
                 close_transfer();
@@ -199,7 +257,7 @@ async fn run_upload(
                 // The host aborted (op 3): discard and confirm.
                 {
                     let mut guard = shared.lock().await;
-                    discard_upload(&mut store.borrow_mut(), &mut guard, is_map, map_id);
+                    discard_upload(&mut store.borrow_mut(), &mut guard, target, map_id);
                 }
                 info!("usb: [bulk] upload aborted by the host");
                 close_transfer();
@@ -209,61 +267,98 @@ async fn run_upload(
         };
         let consumed = rx.push(&buf[..n]);
         // The receiver's CRC always sees every payload byte; only the *write* skips the held magic.
-        let write = if is_map { held.feed(&buf[..consumed]) } else { &buf[..consumed] };
-        let appended = write.is_empty() || {
-            let mut guard = shared.lock().await;
-            store.borrow_mut().upload_append(&mut guard, write)
-        };
+        let write = if holds_magic { held.feed(&buf[..consumed]) } else { &buf[..consumed] };
+        // Into RAM, not onto the card: `stage` appends a batch at a time so the card gets one
+        // multi-block burst instead of a CMD24 per 512 B. It is what makes the fork worth having.
+        let appended = stage.push(write, store, shared).await;
         if !appended {
             {
                 let mut guard = shared.lock().await;
-                discard_upload(&mut store.borrow_mut(), &mut guard, is_map, map_id);
+                discard_upload(&mut store.borrow_mut(), &mut guard, target, map_id);
             }
             warn!("usb: [bulk] SD append failed — upload rejected");
-            if is_map {
+            if holds_magic {
                 crate::link::map_transfer_storage_failed();
             }
             close_transfer();
             tx.send_status(transfer_result(rx.object_id(), TransferStatus::Error)).await;
             return TransferOutcome::Answered;
         }
-        if is_map {
+        if holds_magic {
             crate::link::map_transfer_progress(rx.committed_offset());
         }
+    }
+    // The tail. An object almost never ends on a batch boundary, so the last flush is short by
+    // definition — and until it lands, those bytes exist only in RAM.
+    if !stage.flush(store, shared).await {
+        {
+            let mut guard = shared.lock().await;
+            discard_upload(&mut store.borrow_mut(), &mut guard, target, map_id);
+        }
+        warn!("usb: [bulk] SD append failed on the final flush — upload rejected");
+        if holds_magic {
+            crate::link::map_transfer_storage_failed();
+        }
+        close_transfer();
+        tx.send_status(transfer_result(rx.object_id(), TransferStatus::Error)).await;
+        return TransferOutcome::Answered;
     }
     // The commit target is the object type: a `fwImage` promotes to /UPDATE.BIN in the card root
     // (staging, no catalog id, no store-revision bump — spec §7.6); a `trip` commits into the trip
     // catalog as `TP{id}.OBT` (bumping the *trip* store, §4.3); a `map` patches the held magic into
-    // `MP{id}.OBM` and becomes the selected map (#927); everything else is a route.
+    // `MP{id}.OBM` and becomes the selected map (#927); a set's shard and manifest patch theirs into
+    // `MS{id}S{kk}.OBM` / `MS{id}.OBS`, the manifest last and only after every shard has landed
+    // (#1039); everything else is a route.
     let is_fwimage = desc.ty == ObjectType::FwImage;
     let is_trip = desc.ty == ObjectType::Trip;
     let (id, status) = {
         let mut guard = shared.lock().await;
         let mut st = store.borrow_mut();
-        if is_map {
+        match target {
             // A map shorter than a magic can't reach here — the announce guard rejects anything
             // below a full OBCM header — but the codec is total, so answer `error` rather than
             // fabricate one.
-            let status = match held.take() {
-                Some(magic) => st.map_upload_finish(&mut guard, &rx, map_id, magic),
-                None => TransferStatus::Error,
-            };
-            (map_id, status)
-        } else if is_fwimage {
-            (rx.object_id(), st.fwimage_finish(&mut guard, &rx))
-        } else if is_trip {
-            st.upload_finish_trip(&mut guard, &rx, desc.crc32)
-        } else {
-            st.upload_finish(&mut guard, &rx, desc.crc32)
+            MapTarget::Map => {
+                let status = match held.take() {
+                    Some(magic) => st.map_upload_finish(&mut guard, &rx, map_id, magic),
+                    None => TransferStatus::Error,
+                };
+                (map_id, status)
+            }
+            // A shard's result echoes its **part**, not the set id: that is what the host correlates
+            // its slot against (§4.1's "a correlated close"), and it is what says *which* file of
+            // the set just committed.
+            MapTarget::Shard(part) => {
+                let status = match held.take() {
+                    Some(magic) => st.set_shard_finish(&mut guard, &rx, map_id, part, magic),
+                    None => TransferStatus::Error,
+                };
+                (part.encode(), status)
+            }
+            // The manifest's result carries the **assigned set id** — the one moment the set's
+            // identity crosses the wire, and the answer to "what did my upload become".
+            MapTarget::Manifest => {
+                let status = match held.take() {
+                    Some(magic) => st.set_manifest_finish(&mut guard, &rx, map_id, magic),
+                    None => TransferStatus::Error,
+                };
+                (map_id, status)
+            }
+            MapTarget::Object if is_fwimage => (rx.object_id(), st.fwimage_finish(&mut guard, &rx)),
+            MapTarget::Object if is_trip => st.upload_finish_trip(&mut guard, &rx, desc.crc32),
+            MapTarget::Object => st.upload_finish(&mut guard, &rx, desc.crc32),
         }
     };
-    if is_map {
+    if holds_magic {
         crate::link::map_transfer_ended(Some(status));
     }
     let committed = status == TransferStatus::Committed;
     let elapsed_ms = started.elapsed().as_millis().max(1);
-    if committed && is_map {
+    if committed && target == MapTarget::Map {
         info!("usb: [bulk] map {} is now the selected map — it loads on the next boot", id);
+    }
+    if committed && target == MapTarget::Manifest {
+        info!("usb: [bulk] volume set MS{} committed — it loads on the next boot", id);
     }
     info!(
         "usb: [bulk] upload finished: id {} -> {} ({} bytes in {} ms, ~{} kB/s)",
@@ -278,7 +373,7 @@ async fn run_upload(
     tx.send_status(transfer_result_at(id, status, offset)).await;
     // A `fwImage` is a staging slot and a `map` is not a listed object (there is no `mapList`), so
     // neither has a catalog for a peer to re-read — only routes and trips raise `storeChanged`.
-    if committed && !is_fwimage && !is_map {
+    if committed && !is_fwimage && target == MapTarget::Object {
         let ty = if is_trip { ObjectType::Trip } else { ObjectType::Route };
         tx.publish_store_change(store, ty).await;
     }
@@ -290,14 +385,27 @@ async fn run_upload(
 /// [`Storage::map_upload_abort`](crate::sd::Storage::map_upload_abort) for why waiting for the boot
 /// sweep is not good enough. Clearing the published transfer state closes the on-glass card without
 /// a red outcome: an abort or an unplug is something the rider did.
-fn discard_upload(store: &mut ObjectStore, shared: &mut crate::SharedStore, is_map: bool, map_id: u16) {
-    if is_map {
-        crate::link::map_transfer_ended(None);
-        if let Some(storage) = &mut shared.storage {
-            storage.map_upload_abort(map_id);
+///
+/// A **volume set** takes the same argument one level up, and further: an interrupted set is
+/// gigabytes, and `OBCA_Spec.md` §5.4 makes a half-set unmountable anyway, so the whole set goes —
+/// shards already committed included. The alternative would be a mountable-looking pile of files
+/// the next upload could not reuse and no surface could explain. What that costs is resume across a
+/// disconnect, and the protocol never offered that (§1 principle 4: transfers restart, never
+/// resume); what it does *not* cost is resume within a session, because a failed shard drops only
+/// itself (`ObjectStore::set_shard_finish`).
+fn discard_upload(store: &mut ObjectStore, shared: &mut crate::SharedStore, target: MapTarget, map_id: u16) {
+    match target {
+        MapTarget::Object => store.upload_discard(shared),
+        MapTarget::Map => {
+            crate::link::map_transfer_ended(None);
+            if let Some(storage) = &mut shared.storage {
+                storage.map_upload_abort(map_id);
+            }
         }
-    } else {
-        store.upload_discard(shared);
+        MapTarget::Shard(_) | MapTarget::Manifest => {
+            crate::link::map_transfer_ended(None);
+            store.set_upload_abort(shared);
+        }
     }
 }
 

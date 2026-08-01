@@ -1,7 +1,4 @@
-# Web builder (builder/server) runtime deps. The map packer itself is the
-# native `obc-pack` binary (host/obc-pack) — no Python packing deps needed.
-# The Geofabrik half lives in requirements-static.txt: the site deploy needs it
-# without the server, and one file means the versions cannot drift apart.
--r requirements-static.txt
+# Local maintainer host for the schema editor. Product builds use the static
+# frontend and the published cell catalog; raw OSM processing lives in obc-bake.
 fastapi>=0.110.0
 uvicorn[standard]>=0.27.0
