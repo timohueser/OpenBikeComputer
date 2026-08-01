@@ -190,10 +190,17 @@ public struct UpdateChecker: Sendable {
     ///
     /// With the pre-release opt-in on, both channels are fetched and the **newer of the two** is
     /// the answer; a 404 on either is simply that channel having nothing.
+    ///
+    /// A pre-release channel that fails *any other way* is swallowed and the stable answer stands
+    /// (#773 U5). The loudness above belongs to the stable channel — the one every rider is on —
+    /// and it is untouched; the opt-in channel is a dev extra, and letting its 500 take down the
+    /// launch/background check for a rider who once flipped the switch would be the wrong trade.
     @discardableResult
     public func check(now: Date = Date()) async throws -> UpdateCheckRecord {
         var newest = try await fetch(manifestURL)
-        if includePrereleases, let pre = try await fetch(prereleaseURL) {
+        // `try?` flattens the optional, so a 404 (nothing published there) and a failed fetch land
+        // in the same place: the stable answer, unchanged.
+        if includePrereleases, let pre = try? await fetch(prereleaseURL) {
             newest = newer(newest, pre)
         }
         let record = UpdateCheckRecord(release: newest, checkedAt: now)

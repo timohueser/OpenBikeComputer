@@ -165,12 +165,7 @@ public struct SettingsView: View {
     // MARK: Firmware (coming soon)
 
     private var firmwareGroup: some View {
-        OBCGroupedSection(
-            "Firmware",
-            footer: onOpenFirmwareUpdate == nil
-                ? "OTA updates will arrive in a later release. For now, flash from the desktop tool."
-                : "Import an UPDATE.BIN to send new firmware to your device over Bluetooth."
-        ) {
+        OBCGroupedSection("Firmware", footer: firmwareFooter) {
             if let onOpenFirmwareUpdate {
                 OBCListRow(
                     icon: "arrow.down.to.line",
@@ -187,6 +182,23 @@ public struct SettingsView: View {
                     comingSoon: true
                 )
             }
+            // #773 U5 — the one switch behind the launch sheet and the background check.
+            OBCListRow(
+                icon: "arrow.clockwise",
+                iconColor: OBCTheme.water,
+                label: "Check for updates automatically"
+            ) {
+                Toggle(
+                    "Check for updates automatically",
+                    isOn: Binding(
+                        get: { model.autoCheckUpdates },
+                        set: { model.setAutoCheckUpdates($0) }
+                    )
+                )
+                .labelsHidden()
+                .tint(OBCTheme.forest)
+            }
+            .accessibilityIdentifier("firmware.autoCheck")
             OBCListRow(
                 icon: "clock",
                 iconColor: OBCTheme.parchment3,
@@ -195,6 +207,18 @@ public struct SettingsView: View {
                 showsDivider: false
             )
         }
+    }
+
+    /// The footer carries #773's privacy footnote verbatim in spirit: the check is a plain
+    /// anonymous request for a public file, and nothing about the device is sent. It is a
+    /// requirement of the epic, not a reassurance we invented, so it lives where the switch is.
+    private var firmwareFooter: String {
+        guard onOpenFirmwareUpdate != nil else {
+            return "OTA updates will arrive in a later release. For now, flash from the desktop tool."
+        }
+        return "Send new firmware over Bluetooth — a file you picked, or the published update the "
+            + "app finds for you. Checking is an anonymous request for one public file: no account, "
+            + "and nothing about your device or your rides is sent."
     }
 
     // MARK: Connected services (the B7 seam, disabled)
