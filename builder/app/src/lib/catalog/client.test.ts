@@ -200,7 +200,7 @@ describe("regionCellList", () => {
         const client = await CatalogClient.load(ROOT_URL, { fetchImpl: impl });
         await client.cellIndex("fine");
         const cells = await client.regionCellList("europe/switzerland");
-        expect(cells.cells.fine).toEqual(["18/1204/1052", "18/1204/1053"]);
+        expect(cells.cells.fine).toEqual(["18/1204/1052", "18/1204/1053", "18/1204/1055"]);
     });
 
     it("catches a region naming a cell its band's index does not have", async () => {

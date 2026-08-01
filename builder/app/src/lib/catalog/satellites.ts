@@ -61,14 +61,34 @@ export interface CellEntry {
     partial: boolean;
 }
 
+/** An inclusive, same-row run of cells whose canonical content is empty.
+ *
+ * These cells have no OBCM object: they are explicit coverage, not missing
+ * data, and therefore cost zero bytes and need no payload download or graft.
+ * Their identities still participate in assembly coverage and output bounds.
+ */
+export interface KnownEmptyRun {
+    start: string;
+    end: string;
+    /** Parsed bounds. Not on the wire. */
+    startCell: CellId;
+    endCell: CellId;
+    built_at: string;
+    sources: CellSource[];
+}
+
 export interface CellIndexDocument {
     schema_version: number;
     schema_revision: number;
     band: string;
     cells: CellEntry[];
+    known_empty: KnownEmptyRun[];
     /** The cells keyed by canonical id — the lookup every price and every
      *  download plan does, built once. */
     byId: ReadonlyMap<string, CellEntry>;
+    /** Known-empty runs keyed by latitude row, for logarithmic membership
+     *  checks without expanding a planet-scale range into individual ids. */
+    emptyByRow: ReadonlyMap<number, readonly KnownEmptyRun[]>;
 }
 
 export interface RegionCellsDocument {
@@ -110,6 +130,49 @@ function checkEnvelope(o: Record<string, unknown>, catalog: Catalog, where: stri
     }
 }
 
+function parseSources(v: unknown, at: string): CellSource[] {
+    const sources = arr(v, `${at}.sources`).map((s, n) => {
+        const sat = `${at}.sources[${n}]`;
+        const e = obj(s, sat);
+        const snapshot = str(e, "snapshot", sat, DATE);
+        realDate(snapshot, `${sat}.snapshot`);
+        return { extract_id: str(e, "extract_id", sat, PATH_ID), snapshot };
+    });
+    if (!sources.length) fail(`${at}: coverage came from at least one source extract`);
+    for (let n = 1; n < sources.length; n++) {
+        if (sources[n].extract_id <= sources[n - 1].extract_id) {
+            fail(`${at}.sources: not sorted by extract_id, or an extract appears twice`);
+        }
+    }
+    return sources;
+}
+
+function sameProvenance(a: KnownEmptyRun, b: KnownEmptyRun): boolean {
+    return a.built_at === b.built_at && JSON.stringify(a.sources) === JSON.stringify(b.sources);
+}
+
+/** The known-empty run containing `id`, if any. */
+export function knownEmptyAt(index: CellIndexDocument, id: string): KnownEmptyRun | undefined {
+    const cell = parseCellIdIn(id, `cell index (${index.band}) lookup`);
+    const runs = index.emptyByRow.get(cell.i) ?? [];
+    let lo = 0;
+    let hi = runs.length;
+    while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        const run = runs[mid];
+        if (cell.j < run.startCell.j) hi = mid;
+        else if (cell.j > run.endCell.j) lo = mid + 1;
+        else return cell.log2 === run.startCell.log2 ? run : undefined;
+    }
+    return undefined;
+}
+
+/** Whether a band explicitly covers a cell, either with an artifact or as
+ * canonical empty ground. */
+export function cellIndexHas(index: CellIndexDocument, id: string): boolean {
+    return index.byId.has(id) || knownEmptyAt(index, id) !== undefined;
+}
+
 /**
  * Parse one band's cell index against the root's pin on it.
  *
@@ -149,20 +212,6 @@ export function parseCellIndex(body: string, catalog: Catalog, ref: CellIndexRef
         }
         previous = cell;
 
-        const sources = arr(o.sources, `${at}.sources`).map((s, n) => {
-            const sat = `${at}.sources[${n}]`;
-            const e = obj(s, sat);
-            const snapshot = str(e, "snapshot", sat, DATE);
-            realDate(snapshot, `${sat}.snapshot`);
-            return { extract_id: str(e, "extract_id", sat, PATH_ID), snapshot };
-        });
-        if (!sources.length) fail(`${at}: a cell was baked from at least one extract`);
-        for (let n = 1; n < sources.length; n++) {
-            if (sources[n].extract_id <= sources[n - 1].extract_id) {
-                fail(`${at}.sources: not sorted by extract_id, or an extract appears twice`);
-            }
-        }
-
         const cellEntry: CellEntry = {
             id,
             cell,
@@ -172,14 +221,83 @@ export function parseCellIndex(body: string, catalog: Catalog, ref: CellIndexRef
             // happens to accept a relative path.
             url: urlStr(o, "url", at),
             built_at: instant(o, "built_at", at),
-            sources,
+            sources: parseSources(o.sources, at),
             partial: bool(o, "partial", at),
         };
         byId.set(id, cellEntry);
         return cellEntry;
     });
 
-    return { schema_version: catalog.schema_version, schema_revision: catalog.schema.revision, band: bandId, cells, byId };
+    const rawEmpty = Object.hasOwn(doc, "known_empty")
+        ? arr(doc.known_empty, `${where}.known_empty`)
+        : [];
+    const emptyByRow = new Map<number, KnownEmptyRun[]>();
+    let previousEmpty: KnownEmptyRun | null = null;
+    let knownEmptyCount = 0;
+    const knownEmpty = rawEmpty.map((entry, k) => {
+        const at = `${where}.known_empty[${k}]`;
+        const o = obj(entry, at);
+        const start = str(o, "start", at);
+        const end = str(o, "end", at);
+        const startCell = parseCellIdIn(start, `${at}.start`);
+        const endCell = parseCellIdIn(end, `${at}.end`);
+        if (formatCellId(startCell) !== start) fail(`${at}.start: id ${JSON.stringify(start)} is not canonically padded`);
+        if (formatCellId(endCell) !== end) fail(`${at}.end: id ${JSON.stringify(end)} is not canonically padded`);
+        if (startCell.log2 !== ref.cell_log2 || endCell.log2 !== ref.cell_log2) {
+            fail(`${at}: range cell size is not band "${ref.band}"'s 2^${ref.cell_log2}`);
+        }
+        if (startCell.i !== endCell.i) fail(`${at}: a known-empty range must stay in one latitude row`);
+        if (startCell.j > endCell.j) fail(`${at}: range start comes after its end`);
+
+        const run: KnownEmptyRun = {
+            start,
+            end,
+            startCell,
+            endCell,
+            built_at: instant(o, "built_at", at),
+            sources: parseSources(o.sources, at),
+        };
+        if (
+            previousEmpty &&
+            (startCell.i < previousEmpty.startCell.i ||
+                (startCell.i === previousEmpty.startCell.i && startCell.j <= previousEmpty.endCell.j))
+        ) {
+            fail(`${at}: known-empty ranges are not sorted or overlap`);
+        }
+        if (
+            previousEmpty &&
+            startCell.i === previousEmpty.endCell.i &&
+            startCell.j === previousEmpty.endCell.j + 1 &&
+            sameProvenance(previousEmpty, run)
+        ) {
+            fail(`${at}: adjacent ranges with identical provenance must be merged`);
+        }
+        previousEmpty = run;
+        knownEmptyCount += endCell.j - startCell.j + 1;
+        const row = emptyByRow.get(startCell.i) ?? [];
+        row.push(run);
+        emptyByRow.set(startCell.i, row);
+        return run;
+    });
+    if (knownEmptyCount !== ref.known_empty_count) {
+        fail(`${where}: root says ${ref.known_empty_count} known-empty cells, the document covers ${knownEmptyCount}`);
+    }
+
+    const index: CellIndexDocument = {
+        schema_version: catalog.schema_version,
+        schema_revision: catalog.schema.revision,
+        band: bandId,
+        cells,
+        known_empty: knownEmpty,
+        byId,
+        emptyByRow,
+    };
+    for (const cell of cells) {
+        if (knownEmptyAt(index, cell.id)) {
+            fail(`${where}: cell ${cell.id} has both an artifact and a known-empty assertion`);
+        }
+    }
+    return index;
 }
 
 /**
@@ -257,7 +375,7 @@ export function assertRegionCellsIndexed(
         const index = indexByBand.get(bandId);
         if (!index) continue; // not loaded yet; the client checks what it has
         for (const id of ids) {
-            if (!index.byId.has(id)) {
+            if (!cellIndexHas(index, id)) {
                 fail(`region cells (${doc.region_id}): cell ${id} is not in band "${bandId}"'s index`);
             }
         }

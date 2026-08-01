@@ -41,6 +41,11 @@ export interface WorkerCell {
     bytes: Uint8Array;
 }
 
+export interface WorkerKnownEmpty {
+    id: string;
+    band: string;
+}
+
 export type AssembleWorkerRequest =
     | {
           type: "estimate";
@@ -52,6 +57,7 @@ export type AssembleWorkerRequest =
     | {
           type: "assemble";
           cells: WorkerCell[];
+          knownEmpty: WorkerKnownEmpty[];
           /** The catalog root body, verbatim — the engine reads the schema out
            *  of it (`Schema::parse` accepts an OBCC v2 root). */
           schemaJson: string;

@@ -418,8 +418,12 @@ pub struct CellIndexRef {
     pub band: String,
     /// `log2(S)`; matches the band's entry in `schema.bands`.
     pub cell_log2: u8,
-    /// Cells in the referenced document.
+    /// Downloadable OBCM artifact entries in the referenced document.
     pub cell_count: u32,
+    /// Canonical cells represented as verified-empty ranges rather than OBCM
+    /// artifacts. Additive in v2; older roots deserialize this as zero.
+    #[serde(default)]
+    pub known_empty_count: u32,
     /// Size of the referenced document.
     pub bytes: u64,
     /// Its digest. A satellite that does not match MUST be rejected and the root kept.
@@ -436,6 +440,27 @@ pub struct CellIndexDocument {
     pub band: String,
     /// Sorted by `(i, j)`.
     pub cells: Vec<CellEntry>,
+    /// Canonical, non-overlapping row runs that carry no bytes for this band.
+    /// Additive in v2; older satellites deserialize this as an empty list.
+    #[serde(default)]
+    pub known_empty: Vec<KnownEmptyRun>,
+}
+
+/// An inclusive row run of cells proven to carry no content for one band.
+///
+/// Empty coverage is explicit because absence means a coverage hole. Runs avoid
+/// publishing both an OBCM object and one JSON entry for every empty ocean or
+/// network cell in a planet catalog.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct KnownEmptyRun {
+    /// First canonical cell id in the run.
+    pub start: String,
+    /// Last canonical cell id in the run (inclusive, same row as `start`).
+    pub end: String,
+    /// RFC 3339 UTC, recorded by the bake job.
+    pub built_at: String,
+    /// Every source extract against which emptiness was established.
+    pub sources: Vec<CellSource>,
 }
 
 /// One published cell. **No bbox, deliberately**: the `id` determines the square and
@@ -539,6 +564,10 @@ const CELL_INDEX_NAME: &str = "index.json";
 const REGION_DOC: &str = "region.json";
 const REGION_POLY: &str = "boundary.poly";
 const REGION_CELLS_NAME: &str = "cells.json";
+/// Local bakery state for cells whose semantic payload is empty. The leading dot
+/// keeps it out of publication; its validated ranges are copied into the pinned
+/// band satellite instead.
+const KNOWN_EMPTY_STATE_NAME: &str = ".known-empty.json";
 
 /// Walk a bake tree and build the root plus its satellites.
 ///
@@ -573,13 +602,14 @@ pub fn generate(tree: &Path, opts: &CatalogOptions) -> Result<GeneratedCatalog, 
 
     let mut satellites = Vec::new();
     let mut cell_index = Vec::new();
-    let mut by_band: BTreeMap<&str, BTreeMap<String, &CellEntry>> = BTreeMap::new();
+    let mut by_band: BTreeMap<&str, BandIndex<'_>> = BTreeMap::new();
     for band in &schema.bands {
         let entries = cells.by_band.get(band.id.as_str()).map_or(&[][..], Vec::as_slice);
-        if entries.is_empty() {
+        let known_empty = cells.known_empty_by_band.get(band.id.as_str()).map_or(&[][..], Vec::as_slice);
+        if entries.is_empty() && known_empty.is_empty() {
             warnings.push(format!(
-                "band `{}` has no published cells — every assembly at this schema will be missing what that band \
-                 carries",
+                "band `{}` has no published or known-empty cells — every assembly at this schema will be missing \
+                 what that band carries",
                 band.id
             ));
         }
@@ -588,6 +618,7 @@ pub fn generate(tree: &Path, opts: &CatalogOptions) -> Result<GeneratedCatalog, 
             schema_revision: schema.revision,
             band: band.id.clone(),
             cells: entries.to_vec(),
+            known_empty: known_empty.to_vec(),
         };
         let rel_path = format!("{CELLS_DIR}/{}/{CELL_INDEX_NAME}", band.id);
         let body = document_json(&doc);
@@ -596,12 +627,13 @@ pub fn generate(tree: &Path, opts: &CatalogOptions) -> Result<GeneratedCatalog, 
             band: band.id.clone(),
             cell_log2: band.cell_log2,
             cell_count: entries.len() as u32,
+            known_empty_count: known_empty_count(known_empty)?,
             bytes,
             sha256,
             url: format!("{base_url}/{rel_path}"),
         });
         satellites.push(Satellite { rel_path, body });
-        by_band.insert(band.id.as_str(), entries.iter().map(|c| (c.id.clone(), c)).collect());
+        by_band.insert(band.id.as_str(), BandIndex::new(entries, known_empty)?);
     }
     // §3: sorted by `cell_log2` descending — coarse first. Two bands may share a
     // size (`fine` and `network` are both 2^18), so the band id breaks the tie
@@ -1204,7 +1236,53 @@ fn joined<'a>(items: impl Iterator<Item = &'a str>) -> String {
 /// rather than adding a second entry beside it.
 struct Cells {
     by_band: BTreeMap<String, Vec<CellEntry>>,
+    known_empty_by_band: BTreeMap<String, Vec<KnownEmptyRun>>,
     obcm_version: u8,
+}
+
+/// Local, un-published state from which the generator builds one band's compact
+/// known-empty ranges.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct KnownEmptyState {
+    schema_revision: u32,
+    band: String,
+    known_empty: Vec<KnownEmptyRun>,
+}
+
+/// Lookup used while validating region satellites. A present cell is either a
+/// downloadable artifact or a verified-empty grid square; only the former has
+/// bytes or can be partial.
+struct BandIndex<'a> {
+    cells: BTreeMap<String, &'a CellEntry>,
+    empty_by_row: BTreeMap<u32, Vec<(u32, u32)>>,
+}
+
+enum IndexedCell<'a> {
+    Artifact(&'a CellEntry),
+    KnownEmpty,
+}
+
+impl<'a> BandIndex<'a> {
+    fn new(cells: &'a [CellEntry], known_empty: &[KnownEmptyRun]) -> Result<Self, String> {
+        let mut empty_by_row: BTreeMap<u32, Vec<(u32, u32)>> = BTreeMap::new();
+        for run in known_empty {
+            let start = CellId::parse(&run.start)?;
+            let end = CellId::parse(&run.end)?;
+            empty_by_row.entry(start.i).or_default().push((start.j, end.j));
+        }
+        Ok(Self { cells: cells.iter().map(|cell| (cell.id.clone(), cell)).collect(), empty_by_row })
+    }
+
+    fn get(&self, id: &str) -> Result<Option<IndexedCell<'_>>, String> {
+        if let Some(cell) = self.cells.get(id) {
+            return Ok(Some(IndexedCell::Artifact(cell)));
+        }
+        let cell = CellId::parse(id)?;
+        let Some(runs) = self.empty_by_row.get(&cell.i) else { return Ok(None) };
+        let at = runs.partition_point(|(_, end)| *end < cell.j);
+        Ok(runs.get(at).filter(|(start, end)| *start <= cell.j && cell.j <= *end).map(|_| IndexedCell::KnownEmpty))
+    }
 }
 
 /// The facts a cell's bytes cannot state. Band is **not** among them: band membership
@@ -1231,6 +1309,7 @@ fn read_cells(tree: &Path, schema: &SchemaDoc, base_url: &str) -> Result<Cells, 
     }
     let bands: BTreeMap<&str, &BandEntry> = schema.bands.iter().map(|b| (b.id.as_str(), b)).collect();
     let mut by_band: BTreeMap<String, Vec<CellEntry>> = BTreeMap::new();
+    let mut known_empty_by_band: BTreeMap<String, Vec<KnownEmptyRun>> = BTreeMap::new();
     let mut obcm_version = None;
 
     for band_dir in sorted_entries(&root)? {
@@ -1253,6 +1332,7 @@ fn read_cells(tree: &Path, schema: &SchemaDoc, base_url: &str) -> Result<Cells, 
         })?;
 
         let mut entries = Vec::new();
+        let known_empty = read_known_empty_state(&band_dir.join(KNOWN_EMPTY_STATE_NAME), band, schema)?;
         for i_dir in sorted_entries(&band_dir)? {
             let name = file_name(&i_dir)?;
             if name.starts_with('.') || name == CELL_INDEX_NAME {
@@ -1268,14 +1348,16 @@ fn read_cells(tree: &Path, schema: &SchemaDoc, base_url: &str) -> Result<Cells, 
             read_cell_row(&i_dir, &name, band, tree, schema, base_url, &mut entries, &mut obcm_version)?;
         }
         entries.sort_by(|a, b| a.id.cmp(&b.id));
+        reject_known_empty_artifact_overlap(&band_dir, &entries, &known_empty)?;
         by_band.insert(band.id.clone(), entries);
+        known_empty_by_band.insert(band.id.clone(), known_empty);
     }
 
     let total: usize = by_band.values().map(Vec::len).sum();
     if total == 0 {
         return Err(format!("{}: no cells found — refusing to publish an empty cell store", root.display()));
     }
-    Ok(Cells { by_band, obcm_version: obcm_version.expect("a cell was read") })
+    Ok(Cells { by_band, known_empty_by_band, obcm_version: obcm_version.expect("a cell was read") })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1391,14 +1473,19 @@ fn read_cell_sidecar(path: &Path) -> Result<CellSidecar, String> {
     })?;
     let mut sidecar: CellSidecar = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
     validate_timestamp(&sidecar.built_at).map_err(|e| format!("{}: built_at {e}", path.display()))?;
-    if sidecar.sources.is_empty() {
+    validate_sources(path, &mut sidecar.sources)?;
+    Ok(sidecar)
+}
+
+fn validate_sources(path: &Path, sources: &mut [CellSource]) -> Result<(), String> {
+    if sources.is_empty() {
         return Err(format!(
             "{}: `sources` is empty — a cell must record what it was baked from (OBCA_Spec.md §3.7)",
             path.display()
         ));
     }
     let mut seen = BTreeSet::new();
-    for source in &sidecar.sources {
+    for source in sources.iter() {
         validate_region_id(&source.extract_id).map_err(|e| format!("{}: sources.extract_id {e}", path.display()))?;
         validate_date(&source.snapshot).map_err(|e| format!("{}: sources.snapshot {e}", path.display()))?;
         if !seen.insert(source.extract_id.as_str()) {
@@ -1407,8 +1494,122 @@ fn read_cell_sidecar(path: &Path) -> Result<CellSidecar, String> {
     }
     // §8 publishes sources sorted by extract_id; the order a bake job happened to
     // write them in is not content.
-    sidecar.sources.sort();
-    Ok(sidecar)
+    sources.sort();
+    Ok(())
+}
+
+fn read_known_empty_state(path: &Path, band: &BandEntry, schema: &SchemaDoc) -> Result<Vec<KnownEmptyRun>, String> {
+    if !path.is_file() {
+        return Ok(Vec::new());
+    }
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut state: KnownEmptyState = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    if state.schema_revision != schema.revision {
+        return Err(format!(
+            "{}: known-empty state is schema revision {} but `{SCHEMA_DOC}` is revision {}",
+            path.display(),
+            state.schema_revision,
+            schema.revision
+        ));
+    }
+    if state.band != band.id {
+        return Err(format!(
+            "{}: known-empty state says band `{}` but lives under `{}`",
+            path.display(),
+            state.band,
+            band.id
+        ));
+    }
+
+    let mut previous: Option<(CellId, KnownEmptyRun)> = None;
+    for run in &mut state.known_empty {
+        let start = CellId::parse(&run.start).map_err(|e| format!("{}: {e}", path.display()))?;
+        let end = CellId::parse(&run.end).map_err(|e| format!("{}: {e}", path.display()))?;
+        if start.to_string() != run.start || end.to_string() != run.end {
+            return Err(format!(
+                "{}: known-empty run {}..{} does not use canonical padded cell ids",
+                path.display(),
+                run.start,
+                run.end
+            ));
+        }
+        if start.log2 != band.cell_log2 || end.log2 != band.cell_log2 {
+            return Err(format!(
+                "{}: known-empty run {}..{} is not band `{}`'s 2^{} grid",
+                path.display(),
+                run.start,
+                run.end,
+                band.id,
+                band.cell_log2
+            ));
+        }
+        if start.i != end.i || start.j > end.j {
+            return Err(format!(
+                "{}: known-empty run {}..{} must be one non-empty inclusive row range",
+                path.display(),
+                run.start,
+                run.end
+            ));
+        }
+        validate_timestamp(&run.built_at).map_err(|e| format!("{}: built_at {e}", path.display()))?;
+        validate_sources(path, &mut run.sources)?;
+        if let Some((prev_end, ref prev)) = previous {
+            if start.i < prev_end.i || (start.i == prev_end.i && start.j <= prev_end.j) {
+                return Err(format!(
+                    "{}: known-empty runs overlap or are out of order at {}..{}",
+                    path.display(),
+                    run.start,
+                    run.end
+                ));
+            }
+            if start.i == prev_end.i
+                && start.j == prev_end.j + 1
+                && run.built_at == prev.built_at
+                && run.sources == prev.sources
+            {
+                return Err(format!(
+                    "{}: adjacent known-empty runs {}..{} and {}..{} have identical provenance; merge them",
+                    path.display(),
+                    prev.start,
+                    prev.end,
+                    run.start,
+                    run.end
+                ));
+            }
+        }
+        previous = Some((end, run.clone()));
+    }
+    known_empty_count(&state.known_empty)?;
+    Ok(state.known_empty)
+}
+
+fn known_empty_count(runs: &[KnownEmptyRun]) -> Result<u32, String> {
+    let mut total = 0u32;
+    for run in runs {
+        let start = CellId::parse(&run.start)?;
+        let end = CellId::parse(&run.end)?;
+        let width = end.j.checked_sub(start.j).and_then(|n| n.checked_add(1)).ok_or("known-empty run overflow")?;
+        total = total.checked_add(width).ok_or("known-empty cell count exceeds u32")?;
+    }
+    Ok(total)
+}
+
+fn reject_known_empty_artifact_overlap(
+    band_dir: &Path,
+    entries: &[CellEntry],
+    runs: &[KnownEmptyRun],
+) -> Result<(), String> {
+    let index = BandIndex::new(&[], runs)?;
+    for entry in entries {
+        if matches!(index.get(&entry.id)?, Some(IndexedCell::KnownEmpty)) {
+            return Err(format!(
+                "{}: cell `{}` is both an OBCM artifact and known empty",
+                band_dir.display(),
+                entry.id
+            ));
+        }
+    }
+    Ok(())
 }
 
 // --- regions ------------------------------------------------------------------------------
@@ -1431,7 +1632,7 @@ struct RegionDoc {
 fn read_regions(
     tree: &Path,
     schema: &SchemaDoc,
-    by_band: &BTreeMap<&str, BTreeMap<String, &CellEntry>>,
+    by_band: &BTreeMap<&str, BandIndex<'_>>,
     base_url: &str,
     opts: &CatalogOptions,
     satellites: &mut Vec<Satellite>,
@@ -1510,7 +1711,7 @@ fn read_region(
     parent: Option<String>,
     dir: &Path,
     schema: &SchemaDoc,
-    by_band: &BTreeMap<&str, BTreeMap<String, &CellEntry>>,
+    by_band: &BTreeMap<&str, BandIndex<'_>>,
     base_url: &str,
     opts: &CatalogOptions,
     satellites: &mut Vec<Satellite>,
@@ -1556,17 +1757,20 @@ fn read_region(
             }
             // §6: a region MUST NOT name a cell absent from the band's index. A
             // consumer would reject the pair, so publishing it is not an option.
-            let entry = index.get(&canonical).ok_or_else(|| {
-                format!(
+            let entry =
+                index.get(&canonical).map_err(|e| format!("{}: {e}", doc_path.display()))?.ok_or_else(|| {
+                    format!(
                     "{}: band `{}` names cell `{canonical}`, which is not published — either bake it or drop it from \
                      the selection (OBCC_Spec.md §6)",
                     doc_path.display(),
                     band.id
                 )
-            })?;
-            band_bytes += entry.bytes;
-            if entry.partial {
-                band_partial_cell_count += 1;
+                })?;
+            if let IndexedCell::Artifact(entry) = entry {
+                band_bytes += entry.bytes;
+                if entry.partial {
+                    band_partial_cell_count += 1;
+                }
             }
         }
         if ids.is_empty() {
@@ -2012,6 +2216,12 @@ pub fn catalog_schema() -> Value {
     cell_ref["cell_log2"]["maximum"] = Value::from(MAX_CELL_LOG2);
     cell_ref["sha256"]["pattern"] = Value::from(SHA256_PATTERN);
     cell_ref["url"]["pattern"] = Value::from(URL_PATTERN);
+
+    let empty = defs["KnownEmptyRun"]["properties"].as_object_mut().expect("known-empty properties");
+    empty["start"]["pattern"] = Value::from(CELL_ID_PATTERN);
+    empty["end"]["pattern"] = Value::from(CELL_ID_PATTERN);
+    empty["built_at"]["pattern"] = Value::from(TIMESTAMP_PATTERN);
+    empty["sources"]["minItems"] = Value::from(1);
 
     defs["CellEntry"]["description"] = Value::from(CELL_DESCRIPTION);
     let cell = defs["CellEntry"]["properties"].as_object_mut().expect("cell properties");

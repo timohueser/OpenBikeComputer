@@ -41,7 +41,7 @@
 
 import { fetchVerified } from "../download";
 import type { Catalog } from "./manifest";
-import type { CellEntry, CellIndexDocument } from "./satellites";
+import { knownEmptyAt, type CellEntry, type CellIndexDocument } from "./satellites";
 import type { SelectionResolution } from "./selection";
 
 export interface CellDownloadItem {
@@ -53,6 +53,9 @@ export interface CellDownloadPlan {
     /** In schema band order, then canonical cell id. The plan is the ordering
      *  authority; completion order is whatever the network does. */
     items: CellDownloadItem[];
+    /** Selected canonical-empty cells. They have no request or byte buffer,
+     *  but the assembler needs their identities for bbox and coverage math. */
+    knownEmpty: { band: string; id: string }[];
     /** Summed `bytes` of every item — knowable before the fetch (§6). */
     totalBytes: number;
 }
@@ -105,18 +108,22 @@ export function planCells(
     indices: ReadonlyMap<string, CellIndexDocument>,
 ): CellDownloadPlan {
     const items: CellDownloadItem[] = [];
+    const knownEmpty: { band: string; id: string }[] = [];
     let totalBytes = 0;
     for (const band of catalog.schema.bands) {
         const index = indices.get(band.id);
         if (!index) continue;
         for (const id of resolution.cellsByBand.get(band.id) ?? []) {
             const cell = index.byId.get(id);
-            if (!cell) continue;
-            items.push({ band: band.id, cell });
-            totalBytes += cell.bytes;
+            if (cell) {
+                items.push({ band: band.id, cell });
+                totalBytes += cell.bytes;
+            } else if (knownEmptyAt(index, id)) {
+                knownEmpty.push({ band: band.id, id });
+            }
         }
     }
-    return { items, totalBytes };
+    return { items, knownEmpty, totalBytes };
 }
 
 /**

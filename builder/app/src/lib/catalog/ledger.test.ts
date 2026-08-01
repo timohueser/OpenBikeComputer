@@ -103,6 +103,35 @@ describe("ledgerFor", () => {
         expect(ledger.coverage.hasWarnings).toBe(true);
     });
 
+    it("prices known-empty coverage at zero without reporting a fine-band hole", () => {
+        const empty = cellSquare(parseCellId("18/1204/1055"));
+        const emptyBox = box("empty", {
+            minLat: empty.minLat + 1,
+            minLon: empty.minLon + 1,
+            maxLat: empty.maxLat - 1,
+            maxLon: empty.maxLon - 1,
+        });
+        const emptyIndices = fixtureIndices(
+            exampleCatalog,
+            {
+                coarse: [{ id: "20/0301/0263", bytes: 2088, partial: true }],
+                mid: [{ id: "19/0602/0527", bytes: 900 }],
+                fine: [],
+                network: [],
+            },
+            { fine: [{ start: "18/1204/1055", end: "18/1204/1055" }] },
+        );
+        const resolution = resolveSelection(
+            { parts: [emptyBox], corridorRadiusM: 0 },
+            { catalog: exampleCatalog, indices: emptyIndices, regionCells: new Map() },
+        );
+        const ledger = ledgerFor(resolution, exampleCatalog, emptyIndices);
+        const fine = ledger.bands.find((band) => band.band === "fine")!;
+        expect(fine.cellCount).toBe(1);
+        expect(fine.bytes).toBe(0);
+        expect(fine.missingCells).toEqual([]);
+    });
+
     it("says nothing is final while a band's index is missing", () => {
         const partial = { ...ctx, indices: new Map([["fine", indices.get("fine")!]]) };
         const ledger = ledgerFor(

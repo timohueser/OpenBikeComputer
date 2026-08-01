@@ -37,11 +37,17 @@ export interface FixtureCell {
     sha256?: string;
 }
 
+export interface FixtureKnownEmpty {
+    start: string;
+    end: string;
+}
+
 /** A band's cell index, built through the real parser. */
 export function fixtureIndex(
     catalog: Catalog,
     bandId: string,
     cells: FixtureCell[],
+    knownEmpty: FixtureKnownEmpty[] = [],
 ): CellIndexDocument {
     const band = catalog.schema.bands.find((b) => b.id === bandId);
     if (!band) throw new Error(`no band ${bandId}`);
@@ -49,6 +55,11 @@ export function fixtureIndex(
         schema_version: 2,
         schema_revision: catalog.schema.revision,
         band: bandId,
+        known_empty: knownEmpty.map((run) => ({
+            ...run,
+            built_at: "2026-07-30T02:13:11Z",
+            sources: [{ extract_id: "planet", snapshot: "2026-07-19" }],
+        })),
         cells: cells.map((c) => ({
             id: c.id,
             bytes: c.bytes,
@@ -63,6 +74,11 @@ export function fixtureIndex(
         band: bandId,
         cell_log2: band.cell_log2,
         cell_count: cells.length,
+        known_empty_count: knownEmpty.reduce((sum, run) => {
+            const start = Number(run.start.split("/")[2]);
+            const end = Number(run.end.split("/")[2]);
+            return sum + end - start + 1;
+        }, 0),
         bytes: 0,
         sha256: ZERO_DIGEST,
         url: `/catalog/cells/${bandId}/index.json`,
@@ -74,8 +90,12 @@ export function fixtureIndex(
 export function fixtureIndices(
     catalog: Catalog,
     byBand: Record<string, FixtureCell[]>,
+    emptyByBand: Record<string, FixtureKnownEmpty[]> = {},
 ): Map<string, CellIndexDocument> {
     return new Map(
-        Object.entries(byBand).map(([band, cells]) => [band, fixtureIndex(catalog, band, cells)]),
+        Object.entries(byBand).map(([band, cells]) => [
+            band,
+            fixtureIndex(catalog, band, cells, emptyByBand[band] ?? []),
+        ]),
     );
 }
