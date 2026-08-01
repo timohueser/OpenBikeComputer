@@ -38,7 +38,7 @@ pub const fn t(m: Msg, lang: Language) -> &'static str {
     TABLE[m as usize][lang as usize]
 }
 
-impl<'a, 'd> Render<'a, 'd> {
+impl<'a> Render<'a> {
     /// The translation for `m` in the current UI language (`self.settings.language`) — the
     /// draw-time convenience over [`t`].
     #[inline]

@@ -13,20 +13,27 @@
  * wrong: a cancelled write and an unplug mid-transfer.
  */
 
-import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 
-import { DeviceError } from "../usb/client";
+import { DeviceError, type ProtocolClient } from "../usb/client";
 import { loopbackDevice } from "../usb/loopback";
 import { ObjectType, SINGLETON_OBJECT_ID } from "../usb/protocol";
 import { initConvert } from "../convert/bridge";
 import { prepareRoute } from "./route";
-import { askToInstall, sendCatalogMap, sendMapFile, sendRoute, stageFirmware } from "./write";
+import {
+    abandonAssembledSet,
+    askToInstall,
+    sendAssembledSetFile,
+    sendMapFile,
+    sendRoute,
+    setSendState,
+    stageFirmware,
+} from "./write";
 import type { JobContext, JobPhase } from "./progress";
-import { syntheticBody, syntheticBytes, tempStaging } from "./testing";
 
 // --- fixtures -----------------------------------------------------------------
 
@@ -49,10 +56,6 @@ beforeAll(async () => {
         throw new Error(`the wasm bridge is not built (${wasm} missing). Run \`npm run build:wasm\`.`);
     }
     await initConvert(readFileSync(wasm));
-});
-
-afterEach(() => {
-    vi.unstubAllGlobals();
 });
 
 // --- a job context a test can watch -------------------------------------------
@@ -84,108 +87,97 @@ function context(options: { signal?: AbortSignal; at?: (done: number, phase: Job
     };
 }
 
-/** A `fetch` that serves `bytes` as a real streamed response. */
-function serving(total: number, chunk = 16 * 1024): void {
-    vi.stubGlobal("fetch", async (_url: string, init?: { signal?: AbortSignal }) => {
-        const body = syntheticBody(total, chunk);
-        // The abort has to reach the body, exactly as a real fetch's does — otherwise a cancelled
-        // download would look cancelled to the caller while the transfer kept running.
-        init?.signal?.addEventListener("abort", () => void body.cancel().catch(() => undefined), { once: true });
-        return new Response(body, { status: 200 });
-    });
-}
-
 // --- the flows ----------------------------------------------------------------
 
-describe("map upload from the catalog", () => {
-    const SIZE = 512 * 1024;
-
-    it("streams the artifact through a scratch file and commits it", async () => {
+describe("assembled volume-set upload", () => {
+    it("verifies and commits shards in order, with the manifest last", async () => {
         const { client, device, close } = loopbackDevice();
-        const { area, cleanup, dir } = tempStaging();
-        serving(SIZE);
         try {
+            const shard = syntheticBytes(4096);
+            const manifest = syntheticBytes(128);
+            const state = setSendState(1, shard.length + manifest.length);
             const ctx = context();
-            const result = await sendCatalogMap(
+            await sendAssembledSetFile(
                 client,
-                {
-                    filename: "switzerland-default.obcm",
-                    url: "https://cdn.example/switzerland-default.obcm",
-                    bytes: SIZE,
-                    sha256: digest(syntheticBytes(SIZE)),
-                },
-                area,
+                state,
+                { name: "MS1S00.OBM", role: "core", sha256: digest(shard), byteLength: shard.length, bytes: shard },
                 ctx,
             );
-            expect(result.committedOffset).toBe(SIZE);
-            // "Uploaded" means the device holds a valid file: the mock verified the announced
-            // whole-object CRC before committing, and these are the bytes it kept.
-            expect(device.stored(ObjectType.Map, result.objectId)).toEqual(syntheticBytes(SIZE));
-            expect(ctx.phases).toEqual(["downloading", "sending"]);
-            expect(readdirSyncSafe(dir), "the scratch copy is deleted once it has been sent").toEqual([]);
+            expect(device.stagedMapShardCount).toBe(1);
+            await sendAssembledSetFile(
+                client,
+                state,
+                { name: "MS1.OBS", role: "manifest", sha256: "", byteLength: manifest.length, bytes: manifest },
+                ctx,
+            );
+            expect(state.setId).toBe(1);
+            expect(state.committedBytes).toBe(state.totalBytes);
+            expect(device.stagedMapShardCount).toBe(0);
         } finally {
-            cleanup();
             await close();
         }
     });
 
-    it("never opens a transfer when the artifact fails its checksum", async () => {
+    it("abandons already committed shards when assembly stops between files", async () => {
         const { client, device, close } = loopbackDevice();
-        const { area, cleanup, dir } = tempStaging();
-        serving(SIZE);
         try {
+            const shard = syntheticBytes(1024);
+            const state = setSendState(2, 4096);
+            await sendAssembledSetFile(
+                client,
+                state,
+                { name: "MS1S00.OBM", role: "core", sha256: digest(shard), byteLength: shard.length, bytes: shard },
+                context(),
+            );
+            expect(device.stagedMapShardCount).toBe(1);
+            await abandonAssembledSet(client, state);
+            expect(device.stagedMapShardCount).toBe(0);
+        } finally {
+            await close();
+        }
+    });
+
+    it("refuses a worker buffer whose SHA-256 no longer matches", async () => {
+        const { client, device, close } = loopbackDevice();
+        try {
+            const shard = syntheticBytes(512);
+            const state = setSendState(1, shard.length);
             await expect(
-                sendCatalogMap(
+                sendAssembledSetFile(
                     client,
+                    state,
                     {
-                        filename: "switzerland-default.obcm",
-                        url: "https://cdn.example/switzerland-default.obcm",
-                        bytes: SIZE,
-                        sha256: "b".repeat(64),
+                        name: "MS1S00.OBM",
+                        role: "core",
+                        sha256: "0".repeat(64),
+                        byteLength: shard.length,
+                        bytes: shard,
                     },
-                    area,
                     context(),
                 ),
-            ).rejects.toMatchObject({ code: "digest-mismatch" });
-            expect(device.stored(ObjectType.Map, 1)).toBeNull();
-            expect(readdirSyncSafe(dir)).toEqual([]);
+            ).rejects.toThrow("SHA-256");
+            expect(device.stagedMapShardCount).toBe(0);
         } finally {
-            cleanup();
             await close();
         }
     });
 
-    it("cancels mid-download and leaves the device untouched", async () => {
-        const { client, device, close } = loopbackDevice();
-        const { area, cleanup, dir } = tempStaging();
-        serving(SIZE * 8, 4096);
-        const controller = new AbortController();
-        try {
-            const ctx = context({
-                signal: controller.signal,
-                at: (done) => {
-                    if (done > SIZE) controller.abort();
-                },
-            });
-            await expect(
-                sendCatalogMap(
-                    client,
-                    {
-                        filename: "big.obcm",
-                        url: "https://cdn.example/big.obcm",
-                        bytes: SIZE * 8,
-                        sha256: digest(syntheticBytes(SIZE * 8)),
-                    },
-                    area,
-                    ctx,
-                ),
-            ).rejects.toMatchObject({ code: "aborted" });
-            expect(device.stored(ObjectType.Map, 1)).toBeNull();
-            expect(readdirSyncSafe(dir)).toEqual([]);
-        } finally {
-            cleanup();
-            await close();
-        }
+    it("retries one whole shard after a device CRC refusal", async () => {
+        const shard = syntheticBytes(512);
+        const upload = vi
+            .fn()
+            .mockRejectedValueOnce(new DeviceError("crc-mismatch", "bad wire CRC"))
+            .mockResolvedValue({ objectId: 0x0100, committedOffset: shard.length });
+        const client = { upload } as unknown as ProtocolClient;
+        const state = setSendState(1, shard.length);
+        await sendAssembledSetFile(
+            client,
+            state,
+            { name: "MS1S00.OBM", role: "core", sha256: digest(shard), byteLength: shard.length, bytes: shard },
+            context(),
+        );
+        expect(upload).toHaveBeenCalledTimes(2);
+        expect(state.nextShard).toBe(1);
     });
 });
 
@@ -325,10 +317,14 @@ describe("firmware update", () => {
     it("stages a verified container and then asks — it never installs", async () => {
         const { client, device, close } = loopbackDevice();
         try {
-            const container = vector("update-container-v1.bin");
+            // The signed (v2) container — the only shape the device installs (`OBCU_Spec.md` §1.4),
+            // and the trailer must reach it intact or it refuses the file as truncated.
+            const container = vector("update-container-v2.bin");
             const ctx = context();
             const { image, result } = await stageFirmware(client, container, ctx);
             expect(image.version).toBe("1.2.0+abc1234");
+            expect(image.sigScheme).toBe(1);
+            expect(image.containerLen).toBe(container.length);
             // A fwImage upload is a singleton stage: id 0 in, id 0 back (§7.6).
             expect(result.objectId).toBe(SINGLETON_OBJECT_ID);
             expect(device.stagedFirmware).toEqual(container);
@@ -345,9 +341,14 @@ describe("firmware update", () => {
     it("refuses a damaged image locally, before spending a transfer on it", async () => {
         const { client, device, close } = loopbackDevice();
         try {
-            const broken = Uint8Array.from(vector("update-container-v1.bin"));
+            const broken = Uint8Array.from(vector("update-container-v2.bin"));
             broken[70] ^= 0xff;
             await expect(stageFirmware(client, broken, context())).rejects.toMatchObject({ code: "image-crc" });
+            expect(device.stagedFirmware).toBeNull();
+
+            // …and so is an intact but *unsigned* one, which the device would refuse anyway (§1.4).
+            const unsigned = vector("update-container-v1.bin");
+            await expect(stageFirmware(client, unsigned, context())).rejects.toMatchObject({ code: "unsigned" });
             expect(device.stagedFirmware).toBeNull();
         } finally {
             await close();
@@ -364,11 +365,8 @@ describe("firmware update", () => {
     });
 });
 
-/** `readdirSync`, tolerating a directory a test already cleaned up. */
-function readdirSyncSafe(dir: string): string[] {
-    try {
-        return readdirSync(dir);
-    } catch {
-        return [];
-    }
+function syntheticBytes(total: number): Uint8Array<ArrayBuffer> {
+    const bytes = new Uint8Array(total);
+    for (let i = 0; i < bytes.length; i++) bytes[i] = i & 0xff;
+    return bytes;
 }

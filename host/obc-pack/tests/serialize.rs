@@ -1,7 +1,9 @@
 //! Byte-pinned serializer tests. Polygon rings are pre-closed (`first == last`),
 //! matching the closed geometry that reaches `pack_feature`.
 
-use obc_pack::{pack_chunk, pack_feature, pack_style_dict, serialize_lods, Feature, Kind, LodLayer, Node, Style};
+use obc_pack::{
+    pack_chunk, pack_feature, pack_style_dict, serialize_lods, serialize_tree, Feature, Kind, LodLayer, Node, Style,
+};
 
 fn line(style_id: u8, pts: &[(f64, f64)]) -> Feature {
     Feature { style_id, kind: Kind::Line, rings: vec![pts.to_vec()] }
@@ -66,24 +68,26 @@ fn pack_feature_8bit_line() {
     let node_bbox = (1_000_000, 1_000_000, 1_010_000, 1_010_000);
     let data = pack_feature(&f, node_bbox);
 
-    assert_eq!(data.len(), 14); // header(12) + one 8-bit delta pair(2)
+    // v11 compact header: 2 vertices and a zero anchor both fit the narrow fields.
+    assert_eq!(data.len(), 9); // compact header(7) + one 8-bit delta pair(2)
     assert_eq!(data[0], 10); // style
-    assert_eq!(u16::from_le_bytes([data[1], data[2]]), 2); // pt count
-    assert_eq!(i32::from_le_bytes([data[3], data[4], data[5], data[6]]), 0); // anchor x
-    assert_eq!(i32::from_le_bytes([data[7], data[8], data[9], data[10]]), 0); // anchor y
-    assert_eq!(data[11], 0); // flags: line, 8-bit
-    assert_eq!(data[12] as i8, 100); // dx = (1.0001 - 1.0) * 1e6
-    assert_eq!(data[13] as i8, 100); // dy
+    assert_eq!(data[1], 0); // flags: line, 8-bit, compact (WIDE clear)
+    assert_eq!(data[2], 2); // pt count (u8)
+    assert_eq!(u16::from_le_bytes([data[3], data[4]]), 0); // anchor x
+    assert_eq!(u16::from_le_bytes([data[5], data[6]]), 0); // anchor y
+    assert_eq!(data[7] as i8, 100); // dx = (1.0001 - 1.0) * 1e6
+    assert_eq!(data[8] as i8, 100); // dy
 }
 
 #[test]
-fn pack_chunk_pads_with_ff() {
+fn pack_chunk_is_tight_and_ends_in_one_sentinel() {
+    // v11: no padding to `chunk_size`. The chunk is the packed features plus exactly one 0xFF.
     let f = line(10, &[(1.0, 1.0), (1.0001, 1.0001)]);
     let node_bbox = (1_000_000, 1_000_000, 1_010_000, 1_010_000);
     let (chunk, dropped) = pack_chunk(&[f], node_bbox, 32);
-    assert_eq!(chunk.len(), 32);
+    assert_eq!(chunk.len(), 10, "9-byte feature + 1 sentinel, not padded to 32");
     assert_eq!(dropped, 0);
-    assert!(chunk[14..].iter().all(|&b| b == 0xFF)); // 18 bytes of padding
+    assert_eq!(chunk[9], 0xFF, "the one trailing sentinel");
 }
 
 #[test]
@@ -96,10 +100,10 @@ fn pack_polygon_with_hole() {
     let data = pack_feature(&f, node_bbox);
 
     assert_eq!(data[0], 20); // style
-    assert_eq!(u16::from_le_bytes([data[1], data[2]]), 5); // exterior pt count (closed)
-    assert_eq!(data[11], 0x06); // poly | has-holes, 8-bit
-    assert_eq!(data[20], 1); // hole count (after 12 header + 8 exterior delta bytes)
-    assert_eq!(u16::from_le_bytes([data[21], data[22]]), 5); // hole pt count
+    assert_eq!(data[1], 0x06); // flags: poly | has-holes, 8-bit, compact
+    assert_eq!(data[2], 5); // exterior pt count (closed)
+    assert_eq!(data[15], 1); // hole count (after the 7-byte header + 8 exterior delta bytes)
+    assert_eq!(u16::from_le_bytes([data[16], data[17]]), 5); // hole pt count (still u16)
 }
 
 #[test]
@@ -121,7 +125,8 @@ fn serialize_lods_header_single_empty_leaf() {
     );
     assert_eq!(dropped, 0);
 
-    // header(40) + style count(1) + 1 LOD entry(18) + index(4) = 63, then the empty POI directory
+    // header(40) + style count(1) + 1 LOD entry(18) + index(4) + the chunkless LOD's one-entry
+    // offset table(4) = 67, then the empty POI directory
     // — count(1) + chunk_size(2) + 6 entries × 13 + the two v7 pool fields (offset u32 + count u16 =
     // 6) = 87 bytes — the empty hours pool (a bare `count u16` = 2 bytes), and the empty v9 nav
     // section (28-byte directory + the always-present profile table) at the tail.
@@ -130,18 +135,18 @@ fn serialize_lods_header_single_empty_leaf() {
                             // Empty graph: the 28-byte directory + the four default profiles (52 B each), always present.
     let profile_table_len = 4 * 52;
     let nav_section_len = 28 + profile_table_len;
-    assert_eq!(bin.len(), 63 + poi_dir_len + hours_pool_len + nav_section_len);
+    assert_eq!(bin.len(), 67 + poi_dir_len + hours_pool_len + nav_section_len);
     assert_eq!(&bin[0..4], b"OBCM");
-    assert_eq!(bin[4], 10); // version
+    assert_eq!(bin[4], 11); // version
     assert_eq!(u32::from_le_bytes([bin[21], bin[22], bin[23], bin[24]]), 40); // style offset (40 since v8)
     assert_eq!(bin[25], 1); // lod count
     let lod_tbl = u32::from_le_bytes([bin[26], bin[27], bin[28], bin[29]]) as usize;
     assert_eq!(lod_tbl, 41); // 40 header + 1 style-count byte
 
     // The POI section offset (header byte 32) points just past the LOD payload: the
-    // section is 63 bytes in (header 40 + style 1 + LOD entry 18 + index 4).
+    // section is 67 bytes in (header 40 + style 1 + LOD entry 18 + index 4 + offset table 4).
     let poi_off = u32::from_le_bytes([bin[32], bin[33], bin[34], bin[35]]) as usize;
-    assert_eq!(poi_off, 63);
+    assert_eq!(poi_off, 67);
     assert_eq!(bin[poi_off], 6, "empty POI directory still declares 6 categories");
     assert_eq!(u16::from_le_bytes([bin[poi_off + 1], bin[poi_off + 2]]), 512); // shared chunk_size
 
@@ -183,6 +188,10 @@ fn serialize_lods_header_single_empty_leaf() {
     assert_eq!(node_count, 1);
     assert_eq!(c_size, 2048);
     assert_eq!(chunk_count, 0);
+    // A chunkless LOD still writes its offset table: the single `0` entry, and nothing after it.
+    let table_off = idx_off as usize + node_count as usize * 4;
+    assert_eq!(u32::from_le_bytes(bin[table_off..table_off + 4].try_into().unwrap()), 0);
+    assert_eq!(table_off + 4, poi_off, "table of one entry, then the POI section");
 }
 
 // === 16-bit delta path — byte-pinned ========================================
@@ -195,16 +204,16 @@ fn pack_feature_16bit_line() {
     let node_bbox = (1_000_000, 1_000_000, 1_010_000, 1_010_000);
     let data = pack_feature(&f, node_bbox);
 
-    // header(12) + one int16 delta pair(4) = 16.
-    assert_eq!(data.len(), 16, "12-byte header + one int16 (dx,dy) pair");
+    // compact header(7) + one int16 delta pair(4) = 11.
+    assert_eq!(data.len(), 11, "7-byte compact header + one int16 (dx,dy) pair");
     assert_eq!(data[0], 10); // style
-    assert_eq!(u16::from_le_bytes([data[1], data[2]]), 2); // exterior pt count
-    assert_eq!(i32::from_le_bytes([data[3], data[4], data[5], data[6]]), 0); // anchor x (at node min)
-    assert_eq!(i32::from_le_bytes([data[7], data[8], data[9], data[10]]), 0); // anchor y
-    assert_eq!(data[11], 0x01, "flags: line, 16-bit deltas");
-    // dx = dy = 500 µdeg, little-endian int16.
-    assert_eq!(i16::from_le_bytes([data[12], data[13]]), 500, "dx as int16");
-    assert_eq!(i16::from_le_bytes([data[14], data[15]]), 500, "dy as int16");
+    assert_eq!(data[1], 0x01, "flags: line, 16-bit deltas, compact");
+    assert_eq!(data[2], 2); // exterior pt count
+    assert_eq!(u16::from_le_bytes([data[3], data[4]]), 0); // anchor x (at node min)
+    assert_eq!(u16::from_le_bytes([data[5], data[6]]), 0); // anchor y
+                                                           // dx = dy = 500 µdeg, little-endian int16.
+    assert_eq!(i16::from_le_bytes([data[7], data[8]]), 500, "dx as int16");
+    assert_eq!(i16::from_le_bytes([data[9], data[10]]), 500, "dy as int16");
 }
 
 #[test]
@@ -214,11 +223,11 @@ fn pack_feature_16bit_negative_delta() {
     let f = line(7, &[(2.0, 2.0), (1.9995, 1.9995)]);
     let node_bbox = (1_999_500, 1_999_500, 2_001_000, 2_001_000);
     let data = pack_feature(&f, node_bbox);
-    assert_eq!(data[11], 0x01, "16-bit flag set for a -500 µdeg delta");
+    assert_eq!(data[1], 0x01, "16-bit flag set for a -500 µdeg delta, header still compact");
     // Anchor is the first vertex (2.0,2.0) relative to the node min corner.
-    assert_eq!(i32::from_le_bytes([data[3], data[4], data[5], data[6]]), 2_000_000 - 1_999_500); // = 500
-    assert_eq!(i16::from_le_bytes([data[12], data[13]]), -500, "dx = -500 as signed int16");
-    assert_eq!(i16::from_le_bytes([data[14], data[15]]), -500, "dy = -500 as signed int16");
+    assert_eq!(u16::from_le_bytes([data[3], data[4]]), 500, "= 2_000_000 − 1_999_500");
+    assert_eq!(i16::from_le_bytes([data[7], data[8]]), -500, "dx = -500 as signed int16");
+    assert_eq!(i16::from_le_bytes([data[9], data[10]]), -500, "dy = -500 as signed int16");
 }
 
 // === Densify byte-pinning inside pack_feature ===============================
@@ -232,15 +241,15 @@ fn pack_feature_densifies_long_segment_bytes() {
     let node_bbox = (1_000_000, 1_000_000, 1_100_000, 1_100_000);
     let data = pack_feature(&f, node_bbox);
 
-    assert_eq!(u16::from_le_bytes([data[1], data[2]]), 3, "densify bumped exterior Pt Count 2 → 3");
-    assert_eq!(data[11], 0x01, "27 500-µdeg deltas force the 16-bit path");
-    // header(12) + two int16 (dx,dy) pairs(8) = 20.
-    assert_eq!(data.len(), 20, "header + two densified int16 delta pairs");
+    assert_eq!(data[2], 3, "densify bumped exterior Pt Count 2 → 3");
+    assert_eq!(data[1], 0x01, "27 500-µdeg deltas force the 16-bit path");
+    // compact header(7) + two int16 (dx,dy) pairs(8) = 15.
+    assert_eq!(data.len(), 15, "header + two densified int16 delta pairs");
     // Both deltas are (0, +27500): the inserted midpoint and the real endpoint.
-    assert_eq!(i16::from_le_bytes([data[12], data[13]]), 0); // dx to midpoint
-    assert_eq!(i16::from_le_bytes([data[14], data[15]]), 27_500); // dy to midpoint
-    assert_eq!(i16::from_le_bytes([data[16], data[17]]), 0); // dx to endpoint
-    assert_eq!(i16::from_le_bytes([data[18], data[19]]), 27_500); // dy to endpoint
+    assert_eq!(i16::from_le_bytes([data[7], data[8]]), 0); // dx to midpoint
+    assert_eq!(i16::from_le_bytes([data[9], data[10]]), 27_500); // dy to midpoint
+    assert_eq!(i16::from_le_bytes([data[11], data[12]]), 0); // dx to endpoint
+    assert_eq!(i16::from_le_bytes([data[13], data[14]]), 27_500); // dy to endpoint
 }
 
 // === Numeric extremes =======================================================
@@ -260,13 +269,13 @@ fn pack_feature_extreme_anchor_survives_i32() {
     let node_bbox = (179_998_000, 84_999_000, 180_000_000, 85_001_000);
     let data = pack_feature(&f, node_bbox);
 
-    // Anchor = first vertex (179_999_000, 85_000_000) − node min (179_998_000, 84_999_000).
-    assert_eq!(i32::from_le_bytes([data[3], data[4], data[5], data[6]]), 1_000, "anchor x offset survives i32");
-    assert_eq!(i32::from_le_bytes([data[7], data[8], data[9], data[10]]), 1_000, "anchor y offset survives i32");
-    // Small 100-µdeg step stays on the 8-bit path even at extreme absolute coords.
-    assert_eq!(data[11], 0x00, "small deltas ⇒ 8-bit even with a huge anchor");
-    assert_eq!(data[12] as i8, 100);
-    assert_eq!(data[13] as i8, 100);
+    // Anchor = first vertex (179_999_000, 85_000_000) − node min (179_998_000, 84_999_000). Extreme
+    // *absolute* coords, but the leaf-relative offset is small — so the header stays compact.
+    assert_eq!(data[1], 0x00, "small deltas ⇒ 8-bit; small offset ⇒ compact, even at 180° lon");
+    assert_eq!(u16::from_le_bytes([data[3], data[4]]), 1_000, "anchor x offset");
+    assert_eq!(u16::from_le_bytes([data[5], data[6]]), 1_000, "anchor y offset");
+    assert_eq!(data[7] as i8, 100);
+    assert_eq!(data[8] as i8, 100);
 }
 
 #[test]
@@ -279,10 +288,10 @@ fn pack_feature_antimeridian_negative_anchor() {
     let node_bbox = (-180_000_000, -85_001_000, -179_000_000, -84_000_000);
     let data = pack_feature(&f, node_bbox);
     // Anchor = (-179_999_000) − (-180_000_000) = 1_000; (-85_000_000) − (-85_001_000) = 1_000.
-    assert_eq!(i32::from_le_bytes([data[3], data[4], data[5], data[6]]), 1_000);
-    assert_eq!(i32::from_le_bytes([data[7], data[8], data[9], data[10]]), 1_000);
-    assert_eq!(data[12] as i8, 100, "dx = +100 µdeg");
-    assert_eq!(data[13] as i8, 100, "dy = +100 µdeg");
+    assert_eq!(u16::from_le_bytes([data[3], data[4]]), 1_000);
+    assert_eq!(u16::from_le_bytes([data[5], data[6]]), 1_000);
+    assert_eq!(data[7] as i8, 100, "dx = +100 µdeg");
+    assert_eq!(data[8] as i8, 100, "dy = +100 µdeg");
 }
 
 // === Quadtree budget vs real packed bytes ===================================
@@ -336,22 +345,19 @@ fn pack_chunk_drops_overflowing_feature_and_the_rest() {
     // Two small features that each fit, then a wide one that doesn't. Size a chunk to
     // hold the first feature but not the first + second, so the second (and the third
     // after it) are dropped.
-    let a = line(10, &[(1.0, 1.0), (1.0001, 1.0001)]); // 14 bytes (8-bit, 1 delta pair)
-    let b = line(11, &[(1.0, 1.0), (1.0001, 1.0001)]); // also 14 bytes
-    let c = line(12, &[(1.0, 1.0), (1.0001, 1.0001)]); // also 14 bytes
+    let a = line(10, &[(1.0, 1.0), (1.0001, 1.0001)]); // 9 bytes (compact, 1 8-bit delta pair)
+    let b = line(11, &[(1.0, 1.0), (1.0001, 1.0001)]); // also 9 bytes
+    let c = line(12, &[(1.0, 1.0), (1.0001, 1.0001)]); // also 9 bytes
     let node_bbox = (1_000_000, 1_000_000, 1_010_000, 1_010_000);
 
-    // Chunk of 20: holds `a` (14) but not `a`+`b` (28) ⇒ b and c dropped.
-    let (chunk, dropped) = pack_chunk(&[a, b, c], node_bbox, 20);
-    assert_eq!(chunk.len(), 20, "chunk is exactly chunk_size");
+    // Chunk of 12: holds `a` + its sentinel (10) but not `a`+`b` (19) ⇒ b and c dropped.
+    let (chunk, dropped) = pack_chunk(&[a, b, c], node_bbox, 12);
+    assert_eq!(chunk.len(), 10, "the kept feature (9) + its sentinel — tight, not 12");
     assert_eq!(dropped, 2, "b and c are reported as dropped, not lost silently");
-    // First 14 bytes are feature `a` (style 10); the rest is 0xFF padding — no
-    // partial second feature, and `c` is gone too (break, not continue).
+    // The chunk is feature `a` (style 10) and nothing else: no partial second feature, and `c` is
+    // gone too (break, not continue).
     assert_eq!(chunk[0], 10, "the one feature that fit is `a`");
-    assert!(
-        chunk[14..].iter().all(|&byte| byte == 0xFF),
-        "everything after the kept feature is padding, no partial b/c"
-    );
+    assert_eq!(chunk[9], 0xFF, "the sentinel closes the stream right after `a`");
     // Specifically, style ids 11 and 12 never appear.
     assert!(!chunk.contains(&11) && !chunk.contains(&12), "overflowing features b/c were dropped, not packed");
 }
@@ -366,7 +372,7 @@ fn serialize_keeps_chunk_index_consistent_when_a_feature_overflows() {
     let b = line(11, &[(1.0, 1.0), (1.0001, 1.0001)]);
     let lods = vec![LodLayer {
         max_mpp: None,
-        chunk_size: 20,
+        chunk_size: 12,
         root: Node::Leaf { bbox: (1_000_000, 1_000_000, 1_010_000, 1_010_000), features: vec![a, b] },
     }];
     let (bin, dropped) = serialize_lods(
@@ -393,8 +399,162 @@ fn serialize_keeps_chunk_index_consistent_when_a_feature_overflows() {
     assert_eq!(entry & obc_formats::obcm::BRANCH_BIT, 0, "index entry is a leaf, not a branch");
     assert_eq!(entry & !obc_formats::obcm::BRANCH_BIT, 0, "leaf maps to chunk id 0");
 
-    // The single chunk holds only feature `a` (style 10); style 11 was dropped.
-    let chunk_off = idx_off + node_count as usize * 4;
+    // The single chunk holds only feature `a` (style 10); style 11 was dropped. Chunk data starts
+    // after the index *and* the (chunk_count + 1)-entry offset table, and its extent is the table's
+    // first two entries.
+    let table_off = idx_off + node_count as usize * 4;
+    let chunk_off = table_off + (chunk_count as usize + 1) * 4;
+    let end = u32::from_le_bytes(bin[table_off + 4..table_off + 8].try_into().unwrap()) as usize;
+    assert_eq!(u32::from_le_bytes(bin[table_off..table_off + 4].try_into().unwrap()), 0, "offsets[0] is 0");
+    assert_eq!(end, 10, "the tight chunk is the 9-byte feature plus its sentinel");
     assert_eq!(bin[chunk_off], 10, "chunk starts with the kept feature");
-    assert!(!bin[chunk_off..chunk_off + 20].contains(&11), "the overflowing feature is absent from the chunk");
+    assert!(!bin[chunk_off..chunk_off + end].contains(&11), "the overflowing feature is absent from the chunk");
+}
+
+// === v11 chunk offset table (§5, issue #1009) ================================
+
+/// `serialize_tree`'s data region: a `chunk_count + 1` entry `uint32` table, then the tight chunks.
+/// Every property the reader's arithmetic depends on is pinned here — zero-based, monotonic, the last
+/// entry the region total, and the slice each pair delimits actually being that chunk's bytes.
+#[test]
+fn serialize_tree_writes_a_monotonic_offset_table() {
+    // Two leaves under a branch: NW and NE hold one feature each, SW/SE are empty.
+    let leaf = |lon: f64, style: u8, bbox| Node::Leaf {
+        bbox,
+        features: vec![line(style, &[(lon, 0.1), (lon + 0.0001, 0.1)])],
+    };
+    let empty = |bbox| Node::Leaf { bbox, features: vec![] };
+    let root = Node::Branch(Box::new([
+        leaf(0.1, 10, (0, 500_000, 500_000, 1_000_000)),
+        leaf(0.6, 11, (500_000, 500_000, 1_000_000, 1_000_000)),
+        empty((0, 0, 500_000, 500_000)),
+        empty((500_000, 0, 1_000_000, 500_000)),
+    ]));
+    let (index, node_count, data, chunk_count, dropped) = serialize_tree(&root, 4096);
+    assert_eq!((node_count, chunk_count, dropped), (5, 2, 0));
+    assert_eq!(index.len(), 5 * 4);
+
+    let table_len = (chunk_count as usize + 1) * 4;
+    let offsets: Vec<u32> =
+        (0..=chunk_count as usize).map(|k| u32::from_le_bytes(data[k * 4..k * 4 + 4].try_into().unwrap())).collect();
+    assert_eq!(offsets[0], 0, "offsets are relative to the first chunk byte");
+    assert!(offsets.windows(2).all(|w| w[0] <= w[1]), "monotonic: {offsets:?}");
+    assert_eq!(offsets[chunk_count as usize] as usize, data.len() - table_len, "last entry is the region total");
+
+    // Each pair delimits exactly that chunk: the style byte it starts with, and its one sentinel.
+    for (k, style) in [(0usize, 10u8), (1, 11)] {
+        let chunk = &data[table_len + offsets[k] as usize..table_len + offsets[k + 1] as usize];
+        assert_eq!(chunk[0], style, "chunk {k} starts with its feature");
+        assert_eq!(*chunk.last().unwrap(), 0xFF, "and ends on exactly one sentinel");
+        assert!(!chunk[..chunk.len() - 1].ends_with(&[0xFF]), "no padding before it");
+    }
+}
+
+/// The chunkless tree: one empty leaf, no chunks, and the table is still written as the single `0`
+/// entry (the reader reads that entry unconditionally as its region bound).
+#[test]
+fn serialize_tree_writes_the_table_even_with_no_chunks() {
+    let root = Node::Leaf { bbox: (0, 0, 1_000_000, 1_000_000), features: vec![] };
+    let (_, node_count, data, chunk_count, dropped) = serialize_tree(&root, 4096);
+    assert_eq!((node_count, chunk_count, dropped), (1, 0, 0));
+    assert_eq!(data, vec![0, 0, 0, 0], "one zero entry, nothing after it");
+}
+
+// === v11 compact-vs-wide header selection (§5, issue #1009) ==================
+
+/// Read a packed feature's `(wide, ext_pt_count, ax, ay)` the way the reader does.
+fn header_of(packed: &[u8]) -> (bool, usize, i32, i32) {
+    let wide = packed[1] & obc_formats::obcm::FEATURE_FLAG_WIDE != 0;
+    if wide {
+        (
+            true,
+            u16::from_le_bytes([packed[2], packed[3]]) as usize,
+            i32::from_le_bytes(packed[4..8].try_into().unwrap()),
+            i32::from_le_bytes(packed[8..12].try_into().unwrap()),
+        )
+    } else {
+        (
+            false,
+            packed[2] as usize,
+            u16::from_le_bytes([packed[3], packed[4]]) as i32,
+            u16::from_le_bytes([packed[5], packed[6]]) as i32,
+        )
+    }
+}
+
+/// The `pt_count` boundary: 255 vertices still fit the compact `u8`, 256 do not. Both are 8-bit-delta
+/// lines anchored at the leaf min corner, so nothing but the count moves the decision.
+#[test]
+fn compact_header_holds_up_to_255_vertices() {
+    let node_bbox = (0, 0, 1_000_000, 1_000_000);
+    let ramp = |n: usize| line(1, &(0..n).map(|i| (i as f64 * 1e-6, 0.0)).collect::<Vec<_>>());
+
+    let packed = pack_feature(&ramp(255), node_bbox);
+    assert_eq!(header_of(&packed), (false, 255, 0, 0), "255 is the last compact count");
+    assert_eq!(packed.len(), 7 + 254 * 2);
+
+    let packed = pack_feature(&ramp(256), node_bbox);
+    assert_eq!(header_of(&packed), (true, 256, 0, 0), "256 escapes to the wide header");
+    assert_eq!(packed.len(), 12 + 255 * 2);
+}
+
+/// The anchor boundary: `65535` is the last compact anchor, `65536` escapes. Independently on each
+/// axis, since either one out of range forces the wide form.
+#[test]
+fn compact_header_holds_anchors_up_to_65535() {
+    // The anchor is the first vertex minus the leaf's min corner, so a leaf at the origin makes the
+    // anchor the coordinate itself.
+    let node_bbox = (0, 0, 1_000_000, 1_000_000);
+    let at = |lon_udeg: i64, lat_udeg: i64| {
+        let (lon, lat) = (lon_udeg as f64 * 1e-6, lat_udeg as f64 * 1e-6);
+        line(1, &[(lon, lat), (lon + 1e-6, lat)])
+    };
+
+    assert_eq!(header_of(&pack_feature(&at(65_535, 65_535), node_bbox)), (false, 2, 65_535, 65_535));
+    assert_eq!(header_of(&pack_feature(&at(65_536, 0), node_bbox)), (true, 2, 65_536, 0), "x one past the u16");
+    assert_eq!(header_of(&pack_feature(&at(0, 65_536), node_bbox)), (true, 2, 0, 65_536), "y one past the u16");
+}
+
+/// A negative anchor — the leaf's min corner *above* the feature's first vertex. The packer should
+/// never emit one (clipping keeps a feature inside its leaf), but the encoding must not silently
+/// wrap it into a positive `u16`, so it takes the wide escape and round-trips as the negative it is.
+#[test]
+fn a_negative_anchor_takes_the_wide_escape() {
+    let node_bbox = (1_000, 1_000, 1_000_000, 1_000_000);
+    let f = line(1, &[(0.0, 0.0), (0.000_001, 0.0)]); // first vertex below the leaf min corner
+    let packed = pack_feature(&f, node_bbox);
+    assert_eq!(header_of(&packed), (true, 2, -1_000, -1_000));
+}
+
+/// End-to-end: a **coarse leaf spanning more than 65 535 µdeg** — the case the escape exists for.
+/// Features near the leaf's min corner stay compact; one far enough in to pass the `u16` needs the
+/// wide header, and the reader must hand back the same absolute coordinates for both.
+#[test]
+fn a_leaf_wider_than_the_u16_anchor_round_trips_through_both_forms() {
+    use obc_reader::{MapCache, MapTables, Reader, SliceSource, MAX_FEAT_PTS, MAX_FEAT_RINGS};
+
+    // A single leaf spanning 1° (1 000 000 µdeg) — 15× the u16 anchor range.
+    const BBOX: (i64, i64, i64, i64) = (0, 0, 1_000_000, 1_000_000);
+    let near = line(1, &[(0.01, 0.01), (0.010_001, 0.01)]); // anchor 10 000 → compact
+    let far = line(1, &[(0.9, 0.9), (0.900_001, 0.9)]); // anchor 900 000 → wide
+    let lods =
+        vec![LodLayer { max_mpp: None, chunk_size: 4096, root: Node::Leaf { bbox: BBOX, features: vec![near, far] } }];
+    let styles = vec![Style { id: 1, z_index: 0, color: 0x1234, weight: 1, priority: 1, dashed: false, color2: None }];
+    let (bin, dropped) =
+        serialize_lods(&lods, &styles, 0xF800, BBOX, &[], &Default::default(), &obc_pack::config::default_profiles());
+    assert_eq!(dropped, 0);
+
+    let cache = MapCache::new();
+    let src = SliceSource(&bin);
+    let tables = MapTables::parse(&src).expect("v11 map parses");
+    let r = Reader::new(&src, &tables, &cache);
+    let mut points = heapless::Vec::<_, MAX_FEAT_PTS>::new();
+    let mut ring_lens = heapless::Vec::<_, MAX_FEAT_RINGS>::new();
+    let mut got: Vec<Vec<(i32, i32)>> = Vec::new();
+    r.for_each_feature(0, 0, &r.bbox, &mut points, &mut ring_lens, |f| got.push(f.exterior().to_vec())).unwrap();
+    assert_eq!(
+        got,
+        vec![vec![(10_000, 10_000), (10_001, 10_000)], vec![(900_000, 900_000), (900_001, 900_000)]],
+        "both header forms decode to their absolute microdegrees"
+    );
 }

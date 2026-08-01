@@ -17,8 +17,8 @@ trees — one `Cargo.lock`, one `target/`:
 | Tree | Holds | Reached by the device image? |
 | :-- | :-- | :-- |
 | `firmware/` | `obc-formats`, `obc-ports`, `obc-map-scene`, `obc-reader`, `obc-route`, `obc-render`, `obc-app`, `obc-ble`, `obc-dfu`, the platform adapters | **yes** — that is the rule |
-| `../host/` | the packer (`obc-pack`), the bakery (`obc-bake`), `obc-mkimage`, `obc-bench`, the oracles (`obcm-testkit`, `obc-vectors`), `obc-host-core`, `obc-replay`, `obc-usb-host` | no |
-| `../apps/` | `obc-sim`, `obc-web-demo`, `obc-web-convert`, `obc-web-preview`, `obc-desktop` | no |
+| `../host/` | the packer (`obc-pack`), the bakery (`obc-bake`), the cell assembler (`obcm-assemble`), `obc-mkimage`, `obc-bench`, the oracles (`obcm-testkit`, `obc-vectors`), `obc-host-core`, `obc-replay`, `obc-usb-host` | no |
+| `../apps/` | `obc-sim`, `obc-web-demo`, `obc-web-convert`, `obc-web-assemble`, `obc-desktop` | no |
 
 Dev-dependencies cross that boundary on purpose — `obc-render` and `obc-reader`
 test against `obcm-testkit`, `obc-route` against `obc-pack` — because a dev-dep
@@ -168,16 +168,16 @@ trunk build --release --config docs/Trunk.toml # → docs/dist/
 The demo core is target-independent, so its unit tests run in the plain
 `cargo test` above — no browser needed for the logic.
 
-## Build the web builder's wasm bridges (`obc-web-convert`, `obc-web-preview`)
+## Build the web builder's wasm bridges (`obc-web-convert`, `obc-web-assemble`)
 
-The hosted web builder has no backend, so two things it needs run as wasm in the
-tab, each a thin host over shared firmware crates:
+The hosted web builder has no backend, so two things it needs run as wasm in
+the tab, each a thin host over a shared crate:
 
 - **`obc-web-convert`** — `obc-route`'s `gpx_to_obcr` / `track_to_gpx`, so a
   dropped GPX becomes the *same* `.obcr` the device and the CLI produce.
-- **`obc-web-preview`** — `obc-reader` + `obc-render`, so a preset card renders a
-  small demo map at the panel's own 240×320 through the device's render path
-  (the maps come from `builder/bake-previews.sh`; see `builder/README.md`).
+- **`obc-web-assemble`** — `obcm-assemble`, so downloaded OBCA cells become one
+  map in the tab, verified (spec §4.8) before anything leaves it. The only one
+  wrapping a `host/` crate rather than a firmware one.
 
 Both are normal workspace members — their cores are target-independent and
 covered by the `cargo test` above; only the shipping artifacts are wasm.
@@ -186,33 +186,36 @@ Unlike the demo these are **libraries** consumed by Vite, not apps Trunk
 bundles, so they build with `wasm-pack` (`cargo install wasm-pack` once):
 
 ```sh
-# From builder/app — writes src/lib/{convert,preview}/pkg/ (gitignored).
-npm run build:wasm            # both; :convert / :preview build one
+# From builder/app — writes src/lib/{convert,assemble}/pkg/ (gitignored).
+npm run build:wasm            # both; :convert / :assemble build one
 ```
 
 The frontend needs that output before `npm run check`, `npm test` or
 `npm run build` will work: the TypeScript wrappers import the generated
-bindings, and the vitest suite converts the checked-in `specs/vectors/`
-fixtures through the wasm module and compares them **byte-for-byte** against the
-native converter's checked-in output. CI does the same in its `wasm-bridges`
-job, which also enforces the per-module bundle-size budgets:
+bindings, and two vitest suites push checked-in fixtures through the wasm
+modules and compare **byte-for-byte** against the native tools' checked-in
+output — `specs/vectors/` for the converter, and the cell tree in
+`apps/obc-web-assemble/tests/fixture/` for the assembler. CI does the same in
+its `wasm-bridges` job, which also enforces the per-module bundle-size budgets:
 
 ```sh
 # From the repo root; --pkg overrides the module's default location.
 python3 firmware/tools/wasm_size_guard.py --module convert
 python3 firmware/tools/wasm_size_guard.py --module preview
+python3 firmware/tools/wasm_size_guard.py --module assemble
 ```
 
 ## Firmware update images (OBCU)
 
-Field firmware updates (epic #615) ship as an **OBCU** container — a 64-byte header
-plus the raw app image — dropped on the SD card as `/UPDATE.BIN`. The byte format is
+Field firmware updates (epic #615) ship as an **OBCU** container — a 64-byte header,
+the raw app image, and an Ed25519 signature trailer (OBCU v2, #997) — dropped on the SD
+card as `/UPDATE.BIN`. The byte format is
 [`OBCU_Spec.md`](../specs/OBCU_Spec.md); the shared codec + boot-decision logic live in
 `obc-dfu` (a `no_std` workspace member, host-tested by the `cargo test` above). The
 producer is `obc-mkimage`.
 
-The pipeline is **objcopy → wrap**. Strip the board ELF to a raw binary (vector table
-first), then wrap it:
+The pipeline is **objcopy → wrap+sign**. Strip the board ELF to a raw binary (vector
+table first), then wrap and sign it:
 
 ```sh
 # From the board crate — its .cargo/config.toml selects the nRF54L target (see its README).
@@ -221,13 +224,16 @@ cd obc-fw-nrf54l
 cargo objcopy --release -- -O binary app.bin
 # (equivalently, on the ELF: llvm-objcopy -O binary target/<triple>/release/obc-fw-nrf54l app.bin)
 
-# Wrap into an OBCU container tagged with the build's git describe.
+# Wrap into a signed OBCU container tagged with the build's git describe. On a dev machine
+# the committed test seed is the right key (the firmware trusts it until the release key is
+# rotated — see firmware/obc-dfu/keys/README.md); CI passes --sign-seed-env instead.
 cargo run -p obc-mkimage -- wrap \
     --bin app.bin \
     --version "$(git describe --always --dirty)" \
-    --out UPDATE.BIN
+    --out UPDATE.BIN \
+    --sign-seed ../obc-dfu/keys/test/obcu-test.seed
 
-# Inspect: decode + verify both CRCs (non-zero exit if invalid).
+# Inspect: decode + verify both CRCs AND the signature (non-zero exit if invalid).
 cargo run -p obc-mkimage -- inspect UPDATE.BIN
 ```
 
@@ -235,6 +241,15 @@ cargo run -p obc-mkimage -- inspect UPDATE.BIN
 and **warns** if the binary's first word isn't a plausible initial stack pointer in
 RAM (`0x2000_0000 … 0x2004_0000`) — a raw `.bin` starts with the vector table, so a
 failed check usually means an ELF or a wrong-section-order strip slipped through.
+
+**Signing is not optional on the device.** Without `--sign-seed`/`--sign-seed-env`,
+`wrap` emits a v1/unsigned container, warns loudly, and the armer **rejects** it
+("This update file is not signed for this device") — the signature would be pointless if
+an unsigned wrapper still installed. `obc-mkimage sign --in … --out …` attaches the
+trailer to an already-wrapped container, so an artifact can be built on one machine and
+signed on the one that holds the key; `keygen` makes a keypair. Everything about keys —
+the file format, the `OBCU_SIGNING_SEED` CI secret, and the **rotation still owed before
+the first real release** — is in [`obc-dfu/keys/README.md`](obc-dfu/keys/README.md).
 
 Installing a staged `UPDATE.BIN` on the device is the app-side armer (S4, #619): copy
 the file to the card root and trigger the install — from the S5 UI once it lands, or

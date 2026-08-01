@@ -19,6 +19,10 @@
 //!   matrix, the snapshot-before-page-write arm sequencing, the generation bump, and the trial
 //!   confirm, as pure drivers over the [`armer::StageIo`]/[`armer::ArmIo`] traits — host-tested
 //!   with mocks (`tests/armer.rs`) exactly like the engine.
+//! - [`sig`] — the **OBCU v2 signature** (`OBCU_Spec.md` §1.3, #997): the domain-separated signed
+//!   message, the embedded release public key, and a streaming Ed25519 [`sig::Verifier`]. The
+//!   armer is the only place it runs — verify **before arm**; the flash-once bootloader stays
+//!   cryptography-free.
 //!
 //! Everything is little-endian (repo convention, matching OBCM/OBCR). Both codecs follow the
 //! settings-store convention: a version + CRC frame, **valid CRC ⇒ `Some`/decoded**, anything else
@@ -30,14 +34,19 @@ pub mod armer;
 pub mod crc32;
 pub mod engine;
 pub mod image;
+pub mod sig;
 pub mod state;
 
 pub use armer::{ArmError, ArmIo, ArmTicket, ExtentsError, Rollback, ScanError, StageIo};
 pub use crc32::{crc32, Crc32};
 pub use engine::{InstallIo, IoError, Outcome, Phase, Slot, FLASH_RETRIES, PAD_BYTE, RRAM_LINE_LEN, SD_BLOCK_LEN};
 pub use image::{
-    looks_like_vector_table, ImageHeader, FW_VERSION_LEN, HEADER_LEN, HEADER_VERSION, MAGIC, MAX_IMAGE_LEN, RAM_END,
-    RAM_START,
+    looks_like_vector_table, ImageHeader, FW_VERSION_LEN, HEADER_LEN, HEADER_VERSION, MAGIC, MAX_CONTAINER_LEN,
+    MAX_IMAGE_LEN, RAM_END, RAM_START,
+};
+pub use sig::{
+    hex32, public_key_of, sign_image, signing_prefix, verify_image, PublicKey, SigError, Verifier, PUBKEY_LEN,
+    RELEASE_PUBKEY, SEED_LEN, SIG_CONTEXT, SIG_LEN, SIG_PREFIX_LEN, SIG_SCHEME_ED25519, SIG_SCHEME_NONE,
 };
 pub use state::{
     decide, verdict, BootDecision, BootState, EncodedPage, Extent, LastOutcome, OutcomeKind, StagedRef, Verdict,

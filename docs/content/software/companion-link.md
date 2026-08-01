@@ -173,12 +173,22 @@ whole-object checksum *and* the header have both checked out. The interrupted
 state is byte-for-byte the one the copy leaves — a magic-less file the map
 catalog refuses and a boot sweep reclaims.
 
-Three more rules fall out of the same size:
+Four more rules fall out of the same size:
 
 - **A map upload is new-only.** Writing into a stored map's file would destroy it
   as the replacement arrives, and "a failed checksum never touches the old copy"
   is not a promise to break on the one file the rider needs to see where they
-  are. Replacing a map is *send the new one, then delete the old one*.
+  are. Replacing a map is *send the new one and let the device retire the old
+  one*; there is no delete for a map on the wire at all.
+- **The device keeps one uploaded map.** It loads a single map and never switches
+  between them — the choice is made once at startup and the file stays open for
+  the session — so a second copy is a few hundred megabytes no reader will ever
+  open. The retirement happens at the boot that adopts the new map, and only once
+  that map has opened: the upload lands while its predecessor is still being
+  streamed from, so the instant of the commit is exactly when the old file cannot
+  be touched. Between the two, the card carries both. A map the rider copied on
+  themselves is never retired — it has no device-assigned id, and the rule is one
+  *uploaded* map, not one file.
 - **Free space is checked before the first byte**, not discovered at the last.
   A card that cannot fit the announced map is told so at the announce, with a
   reserve left over so a map can never take the last cluster and strand the ride
@@ -189,6 +199,66 @@ Three more rules fall out of the same size:
   filename, size, format version, bounding box, all read off the card — and
   cannot say where any of them came from. That is a gap in the protocol, not in
   the filesystem, and closing it means a new command rather than a new object.
+
+### A big map arrives in pieces, and the last one is the one that counts
+
+Past roughly Germany scale a map stops being a file. FAT32 caps one file at 4 GiB
+and the map format's own offsets are 32-bit, so a logical map becomes a **volume
+set**: a small manifest plus one to thirty-two ordinary map files ([more on the
+shape](../formats/#one-map-several-files)). Every interface still shows
+one map — that part is a rule, not a convention.
+
+Sending one is therefore several transfers instead of one, and the order matters
+in a way nothing else on this link does. The manifest is what says those files
+are one map, so it goes **last**: until it lands there is no map, only some large
+files no reader will open. That is the whole atomicity story, and it is the same
+held-back-magic trick a single map uses, one level up — a file whose first four
+bytes are missing is not a map, and a *set* whose manifest is missing is not one
+either.
+
+The interesting part is what the device does with that rule, because a rule
+addressed to the sender is not a guarantee. So the device enforces it:
+
+- **A manifest sent early is refused, not stored.** If any shard the manifest
+  will name has not arrived and checked out, the device says no at the announce —
+  before a single byte of it streams. A host that gets the order wrong finds out
+  in milliseconds rather than after several gigabytes.
+- **Each piece says which piece it is, and how many there are.** The count rides
+  every one of them, not just the first, and that buys the refusal that matters
+  most: a device that cannot hold enough files open for a set that large says so
+  at *shard zero*. Learning it at the manifest would mean learning it after the
+  whole upload.
+- **An interrupted set leaves nothing to explain.** The device writes the
+  manifest's name as a four-zero-byte placeholder before the first shard and fills
+  it in only at the very end, so a manifest whose first four bytes are *not* a
+  finished signature — all zeros, half-written, or not there yet — is proof the
+  device was the one writing it. A card reader never leaves that, because it
+  copies a manifest that is already complete, front to back. A pulled cable
+  deletes the set immediately; a power cut is cleaned up at the next start-up. A
+  rider half-way through copying a set by hand is left strictly alone — right
+  down to the id the next upload picks, which skips any name their copy has
+  already used. That is the direction to be wrong in: the alternative is deleting
+  a map that was minutes from working.
+- **Cancelling really cancels.** Because a set is several transfers, "stop" nearly
+  always arrives in the gap between two of them, where there is nothing in flight
+  to interrupt. The device takes it as abandoning the set: the staged pieces go
+  immediately, and the next set can start on the same connection.
+
+Because each piece is its own file, re-sending one that failed costs that one
+piece rather than the set — the only kind of resume this link offers, and the one
+that matches what actually goes wrong. Resuming after the cable is pulled is a
+different thing and is not pretended at: the device would have to be able to say
+which pieces of which set it already holds, and that is a question the protocol
+does not yet have.
+
+One limit is worth stating rather than leaving to be discovered. Each piece
+announces how many pieces there are, which is what catches a sender that changes
+its mind mid-upload — but only when the new set is a *different* size. Two sets
+of the same size look identical piece by piece, because nothing in a piece's
+announcement says which set it belongs to. What catches that is the manifest at
+the end, which is checked against the files actually on the card and refused if it
+does not describe them; the set is then deleted whole. Later than an announcement,
+but still before anything becomes a map.
 
 Because the FAT layer the firmware uses creates 8.3 filenames only, a received
 map lands as `MP7.OBM` — the same trick the [reserved computed-route
@@ -210,12 +280,15 @@ the exact bytes it will later stream, so a ride download is a verbatim file copy
 One object is not a stored file but a **firmware update**: a `fwImage` upload
 carries an [`OBCU`](src:specs/OBCU_Spec.md) `UPDATE.BIN` container, which the device
 writes to the card root verbatim — the transfer layer stays format-blind, exactly
-as with a route's OBCR bytes. **Staging is not installing.** A committed `fwImage`
+as with a route's OBCR bytes. That container is **signed**, and the *device* checks the
+signature before it will install anything, so a peer can only ever stage an image it
+obtained from a real release. **Staging is not installing.** A committed `fwImage`
 only *places* the file; the app then sends a separate `installFw` command to
 *request* an install, and the device runs its own scan and shows a **confirm card**
 that the rider must approve with a physical Select press. The phone can never arm
 or reboot the device on its own — the same on-glass gate the pairing passkey uses.
-The whole trust model, the two delivery paths, and the RRAM layout are on the
+The whole trust model, the three delivery paths, how a tagged release is published and
+served so the phone can find it at all, and the RRAM layout are on the
 [firmware updates](../firmware-updates/) page.
 
 **Object ids are durable.** Each stored object has a `u16` id the device assigns
@@ -632,12 +705,12 @@ with the card-resident decision in
 [#776](https://github.com/timohueser/OpenBikeComputer/issues/776).
 
 **One more field, and why it isn't a version bump.** The read carries a third value:
-`obcm_version`, the [OBCM map-format version](../formats/#the-catalog-a-third-format-for-finding-the-first-two)
+`obcm_version`, the [OBCM map-format version](../formats/#the-catalog-the-map-builders-source-of-truth)
 this firmware's reader reads. It is a *different number in a different sequence* from
 the protocol version beside it — one is this wire contract, the other is the file
 format on the card — and neither can be derived from the other, nor from the firmware
 revision string, which maps to a format version only through a table nobody keeps. A
-site that hands out pre-baked maps needs it, and had nothing to read it from.
+catalog builder needs it before offering assembled map bytes, and had nothing to read it from.
 
 Appending it changed the read's length, and a read whose length changed sounds like a
 protocol break. It isn't, because **the length has always been the version mechanism
@@ -986,6 +1059,20 @@ real product rather than a demo:
   cancel for real, and must: after an abort the device stops sending by design,
   so a read left waiting on it would hold the endpoint forever and the link would
   be dead while still looking alive.
+
+The map builder uses one small USB-only read beside those shared objects: the
+device reports the mounted card's free-byte count from FAT32's cached FSInfo
+sector. Step 4 compares that number with the selected assembly plus its safety
+allowance before enabling Send; no guessed card capacity and no stale desktop
+setting stands in for the card that is actually connected.
+
+A cell-built map then crosses as the volume set it really is. The assembler
+hands the page **one file at a time**, the page verifies each shard's SHA-256,
+and the worker does not release the next buffer until the device has committed
+the current one. Shards go in index order and the manifest goes last, so an
+interrupted set is never visible as a map; Cancel sends the set-abandon edge
+even when it lands between two whole-file transfers. The progress line stays
+set-wide (`shard 3 of 8 · 62%`) rather than jumping back to zero per file.
 
 Everything else about the link is unchanged by the choice of wire: the same
 objects, the same restart-don't-resume rule, the same change signal, the same

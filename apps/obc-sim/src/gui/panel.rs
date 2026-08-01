@@ -32,15 +32,6 @@ fn retention_label(r: obc_app::Retention) -> &'static str {
     }
 }
 
-/// A labelled `0–100%` progress bar (a render-stats buffer-utilization row).
-#[allow(dead_code)]
-fn util_bar(ui: &mut egui::Ui, label: &str, frac: f32) {
-    ui.horizontal(|ui| {
-        ui.label(label);
-        ui.add(egui::ProgressBar::new(frac).text(format!("{:.0}%", frac * 100.0)));
-    });
-}
-
 // TEMP debug (scratch-budget investigation): the two render paths, colored the same in the legend
 // and the stacked bars below.
 const KIND_LINE: egui::Color32 = egui::Color32::from_rgb(80, 150, 235); // lines = blue

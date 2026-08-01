@@ -41,3 +41,8 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 pollster = "0.3"
 # Native "open file" dialog for selecting a GPX track to replay.
 rfd = "0.14"
+
+[dev-dependencies]
+# Hand-built OBCM / OBCA fixtures for the `--set` loader tests. An independent oracle that calls no
+# production serializer, so a set the simulator mounts was not built by the code under test.
+obcm-testkit = { path = "../../host/obcm-testkit" }

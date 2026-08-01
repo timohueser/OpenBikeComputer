@@ -1,6 +1,6 @@
 ---
 title: Firmware updates
-description: How OpenBikeComputer updates its own firmware in the field — the SD-staged DFU trust model, the delivery paths (card sideload, BLE, USB — all confirmed on the glass), and the RRAM layout the bootloader and the app share.
+description: How OpenBikeComputer updates its own firmware in the field — the SD-staged DFU trust model, how a tagged release is published and served so every client finds it, the delivery paths (card sideload, BLE, USB — all confirmed on the glass), and the RRAM layout the bootloader and the app share.
 ---
 
 # Firmware updates
@@ -24,7 +24,7 @@ cover the design and the trust model.
 
 ## The trust model
 
-Everything below hangs off four invariants. They are not aspirations — each is a
+Everything below hangs off five invariants. They are not aspirations — each is a
 host test in the shared [`obc-dfu`](src:firmware/obc-dfu) crate, the same
 `no_std` code the app's *armer* and the bootloader's *install engine* both run.
 
@@ -52,6 +52,11 @@ host test in the shared [`obc-dfu`](src:firmware/obc-dfu) crate, the same
   a blank page, a half-written line, a caught bit-flip — means "no pending update,
   run the app", never a garbage install. Safety is the *default* outcome of
   corruption, not a case that has to be handled.
+- **Nothing unsigned gets armed.** The app verifies an Ed25519 signature over the
+  staged image before an install is even possible, and an *unsigned* container is
+  refused just as firmly as a badly-signed one — otherwise the check would be
+  trivially skippable. See [Signed images](#signed-images-and-the-one-thing-the-bootloader-deliberately-cant-do)
+  below for why the bootloader is deliberately left out of this.
 
 Read as a state machine, the update is a short cycle through three states, with
 the bootloader doing the dangerous work in the middle and every failure edge
@@ -141,18 +146,285 @@ the arm was abandoned, and boots the old firmware. The rider sees a one-time
 instead of staring at a device that is holding perfectly good firmware hostage to a
 card that never returns.
 
-> **CRC-32, no signatures — on purpose (v1).** Integrity is a CRC-32/IEEE over the
-> whole image, end to end. There is no cryptographic signature: physical access to
-> the card is already root on an open device, so the meaningful gate is the human
-> at the install step, not a key. The [`OBCU`](src:specs/OBCU_Spec.md) header reserves
-> bytes for a signature scheme if internet-sourced OTA ever lands.
+## Signed images, and the one thing the bootloader deliberately can't do
+
+v1 of the format shipped with a CRC-32 and nothing else, on the honest reasoning that
+physical access to the card is already root on an open device. It also reserved twelve
+header bytes "for a future signature-scheme marker if internet-sourced OTA ever lands".
+It landed — updates are published as GitHub releases now, and a file fetched over the
+internet is a different threat from a file you copied yourself. So **OBCU v2 signs the
+image**, and those reserved bytes are what it spends.
+
+The two checks answer different questions, and both stay:
+
+- The **CRC-32** asks *did these bytes arrive intact?* It catches a truncated download
+  or a bit-flipped card, and the answer the rider gets is "this file is damaged, copy
+  it again".
+- The **signature** asks *are these bytes ours?* It catches a forged or tampered image,
+  and the answer is "this update is not signed for this device". Telling someone to
+  re-copy a perfectly intact forgery would be a lie, so these are two separate error
+  cards, not one.
+
+The signature is **Ed25519** over a deliberately narrow message: a fixed context string
+`"OBCUv2-sig\0"`, then the header's version string and image length, then the image
+itself. Every piece is doing a job. The context string means an OBCU signature can
+never be valid in some other protocol that signs raw bytes. Covering the *version
+string* is what stops re-labelling — without it, a genuinely signed v1.4.0 image could
+be re-announced as v9.9.9, or as something older to walk a device backwards into a
+build with a known bug, and the signature would still check out. Covering the *length*
+stops a lie about how much to read and flash. The signature itself sits in a trailer
+after the image, in bytes v1 had already declared ignorable.
+
+Verification happens in the **app**, before an update can be armed — and it is a hard
+gate: an unsigned container is rejected outright, not merely flagged. That last part is
+the whole design. If a v1-style unsigned wrapper still installed, nobody would ever
+bother forging a signature; they would just leave it off.
+
+The bootloader, notably, does **not** verify. That looks like the wrong half to leave
+out until you remember what the bootloader is: 32 KB, flashed once by probe, and never
+updated by DFU. Whatever key it trusted would be frozen into the device for its entire
+life, unrotatable. Putting the trust root in the half that ships with every image is
+what makes rotation possible at all — a device trusts exactly the key its own firmware
+was built with.
+
+Which raises the awkward constraint that shaped the whole format change: **bootloaders
+already in the field have to keep installing images built years later.** The v1 header
+decoder they run rejects any header-version value but `1`, so a "v2" container cannot
+actually bump that field — a bumped version would be unparseable to every boot chain
+already out there, and every future update would fail the same way. So it doesn't bump.
+A v2 container still says version `1`, keeps every field the bootloader reads at its
+original offset, puts the scheme marker in the reserved space that was set aside for
+precisely this, and hides the signature past the end of the image where v1 already
+ignored bytes. The old bootloader reads a v2 file and sees exactly what it saw before;
+it flashes the same bytes from the same offsets. The
+[format spec](src:specs/OBCU_Spec.md) states that argument field by field, and
+`obc-dfu`'s tests prove it by re-implementing the old decoder from the spec text and
+running the real install engine over a v2 container.
+
+## Publishing an update: a tag, and one small file everything reads
+
+Everything above assumes a file that is already on the card. This is the part before
+that: how a pushed git tag becomes an update that every client can find — the phone, the
+builder in a browser, and a bare card reader with no app behind it at all. It is worth
+stating the boundary up front, because it *is* the shape of the
+design — the automation covers **delivery**, end to end, and it stops at the glass.
+Nothing described in this section can install anything.
+
+Pushing a SemVer-shaped `v*` tag runs [`release.yml`](src:.github/workflows/release.yml).
+The workflow rejects malformed version input before using it in a path or command, and a
+real tag's numeric core must match the board crate's version. It then builds
+both flashed images in their shipping shape, `objcopy`s the app to a raw binary, and
+wraps it into an OBCU container stamped with the tag and signed with the release key.
+Then, before anything is published, it runs `obc-mkimage inspect` over the result as a
+**gate**: inspect checks both CRC-32s *and* the signature against the release public
+key compiled into the firmware it has just built, so a container that firmware would
+refuse to install cannot become a release. Two further guards apply to the publishing
+path alone. The job refuses a real tag while the trusted key is still the committed
+*test* key — whose seed is in the repository, so anyone could sign an image such a
+firmware would happily install — and it refuses one when the signing secret is absent,
+rather than quietly falling back to that test key. A manual dry run *may* sign with the
+test key, for the single reason that makes it safe: it publishes nothing.
+
+### Two homes for the same bytes, and why
+
+The tagged **GitHub release** is the source of truth. It is the versioned archive, the
+release notes a rider actually reads, and where both ELFs and the
+`SHA256SUMS.txt` live — the things you want years later when the question is *what
+exactly was `v1.3.0`?*
+
+It is not where the apps fetch from, and the reason is mundane rather than
+architectural. A release asset's stable download URL redirects to storage that sends no
+`access-control-allow-origin` header at all, so a browser `fetch` cannot read the
+response — which kills the check in both hosts that have a browser inside them, the web
+builder and the desktop app's webview. (GitHub's JSON API *does* send CORS headers, but
+it is the rate-limited surface the design set out to stay off.) So the workflow mirrors
+two objects into the project's own R2 bucket — the same object storage the
+[map bakery](../formats/#the-catalog-the-map-builders-source-of-truth)
+publishes its catalog into, under its own prefix — and that bucket is the **serving
+edge**.
+
+Splitting the two isn't a compromise; it's the two jobs pulling apart. A source of
+truth wants immutability, a history, and a page a person can read; a serving edge wants
+CORS headers, no rate limit, and a shape that never changes. Asking one host to be both
+is what raised the question in the first place.
+
+### The manifest is the abstraction
+
+What a client reads is never the release. It is one small JSON file:
+
+```json
+{
+  "version": "v1.3.0",
+  "bytes": 1204208,
+  "sha256": "…64 lowercase hex…",
+  "url": "https://updates.openbikecomputer.com/fw/v1.3.0/UPDATE.BIN",
+  "notes": "https://github.com/…/releases/tag/v1.3.0"
+}
+```
+
+Five fields, and the indirection in the middle one is the point. The manifest *names*
+where the image is, so the serving host can move — a different bucket, a CDN in front of
+it, a mirror — by changing one workflow variable, with no client release and without
+touching the trust chain, because nothing in that chain depends on who served the bytes.
+The signature says whose the image is and the digest says whether it arrived whole; the
+host only ever says *where*. The same manifest is attached to the GitHub release as an
+asset too, so the archive describes itself without depending on the bucket at all.
+
+The parsers treat it as a contract rather than a hint. Every required field is checked
+before any of it is used — a `version` that is not a release version, a `sha256` that is
+not 64 hex characters, a `bytes` that is not a positive integer, a `url` that is not
+`https` — and a manifest failing any of those is reported loudly rather than partly
+believed, because a half-understood manifest that still offers a download is worse than
+no manifest. A plain **404 is not a failure**: it means nothing is published on that
+channel, which is an ordinary answer and is treated as one. Unknown fields are ignored,
+so the file can grow without a flag day.
+
+### Two channels, which is the whole rollout lever
+
+Three object names carry all of it:
+
+| Object | Written by | Role |
+|---|---|---|
+| `fw/<tag>/UPDATE.BIN` | every tag | the image itself — versioned, and never rewritten |
+| `fw/manifest.json` | **stable** tags only | the "latest" pointer, the one every client polls by default |
+| `fw/prerelease/manifest.json` | SemVer **pre-release** tags only | the opt-in channel |
+
+A SemVer pre-release tag — `v1.3.0-rc.1` — publishes its image and moves the
+pre-release pointer, and it **never touches** `fw/manifest.json`. The channel decision
+looks only before optional `+build` metadata, so `v1.3.0+build-2` remains stable. That single
+refusal is the staged rollout. A rider on the default channel cannot be shown a release
+candidate at all; a client that offers the opt-in fetches both pointers and takes
+whichever names the newer version; and a specific build can still be handed to a
+specific device by reaching straight for the object under its tag, which is exactly what
+the immutable per-tag path is for. Nothing here needed a percentage rollout or a device
+list to be able to say *"this one goes to the people who asked for it"*.
+
+### One dialect, two parsers, three hosts
+
+A client's entire decision is a comparison of two strings: the version the manifest
+names, and the version the connected device reports over
+[DIS](../companion-link/) or the USB device-information frame. So the dialect has to
+mean the same thing everywhere, and it is written twice — once in TypeScript for the
+builder's web and desktop hosts, once in Swift for the phone — with the Swift test
+matrix a port of the TypeScript one, case for case, because two parsers that drift would
+disagree about whether a rider is up to date.
+
+The dialect is deliberately small: an optional leading `v`, a three-part numeric core,
+an optional `-pre` tag, and `+build` metadata that is parsed only to be discarded, so
+`1.2.0+abc1234` and `1.2.0` are one version. A pre-release sorts *before* the release
+sharing its triple; its dot-separated identifiers use SemVer precedence, so `rc.10`
+follows `rc.2`. A device running something newer than what is published is told so and
+never offered a downgrade.
+
+And a string that is not a release version parses as **nothing at all**, which is where
+the one locked rule lives: a client that cannot read the running version never offers an
+update, and it says so rather than going quiet. That is not a gap in the parsers — it is
+why the firmware's fallback revision string is a bare git hash rather than anything
+version-shaped. A probe-flashed development build reports a hash, every comparison
+refuses instead of guessing, and nobody's work-in-progress gets overwritten by a
+"newer" release. The way back onto the release track is the manual path, which is always
+there.
+
+<figure class="fig">
+<svg viewBox="0 0 720 512" role="img" aria-label="How a tagged release reaches a device, drawn top to bottom. At the top left, a pushed git tag v1.3.0 feeds the release.yml workflow, which builds, objcopies, wraps and signs the image and then runs inspect as a gate — the signature must verify under the key compiled into the build. From the workflow one arrow goes right to the GitHub Release, labelled the source of truth: notes, ELFs, checksums, versioned archive. A second arrow goes down, labelled mirror, into a band for updates.openbikecomputer.com, the serving edge, which lists three objects: fw slash tag slash UPDATE.BIN, immutable and written for every tag; fw slash manifest.json, the latest pointer, written by stable tags only; and fw slash prerelease slash manifest.json, the opt-in channel that never moves latest. A note in the band explains that a GitHub release asset sends no CORS header, so a browser fetch cannot read it. Below, two arrows leave the manifest for two clients — the companion app, which downloads and checks the sha256 on the phone before sending over BLE, and the map builder, one parser across web and desktop, which does the same over USB — while a third dashed arrow runs from the GitHub Release straight to any computer, the by-hand path that copies UPDATE.BIN onto the card with no manifest and no network. All three converge on a band reading UPDATE.BIN on the card: staged, not installed. Under that a dashed coral line with a single gap marks the boundary: staging is not installing, and the one way through is the rider's Select press. A green arrow passes through the gap into the device, which confirms, arms and installs.">
+  <defs>
+    <marker id="ota-a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+    <marker id="ota-g" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#9aa884" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="22">Tag to glass — the automation delivers, the rider installs</text>
+
+  <!-- the tag -->
+  <rect class="d-panel" x="24" y="42" width="118" height="58" rx="10" />
+  <text class="d-title" x="83" y="70" text-anchor="middle">v1.3.0</text>
+  <text class="d-sub" x="83" y="88" text-anchor="middle">a pushed git tag</text>
+  <line x1="144" y1="71" x2="180" y2="71" class="d-flow" marker-end="url(#ota-a)" />
+
+  <!-- the workflow -->
+  <rect class="d-panel-2" x="184" y="36" width="254" height="72" rx="12" style="fill:#f4ecd6" />
+  <text class="d-label" x="311" y="56" text-anchor="middle" style="fill:#a9501c">release.yml</text>
+  <text class="d-sub" x="311" y="74" text-anchor="middle">build → objcopy → wrap + SIGN</text>
+  <text class="d-sub" x="311" y="89" text-anchor="middle">then inspect as the gate: the sig</text>
+  <text class="d-sub" x="311" y="103" text-anchor="middle">must verify under this build's key</text>
+  <line x1="440" y1="71" x2="474" y2="71" class="d-flow" marker-end="url(#ota-a)" />
+
+  <!-- the release -->
+  <rect class="d-panel" x="478" y="36" width="218" height="72" rx="12" />
+  <text class="d-title" x="587" y="58" text-anchor="middle">GitHub Release</text>
+  <text class="d-sub" x="587" y="76" text-anchor="middle">the source of truth</text>
+  <text class="d-sub" x="587" y="91" text-anchor="middle">notes · ELFs · SHA256SUMS</text>
+  <text class="d-sub" x="587" y="105" text-anchor="middle" style="fill:#3c6b39">versioned archive</text>
+
+  <!-- mirror -->
+  <line x1="311" y1="108" x2="311" y2="142" class="d-flow" marker-end="url(#ota-a)" />
+  <text class="d-sub" x="319" y="130">mirror</text>
+
+  <!-- the serving edge -->
+  <rect class="d-panel-2" x="112" y="144" width="496" height="112" rx="12" style="fill:#eef2df" />
+  <text class="d-label" x="360" y="167" text-anchor="middle" style="fill:#3c6b39">updates.openbikecomputer.com — the serving edge</text>
+  <text class="d-sub" x="128" y="192">fw/&lt;tag&gt;/UPDATE.BIN</text>
+  <text class="d-sub" x="592" y="192" text-anchor="end">written for every tag · immutable</text>
+  <text class="d-sub" x="128" y="212">fw/manifest.json</text>
+  <text class="d-sub" x="592" y="212" text-anchor="end">the "latest" pointer · STABLE tags only</text>
+  <text class="d-sub" x="128" y="232">fw/prerelease/manifest.json</text>
+  <text class="d-sub" x="592" y="232" text-anchor="end">opt-in · never moves "latest"</text>
+  <text class="d-sub" x="360" y="250" text-anchor="middle" style="font-size:9px;fill:#a9501c">a GitHub release asset sends no CORS header — a browser fetch cannot read it</text>
+
+  <!-- fan out -->
+  <path d="M300 256 C 240 268, 180 272, 130 284" fill="none" class="d-flow" marker-end="url(#ota-a)" />
+  <line x1="360" y1="256" x2="360" y2="284" class="d-flow" marker-end="url(#ota-a)" />
+  <path d="M692 108 C 716 180, 700 250, 606 282" fill="none" stroke="#9aa884" stroke-width="1.3" stroke-dasharray="4 4" marker-end="url(#ota-g)" />
+  <text class="d-sub" x="648" y="188" text-anchor="middle" style="font-size:9px;fill:#6b7758">from the</text>
+  <text class="d-sub" x="648" y="201" text-anchor="middle" style="font-size:9px;fill:#6b7758">release page,</text>
+  <text class="d-sub" x="648" y="214" text-anchor="middle" style="font-size:9px;fill:#6b7758">by hand</text>
+
+  <!-- the three clients -->
+  <rect class="d-panel" x="24" y="290" width="208" height="58" rx="10" />
+  <text class="d-title" x="128" y="312" text-anchor="middle">companion app</text>
+  <text class="d-sub" x="128" y="329" text-anchor="middle">manifest → download → BLE</text>
+  <text class="d-sub" x="128" y="343" text-anchor="middle">sha256 checked on the phone</text>
+
+  <rect class="d-panel" x="256" y="290" width="208" height="58" rx="10" />
+  <text class="d-title" x="360" y="312" text-anchor="middle">map builder</text>
+  <text class="d-sub" x="360" y="329" text-anchor="middle">manifest → download → USB</text>
+  <text class="d-sub" x="360" y="343" text-anchor="middle">web + desktop, one parser</text>
+
+  <rect class="d-panel" x="488" y="290" width="208" height="58" rx="10" />
+  <text class="d-title" x="592" y="312" text-anchor="middle">any computer</text>
+  <text class="d-sub" x="592" y="329" text-anchor="middle">copy UPDATE.BIN to the card</text>
+  <text class="d-sub" x="592" y="343" text-anchor="middle">no manifest, no network</text>
+
+  <path d="M128 348 C 128 360, 180 362, 212 369" fill="none" class="d-flow" marker-end="url(#ota-a)" />
+  <line x1="360" y1="348" x2="360" y2="369" class="d-flow" marker-end="url(#ota-a)" />
+  <path d="M592 348 C 592 360, 540 362, 508 369" fill="none" class="d-flow" marker-end="url(#ota-a)" />
+
+  <!-- staged -->
+  <rect class="d-panel-2" x="210" y="372" width="300" height="38" rx="9" style="fill:#f8efe4" />
+  <text class="d-label" x="360" y="390" text-anchor="middle" style="fill:#a9501c">/UPDATE.BIN on the card</text>
+  <text class="d-sub" x="360" y="404" text-anchor="middle">staged — not installed</text>
+
+  <!-- the wall, with exactly one door -->
+  <line x1="24" y1="436" x2="300" y2="436" class="d-hot" stroke-dasharray="6 5" />
+  <line x1="420" y1="436" x2="696" y2="436" class="d-hot" stroke-dasharray="6 5" />
+  <text class="d-sub" x="292" y="429" text-anchor="end" style="font-size:9.5px;fill:#a9501c">staging is not installing</text>
+  <text class="d-sub" x="428" y="429" style="font-size:9.5px;fill:#3c6b39">one way through: the rider's Select press</text>
+  <line x1="360" y1="410" x2="360" y2="452" class="d-flow" marker-end="url(#ota-a)" />
+
+  <!-- the device -->
+  <rect class="d-panel" x="250" y="454" width="220" height="46" rx="11" />
+  <text class="d-title" x="360" y="476" text-anchor="middle">the device</text>
+  <text class="d-sub" x="360" y="492" text-anchor="middle">confirms, arms, installs</text>
+</svg>
+<figcaption>One build, two homes, one pointer, three clients — and a wall with a single door in it. The workflow is the only thing that signs, and the <code>inspect</code> gate means it cannot publish a container its own firmware would refuse. The <b>release</b> is the archive; the <b>bucket</b> is only where the bytes are served, which is why the manifest names a URL instead of the clients knowing one. The dashed path is the manual one, and it is deliberately still there: it needs no manifest, no network and no app. Every path converges on a <em>staged</em> file, and the only thing that turns staged into installed is a rider pressing Select.</figcaption>
+</figure>
 
 ## Three ways an update arrives
 
 A staged update is one file, `/UPDATE.BIN`, in the card's root — an
 [`OBCU`](src:specs/OBCU_Spec.md) container (a 64-byte header with the image length,
-CRC-32, and a `git describe` version string, then the raw application image).
-There are three ways it gets there, and **exactly one** way it gets installed.
+CRC-32, a version string — the release tag, for anything the pipeline published — and
+the signature-scheme marker, then the raw application image, then the signature). There
+are three ways it gets there, and
+**exactly one** way it gets installed.
 
 - **Card sideload.** Copy `UPDATE.BIN` onto the card from any computer, put the
   card back, and choose **Settings → System → Firmware → "Install update from card"**. The
@@ -163,7 +435,14 @@ There are three ways it gets there, and **exactly one** way it gets installed.
 - **BLE from the companion.** The [companion app](../companion-link/) can stage the
   same `UPDATE.BIN` over the link: it uploads a `fwImage` object (§7.6 of the BLE
   spec), the device writes it to the card verbatim, and then the app sends an
-  `installFw` command (§4.4) to *ask* the device to install it.
+  `installFw` command (§4.4) to *ask* the device to install it. The file is either
+  one you picked in Files or the published release the app checks for — downloaded
+  and verified against the manifest's size and SHA-256 on the phone, before a byte
+  goes over the link. The app also *raises* a published update without being asked:
+  a sheet the next time you open it, or a local notification from a periodic
+  background check. Both are one switch away (on by default), both go quiet for a
+  device whose running version isn't a release version, and both ask each version
+  once — the check itself is an anonymous request for one public file.
 - **USB from the browser.** The map builder's device step does the same two
   steps over the cable — the [object model is the transport's
   guest](../companion-link/), so this is the identical `fwImage` upload followed
@@ -172,7 +451,8 @@ There are three ways it gets there, and **exactly one** way it gets installed.
   checks the container *before* spending the transfer on it: magic, header
   version, header CRC-32, the image CRC-32 over the bytes that follow, and the
   slot ceiling. That is the same decode rule the armer applies and it replaces
-  nothing — the device still verifies over what actually landed on the card. What
+  nothing — the device still verifies over what actually landed on the card, and the
+  *signature* check is the device's alone. What
   it buys is that "that isn't a firmware update" arrives in a second instead of
   after an upload. A device running a development build reports a git hash rather
   than a version, which does not parse: no update is ever offered for it, and the
@@ -204,6 +484,17 @@ There are no silent installs, ever. The running firmware's version a peer
 displays is read from the standard [DIS](../companion-link/) Firmware Revision
 characteristic, so after a confirmed update it simply reflects the new image on the
 next connect.
+
+That characteristic answers with the version string of the **container the device
+installed** — the `fw_version` the image was wrapped with, which for a released
+build is the release tag. It is not the running build's own idea of its version,
+and the difference is the whole point: a version a device made up from its source
+tree can never equal a published release, so nothing could be compared to it. A
+board flashed over a debug probe has installed no container at all, so it falls
+back to reporting its git hash, which parses as no version — and that is the
+locked answer, not a gap to close: an update is never offered against a build
+nobody published. Such a device is updated the same way it was flashed, or by
+staging a container by hand.
 
 A press that *can't* arm is never silent either. Between the confirm press and the
 reboot the device shows a **"Preparing update..."** spinner while it snapshots the
@@ -237,6 +528,51 @@ unconfirmed trial), or *"UPDATE FAILED"* when the armed image is not what's runn
 either the arm was never consumed (a stale or missing bootloader, which the app then
 clears so it can't fire by surprise later) or the stage was rejected / rolled back. A
 plain boot has no breadcrumb and shows nothing.
+
+## The chain, layer by layer
+
+Five things stand between a tagged build and a device running it, and the useful way to
+read them is by the question each one answers — because each answers exactly one, and
+none is a stand-in for another. Stacking checks that all answer the same question is how
+a trust chain gets long without getting stronger.
+
+- **HTTPS, on every fetch.** *Am I talking to the host I meant to?* That is all it
+  answers: it authenticates a server, not a file, and says nothing about what the server
+  chose to hand over. It is still load-bearing, because without it the manifest itself
+  could be rewritten in flight — which is why the parsers refuse a `url` that is not
+  `https`, so a manifest cannot downgrade its own download.
+- **The Ed25519 signature, verified on the device.** *Are these bytes ours?* This is the
+  only layer that answers it, and deliberately the only one that has to be trusted: it
+  is checked by the firmware, against a key compiled into that same firmware, over the
+  bytes that actually landed on the card. Everything upstream of it is convenience;
+  this is the one that would have to be broken.
+- **The manifest's SHA-256, checked on the phone or in the browser.** *Is this the file
+  the manifest described?* A download is measured — byte count first, then the digest —
+  before a single byte is sent to the device. It is emphatically *not* a second opinion
+  about authenticity: the digest and the image come from the same place, so a host able
+  to swap one could swap both. Its job is that a truncated or wrong download fails in a
+  second, on a machine with a screen and a fast link to retry on, instead of after a
+  multi-minute BLE transfer and a rejection card on the glass.
+- **The container's CRC-32, checked by the bootloader.** *Did the bytes survive the
+  card?* This covers the stretch nothing else watches: the write to the SD card, the card
+  spending a week in a frame bag, the block reads during the install. It is also the only
+  check the bootloader can make without a key, which is what makes verify-before-erase
+  possible at all.
+- **The confirm press, then the trial boot.** *Does the rider want this, and does it
+  work?* No automation reaches either. A peer can only ever leave a file on the card; the
+  device does its own scan and asks on the glass, and afterwards the new image has to
+  prove itself once before it becomes permanent — otherwise the snapshot comes back.
+
+Read downwards the chain narrows: transport, then provenance, then a particular file,
+then particular bytes, then a person. Read as a set of failures it is easier to check.
+A tampered transport is caught by the signature. Without the signing key, a hostile
+serving host cannot produce a container the device will install, only refuse to serve
+one. A forged image with a
+perfect CRC dies at the signature; a genuine image with a broken CRC dies before the
+erase. A signed, intact, genuinely-newer image still does nothing until someone presses
+Select — and if it then fails its trial boot, the snapshot comes back. These checks
+bound delivery and install failures; they do not claim that an authorized, signed
+release is free of application bugs, which remains the job of release testing.
 
 ## The RRAM layout
 
@@ -312,5 +648,7 @@ a frozen COM line would apply for the multi-ten-second install.
 - The shared `no_std` core: [`obc-dfu`](src:firmware/obc-dfu) — the container + state codecs ([`image.rs`](src:firmware/obc-dfu/src/image.rs) · [`state.rs`](src:firmware/obc-dfu/src/state.rs)), the bootloader's install engine ([`engine.rs`](src:firmware/obc-dfu/src/engine.rs)), and the app-side armer ([`armer.rs`](src:firmware/obc-dfu/src/armer.rs))
 - The bootloader itself, its LED codes and flash-once workflow: [`obc-boot`](src:firmware/obc-boot) ([README](src:firmware/obc-boot/README.md))
 - The host tool that builds and inspects `UPDATE.BIN`: [`obc-mkimage`](src:host/obc-mkimage) — the `objcopy → wrap` pipeline is in the [firmware README](src:firmware/README.md)
+- The publish pipeline — the tag trigger, the signing and `inspect` gate, the release assets and the R2 mirror: [`release.yml`](src:.github/workflows/release.yml); the signing key and its rotation recipe: [`obc-dfu/keys/README.md`](src:firmware/obc-dfu/keys/README.md)
+- The manifest readers and the shared version dialect: [`builder/app/src/lib/firmware/release.ts`](src:builder/app/src/lib/firmware/release.ts) for the web and desktop hosts, and its Swift twin in [`OBCKit/Sources/OBCTransport/Firmware/`](src:companion-ios/Packages/OBCKit/Sources/OBCTransport/Firmware) for the phone
 - The BLE and USB staging paths — the `fwImage` object and `installFw` command: [the companion link](../companion-link/) (contract: [`obc-ble-interface-spec.md`](src:specs/obc-ble-interface-spec.md) §4.4, §7.6); the browser half in [`web_builder/frontend/src/lib/device/`](src:builder/app/src/lib/device)
 - Copying a card image by hand and the release recipe: the [repo README](src:README.md)

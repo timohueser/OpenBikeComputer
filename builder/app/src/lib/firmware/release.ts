@@ -6,13 +6,12 @@
  * {@link FIRMWARE_MANIFEST_URL}. This page reads that manifest and compares it against the running
  * version; it never decides what an update *is*.
  *
- * ## Provisional, and honest about it
+ * ## Published shape
  *
- * U3 (#773) is the sub-issue that makes `release.yml` emit that manifest and mirror it to the
- * bucket, and it has not landed — so today the fetch 404s and the UI says there is nothing
- * published yet, rather than pretending. {@link parseFirmwareManifest} implements the shape U3's
- * description names (version, size, sha256, a notes URL) and rejects anything else loudly. When U3
- * publishes the real file, the only thing that can need changing is this parser.
+ * `release.yml` emits this manifest and mirrors it to the update bucket. Before the first tag the
+ * fetch can legitimately return 404 and the UI says there is nothing published yet.
+ * {@link parseFirmwareManifest} implements the pipeline's shape (version, size, SHA-256, image URL
+ * and optional notes URL) and rejects anything else loudly.
  *
  * ## The version dialect, which is the part with teeth
  *
@@ -48,10 +47,10 @@ export interface FirmwareRelease {
  * WKWebView. (The JSON API does send CORS headers, but it is the rate-limited surface #773's body
  * set out to avoid.) So #773's 2026-07-29 planning comment locks the serving end: `release.yml`
  * mirrors `manifest.json` + `UPDATE.BIN` to R2 behind this domain, under a per-channel `fw/`
- * prefix, and **GitHub Releases stays the source of truth** — the publish trigger, the immutable
+ * prefix, and **GitHub Releases stays the source of truth** — the publish trigger, the versioned
  * archive, the release notes, the ELFs. Nothing about the trust chain moves with the bytes: the
- * sha256 here (and the Ed25519 signature U3 adds) is what says an image is genuine, not the host
- * that served it.
+ * Ed25519 signature the device verifies is what says an image is genuine, not the host that served
+ * it. The SHA-256 here only proves that the download matches the manifest.
  *
  * Overridable so a test never touches the network.
  */
@@ -68,7 +67,7 @@ export class FirmwareManifestError extends Error {
  * Parse a whole manifest body.
  *
  * Whole, not streamed, and every required field checked before any of it is used — the same posture
- * `OBCC_Spec.md` §7 takes for the map catalog, for the same reason: a half-understood manifest that
+ * `OBCC_Spec.md` §11 takes for the map catalog, for the same reason: a half-understood manifest that
  * offers a download is worse than no manifest.
  */
 export function parseFirmwareManifest(body: string): FirmwareRelease {

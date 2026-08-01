@@ -28,7 +28,14 @@ _run() {
 obc_init() {
   [[ -n "${OBC_ROOT:-}" ]] || { echo "obc: OBC_ROOT unset (run via the obc wrapper)" >&2; return 1; }
   local local_file="${OBC_TOOLS:-$OBC_ROOT}/obc.local"
-  [[ -f "$local_file" ]] && source "$local_file"
+  # `obc.local` is the operator-facing environment file. Auto-export it so values
+  # such as OBC_CATALOG_URL and the R2 credentials reach the Rust binaries and the
+  # desktop process without making every local line repeat `export`.
+  if [[ -f "$local_file" ]]; then
+    set -a
+    source "$local_file"
+    set +a
+  fi
   # remember where the user invoked us, before recipes cd around
   OBC_PWD="${OBC_PWD:-$PWD}"
   return 0
