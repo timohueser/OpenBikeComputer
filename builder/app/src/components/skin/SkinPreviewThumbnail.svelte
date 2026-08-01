@@ -13,7 +13,7 @@
 </script>
 
 <span role="img" aria-label={label}>
-    <canvas width={frame.width} height={frame.height} aria-hidden="true"></canvas>
+    <canvas bind:this={canvas} width={frame.width} height={frame.height} aria-hidden="true"></canvas>
 </span>
 
 <style>

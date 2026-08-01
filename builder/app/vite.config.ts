@@ -42,6 +42,10 @@ export default defineConfig(({ mode }) => {
             // Root-relative rather than an absolute path so the config needs no
             // node: builtins (and so no @types/node just to type-check itself).
             alias: { $host: `/src/lib/platform/${host.module}.ts` },
+            // Component tests run through Vitest's SSR transform even when their
+            // per-file environment supplies a DOM. Select Svelte's client runtime
+            // there so mounted tests exercise the real browser lifecycle.
+            ...(mode === "test" ? { conditions: ["browser"] } : {}),
         },
         build: {
             outDir: host.outDir,
