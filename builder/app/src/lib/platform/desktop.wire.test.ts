@@ -90,4 +90,11 @@ describe("desktop catalog command", () => {
         expect(calls[1].args).toBe(bytes);
         expect(calls[1].options).toEqual({ headers: { "output-id": "7", filename: "MS1.OBS" } });
     });
+
+    it("can discard an incomplete output session", async () => {
+        reply = (cmd) => (cmd === "map_output_begin" ? { id: 8, path: "/maps/Partial" } : undefined);
+        const output = await (await freshHost()).openMapOutput!("Partial");
+        await output.discard();
+        expect(calls.map((call) => call.cmd)).toEqual(["map_output_begin", "map_output_discard"]);
+    });
 });

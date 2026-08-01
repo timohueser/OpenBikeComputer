@@ -27,25 +27,18 @@ describe.each(Object.entries(HOSTS))("%s host", (name, host) => {
         expect(member(host.platform) !== null).toBe(host.platform.caps[cap]);
     });
 
-    it("serves schema tooling only with the maintainer editor", () => {
-        expect(host.platform.schema !== null).toBe(host.loadStyleEditor !== null);
-        expect(host.platform.palette !== null).toBe(host.loadStyleEditor !== null);
-    });
-
 });
 
 describe("the hosts as a set", () => {
     it("agrees with the tier split in #894", () => {
         // Product hosts consume published cells; only the dev host loads the
         // maintainer schema editor.
-        expect(web.loadStyleEditor).toBeNull();
-        expect(desktop.loadStyleEditor).toBeNull();
-        expect(dev.loadStyleEditor).not.toBeNull();
+        expect(web.platform.styleEditor).toBeNull();
+        expect(desktop.platform.styleEditor).toBeNull();
+        expect(dev.platform.styleEditor).not.toBeNull();
         expect(web.platform.caps.rideLibrary).toBe(false);
         // Which is *why* the hosted tier has no schema and no palette: both are
         // absent by design, so neither may become a seam some issue owes.
-        expect(web.platform.schema).toBeNull();
-        expect(web.platform.palette).toBeNull();
         expect(desktop.platform.caps).toEqual({
             rideLibrary: true,
             deviceUsb: true,

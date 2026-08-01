@@ -118,7 +118,7 @@ fn track_vectors_pin_the_log_and_its_export() {
     let point = |k: usize| {
         let mut rec = [0u8; TRACK_RECORD_LEN];
         rec.copy_from_slice(&log[k * TRACK_RECORD_LEN..(k + 1) * TRACK_RECORD_LEN]);
-        obc_route::decode_record(&rec)
+        obc_formats::track::decode_record(&rec)
     };
     let sensors: Vec<_> = (0..whole).map(|k| (point(k).hr, point(k).cadence, point(k).power)).collect();
     assert_eq!(

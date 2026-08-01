@@ -93,6 +93,7 @@ export const desktop = {
             headers: { "output-id": String(id), filename: name },
         }),
     mapOutputFinish: (id: number) => invoke<void>("map_output_finish", { id }),
+    mapOutputDiscard: (id: number) => invoke<void>("map_output_discard", { id }),
 
     storagePlaces: () => invoke<StoragePlace[]>("storage_info"),
 

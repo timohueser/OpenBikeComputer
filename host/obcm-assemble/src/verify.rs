@@ -16,7 +16,8 @@ use std::collections::HashMap;
 
 use obc_formats::io::ByteSource;
 use obc_formats::obcm::{NAV_CHUNK_SIZE, NAV_EDGE_FIXED_LEN};
-use obc_reader::{BBox, MapCache, MapTables, Reader, MAX_FEAT_PTS, MAX_FEAT_RINGS, NAV_MAX_CHUNK_BYTES};
+use obc_map_scene::BBox;
+use obc_reader::{MapCache, MapTables, Reader, MAX_FEAT_PTS, MAX_FEAT_RINGS, NAV_MAX_CHUNK_BYTES};
 
 use crate::grid::AlignedBox;
 use crate::{Error, Result};

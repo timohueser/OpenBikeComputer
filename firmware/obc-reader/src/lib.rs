@@ -21,9 +21,6 @@
 //!   [`WeeklySchedule`], select today's intervals, answer *open now*, and the Zeller weekday
 //!   helper the app maps its local clock through.
 //! - [`color`] — RGB565 → display color conversions.
-//! - [`geo`] — the shared Earth-model distance core ([`M_PER_DEG`] in `f32` clothing):
-//!   microdegrees → ground meters, used identically by the route format's stored distances
-//!   and the layers that render or match against them.
 //!
 //! The persistent-format authority — the byte-I/O seam, primitive codecs, OBCM flags/constants,
 //! and the POI category/subtype table — lives in [`obc_formats`]; consumers import it from there.
@@ -42,7 +39,6 @@ extern crate alloc;
 
 pub mod color;
 pub mod corridor;
-pub mod geo;
 pub mod hours;
 pub mod reader;
 mod scene;
@@ -54,12 +50,10 @@ pub use corridor::{
     project_onto_chunk, CorridorPoi, PathProjection, PoiCategorySet, RoutePath, CORRIDOR_HALF_WIDTH_M,
     MAX_CORRIDOR_RESULTS,
 };
-pub use geo::{cos_lat, delta_m, ground_dist_m, ground_dist_m_cl, seg_dist_m, seg_dist_m_cl};
 pub use hours::{weekday_from_ymd, Interval, WeeklySchedule, MINUTES_PER_DAY};
-// The byte-I/O seam is owned by `obc-formats`; re-exported here at the crate root for convenience
-// because the reader's public API traffics in it (`Reader::new(&dyn ByteSource)`). Its `Error` is
-// **not** re-exported (it would shadow the map-parse [`Error`] below) — reach it via
-// `obc_formats::io::Error`, as `obc-route` does when it re-exports it as `obc_route::Error`.
+// The byte-I/O seam is owned by `obc-formats`; re-exported here because the reader's public API
+// traffics in it (`Reader::new(&dyn ByteSource)`). Its `Error` is
+// **not** re-exported because it would shadow the map-parse [`Error`] below.
 pub use obc_formats::io::{ByteSink, ByteSource, SliceSource};
 // The POI category/subtype types the reader's `Poi` surfaces; the normative table + its
 // lookups (`poi_category_of` / `poi_label_of` / `poi_subtype_row`) are imported from `obc_formats`.
@@ -71,9 +65,6 @@ pub use reader::{
     MAX_POI_RESULTS, NAV_MAX_CHUNK_BYTES, NAV_TILE_SLOTS, POI_MAX_CATEGORIES, POI_MAX_CHUNK_BYTES,
 };
 pub use volume::{FullSetShards, MountError, MountedSet, SetShards, ShardTables};
-
-// Compatibility paths: neutral scene/geometry primitives now live below the concrete OBCM reader.
-pub use obc_map_scene::{BBox, Kind, Style, M_PER_DEG};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {

@@ -18,7 +18,6 @@
 use heapless::Vec;
 
 use crate::deadband::DeadBand;
-use crate::geo::{cos_lat, delta_m, seg_dist_m};
 use crate::gpx::{GpxScanner, RawWaypoint, WptScanner};
 use crate::reader::{ChunkMeta, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS, MAX_WAYPOINTS};
 use crate::symbol::category_for_symbol;
@@ -27,7 +26,8 @@ use obc_formats::obcr::{
     CHUNK_META_LEN, HEADER_FULL_LEN, MAGIC, NAME_CAP, POINT_RECORD_LEN, VERSION, WAYPOINT_CATEGORY_GENERIC,
     WAYPOINT_ELE_NONE, WAYPOINT_LEN, WAYPOINT_NAME_OFF,
 };
-use obc_reader::BBox;
+use obc_map_scene::BBox;
+use obc_map_scene::{cos_lat, delta_m, ground_dist_m};
 
 /// Decimation tolerance: drop a vertex within this perpendicular distance of the chord.
 const EPSILON_M: f32 = 1.0;
@@ -235,7 +235,7 @@ impl ObcrEmitter {
     ) -> Result<(), Error> {
         // Distance from the previous raw point.
         if let Some(pr) = self.prev {
-            self.cum_dist += seg_dist_m(pr, (lon, lat)) as f64;
+            self.cum_dist += ground_dist_m(pr, (lon, lat)) as f64;
         } else {
             self.start = (lon, lat);
         }

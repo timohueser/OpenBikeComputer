@@ -17,12 +17,12 @@
 //! reads the host-fed decimated detour polyline through [`Render::detour_preview`].
 
 use embedded_graphics::{draw_target::DrawTarget, prelude::Point};
+use obc_map_scene::{cos_lat, BBox};
 use obc_render::{
     rect,
     text::{Font, TextAlign},
     Canvas, Surface, Viewport,
 };
-use obc_route::BBox;
 
 use crate::activity::{Activity, DetourRequest};
 use crate::host::DetourPreview;
@@ -466,7 +466,7 @@ fn extend_bounds(b: &mut BBox, lon: i32, lat: i32) {
 fn fit_viewport(w: i32, h: i32, b: BBox) -> Viewport {
     let cam_lon = b.min_lon + (b.max_lon - b.min_lon) / 2;
     let centre_lat = b.min_lat + (b.max_lat - b.min_lat) / 2;
-    let aspect = obc_route::cos_lat(centre_lat).abs().max(0.01);
+    let aspect = cos_lat(centre_lat).abs().max(0.01);
     let span_x = (b.max_lon - b.min_lon).unsigned_abs() as f32 * aspect;
     let span_y = (b.max_lat - b.min_lat).unsigned_abs() as f32;
     let usable_w = (w as f32 - 2.0 * FIT_MARGIN).max(1.0);

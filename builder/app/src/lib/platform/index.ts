@@ -9,5 +9,5 @@
 // `npm run dev` and `npm run build` use. All three hosts are still checked as
 // files, each against `Platform`.
 
-export { loadStyleEditor, platform } from "$host";
+export { platform } from "$host";
 export * from "./types";

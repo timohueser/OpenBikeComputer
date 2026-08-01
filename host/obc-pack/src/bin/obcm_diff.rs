@@ -26,9 +26,10 @@
 use std::collections::{HashMap, HashSet};
 use std::process::ExitCode;
 
+use obc_map_scene::{BBox, Kind, Style};
 use obc_reader::{
-    BBox, Kind, MapCache, MapTables, PoiCategory, Reader, SliceSource, Style, MAX_FEAT_PTS, MAX_FEAT_RINGS,
-    MAX_POI_RESULTS, NAV_MAX_CHUNK_BYTES,
+    MapCache, MapTables, PoiCategory, Reader, SliceSource, MAX_FEAT_PTS, MAX_FEAT_RINGS, MAX_POI_RESULTS,
+    NAV_MAX_CHUNK_BYTES,
 };
 
 /// Canonical, hashable identity of a decoded feature (geometry in microdegrees).

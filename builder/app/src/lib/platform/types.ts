@@ -56,10 +56,18 @@ export interface MapOutputSession {
     readonly path: string;
     write(name: string, bytes: Uint8Array): Promise<string>;
     finish(): Promise<void>;
+    discard(): Promise<void>;
 }
 
 export type StyleEditorModule = { default: Component<Record<string, never>> };
-export type LoadStyleEditor = () => Promise<StyleEditorModule>;
+
+export interface StyleEditorService {
+    load(): Promise<StyleEditorModule>;
+    presets(): Promise<Preset[]>;
+    schema(): Promise<SchemaEnvelope>;
+    palette(): Promise<Palette>;
+    readonly preview: SchemaPreviewService;
+}
 
 /**
  * Host services used by the shared app. Build-time aliases select one platform,
@@ -72,7 +80,6 @@ export interface Platform {
     /** Whether `device()` uses browser WebUSB rather than a native driver. */
     readonly usbViaWebUsb: boolean;
 
-    presets(): Promise<Preset[]>;
     /** Resolved catalog URL and its raw root document. */
     catalog(): Promise<{ url: string; body: string }>;
     readonly catalogFetch: typeof fetch;
@@ -81,9 +88,7 @@ export interface Platform {
     readonly device: (() => Promise<DeviceSession>) | null;
     readonly rides: (() => Promise<RideLibrary>) | null;
 
-    readonly schema: (() => Promise<SchemaEnvelope>) | null;
-    readonly palette: (() => Promise<Palette>) | null;
-    readonly schemaPreview: SchemaPreviewService | null;
+    readonly styleEditor: StyleEditorService | null;
 
     readonly storage?: DiskStorage;
     readonly revealFile?: (path: string) => Promise<void>;

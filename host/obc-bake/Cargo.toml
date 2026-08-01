@@ -17,6 +17,7 @@ obc-pack = { path = "../obc-pack" }
 # device runs — rather than sniffing the header. `alloc` is for `MapCache::new_boxed`:
 # the cache is ~277 KB and must not be built on the stack.
 obc-reader = { path = "../../firmware/obc-reader", features = ["alloc"] }
+obc-map-scene = { path = "../../firmware/obc-map-scene" }
 # The normative OBCM version the bake and the published-catalog guard compare against.
 obc-formats = { path = "../../firmware/obc-formats" }
 # Skin previews are not screenshots of a second renderer. The bakery restamps a

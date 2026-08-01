@@ -28,7 +28,7 @@ use crate::serialize::serialize_lods_streaming;
 
 // Meters → degrees divisor for simplify tolerance; shared so the packer's scale
 // matches the Earth model everything else uses.
-use obc_reader::M_PER_DEG;
+use obc_map_scene::M_PER_DEG;
 
 /// Everything a pack run can be told to do differently. The defaults are the
 /// plain `obc-pack <pbf> <config> <out>` build.

@@ -2,11 +2,11 @@
 
 use heapless::Vec;
 use obc_map_scene::{
-    Candidate, CandidateReport, CapacityError as SceneCapacityError, DecodeReport, Diagnostics, Feature,
+    BBox, Candidate, CandidateReport, CapacityError as SceneCapacityError, DecodeReport, Diagnostics, Feature,
     FeatureError as SceneFeatureError, FeatureToken, MapScene, ReadError as SceneReadError, SelectedFeatures,
 };
 
-use crate::{BBox, CacheError, CapacityError, FeatureDecodeError, FeatureReadError, MapReadError, Reader};
+use crate::{CacheError, CapacityError, FeatureDecodeError, FeatureReadError, MapReadError, Reader};
 
 #[inline]
 fn read_error(error: MapReadError) -> SceneReadError {

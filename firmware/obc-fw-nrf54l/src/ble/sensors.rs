@@ -92,17 +92,11 @@ const CRUISE_PARAMS: RequestedConnParams = RequestedConnParams {
     supervision_timeout: Duration::from_millis(5000),
 };
 
-// ============================ App-facing seam types (SE7 consumes) ============================
-//
-// This whole seam — the scan-hit / slot-status snapshots and the scan/save/forget requests — is
-// built now (SE6) for SE7 (#714, the Sensors screen + saved-sensor persistence) to consume. Until
-// SE7 wires it into the ride loop it is legitimately unread, so the seam carries `#[allow(dead_code)]`
-// (the board crate is linted `-D warnings`); the fields are all written by the manager below.
+// ============================ App-facing seam ============================
 
 /// A sensor discovered in a scan — the scan-list row the Sensors screen (SE7) shows and, on select,
 /// saves + connects.
 #[derive(Clone)]
-#[allow(dead_code)] // SE7 (#714) reads these fields via `sensor_scan_hits`.
 pub struct SensorScanHit {
     /// The advertiser address (little-endian, as the wire carries it).
     pub addr: [u8; 6],
@@ -118,12 +112,9 @@ pub struct SensorScanHit {
 
 /// The live state of one sensor slot, for the app seam.
 #[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
-#[allow(dead_code)] // `Scanning` is set by SE7's per-quantity scan; the rest are set here.
 pub enum SensorSlotState {
     /// No sensor saved, or saved but the radio is off — nothing to do.
     Idle,
-    /// A user scan is running (discovery).
-    Scanning,
     /// Connecting to / rediscovering the saved sensor.
     Connecting,
     /// Connected and subscribed — notifications are flowing.
@@ -133,10 +124,7 @@ pub enum SensorSlotState {
 /// A per-quantity status snapshot (SE7 renders it as the Sensors-screen row; the ride loop feeds it
 /// through the app the way [`super::app_ble_status`] feeds the phone link).
 #[derive(Clone, Copy)]
-#[allow(dead_code)] // SE7 (#714) reads these fields via `sensor_slot_status`.
 pub struct SensorSlotStatus {
-    /// Which quantity this slot is (HR / Power / Cadence) — fixed per index.
-    pub kind: SensorKind,
     /// Whether a sensor address is saved for this quantity.
     pub saved: bool,
     /// The connection state.
@@ -148,8 +136,8 @@ pub struct SensorSlotStatus {
 }
 
 impl SensorSlotStatus {
-    const fn init(kind: SensorKind) -> Self {
-        Self { kind, saved: false, state: SensorSlotState::Idle, battery: None, last_value_ms: 0 }
+    const fn init() -> Self {
+        Self { saved: false, state: SensorSlotState::Idle, battery: None, last_value_ms: 0 }
     }
 }
 
@@ -180,11 +168,8 @@ type SavedCell = BlockingMutex<CriticalSectionRawMutex, Cell<[Option<SavedSensor
 /// `await`.
 static SCAN_HITS: ScanHitsCell = BlockingMutex::new(RefCell::new(Vec::new()));
 /// The per-quantity status snapshot (Copy, so a plain `Cell`).
-static SLOT_STATUS: SlotStatusCell = BlockingMutex::new(Cell::new([
-    SensorSlotStatus::init(SensorKind::HeartRate),
-    SensorSlotStatus::init(SensorKind::Power),
-    SensorSlotStatus::init(SensorKind::Cadence),
-]));
+static SLOT_STATUS: SlotStatusCell =
+    BlockingMutex::new(Cell::new([SensorSlotStatus::init(), SensorSlotStatus::init(), SensorSlotStatus::init()]));
 /// The saved-sensor table: reconciled from the app's persisted `Settings.saved_sensors` (SE7, #714)
 /// via the ride loop's per-pass diff → [`request_save_sensor`] / [`request_forget_sensor`]. Starts
 /// empty; the ride loop seeds it on its first pass, so a saved sensor auto-reconnects across a reboot.
@@ -227,20 +212,17 @@ pub const RESIDENT_BYTES: usize = core::mem::size_of::<ScanHitsCell>()
 // ============================ App-facing accessors + requests ============================
 
 /// Read the current scan snapshot (the deduped hits) under the lock, without copying it out.
-#[allow(dead_code)] // SE7 (#714): the Sensors-screen scan list.
 pub fn sensor_scan_hits<R>(f: impl FnOnce(&[SensorScanHit]) -> R) -> R {
     SCAN_HITS.lock(|c| f(c.borrow().as_slice()))
 }
 
 /// The per-quantity status snapshot for the app seam (SE7). `quantity` is 0=HR, 1=power, 2=cadence.
-#[allow(dead_code)] // SE7 (#714): the Sensors-screen rows.
 pub fn sensor_slot_status(quantity: usize) -> SensorSlotStatus {
     SLOT_STATUS.lock(|c| c.get()[quantity.min(QUANTITIES - 1)])
 }
 
 /// Ring a one-shot scan request (Sensors screen). The manager runs a ~10 s active scan and publishes
 /// the results into [`sensor_scan_hits`].
-#[allow(dead_code)] // SE7 (#714): the Sensors-screen "scan" action.
 pub fn request_scan() {
     SCAN_REQUEST.signal(());
     wake_work();
@@ -262,14 +244,12 @@ pub fn cancel_scan() {
 
 /// Save a sensor address to a quantity slot and (re)connect it. `quantity` is 0=HR, 1=power,
 /// 2=cadence.
-#[allow(dead_code)] // SE7 (#714): saving a picked sensor + boot seed from settings.
 pub fn request_save_sensor(quantity: usize, addr: [u8; 6], random: bool) {
     SAVE_REQUEST.signal(SaveReq { quantity, addr, random });
     wake_work();
 }
 
 /// Forget the saved sensor for a quantity slot (drops any live link on the next loop pass).
-#[allow(dead_code)] // SE7 (#714): the Sensors-screen hold-to-forget footer.
 pub fn request_forget_sensor(quantity: usize) {
     FORGET_REQUEST.signal(quantity);
     wake_work();

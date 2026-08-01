@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 
 use geos::{CoordSeq, Geom as _, Geometry, GeometryTypes};
-use obc_reader::M_PER_DEG;
+use obc_map_scene::M_PER_DEG;
 use rayon::prelude::*;
 
 use crate::serialize::{Feature, Kind};

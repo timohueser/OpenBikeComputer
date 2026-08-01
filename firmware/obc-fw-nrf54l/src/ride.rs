@@ -281,7 +281,7 @@ fn sensor_kind_slot(kind: obc_ble::SensorKind) -> u8 {
     }
 }
 
-/// Distil the central manager's per-quantity [`SensorSlotStatus`](crate::ble::SensorSlotStatus) into
+/// Distil the central manager's per-quantity sensor status into
 /// the app-vocabulary [`SensorStatus`](obc_app::SensorStatus) the Sensors screen renders (SE7, #714):
 /// `NotSet` when nothing is saved, else the connection phase, carrying battery + the freshest-value
 /// tick.
@@ -295,8 +295,7 @@ fn sensor_status_of(q: usize) -> obc_app::SensorStatus {
         match s.state {
             SensorSlotState::Connected => obc_app::SensorPhase::Connected,
             SensorSlotState::Connecting => obc_app::SensorPhase::Connecting,
-            // Idle / Scanning both read as searching for the saved sensor.
-            _ => obc_app::SensorPhase::Searching,
+            SensorSlotState::Idle => obc_app::SensorPhase::Searching,
         }
     };
     obc_app::SensorStatus { phase, battery: s.battery, last_value_ms: s.last_value_ms }
@@ -699,7 +698,7 @@ pub(crate) async fn run_app(
             // Surface the peak in the diagnostics blob for the A9 soak rig (#277) — the ride loop owns the
             // stackmeter, so on a `ble` build it publishes the mark into the BLE state the blob reads.
             #[cfg(feature = "ble")]
-            crate::ble::publish_stack_high_water(hw);
+            crate::link::publish_stack_high_water(hw);
             defmt::info!("stack high-water {=usize} / {=usize} B (new peak)", hw, stackmeter::total());
         }
 
@@ -810,7 +809,7 @@ pub(crate) async fn run_app(
             // request stays pending, retries next pass, and keeps the BLE edge's `dfu_install_pending()`
             // busy-gate accurate while it waits. The Scan posted here is drained by the DFU match below
             // in this same pass, so the wait card swaps to the confirm/error promptly.
-            crate::ble::set_recording(app.activity.is_tracking());
+            crate::link::set_recording(app.activity.is_tracking());
             if crate::object_store::dfu_install_pending() && app.open_remote_dfu_check() {
                 let _ = crate::object_store::take_dfu_install_ble();
             }
@@ -1190,36 +1189,18 @@ pub(crate) async fn run_app(
             // phone-initiated delete does — then the store-changed edge (next pass) brings the live
             // rescan + P3 remap around, so `active_route` and the menu highlight follow by identity.
             //
-            // `ble` builds: the `ObjectStore` lives behind the BLE task's `RefCell`, unreachable from
-            // here (they're separate thread-mode tasks; there is no shared handle). Post the id to the
-            // BLE plane (`request_route_delete`), which owns that `RefCell` and drains it whether the
-            // phone is connected or the device is parked advertising — that keeps the whole delete on the
-            // one `ObjectStore`, revision-and-notify coherent, and RefCell-legal (the ride loop never
-            // borrows the store). The rescan comes back on the resulting `STORE_CHANGED` edge above.
-            if let Some(_id) = host_pass.delete_route {
+            // `ObjectStore` lives behind the BLE task's `RefCell`, so post the id to that plane. It
+            // owns the coherent catalog revision, notification, and rescan path.
+            if let Some(id) = host_pass.delete_route {
                 // A full channel DROPS the id (not observed backpressure — the app's dispatch
                 // bookkeeping already ran): warn, and rely on the app's retain-until-rescan
                 // candidate to re-dispatch it after the bounded backoff (finding #876-3).
                 #[cfg(feature = "ble")]
-                if !crate::object_store::request_route_delete(_id) {
+                if !crate::object_store::request_route_delete(id) {
                     defmt::warn!(
                         "ride: route-delete channel full — id {} dropped; the app's retained candidate retries",
-                        _id
+                        id
                     );
-                }
-                // Map-only build: no `ObjectStore`/radio, so delete the file directly and re-scan the
-                // catalog locally (the same `load_routes` machinery the store-changed edge runs).
-                // Geometry handle closed FIRST, for the same two reasons as the store-changed
-                // rescan above: an open file can't be deleted, and a scan that meets it silently
-                // drops it from the catalog (#480).
-                #[cfg(not(feature = "ble"))]
-                if let Some(s) = storage.as_mut() {
-                    s.reconcile_route(None);
-                    if s.delete_route_by_id(_id) {
-                        load_routes(s, app);
-                    }
-                    prev_active = None; // force the reconcile below to re-derive off the new indexing
-                    index_route = None;
                 }
             }
 
@@ -1227,22 +1208,11 @@ pub(crate) async fn run_app(
             // The Route menu's long-press → confirm recorded the trip's durable object id; the cascade
             // deletes the trip AND every member route (locked: post-trip cleanup). Same seam shape as the
             // route delete above: `ble` builds post to the BLE plane (`request_trip_cascade` →
-            // `ObjectStore::delete_trip_cascade`, so both store revisions + both `storeChanged` edges move
-            // coherently and the rescan returns on the STORE_CHANGED edge); map-only builds sweep the
-            // files directly and re-feed both catalogs locally. A member route may be the actively-open
-            // one, so the map-only arm resets the active-route reconcile exactly like a route delete.
-            if let Some(_id) = host_pass.delete_trip {
+            // `ObjectStore::delete_trip_cascade`, so both store revisions + both `storeChanged` edges
+            // move coherently and the rescan returns on the STORE_CHANGED edge).
+            if let Some(id) = host_pass.delete_trip {
                 #[cfg(feature = "ble")]
-                crate::object_store::request_trip_cascade(_id);
-                #[cfg(not(feature = "ble"))]
-                if let Some(s) = storage.as_mut() {
-                    if s.delete_trip_cascade_by_id(_id) {
-                        load_routes(s, app);
-                        load_trips(s, app);
-                    }
-                    prev_active = None; // a deleted member may have been the active route
-                    index_route = None;
-                }
+                crate::object_store::request_trip_cascade(id);
             }
 
             // The System settings screen's card-free scan (T8 item 6): a drained on-entry request runs
@@ -1259,24 +1229,17 @@ pub(crate) async fn run_app(
             // ride's durable object id. On `ble`, post it to the BLE plane (it owns the `ObjectStore`
             // `RefCell`) so the delete goes through the store — revision bump + `storeChanged`, coherent
             // with a phone-initiated delete; the rescan returns on the resulting store-changed edge above.
-            // Map-only: delete the `RD{id}.ORD` directly (retiring its synced-set flag) and re-feed the
-            // Rides menu locally. The greying while recording already keeps the delete legal (no open
-            // TRACK.OBT / pending save collides).
-            if let Some(_id) = host_pass.delete_ride {
+            // The greying while recording already keeps the delete legal (no open TRACK.OBT / pending
+            // save collides).
+            if let Some(id) = host_pass.delete_ride {
                 // Same contract as the route delete above: a full channel drops the id — warn and
                 // rely on the app's retained candidate to re-dispatch after the backoff.
                 #[cfg(feature = "ble")]
-                if !crate::object_store::request_ride_delete(_id) {
+                if !crate::object_store::request_ride_delete(id) {
                     defmt::warn!(
                         "ride: ride-delete channel full — id {} dropped; the app's retained candidate retries",
-                        _id
+                        id
                     );
-                }
-                #[cfg(not(feature = "ble"))]
-                if let Some(s) = storage.as_mut() {
-                    if s.delete_ride_by_id(_id) {
-                        load_rides(s, app);
-                    }
                 }
             }
 
@@ -1436,7 +1399,7 @@ pub(crate) async fn run_app(
                         app.apply_event(obc_app::HostEvent::SettingsPersisted { revision });
                         // Settings coherence, device → phone (#456): the RRAM blob just moved, so the BLE
                         // config-read cache is stale — flag it so the BLE plane refreshes from RRAM before
-                        // its next Config read / advertised-name read. One relaxed store; no-op non-BLE.
+                        // its next Config read / advertised-name read. One relaxed store.
                         #[cfg(feature = "ble")]
                         crate::object_store::mark_device_settings_changed();
                         // Push a changed GPS fix interval to the sensor task → it re-VALSETs the M10's rate.
