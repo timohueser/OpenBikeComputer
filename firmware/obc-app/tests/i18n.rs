@@ -20,7 +20,8 @@ use embedded_graphics::pixelcolor::Rgb888;
 use embedded_graphics::prelude::*;
 use obc_app::i18n::{t, Msg};
 use obc_app::settings::Language;
-use obc_app::{App, AppState, Button, ButtonEvent, Gesture, InputClock, InputEvent, Screen, Settings};
+use obc_app::{App, AppState, Gesture, Screen, Settings};
+use obc_ports::{Button, ButtonEvent, InputClock, InputEvent};
 
 mod common;
 use common::{build_min_obcm, keys, render_120};

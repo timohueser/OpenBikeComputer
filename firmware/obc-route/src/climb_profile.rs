@@ -27,9 +27,9 @@
 //! pick its own smoothing window (locked in the epic's open questions).
 
 use crate::climb::ClimbSeg;
-use crate::geo::seg_dist_m;
 use crate::reader::{RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
 use heapless::Vec;
+use obc_map_scene::ground_dist_m;
 
 /// Columns in one climb's detail buffer. One elevation sample per column; the local grade is
 /// derived from a small window ([`grade_at`](ClimbProfile::grade_at)). At `i16` per column this
@@ -151,7 +151,7 @@ impl ClimbProfile {
             let mut prev: Option<(i32, i32)> = None;
             for p in &buf {
                 if let Some(pr) = prev {
-                    dist += seg_dist_m(pr, (p.lon, p.lat)) as f64;
+                    dist += ground_dist_m(pr, (p.lon, p.lat)) as f64;
                 }
                 prev = Some((p.lon, p.lat));
                 // Only points inside the climb's interval bucket into a column; points in the

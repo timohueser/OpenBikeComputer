@@ -244,6 +244,17 @@ displays is read from the standard [DIS](../companion-link/) Firmware Revision
 characteristic, so after a confirmed update it simply reflects the new image on the
 next connect.
 
+That characteristic answers with the version string of the **container the device
+installed** — the `fw_version` the image was wrapped with, which for a released
+build is the release tag. It is not the running build's own idea of its version,
+and the difference is the whole point: a version a device made up from its source
+tree can never equal a published release, so nothing could be compared to it. A
+board flashed over a debug probe has installed no container at all, so it falls
+back to reporting its git hash, which parses as no version — and that is the
+locked answer, not a gap to close: an update is never offered against a build
+nobody published. Such a device is updated the same way it was flashed, or by
+staging a container by hand.
+
 A press that *can't* arm is never silent either. Between the confirm press and the
 reboot the device shows a **"Preparing update..."** spinner while it snapshots the
 rollback and writes the boot record — and if that pass can't finish it lands a plain

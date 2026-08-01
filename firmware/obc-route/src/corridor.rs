@@ -20,10 +20,11 @@
 //! deliberately untuned first values — revisit on-glass.
 
 use heapless::Vec;
-use obc_reader::{BBox, M_PER_DEG};
+use obc_map_scene::{BBox, M_PER_DEG};
 
-use crate::geo::{cos_lat, ground_dist_m_cl, project_to_segment};
+use crate::geo::project_to_segment;
 use crate::reader::RouteReader;
+use obc_map_scene::{cos_lat, ground_dist_m_cl};
 
 /// Max resident corridor sample points (8 B each → ~1 KB). A longer span widens its sampling
 /// stride to fit, so this is a hard cap by construction, never an overflow.

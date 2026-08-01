@@ -303,6 +303,46 @@ fn verdict_armed_is_not_started() {
     assert_eq!(verdict(&armed, None), Verdict::NotStarted);
 }
 
+// ==================== the running image (#996) ====================
+
+/// `running_image` maps every state to the image that is *actually executing* — the fact the DIS /
+/// USB firmware-revision string is assembled from (#996, epic #773). The staged image is never it.
+#[test]
+fn running_image_per_state() {
+    assert_eq!(
+        BootState::Idle { installed: None, last_outcome: None }.running_image(),
+        None,
+        "a never-installed device names no image — the caller falls back to its build-time string"
+    );
+    let installed = header("v1.0.0", 800_000);
+    assert_eq!(
+        BootState::Idle {
+            installed: Some(installed),
+            last_outcome: Some(LastOutcome { kind: OutcomeKind::Installed, generation: 4 }),
+        }
+        .running_image(),
+        Some(installed),
+        "Idle runs its installed record"
+    );
+    let trial = header("v2.0.0", 900_000);
+    assert_eq!(
+        BootState::Trial { generation: 2, installed: trial, rollback: Some(staged("rollback", 2)) }.running_image(),
+        Some(trial),
+        "a trial boot runs the freshly-installed image, confirmed or not"
+    );
+    let rollback = staged("v1.0.0", 3);
+    assert_eq!(
+        BootState::Armed { generation: 7, update: staged("v3.0.0", 2), rollback: Some(rollback) }.running_image(),
+        Some(rollback.header),
+        "an unconsumed arm is still running the old image the armer snapshotted — never the staged one"
+    );
+    assert_eq!(
+        BootState::Armed { generation: 7, update: staged("v3.0.0", 2), rollback: None }.running_image(),
+        None,
+        "a first-install arm has no snapshot, so the page names no running image"
+    );
+}
+
 // ==================== v1 read-compatibility (DR2 #730) ====================
 //
 // The bootloader is flashed once by probe and NOT updated by DFU, so a fielded bootloader keeps

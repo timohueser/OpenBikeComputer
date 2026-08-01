@@ -97,11 +97,12 @@ use heapless::Vec;
 
 use crate::convert::{EmitStats, ObcrEmitter, RouteStats, WpPlace};
 use crate::corridor::Corridor;
-use crate::geo::{cos_lat, ground_dist_m, ground_dist_m_cl};
 use crate::reader::MAX_WAYPOINTS;
 use obc_formats::io::ByteSink;
 use obc_formats::obcr::NAME_CAP;
-use obc_reader::{BBox, NavTileCache, Reader, M_PER_DEG};
+use obc_map_scene::{cos_lat, ground_dist_m, ground_dist_m_cl};
+use obc_map_scene::{BBox, M_PER_DEG};
+use obc_reader::{NavTileCache, Reader};
 
 /// Snap radius, meters (locked on #116): each endpoint snaps to the nearest routable
 /// node within this, or the route fails as [`NavError::NoPath`]. v1 snaps to nodes,

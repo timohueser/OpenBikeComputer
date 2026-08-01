@@ -153,7 +153,7 @@ final class ProtocolVectorTests: XCTestCase {
         let decodedFull = decode(full)
         XCTAssertEqual(decodedFull.version, OBCProtocol.version)
         XCTAssertEqual(decodedFull.epoch, 0xA1B2_C3D4)
-        XCTAssertEqual(decodedFull.obcm, 10)
+        XCTAssertEqual(decodedFull.obcm, 11)
 
         // 6 bytes: a firmware predating the field. The epoch is present, so the ack gate is open;
         // the map version is simply unknown.
@@ -176,7 +176,7 @@ final class ProtocolVectorTests: XCTestCase {
         let future = full + Data([0xEE, 0xEE])
         let decodedFuture = decode(future)
         XCTAssertEqual(decodedFuture.epoch, 0xA1B2_C3D4)
-        XCTAssertEqual(decodedFuture.obcm, 10)
+        XCTAssertEqual(decodedFuture.obcm, 11)
     }
 
     func testRideVectorDecodesAndReEncodesByteExactly() throws {

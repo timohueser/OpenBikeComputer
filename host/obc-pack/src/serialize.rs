@@ -1,9 +1,11 @@
-//! OBCM v8 serializer — lay out the `.obcm` bytes per `OBCM_Spec.md`.
+//! OBCM v11 serializer — lay out the `.obcm` bytes per `OBCM_Spec.md`.
 //!
 //! Deterministic: same feature list + quadtree → same output. Geometry arrives
 //! already clipped + simplified; this module rounds lon/lat to microdegrees
 //! (round-half-to-even), densifies long segments, delta-encodes rings, and lays out
-//! the chunk / index / LOD-table / header bytes. The **POI section** (§7 of the
+//! the chunk / offset-table / index / LOD-table / header bytes. Geometry chunks are
+//! packed **tight** and addressed by a per-LOD offset table (v11 §5,
+//! [`serialize_tree`]); POI and nav chunks keep their fixed strides. The **POI section** (§7 of the
 //! spec) is a per-category quadtree over fixed 36-byte point records (each carrying
 //! a `hours_ref` u16 into the shared hours-pool section), reusing the same
 //! BFS-flatten + u32 node encoding as the geometry tree. The trailing **nav-graph
@@ -14,8 +16,8 @@
 use std::io::{self, Seek, SeekFrom, Write};
 
 use obc_formats::obcm::{
-    BRANCH_BIT, CHUNK_END, EMPTY_LEAF, FEATURE_FLAG_16BIT, FEATURE_FLAG_HOLES, FEATURE_FLAG_POLYGON,
-    FEATURE_HEADER_LEN, MAGIC, STYLE_DASHED_BIT, STYLE_HAS_COLOR2_BIT, STYLE_PRIORITY_MASK, STYLE_RECORD_LEN,
+    BRANCH_BIT, CHUNK_END, EMPTY_LEAF, FEATURE_FLAG_16BIT, FEATURE_FLAG_HOLES, FEATURE_FLAG_POLYGON, FEATURE_FLAG_WIDE,
+    FEATURE_HEADER_COMPACT_LEN, MAGIC, STYLE_DASHED_BIT, STYLE_HAS_COLOR2_BIT, STYLE_PRIORITY_MASK, STYLE_RECORD_LEN,
 };
 
 // The OBCM constants the serializer lays out are owned by `obc-formats`; imported here (the
@@ -77,12 +79,16 @@ pub struct NavProfile {
 }
 
 /// Largest `chunk_size` (bytes) that keeps every feature within the reader's
-/// [`obc_reader::MAX_FEAT_PTS`] vertex cap. Densest encoding is 8-bit deltas
-/// (12-byte header + 2 bytes/vertex), so a chunk carries at most
-/// `(chunk_size - 12) / 2 + 1` vertices. Above this the reader **silently
+/// [`obc_reader::MAX_FEAT_PTS`] vertex cap. Any feature's packed bytes are at least
+/// `FEATURE_HEADER_COMPACT_LEN + 2 · (total_vertices − 1)`: the smallest header v11
+/// can write is the 7-byte compact one, and the densest geometry is 8-bit deltas at
+/// 2 bytes per vertex after the anchor (holes and the wide header only add bytes).
+/// So a chunk of `chunk_size` bytes carries at most `(chunk_size − 7) / 2 + 1`
+/// vertices, and `4101` is where that hits 2048. Above this the reader **silently
 /// truncates** past-cap vertices (`heapless` push fails, no error either side),
-/// corrupting the feature's fill/stroke.
-pub const MAX_SAFE_CHUNK_SIZE: usize = (obc_reader::MAX_FEAT_PTS - 1) * 2 + FEATURE_HEADER_LEN;
+/// corrupting the feature's fill/stroke. (v10's bound was 4106 off the 12-byte
+/// header; the compact header is what tightened it by 5 bytes.)
+pub const MAX_SAFE_CHUNK_SIZE: usize = (obc_reader::MAX_FEAT_PTS - 1) * 2 + FEATURE_HEADER_COMPACT_LEN;
 
 // The safe ceiling must itself fit the on-wire `u16` chunk_size field, or the bound is moot.
 const _: () = assert!(MAX_SAFE_CHUNK_SIZE <= u16::MAX as usize, "chunk_size is a u16 in the format");
@@ -209,7 +215,7 @@ fn push_deltas(data: &mut Vec<u8>, deltas: &[i64], is16: bool) {
     }
 }
 
-/// Pack the style table (OBCM v10): `Count(u8)` then, sorted by id, `<BbHBBH>` per style — `id,
+/// Pack the style table (OBCM §2): `Count(u8)` then, sorted by id, `<BbHBBH>` per style — `id,
 /// z_index, color, weight, flags, color2`. `flags = (priority-1) & STYLE_PRIORITY_MASK`, plus
 /// `STYLE_DASHED_BIT` when `dashed` and `STYLE_HAS_COLOR2_BIT` when `color2` is `Some`. `color2`
 /// writes its RGB565 value when present, else `0x0000` (which the reader ignores, bit 3 being clear).
@@ -237,9 +243,15 @@ pub fn pack_style_dict(styles: &[Style]) -> Vec<u8> {
     data
 }
 
-/// Pack one feature: 12-byte header `<BHiiB>` + delta-encoded rings. `node_bbox`
-/// is the containing leaf's bbox; the exterior's first point becomes the anchor,
-/// stored relative to the leaf min corner.
+/// Pack one feature: the v11 §5 header + delta-encoded rings. `node_bbox` is the containing leaf's
+/// bbox; the exterior's first point becomes the anchor, stored relative to the leaf min corner.
+///
+/// The header is the **7-byte compact** form (`<BBBHH>`: style, flags, `pt_count u8`, `anchor u16`
+/// ×2) whenever the exterior holds `1..=255` vertices *and* both anchor components land in
+/// `0..=65535`, else the **12-byte wide** form (`<BBHii>`) with [`FEATURE_FLAG_WIDE`] set. A
+/// leaf-relative anchor is small at fine LODs but genuinely isn't at coarse ones, where one leaf can
+/// span far more than 65 535 µdeg — the wide form is that escape (and covers a negative anchor, which
+/// clipping should never produce but the encoding must not silently mangle).
 pub fn pack_feature(f: &Feature, node_bbox: (i64, i64, i64, i64)) -> Vec<u8> {
     let is_polygon = f.kind == Kind::Polygon;
     let mut flags: u8 = 0;
@@ -304,14 +316,39 @@ pub fn pack_feature(f: &Feature, node_bbox: (i64, i64, i64, i64)) -> Vec<u8> {
         "feature vertex count exceeds the reader's MAX_FEAT_PTS — chunk_size too large?"
     );
 
+    // The reader buffers ring lengths in a `MAX_FEAT_RINGS` heapless vec and
+    // discards the whole feature past it; the quadtree splits (or floor-trims)
+    // features over the cap before they reach here. (Also keeps the hole-count
+    // byte below from ever wrapping u8.)
+    debug_assert!(
+        packed_rings.len() <= obc_reader::MAX_FEAT_RINGS,
+        "feature ring count exceeds the reader's MAX_FEAT_RINGS — quadtree cap enforcement missed it"
+    );
+
     debug_assert!(packed_rings[0].0 <= u16::MAX as usize, "exterior pt_count overflows the u16 field");
-    let ext_pt_count = packed_rings[0].0 as u16;
+    let ext_pt_count = packed_rings[0].0;
+    // Compact iff every compact field can hold its value; the anchor test is on the *packed* anchor,
+    // which densification cannot move (it is the exterior's first vertex).
+    const ANCHOR_COMPACT: core::ops::RangeInclusive<i64> = 0..=u16::MAX as i64;
+    let wide = ext_pt_count > u8::MAX as usize
+        || !ANCHOR_COMPACT.contains(&anchor_lon)
+        || !ANCHOR_COMPACT.contains(&anchor_lat);
+    if wide {
+        flags |= FEATURE_FLAG_WIDE;
+    }
+
     let mut data = Vec::new();
     data.push(f.style_id);
-    data.extend_from_slice(&ext_pt_count.to_le_bytes());
-    data.extend_from_slice(&(anchor_lon as i32).to_le_bytes());
-    data.extend_from_slice(&(anchor_lat as i32).to_le_bytes());
     data.push(flags);
+    if wide {
+        data.extend_from_slice(&(ext_pt_count as u16).to_le_bytes());
+        data.extend_from_slice(&(anchor_lon as i32).to_le_bytes());
+        data.extend_from_slice(&(anchor_lat as i32).to_le_bytes());
+    } else {
+        data.push(ext_pt_count as u8);
+        data.extend_from_slice(&(anchor_lon as u16).to_le_bytes());
+        data.extend_from_slice(&(anchor_lat as u16).to_le_bytes());
+    }
 
     push_deltas(&mut data, &packed_rings[0].1, is16);
 
@@ -326,22 +363,24 @@ pub fn pack_feature(f: &Feature, node_bbox: (i64, i64, i64, i64)) -> Vec<u8> {
     data
 }
 
-/// Pack features into a fixed-size chunk, padded with `0xFF`. A feature that
-/// would overflow the chunk (and every feature after it) is dropped; the second
-/// return value is the number dropped, so callers can warn instead of losing
-/// map content silently.
+/// Pack features into one **tight** v11 chunk: the packed features back to back, then exactly one
+/// `0xFF` [`CHUNK_END`] sentinel — no padding to `chunk_size`, which is now only the capacity bound
+/// (§3). A feature that would overflow the chunk (and every feature after it) is dropped; the second
+/// return value is the number dropped, so callers can warn instead of losing map content silently.
 pub fn pack_chunk(features: &[Feature], node_bbox: (i64, i64, i64, i64), chunk_size: usize) -> (Vec<u8>, usize) {
     let mut data = Vec::new();
     let mut kept = 0usize;
     for f in features {
         let packed = pack_feature(f, node_bbox);
-        if data.len() + packed.len() > chunk_size {
+        // The `+ 1` reserves the sentinel byte, so the *sealed* chunk still fits the capacity —
+        // which is what the reader validates an offset-table length against.
+        if data.len() + packed.len() + 1 > chunk_size {
             break;
         }
         data.extend_from_slice(&packed);
         kept += 1;
     }
-    data.resize(chunk_size, CHUNK_END);
+    data.push(CHUNK_END);
     (data, features.len() - kept)
 }
 
@@ -369,13 +408,17 @@ trait FlattenTree: Sized {
     fn pack_leaf(&self, chunk_size: usize) -> Option<(Vec<u8>, usize)>;
 }
 
-/// Flatten any [`FlattenTree`] into `(index_bytes, node_count, chunk_bytes,
-/// chunk_count, dropped)` via BFS. Child order and chunk-id assignment order are
-/// BFS, which fixes the byte layout: a branch's four children are appended
-/// contiguously, so its first-child index is the node count at the moment it is
-/// expanded (`child > idx` always — the invariant the reader's `walk_leaves`
-/// relies on). `dropped` is the total chunk-overflow drop count across all leaves.
-fn flatten_tree<N: FlattenTree>(root: &N, chunk_size: usize) -> (Vec<u8>, u32, Vec<u8>, u32, usize) {
+/// Flatten any [`FlattenTree`] into `(index_bytes, node_count, chunks, dropped)` via BFS. Child
+/// order and chunk-id assignment order are BFS, which fixes the byte layout: a branch's four
+/// children are appended contiguously, so its first-child index is the node count at the moment it
+/// is expanded (`child > idx` always — the invariant the reader's `walk_leaves` relies on).
+/// `dropped` is the total chunk-overflow drop count across all leaves.
+///
+/// Chunks come back **one `Vec` per chunk**, not concatenated, because the two consumers frame them
+/// differently: POI chunks are a fixed stride and just get joined ([`serialize_poi_section`]),
+/// while geometry chunks are tight and need their lengths to build the v11 offset table
+/// ([`serialize_tree`]).
+fn flatten_tree<N: FlattenTree>(root: &N, chunk_size: usize) -> (Vec<u8>, u32, Vec<Vec<u8>>, usize) {
     // BFS in enqueue order. Children are appended contiguously, so a branch's
     // first-child index is the length of `nodes` at the moment we expand it.
     let mut nodes: Vec<&N> = vec![root];
@@ -393,18 +436,16 @@ fn flatten_tree<N: FlattenTree>(root: &N, chunk_size: usize) -> (Vec<u8>, u32, V
     }
 
     let mut index: Vec<u32> = Vec::with_capacity(nodes.len());
-    let mut chunks: Vec<u8> = Vec::new();
-    let mut chunk_count: u32 = 0;
+    let mut chunks: Vec<Vec<u8>> = Vec::new();
     let mut dropped: usize = 0;
     for (idx, node) in nodes.iter().enumerate() {
         match node.classify() {
             TreeNode::Leaf(leaf) => match leaf.pack_leaf(chunk_size) {
                 None => index.push(EMPTY_LEAF),
                 Some((chunk, chunk_dropped)) => {
-                    let chunk_id = chunk_count;
-                    chunks.extend_from_slice(&chunk);
+                    let chunk_id = chunks.len() as u32;
+                    chunks.push(chunk);
                     dropped += chunk_dropped;
-                    chunk_count += 1;
                     index.push(chunk_id & !BRANCH_BIT);
                 }
             },
@@ -416,7 +457,7 @@ fn flatten_tree<N: FlattenTree>(root: &N, chunk_size: usize) -> (Vec<u8>, u32, V
     for v in &index {
         index_bytes.extend_from_slice(&v.to_le_bytes());
     }
-    (index_bytes, index.len() as u32, chunks, chunk_count, dropped)
+    (index_bytes, index.len() as u32, chunks, dropped)
 }
 
 impl FlattenTree for Node {
@@ -434,12 +475,31 @@ impl FlattenTree for Node {
     }
 }
 
-/// Flatten one geometry quadtree into `(index_bytes, node_count, chunk_bytes,
-/// chunk_count, dropped_features)` via BFS. Thin wrapper over the shared
-/// [`flatten_tree`]; `dropped_features` counts chunk-overflow drops across all
-/// leaves (see [`pack_chunk`]).
+/// Flatten one geometry quadtree into `(index_bytes, node_count, data_bytes, chunk_count,
+/// dropped_features)` via BFS (the shared [`flatten_tree`]), framing the chunks as the v11 §5
+/// **chunk-data region**: a `chunk_count + 1` entry `uint32` offset table followed by the tightly
+/// packed chunks.
+///
+/// Offsets are relative to the first chunk's byte — i.e. to the end of the table — so `offsets[0]`
+/// is `0`, chunk `k` occupies `offsets[k]..offsets[k+1]`, and `offsets[chunk_count]` is the region's
+/// total chunk bytes (the reader keeps that last entry resident as its bound). The table is written
+/// even for a chunkless LOD, where it is the single `0` entry. `dropped_features` counts
+/// chunk-overflow drops across all leaves (see [`pack_chunk`]).
 pub fn serialize_tree(root: &Node, chunk_size: usize) -> (Vec<u8>, u32, Vec<u8>, u32, usize) {
-    flatten_tree(root, chunk_size)
+    let (index_bytes, node_count, chunks, dropped) = flatten_tree(root, chunk_size);
+    let total: usize = chunks.iter().map(Vec::len).sum();
+    let mut data = Vec::with_capacity((chunks.len() + 1) * 4 + total);
+    let mut offset = 0u32;
+    data.extend_from_slice(&offset.to_le_bytes());
+    for c in &chunks {
+        offset += c.len() as u32;
+        data.extend_from_slice(&offset.to_le_bytes());
+    }
+    for c in &chunks {
+        data.extend_from_slice(c);
+    }
+    debug_assert_eq!(offset as usize, total, "the last offset is the region's chunk-byte total");
+    (index_bytes, node_count, data, chunks.len() as u32, dropped)
 }
 
 // --- POI section (v7, spec §7) ------------------------------------------------
@@ -619,9 +679,12 @@ pub fn serialize_poi_section(pois: &[Poi], global_bbox: (i64, i64, i64, i64), se
             continue;
         }
         let root = build_poi_tree(pts, global_bbox, capacity);
-        let (index, node_count, chunks, chunk_count, dropped) = flatten_tree(&root, POI_CHUNK_SIZE);
+        let (index, node_count, chunks, dropped) = flatten_tree(&root, POI_CHUNK_SIZE);
         debug_assert_eq!(dropped, 0, "fixed-size POI records never overflow a split leaf");
-        blocks.push(CatBlock { cat_id, index, node_count, chunks, chunk_count });
+        // POI chunks keep the fixed `POI_CHUNK_SIZE` stride (§7.3) — no offset table, so the reader's
+        // `PoiCatEntry::chunk_range` stays the plain `k * chunk_size` it has been since v6.
+        let chunk_count = chunks.len() as u32;
+        blocks.push(CatBlock { cat_id, index, node_count, chunks: chunks.concat(), chunk_count });
     }
 
     // Directory size: count byte + chunk_size u16 + one entry per category + the two
@@ -1140,7 +1203,8 @@ fn header_bytes(
 }
 
 /// Append one LOD-table entry `<fIIHI>`: max_mpp (`None` ⇒ `+inf`), index offset,
-/// node count, chunk size, chunk count.
+/// node count, chunk size, chunk count. The 18-byte layout is unchanged in v11; `cs` is now the
+/// chunk **capacity bound** rather than a stride (§3).
 fn push_lod_entry(table: &mut Vec<u8>, max_mpp: Option<f64>, index_offset: u32, nc: u32, cs: usize, cc: u32) {
     let mpp_f: f32 = max_mpp.map_or(f32::INFINITY, |v| v as f32);
     table.extend_from_slice(&mpp_f.to_le_bytes());
@@ -1238,6 +1302,15 @@ pub fn serialize_lods(
 /// in order; each tree is dropped before the next call. The POI and nav sections
 /// are built in memory (small — point/junction records, not geometry) after the
 /// LODs stream out.
+///
+/// A `None` root writes an **empty region** for that level: `Index Node Count = 0`, `Chunk Count =
+/// 0`, and the single-`0`-entry offset table `OBCM_Spec.md` §5.1 mandates for a chunkless LOD — 4
+/// bytes of payload, and a reader walks it and finds nothing. That is not merely an optimisation of
+/// the "leaf with no features" case (which still costs an index node): it is what a **cell artifact**
+/// needs, because a cell writes the complete ladder with its out-of-band levels empty so that band
+/// membership never appears in the bytes ([`OBCA_Spec.md`](../../../specs/OBCA_Spec.md) §3.1), and
+/// `Index Node Count == 0` is the predicate a reader caches at mount to skip a level with no I/O at
+/// all (§5.6).
 #[allow(clippy::too_many_arguments)]
 pub fn serialize_lods_streaming<W, F>(
     w: &mut W,
@@ -1252,7 +1325,7 @@ pub fn serialize_lods_streaming<W, F>(
 ) -> io::Result<(u64, usize)>
 where
     W: Write + Seek,
-    F: FnMut(usize) -> (Node, usize, Option<f64>),
+    F: FnMut(usize) -> (Option<Node>, usize, Option<f64>),
 {
     let style_data = pack_style_dict(styles);
     let lod_table_offset = HEADER_LEN + style_data.len();
@@ -1273,8 +1346,15 @@ where
     let mut dropped = 0usize;
     for i in 0..lod_count {
         let (root, chunk_size, max_mpp) = build(i);
-        let (ib, nc, cb, cc, lod_dropped) = serialize_tree(&root, chunk_size);
-        drop(root); // free the tree before writing this LOD / building the next
+        let (ib, nc, cb, cc, lod_dropped) = match root {
+            Some(root) => {
+                let out = serialize_tree(&root, chunk_size);
+                drop(root); // free the tree before writing this LOD / building the next
+                out
+            }
+            // Empty region: no index, no chunk, and the mandatory single-`0` offset table.
+            None => (Vec::new(), 0u32, 0u32.to_le_bytes().to_vec(), 0u32, 0usize),
+        };
         dropped += lod_dropped;
         push_lod_entry(&mut table, max_mpp, cursor as u32, nc, chunk_size, cc);
         w.write_all(&ib)?;
@@ -1307,6 +1387,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use obc_formats::obcm::FEATURE_HEADER_WIDE_LEN;
 
     #[test]
     fn rounding_is_ties_even_not_away() {
@@ -1352,10 +1433,20 @@ mod tests {
         let f = Feature { style_id: 1, kind: Kind::Line, rings: vec![coords] };
         let packed = pack_feature(&f, (0, 0, n as i64, 1));
 
-        let ext_pt_count = u16::from_le_bytes([packed[1], packed[2]]) as usize;
+        // 2048 vertices overflow the compact `pt_count u8`, so this is the wide header — read the
+        // count from where the wide layout puts it.
+        assert_eq!(packed[1] & FEATURE_FLAG_WIDE, FEATURE_FLAG_WIDE, "a cap-sized feature needs the wide header");
+        let ext_pt_count = u16::from_le_bytes([packed[2], packed[3]]) as usize;
         assert_eq!(ext_pt_count, n, "a cap-sized feature keeps every vertex");
         assert!(ext_pt_count <= obc_reader::MAX_FEAT_PTS, "must not exceed the reader cap");
-        assert!(packed.len() <= MAX_SAFE_CHUNK_SIZE, "and fits the safe-max chunk: {} bytes", packed.len());
+
+        // The bound runs the *other* way, and this is the honest statement of it: a chunk of
+        // `MAX_SAFE_CHUNK_SIZE` cannot hold a cap-sized feature at all, so the reader is never handed
+        // one it would silently truncate. The bound itself is the loosest encoding — a compact-header
+        // line at `2·V + 5` bytes — which is why it sits above these 4106.
+        assert!(packed.len() > MAX_SAFE_CHUNK_SIZE, "a cap-sized feature does not fit the safe-max chunk");
+        assert_eq!(packed.len(), FEATURE_HEADER_WIDE_LEN + (n - 1) * 2, "wide header + 2 bytes per delta");
+        assert_eq!(MAX_SAFE_CHUNK_SIZE, 2 * n + FEATURE_HEADER_COMPACT_LEN - 2, "the 2·V + 5 arithmetic");
     }
 
     #[test]
@@ -1442,7 +1533,7 @@ mod tests {
         let mut cur = Cursor::new(Vec::new());
         let (total, dropped) =
             serialize_lods_streaming(&mut cur, lods.len(), &styles, 0xABCD, bbox, &pois, &nav, &profiles, |i| {
-                (lods[i].root.clone(), lods[i].chunk_size, lods[i].max_mpp)
+                (Some(lods[i].root.clone()), lods[i].chunk_size, lods[i].max_mpp)
             })
             .unwrap();
 
