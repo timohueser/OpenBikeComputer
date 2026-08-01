@@ -32,7 +32,7 @@ fn fixture_pbf() -> String {
 /// `_meta` block rides along and is ignored (`config::tests::
 /// unknown_tooling_metadata_remains_compatible`).
 fn preset_path() -> PathBuf {
-    repo("builder/presets/default.json")
+    repo("builder/presets/schema.json")
 }
 
 fn out_dir(name: &str) -> PathBuf {

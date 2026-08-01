@@ -17,10 +17,11 @@ use crate::render_res::RenderResources;
 use crate::ride::RideSummary;
 use crate::ride_engine::RideEngine;
 use crate::route::RouteSummary;
-use crate::screen::{self, Ctx, MapScreen, Render, Screen, WarningFlags};
+use crate::screen::{self, Ctx, MapScreen, Render, RenderFrame, Screen, WarningFlags};
 use crate::settings::{DateTime, Settings};
 use crate::ui_runtime::{UiRuntime, UploadEvent};
 use crate::wall_clock::WallClock;
+use obc_map_scene::MapScene;
 use obc_ports::{Fix, InputClock, InputSource, LocationSource, RideClock, Sensors, TrackPoint};
 
 /// How the camera relates to the user's position.
@@ -116,7 +117,7 @@ pub struct AppState {
     /// map, so the orientation follows the compass instead of snapping to north; only
     /// adopted on ticks where it would actually drive the rotation (see [`App::tick`]).
     pub compass_deg: Option<f32>,
-    /// Battery charge, 0–100 %. [`App::tick`] writes it from the [`FuelGauge`](crate::FuelGauge);
+    /// Battery charge, 0–100 %. [`App::tick`] writes it from the [`FuelGauge`](obc_ports::FuelGauge);
     /// the Home screen draws the gauge from it (filled bars coloured by level, empty bars dim grey).
     pub battery_pct: u8,
     /// The BLE link phase (Off / Advertising / Connected). [`App::set_ble_status`] writes it from
@@ -156,7 +157,7 @@ impl AppState {
             user_fix: None,
             pan: None,
             compass_deg: None,
-            // Stand-in until a [`FuelGauge`](crate::FuelGauge) feeds a real reading on the first tick.
+            // Stand-in until a [`FuelGauge`](obc_ports::FuelGauge) feeds a real reading on the first tick.
             battery_pct: 75,
             // No phone linked until the host feeds the first [`BleStatus`](crate::BleStatus).
             ble_link: crate::BleLink::Advertising,
@@ -2128,6 +2129,31 @@ impl App {
         stats
     }
 
+    /// Render a frame whose geometry comes from any [`MapScene`], while POI/hours acquisition
+    /// reads the set's core [`Reader`]. For a single OBCM both arguments are the same `Reader`;
+    /// for an OBCA volume set `scene` is its `MountedSet` and `core_reader` is
+    /// `MountedSet::core_reader()`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_scene_frame<D, F, S>(
+        &mut self,
+        target: &mut D,
+        scene: &S,
+        core_reader: &Reader,
+        route: Option<&RouteReader>,
+        w: f32,
+        h: f32,
+        color_fn: F,
+    ) -> RenderStats
+    where
+        D: DrawTarget,
+        F: Fn(u16) -> D::Color,
+        S: MapScene,
+    {
+        let stats = self.render_scene_map(target, scene, core_reader, route, w, h, &color_fn);
+        self.render_overlay(target, w, h, &color_fn);
+        stats
+    }
+
     /// Render **only the map plane** — the screen stack from the topmost opaque screen upward, but
     /// **excluding** the global hold-hint chrome. Returns the map [`RenderStats`].
     ///
@@ -2149,7 +2175,28 @@ impl App {
     {
         // Untimed: `NoopClock` leaves the per-stage `*_us` fields at 0 (the device uses
         // `render_map_timed` with a real clock for the benchmark). Always draws the map, so `Some`.
-        self.render_map_timed(target, Some(reader), route, w, h, color_fn, &NoopClock)
+        self.render_scene_map_timed(target, Some(reader), Some(reader), route, w, h, color_fn, &NoopClock)
+    }
+
+    /// Render only the map plane from any [`MapScene`]. `core_reader` remains the authority for
+    /// POIs and hours, which live only in a volume set's core shard.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_scene_map<D, F, S>(
+        &mut self,
+        target: &mut D,
+        scene: &S,
+        core_reader: &Reader,
+        route: Option<&RouteReader>,
+        w: f32,
+        h: f32,
+        color_fn: F,
+    ) -> RenderStats
+    where
+        D: DrawTarget,
+        F: Fn(u16) -> D::Color,
+        S: MapScene,
+    {
+        self.render_scene_map_timed(target, Some(scene), Some(core_reader), route, w, h, color_fn, &NoopClock)
     }
 
     /// Like [`render_map`](App::render_map) but threads `clock` to the Map screen's
@@ -2171,6 +2218,29 @@ impl App {
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
+        self.render_scene_map_timed(target, reader, reader, route, w, h, color_fn, clock)
+    }
+
+    /// Generic timed map-plane render. `scene` drives geometry through [`MapScene`];
+    /// `core_reader` drives the core-only POI/hours preparation. They are independently optional
+    /// so chrome-only frames can skip every map source.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_scene_map_timed<D, F, S>(
+        &mut self,
+        target: &mut D,
+        scene: Option<&S>,
+        core_reader: Option<&Reader>,
+        route: Option<&RouteReader>,
+        w: f32,
+        h: f32,
+        color_fn: F,
+        clock: &dyn Clock,
+    ) -> RenderStats
+    where
+        D: DrawTarget,
+        F: Fn(u16) -> D::Color,
+        S: MapScene,
+    {
         // Record the panel size for the screen ticks' region reporting (`advance_animations`) —
         // the one place every host states its real frame dimensions.
         self.ui.frame_size = (w as i16, h as i16);
@@ -2190,7 +2260,7 @@ impl App {
         // snapshot / hours or Detour route geometry) before the draw loop, so `Render` carries
         // the POI scratch read-only and every screen's `draw` is side-effect-free.
         self.ui.prepare_base(
-            reader,
+            core_reader,
             route,
             self.state.user_fix,
             self.activity.active_route,
@@ -2238,8 +2308,7 @@ impl App {
             .active_climb
             .and_then(|i| ride.climbs.as_slice().get(i))
             .map(|seg| screen::ActiveClimb { seg, profile: &ride.climb_profile });
-        let mut rx = Render {
-            reader,
+        let rx = Render {
             renderer: &mut render_res.renderer,
             state,
             activity,
@@ -2279,6 +2348,7 @@ impl App {
             map_obcm_version: *map_obcm_version,
             card_free_bytes: *card_free_bytes,
         };
+        let mut rx = RenderFrame { scene, render: rx };
         // The one Canvas of the frame: every screen draws through it (the base screen — the only
         // possible Map — writes `rx.stats`; the overlays above it leave the stats untouched).
         // A drained region clip makes it reject whole out-of-region primitives — the half of a
@@ -2382,8 +2452,7 @@ impl App {
 // One vocabulary, one pending state. Every host-directed one-shot/counter is drained here as a
 // typed [`HostCommand`] through `drain_host_commands`, and every host fact/answer lands here as a
 // typed [`HostEvent`] through `apply_event` — the only two doors, with the per-class pending state
-// living once inside `App` (a typed slot, a counter, or a derived predicate). The legacy per-latch
-// `take_*` / `has_*` / `notify_*` compatibility adapters were removed in FAR-19 (#812).
+// living once inside `App` (a typed slot, a counter, or a derived predicate).
 
 impl App {
     /// Drain every pending host-directed command into the caller-owned mailbox, in the canonical
@@ -2420,16 +2489,14 @@ impl App {
 
     /// Whether any host-directed command is currently pending — what a
     /// [`drain_host_commands`](App::drain_host_commands) call would emit at least one command for.
-    /// The typed twin of the per-class `has_*` peeks: it consumes nothing.
+    /// This consumes nothing.
     pub fn has_pending_host_command(&self) -> bool {
         HostCommand::DRAIN_ORDER.iter().any(|&c| self.peek_host_command(c))
     }
 
-    /// Apply one host answer/fact to the app — the single typed entry every `notify_*`
-    /// compatibility adapter delegates to. Events are owned values, so a host can hold one across
-    /// however many passes its asynchronous work takes and apply it late; each arm keeps the
-    /// documented drop/defer rule of the seam it replaces (a late answer whose screen is gone is
-    /// dropped, advisory prompts defer behind the passkey card / a charging hold, and so on).
+    /// Apply one host answer or fact. Events are owned, so a host can hold one across asynchronous
+    /// work and apply it later; a late answer whose screen is gone is dropped, while advisory
+    /// prompts defer behind the passkey card or a charging hold.
     pub fn apply_event(&mut self, event: HostEvent) {
         match event {
             HostEvent::StoreChanged => self.host.note_store_changed(),
@@ -2469,10 +2536,9 @@ impl App {
         self.on_warning(WarningFlags::SETTINGS_ERROR);
     }
 
-    /// Non-consuming per-class pendency — the shared predicate behind the `has_*` compatibility
-    /// peeks and the drain's backpressure check. For the delete classes this reports the request
-    /// slot itself (matching the legacy `has_*` semantics): a request whose subject vanished in a
-    /// racing rescan still peeks `true` and then drains to nothing.
+    /// Non-consuming per-class pendency for the drain's backpressure check. For delete classes this
+    /// reports the request slot itself: a request whose subject vanished in a racing rescan still
+    /// peeks `true` and then drains to nothing.
     fn peek_host_command(&self, class: HostCommandClass) -> bool {
         match class {
             HostCommandClass::RescanStore => self.host.store_changed_pending() > 0,
@@ -2502,10 +2568,8 @@ impl App {
         }
     }
 
-    /// Drain one command class from its single pending slot — the shared consumer behind both
-    /// [`drain_host_commands`](App::drain_host_commands) and every `take_*` compatibility adapter,
-    /// so a command drained through either door is gone through both. Preserves each latch's exact
-    /// semantics: one-shots drain exactly once, the store counter drains whole,
+    /// Drain one command class from its single pending slot. One-shots drain exactly once, the store
+    /// counter drains whole,
     /// `PersistSettings` fires only once an edited value has left the settings subtree, the
     /// delete indices resolve to durable ids at drain (a vanished subject consumes the slot and
     /// yields nothing), and the derived fill cues consume nothing (they clear when answered).
@@ -2719,11 +2783,7 @@ mod tests {
         }
     }
 
-    // ── Typed-protocol test helpers (FAR-19, #812): the former `take_*` compat adapters these
-    // tests exercised are gone, so each helper drains its one class through the crate-internal
-    // per-class `drain_host_command` — exactly what the deleted adapter did, so per-class isolation
-    // (a test that drains nav then cancel separately) is preserved (a whole-mailbox drain would
-    // consume both at once).
+    // Per-class drain helpers keep tests focused on one command without consuming the whole mailbox.
     use crate::host::HostCommandClass;
 
     /// The drained [`DfuAction`], if a `Dfu` command was pending (the `take_dfu_request` successor).
@@ -5159,7 +5219,7 @@ mod tests {
             name: n,
             distance_km: 10,
             climb_m: 100,
-            bbox: obc_route::BBox { min_lon: 0, min_lat: 0, max_lon: 1000, max_lat: 1000 },
+            bbox: obc_map_scene::BBox { min_lon: 0, min_lat: 0, max_lon: 1000, max_lat: 1000 },
             start_lon: 100,
             start_lat: 100,
         }
@@ -5338,8 +5398,7 @@ mod tests {
     }
 
     /// `PersistSettings` stays gated on leaving the settings subtree — a dirty value under an open
-    /// settings screen is not yet a command (the per-step debounce), through both the typed
-    /// drain and the compat adapter, which consume the same single flag.
+    /// settings screen is not yet a command.
     #[test]
     fn persist_settings_waits_for_subtree_exit_and_is_single_sourced() {
         use crate::host::{HostCommand, HostMailbox};
@@ -5348,7 +5407,7 @@ mod tests {
         let _ = app.ui.stack.push(Screen::Settings(crate::screen::SettingsScreen::new()));
         app.arm_settings_save(); // rev → 1
         assert!(!app.has_pending_host_command(), "still editing — no command yet");
-        assert!(!settings_dirty(&mut app), "the compat adapter agrees");
+        assert!(!settings_dirty(&mut app), "the per-class drain agrees");
 
         app.ui.stack.pop(); // leave the subtree
         let mut mailbox: HostMailbox = HostMailbox::new();
@@ -5490,35 +5549,9 @@ mod tests {
         assert_eq!(drain_persist(&mut app), None, "a seeded boot value is already persisted");
     }
 
-    /// Compat adapters and the typed drain consume the **same** pending slot, in both directions:
-    /// whichever door drains first empties the protocol for the other.
-    #[test]
-    fn compat_adapters_share_the_typed_pending_state() {
-        use crate::activity::NavRequest;
-        use crate::host::HostMailbox;
-
-        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        let mut mailbox: HostMailbox = HostMailbox::new();
-
-        // Compat first → typed drain sees nothing.
-        app.activity.request_nav(NavRequest::new((0, 0), (1, 1), "A"));
-        assert!(drain_nav(&mut app).is_some());
-        let _ = app.drain_host_commands(&mut mailbox);
-        assert!(mailbox.is_empty(), "the compat take consumed the typed slot");
-
-        // Typed first → compat adapter sees nothing.
-        app.activity.request_nav(NavRequest::new((0, 0), (1, 1), "B"));
-        let _ = app.drain_host_commands(&mut mailbox);
-        assert_eq!(mailbox.len(), 1);
-        assert!(drain_nav(&mut app).is_none(), "the typed drain consumed the compat slot");
-    }
-
     /// Same-batch confirm→Back (review F1): a cancel posted while the plan request is still
     /// undrained **annihilates** it — the rider's net intent is "no plan", matching what both
-    /// legacy host drain orders net, so the host can never execute a dismissed plan and commit a
-    /// ghost route with a dropped answer. The cancel still latches (a no-op with nothing in
-    /// flight), and the three-gesture batch (cancel A, confirm B, Back on B) also nets exactly
-    /// one cancel — the host aborts the in-flight A and B never runs.
+    /// per-class and whole-mailbox drains observe, so the host cannot execute a dismissed plan.
     #[test]
     fn a_cancel_annihilates_an_undrained_plan_request() {
         use crate::activity::NavRequest;
@@ -5533,7 +5566,7 @@ mod tests {
         assert_eq!(mailbox.pop(), Some(HostCommand::CancelRoutePlan));
         assert!(mailbox.is_empty(), "the cancelled plan never reaches the mailbox");
 
-        // The compat doors agree — same single pending state.
+        // Per-class drains observe the same pending state.
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         app.activity.request_nav(NavRequest::new((0, 0), (1, 1), "A"));
         app.activity.request_nav_cancel();

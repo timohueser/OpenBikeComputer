@@ -1,22 +1,24 @@
-"""FastAPI app for the OBCM Web Builder."""
+"""Local maintainer host for the schema editor."""
 import json
 import os
 import subprocess
+from urllib.error import HTTPError, URLError
+from urllib.parse import unquote, urlsplit
+import urllib.request
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
 
-from . import geofabrik, jobs, paths
+from . import paths
+from . import schema_preview
 
 PROJECT_ROOT = paths.BUILDER_ROOT
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
-# Shipped style presets: complete packer configs + a _meta block, default first.
+# The shipped style documents. Since #1036 this directory is one schema.json (a
+# complete packer config + a _meta block) plus a skins/ subdirectory; only the schema
+# can be handed to the packer, so only the top level is listed.
 PRESETS_DIR = os.path.join(PROJECT_ROOT, "presets")
-# user_config.json: the retired editor's server-side persistence. Served once
-# via /api/config/legacy so the new app can offer a one-shot import.
-USER_CONFIG = os.path.join(PROJECT_ROOT, "user_config.json")
 # palette.json ships with the repo: the device's 64-color gamut offered as the
 # default color picker. Editable, with a generated fallback if it's missing.
 PALETTE_FILE = os.path.join(PROJECT_ROOT, "palette.json")
@@ -26,18 +28,82 @@ PALETTE_FILE = os.path.join(PROJECT_ROOT, "palette.json")
 # that stops resolving degrades silently (the fallback just never fires).
 SCHEMA_FILE = os.path.join(paths.REPO_ROOT, "host", "obc-pack", "schema", "config.schema.json")
 
-app = FastAPI(title="OBCM Web Builder")
+app = FastAPI(title="OBC Schema Editor")
+
+MAX_CATALOG_OBJECT_BYTES = 128 * 1024 * 1024
 
 
-class JobRequest(BaseModel):
-    region_ids: list[str]
-    config: dict
-    chunk_size: int = 4096
-    output_name: str
-    # Optional [west, south, east, north] crop box (degrees). When present the
-    # selected PBFs are cropped to it (bounding-box build mode); the region_ids
-    # are then just the source regions that cover the box.
-    bbox: list[float] | None = None
+def _catalog_url() -> str:
+    value = os.environ.get(
+        "OBC_CATALOG_URL",
+        "https://maps.openbikecomputer.com/cell-catalog/catalog.json",
+    )
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme not in ("http", "https")
+        or not parsed.netloc
+        or parsed.username
+        or parsed.password
+        or parsed.fragment
+        or not parsed.path.endswith("/catalog.json")
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail="OBC_CATALOG_URL must be an absolute http(s) URL ending in /catalog.json, without credentials.",
+        )
+    return value
+
+
+def _catalog_object_url(value: str) -> str:
+    root = urlsplit(_catalog_url())
+    target = urlsplit(value)
+    root_dir = root.path.rsplit("/", 1)[0].rstrip("/") + "/"
+    decoded_path = unquote(target.path)
+    if (
+        target.scheme != root.scheme
+        or target.netloc != root.netloc
+        or target.username
+        or target.password
+        or target.fragment
+        or not decoded_path.startswith(root_dir)
+        or any(part == ".." for part in decoded_path.split("/"))
+    ):
+        raise HTTPException(status_code=400, detail="Catalog object URL is outside the configured catalog tree.")
+    return value
+
+
+def _fetch_catalog_object(url: str) -> tuple[bytes, str]:
+    request = urllib.request.Request(url, headers={"User-Agent": "OpenBikeComputer maintainer host"})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            _catalog_object_url(response.geturl())
+            length = response.headers.get("Content-Length")
+            if length and int(length) > MAX_CATALOG_OBJECT_BYTES:
+                raise HTTPException(status_code=413, detail="Catalog object exceeds the local proxy limit.")
+            body = response.read(MAX_CATALOG_OBJECT_BYTES + 1)
+            if len(body) > MAX_CATALOG_OBJECT_BYTES:
+                raise HTTPException(status_code=413, detail="Catalog object exceeds the local proxy limit.")
+            return body, response.headers.get_content_type()
+    except HTTPException:
+        raise
+    except HTTPError as error:
+        raise HTTPException(status_code=error.code, detail=f"Published catalog returned HTTP {error.code}.") from error
+    except (OSError, URLError, ValueError) as error:
+        raise HTTPException(status_code=502, detail=f"Published catalog could not be read: {error}.") from error
+
+
+@app.get("/api/catalog/root")
+def get_catalog_root():
+    url = _catalog_url()
+    body, content_type = _fetch_catalog_object(url)
+    return Response(content=body, media_type=content_type, headers={"X-OBC-Catalog-Url": url})
+
+
+@app.get("/api/catalog/object")
+def get_catalog_object(url: str):
+    resolved = _catalog_object_url(url)
+    body, content_type = _fetch_catalog_object(resolved)
+    return Response(content=body, media_type=content_type)
 
 
 def _default_palette():
@@ -52,14 +118,6 @@ def _default_palette():
             b = levels[col % 4]
             colors.append(f"#{r:02X}{g:02X}{b:02X}")
     return {"columns": 8, "colors": colors}
-
-
-@app.get("/api/regions")
-def get_regions():
-    try:
-        return JSONResponse(geofabrik.get_regions())
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Failed to load Geofabrik index: {exc}")
 
 
 def _read_config(path: str):
@@ -80,8 +138,11 @@ def get_palette():
 
 @app.get("/api/presets")
 def get_presets():
-    """List the shipped style presets, default first. Each entry carries the
-    _meta fields plus the bare packer config (directly submittable / CLI-usable)."""
+    """List the shipped, bakeable style documents — since #1036 the one schema.
+    Each entry carries the _meta fields plus the bare packer config (directly
+    submittable / CLI-usable). Skins live in presets/skins/ and are deliberately
+    absent: a skin is presentation stamped onto already-baked bytes and carries no
+    LOD ladder, so it is not something this endpoint's consumer can build with."""
     presets = []
     for fn in sorted(os.listdir(PRESETS_DIR)):
         if not fn.endswith(".json"):
@@ -99,7 +160,7 @@ def get_presets():
             "swatch": meta.get("swatch", []),
             "config": data,
         })
-    presets.sort(key=lambda p: (p["id"] != "default", p["name"]))
+    presets.sort(key=lambda p: p["name"])
     return JSONResponse(presets)
 
 
@@ -136,67 +197,47 @@ def get_schema():
         })
     raise HTTPException(
         status_code=503,
-        detail="obc-pack is not built — run `cargo build --release -p obc-pack` from "
-               "the repo root (or set OBC_PACK_BIN to its path).",
+        detail="The native packer and checked-in schema are unavailable. Restart with `obc web`; "
+               "maintainers may alternatively set OBC_PACK_BIN to an executable path.",
     )
 
 
-@app.get("/api/config/legacy")
-def get_legacy_config():
-    """The retired editor's user_config.json, if it exists — the new app offers
-    to import it into the browser-held working config once."""
-    if not os.path.exists(USER_CONFIG):
-        raise HTTPException(status_code=404, detail="No legacy config")
-    return JSONResponse(_read_config(USER_CONFIG))
+@app.get("/api/schema-preview/status")
+def get_schema_preview_status():
+    status = schema_preview.source_status()
+    return JSONResponse({
+        "available": status.available,
+        "label": status.label,
+        "configured": status.configured,
+        "detail": status.detail,
+        "bbox": schema_preview.TENINGEN_BBOX,
+    })
 
 
-@app.post("/api/jobs")
-def post_job(req: JobRequest):
-    if not req.region_ids:
-        raise HTTPException(status_code=400, detail="No regions selected")
-    if not req.output_name.strip():
-        raise HTTPException(status_code=400, detail="Output name is required")
-    if req.bbox is not None and len(req.bbox) != 4:
-        raise HTTPException(status_code=400, detail="bbox must be [west, south, east, north]")
+@app.post("/api/schema-preview")
+async def build_schema_preview(request: Request):
+    # Read one byte beyond the cap so an exact-limit body is accepted without
+    # allowing an unbounded request to be decoded first.
+    body = b""
+    async for chunk in request.stream():
+        body += chunk
+        if len(body) > schema_preview.MAX_CONFIG_BYTES:
+            raise HTTPException(status_code=413, detail="Schema preview config is too large.")
     try:
-        job = jobs.create_job(
-            req.region_ids, req.config, req.chunk_size, req.output_name.strip(), req.bbox
-        )
-    except jobs.QueueFull as exc:
-        raise HTTPException(status_code=429, detail=str(exc))
-    return {"job_id": job.id}
-
-
-@app.get("/api/jobs/{job_id}")
-def job_state(job_id: str):
-    """State snapshot — lets a reloaded page re-attach to a running build."""
-    job = jobs.get_job(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="Unknown job")
-    return JSONResponse(job.public_state())
-
-
-@app.get("/api/jobs/{job_id}/download")
-def job_download(job_id: str):
-    job = jobs.get_job(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="Unknown job")
-    if job.state != "done" or not os.path.exists(job.out_path):
-        raise HTTPException(status_code=409, detail=f"Build is not finished (state: {job.state})")
-    return FileResponse(
-        job.out_path, filename=job.download_name, media_type="application/octet-stream"
-    )
-
-
-@app.get("/api/jobs/{job_id}/events")
-def job_events(job_id: str):
-    job = jobs.get_job(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="Unknown job")
-    return StreamingResponse(
-        jobs.event_iterator(job),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        config = schema_preview.validate_config(body)
+        result = await schema_preview.pack_config(config, request.is_disconnected)
+    except schema_preview.PreviewCancelled:
+        return Response(status_code=499)
+    except schema_preview.PreviewError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return Response(
+        content=result.body,
+        media_type="application/vnd.openbikecomputer.obcm",
+        headers={
+            "X-OBC-Pack-Duration-Ms": str(result.duration_ms),
+            "X-OBC-Pack-Bytes": str(len(result.body)),
+            "X-OBC-Pack-Diagnostics": schema_preview.encode_diagnostics(result.diagnostics),
+        },
     )
 
 

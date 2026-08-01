@@ -9,7 +9,8 @@
 
 use std::path::{Path, PathBuf};
 
-use obc_app::{decode_synced_rides, encode_synced_rides, RideSummary, SyncedRides, SYNCED_RIDES_MAX_LEN};
+use obc_app::ride::{decode_synced_rides, encode_synced_rides, SyncedRides, SYNCED_RIDES_MAX_LEN};
+use obc_app::RideSummary;
 use obc_formats::io::SliceSource;
 use obc_route::{ride_elevation_profile, ride_preview_polyline, Profile, RideInfo};
 

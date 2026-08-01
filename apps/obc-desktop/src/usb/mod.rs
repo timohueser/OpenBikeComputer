@@ -270,8 +270,8 @@ pub async fn usb_send_file(
 /// The window is granted `core:default` and nothing else, so a command that took any path would be
 /// the filesystem capability the crate deliberately does not hand out. The rule is therefore the
 /// same shape as `reveal_file`'s: the **canonicalised** path must be a regular file inside a
-/// directory the app itself owns — the maps folder it builds into, or the shared cache it
-/// downloads into. Canonicalising both sides is what stops a symlink from pointing out of them.
+/// directory the app itself owns — the maps folder it assembles into. Canonicalising both sides
+/// is what stops a symlink from pointing out of it.
 ///
 /// This is deliberately narrower than "anything the user could pick". A file chosen through the
 /// webview's own `<input type=file>` has no path at all — it arrives as a `File`, and that flow
@@ -284,17 +284,12 @@ fn sendable_path(app: &tauri::AppHandle, raw: &str) -> Result<PathBuf, PipeFault
     if !path.is_file() {
         return Err(PipeFault::device(format!("{raw} is not a file.")));
     }
-    let roots = [crate::paths::maps_dir(app.path().document_dir().ok()), crate::paths::cache_dir()];
-    for root in roots {
-        if let Ok(root) = std::fs::canonicalize(&root) {
-            if path.starts_with(&root) {
-                return Ok(path);
-            }
+    if let Ok(root) = std::fs::canonicalize(crate::paths::maps_dir(app.path().document_dir().ok())) {
+        if path.starts_with(root) {
+            return Ok(path);
         }
     }
-    Err(PipeFault::device(format!(
-        "{raw} is outside the folders this app streams from (its maps folder and its cache)."
-    )))
+    Err(PipeFault::device(format!("{raw} is outside the maps folder this app streams from.")))
 }
 
 #[cfg(test)]
