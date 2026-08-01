@@ -87,8 +87,8 @@ export function parseFirmwareManifest(body: string): FirmwareRelease {
         throw new FirmwareManifestError(`the firmware manifest's version "${version}" is not a release version.`);
     }
     const bytes = raw.bytes ?? raw.size;
-    if (typeof bytes !== "number" || !Number.isInteger(bytes) || bytes <= 0) {
-        throw new FirmwareManifestError("the firmware manifest's size is missing or not a positive integer.");
+    if (typeof bytes !== "number" || !Number.isSafeInteger(bytes) || bytes <= 0) {
+        throw new FirmwareManifestError("the firmware manifest's size is missing or not a positive safe integer.");
     }
     const sha256 = str(raw, "sha256").toLowerCase();
     if (!/^[0-9a-f]{64}$/.test(sha256)) {
@@ -153,7 +153,11 @@ interface Version {
 export function parseVersion(text: string): Version | null {
     const match = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(text.trim());
     if (!match) return null;
-    return { major: +match[1], minor: +match[2], patch: +match[3], pre: match[4] ?? null };
+    const major = Number(match[1]);
+    const minor = Number(match[2]);
+    const patch = Number(match[3]);
+    if (![major, minor, patch].every(Number.isSafeInteger)) return null;
+    return { major, minor, patch, pre: match[4] ?? null };
 }
 
 /**
@@ -167,15 +171,39 @@ export function compareVersions(a: string, b: string): number | null {
     const left = parseVersion(a);
     const right = parseVersion(b);
     if (!left || !right) return null;
-    if (left.major !== right.major) return left.major - right.major;
-    if (left.minor !== right.minor) return left.minor - right.minor;
-    if (left.patch !== right.patch) return left.patch - right.patch;
+    if (left.major !== right.major) return left.major < right.major ? -1 : 1;
+    if (left.minor !== right.minor) return left.minor < right.minor ? -1 : 1;
+    if (left.patch !== right.patch) return left.patch < right.patch ? -1 : 1;
     if (left.pre === right.pre) return 0;
-    // A pre-release precedes its release; between two pre-releases, plain string order is enough
-    // for the one thing this decides ("is the published one newer than mine").
+    // A pre-release precedes its release. Between two pre-releases, SemVer identifier precedence
+    // keeps rc.10 newer than rc.2: numeric segments compare numerically and precede text segments;
+    // otherwise ASCII lexical order applies.
     if (left.pre === null) return 1;
     if (right.pre === null) return -1;
-    return left.pre < right.pre ? -1 : 1;
+    return comparePrerelease(left.pre, right.pre);
+}
+
+function comparePrerelease(left: string, right: string): number {
+    const lhs = left.split(".");
+    const rhs = right.split(".");
+    for (let index = 0; index < Math.min(lhs.length, rhs.length); index++) {
+        const a = lhs[index];
+        const b = rhs[index];
+        if (a === b) continue;
+        const aNumeric = /^\d+$/.test(a);
+        const bNumeric = /^\d+$/.test(b);
+        if (aNumeric && bNumeric) {
+            const aDigits = a.replace(/^0+/, "") || "0";
+            const bDigits = b.replace(/^0+/, "") || "0";
+            if (aDigits.length !== bDigits.length) return aDigits.length < bDigits.length ? -1 : 1;
+            if (aDigits !== bDigits) return aDigits < bDigits ? -1 : 1;
+            continue;
+        }
+        if (aNumeric !== bNumeric) return aNumeric ? -1 : 1;
+        return a < b ? -1 : 1;
+    }
+    if (lhs.length === rhs.length) return 0;
+    return lhs.length < rhs.length ? -1 : 1;
 }
 
 /**
