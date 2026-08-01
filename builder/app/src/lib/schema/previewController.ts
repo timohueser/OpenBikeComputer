@@ -3,6 +3,7 @@ export type PreviewPhase<T> =
     | { kind: "waiting" }
     | { kind: "packing" }
     | { kind: "ready"; value: T }
+    | { kind: "displayed" }
     | { kind: "error"; message: string };
 
 /**
