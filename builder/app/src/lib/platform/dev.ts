@@ -8,11 +8,7 @@ import { LINKS } from "../constants";
 import type { LoadStyleEditor, Platform } from "./types";
 
 async function catalog(): Promise<{ url: string; body: string }> {
-    const runtime = await api.runtime();
-    const url = new URL(runtime.catalog_url, document.baseURI).toString();
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`${runtime.catalog_url}: ${response.status} ${response.statusText}`);
-    return { url, body: await response.text() };
+    return api.catalogRoot();
 }
 
 export const platform: Platform = {
@@ -36,7 +32,7 @@ export const platform: Platform = {
         pack: (config, signal) => api.packPreview(config, signal),
     },
     catalog,
-    catalogFetch: globalThis.fetch,
+    catalogFetch: (input, init) => api.catalogFetch(input, init),
     openMapOutput: null,
 
     device: null,

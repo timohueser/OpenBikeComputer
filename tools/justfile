@@ -302,7 +302,7 @@ web *args:
     if [[ "${1:-}" == preview-source ]]; then
       shift
       (( $# == 0 )) || { _err "usage: obc web preview-source"; exit 1; }
-      _say "downloading the fixed Freiburg-regbez source for the Teningen schema lab…"
+      _say "preparing the small reference-complete source for the Teningen schema lab…"
       _run .venv/bin/python -m builder.server.schema_preview --download-source
       exit 0
     fi
@@ -312,6 +312,10 @@ web *args:
           ! -f builder/app/src/lib/assemble/pkg/obc_web_assemble_bg.wasm || \
           ! -f builder/app/src/lib/skin/pkg/obc_skin_preview_bg.wasm ]]; then
       _say "building the wasm bridges…"; ( cd builder/app && _run npm run build:wasm )
+    else
+      # The local schema lab adds a raw-map API to this bridge. Existence alone
+      # cannot prove a gitignored generated binding matches the Rust source.
+      _say "refreshing the production preview bridge…"; ( cd builder/app && _run npm run build:wasm:preview )
     fi
     # Always rebuild this small local bundle: tools/obc.local is runtime state,
     # but a source checkout must never keep serving yesterday's platform adapter.

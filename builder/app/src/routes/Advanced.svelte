@@ -5,6 +5,7 @@
     import OutputTab from "../components/advanced/OutputTab.svelte";
     import ProfilesTab from "../components/advanced/ProfilesTab.svelte";
     import StyleTable from "../components/advanced/StyleTable.svelte";
+    import SchemaLab from "../components/advanced/SchemaLab.svelte";
     import { platform } from "../lib/platform";
     import { exportFile, importFile } from "../lib/config/edit";
     import { isBuildable, type Preset, type SchemaEnvelope } from "../lib/config/model";
@@ -175,6 +176,9 @@
         <p>No working config yet — pick a map style on the <a href="#/">main page</a> first.</p>
     </div>
 {:else}
+    {#if platform.schemaPreview}
+        <SchemaLab {env} {schema} />
+    {/if}
     <div class="tabs">
         <button type="button" class:active={tab === "features"} onclick={() => (tab = "features")}>
             Features &amp; styling

@@ -45,6 +45,7 @@ export interface SchemaPreviewStatus {
 export interface SchemaPreviewMap {
     bytes: Uint8Array;
     packDurationMs: number;
+    diagnostics: string[];
 }
 
 export interface SchemaPreviewService {

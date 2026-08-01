@@ -8,20 +8,24 @@ command line, output path and resource bounds all remain server-owned.
 from __future__ import annotations
 
 import asyncio
+import base64
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import time
+import urllib.error
 import urllib.request
 
 from . import paths
 
 
-SOURCE_NAME = "europe_germany_baden-wuerttemberg_freiburg-regbez-latest.osm.pbf"
+FULL_SOURCE_NAME = "europe_germany_baden-wuerttemberg_freiburg-regbez-latest.osm.pbf"
+PREVIEW_SOURCE_NAME = "teningen-reference-complete.osm.pbf"
 SOURCE_URL = (
     "https://download.geofabrik.de/europe/germany/"
     "baden-wuerttemberg/freiburg-regbez-latest.osm.pbf"
@@ -59,11 +63,19 @@ class PackResult:
     body: bytes
     duration_ms: int
     log: str
+    diagnostics: tuple[str, ...]
+
+
+def _cache_root() -> Path:
+    return Path(os.environ.get("OBCM_CACHE_DIR", Path.home() / ".cache" / "obcm"))
+
+
+def _full_source() -> Path:
+    return _cache_root() / "geofabrik" / FULL_SOURCE_NAME
 
 
 def _default_source() -> Path:
-    cache = Path(os.environ.get("OBCM_CACHE_DIR", Path.home() / ".cache" / "obcm"))
-    return cache / "geofabrik" / SOURCE_NAME
+    return _cache_root() / "schema-preview" / PREVIEW_SOURCE_NAME
 
 
 def _source_candidate() -> tuple[Path, bool]:
@@ -90,12 +102,18 @@ def source_status() -> SourceStatus:
             "The preview source must be an .osm.pbf file.",
         )
     if not candidate.is_file():
+        detail = (
+            "Configured prepared source not found. Create the reference-complete Teningen PBF at that path, "
+            "or unset OBC_SCHEMA_PREVIEW_PBF and run `obc web preview-source`."
+            if configured
+            else "Prepared source not found. Run `obc web preview-source`, or set OBC_SCHEMA_PREVIEW_PBF to an "
+            "existing reference-complete Teningen .osm.pbf in tools/obc.local."
+        )
         return SourceStatus(
             False,
             candidate.name,
             configured,
-            "Source not found. Run `obc web preview-source`, or set "
-            "OBC_SCHEMA_PREVIEW_PBF to an existing absolute path in tools/obc.local.",
+            detail,
         )
     try:
         resolved = candidate.resolve(strict=True)
@@ -103,6 +121,8 @@ def source_status() -> SourceStatus:
         return SourceStatus(False, candidate.name, configured, f"Preview source cannot be opened: {error}.")
     if not resolved.is_file():
         return SourceStatus(False, candidate.name, configured, "Preview source is not a regular file.")
+    if resolved.stat().st_size < 1024:
+        return SourceStatus(False, candidate.name, configured, "Preview source is unexpectedly short.")
     return SourceStatus(True, resolved.name, configured, "Ready to pack the fixed Teningen crop.")
 
 
@@ -156,6 +176,14 @@ async def _stop(process: subprocess.Popen[bytes]) -> None:
 _pack_lock = asyncio.Lock()
 
 
+def _log_tail(path: Path, limit: int = 64 * 1024) -> str:
+    with path.open("rb") as handle:
+        handle.seek(0, os.SEEK_END)
+        size = handle.tell()
+        handle.seek(max(0, size - limit))
+        return handle.read(limit).decode("utf-8", errors="replace")
+
+
 async def pack_config(
     config: dict[str, object],
     disconnected: Callable[[], Awaitable[bool]],
@@ -166,11 +194,10 @@ async def pack_config(
 
     source = source_path()
     binary = _pack_binary()
-    started = time.monotonic()
-
     async with _pack_lock:
         if await disconnected():
             raise PreviewCancelled()
+        started = time.monotonic()
         with tempfile.TemporaryDirectory(prefix="obc-schema-preview-") as directory:
             root = Path(directory)
             config_path = root / "schema.json"
@@ -207,8 +234,8 @@ async def pack_config(
                         raise PreviewError(f"The Teningen preview pack exceeded its {int(timeout)} s time limit.")
                     await asyncio.sleep(POLL_SECONDS)
 
-            stdout_text = stdout_path.read_text(encoding="utf-8", errors="replace")
-            stderr_text = stderr_path.read_text(encoding="utf-8", errors="replace")
+            stdout_text = _log_tail(stdout_path)
+            stderr_text = _log_tail(stderr_path)
             log = "\n".join(part.strip() for part in (stdout_text, stderr_text) if part.strip())[-4000:]
             if process.returncode != 0:
                 detail = log or f"native packer exited with status {process.returncode}"
@@ -223,24 +250,33 @@ async def pack_config(
                 )
             result = output_path.read_bytes()
 
-    return PackResult(result, round((time.monotonic() - started) * 1000), log)
+    diagnostics = tuple(
+        line.strip()
+        for line in log.splitlines()
+        if "exceeded chunk_size" in line or "reader's 32-ring cap" in line
+    )[:8]
+    return PackResult(result, round((time.monotonic() - started) * 1000), log, diagnostics)
 
 
-def download_source() -> Path:
-    """Atomically cache the one fixed Geofabrik extract used by the lab."""
+def encode_diagnostics(lines: tuple[str, ...]) -> str:
+    raw = json.dumps(lines, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii")
 
-    target, _ = _source_candidate()
-    if not target.name.endswith(".osm.pbf"):
-        raise PreviewError("OBC_SCHEMA_PREVIEW_PBF must end in .osm.pbf.")
+
+def _download_full_source(target: Path) -> None:
+    """Atomically download the fixed upstream extract when the bakery has not."""
+
+    if target.is_file():
+        return
     if target.exists():
-        if target.is_file():
-            return target.resolve(strict=True)
-        raise PreviewError(f"Refusing to replace non-file preview source {target}.")
+        raise PreviewError(f"Refusing to replace non-file source cache {target}.")
     target.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".part", dir=target.parent)
     temporary = Path(temporary_name)
     try:
-        with os.fdopen(fd, "wb") as output, urllib.request.urlopen(SOURCE_URL, timeout=60) as response:
+        print(f"downloading Freiburg-regbez ({SOURCE_URL})…", file=os.sys.stderr)
+        request = urllib.request.Request(SOURCE_URL, headers={"User-Agent": "OpenBikeComputer schema-lab"})
+        with os.fdopen(fd, "wb") as output, urllib.request.urlopen(request, timeout=60) as response:
             while True:
                 block = response.read(1024 * 1024)
                 if not block:
@@ -249,7 +285,69 @@ def download_source() -> Path:
             output.flush()
             os.fsync(output.fileno())
         if temporary.stat().st_size < 1024:
-            raise PreviewError("The downloaded preview source is unexpectedly short.")
+            raise PreviewError("The downloaded Freiburg preview source is unexpectedly short.")
+        os.replace(temporary, target)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def prepare_source() -> Path:
+    """Atomically prepare the small reference-complete source used per edit."""
+
+    target, configured = _source_candidate()
+    if not target.name.endswith(".osm.pbf"):
+        raise PreviewError("OBC_SCHEMA_PREVIEW_PBF must end in .osm.pbf.")
+    if target.exists():
+        if target.is_file():
+            return target.resolve(strict=True)
+        raise PreviewError(f"Refusing to replace non-file preview source {target}.")
+    if configured:
+        raise PreviewError(
+            "OBC_SCHEMA_PREVIEW_PBF names a maintainer-owned prepared source and is not overwritten. "
+            "Create that reference-complete crop yourself, or unset it and rerun `obc web preview-source`."
+        )
+
+    osmium = shutil.which("osmium")
+    if not osmium:
+        raise PreviewError(
+            "Osmium is required to prepare the reference-complete Teningen source. Run `obc doctor`; "
+            "install osmium-tool with your system package manager, then retry."
+        )
+
+    full = _full_source()
+    _download_full_source(full)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".part", dir=target.parent)
+    os.close(fd)
+    temporary = Path(temporary_name)
+    try:
+        print("extracting the fixed reference-complete Teningen crop…", file=os.sys.stderr)
+        result = subprocess.run(
+            [
+                osmium,
+                "extract",
+                "--strategy=smart",
+                "--bbox",
+                TENINGEN_BBOX,
+                "--overwrite",
+                "--output-format=pbf",
+                "--output",
+                os.fspath(temporary),
+                os.fspath(full),
+            ],
+            cwd=paths.REPO_ROOT,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=600,
+            shell=False,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or f"osmium exited with {result.returncode}").strip()[-2000:]
+            raise PreviewError(f"Osmium could not prepare the Teningen source: {detail}")
+        if temporary.stat().st_size < 1024:
+            raise PreviewError("Osmium produced an unexpectedly short Teningen source.")
         os.replace(temporary, target)
         return target.resolve(strict=True)
     except Exception:
@@ -266,7 +364,7 @@ def main() -> int:
     if not args.download_source:
         parser.error("--download-source is required")
     try:
-        target = download_source()
+        target = prepare_source()
     except (OSError, PreviewError, urllib.error.URLError) as error:
         print(f"obc web preview-source: {error}", file=os.sys.stderr)
         return 1

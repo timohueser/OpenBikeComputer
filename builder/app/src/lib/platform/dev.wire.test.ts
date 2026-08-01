@@ -36,27 +36,35 @@ describe("dev host requests", () => {
         expect(calls).toEqual([{ url, method: "GET" }]);
     });
 
-    it("reads the configured published catalog at runtime instead of baking it into Vite", async () => {
+    it("reads the configured published catalog through the runtime host instead of baking it into Vite", async () => {
         globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
             const url = String(input);
             calls.push({ url, method: init?.method ?? "GET" });
-            if (url === "/api/runtime") {
-                return new Response(JSON.stringify({ catalog_url: "https://maps.example.test/live/catalog.json" }), {
-                    status: 200,
-                    headers: { "Content-Type": "application/json" },
-                });
-            }
-            return new Response("catalog-body", { status: 200 });
+            return new Response("catalog-body", {
+                status: 200,
+                headers: { "X-OBC-Catalog-Url": "https://maps.example.test/live/catalog.json" },
+            });
         }) as typeof fetch;
 
         await expect(platform.catalog()).resolves.toEqual({
             url: "https://maps.example.test/live/catalog.json",
             body: "catalog-body",
         });
-        expect(calls).toEqual([
-            { url: "/api/runtime", method: "GET" },
-            { url: "https://maps.example.test/live/catalog.json", method: "GET" },
-        ]);
+        expect(calls).toEqual([{ url: "/api/catalog/root", method: "GET" }]);
+    });
+
+    it("moves satellites and cells through the same-origin bounded proxy", async () => {
+        globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+            calls.push({ url: String(input), method: init?.method ?? "GET" });
+            return new Response(new Uint8Array([1, 2, 3]), { status: 200 });
+        }) as typeof fetch;
+        const object = "https://maps.example.test/live/cells/12/3/4.obcm";
+        const response = await platform.catalogFetch(object);
+        expect(new Uint8Array(await response.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]));
+        expect(calls).toEqual([{
+            url: `/api/catalog/object?url=${encodeURIComponent(object)}`,
+            method: "GET",
+        }]);
     });
 
     it("posts only config JSON and propagates cancellation", async () => {
@@ -73,7 +81,7 @@ describe("dev host requests", () => {
 
         await expect(
             platform.schemaPreview!.pack({ lods: [], features: {} }, controller.signal),
-        ).resolves.toEqual({ bytes: new Uint8Array([79, 66, 67, 77]), packDurationMs: 42 });
+        ).resolves.toEqual({ bytes: new Uint8Array([79, 66, 67, 77]), packDurationMs: 42, diagnostics: [] });
         expect(calls).toEqual([{ url: "/api/schema-preview", method: "POST" }]);
     });
 });

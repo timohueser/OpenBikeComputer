@@ -112,6 +112,6 @@ def test_unbuilt_packer_says_where_to_build_it(monkeypatch):
         server.get_schema()
     assert excinfo.value.status_code == 503
     detail = excinfo.value.detail
-    assert "cargo build --release -p obc-pack" in detail
+    assert "obc web" in detail
     assert "OBC_PACK_BIN" in detail
     assert "firmware/" not in detail, f"stale build directory in the hint: {detail!r}"
