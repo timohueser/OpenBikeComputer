@@ -6,10 +6,11 @@
 //! the multi-block index assembly, and negative microdegrees. Each test asserts a concrete decoded
 //! value (whole-feature drop status, bbox, cache hit/miss counts) rather than "didn't panic".
 
+use obc_map_scene::BBox;
 use obc_reader::{
-    BBox, DecodeStatus, Error, MapCache, MapTables, Reader, SliceSource, MAX_CHUNK_BYTES, MAX_FEAT_PTS, MAX_FEAT_RINGS,
+    DecodeStatus, Error, MapCache, MapTables, Reader, SliceSource, MAX_CHUNK_BYTES, MAX_FEAT_PTS, MAX_FEAT_RINGS,
 };
-use obcm_testkit::{build_file, pack_line, pack_line_decl, pack_poly_decl, pack_poly_holes, pad, LodSpec, Style};
+use obcm_testkit::{build_file, pack_line, pack_line_decl, pack_poly_decl, pack_poly_holes, seal, LodSpec, Style};
 
 const STYLES: &[Style] = &[(1, 3, 0xF800, 2, 3, false, None), (2, -1, 0x07E0, 1, 3, false, None)];
 const GLOBAL: (i32, i32, i32, i32) = (0, 0, 1000, 1000);
@@ -21,7 +22,7 @@ fn single_leaf(bbox: (i32, i32, i32, i32), chunk: Vec<u8>, chunk_size: usize) ->
     build_file(
         bbox,
         STYLES,
-        &[LodSpec { max_mpp: f32::INFINITY, index: vec![0], chunks: vec![pad(chunk, chunk_size)], chunk_size }],
+        &[LodSpec { max_mpp: f32::INFINITY, index: vec![0], chunks: vec![seal(chunk, chunk_size)], chunk_size }],
     )
 }
 
@@ -98,14 +99,21 @@ fn holes_past_max_feat_rings_are_dropped_at_capacity() {
     assert_eq!(status.malformed, 0);
 }
 
-/// A legal map whose `chunk_size` sits between the cache slot (`CACHE_SLOT_BYTES` = 4096) and the
-/// accepted cap (`MAX_CHUNK_BYTES` = 16384). `load_chunk`'s `len > CACHE_SLOT_BYTES` branch reads
-/// such a chunk through the *uncached* scratch every call — a miss + read, **never a hit**. Decoded
-/// twice here: both must miss (no slot caches it), and the geometry must be byte-correct.
+/// A legal map with a chunk whose **real length** sits between the cache slot (`CACHE_SLOT_BYTES` =
+/// 4096) and the accepted cap (`MAX_CHUNK_BYTES` = 16384). `load_chunk`'s `len > CACHE_SLOT_BYTES`
+/// branch reads such a chunk through the *uncached* scratch every call — a miss + read, **never a
+/// hit**. Decoded twice here: both must miss (no slot caches it), and the geometry must be
+/// byte-correct. Since v11 chunks are tight, the length has to be *filled* to get there: a declared
+/// `chunk_size` above the slot no longer implies a chunk above the slot.
 #[test]
 fn oversized_chunk_decodes_through_scratch_and_never_caches() {
-    const CS: usize = 8192; // 4096 < CS <= 16384 → the scratch path
-    let chunk = pack_line(1, 100, 200, &[(10, 0), (0, 10)]);
+    const CS: usize = 8192; // 4096 < CS <= 16384 → the capacity that admits such a chunk
+    let mut chunk = Vec::new();
+    let mut feature_count = 0usize;
+    while chunk.len() <= 4096 {
+        chunk.extend_from_slice(&pack_line(1, 100, 200, &[(10, 0), (0, 10)]));
+        feature_count += 1;
+    }
     let bytes = single_leaf(GLOBAL, chunk, CS);
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
@@ -117,7 +125,7 @@ fn oversized_chunk_decodes_through_scratch_and_never_caches() {
     let before = r.chunk_cache_stats();
     let f0 = decode(&r, 0, 0, &r.bbox);
     let after = r.chunk_cache_stats();
-    assert_eq!(f0.len(), 1);
+    assert_eq!(f0.len(), feature_count);
     assert_eq!(f0[0].exterior_len, 3);
     assert_eq!(after.chunk_hits, before.chunk_hits, "an oversized chunk must not register a hit");
     assert_eq!(after.chunk_misses, before.chunk_misses + 1, "it counts as a miss");
@@ -205,7 +213,7 @@ fn lru_evicts_the_oldest_chunk_at_the_reader_level() {
     chunk_ids.push(next_chunk);
 
     let n_chunks = chunk_ids.len();
-    let chunks: Vec<Vec<u8>> = (0..n_chunks).map(|_| pad(pack_line(1, 1, 1, &[(1, 1)]), CS)).collect();
+    let chunks: Vec<Vec<u8>> = (0..n_chunks).map(|_| seal(pack_line(1, 1, 1, &[(1, 1)]), CS)).collect();
     let bytes = build_file(GLOBAL, STYLES, &[LodSpec { max_mpp: f32::INFINITY, index, chunks, chunk_size: CS }]);
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
@@ -269,8 +277,8 @@ fn decode_feature_at_clears_partial_and_stale_scratch_on_malformed_hole() {
     let mut chunk = pack_poly_holes(1, 100, 100, &ext, &holes);
     // Keep the complete exterior and the hole-count byte, but remove the first hole's u16 count.
     // The decoder therefore mutates scratch before it discovers the structural truncation.
-    chunk.truncate(12 + ext.len() * 2 + 1);
-    let bytes = single_leaf(GLOBAL, chunk.clone(), chunk.len());
+    chunk.truncate(7 + ext.len() * 2 + 1);
+    let bytes = single_leaf(GLOBAL, chunk.clone(), chunk.len() + 1);
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
     let tables = MapTables::parse(&src).unwrap();
@@ -324,26 +332,33 @@ fn filtered_malformed_skip_clears_prior_feature_scratch() {
     assert!(ring_lens.is_empty(), "malformed filtered framing must clear prior/stale ring lengths");
 }
 
-/// A feature header that itself straddles the chunk end: the `while off + 12 <= cs` guard
-/// must stop before reading a partial 12-byte header. We place one whole feature,
-/// then trailing bytes too short to be a header (and not 0xFF, so the 0xFF early-out doesn't mask
-/// the guard). The whole feature decodes; the runt tail is ignored, not misread.
+/// A feature header that straddles the chunk end. One whole feature, then trailing bytes too short
+/// to be a header (and not `0xFF`, so the sentinel early-out doesn't mask the guard), and no
+/// sentinel at all. The whole feature still decodes and no partial header is read — but v11 owes the
+/// caller a **malformed drop** for the runt: a chunk whose stream doesn't end on the sentinel is
+/// truncated, and silence there is what the offset table's length is supposed to catch.
 #[test]
-fn header_straddling_chunk_end_is_not_misread() {
+fn header_straddling_chunk_end_is_a_malformed_drop() {
     let mut chunk = pack_line(1, 100, 200, &[(10, 0), (0, 10)]);
-    // Append 6 non-0xFF bytes — fewer than the 12-byte header — right at the end of a tight chunk
-    // so `off + 12 <= cs` is false when the decoder reaches them.
     chunk.extend_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
-    let cs = chunk.len(); // no 0xFF pad: the runt tail sits flush at the chunk end
-    let bytes = single_leaf(GLOBAL, chunk, cs);
+    // Hand `build_file` the chunk unsealed — no trailing sentinel, the runt tail sits flush at the end.
+    let cs = chunk.len();
+    let bytes = build_file(
+        GLOBAL,
+        STYLES,
+        &[LodSpec { max_mpp: f32::INFINITY, index: vec![0], chunks: vec![chunk], chunk_size: cs }],
+    );
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
     let tables = MapTables::parse(&src).unwrap();
     let r = Reader::new(&src, &tables, &cache);
 
-    let feats = decode(&r, 0, 0, &r.bbox);
-    assert_eq!(feats.len(), 1, "only the one whole feature decodes; the runt header tail is skipped");
+    let (feats, status) = decode_status(&r, 0, 0, &r.bbox);
+    assert_eq!(feats.len(), 1, "the one whole feature still decodes");
     assert_eq!(feats[0].exterior_len, 3);
+    assert_eq!(status.complete, 1);
+    assert_eq!(status.malformed, 1, "the runt tail is reported, not silently skipped");
+    assert_eq!(status.capacity_dropped, 0);
 }
 
 /// A style table whose count byte claims more records than the file actually holds. `parse_styles`'
@@ -429,7 +444,7 @@ fn index_read_crosses_block_boundary() {
     assert!(leaf_idx >= NODES_PER_BLOCK, "the leaf must sit past the first index block to test the seam");
 
     const CS: usize = 64;
-    let chunk = pad(pack_line(1, 5, 5, &[(2, 2)]), CS);
+    let chunk = seal(pack_line(1, 5, 5, &[(2, 2)]), CS);
     let bytes =
         build_file(GLOBAL, STYLES, &[LodSpec { max_mpp: f32::INFINITY, index, chunks: vec![chunk], chunk_size: CS }]);
     let cache = MapCache::new();

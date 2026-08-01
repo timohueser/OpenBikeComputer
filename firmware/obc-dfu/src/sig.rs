@@ -112,7 +112,9 @@ impl PublicKey {
 /// secret-seed constants — both files have the same one-line-of-hex shape.
 pub const fn hex32(hex: &[u8]) -> [u8; 32] {
     assert!(
-        hex.len() == 64 || (hex.len() == 65 && hex[64] == b'\n') || (hex.len() == 66 && hex[64] == b'\r'),
+        hex.len() == 64
+            || (hex.len() == 65 && hex[64] == b'\n')
+            || (hex.len() == 66 && hex[64] == b'\r' && hex[65] == b'\n'),
         "OBCU key file must be exactly 64 hex characters (plus an optional trailing newline)"
     );
     let mut out = [0u8; 32];
@@ -365,5 +367,10 @@ mod tests {
         assert_eq!(k.as_bytes()[0], 0x71);
         assert_eq!(k.as_bytes()[31], 0xf6);
         assert_eq!(k, PublicKey::from_hex(include_bytes!("../keys/test/obcu-test.pub")));
+        assert_eq!(k, PublicKey::from_hex(b"71331dda025a9658d00c1ef53947ffcafb30e15e8cc9cb585493653b26dd0af6\r\n"));
+        assert!(std::panic::catch_unwind(|| {
+            PublicKey::from_hex(b"71331dda025a9658d00c1ef53947ffcafb30e15e8cc9cb585493653b26dd0af6\rX")
+        })
+        .is_err());
     }
 }

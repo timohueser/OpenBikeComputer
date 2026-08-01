@@ -431,7 +431,14 @@ are three ways it gets there, and
 - **BLE from the companion.** The [companion app](../companion-link/) can stage the
   same `UPDATE.BIN` over the link: it uploads a `fwImage` object (§7.6 of the BLE
   spec), the device writes it to the card verbatim, and then the app sends an
-  `installFw` command (§4.4) to *ask* the device to install it.
+  `installFw` command (§4.4) to *ask* the device to install it. The file is either
+  one you picked in Files or the published release the app checks for — downloaded
+  and verified against the manifest's size and SHA-256 on the phone, before a byte
+  goes over the link. The app also *raises* a published update without being asked:
+  a sheet the next time you open it, or a local notification from a periodic
+  background check. Both are one switch away (on by default), both go quiet for a
+  device whose running version isn't a release version, and both ask each version
+  once — the check itself is an anonymous request for one public file.
 - **USB from the browser.** The map builder's device step does the same two
   steps over the cable — the [object model is the transport's
   guest](../companion-link/), so this is the identical `fwImage` upload followed
@@ -456,6 +463,17 @@ There are no silent installs, ever. The running firmware's version a peer
 displays is read from the standard [DIS](../companion-link/) Firmware Revision
 characteristic, so after a confirmed update it simply reflects the new image on the
 next connect.
+
+That characteristic answers with the version string of the **container the device
+installed** — the `fw_version` the image was wrapped with, which for a released
+build is the release tag. It is not the running build's own idea of its version,
+and the difference is the whole point: a version a device made up from its source
+tree can never equal a published release, so nothing could be compared to it. A
+board flashed over a debug probe has installed no container at all, so it falls
+back to reporting its git hash, which parses as no version — and that is the
+locked answer, not a gap to close: an update is never offered against a build
+nobody published. Such a device is updated the same way it was flashed, or by
+staging a container by hand.
 
 A press that *can't* arm is never silent either. Between the confirm press and the
 reboot the device shows a **"Preparing update..."** spinner while it snapshots the

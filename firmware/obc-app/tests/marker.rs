@@ -4,7 +4,8 @@
 //! tiny in-memory `DrawTarget` over a hand-built minimal v5 `.obcm`.
 
 use embedded_graphics::pixelcolor::Rgb888;
-use obc_app::{App, AppState, CameraMode, Fix, RideClock, Sensors};
+use obc_app::{App, AppState, CameraMode};
+use obc_ports::{Fix, RideClock, Sensors};
 use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader, SliceSource};
 
 mod common;

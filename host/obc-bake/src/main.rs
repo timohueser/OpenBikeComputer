@@ -2,10 +2,9 @@
 //!
 //! ```text
 //! obc-bake regions [--regions FILE]
-//! obc-bake bake --out TREE [--regions FILE] [--presets-dir DIR] [--preset ID]… [--region ID]…
-//!               [--source BASE] [--cache DIR] [--force] [--no-land] [--fail-fast]
-//!               [--summary-json FILE]
+//! obc-bake bake --out TREE --base-url URL [REGION…] [--skin ID]… [flags]
 //! obc-bake publish TREE --base-url URL [--target dir:PATH|r2] [--generated-at TS] [--dry-run]
+//! obc-bake verify TREE [--sample N]
 //! obc-bake check-obcm-version [--catalog-url URL]
 //! ```
 //!
@@ -13,48 +12,53 @@
 //! be resumed, re-run, or done on a different machine from the one holding the
 //! credentials. The tree in between is the interface, and it is exactly the tree
 //! `obc-pack catalog` walks.
+//!
+//! A bake resolves curated regions to grid cells, writes the catalog root and
+//! digest-pinned satellites, and leaves publishing as a separate resumable step.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use obc_bake::bake::{BakeOptions, Bakery, ObcPacker};
 use obc_bake::publish::{DirStore, ObjectStore, PublishOptions, RcloneStore};
 use obc_pack::catalog::CatalogOptions;
-use obc_pack::progress::Progress;
 
 const USAGE: &str = "\
 usage:
   obc-bake regions [--regions FILE]
       List the curated regions this binary would bake.
 
-  obc-bake bake --out TREE [flags]
-      Bake (region × preset) into a tree `obc-pack catalog` accepts.
-        --regions FILE       region list (default: the built-in curated list)
-        --presets-dir DIR    style presets (default: builder/presets)
-        --preset ID          bake only this preset (repeatable)
-        --region ID          bake only this region (repeatable)
-        --source BASE        extract source: an https:// base, or a local directory
-                             (default: https://download.geofabrik.de)
-        --cache DIR          extract download cache (default: $OBCM_CACHE_DIR or
-                             ~/.cache/obcm/geofabrik)
-        --force              re-bake even when nothing changed
-        --no-land            skip land generation (skips the ~950 MB dataset)
-        --chunk-size N       override the presets' chunk_size
+  obc-bake bake [REGION…] [flags]
+      Bake selected regions into the shared cell tree and generate its catalog.
+        --out TREE           output tree (default: ./obc-bake)
+        --schema-id ID       published schema id (default: bikepacking)
+        --schema-revision N  store revision (default: 1)
+        --bands FILE         band table (default: OBCA recommendation)
+        --skin ID            skin to publish (repeatable; default: all skins/)
+        --generated-at TS    pin the catalog's generated_at
+        --base-url URL       catalog object base (default: /obc-bake while staging)
+        --regions FILE       curated region list
+        --presets-dir DIR    schema.json + skins/ (default: builder/presets)
+        --source SOURCE      Geofabrik base/directory, or planet PBF URL/file with --all
+        --cache DIR          extract download cache
+        --force              re-bake even when unchanged
+        --no-land            skip land generation
+        --chunk-size N       override schema chunk_size
         --fail-fast          stop at the first failure
         --summary-json FILE  write the machine-readable run summary
+        --all                update/bake the whole planet through resumable source shards
 
   obc-bake publish TREE --base-url URL [flags]
-      Generate the manifest and publish the tree: artifacts first, manifest last.
-        --base-url URL       where the tree is published (the manifest's url prefix)
-        --target TARGET      `dir:PATH` (default: dry run) or `r2` (env credentials)
-        --generated-at TS    pin the manifest's generated_at (RFC 3339 UTC)
+      Regenerate and publish content first, then replace catalog.json last.
+        --target TARGET      `dir:PATH` (default: dry run) or `r2`
+        --generated-at TS    pin generated_at (RFC 3339 UTC)
         --dry-run            generate + plan, upload nothing
-        --allow-shrink       permit dropping coverage the live catalog serves
-                             (refused by default — publishing a partial bake over a
-                             full one silently un-offers regions)
+        --verbose            report per-object upload and verification progress
+
+  obc-bake verify TREE [--sample N]
+      Verify catalog pins, cell header bboxes, reader round-trips and lockstep.
 
   obc-bake check-obcm-version [--catalog-url URL]
-      Fail if the published catalog is not this build's OBCM version. Skips when no
+      Compare the published catalog with this build's OBCM version; skip when no
       URL is configured (--catalog-url or OBC_CATALOG_URL).";
 
 fn main() -> ExitCode {
@@ -65,6 +69,7 @@ fn main() -> ExitCode {
         "regions" => run_regions(rest),
         "bake" => run_bake(rest),
         "publish" => run_publish(rest),
+        "verify" => run_verify(rest),
         "check-obcm-version" => run_guard(rest),
         "--help" | "-h" | "help" => {
             println!("{USAGE}");
@@ -89,7 +94,7 @@ struct Flags {
 }
 
 impl Flags {
-    fn parse(args: &[String], known_switches: &[&str]) -> Result<(Self, Vec<String>), String> {
+    fn parse(args: &[String], known_switches: &[&str], known_values: &[&str]) -> Result<(Self, Vec<String>), String> {
         let mut values = Vec::new();
         let mut switches = Vec::new();
         let mut positional = Vec::new();
@@ -99,6 +104,9 @@ impl Flags {
                 if known_switches.contains(&name) {
                     switches.push(name.to_string());
                 } else {
+                    if !known_values.contains(&name) {
+                        return Err(format!("unknown flag `--{name}`\n\n{USAGE}"));
+                    }
                     let value = it.next().ok_or_else(|| format!("--{name} needs a value\n\n{USAGE}"))?;
                     values.push((name.to_string(), value.clone()));
                 }
@@ -123,22 +131,50 @@ impl Flags {
 }
 
 fn run_regions(args: &[String]) -> Result<(), String> {
-    let (flags, _) = Flags::parse(args, &[])?;
+    let (flags, _) = Flags::parse(args, &[], &["regions"])?;
     let regions = obc_bake::regions::load(flags.get("regions").map(Path::new))?;
     for region in &regions {
-        let presets = region.presets.as_ref().map_or_else(|| "all presets".to_string(), |p| p.join(", "));
-        println!("{:<44} {:<28} {presets}", region.id, region.name);
+        println!("{:<44} {}", region.id, region.name);
     }
     println!("\n{} regions", regions.len());
     Ok(())
 }
 
 fn run_bake(args: &[String]) -> Result<(), String> {
-    let (flags, _) = Flags::parse(args, &["force", "no-land", "fail-fast"])?;
-    let out = PathBuf::from(flags.get("out").ok_or_else(|| format!("bake needs --out TREE\n\n{USAGE}"))?);
+    let (flags, positional) = Flags::parse(
+        args,
+        &["force", "no-land", "fail-fast", "all"],
+        &[
+            "out",
+            "schema-id",
+            "schema-revision",
+            "bands",
+            "skin",
+            "generated-at",
+            "regions",
+            "presets-dir",
+            "source",
+            "cache",
+            "chunk-size",
+            "summary-json",
+            "base-url",
+        ],
+    )?;
+    let out = PathBuf::from(flags.get("out").unwrap_or("obc-bake"));
 
     let all_regions = obc_bake::regions::load(flags.get("regions").map(Path::new))?;
-    let wanted = flags.all("region");
+    if flags.has("all") {
+        if !positional.is_empty() {
+            return Err("`--all` cannot be combined with region selectors; omit `--all` for a curated bake".into());
+        }
+        let presets_dir = PathBuf::from(flags.get("presets-dir").unwrap_or("builder/presets"));
+        return run_planet_bake(&flags, out, all_regions, &presets_dir);
+    }
+    // Region ids are positional (`obc-bake bake … europe/germany europe/switzerland`),
+    // which also reads as "these regions
+    // are baked *together*" — and for cells that is not cosmetic, because co-baked
+    // neighbours are what complete each other's border cells.
+    let wanted = positional;
     let regions: Vec<_> = if wanted.is_empty() {
         all_regions
     } else {
@@ -151,53 +187,230 @@ fn run_bake(args: &[String]) -> Result<(), String> {
     };
 
     let presets_dir = PathBuf::from(flags.get("presets-dir").unwrap_or("builder/presets"));
-    let only = flags.all("preset");
-    let presets = obc_bake::presets::load(&presets_dir, (!only.is_empty()).then_some(&only))?;
+    run_cell_bake(&flags, out, regions, &presets_dir)
+}
+
+/// Bake selected curated regions into the shared cell catalog.
+///
+/// The schema is one packer config plus a revision and a band table; skins restyle it
+/// without changing a style id. The run ends by generating the catalog because a cell
+/// tree without its root and satellites is not something a consumer can read.
+fn run_cell_bake(
+    flags: &Flags,
+    out: PathBuf,
+    regions: Vec<obc_bake::regions::Region>,
+    presets_dir: &Path,
+) -> Result<(), String> {
+    let schema = obc_bake::presets::load_schema(presets_dir)?;
+    // Keep the small canonical renderer input locked to the schema before a
+    // potentially hours-long bake starts.
+    obc_bake::previews::check_source(&schema.config)?;
+    let skin_ids = flags.all("skin");
+    // Default: every skin in the directory. A hosted catalog's whole point is that the
+    // skins are free — publishing a subset by accident is the mistake worth avoiding,
+    // not publishing one too many.
+    let loaded = obc_bake::presets::load_skins(presets_dir, (!skin_ids.is_empty()).then_some(&skin_ids))?;
+    let skins: Vec<&obc_bake::presets::StyleDoc> = loaded.iter().collect();
+
+    let bands = match flags.get("bands") {
+        Some(path) => obc_pack::grid::BandTable::load(path)?,
+        None => obc_pack::grid::BandTable::recommended(),
+    };
+    let revision: u32 = match flags.get("schema-revision") {
+        Some(v) => v.parse().map_err(|_| "--schema-revision needs a number".to_string())?,
+        None => 1,
+    };
 
     let cache = flags.get("cache").map(PathBuf::from).unwrap_or_else(default_cache_dir);
     let source_spec = flags.get("source").unwrap_or(obc_bake::source::GeofabrikExtracts::DEFAULT_BASE_URL);
     let source = obc_bake::source::from_spec(source_spec, &cache);
-
-    let packer = ObcPacker {
+    let cutter = obc_bake::cells::ObcCutter {
         no_land: flags.has("no-land"),
         chunk_size: match flags.get("chunk-size") {
             Some(v) => Some(v.parse().map_err(|_| "--chunk-size needs a number".to_string())?),
             None => None,
         },
     };
-    let bakery = Bakery {
-        regions: &regions,
-        presets: &presets,
-        source: source.as_ref(),
-        packer: &packer,
-        opts: BakeOptions { out, force: flags.has("force"), fail_fast: flags.has("fail-fast") },
-    };
 
-    let summary = bakery.run(&Progress::stdout())?;
+    let bakery = obc_bake::cells::CellBakery {
+        regions: &regions,
+        schema: &schema,
+        skins: &skins,
+        source: source.as_ref(),
+        cutter: &cutter,
+        opts: obc_bake::cells::CellBakeOptions {
+            out: out.clone(),
+            force: flags.has("force"),
+            fail_fast: flags.has("fail-fast"),
+            bands,
+            schema_id: flags.get("schema-id").unwrap_or("bikepacking").to_string(),
+            schema_revision: revision,
+        },
+    };
+    let summary = bakery.run(&obc_pack::progress::Progress::stdout())?;
     print!("{}", summary.render());
     if let Some(path) = flags.get("summary-json") {
         let json = serde_json::to_string_pretty(&summary).map_err(|e| e.to_string())?;
         std::fs::write(path, format!("{json}\n")).map_err(|e| format!("{path}: {e}"))?;
     }
+
+    finish_tree(flags, &out)?;
+
     if summary.ok() {
         Ok(())
     } else {
-        // Non-zero even when most of the matrix succeeded: a coverage hole must not
-        // be something a green pipeline can hide.
         Err(format!(
-            "{} job(s) failed, {} region(s) have no artifact — see the summary above",
+            "{} plan(s) failed, {} region(s) have an incomplete cell set — see the summary above",
             summary.failures().len(),
             summary.uncovered_regions.len()
         ))
     }
 }
 
+fn run_planet_bake(
+    flags: &Flags,
+    out: PathBuf,
+    regions: Vec<obc_bake::regions::Region>,
+    presets_dir: &Path,
+) -> Result<(), String> {
+    use obc_bake::planet::{ReplicationUpdater as _, ShardRunner as _};
+
+    let schema = obc_bake::presets::load_schema(presets_dir)?;
+    obc_bake::previews::check_source(&schema.config)?;
+    let skin_ids = flags.all("skin");
+    let loaded = obc_bake::presets::load_skins(presets_dir, (!skin_ids.is_empty()).then_some(&skin_ids))?;
+    let skins: Vec<&obc_bake::presets::StyleDoc> = loaded.iter().collect();
+    let bands = match flags.get("bands") {
+        Some(path) => obc_pack::grid::BandTable::load(path)?,
+        None => obc_pack::grid::BandTable::recommended(),
+    };
+    let revision: u32 = match flags.get("schema-revision") {
+        Some(value) => value.parse().map_err(|_| "--schema-revision needs a number".to_string())?,
+        None => 1,
+    };
+    let cache = flags.get("cache").map(PathBuf::from).unwrap_or_else(default_cache_dir);
+    let progress = obc_pack::progress::Progress::stdout();
+    // Fail before an 80+ GB transfer when the required source-sharding tool is
+    // unavailable. Tests inject the runner at the library boundary; the CLI uses
+    // the real executable (or OBC_OSMIUM for a deliberate alternate path).
+    let runner = obc_bake::planet::OsmiumRunner::default();
+    runner.check()?;
+    let updater = obc_bake::planet::PyOsmiumUpdater::default();
+    let source = flags.get("source");
+    let remote_source = source.is_none_or(|value| value.starts_with("http://") || value.starts_with("https://"));
+    if remote_source {
+        updater.check()?;
+    }
+    let polygons =
+        obc_bake::source::GeofabrikExtracts::new(obc_bake::source::GeofabrikExtracts::DEFAULT_BASE_URL, &cache);
+    let region_presets = obc_bake::planet::resolve_region_presets(&regions, &polygons, &bands, &progress)?;
+    let input = obc_bake::planet::resolve_planet_with(source, &cache, &progress, &updater)?;
+    let shards = obc_bake::planet::PlanetSharder { input: &input, cache: &cache, runner: &runner }.run(&progress)?;
+    let cutter = obc_bake::cells::ObcCutter {
+        no_land: flags.has("no-land"),
+        chunk_size: match flags.get("chunk-size") {
+            Some(value) => Some(value.parse().map_err(|_| "--chunk-size needs a number".to_string())?),
+            None => None,
+        },
+    };
+    let summary = obc_bake::planet::PlanetBake {
+        input: &input,
+        leaves: &shards.leaves,
+        regions: &region_presets,
+        schema: &schema,
+        skins: &skins,
+        cutter: &cutter,
+        source_leaves_reused: shards.reused,
+        source_leaves_refreshed: shards.refreshed,
+        source_leaves_changed: shards.changed,
+        opts: obc_bake::cells::CellBakeOptions {
+            out: out.clone(),
+            force: flags.has("force"),
+            fail_fast: flags.has("fail-fast"),
+            bands,
+            schema_id: flags.get("schema-id").unwrap_or("bikepacking").to_string(),
+            schema_revision: revision,
+        },
+    }
+    .run(&progress)?;
+    print!("{}", summary.render());
+    if let Some(path) = flags.get("summary-json") {
+        let json = serde_json::to_string_pretty(&summary).map_err(|e| e.to_string())?;
+        std::fs::write(path, format!("{json}\n")).map_err(|e| format!("{path}: {e}"))?;
+    }
+    if summary.ok() {
+        finish_tree(flags, &out)?;
+        Ok(())
+    } else {
+        Err(format!("{} planet leaf/leaves failed — see the summary above", summary.failures.len()))
+    }
+}
+
+/// The catalog is generated even after a partial run: it is what `verify` reads,
+/// and a store that cannot be inspected is worse than one that visibly has holes.
+fn finish_tree(flags: &Flags, out: &Path) -> Result<(), String> {
+    let base_url = flags
+        .get("base-url")
+        .map(str::to_owned)
+        .or_else(|| std::env::var("OBC_MAPS_BASE_URL").ok().filter(|value| !value.trim().is_empty()))
+        .unwrap_or_else(|| "/obc-bake".into());
+    let opts = obc_pack::catalog::CatalogOptions::new(
+        &base_url,
+        flags.get("generated-at").map_or_else(obc_pack::catalog::now_timestamp, str::to_string),
+    );
+    let seed = obc_pack::catalog::generate(out, &opts)?;
+    let previews = obc_bake::previews::generate(out, &seed.root)?;
+    let generated = obc_pack::catalog::generate(out, &opts)?;
+    for w in &generated.warnings {
+        eprintln!("warning: {w}");
+    }
+    obc_pack::catalog::write_all_atomic(out, &generated)?;
+    let cells: u32 = generated.root.cell_index.iter().map(|c| c.cell_count).sum();
+    let known_empty: u32 = generated.root.cell_index.iter().map(|c| c.known_empty_count).sum();
+    println!(
+        "\n{}: {cells} artifact cell(s) + {known_empty} known-empty across {} bands, {} region(s), {} skin(s), {} preview(s), {} satellite document(s)",
+        out.join(obc_pack::catalog::DEFAULT_MANIFEST_NAME).display(),
+        generated.root.cell_index.len(),
+        generated.root.regions.len(),
+        generated.root.skins.len(),
+        previews.skins,
+        generated.satellites.len()
+    );
+
+    Ok(())
+}
+
+/// `obc-bake verify TREE [--sample N]` — the cell tree's own acceptance gate.
+fn run_verify(args: &[String]) -> Result<(), String> {
+    let (flags, positional) = Flags::parse(args, &[], &["sample"])?;
+    let tree = PathBuf::from(positional.first().ok_or_else(|| format!("verify needs a cell tree\n\n{USAGE}"))?);
+    let sample = match flags.get("sample") {
+        Some(v) => v.parse().map_err(|_| "--sample needs a number".to_string())?,
+        None => obc_bake::verify::CellTreeVerifyOptions::default().sample,
+    };
+    let guard = obc_bake::guard::check_cell_store(&tree)?;
+    print!("{}", guard.render());
+    let report = obc_bake::verify::verify_cell_tree(&tree, obc_bake::verify::CellTreeVerifyOptions { sample })?;
+    print!("{}", report.render());
+    if guard.ok() && report.ok() {
+        Ok(())
+    } else {
+        Err(format!("{} guard problem(s), {} verify problem(s)", guard.problems.len(), report.problems.len()))
+    }
+}
+
 fn run_publish(args: &[String]) -> Result<(), String> {
-    let (flags, positional) = Flags::parse(args, &["dry-run", "allow-shrink"])?;
+    let (flags, positional) = Flags::parse(args, &["dry-run", "verbose"], &["base-url", "target", "generated-at"])?;
     let tree = positional.first().ok_or_else(|| format!("publish needs a bake tree\n\n{USAGE}"))?;
     let base_url = flags
         .get("base-url")
-        .ok_or_else(|| format!("--base-url is required — it is where this tree gets published\n\n{USAGE}"))?;
+        .map(str::to_owned)
+        .or_else(|| std::env::var("OBC_MAPS_BASE_URL").ok().filter(|value| !value.trim().is_empty()))
+        .ok_or_else(|| {
+            format!(
+                "publish needs --base-url URL or OBC_MAPS_BASE_URL — it is where this tree becomes visible\n\n{USAGE}"
+            )
+        })?;
 
     let target = flags.get("target").unwrap_or("");
     let dry_run = flags.has("dry-run") || target.is_empty();
@@ -208,27 +421,22 @@ fn run_publish(args: &[String]) -> Result<(), String> {
         other => return Err(format!("unknown --target `{other}` (expected `r2` or `dir:PATH`)")),
     };
 
-    let opts = CatalogOptions {
-        base_url: base_url.to_string(),
-        generated_at: flags.get("generated-at").map_or_else(obc_pack::catalog::now_timestamp, str::to_string),
-    };
+    let generated_at = flags.get("generated-at").map_or_else(obc_pack::catalog::now_timestamp, str::to_string);
     println!("publishing {tree} → {}{}", store.describe(), if dry_run { " (dry run)" } else { "" });
-    let publish_opts = PublishOptions { dry_run, allow_shrink: flags.has("allow-shrink") };
+    // R2 publishes are long enough that silence looks like a hang. Keep local
+    // directory publishes quiet unless explicitly requested, but always report
+    // progress for the real operator path.
+    let publish_opts = PublishOptions { dry_run, verbose: flags.has("verbose") || target == "r2" };
+    let opts = CatalogOptions::new(&base_url, generated_at);
     let report = obc_bake::publish::publish(Path::new(tree), store.as_ref(), &opts, publish_opts)?;
-    // A coverage hole is a warning in the generator and must stay visible here.
     for warning in &report.warnings {
         eprintln!("warning: {warning}");
     }
-    if !report.coverage_lost.is_empty() {
-        eprintln!("\n!!! COVERAGE REMOVED ({} artifacts) !!!", report.coverage_lost.len());
-        for pair in &report.coverage_lost {
-            eprintln!("  {pair}");
-        }
-    }
     println!(
-        "{} artifacts across {} presets, {} objects, {} bytes{}",
-        report.manifest.artifacts.len(),
-        report.manifest.presets.len(),
+        "{} cells, {} region(s), {} skin(s), {} objects, {} bytes{}",
+        report.cells,
+        report.regions.len(),
+        report.skins,
         report.objects,
         report.bytes,
         if dry_run { " — nothing uploaded" } else { "" }
@@ -237,7 +445,7 @@ fn run_publish(args: &[String]) -> Result<(), String> {
 }
 
 fn run_guard(args: &[String]) -> Result<(), String> {
-    let (flags, _) = Flags::parse(args, &[])?;
+    let (flags, _) = Flags::parse(args, &[], &["catalog-url"])?;
     let outcome = obc_bake::guard::check(flags.get("catalog-url"))?;
     let text = outcome.render();
     if outcome.ok() {

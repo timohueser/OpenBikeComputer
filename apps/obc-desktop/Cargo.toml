@@ -3,7 +3,7 @@ name = "obc-desktop"
 version = "0.1.0"
 edition = "2021"
 publish = false  # internal app crate — not published to crates.io
-description = "OpenBikeComputer desktop app: the web builder in a Tauri shell, with obc-pack linked in"
+description = "OpenBikeComputer desktop app: the published-cell builder in a Tauri shell"
 
 # A standalone cargo root, like obc-fw-nrf54l and obc-boot — deliberately NOT a
 # member of the root Cargo.toml. Tauri drags in wry and a platform webview
@@ -15,9 +15,8 @@ description = "OpenBikeComputer desktop app: the web builder in a Tauri shell, w
 [workspace]
 
 [features]
-# Both defaults are about the same thing — that plain `cargo build` in this
-# directory produces a *shippable app*, not a developer's private configuration.
-default = ["custom-protocol", "vendored-geos"]
+# Plain `cargo build` produces a shippable app rather than a dev-server shell.
+default = ["custom-protocol"]
 
 # `tauri/custom-protocol` is what decides whether the app *is* an app: with it,
 # `tauri::generate_context!` embeds the built frontend and the webview loads it
@@ -29,50 +28,14 @@ default = ["custom-protocol", "vendored-geos"]
 # So it is ON by default here, and the live-reload loop is the explicit opt-out:
 #
 #     npm --prefix ../../builder/app run dev -- --mode desktop
-#     cargo run --no-default-features --features vendored-geos   # follows Vite
-#
-# Keep the other default explicitly named there: the two features are orthogonal,
-# and `--no-default-features` alone would silently also drop the vendored GEOS.
+#     cargo run --no-default-features   # follows Vite
 custom-protocol = ["tauri/custom-protocol"]
-
-# `vendored-geos` (D2, #907) is what makes this crate buildable and shippable on a
-# machine that has never heard of GEOS. `obc-pack` links libGEOS through the `geos`
-# crate; by default that means *system* GEOS ≥ 3.14, which is a Homebrew/apt/vcpkg
-# errand no user of a desktop app should be asked to run — and on Windows barely
-# exists. Enabling it here pulls `geos-src`, which carries the GEOS 3.14.1 C++
-# sources inside the crate and builds them with CMake into a **static** archive
-# that links straight into this binary. Nothing to install, nothing to ship
-# alongside, no `.dll`/`.dylib`/`.so` search path at runtime.
-#
-# The mechanism is cargo's feature unification, so it is worth spelling out: this
-# crate names `geos` directly *only* to turn on `geos/static`, and because
-# `obc-pack`'s `geos` dependency resolves to the same package in this build graph,
-# it gets the vendored, static libGEOS too. There is deliberately no matching
-# feature on `obc-pack`: the `firmware/` workspace is a separate cargo root, so its
-# `--all-features` clippy/test runs (and the CLI packer, and CI's host jobs) keep
-# using system GEOS and stay fast. The app vendors; the dev workspace does not.
-# `tests/geos_smoke.rs` is what stops that from being a claim in a comment.
-#
-# Opt out for a fast local edit loop when you *do* have system GEOS ≥ 3.14:
-#
-#     cargo build --no-default-features --features custom-protocol
-vendored-geos = ["dep:geos"]
 
 [build-dependencies]
 # Generates the Tauri context (config + the embedded frontend bundle).
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-# The whole point of this crate: obc-pack is a library dependency, not a
-# subprocess. `pipeline::pack` is the same function the CLI calls.
-obc-pack = { path = "../../host/obc-pack" }
-# Not called for its geometry — `obc-pack` owns all of that. This entry exists to
-# add `static` to the feature set of the *same* `geos` package `obc-pack` depends
-# on (see `vendored-geos` above), and the version must therefore stay pinned to
-# `obc-pack`'s. `geos_version_is_the_one_obc_pack_asked_for` in tests/geos_smoke.rs
-# fails if the two drift, because a silently *older* system GEOS satisfying
-# `v3_14_0`'s runtime check is exactly the bug this vendoring exists to prevent.
-geos = { version = "11.1.1", features = ["v3_14_0", "static"], optional = true }
 # The device's own CRC-32/IEEE, linked rather than re-typed. A file streamed to a
 # device needs its whole-object checksum before the descriptor is written (spec
 # §4.2), and this is the implementation `lib/usb/crc32.ts` was ported from — so
@@ -80,9 +43,8 @@ geos = { version = "11.1.1", features = ["v3_14_0", "static"], optional = true }
 # obc-ble is deliberately no_std and transport-free.
 obc-ble = { path = "../../firmware/obc-ble" }
 tauri = { version = "2", features = [] }
-# Native USB (#909). Pure Rust, and chosen over `rusb`/libusb for exactly the
-# reason `vendored-geos` above exists: there is no C library to vendor, no CMake
-# leg, and nothing for a user to install. It talks to each platform's own USB
+# Native USB (#909). Pure Rust: there is no C library to vendor, no CMake leg,
+# and nothing for a user to install. It talks to each platform's own USB
 # stack directly — usbfs on Linux, IOKit on macOS, WinUSB on Windows.
 #
 # `features = ["tokio"]` is load-bearing, not tuning. nusb wraps every blocking
@@ -109,16 +71,10 @@ tauri-plugin-opener = "2"
 # names a place; here the OS's own chooser does, with the person driving it.
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
-# `preserve_order` for the same reason obc-pack needs it: a packer config's style
-# IDs are assigned in document order, and this crate hands configs through.
-serde_json = { version = "1", features = ["preserve_order"] }
-# Blocking HTTP for the Geofabrik index, the `.pbf` downloads and the map
-# catalog. Blocking because every caller is already on its own worker thread, and
-# rustls-by-default keeps the Windows/macOS builds free of an OpenSSL system dep
-# (D2 #907 cares about that).
+serde_json = "1"
+# Blocking HTTP for the small map catalog document. The caller runs on a worker
+# thread, and rustls-by-default avoids an OpenSSL system dependency.
 ureq = "3"
-
-[dev-dependencies]
-# So the app-vs-CLI parity test states a digest rather than "the vectors were
-# equal" — a claim someone can re-run and compare against.
-sha2 = "0.11"
+# Parses catalog/object URLs so the native fetch command can enforce same-origin
+# access instead of handing the webview a general HTTP proxy.
+url = "2"

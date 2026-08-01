@@ -402,6 +402,13 @@ fn demo_rides() -> Vec<obc_app::RideSummary> {
 mod tests {
     use super::*;
 
+    fn drive(demo: &mut Demo, now_ms: &mut f64, command: &str, expected: &str) {
+        demo.cmd(command);
+        *now_ms += 16.0;
+        demo.tick(*now_ms);
+        assert_eq!(demo.state(), expected, "`{command}` should reach {expected}");
+    }
+
     /// The page-opening contract: the first tick renders (ready), the demo opens on the live Map,
     /// and the frame is exactly the putImageData layout.
     #[test]
@@ -483,6 +490,67 @@ mod tests {
         let mut d = Demo::new();
         d.tick(0.0);
         assert!(obc_app::Screen::NAMES.contains(&d.state()));
+    }
+
+    #[test]
+    fn climb_tour_cycles_the_current_riding_views() {
+        let mut d = Demo::new();
+        let mut now = 0.0;
+        d.tick(now);
+
+        drive(&mut d, &mut now, "enter", "Map");
+        drive(&mut d, &mut now, "back", "Statistics");
+        drive(&mut d, &mut now, "back", "Climb");
+        drive(&mut d, &mut now, "back", "Map");
+    }
+
+    #[test]
+    fn up_ahead_tour_opens_a_populated_route_timeline() {
+        let mut d = Demo::new();
+        let mut now = 0.0;
+        d.tick(now);
+
+        drive(&mut d, &mut now, "enter", "Map");
+        drive(&mut d, &mut now, "backhold", "RideMenu");
+        drive(&mut d, &mut now, "press", "UpAhead");
+        assert!(d.app.corridor_snapshot_len() > 0, "the demo route should showcase map POIs ahead");
+        drive(&mut d, &mut now, "back", "RideMenu");
+        drive(&mut d, &mut now, "back", "Map");
+    }
+
+    #[test]
+    fn reroute_tour_reaches_pois_through_both_menus() {
+        let mut d = Demo::new();
+        let mut now = 0.0;
+        d.tick(now);
+
+        drive(&mut d, &mut now, "enter", "Map");
+        drive(&mut d, &mut now, "backhold", "RideMenu");
+        drive(&mut d, &mut now, "step:-1", "RideMenu");
+        drive(&mut d, &mut now, "press", "Menu");
+        drive(&mut d, &mut now, "step:1", "Menu");
+        drive(&mut d, &mut now, "step:1", "Menu");
+        drive(&mut d, &mut now, "press", "PoiMenu");
+        drive(&mut d, &mut now, "step:1", "PoiMenu");
+        drive(&mut d, &mut now, "step:1", "PoiMenu");
+        drive(&mut d, &mut now, "press", "PoiList");
+        assert!(d.app.poi_snapshot_len() > 0, "the scripted category should contain a demo POI");
+        drive(&mut d, &mut now, "press", "PoiDetail");
+        drive(&mut d, &mut now, "press", "NavConfirm");
+
+        d.cmd("press");
+        now += 16.0;
+        d.tick(now);
+        for _ in 0..2_000 {
+            if d.state() != "NavPlanning" {
+                break;
+            }
+            now += 16.0;
+            d.tick(now);
+        }
+        assert_eq!(d.state(), "RouteOverview", "the embedded map should route to the scripted POI");
+        drive(&mut d, &mut now, "press", "RouteSwap");
+        drive(&mut d, &mut now, "press", "Map");
     }
 
     /// **The tour drift-guard** (epic #624 S3 / #628). The landing page's guided scenarios wait on

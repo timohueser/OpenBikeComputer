@@ -1,4 +1,4 @@
-# OBCM File Format Specification (v10)
+# OBCM File Format Specification (v11)
 
 OBCM (OpenStreetMap Binary Chunked Map) is a compact binary map format designed
 for efficient rendering on memory-constrained devices such as microcontrollers
@@ -48,8 +48,37 @@ flags byte gains a **dashed** bit (bit 2, line style) and a **color2-present** b
 (bit 3), and a trailing **`color2`** u16 (RGB565 secondary color) is appended. The
 header, geometry, POI, and nav sections are byte-identical to v9. `color2` is written
 `0x0000` when its flag bit is clear, and readers MUST ignore it then (`0x0000` is a
-legit color — black rails — not a "no color2" sentinel). **v10 is the only supported
-version**; earlier maps get repacked.
+legit color — black rails — not a "no color2" sentinel). (v10 was the only supported
+version until v11, below; the interesting detail for v11 is that the §8 padding
+lesson of v9 turned out to apply to the geometry chunks too.)
+
+**Version 11** (issue #1009) stops paying for padding. Two changes, both to the
+per-LOD geometry region; the header, POI section (§7), hours pool (§7.5) and
+nav-graph section (§8) are byte-identical to v10.
+
+1. **Data chunks are packed tight, behind a per-chunk offset table** (§5). v10
+   padded every chunk to `Chunk Size` because `data_start + k * Chunk Size` was the
+   O(1) addressing scheme — measured **53% of `freiburg.obcm` and 65% of
+   `grimsel.obcm` was trailing `0xFF`**, structurally: a quadtree node splits when
+   its features overflow one chunk, so leaves land between a quarter and half full.
+   A LOD now writes `Chunk Count + 1` `uint32` offsets between its index and its
+   chunk data; chunk `k` is `offsets[k]..offsets[k+1]`, still O(1), and each chunk
+   carries exactly **one** trailing `0xFF` sentinel instead of padding. `Chunk Size`
+   keeps its 18-byte LOD-table slot but changes meaning: it is now the chunk
+   **capacity bound**, not a stride.
+2. **The feature header shrinks 12 → 7 bytes for the common case** (§5). `Flags`
+   moves to byte 1 so its new `0x08` **WIDE** bit tells a reader the header's width
+   before it reads anything behind it. The compact layout stores `Pt Count` as a
+   `uint8` and both anchors as `uint16`; a feature with more than 255 exterior
+   vertices, or a leaf-relative anchor outside `0..=65535` (a coarse-LOD leaf can
+   span far more than that), sets WIDE and keeps v10's `uint16` count + `int32`
+   anchors.
+
+Stacked, real maps land at **~2.3–2.5× smaller** (monaco 1 597 945 → 683 532 B;
+grimsel 6 189 979 → 2 614 924 B) with byte-for-byte the same decoded geometry.
+Tight chunks are also a read win: a chunk miss reads the chunk's real length —
+averaging ~1 600 B, 3–4 SD blocks — instead of a fixed 4096 B / 8 blocks.
+**v11 is the only supported version**; earlier maps get repacked.
 
 **Version 9** (epic #533 N2) is a §8-only bump that makes the router **bike-type
 aware** and shrinks the section it reads (measured ~58% padding in v8 node
@@ -63,7 +92,7 @@ nav chunks are **pinned to 512 bytes** (the reader rejects any other value); nod
 chunks are **bin-packed** so distinct index leaves may share a chunk; and a
 per-map **profile table** (§8.6) of `1..=8` bike profiles is baked in. (v9 was a
 hard cut from v8; earlier versions v8 down to v2 were dropped — old maps get
-repacked. v10 supersedes it, see above.)
+repacked. v10 and then v11 superseded it, see above.)
 
 ## Design principles
 
@@ -91,10 +120,10 @@ screen space is the renderer's responsibility, not the format's.
 [Header]                            (40 bytes, fixed)
 [Style Table]                       (global — shared by all LODs)
 [LOD Table]                         (LOD Count entries)
-[LOD 0 Index][LOD 0 Data Chunks]    (coarsest)
-[LOD 1 Index][LOD 1 Data Chunks]
+[LOD 0 Index][LOD 0 Offset Table][LOD 0 Data Chunks]    (coarsest)
+[LOD 1 Index][LOD 1 Offset Table][LOD 1 Data Chunks]
 ...
-[LOD N-1 Index][LOD N-1 Data Chunks] (finest)
+[LOD N-1 Index][LOD N-1 Offset Table][LOD N-1 Data Chunks] (finest)
 [POI Directory][POI Indexes + Chunks] (§7)
 [Hours-Pool Section]                  (§7.5)
 [Nav Directory][Profile Table][Node Index + Chunks][Edge Pool] (§8 — file tail)
@@ -112,7 +141,7 @@ Packed as `struct "<4sBiiiiIBIHII"`.
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
 | 0 | Magic | 4 | `char[4]` | Must be `b"OBCM"` |
-| 4 | Version | 1 | `uint8` | `0x0A` |
+| 4 | Version | 1 | `uint8` | `0x0B` |
 | 5 | Min Lat | 4 | `int32` | Global bbox min latitude (microdegrees) |
 | 9 | Min Lon | 4 | `int32` | Global bbox min longitude |
 | 13 | Max Lat | 4 | `int32` | Global bbox max latitude |
@@ -186,14 +215,33 @@ entry is 18 bytes, packed as `struct "<fIIHI"`.
 | Max Meters/Pixel | 4 | `float32` | Upper bound of the m/px range this LOD covers. Strictly decreasing down the list; the coarsest level is `+inf` (`f32::INFINITY`). |
 | Index Offset | 4 | `uint32` | Byte offset to this LOD's quadtree index |
 | Index Node Count | 4 | `uint32` | Number of `uint32` nodes in the index |
-| Chunk Size | 2 | `uint16` | Fixed capacity of each data chunk (bytes) — per-LOD |
+| Chunk Size | 2 | `uint16` | **Capacity bound** of one data chunk (bytes) — per-LOD. v11: not a stride; see below |
 | Chunk Count | 4 | `uint32` | Number of data chunks in this LOD |
 
-This LOD's data chunks begin at `Index Offset + Index Node Count * 4` (i.e.
-immediately after its index). Chunk `k` is at `data_start + k * Chunk Size`.
+A LOD's region is three parts, back to back:
+
+```
+[Quadtree Index]   Index Node Count × uint32          at Index Offset
+[Offset Table]     (Chunk Count + 1) × uint32         at Index Offset + Index Node Count * 4
+[Chunk Data]       tightly packed chunks              at data_start (below)
+```
+
+```
+table_start = Index Offset + Index Node Count * 4
+data_start  = table_start + (Chunk Count + 1) * 4
+chunk k     = data_start + offsets[k] .. data_start + offsets[k+1]
+```
+
+**`Chunk Size` is a bound, not a stride** (v11). It is the packer's leaf-split
+threshold and the largest length any single chunk may have; a reader MUST reject a
+chunk whose offset pair spans more than it. Chunk lengths come from the offset table
+(§5), which is what lets chunks be packed tight — v10's fixed stride is why every
+chunk had to be padded to `Chunk Size`.
 
 Storing `Index Node Count` and `Chunk Count` explicitly is what removes any
-runtime discovery: the reader never has to walk the tree to learn its size.
+runtime discovery: the reader never has to walk the tree to learn its size. The
+offset table's last entry (`offsets[Chunk Count]`) is the LOD's total chunk bytes,
+so one `uint32` read at parse bounds every later chunk fetch.
 
 ---
 
@@ -225,27 +273,78 @@ SE = (mid_lon, min_lat, max_lon, mid_lat)
 To query a viewport: start at node 0 with the global bbox, recurse into children
 whose bbox intersects the view, and collect `(chunk_id, node_bbox)` for every
 non-empty leaf reached. The `node_bbox` is required to decode the chunk (see
-§5, anchors).
+§5.2, anchors). A `Chunk ID` addresses the LOD's offset table (§5.1), not a fixed
+stride.
 
 ---
 
 ## 5. Data Chunks (per LOD)
 
-Features are packed into fixed-capacity blocks of `Chunk Size` bytes. Unused
-trailing bytes are padded with `0xFF`; a `0xFF` style-ID byte (an impossible
-style) marks the end of features in a chunk.
+### 5.1 Offset table + tight chunks (v11)
 
-### Feature Header (12 bytes)
+A LOD's chunk data is addressed by its own **offset table**, written between the
+quadtree index and the chunks (§3):
 
-Packed as `struct "<BHiiB"`.
+- `Chunk Count + 1` `uint32` entries. Each is a byte offset **relative to the start
+  of the chunk-data region** (i.e. to the byte just past the table itself).
+- `offsets[0]` is always `0`. Offsets are non-decreasing. `offsets[Chunk Count]` is
+  the region's total chunk bytes.
+- Chunk `k` occupies `offsets[k] .. offsets[k+1]`; its length is the difference.
+- The table is written even when `Chunk Count == 0`, where it is the single `0` entry.
 
-| Field | Size | Type | Description |
-| :-- | :-- | :-- | :-- |
-| Style ID | 1 | `uint8` | Reference into the Style Table |
-| Pt Count | 2 | `uint16` | Vertex count of the **exterior** ring |
-| Anchor X | 4 | `int32` | Exterior start, relative to the **leaf node's min longitude** (microdegrees) |
-| Anchor Y | 4 | `int32` | Exterior start, relative to the leaf node's min latitude |
-| Flags | 1 | `uint8` | `0x01` 16-bit deltas · `0x02` polygon · `0x04` has holes |
+Each chunk is its packed features followed by **exactly one** `0xFF` `CHUNK_END`
+sentinel byte, and nothing else — no padding. A `0xFF` style-ID byte is an
+impossible style, so the sentinel still marks end-of-features for a reader walking
+the stream; the offset-derived end is then a second, independent bound. A reader
+MUST treat a chunk whose feature stream reaches the offset-derived end **without**
+meeting the sentinel as malformed (truncated), not as a clean finish.
+
+A reader MUST validate an offset pair before using it, because `Chunk ID` comes from
+a quadtree leaf and is arbitrary in a corrupt map: `k < Chunk Count`,
+`offsets[k] <= offsets[k+1]`, `offsets[k+1] <= offsets[Chunk Count]`, and
+`offsets[k+1] - offsets[k] <= Chunk Size`.
+
+> **Why.** v10 addressed chunk `k` at `data_start + k * Chunk Size`, which forces
+> every chunk to be padded to `Chunk Size`. Because a quadtree node splits as soon as
+> its features overflow one chunk, leaves settle between a quarter and half full, so
+> the padding is structural rather than a tuning problem — measured 53% of
+> `freiburg.obcm`, 65% of `grimsel.obcm`. One `uint32` per chunk buys all of it back
+> (freiburg: 1 534 chunks × 4 B = 6 KB of table for 3.8 MB of padding).
+
+### 5.2 Feature Header (7 or 12 bytes, v11)
+
+`Flags` is at byte **1** in both layouts — its `0x08` **WIDE** bit selects the
+layout, so a reader knows the header's width before it reads any field behind it.
+
+**Compact** (WIDE clear), 7 bytes, `struct "<BBBHH"` — the common case:
+
+| Offset | Field | Size | Type | Description |
+| :-- | :-- | :-- | :-- | :-- |
+| 0 | Style ID | 1 | `uint8` | Reference into the Style Table |
+| 1 | Flags | 1 | `uint8` | `0x01` 16-bit deltas · `0x02` polygon · `0x04` has holes · `0x08` WIDE (**clear** here) |
+| 2 | Pt Count | 1 | `uint8` | Vertex count of the **exterior** ring, `1..=255` |
+| 3 | Anchor X | 2 | `uint16` | Exterior start relative to the **leaf node's min longitude** (microdegrees), `0..=65535` |
+| 5 | Anchor Y | 2 | `uint16` | Exterior start relative to the leaf node's min latitude |
+
+**Wide** (WIDE set), 12 bytes, `struct "<BBHii"` — the escape:
+
+| Offset | Field | Size | Type | Description |
+| :-- | :-- | :-- | :-- | :-- |
+| 0 | Style ID | 1 | `uint8` | Reference into the Style Table |
+| 1 | Flags | 1 | `uint8` | Same bits, `0x08` WIDE **set** |
+| 2 | Pt Count | 2 | `uint16` | Vertex count of the exterior ring |
+| 4 | Anchor X | 4 | `int32` | Exterior start, relative to the leaf node's min longitude |
+| 8 | Anchor Y | 4 | `int32` | Exterior start, relative to the leaf node's min latitude |
+
+Bits 4-7 of `Flags` are reserved and written `0`; a reader MUST reject a feature with
+any of them set. `Pt Count == 0` is malformed in both layouts. Compact anchors are
+**unsigned** — zero-extended, never sign-extended.
+
+A writer MUST choose compact when `Pt Count` is in `1..=255` **and** both anchor
+components are in `0..=65535`, and wide otherwise. The escape is not hypothetical: a
+coarse-LOD leaf can span far more than 65 535 µdeg (~7 km), so an anchor inside it
+genuinely needs the wider field. Everything after the header — hole bookkeeping and
+the delta streams — is identical in both layouts and unchanged from v10.
 
 The **anchor** is the feature's first absolute coordinate, stored relative to the
 containing leaf node's min corner to keep it small:
@@ -282,15 +381,30 @@ Lines use only the exterior ring (`Flags & 0x02 == 0`, no holes).
 > publishing geometry: if the caller's fixed point/ring scratch is too small, the
 > whole feature is dropped with an explicit capacity outcome — no truncated line or
 > polygon is exposed. The packer guarantees the format bound through `Chunk Size`:
-> a feature can't outgrow its chunk, and the densest encoding is 8-bit deltas at 2
-> bytes per vertex, so `Chunk Size ≤ (2048−1)·2 + 12 = 4106` keeps every feature
-> within the cap. `obc-pack` rejects a larger `Chunk Size` at build time rather than
-> emit a feature the reference buffer cannot hold.
+> a feature can't outgrow its chunk, and its packed bytes are at least
+> `7 + 2·(V−1) = 2·V + 5` for `V` total vertices (the smallest header v11 writes is
+> the 7-byte compact one, and the densest geometry is 8-bit deltas at 2 bytes per
+> vertex after the anchor; holes and the wide header only add). So
+> `Chunk Size ≤ (2048−1)·2 + 7 = 4101` keeps every feature within the cap — 5 bytes
+> tighter than v10's `4106`, which was derived off the 12-byte header. `obc-pack`
+> rejects a larger `Chunk Size` at build time rather than emit a feature the
+> reference buffer cannot hold. (The bound is deliberately the *loosest* encoding: a
+> genuinely 2048-vertex feature needs the wide header, so it packs to 4106 bytes and
+> could never fit a `4101`-byte chunk in the first place.)
+
+> **Per-feature ring cap:** although `Hole Count` is a `uint8`, a single feature
+> must not exceed **32 rings** (exterior + 31 holes). The reference reader's ring
+> scratch (`MAX_FEAT_RINGS`) is fixed at 32 and a feature past it is dropped whole,
+> with the same explicit capacity outcome as the vertex cap. Bytes do not imply
+> this bound — a heavily simplified polygon can carry dozens of holes on a handful
+> of vertices — so `obc-pack` enforces it structurally: a quadtree node holding an
+> over-cap polygon splits (clipping spreads the holes across the children), and at
+> the 10 µdeg split floor the smallest holes are dropped to fit.
 
 ### Polygon-with-holes byte layout
 
 ```
-[Feature Header (12 B)]
+[Feature Header (7 B compact | 12 B wide)]
 [Exterior deltas]                ((Pt Count - 1) × (int8|int16) pairs)
 [Hole Count (uint8)]
   [Hole 1 Pt Count (uint16)]

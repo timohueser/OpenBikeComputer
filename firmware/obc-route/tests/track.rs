@@ -2,10 +2,12 @@
 //! (coordinate formatting, `<trkseg>` splitting on `segment_start`, well-formedness).
 
 use obc_formats::io::SliceSource;
+use obc_formats::track::{decode_record, encode_record};
 use obc_formats::track::{
     CAD_NONE as TRACK_CAD_NONE, HR_NONE as TRACK_HR_NONE, PWR_NONE as TRACK_PWR_NONE, RECORD_LEN as TRACK_RECORD_LEN,
 };
-use obc_route::{decode_record, encode_record, track_to_gpx, TrackPoint};
+use obc_ports::TrackPoint;
+use obc_route::track_to_gpx;
 
 mod common;
 use common::VecSink;

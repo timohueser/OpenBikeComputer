@@ -4,14 +4,13 @@
  *
  * All three of C4's flows run through this, because the interesting behaviour is identical in all
  * three and only one of them is short. A map is hundreds of megabytes over a link whose ceiling is
- * the **SD card** — the proven ~8 MHz SPI to the card is high-hundreds of KB/s, so a regional map is
+ * the **SD card** — the proven ~8 MHz SPI to the card is high-hundreds of KB/s, so a large map is
  * *minutes*, not "USB is fast". A progress bar that only counts percent invites the rider to think
  * something is stuck at 12%; a rate and a remaining time say what is actually happening.
  *
  * The rate is measured over a short trailing window rather than since the start, because the two
- * halves of a map upload run at completely different speeds: the CDN fills the scratch file at
- * network speed, then the card drains it at card speed. An average over the whole job would spend
- * the first minute of the send predicting a finish that never arrives.
+ * phases of a transfer can run at different speeds. An average over the whole job can therefore
+ * spend the first minute predicting a finish that never arrives.
  */
 
 import type { JobContext, JobPhase } from "./progress";
@@ -43,7 +42,7 @@ export class DeviceJob {
     done = $state(0);
     total = $state(0);
     error = $state<string | null>(null);
-    /** The failure's stable code where it had one — `DeviceError.code`, `StagingError.code`,
+    /** The failure's stable code where it had one — `DeviceError.code`,
      *  `ConvertError.code`. The message is for the rider; this is for the caller, which has to
      *  tell "the cable came out" from "the card is full" without reading English. */
     errorCode = $state<string | null>(null);
@@ -51,6 +50,10 @@ export class DeviceJob {
     result = $state<string | null>(null);
     /** Bytes per second over the last few seconds, or null before there is enough to say. */
     rate = $state<number | null>(null);
+    /** Current file in a volume-set write. Zero means this job is not multipart. */
+    partCurrent = $state(0);
+    partTotal = $state(0);
+    partLabel = $state<string | null>(null);
 
     /** `$state` because {@link running} is read from the markup — a plain field would leave the
      *  progress bar and the disabled buttons frozen at whatever they were on first render. */
@@ -91,6 +94,9 @@ export class DeviceJob {
         this.total = 0;
         this.rate = null;
         this.samples = [];
+        this.partCurrent = 0;
+        this.partTotal = 0;
+        this.partLabel = null;
         this.phase = "reading";
         try {
             const value = await task({
@@ -105,6 +111,11 @@ export class DeviceJob {
                     this.rate = null;
                 },
                 progress: (done, total) => this.sample(done, total),
+                part: (current, total, label) => {
+                    this.partCurrent = current;
+                    this.partTotal = total;
+                    this.partLabel = label ?? null;
+                },
             });
             this.phase = "done";
             this.done = this.total;
@@ -147,6 +158,9 @@ export class DeviceJob {
         this.total = 0;
         this.error = null;
         this.result = null;
+        this.partCurrent = 0;
+        this.partTotal = 0;
+        this.partLabel = null;
     }
 
     private sample(done: number, total: number): void {

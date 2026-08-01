@@ -1,4 +1,5 @@
 import SwiftUI
+import UserNotifications
 import OBCDomain
 import OBCTransport
 import OBCUI
@@ -22,10 +23,20 @@ struct OBCCompanionApp: App {
         launchOptions.useBLETransport ? nil : launchOptions.makeControl()
     #endif
 
+    /// The notification tap router (#773 U5). Held here because
+    /// `UNUserNotificationCenter.delegate` is a weak reference — a delegate created inline would be
+    /// released before the first tap ever arrived.
+    private static let notificationDelegate = UpdateNotificationDelegate()
+
     init() {
         // Field-guide nav chrome (serif large titles, parchment bar) — the one
         // global UIKit-appearance call the B11 kit needs (§9 "Nav Bar").
         OBCNavigationChrome.apply()
+        // Tapping an update notice must land on the firmware screen even from a cold launch, so the
+        // delegate has to be in place before iOS delivers the pending response. Setting a delegate
+        // asks for **no** permission and shows nothing — the permission moment is the launch sheet
+        // (see `UpdateSurfaceModel`).
+        UNUserNotificationCenter.current().delegate = Self.notificationDelegate
         #if DEBUG
         // Log a DEBUG-only symbol at launch so the mock-exclusion seam is exercised
         // by a real build and lands in the Debug binary — but never the Release one
@@ -42,6 +53,8 @@ struct OBCCompanionApp: App {
                 library: Self.makeLibraryStore(),
                 retentionDefaults: Self.makeRetentionDefaultsStore(),
                 reachability: Self.makeReachability(),
+                updateSurface: Self.makeUpdateSurfaceStore(),
+                updateNotifier: SystemUpdateNotifier(),
                 importAtLaunch: Self.launchImport(),
                 firmwareDemoAtLaunch: Self.launchFirmwareDemo()
             )
@@ -53,6 +66,26 @@ struct OBCCompanionApp: App {
                 )
             #endif
         }
+        // #773 U5 — the background update check. This modifier *is* the `BGTaskScheduler`
+        // registration (SwiftUI does it before the app finishes launching, which is the framework's
+        // hard requirement); the identifier must also be listed in
+        // `BGTaskSchedulerPermittedIdentifiers` (project.yml) or iOS traps at launch. Everything
+        // else about the wake — including the decision to say nothing — is
+        // `BackgroundUpdateRefresh.run()`.
+        .backgroundTask(.appRefresh(BackgroundUpdateRefresh.identifier)) {
+            await BackgroundUpdateRefresh.run()
+        }
+    }
+
+    /// The proactive-update preference store (#773 U5): the auto-check toggle, the answered ledger,
+    /// and the last-seen device. Mock runs stay **in-memory** — the same determinism rule the
+    /// library and retention stores keep, so a scenario launch never inherits a previous run's
+    /// "already asked about v1.4.0" and the sheet is reproducible.
+    static func makeUpdateSurfaceStore() -> any UpdateSurfaceStore {
+        #if DEBUG
+        if mockControl != nil { return InMemoryUpdateSurfaceStore() }
+        #endif
+        return UserDefaultsUpdateSurfaceStore()
     }
 
     /// Debug defaults to the fixture-backed mock (no BLE in the simulator),

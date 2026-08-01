@@ -16,7 +16,8 @@
 //! it is the release workflow's gate. See `firmware/README.md` (§Firmware update images) for how the
 //! raw `.bin` is produced, and `specs/OBCU_Spec.md` §1 for the bytes.
 
-use std::path::{Path, PathBuf};
+use std::io::Write;
+use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 
 use obc_dfu::sig::{public_key_of, sign_image, verify_image, PublicKey, PUBKEY_LEN, SEED_LEN, SIG_LEN};
@@ -76,6 +77,9 @@ fn keygen(args: &[String]) -> Result<(), String> {
         }
     }
     let out_dir = out_dir.ok_or("keygen: missing --out-dir")?;
+    if !matches!(Path::new(&name).components().collect::<Vec<_>>().as_slice(), [Component::Normal(_)]) {
+        return Err("keygen: --name must be one filename, not a path".to_string());
+    }
 
     let mut seed = [0u8; SEED_LEN];
     getrandom::fill(&mut seed).map_err(|e| format!("keygen: no OS entropy available ({e})"))?;
@@ -90,9 +94,8 @@ fn keygen(args: &[String]) -> Result<(), String> {
             pub_path.display()
         ));
     }
-    write_hex(&seed_path, &seed)?;
-    restrict(&seed_path)?;
-    write_hex(&pub_path, public.as_bytes())?;
+    write_hex_new(&seed_path, &seed, true)?;
+    write_hex_new(&pub_path, public.as_bytes(), false)?;
 
     println!("wrote {}  <-- SECRET, never commit this", seed_path.display());
     println!("wrote {}", pub_path.display());
@@ -208,14 +211,14 @@ fn sign(args: &[String]) -> Result<(), String> {
     let out = out.ok_or("sign: missing --out")?;
     let seed = seed_src.ok_or("sign: need --seed <file> or --seed-env <VAR>")?.read()?;
 
-    let Container { header, image, .. } = split_container(&input)?;
-    let blob = build_signed(header, image, &seed);
+    let container = split_container(&input)?;
+    let blob = build_signed(container.header, container.image(), &seed);
     std::fs::write(&out, &blob).map_err(|e| format!("writing {}: {e}", out.display()))?;
     println!(
         "wrote {} — version \"{}\", image {} bytes, Ed25519-signed by {}",
         out.display(),
-        header.fw_version_str(),
-        header.image_len,
+        container.header.fw_version_str(),
+        container.header.image_len,
         hex(public_key_of(&seed).as_bytes())
     );
     Ok(())
@@ -254,9 +257,11 @@ fn inspect(args: &[String]) -> Result<(), String> {
     }
     let path = path.ok_or_else(|| format!("inspect: expected exactly one file argument\n\n{USAGE}"))?;
 
-    let Container { header, image, trailer } = split_container(&path)?;
-    let blob = std::fs::read(&path).map_err(|e| format!("reading {}: {e}", path.display()))?;
-    let header_bytes: &[u8; HEADER_LEN] = blob[..HEADER_LEN].try_into().expect("checked length");
+    let container = split_container(&path)?;
+    let header = container.header;
+    let header_bytes = container.header_bytes();
+    let image = container.image();
+    let trailer = container.trailer();
 
     let actual_image_crc = obc_dfu::crc32(image);
     let len_ok = header.image_len as usize == image.len();
@@ -283,16 +288,16 @@ fn inspect(args: &[String]) -> Result<(), String> {
         actual_image_crc
     );
 
-    let sig_ok = match (header.is_signed(), trailer) {
-        (false, _) => {
+    let sig_ok = match (header.sig_scheme, header.sig_len as usize, trailer) {
+        (obc_dfu::SIG_SCHEME_NONE, 0, _) => {
             println!("  signature    : NONE (OBCU v1 container — a v2 device refuses to install it)");
             allow_unsigned
         }
-        (true, None) => {
+        (obc_dfu::SIG_SCHEME_ED25519, SIG_LEN, None) => {
             println!("  signature    : MISSING — the header claims a {}-byte trailer that isn't there", header.sig_len);
             false
         }
-        (true, Some(sig)) => {
+        (obc_dfu::SIG_SCHEME_ED25519, SIG_LEN, Some(sig)) => {
             let result = verify_image(&key, &header, image, sig);
             println!("  signature    : Ed25519, {} bytes, scheme {}", sig.len(), header.sig_scheme);
             println!("  verified vs  : {} ({})", hex(key.as_bytes()), key_src);
@@ -306,6 +311,10 @@ fn inspect(args: &[String]) -> Result<(), String> {
                     false
                 }
             }
+        }
+        (scheme, len, _) => {
+            println!("  signature    : UNSUPPORTED scheme {scheme}, length {len}");
+            false
         }
     };
 
@@ -344,21 +353,32 @@ impl SeedSource {
     }
 }
 
-/// A container read off disk, split into its three parts (§1). The byte slices are `'static`
-/// because `split_container` leaks the file into a process-lifetime allocation — `obc-mkimage` is a
-/// short-lived CLI, and this keeps the borrow shape trivial at every call site.
+/// A container read off disk, with cheap borrowed views over its three parts (§1).
 struct Container {
     header: ImageHeader,
-    /// Exactly `header.image_len` raw image bytes.
-    image: &'static [u8],
-    /// The signature trailer, when the header promises one *and* the file actually holds it.
-    trailer: Option<&'static [u8]>,
+    bytes: Vec<u8>,
+    image_end: usize,
+    trailer_end: Option<usize>,
+}
+
+impl Container {
+    fn header_bytes(&self) -> &[u8; HEADER_LEN] {
+        self.bytes[..HEADER_LEN].try_into().expect("split_container checked the header length")
+    }
+
+    fn image(&self) -> &[u8] {
+        &self.bytes[HEADER_LEN..self.image_end]
+    }
+
+    fn trailer(&self) -> Option<&[u8]> {
+        self.trailer_end.map(|end| &self.bytes[self.image_end..end])
+    }
 }
 
 /// Read a container and split it into header / raw image / optional signature trailer. Rejects
 /// anything that isn't a decodable OBCU container, or that is shorter than its own header claims.
 fn split_container(path: &Path) -> Result<Container, String> {
-    let blob: &'static [u8] = Vec::leak(std::fs::read(path).map_err(|e| format!("reading {}: {e}", path.display()))?);
+    let blob = std::fs::read(path).map_err(|e| format!("reading {}: {e}", path.display()))?;
     if blob.len() < HEADER_LEN {
         return Err(format!("{} is only {} bytes — shorter than a 64-byte OBCU header", path.display(), blob.len()));
     }
@@ -366,7 +386,9 @@ fn split_container(path: &Path) -> Result<Container, String> {
     let header = ImageHeader::decode(header_bytes)
         .ok_or_else(|| format!("{}: not a valid OBCU image (bad magic, version, or header CRC)", path.display()))?;
 
-    let image_end = HEADER_LEN + header.image_len as usize;
+    let image_end = HEADER_LEN
+        .checked_add(header.image_len as usize)
+        .ok_or_else(|| format!("{}: image length overflows this host", path.display()))?;
     if blob.len() < image_end {
         return Err(format!(
             "{}: truncated — the header claims {} image bytes but the file holds {}",
@@ -375,13 +397,8 @@ fn split_container(path: &Path) -> Result<Container, String> {
             blob.len().saturating_sub(HEADER_LEN)
         ));
     }
-    let image = &blob[HEADER_LEN..image_end];
-    let trailer = match header.sig_len as usize {
-        0 => None,
-        n if blob.len() >= image_end + n => Some(&blob[image_end..image_end + n]),
-        _ => None,
-    };
-    Ok(Container { header, image, trailer })
+    let trailer_end = image_end.checked_add(header.sig_len as usize).filter(|&end| end <= blob.len());
+    Ok(Container { header, bytes: blob, image_end, trailer_end })
 }
 
 /// The header CRC as stored (decode already verified it matches; read it back for the report).
@@ -414,20 +431,26 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn write_hex(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    std::fs::write(path, format!("{}\n", hex(bytes))).map_err(|e| format!("writing {}: {e}", path.display()))
-}
-
-/// Owner-only permissions on a freshly written secret (best effort; a no-op off Unix).
-fn restrict(path: &Path) -> Result<(), String> {
+/// Create a key file atomically, refusing to follow the check-then-overwrite race that a plain
+/// `fs::write` would leave. Secret permissions are set at creation, so the seed is never briefly
+/// world-readable before a later chmod.
+fn write_hex_new(path: &Path, bytes: &[u8], secret: bool) -> Result<(), String> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-            .map_err(|e| format!("chmod {}: {e}", path.display()))?;
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(if secret { 0o600 } else { 0o644 });
     }
-    let _ = path;
-    Ok(())
+    let _ = secret;
+    let mut file = options.open(path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::AlreadyExists {
+            format!("{} already exists — refusing to overwrite a key", path.display())
+        } else {
+            format!("creating {}: {e}", path.display())
+        }
+    })?;
+    writeln!(file, "{}", hex(bytes)).map_err(|e| format!("writing {}: {e}", path.display()))
 }
 
 fn next_value<'a>(it: &mut impl Iterator<Item = &'a String>, flag: &str) -> Result<String, String> {

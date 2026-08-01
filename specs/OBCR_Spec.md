@@ -283,8 +283,8 @@ wants the bakery and the café in one list.
 sentinels) and `io.rs` ([`ByteSource`](#bytesource)/`ByteSink` + endian primitives).
 `firmware/obc-route` (`no_std`): `reader.rs` (`RouteReader`, `RouteSummary`,
 `ChunkMeta`, `Waypoint` + `for_each_waypoint`), `convert.rs` (GPX → OBCR),
-`gpx.rs` (streaming `<trkpt>` + `<wpt>` scans), and `symbol.rs` (§4.1's table). Its `byte_io.rs` remains only as a
-temporary source-compatibility re-export. Format-contract tests build synthetic
+`gpx.rs` (streaming `<trkpt>` + `<wpt>` scans), and `symbol.rs` (§4.1's table).
+Format-contract tests build synthetic
 `.obcr` bytes by hand, mirroring this layout (`obc-route/tests/format.rs` +
 `tests/waypoints.rs`); shared phone↔firmware fixtures live in `specs/vectors/`.
 

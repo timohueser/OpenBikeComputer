@@ -9,6 +9,11 @@ __pycache__/
 # extract and minutes of CPU — none of which belongs in a static-site deploy. Regenerate
 # with builder/bake-previews.sh; the sizes are in previews.json beside them.
 !builder/app/public/preview/*.obcm
+# ...and the wasm assembly bridge's cell fixture (P4b, #1034), ~9 KB of baked OBCA cells. It must
+# ship in-repo: it is the input half of the pin that says the browser's assembly is byte-identical
+# to the native CLI's, asserted from both Rust and Node, and cutting it wants libGEOS. Regenerate
+# with the two commands in apps/obc-web-assemble/tests/fixture.rs.
+!apps/obc-web-assemble/tests/fixture/cells/**/*.obcm
 *.obcr
 # ...except the shared wire-protocol test vectors (S0, issue #268). They must ship
 # in-repo: firmware `cargo test -p obc-vectors` and the app's swift tests pin their
@@ -64,6 +69,8 @@ project/
 # frontend, `npm run build:wasm` rebuilds it, and CI builds it fresh on every run. wasm-pack
 # drops its own `pkg/.gitignore` too — this entry is here so the intent is visible in one place.
 builder/app/src/lib/convert/pkg/
+# …and the assembly bridge's (#1034), the same way.
+builder/app/src/lib/assemble/pkg/
 # `obc` dev-task tooling (in tools/): personal defaults + the web builder's
 # virtualenv + the optional local maps drop. The tooling itself (everything in
 # tools/ except obc.local) is committed.

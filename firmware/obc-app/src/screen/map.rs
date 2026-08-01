@@ -33,7 +33,7 @@ use crate::wall_clock::MinuteTicker;
 use crate::Msg;
 use obc_ports::Fix;
 
-use super::{Ctx, Render, Screen, ScreenTick, StatisticsScreen, Transition};
+use super::{Ctx, RenderFrame, Screen, ScreenTick, StatisticsScreen, Transition};
 
 /// Zoom multiplier per Up/Down step (matches the scroll-wheel feel).
 const ZOOM_STEP: f32 = 1.2;
@@ -223,10 +223,11 @@ impl MapScreen {
         }
     }
 
-    pub fn draw<D, F>(&self, cv: &mut Canvas<D, F>, rx: &mut Render)
+    pub fn draw<D, F, S>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, S>)
     where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
+        S: obc_map_scene::MapScene,
     {
         let vp = rx.state.viewport(rx.w as f32, rx.h as f32);
         let Some(marker565) = draw_map_scene(cv, rx, &vp, None) else { return };
@@ -334,21 +335,23 @@ pub(crate) struct DetourMapOverlay<'a> {
 /// Draw the reusable map scene (base map, full route, optional skipped-range + detour ink,
 /// breadcrumb, waypoints, rider and candidate). Map chrome stays in [`MapScreen::draw`]; the
 /// Detour chooser/preview add their own floating HUD after this returns.
-pub(crate) fn draw_map_scene<D, F>(
+pub(crate) fn draw_map_scene<D, F, S>(
     cv: &mut Canvas<D, F>,
-    rx: &mut Render,
+    rx: &mut RenderFrame<'_, S>,
     vp: &Viewport,
     skip: Option<DetourMapOverlay<'_>>,
 ) -> Option<u16>
 where
     D: DrawTarget,
     F: Fn(u16) -> D::Color,
+    S: obc_map_scene::MapScene,
 {
-    let reader = rx.reader?;
-    let bg565 = reader.backdrop_style().map_or(DEFAULT_BG_RGB565, |s| s.color);
+    let scene = rx.scene?;
+    let rx = &mut rx.render;
+    let bg565 = scene.backdrop_style().map_or(DEFAULT_BG_RGB565, |style| style.color);
     let (target, color_fn) = cv.split();
     let bg = color_fn(bg565);
-    let mut stats = rx.renderer.render_timed(target, reader, vp, bg, color_fn, rx.clock);
+    let mut stats = rx.renderer.render_timed(target, scene, vp, bg, color_fn, rx.clock);
     let arrows_at = (skip.is_none() && vp.meters_per_pixel() <= CHEVRON_MAX_MPP).then_some(rx.activity.progress_m);
 
     if let Some(route) = rx.route {
@@ -396,7 +399,7 @@ where
     rx.stats = stats;
 
     draw_waypoint_diamonds(cv, vp, rx.waypoints.as_slice(), rx.w, rx.h);
-    let marker565 = if rx.activity.off_route { super::palette::WARNING } else { reader.marker_color };
+    let marker565 = if rx.activity.off_route { super::palette::WARNING } else { scene.marker_color() };
     if let Some(fix) = rx.state.user_fix {
         let (target, color_fn) = cv.split();
         rx.renderer.draw_marker(target, vp, fix.lon, fix.lat, fix.course, color_fn(marker565));
