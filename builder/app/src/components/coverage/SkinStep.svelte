@@ -6,13 +6,15 @@
 
     import type { CoverageStore } from "../../lib/coverage/store.svelte";
     import SkinEditor from "../skin/SkinEditor.svelte";
-    import { rgb565ToDeviceHex } from "../../lib/color/rgb565";
+    import SkinPreviewThumbnail from "../skin/SkinPreviewThumbnail.svelte";
     import type { SkinEntry } from "../../lib/catalog/manifest";
     import { isCustomSkinId } from "../../lib/skin/custom";
+    import { renderSkinPreviewFrames, type SkinPreviewFrame } from "../../lib/skin/preview";
     import { confirmAction } from "../../lib/ui/confirm.svelte";
 
     let { store }: { store: CoverageStore } = $props();
     let previewUrls = $state<Record<string, string>>({});
+    let customPreviewFrames = $state<Record<string, SkinPreviewFrame>>({});
     let editing = $state<SkinEntry | null>(null);
 
     $effect(() => {
@@ -41,6 +43,29 @@
         };
     });
 
+    $effect(() => {
+        const custom = store.skins.filter((skin) => isCustomSkinId(skin.id));
+        const controller = new AbortController();
+        let live = true;
+        if (custom.length === 0) {
+            customPreviewFrames = {};
+        } else {
+            void renderSkinPreviewFrames(store.rootBody, custom, { signal: controller.signal })
+                .then((frames) => {
+                    if (live) customPreviewFrames = frames;
+                })
+                .catch(() => {
+                    // The validated skin remains selectable if wasm or the
+                    // fixture cannot load; its card falls back to the neutral shot.
+                    if (live) customPreviewFrames = {};
+                });
+        }
+        return () => {
+            live = false;
+            controller.abort();
+        };
+    });
+
     async function removeSelected() {
         if (!isCustomSkinId(store.skin.id)) return;
         const doomed = store.skin;
@@ -58,11 +83,16 @@
     {#each store.skins as skin (skin.id)}
         <button type="button" class="skin" class:selected={store.skinId === skin.id} onclick={() => (store.skinId = skin.id)}>
             {#if isCustomSkinId(skin.id)}
-                <span class="shot custom-shot" aria-label={`${skin.name} device-color palette`}>
-                    {#each skin.styles.slice(0, 36) as style, index (`${style.feature_type}-${index}`)}
-                        <span style:background={rgb565ToDeviceHex(style.color)}></span>
-                    {/each}
-                </span>
+                {#if customPreviewFrames[skin.id]}
+                    <span class="shot">
+                        <SkinPreviewThumbnail
+                            frame={customPreviewFrames[skin.id]}
+                            label={`${skin.name} rendered over Teningen`}
+                        />
+                    </span>
+                {:else}
+                    <span class="shot placeholder" aria-hidden="true"></span>
+                {/if}
             {:else if previewUrls[skin.id]}
                 <img
                     class="shot"
@@ -142,16 +172,8 @@
         background: linear-gradient(135deg, var(--parchment-2), var(--parchment-3));
     }
 
-    .custom-shot {
-        display: grid;
-        grid-template-columns: repeat(6, 1fr);
-        grid-template-rows: repeat(6, 1fr);
+    .shot {
         overflow: hidden;
-    }
-
-    .custom-shot span {
-        min-width: 0;
-        min-height: 0;
     }
 
     .label-line {
