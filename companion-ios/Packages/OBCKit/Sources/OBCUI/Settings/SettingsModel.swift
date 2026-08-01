@@ -134,9 +134,9 @@ public final class SettingsModel {
 
     // MARK: Automatic update checks (#773 U5)
 
-    /// Flip "Check for updates automatically" and persist it. Takes effect at the next foreground /
-    /// background wake — nothing is cancelled retroactively because nothing is in flight; the
-    /// policy reads this store every time it decides.
+    /// Flip "Check for updates automatically" and persist it. The policy reads this store every
+    /// time it decides, including after an in-flight check returns, so switching off cannot surface
+    /// an answer that happened to arrive a moment later.
     public func setAutoCheckUpdates(_ enabled: Bool) {
         guard enabled != autoCheckUpdates else { return }
         autoCheckUpdates = enabled

@@ -55,7 +55,11 @@ enum BackgroundUpdateRefresh {
         bondStore: any BondStore = UserDefaultsBondStore()
     ) async {
         defer { schedule() }
-        guard let release = await runner.run() else { return }
+        // Keep the decision and its ledger write attached to one snapshot. This is normally a
+        // no-link wake, but it also makes the function correct if app/device state changes while
+        // its network request is in flight.
+        let device = runner.device()
+        guard let release = await runner.run(device: device) else { return }
         let posted = await notifier.notifyUpdateAvailable(
             version: release.version,
             deviceName: bondStore.load()?.deviceName ?? "your bike computer"
@@ -65,6 +69,6 @@ enum BackgroundUpdateRefresh {
         // version, never a nag, and the sheet won't re-raise what the notification already raised.
         // A *denied* notifier records nothing, so the offer survives for the launch sheet.
         guard posted else { return }
-        runner.recordAnswered(version: release.version, device: runner.device())
+        runner.recordAnswered(version: release.version, device: device)
     }
 }
