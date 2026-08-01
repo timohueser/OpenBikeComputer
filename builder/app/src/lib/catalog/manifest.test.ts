@@ -30,9 +30,11 @@ describe("parseRoot", () => {
         expect(catalog.skins.map((s) => s.id)).toEqual(["contrast", "default"]);
         expect(catalog.skins[0].preview).toBeNull();
         expect(catalog.skins[1].preview).toMatchObject({
-            url: "https://maps.example.org/catalog/previews/default.png",
             bytes: 19,
         });
+        expect(catalog.skins[1].preview?.url).toMatch(
+            /^https:\/\/maps\.example\.org\/catalog\/previews\/default\.[0-9a-f]{64}\.png$/,
+        );
         expect(catalog.regions.map((r) => r.id)).toEqual([
             "europe/switzerland",
             "europe/switzerland/basel-stadt",
@@ -61,6 +63,18 @@ describe("parseRoot", () => {
             d.regions[0].population = 8_700_000;
         });
         expect(parseRoot(doc).regions).toHaveLength(2);
+    });
+
+    it("keeps accepting catalogs published with stable object URLs", () => {
+        const body = mutated((d) => {
+            d.cell_index[0].url = "https://maps.example.org/catalog/cells/coarse/index.json";
+            d.regions[0].cells_url = "https://maps.example.org/catalog/regions/europe/switzerland/cells.json";
+            d.skins[1].preview.url = "https://maps.example.org/catalog/previews/default.png";
+        });
+        const catalog = parseRoot(body);
+        expect(catalog.cell_index[0].url.endsWith("/cells/coarse/index.json")).toBe(true);
+        expect(catalog.regions[0].cells_url.endsWith("/regions/europe/switzerland/cells.json")).toBe(true);
+        expect(catalog.skins[1].preview?.url.endsWith("/previews/default.png")).toBe(true);
     });
 
     it.each<[string, (d: LooseDoc) => void]>([

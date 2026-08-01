@@ -30,10 +30,13 @@ The key words MUST, MUST NOT, SHOULD, and MAY are interpreted as in RFC 2119.
 3. **Pinned composition.** The small root pins every satellite by byte length and
    SHA-256. Satellites pin every cell. A consumer either has one consistent
    publish or rejects it.
-4. **One schema, many skins.** Geometry, routing, LODs, and style-id assignment
+4. **Immutable referenced bytes.** Every pinned object's published key contains
+   its SHA-256. Replacing the root therefore leaves every object referenced by an
+   older, cached root available under its old key.
+5. **One schema, many skins.** Geometry, routing, LODs, and style-id assignment
    are baked once. A skin contains presentation only and is stamped during
    assembly.
-5. **Deterministic and loud.** Stable inputs produce stable documents apart from
+6. **Deterministic and loud.** Stable inputs produce stable documents apart from
    the explicit generation timestamp. Missing cells, mixed revisions, malformed
    bands, and digest disagreements are errors.
 
@@ -43,18 +46,26 @@ The key words MUST, MUST NOT, SHOULD, and MAY are interpreted as in RFC 2119.
 catalog.json
 schema.json
 skins/<id>.json
-cells/<band>/index.json
-cells/<band>/<i>/<j>.obcm
 cells/<band>/<i>/<j>.obcm.json
 regions/<region_id>/region.json
 regions/<region_id>/boundary.poly
-regions/<region_id>/cells.json
+cells/<band>/index.<sha256>.json
+cells/<band>/<i>/<j>.<sha256>.obcm
+regions/<region_id>/cells.<sha256>.json
+previews/<id>.<sha256>.png
 ```
 
 `catalog.json` is the root. A named region is a selection preset, not an OBCM
 artifact: its satellite lists cell ids for each band. Cell indexes are keyed by
 band rather than only by cell size because two semantic bands MAY use the same
 `cell_log2`.
+
+`schema.json`, skin documents, cell sidecars, region metadata, and boundaries are
+producer records and MAY retain stable keys because no root points at them.
+Every root-referenced cell, satellite, and preview uses the immutable form above;
+the digest immediately before its final extension is the same lowercase SHA-256
+carried by its pin. Local bake trees keep the unsuffixed names, so content
+addressing changes publication rather than the resumable bake layout.
 
 The root and satellites are complete JSON documents. Unknown optional fields MAY
 be ignored. Missing required fields, unknown enum values, duplicate ids, unknown
@@ -242,7 +253,7 @@ The pinned cell index has this shape:
       "id": "18/1204/1052",
       "bytes": 552,
       "sha256": "8e2803c1749d16d151ec22abb5f541b06cfdc7c102b46ce080807f5cf0504f83",
-      "url": "https://maps.example.org/cells/fine/1204/1052.obcm",
+      "url": "https://maps.example.org/cells/fine/1204/1052.8e2803c1749d16d151ec22abb5f541b06cfdc7c102b46ce080807f5cf0504f83.obcm",
       "built_at": "2026-07-30T02:12:55Z",
       "sources": [
         { "extract_id": "europe/switzerland", "snapshot": "2026-07-19" }
@@ -300,6 +311,13 @@ consumer MUST restrict all satellite and cell requests to the configured catalog
 origin; it MUST NOT follow the catalog to an unrelated origin. Plain HTTP is
 permitted only for loopback development.
 
+New v2 producers MUST place the pinned object's lowercase SHA-256 immediately
+before the URL's final extension. The path is immutable: producers MUST NOT later
+serve different bytes at that key and MUST retain an object while a previously
+published root may still reference it. Consumers use the explicit URL and digest;
+they MUST continue to accept older v2 catalogs whose URLs used stable unsuffixed
+keys, but MUST NOT derive a URL from an id or digest themselves.
+
 For every pinned object, consumers MUST:
 
 1. download the complete body;
@@ -336,9 +354,10 @@ A publish MUST make all referenced content available before replacing the root:
 
 A failure before step 4 leaves the previously published root authoritative.
 `catalog.json` SHOULD use a short cache lifetime (at most 60 seconds or
-revalidation). Because current cell paths are stable and may be replaced on a
-re-bake, cell and satellite responses MUST revalidate rather than be treated as
-immutable content-addressed keys.
+revalidation). Digest-addressed cells, satellites, and previews SHOULD use a long
+immutable cache lifetime. A publisher MUST NOT overwrite the stable referenced
+keys used by legacy v2 roots during the transition to content-addressed keys;
+those roots must remain readable until their cache lifetime has elapsed.
 
 Generation is deterministic for a fixed tree and `generated_at`: objects and
 entries are sorted by their specified ids, JSON spelling is stable, and the root

@@ -185,7 +185,7 @@
         }
       ],
       "preview": {
-        "url": "https://maps.example.org/catalog/previews/default.png",
+        "url": "https://maps.example.org/catalog/previews/default.a006d15f4bc15671408b6e2f1b9bddc98e589151972cff251dcd4d86faadce67.png",
         "bytes": 19,
         "sha256": "a006d15f4bc15671408b6e2f1b9bddc98e589151972cff251dcd4d86faadce67"
       }
@@ -242,7 +242,7 @@
         "mid": 0,
         "network": 1
       },
-      "cells_url": "https://maps.example.org/catalog/regions/europe/switzerland/cells.json",
+      "cells_url": "https://maps.example.org/catalog/regions/europe/switzerland/cells.8a29713d62450f8655ede3e90f734707375f86df7aab4bdecfd1ff5c77efad27.json",
       "cells_bytes": 342,
       "cells_sha256": "8a29713d62450f8655ede3e90f734707375f86df7aab4bdecfd1ff5c77efad27"
     },
@@ -297,7 +297,7 @@
         "mid": 0,
         "network": 0
       },
-      "cells_url": "https://maps.example.org/catalog/regions/europe/switzerland/basel-stadt/cells.json",
+      "cells_url": "https://maps.example.org/catalog/regions/europe/switzerland/basel-stadt/cells.8dfcd49faffa13813c6226b1676215e49286e759f7e79505d096d71ac5f5c91a.json",
       "cells_bytes": 288,
       "cells_sha256": "8dfcd49faffa13813c6226b1676215e49286e759f7e79505d096d71ac5f5c91a"
     }
@@ -308,36 +308,36 @@
       "cell_log2": 20,
       "cell_count": 1,
       "known_empty_count": 0,
-      "bytes": 525,
-      "sha256": "4a4d8e047e24caa3c335ed77f6993f84b8178a90238c2504b8a9230ead68de49",
-      "url": "https://maps.example.org/catalog/cells/coarse/index.json"
+      "bytes": 590,
+      "sha256": "94825e54638005549505271cde268cd6ccacfd5a07d5078b0df4fe28cf5230ae",
+      "url": "https://maps.example.org/catalog/cells/coarse/index.94825e54638005549505271cde268cd6ccacfd5a07d5078b0df4fe28cf5230ae.json"
     },
     {
       "band": "mid",
       "cell_log2": 19,
       "cell_count": 1,
       "known_empty_count": 0,
-      "bytes": 519,
-      "sha256": "d22e824630471e8a9528ffda4e8dd8ca0168c1ee475155ea740940a314ee766e",
-      "url": "https://maps.example.org/catalog/cells/mid/index.json"
+      "bytes": 584,
+      "sha256": "aa7521430c0cd93b95b477e1e50e37debcbbb54f1710ff4aadc5c28bbd34bae1",
+      "url": "https://maps.example.org/catalog/cells/mid/index.aa7521430c0cd93b95b477e1e50e37debcbbb54f1710ff4aadc5c28bbd34bae1.json"
     },
     {
       "band": "fine",
       "cell_log2": 18,
       "cell_count": 2,
       "known_empty_count": 1,
-      "bytes": 1284,
-      "sha256": "81d657fb871f9d2a8db964ae3b5f6715b617882dc7f9446b295ae80f5a46ec97",
-      "url": "https://maps.example.org/catalog/cells/fine/index.json"
+      "bytes": 1414,
+      "sha256": "829380ee422d917f280a1a3cb1e265a7a907e5116723317ea638387daad7aaae",
+      "url": "https://maps.example.org/catalog/cells/fine/index.829380ee422d917f280a1a3cb1e265a7a907e5116723317ea638387daad7aaae.json"
     },
     {
       "band": "network",
       "cell_log2": 18,
       "cell_count": 2,
       "known_empty_count": 0,
-      "bytes": 942,
-      "sha256": "11f1ff0421fe06987a77b7dc2a5878aa95b287aa4383baffede1310f2e6b970a",
-      "url": "https://maps.example.org/catalog/cells/network/index.json"
+      "bytes": 1072,
+      "sha256": "55e05ffef029c5515f7a5a200589732e66dbc683dc429f0d0def08261d36a3ab",
+      "url": "https://maps.example.org/catalog/cells/network/index.55e05ffef029c5515f7a5a200589732e66dbc683dc429f0d0def08261d36a3ab.json"
     }
   ]
 }
