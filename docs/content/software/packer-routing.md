@@ -632,6 +632,12 @@ downloaded with byte-length and SHA-256 checks, then passed to
 [`obc-web-assemble`](src:apps/obc-web-assemble) in a worker. Cancelling
 terminates the worker; there is no verification bypass.
 
+The same digest appears in each referenced object's published key. Cells,
+per-band indexes, region cell lists, and previews are therefore immutable below
+one root: a CDN can keep serving an older root and its objects while a new root
+propagates, and unchanged planet cells keep their existing keys instead of being
+uploaded into a duplicate generation directory.
+
 ### Editing a skin
 
 Default and Dusk remain catalog objects with digest-pinned Teningen preview
