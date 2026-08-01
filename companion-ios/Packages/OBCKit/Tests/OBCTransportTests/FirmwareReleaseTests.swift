@@ -74,6 +74,7 @@ struct FirmwareReleaseTests {
         #"{"version":"1.4.0","size":1,"sha256":"nope","url":"https://x/"}"#,                    // short digest
         #"{"version":"1.4.0","size":1,"sha256":"§64§","url":"http://x/"}"#,                     // not https
         #"{"version":"1.4.0","size":1.5,"sha256":"§64§","url":"https://x/"}"#,                  // not an integer
+        #"{"version":"1.4.0","size":9007199254740992,"sha256":"§64§","url":"https://x/"}"#,     // not safely representable in both clients
         #"{"version":"1.4.0","size":true,"sha256":"§64§","url":"https://x/"}"#,                 // not a number
         #"{"version":"","size":1,"sha256":"§64§","url":"https://x/"}"#,                         // empty version
         #"{"size":1,"sha256":"§64§","url":"https://x/"}"#,                                      // no version
@@ -117,11 +118,20 @@ struct FirmwareReleaseTests {
         #expect(try #require(FirmwareVersion.compare("1.4.0-rc1", "1.4.0-rc2")) < 0)
     }
 
+    /// A manifest controls one side of this comparison. Keep the full shared safe-integer range
+    /// comparable without arithmetic overflow, even at its boundary.
+    @Test func comparesTheLargestParseableNumericComponentWithoutTrapping() throws {
+        let largest = "9007199254740991.0.0"
+        #expect(try #require(FirmwareVersion.compare(largest, "0.0.0")) > 0)
+        #expect(try #require(FirmwareVersion.compare("0.0.0", largest)) < 0)
+    }
+
     /// The shapes that are *not* release versions. Each one would, if it parsed, put the app in the
     /// business of guessing what a device is running.
     @Test(arguments: [
         "", " ", "v", "1", "1.2", "1.2.3.4", "1.2.x", "1.2.-1", "v1.2.0-", "1.2.0+",
         "abc1234", "g1a2b3c4", "1.2.0-rc 1", "one.two.three", "1.2.0+build+more", "-1.2.0",
+        "9007199254740992.0.0",
     ])
     func refusesEverythingThatIsNotAReleaseVersion(text: String) {
         #expect(FirmwareVersion.parse(text) == nil, "\"\(text)\" must not parse as a release version")

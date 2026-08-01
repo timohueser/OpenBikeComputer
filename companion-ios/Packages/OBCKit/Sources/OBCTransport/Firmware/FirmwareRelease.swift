@@ -122,7 +122,9 @@ private func positiveInteger(_ value: Any?) -> Int? {
     guard let number = value as? NSNumber else { return nil }
     guard CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
     let double = number.doubleValue
-    guard double > 0, double <= Double(Int.max), double.rounded() == double else { return nil }
+    // Keep this identical to JavaScript's `Number.isSafeInteger`: the same manifest must have one
+    // meaning in both clients, and converting a rounded value near `Int.max` can itself trap.
+    guard double > 0, double <= 9_007_199_254_740_991, double.rounded() == double else { return nil }
     return Int(double)
 }
 
@@ -157,8 +159,8 @@ public struct FirmwareVersion: Equatable, Sendable {
     ///
     /// The dialect is the builder's regex, hand-rolled: an optional leading `v`, a three-part
     /// numeric core, an optional `-pre` tag of `[0-9A-Za-z.-]`, and optional `+build` metadata of
-    /// the same alphabet which is parsed only to be discarded. A numeric part too large for `Int`
-    /// is treated as unparseable — no real version reaches it, and guessing is worse.
+    /// the same alphabet which is parsed only to be discarded. A numeric part outside JavaScript's
+    /// safe-integer range is treated as unparseable so both clients give it exactly one meaning.
     public static func parse(_ text: String) -> FirmwareVersion? {
         var rest = Substring(text.trimmingCharacters(in: .whitespacesAndNewlines))
         if rest.first == "v" { rest = rest.dropFirst() }
@@ -182,7 +184,12 @@ public struct FirmwareVersion: Equatable, Sendable {
         guard parts.count == 3 else { return nil }
         var numbers: [Int] = []
         for part in parts {
-            guard !part.isEmpty, part.allSatisfy({ $0.isASCII && $0.isNumber }), let n = Int(part) else {
+            guard
+                !part.isEmpty,
+                part.allSatisfy({ $0.isASCII && $0.isNumber }),
+                let n = Int(part),
+                n <= 9_007_199_254_740_991
+            else {
                 return nil
             }
             numbers.append(n)
@@ -197,9 +204,11 @@ public struct FirmwareVersion: Equatable, Sendable {
     /// update is ever offered, and collapsing `nil` into `0` would silently offer one.
     public static func compare(_ a: String, _ b: String) -> Int? {
         guard let left = parse(a), let right = parse(b) else { return nil }
-        if left.major != right.major { return left.major - right.major }
-        if left.minor != right.minor { return left.minor - right.minor }
-        if left.patch != right.patch { return left.patch - right.patch }
+        // Do not subtract untrusted numeric input just to learn its order. Relational comparison
+        // states the actual intent and stays safe if the accepted component range ever changes.
+        if left.major != right.major { return left.major < right.major ? -1 : 1 }
+        if left.minor != right.minor { return left.minor < right.minor ? -1 : 1 }
+        if left.patch != right.patch { return left.patch < right.patch ? -1 : 1 }
         if left.pre == right.pre { return 0 }
         // A pre-release precedes its release; between two pre-releases, plain lexicographic order
         // over the bytes is enough for the one thing this decides ("is the published one newer
