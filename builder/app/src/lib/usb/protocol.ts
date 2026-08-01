@@ -68,6 +68,10 @@ export const ObjectType = {
      * owns both.
      */
     Map: 16,
+    /** One OBCM shard in a manifest-committed volume set (USB only). */
+    MapShard: 17,
+    /** The OBCA manifest that commits a previously uploaded shard set (USB only). */
+    MapSet: 18,
 } as const;
 export type ObjectType = (typeof ObjectType)[keyof typeof ObjectType];
 
@@ -82,6 +86,17 @@ export const NEW_OBJECT_ID = 0xffff;
 
 /** Object id of the singletons: the list objects, diagnostics, and the `fwImage` staging slot. */
 export const SINGLETON_OBJECT_ID = 0;
+
+/** Pack a volume-set shard's `(shard_count, index)` into the descriptor's object id (§4.2). */
+export function setPartId(shardCount: number, index: number): number {
+    if (!Number.isInteger(shardCount) || shardCount < 1 || shardCount > 32) {
+        throw new RangeError(`a map set must contain 1–32 shards, got ${shardCount}.`);
+    }
+    if (!Number.isInteger(index) || index < 0 || index >= shardCount) {
+        throw new RangeError(`shard index ${index} is outside a ${shardCount}-shard set.`);
+    }
+    return (shardCount << 8) | index;
+}
 
 /**
  * The fixed **12-byte** transfer descriptor (§4.2) — one shape for upload, download request,
@@ -367,7 +382,7 @@ export function encodeSetRouteRetention(objectId: number, retention: number): Ui
  *
  * `obcmVersion` is the OBCM **map-format** version this device's firmware reads — a different
  * number in a different sequence from `version`, which is the wire contract. It is the one fact
- * `OBCC_Spec.md` §6(c) turns on: don't offer a map artifact the connected device cannot read. A
+ * `OBCC_Spec.md` §10 turns on: don't offer an assembly the connected device cannot read. A
  * trailing field the read did not carry is `null`, **never** a fabricated `0`: `obcmVersion: 0`
  * would read as "this device supports OBCM v0" and refuse every real map, where `null` correctly
  * means "unknown" and takes §6(c)'s no-known-target-firmware branch (offer it, stating the

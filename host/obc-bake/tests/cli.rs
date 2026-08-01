@@ -27,12 +27,12 @@ fn obc_bake() -> Command {
 }
 
 #[test]
-fn regions_lists_the_curated_shelf() {
+fn regions_lists_the_curated_coverage() {
     let out = obc_bake().arg("regions").output().expect("run");
     assert!(out.status.success());
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.contains("europe/germany/bayern"), "{text}");
-    assert!(text.contains("19 regions"), "{text}");
+    assert!(text.contains("20 regions"), "{text}");
 }
 
 #[test]
@@ -41,6 +41,11 @@ fn bake_then_publish_is_the_whole_loop() {
     let extracts = dir.join("extracts/europe");
     std::fs::create_dir_all(&extracts).unwrap();
     std::fs::copy(repo("builder/tests/corpus/data/tiny.osm.pbf"), extracts.join("testland-latest.osm.pbf")).unwrap();
+    std::fs::write(
+        extracts.join("testland.poly"),
+        "testland\n1\n  7.790 47.980\n  7.830 47.980\n  7.830 48.010\n  7.790 48.010\n  7.790 47.980\nEND\nEND\n",
+    )
+    .unwrap();
     let regions = dir.join("regions.toml");
     std::fs::write(&regions, "regions = [ { id = \"europe/testland\", name = \"Testland\" } ]\n").unwrap();
     let tree = dir.join("tree");
@@ -48,29 +53,32 @@ fn bake_then_publish_is_the_whole_loop() {
     let out = obc_bake()
         .args(["bake", "--out"])
         .arg(&tree)
+        .args(["--base-url", "https://maps.example/obc"])
         .arg("--regions")
         .arg(&regions)
         .arg("--presets-dir")
         .arg(repo("builder/presets"))
-        .args(["--preset", "default", "--source"])
+        .args(["--source"])
         .arg(dir.join("extracts"))
         .arg("--no-land")
         .output()
         .expect("run bake");
     let log = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(out.status.success(), "{log}");
-    assert!(log.contains("bake summary"), "{log}");
-    assert!(tree.join("regions/europe/testland/default.obcm").is_file(), "{log}");
+    assert!(log.contains("cell bake summary"), "{log}");
+    assert!(tree.join("catalog.json").is_file(), "{log}");
+    assert!(tree.join("regions/europe/testland/cells.json").is_file(), "{log}");
 
     // A second run says so rather than re-packing.
     let out = obc_bake()
         .args(["bake", "--out"])
         .arg(&tree)
+        .args(["--base-url", "https://maps.example/obc"])
         .arg("--regions")
         .arg(&regions)
         .arg("--presets-dir")
         .arg(repo("builder/presets"))
-        .args(["--preset", "default", "--source"])
+        .args(["--source"])
         .arg(dir.join("extracts"))
         .arg("--no-land")
         .output()
@@ -88,84 +96,61 @@ fn bake_then_publish_is_the_whole_loop() {
     assert!(out.status.success(), "{log}");
     assert!(log.contains("nothing uploaded"), "{log}");
     let manifest = std::fs::read_to_string(tree.join("catalog.json")).expect("manifest written");
-    assert!(manifest.contains("\"region_id\": \"europe/testland\""), "{manifest}");
-
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn publishing_a_shrunken_catalog_is_refused_at_the_command_line() {
-    let dir = scratch("shrink");
-    let extracts = dir.join("extracts/europe");
-    std::fs::create_dir_all(&extracts).unwrap();
-    for region in ["alpha", "beta"] {
-        std::fs::copy(
-            repo("builder/tests/corpus/data/tiny.osm.pbf"),
-            extracts.join(format!("{region}-latest.osm.pbf")),
-        )
-        .unwrap();
-    }
-    let dest = dir.join("public");
-
-    let bake = |tree: &std::path::Path, regions: &str| {
-        let list = tree.with_extension("toml");
-        std::fs::write(&list, regions).unwrap();
-        let out = obc_bake()
-            .args(["bake", "--out"])
-            .arg(tree)
-            .arg("--regions")
-            .arg(&list)
-            .arg("--presets-dir")
-            .arg(repo("builder/presets"))
-            .args(["--preset", "default", "--source"])
-            .arg(dir.join("extracts"))
-            .arg("--no-land")
-            .output()
-            .expect("run bake");
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    };
-    let publish = |tree: &std::path::Path, extra: &[&str]| {
-        obc_bake()
-            .arg("publish")
-            .arg(tree)
-            .args(["--base-url", "https://maps.example/obc", "--target"])
-            .arg(format!("dir:{}", dest.display()))
-            .args(extra)
-            .output()
-            .expect("run publish")
-    };
-
-    let full = dir.join("full-tree");
-    bake(
-        &full,
-        "regions = [ { id = \"europe/alpha\", name = \"Alpha\" }, { id = \"europe/beta\", name = \"Beta\" } ]\n",
-    );
-    assert!(publish(&full, &[]).status.success(), "the first publish establishes the catalog");
-
-    // The trap: a narrower tree published over it.
-    let partial = dir.join("partial-tree");
-    bake(&partial, "regions = [ { id = \"europe/alpha\", name = \"Alpha\" } ]\n");
-    let out = publish(&partial, &[]);
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(!out.status.success(), "a shrinking publish must fail: {err}");
-    assert!(err.contains("europe/beta [default]"), "{err}");
-
-    // …and `--allow-shrink` parses as a switch (not as a value flag swallowing the
-    // next argument) and lets the deliberate case through, loudly.
-    let out = publish(&partial, &["--allow-shrink"]);
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(out.status.success(), "{err}");
-    assert!(err.contains("COVERAGE REMOVED"), "{err}");
+    assert!(manifest.contains("\"id\": \"europe/testland\""), "{manifest}");
 
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn a_region_outside_the_curated_list_is_refused() {
-    let out = obc_bake().args(["bake", "--out", "/tmp/nope", "--region", "europe/france"]).output().expect("run");
+    let out = obc_bake().args(["bake", "--out", "/tmp/nope", "europe/france"]).output().expect("run");
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("not in the curated region list"), "{err}");
+}
+
+#[test]
+fn all_checks_osmium_before_touching_the_planet_source() {
+    let out = obc_bake()
+        .env("OBC_OSMIUM", "/definitely/not/an/osmium-binary")
+        .args(["bake", "--all", "--source", "http://127.0.0.1:1/planet.osm.pbf", "--presets-dir"])
+        .arg(repo("builder/presets"))
+        .output()
+        .expect("run");
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("is required for `obc bake --all`"), "{err}");
+    assert!(!err.contains("HEAD http"), "the prerequisite check must happen before network I/O: {err}");
+}
+
+#[test]
+fn all_checks_replication_tool_before_touching_the_planet_source() {
+    let out = obc_bake()
+        .env("OBC_OSMIUM", "true")
+        .env("OBC_PYOSMIUM_UP_TO_DATE", "/definitely/not/a/pyosmium-up-to-date-binary")
+        .args(["bake", "--all", "--source", "http://127.0.0.1:1/planet.osm.pbf", "--presets-dir"])
+        .arg(repo("builder/presets"))
+        .output()
+        .expect("run");
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("obc doctor --install"), "{err}");
+    assert!(!err.contains("HEAD http"), "the prerequisite check must happen before network I/O: {err}");
+}
+
+#[test]
+fn all_and_a_curated_selector_are_mutually_exclusive() {
+    let out = obc_bake().args(["bake", "--all", "europe/germany"]).output().expect("run");
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("cannot be combined with region selectors"));
+}
+
+#[test]
+fn unknown_flags_are_refused_instead_of_ignored() {
+    let out = obc_bake().args(["bake", "--out", "/tmp/nope", "--typo", "value"]).output().expect("run");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "an unknown flag must not be swallowed: {err}");
+    assert!(err.contains("unknown flag `--typo`"), "{err}");
 }
 
 #[test]

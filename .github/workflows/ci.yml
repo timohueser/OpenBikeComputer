@@ -20,17 +20,15 @@ name: CI
 #     //rust-toolchain.toml and shared with local dev. It intentionally tracks floating stable.
 #   * obc-boot (the 32 KB DFU bootloader, #617) is excluded + standalone the same way as the
 #     board crate; its job adds a flash-size guard against the 32 KB slot.
-#   * obc-web-convert (#896) and obc-web-preview (#899) are normal workspace members (so
-#     fmt/clippy/test/deny already cover them) whose *shipping* artifacts are wasm32 builds the
-#     web builder imports — hence the extra `wasm-bridges` job, its two bundle-size guards, and
-#     the artifact hand-off into `web`.
+#   * obc-web-convert (#896), obc-web-assemble (#1034), and obc-skin-preview (#1045) are normal
+#     workspace members (so fmt/clippy/test/deny already cover them) whose *shipping* artifacts are
+#     wasm32 builds the web builder imports — hence the extra `wasm-bridges` job, its three
+#     bundle-size guards, and the artifact hand-off into `web`.
 #   * obc-desktop (#906) is the third excluded + standalone crate: a Tauri app, so it brings a
 #     platform webview with it (WebKitGTK on Linux) and would otherwise put those headers in
 #     every renderer test's way. Its job is also the only Rust one that needs Node — the shell
 #     *embeds* the built frontend, so it breaks from either side and both halves are built there.
-#     It is the only **three-OS matrix** in this file (D2, #907): it is the artifact a user
-#     installs, it statically links a vendored libGEOS, and a C++ dependency proved on Linux
-#     alone is not proved. Deliberately the one Rust job with *no* system GEOS anywhere.
+#     It is the only **three-OS matrix** in this file because it is the artifact a user installs.
 #   * `--locked` everywhere so a stale Cargo.lock (any of the four) fails CI.
 
 on:
@@ -70,7 +68,7 @@ jobs:
               # host/ holds the packer, the bench + its golden hashes, and the test oracles
               # (obcm-testkit, obc-vectors) that firmware crates dev-depend on.
               - 'host/**'
-              # apps/ holds the four shells: the simulator, both wasm hosts, and the Tauri app.
+              # apps/ holds the shells: the simulator, the wasm hosts, and the Tauri app.
               - 'apps/**'
               - 'builder/presets/**'
               # builder/tests/ drives the real obc-pack binary and the builder's pure API
@@ -101,32 +99,34 @@ jobs:
               - 'companion-ios/**'
               - '.github/workflows/ci.yml'
             desktop:
-              # The Tauri shell embeds the built frontend and links obc-pack, so it
-              # breaks from either side.
+              # The Tauri shell embeds the same published-cell frontend, so either
+              # half can break the packaged app.
               - 'apps/obc-desktop/**'
-              - 'host/obc-pack/**'
+              - 'apps/obc-skin-preview/**'
               - 'builder/app/**'
-              - 'builder/presets/**'
-              # The GEOS smoke test (#907) packs this fixture with that preset and
-              # pins the digest, so either one moving must re-run the three-platform
-              # matrix rather than leaving a stale hash asserted.
-              - 'builder/tests/corpus/**'
-              - 'builder/palette.json'
               - 'rust-toolchain.toml'
               - '.github/workflows/ci.yml'
             web:
               - 'builder/app/**'
-              # The frontend now embeds firmware code: obc-web-convert (#896) compiles the shared
-              # obc-route conversion path to wasm and obc-web-preview (#899) the obc-render map
-              # path, so any shared-crate change can move those bytes. The conversion bridge's
-              # byte-identity guard reads specs/vectors/, and the toolchain file picks the
-              # compiler that produces both modules.
+              # The frontend now embeds firmware and host code: obc-web-convert (#896) compiles the
+              # shared obc-route conversion path to wasm and obc-web-assemble (#1034) the
+              # obcm-assemble OBCA engine — so any shared-
+              # crate change can move those bytes. The conversion bridge's byte-identity guard reads
+              # specs/vectors/ and the assembly bridge's reads its own checked-in cell fixture under
+              # apps/, and the toolchain file picks the compiler that produces both modules.
               - 'firmware/**'
               - 'host/**'
               - 'apps/**'
               - 'specs/vectors/**'
               - 'rust-toolchain.toml'
               - '.github/workflows/ci.yml'
+
+  retired-map-stack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deleted catalog and bake APIs stay deleted
+        run: python3 tools/check_retired_map_stack.py
 
   # cargo fmt --check for all three manifests. rustfmt walks up from each file and finds the
   # shared rustfmt.toml at the repo root, so the excluded crates inherit it; the virtual workspace
@@ -423,13 +423,22 @@ jobs:
           tool: trunk@0.21.14
       - name: trunk build (obc-web-demo → wasm)
         run: trunk build --config docs/Trunk.toml
+      # The assembly engine (#1024) has to stay browser-shippable: P4 runs *this* code in a tab, so
+      # the library must carry no filesystem and no native dependency. Building it for wasm32 with
+      # the `cli` feature off is the guard — the CLI is the native driver and owns every std::fs call
+      # in the crate, so a stray `std::fs` in the engine fails here rather than in P4.
+      - name: cargo build -p obcm-assemble --lib (wasm32, engine only)
+        run: cargo build -p obcm-assemble --lib --no-default-features --locked --target wasm32-unknown-unknown
 
-  # The hosted builder's two wasm bridges — the shared firmware crates compiled to wasm so the
-  # hosted tier needs no backend at all:
+  # The hosted builder's three wasm bridges — the shared crates compiled to wasm so the hosted tier
+  # needs no backend at all:
   #
   #   * obc-web-convert (#896) — the obc-route GPX↔OBCR path, so route conversion runs client-side.
-  #   * obc-web-preview (#899) — the obc-reader/obc-render map path, so a preset card shows what
-  #     that preset actually draws.
+  #   * obc-web-assemble (#1034) — the obcm-assemble OBCA engine, so downloaded map cells become a
+  #     map in the tab. This is the one that makes the cell catalog's promise true (epic #1016):
+  #     any selection is an assembly, not a bake, and nothing has to be pre-baked or server-side.
+  #   * obc-skin-preview (#1045) — the firmware reader + renderer over the canonical Teningen map,
+  #     loaded only while the skin-space editor is open.
   #
   # Two things happen per module and the order matters:
   #
@@ -457,18 +466,12 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: wasm-pack@0.15.0
-      - name: wasm-pack build (obc-web-convert → wasm)
-        run: |
-          wasm-pack build apps/obc-web-convert --release --target web \
-            --out-dir ../../builder/app/src/lib/convert/pkg \
-            --out-name obc_web_convert
+      - name: Build all wasm bridges
+        run: bash builder/build-wasm-bridges.sh
       - name: bundle-size budget (convert)
         run: python3 firmware/tools/wasm_size_guard.py --module convert
-      - name: wasm-pack build (obc-web-preview → wasm)
-        run: |
-          wasm-pack build apps/obc-web-preview --release --target web \
-            --out-dir ../../builder/app/src/lib/preview/pkg \
-            --out-name obc_web_preview
+      - name: bundle-size budget (assemble)
+        run: python3 firmware/tools/wasm_size_guard.py --module assemble
       - name: bundle-size budget (preview)
         run: python3 firmware/tools/wasm_size_guard.py --module preview
       - uses: actions/upload-artifact@v4
@@ -478,8 +481,13 @@ jobs:
           retention-days: 1
       - uses: actions/upload-artifact@v4
         with:
-          name: obc-web-preview-pkg
-          path: builder/app/src/lib/preview/pkg
+          name: obc-web-assemble-pkg
+          path: builder/app/src/lib/assemble/pkg
+          retention-days: 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: obc-skin-preview-pkg
+          path: builder/app/src/lib/skin/pkg
           retention-days: 1
 
   # Render the docs site (stdlib-only Python, no pip) and fail on error, plus the cross-page
@@ -568,11 +576,13 @@ jobs:
   # tries to ship it. The *contents* of the web bundle (no job polling, no style
   # editor) are asserted by vitest, which builds and inspects the emitted chunks.
   #
-  # The two wasm bridges come from `wasm-bridges` rather than being rebuilt here, so the
+  # The three wasm bridges come from `wasm-bridges` rather than being rebuilt here, so the
   # module the byte-identity tests run against is literally the one the size budget passed. It is
-  # a hard dependency, not an optimisation, and it is why the download lands before `npm ci`:
-  # every step below needs it — the TS wrapper imports the generated bindings, so `npm run check`
-  # type-checks against them, and both vitest suites and `build:all` fail without the artifact.
+  # a hard dependency, not an optimisation, and it is why the downloads land before `npm ci`:
+  # every step below needs them — the TS wrappers import the generated bindings, so `npm run check`
+  # type-checks against them, and the vitest suites and `build:all` fail without the artifacts.
+  # The assembly bridge's suite is also the *headless smoke* for #1034: it assembles the checked-in
+  # cell fixture in Node and compares the result to the bytes the native CLI wrote.
   # The two jobs share one path filter so they are always skipped or run together.
   web:
     needs: [changes, wasm-bridges]
@@ -589,8 +599,12 @@ jobs:
           path: builder/app/src/lib/convert/pkg
       - uses: actions/download-artifact@v4
         with:
-          name: obc-web-preview-pkg
-          path: builder/app/src/lib/preview/pkg
+          name: obc-web-assemble-pkg
+          path: builder/app/src/lib/assemble/pkg
+      - uses: actions/download-artifact@v4
+        with:
+          name: obc-skin-preview-pkg
+          path: builder/app/src/lib/skin/pkg
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -616,29 +630,7 @@ jobs:
   # imports comes from `wasm-bridges`, for the same reason the `web` job takes it.
   # No leg of this matrix runs Node.
   #
-  # Build-only plus tests: the `#[ignore]`d ones pack a real region off the network
-  # and belong on a developer's machine, not in CI.
-  #
-  # **Three platforms since D2 (#907)**, because a vendoring story exercised on one
-  # OS is not a vendoring story. `obc-pack` links libGEOS, a C++ library; the app
-  # turns on `geos/static` so a user installs nothing, and the only way to know that
-  # holds for macOS, Windows MSVC and Linux is to build it on macOS, Windows MSVC
-  # and Linux.
-  #
-  # Two properties are load-bearing and easy to lose in an edit:
-  #
-  #  * **No runner here has a system libGEOS**, and `setup-host-deps` — which builds
-  #    one for the host workspace's jobs — is deliberately *not* used. So this job
-  #    cannot accidentally pass by linking someone else's GEOS: if `vendored-geos`
-  #    stopped working, `geos-sys`'s build script would fail to find any library at
-  #    all and every leg would go red.
-  #  * **Everything runs in `--release`.** Not for speed of the code but for count of
-  #    GEOS builds: cargo keys build-script output on the profile, so a debug clippy
-  #    plus a release build would compile the whole of GEOS twice per platform.
-  #
-  # `geos_smoke.rs` is the acceptance test — it packs the checked-in fixture through
-  # the linked GEOS and pins the digest, so all three platforms assert the *same*
-  # bytes. Linking is not evidence that the geometry runs.
+  # The shell is built and tested on all three supported desktop platforms.
   # The bundle the Tauri shell embeds. Built once, on Linux, and handed to all three
   # legs of `desktop` below: it is a Vite build of the same sources whatever runner
   # produces it, so building it per-platform bought nothing and cost three `npm ci`
@@ -657,8 +649,12 @@ jobs:
           path: builder/app/src/lib/convert/pkg
       - uses: actions/download-artifact@v4
         with:
-          name: obc-web-preview-pkg
-          path: builder/app/src/lib/preview/pkg
+          name: obc-web-assemble-pkg
+          path: builder/app/src/lib/assemble/pkg
+      - uses: actions/download-artifact@v4
+        with:
+          name: obc-skin-preview-pkg
+          path: builder/app/src/lib/skin/pkg
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -679,9 +675,12 @@ jobs:
     needs: [changes, desktop-frontend]
     if: needs.changes.outputs.desktop == 'true'
     runs-on: ${{ matrix.os }}
+    env:
+      # Baked into packaged apps; a runtime variable can still override it for a
+      # maintainer testing an unpublished tree.
+      OBC_CATALOG_URL: ${{ vars.OBC_CATALOG_URL }}
     strategy:
-      # One platform's failure must not hide another's — with a C++ dependency the
-      # interesting information is *which* of the three broke.
+      # One platform's failure must not hide another's.
       fail-fast: false
       matrix:
         include:
@@ -710,7 +709,6 @@ jobs:
           key: desktop-${{ matrix.slug }}
       # wry's Linux backend. macOS and Windows need nothing extra — which is most of
       # why Tauri was chosen over Electron (#906) — but Linux wants WebKitGTK.
-      # (CMake, which builds the vendored GEOS, is preinstalled on all three images.)
       - name: Install the Linux webview deps
         if: runner.os == 'Linux'
         run: |
@@ -739,30 +737,10 @@ jobs:
       - name: "obc-desktop: build (release)"
         working-directory: apps/obc-desktop
         run: cargo build --release --locked
-      # The GEOS smoke test lives here: packs the fixture through the vendored
-      # library and asserts the digest. --nocapture so the log records the digest
-      # and the linked GEOS version even on a green run.
-      - name: "obc-desktop: test (incl. the GEOS smoke test)"
+      - name: "obc-desktop: test"
         working-directory: apps/obc-desktop
         run: cargo test --release --locked -- --nocapture
-      # A dynamic reference to libGEOS here would mean the app only works on a
-      # machine that already has it — the exact failure D2 exists to remove. On
-      # Windows there is nothing to check: a missing DLL is a load failure, so the
-      # smoke test above could not have run at all.
-      - name: "obc-desktop: no dynamic libGEOS"
-        if: runner.os != 'Windows'
-        working-directory: apps/obc-desktop
-        run: |
-          bin="target/release/${{ matrix.exe }}"
-          if [ "$RUNNER_OS" = "macOS" ]; then deps=$(otool -L "$bin"); else deps=$(ldd "$bin"); fi
-          if echo "$deps" | grep -i geos; then
-            echo "::error::$bin links libGEOS dynamically — the vendored static build did not take"
-            exit 1
-          fi
-          echo "no libGEOS in the dynamic dependencies"
-      # Recorded so a regression is noticeable (#907's acceptance), and because the
-      # +1.2 MB the static GEOS costs is the number the alternative — shipping a
-      # dylib beside the app — has to beat.
+      # Recorded so an accidental native dependency or bundling regression is visible.
       - name: "obc-desktop: record the artifact size"
         working-directory: apps/obc-desktop
         run: |
@@ -774,17 +752,10 @@ jobs:
           path: apps/obc-desktop/target/release/${{ matrix.exe }}
           retention-days: 7
       # macOS ships two architectures and this crate is built on the Apple-silicon
-      # runner, so the Intel slice is proved by *cross-building* it: enough to know
-      # the vendored GEOS still configures, compiles and links for x86_64, which is
-      # the part that would break. It is not run — a universal `lipo`'d bundle is
-      # D3's (#908) job, and this step is what keeps that option open.
+      # runner, so cross-build the Intel slice to keep a future universal bundle open.
       #
-      # **Push events only, not pull requests.** A second target triple means a second
-      # vendored GEOS and a second full dependency tree: measured at 415 s on a cold
-      # cache, the largest single step in this workflow and about 40 % of the macOS
-      # leg. It is build-only insurance for a future universal bundle, not a
-      # correctness gate on the app anyone runs, so it belongs off the per-PR path —
-      # a merge to develop still catches an x86_64 vendoring break within one commit.
+      # Push events only: a second target triple is build-only insurance, not a
+      # correctness gate on the app anyone runs.
       - name: "obc-desktop: the macOS Intel slice (build-only)"
         if: runner.os == 'macOS' && github.event_name == 'push'
         working-directory: apps/obc-desktop
@@ -795,7 +766,7 @@ jobs:
 
   ci:
     if: always()
-    needs: [changes, fmt, clippy, test, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, web, desktop-frontend, desktop]
+    needs: [changes, retired-map-stack, fmt, clippy, test, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, web, desktop-frontend, desktop]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all required jobs succeeded (or were skipped)

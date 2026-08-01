@@ -176,6 +176,26 @@
       "total_len": 308,
       "crc32": "0x1BFB6E3C"
     },
+    "transfer-set-shard.bin": {
+      "format": "transferControl (spec 4.2) — 12 bytes, protocol v2",
+      "op": 1,
+      "type": 17,
+      "object_id": 2050,
+      "shard_count": 8,
+      "shard_index": 2,
+      "total_len": 308,
+      "crc32": "0x1BFB6E3C",
+      "note": "mapShard: object_id is NOT an object id — it is (shard_count << 8) | index, so 0x0802 is shard 2 of 8 (OBCA 5.1). The count rides every shard, not just the first, so a device refuses an over-large set at shard 0"
+    },
+    "transfer-set-manifest.bin": {
+      "format": "transferControl (spec 4.2) — 12 bytes, protocol v2",
+      "op": 1,
+      "type": 18,
+      "object_id": 65535,
+      "total_len": 520,
+      "crc32": "0x8B2C4E17",
+      "note": "mapSet: the OBCS manifest, new-only and written last (OBCA 5.4). total_len is fixed by the shard count: 72 + 56 x 8"
+    },
     "transfer-download-request.bin": {
       "format": "transferControl (spec 4.2) — 12 bytes, protocol v2",
       "op": 2,
@@ -247,13 +267,33 @@
       "retention_meaning": "2 weeks"
     },
     "update-container-v1.bin": {
-      "format": "OBCU update container (spec 1) — fwImage payload (spec 7.6)",
+      "format": "OBCU update container (spec 1), unsigned/v1 — fwImage payload (spec 7.6)",
       "byte_len": 192,
       "header_len": 64,
       "image_len": 128,
       "image_crc32": "0x5B990292",
       "header_crc32": "0x56B035F8",
       "fw_version": "1.2.0+abc1234",
+      "sig_scheme": 0,
+      "sig_len": 0,
+      "object_id": 0
+    },
+    "update-container-v2.bin": {
+      "format": "OBCU update container (spec 1), Ed25519-signed/v2 — same header table and same 128-byte image as v1, with the scheme marker in v1's reserved bytes 48..52 and a 64-byte signature trailer",
+      "byte_len": 256,
+      "header_len": 64,
+      "image_len": 128,
+      "image_crc32": "0x5B990292",
+      "header_crc32": "0x53AF7E37",
+      "fw_version": "1.2.0+abc1234",
+      "header_version": 1,
+      "sig_scheme": 1,
+      "sig_len": 64,
+      "sig_context_hex": "4f42435576322d73696700",
+      "signed_message": "sig_context (11 B, trailing NUL) || fw_version[32] || image_len u32 LE || image[image_len]",
+      "signed_by": "firmware/obc-dfu/keys/test/obcu-test.pub",
+      "signing_pubkey": "71331dda025a9658d00c1ef53947ffcafb30e15e8cc9cb585493653b26dd0af6",
+      "signature": "a9daca893a22b6e8b6a3d3390a40e240b506fb8bab5d936ca7511741cabb906e7545447724ea032524219f5f031e21124ab24e02ea827894c9b7c37444c56103",
       "object_id": 0
     },
     "route-list.bin": {
@@ -310,7 +350,7 @@
       "byte_len": 7,
       "version": 2,
       "store_epoch": "0xA1B2C3D4",
-      "obcm_version": 10,
+      "obcm_version": 11,
       "_note": "obcm_version is the OBCM map-format version the reader reads (obc_formats::obcm::VERSION), NOT the protocol version beside it. The builder self-sources it, so an OBCM bump re-cuts this fixture and this number on purpose."
     },
     "version-read-noobcm.bin": {

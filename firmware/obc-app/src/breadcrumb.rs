@@ -23,7 +23,8 @@
 //! containers, so the renderer's polyline scratch can never overrun.
 
 use heapless::{Deque, Vec};
-use obc_route::{cos_lat, ground_dist_m, tri_area_m2_cl};
+use obc_map_scene::{cos_lat, ground_dist_m};
+use obc_route::tri_area_m2_cl;
 
 /// A 2-D point in microdegrees `(lon, lat)` — what the renderer projects.
 type P = (i32, i32);

@@ -36,11 +36,13 @@ A drift on any side fails that side's tests — the files are the contract.
 | `ride-v1.bin` | ride object v1 (spec §7.2) | "Höhenweg", 3 points, the last without elevation |
 | `ride-v2.bin` | ride object v2 (spec §7.2, epic #707) | "Sensor Ride", 3 points, BLE-sensor summary + per-point hr/cad/pwr with mixed present/absent (0xFF/0xFFFF sentinels) — the app must accept v1 **and** v2 |
 | `config-v1.bin` | Config v1 (spec §7.3) | name "OBC Tourer", metric |
-| `version-read.bin` | `protocolVersion` read §1 | the **full** identity read: `version u16` = 2 · `store_epoch u32` = `0xA1B2C3D4` · `obcm_version u8` = 10. The last byte is the OBCM **map-format** version the device's reader reads — a different number in a different sequence from the protocol version beside it — and it is **self-sourced** from `obc_formats::obcm::VERSION`, so an OBCM bump re-cuts this file on purpose |
+| `version-read.bin` | `protocolVersion` read §1 | the **full** identity read: `version u16` = 2 · `store_epoch u32` = `0xA1B2C3D4` · `obcm_version u8` = 11. The last byte is the OBCM **map-format** version the device's reader reads — a different number in a different sequence from the protocol version beside it — and it is **self-sourced** from `obc_formats::obcm::VERSION`, so an OBCM bump re-cuts this file on purpose |
 | `version-read-noobcm.bin` | `protocolVersion` read §1 | the **6-byte** read a firmware predating `obcm_version` serves. The epoch is present (the ack gate is open); the trailing field must decode to *unknown*, never `0` — `obcm_version` 0 would read as "supports OBCM v0" and refuse every real map |
 | `version-read-nostore.bin` | `protocolVersion` read §1 | the **2-byte** read a device with no mounted card serves: `version u16` = 2 and nothing else. A reader must take it as "no epoch" — never epoch `0`, which is a legal era — and fail its ack closed. No epoch also means no room for the `obcm_version` after it |
 | `transfer-upload-start.bin` | `transferControl` §4.2 | fresh route upload, id `0xFFFF` (new); **12-byte v2 descriptor** (no `offset`); `total_len`/`crc32` are the **actual** length + CRC-32 of `route-waypoints.obcr` |
 | `transfer-download-request.bin` | `transferControl` §4.2 | download request for the `rideList` object (12 bytes) |
+| `transfer-set-shard.bin` | `transferControl` §4.2 | a **volume-set shard** upload (§4.1, #1039): type `17` `mapShard`, and the one `object_id` on this wire that is not an object id — the packed part `(shard_count << 8) \| index` = `0x0802`, shard 2 of 8. Count in the *high* byte; the fixture exists because that is the half of the rule three implementations would otherwise each re-derive from prose. `total_len`/`crc32` are `route-waypoints.obcr`'s, as the other descriptors' are |
+| `transfer-set-manifest.bin` | `transferControl` §4.2 | the **set manifest** upload: type `18` `mapSet`, new-only (`0xFFFF`), and written **last** (`OBCA_Spec.md` §5.4). `total_len` = `72 + 56 × 8` = 520, the length a manifest's shard count fixes and a device checks at the announce |
 | `transfer-abort.bin` | `transferControl` §4.2 | abort of the active upload (12 bytes) |
 | `status-download-announce.bin` | `status` msg 4 §4.3 | the download announce — `msg` byte + the 12-byte descriptor (`op` = download, id 7, size + CRC of `route-waypoints.obcr`); protocol v2 moves the announce off `transferControl` |
 | `status-transfer-result.bin` | `status` msg 1 §4.3 | `committed`, assigned id 7, all bytes durable |
@@ -51,7 +53,8 @@ A drift on any side fails that side's tests — the files are the contract.
 | `command-set-clock.bin` | `setClock` §4.4 cmd 5 | `utc` 1783598400 (2026-07-09T12:00:00Z) · `offset_min` 120 |
 | `command-set-route-retention.bin` | `setRouteRetention` §4.4 cmd 6 | route id 7 · retention `3` (2 weeks) |
 | `route-list.bin` | `routeList` object §7.4 | three catalog entries — the two stored route fixtures (ids 7 + 8, fields from their OBCR headers, each with its whole-object `crc32`) plus a synthetic id 9 with no file behind it; **6-byte v2 header** (`total` = `count` = 3) + **84-byte entries** (the 76-byte v2 core + the auto-expiry tail), covering all three retention states: a live countdown, a clock not yet started, and `Never` |
-| `update-container-v1.bin` | OBCU container ([`OBCU_Spec.md`](../OBCU_Spec.md) §1) | a full `UPDATE.BIN` / `fwImage` payload (§7.6, id 0): 64-byte header (`fw_version` `1.2.0+abc1234`, `image_len` 128) + a 128-byte raw image. Decoded by `obc-dfu` (`cargo test -p obc-dfu --test vectors`) and the iOS `OBCUHeader` |
+| `update-container-v1.bin` | OBCU container ([`OBCU_Spec.md`](../OBCU_Spec.md) §1), **unsigned/v1** | a full `UPDATE.BIN` / `fwImage` payload (§7.6, id 0): 64-byte header (`fw_version` `1.2.0+abc1234`, `image_len` 128) + a 128-byte raw image. Decoded by `obc-dfu` (`cargo test -p obc-dfu --test vectors`) and the iOS `OBCUHeader`. Kept even though a v2 device refuses to *install* it: it is still the shape of a fielded container and of the device-written `ROLLBACK.BIN`, and pairing it with the v2 file below is what pins the offset-compatibility guarantee across implementations |
+| `update-container-v2.bin` | OBCU container (§1), **Ed25519-signed/v2** (#997) | the *same* header table and the *same* 128-byte image as v1 — `header_version` still `1`, deliberately (§1.2) — with `sig_scheme`/`sig_len` in v1's reserved bytes `48..52` and a 64-byte signature trailer after the image. Signed with the committed **test** key (`firmware/obc-dfu/keys/test/`); signing is deterministic, so this is a stable file. A decoder must read every v1 field from it byte-identically |
 | `trip-v1.bin` | trip object v1 (spec §7.7) | "Alpen Traverse", 3 stages referencing route ids 7 + 8 (the two `route-list.bin` entries) **plus one deliberately dangling id (99)** — pins read-tolerance; 56-byte header + 2 bytes/stage |
 | `trip-list.bin` | `tripList` object §7.4 | one entry for the trip above: **6-byte v2 header** + a **76-byte** entry mirroring `routeList` (trailing whole-object `crc32`); `total_distance_m`/`total_ascent_m` (4414 / 152) summed over the two **resolvable** stages, `stage_count` 3 counts every stored stage (dangling included) |
 
@@ -73,7 +76,13 @@ cd firmware && cargo test -p obc-vectors regenerate -- --ignored
 builder's two consumers — the conversion bridge and the USB protocol client. All
 of them pin the same bytes.
 
-One builder input is **not** a literal: `version-read.bin`'s `obcm_version` comes
+Two builder inputs are **not** literals. `update-container-v2.bin`'s 64-byte trailer
+comes from `obc_dfu::sign_image` — a signature is the one thing a builder cannot
+transcribe from spec prose — and that signer is deterministic on purpose, so the
+fixture is a fixed file rather than one that re-cuts on every regeneration. The
+other:
+
+`version-read.bin`'s `obcm_version` comes
 from `obc_formats::obcm::VERSION`. That is deliberate — the fixture's job is to be
 the bytes a current device serves, and a device that reads OBCM v11 saying "10"
 would be a lie three implementations agreed on. So an OBCM format bump fails

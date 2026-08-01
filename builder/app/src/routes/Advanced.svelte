@@ -5,6 +5,7 @@
     import OutputTab from "../components/advanced/OutputTab.svelte";
     import ProfilesTab from "../components/advanced/ProfilesTab.svelte";
     import StyleTable from "../components/advanced/StyleTable.svelte";
+    import SchemaLab from "../components/advanced/SchemaLab.svelte";
     import { platform } from "../lib/platform";
     import { exportFile, importFile } from "../lib/config/edit";
     import { isBuildable, type Preset, type SchemaEnvelope } from "../lib/config/model";
@@ -16,22 +17,17 @@
     let catalog = $state<{ keys: Record<string, string[]> }>({ keys: {} });
     let schema = $state<SchemaEnvelope | null>(null);
     let presets = $state<Preset[]>([]);
+    let presetsLoaded = $state(false);
+    let presetsError = $state<string | null>(null);
     let importError = $state<string | null>(null);
-    let legacyConfig = $state<Record<string, unknown> | null>(null);
     let fileInput: HTMLInputElement;
-    /** Where the last export landed, on a host that saves files rather than downloading them. */
-    let exported = $state<string | null>(null);
-    let exportError = $state<string | null>(null);
-
-    // Read once: neither changes while the app runs. Both absent in a browser tab, where an
-    // `<a download>` is the whole story and there is no file manager to point at.
-    const saveText = platform.saveText;
-    const revealFile = platform.revealFile;
+    const editor = platform.styleEditor!;
 
     const env = $derived(working.envelope);
     const basedOnName = $derived(
         presets.find((p) => p.id === env?.based_on?.id)?.name ?? env?.based_on?.id ?? null,
     );
+    const buildablePresetCount = $derived(presets.filter(isBuildable).length);
 
     // Fields the table renders bespoke columns for; everything else the schema
     // declares becomes an extra column via SchemaField (v6 line_style/color2).
@@ -44,24 +40,28 @@
 
     onMount(async () => {
         if (!working.envelope) working.restore();
-        // Non-null wherever this route can load — `schema` is gated on
-        // `caps.build || caps.styleEditor` and the editor is the latter.
-        platform.schema?.().then((s) => (schema = s)).catch(() => (schema = null));
-        platform.presets().then((p) => (presets = p)).catch(() => {});
+        editor.schema().then((s) => (schema = s)).catch(() => (schema = null));
+        editor
+            .presets()
+            .then((loaded) => {
+                presets = loaded;
+                const buildable = loaded.filter(isBuildable);
+                // A hosted skin is presentation-only and cannot seed this
+                // schema editor. On first use, the one shipped buildable schema
+                // is deterministic; restore/import always wins, and a future
+                // shelf with multiple schemas requires an explicit choice.
+                if (!working.envelope && buildable.length === 1) working.applyPreset(buildable[0]);
+            })
+            .catch((cause) => {
+                presetsError = cause instanceof Error ? cause.message : String(cause);
+            })
+            .finally(() => (presetsLoaded = true));
         // The OSM tag-key catalog for the category rail — a static asset on
         // every host, and unrelated to the platform's `catalog()` (baked maps).
         fetch(`${import.meta.env.BASE_URL}osm_catalog.json`)
             .then((r) => (r.ok ? r.json() : { keys: {} }))
             .then((c) => (catalog = c?.keys ? c : { keys: {} }))
             .catch(() => {});
-        // One-shot migration offer for pre-redesign server-side edits. Only the
-        // dev host ever had a server-side config, hence the optional call.
-        if (!localStorage.getItem("obcm.legacyPromptDismissed")) {
-            platform
-                .legacyConfig?.()
-                .then((cfg) => (legacyConfig = cfg))
-                .catch(() => {});
-        }
     });
 
     $effect(() => {
@@ -72,7 +72,7 @@
     async function resetToPreset() {
         const preset = presets.find((p) => p.id === env?.based_on?.id);
         // This editor only exists on a tier that serves config-carrying presets
-        // (`caps.styleEditor`), so the guard is the type system's, not a case
+        // (the dev host), so the guard is the type system's, not a case
         // that happens: there is nothing to reset to without a config.
         if (!preset || !isBuildable(preset)) return;
         // The explicit re-copy the envelope's semantics are built around: a preset never reaches a
@@ -92,40 +92,19 @@
     /**
      * Write the working config out as a plain, CLI-usable packer config.
      *
-     * Two ways, because the two hosts disagree about what "save a file" is — not about the
-     * document, which is byte-identical either way. A browser gets the anchor it has always had;
-     * the desktop app gets a Rust write, because that anchor is silently inert inside a Tauri
-     * webview (see `Platform.saveText`). Nothing here branches on a host name: the seam being
-     * present *is* the statement that the fallback would not work.
+     * This route exists only on the localhost maintainer host, where an ordinary
+     * browser download is the right export mechanism.
      */
     async function exportNow() {
         if (!env) return;
-        exported = null;
-        exportError = null;
         const name = `obcm-style-${env.based_on?.id ?? "custom"}.json`;
         const text = exportFile(env);
-        if (saveText) {
-            try {
-                exported = await saveText(name, text);
-            } catch (e) {
-                exportError = e instanceof Error ? e.message : String(e);
-            }
-            return;
-        }
         const blob = new Blob([text], { type: "application/json" });
         const a = document.createElement("a");
         a.href = URL.createObjectURL(blob);
         a.download = name;
         a.click();
         URL.revokeObjectURL(a.href);
-    }
-
-    async function revealExport(path: string) {
-        try {
-            await revealFile?.(path);
-        } catch (e) {
-            exportError = e instanceof Error ? e.message : String(e);
-        }
     }
 
     async function importPicked(files: FileList | null) {
@@ -140,17 +119,6 @@
         working.adopt(imported);
     }
 
-    function importLegacy() {
-        if (!legacyConfig) return;
-        const imported = importFile(JSON.stringify(legacyConfig));
-        if (imported) working.adopt(imported);
-        dismissLegacy();
-    }
-
-    function dismissLegacy() {
-        legacyConfig = null;
-        localStorage.setItem("obcm.legacyPromptDismissed", "1");
-    }
 </script>
 
 <div class="head">
@@ -186,38 +154,24 @@
     <p class="error small">{importError}</p>
 {/if}
 
-{#if exportError}
-    <p class="error small">{exportError}</p>
-{/if}
-
-{#if exported}
-    <p class="small muted saved">
-        Saved to <span class="mono">{exported}</span>
-        {#if revealFile}
-            {@const path = exported}
-            <button type="button" class="btn ghost" onclick={() => revealExport(path)}>Show</button>
-        {/if}
-    </p>
-{/if}
-
-{#if legacyConfig}
-    <div class="legacy card">
-        <span class="small">
-            Found edits from the previous editor (<span class="mono">user_config.json</span>).
-            Import them as your working config?
-        </span>
-        <span class="legacy-actions">
-            <button type="button" class="btn ghost" onclick={importLegacy}>Import</button>
-            <button type="button" class="btn ghost" onclick={dismissLegacy}>Dismiss</button>
-        </span>
-    </div>
-{/if}
-
 {#if !env}
     <div class="card">
-        <p>No working config yet — pick a map style on the <a href="#/">main page</a> first.</p>
+        {#if !presetsLoaded}
+            <p>Loading the maintainer schema preset…</p>
+        {:else if presetsError}
+            <p>
+                The maintainer schema presets could not be loaded: {presetsError}
+                Restart <code>obc web</code>, or import a complete packer config above.
+            </p>
+        {:else}
+            <p>
+                Automatic first-use setup requires exactly one buildable schema preset, but this host provided
+                {buildablePresetCount}. Import a complete packer config above.
+            </p>
+        {/if}
     </div>
 {:else}
+    <SchemaLab {env} {schema} service={editor.preview} />
     <div class="tabs">
         <button type="button" class:active={tab === "features"} onclick={() => (tab = "features")}>
             Features &amp; styling
@@ -291,31 +245,6 @@
     .error {
         color: var(--coral);
         margin: 0 0 10px;
-    }
-
-    .saved {
-        margin: 0 0 10px;
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        flex-wrap: wrap;
-        word-break: break-all;
-    }
-
-    .legacy {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 14px;
-        margin-bottom: 12px;
-        border-left: 4px solid var(--amber);
-        border-radius: 0 16px 16px 0;
-    }
-
-    .legacy-actions {
-        display: flex;
-        gap: 8px;
-        flex: none;
     }
 
     .tabs {

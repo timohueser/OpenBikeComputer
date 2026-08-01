@@ -8,6 +8,10 @@ description = "S0 wire-protocol shared test vectors (obc-ble-interface-spec.md):
 [dependencies]
 obc-formats = { path = "../../firmware/obc-formats" }
 obc-route = { path = "../../firmware/obc-route" }
+# Only for the OBCU v2 fixture's Ed25519 signature (#997). The container's *header* is still
+# hand-built from the spec's field table like every other fixture here — a signature is the one
+# thing a builder cannot transcribe from prose.
+obc-dfu = { path = "../../firmware/obc-dfu" }
 
 [dev-dependencies]
 heapless = "0.8"

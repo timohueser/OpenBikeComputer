@@ -13,10 +13,10 @@ use std::path::PathBuf;
 use obc_app::TrackAction;
 use obc_ports::{TrackPoint, TrackSink};
 use {
-    obc_formats::io::SliceSource,
+    obc_formats::{io::SliceSource, track::encode_record},
     obc_host_core::VecSink,
     obc_ports::TrackError,
-    obc_route::{encode_record, track_to_gpx, track_to_ride, RideStats},
+    obc_route::{track_to_gpx, track_to_ride, RideStats},
     std::fs::{self, File, OpenOptions},
     std::io::Write,
 };
@@ -99,7 +99,7 @@ impl TrackStore {
 
     /// Finalise the open log and drop the temp. Writes the durable `RD{id}.ORD` ride object (the
     /// device's Finish artifact — what the Rides screen lists) when `stats` are supplied, *and* a
-    /// human-readable `<name>.gpx` (the sim's legacy convenience export; the device no longer writes
+    /// human-readable `<name>.gpx` (a simulator convenience export; the device no longer writes
     /// GPX). With no stats (only possible on the headless `--save-track` path) it keeps just the GPX.
     fn finalize(&mut self, stats: Option<RideStats>) {
         let Some(mut log) = self.open.take() else { return };

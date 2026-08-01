@@ -156,13 +156,17 @@ cargo run --release --no-default-features --features ble
 **There is no `usb` feature.** The USB device plane (#889) is in every build above — see the
 "USB device plane" section further down for the bring-up recipe.
 
-### SD read throughput diagnostic
+### SD throughput diagnostic
 
-`sd_bench` measures the real SERIAL22 → embedded-sdmmc → card path against the first `.obcm` its
+`sd_bench` measures the real SPIM00 → embedded-sdmmc → card path against the first `.obcm` its
 own scan finds in the card root — deliberately *not* the app's selected map (`/MAP.SEL`, #927): the
 benchmark wants a large file to read, not the one the renderer would pick. It compares
 CMD17-per-block reads with CMD18 batches across sequential, random 4 KB,
-and random 512-byte shapes, and checks sequential passes against an FNV integrity hash:
+and random 512-byte shapes, and checks sequential passes against an FNV integrity hash.
+It also prices **writes** (the map-upload path, #889): the FAT-layer single-block baseline
+against raw CMD25 batches into a scratch file, every block stamped and read back; plus a
+bulk-clock sweep over the even PRESCALER divisors (⚠️ odd divisors hard-wedge the bus — see
+`sd::SD_FAST_DIVISOR`), each rung integrity-guarded:
 
 ```sh
 cargo run --release --bin sd_bench
@@ -296,9 +300,14 @@ there, not here. `src/ble/` implements it; the S0 descriptor codecs + transfer s
 host-tested `obc-ble` crate (`cargo test -p obc-ble`, pinned to `specs/vectors/`). What's
 **board/firmware-specific** and worth knowing:
 
-- **DIS identity** — Firmware Revision is `<crate-semver>+<git-short>` (`build.rs` emits
-  `OBC_FW_GIT`), Hardware Revision `nrf54l15-dk`, Serial Number the 16-hex FICR `DEVICEID` whose last
-  four digits are the `OBC-XXXX` advertised name.
+- **DIS identity** — Firmware Revision is the **installed OBCU container's version string**, read
+  off the DFU boot-state page at boot (`dfu::seed_firmware_revision` → `link::identity`), falling
+  back to `OBC_FW_GIT` — the bare git short hash `build.rs` emits — on a probe-flashed board that has
+  never installed a container. So a device you flashed over SWD reports `ca9b336`, not a version, and
+  no host offers it an auto-update (the dialect + why is in the BLE spec §3.1); to see a real version
+  on glass, install a wrapped `UPDATE.BIN` (`obc-mkimage`). The same string answers the USB
+  `DEVICE_INFO_READ` frame. Hardware Revision `nrf54l15-dk`, Serial Number the 16-hex FICR `DEVICEID`
+  whose last four digits are the `OBC-XXXX` advertised name.
 - **Storage lives on SD, ids are durable in filenames.** Uploaded routes land as 8.3 `RTnn.OBR`
   files (the `OBCR` magic held back as zeros until commit, so a power cut never leaves a half-route
   the boot scan accepts); the **map build's** catalog scan matches `*.OBR` beside `.obcr`, so an
@@ -308,9 +317,31 @@ host-tested `obc-ble` crate (`cargo test -p obc-ble`, pinned to `specs/vectors/`
   that streams *straight into its final file* rather than through `UPLOAD.TMP` — a temp-then-copy
   promote would double both the minutes of writing and the free space needed — so the held-back
   magic is patched into the final file itself at commit, and `sweep_aborted_maps()` reclaims the
-  zero-magic corpse of an interrupted transfer at the next boot. `/MAP.SEL` records which map the
-  renderer streams from; a committed upload becomes that choice, effective at the next boot (the
-  map's tables are parsed once at startup and held for the session). Every ride Finish on the map build
+  zero-magic corpse of an interrupted transfer at the next boot. A **volume set** (#1039) is the
+  same file family `1..=32` times over — `/MSnnSkk.OBM` shards plus the `/MSnn.OBS` manifest
+  (`OBCA_Spec.md` §5) — and the same trick one level up: `set_upload_begin()` writes the manifest as
+  four zero bytes *before the first shard streams* and `set_manifest_commit()` patches `OBCS` in
+  last, after re-reading it and checking it against the shards on the card. So the manifest is the
+  set's commit point **and** its abandoned-upload signature: `sweep_aborted_sets()` reclaims a set
+  whose manifest magic is not *whole* — zeroed, half-patched, or shorter than four bytes — and can
+  never mistake a card-reader copy for its own (that one is written front to back from a finished
+  manifest, so its magic is there from the first block). Set ids are card-derived with no RRAM floor
+  — they name files, they are not durable protocol object ids — and are taken from **every** `MS`
+  name on the card, listed or not, so a rider's half-copied set is never minted over;
+  `set_upload_begin()` then runs the whole `delete_plan` first, which is §5.4's own replace-a-set
+  rule. `/MAP.SEL` records which map
+  the renderer streams from; a committed upload — single map or set — becomes that choice, effective
+  at the next boot (the map's tables are parsed once at startup and held for the session). A set
+  mount opens and retains every shard, resolves one direct-read FAT extent table per shard, and
+  places `SetShards<11>` in `.bss`; the board therefore mounts at most **11 shards** even though the
+  file format permits 32. Set-shard tables admit up to **64 FAT runs** (the standalone-map path
+  keeps its 128-run cap); a more fragmented shard is fixed by re-copying the publish tree to the
+  card. The parsed manifest is dropped after a synchronous mount, and the standalone/set extent
+  tables share one size/alignment-guarded `.bss` union because boot chooses exactly one map kind.
+  A larger set, or one whose shard extent table cannot be built and verified, is shown as
+  **MAP UNREADABLE** rather than partially mounted. Geometry renders through the same
+  app `MapScene` path as one `.obcm`; POIs, hours, the navigation graph and on-device routing stay on
+  the set's core shard. Every ride Finish on the map build
   writes `/tracks/RDnn.ORD` (byte-for-byte the S0 §7.2 ride object) — the only save artifact; the `ble`
   build just serves those. The id in each filename is recovered at boot and is what the app's
   synced-set keys on. A ride is deleted **only on the device** (its Rides screen, hold-to-delete);
@@ -339,6 +370,15 @@ host-tested `obc-ble` crate (`cargo test -p obc-ble`, pinned to `specs/vectors/`
   the map build (`synth` is fine indoors), reflash `ble`, sync pulls them; spot-check a decoded ride's
   totals in the app against the device's Paused ledger. Ids must survive a power cycle; the boot
   counter must increment across them.
+- **Volume-set map path (#1033)** — put a valid `MS{id}.OBS` plus all derived shards on the card (or
+  upload the set), ensure `/MAP.SEL` names the manifest, and boot the default image. RTT must report
+  one mounted set and retain every shard; ride a route across a geometry-shard boundary at fine zoom,
+  then zoom out onto the coarse shard. Roads, route ink, rider marker and guidance must remain
+  continuous through both transitions. Repeat with a missing shard and with a set over 11 shards:
+  both must stop at **MAP UNREADABLE**, never render the remaining files as a smaller map. This run
+  is also the RAM acceptance for #1033: the guarded release ELF leaves 53,400 B above linked
+  residents, 17,592 B beyond the last measured 35,808 B deep-path peak, so complete the ordinary
+  route-load → ride → finish/save path while watching for `STKOF`/HardFault.
 - **Pairing** — passkey card on the panel typed on the phone → bond lands; power-cycle / app
   restart / walk-away → silent reconnect, no dialog; reflash `ble` → still no dialog. A **second
   phone** is rejected while bonded (no passkey card, generic failure on the stranger). Re-pair path:
@@ -466,7 +506,8 @@ enumerates serial ports; the VCOM is the J-Link CDC port.
 
 ### Triggering a firmware update over the VCOM (`dfu-install`, S4 #619)
 
-With an `UPDATE.BIN` (see `../README.md` §Firmware update images) in the card root, the
+With a **signed** `UPDATE.BIN` (see `../README.md` §Firmware update images — an unsigned
+container is refused since OBCU v2, #997) in the card root, the
 same link carries the DFU armer's trigger — no feeder GUI needed. Two hard-won gotchas
 (both bit for real): the J-Link exposes **two** CDC ports and only one is live — on macOS
 it's the `cu.usbmodem*133` one (`*131` silently swallows writes; and use `cu.*`, never
@@ -493,6 +534,7 @@ NOT clear it, only a physical DK power-cycle does.
 The device streams one `D` line per phase — scan result (staged version, size, extents),
 rollback snapshot, `armed gen=N` — then resets into `obc-boot`, which installs the image
 (LED codes: `../obc-boot/README.md`). Errors (`no UPDATE.BIN…`, `failed its CRC check…`,
-`too fragmented…`) come back the same way and the device keeps running. The trigger is
+`is not signed…`, `signature is not valid for this device`, `too fragmented…`) come back the
+same way and the device keeps running. The trigger is
 refused mid-recording. Concept + formats: `OBCU_Spec.md`; the byte-identical request path
 is what S5's on-device menu entry will post.

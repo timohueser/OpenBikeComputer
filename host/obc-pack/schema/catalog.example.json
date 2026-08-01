@@ -1,111 +1,341 @@
 {
-  "schema_version": 1,
-  "generated_at": "2026-07-26T09:00:00Z",
-  "presets": [
+  "schema_version": 2,
+  "generated_at": "2026-07-30T09:00:00Z",
+  "schema": {
+    "id": "bikepacking",
+    "revision": 7,
+    "name": "Bikepacking",
+    "description": "Three LOD rungs over four bands — the shape of the shipped bikepacking ladder at example scale.",
+    "obcm_version": 11,
+    "grid": {
+      "origin_udeg": -268435456,
+      "world_side_udeg": 536870912
+    },
+    "lods": [
+      {
+        "index": 0,
+        "max_mpp": null,
+        "band": "coarse"
+      },
+      {
+        "index": 1,
+        "max_mpp": 16.0,
+        "band": "mid"
+      },
+      {
+        "index": 2,
+        "max_mpp": 3.0,
+        "band": "fine"
+      }
+    ],
+    "bands": [
+      {
+        "id": "coarse",
+        "cell_log2": 20,
+        "lods": [
+          0
+        ],
+        "sections": [],
+        "role": "coarse"
+      },
+      {
+        "id": "mid",
+        "cell_log2": 19,
+        "lods": [
+          1
+        ],
+        "sections": [],
+        "role": "geometry"
+      },
+      {
+        "id": "fine",
+        "cell_log2": 18,
+        "lods": [
+          2
+        ],
+        "sections": [],
+        "role": "geometry"
+      },
+      {
+        "id": "network",
+        "cell_log2": 18,
+        "lods": [],
+        "sections": [
+          "nav",
+          "poi"
+        ],
+        "role": "core"
+      }
+    ],
+    "styles": [
+      {
+        "id": 1,
+        "feature_type": "highway.primary"
+      },
+      {
+        "id": 2,
+        "feature_type": "highway.track"
+      },
+      {
+        "id": 3,
+        "feature_type": "natural.water"
+      },
+      {
+        "id": 4,
+        "feature_type": "landuse.forest"
+      }
+    ],
+    "routing": {
+      "min_component_edges": 50,
+      "profiles": [
+        "Road",
+        "Gravel"
+      ]
+    },
+    "chunk_size": 4096
+  },
+  "skins": [
+    {
+      "id": "contrast",
+      "name": "High contrast",
+      "description": "High contrast: fewer greys, heavier strokes, for bright sun on the panel.",
+      "version": 1,
+      "marker_color": 31,
+      "styles": [
+        {
+          "feature_type": "highway.primary",
+          "color": 64160,
+          "weight": 3,
+          "z_index": 60,
+          "priority": 2,
+          "dashed": false,
+          "color2": null
+        },
+        {
+          "feature_type": "highway.track",
+          "color": 43648,
+          "weight": 1,
+          "z_index": 30,
+          "priority": 3,
+          "dashed": true,
+          "color2": null
+        },
+        {
+          "feature_type": "natural.water",
+          "color": 21983,
+          "weight": 1,
+          "z_index": 10,
+          "priority": 3,
+          "dashed": false,
+          "color2": null
+        },
+        {
+          "feature_type": "landuse.forest",
+          "color": 23365,
+          "weight": 1,
+          "z_index": 5,
+          "priority": 4,
+          "dashed": false,
+          "color2": null
+        }
+      ]
+    },
     {
       "id": "default",
       "name": "Bikepacking",
-      "description": "The full touring map: roads by class, trails and cycleways, rail, water, forests and landuse.",
-      "version": 3,
-      "preview": "previews/default.png"
-    },
-    {
-      "id": "minimal",
-      "name": "Minimal",
-      "description": "The big picture: major roads, rail, rivers and lakes. Small files, fast builds.",
-      "version": 2
+      "description": "The full touring look: warm through-roads, brown trails, indigo cycleways.",
+      "version": 4,
+      "marker_color": 63488,
+      "styles": [
+        {
+          "feature_type": "highway.primary",
+          "color": 64160,
+          "weight": 3,
+          "z_index": 60,
+          "priority": 2,
+          "dashed": false,
+          "color2": null
+        },
+        {
+          "feature_type": "highway.track",
+          "color": 43648,
+          "weight": 1,
+          "z_index": 30,
+          "priority": 3,
+          "dashed": true,
+          "color2": null
+        },
+        {
+          "feature_type": "natural.water",
+          "color": 21983,
+          "weight": 1,
+          "z_index": 10,
+          "priority": 3,
+          "dashed": false,
+          "color2": null
+        },
+        {
+          "feature_type": "landuse.forest",
+          "color": 23365,
+          "weight": 1,
+          "z_index": 5,
+          "priority": 4,
+          "dashed": false,
+          "color2": null
+        }
+      ],
+      "preview": {
+        "url": "https://maps.example.org/catalog/previews/default.a006d15f4bc15671408b6e2f1b9bddc98e589151972cff251dcd4d86faadce67.png",
+        "bytes": 19,
+        "sha256": "a006d15f4bc15671408b6e2f1b9bddc98e589151972cff251dcd4d86faadce67"
+      }
     }
   ],
-  "artifacts": [
+  "regions": [
     {
-      "region_id": "europe/monaco",
-      "region_name": "Monaco",
-      "preset_id": "default",
-      "preset_version": 3,
-      "obcm_version": 10,
-      "bytes": 168,
-      "sha256": "bb1e01529478f3da53f0ec3c9bc0e512ba8bdf60590c46acddaca6195036d611",
-      "bbox": {
-        "min_lat": 43724355,
-        "min_lon": 7409055,
-        "max_lat": 43751930,
-        "max_lon": 7439812
+      "id": "europe/switzerland",
+      "name": "Switzerland",
+      "boundary": {
+        "tolerance_udeg": 2000,
+        "rings": [
+          [
+            [
+              45800000,
+              5900000
+            ],
+            [
+              47800000,
+              5900000
+            ],
+            [
+              47800000,
+              10500000
+            ],
+            [
+              45800000,
+              10500000
+            ],
+            [
+              45800000,
+              5900000
+            ]
+          ]
+        ]
       },
-      "built_at": "2026-07-20T02:44:19Z",
-      "source_snapshot": "2026-07-19",
-      "url": "https://maps.example.org/catalog/v1/regions/europe/monaco/default.obcm"
+      "bytes": 4592,
+      "bytes_by_band": {
+        "coarse": 2088,
+        "fine": 976,
+        "mid": 1064,
+        "network": 464
+      },
+      "cell_count": {
+        "coarse": 1,
+        "fine": 3,
+        "mid": 1,
+        "network": 2
+      },
+      "partial_cell_count_by_band": {
+        "coarse": 0,
+        "fine": 0,
+        "mid": 0,
+        "network": 1
+      },
+      "cells_url": "https://maps.example.org/catalog/regions/europe/switzerland/cells.8a29713d62450f8655ede3e90f734707375f86df7aab4bdecfd1ff5c77efad27.json",
+      "cells_bytes": 342,
+      "cells_sha256": "8a29713d62450f8655ede3e90f734707375f86df7aab4bdecfd1ff5c77efad27"
     },
     {
-      "region_id": "europe/monaco",
-      "region_name": "Monaco",
-      "preset_id": "minimal",
-      "preset_version": 2,
-      "obcm_version": 10,
-      "bytes": 104,
-      "sha256": "f3dd3e0cfc3e412a611ca526d564a3ee7a64c7e4e6c4a5a4066b71f7ca3f41cb",
-      "bbox": {
-        "min_lat": 43724355,
-        "min_lon": 7409055,
-        "max_lat": 43751930,
-        "max_lon": 7439812
+      "id": "europe/switzerland/basel-stadt",
+      "name": "Basel-Stadt",
+      "parent": "europe/switzerland",
+      "boundary": {
+        "tolerance_udeg": 2000,
+        "rings": [
+          [
+            [
+              47500000,
+              7500000
+            ],
+            [
+              47600000,
+              7500000
+            ],
+            [
+              47600000,
+              7700000
+            ],
+            [
+              47500000,
+              7700000
+            ],
+            [
+              47500000,
+              7500000
+            ]
+          ]
+        ]
       },
-      "built_at": "2026-07-20T02:44:41Z",
-      "source_snapshot": "2026-07-19",
-      "url": "https://maps.example.org/catalog/v1/regions/europe/monaco/minimal.obcm"
+      "bytes": 4000,
+      "bytes_by_band": {
+        "coarse": 2088,
+        "fine": 552,
+        "mid": 1064,
+        "network": 296
+      },
+      "cell_count": {
+        "coarse": 1,
+        "fine": 1,
+        "mid": 1,
+        "network": 1
+      },
+      "partial_cell_count_by_band": {
+        "coarse": 0,
+        "fine": 0,
+        "mid": 0,
+        "network": 0
+      },
+      "cells_url": "https://maps.example.org/catalog/regions/europe/switzerland/basel-stadt/cells.8dfcd49faffa13813c6226b1676215e49286e759f7e79505d096d71ac5f5c91a.json",
+      "cells_bytes": 288,
+      "cells_sha256": "8dfcd49faffa13813c6226b1676215e49286e759f7e79505d096d71ac5f5c91a"
+    }
+  ],
+  "cell_index": [
+    {
+      "band": "coarse",
+      "cell_log2": 20,
+      "cell_count": 1,
+      "known_empty_count": 0,
+      "bytes": 590,
+      "sha256": "94825e54638005549505271cde268cd6ccacfd5a07d5078b0df4fe28cf5230ae",
+      "url": "https://maps.example.org/catalog/cells/coarse/index.94825e54638005549505271cde268cd6ccacfd5a07d5078b0df4fe28cf5230ae.json"
     },
     {
-      "region_id": "europe/switzerland",
-      "region_name": "Switzerland",
-      "preset_id": "default",
-      "preset_version": 3,
-      "obcm_version": 10,
-      "bytes": 1064,
-      "sha256": "a59ad4a57fdd31408eaf356ad42eb5de7cefcf2b7e125d9f71349251e3303a00",
-      "bbox": {
-        "min_lat": 45817995,
-        "min_lon": 5955911,
-        "max_lat": 47808455,
-        "max_lon": 10492294
-      },
-      "built_at": "2026-07-20T02:14:07Z",
-      "source_snapshot": "2026-07-19",
-      "url": "https://maps.example.org/catalog/v1/regions/europe/switzerland/default.obcm"
+      "band": "mid",
+      "cell_log2": 19,
+      "cell_count": 1,
+      "known_empty_count": 0,
+      "bytes": 584,
+      "sha256": "aa7521430c0cd93b95b477e1e50e37debcbbb54f1710ff4aadc5c28bbd34bae1",
+      "url": "https://maps.example.org/catalog/cells/mid/index.aa7521430c0cd93b95b477e1e50e37debcbbb54f1710ff4aadc5c28bbd34bae1.json"
     },
     {
-      "region_id": "europe/switzerland",
-      "region_name": "Switzerland",
-      "preset_id": "minimal",
-      "preset_version": 2,
-      "obcm_version": 10,
-      "bytes": 552,
-      "sha256": "a4c262895addc86c1541c32ccc6d75a1a5111c6628ee3c516ce6c50c08b247cb",
-      "bbox": {
-        "min_lat": 45817995,
-        "min_lon": 5955911,
-        "max_lat": 47808455,
-        "max_lon": 10492294
-      },
-      "built_at": "2026-07-20T02:31:55Z",
-      "source_snapshot": "2026-07-19",
-      "url": "https://maps.example.org/catalog/v1/regions/europe/switzerland/minimal.obcm"
+      "band": "fine",
+      "cell_log2": 18,
+      "cell_count": 2,
+      "known_empty_count": 1,
+      "bytes": 1414,
+      "sha256": "829380ee422d917f280a1a3cb1e265a7a907e5116723317ea638387daad7aaae",
+      "url": "https://maps.example.org/catalog/cells/fine/index.829380ee422d917f280a1a3cb1e265a7a907e5116723317ea638387daad7aaae.json"
     },
     {
-      "region_id": "europe/switzerland/ticino",
-      "region_name": "Ticino",
-      "preset_id": "default",
-      "preset_version": 3,
-      "obcm_version": 10,
-      "bytes": 296,
-      "sha256": "801c8ba7319b50232d704b1b7ee6761c6186dd652da78c1633ea29aa8b934da5",
-      "bbox": {
-        "min_lat": 45817995,
-        "min_lon": 8380000,
-        "max_lat": 46630000,
-        "max_lon": 9170000
-      },
-      "built_at": "2026-07-20T02:41:02Z",
-      "source_snapshot": "2026-07-19",
-      "url": "https://maps.example.org/catalog/v1/regions/europe/switzerland/ticino/default.obcm"
+      "band": "network",
+      "cell_log2": 18,
+      "cell_count": 2,
+      "known_empty_count": 0,
+      "bytes": 1072,
+      "sha256": "55e05ffef029c5515f7a5a200589732e66dbc683dc429f0d0def08261d36a3ab",
+      "url": "https://maps.example.org/catalog/cells/network/index.55e05ffef029c5515f7a5a200589732e66dbc683dc429f0d0def08261d36a3ab.json"
     }
   ]
 }

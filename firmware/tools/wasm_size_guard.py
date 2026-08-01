@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Bundle-size budgets for the hosted builder's wasm bridges.
 
-Two modules, same argument. `apps/obc-web-convert` (#896) is what a visitor downloads the moment
-they drop a route; `apps/obc-web-preview` (#899) is what renders the preset cards. Both are
-reached through a dynamic import, so each is its own chunk rather than part of the initial page —
-and a silent size regression in either is a product regression: the thing stops feeling instant.
-CI runs this right after each `wasm-pack build`, on the very bytes it then hands to the frontend
-job.
+Three modules, same argument. `apps/obc-web-convert` (#896) is what a visitor downloads the moment
+they drop a route; `apps/obc-web-assemble` (#1034) is what turns downloaded map cells into a map. Both are
+reached through a dynamic import. `apps/obc-skin-preview` (#1045) is the firmware reader + renderer
+opened only by the skin editor. Each is its own chunk rather than part of the initial page, and a
+silent size regression is a product regression. CI runs this right after each `wasm-pack build`,
+on the very bytes it then hands to the frontend job.
 
 What is measured, and why:
 
@@ -50,25 +50,71 @@ from pathlib import Path
 # `RouteIndex`/`RouteReader`/`for_each_waypoint`, which had eaten the old headroom (101 KB raw at
 # the previous commit — 99 % of the 100 KB budget before this addition's ~2.8 KB). Budgets
 # re-based to ~10 % above the new measurement, same philosophy as before.
-# --- obc-web-preview -------------------------------------------------------------------------
+# --- obc-web-assemble ------------------------------------------------------------------------
 #
-# Measured 2026-07-29 on the initial B2 artifact (same toolchain as above): 124,857 B raw wasm +
-# 13,798 B glue -> 59,556 B gzipped. Bigger than the conversion bridge and unsurprisingly so: this
-# one links the whole render path (`obc-render`'s painter, scanline fill and stroker, plus
-# `obc-reader`'s OBCM decoder and quadtree walk) rather than a file converter. It stays in the
-# same order of magnitude because it links no *app* — no screens, no replay, no planner.
+# Measured 2026-07-31 on the initial P4b artifact (wasm-pack 0.15.0 / wasm-opt -Oz): 434,476 B raw
+# wasm + 20,474 B glue -> 184,441 B gzipped. Three times the other two, and it should be: this one
+# links the whole OBCA assembly engine (`obcm-assemble`'s graft, POI merge, nav rewrite, shard
+# planner and §4.8 verify pass) plus `obc-reader`'s decoder, SHA-256, and serde/serde_json for the
+# schema and skin documents. It is a *program*, not a converter.
 #
-# Same ~10 % headroom, same philosophy: a toolchain bump must not turn a green PR red, but linking
-# `obc-app` or a second renderer has to be argued for.
+# The budget is set differently from the other two on purpose. Those are latency budgets — they
+# guard the moment a visitor drops a file or hovers a preset card, where tens of KB are felt. This
+# module is fetched when someone has already chosen to assemble a map they are about to download
+# hundreds of MB of cells for, so 180 KB is not the cost that matters. What the budget is here for
+# is the *structural* regression: linking `obc-pack` (libGEOS), a second renderer, or the whole app.
+# Hence ~10 % headroom over the measurement, same as the others: enough that a toolchain bump never
+# turns a green PR red, far too little to absorb another crate.
+#
+# Re-measured 2026-07-31 after the review round (the §4.8 progress/abort wrapper, the double-take
+# refusal, the budget override, the warn-once console binding): 435,990 B raw + 24,452 B glue ->
+# 186,601 B gzipped. +1,514 B raw / +2,160 B gzipped, which is the shape a fix round should have —
+# error prose and a handful of branches, no new crate. Budgets unchanged (89 % / 91 %).
+# --- obc-skin-preview ------------------------------------------------------------------------
+#
+# Measured 2026-08-01 on #1045 (wasm-pack 0.15.0 / wasm-opt -Oz): 240,227 B raw wasm + 11,859 B
+# glue -> 112,275 B gzipped. It intentionally links `obc-reader`, `obc-render`, and just enough of
+# `obcm-assemble` to resolve and stamp a skin; it does not link obc-pack, GEOS, or the cell assembly
+# driver. The module is lazy-loaded only when the editor opens, and its map/frame object is released
+# when it closes.
+# Budgets leave ~14 % headroom while still catching a second engine or accidental packer link.
 BUDGETS = {
     "convert": {"gzipped": 62 * 1024, "raw_wasm": 112 * 1024},
-    "preview": {"gzipped": 66 * 1024, "raw_wasm": 138 * 1024},
+    "assemble": {"gzipped": 200 * 1024, "raw_wasm": 480 * 1024},
+    "preview": {"gzipped": 128 * 1024, "raw_wasm": 272 * 1024},
+}
+
+# What to *do* about an over-budget module, which is not the same advice for all three — and a guard
+# that gives the wrong advice gets obeyed anyway. Convert is a latency budget: the number is
+# what a visitor waits for, so "make it smaller" is the literal fix. Assemble is a structural guard
+# on a module nobody is waiting on, so the fix is almost never "shrink it" — it is to find out what
+# got linked in that should not have been.
+ADVICE = {
+    "convert": (
+        "This is the moment a visitor drops a route, and it ships to every one of them:"
+        " shrink it, or raise the budget in firmware/tools/wasm_size_guard.py with the reason in the PR body."
+    ),
+    "assemble": (
+        "This budget is a structural guard, not a latency one — nobody waits on this module, so the question is"
+        " not 'how do I make it smaller' but 'what got linked in'. Diff the dependency graph"
+        " (`cargo tree -p obc-web-assemble --target wasm32-unknown-unknown`) against the base branch and look for a"
+        " new crate: obc-pack (libGEOS), a renderer, or the app itself would each land in this range. If the growth"
+        " really is the engine getting bigger for a good reason, raise the budget in"
+        " firmware/tools/wasm_size_guard.py with the reason in the PR body."
+    ),
+    "preview": (
+        "This module should contain the reader, renderer, and skin resolver only. Diff the dependency graph"
+        " (`cargo tree -p obc-skin-preview --target wasm32-unknown-unknown`) and make sure obc-pack, GEOS,"
+        " or the full assembly driver did not get linked. If renderer growth is intentional, raise the budget"
+        " in firmware/tools/wasm_size_guard.py with the reason in the PR body."
+    ),
 }
 
 #: Where each module's wasm-pack output lands in the frontend.
 PKG_DIRS = {
     "convert": Path("builder/app/src/lib/convert/pkg"),
-    "preview": Path("builder/app/src/lib/preview/pkg"),
+    "assemble": Path("builder/app/src/lib/assemble/pkg"),
+    "preview": Path("builder/app/src/lib/skin/pkg"),
 }
 
 
@@ -134,8 +180,7 @@ def main() -> int:
         if measured > budget:
             print(
                 f"::error::obc-web-{args.module} {label} is {measured:,} B, over the {budget:,} B budget."
-                " This ships to every visitor: shrink it, or raise the budget in"
-                " firmware/tools/wasm_size_guard.py with the reason in the PR body."
+                f" {ADVICE[args.module]}"
             )
             failed = True
     return 1 if failed else 0

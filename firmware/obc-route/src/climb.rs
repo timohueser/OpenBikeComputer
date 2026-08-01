@@ -26,8 +26,8 @@
 use heapless::Vec;
 
 use crate::deadband::DeadBand;
-use crate::geo::seg_dist_m;
 use crate::reader::{RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
+use obc_map_scene::ground_dist_m;
 
 // ---------------------------------------------------------------------------------------------
 // Tuning knobs — the whole "what counts as a climb" policy in five consts.
@@ -448,7 +448,7 @@ impl Iterator for ClimbStream<'_, '_> {
             let p = self.buf[self.in_chunk];
             self.in_chunk += 1;
             if let Some(pr) = self.prev {
-                self.dist += seg_dist_m(pr, (p.lon, p.lat)) as f64;
+                self.dist += ground_dist_m(pr, (p.lon, p.lat)) as f64;
             }
             self.prev = Some((p.lon, p.lat));
             // Smooth the elevation with the shared dead-band; the smoothed reference the

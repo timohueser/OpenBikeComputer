@@ -62,10 +62,24 @@ pub enum ObjectType {
     /// transport-introduced types that BLE could never have carried.
     ///
     /// The transfer layer stays format-blind, as it is for `FwImage`: the payload is opaque bytes.
-    /// **The device does not yet accept one** — see the note in the board's
-    /// `link::transfer::classify_transfer`; the storage side (8.3 naming, collision policy, and how
-    /// an uploaded map becomes the one the renderer streams from) is its own piece of work.
     Map = 16,
+    /// One OBCM **shard** of a volume set (`OBCA_Spec.md` §5.1), host → device, upload only —
+    /// **USB only**, for the same reason `Map` is: a set is strictly *larger* than the single map
+    /// BLE could never carry.
+    ///
+    /// A shard is an ordinary OBCM file, so the streaming, the whole-object CRC and the held-back
+    /// magic are `Map`'s unchanged. What differs is the one thing the descriptor has to say and
+    /// `Map` never needed: **which** file of the set this is. That rides `object_id` as a
+    /// [`SetPart`] — not an object id, because a shard has none (§5.2 derives every filename from
+    /// the set id and the index, and a set is *one map* in every interface, §5.4).
+    MapShard = 17,
+    /// The OBCS **set manifest** (`OBCA_Spec.md` §5.2), host → device, upload only — **USB only**.
+    ///
+    /// New-only like `Map`, so `object_id` is `0xFFFF`. It is the set's atomicity token: §5.4 makes
+    /// it the file that must be written **last**, and the device *enforces* that rather than
+    /// trusting the order it arrives in — a manifest announced before every shard it will name has
+    /// committed is refused before a byte streams.
+    MapSet = 18,
 }
 
 impl ObjectType {
@@ -88,8 +102,69 @@ impl ObjectType {
             10 => Self::TripList,
             // 11–15 stay reserved (sensors, M4) and keep rejecting.
             16 => Self::Map,
+            17 => Self::MapShard,
+            18 => Self::MapSet,
             other => return Err(DescriptorError::UnknownType(other)),
         })
+    }
+
+    /// Whether this type is part of a map upload — the three types the reference firmware streams
+    /// straight into their final file with the format magic held back, rather than through the
+    /// invisible `UPLOAD.TMP` every small object uses. Also the three types that are **USB only**
+    /// (spec §10).
+    pub const fn is_map_payload(self) -> bool {
+        matches!(self, Self::Map | Self::MapShard | Self::MapSet)
+    }
+}
+
+/// What a [`ObjectType::MapShard`] descriptor's `object_id` field carries: **which file of the set
+/// this is**, as `shard_count` in the high byte and `index` in the low one.
+///
+/// The field is repurposed rather than added to because the descriptor is a fixed 12 bytes shared
+/// by every transport and every object type (§4.2), and a shard has no object id to put there
+/// anyway: `OBCA_Spec.md` §5.2 *derives* every filename from the set id and the index, and §5.4
+/// makes the whole set one map with one identity. Widening the descriptor for one type would repin
+/// every codec, every fixture and both companion apps for a field the other ten types would write
+/// zero into.
+///
+/// Carrying `shard_count` in **every** shard announce, not just the first, buys two things the
+/// index alone could not:
+///
+/// - The device can refuse a set past its own shard ceiling at the **first** announce, before the
+///   rider spends minutes uploading shards it will never mount. The alternative — discovering the
+///   count when the manifest arrives — refuses after the whole set has moved.
+/// - Every announce re-states the set's **shape**, so a host that switches to a set with a
+///   different shard count mid-transfer is a mismatch the device names, not a set silently
+///   assembled out of two. A switch between two sets of the *same* count is not visible here — the
+///   pair names a file, not a set — and is caught at the manifest's commit instead, when every
+///   shard is checked against the manifest's record of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SetPart {
+    /// How many shards the set has in total (`1..=32`, `OBCA_Spec.md` §5.2).
+    pub shard_count: u8,
+    /// This shard's index within the set, `< shard_count`.
+    pub index: u8,
+}
+
+impl SetPart {
+    /// The `object_id` bytes for this part.
+    pub const fn encode(&self) -> u16 {
+        ((self.shard_count as u16) << 8) | self.index as u16
+    }
+
+    /// Decode a `mapShard` descriptor's `object_id`, rejecting every pair that cannot name a file
+    /// of a set: a zero shard count, and an index at or past it.
+    ///
+    /// Deliberately does **not** apply the `1..=32` spec cap or a device's own (smaller) shard
+    /// ceiling — those are a policy the caller owns and answers with a typed status, exactly as
+    /// `fwimage_announce_reject` takes its ceiling rather than linking the DFU crate.
+    pub const fn decode(object_id: u16) -> Option<SetPart> {
+        let shard_count = (object_id >> 8) as u8;
+        let index = (object_id & 0xFF) as u8;
+        if shard_count == 0 || index >= shard_count {
+            return None;
+        }
+        Some(SetPart { shard_count, index })
     }
 }
 
@@ -252,9 +327,9 @@ impl TransferStatus {
     /// write with [`Error`](Self::Error), **before any bytes stream** — a ~900 KB update would
     /// otherwise transfer only to fail at commit. `None` = accept (the caller arms the
     /// [`Receiver`](crate::Receiver)). `total_len` is the whole OBCU container (64-byte header +
-    /// raw image), so the board passes the **container-sized** ceiling
-    /// `obc_dfu::MAX_IMAGE_LEN + HEADER_LEN` — the raw-image cap plus the header (DR5, #733); the
-    /// constants stay out of this crate so the wire codec never links the DFU crate.
+    /// raw image + the v2 signature trailer), so the board passes the **container-sized** ceiling
+    /// `obc_dfu::MAX_CONTAINER_LEN` (DR5, #733; widened by the trailer in #997); the constants stay
+    /// out of this crate so the wire codec never links the DFU crate.
     pub const fn fwimage_announce_reject(total_len: u32, max_len: u32) -> Option<Self> {
         if total_len > max_len {
             Some(Self::Error)

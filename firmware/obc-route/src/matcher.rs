@@ -15,8 +15,9 @@
 
 use heapless::Vec;
 
-use crate::geo::{cos_lat, project_to_segment, seg_dist_m_cl};
+use crate::geo::project_to_segment;
 use crate::reader::{RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
+use obc_map_scene::{cos_lat, ground_dist_m_cl};
 
 /// Cross-track distance (m) at/above which the rider is considered off-route…
 const OFF_M: f32 = 25.0;
@@ -168,7 +169,7 @@ impl RouteMatch {
                     }
                     let a = (self.buf[s].lon, self.buf[s].lat);
                     let b = (self.buf[s + 1].lon, self.buf[s + 1].lat);
-                    let seg_len = seg_dist_m_cl(a, b, cl);
+                    let seg_len = ground_dist_m_cl(a, b, cl);
                     if (!self.started || off >= -back) && global >= self.floor_global_seg {
                         let (mut t, mut dist) = project_to_segment(a, b, p, cl);
                         let mut progress = (cum0 + intra + t * seg_len) as u32;
@@ -185,7 +186,7 @@ impl RouteMatch {
                                 a.0 + libm::roundf((b.0 - a.0) as f32 * t) as i32,
                                 a.1 + libm::roundf((b.1 - a.1) as f32 * t) as i32,
                             );
-                            dist = seg_dist_m_cl(floor, p, cl);
+                            dist = ground_dist_m_cl(floor, p, cl);
                             progress = self.floor_progress_m;
                         }
                         // First lock biases near-ties to the earliest segment (TIE_EPS_M);

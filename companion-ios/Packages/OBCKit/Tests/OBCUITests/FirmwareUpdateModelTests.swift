@@ -12,21 +12,29 @@ import OBCTransport
 struct FirmwareUpdateModelTests {
     // MARK: Helpers
 
-    /// A valid OBCU container tagged with `version` — both CRCs correct, so
-    /// `StagedFirmware.validate` accepts it and reports `version`.
+    /// A valid OBCU **v2** container tagged with `version` — both CRCs correct and the
+    /// signature marker set, so `StagedFirmware.validate` accepts it and reports
+    /// `version`. The trailer is a stand-in: the app never verifies signatures (the key
+    /// lives in the firmware — `OBCU_Spec.md` §1.4), it only has to carry them.
     private func container(version: String, imageLen: Int = 96) -> Data {
         var image = Data()
         image.append(contentsOf: le32(0x2002_0000)) // plausible initial SP
         image.append(contentsOf: (4..<imageLen).map { UInt8($0 & 0xFF) })
         var header = Data(count: 64)
         header.replaceSubrange(0..<4, with: Array("OBCU".utf8))
-        header[4] = 1 // header_version LE
+        header[4] = 1 // header_version LE — still 1 in a v2 container (§1.2)
         header.replaceSubrange(8..<12, with: le32(UInt32(image.count)))
         header.replaceSubrange(12..<16, with: le32(CRC32.checksum(image)))
         let v = Array(version.utf8.prefix(32))
         header.replaceSubrange(16..<16 + v.count, with: v)
+        header.replaceSubrange(48..<50, with: le16(1)) // sig_scheme = Ed25519
+        header.replaceSubrange(50..<52, with: le16(64)) // sig_len
         header.replaceSubrange(60..<64, with: le32(CRC32.checksum(header[0..<60])))
-        return header + image
+        return header + image + Data(repeating: 0x5A, count: 64)
+    }
+
+    private func le16(_ v: UInt16) -> [UInt8] {
+        withUnsafeBytes(of: v.littleEndian, Array.init)
     }
 
     private func le32(_ v: UInt32) -> [UInt8] { withUnsafeBytes(of: v.littleEndian, Array.init) }

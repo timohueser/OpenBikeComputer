@@ -1,6 +1,6 @@
 //! Recorded-track format: the fixed-record ride log + its GPX export (`no_std`).
 //!
-//! While riding, the device appends one [`TrackPoint`] per accepted GPS fix to an SD-card
+//! While riding, the device appends one [`TrackPoint`](obc_ports::TrackPoint) per accepted GPS fix to an SD-card
 //! file as a **fixed 20-byte record** — *no header*, so the file is just a record array
 //! and truncating to a 20-byte boundary is always valid (the worst a power-loss can cost
 //! is the in-flight record). On **Finish** the log is converted to a `.gpx`
@@ -13,16 +13,8 @@
 use core::fmt::Write;
 
 use heapless::String;
-pub use obc_ports::TrackPoint;
-
 use obc_formats::io::{ByteSink, ByteSource, Error};
-
-// The record codec + its constants are owned by `obc-formats` (the byte authority), so a storage
-// adapter can encode/decode without an `obc-route` dependency (#807/#812). obc-route re-exports the
-// codec (its `track_to_gpx` + `track_to_ride` and downstream hosts encode/decode through it); the
-// streaming `.obct` → GPX conversion below is the algorithm and stays here.
-use obc_formats::track::RECORD_LEN as TRACK_RECORD_LEN;
-pub use obc_formats::track::{decode_record, encode_record};
+use obc_formats::track::{decode_record, RECORD_LEN as TRACK_RECORD_LEN};
 
 /// Records read per [`ByteSource`] call — one SD read fills a block rather than a record,
 /// keeping the one-shot Finish conversion fast on the device.
@@ -31,7 +23,8 @@ const BLOCK_RECORDS: usize = 64;
 /// Convert a recorded `.obct` log (`src`, a flat array of [`TRACK_RECORD_LEN`]-byte records)
 /// into a GPX 1.1 track written to `sink`, naming the track `name`.
 ///
-/// One streaming pass: a fresh `<trkseg>` opens on each [`segment_start`](TrackPoint::segment_start)
+/// One streaming pass: a fresh `<trkseg>` opens on each
+/// [`segment_start`](obc_ports::TrackPoint::segment_start)
 /// (and on the first point), so pauses/gaps become honest segment breaks. `<time>` is
 /// intentionally omitted until the device has a real clock. A trailing partial record (a
 /// power-loss mid-write) is ignored — the log stays valid at any 20-byte boundary.

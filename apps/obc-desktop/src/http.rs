@@ -1,35 +1,50 @@
-//! The app's network surface, in one place so what it reaches is auditable: the
-//! Geofabrik index, the `.pbf` extracts that index names, and the published map
-//! catalog. Never on behalf of the webview — the frontend has no HTTP capability
-//! at all (see `capabilities/default.json`).
-//!
-//! There is a fourth host, and it is worth naming here rather than leaving it to
-//! be discovered: `obc-pack` fetches the ~950 MB land-polygon dataset from
-//! `osmdata.openstreetmap.de` on the first build that needs land. That download has
-//! always happened — it used to shell out to `curl`, which is exactly why it was
-//! invisible from this file — and it now runs through the same code the functions
-//! below do (`obc_pack::net`, #907). One downloader, one retry policy, one
-//! cancellation contract; this module is the app's list of *what* it reaches, not a
-//! second implementation of *how*.
+//! The desktop app's small native network surface. Map selection, verification
+//! and assembly are shared with the web builder; Rust moves the catalog bytes
+//! because the Tauri webview has no blanket network permission.
 
-use std::path::Path;
+use std::io::Read;
 
-use obc_pack::progress::Progress;
-
-/// Small documents (the region index, the catalog manifest) — read whole, because
-/// both are parsed as one document and a partial one is worthless.
+/// Read a small text document whole.
 pub fn get_text(url: &str) -> Result<String, String> {
-    obc_pack::net::get_text(url)
+    let mut response = ureq::get(url).call().map_err(|e| format!("GET {url}: {e}"))?;
+    response.body_mut().read_to_string().map_err(|e| format!("read {url}: {e}"))
 }
 
-/// Download `url` to `dest`, reporting percentage through `on_pct` and honouring
-/// `progress`'s cancel token. Returns the number of bytes written.
-///
-/// The write goes to a `.part` sibling and is renamed on completion, so an
-/// interrupted download — cancelled, crashed, unplugged — can never be mistaken
-/// for a cached extract on the next run. A region is hundreds of megabytes and
-/// this is where a cancelled build usually is when the user changes their mind,
-/// so the token is checked every chunk.
-pub fn download(url: &str, dest: &Path, progress: &Progress, on_pct: impl FnMut(u8)) -> Result<u64, String> {
-    obc_pack::net::download(url, dest, progress, on_pct)
+/// Read one digest-pinned catalog object. This is deliberately not a general
+/// HTTP proxy: every URL must share the configured catalog root's origin.
+pub fn get_catalog_object(url: &str) -> Result<Vec<u8>, String> {
+    same_catalog_origin(url, &crate::catalog::url())?;
+    let mut response = ureq::get(url).call().map_err(|e| format!("GET {url}: {e}"))?;
+    let mut bytes = Vec::new();
+    response.body_mut().as_reader().read_to_end(&mut bytes).map_err(|e| format!("read {url}: {e}"))?;
+    Ok(bytes)
+}
+
+fn same_catalog_origin(requested: &str, catalog: &str) -> Result<(), String> {
+    let requested = url::Url::parse(requested).map_err(|e| format!("catalog object URL: {e}"))?;
+    let catalog = url::Url::parse(catalog).map_err(|e| format!("configured catalog URL: {e}"))?;
+    let local_http =
+        requested.scheme() == "http" && matches!(requested.host_str(), Some("localhost" | "127.0.0.1" | "::1"));
+    if requested.scheme() != "https" && !local_http {
+        return Err("catalog objects must use https (or loopback http for local testing)".into());
+    }
+    if requested.origin() != catalog.origin() {
+        return Err(format!("catalog objects must stay on {}", catalog.origin().ascii_serialization()));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn catalog_reads_are_https_and_same_origin() {
+        let root = "https://maps.example.test/prefix/catalog.json";
+        assert!(same_catalog_origin("https://maps.example.test/prefix/cells/fine/index.json", root).is_ok());
+        assert!(same_catalog_origin("https://other.example.test/cell.obcm", root).is_err());
+        assert!(same_catalog_origin("http://maps.example.test/cell.obcm", root).is_err());
+        assert!(same_catalog_origin("file:///tmp/cell.obcm", root).is_err());
+        assert!(same_catalog_origin("http://127.0.0.1:8123/cell.obcm", "http://127.0.0.1:8123/catalog.json").is_ok());
+    }
 }
