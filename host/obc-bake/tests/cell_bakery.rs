@@ -801,6 +801,23 @@ fn a_tampered_satellite_fails_verification() {
     assert!(report.problems.iter().any(|p| p.contains("cells/coarse/index.json")), "{:?}", report.problems);
 }
 
+/// A same-length rewrite between generation and upload must not be placed under
+/// the digest-addressed key the root already chose.
+#[test]
+fn publish_plan_rejects_a_pin_changed_after_generation() {
+    let f = fixture_dirs("publish-race");
+    f.bake(&FixtureCutter::new(), &[], SNAPSHOT, false);
+    let generated = f.catalog();
+    let satellite = generated.satellites.first().expect("a generated satellite");
+    let path = f.tree.join(&satellite.rel_path);
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes[0] ^= 1;
+    std::fs::write(&path, bytes).unwrap();
+
+    let error = obc_bake::publish::plan(&f.tree, &generated).expect_err("changed bytes must not use the old pin");
+    assert!(error.contains("digest changed after catalog generation"), "{error}");
+}
+
 /// A cell tree publishes root-last — the satellites are
 /// ordinary objects and must all be fetchable before the document naming them is.
 #[test]
@@ -809,12 +826,18 @@ fn a_cell_tree_publishes_its_root_last() {
     f.bake(&FixtureCutter::new(), &[], SNAPSHOT, false);
     f.catalog();
 
-    let objects = obc_bake::publish::plan(&f.tree).expect("plan");
+    let generated = f.catalog();
+    obc_pack::catalog::write_all_atomic(&f.tree, &generated).expect("catalog files");
+    let objects = obc_bake::publish::plan(&f.tree, &generated).expect("plan");
     let keys: Vec<&str> = objects.iter().map(|o| o.key.as_str()).collect();
     assert_eq!(*keys.last().unwrap(), "catalog.json", "the root is last by construction");
     assert!(keys.contains(&"schema.json"), "the schema document is published too: {keys:?}");
-    assert!(keys.contains(&"cells/coarse/index.json"), "and every satellite: {keys:?}");
-    assert!(keys.contains(&"regions/europe/west/cells.json"), "{keys:?}");
+    assert!(
+        keys.iter().any(|key| key.starts_with("cells/coarse/index.") && key.ends_with(".json")),
+        "and every satellite is content-addressed: {keys:?}"
+    );
+    assert!(keys.iter().any(|key| key.starts_with("regions/europe/west/cells.") && key.ends_with(".json")), "{keys:?}");
+    assert!(!keys.contains(&"cells/coarse/index.json"), "a pinned stable key would permit mixed generations");
     assert!(keys.contains(&"regions/europe/west/boundary.poly"), "{keys:?}");
     assert!(keys.iter().all(|k| !k.contains("/.")), "no bake-state dotfile is published: {keys:?}");
 
@@ -830,7 +853,11 @@ fn a_cell_tree_publishes_its_root_last() {
     .expect("publish");
     assert_eq!(report.cells, 30);
     assert!(dest.join("catalog.json").is_file());
-    assert!(dest.join("cells/coarse/1204/1052.obcm").is_file());
+    let old_root: obc_pack::catalog::Catalog =
+        serde_json::from_str(&std::fs::read_to_string(dest.join("catalog.json")).unwrap()).unwrap();
+    let old_coarse_url = old_root.cell_index.iter().find(|entry| entry.band == "coarse").unwrap().url.clone();
+    let old_coarse_key = old_coarse_url.strip_prefix(&format!("{BASE_URL}/")).unwrap();
+    assert!(dest.join(old_coarse_key).is_file());
 
     // A later scoped publish replaces only the objects its new root references.
     let narrowed = fixture_dirs("publish-narrow");
@@ -844,4 +871,9 @@ fn a_cell_tree_publishes_its_root_last() {
     )
     .expect("scoped publish");
     assert_eq!(narrowed_report.regions, vec!["europe/west"]);
+    let new_root: obc_pack::catalog::Catalog =
+        serde_json::from_str(&std::fs::read_to_string(dest.join("catalog.json")).unwrap()).unwrap();
+    let new_coarse_url = &new_root.cell_index.iter().find(|entry| entry.band == "coarse").unwrap().url;
+    assert_ne!(&old_coarse_url, new_coarse_url, "changed satellite bytes get a new immutable key");
+    assert!(dest.join(old_coarse_key).is_file(), "the prior root remains readable after its replacement");
 }

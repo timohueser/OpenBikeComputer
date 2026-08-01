@@ -456,7 +456,7 @@ fn walks_a_tree_into_a_root_and_its_satellites() {
     assert_eq!(g.root.skins.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["contrast", "default"], "sorted by id");
     assert_eq!(g.root.skins[0].preview, None, "a generic catalog may omit a preview");
     let preview = g.root.skins[1].preview.as_ref().expect("default preview");
-    assert_eq!(preview.url, "https://maps.example.org/catalog/previews/default.png");
+    assert_eq!(preview.url, format!("https://maps.example.org/catalog/previews/default.{}.png", preview.sha256));
     assert_eq!(preview.bytes, 19);
     assert_eq!(preview.sha256.len(), 64);
     assert_eq!(
@@ -499,7 +499,7 @@ fn a_cell_entry_states_the_bake_and_carries_no_bbox() {
     let west = &doc.cells[0];
     assert_eq!(west.bytes, (HEADER_LEN + 512) as u64);
     assert_eq!(west.sha256.len(), 64);
-    assert_eq!(west.url, "https://maps.example.org/catalog/cells/fine/1204/1052.obcm");
+    assert_eq!(west.url, format!("https://maps.example.org/catalog/cells/fine/1204/1052.{}.obcm", west.sha256));
     assert_eq!(west.built_at, "2026-07-30T02:12:55Z");
     assert!(!west.partial);
     assert_eq!(
@@ -561,7 +561,10 @@ fn a_region_prices_its_cell_set_per_band() {
     );
     assert_eq!(ch.partial_cell_count_by_band.values().sum::<u32>(), ch.partial_cell_count);
 
-    assert_eq!(ch.cells_url, "https://maps.example.org/catalog/regions/europe/switzerland/cells.json");
+    assert_eq!(
+        ch.cells_url,
+        format!("https://maps.example.org/catalog/regions/europe/switzerland/cells.{}.json", ch.cells_sha256)
+    );
     let cells: RegionCellsDocument =
         serde_json::from_str(&satellite(&g, "regions/europe/switzerland/cells.json").body).expect("cells doc");
     assert_eq!(cells.region_id, "europe/switzerland");
@@ -799,11 +802,12 @@ fn the_root_pins_every_satellite_by_size_and_digest() {
     for entry in &g.root.cell_index {
         let (bytes, sha256) = pin(&format!("cells/{}/index.json", entry.band));
         assert_eq!((entry.bytes, entry.sha256.clone()), (bytes, sha256), "band `{}`", entry.band);
-        assert!(entry.url.ends_with(&format!("cells/{}/index.json", entry.band)));
+        assert!(entry.url.ends_with(&format!("cells/{}/index.{}.json", entry.band, entry.sha256)));
     }
     for r in &g.root.regions {
         let (bytes, sha256) = pin(&format!("regions/{}/cells.json", r.id));
         assert_eq!((r.cells_bytes, r.cells_sha256.clone()), (bytes, sha256), "region `{}`", r.id);
+        assert!(r.cells_url.ends_with(&format!("regions/{}/cells.{}.json", r.id, r.cells_sha256)));
     }
     // Known-answer check on the digest encoding itself (NIST's SHA-256 of "abc"), so
     // "the pins agree with each other" cannot be vacuously true.

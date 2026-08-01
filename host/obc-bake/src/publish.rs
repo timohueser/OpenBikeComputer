@@ -38,40 +38,35 @@
 //! environment (see [`RcloneStore`]), so nothing secret is visible to `ps` and
 //! there is no connection-string parser to mis-split an `https://` endpoint.
 
+use std::collections::BTreeSet;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use obc_pack::catalog::{CatalogOptions, DEFAULT_MANIFEST_NAME};
+use sha2::{Digest, Sha256};
 
 /// Cache lifetime for the manifest. `OBCC_Spec.md` §11: at most 60 s, because a
 /// consumer cannot compensate for an over-cached manifest — a fresh bake stays
 /// invisible for as long as the cache says it is.
 pub const MANIFEST_CACHE_CONTROL: &str = "public, max-age=60, must-revalidate";
-/// Artifacts get a **short** TTL with mandatory revalidation, and the reason is the
-/// published layout: keys are stable paths (`cells/<band>/<i>/<j>.obcm`, §8), not
-/// content-addressed names, so every re-bake **rewrites the same key with different
-/// bytes**.
-///
-/// Behind a CDN that is a correctness problem, not a freshness one. An edge holding
-/// last week's copy of a key serves those bytes against a manifest whose `sha256` now
-/// describes the new ones — and a consumer is *required* to check that digest before
-/// writing to a device (§7). The mismatch is not a stale map; it is a hard download
-/// failure, on every edge that cached the old object, for as long as its TTL runs.
-/// An hour with `must-revalidate` bounds that: revalidation against R2 is a
-/// conditional request that answers 304 in the common case, so the bytes only move
-/// when they actually changed.
-///
-/// The deeper fix is content-addressed keys, which would make an artifact immutable
-/// and cacheable forever — but the key *is* the manifest's `url`, and §8 fixes that
-/// layout ("`url` is `<base-url>/<path of the artifact relative to the tree root>`"),
-/// so it is a spec change rather than a knob. Left as a follow-up.
+/// Mutable producer metadata is not referenced by a catalog root, but it keeps a
+/// short TTL so direct inspection never presents an old sidecar as current.
 pub const ARTIFACT_CACHE_CONTROL: &str = "public, max-age=3600, must-revalidate";
+/// Every root-referenced object carries its SHA-256 in the published key. Such a key
+/// is immutable: a later root points at a different key, while a browser still using
+/// the previous root can finish against the previous bytes without a mixed-generation
+/// digest failure.
+pub const PINNED_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
 
 /// What an object is, which is also what decides its cache policy and its order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ObjectKind {
     Schema,
+    /// Mutable producer metadata that no catalog root references directly.
     Artifact,
     Sidecar,
+    /// Digest-addressed content referenced and pinned by the root.
+    Pinned,
     /// Exactly one, and always last.
     Manifest,
 }
@@ -79,8 +74,8 @@ pub enum ObjectKind {
 /// One object to upload.
 #[derive(Debug, Clone)]
 pub struct PlannedObject {
-    /// Key relative to the publish root — the same path the manifest's `url` was
-    /// built from, so the published layout *is* the tree layout (§8).
+    /// Key relative to the publish root. Pinned content uses the immutable path
+    /// named by the catalog; `path` remains its stable local bake-tree source.
     pub key: String,
     pub path: PathBuf,
     pub bytes: u64,
@@ -91,6 +86,7 @@ impl PlannedObject {
     pub fn cache_control(&self) -> &'static str {
         match self.kind {
             ObjectKind::Manifest => MANIFEST_CACHE_CONTROL,
+            ObjectKind::Pinned => PINNED_CACHE_CONTROL,
             _ => ARTIFACT_CACHE_CONTROL,
         }
     }
@@ -144,7 +140,13 @@ pub struct PublishReport {
 /// could change. Dotfiles are skipped — the bake state files live beside the
 /// artifacts and are local bookkeeping, never published (`OBCC_Spec.md` §2 ignores
 /// them for the same reason).
-fn collect(tree: &Path, dir: &Path, kind: ObjectKind, out: &mut Vec<PlannedObject>) -> Result<(), String> {
+fn collect(
+    tree: &Path,
+    dir: &Path,
+    kind: ObjectKind,
+    skipped: &BTreeSet<String>,
+    out: &mut Vec<PlannedObject>,
+) -> Result<(), String> {
     if !dir.is_dir() {
         return Ok(());
     }
@@ -159,11 +161,14 @@ fn collect(tree: &Path, dir: &Path, kind: ObjectKind, out: &mut Vec<PlannedObjec
             continue;
         }
         if path.is_dir() {
-            collect(tree, &path, kind, out)?;
+            collect(tree, &path, kind, skipped, out)?;
             continue;
         }
         let rel = path.strip_prefix(tree).map_err(|_| format!("{}: outside the tree", path.display()))?;
         let key = rel.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
+        if skipped.contains(&key) {
+            continue;
+        }
         let bytes = std::fs::metadata(&path).map_err(|e| format!("{}: {e}", path.display()))?.len();
         let kind = if name.ends_with(".obcm.json") { ObjectKind::Sidecar } else { kind };
         out.push(PlannedObject { key, path, bytes, kind });
@@ -199,7 +204,7 @@ pub fn publish(
     let generated = obc_pack::catalog::generate(tree, opts)?;
     obc_pack::catalog::write_all_atomic(tree, &generated)?;
 
-    let objects = plan(tree)?;
+    let objects = plan(tree, &generated)?;
     let total: u64 = objects.iter().map(|o| o.bytes).sum();
     let cells: u32 = generated.root.cell_index.iter().map(|c| c.cell_count).sum();
     let warnings = generated.warnings;
@@ -319,17 +324,40 @@ fn duration(value: std::time::Duration) -> String {
     }
 }
 
-/// Every object of a cell tree, root last.
+/// Every object of a generated cell catalog, root last.
 ///
 /// Deliberately a whole-tree walk: a cell tree's
 /// publishable set is `cells/`, `regions/`, `skins/`, `previews/` **and** `schema.json` — the last
 /// of which is not optional, because it is the document the generator reads the
 /// style-id assignment out of and the one a re-generation on another machine needs.
-/// Walking the tree means a future document cannot be forgotten here.
-pub fn plan(tree: &Path) -> Result<Vec<PlannedObject>, String> {
+/// Walking the tree means a future producer document cannot be forgotten here.
+/// Root-referenced cells, previews, and satellites are replaced in that walk by
+/// the digest-addressed keys returned by the generator.
+pub fn plan(tree: &Path, generated: &obc_pack::catalog::GeneratedCatalog) -> Result<Vec<PlannedObject>, String> {
     let mut objects = Vec::new();
+    let skipped: BTreeSet<String> = generated
+        .pinned_artifacts
+        .iter()
+        .map(|artifact| artifact.rel_path.clone())
+        .chain(generated.satellites.iter().map(|satellite| satellite.rel_path.clone()))
+        .collect();
     for dir in ["cells", "regions", "skins", crate::previews::PREVIEWS_DIR] {
-        collect(tree, &tree.join(dir), ObjectKind::Artifact, &mut objects)?;
+        collect(tree, &tree.join(dir), ObjectKind::Artifact, &skipped, &mut objects)?;
+    }
+    for artifact in &generated.pinned_artifacts {
+        let path = tree.join(artifact.rel_path.replace('/', std::path::MAIN_SEPARATOR_STR));
+        let bytes = verify_generated_pin(&path, artifact.bytes, &artifact.sha256)?;
+        objects.push(PlannedObject { key: artifact.published_rel_path.clone(), path, bytes, kind: ObjectKind::Pinned });
+    }
+    for satellite in &generated.satellites {
+        let path = tree.join(satellite.rel_path.replace('/', std::path::MAIN_SEPARATOR_STR));
+        let bytes = verify_generated_pin(&path, satellite.bytes, &satellite.sha256)?;
+        objects.push(PlannedObject {
+            key: satellite.published_rel_path.clone(),
+            path,
+            bytes,
+            kind: ObjectKind::Pinned,
+        });
     }
     let schema = tree.join("schema.json");
     if schema.is_file() {
@@ -347,6 +375,35 @@ pub fn plan(tree: &Path) -> Result<Vec<PlannedObject>, String> {
         kind: ObjectKind::Manifest,
     });
     Ok(objects)
+}
+
+/// Refuse to upload bytes under a digest-addressed key when the local source was
+/// modified after catalog generation. Length alone is insufficient: an in-place
+/// rewrite can preserve it while changing the digest.
+fn verify_generated_pin(path: &Path, expected_bytes: u64, expected_sha256: &str) -> Result<u64, String> {
+    let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let bytes = file.metadata().map_err(|e| format!("{}: {e}", path.display()))?.len();
+    if bytes != expected_bytes {
+        return Err(format!(
+            "{}: changed from {expected_bytes} to {bytes} bytes after catalog generation",
+            path.display()
+        ));
+    }
+    let mut reader = std::io::BufReader::new(file);
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = reader.read(&mut buffer).map_err(|e| format!("{}: {e}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let actual_sha256 = hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    if actual_sha256 != expected_sha256 {
+        return Err(format!("{}: digest changed after catalog generation", path.display()));
+    }
+    Ok(bytes)
 }
 
 /// Publish into a local directory: the dry-run target, the test target, and a real
@@ -495,8 +552,8 @@ impl ObjectStore for RcloneStore {
 
     fn put(&self, object: &PlannedObject) -> Result<(), String> {
         // `copyto` with `--checksum` skips an object whose remote hash already
-        // matches, which is what makes re-publishing a mostly-unchanged catalog
-        // cheap; the header flags set the per-object cache policy (§7).
+        // matches. Digest-addressed keys make this especially cheap: an unchanged
+        // planet cell already exists at exactly its final immutable name.
         let args = vec![
             "copyto".to_string(),
             "--checksum".to_string(),
@@ -589,15 +646,13 @@ mod tests {
             kind: ObjectKind::Artifact,
         };
         let preview = PlannedObject {
-            key: "previews/default.png".into(),
+            key: format!("previews/default.{}.png", "a".repeat(64)),
             path: PathBuf::new(),
             bytes: 0,
-            kind: ObjectKind::Artifact,
+            kind: ObjectKind::Pinned,
         };
-        // §7: the manifest is short-lived. So are the artifacts, but for a different
-        // reason — their keys are stable paths that a re-bake rewrites, so an edge
-        // holding old bytes against a new manifest breaks the consumer's mandatory
-        // sha256 check. Both must revalidate.
+        // §7: the manifest is short-lived. Mutable producer records also revalidate;
+        // root-referenced content is immutable and may be cached for a year.
         assert!(manifest.cache_control().contains("max-age=60"));
         assert!(manifest.cache_control().contains("must-revalidate"));
         assert_eq!(manifest.content_type(), "application/json");
@@ -608,5 +663,7 @@ mod tests {
         );
         assert_eq!(artifact.content_type(), "application/octet-stream");
         assert_eq!(preview.content_type(), "image/png");
+        assert!(preview.cache_control().contains("max-age=31536000"));
+        assert!(preview.cache_control().contains("immutable"));
     }
 }

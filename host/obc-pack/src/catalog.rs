@@ -21,7 +21,8 @@
 //!   changing one invalidates no cell (§5).
 //!
 //! Cell paths are keyed by **band**
-//! (`cells/<band>/<i>/<j>.obcm`, `cells/<band>/index.json`) rather than by
+//! (`cells/<band>/<i>/<j>.<sha256>.obcm`, `cells/<band>/index.<sha256>.json`)
+//! rather than by
 //! `<log2(S)>`. The recommended band table gives `fine` and `network` the same `2^18` cell
 //! size ([`OBCA_Spec.md` §1.5](../../../../specs/OBCA_Spec.md)), so a `<log2>`-keyed
 //! path is not a function of (band, cell) and the two bands' indices and artifacts
@@ -508,8 +509,8 @@ pub struct RegionCellsDocument {
 /// Generator inputs that cannot be derived from the tree.
 #[derive(Debug, Clone)]
 pub struct CatalogOptions {
-    /// Where the tree gets published; every `url` is this plus the object's path
-    /// relative to the tree root.
+    /// Where the tree gets published; every `url` is this plus the object's
+    /// digest-addressed publish path. Local bake-tree paths remain stable.
     pub base_url: String,
     /// The root's `generated_at`, RFC 3339 UTC. Passed in so the generator is a pure
     /// function of (tree, options).
@@ -530,12 +531,36 @@ impl CatalogOptions {
     }
 }
 
-/// A satellite document: its path relative to the tree root (which is also its path
-/// relative to `base_url`) and its exact bytes — the bytes the root's digest pins.
+/// A satellite document: its stable local path, immutable published path, and exact
+/// bytes — the bytes the root's digest pins.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Satellite {
+    /// Stable path used inside the local bake tree.
     pub rel_path: String,
+    /// Immutable path used below `CatalogOptions::base_url` when publishing.
+    pub published_rel_path: String,
     pub body: String,
+    pub bytes: u64,
+    pub sha256: String,
+}
+
+impl Satellite {
+    fn new(rel_path: String, body: String) -> Self {
+        let (bytes, sha256) = hash_str(&body);
+        let published_rel_path = content_addressed_rel_path(&rel_path, &sha256);
+        Self { rel_path, published_rel_path, body, bytes, sha256 }
+    }
+}
+
+/// A digest-pinned file already present at a stable path in the local bake tree.
+/// The publisher uploads it under `published_rel_path`, so replacing a catalog
+/// root never invalidates a root that a consumer fetched a moment earlier.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PinnedArtifact {
+    pub rel_path: String,
+    pub published_rel_path: String,
+    pub bytes: u64,
+    pub sha256: String,
 }
 
 /// A generated catalog: the root, the satellites it pins, and non-fatal
@@ -545,6 +570,7 @@ pub struct Satellite {
 pub struct GeneratedCatalog {
     pub root: Catalog,
     pub satellites: Vec<Satellite>,
+    pub pinned_artifacts: Vec<PinnedArtifact>,
     pub warnings: Vec<String>,
 }
 
@@ -598,7 +624,9 @@ pub fn generate(tree: &Path, opts: &CatalogOptions) -> Result<GeneratedCatalog, 
     let cells = read_cells(tree, &schema, &base_url)?;
     let obcm_version = cells.obcm_version;
 
-    let skins = read_skins(&tree.join(SKINS_DIR), &tree.join(PREVIEWS_DIR), &schema, &base_url)?;
+    let (skins, mut pinned_artifacts) =
+        read_skins(&tree.join(SKINS_DIR), &tree.join(PREVIEWS_DIR), &schema, &base_url)?;
+    pinned_artifacts.extend(cells.pinned_artifacts.iter().cloned());
 
     let mut satellites = Vec::new();
     let mut cell_index = Vec::new();
@@ -622,17 +650,17 @@ pub fn generate(tree: &Path, opts: &CatalogOptions) -> Result<GeneratedCatalog, 
         };
         let rel_path = format!("{CELLS_DIR}/{}/{CELL_INDEX_NAME}", band.id);
         let body = document_json(&doc);
-        let (bytes, sha256) = hash_str(&body);
+        let satellite = Satellite::new(rel_path, body);
         cell_index.push(CellIndexRef {
             band: band.id.clone(),
             cell_log2: band.cell_log2,
             cell_count: entries.len() as u32,
             known_empty_count: known_empty_count(known_empty)?,
-            bytes,
-            sha256,
-            url: format!("{base_url}/{rel_path}"),
+            bytes: satellite.bytes,
+            sha256: satellite.sha256.clone(),
+            url: format!("{base_url}/{}", satellite.published_rel_path),
         });
-        satellites.push(Satellite { rel_path, body });
+        satellites.push(satellite);
         by_band.insert(band.id.as_str(), BandIndex::new(entries, known_empty)?);
     }
     // §3: sorted by `cell_log2` descending — coarse first. Two bands may share a
@@ -668,7 +696,8 @@ pub fn generate(tree: &Path, opts: &CatalogOptions) -> Result<GeneratedCatalog, 
         regions,
         cell_index,
     };
-    Ok(GeneratedCatalog { root, satellites, warnings })
+    pinned_artifacts.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
+    Ok(GeneratedCatalog { root, satellites, pinned_artifacts, warnings })
 }
 
 /// Pretty JSON with a trailing newline, so a published document diffs line-by-line
@@ -690,6 +719,22 @@ fn hash_str(body: &str) -> (u64, String) {
     let mut hasher = Sha256::new();
     hasher.update(body.as_bytes());
     (body.len() as u64, hex(&hasher.finalize()))
+}
+
+/// Insert an object's digest before its final extension. The local bake tree keeps
+/// stable, human-readable paths, while published references are immutable:
+/// `cells/fine/1204/1052.obcm` becomes
+/// `cells/fine/1204/1052.<sha256>.obcm`.
+fn content_addressed_rel_path(rel_path: &str, sha256: &str) -> String {
+    let (prefix, name) = rel_path.rsplit_once('/').map_or(("", rel_path), |(prefix, name)| (prefix, name));
+    let (stem, extension) = name.rsplit_once('.').map_or((name, ""), |(stem, extension)| (stem, extension));
+    let addressed =
+        if extension.is_empty() { format!("{stem}.{sha256}") } else { format!("{stem}.{sha256}.{extension}") };
+    if prefix.is_empty() {
+        addressed
+    } else {
+        format!("{prefix}/{addressed}")
+    }
 }
 
 /// Write the whole catalog into the tree: **satellites first, root last**.
@@ -1143,11 +1188,17 @@ struct SkinMeta {
     version: u32,
 }
 
-fn read_skins(dir: &Path, previews_dir: &Path, schema: &SchemaDoc, base_url: &str) -> Result<Vec<SkinEntry>, String> {
+fn read_skins(
+    dir: &Path,
+    previews_dir: &Path,
+    schema: &SchemaDoc,
+    base_url: &str,
+) -> Result<(Vec<SkinEntry>, Vec<PinnedArtifact>), String> {
     if !dir.is_dir() {
         return Err(format!("{}: no `{SKINS_DIR}/` directory — a catalog offers at least one skin", dir.display()));
     }
     let mut skins = Vec::new();
+    let mut pinned_artifacts = Vec::new();
     for path in sorted_entries(dir)? {
         let name = file_name(&path)?;
         if name.starts_with('.') || path.is_dir() {
@@ -1173,7 +1224,11 @@ fn read_skins(dir: &Path, previews_dir: &Path, schema: &SchemaDoc, base_url: &st
         let preview_path = previews_dir.join(format!("{}.png", meta.id));
         let preview = if preview_path.exists() {
             let (bytes, sha256) = hash_file(&preview_path)?;
-            Some(SkinPreview { url: format!("{base_url}/{PREVIEWS_DIR}/{}.png", meta.id), bytes, sha256 })
+            let rel_path = format!("{PREVIEWS_DIR}/{}.png", meta.id);
+            let published_rel_path = content_addressed_rel_path(&rel_path, &sha256);
+            let url = format!("{base_url}/{published_rel_path}");
+            pinned_artifacts.push(PinnedArtifact { rel_path, published_rel_path, bytes, sha256: sha256.clone() });
+            Some(SkinPreview { url, bytes, sha256 })
         } else {
             None
         };
@@ -1190,7 +1245,7 @@ fn read_skins(dir: &Path, previews_dir: &Path, schema: &SchemaDoc, base_url: &st
     if skins.is_empty() {
         return Err(format!("{}: no skin configs found", dir.display()));
     }
-    Ok(skins)
+    Ok((skins, pinned_artifacts))
 }
 
 /// A skin's style values, in the schema's id order, after [`check_skin`] has proved
@@ -1238,6 +1293,7 @@ struct Cells {
     by_band: BTreeMap<String, Vec<CellEntry>>,
     known_empty_by_band: BTreeMap<String, Vec<KnownEmptyRun>>,
     obcm_version: u8,
+    pinned_artifacts: Vec<PinnedArtifact>,
 }
 
 /// Local, un-published state from which the generator builds one band's compact
@@ -1311,6 +1367,7 @@ fn read_cells(tree: &Path, schema: &SchemaDoc, base_url: &str) -> Result<Cells, 
     let mut by_band: BTreeMap<String, Vec<CellEntry>> = BTreeMap::new();
     let mut known_empty_by_band: BTreeMap<String, Vec<KnownEmptyRun>> = BTreeMap::new();
     let mut obcm_version = None;
+    let mut pinned_artifacts = Vec::new();
 
     for band_dir in sorted_entries(&root)? {
         let name = file_name(&band_dir)?;
@@ -1345,7 +1402,17 @@ fn read_cells(tree: &Path, schema: &SchemaDoc, base_url: &str) -> Result<Cells, 
                     i_dir.display()
                 ));
             }
-            read_cell_row(&i_dir, &name, band, tree, schema, base_url, &mut entries, &mut obcm_version)?;
+            read_cell_row(
+                &i_dir,
+                &name,
+                band,
+                tree,
+                schema,
+                base_url,
+                &mut entries,
+                &mut obcm_version,
+                &mut pinned_artifacts,
+            )?;
         }
         entries.sort_by(|a, b| a.id.cmp(&b.id));
         reject_known_empty_artifact_overlap(&band_dir, &entries, &known_empty)?;
@@ -1357,7 +1424,7 @@ fn read_cells(tree: &Path, schema: &SchemaDoc, base_url: &str) -> Result<Cells, 
     if total == 0 {
         return Err(format!("{}: no cells found — refusing to publish an empty cell store", root.display()));
     }
-    Ok(Cells { by_band, known_empty_by_band, obcm_version: obcm_version.expect("a cell was read") })
+    Ok(Cells { by_band, known_empty_by_band, obcm_version: obcm_version.expect("a cell was read"), pinned_artifacts })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1370,6 +1437,7 @@ fn read_cell_row(
     base_url: &str,
     out: &mut Vec<CellEntry>,
     obcm_version: &mut Option<u8>,
+    pinned_artifacts: &mut Vec<PinnedArtifact>,
 ) -> Result<(), String> {
     let mut sidecars: Vec<String> = Vec::new();
     let mut artifacts: Vec<(String, PathBuf)> = Vec::new();
@@ -1447,15 +1515,18 @@ fn read_cell_row(
 
         let (bytes, sha256) = hash_file(&path)?;
         let rel = path.strip_prefix(tree).map_err(|_| format!("{}: cell is outside the tree root", path.display()))?;
+        let rel_path = rel_url_path(rel)?;
+        let published_rel_path = content_addressed_rel_path(&rel_path, &sha256);
         out.push(CellEntry {
             id: id.to_string(),
             bytes,
-            sha256,
-            url: format!("{base_url}/{}", rel_url_path(rel)?),
+            sha256: sha256.clone(),
+            url: format!("{base_url}/{published_rel_path}"),
             built_at: sidecar.built_at,
             sources: sidecar.sources,
             partial: sidecar.partial,
         });
+        pinned_artifacts.push(PinnedArtifact { rel_path, published_rel_path, bytes, sha256 });
     }
 
     if let Some(orphan) = sidecars.first() {
@@ -1820,8 +1891,11 @@ fn read_region(
     };
     let rel_path = format!("{REGIONS_DIR}/{id}/{REGION_CELLS_NAME}");
     let body = document_json(&cells_doc);
-    let (cells_bytes, cells_sha256) = hash_str(&body);
-    satellites.push(Satellite { rel_path: rel_path.clone(), body });
+    let satellite = Satellite::new(rel_path, body);
+    let cells_url = format!("{base_url}/{}", satellite.published_rel_path);
+    let cells_bytes = satellite.bytes;
+    let cells_sha256 = satellite.sha256.clone();
+    satellites.push(satellite);
 
     Ok(RegionEntry {
         id: id.to_string(),
@@ -1833,7 +1907,7 @@ fn read_region(
         cell_count,
         partial_cell_count,
         partial_cell_count_by_band,
-        cells_url: format!("{base_url}/{rel_path}"),
+        cells_url,
         cells_bytes,
         cells_sha256,
     })
