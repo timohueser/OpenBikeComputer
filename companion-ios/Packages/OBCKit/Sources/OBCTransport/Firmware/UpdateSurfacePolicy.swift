@@ -55,6 +55,19 @@ public struct LastSeenDevice: Equatable, Sendable, Codable {
     public var ledgerKey: String { serial.isEmpty ? "unknown" : serial }
 }
 
+/// Whether `candidate` is a genuinely newer question than `answered`.
+///
+/// The ledger is monotonic by version, not by arrival order: a channel rollback must not re-ask
+/// about an older release, and a late foreground dismissal must not overwrite a newer background
+/// answer. An unreadable legacy value is replaceable; every value this code writes is parsed first.
+private func isNewerAnswer(_ candidate: String, than answered: String?) -> Bool {
+    guard let answered else { return true }
+    guard let order = FirmwareVersion.compare(candidate, answered) else {
+        return candidate != answered
+    }
+    return order > 0
+}
+
 /// Persistence for the surfaces: the rider's toggle, the answered ledger, and the last-seen device.
 /// Beside ``UpdateCheckStore`` — phone-local, never on the wire.
 public protocol UpdateSurfaceStore: Sendable {
@@ -82,6 +95,10 @@ public struct UserDefaultsUpdateSurfaceStore: UpdateSurfaceStore, @unchecked Sen
     private static let ledgerKey = "obc.firmwareAnsweredVersions"
     private static let lastDeviceKey = "obc.firmwareLastSeenDevice"
     private static let askedKey = "obc.firmwareDidAskNotifications"
+    /// `UserDefaults` makes each operation thread-safe, not this read-modify-write transaction.
+    /// Every store instance in the process shares the lock because foreground and background paths
+    /// intentionally construct separate stores over the same defaults domain.
+    private static let ledgerLock = NSLock()
     private let defaults: UserDefaults
 
     public init(defaults: UserDefaults = .standard) {
@@ -102,12 +119,16 @@ public struct UserDefaultsUpdateSurfaceStore: UpdateSurfaceStore, @unchecked Sen
         (defaults.dictionary(forKey: Self.ledgerKey) as? [String: String])?[key]
     }
 
-    /// One entry per device, overwritten — the ledger records the newest answered version, not a
-    /// growing history, so it can't grow without bound on a phone that sees many updates.
+    /// One entry per device, advanced only — the ledger records the newest answered version, not a
+    /// growing history, so it can't grow without bound or regress when two surfaces finish out of
+    /// order.
     public func saveAnsweredVersion(_ version: String, device key: String) {
-        var ledger = (defaults.dictionary(forKey: Self.ledgerKey) as? [String: String]) ?? [:]
-        ledger[key] = version
-        defaults.set(ledger, forKey: Self.ledgerKey)
+        Self.ledgerLock.withLock {
+            var ledger = (defaults.dictionary(forKey: Self.ledgerKey) as? [String: String]) ?? [:]
+            guard isNewerAnswer(version, than: ledger[key]) else { return }
+            ledger[key] = version
+            defaults.set(ledger, forKey: Self.ledgerKey)
+        }
     }
 
     public func loadLastSeenDevice() -> LastSeenDevice? {
@@ -151,7 +172,10 @@ public final class InMemoryUpdateSurfaceStore: UpdateSurfaceStore, @unchecked Se
     public func saveAutoCheckEnabled(_ enabled: Bool) { lock.withLock { autoCheck = enabled } }
     public func loadAnsweredVersion(device key: String) -> String? { lock.withLock { ledger[key] } }
     public func saveAnsweredVersion(_ version: String, device key: String) {
-        lock.withLock { ledger[key] = version }
+        lock.withLock {
+            guard isNewerAnswer(version, than: ledger[key]) else { return }
+            ledger[key] = version
+        }
     }
     public func loadLastSeenDevice() -> LastSeenDevice? { lock.withLock { lastSeen } }
     public func saveLastSeenDevice(_ device: LastSeenDevice) { lock.withLock { lastSeen = device } }
@@ -226,8 +250,9 @@ public enum UpdateSurfacePolicy {
         guard let release = cached.release,
               FirmwareVersion.updateStatus(running: running, latest: release.version) == .available
         else { return .nothing }
-        // 6. Asked and answered — until a newer version publishes.
-        guard context.answeredVersion != release.version else { return .nothing }
+        // 6. Asked and answered — until a genuinely newer version publishes. Comparing the
+        // versions (rather than just their strings) also keeps a channel rollback silent.
+        guard isNewerAnswer(release.version, than: context.answeredVersion) else { return .nothing }
         return .surface(release)
     }
 }

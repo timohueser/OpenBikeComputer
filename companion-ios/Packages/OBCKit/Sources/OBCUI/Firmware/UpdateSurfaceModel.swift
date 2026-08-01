@@ -91,11 +91,15 @@ public final class UpdateSurfaceModel {
             // A live read beats the remembered one — and it refreshes the memory. `?? nil` flattens
             // the optional chain: no model and no link land in the same place, the persisted record.
             let live = await self?.rememberDevice() ?? nil
-            let release = await runner.run(device: live)
+            // Capture the fallback once. A different device can connect while the network request
+            // is in flight; the offer must remain labelled and ledgered for the device whose
+            // running version the policy actually evaluated.
+            let target = runner.device(live)
+            let release = await runner.run(device: target)
             guard let self else { return }
             checkTask = nil
             guard !Task.isCancelled, pending == nil, let release else { return }
-            present(release, device: runner.device(live))
+            present(release, device: target)
         }
     }
 

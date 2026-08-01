@@ -68,6 +68,14 @@ struct UpdateSurfacePolicyTests {
         #expect(UpdateSurfacePolicy.decide(context) == .surface(Self.release("1.5.0")))
     }
 
+    @Test("A channel rollback never re-asks about an older answered release")
+    func olderVersionStaysSilent() {
+        let context = Self.context(cached: Self.cached("1.4.0"), answered: "1.5.0")
+        #expect(UpdateSurfacePolicy.decide(context) == .nothing)
+        // Different spellings of the same semantic version are not new questions either.
+        #expect(UpdateSurfacePolicy.decide(Self.context(answered: "v1.4.0")) == .nothing)
+    }
+
     /// #773's locked refusal, and the reason it is a table rather than one case: an unparseable
     /// running version must lose to *nothing* — not to a published release, not to a stale cache,
     /// not to an empty ledger. A probe-flashed dev build is never interrupted and never polled for.
@@ -262,7 +270,9 @@ struct UpdateSurfaceRunnerTests {
     func recordAnswered() {
         let (runner, surface, _) = makeRunner()
         runner.recordAnswered(version: "1.4.0", device: Self.device)
-        #expect(surface.loadAnsweredVersion(device: "OBC-0001") == "1.4.0")
+        runner.recordAnswered(version: "1.5.0", device: Self.device)
+        runner.recordAnswered(version: "1.4.0", device: Self.device)
+        #expect(surface.loadAnsweredVersion(device: "OBC-0001") == "1.5.0")
     }
 
     /// A fresh cache is the common case (the app was foregrounded twice in an hour) — and it must
@@ -289,20 +299,21 @@ struct UpdateSurfaceRunnerTests {
         #expect(!store.loadAutoCheckEnabled())
     }
 
-    @Test("The persisted ledger keeps one entry per device and overwrites in place")
+    @Test("The persisted ledger keeps one monotonic entry per device")
     func ledgerPersistsPerDevice() {
         let defaults = UserDefaults(suiteName: "obc.tests.updateSurface.\(UUID().uuidString)")!
         let store = UserDefaultsUpdateSurfaceStore(defaults: defaults)
         store.saveAnsweredVersion("1.4.0", device: "A")
         store.saveAnsweredVersion("1.4.0", device: "B")
         store.saveAnsweredVersion("1.5.0", device: "A")
+        store.saveAnsweredVersion("1.4.0", device: "A")
         #expect(store.loadAnsweredVersion(device: "A") == "1.5.0")
         #expect(store.loadAnsweredVersion(device: "B") == "1.4.0")
         #expect(store.loadAnsweredVersion(device: "C") == nil)
     }
 
     @Test("A device that reports no serial still gets a stable ledger bucket")
-    func serriallessDeviceHasAKey() {
+    func seriallessDeviceHasAKey() {
         let device = LastSeenDevice(serial: "", firmwareVersion: "1.3.0", seenAt: Date())
         #expect(device.ledgerKey == "unknown")
     }
