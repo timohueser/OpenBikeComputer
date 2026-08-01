@@ -226,9 +226,21 @@ production-rendered Teningen previews, satellites, and `catalog.json` all live
 below the output directory.
 
 No selector and `--all` deliberately mean different things. Omitting selectors
-bakes the curated TOML list. `--all` is reserved for a true whole-planet bake and
-currently exits with an explanation; planet publication needs a global source and
-sharding plan, not a Geofabrik region loop disguised as one.
+bakes the curated TOML list; `obc bake --all` bakes a planet snapshot while retaining
+those entries as named catalog selections. Planet mode requires `osmium`, downloads
+and caches `planet-latest.osm.pbf` by default, splits it through a binary hierarchy
+of grid-aligned source leaves, and hands only one bounded leaf to the Rust cutter at
+a time. An interrupted run reuses hash-verified source leaves and current cells.
+Every geographic cell ends as either an OBCM artifact or a zero-byte known-empty
+claim, and an incomplete planet run cannot pass `verify` or `publish`.
+
+```sh
+# Bake a complete planet snapshot. This is intentionally separate from publish.
+obc bake --all
+
+# The same pipeline from an already-downloaded planet PBF.
+obc bake --all --source /data/planet-latest.osm.pbf
+```
 
 Publishing is a separate operation. It regenerates URLs for the public origin,
 regenerates the square preview for every skin, uploads content first, verifies
@@ -260,8 +272,11 @@ in `OBC_CATALOG_URL` is then
 `https://maps.openbikecomputer.com/cell-catalog/catalog.json`.
 
 Set `OBC_BAKE_TREE` in `tools/obc.local` to move the operator tree. An explicit
-tree may also follow `verify` or `publish`. `--source DIR` uses local Geofabrik-shaped
-`.osm.pbf` and `.poly` inputs, while the default downloads and caches them.
+tree may also follow `verify` or `publish`. For curated bakes, `--source DIR` uses
+local Geofabrik-shaped `.osm.pbf` and `.poly` inputs. With `--all`, `--source`
+accepts a planet PBF URL, a local `planet-latest.osm.pbf`, or its containing
+directory. The default source is the current planet PBF and all downloads and
+source shards live in the shared cache.
 Run `obc bake help` for the complete operator surface.
 
 ### Web builder and desktop app
