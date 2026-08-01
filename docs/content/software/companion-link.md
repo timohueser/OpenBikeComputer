@@ -287,7 +287,8 @@ only *places* the file; the app then sends a separate `installFw` command to
 *request* an install, and the device runs its own scan and shows a **confirm card**
 that the rider must approve with a physical Select press. The phone can never arm
 or reboot the device on its own — the same on-glass gate the pairing passkey uses.
-The whole trust model, the two delivery paths, and the RRAM layout are on the
+The whole trust model, the three delivery paths, how a tagged release is published and
+served so the phone can find it at all, and the RRAM layout are on the
 [firmware updates](../firmware-updates/) page.
 
 **Object ids are durable.** Each stored object has a `u16` id the device assigns

@@ -100,6 +100,23 @@ only in lockstep with a firmware wire change.
 | **BAS** — Battery | `0x180F` (SIG) | battery % (notify) | `battery` stream → top bar |
 | **OBC Control** | `3C920000-9916-4EBA-ABC2-342FE08F6B10` | command + bulk-transfer orchestration | see below |
 
+**The firmware-revision dialect — DIS `0x2A26` (#996, epic #773; canonical spec §3.1).**
+The app's whole update decision is a comparison against this string, so the two cases it
+can be matter. The device answers with the **installed OBCU container's `fw_version`**,
+verbatim — a release tag such as `v1.3.0` — when it has installed one; otherwise with the
+build's **bare git short hash** (`ca9b336`), which is every probe-flashed board, since it
+has installed no container to take a version from. The hash is deliberately **not
+parseable as a version**: `FirmwareVersion.parse` returns `nil`, `updateStatus` answers
+`.unknown`, and **no update is ever offered**. That is a locked behaviour, not a
+limitation to route around — such a device is updated the way it was flashed, or by
+picking an `UPDATE.BIN` by hand. `+build` metadata is parsed only to be discarded, so
+`1.2.0+abc1234` and `1.2.0` are one version, and a value that isn't a version at all can
+never accidentally compare equal to a published release. The string is ≤ 32 bytes (the
+OBCU `fw_version` field width, so `DeviceInfo.firmwareVersion` needs no truncation) and
+the firmware assembles it in exactly **one** place, so this characteristic and the USB
+device-information frame always carry identical bytes — never read a running version from
+anywhere else.
+
 **OBC Control characteristics** — base `3C92XXXX-9916-4EBA-ABC2-342FE08F6B10`,
 the 16-bit `XXXX` block selects the characteristic (spec §3.3; constants in
 `BLE/GATT.swift`). **Six characteristics in v2** (two of v1's eight dropped) — the
