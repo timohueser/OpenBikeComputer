@@ -677,6 +677,7 @@ or assembly algorithms.
 | Product skin editor | yes | yes | yes |
 | Output | browser downloads | atomic local folder | browser downloads |
 | Advanced schema editor | no | no | yes |
+| Native fixed-crop schema preview | no | no | yes |
 | Product PBF build | no | no | no |
 | Managed ride library and device dashboard | no | yes | no |
 
@@ -688,10 +689,35 @@ folder under `Documents/OpenBikeComputer`, using temporary files and atomic
 renames. Saving changes where bytes land, never what the assembler emitted.
 
 The local Python server remains useful while developing the one hosted schema.
-Its advanced editor reads the real packer JSON Schema, exports a complete config,
-and keeps working state in the browser. An exported schema becomes published
-only through an explicit maintainer bake; riders never accidentally trigger a
-country-scale compile.
+Its Maps tab resolves `OBC_CATALOG_URL` at server runtime and proxies only the
+configured catalog tree, avoiding both a stale build-time `./data/catalog.json`
+fallback and a dependency on object-storage CORS. Its Advanced route reads the
+real packer JSON Schema, exports a complete config, and keeps working state in
+the browser.
+
+That route also provides a deliberately **semi-live schema lab**. One setup
+command reuses or downloads Freiburg-regbez and has Osmium atomically prepare a
+small, reference-complete crop around Teningen. Schema edits are debounced and
+cancel the superseded request; the server gives only that fixed source, one
+temporary config, and one temporary output to the exact native `obc-pack`
+binary. There is no request-controlled path or command, only one pack process
+at a time, and a timeout terminates it. Packing the small crop typically takes
+5–15 seconds, so this is feedback after an edit rather than a frame-by-frame
+restyle.
+
+The resulting OBCM is opened without restamping and rendered through the same
+`obc-reader` + `obc-render` bridge on a 240×320 device map plane. Controls visit
+every authored LOD by its real m/px dispatch. The panel reports features tried,
+drawn and dropped; chunks and points; the 2,048-point/32-ring per-feature decode
+limits; and the production 1,152-span/4,768-point/1,024-ring frame limits and
+errors. It is therefore honest about the device's selection pressure, not a
+browser drawing of what the schema might mean.
+
+This remains a maintainer-only preview, not a fourth product build path. It
+never cuts published cells, bakes a region, or teaches the website or desktop
+app to accept a local PBF. An exported schema becomes published only through an
+explicit maintainer bake; riders never accidentally trigger a country-scale
+compile.
 
 ### Device and ride surfaces
 
