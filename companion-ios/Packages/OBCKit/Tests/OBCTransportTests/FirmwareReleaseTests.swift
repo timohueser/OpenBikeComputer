@@ -116,6 +116,8 @@ struct FirmwareReleaseTests {
         #expect(try #require(FirmwareVersion.compare("2.0.0", "1.99.99")) > 0)
         #expect(try #require(FirmwareVersion.compare("1.4.0-rc1", "1.4.0")) < 0)
         #expect(try #require(FirmwareVersion.compare("1.4.0-rc1", "1.4.0-rc2")) < 0)
+        #expect(try #require(FirmwareVersion.compare("1.4.0-rc.2", "1.4.0-rc.10")) < 0)
+        #expect(try #require(FirmwareVersion.compare("1.4.0-10", "1.4.0-rc")) < 0)
     }
 
     /// A manifest controls one side of this comparison. Keep the full shared safe-integer range
