@@ -1,9 +1,12 @@
-//! Whole-planet source preparation for `obc bake --all`.
+//! Whole-planet source update and preparation for `obc bake --all`.
 //!
 //! The packer intentionally retains the styled content it is about to cut. A
 //! planet PBF therefore cannot be handed to it directly. This module uses Osmium's
 //! reference-complete `smart` extraction in a binary hierarchy and yields
-//! grid-aligned leaves; the bakery ingests one leaf at a time.
+//! grid-aligned leaves; the bakery ingests one leaf at a time. On later runs the
+//! official Pyosmium client atomically advances the cached planet through its
+//! replication state, and only leaves whose canonical extracted bytes changed are
+//! re-ingested.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -31,6 +34,7 @@ const PLANET_URL: &str = "https://planet.openstreetmap.org/pbf/planet-latest.osm
 const PLANET_FILE: &str = "planet-latest.osm.pbf";
 const SHARD_HALO_UDEG: i64 = 1;
 const PLANET_STATUS_FILE: &str = ".planet-bake/status.json";
+const MAX_REPLICATION_AGE_SECONDS: i64 = 90 * 24 * 60 * 60;
 
 #[derive(Debug, Clone)]
 pub struct PlanetInput {
@@ -38,6 +42,22 @@ pub struct PlanetInput {
     pub bytes: u64,
     pub sha256: String,
     pub snapshot: String,
+    pub replication: Option<ReplicationUpdate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReplicationState {
+    #[serde(skip_serializing)]
+    pub base_url: String,
+    pub sequence: u64,
+    pub timestamp: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReplicationUpdate {
+    pub from: ReplicationState,
+    pub to: ReplicationState,
+    pub batches: usize,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -52,14 +72,25 @@ struct CachedPlanet {
 /// Resolve the existing `--source` spelling for planet mode. A URL may name the
 /// PBF itself or a directory; a local value may name the file or its directory.
 pub fn resolve_planet(spec: Option<&str>, cache: &Path, progress: &Progress) -> Result<PlanetInput, String> {
+    resolve_planet_with(spec, cache, progress, &PyOsmiumUpdater::default())
+}
+
+/// Injectable form of [`resolve_planet`], used to prove replication and failure
+/// semantics without a network service or an 80 GB fixture.
+pub fn resolve_planet_with(
+    spec: Option<&str>,
+    cache: &Path,
+    progress: &Progress,
+    updater: &dyn ReplicationUpdater,
+) -> Result<PlanetInput, String> {
     let spec = spec.unwrap_or(PLANET_URL);
-    let (path, snapshot) = if spec.starts_with("http://") || spec.starts_with("https://") {
+    let (path, snapshot, replication) = if spec.starts_with("http://") || spec.starts_with("https://") {
         let url = if spec.ends_with(".osm.pbf") {
             spec.to_string()
         } else {
             format!("{}/{}", spec.trim_end_matches('/'), PLANET_FILE)
         };
-        fetch_planet(&url, cache, progress)?
+        fetch_planet(&url, cache, progress, updater)?
     } else {
         let candidate = PathBuf::from(spec.strip_prefix("file://").unwrap_or(spec));
         let path = if candidate.is_dir() { candidate.join(PLANET_FILE) } else { candidate };
@@ -67,36 +98,71 @@ pub fn resolve_planet(spec: Option<&str>, cache: &Path, progress: &Progress) -> 
             return Err(format!("planet source {} is not a file", path.display()));
         }
         let snapshot = local_snapshot(&path)?;
-        (path, snapshot)
+        (path, snapshot, None)
     };
 
     progress.log(format!("Hashing planet source {}...", path.display()));
     let (bytes, sha256) = crate::hash::file(&path)?;
     progress.log(format!("  planet source: {} ({snapshot}, sha256 {}…)", human(bytes), &sha256[..12]));
-    Ok(PlanetInput { path, bytes, sha256, snapshot })
+    Ok(PlanetInput { path, bytes, sha256, snapshot, replication })
 }
 
-fn fetch_planet(url: &str, cache: &Path, progress: &Progress) -> Result<(PathBuf, String), String> {
+fn fetch_planet(
+    url: &str,
+    cache: &Path,
+    progress: &Progress,
+    updater: &dyn ReplicationUpdater,
+) -> Result<(PathBuf, String, Option<ReplicationUpdate>), String> {
     let dir = cache.join("planet");
     let path = dir.join(PLANET_FILE);
     let meta_path = dir.join("planet.meta.json");
-    let head = crate::source::head(url)?;
     if path.is_file() {
         if let Ok(text) = std::fs::read_to_string(&meta_path) {
             if let Ok(meta) = serde_json::from_str::<CachedPlanet>(&text) {
-                let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-                if meta.url == url
-                    && meta.last_modified == head.last_modified
-                    && ((head.content_length == 0 && size == meta.content_length)
-                        || (meta.content_length == head.content_length && size == head.content_length))
-                {
-                    progress.log(format!("Reusing cached planet source {}", path.display()));
-                    return Ok((path, meta.snapshot));
+                if meta.url == url {
+                    let force_fresh = if let Some(state) = updater.state(&path)? {
+                        if replication_is_too_old(&state) {
+                            progress.log(format!(
+                                "Cached planet is older than 90 days ({}); downloading a fresh snapshot instead of \
+                                 replaying months of diffs",
+                                state.timestamp
+                            ));
+                            true
+                        } else {
+                            updater.check()?;
+                            let replication = advance_replication(&path, updater, progress)?;
+                            let snapshot = snapshot_from_replication(&replication.to.timestamp)?;
+                            let bytes = std::fs::metadata(&path).map_err(|e| format!("{}: {e}", path.display()))?.len();
+                            write_json(
+                                &meta_path,
+                                &CachedPlanet { content_length: bytes, snapshot: snapshot.clone(), ..meta },
+                            )?;
+                            return Ok((path, snapshot, Some(replication)));
+                        }
+                    } else {
+                        false
+                    };
+
+                    // Old/custom PBFs without a replication header retain the
+                    // snapshot-download behavior. Official planet files take the
+                    // incremental path above and do not need this HEAD request.
+                    if !force_fresh {
+                        let head = crate::source::head(url)?;
+                        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                        if meta.last_modified == head.last_modified
+                            && ((head.content_length == 0 && size == meta.content_length)
+                                || (meta.content_length == head.content_length && size == head.content_length))
+                        {
+                            progress.log(format!("Reusing cached planet source {}", path.display()));
+                            return Ok((path, meta.snapshot, None));
+                        }
+                    }
                 }
             }
         }
     }
 
+    let head = crate::source::head(url)?;
     progress.log(format!("Downloading planet source from {url}"));
     let mut last = 0u8;
     let bytes = obc_pack::net::download(url, &path, progress, |pct| {
@@ -119,7 +185,179 @@ fn fetch_planet(url: &str, cache: &Path, progress: &Progress) -> Result<(PathBuf
         snapshot: head.snapshot.clone(),
     };
     write_json(&meta_path, &meta)?;
-    Ok((path, head.snapshot))
+    Ok((path, head.snapshot, None))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReplicationStep {
+    Current,
+    MoreAvailable,
+}
+
+/// The official updater is injectable because replication tests must stay fully
+/// offline and must be able to stop between batches deterministically.
+pub trait ReplicationUpdater: Sync {
+    fn check(&self) -> Result<(), String>;
+    fn state(&self, path: &Path) -> Result<Option<ReplicationState>, String>;
+    fn update_once(&self, path: &Path, progress: &Progress) -> Result<ReplicationStep, String>;
+}
+
+pub struct PyOsmiumUpdater {
+    binary: PathBuf,
+    osmium: PathBuf,
+}
+
+impl Default for PyOsmiumUpdater {
+    fn default() -> Self {
+        Self {
+            binary: std::env::var_os("OBC_PYOSMIUM_UP_TO_DATE")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("pyosmium-up-to-date")),
+            osmium: std::env::var_os("OBC_OSMIUM").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("osmium")),
+        }
+    }
+}
+
+impl ReplicationUpdater for PyOsmiumUpdater {
+    fn check(&self) -> Result<(), String> {
+        let out = Command::new(&self.binary).arg("--version").output().map_err(|error| {
+            format!(
+                "{} is required to update the cached planet for `obc bake --all`: {error}. Run `obc doctor \
+                 --install` and retry",
+                self.binary.display()
+            )
+        })?;
+        if !out.status.success() {
+            return Err(format!("{} --version failed with {}", self.binary.display(), out.status));
+        }
+        Ok(())
+    }
+
+    fn state(&self, path: &Path) -> Result<Option<ReplicationState>, String> {
+        let output = Command::new(&self.osmium).args(["fileinfo", "-j"]).arg(path).output().map_err(|e| {
+            format!("read replication header from {} with {}: {e}", path.display(), self.osmium.display())
+        })?;
+        if !output.status.success() {
+            return Err(format!(
+                "{} fileinfo failed for {} with {}",
+                self.osmium.display(),
+                path.display(),
+                output.status
+            ));
+        }
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).map_err(|e| {
+            format!("{} fileinfo returned invalid JSON for {}: {e}", self.osmium.display(), path.display())
+        })?;
+        let Some(options) = json.pointer("/header/option").and_then(serde_json::Value::as_object) else {
+            return Ok(None);
+        };
+        let get = |key: &str| options.get(key).and_then(serde_json::Value::as_str);
+        let (Some(base_url), Some(sequence), Some(timestamp)) = (
+            get("osmosis_replication_base_url"),
+            get("osmosis_replication_sequence_number"),
+            get("osmosis_replication_timestamp"),
+        ) else {
+            return Ok(None);
+        };
+        let sequence =
+            sequence.parse().map_err(|_| format!("{}: invalid replication sequence `{sequence}`", path.display()))?;
+        snapshot_from_replication(timestamp)?;
+        Ok(Some(ReplicationState { base_url: base_url.to_string(), sequence, timestamp: timestamp.to_string() }))
+    }
+
+    fn update_once(&self, path: &Path, progress: &Progress) -> Result<ReplicationStep, String> {
+        progress.check()?;
+        let tmpdir = path.parent().ok_or_else(|| format!("{} has no parent directory", path.display()))?;
+        let status = Command::new(&self.binary)
+            .args(["-vv", "--tmpdir"])
+            .arg(tmpdir)
+            .arg(path)
+            .status()
+            .map_err(|e| format!("run {}: {e}", self.binary.display()))?;
+        match status.code() {
+            Some(0) => Ok(ReplicationStep::Current),
+            Some(1) => Ok(ReplicationStep::MoreAvailable),
+            _ => Err(format!(
+                "{} failed with {status}; its atomic temporary output was not accepted. The previous cached planet \
+                 remains usable",
+                self.binary.display()
+            )),
+        }
+    }
+}
+
+fn advance_replication(
+    path: &Path,
+    updater: &dyn ReplicationUpdater,
+    progress: &Progress,
+) -> Result<ReplicationUpdate, String> {
+    let from =
+        updater.state(path)?.ok_or_else(|| format!("{} has no usable OSM replication header", path.display()))?;
+    let mut current = from.clone();
+    let mut batches = 0usize;
+    progress
+        .log(format!("Updating cached planet from replication sequence {} ({})", current.sequence, current.timestamp));
+    loop {
+        let step = updater.update_once(path, progress)?;
+        let after = updater
+            .state(path)?
+            .ok_or_else(|| format!("{} lost its OSM replication header after a successful update", path.display()))?;
+        if after.base_url != current.base_url {
+            return Err(format!(
+                "{} changed replication service from {} to {} — refusing an ambiguous source transition",
+                path.display(),
+                current.base_url,
+                after.base_url
+            ));
+        }
+        if after.sequence < current.sequence || after.timestamp < current.timestamp {
+            return Err(format!(
+                "{} replication state moved backwards from sequence {} ({}) to {} ({})",
+                path.display(),
+                current.sequence,
+                current.timestamp,
+                after.sequence,
+                after.timestamp
+            ));
+        }
+        if after.sequence > current.sequence {
+            batches += 1;
+            progress.log(format!("  replication batch {batches}: sequence {} ({})", after.sequence, after.timestamp));
+        } else if step == ReplicationStep::MoreAvailable {
+            return Err(format!(
+                "{} reported more replication data without advancing sequence {} — refusing an infinite retry loop",
+                path.display(),
+                current.sequence
+            ));
+        }
+        current = after;
+        if step == ReplicationStep::Current {
+            break;
+        }
+    }
+    if batches == 0 {
+        progress.log("  cached planet is already at the newest replication sequence");
+    } else {
+        progress.log(format!("  cached planet is current at sequence {}", current.sequence));
+    }
+    Ok(ReplicationUpdate { from, to: current, batches })
+}
+
+fn snapshot_from_replication(timestamp: &str) -> Result<String, String> {
+    let date = timestamp.get(..10).ok_or_else(|| format!("invalid OSM replication timestamp `{timestamp}`"))?;
+    obc_pack::catalog::validate_date(date)
+        .map_err(|e| format!("invalid OSM replication timestamp `{timestamp}`: {e}"))?;
+    Ok(date.to_string())
+}
+
+fn replication_is_too_old(state: &ReplicationState) -> bool {
+    let Ok(timestamp) = obc_pack::catalog::validate_timestamp(&state.timestamp) else {
+        return false;
+    };
+    let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
+        return false;
+    };
+    (now.as_secs() as i64).saturating_sub(timestamp) > MAX_REPLICATION_AGE_SECONDS
 }
 
 fn local_snapshot(path: &Path) -> Result<String, String> {
@@ -230,7 +468,7 @@ impl LeafRect {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LeafState {
     state_version: u32,
@@ -333,7 +571,20 @@ pub struct PlanetSharder<'a> {
 pub struct PlanetShardRun {
     pub leaves: Vec<PlanetLeaf>,
     pub reused: usize,
-    pub created: usize,
+    pub refreshed: usize,
+    pub changed: usize,
+}
+
+#[derive(Default)]
+struct ShardChanges {
+    refreshed: usize,
+    changed: usize,
+}
+
+struct ShardProgress<'a> {
+    previous: &'a BTreeMap<LeafId, PlanetLeaf>,
+    current: BTreeSet<LeafId>,
+    changes: ShardChanges,
 }
 
 impl PlanetSharder<'_> {
@@ -342,23 +593,28 @@ impl PlanetSharder<'_> {
         let root = LeafRect::root();
         let mut expected = Vec::new();
         root.leaves(&mut expected);
+        let mut previous = BTreeMap::new();
         let mut current = BTreeSet::new();
         for id in &expected {
-            if self.read_current(*id, true)?.is_some() {
-                current.insert(*id);
+            if let Some((leaf, state)) = self.read_stored(*id, true)? {
+                if state.source_sha256 == self.input.sha256 {
+                    current.insert(*id);
+                }
+                previous.insert(*id, leaf);
             }
         }
         let current_at_start = current.len();
+        let mut shard_progress = ShardProgress { previous: &previous, current, changes: ShardChanges::default() };
         progress.log(format!(
-            "planet source shards: {} current, {} to create (2^{} µdeg leaves)",
-            current.len(),
-            expected.len() - current.len(),
+            "planet source shards: {} current, {} to compare/create (2^{} µdeg leaves)",
+            shard_progress.current.len(),
+            expected.len() - shard_progress.current.len(),
             SOURCE_LEAF_LOG2
         ));
-        if current.len() != expected.len() {
+        if shard_progress.current.len() != expected.len() {
             let work = self.cache.join("planet-shards/.work");
             std::fs::create_dir_all(&work).map_err(|e| format!("{}: {e}", work.display()))?;
-            self.ensure(root, &self.input.path, false, &mut current, progress)?;
+            self.ensure(root, &self.input.path, false, &mut shard_progress, progress)?;
         }
 
         let leaves = expected
@@ -368,7 +624,21 @@ impl PlanetSharder<'_> {
                     .ok_or_else(|| format!("planet source leaf {}/{} is missing after sharding", id.i, id.j))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(PlanetShardRun { created: leaves.len() - current_at_start, reused: current_at_start, leaves })
+        if current_at_start + shard_progress.changes.refreshed + shard_progress.changes.changed != leaves.len() {
+            return Err(format!(
+                "planet source-shard outcome mismatch: {} current + {} refreshed + {} changed != {} leaves",
+                current_at_start,
+                shard_progress.changes.refreshed,
+                shard_progress.changes.changed,
+                leaves.len()
+            ));
+        }
+        Ok(PlanetShardRun {
+            reused: current_at_start,
+            refreshed: shard_progress.changes.refreshed,
+            changed: shard_progress.changes.changed,
+            leaves,
+        })
     }
 
     fn ensure(
@@ -376,12 +646,12 @@ impl PlanetSharder<'_> {
         rect: LeafRect,
         input: &Path,
         input_owned: bool,
-        current: &mut BTreeSet<LeafId>,
+        shard_progress: &mut ShardProgress<'_>,
         progress: &Progress,
     ) -> Result<(), String> {
         let mut ids = Vec::new();
         rect.leaves(&mut ids);
-        if ids.iter().all(|id| current.contains(id)) {
+        if ids.iter().all(|id| shard_progress.current.contains(id)) {
             if input_owned {
                 let _ = std::fs::remove_file(input);
             }
@@ -389,8 +659,15 @@ impl PlanetSharder<'_> {
         }
         if rect.is_leaf() {
             let id = ids[0];
-            self.install_leaf(id, rect, input, input_owned)?;
-            current.insert(id);
+            self.install_leaf(
+                id,
+                rect,
+                input,
+                input_owned,
+                shard_progress.previous.get(&id),
+                &mut shard_progress.changes,
+            )?;
+            shard_progress.current.insert(id);
             return Ok(());
         }
 
@@ -400,7 +677,7 @@ impl PlanetSharder<'_> {
             .filter(|child| {
                 let mut leaves = Vec::new();
                 child.leaves(&mut leaves);
-                leaves.iter().any(|id| !current.contains(id))
+                leaves.iter().any(|id| !shard_progress.current.contains(id))
             })
             .collect();
         let dir = self.cache.join("planet-shards/.work").join(rect.slug());
@@ -414,11 +691,11 @@ impl PlanetSharder<'_> {
             "  sharding {} into {} child extract(s) ({} leaf/leaves remain)",
             rect.slug(),
             requests.len(),
-            ids.iter().filter(|id| !current.contains(id)).count()
+            ids.iter().filter(|id| !shard_progress.current.contains(id)).count()
         ));
         self.runner.split(input, &dir, &requests, progress)?;
         for (k, child) in needed.iter().enumerate() {
-            self.ensure(*child, &dir.join(format!("child-{k}.osm.pbf")), true, current, progress)?;
+            self.ensure(*child, &dir.join(format!("child-{k}.osm.pbf")), true, shard_progress, progress)?;
         }
         let _ = std::fs::remove_dir_all(&dir);
         if input_owned {
@@ -427,17 +704,34 @@ impl PlanetSharder<'_> {
         Ok(())
     }
 
-    fn install_leaf(&self, id: LeafId, rect: LeafRect, input: &Path, input_owned: bool) -> Result<(), String> {
+    fn install_leaf(
+        &self,
+        id: LeafId,
+        rect: LeafRect,
+        input: &Path,
+        input_owned: bool,
+        previous: Option<&PlanetLeaf>,
+        changes: &mut ShardChanges,
+    ) -> Result<(), String> {
         let path = self.leaf_path(id);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
         }
-        if input_owned {
-            std::fs::rename(input, &path).map_err(|e| format!("{} -> {}: {e}", input.display(), path.display()))?;
+        let (bytes, leaf_sha256) = crate::hash::file(input)?;
+        let unchanged = previous.is_some_and(|leaf| leaf.bytes == bytes && leaf.sha256 == leaf_sha256);
+        if unchanged {
+            if input_owned {
+                let _ = std::fs::remove_file(input);
+            }
+            changes.refreshed += 1;
         } else {
-            std::fs::copy(input, &path).map_err(|e| format!("{} -> {}: {e}", input.display(), path.display()))?;
+            if input_owned {
+                std::fs::rename(input, &path).map_err(|e| format!("{} -> {}: {e}", input.display(), path.display()))?;
+            } else {
+                std::fs::copy(input, &path).map_err(|e| format!("{} -> {}: {e}", input.display(), path.display()))?;
+            }
+            changes.changed += 1;
         }
-        let (bytes, leaf_sha256) = crate::hash::file(&path)?;
         let bbox = rect.bbox();
         let state = LeafState {
             state_version: SHARD_STATE_VERSION,
@@ -450,11 +744,18 @@ impl PlanetSharder<'_> {
     }
 
     fn read_current(&self, id: LeafId, verify_hash: bool) -> Result<Option<PlanetLeaf>, String> {
+        Ok(self
+            .read_stored(id, verify_hash)?
+            .filter(|(_, state)| state.source_sha256 == self.input.sha256)
+            .map(|(leaf, _)| leaf))
+    }
+
+    fn read_stored(&self, id: LeafId, verify_hash: bool) -> Result<Option<(PlanetLeaf, LeafState)>, String> {
         let path = self.leaf_path(id);
         let state_path = self.leaf_state_path(id);
         let Ok(text) = std::fs::read_to_string(&state_path) else { return Ok(None) };
         let Ok(state) = serde_json::from_str::<LeafState>(&text) else { return Ok(None) };
-        if state.state_version != SHARD_STATE_VERSION || state.source_sha256 != self.input.sha256 || !path.is_file() {
+        if state.state_version != SHARD_STATE_VERSION || !path.is_file() {
             return Ok(None);
         }
         let expected_bbox = id.cell().square();
@@ -471,13 +772,21 @@ impl PlanetSharder<'_> {
                 return Ok(None);
             }
         }
-        Ok(Some(PlanetLeaf {
-            id,
-            path,
-            bytes,
-            sha256: state.leaf_sha256,
-            logical_bbox: (state.logical_bbox[0], state.logical_bbox[1], state.logical_bbox[2], state.logical_bbox[3]),
-        }))
+        Ok(Some((
+            PlanetLeaf {
+                id,
+                path,
+                bytes,
+                sha256: state.leaf_sha256.clone(),
+                logical_bbox: (
+                    state.logical_bbox[0],
+                    state.logical_bbox[1],
+                    state.logical_bbox[2],
+                    state.logical_bbox[3],
+                ),
+            },
+            state,
+        )))
     }
 
     fn leaf_path(&self, id: LeafId) -> PathBuf {
@@ -497,9 +806,11 @@ pub struct PlanetRunSummary {
     pub source: PathBuf,
     pub source_snapshot: String,
     pub source_bytes: u64,
+    pub replication: Option<ReplicationUpdate>,
     pub leaves: usize,
     pub source_leaves_reused: usize,
-    pub source_leaves_created: usize,
+    pub source_leaves_refreshed: usize,
+    pub source_leaves_changed: usize,
     pub leaves_cut: usize,
     pub leaves_unchanged: usize,
     pub leaves_refreshed: usize,
@@ -556,10 +867,21 @@ impl PlanetRunSummary {
         let _ = writeln!(out, "\n=== planet bake summary ({}) ===", self.tree.display());
         let _ =
             writeln!(out, "source {} ({}; {})", self.source.display(), self.source_snapshot, human(self.source_bytes));
+        if let Some(replication) = &self.replication {
+            let _ = writeln!(
+                out,
+                "replication: {} ({}) → {} ({}), {} applied batch(es)",
+                replication.from.sequence,
+                replication.from.timestamp,
+                replication.to.sequence,
+                replication.to.timestamp,
+                replication.batches
+            );
+        }
         let _ = writeln!(
             out,
-            "source shards: {} reused, {} created",
-            self.source_leaves_reused, self.source_leaves_created
+            "source shards: {} current, {} byte-identical, {} changed/new",
+            self.source_leaves_reused, self.source_leaves_refreshed, self.source_leaves_changed
         );
         let _ = writeln!(
             out,
@@ -588,7 +910,8 @@ pub struct PlanetBake<'a> {
     pub skins: &'a [&'a StyleDoc],
     pub cutter: &'a dyn CellCutter,
     pub source_leaves_reused: usize,
-    pub source_leaves_created: usize,
+    pub source_leaves_refreshed: usize,
+    pub source_leaves_changed: usize,
     pub opts: CellBakeOptions,
 }
 
@@ -612,9 +935,11 @@ impl PlanetBake<'_> {
             source: self.input.path.clone(),
             source_snapshot: self.input.snapshot.clone(),
             source_bytes: self.input.bytes,
+            replication: self.input.replication.clone(),
             leaves: self.leaves.len(),
             source_leaves_reused: self.source_leaves_reused,
-            source_leaves_created: self.source_leaves_created,
+            source_leaves_refreshed: self.source_leaves_refreshed,
+            source_leaves_changed: self.source_leaves_changed,
             leaves_cut: 0,
             leaves_unchanged: 0,
             leaves_refreshed: 0,
@@ -716,11 +1041,13 @@ impl PlanetBake<'_> {
                 expected.len()
             ));
         }
-        if self.source_leaves_reused + self.source_leaves_created != self.leaves.len() {
+        if self.source_leaves_reused + self.source_leaves_refreshed + self.source_leaves_changed != self.leaves.len() {
             return Err(format!(
-                "planet source-shard summary says {} reused + {} created, but the bakery received {} leaves",
+                "planet source-shard summary says {} current + {} byte-identical + {} changed/new, but the bakery \
+                 received {} leaves",
                 self.source_leaves_reused,
-                self.source_leaves_created,
+                self.source_leaves_refreshed,
+                self.source_leaves_changed,
                 self.leaves.len()
             ));
         }
@@ -1118,6 +1445,7 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
     use std::sync::Mutex;
 
     fn repo(path: &str) -> PathBuf {
@@ -1159,8 +1487,94 @@ mod tests {
         }
     }
 
+    fn replication_state(sequence: u64, hour: u64) -> ReplicationState {
+        ReplicationState {
+            base_url: "https://planet.openstreetmap.org/replication/hour/".into(),
+            sequence,
+            timestamp: format!("2026-08-01T{hour:02}:00:00Z"),
+        }
+    }
+
+    struct ScriptedUpdater {
+        state: Mutex<ReplicationState>,
+        steps: Mutex<VecDeque<Result<(ReplicationStep, ReplicationState), String>>>,
+    }
+
+    impl ReplicationUpdater for ScriptedUpdater {
+        fn check(&self) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn state(&self, _path: &Path) -> Result<Option<ReplicationState>, String> {
+            Ok(Some(self.state.lock().unwrap().clone()))
+        }
+
+        fn update_once(&self, _path: &Path, _progress: &Progress) -> Result<ReplicationStep, String> {
+            let (step, state) = self.steps.lock().unwrap().pop_front().expect("scripted replication step")?;
+            *self.state.lock().unwrap() = state;
+            Ok(step)
+        }
+    }
+
+    #[test]
+    fn replication_runs_bounded_batches_until_current_and_reports_the_range() {
+        let updater = ScriptedUpdater {
+            state: Mutex::new(replication_state(10, 10)),
+            steps: Mutex::new(VecDeque::from([
+                Ok((ReplicationStep::MoreAvailable, replication_state(11, 11))),
+                Ok((ReplicationStep::Current, replication_state(12, 12))),
+            ])),
+        };
+        let update = advance_replication(Path::new("planet.osm.pbf"), &updater, &Progress::silent()).unwrap();
+        assert_eq!(update.from, replication_state(10, 10));
+        assert_eq!(update.to, replication_state(12, 12));
+        assert_eq!(update.batches, 2);
+    }
+
+    #[test]
+    fn replication_failure_preserves_the_last_successful_state_for_resume() {
+        let updater = ScriptedUpdater {
+            state: Mutex::new(replication_state(10, 10)),
+            steps: Mutex::new(VecDeque::from([
+                Ok((ReplicationStep::MoreAvailable, replication_state(11, 11))),
+                Err("network stopped".into()),
+            ])),
+        };
+        let error = advance_replication(Path::new("planet.osm.pbf"), &updater, &Progress::silent())
+            .expect_err("the second batch fails");
+        assert!(error.contains("network stopped"), "{error}");
+        assert_eq!(*updater.state.lock().unwrap(), replication_state(11, 11));
+    }
+
+    #[test]
+    fn replication_refuses_a_more_available_loop_without_progress() {
+        let updater = ScriptedUpdater {
+            state: Mutex::new(replication_state(10, 10)),
+            steps: Mutex::new(VecDeque::from([Ok((ReplicationStep::MoreAvailable, replication_state(10, 10)))])),
+        };
+        let error = advance_replication(Path::new("planet.osm.pbf"), &updater, &Progress::silent())
+            .expect_err("a stuck updater must not loop forever");
+        assert!(error.contains("without advancing"), "{error}");
+    }
+
+    #[test]
+    fn replication_age_switches_very_old_sources_to_a_fresh_snapshot() {
+        let very_old = ReplicationState {
+            base_url: "https://planet.openstreetmap.org/replication/hour/".into(),
+            sequence: 1,
+            timestamp: "2000-01-01T00:00:00Z".into(),
+        };
+        assert!(replication_is_too_old(&very_old));
+
+        let future =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64 + 24 * 60 * 60;
+        let current = ReplicationState { timestamp: obc_pack::catalog::format_timestamp(future), ..very_old };
+        assert!(!replication_is_too_old(&current));
+    }
+
     struct FakeRunner {
         calls: Mutex<Vec<usize>>,
+        mutated_leaf: Mutex<Option<[f64; 4]>>,
     }
 
     impl ShardRunner for FakeRunner {
@@ -1176,9 +1590,11 @@ mod tests {
             _progress: &Progress,
         ) -> Result<(), String> {
             self.calls.lock().unwrap().push(requests.len());
+            let mutated_leaf = *self.mutated_leaf.lock().unwrap();
             std::fs::create_dir_all(output_dir).unwrap();
             for request in requests {
-                std::fs::write(output_dir.join(&request.output), format!("{:?}", request.bbox)).unwrap();
+                let suffix = if mutated_leaf == Some(request.bbox) { " changed" } else { "" };
+                std::fs::write(output_dir.join(&request.output), format!("{:?}{suffix}", request.bbox)).unwrap();
             }
             Ok(())
         }
@@ -1202,6 +1618,47 @@ mod tests {
     }
 
     #[test]
+    fn installed_osmium_keeps_identical_leaf_bytes_across_replication_headers() {
+        let runner = OsmiumRunner::default();
+        if runner.check().is_err() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("obc-osmium-replication-headers-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = repo("builder/tests/corpus/data/tiny.osm.pbf");
+        let make = |name: &str, sequence: &str, timestamp: &str| {
+            let path = dir.join(name);
+            let status = Command::new(&runner.binary)
+                .arg("cat")
+                .arg(&source)
+                .arg("-o")
+                .arg(&path)
+                .arg("--overwrite")
+                .arg(format!("--output-header=osmosis_replication_sequence_number={sequence}"))
+                .arg(format!("--output-header=osmosis_replication_timestamp={timestamp}"))
+                .arg("--output-header=osmosis_replication_base_url=https://planet.openstreetmap.org/replication/hour/")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            path
+        };
+        let first = make("first.osm.pbf", "10", "2026-08-01T10:00:00Z");
+        let second = make("second.osm.pbf", "11", "2026-08-01T11:00:00Z");
+        let request = [ExtractRequest { output: "leaf.osm.pbf".into(), bbox: [7.0, 47.0, 8.5, 49.0] }];
+        let first_out = dir.join("first");
+        let second_out = dir.join("second");
+        runner.split(&first, &first_out, &request, &Progress::silent()).unwrap();
+        runner.split(&second, &second_out, &request, &Progress::silent()).unwrap();
+        assert_eq!(
+            crate::hash::file(&first_out.join("leaf.osm.pbf")).unwrap(),
+            crate::hash::file(&second_out.join("leaf.osm.pbf")).unwrap(),
+            "replication-only source header changes must not invalidate every geographic leaf"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn sharding_is_resumable_and_hash_checks_leaves() {
         let dir = std::env::temp_dir().join(format!("obc-planet-shards-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1213,21 +1670,55 @@ mod tests {
             bytes: 6,
             sha256: crate::hash::text("fixture-planet"),
             snapshot: "2026-08-01".into(),
+            replication: None,
         };
-        let runner = FakeRunner { calls: Mutex::new(Vec::new()) };
+        let runner = FakeRunner { calls: Mutex::new(Vec::new()), mutated_leaf: Mutex::new(None) };
         let sharder = PlanetSharder { input: &input, cache: &dir, runner: &runner };
         let first = sharder.run(&Progress::silent()).unwrap();
         assert!(runner.calls.lock().unwrap().iter().all(|count| *count <= 2));
         let calls = runner.calls.lock().unwrap().len();
         let second = sharder.run(&Progress::silent()).unwrap();
         assert_eq!(first.leaves.len(), second.leaves.len());
-        assert_eq!(first.created, first.leaves.len());
+        assert_eq!(first.changed, first.leaves.len());
         assert_eq!(second.reused, second.leaves.len());
         assert_eq!(runner.calls.lock().unwrap().len(), calls, "a current hierarchy performs no extraction");
 
+        let next_input = PlanetInput {
+            path: input.path.clone(),
+            bytes: input.bytes,
+            sha256: crate::hash::text("fixture-planet-next-snapshot"),
+            snapshot: "2026-08-02".into(),
+            replication: None,
+        };
+        let next_sharder = PlanetSharder { input: &next_input, cache: &dir, runner: &runner };
+        let refreshed = next_sharder.run(&Progress::silent()).unwrap();
+        assert_eq!(refreshed.reused, 0);
+        assert_eq!(refreshed.refreshed, refreshed.leaves.len());
+        assert_eq!(refreshed.changed, 0, "snapshot headers must not invalidate byte-identical leaves");
+        assert_eq!(
+            first.leaves.iter().map(|leaf| &leaf.sha256).collect::<Vec<_>>(),
+            refreshed.leaves.iter().map(|leaf| &leaf.sha256).collect::<Vec<_>>()
+        );
+
+        let changed_id = refreshed.leaves[0].id;
+        *runner.mutated_leaf.lock().unwrap() = Some(
+            LeafRect { i0: changed_id.i, i1: changed_id.i + 1, j0: changed_id.j, j1: changed_id.j + 1 }.extract_bbox(),
+        );
+        let changed_input = PlanetInput {
+            path: input.path.clone(),
+            bytes: input.bytes,
+            sha256: crate::hash::text("fixture-planet-with-one-change"),
+            snapshot: "2026-08-03".into(),
+            replication: None,
+        };
+        let changed_sharder = PlanetSharder { input: &changed_input, cache: &dir, runner: &runner };
+        let changed = changed_sharder.run(&Progress::silent()).unwrap();
+        assert_eq!(changed.changed, 1);
+        assert_eq!(changed.refreshed, changed.leaves.len() - 1);
+
         std::fs::write(&first.leaves[0].path, b"corrupt").unwrap();
-        let repaired = sharder.run(&Progress::silent()).unwrap();
-        assert_eq!(repaired.created, 1);
+        let repaired = changed_sharder.run(&Progress::silent()).unwrap();
+        assert_eq!(repaired.changed, 1);
         assert!(runner.calls.lock().unwrap().len() > calls, "a changed leaf is recreated through its branch");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1256,8 +1747,47 @@ mod tests {
         }
     }
 
+    struct AllEmptyCutter;
+
+    impl CellCutter for AllEmptyCutter {
+        fn recipe(&self) -> String {
+            "all-empty-fixture".into()
+        }
+
+        fn cut(
+            &self,
+            _pbfs: &[String],
+            _config: &obc_pack::config::Config,
+            _out_dir: &Path,
+            opts: &CutOptions,
+            _progress: &Progress,
+        ) -> Result<obc_pack::cut::CutSummary, String> {
+            let cells = opts
+                .bands
+                .bands
+                .iter()
+                .flat_map(|band| {
+                    opts.select.iter().copied().map(|id| CellArtifact {
+                        id,
+                        band: band.id.clone(),
+                        path: format!("cells/{}/{}/{}.obcm", band.id, id.i, id.j),
+                        bytes: 0,
+                        sha256: crate::hash::text(""),
+                        partial: false,
+                        dropped: 0,
+                        pois: 0,
+                        nav_nodes: 0,
+                        nav_edges: 0,
+                        empty: true,
+                    })
+                })
+                .collect();
+            Ok(obc_pack::cut::CutSummary { cells, bytes: 0, dropped: 0, partial: 0 })
+        }
+    }
+
     #[test]
-    fn a_leaf_bake_replaces_empty_artifacts_with_ranges_and_then_skips() {
+    fn a_leaf_bake_replaces_empty_artifacts_with_ranges_skips_and_applies_deletions() {
         let dir = std::env::temp_dir().join(format!("obc-planet-bake-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -1269,6 +1799,7 @@ mod tests {
             bytes: std::fs::metadata(&pbf).unwrap().len(),
             sha256: sha256.clone(),
             snapshot: "2026-08-01".into(),
+            replication: None,
         };
         let leaf = PlanetLeaf {
             id: LeafId { i: leaf_cell.i, j: leaf_cell.j },
@@ -1287,7 +1818,8 @@ mod tests {
             skins: &[],
             cutter: &cutter,
             source_leaves_reused: 0,
-            source_leaves_created: 1,
+            source_leaves_refreshed: 0,
+            source_leaves_changed: 1,
             opts: CellBakeOptions {
                 out: dir.clone(),
                 force: false,
@@ -1306,6 +1838,47 @@ mod tests {
         let second = run().run_inner(&Progress::silent()).unwrap();
         assert_eq!(second.leaves_unchanged, 1, "the source leaf is not ingested twice");
         assert_eq!(second.leaves_cut, 0);
+
+        let deleted_input = PlanetInput {
+            path: input.path.clone(),
+            bytes: input.bytes,
+            sha256: crate::hash::text("post-deletion-planet"),
+            snapshot: "2026-08-02".into(),
+            replication: None,
+        };
+        let deleted_leaf = PlanetLeaf { sha256: crate::hash::text("post-deletion-leaf"), ..leaf.clone() };
+        let deleted = PlanetBake {
+            input: &deleted_input,
+            leaves: std::slice::from_ref(&deleted_leaf),
+            regions: &[],
+            schema: &schema,
+            skins: &[],
+            cutter: &AllEmptyCutter,
+            source_leaves_reused: 0,
+            source_leaves_refreshed: 0,
+            source_leaves_changed: 1,
+            opts: CellBakeOptions {
+                out: dir.clone(),
+                force: false,
+                fail_fast: true,
+                bands: test_bands(),
+                schema_id: "bikepacking".into(),
+                schema_revision: 1,
+            },
+        }
+        .run_inner(&Progress::silent())
+        .unwrap();
+        assert_eq!(deleted.leaves_cut, 1);
+        assert_eq!(deleted.artifacts_cut, 0);
+        assert_eq!(deleted.known_empty_cut, 16);
+        let empties = KnownEmptyIndex::load(&dir, &test_bands(), 1).unwrap();
+        for (band, ids) in leaf_cells(leaf.id, &test_bands()) {
+            for id in ids {
+                assert!(empties.fact(&band, id).is_some(), "{band} {id} records the deletion as known-empty");
+                assert!(!cell_paths(&dir, &band, id).0.exists(), "{band} {id} stale artifact was removed");
+            }
+        }
+
         let error = run().validate_planet_leaves().expect_err("one fixture leaf is not a complete planet");
         assert!(error.contains("refusing to mark partial coverage complete"), "{error}");
         let _ = std::fs::remove_dir_all(&dir);
@@ -1359,6 +1932,7 @@ mod tests {
             bytes: 0,
             sha256: "0".repeat(64),
             snapshot: "2026-08-01".into(),
+            replication: None,
         };
         let schema = crate::presets::load_schema(&repo("builder/presets")).unwrap();
         let cutter = crate::cells::ObcCutter { no_land: true, chunk_size: None };
@@ -1370,7 +1944,8 @@ mod tests {
             skins: &[],
             cutter: &cutter,
             source_leaves_reused: leaves.len(),
-            source_leaves_created: 0,
+            source_leaves_refreshed: 0,
+            source_leaves_changed: 0,
             opts: CellBakeOptions {
                 out: dir.clone(),
                 force: false,
