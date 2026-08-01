@@ -12,11 +12,10 @@ import { mount } from "svelte";
 import "leaflet/dist/leaflet.css";
 import "../src/styles/app.css";
 import App from "../src/App.svelte";
-import { builtMap } from "../src/lib/device/built.svelte";
 import { deviceHolder } from "../src/lib/device/session.svelte";
 import { platform, type Platform } from "../src/lib/platform";
 import { harnessRideLibrary } from "./ride-library";
-import { BUILT_MAP, openSimulatedSession } from "./simulated-device.svelte";
+import { openSimulatedSession } from "./simulated-device.svelte";
 
 // Claim the shared session before the app mounts: `DeviceStep`'s own `open()` is memoized, so the
 // first opener wins and every surface below it talks to the simulated device.
@@ -32,11 +31,5 @@ void deviceHolder.open(openSimulatedSession);
     seam.caps.rideLibrary = true;
     seam.rides = async () => harnessRideLibrary();
 }
-
-// Pretend a build just finished (E3 #913), so the Map surface offers the row it offers in the app.
-// The harness runs the *web* tier, which has no packer and therefore never produces one — but the
-// row's gate is the session's `localFileSource`, not a host name, and the simulated session has
-// one. So the built-map path is clickable here without a Tauri build or a `.pbf`.
-builtMap.note(BUILT_MAP);
 
 mount(App, { target: document.getElementById("app")! });

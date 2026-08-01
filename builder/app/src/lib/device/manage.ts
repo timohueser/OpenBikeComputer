@@ -12,9 +12,10 @@
  */
 
 import type { ProtocolClient } from "../usb/client";
+import { truncateUtf8 } from "../format";
 import { decodeTripObject, encodeTripObject, type TripObject } from "../usb/objects";
 import { NEW_OBJECT_ID, ObjectType } from "../usb/protocol";
-import { decodeRouteHeader, ROUTE_NAME_MAX, truncateUtf8 } from "./route";
+import { decodeRouteHeader, ROUTE_NAME_MAX } from "./route";
 
 /** The trip name field's cap — same 48-byte field as a route's (`objects.ts` §7.7). */
 export const TRIP_NAME_MAX = 48;

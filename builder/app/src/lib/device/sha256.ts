@@ -1,19 +1,9 @@
 /**
- * Incremental SHA-256 (FIPS 180-4), because WebCrypto has no streaming digest.
+ * Incremental SHA-256 (FIPS 180-4).
  *
- * [`OBCC_Spec.md`](../../../../../specs/OBCC_Spec.md) §7 requires a consumer to verify a downloaded
- * artifact against the manifest's `bytes` and `sha256` **before writing it to a device**.
- * `crypto.subtle.digest` is one-shot: it takes a `BufferSource`, so honouring that rule through it
- * means holding the whole artifact in memory. For a 300 MB regional map that is the exact thing
- * #903 says must not happen, so the digest has to fold in as bytes go past.
- *
- * ~110 lines of well-specified arithmetic is a real cost, and it is worth being blunt about why it
- * is paid rather than pulling a dependency: the hosted tier ships from a CDN with no build server,
- * and a hash is the one place where "some package on npm" is the wrong answer. It is held to
- * WebCrypto itself in `sha256.test.ts` — same inputs, same digest, across every block-boundary
- * length that matters — so a divergence fails in CI rather than as a rejected download.
- */
-
+ * Firmware release manifests are authenticated before an update is offered, but WebCrypto has
+ * no incremental digest API. This implementation lets a response be verified as its chunks
+ * arrive and is held to WebCrypto itself in `sha256.test.ts`.
 /** Round constants: the first 32 bits of the fractional parts of the cube roots of the first 64 primes. */
 // prettier-ignore
 const K = new Uint32Array([
@@ -98,7 +88,7 @@ export class Sha256 {
         return out;
     }
 
-    /** The digest as lowercase hex — the spelling `OBCC_Spec.md` §3 uses. */
+    /** The digest as lowercase hex — the spelling `OBCC_Spec.md` §9 uses. */
     hex(): string {
         return toHex(this.digest());
     }

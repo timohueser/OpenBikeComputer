@@ -20,7 +20,7 @@ const SYNTH_SPEED_MPS: f32 = 5.0;
 const SYNTH_FIX_INTERVAL_MS: u64 = 1000;
 
 /// Microdegrees of latitude per metre north (the map/route coordinate convention). Longitude scales
-/// this by 1/cos(lat), via [`obc_route::cos_lat`].
+/// this by 1/cos(lat), via [`obc_map_scene::cos_lat`].
 const UDEG_PER_M: f32 = 1_000_000.0 / 111_320.0;
 
 /// A stand-in moving [`LocationSource`] for the **`debug-link`-off** build: the fix walks a slow
@@ -49,7 +49,7 @@ impl SynthLocation {
     pub fn recenter(&mut self, lon: i32, lat: i32) {
         self.center_lon = lon;
         self.center_lat = lat;
-        self.udeg_per_m_east = UDEG_PER_M / obc_route::cos_lat(lat);
+        self.udeg_per_m_east = UDEG_PER_M / obc_map_scene::cos_lat(lat);
     }
 }
 

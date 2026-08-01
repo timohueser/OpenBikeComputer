@@ -1,6 +1,0 @@
-# Deps of the static tier's data producer (builder/server/static_data.py) and
-# nothing else. Split out from requirements.txt so the site deploy (#905) installs the
-# two packages that build regions.json without dragging in a web framework the hosted
-# tier deliberately does not have.
-requests>=2.28.0          # Geofabrik index download
-shapely>=2.0.0            # simplify region-picker boundary polygons (geofabrik.py)

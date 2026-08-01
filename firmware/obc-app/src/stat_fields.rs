@@ -56,7 +56,7 @@ pub struct Readout<'a> {
     pub next_waypoint: Option<usize>,
     /// The live wall-clock time (the [`Clock`](StatField::Clock) tile).
     pub now: DateTime,
-    /// The boot-relative millis this frame (the [`RideClock`](crate::RideClock) already threaded
+    /// The boot-relative millis this frame (the [`RideClock`](obc_ports::RideClock) already threaded
     /// through the ride loop) — the staleness clock the live sensor tiles
     /// ([`HeartRate`](StatField::HeartRate) / [`Power`](StatField::Power) /
     /// [`Cadence`](StatField::Cadence)) pass to [`Activity`](crate::activity::Activity)'s 5 s-gated

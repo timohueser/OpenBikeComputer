@@ -228,6 +228,18 @@ pub trait MapScene {
     fn select_lod_for_mpp(&self, mpp: f32) -> usize;
     fn style(&self, id: u8) -> Option<&Style>;
 
+    /// RGB565 marker colour stored with the map presentation metadata.
+    fn marker_color(&self) -> u16 {
+        0
+    }
+
+    /// The style at the bottom of the paint order, used to clear the map plane before geometry.
+    /// Sources with a pre-resolved backdrop override this; the allocation-free fallback scans the
+    /// bounded 256-entry style id space.
+    fn backdrop_style(&self) -> Option<&Style> {
+        (0..=u8::MAX).filter_map(|id| self.style(id)).min_by_key(|style| (style.z_index, style.id))
+    }
+
     /// Snapshot optional cumulative source/cache counters. `Ok(None)` means the source has none.
     fn diagnostics(&self) -> Result<Option<Diagnostics>, ReadError> {
         Ok(None)

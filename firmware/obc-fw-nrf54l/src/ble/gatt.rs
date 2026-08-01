@@ -44,8 +44,10 @@ pub(crate) struct Server {
 /// string, so the macro declares them empty and `run` fills them.
 #[gatt_service(uuid = service::DEVICE_INFORMATION)]
 pub(crate) struct DeviceInformationService {
+    // 32 = the OBCU container's `fw_version` field width, which is what the value now carries
+    // (#996) — a release tag verbatim, or the build's git hash on a dev device.
     #[characteristic(uuid = characteristic::FIRMWARE_REVISION_STRING, read)]
-    pub firmware_revision: heapless09::String<24>,
+    pub firmware_revision: heapless09::String<32>,
     #[characteristic(uuid = characteristic::HARDWARE_REVISION_STRING, read)]
     pub hardware_revision: heapless09::String<16>,
     #[characteristic(uuid = characteristic::SERIAL_NUMBER_STRING, read)]
@@ -146,7 +148,7 @@ fn gatt_vec<const N: usize>(bytes: &[u8]) -> heapless09::Vec<u8, N> {
 }
 
 /// The DIS **Firmware Revision** attribute value.
-pub(crate) fn dis_firmware_revision() -> heapless09::String<24> {
+pub(crate) fn dis_firmware_revision() -> heapless09::String<32> {
     gatt_str(identity::firmware_revision().as_str())
 }
 

@@ -16,9 +16,9 @@ crate-type = ["cdylib", "rlib"]
 # byte-buffer adapter plus an error vocabulary.
 obc-route = { path = "../../firmware/obc-route" }
 # The byte-I/O seam (`ByteSource`/`ByteSink`/`Error`) and the recorded-track record width — the
-# byte authority, imported directly rather than through obc-route's re-export (see obc-route's
-# `pub use obc_formats::io::Error` note).
+# byte authority, imported directly rather than through the route algorithms.
 obc-formats = { path = "../../firmware/obc-formats" }
+obc-ports = { path = "../../firmware/obc-ports" }
 # `RouteReader::decode_chunk` fills a fixed-capacity buffer; the version tracks obc-route's.
 heapless = "0.8"
 

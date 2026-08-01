@@ -24,7 +24,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 BUILDER_ROOT = os.path.dirname(HERE)
 REPO_ROOT = os.path.dirname(BUILDER_ROOT)
 TINY_PBF = os.path.join(HERE, "corpus", "data", "tiny.osm.pbf")
-DEFAULT_PRESET = os.path.join(BUILDER_ROOT, "presets", "default.json")
+SCHEMA_PRESET = os.path.join(BUILDER_ROOT, "presets", "schema.json")
 
 # §8.6 canonical class order (must match obc-pack/src/nav.rs and OBCM_Spec §8.6).
 HIGHWAY_CLASSES = [
@@ -34,7 +34,7 @@ HIGHWAY_CLASSES = [
 SURFACE_CLASSES = ["unknown", "paved", "compacted", "gravel", "dirt", "rough", "cobbles", "grass"]
 NAME_LEN = 12
 PROFILE_RECORD_LEN = 52  # 12 name + 32 highway + 8 surface
-OBCM_VERSION = 10
+OBCM_VERSION = 11
 
 
 def _pack_bin():
@@ -79,7 +79,7 @@ def _expected_record(profile):
 
 def _pack(tmp_path, profiles, min_component_edges=None):
     """Pack the tiny corpus with the given routing.profiles; return the .obcm bytes."""
-    cfg = json.load(open(DEFAULT_PRESET))
+    cfg = json.load(open(SCHEMA_PRESET))
     cfg.pop("_meta", None)
     routing = {"profiles": profiles}
     if min_component_edges is not None:
@@ -157,7 +157,7 @@ def test_single_profile_count(tmp_path):
 def test_sub_one_multiplier_is_rejected_with_admissibility_error(tmp_path):
     """A multiplier below 1.0 must be rejected by the packer with the admissibility error
     — the identical failure the builder API surfaces as a job error."""
-    cfg = json.load(open(DEFAULT_PRESET))
+    cfg = json.load(open(SCHEMA_PRESET))
     cfg.pop("_meta", None)
     cfg["routing"] = {"profiles": [{"name": "Bad", "highway": {"cycleway": 0.5}}]}
     cfg_path = tmp_path / "config.json"

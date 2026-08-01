@@ -1,17 +1,12 @@
 // The dev host's transport: HTTP against `python -m builder.server`. Only
 // platform/dev.ts imports it, so it never reaches the other two bundles.
 
-import type { BuildRequest, Palette, RegionFeature } from "../platform/types";
+import type { Palette, SchemaPreviewMap, SchemaPreviewStatus } from "../platform/types";
 import type { Preset, SchemaEnvelope } from "../config/model";
 
 // Every fetch goes through API_BASE so a deployment can relocate the API with
 // a build-time env var (VITE_API_BASE) instead of code changes.
 export const API_BASE: string = import.meta.env.VITE_API_BASE ?? "/api";
-
-// The region shape is declared at the platform seam now (every host serves
-// regions), but it is still this client's `/regions` response type, so it stays
-// re-exported here alongside the other wire shapes below.
-export type { RegionFeature };
 
 async function getJson<T>(path: string): Promise<T> {
     const res = await fetch(API_BASE + path);
@@ -27,61 +22,56 @@ async function getJson<T>(path: string): Promise<T> {
     return res.json() as Promise<T>;
 }
 
-/** The POST /jobs wire body — snake_case, and this module's business alone. */
-export interface JobRequest {
-    region_ids: string[];
-    config: unknown;
-    chunk_size?: number;
-    output_name: string;
-    bbox?: [number, number, number, number];
-}
-
-export interface JobSnapshot {
-    id: string;
-    state: "queued" | "running" | "done" | "error";
-    created_at: number;
-    output: string;
-    size?: number;
-    download_url?: string;
-    error?: string;
+async function errorDetail(res: Response): Promise<string> {
+    try {
+        const body = (await res.json()) as { detail?: unknown };
+        if (typeof body.detail === "string") return body.detail;
+    } catch {
+        // Keep the HTTP status below for a non-JSON failure.
+    }
+    return `${res.status} ${res.statusText}`;
 }
 
 export const api = {
-    regions: () =>
-        getJson<{ features: RegionFeature[] }>("/regions").then((fc) => fc.features),
     presets: () => getJson<Preset[]>("/presets"),
     schema: () => getJson<SchemaEnvelope>("/schema"),
     palette: () => getJson<Palette>("/palette"),
-    job: (id: string) => getJson<JobSnapshot>(`/jobs/${id}`),
-
-    /** 404 (no user_config.json on the server) is the common case, not an error. */
-    async legacyConfig(): Promise<Record<string, unknown> | null> {
-        const res = await fetch(`${API_BASE}/config/legacy`);
-        return res.ok ? ((await res.json()) as Record<string, unknown>) : null;
+    async publishedCatalog(): Promise<{ url: string; body: string }> {
+        const res = await fetch(`${API_BASE}/catalog/root`);
+        if (!res.ok) throw new Error(await errorDetail(res));
+        const url = res.headers.get("X-OBC-Catalog-Url");
+        if (!url) throw new Error("The maintainer host omitted the catalog URL.");
+        return { url, body: await res.text() };
     },
 
-    async startJob(req: BuildRequest): Promise<string> {
-        const body: JobRequest = {
-            region_ids: req.regionIds,
-            config: req.config,
-            ...(req.chunkSize != null ? { chunk_size: req.chunkSize } : {}),
-            output_name: req.outputName,
-            ...(req.bbox ? { bbox: req.bbox } : {}),
-        };
-        const res = await fetch(API_BASE + "/jobs", {
+    async catalogFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+        const url = input instanceof Request ? input.url : String(input);
+        return fetch(`${API_BASE}/catalog/object?url=${encodeURIComponent(url)}`, init);
+    },
+    previewStatus: () => getJson<SchemaPreviewStatus>("/schema-preview/status"),
+
+    async packPreview(config: Record<string, unknown>, signal: AbortSignal): Promise<SchemaPreviewMap> {
+        const res = await fetch(`${API_BASE}/schema-preview`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
+            body: JSON.stringify(config),
+            signal,
         });
-        if (!res.ok) {
-            let detail = res.statusText;
+        if (!res.ok) throw new Error(await errorDetail(res));
+        let diagnostics: string[] = [];
+        const encoded = res.headers.get("X-OBC-Pack-Diagnostics");
+        if (encoded) {
             try {
-                detail = (await res.json()).detail ?? detail;
+                const parsed: unknown = JSON.parse(atob(encoded.replaceAll("-", "+").replaceAll("_", "/")));
+                if (Array.isArray(parsed) && parsed.every((line) => typeof line === "string")) diagnostics = parsed;
             } catch {
-                // non-JSON error body; keep statusText
+                // Diagnostics are advisory; never reject a valid map for a bad header.
             }
-            throw new Error(detail);
         }
-        return (await res.json()).job_id as string;
+        return {
+            bytes: new Uint8Array(await res.arrayBuffer()),
+            packDurationMs: Number(res.headers.get("X-OBC-Pack-Duration-Ms") ?? 0),
+            diagnostics,
+        };
     },
 };
