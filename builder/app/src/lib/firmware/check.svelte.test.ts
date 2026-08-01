@@ -128,6 +128,17 @@ describe("the answered ledger", () => {
         expect(check.isAnswered(SERIAL, "1.5.0")).toBe(false);
     });
 
+    it("does not re-ask after a channel rollback or regress the ledger", async () => {
+        const check = await checked(memoryLedger());
+        check.answer(SERIAL, "1.5.0");
+        check.answer(SERIAL, "1.4.0"); // a late, older surface completion
+        expect(check.isAnswered(SERIAL, "1.5.0")).toBe(true);
+        expect(check.isAnswered(SERIAL, "1.4.0")).toBe(true);
+
+        check.release = { ...check.release!, version: "1.4.0" };
+        expect(check.offer(SERIAL, "1.3.0"), "an older channel pointer is not a new question").toBeNull();
+    });
+
     it("survives a reload", async () => {
         const storage = memoryLedger();
         (await checked(storage)).answer(SERIAL, "1.4.0");
@@ -141,7 +152,11 @@ describe("the answered ledger", () => {
         const check = await checked(storage);
         check.answer(SERIAL, "0.0.1");
         for (let i = 0; i < LEDGER_CAP; i++) check.answer(SERIAL, `9.9.${i}`);
-        expect(check.isAnswered(SERIAL, "0.0.1")).toBe(false);
+        const written = JSON.parse(storage.map.get("obcm.fwPromptAnswered")!) as string[];
+        expect(written).toHaveLength(LEDGER_CAP);
+        expect(written).not.toContain(`${SERIAL}@0.0.1`);
+        // The entry aged out, but a newer answer still suppresses a rolled-back channel pointer.
+        expect(check.isAnswered(SERIAL, "0.0.1")).toBe(true);
         expect(check.isAnswered(SERIAL, `9.9.${LEDGER_CAP - 1}`)).toBe(true);
     });
 

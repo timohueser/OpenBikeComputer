@@ -44,6 +44,7 @@ describe("parseFirmwareManifest", () => {
             JSON.stringify({ version: "1.4.0", size: 1, sha256: "a".repeat(64) }), // no url
             JSON.stringify({ version: "abc1234", size: 1, sha256: "a".repeat(64), url: "https://x/" }),
             JSON.stringify({ version: "1.4.0", size: 0, sha256: "a".repeat(64), url: "https://x/" }),
+            JSON.stringify({ version: "1.4.0", size: 9_007_199_254_740_992, sha256: "a".repeat(64), url: "https://x/" }),
             JSON.stringify({ version: "1.4.0", size: 1, sha256: "nope", url: "https://x/" }),
             JSON.stringify({ version: "1.4.0", size: 1, sha256: "a".repeat(64), url: "http://x/" }),
         ];
@@ -109,6 +110,13 @@ describe("the version dialect", () => {
         expect(compareVersions("2.0.0", "1.99.99")).toBeGreaterThan(0);
         expect(compareVersions("1.4.0-rc1", "1.4.0")).toBeLessThan(0);
         expect(compareVersions("1.4.0-rc1", "1.4.0-rc2")).toBeLessThan(0);
+        expect(compareVersions("1.4.0-rc.2", "1.4.0-rc.10")).toBeLessThan(0);
+        expect(compareVersions("1.4.0-10", "1.4.0-rc")).toBeLessThan(0);
+    });
+
+    it("accepts the largest exact component and rejects rounded ones", () => {
+        expect(compareVersions("9007199254740991.0.0", "9007199254740990.0.0")).toBeGreaterThan(0);
+        expect(parseVersion("9007199254740992.0.0")).toBeNull();
     });
 });
 

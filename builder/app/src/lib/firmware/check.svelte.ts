@@ -28,7 +28,7 @@
  * flow — the offer, the send button, the file picker — never reads it.
  */
 
-import { fetchFirmwareRelease, updateStatus, type FirmwareRelease } from "./release";
+import { compareVersions, fetchFirmwareRelease, updateStatus, type FirmwareRelease } from "./release";
 
 /**
  * The slice of `localStorage` the ledger needs — injectable, so the store is tested against a Map
@@ -109,9 +109,17 @@ export class FirmwareCheck {
         return this.isAnswered(serial, release.version) ? null : release;
     }
 
-    /** Whether this device's rider has already answered for this version. */
+    /** Whether this device's rider has answered this version or a newer one. A release-channel
+     * rollback is not a new question, and alternate spellings of one semantic version are not
+     * separate questions. */
     isAnswered(serial: string, version: string): boolean {
-        return this.answered.includes(answerKey(serial, version));
+        const prefix = `${serial}@`;
+        return this.answered.some((entry) => {
+            if (!entry.startsWith(prefix)) return false;
+            const answeredVersion = entry.slice(prefix.length);
+            const order = compareVersions(answeredVersion, version);
+            return order === null ? answeredVersion === version : order >= 0;
+        });
     }
 
     /**
@@ -121,6 +129,9 @@ export class FirmwareCheck {
      */
     answer(serial: string | null | undefined, version: string): void {
         if (!serial) return;
+        // A late completion from an older prompt must not regress the ledger or consume another
+        // slot. The browser is single-threaded, but foreground flows can still settle out of order.
+        if (this.isAnswered(serial, version)) return;
         const key = answerKey(serial, version);
         const next = [...this.answered.filter((entry) => entry !== key), key].slice(-LEDGER_CAP);
         this.answered = next;
