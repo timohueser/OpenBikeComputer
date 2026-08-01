@@ -50,6 +50,9 @@
             packDurationMs = result.packDurationMs;
             diagnostics = result.diagnostics;
             opened.setMetersPerPixel(metersPerPixel);
+            // The Wasm preview owns its map bytes now. Do not retain the same
+            // multi-megabyte response in `phase.ready` as a second JS copy.
+            phase = { kind: "displayed" };
             paint();
         } catch (cause) {
             if (generation !== installGeneration) return;
@@ -125,7 +128,7 @@
         <span class="state small" class:error={phase.kind === "error"} aria-live="polite">
             {#if phase.kind === "waiting"}Waiting for edits…
             {:else if phase.kind === "packing"}Packing Teningen…
-            {:else if phase.kind === "ready" && renderer}Packed in {(packDurationMs / 1000).toFixed(1)} s
+            {:else if phase.kind === "displayed" && renderer}Packed in {(packDurationMs / 1000).toFixed(1)} s
             {:else if phase.kind === "error"}{phase.message}
             {:else}Checking source…{/if}
         </span>
