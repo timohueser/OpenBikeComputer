@@ -227,18 +227,36 @@ below the output directory.
 
 No selector and `--all` deliberately mean different things. Omitting selectors
 bakes the curated TOML list; `obc bake --all` bakes a planet snapshot while retaining
-those entries as named catalog selections. Planet mode requires `osmium`, downloads
-and caches `planet-latest.osm.pbf` by default, splits it through a binary hierarchy
-of grid-aligned source leaves, and hands only one bounded leaf to the Rust cutter at
-a time. An interrupted run reuses hash-verified source leaves and current cells.
-Every geographic cell ends as either an OBCM artifact or a zero-byte known-empty
-claim, and an incomplete planet run cannot pass `verify` or `publish`.
+those entries as named catalog selections. Planet mode requires `osmium` and the
+official Pyosmium replication client; `obc doctor --install` installs the latter in
+the repository venv. The first run downloads and caches `planet-latest.osm.pbf`.
+Later runs advance that same file through its embedded OSM replication state in
+atomic, bounded batches; a cache older than 90 days is replaced by a fresh snapshot
+instead of replaying months of diffs.
+
+Every snapshot is split through a binary hierarchy of grid-aligned source leaves,
+with only one bounded leaf handed to the Rust cutter at a time. The new leaf bytes
+are compared with the preceding generation: byte-identical leaves refresh
+provenance without a cell re-bake, while changed leaves replace their complete cell
+set. This post-update comparison, rather than diff bounding boxes, also handles
+deletions and relation membership changes. An interrupted run reuses hash-verified
+source leaves and current cells. Every geographic cell ends as either an OBCM
+artifact or a zero-byte known-empty claim, and an incomplete cell transition cannot
+pass `verify` or `publish`.
 
 ```sh
+# Install/check Osmium, Pyosmium, and the rest of the maintainer toolchain.
+obc doctor --install
+
 # Bake a complete planet snapshot. This is intentionally separate from publish.
 obc bake --all
 
+# Run the same command later: it applies replication updates and only re-bakes
+# source leaves whose canonical content changed.
+obc bake --all
+
 # The same pipeline from an already-downloaded planet PBF.
+# A local source is treated as a fixed snapshot and is never modified.
 obc bake --all --source /data/planet-latest.osm.pbf
 ```
 
@@ -275,8 +293,12 @@ Set `OBC_BAKE_TREE` in `tools/obc.local` to move the operator tree. An explicit
 tree may also follow `verify` or `publish`. For curated bakes, `--source DIR` uses
 local Geofabrik-shaped `.osm.pbf` and `.poly` inputs. With `--all`, `--source`
 accepts a planet PBF URL, a local `planet-latest.osm.pbf`, or its containing
-directory. The default source is the current planet PBF and all downloads and
-source shards live in the shared cache.
+directory. The default/URL source is cached and replication-updated; a local file is
+read-only. Planet updates need temporary disk for one additional full PBF while
+Pyosmium writes its atomic replacement. Downloads, source shards, and replication
+state live in the shared cache. The terminal and `--summary-json` report the
+replication sequence range, source leaves that were current/byte-identical/changed,
+and cell leaves that were cut/refreshed/unchanged.
 Run `obc bake help` for the complete operator surface.
 
 ### Web builder and desktop app

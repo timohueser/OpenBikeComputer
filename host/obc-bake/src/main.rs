@@ -45,7 +45,7 @@ usage:
         --chunk-size N       override schema chunk_size
         --fail-fast          stop at the first failure
         --summary-json FILE  write the machine-readable run summary
-        --all                bake the whole planet through resumable source shards
+        --all                update/bake the whole planet through resumable source shards
 
   obc-bake publish TREE --base-url URL [flags]
       Regenerate and publish content first, then replace catalog.json last.
@@ -273,7 +273,7 @@ fn run_planet_bake(
     regions: Vec<obc_bake::regions::Region>,
     presets_dir: &Path,
 ) -> Result<(), String> {
-    use obc_bake::planet::ShardRunner as _;
+    use obc_bake::planet::{ReplicationUpdater as _, ShardRunner as _};
 
     let schema = obc_bake::presets::load_schema(presets_dir)?;
     obc_bake::previews::check_source(&schema.config)?;
@@ -295,10 +295,16 @@ fn run_planet_bake(
     // the real executable (or OBC_OSMIUM for a deliberate alternate path).
     let runner = obc_bake::planet::OsmiumRunner::default();
     runner.check()?;
+    let updater = obc_bake::planet::PyOsmiumUpdater::default();
+    let source = flags.get("source");
+    let remote_source = source.is_none_or(|value| value.starts_with("http://") || value.starts_with("https://"));
+    if remote_source {
+        updater.check()?;
+    }
     let polygons =
         obc_bake::source::GeofabrikExtracts::new(obc_bake::source::GeofabrikExtracts::DEFAULT_BASE_URL, &cache);
     let region_presets = obc_bake::planet::resolve_region_presets(&regions, &polygons, &bands, &progress)?;
-    let input = obc_bake::planet::resolve_planet(flags.get("source"), &cache, &progress)?;
+    let input = obc_bake::planet::resolve_planet_with(source, &cache, &progress, &updater)?;
     let shards = obc_bake::planet::PlanetSharder { input: &input, cache: &cache, runner: &runner }.run(&progress)?;
     let cutter = obc_bake::cells::ObcCutter {
         no_land: flags.has("no-land"),
@@ -315,7 +321,8 @@ fn run_planet_bake(
         skins: &skins,
         cutter: &cutter,
         source_leaves_reused: shards.reused,
-        source_leaves_created: shards.created,
+        source_leaves_refreshed: shards.refreshed,
+        source_leaves_changed: shards.changed,
         opts: obc_bake::cells::CellBakeOptions {
             out: out.clone(),
             force: flags.has("force"),
