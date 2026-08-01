@@ -299,7 +299,7 @@ fn run_planet_bake(
         obc_bake::source::GeofabrikExtracts::new(obc_bake::source::GeofabrikExtracts::DEFAULT_BASE_URL, &cache);
     let region_presets = obc_bake::planet::resolve_region_presets(&regions, &polygons, &bands, &progress)?;
     let input = obc_bake::planet::resolve_planet(flags.get("source"), &cache, &progress)?;
-    let leaves = obc_bake::planet::PlanetSharder { input: &input, cache: &cache, runner: &runner }.run(&progress)?;
+    let shards = obc_bake::planet::PlanetSharder { input: &input, cache: &cache, runner: &runner }.run(&progress)?;
     let cutter = obc_bake::cells::ObcCutter {
         no_land: flags.has("no-land"),
         chunk_size: match flags.get("chunk-size") {
@@ -309,11 +309,13 @@ fn run_planet_bake(
     };
     let summary = obc_bake::planet::PlanetBake {
         input: &input,
-        leaves: &leaves,
+        leaves: &shards.leaves,
         regions: &region_presets,
         schema: &schema,
         skins: &skins,
         cutter: &cutter,
+        source_leaves_reused: shards.reused,
+        source_leaves_created: shards.created,
         opts: obc_bake::cells::CellBakeOptions {
             out: out.clone(),
             force: flags.has("force"),
