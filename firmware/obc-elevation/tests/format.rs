@@ -135,6 +135,26 @@ impl ByteSource for Counting<'_> {
     }
 }
 
+/// A [`ByteSource`] that can be **armed** to fail every read of the directory range, so a test can
+/// parse a good file and only then make the medium go bad under it.
+struct FlakyDirectory<'a> {
+    bytes: &'a [u8],
+    armed: Cell<bool>,
+    directory: core::ops::Range<u32>,
+}
+
+impl ByteSource for FlakyDirectory<'_> {
+    fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), Error> {
+        if self.armed.get() && self.directory.contains(&offset) {
+            return Err(Error::Io);
+        }
+        SliceSource(self.bytes).read_at(offset, buf)
+    }
+    fn len(&self) -> u32 {
+        self.bytes.len() as u32
+    }
+}
+
 /// Sample through a fresh reader + cache — the shape every test below wants.
 fn sample_all(bytes: &[u8], points: &[(i32, i32)]) -> Vec<Option<i16>> {
     let src = SliceSource(bytes);
@@ -307,6 +327,48 @@ fn a_nodata_corner_voids_the_sample_and_nothing_else() {
     // Two postings away, the surface is untouched — the void does not spread.
     let clear = (coord(hole_i + 2), coord(hole_j + 2));
     assert_eq!(sample_all(&bytes, &[clear])[0], Some(plane(hole_i + 2, hole_j + 2)));
+}
+
+/// A **failed directory read voids the sample** — it must never be mistaken for "that cell is
+/// absent" and answered with the coverage clamp, which would hand back an entirely plausible
+/// height on a card that just glitched.
+///
+/// The setup isolates the corner path: sample once inside the home cell so the cell memo holds it,
+/// *then* arm the failure, then sample a point whose upper corners cross the cell seam. The home
+/// cell now comes from the memo, so the only read that fails is the neighbour's directory entry —
+/// the exact spot where absence and I/O failure look alike.
+#[test]
+fn a_failed_directory_read_voids_the_sample_instead_of_clamping() {
+    let bytes = shard();
+    let dir_len = (ROWS as u32) * (COLS as u32) * DIR_ENTRY_LEN as u32;
+    let src = FlakyDirectory {
+        bytes: &bytes,
+        armed: Cell::new(false),
+        directory: HEADER_LEN as u32..HEADER_LEN as u32 + dir_len,
+    };
+    let reader = TerrainReader::parse(&src).expect("parse happens before the medium goes bad");
+    let mut cache = TileCache::<4>::new();
+    let (bi, bj) = base_sample();
+
+    // Half a posting below the cell seam: the upper corners live in the cell above.
+    let straddle = (coord(bi + CELL_SAMPLES - 1) + 256, coord(bj + 4));
+    let healthy = reader.sample(&mut cache, straddle.0, straddle.1);
+    assert_eq!(healthy, Some(plane_oracle(straddle.0, straddle.1)), "the healthy answer crosses the seam");
+
+    // Warm the memo with the home cell, then break the card.
+    let mut cache = TileCache::<4>::new();
+    assert!(reader.sample(&mut cache, coord(bi + 2), coord(bj + 4)).is_some());
+    src.armed.set(true);
+    assert_eq!(reader.sample(&mut cache, straddle.0, straddle.1), None, "an I/O error is not an absent cell");
+
+    // And the clamp it must not have taken: had the error been read as absence, the seam query
+    // would have answered the home cell's edge sample — a wrong number that looks right.
+    let clamped_if_wrong = plane(bi + CELL_SAMPLES - 1, bj + 4);
+    assert_ne!(healthy, Some(clamped_if_wrong), "the two answers really are distinguishable");
+
+    // Disarmed, the same reader and the same warm cache answer normally again.
+    src.armed.set(false);
+    assert_eq!(reader.sample(&mut cache, straddle.0, straddle.1), healthy);
 }
 
 /// Every structural fault is refused at parse, before a query can read past the file.
