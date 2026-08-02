@@ -29,7 +29,8 @@ fn reconcile(host: &mut HostLoop, app: &mut App, routes: &mut MemRouteStore) {
     let mut rides = MemRideStore::new(Vec::new());
     let mut tracks = MemTrackStore::new();
     let mut no_trips = ();
-    host.reconcile(app, routes, &mut rides, &mut tracks, &mut no_trips, &reader, |_app, _cmd| {});
+    let mut elev = obc_route::NullElevation;
+    host.reconcile(app, routes, &mut rides, &mut tracks, &mut no_trips, &reader, &mut elev, |_app, _cmd| {});
 }
 
 /// The board rescans the object store on a store-changed edge and re-feeds the catalog; the

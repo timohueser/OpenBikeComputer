@@ -66,6 +66,9 @@ pub struct MapSource {
     names: Vec<String>,
     /// The parsed manifest and the set id its filename carried; `None` for a single map.
     set: Option<(u16, SetManifest)>,
+    /// The path the map was opened from — what [`terrain`](obc_host_core::terrain) resolves the
+    /// `.obcd` sidecar against (EL7). For a set, the manifest's path.
+    path: PathBuf,
 }
 
 impl MapSource {
@@ -73,7 +76,7 @@ impl MapSource {
     pub fn load_single(path: &str) -> Result<MapSource, LoadError> {
         let path = Path::new(path);
         let bytes = std::fs::read(path).map_err(|err| LoadError::Read(path.to_path_buf(), err))?;
-        Ok(MapSource { files: vec![bytes], names: vec![file_name(path)], set: None })
+        Ok(MapSource { files: vec![bytes], names: vec![file_name(path)], set: None, path: path.to_path_buf() })
     }
 
     /// Read a whole volume set from the `MS<id>.OBS` manifest at `path`: parse the manifest, derive
@@ -99,7 +102,12 @@ impl MapSource {
             files.push(bytes);
             names.push(shard);
         }
-        Ok(MapSource { files, names, set: Some((id, manifest)) })
+        Ok(MapSource { files, names, set: Some((id, manifest)), path: path.to_path_buf() })
+    }
+
+    /// The path this map was opened from — the anchor the terrain sidecar is resolved against.
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
     /// The manifest, or `None` for a single-file map.
@@ -252,6 +260,13 @@ impl LoadedMap {
     /// The mounted set, or `None` for a single map.
     pub fn set(&self) -> Option<&MountedSet<'static>> {
         self.set.as_ref()
+    }
+
+    /// The map's terrain (EL7): its `.obcd` sidecar mounted through the shared host resolver, or
+    /// the null source when there is none. Called **once** per run, right after the mount — the
+    /// simulator holds one elevation source for the session exactly as the device does.
+    pub fn elevation(&self) -> Box<dyn obc_route::ElevationSource> {
+        obc_host_core::terrain::resolve(self.source.path())
     }
 
     /// The reader the whole app path takes: a set's **core** shard (§5.1 — nav, POI, hours and

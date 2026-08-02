@@ -197,6 +197,9 @@ pub(crate) struct ObcrEmitter {
     // Decimation state (1-step lookahead).
     last_kept: Option<Cand>,
     pending: Option<Cand>,
+    /// Elevation-detail keep threshold (m), `0` = off — see
+    /// [`keep_elevation_detail`](ObcrEmitter::keep_elevation_detail).
+    ele_keep_m: i16,
 }
 
 impl ObcrEmitter {
@@ -213,7 +216,25 @@ impl ObcrEmitter {
             emitted: 0,
             last_kept: None,
             pending: None,
+            ele_keep_m: 0,
         })
+    }
+
+    /// Keep a candidate whose height differs from the last kept vertex by at least `threshold_m`,
+    /// on top of the geometric rules. Off (`0`) unless a producer turns it on.
+    ///
+    /// The decimator is otherwise purely planar: it drops anything within [`EPSILON_M`] of the
+    /// chord, so an interpolated point on a *straight* road is always dropped — including the one
+    /// standing on a crest. That is harmless for a GPX import, whose kept vertices are real track
+    /// points with their own `<ele>` at ~10 m spacing, and wrong for the nav router's emit-time
+    /// fill (EL7, epic #1068), whose extra points exist **only** to carry height: decimating them
+    /// away would leave the stored profile — and therefore a GPX export, and therefore a re-import's
+    /// stats — coarser than the totals the header claims. Setting this to the elevation dead-band
+    /// makes "kept" and "booked by the dead-band" the same set of vertices.
+    ///
+    /// Off for [`gpx_to_obcr`], so imported routes decimate byte-identically to before.
+    pub(crate) fn keep_elevation_detail(&mut self, threshold_m: i16) {
+        self.ele_keep_m = threshold_m;
     }
 
     /// Cumulative raw-path distance so far (m) — includes the point just pushed, so the GPX
@@ -252,7 +273,9 @@ impl ObcrEmitter {
             (Some(lk), Some(pd)) => {
                 let perp = perp_dist_m(lk, c, pd);
                 let span = (c.cum_d - lk.cum_d) as f32;
-                if perp > EPSILON_M || span > MAX_SPAN_M || reverses(lk, pd, c) {
+                let ele_break =
+                    self.ele_keep_m > 0 && (i32::from(pd.ele) - i32::from(lk.ele)).abs() >= i32::from(self.ele_keep_m);
+                if perp > EPSILON_M || span > MAX_SPAN_M || ele_break || reverses(lk, pd, c) {
                     self.emitted += emit_densified(&mut self.enc, sink, Some(lk), pd)?;
                     self.last_kept = Some(pd);
                 }

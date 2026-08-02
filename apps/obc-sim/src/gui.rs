@@ -235,6 +235,10 @@ struct SimGui {
     /// the resident active-route session (so the Map opens without a per-frame `RouteIndex` reparse).
     /// Every delete/rescan/nav/track sequencing decision lives in the dispatcher, not here.
     host: HostLoop,
+    /// The map's terrain (EL7): the `.obcd` sidecar beside the `.obcm`, mounted once for the
+    /// session like the map, or the null source when there is none. The planner samples it as it
+    /// emits, so a route created in the GUI arrives with a real elevation profile and climbs.
+    elevation: Box<dyn obc_route::ElevationSource>,
     /// The device body color drawn by the housing chrome. Switchable in the control panel.
     colorway: Colorway,
     /// This frame's device-control keyboard state, read at the top of `update` (before a widget
@@ -355,6 +359,7 @@ impl SimGui {
             texture: None,
             screenshot: args.screenshot,
             screenshot_requested: false,
+            elevation: map.elevation(),
             map,
             last_stats: obc_render::RenderStats::default(),
             last_dirty: Dirty::CLEAN,
@@ -452,6 +457,7 @@ impl SimGui {
                 &mut self.tracks,
                 &mut self.trip_store,
                 &reader,
+                &mut *self.elevation,
                 |app, cmd| match cmd {
                     HostCommand::ScanCardFree => {
                         app.apply_event(HostEvent::CardScanned { free_bytes: Some(1_288_490_188) });
