@@ -193,6 +193,7 @@ fn detour_over(
         corridor,
         &mut scratch,
         &mut tiles,
+        &mut NullElevation,
         &mut sink,
     );
     (res, sink.buf)
@@ -357,7 +358,18 @@ fn detour_bridge_crossing_edge_stays_usable() {
     let mut scratch = NavScratch::<{ obc_route::NAV_MAX_NODES }>::new();
     let mut tiles = NavTileCache::new();
     let mut sink = VecSink::default();
-    let res = plan_detour(&r, road_at(0), south, "Over the bridge", 0, corridor, &mut scratch, &mut tiles, &mut sink);
+    let res = plan_detour(
+        &r,
+        road_at(0),
+        south,
+        "Over the bridge",
+        0,
+        corridor,
+        &mut scratch,
+        &mut tiles,
+        &mut NullElevation,
+        &mut sink,
+    );
     let stats = res.expect("the bridge route plans — the crossing edge must not be blacklisted");
     assert_eq!(stats.total_distance_m, 1_700 + 223);
 }
@@ -397,12 +409,15 @@ fn detour_with_degenerate_corridor_matches_plain_plan() {
     let mut scratch = NavScratch::<{ obc_route::NAV_MAX_NODES }>::new();
     let mut tiles = NavTileCache::new();
     let mut plain = VecSink::default();
-    let plain_res = plan_route(&r, from, to, "Same", 0, &mut scratch, &mut tiles, &mut plain).unwrap();
+    let plain_res =
+        plan_route(&r, from, to, "Same", 0, &mut scratch, &mut tiles, &mut NullElevation, &mut plain).unwrap();
 
     let mut scratch2 = NavScratch::<{ obc_route::NAV_MAX_NODES }>::new();
     let mut tiles2 = NavTileCache::new();
     let mut det = VecSink::default();
-    let det_res = plan_detour(&r, from, to, "Same", 0, corridor, &mut scratch2, &mut tiles2, &mut det).unwrap();
+    let det_res =
+        plan_detour(&r, from, to, "Same", 0, corridor, &mut scratch2, &mut tiles2, &mut NullElevation, &mut det)
+            .unwrap();
 
     assert_eq!(plain_res, det_res);
     assert_eq!(plain.buf, det.buf, "a degenerate corridor must not perturb the plan by a single byte");

@@ -15,6 +15,9 @@ obc-reader = { path = "../../firmware/obc-reader" }
 # (the ~39 KB A* table would overflow the wasm build's stack via a plain `Box::new`).
 obc-route = { path = "../../firmware/obc-route", features = ["alloc"] }
 obc-formats = { path = "../../firmware/obc-formats" } # the byte-I/O seam (ByteSource/ByteSink/SliceSource/Error) — the authority, not via obc-route
+# The OBCT terrain reader + tile cache behind `terrain::mount` (EL7): the host mounts a map's
+# `.obcd` sidecar into the same `ElevationSource` seam the device fills routes from.
+obc-elevation = { path = "../../firmware/obc-elevation" }
 # Shared host GPX replay (the GpxPlayer / BaroSensor `replay_step` advances) — the same crate the
 # USB feeder (obc-usb-host) uses, so a recorded ride plays back identically on every host.
 obc-replay = { path = "../obc-replay" }

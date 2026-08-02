@@ -347,6 +347,31 @@ static mut EXTENT_SLOTS: ExtentSlots =
 static mut SET_SOURCES: [core::mem::MaybeUninit<SetExtentSource<'static>>; SD_SET_MAX_SHARDS] =
     [const { core::mem::MaybeUninit::uninit() }; SD_SET_MAX_SHARDS];
 
+/// The terrain sidecar's resident extent table + direct-read source (EL7, epic #1068). A *second*
+/// file is open beside the map for the session, so these cannot share [`EXTENT_SLOTS`] (which is a
+/// union: one map **or** one set) — terrain gets its own pair, at the set shards' 64-run capacity
+/// rather than the map's 128, because a baked terrain artifact is a small, freshly-written file.
+///
+/// Only the seek-free path is admitted here, for the same reason a set refuses one: a terrain
+/// sample sits inside the nav emit loop, and reinserting a FAT walk per 512 B tile would put SD
+/// seeks under the router. A file that will not extent-map simply yields no terrain.
+#[cfg(has_nav)]
+static mut TERRAIN_EXTENTS: core::mem::MaybeUninit<SetExtentTable> = core::mem::MaybeUninit::uninit();
+#[cfg(has_nav)]
+static mut TERRAIN_SOURCE: core::mem::MaybeUninit<SetExtentSource<'static>> = core::mem::MaybeUninit::uninit();
+
+/// The 8.3 extension of a terrain artifact (`OBCT_Spec.md` §4.6: `.obcd`, three-char twin `OBD` —
+/// deliberately not `.OBT`, which is a recorded ride log).
+#[cfg(has_nav)]
+const TERRAIN_EXT: &str = "OBD";
+
+/// Exact target-side bytes of the terrain sidecar's board-private statics (table + source), for the
+/// compile-time RAM budget and the resource report in `main.rs`. Reported unconditionally, like the
+/// `nav_*` sizes: it is the *type*'s cost, and a profile that gates the router out still wants the
+/// number legible in its report.
+pub(crate) const TERRAIN_EXTENT_BYTES: usize =
+    core::mem::size_of::<SetExtentTable>() + core::mem::size_of::<SetExtentSource<'static>>();
+
 /// Exact target-side bytes of the board-private volume-set statics, exported numerically for the
 /// compile-time RAM budget and resource report in `main.rs` without exposing their concrete types.
 pub(crate) const SET_EXTENT_TABLES_BYTES: usize = core::mem::size_of::<ExtentSlots>();
@@ -561,6 +586,12 @@ pub struct Storage {
     /// the seek path still works, just slowly, and open_map logged why. A reference into the
     /// [`MAP_EXTENTS`] `.bss` slot — see its doc for why the table must not live in here by value.
     map_extents: Option<&'static ExtentTable>,
+    /// The map's **terrain sidecar** (EL7, epic #1068), when one opened: `(handle, length)`, held
+    /// open for the session exactly like the map so its FAT chain stays pinned under the resident
+    /// extent source. `None` = no `.OBD` beside the map, or it would not open / extent-map — every
+    /// one of which is a *no terrain* answer, never a fault (see [`open_terrain`](Storage::open_terrain)).
+    #[cfg(has_nav)]
+    open_terrain: Option<(RawFile, u32)>,
     /// The fault the boot must show when [`map_source`](Storage::map_source) has nothing to hand
     /// out — `None` until [`open_map`](Storage::open_map) has run, then whatever
     /// [`obc_app::boot_fault`] answers for the card that was actually scanned.
@@ -743,6 +774,8 @@ impl Storage {
             open_set: None,
             open_map_name: None,
             map_extents: None,
+            #[cfg(has_nav)]
+            open_terrain: None,
             map_boot_fault: None,
             open_track: None,
             pending_save: None,
@@ -1512,6 +1545,65 @@ impl Storage {
         // of a failed open is how a rider ends up with no map at all.
         self.retire_superseded_maps(&maps, Some(keep));
         Some(len)
+    }
+
+    /// **The terrain source for the mounted map** (EL7, epic #1068) — the board's half of the one
+    /// question a host answers in `obc_host_core::terrain`: open the `.OBD` sidecar named after the
+    /// map (`GRIMSEL.OBM` → `GRIMSEL.OBD`; a set's manifest `MS7.OBS` → `MS7.OBD`), resolve its FAT
+    /// chain to a resident extent source, and hand back a `'static` [`ByteSource`] over it. Call
+    /// once, right after [`open_map`](Self::open_map).
+    ///
+    /// **Every failure is `None`, and `None` is not a fault.** No sidecar, a name that will not
+    /// open, a chain that will not extent-map, a table that fails verification — all of them mean
+    /// *this map has no terrain*, which the whole elevation seam is built to handle (routes plan
+    /// and ride exactly as before, with flat profiles). Deliberately outside the NO MAP / MAP
+    /// UNREADABLE rules of #1042: those exist because a rider whose **map** is missing must not be
+    /// misled, and a missing terrain file takes nothing away that was ever there.
+    ///
+    /// EL4 adds the set manifest's `terrain` role; when it lands, the role lookup goes *here*, in
+    /// front of the sidecar fallback, and no caller changes.
+    #[cfg(has_nav)]
+    #[inline(never)]
+    pub fn open_terrain(&mut self) -> Option<&'static dyn ByteSource> {
+        let map_name =
+            self.open_map_name.clone().or_else(|| self.open_set.as_ref().map(|s| s.manifest_name.clone()))?;
+        let name = sidecar_name(&map_name)?;
+        let (entry_block, entry_offset, entry_len) = self.find_root_entry(&name)?;
+        let Ok(file) = self.vmgr.open_file_in_dir(self.root, &name, Mode::ReadOnly) else {
+            defmt::warn!("SD: terrain {} will not open — routes stay flat", defmt::Debug2Format(&name));
+            return None;
+        };
+        let len = self.vmgr.file_length(file).unwrap_or(0);
+        if len == 0 || len != entry_len {
+            let _ = self.vmgr.close_file(file);
+            return None;
+        }
+        let Ok(table) = SetExtentTable::build(self.card, entry_block, entry_offset, len) else {
+            defmt::warn!("SD: terrain {} will not extent-map — routes stay flat", defmt::Debug2Format(&name));
+            let _ = self.vmgr.close_file(file);
+            return None;
+        };
+        // SAFETY: boot calls this once, after `open_map`; both slots are written exactly once and
+        // the retained handle pins the chain the table describes for the session.
+        let (table, source) = unsafe {
+            let table = crate::init_static(core::ptr::addr_of_mut!(TERRAIN_EXTENTS), table);
+            let source =
+                crate::init_static(core::ptr::addr_of_mut!(TERRAIN_SOURCE), SetExtentSource::new(self.card, table));
+            (&*table, &*source)
+        };
+        if !self.verify_extents(table, file, len) {
+            defmt::warn!("SD: terrain {} failed extent verification — routes stay flat", defmt::Debug2Format(&name));
+            let _ = self.vmgr.close_file(file);
+            return None;
+        }
+        defmt::info!(
+            "SD: terrain {} mounted ({=u32} B, {=usize} extent(s))",
+            defmt::Debug2Format(&name),
+            len,
+            table.extent_count()
+        );
+        self.open_terrain = Some((file, len));
+        Some(source)
     }
 
     /// Open every shard of one validated volume set, resolve one resident extent table/source per
@@ -4042,6 +4134,20 @@ fn short_name_bytes(name: &ShortFileName) -> heapless::Vec<u8, 12> {
 /// (uppercase, no leading zeros, id ≤ 999) lives in the format authority.
 pub fn set_manifest_id(name: &ShortFileName) -> Option<u16> {
     obc_formats::obcs::parse_manifest_name(&short_name_bytes(name))
+}
+
+/// The terrain sidecar's 8.3 name for a map file: the map's base name with [`TERRAIN_EXT`]
+/// (`GRIMSEL.OBM` → `GRIMSEL.OBD`, `MS7.OBS` → `MS7.OBD`). Derived, never stored — the same rule
+/// as a set's shard names, and the reason a rider can rename a map without breaking its terrain.
+#[cfg(has_nav)]
+fn sidecar_name(map: &ShortFileName) -> Option<ShortFileName> {
+    let mut text: String<16> = String::new();
+    for &b in map.base_name().iter().take_while(|&&b| b != b' ') {
+        text.push(b as char).ok()?;
+    }
+    text.push('.').ok()?;
+    text.push_str(TERRAIN_EXT).ok()?;
+    ShortFileName::create_from_str(text.as_str()).ok()
 }
 
 /// The 8.3 name of shard `index` of set `id`. Filenames are **derived, not stored** (§5.2): a

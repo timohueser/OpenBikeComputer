@@ -333,10 +333,21 @@ const SET_RESIDENT: usize =
 /// (~14.3 KB, the `NAV_*` statics below). Zero on the `ble` build — `has_nav` gates the router
 /// out of the combined image because these two statics push its stack region ~1.9 KB below the
 /// measured deep-render peak on the 256 KB DK (see build.rs); the LM20 deletes the gate.
+/// …plus the map's terrain (EL7, epic #1068): the [`TERRAIN`] slot (an OBCT reader + its four
+/// 512 B tiles, ~2.1 KB) and the sidecar's own extent table/source in `sd.rs` (~1.3 KB). Resident
+/// whether or not a terrain file is on the card, deliberately: the slot is what makes the emit
+/// path's sampler a `.bss` object instead of a plan-frame local (#419/#501), and a budget that
+/// moved with the card's contents would not be a budget.
 #[cfg(has_nav)]
 const NAV_RESIDENT: usize = core::mem::size_of::<obc_route::NavScratch>()
     + core::mem::size_of::<obc_reader::NavTileCache>()
-    + core::mem::size_of::<obc_route::NavPlanner>();
+    + core::mem::size_of::<obc_route::NavPlanner>()
+    + TERRAIN_RESIDENT;
+/// The terrain half of [`NAV_RESIDENT`], itemized so the report table can name it.
+#[cfg(has_nav)]
+const TERRAIN_RESIDENT: usize = core::mem::size_of::<
+    obc_elevation::TerrainElevation<'static, { obc_elevation::DEFAULT_TILE_SLOTS }>,
+>() + sd::TERRAIN_EXTENT_BYTES;
 #[cfg(not(has_nav))]
 const NAV_RESIDENT: usize = 0;
 /// The BLE stack's residents (`ble::RESIDENT_BYTES`: the MPSL handle + SDC memory block + TrouBLE's
@@ -425,7 +436,18 @@ mod resource_report {
         entry("ble_sensor_manager", 0),
     ];
 
-    const ENTRIES: usize = 27;
+    /// The terrain seam's entries (EL7). Unconditional, like the `nav_*` ones: these are the
+    /// *types'* sizes, reported in every profile even where `has_nav` keeps the statics out of the
+    /// image (the linked `.bss + .data` gate is what says whether they were allocated).
+    const TERRAIN_ENTRIES: [Entry; 2] = [
+        entry(
+            "terrain",
+            core::mem::size_of::<obc_elevation::TerrainElevation<'static, { obc_elevation::DEFAULT_TILE_SLOTS }>>(),
+        ),
+        entry("terrain_extents", sd::TERRAIN_EXTENT_BYTES),
+    ];
+
+    const ENTRIES: usize = 29;
 
     #[used]
     #[no_mangle]
@@ -446,6 +468,11 @@ mod resource_report {
         entry("nav_scratch", core::mem::size_of::<obc_route::NavScratch>()),
         entry("nav_tile_cache", core::mem::size_of::<obc_reader::NavTileCache>()),
         entry("nav_planner", core::mem::size_of::<obc_route::NavPlanner>()),
+        // The terrain seam's two statics (EL7): the sampler + tile cache, and the sidecar's own
+        // extent table/source. Named because they are the newest resident block on this path and a
+        // change in the tile-slot count must be legible here, not as anonymous `.bss`.
+        TERRAIN_ENTRIES[0],
+        TERRAIN_ENTRIES[1],
         entry("stack_reserve", STACK_RESERVE),
         BLE_ENTRIES[0],
         BLE_ENTRIES[1],
@@ -519,6 +546,18 @@ static mut NAV_TILES: MaybeUninit<obc_reader::NavTileCache> = MaybeUninit::unini
 /// `.bss`, byte for byte.
 #[cfg(has_nav)]
 static mut NAV_PLANNER: MaybeUninit<obc_route::NavPlanner> = MaybeUninit::uninit();
+/// The mounted map's **terrain** (EL7, epic #1068): the OBCT reader plus its `N = 4` tile cache —
+/// ~2.1 KB of resident raster + a 32-byte header, in `.bss` for exactly the reason the caches above
+/// are (`TerrainElevation` embeds the cache; a stack copy of one inside the emit path is precisely
+/// the #419/#501 fat local). Written once at boot **only when a terrain sidecar mounted**; the ride
+/// loop then holds a `&'static mut` to it (or to [`NULL_ELEV`]) and hands it to every planner step.
+#[cfg(has_nav)]
+static mut TERRAIN: MaybeUninit<obc_elevation::TerrainElevation<'static, { obc_elevation::DEFAULT_TILE_SLOTS }>> =
+    MaybeUninit::uninit();
+/// The no-terrain source (a ZST): what the ride loop hands the planner when no sidecar mounted, so
+/// the emit path has one uniform seam and no `Option` branch per point.
+#[cfg(has_nav)]
+static mut NULL_ELEV: obc_route::NullElevation = obc_route::NullElevation;
 
 /// Build a `'static` value into a `.bss` [`MaybeUninit`] slot, returning the sole `&'static mut` to it
 /// — the warm-reset-safe replacement for `StaticCell` that every runtime-built shared static (the bus
@@ -1121,6 +1160,17 @@ async fn main(_spawner: Spawner) {
         // `Catalog` never sits on `main`'s stack beneath the long-lived ride loop.)
         storage.open_map();
 
+        // The map's terrain sidecar (EL7): mounted right behind the map, on the same one-open-at-boot
+        // rule, and folded into the `.bss` `TERRAIN` slot. Absent or unusable ⇒ `None` ⇒ the ride loop
+        // uses `NULL_ELEV` and a planned route is as flat as it was before the epic — never a fault
+        // (see `Storage::open_terrain`). The `TerrainElevation` moves through this shallow boot frame
+        // once, ~2.1 KB, nowhere near the deep render/plan paths #419 measured.
+        #[cfg(has_nav)]
+        let terrain = storage.open_terrain().and_then(|src| obc_elevation::TerrainElevation::parse(src).ok()).map(
+            // SAFETY: sole owner of TERRAIN, written at most once per boot before any reference escapes.
+            |t| unsafe { init_static(core::ptr::addr_of_mut!(TERRAIN), t) },
+        );
+
         // Place the streamed-map geometry cache in `.bss`, built in place (an all-zero
         // `MaybeUninit::zeroed` → a `.bss` memset, never a stack temporary).
         // SAFETY: sole owner of MAP_CACHE; single executor → no aliasing.
@@ -1257,6 +1307,13 @@ async fn main(_spawner: Spawner) {
             // SAFETY: the sole handle to the planner slot; the ride loop (re)writes it per
             // request and reads it only while its plan bookkeeping is active.
             planner: unsafe { &mut *core::ptr::addr_of_mut!(NAV_PLANNER) },
+            // The terrain the emit phase fills from, or the null source — both `.bss`, never a frame.
+            // SAFETY: `NULL_ELEV` is a ZST written nowhere else; `terrain` is the sole reference to
+            // the `TERRAIN` slot, moved here.
+            elev: match terrain {
+                Some(t) => t,
+                None => unsafe { &mut *core::ptr::addr_of_mut!(NULL_ELEV) },
+            },
         };
         #[cfg(not(has_nav))]
         let nav = ride::NavBuffers;

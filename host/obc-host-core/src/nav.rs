@@ -37,8 +37,12 @@ impl NavPlan {
 
     /// Run **one bounded planner step** (the frame loop's per-frame unit). `Running` = keep going
     /// next frame; a terminal outcome is handed to [`finish_nav_plan`].
-    pub fn step(&mut self, reader: &obc_reader::Reader) -> obc_route::Step {
-        self.planner.step(reader, &mut self.scratch, &mut self.tiles, &mut self.sink)
+    ///
+    /// `elev` is the mounted map's terrain (EL7, epic #1068) — the emit phase fills each point's
+    /// height from it. A host with no terrain hands in
+    /// [`NullElevation`](obc_route::NullElevation) and the plan is exactly what it was before.
+    pub fn step(&mut self, reader: &obc_reader::Reader, elev: &mut dyn obc_route::ElevationSource) -> obc_route::Step {
+        self.planner.step(reader, &mut self.scratch, &mut self.tiles, elev, &mut self.sink)
     }
 
     /// The emitted OBCR bytes so far (complete once the planner reported `Done`).
@@ -88,9 +92,11 @@ impl DetourPlan {
         })
     }
 
-    /// Run one bounded planner step (the frame loop's per-frame unit).
-    pub fn step(&mut self, reader: &obc_reader::Reader) -> obc_route::Step {
-        self.planner.step(reader, &mut self.scratch, &mut self.tiles, &mut self.sink)
+    /// Run one bounded planner step (the frame loop's per-frame unit). `elev` fills the detour's
+    /// own elevation exactly as it does a route plan's (EL7) — a spliced detour must not punch a
+    /// flat span through the profile of the route it joins.
+    pub fn step(&mut self, reader: &obc_reader::Reader, elev: &mut dyn obc_route::ElevationSource) -> obc_route::Step {
+        self.planner.step(reader, &mut self.scratch, &mut self.tiles, elev, &mut self.sink)
     }
 }
 
