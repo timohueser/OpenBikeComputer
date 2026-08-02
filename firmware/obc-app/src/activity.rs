@@ -1229,6 +1229,29 @@ mod tests {
         assert_eq!(a.climb_m(), 5.0, "ride two measures from its own anchor, got {}", a.climb_m());
     }
 
+    /// …but the map-referenced altimeter (EL8) is **not** a ride accumulator, so `reset_ride` must
+    /// leave it alone: starting a new ride does not change the weather, and re-settling the offset
+    /// from scratch would drop the Elevation tile back to the raw reading for no reason.
+    #[test]
+    fn reset_ride_keeps_the_altimeter_calibration() {
+        let mut a = Activity::new(Mode::Riding);
+        for _ in 0..crate::altitude::SETTLE_SAMPLES {
+            a.record_altitude(1062.0); // the barometer reads 62 m high
+            a.record_map_elevation(1000);
+        }
+        let offset = a.altitude().offset_m().expect("settled during ride one");
+        assert!(a.altitude().settled());
+
+        a.reset_ride();
+        assert!(a.altitude().settled(), "the calibration survives a new session");
+        assert_eq!(a.altitude().offset_m(), Some(offset), "…unchanged");
+        // The tile is `--` only until ride two's first altimeter sample (the pre-existing rule),
+        // then immediately map-referenced again — no second settling wait.
+        assert_eq!(a.current_elevation_m(), None, "no altitude sample yet on ride two");
+        a.record_altitude(1062.0);
+        assert_eq!(a.current_elevation_m(), Some(1000.0), "fused from the retained offset at once");
+    }
+
     // `record_motion` numeric edges: the gate thresholds and `ground_dist_m` extremes the mid-band
     // cases above don't reach.
 
