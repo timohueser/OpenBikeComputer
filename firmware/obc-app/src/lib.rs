@@ -17,6 +17,7 @@
 #![cfg_attr(not(test), no_std)]
 
 pub mod activity;
+pub mod altitude;
 pub mod app;
 pub mod ble;
 pub mod breadcrumb;
@@ -52,6 +53,7 @@ pub(crate) mod ui_runtime;
 pub mod wall_clock;
 
 pub use activity::{Activity, DetourRequest, DfuAction, Mode, NavRequest, TrackAction};
+pub use altitude::AltitudeFusion;
 pub use app::{App, AppState, CameraMode, ClockTrust, Pan, PanAxis, NAV_PREVIEW_MAX};
 pub use ble::{BleLink, BleStatus};
 pub use breadcrumb::Breadcrumb;

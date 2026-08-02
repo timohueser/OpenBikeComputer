@@ -109,7 +109,8 @@ pub enum StatField {
     ToClimb = 5,
     /// Grade (%) at the live position.
     Grade = 6,
-    /// Current elevation — the live barometric altitude.
+    /// Current elevation — the live altitude: map-referenced (EL8) once the offset estimator has
+    /// settled, raw barometric until then.
     Elevation = 7,
     /// Moving time this ride.
     RideTime = 8,
@@ -347,8 +348,10 @@ impl StatField {
                 StatCell::new(cap(t(Msg::TileGrade, lang), ""), value, false)
             }
             StatField::Elevation => {
-                // The live barometric altitude, not the route profile — so it reads the current
-                // height with no route loaded, and `--` until the first sample.
+                // The live altitude, not the route profile — so it reads the current height with no
+                // route loaded, and `--` until the first sample. Map-referenced once the EL8
+                // estimator has settled (`Activity::current_elevation_m`), raw barometric before
+                // that and on a terrain-less map: same tile, same presentation, no fake precision.
                 let v = cx.activity.current_elevation_m().map(|m| units.elev(m));
                 StatCell::new(cap(t(Msg::TileElev, lang), units.elev_label()), fmt_elev(v), false)
             }
@@ -1259,6 +1262,30 @@ mod tests {
         assert_eq!(value(&activity, Units::Metric).as_str(), "144", "metric shows whole metres");
         // 144 m × 3.28084 ≈ 472.4 ft → rounds to 472.
         assert_eq!(value(&activity, Units::Imperial).as_str(), "472", "imperial converts to feet");
+    }
+
+    /// …and switches to the **map-referenced** height once the EL8 estimator settles (#1076): same
+    /// tile, same presentation, a trustworthy absolute number. Unsettled it is still the raw
+    /// reading — the tile never shows a half-converged one.
+    #[test]
+    fn elevation_tile_switches_to_the_fused_height_once_settled() {
+        let mut activity = Activity::new(Mode::Riding);
+        let empty = Waypoints::new();
+        let value = |a: &Activity| StatField::Elevation.cell(&readout(a, Units::Metric, &empty)).value;
+
+        // The barometer reads 62 m high all ride; the terrain under the fix says 1800 m.
+        activity.record_altitude(1862.0);
+        activity.record_map_elevation(1800);
+        assert_eq!(value(&activity).as_str(), "1862", "one residual is not settled → the raw reading");
+
+        for _ in 1..crate::altitude::SETTLE_SAMPLES {
+            activity.record_altitude(1862.0);
+            activity.record_map_elevation(1800);
+        }
+        assert_eq!(value(&activity).as_str(), "1800", "settled → the map-referenced height");
+        // The barometer then climbs a real 40 m; the fused tile follows it metre for metre.
+        activity.record_altitude(1902.0);
+        assert_eq!(value(&activity).as_str(), "1840", "baro supplies the dynamics, the map the frame");
     }
 
     /// With no fix, no route and a fresh ride, every field falls back to its documented idle

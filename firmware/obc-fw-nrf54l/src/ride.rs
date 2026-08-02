@@ -623,6 +623,10 @@ pub(crate) async fn run_app(
     // just completed) gets one trailing redraw to clear its on-screen bar — the falling edge the
     // charging redraw below would otherwise miss now that a cancelled long-press emits no gesture.
     let mut prev_hold_p = 0.0f32;
+    // Terrain samples taken this boot (EL8), purely to throttle the `altfuse:` RTT line to one per
+    // 64 fixes. Not state the app reads — the estimator's own counters live on `Activity`.
+    #[cfg(has_nav)]
+    let mut elev_fixes: u32 = 0;
     // The DFU trial confirm (epic #615 S4, #619) is anchored at "first frame presented AND SD
     // mounted" — precisely the first successful `render_present` below (main mounts the card and
     // faults out *before* this loop can run, so storage being live is already implied here; a
@@ -1603,6 +1607,37 @@ pub(crate) async fn run_app(
                 },
                 route.as_ref(),
             );
+
+            // The **map-referenced altimeter** (elevation epic #1068, EL8): one terrain sample per
+            // fresh fix, feeding the offset estimator that turns the BMP581's weather-drifting
+            // relative altitude into a trustworthy absolute one on the Elevation tile. The request
+            // is a one-shot armed by `tick`, so this is at most one 512 B tile read per fix — and
+            // usually none at all, since consecutive fixes sit in the same tile and the four-slot
+            // cache holds it. `nav.elev` is the very same `.bss` source the emit path samples;
+            // nothing is borrowed across a planner step, so the shared `&'static mut` is fine here.
+            #[cfg(has_nav)]
+            if app.sample_terrain(&mut *nav.elev) {
+                // The `altfuse:` RTT line (grep it) — the board half of the simulator's Altimeter
+                // panel, and the inspection hook #529 was waiting on: `p_ref` is the sea-level-
+                // reduced pressure with the ride's own climbing already subtracted out, so its
+                // *trend* is weather and nothing else. Throttled to one line per 64 fixes so a long
+                // ride doesn't flood the transport.
+                elev_fixes = elev_fixes.wrapping_add(1);
+                if elev_fixes.is_multiple_of(64) {
+                    let a = app.activity.altitude();
+                    let baro = app.activity.baro_elevation_m().unwrap_or(f32::NAN);
+                    defmt::debug!(
+                        "altfuse: raw={=f32} m offset={=f32} m fused={=f32} m p_ref={=f32} hPa acc={=u32} gated={=u32} reseeds={=u16}",
+                        baro,
+                        a.offset_m().unwrap_or(f32::NAN),
+                        a.fused_m(baro).unwrap_or(f32::NAN),
+                        a.reference_pressure_hpa(baro).unwrap_or(f32::NAN),
+                        a.accepted(),
+                        a.gated(),
+                        a.reseeds()
+                    );
+                }
+            }
 
             // Feed the high-priority plane's Select hold-progress to the map render so the in-screen
             // confirm fills (the factory-Reset bar) track the hold — `App`'s own input plane isn't

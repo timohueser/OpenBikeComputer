@@ -228,6 +228,12 @@ impl SimGui {
                         egui::CollapsingHeader::new("Render Stats")
                             .default_open(true)
                             .show(ui, |ui| self.show_render_stats(ui));
+
+                        separator_above(ui);
+
+                        egui::CollapsingHeader::new("Altimeter")
+                            .default_open(false)
+                            .show(ui, |ui| self.show_altimeter(ui));
                     });
 
                     if ctx.input(|i| i.viewport().close_requested()) {
@@ -644,6 +650,51 @@ impl SimGui {
             self.gpx = None;
             self.gpx_label = None;
         }
+    }
+
+    /// The **map-referenced altimeter** readout (elevation epic #1068, EL8) — the simulator half of
+    /// the device's `altfuse:` RTT line, and the inspection surface #529 was waiting on.
+    ///
+    /// Raw vs. fused is the whole story: with `--baro-drift` injected the raw row walks away from
+    /// the terrain while the fused row stays on it, and `Offset` is the number doing the work.
+    /// `Reference P` is the sea-level-reduced pressure — the trend a storm heuristic would read,
+    /// with the ride's own climbing already subtracted out. Nothing here is drawn on the device.
+    fn show_altimeter(&self, ui: &mut egui::Ui) {
+        let a = self.app.activity.altitude();
+        let baro = self.app.activity.baro_elevation_m();
+        egui::Grid::new("altimeter_stats").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
+            ui.label("Raw baro");
+            ui.label(baro.map_or_else(|| "—".to_string(), |m| format!("{m:.1} m")));
+            ui.end_row();
+
+            ui.label("Map ref");
+            ui.label(a.map_reference_m().map_or_else(|| "—".to_string(), |m| format!("{m:.0} m")));
+            ui.end_row();
+
+            ui.label("Offset");
+            ui.label(a.offset_m().map_or_else(|| "—".to_string(), |m| format!("{m:+.1} m")));
+            ui.end_row();
+
+            ui.label("Fused");
+            let fused = baro.and_then(|b| a.fused_m(b));
+            match fused {
+                Some(m) => ui.label(format!("{m:.1} m")),
+                None if a.offset_m().is_some() => {
+                    ui.colored_label(ui.visuals().weak_text_color(), format!("settling {}/20", a.accepted()))
+                }
+                None => ui.label("—"),
+            };
+            ui.end_row();
+
+            ui.label("Reference P");
+            let p = baro.and_then(|b| a.reference_pressure_hpa(b));
+            ui.label(p.map_or_else(|| "—".to_string(), |hpa| format!("{hpa:.2} hPa")));
+            ui.end_row();
+
+            ui.label("Samples");
+            ui.label(format!("{} ok · {} gated · {} re-seed", a.accepted(), a.gated(), a.reseeds()));
+            ui.end_row();
+        });
     }
 
     /// The collapsing render-stats readout: last frame's [`RenderStats`](obc_render::RenderStats)
