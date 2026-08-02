@@ -479,7 +479,7 @@ fn device_slot_lifecycle_is_uninit_and_alias_clean() {
 fn record_stride_keeps_odd_offsets_exercised() {
     assert_eq!(obc_formats::obcm::NAV_NODE_FIXED_LEN % 2, 1, "the fixed record head is odd-length");
     assert_eq!(obc_formats::obcm::NAV_NEIGHBOR_LEN, 17, "v12 neighbor entries are 17 bytes");
-    // ⇒ every record'''s first neighbor entry begins at record_start + 13 (odd), so its multi-byte
+    // ⇒ every record's first neighbor entry begins at record_start + 13 (odd), so its multi-byte
     // fields decode at odd, unaligned offsets. The 17-byte entry is odd too, so consecutive record
     // starts keep varying parity and record heads are exercised at odd offsets in multi-record
     // chunks as well — the v12 widening did not accidentally align the layout.
