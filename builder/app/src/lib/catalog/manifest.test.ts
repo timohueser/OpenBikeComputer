@@ -25,7 +25,9 @@ describe("parseRoot", () => {
         expect(catalog.schema_version).toBe(2);
         expect(catalog.schema.id).toBe("bikepacking");
         expect(catalog.schema.revision).toBe(7);
-        expect(catalog.schema.obcm_version).toBe(11);
+        // The generated example is self-sourced from `obc_formats::obcm::VERSION`, so this pin is
+        // what makes an OBCM bump walk past the site's own catalog reader (OBCC §10 filters on it).
+        expect(catalog.schema.obcm_version).toBe(12);
         expect(catalog.schema.bands.map((b) => b.id)).toEqual(["coarse", "mid", "fine", "network"]);
         expect(catalog.skins.map((s) => s.id)).toEqual(["contrast", "default"]);
         expect(catalog.skins[0].preview).toBeNull();
