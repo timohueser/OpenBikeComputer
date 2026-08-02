@@ -62,6 +62,11 @@ pub struct Readout<'a> {
     /// [`Cadence`](StatField::Cadence)) pass to [`Activity`](crate::activity::Activity)'s 5 s-gated
     /// `live_*` accessors, so a dropped sensor reads `--` rather than its frozen last value.
     pub now_ms: u32,
+    /// The rider's selected bike profile ([`Settings::bike_profile_idx`](crate::Settings)) — the row
+    /// the EL9 time model (#1077) reads its `v_flat` / `k_climb` from, so the ETA tiles answer for
+    /// the bike the router planned under. Out-of-range indices fall back to profile 0 inside
+    /// [`obc_route::eta`], the same rule the router and the Bike-type label use.
+    pub bike_profile_idx: u8,
     /// The UI language (epic #602) — the word-bearing tile captions (`AVG`, `CLIMBED`, `TO GO`…)
     /// route through the catalog; the unit symbols glued to the value stay language-independent.
     pub language: Language,
@@ -140,6 +145,12 @@ pub enum StatField {
     NextPharmacy = 19,
     /// Next **bike shop** on the route ahead — a two-column tile.
     NextBikeShop = 20,
+    /// Estimated **time still to ride** to the end of the route — the gradient-aware model
+    /// (elevation epic #1068, EL9), not distance ÷ average speed. `--` on a route-less ride.
+    TimeToGo = 21,
+    /// Estimated **arrival clock time** at the end of the route — [`TimeToGo`](StatField::TimeToGo)
+    /// added to the wall clock. `--` on a route-less ride.
+    Eta = 22,
 }
 
 impl StatField {
@@ -149,8 +160,11 @@ impl StatField {
     /// discriminants (which are append-only): the six `Next: <category>` tiles are numbered last but
     /// listed **directly after** [`NextWaypoint`](StatField::NextWaypoint), because that is where a
     /// rider looking for "what's coming up" will look for them (epic #946, U5 — grouping in the
-    /// picker is the *only* curation knob the epic allows).
-    pub const ALL: [StatField; 21] = [
+    /// picker is the *only* curation knob the epic allows). The same reasoning puts
+    /// [`TimeToGo`](StatField::TimeToGo) and [`Eta`](StatField::Eta) (EL9, #1077) between
+    /// [`RideTime`](StatField::RideTime) and [`Clock`](StatField::Clock) — the clock family, read
+    /// together — rather than at the end where their discriminants sit.
+    pub const ALL: [StatField; 23] = [
         StatField::Speed,
         StatField::AvgSpeed,
         StatField::DistDone,
@@ -160,6 +174,8 @@ impl StatField {
         StatField::Grade,
         StatField::Elevation,
         StatField::RideTime,
+        StatField::TimeToGo,
+        StatField::Eta,
         StatField::Clock,
         StatField::NextWaypoint,
         StatField::NextWater,
@@ -252,6 +268,8 @@ impl StatField {
             StatField::Grade => t(Msg::StatfieldGrade, lang),
             StatField::Elevation => t(Msg::StatfieldElevation, lang),
             StatField::RideTime => t(Msg::StatfieldRideTime, lang),
+            StatField::TimeToGo => t(Msg::StatfieldTimeToGo, lang),
+            StatField::Eta => t(Msg::StatfieldEta, lang),
             StatField::Clock => t(Msg::StatfieldClock, lang),
             StatField::NextWaypoint => t(Msg::StatfieldNextWaypoint, lang),
             StatField::WaypointList => t(Msg::StatfieldWaypointList, lang),
@@ -307,10 +325,11 @@ impl StatField {
             ),
             StatField::ToClimb => {
                 // Route-relative — `--` on a route-less ride (no cumulative ascent to subtract from).
+                // The remaining ascent is the profile's own climb-between-two-points lookup over
+                // [progress, end] — the one the Up-ahead rows and the EL9 time model also read, so
+                // TO CLIMB and TIME TO GO can never disagree about the climbing that's left.
                 let value = match (cx.route, cx.profile) {
-                    (Some(r), Some(p)) => {
-                        fmt_int(units.elev(r.total_ascent_m.saturating_sub(p.ascent_to(live)) as f32) as u32)
-                    }
+                    (Some(r), Some(p)) => fmt_int(units.elev(ascent_to_go_m(r, p, cx.activity) as f32) as u32),
                     _ => dashes(),
                 };
                 StatCell::new(cap(t(Msg::TileToClimb, lang), ""), value, true)
@@ -334,6 +353,35 @@ impl StatField {
                 StatCell::new(cap(t(Msg::TileElev, lang), units.elev_label()), fmt_elev(v), false)
             }
             StatField::RideTime => StatCell::new(cap(t(Msg::TileRide, lang), ""), fmt_hms(cx.activity.moving_s), false),
+            // The two EL9 time tiles (#1077). Both read one number — the gradient-aware seconds
+            // still to ride — and differ only in how they present it: TIME TO GO as a duration,
+            // ETA as the clock time it lands on. Route-relative, so `--` on a route-less ride
+            // (like DistToGo / ToClimb): with no route there is no end to arrive at, and a
+            // distance-only guess is exactly the wrong answer this field exists to replace.
+            StatField::TimeToGo => {
+                let value = match time_to_go_s(cx) {
+                    Some(s) => fmt_hms(s as f32),
+                    None => dashes(),
+                };
+                // The unit rides in the caption like every other tile ("h TO GO", the twin of
+                // DistToGo's "km TO GO") — a single-column tile fits 8 Label glyphs, so a
+                // spelled-out "TIME TO GO" would only be ellipsised back to this.
+                StatCell::new(cap("h", t(Msg::TileToGo, lang)), value, false)
+            }
+            StatField::Eta => {
+                // Wall clock + the estimate, rounded to the nearest minute — an arrival time is
+                // read to the minute, and truncating would make a 59-second remainder vanish.
+                let value = match time_to_go_s(cx) {
+                    Some(s) => {
+                        let at = cx.now.add_minutes((s + 30) / 60);
+                        let mut v: heapless::String<8> = heapless::String::new();
+                        let _ = write!(v, "{:02}:{:02}", at.hour, at.minute);
+                        v
+                    }
+                    None => dashes(),
+                };
+                StatCell::new(cap(t(Msg::TileEta, lang), ""), value, false)
+            }
             StatField::Clock => {
                 let mut value: heapless::String<8> = heapless::String::new();
                 let _ = write!(value, "{:02}:{:02}", cx.now.hour, cx.now.minute);
@@ -866,6 +914,30 @@ pub(crate) fn grade_at(profile: &obc_route::Profile, total_distance_m: u32, frac
     ((mid(hi) - mid(lo)) as f32 / run_m * 100.0) as i32
 }
 
+/// The ascent (m) still to climb between the rider's matched progress and the end of the route —
+/// the profile's own [`ascent_between_m`](Profile::ascent_between_m) over `[progress, total]`.
+///
+/// One lookup, three readers: the `TO CLIMB` tile, the EL9 time model below, and (over a different
+/// pair of distances) the Up-ahead rows' climb-to-go. The length axis is the **route reader's**
+/// total, which is exactly what [`Activity::route_total_m`](crate::Activity) mirrors, so this can't
+/// disagree with `DIST TO GO` about where the end is.
+fn ascent_to_go_m(r: &RouteReader, p: &Profile, a: &Activity) -> u32 {
+    p.ascent_between_m(a.progress_m, r.total_distance_m, r.total_distance_m)
+}
+
+/// Seconds still to ride to the end of the route under the EL9 gradient-aware model (#1077), or
+/// `None` on a route-less ride / before the profile has streamed in — the shared source for both the
+/// [`TimeToGo`](StatField::TimeToGo) and [`Eta`](StatField::Eta) tiles, so the duration and the
+/// arrival stamp are always the same estimate rendered two ways.
+///
+/// A route with no elevation (a device-planned one, until EL7 fills it from terrain) has zero
+/// ascent-to-go and so degrades to `dist / v_flat` — the model's own answer for a flat input, not a
+/// branch here.
+fn time_to_go_s(cx: &Readout) -> Option<u32> {
+    let (r, p) = (cx.route?, cx.profile?);
+    Some(obc_route::time_to_go_s(p, r.total_distance_m, cx.activity.progress_m, cx.bike_profile_idx))
+}
+
 /// The fractional live position (`0.0`–`1.0`) along the route; `0.0` when no length is known.
 /// Shared by the route-relative fields here and the Statistics screen's cursor logic.
 pub(crate) fn live_frac(a: &Activity) -> f32 {
@@ -1007,6 +1079,7 @@ mod tests {
             next_waypoint: None,
             now: DateTime::default(),
             now_ms: 0,
+            bike_profile_idx: 0,
             language: Language::En,
             next_ahead: EMPTY_CACHE,
         }
@@ -1031,6 +1104,144 @@ mod tests {
                 .unwrap();
         }
         w
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // The EL9 time tiles (#1077) — TIME TO GO / ETA against a real converted route.
+    // ---------------------------------------------------------------------------------------
+
+    /// A ~9 km pass: 500 m up to 800 m and back down, zigzagged so no corner decimates away. All
+    /// 300 m of ascent sit in the first half, which is where the two tiles have to move fastest.
+    const PASS_GPX: &str = r#"<gpx><trk><trkseg>
+    <trkpt lat="47.0000" lon="8.0000"><ele>500</ele></trkpt>
+    <trkpt lat="47.0020" lon="8.0200"><ele>600</ele></trkpt>
+    <trkpt lat="47.0000" lon="8.0400"><ele>700</ele></trkpt>
+    <trkpt lat="47.0020" lon="8.0600"><ele>800</ele></trkpt>
+    <trkpt lat="47.0000" lon="8.0800"><ele>700</ele></trkpt>
+    <trkpt lat="47.0020" lon="8.1000"><ele>600</ele></trkpt>
+    <trkpt lat="47.0000" lon="8.1200"><ele>500</ele></trkpt>
+  </trkseg></trk></gpx>"#;
+
+    /// Convert [`PASS_GPX`] and run `f` with the route reader + its profile, exactly as the App
+    /// holds them (a `RouteReader` borrows its source, so this has to be a closure, not a return).
+    fn with_pass_route<R>(f: impl FnOnce(&RouteReader, &Profile) -> R) -> R {
+        use obc_formats::io::{ByteSink, Error, SliceSource};
+        #[derive(Default)]
+        struct VecSink(std::vec::Vec<u8>);
+        impl ByteSink for VecSink {
+            fn write(&mut self, b: &[u8]) -> Result<(), Error> {
+                self.0.extend_from_slice(b);
+                Ok(())
+            }
+            fn patch_at(&mut self, off: u32, b: &[u8]) -> Result<(), Error> {
+                let o = off as usize;
+                self.0[o..o + b.len()].copy_from_slice(b);
+                Ok(())
+            }
+        }
+        let mut sink = VecSink::default();
+        obc_route::gpx_to_obcr(&SliceSource(PASS_GPX.as_bytes()), "Pass", &mut sink).unwrap();
+        let src = SliceSource(&sink.0);
+        let idx = obc_route::RouteIndex::read(&src).unwrap();
+        let route = RouteReader::new(&idx, &src);
+        let profile = route.elevation_profile();
+        f(&route, &profile)
+    }
+
+    /// Both tiles render **one** estimate: TIME TO GO as `H:MM`, ETA as that many minutes added to
+    /// the wall clock. The number itself is `obc-route`'s gradient-aware model, so this pins the
+    /// wiring (route + profile + bike profile in, the right two strings out), not the physics.
+    #[test]
+    fn time_tiles_render_the_gradient_aware_estimate() {
+        with_pass_route(|route, profile| {
+            let mut activity = Activity::new(Mode::Riding);
+            activity.route_total_m = route.total_distance_m;
+            let empty = Waypoints::new();
+            let cx = Readout {
+                route: Some(route),
+                profile: Some(profile),
+                // 14:00 on the wall clock, so the ETA arithmetic is easy to read.
+                now: DateTime { hour: 14, minute: 0, ..DateTime::default() },
+                ..readout(&activity, Units::Metric, &empty)
+            };
+            assert_eq!(route.total_ascent_m, 300, "the fixture climbs 300 m");
+
+            let secs = obc_route::route_time_s(route.total_distance_m, route.total_ascent_m, 0);
+            assert_eq!(StatField::TimeToGo.cell(&cx).value.as_str(), fmt_hms(secs as f32).as_str());
+            // ETA = 14:00 + the estimate rounded to the nearest minute.
+            let mins = (secs + 30) / 60;
+            let mut want: heapless::String<8> = heapless::String::new();
+            let at = DateTime { hour: 14, minute: 0, ..DateTime::default() }.add_minutes(mins);
+            write!(want, "{:02}:{:02}", at.hour, at.minute).unwrap();
+            assert_eq!(StatField::Eta.cell(&cx).value.as_str(), want.as_str());
+
+            // The climb is really in there: the same route ridden as if it were flat is quicker by
+            // the climb term (300 m × 1.6 s/m = 480 s on the Road profile).
+            let flat = obc_route::ride_time_s(route.total_distance_m, 0, 0);
+            assert!((secs - flat).abs_diff(480) <= 2, "the climb term is {} s", secs - flat);
+
+            // Unit-system independent: hours and minutes are the same in both systems.
+            let imperial =
+                Readout { route: Some(route), profile: Some(profile), ..readout(&activity, Units::Imperial, &empty) };
+            assert_eq!(StatField::TimeToGo.cell(&imperial).value, StatField::TimeToGo.cell(&cx).value);
+        });
+    }
+
+    /// The bike profile is what the model is keyed by: an MTB estimate is longer than a road one on
+    /// the identical route, and a stale out-of-range index falls back to profile 0 (the router's own
+    /// rule) rather than reading `--` or panicking.
+    #[test]
+    fn time_tiles_follow_the_bike_profile() {
+        with_pass_route(|route, profile| {
+            let mut activity = Activity::new(Mode::Riding);
+            activity.route_total_m = route.total_distance_m;
+            let empty = Waypoints::new();
+            let secs = |idx: u8| {
+                let cx = Readout {
+                    route: Some(route),
+                    profile: Some(profile),
+                    bike_profile_idx: idx,
+                    ..readout(&activity, Units::Metric, &empty)
+                };
+                time_to_go_s(&cx).unwrap()
+            };
+            assert!(secs(2) > secs(0), "an MTB is slower than a road bike over the same pass");
+            assert_eq!(secs(99), secs(0), "a stale index falls back to profile 0");
+        });
+    }
+
+    /// TIME TO GO counts down and ETA never slips later as the rider advances — the monotonicity the
+    /// model guarantees, checked through the rendered tiles (so a formatting bug can't hide it).
+    /// At the finish both read the arrival instant: `0:00` and the current clock.
+    #[test]
+    fn time_tiles_count_down_as_the_ride_advances() {
+        with_pass_route(|route, profile| {
+            let total = route.total_distance_m;
+            let empty = Waypoints::new();
+            let mut prev = u32::MAX;
+            let mut prev_eta: std::string::String = std::string::String::new();
+            for step in 0..=40u32 {
+                let mut activity = Activity::new(Mode::Riding);
+                activity.route_total_m = total;
+                activity.progress_m = total * step / 40;
+                let cx = Readout {
+                    route: Some(route),
+                    profile: Some(profile),
+                    now: DateTime { hour: 14, minute: 0, ..DateTime::default() },
+                    ..readout(&activity, Units::Metric, &empty)
+                };
+                let secs = time_to_go_s(&cx).unwrap();
+                assert!(secs <= prev, "time-to-go rose from {prev} to {secs} s at {} m", activity.progress_m);
+                prev = secs;
+                let eta = StatField::Eta.cell(&cx).value;
+                if !prev_eta.is_empty() {
+                    assert!(eta.as_str() <= prev_eta.as_str(), "ETA slipped from {prev_eta} to {eta}");
+                }
+                prev_eta = eta.as_str().into();
+            }
+            assert_eq!(prev, 0, "nothing left at the finish");
+            assert_eq!(prev_eta, "14:00", "arriving now — the ETA is the wall clock");
+        });
     }
 
     /// The Elevation tile reads the live barometric altitude, not the route profile: it shows the
@@ -1067,6 +1278,8 @@ mod tests {
         assert_eq!(val(StatField::ToClimb).as_str(), "--", "no route → nothing to climb, reads --");
         assert_eq!(val(StatField::Grade).as_str(), "--", "no route → grade reads --");
         assert_eq!(val(StatField::RideTime).as_str(), "0:00");
+        assert_eq!(val(StatField::TimeToGo).as_str(), "--", "no route → no end to ride to, reads --");
+        assert_eq!(val(StatField::Eta).as_str(), "--", "no route → no arrival to estimate, reads --");
         assert_eq!(val(StatField::Clock).as_str(), "12:00", "the neutral default DateTime");
         assert_eq!(val(StatField::NextWaypoint).as_str(), "--", "no route → the waypoint tile reads --");
     }
@@ -1089,6 +1302,8 @@ mod tests {
         assert_eq!(val(StatField::DistToGo).as_str(), "--", "no route → to-go reads --");
         assert_eq!(val(StatField::ToClimb).as_str(), "--", "no route → to-climb reads --");
         assert_eq!(val(StatField::Grade).as_str(), "--", "no route → grade reads --");
+        assert_eq!(val(StatField::TimeToGo).as_str(), "--", "no route → time-to-go reads --");
+        assert_eq!(val(StatField::Eta).as_str(), "--", "no route → ETA reads --");
         // Route-independent → real data.
         assert_ne!(val(StatField::DistDone).as_str(), "--", "distance done is real, not --");
         assert_eq!(val(StatField::Climbed).as_str(), "30", "climbed is barometric, route-independent");
@@ -1507,9 +1722,12 @@ mod tests {
         assert_eq!(page_count(&l), 3, "the seventh single spills to a third page");
 
         // A maxed selection carrying the panel (it leads, then the catalogue fills the rest until
-        // `push` refuses) reaches four pages. Nothing may cap at two. (The catalogue carries far
-        // more than MAX_STAT_FIELDS fields, so a full grid is always a MAX_STAT_FIELDS-sized
-        // *subset* — and the panel is only in it if it was picked, hence the explicit lead.)
+        // `push` refuses) spills well past two pages. Nothing may cap at two. (The catalogue carries
+        // far more than MAX_STAT_FIELDS fields, so a full grid is always a MAX_STAT_FIELDS-sized
+        // *subset* — and the panel is only in it if it was picked, hence the explicit lead.) The
+        // exact count follows catalogue *order*, since that decides which fields make the cut: with
+        // the EL9 pair (#1077) inserted before `Clock`, the subset is the panel + 11 single-column
+        // fields = 17 slots = 3 pages (it was 4 while two wide tiles fell inside the cut).
         let full = {
             let mut l = StatFieldList { ids: [StatField::Speed; MAX_STAT_FIELDS], len: 0 };
             l.push(StatField::WaypointList);
@@ -1520,7 +1738,7 @@ mod tests {
         };
         assert_eq!(full.len(), MAX_STAT_FIELDS, "the grid fills to its MAX_STAT_FIELDS cap");
         assert!(full.contains(StatField::WaypointList), "the maxed selection includes the panel");
-        assert_eq!(page_count(&full), 4, "a full selection with the panel spans four pages, not two");
+        assert_eq!(page_count(&full), 3, "a full selection with the panel spans three pages, not two");
     }
 
     /// The panel hops a whole page of singles per step and can never land mid-page — the page-level
