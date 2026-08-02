@@ -342,10 +342,16 @@ pub fn plan(tree: &Path, generated: &obc_pack::catalog::GeneratedCatalog) -> Res
             kind: ObjectKind::Pinned,
         });
     }
-    let schema = tree.join("schema.json");
-    if schema.is_file() {
-        let bytes = std::fs::metadata(&schema).map_err(|e| format!("{}: {e}", schema.display()))?.len();
-        objects.push(PlannedObject { key: "schema.json".into(), path: schema, bytes, kind: ObjectKind::Mutable });
+    // The producer records: `schema.json` because the generator reads the style-id assignment out
+    // of it and a re-generation on another machine needs it, and `terrain.json` for exactly the
+    // same reason on the other revision track (`OBCC_Spec.md` §2, §13.1). Neither is root-pinned,
+    // so both keep their stable key and a revalidating cache policy.
+    for name in ["schema.json", crate::terrain::TERRAIN_DOC] {
+        let path = tree.join(name);
+        if path.is_file() {
+            let bytes = std::fs::metadata(&path).map_err(|e| format!("{}: {e}", path.display()))?.len();
+            objects.push(PlannedObject { key: name.into(), path, bytes, kind: ObjectKind::Mutable });
+        }
     }
     objects.sort_by(|a, b| a.key.cmp(&b.key));
 

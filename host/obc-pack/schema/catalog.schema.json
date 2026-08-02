@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "OpenBikeComputer map catalog (schema_version 2)",
-  "description": "The schema_version 2 map catalog: one schema, a set of skins, named cell-set regions with drawable boundaries, and digest-pinned per-band cell indices. A consumer prices a selection from this document alone — total bytes and bytes per band, which is the per-file projection a volume set needs — and verifies each satellite against the `bytes` + `sha256` pinned here. The satellite documents are `$defs/CellIndexDocument` and `$defs/RegionCellsDocument`. Normative contract: OBCC_Spec.md, with OBCA_Spec.md for the grid, bands, and assembly.",
+  "description": "The schema_version 2 map catalog: one schema, a set of skins, named cell-set regions with drawable boundaries, and digest-pinned per-band cell indices. A consumer prices a selection from this document alone — total bytes and bytes per band, which is the per-file projection a volume set needs — and verifies each satellite against the `bytes` + `sha256` pinned here. The satellite documents are `$defs/CellIndexDocument`, `$defs/RegionCellsDocument` and `$defs/TerrainIndexDocument`. The optional `terrain` block is a second artifact class on its own revision track (§13). Normative contract: OBCC_Spec.md, with OBCA_Spec.md for the grid, bands, and assembly and OBCT_Spec.md for the raster.",
   "type": "object",
   "properties": {
     "schema_version": {
@@ -40,6 +40,26 @@
       "items": {
         "$ref": "#/$defs/CellIndexRef"
       }
+    },
+    "terrain": {
+      "description": "The terrain artifact class, when the catalog publishes one (§13). Absent is a complete, valid catalog: every consumer degrades to \"no elevation here\", which is exactly what a map with no terrain has always done.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TerrainEntry"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "network_terrain_revision": {
+      "description": "**The one coupling between the two revision tracks** (§13.4). Network-band cells are baked sampling OBCT, so their `Ascent M` values are a function of a particular terrain revision; this records which one. `None` for a terrain-less bake, whose ascents are all zero and depend on nothing. It is at the root rather than in [`SchemaEntry`] on purpose: the schema is the identity of the OBCM store and must not acquire a terrain field, or a terrain re-bake would look like a schema change to every consumer that compares schemas.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "minimum": 0
     }
   },
   "required": [
@@ -515,6 +535,17 @@
             "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
           }
         },
+        "terrain": {
+          "description": "This region's terrain footprint (§13.3), when the catalog publishes terrain.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RegionTerrain"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "cells_url": {
           "description": "Where the region's cell-id list lives (§6).",
           "type": "string",
@@ -578,6 +609,33 @@
         "rings"
       ]
     },
+    "RegionTerrain": {
+      "description": "A region's terrain footprint, when the catalog publishes terrain. Kept out of `bytes`/`bytes_by_band`, which are the OBCM volume set's per-file projection: a rider may take the map without the raster, so the two prices are separate numbers.",
+      "type": "object",
+      "properties": {
+        "cell_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "known_empty_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "bytes": {
+          "description": "Sum of the real bytes of this region's downloadable terrain cells.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "cell_count",
+        "known_empty_count",
+        "bytes"
+      ]
+    },
     "CellIndexRef": {
       "description": "The root's pin on one band's cell index (§8).",
       "type": "object",
@@ -624,6 +682,98 @@
       "required": [
         "band",
         "cell_log2",
+        "cell_count",
+        "known_empty_count",
+        "bytes",
+        "sha256",
+        "url"
+      ]
+    },
+    "TerrainEntry": {
+      "description": "The terrain artifact class (OBCC_Spec.md §13): an OBCT raster on the same OBCA grid, published with its OWN revision track. `dataset_version`, `posting_log2`, `cell_log2` and `terrain_revision` are terrain's entire lockstep rule — no OBCM version or schema revision appears here, and an OBCM or schema bump invalidates none of these objects. The single reverse coupling is the root's `network_terrain_revision`, which records the terrain revision the nav graph's ascents were integrated from.",
+      "type": "object",
+      "properties": {
+        "dataset_id": {
+          "description": "Stable kebab-case id of the source dataset, e.g. `copernicus-glo-30`.",
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+        },
+        "dataset_version": {
+          "description": "That dataset's release identity, e.g. `2021-1`. Opaque to a consumer: it is compared for equality, never parsed.",
+          "type": "string",
+          "minLength": 1
+        },
+        "posting_log2": {
+          "description": "`log2(P)` of the sample lattice, µdeg (`OBCT_Spec.md` §1.1).",
+          "type": "integer",
+          "format": "uint8",
+          "minimum": 4,
+          "maximum": 16
+        },
+        "cell_log2": {
+          "description": "`log2(S)` of the terrain cell, µdeg. Independent of any band's `cell_log2`.",
+          "type": "integer",
+          "format": "uint8",
+          "minimum": 10,
+          "maximum": 28
+        },
+        "terrain_revision": {
+          "description": "Monotone content revision of the terrain store, bumped by a re-bake. Unrelated to `schema.revision`: neither invalidates the other (§13.2).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 1
+        },
+        "attribution": {
+          "description": "The source licence's required credit, verbatim, so a consumer displays it from the catalog rather than hard-coding a string that can go stale (§13.5).",
+          "type": "string",
+          "minLength": 1
+        },
+        "cell_index": {
+          "description": "The single pinned terrain cell index.",
+          "$ref": "#/$defs/TerrainIndexRef"
+        }
+      },
+      "required": [
+        "dataset_id",
+        "dataset_version",
+        "posting_log2",
+        "cell_log2",
+        "terrain_revision",
+        "attribution",
+        "cell_index"
+      ]
+    },
+    "TerrainIndexRef": {
+      "description": "The root's pin on the terrain cell index — the §8 machinery, one document instead of one per band, because terrain has no bands.",
+      "type": "object",
+      "properties": {
+        "cell_count": {
+          "description": "Downloadable OBCT artifact entries in the referenced document.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "known_empty_count": {
+          "description": "Canonical cells represented as all-`NODATA` runs rather than OBCT artifacts.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "url": {
+          "type": "string",
+          "pattern": "^(https?://|/).+\\.[0-9a-f]{64}\\.[^/?#]+$"
+        }
+      },
+      "required": [
         "cell_count",
         "known_empty_count",
         "bytes",
@@ -813,9 +963,137 @@
           "propertyNames": {
             "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
           }
+        },
+        "terrain": {
+          "description": "Sorted terrain cell ids on the terrain grid (§13.3). A separate field rather than a `cells` key: `cells` is keyed by *schema band*, and terrain is not a band — it has no LOD, no section, no assembly role and no schema revision.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^\\d{1,2}/\\d{4,}/\\d{4,}$"
+          }
         }
       },
       "description": "A region's cell list: the satellite `RegionEntry::cells_url` points at (§6). Cell ids only — every other fact is in the band's index, keyed by the same id.",
+      "type": "object"
+    },
+    "TerrainCellEntry": {
+      "description": "One published terrain cell. No bbox and no source list: the `id` is the square (§13.1), and the provenance is one dataset stated once in the root block rather than repeated on every one of thousands of entries.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Canonical cell id, `<cell_log2>/<i>/<j>`, on the terrain grid.",
+          "type": "string",
+          "pattern": "^\\d{1,2}/\\d{4,}/\\d{4,}$"
+        },
+        "bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "url": {
+          "type": "string",
+          "pattern": "^(https?://|/).+\\.[0-9a-f]{64}\\.[^/?#]+$"
+        },
+        "built_at": {
+          "description": "RFC 3339 UTC, recorded by the bake job.",
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+        }
+      },
+      "required": [
+        "id",
+        "bytes",
+        "sha256",
+        "url",
+        "built_at"
+      ]
+    },
+    "TerrainEmptyRun": {
+      "description": "An inclusive row run of terrain cells that are all `NODATA` — open ocean, which [`obc-dem`](https://github.com/timohueser/OpenBikeComputer) does not write an object for at all (`OBCT_Spec.md` §4.3 makes an absent cell and an all-void one answer identically). The catalog says so instead, so a hole is still distinguishable from a coverage gap.",
+      "type": "object",
+      "properties": {
+        "start": {
+          "type": "string",
+          "pattern": "^\\d{1,2}/\\d{4,}/\\d{4,}$"
+        },
+        "end": {
+          "type": "string",
+          "pattern": "^\\d{1,2}/\\d{4,}/\\d{4,}$"
+        },
+        "built_at": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+        }
+      },
+      "required": [
+        "start",
+        "end",
+        "built_at"
+      ]
+    },
+    "TerrainIndexDocument": {
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "const": 2
+        },
+        "terrain_revision": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 1
+        },
+        "dataset_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+        },
+        "dataset_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "posting_log2": {
+          "type": "integer",
+          "format": "uint8",
+          "minimum": 4,
+          "maximum": 16
+        },
+        "cell_log2": {
+          "type": "integer",
+          "format": "uint8",
+          "minimum": 10,
+          "maximum": 28
+        },
+        "cells": {
+          "description": "Sorted by cell id.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TerrainCellEntry"
+          }
+        },
+        "known_empty": {
+          "description": "Canonical, non-overlapping row runs whose every sample is `NODATA` — ocean.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TerrainEmptyRun"
+          }
+        }
+      },
+      "required": [
+        "schema_version",
+        "terrain_revision",
+        "dataset_id",
+        "dataset_version",
+        "posting_log2",
+        "cell_log2",
+        "cells",
+        "known_empty"
+      ],
+      "description": "The terrain cell index: the satellite the root's terrain block pins (§13.1). It restates the four lockstep fields so the document is self-describing when it is fetched on its own, and it deliberately carries **no** `schema_revision`: a terrain cell does not know which OBCM schema it is being used beside, and adding the field would make an OBCM bump rewrite this document.",
       "type": "object"
     }
   }

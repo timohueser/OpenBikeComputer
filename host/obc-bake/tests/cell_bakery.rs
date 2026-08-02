@@ -31,6 +31,7 @@ use obc_bake::cells::{CellBakeOptions, CellBakery, CellCutter, CellRunSummary, C
 use obc_bake::presets::StyleDoc;
 use obc_bake::regions::Region;
 use obc_bake::source::LocalExtracts;
+use obc_bake::terrain::{TerrainBakeOptions, TerrainBakery, TerrainCutter, TerrainDoc, TerrainRunSummary};
 use obc_pack::config::Config;
 use obc_pack::cut::{CutOptions, CutSummary};
 use obc_pack::geom::Geom;
@@ -261,10 +262,52 @@ impl Fixture {
                 bands: BandTable::parse(BANDS_JSON).expect("band table"),
                 schema_id: "testschema".into(),
                 schema_revision: 1,
+                // Whatever `terrain_bake` has already put in this tree — the same discovery the
+                // CLI does, so the recorded coupling (`OBCC_Spec.md` §13.4) is exercised rather
+                // than hand-wired.
+                terrain: obc_bake::terrain::in_tree(&self.tree).expect("the tree's terrain, if any"),
             },
         }
         .run(&Progress::silent())
         .expect("the run itself completes; per-plan failures are in the summary")
+    }
+
+    fn bake_at_revision(&self, cutter: &dyn CellCutter, revision: u32) -> CellRunSummary {
+        let skins: Vec<&StyleDoc> = self.skins.iter().collect();
+        CellBakery {
+            regions: &self.regions,
+            schema: &self.schema,
+            skins: &skins,
+            source: &LocalExtracts::new(&self.extracts).with_snapshot(SNAPSHOT),
+            cutter,
+            opts: CellBakeOptions {
+                out: self.tree.clone(),
+                force: false,
+                fail_fast: false,
+                bands: BandTable::parse(BANDS_JSON).expect("band table"),
+                schema_id: "testschema".into(),
+                schema_revision: revision,
+                terrain: obc_bake::terrain::in_tree(&self.tree).expect("the tree's terrain, if any"),
+            },
+        }
+        .run(&Progress::silent())
+        .expect("the run completes")
+    }
+
+    /// Bake the terrain artifact class into the same tree, at `revision`.
+    fn terrain_bake(&self, cutter: &dyn TerrainCutter, revision: u32) -> TerrainRunSummary {
+        TerrainBakery {
+            regions: &self.regions,
+            source: &LocalExtracts::new(&self.extracts).with_snapshot(SNAPSHOT),
+            cutter,
+            opts: TerrainBakeOptions {
+                out: self.tree.clone(),
+                doc: terrain_doc(revision, TERRAIN_DATASET_VERSION),
+                force: false,
+            },
+        }
+        .run(&Progress::silent())
+        .expect("the terrain run completes")
     }
 
     /// Generate the catalog into the tree, as the CLI does after a bake.
@@ -313,6 +356,287 @@ impl Drop for Fixture {
 
 fn statuses(summary: &CellRunSummary) -> BTreeMap<String, CellStatus> {
     summary.plans.iter().flat_map(|p| p.cells.iter().map(|c| (format!("{} [{}]", c.id, c.band), c.status))).collect()
+}
+
+// --- the terrain artifact class (#1071) -------------------------------------------
+
+/// The fixture's terrain pairing. `2^19 / 2^15` makes a cell exactly one tile — a 512-byte block
+/// instead of the 2 MiB a real `2^19 / 2^9` cell is — and it is deliberately **not** either band's
+/// `2^18`, so nothing in these tests can pass by accidentally keying terrain off a band.
+const TERRAIN_POSTING_LOG2: u8 = 15;
+const TERRAIN_CELL_LOG2: u8 = 19;
+const TERRAIN_DATASET_VERSION: &str = "2021-1";
+/// The one square this fixture's DEM has no data for: open water, published as a known-empty run
+/// and as no object at all.
+const TERRAIN_OCEAN: &str = "19/0602/0527";
+
+fn terrain_doc(revision: u32, dataset_version: &str) -> TerrainDoc {
+    TerrainDoc {
+        dataset_id: "copernicus-glo-30".into(),
+        dataset_version: dataset_version.into(),
+        posting_log2: TERRAIN_POSTING_LOG2,
+        cell_log2: TERRAIN_CELL_LOG2,
+        revision,
+        // The credit comes from `obc-dem`'s own `const` and is never retyped, here or anywhere:
+        // this assertion is the whole reason the bakery reaches for the library rather than a CLI.
+        attribution: obc_dem::COPERNICUS_ATTRIBUTION.into(),
+    }
+}
+
+/// A DEM that answers every cell with a constant surface, except one square of open water.
+///
+/// The rasterising itself is `obc-dem`'s contract and is pinned by its own digest tests; what this
+/// stage owes is the selection, the skip key, the known-empty bookkeeping and the tree wiring, and
+/// none of that needs a GeoTIFF.
+struct FakeDem {
+    /// Varies the bytes so a re-bake at a new revision produces genuinely different objects.
+    fill: u8,
+}
+
+impl TerrainCutter for FakeDem {
+    fn recipe(&self) -> String {
+        "fake dem".into()
+    }
+
+    fn bake_cell(&self, ci: u32, cj: u32, posting_log2: u8, cell_log2: u8) -> Result<Option<Vec<u8>>, String> {
+        let len = obc_formats::obct::cell_block_len(posting_log2, cell_log2).expect("a pairing OBCT permits") as usize;
+        let width = obc_pack::grid::id_width(u32::from(cell_log2));
+        let id = format!("{cell_log2}/{ci:0width$}/{cj:0width$}");
+        if id == TERRAIN_OCEAN {
+            return Ok(None);
+        }
+        // A plausible little surface: whole metres, little-endian, never the NODATA sentinel.
+        Ok(Some(
+            (0..len / 2).flat_map(|k| (((k as i16) % 700) + i16::from(self.fill)).to_le_bytes()).collect::<Vec<u8>>(),
+        ))
+    }
+}
+
+fn terrain_dir(tree: &Path) -> PathBuf {
+    tree.join("cells").join("terrain")
+}
+
+/// Every terrain object in the tree, by path → digest. Comparing two of these is the "was anything
+/// re-published?" question asked of the bytes rather than of a log line.
+fn terrain_digests(tree: &Path) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    let Ok(rows) = std::fs::read_dir(terrain_dir(tree)) else { return out };
+    for row in rows.flatten().filter(|r| r.path().is_dir()) {
+        let i = row.file_name().to_string_lossy().into_owned();
+        for entry in std::fs::read_dir(row.path()).into_iter().flatten().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                continue;
+            }
+            let (_, sha) = obc_bake::hash::file(&entry.path()).expect("hashable");
+            out.insert(format!("{i}/{name}"), sha);
+        }
+    }
+    out
+}
+
+/// Every OBCM cell artifact in the tree, by path → digest.
+fn obcm_digests(tree: &Path) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for band in ["coarse", "network"] {
+        let Ok(rows) = std::fs::read_dir(tree.join("cells").join(band)) else { continue };
+        for row in rows.flatten().filter(|r| r.path().is_dir()) {
+            let i = row.file_name().to_string_lossy().into_owned();
+            for entry in std::fs::read_dir(row.path()).into_iter().flatten().flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.starts_with('.') || !name.ends_with(".obcm") {
+                    continue;
+                }
+                let (_, sha) = obc_bake::hash::file(&entry.path()).expect("hashable");
+                out.insert(format!("{band}/{i}/{name}"), sha);
+            }
+        }
+    }
+    out
+}
+
+/// The whole round trip: bake terrain, bake cells against it, generate the catalog, and verify.
+///
+/// Terrain first because the cell bake records which revision it sampled — the one direction the
+/// two tracks are coupled in (`OBCC_Spec.md` §13.4), and the order a real bakery runs them in.
+#[test]
+fn a_terrain_bake_publishes_cells_ocean_runs_and_a_priced_region_selection() {
+    let f = fixture_dirs("terrain-roundtrip");
+    let summary = f.terrain_bake(&FakeDem { fill: 1 }, 1);
+    assert_eq!(summary.terrain_revision, 1);
+    // Six squares cover the fixture's two rectangles at 2^19; one of them is open water.
+    assert_eq!(summary.cells.len(), 6, "{}", summary.render());
+    assert_eq!(summary.cells.iter().filter(|c| c.status == obc_bake::terrain::TerrainCellStatus::Empty).count(), 1);
+    assert!(!terrain_dir(&f.tree).join("0602").join("0527.obcd").exists(), "an all-NODATA square gets no object");
+    assert!(terrain_dir(&f.tree).join("0601").join("0525.obcd").is_file());
+
+    f.bake(&FixtureCutter::new(), &[], SNAPSHOT, false);
+    let generated = f.catalog();
+    let root = &generated.root;
+
+    // §13.1 — the block, and the pinned digest-keyed index.
+    let terrain = root.terrain.as_ref().expect("the catalog publishes terrain");
+    assert_eq!(terrain.terrain_revision, 1);
+    assert_eq!(terrain.dataset_id, "copernicus-glo-30");
+    assert_eq!((terrain.posting_log2, terrain.cell_log2), (TERRAIN_POSTING_LOG2, TERRAIN_CELL_LOG2));
+    assert_eq!(terrain.attribution, obc_dem::COPERNICUS_ATTRIBUTION, "§13.5: the credit comes from obc-dem's const");
+    assert_eq!((terrain.cell_index.cell_count, terrain.cell_index.known_empty_count), (5, 1));
+    assert!(terrain.cell_index.url.contains(&terrain.cell_index.sha256), "the index is addressed by its own digest");
+
+    // Every published object's key carries its digest, terrain included.
+    let doc: obc_pack::catalog::TerrainIndexDocument = serde_json::from_str(
+        &generated.satellites.iter().find(|s| s.rel_path == "cells/terrain/index.json").expect("index").body,
+    )
+    .expect("parses");
+    assert_eq!(doc.terrain_revision, 1);
+    for entry in &doc.cells {
+        assert!(entry.url.contains(&entry.sha256), "{}", entry.url);
+    }
+    assert_eq!(doc.known_empty.len(), 1);
+    assert_eq!((doc.known_empty[0].start.as_str(), doc.known_empty[0].end.as_str()), (TERRAIN_OCEAN, TERRAIN_OCEAN));
+
+    // §13.3 — a region's satellite lists its terrain ids, and the root prices them separately.
+    let region = root.regions.iter().find(|r| r.id == "europe/west").expect("west");
+    let footprint = region.terrain.expect("a priced terrain footprint");
+    assert!(footprint.cell_count > 0 && footprint.bytes > 0);
+    let cells: obc_pack::catalog::RegionCellsDocument = serde_json::from_str(
+        &generated.satellites.iter().find(|s| s.rel_path == "regions/europe/west/cells.json").expect("west").body,
+    )
+    .expect("parses");
+    assert!(!cells.terrain.is_empty());
+    assert!(cells.terrain.windows(2).all(|w| w[0] < w[1]), "sorted: {:?}", cells.terrain);
+
+    // §13.4 — the coupling, recorded from the cells' own sidecars, and consistent here.
+    assert_eq!(root.network_terrain_revision, Some(1));
+    assert!(generated.warnings.is_empty(), "{:?}", generated.warnings);
+
+    // And the whole tree passes its own acceptance gates.
+    let guard = obc_bake::guard::check_cell_store(&f.tree).expect("the guard runs");
+    assert!(guard.ok(), "{}", guard.render());
+    let terrain_state = guard.terrain.expect("the guard reports the terrain track");
+    assert_eq!((terrain_state.cells, terrain_state.known_empty), (5, 1));
+    assert_eq!(terrain_state.network_terrain_revision, Some(1));
+    let report = obc_bake::verify::verify_cell_tree(&f.tree, obc_bake::verify::CellTreeVerifyOptions { sample: 1 })
+        .expect("verify runs");
+    assert!(report.ok(), "{}", report.render());
+    assert_eq!(report.terrain_cells, 5);
+
+    // The object layout, planned rather than uploaded — the same digest-in-name convention every
+    // published object uses, and the manifest still last by construction.
+    let plan = obc_bake::publish::plan(&f.tree, &generated).expect("the publish plan");
+    let keys: Vec<&str> = plan.iter().map(|o| o.key.as_str()).collect();
+    assert_eq!(*keys.last().expect("a plan"), "catalog.json");
+    let terrain_keys: Vec<&&str> = keys.iter().filter(|k| k.starts_with("cells/terrain/")).collect();
+    assert!(
+        terrain_keys.iter().any(|k| k.starts_with("cells/terrain/index.") && k.ends_with(".json")),
+        "{terrain_keys:?}"
+    );
+    for entry in &doc.cells {
+        let want = entry.url.rsplit_once("/cells/terrain/").expect("a terrain url").1;
+        assert!(keys.contains(&format!("cells/terrain/{want}").as_str()), "{want} is not in the plan");
+    }
+    // The producer record travels with the objects it explains, on a stable key.
+    assert!(keys.contains(&"terrain.json"), "{keys:?}");
+}
+
+/// **Independence pin (b), at the bakery**: a terrain re-bake re-publishes no OBCM object, and the
+/// guard names the network band stale — with both revisions in the message, because "something is
+/// stale" is not an actionable thing to read at 2 a.m.
+#[test]
+fn a_terrain_rebake_leaves_the_obcm_store_alone_and_the_guard_flags_the_network_band() {
+    let f = fixture_dirs("terrain-rebake");
+    f.terrain_bake(&FakeDem { fill: 1 }, 1);
+    f.bake(&FixtureCutter::new(), &[], SNAPSHOT, false);
+    let obcm_before = obcm_digests(&f.tree);
+    let terrain_before = terrain_digests(&f.tree);
+    assert!(obc_bake::guard::check_cell_store(&f.tree).expect("guard").ok());
+
+    // The DEM was re-released: a new terrain revision, new bytes, nothing else touched.
+    let summary = f.terrain_bake(&FakeDem { fill: 9 }, 2);
+    assert_eq!(summary.terrain_revision, 2);
+    assert_ne!(terrain_digests(&f.tree), terrain_before, "the terrain store really did move");
+    assert_eq!(obcm_digests(&f.tree), obcm_before, "a terrain re-bake must not rewrite one OBCM cell");
+
+    let guard = obc_bake::guard::check_cell_store(&f.tree).expect("guard");
+    assert!(!guard.ok(), "a stale network band must fail the guard:\n{}", guard.render());
+    let text = guard.render();
+    assert!(text.contains("STALE network band"), "{text}");
+    assert!(text.contains("terrain revision 1"), "the message must name what the cells sampled: {text}");
+    assert!(text.contains("terrain revision 2"), "…and what is published now: {text}");
+    assert!(text.contains("obc-bake bake"), "…and what to do: {text}");
+
+    // Re-cutting the cells against the new terrain is what clears it — and it really does re-cut,
+    // because the terrain revision is part of the pack key. (The bytes are unchanged here only
+    // because this fixture's cutter is a synthetic ingest that samples no terrain; in a real bake
+    // the ascents move, which is exactly why the key includes the revision.)
+    let summary = f.bake(&FixtureCutter::new(), &[], SNAPSHOT, false);
+    assert!(statuses(&summary).values().all(|s| *s == CellStatus::Cut), "{}", summary.render());
+    let guard = obc_bake::guard::check_cell_store(&f.tree).expect("guard");
+    assert!(guard.ok(), "{}", guard.render());
+    assert_eq!(f.catalog().root.network_terrain_revision, Some(2));
+}
+
+/// **Independence pin (a), at the bakery**: a schema-revision bump re-cuts every OBCM cell and
+/// re-publishes not one terrain object.
+#[test]
+fn a_schema_revision_bump_rebakes_no_terrain_object() {
+    let f = fixture_dirs("terrain-schema-bump");
+    f.terrain_bake(&FakeDem { fill: 1 }, 1);
+    f.bake(&FixtureCutter::new(), &[], SNAPSHOT, false);
+    let obcm_before = obcm_digests(&f.tree);
+    let terrain_before = terrain_digests(&f.tree);
+    assert!(!terrain_before.is_empty());
+
+    // Revision 2: OBCA principle 5's whole-store cutover. The known-empty state is stamped with
+    // the schema revision it was established at, so it is reset by the bump — which is itself the
+    // asymmetry this test is about: the *schema*-scoped local state resets, and the
+    // terrain-scoped one does not.
+    for band in ["coarse", "network"] {
+        let _ = std::fs::remove_file(f.tree.join("cells").join(band).join(".known-empty.json"));
+    }
+    let summary = f.bake_at_revision(&FixtureCutter::new(), 2);
+    assert!(statuses(&summary).values().all(|s| *s == CellStatus::Cut), "{}", summary.render());
+    assert_eq!(obcm_digests(&f.tree).len(), obcm_before.len());
+    assert_eq!(terrain_digests(&f.tree), terrain_before, "a schema bump must not touch one terrain byte");
+
+    // …and the terrain track's published shape is byte-identical across the bump.
+    let opts = obc_pack::catalog::CatalogOptions::new(BASE_URL, GENERATED_AT);
+    let generated = obc_pack::catalog::generate(&f.tree, &opts).expect("catalog");
+    let index = generated.satellites.iter().find(|s| s.rel_path == "cells/terrain/index.json").expect("index");
+    assert_eq!(generated.root.terrain.as_ref().expect("terrain").cell_index.sha256, index.sha256);
+    assert_eq!(generated.root.schema.revision, 2);
+    assert_eq!(generated.root.terrain.as_ref().expect("terrain").terrain_revision, 1);
+
+    // Re-running the terrain stage after all that is a no-op: nothing it keys on changed.
+    let again = f.terrain_bake(&FakeDem { fill: 1 }, 1);
+    assert!(
+        again.cells.iter().all(|c| c.status != obc_bake::terrain::TerrainCellStatus::Baked),
+        "a schema bump must not make the terrain stage re-rasterise: {}",
+        again.render()
+    );
+    assert_eq!(terrain_digests(&f.tree), terrain_before);
+}
+
+/// Mixed terrain revisions in one store: rejected by the guard, and by the catalog generator.
+#[test]
+fn a_store_that_mixes_terrain_revisions_is_rejected() {
+    let f = fixture_dirs("terrain-mixed");
+    f.terrain_bake(&FakeDem { fill: 1 }, 1);
+    f.bake(&FixtureCutter::new(), &[], SNAPSHOT, false);
+
+    // One cell left behind by an interrupted re-bake.
+    let path = terrain_dir(&f.tree).join("0601").join("0525.obcd.json");
+    let mut sidecar: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    sidecar["terrain_revision"] = serde_json::json!(2);
+    std::fs::write(&path, format!("{}\n", serde_json::to_string_pretty(&sidecar).unwrap())).unwrap();
+
+    let guard = obc_bake::guard::check_cell_store(&f.tree).expect("guard");
+    assert!(!guard.ok(), "{}", guard.render());
+    assert!(guard.render().contains("one raster per revision"), "{}", guard.render());
+
+    let opts = obc_pack::catalog::CatalogOptions::new(BASE_URL, GENERATED_AT);
+    let error = obc_pack::catalog::generate(&f.tree, &opts).expect_err("a mixed terrain store is not publishable");
+    assert!(error.contains("lockstep within its own track"), "{error}");
 }
 
 // --- the tests --------------------------------------------------------------------
@@ -539,6 +863,7 @@ fn a_skin_that_does_not_fit_the_schema_refuses_the_bake_before_any_cutting() {
             bands: BandTable::parse(BANDS_JSON).expect("band table"),
             schema_id: "testschema".into(),
             schema_revision: 1,
+            terrain: None,
         },
     }
     .run(&Progress::silent())
@@ -586,6 +911,7 @@ fn a_skin_carrying_schema_data_refuses_the_bake_before_any_cutting() {
             bands: BandTable::parse(BANDS_JSON).expect("band table"),
             schema_id: "testschema".into(),
             schema_revision: 1,
+            terrain: None,
         },
     }
     .run(&Progress::silent())
@@ -622,6 +948,7 @@ fn a_schema_id_that_disagrees_with_the_document_is_refused_not_overwritten() {
             bands: BandTable::parse(BANDS_JSON).expect("band table"),
             schema_id: "typoschema".into(),
             schema_revision: 1,
+            terrain: None,
         },
     }
     .run(&Progress::silent())
@@ -665,6 +992,7 @@ fn a_skin_the_run_no_longer_publishes_is_pruned_from_the_tree() {
                 bands: BandTable::parse(BANDS_JSON).expect("band table"),
                 schema_id: "testschema".into(),
                 schema_revision: 1,
+                terrain: None,
             },
         }
         .run(&Progress::silent())

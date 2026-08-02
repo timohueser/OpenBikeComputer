@@ -193,6 +193,37 @@ pub fn cell_file_name(cell_log2: u8, ci: u32, cj: u32) -> String {
     format!("{cell_log2}_{ci:0width$}_{cj:0width$}.obcd", width = width)
 }
 
+/// Write one already-baked cell block as a **1 × 1 container** at `path` — the published
+/// terrain-cell shape (`OBCT_Spec.md` §4.1).
+///
+/// Split out of [`bake_cells`] so a caller that owns its own naming can still write the *one*
+/// container this crate writes. The bakery (EL3) is exactly that caller: a catalog lays its objects
+/// out as `cells/terrain/<i>/<j>.obcd` rather than in one flat directory, and it must not reach for
+/// a second writer to get there — a second writer is the first place the published cell and the
+/// assembled shard could drift apart.
+pub fn write_cell_file(
+    path: &std::path::Path,
+    posting_log2: u8,
+    cell_log2: u8,
+    ci: u32,
+    cj: u32,
+    block: &[u8],
+) -> Result<(), String> {
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    }
+    let file = std::fs::File::create(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut writer = ShardWriter::new(
+        std::io::BufWriter::new(file),
+        posting_log2,
+        cell_log2,
+        CellRect { min_i: ci, min_j: cj, rows: 1, cols: 1 },
+    )?;
+    writer.push(Some(block))?;
+    writer.finish()?;
+    Ok(())
+}
+
 /// Bake every cell the box selects into **one file each** — the terrain *cells* a bakery publishes
 /// and a catalog names, each a container whose rectangle is 1 × 1.
 ///
@@ -217,15 +248,7 @@ pub fn bake_cells(
                 report.cells_written += 1;
                 report.samples_nodata += nodata_in(&bytes);
                 let path = dir.join(cell_file_name(params.cell_log2, ci, cj));
-                let file = std::fs::File::create(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-                let mut writer = ShardWriter::new(
-                    std::io::BufWriter::new(file),
-                    params.posting_log2,
-                    params.cell_log2,
-                    CellRect { min_i: ci, min_j: cj, rows: 1, cols: 1 },
-                )?;
-                writer.push(Some(&bytes))?;
-                writer.finish()?;
+                write_cell_file(&path, params.posting_log2, params.cell_log2, ci, cj, &bytes)?;
                 progress(index as u64 + 1, total, ci, cj, true);
             }
             None => {

@@ -111,8 +111,22 @@ pub struct CellStoreOutcome {
     pub cells: usize,
     pub revision: u32,
     pub partial: Vec<String>,
+    /// What the terrain track holds, when the tree publishes one (§13).
+    pub terrain: Option<TerrainStoreOutcome>,
     /// Every violation, named. Empty means the store is in lockstep.
     pub problems: Vec<String>,
+}
+
+/// What the terrain half of the guard found — reported separately because it *is* a
+/// separate store, with a separate revision, that a separate command bakes.
+#[derive(Debug, Clone, Default)]
+pub struct TerrainStoreOutcome {
+    pub cells: usize,
+    pub known_empty: u32,
+    pub dataset: String,
+    pub revision: u32,
+    /// The terrain revision the OBCM cells recorded sampling, if any (§13.4).
+    pub network_terrain_revision: Option<u32>,
 }
 
 impl CellStoreOutcome {
@@ -145,6 +159,7 @@ impl CellStoreOutcome {
                     let _ = writeln!(s, "    … and {} more", self.partial.len() - 10);
                 }
             }
+            s.push_str(&self.render_terrain());
             return s;
         }
         let _ = writeln!(
@@ -161,6 +176,27 @@ impl CellStoreOutcome {
         if self.problems.len() > 30 {
             let _ = writeln!(s, "  … and {} more", self.problems.len() - 30);
         }
+        s.push_str(&self.render_terrain());
+        s
+    }
+
+    fn render_terrain(&self) -> String {
+        use std::fmt::Write;
+        let mut s = String::new();
+        let Some(t) = &self.terrain else {
+            return s;
+        };
+        let _ = writeln!(
+            s,
+            "terrain guard: {} cell(s) + {} known-empty, {} at terrain revision {} — its own lockstep, unaffected by \
+             the OBCM store's",
+            t.cells, t.known_empty, t.dataset, t.revision
+        );
+        let _ = writeln!(
+            s,
+            "  the cell store's nav ascents were baked against terrain revision {}",
+            t.network_terrain_revision.map_or("none".to_string(), |r| r.to_string())
+        );
         s
     }
 }
@@ -187,6 +223,8 @@ pub fn check_cell_store(tree: &std::path::Path) -> Result<CellStoreOutcome, Stri
     struct Sidecar {
         schema_revision: u32,
         partial: bool,
+        #[serde(default)]
+        terrain_revision: Option<u32>,
     }
     #[derive(serde::Deserialize)]
     struct State {
@@ -213,8 +251,20 @@ pub fn check_cell_store(tree: &std::path::Path) -> Result<CellStoreOutcome, Stri
     if !cells_root.is_dir() {
         return Err(format!("{}: no `cells/` directory — is this a cell bake tree?", cells_root.display()));
     }
+    // Read the terrain declaration before the cells, so the per-cell `terrain_revision` has
+    // something to be checked against as it is read.
+    let terrain_doc = match tree.join(crate::terrain::TERRAIN_DOC).is_file() {
+        true => Some(crate::terrain::read_terrain_doc(&tree.join(crate::terrain::TERRAIN_DOC))?),
+        false => None,
+    };
+    let mut baked_against: Option<Option<u32>> = None;
     for band_dir in sorted_dir(&cells_root)? {
         if !band_dir.is_dir() || name_of(&band_dir).starts_with('.') {
+            continue;
+        }
+        if name_of(&band_dir) == crate::terrain::TERRAIN_DIR {
+            // The other artifact class, on the other revision track. Checked below, against
+            // `terrain.json` — never against `schema.json`, which is the whole point.
             continue;
         }
         for i_dir in sorted_dir(&band_dir)? {
@@ -243,6 +293,18 @@ pub fn check_cell_store(tree: &std::path::Path) -> Result<CellStoreOutcome, Stri
                         sidecar.schema_revision,
                         schema.meta.revision
                     ));
+                }
+                // §13.4: the store as a whole sampled one terrain revision, or none.
+                match baked_against {
+                    None => baked_against = Some(sidecar.terrain_revision),
+                    Some(have) if have != sidecar.terrain_revision => out.problems.push(format!(
+                        "{}: baked against terrain revision {} but the store was baked against {} — half the nav \
+                         graph's ascents would come from a different raster than the other half",
+                        path.display(),
+                        name_revision(sidecar.terrain_revision),
+                        name_revision(have)
+                    )),
+                    Some(_) => {}
                 }
                 match crate::verify::header_of(&path) {
                     Ok((version, _)) if version != obc_formats::obcm::VERSION => out.problems.push(format!(
@@ -277,7 +339,142 @@ pub fn check_cell_store(tree: &std::path::Path) -> Result<CellStoreOutcome, Stri
     if out.cells == 0 {
         return Err(format!("{}: no cells — refusing to call an empty store lockstep", cells_root.display()));
     }
+    out.terrain = check_terrain_store(tree, terrain_doc, baked_against.unwrap_or(None), &mut out.problems)?;
     Ok(out)
+}
+
+fn name_revision(revision: Option<u32>) -> String {
+    revision.map_or("none".to_string(), |r| r.to_string())
+}
+
+/// The terrain track's own lockstep, and the one coupling to the OBCM store (§13.2, §13.4).
+///
+/// Two separate statements, and it matters that they are separate:
+///
+/// - **Terrain lockstep** is `(dataset_version, posting, cell size, terrain_revision)` and nothing
+///   else. Not the OBCM version, not the schema revision — so a schema bump can never make this
+///   half of the guard fail, which is exactly the property epic #1068 needs from the catalog.
+/// - **The coupling** runs one way. The network band's cells sample OBCT at bake time, so their
+///   `Ascent M` values are a function of a particular terrain revision. When the terrain is
+///   re-baked and those cells are not, the router's numbers and the drawn profile stop being the
+///   same surface — silently, because every file still parses. That is what this names, loudly,
+///   *before* a publish rather than after one.
+fn check_terrain_store(
+    tree: &std::path::Path,
+    doc: Option<crate::terrain::TerrainDoc>,
+    network_terrain_revision: Option<u32>,
+    problems: &mut Vec<String>,
+) -> Result<Option<TerrainStoreOutcome>, String> {
+    #[derive(serde::Deserialize)]
+    struct TerrainSidecar {
+        terrain_revision: u32,
+        dataset_version: String,
+    }
+    #[derive(serde::Deserialize)]
+    struct KnownEmpty {
+        terrain_revision: u32,
+        known_empty: Vec<serde_json::Value>,
+    }
+
+    let dir = tree.join("cells").join(crate::terrain::TERRAIN_DIR);
+    let Some(doc) = doc else {
+        if dir.is_dir() {
+            problems.push(format!(
+                "{}: terrain cells with no `{}` — a terrain cell is only interpretable beside the dataset, pairing \
+                 and revision it was baked at (OBCC_Spec.md §13.1)",
+                dir.display(),
+                crate::terrain::TERRAIN_DOC
+            ));
+        }
+        if let Some(revision) = network_terrain_revision {
+            problems.push(format!(
+                "the cell store's nav ascents were baked against terrain revision {revision}, but this tree publishes \
+                 no terrain — the raster the router's numbers came from would not ship with them"
+            ));
+        }
+        return Ok(None);
+    };
+
+    let mut outcome = TerrainStoreOutcome {
+        dataset: format!("{} {}", doc.dataset_id, doc.dataset_version),
+        revision: doc.revision,
+        network_terrain_revision,
+        ..Default::default()
+    };
+    if dir.is_dir() {
+        for i_dir in sorted_dir(&dir)? {
+            if !i_dir.is_dir() || name_of(&i_dir).starts_with('.') {
+                continue;
+            }
+            for path in sorted_dir(&i_dir)? {
+                let name = name_of(&path);
+                if name.starts_with('.') || !name.ends_with(".obcd") {
+                    continue;
+                }
+                outcome.cells += 1;
+                let sidecar_path = path.with_file_name(format!("{name}.json"));
+                let sidecar: TerrainSidecar =
+                    match std::fs::read_to_string(&sidecar_path).ok().and_then(|t| serde_json::from_str(&t).ok()) {
+                        Some(s) => s,
+                        None => {
+                            problems.push(format!("{}: no readable terrain sidecar", sidecar_path.display()));
+                            continue;
+                        }
+                    };
+                if sidecar.terrain_revision != doc.revision {
+                    problems.push(format!(
+                        "{}: baked at terrain revision {} but the terrain store is revision {} — one raster per \
+                         revision (OBCC_Spec.md §13.2)",
+                        path.display(),
+                        sidecar.terrain_revision,
+                        doc.revision
+                    ));
+                }
+                if sidecar.dataset_version != doc.dataset_version {
+                    problems.push(format!(
+                        "{}: baked from dataset version `{}` but the terrain store is `{}` — a mixed-dataset raster \
+                         has a discontinuity at every seam between the two",
+                        path.display(),
+                        sidecar.dataset_version,
+                        doc.dataset_version
+                    ));
+                }
+            }
+        }
+    }
+    let empty_path = dir.join(".known-empty.json");
+    if empty_path.is_file() {
+        match std::fs::read_to_string(&empty_path).ok().and_then(|t| serde_json::from_str::<KnownEmpty>(&t).ok()) {
+            Some(state) if state.terrain_revision != doc.revision => problems.push(format!(
+                "{}: known-empty state is terrain revision {} but the store is revision {}",
+                empty_path.display(),
+                state.terrain_revision,
+                doc.revision
+            )),
+            Some(state) => outcome.known_empty = state.known_empty.len() as u32,
+            None => problems.push(format!("{}: unreadable known-empty state", empty_path.display())),
+        }
+    }
+    if outcome.cells == 0 && outcome.known_empty == 0 {
+        problems.push(format!(
+            "{}: `{}` declares a terrain store with no cells and no known-empty coverage",
+            tree.display(),
+            crate::terrain::TERRAIN_DOC
+        ));
+    }
+
+    // §13.4 — the one coupling, and the only place in this guard where the two tracks meet.
+    if network_terrain_revision != Some(doc.revision) {
+        problems.push(format!(
+            "STALE network band: its cells' nav ascents were baked against terrain revision {}, but this tree \
+             publishes terrain revision {}. The router's baked ascents and the published raster are two different \
+             surfaces (OBCC_Spec.md §13.4) — re-bake the cells against the current terrain:\n      obc-bake bake \
+             --out <tree> --force <region…>",
+            name_revision(network_terrain_revision),
+            doc.revision
+        ));
+    }
+    Ok(Some(outcome))
 }
 
 fn name_of(path: &std::path::Path) -> String {
