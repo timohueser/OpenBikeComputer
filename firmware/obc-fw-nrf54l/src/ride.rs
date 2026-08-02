@@ -1623,7 +1623,7 @@ pub(crate) async fn run_app(
                 // *trend* is weather and nothing else. Throttled to one line per 64 fixes so a long
                 // ride doesn't flood the transport.
                 elev_fixes = elev_fixes.wrapping_add(1);
-                if elev_fixes % 64 == 0 {
+                if elev_fixes.is_multiple_of(64) {
                     let a = app.activity.altitude();
                     let baro = app.activity.baro_elevation_m().unwrap_or(f32::NAN);
                     defmt::debug!(
