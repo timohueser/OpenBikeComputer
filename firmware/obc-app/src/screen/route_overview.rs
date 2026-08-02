@@ -3,9 +3,11 @@
 //! the stat rows flip together every 5 s — page A is the route's **track-shape preview** (the
 //! host-decimated polyline, the NEW ROUTE page's sketch) over its DISTANCE, page B the full
 //! **elevation profile** (the Statistics band, **non-interactive**: no cursor, no zoom, no live
-//! shading) over CLIMB + DESCENT. (EST TIME was investigated for page A and omitted: the §8.6
-//! nav profiles carry only dimensionless edge-weight multipliers — no speed model exists
-//! anywhere in the format, so there is no defensible estimate.) Below the pager, a START RIDE
+//! shading) over CLIMB + DESCENT. (EST TIME joined page A with the elevation epic's time model
+//! (#1068, EL9): it was omitted at review round 3 because the §8.6 nav profiles carry only
+//! dimensionless edge-weight multipliers — no speed model existed anywhere — and
+//! [`obc_route::eta`] is exactly that missing model, `dist / v_flat + ascent × k_climb` keyed by
+//! the rider's bike profile.) Below the pager, a START RIDE
 //! row and (when deletable) the Delete-route row under it. The two action rows are
 //! the **Pause-menu (ride_control) row family** (owner review round 3 — the round-2 focus
 //! outline read as one-off chrome): unselected rows are plain labels, the selected row wears the
@@ -57,7 +59,7 @@ const EXPIRY_ROW_Y: i32 = LIST_TOP + 4;
 const EXPIRY_ROW_X: i32 = 12;
 
 /// The stat ledger under the media band — the content-paired pager's stat half (owner review
-/// round 3): page A (track shape) carries DISTANCE, page B (elevation) CLIMB + DESCENT;
+/// round 3): page A (track shape) carries DISTANCE + EST TIME, page B (elevation) CLIMB + DESCENT;
 /// [`ROW_PITCH`] is the row spacing within a page. Placed between the band and the action rows
 /// (whose Pause-family block sits 4 px higher than the old START bar — the ledger moved up with
 /// it, keeping the same breathing gap above the amber row).
@@ -250,13 +252,20 @@ impl RouteOverviewScreen {
             let dist_unit = write_computed_distance(&mut dist, total_m, units);
             let rows_top = LIST_TOP + 34;
             ledger_row(cv, w, rows_top, rx.t(Msg::RouteOverviewDistance), &dist, dist_unit, None);
+            // EST TIME (EL9, #1077) — the one figure a length-only page was missing. A computed
+            // route's points are all zero-elevation until EL7 fills them from terrain, so the
+            // model's ascent term is zero and this reads exactly `distance / v_flat`; when EL7
+            // lands the identical call starts answering with the real climb, with nothing here to
+            // change. The BIKE TYPE row directly under it names the profile the figure is keyed to.
+            let est = est_time_value(total_m, route_ascent_m(rx, summary), rx.settings.bike_profile_idx);
+            ledger_row(cv, w, rows_top + ROW_PITCH, rx.t(Msg::RouteOverviewEstTime), &est, "h", None);
             // The bike profile the route was planned under (routing-v2 N5): the rider must be able to
             // tell a Road route from an MTB one they picked by accident. The name resolves against the
             // loaded map for the current selection — which is the profile the just-finished plan used,
             // since planning uses `bike_profile_idx` and the overview opens straight off it.
-            draw_profile_label(cv, w, rx, rows_top + ROW_PITCH);
+            draw_profile_label(cv, w, rx, rows_top + 2 * ROW_PITCH);
             // The route-shape preview fills the middle between the ledger and the START bar.
-            draw_route_preview(cv, w, rows_top + 2 * ROW_PITCH, h - 10 - BUTTON_H, rx.nav_preview);
+            draw_route_preview(cv, w, rows_top + 3 * ROW_PITCH, h - 10 - BUTTON_H, rx.nav_preview);
             draw_start_button(cv, w, h, rx.t(Msg::RouteOverviewStartRide));
             return;
         }
@@ -360,16 +369,23 @@ impl RouteOverviewScreen {
             }
         }
 
-        // The stats pair with their media (owner review round 3): DISTANCE belongs to the track
-        // shape (page A), CLIMB + DESCENT to the elevation band (page B). The flip itself is the
-        // affordance — no page dots. (Page A stays a lone DISTANCE: EST TIME was investigated and
-        // omitted — the §8.6 profiles carry no speed model, so no defensible estimate exists.)
-        let entries: [(&str, &str, &str, Option<bool>); 3] = [
+        // EST TIME (EL9, #1077): the gradient-aware estimate for the whole route, keyed to the
+        // rider's bike profile. It pairs with the track shape on page A — "how far, how long" — while
+        // the climbing that drives it is spelled out on page B. Totals come from the opened route
+        // when it has streamed in (metre/metre exact) and from the catalog summary before that, so
+        // the row never has to show a placeholder.
+        let est = est_time_value(route_total_m(rx, summary), route_ascent_m(rx, summary), rx.settings.bike_profile_idx);
+
+        // The stats pair with their media (owner review round 3): DISTANCE + EST TIME belong to the
+        // track shape (page A), CLIMB + DESCENT to the elevation band (page B). The flip itself is
+        // the affordance — no page dots.
+        let entries: [(&str, &str, &str, Option<bool>); 4] = [
             (rx.t(Msg::RouteOverviewDistance), &dist, dist_unit, None),
             (rx.t(Msg::RouteOverviewClimb), &climb, units.elev_label(), Some(true)),
             (rx.t(Msg::RouteOverviewDescent), &desc, units.elev_label(), Some(false)),
+            (rx.t(Msg::RouteOverviewEstTime), &est, "h", None),
         ];
-        let page_rows: &[usize] = if page_b { &[1, 2] } else { &[0] };
+        let page_rows: &[usize] = if page_b { &[1, 2] } else { &[0, 3] };
         for (slot, &e) in page_rows.iter().enumerate() {
             let y = ROWS_TOP + slot as i32 * ROW_PITCH;
             let (caption, value, unit, arrow) = entries[e];
@@ -444,6 +460,29 @@ fn fmt_remaining(deadline: u32, now_utc: u32) -> heapless::String<12> {
         let _ = s.push_str("soon");
     }
     s
+}
+
+/// The route's length in metres for the time model: the **opened** route's exact total once it has
+/// streamed in, else the catalog summary's whole-km figure. The estimate is a whole-minute readout,
+/// so the km-grain fallback only matters for the frame or two before the geometry opens.
+fn route_total_m(rx: &Render, summary: &RouteSummary) -> u32 {
+    rx.route.map_or(summary.distance_km * 1000, |r| r.total_distance_m)
+}
+
+/// The route's total ascent in metres for the time model — the opened route's header figure, else
+/// the catalog summary's. A route with no elevation at all (a computed one, until EL7) reports `0`
+/// here, which is exactly what makes [`est_time_value`] fall back to `distance / v_flat` with no
+/// branch of its own.
+fn route_ascent_m(rx: &Render, summary: &RouteSummary) -> u32 {
+    rx.route.map_or(summary.climb_m, |r| r.total_ascent_m)
+}
+
+/// The EST TIME ledger value: the whole route through the gradient-aware model
+/// ([`obc_route::eta`], elevation epic #1068 / EL9) rendered `H:MM`, the same duration shape the
+/// RIDE tile and the ride ledger use. Not localised and not unit-dependent — hours and minutes are
+/// hours and minutes in every catalog language and both unit systems.
+fn est_time_value(total_m: u32, ascent_m: u32, bike_profile_idx: u8) -> heapless::String<8> {
+    crate::stat_fields::fmt_hms(obc_route::route_time_s(total_m, ascent_m, bike_profile_idx) as f32)
 }
 
 /// The "BIKE TYPE" ledger row: the profile name the computed route was planned under (routing-v2
@@ -694,6 +733,24 @@ mod tests {
         let mut scr = RouteOverviewScreen::computed(0, None);
         assert!(!scr.tick_timers(PAGE_FLIP_MS).changed);
         assert_eq!(scr.tick_timers(PAGE_FLIP_MS), ScreenTick::idle());
+    }
+
+    /// The EST TIME ledger value (EL9, #1077): `H:MM` from the gradient-aware model, keyed by the
+    /// rider's bike profile, with a zero-ascent route (a device-planned one, until EL7 fills its
+    /// elevation from terrain) degrading to plain `distance / v_flat` — the natural behavior, not a
+    /// special case, so the row never needs a "no elevation" branch or a `--`.
+    #[test]
+    fn est_time_value_is_the_gradient_aware_estimate() {
+        // Road profile, 22 km/h flat: 44 km with no climbing is two hours.
+        assert_eq!(est_time_value(44_000, 0, 0).as_str(), "2:00", "a flat route is distance / v_flat");
+        // The same 44 km over a 1000 m col costs 1000 × 1.6 s = 26:40 more → 2:26.
+        assert_eq!(est_time_value(44_000, 1_000, 0).as_str(), "2:26", "the col adds its climb term");
+        // Same route, MTB profile (16 km/h, 2.3 s/m): 2:45 flat + 38:20 climbing → 3:23.
+        assert_eq!(est_time_value(44_000, 1_000, 2).as_str(), "3:23", "a slower bike, a longer day");
+        // A stale out-of-range index falls back to profile 0, the router's own rule.
+        assert_eq!(est_time_value(44_000, 1_000, 99), est_time_value(44_000, 1_000, 0));
+        // Degenerate inputs stay a readable zero rather than a placeholder.
+        assert_eq!(est_time_value(0, 0, 0).as_str(), "0:00");
     }
 
     /// The locked remaining-time format (epic #638 S5), at every boundary: the day/hour cutover at

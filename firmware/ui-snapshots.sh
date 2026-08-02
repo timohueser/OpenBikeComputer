@@ -52,7 +52,18 @@ TRIPDIR="$(mktemp -d)"
 # A routes dir holding only the waypoint-less `route-plain` vector route — the Up-ahead
 # "nothing ahead" empty states below need a route whose corridor is genuinely empty.
 PLAINROUTE="$(mktemp -d)"
-trap 'rm -rf "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE"' EXIT
+# The EL9 ETA A/B (#1077): the Grimsel climb route, and a **zero-elevation twin** of it — the same
+# 19 km of geometry with every <ele> zeroed, imported through the sim's own GPX path. One replay
+# then drives both, so the only difference between the two ETA frames is the elevation, which is
+# exactly what the gradient-aware model is supposed to react to. (The twin also stands in for a
+# device-planned route, whose points are all zero-elevation until EL7 fills them from terrain.)
+ETAROUTE="$(mktemp -d)"
+ETAFLAT="$(mktemp -d)"
+trap 'rm -rf "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE" "$ETAROUTE" "$ETAFLAT"' EXIT
+cp "$repo_root/apps/obc-sim/assets/grimsel-climb.obcr" "$ETAROUTE/"
+sed 's#<ele>[^<]*</ele>#<ele>0</ele>#g' "$GPX" > "$ETAFLAT/grimsel-flat.gpx"
+"$SIM" --import "$ETAFLAT/grimsel-flat.gpx" --routes-dir "$ETAFLAT" > /dev/null
+rm "$ETAFLAT/grimsel-flat.gpx"
 cp "$ROUTES/ride-v1.bin" "$TRACKS/RD0.ORD"
 cp "$ROUTES/ride-v1.bin" "$TRACKS/RD1.ORD"
 printf '\x88\x45\x00\x00' | dd of="$TRACKS/RD1.ORD" bs=1 seek=16 conv=notrunc status=none
@@ -375,6 +386,24 @@ DFU_PRE="B u p d d d d p d d d p p"
 # tiles read live values (152 bpm / 210 W / 88 rpm) rather than `--`. A minimal stub until SE8 wires
 # the sim control-panel sliders; this frame pins the new tiles' captions + value formatting.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p b" --gpx "$GPX" --at 30 --sensors-demo --png "$OUT/statistics-sensors.png"
+# The EL9 time tiles (#1077): TIME TO GO (`h TO GO`) and ETA on the Statistics grid, beside the
+# DIST TO GO / TO CLIMB pair they are derived from, at a pinned 14:40 wall clock. The A/B is the
+# point — the two frames ride the *same* replay over the *same* 19 km of geometry, and differ only
+# in whether the loaded route carries elevation:
+#   * `-grimsel`: the real climb route — 18.6 km and 1083 m still to go → 1:19, arriving 16:00;
+#   * `-flat`:    its zero-elevation twin — the same 18.6 km, 0 m → 0:50, arriving 15:31.
+# The 29-minute gap is the model's climb term (1083 m × 1.6 s/m on the Road profile); the flat frame
+# is also the "no elevation" degradation, which must read as a plain distance ÷ speed answer rather
+# than a `--` or a special case.
+ETAFIELDS="time-to-go,eta,dist-to-go,to-climb,speed,ride-time"
+"$SIM" "$MAP" --boot --routes-dir "$ETAROUTE" --clock "2025-06-29T14:40" --stat-fields "$ETAFIELDS" \
+    --script "p p p p b" --gpx "$GPX" --at 30 --png "$OUT/statistics-eta.png"
+"$SIM" "$MAP" --boot --routes-dir "$ETAFLAT"  --clock "2025-06-29T14:40" --stat-fields "$ETAFIELDS" \
+    --script "p p p p b" --gpx "$GPX" --at 30 --png "$OUT/statistics-eta-flat.png"
+# The same pair as the Route overview's EST TIME row sees them (page A of the content-paired pager,
+# alongside DISTANCE): the whole-route estimate before the ride starts.
+"$SIM" "$MAP" --boot --routes-dir "$ETAROUTE" --script "p p p" --png "$OUT/routeoverview-est-time.png"
+"$SIM" "$MAP" --boot --routes-dir "$ETAFLAT"  --script "p p p" --png "$OUT/routeoverview-est-time-flat.png"
 # The low-battery cue (issue: < 10 %): a warning-red battery glyph in the map's top-left corner.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --battery 5 --script "p p p p" --gpx "$GPX" --at 30 --png "$OUT/map-lowbatt.png"
 # Waypoint UI (epic #523). specs/vectors holds two routes in filename order: id 0 = route-plain,
