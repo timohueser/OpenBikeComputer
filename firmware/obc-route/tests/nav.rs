@@ -1344,6 +1344,28 @@ impl obc_route::ElevationSource for HolyRidge {
     }
 }
 
+/// Terrain that **starts** past the route's opening — the coverage crop a real sidecar has when the
+/// nav graph reaches beyond the extract it was baked for (complete-way retention). Everything west
+/// of [`COVERAGE_LON`] is `None`; east of it the ground climbs 1 m per 25 µdeg from
+/// [`COVERED_BASE_M`], so the covered part has an exactly known climb.
+struct CroppedTerrain;
+
+/// Where coverage begins — past the grid's first column (500 000), so the route's first points and
+/// the interpolated ones between them are all outside the raster.
+const COVERAGE_LON: i32 = 507_000;
+/// The height at [`COVERAGE_LON`] — high enough that booking it as ascent would be unmissable.
+const COVERED_BASE_M: i32 = 1_412;
+
+fn covered_height(lon: i32) -> i16 {
+    (COVERED_BASE_M + (lon - COVERAGE_LON) / 25) as i16
+}
+
+impl obc_route::ElevationSource for CroppedTerrain {
+    fn sample(&mut self, _lat_udeg: i32, lon_udeg: i32) -> Option<i16> {
+        (lon_udeg >= COVERAGE_LON).then(|| covered_height(lon_udeg))
+    }
+}
+
 /// Plan the standard corner-to-corner grid route through `elev`, returning `(stats, obcr bytes)`.
 fn plan_with_elevation(bytes: &[u8], elev: &mut dyn obc_route::ElevationSource) -> (obc_route::RouteStats, Vec<u8>) {
     let src = SliceSource(bytes);
@@ -1531,6 +1553,13 @@ fn a_real_grimsel_plan_carries_the_pass_road_profile() {
 /// [`gpx_to_obcr`](obc_route::gpx_to_obcr); the re-imported route's own climb agrees with the
 /// header the planner wrote. Without the emit-time fill both sides are 0 and the check is vacuous;
 /// with it, the two independently-computed totals have to land on each other.
+///
+/// The route is **wholly inside** `grimsel.obcd`'s coverage, and the `p.ele > 0` assertion in the
+/// export loop is what holds it there. That is the parity claim's boundary, by construction: a
+/// route whose opening lies outside the raster stores `0` for those points (the module docs' hole
+/// policy — the format has no "unknown"), so its export re-imports with a step the converter's
+/// dead-band books. Inside coverage — every route on a map whose terrain was baked for it — the
+/// two integrations agree.
 #[test]
 fn a_planned_route_exported_to_gpx_and_reimported_keeps_its_climb() {
     let map = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../apps/obc-sim/assets/grimsel.obcm"))
@@ -1574,6 +1603,61 @@ fn a_planned_route_exported_to_gpx_and_reimported_keeps_its_climb() {
         (a - b).abs() * 20 <= a.max(1),
         "planned +{a} m vs re-imported +{b} m — the two dead-band integrations must agree within 5%"
     );
+}
+
+/// **A leading hole books nothing.** A route that starts outside coverage has no known height to
+/// carry yet, so the integrator must not run until the first sample resolves — otherwise the band
+/// anchors on the `0` placeholder and the first real height (1 412 m here) lands in the header as
+/// ascent, poisoning every stored `cum_ascent` after it as well.
+#[test]
+fn a_route_that_starts_outside_coverage_books_no_phantom_ascent() {
+    let bytes = map_with(&grid3(false));
+    let (route, obcr) = plan_with_elevation(&bytes, &mut CroppedTerrain);
+    let pts = route_points(&obcr);
+
+    // The route genuinely straddles the coverage edge: points on both sides of it.
+    assert!(pts.iter().any(|p| p.lon < COVERAGE_LON), "the route starts outside coverage");
+    let covered: Vec<&obc_route::RoutePoint> = pts.iter().filter(|p| p.lon >= COVERAGE_LON).collect();
+    assert!(covered.len() >= 2, "and crosses well into it");
+
+    // The header's climb is the *covered* climb only — the 1 412 m step into coverage is not a hill.
+    let mut band = obc_elevation::DeadBand::<f64>::new();
+    for p in &covered {
+        band.push(f64::from(p.ele));
+    }
+    let covered_ascent = band.ascent() as u32;
+    assert!(covered_ascent > 0, "the covered part does climb (otherwise this test proves nothing)");
+    assert_eq!(
+        route.total_ascent_m, covered_ascent,
+        "header ascent must be the post-coverage climb only, not {} m of phantom step",
+        COVERED_BASE_M
+    );
+    assert!(
+        route.total_ascent_m < COVERED_BASE_M as u32,
+        "a {} m first sample was booked as ascent (the leading-hole bug)",
+        COVERED_BASE_M
+    );
+    // …and the same on the stored per-point cumulative: the first covered point must still read 0.
+    let first_covered_cum = cum_ascent_at(&obcr, |p| p.lon >= COVERAGE_LON);
+    assert_eq!(first_covered_cum, 0, "cum_ascent at the first covered point is poisoned");
+    // The uncovered opening still *stores* 0 (OBCR has no "unknown") — the documented wart.
+    assert!(pts.iter().filter(|p| p.lon < COVERAGE_LON).all(|p| p.ele == 0));
+}
+
+/// The stored cumulative ascent (a chunk-level field) at the first point matching `pred` — read
+/// through the same `ChunkMeta` the profile builder reads, so this checks what is *written*, not a
+/// recomputation.
+fn cum_ascent_at(obcr: &[u8], pred: impl Fn(&obc_route::RoutePoint) -> bool) -> u32 {
+    let src = SliceSource(obcr);
+    let idx = RouteIndex::read(&src).expect("the emitted OBCR parses");
+    let r = RouteReader::new(&idx, &src);
+    for k in 0..idx.chunks().len() {
+        let chunk = decode(&r, k);
+        if chunk.iter().any(&pred) {
+            return idx.chunks()[k].cum_ascent_m;
+        }
+    }
+    panic!("no point matched")
 }
 
 /// A source that never resolves is the null source as far as the route is concerned: same bytes,
