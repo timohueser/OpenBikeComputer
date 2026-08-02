@@ -885,6 +885,15 @@ fn the_engine_and_the_packer_agree_on_the_grid() {
     // an eighth of the world).
     assert_eq!((MIN_CELL_LOG2, MAX_CELL_LOG2), (obc_pack::grid::MIN_CELL_LOG2, obc_pack::grid::MAX_CELL_LOG2));
     assert_eq!(GRID_ORIGIN, obc_pack::grid::GRID_ORIGIN);
+    // …and the third copy: the OBCT terrain raster sits on this same grid (`OBCT_Spec.md` §1.1) but
+    // is read by a no_std crate that cannot depend on either host copy, so `obc-formats` restates
+    // the origin and the cell-size range. Same drift guard, same reason.
+    assert_eq!(GRID_ORIGIN, obc_formats::obct::GRID_ORIGIN as i64);
+    assert_eq!(obcm_assemble::grid::WORLD_SIDE, obc_formats::obct::WORLD_SIDE as i64);
+    assert_eq!(
+        (MIN_CELL_LOG2, MAX_CELL_LOG2),
+        (obc_formats::obct::MIN_CELL_LOG2 as u32, obc_formats::obct::MAX_CELL_LOG2 as u32)
+    );
     for log2 in MIN_CELL_LOG2..=MAX_CELL_LOG2 {
         let last = obc_pack::grid::axis_cells(log2) - 1;
         assert_eq!(obc_pack::grid::axis_cells(log2), obcm_assemble::grid::axis_cells(log2));

@@ -2,8 +2,9 @@
 
 Binary fixtures pinning the byte layouts of
 [`obc-ble-interface-spec.md`](../obc-ble-interface-spec.md), the OBCR v3
-waypoint extension ([`OBCR_Spec.md`](../OBCR_Spec.md)), and the device's own
-recorded-track log, consumed by **four** implementations:
+waypoint extension ([`OBCR_Spec.md`](../OBCR_Spec.md)), the device's own
+recorded-track log, and the OBCT terrain raster
+([`OBCT_Spec.md`](../OBCT_Spec.md)), consumed by **four** implementations:
 
 - **Firmware**: `cargo test -p obc-vectors` (workspace `firmware/`) verifies every
   file byte-for-byte against builders written straight from the spec text, and
@@ -56,6 +57,7 @@ A drift on any side fails that side's tests — the files are the contract.
 | `update-container-v1.bin` | OBCU container ([`OBCU_Spec.md`](../OBCU_Spec.md) §1), **unsigned/v1** | a full `UPDATE.BIN` / `fwImage` payload (§7.6, id 0): 64-byte header (`fw_version` `1.2.0+abc1234`, `image_len` 128) + a 128-byte raw image. Decoded by `obc-dfu` (`cargo test -p obc-dfu --test vectors`) and the iOS `OBCUHeader`. Kept even though a v2 device refuses to *install* it: it is still the shape of a fielded container and of the device-written `ROLLBACK.BIN`, and pairing it with the v2 file below is what pins the offset-compatibility guarantee across implementations |
 | `update-container-v2.bin` | OBCU container (§1), **Ed25519-signed/v2** (#997) | the *same* header table and the *same* 128-byte image as v1 — `header_version` still `1`, deliberately (§1.2) — with `sig_scheme`/`sig_len` in v1's reserved bytes `48..52` and a 64-byte signature trailer after the image. Signed with the committed **test** key (`firmware/obc-dfu/keys/test/`); signing is deterministic, so this is a stable file. A decoder must read every v1 field from it byte-identically |
 | `trip-v1.bin` | trip object v1 (spec §7.7) | "Alpen Traverse", 3 stages referencing route ids 7 + 8 (the two `route-list.bin` entries) **plus one deliberately dangling id (99)** — pins read-tolerance; 56-byte header + 2 bytes/stage |
+| `terrain-shard.obcd` | OBCT terrain shard ([`OBCT_Spec.md`](../OBCT_Spec.md) §4) | a 2 × 2 cell rectangle at ≈ 46.97°N / 7.98°E over a **plane** (`100 + 3·di + 5·dj` m), with the far cell **absent** (the `0` directory sentinel) and one `NODATA` sample. Posting is the v1 `2^9`; the cell is `2^14` — deliberately not the v1 `2^19`, because a v1 cell is 2 MiB of raster and the point of both being header data is that a small one is equally legal. A plane is an *oracle*: bilinear interpolation over one has a closed form, so a second implementation checks itself against arithmetic rather than a reference table, and the differing coefficients (3 vs 5) catch a transposed lat/lon |
 | `trip-list.bin` | `tripList` object §7.4 | one entry for the trip above: **6-byte v2 header** + a **76-byte** entry mirroring `routeList` (trailing whole-object `crc32`); `total_distance_m`/`total_ascent_m` (4414 / 152) summed over the two **resolvable** stages, `stage_count` 3 counts every stored stage (dangling included) |
 
 `manifest.json` restates each fixture's expected decoded values (plus the pinned

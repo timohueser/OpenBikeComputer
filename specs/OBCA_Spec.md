@@ -25,8 +25,10 @@ interpreted as in RFC 2119.
 
 Related contracts: [`OBCM_Spec.md`](OBCM_Spec.md) is the byte format of every cell, shard, and
 assembly; [`OBCC_Spec.md`](OBCC_Spec.md) is the catalog manifest that publishes cells and names
-the selectable regions; [`OBCU_Spec.md`](OBCU_Spec.md) is unrelated (firmware updates) and is
-cited only for the fixed-layout header conventions §5.2 follows.
+the selectable regions; [`OBCT_Spec.md`](OBCT_Spec.md) is the terrain raster, a second artifact
+class on **this same grid** (§1) with its own revision track, carried beside a map rather than
+inside one; [`OBCU_Spec.md`](OBCU_Spec.md) is unrelated (firmware updates) and is cited only for
+the fixed-layout header conventions §5.2 follows.
 
 ## Design principles
 

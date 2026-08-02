@@ -25,8 +25,8 @@
 
 use heapless::Vec;
 
-use crate::deadband::DeadBand;
 use crate::reader::{RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
+use obc_elevation::DeadBand;
 use obc_map_scene::ground_dist_m;
 
 // ---------------------------------------------------------------------------------------------

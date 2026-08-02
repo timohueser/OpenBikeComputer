@@ -27,11 +27,11 @@
 use heapless::Vec;
 
 use crate::convert::{EmitStats, ObcrEmitter, RouteStats, WpPlace};
-use crate::deadband::DeadBand;
 use crate::geo::project_to_segment;
 use crate::reader::{
     decode_route_points_between, for_each_waypoint, RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK, MAX_WAYPOINTS,
 };
+use obc_elevation::DeadBand;
 use obc_formats::io::{ByteSink, Error};
 use obc_formats::obcr::NAME_CAP;
 use obc_map_scene::{cos_lat, ground_dist_m, ground_dist_m_cl};

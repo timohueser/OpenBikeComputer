@@ -1257,6 +1257,7 @@ dependencies = [
  "embedded-graphics",
  "heapless 0.8.0",
  "libm",
+ "obc-elevation",
  "obc-formats",
  "obc-map-scene",
  "obc-ports",
@@ -1281,6 +1282,13 @@ name = "obc-display"
 version = "0.1.0"
 dependencies = [
  "embedded-graphics",
+]
+
+[[package]]
+name = "obc-elevation"
+version = "0.1.0"
+dependencies = [
+ "obc-formats",
 ]
 
 [[package]]
@@ -1385,6 +1393,7 @@ version = "0.1.0"
 dependencies = [
  "heapless 0.8.0",
  "libm",
+ "obc-elevation",
  "obc-formats",
  "obc-map-scene",
  "obc-ports",

@@ -14,6 +14,7 @@ alloc = []
 [dependencies]
 heapless = "0.8"
 libm = { version = "0.2", default-features = false } # no arch asm: identical correctly-rounded results, keeps the suite Miri-runnable (the #501 alignment-UB tripwire)
+obc-elevation = { path = "../obc-elevation" } # the shared elevation dead-band + (from EL7) the OBCT sampler
 obc-formats = { path = "../obc-formats" }
 obc-map-scene = { path = "../obc-map-scene" }
 obc-ports = { path = "../obc-ports" }
