@@ -5,9 +5,9 @@ description: OBCM maps and OBCR routes — the binary, table-driven formats a mi
 
 # Data formats
 
-The device reads two kinds of file: an **OBCM** map and an **OBCR** route. Both are binary, and both exist for the same reason — a microcontroller should read them *directly off flash*, with no JSON to parse, no structure to rebuild in RAM, and no heap to churn. A host produces them once; the device just points at the bytes and draws. (A third format, the [catalog manifest](#the-catalog-the-map-builders-source-of-truth), never reaches the device at all — it is how a builder finds verified cells.)
+The device reads three kinds of file: an **OBCM** map, an **OBCR** route, and — beside a map, never inside it — an **OBCT** raster of ground heights. All are binary, and all exist for the same reason — a microcontroller should read them *directly off flash*, with no JSON to parse, no structure to rebuild in RAM, and no heap to churn. A host produces them once; the device just points at the bytes and draws. (A fourth format, the [catalog manifest](#the-catalog-the-map-builders-source-of-truth), never reaches the device at all — it is how a builder finds verified cells.)
 
-This page is the guided tour of what's actually in those files. The exhaustive byte-level tables live in the repo specs — [`OBCM_Spec.md`](src:specs/OBCM_Spec.md) and [`OBCR_Spec.md`](src:specs/OBCR_Spec.md) — so here we focus on *why* the bytes are shaped the way they are. Those root specifications remain the normative contracts; the dependency-free [`obc-formats`](src:firmware/obc-formats) crate is the code authority beneath them for version numbers, fixed record lengths, flags, sentinels, endian primitives, and the shared byte-I/O seam. Parsing, caching, conversion, and file assembly stay in the reader, route, and packer crates.
+This page is the guided tour of what's actually in those files. The exhaustive byte-level tables live in the repo specs — [`OBCM_Spec.md`](src:specs/OBCM_Spec.md), [`OBCR_Spec.md`](src:specs/OBCR_Spec.md) and [`OBCT_Spec.md`](src:specs/OBCT_Spec.md) — so here we focus on *why* the bytes are shaped the way they are. Those root specifications remain the normative contracts; the dependency-free [`obc-formats`](src:firmware/obc-formats) crate is the code authority beneath them for version numbers, fixed record lengths, flags, sentinels, endian primitives, and the shared byte-I/O seam. Parsing, caching, conversion, and file assembly stay in the reader, route, and packer crates.
 
 ## Two binaries, one philosophy
 
@@ -159,7 +159,7 @@ The last table entry (`offsets[chunk_count]`) is the layer's total chunk bytes, 
 The 40-byte header is the one fixed-size, always-present part of the file. Everything else is found through offsets it stores.
 
 <figure class="fig">
-<svg viewBox="0 0 720 170" role="img" aria-label="The 40-byte OBCM header drawn as a byte ruler: bytes 0 to 3 are the magic OBCM, byte 4 is the version (11), bytes 5 to 20 are the global bounding box as four 32-bit integers, bytes 21 to 24 are the style-table offset, byte 25 is the LOD count, bytes 26 to 29 are the LOD-table offset, bytes 30 to 31 are the marker colour, bytes 32 to 35 are the POI-section offset, and bytes 36 to 39 are the navigation-graph offset appended in version 8.">
+<svg viewBox="0 0 720 170" role="img" aria-label="The 40-byte OBCM header drawn as a byte ruler: bytes 0 to 3 are the magic OBCM, byte 4 is the version (12), bytes 5 to 20 are the global bounding box as four 32-bit integers, bytes 21 to 24 are the style-table offset, byte 25 is the LOD count, bytes 26 to 29 are the LOD-table offset, bytes 30 to 31 are the marker colour, bytes 32 to 35 are the POI-section offset, and bytes 36 to 39 are the navigation-graph offset appended in version 8.">
   <text class="d-tag" x="20" y="24">The 40-byte header, byte by byte</text>
 
   <!-- field names -->
@@ -200,7 +200,7 @@ The 40-byte header is the one fixed-size, always-present part of the file. Every
   </g>
   <!-- value + byte ranges -->
   <text class="d-label" x="74" y="93" text-anchor="middle" style="fill:#fff;font-size:11px">OBCM</text>
-  <text class="d-label" x="112" y="93" text-anchor="middle" style="font-size:11px">11</text>
+  <text class="d-label" x="112" y="93" text-anchor="middle" style="font-size:11px">12</text>
   <text class="d-sub" x="74"  y="122" text-anchor="middle" style="font-size:9px">0–3</text>
   <text class="d-sub" x="112" y="122" text-anchor="middle" style="font-size:9px">4</text>
   <text class="d-sub" x="239" y="122" text-anchor="middle" style="font-size:9px">5–20</text>
@@ -967,9 +967,140 @@ One thing the file *doesn't* store is the elevation **profile** the Statistics s
 
 The exhaustive byte tables — every header and point field in both versions — are the normative [BLE interface spec §7.2](src:specs/obc-ble-interface-spec.md); this is the readable tour. The ride object crosses to a phone as [an object on the companion link](../companion-link/#objects-are-files-the-device-already-speaks), where the [Sensors section](../companion-link/#sensors-the-device-as-ble-central) covers how those sensor values were captured in the first place.
 
+## OBCT — the terrain raster
+
+The third file on the card is not a map and not a route: it is a grid of **ground
+heights**, carried beside the map so the router can price a climb, a device-planned
+route can carry real elevations, and the barometer can be told what altitude it is
+actually at. *Why* it is a separate artifact — and what still works when it is absent
+— is the [terrain & elevation](../terrain/) page; this is the tour of its bytes.
+[`OBCT_Spec.md`](src:specs/OBCT_Spec.md) is the normative contract, exactly as
+`OBCM_Spec.md` and `OBCR_Spec.md` are for the other two.
+
+Four ideas stack, each a power of two on the same origin as the
+[cell grid](#cells-and-assemblies), which is what makes every lookup arithmetic
+instead of search.
+
+<figure class="fig">
+<svg viewBox="0 0 720 340" role="img" aria-label="The OBCT format as four nested ideas and a file layout. Top left, the sample lattice: a global microdegree lattice anchored on the grid origin at a posting of 2 to the 9 microdegrees, roughly 57 by 39 metres at 47 degrees north, each sample a signed 16-bit height in whole metres with negative 32768 reserved as NODATA. Next, a tile: 16 by 16 samples, exactly 512 bytes, one SD block, laid out row-major with rows advancing latitude so the first sample is the tile's minimum corner. Next, a terrain cell: 2 to the 19 microdegrees on the grid, 64 by 64 tiles, 1024 squared samples, a 2 mebibyte block, half-open so a boundary sample belongs to exactly one cell. Below, the container: a fixed 32-byte header, then a row-major uint32 offset directory over the cell rectangle where zero means the cell is absent, then the present cell blocks. A note says a published cell is a container whose rectangle is 1 by 1 and a shard is one covering a whole selection, so there is one format and no branch.">
+  <defs>
+    <marker id="aTF" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="22">§1 lattice → §2 tile → §3 cell → §4 container</text>
+
+  <!-- lattice -->
+  <rect class="d-panel-2" x="24" y="40" width="150" height="118" rx="9" />
+  <text class="d-label" x="38" y="60" style="font-size:10.5px">sample lattice</text>
+  <g stroke="#9aa884" stroke-width="0.8">
+    <line x1="42" y1="72" x2="158" y2="72" /><line x1="42" y1="88" x2="158" y2="88" />
+    <line x1="42" y1="104" x2="158" y2="104" /><line x1="42" y1="120" x2="158" y2="120" />
+    <line x1="58" y1="68" x2="58" y2="124" /><line x1="82" y1="68" x2="82" y2="124" />
+    <line x1="106" y1="68" x2="106" y2="124" /><line x1="130" y1="68" x2="130" y2="124" />
+  </g>
+  <circle cx="82" cy="88" r="3" class="d-hot-fill" />
+  <text class="d-sub" x="38" y="137" style="font-size:8.5px">posting 2&#8313; &#181;deg</text>
+  <text class="d-sub" x="38" y="149" style="font-size:8.5px">&#8776; 57 &#215; 39 m &#183; int16 m</text>
+
+  <line class="d-flow" x1="178" y1="92" x2="204" y2="92" marker-end="url(#aTF)" />
+
+  <!-- tile -->
+  <rect class="d-panel" x="208" y="40" width="150" height="118" rx="9" />
+  <text class="d-label" x="222" y="60" style="font-size:10.5px">tile</text>
+  <rect x="238" y="68" width="96" height="56" style="fill:#e7ead8;stroke:#3c6b39;stroke-width:1.2" />
+  <g stroke="#3c6b39" stroke-opacity="0.35" stroke-width="0.7">
+    <line x1="238" y1="82" x2="334" y2="82" /><line x1="238" y1="96" x2="334" y2="96" /><line x1="238" y1="110" x2="334" y2="110" />
+    <line x1="262" y1="68" x2="262" y2="124" /><line x1="286" y1="68" x2="286" y2="124" /><line x1="310" y1="68" x2="310" y2="124" />
+  </g>
+  <circle cx="238" cy="124" r="3.5" class="d-hot-fill" />
+  <text class="d-sub" x="222" y="137" style="font-size:8.5px">16 &#215; 16 = <tspan style="font-weight:700">512 B</tspan></text>
+  <text class="d-sub" x="222" y="149" style="font-size:8.5px">one SD block</text>
+
+  <line class="d-flow" x1="362" y1="92" x2="388" y2="92" marker-end="url(#aTF)" />
+
+  <!-- cell -->
+  <rect class="d-panel" x="392" y="40" width="150" height="118" rx="9" />
+  <text class="d-label" x="406" y="60" style="font-size:10.5px">terrain cell</text>
+  <rect x="422" y="68" width="88" height="56" style="fill:#dfe6e0;stroke:#3c6b39;stroke-width:1.4" />
+  <g stroke="#3c6b39" stroke-opacity="0.28" stroke-width="0.6">
+    <line x1="422" y1="82" x2="510" y2="82" /><line x1="422" y1="96" x2="510" y2="96" /><line x1="422" y1="110" x2="510" y2="110" />
+    <line x1="444" y1="68" x2="444" y2="124" /><line x1="466" y1="68" x2="466" y2="124" /><line x1="488" y1="68" x2="488" y2="124" />
+  </g>
+  <rect x="422" y="68" width="22" height="14" style="fill:#cf6a2a;fill-opacity:0.35;stroke:#cf6a2a;stroke-width:1" />
+  <text class="d-sub" x="406" y="137" style="font-size:8.5px">2&#185;&#8313; &#181;deg &#183; 64&#178; tiles</text>
+  <text class="d-sub" x="406" y="149" style="font-size:8.5px">1024&#178; samples &#183; 2 MiB</text>
+
+  <!-- half-open note -->
+  <rect class="d-panel-2" x="560" y="40" width="136" height="118" rx="9" />
+  <text class="d-tag" x="574" y="60">half-open</text>
+  <text class="d-sub" x="574" y="80" style="font-size:9px">a cell owns its</text>
+  <text class="d-sub" x="574" y="93" style="font-size:9px">minimum edges,</text>
+  <text class="d-sub" x="574" y="106" style="font-size:9px">not its maximum</text>
+  <text class="d-sub" x="574" y="126" style="font-size:8.5px;fill:#a9501c">no sample stored twice</text>
+
+  <!-- container ribbon -->
+  <text class="d-sub" x="24" y="190" style="font-size:9px;fill:#6b7758">the container — one format for a published cell and an assembled shard</text>
+  <g stroke="#20301d" stroke-width="1">
+    <rect x="24" y="200" width="86" height="40" class="d-forest" />
+    <rect x="110" y="200" width="170" height="40" class="d-amber" />
+    <rect x="280" y="200" width="138" height="40" class="d-water" />
+    <rect x="418" y="200" width="138" height="40" class="d-muted" />
+    <rect x="556" y="200" width="140" height="40" class="d-water" />
+  </g>
+  <text class="d-label" x="67" y="219" text-anchor="middle" style="fill:#fff;font-size:10px">header</text>
+  <text class="d-sub" x="67" y="233" text-anchor="middle" style="fill:#fff;font-size:8.5px">32 B</text>
+  <text class="d-label" x="195" y="219" text-anchor="middle" style="font-size:10px">offset directory</text>
+  <text class="d-sub" x="195" y="233" text-anchor="middle" style="font-size:8.5px">rows &#215; cols &#215; u32</text>
+  <text class="d-label" x="349" y="219" text-anchor="middle" style="fill:#fff;font-size:10px">cell block</text>
+  <text class="d-sub" x="349" y="233" text-anchor="middle" style="fill:#dfe6e0;font-size:8.5px">T&#178; &#215; 512 B</text>
+  <text class="d-label" x="487" y="219" text-anchor="middle" style="font-size:10px">cell block</text>
+  <text class="d-label" x="626" y="219" text-anchor="middle" style="fill:#fff;font-size:10px">cell block</text>
+
+  <text class="d-sub" x="24" y="262" style="font-size:9px">slot = (ci &#8722; CellMinI) &#215; CellCols + (cj &#8722; CellMinJ) &#8594; a byte offset, or <tspan style="font-weight:700">0</tspan> = absent</text>
+  <text class="d-sub" x="24" y="278" style="font-size:9px;fill:#a9501c">no bbox field — the cell rectangle <tspan style="font-style:italic">is</tspan> the bounding box</text>
+
+  <rect class="d-panel-2" x="24" y="296" width="672" height="32" rx="8" />
+  <text class="d-sub" x="360" y="316" text-anchor="middle" style="font-size:9.5px">a <tspan style="font-weight:700">cell</tspan> is a 1 &#215; 1 container; a <tspan style="font-weight:700">shard</tspan> covers a selection — one format, no branch</text>
+</svg>
+<figcaption>Every step is a shift. A coordinate's sample index is <code>(µdeg − origin) &gt;&gt; posting_log2</code>; the tile inside a cell is that index <code>&gt;&gt; 4</code>; the sample inside the tile is the low four bits. The <b>offset directory</b> is a dense rectangle rather than a sorted list of ids on purpose: it is O(1) with two subtractions and a multiply, costs four bytes per covered <i>or</i> uncovered square in the box (≈ 2 KB for a DACH-shaped selection, against ≈ 430 MiB of raster), and needs no resident index at all.</figcaption>
+</figure>
+
+A few details a reader notices:
+
+- **Rows advance latitude, and the tile's first sample is its minimum corner** — the
+  opposite of the north-up scanline a GeoTIFF ships. The baker flips once,
+  deliberately; no consumer ever flips anything. It is exactly the kind of convention
+  two implementations would otherwise each guess at, so the spec makes it normative.
+- **Posting and cell size are header fields, not constants.** `Posting Log2` and
+  `Cell Log2` are bytes in the header, so retuning the lattice is a terrain re-bake
+  rather than a format bump — the same "sizes are data, shape is format" idiom the
+  [cell grid](#cells-and-assemblies) uses. The *tile* is not negotiable: 512 bytes is
+  one SD block and one [nav chunk](#the-navigation-graph-a-routable-network), and it
+  is the fetch unit every consumer is budgeted around.
+- **`-32768` is `NODATA`**, not a height. It costs one metre at the bottom of the
+  Mariana Trench and buys a sentinel needing no separate mask plane. If any of the
+  four corners a bilinear query touches is `NODATA`, the *whole* query answers
+  "unknown" — there is no partial interpolation over the survivors.
+- **The header carries a `Flags` byte that must be zero**, and a v1 reader refuses a
+  file with any bit set. That is the reserved escape for a future per-tile packed
+  encoding: it can arrive without a new magic, and it cannot be silently
+  misinterpreted by a reader that predates it.
+- **Validation happens once, at parse.** Magic, version, the lattice bounds, the
+  rectangle sitting inside the world grid, and every directory entry being even, at
+  or after the directory, and wholly inside the file — all checked when the container
+  opens, which is what lets the sampler be free of bounds tests on the hot path.
+
+**The file is called `.obcd` (8.3: `.OBD`), not `.obct`.** The magic is `OBCT` — it
+names the format — but the extension had to move, because the device's recorded
+[track log](#recorded-rides-the-track-log-and-the-ride-object) already claims `.obct`,
+and two unrelated things sharing an extension on one card is a bug waiting for a
+directory scan. Inside a [volume set](#one-map-several-files) the raster is
+`MS<id>.OBD`, which is precisely the sidecar name of the set's own `MS<id>.OBS`
+manifest — so a host resolving terrain by the sidecar convention and one reading the
+manifest role open the same file.
+
 ## Streaming: resident vs on-demand
 
-Both formats are read through one trait. Neither reader touches a filesystem directly — they ask a [`ByteSource`](src:firmware/obc-formats/src/io.rs) for bytes at an offset:
+All three formats are read through one trait. Neither reader touches a filesystem directly — they ask a [`ByteSource`](src:firmware/obc-formats/src/io.rs) for bytes at an offset:
 
 ```rust
 pub trait ByteSource {
@@ -978,7 +1109,7 @@ pub trait ByteSource {
 }
 ```
 
-On the host that's a slice of memory; on the device it's a file on the SD card. The reader holds a `&dyn ByteSource` and stays monomorphic, so the genericity never leaks into the renderer or the screen stack — it's [one of the project's four seams](../architecture/#two-hosts-one-core-and-the-seams-between-them). What changes between the two formats is *how much* they keep resident.
+On the host that's a slice of memory; on the device it's a file on the SD card. The reader holds a `&dyn ByteSource` and stays monomorphic, so the genericity never leaks into the renderer or the screen stack — it's [one of the project's four seams](../architecture/#two-hosts-one-core-and-the-seams-between-them). What changes between the formats is *how much* they keep resident.
 
 <figure class="fig">
 <svg viewBox="0 0 720 270" role="img" aria-label="A large map file on the SD card, much bigger than RAM. When the file opens, only the small header, style table and LOD table are read resident; the quadtree index and geometry chunks are pulled on demand through small caches. A note contrasts the route, which keeps its whole small index resident and streams only geometry.">
@@ -1017,6 +1148,16 @@ On the host that's a slice of memory; on the device it's a file on the SD card. 
 </svg>
 <figcaption>A map never has to fit in RAM — the device has 512 KB and no external memory to hold the whole file. Even the quadtree index streams, through a small block cache that coalesces the 4-byte node reads; geometry chunks stream through a slot cache too, and the renderer touches each visible chunk at most twice a frame (once to pick features, once to draw the survivors) so the SD reads stay bounded. The route's index is a short flat list, so it's read whole at open; its geometry streams chunk-by-chunk through a small resident cache of its own, so a redraw of the same route re-reads nothing either.</figcaption>
 </figure>
+
+The terrain raster is the extreme case of the same instinct: **nothing but its
+32-byte header is resident.** There is no index to hold — a cell's position is
+arithmetic on the query coordinate plus one `uint32` read from the offset directory,
+memoized so a query's four corners cost one directory read between them — and the
+tiles themselves stream through a **four-slot, 512-byte cache** of about 2 KB. Four
+slots, not two or eight, because a single bilinear query can straddle a tile corner
+and touch exactly four tiles: fewer would thrash on the one access pattern the
+sampler is guaranteed to make. A 430 MiB raster therefore costs under 4 KB of RAM to
+read, which is what makes it affordable to sample inside the route-emit loop at all.
 
 The map's caches matter because the [stub-select collector](../rendering/#4-decode-by-priority) walks the same visible chunks twice per frame — once in pass A to pick the surviving features, once in pass B to re-decode the winners; without a cache, pass B would re-read every winner chunk off the SD. With it, pass B's winner chunks are already resident, and a slow pan re-hits last frame's chunks. The cache changes *when* a byte is read, never *what* decodes — so a render stays byte-identical whether the whole file was resident or streamed one chunk at a time.
 
@@ -1242,6 +1383,28 @@ So a logical map is a **volume set**: a tiny fixed-layout manifest plus 1..N ord
 - **A small map is a set of one**, which is nearly every selection: a country is under a gigabyte, a 300 km corridor around a trip's routes projects to about a quarter of one.
 - **One terrain shard**, when the selection has elevation, carries the whole map's raster — a single [OBCT](src:specs/OBCT_Spec.md) container rather than an OBCM file, so the manifest's fourth role is the one that names something a map reader never opens. It spans the whole assembly, and it is always its own file: at DACH scale it is ≈ 430 MiB against the same 4 GiB ceiling, an order of magnitude of headroom, so splitting it would buy a file-count problem in exchange for nothing.
 
+The manifest itself is 72 bytes plus one 56-byte record per file, and terrain's
+arrival moved its version byte to **`0x02`** — a hard cut, because a v1 reader shown a
+v2 manifest would reject the unknown role and refuse the whole set anyway; the version
+byte at least says *why*. The terrain record is an ordinary shard record — role, bbox,
+byte count, SHA-256 — with three rules stacked on top, and each one exists to stop
+something specific:
+
+- **At most one, and it is the last record.** Readers take the leading records as the
+  OBCM shards and a record's *index* as the `S<kk>` in its derived filename, so a
+  raster anywhere else would renumber every shard after it. Keeping it last is what
+  lets every existing mount, dispatch and transfer path stay exactly as it was — none
+  of them needs a role filter, and none of them can hand a raster to an OBCM parser.
+- **Its bbox is the whole assembly**, like the core's. It takes no part in the
+  geometry/coarse tiling proof, because it is not tiling anything.
+- **Its name carries no shard index** — `MS<id>.OBD`, not `MS<id>S00.OBD` — since an
+  index that is always `00` is a second thing to keep in step with the manifest for
+  no gain. What the role adds over the sidecar convention is the two things a filename
+  cannot state: that the set *claims* a raster, and how many bytes of one. That is
+  the failure it exists to close — `MS<id>.OBD` may well be sitting on a card as the
+  leftover of a set this one replaced, and a rider getting a profile from the map they
+  deleted is exactly the quiet wrongness the manifest is for.
+
 Assembling terrain is the shortest step of the whole pipeline, and it is worth saying why: it is *placement*, not grafting. A published terrain cell is already in its final form, and the sample lattice is global and half-open, so two neighbouring cells agree about every sample without anyone looking. There is no index to relocate, no seam to unify, and nothing to decode — the assembler writes one directory over the assembly rectangle and copies each cell's block into the slot its id names. Squares the selection covers but the catalog publishes no object for — canonically void ocean, or ground outside the dataset — are a zero in that directory, which reads exactly like a block of "no data": four bytes instead of two megabytes. A set with no raster at all is not a degraded map; it is the map every selection produced before terrain existed, with flat profiles and zero baked ascent.
 
 Mounting preserves that one-map illusion all the way through the UI. The runtime opens every shard
@@ -1300,6 +1463,7 @@ The grid, theorem, seam rules, assembly contract, volume-set manifest bytes, and
 - The byte-level specs: [`OBCM_Spec.md`](src:specs/OBCM_Spec.md) · [`OBCR_Spec.md`](src:specs/OBCR_Spec.md) · [`obc-ble-interface-spec.md`](src:specs/obc-ble-interface-spec.md) (the wire contract routes/rides cross to the companion app)
 - The catalog manifest — spec [`OBCC_Spec.md`](src:specs/OBCC_Spec.md), generator [`obc-pack/src/catalog.rs`](src:host/obc-pack/src/catalog.rs), JSON Schema [`catalog.schema.json`](src:host/obc-pack/schema/catalog.schema.json)
 - The terrain artifact class — spec [`OBCT_Spec.md`](src:specs/OBCT_Spec.md) and `OBCC_Spec.md` §13, rasteriser [`obc-dem`](src:host/obc-dem), bakery stage [`obc-bake/src/terrain.rs`](src:host/obc-bake/src/terrain.rs)
+- The OBCT reader, the normative sampler, the tile cache and the `ElevationSource` seam: [`obc-elevation`](src:firmware/obc-elevation); its layout arithmetic and sentinels: [`obc-formats/src/obct.rs`](src:firmware/obc-formats/src/obct.rs); the assembler's placement + verify pass: [`obcm-assemble/src/terrain.rs`](src:host/obcm-assemble/src/terrain.rs)
 - The cell catalog the section above describes — producer [`catalog.rs`](src:host/obc-pack/src/catalog.rs), region-outline reduction [`catalog/boundary.rs`](src:host/obc-pack/src/catalog/boundary.rs), and JSON Schema [`catalog.schema.json`](src:host/obc-pack/schema/catalog.schema.json)
 - The cell grid, the assembly contract, and the volume-set manifest: [`OBCA_Spec.md`](src:specs/OBCA_Spec.md); the byte-density measurement its band sizes come from: [`cell_size_survey.rs`](src:host/obc-pack/examples/cell_size_survey.rs)
 - The cell cutter — the grid arithmetic, cell ids and band table in [`obc-pack/src/grid.rs`](src:host/obc-pack/src/grid.rs), the cut itself (clip at the edge, the deterministic boundary junctions, interior-only pruning, provenance) in [`obc-pack/src/cut.rs`](src:host/obc-pack/src/cut.rs)
@@ -1308,4 +1472,4 @@ The grid, theorem, seam rules, assembly contract, volume-set manifest bytes, and
 - The bakery that fills the tree and publishes it — curated region list [`regions.toml`](src:host/obc-bake/regions.toml), scoped cell runner [`obc-bake/src/cells.rs`](src:host/obc-bake/src/cells.rs), hierarchical planet runner [`obc-bake/src/planet.rs`](src:host/obc-bake/src/planet.rs), read-it-back gate [`obc-bake/src/verify.rs`](src:host/obc-bake/src/verify.rs), and ordered publish [`obc-bake/src/publish.rs`](src:host/obc-bake/src/publish.rs)
 - The bakery's **cell** path — region → cell sets and the co-baked source-set rule in [`obc-bake/src/cells.rs`](src:host/obc-bake/src/cells.rs), the `.poly` coverage geometry that decides both the selection and `partial` in [`obc-bake/src/coverage.rs`](src:host/obc-bake/src/coverage.rs), the lockstep guard in [`obc-bake/src/guard.rs`](src:host/obc-bake/src/guard.rs)
 
-Maps are produced by the packer and routes by the GPX converter — how those work, and how a route is matched to the map you're riding, is the subject of [packer & routing](../packer-routing/). For how these bytes become pixels, see the [rendering pipeline](../rendering/). Routes and rides also cross to a phone over Bluetooth as *these same bytes* — how that link is shaped is [the companion link](../companion-link/).
+Maps are produced by the packer and routes by the GPX converter — how those work, and how a route is matched to the map you're riding, is the subject of [packer & routing](../packer-routing/). Where the raster beside the map comes from, and what breaks when it isn't there, is [terrain & elevation](../terrain/). For how these bytes become pixels, see the [rendering pipeline](../rendering/). Routes and rides also cross to a phone over Bluetooth as *these same bytes* — how that link is shaped is [the companion link](../companion-link/).
