@@ -363,6 +363,7 @@ impl Render<'_> {
             next_waypoint: self.activity.next_waypoint,
             now: self.now,
             now_ms: self.now_ms,
+            bike_profile_idx: self.settings.bike_profile_idx,
             language: self.settings.language,
             next_ahead: self.next_ahead,
         }
@@ -1693,6 +1694,7 @@ mod tests {
             next_waypoint: next,
             now: DateTime::default(),
             now_ms: 0,
+            bike_profile_idx: 0,
             language: crate::settings::Language::En,
             next_ahead: EMPTY_CACHE,
         }

@@ -249,10 +249,13 @@ fn scoped_corridor(corridor: &[CorridorPoi], source: UpAheadSource, route_loaded
 }
 
 /// Pure route-relative figures for one row. The distance axis is the entry's `dist_along_m` against
-/// matched activity progress. Remaining ascent uses the cached profile's cumulative-ascent curve at
-/// those same two fractions — not entry elevation (which may be absent or off the line), and not
-/// coarse chunk metadata. Identical math for both sources: a corridor POI *is* a point on the route
-/// axis, so the waypoint arithmetic applies unchanged.
+/// matched activity progress. Remaining ascent is the cached profile's own
+/// [`ascent_between_m`](obc_route::Profile::ascent_between_m) over those two along-route distances —
+/// not entry elevation (which may be absent or off the line), and not coarse chunk metadata. That
+/// is the shared climb-between-two-points lookup the `TO CLIMB` tile and the ETA model read too
+/// (elevation epic #1068, EL9), so no two readouts can disagree about the same stretch of route.
+/// Identical math for both sources: a corridor POI *is* a point on the route axis, so the waypoint
+/// arithmetic applies unchanged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Figures {
     pub passed: bool,
@@ -263,10 +266,8 @@ pub(crate) struct Figures {
 pub(crate) fn figures(dist_along_m: u32, progress_m: u32, route_total_m: u32, profile: Option<&Profile>) -> Figures {
     let passed = progress_m > dist_along_m;
     let distance_m = dist_along_m.saturating_sub(progress_m);
-    let climb_m = profile.filter(|_| route_total_m > 0).map(|p| {
-        let frac = |m: u32| (m.min(route_total_m) as f32 / route_total_m as f32).clamp(0.0, 1.0);
-        p.ascent_to(frac(dist_along_m)).saturating_sub(p.ascent_to(frac(progress_m)))
-    });
+    let climb_m =
+        profile.filter(|_| route_total_m > 0).map(|p| p.ascent_between_m(progress_m, dist_along_m, route_total_m));
     Figures { passed, distance_m, climb_m }
 }
 

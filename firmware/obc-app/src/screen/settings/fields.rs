@@ -267,6 +267,8 @@ fn draw_trash(cv: &mut impl Surface, cx: i32, cy: i32, color: u16) {
 /// | Grade         | `4%`                    |
 /// | Elevation     | `1240`                  |
 /// | RideTime      | `2:14:30`               |
+/// | TimeToGo      | `1:05`                  |
+/// | Eta           | `15:37`                 |
 /// | Clock         | `14:32`                 |
 /// | NextWaypoint  | `Pass Summit` + `8.7km` |
 /// | WaypointList  | (drawn by [`waypoint_panel_ghost`](crate::screen::waypoint_panel_ghost)) |
@@ -316,6 +318,10 @@ fn ghost_value(
         F::Grade => "4%",
         F::Elevation => "1240",
         F::RideTime => "2:14:30",
+        // The EL9 pair (#1077) is one estimate shown two ways, so the samples agree: 1 h 05 left
+        // from the 14:32 the Clock ghost shows lands at 15:37.
+        F::TimeToGo => "1:05",
+        F::Eta => "15:37",
         F::Clock => "14:32",
         F::NextWaypoint => {
             // The wide waypoint tile is a name caption + a right-aligned distance value.
@@ -491,6 +497,7 @@ mod tests {
             next_waypoint: None,
             now: crate::settings::DateTime::default(),
             now_ms: 0,
+            bike_profile_idx: 0,
             language: Language::De,
             next_ahead: &cache,
         };
