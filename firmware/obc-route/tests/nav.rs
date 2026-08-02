@@ -1514,6 +1514,10 @@ fn a_coverage_hole_carries_the_last_height_forward() {
 /// The end-to-end article, on the committed fixtures: the Grimsel map's nav graph planned through
 /// the Grimsel **terrain sidecar** (EL2's `grimsel.obcd`, the same file the simulator mounts).
 /// Nothing synthetic — this is the number a rider would see on the Route overview.
+// Reads the committed fixtures from disk, which Miri's default isolation forbids — skip it there,
+// like `road_vs_mtb_diverge_over_grimsel`. (Missed when EL7 landed; the module's standing
+// `cargo +nightly miri test -p obc-route --test nav` aborted on it.)
+#[cfg_attr(miri, ignore)]
 #[test]
 fn a_real_grimsel_plan_carries_the_pass_road_profile() {
     let map = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../apps/obc-sim/assets/grimsel.obcm"))
@@ -1560,6 +1564,7 @@ fn a_real_grimsel_plan_carries_the_pass_road_profile() {
 /// policy — the format has no "unknown"), so its export re-imports with a step the converter's
 /// dead-band books. Inside coverage — every route on a map whose terrain was baked for it — the
 /// two integrations agree.
+#[cfg_attr(miri, ignore)] // reads the committed fixtures from disk — see the note above
 #[test]
 fn a_planned_route_exported_to_gpx_and_reimported_keeps_its_climb() {
     let map = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../apps/obc-sim/assets/grimsel.obcm"))
@@ -1677,4 +1682,317 @@ fn a_source_that_never_resolves_leaves_the_stats_zeroed() {
     assert_eq!((route.min_ele_m, route.max_ele_m), (0, 0));
     assert_eq!((route.total_ascent_m, route.total_descent_m), (0, 0));
     assert_eq!(obcr, null_obcr, "an always-None source emits exactly the null source's bytes");
+}
+
+// --- EL6: climb-aware A* relaxation (epic #1068, #1074) ------------------------------------------
+//
+// The relaxation now costs an edge `(cost_m × effective) >> 4 + ascent_m × climb_weight` (§8.6).
+// `ascent_m` is baked by the packer from an `ElevationSource` at serialize time, so these fixtures
+// hand `serialize_lods` a synthetic terrain and then route over the resulting **real v12 bytes** —
+// the same writer→reader loop the rest of this file uses. Nothing below mounts terrain at *emit*
+// (every plan runs through `NullElevation`), which keeps the emitted OBCR comparable to the
+// pre-terrain pins: what is under test here is the search, not the fill.
+
+/// [`map_with_profiles`] over a caller-supplied terrain — the v12 ascent path. Without this the
+/// packer bakes `Ascent M = 0` everywhere and the climb term is unreachable from a test.
+fn map_with_terrain(
+    graph: &NavGraph,
+    profiles: &[NavProfile],
+    terrain: &mut dyn obc_route::ElevationSource,
+) -> Vec<u8> {
+    let lods =
+        vec![LodLayer { max_mpp: None, chunk_size: 2048, root: GeomNode::Leaf { bbox: GLOBAL, features: vec![] } }];
+    let (bin, dropped) = serialize_lods(&lods, &[], 0xF800, GLOBAL, &[], graph, profiles, terrain);
+    assert_eq!(dropped, 0);
+    bin
+}
+
+/// A neutral-multiplier profile carrying nothing but a climb weight — so a test that moves `w` moves
+/// **only** the climb term and every other input to the cost stays where the other fixtures put it.
+fn climb_profile(name: &str, climb_weight: u8) -> NavProfile {
+    NavProfile { name: name.into(), highway: [16; 32], surface: [16; 8], climb_weight }
+}
+
+/// A north-facing hillside: the ground rises 1 m per 25 µdeg of latitude above the fixture grid's
+/// base row and is dead flat at or below it. One variable (latitude), so every ascent below is
+/// arithmetic: a leg from row 0 to row 1 climbs `SP / 25 = 400 m`, and the same leg southbound
+/// climbs nothing at all.
+struct Hillside;
+
+/// The climb, in metres, of one grid row of the [`Hillside`] — `SP / 25`.
+const ROW_CLIMB_M: u32 = 400;
+
+impl obc_route::ElevationSource for Hillside {
+    fn sample(&mut self, lat_udeg: i32, _lon_udeg: i32) -> Option<i16> {
+        Some(((lat_udeg - BASE.1).max(0) / 25) as i16)
+    }
+}
+
+/// A conical knoll centred on the 3×3 grid's middle node: 600 m at the summit, falling 1 m per
+/// 20 µdeg of Chebyshev distance and flat at the grid's rim. Unlike [`Hillside`] it makes the grid's
+/// monotone corner-to-corner paths differ *in climb while tying in distance* — over the top costs
+/// 500 m, around the rim costs nothing — which is what the Dijkstra ground truth needs to bite on.
+struct Knoll;
+
+/// The knoll's summit height, m.
+const SUMMIT_M: i32 = 600;
+
+impl obc_route::ElevationSource for Knoll {
+    fn sample(&mut self, lat_udeg: i32, lon_udeg: i32) -> Option<i16> {
+        let summit = at(1, 1);
+        let d = (lon_udeg - summit.0).abs().max((lat_udeg - summit.1).abs());
+        Some((SUMMIT_M - d / 20).max(0) as i16)
+    }
+}
+
+/// The pass-vs-valley fixture, the product behaviour in four nodes: A and B a grid row apart on the
+/// flat, joined either **north over a pass** (two short legs through the apex, which the
+/// [`Hillside`] puts [`ROW_CLIMB_M`] above them) or **south through a valley** (two long legs that
+/// never leave the flat). Every leg is longer than its own straight line, so the great-circle
+/// heuristic stays admissible whatever the profile.
+///
+/// The arithmetic, once, so every assertion below is a reading of it: the pass corridor costs
+/// `2 × PASS_LEG + ROW_CLIMB_M × w` and the valley `2 × VALLEY_LEG`, so they cross at
+/// `w = 2 × (VALLEY_LEG − PASS_LEG) / ROW_CLIMB_M = 5` exactly. Only the *uphill* leg books ascent —
+/// the descent off the far side books none, which is the §8.6 asymmetry made visible.
+///
+/// **Why the legs are kilometres and the nodes are hundreds of metres apart.** The search is
+/// *weighted* A\*, so a frontier node carries `ε·h` of inflation the goal (at `h = 0`) does not, and
+/// on a fixture whose legs were comparable to `ε·h` the ε rung — not the cost model — would decide
+/// the tie. Making each leg longer than `0.3 × h(pass → B)` puts the corridor choice back where
+/// these tests mean to read it: `A*` settles the pass before the goal pops whenever the pass is
+/// genuinely cheaper, so its answer here is the true climb-aware optimum, not a bounded
+/// approximation of one. (The bound itself is exercised, deliberately, in
+/// `the_climb_aware_optimum_matches_a_directional_dijkstra`.)
+fn pass_vs_valley() -> NavGraph {
+    let (a, b) = (at(0, 0), at(0, 2));
+    let (pass, valley) = (at(1, 1), at(-1, 1));
+    NavGraph {
+        nodes: vec![
+            Node { id: 0, coord: a },
+            Node { id: 1, coord: pass },
+            Node { id: 2, coord: valley },
+            Node { id: 3, coord: b },
+        ],
+        edges: vec![
+            Edge { a: 0, b: 1, polyline: vec![a, pass], length_m: PASS_LEG, kind: 0 },
+            Edge { a: 1, b: 3, polyline: vec![pass, b], length_m: PASS_LEG, kind: 0 },
+            Edge { a: 0, b: 2, polyline: vec![a, valley], length_m: VALLEY_LEG, kind: 0 },
+            Edge { a: 2, b: 3, polyline: vec![valley, b], length_m: VALLEY_LEG, kind: 0 },
+        ],
+    }
+}
+
+/// One leg of the pass corridor, m — comfortably above both its own ~1 574 m straight line and the
+/// ~472 m of `ε·h` inflation the frontier carries (see [`pass_vs_valley`]).
+const PASS_LEG: u32 = 3_000;
+/// One leg of the valley corridor, m. `2 × 4 000 = 8 000` is 2 000 m of ground more than the pass —
+/// which the climb term matches at exactly `w = 5`.
+const VALLEY_LEG: u32 = 4_000;
+
+/// Plan A→B over a [`pass_vs_valley`] map and report `(raw distance, took the pass?)`.
+fn plan_corridor(bytes: &[u8]) -> (u32, bool) {
+    let (a, b) = (at(0, 0), at(0, 2));
+    let (res, obcr, _) = plan_p(bytes, (a.0 + 30, a.1), (b.0 - 30, b.1), "Corridor", 0);
+    let route = res.expect("both corridors are legal — one of them must plan");
+    let over_the_pass = route_points(&obcr).iter().any(|p| (p.lon, p.lat) == at(1, 1));
+    (route.total_distance_m, over_the_pass)
+}
+
+/// **The steering test** — the product behaviour EL6 exists for, pinned. Same map, same endpoints,
+/// same everything except the profile's climb weight: a climb-blind router takes the short steep
+/// pass (it is 1 600 m of ground cheaper) and a road-weighted one takes the long flat valley. This
+/// is the grimsel A/B in miniature, and it is deterministic.
+#[test]
+fn the_climb_weight_steers_from_the_pass_to_the_valley() {
+    let graph = pass_vs_valley();
+
+    // Non-vacuity first: the packer really did bake the climb the assertions below spend. The
+    // uphill direction books a row of the hillside; the downhill one books nothing.
+    let (up, down) = obc_pack::nav::integrate_edge_ascent(&[at(0, 0), at(1, 1)], &mut Hillside);
+    assert!(
+        (up as i64 - ROW_CLIMB_M as i64).abs() <= 4,
+        "the pass leg should bake ≈ {ROW_CLIMB_M} m of ascent, baked {up}"
+    );
+    assert_eq!(down, 0, "and nothing at all coming back down — ascent is directional (§8.3)");
+
+    let blind = map_with_terrain(&graph, &[climb_profile("Blind", 0)], &mut Hillside);
+    assert_eq!(plan_corridor(&blind), (2 * PASS_LEG, true), "climb-blind, the pass is simply the shorter way");
+
+    let road = map_with_terrain(&graph, &[climb_profile("Road", 10)], &mut Hillside);
+    assert_eq!(plan_corridor(&road), (2 * VALLEY_LEG, false), "at the stock Road weight the climb outprices 2 km");
+}
+
+/// The crossover sits **exactly** where the §8.6 arithmetic puts it, not merely somewhere sensible:
+/// the corridors tie at `w = 5` (`400 × 5 = 2 000` = the valley's extra ground), so `w = 4` still
+/// takes the pass and `w = 6` already takes the valley. A cost model that folded the climb term
+/// inside the `>> 4`, or scaled it by the way-kind multiplier, or charged both directions of the
+/// edge, would miss this by a rung.
+#[test]
+fn the_climb_crossover_lands_where_the_formula_says() {
+    let graph = pass_vs_valley();
+    let below = map_with_terrain(&graph, &[climb_profile("w4", 4)], &mut Hillside);
+    let above = map_with_terrain(&graph, &[climb_profile("w6", 6)], &mut Hillside);
+    assert_eq!(plan_corridor(&below), (2 * PASS_LEG, true), "4 × 400 = 1 600 < 2 000 ⇒ the pass still wins");
+    assert_eq!(plan_corridor(&above), (2 * VALLEY_LEG, false), "6 × 400 = 2 400 > 2 000 ⇒ the valley wins");
+}
+
+/// **The null-path pin (EL6, non-negotiable).** A map baked *with* terrain — every §8.3 `Ascent M`
+/// a real number — routed under a `climb_weight = 0` profile must emit the bytes `develop`'s
+/// pre-elevation router emitted. The digest is [`NULL_PATH_DIGEST`], the very constant EL7 took from
+/// `develop` at the commit before the epic touched this crate, so the two zeroes the spec calls
+/// legal (`Ascent M = 0` on a terrain-free map, `Climb Weight = 0` on a climb-blind profile) are
+/// *proved* to reproduce v11 costing rather than assumed to.
+#[test]
+fn climb_weight_zero_over_real_ascents_is_the_pre_elevation_router() {
+    let graph = grid3(false);
+    let flat = map_with(&graph);
+    let hilly = map_with_terrain(&graph, &[neutral_profile()], &mut Hillside);
+
+    // The fixture is not vacuous: the two maps differ (the ascent field is populated) and a grid
+    // column really does climb a row of the hillside.
+    assert_ne!(flat, hilly, "the terrain-baked map must differ on the wire, or this pins nothing");
+    let (up, _) = obc_pack::nav::integrate_edge_ascent(&[at(0, 0), at(0, 500), at(1, 0)], &mut Hillside);
+    assert!(up >= ROW_CLIMB_M as u16 - 4, "a grid column climbs a row of the hillside, baked {up} m");
+
+    let (route, obcr) = plan_with_elevation(&hilly, &mut NullElevation);
+    assert_eq!(digest(&obcr), NULL_PATH_DIGEST, "a climb-blind plan over baked ascents must not move a byte");
+    assert_eq!(route.total_distance_m, 4 * EDGE_COST);
+    let (_, flat_obcr) = plan_with_elevation(&flat, &mut NullElevation);
+    assert_eq!(obcr, flat_obcr, "…and is the same route the terrain-free map plans");
+}
+
+/// **The committed-fixture pin.** `apps/obc-sim/assets/grimsel.obcm` is packed *without* `--terrain`
+/// (`assets/repack.sh` passes no such flag), so every `Ascent M` on it is `0` and the climb term
+/// vanishes whatever the profile's weight — even though the shipped table carries the stock
+/// Road 10 / Gravel 8 / MTB 6 / Touring 8. All four profiles' routes are therefore byte-frozen at
+/// the digests `develop` produced before EL6; if one moves, the "no terrain ⇒ no change" claim (and
+/// with it every committed UI snapshot) is broken.
+#[cfg_attr(miri, ignore)] // reads the 6.5 MB fixture from disk — Miri's isolation forbids it
+#[test]
+fn the_terrain_free_grimsel_fixture_routes_byte_identically_on_every_profile() {
+    let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../apps/obc-sim/assets/grimsel.obcm"))
+        .expect("grimsel.obcm fixture present");
+    let (from, to) = ((8_169_610, 46_694_536), (8_217_309, 46_706_261));
+    for (idx, want) in GRIMSEL_PRE_EL6_DIGESTS.iter().enumerate() {
+        let (res, obcr, _) = plan_p(&bytes, from, to, "Grimsel", idx as u8);
+        res.unwrap_or_else(|e| panic!("profile {idx} plans on grimsel, got {e:?}"));
+        assert_eq!(digest(&obcr), *want, "profile {idx}'s route on the terrain-free fixture moved");
+    }
+}
+
+/// FNV-1a of each stock profile's Innertkirchen→Grimsel route on the committed fixture, captured on
+/// `develop` at 16de566c (EL7's merge, the commit this branch forked from) and unchanged by EL6.
+const GRIMSEL_PRE_EL6_DIGESTS: [u64; 4] =
+    [0xd6e8_1a83_6000_7fb9, 0xb605_bfd0_f318_e1b3, 0xfa4b_d3c0_6c4c_1e92, 0x407d_5d79_4678_0248];
+
+/// **Admissibility in practice, not just in prose**: over a graph whose paths genuinely differ in
+/// climb (the [`Knoll`] — over the top costs 500 m, around the rim costs nothing, and every path
+/// ties on distance), weighted A\*'s answer is the *exact* optimum a plain Dijkstra over the same
+/// climb-aware, **directional** edge costs finds. The ε bound would allow 1.3× of it; the point of
+/// asserting equality is that an inadmissible `h` would show up here as a cheaper reference than the
+/// search could reach, long before it ever showed up as a 1.3.
+#[test]
+fn the_climb_aware_optimum_matches_a_directional_dijkstra() {
+    let graph = grid3(false);
+    let prof = climb_profile("Climby", 10);
+    let bytes = map_with_terrain(&graph, std::slice::from_ref(&prof), &mut Knoll);
+
+    // Reference: Dijkstra over the fixture graph with the SAME per-direction costs — the packer's
+    // own `integrate_edge_ascent` supplies each direction's ascent, so the ground truth is computed
+    // from the same integrator that wrote the bytes rather than from a re-derivation of it.
+    let n = graph.nodes.len();
+    let mut adj = vec![Vec::<(usize, u32)>::new(); n];
+    for e in &graph.edges {
+        let (fwd, back) = obc_pack::nav::integrate_edge_ascent(&e.polyline, &mut Knoll);
+        let base = weighted(e.length_m, e.kind, &prof);
+        let charge = |asc: u16| base + asc as u32 * prof.climb_weight as u32;
+        adj[e.a as usize].push((e.b as usize, charge(fwd)));
+        adj[e.b as usize].push((e.a as usize, charge(back)));
+    }
+    assert!(
+        adj.iter().flatten().any(|&(_, w)| w > weighted(EDGE_COST, 0, &prof)),
+        "the knoll must make some edge cost more than its ground length, or this test is vacuous"
+    );
+    let mut dist = vec![u32::MAX; n];
+    let mut done = vec![false; n];
+    dist[0] = 0;
+    for _ in 0..n {
+        let Some(u) = (0..n).filter(|&i| !done[i] && dist[i] != u32::MAX).min_by_key(|&i| dist[i]) else { break };
+        done[u] = true;
+        for &(v, w) in &adj[u] {
+            dist[v] = dist[v].min(dist[u].saturating_add(w));
+        }
+    }
+    let reference = dist[8];
+    assert!(reference > 0 && reference != u32::MAX, "the reference is a real finite cost");
+
+    // The found path, re-costed through the same directional table.
+    let (c0, c8) = (at(0, 0), at(2, 2));
+    let (res, obcr, _) = plan_p(&bytes, (c0.0 + 100, c0.1 - 100), (c8.0 - 100, c8.1 + 100), "Knoll", 0);
+    res.expect("the knoll grid plans");
+    let mut seq: Vec<usize> = Vec::new();
+    for pt in route_points(&obcr) {
+        if let Some(node) = graph.nodes.iter().find(|nd| nd.coord == (pt.lon, pt.lat)) {
+            if seq.last() != Some(&(node.id as usize)) {
+                seq.push(node.id as usize);
+            }
+        }
+    }
+    let found: u32 = seq
+        .windows(2)
+        .map(|w| adj[w[0]].iter().find(|&&(v, _)| v == w[1]).expect("consecutive nodes share an edge").1)
+        .sum();
+
+    assert_eq!(found, reference, "weighted A* did not find the climb-aware optimum ({found} vs {reference})");
+    assert!(found <= reference * 13 / 10, "…and it is inside the ε = 1.3 bound by construction");
+}
+
+/// **Distance honesty under a dominant climb term** (N3's rule, re-pinned where EL6 could break it):
+/// a single hillside leg weighted at `w = 100` accumulates a `g` of `1 600 + 400 × 100 = 41 600`,
+/// twenty-six times its ground length — and the header still reports the ground length. Nothing on a
+/// display path reads `g`; `emit_hop` sums each hop's raw `length_m` and the climb term never enters
+/// that sum.
+#[test]
+fn the_displayed_distance_ignores_the_climb_term_entirely() {
+    let (a, pass) = (at(0, 0), at(1, 1));
+    let graph = NavGraph {
+        nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: pass }],
+        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, pass], length_m: PASS_LEG, kind: 0 }],
+    };
+    let bytes = map_with_terrain(&graph, &[climb_profile("Heavy", 100)], &mut Hillside);
+    let (res, _, _) = plan_p(&bytes, (a.0 + 30, a.1), (pass.0 - 30, pass.1), "Uphill", 0);
+    let route = res.expect("a single uphill edge plans");
+    assert_eq!(route.total_distance_m, PASS_LEG, "the header total is the raw ground length");
+    assert!(route.total_distance_m < ROW_CLIMB_M * 100, "…and emphatically not the weighted g");
+}
+
+/// **The saturation edge.** At `w = 255` the pass leg's climb term alone is `400 × 255 = 102 000` —
+/// past `u16::MAX`, so the frontier's 16-bit `g` clamps. The documented consequence is that a
+/// saturated node is *maximally unattractive*, never wrapped and never mis-ordered: the plan must
+/// still complete, still take the flat valley, and still report its honest raw distance. (The
+/// arithmetic's own extremes — every input at its wire maximum — are unit-pinned next to
+/// `ProfileMult::edge_cost` in `src/nav.rs`.)
+#[test]
+fn a_saturating_climb_weight_clamps_instead_of_wrapping() {
+    assert!(ROW_CLIMB_M * 255 > u16::MAX as u32, "the fixture must actually reach saturation");
+    let bytes = map_with_terrain(&pass_vs_valley(), &[climb_profile("Absurd", 255)], &mut Hillside);
+    assert_eq!(plan_corridor(&bytes), (2 * VALLEY_LEG, false), "a saturated pass is unattractive, not cheap");
+}
+
+/// The other half of the saturation story: when **every** route saturates there is no ordering left
+/// to exploit, and the contract is only that the search degrades — it must still terminate and still
+/// return a real route, never panic and never wrap into a bogus shortcut. The knoll grid at `w = 255`
+/// saturates on the first climbing edge out of the start.
+#[test]
+fn a_wholly_saturated_frontier_still_returns_a_route() {
+    let graph = grid3(false);
+    let bytes = map_with_terrain(&graph, &[climb_profile("Absurd", 255)], &mut Knoll);
+    let (c0, c8) = (at(0, 0), at(2, 2));
+    let (res, obcr, _) = plan_p(&bytes, (c0.0 + 100, c0.1), (c8.0 - 100, c8.1), "Saturated", 0);
+    let route = res.expect("a saturated frontier still drains to the goal");
+    assert!(route.total_distance_m >= 4 * EDGE_COST, "a real path, not a wrapped shortcut");
+    let pts = route_points(&obcr);
+    assert_eq!((pts[0].lon, pts[0].lat), c0);
+    assert_eq!((pts[pts.len() - 1].lon, pts[pts.len() - 1].lat), c8);
 }
