@@ -250,11 +250,33 @@ pub fn pack_style_table(styles: &[StyleRecord]) -> Vec<u8> {
     out
 }
 
+/// The set's terrain shard as the manifest records it (§5.2's `terrain` role) — everything the
+/// record needs and nothing about how it was built.
+#[derive(Clone, Copy, Debug)]
+pub struct TerrainRecord {
+    pub bytes: u64,
+    pub sha256: [u8; 32],
+}
+
 /// The OBCS set manifest (§5.2): `72 + 56 × Shard Count` bytes, fixed-layout and little-endian, so a
 /// device parses it with no allocation.
-pub fn manifest(shards: &[ShardPlan], assembly: AlignedBox, schema_revision: u32, name: &str) -> Result<Vec<u8>> {
-    if shards.is_empty() || shards.len() > MAX_SHARDS {
-        return Err(Error::Capacity(format!("a set holds 1..={MAX_SHARDS} shards, not {}", shards.len())));
+///
+/// `terrain` is the optional `Role == 3` record, and it is written **last** — the invariant that
+/// lets every reader treat the leading records as the OBCM shards without a role filter.
+pub fn manifest(
+    shards: &[ShardPlan],
+    terrain: Option<TerrainRecord>,
+    assembly: AlignedBox,
+    schema_revision: u32,
+    name: &str,
+) -> Result<Vec<u8>> {
+    let records = shards.len() + terrain.is_some() as usize;
+    if shards.is_empty() || records > MAX_SHARDS {
+        return Err(Error::Capacity(format!(
+            "a set holds 1..={MAX_SHARDS} records; this one needs {records} ({} shard(s){})",
+            shards.len(),
+            if terrain.is_some() { " plus terrain" } else { "" }
+        )));
     }
     let core = shards
         .iter()
@@ -276,19 +298,23 @@ pub fn manifest(shards: &[ShardPlan], assembly: AlignedBox, schema_revision: u32
     }
 
     // `Set Id` is a content identity: two assemblies of the same cells with the same skin produce
-    // the same id, which is what lets an upload notice the set is already present.
+    // the same id, which is what lets an upload notice the set is already present. Terrain is in the
+    // chain — a set that gained or re-baked its raster is a different set on the card.
     let mut id_hash = Sha256::new();
     for s in shards {
         id_hash.update(s.sha256);
     }
+    if let Some(t) = &terrain {
+        id_hash.update(t.sha256);
+    }
     let set_id: [u8; 32] = id_hash.finalize().into();
 
     let (min_lon, min_lat, max_lon, max_lat) = assembly.ubox();
-    let mut out = Vec::with_capacity(MANIFEST_HEADER_LEN + shards.len() * MANIFEST_SHARD_LEN);
+    let mut out = Vec::with_capacity(MANIFEST_HEADER_LEN + records * MANIFEST_SHARD_LEN);
     out.extend_from_slice(b"OBCS");
-    out.push(1); // manifest version
-    out.push(VERSION); // the OBCM version of every shard
-    out.push(shards.len() as u8);
+    out.push(obc_formats::obcs::VERSION); // manifest version
+    out.push(VERSION); // the OBCM version of every OBCM shard
+    out.push(records as u8);
     out.push(core as u8);
     out.extend_from_slice(&schema_revision.to_le_bytes());
     out.extend_from_slice(&0u32.to_le_bytes()); // flags, reserved
@@ -300,19 +326,33 @@ pub fn manifest(shards: &[ShardPlan], assembly: AlignedBox, schema_revision: u32
     out.extend_from_slice(&fold_name(name));
     debug_assert_eq!(out.len(), MANIFEST_HEADER_LEN);
 
-    for s in shards {
-        let (min_lon, min_lat, max_lon, max_lat) = s.box_.ubox();
-        out.push(s.role.wire());
+    let push_record = |out: &mut Vec<u8>, role: u8, box_: AlignedBox, bytes: u64, sha256: &[u8; 32]| {
+        let (min_lon, min_lat, max_lon, max_lat) = box_.ubox();
+        out.push(role);
         out.push(0); // flags
         out.extend_from_slice(&[0, 0]); // reserved
         out.extend_from_slice(&(min_lat as i32).to_le_bytes());
         out.extend_from_slice(&(min_lon as i32).to_le_bytes());
         out.extend_from_slice(&(max_lat as i32).to_le_bytes());
         out.extend_from_slice(&(max_lon as i32).to_le_bytes());
-        out.extend_from_slice(&(s.bytes as u32).to_le_bytes());
-        out.extend_from_slice(&s.sha256);
+        out.extend_from_slice(&(bytes as u32).to_le_bytes());
+        out.extend_from_slice(sha256);
+    };
+    for s in shards {
+        push_record(&mut out, s.role.wire(), s.box_, s.bytes, &s.sha256);
     }
-    debug_assert_eq!(out.len(), MANIFEST_HEADER_LEN + shards.len() * MANIFEST_SHARD_LEN);
+    // §5.2: the terrain record last, spanning the assembly bbox. Last is not a convention — a
+    // reader takes the leading records as the OBCM shards and their index as the `S<kk>` in a
+    // derived filename, so a raster anywhere else would rename every shard after it.
+    if let Some(t) = &terrain {
+        push_record(&mut out, obc_formats::obcs::Role::Terrain.id(), assembly, t.bytes, &t.sha256);
+    }
+    debug_assert_eq!(out.len(), MANIFEST_HEADER_LEN + records * MANIFEST_SHARD_LEN);
+    // The set is about to be written; the format authority is what decides whether it is one
+    // (§5.3). Parsing our own bytes back is cheap and catches a role, an ordering or a bbox the
+    // planner got wrong here rather than on a card.
+    obc_formats::obcs::parse(&out)
+        .map_err(|e| Error::Verify(format!("the manifest this assembly wrote does not validate: {e:?} (OBCA §5.3)")))?;
     Ok(out)
 }
 
@@ -336,6 +376,13 @@ pub fn manifest_filename(card_id: u16) -> String {
     format!("MS{card_id}.OBS")
 }
 
+/// The terrain shard's filename: `MS<id>.OBD` (§5.2) — no `S<kk>`, because there is at most one.
+/// It is also the `OBCT_Spec.md` §4.6 sidecar of `MS<id>.OBS`, so a host that resolves terrain by
+/// sidecar and one that reads the manifest role open the same file.
+pub fn terrain_filename(card_id: u16) -> String {
+    format!("MS{card_id}.OBD")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -356,11 +403,11 @@ mod tests {
     fn manifest_layout_is_the_spec_table() {
         let shards =
             vec![plan(0, BandRole::Core, true), plan(1, BandRole::Coarse, false), plan(2, BandRole::Geometry, false)];
-        let bx = AlignedBox { min_lat: 47_185_920, min_lon: 7_340_032, span_log2: 21 };
-        let m = manifest(&shards, bx, 7, "Switzerland").expect("manifest");
+        let bx = AlignedBox { min_lat: 47_185_920, min_lon: 7_340_032, span_log2: 20 };
+        let m = manifest(&shards, None, bx, 7, "Switzerland").expect("manifest");
         assert_eq!(m.len(), MANIFEST_HEADER_LEN + 3 * MANIFEST_SHARD_LEN);
         assert_eq!(&m[0..4], b"OBCS");
-        assert_eq!(m[4], 1);
+        assert_eq!(m[4], 2, "manifest v2 — the terrain role is a hard cut");
         assert_eq!(m[5], VERSION);
         assert_eq!(m[6], 3, "shard count");
         assert_eq!(m[7], 0, "core shard index");
@@ -380,7 +427,7 @@ mod tests {
     fn a_set_with_no_core_is_refused() {
         let shards = vec![plan(0, BandRole::Geometry, false)];
         let bx = AlignedBox { min_lat: 0, min_lon: 0, span_log2: 20 };
-        assert!(manifest(&shards, bx, 1, "x").is_err());
+        assert!(manifest(&shards, None, bx, 1, "x").is_err());
     }
 
     /// §5.3: a reader has no schema, so a multi-shard set missing a whole role does not mount. The
@@ -388,19 +435,51 @@ mod tests {
     /// produce a manifest that looks valid and is not.
     #[test]
     fn a_multi_shard_set_missing_a_role_is_refused() {
-        let bx = AlignedBox { min_lat: 47_185_920, min_lon: 7_340_032, span_log2: 21 };
+        let bx = AlignedBox { min_lat: 47_185_920, min_lon: 7_340_032, span_log2: 20 };
         let no_coarse = vec![plan(0, BandRole::Core, true), plan(1, BandRole::Geometry, false)];
-        let err = format!("{}", manifest(&no_coarse, bx, 1, "x").expect_err("no coarse shard"));
+        let err = format!("{}", manifest(&no_coarse, None, bx, 1, "x").expect_err("no coarse shard"));
         assert!(err.contains("no coarse shard"), "got: {err}");
         let no_geometry = vec![plan(0, BandRole::Core, true), plan(1, BandRole::Coarse, false)];
-        let err = format!("{}", manifest(&no_geometry, bx, 1, "x").expect_err("no geometry shard"));
+        let err = format!("{}", manifest(&no_geometry, None, bx, 1, "x").expect_err("no geometry shard"));
         assert!(err.contains("no geometry shard"), "got: {err}");
         // …and the single-file fast path is exempt, because §5.5 says the one shard is the core.
-        manifest(&[plan(0, BandRole::Core, true)], bx, 1, "x").expect("a set of one is legal");
+        manifest(&[plan(0, BandRole::Core, true)], None, bx, 1, "x").expect("a set of one is legal");
+    }
+
+    /// §5.2's `terrain` role: the last record, spanning the assembly, counted by `Shard Count`,
+    /// and in the `Set Id` chain — so a set that gains a raster is a different set on the card.
+    #[test]
+    fn the_terrain_record_is_last_and_changes_the_set_id() {
+        let bx = AlignedBox { min_lat: 47_185_920, min_lon: 7_340_032, span_log2: 20 };
+        let shards = vec![plan(0, BandRole::Core, true)];
+        let terrain = TerrainRecord { bytes: 6_192, sha256: [0x77; 32] };
+        let plain = manifest(&shards, None, bx, 7, "Grimsel").expect("no raster is a complete map");
+        let with = manifest(&shards, Some(terrain), bx, 7, "Grimsel").expect("core + terrain");
+
+        assert_eq!(plain.len(), MANIFEST_HEADER_LEN + MANIFEST_SHARD_LEN);
+        assert_eq!(with.len(), MANIFEST_HEADER_LEN + 2 * MANIFEST_SHARD_LEN);
+        assert_eq!(with[6], 2, "Shard Count counts every record");
+        assert_eq!(with[7], 0, "…and the core is still record 0");
+        let base = MANIFEST_HEADER_LEN + MANIFEST_SHARD_LEN;
+        assert_eq!(with[base], obc_formats::obcs::Role::Terrain.id());
+        assert_eq!(i32::from_le_bytes(with[base + 4..base + 8].try_into().unwrap()) as i64, bx.min_lat);
+        assert_eq!(u32::from_le_bytes(with[base + 20..base + 24].try_into().unwrap()), 6_192);
+        assert_eq!(&with[base + 24..base + 56], &[0x77; 32]);
+        assert_ne!(&with[32..48], &plain[32..48], "the Set Id covers the raster");
+
+        // The parsed manifest keeps the raster out of the OBCM shard list, which is what every
+        // mount path iterates.
+        let parsed = obc_formats::obcs::parse(&with).expect("valid");
+        assert_eq!(parsed.shard_count(), 1);
+        assert_eq!(parsed.record_count(), 2);
+        assert_eq!(parsed.terrain().map(|t| t.bytes), Some(6_192));
+        assert!(parsed.is_single_file(), "terrain is its own file, so this is still §5.5's fast path");
     }
 
     #[test]
     fn filenames_are_eight_three_safe() {
+        assert_eq!(terrain_filename(7), "MS7.OBD");
+        assert_eq!(terrain_filename(999), "MS999.OBD");
         assert_eq!(shard_filename(7, 0), "MS7S00.OBM");
         assert_eq!(shard_filename(MAX_CARD_ID, 31), "MS999S31.OBM");
         assert_eq!(manifest_filename(7), "MS7.OBS");

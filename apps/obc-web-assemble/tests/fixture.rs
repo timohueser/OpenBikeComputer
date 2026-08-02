@@ -7,19 +7,22 @@
 //! has a stated provenance, so here it is, executable:
 //!
 //! ```text
-//! # 1. cut the synthetic extract into cells (writes tests/fixture/cells/ + cells.json + skin.json)
+//! # 1. cut the synthetic extract into cells, and write the terrain cells beside it
+//! #    (writes tests/fixture/cells/, cells.json, skin.json, terrain/, terrain.json)
 //! cargo test -p obc-web-assemble --test fixture regenerate -- --ignored --nocapture
 //! # 2. assemble them with the NATIVE CLI — the bytes both sides are then held to
 //! cargo run --release -p obcm-assemble -- \
-//!     --cells apps/obc-web-assemble/tests/fixture/cells.json \
-//!     --skin  apps/obc-web-assemble/tests/fixture/skin.json \
-//!     --out   apps/obc-web-assemble/tests/fixture/expected \
+//!     --cells   apps/obc-web-assemble/tests/fixture/cells.json \
+//!     --terrain apps/obc-web-assemble/tests/fixture/terrain.json \
+//!     --skin    apps/obc-web-assemble/tests/fixture/skin.json \
+//!     --out     apps/obc-web-assemble/tests/fixture/expected \
 //!     --name "Bridge Fixture" --accept-partial
 //! # 3. …and again as a volume set, which is the multi-file shape the bridge hands on
 //! cargo run --release -p obcm-assemble -- \
-//!     --cells apps/obc-web-assemble/tests/fixture/cells.json \
-//!     --skin  apps/obc-web-assemble/tests/fixture/skin.json \
-//!     --out   apps/obc-web-assemble/tests/fixture/expected-split \
+//!     --cells   apps/obc-web-assemble/tests/fixture/cells.json \
+//!     --terrain apps/obc-web-assemble/tests/fixture/terrain.json \
+//!     --skin    apps/obc-web-assemble/tests/fixture/skin.json \
+//!     --out     apps/obc-web-assemble/tests/fixture/expected-split \
 //!     --name "Bridge Fixture" --accept-partial --force-split
 //! ```
 //!
@@ -91,6 +94,89 @@ const BANDS: &str = r#"{"bands": [
 /// Where the checked-in fixture lives.
 pub fn fixture_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixture")
+}
+
+// --- Terrain (EL4, #1072) ---------------------------------------------------------------------
+//
+// The fixture's terrain store, at a lattice chosen the way `obc-vectors`' own does: the **cell** is
+// the v1 `2^19` (so the assembly rectangle is the real thing — 2 × 2 squares over the fixture's
+// `2^20` assembly bbox) while the **posting** is coarsened to `2^14`, because the v1 `2^9` posting
+// would make one cell 2 MiB of raster and the whole fixture 8 MiB in the repo. Both are header data
+// precisely so this is legal (`OBCT_Spec.md` §1.3); at this pairing a cell is 32 × 32 samples =
+// 2 × 2 tiles = 2048 bytes, so the tree is 6 KB and still exercises tile addressing, the cross-cell
+// seam, and a hole.
+
+/// The store's lattice — what the catalog's §13.1 terrain block would state.
+pub const T_POSTING_LOG2: u8 = 14;
+pub const T_CELL_LOG2: u8 = 19;
+/// The fixture's assembly bbox is `2^20` at (47.185920 °N, 7.340032 °E), which is these four
+/// `2^19` squares.
+const T_MIN_I: u32 = 602;
+const T_MIN_J: u32 = 526;
+/// The square left **unpublished**: the fixture's known-empty terrain, which must reach the shard as
+/// a `0` directory slot and cost four bytes (`OBCC_Spec.md` §13.6, `OBCT_Spec.md` §4.3).
+const T_ABSENT: (u32, u32) = (603, 527);
+
+/// The surface: a plane with **different** coefficients per axis, so a transposed latitude/longitude
+/// produces different numbers rather than a plausible-looking one. Indexed by lattice offsets from
+/// each cell's own base sample, which is what makes each cell a pure function of its id — the same
+/// property the real bakery's `bake_cell` has, and the reason a cell inside a shard is byte-for-byte
+/// the cell published on its own.
+fn t_height(ci: u32, cj: u32) -> impl Fn(u32, u32) -> i16 {
+    let per_cell = 1u32 << (T_CELL_LOG2 - T_POSTING_LOG2);
+    move |di, dj| {
+        let i = (ci - T_MIN_I) * per_cell + di;
+        let j = (cj - T_MIN_J) * per_cell + dj;
+        (400 + 3 * i as i32 + 11 * j as i32) as i16
+    }
+}
+
+/// Write `tests/fixture/terrain/<i>/<j>.obcd` plus the `terrain.json` sidecar the CLI's `--terrain`
+/// takes — the terrain half of step 1 in the module header.
+fn regenerate_terrain(dir: &Path) {
+    use sha2::{Digest, Sha256};
+
+    let root = dir.join("terrain");
+    let _ = std::fs::remove_dir_all(&root);
+    let mut entries: Vec<serde_json::Value> = Vec::new();
+    for ci in T_MIN_I..T_MIN_I + 2 {
+        for cj in T_MIN_J..T_MIN_J + 2 {
+            if (ci, cj) == T_ABSENT {
+                continue; // canonically void: no object at all (OBCC §13.6)
+            }
+            // A published cell is a 1 × 1 container at exactly its own square (OBCC §13.1).
+            let bytes = obc_vectors::terrain_container(
+                T_POSTING_LOG2,
+                T_CELL_LOG2,
+                ci,
+                cj,
+                1,
+                1,
+                &|_, _| true,
+                &t_height(ci, cj),
+            );
+            let rel = format!("terrain/{ci:04}/{cj:04}.obcd");
+            let path = dir.join(&rel);
+            std::fs::create_dir_all(path.parent().expect("has a parent")).expect("mkdir");
+            std::fs::write(&path, &bytes).expect("write terrain cell");
+            let digest: [u8; 32] = Sha256::digest(&bytes).into();
+            entries.push(serde_json::json!({
+                "id": format!("{T_CELL_LOG2}/{ci:04}/{cj:04}"),
+                "path": rel,
+                "bytes": bytes.len(),
+                "sha256": digest.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+            }));
+            println!("  terrain {rel:28} {:>7} B", bytes.len());
+        }
+    }
+    let mut json = serde_json::to_string_pretty(&serde_json::json!({
+        "posting_log2": T_POSTING_LOG2,
+        "cell_log2": T_CELL_LOG2,
+        "cells": entries,
+    }))
+    .expect("the terrain sidecar serialises");
+    json.push('\n');
+    std::fs::write(dir.join("terrain.json"), json).expect("write terrain.json");
 }
 
 fn deg(udeg: i64) -> f64 {
@@ -249,5 +335,6 @@ fn regenerate() {
     for c in &summary.cells {
         println!("  {:8} {:20} {:>7} B", c.band, c.path, c.bytes);
     }
+    regenerate_terrain(&dir);
     println!("\nnow run the native CLI to write tests/fixture/expected/ — see the module header.");
 }

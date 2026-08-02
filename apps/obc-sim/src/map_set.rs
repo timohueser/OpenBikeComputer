@@ -181,6 +181,10 @@ impl MapSource {
                 Some(Role::Core) => "core",
                 Some(Role::Geometry) => "geometry",
                 Some(Role::Coarse) => "coarse",
+                // Unreachable by construction: `shards()` is the OBCM prefix, and a terrain record
+                // is never in it (`OBCA_Spec.md` §5.2). Named rather than wildcarded so a future
+                // role has to be thought about here too.
+                Some(Role::Terrain) => "terrain?!",
                 None => "?",
             };
             out.push_str(&format!(

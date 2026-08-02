@@ -5,9 +5,20 @@ edition = "2021"
 publish = false # internal host tool — not published to crates.io
 description = "Copernicus GLO-30 GeoTIFF -> OBCT terrain cells (obc-dem fetch / bake). The producer side of specs/OBCT_Spec.md."
 
+# The **container writer is this crate's wasm-reachable half**. `obcm-assemble` places published
+# cells into a terrain shard (EL4, #1072) and compiles for `wasm32-unknown-unknown`, so it takes this
+# crate with `default-features = false` — which drops the DEM decoder and the HTTP client and leaves
+# `container`, whose only dependencies are `obc-formats` and `obc-elevation`. The alternative was a
+# second OBCT writer inside the assembler, which is exactly the drift `container`'s module header
+# exists to refuse.
+[features]
+default = ["dem"]
+dem = ["dep:tiff", "dep:ureq"]
+
 [[bin]]
 name = "obc-dem"
 path = "src/main.rs"
+required-features = ["dem"]
 
 [dependencies]
 # The OBCT byte authority: magic, header offsets, sentinels, and the layout arithmetic that turns a
@@ -25,11 +36,11 @@ obc-elevation = { path = "../../firmware/obc-elevation" }
 # *floating-point* horizontal predictor (`Predictor = 3`), 1024 × 1024 internal tiles. Default
 # features are off deliberately: `fax`, `jpeg` and `lzw` are codecs no DEM ships in, and every one
 # of them is decoder surface this tool would otherwise carry for nothing.
-tiff = { version = "0.11", default-features = false, features = ["deflate"] }
+tiff = { version = "0.11", default-features = false, features = ["deflate"], optional = true }
 # `fetch` only. Blocking and rustls-by-default, so no OpenSSL follows it onto macOS or Windows —
 # the same client `obc-pack`'s land-dataset download and the desktop app already use (#907: libGEOS
 # stays the last native dependency in the tree, and this crate has none at all).
-ureq = "3"
+ureq = { version = "3", optional = true }
 
 [dev-dependencies]
 # Digest pins on fixture output — the "same inputs ⇒ byte-identical cells" contract, checked rather

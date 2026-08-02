@@ -41,7 +41,7 @@ const MAP_CHUNK = 32 * 1024;
 /** One file streamed out of the assembler worker. Shards precede the manifest. */
 export interface AssembledSetFile {
     readonly name: string;
-    readonly role: "core" | "coarse" | "geometry" | "manifest";
+    readonly role: "core" | "coarse" | "geometry" | "terrain" | "manifest";
     readonly sha256: string;
     readonly byteLength: number;
     readonly bytes: Uint8Array;
@@ -77,6 +77,19 @@ export async function sendAssembledSetFile(
         throw new Error(
             `${file.name} arrived as ${file.bytes.byteLength} bytes; the assembler announced ${file.byteLength}.`,
         );
+    }
+    // The terrain shard has no `mapShard` object type yet — the device-side set
+    // transfer (#1044) predates EL4's `terrain` role and knows nothing about a
+    // raster. Sending it as an ordinary shard would consume a shard index the
+    // manifest does not name and desynchronise the whole set, so it is skipped
+    // **loudly** rather than misfiled: the map still arrives complete, without
+    // elevation, which is exactly what a terrain-less set already is (§13).
+    if (file.role === "terrain") {
+        console.warn(
+            `obc: skipping ${file.name} — sending a set's terrain shard to a device needs the transfer step ` +
+                "(#1044) to learn the terrain role. The map is sent whole; its profiles will be flat.",
+        );
+        return;
     }
     const manifest = file.role === "manifest";
     if (!manifest) {

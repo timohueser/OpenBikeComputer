@@ -70,6 +70,20 @@ from pathlib import Path
 # refusal, the budget override, the warn-once console binding): 435,990 B raw + 24,452 B glue ->
 # 186,601 B gzipped. +1,514 B raw / +2,160 B gzipped, which is the shape a fix round should have —
 # error prose and a handful of branches, no new crate. Budgets unchanged (89 % / 91 %).
+#
+# Re-measured 2026-08-03 for EL4 (#1072, the terrain shard): 481,473 B raw + 27,118 B glue ->
+# 205,343 B gzipped. +45,483 B raw / +18,742 B gzipped — the largest single jump this module has
+# taken, and the one case where a *bigger* number is the right answer rather than a regression to
+# hunt. Two crates joined the graph, both deliberately and both small: `obc-elevation`'s
+# `TerrainReader` (the §4.8 read-back of the raster runs through the same parser the firmware does,
+# not a second opinion about the bytes) and `obc-dem`'s `container::ShardWriter` behind
+# `default-features = false` — which is the *whole point* of that feature gate, because the
+# alternative was a second OBCT container writer living in the assembler. Neither brings a
+# dependency of its own; the growth is object code for one format's reader and writer.
+#
+# What the budget still guards is unchanged: `obc-pack`/libGEOS, a renderer, or the app itself would
+# each be an order of magnitude more than this. Budgets raised to keep the same ~10 % headroom over
+# the new measurement (94 % / 92 %).
 # --- obc-skin-preview ------------------------------------------------------------------------
 #
 # Measured 2026-08-01 on #1045 (wasm-pack 0.15.0 / wasm-opt -Oz): 240,227 B raw wasm + 11,859 B
@@ -80,7 +94,7 @@ from pathlib import Path
 # Budgets leave ~14 % headroom while still catching a second engine or accidental packer link.
 BUDGETS = {
     "convert": {"gzipped": 62 * 1024, "raw_wasm": 112 * 1024},
-    "assemble": {"gzipped": 200 * 1024, "raw_wasm": 480 * 1024},
+    "assemble": {"gzipped": 220 * 1024, "raw_wasm": 524 * 1024},
     "preview": {"gzipped": 128 * 1024, "raw_wasm": 272 * 1024},
 }
 

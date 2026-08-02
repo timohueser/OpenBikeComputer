@@ -57,7 +57,8 @@ use obc_formats::io::{ByteSource, SliceSource};
 use obcm_assemble::grid::CellId;
 use obcm_assemble::schema::{Schema, Skin};
 use obcm_assemble::{
-    assemble_with_known_empty, CellInput, Clock, Error, KnownEmptyInput, MemorySource, Options, ShardPlan, ShardStore,
+    assemble_full, CellInput, Clock, Error, KnownEmptyInput, MemorySource, Options, ShardPlan, ShardStore,
+    TerrainCellInput, TerrainJob, TerrainParams,
 };
 
 /// One downloaded cell, as the caller hands it over: the catalog's identity plus the verified bytes.
@@ -78,6 +79,28 @@ pub struct CellBytes {
 pub struct KnownEmptyCell {
     pub id: String,
     pub band: String,
+}
+
+/// One downloaded terrain cell (EL4): its id on the terrain grid, the whole `.obcd` object, and the
+/// `sha256` the pinned terrain index published for it.
+///
+/// A known-empty terrain square is simply **not handed over** — it has no object to fetch
+/// (`OBCC_Spec.md` §13.6) and an absent cell reads identically to an all-`NODATA` one, so it needs
+/// no identity here the way an empty *band* cell does.
+pub struct TerrainCellBytes {
+    /// The canonical cell id, `<cell_log2>/<i>/<j>`, on the terrain grid.
+    pub id: String,
+    /// Lowercase-hex SHA-256 from the terrain index. Empty means "no catalog", which is not a
+    /// case the browser has — it is here so the type can be built in a test.
+    pub sha256: String,
+    pub bytes: Vec<u8>,
+}
+
+/// The terrain store's lattice, verbatim from the catalog's `terrain` block (`OBCC_Spec.md` §13.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TerrainLattice {
+    pub posting_log2: u8,
+    pub cell_log2: u8,
 }
 
 /// What an assembly can be told to do differently — [`obcm_assemble::Options`] minus `skip_verify`.
@@ -617,6 +640,26 @@ pub fn assemble_cells_with_known_empty(
     opts: &BridgeOptions,
     hooks: &mut dyn Hooks,
 ) -> Result<Outcome, AssembleFailure> {
+    assemble_everything(cells, known_empty, None, Vec::new(), schema_json, skin_json, opts, hooks)
+}
+
+/// The full assembly, raster included (EL4, #1072).
+///
+/// `terrain` is the catalog's lattice; `None` means the catalog publishes no terrain block, or the
+/// rider's selection covers no terrain object, and the set is written without a `terrain` role — a
+/// complete, ordinary map whose profiles are flat.
+// One assembly is exactly these eight things; a struct would restate the signature.
+#[allow(clippy::too_many_arguments)]
+pub fn assemble_everything(
+    cells: Vec<CellBytes>,
+    known_empty: Vec<KnownEmptyCell>,
+    terrain: Option<TerrainLattice>,
+    terrain_cells: Vec<TerrainCellBytes>,
+    schema_json: &str,
+    skin_json: &str,
+    opts: &BridgeOptions,
+    hooks: &mut dyn Hooks,
+) -> Result<Outcome, AssembleFailure> {
     if cells.is_empty() {
         return Err(AssembleFailure::new(
             ErrorCode::Input,
@@ -655,6 +698,21 @@ pub fn assemble_cells_with_known_empty(
         })
         .collect::<Result<_, _>>()?;
 
+    // The raster's inputs, split identity from payload the same way.
+    let mut terrain_ids = Vec::with_capacity(terrain_cells.len());
+    let mut terrain_sources = Vec::with_capacity(terrain_cells.len());
+    for c in terrain_cells {
+        let id = CellId::parse(&c.id).map_err(|e| {
+            AssembleFailure::new(
+                ErrorCode::Internal,
+                format!("terrain cell id {:?} is not a `<log2>/<i>/<j>` id: {e}", c.id),
+            )
+        })?;
+        let sha256 = if c.sha256.is_empty() { None } else { Some(parse_digest(&c.sha256, &c.id)?) };
+        terrain_ids.push((id, sha256));
+        terrain_sources.push(MemorySource(c.bytes));
+    }
+
     let options = Options {
         name: opts.name.clone(),
         card_id: opts.card_id,
@@ -678,7 +736,19 @@ pub fn assemble_cells_with_known_empty(
     });
     let clock = HookedClock { p: &progress };
     let mut store = HookedStore { shards: Vec::new(), manifest: Vec::new(), p: &progress };
-    let summary = match assemble_with_known_empty(inputs, known_empty, &schema, &skin, &options, &mut store, &clock) {
+    // The terrain shard is written into an ordinary in-memory buffer, like every OBCM shard: the
+    // engine's OBCT writer seeks (it back-patches its directory), which a `Cursor` gives for free.
+    let mut terrain_sink = std::io::Cursor::new(Vec::<u8>::new());
+    let job = terrain.map(|lattice| TerrainJob {
+        params: TerrainParams { posting_log2: lattice.posting_log2, cell_log2: lattice.cell_log2 },
+        cells: terrain_ids
+            .iter()
+            .zip(&terrain_sources)
+            .map(|((id, sha256), src)| TerrainCellInput { id: *id, src, sha256: *sha256 })
+            .collect(),
+        sink: &mut terrain_sink,
+    });
+    let summary = match assemble_full(inputs, known_empty, job, &schema, &skin, &options, &mut store, &clock) {
         Ok(s) => s,
         Err(e) => return Err(map_error(e, progress.borrow().aborted)),
     };
@@ -688,13 +758,23 @@ pub fn assemble_cells_with_known_empty(
     }
 
     let mut shards = store.shards;
-    let mut files = Vec::with_capacity(shards.len() + 1);
+    let mut files = Vec::with_capacity(shards.len() + 2);
     for (s, buf) in summary.shards.iter().zip(shards.drain(..)) {
         files.push(OutputFile {
             name: s.filename.clone(),
             role: s.role.as_str(),
             sha256: s.sha256.iter().map(|b| format!("{b:02x}")).collect(),
             bytes: buf.bytes,
+        });
+    }
+    // The raster goes with the shards — before the manifest, because §5.4's rule is about the
+    // manifest being last, and it names the terrain record too.
+    if let Some(t) = &summary.terrain {
+        files.push(OutputFile {
+            name: t.filename.clone(),
+            role: "terrain",
+            sha256: t.sha256.iter().map(|b| format!("{b:02x}")).collect(),
+            bytes: terrain_sink.into_inner(),
         });
     }
     files.push(OutputFile {
@@ -706,6 +786,26 @@ pub fn assemble_cells_with_known_empty(
 
     let summary_json = summary_json(&summary);
     Ok(Outcome { files, warnings: summary.warnings, summary_json })
+}
+
+/// A lowercase-hex SHA-256 as the 32 bytes the engine compares against. A malformed one is this
+/// bridge's problem, not the catalog's format — the catalog parser already rejected a bad digest
+/// long before the download started, so reaching here means the caller built the string wrongly.
+fn parse_digest(hex: &str, what: &str) -> Result<[u8; 32], AssembleFailure> {
+    let bad = || {
+        AssembleFailure::new(
+            ErrorCode::Internal,
+            format!("terrain cell {what}: {hex:?} is not a 64-character lowercase-hex SHA-256"),
+        )
+    };
+    if hex.len() != 64 {
+        return Err(bad());
+    }
+    let mut out = [0u8; 32];
+    for (k, slot) in out.iter_mut().enumerate() {
+        *slot = u8::from_str_radix(hex.get(k * 2..k * 2 + 2).ok_or_else(bad)?, 16).map_err(|_| bad())?;
+    }
+    Ok(out)
 }
 
 /// Map an engine refusal onto the bridge's vocabulary, keeping the engine's own message. The match
@@ -771,6 +871,13 @@ fn summary_json(s: &obcm_assemble::Summary) -> String {
         "bytes": s.bytes,
         "manifest": s.manifest_filename,
         "shards": shards,
+        "terrain": s.terrain.as_ref().map(|t| serde_json::json!({
+            "file": t.filename,
+            "bytes": t.bytes,
+            "sha256": t.sha256.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+            "cells": t.cells,
+            "slots": t.slots,
+        })),
         "phases_us": {
             "open": st.open_us, "poi": st.poi_us, "nav": st.nav_us,
             "plan": st.plan_us, "write": st.write_us, "verify": st.verify_us, "total": st.total_us,

@@ -17,9 +17,12 @@ import {
     assertRegionCellsIndexed,
     parseCellIndex,
     parseRegionCells,
+    parseTerrainIndex,
     type CellEntry,
     type CellIndexDocument,
     type RegionCellsDocument,
+    type TerrainCellEntry,
+    type TerrainIndexDocument,
 } from "./satellites";
 
 export interface CatalogClientOptions {
@@ -64,6 +67,7 @@ export class CatalogClient {
     private readonly loaded = new Map<string, CellIndexDocument>();
     private readonly regionCells = new Map<string, Promise<RegionCellsDocument>>();
     private readonly previews = new Map<string, Promise<Uint8Array>>();
+    private terrainIndex: Promise<TerrainIndexDocument | null> | null = null;
 
     private constructor(catalog: Catalog, baseUrl: string, opts: CatalogClientOptions) {
         this.catalog = catalog;
@@ -158,6 +162,34 @@ export class CatalogClient {
     async cellIndices(): Promise<Map<string, CellIndexDocument>> {
         const loaded = await Promise.all(this.catalog.schema.bands.map((b) => this.cellIndex(b.id)));
         return new Map(loaded.map((doc) => [doc.band, doc]));
+    }
+
+    /**
+     * The single pinned terrain index (§13.1), or `null` when the catalog
+     * publishes no terrain at all.
+     *
+     * `null` is not a failure and must not be reported as one: a terrain-less
+     * catalog is complete and valid, and every map assembled from it is an
+     * ordinary map whose profiles are flat. It is one document for the whole
+     * store — terrain is not keyed by band — so there is one promise here rather
+     * than a map of them.
+     */
+    terrain(): Promise<TerrainIndexDocument | null> {
+        if (this.terrainIndex) return this.terrainIndex;
+        const block = this.catalog.terrain;
+        if (!block) return Promise.resolve(null);
+        const inflight = (async () => {
+            const bytes = await fetchVerified(this.resolve(block.cell_index.url), block.cell_index, this.downloadOptions());
+            const doc = parseTerrainIndex(decode(bytes, "terrain index"), this.catalog, block);
+            // Resolved once, here, exactly as a band cell's url is.
+            const cells = doc.cells.map((c): TerrainCellEntry => ({ ...c, url: this.resolve(c.url) }));
+            return { ...doc, cells, byId: new Map(cells.map((c) => [c.id, c])) };
+        })().catch((e: unknown) => {
+            this.terrainIndex = null;
+            throw e;
+        });
+        this.terrainIndex = inflight;
+        return inflight;
     }
 
     /**

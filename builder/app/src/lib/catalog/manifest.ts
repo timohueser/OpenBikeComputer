@@ -129,6 +129,9 @@ export interface Boundary {
 
 export interface RegionEntry {
     id: string;
+    /** This region's terrain selection, priced (§13.3); `null` for a catalog
+     *  with no terrain block. */
+    terrain: RegionTerrain | null;
     name: string;
     parent: string | null;
     boundary: Boundary;
@@ -155,6 +158,46 @@ export interface CellIndexRef {
     url: string;
 }
 
+/** A region's terrain price (§13.3). Deliberately **not** part of `bytes` /
+ *  `bytes_by_band`: a rider may take the map without the raster, so the two
+ *  prices are separate numbers and a consumer MUST present them separately. */
+export interface RegionTerrain {
+    cell_count: number;
+    known_empty_count: number;
+    bytes: number;
+}
+
+/** The root's `terrain` block (§13.1): a **second artifact class with its own
+ *  revision track**, not a band and not covered by the OBCM lockstep.
+ *
+ *  Absent is complete and valid — everything degrades to "no elevation is known
+ *  here", which is the behaviour of every map before terrain existed. A consumer
+ *  MUST NOT synthesize elevation from any other source. */
+export interface TerrainEntry {
+    dataset_id: string;
+    /** Opaque: compared for equality, never parsed. */
+    dataset_version: string;
+    /** `log2(P)` of the sample lattice, µdeg (`OBCT_Spec.md` §1.1). */
+    posting_log2: number;
+    /** `log2(S)` of the terrain cell, µdeg. Independent of any band's. */
+    cell_log2: number;
+    terrain_revision: number;
+    /** The source dataset's required credit, verbatim. §13.5 makes taking it
+     *  from here rather than hard-coding it a MUST, so a dataset change carries
+     *  its own notice with it. */
+    attribution: string;
+    cell_index: TerrainIndexRef;
+}
+
+/** The root's pin on the single terrain index (§13.1). */
+export interface TerrainIndexRef {
+    cell_count: number;
+    known_empty_count: number;
+    bytes: number;
+    sha256: string;
+    url: string;
+}
+
 export interface Catalog {
     schema_version: number;
     generated_at: string;
@@ -162,6 +205,12 @@ export interface Catalog {
     skins: SkinEntry[];
     regions: RegionEntry[];
     cell_index: CellIndexRef[];
+    /** `null` for a catalog that publishes no raster (§13). */
+    terrain: TerrainEntry | null;
+    /** The terrain revision the network band's baked ascents were integrated
+     *  from (§13.4), or `null` when the store was baked with no terrain. Root
+     *  level and deliberately not in `SchemaEntry`. */
+    network_terrain_revision: number | null;
 }
 
 /** What a satellite has to match before it is believed (§9). */
@@ -474,9 +523,25 @@ function parseRegions(v: unknown, where: string, bandIds: Set<string>): RegionEn
             }
         }
         const cellsSha256 = str(o, "cells_sha256", at, SHA256);
+        // §13.3. Optional, because a terrain-less catalog is complete — but its
+        // bytes are separate from `bytes` on purpose, so nothing here folds them
+        // into the sum checked above.
+        const terrain: RegionTerrain | null =
+            o.terrain === undefined || o.terrain === null
+                ? null
+                : (() => {
+                      const tat = `${at}.terrain`;
+                      const t = obj(o.terrain, tat);
+                      return {
+                          cell_count: int(t, "cell_count", tat, 0, U32),
+                          known_empty_count: int(t, "known_empty_count", tat, 0, U32),
+                          bytes: int(t, "bytes", tat, 0),
+                      };
+                  })();
 
         return {
             id,
+            terrain,
             name: str(o, "name", at),
             parent: optionalStr(o, "parent", at, PATH_ID),
             boundary: parseBoundary(o.boundary, `${at}.boundary`),
@@ -541,6 +606,46 @@ function parseCellIndexRefs(v: unknown, where: string, bands: BandEntry[]): Cell
     return refs;
 }
 
+/**
+ * §13.1's terrain block, or `null`.
+ *
+ * The whole block is optional; every field inside it is required when it is
+ * present. That asymmetry is the spec's, and it is the right one: a catalog
+ * without terrain says "no elevation is known here", while a catalog with half a
+ * terrain block says nothing a consumer can act on — it could not verify a cell's
+ * lattice, price the download, or credit the source.
+ */
+function parseTerrain(v: unknown, where: string): TerrainEntry | null {
+    if (v === undefined || v === null) return null;
+    const o = obj(v, where);
+    const refAt = `${where}.cell_index`;
+    const ref = obj(o.cell_index, refAt);
+    const sha256 = str(ref, "sha256", refAt, SHA256);
+    // §13.5: a producer MUST NOT publish an empty attribution, and a consumer
+    // that displays terrain MUST take the string from here. An empty one would
+    // ship derived Copernicus raster with no credit at all, which is a licence
+    // problem rather than a cosmetic one.
+    const attribution = str(o, "attribution", where);
+    if (!attribution.trim()) fail(`${where}.attribution: a terrain block credits its source (§13.5)`);
+    return {
+        dataset_id: str(o, "dataset_id", where, KEBAB),
+        dataset_version: str(o, "dataset_version", where),
+        // The OBCT §4.5 ranges, checked here so a shard can never be planned at
+        // a pairing the format does not admit.
+        posting_log2: int(o, "posting_log2", where, 4, 16),
+        cell_log2: int(o, "cell_log2", where, MIN_CELL_LOG2, MAX_CELL_LOG2),
+        terrain_revision: int(o, "terrain_revision", where, 1),
+        attribution,
+        cell_index: {
+            cell_count: int(ref, "cell_count", refAt, 0, U32),
+            known_empty_count: int(ref, "known_empty_count", refAt, 0, U32),
+            bytes: int(ref, "bytes", refAt, 0),
+            sha256,
+            url: pinnedUrlStr(ref, "url", sha256, refAt),
+        },
+    };
+}
+
 /** Parse the current catalog root, or throw. */
 export function parseRoot(body: string): Catalog {
     const root = obj(json(body, "catalog"), "catalog");
@@ -555,6 +660,11 @@ export function parseRoot(body: string): Catalog {
     }
     const schema = parseSchema(root.schema, "catalog.schema");
     const bandIds = new Set(schema.bands.map((b) => b.id));
+    const terrain = parseTerrain(root.terrain, "catalog.terrain");
+    const ntr = root.network_terrain_revision;
+    if (ntr !== undefined && ntr !== null && (typeof ntr !== "number" || !Number.isInteger(ntr) || ntr < 1)) {
+        fail("catalog.network_terrain_revision: must be a positive integer or null");
+    }
     return {
         schema_version: CATALOG_SCHEMA_VERSION,
         generated_at: instant(root, "generated_at", "catalog"),
@@ -562,6 +672,8 @@ export function parseRoot(body: string): Catalog {
         skins: parseSkins(root.skins, "catalog.skins", schema),
         regions: parseRegions(root.regions, "catalog.regions", bandIds),
         cell_index: parseCellIndexRefs(root.cell_index, "catalog.cell_index", schema.bands),
+        terrain,
+        network_terrain_revision: (ntr as number | null | undefined) ?? null,
     };
 }
 

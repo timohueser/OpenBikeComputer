@@ -10,6 +10,7 @@
         requestTransferList,
         type AssembleWorkerRequest,
         type WorkerCell,
+        type WorkerTerrainCell,
     } from "../../lib/assemble/workerProtocol";
     import { saveBytes } from "../../lib/download";
     import { platform } from "../../lib/platform";
@@ -288,14 +289,27 @@
         phase = "downloading";
         if (out.kind === "device") out.ctx.phase("downloading", l.totalBytes);
 
-        const plan = planCells(resolution, store.catalog, indices);
+        const plan = planCells(resolution, store.catalog, indices, store.terrain);
         const cells: WorkerCell[] = [];
+        const terrainCells: WorkerTerrainCell[] = [];
         abortCtl = new AbortController();
         try {
             await downloadCells(plan, {
                 fetchImpl: store.client.fetchImpl,
                 onCell: (item, bytes) => {
-                    cells.push({ id: item.cell.id, band: item.band, partial: item.cell.partial, bytes });
+                    // `band === null` is what a terrain cell is (`OBCC_Spec.md`
+                    // §13: a second artifact class, not a band), and it is the
+                    // only thing that decides which door it goes in.
+                    if (item.band === null) {
+                        terrainCells.push({ id: item.cell.id, sha256: item.cell.sha256, bytes });
+                    } else {
+                        cells.push({
+                            id: item.cell.id,
+                            band: item.band,
+                            partial: "partial" in item.cell && item.cell.partial,
+                            bytes,
+                        });
+                    }
                 },
                 onProgress: (p) => {
                     dlProgress = p;
@@ -323,6 +337,14 @@
             type: "assemble",
             cells,
             knownEmpty: plan.knownEmpty,
+            // Terrain travels as its own pair: the lattice the catalog states
+            // and the objects that were downloaded. A catalog with no terrain
+            // block sends neither, and the set is written without a `terrain`
+            // role — a complete map with flat profiles (§13).
+            terrain: store.terrain
+                ? { postingLog2: store.terrain.posting_log2, cellLog2: store.terrain.cell_log2 }
+                : undefined,
+            terrainCells: store.terrain ? terrainCells : undefined,
             schemaJson: store.rootBody,
             skinJson: JSON.stringify(store.skin),
             options: {

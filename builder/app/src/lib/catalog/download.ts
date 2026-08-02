@@ -6,23 +6,33 @@
 
 import { fetchVerified } from "../download";
 import type { Catalog } from "./manifest";
-import { knownEmptyAt, type CellEntry, type CellIndexDocument } from "./satellites";
+import { knownEmptyAt, type CellEntry, type CellIndexDocument, type TerrainCellEntry, type TerrainIndexDocument } from "./satellites";
 import type { SelectionResolution } from "./selection";
 
 export interface CellDownloadItem {
-    band: string;
-    cell: CellEntry;
+    /** The band this cell belongs to, or `null` for a **terrain** cell — which
+     *  belongs to no band by construction (`OBCC_Spec.md` §13: a second artifact
+     *  class, not a band), and is what tells the assembler which door it goes in. */
+    band: string | null;
+    cell: CellEntry | TerrainCellEntry;
 }
 
 export interface CellDownloadPlan {
-    /** In schema band order, then canonical cell id. The plan is the ordering
-     *  authority; completion order is whatever the network does. */
+    /** In schema band order, then canonical cell id, then the terrain squares.
+     *  The plan is the ordering authority; completion order is whatever the
+     *  network does. */
     items: CellDownloadItem[];
     /** Selected canonical-empty cells. They have no request or byte buffer,
-     *  but the assembler needs their identities for bbox and coverage math. */
+     *  but the assembler needs their identities for bbox and coverage math.
+     *  Terrain's void squares are **not** here: an absent terrain cell and an
+     *  all-`NODATA` one read identically (`OBCT_Spec.md` §4.3), so they need no
+     *  identity downstream at all. */
     knownEmpty: { band: string; id: string }[];
-    /** Summed `bytes` of every item — knowable before the fetch (§6). */
+    /** Summed `bytes` of every item — knowable before the fetch (§6/§5.7). */
     totalBytes: number;
+    /** Of which, the raster's: the number a UI shows on its own line, because
+     *  §13.3 requires the two prices to be presented separately. */
+    terrainBytes: number;
 }
 
 export interface CellDownloadProgress {
@@ -71,6 +81,7 @@ export function planCells(
     resolution: SelectionResolution,
     catalog: Catalog,
     indices: ReadonlyMap<string, CellIndexDocument>,
+    terrain?: TerrainIndexDocument | null,
 ): CellDownloadPlan {
     const items: CellDownloadItem[] = [];
     const knownEmpty: { band: string; id: string }[] = [];
@@ -88,7 +99,19 @@ export function planCells(
             }
         }
     }
-    return { items, knownEmpty, totalBytes };
+    // The raster last, so a torn download loses elevation before it loses the
+    // map: every OBCM cell is already in hand when the terrain squares start,
+    // and a map with no terrain is a map, while terrain with no map is nothing.
+    let terrainBytes = 0;
+    if (terrain) {
+        for (const id of resolution.terrain.cells) {
+            const cell = terrain.byId.get(id);
+            if (!cell) continue;
+            items.push({ band: null, cell });
+            terrainBytes += cell.bytes;
+        }
+    }
+    return { items, knownEmpty, totalBytes: totalBytes + terrainBytes, terrainBytes };
 }
 
 /**

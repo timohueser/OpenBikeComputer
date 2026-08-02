@@ -32,8 +32,10 @@ import type { BandEntry, Catalog } from "./manifest";
 import {
     assertRegionCellsIndexed,
     cellIndexHas,
+    terrainEmptyAt,
     type CellIndexDocument,
     type RegionCellsDocument,
+    type TerrainIndexDocument,
 } from "./satellites";
 
 export type { LatLon } from "./corridor";
@@ -92,6 +94,10 @@ export interface SelectionContext {
     indices: ReadonlyMap<string, CellIndexDocument>;
     /** Region id → its published cell list, for every `region` part in play. */
     regionCells: ReadonlyMap<string, RegionCellsDocument>;
+    /** The pinned terrain index, or `null`/absent when the catalog publishes no
+     *  raster — in which case the selection simply names no terrain and the map
+     *  assembles exactly as it did before terrain existed (`OBCC_Spec.md` §13). */
+    terrain?: TerrainIndexDocument | null;
 }
 
 /** One part's contribution, as the parts list shows it. */
@@ -128,8 +134,34 @@ export interface PartResolution {
     pending: boolean;
 }
 
+/** The raster a selection covers (§13.3, EL4). Separate from `cellsByBand`
+ *  because terrain is a second artifact class, not a band — and separately
+ *  priced, because a rider may take the map without it. */
+export interface TerrainResolution {
+    /** Squares with a published object: what the download fetches, sorted. */
+    cells: string[];
+    /** Squares that are canonically void (§13.6): coverage with no object, so
+     *  they cost nothing and reach the shard as a `0` directory slot. */
+    knownEmpty: string[];
+    /** Summed `bytes` of {@link TerrainResolution.cells}. */
+    bytes: number;
+    /** Ground the selection covers that the terrain store says nothing about at
+     *  all — outside the published coverage. Legal (the shard's directory says
+     *  `0` there too) but not the same thing as canonically void, and shown as
+     *  what it is: elevation this map will not have. */
+    missing: string[];
+}
+
+/** A selection covering no raster at all — the answer for a terrain-less catalog. */
+export function emptyTerrainResolution(): TerrainResolution {
+    return { cells: [], knownEmpty: [], bytes: 0, missing: [] };
+}
+
 export interface SelectionResolution {
     parts: PartResolution[];
+    /** The terrain squares this selection covers. Empty when the catalog has no
+     *  terrain block or the index has not loaded. */
+    terrain: TerrainResolution;
     /** The union, band id → sorted canonical cell ids that the catalog covers.
      *  Artifact entries contribute downloaded payloads; known-empty identities
      *  reach assembly without a payload. */
@@ -231,6 +263,27 @@ function partCells(part: SelectionPart, bandEntry: BandEntry, ctx: SelectionCont
     }
 }
 
+/**
+ * The terrain squares one part covers — the OBCA §1.2 coverage rule, verbatim,
+ * applied to the terrain grid (§13.3 says a region's list is built the same way).
+ *
+ * There is no terrain special case here and there must never be one: a box and a
+ * corridor resolve through exactly the test the bands use, and a region reads its
+ * published list for the same reason it does for bands — deriving one from the
+ * drawable boundary would let a simplification error drop an edge square, and a
+ * dropped square is a stretch of route with no elevation at all.
+ */
+function partTerrainCells(part: SelectionPart, log2: number, ctx: SelectionContext, radiusM: number): string[] {
+    switch (part.kind) {
+        case "region":
+            return [...(ctx.regionCells.get(part.regionId)?.terrain ?? [])];
+        case "box":
+            return cellsIntersecting(log2, part.box).map(formatCellId);
+        case "corridor":
+            return corridorCells(log2, part.points, radiusM).map(formatCellId);
+    }
+}
+
 /** One part's contribution to one band, split — the unit the resolver caches. */
 interface BandCells {
     published: string[];
@@ -321,6 +374,32 @@ function resolveWith(selection: Selection, ctx: SelectionContext, cellsFor: Cell
 
     const bytesOf = (band: string, id: string) => ctx.indices.get(band)?.byId.get(id)?.bytes ?? 0;
 
+    // The raster: one union over every part, split three ways against the pinned
+    // terrain index. Not per part, because §13.3 prices terrain as one number for
+    // the selection and the parts list has no terrain column — the ledger shows
+    // one "elevation" line, which is what the "no toggle" decision implies.
+    const terrainIndex = ctx.terrain ?? null;
+    const terrain = emptyTerrainResolution();
+    if (terrainIndex) {
+        const seen = new Set<string>();
+        for (const part of selection.parts) {
+            for (const id of partTerrainCells(part, terrainIndex.cell_log2, ctx, selection.corridorRadiusM)) {
+                seen.add(id);
+            }
+        }
+        for (const id of [...seen].sort()) {
+            const entry = terrainIndex.byId.get(id);
+            if (entry) {
+                terrain.cells.push(id);
+                terrain.bytes += entry.bytes;
+            } else if (terrainEmptyAt(terrainIndex, id)) {
+                terrain.knownEmpty.push(id);
+            } else {
+                terrain.missing.push(id);
+            }
+        }
+    }
+
     const parts: PartResolution[] = perPart.map(({ part, cellsByBand, missingByBand, pending }) => {
         let bytes = 0;
         let marginalBytes = 0;
@@ -340,6 +419,7 @@ function resolveWith(selection: Selection, ctx: SelectionContext, cellsFor: Cell
 
     return {
         parts,
+        terrain,
         cellsByBand: sortedLists(union),
         missingByBand: sortedLists(missingUnion),
         unresolvedBands,
