@@ -29,25 +29,50 @@
 //! re-open strictly lowers an integer `g ≥ 0`, and no new node ever enters once full — the
 //! frontier must empty.
 //!
-//! **Profile-weighted edges** (epic #533, N3): each edge is relaxed by the selected
-//! **bike profile's** multiplier for its §8.3 `way_kind` — `weighted = (cost_m ×
-//! mult(kind)) >> 4`, `mult` a 40-byte per-plan lookup (32 highway × 8 surface `u8`
-//! 1/16 bytes, combined at lookup) resolved once from the map's §8.6 profile table. An
-//! out-of-range profile index falls back to profile 0 (a stale device setting must
-//! never brick routing — never an error). A **forbidden** class (`mult == 0`) is simply
-//! not relaxed: the neighbor is skipped, so the graph stays whole for the other
-//! profiles and an endpoint whose only escapes are forbidden drains the frontier to an
-//! honest [`NavError::NoPath`]. The *displayed* distance is unweighted — the planner sums
-//! each hop's raw edge `length_m` at emit, not the weighted `g`.
+//! **Profile-weighted, climb-aware edges** (epic #533 N3; the climb term is EL6, epic #1068). Every
+//! edge is relaxed through the §8.6 formula, verbatim:
+//!
+//! ```text
+//! weighted = (cost_m × effective(way_kind)) >> 4  +  ascent_m × climb_weight     # saturating
+//! ```
+//!
+//! `effective` is the selected **bike profile's** multiplier for the edge's §8.3 `way_kind`, from a
+//! 40-byte per-plan lookup (32 highway × 8 surface `u8` 1/16 bytes, combined at lookup);
+//! `climb_weight` is the same profile's flat-metres-per-metre-of-ascent byte. Both are resolved
+//! **once per plan** from the map's §8.6 profile table into [`ProfileMult`]. An out-of-range profile
+//! index falls back to profile 0 (a stale device setting must never brick routing — never an error).
+//! A **forbidden** class (`effective == 0`) is simply not relaxed: the neighbor is skipped, so the
+//! graph stays whole for the other profiles and an endpoint whose only escapes are forbidden drains
+//! the frontier to an honest [`NavError::NoPath`]. The *displayed* distance is unweighted — the
+//! planner sums each hop's raw edge `length_m` at emit, not the weighted `g`.
+//!
+//! `ascent_m` is the §8.3 neighbor entry's own **directional** integrated climb (v12) — it is read
+//! off the adjacency record already in hand, which is why EL5 put it *there* and not in the §8.4
+//! edge pool: relaxation still costs no second fetch. A map packed without terrain carries `0`
+//! everywhere and a `climb_weight` of `0` is a legal, meaningful profile, so both zeroes reproduce
+//! v11's costing exactly — the null path is provably today's router (pinned in `tests/nav.rs`).
+//!
+//! **Admissibility with elevation, restated where the code lives** (§8.6, normative): *`Ascent M`
+//! and `Climb Weight` are both unsigned and the term is added, so a descent MUST NOT reduce an
+//! edge's cost below its profile-weighted ground length.* That is the whole reason the climb term is
+//! shaped as it is. `h` remains the great-circle distance to the goal in the same
+//! local-equirectangular metric the packer summed every `cost_m` in, nothing anywhere subtracts from
+//! a cost, and every non-forbidden multiplier is ≥ 1.0× — so `weighted ≥ ground length ≥
+//! great-circle` still holds edge for edge and `h` stays a lower bound unchanged. Descent credits
+//! are therefore **banned**, not merely unimplemented (epic #1068's out-of-scope list): an edge
+//! cheaper than its straight-line distance would break the bound the whole ε-ladder rests on.
+//! Gradient effects on *time* belong in ETA (EL9), never in the A\* cost.
 //!
 //! **Bounded suboptimality, not exactness** (decided 2026-07-06 — range in fixed
 //! memory): the priority is `f = g + ε·h`, ε an inflation from the [`NAV_EPSILON_LADDER`].
 //! The heuristic itself never overestimates the *weighted* cost — it is the great-circle
 //! distance to the goal in the *same* local-equirectangular metric the packer summed for
-//! every edge's `cost_m`, and every non-forbidden profile multiplier is **≥ 1.0**
-//! (packer-enforced + reader-clamped), so `weighted cost ≥ ground length ≥ great-circle`:
-//! `h` stays admissible unchanged. Weighted A\* therefore returns a path of cost **≤ ε×
-//! the cheapest route under the selected profile**, where ε is **the rung the search
+//! every edge's `cost_m`, every non-forbidden profile multiplier is **≥ 1.0**
+//! (packer-enforced + reader-clamped), and the climb term only ever *adds*, so
+//! `weighted cost ≥ ground length ≥ great-circle`: `h` stays admissible unchanged. Weighted A\*
+//! therefore returns a path of cost **≤ ε× the cheapest *climb-aware* route under the selected
+//! profile** (that reading is the only thing EL6 changed about this bound — the ε numbers and every
+//! rung's logic are untouched), where ε is **the rung the search
 //! succeeded on** — 1.3× for the first-try success every route used before N8 (a few
 //! percent on road networks in practice), and 2.0× or 3.0× only for a route that *would
 //! otherwise have failed* the tight bound (see the ε-escalation note under [`NAV_EPSILON_LADDER`]).
@@ -247,8 +272,9 @@ pub enum NavError {
 /// 34 B/node with `u32` costs and id-keyed `came_from` before the 2026-07-06 range
 /// fix). `g`/`h` in `u16` meters saturate at 65 535 m and a saturated cost only makes its
 /// node maximally unattractive (never mis-ordered, never wrapped). `g` now accumulates
-/// **weighted** cost (`(cost_m × mult) >> 4`, N3), so it saturates *earlier* than plain
-/// distance — a 4× multiplier ⇒ ~16 km of that class fills the field — but this is the
+/// **weighted** cost (`(cost_m × mult) >> 4 + ascent_m × climb_weight`, N3 + EL6), so it saturates
+/// *earlier* than plain distance — a 4× multiplier ⇒ ~16 km of that class fills the field, and the
+/// climb term charges a further 10 m per metre climbed at the stock Road weight — but this is the
 /// same graceful degradation: the fixed table exhausts long before saturation matters on
 /// real terrain (profiles are capped ≤ ~8×), and with no distance cap a very distant goal
 /// still degrades the ordering toward uniform expansion until the table exhausts (see the
@@ -337,25 +363,35 @@ fn sat16(m: u32) -> u16 {
     m.min(u16::MAX as u32) as u16
 }
 
-/// The selected bike profile's edge-weight lookup, resolved **once per plan** from the map's §8.6
-/// profile table (epic #533, N3): the 32 highway + 8 surface `u8` 1/16-fixed-point multipliers
-/// (`16` = 1.0×, `0` = forbidden), copied by value into the planner. Kept as the raw 40 bytes and
-/// **combined at lookup** ([`mult`](Self::mult)) rather than pre-expanded to a 256-entry
+/// The selected bike profile's edge-cost parameters, resolved **once per plan** from the map's §8.6
+/// profile table (epic #533 N3; the climb weight is EL6, epic #1068): the 32 highway + 8 surface
+/// `u8` 1/16-fixed-point multipliers (`16` = 1.0×, `0` = forbidden) plus the profile's climb weight,
+/// copied by value into the planner. The multipliers are kept as the raw 40 bytes and
+/// **combined at lookup** ([`edge_cost`](Self::edge_cost)) rather than pre-expanded to a 256-entry
 /// `way_kind → multiplier` table — 40 B of `.bss` next to the scratch, no 256 B table, and one
 /// multiply per relaxation. Mirrors [`obc_reader::MapProfile::multiplier`]'s integer arithmetic
 /// exactly (the reader owns the same combine for its own callers); the copy is what lets the
 /// weighting run with no `Reader` borrow held across the search.
+///
+/// **[`edge_cost`](Self::edge_cost) is the router's one cost model.** POI plans and #882's detour
+/// dispatch run the same [`settle`] and therefore the same function — there is deliberately no
+/// second formula anywhere for a detour to drift from (pinned in `tests/detour.rs`).
 #[derive(Clone, Copy)]
 struct ProfileMult {
     highway: [u8; 32],
     surface: [u8; 8],
+    /// §8.6 v12 `Climb Weight`, widened once so relaxation does no cast: flat metres charged per
+    /// metre of a neighbor entry's `ascent_m`. `0` = climb-blind, which is both what a pre-terrain
+    /// map decodes to and a legal opinion a producer may hold.
+    climb: u32,
 }
 
 impl ProfileMult {
-    /// The all-1.0× table: every non-forbidden multiplier `16`. The pre-resolution placeholder a
-    /// fresh [`NavPlanner`] holds (overwritten at its first step) and the fallback for the
-    /// degenerate empty-profile-table map (which snaps to nothing and fails first anyway).
-    const NEUTRAL: ProfileMult = ProfileMult { highway: [16; 32], surface: [16; 8] };
+    /// The all-1.0×, climb-blind table: every non-forbidden multiplier `16`, `climb` `0`. The
+    /// pre-resolution placeholder a fresh [`NavPlanner`] holds (overwritten at its first step) and
+    /// the fallback for the degenerate empty-profile-table map (which snaps to nothing and fails
+    /// first anyway).
+    const NEUTRAL: ProfileMult = ProfileMult { highway: [16; 32], surface: [16; 8], climb: 0 };
 
     /// Resolve the profile selected by `profile_idx` from the reader's parsed §8.6 table. An
     /// **out-of-range index falls back to profile 0** (locked on #536: a stale device profile
@@ -365,23 +401,42 @@ impl ProfileMult {
     fn resolve(reader: &Reader, profile_idx: u8) -> ProfileMult {
         let profiles = reader.nav_profiles();
         match profiles.get(profile_idx as usize).or_else(|| profiles.first()) {
-            Some(p) => ProfileMult { highway: p.highway, surface: p.surface },
+            Some(p) => ProfileMult { highway: p.highway, surface: p.surface, climb: u32::from(p.climb_weight()) },
             None => ProfileMult::NEUTRAL,
         }
     }
 
-    /// Effective edge multiplier for a packed `way_kind` byte in 1/16 fixed-point:
-    /// `(highway[kind & 31] × surface[kind >> 5]) >> 4`. `None` when either class is **forbidden**
-    /// (a `0` byte) — the neighbor is then skipped in relaxation (§8.6).
+    /// The §8.6 weighted cost of one adjacency entry, **the formula verbatim**:
+    ///
+    /// ```text
+    /// (cost_m × ((highway[kind & 31] × surface[kind >> 5]) >> 4)) >> 4  +  ascent_m × climb_weight
+    /// ```
+    ///
+    /// `None` when either multiplier class is **forbidden** (a `0` byte) — the neighbor is then
+    /// skipped in relaxation, never relaxed at a huge cost, so the graph stays whole for the other
+    /// profiles (§8.6).
+    ///
+    /// **Overflow analysis** (why the saturating ops here are discipline, not need). Every input is
+    /// bounded by its wire type: `cost_m` widens from a §8.3 `uint16` (≤ 65 535), `ascent_m` is a
+    /// `uint16` (≤ 65 535), and the two multiplier bytes are `u8`, so `effective ≤ (255 × 255) >> 4
+    /// = 4 064` and `climb ≤ 255`. The distance term is therefore at most
+    /// `(65 535 × 4 064) >> 4 = 16 645 890` and the climb term at most `65 535 × 255 = 16 711 425`;
+    /// their sum, ≤ 33 357 315, is **under 1 % of `u32::MAX`**. Nothing here can wrap even on a
+    /// hand-forged file, and the spec's own range check (a 60 km edge with 3 000 m of ascent at
+    /// weight 15) is three orders of magnitude inside it. The one place a real value is *lost* is
+    /// the caller's [`sat16`] into the 16-bit frontier cost — and a saturated `g` only makes its
+    /// node maximally unattractive, never mis-ordered (see the [`NAV_MAX_NODES`] layout note).
     #[inline]
-    fn mult(&self, way_kind: u8) -> Option<u32> {
+    fn edge_cost(&self, cost_m: u32, ascent_m: u16, way_kind: u8) -> Option<u32> {
         let mh = self.highway[(way_kind & 0x1F) as usize] as u32;
         let ms = self.surface[(way_kind >> 5) as usize] as u32;
         if mh == 0 || ms == 0 {
-            None
-        } else {
-            Some((mh * ms) >> 4)
+            return None;
         }
+        let distance = (cost_m.saturating_mul((mh * ms) >> 4)) >> 4;
+        // Additive and non-negative, always — §8.6's normative rule and the reason `h` survives
+        // elevation. Nothing in this crate subtracts from a cost.
+        Some(distance.saturating_add(u32::from(ascent_m).saturating_mul(self.climb)))
     }
 }
 
@@ -631,10 +686,12 @@ pub struct NavPlanner {
     /// The route's name, applied by the finishing header patch.
     name: heapless::String<NAME_CAP>,
     /// The selected bike profile index (device setting; N5 threads the real value — N3 hosts pass
-    /// `0`). Resolved to [`mult`](Self::mult) at the first step; out-of-range falls back to profile 0.
+    /// `0`). Resolved into [`mult`](Self::mult) at the first step; out-of-range falls back to
+    /// profile 0.
     profile_idx: u8,
-    /// The profile's 40-byte multiplier lookup, resolved once from the reader at the first step
-    /// (neutral until then). Every edge is relaxed through [`ProfileMult::mult`].
+    /// The profile's 40-byte multiplier lookup **and its climb weight**, resolved once from the
+    /// reader at the first step (neutral + climb-blind until then). Every edge — POI plan or detour
+    /// alike — is relaxed through [`ProfileMult::edge_cost`].
     mult: ProfileMult,
     /// The snapped endpoints (valid once their phase has run).
     start_id: u32,
@@ -1259,9 +1316,9 @@ pub fn plan_detour<const N: usize>(
 
 /// One settle: descend the node quadtree to the settled node's leaf (a degenerate
 /// one-point view — the spatial re-fetch) and relax each of its §8.3 neighbors from
-/// the inline `(coord, cost_m, way_kind)`, weighting the cost by the plan's profile
-/// (`mult`). A neighbor whose `way_kind` is **forbidden** under the profile (`mult` is
-/// `None`) is skipped — not relaxed — so the graph stays whole for other profiles. A
+/// the inline `(coord, cost_m, way_kind, ascent_m)` through the plan's profile
+/// ([`ProfileMult::edge_cost`]). A neighbor whose `way_kind` is **forbidden** under the profile
+/// (`edge_cost` is `None`) is skipped — not relaxed — so the graph stays whole for other profiles. A
 /// node the walk doesn't yield (corrupt map) simply relaxes nothing; the search
 /// continues on whatever frontier remains.
 ///
@@ -1294,10 +1351,12 @@ fn settle<const N: usize>(
                 return;
             }
             for nb in n.neighbors() {
-                // Profile-weighted edge cost: `weighted = (cost_m × mult(kind)) >> 4` (mult in
-                // 1/16 fixed-point). A forbidden class (`mult == None`) is skipped entirely — the
-                // neighbor is never relaxed, so the graph stays whole for the other profiles.
-                let Some(m) = mult.mult(nb.way_kind) else {
+                // The §8.6 edge cost: profile-weighted ground length **plus** the entry's own
+                // directional climb charged at the profile's weight. `ascent_m` rides on the
+                // adjacency entry already in hand — no second fetch, which is why EL5 put it there.
+                // A forbidden class (`edge_cost == None`) is skipped entirely — the neighbor is
+                // never relaxed, so the graph stays whole for the other profiles.
+                let Some(weighted) = mult.edge_cost(nb.cost_m, nb.ascent_m, nb.way_kind) else {
                     continue;
                 };
                 // Detour blacklist (#882): an edge whose chord hugs the skipped span is skipped
@@ -1305,7 +1364,6 @@ fn settle<const N: usize>(
                 if corridor.is_some_and(|c| c.blocks((settled.lon, settled.lat), (nb.lon, nb.lat))) {
                     continue;
                 }
-                let weighted = (nb.cost_m.saturating_mul(m)) >> 4;
                 // u16-saturating tentative cost: a saturated g is just maximally
                 // unattractive (see the layout note) — never wrapped, never mis-ordered.
                 let tentative = sat16((settled.g as u32).saturating_add(weighted));
@@ -1400,5 +1458,52 @@ fn snap(reader: &Reader, tiles: &mut NavTileCache, p: (i32, i32)) -> Option<(u32
             return best.map(|(id, c, _)| (id, c));
         }
         half = (half * 2).min(full_half);
+    }
+}
+
+/// Unit cover for the one piece of arithmetic the integration suite can only reach through a packed
+/// map: [`ProfileMult::edge_cost`] at the extremes of its wire types (EL6). The routing *behaviour*
+/// is pinned end-to-end over real writer→reader bytes in `tests/nav.rs`; what lives here is the
+/// overflow argument from `edge_cost`'s doc, executed.
+#[cfg(test)]
+mod tests {
+    use super::{sat16, ProfileMult};
+
+    /// The maximum every input can legally reach — `cost_m` and `ascent_m` both `u16::MAX`, both
+    /// multiplier bytes and the climb weight all `u8::MAX`. The exact sum is asserted (not merely
+    /// "it didn't panic"), because the claim being pinned is that the true value *fits*: at
+    /// 33 357 315 it is under a hundredth of `u32::MAX`, so the router never reaches its own
+    /// saturation. Runs under `-C overflow-checks` in the debug test profile, which is what makes it
+    /// a real tripwire rather than a wrap-tolerant smoke test.
+    #[test]
+    fn edge_cost_at_the_wire_maxima_is_exact_and_nowhere_near_wrapping() {
+        let p = ProfileMult { highway: [u8::MAX; 32], surface: [u8::MAX; 8], climb: u32::from(u8::MAX) };
+        let got = p.edge_cost(u32::from(u16::MAX), u16::MAX, 0xFF).expect("255 is not forbidden");
+        // (65 535 × ((255 × 255) >> 4)) >> 4 = 16 645 890 distance, + 65 535 × 255 = 16 711 425 climb.
+        assert_eq!(got, 16_645_890 + 16_711_425);
+        assert!(got < u32::MAX / 64, "the worst legal edge must stay far inside u32");
+        // The only lossy step is the frontier's own 16-bit field, and it clamps rather than wraps.
+        assert_eq!(sat16(u32::from(u16::MAX).saturating_add(got)), u16::MAX);
+    }
+
+    /// A `climb_weight` of `0` and an `ascent_m` of `0` each independently reduce the formula to
+    /// v11's — the null path, in arithmetic form.
+    #[test]
+    fn either_zero_reproduces_the_pre_terrain_cost() {
+        let blind = ProfileMult { highway: [16; 32], surface: [16; 8], climb: 0 };
+        let weighted = ProfileMult { climb: 10, ..blind };
+        assert_eq!(blind.edge_cost(1_000, 400, 0), Some(1_000), "climb-blind ignores a 400 m climb");
+        assert_eq!(weighted.edge_cost(1_000, 0, 0), Some(1_000), "a flat edge costs its ground length");
+        assert_eq!(weighted.edge_cost(1_000, 400, 0), Some(5_000), "…and a climbing one is charged for it");
+    }
+
+    /// A forbidden class is `None` **whatever the climb**: the skip decision is the multiplier's
+    /// alone, so an unroutable edge is never relaxed at some enormous cost instead.
+    #[test]
+    fn a_forbidden_class_stays_forbidden_under_any_climb() {
+        let mut p = ProfileMult { highway: [16; 32], surface: [16; 8], climb: 255 };
+        p.highway[4] = 0;
+        assert_eq!(p.edge_cost(1_000, 0, 4), None);
+        assert_eq!(p.edge_cost(1_000, u16::MAX, 4), None);
     }
 }
