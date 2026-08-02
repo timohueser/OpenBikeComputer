@@ -1077,6 +1077,33 @@ change is therefore free, while a schema-revision or OBCM-version change is a
 hard cut requiring one consistent new store. The preview is presentation only;
 its bytes cannot affect selection, pricing, or assembled output.
 
+Terrain is the catalog's **second artifact class**, and the interesting thing
+about it is what it is *not*: it is not a band. The OBCM cells re-bake on every
+format or schema bump, because assembly copies their chunk bytes between files
+and that only means anything within one revision. Terrain is
+[OBCT](src:specs/OBCT_Spec.md) raster derived from a public elevation dataset
+that is re-released every few years, so folding it into that lockstep would
+re-publish hundreds of megabytes of byte-identical height data — and make a rider
+re-download it — every time an unrelated map detail changed. Instead the root
+carries a small terrain block naming the dataset, its version, the sample lattice,
+the cell size and a `terrain_revision`, plus one pinned index in the same
+digest-keyed shape a band's uses. Those four values are the terrain store's entire
+lockstep: an OBCM or schema bump invalidates none of it, and a terrain re-bake
+invalidates no map cell. Regions list and price their terrain cells separately,
+because a rider may take the map without the raster. Ocean squares are all-`NODATA`
+and get no object at all — the same known-empty ranges say so. The dataset's
+required credit rides in the block, so the builder shows it rather than hard-coding
+a string that can go stale.
+
+One coupling is real, and the catalog states it rather than hiding it. The routing
+band's cells are baked *sampling* that raster: each navigation edge stores the
+metres it climbs, integrated from the terrain at bake time. So the root records
+which `terrain_revision` those ascents came from, and the bake guard refuses to
+publish a store whose cells name an older one than the terrain beside them. Without
+that check a terrain re-bake would silently leave the router costing climbs from one
+surface while the device drew its profile from another — with every file still
+parsing perfectly.
+
 [`obc-bake`](src:host/obc-bake) fills that store from ordinary Geofabrik
 extracts. Positional region ids select a subset; no ids means every entry in
 [`regions.toml`](src:host/obc-bake/regions.toml). Several neighbouring extracts
@@ -1261,6 +1288,7 @@ The grid, theorem, seam rules, assembly contract, volume-set manifest bytes, and
 - Normative OBCM / OBCR / ride / track constants, primitive codecs, and the shared byte seam: [`obc-formats`](src:firmware/obc-formats)
 - The byte-level specs: [`OBCM_Spec.md`](src:specs/OBCM_Spec.md) · [`OBCR_Spec.md`](src:specs/OBCR_Spec.md) · [`obc-ble-interface-spec.md`](src:specs/obc-ble-interface-spec.md) (the wire contract routes/rides cross to the companion app)
 - The catalog manifest — spec [`OBCC_Spec.md`](src:specs/OBCC_Spec.md), generator [`obc-pack/src/catalog.rs`](src:host/obc-pack/src/catalog.rs), JSON Schema [`catalog.schema.json`](src:host/obc-pack/schema/catalog.schema.json)
+- The terrain artifact class — spec [`OBCT_Spec.md`](src:specs/OBCT_Spec.md) and `OBCC_Spec.md` §13, rasteriser [`obc-dem`](src:host/obc-dem), bakery stage [`obc-bake/src/terrain.rs`](src:host/obc-bake/src/terrain.rs)
 - The cell catalog the section above describes — producer [`catalog.rs`](src:host/obc-pack/src/catalog.rs), region-outline reduction [`catalog/boundary.rs`](src:host/obc-pack/src/catalog/boundary.rs), and JSON Schema [`catalog.schema.json`](src:host/obc-pack/schema/catalog.schema.json)
 - The cell grid, the assembly contract, and the volume-set manifest: [`OBCA_Spec.md`](src:specs/OBCA_Spec.md); the byte-density measurement its band sizes come from: [`cell_size_survey.rs`](src:host/obc-pack/examples/cell_size_survey.rs)
 - The cell cutter — the grid arithmetic, cell ids and band table in [`obc-pack/src/grid.rs`](src:host/obc-pack/src/grid.rs), the cut itself (clip at the edge, the deterministic boundary junctions, interior-only pruning, provenance) in [`obc-pack/src/cut.rs`](src:host/obc-pack/src/cut.rs)
