@@ -202,6 +202,13 @@ struct ProfileDocument {
     #[serde(default)]
     #[schemars(with = "BTreeMap<String, MultiplierValue>")]
     surface: IndexMap<String, MultiplierValue>,
+    /// OBCM §8.6 `Climb Weight` (v12): flat metres charged per metre of ascent. Absent ⇒ `0`,
+    /// climb-blind — a config that lists profiles but says nothing about climbing gets exactly
+    /// v11's routing, which is the same "you did not ask for it" rule the packer's `--terrain`
+    /// input follows.
+    #[serde(default = "default_zero_u8_document")]
+    #[schemars(default = "default_zero_u8_document")]
+    climb_weight: Option<u8>,
 }
 
 fn default_features_document() -> Option<IndexMap<String, IndexMap<String, StyleDocument>>> {
@@ -669,6 +676,7 @@ const DEFAULT_PROFILES_JSON: &str = r#"[
   {
     "name": "Road",
     "default": 3.0,
+    "climb_weight": 10,
     "highway": {
       "cycleway": 1.0, "living_street": 1.4, "residential": 1.4, "unclassified": 1.5,
       "tertiary": 1.3, "secondary": 1.5, "primary": 1.8, "service": 2.2, "trunk_cycl": 2.5,
@@ -682,6 +690,7 @@ const DEFAULT_PROFILES_JSON: &str = r#"[
   {
     "name": "Gravel",
     "default": 2.0,
+    "climb_weight": 8,
     "highway": {
       "cycleway": 1.1, "track": 1.2, "path": 1.5, "unclassified": 1.2, "residential": 1.3,
       "living_street": 1.3, "tertiary": 1.3, "secondary": 1.6, "primary": 2.2, "service": 1.6,
@@ -695,6 +704,7 @@ const DEFAULT_PROFILES_JSON: &str = r#"[
   {
     "name": "MTB",
     "default": 2.0,
+    "climb_weight": 6,
     "highway": {
       "path": 1.0, "track": 1.0, "bridleway": 1.1, "cycleway": 1.3, "footway": 1.8,
       "unclassified": 1.6, "residential": 1.6, "living_street": 1.5, "tertiary": 1.8,
@@ -708,6 +718,7 @@ const DEFAULT_PROFILES_JSON: &str = r#"[
   {
     "name": "Touring",
     "default": 2.0,
+    "climb_weight": 8,
     "highway": {
       "cycleway": 1.0, "residential": 1.2, "living_street": 1.2, "unclassified": 1.2,
       "tertiary": 1.3, "track": 1.6, "path": 2.0, "secondary": 1.7, "primary": 2.6,
@@ -763,6 +774,14 @@ fn annotate_definitions(defs: &mut Map<String, Value>) {
     props["name"]["x-maxUtf8Bytes"] = Value::from(NAV_PROFILE_NAME_LEN);
     props["default"]["description"] =
         Value::String("Multiplier applied to any highway/surface class not listed below.".into());
+    props["climb_weight"]["description"] = Value::String(
+        "Flat metres charged per metre of ascent (OBCM v12 §8.6). 0 is climb-blind; the shipped \
+         profiles use Road 10 / Gravel 8 / MTB 6 / Touring 8. Ignored unless the map was packed \
+         with terrain."
+            .into(),
+    );
+    props["climb_weight"]["minimum"] = Value::from(0);
+    props["climb_weight"]["maximum"] = Value::from(u8::MAX);
     annotate_class_map(&mut props["highway"], &HIGHWAY_CLASS_NAMES, "highway");
     annotate_class_map(&mut props["surface"], &SURFACE_CLASS_NAMES, "surface");
 }
@@ -849,7 +868,10 @@ impl ProfileDocument {
             highway.iter().chain(&surface).all(|&m| m == 0 || m >= 16),
             "every non-zero multiplier must be ≥ 16 (admissible)"
         );
-        Ok(NavProfile { name, highway, surface })
+        // `climb_weight` needs no admissibility check: §8.6's climb term is additive and
+        // non-negative, so every `u8` — including 0 — leaves the great-circle heuristic admissible.
+        // `serde` has already rejected anything outside `0..=255`.
+        Ok(NavProfile { name, highway, surface, climb_weight: self.climb_weight.unwrap_or(0) })
     }
 }
 
@@ -1240,7 +1262,7 @@ mod tests {
         let env: Value = serde_json::from_str(&schema_envelope()).expect("envelope is valid JSON");
         assert_eq!(env["schema_version"].as_u64(), Some(CONFIG_SCHEMA_VERSION as u64));
         assert_eq!(env["format_version"].as_u64(), Some(OBCM_VERSION as u64));
-        assert_eq!(env["format_version"].as_u64(), Some(11), "#1009 bumps the OBCM format to v11");
+        assert_eq!(env["format_version"].as_u64(), Some(12), "#1073 bumps the OBCM format to v12");
         assert!(env["schema"]["$defs"]["style"].is_object(), "envelope embeds the schema");
     }
 
@@ -1364,5 +1386,35 @@ mod tests {
             .map(|v| v.as_str().unwrap())
             .collect();
         assert_eq!(sf_enum, SURFACE_CLASS_NAMES, "surface class enum must mirror the canonical table");
+        // v12 climb weight: a plain u8, bounds stated so the editor offers the same range the
+        // packer accepts, and absent ⇒ 0 (climb-blind).
+        let climb = &schema["$defs"]["profile"]["properties"]["climb_weight"];
+        assert_eq!(climb["minimum"].as_u64(), Some(0));
+        assert_eq!(climb["maximum"].as_u64(), Some(u8::MAX as u64));
+        assert_eq!(climb["default"].as_u64(), Some(0));
+    }
+
+    /// The v12 §8.6 climb weight, end to end through the config: the four shipped profiles carry
+    /// the seeded values, an explicit one is taken verbatim, and an omitted one is climb-blind
+    /// rather than inherited — a config that says nothing about climbing must route exactly as it
+    /// did before terrain existed.
+    #[test]
+    fn climb_weight_is_seeded_taken_verbatim_and_zero_when_unstated() {
+        let shipped = default_profiles();
+        let weights: Vec<u8> = shipped.iter().map(|p| p.climb_weight).collect();
+        assert_eq!(weights, vec![10, 8, 6, 8], "Road / Gravel / MTB / Touring");
+        assert_eq!(shipped.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["Road", "Gravel", "MTB", "Touring"]);
+
+        let cfg = Config::parse(r#"{"routing":{"profiles":[{"name":"Steep","climb_weight":255},{"name":"Blind"}]}}"#)
+            .expect("both profiles parse");
+        assert_eq!(cfg.routing.profiles[0].climb_weight, 255, "the maximum weight is legal — the term is additive");
+        assert_eq!(cfg.routing.profiles[1].climb_weight, 0, "unstated is climb-blind, not inherited");
+
+        // Unlike a multiplier there is no admissibility floor to fall below, so nothing here can be
+        // rejected for being too small; a value outside u8 is a *type* error from serde.
+        assert!(
+            Config::parse(r#"{"routing":{"profiles":[{"name":"X","climb_weight":256}]}}"#).is_err(),
+            "256 does not fit the u8 wire field"
+        );
     }
 }

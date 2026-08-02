@@ -86,7 +86,7 @@ other:
 
 `version-read.bin`'s `obcm_version` comes
 from `obc_formats::obcm::VERSION`. That is deliberate — the fixture's job is to be
-the bytes a current device serves, and a device that reads OBCM v11 saying "10"
+the bytes a current device serves, and a device that reads OBCM v12 saying "11"
 would be a lie three implementations agreed on. So an OBCM format bump fails
 `cargo test -p obc-vectors`, and the regeneration walks you past the Swift and TS
 assertions on that number, which is exactly the review this change wants.

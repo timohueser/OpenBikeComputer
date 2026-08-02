@@ -1183,6 +1183,10 @@ impl PlanetBake<'_> {
             }],
             chunk_size: None,
             no_land: false,
+            // The bakery does not feed terrain yet: OBCT cells are a separate artifact on their own
+            // revision track (epic #1068), so a v12 bake writes `Ascent M = 0` until the terrain
+            // track is wired in. That is a decode-valid map, not a degraded one.
+            terrain: None,
             bbox: None,
             source_extent: Some(leaf.logical_bbox),
         };

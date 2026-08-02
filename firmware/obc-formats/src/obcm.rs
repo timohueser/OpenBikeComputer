@@ -3,7 +3,7 @@
 use crate::io::{validate_prefix, DecodeError};
 
 pub const MAGIC: [u8; 4] = *b"OBCM";
-pub const VERSION: u8 = 11;
+pub const VERSION: u8 = 12;
 pub const HEADER_LEN: usize = 40;
 pub const LOD_ENTRY_LEN: usize = 18;
 pub const STYLE_RECORD_LEN: usize = 8;
@@ -44,10 +44,23 @@ pub const POI_DIR_POOL_FIELDS_LEN: usize = 6;
 pub const NAV_DIR_LEN: usize = 28;
 pub const NAV_CHUNK_SIZE: usize = 512;
 pub const NAV_NODE_FIXED_LEN: usize = 13;
-pub const NAV_NEIGHBOR_LEN: usize = 15;
+/// Width of one §8.3 adjacency entry. **17 in v12** (#1073): `id u32, dlat i16, dlon i16,
+/// edge_id u32, cost_m u16, way_kind u8, ascent_m u16`.
+pub const NAV_NEIGHBOR_LEN: usize = 17;
+/// Offset of the v12 `Ascent M` field inside a §8.3 neighbor entry — the integrated climb of
+/// riding the edge **from this record's node toward the neighbor**, so the two sides of an edge
+/// carry different values (§8.3's one exception to "both sides agree").
+pub const NAV_NEIGHBOR_ASCENT_OFF: usize = 15;
 pub const NAV_EDGE_FIXED_LEN: usize = 15;
-pub const NAV_PROFILE_LEN: usize = 52;
+/// Width of one §8.6 profile record. **56 in v12** (#1073): the 52-byte v9 record plus
+/// [`NAV_PROFILE_CLIMB_WEIGHT_OFF`] and three reserved bytes written `0`.
+pub const NAV_PROFILE_LEN: usize = 56;
 pub const NAV_PROFILE_NAME_LEN: usize = 12;
+/// Offset of the v12 `Climb Weight` byte inside a §8.6 profile record: flat-metres-equivalent per
+/// metre of ascent, `0` = climb-blind.
+pub const NAV_PROFILE_CLIMB_WEIGHT_OFF: usize = 52;
+/// Length of the reserved tail after `Climb Weight`; written `0`, ignored on read.
+pub const NAV_PROFILE_RESERVED_LEN: usize = 3;
 pub const NAV_MAX_PROFILES: usize = 8;
 pub const NAV_MAX_DEGREE: usize = 24;
 
@@ -182,7 +195,15 @@ mod tests {
         assert_eq!(FEATURE_HEADER_COMPACT_LEN, 1 + 1 + 1 + 2 + 2);
         assert_eq!(FEATURE_HEADER_WIDE_LEN, 1 + 1 + 2 + 4 + 4);
         assert_eq!(POI_RECORD_LEN, 4 + 4 + 1 + 1 + POI_NAME_LEN + 2);
-        assert_eq!(NAV_PROFILE_LEN, NAV_PROFILE_NAME_LEN + 32 + 8);
+        // v12 §8.6: the v9 record (name + two multiplier tables) plus climb weight + reserved.
+        assert_eq!(NAV_PROFILE_LEN, NAV_PROFILE_NAME_LEN + 32 + 8 + 1 + NAV_PROFILE_RESERVED_LEN);
+        assert_eq!(NAV_PROFILE_CLIMB_WEIGHT_OFF, NAV_PROFILE_NAME_LEN + 32 + 8);
+        // v12 §8.3: the v9 entry plus the directional `Ascent M`.
+        assert_eq!(NAV_NEIGHBOR_LEN, 4 + 2 + 2 + 4 + 2 + 1 + 2);
+        assert_eq!(NAV_NEIGHBOR_ASCENT_OFF, NAV_NEIGHBOR_LEN - 2);
+        // The §8.3 degree-cap derivation: 13 + 17 × 24 = 421 ≤ 512, so the pinned nav chunk still
+        // holds a cap-degree record whole.
+        assert_eq!(NAV_NODE_FIXED_LEN + NAV_MAX_DEGREE * NAV_NEIGHBOR_LEN, 421);
     }
 
     #[test]
