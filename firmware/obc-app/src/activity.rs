@@ -10,8 +10,9 @@
 //! from the GPS [`Fix`] stream and climb from the **separate** barometric
 //! [`AltimeterSource`](obc_ports::AltimeterSource); the two integrate independently.
 
+use obc_elevation::DeadBand;
 use obc_map_scene::ground_dist_m;
-use obc_route::{DeadBand, Match};
+use obc_route::Match;
 
 use obc_ports::Fix;
 

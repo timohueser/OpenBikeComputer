@@ -1,0 +1,13 @@
+[package]
+name = "obc-elevation"
+version = "0.1.0"
+edition = "2021"
+publish = false # internal firmware crate — not published to crates.io
+description = "OBCT terrain reader, bilinear sampling, tile cache and the shared ascent integrator (no_std)"
+
+[dependencies]
+# The only dependency, deliberately: this crate is a strict leaf. It knows about heights and the
+# grid they sit on — never about maps (OBCM), routes (OBCR) or the UI. Every consumer depends on
+# *it* (obc-route, obc-pack, obc-app), so a dependency in the other direction would be a cycle
+# waiting to happen and would drag map concepts into the elevation seam.
+obc-formats = { path = "../obc-formats" }

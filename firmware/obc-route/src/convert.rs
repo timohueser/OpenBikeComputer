@@ -17,10 +17,10 @@
 
 use heapless::Vec;
 
-use crate::deadband::DeadBand;
 use crate::gpx::{GpxScanner, RawWaypoint, WptScanner};
 use crate::reader::{ChunkMeta, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS, MAX_WAYPOINTS};
 use crate::symbol::category_for_symbol;
+use obc_elevation::DeadBand;
 use obc_formats::io::{put_i16, put_i32, put_u16, put_u32, ByteSink, ByteSource, Error};
 use obc_formats::obcr::{
     CHUNK_META_LEN, HEADER_FULL_LEN, MAGIC, NAME_CAP, POINT_RECORD_LEN, VERSION, WAYPOINT_CATEGORY_GENERIC,

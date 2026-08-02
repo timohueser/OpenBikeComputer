@@ -19,6 +19,11 @@
 //! - [`symbol`] — the canonical GPX `<sym>`/`<type>` → [`PoiCategory`](obc_reader::PoiCategory)
 //!   table the converter categorises imported waypoints with.
 //!
+//! The elevation dead-band every one of these integrates through is **not** here: it lives in
+//! [`obc_elevation`], with the OBCT terrain sampler that will feed it (epic #1068 / #1069). One
+//! home for the hysteresis, so the packer's ascent, the profile's climb and the ridden barometric
+//! total cannot drift apart.
+//!
 //! Coordinates are integer microdegrees (1e-6 degrees) like the map; distances and
 //! elevations are whole meters. [`obc_map_scene::BBox`] is reused for bounding boxes so
 //! the renderer can compare a route chunk against the map [`Viewport`]'s bbox without
@@ -38,7 +43,6 @@ pub mod climb;
 pub mod climb_profile;
 pub mod convert;
 pub mod corridor;
-pub mod deadband;
 mod geo;
 pub mod gpx;
 pub mod matcher;
@@ -57,7 +61,6 @@ pub use climb::{
 pub use climb_profile::{ClimbProfile, COLS as CLIMB_PROFILE_COLS};
 pub use convert::{gpx_to_obcr, RouteStats};
 pub use corridor::{Corridor, CORRIDOR_WIDTH_M, MIN_DETOUR_SPAN_M};
-pub use deadband::{DeadBand, Elev, ELE_DEADBAND_M};
 pub use geo::{tri_area_m2, tri_area_m2_cl};
 pub use gpx::{GpxScanner, RawPoint, RawWaypoint, WptScanner, WAYPOINT_SYMBOL_CAP};
 pub use matcher::{Match, RouteMatch};

@@ -11,6 +11,9 @@ obc-ports = { path = "../obc-ports" }
 # The persistent-format authority: OBCM/ride format constants, the POI category/subtype table, and
 # its lookups (`poi_label_of` / `poi_category_of`). no_std foundation crate — a downward edge.
 obc-formats = { path = "../obc-formats" }
+# Elevation: the shared ascent dead-band the ride ledger integrates barometric climb through, and
+# (from EL7) the OBCT terrain source the app mounts. no_std leaf — a downward edge like obc-formats.
+obc-elevation = { path = "../obc-elevation" }
 # default-features = false keeps `std` OUT of the shared app layer, so this crate
 # (and everything it pulls) compiles for the nRF54L's bare-metal target. The host
 # simulator re-enables std on `obc-reader` through its own dependency edge. `render`
