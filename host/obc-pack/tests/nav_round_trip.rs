@@ -467,10 +467,23 @@ fn t_cell(udeg: i64) -> u32 {
     ((udeg + (1 << 28)) >> T_CELL_LOG2) as u32
 }
 
-/// The fixture rectangle's lattice row for a µdeg latitude — the `di` the surface functions take.
+/// The fixture rectangle's base sample index. The rectangle starts at the same cell on both axes,
+/// so one function serves rows (`di`, latitude) and columns (`dj`, longitude) alike.
+fn t_base_sample() -> i64 {
+    (t_cell(T_MIN_UDEG) as i64) << (T_CELL_LOG2 - T_POSTING_LOG2)
+}
+
+/// The fixture rectangle's lattice offset for a µdeg coordinate — the `di`/`dj` the surface
+/// functions take.
 fn t_row(udeg: i64) -> u32 {
-    let base = (t_cell(T_MIN_UDEG) as u64) << (T_CELL_LOG2 - T_POSTING_LOG2);
-    (((udeg + (1 << 28)) >> T_POSTING_LOG2) as u64 - base) as u32
+    (((udeg + (1 << 28)) >> T_POSTING_LOG2) - t_base_sample()) as u32
+}
+
+/// The exact µdeg coordinate of lattice offset `d` — the inverse of [`t_row`]. An endpoint placed
+/// here lands **on** a lattice point, where bilinear interpolation returns the stored sample
+/// untouched, so a test can predict the height by arithmetic instead of by re-running the sampler.
+fn t_udeg(d: u32) -> i32 {
+    (-(1i64 << 28) + ((t_base_sample() + d as i64) << T_POSTING_LOG2)) as i32
 }
 
 /// A scratch directory that cleans up after itself.
@@ -527,6 +540,67 @@ fn two_node_graph(a: (i32, i32), b: (i32, i32), length_m: u32) -> NavGraph {
         nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: b }],
         edges: vec![Edge { a: 0, b: 1, polyline: vec![a, b], length_m, kind: (1 << 5) | 10 }],
     }
+}
+
+/// Metres of rise per lattice **row** (latitude) and per lattice **column** (longitude) of the
+/// tilted-plane surface below. Different, coprime, and neither a multiple of the other — the whole
+/// point is that swapping the two axes produces a *different* number.
+const T_TILT_PER_ROW: i32 = 3;
+const T_TILT_PER_COL: i32 = 11;
+
+/// A plane tilted differently in the two axes. Bilinear interpolation of a plane is exact, so every
+/// sample along a straight edge is the plane's own value and the totals below are arithmetic.
+fn tilted_plane(di: u32, dj: u32) -> i16 {
+    (1_000 + T_TILT_PER_ROW * di as i32 + T_TILT_PER_COL * dj as i32) as i16
+}
+
+/// **The lat/lon swap pin.** `ascent_along` samples with `source.sample(p.1, p.0)` — the polyline's
+/// tuples are `(lon, lat)` and [`ElevationSource::sample`] takes `(lat, lon)`, so the two are
+/// deliberately crossed at exactly one place. A silent swap there is the classic elevation bug and
+/// most synthetic terrains are far too symmetric to notice it: any surface that treats the axes
+/// alike, or any test edge that moves along only one of them, will pass either way round.
+///
+/// So this one is built to fail loudly. The surface is a plane tilted **3 m per latitude row and
+/// 11 m per longitude column**; the edge climbs **4 rows and 12 columns**, both endpoints landing
+/// exactly on lattice points where bilinear returns the stored sample untouched. The rise is then
+/// `3×4 + 11×12 = 144 m` — and with the axes swapped it would be `11×4 + 3×12 = 80 m`. Both numbers
+/// are asserted: the right one as an equality, the wrong one as an inequality that names the bug.
+///
+/// The dead-band cannot blur the answer either. Every ~50 m step of this plane rises far more than
+/// the 3 m threshold, so every step books its whole delta and re-anchors — the sum telescopes to
+/// `last − first`, which is exact because both ends are lattice points.
+#[test]
+fn the_sampler_reads_latitude_and_longitude_the_right_way_round() {
+    let dir = Scratch::new("axes");
+    let set = open_terrain(&write_terrain(&dir.0, "tilt.obcd", &tilted_plane));
+    let mut terrain = set.sampler_for(None).expect("sampler");
+
+    let (d_rows, d_cols) = (4u32, 12u32);
+    let base = t_row(490_000);
+    // Coords are the crate's `(lon, lat)`: longitude walks columns, latitude walks rows.
+    let a = (t_udeg(base), t_udeg(base));
+    let b = (t_udeg(base + d_cols), t_udeg(base + d_rows));
+
+    let expected = T_TILT_PER_ROW * d_rows as i32 + T_TILT_PER_COL * d_cols as i32; // 144
+    let swapped = T_TILT_PER_COL * d_rows as i32 + T_TILT_PER_ROW * d_cols as i32; // 80
+    assert_ne!(expected, swapped, "the fixture must be able to tell the two orders apart");
+
+    // The test's own sampler, called with the documented `(lat, lon)` order, sees the same rise.
+    let ha = i32::from(terrain.sample(a.1, a.0).expect("covered"));
+    let hb = i32::from(terrain.sample(b.1, b.0).expect("covered"));
+    assert_eq!(hb - ha, expected, "the endpoints are lattice points, so the plane's arithmetic is exact");
+
+    let bytes = map_with_terrain(&two_node_graph(a, b, 720), &default_profiles(), &mut terrain);
+    let decoded = decode_all(&bytes);
+    let up = i32::from(arc(&decoded, 0, 1).ascent_m);
+
+    assert_eq!(up, expected, "the packer must sample (lat, lon); {up} m booked, {expected} m of plane");
+    assert_ne!(
+        up, swapped,
+        "{up} m is what a swapped `source.sample(p.0, p.1)` would book — the polyline's (lon, lat) \
+         tuple must be crossed into the sampler's (lat, lon) argument order"
+    );
+    assert_eq!(arc(&decoded, 1, 0).ascent_m, 0, "the plane rises monotonically in both axes");
 }
 
 /// **The headline v12 property.** A straight climb books its rise riding up and *nothing* riding
