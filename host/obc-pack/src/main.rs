@@ -7,8 +7,11 @@
 //!
 //! Positional CLI: `<pbf...> <config.json> <out.obcm>`, plus `--bbox W,S,E,N`
 //! (crop the sources to a box during ingest — see [`obc_pack::ingest`]),
-//! `--chunk-size`, `--no-land`, `--dump-pois` (print the classified POI list for
-//! eyeballing), and `--dump-hours` (print each POI's parsed weekly schedule). It
+//! `--chunk-size`, `--no-land`, `--terrain <path>` (baked OBCT tiles — a `.obcd`
+//! container or a directory of them — to integrate the OBCM §8.3 per-direction
+//! ascent from; omit it and every adjacency entry gets `0`), `--dump-pois` (print
+//! the classified POI list for eyeballing), and `--dump-hours` (print each POI's
+//! parsed weekly schedule). It
 //! prints one stage string per phase ("Merging", "Pass 0/1/2", "Calculating BBox",
 //! "Generating land", "Building Quadtree", "Serializing", "Writing") so the web
 //! builder UI can show progress — it matches these prefixes, and their order here
@@ -46,6 +49,9 @@ fn parse_args() -> Result<Args, String> {
                 opts.chunk_size = Some(it.next().and_then(|s| s.parse().ok()).ok_or("--chunk-size needs a number")?);
             }
             "--no-land" => opts.no_land = true,
+            "--terrain" => {
+                opts.terrain = Some(PathBuf::from(it.next().ok_or("--terrain needs a .obcd file or a directory")?));
+            }
             "--dump-pois" => opts.dump_pois = true,
             "--dump-hours" => opts.dump_hours = true,
             _ => positional.push(a),
@@ -54,7 +60,7 @@ fn parse_args() -> Result<Args, String> {
     // `<pbf...> <config.json> <out.obcm>`: last two positionals are config + output.
     if positional.len() < 3 {
         return Err("usage: obc-pack <pbf...> <config.json> <out.obcm> [--bbox W,S,E,N] [--chunk-size N] [--no-land] \
-                    [--dump-pois] [--dump-hours]\n       \
+                    [--terrain <path>] [--dump-pois] [--dump-hours]\n       \
                     obc-pack schema                                 (print the config JSON Schema envelope)\n       \
                     obc-pack catalog <bake-tree> --base-url <url>   (write a bake tree's catalog manifest)\n       \
                     obc-pack cells <pbf...> <config.json> <out-dir> (cut the extract into OBCA grid cells)"
@@ -163,7 +169,7 @@ fn run_cells(args: &[String]) -> Result<(), String> {
     const USAGE: &str = "usage: obc-pack cells <pbf...> <config.json> <out-dir> [--bands <bands.json>] \
                          [--band <id>]... [--cell <log2/i/j>]... \
                          [--source <id>[@<snapshot>][=W,S,E,N]]... \
-                         [--bbox W,S,E,N] [--chunk-size N] [--no-land]";
+                         [--bbox W,S,E,N] [--chunk-size N] [--no-land] [--terrain <path>]";
     let mut positional: Vec<String> = Vec::new();
     let mut opts = CutOptions::default();
     let mut it = args.iter();
@@ -179,6 +185,7 @@ fn run_cells(args: &[String]) -> Result<(), String> {
                 opts.chunk_size = Some(next("--chunk-size")?.parse().map_err(|_| "--chunk-size needs a number")?);
             }
             "--no-land" => opts.no_land = true,
+            "--terrain" => opts.terrain = Some(PathBuf::from(next("--terrain")?)),
             other if other.starts_with("--") => return Err(format!("unknown flag `{other}`\n{USAGE}")),
             other => positional.push(other.to_string()),
         }

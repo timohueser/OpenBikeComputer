@@ -38,6 +38,7 @@ pub mod poi;
 pub mod progress;
 pub mod quadtree;
 pub mod serialize;
+pub mod terrain;
 
 pub use pipeline::{pack, PackOptions, PackSummary};
 pub use progress::{CancelToken, PackError, Phase, Progress};

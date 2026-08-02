@@ -1,4 +1,4 @@
-# OBCM File Format Specification (v11)
+# OBCM File Format Specification (v12)
 
 OBCM (OpenStreetMap Binary Chunked Map) is a compact binary map format designed
 for efficient rendering on memory-constrained devices such as microcontrollers
@@ -78,7 +78,33 @@ Stacked, real maps land at **~2.3–2.5× smaller** (monaco 1 597 945 → 683 53
 grimsel 6 189 979 → 2 614 924 B) with byte-for-byte the same decoded geometry.
 Tight chunks are also a read win: a chunk miss reads the chunk's real length —
 averaging ~1 600 B, 3–4 SD blocks — instead of a fixed 4096 B / 8 blocks.
-**v11 is the only supported version**; earlier maps get repacked.
+(v11 was the only supported version until v12, below; its geometry sections are
+unchanged by it.)
+
+**Version 12** (issue #1073, elevation epic #1068) makes the routable graph
+**climb-aware**. Two fields, one section — §8. The header, style table, geometry
+(§5), POI section (§7), hours pool (§7.5), nav directory (§8.1), node quadtree
+(§8.2) and edge pool (§8.4) are **byte-identical to v11**.
+
+1. **The §8.3 neighbor entry grows 15 → 17 bytes**: a trailing `uint16 Ascent M`,
+   the **integrated** climb of riding that edge *from this record's node toward
+   the neighbor*, in metres, saturating. Integrated rather than an endpoint
+   difference, because a pass between two equal-height junctions has hundreds of
+   metres of climb and no net change — the number A\* needs is the integral. It
+   lives in the adjacency entry and nowhere else because relaxation reads exactly
+   that record; §8's "no second fetch" intent is the whole reason the entry
+   carries its neighbor's coordinate inline.
+2. **The §8.6 profile record grows 52 → 56 bytes**: a `uint8 Climb Weight` (flat
+   metres charged per metre of ascent; `0` = climb-blind) plus three reserved
+   bytes written `0`.
+
+The degree cap survives untouched: `13 + 17 × 24 = 421 ≤ 512`, so a cap-degree
+junction record still fits one pinned nav chunk. Real maps grow ~0.3–0.6 %.
+
+A map packed **without** terrain writes `Ascent M = 0` everywhere and is
+decode-valid: it routes exactly as v11 did, which is both the degrade path and
+what every fixture in the tree carries until the terrain track (#1068 EL2) is
+baked. **v12 is the only supported version**; earlier maps get repacked.
 
 **Version 9** (epic #533 N2) is a §8-only bump that makes the router **bike-type
 aware** and shrinks the section it reads (measured ~58% padding in v8 node
@@ -141,7 +167,7 @@ Packed as `struct "<4sBiiiiIBIHII"`.
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
 | 0 | Magic | 4 | `char[4]` | Must be `b"OBCM"` |
-| 4 | Version | 1 | `uint8` | `0x0B` |
+| 4 | Version | 1 | `uint8` | `0x0C` |
 | 5 | Min Lat | 4 | `int32` | Global bbox min latitude (microdegrees) |
 | 9 | Min Lon | 4 | `int32` | Global bbox min longitude |
 | 13 | Max Lat | 4 | `int32` | Global bbox max latitude |
@@ -649,7 +675,7 @@ region has millions of graph elements), so A\* **re-fetches spatially** — sett
 a node is one quadtree descent to its coord's leaf + one chunk read — and each
 record carries its neighbors' coords **inline** so relaxation (`f = g + h`) needs
 no second fetch. Edge geometry is touched only when the final route is emitted.
-Only the directory and the profile table (≤ `8 × 52 = 416` B) are resident.
+Only the directory and the profile table (≤ `8 × 56 = 448` B) are resident.
 
 ### 8.1 Nav Directory (28 bytes)
 
@@ -662,7 +688,7 @@ Only the directory and the profile table (≤ `8 × 52 = 416` B) are resident.
 | 16 | Edge Chunk Count | 4 | `uint32` | Number of `Chunk Size`-byte chunks in the edge pool |
 | 20 | Chunk Size | 2 | `uint16` | Fixed capacity of every nav chunk — **must be `512`** (the reader rejects any other value) |
 | 22 | Profile Table Offset | 4 | `uint32` | Absolute byte offset of the §8.6 profile table |
-| 26 | Profile Count | 1 | `uint8` | Number of 52-byte profile records; **`1..=8`** (reader rejects `0` or `> 8`) |
+| 26 | Profile Count | 1 | `uint8` | Number of 56-byte profile records; **`1..=8`** (reader rejects `0` or `> 8`) |
 | 27 | Reserved | 1 | `uint8` | `0` (keeps the directory even-sized; no other meaning) |
 
 Node data chunks begin at `Index Offset + Index Node Count * 4` — the §3/§4
@@ -712,7 +738,7 @@ chunk-decode are unchanged.
 ### 8.3 Junction records (variable length)
 
 Records are packed back-to-back into 512-byte chunks; unused trailing bytes are
-`0xFF`. A record is `13 + 15 × Degree` bytes:
+`0xFF`. A record is `13 + 17 × Degree` bytes:
 
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
@@ -720,9 +746,9 @@ Records are packed back-to-back into 512-byte chunks; unused trailing bytes are
 | 4 | Lon | 4 | `int32` | Longitude, **absolute** microdegrees |
 | 8 | Node Id | 4 | `uint32` | Dense pack-run node id (the A\* hash key; stable within one file) |
 | 12 | Degree | 1 | `uint8` | Neighbor count; **`0xFF` = end-of-chunk sentinel** |
-| 13 | Neighbors | 15 × Degree | | `Degree` entries, layout below |
+| 13 | Neighbors | 17 × Degree | | `Degree` entries, layout below |
 
-Per neighbor entry (15 bytes):
+Per neighbor entry (17 bytes, v12):
 
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
@@ -732,13 +758,24 @@ Per neighbor entry (15 bytes):
 | 8 | Edge Id | 4 | `uint32` | The connecting edge, §8.4 addressing |
 | 12 | Cost M | 2 | `uint16` | The edge's raw ground length in meters (the unweighted distance) |
 | 14 | Way Kind | 1 | `uint8` | The edge's packed class byte (§8.6) — the input to profile weighting |
+| 15 | Ascent M | 2 | `uint16` | **Directional** (v12): the integrated climb, in metres, of riding this edge *from this record's node toward the neighbor*. Saturating; `0` on a map packed without terrain |
 
 The neighbor's absolute coord is reconstructed as `(Lat + dLat, Lon + dLon)`; the
 packer guarantees both endpoints of every edge sit within `int16` of each other
 (see §8.4) so the delta never overflows. `Cost M` is the **unweighted** ground
 distance; the profile-weighted cost A\* actually accumulates is
-`Cost M × effective_multiplier(Way Kind) >> 4` (§8.6), computed on device at
-relaxation — the file stores distance, not weight.
+`Cost M × effective_multiplier(Way Kind) >> 4 + Ascent M × Climb Weight` (§8.6),
+computed on device at relaxation — the file stores distance and climb, not weight.
+
+`Ascent M` is an **integral over the edge's polyline, not an endpoint
+difference**. A pass road between two 500 m junctions has hundreds of metres of
+climb in each direction and no net change at all; an endpoint delta would price
+it as flat. The producer samples elevation along the edge's densified polyline
+(one sample per vertex plus interpolated points, so no gap exceeds ~50 m of
+ground) and folds the `(distance, elevation)` stream through the shared
+dead-banded integrator, so the number a route is *costed* by is the number the
+rider is later *shown*. A stretch with no elevation coverage contributes nothing:
+the integrator re-anchors across the hole rather than booking the climb over it.
 
 Rules:
 
@@ -746,18 +783,29 @@ Rules:
   `Degree` would sit reads `0xFF` — the reader stops there (mirrors the POI
   subtype sentinel; the geometry chunks' style-id sentinel likewise). A record
   never straddles a chunk boundary, so a chunk decodes in isolation.
-- **Degree cap: 24.** `13 + 24 × 15 = 373 ≤ 512`, so a cap-degree record always
+- **Degree cap: 24.** `13 + 24 × 17 = 421 ≤ 512`, so a cap-degree record always
   fits one chunk; real OSM junction degrees never approach it. A pathological
   node keeps its **first 24** adjacency entries (edge-pool order, deterministic)
   and the packer warns; a dropped arc survives one-way via the neighbor's own
   record. `0xFF` can therefore never be a real degree.
-- **Undirected.** Every edge appears in both endpoints' records with the **same**
-  `Edge Id`, `Cost M`, and `Way Kind`. A self-loop (`a == b`, e.g. a lollipop
-  loop) appears **once** in its node's record.
+- **Undirected, with one exception.** Every edge appears in both endpoints'
+  records with the **same** `Edge Id`, `Cost M`, and `Way Kind`. **`Ascent M` is
+  the exception and MUST NOT be assumed equal**: the entry `a→b` carries
+  `ascent(a→b)` and the entry `b→a` carries `ascent(b→a)`, which is the first
+  direction's *descent*. A consumer that verifies "both sides agree" must exclude
+  this field. A self-loop (`a == b`, e.g. a lollipop loop) appears **once** in its
+  node's record, carrying its forward direction's ascent.
+- **Seam determinism.** A producer that cuts one edge into pieces at a cell border
+  (`OBCA_Spec.md` §3) integrates each piece over the **same global elevation
+  lattice**, so two neighbouring cells' stubs are each the integral of their own
+  geometry over one surface and the pieces' ascents sum to the uncut edge's.
 - Degree `0` is valid to decode but the packer never emits it (every junction
   comes from at least one edge endpoint).
 
 ### 8.4 Edge pool
+
+*(Byte-identical to v9/v11. The v12 climb lives in the adjacency entry, not here:
+the pool is fetched only at route emit, and A\* must not have to touch it.)*
 
 Deduplicated edge geometry, fetched **only at route emit** (stitching the A\*
 came-from chain into the output polyline; also the sum of `Length M` over the
@@ -808,32 +856,37 @@ Packer guarantees that make the fixed `int16` deltas, the `int16` neighbor delta
 
 A minimal graph — two junctions `A`(lat 100, lon 200) and `B`(lat 900, lon 800)
 joined by one 3-vertex edge of 1234 m and way-kind `0x2A` (tertiary/paved: highway
-class 10 `| (`surface class 1 `<< 5)`) — with one profile "`Road`" and the section
-at file offset `S`:
+class 10 `| (`surface class 1 `<< 5)`) that climbs 300 m from `A` to `B` and
+re-climbs 42 m of dips on the way back — with one profile "`Road`" (climb weight
+10) and the section at file offset `S`:
 
 ```
 S+0    Nav Directory (28 B):
-         index_offset          = S+80      (= S+28 + 52 profile table)
+         index_offset          = S+84      (= S+28 + 56 profile table)
          index_node_count      = 1
          node_chunk_count      = 1
-         edge_pool_offset      = S+596     (= S+80 + 4 index + 512 node chunk)
+         edge_pool_offset      = S+600     (= S+84 + 4 index + 512 node chunk)
          edge_chunk_count      = 1
          chunk_size            = 512
          profile_table_offset  = S+28
          profile_count         = 1
          reserved              = 0
-S+28   Profile Table (52 B):
+S+28   Profile Table (56 B):
          profile 0: name="Road"      (12 B, 0xFF-padded)
                     highway[32]       (u8 1/16 multipliers)
                     surface[8]
-S+80   Node Quadtree (4 B):  [0x00000000]        single leaf → node chunk 0
-S+84   Node Chunk 0 (512 B):
+                    climb_weight=10   (1 B)
+                    reserved          (3 B, zero)
+S+84   Node Quadtree (4 B):  [0x00000000]        single leaf → node chunk 0
+S+88   Node Chunk 0 (512 B):
          rec A: lat=100 lon=200 id=0 degree=1
-                nbr { id=1, dLat=+800, dLon=+600, edge_id=0, cost_m=1234, way_kind=0x2A }  (28 B)
+                nbr { id=1, dLat=+800, dLon=+600, edge_id=0, cost_m=1234,
+                      way_kind=0x2A, ascent_m=300 }                          (30 B)
          rec B: lat=900 lon=800 id=1 degree=1
-                nbr { id=0, dLat=-800, dLon=-600, edge_id=0, cost_m=1234, way_kind=0x2A }  (28 B)
-         0xFF × 456                                (padding = sentinel)
-S+596  Edge Pool chunk 0 (512 B):
+                nbr { id=0, dLat=-800, dLon=-600, edge_id=0, cost_m=1234,
+                      way_kind=0x2A, ascent_m=42 }                           (30 B)
+         0xFF × 452                                (padding = sentinel)
+S+600  Edge Pool chunk 0 (512 B):
          edge 0 (at pool offset 0 ⇒ edge_id = 0):
            length_m=1234  pt_count=3  way_kind=0x2A  anchor=(lat 100, lon 200)
            deltas: (+400,+300) (+400,+300)          → (500,500), (900,800)   (23 B)
@@ -841,13 +894,17 @@ S+596  Edge Pool chunk 0 (512 B):
 ```
 
 Node `A` reconstructs neighbor `B` as `(100 + 800, 200 + 600) = (900, 800)` — no
-edge fetch needed for `h`. Both directions of the edge carry `edge_id = 0`;
-fetching it decodes the polyline `(100,200) → (500,500) → (900,800)`, its way-kind
-`0x2A`, and its 1234 m length in one ≤ 512-byte read.
+edge fetch needed for `h`. Both directions of the edge carry `edge_id = 0`,
+`cost_m = 1234` and `way_kind = 0x2A`; only `ascent_m` differs, and that is the
+v12 exception above — the same road costs 300 m of climb uphill and 42 m down.
+Under "`Road`" the uphill arc weighs `(1234 × 16) >> 4 + 300 × 10 = 4234` and the
+downhill one `1234 + 42 × 10 = 1654`. Fetching the edge decodes the polyline
+`(100,200) → (500,500) → (900,800)`, its way-kind `0x2A`, and its 1234 m length in
+one ≤ 512-byte read.
 
 ### 8.6 Profile table (bike-type routing)
 
-`Profile Count` (1..=8) consecutive **52-byte** records at `Profile Table Offset`,
+`Profile Count` (1..=8) consecutive **56-byte** records at `Profile Table Offset`,
 one per selectable bike profile (Road / Gravel / MTB / Touring by default). The
 device picks one by index; A\* weights each edge by it. The table is **always
 present** — even an empty graph carries ≥ 1 profile — and the reader rejects a
@@ -858,6 +915,13 @@ present** — even an empty graph carries ≥ 1 profile — and the reader rejec
 | 0 | Name | 12 | `char[12]` | UTF-8, `0xFF`-padded (the §7.3 POI-name convention) |
 | 12 | Highway Multipliers | 32 | `uint8[32]` | Weight per **highway class**, `1/16` fixed-point; `16` = 1.0×, `0` = **forbidden** |
 | 44 | Surface Multipliers | 8 | `uint8[8]` | Weight per **surface class**, same encoding |
+| 52 | Climb Weight | 1 | `uint8` | **v12**: flat metres charged per metre of §8.3 `Ascent M`. `0` = climb-blind |
+| 53 | Reserved | 3 | `uint8[3]` | Written `0`; readers MUST ignore |
+
+Stock values are Road `10` / Gravel `8` / MTB `6` / Touring `8` — a road rider
+detours further to avoid a climb than a mountain biker does. `0` is a legal and
+meaningful value: it reproduces v11's costing exactly, and it is what a producer
+writes when it has no opinion.
 
 The **effective multiplier** for an edge whose packed `Way Kind` is `k` is:
 
@@ -868,8 +932,13 @@ effective = (mh × ms) >> 4       # u32 math; 16×16>>4 = 16 = 1.0×
 ```
 
 The edge is **forbidden** (not routable under this profile) if either byte is `0`.
-The weighted A\* cost of the edge is `Cost M × effective >> 4` (saturating into the
-`uint16` frontier cost exactly as v8 did).
+The weighted A\* cost of the edge is
+
+```
+weighted = (Cost M × effective) >> 4  +  Ascent M × Climb Weight     # saturating
+```
+
+(saturating into the `uint16` frontier cost exactly as v8 did).
 
 **Admissibility invariant (normative).** Every **non-zero** multiplier is `≥ 16`
 (i.e. `≥ 1.0×`). This keeps the great-circle heuristic admissible, so the existing
@@ -878,6 +947,17 @@ The packer **rejects** a config whose quantized weight is non-zero but `< 16` wi
 an error naming this A\* heuristic bound; the reader **clamps** a non-zero
 multiplier `< 16` up to `16` defensively (a hand-forged file can't hand the router
 an inadmissible weight).
+
+**The climb term is additive and non-negative (normative, v12).** `Ascent M` and
+`Climb Weight` are both unsigned and the term is *added*, so a descent MUST NOT
+reduce an edge's cost below its profile-weighted ground length. That is what keeps
+the great-circle heuristic admissible in the presence of elevation — a
+descent-credit formulation would let an edge cost less than the straight-line
+distance the heuristic assumes, and the `ε`-ladder's guarantee would go with it.
+`Climb Weight` therefore needs no lower bound the way a multiplier does: every
+`uint8`, `0` included, is admissible. Range check: the worst real edge (60 km,
+3000 m of ascent, the §8.4 split bounds) at `Climb Weight = 15` is
+`60 000 + 45 000`, inside the existing saturating arithmetic.
 
 #### Canonical way-kind table (normative)
 
@@ -944,7 +1024,8 @@ legality) is the profile's job.
 - **Reader + renderer (Rust, no_std):** `firmware/obc-reader` — `reader.rs`
   (`Reader`, `for_each_feature`, `select_lod_for_mpp`, the POI + nav directories +
   the profile table in `MapTables`, `for_each_nav_node`, `NavNeighbor` delta
-  decode, `nav_edge`, `MapProfile::multiplier`) — and `firmware/obc-render`
+  decode, `nav_edge`, `MapProfile::multiplier`, `MapProfile::climb_weight`) — and
+  `firmware/obc-render`
   (`Viewport`, `MapRenderer`). Format-contract tests in
   `firmware/obc-reader/tests/format.rs` (byte pins) and
   `host/obc-pack/tests/nav_round_trip.rs` (writer↔reader §8 round trip, incl.

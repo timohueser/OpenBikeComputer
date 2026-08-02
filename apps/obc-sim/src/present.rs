@@ -682,7 +682,7 @@ mod tests {
         let cache = MapCache::new();
         let r = Reader::new(&src, &tables, &cache);
 
-        assert_eq!(r.version, 11, "the fixture is OBCM v11");
+        assert_eq!(r.version, obc_formats::obcm::VERSION, "the fixture is the OBCM version this build reads");
         let dir = r.poi_directory();
         // The directory is always present with all six categories (spec §7.1).
         assert_eq!(dir.entries.len(), 6, "six-category POI directory");

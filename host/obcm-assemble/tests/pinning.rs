@@ -15,6 +15,7 @@
 //! the answer is: the packer writes a map, this test slices the three tables out of it, and the
 //! engine's writers are asked to produce the same bytes.
 
+use obc_elevation::NullElevation;
 use obc_formats::obcm::{HEADER_LEN, LOD_ENTRY_LEN, NAV_CHUNK_SIZE, POI_CHUNK_SIZE, STYLE_RECORD_LEN};
 use obc_pack::geom::Geom;
 use obc_pack::nav::NavGraph;
@@ -99,9 +100,17 @@ fn packed() -> (Vec<u8>, Vec<Style>, Vec<StyleRecord>, u16) {
             root: build_lod_with(features[..take].to_vec(), bbox, 1024, &Progress::silent()),
         })
         .collect();
-    let profiles = [NavProfile { name: "Road".into(), highway: [16; 32], surface: [16; 8] }];
-    let (bytes, dropped) =
-        serialize_lods(&lods, &pack_styles, marker_color, bbox, &[], &NavGraph::default(), &profiles);
+    let profiles = [NavProfile { name: "Road".into(), highway: [16; 32], surface: [16; 8], climb_weight: 10 }];
+    let (bytes, dropped) = serialize_lods(
+        &lods,
+        &pack_styles,
+        marker_color,
+        bbox,
+        &[],
+        &NavGraph::default(),
+        &profiles,
+        &mut NullElevation,
+    );
     assert_eq!(dropped, 0, "the fixture must not lose features to the chunk cap");
     (bytes, pack_styles, engine_styles, marker_color)
 }

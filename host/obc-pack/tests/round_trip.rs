@@ -11,6 +11,7 @@
 //! `to_udeg` recovers it exactly) and every segment stays under the 30 000-µdeg
 //! densify threshold, so no midpoints are inserted and point counts are preserved.
 
+use obc_elevation::NullElevation;
 use obc_map_scene::{BBox, Kind as ReadKind};
 use obc_pack::{serialize_lods, Feature, Kind as PackKind, LodLayer, Node, Style};
 use obc_reader::{MapCache, MapTables, Reader, SliceSource, MAX_FEAT_PTS, MAX_FEAT_RINGS};
@@ -90,6 +91,7 @@ fn packed() -> Vec<u8> {
         &[],
         &Default::default(),
         &obc_pack::config::default_profiles(),
+        &mut NullElevation,
     );
     assert_eq!(dropped, 0, "every fixture feature fits its chunk");
     bytes
@@ -155,7 +157,7 @@ fn header_round_trips() {
     let src = SliceSource(&bytes);
     let tables = MapTables::parse(&src).unwrap();
     let r = Reader::new(&src, &tables, &cache);
-    assert_eq!(r.version, 11);
+    assert_eq!(r.version, obc_formats::obcm::VERSION);
     assert_eq!(r.marker_color, MARKER);
     // bbox stored lat,lon,lat,lon in the header; the reader must hand it back
     // with lon and lat in the right fields (max_lon=2°, max_lat=1°).
@@ -298,6 +300,7 @@ fn many_holed_polygon_survives_the_reader() {
         &[],
         &Default::default(),
         &obc_pack::config::default_profiles(),
+        &mut NullElevation,
     );
     assert_eq!(dropped, 0, "every split piece fits its chunk");
 
