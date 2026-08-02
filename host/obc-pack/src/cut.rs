@@ -63,6 +63,8 @@ use crate::poi::Poi;
 use crate::progress::{PackError, Phase, Progress};
 use crate::quadtree::build_lod_with;
 use crate::serialize::{serialize_lods_streaming, validate_chunk_size, Node};
+use crate::terrain::TerrainSet;
+use obc_elevation::{ElevationSource, NullElevation};
 
 /// Filename of the cutter's provenance sidecar, written **last** (see [`cut_ingested`]).
 pub const MANIFEST_NAME: &str = "cells.json";
@@ -135,6 +137,15 @@ pub struct CutOptions {
     pub no_land: bool,
     /// Crop the sources to this box during ingest.
     pub bbox: Option<Bbox>,
+    /// Baked OBCT terrain (a `.obcd` container or a directory of them) to integrate the OBCM §8.3
+    /// per-direction `Ascent M` from. Absent ⇒ every adjacency entry gets `0`.
+    ///
+    /// **Seam-safe by construction.** The cutter slices edges exactly on cell-edge lines and the
+    /// ascent of a piece is integrated from the *global* OBCT lattice, never from anything cell-local
+    /// — so the stub the western neighbour bakes and the stub the eastern one bakes are each the
+    /// integral of their own geometry over one shared surface, and re-cutting a cell alone
+    /// reproduces the identical bytes.
+    pub terrain: Option<PathBuf>,
     /// Logical source extent used for land generation and the cut manifest.
     ///
     /// Ordinarily the ingest derives this from the retained features. Planet
@@ -153,6 +164,7 @@ impl Default for CutOptions {
             chunk_size: None,
             no_land: false,
             bbox: None,
+            terrain: None,
             source_extent: None,
         }
     }
@@ -264,6 +276,12 @@ pub fn cut_ingested(
         }
     }
     let extract = opts.source_extent.unwrap_or_else(|| crate::pipeline::compute_bbox(ing));
+    // Opened once for the whole run and shared by every cell: validating a hundred containers per
+    // cell would dominate a cut. `sampler_for` is the per-cell part.
+    let terrain_set = match &opts.terrain {
+        None => None,
+        Some(path) => Some(TerrainSet::open(path)?),
+    };
     let styles = config.styles();
     let mut artifacts: Vec<CellArtifact> = Vec::new();
 
@@ -303,7 +321,32 @@ pub fn cut_ingested(
                 };
                 let trees: Vec<(usize, Node)> =
                     lod_sets.iter().map(|set| (set.lod, set.cell_tree(*cell, chunk_size, progress))).collect();
-                write_cell(cell, band, out_dir, config, &styles, chunk_size, trees, &pois, &graph, &opts.sources)
+                // One sampler per cell: it opens only the OBCT containers this square touches, and
+                // an `ElevationSource` is `&mut` by design (it caches tiles), so it cannot be shared
+                // across the rayon workers. A cell outside the supplied terrain gets an empty
+                // sampler, which answers `None` everywhere exactly like `NullElevation`.
+                let mut sampler = match &terrain_set {
+                    None => None,
+                    Some(set) => Some(set.sampler_for(Some(cell.square()))?),
+                };
+                let mut null = NullElevation;
+                let terrain: &mut dyn ElevationSource = match &mut sampler {
+                    Some(s) => s,
+                    None => &mut null,
+                };
+                write_cell(
+                    cell,
+                    band,
+                    out_dir,
+                    config,
+                    &styles,
+                    chunk_size,
+                    trees,
+                    &pois,
+                    &graph,
+                    terrain,
+                    &opts.sources,
+                )
             })
             .collect();
         for w in written {
@@ -730,6 +773,7 @@ fn write_cell(
     trees: Vec<(usize, Node)>,
     pois: &[Poi],
     graph: &NavGraph,
+    terrain: &mut dyn ElevationSource,
     sources: &[SourceExtent],
 ) -> Result<CellArtifact, String> {
     let square = cell.square();
@@ -751,6 +795,7 @@ fn write_cell(
         pois,
         graph,
         &config.routing.profiles,
+        terrain,
         |i| {
             // In band ⇒ its tree; out of band ⇒ an empty region, so band membership never shows up
             // in the bytes (§3.1).

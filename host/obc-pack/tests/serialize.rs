@@ -1,6 +1,7 @@
 //! Byte-pinned serializer tests. Polygon rings are pre-closed (`first == last`),
 //! matching the closed geometry that reaches `pack_feature`.
 
+use obc_elevation::NullElevation;
 use obc_pack::{
     pack_chunk, pack_feature, pack_style_dict, serialize_lods, serialize_tree, Feature, Kind, LodLayer, Node, Style,
 };
@@ -122,22 +123,24 @@ fn serialize_lods_header_single_empty_leaf() {
         &[],
         &Default::default(),
         &obc_pack::config::default_profiles(),
+        &mut NullElevation,
     );
     assert_eq!(dropped, 0);
 
     // header(40) + style count(1) + 1 LOD entry(18) + index(4) + the chunkless LOD's one-entry
     // offset table(4) = 67, then the empty POI directory
     // — count(1) + chunk_size(2) + 6 entries × 13 + the two v7 pool fields (offset u32 + count u16 =
-    // 6) = 87 bytes — the empty hours pool (a bare `count u16` = 2 bytes), and the empty v9 nav
+    // 6) = 87 bytes — the empty hours pool (a bare `count u16` = 2 bytes), and the empty nav
     // section (28-byte directory + the always-present profile table) at the tail.
     let poi_dir_len = 1 + 2 + 6 * 13 + 6;
     let hours_pool_len = 2; // an empty pool is just its count
-                            // Empty graph: the 28-byte directory + the four default profiles (52 B each), always present.
-    let profile_table_len = 4 * 52;
+                            // Empty graph: the 28-byte directory + the four default profiles (56 B
+                            // each in v12), always present.
+    let profile_table_len = 4 * obc_formats::obcm::NAV_PROFILE_LEN;
     let nav_section_len = 28 + profile_table_len;
     assert_eq!(bin.len(), 67 + poi_dir_len + hours_pool_len + nav_section_len);
     assert_eq!(&bin[0..4], b"OBCM");
-    assert_eq!(bin[4], 11); // version
+    assert_eq!(bin[4], obc_formats::obcm::VERSION); // version
     assert_eq!(u32::from_le_bytes([bin[21], bin[22], bin[23], bin[24]]), 40); // style offset (40 since v8)
     assert_eq!(bin[25], 1); // lod count
     let lod_tbl = u32::from_le_bytes([bin[26], bin[27], bin[28], bin[29]]) as usize;
@@ -383,6 +386,7 @@ fn serialize_keeps_chunk_index_consistent_when_a_feature_overflows() {
         &[],
         &Default::default(),
         &obc_pack::config::default_profiles(),
+        &mut NullElevation,
     );
     assert_eq!(dropped, 1, "the overflowing feature is reported dropped");
 
@@ -540,8 +544,16 @@ fn a_leaf_wider_than_the_u16_anchor_round_trips_through_both_forms() {
     let lods =
         vec![LodLayer { max_mpp: None, chunk_size: 4096, root: Node::Leaf { bbox: BBOX, features: vec![near, far] } }];
     let styles = vec![Style { id: 1, z_index: 0, color: 0x1234, weight: 1, priority: 1, dashed: false, color2: None }];
-    let (bin, dropped) =
-        serialize_lods(&lods, &styles, 0xF800, BBOX, &[], &Default::default(), &obc_pack::config::default_profiles());
+    let (bin, dropped) = serialize_lods(
+        &lods,
+        &styles,
+        0xF800,
+        BBOX,
+        &[],
+        &Default::default(),
+        &obc_pack::config::default_profiles(),
+        &mut NullElevation,
+    );
     assert_eq!(dropped, 0);
 
     let cache = MapCache::new();

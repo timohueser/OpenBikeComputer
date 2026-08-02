@@ -254,7 +254,7 @@ describe("control-plane codecs", () => {
         // reader reads — the fact `OBCC_Spec.md` §10 filters the catalog on, and a different
         // number in a different sequence from the protocol `version` beside it.
         const full = decodeVersionRead(vector("version-read.bin"));
-        expect(full).toEqual({ version: 2, storeEpoch: hex("0xA1B2C3D4"), obcmVersion: 11 });
+        expect(full).toEqual({ version: 2, storeEpoch: hex("0xA1B2C3D4"), obcmVersion: REFERENCE_OBCM_VERSION });
         expectSameBytes(encodeVersionRead(full), vector("version-read.bin"), "version-read");
 
         // 6 bytes: a firmware predating the field. Unknown, not zero — `obcmVersion: 0` would read
@@ -281,7 +281,7 @@ describe("control-plane codecs", () => {
         expect(decodeVersionRead(future)).toEqual({
             version: 2,
             storeEpoch: hex("0xA1B2C3D4"),
-            obcmVersion: 11,
+            obcmVersion: REFERENCE_OBCM_VERSION,
         });
     });
 

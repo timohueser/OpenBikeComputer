@@ -6,8 +6,9 @@
 //! drifts, these break. `obcm-testkit` shares the layout with `obc-render`'s priority test.
 
 use obc_formats::obcm::{
-    BRANCH_BIT, EMPTY_LEAF, HEADER_LEN, NAV_CHUNK_SIZE, NAV_DIR_LEN, NAV_EDGE_FIXED_LEN, NAV_NEIGHBOR_LEN,
-    NAV_NODE_FIXED_LEN, POI_HOURS_BLOB_LEN, POI_RECORD_LEN,
+    BRANCH_BIT, EMPTY_LEAF, HEADER_LEN, NAV_CHUNK_SIZE, NAV_DIR_LEN, NAV_EDGE_FIXED_LEN, NAV_NEIGHBOR_ASCENT_OFF,
+    NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN, NAV_PROFILE_CLIMB_WEIGHT_OFF, NAV_PROFILE_LEN, POI_HOURS_BLOB_LEN,
+    POI_RECORD_LEN,
 };
 use obc_map_scene::{BBox, Kind};
 use obc_reader::{Error, MapCache, MapTables, Reader, SliceSource, MAX_FEAT_PTS, MAX_FEAT_RINGS};
@@ -99,7 +100,7 @@ fn header_and_lod_table() {
     let tables = MapTables::parse(&src).unwrap();
     let r = Reader::new(&src, &tables, &cache);
 
-    assert_eq!(r.version, 11);
+    assert_eq!(r.version, obc_formats::obcm::VERSION);
     assert_eq!(r.marker_color, MARKER);
     assert_eq!(r.bbox.min_lon, 0);
     assert_eq!(r.bbox.min_lat, 0);
@@ -424,7 +425,7 @@ fn rejects_bad_input() {
     assert_eq!(err(&bytes), Error::BadMagic);
 
     let mut bytes = two_lod_file();
-    bytes[4] = 10; // v10 (and earlier) no longer supported — only v11 is read
+    bytes[4] = obc_formats::obcm::VERSION - 1; // the immediately-prior format is no longer read
     assert_eq!(err(&bytes), Error::BadVersion);
 }
 
@@ -659,10 +660,11 @@ fn walk_caps_depth_on_forward_chain() {
 fn header_is_40_bytes_with_poi_and_nav_offsets() {
     let bytes = two_lod_file();
 
-    // Version byte is 10; the style table follows the header, so the style offset equals the 40-byte
-    // header length (v10 grows the style *record*, not the header).
+    // The style table follows the header, so the style offset equals the 40-byte header length —
+    // no version since v8 has grown the header (v10 grew the style *record*, v11 the geometry
+    // chunks, v12 the §8 nav records).
     assert_eq!(HEADER_LEN, 40);
-    assert_eq!(bytes[4], 11);
+    assert_eq!(bytes[4], obc_formats::obcm::VERSION);
     assert_eq!(u32::from_le_bytes(bytes[21..25].try_into().unwrap()) as usize, HEADER_LEN);
 
     // The POI section offset lives at header byte 32 (right after the 2-byte marker at 30) and is
@@ -684,7 +686,7 @@ fn header_is_40_bytes_with_poi_and_nav_offsets() {
     let profile_count = bytes[nav_off + 26] as usize;
     assert!((1..=8).contains(&profile_count), "1..=8 profiles always present");
     assert_eq!(
-        profile_off + profile_count * 52,
+        profile_off + profile_count * obc_formats::obcm::NAV_PROFILE_LEN,
         bytes.len(),
         "the empty nav section (directory + profile table) ends the file"
     );
@@ -901,25 +903,32 @@ fn empty_poi_directory_builder_matches_reader() {
     assert_eq!(u16::from_le_bytes([dir[count_field], dir[count_field + 1]]), 0, "empty pool");
 }
 
-// === Nav-graph section (v9, spec §8) — byte-pinned contract ==================
+// === Nav-graph section (v12, spec §8) — byte-pinned contract =================
 //
-// These pin the v9 §8 layout explicitly: the 28-byte nav directory (with the profile-table
-// offset/count fields), the always-present §8.6 profile table right after it, the §8.3
-// variable-length junction record with 15-byte inline neighbor entries (i16 coord deltas +
-// cost_m u16 + way_kind, the 0xFF degree sentinel + padding), the §8.4 edge record (15-byte head
-// with way_kind + anchor + i16 delta pairs) and its pool-relative-byte-offset addressing, the
-// empty-graph convention, and the corrupt-directory guards (incl. chunk-size != 512 and
-// profile_count == 0). Where `build_file` writes an empty nav section, the populated test
-// hand-assembles it so the bytes are pinned, not derived.
+// These pin the §8 layout explicitly: the 28-byte nav directory (with the profile-table
+// offset/count fields), the always-present §8.6 profile table right after it (56 B per record in
+// v12: the multipliers plus `climb_weight` and its three reserved zeros), the §8.3
+// variable-length junction record with **17-byte** inline neighbor entries (i16 coord deltas +
+// cost_m u16 + way_kind + the v12 directional `ascent_m` u16, the 0xFF degree sentinel + padding),
+// the §8.4 edge record (15-byte head with way_kind + anchor + i16 delta pairs — byte-identical to
+// v11) and its pool-relative-byte-offset addressing, the empty-graph convention, and the
+// corrupt-directory guards (incl. chunk-size != 512 and profile_count == 0). Where `build_file`
+// writes an empty nav section, the populated test hand-assembles it so the bytes are pinned, not
+// derived.
 
 /// The distinctive `way_kind` byte the hand-assembled section carries on both the edge and the
 /// adjacency entries (so the byte-pins can locate it).
 const NAV_TEST_KIND: u8 = 0x2A;
 
+/// The v12 `Ascent M` of the hand-assembled edge, per direction. Deliberately different values:
+/// the §8.3 "both sides agree" rule has exactly one exception and this is what pins it.
+const NAV_TEST_ASCENT_AB: u16 = 300;
+const NAV_TEST_ASCENT_BA: u16 = 42;
+
 /// Replace `base`'s tail (empty) nav section with a hand-assembled populated one: two junction
-/// nodes joined by one 3-point edge. Returns `(bytes, nav_off)`. Layout at `nav_off`:
-/// `[28-byte directory][profile table (1 profile, 52 B)][1-node index][one 512 B node chunk]
-/// [one 512 B edge-pool chunk]`.
+/// nodes joined by one 3-point edge that climbs 300 m eastward. Returns `(bytes, nav_off)`. Layout
+/// at `nav_off`: `[28-byte directory][profile table (1 profile, 56 B)][1-node index]
+/// [one 512 B node chunk][one 512 B edge-pool chunk]`.
 fn nav_two_node_map() -> (Vec<u8>, usize) {
     let base = two_lod_file();
     let nav_off = u32::from_le_bytes(base[36..40].try_into().unwrap()) as usize;
@@ -932,10 +941,13 @@ fn nav_two_node_map() -> (Vec<u8>, usize) {
     let edge = pack_nav_edge_record(1234, NAV_TEST_KIND, &[(100, 200), (500, 500), (900, 800)]);
     assert_eq!(edge.len(), NAV_EDGE_FIXED_LEN + 2 * 4, "3-point record: 15-byte head + two delta pairs");
 
-    // Two degree-1 junctions, each carrying the other inline (as an i16 delta) + edge 0 + cost + kind.
-    let rec0 = pack_nav_record(100, 200, 0, &[(1, 900, 800, 0, 1234, NAV_TEST_KIND)]);
-    let rec1 = pack_nav_record(900, 800, 1, &[(0, 100, 200, 0, 1234, NAV_TEST_KIND)]);
-    assert_eq!(rec0.len(), NAV_NODE_FIXED_LEN + NAV_NEIGHBOR_LEN, "degree-1 record is 28 bytes");
+    // Two degree-1 junctions, each carrying the other inline (as an i16 delta) + edge 0 + cost +
+    // kind + the v12 ascent. The two ascents differ **on purpose**: riding 0 → 1 climbs 300 m, and
+    // riding 1 → 0 is that descent, which books 42 m of its own re-climb here. Same edge, same
+    // `edge_id`, same `cost_m`, same `way_kind` — one field that legitimately disagrees.
+    let rec0 = pack_nav_record(100, 200, 0, &[(1, 900, 800, 0, 1234, NAV_TEST_KIND, NAV_TEST_ASCENT_AB)]);
+    let rec1 = pack_nav_record(900, 800, 1, &[(0, 100, 200, 0, 1234, NAV_TEST_KIND, NAV_TEST_ASCENT_BA)]);
+    assert_eq!(rec0.len(), NAV_NODE_FIXED_LEN + NAV_NEIGHBOR_LEN, "degree-1 record is 30 bytes");
 
     // The always-present profile table sits right after the directory; the index follows it.
     let profile_table = default_nav_profile_table();
@@ -989,20 +1001,21 @@ fn empty_nav_directory_parses_and_walks_nothing() {
     assert_eq!(r.nav_edge(0, &mut pts), None, "no edge pool ⇒ no edge");
 }
 
-/// Pin the populated v9 §8 bytes: the 28-byte directory fields (incl. the profile-table
-/// offset/count), the §8.6 profile table right after the directory, the exact junction-record
-/// layout (lat, lon, id, degree, then a 15-byte neighbor entry — id, i16 dlat/dlon, edge_id, u16
-/// cost_m, way_kind), the 0xFF degree sentinel + padding, and the §8.4 edge record (length,
-/// pt_count, way_kind, anchor, i16 delta pairs) — then parse it all back through the reader,
-/// checking the exact delta reconstruction of the neighbor coords.
+/// Pin the populated v12 §8 bytes: the 28-byte directory fields (incl. the profile-table
+/// offset/count), the §8.6 profile table right after the directory (climb weight + reserved zeros),
+/// the exact junction-record layout (lat, lon, id, degree, then a 17-byte neighbor entry — id, i16
+/// dlat/dlon, edge_id, u16 cost_m, way_kind, u16 ascent_m), the 0xFF degree sentinel + padding, and
+/// the §8.4 edge record (length, pt_count, way_kind, anchor, i16 delta pairs) — then parse it all
+/// back through the reader, checking the exact delta reconstruction of the neighbor coords and that
+/// the two directions of one edge carry their own ascents.
 #[test]
 fn populated_nav_section_round_trips_with_record_layout() {
     let (bytes, nav_off) = nav_two_node_map();
 
     // Directory bytes (§8.1) at their fixed offsets. The index follows the directory + the profile
-    // table (1 profile × 52 B here).
+    // table (1 profile × 56 B in v12).
     let index_offset = u32::from_le_bytes(bytes[nav_off..nav_off + 4].try_into().unwrap()) as usize;
-    assert_eq!(index_offset, nav_off + NAV_DIR_LEN + 52, "index follows the directory + 1-profile table");
+    assert_eq!(index_offset, nav_off + NAV_DIR_LEN + 56, "index follows the directory + 1-profile table");
     assert_eq!(u32::from_le_bytes(bytes[nav_off + 4..nav_off + 8].try_into().unwrap()), 1, "index_node_count");
     assert_eq!(u32::from_le_bytes(bytes[nav_off + 8..nav_off + 12].try_into().unwrap()), 1, "node_chunk_count");
     let edge_pool_offset = u32::from_le_bytes(bytes[nav_off + 12..nav_off + 16].try_into().unwrap()) as usize;
@@ -1014,14 +1027,18 @@ fn populated_nav_section_round_trips_with_record_layout() {
     assert_eq!(profile_off, nav_off + NAV_DIR_LEN, "profile table immediately after the directory");
     assert_eq!(bytes[nav_off + 26], 1, "profile_count");
     assert_eq!(bytes[nav_off + 27], 0, "reserved");
-    // The profile record: 12-byte name ("Default", 0xFF-padded) then 32 highway + 8 surface bytes.
+    // The profile record: 12-byte name ("Default", 0xFF-padded), 32 highway + 8 surface bytes, then
+    // v12's climb weight and its three reserved bytes — which are **zero**, not 0xFF padding.
     assert_eq!(&bytes[profile_off..profile_off + 7], b"Default", "profile name");
     assert_eq!(bytes[profile_off + 7], 0xFF, "name is 0xFF-padded");
+    assert_eq!(bytes[profile_off + NAV_PROFILE_CLIMB_WEIGHT_OFF], 0, "the testkit profile is climb-blind");
+    assert_eq!(&bytes[profile_off + 53..profile_off + 56], &[0, 0, 0], "reserved tail is zero");
+    assert_eq!(NAV_PROFILE_LEN, 56, "v12 §8.6 record width");
 
     // Node chunk starts right after the 1-node index (the §3/§4 convention). Pin record 0's exact
-    // 28 bytes: lat, lon, id, degree, then the 15-byte neighbor entry.
+    // 30 bytes: lat, lon, id, degree, then the 17-byte neighbor entry.
     let chunk_off = index_offset + 4;
-    let rec = &bytes[chunk_off..chunk_off + 28];
+    let rec = &bytes[chunk_off..chunk_off + 30];
     assert_eq!(i32::from_le_bytes(rec[0..4].try_into().unwrap()), 100, "lat");
     assert_eq!(i32::from_le_bytes(rec[4..8].try_into().unwrap()), 200, "lon");
     assert_eq!(u32::from_le_bytes(rec[8..12].try_into().unwrap()), 0, "node id");
@@ -1032,9 +1049,22 @@ fn populated_nav_section_round_trips_with_record_layout() {
     assert_eq!(u32::from_le_bytes(rec[21..25].try_into().unwrap()), 0, "edge_id");
     assert_eq!(u16::from_le_bytes(rec[25..27].try_into().unwrap()), 1234, "cost_m (u16)");
     assert_eq!(rec[27], NAV_TEST_KIND, "way_kind");
-    // After the two 28-byte records the padding's first byte lands on the next degree slot — but
+    assert_eq!(u16::from_le_bytes(rec[28..30].try_into().unwrap()), NAV_TEST_ASCENT_AB, "ascent_m (v12)");
+    assert_eq!(
+        NAV_NODE_FIXED_LEN + NAV_NEIGHBOR_ASCENT_OFF,
+        28,
+        "the ascent field sits at record offset 28 = 13-byte head + entry offset 15"
+    );
+    // Record 1 is the same edge from the other end: identical edge_id / cost_m / way_kind, its own
+    // ascent. That inequality is the §8.3 v12 exception, pinned in bytes.
+    let rec1 = &bytes[chunk_off + 30..chunk_off + 60];
+    assert_eq!(u32::from_le_bytes(rec1[21..25].try_into().unwrap()), 0, "same edge_id from the far end");
+    assert_eq!(u16::from_le_bytes(rec1[25..27].try_into().unwrap()), 1234, "same cost_m");
+    assert_eq!(rec1[27], NAV_TEST_KIND, "same way_kind");
+    assert_eq!(u16::from_le_bytes(rec1[28..30].try_into().unwrap()), NAV_TEST_ASCENT_BA, "its own ascent_m");
+    // After the two 30-byte records the padding's first byte lands on the next degree slot — but
     // every padding byte is 0xFF, so the whole tail is the sentinel.
-    assert!(bytes[chunk_off + 56..chunk_off + 512].iter().all(|&b| b == 0xFF), "0xFF padding ends the records");
+    assert!(bytes[chunk_off + 60..chunk_off + 512].iter().all(|&b| b == 0xFF), "0xFF padding ends the records");
 
     // Edge record bytes (§8.4) at pool offset 0: length, pt_count, way_kind, anchor, deltas (23 B).
     let e = &bytes[edge_pool_offset..edge_pool_offset + 23];
@@ -1072,8 +1102,10 @@ fn populated_nav_section_round_trips_with_record_layout() {
     // Neighbor coords are reconstructed exactly as (record coord + i16 delta); way_kind survives.
     let n = seen[0].3[0];
     assert_eq!((n.id, n.lat, n.lon, n.edge_id, n.cost_m, n.way_kind), (1, 900, 800, 0, 1234, NAV_TEST_KIND));
+    assert_eq!(n.ascent_m, NAV_TEST_ASCENT_AB, "the a→b entry decodes its own climb");
     let n = seen[1].3[0];
     assert_eq!((n.id, n.lat, n.lon, n.edge_id, n.cost_m, n.way_kind), (0, 100, 200, 0, 1234, NAV_TEST_KIND));
+    assert_eq!(n.ascent_m, NAV_TEST_ASCENT_BA, "…and the b→a entry decodes the other one");
 
     // Edge fetch by pool-relative byte offset: id 0 decodes the polyline as the crate's (lon, lat)
     // pairs and returns length_m.
