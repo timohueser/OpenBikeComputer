@@ -1095,6 +1095,14 @@ and get no object at all — the same known-empty ranges say so. The dataset's
 required credit rides in the block, so the builder shows it rather than hard-coding
 a string that can go stale.
 
+Selection is where that separateness stops being an abstraction. A map's terrain is
+the squares whose grid cell the selection touches — the same intersect rule the
+bands use, run on the terrain lattice — and there is deliberately **no toggle** for
+it: elevation is roughly five per cent of a download, and a switch would make a
+rider decide something they have no way to decide well. So the builder prices it as
+its own line, credits the source beside it, and downloads it with the map; the
+assembler writes it as one file per set, and the device finds it there.
+
 One coupling is real, and the catalog states it rather than hiding it. The routing
 band's cells are baked *sampling* that raster: each navigation edge stores the
 metres it climbs, integrated from the terrain at bake time. So the root records
@@ -1232,6 +1240,9 @@ So a logical map is a **volume set**: a tiny fixed-layout manifest plus 1..N ord
 - **A viewport query goes to every shard whose box it touches.** A shard that does not carry the requested LOD has an empty index for it and contributes nothing, so the dispatch needs no notion of roles. Each file's "which LODs am I empty at" answer is cached at mount from its own LOD table — seven bits per file — so the role-free dispatch costs no reads either.
 - **The manifest is written last.** A half-uploaded set has no manifest and never mounts — and a shard on its own is never mounted as a standalone map, even though it would open, because a map with no roads is exactly the kind of quiet wrongness a rider cannot diagnose.
 - **A small map is a set of one**, which is nearly every selection: a country is under a gigabyte, a 300 km corridor around a trip's routes projects to about a quarter of one.
+- **One terrain shard**, when the selection has elevation, carries the whole map's raster — a single [OBCT](src:specs/OBCT_Spec.md) container rather than an OBCM file, so the manifest's fourth role is the one that names something a map reader never opens. It spans the whole assembly, and it is always its own file: at DACH scale it is ≈ 430 MiB against the same 4 GiB ceiling, an order of magnitude of headroom, so splitting it would buy a file-count problem in exchange for nothing.
+
+Assembling terrain is the shortest step of the whole pipeline, and it is worth saying why: it is *placement*, not grafting. A published terrain cell is already in its final form, and the sample lattice is global and half-open, so two neighbouring cells agree about every sample without anyone looking. There is no index to relocate, no seam to unify, and nothing to decode — the assembler writes one directory over the assembly rectangle and copies each cell's block into the slot its id names. Squares the selection covers but the catalog publishes no object for — canonically void ocean, or ground outside the dataset — are a zero in that directory, which reads exactly like a block of "no data": four bytes instead of two megabytes. A set with no raster at all is not a degraded map; it is the map every selection produced before terrain existed, with flat profiles and zero baked ascent.
 
 Mounting preserves that one-map illusion all the way through the UI. The runtime opens every shard
 for the mount lifetime, parses the full style and LOD tables once from the core, and keeps only each
