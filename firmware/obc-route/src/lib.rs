@@ -61,7 +61,9 @@ pub use deadband::{DeadBand, Elev, ELE_DEADBAND_M};
 pub use geo::{tri_area_m2, tri_area_m2_cl};
 pub use gpx::{GpxScanner, RawPoint, RawWaypoint, WptScanner, WAYPOINT_SYMBOL_CAP};
 pub use matcher::{Match, RouteMatch};
-pub use nav::{plan_detour, plan_route, NavError, NavPhase, NavPlanner, NavScratch, Step, NAV_MAX_NODES};
+pub use nav::{
+    plan_detour, plan_route, NavError, NavPhase, NavPlanner, NavScratch, Step, NAV_MAX_NODES, NAV_SNAP_STRIPS,
+};
 pub use profile::{
     elevation_sparkline, ride_elevation_profile, ride_preview_polyline, Profile, Window, PROFILE_COLS,
     SPARKLINE_BUCKETS,

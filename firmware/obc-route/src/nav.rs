@@ -118,6 +118,23 @@ const SNAP_EDGE_MAX_M: f32 = NAV_SNAP_EDGE_MAX_M as f32;
 // the endpoint-query proof conservative at the exact bound.
 const SNAP_EDGE_REACH_M: f32 = SNAP_EDGE_MAX_M / 2.0 + 1.0;
 
+/// How many latitude bands the snap's one exhaustive ~501 m search box is cut into, **one band
+/// per [`step`](NavPlanner::step)** — the snap phase's step budget. Snapping projects candidate
+/// edge polylines (a ~1.1 ms SD chunk read each, and unlike a settle there is no per-record
+/// cap), so an unbudgeted snap on a dense urban graph was measured at hundreds of chunk reads
+/// in a single step — a visible UI stall between two rendered frames. Eight bands cut the worst
+/// measured step to ~⅛ of that while adding only `2 × 8` snap steps to a plan that runs
+/// hundreds of search steps.
+pub const NAV_SNAP_STRIPS: usize = 8;
+
+/// The band scan order: middle-out from the band under the requested point (the box is centred
+/// on it), so the nearest road is usually found in the first band or two and every later band's
+/// [`nearest_nav_edge_cached`](Reader::nearest_nav_edge_cached) call inherits that distance as
+/// its cap — its chord-distance pre-filter then rejects nearly everything without a read. Bands
+/// `3` and `4` share the centre; distance ties break low-first. A constant because the point is
+/// always the box centre.
+const SNAP_STRIP_ORDER: [i32; NAV_SNAP_STRIPS] = [3, 4, 2, 5, 1, 6, 0, 7];
+
 /// Internal ids for the virtual A* nodes at projected edge endpoints. Packed node
 /// ids are dense from zero, so the top two `u32` values are outside every real map.
 const VIRTUAL_START_ID: u32 = u32::MAX;
@@ -623,8 +640,16 @@ pub struct NavPlanner {
     /// `Some` when that endpoint projected into an edge interior. A virtual graph
     /// node at the projected coordinate connects to both real edge endpoints; the
     /// same metadata clips the first/last emitted geometry to the projection.
+    ///
+    /// During that endpoint's snap phase the same slot doubles as the band-scan
+    /// accumulator (the best [`NavEdgeSnap`] over the bands run so far); the phase's
+    /// last band normalizes it ([`SnappedEndpoint::from_snap`]) — an exact endpoint
+    /// hit becomes a real node id and the slot returns to `None`.
     start_edge: Option<NavEdgeSnap>,
     goal_edge: Option<NavEdgeSnap>,
+    /// The next [`SNAP_STRIP_ORDER`] band the active snap phase will scan — the snap
+    /// step budget's cursor, `0..NAV_SNAP_STRIPS` within each of the two snap phases.
+    snap_ordinal: u8,
     /// Total settles so far — the RTT line's `settles=` figure, and the budget tests' probe. Stays
     /// **cumulative across [`NAV_EPSILON_LADDER`] rungs** (N8): an escalated plan's `settles` is the
     /// honest total work over every attempt, not just the last.
@@ -677,6 +702,7 @@ impl NavPlanner {
             goal_c: (0, 0),
             start_edge: None,
             goal_edge: None,
+            snap_ordinal: 0,
             settles: 0,
             rung: 0,
             table_full: false,
@@ -774,12 +800,30 @@ impl NavPlanner {
             PhaseState::SnapFrom => {
                 // First step of the plan: claim the caller's buffers and resolve the bike profile
                 // once (out-of-range index → profile 0; see `ProfileMult::resolve`).
-                scratch.reset();
-                tiles.reset();
-                self.mult = ProfileMult::resolve(reader, self.profile_idx);
-                let Some(snapped) = snap(reader, tiles, self.from) else {
+                if self.snap_ordinal == 0 {
+                    scratch.reset();
+                    tiles.reset();
+                    self.mult = ProfileMult::resolve(reader, self.profile_idx);
+                }
+                // One band of the bounded box per step (the snap step budget); `start_edge`
+                // accumulates the best find, and each band caps the next one's search.
+                let cap = self.start_edge.map_or(SNAP_RADIUS_M, |b| b.distance_m);
+                match snap_band(reader, tiles, self.from, self.snap_ordinal, cap) {
+                    Err(()) => return self.fail(NavError::NoPath),
+                    Ok(Some(found)) if self.start_edge.is_none_or(|old| snap_beats(&found, &old)) => {
+                        self.start_edge = Some(found);
+                    }
+                    Ok(_) => {}
+                }
+                self.snap_ordinal += 1;
+                if usize::from(self.snap_ordinal) < NAV_SNAP_STRIPS {
+                    return Step::Running;
+                }
+                self.snap_ordinal = 0;
+                let Some(edge) = self.start_edge.take() else {
                     return self.fail(NavError::NoPath);
                 };
+                let snapped = SnappedEndpoint::from_snap(edge);
                 self.start_c = snapped.coord();
                 self.start_edge = snapped.edge();
                 self.start_id = if self.start_edge.is_some() { VIRTUAL_START_ID } else { snapped.node_id() };
@@ -787,9 +831,23 @@ impl NavPlanner {
                 Step::Running
             }
             PhaseState::SnapTo => {
-                let Some(snapped) = snap(reader, tiles, self.to) else {
+                let cap = self.goal_edge.map_or(SNAP_RADIUS_M, |b| b.distance_m);
+                match snap_band(reader, tiles, self.to, self.snap_ordinal, cap) {
+                    Err(()) => return self.fail(NavError::NoPath),
+                    Ok(Some(found)) if self.goal_edge.is_none_or(|old| snap_beats(&found, &old)) => {
+                        self.goal_edge = Some(found);
+                    }
+                    Ok(_) => {}
+                }
+                self.snap_ordinal += 1;
+                if usize::from(self.snap_ordinal) < NAV_SNAP_STRIPS {
+                    return Step::Running;
+                }
+                self.snap_ordinal = 0;
+                let Some(edge) = self.goal_edge.take() else {
                     return self.fail(NavError::NoPath);
                 };
+                let snapped = SnappedEndpoint::from_snap(edge);
                 self.goal_c = snapped.coord();
                 self.goal_edge = snapped.edge();
                 self.goal_id = if self.goal_edge.is_some() { VIRTUAL_GOAL_ID } else { snapped.node_id() };
@@ -1327,53 +1385,70 @@ fn settle<const N: usize>(
     Ok(())
 }
 
-/// Snap `p` to the nearest point on routable **edge geometry** within
+/// One band of snapping `p` to the nearest point on routable **edge geometry** within
 /// [`SNAP_RADIUS_M`]. The node quadtree remains the spatial index: packed edges are
-/// at most [`SNAP_EDGE_MAX_M`], so every point on it lies within half that length
-/// of one endpoint. An edge touching the snap disc therefore has an endpoint inside
-/// the combined ~501 m search radius (including rounding guard). Expanding rings stop once the nearest projected
-/// edge plus that half-length reach fits inside the ring; the final ring is exhaustive
-/// by construction. Edge records are projected segment-by-segment by
+/// at most [`SNAP_EDGE_MAX_M`], so every point on one lies within half that length
+/// of an endpoint, and an edge touching the snap disc therefore has an endpoint inside
+/// the combined ~501 m search box (including rounding guard) — the box is exhaustive
+/// by construction, with no expanding-ring walk needed. The box is scanned as
+/// [`NAV_SNAP_STRIPS`] latitude bands, **one per planner step** in [`SNAP_STRIP_ORDER`],
+/// with earlier bands' best distance handed on as `cap`; the step arms merge the
+/// per-band winners. Edge records are projected segment-by-segment by
 /// [`Reader::nearest_nav_edge_cached`], so bends use their real polyline, not a chord.
 ///
-/// A projection exactly on an edge endpoint normalizes to that real graph node.
-/// Otherwise the planner creates a virtual node connected to both endpoints with
-/// proportional partial costs. **Kind-agnostic** remains locked on #536: the nearest
-/// road wins first; the active profile may then make its edge forbidden and produce
-/// an honest [`NavError::NoPath`].
+/// `Err` is a read failure (or an unroutable map), degrading to the plan's generic
+/// failure tier like every other I/O error.
 #[inline(never)] // #419/#501: a phase-boundary frame — never inlined into the step frame
-fn snap(reader: &Reader, tiles: &mut NavTileCache, p: (i32, i32)) -> Option<SnappedEndpoint> {
+fn snap_band(
+    reader: &Reader,
+    tiles: &mut NavTileCache,
+    p: (i32, i32),
+    ordinal: u8,
+    cap: f32,
+) -> Result<Option<NavEdgeSnap>, ()> {
     if reader.nav_directory().is_empty() {
-        return None;
+        return Err(());
     }
     let cl = cos_lat(p.1).max(1e-3);
     let search_m = SNAP_RADIUS_M + SNAP_EDGE_REACH_M;
     let full_half = libm::ceilf(search_m / M_PER_DEG as f32 * 1e6) as i32;
-    let mut half = (full_half / 4).max(1);
-    loop {
-        let lon_half = ((half as f32 / cl) as i32).max(1);
-        let view = BBox {
-            min_lon: p.0.saturating_sub(lon_half),
-            min_lat: p.1.saturating_sub(half),
-            max_lon: p.0.saturating_add(lon_half),
-            max_lat: p.1.saturating_add(half),
-        };
-        let best = reader.nearest_nav_edge_cached(&view, tiles, p, SNAP_RADIUS_M).ok()?;
-        let half_m = half as f32 * (M_PER_DEG as f32) * 1e-6;
-        if let Some(edge) = best {
-            if edge.distance_m + SNAP_EDGE_REACH_M <= half_m || half >= full_half {
-                if edge.position.coord == edge.a.coord {
-                    return Some(SnappedEndpoint::Node { id: edge.a.id, coord: edge.a.coord });
-                }
-                if edge.position.coord == edge.b.coord {
-                    return Some(SnappedEndpoint::Node { id: edge.b.id, coord: edge.b.coord });
-                }
-                return Some(SnappedEndpoint::Edge(edge));
-            }
+    let lon_half = ((full_half as f32 / cl) as i32).max(1);
+    let band = SNAP_STRIP_ORDER[ordinal as usize];
+    // Integer band edges tile the box exactly: band k spans [k, k+1] × span/STRIPS from the
+    // bottom, the last band absorbing the division remainder. A node on a shared boundary is
+    // visited by both bands; the merge is idempotent, so that is harmless.
+    let bottom = p.1.saturating_sub(full_half);
+    let step = (2 * full_half) / NAV_SNAP_STRIPS as i32;
+    let lo = bottom.saturating_add(step * band);
+    let hi = if band as usize == NAV_SNAP_STRIPS - 1 {
+        p.1.saturating_add(full_half)
+    } else {
+        bottom.saturating_add(step * (band + 1))
+    };
+    let view =
+        BBox { min_lon: p.0.saturating_sub(lon_half), min_lat: lo, max_lon: p.0.saturating_add(lon_half), max_lat: hi };
+    reader.nearest_nav_edge_cached(&view, tiles, p, cap).map_err(|_| ())
+}
+
+/// Whether `new` beats `old` under the snap's total order — nearer wins, exact distance ties
+/// break to the lower edge id. The same order [`Reader::nearest_nav_edge_cached`] applies
+/// within one call, so merging per-band winners with it is equivalent to one whole-box scan.
+fn snap_beats(new: &NavEdgeSnap, old: &NavEdgeSnap) -> bool {
+    new.distance_m < old.distance_m || (new.distance_m == old.distance_m && new.edge_id < old.edge_id)
+}
+
+impl SnappedEndpoint {
+    /// Normalize a winning projection: exactly on an edge endpoint → that real graph node
+    /// (no virtual node needed); anywhere interior → an edge snap. **Kind-agnostic** remains
+    /// locked on #536: the nearest road wins first; the active profile may then make its edge
+    /// forbidden and produce an honest [`NavError::NoPath`].
+    fn from_snap(edge: NavEdgeSnap) -> Self {
+        if edge.position.coord == edge.a.coord {
+            SnappedEndpoint::Node { id: edge.a.id, coord: edge.a.coord }
+        } else if edge.position.coord == edge.b.coord {
+            SnappedEndpoint::Node { id: edge.b.id, coord: edge.b.coord }
+        } else {
+            SnappedEndpoint::Edge(edge)
         }
-        if half >= full_half {
-            return None;
-        }
-        half = (half * 2).min(full_half);
     }
 }

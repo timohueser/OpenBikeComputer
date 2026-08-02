@@ -377,6 +377,33 @@ fn same_snap_node_emits_single_point_route() {
     assert_eq!((pts[0].lon, pts[0].lat), at(0, 0));
 }
 
+/// The snap phase is **step-budgeted**: each endpoint's exhaustive search box is scanned as
+/// `NAV_SNAP_STRIPS` bands, one per `step()`, so the host's render/input loop breathes between
+/// bands instead of stalling behind one unbounded projection sweep. Pins the step count so a
+/// future "simplify" back to one step per endpoint fails loudly.
+#[test]
+fn snap_phase_runs_one_band_per_step() {
+    let bytes = map_with(&grid3(false));
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let cache = MapCache::new();
+    let r = Reader::new(&src, &tables, &cache);
+    let mut scratch = NavScratch::<{ obc_route::NAV_MAX_NODES }>::new();
+    let mut tiles = NavTileCache::new();
+    let mut sink = VecSink::default();
+    let mut p = NavPlanner::new(at(0, 0), at(2, 2), "Budgeted", 0);
+    let mut snap_steps = 0;
+    while matches!(p.phase(), obc_route::NavPhase::Snap) {
+        assert!(matches!(p.step(&r, &mut scratch, &mut tiles, &mut sink), obc_route::Step::Running));
+        snap_steps += 1;
+        assert!(snap_steps <= 2 * obc_route::NAV_SNAP_STRIPS, "the snap phase never ends");
+    }
+    assert_eq!(snap_steps, 2 * obc_route::NAV_SNAP_STRIPS, "one band per step, both endpoints");
+    let ((sid, sc), _) = p.endpoints();
+    assert_eq!(sc, at(0, 0), "the budgeted snap still lands on the exact nearest point");
+    assert_ne!(sid, 0xFFFF_FFFF, "an exact node hit normalizes to the real graph node");
+}
+
 /// A rider beside the middle of a long road is more than 250 m from either junction, but only
 /// metres from the edge. Both directions start at the exact projected road point, clip the edge
 /// geometry there, and charge only the partial raw edge length.
@@ -788,8 +815,8 @@ fn abandoned_mid_search_plan_wrote_nothing() {
     let from = (BASE.0 + 30, BASE.1);
     let to = (BASE.0 + 599 * 135 - 30, BASE.1);
     let mut planner = NavPlanner::new(from, to, "x", 0);
-    for _ in 0..10 {
-        // 2 snap steps + 8 search steps — well before the ~600-settle search could finish.
+    for _ in 0..(2 * obc_route::NAV_SNAP_STRIPS + 8) {
+        // Both banded snap phases + 8 search steps — well before the ~600-settle search finishes.
         assert_eq!(planner.step(&r, &mut scratch, &mut tiles, &mut sink), obc_route::Step::Running);
     }
     assert_eq!(planner.phase(), NavPhase::Search, "still searching when abandoned");
