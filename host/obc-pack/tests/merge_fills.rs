@@ -4,6 +4,7 @@
 //! still packs every leaf (`dropped == 0`), round-trips through the reader, and a
 //! no-candidate run is byte-identical to packing without the transform at all.
 
+use obc_elevation::NullElevation;
 use obc_pack::geom::Geom;
 use obc_pack::merge::{merge_classes, merge_fills};
 use obc_pack::quadtree::build_lod;
@@ -35,7 +36,16 @@ fn cell(style_id: u8, gx: i64, gy: i64) -> (u8, Geom) {
 fn pack(features: Vec<(u8, Geom)>, styles: &[Style]) -> (Vec<u8>, usize) {
     let root = build_lod(features, GLOBAL, CHUNK);
     let lod = LodLayer { max_mpp: None, chunk_size: CHUNK, root };
-    serialize_lods(&[lod], styles, MARKER, GLOBAL, &[], &Default::default(), &obc_pack::config::default_profiles())
+    serialize_lods(
+        &[lod],
+        styles,
+        MARKER,
+        GLOBAL,
+        &[],
+        &Default::default(),
+        &obc_pack::config::default_profiles(),
+        &mut NullElevation,
+    )
 }
 
 /// `(feature count, total vertex count)` decoded from LOD 0 through the real reader

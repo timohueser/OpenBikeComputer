@@ -16,7 +16,7 @@
 //! (§7.5). **v8** grew the header to 40 bytes (the trailing `Nav Graph Offset`) and
 //! appended the nav-graph section (spec §8): a node quadtree over variable-length
 //! junction records plus a chunked edge pool. **v9** reworked §8 (28-byte nav
-//! directory + profile table, 15-byte neighbor entries, pinned 512-byte nav chunks).
+//! directory + profile table, 17-byte neighbor entries, pinned 512-byte nav chunks).
 //! **v10** grows the style record 6 → 8 bytes: a `dashed` flag bit + an optional
 //! `color2` u16 (spec §2, epic #556). **v11** packs geometry chunks tight behind a
 //! per-LOD offset table ([`chunk_region`], [`seal`]) and reorders the feature header
@@ -222,9 +222,10 @@ pub fn nav_directory(
     d
 }
 
-/// Pack one §8.6 profile record (52 bytes): a `0xFF`-padded 12-byte name + 32 highway + 8 surface
-/// multipliers (`u8` 1/16 fixed-point). `name` is truncated to 12 bytes.
-pub fn nav_profile_record(name: &str, highway: [u8; 32], surface: [u8; 8]) -> Vec<u8> {
+/// Pack one §8.6 profile record (56 bytes, v12): a `0xFF`-padded 12-byte name + 32 highway + 8
+/// surface multipliers (`u8` 1/16 fixed-point) + the `climb_weight` byte + 3 reserved zero bytes.
+/// `name` is truncated to 12 bytes.
+pub fn nav_profile_record(name: &str, highway: [u8; 32], surface: [u8; 8], climb_weight: u8) -> Vec<u8> {
     let mut rec = Vec::with_capacity(NAV_PROFILE_LEN);
     let nb = name.as_bytes();
     let n = nb.len().min(NAV_PROFILE_NAME_LEN);
@@ -232,14 +233,16 @@ pub fn nav_profile_record(name: &str, highway: [u8; 32], surface: [u8; 8]) -> Ve
     rec.resize(NAV_PROFILE_NAME_LEN, 0xFF);
     rec.extend_from_slice(&highway);
     rec.extend_from_slice(&surface);
+    rec.push(climb_weight);
+    rec.resize(NAV_PROFILE_LEN, 0); // the reserved tail is zero, not 0xFF — it is not a padded name
     assert_eq!(rec.len(), NAV_PROFILE_LEN);
     rec
 }
 
-/// A minimal §8.6 profile table: one profile ("Default", every multiplier 16 = 1.0×), 52 bytes —
-/// enough to satisfy the v9 reader's "1..=8 profiles, always present" rule.
+/// A minimal §8.6 profile table: one profile ("Default", every multiplier 16 = 1.0×, climb-blind),
+/// 56 bytes — enough to satisfy the reader's "1..=8 profiles, always present" rule.
 pub fn default_nav_profile_table() -> Vec<u8> {
-    nav_profile_record("Default", [16; 32], [16; 8])
+    nav_profile_record("Default", [16; 32], [16; 8], 0)
 }
 
 /// An **empty** v9 nav directory + its (always-present) profile table: no quadtree, no chunks, no
@@ -255,28 +258,31 @@ pub fn empty_nav_directory(section_off: usize) -> Vec<u8> {
     out
 }
 
-/// One v9 §8.3 neighbor entry for [`pack_nav_record`]: `(neighbor_id, lat, lon, edge_id, cost_m,
-/// way_kind)`. `lat`/`lon` are the neighbor's **absolute** µdeg coords ([`pack_nav_record`] stores
-/// the `i16` delta from the owning record's own coord); `cost_m` must fit `u16`.
-pub type NavNeighborSpec = (u32, i32, i32, u32, u32, u8);
+/// One v12 §8.3 neighbor entry for [`pack_nav_record`]: `(neighbor_id, lat, lon, edge_id, cost_m,
+/// way_kind, ascent_m)`. `lat`/`lon` are the neighbor's **absolute** µdeg coords
+/// ([`pack_nav_record`] stores the `i16` delta from the owning record's own coord); `cost_m` must
+/// fit `u16`; `ascent_m` is the climb of riding **toward** this neighbor, so the two entries of one
+/// edge legitimately differ in it.
+pub type NavNeighborSpec = (u32, i32, i32, u32, u32, u8, u16);
 
-/// Pack one variable-length v9 §8.3 junction record: `lat i32, lon i32, node_id u32, degree u8`,
-/// then one 15-byte entry per neighbor (`id u32, dlat i16, dlon i16, edge_id u32, cost_m u16,
-/// way_kind u8`). The record head coords are absolute µdeg (lat first); each neighbor's coord is
-/// stored as an `i16` delta from this record's own `lat`/`lon`.
+/// Pack one variable-length v12 §8.3 junction record: `lat i32, lon i32, node_id u32, degree u8`,
+/// then one 17-byte entry per neighbor (`id u32, dlat i16, dlon i16, edge_id u32, cost_m u16,
+/// way_kind u8, ascent_m u16`). The record head coords are absolute µdeg (lat first); each
+/// neighbor's coord is stored as an `i16` delta from this record's own `lat`/`lon`.
 pub fn pack_nav_record(lat: i32, lon: i32, node_id: u32, neighbors: &[NavNeighborSpec]) -> Vec<u8> {
     let mut rec = Vec::with_capacity(NAV_NODE_FIXED_LEN + neighbors.len() * NAV_NEIGHBOR_LEN);
     rec.extend_from_slice(&lat.to_le_bytes());
     rec.extend_from_slice(&lon.to_le_bytes());
     rec.extend_from_slice(&node_id.to_le_bytes());
     rec.push(neighbors.len() as u8);
-    for &(id, nlat, nlon, edge_id, cost_m, way_kind) in neighbors {
+    for &(id, nlat, nlon, edge_id, cost_m, way_kind, ascent_m) in neighbors {
         rec.extend_from_slice(&id.to_le_bytes());
         rec.extend_from_slice(&((nlat - lat) as i16).to_le_bytes());
         rec.extend_from_slice(&((nlon - lon) as i16).to_le_bytes());
         rec.extend_from_slice(&edge_id.to_le_bytes());
         rec.extend_from_slice(&(cost_m as u16).to_le_bytes());
         rec.push(way_kind);
+        rec.extend_from_slice(&ascent_m.to_le_bytes());
     }
     rec
 }

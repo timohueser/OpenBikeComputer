@@ -7,12 +7,12 @@
 mod common;
 
 use common::{decode, VecSink};
+use obc_elevation::NullElevation;
 use obc_formats::io::SliceSource;
 use obc_pack::nav::{Edge, NavGraph, Node};
 use obc_pack::{serialize_lods, LodLayer, NavProfile, Node as GeomNode};
 use obc_reader::{MapCache, MapTables, NavTileCache, Reader};
 use obc_route::nav::{plan_route, NavError, NavPhase, NavPlanner, NavScratch};
-use obc_route::NullElevation;
 use obc_route::{RouteIndex, RouteObjectInfo, RouteReader};
 
 /// Global bbox `(min_lon, min_lat, max_lon, max_lat)` µdeg — roomy so the node
@@ -38,7 +38,7 @@ const SHORTCUT_COST: u32 = 3_200;
 /// The shipped defaults are opinionated (Road/Gravel/MTB/Touring); the fixtures deliberately pin a
 /// neutral baseline so a profile-weighting test's math is the *only* thing under test.
 fn neutral_profile() -> NavProfile {
-    NavProfile { name: "Neutral".into(), highway: [16; 32], surface: [16; 8] }
+    NavProfile { name: "Neutral".into(), highway: [16; 32], surface: [16; 8], climb_weight: 0 }
 }
 
 /// A test profile from an explicit set of highway-class overrides (surface all neutral). Each
@@ -50,7 +50,7 @@ fn profile(name: &str, overrides: &[(u8, u8)]) -> NavProfile {
     for &(class, m) in overrides {
         highway[class as usize] = m;
     }
-    NavProfile { name: name.into(), highway, surface: [16; 8] }
+    NavProfile { name: name.into(), highway, surface: [16; 8], climb_weight: 0 }
 }
 
 /// Serialize `graph` into a minimal v9 map (one empty geometry leaf, no styles) with the given
@@ -58,7 +58,7 @@ fn profile(name: &str, overrides: &[(u8, u8)]) -> NavProfile {
 fn map_with_profiles(graph: &NavGraph, profiles: &[NavProfile]) -> Vec<u8> {
     let lods =
         vec![LodLayer { max_mpp: None, chunk_size: 2048, root: GeomNode::Leaf { bbox: GLOBAL, features: vec![] } }];
-    let (bin, dropped) = serialize_lods(&lods, &[], 0xF800, GLOBAL, &[], graph, profiles);
+    let (bin, dropped) = serialize_lods(&lods, &[], 0xF800, GLOBAL, &[], graph, profiles, &mut NullElevation);
     assert_eq!(dropped, 0);
     bin
 }
@@ -487,10 +487,11 @@ fn device_slot_lifecycle_is_uninit_and_alias_clean() {
 #[test]
 fn record_stride_keeps_odd_offsets_exercised() {
     assert_eq!(obc_formats::obcm::NAV_NODE_FIXED_LEN % 2, 1, "the fixed record head is odd-length");
-    assert_eq!(obc_formats::obcm::NAV_NEIGHBOR_LEN, 15, "v9 neighbor entries are 15 bytes");
+    assert_eq!(obc_formats::obcm::NAV_NEIGHBOR_LEN, 17, "v12 neighbor entries are 17 bytes");
     // ⇒ every record's first neighbor entry begins at record_start + 13 (odd), so its multi-byte
-    // fields decode at odd, unaligned offsets. The 15-byte entry keeps consecutive record starts
-    // parity-varying, so record heads are exercised at odd offsets in multi-record chunks too.
+    // fields decode at odd, unaligned offsets. The 17-byte entry is odd too, so consecutive record
+    // starts keep varying parity and record heads are exercised at odd offsets in multi-record
+    // chunks as well — the v12 widening did not accidentally align the layout.
 }
 
 /// The slimmed entry layout holds: 26 B/node (24 B entry + 2 B heap slot) plus the two

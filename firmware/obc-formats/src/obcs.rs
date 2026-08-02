@@ -680,7 +680,7 @@ mod tests {
         let west = SetBBox { max_lon: mid, ..WORLD };
         let east = SetBBox { min_lon: mid, ..WORLD };
         build(
-            11,
+            crate::obcm::VERSION,
             0,
             7,
             WORLD,
@@ -722,7 +722,7 @@ mod tests {
         let bytes = encode(&manifest);
         assert_eq!(&bytes[0..4], b"OBCS");
         assert_eq!(bytes[4], 1); // Version
-        assert_eq!(bytes[5], 11); // OBCM Version
+        assert_eq!(bytes[5], crate::obcm::VERSION); // OBCM Version
         assert_eq!(bytes[6], 4); // Shard Count
         assert_eq!(bytes[7], 0); // Core Shard
         assert_eq!(checked_rd_u32(&bytes, 8).unwrap(), 7); // Schema Revision

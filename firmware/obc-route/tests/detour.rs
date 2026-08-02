@@ -11,6 +11,7 @@
 mod common;
 
 use common::{convert, VecSink};
+use obc_elevation::NullElevation;
 use obc_formats::io::SliceSource;
 use obc_pack::nav::{Edge, NavGraph, Node};
 use obc_pack::{serialize_lods, LodLayer, NavProfile, Node as GeomNode};
@@ -19,7 +20,6 @@ use obc_route::corridor::{Corridor, CORRIDOR_MAX_PTS, MIN_DETOUR_SPAN_M};
 use obc_route::nav::{plan_detour, plan_route, NavError, NavScratch};
 use obc_route::reader::for_each_waypoint;
 use obc_route::splice::{splice_detour, trim_detour_to_tail};
-use obc_route::NullElevation;
 use obc_route::{RouteIndex, RoutePoint, RouteReader, TrimOutcome};
 
 /// Global bbox (µdeg) — roomy so the node quadtree genuinely subdivides (see tests/nav.rs).
@@ -38,14 +38,15 @@ const SEG_COST: u32 = 280;
 const CONN_COST: u32 = 401;
 
 fn neutral_profile() -> NavProfile {
-    NavProfile { name: "Neutral".into(), highway: [16; 32], surface: [16; 8] }
+    NavProfile { name: "Neutral".into(), highway: [16; 32], surface: [16; 8], climb_weight: 0 }
 }
 
 /// Serialize `graph` into a minimal v9 map with one neutral profile (tests/nav.rs's `map_with`).
 fn map_with(graph: &NavGraph) -> Vec<u8> {
     let lods =
         vec![LodLayer { max_mpp: None, chunk_size: 2048, root: GeomNode::Leaf { bbox: GLOBAL, features: vec![] } }];
-    let (bin, dropped) = serialize_lods(&lods, &[], 0xF800, GLOBAL, &[], graph, &[neutral_profile()]);
+    let (bin, dropped) =
+        serialize_lods(&lods, &[], 0xF800, GLOBAL, &[], graph, &[neutral_profile()], &mut NullElevation);
     assert_eq!(dropped, 0);
     bin
 }

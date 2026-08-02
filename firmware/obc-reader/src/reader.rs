@@ -1,4 +1,4 @@
-//! OBCM **v11** format reader: header, style table, LOD table, per-LOD
+//! OBCM **v12** format reader: header, style table, LOD table, per-LOD
 //! quadtree query + chunk decode, the POI directory + hours-pool section, and
 //! the trailing nav-graph section (parse + leaf-walk/record-decode only here —
 //! the A* traversal over it is R3, #465).
@@ -41,8 +41,9 @@ use obc_formats::obcm::{
     POI_HOURS_REF_NONE, POI_RECORD_LEN, STYLE_RECORD_LEN, VERSION,
 };
 use obc_formats::obcm::{
-    HEADER_LEN, LOD_ENTRY_LEN, NAV_CHUNK_SIZE, NAV_EDGE_FIXED_LEN, NAV_MAX_PROFILES, NAV_NEIGHBOR_LEN,
-    NAV_NODE_FIXED_LEN, NAV_PROFILE_LEN, NAV_PROFILE_NAME_LEN, POI_HOURS_BLOB_LEN, POI_NAME_LEN,
+    HEADER_LEN, LOD_ENTRY_LEN, NAV_CHUNK_SIZE, NAV_EDGE_FIXED_LEN, NAV_MAX_PROFILES, NAV_NEIGHBOR_ASCENT_OFF,
+    NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN, NAV_PROFILE_CLIMB_WEIGHT_OFF, NAV_PROFILE_LEN, NAV_PROFILE_NAME_LEN,
+    POI_HOURS_BLOB_LEN, POI_NAME_LEN,
 };
 use obc_map_scene::{cos_lat, ground_dist_m_cl, BBox, Kind, Style, M_PER_DEG};
 
@@ -359,7 +360,7 @@ pub struct NavDirectory {
     pub chunk_size: usize,
     /// Absolute byte offset of the §8.6 profile table (written immediately after this directory).
     pub profile_table_offset: usize,
-    /// Number of 52-byte profile records at `profile_table_offset` (1..=8; parse rejects otherwise).
+    /// Number of 56-byte profile records at `profile_table_offset` (1..=8; parse rejects otherwise).
     pub profile_count: usize,
 }
 
@@ -432,6 +433,9 @@ pub struct MapProfile {
     pub highway: [u8; 32],
     /// Multiplier per surface class (3-bit index). Same encoding.
     pub surface: [u8; 8],
+    /// Flat-metres-equivalent charged per metre of a neighbor entry's `Ascent M` (§8.6, v12).
+    /// `0` = climb-blind, which is what a map packed before terrain existed decodes to.
+    climb_weight: u8,
 }
 
 impl MapProfile {
@@ -439,6 +443,18 @@ impl MapProfile {
     #[inline]
     pub fn name(&self) -> &str {
         core::str::from_utf8(&self.name[..self.name_len]).unwrap_or("")
+    }
+
+    /// The profile's climb weight (§8.6, v12): flat metres charged per metre of ascent. `0` means
+    /// climb-blind — the router costs the edge by ground length alone, exactly as v11 did.
+    ///
+    /// The term it feeds is **additive and non-negative**: weighted cost is
+    /// `(cost_m × effective) >> 4 + ascent_m × climb_weight`, saturating. Descent can never make an
+    /// edge cheaper than its profile-weighted ground length, which is what keeps the great-circle
+    /// heuristic admissible (EL6 is the router side; the reader only serves the number).
+    #[inline]
+    pub fn climb_weight(&self) -> u8 {
+        self.climb_weight
     }
 
     /// Effective edge-weight multiplier for a packed `way_kind` byte, in 1/16 fixed-point:
@@ -469,6 +485,11 @@ pub struct NavNeighbor {
     pub edge_id: u32,
     pub cost_m: u32,
     pub way_kind: u8,
+    /// Integrated climb (m) of riding this edge **from the record's node toward this neighbor**
+    /// (§8.3, v12). **Directional**: the opposite entry of the same edge carries that direction's
+    /// ascent, i.e. this direction's descent — the one field of an adjacency entry that legitimately
+    /// differs between the two sides. `0` everywhere on a map packed without terrain.
+    pub ascent_m: u16,
 }
 
 /// One §8.3 junction record, borrowed from the chunk scratch for a single
@@ -495,7 +516,8 @@ impl<'a> NavNodeRef<'a> {
 
     /// Iterate the adjacency entries in record order. Each neighbor's absolute coord is
     /// reconstructed as `record coord + i16 delta` (cast-free `from_le_bytes` on the slice — the
-    /// #501 alignment rule); `cost_m` widens from the `u16` wire value; `way_kind` is a raw byte.
+    /// #501 alignment rule); `cost_m` widens from the `u16` wire value; `way_kind` is a raw byte;
+    /// `ascent_m` is the v12 directional climb at [`NAV_NEIGHBOR_ASCENT_OFF`].
     #[inline]
     pub fn neighbors(&self) -> impl Iterator<Item = NavNeighbor> + 'a {
         let (base_lat, base_lon) = (self.lat, self.lon);
@@ -506,6 +528,7 @@ impl<'a> NavNodeRef<'a> {
             edge_id: rd_u32(e, 8),
             cost_m: rd_u16(e, 12) as u32,
             way_kind: e[14],
+            ascent_m: rd_u16(e, NAV_NEIGHBOR_ASCENT_OFF),
         })
     }
 }
@@ -809,7 +832,7 @@ pub struct MapTables {
     /// graph's only resident state besides the profile table — everything else streams via
     /// [`Reader::for_each_nav_node`] / [`Reader::nav_edge`].
     nav: NavDirectory,
-    /// The parsed §8.6 routing profiles (1..=8, always present). RAM: at most 8 × 52 B = 416 B
+    /// The parsed §8.6 routing profiles (1..=8, always present). RAM: at most 8 × 56 B = 448 B
     /// resident — the whole profile table stays in `.bss`, exposed via [`Reader::nav_profiles`].
     profiles: heapless::Vec<MapProfile, NAV_MAX_PROFILES>,
     /// Styles indexed by id (0..=255) for O(1) lookup during rendering.
@@ -2725,9 +2748,10 @@ fn parse_poi_directory(src: &dyn ByteSource, offset: usize, total: usize) -> Res
 /// sentinel trick — the padding's first byte always lands on a would-be degree slot). A record
 /// whose declared neighbors run past the chunk is corrupt: stop cleanly, decode nothing further.
 ///
-/// **Byte-wise by contract — never a typed view.** The record stride is 13 + 20·degree bytes
-/// (odd + even), so records — and every multi-byte field in them — sit at **odd offsets** inside
-/// the chunk by design; all decoding goes through the `rd_*` `from_le_bytes`-on-`&[u8]` helpers.
+/// **Byte-wise by contract — never a typed view.** The record stride is 13 + 17·degree bytes
+/// (both odd in v12), so records — and every multi-byte field in them — sit at **odd offsets**
+/// inside the chunk by design; all decoding goes through the `rd_*` `from_le_bytes`-on-`&[u8]`
+/// helpers.
 /// Two guards keep it that way (PR #501's on-glass HardFault dossier): the board build compiles
 /// with `+strict-align` (the ARM backend fused even these byte-wise decodes into an
 /// alignment-trapping `ldrd` under fat LTO — see `obc-fw-nrf54l/.cargo/config.toml`), and the
@@ -2788,7 +2812,7 @@ fn parse_nav_directory(src: &dyn ByteSource, offset: usize, total: usize) -> Res
     if dir.profile_count == 0 || dir.profile_count > NAV_MAX_PROFILES {
         return Err(Error::BadOffset);
     }
-    // Profile-table region (52 B × count) at `profile_table_offset` must lie in-file.
+    // Profile-table region (56 B × count) at `profile_table_offset` must lie in-file.
     if dir.profile_table_offset < HEADER_LEN {
         return Err(Error::BadOffset);
     }
@@ -2829,7 +2853,7 @@ fn parse_nav_directory(src: &dyn ByteSource, offset: usize, total: usize) -> Res
 }
 
 /// Parse the §8.6 profile table into `MapTables`: `dir.profile_count` (1..=8, already range-checked
-/// by [`parse_nav_directory`]) consecutive 52-byte records at `dir.profile_table_offset`. Each
+/// by [`parse_nav_directory`]) consecutive 56-byte records at `dir.profile_table_offset`. Each
 /// record's name field is `0xFF`-padded UTF-8; the two multiplier tables are copied verbatim except
 /// that any **non-zero byte below 16 is clamped up to 16** — the admissibility invariant the packer
 /// enforces, re-applied here so a hand-forged file can't hand N3 an inadmissible weight. A read
@@ -2860,8 +2884,11 @@ fn parse_nav_profiles(
                 *m = 16; // clamp an inadmissible weight up to 1.0× (defensive; the packer forbids it)
             }
         }
+        // The v12 climb weight needs no clamp: every `u8` is admissible because the term it feeds is
+        // additive and non-negative (§8.6). The three reserved bytes behind it are ignored.
+        let climb_weight = buf[NAV_PROFILE_CLIMB_WEIGHT_OFF];
         // `push` can't fail: the loop runs `profile_count ≤ NAV_MAX_PROFILES` times (checked above).
-        let _ = out.push(MapProfile { name, name_len, highway, surface });
+        let _ = out.push(MapProfile { name, name_len, highway, surface, climb_weight });
     }
     Ok(out)
 }
