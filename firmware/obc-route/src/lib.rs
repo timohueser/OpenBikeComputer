@@ -14,6 +14,9 @@
 //!   [`Climbs`] (a hysteresis state machine over the same chunk sweep as the profile).
 //! - [`climb_profile`] — one detected climb re-bucketed into a small [`ClimbProfile`] detail
 //!   buffer (reading only the chunks overlapping the climb) for the ClimbPro-style Climb screen.
+//! - [`eta`] — the gradient-aware time model (`t = dist / v_flat + ascent × k_climb`, per bike
+//!   profile) behind the route summary's EST TIME and the ride's ETA / TIME TO GO tiles; its
+//!   ascent-to-go comes from [`Profile`]'s cumulative-ascent curve.
 //! - [`nav`] — the on-device A* router over the map's §8 nav graph ([`plan_route`]),
 //!   emitting its result as a normal OBCR through the shared converter internals.
 //! - [`symbol`] — the canonical GPX `<sym>`/`<type>` → [`PoiCategory`](obc_reader::PoiCategory)
@@ -39,6 +42,7 @@ pub mod climb_profile;
 pub mod convert;
 pub mod corridor;
 pub mod deadband;
+pub mod eta;
 mod geo;
 pub mod gpx;
 pub mod matcher;
@@ -58,6 +62,7 @@ pub use climb_profile::{ClimbProfile, COLS as CLIMB_PROFILE_COLS};
 pub use convert::{gpx_to_obcr, RouteStats};
 pub use corridor::{Corridor, CORRIDOR_WIDTH_M, MIN_DETOUR_SPAN_M};
 pub use deadband::{DeadBand, Elev, ELE_DEADBAND_M};
+pub use eta::{k_climb_s_per_m, ride_time_s, route_time_s, time_to_go_s, v_flat_mps, K_CLIMB_S_PER_M, V_FLAT_KMH};
 pub use geo::{tri_area_m2, tri_area_m2_cl};
 pub use gpx::{GpxScanner, RawPoint, RawWaypoint, WptScanner, WAYPOINT_SYMBOL_CAP};
 pub use matcher::{Match, RouteMatch};

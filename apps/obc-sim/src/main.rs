@@ -368,6 +368,8 @@ fn stat_field_id(f: obc_app::StatField) -> &'static str {
         F::Grade => "grade",
         F::Elevation => "elevation",
         F::RideTime => "ride-time",
+        F::TimeToGo => "time-to-go",
+        F::Eta => "eta",
         F::Clock => "clock",
         F::NextWaypoint => "next-waypoint",
         F::WaypointList => "waypoint-list",
