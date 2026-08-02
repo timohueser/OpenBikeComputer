@@ -31,6 +31,7 @@
     "host": [
       "obc-bake",
       "obc-bench",
+      "obc-dem",
       "obc-desktop",
       "obc-host-core",
       "obc-mkimage",

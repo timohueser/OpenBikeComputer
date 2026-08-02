@@ -54,6 +54,7 @@ the normative byte layouts: [`OBCM_Spec.md`](specs/OBCM_Spec.md) /
 | `host/obc-bench/` | The **render benchmark + pixel-hash tripwire**: seven fixed scenes through the real pipeline, timings printed and frame hashes gated against `hashes.txt` in CI. |
 | `host/obc-host-core/` | Host glue **shared by the two simulator hosts** (desktop + web): GPX replay stepping, the frame-interleaved route planner, in-memory stores. |
 | `host/obc-mkimage/` | Host tool (`wrap` / `inspect`) — prepends the 64-byte `OBCU` header to a raw app image to make an `UPDATE.BIN`, and decodes + CRC-verifies one. The release pipeline's image producer. |
+| `host/obc-dem/` | The **terrain baker**: Copernicus GLO-30 GeoTIFF → `.obcd` OBCT terrain cells and shards (`obc-dem fetch` / `bake`). Pure Rust, no native dependency; deterministic by contract. The packer never sees a DEM — it samples what this baked. |
 | `host/obc-pack/` | The **map packer** (Rust): OSM `.osm.pbf` → `.obcm` — ingest, multipolygon assembly, land generation, quadtree build, streaming serialize. |
 | `host/obc-replay/`, `host/obc-usb-host/` | GPX replay stepping shared by the simulator hosts, and the VCOM feeder that drives a debug-uart board from a recorded ride. |
 | `host/obcm-testkit/`, `host/obc-vectors/` | The **test oracles**. `obcm-testkit` hand-assembles OBCM bytes from the spec's constants — deliberately independent of the production serializer, so reader tests prove agreement with the *format* rather than with the writer. `obc-vectors` builds the shared `specs/vectors/` fixtures. |
