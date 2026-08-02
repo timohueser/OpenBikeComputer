@@ -1,0 +1,31 @@
+{
+  "schema_version": 2,
+  "terrain_revision": 3,
+  "dataset_id": "copernicus-glo-30",
+  "dataset_version": "2021-1",
+  "posting_log2": 9,
+  "cell_log2": 13,
+  "cells": [
+    {
+      "id": "13/38528/33664",
+      "bytes": 548,
+      "sha256": "e93ffb4f74ccc388715ef05a6c6e86c858847c5852711c3a269de65435312087",
+      "url": "https://maps.example.org/catalog/cells/terrain/38528/33664.e93ffb4f74ccc388715ef05a6c6e86c858847c5852711c3a269de65435312087.obcd",
+      "built_at": "2026-08-01T04:00:00Z"
+    },
+    {
+      "id": "13/38528/33665",
+      "bytes": 548,
+      "sha256": "e0309091606ae6cbb7c7891805cae80e74fd25c766da9505dfee42bd8cf7bfa9",
+      "url": "https://maps.example.org/catalog/cells/terrain/38528/33665.e0309091606ae6cbb7c7891805cae80e74fd25c766da9505dfee42bd8cf7bfa9.obcd",
+      "built_at": "2026-08-01T04:00:03Z"
+    }
+  ],
+  "known_empty": [
+    {
+      "start": "13/38528/33667",
+      "end": "13/38528/33667",
+      "built_at": "2026-08-01T04:00:07Z"
+    }
+  ]
+}

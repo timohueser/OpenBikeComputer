@@ -43,6 +43,7 @@ use sha2::{Digest, Sha256};
 
 use obc_formats::io::rd_i32;
 use obc_formats::obcm::{HEADER_LEN, MAGIC, VERSION as OBCM_VERSION};
+use obc_formats::obct;
 
 use crate::config::{Config, LineStyle};
 
@@ -66,6 +67,9 @@ pub const CELL_INDEX_EXAMPLE_JSON: &str = include_str!("../schema/cell-index.exa
 
 /// Worked example of a **region cell list** satellite (§6).
 pub const REGION_CELLS_EXAMPLE_JSON: &str = include_str!("../schema/region-cells.example.json");
+
+/// Worked example of the **terrain cell index** satellite (§13).
+pub const TERRAIN_INDEX_EXAMPLE_JSON: &str = include_str!("../schema/terrain-index.example.json");
 
 // --- the grid (OBCA_Spec.md §1) -----------------------------------------------------------
 
@@ -201,6 +205,21 @@ pub struct Catalog {
     pub regions: Vec<RegionEntry>,
     /// One entry per band, sorted by `cell_log2` descending (§8).
     pub cell_index: Vec<CellIndexRef>,
+    /// The terrain artifact class, when the catalog publishes one (§13). Absent is a
+    /// complete, valid catalog: every consumer degrades to "no elevation here", which
+    /// is exactly what a map with no terrain has always done.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terrain: Option<TerrainEntry>,
+    /// **The one coupling between the two revision tracks** (§13.4). Network-band cells
+    /// are baked sampling OBCT, so their `Ascent M` values are a function of a
+    /// particular terrain revision; this records which one. `None` for a terrain-less
+    /// bake, whose ascents are all zero and depend on nothing.
+    ///
+    /// It is at the root rather than in [`SchemaEntry`] on purpose: the schema is the
+    /// identity of the OBCM store and must not acquire a terrain field, or a terrain
+    /// re-bake would look like a schema change to every consumer that compares schemas.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_terrain_revision: Option<u32>,
 }
 
 /// The schema: the identity of the cell store. Everything a consumer needs to price a
@@ -389,6 +408,9 @@ pub struct RegionEntry {
     pub cell_count: BTreeMap<String, u32>,
     /// Partial cells per band, including zeroes for fully covered bands.
     pub partial_cell_count_by_band: BTreeMap<String, u32>,
+    /// This region's terrain footprint (§13.3), when the catalog publishes terrain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terrain: Option<RegionTerrain>,
     /// Where the region's cell-id list lives (§6).
     pub cells_url: String,
     /// Size of that document, in bytes.
@@ -493,6 +515,111 @@ pub struct RegionCellsDocument {
     pub region_id: String,
     /// Band id → sorted cell ids.
     pub cells: BTreeMap<String, Vec<String>>,
+    /// Sorted terrain cell ids on the terrain grid (§13.3). A separate field rather
+    /// than a `cells` key: `cells` is keyed by *schema band*, and terrain is not a
+    /// band — it has no LOD, no section, no assembly role and no schema revision.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub terrain: Vec<String>,
+}
+
+// --- the terrain artifact class (§13) -----------------------------------------------------
+
+/// The catalog's terrain block: what the raster is, at what resolution, and the one
+/// pinned index that lists its cells (`OBCC_Spec.md` §13.1).
+///
+/// The four fields `dataset_version`, `posting_log2`, `cell_log2` and
+/// `terrain_revision` are terrain's **whole** lockstep rule (§13.2). Nothing about the
+/// OBCM store appears here, and nothing about terrain appears in [`SchemaEntry`] —
+/// which is the shape of the independence, not a comment about it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct TerrainEntry {
+    /// Stable kebab-case id of the source dataset, e.g. `copernicus-glo-30`.
+    pub dataset_id: String,
+    /// That dataset's release identity, e.g. `2021-1`. Opaque to a consumer: it is
+    /// compared for equality, never parsed.
+    pub dataset_version: String,
+    /// `log2(P)` of the sample lattice, µdeg (`OBCT_Spec.md` §1.1).
+    pub posting_log2: u8,
+    /// `log2(S)` of the terrain cell, µdeg. Independent of any band's `cell_log2`.
+    pub cell_log2: u8,
+    /// Monotone content revision of the terrain store, bumped by a re-bake. Unrelated
+    /// to `schema.revision`: neither invalidates the other (§13.2).
+    pub terrain_revision: u32,
+    /// The source licence's required credit, verbatim, so a consumer displays it from
+    /// the catalog rather than hard-coding a string that can go stale (§13.5).
+    pub attribution: String,
+    /// The single pinned terrain cell index.
+    pub cell_index: TerrainIndexRef,
+}
+
+/// The root's pin on the terrain cell index — the §8 machinery, one document instead
+/// of one per band, because terrain has no bands.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct TerrainIndexRef {
+    /// Downloadable OBCT artifact entries in the referenced document.
+    pub cell_count: u32,
+    /// Canonical cells represented as all-`NODATA` runs rather than OBCT artifacts.
+    pub known_empty_count: u32,
+    pub bytes: u64,
+    pub sha256: String,
+    pub url: String,
+}
+
+/// The terrain cell index: the satellite the root's terrain block pins (§13.1).
+///
+/// It restates the four lockstep fields so the document is self-describing when it is
+/// fetched on its own, and it deliberately carries **no** `schema_revision`: a terrain
+/// cell does not know which OBCM schema it is being used beside, and adding the field
+/// would make an OBCM bump rewrite this document.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct TerrainIndexDocument {
+    pub schema_version: u32,
+    pub terrain_revision: u32,
+    pub dataset_id: String,
+    pub dataset_version: String,
+    pub posting_log2: u8,
+    pub cell_log2: u8,
+    /// Sorted by cell id.
+    pub cells: Vec<TerrainCellEntry>,
+    /// Canonical, non-overlapping row runs whose every sample is `NODATA` — ocean.
+    pub known_empty: Vec<TerrainEmptyRun>,
+}
+
+/// One published terrain cell. No bbox and no source list: the `id` is the square
+/// (§13.1), and the provenance is one dataset stated once in the root block rather
+/// than repeated on every one of thousands of entries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct TerrainCellEntry {
+    /// Canonical cell id, `<cell_log2>/<i>/<j>`, on the terrain grid.
+    pub id: String,
+    pub bytes: u64,
+    pub sha256: String,
+    pub url: String,
+    /// RFC 3339 UTC, recorded by the bake job.
+    pub built_at: String,
+}
+
+/// An inclusive row run of terrain cells that are all `NODATA` — open ocean, which
+/// [`obc-dem`](https://github.com/timohueser/OpenBikeComputer) does not write an object
+/// for at all (`OBCT_Spec.md` §4.3 makes an absent cell and an all-void one answer
+/// identically). The catalog says so instead, so a hole is still distinguishable from
+/// a coverage gap.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct TerrainEmptyRun {
+    pub start: String,
+    pub end: String,
+    pub built_at: String,
+}
+
+/// A region's terrain footprint, when the catalog publishes terrain. Kept out of
+/// `bytes`/`bytes_by_band`, which are the OBCM volume set's per-file projection: a
+/// rider may take the map without the raster, so the two prices are separate numbers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RegionTerrain {
+    pub cell_count: u32,
+    pub known_empty_count: u32,
+    /// Sum of the real bytes of this region's downloadable terrain cells.
+    pub bytes: u64,
 }
 
 // --- generation ---------------------------------------------------------------------------
@@ -578,6 +705,13 @@ const SCHEMA_DOC: &str = "schema.json";
 const CELL_EXT: &str = ".obcm";
 const CELL_SIDECAR_EXT: &str = ".obcm.json";
 const CELL_INDEX_NAME: &str = "index.json";
+/// The reserved directory under `cells/` that holds the terrain artifact class, and
+/// therefore a band id no schema may use (§13.1).
+pub const TERRAIN_DIR: &str = "terrain";
+/// The tree's terrain declaration: dataset, pairing, revision.
+const TERRAIN_DOC: &str = "terrain.json";
+const TERRAIN_EXT: &str = ".obcd";
+const TERRAIN_SIDECAR_EXT: &str = ".obcd.json";
 const REGION_DOC: &str = "region.json";
 const REGION_POLY: &str = "boundary.poly";
 const REGION_CELLS_NAME: &str = "cells.json";
@@ -614,10 +748,16 @@ pub fn generate(tree: &Path, opts: &CatalogOptions) -> Result<GeneratedCatalog, 
     // is no schema entry to publish until every cell has agreed.
     let cells = read_cells(tree, &schema, &base_url)?;
     let obcm_version = cells.obcm_version;
+    // The other artifact class, read on its own terms: nothing above is an input to it
+    // and nothing in it is an input to the above (§13.2).
+    let terrain = read_terrain(tree, &base_url)?;
 
     let (skins, mut pinned_artifacts) =
         read_skins(&tree.join(SKINS_DIR), &tree.join(PREVIEWS_DIR), &schema, &base_url)?;
     pinned_artifacts.extend(cells.pinned_artifacts.iter().cloned());
+    if let Some(store) = &terrain {
+        pinned_artifacts.extend(store.pinned_artifacts.iter().cloned());
+    }
 
     let mut satellites = Vec::new();
     let mut cell_index = Vec::new();
@@ -659,7 +799,70 @@ pub fn generate(tree: &Path, opts: &CatalogOptions) -> Result<GeneratedCatalog, 
     // and the order stays total.
     cell_index.sort_by(|a, b| (b.cell_log2, &a.band).cmp(&(a.cell_log2, &b.band)));
 
-    let regions = read_regions(tree, &schema, &by_band, &base_url, opts, &mut satellites, &mut warnings)?;
+    // The terrain block and its one pinned index — the §8 machinery, reused whole.
+    let mut terrain_index = None;
+    let terrain_entry = match &terrain {
+        None => None,
+        Some(store) => {
+            let doc = TerrainIndexDocument {
+                schema_version: CATALOG_SCHEMA_VERSION,
+                terrain_revision: store.doc.revision,
+                dataset_id: store.doc.dataset_id.clone(),
+                dataset_version: store.doc.dataset_version.clone(),
+                posting_log2: store.doc.posting_log2,
+                cell_log2: store.doc.cell_log2,
+                cells: store.cells.clone(),
+                known_empty: store.known_empty.clone(),
+            };
+            let rel_path = format!("{CELLS_DIR}/{TERRAIN_DIR}/{CELL_INDEX_NAME}");
+            let satellite = Satellite::new(rel_path, document_json(&doc));
+            let entry = TerrainEntry {
+                dataset_id: store.doc.dataset_id.clone(),
+                dataset_version: store.doc.dataset_version.clone(),
+                posting_log2: store.doc.posting_log2,
+                cell_log2: store.doc.cell_log2,
+                terrain_revision: store.doc.revision,
+                attribution: store.doc.attribution.clone(),
+                cell_index: TerrainIndexRef {
+                    cell_count: store.cells.len() as u32,
+                    known_empty_count: inclusive_run_count(
+                        store.known_empty.iter().map(|r| (r.start.as_str(), r.end.as_str())),
+                    )?,
+                    bytes: satellite.bytes,
+                    sha256: satellite.sha256.clone(),
+                    url: format!("{base_url}/{}", satellite.published_rel_path),
+                },
+            };
+            satellites.push(satellite);
+            terrain_index = Some(TerrainIndex::new(&store.cells, &store.known_empty)?);
+            Some(entry)
+        }
+    };
+
+    // §13.4, the one coupling — reported, never silently reconciled. The bake guard
+    // turns this into a refusal to publish; the generator still produces the document
+    // so an operator can see exactly what drifted.
+    match (&terrain_entry, cells.terrain_revision) {
+        (Some(t), Some(baked)) if baked != t.terrain_revision => warnings.push(format!(
+            "the network band was baked against terrain revision {baked}, but this catalog publishes terrain \
+             revision {} — the router's baked ascents and the published raster are two different surfaces. Re-bake \
+             the network band against the current terrain (OBCC_Spec.md §13.4).",
+            t.terrain_revision
+        )),
+        (Some(t), None) => warnings.push(format!(
+            "this catalog publishes terrain revision {} but the cell store was baked without terrain — every nav \
+             edge's ascent is zero, so climb-aware routing is off while the raster the device draws is not",
+            t.terrain_revision
+        )),
+        (None, Some(baked)) => warnings.push(format!(
+            "the cell store was baked against terrain revision {baked}, but this catalog publishes no terrain — the \
+             raster those ascents came from is not being published"
+        )),
+        _ => {}
+    }
+
+    let regions =
+        read_regions(tree, &schema, &by_band, terrain_index.as_ref(), &base_url, opts, &mut satellites, &mut warnings)?;
     if regions.is_empty() {
         warnings.push(
             "no regions — the catalog offers cells but no named selection, so a builder has nothing to pick from"
@@ -686,6 +889,8 @@ pub fn generate(tree: &Path, opts: &CatalogOptions) -> Result<GeneratedCatalog, 
         skins,
         regions,
         cell_index,
+        terrain: terrain_entry,
+        network_terrain_revision: cells.terrain_revision,
     };
     pinned_artifacts.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
     Ok(GeneratedCatalog { root, satellites, pinned_artifacts, warnings })
@@ -859,6 +1064,13 @@ fn check_band_table(bands: &[BandDoc], lod_count: usize, path: &Path) -> Result<
     let mut out = Vec::new();
     for band in bands {
         validate_id(&band.id).map_err(|e| format!("{}: band id {e}", at()))?;
+        if band.id == TERRAIN_DIR {
+            return Err(format!(
+                "{}: `{TERRAIN_DIR}` is reserved — `cells/{TERRAIN_DIR}/` holds the terrain artifact class, which is \
+                 on its own revision track and is not a band (OBCC_Spec.md §13.1)",
+                at()
+            ));
+        }
         if !ids.insert(band.id.as_str()) {
             return Err(format!("{}: band `{}` is listed twice", at(), band.id));
         }
@@ -1284,6 +1496,11 @@ struct Cells {
     by_band: BTreeMap<String, Vec<CellEntry>>,
     known_empty_by_band: BTreeMap<String, Vec<KnownEmptyRun>>,
     obcm_version: u8,
+    /// The terrain revision every cell in the store was baked against, read from the
+    /// sidecars the way `obcm_version` is read from the headers. `None` when the store
+    /// was baked with no terrain at all; a store where some cells sampled terrain and
+    /// others did not is refused rather than published (§13.4).
+    terrain_revision: Option<u32>,
     pinned_artifacts: Vec<PinnedArtifact>,
 }
 
@@ -1347,6 +1564,10 @@ struct CellSidecar {
     sources: Vec<CellSource>,
     /// Whether the sources fully cover the cell's square (`OBCA_Spec.md` §3.7).
     partial: bool,
+    /// The terrain revision the cell's nav ascents were integrated from (§13.4).
+    /// Absent for a terrain-less bake, which is every cell before epic #1068.
+    #[serde(default)]
+    terrain_revision: Option<u32>,
 }
 
 fn read_cells(tree: &Path, schema: &SchemaDoc, base_url: &str) -> Result<Cells, String> {
@@ -1358,11 +1579,14 @@ fn read_cells(tree: &Path, schema: &SchemaDoc, base_url: &str) -> Result<Cells, 
     let mut by_band: BTreeMap<String, Vec<CellEntry>> = BTreeMap::new();
     let mut known_empty_by_band: BTreeMap<String, Vec<KnownEmptyRun>> = BTreeMap::new();
     let mut obcm_version = None;
+    let mut terrain_revision: Option<Option<u32>> = None;
     let mut pinned_artifacts = Vec::new();
 
     for band_dir in sorted_entries(&root)? {
         let name = file_name(&band_dir)?;
-        if name.starts_with('.') {
+        if name.starts_with('.') || name == TERRAIN_DIR {
+            // `cells/terrain/` is the other artifact class, on its own revision track
+            // and read by `read_terrain`. It is deliberately not a band (§13.1).
             continue;
         }
         if !band_dir.is_dir() {
@@ -1402,6 +1626,7 @@ fn read_cells(tree: &Path, schema: &SchemaDoc, base_url: &str) -> Result<Cells, 
                 base_url,
                 &mut entries,
                 &mut obcm_version,
+                &mut terrain_revision,
                 &mut pinned_artifacts,
             )?;
         }
@@ -1415,7 +1640,13 @@ fn read_cells(tree: &Path, schema: &SchemaDoc, base_url: &str) -> Result<Cells, 
     if total == 0 {
         return Err(format!("{}: no cells found — refusing to publish an empty cell store", root.display()));
     }
-    Ok(Cells { by_band, known_empty_by_band, obcm_version: obcm_version.expect("a cell was read"), pinned_artifacts })
+    Ok(Cells {
+        by_band,
+        known_empty_by_band,
+        obcm_version: obcm_version.expect("a cell was read"),
+        terrain_revision: terrain_revision.expect("a cell was read"),
+        pinned_artifacts,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1428,6 +1659,7 @@ fn read_cell_row(
     base_url: &str,
     out: &mut Vec<CellEntry>,
     obcm_version: &mut Option<u8>,
+    terrain_revision: &mut Option<Option<u32>>,
     pinned_artifacts: &mut Vec<PinnedArtifact>,
 ) -> Result<(), String> {
     let mut sidecars: Vec<String> = Vec::new();
@@ -1485,6 +1717,24 @@ fn read_cell_row(
             None => *obcm_version = Some(header.version),
             Some(v) if *v != header.version => {
                 return Err(format!("{}: cell is OBCM v{} but the store is v{v}", path.display(), header.version));
+            }
+            Some(_) => {}
+        }
+
+        // §13.4: the OBCM store as a whole was baked against one terrain revision or
+        // against none. Two cells disagreeing means half the nav graph's ascents came
+        // from one raster and half from another — a router that is right nowhere.
+        match terrain_revision {
+            None => *terrain_revision = Some(sidecar.terrain_revision),
+            Some(have) if *have != sidecar.terrain_revision => {
+                let name = |v: Option<u32>| v.map_or("none".to_string(), |r| r.to_string());
+                return Err(format!(
+                    "{}: cell was baked against terrain revision {} but the store was baked against {}. A cell store \
+                     samples one terrain revision or none (OBCC_Spec.md §13.4) — re-bake the store.",
+                    path.display(),
+                    name(sidecar.terrain_revision),
+                    name(*have)
+                ));
             }
             Some(_) => {}
         }
@@ -1646,10 +1896,16 @@ fn read_known_empty_state(path: &Path, band: &BandEntry, schema: &SchemaDoc) -> 
 }
 
 fn known_empty_count(runs: &[KnownEmptyRun]) -> Result<u32, String> {
+    inclusive_run_count(runs.iter().map(|run| (run.start.as_str(), run.end.as_str())))
+}
+
+/// The cells an inclusive-row-run list covers. Shared by the band indexes and the
+/// terrain index so the two cannot come to count a run differently.
+fn inclusive_run_count<'a>(runs: impl Iterator<Item = (&'a str, &'a str)>) -> Result<u32, String> {
     let mut total = 0u32;
-    for run in runs {
-        let start = CellId::parse(&run.start)?;
-        let end = CellId::parse(&run.end)?;
+    for (start, end) in runs {
+        let start = CellId::parse(start)?;
+        let end = CellId::parse(end)?;
         let width = end.j.checked_sub(start.j).and_then(|n| n.checked_add(1)).ok_or("known-empty run overflow")?;
         total = total.checked_add(width).ok_or("known-empty cell count exceeds u32")?;
     }
@@ -1674,6 +1930,408 @@ fn reject_known_empty_artifact_overlap(
     Ok(())
 }
 
+// --- terrain (§13) --------------------------------------------------------------------------
+
+/// The tree's terrain declaration: `terrain.json` beside `schema.json`.
+///
+/// A separate document from `schema.json` on purpose. The two describe stores on
+/// **separate revision tracks** (§13.2), and a single document would be a single thing
+/// to edit — the first way for an OBCM bump to look like it touched terrain.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TerrainDoc {
+    dataset_id: String,
+    dataset_version: String,
+    posting_log2: u8,
+    cell_log2: u8,
+    /// The terrain store's own revision. Nothing here is `schema_revision`.
+    revision: u32,
+    /// The source licence's required credit, verbatim. The bakery stamps
+    /// `obc_dem::COPERNICUS_ATTRIBUTION` here; this crate never hard-codes it, because
+    /// a generic producer publishing another dataset owes a different notice.
+    attribution: String,
+}
+
+/// The facts a terrain cell's bytes cannot state. `dataset_version` is per cell as well
+/// as in the root block for the same reason a cell's `schema_revision` is: it is what
+/// lets the generator *refuse* a tree that mixes two bakes rather than publish one.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TerrainCellSidecar {
+    terrain_revision: u32,
+    dataset_version: String,
+    built_at: String,
+}
+
+/// Local, un-published state behind the published all-`NODATA` runs.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TerrainKnownEmptyState {
+    terrain_revision: u32,
+    known_empty: Vec<TerrainEmptyRun>,
+}
+
+/// Everything the tree says about terrain, read once.
+struct TerrainStore {
+    doc: TerrainDoc,
+    cells: Vec<TerrainCellEntry>,
+    known_empty: Vec<TerrainEmptyRun>,
+    pinned_artifacts: Vec<PinnedArtifact>,
+}
+
+/// Lookup over the terrain index, the same shape [`BandIndex`] has: an artifact or a
+/// verified-empty square, and nothing else is a published cell.
+struct TerrainIndex<'a> {
+    cells: BTreeMap<&'a str, &'a TerrainCellEntry>,
+    empty_by_row: BTreeMap<u32, Vec<(u32, u32)>>,
+}
+
+enum IndexedTerrain<'a> {
+    Artifact(&'a TerrainCellEntry),
+    KnownEmpty,
+}
+
+impl<'a> TerrainIndex<'a> {
+    fn new(cells: &'a [TerrainCellEntry], known_empty: &[TerrainEmptyRun]) -> Result<Self, String> {
+        let mut empty_by_row: BTreeMap<u32, Vec<(u32, u32)>> = BTreeMap::new();
+        for run in known_empty {
+            let start = CellId::parse(&run.start)?;
+            let end = CellId::parse(&run.end)?;
+            empty_by_row.entry(start.i).or_default().push((start.j, end.j));
+        }
+        Ok(Self { cells: cells.iter().map(|cell| (cell.id.as_str(), cell)).collect(), empty_by_row })
+    }
+
+    fn get(&self, id: &str) -> Result<Option<IndexedTerrain<'_>>, String> {
+        if let Some(cell) = self.cells.get(id) {
+            return Ok(Some(IndexedTerrain::Artifact(cell)));
+        }
+        let cell = CellId::parse(id)?;
+        let Some(runs) = self.empty_by_row.get(&cell.i) else { return Ok(None) };
+        let at = runs.partition_point(|(_, end)| *end < cell.j);
+        Ok(runs.get(at).filter(|(start, end)| *start <= cell.j && cell.j <= *end).map(|_| IndexedTerrain::KnownEmpty))
+    }
+}
+
+/// Walk `terrain.json` + `cells/terrain/` into the terrain store, or `None` when the
+/// tree publishes no terrain at all.
+fn read_terrain(tree: &Path, base_url: &str) -> Result<Option<TerrainStore>, String> {
+    let doc_path = tree.join(TERRAIN_DOC);
+    let dir = tree.join(CELLS_DIR).join(TERRAIN_DIR);
+    if !doc_path.is_file() {
+        if dir.is_dir() {
+            return Err(format!(
+                "{}: terrain cells are in the tree but there is no `{TERRAIN_DOC}` — a terrain cell is only \
+                 interpretable beside the dataset, pairing and revision it was baked at (OBCC_Spec.md §13.1)",
+                dir.display()
+            ));
+        }
+        return Ok(None);
+    }
+    let text = std::fs::read_to_string(&doc_path).map_err(|e| format!("{}: {e}", doc_path.display()))?;
+    let doc: TerrainDoc = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", doc_path.display()))?;
+    let at = || doc_path.display().to_string();
+    validate_id(&doc.dataset_id).map_err(|e| format!("{}: dataset_id {e}", at()))?;
+    if doc.dataset_version.trim().is_empty() {
+        return Err(format!("{}: `dataset_version` must be non-empty — it is half the lockstep key", at()));
+    }
+    if doc.attribution.trim().is_empty() {
+        return Err(format!(
+            "{}: `attribution` must be non-empty. The credit travels with the data as a licence obligation, and a \
+             consumer reads it from the catalog rather than hard-coding it (OBCC_Spec.md §13.5).",
+            at()
+        ));
+    }
+    if doc.revision == 0 {
+        return Err(format!("{}: `revision` starts at 1 — a terrain store has no revision zero", at()));
+    }
+    // One call validates both ranges *and* the pairing: a cell smaller than one tile,
+    // or one whose block would outrun the directory's `uint32` offsets, is not a
+    // terrain store OBCT can express.
+    obct::cell_samples_log2(doc.posting_log2, doc.cell_log2).ok_or_else(|| {
+        format!(
+            "{}: posting 2^{} µdeg with cell 2^{} µdeg is not a pairing OBCT permits (OBCT_Spec.md §1.3)",
+            at(),
+            doc.posting_log2,
+            doc.cell_log2
+        )
+    })?;
+
+    let known_empty = read_terrain_known_empty(&dir.join(KNOWN_EMPTY_STATE_NAME), &doc)?;
+    let mut cells = Vec::new();
+    let mut pinned_artifacts = Vec::new();
+    if dir.is_dir() {
+        for i_dir in sorted_entries(&dir)? {
+            let name = file_name(&i_dir)?;
+            if name.starts_with('.') || name == CELL_INDEX_NAME {
+                continue;
+            }
+            if !i_dir.is_dir() {
+                return Err(format!(
+                    "{}: expected a `<i>` directory or the generated `{CELL_INDEX_NAME}`",
+                    i_dir.display()
+                ));
+            }
+            read_terrain_row(&i_dir, &name, &doc, tree, base_url, &mut cells, &mut pinned_artifacts)?;
+        }
+    }
+    cells.sort_by(|a, b| a.id.cmp(&b.id));
+
+    // The same rule §8 states for a band: a square is an artifact or it is empty, never
+    // both. A catalog that said both would leave a consumer to pick one.
+    let index = TerrainIndex::new(&[], &known_empty)?;
+    for cell in &cells {
+        if matches!(index.get(&cell.id)?, Some(IndexedTerrain::KnownEmpty)) {
+            return Err(format!(
+                "{}: terrain cell `{}` is both an OBCT artifact and known empty",
+                dir.display(),
+                cell.id
+            ));
+        }
+    }
+    if cells.is_empty() && known_empty.is_empty() {
+        return Err(format!(
+            "{}: `{TERRAIN_DOC}` declares a terrain store with no cells and no known-empty coverage — publish the \
+             cells or drop the document",
+            at()
+        ));
+    }
+    Ok(Some(TerrainStore { doc, cells, known_empty, pinned_artifacts }))
+}
+
+fn read_terrain_row(
+    dir: &Path,
+    i_text: &str,
+    doc: &TerrainDoc,
+    tree: &Path,
+    base_url: &str,
+    out: &mut Vec<TerrainCellEntry>,
+    pinned_artifacts: &mut Vec<PinnedArtifact>,
+) -> Result<(), String> {
+    let mut sidecars: Vec<String> = Vec::new();
+    let mut artifacts: Vec<(String, PathBuf)> = Vec::new();
+    for entry in sorted_entries(dir)? {
+        let name = file_name(&entry)?;
+        if name.starts_with('.') {
+            continue;
+        }
+        if let Some(stem) = name.strip_suffix(TERRAIN_SIDECAR_EXT) {
+            sidecars.push(stem.to_string());
+        } else if let Some(stem) = name.strip_suffix(TERRAIN_EXT) {
+            artifacts.push((stem.to_string(), entry));
+        } else {
+            return Err(format!(
+                "{}: unexpected entry in a terrain row (expected `<j>{TERRAIN_EXT}` and `<j>{TERRAIN_SIDECAR_EXT}`)",
+                entry.display()
+            ));
+        }
+    }
+
+    for (j_text, path) in artifacts {
+        let id = CellId::parse(&format!("{}/{i_text}/{j_text}", doc.cell_log2))
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        let sidecar_path = path.with_file_name(format!("{j_text}{TERRAIN_SIDECAR_EXT}"));
+        let sidecar_text = std::fs::read_to_string(&sidecar_path).map_err(|e| {
+            format!(
+                "{}: {e} — every terrain cell needs a sidecar (terrain_revision, dataset_version, built_at)",
+                sidecar_path.display()
+            )
+        })?;
+        let sidecar: TerrainCellSidecar =
+            serde_json::from_str(&sidecar_text).map_err(|e| format!("{}: {e}", sidecar_path.display()))?;
+        validate_timestamp(&sidecar.built_at).map_err(|e| format!("{}: built_at {e}", sidecar_path.display()))?;
+        sidecars.retain(|s| s != &j_text);
+
+        // §13.2's lockstep, per cell. Two of the four keys are in the bytes and checked
+        // below; these two cannot be, so they are recorded and compared here.
+        if sidecar.terrain_revision != doc.revision {
+            return Err(format!(
+                "{}: terrain cell was baked at terrain revision {} but `{TERRAIN_DOC}` is revision {}. Terrain is \
+                 lockstep within its own track (OBCC_Spec.md §13.2) — re-bake, or publish the revision the cells \
+                 actually carry.",
+                path.display(),
+                sidecar.terrain_revision,
+                doc.revision
+            ));
+        }
+        if sidecar.dataset_version != doc.dataset_version {
+            return Err(format!(
+                "{}: terrain cell was baked from dataset version `{}` but `{TERRAIN_DOC}` says `{}` — a mixed-dataset \
+                 raster has a discontinuity at every seam between the two",
+                path.display(),
+                sidecar.dataset_version,
+                doc.dataset_version
+            ));
+        }
+
+        // The OBCT analogue of "a cell's header bbox is exactly its square": the
+        // container states its own rectangle, and a 1 × 1 rectangle at (i, j) is the
+        // only thing a cell named `<log2>/<i>/<j>` may be.
+        let header = read_obct_header(&path)?;
+        if (header.posting_log2, header.cell_log2) != (doc.posting_log2, doc.cell_log2) {
+            return Err(format!(
+                "{}: cell is posting 2^{} / cell 2^{} but `{TERRAIN_DOC}` declares 2^{} / 2^{} — one lattice per \
+                 terrain revision (OBCC_Spec.md §13.2)",
+                path.display(),
+                header.posting_log2,
+                header.cell_log2,
+                doc.posting_log2,
+                doc.cell_log2
+            ));
+        }
+        if (header.rows, header.cols) != (1, 1) {
+            return Err(format!(
+                "{}: a published terrain cell is a container whose rectangle is 1 × 1 (OBCT_Spec.md §4.1), but this \
+                 one is {} × {} — that is a shard, not a cell",
+                path.display(),
+                header.rows,
+                header.cols
+            ));
+        }
+        if (header.min_i, header.min_j) != (id.i, id.j) {
+            return Err(format!(
+                "{}: cell `{id}`'s container covers ({}, {}) — a cell whose header disagrees with its id would place \
+                 its raster somewhere else, silently",
+                path.display(),
+                header.min_i,
+                header.min_j
+            ));
+        }
+
+        let (bytes, sha256) = hash_file(&path)?;
+        let rel = path
+            .strip_prefix(tree)
+            .map_err(|_| format!("{}: terrain cell is outside the tree root", path.display()))?;
+        let rel_path = rel_url_path(rel)?;
+        let published_rel_path = content_addressed_rel_path(&rel_path, &sha256);
+        out.push(TerrainCellEntry {
+            id: id.to_string(),
+            bytes,
+            sha256: sha256.clone(),
+            url: format!("{base_url}/{published_rel_path}"),
+            built_at: sidecar.built_at,
+        });
+        pinned_artifacts.push(PinnedArtifact { rel_path, published_rel_path, bytes, sha256 });
+    }
+
+    if let Some(orphan) = sidecars.first() {
+        return Err(format!(
+            "{}: sidecar with no terrain cell — `{orphan}{TERRAIN_EXT}` is missing",
+            dir.join(format!("{orphan}{TERRAIN_SIDECAR_EXT}")).display()
+        ));
+    }
+    Ok(())
+}
+
+fn read_terrain_known_empty(path: &Path, doc: &TerrainDoc) -> Result<Vec<TerrainEmptyRun>, String> {
+    if !path.is_file() {
+        return Ok(Vec::new());
+    }
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let state: TerrainKnownEmptyState = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    if state.terrain_revision != doc.revision {
+        return Err(format!(
+            "{}: known-empty state is terrain revision {} but `{TERRAIN_DOC}` is revision {}",
+            path.display(),
+            state.terrain_revision,
+            doc.revision
+        ));
+    }
+
+    let mut previous: Option<(CellId, &TerrainEmptyRun)> = None;
+    for run in &state.known_empty {
+        let start = CellId::parse(&run.start).map_err(|e| format!("{}: {e}", path.display()))?;
+        let end = CellId::parse(&run.end).map_err(|e| format!("{}: {e}", path.display()))?;
+        if start.to_string() != run.start || end.to_string() != run.end {
+            return Err(format!(
+                "{}: known-empty run {}..{} does not use canonical padded cell ids",
+                path.display(),
+                run.start,
+                run.end
+            ));
+        }
+        if start.log2 != doc.cell_log2 || end.log2 != doc.cell_log2 {
+            return Err(format!(
+                "{}: known-empty run {}..{} is not the terrain grid's 2^{} cells",
+                path.display(),
+                run.start,
+                run.end,
+                doc.cell_log2
+            ));
+        }
+        if start.i != end.i || start.j > end.j {
+            return Err(format!(
+                "{}: known-empty run {}..{} must be one non-empty inclusive row range",
+                path.display(),
+                run.start,
+                run.end
+            ));
+        }
+        validate_timestamp(&run.built_at).map_err(|e| format!("{}: built_at {e}", path.display()))?;
+        if let Some((prev_end, prev)) = previous {
+            if start.i < prev_end.i || (start.i == prev_end.i && start.j <= prev_end.j) {
+                return Err(format!(
+                    "{}: known-empty runs overlap or are out of order at {}..{}",
+                    path.display(),
+                    run.start,
+                    run.end
+                ));
+            }
+            if start.i == prev_end.i && start.j == prev_end.j + 1 && run.built_at == prev.built_at {
+                return Err(format!(
+                    "{}: adjacent known-empty runs {}..{} and {}..{} have identical provenance; merge them",
+                    path.display(),
+                    prev.start,
+                    prev.end,
+                    run.start,
+                    run.end
+                ));
+            }
+        }
+        previous = Some((end, run));
+    }
+    inclusive_run_count(state.known_empty.iter().map(|r| (r.start.as_str(), r.end.as_str())))?;
+    Ok(state.known_empty)
+}
+
+/// What a terrain container states about itself (`OBCT_Spec.md` §4.2). Read directly
+/// rather than through `obc-elevation`'s reader: the generator's job is to check the
+/// header against the id, and the whole 2 MiB block is not needed to do it.
+struct ObctHeader {
+    posting_log2: u8,
+    cell_log2: u8,
+    min_i: u32,
+    min_j: u32,
+    rows: u16,
+    cols: u16,
+}
+
+fn read_obct_header(path: &Path) -> Result<ObctHeader, String> {
+    let mut file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut header = [0u8; obct::HEADER_LEN];
+    file.read_exact(&mut header).map_err(|e| {
+        format!("{}: {e} — too short to be an OBCT artifact ({}-byte header)", path.display(), obct::HEADER_LEN)
+    })?;
+    obct::validate_header_prefix(&header)
+        .map_err(|e| format!("{}: not an OBCT v{} artifact ({e:?})", path.display(), obct::VERSION))?;
+    if header[obct::HDR_FLAGS] != 0 || header[obct::HDR_RESERVED..].iter().any(|&b| b != 0) {
+        return Err(format!(
+            "{}: OBCT flags/reserved bytes are not zero — a v1 reader MUST refuse the file (OBCT_Spec.md §4.5)",
+            path.display()
+        ));
+    }
+    let u32_at = |at: usize| u32::from_le_bytes(header[at..at + 4].try_into().expect("4 bytes"));
+    let u16_at = |at: usize| u16::from_le_bytes(header[at..at + 2].try_into().expect("2 bytes"));
+    Ok(ObctHeader {
+        posting_log2: header[obct::HDR_POSTING_LOG2],
+        cell_log2: header[obct::HDR_CELL_LOG2],
+        min_i: u32_at(obct::HDR_CELL_MIN_I),
+        min_j: u32_at(obct::HDR_CELL_MIN_J),
+        rows: u16_at(obct::HDR_CELL_ROWS),
+        cols: u16_at(obct::HDR_CELL_COLS),
+    })
+}
+
 // --- regions ------------------------------------------------------------------------------
 
 /// The curated selection, as the tree states it. `parent` is **not** a field: it is
@@ -1688,6 +2346,10 @@ struct RegionDoc {
     /// edge cell, and two consumers with different point-in-polygon edge handling must
     /// not be able to disagree about what a region is.
     cells: BTreeMap<String, Vec<String>>,
+    /// The terrain cell ids this region selects, by the same intersect rule applied to
+    /// the terrain grid (§13.3). Empty or absent for a terrain-less catalog.
+    #[serde(default)]
+    terrain: Vec<String>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1695,6 +2357,7 @@ fn read_regions(
     tree: &Path,
     schema: &SchemaDoc,
     by_band: &BTreeMap<&str, BandIndex<'_>>,
+    terrain: Option<&TerrainIndex<'_>>,
     base_url: &str,
     opts: &CatalogOptions,
     satellites: &mut Vec<Satellite>,
@@ -1713,7 +2376,7 @@ fn read_regions(
         // The nearest enclosing *region* — not merely the parent directory, which for
         // `europe/switzerland` is the uncurated `europe`.
         let parent = ancestors(id).find(|a| ids.contains(*a)).map(str::to_string);
-        out.push(read_region(id, parent, dir, schema, by_band, base_url, opts, satellites, warnings)?);
+        out.push(read_region(id, parent, dir, schema, by_band, terrain, base_url, opts, satellites, warnings)?);
     }
     out.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(out)
@@ -1774,6 +2437,7 @@ fn read_region(
     dir: &Path,
     schema: &SchemaDoc,
     by_band: &BTreeMap<&str, BandIndex<'_>>,
+    terrain: Option<&TerrainIndex<'_>>,
     base_url: &str,
     opts: &CatalogOptions,
     satellites: &mut Vec<Satellite>,
@@ -1853,6 +2517,10 @@ fn read_region(
         }
     }
 
+    // §13.3: the terrain selection, resolved against the terrain index by exactly the
+    // rule a band's is resolved against its own.
+    let terrain_selection = read_region_terrain(id, &doc, &doc_path, terrain, warnings)?;
+
     let poly_path = dir.join(REGION_POLY);
     let poly = std::fs::read_to_string(&poly_path).map_err(|e| {
         format!(
@@ -1877,6 +2545,7 @@ fn read_region(
         schema_revision: schema.revision,
         region_id: id.to_string(),
         cells,
+        terrain: terrain_selection.as_ref().map(|s| s.ids.clone()).unwrap_or_default(),
     };
     let rel_path = format!("{REGIONS_DIR}/{id}/{REGION_CELLS_NAME}");
     let body = document_json(&cells_doc);
@@ -1895,10 +2564,69 @@ fn read_region(
         bytes_by_band,
         cell_count,
         partial_cell_count_by_band,
+        terrain: terrain_selection.map(|s| s.footprint),
         cells_url,
         cells_bytes,
         cells_sha256,
     })
+}
+
+/// One region's resolved terrain selection: the sorted ids for its satellite and the
+/// priced footprint for the root.
+struct RegionTerrainSelection {
+    ids: Vec<String>,
+    footprint: RegionTerrain,
+}
+
+fn read_region_terrain(
+    id: &str,
+    doc: &RegionDoc,
+    doc_path: &Path,
+    terrain: Option<&TerrainIndex<'_>>,
+    warnings: &mut Vec<String>,
+) -> Result<Option<RegionTerrainSelection>, String> {
+    let Some(index) = terrain else {
+        if !doc.terrain.is_empty() {
+            return Err(format!(
+                "{}: the region selects {} terrain cell(s) but the tree publishes no terrain — either bake it or drop \
+                 the selection (OBCC_Spec.md §13.3)",
+                doc_path.display(),
+                doc.terrain.len()
+            ));
+        }
+        return Ok(None);
+    };
+    if doc.terrain.is_empty() {
+        warnings.push(format!(
+            "region `{id}` selects no terrain cells, but this catalog publishes terrain — a rider choosing this \
+             region gets a map with no elevation anywhere in it"
+        ));
+    }
+
+    let mut ids = BTreeSet::new();
+    let mut footprint = RegionTerrain { cell_count: 0, known_empty_count: 0, bytes: 0 };
+    for text in &doc.terrain {
+        let cell = CellId::parse(text).map_err(|e| format!("{}: terrain: {e}", doc_path.display()))?;
+        let canonical = cell.to_string();
+        if !ids.insert(canonical.clone()) {
+            return Err(format!("{}: terrain cell `{canonical}` is listed twice", doc_path.display()));
+        }
+        match index.get(&canonical).map_err(|e| format!("{}: {e}", doc_path.display()))? {
+            Some(IndexedTerrain::Artifact(entry)) => {
+                footprint.cell_count += 1;
+                footprint.bytes += entry.bytes;
+            }
+            Some(IndexedTerrain::KnownEmpty) => footprint.known_empty_count += 1,
+            None => {
+                return Err(format!(
+                    "{}: terrain cell `{canonical}` is not published — either bake it or drop it from the selection \
+                     (OBCC_Spec.md §13.3)",
+                    doc_path.display()
+                ))
+            }
+        }
+    }
+    Ok(Some(RegionTerrainSelection { ids: ids.into_iter().collect(), footprint }))
 }
 
 /// A slash-separated region/extract id.
@@ -2162,14 +2890,22 @@ const CATALOG_DESCRIPTION: &str =
      boundaries, and digest-pinned per-band cell indices. A consumer prices a selection from this document \
      alone — total bytes and bytes per band, which is the per-file projection a volume set needs — and \
      verifies each satellite against the `bytes` + `sha256` pinned here. The satellite documents are \
-     `$defs/CellIndexDocument` and `$defs/RegionCellsDocument`. Normative contract: OBCC_Spec.md, with \
-     OBCA_Spec.md for the grid, bands, and assembly.";
+     `$defs/CellIndexDocument`, `$defs/RegionCellsDocument` and `$defs/TerrainIndexDocument`. The optional \
+     `terrain` block is a second artifact class on its own revision track (§13). Normative contract: \
+     OBCC_Spec.md, with OBCA_Spec.md for the grid, bands, and assembly and OBCT_Spec.md for the raster.";
 
 const BOUNDARY_DESCRIPTION: &str =
     "A region's simplified outline, in integer microdegrees, `[lat, lon]` per point. Presentation only: it \
      MUST NOT be used to compute a cell set (that is stored, §6), to price a selection, or as a packer \
      input bbox. The coverage outline a builder draws for a live selection is a different object — the union \
      of the selected cells' squares, computed client-side — and is deliberately not in the catalog.";
+
+const TERRAIN_DESCRIPTION: &str =
+    "The terrain artifact class (OBCC_Spec.md §13): an OBCT raster on the same OBCA grid, published with its \
+     OWN revision track. `dataset_version`, `posting_log2`, `cell_log2` and `terrain_revision` are terrain's \
+     entire lockstep rule — no OBCM version or schema revision appears here, and an OBCM or schema bump \
+     invalidates none of these objects. The single reverse coupling is the root's `network_terrain_revision`, \
+     which records the terrain revision the nav graph's ascents were integrated from.";
 
 const CELL_DESCRIPTION: &str =
     "One published cell. There is deliberately no bbox: a cell's coverage is exactly its grid square, which \
@@ -2195,6 +2931,10 @@ pub fn catalog_schema() -> Value {
         (
             "RegionCellsDocument",
             serde_json::to_value(schemars::schema_for!(RegionCellsDocument)).expect("region cells"),
+        ),
+        (
+            "TerrainIndexDocument",
+            serde_json::to_value(schemars::schema_for!(TerrainIndexDocument)).expect("terrain index"),
         ),
     ] {
         let obj = doc.as_object_mut().expect("satellite schema is an object");
@@ -2224,6 +2964,40 @@ pub fn catalog_schema() -> Value {
     }
     defs["RegionCellsDocument"]["properties"]["region_id"]["pattern"] = Value::from(REGION_ID_PATTERN);
     band_keyed_map(&mut defs["RegionCellsDocument"]["properties"]["cells"]);
+    defs["RegionCellsDocument"]["properties"]["terrain"]["items"]["pattern"] = Value::from(CELL_ID_PATTERN);
+
+    // The terrain artifact class (§13). Its index is the third satellite shape, in the
+    // same checked-in file, and it carries no `schema_revision` at all — which is the
+    // independence stated in the schema rather than only in the prose.
+    let terrain_doc = defs["TerrainIndexDocument"]["properties"].as_object_mut().expect("terrain index properties");
+    terrain_doc["schema_version"]["const"] = Value::from(CATALOG_SCHEMA_VERSION);
+    terrain_doc["terrain_revision"]["minimum"] = Value::from(1);
+    terrain_doc["dataset_id"]["pattern"] = Value::from(ID_PATTERN);
+    terrain_doc["dataset_version"]["minLength"] = Value::from(1);
+    terrain_log2_bounds(terrain_doc);
+
+    defs["TerrainEntry"]["description"] = Value::from(TERRAIN_DESCRIPTION);
+    let terrain = defs["TerrainEntry"]["properties"].as_object_mut().expect("terrain properties");
+    terrain["dataset_id"]["pattern"] = Value::from(ID_PATTERN);
+    terrain["dataset_version"]["minLength"] = Value::from(1);
+    terrain["attribution"]["minLength"] = Value::from(1);
+    terrain["terrain_revision"]["minimum"] = Value::from(1);
+    terrain_log2_bounds(terrain);
+
+    let terrain_ref = defs["TerrainIndexRef"]["properties"].as_object_mut().expect("terrain ref properties");
+    terrain_ref["sha256"]["pattern"] = Value::from(SHA256_PATTERN);
+    terrain_ref["url"]["pattern"] = Value::from(PINNED_URL_PATTERN);
+
+    let terrain_cell = defs["TerrainCellEntry"]["properties"].as_object_mut().expect("terrain cell properties");
+    terrain_cell["id"]["pattern"] = Value::from(CELL_ID_PATTERN);
+    terrain_cell["sha256"]["pattern"] = Value::from(SHA256_PATTERN);
+    terrain_cell["url"]["pattern"] = Value::from(PINNED_URL_PATTERN);
+    terrain_cell["built_at"]["pattern"] = Value::from(TIMESTAMP_PATTERN);
+
+    let terrain_empty = defs["TerrainEmptyRun"]["properties"].as_object_mut().expect("terrain empty properties");
+    terrain_empty["start"]["pattern"] = Value::from(CELL_ID_PATTERN);
+    terrain_empty["end"]["pattern"] = Value::from(CELL_ID_PATTERN);
+    terrain_empty["built_at"]["pattern"] = Value::from(TIMESTAMP_PATTERN);
 
     let schema_entry = defs["SchemaEntry"]["properties"].as_object_mut().expect("schema properties");
     schema_entry["id"]["pattern"] = Value::from(ID_PATTERN);
@@ -2304,6 +3078,16 @@ pub fn catalog_schema() -> Value {
 /// letting any string through.
 fn band_keyed_map(value: &mut Value) {
     value["propertyNames"] = serde_json::json!({ "pattern": ID_PATTERN });
+}
+
+/// The OBCT lattice bounds (`OBCT_Spec.md` §1.1, §3.1), applied wherever the pairing
+/// is published. They are the format's, not the OBCM grid's, which is why they come
+/// from `obc_formats::obct` rather than from this module's `MIN_CELL_LOG2`.
+fn terrain_log2_bounds(properties: &mut Map<String, Value>) {
+    properties["posting_log2"]["minimum"] = Value::from(obct::MIN_POSTING_LOG2);
+    properties["posting_log2"]["maximum"] = Value::from(obct::MAX_POSTING_LOG2);
+    properties["cell_log2"]["minimum"] = Value::from(obct::MIN_CELL_LOG2);
+    properties["cell_log2"]["maximum"] = Value::from(obct::MAX_CELL_LOG2);
 }
 
 /// Stable pretty representation used to regenerate the checked-in schema:

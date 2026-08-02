@@ -18,8 +18,15 @@ obc-pack = { path = "../obc-pack" }
 # the cache is ~277 KB and must not be built on the stack.
 obc-reader = { path = "../../firmware/obc-reader", features = ["alloc"] }
 obc-map-scene = { path = "../../firmware/obc-map-scene" }
-# The normative OBCM version the bake and the published-catalog guard compare against.
+# The normative OBCM version the bake and the published-catalog guard compare against, and the
+# OBCT facts the terrain stage validates a pairing with.
 obc-formats = { path = "../../firmware/obc-formats" }
+# The terrain stage (#1071) drives `obc-dem` as a library rather than as a subprocess: `bake_cell`
+# is already a pure function of (mosaic, cell) and `write_cell_file` already writes the one
+# container OBCT defines, so shelling out would only insert a second naming scheme between the
+# rasteriser and the catalog's object layout. It also carries the Copernicus credit the catalog
+# stamps, so there is exactly one copy of that wording in the repository.
+obc-dem = { path = "../obc-dem" }
 # Skin previews are not screenshots of a second renderer. The bakery restamps a
 # canonical tiny OBCM through the assembly engine's production skin resolver and
 # renders it through the same `MapRenderer` the device runs.

@@ -175,6 +175,7 @@ pack *args:
 # automatically, while an explicit tree remains available as their first argument:
 #
 #   obc bake europe/germany/baden-wuerttemberg
+#   obc bake terrain --sources /tmp/dem   # the OBCT band, own revision track
 #   obc bake verify
 #   obc bake publish                  # plan only
 #   obc bake publish --target r2      # upload content first, catalog root last
@@ -277,6 +278,13 @@ bake *args:
           _run rclone purge "$root/regions" --dry-run
           _run rclone purge "$root/presets" --dry-run
         fi ;;
+      terrain)
+        # The terrain artifact class, on its own revision track (OBCC_Spec.md §13). Same
+        # tree as `bake`, deliberately a separate command: it needs DEM tiles and no OSM
+        # extract, and it must never be a step of a schema re-bake.
+        shift
+        _run "$bin" terrain --out "$tree" "$@"
+        _say "bake tree: $tree — now re-bake the cells so their ascents match: obc bake" ;;
       regions|check-obcm-version|help|-h|--help)
         _run "$bin" "$@" ;;
       *)
