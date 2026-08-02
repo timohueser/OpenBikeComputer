@@ -12,7 +12,7 @@
 
 import { readFileSync } from "node:fs";
 import { parseRoot, type Catalog, type CellIndexRef } from "./manifest";
-import { parseCellIndex, type CellIndexDocument } from "./satellites";
+import { parseCellIndex, parseTerrainIndex, type CellIndexDocument, type TerrainIndexDocument } from "./satellites";
 
 const EXAMPLE_DIR = new URL("../../../../../host/obc-pack/schema/", import.meta.url);
 
@@ -23,6 +23,7 @@ export function readExample(name: string): string {
 export const EXAMPLE_ROOT = readExample("catalog.example.json");
 export const EXAMPLE_CELL_INDEX = readExample("cell-index.example.json");
 export const EXAMPLE_REGION_CELLS = readExample("region-cells.example.json");
+export const EXAMPLE_TERRAIN_INDEX = readExample("terrain-index.example.json");
 
 export const exampleCatalog: Catalog = parseRoot(EXAMPLE_ROOT);
 
@@ -84,6 +85,20 @@ export function fixtureIndex(
         url: `/catalog/cells/${bandId}/index.${ZERO_DIGEST}.json`,
     };
     return parseCellIndex(JSON.stringify(doc), catalog, ref);
+}
+
+/**
+ * The example catalog's own terrain index, through the real parser (§13.1).
+ *
+ * The example ships one — `terrain-index.example.json`, the document the
+ * generator's tests pin — so this is the producer's shape rather than a guess,
+ * exactly like {@link exampleCatalog}. Its lattice is `2^13` cells, which is
+ * *not* the v1 `2^19`: the pairing is header data on purpose, and a fixture that
+ * hard-coded the shipping value would stop testing that.
+ */
+export function exampleTerrainIndex(catalog: Catalog = exampleCatalog): TerrainIndexDocument {
+    if (!catalog.terrain) throw new Error("the example catalog has no terrain block");
+    return parseTerrainIndex(EXAMPLE_TERRAIN_INDEX, catalog, catalog.terrain);
 }
 
 /** Indices for every band of the catalog, from one spec per band. */

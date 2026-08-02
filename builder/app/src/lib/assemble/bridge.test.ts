@@ -26,7 +26,7 @@ import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { ASSEMBLE_ERROR_CODES, AssembleError, assembleCells, estimateMemory, initAssemble } from "./bridge";
-import type { AssembleCell, AssemblePhase } from "./bridge";
+import type { AssembleCell, AssemblePhase, AssembleTerrain, AssembleTerrainCell } from "./bridge";
 
 /** Walk up from this file to the repo root (the directory holding the fixture). */
 function repoRoot(): string {
@@ -59,16 +59,36 @@ function cells(): AssembleCell[] {
     }));
 }
 
+/** The fixture's terrain sidecar — the catalog's §13.1 lattice and its published cells. */
+const terrainSidecar = JSON.parse(readFileSync(join(FIXTURE, "terrain.json"), "utf8")) as {
+    posting_log2: number;
+    cell_log2: number;
+    cells: { id: string; path: string; sha256: string }[];
+};
+
+/** The raster, as the download hands it over. The fixture's fourth square is canonically void and
+ *  is deliberately absent: it has no object at all (`OBCC_Spec.md` §13.6). */
+function terrain(): { lattice: AssembleTerrain; cells: AssembleTerrainCell[] } {
+    return {
+        lattice: { postingLog2: terrainSidecar.posting_log2, cellLog2: terrainSidecar.cell_log2 },
+        cells: terrainSidecar.cells.map((c) => ({
+            id: c.id,
+            sha256: c.sha256,
+            bytes: new Uint8Array(readFileSync(join(FIXTURE, c.path))),
+        })),
+    };
+}
+
 /**
  * What the native CLI left in `tests/fixture/<dir>/`, in the order the bridge must hand it on:
- * shards ascending, the OBCS manifest last (OBCA §5.4).
+ * OBCM shards ascending, then the terrain shard, then the OBCS manifest last (OBCA §5.4). None of
+ * that is the alphabet's order — `MS1.OBD` sorts before `MS1S00.OBM` — so the key is spelled out.
  */
 function expected(dir: string): { name: string; bytes: Uint8Array }[] {
     const root = join(FIXTURE, dir);
     const files = readdirSync(root).map((name) => ({ name, bytes: new Uint8Array(readFileSync(join(root, name))) }));
-    files.sort(
-        (a, b) => Number(a.name.endsWith(".OBS")) - Number(b.name.endsWith(".OBS")) || a.name.localeCompare(b.name),
-    );
+    const rank = (name: string) => (name.endsWith(".OBS") ? 2 : name.endsWith(".OBD") ? 1 : 0);
+    files.sort((a, b) => rank(a.name) - rank(b.name) || a.name.localeCompare(b.name));
     expect(files.length, `${root} is empty — see apps/obc-web-assemble/tests/fixture.rs`).toBeGreaterThan(0);
     return files;
 }
@@ -108,7 +128,7 @@ beforeAll(async () => {
 
 describe("assembleCells", () => {
     it("reproduces the native CLI's bytes for a single-file assembly", async () => {
-        const result = await assembleCells(cells(), sidecar, skin, OPTIONS);
+        const result = await assembleCells(cells(), sidecar, skin, OPTIONS, undefined, [], terrain());
         const want = expected("expected");
         expect(result.files.map((f) => f.name)).toEqual(want.map((f) => f.name));
         for (const [i, file] of result.files.entries()) {
@@ -147,9 +167,9 @@ describe("assembleCells", () => {
     });
 
     it("reproduces the native CLI's bytes for a volume set, manifest last", async () => {
-        const result = await assembleCells(cells(), sidecar, skin, { ...OPTIONS, forceSplit: true });
+        const result = await assembleCells(cells(), sidecar, skin, { ...OPTIONS, forceSplit: true }, undefined, [], terrain());
         const want = expected("expected-split");
-        expect(result.files.map((f) => f.role)).toEqual(["core", "coarse", "geometry", "manifest"]);
+        expect(result.files.map((f) => f.role)).toEqual(["core", "coarse", "geometry", "terrain", "manifest"]);
         expect(result.files.map((f) => f.name)).toEqual(want.map((f) => f.name));
         for (const [i, file] of result.files.entries()) {
             expectSameBytes(file.take(), want[i].bytes, file.name);
@@ -164,6 +184,30 @@ describe("assembleCells", () => {
         expect(summary.shards[0].verified?.chunks).toBeGreaterThan(0);
         expect(summary.shards[0].verified?.features).toBeGreaterThan(0);
         expect(summary.shards[0].sha256).toMatch(/^[0-9a-f]{64}$/);
+    });
+
+    /** EL4: the raster reaches the browser's output as its own file with the §5.2 derived name,
+     *  and the §5.7 projection is the bytes actually written. */
+    it("writes the terrain shard as its own file and prices it exactly", async () => {
+        const result = await assembleCells(cells(), sidecar, skin, OPTIONS, undefined, [], terrain());
+        const shard = result.files.find((f) => f.role === "terrain");
+        expect(shard?.name).toBe("MS1.OBD");
+        const bytes = shard!.take();
+        expect(new TextDecoder().decode(bytes.subarray(0, 4))).toBe("OBCT");
+        // 32-byte header + a 2 × 2 directory + three of four squares present.
+        expect(bytes.length).toBe(32 + 16 + 3 * 2048);
+        const t = result.summary.terrain as { bytes: number; cells: number; slots: number };
+        expect(t.bytes).toBe(bytes.length);
+        expect([t.cells, t.slots]).toEqual([3, 4]);
+        result.release();
+    });
+
+    /** …and a selection with no raster is exactly the map it was before terrain existed (§13). */
+    it("writes no terrain shard when the catalog publishes none", async () => {
+        const result = await assembleCells(cells(), sidecar, skin, OPTIONS);
+        expect(result.files.some((f) => f.role === "terrain")).toBe(false);
+        expect(result.summary.terrain).toBeNull();
+        result.release();
     });
 
     it("reports every phase in order, never going backwards", async () => {

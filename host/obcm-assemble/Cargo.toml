@@ -26,6 +26,14 @@ obc-formats = { path = "../../firmware/obc-formats" }
 # is on for `MapCache::new_boxed`: the ~277 KB cache must not land on a small (wasm) stack.
 obc-reader = { path = "../../firmware/obc-reader", features = ["alloc"] }
 obc-map-scene = { path = "../../firmware/obc-map-scene" }
+# The **one** OBCT container writer in the tree (`OBCT_Spec.md` §4): a published terrain cell and an
+# assembled terrain shard come out of the same code, which is what makes "a cell is a 1 × 1 shard" a
+# fact. `default-features = false` drops obc-dem's GeoTIFF decoder and HTTP client — neither of which
+# compiles for wasm32 and neither of which an assembler has any use for.
+obc-dem = { path = "../obc-dem", default-features = false }
+# The real OBCT **reader**, for the §4.8 read-back of the terrain shard — the same parser the
+# firmware runs, exactly as `obc-reader` is for the OBCM shards.
+obc-elevation = { path = "../../firmware/obc-elevation" }
 # Shard digests + the set id (OBCA §5.2). Pure Rust, so it follows the engine to wasm.
 sha2 = "0.11"
 # `obc-reader`'s feature-decode API fills caller-owned fixed-capacity buffers, so the verify pass
@@ -46,7 +54,4 @@ obc-render = { path = "../../firmware/obc-render" }
 obc-display = { path = "../../firmware/obc-display" }
 # The oracle's route half: the real A* the device runs.
 obc-route = { path = "../../firmware/obc-route", features = ["alloc"] }
-# `NullElevation`: the oracle packs its fixtures without terrain, so the v12 ascent field is 0 on
-# both sides of the comparison and the engine's grafted bytes are the packer's bytes.
-obc-elevation = { path = "../../firmware/obc-elevation" }
 embedded-graphics = "0.8"

@@ -15,7 +15,7 @@
 // A generator refuses to publish a mixed tree; this refuses to consume one.
 
 import { formatCellId, parseCellId, type CellId } from "./grid";
-import type { Catalog, CellIndexRef, RegionEntry } from "./manifest";
+import type { Catalog, CellIndexRef, RegionEntry, TerrainEntry } from "./manifest";
 import {
     arr,
     bool,
@@ -97,6 +97,50 @@ export interface RegionCellsDocument {
     region_id: string;
     /** Band id → its cell ids, sorted, exactly as published. */
     cells: Record<string, string[]>;
+    /** This region's terrain cell ids, sorted (§13.3). A **separate field**,
+     *  because `cells` is keyed by schema band and terrain is not one. Empty
+     *  for a region published before terrain, or for a terrain-less catalog. */
+    terrain: string[];
+}
+
+/** One published terrain cell (§13.1). No bbox and no per-cell source list: the
+ *  id is the square, and the provenance is one dataset stated once in the root. */
+export interface TerrainCellEntry {
+    id: string;
+    /** The parsed id. Not on the wire. */
+    cell: CellId;
+    bytes: number;
+    sha256: string;
+    url: string;
+    built_at: string;
+}
+
+/** An inclusive, same-row run of canonically void terrain squares (§13.6) —
+ *  open ocean, or outside the source dataset's coverage. They have no object,
+ *  because OBCT §4.3 makes an absent cell and an all-`NODATA` one answer
+ *  identically, so 2 MiB of sentinel would buy nothing. */
+export interface TerrainEmptyRun {
+    start: string;
+    end: string;
+    startCell: CellId;
+    endCell: CellId;
+    built_at: string;
+}
+
+export interface TerrainIndexDocument {
+    schema_version: number;
+    /** The terrain store's own revision. There is deliberately **no
+     *  `schema_revision`** here: a terrain cell does not know which OBCM schema
+     *  it will be used beside (§13.1), and the absence is normative. */
+    terrain_revision: number;
+    dataset_id: string;
+    dataset_version: string;
+    posting_log2: number;
+    cell_log2: number;
+    cells: TerrainCellEntry[];
+    known_empty: TerrainEmptyRun[];
+    byId: ReadonlyMap<string, TerrainCellEntry>;
+    emptyByRow: ReadonlyMap<number, readonly TerrainEmptyRun[]>;
 }
 
 /**
@@ -297,6 +341,164 @@ export function parseCellIndex(body: string, catalog: Catalog, ref: CellIndexRef
     return index;
 }
 
+/** The known-empty terrain run containing `id`, if any. */
+export function terrainEmptyAt(index: TerrainIndexDocument, id: string): TerrainEmptyRun | undefined {
+    const cell = parseCellIdIn(id, "terrain index lookup");
+    const runs = index.emptyByRow.get(cell.i) ?? [];
+    let lo = 0;
+    let hi = runs.length;
+    while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        const run = runs[mid];
+        if (cell.j < run.startCell.j) hi = mid;
+        else if (cell.j > run.endCell.j) lo = mid + 1;
+        else return cell.log2 === run.startCell.log2 ? run : undefined;
+    }
+    return undefined;
+}
+
+/** Whether the terrain store explicitly covers a square, either with an object
+ *  or as canonically void ground. */
+export function terrainIndexHas(index: TerrainIndexDocument, id: string): boolean {
+    return index.byId.has(id) || terrainEmptyAt(index, id) !== undefined;
+}
+
+/**
+ * Parse the pinned terrain index against the root's `terrain` block.
+ *
+ * The four keys of §13.2's lockstep — `dataset_version`, `posting_log2`,
+ * `cell_log2`, `terrain_revision` — are re-asserted against the root here,
+ * because the digest only proves the bytes are the ones the root hashed, not
+ * that the root described them correctly. And the absence of `schema_revision`
+ * is checked rather than merely not-read: a document that grew one would mean an
+ * OBCM bump had started rewriting the terrain store, which is precisely the
+ * coupling §13 exists to prevent.
+ */
+export function parseTerrainIndex(body: string, catalog: Catalog, block: TerrainEntry): TerrainIndexDocument {
+    const where = "terrain index";
+    const doc = obj(json(body, where), where);
+    if (doc.schema_version !== catalog.schema_version) {
+        fail(`${where}: schema_version ${JSON.stringify(doc.schema_version)} is not ${catalog.schema_version}`);
+    }
+    if ("schema_revision" in doc) {
+        fail(
+            `${where}: carries a schema_revision. Terrain has its own revision track (§13.1/§13.2) — ` +
+                "a field naming an OBCM schema here would make an OBCM bump rewrite this document",
+        );
+    }
+    const ref = block.cell_index;
+    const revision = int(doc, "terrain_revision", where, 1);
+    if (revision !== block.terrain_revision) {
+        fail(`${where}: terrain_revision ${revision} is not the root's ${block.terrain_revision}`);
+    }
+    for (const key of ["dataset_id", "dataset_version"] as const) {
+        if (doc[key] !== block[key]) {
+            fail(`${where}: ${key} ${JSON.stringify(doc[key])} is not the root's ${JSON.stringify(block[key])}`);
+        }
+    }
+    for (const key of ["posting_log2", "cell_log2"] as const) {
+        if (doc[key] !== block[key]) {
+            fail(`${where}: ${key} ${JSON.stringify(doc[key])} is not the root's ${block[key]}`);
+        }
+    }
+
+    const raw = arr(doc.cells, `${where}.cells`);
+    if (raw.length !== ref.cell_count) {
+        fail(`${where}: root says ${ref.cell_count} cells, the document has ${raw.length}`);
+    }
+    const byId = new Map<string, TerrainCellEntry>();
+    let previous: CellId | null = null;
+    const cells = raw.map((entry, k) => {
+        const at = `${where}.cells[${k}]`;
+        const o = obj(entry, at);
+        const id = str(o, "id", at);
+        const cell = parseCellIdIn(id, at);
+        if (formatCellId(cell) !== id) fail(`${at}: id ${JSON.stringify(id)} is not canonically padded`);
+        if (cell.log2 !== block.cell_log2) {
+            fail(`${at}: cell size 2^${cell.log2} is not the store's 2^${block.cell_log2}`);
+        }
+        if (previous && (cell.i < previous.i || (cell.i === previous.i && cell.j <= previous.j))) {
+            fail(`${at}: cells are not sorted by (i, j)`);
+        }
+        previous = cell;
+        const sha256 = str(o, "sha256", at, SHA256);
+        const parsed: TerrainCellEntry = {
+            id,
+            cell,
+            bytes: int(o, "bytes", at, 0),
+            sha256,
+            url: pinnedUrlStr(o, "url", sha256, at),
+            built_at: instant(o, "built_at", at),
+        };
+        byId.set(id, parsed);
+        return parsed;
+    });
+
+    const rawEmpty = arr(doc.known_empty, `${where}.known_empty`);
+    const emptyByRow = new Map<number, TerrainEmptyRun[]>();
+    let previousEmpty: TerrainEmptyRun | null = null;
+    let emptyCount = 0;
+    const knownEmpty = rawEmpty.map((entry, k) => {
+        const at = `${where}.known_empty[${k}]`;
+        const o = obj(entry, at);
+        const start = str(o, "start", at);
+        const end = str(o, "end", at);
+        const startCell = parseCellIdIn(start, `${at}.start`);
+        const endCell = parseCellIdIn(end, `${at}.end`);
+        if (formatCellId(startCell) !== start) fail(`${at}.start: id ${JSON.stringify(start)} is not canonically padded`);
+        if (formatCellId(endCell) !== end) fail(`${at}.end: id ${JSON.stringify(end)} is not canonically padded`);
+        if (startCell.log2 !== block.cell_log2 || endCell.log2 !== block.cell_log2) {
+            fail(`${at}: range cell size is not the store's 2^${block.cell_log2}`);
+        }
+        if (startCell.i !== endCell.i) fail(`${at}: a known-empty range must stay in one latitude row`);
+        if (startCell.j > endCell.j) fail(`${at}: range start comes after its end`);
+        const run: TerrainEmptyRun = { start, end, startCell, endCell, built_at: instant(o, "built_at", at) };
+        if (
+            previousEmpty &&
+            (startCell.i < previousEmpty.startCell.i ||
+                (startCell.i === previousEmpty.startCell.i && startCell.j <= previousEmpty.endCell.j))
+        ) {
+            fail(`${at}: known-empty ranges are not sorted or overlap`);
+        }
+        if (
+            previousEmpty &&
+            startCell.i === previousEmpty.endCell.i &&
+            startCell.j === previousEmpty.endCell.j + 1 &&
+            previousEmpty.built_at === run.built_at
+        ) {
+            fail(`${at}: adjacent ranges with identical provenance must be merged`);
+        }
+        previousEmpty = run;
+        emptyCount += endCell.j - startCell.j + 1;
+        const row = emptyByRow.get(startCell.i) ?? [];
+        row.push(run);
+        emptyByRow.set(startCell.i, row);
+        return run;
+    });
+    if (emptyCount !== ref.known_empty_count) {
+        fail(`${where}: root says ${ref.known_empty_count} known-empty cells, the document covers ${emptyCount}`);
+    }
+
+    const index: TerrainIndexDocument = {
+        schema_version: catalog.schema_version,
+        terrain_revision: revision,
+        dataset_id: block.dataset_id,
+        dataset_version: block.dataset_version,
+        posting_log2: block.posting_log2,
+        cell_log2: block.cell_log2,
+        cells,
+        known_empty: knownEmpty,
+        byId,
+        emptyByRow,
+    };
+    for (const cell of cells) {
+        if (terrainEmptyAt(index, cell.id)) {
+            fail(`${where}: cell ${cell.id} has both an artifact and a known-empty assertion`);
+        }
+    }
+    return index;
+}
+
 /**
  * Parse a region's cell list against the root's entry for that region.
  *
@@ -351,7 +553,43 @@ export function parseRegionCells(body: string, catalog: Catalog, entry: RegionEn
     for (const [bandId, count] of Object.entries(entry.cell_count)) {
         if (count > 0 && !(bandId in cells)) fail(`${where}: band "${bandId}" is priced but absent from the list`);
     }
-    return { schema_version: catalog.schema_version, schema_revision: catalog.schema.revision, region_id: regionId, cells };
+
+    // §13.3's terrain list: a **separate field**, because `cells` is keyed by
+    // schema band and terrain is not one. Optional, so a terrain-less catalog
+    // and a region published before terrain both read as "no raster here".
+    const terrainAt = `${where}.terrain`;
+    const terrain: string[] =
+        doc.terrain === undefined || doc.terrain === null
+            ? []
+            : arr(doc.terrain, terrainAt).map((v, k) => {
+                  if (typeof v !== "string") fail(`${terrainAt}[${k}]: expected a cell id`);
+                  const cell = parseCellIdIn(v as string, `${terrainAt}[${k}]`);
+                  if (formatCellId(cell) !== v) fail(`${terrainAt}[${k}]: id ${JSON.stringify(v)} is not canonically padded`);
+                  if (catalog.terrain && cell.log2 !== catalog.terrain.cell_log2) {
+                      fail(`${terrainAt}[${k}]: cell size 2^${cell.log2} is not the store's 2^${catalog.terrain.cell_log2}`);
+                  }
+                  return v as string;
+              });
+    for (let k = 1; k < terrain.length; k++) {
+        if (terrain[k] <= terrain[k - 1]) fail(`${terrainAt}: ids are not sorted, or one appears twice`);
+    }
+    // The root priced this selection; a list that disagrees is a price that is
+    // not the price of the download. Counted against the two halves §13.3 splits
+    // it into, so a downloadable square silently becoming void is caught too.
+    if (entry.terrain) {
+        const priced = entry.terrain.cell_count + entry.terrain.known_empty_count;
+        if (terrain.length !== priced) {
+            fail(`${terrainAt}: the root prices ${priced} terrain square(s), the list has ${terrain.length}`);
+        }
+    }
+
+    return {
+        schema_version: catalog.schema_version,
+        schema_revision: catalog.schema.revision,
+        region_id: regionId,
+        cells,
+        terrain,
+    };
 }
 
 /**

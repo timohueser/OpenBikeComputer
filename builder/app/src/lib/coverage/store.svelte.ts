@@ -16,7 +16,7 @@ import { cellsIntersecting, coverageBbox, parseCellId, type UBox } from "../cata
 import { cellsTouchingHoles, detailBandId } from "./shape";
 import { ledgerFor, type Ledger } from "../catalog/ledger";
 import type { Catalog, RegionEntry, SkinEntry } from "../catalog/manifest";
-import type { CellIndexDocument, RegionCellsDocument } from "../catalog/satellites";
+import type { CellIndexDocument, RegionCellsDocument, TerrainIndexDocument } from "../catalog/satellites";
 import {
     browserSkinStorage,
     loadCustomSkins,
@@ -87,6 +87,10 @@ export class CoverageStore {
      *  computed from some bands is exactly the not-final state the ledger's
      *  `isFinal` exists to name, so nothing is priced until all arrive. */
     indices = $state<ReadonlyMap<string, CellIndexDocument> | null>(null);
+    /** The pinned terrain index (`OBCC_Spec.md` §13.1), or `null` — which is
+     *  both "not loaded yet" and "this catalog publishes no raster", because a
+     *  consumer treats the two the same way: no elevation, no refusal. */
+    terrain = $state<TerrainIndexDocument | null>(null);
     indexError = $state<string | null>(null);
 
     /** Region cell lists, as they arrive. Replaced wholesale on each arrival so
@@ -137,7 +141,13 @@ export class CoverageStore {
 
     private async loadIndices(): Promise<void> {
         try {
-            this.indices = await this.client.cellIndices();
+            // Terrain alongside the bands, in one round of requests, because a
+            // selection is priced with the raster in it and a price that arrives
+            // in two steps is a price that is briefly wrong. `null` is the
+            // ordinary answer for a catalog with no terrain block (§13).
+            const [indices, terrain] = await Promise.all([this.client.cellIndices(), this.client.terrain()]);
+            this.terrain = terrain;
+            this.indices = indices;
         } catch (e) {
             this.indexError = e instanceof Error ? e.message : String(e);
         }
@@ -151,7 +161,7 @@ export class CoverageStore {
 
     private get ctx(): SelectionContext | null {
         if (!this.indices) return null;
-        return { catalog: this.catalog, indices: this.indices, regionCells: this.regionCells };
+        return { catalog: this.catalog, indices: this.indices, regionCells: this.regionCells, terrain: this.terrain };
     }
 
     /**

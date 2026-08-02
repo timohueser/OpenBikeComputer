@@ -24,7 +24,10 @@ use std::time::Instant;
 use obc_formats::io::{ByteSource, Error as IoError};
 use obcm_assemble::grid::CellId;
 use obcm_assemble::schema::{Schema, Skin};
-use obcm_assemble::{assemble, CellInput, Clock, Error, Options, Result, ShardPlan, ShardStore};
+use obcm_assemble::{
+    assemble_full, CellInput, Clock, Error, Options, Result, ShardPlan, ShardStore, TerrainCellInput, TerrainJob,
+    TerrainParams,
+};
 
 /// A cell artifact read on demand. Cell regions are copied in 256 KB blocks, so the whole tree never
 /// has to be resident — which is what keeps a country assembly's memory about the nav graph rather
@@ -71,6 +74,9 @@ struct FileStore {
     open: Option<std::io::BufWriter<File>>,
     sealed: Vec<FileSource>,
     manifest_path: PathBuf,
+    /// Whether this run wrote a terrain shard, so the manifest step knows whether an existing
+    /// `MS<id>.OBD` is this set's raster or an orphan of the one it replaced.
+    terrain_written: bool,
 }
 
 impl FileStore {
@@ -82,6 +88,7 @@ impl FileStore {
             open: None,
             sealed: Vec::new(),
             manifest_path: dir.join(obcm_assemble::shard::manifest_filename(card_id)),
+            terrain_written: false,
         })
     }
 }
@@ -118,8 +125,68 @@ impl ShardStore for FileStore {
         for index in self.sealed.len()..obcm_assemble::shard::MAX_SHARDS {
             let _ = std::fs::remove_file(self.dir.join(obcm_assemble::shard::shard_filename(self.card_id, index)));
         }
+        if !self.terrain_written {
+            // The same rule for the raster: a set re-assembled without terrain must not leave the
+            // old one behind for the next mount to find.
+            let _ = std::fs::remove_file(self.dir.join(obcm_assemble::shard::terrain_filename(self.card_id)));
+        }
         std::fs::write(&self.manifest_path, bytes).map_err(|_| Error::Io(IoError::Io))
     }
+}
+
+impl FileStore {
+    /// Open the terrain shard for writing. Read+write because the OBCT writer back-patches its
+    /// directory and §4.8 reads the file back through the real reader before the manifest names it.
+    fn terrain_file(&mut self) -> std::result::Result<File, String> {
+        let path = self.dir.join(obcm_assemble::shard::terrain_filename(self.card_id));
+        // Same §5.4 window as a shard: no manifest may point at a file being rewritten.
+        let _ = std::fs::remove_file(&self.manifest_path);
+        self.terrain_written = true;
+        File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .map_err(|e| format!("create {}: {e}", path.display()))
+    }
+}
+
+/// The terrain sidecar the CLI is driven by — the catalog's §13.1 lattice plus the downloaded
+/// cells, in the same shape `cells.json` states the OBCM ones.
+struct TerrainSidecar {
+    params: TerrainParams,
+    cells: Vec<(CellId, String, Option<[u8; 32]>)>,
+}
+
+fn parse_terrain_sidecar(text: &str) -> std::result::Result<TerrainSidecar, String> {
+    let doc: serde_json::Value = serde_json::from_str(text).map_err(|e| format!("terrain.json: {e}"))?;
+    let byte = |key: &str| -> std::result::Result<u8, String> {
+        doc.get(key)
+            .and_then(|v| v.as_u64())
+            .and_then(|v| u8::try_from(v).ok())
+            .ok_or_else(|| format!("terrain.json has no `{key}`"))
+    };
+    let params = TerrainParams { posting_log2: byte("posting_log2")?, cell_log2: byte("cell_log2")? };
+    let listed = doc.get("cells").and_then(|c| c.as_array()).ok_or("terrain.json has no `cells` array")?;
+    let mut cells = Vec::with_capacity(listed.len());
+    for c in listed {
+        let id = c.get("id").and_then(|v| v.as_str()).ok_or("a terrain cell has no `id`")?;
+        let path = c.get("path").and_then(|v| v.as_str()).ok_or("a terrain cell has no `path`")?;
+        let sha256 = match c.get("sha256").and_then(|v| v.as_str()) {
+            None => None,
+            Some(hex) => {
+                let raw: std::result::Result<Vec<u8>, String> = (0..hex.len())
+                    .step_by(2)
+                    .map(|k| u8::from_str_radix(&hex[k..k + 2], 16).map_err(|_| format!("bad sha256 {hex:?}")))
+                    .collect();
+                let raw = raw?;
+                Some(<[u8; 32]>::try_from(raw.as_slice()).map_err(|_| format!("sha256 {hex:?} is not 32 bytes"))?)
+            }
+        };
+        cells.push((CellId::parse(id)?, path.to_string(), sha256));
+    }
+    Ok(TerrainSidecar { params, cells })
 }
 
 /// Wall-clock microseconds, for the phase split the engine reports.
@@ -170,6 +237,10 @@ REQUIRED:
 
 OPTIONS:
     --schema <path>         schema document (OBCC v2 root or SchemaEntry); default: the sidecar's
+    --terrain <path>        terrain sidecar: {posting_log2, cell_log2, cells:[{id, path, sha256?}]}.
+                            Writes the set's `MS<id>.OBD` terrain shard and the manifest's `terrain`
+                            role. Squares the selection covers but the list omits are canonically
+                            void and cost four directory bytes each (OBCC §13.6)
     --band <id>             only assemble these bands (repeatable)
     --cell <id>             only assemble these cells (repeatable, `<log2>/<i>/<j>`)
     --name <text>           the set's display name (24 bytes on the card)
@@ -209,6 +280,7 @@ fn run() -> std::result::Result<(), String> {
         return Ok(());
     }
     let mut cells_path: Option<PathBuf> = None;
+    let mut terrain_path: Option<PathBuf> = None;
     let mut schema_path: Option<PathBuf> = None;
     let mut skin_path: Option<PathBuf> = None;
     let mut out_dir: Option<PathBuf> = None;
@@ -225,6 +297,7 @@ fn run() -> std::result::Result<(), String> {
         };
         match args[i].as_str() {
             "--cells" => cells_path = Some(PathBuf::from(value(&mut i)?)),
+            "--terrain" => terrain_path = Some(PathBuf::from(value(&mut i)?)),
             "--schema" => schema_path = Some(PathBuf::from(value(&mut i)?)),
             "--skin" => skin_path = Some(PathBuf::from(value(&mut i)?)),
             "--out" => out_dir = Some(PathBuf::from(value(&mut i)?)),
@@ -281,9 +354,45 @@ fn run() -> std::result::Result<(), String> {
         .map(|(c, src)| CellInput { id: c.id, band: c.band.clone(), src, partial: c.partial })
         .collect();
 
+    // The raster, if this assembly has one. Read as file sources exactly like the OBCM cells: the
+    // engine copies one block at a time, so a continental terrain tree is never resident.
+    let terrain_sidecar = match &terrain_path {
+        None => None,
+        Some(p) => {
+            Some(parse_terrain_sidecar(&std::fs::read_to_string(p).map_err(|e| format!("read {}: {e}", p.display()))?)?)
+        }
+    };
+    let terrain_root = terrain_path.as_ref().and_then(|p| p.parent()).unwrap_or(Path::new(".")).to_path_buf();
+    let mut terrain_sources: Vec<FileSource> = Vec::new();
+    if let Some(sidecar) = &terrain_sidecar {
+        for (_, path, _) in &sidecar.cells {
+            let path = terrain_root.join(path);
+            terrain_sources.push(FileSource::open(&path).map_err(|e| format!("open {}: {e}", path.display()))?);
+        }
+    }
+
     let mut store = FileStore::new(&out_dir, opts.card_id).map_err(|e| e.to_string())?;
+    let mut terrain_file = match &terrain_sidecar {
+        None => None,
+        Some(_) => Some(store.terrain_file()?),
+    };
+    let job = match (&terrain_sidecar, terrain_file.as_mut()) {
+        (Some(sidecar), Some(file)) => Some(TerrainJob {
+            params: sidecar.params,
+            cells: sidecar
+                .cells
+                .iter()
+                .zip(&terrain_sources)
+                .map(|((id, _, sha256), src)| TerrainCellInput { id: *id, src, sha256: *sha256 })
+                .collect(),
+            sink: file,
+        }),
+        _ => None,
+    };
+
     let clock = StdClock(Instant::now());
-    let summary = assemble(inputs, &schema, &skin, &opts, &mut store, &clock).map_err(|e| e.to_string())?;
+    let summary =
+        assemble_full(inputs, Vec::new(), job, &schema, &skin, &opts, &mut store, &clock).map_err(|e| e.to_string())?;
 
     // The engine returns what the spec says to report; the CLI is what has a stderr (§4.5.2, §5.7,
     // `OBCM_Spec.md` §8.3). Printed before the summary so a long JSON blob cannot bury them.
@@ -320,6 +429,12 @@ fn print_summary(s: &obcm_assemble::Summary, out_dir: &Path) {
             })
             .unwrap_or_else(|| "  NOT VERIFIED (--skip-verify)".into());
         println!("  [{}] {:8} {:>12} B  {}\n{v}", sh.index, sh.role.as_str(), sh.bytes, sh.filename);
+    }
+    if let Some(t) = &s.terrain {
+        println!(
+            "  [T] terrain  {:>12} B  {}\n  verified: {} of {} square(s) present, the rest canonically void",
+            t.bytes, t.filename, t.cells, t.slots
+        );
     }
     println!("manifest: {}", out_dir.join(&s.manifest_filename).display());
     let st = &s.stats;
@@ -376,6 +491,13 @@ fn summary_json(s: &obcm_assemble::Summary, out_dir: &Path) -> String {
         "cells": st.cells,
         "bytes": s.bytes,
         "shards": shards,
+        "terrain": s.terrain.as_ref().map(|t| serde_json::json!({
+            "file": t.filename,
+            "bytes": t.bytes,
+            "sha256": t.sha256.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+            "cells": t.cells,
+            "slots": t.slots,
+        })),
         "manifest": out_dir.join(&s.manifest_filename).display().to_string(),
         "phases_us": {
             "open": st.open_us, "poi": st.poi_us, "nav": st.nav_us,

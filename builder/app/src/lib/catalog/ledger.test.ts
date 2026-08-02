@@ -177,6 +177,7 @@ function regionEntry(coreBytes: number): RegionEntry {
         name: "DACH",
         parent: null,
         boundary: { tolerance_udeg: 2000, rings: [] },
+        terrain: null,
         bytes: coreBytes,
         bytes_by_band: { coarse: 0, mid: 0, fine: 0, network: coreBytes },
         cell_count: { network: 1 },
@@ -191,8 +192,27 @@ describe("the core file's ceiling (OBCA §5.7)", () => {
     it("prices a named region from the root alone — no satellite fetch", () => {
         const entry = exampleCatalog.regions[0];
         const ledger = ledgerForRegion(exampleCatalog, entry);
-        expect(ledger.totalBytes).toBe(entry.bytes);
+        // The raster is priced in the root too (§13.3), so a hover shows the whole
+        // download — and it stays a **separate line**, because a rider may take
+        // the map without it and `bytes_by_band` deliberately excludes it.
+        expect(ledger.terrain?.bytes).toBe(entry.terrain?.bytes);
+        expect(ledger.totalBytes).toBe(entry.bytes + entry.terrain!.bytes);
+        expect(Object.values(entry.bytes_by_band).reduce((a, b) => a + b, 0)).toBe(entry.bytes);
         expect(ledger.core.bytes).toBe(entry.bytes_by_band.network);
+        expect(ledger.verdict.kind).toBe("ok");
+    });
+
+    it("shows the catalog's attribution and never a hard-coded one (§13.5)", () => {
+        const ledger = ledgerForRegion(exampleCatalog, exampleCatalog.regions[0]);
+        expect(ledger.terrain?.attribution).toBe(exampleCatalog.terrain!.attribution);
+        expect(ledger.terrain?.attribution).toMatch(/Copernicus/);
+    });
+
+    it("prices a terrain-less catalog with no elevation line at all (§13)", () => {
+        const plain = { ...exampleCatalog, terrain: null };
+        const ledger = ledgerForRegion(plain, plain.regions[0]);
+        expect(ledger.terrain).toBeNull();
+        expect(ledger.totalBytes).toBe(plain.regions[0].bytes);
         expect(ledger.verdict.kind).toBe("ok");
     });
 
