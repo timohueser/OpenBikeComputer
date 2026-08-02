@@ -22,8 +22,8 @@
 
 use heapless::Vec;
 
-use crate::deadband::DeadBand;
 use crate::reader::{decode_chunk_from, parse_chunk_meta, read_header, RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
+use obc_elevation::DeadBand;
 use obc_formats::io::{ByteSource, Error};
 use obc_formats::obcr::CHUNK_META_LEN;
 use obc_map_scene::ground_dist_m;

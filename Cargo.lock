@@ -2477,6 +2477,7 @@ dependencies = [
  "embedded-graphics",
  "heapless 0.8.0",
  "libm",
+ "obc-elevation",
  "obc-formats",
  "obc-map-scene",
  "obc-ports",
@@ -2544,6 +2545,13 @@ dependencies = [
  "embedded-graphics",
  "obc-reader",
  "pollster",
+]
+
+[[package]]
+name = "obc-elevation"
+version = "0.1.0"
+dependencies = [
+ "obc-formats",
 ]
 
 [[package]]
@@ -2661,6 +2669,7 @@ version = "0.1.0"
 dependencies = [
  "heapless 0.8.0",
  "libm",
+ "obc-elevation",
  "obc-formats",
  "obc-map-scene",
  "obc-pack",
@@ -2753,6 +2762,7 @@ version = "0.1.0"
 dependencies = [
  "heapless 0.8.0",
  "obc-dfu",
+ "obc-elevation",
  "obc-formats",
  "obc-route",
 ]

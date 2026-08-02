@@ -9,6 +9,7 @@ members = [
     "firmware/obc-ports",
     "firmware/obc-map-scene",
     "firmware/obc-reader",
+    "firmware/obc-elevation",
     "firmware/obc-route",
     "firmware/obc-render",
     "firmware/obc-app",
