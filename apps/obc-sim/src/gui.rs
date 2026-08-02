@@ -350,7 +350,14 @@ impl SimGui {
             panel,
             input: DeviceInput::new(),
             gpx: None,
-            baro: BaroSensor::new(),
+            baro: {
+                // `--baro-drift` (EL8, #1076): synthetic weather drift on the replayed altimeter,
+                // so the map-referenced altimeter's correction is visible in the GUI too. 0 = the
+                // plain replay.
+                let mut b = BaroSensor::new();
+                b.set_drift(args.baro_drift.unwrap_or(0.0));
+                b
+            },
             compass: SimCompass::new(),
             sim_sensors: crate::sim_sensors::SimSensors::new(),
             gpx_label: None,
@@ -564,6 +571,10 @@ impl SimGui {
             };
             self.app.tick(RideClock(now_ms), sensors, route.as_ref());
         }
+        // The map-referenced altimeter's terrain read (EL8, #1076), drained once per frame behind
+        // whichever tick ran above — the board's ride-loop shape. It is a one-shot armed only by a
+        // fresh fix, so this reads at most one 512 B tile per fix, never per frame.
+        self.app.sample_terrain(&mut *self.elevation);
 
         // Time the whole frame draw into `render_us` (`obc-render` is clockless, so the host
         // fills it; the device uses the DWT cycle counter). Render the whole frame straight into the

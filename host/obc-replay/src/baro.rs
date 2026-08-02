@@ -22,7 +22,8 @@ const SAMPLE_INTERVAL_S: f64 = 0.5;
 /// returns a value only when [`SAMPLE_INTERVAL_S`] has elapsed since the last emission.
 #[derive(Debug, Default)]
 pub struct BaroSensor {
-    /// Latest elevation fed from the track (m), if any.
+    /// Latest elevation fed from the track (m), if any — already carrying
+    /// [`drift_m_per_h`](BaroSensor::drift_m_per_h).
     current: Option<f32>,
     /// Playback time of the most recent `feed`.
     fed_t: f64,
@@ -30,11 +31,27 @@ pub struct BaroSensor {
     /// `fed_t - emitted_t >= SAMPLE_INTERVAL_S`.
     emitted_t: f64,
     due: bool,
+    /// Synthetic **weather drift** (m of apparent altitude per hour of playback time), added to
+    /// every fed elevation — see [`set_drift`](BaroSensor::set_drift). `0.0` = today's behaviour.
+    drift_m_per_h: f32,
 }
 
 impl BaroSensor {
     pub fn new() -> Self {
-        BaroSensor { current: None, fed_t: 0.0, emitted_t: f64::NEG_INFINITY, due: false }
+        BaroSensor { current: None, fed_t: 0.0, emitted_t: f64::NEG_INFINITY, due: false, drift_m_per_h: 0.0 }
+    }
+
+    /// Inject a synthetic **barometric weather drift**: the emitted altitude walks away from the
+    /// track's true elevation by `m_per_h` metres per hour of playback time (negative = pressure
+    /// rising, the sensor under-reading).
+    ///
+    /// This is the simulator's stand-in for the one error the device's altimeter genuinely has and
+    /// a GPX replay otherwise cannot show: `bmp581.rs` hard-codes sea-level `P0`, so a passing front
+    /// moves every reading together. Real weather is on the order of 1 hPa/h ≈ 8 m/h; the map-
+    /// referenced altimeter (epic #1068, EL8) exists to cancel exactly this, so this knob is how
+    /// its cancellation is demonstrated and regression-tested. `0.0` restores the plain replay.
+    pub fn set_drift(&mut self, m_per_h: f32) {
+        self.drift_m_per_h = m_per_h;
     }
 
     /// Feed the track's elevation `ele_m` at playback time `t`. Marks a sample due once a
@@ -42,7 +59,9 @@ impl BaroSensor {
     /// stream is coarser than, and out of phase with, the per-frame fixes). A backward
     /// jump in `t` (seek / replay restart) re-arms immediately.
     pub fn feed(&mut self, ele_m: Option<f32>, t: f64) {
-        self.current = ele_m;
+        // The drift is applied at feed time, so the emitted sample is what a drifting sensor would
+        // actually have reported at this playback instant.
+        self.current = ele_m.map(|e| e + self.drift_m_per_h * (t as f32) / 3600.0);
         self.fed_t = t;
         if t < self.emitted_t {
             self.emitted_t = f64::NEG_INFINITY;
@@ -96,6 +115,24 @@ mod tests {
         let mut b = BaroSensor::new();
         b.feed(None, 0.0);
         assert_eq!(b.poll(), None);
+    }
+
+    /// The EL8 drift injector: the emitted altitude walks away from the track's true elevation at
+    /// the configured rate, and the plain replay (drift 0) is unchanged.
+    #[test]
+    fn injected_drift_walks_the_emitted_altitude_away() {
+        let mut b = BaroSensor::new();
+        b.set_drift(8.0); // 8 m/h ≈ 1 hPa/h, a realistic passing front
+        b.feed(Some(500.0), 0.0);
+        assert_eq!(b.poll(), Some(500.0), "no drift has accrued at t = 0");
+        b.feed(Some(500.0), 3600.0);
+        assert_eq!(b.poll(), Some(508.0), "one hour later the same ground reads 8 m higher");
+        b.feed(Some(600.0), 7200.0);
+        assert_eq!(b.poll(), Some(616.0), "real climbing and drift add");
+
+        let mut plain = BaroSensor::new();
+        plain.feed(Some(500.0), 7200.0);
+        assert_eq!(plain.poll(), Some(500.0), "drift 0 is the pre-EL8 replay, bit for bit");
     }
 
     #[test]
