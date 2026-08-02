@@ -46,6 +46,22 @@ export interface WorkerKnownEmpty {
     band: string;
 }
 
+/** One terrain cell crossing into the worker. Same fields as
+ *  `AssembleTerrainCell`; a canonically void square is simply not sent, because
+ *  it has no object at all (`OBCC_Spec.md` §13.6). */
+export interface WorkerTerrainCell {
+    id: string;
+    sha256: string;
+    bytes: Uint8Array;
+}
+
+/** The catalog's terrain lattice (`OBCC_Spec.md` §13.1). Absent means the
+ *  catalog publishes no raster and the set carries no `terrain` role. */
+export interface WorkerTerrain {
+    postingLog2: number;
+    cellLog2: number;
+}
+
 export type AssembleWorkerRequest =
     | {
           type: "estimate";
@@ -64,6 +80,10 @@ export type AssembleWorkerRequest =
           /** The chosen skin entry, as JSON. */
           skinJson: string;
           options: AssembleOptions;
+          /** The raster (EL4). Absent for a terrain-less catalog, in which case
+           *  the set is written without a `terrain` role. */
+          terrain?: WorkerTerrain;
+          terrainCells?: WorkerTerrainCell[];
       }
     | { type: "file-ack" };
 
@@ -71,7 +91,7 @@ export type AssembleWorkerRequest =
  *  which has already happened on the worker side. */
 export interface WorkerFile {
     name: string;
-    role: "core" | "coarse" | "geometry" | "manifest";
+    role: "core" | "coarse" | "geometry" | "terrain" | "manifest";
     sha256: string;
     byteLength: number;
     bytes: Uint8Array;
@@ -90,7 +110,7 @@ export type AssembleWorkerResponse =
  *  gigabytes of downloaded cells once the assembly owns them. */
 export function requestTransferList(req: AssembleWorkerRequest): Transferable[] {
     if (req.type !== "assemble") return [];
-    return dedupedBuffers(req.cells.map((c) => c.bytes));
+    return dedupedBuffers([...req.cells.map((c) => c.bytes), ...(req.terrainCells ?? []).map((c) => c.bytes)]);
 }
 
 /** The transfer list for a `file` response. */
@@ -120,7 +140,7 @@ const PHASES: ReadonlySet<string> = new Set([
     "manifest",
     "done",
 ]);
-const ROLES: ReadonlySet<string> = new Set(["core", "coarse", "geometry", "manifest"]);
+const ROLES: ReadonlySet<string> = new Set(["core", "coarse", "geometry", "terrain", "manifest"]);
 const CODES: ReadonlySet<string> = new Set(ASSEMBLE_ERROR_CODES);
 
 /**

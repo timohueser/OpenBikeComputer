@@ -1,10 +1,22 @@
 //! OBCS volume-set manifest codec from `OBCA_Spec.md` §5.2 / §5.3.
 //!
-//! One *logical* map is a **set**: this small manifest plus `1..=32` physical OBCM files
-//! (§5). The manifest is parsed on the device, so the layout is fixed, little-endian, and
-//! needs no allocation — a parsed [`SetManifest`] is a plain value with a fixed-capacity
-//! shard array (24 B per shard resident; the 32-byte digests stay in the caller's byte
-//! buffer and are reached through [`shard_digest`], because a device defers hashing).
+//! One *logical* map is a **set**: this small manifest plus `1..=32` physical files (§5). The
+//! manifest is parsed on the device, so the layout is fixed, little-endian, and needs no
+//! allocation — a parsed [`SetManifest`] is a plain value with a fixed-capacity shard array
+//! (24 B per shard resident; the 32-byte digests stay in the caller's byte buffer and are
+//! reached through [`shard_digest`], because a device defers hashing).
+//!
+//! ## Two kinds of record, one array (manifest v2, EL4)
+//!
+//! Most records name an **OBCM shard**. At most one names the set's **terrain shard**
+//! ([`Role::Terrain`], `OBCT_Spec.md` §4) — a raster, not a map, and therefore not something a
+//! reader may open as OBCM, tile against the geometry roles, or count as a zoom level. That
+//! record is required to be **last** in the array, which is what lets [`SetManifest::shards`]
+//! keep meaning exactly what it meant before terrain existed: the OBCM shards, in the index
+//! order their derived `MS<id>S<kk>.OBM` filenames count in. A consumer that never asks about
+//! terrain therefore needs no change and cannot accidentally hand a raster to an OBCM parser.
+//! [`SetManifest::records`] is the whole array, and it is what the wire `Shard Count`, the
+//! `Set Id` digest chain and [`SetManifest::total_bytes`] count.
 //!
 //! This module is the *codec and validator* only. Mounting — checking that every derived
 //! filename exists, has the recorded size, and opens as an OBCM file with the recorded
@@ -19,7 +31,11 @@ use crate::io::{checked_put_i32, checked_put_u32, checked_rd_i32, checked_rd_u32
 /// parser — noted only so a `grep` for the magic does not read as a collision.
 pub const MAGIC: [u8; 4] = *b"OBCS";
 /// The one accepted manifest version; readers reject any other value (§5.2).
-pub const VERSION: u8 = 1;
+///
+/// `2` since EL4 (#1072) added [`Role::Terrain`]. A **hard cut**, per the pre-release rule: a v1
+/// manifest is not read, because a v1 reader shown a v2 manifest would treat the terrain record as
+/// an unknown role and refuse the whole set anyway, and the version byte says *why*.
+pub const VERSION: u8 = 2;
 /// Fixed manifest header width (§5.2).
 pub const HEADER_LEN: usize = 72;
 /// Fixed per-shard record width (§5.2).
@@ -45,6 +61,9 @@ pub const SET_PREFIX: &str = "MS";
 pub const MANIFEST_EXT: &str = ".OBS";
 /// The shard extension — the same one a single received map uses (§5.2).
 pub const SHARD_EXT: &str = ".OBM";
+/// The terrain shard's extension: the 8.3 spelling of `.obcd` (`OBCT_Spec.md` §4.6). Deliberately
+/// **not** `.OBT` — a device's recorded ride log already owns `.obct`.
+pub const TERRAIN_EXT: &str = ".OBD";
 /// Largest card id the derived 8.3 names can express (`MS999S31.OBM` is eight characters).
 pub const MAX_SET_ID: u16 = 999;
 
@@ -60,6 +79,9 @@ pub enum Role {
     Geometry = 1,
     /// The `coarse`-band LODs and nothing else; one by default, spanning the assembly.
     Coarse = 2,
+    /// The set's **terrain shard** — an OBCT container, not an OBCM file (`OBCT_Spec.md` §4).
+    /// At most one per set, spanning the assembly bbox, and always the **last** record.
+    Terrain = 3,
 }
 
 impl Role {
@@ -74,8 +96,16 @@ impl Role {
             0 => Role::Core,
             1 => Role::Geometry,
             2 => Role::Coarse,
+            3 => Role::Terrain,
             _ => return None,
         })
+    }
+
+    /// Whether a record with this role names an **OBCM** file — the question every mount path
+    /// asks, spelled once here so no consumer re-derives it from a byte value.
+    #[inline]
+    pub const fn is_obcm(self) -> bool {
+        !matches!(self, Role::Terrain)
     }
 }
 
@@ -172,20 +202,48 @@ pub struct SetManifest {
     /// `core*` accessor and [`validate`] into a panic site. Both constructors range-check it, and
     /// [`SetManifest::core_shard`] reads it back.
     core_shard: u8,
-    shard_count: u8,
+    /// The wire `Shard Count`: **every** record, terrain included.
+    record_count: u8,
     shards: [Shard; MAX_SHARDS],
 }
 
 impl SetManifest {
-    /// The shards, in index order — the order the derived filenames count in.
+    /// The **OBCM** shards, in index order — the order the derived `MS<id>S<kk>.OBM` filenames
+    /// count in. A terrain record is not one and is never in here (see the module header).
     #[inline]
     pub fn shards(&self) -> &[Shard] {
-        &self.shards[..self.shard_count as usize]
+        &self.shards[..self.shard_count()]
+    }
+
+    /// How many OBCM shards the set has.
+    #[inline]
+    pub fn shard_count(&self) -> usize {
+        self.record_count as usize - self.has_terrain() as usize
+    }
+
+    /// Every record the manifest carries, terrain included — the wire `Shard Count`'s array, the
+    /// order the `Set Id` digest chain runs in, and what [`serialize`] wants digests for.
+    #[inline]
+    pub fn records(&self) -> &[Shard] {
+        &self.shards[..self.record_count as usize]
+    }
+
+    /// The wire `Shard Count`.
+    #[inline]
+    pub fn record_count(&self) -> usize {
+        self.record_count as usize
     }
 
     #[inline]
-    pub fn shard_count(&self) -> usize {
-        self.shard_count as usize
+    fn has_terrain(&self) -> bool {
+        matches!(self.shards.get(self.record_count as usize - 1), Some(s) if s.role == Role::Terrain)
+    }
+
+    /// The set's terrain shard, or `None` when it carries no raster — which is a complete,
+    /// ordinary map (`OBCC_Spec.md` §13: elevation degrades to "none is known here").
+    #[inline]
+    pub fn terrain(&self) -> Option<&Shard> {
+        self.records().last().filter(|s| s.role == Role::Terrain)
     }
 
     /// Index of the core shard (§5.1); always `< shard_count`, by construction.
@@ -217,22 +275,24 @@ impl SetManifest {
         core::str::from_utf8(raw).ok()
     }
 
-    /// Whether this is the single-file fast path (§5.5): one shard, which is the core and
-    /// carries everything.
+    /// Whether this is the single-file fast path (§5.5): one **OBCM** shard, which is the core
+    /// and carries everything. A terrain sidecar beside it does not change that — terrain is
+    /// always its own file, so the fast path is about the map, not about the file count.
     #[inline]
     pub fn is_single_file(&self) -> bool {
-        self.shard_count == 1
+        self.shard_count() == 1
     }
 
-    /// Total bytes of the set — the only size figure a UI may show (§5.4).
+    /// Total bytes of the set — the only size figure a UI may show (§5.4). Terrain included:
+    /// it is space on the card either way.
     pub fn total_bytes(&self) -> u64 {
-        self.shards().iter().map(|shard| shard.bytes as u64).sum()
+        self.records().iter().map(|shard| shard.bytes as u64).sum()
     }
 
     /// Serialized length of this manifest.
     #[inline]
     pub fn encoded_len(&self) -> usize {
-        manifest_len(self.shard_count as usize)
+        manifest_len(self.record_count as usize)
     }
 }
 
@@ -319,15 +379,15 @@ pub fn parse(bytes: &[u8]) -> Result<SetManifest, ManifestError> {
     validate_prefix(bytes, &MAGIC, VERSION, VERSION)?;
 
     let obcm_version = byte_at(bytes, 5)?;
-    let shard_count = byte_at(bytes, 6)? as usize;
-    if shard_count == 0 || shard_count > MAX_SHARDS {
+    let record_count = byte_at(bytes, 6)? as usize;
+    if record_count == 0 || record_count > MAX_SHARDS {
         return Err(ManifestError::ShardCount);
     }
-    if bytes.len() != manifest_len(shard_count) {
+    if bytes.len() != manifest_len(record_count) {
         return Err(ManifestError::Length);
     }
     let core_shard = byte_at(bytes, 7)?;
-    if core_shard as usize >= shard_count {
+    if core_shard as usize >= record_count {
         return Err(ManifestError::ShardCount);
     }
     let schema_revision = checked_rd_u32(bytes, 8)?;
@@ -340,7 +400,7 @@ pub fn parse(bytes: &[u8]) -> Result<SetManifest, ManifestError> {
     let name: [u8; NAME_LEN] = array_at(bytes, 48)?;
 
     let mut shards = [Shard::default(); MAX_SHARDS];
-    for (index, shard) in shards.iter_mut().enumerate().take(shard_count) {
+    for (index, shard) in shards.iter_mut().enumerate().take(record_count) {
         let base = HEADER_LEN + index * SHARD_RECORD_LEN;
         let role = Role::from_id(byte_at(bytes, base)?).ok_or(ManifestError::Roles)?;
         if array_at::<3>(bytes, base + 1)? != [0, 0, 0] {
@@ -356,7 +416,7 @@ pub fn parse(bytes: &[u8]) -> Result<SetManifest, ManifestError> {
         bbox,
         set_id,
         name,
-        shard_count: shard_count as u8,
+        record_count: record_count as u8,
         shards,
     };
     validate(&manifest)?;
@@ -366,10 +426,18 @@ pub fn parse(bytes: &[u8]) -> Result<SetManifest, ManifestError> {
 /// The §5.3 semantic rules, over an already-decoded manifest. Split out so a host assembler
 /// can check a manifest it is about to write without serializing it first.
 pub fn validate(manifest: &SetManifest) -> Result<(), ManifestError> {
+    let records = manifest.records();
+    // A terrain record is legal only as the **last** one. That is what makes `shards()` a plain
+    // prefix slice and therefore what keeps every OBCM mount path free of a role filter — so it is
+    // checked here, once, rather than trusted everywhere else.
+    if records.iter().rev().skip(1).any(|shard| shard.role == Role::Terrain) {
+        return Err(ManifestError::Roles);
+    }
     let shards = manifest.shards();
     let core_index = manifest.core_shard as usize;
     // Bounds-checked rather than indexed: `validate` is the *authority*, so it may not assume the
-    // invariant it exists to establish.
+    // invariant it exists to establish. Indexed into the OBCM prefix, so a `Core Shard` pointing at
+    // the terrain record is refused rather than mounted as a map.
     let core = shards.get(core_index).ok_or(ManifestError::ShardCount)?;
 
     // Exactly one core, and it is the one the header names.
@@ -378,7 +446,9 @@ pub fn validate(manifest: &SetManifest) -> Result<(), ManifestError> {
         return Err(ManifestError::Roles);
     }
     // A role with no shard is a map missing whole zoom levels — unless this is the §5.5
-    // single-file fast path, where the one shard is the core and carries everything.
+    // single-file fast path, where the one shard is the core and carries everything. Counted over
+    // the OBCM shards alone: a terrain record adds a raster, never a zoom level, so a one-shard map
+    // with terrain is still the fast path.
     if shards.len() > 1 {
         for role in [Role::Geometry, Role::Coarse] {
             if !shards.iter().any(|shard| shard.role == role) {
@@ -395,13 +465,21 @@ pub fn validate(manifest: &SetManifest) -> Result<(), ManifestError> {
     if !manifest.bbox.is_ordered() || manifest.bbox.area() == 0 {
         return Err(ManifestError::Geometry);
     }
-    for shard in shards {
+    for shard in records {
         if !shard.bbox.is_ordered() || shard.bbox.area() == 0 || !shard.bbox.is_inside(&manifest.bbox) {
             return Err(ManifestError::Geometry);
         }
     }
     if core.bbox != manifest.bbox {
         return Err(ManifestError::Geometry);
+    }
+    // The terrain shard spans the whole assembly, like the core: it is one raster over the map's
+    // ground, and a partial one would leave elevation silently absent in part of a map that looks
+    // complete. (Splitting it by bbox is a later problem — see `OBCA_Spec.md` §5.1.)
+    if let Some(terrain) = manifest.terrain() {
+        if terrain.bbox != manifest.bbox {
+            return Err(ManifestError::Geometry);
+        }
     }
 
     // Each non-core role tiles the assembly: pairwise interior-disjoint, and the areas sum to
@@ -441,7 +519,7 @@ pub fn shard_digest(bytes: &[u8], index: usize) -> Option<&[u8; DIGEST_LEN]> {
 /// the atomicity token, so writing an invalid one is never useful.
 pub fn serialize(manifest: &SetManifest, digests: &[[u8; DIGEST_LEN]], out: &mut [u8]) -> Result<usize, ManifestError> {
     validate(manifest)?;
-    let shards = manifest.shards();
+    let shards = manifest.records();
     if digests.len() != shards.len() {
         return Err(ManifestError::ShardCount);
     }
@@ -495,7 +573,7 @@ pub fn build(
         bbox,
         set_id,
         name,
-        shard_count: parts.len() as u8,
+        record_count: parts.len() as u8,
         shards,
     };
     validate(&manifest)?;
@@ -565,6 +643,25 @@ pub fn manifest_name(id: u16) -> Option<FileName> {
     Some(FileName { buf, len: len as u8 })
 }
 
+/// `MS<id>.OBD` — the terrain shard of set `id` (§5.2). `None` above [`MAX_SET_ID`].
+///
+/// It carries **no `S<kk>`**, and that is the rule rather than an omission: there is at most one
+/// terrain shard per set, so an index would be a number that is always `00` and a second thing to
+/// keep in step with the manifest. The name is also exactly the manifest's own stem with the
+/// terrain extension, which makes it the `OBCT_Spec.md` §4.6 sidecar of `MS<id>.OBS` — so a host
+/// that resolves terrain by sidecar and a host that reads the manifest role land on one file.
+pub fn terrain_name(id: u16) -> Option<FileName> {
+    if id > MAX_SET_ID {
+        return None;
+    }
+    let mut buf = [0u8; MAX_SHARD_NAME_LEN];
+    let mut len = 0usize;
+    push(&mut buf, &mut len, SET_PREFIX.as_bytes());
+    push_decimal(&mut buf, &mut len, id, 1);
+    push(&mut buf, &mut len, TERRAIN_EXT.as_bytes());
+    Some(FileName { buf, len: len as u8 })
+}
+
 /// `MS<id>S<kk>.OBM` — shard `index` of set `id` (§5.2). Filenames are **derived, not
 /// stored**: a stored name is a second source of truth that can disagree with the directory.
 pub fn shard_name(id: u16, index: usize) -> Option<FileName> {
@@ -605,11 +702,16 @@ pub fn delete_plan(id: u16) -> Option<[FileName; DELETE_PLAN_LEN]> {
     for index in 0..MAX_SHARDS {
         plan[index + 1] = shard_name(id, index)?;
     }
+    // The terrain shard is swept unconditionally, exactly like the shard tail: a set that once
+    // carried terrain and is replaced by one that does not must not leave megabytes of raster
+    // behind that nothing references (§5.4's orphan rule).
+    plan[MAX_SHARDS + 1] = terrain_name(id)?;
     Some(plan)
 }
 
-/// Length of [`delete_plan`]'s list: the manifest plus every shard name the cap can express.
-pub const DELETE_PLAN_LEN: usize = MAX_SHARDS + 1;
+/// Length of [`delete_plan`]'s list: the manifest, every shard name the cap can express, and the
+/// terrain shard.
+pub const DELETE_PLAN_LEN: usize = MAX_SHARDS + 2;
 
 /// Recover the set id from a `MS<id>.OBS` manifest filename, or `None` if `name` is not one.
 /// Deliberately strict: no lowercase, no leading zeros beyond a bare `0`, id `≤ 999`.
@@ -634,6 +736,14 @@ fn parse_id(digits: &[u8]) -> Option<u16> {
         value = value * 10 + (byte - b'0') as u16;
     }
     Some(value)
+}
+
+/// Recover the set id from a `MS<id>.OBD` terrain filename, or `None` if `name` is not one.
+/// As strict as [`parse_manifest_name`], and for the same reason.
+pub fn parse_terrain_name(name: &[u8]) -> Option<u16> {
+    let rest = name.strip_prefix(SET_PREFIX.as_bytes())?;
+    let digits = rest.strip_suffix(TERRAIN_EXT.as_bytes())?;
+    parse_id(digits)
 }
 
 /// Recover `(set id, shard index)` from a `MS<id>S<kk>.OBM` shard filename. A file that only
@@ -699,7 +809,7 @@ mod tests {
     fn encode(manifest: &SetManifest) -> [u8; MAX_MANIFEST_LEN] {
         let digests = [[0x11u8; DIGEST_LEN]; MAX_SHARDS];
         let mut out = [0u8; MAX_MANIFEST_LEN];
-        let len = serialize(manifest, &digests[..manifest.shard_count()], &mut out).unwrap();
+        let len = serialize(manifest, &digests[..manifest.record_count()], &mut out).unwrap();
         assert_eq!(len, manifest.encoded_len());
         out
     }
@@ -713,7 +823,109 @@ mod tests {
         assert_eq!(Role::Core.id(), 0);
         assert_eq!(Role::Geometry.id(), 1);
         assert_eq!(Role::Coarse.id(), 2);
-        assert_eq!(Role::from_id(3), None);
+        assert_eq!(Role::Terrain.id(), 3);
+        assert_eq!(Role::from_id(4), None);
+        assert!(Role::Core.is_obcm() && Role::Geometry.is_obcm() && Role::Coarse.is_obcm());
+        assert!(!Role::Terrain.is_obcm());
+        assert_eq!(VERSION, 2, "EL4 (#1072) is a hard cut, not a compatible extension");
+    }
+
+    /// The terrain record is the last one, it is not an OBCM shard, and it changes neither the
+    /// shard indexing nor the fast path. This is the whole EL4 contract in one test: a consumer
+    /// that only ever asks for `shards()` sees exactly what it saw before terrain existed.
+    #[test]
+    fn a_terrain_record_rides_last_and_is_not_a_shard() {
+        let solo = build(
+            11,
+            0,
+            1,
+            WORLD,
+            [0; SET_ID_LEN],
+            name_field("Grimsel"),
+            &[core(WORLD, 42), Shard { role: Role::Terrain, bbox: WORLD, bytes: 6_192 }],
+        )
+        .expect("core + terrain is the single-file fast path with a raster beside it");
+        assert_eq!(solo.shard_count(), 1, "one OBCM shard");
+        assert_eq!(solo.record_count(), 2, "…and two records on the wire");
+        assert!(solo.is_single_file(), "terrain is always its own file, so the fast path still applies");
+        assert_eq!(solo.shards().len(), 1);
+        assert_eq!(solo.shards()[0].role, Role::Core);
+        assert_eq!(solo.terrain().map(|t| t.bytes), Some(6_192));
+        assert_eq!(solo.total_bytes(), 42 + 6_192, "the card pays for the raster too");
+
+        let bytes = encode(&solo);
+        assert_eq!(bytes[4], 2, "manifest Version");
+        assert_eq!(bytes[6], 2, "wire Shard Count counts every record");
+        assert_eq!(bytes[HEADER_LEN + SHARD_RECORD_LEN], Role::Terrain.id());
+        assert_eq!(parse(&bytes[..solo.encoded_len()]).unwrap(), solo);
+
+        // A set with no raster is complete and says so.
+        let plain = build(11, 0, 1, WORLD, [0; SET_ID_LEN], name_field("Solo"), &[core(WORLD, 42)]).unwrap();
+        assert_eq!(plain.terrain(), None);
+    }
+
+    /// The invariants that make the prefix slice safe: at most one terrain record, and never
+    /// anywhere but last. Both are refused rather than tolerated, because `shards()` would
+    /// otherwise hand a raster to an OBCM parser.
+    #[test]
+    fn a_terrain_record_that_is_not_last_is_refused() {
+        let terrain = Shard { role: Role::Terrain, bbox: WORLD, bytes: 1 };
+        assert_eq!(
+            build(11, 1, 1, WORLD, [0; SET_ID_LEN], name_field("x"), &[terrain, core(WORLD, 1)]),
+            Err(ManifestError::Roles),
+            "terrain first would shift every derived shard index"
+        );
+        assert_eq!(
+            build(11, 0, 1, WORLD, [0; SET_ID_LEN], name_field("x"), &[core(WORLD, 1), terrain, terrain]),
+            Err(ManifestError::Roles),
+            "one raster per set"
+        );
+        // `Core Shard` may not name the terrain record: it indexes the OBCM prefix, so a value
+        // that lands on the raster is out of range rather than a mountable core.
+        assert_eq!(
+            build(11, 1, 1, WORLD, [0; SET_ID_LEN], name_field("x"), &[core(WORLD, 1), terrain]),
+            Err(ManifestError::ShardCount)
+        );
+        // …and it spans the whole assembly, like the core.
+        let half = SetBBox { max_lon: (WORLD.min_lon + WORLD.max_lon) / 2, ..WORLD };
+        assert_eq!(
+            build(
+                11,
+                0,
+                1,
+                WORLD,
+                [0; SET_ID_LEN],
+                name_field("x"),
+                &[core(WORLD, 1), Shard { role: Role::Terrain, bbox: half, bytes: 1 }]
+            ),
+            Err(ManifestError::Geometry)
+        );
+    }
+
+    /// A terrain record is invisible to the geometry/coarse tiling proof — it spans the whole
+    /// assembly and would otherwise read as an overlapping shard of some role.
+    #[test]
+    fn terrain_does_not_take_part_in_the_role_tiling() {
+        let mid = (WORLD.min_lon + WORLD.max_lon) / 2;
+        let manifest = build(
+            11,
+            0,
+            7,
+            WORLD,
+            [0xA5; SET_ID_LEN],
+            name_field("Alpen"),
+            &[
+                core(WORLD, 1_000),
+                Shard { role: Role::Coarse, bbox: WORLD, bytes: 2_000 },
+                Shard { role: Role::Geometry, bbox: SetBBox { max_lon: mid, ..WORLD }, bytes: 3_000 },
+                Shard { role: Role::Geometry, bbox: SetBBox { min_lon: mid, ..WORLD }, bytes: 4_000 },
+                Shard { role: Role::Terrain, bbox: WORLD, bytes: 5_000 },
+            ],
+        )
+        .expect("a split set with terrain");
+        assert_eq!(manifest.shard_count(), 4);
+        assert_eq!(manifest.record_count(), 5);
+        assert!(!manifest.is_single_file());
     }
 
     #[test]
@@ -721,7 +933,7 @@ mod tests {
         let manifest = split_set();
         let bytes = encode(&manifest);
         assert_eq!(&bytes[0..4], b"OBCS");
-        assert_eq!(bytes[4], 1); // Version
+        assert_eq!(bytes[4], 2); // Version
         assert_eq!(bytes[5], crate::obcm::VERSION); // OBCM Version
         assert_eq!(bytes[6], 4); // Shard Count
         assert_eq!(bytes[7], 0); // Core Shard
@@ -784,7 +996,10 @@ mod tests {
         assert_eq!(parse(&bad[..len]), Err(ManifestError::Layout));
 
         let mut bad = good;
-        bad[4] = 2;
+        bad[4] = 1; // the retired v1 layout
+        assert_eq!(parse(&bad[..len]), Err(ManifestError::Version));
+        let mut bad = good;
+        bad[4] = 3;
         assert_eq!(parse(&bad[..len]), Err(ManifestError::Version));
 
         let mut bad = good;
@@ -892,11 +1107,12 @@ mod tests {
     fn the_delete_plan_removes_the_manifest_first_then_the_whole_tail() {
         let plan = delete_plan(7).expect("set 7 has derived names");
         assert_eq!(plan.len(), DELETE_PLAN_LEN);
-        assert_eq!(plan.len(), MAX_SHARDS + 1);
+        assert_eq!(plan.len(), MAX_SHARDS + 2);
         assert_eq!(plan[0].as_str(), "MS7.OBS", "the manifest goes first (§5.4)");
         assert_eq!(plan[1].as_str(), "MS7S00.OBM");
         assert_eq!(plan[MAX_SHARDS].as_str(), "MS7S31.OBM", "the sweep runs to the cap, not the set's count");
-        for (index, name) in plan[1..].iter().enumerate() {
+        assert_eq!(plan[MAX_SHARDS + 1].as_str(), "MS7.OBD", "…and the raster goes too (§5.4's orphan rule)");
+        for (index, name) in plan[1..=MAX_SHARDS].iter().enumerate() {
             assert_eq!(parse_shard_name(name.as_bytes()), Some((7, index)));
         }
         assert!(delete_plan(1000).is_none(), "an id with no derived name has no plan");
@@ -928,7 +1144,11 @@ mod tests {
         let len = manifest.encoded_len();
 
         let mut bad = good;
-        bad[HEADER_LEN + SHARD_RECORD_LEN] = 3; // unknown role byte
+        bad[HEADER_LEN + SHARD_RECORD_LEN] = 4; // unknown role byte
+        assert_eq!(parse(&bad[..len]), Err(ManifestError::Roles));
+
+        let mut bad = good;
+        bad[HEADER_LEN + SHARD_RECORD_LEN] = Role::Terrain.id(); // terrain, but not last
         assert_eq!(parse(&bad[..len]), Err(ManifestError::Roles));
 
         let mut bad = good;

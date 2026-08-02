@@ -101,12 +101,41 @@ export interface CoverageReport {
     hasWarnings: boolean;
 }
 
+/**
+ * The elevation line (EL4, `OBCC_Spec.md` §13.3).
+ *
+ * Kept beside the bands rather than as one of them, because terrain is a second
+ * artifact class with its own revision track — it is not in `bytes_by_band`, it
+ * has no per-file ceiling to test (it is always its own file, `OBCA_Spec.md`
+ * §5.5), and it never feeds the core's nav-graph verdict. What it does share is
+ * §5.7's discipline: every byte here is a published `bytes` the catalog states,
+ * summed before anything is fetched.
+ */
+export interface TerrainLedger {
+    /** Downloadable squares. */
+    cellCount: number;
+    /** Squares that are canonically void — coverage that costs nothing (§13.6). */
+    knownEmptyCount: number;
+    /** Ground with no terrain object *and* no void assertion: elevation this map
+     *  will not have. Legal, and shown rather than merely tolerated. */
+    missingCount: number;
+    /** Summed published `bytes` — what the raster adds to the download. */
+    bytes: number;
+    /** The catalog's source credit, verbatim (§13.5). A consumer that displays
+     *  terrain MUST show this and MUST NOT hard-code it. */
+    attribution: string;
+}
+
 export interface Ledger {
     bands: BandLedger[];
     /** Everything the download costs: the sum of every selected cell's bytes,
-     *  across every band. This is the number the summary card shows. */
+     *  across every band **and the raster**. This is the number the summary card
+     *  shows, because it is what the transfer actually costs. */
     totalBytes: number;
     cellCount: number;
+    /** The raster's own line, or `null` when the catalog publishes no terrain —
+     *  a complete map whose profiles are flat (§13). */
+    terrain: TerrainLedger | null;
     /** The core file's line — the nav graph and the POIs. */
     core: BandLedger;
     coverage: CoverageReport;
@@ -248,9 +277,19 @@ export function ledgerFor(
     });
 
     const core = bands.find((b) => b.role === "core")!;
+    const terrain: TerrainLedger | null = catalog.terrain
+        ? {
+              cellCount: resolution.terrain.cells.length,
+              knownEmptyCount: resolution.terrain.knownEmpty.length,
+              missingCount: resolution.terrain.missing.length,
+              bytes: resolution.terrain.bytes,
+              attribution: catalog.terrain.attribution,
+          }
+        : null;
     return {
         bands,
-        totalBytes: bands.reduce((sum, b) => sum + b.bytes, 0),
+        terrain,
+        totalBytes: bands.reduce((sum, b) => sum + b.bytes, 0) + (terrain?.bytes ?? 0),
         cellCount: bands.reduce((sum, b) => sum + b.cellCount, 0),
         core,
         coverage: coverageReport(resolution.missingByBand, bands),
@@ -293,9 +332,22 @@ export function ledgerForRegion(catalog: Catalog, entry: RegionEntry): Ledger {
         };
     });
     const core = bands.find((b) => b.role === "core")!;
+    // §13.3 prices a region's raster in the root too, so hovering a region shows
+    // the whole download — map plus elevation — with no satellite fetch either.
+    const terrain: TerrainLedger | null =
+        catalog.terrain && entry.terrain
+            ? {
+                  cellCount: entry.terrain.cell_count,
+                  knownEmptyCount: entry.terrain.known_empty_count,
+                  missingCount: 0,
+                  bytes: entry.terrain.bytes,
+                  attribution: catalog.terrain.attribution,
+              }
+            : null;
     return {
         bands,
-        totalBytes: entry.bytes,
+        terrain,
+        totalBytes: entry.bytes + (terrain?.bytes ?? 0),
         cellCount: bands.reduce((sum, b) => sum + b.cellCount, 0),
         core,
         coverage: coverageReport(new Map(), bands, entry.partial_cell_count_by_band),

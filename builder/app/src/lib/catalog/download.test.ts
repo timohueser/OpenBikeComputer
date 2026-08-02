@@ -334,7 +334,7 @@ describe("downloadCells", () => {
 
     it("has nothing to do for an empty plan", async () => {
         const impl = serving();
-        expect(await downloadCells({ items: [], knownEmpty: [], totalBytes: 0 }, { fetchImpl: impl, onCell: () => {} })).toEqual({
+        expect(await downloadCells({ items: [], knownEmpty: [], totalBytes: 0, terrainBytes: 0 }, { fetchImpl: impl, onCell: () => {} })).toEqual({
             cells: 0,
             bytes: 0,
         });

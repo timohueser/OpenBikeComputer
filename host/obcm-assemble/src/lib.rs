@@ -63,9 +63,11 @@ pub mod poi;
 pub mod qtree;
 pub mod schema;
 pub mod shard;
+pub mod terrain;
 pub mod verify;
 
 pub use input::CellInput;
+pub use terrain::{TerrainCellInput, TerrainParams, TerrainPlan, TerrainShard, TerrainSink};
 
 /// One selected cell whose canonical band content is empty, as asserted by the
 /// pinned catalog. It contributes coverage and therefore participates in bbox
@@ -263,6 +265,36 @@ pub struct Stats {
     pub poi_section_bytes: u64,
 }
 
+/// The terrain half of an assembly (EL4): the store's lattice, the downloaded cells, and the
+/// seekable sink the shard is written to.
+///
+/// It is a separate argument rather than another [`ShardStore`] method because terrain is a
+/// separate *file* by rule (`OBCA_Spec.md` §5.5) written by a separate writer with a different
+/// contract — [`obc_dem::container::ShardWriter`] back-patches its directory, so its sink seeks,
+/// while an OBCM shard streams. Bolting a seek onto the OBCM sink to share one trait would make
+/// every host implement a capability only the raster needs.
+pub struct TerrainJob<'a> {
+    /// `OBCC_Spec.md` §13.1's `posting_log2` / `cell_log2`, verbatim from the catalog.
+    pub params: TerrainParams,
+    /// The downloaded cells. Known-empty squares are simply absent — an absent cell and an
+    /// all-`NODATA` one answer identically (`OBCT_Spec.md` §4.3), which is §13.6's whole point.
+    pub cells: Vec<TerrainCellInput<'a>>,
+    /// Where the shard's bytes go.
+    pub sink: &'a mut dyn TerrainSink,
+}
+
+/// The terrain shard, as the caller sees it.
+#[derive(Clone, Debug)]
+pub struct TerrainSummary {
+    pub bytes: u64,
+    pub sha256: [u8; 32],
+    pub filename: String,
+    /// Cells with a block in the shard.
+    pub cells: usize,
+    /// Squares in the rectangle, present or not.
+    pub slots: u64,
+}
+
 /// One shard, as the caller sees it.
 #[derive(Clone, Debug)]
 pub struct ShardSummary {
@@ -280,7 +312,11 @@ pub struct ShardSummary {
 pub struct Summary {
     pub assembly_box: AlignedBox,
     pub shards: Vec<ShardSummary>,
+    /// The set's terrain shard, or `None` when the assembly carries no raster — an ordinary,
+    /// complete map whose profiles are flat (`OBCC_Spec.md` §13).
+    pub terrain: Option<TerrainSummary>,
     pub manifest_filename: String,
+    /// Every file of the set, terrain included.
     pub bytes: u64,
     pub stats: Stats,
     /// Everything the spec says a producer SHOULD *report* rather than refuse: §5.7's core-headroom
@@ -313,6 +349,28 @@ pub fn assemble(
 pub fn assemble_with_known_empty(
     cells: Vec<CellInput<'_>>,
     known_empty: Vec<KnownEmptyInput>,
+    schema: &Schema,
+    skin: &Skin,
+    opts: &Options,
+    store: &mut dyn ShardStore,
+    clock: &dyn Clock,
+) -> Result<Summary> {
+    assemble_full(cells, known_empty, None, schema, skin, opts, store, clock)
+}
+
+/// Assemble a set, with the raster if there is one (EL4, #1072).
+///
+/// The terrain shard is written **after** every OBCM shard is written and verified and **before**
+/// the manifest, which is the only order §5.4 admits: the manifest is the atomicity token, so
+/// nothing it names may be missing when it lands, and a terrain failure must leave the set
+/// unmountable rather than half-elevated.
+// One assembly is exactly these eight things; a struct would restate the signature (see
+// `build_shard` for the same call).
+#[allow(clippy::too_many_arguments)]
+pub fn assemble_full(
+    cells: Vec<CellInput<'_>>,
+    known_empty: Vec<KnownEmptyInput>,
+    terrain: Option<TerrainJob<'_>>,
     schema: &Schema,
     skin: &Skin,
     opts: &Options,
@@ -509,7 +567,35 @@ pub fn assemble_with_known_empty(
         });
     }
     check_set_invariants(&plans, assembly)?;
-    let manifest = shard::manifest(&plans, assembly, schema.revision, &opts.name)?;
+
+    // The raster, between the last verified shard and the manifest (§5.4).
+    let terrain_summary = match terrain {
+        None => None,
+        Some(job) => {
+            let t0 = clock.now_us();
+            let plan = terrain::TerrainPlan::over(job.params, assembly)?;
+            debug_assert_eq!(plan.ubox(), assembly.ubox(), "the rectangle is the assembly bbox by construction");
+            let written = terrain::write_shard(plan, &job.cells, job.sink)?;
+            if written.bytes > FILE_CEILING {
+                return Err(Error::Capacity(format!(
+                    "the terrain shard is {} bytes, past the {FILE_CEILING}-byte ceiling. Terrain is one file per set \
+                     in v1, so the only thing that reduces it is reducing the coverage (OBCA §5.7).",
+                    written.bytes
+                )));
+            }
+            verify_us += clock.now_us() - t0;
+            Some(TerrainSummary {
+                bytes: written.bytes,
+                sha256: written.sha256,
+                filename: shard::terrain_filename(opts.card_id),
+                cells: written.cells,
+                slots: written.slots,
+            })
+        }
+    };
+
+    let terrain_record = terrain_summary.as_ref().map(|t| shard::TerrainRecord { bytes: t.bytes, sha256: t.sha256 });
+    let manifest = shard::manifest(&plans, terrain_record, assembly, schema.revision, &opts.name)?;
     store.manifest(&manifest)?;
 
     stats.write_us = write_us;
@@ -517,9 +603,10 @@ pub fn assemble_with_known_empty(
     stats.total_us = clock.now_us() - t_start;
     Ok(Summary {
         assembly_box: assembly,
-        bytes: summaries.iter().map(|s| s.bytes).sum(),
+        bytes: summaries.iter().map(|s| s.bytes).sum::<u64>() + terrain_summary.as_ref().map_or(0, |t| t.bytes),
         manifest_filename: shard::manifest_filename(opts.card_id),
         shards: summaries,
+        terrain: terrain_summary,
         stats,
         warnings,
     })

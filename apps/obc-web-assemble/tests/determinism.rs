@@ -19,8 +19,8 @@
 use std::path::{Path, PathBuf};
 
 use obc_web_assemble::{
-    assemble_cells, assemble_cells_with_known_empty, BridgeOptions, CellBytes, ErrorCode, Hooks, KnownEmptyCell,
-    NoHooks, Phase,
+    assemble_cells, assemble_cells_with_known_empty, assemble_everything, BridgeOptions, CellBytes, ErrorCode, Hooks,
+    KnownEmptyCell, NoHooks, Phase, TerrainCellBytes, TerrainLattice,
 };
 
 fn fixture_dir() -> PathBuf {
@@ -57,6 +57,47 @@ fn cells() -> Vec<CellBytes> {
         .collect()
 }
 
+/// The terrain sidecar, in the shape the CLI's `--terrain` and a catalog's §13.1 block share.
+fn terrain_sidecar() -> serde_json::Value {
+    let text = std::fs::read_to_string(fixture_dir().join("terrain.json"))
+        .expect("tests/fixture/terrain.json — see tests/fixture.rs");
+    serde_json::from_str(&text).expect("the terrain sidecar is JSON")
+}
+
+/// The store's lattice, as the catalog would state it.
+fn terrain_lattice() -> TerrainLattice {
+    let doc = terrain_sidecar();
+    TerrainLattice {
+        posting_log2: doc["posting_log2"].as_u64().expect("posting_log2") as u8,
+        cell_log2: doc["cell_log2"].as_u64().expect("cell_log2") as u8,
+    }
+}
+
+/// Every published terrain cell, with the digest the sidecar pins it with — exactly what the builder
+/// hands over after `fetchVerified`. The fixture's fourth square is deliberately **not** here: it is
+/// canonically void, so it has no object (`OBCC_Spec.md` §13.6) and must reach the shard as a `0`
+/// directory slot.
+fn terrain_cells() -> Vec<TerrainCellBytes> {
+    let doc = terrain_sidecar();
+    let dir = fixture_dir();
+    doc["cells"]
+        .as_array()
+        .expect("the terrain sidecar lists cells")
+        .iter()
+        .map(|c| TerrainCellBytes {
+            id: c["id"].as_str().expect("terrain cell id").to_string(),
+            sha256: c["sha256"].as_str().expect("terrain cell sha256").to_string(),
+            bytes: std::fs::read(dir.join(c["path"].as_str().expect("terrain cell path"))).expect("a terrain cell"),
+        })
+        .collect()
+}
+
+/// The whole fixture assembly — cells **and** raster — which is what the CLI wrote `expected/` from.
+fn assemble_fixture(opts: &BridgeOptions, hooks: &mut dyn Hooks) -> obc_web_assemble::Outcome {
+    assemble_everything(cells(), Vec::new(), Some(terrain_lattice()), terrain_cells(), &sidecar(), &skin(), opts, hooks)
+        .expect("the assembly runs")
+}
+
 /// The options the fixture's `expected/` was produced with (`--name "Bridge Fixture"
 /// --accept-partial`). The coarse `2^20` cell is necessarily partial at this extract's size, which
 /// is why the flag is on rather than the refusal being papered over.
@@ -75,9 +116,19 @@ fn expected(dir: &str) -> Vec<(String, Vec<u8>)> {
             (e.file_name().to_string_lossy().into_owned(), std::fs::read(e.path()).expect("an expected file"))
         })
         .collect();
-    // `MS1S00.OBM` … `MS1S02.OBM` then `MS1.OBS`: the shard names sort before the manifest's only by
-    // accident of the alphabet, so the manifest is placed explicitly.
-    files.sort_by(|a, b| a.0.ends_with(".OBS").cmp(&b.0.ends_with(".OBS")).then(a.0.cmp(&b.0)));
+    // The order the bridge hands them on: OBCM shards ascending, then the terrain shard, then the
+    // manifest **last** (§5.4). None of that is the alphabet's order — `MS1.OBD` sorts *before*
+    // `MS1S00.OBM` — so the key is spelled out rather than relied on.
+    let rank = |name: &str| {
+        if name.ends_with(".OBS") {
+            2
+        } else if name.ends_with(".OBD") {
+            1
+        } else {
+            0
+        }
+    };
+    files.sort_by(|a, b| rank(&a.0).cmp(&rank(&b.0)).then(a.0.cmp(&b.0)));
     assert!(!files.is_empty(), "{} is empty", root.display());
     files
 }
@@ -100,17 +151,93 @@ fn assert_same_bytes(actual: &[u8], want: &[u8], what: &str) {
 /// The headline: a single-file assembly through the bridge **is** the file the CLI wrote.
 #[test]
 fn the_bridge_reproduces_the_native_clis_bytes() {
-    let out = assemble_cells(cells(), &sidecar(), &skin(), &options(), &mut NoHooks).expect("the assembly runs");
+    let out = assemble_fixture(&options(), &mut NoHooks);
     let want = expected("expected");
     assert_eq!(out.files.len(), want.len(), "file count: {:?} vs {:?}", out.files, want);
     for (got, (name, bytes)) in out.files.iter().zip(&want) {
         assert_eq!(&got.name, name, "the derived filenames must match the CLI's (OBCA §5.2)");
         assert_same_bytes(&got.bytes, bytes, name);
     }
-    // The set is one file plus its manifest — the §5.5 fast path — and the manifest is last.
-    assert_eq!(out.files.iter().filter(|f| f.role == "manifest").count(), 1);
-    assert_eq!(out.files.last().expect("a manifest").role, "manifest");
-    assert_eq!(out.files[0].role, "core");
+    // One OBCM file, its raster, and the manifest last — §5.5's fast path with terrain beside it,
+    // which is the shape a rider's map actually has.
+    assert_eq!(out.files.iter().map(|f| f.role).collect::<Vec<_>>(), vec!["core", "terrain", "manifest"]);
+}
+
+/// **The terrain round trip** (EL4): the shard the assembler wrote is a legal OBCT container whose
+/// directory places every downloaded cell's block verbatim, and whose one unpublished square is the
+/// `0` sentinel — read back with the real reader, from the checked-in bytes.
+#[test]
+fn the_terrain_shard_places_every_published_cell_and_leaves_the_void_absent() {
+    let out = assemble_fixture(&options(), &mut NoHooks);
+    let shard = &out.files.iter().find(|f| f.role == "terrain").expect("a terrain shard").bytes;
+
+    // OBCT §4.2's header, over the fixture's 2 × 2 rectangle at the catalog's lattice.
+    assert_eq!(&shard[..4], b"OBCT");
+    assert_eq!(shard[5], terrain_lattice().posting_log2);
+    assert_eq!(shard[6], terrain_lattice().cell_log2);
+    assert_eq!(u16::from_le_bytes(shard[16..18].try_into().unwrap()), 2, "rows");
+    assert_eq!(u16::from_le_bytes(shard[18..20].try_into().unwrap()), 2, "cols");
+    let dir: Vec<u32> = shard[32..48].chunks_exact(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect();
+    assert_eq!(dir.iter().filter(|&&e| e == 0).count(), 1, "exactly one canonically void square (OBCC §13.6)");
+    assert_eq!(dir[3], 0, "…and it is the rectangle's last slot");
+
+    // Every present block is byte-for-byte the block of the published cell it came from — placement,
+    // not grafting. The published objects' own blocks start after their 32-byte header and single
+    // directory entry.
+    for cell in terrain_cells() {
+        let (i, j) = {
+            let mut parts = cell.id.split('/').skip(1);
+            (parts.next().unwrap().parse::<u32>().unwrap(), parts.next().unwrap().parse::<u32>().unwrap())
+        };
+        let slot = (i - 602) as usize * 2 + (j - 526) as usize;
+        let at = dir[slot] as usize;
+        assert!(at != 0, "cell {} was published and must be present", cell.id);
+        assert_eq!(&shard[at..at + 2048], &cell.bytes[36..36 + 2048], "cell {}'s block moved", cell.id);
+    }
+
+    // §5.7's pin, on the raster: 32-byte header + 4 × 4-byte directory + 3 × 2048-byte blocks.
+    assert_eq!(shard.len(), 32 + 16 + 3 * 2048);
+    let s: serde_json::Value = serde_json::from_str(&out.summary_json).expect("the summary is JSON");
+    assert_eq!(s["terrain"]["file"], "MS1.OBD");
+    assert_eq!(s["terrain"]["bytes"], shard.len());
+    assert_eq!(s["terrain"]["cells"], 3);
+    assert_eq!(s["terrain"]["slots"], 4);
+}
+
+/// A selection with no raster assembles exactly as it did before terrain existed: no `.OBD`, no
+/// `terrain` role, and the summary says so. `OBCC_Spec.md` §13's degrade-to-flat rule, at the seam
+/// where it is easiest to get wrong.
+#[test]
+fn a_selection_with_no_terrain_writes_no_terrain_shard() {
+    let out = assemble_cells(cells(), &sidecar(), &skin(), &options(), &mut NoHooks).expect("the assembly runs");
+    assert!(!out.files.iter().any(|f| f.role == "terrain"));
+    let s: serde_json::Value = serde_json::from_str(&out.summary_json).expect("summary");
+    assert!(s["terrain"].is_null());
+    // …and the manifest is back to one record.
+    let manifest = &out.files.last().expect("a manifest").bytes;
+    assert_eq!(manifest[6], 1, "Shard Count");
+    assert_eq!(manifest.len(), 72 + 56);
+}
+
+/// A digest the catalog does not confirm is refused, and the whole set is refused with it — the
+/// §4.8 posture, on the raster: nothing self-made reaches a device unverified.
+#[test]
+fn a_terrain_cell_that_fails_its_catalog_digest_aborts_the_assembly() {
+    let mut cells = terrain_cells();
+    cells[0].bytes[64] ^= 0xFF; // one sample, deep inside the block
+    let e = assemble_everything(
+        self::cells(),
+        Vec::new(),
+        Some(terrain_lattice()),
+        cells,
+        &sidecar(),
+        &skin(),
+        &options(),
+        &mut NoHooks,
+    )
+    .expect_err("the catalog pins these bytes");
+    assert_eq!(e.code, ErrorCode::Format);
+    assert!(e.message.contains("digest mismatch"), "{}", e.message);
 }
 
 #[test]
@@ -135,7 +262,7 @@ fn known_empty_cells_expand_coverage_without_payloads() {
 #[test]
 fn the_bridge_reproduces_the_native_clis_volume_set() {
     let opts = BridgeOptions { force_split: true, ..options() };
-    let out = assemble_cells(cells(), &sidecar(), &skin(), &opts, &mut NoHooks).expect("the assembly runs");
+    let out = assemble_fixture(&opts, &mut NoHooks);
     let want = expected("expected-split");
     assert_eq!(out.files.len(), want.len(), "file count: {:?} vs {:?}", out.files, want);
     for (got, (name, bytes)) in out.files.iter().zip(&want) {
@@ -143,7 +270,10 @@ fn the_bridge_reproduces_the_native_clis_volume_set() {
         assert_same_bytes(&got.bytes, bytes, name);
     }
     let roles: Vec<&str> = out.files.iter().map(|f| f.role).collect();
-    assert_eq!(roles, vec!["core", "coarse", "geometry", "manifest"], "OBCA §5.1's roles, manifest last");
+    assert_eq!(roles, vec!["core", "coarse", "geometry", "terrain", "manifest"], "§5.1's roles, manifest last");
+    // The raster does not split with the geometry: one terrain shard per set, spanning the whole
+    // assembly, however many OBCM files the map needs.
+    assert_eq!(out.files.iter().filter(|f| f.role == "terrain").count(), 1);
 }
 
 /// Same inputs, same bytes — twice, in one process. The engine renumbers nav nodes and re-bins POIs

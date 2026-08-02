@@ -489,6 +489,11 @@ struct OpenSet {
     manifest_name: ShortFileName,
     core_index: u8,
     shards: Vec<OpenSetShard, SD_SET_MAX_SHARDS>,
+    /// The `Bytes` of the manifest's `terrain` record (`OBCA_Spec.md` §5.2), or `None` when the set
+    /// names no raster. Kept from the mount rather than re-read, so [`Storage::open_terrain`] never
+    /// has to parse the manifest a second time — and so a `MS<id>.OBD` the manifest does *not* name
+    /// is recognised as an orphan of a replaced set (§5.4) instead of being mounted.
+    terrain_bytes: Option<u32>,
 }
 
 /// Why the board could not turn its already-open shard handles into a reader mount. Kept separate
@@ -1560,15 +1565,35 @@ impl Storage {
     /// UNREADABLE rules of #1042: those exist because a rider whose **map** is missing must not be
     /// misled, and a missing terrain file takes nothing away that was ever there.
     ///
-    /// EL4 adds the set manifest's `terrain` role; when it lands, the role lookup goes *here*, in
-    /// front of the sidecar fallback, and no caller changes.
+    /// **A set answers from its manifest** (EL4, #1072). The `terrain` role's presence decides
+    /// whether the set has a raster at all, and its `Bytes` is checked against the file — because
+    /// `MS<id>.OBD` may well exist on a card without belonging to the set that is mounted, as the
+    /// leftover of one it replaced (§5.4's orphan rule). The derived name is the same one either
+    /// way: `MS<id>.OBD` is exactly the sidecar of `MS<id>.OBS`, so the role lookup adds the
+    /// manifest's judgement without changing which file is opened.
     #[cfg(has_nav)]
     #[inline(never)]
     pub fn open_terrain(&mut self) -> Option<&'static dyn ByteSource> {
+        // What the manifest says about a mounted set, and `None` (no terrain) when it says nothing.
+        let recorded = match &self.open_set {
+            Some(set) if self.open_map_name.is_none() => Some(set.terrain_bytes?),
+            _ => None,
+        };
         let map_name =
             self.open_map_name.clone().or_else(|| self.open_set.as_ref().map(|s| s.manifest_name.clone()))?;
         let name = sidecar_name(&map_name)?;
         let (entry_block, entry_offset, entry_len) = self.find_root_entry(&name)?;
+        if let Some(recorded) = recorded {
+            if entry_len != recorded {
+                defmt::warn!(
+                    "SD: terrain {} is {=u32} B but the manifest records {=u32} — routes stay flat",
+                    defmt::Debug2Format(&name),
+                    entry_len,
+                    recorded
+                );
+                return None;
+            }
+        }
         let Ok(file) = self.vmgr.open_file_in_dir(self.root, &name, Mode::ReadOnly) else {
             defmt::warn!("SD: terrain {} will not open — routes stay flat", defmt::Debug2Format(&name));
             return None;
@@ -1695,8 +1720,13 @@ impl Storage {
             parsed.shard_count(),
             parsed.total_bytes()
         );
-        self.open_set =
-            Some(OpenSet { id, manifest_name: chosen.file.clone(), core_index: core_index as u8, shards: opened });
+        self.open_set = Some(OpenSet {
+            id,
+            manifest_name: chosen.file.clone(),
+            core_index: core_index as u8,
+            shards: opened,
+            terrain_bytes: parsed.terrain().map(|record| record.bytes),
+        });
         Some(core_len)
     }
 

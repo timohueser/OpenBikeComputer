@@ -12,13 +12,19 @@ carries. It defines four things:
    must do (§4), including the navigation-graph seam rules that make routing correct across cell
    boundaries by construction.
 4. **Volume sets** (§5) — how one logical map becomes a set manifest plus 1..N physical OBCM
-   files, each inside the 4 GiB ceilings that FAT32 and OBCM's `uint32` offsets both impose.
+   files, each inside the 4 GiB ceilings that FAT32 and OBCM's `uint32` offsets both impose, and
+   optionally the one [OBCT](OBCT_Spec.md) terrain shard that carries the map's elevation.
 
 OBCA introduces **no new OBCM version and changes no OBCM semantics**. Every cell and every
 shard is an ordinary [OBCM v12](OBCM_Spec.md) file that today's reader parses unchanged; the only
-new bytes on the card are the small [set manifest](#5-volume-sets) of §5.2. What OBCA adds is a
-set of *constraints* on how those files are produced, plus the discipline that makes assembling
-them cheap enough to run in a browser.
+new bytes on the card are the small [set manifest](#5-volume-sets) of §5.2 and, where a selection
+has elevation, the terrain shard §5.1 names. What OBCA adds is a set of *constraints* on how those
+files are produced, plus the discipline that makes assembling them cheap enough to run in a browser.
+
+> **Manifest v2** (EL4, #1072). The set manifest's `Version` byte is `2`: §5.2 gained the `terrain`
+> role, and §5.3's role and tiling rules count OBCM shards rather than records. It is a **hard cut** —
+> a v1 manifest is not read — because a v1 reader shown a v2 manifest would reject the unknown role
+> and refuse the whole set anyway, and the version byte at least says why.
 
 This document is normative. The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are to be
 interpreted as in RFC 2119.
@@ -576,6 +582,7 @@ overhang: the cells out there do not exist, so their leaves are empty. It MUST N
 | **POI section + hours pool** | Rebuilt (§4.5). |
 | **Nav section** (directory, node tree, node chunks, edge pool) | Rebuilt (§4.6). |
 | **Profile table** (`OBCM_Spec.md` §8.6) | Copied from the cells after checking every cell agrees; it is schema data. |
+| **Terrain cell blocks** ([`OBCT_Spec.md`](OBCT_Spec.md) §3.2) | **Verbatim**, into a fresh directory over the assembly rectangle (§5.1's `terrain` role). Terrain assembly is *placement*, not grafting: the lattice is global and half-open, so two neighbouring cells already agree about every sample and there is nothing to relocate, re-index or unify. |
 
 An assembler MUST NOT decode a geometry chunk in the normal path. Decoding is for verification
 (§4.8), where it is the point.
@@ -700,6 +707,17 @@ uses — and MUST cover, per file of the set:
    sections non-empty **only** in the core; each band's LODs non-empty **only** in shards of that
    band's role — in particular the core carries **no** geometry outside the single-file fast path.
 7. **Digests.** SHA-256 per file, recorded in the manifest (§5.2).
+8. **The terrain shard**, if the set has one (§5.1's `terrain` role). Every input is checked
+   **before its bytes are copied**, because a bad cell must not reach the shard even to be caught on
+   the way out: each downloaded object parses as an OBCT container through the real reader
+   (`OBCT_Spec.md` §4.5 — magic, version, flags, the posting/cell pairing, the rectangle against the
+   world grid, and every directory entry against the file's own length, which is what rejects a
+   truncated download and an out-of-bounds offset); its header's `Posting Log2` and `Cell Log2` equal
+   the catalog's terrain block ([`OBCC_Spec.md` §13.1](OBCC_Spec.md)); it is the `1 × 1` container at
+   exactly its own id that §13.1 requires of a *published cell*; and its SHA-256 equals the one the
+   pinned terrain index published. The written shard is then read back through the same reader, and
+   every present cell's block MUST equal the block of the object it came from, with every square the
+   assembly did not receive at directory `0`.
 
 A failure at any step MUST abort the whole assembly. A partially written set is not a degraded map;
 it is an unmountable one (§5.4), which is the correct outcome.
@@ -728,9 +746,9 @@ Every shard is an ordinary OBCM file whose header bbox is a grid-aligned power-o
 (§2.1) — a node of the assembly quadtree — and whose LOD table lists the **full ladder**, with the
 LODs it does not carry written empty (§3.1).
 
-Three roles are defined. The ordering principle is stated once and then obeyed everywhere:
-**the core file holds only what cannot be split by bbox, and everything that can be is moved out
-of it.**
+Four roles are defined. Three of them are OBCM shards and obey one ordering principle, stated once
+and then obeyed everywhere: **the core file holds only what cannot be split by bbox, and everything
+that can be is moved out of it.** The fourth is the raster, which is not an OBCM file at all.
 
 - **The core shard** (exactly one per set) carries the style table, the `Marker Color`, the single
   unified **nav graph**, and the **POIs** with their hours pool — the sections of a band whose
@@ -746,6 +764,25 @@ of it.**
 - **Geometry shards** carry the `mid`- and `fine`-band LODs and nothing else: empty nav directory,
   empty POI categories. There are as many as the target shard size needs, and none at all only in
   the single-file fast path.
+- **The terrain shard** (at most one per set) is an [OBCT](OBCT_Spec.md) container, not an OBCM
+  file: the elevation raster for the whole assembly, as a fresh offset directory over the assembly
+  rectangle with each selected cell's block copied verbatim (§4.3). Its cell rectangle **is** the
+  assembly bbox — a terrain cell no larger than the assembly square tiles it exactly, because the
+  assembly corner is congruent to `GRID_ORIGIN` modulo `S_MAX` and therefore modulo the terrain cell
+  too. An assembler MUST refuse a terrain `cell_log2` larger than the assembly's `span_log2` rather
+  than overhang the box or grow it (§4.2 forbids growing it). Squares the selection covers but the
+  catalog does not publish an object for — canonically void ocean (`OBCC_Spec.md` §13.6), or ground
+  outside the dataset — are directory `0`, which `OBCT_Spec.md` §4.3 makes indistinguishable from an
+  all-`NODATA` block. That is the whole reason terrain costs four bytes per uncovered square rather
+  than a cell block.
+
+  **Terrain is always its own file, and in v1 there is exactly one of it.** Not because it could not
+  be split — an OBCT container is a rectangle and splits by bbox as easily as geometry does — but
+  because it does not need to be at any scale v1 supports: a DACH-shaped raster is ≈ 430 MiB against
+  a `4 GiB − 1` ceiling, an order of magnitude of headroom, and a second terrain shard would buy a
+  file-count problem in exchange for nothing. An assembler MUST fail rather than emit an over-size
+  terrain shard; splitting the raster by bbox is the specific future change that would lift that,
+  and it touches only this role.
 
 Coarse and geometry shards are split the same way. The shards of one role **tile** the assembly
 bbox: their bboxes are an antichain of assembly-quadtree nodes whose squares are pairwise disjoint
@@ -799,10 +836,10 @@ allocation — the `OBCU_Spec.md` §1.1 conventions. It is `72 + 56 × Shard Cou
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
 | 0 | Magic | 4 | `char[4]` | Must be `b"OBCS"` |
-| 4 | Version | 1 | `uint8` | `0x01` (readers reject any other value) |
-| 5 | OBCM Version | 1 | `uint8` | The OBCM version of **every** shard, e.g. `0x0C` |
-| 6 | Shard Count | 1 | `uint8` | `1..=32`; readers reject `0` or `> 32` |
-| 7 | Core Shard | 1 | `uint8` | Index of the core shard (§5.1); `< Shard Count` |
+| 4 | Version | 1 | `uint8` | `0x02` (readers reject any other value) |
+| 5 | OBCM Version | 1 | `uint8` | The OBCM version of every **OBCM** shard, e.g. `0x0C` |
+| 6 | Shard Count | 1 | `uint8` | `1..=32`; readers reject `0` or `> 32`. Counts **every** record, the terrain one included |
+| 7 | Core Shard | 1 | `uint8` | Index of the core shard (§5.1); `< Shard Count`, and it MUST name an OBCM record |
 | 8 | Schema Revision | 4 | `uint32` | The schema revision every cell was baked at (§6.3) |
 | 12 | Flags | 4 | `uint32` | Reserved; written `0`, readers MUST reject a non-zero value |
 | 16 | Min Lat | 4 | `int32` | Assembly bbox (§4.2), microdegrees — **lat, lon, lat, lon**, the OBCM header order |
@@ -816,7 +853,7 @@ allocation — the `OBCU_Spec.md` §1.1 conventions. It is `72 + 56 × Shard Cou
 
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
-| 0 | Role | 1 | `uint8` | `0` = core, `1` = geometry, `2` = coarse (§5.1); readers reject any other value |
+| 0 | Role | 1 | `uint8` | `0` = core, `1` = geometry, `2` = coarse, `3` = terrain (§5.1); readers reject any other value |
 | 1 | Flags | 1 | `uint8` | Reserved; `0` |
 | 2 | Reserved | 2 | — | `0` |
 | 4 | Min Lat | 4 | `int32` | This shard's OBCM header bbox, verbatim |
@@ -826,6 +863,13 @@ allocation — the `OBCU_Spec.md` §1.1 conventions. It is `72 + 56 × Shard Cou
 | 20 | Bytes | 4 | `uint32` | Shard size in bytes. `uint32` is exactly right: the FAT32 ceiling is `4 GiB − 1 = u32::MAX` |
 | 24 | SHA-256 | 32 | `uint8[32]` | Digest of the shard's bytes |
 
+**The terrain record is the last one.** A manifest with a `Role == 3` record MUST carry exactly one,
+and it MUST be at index `Shard Count − 1`. That is not house style: readers take the leading records
+as the OBCM shards and a record's index as the `S<kk>` of its derived filename, so a raster anywhere
+else would renumber every shard after it. Keeping it last means a consumer that never asks about
+terrain — every existing mount, dispatch and transfer path — needs no role filter and cannot hand a
+raster to an OBCM parser.
+
 **Filenames are derived, not stored.** Shard `k` of the set with card id `id` lives at the card
 root as
 
@@ -833,11 +877,24 @@ root as
 MS<id>S<kk>.OBM       e.g.  MS7S00.OBM, MS7S01.OBM     (id: 1..3 digits, kk: 2 digits, 00..31)
 ```
 
+the terrain shard at
+
+```
+MS<id>.OBD            e.g.  MS7.OBD
+```
+
 and the manifest itself at
 
 ```
 MS<id>.OBS            e.g.  MS7.OBS
 ```
+
+The terrain shard carries **no `S<kk>`** — there is at most one, so an index would be a number that
+is always `00` and a second thing to keep in step with the manifest. Its name is therefore exactly
+the manifest's own stem with the terrain extension, which makes it the `OBCT_Spec.md` §4.6 sidecar of
+`MS<id>.OBS`: a host that resolves terrain by the sidecar convention and one that reads the manifest
+role open the same file, and the role lookup adds only the two things a sidecar cannot state — that
+the set claims a raster, and how many bytes of one.
 
 `MS999S31.OBM` is eight characters, so every name is an 8.3-safe uppercase short name — required,
 because the firmware's FAT layer creates short names only. The `MS` prefix keeps sets clear of the
@@ -859,18 +916,33 @@ notice the set is already present.
 A reader MUST reject a manifest unless all of the following hold. There is no partial acceptance:
 a set that does not validate does not mount (§5.4).
 
-- length is exactly `72 + 56 × Shard Count`; magic is `OBCS`; `Version == 1`; `Flags == 0`;
-- `1 ≤ Shard Count ≤ 32`; `Core Shard < Shard Count`; the shard at `Core Shard` has `Role == 0` and
-  is the **only** shard with `Role == 0`; every other shard has `Role == 1` or `Role == 2`;
-- if `Shard Count == 1` the single shard is the core (§5.5); otherwise there is **at least one**
+Below, an **OBCM shard** is a record whose `Role` is `0`, `1` or `2`, and the *shard count* the rules
+speak of is the number of those — `Shard Count` minus the terrain record, if there is one.
+
+- length is exactly `72 + 56 × Shard Count`; magic is `OBCS`; `Version == 2`; `Flags == 0`;
+- `1 ≤ Shard Count ≤ 32`; `Core Shard < Shard Count`; the record at `Core Shard` has `Role == 0` and
+  is the **only** record with `Role == 0`; every other record has `Role == 1`, `2` or `3`;
+- at most one record has `Role == 3`, and if one does it is the **last** record (§5.2);
+- if there is exactly one OBCM shard it is the core (§5.5); otherwise there is **at least one**
   shard of each role the schema's bands name — at least one `Role == 2` and at least one
-  `Role == 1` at the v1 table — because a role with no shard is a map missing whole zoom levels;
-- the assembly bbox has `min ≤ max` on both axes; every shard bbox has `min ≤ max` and lies inside
-  the assembly bbox; the core shard's bbox equals the assembly bbox; the shards of each non-core
-  role have pairwise disjoint bboxes whose union is the assembly bbox (§5.1), which for a single
-  shard of that role means its bbox equals the assembly bbox;
-- every shard file named by §5.2 exists, has exactly the recorded `Bytes`, opens as OBCM with the
-  recorded `OBCM Version`, and has a header bbox equal to its recorded bbox.
+  `Role == 1` at the v1 table — because a role with no shard is a map missing whole zoom levels. The
+  terrain record is not counted here: it adds a raster, never a zoom level, so a one-shard map with
+  terrain beside it is still the fast path;
+- the assembly bbox has `min ≤ max` on both axes; every record's bbox has `min ≤ max` and lies inside
+  the assembly bbox; the core shard's bbox equals the assembly bbox, and so does the terrain
+  record's; the shards of each non-core OBCM role have pairwise disjoint bboxes whose union is the
+  assembly bbox (§5.1), which for a single shard of that role means its bbox equals the assembly
+  bbox. The terrain record takes no part in that tiling — it spans the whole assembly, so counting it
+  would read as an overlapping shard of some role;
+- every OBCM shard file named by §5.2 exists, has exactly the recorded `Bytes`, opens as OBCM with
+  the recorded `OBCM Version`, and has a header bbox equal to its recorded bbox; the terrain file, if
+  named, exists, has exactly the recorded `Bytes`, and parses per `OBCT_Spec.md` §4.5.
+
+**A missing or unreadable terrain shard does not fail the mount.** It is the one exception, and it
+follows from `OBCC_Spec.md` §13: elevation is an enhancement, so a set whose raster will not open is
+a map that plans, renders and rides exactly as one baked without terrain, while a set whose *core* is
+missing is not a map at all. A reader MUST mount such a set, MUST fall back to no elevation, and MUST
+NOT present it as a fault.
 
 A device MAY defer the SHA-256 check (hashing gigabytes off an SD card is minutes of work) but
 MUST verify `Bytes` and the header bbox at mount, and a **host** writing a set MUST verify every
@@ -909,11 +981,15 @@ touched all become possible later without a manifest change.
 ### 5.5 Single-file fast path
 
 When the whole assembly fits one OBCM file under `4 GiB − 1 B`, the assembler writes a set of
-**one**: `Shard Count = 1`, `Core Shard = 0`, that shard's `Role = 0` and its bbox equal to the
-assembly bbox, carrying every LOD, the nav graph, and the POIs. It is the one case where geometry
-lives in the core, and it is safe by construction: the whole map already fits one file, so there is
-nothing to move out. Nothing else in §5 changes; the device's dispatch loop simply runs over one
-shard, and §5.6's empty-LOD cache finds nothing empty.
+**one**: one OBCM shard with `Core Shard = 0`, `Role = 0` and its bbox equal to the assembly bbox,
+carrying every LOD, the nav graph, and the POIs. It is the one case where geometry lives in the core,
+and it is safe by construction: the whole map already fits one file, so there is nothing to move out.
+Nothing else in §5 changes; the device's dispatch loop simply runs over one shard, and §5.6's
+empty-LOD cache finds nothing empty.
+
+If the selection has terrain, the raster rides beside it as the `terrain` record — `Shard Count = 2`,
+`map.obcm`-plus-sidecar in every respect that matters — and the fast path is unaffected, because
+terrain is always its own file (§5.1) and is therefore never something the core could have absorbed.
 
 At the v1 schema this covers essentially every selection a rider makes below country-plus scale —
 a measured whole-Switzerland bake is 0.67 GiB (690 MiB), Baden-Württemberg projects to ≈ 0.71 GiB,
@@ -972,6 +1048,17 @@ Therefore:
   coarse or geometry shard further, since that is what those roles are for.
 - §4.8's verify then re-checks every file's actual size against the ceiling, so the pre-download
   projection is bounded on both ends: refused before the fetch, and re-asserted before the write.
+
+**The terrain shard is the easiest file of the set to project, and it is projected the same way.**
+Its size is `32 + 4 · rows · cols + present · T² · 512` — a header, a directory over the assembly
+rectangle, and one fixed-size block per square that has a published object — and every term is known
+from the catalog: the rectangle from the assembly bbox and the terrain block's `cell_log2`, the block
+length from the `posting_log2`/`cell_log2` pairing (`OBCT_Spec.md` §3.2), and which squares are
+present from the pinned terrain index. Nothing is content-dependent, so §1.5's `+5–15 %` budget does
+**not** apply to it: that allowance exists for what a *bake* varies by, and a raster's size does not
+vary. A consumer MUST show the raster's bytes as their own figure rather than folding them into the
+map's — `OBCC_Spec.md` §13.3 makes the two separate prices, because a rider may take one without the
+other.
 
 The consequence is the point: **no runtime and no on-device path can ever encounter an over-limit
 file.** A device only ever sees a set that a host projected, assembled, verified and wrote, and each

@@ -69,6 +69,9 @@ self.onmessage = async (event: MessageEvent<AssembleWorkerRequest>) => {
                 post({ type: "progress", phase, fraction });
             },
             req.knownEmpty,
+            // The raster, when the catalog publishes one. A terrain-less catalog
+            // sends nothing here and the set is written without a `terrain` role.
+            req.terrain ? { lattice: req.terrain, cells: req.terrainCells ?? [] } : undefined,
         );
         try {
             post({
