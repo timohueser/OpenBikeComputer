@@ -13,6 +13,9 @@
 //! - [`NavPlan`] / [`finish_nav_plan`] — the resumable route planner held across frames (one
 //!   bounded step per frame, the board's one-step-per-pass shape) and the shared commit/answer
 //!   tail, generic over a host's route store via [`RouteRepository`].
+//! - [`terrain`] — the one place a host resolves "the elevation source for this map" (EL7): the
+//!   `.obcd` sidecar mounted into an [`ElevationSource`](obc_route::ElevationSource), or the null
+//!   source when there is none.
 //! - [`VecSink`] — the in-memory [`ByteSink`](obc_formats::io::ByteSink) OBCR/GPX output collects into.
 //! - [`RgbaFrame`] — the in-memory RGBA8888 `DrawTarget` the browser hosts blit to a `<canvas>`
 //!   (the app demo and the builder's preset previews both draw into it).
@@ -33,6 +36,7 @@ mod repo;
 mod session;
 mod sink;
 mod stores;
+pub mod terrain;
 
 pub use dispatch::HostLoop;
 pub use frame::RgbaFrame;

@@ -197,6 +197,9 @@ obc-formats = { path = "../obc-formats" } # OBCR `NAME_CAP` (route/ride name cap
 obc-map-scene = { path = "../obc-map-scene" } # Shared map bounds used by the streamed map catalog.
 obc-reader = { path = "../obc-reader" } # the streamed `Reader` + `.bss` `MapCache` the N4 map path renders from (#125)
 obc-route = { path = "../obc-route" } # RouteSummary / RouteIndex / track_to_gpx for the `/routes` catalog + GPX (SD `Storage`)
+# The OBCT terrain reader + its `.bss` tile cache (EL7, epic #1068): the board mounts the map's
+# `.OBD` sidecar into the `ElevationSource` the router fills a planned route's elevation from.
+obc-elevation = { path = "../obc-elevation" }
 # The SD-staged DFU foundation (epic #615): the OBCU container + boot-state codec the app-side
 # armer reads/writes (S4, #619), plus its pure scan/arm/confirm decision core (`obc_dfu::armer`).
 obc-dfu = { path = "../obc-dfu" }

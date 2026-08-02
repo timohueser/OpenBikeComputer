@@ -69,7 +69,10 @@ pub use eta::{k_climb_s_per_m, ride_time_s, route_time_s, time_to_go_s, v_flat_m
 pub use geo::{tri_area_m2, tri_area_m2_cl};
 pub use gpx::{GpxScanner, RawPoint, RawWaypoint, WptScanner, WAYPOINT_SYMBOL_CAP};
 pub use matcher::{Match, RouteMatch};
+// The emit-time elevation seam (EL7): re-exported so a caller of `plan_route` / `NavPlanner::step`
+// names the source it must hand in without also depending on `obc-elevation` directly.
 pub use nav::{plan_detour, plan_route, NavError, NavPhase, NavPlanner, NavScratch, Step, NAV_MAX_NODES};
+pub use obc_elevation::{ElevationSource, NullElevation};
 pub use profile::{
     elevation_sparkline, ride_elevation_profile, ride_preview_polyline, Profile, Window, PROFILE_COLS,
     SPARKLINE_BUCKETS,

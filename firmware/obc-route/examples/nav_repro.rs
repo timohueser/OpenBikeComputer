@@ -18,6 +18,7 @@ use obc_formats::io::{ByteSink, Error};
 use obc_map_scene::ground_dist_m;
 use obc_reader::{MapCache, MapTables, NavTileCache, PoiCategory, Reader, SliceSource};
 use obc_route::nav::{NavPhase, NavPlanner, NavScratch, Step};
+use obc_route::NullElevation;
 
 struct VecSink(Vec<u8>);
 impl ByteSink for VecSink {
@@ -49,7 +50,7 @@ fn stepped<const N: usize>(reader: &Reader, from: (i32, i32), to: (i32, i32)) {
             NavPhase::Emit => 2,
             NavPhase::Done => 3,
         }] += 1;
-        match planner.step(reader, &mut scratch, &mut tiles, &mut sink) {
+        match planner.step(reader, &mut scratch, &mut tiles, &mut NullElevation, &mut sink) {
             Step::Running => {}
             other => break other,
         }
@@ -84,7 +85,8 @@ fn one_shot(reader: &Reader, from: (i32, i32), to: (i32, i32)) {
     let mut scratch: Box<NavScratch<768>> = unsafe { Box::new_zeroed().assume_init() };
     let mut tiles = NavTileCache::new();
     let mut sink = VecSink(Vec::new());
-    let res = obc_route::plan_route(reader, from, to, "Repro", 0, &mut scratch, &mut tiles, &mut sink);
+    let res =
+        obc_route::plan_route(reader, from, to, "Repro", 0, &mut scratch, &mut tiles, &mut NullElevation, &mut sink);
     let stats = tiles.stats();
     println!("  one-shot N=768:");
     match res {

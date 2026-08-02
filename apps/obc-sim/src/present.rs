@@ -825,7 +825,10 @@ mod tests {
         let mut rides = obc_host_core::MemRideStore::new(Vec::new());
         let mut tracks = obc_host_core::MemTrackStore::new();
         let mut no_trips = ();
-        host.reconcile(app, store, &mut rides, &mut tracks, &mut no_trips, reader, |_app, _cmd| {});
+        // The tour drives geometry, not terrain: the null source keeps its frames byte-comparable
+        // with the pre-EL7 ones.
+        let mut elev = obc_route::NullElevation;
+        host.reconcile(app, store, &mut rides, &mut tracks, &mut no_trips, reader, &mut elev, |_app, _cmd| {});
 
         // Open the active route's geometry from the resident session (gui.rs's per-frame open).
         let changed = store.sync_active(app.active_route_index());

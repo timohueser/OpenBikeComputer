@@ -430,9 +430,39 @@ ETAFIELDS="time-to-go,eta,dist-to-go,to-climb,speed,ride-time"
 # base riding view for the Climb screen; it isn't reachable by gesture until C5 wires the Back-cycle,
 # so this debug seam opens it. Staged in a temp routes dir (the fixture lives in the sim crate's
 # assets, not specs/vectors).
-CLIMBROUTES="$(mktemp -d)"; trap 'rm -rf "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE" "$CLIMBROUTES"' EXIT
+CLIMBROUTES="$(mktemp -d)"
+# The EL7 sweep below plans a route on the device and rides it; its own dir.
+ELEVDIR="$(mktemp -d)"
+trap 'rm -rf "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE" "$CLIMBROUTES" "$ELEVDIR" "$ETAROUTE" "$ETAFLAT"' EXIT
 cp "$repo_root/apps/obc-sim/assets/grimsel-climb.obcr" "$CLIMBROUTES/"
 "$SIM" "$MAP" --boot --routes-dir "$CLIMBROUTES" --script "p p p p" --gpx "$GPX" --at 1500 --open-climb --png "$OUT/climb.png"
+
+# --- Terrain-filled device-planned route (elevation epic #1068, EL7) -----------------------------
+# The unlock, end to end: the sim mounts `grimsel.obcd` (the terrain sidecar beside the map, EL2)
+# and the on-device router samples it as it emits, so a route the *device* planned now carries real
+# per-point elevation — and every already-shipped elevation consumer lights up with no change of
+# its own. Before EL7 all four frames below were flat: `▲0 m` in the list, an empty band, and a
+# Climb screen that could not open because no climb could be detected in a zero-elevation profile.
+#
+# The plan: a fix at the Grimsel replay's first track point, routed to the "Handegg" Lodging POI up
+# the pass road (`B d d w p` opens the POI categories, `d d p` picks Lodging, `d d d` steps to
+# Handegg, `p p p` opens it → Route here → confirm, and the trailing `f` drains the request and runs
+# the real A*). Starting the plan on the replay's own road is what lets the same GPX ride it below.
+"$SIM" "$MAP" --boot --routes-dir "$ELEVDIR" --center 8290977,46653917 --heading 0 \
+    --script "B d d w p d d p f d d d p p p f" --png "$OUT/elev-nav-overview.png"
+# (a) The route list row for that saved plan: `6 km  ▲394 m` — the climb group is read straight off
+# the emitted header, which the router filled from the raster.
+"$SIM" "$MAP" --boot --routes-dir "$ELEVDIR" --script "p p" --png "$OUT/elev-routemenu.png"
+# (b) Its overview, held long enough for the content pager to flip to page B: the elevation profile
+# band with the summit label, over the CLIMB / DESCENT rows. Seven `w` settles ≈ 5.6 s, just past
+# the 5 s flip.
+"$SIM" "$MAP" --boot --routes-dir "$ELEVDIR" --script "p p p f w w w w w w w f" \
+    --png "$OUT/elev-route-profile.png"
+# (c) The Climb screen on the *planned* route: ride it with the same Grimsel replay (`--at 1500`,
+# ~25 min in) and open the screen through the debug seam. The detector segments the emitted
+# profile, so the ramp, the cursor and the TO CLIMB / GRADE tiles are all terrain-derived.
+"$SIM" "$MAP" --boot --routes-dir "$ELEVDIR" --gpx "$GPX" --at 1500 --open-climb \
+    --script "p p p p" --png "$OUT/elev-climb.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p p" --gpx "$GPX" --at 30 --png "$OUT/ridecontrol.png"
 # The "Up ahead" timeline (epic #946, U3) — the ride compass's north station. Needs a POI-DENSE map,
 # so these frames use `monaco.obcm` (not $MAP) with the committed `monaco-upahead.gpx`: a ~2.7 km line
@@ -442,7 +472,7 @@ cp "$repo_root/apps/obc-sim/assets/grimsel-climb.obcr" "$CLIMBROUTES/"
 # `f` draws one throwaway frame so the corridor snapshot lands before the next token.
 UPMAP="$repo_root/apps/obc-sim/assets/monaco.obcm"
 UPGPX="$repo_root/apps/obc-sim/assets/monaco-upahead.gpx"
-UPROUTES="$(mktemp -d)"; trap 'rm -rf "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE" "$CLIMBROUTES" "$UPROUTES"' EXIT
+UPROUTES="$(mktemp -d)"; trap 'rm -rf "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE" "$CLIMBROUTES" "$ELEVDIR" "$UPROUTES"' EXIT
 "$SIM" --import "$UPGPX" --routes-dir "$UPROUTES" >/dev/null
 UPBASE="p p p p T B w p f"
 # (a) The merged list: map-POI rows (muted icons) and custom-waypoint rows (AMBER icon + diamond pip)

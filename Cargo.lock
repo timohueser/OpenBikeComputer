@@ -2596,6 +2596,7 @@ version = "0.1.0"
 dependencies = [
  "embedded-graphics",
  "obc-app",
+ "obc-elevation",
  "obc-formats",
  "obc-map-scene",
  "obc-ports",
