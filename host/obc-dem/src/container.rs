@@ -50,6 +50,8 @@ pub struct ShardWriter<W: Write + Seek> {
     out: W,
     rect: CellRect,
     block_len: u32,
+    /// Kept only so an overflow error can name the pairing that caused it.
+    cell_log2: u8,
     /// Directory entries in slot order; `DIR_ABSENT` until a block is written for that cell.
     directory: Vec<u32>,
     /// Next slot to be offered a block. Cells arrive in directory order, so the file ends up as a
@@ -74,12 +76,15 @@ impl<W: Write + Seek> ShardWriter<W> {
         if rect.min_i as u64 + rect.rows as u64 > axis || rect.min_j as u64 + rect.cols as u64 > axis {
             return Err(format!("cell rectangle {rect:?} runs off the world grid at 2^{cell_log2} µdeg"));
         }
-        // A `uint32` addresses the whole file, so the rectangle's worst case has to fit one.
-        let dir_bytes = rect.slots() * DIR_ENTRY_LEN as u64;
-        let max_len = HEADER_LEN as u64 + dir_bytes + rect.slots() * block_len as u64;
-        if max_len > u32::MAX as u64 {
+        // A `uint32` addresses the whole file, so the directory alone has to fit one — and it has to
+        // fit with room for at least one block behind it. The *blocks* are checked as they arrive
+        // (see [`push`]) rather than against the rectangle's worst case: a wide rectangle that is
+        // mostly absent is a perfectly ordinary shard, and refusing it here because a hypothetically
+        // full one would overflow would reject files that are entirely writable.
+        let dir_end = HEADER_LEN as u64 + rect.slots() * DIR_ENTRY_LEN as u64;
+        if dir_end + block_len as u64 > u32::MAX as u64 {
             return Err(format!(
-                "a full {}×{} shard would be {max_len} bytes — past the uint32 offsets the directory is made of",
+                "a {}×{} directory at 2^{cell_log2} µdeg leaves no room inside the uint32 offsets it is made of",
                 rect.rows, rect.cols
             ));
         }
@@ -107,6 +112,7 @@ impl<W: Write + Seek> ShardWriter<W> {
             out,
             rect,
             block_len,
+            cell_log2,
             directory: vec![DIR_ABSENT; slots],
             next_slot: 0,
             cursor: HEADER_LEN as u32 + (slots * DIR_ENTRY_LEN) as u32,
@@ -135,6 +141,15 @@ impl<W: Write + Seek> ShardWriter<W> {
         let Some(block) = block else { return Ok(()) };
         if block.len() != self.block_len as usize {
             return Err(format!("cell block is {} bytes, expected {}", block.len(), self.block_len));
+        }
+        // The directory is made of `uint32` offsets, so this block's *end* has to be addressable —
+        // checked here, where the actual file length is known, rather than pessimistically at open.
+        if self.cursor as u64 + self.block_len as u64 > u32::MAX as u64 {
+            return Err(format!(
+                "this shard has grown past the uint32 offsets the directory is made of — {} present cells is too many at 2^{} µdeg",
+                self.directory.iter().filter(|&&e| e != DIR_ABSENT).count(),
+                self.cell_log2
+            ));
         }
         self.out.write_all(block).map_err(|e| format!("writing OBCT cell block: {e}"))?;
         self.directory[slot] = self.cursor;
@@ -231,9 +246,14 @@ mod tests {
         let last = axis_cells(13);
         assert!(ShardWriter::new(Cursor::new(Vec::new()), 9, 13, CellRect { min_i: last, min_j: 0, rows: 1, cols: 1 })
             .is_err());
-        // A shard whose worst case would not fit the uint32 offsets the directory is made of.
-        assert!(ShardWriter::new(Cursor::new(Vec::new()), 9, 19, CellRect { min_i: 0, min_j: 0, rows: 64, cols: 64 })
-            .is_err());
+        // A wide-but-sparse rectangle is fine. 64 × 64 v1 cells would be 8 GiB if every one were
+        // present, but a shard is not obliged to carry them — refusing it here would reject files
+        // that write perfectly well, so the uint32 bound is enforced per block as they arrive.
+        let wide = CellRect { min_i: 0, min_j: 0, rows: 64, cols: 64 };
+        assert!(ShardWriter::new(Cursor::new(Vec::new()), 9, 19, wide).is_ok());
+        // A directory so wide that no block could follow it inside a uint32 *is* refused, though.
+        let vast = CellRect { min_i: 0, min_j: 0, rows: u16::MAX, cols: u16::MAX };
+        assert!(ShardWriter::new(Cursor::new(Vec::new()), 9, 19, vast).is_err());
     }
 
     #[test]

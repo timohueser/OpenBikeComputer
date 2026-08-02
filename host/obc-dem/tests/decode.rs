@@ -22,7 +22,7 @@ use obc_dem::BboxUdeg;
 
 /// The tile the spike ran against: 46–47 °N, 8–9 °E — the Bernese/Urner Alps, and the square the
 /// simulator's Grimsel map sits in.
-const GRIMSEL_BBOX: &str = "46.4626,8.1303,46.7407,8.4801";
+const GRIMSEL_BBOX: &str = "46.48261,8.15034,46.72070,8.46007";
 
 fn sources_dir() -> std::path::PathBuf {
     match std::env::var_os("OBC_DEM_TEST_SOURCES") {
@@ -63,7 +63,10 @@ fn the_tiff_crate_decodes_a_real_glo30_tile() {
     // nothing downstream may assume one global post lattice — hence the per-tile geotransform.
 
     // --- values --------------------------------------------------------------------------------
-    let mosaic = DemMosaic::open_dir(&dir).expect("mosaic");
+    // One tile, not `open_dir`: the cache directory also holds the Teningen tile once
+    // `repack.sh terrain` has run, and this test is about *this* square.
+    let mut mosaic = DemMosaic::default();
+    mosaic.push(DemTile::open(&paths[0]).expect("decode"));
     for (name, lat, lon, surveyed, tolerance) in [
         ("Grimsel Pass", 46.5611, 8.3372, 2164.0, 10.0),
         ("Furka Pass", 46.5722, 8.4153, 2429.0, 10.0),
