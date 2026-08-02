@@ -12,11 +12,16 @@
 # 14.5 MB). Extract bboxes below are canonical and hand-picked; change them
 # only as a deliberate, reviewed decision.
 #
+# It also bakes the committed OBCT terrain sidecars (`./repack.sh terrain`) —
+# a separate, self-contained block near the bottom, because terrain comes from
+# Copernicus GLO-30 and has no OSM in it at all.
+#
 # Usage:
 #   ./repack.sh grimsel      [switzerland.osm.pbf]
 #   ./repack.sh grimsel-demo [switzerland.osm.pbf]
 #   ./repack.sh monaco       [monaco.osm.pbf]
-#   ./repack.sh all          [switzerland.osm.pbf] [monaco.osm.pbf]
+#   ./repack.sh terrain      [dem_dir]
+#   ./repack.sh all          [switzerland.osm.pbf] [monaco.osm.pbf] [dem_dir]
 #
 # With no source argument the current Geofabrik snapshot is downloaded (the
 # Switzerland file is ~600 MB). Needs only the workspace toolchain (obc-pack
@@ -94,17 +99,68 @@ do_monaco() {
     repack monaco "$src" "$MONACO_BBOX"
 }
 
+# === Terrain sidecars (OBCT, epic #1068 / #1070) =============================
+# `./repack.sh terrain [dem_dir]` bakes the two committed `.obcd` terrain
+# companions from Copernicus GLO-30. Self-contained: it shares nothing with the
+# `.obcm` path above, because terrain has no OSM in it at all.
+#
+#   apps/obc-sim/assets/grimsel.obcd          — beside grimsel.obcm
+#   host/obc-bake/assets/teningen-preview.obcd — beside teningen-preview.obcm
+#
+# The bboxes are LATITUDE FIRST (min_lat,min_lon,max_lat,max_lon), which is the
+# opposite of `obc-pack --bbox` above — `obc-dem` selects grid *cells*, and every
+# grid expression in the platform puts latitude first. Nothing catches the
+# mix-up for an Alpine box, so read the order before editing these.
+#
+# They are the same canonical extract bboxes as the maps beside them, restated in
+# latitude-first order — NOT derived from any `.obcm` header, and not from a
+# previous `.obcd`. That extract box is what the README calls the map's canonical
+# camera coverage; the header bbox reaches further only because complete-way
+# retention drags stray geometry outside it, which is not space to pan into. The
+# cell rectangle rounds outward to whole 2^16 cells anyway, so each sidecar
+# already covers a good margin beyond its box.
+#
+# `--cell-log2 16` rather than the published v1 `19`: the *posting* is the real
+# one (2^9 µdeg — the posting is what decides the heights), while a 2^19 cell
+# would make grimsel four 2 MiB blocks, most of them outside the map. OBCT §1.3
+# makes both header data for exactly this reason, and §4.5 requires a reader to
+# accept any legal pairing.
+#
+# With no dem_dir the GLO-30 tiles are downloaded (~44 MB each, two of them) into
+# a temp dir; pass a directory to reuse a local cache.
+GRIMSEL_TERRAIN_BBOX="46.48261,8.15034,46.72070,8.46007"  # = GRIMSEL_BBOX, lat first
+TENINGEN_TERRAIN_BBOX="48.119,7.798,48.141,7.830"        # = the teningen-preview crop
+
+do_terrain() {
+    local dem="${1:-$WORK/dem}"
+    mkdir -p "$dem"
+    local bake_assets="$FIRMWARE_DIR/../host/obc-bake/assets"
+    (cd "$FIRMWARE_DIR" && cargo build --release --bin obc-dem)
+    local obc_dem="$FIRMWARE_DIR/../target/release/obc-dem"
+    for bbox in "$GRIMSEL_TERRAIN_BBOX" "$TENINGEN_TERRAIN_BBOX"; do
+        "$obc_dem" fetch --bbox "$bbox" --out "$dem"
+    done
+    "$obc_dem" bake --sources "$dem" --bbox "$GRIMSEL_TERRAIN_BBOX" \
+        --cell-log2 16 --shard "$ASSETS_DIR/grimsel.obcd" --quiet
+    "$obc_dem" bake --sources "$dem" --bbox "$TENINGEN_TERRAIN_BBOX" \
+        --cell-log2 16 --shard "$bake_assets/teningen-preview.obcd" --quiet
+    ls -la "$ASSETS_DIR/grimsel.obcd" "$bake_assets/teningen-preview.obcd"
+}
+# =============================================================================
+
 case "${1:-}" in
 grimsel) do_grimsel "${2:-}" ;;
 grimsel-demo) do_grimsel_demo "${2:-}" ;;
 monaco) do_monaco "${2:-}" ;;
+terrain) do_terrain "${2:-}" ;;
 all)
     do_grimsel "${2:-}"
     do_grimsel_demo "${2:-}"
     do_monaco "${3:-}"
+    do_terrain "${4:-}"
     ;;
 *)
-    echo "usage: $0 grimsel|grimsel-demo|monaco|all [source.osm.pbf ...]" >&2
+    echo "usage: $0 grimsel|grimsel-demo|monaco|terrain|all [source.osm.pbf ...] [dem_dir]" >&2
     exit 2
     ;;
 esac
