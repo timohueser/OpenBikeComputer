@@ -236,7 +236,7 @@ Once a ride is running, `back-hold` opens a second compass with the **same five-
   <path d="M331 152 C 370 160, 410 130, 398 84" fill="none" stroke="#0000aa" stroke-width="3" />
   <rect x="286" y="178" width="94" height="20" rx="6" style="fill:#f3f0df;stroke:#3d3427;stroke-width:1" />
   <text x="333" y="192" text-anchor="middle" style="font-family:var(--mono);font-size:9.5px;fill:#3d3427">+434 m</text>
-  <text class="d-sub" x="266" y="228" style="font-size:9px">distance-only — the graph has no elevation</text>
+  <text class="d-sub" x="266" y="228" style="font-size:9px">distance-only — the splice's heights aren't sampled yet</text>
 
   <!-- panel 3: commit -->
   <line class="d-flow" x1="474" y1="135" x2="494" y2="135" marker-end="url(#aDT)" />
@@ -251,9 +251,9 @@ Once a ride is running, `back-hold` opens a second compass with the **same five-
 
 `Press` freezes the request — the rider's along-route position, the chosen rejoin distance, and the current fix — and hands it to the host, which plans on the map's **§8 navigation graph** behind the shared spinning-needle wait. The skipped stretch is not resolved to graph edges by id — a route polyline is planner GPX, not guaranteed graph-aligned — but blacklisted **geometrically**: the span is downsampled into a corridor, and the search skips any edge *both* of whose endpoints hug it within ~40 m. Both-endpoints proximity doubles as the parallelism test: the blocked road and a street hugging it are skipped, while a bridge *crossing* the corridor (endpoints off to either side) and the junction edges that leave the road stay usable. Discs around the snapped start and rejoin nodes stay exempt so the search can always take off and land on the route itself.
 
-A successful plan lands on the **preview**: the detour's polyline in blue over the warning-coloured skipped stretch, and one figure — the signed distance cost (*+434 m*: detour length minus the stretch it replaces). It is deliberately distance-only; the routing graph carries no elevation, and a made-up climb figure would be worse than none. When the planned path reaches the route earlier than the chosen point, the rejoin **advances to that first sustained contact** rather than riding up to the ring and doubling back — the chosen distance is a minimum, and the preview already describes the shortened detour.
+A successful plan lands on the **preview**: the detour's polyline in blue over the warning-coloured skipped stretch, and one figure — the signed distance cost (*+434 m*: detour length minus the stretch it replaces). It is deliberately distance-only. The search *is* climb-aware — it weights each edge's [baked ascent](../packer-routing/#weighting-the-climb) like any plan does — but the figure the preview would have to show is the spliced route's climb, and the splice still writes the detour's heights as a straight interpolation between its two seams (below) rather than sampling terrain along it. Until that changes, a climb number here would describe a line the rider is not going to ride, which is worse than no number. When the planned path reaches the route earlier than the chosen point, the rejoin **advances to that first sustained contact** rather than riding up to the ring and doubling back — the chosen distance is a minimum, and the preview already describes the shortened detour.
 
-Committing **splices**: the device streams a derived route — the ridden part up to the rider, the detour, then the original route from the rejoin — into the reserved computed-route slot and re-adopts it as the active route; the recording session, breadcrumb, and ride totals are untouched. Waypoints on the avoided stretch are dropped, climbs and the elevation profile rebuild from the spliced geometry (the detour's elevation is interpolated between its endpoints), and the matcher re-anchors at the splice seam with a forward-only floor, so GPS jitter can never snap navigation back into a stretch that no longer exists. The spliced route is an ordinary route file and survives a power cycle like any other.
+Committing **splices**: the device streams a derived route — the ridden part up to the rider, the detour, then the original route from the rejoin — into the reserved computed-route slot and re-adopts it as the active route; the recording session, breadcrumb, and ride totals are untouched. Waypoints on the avoided stretch are dropped, climbs and the elevation profile rebuild from the spliced geometry — the detour's own points are rewritten to a linear interpolation between the two seam elevations, so the profile has no spike at either join, which is the conservative choice and a standing candidate for sampling the terrain raster instead — and the matcher re-anchors at the splice seam with a forward-only floor, so GPS jitter can never snap navigation back into a stretch that no longer exists. The spliced route is an ordinary route file and survives a power cycle like any other.
 
 A few guards keep the flow honest: the chooser follows the live progress anchor while open, so a `Step` followed immediately by `Press` can't plan against a stale candidate; a catalog reorder rekeys the chooser, plan request, and preview by the route's durable id, and if the route vanished — or the rider passes the rejoin while deciding — the flow cancels back rather than committing a stale plan. Commit and cancel both pop back to the exact riding view that opened the compass.
 
@@ -869,6 +869,8 @@ The **live values** land on the riding grid as three [stat tiles](#settings-a-se
 
 A planned route's hard parts are its climbs, so a third riding view is given over to the one you're on. The **Climb** screen draws the current climb the way a dedicated climb computer does — a tall elevation trace with the **gradient shown as colour**, each column tinted by its local steepness from green through red. A "you are here" cursor rides the trace, and four tiles below read only *this* climb: the ascent and distance still to the top, the gradient here, and the average gradient of what's left.
 
+**Both kinds of route get this screen now.** For a long time it served only *imported* routes: a GPX arrives with a height on every point, while a route the device planned itself came out of the router with zero on every point, so its profile was a flat line and no climb was detectable in it — the Climb screen could not open at all. That gap closed by feeding the router's emit step the [terrain raster carried beside the map](../terrain/), so a planned route's points arrive with real heights and everything downstream lights up **without a line of its own changing**: the same segmentation pass, the same profile band, the same four tiles, the same GPX export. The screen never learns where its route came from — which is the property that made the change small.
+
 **The climbs are found once, at load.** Because the route is planned, its shape is known before you turn a pedal — so finding climbs is an offline *segmentation*, not a live detector. The same load-time pass that builds the whole-route [elevation profile](../formats/) walks the height-against-distance signal and cuts it into a handful of climbs on plain rules: a stretch counts only if it gains enough, averages steeply enough, and runs long enough; a shallow dip is bridged (a false flat is still one climb) while a deep col splits it in two. Deciding up front turns the live question — *am I on a climb?* — into an interval test on the matched distance, and the found climbs cost about a kilobyte of resident state.
 
 **Detail without a bigger buffer.** The whole-route profile is decimated to a few hundred columns — plenty for the Statistics band, far too coarse to read one climb's gradient. So the Climb screen draws from a *second*, finer profile scoped to the active climb alone: one small resident buffer, rebuilt only when you cross into a new climb, never per frame. It's the profile pyramid's trick again — precompute on load, read cheaply while riding — and, like the profile, it's a runtime structure. Nothing new is stored in the route file or sent over the link.
@@ -931,6 +933,63 @@ A planned route's hard parts are its climbs, so a third riding view is given ove
 </svg>
 <figcaption>The Climb screen is the profile the way a paper route card would draw it — the trace tinted by gradient, hottest where it's steepest. The climbs themselves are found in one pass when the route loads (the same moment the whole-route profile is built), so riding only has to ask which segment the matched distance falls in; the panel then reads a second, finer profile scoped to that one climb — a small buffer rebuilt on each new climb, never per frame. Nothing new is stored in the route file.</figcaption>
 </figure>
+
+## Two numbers the elevation unlocked
+
+Once a route reliably carries heights, two readouts that had been deliberately absent
+become honest, and both are worth describing because their *models* are small enough
+to state in full.
+
+**Estimated time, and time to go.** The Route overview's `EST TIME` row had been
+investigated once and dropped, for a good reason: the map's bike profiles carry
+dimensionless edge-weight multipliers and no speed anywhere, so there was nothing to
+turn a distance into an hour. There is now — a two-line model, keyed to the same
+profile the router used:
+
+```
+time = distance / v_flat  +  ascent × k_climb
+```
+
+`v_flat` is that bike's flat cruising speed and `k_climb` the seconds a metre of
+climbing costs on top of the ground it covers — the classic "a metre up is worth
+eight to ten flat metres", written in time. At the Road profile's seeds (22 km/h,
+1.6 s/m) a 1 000 m col adds 27 minutes to its own length, about a 1 000 m/h ascent
+rate on a sustained 8 %, which is where a fit but unhurried rider lands.
+
+Two deliberate refusals shape it. **There is no setting**, because the rider already
+answered *which bike* once, in Bike type, and a second knob would let the clock and
+the router describe different bicycles. And **descent credits nothing**: braking,
+hairpins and fatigue eat most of what physics would hand back, and the failure modes
+are not symmetric — twenty minutes late costs a train, twenty minutes early is a
+pleasant surprise.
+
+Riding, the same estimate appears as **two tiles reading one number**: `h TO GO`
+counts down as `H:MM`, and `ETA` adds those minutes to the wall clock. The climb term
+comes from the profile's cumulative-ascent curve — the *same* curve the Up-ahead
+timeline's "climb to go" and the `TO CLIMB` tile read, so three surfaces cannot
+disagree about how much is left. A route with no elevation is not special-cased
+anywhere: its ascent-to-go is zero, the second term vanishes, and the answer is
+distance ÷ speed rather than a `--`.
+
+**Current Elevation, when it has earned it.** The barometer measures pressure, and
+turning pressure into height needs a sea-level reference nobody on a bike has, so the
+tile was always an estimate that drifted with the weather. With terrain mounted, the
+device subtracts the two at every GPS fix — map height minus barometric height — and
+low-passes that difference over about five minutes. The difference *is* the
+barometer's unknown offset, and it changes only as fast as the weather does, so
+adding it back gives an absolute elevation that still moves metre by metre with the
+barometer's own responsiveness.
+
+What "settled" means for a rider is concrete: roughly **twenty seconds of fixes**
+under open sky. Before that — and forever on a map with no terrain — the tile reads
+exactly what it read before any of this existed, with no fake precision. Once settled
+it *stays* settled: riding out of coverage freezes the offset rather than withdrawing
+the frame, and a large disagreement (a bridge over a gorge, a cutting, a tunnel with
+the mountain faithfully reported overhead) is rejected rather than averaged in. Only a
+*sustained, self-consistent* run of disagreement re-seeds the estimate, which is what
+lets a genuinely moved reference recover in about a minute instead of wedging the
+filter forever. And the **recorded ride is never fused** — its elevations stay the
+rider's own measurement, because folding the map into them would count the map twice.
 
 ## Waypoints on the route
 
@@ -1268,9 +1327,10 @@ The UI is styled like a weatherproof field map — a wood frame, a parchment pan
 - The settings screens (the two-level editors + the shared kit): [`obc-app/src/screen/settings/`](src:firmware/obc-app/src/screen/settings)
 - The `Settings` value + its byte codec and the `Language` enum: [`obc-app/src/settings.rs`](src:firmware/obc-app/src/settings.rs); the dependency-free `SettingsStore` seam: [`obc-ports/src/lib.rs`](src:firmware/obc-ports/src/lib.rs); direct adapters: [`obc-sim/src/settings_store.rs`](src:apps/obc-sim/src/settings_store.rs), [`obc-fw-nrf54l/src/settings.rs`](src:firmware/obc-fw-nrf54l/src/settings.rs)
 - The i18n catalogue + codegen — the per-language TOMLs, the `build.rs` that generates `Msg`/`TABLE`, and the `t()`/`rx.t()` lookup: [`obc-app/i18n/`](src:firmware/obc-app/i18n), [`obc-app/build.rs`](src:firmware/obc-app/build.rs), [`obc-app/src/i18n.rs`](src:firmware/obc-app/src/i18n.rs); the font-repertoire guard: [`obc-app/tests/i18n.rs`](src:firmware/obc-app/tests/i18n.rs)
+- The climb segmentation and the per-climb profile: [`obc-route/src/climb.rs`](src:firmware/obc-route/src/climb.rs), [`obc-route/src/climb_profile.rs`](src:firmware/obc-route/src/climb_profile.rs); the gradient-aware time model behind `EST TIME` / `h TO GO` / `ETA`: [`obc-route/src/eta.rs`](src:firmware/obc-route/src/eta.rs); the altimeter fusion behind the Elevation tile: [`obc-app/src/altitude.rs`](src:firmware/obc-app/src/altitude.rs)
 - The gesture recognizer: [`obc-app/src/input.rs`](src:firmware/obc-app/src/input.rs)
 - The input + overlay plane: [`obc-app/src/input_plane.rs`](src:firmware/obc-app/src/input_plane.rs)
 - The app driver (frame loop, render-on-demand, compositing): [`obc-app/src/app.rs`](src:firmware/obc-app/src/app.rs)
 - The injected-hardware traits, settings persistence seam, and input types: [`obc-ports/src/lib.rs`](src:firmware/obc-ports/src/lib.rs); platform adapters: [`obc-platform/src/`](src:firmware/obc-platform/src)
 
-For how the two planes keep input responsive under a long render, and where the HAL fits, see [system architecture](../architecture/). For how a screen's `draw` actually puts pixels on the panel, see the [rendering pipeline](../rendering/).
+For how the two planes keep input responsive under a long render, and where the HAL fits, see [system architecture](../architecture/). For how a screen's `draw` actually puts pixels on the panel, see the [rendering pipeline](../rendering/). For where the heights behind the Climb screen, the time tiles and the Elevation tile come from, see [terrain & elevation](../terrain/).
