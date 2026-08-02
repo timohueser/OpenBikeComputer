@@ -1,7 +1,7 @@
 {
   "cutter": "obc-pack 0.1.0",
   "schema": {
-    "obcm_version": 11,
+    "obcm_version": 12,
     "chunk_size": 512,
     "grid": {
       "origin_udeg": -268435456,
@@ -75,56 +75,61 @@
       "id": "20/0301/0263",
       "band": "coarse",
       "path": "cells/coarse/0301/0263.obcm",
-      "bytes": 559,
-      "sha256": "72a64b56ec6707718330e760f2dd24f6ded187c88ae78c7b74175199b098a567",
+      "bytes": 575,
+      "sha256": "7fac1b96a82a4f2113e310ded21b2175b6cc98c4b92e7f9fddbdbe249c0e465a",
       "partial": true,
       "pois": 0,
       "nav_nodes": 0,
-      "nav_edges": 0
+      "nav_edges": 0,
+      "empty": false
     },
     {
       "id": "18/1204/1052",
       "band": "fine",
       "path": "cells/fine/1204/1052.obcm",
-      "bytes": 1490,
-      "sha256": "d3ec6c062c839e318a20511d341ba7ac160f44d22250aab60bf5aec82b6cac9c",
+      "bytes": 1506,
+      "sha256": "c8bc151a50b1f5a81e8e286b30c97f6b97ee721acf8ea1a9c393b0a856d79f83",
       "partial": false,
       "pois": 0,
       "nav_nodes": 0,
-      "nav_edges": 0
+      "nav_edges": 0,
+      "empty": false
     },
     {
       "id": "18/1204/1053",
       "band": "fine",
       "path": "cells/fine/1204/1053.obcm",
-      "bytes": 1502,
-      "sha256": "ca26a0cc461876062ede291dfa5b264dbeb18b85ab5da7b7d48673a8b6777578",
+      "bytes": 1518,
+      "sha256": "35556499a39dcbe69ba289af43bc78aa7540f76e6ea634b275ab5339185e58c8",
       "partial": false,
       "pois": 0,
       "nav_nodes": 0,
-      "nav_edges": 0
+      "nav_edges": 0,
+      "empty": false
     },
     {
       "id": "18/1204/1052",
       "band": "network",
       "path": "cells/network/1204/1052.obcm",
-      "bytes": 2531,
-      "sha256": "b77f1926c5e4cc4489e365a3bb87a35e292bb84df7b5acf5a69ef0718fa00fdc",
+      "bytes": 2547,
+      "sha256": "a420350cab095839bdf0e73b0f239a294deb0390eba3cb64d406368663791ee4",
       "partial": false,
       "pois": 2,
       "nav_nodes": 6,
-      "nav_edges": 4
+      "nav_edges": 4,
+      "empty": false
     },
     {
       "id": "18/1204/1053",
       "band": "network",
       "path": "cells/network/1204/1053.obcm",
-      "bytes": 2560,
-      "sha256": "a26f527de66e259f5db15386d87a08a77864c772ad335bee8daff1f97027ed58",
+      "bytes": 2576,
+      "sha256": "6acd7b561ab04737cff8595844e9e010d9ebf4a180c8552fd133d8db3cb0368c",
       "partial": false,
       "pois": 2,
       "nav_nodes": 9,
-      "nav_edges": 7
+      "nav_edges": 7,
+      "empty": false
     }
   ]
 }

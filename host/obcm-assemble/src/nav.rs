@@ -36,7 +36,8 @@
 use std::collections::{BTreeMap, HashMap};
 
 use obc_formats::obcm::{
-    CHUNK_END, NAV_CHUNK_SIZE, NAV_DIR_LEN, NAV_EDGE_FIXED_LEN, NAV_MAX_DEGREE, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN,
+    CHUNK_END, NAV_CHUNK_SIZE, NAV_DIR_LEN, NAV_EDGE_FIXED_LEN, NAV_MAX_DEGREE, NAV_NEIGHBOR_ASCENT_OFF,
+    NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN,
 };
 
 use crate::grid::{on_grid_boundary, UBox};
@@ -62,6 +63,11 @@ struct MergedEdge {
     /// both the §4.6.3 duplicate key and the §4.6.6 emission order, and re-hashing a 511-byte record
     /// inside an `O(n log n)` comparator was measurable on a country-scale graph.
     hash: u64,
+    /// The v12 §8.3 climb of riding `a → b`, and of riding `b → a`. Not part of the record and not
+    /// derivable from it: the assembler carries both from the source adjacency entries, one per
+    /// direction, and re-emits them on the sides they came from.
+    ascent_ab: u16,
+    ascent_ba: u16,
 }
 
 /// One junction ready to serialize.
@@ -79,6 +85,9 @@ struct WireNeighbor {
     edge_id: u32,
     cost_m: u32,
     way_kind: u8,
+    /// The v12 §8.3 climb of riding **toward** this neighbour. Carried through the merge per
+    /// direction, because it is the one adjacency field the two sides of an edge do not share.
+    ascent_m: u16,
 }
 
 impl Point for NavPoint {
@@ -216,7 +225,10 @@ pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, gl
 
         // Pass B: adjacency → edges. Every edge shows up in both endpoints' records with the same
         // `Edge Id`, so the first sighting wins and the second only has to agree.
-        let mut cell_edges: HashMap<u32, ()> = HashMap::new();
+        // `edge_id` → its index in `edges`, or `None` when that id resolved to a duplicate. The
+        // value matters in v12: the second direction of an edge writes back into the record the
+        // first one created.
+        let mut cell_edges: HashMap<u32, Option<usize>> = HashMap::new();
         for &(own_id, lat, lon, k, at) in &records {
             let chunk = &chunks[k];
             let degree = chunk[at + 12] as usize;
@@ -226,8 +238,25 @@ pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, gl
                 let edge_id = u32::from_le_bytes(e[8..12].try_into().expect("4 bytes"));
                 let cost_m = u16::from_le_bytes(e[12..14].try_into().expect("2 bytes")) as u32;
                 let way_kind = e[14];
-                if cell_edges.insert(edge_id, ()).is_some() {
-                    continue; // the other direction of an edge already taken
+                let ascent_m = u16::from_le_bytes(
+                    e[NAV_NEIGHBOR_ASCENT_OFF..NAV_NEIGHBOR_ASCENT_OFF + 2].try_into().expect("2 bytes"),
+                );
+                // v12: the second sighting of an edge is no longer redundant — it carries the *other*
+                // direction's ascent, which nothing else in the file states. So it is read rather
+                // than skipped, and only the edge itself is de-duplicated.
+                if let Some(&existing) = cell_edges.get(&edge_id) {
+                    if let Some(index) = existing {
+                        let edge: &mut MergedEdge = &mut edges[index];
+                        // Orientation again: this entry runs from *this* record's node. It is the
+                        // a→b direction exactly when this node is the edge's `a`.
+                        let own = *local.get(&own_id).expect("own id interned above");
+                        if own == edge.a {
+                            edge.ascent_ab = ascent_m;
+                        } else {
+                            edge.ascent_ba = ascent_m;
+                        }
+                    }
+                    continue;
                 }
                 let a = *local.get(&own_id).expect("own id interned above");
                 let b = *local.get(&nbr_id).ok_or_else(|| {
@@ -239,14 +268,24 @@ pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, gl
                 // record itself states.
                 let anchor_lat = i32::from_le_bytes(rec[7..11].try_into().expect("4 bytes"));
                 let anchor_lon = i32::from_le_bytes(rec[11..15].try_into().expect("4 bytes"));
-                let (a, b) = if (anchor_lat, anchor_lon) == (lat, lon) { (a, b) } else { (b, a) };
+                let own_is_anchor = (anchor_lat, anchor_lon) == (lat, lon);
+                let (a, b) = if own_is_anchor { (a, b) } else { (b, a) };
                 let hash = fnv(&rec);
                 let key = (a.min(b), a.max(b), cost_m, way_kind, hash);
                 if seen_edges.insert(key, ()).is_some() {
                     stats.duplicate_edges += 1;
+                    // Remember that this id was seen and resolved to nothing, so the other direction
+                    // does not re-intern it as a fresh edge.
+                    cell_edges.insert(edge_id, None);
                     continue;
                 }
-                edges.push(MergedEdge { a, b, cost_m, kind: way_kind, rec, hash });
+                // This entry rides from the record's own node, so it books a→b when that node is
+                // `a`. The opposite direction arrives with the neighbour's own entry above; if it
+                // never does (a degree-capped arc, or a self-loop, which §8.3 writes once) the
+                // other direction stays `0` — the same value a map packed without terrain carries.
+                let (ascent_ab, ascent_ba) = if own_is_anchor { (ascent_m, 0) } else { (0, ascent_m) };
+                cell_edges.insert(edge_id, Some(edges.len()));
+                edges.push(MergedEdge { a, b, cost_m, kind: way_kind, rec, hash, ascent_ab, ascent_ba });
             }
         }
     }
@@ -312,7 +351,7 @@ pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, gl
     let mut adj: Vec<Vec<WireNeighbor>> = (0..order.len()).map(|_| Vec::new()).collect();
     for (e, &edge_id) in kept.iter().zip(&edge_ids) {
         let (a, b) = (new_id[e.a as usize], new_id[e.b as usize]);
-        let mut push = |from: u32, to: u32| -> Result<()> {
+        let mut push = |from: u32, to: u32, ascent_m: u16| -> Result<()> {
             let list = &mut adj[from as usize];
             if list.len() >= NAV_MAX_DEGREE {
                 stats.degree_truncated += 1;
@@ -333,12 +372,13 @@ pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, gl
                 edge_id,
                 cost_m: e.cost_m.min(u16::MAX as u32),
                 way_kind: e.kind,
+                ascent_m,
             });
             Ok(())
         };
-        push(a, b)?;
+        push(a, b, e.ascent_ab)?;
         if a != b {
-            push(b, a)?; // a self-loop appears once (§8.3)
+            push(b, a, e.ascent_ba)?; // a self-loop appears once (§8.3)
         }
     }
 
@@ -487,6 +527,7 @@ fn pack_record(p: &NavPoint, out: &mut Vec<u8>) {
         out.extend_from_slice(&n.edge_id.to_le_bytes());
         out.extend_from_slice(&(n.cost_m.min(u16::MAX as u32) as u16).to_le_bytes());
         out.push(n.way_kind);
+        out.extend_from_slice(&n.ascent_m.to_le_bytes());
     }
 }
 

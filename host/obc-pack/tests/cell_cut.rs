@@ -20,6 +20,8 @@
 //! - [`island_pruning_is_strictly_interior`] — §3.5, through the whole cut.
 //! - [`partial_marking_follows_declared_coverage`] — §3.7.
 //! - [`a_real_pbf_cuts_into_cells`] — the ingest→cut path over the committed corpus fixture.
+//! - [`a_terrain_fed_cut_agrees_across_the_seam`] — OBCM v12's §8.3 ascent is integrated from the
+//!   *global* OBCT lattice, so two neighbours' stubs agree and sum to the uncut way (#1073).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -30,9 +32,10 @@ use obc_pack::cut::{cut_ingested, CutOptions, CutSummary, SourceExtent};
 use obc_pack::geom::Geom;
 use obc_pack::grid::{BandTable, CellId, UBox};
 use obc_pack::ingest::{IngestFeature, Ingested};
-use obc_pack::nav::RoutableWay;
+use obc_pack::nav::{integrate_edge_ascent, RoutableWay};
 use obc_pack::poi::Poi;
 use obc_pack::progress::Progress;
+use obc_pack::terrain::TerrainSet;
 use obc_reader::{MapCache, MapTables, Reader, SliceSource, MAX_FEAT_PTS, MAX_FEAT_RINGS};
 
 /// The band-`2^18` lon line between cells `j = 1052` and `j = 1053` — OBCA §7's worked-example seam.
@@ -442,7 +445,7 @@ fn every_cell_round_trips_through_the_reader() {
         let tables = MapTables::parse(&src).unwrap_or_else(|e| panic!("{}: parse: {e:?}", artifact.path));
         let cache = MapCache::new();
         let r = Reader::new(&src, &tables, &cache);
-        assert_eq!(r.version, 11);
+        assert_eq!(r.version, obc_formats::obcm::VERSION);
         assert_eq!(r.marker_color, cfg.marker_color);
 
         // The header bbox is the cell square — the inverted rule of §3.1.
@@ -654,4 +657,141 @@ fn a_real_pbf_cuts_into_cells() {
         let (min_lon, min_lat, ..) = a.id.square();
         assert_eq!((r.bbox.min_lon as i64, r.bbox.min_lat as i64), (min_lon, min_lat), "{}", a.path);
     }
+}
+
+// === Terrain-fed cuts: the v12 §8.3 ascent at a seam (epic #1068 EL5) ==========================
+
+/// The synthetic terrain's posting and cell size — both legal OBCT v1 header values, both small so
+/// the container covering the fixture is ~100 KB rather than ~100 MB (`OBCT_Spec.md` §1.3: posting
+/// and cell size are data, and the sampler cannot tell a small one from a production one).
+const T_POSTING_LOG2: u8 = 9;
+const T_CELL_LOG2: u8 = 14;
+
+/// The OBCA cell index of a µdeg coordinate at [`T_CELL_LOG2`].
+fn t_cell(udeg: i64) -> u32 {
+    ((udeg + (1 << 28)) >> T_CELL_LOG2) as u32
+}
+
+/// Write a `.obcd` container covering the fixture's whole neighbourhood — both seams, both cell
+/// rows — whose height rises **with longitude** at ~4 m per lattice column. Eastbound roads
+/// therefore climb monotonically, which is what makes the seam arithmetic below checkable by hand.
+///
+/// Latitude is deliberately absent from the surface: a transposed lat/lon would book a flat road and
+/// be caught, rather than sampling a plausible-looking plane and passing.
+fn write_seam_terrain(dir: &Path) -> PathBuf {
+    let (lat0, lat1) = (LAT - 80_000, LAT + 80_000);
+    let (lon0, lon1) = (SEAM - 40_000, SEAM_E + 40_000);
+    let (min_i, min_j) = (t_cell(lat0), t_cell(lon0));
+    let rows = (t_cell(lat1) - min_i + 1) as u16;
+    let cols = (t_cell(lon1) - min_j + 1) as u16;
+    let bytes = obc_vectors::terrain_container(
+        T_POSTING_LOG2,
+        T_CELL_LOG2,
+        min_i,
+        min_j,
+        rows,
+        cols,
+        &|_, _| true,
+        &|_di, dj| (200 + 4 * dj as i32) as i16,
+    );
+    let path = dir.join("seam.obcd");
+    std::fs::write(&path, bytes).expect("write terrain");
+    path
+}
+
+/// One adjacency arc: `(from coord, to coord, ascent_m)`, coords µdeg `(lon, lat)`.
+type Arc = ((i32, i32), (i32, i32), u16);
+
+/// Every adjacency arc of a cell.
+fn nav_arcs(bytes: &[u8]) -> BTreeSet<Arc> {
+    let src = SliceSource(bytes);
+    let tables = MapTables::parse(&src).expect("a cell parses");
+    let cache = MapCache::new();
+    let r = Reader::new(&src, &tables, &cache);
+    let mut out = BTreeSet::new();
+    let mut scratch = [0u8; 512];
+    r.for_each_nav_node(&r.bbox, &mut scratch, |n| {
+        for nb in n.neighbors() {
+            out.insert(((n.lon, n.lat), (nb.lon, nb.lat), nb.ascent_m));
+        }
+    })
+    .expect("nav walk");
+    out
+}
+
+/// The one arc leaving `from` toward `to`, or `None`.
+fn arc_ascent(arcs: &BTreeSet<Arc>, from: (i32, i32), to: (i32, i32)) -> Option<u16> {
+    arcs.iter().find(|(f, t, _)| *f == from && *t == to).map(|(_, _, a)| *a)
+}
+
+/// **The seam-determinism pin for v12.** The cutter slices the road crossing the `2^18` line exactly
+/// on it, and each neighbour bakes the ascent of *its own* stub — but both integrate the same global
+/// OBCT lattice, so:
+///
+/// 1. each side's booked climb equals what integrating that stub through the shared sampler gives,
+///    which is what would break the moment anything sampled a cell-local raster or a per-cell origin;
+/// 2. the two stubs' eastbound climbs **sum to the uncut way's**, so cutting an edge at a border
+///    does not create or destroy metres of climbing (exactly, on this monotone ramp — the dead-band
+///    re-anchors at the cut, which costs at most its own threshold);
+/// 3. and cutting twice produces byte-identical cells, terrain and all.
+#[test]
+fn a_terrain_fed_cut_agrees_across_the_seam() {
+    let out = Scratch::new("terrain-seam");
+    let terrain_path = write_seam_terrain(out.path());
+    let opts = CutOptions { terrain: Some(terrain_path.clone()), ..options() };
+    let summary = cut_fixture(out.path(), &opts);
+
+    let west = nav_arcs(&cell_file(out.path(), &summary, "network", 1204, 1052));
+    let east = nav_arcs(&cell_file(out.path(), &summary, "network", 1204, 1053));
+
+    // The road of `way(1_000)`: (SEAM − 6 000) → SEAM → (SEAM + 6 000), all at LAT.
+    let w_end = ((SEAM - 6_000) as i32, LAT as i32);
+    let boundary = (SEAM as i32, LAT as i32);
+    let e_end = ((SEAM + 6_000) as i32, LAT as i32);
+
+    let up_west = arc_ascent(&west, w_end, boundary).expect("the western stub is in the western cell");
+    let up_east = arc_ascent(&east, boundary, e_end).expect("the eastern stub is in the eastern cell");
+    let down_west = arc_ascent(&west, boundary, w_end).expect("…and its reverse");
+    assert!(up_west > 20 && up_east > 20, "both stubs climb: {up_west} m / {up_east} m");
+    assert_eq!(down_west, 0, "riding the ramp westward books no climb");
+
+    // (1) Each side's number is the shared sampler's, over the global lattice.
+    let set = TerrainSet::open(&terrain_path).expect("the container opens");
+    let mut sampler = set.sampler_for(None).expect("sampler");
+    let (expect_west, _) = integrate_edge_ascent(&[w_end, boundary], &mut sampler);
+    let (expect_east, _) = integrate_edge_ascent(&[boundary, e_end], &mut sampler);
+    assert_eq!(up_west, expect_west, "the western cell sampled the global lattice, not something local");
+    assert_eq!(up_east, expect_east, "and so did the eastern one");
+
+    // (2) The cut neither created nor destroyed climbing.
+    let (whole, _) = integrate_edge_ascent(&[w_end, e_end], &mut sampler);
+    let summed = i32::from(up_west) + i32::from(up_east);
+    assert!(
+        (summed - i32::from(whole)).abs() <= 3,
+        "the two stubs sum to the uncut way's climb: {summed} m vs {whole} m"
+    );
+
+    // (3) Same inputs, same bytes — terrain does not make a cut order- or cache-dependent.
+    let again = Scratch::new("terrain-seam-again");
+    let again_terrain = write_seam_terrain(again.path());
+    let again_opts = CutOptions { terrain: Some(again_terrain), ..options() };
+    let again_summary = cut_fixture(again.path(), &again_opts);
+    for (band, i, j) in [("network", 1204, 1052), ("network", 1204, 1053)] {
+        assert_eq!(
+            cell_file(out.path(), &summary, band, i, j),
+            cell_file(again.path(), &again_summary, band, i, j),
+            "{band}/{i}/{j} must be byte-identical across runs"
+        );
+    }
+}
+
+/// A cut with **no** `--terrain` writes `Ascent M = 0` everywhere: the degrade path, and what every
+/// other cut test in this file (and every bake until the terrain track is wired in) produces.
+#[test]
+fn a_cut_without_terrain_books_no_ascent() {
+    let out = Scratch::new("no-terrain");
+    let summary = cut_fixture(out.path(), &options());
+    let arcs = nav_arcs(&cell_file(out.path(), &summary, "network", 1204, 1052));
+    assert!(!arcs.is_empty(), "the western cell has a graph to be flat about");
+    assert!(arcs.iter().all(|(_, _, ascent)| *ascent == 0), "no terrain in ⇒ no climb out");
 }

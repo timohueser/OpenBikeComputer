@@ -296,31 +296,62 @@ pub fn terrain_coord(base_cell: u32, d: u32) -> i32 {
 /// Built straight from the spec's field tables, independent of the `obc-elevation` reader that
 /// parses it from the other side. Length = `32 + 16 + 3 × 2048` = 6192 bytes.
 pub fn terrain_shard() -> Vec<u8> {
-    let samples = 1u32 << (TERRAIN_CELL_LOG2 - TERRAIN_POSTING_LOG2); // 32 per cell edge
-    let tiles = samples / 16; // 2 tiles per cell edge
-    let dir_len = TERRAIN_ROWS as usize * TERRAIN_COLS as usize * 4;
+    terrain_container(
+        TERRAIN_POSTING_LOG2,
+        TERRAIN_CELL_LOG2,
+        TERRAIN_CELL_MIN_I,
+        TERRAIN_CELL_MIN_J,
+        TERRAIN_ROWS,
+        TERRAIN_COLS,
+        &|ci, cj| (ci, cj) != TERRAIN_ABSENT_CELL,
+        &terrain_height,
+    )
+}
+
+/// The general OBCT §4 container writer behind [`terrain_shard`], for a caller that needs terrain
+/// somewhere *else* — the packer's `--terrain` tests bake ascent over a synthetic surface at their
+/// own coordinates, and moving the pinned spec fixture to suit them would defeat its purpose.
+///
+/// `present(ci, cj)` decides which cells of the rectangle get a block (a `false` leaves the
+/// directory's absent sentinel); `height(di, dj)` is the surface, indexed by **lattice offsets from
+/// the rectangle's base sample** exactly like [`terrain_height`]. Still written straight from the
+/// spec's field tables — this is one implementation with a parameterised surface, not a second one.
+#[allow(clippy::too_many_arguments)]
+pub fn terrain_container(
+    posting_log2: u8,
+    cell_log2: u8,
+    cell_min_i: u32,
+    cell_min_j: u32,
+    rows: u16,
+    cols: u16,
+    present: &dyn Fn(u32, u32) -> bool,
+    height: &dyn Fn(u32, u32) -> i16,
+) -> Vec<u8> {
+    let samples = 1u32 << (cell_log2 - posting_log2); // samples per cell edge
+    let tiles = samples / 16; // tiles per cell edge
+    let dir_len = rows as usize * cols as usize * 4;
 
     let mut header = [0u8; 32];
     header[0..4].copy_from_slice(b"OBCT");
     header[4] = 1; // version
-    header[5] = TERRAIN_POSTING_LOG2;
-    header[6] = TERRAIN_CELL_LOG2;
+    header[5] = posting_log2;
+    header[6] = cell_log2;
     header[7] = 0; // flags — v1 defines none
-    header[8..12].copy_from_slice(&TERRAIN_CELL_MIN_I.to_le_bytes());
-    header[12..16].copy_from_slice(&TERRAIN_CELL_MIN_J.to_le_bytes());
-    header[16..18].copy_from_slice(&TERRAIN_ROWS.to_le_bytes());
-    header[18..20].copy_from_slice(&TERRAIN_COLS.to_le_bytes());
+    header[8..12].copy_from_slice(&cell_min_i.to_le_bytes());
+    header[12..16].copy_from_slice(&cell_min_j.to_le_bytes());
+    header[16..18].copy_from_slice(&rows.to_le_bytes());
+    header[18..20].copy_from_slice(&cols.to_le_bytes());
     header[20..24].copy_from_slice(&le32(32)); // the directory follows the header
                                                // 24..32 reserved (0)
 
     let mut directory = vec![0u8; dir_len];
     let mut blocks: Vec<u8> = Vec::new();
-    for ci in 0..TERRAIN_ROWS as u32 {
-        for cj in 0..TERRAIN_COLS as u32 {
-            if (ci, cj) == TERRAIN_ABSENT_CELL {
+    for ci in 0..rows as u32 {
+        for cj in 0..cols as u32 {
+            if !present(ci, cj) {
                 continue; // leave the slot at the absent sentinel
             }
-            let slot = (ci as usize * TERRAIN_COLS as usize + cj as usize) * 4;
+            let slot = (ci as usize * cols as usize + cj as usize) * 4;
             let offset = (32 + dir_len + blocks.len()) as u32;
             directory[slot..slot + 4].copy_from_slice(&le32(offset));
             for ti in 0..tiles {
@@ -329,7 +360,7 @@ pub fn terrain_shard() -> Vec<u8> {
                         for c in 0..16u32 {
                             let di = ci * samples + ti * 16 + r;
                             let dj = cj * samples + tj * 16 + c;
-                            blocks.extend_from_slice(&terrain_height(di, dj).to_le_bytes());
+                            blocks.extend_from_slice(&height(di, dj).to_le_bytes());
                         }
                     }
                 }

@@ -17,6 +17,11 @@ obc-formats = { path = "../../firmware/obc-formats" }
 # per-crate command in firmware/README.md silently stopped working.
 obc-reader = { path = "../../firmware/obc-reader", features = ["alloc"] }
 obc-map-scene = { path = "../../firmware/obc-map-scene" }
+# The one sampling truth (epic #1068): the packer integrates per-edge ascent from **baked OBCT
+# tiles** through the same `no_std` reader, bilinear sampler and dead-banded integrator the device
+# runs, so a climb-aware route costs the number the rider is later shown. Never a DEM library —
+# rasters are `obc-dem`'s business, one step earlier in the pipeline.
+obc-elevation = { path = "../../firmware/obc-elevation" }
 # `preserve_order` is load-bearing: the config assigns style IDs 1-based in
 # config.json document order, so the parsed map must keep insertion order.
 serde = { version = "1", features = ["derive"] }
@@ -64,3 +69,7 @@ zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
 # will use, so "it validates" is a test result and not an assumption. Draft 2020-12,
 # offline (no remote `$ref` resolution), test-only.
 boon = "0.6"
+# The OBCT container builder the §8.3 ascent tests bake their synthetic terrain with. It is the
+# spec-fixture crate, so the test input is written from OBCT_Spec.md's field tables rather than by
+# the reader that has to parse it back.
+obc-vectors = { path = "../obc-vectors" }

@@ -24,12 +24,14 @@ use obc_formats::obcm::{
 // `VERSION as OBCM_VERSION` rename is a module-local readability alias). Not re-exported.
 use obc_formats::obcm::{
     HEADER_LEN, LOD_ENTRY_LEN, NAV_CHUNK_SIZE, NAV_DIR_LEN, NAV_EDGE_FIXED_LEN, NAV_MAX_DEGREE, NAV_MAX_PROFILES,
-    NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN, NAV_PROFILE_LEN, NAV_PROFILE_NAME_LEN, POI_CATEGORY_COUNT, POI_CAT_ENTRY_LEN,
-    POI_CHUNK_SIZE, POI_HOURS_BLOB_LEN, POI_HOURS_REF_NONE, POI_NAME_LEN, POI_RECORD_LEN, VERSION as OBCM_VERSION,
+    NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN, NAV_PROFILE_LEN, NAV_PROFILE_NAME_LEN, NAV_PROFILE_RESERVED_LEN,
+    POI_CATEGORY_COUNT, POI_CAT_ENTRY_LEN, POI_CHUNK_SIZE, POI_HOURS_BLOB_LEN, POI_HOURS_REF_NONE, POI_NAME_LEN,
+    POI_RECORD_LEN, VERSION as OBCM_VERSION,
 };
 
 use crate::nav::{polyline_len_m, NavGraph};
 use crate::poi::{table_row, Poi};
+use obc_elevation::ElevationSource;
 
 /// Max delta (microdegrees) before a segment is densified to keep deltas in
 /// 16-bit range. Crate-visible so `geom::packed_size_budget` can count the
@@ -76,6 +78,9 @@ pub struct NavProfile {
     pub highway: [u8; 32],
     /// Multiplier per surface class (3-bit index, 0..=7). Same encoding.
     pub surface: [u8; 8],
+    /// §8.6 `Climb Weight` (v12): flat metres charged per metre of a neighbor entry's `Ascent M`.
+    /// `0` = climb-blind. Needs no admissibility bound — the term is additive and non-negative.
+    pub climb_weight: u8,
 }
 
 /// Largest `chunk_size` (bytes) that keeps every feature within the reader's
@@ -744,8 +749,9 @@ fn pack_hours_pool(pool: &[[u8; POI_HOURS_BLOB_LEN]]) -> Vec<u8> {
 
 /// One adjacency entry of a junction record (§8.3), holding the neighbor's **absolute** µdeg coords
 /// (the serializer turns them into `i16` deltas from the owning record at pack time), the resolved
-/// wire `edge_id` (pool-relative byte offset), the edge's ground `cost_m` (written `u16`), and its
-/// `way_kind` class byte.
+/// wire `edge_id` (pool-relative byte offset), the edge's ground `cost_m` (written `u16`), its
+/// `way_kind` class byte, and the v12 `ascent_m` — the integrated climb of riding the edge **toward
+/// this neighbor**, which is the one field the two sides of an edge legitimately disagree on.
 struct WireNeighbor {
     id: u32,
     lat: i32,
@@ -753,6 +759,7 @@ struct WireNeighbor {
     edge_id: u32,
     cost_m: u32,
     way_kind: u8,
+    ascent_m: u16,
 }
 
 /// A junction node ready to serialize: absolute µdeg coords, R1's dense id, and
@@ -778,8 +785,9 @@ enum NavTreeNode {
     Branch(Box<[NavTreeNode; 4]>),
 }
 
-/// Pack one v9 §8.3 junction record: `lat i32, lon i32, node_id u32, degree u8`, then one 15-byte
-/// entry per neighbor (`id u32, dlat i16, dlon i16, edge_id u32, cost_m u16, way_kind u8`).
+/// Pack one v12 §8.3 junction record: `lat i32, lon i32, node_id u32, degree u8`, then one 17-byte
+/// entry per neighbor (`id u32, dlat i16, dlon i16, edge_id u32, cost_m u16, way_kind u8,
+/// ascent_m u16`).
 /// Coordinates are absolute µdeg in the head, lat first (the §7.3/§8 record convention); each
 /// neighbor's coord is stored as an `i16` **delta from this record's own lat/lon** (N1's edge
 /// splits guarantee the delta fits), so relaxation reconstructs `neighbor = node + delta` exactly.
@@ -804,6 +812,7 @@ fn pack_nav_record(p: &NavPoint, out: &mut Vec<u8>) {
         out.extend_from_slice(&n.edge_id.to_le_bytes());
         out.extend_from_slice(&(n.cost_m.min(u16::MAX as u32) as u16).to_le_bytes());
         out.push(n.way_kind);
+        out.extend_from_slice(&n.ascent_m.to_le_bytes());
     }
 }
 
@@ -977,10 +986,11 @@ fn pack_edge_record(e: &WorkEdge, out: &mut Vec<u8>) {
     }
 }
 
-/// Pack the §8.6 profile table: `profiles.len()` consecutive 52-byte records (`name [u8;12]`,
-/// `highway_mult [u8;32]`, `surface_mult [u8;8]`). The name is UTF-8 truncated to 12 bytes and
-/// `0xFF`-padded (the POI-name convention). `profiles` is `1..=8` (the packer never writes an empty
-/// table; the reader rejects `profile_count` outside that range).
+/// Pack the §8.6 profile table: `profiles.len()` consecutive 56-byte v12 records (`name [u8;12]`,
+/// `highway_mult [u8;32]`, `surface_mult [u8;8]`, `climb_weight u8`, 3 reserved bytes written `0`).
+/// The name is UTF-8 truncated to 12 bytes and `0xFF`-padded (the POI-name convention); the reserved
+/// tail is **zero**, not `0xFF` — it is a reserved field, not a padded string. `profiles` is `1..=8`
+/// (the packer never writes an empty table; the reader rejects `profile_count` outside that range).
 fn pack_profile_table(profiles: &[NavProfile]) -> Vec<u8> {
     debug_assert!((1..=NAV_MAX_PROFILES).contains(&profiles.len()), "1..=8 profiles");
     let mut out = Vec::with_capacity(profiles.len() * NAV_PROFILE_LEN);
@@ -991,6 +1001,8 @@ fn pack_profile_table(profiles: &[NavProfile]) -> Vec<u8> {
         out.resize(out.len() + (NAV_PROFILE_NAME_LEN - n), CHUNK_END); // 0xFF-pad the name field
         out.extend_from_slice(&p.highway);
         out.extend_from_slice(&p.surface);
+        out.push(p.climb_weight);
+        out.resize(out.len() + NAV_PROFILE_RESERVED_LEN, 0);
     }
     debug_assert_eq!(out.len(), profiles.len() * NAV_PROFILE_LEN);
     out
@@ -1017,11 +1029,19 @@ fn pack_profile_table(profiles: &[NavProfile]) -> Vec<u8> {
 /// Wire `edge_id` = the record's **pool-relative byte offset** (§8.4): the reader derives
 /// `(chunk, offset)` as `id / 512`, `id % 512` with **zero resident index**. A self-loop edge
 /// (`a == b`) contributes **one** adjacency entry, not two.
+///
+/// `terrain` is where the v12 `Ascent M` comes from. It is sampled **after** every split, over each
+/// final piece's own polyline, because that is the only place the geometry an adjacency entry
+/// describes actually exists — an edge's total climb cannot be divided among its pieces after the
+/// fact (the dead-band is a fold over samples, not a length). Hand it
+/// [`NullElevation`](obc_elevation::NullElevation) and every entry gets `0`: a decode-valid map that
+/// routes exactly as v11 did, which is the degrade path *and* what keeps small test packs cheap.
 pub fn serialize_nav_section(
     graph: &NavGraph,
     profiles: &[NavProfile],
     global_bbox: (i64, i64, i64, i64),
     section_offset: usize,
+    terrain: &mut dyn ElevationSource,
 ) -> Vec<u8> {
     let profile_table = pack_profile_table(profiles);
     // The profile table sits right after the 28-byte directory; the node index (and, for an empty
@@ -1127,18 +1147,22 @@ pub fn serialize_nav_section(
     let mut adj: Vec<Vec<WireNeighbor>> = (0..coords.len()).map(|_| Vec::new()).collect();
     let mut truncated = 0usize;
     for (e, &edge_id) in edges.iter().zip(&edge_ids) {
-        let mut push = |from: u32, to: u32| {
+        // §8.3 v12: the two entries of an edge differ in exactly one field. `a→b` books the climb of
+        // riding the polyline forwards, `b→a` the climb of riding it backwards (= the forward
+        // descent). A self-loop writes the forward one and nothing else, matching its single entry.
+        let (ascent_ab, ascent_ba) = crate::nav::integrate_edge_ascent(&e.polyline, terrain);
+        let mut push = |from: u32, to: u32, ascent_m: u16| {
             let list = &mut adj[from as usize];
             if list.len() >= NAV_MAX_DEGREE {
                 truncated += 1;
                 return;
             }
             let (lon, lat) = coords[to as usize];
-            list.push(WireNeighbor { id: to, lat, lon, edge_id, cost_m: e.cost_m, way_kind: e.kind });
+            list.push(WireNeighbor { id: to, lat, lon, edge_id, cost_m: e.cost_m, way_kind: e.kind, ascent_m });
         };
-        push(e.a, e.b);
+        push(e.a, e.b, ascent_ab);
         if e.a != e.b {
-            push(e.b, e.a);
+            push(e.b, e.a, ascent_ba);
         }
     }
     if truncated > 0 {
@@ -1220,6 +1244,14 @@ fn push_lod_entry(table: &mut Vec<u8>, max_mpp: Option<f64>, index_offset: u32, 
 /// classified POI list, `nav` the routable graph, and `profiles` the `1..=8` routing
 /// profiles (§8.6) — all **always** get a section, empty or not. The second return
 /// value is the total chunk-overflow feature drops (see [`pack_chunk`]).
+///
+/// `terrain` is the OBCT source the §8.3 `Ascent M` is integrated from; pass
+/// [`NullElevation`](obc_elevation::NullElevation) for a map with no terrain.
+// Eight positional arguments, one past clippy's default. Grouping them into a struct would only
+// move the same eight names one indirection away and force every caller (and every test) to name a
+// type to say "no styles, no POIs, an empty graph"; the streaming twin below already carries the
+// same list, and the two must stay in lockstep.
+#[allow(clippy::too_many_arguments)]
 pub fn serialize_lods(
     lods: &[LodLayer],
     styles: &[Style],
@@ -1228,6 +1260,7 @@ pub fn serialize_lods(
     pois: &[Poi],
     nav: &NavGraph,
     profiles: &[NavProfile],
+    terrain: &mut dyn ElevationSource,
 ) -> (Vec<u8>, usize) {
     let style_data = pack_style_dict(styles);
     let lod_count = lods.len();
@@ -1264,7 +1297,7 @@ pub fn serialize_lods(
     let poi_section_offset = cursor;
     let poi_section = serialize_poi_section(pois, global_bbox, poi_section_offset);
     let nav_section_offset = poi_section_offset + poi_section.len();
-    let nav_section = serialize_nav_section(nav, profiles, global_bbox, nav_section_offset);
+    let nav_section = serialize_nav_section(nav, profiles, global_bbox, nav_section_offset, terrain);
 
     let mut out =
         Vec::with_capacity(lod_table_offset + table.len() + payload.len() + poi_section.len() + nav_section.len());
@@ -1321,6 +1354,7 @@ pub fn serialize_lods_streaming<W, F>(
     pois: &[Poi],
     nav: &NavGraph,
     profiles: &[NavProfile],
+    terrain: &mut dyn ElevationSource,
     mut build: F,
 ) -> io::Result<(u64, usize)>
 where
@@ -1369,7 +1403,7 @@ where
     w.write_all(&poi_section)?;
     cursor += poi_section.len();
     let nav_section_offset = cursor;
-    let nav_section = serialize_nav_section(nav, profiles, global_bbox, nav_section_offset);
+    let nav_section = serialize_nav_section(nav, profiles, global_bbox, nav_section_offset, terrain);
     w.write_all(&nav_section)?;
     cursor += nav_section.len();
 
@@ -1387,6 +1421,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use obc_elevation::NullElevation;
     use obc_formats::obcm::FEATURE_HEADER_WIDE_LEN;
 
     #[test]
@@ -1523,19 +1558,28 @@ mod tests {
         // Two profiles so §8.6 is non-trivial and the streaming/in-memory paths must agree on its
         // bytes as well as the graph's.
         let profiles = vec![
-            NavProfile { name: "Road".into(), highway: [16; 32], surface: [16; 8] },
-            NavProfile { name: "Gravel".into(), highway: [24; 32], surface: [32; 8] },
+            NavProfile { name: "Road".into(), highway: [16; 32], surface: [16; 8], climb_weight: 10 },
+            NavProfile { name: "Gravel".into(), highway: [24; 32], surface: [32; 8], climb_weight: 8 },
         ];
 
-        let (reference, ref_dropped) = serialize_lods(&lods, &styles, 0xABCD, bbox, &pois, &nav, &profiles);
+        let (reference, ref_dropped) =
+            serialize_lods(&lods, &styles, 0xABCD, bbox, &pois, &nav, &profiles, &mut NullElevation);
         assert_eq!(ref_dropped, 0, "nothing overflows in this fixture");
 
         let mut cur = Cursor::new(Vec::new());
-        let (total, dropped) =
-            serialize_lods_streaming(&mut cur, lods.len(), &styles, 0xABCD, bbox, &pois, &nav, &profiles, |i| {
-                (Some(lods[i].root.clone()), lods[i].chunk_size, lods[i].max_mpp)
-            })
-            .unwrap();
+        let (total, dropped) = serialize_lods_streaming(
+            &mut cur,
+            lods.len(),
+            &styles,
+            0xABCD,
+            bbox,
+            &pois,
+            &nav,
+            &profiles,
+            &mut NullElevation,
+            |i| (Some(lods[i].root.clone()), lods[i].chunk_size, lods[i].max_mpp),
+        )
+        .unwrap();
 
         assert_eq!(cur.into_inner(), reference, "streaming output must be byte-identical");
         assert_eq!(total as usize, reference.len());

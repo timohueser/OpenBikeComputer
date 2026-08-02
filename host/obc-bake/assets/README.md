@@ -6,11 +6,11 @@ table, and renders the fixed Teningen camera through the production map renderer
 It is never published itself.
 
 Provenance: Geofabrik `europe/germany/baden-wuerttemberg/freiburg-regbez`,
-snapshot `2026-07-30`, packed as OBCM v11 with
+snapshot `2026-08-01`, packed as OBCM v12 with
 `builder/presets/schema.json` (Bikepacking v4) and this padded crop:
 
 ```text
-obc pack freiburg-regbez-260730.osm.pbf builder/presets/schema.json \
+obc pack freiburg-regbez-260801.osm.pbf builder/presets/schema.json \
   /tmp/teningen-preview.obcm -- \
   --bbox 7.798,48.119,7.830,48.141
 ```
@@ -28,6 +28,12 @@ inside it. That keeps residential, forest, and farmland fills whole even when a
 ring segment lies outside the crop. It is already large enough for the
 interactive preview to select all seven LODs, so no second browser fixture is
 needed.
+
+Size log: 472 061 B at OBCM v11 → **481 517 B at v12** (#1073). The +9 456 B is
+the v12 §8.3 ascent field — `2 × 4 700` adjacency entries plus 4 B of profile
+table, realised as +18 whole 512-byte node chunks. The snapshot moved at the same
+time and cost nothing: the v11 packer produces the identical 472 061 B from the
+2026-08-01 extract.
 
 Refresh this fixture whenever the schema's style-id assignment or OBCM version
 changes. `obc-bake` checks the assignment before starting a region bake and
