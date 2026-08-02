@@ -427,6 +427,12 @@ by construction. Resolve each corner as follows:
    with the nearest sample of the **containing** cell, i.e. clamp each out-of-cell axis index to
    that cell's maximum sample index on that axis. The weights `a`, `b` are **not** changed.
 
+Step 3 applies to **absence only**. A failed read — of a directory entry, of a tile — is not
+absence, and an implementation MUST NOT let one fall into the clamp: it makes the whole sample
+`None` per §5.1. Absence is a fact about the file and has a defined answer; a read error is a fact
+about the medium, and answering it with a neighbouring height would be the one thing principle 6
+forbids — a guess that looks exactly like data.
+
 Clamping is the coverage-edge rule. It makes the surface flatten over the last half posting at the
 outer boundary of coverage instead of jumping to `None`, so a query one micro-degree past the last
 sample answers the last sample rather than nothing. Step 3 fires for a hole *inside* the rectangle

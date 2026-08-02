@@ -204,7 +204,9 @@ impl<'a> TerrainReader<'a> {
             cell_of(at.i, self.header.posting_log2, self.header.cell_log2),
             cell_of(at.j, self.header.posting_log2, self.header.cell_log2),
         );
-        let home = self.cell_offset(cache, home_i, home_j)?;
+        // A failed directory read and an absent cell both leave the query unanswered here; the
+        // distinction only matters for a *corner* (§5.3), where one clamps and the other must not.
+        let home = self.cell_offset(cache, home_i, home_j).ok().flatten()?;
 
         let v00 = self.corner(cache, (home_i, home_j), home, at.i, at.j)?;
         let v10 = self.corner(cache, (home_i, home_j), home, at.i + 1, at.j)?;
@@ -215,8 +217,9 @@ impl<'a> TerrainReader<'a> {
 
     /// One bilinear corner (`OBCT_Spec.md` §5.3): read sample `(i, j)` from whichever cell owns it,
     /// falling back to the nearest sample of the **home** cell when that cell is not in the file —
-    /// the coverage-edge clamp. `None` means the sample read as [`NODATA`] (or the medium failed),
-    /// which §5.4 propagates to the whole query.
+    /// the coverage-edge clamp. `None` means the sample read as [`NODATA`], or the medium failed on
+    /// the way to it; §5.4 propagates either to the whole query. Only *absence* clamps: a failed
+    /// read is never answered with a neighbouring height.
     fn corner<const N: usize>(
         &self,
         cache: &mut TileCache<N>,
@@ -234,9 +237,12 @@ impl<'a> TerrainReader<'a> {
             (home_cell, home_offset, i, j)
         } else {
             match self.cell_offset(cache, ci, cj) {
-                Some(offset) => ((ci, cj), offset, i, j),
+                Ok(Some(offset)) => ((ci, cj), offset, i, j),
+                // The medium failed: void the sample. A clamp here would answer a read error with a
+                // plausible height, which is exactly the guess the format forbids.
+                Err(_) => return None,
                 // Clamp each out-of-cell axis to the home cell's last sample on that axis.
-                None => {
+                Ok(None) => {
                     let last_i = cell_base_sample(home_cell.0, self.header.posting_log2, self.header.cell_log2)
                         + (1 << span_log2)
                         - 1;
@@ -272,27 +278,41 @@ impl<'a> TerrainReader<'a> {
         Some(i16::from_le_bytes([filled[at], filled[at + 1]]))
     }
 
-    /// The offset of cell `(i, j)`, or `None` when it is outside the rectangle or absent from the
-    /// directory. One `uint32` read behind the cache's one-entry memo; a present cell is memoized,
-    /// so the four corners of a query cost one directory read between them.
-    fn cell_offset<const N: usize>(&self, cache: &mut TileCache<N>, i: u32, j: u32) -> Option<u32> {
+    /// The offset of cell `(i, j)`: `Ok(Some(_))` present, `Ok(None)` outside the rectangle or
+    /// absent from the directory, `Err(_)` the medium failed.
+    ///
+    /// **The three answers are deliberately not collapsed.** "Absent" is a fact about the file and
+    /// makes a corner clamp (§5.3); a failed read is a fact about the *card* and must void the whole
+    /// sample. Folding the error into `None` would let an SD glitch hand back a clamped, entirely
+    /// plausible height — the one thing the format's "a hole is silence, never a guess" principle
+    /// forbids, and the reason the tile path invalidates its slot rather than serving a short read.
+    ///
+    /// One `uint32` read behind the cache's one-entry memo. A query whose four corners land in the
+    /// same cell therefore costs one directory read between them; at a seam the memo ping-pongs
+    /// between the home cell and its neighbour, so a straddling query can pay one read per crossing
+    /// corner — cheap next to the tile read it is amortising, and the reason this is a memo rather
+    /// than a resident directory.
+    fn cell_offset<const N: usize>(&self, cache: &mut TileCache<N>, i: u32, j: u32) -> Result<Option<u32>, Error> {
         if let Some(offset) = cache.memo(i, j) {
-            return Some(offset);
+            return Ok(Some(offset));
         }
-        let (di, dj) = (i.checked_sub(self.header.cell_min_i)?, j.checked_sub(self.header.cell_min_j)?);
+        let (Some(di), Some(dj)) = (i.checked_sub(self.header.cell_min_i), j.checked_sub(self.header.cell_min_j))
+        else {
+            return Ok(None);
+        };
         if di >= self.header.cell_rows as u32 || dj >= self.header.cell_cols as u32 {
-            return None;
+            return Ok(None);
         }
         let slot = di as u64 * self.header.cell_cols as u64 + dj as u64;
         let at = self.header.directory_offset as u64 + slot * DIR_ENTRY_LEN as u64;
         let mut entry = [0u8; DIR_ENTRY_LEN];
-        self.src.read_at(at as u32, &mut entry).ok()?;
+        self.src.read_at(at as u32, &mut entry)?;
         let offset = u32::from_le_bytes(entry);
         if offset == DIR_ABSENT {
-            return None;
+            return Ok(None);
         }
         cache.remember(i, j, offset);
-        Some(offset)
+        Ok(Some(offset))
     }
 
     /// The µdeg coordinate of lattice sample `i` — exposed so a caller (the `obc-dem` baker's
