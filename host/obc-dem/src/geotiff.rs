@@ -280,9 +280,21 @@ fn geo_keys<R: std::io::Read + std::io::Seek>(dec: &mut Decoder<R>) -> Vec<(u16,
 /// Tiles are held in a fixed order and looked up by coordinate, never by name — so a mosaic of one
 /// tile, of a whole country, or of two tiles at different latitudes with *different* post spacings
 /// all sample the same way.
+///
+/// **Every tile is held decoded in memory** — ~52 MB per 1° GLO-30 tile. That is the right shape for
+/// a bake of a map-sized box, and the wrong shape for a continent: a caller baking DACH must feed it
+/// the tiles a region needs and drop them between regions, not the whole dataset at once.
 #[derive(Debug, Default)]
 pub struct DemMosaic {
     tiles: Vec<DemTile>,
+    /// The tile that answered the previous query. A bake walks a cell sample by sample, so
+    /// essentially every query lands in the same tile as the one before it, and without this the
+    /// lookup is a linear scan of the mosaic **per sample** — invisible at two tiles, quadratic
+    /// misery at six hundred.
+    ///
+    /// It cannot change an answer: tile coverage boxes are disjoint by construction (§`owns`), so
+    /// at most one tile ever matches and checking a different one first only reorders the search.
+    last_hit: std::cell::Cell<usize>,
 }
 
 impl DemMosaic {
@@ -317,6 +329,7 @@ impl DemMosaic {
     pub fn push(&mut self, tile: DemTile) {
         self.tiles.push(tile);
         self.tiles.sort_by_key(DemTile::order_key);
+        self.last_hit.set(0); // the sort invalidated the memo's index
     }
 
     /// How many tiles the mosaic holds.
@@ -330,7 +343,14 @@ impl DemMosaic {
 
     /// The tile that answers for `(lat, lon)`, or `None` outside coverage.
     fn tile_for(&self, lat_deg: f64, lon_deg: f64) -> Option<&DemTile> {
-        self.tiles.iter().find(|t| t.owns(lat_deg, lon_deg))
+        if let Some(tile) = self.tiles.get(self.last_hit.get()) {
+            if tile.owns(lat_deg, lon_deg) {
+                return Some(tile);
+            }
+        }
+        let (index, tile) = self.tiles.iter().enumerate().find(|(_, t)| t.owns(lat_deg, lon_deg))?;
+        self.last_hit.set(index);
+        Some(tile)
     }
 
     /// The nearest source post to `(lat, lon)`, or `None` outside coverage / over a void. Used only

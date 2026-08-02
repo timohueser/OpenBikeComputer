@@ -41,7 +41,7 @@ fn with_sampler(bytes: &[u8], body: impl FnOnce(&mut dyn FnMut(f64, f64) -> Opti
 #[test]
 fn the_grimsel_sidecar_covers_its_map_and_reads_as_the_grimsel() {
     let bytes = asset("apps/obc-sim/assets/grimsel.obcd");
-    assert_eq!(bytes.len(), 786_560, "20 cells of 32 KiB behind a 4 × 5 directory");
+    assert_eq!(bytes.len(), 786_560, "24 cells of 32 KiB behind a 4 × 6 directory");
 
     with_sampler(&bytes, |at| {
         // The four corners of the map's canonical extract bbox (`repack.sh`'s `GRIMSEL_BBOX`).

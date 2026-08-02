@@ -37,13 +37,14 @@ mod common;
 use common::Scratch;
 use obc_dem::bake::{bake_shard, BakeParams, V1_POSTING_LOG2};
 use obc_dem::fetch::fetch_tiles;
-use obc_dem::geotiff::DemMosaic;
+use obc_dem::geotiff::{DemMosaic, DemTile};
 use obc_dem::BboxUdeg;
 use obc_elevation::{TerrainReader, TileCache, DEFAULT_TILE_SLOTS};
 use obc_formats::io::SliceSource;
 
-/// The Grimsel box `apps/obc-sim/assets/repack.sh` bakes the sidecar over, padded like the sidecar.
-const GRIMSEL_BBOX: &str = "46.4626,8.1303,46.7407,8.4801";
+/// The exact box `apps/obc-sim/assets/repack.sh terrain` bakes the committed sidecar over, so this
+/// test walks the same path that produced the file in the tree.
+const GRIMSEL_BBOX: &str = "46.48261,8.15034,46.72070,8.46007";
 
 /// Where the downloaded tiles are cached between runs.
 fn sources_dir() -> std::path::PathBuf {
@@ -63,7 +64,12 @@ fn a_real_glo30_tile_decodes_bakes_and_reads_back_at_surveyed_elevations() {
     assert_eq!(paths.len(), 1, "the Grimsel box lives inside one 1° tile");
 
     // --- the spike proper: pure-Rust decode of the real thing ---------------------------------
-    let mosaic = DemMosaic::open_dir(&dir).expect("decoding the GLO-30 tile");
+    // Built from the tiles the *box* needs, not from everything in the cache directory — the same
+    // cache also holds the Teningen tile once `repack.sh terrain` has run.
+    let mut mosaic = DemMosaic::default();
+    for path in &paths {
+        mosaic.push(DemTile::open(path).expect("pure-Rust decode of a GLO-30 COG"));
+    }
     assert_eq!(mosaic.len(), 1);
 
     // --- bake at the v1 posting, into one shard -------------------------------------------------
