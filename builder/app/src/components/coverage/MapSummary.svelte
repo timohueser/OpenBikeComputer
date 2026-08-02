@@ -86,6 +86,24 @@
             {/if}
         {/if}
 
+        <!-- Elevation (EL4). One line, no toggle: terrain is ~5 % of a download
+             and a switch would be a decision a rider should not have to make.
+             The size is stated separately from the map's because OBCC §13.3
+             requires it — the two are separate prices — and the credit is the
+             catalog's own string, which §13.5 makes a MUST rather than a
+             courtesy: a dataset change must carry its own notice with it. -->
+        {#if ledger.terrain}
+            <p class="small faint terrain">
+                Includes {formatBytes(ledger.terrain.bytes)} of elevation data.
+                {#if ledger.terrain.missingCount > 0}
+                    {ledger.terrain.missingCount}
+                    {ledger.terrain.missingCount === 1 ? "square has" : "squares have"} no elevation coverage;
+                    climbs there read as flat.
+                {/if}
+            </p>
+            <p class="small faint attribution">{ledger.terrain.attribution}</p>
+        {/if}
+
         <p class="small faint fit">
             Whether it fits your SD card is checked against the connected card in step 4 — maps of any
             size arrive as a set of files.
@@ -162,7 +180,16 @@
         text-decoration: underline;
     }
 
-    .fit {
+    .fit,
+    .terrain {
         line-height: 1.4;
+    }
+
+    /* The source credit is a licence obligation, not a caption — small, but
+       never hidden, never truncated, and never a tooltip. */
+    .attribution {
+        line-height: 1.35;
+        font-size: 10px;
+        opacity: 0.75;
     }
 </style>

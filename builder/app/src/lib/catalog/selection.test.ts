@@ -22,7 +22,7 @@ import {
     type RegionPart,
     type SelectionContext,
 } from "./selection";
-import { EXAMPLE_REGION_CELLS, exampleCatalog, fixtureIndices } from "./testdata";
+import { EXAMPLE_REGION_CELLS, exampleCatalog, exampleTerrainIndex, fixtureIndices } from "./testdata";
 
 const indices = fixtureIndices(exampleCatalog, {
     coarse: [{ id: "20/0301/0263", bytes: 2088, partial: true }],
@@ -370,6 +370,41 @@ describe("SelectionResolver", () => {
 
         resolver.invalidateAll();
         expect(resolver.size).toBe(0);
+    });
+
+    it("resolves terrain by the same intersect rule, on the terrain grid (EL4, §13.3)", () => {
+        const terrain = exampleTerrainIndex();
+        // The example store is `2^13` squares; the box below is drawn over the
+        // first published one, plus the void square beside it and one the store
+        // says nothing about — the three answers §13.3/§13.6 distinguish.
+        const first = cellSquare(parseCellId("13/38528/33664"));
+        const wide: BoxPart = {
+            kind: "box",
+            id: "box-t",
+            name: "Terrain box",
+            box: { minLat: first.minLat + 1, minLon: first.minLon + 1, maxLat: first.maxLat - 1, maxLon: first.maxLon + 2 * 8192 },
+        };
+        const r = resolveSelection({ parts: [wide], corridorRadiusM: 0 }, { ...ctx, terrain });
+        expect(r.terrain.cells).toEqual(["13/38528/33664", "13/38528/33665"]);
+        expect(r.terrain.knownEmpty).toEqual(["13/38528/33667"]);
+        expect(r.terrain.missing).toEqual(["13/38528/33666"]);
+        // §13.1 publishes 548 B per cell in the example.
+        expect(r.terrain.bytes).toBe(548 * 2);
+    });
+
+    it("takes a region's terrain from its published list, never from its outline", () => {
+        const terrain = exampleTerrainIndex();
+        const r = resolveSelection({ parts: [region], corridorRadiusM: 0 }, { ...ctx, terrain });
+        // Exactly the region satellite's `terrain` array — two objects and the
+        // one canonically void square.
+        expect([...r.terrain.cells, ...r.terrain.knownEmpty].sort()).toEqual(swissCells.terrain);
+        expect(r.terrain.missing).toEqual([]);
+    });
+
+    it("names no terrain at all when the catalog publishes none (§13)", () => {
+        const r = resolveSelection({ parts: [region], corridorRadiusM: 0 }, ctx);
+        expect(r.terrain.cells).toEqual([]);
+        expect(r.terrain.bytes).toBe(0);
     });
 
     it("still refuses a region cell no band index publishes", () => {

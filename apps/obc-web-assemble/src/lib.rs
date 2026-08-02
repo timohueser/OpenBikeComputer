@@ -13,6 +13,7 @@
 //! | :-- | :-- |
 //! | `new Assembler(schemaJson, skinJson, optionsJson?)` | an empty assembly, waiting for cells |
 //! | `.addCell(id, band, partial, bytes)` | hand over one downloaded cell; `bytes` crosses **once** |
+//! | `.setTerrain(postingLog2, cellLog2)` / `.addTerrainCell(id, sha256, bytes)` | the raster (EL4) |
 //! | `.run(onProgress?)` | assemble; returns the summary JSON, throws a typed error |
 //! | `.fileCount` / `.fileName(i)` / `.fileRole(i)` / `.fileSha256(i)` / `.fileByteLength(i)` | the finished set, shards first and the manifest **last** (OBCA §5.4) |
 //! | `.takeFile(i)` | move one file's bytes out to JS and free the wasm-side copy; twice throws |
@@ -36,8 +37,8 @@ pub mod driver;
 pub mod estimate;
 
 pub use driver::{
-    assemble_cells, assemble_cells_with_known_empty, AssembleFailure, BridgeOptions, CellBytes, ErrorCode, Hooks,
-    KnownEmptyCell, NoHooks, Outcome, OutputFile, Phase,
+    assemble_cells, assemble_cells_with_known_empty, assemble_everything, AssembleFailure, BridgeOptions, CellBytes,
+    ErrorCode, Hooks, KnownEmptyCell, NoHooks, Outcome, OutputFile, Phase, TerrainCellBytes, TerrainLattice,
 };
 pub use estimate::{
     estimate_memory, estimate_memory_with_budget, MemoryEstimate, OUTPUT_PER_CELL_BYTE, PEAK_PER_NAV_BYTE,
@@ -49,8 +50,8 @@ mod web {
     use wasm_bindgen::prelude::*;
 
     use crate::driver::{
-        assemble_cells_with_known_empty, AssembleFailure, BridgeOptions, CellBytes, ErrorCode, Hooks, KnownEmptyCell,
-        OutputFile, Phase,
+        assemble_everything, AssembleFailure, BridgeOptions, CellBytes, ErrorCode, Hooks, KnownEmptyCell, OutputFile,
+        Phase, TerrainCellBytes, TerrainLattice,
     };
 
     /// Module start (wasm-bindgen runs this during instantiation): surface Rust panics in the console
@@ -122,6 +123,10 @@ mod web {
         options: BridgeOptions,
         cells: Vec<CellBytes>,
         known_empty: Vec<KnownEmptyCell>,
+        /// The catalog's terrain lattice, once the caller declares one. `None` leaves the set
+        /// without a `terrain` role — a complete map with flat profiles (`OBCC_Spec.md` §13).
+        terrain: Option<TerrainLattice>,
+        terrain_cells: Vec<TerrainCellBytes>,
         files: Vec<OutputFile>,
         /// Which files have already been moved out to JS. An emptied buffer is indistinguishable
         /// from a legitimately empty one, and the difference decides between handing back an
@@ -149,6 +154,8 @@ mod web {
                 options,
                 cells: Vec::new(),
                 known_empty: Vec::new(),
+                terrain: None,
+                terrain_cells: Vec::new(),
                 files: Vec::new(),
                 taken: Vec::new(),
                 warnings: Vec::new(),
@@ -173,10 +180,39 @@ mod web {
             self.known_empty.push(KnownEmptyCell { id, band });
         }
 
+        /// Declare the catalog's terrain lattice (`OBCC_Spec.md` §13.1's `posting_log2` /
+        /// `cell_log2`). Calling it is what makes the set carry a `terrain` role at all; a catalog
+        /// with no terrain block simply never calls it, and the map assembles exactly as before.
+        ///
+        /// Declaring the lattice with **no** cells is legal and meaningful: it writes a shard that
+        /// is all directory, which says "this ground is canonically void" (open ocean, outside the
+        /// dataset's coverage) rather than "the raster failed to arrive".
+        #[wasm_bindgen(js_name = setTerrain)]
+        pub fn set_terrain(&mut self, posting_log2: u8, cell_log2: u8) {
+            self.terrain = Some(TerrainLattice { posting_log2, cell_log2 });
+        }
+
+        /// Hand over one downloaded terrain cell: its id on the terrain grid, the `sha256` the
+        /// pinned terrain index published, and the whole `.obcd` object.
+        ///
+        /// A **known-empty** square is not handed over at all — it has no object, and an absent
+        /// cell reads identically to an all-`NODATA` one (`OBCT_Spec.md` §4.3), which is exactly
+        /// why the catalog publishes ocean as a row run rather than as megabytes of sentinel.
+        #[wasm_bindgen(js_name = addTerrainCell)]
+        pub fn add_terrain_cell(&mut self, id: String, sha256: String, bytes: Vec<u8>) {
+            self.terrain_cells.push(TerrainCellBytes { id, sha256, bytes });
+        }
+
         /// How many selected cells are waiting, including zero-byte coverage.
         #[wasm_bindgen(getter, js_name = cellCount)]
         pub fn cell_count(&self) -> usize {
             self.cells.len() + self.known_empty.len()
+        }
+
+        /// How many terrain cells are waiting.
+        #[wasm_bindgen(getter, js_name = terrainCellCount)]
+        pub fn terrain_cell_count(&self) -> usize {
+            self.terrain_cells.len()
         }
 
         /// Assemble, and return the summary as JSON — the same document `obcm-assemble --json`
@@ -198,9 +234,12 @@ mod web {
             let mut hooks = JsHooks { on_progress, last_us: 0, warned: false };
             let cells = core::mem::take(&mut self.cells);
             let known_empty = core::mem::take(&mut self.known_empty);
-            let out = assemble_cells_with_known_empty(
+            let terrain_cells = core::mem::take(&mut self.terrain_cells);
+            let out = assemble_everything(
                 cells,
                 known_empty,
+                self.terrain,
+                terrain_cells,
                 &self.schema_json,
                 &self.skin_json,
                 &self.options,
@@ -225,7 +264,7 @@ mod web {
             self.file(index).map(|f| f.name.clone())
         }
 
-        /// `"core"`, `"coarse"`, `"geometry"`, or `"manifest"`.
+        /// `"core"`, `"coarse"`, `"geometry"`, `"terrain"`, or `"manifest"`.
         #[wasm_bindgen(js_name = fileRole)]
         pub fn file_role(&self, index: usize) -> Result<String, JsValue> {
             self.file(index).map(|f| f.role.to_string())
@@ -293,6 +332,7 @@ mod web {
         pub fn release_cells(&mut self) {
             self.cells = Vec::new();
             self.known_empty = Vec::new();
+            self.terrain_cells = Vec::new();
         }
 
         fn file(&self, index: usize) -> Result<&OutputFile, JsValue> {

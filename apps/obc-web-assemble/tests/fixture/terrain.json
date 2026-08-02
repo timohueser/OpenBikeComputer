@@ -1,0 +1,24 @@
+{
+  "posting_log2": 14,
+  "cell_log2": 19,
+  "cells": [
+    {
+      "id": "19/0602/0526",
+      "path": "terrain/0602/0526.obcd",
+      "bytes": 2084,
+      "sha256": "d67c0a01523396b604d76c0ee34fa8ea3765d11d7fd00d9eae64b6932033242c"
+    },
+    {
+      "id": "19/0602/0527",
+      "path": "terrain/0602/0527.obcd",
+      "bytes": 2084,
+      "sha256": "717538a8f5f982d3706d687c45d371b4f5ca90d3a71dec9ea4bf778b32388cc7"
+    },
+    {
+      "id": "19/0603/0526",
+      "path": "terrain/0603/0526.obcd",
+      "bytes": 2084,
+      "sha256": "e4959677ef45882c671cd28b0419d66621f6a10abfe09671ad9ec0188f0872db"
+    }
+  ]
+}

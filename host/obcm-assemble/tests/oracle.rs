@@ -805,7 +805,7 @@ fn the_output_is_a_legal_single_file_set() {
     let (_, grafted, store, bbox) = both("set");
     let m = &store.manifest;
     assert_eq!(&m[0..4], b"OBCS");
-    assert_eq!(m[4], 1, "manifest version");
+    assert_eq!(m[4], obc_formats::obcs::VERSION, "manifest version");
     assert_eq!(m[5], obc_formats::obcm::VERSION);
     assert_eq!(m[6], 1, "the single-file fast path is a set of one (§5.5)");
     assert_eq!(m[7], 0, "…and that shard is the core");
