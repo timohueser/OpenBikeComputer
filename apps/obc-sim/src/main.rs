@@ -649,7 +649,13 @@ fn render_text_demo(fb: &mut Framebuffer, true_color: bool) {
 /// Headless one-shot for a drained request: loop the planner to completion (`plan_route`), then
 /// commit through the shared [`finish_nav_plan`] — scripted flows don't need frame-interleaved
 /// stepping (the live GUI holds an [`obc_host_core::NavPlan`] instead).
-fn run_nav_request(app: &mut obc_app::App, store: &mut RouteStore, reader: &Reader, req: &obc_app::NavRequest) {
+fn run_nav_request(
+    app: &mut obc_app::App,
+    store: &mut RouteStore,
+    reader: &Reader,
+    elev: &mut dyn obc_route::ElevationSource,
+    req: &obc_app::NavRequest,
+) {
     use obc_route::nav::{plan_route, NavScratch};
     // Zeroed heap allocation, no giant stack temp (invariant owned by `NavScratch::new_boxed`).
     // The `NavScratch` annotation pins the default `NAV_MAX_NODES` table (an assoc-fn call can't
@@ -659,7 +665,8 @@ fn run_nav_request(app: &mut obc_app::App, store: &mut RouteStore, reader: &Read
     let mut sink = VecSink::default();
     // The rider's bike-type setting (N5 §8.6); an out-of-range index falls back to profile 0 in the router.
     let profile_idx = app.settings().bike_profile_idx;
-    let outcome = plan_route(reader, req.from, req.to, req.name(), profile_idx, &mut scratch, &mut tiles, &mut sink);
+    let outcome =
+        plan_route(reader, req.from, req.to, req.name(), profile_idx, &mut scratch, &mut tiles, elev, &mut sink);
     let stats = tiles.stats();
     finish_nav_plan(app, store, outcome, sink.bytes(), stats);
 }
@@ -673,6 +680,7 @@ fn run_detour_request(
     app: &mut obc_app::App,
     store: &mut RouteStore,
     reader: &Reader,
+    elev: &mut dyn obc_route::ElevationSource,
     req: &obc_app::DetourRequest,
 ) -> Option<obc_host_core::DetourReady> {
     use obc_host_core::{finish_detour_plan, DetourPlan};
@@ -693,7 +701,7 @@ fn run_detour_request(
         return None;
     };
     loop {
-        match plan.step(reader) {
+        match plan.step(reader, elev) {
             obc_route::Step::Running => {}
             obc_route::Step::Done(stats) => return finish_detour_plan(app, Ok(stats), plan, Some(orig)),
             obc_route::Step::Failed(e) => return finish_detour_plan(app, Err(e), plan, Some(orig)),
@@ -730,6 +738,7 @@ fn apply_host_commands(
     ride_store: &mut RideStore,
     trip_store: &mut TripStore,
     reader: &Reader,
+    elev: &mut dyn obc_route::ElevationSource,
     hold_nav: bool,
     hold_detour: bool,
     detour_ready: &mut Option<obc_host_core::DetourReady>,
@@ -740,12 +749,12 @@ fn apply_host_commands(
         match cmd {
             obc_app::HostCommand::PlanRoute(req) => {
                 if !hold_nav {
-                    run_nav_request(app, store, reader, &req);
+                    run_nav_request(app, store, reader, elev, &req);
                 }
             }
             obc_app::HostCommand::PlanDetour(req) => {
                 if !hold_detour {
-                    *detour_ready = run_detour_request(app, store, reader, &req);
+                    *detour_ready = run_detour_request(app, store, reader, elev, &req);
                 }
             }
             obc_app::HostCommand::CommitDetour => run_detour_commit(app, store, detour_ready.take()),
@@ -1202,6 +1211,11 @@ fn main() {
             // screen stays up (for its own snapshot, or for the injected answer to land in).
             let hold_nav = args.nav_hold || args.inject_nav_fail.is_some();
             let hold_detour = args.detour_hold || args.inject_detour_fail.is_some();
+            // The map's terrain (EL7), mounted once for the run like the map itself: a scripted
+            // route plan fills its elevation from the `.obcd` sidecar beside the `.obcm`, so the
+            // Route overview's band and the Climb screen have something to draw. No sidecar ⇒ the
+            // null source ⇒ the pre-EL7 flat route.
+            let mut elev = map.elevation();
             let mut hook = |app: &mut App, what: ScriptHook| match what {
                 ScriptHook::Render => {
                     // A pending Ride-detail track request (#680) fills before the draw, so a `d` frame
@@ -1238,6 +1252,7 @@ fn main() {
                         &mut ride_store,
                         &mut trip_store,
                         &reader,
+                        &mut *elev,
                         hold_nav,
                         hold_detour,
                         &mut detour_ready,
@@ -1287,6 +1302,7 @@ fn main() {
                 &mut ride_store,
                 &mut trip_store,
                 &reader,
+                &mut *elev,
                 hold_nav,
                 hold_detour,
                 &mut detour_ready,

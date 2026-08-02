@@ -228,6 +228,10 @@ pub(crate) struct NavBuffers {
     /// steps), (re)written per request and only read while [`NavRun`] says a plan is active —
     /// which is what makes the `assume_init` accesses in the step path sound.
     pub(crate) planner: &'static mut core::mem::MaybeUninit<obc_route::NavPlanner>,
+    /// The map's terrain, or the null source (EL7, epic #1068): the emit phase samples it per
+    /// point. `&'static mut` for the same reason as the two buffers above — a `TerrainElevation`
+    /// carries its ~2.1 KB tile cache inline and must never be copied into a plan frame.
+    pub(crate) elev: &'static mut dyn obc_route::ElevationSource,
 }
 /// The `ble` build's stand-in: the router isn't in the combined image — its ~14.3 KB of statics
 /// would push the 256 KB DK's stack region below the measured deep-render peak (see build.rs's
@@ -324,7 +328,7 @@ fn nav_step(
     // SAFETY: only called while a `NavRun` is active, and the drain arm wrote the planner slot
     // before creating that run (see `NavBuffers::planner`).
     let planner = unsafe { nav.planner.assume_init_mut() };
-    planner.step(&reader, &mut *nav.scratch, &mut *nav.tiles, &mut sink)
+    planner.step(&reader, &mut *nav.scratch, &mut *nav.tiles, &mut *nav.elev, &mut sink)
 }
 
 /// Finish a **completed** plan: flush/patch or delete the reserved file, rescan + re-feed the

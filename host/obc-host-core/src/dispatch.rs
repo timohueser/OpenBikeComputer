@@ -67,9 +67,10 @@ impl HostLoop {
     /// [`ForgetBond`](HostCommand::ForgetBond), [`PersistSettings`](HostCommand::PersistSettings),
     /// [`Dfu`](HostCommand::Dfu)) are handed to `host` — pass `|_, _| {}` for a host that has none.
     ///
-    /// `reader` is the map reader the resumable planner steps against. The active-route
-    /// [`RefreshNavPreview`](HostCommand::RefreshNavPreview) cue is intentionally *not* answered in
-    /// the drain (the route isn't open yet); the caller answers it with
+    /// `reader` is the map reader the resumable planner steps against, and `elev` the map's
+    /// terrain (EL7 — [`crate::terrain`]; `&mut NullElevation` for a host without one). The
+    /// active-route [`RefreshNavPreview`](HostCommand::RefreshNavPreview) cue is intentionally
+    /// *not* answered in the drain (the route isn't open yet); the caller answers it with
     /// [`fill_nav_preview`](crate::fill_nav_preview) once it opens the route after this returns.
     #[allow(clippy::too_many_arguments)]
     pub fn reconcile(
@@ -80,6 +81,7 @@ impl HostLoop {
         tracks: &mut dyn TrackRepository,
         trips: &mut dyn TripCatalog,
         reader: &obc_reader::Reader,
+        elev: &mut dyn obc_route::ElevationSource,
         host: impl FnMut(&mut App, HostCommand),
     ) {
         // The three phases run as **separate calls** on purpose: `dispatch_commands` reserves the
@@ -87,7 +89,7 @@ impl HostLoop {
         // ~8 KB `RouteIndex` parse — nesting them in one frame stacked both and overflowed the deep
         // sim tour test's thread stack. Sequential calls keep only one large frame live at a time.
         let finish = self.dispatch_commands(app, routes, rides, tracks, trips, host);
-        self.step_plan(app, routes, reader);
+        self.step_plan(app, routes, reader, elev);
         reconcile_track(app, rides, tracks, finish);
     }
 
@@ -198,13 +200,19 @@ impl HostLoop {
     /// `#[inline(never)]` so the `RouteIndex` parse inside the finish tails never coexists with
     /// phase 1's plan-reservation frame.
     #[inline(never)]
-    fn step_plan(&mut self, app: &mut App, routes: &mut dyn RouteRepository, reader: &obc_reader::Reader) {
+    fn step_plan(
+        &mut self,
+        app: &mut App,
+        routes: &mut dyn RouteRepository,
+        reader: &obc_reader::Reader,
+        elev: &mut dyn obc_route::ElevationSource,
+    ) {
         // Compute the outcome before `take`-ing, so the terminal-outcome commit doesn't overlap the
         // step borrow.
         let outcome = match self.plan.as_mut() {
             None => return,
-            Some(InflightPlan::Nav(plan)) => plan.step(reader),
-            Some(InflightPlan::Detour(plan)) => plan.step(reader),
+            Some(InflightPlan::Nav(plan)) => plan.step(reader, elev),
+            Some(InflightPlan::Detour(plan)) => plan.step(reader, elev),
         };
         let terminal = match outcome {
             obc_route::Step::Running => return,

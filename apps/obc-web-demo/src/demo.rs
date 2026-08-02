@@ -261,6 +261,9 @@ impl Demo {
                 &mut self.tracks,
                 &mut no_trips,
                 &reader,
+                // The demo page ships one embedded `.obcm` and no terrain beside it (EL7): the null
+                // source keeps a planned route exactly as flat as it has always been here.
+                &mut obc_route::NullElevation,
                 |_app, _cmd| {},
             );
         }
