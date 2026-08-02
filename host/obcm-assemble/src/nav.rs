@@ -3,10 +3,10 @@
 //!
 //! Nothing in `OBCM_Spec.md` §8 survives concatenation: node ids are file-local and dense, and an
 //! `Edge Id` is a **pool byte offset**. So the graph is read back out of every `network` cell,
-//! unified at the seams, pruned, renumbered, and re-emitted. What it is *not* is re-derived: an edge
-//! record's bytes are copied verbatim (§4.6.6 permits exactly this — the record is self-contained,
-//! absolute anchor plus deltas), so no polyline is ever decoded and re-encoded, and the costs and
-//! way kinds the packer measured travel through untouched.
+//! unified at the seams, pruned, spatially bounded, renumbered, and re-emitted. Short edge records
+//! are copied verbatim. A surviving edge longer than the device's bounded-snap invariant is decoded
+//! and split only *after* island pruning, so synthetic routing detail cannot inflate a component's
+//! source edge count.
 //!
 //! The order of the passes is normative and each one depends on the last:
 //!
@@ -30,14 +30,16 @@
 //!    coordinate key would fuse the interior collisions that exist inside a single file — stacked
 //!    bridge/tunnel junctions, 9 in one regional bake and 28 in a country one.
 //! 3. **Deduplicate adjacency**, 4. **prune islands** over the merged graph (the pass the bake
-//!    deferred), 5. **renumber**, 6. **rebuild the edge pool**, 7. re-check the wire limits and
-//!    rebuild the node quadtree.
+//!    deferred), 5. **split surviving long edges**, 6. **renumber**, 7. **rebuild the edge pool**,
+//!    8. re-check the wire limits and rebuild the node quadtree.
 
 use std::collections::{BTreeMap, HashMap};
 
 use obc_formats::obcm::{
     CHUNK_END, NAV_CHUNK_SIZE, NAV_DIR_LEN, NAV_EDGE_FIXED_LEN, NAV_MAX_DEGREE, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN,
+    NAV_SNAP_EDGE_MAX_M,
 };
+use obc_map_scene::ground_dist_m;
 
 use crate::grid::{on_grid_boundary, UBox};
 use crate::input::Cell;
@@ -49,14 +51,14 @@ use crate::{Error, Result};
 /// re-check rather than assume.
 const MAX_NEIGHBOR_DELTA: i64 = i16::MAX as i64;
 
-/// An edge on its way into the merged pool: unified endpoints plus the source record, verbatim.
+/// An edge on its way into the merged pool: unified endpoints plus its self-contained record.
 struct MergedEdge {
     a: u32,
     b: u32,
     cost_m: u32,
     kind: u8,
-    /// The §8.4 record exactly as its cell wrote it — `length_m`, `pt_count`, `way_kind`, anchor and
-    /// deltas. Only its *placement* is new.
+    /// The §8.4 record — `length_m`, `pt_count`, `way_kind`, anchor and deltas. Usually exactly as
+    /// its cell wrote it; post-prune spatial splits create new records for their pieces.
     rec: Vec<u8>,
     /// FNV-1a over `rec`, computed **once** when the edge is interned. It is the content half of
     /// both the §4.6.3 duplicate key and the §4.6.6 emission order, and re-hashing a 511-byte record
@@ -104,6 +106,9 @@ pub struct NavStats {
     pub components_kept: usize,
     pub pruned_nodes: usize,
     pub pruned_edges: usize,
+    /// Synthetic degree-2 nodes added after pruning to enforce [`NAV_SNAP_EDGE_MAX_M`]. Kept
+    /// separate from the source/prune counters so component-size accounting remains auditable.
+    pub spatial_split_nodes: usize,
     pub nodes: usize,
     pub edges: usize,
     /// Share of the merged graph in its largest component, in per-mille. An implausibly small value
@@ -257,9 +262,25 @@ pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, gl
 
     // --- 4. Island pruning over the *merged* graph: the only place the schema's threshold means
     // what it says — an island in the map, not in a cell (§3.5/§4.6.4). ---
-    let (keep_node, keep_edge) = prune(coords.len(), &edges, min_component_edges, &mut stats);
+    let (mut keep_node, keep_edge) = prune(coords.len(), &edges, min_component_edges, &mut stats);
 
-    // --- 5. Renumber densely by (lat, lon) ascending — deterministic and content-derived (§4.6.5).
+    // --- 5. Bound every surviving edge for the device's nearest-edge query. This must happen
+    // *after* pruning: `min_component_edges` describes source topology, and counting synthetic
+    // degree-2 pieces would let a single long road masquerade as a large component. Whole-map
+    // packs do the same split after their own prune; cell packs defer it until this point. ---
+    let source_node_count = coords.len();
+    let mut bounded = Vec::with_capacity(edges.len());
+    for (edge, keep) in edges.into_iter().zip(keep_edge) {
+        if keep {
+            split_spatial_edge(edge, &mut coords, &mut bounded)?;
+        }
+    }
+    edges = bounded;
+    stats.spatial_split_nodes = coords.len() - source_node_count;
+    keep_node.resize(coords.len(), true); // only surviving edges mint synthetic nodes
+    let keep_edge = vec![true; edges.len()];
+
+    // --- 6. Renumber densely by (lat, lon) ascending — deterministic and content-derived (§4.6.5).
     //
     // Two *distinct* surviving nodes can share a coordinate: unification is restricted to boundary
     // lines (§4.6.2), so the interior collisions a single file legitimately contains — stacked
@@ -284,7 +305,7 @@ pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, gl
         new_id[old as usize] = dense as u32;
     }
 
-    // --- 6. Rebuild the edge pool. `Edge Id` is a pool byte offset, so every record is re-emitted
+    // --- 7. Rebuild the edge pool. `Edge Id` is a pool byte offset, so every record is re-emitted
     // at a new place and the no-straddle rule re-applied at the 512-byte granularity. ---
     let mut kept: Vec<&MergedEdge> = edges.iter().zip(&keep_edge).filter(|(_, &k)| k).map(|(e, _)| e).collect();
     kept.sort_by_key(|e| {
@@ -308,7 +329,7 @@ pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, gl
     }
     pool.resize(pool.len().div_ceil(NAV_CHUNK_SIZE) * NAV_CHUNK_SIZE, CHUNK_END);
 
-    // --- 7. Adjacency with inline neighbour coords, degree-capped, wire limits re-checked. ---
+    // --- 8. Adjacency with inline neighbour coords, degree-capped, wire limits re-checked. ---
     let mut adj: Vec<Vec<WireNeighbor>> = (0..order.len()).map(|_| Vec::new()).collect();
     for (e, &edge_id) in kept.iter().zip(&edge_ids) {
         let (a, b) = (new_id[e.a as usize], new_id[e.b as usize]);
@@ -354,13 +375,129 @@ pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, gl
     stats.nodes = nodes.len();
     stats.edges = kept.len();
 
-    // --- 7 (cont.). The node quadtree over the **assembly** bbox, with §8.2's bin-packed 512-byte
+    // --- 8 (cont.). The node quadtree over the **assembly** bbox, with §8.2's bin-packed 512-byte
     // chunks. Laid out here so a shard's size is known before its header is written. ---
     let tree = qtree::build(nodes, global_bbox, NAV_CHUNK_SIZE);
     let (index, node_count, chunks, chunk_count, dropped) =
         qtree::flatten(&tree, NAV_CHUNK_SIZE, true, &|p, out| pack_record(p, out));
     stats.dropped_nodes = dropped;
     Ok(MergedNav { index, node_count, chunks, chunk_count, pool, stats })
+}
+
+/// Split a surviving cell edge until every piece satisfies the spatial contract used by the
+/// firmware's bounded nearest-edge search. Cell serialization has already enforced the wire
+/// delta/record-size limits, so a split can reuse the decoded vertices and every new record still
+/// fits one chunk.
+fn split_spatial_edge(edge: MergedEdge, coords: &mut Vec<(i32, i32)>, out: &mut Vec<MergedEdge>) -> Result<()> {
+    if edge.cost_m <= NAV_SNAP_EDGE_MAX_M {
+        out.push(edge);
+        return Ok(());
+    }
+
+    let mut polyline = decode_edge_polyline(&edge.rec)?;
+    let expected_a = coords[edge.a as usize];
+    let expected_b = coords[edge.b as usize];
+    if polyline.first().copied() != Some((expected_a.1, expected_a.0))
+        || polyline.last().copied() != Some((expected_b.1, expected_b.0))
+    {
+        return Err(Error::Format("a long nav edge record does not terminate at its adjacency endpoints".into()));
+    }
+
+    // A two-point edge has no existing shape vertex at which to split. Insert an exact integer
+    // midpoint, matching the packer's graph-level split and guaranteeing progress even for a
+    // single unusually long OSM segment.
+    if polyline.len() == 2 {
+        let (a, b) = (polyline[0], polyline[1]);
+        let midpoint = (((a.0 as i64 + b.0 as i64) / 2) as i32, ((a.1 as i64 + b.1 as i64) / 2) as i32);
+        polyline.insert(1, midpoint);
+    }
+    let cut = midpoint_index(&polyline);
+    let left_polyline = &polyline[..=cut];
+    let right_polyline = &polyline[cut..];
+    let (lon, lat) = polyline[cut];
+    let synthetic = coords.len() as u32;
+    coords.push((lat, lon));
+
+    let left = make_edge(edge.a, synthetic, left_polyline, edge.kind)?;
+    let right = make_edge(synthetic, edge.b, right_polyline, edge.kind)?;
+    split_spatial_edge(left, coords, out)?;
+    split_spatial_edge(right, coords, out)
+}
+
+/// Decode one self-contained §8.4 edge record into µdegree `(lon, lat)` vertices.
+fn decode_edge_polyline(rec: &[u8]) -> Result<Vec<(i32, i32)>> {
+    if rec.len() < NAV_EDGE_FIXED_LEN {
+        return Err(Error::Format("a nav edge record is shorter than its fixed header".into()));
+    }
+    let count = u16::from_le_bytes(rec[4..6].try_into().expect("2 bytes")) as usize;
+    if count < 2 || rec.len() != NAV_EDGE_FIXED_LEN + (count - 1) * 4 {
+        return Err(Error::Format("a nav edge record has an inconsistent point count".into()));
+    }
+    let mut lat = i32::from_le_bytes(rec[7..11].try_into().expect("4 bytes")) as i64;
+    let mut lon = i32::from_le_bytes(rec[11..15].try_into().expect("4 bytes")) as i64;
+    let mut points = Vec::with_capacity(count);
+    points.push((lon as i32, lat as i32));
+    for delta in rec[NAV_EDGE_FIXED_LEN..].chunks_exact(4) {
+        lat += i16::from_le_bytes(delta[..2].try_into().expect("2 bytes")) as i64;
+        lon += i16::from_le_bytes(delta[2..].try_into().expect("2 bytes")) as i64;
+        if i32::try_from(lat).is_err() || i32::try_from(lon).is_err() {
+            return Err(Error::Format("a nav edge delta walks outside the int32 coordinate domain".into()));
+        }
+        points.push((lon as i32, lat as i32));
+    }
+    Ok(points)
+}
+
+/// Re-encode a split edge and derive its rounded physical cost from its geometry.
+fn make_edge(a: u32, b: u32, polyline: &[(i32, i32)], kind: u8) -> Result<MergedEdge> {
+    let cost_m = polyline_len_m(polyline);
+    let mut rec = Vec::with_capacity(NAV_EDGE_FIXED_LEN + (polyline.len() - 1) * 4);
+    rec.extend_from_slice(&cost_m.to_le_bytes());
+    rec.extend_from_slice(&(polyline.len() as u16).to_le_bytes());
+    rec.push(kind);
+    rec.extend_from_slice(&polyline[0].1.to_le_bytes());
+    rec.extend_from_slice(&polyline[0].0.to_le_bytes());
+    for segment in polyline.windows(2) {
+        let dlat = segment[1].1 as i64 - segment[0].1 as i64;
+        let dlon = segment[1].0 as i64 - segment[0].0 as i64;
+        let (dlat, dlon) = (i16::try_from(dlat), i16::try_from(dlon));
+        let (Ok(dlat), Ok(dlon)) = (dlat, dlon) else {
+            return Err(Error::Format("a spatially split nav edge exceeds the int16 delta limit".into()));
+        };
+        rec.extend_from_slice(&dlat.to_le_bytes());
+        rec.extend_from_slice(&dlon.to_le_bytes());
+    }
+    if rec.len() > NAV_CHUNK_SIZE {
+        return Err(Error::Format("a spatially split nav edge exceeds one edge-pool chunk".into()));
+    }
+    let hash = fnv(&rec);
+    Ok(MergedEdge { a, b, cost_m, kind, rec, hash })
+}
+
+fn polyline_len_m(polyline: &[(i32, i32)]) -> u32 {
+    polyline
+        .windows(2)
+        .map(|segment| ground_dist_m(segment[0], segment[1]) as f64)
+        .sum::<f64>()
+        .round()
+        .clamp(0.0, u32::MAX as f64) as u32
+}
+
+/// Interior vertex nearest half the polyline's physical length.
+fn midpoint_index(polyline: &[(i32, i32)]) -> usize {
+    let total = polyline.windows(2).map(|segment| ground_dist_m(segment[0], segment[1]) as f64).sum::<f64>();
+    let mut cumulative = 0.0f64;
+    let mut best = 1usize;
+    let mut best_distance = f64::MAX;
+    for index in 1..polyline.len() - 1 {
+        cumulative += ground_dist_m(polyline[index - 1], polyline[index]) as f64;
+        let distance = (cumulative - total / 2.0).abs();
+        if distance < best_distance {
+            best = index;
+            best_distance = distance;
+        }
+    }
+    best
 }
 
 /// One §8.4 edge record, sliced out of its cell's pool at `edge_id` (a pool-relative byte offset).

@@ -1384,9 +1384,9 @@ fn the_merge_reports_the_seams_it_unified_and_the_islands_it_pruned() {
 
     assert!(nav.unified > 0, "the fixture's roads cross three grid lines, so stubs must have unified: {nav:?}");
     assert_eq!(
-        nav.cell_nodes - nav.unified,
+        nav.cell_nodes - nav.unified + nav.spatial_split_nodes,
         nav.nodes + nav.pruned_nodes,
-        "every cell record is unified, kept or pruned"
+        "every cell record is unified, kept or pruned; post-prune spatial nodes are explicit"
     );
     // The islet way is strictly interior and below `min_component_edges`, so §4.6.4 must drop it —
     // at merge time, over the *merged* graph, which is the only place the threshold means what it

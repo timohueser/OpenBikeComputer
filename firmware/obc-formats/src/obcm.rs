@@ -50,6 +50,10 @@ pub const NAV_PROFILE_LEN: usize = 52;
 pub const NAV_PROFILE_NAME_LEN: usize = 12;
 pub const NAV_MAX_PROFILES: usize = 8;
 pub const NAV_MAX_DEGREE: usize = 24;
+/// Packer/router spatial contract: routing edges are split to at
+/// most this many rounded metres so a 250 m edge snap is discoverable through a
+/// bounded ~501 m endpoint query over the node quadtree (including rounding guard).
+pub const NAV_SNAP_EDGE_MAX_M: u32 = 500;
 
 /// The browsable POI categories from OBCM spec §7.4. Discriminants are stable wire ids.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

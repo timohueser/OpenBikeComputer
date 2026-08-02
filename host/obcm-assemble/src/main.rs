@@ -336,14 +336,15 @@ fn print_summary(s: &obcm_assemble::Summary, out_dir: &Path) {
     );
     println!(
         "geometry copied: {} B · nav section: {} B ({} node(s), {} edge(s), {} unified at seams, {} island node(s) \
-         pruned, {} adjacency entrie(s) at the degree cap, {} node record(s) dropped) · POIs: {} ({} duplicate(s), {} \
-         dropped)",
+         pruned, {} spatial split node(s), {} adjacency entrie(s) at the degree cap, {} node record(s) dropped) · POIs: \
+         {} ({} duplicate(s), {} dropped)",
         st.geometry_bytes,
         st.nav_section_bytes,
         st.nav.nodes,
         st.nav.edges,
         st.nav.unified,
         st.nav.pruned_nodes,
+        st.nav.spatial_split_nodes,
         st.nav.degree_truncated,
         st.nav.dropped_nodes,
         st.poi_records,
@@ -393,6 +394,7 @@ fn summary_json(s: &obcm_assemble::Summary, out_dir: &Path) -> String {
             "components_kept": st.nav.components_kept,
             "pruned_nodes": st.nav.pruned_nodes,
             "pruned_edges": st.nav.pruned_edges,
+            "spatial_split_nodes": st.nav.spatial_split_nodes,
             "largest_component_permille": st.nav.largest_component_permille,
             "degree_truncated": st.nav.degree_truncated,
             "dropped_nodes": st.nav.dropped_nodes,

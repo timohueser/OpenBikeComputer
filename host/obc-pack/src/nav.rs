@@ -22,8 +22,8 @@
 //! 2. **Bike legality** — a stricter [`is_routable`] drops ways illegal for bikes.
 //! 3. **Island pruning** — tiny disconnected components are dropped so a rider can't
 //!    snap onto an unroutable islet.
-//! 4. **Edge splits** — edges are split so N2's `i16` neighbor-coord deltas and
-//!    `u16` costs hold *by construction*.
+//! 4. **Edge splits** — edges are split so N2's wire bounds and the device's
+//!    bounded nearest-edge snap hold *by construction*.
 //!
 //! Coordinates are µdeg `(lon, lat)` — the same grid POIs and the serializer's chunk
 //! coords live on — so edge lengths reuse `obc-reader`'s shared great-circle helper
@@ -31,6 +31,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use obc_formats::obcm::NAV_SNAP_EDGE_MAX_M;
 use obc_map_scene::ground_dist_m;
 
 /// Dedup key for an edge: the unordered endpoint pair (canonicalized to `min <=
@@ -54,9 +55,14 @@ pub const DEFAULT_MIN_COMPONENT_EDGES: usize = 50;
 /// (32 767). Measured max on grimsel: 90 130 µdeg on one pass road.
 const MAX_ENDPOINT_DELTA_UDEG: i64 = 32_000;
 
-/// Maximum edge `length_m` before [`build_graph`] splits it. N2 stores each
-/// neighbor's cost as a `u16`; `60 000` keeps a margin below `u16::MAX` (65 535).
-const MAX_EDGE_LEN_M: u32 = 60_000;
+/// Maximum edge `length_m` before [`build_graph`] splits it. Besides keeping the
+/// neighbor's `u16` cost in range, this is the spatial contract the device's
+/// mid-edge snap relies on: a point within the 250 m snap radius of an edge has
+/// at least one endpoint within 500 m (250 m to the edge plus at most half its
+/// length), so the node quadtree can find it without a global edge index.
+/// Synthetic degree-2 nodes are routing detail only; the full road geometry
+/// remains in the split pieces.
+pub const MAX_EDGE_LEN_M: u32 = NAV_SNAP_EDGE_MAX_M;
 
 /// Canonical highway-class names, indexed by the 5-bit class id (see the canonical table on
 /// [`classify`]). Used by [`format_summary`]'s kinds histogram **and** as the profile config's
@@ -350,12 +356,12 @@ pub(crate) fn polyline_len_m(pts: &[(i32, i32)]) -> u32 {
 /// [`DEFAULT_MIN_COMPONENT_EDGES`] edges are kept and the rest dropped, so a rider
 /// can't snap onto an unroutable islet.
 ///
-/// **Edge splits for the v9 guarantees.** Any surviving edge whose endpoint-to-
-/// endpoint lat/lon delta exceeds [`MAX_ENDPOINT_DELTA_UDEG`] or whose `length_m`
-/// exceeds [`MAX_EDGE_LEN_M`] is split at a polyline vertex into pieces joined by
-/// synthetic degree-2 nodes (each piece's cost re-measured, so costs sum to the
-/// original) — the same machinery the serializer's long-edge split uses (§8.4), one
-/// level up in the pipeline so N2's slimmed records are valid by construction.
+/// **Edge splits for the wire + spatial-snap guarantees.** Any surviving edge whose
+/// endpoint-to-endpoint lat/lon delta exceeds [`MAX_ENDPOINT_DELTA_UDEG`] or whose
+/// `length_m` exceeds [`MAX_EDGE_LEN_M`] is split at a polyline vertex into pieces
+/// joined by synthetic degree-2 nodes (each piece's cost re-measured, so costs sum
+/// to the original). The short length bound also makes every road discoverable from
+/// the node quadtree by a bounded ~501 m mid-edge-snap query (including rounding guard).
 pub fn build_graph(ways: &[RoutableWay]) -> (NavGraph, NavStats) {
     build_graph_with(ways, DEFAULT_MIN_COMPONENT_EDGES)
 }
@@ -451,8 +457,8 @@ pub struct CutRun {
 
 /// Build a **cell's** routable graph from the runs the cutter carved out of the source ways.
 ///
-/// Same machinery as [`build_graph_with`] — junction split, dedup, prune, then the v9-bound edge
-/// splits — with the two rules that make a cell's graph assemble correctly (OBCA §3.4/§3.5):
+/// Same machinery as [`build_graph_with`] — junction split, dedup and protected pruning — with the
+/// two rules that make a cell's graph assemble correctly (OBCA §3.4/§3.5):
 ///
 /// - **`is_junction` is supplied by the caller**, because junction-ness must be classified from the
 ///   *source snapshot's* whole way set (plus every vertex on a cell-edge line), never from the ways
@@ -463,9 +469,10 @@ pub struct CutRun {
 ///   whose continuation is in the neighbour is never dropped as an island. The real pruning pass
 ///   runs at assembly time, over the merged graph, where component sizes are finally true.
 ///
-/// Interior synthetic nodes still appear (the split pass mints them, and so does the serializer's
-/// §8.4 split); they are *never* load-bearing at a seam, and nothing here assumes they coincide with
-/// anything in the neighbour.
+/// The cell serializer may still mint synthetic nodes for §8.4's wire limits. The shorter spatial
+/// split used by mid-edge snapping is deliberately deferred until the assembler has merged and
+/// pruned the source topology: otherwise one long edge becomes several edges before the
+/// `min_component_edges` test and can make a tiny island look large enough to survive.
 pub fn build_graph_cut(
     runs: &[CutRun],
     min_component_edges: usize,
@@ -502,12 +509,7 @@ pub fn build_graph_cut(
     }
 
     let (nodes, edges, stats) = prune_islands(nodes, edges, min_component_edges, Some(on_boundary));
-    let mut nodes = nodes;
-    let mut split: Vec<Edge> = Vec::with_capacity(edges.len());
-    for e in edges {
-        split_edge(e, &mut nodes, &mut split);
-    }
-    (NavGraph { nodes, edges: split }, stats)
+    (NavGraph { nodes, edges }, stats)
 }
 
 /// Split out one edge `keys/coords[start..=end]` and push it (deduped). `start`/`end` are
@@ -674,8 +676,8 @@ fn prune_islands(
     (new_nodes, new_edges, NavStats { components_found, components_kept, edges_dropped })
 }
 
-/// Whether an edge exceeds either v9 bound: endpoint-to-endpoint lat/lon delta over
-/// [`MAX_ENDPOINT_DELTA_UDEG`], or `length_m` over [`MAX_EDGE_LEN_M`].
+/// Whether an edge exceeds either wire/spatial bound: endpoint-to-endpoint lat/lon
+/// delta over [`MAX_ENDPOINT_DELTA_UDEG`], or `length_m` over [`MAX_EDGE_LEN_M`].
 fn edge_exceeds_bounds(polyline: &[(i32, i32)], length_m: u32) -> bool {
     let a = polyline[0];
     let b = *polyline.last().unwrap();
@@ -707,9 +709,9 @@ fn midpoint_index(polyline: &[(i32, i32)]) -> usize {
     best
 }
 
-/// Split one edge until every piece holds the v9 bounds, pushing the pieces onto
+/// Split one edge until every piece holds the wire/spatial bounds, pushing the pieces onto
 /// `out`. Each split cuts at the vertex nearest the midpoint ([`midpoint_index`]) and
-/// inserts a synthetic degree-2 junction there (a new dense id past the real ones),
+/// inserts a synthetic degree-2 node there (a new dense id past the real ones),
 /// mirroring the serializer's long-edge split (§8.4); each piece's cost is
 /// re-measured so the pieces' costs sum to the original within rounding.
 ///
@@ -901,9 +903,9 @@ mod tests {
     fn t_junction_three_ways() {
         let center = (100i64, 7_800_000i32, 47_990_000i32);
         let ways = [
-            way(&[center, (1, 7_810_000, 47_990_000)]),
-            way(&[center, (2, 7_790_000, 47_990_000)]),
-            way(&[center, (3, 7_800_000, 48_000_000)]),
+            way(&[center, (1, 7_801_000, 47_990_000)]),
+            way(&[center, (2, 7_799_000, 47_990_000)]),
+            way(&[center, (3, 7_800_000, 47_991_000)]),
         ];
         let (g, _) = build_graph(&ways);
         assert_eq!(g.nodes.len(), 4);
@@ -918,8 +920,8 @@ mod tests {
     fn four_way_crossing() {
         let cross = (100i64, 7_800_000i32, 47_990_000i32);
         let ways = [
-            way(&[(1, 7_790_000, 47_990_000), cross, (2, 7_810_000, 47_990_000)]),
-            way(&[(3, 7_800_000, 47_980_000), cross, (4, 7_800_000, 48_000_000)]),
+            way(&[(1, 7_799_000, 47_990_000), cross, (2, 7_801_000, 47_990_000)]),
+            way(&[(3, 7_800_000, 47_989_000), cross, (4, 7_800_000, 47_991_000)]),
         ];
         let (g, _) = build_graph(&ways);
         assert_eq!(g.nodes.len(), 5);
@@ -934,9 +936,9 @@ mod tests {
     fn interior_shape_points_are_not_junctions() {
         let ways = [way(&[
             (1, 7_800_000, 47_990_000),
-            (2, 7_800_000, 47_991_000),
-            (3, 7_800_000, 47_992_000),
-            (4, 7_800_000, 47_993_000),
+            (2, 7_800_000, 47_990_500),
+            (3, 7_800_000, 47_991_000),
+            (4, 7_800_000, 47_991_500),
         ])];
         let (g, _) = build_graph(&ways);
         assert_eq!(g.nodes.len(), 2, "only the two endpoints are junctions");
@@ -947,7 +949,7 @@ mod tests {
     /// Two identical parallel ways → ONE deduped edge.
     #[test]
     fn identical_parallel_ways_dedup() {
-        let pts = [(1i64, 7_800_000i32, 47_990_000i32), (2, 7_810_000, 47_990_000)];
+        let pts = [(1i64, 7_800_000i32, 47_990_000i32), (2, 7_801_000, 47_990_000)];
         let (g, _) = build_graph(&[way(&pts), way(&pts)]);
         assert_eq!(g.edges.len(), 1, "two identical ways collapse to one edge");
         assert_eq!(g.nodes.len(), 2);
@@ -956,8 +958,8 @@ mod tests {
     /// A way given in reverse order duplicates the forward way → still ONE edge.
     #[test]
     fn reversed_duplicate_dedup() {
-        let fwd = way(&[(1, 7_800_000, 47_990_000), (2, 7_810_000, 47_990_000)]);
-        let rev = way(&[(2, 7_810_000, 47_990_000), (1, 7_800_000, 47_990_000)]);
+        let fwd = way(&[(1, 7_800_000, 47_990_000), (2, 7_801_000, 47_990_000)]);
+        let rev = way(&[(2, 7_801_000, 47_990_000), (1, 7_800_000, 47_990_000)]);
         let (g, _) = build_graph(&[fwd, rev]);
         assert_eq!(g.edges.len(), 1, "a way and its reverse are the same undirected edge");
     }
@@ -966,8 +968,8 @@ mod tests {
     /// both survive — the dedup key includes geometry.
     #[test]
     fn distinct_parallel_geometry_kept() {
-        let a = way(&[(1, 7_800_000, 47_990_000), (9, 7_805_000, 47_991_000), (2, 7_810_000, 47_990_000)]);
-        let b = way(&[(1, 7_800_000, 47_990_000), (8, 7_805_000, 47_989_000), (2, 7_810_000, 47_990_000)]);
+        let a = way(&[(1, 7_800_000, 47_990_000), (9, 7_800_500, 47_990_100), (2, 7_801_000, 47_990_000)]);
+        let b = way(&[(1, 7_800_000, 47_990_000), (8, 7_800_500, 47_989_900), (2, 7_801_000, 47_990_000)]);
         let (g, _) = build_graph(&[a, b]);
         assert_eq!(g.edges.len(), 2, "distinct geometry between the same pair → two edges");
     }
@@ -976,7 +978,7 @@ mod tests {
     /// cycleway drawn over a road) stay as two edges rather than collapsing.
     #[test]
     fn dedup_keys_on_kind() {
-        let pts = [(1i64, 7_800_000i32, 47_990_000i32), (2, 7_810_000, 47_990_000)];
+        let pts = [(1i64, 7_800_000i32, 47_990_000i32), (2, 7_801_000, 47_990_000)];
         // Same nodes + geometry, different kinds.
         let road = way_kind(&pts, 7); // residential
         let cycle = way_kind(&pts, 0); // cycleway
@@ -992,11 +994,11 @@ mod tests {
     /// `length_m` matches a hand-computed great-circle sum within rounding.
     #[test]
     fn length_matches_great_circle_sum() {
-        let ways = [way(&[(1, 7_800_000, 47_990_000), (2, 7_800_000, 48_000_000), (3, 7_800_000, 48_010_000)])];
+        let ways = [way(&[(1, 7_800_000, 47_990_000), (2, 7_800_000, 47_991_000), (3, 7_800_000, 47_992_000)])];
         let (g, _) = build_graph(&ways);
         assert_eq!(g.edges.len(), 1);
-        let leg = 0.01f64 * 111_320.0; // 1113.2 m
-        let expected = (2.0 * leg).round() as u32; // 2226 m
+        let leg = 0.001f64 * 111_320.0; // 111.3 m
+        let expected = (2.0 * leg).round() as u32; // 223 m
         let got = g.edges[0].length_m;
         assert!((got as i64 - expected as i64).abs() <= 2, "length {got} ≈ {expected} within rounding");
     }
@@ -1007,8 +1009,8 @@ mod tests {
     fn closed_way_is_a_loop() {
         let ways = [way(&[
             (1, 7_800_000, 47_990_000),
-            (2, 7_802_000, 47_990_000),
-            (3, 7_802_000, 47_992_000),
+            (2, 7_800_500, 47_990_000),
+            (3, 7_800_500, 47_990_500),
             (1, 7_800_000, 47_990_000),
         ])];
         let (g, _) = build_graph(&ways);
@@ -1025,8 +1027,8 @@ mod tests {
         // One way crossing a shared node → two edges, both kind 12 (primary).
         let cross = (100i64, 7_800_000i32, 47_990_000i32);
         let ways = [
-            way_kind(&[(1, 7_790_000, 47_990_000), cross, (2, 7_810_000, 47_990_000)], 12),
-            way_kind(&[(3, 7_800_000, 47_980_000), cross, (4, 7_800_000, 48_000_000)], 0),
+            way_kind(&[(1, 7_799_000, 47_990_000), cross, (2, 7_801_000, 47_990_000)], 12),
+            way_kind(&[(3, 7_800_000, 47_989_000), cross, (4, 7_800_000, 47_991_000)], 0),
         ];
         let (g, _) = build_graph(&ways);
         assert_eq!(g.edges.len(), 4);
@@ -1176,7 +1178,7 @@ mod tests {
     }
 
     /// A ~70 km edge whose endpoints stay within the delta bound (a hairpin) is split
-    /// until every piece is ≤ 60 000 m; the delta bound is untouched.
+    /// until every piece satisfies the device snap bound; the delta bound is untouched.
     #[test]
     fn split_long_length() {
         // Vertical zigzag: lon drifts slowly (endpoint lon delta small), lat swings
@@ -1188,7 +1190,7 @@ mod tests {
             poly.push((100_000 + i * 100, lat));
         }
         let orig_len = polyline_len_m(&poly);
-        assert!(orig_len > 60_000, "fixture must exceed the length bound, got {orig_len} m");
+        assert!(orig_len > MAX_EDGE_LEN_M, "fixture must exceed the length bound, got {orig_len} m");
         // Endpoint delta must be inside the bound so ONLY the length bound triggers.
         let (a, b) = (*poly.first().unwrap(), *poly.last().unwrap());
         assert!((a.0 as i64 - b.0 as i64).abs() <= MAX_ENDPOINT_DELTA_UDEG);
@@ -1198,7 +1200,7 @@ mod tests {
         let (g, _) = build_graph(&ways);
         assert!(g.edges.len() > 1, "the long edge was split");
         for e in &g.edges {
-            assert!(e.length_m <= MAX_EDGE_LEN_M, "every piece ≤ 60 000 m");
+            assert!(e.length_m <= MAX_EDGE_LEN_M, "every piece ≤ {MAX_EDGE_LEN_M} m");
             assert!(!violates(e));
         }
         let piece_sum: u32 = g.edges.iter().map(|e| e.length_m).sum();
@@ -1272,7 +1274,7 @@ mod tests {
 
     /// The acceptance-criteria corpus check, over a synthetic giant + islets fixture
     /// (grimsel packs to ≥ 60 components, ~2 kept): the built graph reports the
-    /// expected component stats AND holds the v9 bounds on every edge — asserted, not
+    /// expected component stats AND holds the wire/spatial bounds on every edge — asserted, not
     /// checked by hand. (The shipped `grimsel.obcm` is a v8 pack with no `.pbf`
     /// source to re-pack, so the property is exercised on this fixture instead.)
     #[test]
@@ -1304,9 +1306,9 @@ mod tests {
         assert!(stats.components_found >= 60, "≥ 60 components, got {}", stats.components_found);
         assert_eq!(stats.components_kept, 2, "giant + threshold component kept");
         assert_eq!(stats.edges_dropped, 60, "the 60 islets' edges dropped");
-        // The whole acceptance property: NO edge exceeds either v9 bound.
+        // The whole acceptance property: NO edge exceeds either wire/spatial bound.
         for e in &g.edges {
-            assert!(!violates(e), "edge {}→{} exceeds a v9 bound: len={}", e.a, e.b, e.length_m);
+            assert!(!violates(e), "edge {}→{} exceeds a wire/spatial bound: len={}", e.a, e.b, e.length_m);
         }
         // The detour actually split (synthetic nodes were inserted past the real ones).
         assert!(g.nodes.len() > 61 + (DEFAULT_MIN_COMPONENT_EDGES + 1), "synthetic split nodes present");

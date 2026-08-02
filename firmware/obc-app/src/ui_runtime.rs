@@ -118,6 +118,12 @@ pub(crate) struct UiRuntime {
     /// event, or a timed repaint must not reset it. Seeded to `0` (the boot origin), so the idle
     /// clock runs from power-on until the first touch.
     pub(crate) last_input_ms: u32,
+    /// Whether idle time is currently accumulating. A screen/circumstance for
+    /// which no idle return is eligible suspends the clock; the first eligible
+    /// pass after that suspension starts a fresh full window. This is what keeps
+    /// a long modal operation from donating its elapsed time to the ordinary
+    /// screen that replaces it.
+    pub(crate) idle_return_timing: bool,
     /// Host-supplied Select hold-progress (0.0–1.0) for the in-screen confirm fills (the factory
     /// Reset bar; [`RideControl`](crate::screen::RideControl) confirm rows). `None` on the
     /// single-loop hosts (the render reads `App`'s own [`InputPlane`]); the **two-plane firmware**
@@ -211,6 +217,7 @@ impl UiRuntime {
             render_clip: None,
             next_wake_ms: None,
             last_input_ms: 0,
+            idle_return_timing: true,
             hold_progress_override: None,
             hold_cancel_pending: false,
             poi_scratch: PoiScratch::new(),
@@ -251,6 +258,7 @@ impl UiRuntime {
             addr_of_mut!((*slot).render_clip).write(None);
             addr_of_mut!((*slot).next_wake_ms).write(None);
             addr_of_mut!((*slot).last_input_ms).write(0);
+            addr_of_mut!((*slot).idle_return_timing).write(true);
             addr_of_mut!((*slot).hold_progress_override).write(None);
             addr_of_mut!((*slot).hold_cancel_pending).write(false);
             addr_of_mut!((*slot).poi_scratch).write(PoiScratch::new());
@@ -277,6 +285,7 @@ impl UiRuntime {
                 render_clip: _,
                 next_wake_ms: _,
                 last_input_ms: _,
+                idle_return_timing: _,
                 hold_progress_override: _,
                 hold_cancel_pending: _,
                 poi_scratch: _,
@@ -960,6 +969,9 @@ impl UiRuntime {
         if !self.idle_return_pending(tracking) {
             return None;
         }
+        if !self.idle_return_timing {
+            return Some(timeout);
+        }
         let elapsed = self.now_ms.wrapping_sub(self.last_input_ms);
         Some(timeout.saturating_sub(elapsed).max(1))
     }
@@ -1021,10 +1033,27 @@ impl UiRuntime {
     /// [`idle_return`]: crate::settings::Settings::idle_return
     /// [`Never`]: crate::settings::IdleReturn::Never
     pub(crate) fn apply_idle_return(&mut self, settings: &Settings, tracking: bool) {
-        let Some(timeout) = settings.idle_return.timeout_ms() else { return };
-        // Nothing to move (already home / on a ride view), a modal exemption is up, or a hold is
-        // charging (a gesture in progress is activity): defer, exactly like the popup sweeps.
-        if !self.idle_return_pending(tracking) || self.hold_charging() {
+        let Some(timeout) = settings.idle_return.timeout_ms() else {
+            self.idle_return_timing = false;
+            return;
+        };
+        // No return is eligible while already at the destination/deliberate view or while an
+        // idle-exempt modal is up. Suspend rather than merely ignoring the expired absolute
+        // deadline: when a long plan/upload/update wait later reveals an ordinary screen, that
+        // screen receives a fresh full window instead of being swept away immediately.
+        if !self.idle_return_pending(tracking) {
+            self.idle_return_timing = false;
+            return;
+        }
+        // A charging hold is live activity even before it resolves into a gesture.
+        if self.hold_charging() {
+            self.last_input_ms = self.now_ms;
+            self.idle_return_timing = true;
+            return;
+        }
+        if !self.idle_return_timing {
+            self.last_input_ms = self.now_ms;
+            self.idle_return_timing = true;
             return;
         }
         if self.now_ms.wrapping_sub(self.last_input_ms) < timeout {

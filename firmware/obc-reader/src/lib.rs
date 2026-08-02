@@ -60,9 +60,10 @@ pub use obc_formats::io::{ByteSink, ByteSource, SliceSource};
 pub use obc_formats::obcm::{PoiCategory, PoiSubtype};
 pub use reader::{
     read_header, CacheError, CacheStats, CapacityError, DecodeStatus, FeatureDecodeError, FeatureReadError, FeatureRef,
-    Lod, MapCache, MapHeader, MapProfile, MapReadError, MapTables, NavCacheStats, NavDirectory, NavNeighbor,
-    NavNodeRef, NavTileCache, Poi, PoiCatEntry, PoiDirectory, Reader, MAX_CHUNK_BYTES, MAX_FEAT_PTS, MAX_FEAT_RINGS,
-    MAX_POI_RESULTS, NAV_MAX_CHUNK_BYTES, NAV_TILE_SLOTS, POI_MAX_CATEGORIES, POI_MAX_CHUNK_BYTES,
+    Lod, MapCache, MapHeader, MapProfile, MapReadError, MapTables, NavCacheStats, NavDirectory, NavEdgeEndpoint,
+    NavEdgePosition, NavEdgeSnap, NavNeighbor, NavNodeRef, NavTileCache, Poi, PoiCatEntry, PoiDirectory, Reader,
+    MAX_CHUNK_BYTES, MAX_FEAT_PTS, MAX_FEAT_RINGS, MAX_POI_RESULTS, NAV_MAX_CHUNK_BYTES, NAV_TILE_SLOTS,
+    POI_MAX_CATEGORIES, POI_MAX_CHUNK_BYTES,
 };
 pub use volume::{FullSetShards, MountError, MountedSet, SetShards, ShardTables};
 

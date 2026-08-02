@@ -99,15 +99,29 @@ use crate::convert::{EmitStats, ObcrEmitter, RouteStats, WpPlace};
 use crate::corridor::Corridor;
 use crate::reader::MAX_WAYPOINTS;
 use obc_formats::io::ByteSink;
+use obc_formats::obcm::NAV_SNAP_EDGE_MAX_M;
 use obc_formats::obcr::NAME_CAP;
-use obc_map_scene::{cos_lat, ground_dist_m, ground_dist_m_cl};
+use obc_map_scene::{cos_lat, ground_dist_m};
 use obc_map_scene::{BBox, M_PER_DEG};
-use obc_reader::{NavTileCache, Reader};
+use obc_reader::{NavEdgePosition, NavEdgeSnap, NavTileCache, Reader};
 
-/// Snap radius, meters (locked on #116): each endpoint snaps to the nearest routable
-/// node within this, or the route fails as [`NavError::NoPath`]. v1 snaps to nodes,
-/// not mid-edge (a noted future refinement).
+/// Snap radius, meters (locked on #116): each endpoint snaps to the nearest point
+/// on routable edge geometry within this, or the route fails as [`NavError::NoPath`].
 pub(crate) const SNAP_RADIUS_M: f32 = 250.0;
+
+/// Maximum packed edge length. `obc-pack` splits longer junction-to-junction roads
+/// with synthetic degree-2 nodes, so an edge touching the [`SNAP_RADIUS_M`] disc has
+/// an endpoint inside this + 250 m. This is the bounded node-quadtree search that
+/// replaces a separate edge spatial index.
+const SNAP_EDGE_MAX_M: f32 = NAV_SNAP_EDGE_MAX_M as f32;
+// One metre covers integer-metre edge-cost rounding and the final µdegree bbox rounding, keeping
+// the endpoint-query proof conservative at the exact bound.
+const SNAP_EDGE_REACH_M: f32 = SNAP_EDGE_MAX_M / 2.0 + 1.0;
+
+/// Internal ids for the virtual A* nodes at projected edge endpoints. Packed node
+/// ids are dense from zero, so the top two `u32` values are outside every real map.
+const VIRTUAL_START_ID: u32 = u32::MAX;
+const VIRTUAL_GOAL_ID: u32 = u32::MAX - 1;
 
 /// The **ε-escalation ladder** (N8, epic #533): weighted-A\* heuristic inflation ε as a sequence
 /// of integer `(num, den)` ratios — `f = g + (num·h)/den`. The search starts at rung 0 (1.3×, the
@@ -526,8 +540,38 @@ pub enum NavPhase {
     Done,
 }
 
-/// One snapped plan endpoint: `(node_id, (lon, lat))` µdeg — see [`NavPlanner::endpoints`].
+/// One snapped plan endpoint: `(node_id, (lon, lat))` µdeg. An edge-interior
+/// projection uses a reserved virtual-node id; see [`NavPlanner::endpoints`].
 pub type NavEndpoint = (u32, (i32, i32));
+
+#[derive(Clone, Copy)]
+enum SnappedEndpoint {
+    Node { id: u32, coord: (i32, i32) },
+    Edge(NavEdgeSnap),
+}
+
+impl SnappedEndpoint {
+    fn coord(self) -> (i32, i32) {
+        match self {
+            SnappedEndpoint::Node { coord, .. } => coord,
+            SnappedEndpoint::Edge(edge) => edge.position.coord,
+        }
+    }
+
+    fn node_id(self) -> u32 {
+        match self {
+            SnappedEndpoint::Node { id, .. } => id,
+            SnappedEndpoint::Edge(_) => 0,
+        }
+    }
+
+    fn edge(self) -> Option<NavEdgeSnap> {
+        match self {
+            SnappedEndpoint::Node { .. } => None,
+            SnappedEndpoint::Edge(edge) => Some(edge),
+        }
+    }
+}
 
 /// The fine-grained internal phase; [`NavPhase`] is its public projection.
 enum PhaseState {
@@ -576,6 +620,11 @@ pub struct NavPlanner {
     start_c: (i32, i32),
     goal_id: u32,
     goal_c: (i32, i32),
+    /// `Some` when that endpoint projected into an edge interior. A virtual graph
+    /// node at the projected coordinate connects to both real edge endpoints; the
+    /// same metadata clips the first/last emitted geometry to the projection.
+    start_edge: Option<NavEdgeSnap>,
+    goal_edge: Option<NavEdgeSnap>,
     /// Total settles so far — the RTT line's `settles=` figure, and the budget tests' probe. Stays
     /// **cumulative across [`NAV_EPSILON_LADDER`] rungs** (N8): an escalated plan's `settles` is the
     /// honest total work over every attempt, not just the last.
@@ -626,6 +675,8 @@ impl NavPlanner {
             start_c: (0, 0),
             goal_id: 0,
             goal_c: (0, 0),
+            start_edge: None,
+            goal_edge: None,
             settles: 0,
             rung: 0,
             table_full: false,
@@ -673,9 +724,9 @@ impl NavPlanner {
     }
 
     /// The snapped endpoints — `((start_id, start_coord), (goal_id, goal_coord))`, `(lon, lat)`
-    /// µdeg; zeroes for an endpoint whose snap phase hasn't run yet. A diagnostic for the
-    /// `nav_repro` harness (#501): lets a host run report exactly which graph nodes the plan
-    /// ran between.
+    /// µdeg; zeroes for an endpoint whose snap phase hasn't run yet. Edge-interior projections
+    /// report a reserved virtual-node id plus the exact projected coordinate. A diagnostic for
+    /// the `nav_repro` harness (#501): lets a host report exactly where the plan ran between.
     pub fn endpoints(&self) -> (NavEndpoint, NavEndpoint) {
         ((self.start_id, self.start_c), (self.goal_id, self.goal_c))
     }
@@ -726,20 +777,22 @@ impl NavPlanner {
                 scratch.reset();
                 tiles.reset();
                 self.mult = ProfileMult::resolve(reader, self.profile_idx);
-                let Some((id, c)) = snap(reader, tiles, self.from) else {
+                let Some(snapped) = snap(reader, tiles, self.from) else {
                     return self.fail(NavError::NoPath);
                 };
-                self.start_id = id;
-                self.start_c = c;
+                self.start_c = snapped.coord();
+                self.start_edge = snapped.edge();
+                self.start_id = if self.start_edge.is_some() { VIRTUAL_START_ID } else { snapped.node_id() };
                 self.phase = PhaseState::SnapTo;
                 Step::Running
             }
             PhaseState::SnapTo => {
-                let Some((id, c)) = snap(reader, tiles, self.to) else {
+                let Some(snapped) = snap(reader, tiles, self.to) else {
                     return self.fail(NavError::NoPath);
                 };
-                self.goal_id = id;
-                self.goal_c = c;
+                self.goal_c = snapped.coord();
+                self.goal_edge = snapped.edge();
+                self.goal_id = if self.goal_edge.is_some() { VIRTUAL_GOAL_ID } else { snapped.node_id() };
                 // Both endpoints are now snapped — arm the detour corridor's take-off/landing
                 // exemptions (no-op for POI plans).
                 if let Some(cor) = self.corridor.as_mut() {
@@ -788,6 +841,52 @@ impl NavPlanner {
                             Err(e) => self.fail(e),
                         };
                     }
+                    // A projected start is a virtual node with two partial-edge exits. It has no
+                    // §8.3 record to fetch; relax those two real endpoints directly. If both plan
+                    // endpoints lie on the same edge, also add the direct along-edge connection so
+                    // a short mid-block route does not detour through either junction.
+                    if scratch.entries[idx].node_id == VIRTUAL_START_ID {
+                        let Some(start) = self.start_edge else {
+                            return self.fail(NavError::NoPath);
+                        };
+                        self.table_full |= relax_virtual_edge(
+                            scratch,
+                            idx,
+                            start.a.id,
+                            start.a.coord,
+                            start.edge_id,
+                            start.from_a_m,
+                            start.way_kind,
+                            self.goal_c,
+                            &self.mult,
+                        );
+                        self.table_full |= relax_virtual_edge(
+                            scratch,
+                            idx,
+                            start.b.id,
+                            start.b.coord,
+                            start.edge_id,
+                            start.length_m.saturating_sub(start.from_a_m),
+                            start.way_kind,
+                            self.goal_c,
+                            &self.mult,
+                        );
+                        if let Some(goal) = self.goal_edge.filter(|goal| goal.edge_id == start.edge_id) {
+                            self.table_full |= relax_virtual_edge(
+                                scratch,
+                                idx,
+                                VIRTUAL_GOAL_ID,
+                                goal.position.coord,
+                                start.edge_id,
+                                start.from_a_m.abs_diff(goal.from_a_m),
+                                start.way_kind,
+                                self.goal_c,
+                                &self.mult,
+                            );
+                        }
+                        scratch.entries[idx].meta |= META_CLOSED;
+                        continue;
+                    }
                     self.settles = self.settles.wrapping_add(1);
                     settled_this_step += 1;
                     scratch.entries[idx].meta |= META_CLOSED;
@@ -804,6 +903,31 @@ impl NavPlanner {
                         &mut self.table_full,
                     ) {
                         return self.fail(e);
+                    }
+                    // A projected goal is another virtual node, reached from either endpoint of
+                    // its containing edge with the matching partial raw cost.
+                    if let Some(goal) = self.goal_edge {
+                        let settled_id = scratch.entries[idx].node_id;
+                        let raw = if settled_id == goal.a.id {
+                            Some(goal.from_a_m)
+                        } else if settled_id == goal.b.id {
+                            Some(goal.length_m.saturating_sub(goal.from_a_m))
+                        } else {
+                            None
+                        };
+                        if let Some(raw) = raw {
+                            self.table_full |= relax_virtual_edge(
+                                scratch,
+                                idx,
+                                VIRTUAL_GOAL_ID,
+                                goal.position.coord,
+                                goal.edge_id,
+                                raw,
+                                goal.way_kind,
+                                self.goal_c,
+                                &self.mult,
+                            );
+                        }
                     }
                     // Budget by cache misses — the only expensive unit (≈ one SD chunk read each) —
                     // so a step's wall time is ~constant whatever the hit rate; the settle cap bounds
@@ -928,10 +1052,10 @@ impl NavPlanner {
         Ok(())
     }
 
-    /// Emit one path hop: fetch hop `self.hop`'s edge polyline oriented via
-    /// [`Reader::nav_edge_oriented`] and push it, deduping the seam vertex shared with the
-    /// previous hop so the OBCR carries one continuous polyline. The edge's raw ground `length_m`
-    /// (the call's return, no longer dead) accumulates into `total_m` — the **unweighted**
+    /// Emit one path hop: fetch an ordinary whole edge via [`Reader::nav_edge_oriented`], or an
+    /// endpoint edge clipped to its exact projected position via
+    /// [`Reader::nav_edge_slice_oriented`], then dedupe the seam vertex shared with the previous
+    /// hop. The traversed raw ground length accumulates into `total_m` — the **unweighted**
     /// displayed distance, summed here rather than read off the weighted `g` (N3). Elevation is
     /// zero throughout (no DEM, locked on #116).
     #[inline(never)] // #419/#501: a phase-boundary frame — never inlined into the step frame
@@ -945,21 +1069,34 @@ impl NavPlanner {
         let hop = self.hop as usize;
         let prev = &scratch.entries[scratch.heap[hop] as usize];
         let cur = &scratch.entries[scratch.heap[hop - 1] as usize];
+        let partial = prev.node_id == VIRTUAL_START_ID || cur.node_id == VIRTUAL_GOAL_ID;
+        let positions = if partial {
+            Some((
+                self.edge_position(cur.edge_used, prev.node_id).ok_or(NavError::NoPath)?,
+                self.edge_position(cur.edge_used, cur.node_id).ok_or(NavError::NoPath)?,
+            ))
+        } else {
+            None
+        };
         let em = self.em.as_mut().ok_or(NavError::NoPath)?;
         let mut last = self.last;
         let mut werr = false;
-        let length_m = reader
-            .nav_edge_oriented(tiles, cur.edge_used, (prev.lon, prev.lat), |pt| {
-                if werr || last == Some(pt) {
-                    return; // seam vertex already emitted by the previous hop
-                }
-                if em.push(sink, pt.0, pt.1, 0, 0).is_err() {
-                    werr = true;
-                    return;
-                }
-                last = Some(pt);
-            })
-            .ok_or(NavError::NoPath)?;
+        let mut push = |pt| {
+            if werr || last == Some(pt) {
+                return; // seam vertex already emitted by the previous hop
+            }
+            if em.push(sink, pt.0, pt.1, 0, 0).is_err() {
+                werr = true;
+                return;
+            }
+            last = Some(pt);
+        };
+        let length_m = if let Some((from, to)) = positions {
+            reader.nav_edge_slice_oriented(tiles, cur.edge_used, from.0, to.0, &mut push).ok_or(NavError::NoPath)?;
+            from.1.abs_diff(to.1)
+        } else {
+            reader.nav_edge_oriented(tiles, cur.edge_used, (prev.lon, prev.lat), &mut push).ok_or(NavError::NoPath)?
+        };
         self.last = last;
         if werr {
             return Err(NavError::NoPath);
@@ -967,6 +1104,31 @@ impl NavPlanner {
         // Real ground meters for the displayed total (saturating, like every stored cost).
         self.total_m = self.total_m.saturating_add(length_m);
         Ok(())
+    }
+
+    /// Resolve an A* entry to its exact position + raw offset on `edge_id`. Virtual
+    /// entries use their projection; real endpoint entries use 0 / full length.
+    fn edge_position(&self, edge_id: u32, node_id: u32) -> Option<(NavEdgePosition, u32)> {
+        if node_id == VIRTUAL_START_ID {
+            let e = self.start_edge.filter(|e| e.edge_id == edge_id)?;
+            return Some((e.position, e.from_a_m));
+        }
+        if node_id == VIRTUAL_GOAL_ID {
+            let e = self.goal_edge.filter(|e| e.edge_id == edge_id)?;
+            return Some((e.position, e.from_a_m));
+        }
+        for e in [self.start_edge, self.goal_edge].into_iter().flatten() {
+            if e.edge_id != edge_id {
+                continue;
+            }
+            if node_id == e.a.id {
+                return Some((e.a.position, 0));
+            }
+            if node_id == e.b.id {
+                return Some((e.b.position, e.length_m));
+            }
+        }
+        None
     }
 }
 
@@ -1017,6 +1179,57 @@ pub fn plan_detour<const N: usize>(
             Step::Running => {}
             Step::Done(stats) => return Ok(stats),
             Step::Failed(e) => return Err(e),
+        }
+    }
+}
+
+/// Relax one synthetic partial-edge adjacency used by a projected start or goal.
+/// It follows the same profile weighting and decrease-key rules as [`settle`], but
+/// needs no graph-record fetch because the snap already captured the edge metadata.
+#[allow(clippy::too_many_arguments)]
+fn relax_virtual_edge<const N: usize>(
+    scratch: &mut NavScratch<N>,
+    from: usize,
+    target_id: u32,
+    target_coord: (i32, i32),
+    edge_id: u32,
+    raw_cost_m: u32,
+    way_kind: u8,
+    goal_c: (i32, i32),
+    mult: &ProfileMult,
+) -> bool {
+    let Some(m) = mult.mult(way_kind) else { return false };
+    let weighted = (raw_cost_m.saturating_mul(m)) >> 4;
+    let tentative = sat16((scratch.entries[from].g as u32).saturating_add(weighted));
+    match scratch.lookup(target_id) {
+        Some(j) => {
+            if tentative < scratch.entries[j].g {
+                let e = &mut scratch.entries[j];
+                e.g = tentative;
+                e.came_from = from as u16;
+                e.edge_used = edge_id;
+                if e.heap_pos() == HEAP_NONE {
+                    e.meta &= !META_CLOSED;
+                    scratch.heap_push(j);
+                } else {
+                    let pos = scratch.entries[j].heap_pos() as usize;
+                    scratch.sift_up(pos);
+                }
+            }
+            false
+        }
+        None => {
+            if let Ok(j) = scratch.insert(target_id, target_coord.0, target_coord.1) {
+                let e = &mut scratch.entries[j];
+                e.g = tentative;
+                e.h = sat16(ground_dist_m(target_coord, goal_c) as u32);
+                e.came_from = from as u16;
+                e.edge_used = edge_id;
+                scratch.heap_push(j);
+                false
+            } else {
+                true
+            }
         }
     }
 }
@@ -1114,29 +1327,29 @@ fn settle<const N: usize>(
     Ok(())
 }
 
-/// Snap `p` to the nearest routable node within [`SNAP_RADIUS_M`] — the POI query's
-/// expanding-ring walk shape over the node quadtree: start with a small square view,
-/// double it until the best find is provably nearest (its distance ≤ the ring's
-/// half-extent — everything outside the square is at least that far), capping at the
-/// snap radius. The cap makes the final ring exhaustive by construction (a 250 m
-/// half-extent square contains the whole 250 m disc), so unlike the POI query no
-/// map-cover fallback is needed. Repeat visits across rings re-hit the tile cache.
+/// Snap `p` to the nearest point on routable **edge geometry** within
+/// [`SNAP_RADIUS_M`]. The node quadtree remains the spatial index: packed edges are
+/// at most [`SNAP_EDGE_MAX_M`], so every point on it lies within half that length
+/// of one endpoint. An edge touching the snap disc therefore has an endpoint inside
+/// the combined ~501 m search radius (including rounding guard). Expanding rings stop once the nearest projected
+/// edge plus that half-length reach fits inside the ring; the final ring is exhaustive
+/// by construction. Edge records are projected segment-by-segment by
+/// [`Reader::nearest_nav_edge_cached`], so bends use their real polyline, not a chord.
 ///
-/// **Kind-agnostic** (locked on #536): snap picks the nearest node of *any* kind — a rider
-/// standing on a footway must still snap; the profile shapes the route *away* from it, not the
-/// snap. One accepted v1 consequence: a node **all of whose edges are forbidden** under the active
-/// profile is a dead snap — the search then drains the frontier to an honest [`NavError::NoPath`].
+/// A projection exactly on an edge endpoint normalizes to that real graph node.
+/// Otherwise the planner creates a virtual node connected to both endpoints with
+/// proportional partial costs. **Kind-agnostic** remains locked on #536: the nearest
+/// road wins first; the active profile may then make its edge forbidden and produce
+/// an honest [`NavError::NoPath`].
 #[inline(never)] // #419/#501: a phase-boundary frame — never inlined into the step frame
-fn snap(reader: &Reader, tiles: &mut NavTileCache, p: (i32, i32)) -> Option<(u32, (i32, i32))> {
+fn snap(reader: &Reader, tiles: &mut NavTileCache, p: (i32, i32)) -> Option<SnappedEndpoint> {
     if reader.nav_directory().is_empty() {
         return None;
     }
-    // Guard a degenerate cos_lat (poles / corrupt latitude) like the POI query.
     let cl = cos_lat(p.1).max(1e-3);
-    // 250 m as µdeg of latitude (~2 246); the opening ring is a quarter of it.
-    let full_half = (SNAP_RADIUS_M / M_PER_DEG as f32 * 1e6) as i32;
+    let search_m = SNAP_RADIUS_M + SNAP_EDGE_REACH_M;
+    let full_half = libm::ceilf(search_m / M_PER_DEG as f32 * 1e6) as i32;
     let mut half = (full_half / 4).max(1);
-    let mut best: Option<(u32, (i32, i32), f32)> = None;
     loop {
         let lon_half = ((half as f32 / cl) as i32).max(1);
         let view = BBox {
@@ -1145,23 +1358,21 @@ fn snap(reader: &Reader, tiles: &mut NavTileCache, p: (i32, i32)) -> Option<(u32
             max_lon: p.0.saturating_add(lon_half),
             max_lat: p.1.saturating_add(half),
         };
-        reader
-            .for_each_nav_node_cached(&view, tiles, |n| {
-                let d = ground_dist_m_cl(p, (n.lon, n.lat), cl);
-                if d <= SNAP_RADIUS_M && best.is_none_or(|(_, _, bd)| d < bd) {
-                    best = Some((n.id, (n.lon, n.lat), d));
-                }
-            })
-            .ok()?;
+        let best = reader.nearest_nav_edge_cached(&view, tiles, p, SNAP_RADIUS_M).ok()?;
         let half_m = half as f32 * (M_PER_DEG as f32) * 1e-6;
-        if let Some((id, c, d)) = best {
-            if d <= half_m {
-                return Some((id, c));
+        if let Some(edge) = best {
+            if edge.distance_m + SNAP_EDGE_REACH_M <= half_m || half >= full_half {
+                if edge.position.coord == edge.a.coord {
+                    return Some(SnappedEndpoint::Node { id: edge.a.id, coord: edge.a.coord });
+                }
+                if edge.position.coord == edge.b.coord {
+                    return Some(SnappedEndpoint::Node { id: edge.b.id, coord: edge.b.coord });
+                }
+                return Some(SnappedEndpoint::Edge(edge));
             }
         }
         if half >= full_half {
-            // Final ring covered the whole disc — whatever we found is the answer.
-            return best.map(|(id, c, _)| (id, c));
+            return None;
         }
         half = (half * 2).min(full_half);
     }

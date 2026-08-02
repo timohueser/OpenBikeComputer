@@ -211,6 +211,21 @@ fn route_points(obcr: &[u8]) -> Vec<RoutePoint> {
     pts
 }
 
+/// The exact coordinate the detour request hands to the graph planner at a route distance.
+fn route_coord_at(obcr: &[u8], distance_m: u32) -> (i32, i32) {
+    let src = SliceSource(obcr);
+    let idx = RouteIndex::read(&src).unwrap();
+    let p = RouteReader::new(&idx, &src).position_at(distance_m).unwrap();
+    (p.lon, p.lat)
+}
+
+/// Stored raw cost from the lower-index road node to an interior coordinate on its segment.
+fn road_segment_offset_m(coord: (i32, i32)) -> u32 {
+    assert_eq!(coord.1, BASE.1);
+    let rem = (coord.0 - BASE.0).rem_euclid(SP);
+    (SEG_COST as f32 * rem as f32 / SP as f32).round() as u32
+}
+
 /// Measured polyline length of a stitched point list (the same metric the emitter uses).
 fn measured_len(pts: &[RoutePoint]) -> f32 {
     pts.windows(2).map(|w| obc_map_scene::ground_dist_m((w[0].lon, w[0].lat), (w[1].lon, w[1].lat))).sum()
@@ -302,8 +317,12 @@ fn detour_routes_via_parallel_street() {
         let in_middle = p.lon > BASE.0 + SP && p.lon < BASE.0 + (SEGS - 1) * SP;
         assert!(!(on_road_lat && in_middle), "the detour re-entered the blocked span at ({}, {})", p.lon, p.lat);
     }
-    assert_eq!((pts[0].lon, pts[0].lat), road_at(0), "starts at the start snap node");
-    assert_eq!((pts.last().unwrap().lon, pts.last().unwrap().lat), road_at(SEGS), "ends at the goal snap node");
+    assert_eq!((pts[0].lon, pts[0].lat), route_coord_at(&obcr, 0), "starts at the exact requested road point");
+    assert_eq!(
+        (pts.last().unwrap().lon, pts.last().unwrap().lat),
+        route_coord_at(&obcr, total),
+        "ends at the exact requested road point"
+    );
 }
 
 /// A mid-route span (rider at ~600 m, rejoin at ~2 800 m): the exemption discs let the plan use
@@ -314,8 +333,11 @@ fn detour_mid_span_uses_exempt_take_off_and_landing() {
     let obcr = road_route_obcr();
     let (res, detour) = detour_over(&bytes, &obcr, 600, 2_800);
     let stats = res.expect("the mid-span detour plans");
-    // node2 →1→0 → connector → street ×12 → connector → 12→11→ node10.
-    assert_eq!(stats.total_distance_m, 4 * SEG_COST + 2 * CONN_COST + 12 * SEG_COST);
+    // Exact start → node2 →1→0 → connector → street ×12 → connector → 12→11 → exact goal.
+    // The two partial-edge costs replace the old nearest-node approximation.
+    let start_part = road_segment_offset_m(route_coord_at(&obcr, 600));
+    let goal_part = SEG_COST - road_segment_offset_m(route_coord_at(&obcr, 2_800));
+    assert_eq!(stats.total_distance_m, start_part + 3 * SEG_COST + goal_part + 2 * CONN_COST + 12 * SEG_COST);
     let pts = route_points(&detour);
     // The blocked middle (nodes 5..=8 at ~1 390..2 230 m) is never touched.
     for p in &pts {
@@ -617,14 +639,18 @@ fn trim_rejoins_at_first_tail_contact_and_removes_the_retrace() {
     let dstats = res.expect("the street detour plans");
 
     // Fixture check: the UNTRIMMED plan reproduces the bug — it overshoots to road12 and then
-    // descends the tail to the goal node9 (the retrace the rider sees on glass).
+    // descends the tail to the exact requested point near node9 (the retrace the rider sees on glass).
     let untrimmed = route_points(&detour);
     assert!(
         untrimmed.iter().any(|p| (p.lon, p.lat) == road_at(SEGS)),
         "the untrimmed plan overshoots to road12 (the ring)"
     );
     let last = untrimmed.last().unwrap();
-    assert_eq!((last.lon, last.lat), road_at(9), "…then descends the tail to land at the goal node9");
+    assert_eq!(
+        (last.lon, last.lat),
+        route_coord_at(&obcr, target),
+        "…then descends the tail to land at the requested road point"
+    );
 
     // Trim: rejoin advances to the first contact near the road end, past the chosen minimum.
     let (out, trimmed) = trim_run(&obcr, &detour, target);
@@ -741,9 +767,18 @@ fn splice_span_at_route_end() {
     let idx = RouteIndex::read(&src).unwrap();
     let pts = route_points(&sink.buf);
     let end = pts.last().unwrap();
-    assert_eq!((end.lon, end.lat), road_at(SEGS), "ends at the detour's goal node — the tail is empty");
+    assert_eq!(
+        (end.lon, end.lat),
+        route_coord_at(&obcr, total),
+        "ends at the detour's exact requested goal — the tail is empty"
+    );
     let mut names: Vec<String> = Vec::new();
     for_each_waypoint(&src, |w| names.push(w.name.as_str().into())).unwrap();
     assert_eq!(names, ["W-head"], "span-to-end drops the mid and tail waypoints");
-    assert!(idx.total_distance_m >= 600 + dstats.total_distance_m);
+    let expected_total = 600 + dstats.total_distance_m;
+    assert!(
+        idx.total_distance_m.abs_diff(expected_total) <= 2,
+        "head + exact detour total agrees within metre rounding: got {}, expected {expected_total}",
+        idx.total_distance_m
+    );
 }

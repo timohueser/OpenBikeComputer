@@ -80,7 +80,8 @@
       "partial": true,
       "pois": 0,
       "nav_nodes": 0,
-      "nav_edges": 0
+      "nav_edges": 0,
+      "empty": false
     },
     {
       "id": "18/1204/1052",
@@ -91,7 +92,8 @@
       "partial": false,
       "pois": 0,
       "nav_nodes": 0,
-      "nav_edges": 0
+      "nav_edges": 0,
+      "empty": false
     },
     {
       "id": "18/1204/1053",
@@ -102,29 +104,32 @@
       "partial": false,
       "pois": 0,
       "nav_nodes": 0,
-      "nav_edges": 0
+      "nav_edges": 0,
+      "empty": false
     },
     {
       "id": "18/1204/1052",
       "band": "network",
       "path": "cells/network/1204/1052.obcm",
       "bytes": 2531,
-      "sha256": "b77f1926c5e4cc4489e365a3bb87a35e292bb84df7b5acf5a69ef0718fa00fdc",
+      "sha256": "1b1c8c7a3164f0c7bbe7e3d0f72323785c461af14be2afbd202c26b77725a2c2",
       "partial": false,
       "pois": 2,
-      "nav_nodes": 6,
-      "nav_edges": 4
+      "nav_nodes": 4,
+      "nav_edges": 2,
+      "empty": false
     },
     {
       "id": "18/1204/1053",
       "band": "network",
       "path": "cells/network/1204/1053.obcm",
       "bytes": 2560,
-      "sha256": "a26f527de66e259f5db15386d87a08a77864c772ad335bee8daff1f97027ed58",
+      "sha256": "6e273e29b92cff64a7f7e537e43bd5c590f0de1446bc33aff27e4f63d3b02538",
       "partial": false,
       "pois": 2,
-      "nav_nodes": 9,
-      "nav_edges": 7
+      "nav_nodes": 6,
+      "nav_edges": 4,
+      "empty": false
     }
   ]
 }

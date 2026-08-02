@@ -1095,7 +1095,7 @@ mod tests {
         // Short on purpose: a way spanning a whole cell would be split by the §8.3 `i16` bound into
         // pieces, which is orthogonal to what this test is about.
         let seam = seam_lon();
-        let w = way(&[(1, pt(row_lat(), seam - 5_000)), (2, pt(row_lat(), seam + 5_000))]);
+        let w = way(&[(1, pt(row_lat(), seam - 1_000)), (2, pt(row_lat(), seam + 1_000))]);
         let prep = prepare_nav(&[w], LOG2, &Progress::silent());
         let west = CellId::new(LOG2, 100, 100).unwrap();
         let east = CellId::new(LOG2, 100, 101).unwrap();
@@ -1120,9 +1120,9 @@ mod tests {
     fn a_vertex_on_the_line_is_the_junction() {
         let seam = seam_lon();
         let w = way(&[
-            (1, pt(row_lat(), seam - 5_000)),
+            (1, pt(row_lat(), seam - 1_000)),
             (2, pt(row_lat(), seam)), // an OSM node sitting exactly on the edge line
-            (3, pt(row_lat(), seam + 5_000)),
+            (3, pt(row_lat(), seam + 1_000)),
         ]);
         let prep = prepare_nav(&[w], LOG2, &Progress::silent());
         assert_eq!(prep.ways[0].coords.len(), 3, "nothing was inserted");
