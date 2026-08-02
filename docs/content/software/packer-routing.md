@@ -471,11 +471,68 @@ Which profile the device uses is a single **Bike-type** setting — a bare index
 
 ### Weighting the climb
 
-Way-kind says what an edge is *made of*; it says nothing about what it costs your legs. A map packed against [baked terrain tiles](../formats/#the-navigation-graph-a-routable-network) also stores, per direction of every edge, the **ascent** of riding it — an *integral* along the polyline, not a difference between its endpoints, because a pass road between two junctions at the same height has hundreds of metres of climbing in it and no net change at all. The packer samples elevation along the edge (never further apart than about 50 m of ground) and folds it through the same dead-banded integrator the device uses for the profile it draws you, so the number a route is *costed* by and the number you are later *shown* are the same number.
+Way-kind says what an edge is *made of*; it says nothing about what it costs your legs. In the Alps that is not a rounding error: "the cheapest route under the profile" will happily buy 400 m of climbing to save 200 m of distance, which is the wrong answer for every rider on exactly the terrain this device is for. So a map packed against terrain stores, per **direction** of every edge, the **ascent** of riding it.
 
-Each profile then says what a metre of that climbing is worth in flat metres — the **climb weight**. The shipped four are Road 10, Gravel 8, MTB 6, Touring 8: a road rider will ride a kilometre out of their way to avoid a hundred metres of climb, a mountain biker rather less. The term is **added**: `cost = metres × way-kind weight + ascent × climb weight`. Adding rather than crediting descents is not a simplification but the thing that keeps the router honest — an edge that could cost *less* than its straight-line distance would break the great-circle heuristic and with it the ε bound the plan's quality rests on. A weight of `0` is legal and means climb-blind, which is exactly how a map packed without terrain routes.
+**It is an integral, not an endpoint difference.** A pass road between two junctions at the same height has hundreds of metres of climbing in it and no net change at all; a difference of endpoints would price it as flat and send you over the col. So the packer walks the edge's *final* polyline — after every split the serializer performs, since an edge's climb cannot be divided among its pieces after the fact — sampling at every vertex plus interpolated points, so no gap exceeds about **50 m of ground**. That figure is chosen against the raster rather than the road: the shipped terrain posting is ≈ 57 m in latitude, so 50 m guarantees at least one sample per posting and a hill between two far-apart OSM shape nodes cannot be stepped over. Sampling finer would only re-read the same interpolated plane. A stretch with no elevation coverage contributes nothing — the integrator re-anchors across the hole rather than booking the climb over it.
+
+Because ascent is directional, it is the **one field the two sides of an edge disagree on**: the entry `a→b` carries `ascent(a→b)` and the entry `b→a` carries what is the first direction's descent. Everything else about an edge — its id, its ground length, its way-kind — still matches on both sides, and a verifier that checks "both sides agree" has to exclude exactly this field.
+
+**Where the heights come from — and what the packer deliberately cannot read.** The packer takes a `--terrain` input: an [OBCT](../formats/#obct-the-terrain-raster) container, or a directory of them, which it opens through the *same* `no_std` sampling crate the firmware runs. It has **no DEM decoder at all**. Turning Copernicus GLO-30 GeoTIFFs into terrain cells is a separate host tool, [`obc-dem`](src:host/obc-dem), run once per dataset release by the bakery — so the packer gains no GeoTIFF dependency (libGEOS stays the last native one in the tree), and, more importantly, the surface it costs a climb against is byte-for-byte the surface the device later draws your profile from. That is the whole point of baking terrain first: [one sampling truth](../terrain/#one-sampling-truth), not two pipelines that ought to agree.
+
+The integrator is shared end to end. The same **±3 m dead-band** that the GPX converter runs over an imported track, that the device's live barometric climb uses, and that the elevation profile is built with, is the one the packer folds each edge's samples through — deliberately not a packer-private threshold, because the epic's entire claim is that the ascent a route is *costed* by and the ascent you are *shown* are the same number, and two thresholds would make them incomparable by construction.
+
+Each profile then says what a metre of that climbing is worth in flat metres — the **climb weight**. The shipped four are Road 10, Gravel 8, MTB 6, Touring 8: a road rider will ride a kilometre out of their way to avoid a hundred metres of climb, a mountain biker rather less. The term is **added**, after the way-kind scaling and not inside it:
+
+```
+cost = (metres × way-kind weight) >> 4  +  ascent × climb weight
+```
+
+Adding rather than crediting descents is not a simplification but the thing that keeps the router honest. The great-circle heuristic is admissible only while no edge can cost *less* than its straight-line distance; a descent discount would let one, and the ε bound the plan's quality rests on would go with it. Which is also why the climb weight, unlike a way-kind multiplier, needs no `≥ 1.0×` floor: every value including `0` is admissible, because the term can only ever add. A weight of `0` means climb-blind, which is exactly how a map packed without terrain routes — its ascents are all `0`, so the term vanishes and the router reproduces its pre-elevation behaviour bit for bit.
+
+**What ε bounds now.** The ladder itself did not change — `f = g + ε·h`, starting at 1.3× and escalating 1.3 → 2.0 → 3.0 only when the fixed search table exhausts. What changed is what the guarantee *reads as*: the returned path is at most the successful rung's ε times the best **climb-aware** route under the profile. Not the shortest; not even the cheapest by way-kind alone; the cheapest once your bike's weights *and* its appetite for climbing are both applied.
+
+That is not free, and the honest version is worth stating: charging for climb makes `g` larger relative to `ε·h`, so the search is a little less goal-greedy and the frontier does more work. Measured over hundreds of endpoint pairs on an alpine extract, aggregate settles rose 4–31 % depending on profile, with the median pair settling the same nodes it did before — but 1–3 % of pairs that planned climb-blind now exhaust the table instead. Every one of those fails as the device's honest "too far to route here" after climbing the whole ε ladder, never as a wrong route.
+
+<figure class="fig">
+<svg viewBox="0 0 720 320" role="img" aria-label="A plan view of one measured pair of points above Innertkirchen, with a hill drawn as three nested contour rings peaking at 1380 metres. A solid orange line runs from the start straight over the hill: 8340 metres and 1008 metres of ascent, topping out at 1380 metres. A dashed green line curves around the hill instead: 10914 metres and 784 metres of ascent, never climbing above the goal's own 1066 metres. Notes below say the answer switches between climb weights 8 and 10, buying 2.6 kilometres of extra ground for 224 metres less climb and a crest 314 metres lower, and that the mountain-bike profile at weight 6 declines the same detour.">
+  <text class="d-tag" x="20" y="22">the same two points, two climb weights — measured on grimsel</text>
+
+  <!-- the hill, as nested contours -->
+  <ellipse cx="360" cy="180" rx="132" ry="68" fill="#eae4cb" fill-opacity="0.6" stroke="#9aa884" stroke-width="1.2" />
+  <ellipse cx="360" cy="178" rx="90" ry="46" fill="none" stroke="#9aa884" stroke-width="1.1" />
+  <ellipse cx="360" cy="176" rx="48" ry="25" fill="none" stroke="#9aa884" stroke-width="1.1" />
+  <text class="d-sub" x="360" y="192" text-anchor="middle" style="font-size:9px;fill:#a9501c">crest</text>
+  <text class="d-sub" x="360" y="205" text-anchor="middle" style="font-size:9px;fill:#a9501c">1 380 m</text>
+
+  <!-- over the top -->
+  <path d="M78 214 C 170 200, 262 176, 360 170 C 458 164, 566 186, 646 192"
+        fill="none" stroke="#cf6a2a" stroke-width="2.8" />
+  <!-- round the valley -->
+  <path d="M78 214 C 190 268, 320 280, 440 268 C 540 258, 606 218, 646 192"
+        fill="none" stroke="#3c6b39" stroke-width="2.6" stroke-dasharray="7 5" />
+  <circle cx="78" cy="214" r="4.5" class="d-hot-fill" />
+  <circle cx="646" cy="192" r="4.5" class="d-hot-fill" />
+  <text class="d-sub" x="78" y="234" text-anchor="middle" style="font-size:8.5px">start</text>
+  <text class="d-sub" x="654" y="212" style="font-size:8.5px">goal 1 066 m</text>
+
+  <!-- labels -->
+  <rect class="d-panel-2" x="24" y="34" width="316" height="38" rx="8" />
+  <text class="d-sub" x="38" y="50" style="font-size:9.5px;fill:#a9501c"><tspan style="font-weight:700">climb weight 0</tspan> &#8212; straight over the top</text>
+  <text class="d-sub" x="38" y="64" style="font-size:9.5px">8 340 m &#183; &#9650; 1 008 m &#183; high point 1 380 m</text>
+
+  <rect class="d-panel-2" x="380" y="34" width="316" height="38" rx="8" />
+  <text class="d-sub" x="394" y="50" style="font-size:9.5px;fill:#2c5230"><tspan style="font-weight:700">climb weight 10</tspan> &#8212; round the valley</text>
+  <text class="d-sub" x="394" y="64" style="font-size:9.5px">10 914 m &#183; &#9650; 784 m &#183; never above the goal</text>
+
+  <text class="d-sub" x="24" y="300" style="font-size:9px">the answer switches between <tspan font-family="var(--mono)">w = 8</tspan> and <tspan font-family="var(--mono)">w = 10</tspan>: +2.6 km of ground bought for &#8722;224 m of climb, and a crest 314 m lower</text>
+  <text class="d-sub" x="24" y="313" style="font-size:9px;fill:#6b7758">the MTB profile at <tspan font-family="var(--mono)">w = 6</tspan> declines the same detour and keeps its line — the product statement, not a bug</text>
+</svg>
+<figcaption>Weights are not a dial that makes routes "better"; they are a statement about what a given rider trades. Sweeping the weight on one real alpine pair moves the answer once, sharply, between 8 and 10 — and the two lines share only a quarter of their corridor, so it is a genuinely different route rather than emit jitter. Read down the shipped column and you can predict who diverts: Road and Gravel take the valley, MTB and Touring already had a cheaper way-kind line and keep it.</figcaption>
+</figure>
 
 Profiles are the one part of the routing graph that **is** configurable (the topology is not). The web builder's advanced editor has a **Bike-profiles panel**: one row per way-kind class, a multiplier cell per profile, and a **forbidden** toggle for the `0` case — schema-driven from the same class vocabulary above, and it enforces the ≥ 1.0× floor in the editor so a config that the packer would reject can't be exported in the first place. Like every other field, it round-trips to a plain CLI config.
+
+The **climb weight** is a per-profile `0..255` field of that same config — flat metres charged per metre of ascent, described and bounded in the [packer's JSON Schema](src:host/obc-pack/schema/config.schema.json) alongside the multipliers — but it has *no cell in the profiles panel yet*: the grid there is the way-kind and surface axes only, so today the weight is a maintainer-side edit of the schema document, not something a product build exposes. The shipped values are the ones in [`builder/presets/schema.json`](src:builder/presets/schema.json), and they are what every published map is baked with.
 
 ### Building the LOD pyramid
 
@@ -637,6 +694,28 @@ cell twice. Partial cells remain visible as warnings. The selected cells are
 downloaded with byte-length and SHA-256 checks, then passed to
 [`obc-web-assemble`](src:apps/obc-web-assemble) in a worker. Cancelling
 terminates the worker; there is no verification bypass.
+
+**Elevation rides along with the selection, and there is no switch for it.** The
+terrain squares a map needs are the ones its selection touches — the same intersect
+rule the bands use, run on the [terrain lattice](../terrain/) — so they are resolved,
+priced and downloaded exactly like cells, then handed to the assembler, which
+*places* them into one raster file rather than grafting anything. The summary card
+gains two lines and no controls: the raster's own size, stated separately from the
+map's because a rider may legitimately take one without the other, and the dataset's
+required credit — read **from the catalog**, never hard-coded, so a change of source
+carries its own notice instead of leaving a stale string behind. There is deliberately
+no toggle: elevation is roughly five per cent of a download, and a switch would ask a
+rider to decide something they have no way to decide well.
+
+An assembled map — even a one-shard one — names its raster in the manifest and writes
+it as `MS<id>.OBD`. A map that never went through the assembler, such as one packed
+straight from an extract for the simulator, gets the same file as a plain **sidecar**
+next to the `.obcm`, under the same stem. Those are deliberately the same convention
+seen from two sides: `MS<id>.OBD` *is* the sidecar of `MS<id>.OBS`, so a host that
+resolves terrain by looking beside the map and one that reads the manifest role open
+the same file. What the manifest adds is the two things a filename cannot say — that
+this set claims a raster, and how many bytes of one — which is what stops a leftover
+`.OBD` from a replaced set being read as this map's terrain.
 
 The same digest appears in each referenced object's published key. Cells,
 per-band indexes, region cell lists, and previews are therefore immutable below
@@ -889,9 +968,10 @@ let (back, fwd) = if !self.started {
 - The quadtree build: [`obc-pack/src/quadtree.rs`](src:host/obc-pack/src/quadtree.rs)
 - Land generation: [`obc-pack/src/land.rs`](src:host/obc-pack/src/land.rs)
 - POI extraction, classification, name folding + dedup: [`obc-pack/src/poi.rs`](src:host/obc-pack/src/poi.rs)
-- The navigation-graph build (routable filter, junction detection, edge split + dedup): [`obc-pack/src/nav.rs`](src:host/obc-pack/src/nav.rs)
+- The navigation-graph build (routable filter, junction detection, edge split + dedup) **and the per-edge ascent integration**: [`obc-pack/src/nav.rs`](src:host/obc-pack/src/nav.rs)
+- The DEM stage that runs before the packer, never inside it — GLO-30 → terrain cells: [`obc-dem`](src:host/obc-dem); the sampler both it and the firmware use: [`obc-elevation`](src:firmware/obc-elevation)
 - The on-device router (snap + profile-weighted A\* + OBCR emit): [`obc-route/src/nav.rs`](src:firmware/obc-route/src/nav.rs)
 - The route map-matcher: [`obc-route/src/matcher.rs`](src:firmware/obc-route/src/matcher.rs)
 - GPX → OBCR conversion: [`obc-route/src/convert.rs`](src:firmware/obc-route/src/convert.rs) — one routine, three hosts (device, simulator, browser)
 
-This is the offline bookend to the on-device story: the packer produces the [map format](../formats/) the [renderer](../rendering/) draws, and the matcher drives the navigation the [UI](../ui/) shows.
+This is the offline bookend to the on-device story: the packer produces the [map format](../formats/) the [renderer](../rendering/) draws, and the matcher drives the navigation the [UI](../ui/) shows. The raster the climb weights are measured against — where it comes from, what it costs, and what happens without it — is [terrain & elevation](../terrain/).

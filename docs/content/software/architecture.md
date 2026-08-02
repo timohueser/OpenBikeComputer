@@ -14,7 +14,7 @@ That's why the landing page's [browser demo](../../) (the `obc-web-demo` wasm ho
 The crates form a stack with dependencies pointing **one way — downward**. The foundation fixes byte contracts and semantic boundaries; each layer up adds capability; the *hosts* sit on top. Nothing in the shared core ever depends on a host.
 
 <figure class="fig">
-<svg viewBox="0 0 720 520" role="img" aria-label="The crate dependency stack. At the top, obc-sim and obc-web-demo share host glue in obc-host-core, while obc-fw-nrf54l composes obc-platform adapters; the hosts depend on obc-app and their port implementations bind directly to obc-ports. The app depends on obc-render, obc-reader, obc-route, and obc-ports. obc-render and obc-reader independently depend on the allocation-free obc-map-scene foundation, so rendering does not depend on the concrete OBCM reader. obc-reader and obc-route depend on obc-formats; route and app use obc-ports. Every arrow points downward, so the shared core never depends on a host.">
+<svg viewBox="0 0 720 520" role="img" aria-label="The crate dependency stack. At the top, obc-sim and obc-web-demo share host glue in obc-host-core, while obc-fw-nrf54l composes obc-platform adapters; the hosts depend on obc-app and their port implementations bind directly to obc-ports. The app depends on obc-render, obc-reader, obc-route, obc-elevation and obc-ports. obc-render and obc-reader independently depend on the allocation-free obc-map-scene foundation, so rendering does not depend on the concrete OBCM reader. obc-reader and obc-route depend on obc-formats; obc-route and obc-app also depend on obc-elevation, a fourth foundation crate holding the OBCT reader, the sampling rules and the shared dead-band, whose own only dependency is obc-formats. Every arrow points downward, so the shared core never depends on a host.">
   <defs>
     <marker id="aA" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
   </defs>
@@ -47,33 +47,37 @@ The crates form a stack with dependencies pointing **one way — downward**. The
   <text class="d-label" x="490" y="358" text-anchor="middle">obc-route</text>
   <text class="d-sub" x="490" y="374" text-anchor="middle">OBCR · GPX · map-match</text>
   <!-- foundation -->
-  <rect class="d-panel-2" x="30" y="432" width="210" height="54" rx="10" />
-  <text class="d-label" x="135" y="454" text-anchor="middle">obc-map-scene</text>
-  <text class="d-sub" x="135" y="470" text-anchor="middle">styles · candidate visits</text>
-  <rect class="d-panel-2" x="255" y="432" width="210" height="54" rx="10" />
-  <text class="d-label" x="360" y="454" text-anchor="middle">obc-formats</text>
-  <text class="d-sub" x="360" y="470" text-anchor="middle">layouts · codecs · byte seam</text>
-  <rect class="d-panel-2" x="480" y="432" width="210" height="54" rx="10" />
-  <text class="d-label" x="585" y="454" text-anchor="middle">obc-ports</text>
-  <text class="d-sub" x="585" y="470" text-anchor="middle">semantic traits · no deps</text>
+  <rect class="d-panel-2" x="30" y="432" width="150" height="54" rx="10" />
+  <text class="d-label" x="105" y="454" text-anchor="middle" style="font-size:11px">obc-map-scene</text>
+  <text class="d-sub" x="105" y="470" text-anchor="middle" style="font-size:9px">styles · candidate visits</text>
+  <rect class="d-panel-2" x="200" y="432" width="150" height="54" rx="10" />
+  <text class="d-label" x="275" y="454" text-anchor="middle" style="font-size:11px">obc-formats</text>
+  <text class="d-sub" x="275" y="470" text-anchor="middle" style="font-size:9px">layouts · codecs · bytes</text>
+  <rect class="d-panel-2" x="370" y="432" width="150" height="54" rx="10" />
+  <text class="d-label" x="445" y="454" text-anchor="middle" style="font-size:11px">obc-elevation</text>
+  <text class="d-sub" x="445" y="470" text-anchor="middle" style="font-size:9px">OBCT · sampling · dead-band</text>
+  <rect class="d-panel-2" x="540" y="432" width="150" height="54" rx="10" />
+  <text class="d-label" x="615" y="454" text-anchor="middle" style="font-size:11px">obc-ports</text>
+  <text class="d-sub" x="615" y="470" text-anchor="middle" style="font-size:9px">semantic traits · no deps</text>
 
   <!-- arrows (depends-on, downward) -->
   <line class="d-flow" x1="240" y1="102" x2="258" y2="144" marker-end="url(#aA)" />
   <line class="d-flow" x1="490" y1="102" x2="472" y2="144" marker-end="url(#aA)" />
   <line class="d-flow" x1="370" y1="202" x2="370" y2="240" marker-end="url(#aA)" />
-  <path class="d-flow" d="M240 292 C 150 320, 105 380, 125 430" marker-end="url(#aA)" />
+  <path class="d-flow" d="M240 292 C 150 320, 88 380, 100 430" marker-end="url(#aA)" />
   <line class="d-flow" x1="388" y1="356" x2="354" y2="356" marker-end="url(#aA)" />
-  <line class="d-flow" x1="225" y1="386" x2="160" y2="430" marker-end="url(#aA)" />
-  <line class="d-flow" x1="275" y1="386" x2="340" y2="430" marker-end="url(#aA)" />
-  <line class="d-flow" x1="465" y1="386" x2="390" y2="430" marker-end="url(#aA)" />
-  <line class="d-flow" x1="515" y1="386" x2="570" y2="430" marker-end="url(#aA)" />
+  <line class="d-flow" x1="215" y1="386" x2="135" y2="430" marker-end="url(#aA)" />
+  <line class="d-flow" x1="265" y1="386" x2="262" y2="430" marker-end="url(#aA)" />
+  <line class="d-flow" x1="430" y1="386" x2="300" y2="430" marker-end="url(#aA)" />
+  <line class="d-flow" x1="478" y1="386" x2="440" y2="430" marker-end="url(#aA)" />
+  <line class="d-flow" x1="530" y1="386" x2="600" y2="430" marker-end="url(#aA)" />
 
-  <!-- app also reaches past render straight to the two foundation crates -->
+  <!-- app also reaches past render straight to the foundation crates -->
   <path class="d-flow" d="M186 202 C 170 252, 176 300, 206 330" marker-end="url(#aA)" opacity="0.8" />
   <path class="d-flow" d="M554 202 C 570 252, 564 300, 534 330" marker-end="url(#aA)" opacity="0.8" />
-  <path class="d-flow" d="M590 174 C 700 240, 704 398, 610 430" marker-end="url(#aA)" opacity="0.8" />
+  <path class="d-flow" d="M590 174 C 700 240, 704 398, 640 430" marker-end="url(#aA)" opacity="0.8" />
 </svg>
-<figcaption>Hosts depend on <b>obc-app</b>; the app on <b>obc-render</b> — and directly on <b>obc-reader</b> + <b>obc-route</b>. Render and reader meet only through <b>obc-map-scene</b>, so the renderer never learns OBCM offsets, quadtrees, or cache policy. Beneath them, <b>obc-formats</b> owns persistent byte facts and <b>obc-ports</b> owns the semantic sensor/input/track/settings traits; host and platform implementations bind to those directly, never upward to app policy. Because every arrow points down, the shared core compiles and runs without any host. (Two crates sit outside this stack: <b>obc-pack</b>, the offline map producer, and <b>obc-web-convert</b>, a wasm shim over <b>obc-route</b>'s converters — neither constructs an <code>App</code>.)</figcaption>
+<figcaption>Hosts depend on <b>obc-app</b>; the app on <b>obc-render</b> — and directly on <b>obc-reader</b> + <b>obc-route</b>. Render and reader meet only through <b>obc-map-scene</b>, so the renderer never learns OBCM offsets, quadtrees, or cache policy. Beneath them, <b>obc-formats</b> owns persistent byte facts, <b>obc-elevation</b> owns the terrain raster's reader and its sampling arithmetic (<b>obc-route</b> reaches it at route emit, and <b>obc-app</b> at every GPS fix — that second edge is left undrawn only to keep the diagram legible), and <b>obc-ports</b> owns the semantic sensor/input/track/settings traits; host and platform implementations bind to those directly, never upward to app policy. Because every arrow points down, the shared core compiles and runs without any host. (Three crates sit outside this stack: <b>obc-pack</b>, the offline map producer, <b>obc-dem</b>, the DEM rasteriser that runs before it, and <b>obc-web-convert</b>, a wasm shim over <b>obc-route</b>'s converters — none constructs an <code>App</code>, and the first two consume <b>obc-elevation</b> from the host side, which is what makes the packer's climb arithmetic the device's.)</figcaption>
 </figure>
 
 The one-way rule is the load-bearing constraint. `obc-app` builds for the bare-metal target (`thumbv8m.main-none-eabihf`) with no host present; the simulator and the firmware are just two different things that link *against* it. Swap the host, keep the core.
@@ -91,6 +95,8 @@ Components talk through parameters, not back-references — a delivery rule that
 At the bottom, [`obc-formats`](src:firmware/obc-formats) is deliberately smaller than a reader: no allocator, storage adapter, cache, converter, or rendering policy. The format specs stay the normative byte contracts; this crate is their code authority for versions, fixed lengths, flags, sentinels, endian primitives, and the neutral byte-source/sink traits. Every persistent-format producer and consumer — including `obc-pack` and the deliberately independent `obcm-testkit` byte builder — imports those facts from here, so each byte fact has exactly one import path; `obc-reader` and `obc-route` keep the parsing and streaming algorithms.
 
 [`obc-map-scene`](src:firmware/obc-map-scene) is the equally small boundary between a map source and rasterisation: neutral bounds, geometry/style metadata, LOD selection, candidate visitation, and selected-feature decode into caller-owned buffers. The normal [`obc-reader` adapter](src:firmware/obc-reader/src/scene.rs) is monomorphised into the renderer's hot path; a static test scene can implement the same contract with no map file at all. Opaque six-byte candidate tokens let a source find winners again without leaking byte offsets.
+
+[`obc-elevation`](src:firmware/obc-elevation) is the third crate of that size and the newest: the OBCT reader, the normative bilinear sampler, a fixed-slot tile cache, and the dead-banded ascent integrator, with `obc-formats` as its only dependency and no knowledge of maps, routes or screens. Its seam is a single method — `ElevationSource::sample(lat, lon) -> Option<i16>` — and the crate ships the null implementation that answers `None` for everything, which is what makes a card with no terrain file provably identical to the system before terrain existed. The dependency direction is strictly *consumers → elevation*: `obc-route` samples it at route emit, `obc-app` at each GPS fix, and the host-side `obc-pack` samples the same code over the same bytes when it bakes per-edge ascent — the mechanism behind [one sampling truth](../terrain/#one-sampling-truth).
 
 Beside it, [`obc-ports`](src:firmware/obc-ports) owns the dependency-free values and traits that cross the app/host boundary. The app and every implementation — platform, board, simulator, replay, browser host, USB — bind to it directly. `SettingsStore` uses an associated value type so the foundation never depends upward on the app's `Settings` model.
 
@@ -427,7 +433,8 @@ The split is a behaviour-preserving relocation: the same `InputPlane` either run
 - The semantic hardware/host ports: [`obc-ports/src/lib.rs`](src:firmware/obc-ports/src/lib.rs); direct platform implementations: [`obc-platform/src/`](src:firmware/obc-platform/src)
 - The two-plane input model: [`obc-app/src/input_plane.rs`](src:firmware/obc-app/src/input_plane.rs)
 - The on-device router (snap · weighted A\* · OBCR emit): [`obc-route/src/nav.rs`](src:firmware/obc-route/src/nav.rs)
+- The elevation seam, the OBCT sampler and the terrain tile cache: [`obc-elevation`](src:firmware/obc-elevation); the altimeter-fusion filter that rides on it: [`obc-app/src/altitude.rs`](src:firmware/obc-app/src/altitude.rs)
 - Persistent-format constants, primitive codecs, and the byte-streaming seam: [`obc-formats`](src:firmware/obc-formats)
 - The device host adapters over real hardware: the DrawTarget / present seam in [`obc-display`](src:firmware/obc-display), the SD `ByteSource`/`ByteSink` in [`obc-storage`](src:firmware/obc-storage), the sensor chip decoders in [`obc-sensors`](src:firmware/obc-sensors), and the source/handoff bridges in [`obc-platform`](src:firmware/obc-platform)
 
-For how the renderer in the middle of this stack actually draws a frame, see the [rendering pipeline](../rendering/). For the binary formats the reader streams, see [data formats](../formats/). For the screen stack and gestures the loop drives, see [the UI system](../ui/).
+For how the renderer in the middle of this stack actually draws a frame, see the [rendering pipeline](../rendering/). For the binary formats the reader streams, see [data formats](../formats/). For the screen stack and gestures the loop drives, see [the UI system](../ui/). For the raster behind the elevation seam — where it comes from and what it costs — see [terrain & elevation](../terrain/).
