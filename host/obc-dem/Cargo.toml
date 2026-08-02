@@ -5,6 +5,10 @@ edition = "2021"
 publish = false # internal host tool — not published to crates.io
 description = "Copernicus GLO-30 GeoTIFF -> OBCT terrain cells (obc-dem fetch / bake). The producer side of specs/OBCT_Spec.md."
 
+[[bin]]
+name = "obc-dem"
+path = "src/main.rs"
+
 [dependencies]
 # The OBCT byte authority: magic, header offsets, sentinels, and the layout arithmetic that turns a
 # lattice sample into a byte offset. Transcribing any of it here is exactly the drift `obc-formats`
