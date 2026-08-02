@@ -46,4 +46,7 @@ obc-render = { path = "../../firmware/obc-render" }
 obc-display = { path = "../../firmware/obc-display" }
 # The oracle's route half: the real A* the device runs.
 obc-route = { path = "../../firmware/obc-route", features = ["alloc"] }
+# `NullElevation`: the oracle packs its fixtures without terrain, so the v12 ascent field is 0 on
+# both sides of the comparison and the engine's grafted bytes are the packer's bytes.
+obc-elevation = { path = "../../firmware/obc-elevation" }
 embedded-graphics = "0.8"

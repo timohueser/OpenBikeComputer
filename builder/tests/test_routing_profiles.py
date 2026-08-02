@@ -33,8 +33,9 @@ HIGHWAY_CLASSES = [
 ]
 SURFACE_CLASSES = ["unknown", "paved", "compacted", "gravel", "dirt", "rough", "cobbles", "grass"]
 NAME_LEN = 12
-PROFILE_RECORD_LEN = 52  # 12 name + 32 highway + 8 surface
-OBCM_VERSION = 11
+PROFILE_RECORD_LEN = 56  # 12 name + 32 highway + 8 surface + climb_weight + 3 reserved (v12)
+CLIMB_WEIGHT_OFF = 52
+OBCM_VERSION = 12
 
 
 def _pack_bin():
@@ -63,7 +64,7 @@ def _quantize(v):
 
 
 def _expected_record(profile):
-    """Build the 52-byte §8.6 record we expect the packer to write for a profile."""
+    """Build the 56-byte v12 §8.6 record we expect the packer to write for a profile."""
     default_q = _quantize(profile.get("default", 2.0))
     highway = [default_q] * 32
     surface = [default_q] * 8
@@ -74,7 +75,10 @@ def _expected_record(profile):
     name = profile["name"].encode("utf-8")
     assert len(name) <= NAME_LEN
     name_field = name + b"\xff" * (NAME_LEN - len(name))
-    return name_field + bytes(highway) + bytes(surface)
+    # v12 tail: the climb weight (absent in a config -> climb-blind) and three reserved ZERO bytes.
+    # Zero, not 0xFF: the name field is a padded string, this is a reserved field.
+    climb = bytes([int(profile.get("climb_weight", 0))]) + b"\x00" * 3
+    return name_field + bytes(highway) + bytes(surface) + climb
 
 
 def _pack(tmp_path, profiles, min_component_edges=None):
@@ -115,12 +119,13 @@ CUSTOM = {
     "default": 4.0,  # -> 64
     "highway": {"cycleway": 1.0, "track": 7.0, "steps": "forbidden", "primary": 2.5},
     "surface": {"paved": 1.0, "gravel": 5.0, "rough": "forbidden"},
+    "climb_weight": 12,  # v12 §8.6: flat metres charged per metre of ascent
 }
 MINIMAL = {"name": "Zwei", "default": 2.0}
 
 
 @requires_pack
-def test_custom_profiles_round_trip_to_86_bytes(tmp_path):
+def test_custom_profiles_round_trip_to_112_bytes(tmp_path):
     """A config with custom profiles packs to §8.6 records that match byte-for-byte."""
     data = _pack(tmp_path, [CUSTOM, MINIMAL])
     count, table = _profile_table(data)
@@ -134,6 +139,9 @@ def test_custom_profiles_round_trip_to_86_bytes(tmp_path):
     assert rec0[NAME_LEN + HIGHWAY_CLASSES.index("steps")] == 0       # forbidden
     assert rec0[NAME_LEN + HIGHWAY_CLASSES.index("footway")] == 64    # inherits default 4.0x
     assert rec0[NAME_LEN + 32 + SURFACE_CLASSES.index("rough")] == 0  # forbidden
+    assert rec0[CLIMB_WEIGHT_OFF] == 12          # v12: taken verbatim, no admissibility floor
+    assert rec1[CLIMB_WEIGHT_OFF] == 0           # …and absent means climb-blind
+    assert rec0[CLIMB_WEIGHT_OFF + 1:] == b"\x00" * 3, "the reserved tail is zero"
 
 
 @requires_pack

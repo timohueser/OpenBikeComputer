@@ -20,6 +20,7 @@
 //! that failed to unify, an island pruned that should not have been — every one of those shows up
 //! here as a pixel or a route that moved, in a test that says which.
 
+use obc_elevation::NullElevation;
 use std::path::{Path, PathBuf};
 
 use embedded_graphics::pixelcolor::raw::RawU16;
@@ -348,8 +349,16 @@ fn monolithic(cfg: &Config, ing: &Ingested, ways: &[RoutableWay], bbox: (i64, i6
             }
         })
         .collect();
-    let (bytes, dropped) =
-        serialize_lods(&lods, &cfg.styles(), cfg.marker_color, bbox, &ing.pois, &graph, &cfg.routing.profiles);
+    let (bytes, dropped) = serialize_lods(
+        &lods,
+        &cfg.styles(),
+        cfg.marker_color,
+        bbox,
+        &ing.pois,
+        &graph,
+        &cfg.routing.profiles,
+        &mut NullElevation,
+    );
     assert_eq!(dropped, 0, "the fixture must not lose features to the chunk cap");
     bytes
 }

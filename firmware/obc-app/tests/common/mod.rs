@@ -153,9 +153,9 @@ pub fn build_min_obcm_profiles(marker: u16, profiles: &[&str]) -> Vec<u8> {
     poi_dir.extend_from_slice(&0u16.to_le_bytes()); // hours_pool_count = 0
     poi_dir.extend_from_slice(&0u16.to_le_bytes()); // the empty pool's own `count u16` = 0
 
-    // Empty v9 nav section at the tail: the 28-byte directory + the always-present §8.6 profile
-    // table (the caller's names, every multiplier 16 = 1.0×). Zero-length index + edge pool
-    // "start" just past the profile table.
+    // Empty nav section at the tail: the 28-byte directory + the always-present §8.6 profile
+    // table (the caller's names, every multiplier 16 = 1.0×, climb-blind — this fixture has no
+    // graph to climb). Zero-length index + edge pool "start" just past the profile table.
     let nav_section_off = poi_section_off + poi_dir.len();
     let profile_table_off = (nav_section_off + 28) as u32;
     let mut profile_table = Vec::new();
@@ -165,6 +165,8 @@ pub fn build_min_obcm_profiles(marker: u16, profiles: &[&str]) -> Vec<u8> {
         profile_table.resize(base + 12, 0xFF); // 0xFF-padded 12-byte name
         profile_table.extend_from_slice(&[16u8; 32]); // highway multipliers (1.0×)
         profile_table.extend_from_slice(&[16u8; 8]); // surface multipliers (1.0×)
+        profile_table.push(0); // v12 climb_weight
+        profile_table.resize(base + 56, 0); // three reserved bytes, zero
     }
     let after_nav = profile_table_off + profile_table.len() as u32;
     let mut nav_dir = Vec::new();
@@ -181,7 +183,7 @@ pub fn build_min_obcm_profiles(marker: u16, profiles: &[&str]) -> Vec<u8> {
 
     let mut f = Vec::new();
     f.extend_from_slice(b"OBCM");
-    f.push(11);
+    f.push(obc_formats::obcm::VERSION);
     for v in [-1000i32, -1000, 1000, 1000] {
         f.extend_from_slice(&v.to_le_bytes()); // bbox: min_lat, min_lon, max_lat, max_lon
     }

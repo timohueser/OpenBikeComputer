@@ -31,6 +31,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use obc_elevation::{ElevationSource, ProfileIntegrator};
 use obc_map_scene::ground_dist_m;
 
 /// Dedup key for an edge: the unordered endpoint pair (canonicalized to `min <=
@@ -742,6 +743,111 @@ fn split_edge(e: Edge, nodes: &mut Vec<Node>, out: &mut Vec<Edge>) {
     let right = Edge { a: synth, b: e.b, length_m: polyline_len_m(&right_poly), polyline: right_poly, kind: e.kind };
     split_edge(left, nodes, out);
     split_edge(right, nodes, out);
+}
+
+// --- v12 §8.3 directional ascent (epic #1068 EL5) ---------------------------------------------
+
+/// Longest ground gap (m) the ascent sampler will leave between two elevation samples on an edge.
+///
+/// The number is a property of the raster, not a taste: OBCT v1 data is posted at `2^9` µdeg
+/// (`OBCT_Spec.md` §1.1), which is ≈ 57 m in latitude and less in longitude at European latitudes.
+/// Stepping at 50 m guarantees **at least one sample per posting cell** along the line, so a
+/// hill between two far-apart OSM shape nodes cannot be stepped over. Sampling much finer would only
+/// re-read the same bilinear surface: below the posting the surface is a plane, and a plane
+/// contributes its endpoints' delta however many times it is sampled.
+pub const ASCENT_SAMPLE_STEP_M: f32 = 50.0;
+
+/// Integrate a nav edge's climb in **both** directions, in metres, saturating into the `u16` the
+/// §8.3 neighbor entry carries. Returns `(a→b, b→a)` for a polyline running `a … b`.
+///
+/// Two directions rather than one plus a sign, because ascent is an **integral**: a pass between two
+/// equal-height junctions has hundreds of metres of climb each way and no net change at all. The
+/// second value is the same line walked backwards, which is why it is the first direction's descent
+/// and not its negation.
+///
+/// **The sampling rule, which is the part that has to be reproducible.** Every polyline vertex is
+/// sampled, plus interpolated points so that no two consecutive samples are more than
+/// [`ASCENT_SAMPLE_STEP_M`] of ground apart. Interpolation is integer µdeg with round-half-away-
+/// from-zero, and the sub-division of a segment into `k` equal steps is symmetric under reversal
+/// (`round((a(k−t) + bt)/k)` reversed is the same point set), so the forward and backward passes see
+/// **the same sample coordinates in opposite order** — the property that makes `ascent(b→a)` exactly
+/// `descent(a→b)` on covered terrain rather than approximately so.
+///
+/// **Dead-band: the shared [`ELE_DEADBAND_M`](obc_elevation::ELE_DEADBAND_M) (3 m), deliberately not
+/// a packer-private one.** The whole point of epic #1068 is that the ascent a route is *costed* by
+/// and the ascent a rider is *shown* are the same number; a different threshold here would make them
+/// incomparable by construction.
+///
+/// **A hole in coverage pauses rather than bridges.** When the source has no height for a sample
+/// (outside coverage, a `NODATA` corner, a failed read) the dead-band's reference is dropped, so the
+/// climb *across* the gap is never booked — the same rule the device's tracking pause uses. With no
+/// terrain at all every sample is `None` and the answer is `(0, 0)`: that is the degrade path, and it
+/// is what makes a map packed without `--terrain` route exactly as v11 did.
+pub fn integrate_edge_ascent(polyline: &[(i32, i32)], source: &mut dyn ElevationSource) -> (u16, u16) {
+    let forward = ascent_along(polyline.iter().copied(), source);
+    let backward = ascent_along(polyline.iter().rev().copied(), source);
+    (forward, backward)
+}
+
+/// One direction of [`integrate_edge_ascent`]: densify to [`ASCENT_SAMPLE_STEP_M`], sample, fold.
+fn ascent_along(pts: impl Iterator<Item = (i32, i32)>, source: &mut dyn ElevationSource) -> u16 {
+    let mut it = ProfileIntegrator::<f32>::new();
+    let mut dist = 0.0f32;
+    let mut prev: Option<(i32, i32)> = None;
+    fn push(it: &mut ProfileIntegrator<f32>, dist: f32, p: (i32, i32), source: &mut dyn ElevationSource) {
+        match source.sample(p.1, p.0) {
+            Some(h) => it.push(dist, f32::from(h)),
+            // No height here: keep the length, drop the reference. Booking the climb across an
+            // unsampled stretch would invent metres the rider never rides.
+            None => it.band().pause(),
+        }
+    }
+    for p in pts {
+        let Some(from) = prev else {
+            push(&mut it, dist, p, source);
+            prev = Some(p);
+            continue;
+        };
+        let seg = seg_len_m(from, p);
+        let steps = (seg / ASCENT_SAMPLE_STEP_M).ceil().max(1.0) as u32;
+        for t in 1..=steps {
+            let at = lerp_udeg(from, p, t, steps);
+            push(&mut it, dist + seg * (t as f32 / steps as f32), at, source);
+        }
+        dist += seg;
+        prev = Some(p);
+    }
+    it.ascent_u16()
+}
+
+/// A **direction-independent** segment length (m), used only to choose how many samples a segment
+/// gets.
+///
+/// [`ground_dist_m`] takes its `cos(lat)` from its *first* argument, so it is very slightly
+/// asymmetric — a difference far below a metre, and irrelevant to `length_m`, but enough to make the
+/// forward and backward passes disagree on `steps` for a segment sitting on a rounding boundary, and
+/// therefore to sample two different point sets. Canonicalising the argument order removes the
+/// asymmetry at no cost. Edge `length_m` keeps using [`polyline_len_m`] unchanged — this helper
+/// governs sampling density only, never a distance anyone sees.
+fn seg_len_m(a: (i32, i32), b: (i32, i32)) -> f32 {
+    let (p, q) = if a <= b { (a, b) } else { (b, a) };
+    ground_dist_m(p, q)
+}
+
+/// The point `t/k` of the way from `a` to `b` in integer µdeg, rounded half away from zero.
+///
+/// Deliberately expressed so that `lerp_udeg(a, b, t, k) == lerp_udeg(b, a, k - t, k)`: the forward
+/// and reverse passes must land on the *same* coordinates or the two directions would sample two
+/// slightly different lines and the `ascent(b→a) == descent(a→b)` identity would only hold to within
+/// a metre or two.
+fn lerp_udeg(a: (i32, i32), b: (i32, i32), t: u32, k: u32) -> (i32, i32) {
+    let one = |a: i32, b: i32| -> i32 {
+        let num = a as i64 * (k - t) as i64 + b as i64 * t as i64;
+        let den = k as i64;
+        let half = den / 2;
+        (if num >= 0 { (num + half) / den } else { -((-num + half) / den) }) as i32
+    };
+    (one(a.0, b.0), one(a.1, b.1))
 }
 
 /// The pack-log nav summary (three lines), alongside the POI counts:

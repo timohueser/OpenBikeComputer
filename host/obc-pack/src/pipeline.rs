@@ -13,7 +13,7 @@
 //! in [`Progress`] — see [`crate::progress`].
 
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
 
@@ -25,6 +25,8 @@ use crate::merge::{merge_classes, merge_fills_with, merge_line_classes, merge_li
 use crate::progress::{PackError, Phase, Progress};
 use crate::quadtree::build_lod_with;
 use crate::serialize::serialize_lods_streaming;
+use crate::terrain::TerrainSet;
+use obc_elevation::{ElevationSource, NullElevation};
 
 // Meters → degrees divisor for simplify tolerance; shared so the packer's scale
 // matches the Earth model everything else uses.
@@ -46,6 +48,10 @@ pub struct PackOptions {
     pub dump_pois: bool,
     /// Print each POI's parsed weekly schedule (#440). Same stdout caveat.
     pub dump_hours: bool,
+    /// Baked OBCT terrain (a `.obcd` container or a directory of them) to integrate the OBCM §8.3
+    /// per-direction `Ascent M` from. Absent ⇒ every adjacency entry gets `0`, which is a
+    /// decode-valid v12 map that routes exactly as v11 did.
+    pub terrain: Option<PathBuf>,
 }
 
 /// What a finished run produced.
@@ -132,6 +138,32 @@ fn run(
     // once. Read only when their respective `merge_*` flag is on.
     let fill_classes = merge_classes(&styles);
     let line_classes = merge_line_classes(&styles);
+    // Terrain, if the operator supplied any: opened before the output file so a bad `--terrain`
+    // fails the run rather than leaving a half-written map behind.
+    let terrain_set = match &opts.terrain {
+        None => None,
+        Some(path) => Some(TerrainSet::open(path)?),
+    };
+    let mut sampler = match &terrain_set {
+        None => None,
+        Some(set) => {
+            let s = set.sampler_for(Some(global_bbox))?;
+            progress.stage(
+                Phase::Serialize,
+                format!(
+                    "Terrain: {} container(s), {} covering this extract",
+                    set.len(),
+                    if s.is_empty() { 0 } else { 1 }
+                ),
+            );
+            Some(s)
+        }
+    };
+    let mut null = NullElevation;
+    let terrain: &mut dyn ElevationSource = match &mut sampler {
+        Some(s) => s,
+        None => &mut null,
+    };
     let file = std::fs::File::create(output).map_err(|e| format!("create {out_name}: {e}"))?;
     let mut w = std::io::BufWriter::new(file);
     // The per-LOD closure runs inside the serializer, which has no error channel
@@ -146,6 +178,7 @@ fn run(
         &ingested.pois,
         &ingested.nav_graph,
         &config.routing.profiles,
+        terrain,
         |i| {
             let lod = &config.lods[i];
             progress.stage(Phase::Quadtree, format!("Building Quadtree LOD {i} (simplify {}m)...", lod.simplify_m));

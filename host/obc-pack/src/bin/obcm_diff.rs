@@ -187,7 +187,13 @@ fn dump(r: &Reader, path: &str) {
     let nav = r.nav_directory();
     println!("nav nodes={} chunks={} edge_chunks={}", nav.node_count, nav.chunk_count, nav.edge_chunk_count);
     for p in r.nav_profiles() {
-        println!("nav profile name={:?} highway={:?} surface={:?}", p.name(), p.highway, p.surface);
+        println!(
+            "nav profile name={:?} climb_weight={} highway={:?} surface={:?}",
+            p.name(),
+            p.climb_weight(),
+            p.highway,
+            p.surface
+        );
     }
     let mut scratch = [0u8; NAV_MAX_CHUNK_BYTES];
     let mut node_lines: Vec<String> = Vec::new();
@@ -200,7 +206,12 @@ fn dump(r: &Reader, path: &str) {
         }
         let mut line = format!("nav node id={} lat={} lon={} deg={}", n.id, n.lat, n.lon, n.degree());
         for nb in n.neighbors() {
-            line.push_str(&format!(" [{} {} {} {} {}]", nb.id, nb.lat, nb.lon, nb.cost_m, nb.way_kind));
+            // `ascent_m` last, and per direction: the one adjacency field that differs between the
+            // two sides of an edge, so a cross-bump `--dump` diff shows the climb it gained.
+            line.push_str(&format!(
+                " [{} {} {} {} {} asc={}]",
+                nb.id, nb.lat, nb.lon, nb.cost_m, nb.way_kind, nb.ascent_m
+            ));
             edge_ids.push(nb.edge_id);
         }
         node_lines.push(line);
