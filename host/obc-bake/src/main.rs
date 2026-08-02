@@ -47,6 +47,24 @@ usage:
         --summary-json FILE  write the machine-readable run summary
         --all                update/bake the whole planet through resumable source shards
 
+  obc-bake terrain [REGION…] --sources DIR [flags]
+      Bake the curated coverage's OBCT terrain cells into the tree's terrain band.
+      Terrain has its OWN revision track: this never re-bakes an OBCM cell, and a
+      schema bump never re-bakes a terrain cell (OBCC_Spec.md §13).
+        --out TREE              output tree (default: ./obc-bake)
+        --sources DIR           source DEM GeoTIFFs (`obc-dem fetch --out DIR`)
+        --dataset-id ID         source dataset (default: copernicus-glo-30)
+        --dataset-version V     its release identity (default: 2021-1)
+        --terrain-revision N    terrain store revision (default: 1)
+        --posting-log2 P        sample lattice, µdeg log2 (default: 9)
+        --cell-log2 S           terrain cell size, µdeg log2 (default: 19)
+        --regions FILE          curated region list
+        --base-url URL          catalog object base
+        --generated-at TS       pin the catalog's generated_at
+        --cache DIR             extract/poly download cache
+        --source SOURCE         Geofabrik base or directory (for the .poly files)
+        --force                 re-bake even when unchanged
+
   obc-bake publish TREE --base-url URL [flags]
       Regenerate and publish content first, then replace catalog.json last.
         --target TARGET      `dir:PATH` (default: dry run) or `r2`
@@ -68,6 +86,7 @@ fn main() -> ExitCode {
     let result = match command {
         "regions" => run_regions(rest),
         "bake" => run_bake(rest),
+        "terrain" => run_terrain(rest),
         "publish" => run_publish(rest),
         "verify" => run_verify(rest),
         "check-obcm-version" => run_guard(rest),
@@ -245,6 +264,10 @@ fn run_cell_bake(
             bands,
             schema_id: flags.get("schema-id").unwrap_or("bikepacking").to_string(),
             schema_revision: revision,
+            // Whatever `obc-bake terrain` has already published into this tree. Discovered rather
+            // than flagged: the terrain a cell samples must be the terrain the same catalog
+            // publishes, and a flag would be a second place for the two to disagree.
+            terrain: obc_bake::terrain::in_tree(&out)?,
         },
     };
     let summary = bakery.run(&obc_pack::progress::Progress::stdout())?;
@@ -330,6 +353,10 @@ fn run_planet_bake(
             bands,
             schema_id: flags.get("schema-id").unwrap_or("bikepacking").to_string(),
             schema_revision: revision,
+            // Whatever `obc-bake terrain` has already published into this tree. Discovered rather
+            // than flagged: the terrain a cell samples must be the terrain the same catalog
+            // publishes, and a flag would be a second place for the two to disagree.
+            terrain: obc_bake::terrain::in_tree(&out)?,
         },
     }
     .run(&progress)?;
@@ -344,6 +371,91 @@ fn run_planet_bake(
     } else {
         Err(format!("{} planet leaf/leaves failed — see the summary above", summary.failures.len()))
     }
+}
+
+/// `obc-bake terrain` — the terrain artifact class, baked on its own track.
+///
+/// A separate command from `bake` rather than a phase of it, which is the CLI saying what
+/// `OBCC_Spec.md` §13.2 says: these are two stores with two revisions, and one is not a step of
+/// the other. It needs no OSM extract — only the `.poly` outlines, to know which squares the
+/// curated coverage touches.
+fn run_terrain(args: &[String]) -> Result<(), String> {
+    let (flags, positional) = Flags::parse(
+        args,
+        &["force"],
+        &[
+            "out",
+            "sources",
+            "dataset-id",
+            "dataset-version",
+            "terrain-revision",
+            "posting-log2",
+            "cell-log2",
+            "regions",
+            "presets-dir",
+            "source",
+            "cache",
+            "base-url",
+            "generated-at",
+        ],
+    )?;
+    let out = PathBuf::from(flags.get("out").unwrap_or("obc-bake"));
+    let sources = PathBuf::from(
+        flags
+            .get("sources")
+            .ok_or("terrain needs --sources DIR — a directory of source DEM GeoTIFFs (`obc-dem fetch --out DIR`)")?,
+    );
+
+    let all_regions = obc_bake::regions::load(flags.get("regions").map(Path::new))?;
+    let regions: Vec<_> = if positional.is_empty() {
+        all_regions
+    } else {
+        for want in &positional {
+            if !all_regions.iter().any(|r| &r.id == want) {
+                return Err(format!("`{want}` is not in the curated region list — add it there first"));
+            }
+        }
+        all_regions.into_iter().filter(|r| positional.contains(&r.id)).collect()
+    };
+
+    let number = |name: &str, default: u32| -> Result<u32, String> {
+        match flags.get(name) {
+            Some(value) => value.parse().map_err(|_| format!("--{name} needs a number")),
+            None => Ok(default),
+        }
+    };
+    let log2 = |name: &str, default: u8| -> Result<u8, String> {
+        u8::try_from(number(name, u32::from(default))?).map_err(|_| format!("--{name} is out of range"))
+    };
+    let doc = obc_bake::terrain::TerrainDoc {
+        dataset_id: flags.get("dataset-id").unwrap_or("copernicus-glo-30").to_string(),
+        dataset_version: flags.get("dataset-version").unwrap_or("2021-1").to_string(),
+        posting_log2: log2("posting-log2", obc_dem::bake::V1_POSTING_LOG2)?,
+        cell_log2: log2("cell-log2", obc_dem::bake::V1_CELL_LOG2)?,
+        revision: number("terrain-revision", 1)?,
+        // The credit is a licence obligation and is never retyped here: it comes from the one
+        // `const` in `obc-dem`, travels into the catalog, and a consumer reads it from there.
+        attribution: obc_dem::COPERNICUS_ATTRIBUTION.to_string(),
+    };
+
+    let cache = flags.get("cache").map(PathBuf::from).unwrap_or_else(default_cache_dir);
+    let source_spec = flags.get("source").unwrap_or(obc_bake::source::GeofabrikExtracts::DEFAULT_BASE_URL);
+    let source = obc_bake::source::from_spec(source_spec, &cache);
+    let cutter = obc_bake::terrain::DemCutter::open(&sources)?;
+    println!("{} source DEM tile(s) from {}", cutter.tiles(), sources.display());
+
+    let summary = obc_bake::terrain::TerrainBakery {
+        regions: &regions,
+        source: source.as_ref(),
+        cutter: &cutter,
+        opts: obc_bake::terrain::TerrainBakeOptions { out: out.clone(), doc, force: flags.has("force") },
+    }
+    .run(&obc_pack::progress::Progress::stdout())?;
+    print!("{}", summary.render());
+
+    finish_tree(&flags, &out)?;
+    println!("\n{}", obc_dem::COPERNICUS_ATTRIBUTION);
+    Ok(())
 }
 
 /// The catalog is generated even after a partial run: it is what `verify` reads,

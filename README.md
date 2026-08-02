@@ -220,9 +220,22 @@ obc bake europe/germany/baden-wuerttemberg
 # With no region ids, bake every regions.toml entry into the same tree.
 obc bake
 
+# Bake the terrain artifact class into the same tree, from fetched DEM tiles.
+# Its own revision track: this re-bakes no map cell, and a schema bump re-bakes
+# no terrain cell (OBCC_Spec.md §13).
+obc bake terrain --sources /tmp/dem --terrain-revision 1
+
 # Verify catalog pins, cell headers, lockstep, and reader round-trips.
 obc bake verify
 ```
+
+Run `terrain` **before** `bake`: the cell bake picks up whatever terrain the tree
+already holds, integrates each navigation edge's climb from it, and records which
+`terrain_revision` it sampled. Re-baking terrain afterwards therefore leaves the
+routing band stale, and `obc bake verify` says so — naming both revisions — rather
+than letting the router's numbers drift from the raster the device draws. The DEM
+tiles themselves come from `obc-dem fetch` (see
+[firmware/README.md](firmware/README.md#terrain-tiles-obct)).
 
 Several positional ids are baked together. This matters at borders: neighbouring
 extracts are co-ingested for shared edge cells, so canonical cells are complete

@@ -2511,6 +2511,7 @@ dependencies = [
  "embedded-graphics",
  "heapless 0.8.0",
  "image",
+ "obc-dem",
  "obc-formats",
  "obc-map-scene",
  "obc-pack",

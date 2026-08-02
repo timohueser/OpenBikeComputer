@@ -1,9 +1,10 @@
 //! Tests for the `schema_version 2` producer.
 //!
-//! The synthetic tree in [`example_tree`] is the source of the three checked-in
+//! The synthetic tree in [`example_tree`] is the source of the four checked-in
 //! worked examples, so it is deliberately small and deliberately covers the shapes a
 //! consumer has to handle: four bands (two of them the same cell size), a partial
-//! cell, a co-baked border cell with two sources, a nested region, and a skin with a
+//! cell, a co-baked border cell with two sources, a nested region, a skin with a
+//! preview, and a terrain artifact class on its own revision track.
 
 use std::fs;
 
@@ -211,7 +212,7 @@ fn write_cell_at(
         &cell_path(tree, band, id, CELL_SIDECAR_EXT),
         &format!(
             "{{\n  \"schema_revision\": {revision},\n  \"built_at\": \"{built_at}\",\n  \"sources\": [{}\n  ],\n  \
-             \"partial\": {partial}\n}}\n",
+             \"partial\": {partial},\n  \"terrain_revision\": {TERRAIN_REVISION}\n}}\n",
             sources.join(",")
         ),
     );
@@ -235,6 +236,18 @@ fn poly(name: &str, lon: (f64, f64), lat: (f64, f64)) -> String {
 }
 
 fn write_region(tree: &Path, id: &str, name: &str, cells: &[(&str, Vec<CellId>)], lon: (f64, f64), lat: (f64, f64)) {
+    write_region_with_terrain(tree, id, name, cells, &[], lon, lat);
+}
+
+fn write_region_with_terrain(
+    tree: &Path,
+    id: &str,
+    name: &str,
+    cells: &[(&str, Vec<CellId>)],
+    terrain: &[CellId],
+    lon: (f64, f64),
+    lat: (f64, f64),
+) {
     let dir = tree.join(REGIONS_DIR).join(id);
     let bands: Vec<String> = cells
         .iter()
@@ -243,11 +256,118 @@ fn write_region(tree: &Path, id: &str, name: &str, cells: &[(&str, Vec<CellId>)]
             format!("\n    \"{band}\": [{}]", list.join(", "))
         })
         .collect();
+    let terrain_key = match terrain {
+        [] => String::new(),
+        ids => format!(",\n  \"terrain\": [{}]", ids.iter().map(|c| format!("\"{c}\"")).collect::<Vec<_>>().join(", ")),
+    };
     write(
         &dir.join(REGION_DOC),
-        &format!("{{\n  \"name\": \"{name}\",\n  \"cells\": {{{}\n  }}\n}}\n", bands.join(",")),
+        &format!("{{\n  \"name\": \"{name}\",\n  \"cells\": {{{}\n  }}{terrain_key}\n}}\n", bands.join(",")),
     );
     write(&dir.join(REGION_POLY), &poly(id, lon, lat));
+}
+
+// --- the terrain fixture (§13) --------------------------------------------------------------
+
+/// The example's terrain pairing: the **smallest** OBCT permits (a cell exactly one tile wide), so
+/// a checked-in fixture is 548 bytes instead of 2 MiB. A real bake is `2^9` / `2^19`
+/// (`OBCT_Spec.md` §1.3); nothing in this generator reads the pairing except to check it against
+/// the cells' own headers, so the small one exercises the identical path.
+const TERRAIN_POSTING_LOG2: u8 = 9;
+/// Deliberately a cell size **no band uses**. Terrain is not a band, and its grid is chosen for the
+/// raster rather than for a LOD ladder — a fixture where the two happened to coincide would hide a
+/// generator that had quietly keyed terrain off a band.
+const TERRAIN_CELL_LOG2: u8 = 13;
+const TERRAIN_REVISION: u32 = 3;
+const TERRAIN_DATASET_VERSION: &str = "2021-1";
+/// The credit `obc-dem` owns and the bakery stamps; restated here because this crate has no
+/// dependency on `obc-dem` and must not grow one to read a raster it never decodes.
+const TERRAIN_ATTRIBUTION: &str = "produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus \
+                                   Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union \
+                                   and ESA; all rights reserved";
+
+/// A terrain cell of the example's grid.
+fn terrain_cell(i: u32, j: u32) -> CellId {
+    cell(TERRAIN_CELL_LOG2, i, j)
+}
+
+/// The four terrain cells the example publishes, and the ocean square beside them. The first is the
+/// north-west corner of `fine_west`'s square, which the power-of-two nesting makes exact.
+fn terrain_nw() -> CellId {
+    terrain_cell(38_528, 33_664)
+}
+fn terrain_ne() -> CellId {
+    terrain_cell(38_528, 33_665)
+}
+fn terrain_sea() -> CellId {
+    terrain_cell(38_528, 33_667)
+}
+
+/// A real OBCT 1 × 1 container: header, a one-entry directory, one cell block
+/// (`OBCT_Spec.md` §4.1). Hand-written from `obc-formats`' own field offsets for the same reason
+/// [`obcm_bytes`] is: a fixture built by the code that reads it proves only self-consistency.
+fn obct_bytes(posting_log2: u8, id: CellId, fill: u8) -> Vec<u8> {
+    let block_len = obct::cell_block_len(posting_log2, id.log2).expect("a pairing OBCT permits") as usize;
+    let mut out = vec![0u8; obct::HEADER_LEN + obct::DIR_ENTRY_LEN + block_len];
+    out[obct::HDR_MAGIC..obct::HDR_MAGIC + 4].copy_from_slice(&obct::MAGIC);
+    out[obct::HDR_VERSION] = obct::VERSION;
+    out[obct::HDR_POSTING_LOG2] = posting_log2;
+    out[obct::HDR_CELL_LOG2] = id.log2;
+    out[obct::HDR_CELL_MIN_I..obct::HDR_CELL_MIN_I + 4].copy_from_slice(&id.i.to_le_bytes());
+    out[obct::HDR_CELL_MIN_J..obct::HDR_CELL_MIN_J + 4].copy_from_slice(&id.j.to_le_bytes());
+    out[obct::HDR_CELL_ROWS..obct::HDR_CELL_ROWS + 2].copy_from_slice(&1u16.to_le_bytes());
+    out[obct::HDR_CELL_COLS..obct::HDR_CELL_COLS + 2].copy_from_slice(&1u16.to_le_bytes());
+    let dir_at = obct::HEADER_LEN as u32;
+    out[obct::HDR_DIRECTORY_OFFSET..obct::HDR_DIRECTORY_OFFSET + 4].copy_from_slice(&dir_at.to_le_bytes());
+    let block_at = dir_at + obct::DIR_ENTRY_LEN as u32;
+    out[obct::HEADER_LEN..obct::HEADER_LEN + 4].copy_from_slice(&block_at.to_le_bytes());
+    out[block_at as usize..].fill(fill);
+    out
+}
+
+fn terrain_doc_json(revision: u32, dataset_version: &str) -> String {
+    format!(
+        "{{\n  \"dataset_id\": \"copernicus-glo-30\",\n  \"dataset_version\": \"{dataset_version}\",\n  \
+         \"posting_log2\": {TERRAIN_POSTING_LOG2},\n  \"cell_log2\": {TERRAIN_CELL_LOG2},\n  \"revision\": \
+         {revision},\n  \"attribution\": \"{TERRAIN_ATTRIBUTION}\"\n}}\n"
+    )
+}
+
+fn terrain_path(tree: &Path, id: CellId, ext: &str) -> PathBuf {
+    let w = CellId::index_width(id.log2);
+    tree.join(CELLS_DIR).join(TERRAIN_DIR).join(format!("{:0w$}", id.i, w = w)).join(format!(
+        "{:0w$}{ext}",
+        id.j,
+        w = w
+    ))
+}
+
+fn write_terrain_cell(tree: &Path, id: CellId, fill: u8, built_at: &str, revision: u32, dataset_version: &str) {
+    let path = terrain_path(tree, id, TERRAIN_EXT);
+    fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+    fs::write(&path, obct_bytes(TERRAIN_POSTING_LOG2, id, fill)).expect("terrain cell");
+    write(
+        &terrain_path(tree, id, TERRAIN_SIDECAR_EXT),
+        &format!(
+            "{{\n  \"terrain_revision\": {revision},\n  \"dataset_version\": \"{dataset_version}\",\n  \
+             \"built_at\": \"{built_at}\"\n}}\n"
+        ),
+    );
+}
+
+/// The terrain half of [`example_tree`]: two published cells, one all-`NODATA` ocean square, and
+/// the declaration that gives them a dataset, a pairing and a revision.
+fn write_terrain(tree: &Path, revision: u32, dataset_version: &str) {
+    write(&tree.join(TERRAIN_DOC), &terrain_doc_json(revision, dataset_version));
+    write_terrain_cell(tree, terrain_nw(), 0x11, "2026-08-01T04:00:00Z", revision, dataset_version);
+    write_terrain_cell(tree, terrain_ne(), 0x22, "2026-08-01T04:00:03Z", revision, dataset_version);
+    let state = format!(
+        "{{\n  \"terrain_revision\": {revision},\n  \"known_empty\": [\n    {{\n      \"start\": \"{}\",\n      \
+         \"end\": \"{}\",\n      \"built_at\": \"2026-08-01T04:00:07Z\"\n    }}\n  ]\n}}\n",
+        terrain_sea(),
+        terrain_sea()
+    );
+    write(&tree.join(CELLS_DIR).join(TERRAIN_DIR).join(KNOWN_EMPTY_STATE_NAME), &state);
 }
 
 // The cells the example publishes. `coarse`/`mid`/`fine` nest exactly (the grid's
@@ -311,8 +431,11 @@ fn example_tree(tree: &Path) {
     // Baked from one side only: the sources do not cover the square, so it is partial
     // and a consumer must not present it as canonical coverage.
     write_cell(tree, "network", fine_east(), 128, "2026-07-30T02:14:52Z", &ch, true);
+    // The other artifact class, at its own revision (§13) — deliberately not `EXAMPLE_REVISION`,
+    // so the example itself demonstrates that the two numbers are unrelated.
+    write_terrain(tree, TERRAIN_REVISION, TERRAIN_DATASET_VERSION);
 
-    write_region(
+    write_region_with_terrain(
         tree,
         "europe/switzerland",
         "Switzerland",
@@ -322,12 +445,13 @@ fn example_tree(tree: &Path) {
             ("fine", vec![fine_west(), fine_east(), fine_empty()]),
             ("network", vec![fine_west(), fine_east()]),
         ],
+        &[terrain_nw(), terrain_ne(), terrain_sea()],
         (5.9, 10.5),
         (45.8, 47.8),
     );
     // A sub-region curated separately from its parent: `parent` comes from the tree's
     // own nesting, so the two cannot disagree.
-    write_region(
+    write_region_with_terrain(
         tree,
         "europe/switzerland/basel-stadt",
         "Basel-Stadt",
@@ -337,6 +461,7 @@ fn example_tree(tree: &Path) {
             ("fine", vec![fine_west()]),
             ("network", vec![fine_west()]),
         ],
+        &[terrain_nw()],
         (7.5, 7.7),
         (47.5, 47.6),
     );
@@ -477,6 +602,8 @@ fn walks_a_tree_into_a_root_and_its_satellites() {
             "cells/mid/index.json",
             "cells/fine/index.json",
             "cells/network/index.json",
+            // The terrain index is a satellite like any other — one document, no band.
+            "cells/terrain/index.json",
             "regions/europe/switzerland/cells.json",
             "regions/europe/switzerland/basel-stadt/cells.json",
         ]
@@ -708,7 +835,7 @@ fn generation_is_deterministic_for_a_given_tree() {
     // The same content written in a different order, into a different directory: this
     // is what proves the ordering is content-derived rather than `read_dir`-derived.
     let b = TempTree::new("det-b");
-    write_region(
+    write_region_with_terrain(
         b.path(),
         "europe/switzerland/basel-stadt",
         "Basel-Stadt",
@@ -718,6 +845,7 @@ fn generation_is_deterministic_for_a_given_tree() {
             ("mid", vec![mid_cell()]),
             ("coarse", vec![coarse_cell()]),
         ],
+        &[terrain_nw()],
         (7.5, 7.7),
         (47.5, 47.6),
     );
@@ -749,7 +877,8 @@ fn generation_is_deterministic_for_a_given_tree() {
     );
     write_cell(b.path(), "mid", mid_cell(), 1_024, "2026-07-30T02:11:38Z", &ch, false);
     write_cell(b.path(), "coarse", coarse_cell(), 2_048, "2026-07-30T02:10:04Z", &ch, false);
-    write_region(
+    write_terrain(b.path(), TERRAIN_REVISION, TERRAIN_DATASET_VERSION);
+    write_region_with_terrain(
         b.path(),
         "europe/switzerland",
         "Switzerland",
@@ -759,6 +888,9 @@ fn generation_is_deterministic_for_a_given_tree() {
             ("coarse", vec![coarse_cell()]),
             ("mid", vec![mid_cell()]),
         ],
+        // Reversed, like the band lists above: the published list is sorted, so the order the
+        // curation happened to be written in must not move a byte.
+        &[terrain_sea(), terrain_ne(), terrain_nw()],
         (5.9, 10.5),
         (45.8, 47.8),
     );
@@ -1463,6 +1595,9 @@ fn generated_documents_validate_against_the_checked_in_schema() {
         compiler.compile("catalog.schema.json#/$defs/CellIndexDocument", &mut schemas).expect("compile cell index");
     let region_id =
         compiler.compile("catalog.schema.json#/$defs/RegionCellsDocument", &mut schemas).expect("compile region cells");
+    let terrain_id = compiler
+        .compile("catalog.schema.json#/$defs/TerrainIndexDocument", &mut schemas)
+        .expect("compile terrain index");
 
     let t = TempTree::new("validate");
     example_tree(t.path());
@@ -1473,15 +1608,22 @@ fn generated_documents_validate_against_the_checked_in_schema() {
     }
     for s in &g.satellites {
         let doc: Value = serde_json::from_str(&s.body).unwrap();
-        let sid = if s.rel_path.starts_with("cells/") { cell_id } else { region_id };
+        let sid = match () {
+            _ if s.rel_path.starts_with(&format!("{CELLS_DIR}/{TERRAIN_DIR}/")) => terrain_id,
+            _ if s.rel_path.starts_with("cells/") => cell_id,
+            _ => region_id,
+        };
         if let Err(e) = schemas.validate(&doc, sid) {
             panic!("{} does not validate:\n{e:#}", s.rel_path);
         }
     }
     // The checked-in examples are the artifacts a consumer is built against.
-    for (example, sid) in
-        [(CATALOG_EXAMPLE_JSON, root_id), (CELL_INDEX_EXAMPLE_JSON, cell_id), (REGION_CELLS_EXAMPLE_JSON, region_id)]
-    {
+    for (example, sid) in [
+        (CATALOG_EXAMPLE_JSON, root_id),
+        (CELL_INDEX_EXAMPLE_JSON, cell_id),
+        (REGION_CELLS_EXAMPLE_JSON, region_id),
+        (TERRAIN_INDEX_EXAMPLE_JSON, terrain_id),
+    ] {
         let doc: Value = serde_json::from_str(example).expect("example is valid JSON");
         if let Err(e) = schemas.validate(&doc, sid) {
             panic!("a checked-in example does not validate:\n{e:#}");
@@ -1515,6 +1657,11 @@ fn catalog_examples_are_current() {
             "region-cells.example.json",
             satellite(&g, "regions/europe/switzerland/cells.json").body.clone(),
             REGION_CELLS_EXAMPLE_JSON,
+        ),
+        (
+            "terrain-index.example.json",
+            satellite(&g, "cells/terrain/index.json").body.clone(),
+            TERRAIN_INDEX_EXAMPLE_JSON,
         ),
     ];
     // Regeneration is a deliberate act, so it needs a deliberate switch — the same one
@@ -1587,6 +1734,7 @@ fn the_shipped_schema_and_skin_generate_the_current_catalog() {
     let t = TempTree::new("shipped");
     write(&t.path().join(SCHEMA_DOC), &as_schema(SHIPPED_SCHEMA, RECOMMENDED_BAND_TABLE, 1));
     write(&t.path().join(SKINS_DIR).join("default.json"), &repo_doc(SHIPPED_SKIN));
+    write_terrain(t.path(), TERRAIN_REVISION, TERRAIN_DATASET_VERSION);
     let ch = [("europe/switzerland", "2026-07-19")];
     for (band, id) in [("coarse", coarse_cell()), ("mid", mid_cell()), ("fine", fine_west())] {
         write_cell_at(t.path(), band, id, OBCM_VERSION, id.square(), 16, 1, "2026-07-30T02:10:04Z", &ch, false);
@@ -1688,6 +1836,7 @@ fn the_shipped_dusk_skin_is_a_presentation_only_night_restyle() {
     write(&t.path().join(SCHEMA_DOC), &as_schema(SHIPPED_SCHEMA, RECOMMENDED_BAND_TABLE, 1));
     write(&t.path().join(SKINS_DIR).join("default.json"), &repo_doc(SHIPPED_SKIN));
     write(&t.path().join(SKINS_DIR).join("dusk.json"), &repo_doc(SHIPPED_DUSK_SKIN));
+    write_terrain(t.path(), TERRAIN_REVISION, TERRAIN_DATASET_VERSION);
     let ch = [("europe/switzerland", "2026-07-19")];
     for (band, id) in [("coarse", coarse_cell()), ("mid", mid_cell()), ("fine", fine_west()), ("network", fine_west())]
     {
@@ -1754,4 +1903,314 @@ fn the_shipped_dusk_skin_is_a_presentation_only_night_restyle() {
     let land = dusk_by_type["natural.land"];
     assert_eq!(bucket(land.color), (0, 0, 0), "the dark ground the whole design stands on");
     assert_eq!(bucket(dusk.marker_color), (255, 255, 0), "and a marker that reads against it");
+}
+
+// --- the terrain artifact class (§13) ---------------------------------------------------------
+
+fn terrain_index_doc(g: &GeneratedCatalog) -> TerrainIndexDocument {
+    serde_json::from_str(&satellite(g, &format!("{CELLS_DIR}/{TERRAIN_DIR}/{CELL_INDEX_NAME}")).body)
+        .expect("terrain index parses")
+}
+
+/// Simulate the one event OBCA principle 5 makes a whole-store cutover: a schema-revision bump.
+fn bump_schema_revision(tree: &Path, to: u32) {
+    write_schema(tree, to);
+    let mut stack = vec![tree.join(CELLS_DIR)];
+    while let Some(dir) = stack.pop() {
+        for entry in sorted_entries(&dir).expect("readable") {
+            if entry.is_dir() {
+                stack.push(entry);
+                continue;
+            }
+            let name = file_name(&entry).expect("named");
+            if !name.ends_with(CELL_SIDECAR_EXT) {
+                continue;
+            }
+            let mut doc: Value = serde_json::from_str(&fs::read_to_string(&entry).expect("sidecar")).expect("JSON");
+            doc["schema_revision"] = Value::from(to);
+            write(&entry, &format!("{}\n", serde_json::to_string_pretty(&doc).expect("serializes")));
+        }
+    }
+    // The known-empty state is per schema revision too, so it moves with the store.
+    let path = tree.join(CELLS_DIR).join("fine").join(KNOWN_EMPTY_STATE_NAME);
+    let mut state: Value = serde_json::from_str(&fs::read_to_string(&path).expect("state")).expect("JSON");
+    state["schema_revision"] = Value::from(to);
+    write(&path, &format!("{}\n", serde_json::to_string_pretty(&state).expect("serializes")));
+}
+
+/// Simulate a terrain re-bake: the terrain store moves to a new revision, and the OBCM store — not
+/// re-cut in the same breath — still records having sampled the old one.
+fn bump_terrain_revision(tree: &Path, to: u32) {
+    write(&tree.join(TERRAIN_DOC), &terrain_doc_json(to, TERRAIN_DATASET_VERSION));
+    for (id, fill, built_at) in
+        [(terrain_nw(), 0x33, "2026-09-01T04:00:00Z"), (terrain_ne(), 0x44, "2026-09-01T04:00:03Z")]
+    {
+        write_terrain_cell(tree, id, fill, built_at, to, TERRAIN_DATASET_VERSION);
+    }
+    let state = format!(
+        "{{\n  \"terrain_revision\": {to},\n  \"known_empty\": [\n    {{\n      \"start\": \"{}\",\n      \"end\": \
+         \"{}\",\n      \"built_at\": \"2026-09-01T04:00:07Z\"\n    }}\n  ]\n}}\n",
+        terrain_sea(),
+        terrain_sea()
+    );
+    write(&tree.join(CELLS_DIR).join(TERRAIN_DIR).join(KNOWN_EMPTY_STATE_NAME), &state);
+}
+
+/// Everything the root pins, by published path, split into (terrain, everything else).
+///
+/// The *published* path carries the object's digest, so "the set is unchanged" is literally "there
+/// is nothing to re-upload" — which is the claim both independence pins make.
+fn pinned(g: &GeneratedCatalog) -> (BTreeSet<String>, BTreeSet<String>) {
+    let terrain_prefix = format!("{CELLS_DIR}/{TERRAIN_DIR}/");
+    g.pinned_artifacts
+        .iter()
+        .map(|a| a.published_rel_path.clone())
+        .chain(g.satellites.iter().map(|s| s.published_rel_path.clone()))
+        .partition(|path| path.starts_with(&terrain_prefix))
+}
+
+#[test]
+fn the_root_carries_a_terrain_block_with_its_own_revision() {
+    let t = TempTree::new("terrain-root");
+    example_tree(t.path());
+    let g = generated(t.path());
+    let terrain = g.root.terrain.as_ref().expect("the example publishes terrain");
+
+    assert_eq!(terrain.dataset_id, "copernicus-glo-30");
+    assert_eq!(terrain.dataset_version, TERRAIN_DATASET_VERSION);
+    assert_eq!((terrain.posting_log2, terrain.cell_log2), (TERRAIN_POSTING_LOG2, TERRAIN_CELL_LOG2));
+    assert_eq!(terrain.terrain_revision, TERRAIN_REVISION);
+    assert_ne!(
+        terrain.terrain_revision, g.root.schema.revision,
+        "the two revisions are unrelated numbers, and the worked example says so"
+    );
+    // §13.5: the credit is data a consumer reads, not a string a builder hard-codes.
+    assert!(terrain.attribution.contains("Copernicus"), "{}", terrain.attribution);
+    assert!(terrain.attribution.contains("ESA"), "{}", terrain.attribution);
+
+    // §13.1: one pinned index, digest-addressed like every other pinned object.
+    let pin = &terrain.cell_index;
+    assert_eq!((pin.cell_count, pin.known_empty_count), (2, 1));
+    assert_eq!(pin.url, format!("https://maps.example.org/catalog/cells/terrain/index.{}.json", pin.sha256));
+    let index = satellite(&g, "cells/terrain/index.json");
+    assert_eq!((pin.bytes, pin.sha256.as_str()), (index.bytes, index.sha256.as_str()));
+
+    // §13.4: the one coupling, recorded — and this example is consistent, so nothing is warned.
+    assert_eq!(g.root.network_terrain_revision, Some(TERRAIN_REVISION));
+    assert!(g.warnings.is_empty(), "{:?}", g.warnings);
+}
+
+#[test]
+fn the_terrain_index_lists_cells_and_ocean_runs_and_carries_no_schema_revision() {
+    let t = TempTree::new("terrain-index");
+    example_tree(t.path());
+    let g = generated(t.path());
+    let doc = terrain_index_doc(&g);
+
+    assert_eq!(doc.schema_version, CATALOG_SCHEMA_VERSION);
+    assert_eq!(doc.terrain_revision, TERRAIN_REVISION);
+    assert_eq!(doc.cells.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["13/38528/33664", "13/38528/33665"]);
+    let nw = &doc.cells[0];
+    // 32-byte header + a one-entry directory + one 512-byte tile: the smallest legal container.
+    assert_eq!(nw.bytes, (obct::HEADER_LEN + obct::DIR_ENTRY_LEN + 512) as u64);
+    assert_eq!(nw.url, format!("https://maps.example.org/catalog/cells/terrain/38528/33664.{}.obcd", nw.sha256));
+    assert_eq!(nw.built_at, "2026-08-01T04:00:00Z");
+    // The ocean square: canonical zero-byte coverage, with no object to fetch.
+    assert_eq!(doc.known_empty.len(), 1);
+    assert_eq!(doc.known_empty[0].start, terrain_sea().to_string());
+
+    // The independence, asserted on the serialized document a consumer actually reads: nothing in
+    // it names the OBCM store, so nothing in the OBCM store can invalidate it.
+    let body = &satellite(&g, "cells/terrain/index.json").body;
+    for forbidden in ["schema_revision", "obcm", "band"] {
+        assert!(!body.contains(forbidden), "the terrain index must not name `{forbidden}`:\n{body}");
+    }
+}
+
+#[test]
+fn a_region_lists_and_prices_its_terrain_selection() {
+    let t = TempTree::new("terrain-region");
+    example_tree(t.path());
+    let g = generated(t.path());
+
+    let ch = region(&g, "europe/switzerland");
+    let footprint = ch.terrain.expect("the region selects terrain");
+    assert_eq!((footprint.cell_count, footprint.known_empty_count), (2, 1));
+    let doc = terrain_index_doc(&g);
+    assert_eq!(footprint.bytes, doc.cells.iter().map(|c| c.bytes).sum::<u64>());
+    // Terrain is priced beside the map, never inside it: a rider may take one without the other,
+    // and `bytes_by_band` is the volume set's per-file projection (OBCA_Spec.md §5.7).
+    assert_eq!(ch.bytes, ch.bytes_by_band.values().sum::<u64>());
+    assert!(footprint.bytes > 0 && ch.bytes < footprint.bytes + ch.bytes);
+
+    let satellite_doc: RegionCellsDocument =
+        serde_json::from_str(&satellite(&g, "regions/europe/switzerland/cells.json").body).expect("parses");
+    assert_eq!(
+        satellite_doc.terrain,
+        [terrain_nw().to_string(), terrain_ne().to_string(), terrain_sea().to_string()],
+        "sorted, and a known-empty square is part of the selection"
+    );
+    // A terrain id is not a band key: `cells` stays exactly the schema's bands.
+    assert!(!satellite_doc.cells.contains_key(TERRAIN_DIR));
+
+    let basel = region(&g, "europe/switzerland/basel-stadt");
+    assert_eq!(basel.terrain.expect("selects terrain").cell_count, 1);
+}
+
+/// **Independence pin (a)**: a schema-revision bump is a complete OBCM cutover — and touches not
+/// one terrain byte.
+///
+/// This is the property the whole issue exists for. Terrain derives from a DEM that changes on a
+/// years cadence; if it joined OBCA principle 5's lockstep, every schema bump would re-publish
+/// hundreds of MiB of identical raster.
+#[test]
+fn a_schema_revision_bump_republishes_no_terrain_object() {
+    let t = TempTree::new("indep-schema");
+    example_tree(t.path());
+    let before = generated(t.path());
+    let (terrain_before, obcm_before) = pinned(&before);
+
+    bump_schema_revision(t.path(), EXAMPLE_REVISION + 1);
+    let after = generated(t.path());
+    let (terrain_after, obcm_after) = pinned(&after);
+
+    assert_eq!(after.root.schema.revision, EXAMPLE_REVISION + 1, "the OBCM store really did move");
+    assert_ne!(obcm_after, obcm_before, "…and its satellites really were re-published");
+    assert_eq!(terrain_after, terrain_before, "not one terrain object may be re-published by a schema bump");
+    assert_eq!(
+        satellite(&after, "cells/terrain/index.json").body,
+        satellite(&before, "cells/terrain/index.json").body,
+        "the terrain index is byte-identical across a schema-revision bump"
+    );
+    assert_eq!(after.root.terrain, before.root.terrain, "and so is the root's terrain block");
+    assert!(after.warnings.is_empty(), "{:?}", after.warnings);
+}
+
+/// **Independence pin (b)**: a terrain re-bake is a complete terrain cutover — and touches not one
+/// OBCM byte. The reverse of (a), and it needs its own test because the two directions are
+/// different code.
+///
+/// It also pins the one real coupling: the network band's cells recorded which terrain revision
+/// their ascents were integrated from, so a terrain bump leaves them **stale** — said out loud,
+/// naming both revisions, rather than quietly serving a router whose numbers disagree with the
+/// raster the device draws.
+#[test]
+fn a_terrain_rebake_republishes_no_obcm_object_and_flags_the_network_band() {
+    let t = TempTree::new("indep-terrain");
+    example_tree(t.path());
+    let before = generated(t.path());
+    let (terrain_before, obcm_before) = pinned(&before);
+
+    bump_terrain_revision(t.path(), TERRAIN_REVISION + 1);
+    let after = generated(t.path());
+    let (terrain_after, obcm_after) = pinned(&after);
+
+    assert_eq!(after.root.terrain.as_ref().expect("terrain").terrain_revision, TERRAIN_REVISION + 1);
+    assert_ne!(terrain_after, terrain_before, "the terrain store really did move");
+    assert_eq!(obcm_after, obcm_before, "not one OBCM object may be re-published by a terrain re-bake");
+    for band in ["coarse", "mid", "fine", "network"] {
+        let rel = format!("cells/{band}/index.json");
+        assert_eq!(
+            satellite(&after, &rel).body,
+            satellite(&before, &rel).body,
+            "band `{band}`'s index is byte-identical across a terrain re-bake"
+        );
+    }
+    assert_eq!(after.root.schema, before.root.schema, "and the schema entry is untouched");
+
+    // The coupling, stated: the cells still record the previous revision.
+    assert_eq!(after.root.network_terrain_revision, Some(TERRAIN_REVISION));
+    let warning = after.warnings.iter().find(|w| w.contains("network band")).expect("a stale network band is loud");
+    assert!(warning.contains(&format!("terrain revision {TERRAIN_REVISION},")), "{warning}");
+    assert!(warning.contains(&format!("terrain revision {}", TERRAIN_REVISION + 1)), "{warning}");
+    assert!(warning.contains("§13.4"), "the warning must name the rule: {warning}");
+}
+
+#[test]
+fn a_mixed_terrain_store_is_refused() {
+    // A cell from another terrain revision: the terrain track's own lockstep (§13.2).
+    let t = TempTree::new("mixed-terrain");
+    example_tree(t.path());
+    write_terrain_cell(t.path(), terrain_ne(), 0x22, "2026-08-01T04:00:03Z", TERRAIN_REVISION - 1, "2021-1");
+    let err = generate(t.path(), &opts()).expect_err("a mixed-revision terrain store must fail");
+    assert!(err.contains(&format!("terrain revision {}", TERRAIN_REVISION - 1)), "{err}");
+    assert!(err.contains("lockstep within its own track"), "{err}");
+
+    // A cell from another dataset version: the other half of the same key.
+    let u = TempTree::new("mixed-dataset");
+    example_tree(u.path());
+    write_terrain_cell(u.path(), terrain_ne(), 0x22, "2026-08-01T04:00:03Z", TERRAIN_REVISION, "2023-1");
+    let err = generate(u.path(), &opts()).expect_err("a mixed-dataset terrain store must fail");
+    assert!(err.contains("dataset version `2023-1`"), "{err}");
+
+    // And a cell store that sampled two different rasters (§13.4).
+    let v = TempTree::new("mixed-network-terrain");
+    example_tree(v.path());
+    let path = cell_path(v.path(), "network", fine_east(), CELL_SIDECAR_EXT);
+    let mut doc: Value = serde_json::from_str(&fs::read_to_string(&path).expect("sidecar")).expect("JSON");
+    doc["terrain_revision"] = Value::from(TERRAIN_REVISION + 5);
+    write(&path, &format!("{}\n", serde_json::to_string_pretty(&doc).expect("serializes")));
+    let err = generate(v.path(), &opts()).expect_err("a store that sampled two rasters must fail");
+    assert!(err.contains("§13.4"), "{err}");
+}
+
+#[test]
+fn a_terrain_container_must_be_the_one_by_one_cell_its_id_names() {
+    // A container covering a different square than its path says.
+    let t = TempTree::new("terrain-square");
+    example_tree(t.path());
+    let path = terrain_path(t.path(), terrain_nw(), TERRAIN_EXT);
+    fs::write(&path, obct_bytes(TERRAIN_POSTING_LOG2, terrain_cell(38_529, 33_664), 0x11)).expect("cell");
+    let err = generate(t.path(), &opts()).expect_err("a terrain cell must be its square");
+    assert!(err.contains("disagrees with its id"), "{err}");
+
+    // A shard (a wider rectangle) published as a cell.
+    let u = TempTree::new("terrain-shard");
+    example_tree(u.path());
+    let path = terrain_path(u.path(), terrain_nw(), TERRAIN_EXT);
+    let mut bytes = obct_bytes(TERRAIN_POSTING_LOG2, terrain_nw(), 0x11);
+    bytes[obct::HDR_CELL_COLS..obct::HDR_CELL_COLS + 2].copy_from_slice(&2u16.to_le_bytes());
+    fs::write(&path, bytes).expect("cell");
+    let err = generate(u.path(), &opts()).expect_err("a shard is not a cell");
+    assert!(err.contains("1 × 1"), "{err}");
+
+    // A container at another pairing than the one the store declares.
+    let v = TempTree::new("terrain-pairing");
+    example_tree(v.path());
+    let path = terrain_path(v.path(), terrain_nw(), TERRAIN_EXT);
+    let mut bytes = obct_bytes(TERRAIN_POSTING_LOG2, terrain_nw(), 0x11);
+    bytes[obct::HDR_POSTING_LOG2] = TERRAIN_POSTING_LOG2 - 1;
+    fs::write(&path, bytes).expect("cell");
+    let err = generate(v.path(), &opts()).expect_err("one lattice per terrain revision");
+    assert!(err.contains("one lattice per terrain revision"), "{err}");
+}
+
+#[test]
+fn terrain_is_reserved_and_a_terrainless_catalog_is_complete() {
+    // `terrain` is not a band id, because `cells/terrain/` is the other artifact class.
+    let t = TempTree::new("terrain-band");
+    example_tree(t.path());
+    let bands = BANDS.replace("\"fine\"", "\"terrain\"");
+    write(&t.path().join(SCHEMA_DOC), &schema_doc(EXAMPLE_REVISION).replace(BANDS, &bands));
+    let err = generate(t.path(), &opts()).expect_err("`terrain` is reserved");
+    assert!(err.contains("reserved"), "{err}");
+
+    // And a catalog with no terrain at all is complete: everything degrades to "no elevation
+    // here", which is what every map had before epic #1068.
+    let u = TempTree::new("terrainless");
+    example_tree(u.path());
+    fs::remove_file(u.path().join(TERRAIN_DOC)).expect("remove the declaration");
+    fs::remove_dir_all(u.path().join(CELLS_DIR).join(TERRAIN_DIR)).expect("remove the cells");
+    for id in ["europe/switzerland", "europe/switzerland/basel-stadt"] {
+        let path = u.path().join(REGIONS_DIR).join(id).join(REGION_DOC);
+        let mut doc: Value = serde_json::from_str(&fs::read_to_string(&path).expect("region")).expect("JSON");
+        doc.as_object_mut().expect("object").remove("terrain");
+        write(&path, &format!("{}\n", serde_json::to_string_pretty(&doc).expect("serializes")));
+    }
+    let g = generate(u.path(), &opts()).expect("a terrain-less catalog generates");
+    assert_eq!(g.root.terrain, None);
+    assert!(g.root.regions.iter().all(|r| r.terrain.is_none()));
+    assert!(!root_json(&g.root).contains("\"terrain\""), "an absent artifact class writes no keys");
+    // The cells still record having sampled one, and that is itself worth saying out loud.
+    assert!(g.warnings.iter().any(|w| w.contains("publishes no terrain")), "{:?}", g.warnings);
 }

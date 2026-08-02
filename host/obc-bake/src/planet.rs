@@ -1093,8 +1093,11 @@ impl PlanetBake<'_> {
 
     fn pack_key(&self, leaf: &PlanetLeaf) -> String {
         let bands = serde_json::to_string(&self.opts.bands).unwrap_or_default();
+        // `terrain` is here for the same reason it is in the curated key: the nav graph's per-edge
+        // ascent is integrated from that raster, so a terrain re-bake really does move these bytes.
+        let terrain = self.opts.terrain.as_ref().map_or("none".to_string(), |t| t.revision.to_string());
         crate::hash::text(&format!(
-            "planet-recipe={PLANET_BAKE_STATE_VERSION}\ncell-recipe={}\nobcm={}\ncutter={}\nschema={}\nrevision={}\nbands={bands}\nleaf={}\nextent={:?}\n",
+            "planet-recipe={PLANET_BAKE_STATE_VERSION}\ncell-recipe={}\nobcm={}\ncutter={}\nschema={}\nrevision={}\nbands={bands}\nterrain={terrain}\nleaf={}\nextent={:?}\n",
             crate::cells::CELL_RECIPE_VERSION,
             obc_formats::obcm::VERSION,
             self.cutter.recipe(),
@@ -1183,10 +1186,10 @@ impl PlanetBake<'_> {
             }],
             chunk_size: None,
             no_land: false,
-            // The bakery does not feed terrain yet: OBCT cells are a separate artifact on their own
-            // revision track (epic #1068), so a v12 bake writes `Ascent M = 0` until the terrain
-            // track is wired in. That is a decode-valid map, not a degraded one.
-            terrain: None,
+            // The terrain published in this tree, or nothing (`OBCC_Spec.md` §13.4). A tree with
+            // no terrain writes `Ascent M = 0`, which is a decode-valid v12 map and exactly what
+            // v11 was.
+            terrain: self.opts.terrain.as_ref().map(|t| t.dir.clone()),
             bbox: None,
             source_extent: Some(leaf.logical_bbox),
         };
@@ -1223,7 +1226,15 @@ impl PlanetBake<'_> {
                     .push(EmptyChange { id: artifact.id, fact: Some(fact) });
                 stats.known_empty += 1;
             } else {
-                install_artifact(&self.opts.out, &tmp, artifact, &fact, pack_key, self.opts.schema_revision)?;
+                install_artifact(
+                    &self.opts.out,
+                    &tmp,
+                    artifact,
+                    &fact,
+                    pack_key,
+                    self.opts.schema_revision,
+                    self.opts.terrain.as_ref().map(|t| t.revision),
+                )?;
                 changes.entry(artifact.band.clone()).or_default().push(EmptyChange { id: artifact.id, fact: None });
                 stats.artifacts += 1;
                 stats.bytes += artifact.bytes;
@@ -1339,6 +1350,7 @@ fn install_artifact(
     fact: &EmptyFact,
     pack_key: &str,
     schema_revision: u32,
+    terrain_revision: Option<u32>,
 ) -> Result<(), String> {
     let src = obc_pack::cut::artifact_path(tmp, artifact);
     crate::verify::verify_cell(&src, artifact.id.square())?;
@@ -1346,8 +1358,13 @@ fn install_artifact(
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
     }
-    let sidecar =
-        CellSidecar { schema_revision, built_at: fact.built_at.clone(), sources: fact.sources.clone(), partial: false };
+    let sidecar = CellSidecar {
+        schema_revision,
+        built_at: fact.built_at.clone(),
+        sources: fact.sources.clone(),
+        partial: false,
+        terrain_revision,
+    };
     write_json(&sidecar_path, &sidecar)?;
     std::fs::rename(&src, &dest).map_err(|e| format!("{} -> {}: {e}", src.display(), dest.display()))?;
     write_json(
@@ -1768,6 +1785,7 @@ mod tests {
                 bands: test_bands(),
                 schema_id: "bikepacking".into(),
                 schema_revision: 1,
+                terrain: None,
             },
         };
         let first = run().run_inner(&Progress::silent()).unwrap();
@@ -1805,6 +1823,7 @@ mod tests {
                 bands: test_bands(),
                 schema_id: "bikepacking".into(),
                 schema_revision: 1,
+                terrain: None,
             },
         }
         .run_inner(&Progress::silent())
@@ -1894,6 +1913,7 @@ mod tests {
                 bands: BandTable::recommended(),
                 schema_id: "typo".into(),
                 schema_revision: 1,
+                terrain: None,
             },
         }
         .run(&Progress::silent())

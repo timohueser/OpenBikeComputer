@@ -28,8 +28,8 @@ and consumers import those facts directly rather than transcribing them. The ref
 sampler and tile cache are [`firmware/obc-elevation`](../firmware/obc-elevation).
 
 Related contracts: [`OBCA_Spec.md`](OBCA_Spec.md) §1 defines the grid this raster sits on and §5
-the volume set a shard can ship in; [`OBCC_Spec.md`](OBCC_Spec.md) publishes terrain cells as a
-catalog artifact class; [`OBCM_Spec.md`](OBCM_Spec.md) is the map beside which terrain is carried,
+the volume set a shard can ship in; [`OBCC_Spec.md`](OBCC_Spec.md) §13 publishes terrain cells as a
+catalog artifact class with its own revision track; [`OBCM_Spec.md`](OBCM_Spec.md) is the map beside which terrain is carried,
 and whose §8 nav graph stores the ascent integrated *from* these samples.
 
 ## Design principles
@@ -282,8 +282,8 @@ There is no separate cell format, and a consumer never branches on which it hold
 
 The header carries **no bounding box**: the cell rectangle *is* the bounding box, exactly as a
 catalog cell entry carries none because its square follows from its id
-([`OBCC_Spec.md` §11.6](OBCC_Spec.md)). Two ways to say the same thing is one way for them to
-disagree.
+([`OBCC_Spec.md` §8](OBCC_Spec.md), and §13.1 for a terrain cell's own entry). Two ways to say the
+same thing is one way for them to disagree.
 
 `Flags` is the extension point this format deliberately reserves: a future per-tile packed encoding
 (§3.2) sets a bit here rather than needing a new magic. A v1 reader MUST refuse a file with any bit

@@ -13,6 +13,12 @@ pub(crate) struct CellSidecar {
     pub(crate) built_at: String,
     pub(crate) sources: Vec<CellSource>,
     pub(crate) partial: bool,
+    /// The terrain revision this cell's nav ascents were integrated from
+    /// (`OBCC_Spec.md` §13.4). Skipped when absent so a terrain-less tree's sidecars
+    /// stay byte-identical to the ones baked before terrain existed — the field
+    /// appearing would otherwise rewrite every sidecar in the store for nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) terrain_revision: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
