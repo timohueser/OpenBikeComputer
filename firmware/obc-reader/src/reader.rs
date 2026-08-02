@@ -1761,6 +1761,10 @@ impl<'a> Reader<'a> {
         }
         let mut best: Option<NavEdgeSnap> = None;
         let mut read_error = None;
+        let cl = cos_lat(p.1).max(1e-3);
+        // The tightest *achievable* distance seen so far — the pre-filter's ceiling. Starts at the
+        // caller's radius, since anything beyond it is rejected anyway.
+        let mut bound = max_distance_m;
         self.walk_leaves(&dir, 0, self.bbox, view, 0, &mut |cid, _node| {
             if read_error.is_some() {
                 return;
@@ -1790,6 +1794,31 @@ impl<'a> Reader<'a> {
                     // bin-packed node chunk may itself be revisited). Re-projecting is harmless,
                     // while picking one id direction here would miss an edge when only its other
                     // endpoint lies inside the bounded query. Parallel edge ids remain distinct.
+                    //
+                    // Admissible pre-filter, computed from the record's **inline** coords alone —
+                    // no edge-pool read. Every point of an edge of length `L` whose endpoints are
+                    // `C` apart lies inside the ellipse with those endpoints as foci and major
+                    // axis `L`, so it is at most `sqrt(L² − C²) / 2` from the endpoint chord. A
+                    // candidate whose chord distance minus that bulge already loses cannot win, so
+                    // it is skipped before it costs a chunk read. Never prunes a tie (strict `>`),
+                    // so the winner is byte-identical to the unfiltered walk.
+                    let a = (n.lon, n.lat);
+                    let b = (nb.lon, nb.lat);
+                    // Both endpoints lie *on* their edge, so the nearer of them is an achievable
+                    // distance and therefore an upper bound on the whole query's answer. Tracking
+                    // it costs nothing and tightens the filter long before the first projection
+                    // has produced a `best`.
+                    let (d_a, d_b) = (ground_dist_m_cl(a, p, cl), ground_dist_m_cl(b, p, cl));
+                    bound = bound.min(d_a).min(d_b);
+                    let (_, chord_m) = project_to_nav_segment(a, b, p, cl);
+                    let c = ground_dist_m_cl(a, b, cl);
+                    let l = nb.cost_m as f32;
+                    // +1 m covers the packer's integer-metre cost rounding against this metric.
+                    let bulge = libm::sqrtf((l * l - c * c).max(0.0)) * 0.5 + 1.0;
+                    let lower = chord_m - bulge;
+                    if lower > bound || best.is_some_and(|old| lower > old.distance_m) {
+                        continue;
+                    }
                     let Some(snap) = self.project_nav_edge_cached(tiles, nb.edge_id, n, nb, p) else {
                         continue;
                     };
