@@ -626,8 +626,9 @@ dropped); other bits reserved `0`. The seven days run **Mon (index 0) .. Sun (in
 
 The **routable graph** the on-device router (epic #116, made bike-type-aware by
 #533) runs A\* over: junction **nodes** (derived from OSM node ids shared across
-routable `highway=*` ways) joined by undirected **edges** (the polyline between
-two junctions, junction-free inside). The packer builds the graph in `nav.rs`
+routable `highway=*` ways) plus synthetic degree-2 split nodes, joined by
+undirected **edges** (the polyline between graph nodes, with no real junction
+inside). The packer builds the graph in `nav.rs`
 (way-kind classification, bike-legality filter, island pruning, junction split,
 dedup, edge splits) and this section is its on-wire form.
 
@@ -648,7 +649,9 @@ Design intent: the device is too RAM-tight for any id → offset table (a real
 region has millions of graph elements), so A\* **re-fetches spatially** — settling
 a node is one quadtree descent to its coord's leaf + one chunk read — and each
 record carries its neighbors' coords **inline** so relaxation (`f = g + h`) needs
-no second fetch. Edge geometry is touched only when the final route is emitted.
+no second fetch. Exact endpoint snapping projects candidate edge geometry before
+search; the settle loop itself needs no edge fetch, and the winning geometry is
+read again when the final route is emitted.
 Only the directory and the profile table (≤ `8 × 52 = 416` B) are resident.
 
 ### 8.1 Nav Directory (28 bytes)
@@ -788,17 +791,22 @@ coord, last = `b`'s); a consumer walking the edge from `b` reverses it. Deltas a
 **lat-first** like every §7/§8 record (the geometry sections §5 are lon-first —
 anchors there are viewport-space `x, y`).
 
-Packer guarantees that make the fixed `int16` deltas, the `int16` neighbor deltas
+Producer guarantees that make the fixed `int16` deltas, the `int16` neighbor deltas
 (§8.3), the `uint16` cost, and the no-straddle rule all hold **by construction**:
 
 - **Densification.** Any segment whose lat **or** lon delta exceeds `30000`
   microdegrees is subdivided with interpolated vertices — the same threshold as
   §5 geometry and the OBCR track encoding. Readers need no special handling.
-- **Edge splits.** `nav.rs` splits any edge whose endpoint-to-endpoint lat/lon
+- **Edge splits.** A final graph splits any edge whose endpoint-to-endpoint lat/lon
   delta exceeds `32000` µdeg (so the §8.3 neighbor delta fits `int16`) or whose
-  `Length M` exceeds `60000` m (so `Cost M` fits `uint16`), into pieces joined by
-  **synthetic degree-2 junctions** (new dense ids past the real ones). The
-  serializer additionally splits any piece whose densified record would exceed one
+  `Length M` exceeds `500` m, into pieces joined by **synthetic degree-2 nodes**
+  (new dense ids past the real ones). The 500 m bound is also the router's spatial
+  contract: every point on a piece is at most 250 m along it from one endpoint, so
+  an edge inside the 250 m snap disc is discoverable by an approximately 501 m endpoint query over
+  the node quadtree (the extra metre covers integer cost and bbox rounding). A whole-map pack does the spatial split after island pruning;
+  a cell bake defers it to the assembler's post-merge, post-prune pass so synthetic
+  pieces cannot inflate an island's source edge count. The serializer additionally
+  splits any piece whose densified record would exceed one
   chunk (`Pt Count > (512 − 15) / 4 + 1`, i.e. 125 points) or whose endpoint span
   would exceed the `int16` bound after densification. Routing-neutral: each piece's
   `Length M` is re-measured over its sub-polyline, so costs still sum to the

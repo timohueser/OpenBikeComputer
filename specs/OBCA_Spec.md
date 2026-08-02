@@ -638,15 +638,23 @@ This is the most involved rebuild, and its order matters.
    largest component plus every component at or above the threshold — the pass §3.5 deferred from
    bake time. This is the only place where the threshold means what it says: an island in the
    *map*, not in a *cell*.
-5. **Renumber** the surviving nodes densely from 0, in a deterministic order (`(lat, lon)`
+5. **Bound surviving edges.** Split every edge longer than `OBCM_Spec.md` §8.4's 500 m spatial
+   bound at polyline vertices (inserting an interpolated midpoint for a two-point edge), with
+   synthetic degree-2 nodes and re-measured piece costs. This pass MUST run *after* island pruning:
+   split pieces are storage/search detail, not source topology, and counting them toward
+   `min_component_edges` would let one long edge make a tiny island survive. Cell bakes therefore
+   defer this spatial split; their serializer MAY still create the splits required by §8.4's
+   independent wire limits.
+6. **Renumber** the surviving nodes densely from 0, in a deterministic order (`(lat, lon)`
    ascending is sufficient and content-derived).
-6. **Rebuild the edge pool.** `Edge Id` is a pool byte offset (`OBCM_Spec.md` §8.4), so every edge
+7. **Rebuild the edge pool.** `Edge Id` is a pool byte offset (`OBCM_Spec.md` §8.4), so every edge
    record is re-emitted and every `Edge Id` re-derived. Edge polyline bytes MAY be copied from the
-   source record (they are self-contained: absolute anchor plus deltas), but their *placement* is
-   new, and the no-straddle rule must be re-applied at the 512-byte chunk granularity.
-7. **Re-check the wire limits** (§4.8) and rebuild the node quadtree over the assembly bbox, with
+   source record when the edge was not split (they are self-contained: absolute anchor plus
+   deltas); split pieces are re-encoded. Placement is always new, and the no-straddle rule must be
+   re-applied at the 512-byte chunk granularity.
+8. **Re-check the wire limits** (§4.8) and rebuild the node quadtree over the assembly bbox, with
    `OBCM_Spec.md` §8.2 bin-packed 512-byte node chunks.
-8. **Copy the profile table** after confirming every cell's is identical.
+9. **Copy the profile table** after confirming every cell's is identical.
 
 An assembler MUST NOT create an edge between two nodes that no single cell joined. Unification
 only ever joins *through* a coincident junction, so this is a checkable invariant rather than a
