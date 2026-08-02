@@ -23,6 +23,7 @@ members = [
     "host/obc-host-core",
     "host/obc-pack",
     "host/obc-bake",
+    "host/obc-dem",
     "host/obc-mkimage",
     "host/obc-bench",
     "host/obc-vectors",
