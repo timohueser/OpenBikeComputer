@@ -764,3 +764,159 @@ fn splice_span_at_route_end() {
     assert_eq!(names, ["W-head"], "span-to-end drops the mid and tail waypoints");
     assert!(idx.total_distance_m >= 600 + dstats.total_distance_m);
 }
+
+// ------------------------------------------------------- climb-aware dispatch (EL6, epic #1068)
+//
+// #882's detour dispatch is not a second router: `plan_detour` is `plan_route` plus a corridor
+// blacklist, running the same `settle` and therefore the same §8.6 edge cost. EL6 added a climb
+// term to that cost, so detours became climb-aware with no code of their own — and these two tests
+// are what stops a future change from quietly forking the model.
+
+/// A steep north-facing hillside for the detour fixture: 1 m of rise per 5 µdeg of latitude above
+/// the road, dead flat at or below it. The **north** relief street therefore sits [`NORTH_CLIMB_M`]
+/// above the road and the **south** one is on the flat, which is the only difference between them
+/// the climb term can see.
+struct Hillside;
+
+/// What the north connector climbs: `STREET_OFF / 5`.
+const NORTH_CLIMB_M: u32 = 720;
+/// One segment of the (longer, flat) south relief street, m — chosen so the south corridor costs
+/// 3 000 m more ground than the north one, three times the ε inflation the frontier carries.
+const SOUTH_SEG_COST: u32 = 530;
+
+impl obc_route::ElevationSource for Hillside {
+    fn sample(&mut self, lat_udeg: i32, _lon_udeg: i32) -> Option<i16> {
+        Some(((lat_udeg - BASE.1).max(0) / 5) as i16)
+    }
+}
+
+/// [`map_with`] with an explicit profile and a terrain to bake §8.3 `Ascent M` from.
+fn map_with_terrain(graph: &NavGraph, profile: NavProfile, terrain: &mut dyn obc_route::ElevationSource) -> Vec<u8> {
+    let lods =
+        vec![LodLayer { max_mpp: None, chunk_size: 2048, root: GeomNode::Leaf { bbox: GLOBAL, features: vec![] } }];
+    let (bin, dropped) = serialize_lods(&lods, &[], 0xF800, GLOBAL, &[], graph, &[profile], terrain);
+    assert_eq!(dropped, 0);
+    bin
+}
+
+/// A neutral-multiplier profile carrying nothing but a climb weight.
+fn climb_profile(climb_weight: u8) -> NavProfile {
+    NavProfile { name: "Climb".into(), highway: [16; 32], surface: [16; 8], climb_weight }
+}
+
+/// South relief street node `i` — the mirror of [`street_at`], the same offset below the road.
+fn south_at(i: i32) -> (i32, i32) {
+    (BASE.0 + i * SP, BASE.1 - STREET_OFF)
+}
+
+/// The road with **two** relief corridors: the usual street north of it (short, but reached by
+/// climbing [`NORTH_CLIMB_M`] up the [`Hillside`]) and a mirror street south of it (flat, but
+/// 3 000 m more ground). With the road blacklisted the detour has a genuine choice, and only the
+/// climb term can make it.
+fn road_graph_two_reliefs() -> NavGraph {
+    let mut g = road_graph(true, false);
+    let south_id = |i: i32| (2 * (SEGS + 1) + i) as u32;
+    for i in 0..=SEGS {
+        g.nodes.push(Node { id: south_id(i), coord: south_at(i) });
+        if i < SEGS {
+            g.edges.push(Edge {
+                a: south_id(i),
+                b: south_id(i + 1),
+                polyline: vec![south_at(i), south_at(i + 1)],
+                length_m: SOUTH_SEG_COST,
+                kind: 0,
+            });
+        }
+    }
+    for i in [0, SEGS] {
+        g.edges.push(Edge {
+            a: i as u32,
+            b: south_id(i),
+            polyline: vec![road_at(i), south_at(i)],
+            length_m: CONN_COST,
+            kind: 0,
+        });
+    }
+    g
+}
+
+/// Raw ground length of one relief corridor: two connectors plus [`SEGS`] street segments.
+fn relief_len(seg_cost: u32) -> u32 {
+    2 * CONN_COST + SEGS as u32 * seg_cost
+}
+
+/// Plan `from → to` over `bytes`, optionally under a corridor blacklist — the two dispatch paths
+/// side by side, sharing every other argument, so a difference in their output can only come from
+/// the corridor.
+fn plan_either(bytes: &[u8], from: (i32, i32), to: (i32, i32), corridor: Option<Corridor>) -> (u32, Vec<u8>) {
+    let src = SliceSource(bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let cache = MapCache::new();
+    let r = Reader::new(&src, &tables, &cache);
+    let mut scratch = NavScratch::<{ obc_route::NAV_MAX_NODES }>::new();
+    let mut tiles = NavTileCache::new();
+    let mut sink = VecSink::default();
+    let res = match corridor {
+        Some(c) => plan_detour(&r, from, to, "Leg", 0, c, &mut scratch, &mut tiles, &mut NullElevation, &mut sink),
+        None => plan_route(&r, from, to, "Leg", 0, &mut scratch, &mut tiles, &mut NullElevation, &mut sink),
+    };
+    (res.expect("the fixture always has a legal path").total_distance_m, sink.buf)
+}
+
+/// **The detour dispatch is climb-aware for free.** With the road blacklisted the plan must choose
+/// between the two reliefs, and it flips on the profile's climb weight exactly as a plain plan
+/// would: climb-blind it takes the short hill, climb-weighted it pays 3 km of extra ground to stay
+/// on the flat.
+#[test]
+fn a_detour_weighs_climb_the_same_way_a_plan_does() {
+    let graph = road_graph_two_reliefs();
+    let obcr = road_route_obcr();
+
+    // Non-vacuity: the north connector really does bake the climb this test spends, and only in the
+    // uphill direction.
+    let (up, down) = obc_pack::nav::integrate_edge_ascent(&[road_at(0), street_at(0)], &mut Hillside);
+    assert!(
+        (up as i64 - NORTH_CLIMB_M as i64).abs() <= 4,
+        "the north connector should bake ≈ {NORTH_CLIMB_M} m, got {up}"
+    );
+    assert_eq!(down, 0, "and nothing coming back down");
+
+    let rsrc = SliceSource(&obcr[..]);
+    let idx = RouteIndex::read(&rsrc).unwrap();
+    let route = RouteReader::new(&idx, &rsrc);
+    let total = route.total_distance_m;
+
+    let blind = map_with_terrain(&graph, climb_profile(0), &mut Hillside);
+    let (dist, _) =
+        plan_either(&blind, road_at(0), road_at(SEGS), Some(Corridor::build(&RouteReader::new(&idx, &rsrc), 0, total)));
+    assert_eq!(dist, relief_len(SEG_COST), "climb-blind, the detour takes the short north street");
+
+    let weighted = map_with_terrain(&graph, climb_profile(20), &mut Hillside);
+    let (dist, _) = plan_either(&weighted, road_at(0), road_at(SEGS), Some(Corridor::build(&route, 0, total)));
+    assert_eq!(dist, relief_len(SOUTH_SEG_COST), "at a heavy climb weight it detours south, onto the flat");
+}
+
+/// **One cost model, not two.** `detour_with_degenerate_corridor_matches_plain_plan` above pins the
+/// same equality on a *flat* map; this is its v12 twin, and the difference is the whole point: the
+/// map's ascents are real and the profile charges 20 flat metres for each of them, so the two paths
+/// agree on a cost the climb term dominates. The corridor is then provably the only thing the
+/// detour dispatch adds — the climb term is not re-derived, re-scaled or re-rounded on the way to a
+/// detour.
+#[test]
+fn a_detour_and_a_plan_cost_identically_when_nothing_is_blacklisted() {
+    let bytes = map_with_terrain(&road_graph_two_reliefs(), climb_profile(20), &mut Hillside);
+    let obcr = road_route_obcr();
+    let rsrc = SliceSource(&obcr[..]);
+    let idx = RouteIndex::read(&rsrc).unwrap();
+    let route = RouteReader::new(&idx, &rsrc);
+
+    let empty = Corridor::build(&route, 0, MIN_DETOUR_SPAN_M / 2);
+    assert!(empty.is_degenerate(), "a sub-minimum span must blacklist nothing, or this proves nothing");
+
+    let (detour_len, detour_obcr) = plan_either(&bytes, road_at(0), road_at(SEGS), Some(empty));
+    let (plan_len, plan_obcr) = plan_either(&bytes, road_at(0), road_at(SEGS), None);
+    assert_eq!(detour_len, plan_len);
+    assert_eq!(detour_obcr, plan_obcr, "an unblacklisted detour is a plan, byte for byte");
+    // …and the shared answer is the road itself, which is flat and shorter than either relief.
+    assert_eq!(plan_len, SEGS as u32 * SEG_COST, "the road is the cheapest way when nothing blocks it");
+}
