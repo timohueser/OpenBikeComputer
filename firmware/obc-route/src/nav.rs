@@ -110,8 +110,11 @@
 //! - **A hole carries the last known height forward.** [`ElevationSource::sample`] answers `None`
 //!   for a coverage edge, a `NODATA` corner or no terrain file at all; OBCR has no per-point
 //!   "unknown" encoding, so the fill repeats the last resolved height — a flat segment across the
-//!   gap, honest enough, and one that books no phantom climb through the dead-band. If **no**
-//!   sample ever resolves, the header stats stay zeroed exactly as they were before EL7.
+//!   gap, honest enough, and one that books no phantom climb through the dead-band. A hole
+//!   **before the first resolved sample** has nothing to carry, so the integrator does not run at
+//!   all until coverage begins ([`EleFill::resolve`]): pushing the `0` placeholder would anchor the
+//!   band at sea level and book the whole first real height as ascent. If **no** sample ever
+//!   resolves, the header stats stay zeroed exactly as they were before EL7.
 //! - **The null source is bit-for-bit the old behaviour.** With
 //!   [`NullElevation`](obc_elevation::NullElevation) nothing densifies, every stored height is 0
 //!   and every stat is 0, so the emitted OBCR is byte-identical to the pre-EL7 one (pinned in
@@ -120,6 +123,14 @@
 //! The totals go through the same [`DeadBand`] at the same [`ELE_DEADBAND_M`] threshold the GPX
 //! converter ([`crate::convert`]) runs over an imported track, so a route planned on the device and
 //! the same route exported to GPX and re-imported agree on their climb.
+//!
+//! **The one boundary on that parity**, stated rather than hidden: a route whose *opening* points
+//! fall outside terrain coverage still **stores** height `0` for them, because OBCR has no
+//! "unknown" encoding. The route's own stats are right — the integrator ignored those points — but
+//! an export of it re-imports as a `0 → first-real-height` step, which the converter's dead-band
+//! *will* book. Parity therefore holds for a route lying wholly inside coverage, which is every
+//! route on a map whose terrain was baked for it; the honest fix for the exception is a terrain
+//! file that covers the map's graph, never a fabricated height.
 
 use heapless::Vec;
 
@@ -689,6 +700,16 @@ impl EleFill {
 
     /// Resolve one point's stored height: a real sample re-anchors the carry and grows the min/max,
     /// a hole repeats the carry. Returns the height to store, having already integrated it.
+    ///
+    /// **Nothing is integrated before the first resolved sample.** The hole policy is *carry the
+    /// last known height forward* — and until one has resolved there is no known height to carry,
+    /// only the `0` placeholder. Pushing that into the band would anchor its reference at sea level
+    /// and book the entire first real height as ascent the moment coverage begins: a route whose
+    /// opening points fall outside the raster (the nav graph reaches past a terrain crop — complete-
+    /// way retention means the graph legally runs beyond the extract the sidecar was baked for)
+    /// would report a phantom +1400 m and poison every stored `cum_ascent` after it. Skipping the
+    /// push makes the first *resolved* sample the band's own first reference, which books nothing —
+    /// which is also exactly what the null source does forever.
     fn resolve(&mut self, sample: Option<i16>) -> i16 {
         if let Some(h) = sample {
             self.last_m = h;
@@ -696,7 +717,9 @@ impl EleFill {
             self.max_m = self.max_m.max(h);
             self.seen = true;
         }
-        self.band.push(f64::from(self.last_m));
+        if self.seen {
+            self.band.push(f64::from(self.last_m));
+        }
         self.last_m
     }
 
