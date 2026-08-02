@@ -5,9 +5,15 @@
 //! writes; it never sees a GeoTIFF, which is what keeps libGEOS the last native dependency in the
 //! tree (#907) — this crate has none at all.
 //!
-//! This commit is the **spike** the epic demanded before any of it was written: proof that a pure
-//! Rust GeoTIFF decoder reads a real GLO-30 tile as the mirror ships it. See `tests/decode.rs`. The
-//! bake itself lands next.
+//! ```text
+//! obc-dem fetch --bbox 46.48,8.15,46.73,8.47 --out sources/
+//! obc-dem bake  --sources sources/ --bbox 46.48,8.15,46.73,8.47 --out cells/
+//! obc-dem bake  --sources sources/ --bbox 46.48,8.15,46.73,8.47 --shard grimsel.obcd
+//! ```
+//!
+//! `fetch` is the only thing here that touches the network, and `bake` never does — a bake is a
+//! pure function of a directory of tiles and a bounding box, which is the precondition for the
+//! determinism contract below.
 //!
 //! ## What a bake is, precisely
 //!
@@ -26,17 +32,26 @@
 //! 1. **The resample is `f64` with a fixed expression order** ([`geotiff::DemMosaic::height`]).
 //!    IEEE-754 `+ - * /` are correctly rounded, Rust does not contract them into FMAs, and nothing
 //!    here reads a rounding mode — so the arithmetic is a function of its inputs alone.
-//! 2. **Fixed iteration order everywhere.** Tiles are loaded in sorted path order, and nothing in
-//!    the crate iterates a `HashMap`.
-//! 3. **Rows are flipped once, on ingest** (`OBCT_Spec.md` §2), so no downstream step has to decide
+//! 2. **One stated rounding rule**: half away from zero ([`bake::quantise`]), the same rule
+//!    `OBCT_Spec.md` §5.2 pins for the read side, so the producer and the consumer round the same
+//!    way and a value never shifts a metre as it crosses the format.
+//! 3. **Fixed iteration order everywhere.** Cells are walked row-major over the rectangle, tiles
+//!    are loaded in sorted path order, and nothing in the crate iterates a `HashMap`.
+//! 4. **Rows are flipped once, on ingest** (`OBCT_Spec.md` §2), so no downstream step has to decide
 //!    which way is north.
+//!
+//! [`bake::bake_cell`] is therefore a pure function of `(mosaic, cell)` and nothing else — which is
+//! why a cell baked inside a wide shard is byte-identical to the same cell baked on its own, and
+//! why the tests can pin a digest.
 //!
 //! ## Attribution is a licence obligation
 //!
-//! [`COPERNICUS_ATTRIBUTION`] must travel with anything derived from GLO-30. The CLI prints it, and
+//! [`COPERNICUS_ATTRIBUTION`] must travel with anything derived from GLO-30. `bake` prints it, and
 //! the catalog (EL3) and the builder (EL4) carry it onward to a rider. It is a `const` here so
 //! there is one copy of the wording in the repository.
 
+pub mod bake;
+pub mod container;
 pub mod fetch;
 pub mod geotiff;
 
@@ -45,8 +60,8 @@ pub mod geotiff;
 /// The licence ("Copernicus DEM Instance COP-DEM-GLO-30-F") requires this exact notice wherever the
 /// data have been adapted or modified — which a resample to a different lattice certainly is. It is
 /// not a courtesy and it is not paraphrasable: EL3 stamps it into the catalog, EL4 surfaces it in
-/// the builder, and the CLI prints it at the end of every run so an operator producing cells cannot
-/// fail to have seen it.
+/// the builder, and `obc-dem bake` prints it at the end of every run so an operator producing cells
+/// cannot fail to have seen it.
 pub const COPERNICUS_ATTRIBUTION: &str = "produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 \
 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and \
 ESA; all rights reserved";
