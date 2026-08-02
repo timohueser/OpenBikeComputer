@@ -1,0 +1,33 @@
+[package]
+name = "obc-dem"
+version = "0.1.0"
+edition = "2021"
+publish = false # internal host tool — not published to crates.io
+description = "Copernicus GLO-30 GeoTIFF -> OBCT terrain cells (obc-dem fetch / bake). The producer side of specs/OBCT_Spec.md."
+
+[dependencies]
+# The OBCT byte authority: magic, header offsets, sentinels, and the layout arithmetic that turns a
+# lattice sample into a byte offset. Transcribing any of it here is exactly the drift `obc-formats`
+# exists to prevent — this crate writes the bytes that module names.
+obc-formats = { path = "../../firmware/obc-formats" }
+# The **shared** lattice arithmetic and the **shared** reader. A baker that re-derived "which cell
+# owns sample i" from the prose would be a second implementation of the one thing `OBCT_Spec.md` §5
+# says two implementations must agree on — so this crate does the shifts with `obc_elevation::grid`
+# and every test reads its own output back through `obc_elevation::TerrainReader`. Depending on a
+# `no_std` foundation crate from a host tool is the allowed direction (`dependency_rules.json`).
+obc-elevation = { path = "../../firmware/obc-elevation" }
+# The GeoTIFF decoder. **Pure Rust** — this is what the #1070 spike proved against a real GLO-30
+# tile: float32 samples (`SampleFormat = 3`), Adobe DEFLATE (`Compression = 8`) with the
+# *floating-point* horizontal predictor (`Predictor = 3`), 1024 × 1024 internal tiles. Default
+# features are off deliberately: `fax`, `jpeg` and `lzw` are codecs no DEM ships in, and every one
+# of them is decoder surface this tool would otherwise carry for nothing.
+tiff = { version = "0.11", default-features = false, features = ["deflate"] }
+# `fetch` only. Blocking and rustls-by-default, so no OpenSSL follows it onto macOS or Windows —
+# the same client `obc-pack`'s land-dataset download and the desktop app already use (#907: libGEOS
+# stays the last native dependency in the tree, and this crate has none at all).
+ureq = "3"
+
+[dev-dependencies]
+# Digest pins on fixture output — the "same inputs ⇒ byte-identical cells" contract, checked rather
+# than asserted. Already in the workspace lockfile (`obc-pack` publishes catalog digests with it).
+sha2 = "0.11"
