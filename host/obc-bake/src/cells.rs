@@ -197,6 +197,15 @@ pub struct CellBakeOptions {
     pub schema_id: String,
     /// The schema revision every cell is baked at. A bump invalidates the whole store.
     pub schema_revision: u32,
+    /// The terrain already in the tree, which the nav graph's `Ascent M` is integrated
+    /// from (`OBCM_Spec.md` §8.3, epic #1068 EL5) — and the **one** direction the two
+    /// revision tracks are coupled in (`OBCC_Spec.md` §13.4). `None` bakes ascents of
+    /// zero, which is exactly what a v11 map had and is a decode-valid v12 map.
+    ///
+    /// It is a terrain *input* to the cell bake and never the reverse: nothing in
+    /// [`crate::terrain`] reads a schema fact, so a schema bump re-cuts cells and
+    /// leaves every terrain object alone.
+    pub terrain: Option<crate::terrain::TerrainInput>,
 }
 
 /// How one cell ended.
@@ -648,10 +657,9 @@ impl CellBakery<'_> {
                 .collect(),
             chunk_size: None,
             no_land: false,
-            // The bakery does not feed terrain yet: OBCT cells are a separate artifact on their own
-            // revision track (epic #1068), so a v12 bake writes `Ascent M = 0` until the terrain
-            // track is wired in. That is a decode-valid map, not a degraded one.
-            terrain: None,
+            // The terrain already published in this tree, or nothing. A tree with no terrain bakes
+            // `Ascent M = 0` throughout, which is a decode-valid v12 map and exactly what v11 was.
+            terrain: self.opts.terrain.as_ref().map(|t| t.dir.clone()),
             bbox: crop.as_deref().map(Bbox::parse).transpose()?,
             source_extent: None,
         };
@@ -721,8 +729,13 @@ impl CellBakery<'_> {
             .collect();
         let bands = serde_json::to_string(&self.opts.bands).unwrap_or_default();
         let crop_recipe = crop.map(|_| format!("crop-recipe={CROP_RECIPE_VERSION}\n")).unwrap_or_default();
+        // The terrain revision is in the key because it moves bytes: the nav graph's per-edge
+        // `Ascent M` is integrated from that raster. Only the revision, never the terrain files'
+        // digests — the revision *is* the terrain store's content identity (`OBCC_Spec.md` §13.2),
+        // and hashing thousands of 2 MiB rasters on every run to rediscover it would be absurd.
+        let terrain = self.opts.terrain.as_ref().map_or("none".to_string(), |t| t.revision.to_string());
         crate::hash::text(&format!(
-            "recipe={CELL_RECIPE_VERSION}\n{crop_recipe}obcm={}\ncutter={}\nschema={}\nrevision={}\nbands={bands}\ncrop={}\nsources={}\n",
+            "recipe={CELL_RECIPE_VERSION}\n{crop_recipe}obcm={}\ncutter={}\nschema={}\nrevision={}\nbands={bands}\nterrain={terrain}\ncrop={}\nsources={}\n",
             obc_formats::obcm::VERSION,
             self.cutter.recipe(),
             self.schema.body_sha256,
@@ -757,6 +770,7 @@ impl CellBakery<'_> {
             built_at: obc_pack::catalog::now_timestamp(),
             sources,
             partial,
+            terrain_revision: self.opts.terrain.as_ref().map(|t| t.revision),
         }
     }
 
@@ -1020,6 +1034,13 @@ pub(crate) fn check_schema_id(schema: &StyleDoc, opts: &CellBakeOptions) -> Resu
     Ok(())
 }
 
+/// Write `regions/<a>/…/{region.json, boundary.poly}`, preserving the terrain selection.
+///
+/// Read-modify-write rather than a plain write, because two stages own different keys of one
+/// document: this one owns `cells`, [`crate::terrain`] owns `terrain`. A stage that rewrote the
+/// whole file would silently drop the other's work whenever they ran in the wrong order — and
+/// "wrong order" here means the perfectly ordinary "bake terrain on Monday, refresh the map on
+/// Tuesday", which is the entire point of separate revision tracks.
 pub(crate) fn write_region_selection(
     out: &Path,
     region: &Region,
@@ -1028,12 +1049,16 @@ pub(crate) fn write_region_selection(
 ) -> Result<(), String> {
     let dir = region.segments().iter().fold(out.join(REGIONS_DIR), |path, segment| path.join(segment));
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    #[derive(Serialize)]
-    struct RegionDoc<'a> {
-        name: &'a str,
-        cells: BTreeMap<String, Vec<String>>,
-    }
-    write_json(&dir.join(REGION_DOC), &RegionDoc { name: &region.name, cells })?;
+    let path = dir.join(REGION_DOC);
+    let mut doc: serde_json::Value = match std::fs::read_to_string(&path) {
+        Ok(text) => serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?,
+        Err(_) => serde_json::json!({}),
+    };
+    let object =
+        doc.as_object_mut().ok_or_else(|| format!("{}: a region document is a JSON object", path.display()))?;
+    object.insert("name".into(), serde_json::Value::String(region.name.clone()));
+    object.insert("cells".into(), serde_json::to_value(cells).map_err(|e| e.to_string())?);
+    write_json(&path, &doc)?;
     std::fs::write(dir.join(REGION_POLY), poly).map_err(|e| format!("{}: {e}", dir.display()))
 }
 

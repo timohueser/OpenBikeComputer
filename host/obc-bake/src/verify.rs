@@ -188,6 +188,9 @@ pub struct CellTreeReport {
     /// Cells opened with the real reader and re-hashed.
     pub sampled: usize,
     pub bytes: u64,
+    /// The terrain artifact class, counted separately because it is priced separately.
+    pub terrain_cells: usize,
+    pub terrain_bytes: u64,
     /// Every failed check, in the order they were made. Empty means the tree is good.
     pub problems: Vec<String>,
 }
@@ -205,6 +208,9 @@ impl CellTreeReport {
             "cell tree: {} cells ({} partial) across {} band(s), {} region(s), {} bytes — {} opened with the reader",
             self.cells, self.partial_cells, self.bands, self.regions, self.bytes, self.sampled
         );
+        if self.terrain_cells > 0 {
+            let _ = writeln!(s, "terrain:   {} cell(s), {} bytes", self.terrain_cells, self.terrain_bytes);
+        }
         if self.problems.is_empty() {
             let _ = writeln!(s, "verify: OK");
         } else {
@@ -403,6 +409,76 @@ pub fn verify_cell_tree(tree: &Path, opts: CellTreeVerifyOptions) -> Result<Cell
         }
     }
 
+    // 1 + 2, for the terrain artifact class. Same machinery, its own document: the pinned index
+    // must be the bytes the root named, and every terrain cell's container must state exactly the
+    // 1 × 1 rectangle its id names (`OBCT_Spec.md` §4.1). Its revision is *not* compared with the
+    // schema's — that is the independence, and comparing them here would quietly reintroduce the
+    // lockstep OBCC §13.2 removes.
+    let mut terrain_published: BTreeSet<String> = BTreeSet::new();
+    if let Some(terrain) = &root.terrain {
+        let rel = format!("cells/{}/index.json", obc_pack::catalog::TERRAIN_DIR);
+        let pin = &terrain.cell_index;
+        if let Some(doc) = satellite::<obc_pack::catalog::TerrainIndexDocument>(
+            tree,
+            &rel,
+            pin.bytes,
+            &pin.sha256,
+            &mut report.problems,
+        ) {
+            if (doc.terrain_revision, doc.dataset_version.as_str(), doc.posting_log2, doc.cell_log2)
+                != (terrain.terrain_revision, terrain.dataset_version.as_str(), terrain.posting_log2, terrain.cell_log2)
+            {
+                problem(
+                    format!(
+                        "{rel}: says {} {} at posting 2^{} / cell 2^{}, the root says {} {} at 2^{} / 2^{}",
+                        doc.dataset_version,
+                        doc.terrain_revision,
+                        doc.posting_log2,
+                        doc.cell_log2,
+                        terrain.dataset_version,
+                        terrain.terrain_revision,
+                        terrain.posting_log2,
+                        terrain.cell_log2
+                    ),
+                    &mut report.problems,
+                );
+            }
+            if doc.cells.len() as u32 != pin.cell_count {
+                problem(
+                    format!("{rel}: holds {} terrain cells but the root pinned {}", doc.cells.len(), pin.cell_count),
+                    &mut report.problems,
+                );
+            }
+            report.terrain_cells = doc.cells.len();
+            for entry in &doc.cells {
+                terrain_published.insert(entry.id.clone());
+                report.terrain_bytes += entry.bytes;
+                let mut parts = entry.id.split('/');
+                let (_, i, j) = (parts.next(), parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+                let path = tree.join("cells").join(obc_pack::catalog::TERRAIN_DIR).join(i).join(format!("{j}.obcd"));
+                match crate::hash::file(&path) {
+                    Ok((bytes, _)) if bytes != entry.bytes => problem(
+                        format!("{}: {bytes} bytes on disk, {} in the catalog", path.display(), entry.bytes),
+                        &mut report.problems,
+                    ),
+                    Ok((_, sha)) if sha != entry.sha256 => problem(
+                        format!("{}: sha256 {sha} but the catalog pinned {}", path.display(), entry.sha256),
+                        &mut report.problems,
+                    ),
+                    // The real reader, not a header sniff: `TerrainSet::open` is the same
+                    // `obc-elevation` parse the packer and the device run, so a container that
+                    // reads here reads everywhere.
+                    Ok(_) => {
+                        if let Err(e) = obc_pack::terrain::TerrainSet::open(&path) {
+                            problem(e, &mut report.problems);
+                        }
+                    }
+                    Err(e) => problem(format!("{e} — the catalog publishes it"), &mut report.problems),
+                }
+            }
+        }
+    }
+
     // 4, per region.
     for region in &root.regions {
         report.regions += 1;
@@ -441,6 +517,20 @@ pub fn verify_cell_tree(tree: &Path, opts: CellTreeVerifyOptions) -> Result<Cell
                     );
                 }
             }
+        }
+        // A terrain id a region names must be an artifact or a known-empty square. Known-empty
+        // ones are not in `terrain_published`, so only a *missing* id is reported — the generator
+        // already refuses to publish a region naming one that is neither.
+        let priced = region.terrain.as_ref().map_or(0, |t| t.cell_count);
+        let listed = doc.terrain.iter().filter(|id| terrain_published.contains(*id)).count() as u32;
+        if listed != priced {
+            problem(
+                format!(
+                    "{rel}: lists {listed} downloadable terrain cell(s) but the root prices {priced} — a rider's \
+                     terrain estimate would be wrong before the first byte moves"
+                ),
+                &mut report.problems,
+            );
         }
     }
 

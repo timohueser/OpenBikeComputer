@@ -291,6 +291,12 @@ posting, `2^19` µdeg cell — a 2 MiB block). Both are OBCT *header data*, so a
 different pairing is a re-bake and not a format change; the committed sim sidecars
 use a `2^16` cell for that reason.
 
+For a *published* catalog you do not run `obc-dem bake` by hand: `obc bake terrain`
+drives this crate as a library over the curated coverage and lays the cells out as
+`cells/terrain/<i>/<j>.obcd` with the sidecars and known-empty runs the catalog
+needs (see the root [README](../README.md#baking-and-publishing-the-catalog) and
+`OBCC_Spec.md` §13). `obc-dem` on its own stays the way to build a one-off shard.
+
 `fetch` is the only thing that touches the network — a bake is a pure function of
 a tile directory and a box, and **byte-identical output for identical inputs is a
 contract**, pinned by a digest test. A source void becomes `NODATA`, an uncovered
