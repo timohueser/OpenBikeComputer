@@ -248,6 +248,102 @@ pub fn ride_v2() -> Vec<u8> {
     v
 }
 
+// --- OBCT terrain (OBCT_Spec.md, epic #1068 / EL1) -----------------------------------------
+
+/// The terrain fixture's posting and cell size as `log2(µdeg)`. The posting is the v1 value
+/// (`2^9`); the **cell is deliberately not** — a v1 `2^19` cell is 2 MiB of raster, and the whole
+/// point of both being header data (spec §1.3) is that a small one is equally legal. At `2^14` a
+/// cell is 32 × 32 samples = 2 × 2 tiles, so the fixture still exercises tile addressing inside a
+/// cell, cross-cell fetch, and a hole — in 6 KB.
+pub const TERRAIN_POSTING_LOG2: u8 = 9;
+pub const TERRAIN_CELL_LOG2: u8 = 14;
+/// The fixture's cell rectangle: 2 × 2 cells with their minimum corner at ≈ 46.972928°N,
+/// 7.979008°E (the Bernese Oberland, so a transposed lat/lon lands in the sea and is noticed).
+pub const TERRAIN_CELL_MIN_I: u32 = 19_251;
+pub const TERRAIN_CELL_MIN_J: u32 = 16_871;
+pub const TERRAIN_ROWS: u16 = 2;
+pub const TERRAIN_COLS: u16 = 2;
+/// The cell missing from the rectangle, as an offset from its minimum corner — the fixture's hole,
+/// pinning the `0` directory sentinel and the "a query in a hole is uncovered" rule (§5.3).
+pub const TERRAIN_ABSENT_CELL: (u32, u32) = (1, 1);
+/// The one `NODATA` sample, as a lattice offset from the rectangle's base sample (§5.4).
+pub const TERRAIN_NODATA_AT: (u32, u32) = (40, 5);
+
+/// The fixture's surface: a **plane** `100 + 3·di + 5·dj` metres over the lattice offsets from the
+/// rectangle's base sample, with one [`TERRAIN_NODATA_AT`] void.
+///
+/// A plane because it is the one surface whose bilinear interpolation has a closed form
+/// independent of the interpolator — a second implementation can check itself against arithmetic
+/// rather than against a reference table. The coefficients differ (3 vs 5) so a transposed
+/// latitude/longitude cannot pass.
+pub fn terrain_height(di: u32, dj: u32) -> i16 {
+    if (di, dj) == TERRAIN_NODATA_AT {
+        return i16::MIN; // obc_formats::obct::NODATA, written out per this crate's rules
+    }
+    (100 + 3 * di as i32 + 5 * dj as i32) as i16
+}
+
+/// The µdeg coordinate of lattice offset `d` on either axis, from the rectangle's base sample.
+pub fn terrain_coord(base_cell: u32, d: u32) -> i32 {
+    let base_sample = (base_cell as i64) << (TERRAIN_CELL_LOG2 - TERRAIN_POSTING_LOG2);
+    (-(1i64 << 28) + ((base_sample + d as i64) << TERRAIN_POSTING_LOG2)) as i32
+}
+
+/// A full **OBCT terrain shard** (`OBCT_Spec.md` §4): the 32-byte header, the row-major `uint32`
+/// offset directory over the 2 × 2 cell rectangle (`0` = the absent cell), then the three present
+/// cell blocks — each 2 × 2 tiles of 16 × 16 `int16` metres, row-major with rows advancing latitude.
+///
+/// Built straight from the spec's field tables, independent of the `obc-elevation` reader that
+/// parses it from the other side. Length = `32 + 16 + 3 × 2048` = 6192 bytes.
+pub fn terrain_shard() -> Vec<u8> {
+    let samples = 1u32 << (TERRAIN_CELL_LOG2 - TERRAIN_POSTING_LOG2); // 32 per cell edge
+    let tiles = samples / 16; // 2 tiles per cell edge
+    let dir_len = TERRAIN_ROWS as usize * TERRAIN_COLS as usize * 4;
+
+    let mut header = [0u8; 32];
+    header[0..4].copy_from_slice(b"OBCT");
+    header[4] = 1; // version
+    header[5] = TERRAIN_POSTING_LOG2;
+    header[6] = TERRAIN_CELL_LOG2;
+    header[7] = 0; // flags — v1 defines none
+    header[8..12].copy_from_slice(&TERRAIN_CELL_MIN_I.to_le_bytes());
+    header[12..16].copy_from_slice(&TERRAIN_CELL_MIN_J.to_le_bytes());
+    header[16..18].copy_from_slice(&TERRAIN_ROWS.to_le_bytes());
+    header[18..20].copy_from_slice(&TERRAIN_COLS.to_le_bytes());
+    header[20..24].copy_from_slice(&le32(32)); // the directory follows the header
+                                               // 24..32 reserved (0)
+
+    let mut directory = vec![0u8; dir_len];
+    let mut blocks: Vec<u8> = Vec::new();
+    for ci in 0..TERRAIN_ROWS as u32 {
+        for cj in 0..TERRAIN_COLS as u32 {
+            if (ci, cj) == TERRAIN_ABSENT_CELL {
+                continue; // leave the slot at the absent sentinel
+            }
+            let slot = (ci as usize * TERRAIN_COLS as usize + cj as usize) * 4;
+            let offset = (32 + dir_len + blocks.len()) as u32;
+            directory[slot..slot + 4].copy_from_slice(&le32(offset));
+            for ti in 0..tiles {
+                for tj in 0..tiles {
+                    for r in 0..16u32 {
+                        for c in 0..16u32 {
+                            let di = ci * samples + ti * 16 + r;
+                            let dj = cj * samples + tj * 16 + c;
+                            blocks.extend_from_slice(&terrain_height(di, dj).to_le_bytes());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut v = Vec::with_capacity(32 + dir_len + blocks.len());
+    v.extend_from_slice(&header);
+    v.extend_from_slice(&directory);
+    v.extend_from_slice(&blocks);
+    v
+}
+
 /// Config object v1 (spec §7.3): name "OBC Tourer", metric.
 pub fn config_v1() -> Vec<u8> {
     let name = b"OBC Tourer";
@@ -591,6 +687,12 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         // contract the browser conversion bridge must reproduce byte-for-byte in wasm.
         ("track-log.obct", track_log()),
         ("track-export.gpx", track_export_gpx()),
+        // The OBCT terrain shard (`OBCT_Spec.md`, epic #1068): a 2 × 2 cell rectangle with a hole
+        // and a NODATA sample, over a plane. Not a wire layout — a *storage* one, like
+        // `track-log.obct` beside it — and it is here because three implementations will sample it
+        // (the device, the `obc-dem` baker's cross-check, and eventually the browser), and the
+        // spec's guarantee is that they agree bit-for-bit on the same coordinate.
+        ("terrain-shard.obcd", terrain_shard()),
         ("ride-v1.bin", ride_v1()),
         ("ride-v2.bin", ride_v2()),
         ("config-v1.bin", config_v1()),

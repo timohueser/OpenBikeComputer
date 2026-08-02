@@ -56,6 +56,31 @@
       "identical_ride_to": "route-waypoints.obcr",
       "waypoints": []
     },
+    "terrain-shard.obcd": {
+      "format": "OBCT v1 terrain shard (OBCT_Spec.md 4) — 32-byte header + row-major uint32 cell directory + cell blocks of 16x16 int16 tiles",
+      "byte_len": 6192,
+      "version": 1,
+      "posting_log2": 9,
+      "cell_log2": 14,
+      "flags": 0,
+      "cell_min_i": 19251,
+      "cell_min_j": 16871,
+      "cell_rows": 2,
+      "cell_cols": 2,
+      "directory_offset": 32,
+      "cell_block_len": 2048,
+      "tiles_per_cell_edge": 2,
+      "samples_per_cell_edge": 32,
+      "absent_cell": { "di": 1, "dj": 1, "note": "directory slot 3 holds the 0 sentinel" },
+      "nodata_sample": { "di": 40, "dj": 5, "value": -32768 },
+      "surface": "100 + 3*di + 5*dj metres over the lattice offset from the rectangle's base sample",
+      "base_sample_udeg": { "lat": 46972928, "lon": 7979008 },
+      "worked_examples": [
+        { "lat_udeg": 46974208, "lon_udeg": 7980672, "height_m": 124, "note": "spec 5.6 — bilinear inside one tile (di 2.5, dj 3.25)" },
+        { "lat_udeg": 46989056, "lon_udeg": 7980544, "height_m": 210, "note": "half a posting below the cell seam — the upper corners come from the next cell (di 31.5, dj 3)" },
+        { "lat_udeg": 46973952, "lon_udeg": 8011520, "height_m": 421, "note": "half a posting past the east coverage edge — clamped to the last covered sample, not extrapolated to 424" }
+      ]
+    },
     "track-log.obct": {
       "format": "recorded track log — a flat array of 20-byte records, no header",
       "byte_len": 107,
