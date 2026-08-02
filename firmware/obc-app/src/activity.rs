@@ -11,6 +11,8 @@
 //! [`AltimeterSource`](obc_ports::AltimeterSource); the two integrate independently.
 
 use obc_elevation::DeadBand;
+
+use crate::altitude::AltitudeFusion;
 use obc_map_scene::ground_dist_m;
 use obc_route::Match;
 
@@ -311,6 +313,14 @@ pub struct Activity {
     climb: DeadBand<f32>,
     /// Latest barometric altitude (m), stamped onto each logged [`TrackPoint`](obc_ports::TrackPoint)'s elevation.
     last_alt: Option<f32>,
+    /// The map-referenced altimeter (EL8, epic #1068): the slow estimate of the barometer's
+    /// absolute offset, fed one terrain sample per GPS fix. Corrects **what the Elevation tile
+    /// shows** and nothing else — `last_alt` above (and therefore the recorded track and the climb
+    /// dead-band below it) stays raw barometry on purpose; see [`crate::altitude`].
+    ///
+    /// Deliberately **not** cleared by [`reset_ride`](Activity::reset_ride): it is a calibration of
+    /// the atmosphere, not a tally of the ride.
+    altitude: AltitudeFusion,
     /// `true` when a dropped fix (GPS gap / teleport) left a hole, so the next logged point starts a
     /// fresh track segment.
     segment_break: bool,
@@ -379,12 +389,44 @@ impl Activity {
         (self.moving_m / self.moving_s * 100.0) as u16 // float→int casts saturate
     }
 
-    /// The current barometric elevation (m): the latest altimeter sample, or `None` before the
-    /// first. Unlike [`climb_m`](Activity::climb_m) (dead-banded *ascent*) this is the raw present
-    /// height and follows the altimeter in any [`Mode`]. Read by the
-    /// [`Elevation`](crate::stat_fields::StatField::Elevation) tile.
-    pub fn current_elevation_m(&self) -> Option<f32> {
+    /// The **raw barometric** elevation (m): the latest altimeter sample, or `None` before the
+    /// first. Unlike [`climb_m`](Activity::climb_m) (dead-banded *ascent*) this is the present
+    /// height and follows the altimeter in any [`Mode`]. Absolute value is uncalibrated — this is
+    /// the number `obc_sensors::bmp581` is honest about — so display goes through
+    /// [`current_elevation_m`](Activity::current_elevation_m) instead.
+    pub fn baro_elevation_m(&self) -> Option<f32> {
         self.last_alt
+    }
+
+    /// The current elevation (m) **to show**: the map-referenced fused value once the estimator has
+    /// settled (EL8), otherwise the raw barometric reading exactly as before the epic. `None`
+    /// before the first altimeter sample. Read by the
+    /// [`Elevation`](crate::stat_fields::StatField::Elevation) tile.
+    ///
+    /// On a map with no terrain beside it the estimator never settles, so this is
+    /// [`baro_elevation_m`](Activity::baro_elevation_m) forever — the "removing terrain changes
+    /// nothing else" contract, at the UI end.
+    pub fn current_elevation_m(&self) -> Option<f32> {
+        let baro = self.last_alt?;
+        Some(self.altitude.fused_m(baro).unwrap_or(baro))
+    }
+
+    /// The map-referenced altimeter's state (EL8) — the offset estimate, its settle/gate counters
+    /// and the #529 reference-pressure signal. The inspection surface the board's RTT line and the
+    /// simulator's readout both print; no UI reads it.
+    pub fn altitude(&self) -> &AltitudeFusion {
+        &self.altitude
+    }
+
+    /// Feed one terrain sample taken at the current GPS fix into the map-referenced altimeter
+    /// (EL8). Pairs it with the barometric reading from the **same tick** (the altimeter is polled
+    /// before the fix in [`App::tick`](crate::App::tick), and the host samples terrain immediately
+    /// after that tick), so the residual is a like-for-like difference. A no-op before the first
+    /// altimeter sample — with no barometer there is nothing to reference.
+    pub(crate) fn record_map_elevation(&mut self, map_m: i16) {
+        if let Some(baro) = self.last_alt {
+            self.altitude.observe(f32::from(map_m), baro);
+        }
     }
 
     /// Live heart rate (bpm) for the tile, or `None` when none has arrived or the last sample is
@@ -770,6 +812,9 @@ impl Activity {
 
     /// The elevation (m) to stamp on a logged [`TrackPoint`](obc_ports::TrackPoint): the
     /// latest barometric altitude, or 0 before any sample.
+    ///
+    /// **Raw, never fused** (EL8): the recorded track is the rider's own measurement, and folding
+    /// the map into it would double-count the map — see [`crate::altitude`]'s module header.
     pub(crate) fn track_ele(&self) -> i16 {
         self.last_alt.map_or(0, |a| a as i16)
     }

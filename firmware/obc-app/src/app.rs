@@ -2,6 +2,7 @@
 //! driver that both hosts run.
 
 use embedded_graphics::{draw_target::DrawTarget, primitives::Rectangle};
+use obc_elevation::ElevationSource;
 use obc_reader::Reader;
 use obc_render::{zoom_for_mpp, Canvas, Clock, NoopClock, RenderStats, Viewport};
 use obc_route::{Profile, RouteReader};
@@ -710,6 +711,11 @@ impl App {
             // staleness check + render read with. Off `AppState`, so a stationary fix that moves
             // nothing doesn't force a redraw here.
             self.ride.last_fix_ms = Some(self.ui.now_ms);
+            // Arm the map-referenced altimeter's one terrain read for this fix (EL8, epic #1068).
+            // Nothing is sampled here — `tick` holds no elevation source, and an SD tile read does
+            // not belong in the middle of the fix path anyway. The host drains it right after this
+            // tick through `sample_terrain`, at the fix cadence and never per frame.
+            self.ride.pending_terrain = Some((fix.lat, fix.lon));
             if let Some(route) = route {
                 self.ride.match_fix(&mut self.activity, fix, route);
                 // "Am I on a climb now?" is derived from the fresh match — with hysteresis, and a
@@ -810,6 +816,32 @@ impl App {
         // the roughly-hourly sweep — both gated on a trusted clock (GPS stamped it above / BLE will
         // in S2) and no ride recording. Deletes + stamps leave here as typed host commands.
         self.retention_tick();
+    }
+
+    /// Give the **map-referenced altimeter** (EL8, epic #1068) its one terrain read for the latest
+    /// GPS fix. Call it once per host pass, immediately after [`tick`](App::tick).
+    ///
+    /// Returns whether a sample was actually taken — `false` on any pass with no fresh fix, which
+    /// is most of them. That one-shot is why this is safe to call every frame: `tick` arms the
+    /// request on a fresh fix only, so the read happens **at the fix cadence**, never per frame. On
+    /// device that matters concretely — a terrain sample is a 512 B tile, usually already in the
+    /// four-slot cache and otherwise an SD read, which has no business on the render path.
+    ///
+    /// `elev` is the same [`ElevationSource`] the route emitter fills from: the mounted `.obcd`
+    /// terrain, or [`NullElevation`](obc_elevation::NullElevation) where there is none. With the
+    /// null source (or outside the raster's coverage) the sample is `None`, nothing is fed, the
+    /// estimator never settles, and the Elevation tile keeps its pre-epic barometric reading.
+    ///
+    /// It is deliberately **not** part of [`tick`](App::tick): `Sensors` is `obc-ports` vocabulary
+    /// and terrain is not a sensor — it is the map, which the app already reaches through its own
+    /// seam. Keeping it here also keeps the source's `&mut` out of the fix path, where the board
+    /// holds it as a `.bss` `&'static mut` shared with the planner.
+    pub fn sample_terrain(&mut self, elev: &mut dyn ElevationSource) -> bool {
+        let Some((lat, lon)) = self.ride.pending_terrain.take() else { return false };
+        if let Some(map_m) = elev.sample(lat, lon) {
+            self.activity.record_map_elevation(map_m);
+        }
+        true
     }
 
     /// The per-tick auto-expiry step (epic #638, S3): the once-per-activation active-route
@@ -3447,6 +3479,111 @@ mod tests {
         tick_alt(&mut app, 160.0, 5000); // re-anchors at the current height
         tick_alt(&mut app, 165.0, 6000); // a real +5 m after resuming
         assert_eq!(app.activity.climb_m(), 15.0, "only genuine post-resume climb adds through tick");
+    }
+
+    // --- end-to-end map-referenced altimeter through `tick` + `sample_terrain` (EL8, #1076) ---
+
+    /// A terrain source at a constant height that counts every sample taken from it — so a test can
+    /// assert the *cadence*, not just the value.
+    struct FlatTerrain {
+        height_m: i16,
+        samples: u32,
+    }
+    impl obc_elevation::ElevationSource for FlatTerrain {
+        fn sample(&mut self, _lat_udeg: i32, _lon_udeg: i32) -> Option<i16> {
+            self.samples += 1;
+            Some(self.height_m)
+        }
+    }
+
+    /// One host pass: an altitude sample and (optionally) a fresh fix through `tick`, then the
+    /// terrain drain the hosts run right behind it.
+    fn pass(
+        app: &mut App,
+        terrain: &mut dyn obc_elevation::ElevationSource,
+        fix: Option<Fix>,
+        alt_m: f32,
+        now_ms: u32,
+    ) {
+        let mut loc = OneFix(fix);
+        let mut alt = OneAlt(Some(alt_m));
+        app.ui.now_ms = now_ms;
+        app.tick(
+            RideClock(now_ms),
+            Sensors {
+                loc: &mut loc,
+                altimeter: Some(&mut alt),
+                temperature: None,
+                clock: None,
+                compass: None,
+                track: None,
+                fuel: None,
+                hr: None,
+                power: None,
+                cadence: None,
+            },
+            None,
+        );
+        app.sample_terrain(terrain);
+    }
+
+    /// A fix at a distinct coordinate each pass, so the matcher/motion path sees real movement.
+    fn fix_at(i: u32) -> Fix {
+        Fix { lat: 46_650_000 + i as i32 * 100, lon: 8_290_000, course: Some(0.0), speed_mps: Some(5.0) }
+    }
+
+    /// The end-to-end unlock: a barometer reading 75 m too high is pulled onto the map's frame, and
+    /// the Elevation tile's number follows — while the *recorded* elevation stays raw barometry.
+    #[test]
+    fn tick_fuses_the_altimeter_onto_the_map_frame() {
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        let mut terrain = FlatTerrain { height_m: 1800, samples: 0 };
+        // Before any terrain sample the tile is the plain barometric reading, as it always was.
+        pass(&mut app, &mut terrain, Some(fix_at(0)), 1875.0, 1000);
+        assert_eq!(app.activity.current_elevation_m(), Some(1875.0), "unsettled → the raw reading");
+
+        for i in 1..40 {
+            pass(&mut app, &mut terrain, Some(fix_at(i)), 1875.0, 1000 + i * 1000);
+        }
+        let shown = app.activity.current_elevation_m().expect("a sample has arrived");
+        assert!((shown - 1800.0).abs() < 1.0, "the tile now reads the map-referenced height, got {shown}");
+        assert_eq!(app.activity.baro_elevation_m(), Some(1875.0), "the raw barometric reading is untouched");
+        assert_eq!(app.activity.track_ele(), 1875, "the RECORDED elevation stays raw barometry");
+        assert!(app.activity.altitude().settled());
+    }
+
+    /// The cadence contract: terrain is read once per **fresh fix**, no matter how often the host
+    /// drains — a per-frame read would be an SD tile fetch on the render path.
+    #[test]
+    fn terrain_is_sampled_once_per_fix_never_per_frame() {
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        let mut terrain = FlatTerrain { height_m: 900, samples: 0 };
+        pass(&mut app, &mut terrain, Some(fix_at(0)), 910.0, 1000);
+        assert_eq!(terrain.samples, 1, "one fix, one sample");
+        // Ten more host passes with no fresh fix at all — the drain must find nothing pending.
+        for i in 0..10 {
+            assert!(!app.sample_terrain(&mut terrain), "no fresh fix → nothing to sample");
+            pass(&mut app, &mut terrain, None, 911.0 + i as f32, 2000 + i * 100);
+        }
+        assert_eq!(terrain.samples, 1, "still exactly one terrain read");
+        pass(&mut app, &mut terrain, Some(fix_at(1)), 910.0, 9000);
+        assert_eq!(terrain.samples, 2, "the next fresh fix takes exactly one more");
+    }
+
+    /// A map with no terrain beside it: the null source answers nothing, so the estimator never
+    /// settles and the tile is bit-for-bit its pre-epic self. The "removing terrain changes nothing
+    /// else" contract, at the app's top seam.
+    #[test]
+    fn a_terrain_less_map_leaves_the_elevation_tile_exactly_as_it_was() {
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        let mut null = obc_elevation::NullElevation;
+        for i in 0..60 {
+            pass(&mut app, &mut null, Some(fix_at(i)), 640.0 + i as f32, 1000 + i * 1000);
+        }
+        assert!(!app.activity.altitude().settled(), "no residual ever arrived");
+        assert_eq!(app.activity.altitude().offset_m(), None);
+        assert_eq!(app.activity.current_elevation_m(), app.activity.baro_elevation_m());
+        assert_eq!(app.activity.current_elevation_m(), Some(699.0));
     }
 
     // --- end-to-end BLE sensor seam through `tick` (SE2, #709) ---

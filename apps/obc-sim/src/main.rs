@@ -182,6 +182,13 @@ struct Args {
     /// before C5 wires the screen into the Back-cycle. A no-op unless the replay left a climb active
     /// (so pair it with a `--gpx`/`--at` that reaches one).
     open_climb: bool,
+    /// `--gpx` replay (headless **and** GUI): inject a synthetic **barometric weather drift** of
+    /// this many metres of apparent altitude per hour of playback time — the one error a GPX replay
+    /// otherwise cannot show, since the replayed baro is fed the track's own true elevation. The
+    /// map-referenced altimeter (elevation epic #1068, EL8) exists to cancel exactly this, so
+    /// `--baro-drift -60` is how you watch it do so: the raw barometer walks off by 60 m/h while
+    /// the Elevation tile stays on the terrain. Real weather is ~8 m/h (1 hPa/h).
+    baro_drift: Option<f32>,
     /// Headless `--gpx` replay only: feed a **fixed synthetic HR/power/cadence** through SE2's HAL
     /// sensor traits for one final tick (epic #707, SE5), and pin the three new sensor stat tiles
     /// (HR/PWR/RPM) onto the Statistics grid, so the tiles render live values in the snapshot. A
@@ -273,6 +280,7 @@ impl Default for Args {
             inject_warning: None,
             boot_fault: None,
             open_climb: false,
+            baro_drift: None,
             sensors_demo: false,
             fail_track: false,
             dfu_scan: None,
@@ -486,6 +494,9 @@ fn parse_args() -> Result<Args, String> {
             "--ble-connected" => a.ble_connected = true,
             "--nav-hold" => a.nav_hold = true,
             "--open-climb" => a.open_climb = true,
+            "--baro-drift" => {
+                a.baro_drift = Some(it.next().and_then(|s| s.parse().ok()).ok_or("bad --baro-drift (m per hour)")?)
+            }
             "--sensors-demo" => a.sensors_demo = true,
             "--fail-track" => a.fail_track = true,
             "--dfu-scan" => {
@@ -942,7 +953,7 @@ fn main() {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: obc-sim <map.obcm> | --set <MS7.OBS> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--home-seed N] [--clock YYYY-MM-DDTHH:MM] [--route-retention LEVEL:AGE] [--lang en|de|fr|es] [--stat-fields LIST] [--ble-connected] [--ble-passkey N] [--ble-paired] [--sensors-screen] [--inject-upload ID] [--inject-upload-replace ID] [--inject-trip-upload ID] [--nav-hold] [--inject-nav-fail exhausted|nopath] [--detour-hold] [--inject-detour-fail exhausted|nopath] [--inject-warning gps,altimeter,compass,map] [--boot-fault nocard|nomap|badmap] [--open-climb]\n\n  --set <MS7.OBS>  open an OBCA volume set (specs/OBCA_Spec.md §5): the manifest plus every\n                   MS7S<kk>.OBM shard beside it, mounted as one map. Every shard must be\n                   present and exactly its recorded size, or the set is refused whole (§5.4).");
+            eprintln!("error: {e}\nusage: obc-sim <map.obcm> | --set <MS7.OBS> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--home-seed N] [--clock YYYY-MM-DDTHH:MM] [--route-retention LEVEL:AGE] [--lang en|de|fr|es] [--stat-fields LIST] [--ble-connected] [--ble-passkey N] [--ble-paired] [--sensors-screen] [--inject-upload ID] [--inject-upload-replace ID] [--inject-trip-upload ID] [--nav-hold] [--inject-nav-fail exhausted|nopath] [--detour-hold] [--inject-detour-fail exhausted|nopath] [--inject-warning gps,altimeter,compass,map] [--boot-fault nocard|nomap|badmap] [--open-climb] [--baro-drift M_PER_HOUR]\n\n  --set <MS7.OBS>  open an OBCA volume set (specs/OBCA_Spec.md §5): the manifest plus every\n                   MS7S<kk>.OBM shard beside it, mounted as one map. Every shard must be\n                   present and exactly its recorded size, or the set is refused whole (§5.4).");
             std::process::exit(2);
         }
     };
@@ -1200,6 +1211,12 @@ fn main() {
         // hold arms only while paired) sees the bond, exactly as the control panel drives it live.
         let link = if args.ble_connected { obc_app::BleLink::Connected } else { obc_app::BleLink::Advertising };
         app.set_ble_status(obc_app::BleStatus { link, passkey: args.ble_passkey, paired: args.ble_paired });
+        // The map's terrain (EL7), mounted **once** for the whole headless run like the map itself:
+        // the `.obcd` sidecar beside the `.obcm`, or the null source when there is none. Two
+        // consumers share it — a scripted route plan fills its elevation from it (EL7), and the
+        // replay below feeds the map-referenced altimeter from it (EL8) — so it is mounted here,
+        // above both, rather than once per user (mounting borrows the whole file for the session).
+        let mut elev = map.elevation();
         if let Some(script) = &args.script {
             // The `f` token flushes lazy draw-time state (the POI snapshot / detail hours / the
             // Up-ahead corridor snapshot) by drawing one throwaway frame against the map reader and
@@ -1211,11 +1228,6 @@ fn main() {
             // screen stays up (for its own snapshot, or for the injected answer to land in).
             let hold_nav = args.nav_hold || args.inject_nav_fail.is_some();
             let hold_detour = args.detour_hold || args.inject_detour_fail.is_some();
-            // The map's terrain (EL7), mounted once for the run like the map itself: a scripted
-            // route plan fills its elevation from the `.obcd` sidecar beside the `.obcm`, so the
-            // Route overview's band and the Climb screen have something to draw. No sidecar ⇒ the
-            // null source ⇒ the pre-EL7 flat route.
-            let mut elev = map.elevation();
             let mut hook = |app: &mut App, what: ScriptHook| match what {
                 ScriptHook::Render => {
                     // A pending Ride-detail track request (#680) fills before the draw, so a `d` frame
@@ -1430,6 +1442,9 @@ fn main() {
         // bounded step keeps long tracks fast while staying under the dropout/teleport gates.
         if let Some(p) = player.as_mut() {
             let mut baro = BaroSensor::new();
+            // `--baro-drift` (EL8, #1076): the synthetic weather the map-referenced altimeter is
+            // there to cancel. Off by default, so every existing snapshot replays unchanged.
+            baro.set_drift(args.baro_drift.unwrap_or(0.0));
             p.seek(0.0);
             p.play();
             let step = (replay_to / 400.0).clamp(1.0, 8.0);
@@ -1443,7 +1458,28 @@ fn main() {
                 let sink: Option<&mut dyn TrackSink> =
                     if args.fail_track { Some(&mut fail_sink) } else { tracks.sink() };
                 replay_step(&mut app, p, &mut baro, None, step, route.as_ref(), sink, ReplaySensors::default());
+                // The map-referenced altimeter's one terrain read per fix (EL8, #1076) — the same
+                // mounted `.obcd` the router emits from, drained right behind the tick exactly as
+                // the board's ride loop does.
+                app.sample_terrain(&mut *elev);
                 t += step;
+            }
+            // With drift injected, report what the map-referenced altimeter made of it — the
+            // headless twin of the GUI's Altimeter panel (and of the board's `altfuse:` RTT line).
+            // Gated on the flag so an ordinary snapshot run stays silent.
+            if args.baro_drift.is_some() {
+                let a = app.activity.altitude();
+                let baro = app.activity.baro_elevation_m().unwrap_or(f32::NAN);
+                eprintln!(
+                    "altfuse: raw={baro:.1} m fused={} offset={} map_ref={} p_ref={} acc={} gated={} reseeds={}",
+                    a.fused_m(baro).map_or("--".into(), |m| format!("{m:.1} m")),
+                    a.offset_m().map_or("--".into(), |m| format!("{m:+.1} m")),
+                    a.map_reference_m().map_or("--".into(), |m| format!("{m:.0} m")),
+                    a.reference_pressure_hpa(baro).map_or("--".to_string(), |p| format!("{p:.2} hPa")),
+                    a.accepted(),
+                    a.gated(),
+                    a.reseeds(),
+                );
             }
         }
 
