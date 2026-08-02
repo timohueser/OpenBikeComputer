@@ -2,11 +2,14 @@
 //! equal its spec-derived builder byte-for-byte, and the route vectors must load and
 //! ride through `obc-route`. The app's `swift test` consumes the same files.
 
+use obc_elevation::{TerrainReader, TileCache};
 use obc_formats::io::{ByteSink, Error, SliceSource};
 use obc_formats::track::RECORD_LEN as TRACK_RECORD_LEN;
 use obc_route::{for_each_waypoint, track_to_gpx, RouteIndex, RouteObjectInfo, RouteReader, MAX_POINTS_PER_CHUNK};
 use obc_vectors::{
-    all, crc32, dir, ride_v1, ride_v2, TRACK_NAME, TRIP_DANGLING_STAGE, TRIP_ID, TRIP_NAME, TRIP_STAGE_IDS,
+    all, crc32, dir, ride_v1, ride_v2, terrain_coord, terrain_height, terrain_shard, TERRAIN_CELL_LOG2,
+    TERRAIN_CELL_MIN_I, TERRAIN_CELL_MIN_J, TERRAIN_COLS, TERRAIN_NODATA_AT, TERRAIN_POSTING_LOG2, TERRAIN_ROWS,
+    TRACK_NAME, TRIP_DANGLING_STAGE, TRIP_ID, TRIP_NAME, TRIP_STAGE_IDS,
 };
 
 fn fixture(name: &str) -> Vec<u8> {
@@ -347,6 +350,71 @@ fn trip_vectors_are_self_consistent() {
     assert_eq!(&e[21..21 + name_len], TRIP_NAME.as_bytes());
     // Trailing whole-object crc32 = the trip file's CRC-32 (the content fingerprint routes use).
     assert_eq!(u32::from_le_bytes([e[72], e[73], e[74], e[75]]), crc32(&trip), "entry crc32 fingerprints the trip");
+}
+
+/// The OBCT terrain shard (`OBCT_Spec.md`): the checked-in bytes parse through the production
+/// `obc-elevation` reader, and the three sampling rules that a second implementation is most likely
+/// to get wrong — the cross-cell fetch, the coverage clamp and `NODATA` propagation — produce the
+/// numbers the spec's worked examples state.
+///
+/// The interpolated values are asserted against the **closed form of the plane**
+/// (`100 + 3·di + 5·dj`, rounded half away from zero), not against a table copied out of the
+/// reader: on a plane the two must agree exactly, so this is an oracle rather than a mirror.
+#[test]
+fn terrain_vector_samples_through_the_production_reader() {
+    let bytes = fixture("terrain-shard.obcd");
+    assert_eq!(bytes, terrain_shard(), "the fixture drifted from the spec builder");
+    assert_eq!(bytes.len(), 32 + 16 + 3 * 2048, "header + 2×2 directory + three cell blocks");
+
+    let src = SliceSource(&bytes);
+    let reader = TerrainReader::parse(&src).expect("the hand-built container parses");
+    let header = reader.header();
+    assert_eq!((header.posting_log2, header.cell_log2), (TERRAIN_POSTING_LOG2, TERRAIN_CELL_LOG2));
+    assert_eq!((header.cell_rows, header.cell_cols), (TERRAIN_ROWS, TERRAIN_COLS));
+    let mut cache = TileCache::<4>::new();
+
+    // µdeg helpers over the fixture's lattice offsets.
+    let lat = |di: u32| terrain_coord(TERRAIN_CELL_MIN_I, di);
+    let lon = |dj: u32| terrain_coord(TERRAIN_CELL_MIN_J, dj);
+    // The plane's closed form at a sub-posting offset, rounded half away from zero (spec §5.2).
+    let plane = |di: f64, dj: f64| {
+        let h = 100.0 + 3.0 * di + 5.0 * dj;
+        (h.abs() + 0.5).floor().copysign(h) as i16
+    };
+
+    // The literal µdeg coordinates `manifest.json` publishes, so the two cannot drift apart.
+    assert_eq!((lat(0), lon(0)), (46_972_928, 7_979_008), "the rectangle's base sample");
+    assert_eq!((lat(2) + 256, lon(3) + 128), (46_974_208, 7_980_672));
+    assert_eq!((lat(31) + 256, lon(3)), (46_989_056, 7_980_544));
+    assert_eq!((lat(2), lon(63) + 256), (46_973_952, 8_011_520));
+
+    // Worked example 1 (spec §5.6): a quarter/half-posting offset inside one tile.
+    assert_eq!(reader.sample(&mut cache, lat(2) + 256, lon(3) + 128), Some(124));
+    assert_eq!(plane(2.5, 3.25), 124);
+
+    // Worked example 2: half a posting below the cell seam in latitude — the upper corners come out
+    // of the *next cell down the directory*, and the plane stays a plane across it.
+    assert_eq!(reader.sample(&mut cache, lat(31) + 256, lon(3)), Some(210));
+    assert_eq!(plane(31.5, 3.0), 210);
+
+    // Worked example 3: half a posting past the rectangle's east edge — the missing corner clamps
+    // to the last covered sample, so the surface flattens instead of extrapolating.
+    assert_eq!(reader.sample(&mut cache, lat(2), lon(63)), Some(421));
+    assert_eq!(reader.sample(&mut cache, lat(2), lon(63) + 256), Some(421), "clamped, not 424");
+
+    // Lattice points return their own sample, in every tile of every present cell.
+    for (di, dj) in [(0u32, 0u32), (15, 15), (16, 16), (31, 31), (32, 0), (63, 17), (0, 63)] {
+        assert_eq!(reader.sample(&mut cache, lat(di), lon(dj)), Some(terrain_height(di, dj)), "({di}, {dj})");
+    }
+
+    // The hole: every query inside the absent cell is uncovered.
+    assert_eq!(reader.sample(&mut cache, lat(40) + 100, lon(40) + 100), None, "the absent cell");
+    // The void: any query whose corner set touches the NODATA sample is None, and its neighbour two
+    // postings away is untouched.
+    let (vi, vj) = TERRAIN_NODATA_AT;
+    assert_eq!(reader.sample(&mut cache, lat(vi), lon(vj)), None);
+    assert_eq!(reader.sample(&mut cache, lat(vi - 1) + 1, lon(vj - 1) + 1), None, "no partial interpolation");
+    assert_eq!(reader.sample(&mut cache, lat(vi + 2), lon(vj + 2)), Some(terrain_height(vi + 2, vj + 2)));
 }
 
 /// Rewrite every fixture from the builders. Run only after a deliberate spec change:
