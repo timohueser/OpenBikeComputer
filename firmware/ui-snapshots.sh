@@ -463,6 +463,24 @@ cp "$repo_root/apps/obc-sim/assets/grimsel-climb.obcr" "$CLIMBROUTES/"
 # profile, so the ramp, the cursor and the TO CLIMB / GRADE tiles are all terrain-derived.
 "$SIM" "$MAP" --boot --routes-dir "$ELEVDIR" --gpx "$GPX" --at 1500 --open-climb \
     --script "p p p p" --png "$OUT/elev-climb.png"
+# --- Map-referenced altimeter (elevation epic #1068, EL8) ----------------------------------------
+# The Statistics grid's ELEVATION tile on a route-less ride, 25 minutes into the Grimsel replay,
+# with `--baro-drift` injecting the one error the device's altimeter really has: `bmp581.rs`
+# hard-codes sea-level P0, so a passing front moves every reading together and the tile used to
+# follow it. The A/B is a single number in the same tile, same presentation — no new chrome, which
+# is exactly the point. `B d d d w p p p b` walks Menu → Map → start riding → Statistics.
+#   * `-fused`:  `grimsel.obcd` is beside the map, so 25 min of −60 m/h weather is cancelled: the
+#                tile reads 1320 m, the terrain-referenced height.
+#   * `-nofuse`: the identical drifting ride on a map with **no** terrain sidecar (`monaco.obcm`),
+#                so the estimator never settles and the tile reads the raw 1304 m — bit-for-bit its
+#                pre-epic self. The "no fake precision" rule, and the reason terrain stays removable.
+ELEVFIELDS="elevation,climbed,speed,dist-done"
+ELEVSCRIPT="B d d d w p p p b"
+"$SIM" "$MAP" --boot --gpx "$GPX" --at 1500 --baro-drift -60 --stat-fields "$ELEVFIELDS" \
+    --script "$ELEVSCRIPT" --png "$OUT/elev-altimeter-fused.png"
+"$SIM" "$repo_root/apps/obc-sim/assets/monaco.obcm" --boot --gpx "$GPX" --at 1500 --baro-drift -60 \
+    --stat-fields "$ELEVFIELDS" --script "$ELEVSCRIPT" --png "$OUT/elev-altimeter-nofuse.png"
+
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p p" --gpx "$GPX" --at 30 --png "$OUT/ridecontrol.png"
 # The "Up ahead" timeline (epic #946, U3) — the ride compass's north station. Needs a POI-DENSE map,
 # so these frames use `monaco.obcm` (not $MAP) with the committed `monaco-upahead.gpx`: a ~2.7 km line

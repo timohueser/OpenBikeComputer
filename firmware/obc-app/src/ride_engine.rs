@@ -189,6 +189,16 @@ pub(crate) struct RideEngine {
     /// every fix (incl. a stationary one) never trips the `state != state_before` redraw gate; the
     /// banner's own repaint edge comes from the end-of-tick flip below.
     pub(crate) last_fix_ms: Option<u32>,
+    /// The coordinate `(lat, lon)` of the freshest fix that has **not yet** been handed a terrain
+    /// sample (EL8, epic #1068), or `None` once one has been (or before the first fix).
+    ///
+    /// This one-shot *is* the sampling cadence: `tick` arms it only on a fresh fix, and
+    /// [`App::sample_terrain`](crate::App::sample_terrain) disarms it, so a host that calls the
+    /// sampler every frame still reads at most one terrain tile per fix — the whole point, since a
+    /// per-frame sample would be an SD read on the render path. Lives **off**
+    /// [`AppState`](crate::AppState) for the same reason as
+    /// [`last_fix_ms`](RideEngine::last_fix_ms): it must never trip the redraw gate.
+    pub(crate) pending_terrain: Option<(i32, i32)>,
     /// The no-fix state at the previous tick's end, so the timer edge that flips the "No GPS Fix"
     /// banner dirties the live-data views exactly once. Starts `true` — no fix at boot.
     pub(crate) prev_no_fix: bool,
@@ -221,6 +231,7 @@ impl RideEngine {
             last_battery_poll_ms: None,
             temp_c: None,
             last_fix_ms: None,
+            pending_terrain: None,
             prev_no_fix: true,
             prev_live_sensors: (None, None, None),
         }
@@ -257,6 +268,7 @@ impl RideEngine {
             addr_of_mut!((*slot).last_battery_poll_ms).write(None);
             addr_of_mut!((*slot).temp_c).write(None);
             addr_of_mut!((*slot).last_fix_ms).write(None);
+            addr_of_mut!((*slot).pending_terrain).write(None);
             addr_of_mut!((*slot).prev_no_fix).write(true);
             addr_of_mut!((*slot).prev_live_sensors).write((None, None, None));
             // Exhaustiveness guard: a field added to `RideEngine` fails to compile here until its
@@ -278,6 +290,7 @@ impl RideEngine {
                 last_battery_poll_ms: _,
                 temp_c: _,
                 last_fix_ms: _,
+                pending_terrain: _,
                 prev_no_fix: _,
                 prev_live_sensors: _,
             } = &*slot;
