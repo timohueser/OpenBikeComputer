@@ -181,6 +181,32 @@ impl Profile {
         (a + (b - a) * f) as u32
     }
 
+    /// Cumulative ascent (m) climbed by **`dist_m` metres** along a route of `route_total_m` — the
+    /// distance-indexed twin of [`ascent_to`](Self::ascent_to), which every consumer that thinks in
+    /// route metres (matched ride progress, a waypoint's `dist_along_m`, a corridor POI's
+    /// along-route position) wants instead of a fraction it has to derive itself.
+    ///
+    /// A zero-length route has no axis to place `dist_m` on, so it reads `0`.
+    #[inline]
+    pub fn ascent_to_m(&self, dist_m: u32, route_total_m: u32) -> u32 {
+        if route_total_m == 0 {
+            return 0;
+        }
+        self.ascent_to((dist_m.min(route_total_m) as f32 / route_total_m as f32).clamp(0.0, 1.0))
+    }
+
+    /// Ascent (m) still to climb between two along-route distances — `ascent_to_m(to) −
+    /// ascent_to_m(from)`, saturating so a backwards pair reads `0` rather than wrapping.
+    ///
+    /// This is the one "climb between here and there" lookup: the Up-ahead rows' climb-to-go
+    /// (`from` = matched progress, `to` = the entry's `dist_along_m`), the `TO CLIMB` tile and the
+    /// ETA model's ascent-to-go (`to` = `route_total_m`) all read it, so they cannot drift apart.
+    /// Non-increasing in `from` and non-decreasing in `to`, since the curve is monotonic.
+    #[inline]
+    pub fn ascent_between_m(&self, from_m: u32, to_m: u32, route_total_m: u32) -> u32 {
+        self.ascent_to_m(to_m, route_total_m).saturating_sub(self.ascent_to_m(from_m, route_total_m))
+    }
+
     /// Pick the pyramid [`Window`] to draw for a view centered on `center_frac` at zoom
     /// factor `zoom` (`1.0` = whole route, larger = closer), into a chart `target_px`
     /// wide.
