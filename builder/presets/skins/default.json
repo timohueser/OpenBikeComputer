@@ -3,7 +3,7 @@
         "id": "default",
         "name": "Default",
         "description": "The shipped look: cream paper, warm through-roads, indigo cycleways, green vegetation.",
-        "version": 1,
+        "version": 2,
         "swatch": [
             "#FF5500",
             "#FFAA00",
@@ -12,7 +12,7 @@
             "#55AA55",
             "#AAAAAA"
         ],
-        "skin_note": "Presentation only. Every feature type and every style id comes from `schema.json` and is referenced by the feature headers of every baked chunk (OBCM_Spec.md §5.2), so a skin may restate the seven presentation values and nothing else — the catalog generator refuses one that adds, drops, reorders or renumbers a feature type (OBCC_Spec.md §5). The values below are the schema's own, which is what makes this the default look; `min_lod`, the LOD ladder, the merge passes and the routing profiles are schema data and are deliberately absent."
+        "skin_note": "Presentation only. Every feature type and every style id comes from `schema.json` and is referenced by the feature headers of every baked chunk (OBCM_Spec.md §5.2), so a skin may restate the presentation values in the style record and nothing else — the catalog generator refuses one that adds, drops, reorders or renumbers a feature type (OBCC_Spec.md §5). The values below are the schema's own, which is what makes this the default look; `min_lod`, the LOD ladder, the merge passes and the routing profiles are schema data and are deliberately absent."
     },
     "features": {
         "highway": {
@@ -82,8 +82,8 @@
             "2": {"color": "0xAAB5", "z_index": 100, "weight": 2, "priority": 3, "line_style": "dashed"}
         },
         "contour": {
-            "major": {"color": "0xAD55", "z_index": 8, "weight": 1, "priority": 4, "line_style": "dashed"},
-            "index": {"color": "0xAD55", "z_index": 9, "weight": 1, "priority": 4}
+            "major": {"color": "0xAD55", "z_index": 8, "weight": 1, "priority": 4, "line_style": "dashed", "fixed_width": true, "terrain_layer": true},
+            "index": {"color": "0xAD55", "z_index": 9, "weight": 1, "priority": 4, "fixed_width": true, "terrain_layer": true}
         }
     },
     "marker": {"color": "0xF800"}

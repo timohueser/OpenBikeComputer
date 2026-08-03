@@ -34,7 +34,7 @@ use obc_formats::io::{rd_f32, rd_i16, rd_i32, rd_u16, rd_u32, ByteSource, Error 
 use obc_formats::obcm::PoiCategory;
 use obc_formats::obcm::{
     BRANCH_BIT, EMPTY_LEAF, FEATURE_FLAG_16BIT, FEATURE_FLAG_HOLES, FEATURE_FLAG_POLYGON, FEATURE_FLAG_WIDE,
-    STYLE_DASHED_BIT, STYLE_HAS_COLOR2_BIT, STYLE_PRIORITY_MASK,
+    STYLE_DASHED_BIT, STYLE_FIXED_WIDTH_BIT, STYLE_HAS_COLOR2_BIT, STYLE_PRIORITY_MASK, STYLE_TERRAIN_LAYER_BIT,
 };
 use obc_formats::obcm::{
     CHUNK_END, FEATURE_HEADER_COMPACT_LEN, FEATURE_HEADER_WIDE_LEN, MAGIC, NAV_DIR_LEN, POI_CAT_ENTRY_LEN,
@@ -2598,7 +2598,13 @@ fn parse_styles(
         // The two color2 bytes are always present; the flag bit — not a `0x0000` sentinel — decides
         // whether they carry a color (black `0x0000` is a legal secondary color).
         let color2 = if flags & STYLE_HAS_COLOR2_BIT != 0 { Some(rd_u16(&buf, o + 6)) } else { None };
-        styles[id as usize] = Some(Style { id, z_index, color, weight, priority, dashed, color2 });
+        // #1095: bit 4 takes the style off the width ramp, bit 5 files it under the terrain layer.
+        // Bits 6-7 stay reserved and are **ignored**, not rejected (§2) — that reader tolerance is
+        // exactly what let these two be defined without a format bump.
+        let fixed_width = flags & STYLE_FIXED_WIDTH_BIT != 0;
+        let terrain_layer = flags & STYLE_TERRAIN_LAYER_BIT != 0;
+        styles[id as usize] =
+            Some(Style { id, z_index, color, weight, priority, dashed, color2, fixed_width, terrain_layer });
         o += STYLE_RECORD_LEN;
     }
     Ok(())

@@ -106,6 +106,13 @@ decode-valid: it routes exactly as v11 did, which is both the degrade path and
 what every fixture in the tree carries until the terrain track (#1068 EL2) is
 baked. **v12 is the only supported version**; earlier maps get repacked.
 
+**Within v12** (issue #1095, same elevation epic) two of the style record's reserved
+flag bits gained meanings — bit 4 **fixed width** and bit 5 **terrain layer** (§2).
+This is deliberately *not* a version bump: nothing about the record's length, layout
+or any offset moves, and §2's reader obligation for undefined style bits has always
+been to ignore them, so a reader that does not know these two parses the same fields
+and draws a slightly different-looking contour. §2 carries the argument in full.
+
 **Version 9** (epic #533 N2) is a §8-only bump that makes the router **bike-type
 aware** and shrinks the section it reads (measured ~58% padding in v8 node
 chunks). The header stays 40 bytes; everything new hangs off the nav directory,
@@ -212,7 +219,7 @@ across every LOD. Packed as `Count`, then `Count` records.
 | 1 | Z-Index | 1 | `int8` | Painter's-order layer (lower drawn first) |
 | 2 | Color | 2 | `uint16` | RGB565 (the primary color) |
 | 4 | Weight | 1 | `uint8` | Stroke width in pixels (lines) |
-| 5 | Flags | 1 | `uint8` | Bits 0-1: priority level (1=highest/render first, 4=lowest/render last). **Bit 2 (v10): dashed** line (else solid; ignored for polygons). **Bit 3 (v10): color2 present.** Bits 4-7 reserved, written 0 |
+| 5 | Flags | 1 | `uint8` | Bits 0-1: priority level (1=highest/render first, 4=lowest/render last). **Bit 2 (v10): dashed** line (else solid; ignored for polygons). **Bit 3 (v10): color2 present.** **Bit 4: fixed width.** **Bit 5: terrain layer.** Bits 6-7 reserved, written 0 — a reader MUST **ignore** them, not reject the record (see below) |
 | 6 | Color2 | 2 | `uint16` | RGB565 **secondary color** (v10). Written `0x0000` when flag bit 3 is clear; readers MUST ignore it then (`0x0000` is a legit color — black — not a "no color2" sentinel) |
 
 The **secondary color** and **line style** drive the finest-LOD line/polygon
@@ -220,6 +227,45 @@ embellishments (road casing, dashed admin borders, railway stripes, polygon ring
 outlines — epic #556); the semantics are the renderer's, not the format's. A solid,
 single-color style (flags bits 2-3 clear, `Color2 = 0x0000`) is the pre-v10 record
 padded to 8 bytes, so a map that uses no line styles renders identically.
+
+**Bit 4 — fixed width.** `Weight` is the stroke's width in **device pixels**, used
+verbatim: the renderer's zoom→width ramp does not apply to this style. It marks a
+style as *a mark on the map* rather than *a thing with width on the ground*, which is
+a general property and not the property of any one feature type. The ramp exists
+because a road genuinely is wider than a footpath and both are wider seen from 1 m/px
+than from 100 — a mark has no ground width at all, so ramping it is not merely wrong
+but backwards: it draws thinnest where the mark carries the most meaning and thickest
+where it does the most damage. The width is still clamped to the renderer's `1..=12`
+px range; the bit opts out of the ramp, not out of the panel. Ignored for polygons,
+whose fills have no stroke width (their §5 outline accent is a fixed hairline already).
+
+> **Why no shipped style but the contours takes it (yet).** Every other line in the
+> shipped presets *is* a thing on the ground — roads, tracks, rail, waterways, admin
+> borders that follow ridges and rivers — so the ramp is what they want, and a style
+> that opted out would freeze at one width across a 100× zoom range. Contours (#1095)
+> are the first shipped mark: a 100 m isoline is a statement about the terrain, not an
+> object with a footprint. A future grid, hatch or hairline annotation would take the
+> same bit; that is why it is spelled as a property of the style and not as
+> "contours draw thin".
+
+**Bit 5 — terrain layer.** The style belongs to the **terrain layer**: the group a
+device may suppress wholesale as one user-facing choice, rather than by naming feature
+types. It is presentation metadata carried on the style record and nothing else — no
+reader behaviour in this version depends on it, and a renderer that ignores it draws a
+correct map. It is written so the device Settings toggle (#1096) has something to read.
+
+> **Defining bits 4-5 is not a version bump, and this section is why.** Unlike a
+> *feature*'s `Flags` (§5.2), where "a reader MUST reject a feature with any [reserved
+> bit] set", the reader obligation for a style record's undefined bits has always been
+> to **ignore** them — the reference reader masks bits 0-1 and tests bits 2-3, and has
+> never looked at the rest. So a v12 reader meeting a v12 record with bit 4 set parses
+> every field correctly and renders a contour at the ramped width instead of the
+> authored one: a presentation degrade, inside one style record, with no offset,
+> length or count affected anywhere in the file. A version is this format's hard cut —
+> it makes every existing map unreadable until repacked and every existing reader
+> refuse every new map — and it is reserved for changes that would otherwise be
+> *misparsed*, not for ones that are merely rendered older. **Bits 6-7 keep exactly
+> this contract**: written `0`, ignored by readers, and definable in place the same way.
 
 > **Style IDs are assigned by the packer, not authored.** A style ID is a
 > purely internal reference into this table — no reader depends on a specific

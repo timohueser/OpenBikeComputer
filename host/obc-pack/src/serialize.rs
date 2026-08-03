@@ -17,7 +17,8 @@ use std::io::{self, Seek, SeekFrom, Write};
 
 use obc_formats::obcm::{
     BRANCH_BIT, CHUNK_END, EMPTY_LEAF, FEATURE_FLAG_16BIT, FEATURE_FLAG_HOLES, FEATURE_FLAG_POLYGON, FEATURE_FLAG_WIDE,
-    FEATURE_HEADER_COMPACT_LEN, MAGIC, STYLE_DASHED_BIT, STYLE_HAS_COLOR2_BIT, STYLE_PRIORITY_MASK, STYLE_RECORD_LEN,
+    FEATURE_HEADER_COMPACT_LEN, MAGIC, STYLE_DASHED_BIT, STYLE_FIXED_WIDTH_BIT, STYLE_HAS_COLOR2_BIT,
+    STYLE_PRIORITY_MASK, STYLE_RECORD_LEN, STYLE_TERRAIN_LAYER_BIT,
 };
 
 // The OBCM constants the serializer lays out are owned by `obc-formats`; imported here (the
@@ -146,6 +147,10 @@ pub struct Style {
     /// v10: optional RGB565 secondary color (flag bit 3 + the trailing u16). `None` ⇒ bit clear and
     /// `0x0000` on the wire (which the reader ignores — black is a legit color, not a sentinel).
     pub color2: Option<u16>,
+    /// #1095: fixed width (flag bit 4) — `weight` is device pixels, off the renderer's zoom ramp.
+    pub fixed_width: bool,
+    /// #1095: terrain layer (flag bit 5) — written here, consumed by the device's Settings toggle.
+    pub terrain_layer: bool,
 }
 
 /// f64 lon/lat, rounded to microdegrees and densified here. `rings[0]` is the
@@ -222,8 +227,10 @@ fn push_deltas(data: &mut Vec<u8>, deltas: &[i64], is16: bool) {
 
 /// Pack the style table (OBCM §2): `Count(u8)` then, sorted by id, `<BbHBBH>` per style — `id,
 /// z_index, color, weight, flags, color2`. `flags = (priority-1) & STYLE_PRIORITY_MASK`, plus
-/// `STYLE_DASHED_BIT` when `dashed` and `STYLE_HAS_COLOR2_BIT` when `color2` is `Some`. `color2`
-/// writes its RGB565 value when present, else `0x0000` (which the reader ignores, bit 3 being clear).
+/// `STYLE_DASHED_BIT` when `dashed`, `STYLE_HAS_COLOR2_BIT` when `color2` is `Some`,
+/// `STYLE_FIXED_WIDTH_BIT` when `fixed_width` and `STYLE_TERRAIN_LAYER_BIT` when `terrain_layer`
+/// (#1095). `color2` writes its RGB565 value when present, else `0x0000` (which the reader ignores,
+/// bit 3 being clear). Bits 6-7 stay reserved and written `0`.
 pub fn pack_style_dict(styles: &[Style]) -> Vec<u8> {
     let mut styles = styles.to_vec();
     styles.sort_by_key(|s| s.id);
@@ -237,6 +244,12 @@ pub fn pack_style_dict(styles: &[Style]) -> Vec<u8> {
         }
         if s.color2.is_some() {
             flags |= STYLE_HAS_COLOR2_BIT;
+        }
+        if s.fixed_width {
+            flags |= STYLE_FIXED_WIDTH_BIT;
+        }
+        if s.terrain_layer {
+            flags |= STYLE_TERRAIN_LAYER_BIT;
         }
         data.push(s.id);
         data.push(s.z_index as u8);
@@ -1512,8 +1525,17 @@ mod tests {
         use std::io::Cursor;
 
         let bbox = (0, 0, 1_000_000, 1_000_000);
-        let styles =
-            vec![Style { id: 1, z_index: 0, color: 0x1234, weight: 2, priority: 1, dashed: false, color2: None }];
+        let styles = vec![Style {
+            id: 1,
+            z_index: 0,
+            color: 0x1234,
+            weight: 2,
+            priority: 1,
+            dashed: false,
+            color2: None,
+            fixed_width: false,
+            terrain_layer: false,
+        }];
         let lods = vec![
             LodLayer {
                 max_mpp: Some(100.0),

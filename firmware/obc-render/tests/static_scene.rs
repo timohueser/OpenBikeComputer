@@ -19,7 +19,17 @@ const TOKEN: FeatureToken = FeatureToken::from_source_words([1, 0, 0]);
 const POINTS: [(i32, i32); 4] = [(-8, -8), (8, -8), (8, 8), (-8, 8)];
 const RINGS: [usize; 1] = [4];
 const BOUNDS: BBox = BBox { min_lon: -8, min_lat: -8, max_lon: 8, max_lat: 8 };
-const STYLE: Style = Style { id: 7, z_index: 3, color: 0xF800, weight: 1, priority: 1, dashed: false, color2: None };
+const STYLE: Style = Style {
+    id: 7,
+    z_index: 3,
+    color: 0xF800,
+    weight: 1,
+    priority: 1,
+    dashed: false,
+    color2: None,
+    fixed_width: false,
+    terrain_layer: false,
+};
 
 struct StaticScene;
 
@@ -88,7 +98,17 @@ const SHORT_RING: [usize; 1] = [3];
 const MULTI_RINGS: [usize; 2] = [2, 2];
 const ZERO_MULTI_RINGS: [usize; 3] = [2, 0, 2];
 const OVERFLOW_MULTI_RINGS: [usize; 2] = [usize::MAX, 2];
-const GOOD2: Style = Style { id: 8, z_index: 4, color: 0x001F, weight: 2, priority: 2, dashed: false, color2: None };
+const GOOD2: Style = Style {
+    id: 8,
+    z_index: 4,
+    color: 0x001F,
+    weight: 2,
+    priority: 2,
+    dashed: false,
+    color2: None,
+    fixed_width: false,
+    terrain_layer: false,
+};
 const PRIORITY_ZERO: Style = Style { id: 9, priority: 0, ..STYLE };
 const PRIORITY_FIVE: Style = Style { id: 10, priority: 5, ..STYLE };
 

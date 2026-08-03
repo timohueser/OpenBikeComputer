@@ -99,6 +99,11 @@ export interface SkinStyle {
     z_index: number;
     priority: number;
     dashed: boolean;
+    /** OBCM style-record flag bit 4 (#1095): the weight is the on-screen stroke in device
+     *  pixels, off the renderer's zoom width ramp. */
+    fixed_width: boolean;
+    /** OBCM style-record flag bit 5 (#1095): part of the suppressible terrain layer. */
+    terrain_layer: boolean;
     color2: number | null;
 }
 
@@ -422,6 +427,10 @@ function parseSkins(v: unknown, where: string, schema: SchemaEntry): SkinEntry[]
                 z_index: int(e, "z_index", sat, -128, 127),
                 priority: int(e, "priority", sat, 1, 4),
                 dashed: bool(e, "dashed", sat),
+                // #1095's two flag bits. Absent in a catalog published before they existed, and
+                // absent means clear — an older tree's skins simply carry neither.
+                fixed_width: e.fixed_width === undefined ? false : bool(e, "fixed_width", sat),
+                terrain_layer: e.terrain_layer === undefined ? false : bool(e, "terrain_layer", sat),
                 color2: (color2 as number | null | undefined) ?? null,
             };
         });

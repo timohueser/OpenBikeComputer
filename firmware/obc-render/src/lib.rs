@@ -131,6 +131,28 @@ pub(crate) fn scale_weight(weight: u8, scale: f32) -> u32 {
     (libm::roundf(weight as f32 * scale) as i32).clamp(1, MAX_LINE_PX as i32) as u32
 }
 
+/// A line span's stroke width in device px: [`scale_weight`] for an ordinary style, the authored
+/// `weight` **verbatim** for a *fixed-width* one (OBCM §2 style-record flag bit 4, #1095).
+///
+/// The ramp models a thing that is genuinely wider on the ground — a motorway is wider than a
+/// footpath, and both are wider seen from 1 m/px than from 100. A **mark on the map** has no ground
+/// width at all, so for it the ramp is not merely wrong but backwards: authored `weight 1` contours
+/// draw 4 px at street zoom (where they do the most damage) and 1 px at planning zoom (where the
+/// landform read wants them). Bit 4 is that opt-out, and it is a general style property, not a
+/// contour special case — any future mark-like style (a hairline boundary hatch, a grid) takes it.
+/// Contours are simply the first shipped style that is one.
+///
+/// Still clamped to `1..=MAX_LINE_PX`: `weight` is a `u8`, and neither a vanishing 0-px stroke nor a
+/// 200-px one that eats the panel is something a style table should be able to ask for.
+#[inline]
+pub(crate) fn line_px(weight: u8, scale: f32, fixed_width: bool) -> u32 {
+    if fixed_width {
+        (weight as u32).clamp(1, MAX_LINE_PX)
+    } else {
+        scale_weight(weight, scale)
+    }
+}
+
 /// The renderer's draw scratch: projected screen points (also the polyline run
 /// buffer) and the scanline-fill crossing buffer. Cleared per use.
 #[derive(Default)]
@@ -470,13 +492,20 @@ impl MapRenderer {
                 let pts = &frame.frame_points[pt_start..pt_start + n];
                 // `is_cased` guarantees `color2.is_some()`; quantize it like the fill color. The
                 // `unwrap_or` is a defensive no-op (falls back to an invisible same-color casing).
-                let casing_color = color_fn(scene.style(span.style_id).and_then(|s| s.color2).unwrap_or(span.color));
+                let style = scene.style(span.style_id);
+                let casing_color = color_fn(style.and_then(|s| s.color2).unwrap_or(span.color));
+                // Casing is defined *relative to the fill* — "the fill's width plus one px a side" —
+                // so it composes with #1095's fixed width rather than being special-cased against
+                // it: a fixed-width cased style would case its verbatim `weight`. No shipped style
+                // is both (a contour carries no `color2`, and `is_cased` requires one), so this is
+                // dormant today; leaving `scale_weight` here would make it silently incoherent.
+                let fixed_width = style.is_some_and(|s| s.fixed_width);
                 draw_line(
                     target,
                     vp,
                     pts,
                     casing_color,
-                    scale_weight(span.weight, wscale) + 2 * Self::CASING_PX,
+                    line_px(span.weight, wscale, fixed_width) + 2 * Self::CASING_PX,
                     false,
                     None,
                     &mut draw.screen,
@@ -603,12 +632,15 @@ impl MapRenderer {
                 let style = scene.style(span.style_id);
                 let dashed = style.is_some_and(|s| s.dashed);
                 let color2 = style.and_then(|s| s.color2).map(color_fn);
+                // #1095: a fixed-width style strokes its authored `weight` verbatim (`line_px`); a
+                // missing style falls back to the ramp, exactly as it falls back to a solid stroke.
+                let fixed_width = style.is_some_and(|s| s.fixed_width);
                 draw_line(
                     target,
                     vp,
                     &pts[..n],
                     color,
-                    scale_weight(span.weight, wscale),
+                    line_px(span.weight, wscale, fixed_width),
                     dashed,
                     color2,
                     &mut draw.screen,
@@ -669,7 +701,7 @@ impl MapRenderer {
 
 #[cfg(test)]
 mod width_ramp_tests {
-    use super::{scale_weight, width_scale, MAX_LINE_PX, REF_MPP};
+    use super::{line_px, scale_weight, width_scale, MAX_LINE_PX, REF_MPP};
 
     #[test]
     fn identity_at_reference_scale() {
@@ -700,5 +732,35 @@ mod width_ramp_tests {
         assert_eq!(scale_weight(6, width_scale(0.05)), MAX_LINE_PX);
         // Degenerate mpp (0) must not divide-by-zero into NaN and defeat the clamp.
         assert_eq!(scale_weight(3, width_scale(0.0)), MAX_LINE_PX);
+    }
+
+    /// #1095, flag bit 4: a fixed-width style renders its authored `weight` verbatim at **every**
+    /// zoom, while the same weight on an ordinary style rides the ramp. These are the three zooms
+    /// the E3 contour frames are made at (planning / riding / street, ~9 / 4 / 1 m/px).
+    #[test]
+    fn fixed_width_ignores_the_zoom_ramp() {
+        for mpp in [1000.0, 9.0, 4.0, 1.0, 0.05] {
+            let s = width_scale(mpp);
+            assert_eq!(line_px(1, s, true), 1, "a weight-1 contour is a hairline at {mpp} mpp");
+            assert_eq!(line_px(3, s, true), 3, "a weight-3 fixed style is 3 px at {mpp} mpp");
+        }
+        // ...and the ramp is still the ramp for everything that does not opt out: the same authored
+        // weight 1 is 2 px at riding zoom and 4 px at street zoom, which is what bit 4 opts out of.
+        assert_eq!(line_px(1, width_scale(4.0), false), 2);
+        assert_eq!(line_px(1, width_scale(1.0), false), 4);
+    }
+
+    /// A fixed width is still a *width*: `weight` is a `u8` and the framebuffer is 240 px, so the
+    /// same `1..=MAX_LINE_PX` clamp the ramp carries applies verbatim — bit 4 opts out of the zoom
+    /// ramp, not out of the panel.
+    #[test]
+    fn fixed_width_is_clamped_like_the_ramp() {
+        let s = width_scale(REF_MPP);
+        assert_eq!(line_px(0, s, true), 1, "weight 0 never vanishes");
+        assert_eq!(line_px(255, s, true), MAX_LINE_PX, "a fixed width cannot eat the panel");
+        // At the reference scale the ramp is the identity, so both paths agree there by definition.
+        for w in 1..=5u8 {
+            assert_eq!(line_px(w, s, true), line_px(w, s, false), "identical at REF_MPP, weight {w}");
+        }
     }
 }

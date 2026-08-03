@@ -370,9 +370,9 @@ pub struct SkinPreview {
     pub sha256: String,
 }
 
-/// One feature type's presentation values — the seven bytes of a style record a skin
-/// owns. The **id** is not here: it belongs to the schema, and a skin may not
-/// renumber it (`OBCA_Spec.md` §4.7).
+/// One feature type's presentation values — the bytes of a style record a skin owns (colors,
+/// weight, z, priority and the `Flags` bits). The **id** is not here: it belongs to the schema, and
+/// a skin may not renumber it (`OBCA_Spec.md` §4.7).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SkinStyle {
     pub feature_type: String,
@@ -383,6 +383,13 @@ pub struct SkinStyle {
     /// 1..=4.
     pub priority: u8,
     pub dashed: bool,
+    /// Style-record flag bit 4 (#1095): the weight is used verbatim on screen, off the zoom width
+    /// ramp. Defaulted so a catalog written before the bit existed still parses.
+    #[serde(default)]
+    pub fixed_width: bool,
+    /// Style-record flag bit 5 (#1095): part of the suppressible terrain layer.
+    #[serde(default)]
+    pub terrain_layer: bool,
     /// Optional RGB565 secondary color; `null` when the style has none.
     pub color2: Option<u16>,
 }
@@ -1282,7 +1289,12 @@ pub fn check_skin(schema: &Config, skin: &Config) -> Result<(), String> {
 /// The presentation-only keys a style record in a skin may carry (`OBCC_Spec.md`
 /// §5). Everything else in a packer config decides which bytes get written, and a
 /// skin is stamped onto bytes that already exist.
-const SKIN_STYLE_KEYS: &[&str] = &["color", "color2", "weight", "z_index", "priority", "line_style"];
+/// `fixed_width` and `terrain_layer` (#1095) are on the list for the same reason `line_style` is:
+/// they are **flag bits of the 8-byte style record**, which is precisely the ≈ 2 KB a skin stamps.
+/// Neither decides which bytes get written — a contour is cut into the same cells whether it later
+/// draws hairline or ramped — so both restyle without a re-bake.
+const SKIN_STYLE_KEYS: &[&str] =
+    &["color", "color2", "weight", "z_index", "priority", "line_style", "fixed_width", "terrain_layer"];
 
 /// Prove a skin **document** is presentation only: no schema keys, at either level.
 ///
@@ -1473,6 +1485,8 @@ fn skin_styles(config: &Config, schema: &SchemaDoc, path: &Path) -> Result<Vec<S
             z_index: s.z_index,
             priority: s.priority,
             dashed: s.line_style == LineStyle::Dashed,
+            fixed_width: s.fixed_width,
+            terrain_layer: s.terrain_layer,
             color2: s.color2,
         })
         .collect();

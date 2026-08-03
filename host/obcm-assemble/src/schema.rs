@@ -286,6 +286,12 @@ pub struct SkinStyle {
     pub priority: u8,
     #[serde(default)]
     pub dashed: bool,
+    /// OBCM §2 flag bit 4 (#1095): `weight` is device pixels, off the renderer's zoom width ramp.
+    #[serde(default)]
+    pub fixed_width: bool,
+    /// OBCM §2 flag bit 5 (#1095): part of the suppressible terrain layer.
+    #[serde(default)]
+    pub terrain_layer: bool,
     #[serde(default, deserialize_with = "de_color_opt")]
     pub color2: Option<u16>,
 }
@@ -326,6 +332,8 @@ impl Skin {
             priority: v.priority.clamp(1, 4),
             dashed: v.dashed,
             color2: v.color2,
+            fixed_width: v.fixed_width,
+            terrain_layer: v.terrain_layer,
         };
         let mut out = Vec::with_capacity(self.styles.len());
         if schema.styles.is_empty() {
@@ -397,6 +405,10 @@ pub struct StyleRecord {
     pub priority: u8,
     pub dashed: bool,
     pub color2: Option<u16>,
+    /// Flag bit 4 (#1095): the weight is used verbatim on screen, off the zoom width ramp.
+    pub fixed_width: bool,
+    /// Flag bit 5 (#1095): part of the suppressible terrain layer.
+    pub terrain_layer: bool,
 }
 
 /// RGB565 as either a JSON number or a `"0x…"` / decimal string — the two spellings that exist in
@@ -511,6 +523,8 @@ mod tests {
             z_index: 3,
             priority: 1,
             dashed: false,
+            fixed_width: false,
+            terrain_layer: false,
             color2: None,
         };
         let full = Skin {

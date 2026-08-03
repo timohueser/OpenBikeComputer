@@ -411,6 +411,8 @@ fn skin(cfg: &Config) -> Skin {
             z_index: s.z_index,
             priority: s.priority,
             dashed: s.dashed,
+            fixed_width: s.fixed_width,
+            terrain_layer: s.terrain_layer,
             color2: s.color2,
         })
         .collect();

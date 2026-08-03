@@ -36,12 +36,55 @@ const LINE16: &[(i32, i32)] = &[(300_000, 300_000), (300_500, 300_500), (301_000
 fn styles() -> Vec<Style> {
     vec![
         // Lowest z_index → the backdrop. Negative z and priority 1 (flags 0).
-        Style { id: 1, z_index: -2, color: 0x07E0, weight: 1, priority: 1, dashed: false, color2: None },
+        Style {
+            id: 1,
+            z_index: -2,
+            color: 0x07E0,
+            weight: 1,
+            priority: 1,
+            dashed: false,
+            color2: None,
+            fixed_width: false,
+            terrain_layer: false,
+        },
         // Priority 4 (flags 3, the top of the clamped range). Dashed + a secondary color exercises
         // the v10 flag bits (2 and 3) and the trailing color2 u16 through the whole pack→read path.
-        Style { id: 5, z_index: 3, color: 0xF800, weight: 2, priority: 4, dashed: true, color2: Some(0x8410) },
+        Style {
+            id: 5,
+            z_index: 3,
+            color: 0xF800,
+            weight: 2,
+            priority: 4,
+            dashed: true,
+            color2: Some(0x8410),
+            fixed_width: false,
+            terrain_layer: false,
+        },
         // Mid priority; non-contiguous id exercises the sparse style lookup.
-        Style { id: 12, z_index: 0, color: 0x001F, weight: 3, priority: 2, dashed: false, color2: None },
+        Style {
+            id: 12,
+            z_index: 0,
+            color: 0x001F,
+            weight: 3,
+            priority: 2,
+            dashed: false,
+            color2: None,
+            fixed_width: false,
+            terrain_layer: false,
+        },
+        // The E3 contour shape (#1095): dashed, hairline, and carrying both new flag bits — bit 4
+        // (fixed width) and bit 5 (terrain layer) — through the whole pack → read path.
+        Style {
+            id: 20,
+            z_index: 8,
+            color: 0xAD55,
+            weight: 1,
+            priority: 4,
+            dashed: true,
+            color2: None,
+            fixed_width: true,
+            terrain_layer: true,
+        },
     ]
 }
 
@@ -186,6 +229,15 @@ fn styles_round_trip() {
     assert_eq!((s12.z_index, s12.color, s12.weight, s12.priority), (0, 0x001F, 3, 2));
     assert!(!s12.dashed);
     assert_eq!(s12.color2, None);
+
+    // #1095's two bits survive the same round trip, and stay clear on the styles that don't set
+    // them — a bit that is always on is not a bit.
+    let s20 = r.style(20).expect("style 20");
+    assert_eq!((s20.z_index, s20.color, s20.weight, s20.priority), (8, 0xAD55, 1, 4));
+    assert!(s20.dashed && s20.fixed_width && s20.terrain_layer, "the E3 contour style round-trips whole");
+    for s in [s1, s5, s12] {
+        assert!(!s.fixed_width && !s.terrain_layer, "style {} sets neither new bit", s.id);
+    }
 
     // Unused ids are absent.
     assert!(r.style(2).is_none());
