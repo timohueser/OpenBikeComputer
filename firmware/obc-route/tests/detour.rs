@@ -170,6 +170,18 @@ fn detour_over(
     progress_m: u32,
     target_m: u32,
 ) -> (Result<obc_route::RouteStats, NavError>, Vec<u8>) {
+    detour_over_terrain(bytes, route_obcr, progress_m, target_m, &mut NullElevation)
+}
+
+/// [`detour_over`] with an explicit terrain the emit phase fills the detour's heights from (EL7) —
+/// what a device with a mounted `.obcd` does, and what #1091's splice has to preserve.
+fn detour_over_terrain(
+    bytes: &[u8],
+    route_obcr: &[u8],
+    progress_m: u32,
+    target_m: u32,
+    elev: &mut dyn obc_route::ElevationSource,
+) -> (Result<obc_route::RouteStats, NavError>, Vec<u8>) {
     let rsrc = SliceSource(route_obcr);
     let idx = RouteIndex::read(&rsrc).unwrap();
     let route = RouteReader::new(&idx, &rsrc);
@@ -193,7 +205,7 @@ fn detour_over(
         corridor,
         &mut scratch,
         &mut tiles,
-        &mut NullElevation,
+        elev,
         &mut sink,
     );
     (res, sink.buf)
@@ -441,7 +453,8 @@ fn spliced_road() -> (Vec<u8>, obc_route::RouteStats, u32) {
     let det = RouteReader::new(&didx, &dsrc);
 
     let mut sink = VecSink::default();
-    let stats = splice_detour(&orig, &det, 600, 2_800, dstats.total_distance_m, &mut sink).unwrap();
+    let stats =
+        splice_detour(&orig, &det, 600, 2_800, dstats.total_distance_m, dstats.has_elevation, &mut sink).unwrap();
     (sink.buf, stats, dstats.total_distance_m)
 }
 
@@ -586,7 +599,7 @@ fn splice_self_input_is_previous_output() {
     let det = RouteReader::new(&didx, &dsrc);
 
     let mut sink = VecSink::default();
-    let stats = splice_detour(&orig, &det, 700, 2_900, detour_len, &mut sink).unwrap();
+    let stats = splice_detour(&orig, &det, 700, 2_900, detour_len, false, &mut sink).unwrap();
     let src = SliceSource(&sink.buf[..]);
     let idx = RouteIndex::read(&src).expect("a re-spliced route still parses");
     assert_eq!(idx.name(), "Detour · Road trip", "no stacked name prefixes");
@@ -597,7 +610,12 @@ fn splice_self_input_is_previous_output() {
 
 /// Run [`trim_detour_to_tail`] over an original + detour OBCR at `target_m`; return the outcome and
 /// the (possibly trimmed) sink bytes.
-fn trim_run(orig_obcr: &[u8], detour_obcr: &[u8], target_m: u32) -> (Option<TrimOutcome>, Vec<u8>) {
+fn trim_run(
+    orig_obcr: &[u8],
+    detour_obcr: &[u8],
+    target_m: u32,
+    detour_has_elevation: bool,
+) -> (Option<TrimOutcome>, Vec<u8>) {
     let osrc = SliceSource(orig_obcr);
     let oidx = RouteIndex::read(&osrc).unwrap();
     let orig = RouteReader::new(&oidx, &osrc);
@@ -605,12 +623,19 @@ fn trim_run(orig_obcr: &[u8], detour_obcr: &[u8], target_m: u32) -> (Option<Trim
     let didx = RouteIndex::read(&dsrc).unwrap();
     let det = RouteReader::new(&didx, &dsrc);
     let mut sink = VecSink::default();
-    let out = trim_detour_to_tail(&orig, &det, target_m, &mut sink).unwrap();
+    let out = trim_detour_to_tail(&orig, &det, target_m, detour_has_elevation, &mut sink).unwrap();
     (out, sink.buf)
 }
 
 /// Splice an original + detour and return the spliced route's header total distance.
-fn spliced_total(orig_obcr: &[u8], detour_obcr: &[u8], split_m: u32, rejoin_m: u32, detour_len_m: u32) -> u32 {
+fn spliced_total(
+    orig_obcr: &[u8],
+    detour_obcr: &[u8],
+    split_m: u32,
+    rejoin_m: u32,
+    detour_len_m: u32,
+    detour_has_elevation: bool,
+) -> u32 {
     let osrc = SliceSource(orig_obcr);
     let oidx = RouteIndex::read(&osrc).unwrap();
     let orig = RouteReader::new(&oidx, &osrc);
@@ -618,7 +643,9 @@ fn spliced_total(orig_obcr: &[u8], detour_obcr: &[u8], split_m: u32, rejoin_m: u
     let didx = RouteIndex::read(&dsrc).unwrap();
     let det = RouteReader::new(&didx, &dsrc);
     let mut sink = VecSink::default();
-    splice_detour(&orig, &det, split_m, rejoin_m, detour_len_m, &mut sink).unwrap().total_distance_m
+    splice_detour(&orig, &det, split_m, rejoin_m, detour_len_m, detour_has_elevation, &mut sink)
+        .unwrap()
+        .total_distance_m
 }
 
 /// The headline #882 fix: with connectors only at the road's ends, a plan to a mid-route rejoin
@@ -644,7 +671,7 @@ fn trim_rejoins_at_first_tail_contact_and_removes_the_retrace() {
     assert_eq!((last.lon, last.lat), road_at(9), "…then descends the tail to land at the goal node9");
 
     // Trim: rejoin advances to the first contact near the road end, past the chosen minimum.
-    let (out, trimmed) = trim_run(&obcr, &detour, target);
+    let (out, trimmed) = trim_run(&obcr, &detour, target, dstats.has_elevation);
     let out = out.expect("the retrace is trimmed");
     assert!(out.rejoin_m > target + 500, "rejoin advances toward the road end (got {})", out.rejoin_m);
 
@@ -661,8 +688,8 @@ fn trim_rejoins_at_first_tail_contact_and_removes_the_retrace() {
     }
 
     // The whole splice is far shorter: the retrace is gone from both the detour and the re-ridden tail.
-    let untrimmed_total = spliced_total(&obcr, &detour, 0, target, dstats.total_distance_m);
-    let trimmed_total = spliced_total(&obcr, &trimmed, 0, out.rejoin_m, out.detour_len_m);
+    let untrimmed_total = spliced_total(&obcr, &detour, 0, target, dstats.total_distance_m, dstats.has_elevation);
+    let trimmed_total = spliced_total(&obcr, &trimmed, 0, out.rejoin_m, out.detour_len_m, dstats.has_elevation);
     assert!(
         untrimmed_total >= trimmed_total + 1_000,
         "the trimmed splice drops ≥1 km (untrimmed {untrimmed_total}, trimmed {trimmed_total})"
@@ -702,7 +729,7 @@ fn trim_is_a_noop_for_a_normal_landing() {
             n(7).0 as f64 * 1e-6, // ride one segment forward
         ),
     );
-    let (out, _) = trim_run(&obcr, &detour, target);
+    let (out, _) = trim_run(&obcr, &detour, target, false);
     assert_eq!(out, None, "a final-pair landing at the goal is not trimmed");
 }
 
@@ -731,7 +758,7 @@ fn trim_ignores_a_perpendicular_crossing() {
             (cross.0 + SP) as f64 * 1e-6, // SE
         ),
     );
-    let (out, _) = trim_run(&obcr, &detour, target);
+    let (out, _) = trim_run(&obcr, &detour, target, false);
     assert_eq!(out, None, "a single-point crossing is not sustained contact");
 }
 
@@ -753,7 +780,7 @@ fn splice_span_at_route_end() {
     let det = RouteReader::new(&didx, &dsrc);
 
     let mut sink = VecSink::default();
-    splice_detour(&orig, &det, 600, total, dstats.total_distance_m, &mut sink).unwrap();
+    splice_detour(&orig, &det, 600, total, dstats.total_distance_m, dstats.has_elevation, &mut sink).unwrap();
     let src = SliceSource(&sink.buf[..]);
     let idx = RouteIndex::read(&src).unwrap();
     let pts = route_points(&sink.buf);
@@ -919,4 +946,330 @@ fn a_detour_and_a_plan_cost_identically_when_nothing_is_blacklisted() {
     assert_eq!(detour_obcr, plan_obcr, "an unblacklisted detour is a plan, byte for byte");
     // …and the shared answer is the road itself, which is flat and shorter than either relief.
     assert_eq!(plan_len, SEGS as u32 * SEG_COST, "the road is the cheapest way when nothing blocks it");
+}
+
+// --------------------------------------------- the splice keeps sampled terrain (#1091, epic #1068)
+//
+// Before EL7 a detour arrived with `ele == 0` throughout and the splice's only honest option was a
+// seam-to-seam lerp. Now `plan_detour` samples the map's terrain at every emitted vertex, so the
+// splice keeps those heights and only removes the *datum* mismatch at the two joins, by adding a
+// linear blend of the two seam residuals. These tests pin both halves of that: the blend, and the
+// exact identity it degrades to when there is no terrain.
+
+/// The [`Hillside`] shifted up by a constant — a terrain whose datum disagrees with the fixture
+/// route's own `<ele>` ramp everywhere, which is the GPX-imported case (canopy / barometric offset
+/// against a bare-earth DEM). The residual blend must absorb the offset without flattening the
+/// shape underneath it.
+const DEM_OFFSET_M: i16 = 300;
+
+struct OffsetHillside;
+
+impl obc_route::ElevationSource for OffsetHillside {
+    fn sample(&mut self, lat_udeg: i32, lon_udeg: i32) -> Option<i16> {
+        Hillside.sample(lat_udeg, lon_udeg).map(|h| h + DEM_OFFSET_M)
+    }
+}
+
+/// FNV-1a/64 over the spliced bytes — a cheap, stable digest so "byte-identical" is one number a
+/// future change trips on, not a 3 kB literal.
+fn digest(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in bytes {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+/// Splice the mid-span (600 → 2 800 m) detour planned over `elev` into the road route; returns the
+/// spliced bytes, the spliced stats and the detour plan's own stats.
+fn spliced_over(elev: &mut dyn obc_route::ElevationSource) -> (Vec<u8>, obc_route::RouteStats, obc_route::RouteStats) {
+    spliced_span(600, 2_800, elev)
+}
+
+/// The **whole-route** splice (`split_m = 0`, rejoin at the route end): the head and the tail are
+/// both empty, so the spliced point stream *is* the blended detour and nothing has to guess where
+/// its two seams sit in the output. The seam heights are then simply the original's first and last.
+fn spliced_whole(elev: &mut dyn obc_route::ElevationSource) -> (Vec<u8>, obc_route::RouteStats, obc_route::RouteStats) {
+    let obcr = road_route_obcr();
+    let src = SliceSource(&obcr[..]);
+    let idx = RouteIndex::read(&src).unwrap();
+    let total = RouteReader::new(&idx, &src).total_distance_m;
+    spliced_span(0, total, elev)
+}
+
+fn spliced_span(
+    split_m: u32,
+    rejoin_m: u32,
+    elev: &mut dyn obc_route::ElevationSource,
+) -> (Vec<u8>, obc_route::RouteStats, obc_route::RouteStats) {
+    let bytes = map_with(&road_graph(true, false));
+    let obcr = road_route_obcr();
+    let (res, detour) = detour_over_terrain(&bytes, &obcr, split_m, rejoin_m, elev);
+    let dstats = res.expect("the street detour plans");
+
+    let osrc = SliceSource(&obcr[..]);
+    let oidx = RouteIndex::read(&osrc).unwrap();
+    let orig = RouteReader::new(&oidx, &osrc);
+    let dsrc = SliceSource(&detour[..]);
+    let didx = RouteIndex::read(&dsrc).unwrap();
+    let det = RouteReader::new(&didx, &dsrc);
+
+    let mut sink = VecSink::default();
+    let stats = splice_detour(&orig, &det, split_m, rejoin_m, dstats.total_distance_m, dstats.has_elevation, &mut sink)
+        .unwrap();
+    (sink.buf, stats, dstats)
+}
+
+/// The two seam heights the fixture route stores at a splice's `split_m` / `rejoin_m`.
+fn road_route_seams(split_m: u32, rejoin_m: u32) -> (i16, i16) {
+    let obcr = road_route_obcr();
+    let src = SliceSource(&obcr[..]);
+    let idx = RouteIndex::read(&src).unwrap();
+    let orig = RouteReader::new(&idx, &src);
+    (orig.elevation_at(split_m).unwrap(), orig.elevation_at(rejoin_m).unwrap())
+}
+
+/// The whole-route splice's seam pair.
+fn whole_route_seams() -> (i16, i16) {
+    let obcr = road_route_obcr();
+    let src = SliceSource(&obcr[..]);
+    let idx = RouteIndex::read(&src).unwrap();
+    let total = RouteReader::new(&idx, &src).total_distance_m;
+    road_route_seams(0, total)
+}
+
+/// **The degrade is an identity.** A detour that resolved no terrain at all (`NullElevation` ⇒
+/// `has_elevation == false`) splices to exactly what it spliced before #1091: every detour point on
+/// the straight seam-to-seam lerp, recomputed here independently, and the whole file on a pinned
+/// digest.
+///
+/// The digest is `origin/develop`'s six-argument `splice_detour` over this same fixture (see the PR
+/// body) — it is what makes "the old behaviour is untouched" a claim about bytes rather than intent.
+#[test]
+fn splice_without_detour_elevation_is_the_old_seam_lerp() {
+    let (spliced, _, _) = spliced_road();
+    let bytes = map_with(&road_graph(true, false));
+    let (res, _) = detour_over(&bytes, &road_route_obcr(), 600, 2_800);
+    assert!(!res.unwrap().has_elevation, "a NullElevation plan must report no elevation — the fixture's premise");
+
+    assert_eq!(
+        digest(&spliced),
+        DEVELOP_SPLICE_DIGEST,
+        "an elevation-less detour must splice byte-identically to the pre-#1091 seam lerp"
+    );
+
+    // …and independently, on the whole-route splice (where the output *is* the detour span): every
+    // point sits on the straight seam-to-seam interpolation, recomputed here from the detour's own
+    // arc length rather than read back out of the splice.
+    let (whole, _, _) = spliced_whole(&mut NullElevation);
+    let (lo, hi) = whole_route_seams();
+    let arcs = detour_arc_fractions(0, u32::MAX, &mut NullElevation);
+    let pts = route_points(&whole);
+    // With no heights to keep, the emitter's purely planar decimator collapses the straight street
+    // to its corners — few points, but every one of them is on the lerp.
+    assert!(pts.len() >= 4, "the fixture must have a real span to check (got {})", pts.len());
+    for p in &pts {
+        let t = arcs.get(&(p.lon, p.lat)).copied().expect("every spliced point is a detour point here");
+        let expect = (lo as f32 + (hi as f32 - lo as f32) * t).round() as i16;
+        assert!(
+            (p.ele - expect).abs() <= 1,
+            "an elevation-less detour must be the seam lerp: at t={t:.3} expected {expect}, got {}",
+            p.ele
+        );
+    }
+    assert_eq!(pts.first().unwrap().ele, lo, "…opening exactly on the split seam");
+    assert_eq!(pts.last().unwrap().ele, hi, "…and landing exactly on the rejoin seam");
+}
+
+/// The pinned pre-#1091 digest — see [`splice_without_detour_elevation_is_the_old_seam_lerp`].
+const DEVELOP_SPLICE_DIGEST: u64 = 0x3908_7aa0_c87c_ed01;
+
+/// The planned detour's points keyed to their arc fraction along it — the blend's independent
+/// denominator, measured with the same per-segment metric the splice accumulates.
+fn detour_arc_fractions(
+    split_m: u32,
+    rejoin_m: u32,
+    elev: &mut dyn obc_route::ElevationSource,
+) -> std::collections::HashMap<(i32, i32), f32> {
+    let obcr = road_route_obcr();
+    let src = SliceSource(&obcr[..]);
+    let idx = RouteIndex::read(&src).unwrap();
+    let total = RouteReader::new(&idx, &src).total_distance_m;
+    let rejoin_m = rejoin_m.min(total);
+    let bytes = map_with(&road_graph(true, false));
+    let (_, detour) = detour_over_terrain(&bytes, &obcr, split_m, rejoin_m, elev);
+
+    let pts = route_points(&detour);
+    let len = measured_len(&pts);
+    let mut out = std::collections::HashMap::new();
+    let mut along = 0.0f32;
+    for (i, p) in pts.iter().enumerate() {
+        if i > 0 {
+            along += obc_map_scene::ground_dist_m((pts[i - 1].lon, pts[i - 1].lat), (p.lon, p.lat));
+        }
+        out.insert((p.lon, p.lat), if len > 1e-3 { (along / len).clamp(0.0, 1.0) } else { 1.0 });
+    }
+    out
+}
+
+/// **Sampled heights survive, and both seams stay exact.** With the hillside mounted, the
+/// whole-route detour up the 720 m north street arrives carrying that hump — and the spliced route
+/// still opens and lands exactly on the stored route's own seam heights.
+#[test]
+fn splice_keeps_the_detour_sampled_shape_and_matches_both_seams() {
+    let (spliced, stats, dstats) = spliced_whole(&mut Hillside);
+    assert!(dstats.has_elevation, "the terrain answered for the plan");
+    assert!(stats.has_elevation, "…so the spliced route carries elevation too");
+
+    let (lo, hi) = whole_route_seams();
+    let eles: Vec<i16> = route_points(&spliced).iter().map(|p| p.ele).collect();
+    assert_eq!(*eles.first().unwrap(), lo, "no step at the split seam");
+    assert_eq!(*eles.last().unwrap(), hi, "no step at the rejoin seam");
+
+    // The interior is the terrain's, not a ramp: the street sits NORTH_CLIMB_M above the road, so
+    // the span peaks far outside the seam interval a lerp could never leave.
+    let peak = *eles.iter().max().unwrap();
+    assert!(
+        peak > hi + NORTH_CLIMB_M as i16 / 2,
+        "the spliced detour must carry the street's real height (peak {peak}, seams {lo}..{hi})"
+    );
+    assert!(
+        (peak as i32 - (NORTH_CLIMB_M as i32 + hi as i32)).abs() < 150,
+        "…and it must be the sampled hump plus the blended residual, not something invented (peak {peak})"
+    );
+
+    // The mid-span twin keeps head and tail verbatim while the same blend runs between them.
+    let (mid, _, _) = spliced_over(&mut Hillside);
+    let mid_pts = route_points(&mid);
+    assert_eq!(mid_pts.first().unwrap().ele, 100, "the head keeps the original's stored heights");
+    assert_eq!(mid_pts.last().unwrap().ele, 200, "…and so does the tail");
+    assert!(
+        mid_pts.iter().any(|p| p.ele > 400),
+        "…and the spliced middle still carries the hillside (max {})",
+        mid_pts.iter().map(|p| p.ele).max().unwrap()
+    );
+}
+
+/// **A DEM that disagrees with the route's datum.** `OffsetHillside` puts the whole raster
+/// [`DEM_OFFSET_M`] above the fixture route's `<ele>` ramp — the GPX-imported case. The blend must
+/// absorb the offset at both seams *and* leave the shape between them alone: a constant datum shift
+/// moves both residuals by the same constant, so it cancels exactly and the spliced span is
+/// height-for-height what the un-offset terrain produced.
+#[test]
+fn splice_absorbs_a_dem_datum_offset_without_flattening_the_interior() {
+    let offset: Vec<i16> = route_points(&spliced_whole(&mut OffsetHillside).0).iter().map(|p| p.ele).collect();
+    let plain: Vec<i16> = route_points(&spliced_whole(&mut Hillside).0).iter().map(|p| p.ele).collect();
+    let (lo, hi) = whole_route_seams();
+
+    assert_eq!(*offset.first().unwrap(), lo, "the seam is exact however far the DEM's datum sits");
+    assert_eq!(*offset.last().unwrap(), hi, "…at both ends");
+    assert_eq!(
+        offset, plain,
+        "a constant DEM offset is absorbed whole — the spliced profile cannot depend on the raster's datum"
+    );
+
+    // Non-vacuity: the shape is genuinely there, and genuinely not a lerp.
+    assert!(
+        offset.iter().any(|&e| e > hi + 200),
+        "the interior must still rise well above the seam interval (got max {})",
+        offset.iter().max().unwrap()
+    );
+}
+
+/// **The spliced header's climb is recomputed over the final stream.** Independently re-integrate
+/// the spliced route's own points through the shared dead-band and compare — the header must be
+/// what a plain planned route's would be over those bytes, not a sum of two producers' totals.
+#[test]
+fn splice_stats_are_the_dead_band_over_the_final_point_stream() {
+    let cases = [("no terrain", spliced_road().0, spliced_road().1), {
+        let (bytes, stats, _) = spliced_over(&mut Hillside);
+        ("terrain", bytes, stats)
+    }];
+    for (label, spliced, stats) in &cases {
+        let pts = route_points(spliced);
+        let mut band = obc_elevation::DeadBand::<f64>::new();
+        let (mut lo, mut hi) = (i16::MAX, i16::MIN);
+        for p in &pts {
+            band.push(f64::from(p.ele));
+            lo = lo.min(p.ele);
+            hi = hi.max(p.ele);
+        }
+        assert_eq!(stats.total_ascent_m, band.ascent() as u32, "{label}: header ascent is the stream's");
+        assert_eq!(stats.total_descent_m, band.descent() as u32, "{label}: header descent is the stream's");
+        assert_eq!((stats.min_ele_m, stats.max_ele_m), (lo, hi), "{label}: header min/max are the stream's");
+    }
+
+    // The terrain case must actually exercise the descent arm, or those assertions are vacuous: the
+    // detour climbs the street and comes back down.
+    let terrain = &cases[1].2;
+    assert!(terrain.total_ascent_m > NORTH_CLIMB_M / 2, "the hump is climbed (got {})", terrain.total_ascent_m);
+    assert!(terrain.total_descent_m > NORTH_CLIMB_M / 2, "…and descended (got {})", terrain.total_descent_m);
+    // The elevation-less splice books the ramp only — the pre-#1091 figures, unchanged.
+    assert_eq!(cases[0].2.total_descent_m, 0);
+    assert!((80..=120).contains(&cases[0].2.total_ascent_m));
+}
+
+/// The trim path is on the same contract: a trimmed detour must reach the splice with its sampled
+/// heights **and** its own climb, or the residual blend has nothing to blend onto and the preview
+/// has nothing to price.
+#[test]
+fn a_trimmed_detour_keeps_its_sampled_heights_and_reports_its_climb() {
+    let bytes = map_with(&road_graph(true, false));
+    let obcr = road_route_obcr();
+    let target = 2_500;
+    let (res, detour) = detour_over_terrain(&bytes, &obcr, 0, target, &mut Hillside);
+    let dstats = res.expect("the street detour plans");
+    assert!(dstats.has_elevation);
+
+    let (out, trimmed) = trim_run(&obcr, &detour, target, dstats.has_elevation);
+    let out = out.expect("the retrace is trimmed");
+    let tpts = route_points(&trimmed);
+    assert!(
+        tpts.iter().any(|p| p.ele > NORTH_CLIMB_M as i16 / 2),
+        "the trimmed leg must still carry the street's sampled height"
+    );
+    assert!(out.ascent_m > NORTH_CLIMB_M / 2, "…and report the climb it actually does (got {})", out.ascent_m);
+
+    // The elevation-less twin still trims to the zeroed shape it always did.
+    let (res, detour) = detour_over(&bytes, &obcr, 0, target);
+    let (_, trimmed) = trim_run(&obcr, &detour, target, res.unwrap().has_elevation);
+    assert!(route_points(&trimmed).iter().all(|p| p.ele == 0), "no elevation in, no elevation out");
+}
+
+/// `has_elevation` is the producers' own answer end to end, and never a look at the values: a
+/// sea-level route is *not* an elevation-less one.
+#[test]
+fn has_elevation_is_the_producers_answer_not_the_values() {
+    // A GPX with no `<ele>` at all, and the same track at a constant 0 m, store identical bytes —
+    // so no amount of looking at the values can tell them apart. The converter can, and does.
+    let track = |ele: Option<f64>| {
+        let mut g = String::from("<gpx><trk><trkseg>\n");
+        for i in 0..=SEGS {
+            let (lon, lat) = road_at(i);
+            let e = ele.map_or(String::new(), |e| format!("<ele>{e:.1}</ele>"));
+            g.push_str(&format!(
+                "  <trkpt lat=\"{:.7}\" lon=\"{:.7}\">{e}</trkpt>\n",
+                lat as f64 * 1e-6,
+                lon as f64 * 1e-6
+            ));
+        }
+        g.push_str("</trkseg></trk></gpx>");
+        g
+    };
+    let none = convert("Same name", &track(None));
+    let sea = convert("Same name", &track(Some(0.0)));
+    assert_eq!(none, sea, "the two files are byte-identical — no consumer of the bytes can tell them apart");
+
+    // The reader, which only ever has the bytes, therefore gives the weaker honest answer for both…
+    let src = SliceSource(&sea[..]);
+    let idx = RouteIndex::read(&src).unwrap();
+    assert!(!RouteReader::new(&idx, &src).has_elevation(), "a stored file has no better answer than its header");
+
+    // …while the producer, which watched the parse, tells them apart — which is the whole reason
+    // the bit is threaded from the plan to the splice instead of re-derived there.
+    let mut sink = VecSink::default();
+    assert!(obc_route::gpx_to_obcr(&SliceSource(track(Some(0.0)).as_bytes()), "n", &mut sink).unwrap().has_elevation);
+    let mut sink = VecSink::default();
+    assert!(!obc_route::gpx_to_obcr(&SliceSource(track(None).as_bytes()), "n", &mut sink).unwrap().has_elevation);
 }

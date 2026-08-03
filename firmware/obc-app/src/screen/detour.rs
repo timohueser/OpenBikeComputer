@@ -294,10 +294,10 @@ impl DetourScreen {
 }
 
 /// The planned-detour preview (#882): the skipped span and the detour's decimated polyline over a
-/// fitted map, with a signed distance-cost line. **Press commits** the splice (the host answers
-/// `DetourCommitted` and the app lands back on the riding view); **Back cancels** to the chooser.
-/// The cost figure and polyline describe the plan frozen at the chooser's Press — the anchor is
-/// deliberately not re-derived here.
+/// fitted map, with **two** signed cost figures — distance and, since #1091, climb. **Press
+/// commits** the splice (the host answers `DetourCommitted` and the app lands back on the riding
+/// view); **Back cancels** to the chooser. The figures and polyline describe the plan frozen at the
+/// chooser's Press — the anchor is deliberately not re-derived here.
 #[derive(Debug, Clone, Copy)]
 pub struct DetourPreviewScreen {
     route: Option<usize>,
@@ -306,8 +306,20 @@ pub struct DetourPreviewScreen {
     anchor_m: u32,
     /// The chosen rejoin distance (for the skipped-span overlay + staleness checks).
     target_m: u32,
+    /// Where the plan actually rejoins ([`DetourPreview::rejoin_m`]) — `target_m`, or farther when
+    /// the approach was trimmed. The climb figure's replaced span is `[anchor_m, rejoin_m]`, so it
+    /// prices exactly the swap the distance figure does. The overlay deliberately keeps drawing the
+    /// *chosen* span, which is what the rider picked.
+    rejoin_m: u32,
     /// The plan's cost delta, meters, signed (see [`DetourPreview::cost_delta_m`]).
     cost_delta_m: i32,
+    /// The planned detour's own ascent, or `None` when the terrain never answered for it
+    /// ([`DetourPreview::ascent_m`]).
+    detour_ascent_m: Option<u32>,
+    /// Does the *original* route carry elevation? Read once in [`prepare`](Self::prepare) off the
+    /// streamed route ([`RouteReader::has_elevation`](obc_route::RouteReader)). The climb figure
+    /// needs both sides, so either side missing renders `--`.
+    route_has_elevation: bool,
     /// Press posted the commit; further Presses are no-ops while the host works.
     committing: bool,
     /// The commit failed host-side — the old route is untouched; shown inline on the HUD.
@@ -319,11 +331,17 @@ impl DetourPreviewScreen {
     /// The preview for a completed plan: request context lifted from the chooser (still on the
     /// stack below), figures from the host's [`DetourPreview`] answer.
     pub(crate) fn new(chooser: &DetourScreen, preview: DetourPreview) -> Self {
+        let target_m = chooser.target_m().unwrap_or(chooser.total_m);
         DetourPreviewScreen {
             route: chooser.route,
             anchor_m: chooser.start_m,
-            target_m: chooser.target_m().unwrap_or(chooser.total_m),
+            target_m,
+            // A trim only ever moves the rejoin *forward*; clamp defensively so the replaced span
+            // can never be read backwards.
+            rejoin_m: preview.rejoin_m.max(target_m),
             cost_delta_m: preview.cost_delta_m,
+            detour_ascent_m: preview.ascent_m,
+            route_has_elevation: false,
             committing: false,
             error: false,
             prepared: None,
@@ -387,6 +405,9 @@ impl DetourPreviewScreen {
             return;
         }
         let Some(route) = px.route else { return };
+        // The other half of the climb figure's "both sides have elevation" gate. Read here, with
+        // the streamed route in hand, rather than at draw time.
+        self.route_has_elevation = route.has_elevation();
         let Some(candidate) = route.position_at(self.target_m) else { return };
         let mut bounds =
             BBox { min_lon: candidate.lon, min_lat: candidate.lat, max_lon: candidate.lon, max_lat: candidate.lat };
@@ -443,14 +464,75 @@ impl DetourPreviewScreen {
             );
             return;
         }
-        // The signed cost line: "+4.2 km" (or "-", for a detour that shortcuts a wandering span).
+        // Two signed cost figures on one baseline, each centred in its half of the card: what the
+        // detour costs in **distance** and what it costs in **climb**. Same chrome, same sign
+        // convention, same warning ink — the climb one wears the ledger's up-triangle so it reads
+        // as a climb without a caption row the 76 px card has no space for (and the device font has
+        // no arrow glyph, so it is drawn, exactly as the Up-ahead side hint's arrow is).
+        //
+        // Edge-anchored rather than centred in halves: each figure then owns everything up to the
+        // other, so an imperial climb (`+820ft`) beside a long distance still fits where two fixed
+        // half-width slots would have clipped both.
+        let fy = y + 36;
+        let inset = 14;
+
         let sign = if self.cost_delta_m < 0 { "-" } else { "+" };
         let dist = crate::stat_fields::fmt_dist_short(self.cost_delta_m.unsigned_abs(), rx.settings.units);
         let mut line: heapless::String<12> = heapless::String::new();
         let _ = line.push_str(sign);
         let _ = line.push_str(dist.as_str());
-        cv.text(line.as_str(), Point::new(rx.w / 2, y + 36), Font::Display, TextAlign::Center, WARNING);
+        cv.text(line.as_str(), Point::new(x + inset, fy), Font::Display, TextAlign::Left, WARNING);
+
+        let delta = self.climb_delta_m(rx.profile, rx.activity.route_total_m);
+        draw_climb_figure(cv, x + w - inset, fy, fmt_climb_delta(delta, rx.settings.units).as_str());
     }
+
+    /// The climb the detour costs: **its own ascent minus the replaced span's**, or `None` when
+    /// either side of that subtraction is missing — the detour's terrain never answered, the route
+    /// carries no elevation, or its profile hasn't been built yet.
+    ///
+    /// The replaced span is `[anchor_m, rejoin_m]` read through
+    /// [`Profile::ascent_between_m`](obc_route::Profile) — the one "climb between here and there"
+    /// lookup the Up-ahead rows, the `TO CLIMB` tile and the ETA model all share, so this figure
+    /// cannot drift from them. Both terms are dead-banded the same way, so the difference is a
+    /// like-for-like swap rather than two conventions subtracted.
+    fn climb_delta_m(&self, profile: Option<&obc_route::Profile>, route_total_m: u32) -> Option<i32> {
+        let detour_m = self.detour_ascent_m?;
+        let profile = profile.filter(|_| self.route_has_elevation)?;
+        let replaced_m = profile.ascent_between_m(self.anchor_m, self.rejoin_m, route_total_m);
+        Some(detour_m as i32 - replaced_m as i32)
+    }
+}
+
+/// The climb figure's text: `+120m` / `-40m` in the rider's elevation unit — signed exactly like
+/// the distance figure beside it — or `--` when there is no honest number
+/// ([`climb_delta_m`](DetourPreviewScreen::climb_delta_m)).
+fn fmt_climb_delta(delta_m: Option<i32>, units: crate::settings::Units) -> heapless::String<12> {
+    use core::fmt::Write;
+    let mut s: heapless::String<12> = heapless::String::new();
+    let Some(delta_m) = delta_m else {
+        let _ = s.push_str("--");
+        return s;
+    };
+    let magnitude = (units.elev(delta_m.unsigned_abs() as f32) + 0.5) as u32;
+    let sign = if delta_m < 0 { '-' } else { '+' };
+    let _ = write!(s, "{sign}{magnitude}{}", units.elev_label());
+    s
+}
+
+/// Draw the climb figure — an ink up-triangle followed by `text` — as one group ending at `right`,
+/// its baseline shared with the distance figure. The triangle is the same 13-wide mark
+/// [`ledger_row`](super::ledger_row) draws for a CLIMB row, and it is *drawn* rather than typed
+/// because the device font's Latin strip has no arrow glyph.
+fn draw_climb_figure(cv: &mut impl Surface, right: i32, y: i32, text: &str) {
+    use super::palette::*;
+    const TRI_W: i32 = 13;
+    const TRI_GAP: i32 = 6;
+    let text_w = text.chars().count() as i32 * Font::Display.char_width() as i32;
+    let left = right - (TRI_W + TRI_GAP + text_w);
+    let (flat, tip) = (y + 26, y + 6);
+    cv.triangle(Point::new(left, flat), Point::new(left + TRI_W, flat), Point::new(left + TRI_W / 2, tip), INK);
+    cv.text(text, Point::new(right, y), Font::Display, TextAlign::Right, WARNING);
 }
 
 fn extend_bounds(b: &mut BBox, lon: i32, lat: i32) {
@@ -689,8 +771,11 @@ mod tests {
     // ---- the preview screen ----
 
     fn preview_for(a: &Activity) -> DetourPreviewScreen {
-        let chooser = DetourScreen::new(a);
-        DetourPreviewScreen::new(&chooser, DetourPreview { cost_delta_m: 4_200, total_distance_m: 5_000 })
+        preview_with(a, DetourPreview { cost_delta_m: 4_200, total_distance_m: 5_000, rejoin_m: 0, ascent_m: None })
+    }
+
+    fn preview_with(a: &Activity, preview: DetourPreview) -> DetourPreviewScreen {
+        DetourPreviewScreen::new(&DetourScreen::new(a), preview)
     }
 
     #[test]
@@ -740,6 +825,121 @@ mod tests {
         let t = with_state_ctx(&mut b, nav_state(), |cx| p.handle(Gesture::Step(1), cx));
         assert!(matches!(t, Transition::Pop));
         assert!(b.take_detour_cancel());
+    }
+
+    // ---- the preview's climb figure (#1091) ----
+
+    /// A 4 km route that climbs 200 m in its first half and comes back down in its second — enough
+    /// shape that `ascent_between_m` over different spans gives different answers.
+    const HILL_GPX: &str = r#"<gpx><trk><trkseg>
+    <trkpt lat="47.0000" lon="8.0000"><ele>500</ele></trkpt>
+    <trkpt lat="47.0000" lon="8.0130"><ele>600</ele></trkpt>
+    <trkpt lat="47.0000" lon="8.0260"><ele>700</ele></trkpt>
+    <trkpt lat="47.0000" lon="8.0390"><ele>600</ele></trkpt>
+    <trkpt lat="47.0000" lon="8.0520"><ele>500</ele></trkpt>
+  </trkseg></trk></gpx>"#;
+
+    /// Convert [`HILL_GPX`] and run `f` with the route + its profile, exactly as the App holds them.
+    fn with_hill_route<R>(f: impl FnOnce(&obc_route::RouteReader, &obc_route::Profile) -> R) -> R {
+        use obc_formats::io::{ByteSink, Error, SliceSource};
+        #[derive(Default)]
+        struct VecSink(std::vec::Vec<u8>);
+        impl ByteSink for VecSink {
+            fn write(&mut self, b: &[u8]) -> Result<(), Error> {
+                self.0.extend_from_slice(b);
+                Ok(())
+            }
+            fn patch_at(&mut self, off: u32, b: &[u8]) -> Result<(), Error> {
+                let o = off as usize;
+                self.0[o..o + b.len()].copy_from_slice(b);
+                Ok(())
+            }
+        }
+        let mut sink = VecSink::default();
+        obc_route::gpx_to_obcr(&SliceSource(HILL_GPX.as_bytes()), "Hill", &mut sink).unwrap();
+        let src = SliceSource(&sink.0);
+        let idx = obc_route::RouteIndex::read(&src).unwrap();
+        let route = obc_route::RouteReader::new(&idx, &src);
+        let profile = route.elevation_profile();
+        f(&route, &profile)
+    }
+
+    fn hill_preview(detour_ascent_m: Option<u32>, anchor_m: u32, rejoin_m: u32) -> DetourPreviewScreen {
+        let a = tracking_activity(anchor_m, 4_000);
+        let mut p = preview_with(
+            &a,
+            DetourPreview { cost_delta_m: 0, total_distance_m: 0, rejoin_m, ascent_m: detour_ascent_m },
+        );
+        // `prepare` is what reads the route's own elevation presence off the streamed route; stage
+        // it directly so the arithmetic under test isn't hidden behind a whole prepare pass.
+        p.route_has_elevation = true;
+        p.anchor_m = anchor_m;
+        p.rejoin_m = rejoin_m;
+        p
+    }
+
+    /// The figure is `detour ascent − replaced-span ascent`, signed, using the shared
+    /// `ascent_between_m` lookup — a detour that climbs less than the stretch it replaces reads
+    /// negative.
+    #[test]
+    fn climb_figure_prices_the_swap_against_the_replaced_span() {
+        with_hill_route(|_, profile| {
+            // The whole up-slope, ~2 km of route: +200 m of it is replaced.
+            let replaced = profile.ascent_between_m(0, 2_000, 4_000);
+            assert!(replaced > 150, "fixture check: the replaced span really climbs (got {replaced})");
+
+            let costly = hill_preview(Some(replaced + 120), 0, 2_000);
+            assert_eq!(costly.climb_delta_m(Some(profile), 4_000), Some(120), "a hillier detour costs climb");
+            assert_eq!(fmt_climb_delta(Some(120), Settings::default().units).as_str(), "+120m");
+
+            let cheaper = hill_preview(Some(replaced - 40), 0, 2_000);
+            assert_eq!(cheaper.climb_delta_m(Some(profile), 4_000), Some(-40), "a flatter one saves it");
+            assert_eq!(fmt_climb_delta(Some(-40), Settings::default().units).as_str(), "-40m");
+
+            // The descent-only second half books no ascent, so a flat detour around it is a wash.
+            let wash = hill_preview(Some(0), 2_000, 4_000);
+            assert_eq!(wash.climb_delta_m(Some(profile), 4_000), Some(0), "no climb either side is +0, not `--`");
+        });
+    }
+
+    /// `--` on the explicit signal only: no terrain for the detour, or no elevation on the route.
+    /// A genuinely flat detour still shows `+0` — `0 m` of climb is an answer, not a missing one.
+    #[test]
+    fn climb_figure_is_dashes_only_when_a_side_is_genuinely_missing() {
+        with_hill_route(|_, profile| {
+            let mut no_terrain = hill_preview(None, 0, 2_000);
+            no_terrain.detour_ascent_m = None;
+            assert_eq!(no_terrain.climb_delta_m(Some(profile), 4_000), None, "no terrain for the detour → no figure");
+
+            let mut flat_route = hill_preview(Some(50), 0, 2_000);
+            flat_route.route_has_elevation = false;
+            assert_eq!(flat_route.climb_delta_m(Some(profile), 4_000), None, "an elevation-less route → no figure");
+
+            let staged = hill_preview(Some(50), 0, 2_000);
+            assert_eq!(staged.climb_delta_m(None, 4_000), None, "profile not built yet → no figure");
+
+            assert_eq!(fmt_climb_delta(None, Settings::default().units).as_str(), "--");
+        });
+    }
+
+    /// A trim moves the rejoin **forward**, and the climb figure must price the span that actually
+    /// gets replaced — the same one `cost_delta_m` prices — not the distance the rider dialled in.
+    #[test]
+    fn climb_figure_uses_the_trimmed_rejoin_not_the_chosen_target() {
+        with_hill_route(|_, profile| {
+            let chosen = hill_preview(Some(0), 0, 1_000);
+            let trimmed = hill_preview(Some(0), 0, 2_000);
+            let (a, b) = (chosen.climb_delta_m(Some(profile), 4_000), trimmed.climb_delta_m(Some(profile), 4_000));
+            assert!(a > b, "a farther rejoin replaces more climb, so the same detour costs less ({a:?} vs {b:?})");
+        });
+    }
+
+    /// The rejoin can never read behind the chosen target, whatever the host reports.
+    #[test]
+    fn rejoin_is_clamped_forward_of_the_chosen_target() {
+        let a = tracking_activity(1_000, 5_000);
+        let p = preview_with(&a, DetourPreview { cost_delta_m: 0, total_distance_m: 0, rejoin_m: 0, ascent_m: None });
+        assert_eq!(p.rejoin_m, p.target_m, "a zero/stale rejoin clamps to the chosen one");
     }
 
     #[test]

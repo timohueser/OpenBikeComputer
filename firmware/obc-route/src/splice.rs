@@ -8,11 +8,37 @@
 //! work per [`step`](Splicer::step) — one decoded source chunk ([`SPLICE_CHUNKS_PER_STEP`]) —
 //! plus a [`splice_detour`] one-shot for the headless sim and tests.
 //!
-//! Elevation: the nav graph has no DEM, so the detour's points arrive with `ele == 0`. They are
-//! rewritten to a linear interpolation (in arc length) between the original route's elevations
-//! at the two splice seams — no spike at either seam, at most `|Δele|` of monotone climb — while
-//! head and tail keep their stored elevations verbatim. Ascent/descent are re-accumulated over
-//! the spliced stream with the same [`DeadBand`] hysteresis as the GPX converter.
+//! **Elevation: sampled heights, seam-matched by a residual blend** (#1091). Since EL7 (epic
+//! #1068) `plan_detour` samples the map's terrain at every emitted vertex, so a detour planned on
+//! a terrain-carrying map arrives with **real heights** — and the splice keeps them. What it does
+//! not keep is their absolute datum at the two joins: the stored route's heights and the raster's
+//! need not agree there (a GPX imported from a phone or a barometric head unit is offset from the
+//! DEM by canopy and pressure error), and a step at a seam would be a cliff in the profile and a
+//! phantom climb in the totals. So the splice adds a **linear-in-arc-length blend of the two seam
+//! residuals** to every detour point:
+//!
+//! ```text
+//! r0 = route_ele(split_m)  − detour_ele(first)
+//! r1 = route_ele(rejoin_m) − detour_ele(last)
+//! ele(p) = detour_ele(p) + lerp(r0, r1, arc_fraction(p))
+//! ```
+//!
+//! Both ends then equal the stored route's own seam heights **exactly** — the no-spike property
+//! the old seam-to-seam lerp bought — while the interior keeps the terrain's real shape: a detour
+//! over a rise reads as a rise, not as a straight ramp.
+//!
+//! **The degrade is an identity, not an approximation.** Whether the detour carried heights at
+//! all is an *explicit* signal (`detour_has_elevation`, from the plan's
+//! [`RouteStats::has_elevation`](crate::RouteStats) — EL7's `EleFill::seen`), never a guess at the
+//! values, because `0 m` is a real height. When it is false the blend runs with a sampled height
+//! of `0` and the residuals `(route_ele(split_m), route_ele(rejoin_m))`, which is *arithmetically*
+//! the pre-#1091 seam-to-seam lerp — same expression, same rounding, same bytes (pinned by
+//! `splice_without_detour_elevation_is_the_old_seam_lerp`).
+//!
+//! Head and tail keep their stored elevations verbatim, and ascent/descent are re-accumulated over
+//! the **final** point stream with the same [`DeadBand`] hysteresis at the same threshold the GPX
+//! converter and the nav emit use — so a spliced route's climb is as real as a plain planned
+//! route's, not a patched-up sum of two.
 //!
 //! Distance: the header total is overridden to `measured(head + seams + tail) + detour_len_m`
 //! (the planner's summed raw edge lengths), so the committed route's displayed total is
@@ -31,7 +57,7 @@ use crate::geo::project_to_segment;
 use crate::reader::{
     decode_route_points_between, for_each_waypoint, RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK, MAX_WAYPOINTS,
 };
-use obc_elevation::DeadBand;
+use obc_elevation::{DeadBand, ELE_DEADBAND_M};
 use obc_formats::io::{ByteSink, Error};
 use obc_formats::obcr::NAME_CAP;
 use obc_map_scene::{cos_lat, ground_dist_m, ground_dist_m_cl};
@@ -44,6 +70,12 @@ pub const SPLICE_CHUNKS_PER_STEP: usize = 1;
 /// The spliced route's name prefix. A re-spliced detour keeps its name unchanged instead of
 /// stacking prefixes.
 const NAME_PREFIX: &str = "Detour · ";
+
+/// The height move (m) that forces the splice's emitter to keep a vertex once the detour carries
+/// sampled terrain (#1091) — the same [`ELE_DEADBAND_M`] the nav emit and the GPX converter
+/// integrate at, for the same reason: "kept" and "booked by the dead-band" must be the same set of
+/// vertices, or an export of the spliced route re-imports with a different climb than its header.
+const ELE_SPLICE_KEEP_M: i16 = ELE_DEADBAND_M as i16;
 
 /// One [`Splicer::step`] outcome.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -62,9 +94,11 @@ enum Phase {
     Init,
     /// Stream `original[0..split_m]`, one chunk per step (real elevations).
     Head,
-    /// Pre-measure the detour polyline length (the elevation lerp's denominator).
+    /// Pre-measure the detour polyline length (the residual blend's denominator) and read its
+    /// first/last sampled heights (the blend's two residuals).
     Measure,
-    /// Stream the detour, one chunk per step, rewriting elevations to the seam lerp.
+    /// Stream the detour, one chunk per step, offsetting each sampled elevation by the blended
+    /// seam residual.
     Detour,
     /// Stream `original[rejoin_m..]`, one chunk per step (real elevations).
     Tail,
@@ -90,9 +124,22 @@ pub struct Splicer {
     head_k: usize,
     det_k: usize,
     tail_k: usize,
-    /// Seam elevations sampled from the original route (Init).
+    /// Seam elevations read off the original route (Init).
     ele_split: i16,
     ele_rejoin: i16,
+    /// Did the detour plan's terrain actually answer (`RouteStats::has_elevation`, EL7's
+    /// `EleFill::seen`)? Frozen at construction — the splice never inspects the detour's stored
+    /// heights to decide this, because `0 m` is a real height.
+    det_sampled: bool,
+    /// The detour's first/last **sampled** heights, read in Measure — the two seam residuals'
+    /// subtrahends. Meaningless (and unread) while `det_sampled` is false.
+    det_ele_first: i16,
+    det_ele_last: i16,
+    /// The blend's endpoint residuals, resolved once when Measure completes: `route seam − detour
+    /// sample` at the start and the end. With no detour elevation these degrade to the two seam
+    /// heights themselves, which is exactly the pre-#1091 seam lerp.
+    res_start: f32,
+    res_end: f32,
     /// Measured detour polyline length (Measure) and the emit pass's running position on it.
     det_total: f32,
     det_along: f32,
@@ -111,10 +158,13 @@ pub struct Splicer {
 
 impl Splicer {
     /// A splicer for `original[0..split_m] + detour + original[rejoin_m..]`. `detour_len_m` is
-    /// the detour plan's [`RouteStats::total_distance_m`]; `orig_name` derives the spliced name
+    /// the detour plan's [`RouteStats::total_distance_m`]; `detour_has_elevation` its
+    /// [`RouteStats::has_elevation`] — the explicit "the terrain answered" bit that decides
+    /// whether the detour's stored heights are sampled terrain to keep (residual blend) or the
+    /// `0` placeholder to replace (seam lerp); `orig_name` derives the spliced name
     /// (`"Detour · <name>"`, idempotent for an already-detoured name). Touches nothing until the
     /// first [`step`](Self::step).
-    pub fn new(split_m: u32, rejoin_m: u32, detour_len_m: u32, orig_name: &str) -> Splicer {
+    pub fn new(split_m: u32, rejoin_m: u32, detour_len_m: u32, detour_has_elevation: bool, orig_name: &str) -> Splicer {
         let mut name = heapless::String::new();
         if !orig_name.starts_with(NAME_PREFIX) {
             let _ = name.push_str(NAME_PREFIX);
@@ -136,6 +186,11 @@ impl Splicer {
             tail_k: 0,
             ele_split: 0,
             ele_rejoin: 0,
+            det_sampled: detour_has_elevation,
+            det_ele_first: 0,
+            det_ele_last: 0,
+            res_start: 0.0,
+            res_end: 0.0,
             det_total: 0.0,
             det_along: 0.0,
             last_pushed: None,
@@ -165,7 +220,18 @@ impl Splicer {
                 self.ele_split = es;
                 self.ele_rejoin = er;
                 match ObcrEmitter::new(sink) {
-                    Ok(em) => self.em = Some(em),
+                    Ok(mut em) => {
+                        // The detour's densified sample points exist **only** to carry height: the
+                        // emitter's purely planar decimator would drop the one standing on a crest
+                        // of a straight ramp and hand the profile back the flat line #1091 is about.
+                        // Same threshold, same reason as the nav emit that produced them. Left off
+                        // when the detour has no elevation, which is what keeps that case's bytes
+                        // identical to the pre-#1091 splice.
+                        if self.det_sampled {
+                            em.keep_elevation_detail(ELE_SPLICE_KEEP_M);
+                        }
+                        self.em = Some(em);
+                    }
                     Err(e) => return self.fail(e),
                 }
                 self.phase = Phase::Head;
@@ -189,7 +255,13 @@ impl Splicer {
             Phase::Measure => {
                 for _ in 0..SPLICE_CHUNKS_PER_STEP {
                     if self.det_k >= detour.chunks().len() {
-                        // Denominator ready; restart the detour cursor for the emit pass.
+                        // Denominator and both seam samples ready → resolve the blend's residuals.
+                        // With no detour elevation the sampled term is the `0` placeholder, so the
+                        // residuals *are* the seam heights and the blend is the old seam lerp.
+                        let (s0, s1) = if self.det_sampled { (self.det_ele_first, self.det_ele_last) } else { (0, 0) };
+                        self.res_start = f32::from(self.ele_split) - f32::from(s0);
+                        self.res_end = f32::from(self.ele_rejoin) - f32::from(s1);
+                        // Restart the detour cursor for the emit pass.
                         self.det_k = 0;
                         self.prev_det = None;
                         self.phase = Phase::Detour;
@@ -299,11 +371,21 @@ impl Splicer {
     }
 
     /// Measure one detour chunk's polyline length with the same per-segment metric the emit
-    /// pass accumulates — the elevation lerp's denominator must match its numerator.
+    /// pass accumulates — the blend's denominator must match its numerator — and latch the
+    /// detour's first/last **sampled** heights on the way past (the residuals' subtrahends); no
+    /// second pass over the detour is needed for them.
     #[inline(never)]
     fn measure_detour_chunk(&mut self, detour: &RouteReader, k: usize) -> Result<f32, Error> {
         let mut buf = Vec::<RoutePoint, MAX_POINTS_PER_CHUNK>::new();
         detour.decode_chunk(k, &mut buf)?;
+        if k == 0 {
+            if let Some(first) = buf.first() {
+                self.det_ele_first = first.ele;
+            }
+        }
+        if let Some(last) = buf.last() {
+            self.det_ele_last = last.ele;
+        }
         let mut len = 0.0f32;
         for p in buf.iter() {
             let c = (p.lon, p.lat);
@@ -317,8 +399,9 @@ impl Splicer {
         Ok(len)
     }
 
-    /// Stream one detour chunk, rewriting each point's elevation to the seam lerp at its
-    /// arc-length position.
+    /// Stream one detour chunk, offsetting each point's **sampled** elevation by the blended seam
+    /// residual at its arc-length position (#1091). The two ends land exactly on the stored
+    /// route's seam heights; the interior keeps whatever shape the terrain gave it.
     #[inline(never)]
     fn push_detour_chunk(&mut self, detour: &RouteReader, k: usize, sink: &mut dyn ByteSink) -> Result<(), Error> {
         let mut buf = Vec::<RoutePoint, MAX_POINTS_PER_CHUNK>::new();
@@ -333,7 +416,10 @@ impl Splicer {
             }
             self.prev_det = Some(c);
             let t = if self.det_total > 1e-3 { (self.det_along / self.det_total).clamp(0.0, 1.0) } else { 1.0 };
-            let ele = lerp_ele(self.ele_split, self.ele_rejoin, t);
+            // The one branch on the explicit signal: sampled terrain rides through, an
+            // elevation-less detour contributes the `0` placeholder its points actually carry.
+            let sampled = if self.det_sampled { p.ele } else { 0 };
+            let ele = blend_ele(sampled, self.res_start, self.res_end, t);
             self.push_point(sink, c.0, c.1, ele)?;
         }
         Ok(())
@@ -372,25 +458,40 @@ impl Splicer {
             }
         })?;
 
+        // The spliced route carries elevation iff one of its two sources did: the detour by the
+        // plan's explicit bit, the head/tail by what a reader can honestly say about stored bytes.
+        // Both zero ⇒ the whole stream is the `0` placeholder and the header keeps the documented
+        // no-elevation shape, which is what the ascent/descent/min/max below already come out as.
+        let has_elevation = self.det_sampled || orig.has_elevation();
         if self.min_ele > self.max_ele {
             self.min_ele = 0;
             self.max_ele = 0;
         }
+        // Ascent/descent are the dead-band's totals over the **final** point stream — head, both
+        // seam segments, the blended detour and the tail — at the same [`ELE_DEADBAND_M`] the nav
+        // emit and the GPX converter run, so a spliced route's climb is produced exactly the way a
+        // plain planned route's is rather than stitched from two headers.
         let stats = EmitStats {
             min_ele_m: self.min_ele,
             max_ele_m: self.max_ele,
             ascent_m: self.elev.ascent() as u32,
             descent_m: self.elev.descent() as u32,
             total_distance_m: Some(override_total),
+            has_elevation,
         };
         let em = self.em.take().ok_or(Error::Empty)?;
         em.finish(sink, &self.name, stats, &mut wps)
     }
 }
 
-/// Linear elevation between the two seam samples at arc fraction `t`.
-fn lerp_ele(a: i16, b: i16, t: f32) -> i16 {
-    libm::roundf(a as f32 + (b as f32 - a as f32) * t) as i16
+/// A detour point's spliced height: its own `sampled` terrain height plus the linear blend of the
+/// two seam residuals at arc fraction `t` (#1091).
+///
+/// With `sampled == 0` and `(r0, r1)` the two seam heights this reduces — as an expression, not
+/// merely as a value — to the pre-#1091 `roundf(a + (b − a) · t)` seam lerp, which is what makes
+/// an elevation-less detour splice to byte-identical output.
+fn blend_ele(sampled: i16, r0: f32, r1: f32, t: f32) -> i16 {
+    libm::roundf(sampled as f32 + (r0 + (r1 - r0) * t)) as i16
 }
 
 // ------------------------------------------------------------------------- rejoin-at-first-contact
@@ -420,7 +521,8 @@ const TRIM_MIN_SAMPLE_M: f32 = 20.0;
 const TRIM_NOOP_M: u32 = 30;
 
 /// The result of [`trim_detour_to_tail`] when the detour is advanced to its first sustained tail
-/// contact: the (farther) rejoin distance to splice from, and the trimmed detour's measured length.
+/// contact: the (farther) rejoin distance to splice from, and the trimmed detour's measured length
+/// and climb.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TrimOutcome {
     /// The rejoin distance on the *original* route — always `>= target_m`.
@@ -430,6 +532,11 @@ pub struct TrimOutcome {
     /// length for its shortened form, so this is the honest basis for the preview's cost line — the
     /// same few-percent metric family as the untrimmed splice's header-total precedent.
     pub detour_len_m: u32,
+    /// The trimmed detour's own dead-banded ascent (m) over its **kept** sampled heights — the
+    /// preview's climb figure needs the shortened leg's climb, not the planner's, exactly as
+    /// [`detour_len_m`](Self::detour_len_m) is its length rather than the planner's. `0` when the
+    /// plan carried no elevation (the caller gates on its own `has_elevation`).
+    pub ascent_m: u32,
 }
 
 /// Advance a planned detour's rejoin to its **first sustained contact** with the route tail (#882).
@@ -453,6 +560,7 @@ pub fn trim_detour_to_tail(
     orig: &RouteReader,
     detour: &RouteReader,
     target_m: u32,
+    detour_has_elevation: bool,
     sink: &mut dyn ByteSink,
 ) -> Result<Option<TrimOutcome>, Error> {
     let tail = Tail::build(orig, target_m);
@@ -469,8 +577,8 @@ pub fn trim_detour_to_tail(
     if trim_index + 1 >= last_index && rejoin_m.saturating_sub(target_m) <= TRIM_NOOP_M {
         return Ok(None);
     }
-    let stats = emit_trimmed(detour, trim_index, sink)?;
-    Ok(Some(TrimOutcome { rejoin_m, detour_len_m: stats.total_distance_m }))
+    let stats = emit_trimmed(detour, trim_index, detour_has_elevation, sink)?;
+    Ok(Some(TrimOutcome { rejoin_m, detour_len_m: stats.total_distance_m, ascent_m: stats.total_ascent_m }))
 }
 
 /// A detour point's projection onto the tail: `(segment index, t along it, cross-track distance m)`.
@@ -633,21 +741,41 @@ fn first_tail_contact(detour: &RouteReader, tail: &Tail, target_m: u32) -> Resul
 }
 
 /// Re-emit `detour[0..=trim_index]` (distinct-point indices) through a fresh [`ObcrEmitter`] into
-/// `sink` — the trimmed detour: elevations zeroed (the seam lerp is reapplied by the splice), the
-/// detour name kept, no waypoints, header total the emitter's re-measured polyline length.
+/// `sink` — the trimmed detour: **sampled elevations carried through verbatim** (#1091; the splice
+/// blends its seam residuals onto them later, and it can only do that if they survive the trim),
+/// the detour name kept, no waypoints, header total the emitter's re-measured polyline length and
+/// header climb the dead-band's own over the kept points.
+///
+/// `has_elevation` is the plan's explicit bit, passed through rather than re-derived — with it
+/// false every stored height is the `0` placeholder and the header keeps the no-elevation shape,
+/// which is byte-for-byte what this emitted before #1091.
 ///
 /// `#[inline(never)]` — owns both the ~9 kB emitter and the 2 kB decode buffer; keep the frame off
 /// the caller's stack.
 #[inline(never)]
-fn emit_trimmed(detour: &RouteReader, trim_index: usize, sink: &mut dyn ByteSink) -> Result<RouteStats, Error> {
+fn emit_trimmed(
+    detour: &RouteReader,
+    trim_index: usize,
+    has_elevation: bool,
+    sink: &mut dyn ByteSink,
+) -> Result<RouteStats, Error> {
     let mut em = ObcrEmitter::new(sink)?;
+    if has_elevation {
+        em.keep_elevation_detail(ELE_SPLICE_KEEP_M);
+    }
     let mut buf = heapless::Vec::<RoutePoint, MAX_POINTS_PER_CHUNK>::new();
+    let mut band = DeadBand::<f64>::new();
+    let (mut min_ele, mut max_ele) = (i16::MAX, i16::MIN);
     let mut gi = 0usize;
     'outer: for k in 0..detour.chunks().len() {
         detour.decode_chunk(k, &mut buf)?;
         let skip = usize::from(k > 0);
         for p in buf.iter().skip(skip) {
-            em.push(sink, p.lon, p.lat, 0, 0)?;
+            let ele = if has_elevation { p.ele } else { 0 };
+            min_ele = min_ele.min(ele);
+            max_ele = max_ele.max(ele);
+            band.push(f64::from(ele));
+            em.push(sink, p.lon, p.lat, ele, band.ascent() as u32)?;
             if gi == trim_index {
                 break 'outer;
             }
@@ -655,7 +783,17 @@ fn emit_trimmed(detour: &RouteReader, trim_index: usize, sink: &mut dyn ByteSink
         }
     }
     let mut wps: Vec<WpPlace, MAX_WAYPOINTS> = Vec::new();
-    let stats = EmitStats { min_ele_m: 0, max_ele_m: 0, ascent_m: 0, descent_m: 0, total_distance_m: None };
+    // A trim that kept no point at all leaves the crossed pair; the emitter errors out anyway, but
+    // the zeroing keeps the "no elevation" header shape honest on every path.
+    let (min_ele, max_ele) = if has_elevation && min_ele <= max_ele { (min_ele, max_ele) } else { (0, 0) };
+    let stats = EmitStats {
+        min_ele_m: min_ele,
+        max_ele_m: max_ele,
+        ascent_m: if has_elevation { band.ascent() as u32 } else { 0 },
+        descent_m: if has_elevation { band.descent() as u32 } else { 0 },
+        total_distance_m: None,
+        has_elevation,
+    };
     em.finish(sink, detour.name(), stats, &mut wps)
 }
 
@@ -671,15 +809,17 @@ fn detour_distinct_count(r: &RouteReader) -> usize {
 
 /// One-shot convenience over [`Splicer`]: loop [`step`](Splicer::step) to completion — the
 /// headless sim and the tests; interactive hosts step the splicer themselves.
+#[allow(clippy::too_many_arguments)] // the splice request plus its two readers and the sink
 pub fn splice_detour(
     orig: &RouteReader,
     detour: &RouteReader,
     split_m: u32,
     rejoin_m: u32,
     detour_len_m: u32,
+    detour_has_elevation: bool,
     sink: &mut dyn ByteSink,
 ) -> Result<RouteStats, Error> {
-    let mut sp = Splicer::new(split_m, rejoin_m, detour_len_m, orig.name());
+    let mut sp = Splicer::new(split_m, rejoin_m, detour_len_m, detour_has_elevation, orig.name());
     loop {
         match sp.step(orig, detour, sink) {
             SpliceStep::Running => {}

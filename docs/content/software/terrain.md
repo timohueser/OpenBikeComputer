@@ -229,6 +229,7 @@ with it has the same OBCR digest it had before any of this existed.
 | Routing | Works. The map's baked ascents are `0`, so the climb term vanishes and the router costs exactly as it did before — the same result a climb weight of `0` gives. |
 | Imported GPX routes | Unchanged: they carry their own heights, so profile, climbs, stats and export were never affected. |
 | Device-planned routes | Plan and ride normally, with a **flat** profile: heights store as `0`, the Climb screen finds no climb, the ascent stat is `0`. |
+| [Detours](../ui/#detouring-around-a-blocked-stretch) | Plan and splice normally. The spliced detour's heights fall back to a straight interpolation between the two seam elevations — byte-identically to what the splice wrote before terrain existed — and the preview's climb figure reads `--` instead of inventing one. |
 | Ride recording | Unchanged. The recorded track's elevations are the *barometer's* own measurement and are deliberately never fused. |
 | Current Elevation tile | Reads exactly what it read before — the raw barometric estimate. The fusion never settles, and the tile never claims a precision it does not have. |
 | Estimated time / time-to-go | Still shown. The ascent-to-go is zero, so the model collapses to distance ÷ speed rather than special-casing anything. |
