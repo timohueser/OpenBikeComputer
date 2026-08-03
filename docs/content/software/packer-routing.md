@@ -14,7 +14,7 @@ The packer ([`obc-pack`](src:host/obc-pack)) lives in the same Rust workspace as
 The pipeline is a straight line from an `.osm.pbf` extract to a finished `.obcm`. Two stages carry the weight — ingest and the per-LOD build — and the rest are quick.
 
 <figure class="fig">
-<svg viewBox="0 0 820 240" role="img" aria-label="The packer pipeline as a trail: starting from one or more OSM .pbf files plus a config, the stages are ingest (which also merges and crops), compute bounding box, generate land, build the per-LOD pyramid (simplify then quadtree), and serialize, ending at a .obcm file. Ingest and the per-LOD build are marked as the expensive stages.">
+<svg viewBox="0 0 820 240" role="img" aria-label="The packer pipeline as a trail: starting from one or more OSM .pbf files plus a config, the stages are ingest (which also merges and crops), compute bounding box, generate land, trace contours from terrain, build the per-LOD pyramid (simplify then quadtree), and serialize, ending at a .obcm file. Ingest and the per-LOD build are marked as the expensive stages; contour tracing only runs when the config asks for it and terrain was supplied.">
   <text class="d-tag" x="20" y="24">From OpenStreetMap to a device map</text>
 
   <!-- trail -->
@@ -31,27 +31,31 @@ The pipeline is a straight line from an `.osm.pbf` extract to a finished `.obcm`
   <text class="d-sub" x="150" y="174" text-anchor="middle">ways · relations</text>
   <text class="d-sub" x="150" y="188" text-anchor="middle">merge · crop</text>
   <!-- 2 bbox (above) -->
-  <circle cx="280" cy="120" r="15" class="d-forest" /><text class="d-num" x="280" y="124" text-anchor="middle">2</text>
-  <text class="d-label" x="280" y="74" text-anchor="middle">BBox</text>
-  <text class="d-sub" x="280" y="88" text-anchor="middle">truncate µdeg</text>
+  <circle cx="254" cy="120" r="15" class="d-forest" /><text class="d-num" x="254" y="124" text-anchor="middle">2</text>
+  <text class="d-label" x="254" y="74" text-anchor="middle">BBox</text>
+  <text class="d-sub" x="254" y="88" text-anchor="middle">truncate µdeg</text>
   <!-- 3 land (below) -->
-  <circle cx="410" cy="120" r="15" class="d-forest" /><text class="d-num" x="410" y="124" text-anchor="middle">3</text>
-  <text class="d-label" x="410" y="160" text-anchor="middle">Land</text>
-  <text class="d-sub" x="410" y="174" text-anchor="middle">clip to bbox</text>
-  <!-- 4 per-LOD (above, HOT) -->
-  <circle cx="540" cy="120" r="16" class="d-hot-fill" /><text class="d-num" x="540" y="124" text-anchor="middle">4</text>
-  <text class="d-label" x="540" y="74" text-anchor="middle" style="fill:#a9501c">Per-LOD</text>
-  <text class="d-sub" x="540" y="88" text-anchor="middle">simplify → quadtree</text>
-  <!-- 5 serialize (below) -->
-  <circle cx="670" cy="120" r="15" class="d-forest" /><text class="d-num" x="670" y="124" text-anchor="middle">5</text>
-  <text class="d-label" x="670" y="160" text-anchor="middle">Serialize</text>
-  <text class="d-sub" x="670" y="174" text-anchor="middle">stream out</text>
+  <circle cx="358" cy="120" r="15" class="d-forest" /><text class="d-num" x="358" y="124" text-anchor="middle">3</text>
+  <text class="d-label" x="358" y="160" text-anchor="middle">Land</text>
+  <text class="d-sub" x="358" y="174" text-anchor="middle">clip to bbox</text>
+  <!-- 4 contours (above) — only with terrain + a config that asks -->
+  <circle cx="462" cy="120" r="15" class="d-forest" /><text class="d-num" x="462" y="124" text-anchor="middle">4</text>
+  <text class="d-label" x="462" y="74" text-anchor="middle">Contours</text>
+  <text class="d-sub" x="462" y="88" text-anchor="middle">trace · clamp 15 m</text>
+  <!-- 5 per-LOD (below, HOT) -->
+  <circle cx="566" cy="120" r="16" class="d-hot-fill" /><text class="d-num" x="566" y="124" text-anchor="middle">5</text>
+  <text class="d-label" x="566" y="160" text-anchor="middle" style="fill:#a9501c">Per-LOD</text>
+  <text class="d-sub" x="566" y="174" text-anchor="middle">simplify → quadtree</text>
+  <!-- 6 serialize (above) -->
+  <circle cx="670" cy="120" r="15" class="d-forest" /><text class="d-num" x="670" y="124" text-anchor="middle">6</text>
+  <text class="d-label" x="670" y="74" text-anchor="middle">Serialize</text>
+  <text class="d-sub" x="670" y="88" text-anchor="middle">stream out</text>
 
   <!-- end -->
   <rect class="d-panel" x="772" y="104" width="40" height="32" rx="5" style="fill:#e7ead8" />
   <text class="d-sub" x="792" y="124" text-anchor="middle" style="font-size:9px">.obcm</text>
 </svg>
-<figcaption>There is no separate merge or crop stage: giving the packer several regions, or <a href="#cropping-to-a-box">a box</a> to cut them down to, changes what ingest reads rather than adding a step in front of it — which is why the whole pipeline needs no external tool at all. Each LOD tier is built and streamed to disk before the next begins, so peak memory is roughly <i>one</i> tier's quadtree rather than the whole pyramid plus the output — the same "never resident if it doesn't have to be" instinct the device's reader uses.</figcaption>
+<figcaption>There is no separate merge or crop stage: giving the packer several regions, or <a href="#cropping-to-a-box">a box</a> to cut them down to, changes what ingest reads rather than adding a step in front of it — which is why the whole pipeline needs no external tool at all. Stages 3 and 4 both <i>generate</i> features rather than read them, and both do it before any tier exists, so what they make is cut and simplified like everything else. Each LOD tier is then built and streamed to disk before the next begins, so peak memory is roughly <i>one</i> tier's quadtree rather than the whole pyramid plus the output — the same "never resident if it doesn't have to be" instinct the device's reader uses.</figcaption>
 </figure>
 
 ### Styling: first match wins
@@ -233,6 +237,20 @@ That dataset is ~950 MB, downloaded and unpacked once into the packer's shared c
 </svg>
 <figcaption>The packer reads the land shapefile directly and reprojects it from Web Mercator with closed-form math — no GIS stack — decoding only the records whose bounding box touches the query. The result flows through the same simplify-and-quadtree path as every other feature, so by the time the device sees it, land is just more geometry.</figcaption>
 </figure>
+
+### Contours, traced from the terrain
+
+A map packed with [terrain](../terrain/) can carry contour lines, and they are made the same way land is: generated **once**, over the whole extract, before any tier exists — and then they are ordinary features. Same styles, same simplify ladder, same densify, same quadtree. Nothing downstream, on the host or on the device, is told that a contour is anything other than a line.
+
+That is the entire design. The alternative — a raster band, or a dedicated section with its own renderer — was measured against it and lost on a single fact: contours are *styled vector features*, so the moment they exist as `Geom::Line` with a style id, every problem left is one the packer already solved. The [renderer](../rendering/) is not changed by this feature at all.
+
+The trace itself is **marching squares** over the terrain's own sample lattice, one elevation level at a time, read back through the same `no_std` sampler the device runs (at exact lattice coordinates, where the [bilinear interpolation](../terrain/#one-sampling-truth) collapses to the stored sample — so the packer cannot see a surface the firmware would not). A lattice cell any of whose four corners is unknown is skipped whole: a contour is never drawn across ground the DEM does not know, which is the raster's ["a hole is silence"](../terrain/#coverage-edges-honestly) rule showing up in vector form. The classic ambiguity — a cell with high ground on one diagonal and low on the other, where two contours could be joined two ways — is resolved by the cell's mean, which both neighbours compute identically from the same four numbers, so the segments meet.
+
+Two classes come out: a `major` contour at every level, and an `index` contour at every fifth one (100 m and 500 m by default). They are styled independently, like any two feature types, and a class the config gives no style to is not packed — nor even traced.
+
+**One number is a rule rather than a setting.** Traced geometry is simplified to **15 m** before the ladder ever sees it. The finest tiers simplify at 3 m and 0.5 m — one to two orders finer than a ~40 m DEM posting can justify — so without that clamp the fine LODs faithfully store the interpolation ramp between samples, which is not terrain and is not visible. On an alpine test extract the clamp removed 905 KB and changed nothing on the glass.
+
+The cost is real and worth stating plainly: contours are the most expensive optional thing a map can carry. On the corpus's worst case for them — a 628 km² alpine extract, dense terrain and sparse OSM — 100 m contours from the planning tier down add about **a quarter** to the map. Flat ground adds almost nothing, because flat ground crosses almost no levels.
 
 ### Extracting POIs
 
