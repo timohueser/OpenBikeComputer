@@ -144,6 +144,11 @@ fn run(
         None => None,
         Some(path) => Some(TerrainSet::open(path)?),
     };
+    // Contours: traced out of that same terrain and appended to `ingested` as ordinary line
+    // features, before anything looks at a LOD. Everything downstream — simplify, cull, quadtree,
+    // serialize — treats them as geometry it has always had, which is the point (#1094).
+    crate::contour::add_contours(&mut ingested, config, global_bbox, terrain_set.as_ref(), progress)?;
+    progress.check()?;
     let mut sampler = match &terrain_set {
         None => None,
         Some(set) => {

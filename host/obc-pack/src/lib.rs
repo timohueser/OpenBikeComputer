@@ -24,6 +24,7 @@
 
 pub mod catalog;
 pub mod config;
+pub mod contour;
 pub mod cut;
 pub mod geom;
 pub mod grid;

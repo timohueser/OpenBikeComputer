@@ -12,6 +12,16 @@
 //! picture. A schema change that renumbers styles makes [`check_source`] fail
 //! before a long bake begins, forcing the maintainer to refresh the Teningen cut
 //! instead of publishing a plausible-looking but stale thumbnail.
+//!
+//! **What the fixture may lag by, and only that.** Style ids are assigned in
+//! schema document order, so a feature type *appended* to the schema takes the
+//! next free id and changes nothing about the ids already in the fixture. The
+//! preview is a sample of geometry, and a type the sample contains none of
+//! cannot alter the picture — so the fixture's table is required to be a
+//! **prefix** of the schema's assignment rather than all of it, and the trailing
+//! styles are simply not stamped. A schema that stops covering an id the fixture
+//! carries still fails: there the fixture's bytes mean something the schema no
+//! longer says, which is exactly the stale-thumbnail case.
 
 use std::fs::File;
 use std::io::Write;
@@ -61,10 +71,11 @@ pub fn check_source(schema: &Config) -> Result<(), String> {
     let have: Vec<u8> = tables.styles().iter().filter_map(|style| style.as_ref().map(|s| s.id)).collect();
     let mut want: Vec<u8> = feature_type_ids(schema).into_values().collect();
     want.sort_unstable();
-    if have != want {
+    if !want.starts_with(&have) {
         return Err(format!(
-            "Teningen preview fixture carries style ids {have:?}, but the schema assigns {want:?}. Repack \
-             host/obc-bake/assets/teningen-preview.obcm from the bbox documented in assets/README.md before baking."
+            "Teningen preview fixture carries style ids {have:?}, which is not a prefix of the schema's {want:?}. \
+             Repack host/obc-bake/assets/teningen-preview.obcm from the bbox documented in assets/README.md before \
+             baking."
         ));
     }
     Ok(())
@@ -120,7 +131,6 @@ fn prune(dir: &Path, skin_ids: &[&str]) -> Result<(), String> {
 
 fn render(schema: &Schema, skin: &Skin) -> Result<Vec<u8>, String> {
     let styles = skin.resolve(schema)?;
-    let packed = pack_style_table(&styles);
     let mut map = SOURCE.to_vec();
     if map.len() < HEADER_LEN {
         return Err("Teningen preview fixture is shorter than the OBCM header".into());
@@ -133,15 +143,23 @@ fn render(schema: &Schema, skin: &Skin) -> Result<Vec<u8>, String> {
     let count = *map.get(style_offset).ok_or("Teningen preview fixture has a bad style offset")? as usize;
     let end = style_offset.checked_add(1 + count * STYLE_RECORD_LEN).ok_or("Teningen preview style table overflows")?;
     let slot = map.get_mut(style_offset..end).ok_or("Teningen preview style table runs past the file")?;
-    if slot.len() != packed.len() {
+    // Only the styles the fixture actually carries are stamped; a schema that has grown feature
+    // types since the cut keeps its trailing ones (see the module header — the fixture's table must
+    // be a prefix, and a type with no geometry here cannot change the picture).
+    if styles.len() < count {
         return Err(format!(
-            "Teningen preview fixture has {count} styles, but skin {:?} resolves to {}",
+            "Teningen preview fixture has {count} styles, but skin {:?} resolves to only {}",
             skin.id,
             styles.len()
         ));
     }
+    let stamped = &styles[..count];
+    let packed = pack_style_table(stamped);
+    if slot.len() != packed.len() {
+        return Err(format!("Teningen preview fixture's {count}-style table is not {} bytes", packed.len()));
+    }
     let have_ids: Vec<u8> = slot[1..].chunks_exact(STYLE_RECORD_LEN).map(|record| record[0]).collect();
-    let want_ids: Vec<u8> = styles.iter().map(|style| style.id).collect();
+    let want_ids: Vec<u8> = stamped.iter().map(|style| style.id).collect();
     if have_ids != want_ids {
         return Err(format!(
             "Teningen preview fixture style ids {have_ids:?} do not match skin {:?}'s {want_ids:?}",
@@ -336,6 +354,31 @@ mod tests {
         let schema = include_str!("../../../builder/presets/schema.json");
         let config = Config::parse(schema).expect("schema parses");
         check_source(&config).expect("fixture style ids match");
+    }
+
+    /// The fixture may lag the schema by *appended* feature types, and by nothing else: a schema
+    /// that no longer covers what the fixture's table carries is still refused before a bake.
+    #[test]
+    fn the_fixture_may_lag_the_schema_only_by_appended_types() {
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../../../builder/presets/schema.json")).expect("schema is JSON");
+
+        // Append two more types: the fixture's ids are still the leading run, so nothing about the
+        // stamped picture can have changed and no repack is owed.
+        let mut grown = schema.clone();
+        grown["features"]["_test"] = serde_json::json!({ "a": {"color": "0x0001"}, "b": {"color": "0x0002"} });
+        let grown = Config::parse(&grown.to_string()).expect("the grown schema parses");
+        assert!(check_source(&grown).is_ok(), "appended types must not force a fixture repack");
+
+        // Take types away instead and the fixture genuinely describes a map the schema no longer
+        // does — an id it carries has no meaning any more.
+        let mut shrunk = schema.clone();
+        for key in ["highway", "railway"] {
+            shrunk["features"].as_object_mut().expect("features").remove(key);
+        }
+        let shrunk = Config::parse(&shrunk.to_string()).expect("the shrunken schema parses");
+        let err = check_source(&shrunk).expect_err("a schema with fewer types than the fixture must fail");
+        assert!(err.contains("prefix") && err.contains("Repack"), "{err}");
     }
 
     #[test]
