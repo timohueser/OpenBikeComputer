@@ -39,7 +39,7 @@ use std::collections::HashMap;
 
 use rayon::prelude::*;
 
-use crate::geom::{merge_lines_geos, union_polygons, Geom};
+use crate::geom::{merge_lines_geos, union_polygons, Geom, LodFeature};
 use crate::progress::Progress;
 use crate::serialize::Style;
 
@@ -150,13 +150,22 @@ fn split_lines(g: Geom, lines: &mut Vec<Geom>, others: &mut Vec<Geom>) {
     }
 }
 
+/// A merge group's identity: the class's canonical style id **and** the members' v13 §5.2 level.
+///
+/// The level is in the key because a merged run is one feature on the wire and therefore carries
+/// one level — the same argument that puts every rendered attribute in [`LineClassKey`], now that a
+/// level is one of them (#1105). In practice it only ever splits contours: two isolines at
+/// different heights are disjoint and would not have stitched anyway, so this is the bookkeeping
+/// that lets the output *say* which height it is, not a change to what merges.
+type GroupKey = (u8, Option<i16>);
+
 /// One emission slot in input order: either a passthrough feature emitted here, or a
 /// merge group's output emitted at its **first member's** position (later members of
 /// the same group emit nothing).
 enum Slot {
-    Pass(u8, Geom),
-    /// The class's canonical style id — its members live in `members[canonical]`.
-    Group(u8),
+    Pass(LodFeature),
+    /// The group's key — its members live in `members[key]`.
+    Group(GroupKey),
 }
 
 /// Dissolve mergeable fill polygons in a per-LOD `(style_id, geom)` list.
@@ -168,7 +177,10 @@ enum Slot {
 /// group is emitted at its first member's position, group membership + union input
 /// are walked in input order, and classes are keyed by canonical id — so packing the
 /// same input twice is byte-identical.
-pub fn merge_fills(features: Vec<(u8, Geom)>, classes: &HashMap<u8, (ClassKey, u8)>) -> (Vec<(u8, Geom)>, MergeStats) {
+pub fn merge_fills(
+    features: Vec<impl Into<LodFeature>>,
+    classes: &HashMap<u8, (ClassKey, u8)>,
+) -> (Vec<LodFeature>, MergeStats) {
     merge_fills_with(features, classes, &Progress::silent())
 }
 
@@ -181,20 +193,21 @@ pub fn merge_fills(features: Vec<(u8, Geom)>, classes: &HashMap<u8, (ClassKey, u
 /// stays well-formed rather than becoming a special case nobody tests. The work
 /// is discarded anyway; the point is only to stop starting more of it.
 pub fn merge_fills_with(
-    features: Vec<(u8, Geom)>,
+    features: Vec<impl Into<LodFeature>>,
     classes: &HashMap<u8, (ClassKey, u8)>,
     progress: &Progress,
-) -> (Vec<(u8, Geom)>, MergeStats) {
+) -> (Vec<LodFeature>, MergeStats) {
     // --- Phase 1: walk input, laying out slots and accumulating group members
     // (both in input order). ---
     let mut slots: Vec<Slot> = Vec::with_capacity(features.len());
     // canonical_id → members in input order, each keeping its original style id (a
     // singleton emits that id unchanged, so the byte-untouched guarantee holds even
     // when the class spans several style ids and only one appears at this LOD).
-    let mut members: HashMap<u8, Vec<(u8, Geom)>> = HashMap::new();
-    for (style_id, geom) in features {
+    let mut members: HashMap<GroupKey, Vec<LodFeature>> = HashMap::new();
+    for feature in features {
+        let LodFeature { style_id, level, geom } = feature.into();
         let Some(&(_key, canonical)) = classes.get(&style_id) else {
-            slots.push(Slot::Pass(style_id, geom));
+            slots.push(Slot::Pass(LodFeature { style_id, level, geom }));
             continue;
         };
         // Mergeable style: candidates are the polygon parts; lines (and stray
@@ -203,18 +216,19 @@ pub fn merge_fills_with(
         let mut others = Vec::new();
         split_geom(geom, &mut polys, &mut others);
         for o in others {
-            slots.push(Slot::Pass(style_id, o));
+            slots.push(Slot::Pass(LodFeature { style_id, level, geom: o }));
         }
         if polys.is_empty() {
             continue;
         }
-        let first = !members.contains_key(&canonical);
-        let bucket = members.entry(canonical).or_default();
+        let key = (canonical, level);
+        let first = !members.contains_key(&key);
+        let bucket = members.entry(key).or_default();
         for p in polys {
-            bucket.push((style_id, p));
+            bucket.push(LodFeature { style_id, level, geom: p });
         }
         if first {
-            slots.push(Slot::Group(canonical));
+            slots.push(Slot::Group(key));
         }
     }
 
@@ -222,15 +236,15 @@ pub fn merge_fills_with(
     // and reads back its GEOS geometries wholly on one thread — only plain `Geom`
     // crosses threads. Output order is set by phase 3, so the map's iteration order
     // is irrelevant. ---
-    let mut unions: HashMap<u8, Option<Vec<Geom>>> = members
+    let mut unions: HashMap<GroupKey, Option<Vec<Geom>>> = members
         .par_iter()
         .filter(|(_, m)| m.len() >= 2)
-        .map(|(&canonical, m)| {
+        .map(|(&key, m)| {
             if progress.is_cancelled() {
-                return (canonical, None);
+                return (key, None);
             }
-            let refs: Vec<&Geom> = m.iter().map(|(_, g)| g).collect();
-            (canonical, union_polygons(&refs))
+            let refs: Vec<&Geom> = m.iter().map(|f| &f.geom).collect();
+            (key, union_polygons(&refs))
         })
         .collect();
 
@@ -239,9 +253,9 @@ pub fn merge_fills_with(
     let mut stats = MergeStats::default();
     for slot in slots {
         match slot {
-            Slot::Pass(sid, g) => out.push((sid, g)),
-            Slot::Group(canonical) => {
-                let group = members.remove(&canonical).expect("a Group slot has members");
+            Slot::Pass(f) => out.push(f),
+            Slot::Group(key) => {
+                let group = members.remove(&key).expect("a Group slot has members");
                 if group.len() == 1 {
                     // Singleton: byte-untouched, original style id and geometry.
                     stats.singletons += 1;
@@ -249,13 +263,14 @@ pub fn merge_fills_with(
                     continue;
                 }
                 let n_in = group.len();
-                match unions.remove(&canonical).flatten() {
+                let (canonical, level) = key;
+                match unions.remove(&key).flatten() {
                     Some(parts) => {
                         stats.merged_classes += 1;
                         stats.merged_inputs += n_in;
                         stats.merged_outputs += parts.len();
                         for p in parts {
-                            out.push((canonical, p));
+                            out.push(LodFeature { style_id: canonical, level, geom: p });
                         }
                     }
                     // GEOS failed (or emptied a non-empty group): pass through
@@ -281,25 +296,26 @@ pub fn merge_fills_with(
 /// at its first member's position; classes key by canonical id), so packing the same
 /// input twice is byte-identical.
 pub fn merge_lines(
-    features: Vec<(u8, Geom)>,
+    features: Vec<impl Into<LodFeature>>,
     classes: &HashMap<u8, (LineClassKey, u8)>,
-) -> (Vec<(u8, Geom)>, MergeStats) {
+) -> (Vec<LodFeature>, MergeStats) {
     merge_lines_with(features, classes, &Progress::silent())
 }
 
 /// [`merge_lines`], abandonable — the line dual of [`merge_fills_with`], with the
 /// checkpoint in the same place and for the same reason.
 pub fn merge_lines_with(
-    features: Vec<(u8, Geom)>,
+    features: Vec<impl Into<LodFeature>>,
     classes: &HashMap<u8, (LineClassKey, u8)>,
     progress: &Progress,
-) -> (Vec<(u8, Geom)>, MergeStats) {
+) -> (Vec<LodFeature>, MergeStats) {
     // --- Phase 1: lay out slots, accumulate group members (both in input order). ---
     let mut slots: Vec<Slot> = Vec::with_capacity(features.len());
-    let mut members: HashMap<u8, Vec<(u8, Geom)>> = HashMap::new();
-    for (style_id, geom) in features {
+    let mut members: HashMap<GroupKey, Vec<LodFeature>> = HashMap::new();
+    for feature in features {
+        let LodFeature { style_id, level, geom } = feature.into();
         let Some(&(_key, canonical)) = classes.get(&style_id) else {
-            slots.push(Slot::Pass(style_id, geom));
+            slots.push(Slot::Pass(LodFeature { style_id, level, geom }));
             continue;
         };
         // Every style is in a line class, so a polygon-only style still routes here;
@@ -308,32 +324,33 @@ pub fn merge_lines_with(
         let mut others = Vec::new();
         split_lines(geom, &mut lines, &mut others);
         for o in others {
-            slots.push(Slot::Pass(style_id, o));
+            slots.push(Slot::Pass(LodFeature { style_id, level, geom: o }));
         }
         if lines.is_empty() {
             continue;
         }
-        let first = !members.contains_key(&canonical);
-        let bucket = members.entry(canonical).or_default();
+        let key = (canonical, level);
+        let first = !members.contains_key(&key);
+        let bucket = members.entry(key).or_default();
         for l in lines {
-            bucket.push((style_id, l));
+            bucket.push(LodFeature { style_id, level, geom: l });
         }
         if first {
-            slots.push(Slot::Group(canonical));
+            slots.push(Slot::Group(key));
         }
     }
 
     // --- Phase 2: stitch each ≥2-member group in parallel (one `line_merge` call per
     // class; only plain `Geom` crosses threads). ---
-    let mut merges: HashMap<u8, Option<Vec<Geom>>> = members
+    let mut merges: HashMap<GroupKey, Option<Vec<Geom>>> = members
         .par_iter()
         .filter(|(_, m)| m.len() >= 2)
-        .map(|(&canonical, m)| {
+        .map(|(&key, m)| {
             if progress.is_cancelled() {
-                return (canonical, None);
+                return (key, None);
             }
-            let refs: Vec<&Geom> = m.iter().map(|(_, g)| g).collect();
-            (canonical, merge_lines_geos(&refs))
+            let refs: Vec<&Geom> = m.iter().map(|f| &f.geom).collect();
+            (key, merge_lines_geos(&refs))
         })
         .collect();
 
@@ -342,22 +359,23 @@ pub fn merge_lines_with(
     let mut stats = MergeStats::default();
     for slot in slots {
         match slot {
-            Slot::Pass(sid, g) => out.push((sid, g)),
-            Slot::Group(canonical) => {
-                let group = members.remove(&canonical).expect("a Group slot has members");
+            Slot::Pass(f) => out.push(f),
+            Slot::Group(key) => {
+                let group = members.remove(&key).expect("a Group slot has members");
                 if group.len() == 1 {
                     stats.singletons += 1;
                     out.push(group.into_iter().next().unwrap());
                     continue;
                 }
                 let n_in = group.len();
-                match merges.remove(&canonical).flatten() {
+                let (canonical, level) = key;
+                match merges.remove(&key).flatten() {
                     Some(parts) => {
                         stats.merged_classes += 1;
                         stats.merged_inputs += n_in;
                         stats.merged_outputs += parts.len();
                         for p in parts {
-                            out.push((canonical, p));
+                            out.push(LodFeature { style_id: canonical, level, geom: p });
                         }
                     }
                     None => {
@@ -388,6 +406,7 @@ mod tests {
             color2: None,
             fixed_width: false,
             terrain_layer: false,
+            contour_index: false,
         }
     }
 
@@ -399,7 +418,7 @@ mod tests {
         }
     }
 
-    fn total_area(features: &[(u8, Geom)]) -> f64 {
+    fn total_area(features: &[LodFeature]) -> f64 {
         // Shoelace over every polygon exterior minus its holes; lines contribute 0.
         fn ring_area(r: &[(f64, f64)]) -> f64 {
             let mut a = 0.0;
@@ -411,8 +430,8 @@ mod tests {
             (a * 0.5).abs()
         }
         let mut sum = 0.0;
-        for (_, g) in features {
-            if let Geom::Polygon { exterior, interiors } = g {
+        for f in features {
+            if let Geom::Polygon { exterior, interiors } = &f.geom {
                 sum += ring_area(exterior);
                 for h in interiors {
                     sum -= ring_area(h);
@@ -422,8 +441,8 @@ mod tests {
         sum
     }
 
-    fn count_polys(features: &[(u8, Geom)]) -> usize {
-        features.iter().filter(|(_, g)| matches!(g, Geom::Polygon { .. })).count()
+    fn count_polys(features: &[LodFeature]) -> usize {
+        features.iter().filter(|f| matches!(f.geom, Geom::Polygon { .. })).count()
     }
 
     // --- merge_classes ------------------------------------------------------
@@ -455,8 +474,8 @@ mod tests {
         let in_verts: usize = [&a, &b].iter().map(|g| verts(g)).sum();
         let (out, stats) = merge_fills(vec![(1, a), (1, b)], &classes);
         assert_eq!(count_polys(&out), 1, "the two squares dissolve into one polygon");
-        assert_eq!(out[0].0, 1, "tagged with the canonical (only) style id");
-        assert!(verts(&out[0].1) < in_verts, "the shared edge's interior vertices are gone");
+        assert_eq!(out[0].style_id, 1, "tagged with the canonical (only) style id");
+        assert!(verts(&out[0].geom) < in_verts, "the shared edge's interior vertices are gone");
         assert_eq!((stats.merged_inputs, stats.merged_outputs, stats.merged_classes), (2, 1, 1));
     }
 
@@ -466,7 +485,7 @@ mod tests {
         let classes = merge_classes(&[fill_style(4, 1, 0xABCD, 2), fill_style(2, 1, 0xABCD, 2)]);
         let (out, _) = merge_fills(vec![(4, square(0.0, 0.0, 1.0)), (2, square(1.0, 0.0, 1.0))], &classes);
         assert_eq!(count_polys(&out), 1);
-        assert_eq!(out[0].0, 2, "merged part carries the class's canonical (smallest) style id");
+        assert_eq!(out[0].style_id, 2, "merged part carries the class's canonical (smallest) style id");
     }
 
     #[test]
@@ -484,7 +503,7 @@ mod tests {
         }
         let (out, _) = merge_fills(feats, &classes);
         assert_eq!(count_polys(&out), 1, "the border tiles dissolve into one frame polygon");
-        match &out[0].1 {
+        match &out[0].geom {
             Geom::Polygon { interiors, .. } => {
                 assert_eq!(interiors.len(), 1, "the unmapped centre is exactly one hole")
             }
@@ -539,7 +558,7 @@ mod tests {
         let classes = merge_classes(&[fill_style(1, 0, 0x00F0, 3)]);
         let line = Geom::Line(vec![(0.0, 0.0), (1.0, 1.0)]);
         let (out, stats) = merge_fills(vec![(1, line.clone()), (1, square(0.0, 0.0, 1.0))], &classes);
-        assert!(out.iter().any(|(_, g)| matches!(g, Geom::Line(_))), "the line survives as a line");
+        assert!(out.iter().any(|f| matches!(f.geom, Geom::Line(_))), "the line survives as a line");
         assert_eq!(stats.singletons, 1, "the lone square is a singleton (the line is not a candidate)");
     }
 
@@ -549,9 +568,9 @@ mod tests {
         let poly = square(0.25, 0.25, 0.5);
         let (out, stats) = merge_fills(vec![(1, poly.clone())], &classes);
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0].0, 1);
-        assert_eq!(verts(&out[0].1), verts(&poly), "no GEOS round-trip: vertex count unchanged");
-        assert!((total_area(&out) - total_area(&[(1, poly)])).abs() < 1e-15, "geometry identical");
+        assert_eq!(out[0].style_id, 1);
+        assert_eq!(verts(&out[0].geom), verts(&poly), "no GEOS round-trip: vertex count unchanged");
+        assert!((total_area(&out) - total_area(&[lf(1, poly)])).abs() < 1e-15, "geometry identical");
         assert_eq!(stats, MergeStats { singletons: 1, ..Default::default() });
     }
 
@@ -577,9 +596,9 @@ mod tests {
         ];
         let (out, _) = merge_fills(feats, &classes);
         assert_eq!(out.len(), 2, "A+C merged into one, B passthrough");
-        assert_eq!(out[0].0, 1, "the merged block is first (A's position)");
-        assert!(matches!(out[0].1, Geom::Polygon { .. }));
-        assert_eq!(out[1].0, 9, "B keeps its position after the merged block");
+        assert_eq!(out[0].style_id, 1, "the merged block is first (A's position)");
+        assert!(matches!(out[0].geom, Geom::Polygon { .. }));
+        assert_eq!(out[1].style_id, 9, "B keeps its position after the merged block");
     }
 
     #[test]
@@ -596,7 +615,7 @@ mod tests {
         let (a, sa) = merge_fills(build(), &classes);
         let (b, sb) = merge_fills(build(), &classes);
         assert_eq!(sa, sb);
-        let key = |v: &[(u8, Geom)]| v.iter().map(|(s, g)| (*s, verts(g))).collect::<Vec<_>>();
+        let key = |v: &[LodFeature]| v.iter().map(|f| (f.style_id, verts(&f.geom))).collect::<Vec<_>>();
         assert_eq!(key(&a), key(&b), "same style-id + vertex-count sequence both runs");
     }
 
@@ -613,15 +632,31 @@ mod tests {
         dashed: bool,
         color2: Option<u16>,
     ) -> Style {
-        Style { id, z_index, color, weight, priority, dashed, color2, fixed_width: false, terrain_layer: false }
+        Style {
+            id,
+            z_index,
+            color,
+            weight,
+            priority,
+            dashed,
+            color2,
+            fixed_width: false,
+            terrain_layer: false,
+            contour_index: false,
+        }
     }
 
     fn line(pts: &[(f64, f64)]) -> Geom {
         Geom::Line(pts.to_vec())
     }
 
-    fn count_lines(features: &[(u8, Geom)]) -> usize {
-        features.iter().filter(|(_, g)| matches!(g, Geom::Line(_))).count()
+    fn count_lines(features: &[LodFeature]) -> usize {
+        features.iter().filter(|f| matches!(f.geom, Geom::Line(_))).count()
+    }
+
+    /// A level-less feature, the shape every test but the contour ones uses.
+    fn lf(style_id: u8, geom: Geom) -> LodFeature {
+        LodFeature::new(style_id, None, geom)
     }
 
     #[test]
@@ -652,8 +687,8 @@ mod tests {
         let b = line(&[(1.0, 0.0), (2.0, 0.0)]);
         let (out, stats) = merge_lines(vec![(1, a), (1, b)], &classes);
         assert_eq!(count_lines(&out), 1, "the two segments stitch into one line");
-        assert_eq!(out[0].0, 1);
-        assert_eq!(verts(&out[0].1), 3, "A,B,C — the shared B is not duplicated");
+        assert_eq!(out[0].style_id, 1);
+        assert_eq!(verts(&out[0].geom), 3, "A,B,C — the shared B is not duplicated");
         assert_eq!((stats.merged_inputs, stats.merged_outputs, stats.merged_classes), (2, 1, 1));
     }
 
@@ -668,7 +703,7 @@ mod tests {
         let (out, _) =
             merge_lines(vec![(4, line(&[(0.0, 0.0), (1.0, 0.0)])), (2, line(&[(1.0, 0.0), (2.0, 0.0)]))], &classes);
         assert_eq!(count_lines(&out), 1);
-        assert_eq!(out[0].0, 2, "stitched run carries the class's canonical (smallest) id");
+        assert_eq!(out[0].style_id, 2, "stitched run carries the class's canonical (smallest) id");
     }
 
     #[test]
@@ -715,7 +750,7 @@ mod tests {
         let classes = merge_line_classes(&[line_style(1, 24, 0xAAA0, 1, 3, false, None)]);
         let (out, stats) =
             merge_lines(vec![(1, square(0.0, 0.0, 1.0)), (1, line(&[(0.0, 0.0), (1.0, 0.0)]))], &classes);
-        assert!(out.iter().any(|(_, g)| matches!(g, Geom::Polygon { .. })), "the square survives as a polygon");
+        assert!(out.iter().any(|f| matches!(f.geom, Geom::Polygon { .. })), "the square survives as a polygon");
         assert_eq!(stats.singletons, 1, "the lone line is a singleton; the polygon is not a candidate");
     }
 
@@ -725,8 +760,8 @@ mod tests {
         let l = line(&[(0.0, 0.0), (0.3, 0.1), (0.7, 0.2)]);
         let (out, stats) = merge_lines(vec![(1, l.clone())], &classes);
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0].0, 1);
-        assert_eq!(verts(&out[0].1), verts(&l), "no GEOS round-trip: vertices unchanged");
+        assert_eq!(out[0].style_id, 1);
+        assert_eq!(verts(&out[0].geom), verts(&l), "no GEOS round-trip: vertices unchanged");
         assert_eq!(stats, MergeStats { singletons: 1, ..Default::default() });
     }
 
@@ -755,9 +790,9 @@ mod tests {
         ];
         let (out, _) = merge_lines(feats, &classes);
         assert_eq!(out.len(), 2, "A+C stitched, B passthrough");
-        assert_eq!(out[0].0, 1, "the stitched block is first (A's position)");
-        assert_eq!(verts(&out[0].1), 3);
-        assert_eq!(out[1].0, 9, "B keeps its position after the stitched block");
+        assert_eq!(out[0].style_id, 1, "the stitched block is first (A's position)");
+        assert_eq!(verts(&out[0].geom), 3);
+        assert_eq!(out[1].style_id, 9, "B keeps its position after the stitched block");
     }
 
     /// Total vertex count across a geometry's rings (exterior + holes / parts).

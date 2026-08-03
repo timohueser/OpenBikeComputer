@@ -292,6 +292,9 @@ pub struct SkinStyle {
     /// OBCM §2 flag bit 5 (#1095): part of the suppressible terrain layer.
     #[serde(default)]
     pub terrain_layer: bool,
+    /// OBCM §2 flag bit 6 (v13, #1105): the index contours, the ones a renderer labels.
+    #[serde(default)]
+    pub contour_index: bool,
     #[serde(default, deserialize_with = "de_color_opt")]
     pub color2: Option<u16>,
 }
@@ -334,6 +337,7 @@ impl Skin {
             color2: v.color2,
             fixed_width: v.fixed_width,
             terrain_layer: v.terrain_layer,
+            contour_index: v.contour_index,
         };
         let mut out = Vec::with_capacity(self.styles.len());
         if schema.styles.is_empty() {
@@ -409,6 +413,8 @@ pub struct StyleRecord {
     pub fixed_width: bool,
     /// Flag bit 5 (#1095): part of the suppressible terrain layer.
     pub terrain_layer: bool,
+    /// Flag bit 6 (v13, #1105): the index contours.
+    pub contour_index: bool,
 }
 
 /// RGB565 as either a JSON number or a `"0x…"` / decimal string — the two spellings that exist in
@@ -525,6 +531,7 @@ mod tests {
             dashed: false,
             fixed_width: false,
             terrain_layer: false,
+            contour_index: false,
             color2: None,
         };
         let full = Skin {

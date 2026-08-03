@@ -549,6 +549,10 @@ pub struct FeatureStyle {
     /// The packer writes the bit and the reader carries it; the consumer is the device's Settings
     /// toggle (#1096). Nothing renders differently because of it today.
     pub terrain_layer: bool,
+    /// v13 (#1105): **index contour** (flag bit 6) — set by [`StyleDocument::normalize`] on the
+    /// `contour.index` rule and on nothing else. Derived rather than authored: it says which class
+    /// the packer traced, which is not a fact a style document is in a position to state.
+    pub contour_index: bool,
     /// v10: optional RGB565 secondary color (flag bit 3 + the trailing u16), parsed like `color`.
     pub color2: Option<u16>,
 }
@@ -566,6 +570,7 @@ impl FeatureStyle {
             color2: self.color2,
             fixed_width: self.fixed_width,
             terrain_layer: self.terrain_layer,
+            contour_index: self.contour_index,
         }
     }
 }
@@ -611,6 +616,9 @@ impl Default for Contours {
         }
     }
 }
+
+/// The synthetic tag key the two contour classes are styled under.
+pub const CONTOUR_TAG_KEY: &str = "contour";
 
 /// The two feature classes a contour trace emits. They are ordinary style rules under the synthetic
 /// `contour` tag key — `features.contour.major` / `features.contour.index` — so the config styles
@@ -773,7 +781,7 @@ impl Config {
     /// The style for one traced contour class, if the config asks for it. `None` ⇒ that class is
     /// not packed (and not even traced).
     pub fn contour_style(&self, class: ContourClass) -> Option<&FeatureStyle> {
-        self.feature_style("contour", class.as_str())
+        self.feature_style(CONTOUR_TAG_KEY, class.as_str())
     }
 
     /// The full Style Table for the serializer (order is irrelevant; the
@@ -802,6 +810,11 @@ impl StyleDocument {
             line_style: self.line_style.unwrap_or_default(),
             fixed_width: self.fixed_width.unwrap_or(false),
             terrain_layer: self.terrain_layer.unwrap_or(false),
+            // v13 (#1105): derived from the feature type, never authored. Which class is the index
+            // one is the packer's own fact — it is what `contour.rs` traces every `index_every`th
+            // level under — so there is no config key to get wrong, and no way for a style document
+            // to claim the bit for a road.
+            contour_index: tag_key == CONTOUR_TAG_KEY && tag_value == ContourClass::Index.as_str(),
             color2: self.color2.map(|color| color.0),
         })
     }
@@ -1492,7 +1505,7 @@ mod tests {
         let env: Value = serde_json::from_str(&schema_envelope()).expect("envelope is valid JSON");
         assert_eq!(env["schema_version"].as_u64(), Some(CONFIG_SCHEMA_VERSION as u64));
         assert_eq!(env["format_version"].as_u64(), Some(OBCM_VERSION as u64));
-        assert_eq!(env["format_version"].as_u64(), Some(12), "#1073 bumps the OBCM format to v12");
+        assert_eq!(env["format_version"].as_u64(), Some(13), "#1105 bumps the OBCM format to v13");
         assert!(env["schema"]["$defs"]["style"].is_object(), "envelope embeds the schema");
     }
 

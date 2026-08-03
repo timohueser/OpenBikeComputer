@@ -121,7 +121,12 @@ fn deg(udeg: i64) -> f64 {
 }
 
 fn line(style_id: u8, min_lod: usize, pts: &[(i64, i64)]) -> IngestFeature {
-    IngestFeature { style_id, min_lod, geom: Geom::Line(pts.iter().map(|&(lat, lon)| (deg(lon), deg(lat))).collect()) }
+    IngestFeature {
+        style_id,
+        min_lod,
+        level: None,
+        geom: Geom::Line(pts.iter().map(|&(lat, lon)| (deg(lon), deg(lat))).collect()),
+    }
 }
 
 fn ring(lat0: i64, lon0: i64, lat1: i64, lon1: i64) -> Vec<(f64, f64)> {
@@ -138,6 +143,7 @@ fn rect(style_id: u8, min_lod: usize, lat0: i64, lon0: i64, lat1: i64, lon1: i64
     IngestFeature {
         style_id,
         min_lod,
+        level: None,
         geom: Geom::Polygon { exterior: ring(lat0, lon0, lat1, lon1), interiors: vec![] },
     }
 }
@@ -156,6 +162,7 @@ fn rect_with_hole(
     IngestFeature {
         style_id,
         min_lod,
+        level: None,
         geom: Geom::Polygon {
             exterior: ring(lat0, lon0, lat1, lon1),
             // Interior rings run the other way round; the packer normalises, but stating it here
@@ -413,6 +420,7 @@ fn skin(cfg: &Config) -> Skin {
             dashed: s.dashed,
             fixed_width: s.fixed_width,
             terrain_layer: s.terrain_layer,
+            contour_index: s.contour_index,
             color2: s.color2,
         })
         .collect();

@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use rayon::prelude::*;
 
 use crate::config::Config;
-use crate::geom::{footprint_below, strip_small_holes, topology_preserve_simplify, Geom};
+use crate::geom::{footprint_below, strip_small_holes, topology_preserve_simplify, Geom, LodFeature};
 use crate::ingest::{ingest_osm, Bbox, IngestFeature, Ingested};
 use crate::land;
 use crate::merge::{merge_classes, merge_fills_with, merge_line_classes, merge_lines_with, MergeStats};
@@ -194,7 +194,11 @@ fn run(
             // lands in a minute. The empty level still goes through the same
             // build+serialize so the streaming serializer's contract is unchanged.
             if progress.is_cancelled() {
-                return (Some(build_lod_with(Vec::new(), global_bbox, chunk_size, progress)), chunk_size, lod.max_mpp);
+                return (
+                    Some(build_lod_with(Vec::<LodFeature>::new(), global_bbox, chunk_size, progress)),
+                    chunk_size,
+                    lod.max_mpp,
+                );
             }
             let tol = if lod.simplify_m > 0.0 { lod.simplify_m / M_PER_DEG } else { 0.0 };
             // Coarse-LOD footprint cull: after simplify, drop features too small to
@@ -215,7 +219,7 @@ fn run(
             // time, and a `None` return drains the remaining rayon items in the time
             // it takes to walk them. What is left running after a cancel is at most
             // one `topology_preserve_simplify` per busy worker.
-            let simplify_cull = |style_id: u8, geom: &Geom| -> Option<(u8, Geom)> {
+            let simplify_cull = |style_id: u8, level: Option<i16>, geom: &Geom| -> Option<LodFeature> {
                 if progress.is_cancelled() {
                     return None;
                 }
@@ -232,7 +236,7 @@ fn run(
                         holes_stripped.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
                     }
                 }
-                Some((style_id, g))
+                Some(LodFeature::new(style_id, level, g))
             };
             // Optionally dissolve pixel-identical fill polygons and/or stitch
             // same-styled line fragments BEFORE simplify (see `crate::merge`):
@@ -242,9 +246,13 @@ fn run(
             // vertex (lines: less reduction). The two passes are orthogonal (polygon
             // vs line kind), so they compose. Off ⇒ the original filter→simplify→cull
             // path, byte-identical to before.
-            let level: Vec<(u8, Geom)> = if config.merge_fills || config.merge_lines {
-                let mut feats: Vec<(u8, Geom)> =
-                    ingested.features.iter().filter(|f| f.min_lod <= i).map(|f| (f.style_id, f.geom.clone())).collect();
+            let tier: Vec<LodFeature> = if config.merge_fills || config.merge_lines {
+                let mut feats: Vec<LodFeature> = ingested
+                    .features
+                    .iter()
+                    .filter(|f| f.min_lod <= i)
+                    .map(|f| LodFeature::new(f.style_id, f.level, f.geom.clone()))
+                    .collect();
                 if config.merge_fills {
                     let (merged, m) = merge_fills_with(feats, &fill_classes, progress);
                     report_merge(progress, m, "fill polygon", "into");
@@ -255,13 +263,13 @@ fn run(
                     report_merge(progress, m, "line fragment", "into");
                     feats = merged;
                 }
-                feats.par_iter().filter_map(|(sid, g)| simplify_cull(*sid, g)).collect()
+                feats.par_iter().filter_map(|f| simplify_cull(f.style_id, f.level, &f.geom)).collect()
             } else {
                 ingested
                     .features
                     .par_iter()
                     .filter(|f| f.min_lod <= i)
-                    .filter_map(|f| simplify_cull(f.style_id, &f.geom))
+                    .filter_map(|f| simplify_cull(f.style_id, f.level, &f.geom))
                     .collect()
             };
             let culled = culled.load(std::sync::atomic::Ordering::Relaxed);
@@ -274,7 +282,7 @@ fn run(
             }
             // Always `Some`: a whole-extract pack writes every ladder level as a real (possibly
             // featureless) tree. `None` is the cell cutter's empty out-of-band region (§3.1).
-            (Some(build_lod_with(level, global_bbox, chunk_size, progress)), chunk_size, lod.max_mpp)
+            (Some(build_lod_with(tier, global_bbox, chunk_size, progress)), chunk_size, lod.max_mpp)
         },
     )
     .map_err(|e| format!("write {out_name}: {e}"))?;
@@ -325,7 +333,7 @@ pub(crate) fn add_land(
     let polys = land::get_land_polygons(bbox_deg, progress)?;
     let n = polys.len();
     for geom in polys {
-        ingested.features.push(IngestFeature { style_id: lid, min_lod: lmin, geom });
+        ingested.features.push(IngestFeature { style_id: lid, min_lod: lmin, level: None, geom });
     }
     progress.log(format!("Successfully added {n} land polygons."));
     Ok(())

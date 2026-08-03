@@ -3,7 +3,7 @@
 use crate::io::{validate_prefix, DecodeError};
 
 pub const MAGIC: [u8; 4] = *b"OBCM";
-pub const VERSION: u8 = 12;
+pub const VERSION: u8 = 13;
 pub const HEADER_LEN: usize = 40;
 pub const LOD_ENTRY_LEN: usize = 18;
 pub const STYLE_RECORD_LEN: usize = 8;
@@ -20,6 +20,17 @@ pub const FEATURE_FLAG_16BIT: u8 = 0x01;
 pub const FEATURE_FLAG_POLYGON: u8 = 0x02;
 pub const FEATURE_FLAG_HOLES: u8 = 0x04;
 pub const FEATURE_FLAG_WIDE: u8 = 0x08;
+/// Feature-flag bit 4 (§5.2, **v13** / #1105): an `int16` **level in metres** sits immediately
+/// behind the feature header, before the point data, in both header layouts. Written by the packer
+/// on traced contour lines and on nothing else; legal on **lines only** — a reader MUST reject the
+/// bit on a polygon, because a level says nothing about an area.
+pub const FEATURE_HAS_LEVEL_BIT: u8 = 0x10;
+/// Width of the v13 level field (§5.2): one little-endian `int16`, metres.
+pub const FEATURE_LEVEL_LEN: usize = 2;
+/// Feature-flag bits 5-7 (§5.2): still reserved and written `0`. Unlike a *style*'s flags, a reader
+/// MUST **reject** a feature carrying any of these — a feature's unknown bit changes where its
+/// bytes end, so parsing on is a misread and not a degrade.
+pub const FEATURE_RESERVED_MASK: u8 = 0xE0;
 pub const STYLE_PRIORITY_MASK: u8 = 0x03;
 pub const STYLE_DASHED_BIT: u8 = 0x04;
 pub const STYLE_HAS_COLOR2_BIT: u8 = 0x08;
@@ -29,10 +40,15 @@ pub const STYLE_FIXED_WIDTH_BIT: u8 = 0x10;
 /// Style-record flag bit 5 (§2, #1095): the style belongs to the suppressible **terrain layer**.
 /// Written by the packer; the consumer is the device Settings toggle (#1096).
 pub const STYLE_TERRAIN_LAYER_BIT: u8 = 0x20;
-/// Style-record flag bits 6-7 (§2): still reserved, written `0`. Unlike a *feature*'s flags
-/// (§5.2, [`FEATURE_FLAG_WIDE`] & friends), a reader MUST **ignore** style bits it does not
-/// define rather than reject the record — that is what lets a bit be defined in place.
-pub const STYLE_RESERVED_MASK: u8 = 0xC0;
+/// Style-record flag bit 6 (§2, **v13** / #1105): the style draws **index contours** — the every-Nth
+/// isoline the packer traces under `contour.index`. Set by the packer from the feature type, so the
+/// renderer can label index contours without sniffing z-index or guessing a level modulus it was
+/// never told.
+pub const STYLE_CONTOUR_INDEX_BIT: u8 = 0x40;
+/// Style-record flag bit 7 (§2): still reserved, written `0`. Unlike a *feature*'s flags
+/// (§5.2, [`FEATURE_RESERVED_MASK`]), a reader MUST **ignore** style bits it does not define rather
+/// than reject the record — that is what lets a bit be defined in place, as bits 4-6 were.
+pub const STYLE_RESERVED_MASK: u8 = 0x80;
 
 pub const BRANCH_BIT: u32 = 0x8000_0000;
 pub const EMPTY_LEAF: u32 = 0x7FFF_FFFF;
@@ -214,6 +230,30 @@ mod tests {
         // The §8.3 degree-cap derivation: 13 + 17 × 24 = 421 ≤ 512, so the pinned nav chunk still
         // holds a cap-degree record whole.
         assert_eq!(NAV_NODE_FIXED_LEN + NAV_MAX_DEGREE * NAV_NEIGHBOR_LEN, 421);
+    }
+
+    /// The two flag bytes are one byte each and every bit in them is spoken for exactly once —
+    /// which is the whole content of "bit 4 is the level" and "bit 6 is the index contour".
+    #[test]
+    fn flag_bits_partition_their_bytes() {
+        // §5.2 feature flags: four framing bits, the v13 level bit, then the reserved tail.
+        let feature_defined = FEATURE_FLAG_16BIT | FEATURE_FLAG_POLYGON | FEATURE_FLAG_HOLES | FEATURE_FLAG_WIDE;
+        assert_eq!(feature_defined, 0x0F);
+        assert_eq!(FEATURE_HAS_LEVEL_BIT, 1 << 4);
+        assert_eq!(feature_defined & FEATURE_HAS_LEVEL_BIT, 0);
+        assert_eq!(FEATURE_RESERVED_MASK, !(feature_defined | FEATURE_HAS_LEVEL_BIT));
+        assert_eq!(FEATURE_LEVEL_LEN, core::mem::size_of::<i16>());
+
+        // §2 style flags: priority, the three v10/#1095 bits, the v13 contour bit, one bit left.
+        let style_defined = STYLE_PRIORITY_MASK
+            | STYLE_DASHED_BIT
+            | STYLE_HAS_COLOR2_BIT
+            | STYLE_FIXED_WIDTH_BIT
+            | STYLE_TERRAIN_LAYER_BIT
+            | STYLE_CONTOUR_INDEX_BIT;
+        assert_eq!(STYLE_CONTOUR_INDEX_BIT, 1 << 6);
+        assert_eq!(STYLE_RESERVED_MASK, !style_defined);
+        assert_eq!(STYLE_RESERVED_MASK, 1 << 7, "only bit 7 is left to define in place");
     }
 
     #[test]
