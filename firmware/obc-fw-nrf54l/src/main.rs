@@ -12,7 +12,13 @@
 //! shared SD + settings store ([`SharedStore`] — the ride loop locks it per frame across the
 //! render but never across the present (#809), the object plane per chunk). Fits the 256 KB DK
 //! on the culled `nrf-mem`
-//! caps; the budget assert + the ~53 KB residual stack (deep-ride peak ~36 KB) are the margins.
+//! caps; the budget assert + the ~48.6 KB residual stack (deep-ride peak ~36 KB; deepest boot
+//! chain ~35 KB — the ride task's 20.4 KB poll frame under `link::init_store`'s ~14.7 KB
+//! transient) are the margins. Both numbers moved on 2026-08-03: the elevation epic's `.bss`
+//! (TERRAIN + its extent tables) shrank the residual by ~3.7 KB, and EL7's inlined terrain parse
+//! plus `init_store`'s double-copy briefly summed past it — a boot-bricking STKOF; `mount_terrain`
+//! and `ObjectStore::empty`/`hydrate` are the fix, and any future fat boot-path local belongs in
+//! the same `#[inline(never)]` pattern (#677).
 //! `--no-default-features` stays mandatory — it swaps the critical-section impl to MPSL's.
 //!
 //! Clock: the M33 application core runs at 128 MHz; embassy-time is driven by the **GRTC**
@@ -558,6 +564,27 @@ static mut TERRAIN: MaybeUninit<obc_elevation::TerrainElevation<'static, { obc_e
 /// the emit path has one uniform seam and no `Option` branch per point.
 #[cfg(has_nav)]
 static mut NULL_ELEV: obc_route::NullElevation = obc_route::NullElevation;
+
+/// Mount the map's terrain sidecar (EL7) into the `.bss` [`TERRAIN`] slot and hand back the
+/// resident sampler — `None` when no sidecar mounted or it won't parse (the ride loop then uses
+/// [`NULL_ELEV`] and a planned route is as flat as it was before the epic — never a fault; see
+/// `Storage::open_terrain`).
+///
+/// `#[inline(never)]` is load-bearing (#677): `TerrainElevation` embeds its tile cache, so the
+/// by-value parse temporary is ~2.1 KB. In this transient frame it pops with the call; inlined
+/// into the ride task's async block it became a permanent ~2 KB slot in the task's poll frame —
+/// allocated at entry on **every** poll — which is what tipped boot over the residual main stack
+/// (STKOF HardFault at `link::init_store`'s prologue, 2026-08-03).
+#[cfg(has_nav)]
+#[inline(never)]
+fn mount_terrain(
+    storage: &mut sd::Storage,
+) -> Option<&'static mut obc_elevation::TerrainElevation<'static, { obc_elevation::DEFAULT_TILE_SLOTS }>> {
+    let src = storage.open_terrain()?;
+    let terrain = obc_elevation::TerrainElevation::parse(src).ok()?;
+    // SAFETY: sole owner of TERRAIN, written at most once per boot before any reference escapes.
+    Some(unsafe { init_static(core::ptr::addr_of_mut!(TERRAIN), terrain) })
+}
 
 /// Build a `'static` value into a `.bss` [`MaybeUninit`] slot, returning the sole `&'static mut` to it
 /// — the warm-reset-safe replacement for `StaticCell` that every runtime-built shared static (the bus
@@ -1161,15 +1188,10 @@ async fn main(_spawner: Spawner) {
         storage.open_map();
 
         // The map's terrain sidecar (EL7): mounted right behind the map, on the same one-open-at-boot
-        // rule, and folded into the `.bss` `TERRAIN` slot. Absent or unusable ⇒ `None` ⇒ the ride loop
-        // uses `NULL_ELEV` and a planned route is as flat as it was before the epic — never a fault
-        // (see `Storage::open_terrain`). The `TerrainElevation` moves through this shallow boot frame
-        // once, ~2.1 KB, nowhere near the deep render/plan paths #419 measured.
+        // rule, and folded into the `.bss` `TERRAIN` slot — via `mount_terrain`, whose
+        // `#[inline(never)]` keeps the ~2.1 KB parse temporary out of this task's poll frame.
         #[cfg(has_nav)]
-        let terrain = storage.open_terrain().and_then(|src| obc_elevation::TerrainElevation::parse(src).ok()).map(
-            // SAFETY: sole owner of TERRAIN, written at most once per boot before any reference escapes.
-            |t| unsafe { init_static(core::ptr::addr_of_mut!(TERRAIN), t) },
-        );
+        let terrain = mount_terrain(&mut storage);
 
         // Place the streamed-map geometry cache in `.bss`, built in place (an all-zero
         // `MaybeUninit::zeroed` → a `.bss` memset, never a stack temporary).
