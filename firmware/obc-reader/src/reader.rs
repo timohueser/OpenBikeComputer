@@ -45,7 +45,7 @@ use obc_formats::obcm::{
     NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN, NAV_PROFILE_CLIMB_WEIGHT_OFF, NAV_PROFILE_LEN, NAV_PROFILE_NAME_LEN,
     POI_HOURS_BLOB_LEN, POI_NAME_LEN,
 };
-use obc_map_scene::{cos_lat, ground_dist_m_cl, BBox, Kind, Style, M_PER_DEG};
+use obc_map_scene::{cos_lat, ground_dist_m_cl, BBox, Kind, Style, StyleFlags, M_PER_DEG};
 
 /// Upper bound on the vertices of a single decoded feature — the capacity a caller
 /// sizes the `points` scratch buffer to for [`Reader::for_each_feature`].
@@ -2594,17 +2594,19 @@ fn parse_styles(
         let weight = buf[o + 4];
         let flags = buf[o + 5];
         let priority = (flags & STYLE_PRIORITY_MASK) + 1;
-        let dashed = flags & STYLE_DASHED_BIT != 0;
         // The two color2 bytes are always present; the flag bit — not a `0x0000` sentinel — decides
         // whether they carry a color (black `0x0000` is a legal secondary color).
         let color2 = if flags & STYLE_HAS_COLOR2_BIT != 0 { Some(rd_u16(&buf, o + 6)) } else { None };
         // #1095: bit 4 takes the style off the width ramp, bit 5 files it under the terrain layer.
         // Bits 6-7 stay reserved and are **ignored**, not rejected (§2) — that reader tolerance is
-        // exactly what let these two be defined without a format bump.
-        let fixed_width = flags & STYLE_FIXED_WIDTH_BIT != 0;
-        let terrain_layer = flags & STYLE_TERRAIN_LAYER_BIT != 0;
-        styles[id as usize] =
-            Some(Style { id, z_index, color, weight, priority, dashed, color2, fixed_width, terrain_layer });
+        // exactly what let these two be defined without a format bump. The wire byte is re-packed
+        // into the seam's own [`StyleFlags`] rather than carried through: the table is resident.
+        let style_flags = StyleFlags::new(
+            flags & STYLE_DASHED_BIT != 0,
+            flags & STYLE_FIXED_WIDTH_BIT != 0,
+            flags & STYLE_TERRAIN_LAYER_BIT != 0,
+        );
+        styles[id as usize] = Some(Style { id, z_index, color, weight, priority, flags: style_flags, color2 });
         o += STYLE_RECORD_LEN;
     }
     Ok(())
