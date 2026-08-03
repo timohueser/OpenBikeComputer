@@ -222,6 +222,12 @@ clock = "Horloge"
 clock_sub = "sur carte"
 scale_bar = "Échelle"
 scale_bar_sub = "sur carte"
+# Elevation EL10c (#1096): the provisional contour toggle. Expected to be removed once #1097's ride
+# review decides the feature's fate — drop these two keys from all four catalogs with the row.
+# "Courbes de niveau" does not fit the label column beside the toggle slider, so the term is split
+# across the row's two lines — the sub-caption carries "de niveau" instead of the usual "sur carte".
+contours = "Courbes"
+contours_sub = "de niveau"
 idle = "Veille"
 idle_sub = "délai"
 

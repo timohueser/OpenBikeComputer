@@ -763,6 +763,26 @@ pub struct Settings {
     /// Show the scale bar at the Map's bottom-left (the Display settings screen's toggle).
     /// **Device-only**, like [`map_clock`](Settings::map_clock). Default **on**.
     pub map_scale_bar: bool,
+    /// Draw the map's **terrain layer** — today the E3 contour lines (the Display settings screen's
+    /// toggle). **Device-only**, like [`map_clock`](Settings::map_clock): deliberately *not* one of
+    /// the BLE-writable fields [`adopt_ble_fields`](Settings::adopt_ble_fields) pulls across.
+    /// Default **on** — the point of the setting is to *see* contours without hunting for a switch.
+    /// Off drops every terrain-layer style from the renderer's collect pass
+    /// (`MapRenderer::set_terrain_layer`), so the geometry is never decoded.
+    ///
+    /// **It hides the ink, not the bytes and not the I/O.** Contours are interleaved with everything
+    /// else in the same `mid`/`fine` cells, so switching them off does not shrink the map on the card
+    /// and does not avoid a single chunk read. The #1088 measurement — riding-zoom chunk reads
+    /// roughly doubling, 5.9 → 10.9 kB per frame, ≈ +11 ms per uncached frame on the ~460 kB/s SD
+    /// path — is a cost of *packing* contours, not of drawing them, and this toggle does not recover
+    /// it. "Off" is not a performance control.
+    ///
+    /// **Provisional (#1096).** Contours are a judgement call no mockup settles, so this switch
+    /// exists only so the #1097 ride review can put both states on the same glass on the same ride.
+    /// It is **expected to be removed**: if contours win the toggle goes and they are simply on; if
+    /// they lose the whole feature goes. Built as the cheapest honest switch, not a settled
+    /// preference — don't grow migration concerns around it.
+    pub map_contours: bool,
     /// The rider's selected routing profile, an **index** into the loaded map's §8.6 profile table
     /// (N2/N5, epic #533). The Bike-type settings screen cycles it through the map's profile *names*;
     /// the planner is constructed with it ([`NavPlanner::new`](obc_route::NavPlanner)). Stored as a
@@ -824,6 +844,7 @@ impl Default for Settings {
             idle_return: IdleReturn::default(),
             map_clock: true,
             map_scale_bar: true,
+            map_contours: true,
             bike_profile_idx: 0,
             waypoint_mode: WaypointMode::default(),
             language: Language::default(),
@@ -877,8 +898,10 @@ impl Settings {
 /// v10 appended the `language` byte (epic #602); v11 appended the 24-byte `saved_sensors` block
 /// (BLE-sensors SE7, #714) — 3 slots × 8 B (`present · addr_kind · addr[6]`); v12 appended the
 /// `ride_retention` byte (auto-expiry epic #638, S3); v13 appended the `up_ahead_source` byte
-/// ("Up ahead" epic #946, U4).
-pub const VERSION: u8 = 13;
+/// ("Up ahead" epic #946, U4); v14 appended the `map_contours` byte (elevation EL10c, #1096 — a
+/// **provisional** field; removing it is a version bump like any other, which is exactly the point
+/// of it costing one appended byte).
+pub const VERSION: u8 = 14;
 
 /// Fixed encoded length: the [`PAYLOAD_LEN`] CRC-covered bytes + a 2-byte CRC, **rounded up to the
 /// device RRAM's 16-byte write line** (the firmware store writes whole 128-bit lines) — so a codec
@@ -887,7 +910,9 @@ pub const VERSION: u8 = 13;
 pub const ENCODED_LEN: usize = (PAYLOAD_LEN + 2).div_ceil(16) * 16;
 
 /// Payload size before the trailing CRC. The CRC follows immediately at this offset.
-const PAYLOAD_LEN: usize = UP_AHEAD_OFF + 1;
+const PAYLOAD_LEN: usize = CONTOURS_OFF + 1;
+/// Byte offset of the `map_contours` flag (the v14 tail, right after `up_ahead_source`).
+const CONTOURS_OFF: usize = UP_AHEAD_OFF + 1;
 /// Byte offset of the `up_ahead_source` byte (the v13 tail, right after `ride_retention`).
 const UP_AHEAD_OFF: usize = RIDE_RET_OFF + 1;
 /// Byte offset of the `ride_retention` byte (the v12 tail, right after the `saved_sensors` block).
@@ -973,6 +998,8 @@ pub fn encode(s: &Settings) -> [u8; ENCODED_LEN] {
     b[RIDE_RET_OFF] = s.ride_retention.as_u8();
     // v13 tail: which sources feed the "Up ahead" timeline.
     b[UP_AHEAD_OFF] = s.up_ahead_source as u8;
+    // v14 tail: the Map's terrain-layer (contours) toggle.
+    b[CONTOURS_OFF] = s.map_contours as u8;
     let crc = crate::store_meta::crc16(&b[0..PAYLOAD_LEN]);
     b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
     b
@@ -1040,6 +1067,8 @@ pub fn decode(bytes: &[u8]) -> Option<Settings> {
         // The v13 Up-ahead source scope: an unknown byte sanitises to the default (Both), like the
         // other enum codec fields.
         up_ahead_source: UpAheadSource::from_byte(b[UP_AHEAD_OFF]),
+        // The v14 terrain-layer (contours) toggle: any non-zero byte is "on", like the other bools.
+        map_contours: b[CONTOURS_OFF] != 0,
     };
     s.sanitize();
     Some(s)
@@ -1087,6 +1116,7 @@ mod tests {
             idle_return: IdleReturn::M5,
             map_clock: false,
             map_scale_bar: false,
+            map_contours: false,
             bike_profile_idx: 3,
             waypoint_mode: WaypointMode::Always,
             language: Language::De,
@@ -1109,7 +1139,7 @@ mod tests {
     fn up_ahead_source_round_trips_and_is_device_only() {
         assert_eq!(Settings::default().up_ahead_source, UpAheadSource::Both, "the timeline defaults to Both");
         // The one new byte still fits inside the same 16-byte RRAM line rounding as v12.
-        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v13 up_ahead_source tail)");
+        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v14 map_contours tail)");
 
         for src in [UpAheadSource::Both, UpAheadSource::WaypointsOnly, UpAheadSource::MapPoisOnly] {
             let s = Settings { up_ahead_source: src, ..Settings::default() };
@@ -1283,7 +1313,7 @@ mod tests {
         assert!(Settings::default().map_clock, "the map clock defaults on");
         assert!(Settings::default().map_scale_bar, "the scale bar defaults on");
         // The RRAM carve is unchanged — the two new bytes fit inside the same 16-byte line rounding.
-        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v13 up_ahead_source tail)");
+        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v14 map_contours tail)");
 
         // Every on/off combination round-trips byte-for-byte.
         for clock in [false, true] {
@@ -1299,6 +1329,35 @@ mod tests {
         assert!(!app.map_clock && !app.map_scale_bar, "adopt_ble_fields leaves the map overlays alone");
     }
 
+    /// The v14 tail (elevation EL10c, #1096): the Map's terrain-layer (contours) toggle round-trips,
+    /// defaults **on** — the point of the switch is to see contours without hunting for it — and is
+    /// device-only, like every other Display-screen toggle: [`adopt_ble_fields`] must never pull it
+    /// across. **Provisional**: #1097 decides whether this field survives at all.
+    #[test]
+    fn map_contours_round_trips_and_is_device_only() {
+        assert!(Settings::default().map_contours, "contours default on");
+        // The one new byte still fits inside the same 16-byte RRAM line rounding as v13.
+        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v14 map_contours tail)");
+
+        for on in [false, true] {
+            let s = Settings { map_contours: on, ..Settings::default() };
+            assert_eq!(decode(&encode(&s)), Some(s), "map_contours={on} round-trips");
+        }
+
+        // Any non-zero stored byte is "on", like the other bool fields — re-stamp the CRC so only the
+        // payload byte is unusual.
+        let mut b = encode(&Settings { map_contours: false, ..Settings::default() });
+        b[CONTOURS_OFF] = 7;
+        let crc = crate::store_meta::crc16(&b[0..PAYLOAD_LEN]);
+        b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
+        assert!(decode(&b).expect("valid CRC").map_contours, "any non-zero byte reads as on");
+
+        // Device-only: a BLE blob's contour toggle never lands via the #456 coherence merge.
+        let mut app = Settings { map_contours: false, ..Settings::default() };
+        app.adopt_ble_fields(&Settings { map_contours: true, ..Settings::default() });
+        assert!(!app.map_contours, "adopt_ble_fields leaves the contour toggle alone");
+    }
+
     /// The v8 tail: the routing-profile index round-trips every value, defaults **0**, is stored
     /// **verbatim** (never range-clamped on decode — an out-of-range index is a live-map concern, not
     /// a codec one), and is device-only — [`adopt_ble_fields`] must never pull it across (a phone
@@ -1307,7 +1366,7 @@ mod tests {
     fn bike_profile_idx_round_trips_and_is_device_only() {
         assert_eq!(Settings::default().bike_profile_idx, 0, "the profile index defaults to 0");
         // The one new byte still fits inside the same 16-byte RRAM line rounding as v7.
-        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v13 up_ahead_source tail)");
+        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v14 map_contours tail)");
 
         // Every index round-trips byte-for-byte — including a value past any real map's profile count,
         // which the codec stores verbatim (the router/UI own the fallback, not decode).
@@ -1330,7 +1389,7 @@ mod tests {
     fn waypoint_mode_round_trips_and_is_device_only() {
         assert_eq!(Settings::default().waypoint_mode, WaypointMode::Approach, "the chip defaults to Approach");
         // The one new byte still fits inside the same 16-byte RRAM line rounding as v8.
-        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v13 up_ahead_source tail)");
+        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v14 map_contours tail)");
 
         // Each mode round-trips through the codec byte-for-byte.
         for mode in [WaypointMode::Off, WaypointMode::Approach, WaypointMode::Always] {
@@ -1362,7 +1421,7 @@ mod tests {
         assert_eq!(Settings::default().language, Language::En, "the UI language defaults to English");
         // The saved_sensors tail (v11) then the ride_retention byte (v12) grew the blob to 128 B /
         // 8 RRAM lines; the language byte kept its v10 offset.
-        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v13 up_ahead_source tail)");
+        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v14 map_contours tail)");
 
         // Each language round-trips through the codec byte-for-byte.
         for lang in [Language::En, Language::De, Language::Fr, Language::Es] {
@@ -1399,7 +1458,7 @@ mod tests {
     /// repick the rider's sensors).
     #[test]
     fn saved_sensors_round_trip_and_migration() {
-        assert_eq!(VERSION, 13, "saved_sensors is the v11 tail; the codec is now v13 (up_ahead_source)");
+        assert_eq!(VERSION, 14, "saved_sensors is the v11 tail; the codec is now v14 (map_contours)");
         assert_eq!(
             Settings::default().saved_sensors,
             [SavedSensor::EMPTY; SENSOR_SLOTS],

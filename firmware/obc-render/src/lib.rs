@@ -288,11 +288,40 @@ pub struct MapRenderer {
     /// Draw scratch (projected points / polyline runs + scanline crossings), shared by the map
     /// draw phase and the marker/route/breadcrumb overlays.
     pub(crate) draw: DrawScratch,
+    /// Hide the **terrain layer** — see [`set_terrain_layer`](MapRenderer::set_terrain_layer).
+    ///
+    /// Stored in the *suppressed* sense on purpose: `false` (the all-zero bit pattern, hence the
+    /// [`Default`] and [`init_zeroed`](MapRenderer::init_zeroed) state) means "draw everything",
+    /// which is the correct behaviour for every caller that never touches the setter.
+    suppress_terrain: bool,
 }
 
 impl MapRenderer {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Show or hide the **terrain layer** — every style carrying
+    /// [`StyleFlags::terrain_layer`](obc_map_scene::StyleFlags::terrain_layer) (today: the E3
+    /// contour styles, #1095). Sticky across frames; the next [`render`](MapRenderer::render) takes
+    /// it. Renderers start with the layer **shown**.
+    ///
+    /// Hidden features are dropped in the collect pass's visible-style mask, so their geometry is
+    /// never decoded — they cost no frame budget rather than being drawn and painted over. What this
+    /// does *not* do is skip any I/O: the map's cells interleave terrain with everything else, so the
+    /// same chunks are read either way (#1096).
+    ///
+    /// **Provisional (#1096).** This exists so the #1097 ride review can A/B contours on the same
+    /// ride; it is expected to be removed either way that review lands — the setter, the field, and
+    /// the mask branch in `collect` are the whole of it.
+    ///
+    /// A setter rather than a `render` argument deliberately: the renderer is long-lived and already
+    /// `&mut self`, this is board-agnostic ("does this scene's terrain layer draw?", phrased purely in
+    /// the map-scene seam's own vocabulary), and a temporary flag has no business in a hot signature
+    /// four call sites and every test share.
+    #[inline]
+    pub fn set_terrain_layer(&mut self, visible: bool) {
+        self.suppress_terrain = !visible;
     }
 
     /// Initialize a renderer **in place** at `slot` as the empty, ready-to-render state — the MCU
@@ -307,9 +336,11 @@ impl MapRenderer {
     /// `slot` must be valid for writes, aligned, and exclusively owned for the call.
     /// On return the slot holds a fully initialized, empty [`MapRenderer`].
     pub unsafe fn init_zeroed(slot: *mut Self) {
-        // SAFETY: a renderer is only `heapless::Vec`s — no references, no non-zero-discriminant
-        // enum, no `bool` — so the all-zero bit pattern is the empty renderer (`len = 0`,
-        // write-before-read buffers). The caller guarantees a valid, owned, aligned slot.
+        // SAFETY: a renderer is only `heapless::Vec`s plus one `bool` — no references, no
+        // non-zero-discriminant enum — so the all-zero bit pattern is the empty renderer (`len = 0`,
+        // write-before-read buffers) with `suppress_terrain: false`, i.e. the terrain layer shown,
+        // which is that field's intended initial state (see it). The caller guarantees a valid,
+        // owned, aligned slot.
         unsafe { slot.write_bytes(0u8, 1) }
     }
 
@@ -376,7 +407,7 @@ impl MapRenderer {
         // reads the map source) and record the per-frame delta — robust whether the caller hands us
         // a fresh source adapter each frame or a reused one.
         let before = diagnostics(scene, &mut stats, Diagnostics::default());
-        self.frame.collect(scene, lod, &view, &mut stats);
+        self.frame.collect(scene, lod, &view, self.suppress_terrain, &mut stats);
         let after = diagnostics(scene, &mut stats, before);
         stats.map_chunk_hits = after.chunk_hits.wrapping_sub(before.chunk_hits);
         stats.map_chunk_misses = after.chunk_misses.wrapping_sub(before.chunk_misses);
@@ -432,7 +463,7 @@ impl MapRenderer {
         S: MapScene,
     {
         // Disjoint borrows: spans/geometry read from `frame`, draw scratch written to `draw`.
-        let Self { frame, draw } = self;
+        let Self { frame, draw, .. } = self;
         let spans = frame.spans();
 
         // One zoom→width multiplier for the whole frame (#579, `width_scale`): a style's nominal
