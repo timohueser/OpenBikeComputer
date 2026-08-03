@@ -350,6 +350,22 @@
           "default": "solid",
           "description": "Line stroke style: `solid` (the default) or `dashed`. Ignored for polygons."
         },
+        "fixed_width": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": false,
+          "description": "Use `weight` as the on-screen stroke in device pixels, bypassing the renderer's zoom width ramp (OBCM style-record flag bit 4). For a mark on the map rather than a thing with width on the ground - a contour line has no ground width, so ramping it draws it thickest exactly where it does the most damage."
+        },
+        "terrain_layer": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": false,
+          "description": "Mark this style as part of the suppressible terrain layer (OBCM style-record flag bit 5). Written into the map; the device's terrain toggle is what reads it."
+        },
         "color2": {
           "$ref": "#/$defs/color",
           "description": "Optional secondary RGB565 color; absent means none."

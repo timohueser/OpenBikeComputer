@@ -109,6 +109,8 @@
           "z_index": 60,
           "priority": 2,
           "dashed": false,
+          "fixed_width": false,
+          "terrain_layer": false,
           "color2": null
         },
         {
@@ -118,6 +120,8 @@
           "z_index": 30,
           "priority": 3,
           "dashed": true,
+          "fixed_width": false,
+          "terrain_layer": false,
           "color2": null
         },
         {
@@ -127,6 +131,8 @@
           "z_index": 10,
           "priority": 3,
           "dashed": false,
+          "fixed_width": false,
+          "terrain_layer": false,
           "color2": null
         },
         {
@@ -136,6 +142,8 @@
           "z_index": 5,
           "priority": 4,
           "dashed": false,
+          "fixed_width": false,
+          "terrain_layer": false,
           "color2": null
         }
       ]
@@ -154,6 +162,8 @@
           "z_index": 60,
           "priority": 2,
           "dashed": false,
+          "fixed_width": false,
+          "terrain_layer": false,
           "color2": null
         },
         {
@@ -163,6 +173,8 @@
           "z_index": 30,
           "priority": 3,
           "dashed": true,
+          "fixed_width": false,
+          "terrain_layer": false,
           "color2": null
         },
         {
@@ -172,6 +184,8 @@
           "z_index": 10,
           "priority": 3,
           "dashed": false,
+          "fixed_width": false,
+          "terrain_layer": false,
           "color2": null
         },
         {
@@ -181,6 +195,8 @@
           "z_index": 5,
           "priority": 4,
           "dashed": false,
+          "fixed_width": false,
+          "terrain_layer": false,
           "color2": null
         }
       ],

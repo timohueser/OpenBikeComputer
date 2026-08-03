@@ -389,7 +389,7 @@
       ]
     },
     "SkinStyle": {
-      "description": "One feature type's presentation values — the seven bytes of a style record a skin owns. The **id** is not here: it belongs to the schema, and a skin may not renumber it (`OBCA_Spec.md` §4.7).",
+      "description": "One feature type's presentation values — the bytes of a style record a skin owns (colors, weight, z, priority and the `Flags` bits). The **id** is not here: it belongs to the schema, and a skin may not renumber it (`OBCA_Spec.md` §4.7).",
       "type": "object",
       "properties": {
         "feature_type": {
@@ -424,6 +424,16 @@
         },
         "dashed": {
           "type": "boolean"
+        },
+        "fixed_width": {
+          "description": "Style-record flag bit 4 (#1095): the weight is used verbatim on screen, off the zoom width ramp. Defaulted so a catalog written before the bit existed still parses.",
+          "type": "boolean",
+          "default": false
+        },
+        "terrain_layer": {
+          "description": "Style-record flag bit 5 (#1095): part of the suppressible terrain layer.",
+          "type": "boolean",
+          "default": false
         },
         "color2": {
           "description": "Optional RGB565 secondary color; `null` when the style has none.",

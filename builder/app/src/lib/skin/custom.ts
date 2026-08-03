@@ -84,6 +84,10 @@ function styleFrom(raw: unknown, featureType: string): SkinStyle | null {
         z_index: zIndex,
         priority,
         dashed: value.dashed,
+        // #1095: structural flag bits the editor does not offer but must not silently drop — a
+        // custom skin that lost them would put the contours back on the road width ramp.
+        fixed_width: value.fixed_width === true,
+        terrain_layer: value.terrain_layer === true,
         color2,
     };
 }

@@ -177,6 +177,12 @@ struct StyleDocument {
     #[serde(default = "default_line_style_document")]
     #[schemars(default = "default_line_style_document")]
     line_style: Option<LineStyle>,
+    #[serde(default = "default_false_document")]
+    #[schemars(default = "default_false_document")]
+    fixed_width: Option<bool>,
+    #[serde(default = "default_false_document")]
+    #[schemars(default = "default_false_document")]
+    terrain_layer: Option<bool>,
     #[serde(default, deserialize_with = "deserialize_optional_color", skip_serializing_if = "Option::is_none")]
     #[schemars(with = "ColorValue")]
     color2: Option<ColorValue>,
@@ -535,6 +541,14 @@ pub struct FeatureStyle {
     pub min_lod: usize,
     /// v10: solid or dashed stroke (style-record flag bit 2).
     pub line_style: LineStyle,
+    /// #1095: **fixed width** (flag bit 4) — `weight` is the on-screen stroke in device pixels and
+    /// the renderer's zoom→width ramp is bypassed for this style. For a *mark on the map* rather
+    /// than a thing with width on the ground; contours are the first shipped style that is one.
+    pub fixed_width: bool,
+    /// #1095: **terrain layer** (flag bit 5) — this style belongs to the suppressible terrain group.
+    /// The packer writes the bit and the reader carries it; the consumer is the device's Settings
+    /// toggle (#1096). Nothing renders differently because of it today.
+    pub terrain_layer: bool,
     /// v10: optional RGB565 secondary color (flag bit 3 + the trailing u16), parsed like `color`.
     pub color2: Option<u16>,
 }
@@ -550,6 +564,8 @@ impl FeatureStyle {
             priority: self.priority,
             dashed: self.line_style == LineStyle::Dashed,
             color2: self.color2,
+            fixed_width: self.fixed_width,
+            terrain_layer: self.terrain_layer,
         }
     }
 }
@@ -784,6 +800,8 @@ impl StyleDocument {
             priority,
             min_lod: self.min_lod.unwrap_or(0) as usize,
             line_style: self.line_style.unwrap_or_default(),
+            fixed_width: self.fixed_width.unwrap_or(false),
+            terrain_layer: self.terrain_layer.unwrap_or(false),
             color2: self.color2.map(|color| color.0),
         })
     }
@@ -909,6 +927,17 @@ fn annotate_definitions(defs: &mut Map<String, Value>) {
     );
     style_props["line_style"]["description"] =
         Value::String("Line stroke style: `solid` (the default) or `dashed`. Ignored for polygons.".into());
+    style_props["fixed_width"]["description"] = Value::String(
+        "Use `weight` as the on-screen stroke in device pixels, bypassing the renderer's zoom width ramp (OBCM \
+         style-record flag bit 4). For a mark on the map rather than a thing with width on the ground - a contour \
+         line has no ground width, so ramping it draws it thickest exactly where it does the most damage."
+            .into(),
+    );
+    style_props["terrain_layer"]["description"] = Value::String(
+        "Mark this style as part of the suppressible terrain layer (OBCM style-record flag bit 5). Written into the \
+         map; the device's terrain toggle is what reads it."
+            .into(),
+    );
     style_props["color2"]["description"] = Value::String("Optional secondary RGB565 color; absent means none.".into());
 
     let lod = defs.get_mut("lod").expect("LOD schema");
@@ -1399,6 +1428,41 @@ mod tests {
         assert!(parse_style(1, &serde_json::json!({"color": "0x1", "line_style": "dotted"})).is_err());
     }
 
+    /// #1095's two style-record flag bits are typed optional booleans that default **off**, are
+    /// declared in the schema (so the builder's editor offers them rather than lying), and land on
+    /// the wire as bits 4 and 5 of the style record's `Flags` byte. Bits 6-7 stay written `0`.
+    #[test]
+    fn schema_style_flag_bits_match_parser_and_serializer() {
+        let schema = embedded_schema();
+        for key in ["fixed_width", "terrain_layer"] {
+            let prop = &schema["$defs"]["style"]["properties"][key];
+            assert_eq!(prop["default"], Value::Bool(false), "{key} defaults off in the schema");
+            assert!(prop["description"].as_str().is_some_and(|d| d.contains("flag bit")), "{key} names its wire bit");
+        }
+
+        // Parser: absent/null ⇒ off, `true` ⇒ on.
+        let plain = parse_style(1, &serde_json::json!({"color": "0x1"})).unwrap();
+        assert!(!plain.fixed_width && !plain.terrain_layer, "absent ⇒ both off");
+        let null = parse_style(1, &serde_json::json!({"color": "0x1", "fixed_width": null, "terrain_layer": null}));
+        let null = null.unwrap();
+        assert!(!null.fixed_width && !null.terrain_layer, "null ⇒ both off");
+        let both = parse_style(1, &serde_json::json!({"color": "0x1", "fixed_width": true, "terrain_layer": true}))
+            .expect("both flags parse");
+        assert!(both.fixed_width && both.terrain_layer);
+        assert!(parse_style(1, &serde_json::json!({"color": "0x1", "fixed_width": "yes"})).is_err());
+
+        // Serializer: bit 4 and bit 5 of the flags byte, nothing else disturbed (record 0's flags
+        // sit at offset 5 behind the one-byte count).
+        let flags = |style: &FeatureStyle| crate::serialize::pack_style_dict(&[style.to_style()])[1 + 5];
+        assert_eq!(flags(&plain) & 0x30, 0x00, "neither bit set by default");
+        assert_eq!(flags(&both) & 0x30, 0x30, "both bits set");
+        let fixed = parse_style(1, &serde_json::json!({"color": "0x1", "fixed_width": true})).unwrap();
+        assert_eq!(flags(&fixed) & 0x30, obc_formats::obcm::STYLE_FIXED_WIDTH_BIT);
+        let terrain = parse_style(1, &serde_json::json!({"color": "0x1", "terrain_layer": true})).unwrap();
+        assert_eq!(flags(&terrain) & 0x30, obc_formats::obcm::STYLE_TERRAIN_LAYER_BIT);
+        assert_eq!(flags(&both) & obc_formats::obcm::STYLE_RESERVED_MASK, 0, "bits 6-7 stay written 0");
+    }
+
     /// The schema advertises the `"*"` catch-all in the `features` description, and the parser
     /// actually honours it — so the web builder's editor can offer a catch-all row without lying.
     #[test]
@@ -1484,8 +1548,10 @@ mod tests {
         );
     }
 
-    /// The shipped preset carries both classes and the block, so #1095 has a styling target and the
-    /// bakery has one boolean to flip.
+    /// The shipped preset ships E3 (#1095): both classes styled, from the planning tier, all weight
+    /// 1, `major` dashed and `index` solid — the emphasis is continuity, not mass — both off the
+    /// width ramp and both tagged terrain, and the block itself **on**. Every one of those was
+    /// argued from a rendered frame, so each is pinned rather than left to a re-read of the JSON.
     #[test]
     fn the_shipped_schema_carries_both_contour_classes() {
         let cfg = corpus_config();
@@ -1493,8 +1559,17 @@ mod tests {
             let style = cfg.contour_style(class).unwrap_or_else(|| panic!("{class:?} must be styled"));
             assert_eq!(style.min_lod, 3, "E3 puts contours on the map from the planning tier");
             assert_eq!(style.weight, 1, "every contour is authored weight 1");
+            assert_eq!(style.color, 0xAD55, "one grey, never a second colour");
+            assert!(style.fixed_width, "a contour has no width on the ground — it is off the ramp");
+            assert!(style.terrain_layer, "and it is what the device's terrain toggle suppresses");
         }
-        assert_eq!(cfg.contours, Contours { enabled: false, interval_m: 100, index_every: 5, simplify_m: 15.0 });
+        assert_eq!(cfg.contour_style(ContourClass::Major).unwrap().line_style, LineStyle::Dashed);
+        assert_eq!(
+            cfg.contour_style(ContourClass::Index).unwrap().line_style,
+            LineStyle::Solid,
+            "index is the solid one"
+        );
+        assert_eq!(cfg.contours, Contours { enabled: true, interval_m: 100, index_every: 5, simplify_m: 15.0 });
     }
 
     /// The schema's `contours` default parses back to the code default, and its bounds are the

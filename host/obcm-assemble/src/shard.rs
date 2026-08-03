@@ -11,8 +11,8 @@
 //! the scarcest resource in the design and nothing else may spend it.
 
 use obc_formats::obcm::{
-    HEADER_LEN, LOD_ENTRY_LEN, MAGIC, STYLE_DASHED_BIT, STYLE_HAS_COLOR2_BIT, STYLE_PRIORITY_MASK, STYLE_RECORD_LEN,
-    VERSION,
+    HEADER_LEN, LOD_ENTRY_LEN, MAGIC, STYLE_DASHED_BIT, STYLE_FIXED_WIDTH_BIT, STYLE_HAS_COLOR2_BIT,
+    STYLE_PRIORITY_MASK, STYLE_RECORD_LEN, STYLE_TERRAIN_LAYER_BIT, VERSION,
 };
 use sha2::{Digest, Sha256};
 
@@ -239,6 +239,12 @@ pub fn pack_style_table(styles: &[StyleRecord]) -> Vec<u8> {
         }
         if s.color2.is_some() {
             flags |= STYLE_HAS_COLOR2_BIT;
+        }
+        if s.fixed_width {
+            flags |= STYLE_FIXED_WIDTH_BIT;
+        }
+        if s.terrain_layer {
+            flags |= STYLE_TERRAIN_LAYER_BIT;
         }
         out.push(s.id);
         out.push(s.z_index as u8);
@@ -501,6 +507,8 @@ mod tests {
             priority: 2,
             dashed: true,
             color2: Some(0xBEEF),
+            fixed_width: false,
+            terrain_layer: false,
         };
         let bytes = pack_style_table(&[s]);
         assert_eq!(bytes.len(), 1 + STYLE_RECORD_LEN);
@@ -511,5 +519,16 @@ mod tests {
         assert_eq!(bytes[5], 5);
         assert_eq!(bytes[6], 1 | STYLE_DASHED_BIT | STYLE_HAS_COLOR2_BIT, "priority 2 ⇒ bits 0-1 = 1");
         assert_eq!(u16::from_le_bytes([bytes[7], bytes[8]]), 0xBEEF);
+
+        // #1095: a stamped skin carries the two new bits through to the record it writes, so a
+        // restyled cell tree keeps a contour hairline and terrain-layer-tagged instead of quietly
+        // clearing them back to a ramped road (bits 6-7 stay reserved and written 0).
+        let terrain = StyleRecord { fixed_width: true, terrain_layer: true, ..s };
+        let bytes = pack_style_table(&[terrain]);
+        assert_eq!(
+            bytes[6],
+            1 | STYLE_DASHED_BIT | STYLE_HAS_COLOR2_BIT | STYLE_FIXED_WIDTH_BIT | STYLE_TERRAIN_LAYER_BIT
+        );
+        assert_eq!(bytes[6] & obc_formats::obcm::STYLE_RESERVED_MASK, 0, "bits 6-7 stay 0");
     }
 }

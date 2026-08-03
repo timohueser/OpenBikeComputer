@@ -49,6 +49,13 @@ pub struct Style {
     pub priority: u8,
     pub dashed: bool,
     pub color2: Option<u16>,
+    /// Style-record flag bit 4 (#1095): `weight` is the on-screen stroke in **device pixels**, used
+    /// verbatim — the renderer's zoom→width ramp does not apply. For a mark on the map that has no
+    /// width on the ground (a contour line), where the ramp is not just wrong but backwards.
+    pub fixed_width: bool,
+    /// Style-record flag bit 5 (#1095): this style belongs to the **terrain layer**, the group a
+    /// device setting may suppress wholesale (#1096). Carried by the scene; nothing reads it yet.
+    pub terrain_layer: bool,
 }
 
 /// A source-defined identity for a candidate within one render.

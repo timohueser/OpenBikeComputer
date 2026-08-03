@@ -17,7 +17,17 @@ const MARKER: u16 = 0xF800;
 const CHUNK: usize = 4096;
 
 fn fill(id: u8, color: u16) -> Style {
-    Style { id, z_index: 0, color, weight: 1, priority: 3, dashed: false, color2: None }
+    Style {
+        id,
+        z_index: 0,
+        color,
+        weight: 1,
+        priority: 3,
+        dashed: false,
+        color2: None,
+        fixed_width: false,
+        terrain_layer: false,
+    }
 }
 
 /// A closed square in grid cell `(gx, gy)`, first == last. The 0.001° side keeps

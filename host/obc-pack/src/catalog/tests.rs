@@ -814,6 +814,24 @@ fn a_skin_carrying_schema_keys_is_refused_by_name() {
     let err = super::check_skin_document(&doc, "bad.json").expect_err("`min_lod` is schema data");
     assert!(err.contains("`features.*.*.min_lod`"), "{err}");
 
+    // #1095's two style-record flag bits are presentation, not schema: they are bits of the 8-byte
+    // record a skin stamps, and neither changes which features are cut into which cells — so a skin
+    // may carry them, exactly as it may carry `line_style`.
+    let doc = format!(
+        r#"{{
+  "_meta": {{ "id": "terrain", "name": "Terrain", "description": "Carries the flag bits.", "version": 1 }},
+  "marker": {{ "color": "0xF800" }},
+  "features": {{
+    "highway": {{
+      "track": {{ "color": "0xAA80", "z_index": 30, "weight": 1, "priority": 3, "line_style": "dashed",
+                  "fixed_width": true, "terrain_layer": true }}
+    }}
+  }}
+}}
+"#
+    );
+    super::check_skin_document(&doc, "terrain.json").expect("`fixed_width`/`terrain_layer` are presentation keys");
+
     // The shipped documents are the ones this all has to hold for.
     super::check_skin_document(&repo_doc(SHIPPED_SKIN), SHIPPED_SKIN).expect("the shipped skin is presentation only");
     let err = super::check_skin_document(&repo_doc(SHIPPED_SCHEMA), SHIPPED_SCHEMA)
@@ -1850,12 +1868,14 @@ fn the_shipped_dusk_skin_is_a_presentation_only_night_restyle() {
     assert_ne!(dusk.marker_color, default.marker_color, "red vanishes on a dark ground; dusk re-picks the marker");
     for (d, s) in dusk.styles.iter().zip(&default.styles) {
         assert_eq!(d.feature_type, s.feature_type);
-        // The skin split lets a skin restate all seven presentation bytes, but this one
-        // deliberately recolors only: geometry-shaping stays visually identical to the
-        // day map, so a rider switching skins at dusk sees the same map, re-lit.
+        // The skin split lets a skin restate every presentation value in the record, but this
+        // one deliberately recolors only: geometry-shaping stays visually identical to the
+        // day map, so a rider switching skins at dusk sees the same map, re-lit. The #1095
+        // flag bits are in the tuple for that reason — a dusk contour that lost `fixed_width`
+        // would be a different *drawing*, not a different colour.
         assert_eq!(
-            (d.weight, d.z_index, d.priority, d.dashed),
-            (s.weight, s.z_index, s.priority, s.dashed),
+            (d.weight, d.z_index, d.priority, d.dashed, d.fixed_width, d.terrain_layer),
+            (s.weight, s.z_index, s.priority, s.dashed, s.fixed_width, s.terrain_layer),
             "{}",
             d.feature_type
         );

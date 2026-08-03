@@ -559,6 +559,8 @@ mod tests {
                         "z_index": style.z_index,
                         "priority": style.priority,
                         "dashed": style.line_style == LineStyle::Dashed,
+                        "fixed_width": style.fixed_width,
+                        "terrain_layer": style.terrain_layer,
                         "color2": style.color2,
                     })
                 })
