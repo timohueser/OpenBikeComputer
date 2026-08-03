@@ -39,6 +39,10 @@ export interface NavProfile {
     default?: Multiplier;
     highway?: Record<string, Multiplier>;
     surface?: Record<string, Multiplier>;
+    // OBCM v12 §8.6: flat metres charged per metre of ascent, `0..255`. Unlike a
+    // class multiplier it does NOT inherit anything — absent means `0`, i.e.
+    // climb-blind, which is how the packer reads it.
+    climb_weight?: number;
 }
 
 /** The `routing` config section (owned by obc-pack; see `obc-pack schema`). */

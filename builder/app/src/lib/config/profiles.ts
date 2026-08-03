@@ -30,6 +30,11 @@ export interface ProfileSchema {
     maxProfiles: number;
     /** Max name length on the wire, bytes (schema profile.name x-maxUtf8Bytes). */
     nameMaxBytes: number;
+    /** Climb-weight bounds, `0..255` (schema profile.climb_weight minimum/maximum). */
+    climbMin: number;
+    climbMax: number;
+    /** The climb weight an unstated field means — `0`, climb-blind (schema default). */
+    climbDefault: number;
     /** The four shipped defaults (Road / Gravel / MTB / Touring), canonical. */
     defaultProfiles: NavProfile[];
 }
@@ -50,6 +55,7 @@ interface SchemaTree {
             properties?: {
                 name?: { maxLength?: number; "x-maxUtf8Bytes"?: number };
                 default?: { default?: number };
+                climb_weight?: { minimum?: number; maximum?: number; default?: number };
                 highway?: { propertyNames?: { enum?: string[] } };
                 surface?: { propertyNames?: { enum?: string[] } };
             };
@@ -81,6 +87,11 @@ export function readProfileSchema(env: SchemaEnvelope | null): ProfileSchema | n
         minProfiles: profilesSchema?.minItems ?? 1,
         maxProfiles: profilesSchema?.maxItems ?? 8,
         nameMaxBytes: profile?.name?.["x-maxUtf8Bytes"] ?? profile?.name?.maxLength ?? 12,
+        // A schema that predates v12 states no climb bounds; the wire field is a
+        // `u8` either way, so fall back to its full range and to climb-blind.
+        climbMin: profile?.climb_weight?.minimum ?? 0,
+        climbMax: profile?.climb_weight?.maximum ?? 255,
+        climbDefault: profile?.climb_weight?.default ?? 0,
         defaultProfiles,
     };
 }
@@ -114,6 +125,56 @@ export function isExplicit(profile: NavProfile, group: ClassGroup, cls: string):
 /** A profile's effective `default` multiplier (falls back to the schema default). */
 export function profileDefault(profile: NavProfile, ps: ProfileSchema): Multiplier {
     return profile.default ?? ps.defaultMultiplier;
+}
+
+/** `true` when the profile states a climb weight of its own (vs. being climb-blind
+ * by omission). A legacy config written before v12 states none. */
+export function hasClimbWeight(profile: NavProfile): boolean {
+    return typeof profile.climb_weight === "number" && Number.isFinite(profile.climb_weight);
+}
+
+/**
+ * A profile's effective climb weight — flat metres charged per metre of ascent.
+ * Unlike a class multiplier this inherits nothing: an absent (or, from a
+ * hand-edited config, a non-numeric) field is the schema's `0`, climb-blind,
+ * which is exactly how the packer reads it. So a v11-era config renders `0`
+ * rather than NaN.
+ */
+export function profileClimbWeight(profile: NavProfile, ps: ProfileSchema): number {
+    return hasClimbWeight(profile) ? profile.climb_weight! : ps.climbDefault;
+}
+
+/**
+ * Whether a raw climb-weight entry is admissible. The field is the `u8` §8.6
+ * carries, so the only rules are "a whole number" and the schema's `0..255` —
+ * there is no `>= 1.0` floor to respect, because the climb term is *added*
+ * after the way-kind scaling and so can never make an edge cheaper than the
+ * crow flies. `0` is a meaningful value, not an unset one.
+ */
+export function checkClimbWeight(n: number, min: number, max: number): { ok: boolean; hint: string | null } {
+    if (!Number.isFinite(n) || !Number.isInteger(n)) {
+        return { ok: false, hint: `enter a whole number between ${min} and ${max} (${min} = climb-blind).` };
+    }
+    if (n < min || n > max) {
+        return {
+            ok: false,
+            hint:
+                `a climb weight is a whole number between ${min} and ${max} — it's the byte the ` +
+                `map carries per profile (OBCM §8.6). ${min} is climb-blind: the router costs ` +
+                "ascent at nothing and plans exactly as it did before the map had terrain.",
+        };
+    }
+    return { ok: true, hint: null };
+}
+
+/** Set a profile's climb weight (caller has already validated it). */
+export function setClimbWeight(profile: NavProfile, v: number): void {
+    profile.climb_weight = v;
+}
+
+/** Drop a profile's climb weight, leaving it climb-blind like an unstated field. */
+export function clearClimbWeight(profile: NavProfile): void {
+    delete profile.climb_weight;
 }
 
 /**
