@@ -187,16 +187,10 @@ fn fixture(cfg: &Config) -> (Ingested, Vec<RoutableWay>) {
         (deg(lon0), deg(lat0)),
     ];
     let features = vec![
-        IngestFeature {
-            style_id: water,
-            min_lod: 0,
-            level: None,
-            geom: Geom::Polygon { exterior: ring, interiors: Vec::new() },
-        },
+        IngestFeature { style_id: water, min_lod: 0, geom: Geom::Polygon { exterior: ring, interiors: Vec::new() } },
         IngestFeature {
             style_id: road,
             min_lod: 1,
-            level: None,
             geom: Geom::Line((0..=24).map(|k| (deg(lon0 + k * (lon1 - lon0) / 24), deg(47_300_000))).collect()),
         },
     ];

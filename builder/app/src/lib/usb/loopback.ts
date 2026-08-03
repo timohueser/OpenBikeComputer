@@ -301,7 +301,7 @@ export const MAX_TRIPS = 16;
  * would be exactly the guess this field exists to remove. A mock device is a device, so it gets to
  * hold one.
  */
-export const REFERENCE_OBCM_VERSION = 13;
+export const REFERENCE_OBCM_VERSION = 12;
 
 /** How a {@link MockDevice} starts out. Everything has a working default. */
 export interface MockDeviceOptions {

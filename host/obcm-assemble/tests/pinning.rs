@@ -32,45 +32,49 @@ use obcm_assemble::shard;
 const BOX: AlignedBox = AlignedBox { min_lat: 47_185_920, min_lon: 7_340_032, span_log2: 19 };
 
 /// One style, in the shape both sides construct from: `(id, z_index, color, weight, priority,
-/// dashed, color2, fixed_width, terrain_layer, contour_index)`.
-type Row = (u8, i8, u16, u8, u8, bool, Option<u16>, bool, bool, bool);
+/// dashed, color2, fixed_width, terrain_layer)`.
+type Row = (u8, i8, u16, u8, u8, bool, Option<u16>, bool, bool);
 
 /// The style set both sides are handed. Every defined flag bit is exercised: four priorities, a
 /// dashed record, a `color2` record (including `Some(0x0000)`, which is a real colour and not a
-/// sentinel), #1095's fixed-width (bit 4) and terrain-layer (bit 5) and v13's contour-index (bit 6)
-/// — separately and together — both extremes of the signed `z_index`, and one plain record.
+/// sentinel), #1095's fixed-width (bit 4) and terrain-layer (bit 5) — separately and together —
+/// both extremes of the signed `z_index`, and one plain record.
 fn styles() -> (Vec<Style>, Vec<StyleRecord>) {
     let rows: [Row; 7] = [
-        (1, 0, 0x001F, 1, 1, false, None, false, false, false),
-        (2, -3, 0xF800, 4, 2, true, None, false, false, false),
-        (3, 7, 0x07E0, 2, 3, false, Some(0xBEEF), false, false, false),
-        (4, -128, 0xFFFF, 255, 4, true, Some(0x0000), false, false, false),
-        (9, 127, 0x8410, 3, 1, false, None, false, false, false),
-        // The two shipped contour styles: major (dashed, terrain layer) and index, which adds bit 6.
-        (10, 8, 0xAD55, 1, 4, true, None, true, true, false),
-        (11, 9, 0xAD55, 1, 4, false, None, true, true, true),
+        (1, 0, 0x001F, 1, 1, false, None, false, false),
+        (2, -3, 0xF800, 4, 2, true, None, false, false),
+        (3, 7, 0x07E0, 2, 3, false, Some(0xBEEF), false, false),
+        (4, -128, 0xFFFF, 255, 4, true, Some(0x0000), false, false),
+        (9, 127, 0x8410, 3, 1, false, None, false, false),
+        (10, 8, 0xAD55, 1, 4, true, None, true, true),
+        (11, 9, 0xAD55, 1, 4, false, None, true, false),
     ];
     let pack = rows
         .iter()
-        .map(|&(id, z_index, color, weight, priority, dashed, color2, fixed_width, terrain_layer, contour_index)| {
-            Style { id, z_index, color, weight, priority, dashed, color2, fixed_width, terrain_layer, contour_index }
+        .map(|&(id, z_index, color, weight, priority, dashed, color2, fixed_width, terrain_layer)| Style {
+            id,
+            z_index,
+            color,
+            weight,
+            priority,
+            dashed,
+            color2,
+            fixed_width,
+            terrain_layer,
         })
         .collect();
     let engine = rows
         .iter()
-        .map(|&(id, z_index, color, weight, priority, dashed, color2, fixed_width, terrain_layer, contour_index)| {
-            StyleRecord {
-                id,
-                z_index,
-                color,
-                weight,
-                priority,
-                dashed,
-                color2,
-                fixed_width,
-                terrain_layer,
-                contour_index,
-            }
+        .map(|&(id, z_index, color, weight, priority, dashed, color2, fixed_width, terrain_layer)| StyleRecord {
+            id,
+            z_index,
+            color,
+            weight,
+            priority,
+            dashed,
+            color2,
+            fixed_width,
+            terrain_layer,
         })
         .collect();
     (pack, engine)
