@@ -52,13 +52,12 @@ impl StyleFlags {
     const DASHED: u8 = 1 << 0;
     const FIXED_WIDTH: u8 = 1 << 1;
     const TERRAIN_LAYER: u8 = 1 << 2;
-    const CONTOUR_INDEX: u8 = 1 << 3;
 
     /// No property set: a solid, ramped, non-terrain style.
     pub const NONE: Self = Self(0);
 
     #[inline]
-    pub const fn new(dashed: bool, fixed_width: bool, terrain_layer: bool, contour_index: bool) -> Self {
+    pub const fn new(dashed: bool, fixed_width: bool, terrain_layer: bool) -> Self {
         let mut bits = 0;
         if dashed {
             bits |= Self::DASHED;
@@ -68,9 +67,6 @@ impl StyleFlags {
         }
         if terrain_layer {
             bits |= Self::TERRAIN_LAYER;
-        }
-        if contour_index {
-            bits |= Self::CONTOUR_INDEX;
         }
         Self(bits)
     }
@@ -96,16 +92,6 @@ impl StyleFlags {
     #[inline]
     pub const fn terrain_layer(self) -> bool {
         self.0 & Self::TERRAIN_LAYER != 0
-    }
-
-    /// This style draws **index contours** — every Nth isoline, the ones a map labels. Carried so a
-    /// renderer can single them out by what they *are* rather than by sniffing z-index or guessing
-    /// at a level modulus it was never told (the interval and index step are packer config and do
-    /// not travel in the file). Features of such a style are exactly the ones that carry a
-    /// [`Feature::level`].
-    #[inline]
-    pub const fn contour_index(self) -> bool {
-        self.0 & Self::CONTOUR_INDEX != 0
     }
 }
 
@@ -160,32 +146,12 @@ pub struct Feature<'a> {
     points: &'a [(i32, i32)],
     ring_lens: &'a [usize],
     bbox: BBox,
-    /// Elevation in metres, for a feature whose source states one — contours, and nothing else so
-    /// far. Kept behind [`Feature::level`] like the geometry fields, and set through
-    /// [`Feature::with_level`] rather than by a sixth `new` argument, so a source that has no such
-    /// notion says nothing instead of saying `None` at every call site.
-    level: Option<i16>,
 }
 
 impl<'a> Feature<'a> {
     #[inline]
     pub const fn new(style_id: u8, kind: Kind, points: &'a [(i32, i32)], ring_lens: &'a [usize], bbox: BBox) -> Self {
-        Self { style_id, kind, points, ring_lens, bbox, level: None }
-    }
-
-    /// This feature, carrying `level` (metres). `None` is the same as not calling it.
-    #[inline]
-    pub const fn with_level(mut self, level: Option<i16>) -> Self {
-        self.level = level;
-        self
-    }
-
-    /// The feature's elevation in metres, when its source states one. Set on contour lines by the
-    /// OBCM reader (§5.2's `HAS_LEVEL` field); `None` for every other feature and every source that
-    /// does not carry levels at all.
-    #[inline]
-    pub const fn level(&self) -> Option<i16> {
-        self.level
+        Self { style_id, kind, points, ring_lens, bbox }
     }
 
     #[inline]

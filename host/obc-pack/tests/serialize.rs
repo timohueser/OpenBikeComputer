@@ -7,7 +7,7 @@ use obc_pack::{
 };
 
 fn line(style_id: u8, pts: &[(f64, f64)]) -> Feature {
-    Feature { style_id, kind: Kind::Line, level: None, rings: vec![pts.to_vec()] }
+    Feature { style_id, kind: Kind::Line, rings: vec![pts.to_vec()] }
 }
 
 #[test]
@@ -22,7 +22,6 @@ fn pack_style_dict_one_style() {
         color2: None,
         fixed_width: false,
         terrain_layer: false,
-        contour_index: false,
     }]);
     assert_eq!(data.len(), 9); // count(1) + 8-byte v10 record
     assert_eq!(data[0], 1); // count
@@ -48,7 +47,6 @@ fn pack_style_dict_line_style_and_color2() {
         color2: Some(0x8410),
         fixed_width: false,
         terrain_layer: false,
-        contour_index: false,
     }]);
     assert_eq!(data.len(), 9);
     assert_eq!(data[6], (3 - 1) | 0x04 | 0x08, "priority 3 + dashed bit 2 + color2 bit 3");
@@ -65,19 +63,17 @@ fn pack_style_dict_line_style_and_color2() {
         color2: Some(0x0000),
         fixed_width: false,
         terrain_layer: false,
-        contour_index: false,
     }]);
     assert_eq!(data[6] & 0x08, 0x08, "color2-present bit set even for black");
     assert_eq!(u16::from_le_bytes([data[7], data[8]]), 0x0000);
 }
 
-/// #1095: fixed width is bit 4 and terrain layer is bit 5; v13 (#1105): index contour is bit 6.
-/// Each is independent of the others and of the priority/dashed/color2 bits below them. The record
-/// stays 8 bytes — every one of them lives in the byte that was already there, which is why
-/// defining the first two cost no format bump and the third rides v13 only for company.
+/// #1095: fixed width is bit 4 and terrain layer is bit 5, each independent of the other and of the
+/// priority/dashed/color2 bits below them. The record stays 8 bytes — both bits live in the byte
+/// that was already there, which is why defining them cost no format bump.
 #[test]
 fn pack_style_dict_fixed_width_and_terrain_layer_bits() {
-    let contour = |fixed_width, terrain_layer, contour_index| Style {
+    let contour = |fixed_width, terrain_layer| Style {
         id: 7,
         z_index: 8,
         color: 0xAD55,
@@ -87,24 +83,17 @@ fn pack_style_dict_fixed_width_and_terrain_layer_bits() {
         color2: None,
         fixed_width,
         terrain_layer,
-        contour_index,
     };
     let flags = |s: Style| {
         let data = pack_style_dict(&[s]);
         assert_eq!(data.len(), 9, "the record is still 8 bytes behind its count");
         data[6]
     };
-    assert_eq!(flags(contour(false, false, false)), (4 - 1) | 0x04, "priority 4 + dashed, no other bit");
-    assert_eq!(flags(contour(true, false, false)), (4 - 1) | 0x04 | 0x10, "bit 4 alone");
-    assert_eq!(flags(contour(false, true, false)), (4 - 1) | 0x04 | 0x20, "bit 5 alone");
-    assert_eq!(flags(contour(false, false, true)), (4 - 1) | 0x04 | 0x40, "bit 6 alone");
-    assert_eq!(flags(contour(true, true, false)), (4 - 1) | 0x04 | 0x10 | 0x20, "the shipped major-contour style");
-    assert_eq!(
-        flags(contour(true, true, true)),
-        (4 - 1) | 0x04 | 0x10 | 0x20 | 0x40,
-        "and the index one, which adds v13's bit 6"
-    );
-    assert_eq!(flags(contour(true, true, true)) & 0x80, 0, "bit 7 stays reserved, written 0");
+    assert_eq!(flags(contour(false, false)), (4 - 1) | 0x04, "priority 4 + dashed, neither new bit");
+    assert_eq!(flags(contour(true, false)), (4 - 1) | 0x04 | 0x10, "bit 4 alone");
+    assert_eq!(flags(contour(false, true)), (4 - 1) | 0x04 | 0x20, "bit 5 alone");
+    assert_eq!(flags(contour(true, true)), (4 - 1) | 0x04 | 0x10 | 0x20, "the shipped E3 contour style");
+    assert_eq!(flags(contour(true, true)) & 0xC0, 0, "bits 6-7 stay reserved, written 0");
 }
 
 #[test]
@@ -141,7 +130,7 @@ fn pack_polygon_with_hole() {
     // Rings pre-closed: 4 distinct pts -> 5 stored.
     let ext = vec![(0.0, 0.0), (0.0001, 0.0), (0.0001, 0.0001), (0.0, 0.0001), (0.0, 0.0)];
     let hole = vec![(0.00002, 0.00002), (0.00008, 0.00002), (0.00008, 0.00008), (0.00002, 0.00008), (0.00002, 0.00002)];
-    let f = Feature { style_id: 20, kind: Kind::Polygon, level: None, rings: vec![ext, hole] };
+    let f = Feature { style_id: 20, kind: Kind::Polygon, rings: vec![ext, hole] };
     let node_bbox = (0, 0, 200, 200);
     let data = pack_feature(&f, node_bbox);
 
@@ -362,11 +351,7 @@ fn budget_covers_packed_bytes_for_densify_and_holes() {
 
     // A 2-point line spanning 3° of longitude densifies to ~100 midpoints.
     let long = vec![(0.1, 0.5), (3.1, 0.5)];
-    check(
-        "densified line",
-        &Geom::Line(long.clone()),
-        &Feature { style_id: 1, kind: Kind::Line, level: None, rings: vec![long] },
-    );
+    check("densified line", &Geom::Line(long.clone()), &Feature { style_id: 1, kind: Kind::Line, rings: vec![long] });
 
     // A polygon with two holes, each ~1° from the anchor: the anchor→hole jumps
     // densify too, and the hole count/pt_count bookkeeping bytes must be counted.
@@ -376,7 +361,7 @@ fn budget_covers_packed_bytes_for_densify_and_holes() {
     check(
         "polygon with far holes",
         &Geom::Polygon { exterior: ext.clone(), interiors: vec![h1.clone(), h2.clone()] },
-        &Feature { style_id: 2, kind: Kind::Polygon, level: None, rings: vec![ext, h1, h2] },
+        &Feature { style_id: 2, kind: Kind::Polygon, rings: vec![ext, h1, h2] },
     );
 
     // A small 8-bit line: the budget may be loose (16-bit worst case) but never under.
@@ -384,7 +369,7 @@ fn budget_covers_packed_bytes_for_densify_and_holes() {
     check(
         "small 8-bit line",
         &Geom::Line(small.clone()),
-        &Feature { style_id: 3, kind: Kind::Line, level: None, rings: vec![small] },
+        &Feature { style_id: 3, kind: Kind::Line, rings: vec![small] },
     );
 }
 
@@ -602,7 +587,6 @@ fn a_leaf_wider_than_the_u16_anchor_round_trips_through_both_forms() {
         color2: None,
         fixed_width: false,
         terrain_layer: false,
-        contour_index: false,
     }];
     let (bin, dropped) = serialize_lods(
         &lods,

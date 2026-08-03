@@ -1,4 +1,4 @@
-//! Hand-written OBCM v13 byte builder shared by the `obc-reader` and `obc-render`
+//! Hand-written OBCM v11 byte builder shared by the `obc-reader` and `obc-render`
 //! integration tests.
 //!
 //! Both crates need to synthesise `.obcm` byte buffers by hand (rather than checking
@@ -21,12 +21,7 @@
 //! `color2` u16 (spec §2, epic #556). **v11** packs geometry chunks tight behind a
 //! per-LOD offset table ([`chunk_region`], [`seal`]) and reorders the feature header
 //! — `flags` to byte 1, then either the 7-byte compact or 12-byte wide layout
-//! (issue #1009). **v12** is a §8-only bump (directional ascent + profile climb weight,
-//! issue #1073) that the geometry builders here never see. **v13** appends an optional
-//! `int16` **level** behind the feature header under flag bit 4 ([`pack_line_level`]) and
-//! defines style-flag bit 6 (issue #1105); [`pack_poly_level`] and [`pack_line_flags`]
-//! author the two shapes §5.2 requires a reader to *refuse*, which is the half of a wire
-//! rule an oracle is uniquely placed to state. [`build_file`]/[`build_priority_tree`]
+//! (issue #1009). [`build_file`]/[`build_priority_tree`]
 //! write **empty** POI + nav sections so the reader accepts them; the directory,
 //! record, and pool builders ([`poi_directory`], [`pack_poi_record`], [`hours_pool`],
 //! [`nav_directory`], [`pack_nav_record`], [`pack_nav_edge_record`]) let the
@@ -64,8 +59,8 @@ pub use obc_formats::obcm::{
     POI_CHUNK_SIZE, POI_DIR_POOL_FIELDS_LEN, POI_HOURS_BLOB_LEN, POI_NAME_LEN, POI_RECORD_LEN,
 };
 use obc_formats::obcm::{
-    CHUNK_END, FEATURE_FLAG_16BIT, FEATURE_FLAG_HOLES, FEATURE_FLAG_POLYGON, FEATURE_FLAG_WIDE, FEATURE_HAS_LEVEL_BIT,
-    MAGIC, STYLE_DASHED_BIT, STYLE_HAS_COLOR2_BIT, STYLE_PRIORITY_MASK, VERSION,
+    CHUNK_END, FEATURE_FLAG_16BIT, FEATURE_FLAG_HOLES, FEATURE_FLAG_POLYGON, FEATURE_FLAG_WIDE, MAGIC,
+    STYLE_DASHED_BIT, STYLE_HAS_COLOR2_BIT, STYLE_PRIORITY_MASK, VERSION,
 };
 /// Distinctive (non-default) marker color baked into [`build_file`]'s header, so the
 /// reader's round-trip test is meaningful.
@@ -718,34 +713,6 @@ pub fn chunk_region(chunks: &[Vec<u8>]) -> Vec<u8> {
 pub fn pack_line(style_id: u8, ax: i32, ay: i32, deltas: &[(i8, i8)]) -> Vec<u8> {
     // line, 8-bit deltas — no flags set
     let mut v = feature_header(style_id, (1 + deltas.len()) as u16, ax, ay, 0);
-    push_deltas8(&mut v, deltas);
-    v
-}
-
-/// A line feature carrying the v13 §5.2 **level** (flag bit 4): the `int16` metres sit between the
-/// header and the deltas, which is the only place the field ever appears.
-pub fn pack_line_level(style_id: u8, ax: i32, ay: i32, level: i16, deltas: &[(i8, i8)]) -> Vec<u8> {
-    let mut v = feature_header(style_id, (1 + deltas.len()) as u16, ax, ay, FEATURE_HAS_LEVEL_BIT);
-    v.extend_from_slice(&level.to_le_bytes());
-    push_deltas8(&mut v, deltas);
-    v
-}
-
-/// A **polygon** carrying a level — a deliberately malformed feature (§5.2: levels are legal on
-/// lines only), for the reject path. Byte-shaped exactly as a reader that ignored the rule would
-/// expect, so a test proves the refusal and not a framing accident.
-pub fn pack_poly_level(style_id: u8, ax: i32, ay: i32, level: i16, deltas: &[(i8, i8)]) -> Vec<u8> {
-    let flags = FEATURE_FLAG_POLYGON | FEATURE_HAS_LEVEL_BIT;
-    let mut v = feature_header(style_id, (1 + deltas.len()) as u16, ax, ay, flags);
-    v.extend_from_slice(&level.to_le_bytes());
-    push_deltas8(&mut v, deltas);
-    v
-}
-
-/// A line with arbitrary `extra_flags` OR-ed into its flags byte and no level field — for authoring
-/// the reserved-bit cases (§5.2 bits 5-7) a reader must reject.
-pub fn pack_line_flags(style_id: u8, ax: i32, ay: i32, extra_flags: u8, deltas: &[(i8, i8)]) -> Vec<u8> {
-    let mut v = feature_header(style_id, (1 + deltas.len()) as u16, ax, ay, extra_flags);
     push_deltas8(&mut v, deltas);
     v
 }

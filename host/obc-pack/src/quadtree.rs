@@ -18,7 +18,7 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::geom::{clip_to_box, packed_size_budget, to_feature, trim_excess_holes, Bounds, Geom, LodFeature};
+use crate::geom::{clip_to_box, packed_size_budget, to_feature, trim_excess_holes, Bounds, Geom};
 use crate::progress::Progress;
 use crate::serialize::Node;
 use obc_reader::MAX_FEAT_RINGS;
@@ -32,9 +32,6 @@ fn deg(bbox: (i64, i64, i64, i64)) -> DegBox {
 
 struct StoredFeature {
     style_id: u8,
-    /// v13 §5.2 level (metres) — carried through clipping and splitting untouched, because cutting a
-    /// contour in half does not change how high it is.
-    level: Option<i16>,
     /// A simple geometry (Line/Polygon), post-flatten.
     geom: Geom,
     bounds: Bounds,
@@ -54,7 +51,6 @@ fn place(
     bbox: (i64, i64, i64, i64),
     dbox: DegBox,
     style_id: u8,
-    level: Option<i16>,
     geom: Geom,
     bounds: Bounds,
     out: &mut Vec<StoredFeature>,
@@ -66,29 +62,29 @@ fn place(
     }
     // Contain: fully inside ⇒ keep whole, no clip, no bounds recompute.
     if bounds.0 >= minxf && bounds.2 <= maxxf && bounds.1 >= minyf && bounds.3 <= maxyf {
-        out.push(StoredFeature { style_id, level, geom, bounds });
+        out.push(StoredFeature { style_id, geom, bounds });
         return;
     }
     // Straddle: clip to the box and flatten whatever comes back.
     let clipped = clip_to_box(&geom, bbox);
     if !clipped.is_empty() {
-        flatten(style_id, level, clipped, out);
+        flatten(style_id, clipped, out);
     }
 }
 
 /// Append the simple parts of `geom` (recomputing each part's bounds) to `out`,
 /// flattening `Multi`s. Used for geometry whose bounds aren't already known: a clip
 /// result and each raw input feature at the root.
-fn flatten(style_id: u8, level: Option<i16>, geom: Geom, out: &mut Vec<StoredFeature>) {
+fn flatten(style_id: u8, geom: Geom, out: &mut Vec<StoredFeature>) {
     match geom {
         Geom::Line(_) | Geom::Polygon { .. } => {
             let bounds = geom.bounds();
-            out.push(StoredFeature { style_id, level, geom, bounds });
+            out.push(StoredFeature { style_id, geom, bounds });
         }
         Geom::Multi(parts) => {
             for p in parts {
                 if !p.is_empty() {
-                    flatten(style_id, level, p, out);
+                    flatten(style_id, p, out);
                 }
             }
         }
@@ -132,7 +128,7 @@ fn build_node(bbox: (i64, i64, i64, i64), chunk_size: usize, feats: Vec<StoredFe
                 if n > 0 {
                     trimmed.fetch_add(n, Ordering::Relaxed);
                 }
-                to_feature(f.style_id, f.level, &f.geom)
+                to_feature(f.style_id, &f.geom)
             })
             .collect();
         return Node::Leaf { bbox, features };
@@ -155,7 +151,7 @@ fn build_node(bbox: (i64, i64, i64, i64), chunk_size: usize, feats: Vec<StoredFe
     // contained in one quadrant thus never allocates a throwaway copy.
     let mut buckets: [Vec<StoredFeature>; 4] = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
     for f in feats {
-        let StoredFeature { style_id, level, geom, bounds } = f;
+        let StoredFeature { style_id, geom, bounds } = f;
         let mut reached = [false; 4];
         let mut last = None;
         for (i, &(minxf, minyf, maxxf, maxyf)) in dboxes.iter().enumerate() {
@@ -172,7 +168,7 @@ fn build_node(bbox: (i64, i64, i64, i64), chunk_size: usize, feats: Vec<StoredFe
                 continue;
             }
             let g = if i == last { geom.take().unwrap() } else { geom.as_ref().unwrap().clone() };
-            place(boxes[i], dboxes[i], style_id, level, g, bounds, &mut buckets[i]);
+            place(boxes[i], dboxes[i], style_id, g, bounds, &mut buckets[i]);
         }
     }
 
@@ -198,11 +194,10 @@ fn build_node(bbox: (i64, i64, i64, i64), chunk_size: usize, feats: Vec<StoredFe
 }
 
 /// Build one LOD's quadtree from its (already simplified) features and convert it
-/// to a serializable [`Node`] tree. `features` yields anything that is a
-/// [`LodFeature`] — a bare `(style_id, geom)` pair reads as a level-less one —
-/// with geometry in degrees; empties are skipped (simplify can empty a geometry).
+/// to a serializable [`Node`] tree. `features` yields `(style_id, geom)` with
+/// geometry in degrees; empties are skipped (simplify can empty a geometry).
 pub fn build_lod(
-    features: impl IntoIterator<Item = impl Into<LodFeature>>,
+    features: impl IntoIterator<Item = (u8, Geom)>,
     global_bbox: (i64, i64, i64, i64),
     chunk_size: usize,
 ) -> Node {
@@ -218,7 +213,7 @@ pub fn build_lod(
 /// tree in microseconds is what keeps the tail after a cancel short instead of
 /// paying for a split of a country's worth of features nobody will read.
 pub fn build_lod_with(
-    features: impl IntoIterator<Item = impl Into<LodFeature>>,
+    features: impl IntoIterator<Item = (u8, Geom)>,
     global_bbox: (i64, i64, i64, i64),
     chunk_size: usize,
     progress: &Progress,
@@ -227,14 +222,13 @@ pub fn build_lod_with(
     // can poke just outside it) and flatten Multis to simple parts, in input order.
     let dbox = deg(global_bbox);
     let mut root = Vec::new();
-    for feature in features {
-        let LodFeature { style_id, level, geom } = feature.into();
+    for (style_id, geom) in features {
         if progress.is_cancelled() {
             root.clear();
             break;
         }
         if !geom.is_empty() {
-            place_any(global_bbox, dbox, style_id, level, geom, &mut root);
+            place_any(global_bbox, dbox, style_id, geom, &mut root);
         }
     }
     let trimmed = AtomicUsize::new(0);
@@ -251,26 +245,19 @@ pub fn build_lod_with(
 /// and [`place`] each against the box, computing per-part bounds. Split-level
 /// distribution uses [`place`] directly since it already knows each feature's
 /// bounds; only the root's raw inputs need this bounds-computing wrapper.
-fn place_any(
-    bbox: (i64, i64, i64, i64),
-    dbox: DegBox,
-    style_id: u8,
-    level: Option<i16>,
-    geom: Geom,
-    out: &mut Vec<StoredFeature>,
-) {
+fn place_any(bbox: (i64, i64, i64, i64), dbox: DegBox, style_id: u8, geom: Geom, out: &mut Vec<StoredFeature>) {
     match geom {
         Geom::Multi(parts) => {
             for p in parts {
                 if !p.is_empty() {
-                    place_any(bbox, dbox, style_id, level, p, out);
+                    place_any(bbox, dbox, style_id, p, out);
                 }
             }
         }
         Geom::Empty => {}
         simple => {
             let bounds = simple.bounds();
-            place(bbox, dbox, style_id, level, simple, bounds, out);
+            place(bbox, dbox, style_id, simple, bounds, out);
         }
     }
 }

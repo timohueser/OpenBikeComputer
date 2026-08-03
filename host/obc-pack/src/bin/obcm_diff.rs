@@ -32,9 +32,8 @@ use obc_reader::{
     NAV_MAX_CHUNK_BYTES,
 };
 
-/// Canonical, hashable identity of a decoded feature: style, kind, the v13 §5.2 level (`None` for
-/// everything that is not a contour), and geometry in microdegrees.
-type FeatureKey = (u8, bool, Option<i16>, Vec<(i32, i32)>, Vec<Vec<(i32, i32)>>);
+/// Canonical, hashable identity of a decoded feature (geometry in microdegrees).
+type FeatureKey = (u8, bool, Vec<(i32, i32)>, Vec<Vec<(i32, i32)>>);
 
 /// Canonical form of a closed ring, invariant to start vertex + winding: strip the
 /// closing duplicate, then take the lexicographically-smallest sequence over all
@@ -85,7 +84,7 @@ fn collect_features(r: &Reader, lod: usize, canonical: bool) -> HashMap<FeatureK
                 interiors = interiors.iter().map(|h| canon_ring(h)).collect();
                 interiors.sort();
             }
-            let key = (f.style_id, is_poly, f.level, exterior, interiors);
+            let key = (f.style_id, is_poly, exterior, interiors);
             *counts.entry(key).or_insert(0) += 1;
         })
         .unwrap();
@@ -101,7 +100,7 @@ fn style_tuple(s: &Style) -> (u8, i8, u16, u8, u8) {
 /// line is independent of how the anchor was encoded — the whole point when the header layout is
 /// what changed.
 fn feature_line(key: &FeatureKey, count: usize) -> String {
-    let (style_id, is_poly, level, exterior, interiors) = key;
+    let (style_id, is_poly, exterior, interiors) = key;
     let pts =
         |ring: &[(i32, i32)]| -> String { ring.iter().map(|(x, y)| format!("{x},{y}")).collect::<Vec<_>>().join(" ") };
     let mut line = format!(
@@ -112,14 +111,6 @@ fn feature_line(key: &FeatureKey, count: usize) -> String {
     );
     for hole in interiors {
         line.push_str(&format!(" hole[{}]={}", hole.len(), pts(hole)));
-    }
-    // The v13 level goes **last**, and only when there is one. Both halves of that matter for the
-    // cross-bump diff this listing exists for: a map with no contours prints character-for-character
-    // what the pre-v13 tool printed, and stripping ` level=N` off a map that has them leaves lines
-    // that still sort exactly as the old tool sorted them — which they would not if the annotation
-    // sat mid-line, because `dump` sorts on the whole rendered string.
-    if let Some(metres) = level {
-        line.push_str(&format!(" level={metres}"));
     }
     line
 }
@@ -134,8 +125,7 @@ fn dump(r: &Reader, path: &str) {
     for id in 0u16..=255 {
         if let Some(s) = r.style(id as u8) {
             println!(
-                "style id={} z={} color={:#06x} weight={} prio={} dashed={} fixed_width={} terrain={} \
-                 contour_index={} color2={}",
+                "style id={} z={} color={:#06x} weight={} prio={} dashed={} fixed_width={} terrain={} color2={}",
                 s.id,
                 s.z_index,
                 s.color,
@@ -144,7 +134,6 @@ fn dump(r: &Reader, path: &str) {
                 s.flags.dashed() as u8,
                 s.flags.fixed_width() as u8,
                 s.flags.terrain_layer() as u8,
-                s.flags.contour_index() as u8,
                 s.color2.map_or("-".into(), |c| format!("{c:#06x}"))
             );
         }
@@ -285,13 +274,7 @@ fn directional_diff(
                 line += excess;
             }
             if examples < max_examples {
-                println!(
-                    "  {symbol} LOD{lod} {label} x{excess}: style={} poly={}{} ext_pts={}",
-                    k.0,
-                    k.1,
-                    k.2.map_or(String::new(), |m| format!(" level={m}")),
-                    k.3.len()
-                );
+                println!("  {symbol} LOD{lod} {label} x{excess}: style={} poly={} ext_pts={}", k.0, k.1, k.2.len());
                 examples += 1;
             }
         }
