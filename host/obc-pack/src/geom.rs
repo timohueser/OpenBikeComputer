@@ -296,6 +296,12 @@ fn densify_extra(p1: (i64, i64), p2: (i64, i64)) -> usize {
 /// feature on its own, so the wide-header figure is kept as headroom rather than tightened. Under
 /// v10's padded chunks an overestimate wasted file bytes; with tight chunks it costs nothing but a
 /// marginally earlier leaf split.
+///
+/// That same overestimate is why the v13 level field needs no term here, and the margin is worth
+/// stating rather than trusting: against the worst case a level can occur in — a wide header, 16-bit
+/// deltas, no holes — the budget is `12 + 4·pts` and the packed feature is `12 + 2 + 2·(pts−1)`, so
+/// the budget still leads by `2·pts` bytes, which covers the two the level costs and the chunk's
+/// sentinel byte for every `pts ≥ 1`.
 pub fn packed_size_budget(g: &Geom) -> usize {
     const NO_HOLES: &[Vec<(f64, f64)>] = &[];
     let (exterior, interiors) = match g {

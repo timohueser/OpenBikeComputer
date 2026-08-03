@@ -93,7 +93,9 @@ pub struct NavProfile {
 /// vertices, and `4101` is where that hits 2048. Above this the reader **silently
 /// truncates** past-cap vertices (`heapless` push fails, no error either side),
 /// corrupting the feature's fill/stroke. (v10's bound was 4106 off the 12-byte
-/// header; the compact header is what tightened it by 5 bytes.)
+/// header; the compact header is what tightened it by 5 bytes.) v13's level field
+/// leaves the bound alone in the safe direction: a feature carrying one is 2 bytes
+/// *bigger* than this minimum, so it reaches the vertex cap later, never sooner.
 pub const MAX_SAFE_CHUNK_SIZE: usize = (obc_reader::MAX_FEAT_PTS - 1) * 2 + FEATURE_HEADER_COMPACT_LEN;
 
 // The safe ceiling must itself fit the on-wire `u16` chunk_size field, or the bound is moot.
