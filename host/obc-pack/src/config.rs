@@ -53,7 +53,28 @@ pub fn config_schema() -> Value {
     annotate_property(properties, "chunk_size", CHUNK_SIZE_DESCRIPTION);
     annotate_property(properties, "merge_fills", MERGE_FILLS_DESCRIPTION);
     annotate_property(properties, "merge_lines", MERGE_LINES_DESCRIPTION);
+    annotate_property(properties, "contours", CONTOURS_DESCRIPTION);
     annotate_property(properties, "routing", ROUTING_DESCRIPTION);
+    let contour_props = properties["contours"]["properties"].as_object_mut().expect("contours properties");
+    contour_props["enabled"]["description"] = Value::String(
+        "Trace contours from the terrain given to `--terrain`. Without terrain, nothing is traced.".into(),
+    );
+    contour_props["interval"]["description"] =
+        Value::String("Vertical spacing between contours, in metres. Every level is a `contour.major` feature.".into());
+    contour_props["interval"]["minimum"] = Value::from(1);
+    contour_props["index_every"]["description"] = Value::String(
+        "Every Nth contour is a `contour.index` feature instead of `contour.major`; 1 makes every contour an index \
+         contour."
+            .into(),
+    );
+    contour_props["index_every"]["minimum"] = Value::from(1);
+    contour_props["simplify"]["description"] = Value::String(
+        "Simplify tolerance in metres applied to traced contours *before* the LOD ladder sees them. This is a clamp, \
+         not a detail knob: the fine tiers simplify at 3 m / 0.5 m, one to two orders finer than a ~40 m-posting DEM \
+         supports, so a smaller value only stores interpolation noise."
+            .into(),
+    );
+    contour_props["simplify"]["minimum"] = Value::from(0.0);
     properties["lods"]["maxItems"] = Value::from(MAX_LODS);
     properties["chunk_size"]["minimum"] = Value::from(crate::serialize::MIN_CHUNK_SIZE);
     properties["chunk_size"]["maximum"] = Value::from(crate::serialize::MAX_SAFE_CHUNK_SIZE);
@@ -99,6 +120,7 @@ const MARKER_DESCRIPTION: &str =
 const CHUNK_SIZE_DESCRIPTION: &str = "Quadtree chunk payload target in bytes. The maximum is the reader's per-feature vertex cap; the minimum guards against chunks so small that features are dropped wholesale. Values outside the range are rejected at pack time. Governs the geometry sections (LODs) only; the nav graph's chunks are pinned to 512 bytes.";
 const MERGE_FILLS_DESCRIPTION: &str = "Dissolve fill polygons that render pixel-identically - same z_index, color, and priority, with no color2 - into one union per LOD. A pure map-size/render-cost optimization with no intended visual change; false (the default) packs byte-identically to before.";
 const MERGE_LINES_DESCRIPTION: &str = "Stitch same-styled connected line fragments into maximal polylines per LOD. No intended visual change for solid lines; a dashed or cased line's pattern runs continuously across a former join. false (the default) packs byte-identically to before.";
+const CONTOURS_DESCRIPTION: &str = "Contour lines traced from the baked OBCT terrain passed to `--terrain` and packed as ordinary line features. Two classes are emitted: `contour.major` for every level and `contour.index` for every Nth one; each is styled by a `features.contour.<class>` rule, and a class with no rule is simply not packed. Absent, or `enabled: false`, packs byte-identically to a map with no contours at all.";
 const ROUTING_DESCRIPTION: &str = "Nav-graph routing config (OBCM §8): the island-pruning threshold plus the bike profiles baked into the map's profile table. Absent means the four shipped profiles (Road / Gravel / MTB / Touring).";
 
 fn annotate_property(properties: &mut Map<String, Value>, name: &str, description: &str) {
@@ -128,6 +150,9 @@ struct ConfigDocument {
     #[serde(default = "default_false_document")]
     #[schemars(default = "default_false_document")]
     merge_lines: Option<bool>,
+    #[serde(default = "default_contours_document")]
+    #[schemars(default = "default_contours_document")]
+    contours: ContoursDocument,
     #[serde(default = "default_routing_document")]
     #[schemars(default = "default_routing_document")]
     routing: RoutingDocument,
@@ -176,6 +201,23 @@ struct MarkerDocument {
     #[serde(default = "default_color_document")]
     #[schemars(default = "default_color_document")]
     color: ColorValue,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[schemars(inline)]
+struct ContoursDocument {
+    #[serde(default = "default_false_document")]
+    #[schemars(default = "default_false_document")]
+    enabled: Option<bool>,
+    #[serde(default = "default_contour_interval_document")]
+    #[schemars(default = "default_contour_interval_document")]
+    interval: Option<u32>,
+    #[serde(default = "default_contour_index_every_document")]
+    #[schemars(default = "default_contour_index_every_document")]
+    index_every: Option<u32>,
+    #[serde(default = "default_contour_simplify_document")]
+    #[schemars(default = "default_contour_simplify_document")]
+    simplify: Option<f64>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -265,6 +307,35 @@ const fn default_min_component_edges_document() -> Option<usize> {
 
 fn default_profiles_document() -> Option<Vec<ProfileDocument>> {
     Some(serde_json::from_str(DEFAULT_PROFILES_JSON).expect("embedded default profiles are valid typed config"))
+}
+
+/// 100 m, the one ladder EL10 traces: at the finest tier the screen is ~290 m wide against a
+/// ~40 × 57 m posting, so a 50 m tier draws interpolation segments rather than terrain.
+const DEFAULT_CONTOUR_INTERVAL_M: u32 = 100;
+/// Every 5th contour (500 m at the default interval) is an index contour.
+const DEFAULT_CONTOUR_INDEX_EVERY: u32 = 5;
+/// The traced-geometry clamp in metres (#1094): see [`CONTOURS_DESCRIPTION`].
+const DEFAULT_CONTOUR_SIMPLIFY_M: f64 = 15.0;
+
+const fn default_contour_interval_document() -> Option<u32> {
+    Some(DEFAULT_CONTOUR_INTERVAL_M)
+}
+
+const fn default_contour_index_every_document() -> Option<u32> {
+    Some(DEFAULT_CONTOUR_INDEX_EVERY)
+}
+
+const fn default_contour_simplify_document() -> Option<f64> {
+    Some(DEFAULT_CONTOUR_SIMPLIFY_M)
+}
+
+fn default_contours_document() -> ContoursDocument {
+    ContoursDocument {
+        enabled: default_false_document(),
+        interval: default_contour_interval_document(),
+        index_every: default_contour_index_every_document(),
+        simplify: default_contour_simplify_document(),
+    }
 }
 
 fn default_routing_document() -> RoutingDocument {
@@ -499,6 +570,53 @@ pub struct Lod {
     pub min_area_px: f64,
 }
 
+/// The parsed `contours` config section (EL10a, #1094): what [`crate::contour`] traces out of the
+/// OBCT terrain a run was given. Absent ⇒ [`Contours::default`], which is off.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Contours {
+    /// Trace at all. `false` ⇒ the tracer is never entered and the pack is byte-identical to one
+    /// built before contours existed.
+    pub enabled: bool,
+    /// Vertical spacing between contours in **metres**, ≥ 1.
+    pub interval_m: i32,
+    /// Every Nth level is a [`ContourClass::Index`] contour instead of [`ContourClass::Major`], ≥ 1.
+    pub index_every: u32,
+    /// The pre-ladder simplify clamp in **metres**; `0.0` ⇒ no clamp (see [`CONTOURS_DESCRIPTION`]).
+    pub simplify_m: f64,
+}
+
+impl Default for Contours {
+    fn default() -> Self {
+        Contours {
+            enabled: false,
+            interval_m: DEFAULT_CONTOUR_INTERVAL_M as i32,
+            index_every: DEFAULT_CONTOUR_INDEX_EVERY,
+            simplify_m: DEFAULT_CONTOUR_SIMPLIFY_M,
+        }
+    }
+}
+
+/// The two feature classes a contour trace emits. They are ordinary style rules under the synthetic
+/// `contour` tag key — `features.contour.major` / `features.contour.index` — so the config styles
+/// them independently, and a class with no rule is simply not traced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContourClass {
+    /// Every level of the ladder.
+    Major,
+    /// Every `index_every`th level.
+    Index,
+}
+
+impl ContourClass {
+    /// The config value this class is styled under.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ContourClass::Major => "major",
+            ContourClass::Index => "index",
+        }
+    }
+}
+
 /// The parsed `routing` config section (N2): the island-pruning threshold plus the §8.6 bike
 /// profiles baked into the nav graph. Absent ⇒ [`default_routing`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -528,6 +646,9 @@ pub struct Config {
     /// ([`crate::merge`]). No intended visual change for solid lines; dash/casing
     /// phase runs continuously across a former join. Default `false` ⇒ byte-identical.
     pub merge_lines: bool,
+    /// The `contours` section (EL10a): the ladder [`crate::contour`] traces out of `--terrain`.
+    /// Default off ⇒ absent block packs byte-identically to before.
+    pub contours: Contours,
     /// The `routing` section (island pruning + bike profiles).
     pub routing: Routing,
 }
@@ -596,9 +717,10 @@ impl Config {
         let chunk_size = document.chunk_size.unwrap_or(DEFAULT_CHUNK_SIZE);
         let merge_fills = document.merge_fills.unwrap_or(false);
         let merge_lines = document.merge_lines.unwrap_or(false);
+        let contours = document.contours.normalize()?;
         let routing = document.routing.normalize()?;
 
-        Ok(Config { features, lods, marker_color, chunk_size, merge_fills, merge_lines, routing })
+        Ok(Config { features, lods, marker_color, chunk_size, merge_fills, merge_lines, contours, routing })
     }
 
     /// First matching `(tag_key, value)` in document order. Within a matched
@@ -618,9 +740,24 @@ impl Config {
         None
     }
 
+    /// The style rule at `features.<tag_key>.<value>`, exactly — no `"*"` fallback.
+    ///
+    /// This is the lookup the packer's **generated** features use (land, contours): they carry no
+    /// OSM tags, so [`get_style`](Self::get_style)'s first-match walk has nothing to match on, and a
+    /// catch-all written for some real OSM key must never end up styling them.
+    pub fn feature_style(&self, tag_key: &str, value: &str) -> Option<&FeatureStyle> {
+        self.features.iter().find(|(k, _)| k == tag_key).and_then(|(_, m)| m.get(value))
+    }
+
     /// The `natural.land` style, if the config requests land generation.
     pub fn land_style(&self) -> Option<&FeatureStyle> {
-        self.features.iter().find(|(k, _)| k == "natural").and_then(|(_, m)| m.get("land"))
+        self.feature_style("natural", "land")
+    }
+
+    /// The style for one traced contour class, if the config asks for it. `None` ⇒ that class is
+    /// not packed (and not even traced).
+    pub fn contour_style(&self, class: ContourClass) -> Option<&FeatureStyle> {
+        self.feature_style("contour", class.as_str())
     }
 
     /// The full Style Table for the serializer (order is irrelevant; the
@@ -663,6 +800,31 @@ impl LodDocument {
             return Err(format!("config lods[{index}].min_area_px: {min_area_px} must be >= 0"));
         }
         Ok(Lod { max_mpp: self.max_mpp, simplify_m, min_area_px })
+    }
+}
+
+impl ContoursDocument {
+    fn normalize(self) -> Result<Contours, String> {
+        let default = Contours::default();
+        let interval = self.interval.unwrap_or(DEFAULT_CONTOUR_INTERVAL_M);
+        if interval == 0 {
+            return Err("config contours.interval: must be >= 1 metre".into());
+        }
+        let interval_m = i32::try_from(interval)
+            .map_err(|_| format!("config contours.interval: {interval} m is not a plausible contour spacing"))?;
+        let index_every = self.index_every.unwrap_or(DEFAULT_CONTOUR_INDEX_EVERY);
+        if index_every == 0 {
+            return Err("config contours.index_every: must be >= 1 (1 makes every contour an index contour)".into());
+        }
+        // The product is what a level is tested against; it must stay in `i32` for that test.
+        interval_m
+            .checked_mul(index_every as i32)
+            .ok_or_else(|| format!("config contours.index_every: {interval} m x {index_every} overflows"))?;
+        let simplify_m = self.simplify.unwrap_or(DEFAULT_CONTOUR_SIMPLIFY_M);
+        if !(simplify_m.is_finite() && simplify_m >= 0.0) {
+            return Err(format!("config contours.simplify: {simplify_m} must be a finite value >= 0"));
+        }
+        Ok(Contours { enabled: self.enabled.unwrap_or(default.enabled), interval_m, index_every, simplify_m })
     }
 }
 
@@ -1009,13 +1171,17 @@ mod tests {
         assert_eq!(id("railway", "rail"), Some(20)); // counter carries across keys
         assert_eq!(id("building", "*"), Some(29)); // the default preset's building catch-all
         assert_eq!(id("natural", "land"), Some(31));
-        assert_eq!(id("admin_level", "2"), Some(50)); // last value in the document
+        assert_eq!(id("admin_level", "2"), Some(50));
+        // The synthetic contour classes are appended last on purpose: every OSM style above keeps
+        // the id it had before contours existed.
+        assert_eq!(id("contour", "major"), Some(51));
+        assert_eq!(id("contour", "index"), Some(52)); // last value in the document
 
         // Every id is unique and within 1..=254.
         let mut ids: Vec<u8> = cfg.styles().iter().map(|s| s.id).collect();
         ids.sort_unstable();
         assert_eq!(ids.first(), Some(&1));
-        assert_eq!(ids.last(), Some(&50));
+        assert_eq!(ids.last(), Some(&52));
         let n = ids.len();
         ids.dedup();
         assert_eq!(ids.len(), n, "style ids must be unique");
@@ -1264,6 +1430,91 @@ mod tests {
         assert_eq!(env["format_version"].as_u64(), Some(OBCM_VERSION as u64));
         assert_eq!(env["format_version"].as_u64(), Some(12), "#1073 bumps the OBCM format to v12");
         assert!(env["schema"]["$defs"]["style"].is_object(), "envelope embeds the schema");
+    }
+
+    // --- contours section (EL10a, #1094) -------------------------------------------------------
+
+    fn parse_contours(text: &str) -> Result<Contours, String> {
+        Config::parse(text).map(|c| c.contours)
+    }
+
+    /// An omitted (or null-valued) `contours` section is off, and carries the shipped ladder so
+    /// flipping `enabled` alone is a complete request.
+    #[test]
+    fn contours_default_to_off_with_the_shipped_ladder() {
+        let cfg = Config::parse("{}").expect("empty config parses");
+        assert_eq!(cfg.contours, Contours::default());
+        assert!(!cfg.contours.enabled, "a config that says nothing about contours packs none");
+        assert_eq!((cfg.contours.interval_m, cfg.contours.index_every), (100, 5));
+        assert_eq!(cfg.contours.simplify_m, 15.0, "the 15 m clamp is the default, not a knob to discover");
+
+        let explicit = parse_contours(r#"{"contours":{"enabled":true,"interval":null,"simplify":null}}"#)
+            .expect("null fields fall back to the defaults");
+        assert_eq!(explicit, Contours { enabled: true, ..Contours::default() });
+    }
+
+    /// The values that would make a trace meaningless are rejected at parse time, not survived into
+    /// a division or an infinite level ladder.
+    #[test]
+    fn contours_reject_degenerate_ladders() {
+        assert_eq!(parse_contours(r#"{"contours":{"interval":1}}"#).map(|c| c.interval_m), Ok(1));
+        assert!(parse_contours(r#"{"contours":{"interval":0}}"#).is_err(), "a 0 m interval must error");
+        assert!(parse_contours(r#"{"contours":{"index_every":0}}"#).is_err(), "index_every 0 must error");
+        assert_eq!(parse_contours(r#"{"contours":{"index_every":1}}"#).map(|c| c.index_every), Ok(1));
+        assert!(parse_contours(r#"{"contours":{"simplify":-1}}"#).is_err(), "a negative clamp must error");
+        assert_eq!(parse_contours(r#"{"contours":{"simplify":0}}"#).map(|c| c.simplify_m), Ok(0.0));
+        assert!(parse_contours(r#"{"contours":{"interval":"100"}}"#).is_err(), "the interval is a number");
+    }
+
+    /// The two classes are ordinary style rules under a synthetic tag key, looked up **exactly** —
+    /// a `"*"` catch-all written for a real OSM key must never end up styling terrain.
+    #[test]
+    fn contour_classes_are_styled_independently() {
+        let cfg = Config::parse(
+            r#"{"features":{"contour":{"index":{"color":"0xAD55","min_lod":3}},
+                            "building":{"*":{"color":"0x0001"}}}}"#,
+        )
+        .expect("a config styling one contour class parses");
+        assert!(cfg.contour_style(ContourClass::Major).is_none(), "an unstyled class is not packed");
+        let index = cfg.contour_style(ContourClass::Index).expect("index is styled");
+        assert_eq!((index.color, index.min_lod), (0xAD55, 3));
+        assert!(
+            cfg.feature_style("building", "yes").is_none(),
+            "the generated-feature lookup is exact — no catch-all fallback"
+        );
+    }
+
+    /// The shipped preset carries both classes and the block, so #1095 has a styling target and the
+    /// bakery has one boolean to flip.
+    #[test]
+    fn the_shipped_schema_carries_both_contour_classes() {
+        let cfg = corpus_config();
+        for class in [ContourClass::Major, ContourClass::Index] {
+            let style = cfg.contour_style(class).unwrap_or_else(|| panic!("{class:?} must be styled"));
+            assert_eq!(style.min_lod, 3, "E3 puts contours on the map from the planning tier");
+            assert_eq!(style.weight, 1, "every contour is authored weight 1");
+        }
+        assert_eq!(cfg.contours, Contours { enabled: false, interval_m: 100, index_every: 5, simplify_m: 15.0 });
+    }
+
+    /// The schema's `contours` default parses back to the code default, and its bounds are the
+    /// parser's — the editor must not offer a ladder the packer rejects.
+    #[test]
+    fn schema_contours_default_matches_parser() {
+        let schema = embedded_schema();
+        let contours = &schema["properties"]["contours"];
+        let default = serde_json::json!({ "contours": contours["default"].clone() });
+        assert_eq!(
+            parse_contours(&default.to_string()).expect("schema contours default parses"),
+            Contours::default(),
+            "the schema default must equal the code default"
+        );
+        let props = &contours["properties"];
+        assert_eq!(props["enabled"]["default"], Value::Bool(false));
+        assert_eq!(props["interval"]["minimum"].as_u64(), Some(1));
+        assert_eq!(props["index_every"]["minimum"].as_u64(), Some(1));
+        assert_eq!(props["simplify"]["minimum"].as_f64(), Some(0.0));
+        assert_eq!(props["simplify"]["default"].as_f64(), Some(15.0));
     }
 
     // --- routing section (N2) ---------------------------------------------------------------

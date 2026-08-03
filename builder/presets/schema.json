@@ -89,11 +89,16 @@
         },
         "admin_level": {
             "2": {"z_index": 100, "color": "0xAAB5", "weight": 2, "min_lod": 0, "priority": 3, "line_style": "dashed"}
+        },
+        "contour": {
+            "major": {"z_index": 8, "color": "0xAD55", "weight": 1, "min_lod": 3, "priority": 4, "line_style": "dashed"},
+            "index": {"z_index": 9, "color": "0xAD55", "weight": 1, "min_lod": 3, "priority": 4}
         }
     },
     "marker": {"color": "0xF800"},
     "merge_fills": true,
     "merge_lines": true,
+    "contours": {"enabled": false, "interval": 100, "index_every": 5, "simplify": 15},
     "routing": {
         "min_component_edges": 50,
         "profiles": [

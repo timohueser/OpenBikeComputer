@@ -79,6 +79,56 @@
       "default": false,
       "description": "Stitch same-styled connected line fragments into maximal polylines per LOD. No intended visual change for solid lines; a dashed or cased line's pattern runs continuously across a former join. false (the default) packs byte-identically to before."
     },
+    "contours": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": false,
+          "description": "Trace contours from the terrain given to `--terrain`. Without terrain, nothing is traced."
+        },
+        "interval": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 1,
+          "default": 100,
+          "description": "Vertical spacing between contours, in metres. Every level is a `contour.major` feature."
+        },
+        "index_every": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 1,
+          "default": 5,
+          "description": "Every Nth contour is a `contour.index` feature instead of `contour.major`; 1 makes every contour an index contour."
+        },
+        "simplify": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "default": 15.0,
+          "description": "Simplify tolerance in metres applied to traced contours *before* the LOD ladder sees them. This is a clamp, not a detail knob: the fine tiers simplify at 3 m / 0.5 m, one to two orders finer than a ~40 m-posting DEM supports, so a smaller value only stores interpolation noise.",
+          "minimum": 0.0
+        }
+      },
+      "default": {
+        "enabled": false,
+        "interval": 100,
+        "index_every": 5,
+        "simplify": 15.0
+      },
+      "description": "Contour lines traced from the baked OBCT terrain passed to `--terrain` and packed as ordinary line features. Two classes are emitted: `contour.major` for every level and `contour.index` for every Nth one; each is styled by a `features.contour.<class>` rule, and a class with no rule is simply not packed. Absent, or `enabled: false`, packs byte-identically to a map with no contours at all."
+    },
     "routing": {
       "type": "object",
       "properties": {
