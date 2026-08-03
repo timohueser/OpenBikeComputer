@@ -65,7 +65,8 @@ pub use obc_formats::obcm::{
 };
 use obc_formats::obcm::{
     CHUNK_END, FEATURE_FLAG_16BIT, FEATURE_FLAG_HOLES, FEATURE_FLAG_POLYGON, FEATURE_FLAG_WIDE, FEATURE_HAS_LEVEL_BIT,
-    MAGIC, STYLE_DASHED_BIT, STYLE_HAS_COLOR2_BIT, STYLE_PRIORITY_MASK, VERSION,
+    MAGIC, STYLE_CONTOUR_INDEX_BIT, STYLE_DASHED_BIT, STYLE_FIXED_WIDTH_BIT, STYLE_HAS_COLOR2_BIT, STYLE_PRIORITY_MASK,
+    STYLE_TERRAIN_LAYER_BIT, VERSION,
 };
 /// Distinctive (non-default) marker color baked into [`build_file`]'s header, so the
 /// reader's round-trip test is meaningful.
@@ -85,9 +86,17 @@ pub struct LodSpec {
 /// plus bit 2 when `dashed` and bit 3 when `color2` is `Some`. `color2` writes its RGB565 value when
 /// present, else `0x0000` (ignored by the reader when bit 3 is clear). Shared by both file builders.
 fn style_table(styles: &[Style]) -> Vec<u8> {
+    style_table_flagged(&styles.iter().map(|&s| (s, 0u8)).collect::<Vec<_>>())
+}
+
+/// [`style_table`] with each record's `extra` flag bits OR-ed into its flags byte — the upper-bit
+/// style properties the tuple has no field for (fixed width, terrain layer, contour index; §2 bits
+/// 4-6). Kept as a raw byte rather than three more tuple slots: only the bench fixture authors one,
+/// and the whole point of the testkit is that it writes the bytes the spec names.
+fn style_table_flagged(styles: &[(Style, u8)]) -> Vec<u8> {
     let mut style_bytes = vec![styles.len() as u8];
-    for &(id, z, color, weight, priority, dashed, color2) in styles {
-        let mut flags = (priority - 1) & STYLE_PRIORITY_MASK;
+    for &((id, z, color, weight, priority, dashed, color2), extra) in styles {
+        let mut flags = ((priority - 1) & STYLE_PRIORITY_MASK) | extra;
         if dashed {
             flags |= STYLE_DASHED_BIT;
         }
@@ -573,9 +582,16 @@ fn push_deltas16(v: &mut Vec<u8>, deltas: &[(i16, i16)]) {
 /// with its own quadtree index and padded chunks. The header carries [`MARKER`] as the
 /// marker color.
 pub fn build_file(bbox: (i32, i32, i32, i32), styles: &[Style], lods: &[LodSpec]) -> Vec<u8> {
+    build_file_flagged(bbox, &styles.iter().map(|&s| (s, 0u8)).collect::<Vec<_>>(), lods)
+}
+
+/// [`build_file`] with per-style **extra flag bits** (§2 bits 4-6: fixed width, terrain layer,
+/// contour index) — the upper style properties the [`Style`] tuple has no field for. Every other
+/// byte is identical, and `extra = 0` reproduces [`build_file`] exactly.
+pub fn build_file_flagged(bbox: (i32, i32, i32, i32), styles: &[(Style, u8)], lods: &[LodSpec]) -> Vec<u8> {
     let style_off = HEADER_LEN;
 
-    let style_bytes = style_table(styles);
+    let style_bytes = style_table_flagged(styles);
 
     let lod_tab_off = style_off + style_bytes.len();
     let mut cursor = lod_tab_off + lods.len() * LOD_ENTRY_LEN;
@@ -758,6 +774,17 @@ pub fn pack_line16(style_id: u8, ax: i32, ay: i32, deltas: &[(i16, i16)]) -> Vec
     v
 }
 
+/// A 16-bit-delta line carrying the v13 §5.2 **level** — [`pack_line16`] and [`pack_line_level`]
+/// combined, for a contour long enough on the ground to need wide deltas. The `int16` metres sit
+/// between the header and the deltas in both delta widths.
+pub fn pack_line16_level(style_id: u8, ax: i32, ay: i32, level: i16, deltas: &[(i16, i16)]) -> Vec<u8> {
+    let flags = FEATURE_FLAG_16BIT | FEATURE_HAS_LEVEL_BIT;
+    let mut v = feature_header(style_id, (1 + deltas.len()) as u16, ax, ay, flags);
+    v.extend_from_slice(&level.to_le_bytes());
+    push_deltas16(&mut v, deltas);
+    v
+}
+
 /// A hole-free polygon with 8-bit deltas. `deltas` are the points after the anchor, so
 /// the stored exterior point count is `1 + deltas.len()`.
 pub fn pack_poly(style_id: u8, ax: i32, ay: i32, deltas: &[(i8, i8)]) -> Vec<u8> {
@@ -818,6 +845,11 @@ pub fn pack_poly_holes(style_id: u8, ax: i32, ay: i32, ext_deltas: &[(i8, i8)], 
 /// Divisible by 8 on both axes so the depth-3 quadtree subdivides into uniform leaves. Public so the
 /// bench aims its camera at the fixture's center without re-deriving it.
 pub const BENCH_BBOX: (i32, i32, i32, i32) = (8_500_000, 47_000_000, 8_554_000, 47_054_000);
+
+/// The style id [`build_bench_map`] gives its **index contours** — the one style in the fixture
+/// carrying §2's fixed-width + terrain-layer + contour-index bits, and the only one whose features
+/// carry a §5.2 level. Public so a test can name the labelled style instead of a magic number.
+pub const BENCH_CONTOUR_STYLE: u8 = 7;
 
 /// A quadtree-node bbox in the builders' `(min_lon, min_lat, max_lon, max_lat)` µdeg spelling.
 type LeafBox = (i32, i32, i32, i32);
@@ -883,10 +915,35 @@ fn uniform_quadtree(bbox: LeafBox, depth: u32) -> (Vec<u32>, Vec<LeafBox>) {
     (index, boxes)
 }
 
-/// One coarse-LOD chunk: a leaf-covering land backdrop, a lake on roughly half the leaves, and 225
-/// short 3-point road stubs cycling the three line styles. 16 leaves × ~226 features ≈ 3 620 —
-/// deliberately **over `obc_render::MAX_SPANS` (3072)** so a full-map overview scene saturates the
-/// span buffer and exercises the priority-drop path. ~3.7 KB, under the 4 KB chunk size.
+/// **Index contours** across a leaf `w × h` µdeg, one per entry of `ats` (a latitude inside the leaf,
+/// in µdeg from its bottom edge): 8-vertex polylines spanning the leaf horizontally, each carrying
+/// its level in metres (v13 §5.2) under the index-contour style [`BENCH_CONTOUR_STYLE`].
+///
+/// Present so the fixture exercises the renderer's contour-label pass (#1106) — the bench is the
+/// instrument that pass's frame-time budget is measured with, and a fixture with no labelled contour
+/// would measure an unlabelled frame forever. Levels are four digits (2 000 m up), the width the
+/// label pill is sized for. The gentle vertical wander keeps the lines off the degenerate
+/// axis-aligned case.
+///
+/// The callers deliberately hug the **leaf edges**: the bench camera sits at the map centre, which is
+/// the shared corner of the four centre leaves, so a contour placed mid-leaf would be off-screen at
+/// every zoom but the overview. Same reasoning as the fine chunk's corner "villages".
+fn bench_contours(rng: &mut BenchRng, w: i32, h: i32, ats: &[i32]) -> Vec<u8> {
+    let mut c = Vec::new();
+    let step = (w / 7) as i16;
+    for (k, &ay) in ats.iter().enumerate() {
+        let level = (2_000 + 200 * k) as i16;
+        let deltas: Vec<(i16, i16)> = (0..7).map(|_| (step, rng.range(-h / 24, h / 24) as i16)).collect();
+        c.extend(pack_line16_level(BENCH_CONTOUR_STYLE, 0, ay, level, &deltas));
+    }
+    c
+}
+
+/// One coarse-LOD chunk: a leaf-covering land backdrop, a lake on roughly half the leaves, four
+/// leaf-spanning index contours and 225 short 3-point road stubs cycling the three line styles. 16
+/// leaves × ~230 features ≈ 3 680 — deliberately **over `obc_render::MAX_SPANS`** so a full-map
+/// overview scene saturates the span buffer and exercises the priority-drop path. ~3.9 KB, under the
+/// 4 KB chunk size.
 fn bench_coarse_chunk(rng: &mut BenchRng, leaf: LeafBox) -> Vec<u8> {
     let (min_lon, min_lat, max_lon, max_lat) = leaf;
     let (w, h) = (max_lon - min_lon, max_lat - min_lat);
@@ -899,6 +956,10 @@ fn bench_coarse_chunk(rng: &mut BenchRng, leaf: LeafBox) -> Vec<u8> {
         let (ax, ay) = (rng.range(0, w - lw), rng.range(0, h - lh));
         c.extend(pack_poly16(2, ax, ay, &[(lw as i16, 0), (0, lh as i16), (-lw as i16, 0)]));
     }
+    // Five index contours per leaf: at the mid and overview zooms (both on this LOD) these are the
+    // labelled terrain the #1106 label pass is benched against. The near-edge pair puts contours
+    // through the leaf corners the bench camera sits on; the rest spread up the leaf.
+    c.extend(bench_contours(rng, w, h, &[h / 16, h / 4, h / 2, 3 * h / 4, 15 * h / 16]));
     for k in 0..225 {
         let style = [5u8, 4, 3][k % 3];
         let (ax, ay) = (rng.range(130, w - 130), rng.range(0, h - 260));
@@ -909,9 +970,10 @@ fn bench_coarse_chunk(rng: &mut BenchRng, leaf: LeafBox) -> Vec<u8> {
     c
 }
 
-/// One fine-LOD chunk: a leaf-covering backdrop, an occasional lake, small 8-bit-delta buildings
-/// (every fourth with a hole), a few long 16-bit-delta roads, and a batch of short 8-bit paths of
-/// varying vertex counts — the riding-zoom feature mix. ≤ ~2 KB, well under the 4 KB chunk size.
+/// One fine-LOD chunk: a leaf-covering backdrop, an occasional lake, two leaf-spanning index
+/// contours, small 8-bit-delta buildings (every fourth with a hole), a few long 16-bit-delta roads,
+/// and a batch of short 8-bit paths of varying vertex counts — the riding-zoom feature mix. ≤ ~2 KB,
+/// well under the 4 KB chunk size.
 fn bench_fine_chunk(rng: &mut BenchRng, leaf: LeafBox) -> Vec<u8> {
     let (min_lon, min_lat, max_lon, max_lat) = leaf;
     let (w, h) = (max_lon - min_lon, max_lat - min_lat);
@@ -924,6 +986,9 @@ fn bench_fine_chunk(rng: &mut BenchRng, leaf: LeafBox) -> Vec<u8> {
         let (ax, ay) = (rng.range(0, w - lw), rng.range(0, h - lh));
         c.extend(pack_poly16(2, ax, ay, &[(lw as i16, 0), (0, lh as i16), (-lw as i16, 0)]));
     }
+    // Two index contours per leaf, one just inside each horizontal edge — the riding camera sits on
+    // a leaf corner, so these are the ones it sees (#1106).
+    c.extend(bench_contours(rng, w, h, &[h / 16, 15 * h / 16]));
     // Buildings: small 8-bit-delta rectangles; every fourth big-enough one carries a hole.
     for k in 0..rng.range(8, 16) {
         let (bw, bh) = (rng.range(40, 120), rng.range(40, 120));
@@ -1002,13 +1067,20 @@ fn bench_fine_chunk(rng: &mut BenchRng, leaf: LeafBox) -> Vec<u8> {
 /// encoders the format tests use, so a format layout bump lands here automatically.
 pub fn build_bench_map() -> Vec<u8> {
     const CHUNK: usize = 4096; // the packer's default — every chunk stays cacheable
-    let styles: [Style; 6] = [
-        (1, -10, 0xD6DA, 0, 1, false, None), // land backdrop — lowest z, fills under everything
-        (2, -5, 0x64DD, 0, 2, false, None),  // water
-        (6, 1, 0x9CD3, 0, 3, false, None),   // buildings
-        (5, 4, 0xFC00, 3, 2, false, None),   // major road, weight 3
-        (4, 3, 0xFEA0, 2, 3, false, None),   // secondary road, weight 2
-        (3, 2, 0xFFFF, 1, 4, false, None),   // minor path, weight 1 (Polyline path)
+                               // The index-contour style's upper flag bits (§2): fixed width + terrain layer + contour index —
+                               // the shipped `contour.index` style's exact set, so the bench renders the real thing.
+    let contour_flags = STYLE_FIXED_WIDTH_BIT | STYLE_TERRAIN_LAYER_BIT | STYLE_CONTOUR_INDEX_BIT;
+    let styles: [(Style, u8); 7] = [
+        ((1, -10, 0xD6DA, 0, 1, false, None), 0), // land backdrop — lowest z, fills under everything
+        ((2, -5, 0x64DD, 0, 2, false, None), 0),  // water
+        // Index contour: the shipped preset's own z / colour / weight / priority, so the benched
+        // frame drops and paints contours exactly as the device does — priority 4 means a saturated
+        // overview sheds them first, which is itself worth measuring.
+        ((BENCH_CONTOUR_STYLE, 9, 0xAD55, 1, 4, false, None), contour_flags),
+        ((6, 1, 0x9CD3, 0, 3, false, None), 0), // buildings
+        ((5, 4, 0xFC00, 3, 2, false, None), 0), // major road, weight 3
+        ((4, 3, 0xFEA0, 2, 3, false, None), 0), // secondary road, weight 2
+        ((3, 2, 0xFFFF, 1, 4, false, None), 0), // minor path, weight 1 (Polyline path)
     ];
 
     let mut rng = BenchRng(0x0BC0_0327_D00D_F00D); // hard-coded seed — never change casually
@@ -1019,7 +1091,7 @@ pub fn build_bench_map() -> Vec<u8> {
     let fine_chunks: Vec<Vec<u8>> =
         fine_leaves.iter().map(|&leaf| seal(bench_fine_chunk(&mut rng, leaf), CHUNK)).collect();
 
-    build_file(
+    build_file_flagged(
         BENCH_BBOX,
         &styles,
         &[

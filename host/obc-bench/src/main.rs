@@ -85,6 +85,7 @@ struct SceneResult {
     collect_us: u32,
     sort_us: u32,
     draw_us: u32,
+    label_us: u32,
     total_us: u64,
     stats: RenderStats,
     hash: u64,
@@ -117,6 +118,7 @@ fn run_scene(map: &[u8], name: &str, mpp: f32, heading_deg: f32, clock: &StdCloc
     renderer.render_timed(&mut fb, &reader, &vp, bg, color_fn, clock);
 
     let (mut collect_us, mut sort_us, mut draw_us, mut total_us) = (u32::MAX, u32::MAX, u32::MAX, u64::MAX);
+    let mut label_us = u32::MAX;
     let mut stats = RenderStats::default();
     for _ in 0..ITERS {
         let mut fb = Framebuffer565::new(&mut buf, WIDTH, HEIGHT);
@@ -126,9 +128,10 @@ fn run_scene(map: &[u8], name: &str, mpp: f32, heading_deg: f32, clock: &StdCloc
         collect_us = collect_us.min(stats.collect_us);
         sort_us = sort_us.min(stats.sort_us);
         draw_us = draw_us.min(stats.draw_us);
+        label_us = label_us.min(stats.label_us);
     }
 
-    SceneResult { name: name.into(), collect_us, sort_us, draw_us, total_us, stats, hash: frame_hash(&buf) }
+    SceneResult { name: name.into(), collect_us, sort_us, draw_us, label_us, total_us, stats, hash: frame_hash(&buf) }
 }
 
 /// The `route` scene's polyline, as two chunks of `(Δlon, Δlat)` microdegree offsets from the
@@ -224,6 +227,7 @@ fn run_route_scene(map: &[u8], clock: &StdClock) -> SceneResult {
     draw(&mut buf, &mut renderer); // warm-up: fills the chunk cache
 
     let (mut collect_us, mut sort_us, mut draw_us, mut total_us) = (u32::MAX, u32::MAX, u32::MAX, u64::MAX);
+    let mut label_us = u32::MAX;
     let mut stats = RenderStats::default();
     for _ in 0..ITERS {
         let t0 = clock.now_us();
@@ -232,9 +236,19 @@ fn run_route_scene(map: &[u8], clock: &StdClock) -> SceneResult {
         collect_us = collect_us.min(stats.collect_us);
         sort_us = sort_us.min(stats.sort_us);
         draw_us = draw_us.min(stats.draw_us);
+        label_us = label_us.min(stats.label_us);
     }
 
-    SceneResult { name: "route".into(), collect_us, sort_us, draw_us, total_us, stats, hash: frame_hash(&buf) }
+    SceneResult {
+        name: "route".into(),
+        collect_us,
+        sort_us,
+        draw_us,
+        label_us,
+        total_us,
+        stats,
+        hash: frame_hash(&buf),
+    }
 }
 
 /// Run the full built-in matrix over the testkit fixture, asserting the overview scenes saturate
@@ -265,22 +279,36 @@ fn run_matrix() -> Vec<SceneResult> {
 
 fn print_table(results: &[SceneResult]) {
     println!(
-        "{:<13} {:>3} {:>10} {:>8} {:>9} {:>9}  {:>6} {:>6} {:>7}  {:>6} {:>9}  hash",
-        "scene", "lod", "collect", "sort", "draw", "total", "tried", "drawn", "dropped", "chunks", "hit/miss"
+        "{:<13} {:>3} {:>10} {:>8} {:>9} {:>8} {:>9}  {:>6} {:>6} {:>7} {:>6}  {:>6} {:>9}  hash",
+        "scene",
+        "lod",
+        "collect",
+        "sort",
+        "draw",
+        "label",
+        "total",
+        "tried",
+        "drawn",
+        "dropped",
+        "labels",
+        "chunks",
+        "hit/miss"
     );
     for r in results {
         let s = &r.stats;
         println!(
-            "{:<13} {:>3} {:>8}us {:>6}us {:>7}us {:>7}us  {:>6} {:>6} {:>7}  {:>6} {:>4}/{:<4}  0x{:016x}",
+            "{:<13} {:>3} {:>8}us {:>6}us {:>7}us {:>6}us {:>7}us  {:>6} {:>6} {:>7} {:>6}  {:>6} {:>4}/{:<4}  0x{:016x}",
             r.name,
             s.lod,
             r.collect_us,
             r.sort_us,
             r.draw_us,
+            r.label_us,
             r.total_us,
             s.features_tried,
             s.features_drawn,
             s.features_dropped,
+            s.contour_labels,
             s.chunks_visited,
             s.map_chunk_hits,
             s.map_chunk_misses,
@@ -829,6 +857,7 @@ mod tests {
             collect_us: 0,
             sort_us: 0,
             draw_us: 0,
+            label_us: 0,
             total_us: 0,
             stats: RenderStats::default(),
             hash,
