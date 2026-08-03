@@ -1031,6 +1031,42 @@ fn bike_type_cycles_and_persists_across_reboot() {
     assert_eq!(app2.settings().bike_profile_idx, 2, "the bike profile survives the reboot");
 }
 
+/// The provisional contour toggle (elevation EL10c, #1096) end to end through the App: the Display
+/// row flips [`Settings::map_contours`], the flip is debounced-saved on leaving the settings subtree
+/// like every other setting, and it survives the persisted blob into a fresh App — i.e. the rider's
+/// #1097 A/B choice is still in force after a reboot.
+///
+/// **Provisional**: this test goes with the toggle.
+#[test]
+fn contours_toggle_persists_across_reboot() {
+    let mut app = App::new_idle(AppState::new(0, 0, 0.05)); // [Home]
+    assert!(app.settings().map_contours, "contours default on — nothing to switch on first");
+
+    // Home → Menu → Settings → Display → the Contours row (Clock, Scale bar, Contours, Idle).
+    app.apply_gesture(Gesture::BackHold); // → Menu
+    app.apply_gesture(Gesture::Step(-1)); // compass: one ccw step to Settings
+    app.apply_gesture(Gesture::Press); // → Settings list (Ride is the first row)
+    app.apply_gesture(Gesture::Step(1)); // → the Display row
+    app.apply_gesture(Gesture::Press); // → Display screen (Clock is the first row)
+    assert!(matches!(app.top_screen(), crate::Screen::Display(_)), "navigated to the Display screen");
+    app.apply_gesture(Gesture::Step(2)); // Clock → Scale bar → Contours
+    app.apply_gesture(Gesture::Press);
+    assert!(!app.settings().map_contours, "the row flipped the setting");
+
+    // Debounced to leaving the settings subtree, exactly like the other Display toggles.
+    assert!(!settings_dirty(&mut app), "no save cue while still inside Settings");
+    app.apply_gesture(Gesture::Back); // Display → Settings list
+    app.apply_gesture(Gesture::Back); // → Menu (out of the subtree)
+    assert!(settings_dirty(&mut app), "leaving Settings fires the debounced save");
+
+    // Simulated reboot: the persisted blob seeds a fresh App (the boot path of both hosts).
+    let blob = crate::settings::encode(app.settings());
+    let restored = crate::settings::decode(&blob).expect("clean blob decodes");
+    let mut app2 = App::new_idle(AppState::new(0, 0, 0.05));
+    app2.set_settings(restored);
+    assert!(!app2.settings().map_contours, "the contour choice survives the reboot");
+}
+
 /// A stored index past the loaded map's profile count (a stale setting against a smaller map)
 /// renders **profile 0's name** — the profile the router actually falls back to (N3), so the UI
 /// never names a profile the map doesn't have — and an in-range index renders the map's name.

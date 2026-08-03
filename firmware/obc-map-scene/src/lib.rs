@@ -86,7 +86,9 @@ impl StyleFlags {
     }
 
     /// This style belongs to the **terrain layer**, the group a device setting may suppress
-    /// wholesale. Carried across the seam; nothing in the render path reads it.
+    /// wholesale. The renderer's collect pass reads it: with the terrain layer hidden
+    /// (`MapRenderer::set_terrain_layer(false)`) a style carrying this bit is never admitted to the
+    /// visible-style mask, so its features are not decoded at all.
     #[inline]
     pub const fn terrain_layer(self) -> bool {
         self.0 & Self::TERRAIN_LAYER != 0

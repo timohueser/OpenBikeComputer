@@ -254,6 +254,8 @@ Two classes come out: a `major` contour at every level, and an `index` contour a
 
 The cost is real and worth stating plainly: contours are the most expensive optional thing a map can carry. On the corpus's worst case for them — a 628 km² alpine extract, dense terrain and sparse OSM — 100 m contours from the planning tier down add about **a quarter** to the map. Flat ground adds almost nothing, because flat ground crosses almost no levels.
 
+That cost is paid at pack time and cannot be taken back on the device. The rider's [contour toggle](../ui/#settings-a-second-level-of-focus) suppresses the ink, not the bytes: contours are ordinary features interleaved with everything else in the same cells, so a map that carries them is the same size on the card and reads the same chunks per frame whichever way the switch is left. Whether a given map carries contours at all is decided here, by the config.
+
 ### Extracting POIs
 
 The same OSM extract carries more than geometry. Amenities a bikepacker actually looks for — water, campsites, lodging, resupply, pharmacies, bike shops — are tagged on nodes and areas the geometry pipeline would otherwise style-and-forget. A separate stage harvests them into the map's [POI section](../formats/#pois-a-nearest-list-not-a-map-layer), where the device browses them by category. It's config-free on purpose: the tag → category mapping is **hardcoded in the packer** (a locked decision), so packing the same extract always yields the same POIs.

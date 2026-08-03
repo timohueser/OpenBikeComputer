@@ -247,6 +247,10 @@ clock = "Clock"
 clock_sub = "on map"
 scale_bar = "Scale bar"
 scale_bar_sub = "on map"
+# Elevation EL10c (#1096): the provisional contour toggle. Expected to be removed once #1097's ride
+# review decides the feature's fate — drop these two keys from all four catalogs with the row.
+contours = "Contours"
+contours_sub = "on map"
 idle = "Idle"
 idle_sub = "timeout"
 
