@@ -78,6 +78,22 @@ const RESERVE_MARGIN: i32 = 6;
 /// skipped and the cadence moves on.
 const EDGE_MARGIN: i32 = 2;
 
+/// Anchors one polyline may offer before the pass moves on. A hard bound on the work, for two
+/// reasons that are really one — the stride is derived from the frame's m/px, and nothing outside
+/// the renderer promises that stays sane:
+///
+/// * **Time.** At a degenerate zoom the stride floors at a millimetre while a segment stays
+///   kilometres long, so a single line would test millions of anchors and reject every one for
+///   leaving the viewport. Frame time is the constraint this whole pass is built around; it cannot
+///   be left to depend on the camera.
+/// * **Termination.** `next += stride_m` on an `f32` is a **no-op** once `next` outgrows the stride
+///   by more than the mantissa can hold (a 10 km segment against a 1 mm stride), and the walk would
+///   never end.
+///
+/// Thirty-two strides is ~5 700 px of on-screen line — far past the twelve labels the frame can hold
+/// — so no reachable frame is truncated by this; it exists so no unreachable one hangs.
+const MAX_ANCHORS_PER_LINE: usize = 32;
+
 /// One index-contour polyline the frame may label: where its geometry sits in the frame points and
 /// the level to print.
 ///
@@ -198,6 +214,7 @@ impl MapRenderer {
             // carried across segment boundaries so the cadence is a property of the line, not of its
             // vertex spacing.
             let mut next = phase_m(pts[0], stride_m);
+            let mut anchors = 0usize;
             for w in pts.windows(2) {
                 let seg = ground_dist_m_cl(w[0], w[1], cl);
                 // A repeated vertex contributes no arc length; `is_finite` also rejects the NaN a
@@ -205,9 +222,10 @@ impl MapRenderer {
                 if seg <= 0.0 || !seg.is_finite() {
                     continue;
                 }
-                while next <= seg {
+                while next <= seg && anchors < MAX_ANCHORS_PER_LINE {
                     let f = next / seg;
                     next += stride_m;
+                    anchors += 1;
                     let lon = w[0].0 + ((w[1].0 - w[0].0) as f32 * f) as i32;
                     let lat = w[0].1 + ((w[1].1 - w[0].1) as f32 * f) as i32;
                     let (x, y) = vp.to_screen(lon, lat);
@@ -232,6 +250,9 @@ impl MapRenderer {
                     if placed == MAX_CONTOUR_LABELS {
                         return placed;
                     }
+                }
+                if anchors == MAX_ANCHORS_PER_LINE {
+                    break;
                 }
                 next -= seg;
             }

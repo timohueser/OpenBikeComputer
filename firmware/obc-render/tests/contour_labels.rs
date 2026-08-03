@@ -307,3 +307,23 @@ fn the_default_label_colours_are_paper_and_ink() {
     let ink = (y0..=y1).flat_map(|y| (x0..=x1).map(move |x| (x, y))).filter(|&(x, y)| buf.get(x, y) == BLACK).count();
     assert!(ink > 50, "the digits are drawn in black on the pill, got {ink} px");
 }
+
+/// **The pass always terminates, whatever the camera.** The cadence stride is the frame's
+/// metres-per-pixel times a constant, so a zoomed-in camera drives it toward the floor while the line
+/// stays kilometres long. Without a per-line anchor bound this contour would offer ~66 000 anchors
+/// and reject nearly all of them for leaving the viewport — and past a wider ratio still,
+/// `next += stride` stops advancing an `f32` at all and the walk never ends. `MAX_ANCHORS_PER_LINE`
+/// is what makes the work bounded by the *geometry* rather than by the camera; the real assertion
+/// here is that the test returns.
+#[test]
+fn a_degenerate_zoom_cannot_hang_the_label_walk() {
+    let scene = Scene(std::vec![contour(INDEX.id, 0, Some(2500))]);
+    let mut buf = Buf::new(320, 320);
+    // 10 000 px per µdeg: a ~1.1 µm ground pixel, four orders past anything the app can reach.
+    let vp = Viewport::new(320.0, 320.0, 0, 0, 1e4);
+    let stats = MapRenderer::new().render(&mut buf, &scene, &vp, Rgb888::BLACK, |c| {
+        let (r, g, b) = obc_reader::rgb565_to_rgb888(c);
+        Rgb888::new(r, g, b)
+    });
+    assert!(stats.contour_labels <= MAX_CONTOUR_LABELS, "the cap holds at any scale");
+}
