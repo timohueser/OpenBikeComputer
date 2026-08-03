@@ -56,6 +56,16 @@ impl Font {
         self.mono().character_size.height
     }
 
+    /// Rows between the glyph cell's top and the top of the caps — the cell's leading, read off the
+    /// actual font (`baseline − cap_height`) rather than tabulated, so it cannot drift from the
+    /// strip. What a caller needs to centre the *ink* rather than the cell: [`draw_text`] anchors
+    /// the cell top, and the cell also carries descender space below the caps, so centring the cell
+    /// leaves the digits sitting high. The one caller is the contour-label pill (#1106).
+    #[inline]
+    pub(crate) fn cap_offset(self) -> u32 {
+        self.mono().baseline.saturating_sub(self.cap_height())
+    }
+
     /// Cap height in pixels — the vertical span the glyphs actually occupy (≤ the cell
     /// [`line_height`](Self::line_height)), for centring text in a cell. Approximate but stable.
     #[inline]

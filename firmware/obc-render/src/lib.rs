@@ -20,12 +20,14 @@ pub mod canvas;
 mod collect;
 mod fill;
 mod font_data;
+mod label;
 mod overlay;
 mod stroke;
 pub mod surface;
 pub mod text;
 mod viewport;
 pub use canvas::{rect, Canvas};
+pub use label::MAX_CONTOUR_LABELS;
 pub use overlay::{OverlayChunk, RouteOverlaySource};
 pub use surface::Surface;
 pub use text::{draw_text, glyph_supported, text_width, Font, TextAlign};
@@ -96,7 +98,8 @@ pub const MCU_RENDERER_BYTES: usize = MAX_DECODE_POINTS * 8
     + MAX_FRAME_RINGS * 4
     + MAX_SPANS * core::mem::size_of::<Span>()
     + MAX_SCREEN_POINTS * 8
-    + MAX_CROSSINGS * 4;
+    + MAX_CROSSINGS * 4
+    + label::MAX_LABEL_CANDIDATES * core::mem::size_of::<label::LabelCandidate>();
 // Loose per-crate ceiling catching an accidental cap blow-up; the binding fit check is the board
 // crate's whole-resident-set budget assert.
 const _: () = assert!(MCU_RENDERER_BYTES <= 200 * 1024, "MapRenderer exceeds the 200 KB MCU budget");
@@ -271,12 +274,17 @@ pub struct RenderStats {
     /// Per-stage wall time of the **map** render, µs — filled by
     /// [`render_timed`](MapRenderer::render_timed) from the caller's [`Clock`]; `0` on the untimed
     /// path. `collect_us` = visible-feature collection (walk + read + decode + cull + span build),
-    /// `sort_us` = painter's-order span sort, `draw_us` = full-screen clear + rasterization. Base
-    /// map only; overlays run after `render` returns, so overlay time is
-    /// `total − (collect_us + sort_us + draw_us)`.
+    /// `sort_us` = painter's-order span sort, `draw_us` = full-screen clear + rasterization,
+    /// `label_us` = the index-contour label pass (#1106). Base map only; overlays run after `render`
+    /// returns, so overlay time is `total − (collect_us + sort_us + draw_us + label_us)`.
     pub collect_us: u32,
     pub sort_us: u32,
     pub draw_us: u32,
+    pub label_us: u32,
+    /// Elevation labels drawn on index contours this frame (#1106), `0..=`[`MAX_CONTOUR_LABELS`].
+    /// Zero for a map with no index contours, and zero whenever the terrain layer is suppressed —
+    /// the number #1097's on-glass check reads to tell "no contours in view" from "no label placed".
+    pub contour_labels: usize,
 }
 
 /// Reusable renderer holding every scratch buffer. Construct once, call
@@ -294,6 +302,17 @@ pub struct MapRenderer {
     /// [`Default`] and [`init_zeroed`](MapRenderer::init_zeroed) state) means "draw everything",
     /// which is the correct behaviour for every caller that never touches the setter.
     suppress_terrain: bool,
+    /// The contour label's knockout colour, stored **inverted** — same trick as `suppress_terrain`:
+    /// the all-zero renderer must be the sensible one, and here that is `0xFFFF`, paper white. See
+    /// [`set_label_colors`](MapRenderer::set_label_colors).
+    label_pill_inv: u16,
+    /// The contour label's text colour. Zero is black, which is the right default for the same
+    /// reason white is for the pill, so this one needs no inversion.
+    label_ink: u16,
+    /// Top / bottom screen bands, in px, contour labels keep out of — the host's chrome. Zero (the
+    /// all-zero renderer) is "the whole viewport", correct for a host that draws none. See
+    /// [`set_label_insets`](MapRenderer::set_label_insets).
+    label_inset: (u16, u16),
 }
 
 impl MapRenderer {
@@ -324,6 +343,41 @@ impl MapRenderer {
         self.suppress_terrain = !visible;
     }
 
+    /// The two colours a contour **elevation label** is drawn in (#1106): the filled knockout pill
+    /// and the number on it, both RGB565 resolved through the frame's `color_fn` like every other
+    /// colour. Sticky across frames, like [`set_terrain_layer`](MapRenderer::set_terrain_layer).
+    ///
+    /// A label is **chrome, not cartography** — the same paper-and-ink chip the status and hint
+    /// strips use — so its colours come from the host's palette rather than from the map. They
+    /// cannot come from the map: the pill has to be the colour of the *ground* the contour is drawn
+    /// on, and the scene seam has no such notion. (`backdrop_style` is the bottom of the paint
+    /// order, which in the shipped presets is the **sea** — the land is a polygon painted over it,
+    /// so a backdrop-coloured pill would knock a blue hole in a mountainside.)
+    ///
+    /// Defaults — the untouched, [`init_zeroed`](MapRenderer::init_zeroed) state — are black on
+    /// white: the legible pair for a host that never calls this, and the one the all-zero bit
+    /// pattern can express. The app ships parchment paper with the number in the contour grey; a
+    /// future dark map skin is the other reason this is a setter and not a constant.
+    #[inline]
+    pub fn set_label_colors(&mut self, pill: u16, ink: u16) {
+        self.label_pill_inv = !pill;
+        self.label_ink = ink;
+    }
+
+    /// Screen bands at the **top and bottom** of the viewport, in px, that contour labels stay out
+    /// of. Sticky across frames; `(0, 0)` — the untouched state — is the whole viewport.
+    ///
+    /// The label pass already refuses to place a number that would be cut by the viewport edge,
+    /// because half an elevation is worse than none. Host chrome cuts a label exactly the same way:
+    /// the Map screen's clock floats over the top of the map plane and its scale bar over the
+    /// bottom-left, both drawn *after* the map, so a label under either is overwritten mid-glyph and
+    /// reads as a different number. This is that rule extended to the area the map actually owns —
+    /// the renderer is told a band, not a widget, so it still knows nothing about the host's layout.
+    #[inline]
+    pub fn set_label_insets(&mut self, top: u16, bottom: u16) {
+        self.label_inset = (top, bottom);
+    }
+
     /// Initialize a renderer **in place** at `slot` as the empty, ready-to-render state — the MCU
     /// placement path, building the resident renderer straight into a fixed RAM region without ever
     /// materializing the ~200 KB of scratch on the stack.
@@ -336,11 +390,12 @@ impl MapRenderer {
     /// `slot` must be valid for writes, aligned, and exclusively owned for the call.
     /// On return the slot holds a fully initialized, empty [`MapRenderer`].
     pub unsafe fn init_zeroed(slot: *mut Self) {
-        // SAFETY: a renderer is only `heapless::Vec`s plus one `bool` — no references, no
-        // non-zero-discriminant enum — so the all-zero bit pattern is the empty renderer (`len = 0`,
-        // write-before-read buffers) with `suppress_terrain: false`, i.e. the terrain layer shown,
-        // which is that field's intended initial state (see it). The caller guarantees a valid,
-        // owned, aligned slot.
+        // SAFETY: a renderer is only `heapless::Vec`s plus one `bool` and two `u16`s — no
+        // references, no non-zero-discriminant enum — so the all-zero bit pattern is the empty
+        // renderer (`len = 0`, write-before-read buffers) with `suppress_terrain: false` (the
+        // terrain layer shown) and the label colours at white-on-black; each of those is that
+        // field's intended initial state (see them). The caller guarantees a valid, owned, aligned
+        // slot.
         unsafe { slot.write_bytes(0u8, 1) }
     }
 
@@ -421,12 +476,19 @@ impl MapRenderer {
         self.draw_map(target, scene, is_finest, vp, &color_fn);
         let t_drawn = clock.now_us();
 
+        // Elevation labels last, over the finished map — and still inside `render`, so the route,
+        // the breadcrumb and the rider draw on top of a number rather than under it (#1106). The
+        // pass returns immediately unless the frame actually collected an index contour.
+        stats.contour_labels = self.draw_contour_labels(target, vp, &color_fn);
+        let t_labelled = clock.now_us();
+
         // The clear is a framebuffer write, so it counts toward `draw` even though it ran first.
         // `saturating_sub` guards a momentarily non-monotonic clock; a frame is well under a
         // second, so the `u32` µs casts never truncate.
         stats.collect_us = t_collected.saturating_sub(t_cleared) as u32;
         stats.sort_us = t_sorted.saturating_sub(t_collected) as u32;
         stats.draw_us = (t_cleared.saturating_sub(t0) + t_drawn.saturating_sub(t_sorted)) as u32;
+        stats.label_us = t_labelled.saturating_sub(t_drawn) as u32;
 
         stats
     }

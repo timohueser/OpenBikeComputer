@@ -30,6 +30,7 @@ use obc_map_scene::{
     BBox, Candidate, Feature, FeatureError, FeatureToken, Kind, MapScene, ReadFailures, SelectedFeatures,
 };
 
+use crate::label::{LabelCandidate, MAX_LABEL_CANDIDATES};
 use crate::{RenderStats, MAX_DECODE_POINTS, MAX_DECODE_RINGS, MAX_FRAME_POINTS, MAX_FRAME_RINGS, MAX_SPANS};
 
 /// The renderer's collection scratch: per-feature decode buffers plus the frame buffers that
@@ -47,6 +48,11 @@ pub(crate) struct FrameScratch {
     slots: Vec<Slot, MAX_SPANS>,
     /// How many leading `slots` are live final [`Span`]s after `collect` (the admitted-winner count).
     spans_len: usize,
+    /// The frame's index-contour polylines, recorded as pass B publishes them (#1106). A side list
+    /// rather than two more bytes on [`Span`]: `Span` is 14 bytes multiplied by [`MAX_SPANS`], the
+    /// label pass wants only the handful of features that carry a level, and it wants them without
+    /// scanning a thousand spans for them.
+    labels: Vec<LabelCandidate, MAX_LABEL_CANDIDATES>,
 }
 
 impl FrameScratch {
@@ -70,6 +76,7 @@ impl FrameScratch {
         self.frame_ring_lens.clear();
         self.slots.clear();
         self.spans_len = 0;
+        self.labels.clear();
 
         // A single "is this style drawn at all?" mask (bit set ⇔ the id has a style), built once —
         // the old per-priority-level masks are gone: pass A decodes every drawn feature in one walk.
@@ -255,12 +262,21 @@ impl FrameScratch {
         if winners == 0 {
             return 0;
         }
-        let FrameScratch { dec_points, dec_ring_lens, frame_points, frame_ring_lens, slots, .. } = self;
+        let FrameScratch { dec_points, dec_ring_lens, frame_points, frame_ring_lens, slots, labels, .. } = self;
         // A winner slot, once rewritten to its `Span`, must not be re-read as a stub by a later
         // chunk's scan. `placed` marks the done slots so the scan skips them.
         let mut placed = [0u32; MAX_SPANS.div_ceil(32)];
-        let mut selected =
-            DecodeSink { scene, winners, frame_points, frame_ring_lens, slots, placed: &mut placed, stats, drawn: 0 };
+        let mut selected = DecodeSink {
+            scene,
+            winners,
+            frame_points,
+            frame_ring_lens,
+            slots,
+            labels,
+            placed: &mut placed,
+            stats,
+            drawn: 0,
+        };
         let report = scene.decode_selected(lod, view, dec_points, dec_ring_lens, &mut selected);
         selected.stats.chunks_refetched = selected.stats.chunks_refetched.saturating_add(report.chunks_refetched);
         record_read_failures(selected.stats, report.read_failures);
@@ -303,6 +319,14 @@ impl FrameScratch {
         // SAFETY: as [`FrameScratch::spans`].
         unsafe { core::slice::from_raw_parts_mut(self.slots.as_mut_ptr() as *mut Span, self.spans_len) }
     }
+
+    /// The frame's index-contour label candidates, in pass-B publication order. Empty — the one
+    /// branch the label pass costs a frame — for every map without index contours and every frame
+    /// with the terrain layer suppressed.
+    #[inline]
+    pub(crate) fn labels(&self) -> &[LabelCandidate] {
+        &self.labels
+    }
 }
 
 struct DecodeSink<'a, S: MapScene> {
@@ -311,6 +335,7 @@ struct DecodeSink<'a, S: MapScene> {
     frame_points: &'a mut Vec<(i32, i32), MAX_FRAME_POINTS>,
     frame_ring_lens: &'a mut Vec<usize, MAX_FRAME_RINGS>,
     slots: &'a mut Vec<Slot, MAX_SPANS>,
+    labels: &'a mut Vec<LabelCandidate, MAX_LABEL_CANDIDATES>,
     placed: &'a mut [u32; MAX_SPANS.div_ceil(32)],
     stats: &'a mut RenderStats,
     drawn: usize,
@@ -370,6 +395,18 @@ impl<S: MapScene> SelectedFeatures for DecodeSink<'_, S> {
         };
         self.drawn += 1;
         self.stats.points_drawn += feature.points().len();
+        // #1106: an index contour that states its elevation is a label candidate. Recorded here
+        // because this is the one point where the feature's `level`, its style's `contour_index`
+        // flag and the geometry's final frame offsets are all in hand — the label pass then needs
+        // neither a span scan nor a second style lookup. Lines only: a level says nothing about an
+        // area, and the label pass walks an exterior ring as a path. Overflowing the fixed candidate
+        // list simply offers the label pass fewer lines to choose anchors on.
+        if style.flags.contour_index() && feature.kind == Kind::Line {
+            if let Some(level) = feature.level() {
+                let pt_len = feature.ring_lens().first().copied().unwrap_or(0) as u16;
+                let _ = self.labels.push(LabelCandidate { pt_start, pt_len, level });
+            }
+        }
         let span = Span {
             kind: feature.kind,
             z: style.z_index,

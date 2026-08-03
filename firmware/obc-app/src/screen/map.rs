@@ -355,6 +355,12 @@ where
     // between frames, so a flip on the Display screen lands on the very next map frame with no reload.
     // Suppression drops the terrain layer in the collect pass, so nothing is decoded, let alone drawn.
     rx.renderer.set_terrain_layer(rx.settings.map_contours);
+    // #1106: the elevation labels on index contours are chrome, so their paper and ink come from the
+    // palette, not the map — the same parchment chip the status/hint strips use, with the number in
+    // the contour grey so it reads as belonging to the line it sits on rather than as another HUD
+    // element. The keep-out bands below it are this screen's floating widgets (see them).
+    rx.renderer.set_label_colors(super::palette::PARCHMENT, super::palette::CONTOUR);
+    rx.renderer.set_label_insets(label_inset_top(), label_inset_bottom());
     let mut stats = rx.renderer.render_timed(target, scene, vp, bg, color_fn, rx.clock);
     let arrows_at = (skip.is_none() && vp.meters_per_pixel() <= CHEVRON_MAX_MPP).then_some(rx.activity.progress_m);
 
@@ -553,6 +559,25 @@ fn wrap2(s: &str) -> (&str, &str) {
 /// where the pan bottom chevron would draw — the two never coexist; the chip is pan-suppressed).
 const CHIP_H: i32 = 36;
 const CHIP_MARGIN: i32 = 10;
+
+/// The top / bottom bands of the map plane this screen's **floating chrome** occupies, handed to the
+/// renderer as the contour labels' keep-out (#1106, `MapRenderer::set_label_insets`). Every one of
+/// these widgets — the clock, the bottom chip, the scale bar — is drawn *after* the map plane and
+/// floats directly on it, so a label underneath is overwritten mid-glyph and reads as some other
+/// elevation. A road under the clock is merely covered; a *number* under it is wrong.
+///
+/// Derived from the same constants that place those widgets, so moving one moves the keep-out:
+/// - top = the clock's inset plus its line box;
+/// - bottom = the chip band plus the scale bar in its chip-stepped position (bar + ticks + label),
+///   which also covers the bar's low corner position when no chip is up.
+///
+/// Functions rather than consts only because `Font::line_height` reads the font strip at runtime.
+fn label_inset_top() -> u16 {
+    (CLOCK_TOP + Font::Body.line_height() as i32 + 2) as u16
+}
+fn label_inset_bottom() -> u16 {
+    (CHIP_H + CHIP_MARGIN + SCALE_TICK_H + Font::Label.line_height() as i32) as u16
+}
 
 // ---- Waypoint chip (bottom-centre) ----------------------------------------
 
