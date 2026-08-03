@@ -68,7 +68,7 @@ repack() { # repack <name> <source_pbf> <bbox> [terrain_obcd]
     local name="$1" src="$2" bbox="$3" terrain="${4:-}"
     local extra=()
     # A map with a committed terrain sidecar is packed WITH it, so the fixture
-    # carries real §8.3 ascent and (preset v5, #1094/#1095) the traced E3
+    # carries real §8.3 ascent and (preset v6, #1094/#1095/#1104) the traced E3
     # contours. The sidecar itself never changes here — `./repack.sh terrain`
     # owns it, on the DEM's own revision track.
     [[ -n "$terrain" ]] && extra=(--terrain "$terrain")

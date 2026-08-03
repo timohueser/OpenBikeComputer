@@ -7,7 +7,10 @@ It is never published itself.
 
 Provenance: Geofabrik `europe/germany/baden-wuerttemberg/freiburg-regbez`,
 snapshot `2026-08-01`, packed as OBCM v12 with
-`builder/presets/schema.json` (Bikepacking v4) and this padded crop:
+`builder/presets/schema.json` (Bikepacking v4 at the time; the preset has since
+moved — v6 as of #1104 — without owing this preview a re-pack, because the
+staleness gate is style-**id** assignment, which none of those bumps changed)
+and this padded crop:
 
 ```text
 obc pack freiburg-regbez-260801.osm.pbf builder/presets/schema.json \

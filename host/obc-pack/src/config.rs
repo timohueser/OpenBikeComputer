@@ -1548,20 +1548,30 @@ mod tests {
         );
     }
 
-    /// The shipped preset ships E3 (#1095): both classes styled, from the planning tier, all weight
-    /// 1, `major` dashed and `index` solid — the emphasis is continuity, not mass — both off the
-    /// width ramp and both tagged terrain, and the block itself **on**. Every one of those was
-    /// argued from a rendered frame, so each is pinned rather than left to a re-read of the JSON.
+    /// The shipped preset ships E3 (#1095): both classes styled, all weight 1, `major` dashed and
+    /// `index` solid — the emphasis is continuity, not mass — both off the width ramp and both
+    /// tagged terrain, and the block itself **on**. Every one of those was argued from a rendered
+    /// frame, so each is pinned rather than left to a re-read of the JSON.
+    ///
+    /// Both classes reach **LOD 2** (#1104), one tier above the planning tier (LOD 3) where #1095
+    /// first put them; LODs 0–1 stay contour-free. The reach is the same number for both on purpose:
+    /// index-only at LOD 2 was tried and rejected — solid grey lines with no dashes around them read
+    /// as paths, because emphasis-by-continuity only means anything while the dashes are present
+    /// (Timo's on-glass pick, 2026-08-03).
     #[test]
     fn the_shipped_schema_carries_both_contour_classes() {
         let cfg = corpus_config();
         for class in [ContourClass::Major, ContourClass::Index] {
             let style = cfg.contour_style(class).unwrap_or_else(|| panic!("{class:?} must be styled"));
-            assert_eq!(style.min_lod, 3, "E3 puts contours on the map from the planning tier");
             assert_eq!(style.weight, 1, "every contour is authored weight 1");
             assert_eq!(style.color, 0xAD55, "one grey, never a second colour");
             assert!(style.fixed_width, "a contour has no width on the ground — it is off the ramp");
             assert!(style.terrain_layer, "and it is what the device's terrain toggle suppresses");
+            assert_eq!(
+                style.min_lod, 2,
+                "#1104: {class:?} reaches LOD 2 — index-only at LOD 2 read as paths, so both classes \
+                 travel together (Timo's on-glass pick 2026-08-03)"
+            );
         }
         assert_eq!(cfg.contour_style(ContourClass::Major).unwrap().line_style, LineStyle::Dashed);
         assert_eq!(
