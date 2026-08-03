@@ -222,6 +222,12 @@ clock = "Uhr"
 clock_sub = "auf Karte"
 scale_bar = "Maßstab"
 scale_bar_sub = "auf Karte"
+# Elevation EL10c (#1096): the provisional contour toggle. Expected to be removed once #1097's ride
+# review decides the feature's fate — drop these two keys from all four catalogs with the row.
+# "Höhenlinien" is the term, but at 11 Body glyphs (154 px) it runs under the row's toggle slider,
+# which starts 148 px into the label column — "Konturen" is the reading that fits.
+contours = "Konturen"
+contours_sub = "auf Karte"
 idle = "Ruhe"
 idle_sub = "Timeout"
 

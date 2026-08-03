@@ -351,6 +351,10 @@ where
     let bg565 = scene.backdrop_style().map_or(DEFAULT_BG_RGB565, |style| style.color);
     let (target, color_fn) = cv.split();
     let bg = color_fn(bg565);
+    // #1096 (provisional): the rider's contour switch, re-applied every frame — the renderer keeps it
+    // between frames, so a flip on the Display screen lands on the very next map frame with no reload.
+    // Suppression drops the terrain layer in the collect pass, so nothing is decoded, let alone drawn.
+    rx.renderer.set_terrain_layer(rx.settings.map_contours);
     let mut stats = rx.renderer.render_timed(target, scene, vp, bg, color_fn, rx.clock);
     let arrows_at = (skip.is_none() && vp.meters_per_pixel() <= CHEVRON_MAX_MPP).then_some(rx.activity.progress_m);
 
