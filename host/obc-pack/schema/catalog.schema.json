@@ -435,11 +435,6 @@
           "type": "boolean",
           "default": false
         },
-        "contour_index": {
-          "description": "Style-record flag bit 6 (v13, #1105): the index contours. Like the id, this is the schema's fact and not the skin's — it is republished here only so an assembler restamping a style table has every bit of the record in one place. Defaulted, as the two above are.",
-          "type": "boolean",
-          "default": false
-        },
         "color2": {
           "description": "Optional RGB565 secondary color; `null` when the style has none.",
           "type": [
