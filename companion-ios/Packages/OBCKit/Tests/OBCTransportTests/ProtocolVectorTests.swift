@@ -176,7 +176,7 @@ final class ProtocolVectorTests: XCTestCase {
         let future = full + Data([0xEE, 0xEE])
         let decodedFuture = decode(future)
         XCTAssertEqual(decodedFuture.epoch, 0xA1B2_C3D4)
-        XCTAssertEqual(decodedFuture.obcm, 11)
+        XCTAssertEqual(decodedFuture.obcm, 13)
     }
 
     func testRideVectorDecodesAndReEncodesByteExactly() throws {
