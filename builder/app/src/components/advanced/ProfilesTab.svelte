@@ -1,7 +1,8 @@
 <script lang="ts">
-    // The routing-profile editor: one card per bike profile (name + a per-class
-    // multiplier grid for highway and surface classes), add/remove within the
-    // schema's 1..=8 bound, and per-profile "Reset to defaults". Every bound and
+    // The routing-profile editor: one card per bike profile (name + the §8.6 climb
+    // weight + a per-class multiplier grid for highway and surface classes),
+    // add/remove within the schema's 1..=8 bound, and per-profile "Reset to
+    // defaults". Every bound and
     // every class name is read from the served schema (readProfileSchema) — the
     // shipped defaults come from the packer, not a frontend copy.
     import type { ClassGroup } from "../../lib/config/profiles";
@@ -10,20 +11,25 @@
         cellValue,
         classNames,
         clearCell,
+        clearClimbWeight,
         displayProfiles,
         ensureRouting,
+        hasClimbWeight,
         isExplicit,
+        profileClimbWeight,
         profileDefault,
         readProfileSchema,
         removeProfile,
         resetProfile,
         setCell,
+        setClimbWeight,
         setProfileDefault,
         setProfileName,
     } from "../../lib/config/profiles";
     import type { Multiplier, SchemaEnvelope } from "../../lib/config/model";
     import { working } from "../../lib/config/storage.svelte";
     import { confirmAction } from "../../lib/ui/confirm.svelte";
+    import ClimbWeightCell from "./ClimbWeightCell.svelte";
     import MultiplierCell from "./MultiplierCell.svelte";
 
     let { schema }: { schema: SchemaEnvelope | null } = $props();
@@ -57,6 +63,18 @@
     function editDefault(i: number, v: Multiplier) {
         if (!ps) return;
         setProfileDefault(ensureRouting(env.config, ps).profiles[i], v);
+        touch();
+    }
+
+    function editClimb(i: number, v: number) {
+        if (!ps) return;
+        setClimbWeight(ensureRouting(env.config, ps).profiles[i], v);
+        touch();
+    }
+
+    function revertClimb(i: number) {
+        if (!ps) return;
+        clearClimbWeight(ensureRouting(env.config, ps).profiles[i]);
         touch();
     }
 
@@ -122,8 +140,10 @@
         <p class="muted small">
             Bike profiles weight the nav graph so the router prefers some way and surface types over
             others. Each multiplier is ≥ 1.0 (1.0 = neutral, higher = avoid); unlisted classes use the
-            profile's default. The device picks one of these profiles by position; the name is what
-            the rider sees. Up to {ps.maxProfiles} profiles.
+            profile's default. The <b>climb weight</b> ({ps.climbMin}–{ps.climbMax}) is separate: flat
+            metres charged per metre of ascent, added to the cost rather than scaling it, so
+            {ps.climbMin} is climb-blind and only maps packed with terrain feel it. The device picks one
+            of these profiles by position; the name is what the rider sees. Up to {ps.maxProfiles} profiles.
         </p>
         <button
             type="button"
@@ -159,6 +179,21 @@
                         label={`${profile.name} default`}
                         onset={(v) => editDefault(i, v)}
                         onclear={() => editDefault(i, ps.defaultMultiplier)}
+                        onhint={(h) => (hint = h)}
+                    />
+                </div>
+                <div class="pdefault">
+                    <span class="small muted" title="Flat metres charged per metre of ascent (§8.6)">
+                        climb weight
+                    </span>
+                    <ClimbWeightCell
+                        value={profileClimbWeight(profile, ps)}
+                        stated={hasClimbWeight(profile)}
+                        min={ps.climbMin}
+                        max={ps.climbMax}
+                        label={`${profile.name} climb weight`}
+                        onset={(v) => editClimb(i, v)}
+                        onclear={() => revertClimb(i)}
                         onhint={(h) => (hint = h)}
                     />
                 </div>
