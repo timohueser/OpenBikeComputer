@@ -14,14 +14,17 @@ use obc_map_scene::{BBox, Kind};
 use obc_reader::{Error, MapCache, MapTables, Reader, SliceSource, MAX_FEAT_PTS, MAX_FEAT_RINGS};
 use obcm_testkit::{
     build_file, default_nav_profile_table, empty_nav_directory, empty_poi_directory, hours_pool, nav_directory,
-    pack_line, pack_line16, pack_nav_chunk, pack_nav_edge_record, pack_nav_record, pack_poi_chunk, pack_poi_record,
-    pack_poly_hole, pad, poi_dir_len, poi_directory, seal, LodSpec, PoiCat, Style, MARKER,
+    pack_line, pack_line16, pack_line_flags, pack_line_level, pack_nav_chunk, pack_nav_edge_record, pack_nav_record,
+    pack_poi_chunk, pack_poi_record, pack_poly_hole, pack_poly_level, pad, poi_dir_len, poi_directory, seal, LodSpec,
+    PoiCat, Style, MARKER,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Feature {
     pub style_id: u8,
     pub kind: Kind,
+    /// v13 §5.2: metres, when the feature header carried a level.
+    pub level: Option<i16>,
     pub exterior: Vec<(i32, i32)>,
     pub interiors: Vec<Vec<(i32, i32)>>,
 }
@@ -34,6 +37,7 @@ fn decode_chunk(r: &Reader, lod: usize, chunk_id: u32, node: &BBox) -> Vec<Featu
         out.push(Feature {
             style_id: f.style_id,
             kind: f.kind,
+            level: f.level,
             exterior: f.exterior().to_vec(),
             interiors: f.interiors().map(|h| h.to_vec()).collect(),
         });
@@ -52,6 +56,7 @@ fn decode_filtered(r: &Reader, lod: usize, chunk_id: u32, node: &BBox, keep: imp
         out.push(Feature {
             style_id: f.style_id,
             kind: f.kind,
+            level: f.level,
             exterior: f.exterior().to_vec(),
             interiors: f.interiors().map(|h| h.to_vec()).collect(),
         });
@@ -237,7 +242,8 @@ fn style_record_round_trips_fixed_width_and_terrain_layer() {
     // Record 0's flags: count byte at HEADER_LEN, then offset 5 within the record.
     let flags_at = HEADER_LEN + 1 + 5;
     assert_eq!(bytes[flags_at] & 0xF0, 0, "the oracle writes bits 4-7 clear");
-    bytes[flags_at] |= 0x10 | 0x20 | 0x80; // fixed width + terrain layer + one still-reserved bit
+    // fixed width + terrain layer + index contour + the one still-reserved bit
+    bytes[flags_at] |= 0x10 | 0x20 | 0x40 | 0x80;
 
     let cache = MapCache::new();
     let src = SliceSource(&bytes);
@@ -247,12 +253,110 @@ fn style_record_round_trips_fixed_width_and_terrain_layer() {
     let s1 = r.style(1).expect("a record with a reserved bit set is still read, not rejected");
     assert!(s1.flags.fixed_width(), "bit 4 ⇒ fixed width");
     assert!(s1.flags.terrain_layer(), "bit 5 ⇒ terrain layer");
+    assert!(s1.flags.contour_index(), "bit 6 ⇒ index contour (v13)");
     // The bits below are untouched by the ones above.
     assert!(s1.flags.dashed());
     assert_eq!((s1.weight, s1.priority, s1.color), (1, 4, 0xAD55));
 
     let s2 = r.style(2).expect("style 2");
-    assert!(!s2.flags.fixed_width() && !s2.flags.terrain_layer(), "an ordinary style sets neither bit");
+    assert!(
+        !s2.flags.fixed_width() && !s2.flags.terrain_layer() && !s2.flags.contour_index(),
+        "an ordinary style sets none of the three bits"
+    );
+}
+
+/// v13 §5.2: a line whose flags carry `HAS_LEVEL` reads back its `int16` metres, and the two bytes
+/// are **consumed** — the deltas behind them must still decode to the same geometry the level-less
+/// feature has, which is what proves the reader advanced past the field rather than over a vertex.
+#[test]
+fn feature_level_round_trips_and_shifts_nothing() {
+    let deltas: &[(i8, i8)] = &[(10, 0), (0, 10)];
+    let plain = pack_line(1, 100, 200, deltas);
+    let leveled = pack_line_level(2, 100, 200, 2500, deltas);
+    // The field is exactly two bytes, and it is the only difference in the encoding.
+    assert_eq!(leveled.len(), plain.len() + 2, "a level costs one int16 and nothing else");
+    assert_eq!(&leveled[..2], &[2, 0x10], "style, then flags with bit 4 set and nothing else");
+    // Compact header is 7 bytes, so the level is at 7..9 and the deltas start at 9.
+    assert_eq!(i16::from_le_bytes([leveled[7], leveled[8]]), 2500);
+    assert_eq!(&leveled[9..], &plain[7..], "everything behind the level is the level-less encoding");
+
+    let chunk = seal([plain, leveled].concat(), CS);
+    let bytes = build_file(
+        GLOBAL,
+        STYLES,
+        &[LodSpec { max_mpp: f32::INFINITY, index: vec![0], chunks: vec![chunk], chunk_size: CS }],
+    );
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
+    let node = query_all(&r, 0, &r.bbox)[0].1;
+    let feats = decode_chunk(&r, 0, 0, &node);
+
+    assert_eq!(feats.len(), 2);
+    assert_eq!(feats[0].level, None, "a feature without the bit carries no level");
+    assert_eq!(feats[1].level, Some(2500), "and one with it carries the metres it was written with");
+    assert_eq!(feats[0].exterior, feats[1].exterior, "the level does not move a single vertex");
+    assert_eq!(feats[1].exterior, vec![(100, 200), (110, 200), (110, 210)]);
+}
+
+/// A negative level is a legal one (Dead Sea shore, Zuiderzee polder), so the field is signed and
+/// the reader must not read it as a `uint16`.
+#[test]
+fn feature_level_is_signed() {
+    let chunk = seal(pack_line_level(1, 10, 10, -412, &[(1, 1)]), CS);
+    let bytes = build_file(
+        GLOBAL,
+        STYLES,
+        &[LodSpec { max_mpp: f32::INFINITY, index: vec![0], chunks: vec![chunk], chunk_size: CS }],
+    );
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
+    let node = query_all(&r, 0, &r.bbox)[0].1;
+    assert_eq!(decode_chunk(&r, 0, 0, &node)[0].level, Some(-412));
+}
+
+/// §5.2's two refusals around the level bit. A polygon carrying one is malformed — a level says
+/// nothing about an area — and so is any feature with a bit 5-7 set: a *feature*'s unknown flag can
+/// change where its bytes end, so parsing on would be a misread, not a graceful degrade (unlike a
+/// *style* record's unknown bits, which are ignored — see the test above).
+#[test]
+fn feature_level_on_a_polygon_and_reserved_bits_are_rejected() {
+    let good = seal(pack_line_level(1, 10, 10, 1800, &[(1, 1)]), CS);
+    let cases: Vec<(&str, Vec<u8>)> = vec![
+        ("level on a polygon", seal(pack_poly_level(1, 10, 10, 1800, &[(10, 0), (0, 10)]), CS)),
+        ("reserved bit 5", seal(pack_line_flags(1, 10, 10, 0x20, &[(1, 1)]), CS)),
+        ("reserved bit 6", seal(pack_line_flags(1, 10, 10, 0x40, &[(1, 1)]), CS)),
+        ("reserved bit 7", seal(pack_line_flags(1, 10, 10, 0x80, &[(1, 1)]), CS)),
+    ];
+    for (what, chunk) in cases {
+        let bytes = build_file(
+            GLOBAL,
+            STYLES,
+            &[LodSpec { max_mpp: f32::INFINITY, index: vec![0], chunks: vec![chunk], chunk_size: CS }],
+        );
+        let cache = MapCache::new();
+        let src = SliceSource(&bytes);
+        let tables = MapTables::parse(&src).unwrap();
+        let r = Reader::new(&src, &tables, &cache);
+        let node = query_all(&r, 0, &r.bbox)[0].1;
+        assert!(decode_chunk(&r, 0, 0, &node).is_empty(), "{what} must not decode into a feature");
+    }
+    // The control: the same machinery accepts the well-formed leveled line, so the refusals above
+    // are the rule and not the harness.
+    let bytes = build_file(
+        GLOBAL,
+        STYLES,
+        &[LodSpec { max_mpp: f32::INFINITY, index: vec![0], chunks: vec![good], chunk_size: CS }],
+    );
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
+    let node = query_all(&r, 0, &r.bbox)[0].1;
+    assert_eq!(decode_chunk(&r, 0, 0, &node)[0].level, Some(1800));
 }
 
 #[test]
@@ -879,14 +983,16 @@ fn populated_poi_category_round_trips_with_record_layout() {
     assert_eq!(&bytes[blob1_at..blob1_at + POI_HOURS_BLOB_LEN], &blob1, "blob 1 at index 1");
 }
 
-/// An old file (version byte 10, the immediately-prior format) is rejected — the reader accepts v11
-/// only ("current version only": old maps get repacked). Forging the version byte alone is enough;
-/// the rest of the bytes never get parsed. This is a **distinct** error (`BadVersion`) from a
-/// mis-sized nav chunk (`BadOffset`, see `nav_directory_rejects_corrupt_fields`).
+/// An old file (version byte 12, the immediately-prior format) is rejected — the reader accepts v13
+/// only ("current version only": old maps get repacked, #1047's pre-release rule, so there is no
+/// compatibility path to fall down). Forging the version byte alone is enough; the rest of the bytes
+/// never get parsed. This is a **distinct** error (`BadVersion`) from a mis-sized nav chunk
+/// (`BadOffset`, see `nav_directory_rejects_corrupt_fields`).
 #[test]
 fn old_version_file_is_rejected() {
     let mut bytes = two_lod_file();
-    bytes[4] = 10; // downgrade the version byte to v10 (the just-superseded format)
+    assert_eq!(bytes[4], 13, "the oracle writes the current version");
+    bytes[4] = 12; // downgrade the version byte to v12 (the just-superseded format)
     assert!(matches!(MapTables::parse(&SliceSource(&bytes)), Err(Error::BadVersion)));
 }
 
@@ -1453,11 +1559,12 @@ fn mixed_compact_and_wide_headers_decode_the_same_both_ways() {
 }
 
 /// An unknown flag bit is still rejected — v11 widened the accepted mask to `0x0F` (the new `WIDE`
-/// bit), so `0x10` is the first invalid one, and it must not be mistaken for a header field.
+/// bit) and v13 spent `0x10` on `HAS_LEVEL`, so `0x20` is now the first invalid one, and it must not
+/// be mistaken for a header field.
 #[test]
 fn unknown_feature_flag_bit_is_malformed() {
     let mut chunk = pack_line(1, 100, 200, &[(10, 0)]);
-    chunk[1] |= 0x10; // flags live at byte 1 in v11
+    chunk[1] |= 0x20; // flags live at byte 1 in v11; bit 5 is the lowest still-reserved one in v13
     let chunk = seal(chunk, CS);
     let bytes = build_file(
         GLOBAL,

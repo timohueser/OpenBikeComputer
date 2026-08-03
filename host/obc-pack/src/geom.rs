@@ -15,6 +15,35 @@ use crate::serialize::{Feature, Kind};
 /// Axis-aligned bounds in degrees: (min_lon, min_lat, max_lon, max_lat).
 pub type Bounds = (f64, f64, f64, f64);
 
+/// One feature on its way into a LOD tree: what it is styled as, what it is *about* (the v13 §5.2
+/// level, `Some` on contours and nothing else), and where it is.
+///
+/// The merge passes, the cell cutter and the quadtree all pass features around as this, so a
+/// per-feature wire field cannot be dropped by one stage that happened to be written as a
+/// `(style_id, geom)` pair. `From<(u8, Geom)>` keeps the level-less spelling for the callers — tests,
+/// mostly — that have no notion of one.
+#[derive(Debug, Clone)]
+pub struct LodFeature {
+    pub style_id: u8,
+    /// Elevation in metres (OBCM §5.2 `HAS_LEVEL`); `None` for everything that is not a contour.
+    pub level: Option<i16>,
+    pub geom: Geom,
+}
+
+impl LodFeature {
+    #[inline]
+    pub fn new(style_id: u8, level: Option<i16>, geom: Geom) -> Self {
+        LodFeature { style_id, level, geom }
+    }
+}
+
+impl From<(u8, Geom)> for LodFeature {
+    #[inline]
+    fn from((style_id, geom): (u8, Geom)) -> Self {
+        LodFeature { style_id, level: None, geom }
+    }
+}
+
 /// `Multi` only arises from a clip result and is flattened away before storage.
 #[derive(Debug, Clone)]
 pub enum Geom {
@@ -223,15 +252,18 @@ pub fn trim_excess_holes(g: &mut Geom, max_rings: usize) -> usize {
     }
 }
 
-/// Only `Line`/`Polygon` reach here (post-flatten).
-pub fn to_feature(style_id: u8, g: &Geom) -> Option<Feature> {
+/// Only `Line`/`Polygon` reach here (post-flatten). `level` rides through untouched — it is a
+/// property of the feature, not of its geometry, so clipping and simplifying never change it.
+pub fn to_feature(style_id: u8, level: Option<i16>, g: &Geom) -> Option<Feature> {
     match g {
-        Geom::Line(c) => Some(Feature { style_id, kind: Kind::Line, rings: vec![c.clone()] }),
+        Geom::Line(c) => Some(Feature { style_id, kind: Kind::Line, level, rings: vec![c.clone()] }),
         Geom::Polygon { exterior, interiors } => {
             let mut rings = Vec::with_capacity(1 + interiors.len());
             rings.push(exterior.clone());
             rings.extend(interiors.iter().cloned());
-            Some(Feature { style_id, kind: Kind::Polygon, rings })
+            // A level on an area means nothing and the reader rejects it (§5.2), so it is dropped
+            // here rather than written and refused.
+            Some(Feature { style_id, kind: Kind::Polygon, level: None, rings })
         }
         _ => None,
     }

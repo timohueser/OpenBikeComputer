@@ -31,6 +31,16 @@ fn feature_error(error: FeatureReadError) -> SceneFeatureError {
     }
 }
 
+/// The seam's view of a decoded feature: geometry, style, and — since v13 — the §5.2 level a
+/// contour carries. One function because all four publication sites (candidate/selected × single
+/// map/volume set) must publish exactly the same fields; a field added here can't be forgotten at
+/// one of them.
+#[inline]
+pub(crate) fn scene_feature<'a>(feature: &crate::FeatureRef<'a>) -> Feature<'a> {
+    Feature::new(feature.style_id, feature.kind, feature.points(), feature.ring_lens(), feature.bbox())
+        .with_level(feature.level)
+}
+
 #[inline]
 fn token(cid: u32, offset: usize) -> FeatureToken {
     debug_assert!(offset <= u16::MAX as usize);
@@ -96,16 +106,7 @@ impl MapScene for Reader<'_> {
         let walk = self.for_each_chunk(lod, view, |cid, node| {
             report.chunks_visited += 1;
             match self.for_each_feature_filtered(lod, cid, &node, points, ring_lens, &should_decode, |feature| {
-                visit(Candidate {
-                    token: token(cid, feature.offset()),
-                    feature: Feature::new(
-                        feature.style_id,
-                        feature.kind,
-                        feature.points(),
-                        feature.ring_lens(),
-                        feature.bbox(),
-                    ),
-                });
+                visit(Candidate { token: token(cid, feature.offset()), feature: scene_feature(&feature) });
             }) {
                 Ok(status) => {
                     report.capacity_dropped = report.capacity_dropped.saturating_add(status.capacity_dropped);
@@ -148,16 +149,7 @@ impl MapScene for Reader<'_> {
                 }
                 match self.decode_feature_at(lod, cid, offset, &node, points, ring_lens) {
                     Ok(feature) => {
-                        refetched |= selected.decoded(
-                            i,
-                            Feature::new(
-                                feature.style_id,
-                                feature.kind,
-                                feature.points(),
-                                feature.ring_lens(),
-                                feature.bbox(),
-                            ),
-                        );
+                        refetched |= selected.decoded(i, scene_feature(&feature));
                     }
                     Err(error) => {
                         let _ = selected.failed(i, feature_error(error));

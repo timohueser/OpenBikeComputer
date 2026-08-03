@@ -34,7 +34,8 @@ use obc_formats::io::{rd_f32, rd_i16, rd_i32, rd_u16, rd_u32, ByteSource, Error 
 use obc_formats::obcm::PoiCategory;
 use obc_formats::obcm::{
     BRANCH_BIT, EMPTY_LEAF, FEATURE_FLAG_16BIT, FEATURE_FLAG_HOLES, FEATURE_FLAG_POLYGON, FEATURE_FLAG_WIDE,
-    STYLE_DASHED_BIT, STYLE_FIXED_WIDTH_BIT, STYLE_HAS_COLOR2_BIT, STYLE_PRIORITY_MASK, STYLE_TERRAIN_LAYER_BIT,
+    FEATURE_HAS_LEVEL_BIT, FEATURE_LEVEL_LEN, FEATURE_RESERVED_MASK, STYLE_CONTOUR_INDEX_BIT, STYLE_DASHED_BIT,
+    STYLE_FIXED_WIDTH_BIT, STYLE_HAS_COLOR2_BIT, STYLE_PRIORITY_MASK, STYLE_TERRAIN_LAYER_BIT,
 };
 use obc_formats::obcm::{
     CHUNK_END, FEATURE_HEADER_COMPACT_LEN, FEATURE_HEADER_WIDE_LEN, MAGIC, NAV_DIR_LEN, POI_CAT_ENTRY_LEN,
@@ -697,6 +698,9 @@ impl PoiDirectory {
 pub struct FeatureRef<'a> {
     pub style_id: u8,
     pub kind: Kind,
+    /// v13 §5.2: the feature's elevation in metres, when its header carried the `HAS_LEVEL` field.
+    /// `None` for every feature the packer wrote without one — which is everything but a contour.
+    pub level: Option<i16>,
     points: &'a [(i32, i32)],
     ring_lens: &'a [usize],
     bbox: BBox,
@@ -2328,14 +2332,20 @@ struct FeatHeader {
     /// carry the full `int32`.
     ax: i32,
     ay: i32,
+    /// v13 §5.2: the `HAS_LEVEL` field's value in metres, or `None` when the bit is clear.
+    level: Option<i16>,
+    /// Header width *including* the v13 level field, so the deltas start at `off + len` whether or
+    /// not the feature carries one.
     len: usize,
 }
 
 /// Read the feature header at `off`, or `None` for every malformed-framing case: the end-of-features
-/// sentinel, a header running past the chunk, an unknown flag bit, `pt_count == 0`, or holes on a
-/// line. `style` + `flags` are the fixed 2-byte prefix of both layouts, and the `WIDE` bit lives in
-/// `flags` — so v11 knows the header's width before it needs any field behind it (v10's trailing
-/// flags byte made that impossible, which is why the layout was reordered).
+/// sentinel, a header running past the chunk, a reserved flag bit, `pt_count == 0`, holes on a line,
+/// or a v13 level on a polygon. `style` + `flags` are the fixed 2-byte prefix of both layouts, and
+/// the `WIDE` bit lives in `flags` — so v11 knows the header's width before it needs any field
+/// behind it (v10's trailing flags byte made that impossible, which is why the layout was
+/// reordered). v13's `HAS_LEVEL` bit rides the same property: it only ever *appends* two bytes to
+/// whichever layout `WIDE` chose, so the returned `len` still lands on the first delta.
 #[inline]
 fn read_feature_header(chunk: &[u8], off: usize) -> Option<FeatHeader> {
     if off.checked_add(2).is_none_or(|end| end > chunk.len()) || chunk[off] == CHUNK_END {
@@ -2343,11 +2353,13 @@ fn read_feature_header(chunk: &[u8], off: usize) -> Option<FeatHeader> {
     }
     let style_id = chunk[off];
     let flags = chunk[off + 1];
-    if flags & !(FEATURE_FLAG_16BIT | FEATURE_FLAG_POLYGON | FEATURE_FLAG_HOLES | FEATURE_FLAG_WIDE) != 0 {
+    if flags & FEATURE_RESERVED_MASK != 0 {
         return None;
     }
     let wide = flags & FEATURE_FLAG_WIDE != 0;
-    let len = if wide { FEATURE_HEADER_WIDE_LEN } else { FEATURE_HEADER_COMPACT_LEN };
+    let base_len = if wide { FEATURE_HEADER_WIDE_LEN } else { FEATURE_HEADER_COMPACT_LEN };
+    let has_level = flags & FEATURE_HAS_LEVEL_BIT != 0;
+    let len = base_len + if has_level { FEATURE_LEVEL_LEN } else { 0 };
     if off.checked_add(len).is_none_or(|end| end > chunk.len()) {
         return None;
     }
@@ -2358,10 +2370,16 @@ fn read_feature_header(chunk: &[u8], off: usize) -> Option<FeatHeader> {
         // this layout when both fit `0..=65535`.
         (chunk[off + 2] as usize, rd_u16(chunk, off + 3) as i32, rd_u16(chunk, off + 5) as i32)
     };
-    if ext_pt_count == 0 || (flags & FEATURE_FLAG_HOLES != 0 && flags & FEATURE_FLAG_POLYGON == 0) {
+    // A level is a statement about a line; on a polygon it is meaningless, so a map that claims one
+    // is malformed rather than tolerated (§5.2). Same verdict for holes on a line.
+    let is_poly = flags & FEATURE_FLAG_POLYGON != 0;
+    if ext_pt_count == 0 || (flags & FEATURE_FLAG_HOLES != 0 && !is_poly) || (has_level && is_poly) {
         return None;
     }
-    Some(FeatHeader { style_id, flags, ext_pt_count, ax, ay, len })
+    // Read cast-free: two bytes straight into `i16::from_le_bytes` (#501 — a `&[u8]` from an SD
+    // chunk carries no alignment a pointer cast could rely on).
+    let level = has_level.then(|| i16::from_le_bytes([chunk[off + base_len], chunk[off + base_len + 1]]));
+    Some(FeatHeader { style_id, flags, ext_pt_count, ax, ay, level, len })
 }
 
 /// Decode the single feature whose header starts at `off` in `chunk`, into `points`/
@@ -2390,7 +2408,7 @@ fn decode_one_feature<'b, const P: usize, const R: usize>(
         Some(head) => head,
         None => return dropped_feature(points, ring_lens, FeatureDecodeError::Malformed, chunk.len()),
     };
-    let FeatHeader { style_id, flags, ext_pt_count, ax, ay, len } = head;
+    let FeatHeader { style_id, flags, ext_pt_count, ax, ay, level, len } = head;
     let feat_off = off;
     let mut off = off + len;
 
@@ -2458,6 +2476,7 @@ fn decode_one_feature<'b, const P: usize, const R: usize>(
     let fref = FeatureRef {
         style_id,
         kind: if is_poly { Kind::Polygon } else { Kind::Line },
+        level,
         points,
         ring_lens,
         bbox: bounds.to_bbox(),
@@ -2597,14 +2616,16 @@ fn parse_styles(
         // The two color2 bytes are always present; the flag bit — not a `0x0000` sentinel — decides
         // whether they carry a color (black `0x0000` is a legal secondary color).
         let color2 = if flags & STYLE_HAS_COLOR2_BIT != 0 { Some(rd_u16(&buf, o + 6)) } else { None };
-        // #1095: bit 4 takes the style off the width ramp, bit 5 files it under the terrain layer.
-        // Bits 6-7 stay reserved and are **ignored**, not rejected (§2) — that reader tolerance is
-        // exactly what let these two be defined without a format bump. The wire byte is re-packed
-        // into the seam's own [`StyleFlags`] rather than carried through: the table is resident.
+        // #1095: bit 4 takes the style off the width ramp, bit 5 files it under the terrain layer;
+        // v13 (#1105): bit 6 marks the index contours. Bit 7 stays reserved and is **ignored**, not
+        // rejected (§2) — that reader tolerance is exactly what let the three above be defined
+        // without a format bump of their own. The wire byte is re-packed into the seam's own
+        // [`StyleFlags`] rather than carried through: the table is resident.
         let style_flags = StyleFlags::new(
             flags & STYLE_DASHED_BIT != 0,
             flags & STYLE_FIXED_WIDTH_BIT != 0,
             flags & STYLE_TERRAIN_LAYER_BIT != 0,
+            flags & STYLE_CONTOUR_INDEX_BIT != 0,
         );
         styles[id as usize] = Some(Style { id, z_index, color, weight, priority, flags: style_flags, color2 });
         o += STYLE_RECORD_LEN;

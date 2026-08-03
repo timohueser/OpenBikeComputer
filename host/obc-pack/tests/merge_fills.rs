@@ -27,6 +27,7 @@ fn fill(id: u8, color: u16) -> Style {
         color2: None,
         fixed_width: false,
         terrain_layer: false,
+        contour_index: false,
     }
 }
 
@@ -43,7 +44,7 @@ fn cell(style_id: u8, gx: i64, gy: i64) -> (u8, Geom) {
 }
 
 /// Pack one LOD of `(style_id, geom)` features exactly as the pipeline does.
-fn pack(features: Vec<(u8, Geom)>, styles: &[Style]) -> (Vec<u8>, usize) {
+fn pack(features: Vec<impl Into<obc_pack::geom::LodFeature>>, styles: &[Style]) -> (Vec<u8>, usize) {
     let root = build_lod(features, GLOBAL, CHUNK);
     let lod = LodLayer { max_mpp: None, chunk_size: CHUNK, root };
     serialize_lods(

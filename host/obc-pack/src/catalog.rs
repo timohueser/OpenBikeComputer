@@ -390,6 +390,11 @@ pub struct SkinStyle {
     /// Style-record flag bit 5 (#1095): part of the suppressible terrain layer.
     #[serde(default)]
     pub terrain_layer: bool,
+    /// Style-record flag bit 6 (v13, #1105): the index contours. Like the id, this is the schema's
+    /// fact and not the skin's — it is republished here only so an assembler restamping a style
+    /// table has every bit of the record in one place. Defaulted, as the two above are.
+    #[serde(default)]
+    pub contour_index: bool,
     /// Optional RGB565 secondary color; `null` when the style has none.
     pub color2: Option<u16>,
 }
@@ -1487,6 +1492,7 @@ fn skin_styles(config: &Config, schema: &SchemaDoc, path: &Path) -> Result<Vec<S
             dashed: s.line_style == LineStyle::Dashed,
             fixed_width: s.fixed_width,
             terrain_layer: s.terrain_layer,
+            contour_index: s.contour_index,
             color2: s.color2,
         })
         .collect();

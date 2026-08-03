@@ -1,4 +1,4 @@
-# OBCM File Format Specification (v12)
+# OBCM File Format Specification (v13)
 
 OBCM (OpenStreetMap Binary Chunked Map) is a compact binary map format designed
 for efficient rendering on memory-constrained devices such as microcontrollers
@@ -106,7 +106,7 @@ decode-valid: it routes exactly as v11 did — the degrade path, and what the
 smaller fixtures (`monaco.obcm`, `grimsel-demo.obcm`) still carry.
 `grimsel.obcm` is packed **with** its terrain sidecar since 2026-08-03 (#1096
 follow-up), so it exercises real integrated ascent and the traced contours.
-**v12 is the only supported version**; earlier maps get repacked.
+(v12 was the only supported version until v13, below.)
 
 **Within v12** (issue #1095, same elevation epic) two of the style record's reserved
 flag bits gained meanings — bit 4 **fixed width** and bit 5 **terrain layer** (§2).
@@ -114,6 +114,34 @@ This is deliberately *not* a version bump: nothing about the record's length, la
 or any offset moves, and §2's reader obligation for undefined style bits has always
 been to ignore them, so a reader that does not know these two parses the same fields
 and draws a slightly different-looking contour. §2 carries the argument in full.
+
+**Version 13** (issue #1105, epic #1103) lets a contour **say how high it is**. One
+new feature field and one new style bit; the header, LOD table (§3), quadtree (§4),
+offset tables (§5.1), POI section (§7), hours pool (§7.5) and nav-graph section (§8)
+are **byte-identical to v12**, and so is every feature that does not use the new bit.
+
+1. **Feature flag bit 4 = `HAS_LEVEL`** (§5.2). When set, a little-endian `int16`
+   **level in metres** sits immediately behind the feature header — before the point
+   data — in *either* header layout. The bit is legal on **lines only**: a level is a
+   statement about a contour, and on an area it means nothing, so a reader MUST reject
+   a polygon that carries it. Bits 5-7 remain reserved-must-reject.
+2. **Style flag bit 6 = `CONTOUR_INDEX`** (§2). The style draws **index** contours —
+   the every-Nth isoline a map labels. Written by the packer from the feature type
+   (`contour.index`).
+
+Why the level is in the file at all: the packer knows it at trace time, and the
+alternative — sampling the terrain raster at each label anchor, per frame — puts an SD
+read inside the render loop, which is the one thing the label work is not allowed to
+cost. Why it is a *feature* field rather than a style: a style says what a line looks
+like, and 2500 m is not a look; a map carries hundreds of levels and at most 254
+styles. Two bytes per contour feature is ~0.03 % of a contoured map.
+
+Bit 6 could have been defined in place — §2's reader obligation for unknown style bits
+is to ignore them, as it was for bits 4-5 — but it rides this bump because it is
+useless without the level field beside it, and shipping half of a pair as a silent
+extension would leave a map that says *which* lines are index contours and not *what
+they are*. **v13 is the only supported version**; earlier maps get repacked (there is
+no compatibility path, by the pre-release rule).
 
 **Version 9** (epic #533 N2) is a §8-only bump that makes the router **bike-type
 aware** and shrinks the section it reads (measured ~58% padding in v8 node
@@ -221,7 +249,7 @@ across every LOD. Packed as `Count`, then `Count` records.
 | 1 | Z-Index | 1 | `int8` | Painter's-order layer (lower drawn first) |
 | 2 | Color | 2 | `uint16` | RGB565 (the primary color) |
 | 4 | Weight | 1 | `uint8` | Stroke width in pixels (lines) |
-| 5 | Flags | 1 | `uint8` | Bits 0-1: priority level (1=highest/render first, 4=lowest/render last). **Bit 2 (v10): dashed** line (else solid; ignored for polygons). **Bit 3 (v10): color2 present.** **Bit 4: fixed width.** **Bit 5: terrain layer.** Bits 6-7 reserved, written 0 — a reader MUST **ignore** them, not reject the record (see below) |
+| 5 | Flags | 1 | `uint8` | Bits 0-1: priority level (1=highest/render first, 4=lowest/render last). **Bit 2 (v10): dashed** line (else solid; ignored for polygons). **Bit 3 (v10): color2 present.** **Bit 4: fixed width.** **Bit 5: terrain layer.** **Bit 6 (v13): index contour.** Bit 7 reserved, written 0 — a reader MUST **ignore** it, not reject the record (see below) |
 | 6 | Color2 | 2 | `uint16` | RGB565 **secondary color** (v10). Written `0x0000` when flag bit 3 is clear; readers MUST ignore it then (`0x0000` is a legit color — black — not a "no color2" sentinel) |
 
 The **secondary color** and **line style** drive the finest-LOD line/polygon
@@ -256,18 +284,31 @@ types. It is presentation metadata carried on the style record and nothing else 
 reader behaviour in this version depends on it, and a renderer that ignores it draws a
 correct map. It is written so the device Settings toggle (#1096) has something to read.
 
-> **Defining bits 4-5 is not a version bump, and this section is why.** Unlike a
-> *feature*'s `Flags` (§5.2), where "a reader MUST reject a feature with any [reserved
-> bit] set", the reader obligation for a style record's undefined bits has always been
-> to **ignore** them — the reference reader masks bits 0-1 and tests bits 2-3, and has
-> never looked at the rest. So a v12 reader meeting a v12 record with bit 4 set parses
-> every field correctly and renders a contour at the ramped width instead of the
-> authored one: a presentation degrade, inside one style record, with no offset,
-> length or count affected anywhere in the file. A version is this format's hard cut —
-> it makes every existing map unreadable until repacked and every existing reader
-> refuse every new map — and it is reserved for changes that would otherwise be
-> *misparsed*, not for ones that are merely rendered older. **Bits 6-7 keep exactly
-> this contract**: written `0`, ignored by readers, and definable in place the same way.
+**Bit 6 — index contour** (v13). The style draws **index** contours: the every-Nth
+isoline of the packer's contour trace, the sparse rhythm a paper map prints heavier and
+labels. Written by the packer from the feature type (`contour.index`) and by nothing
+else — it is not an authored style property, because which class was traced is a fact
+about the trace and not about the look someone chose for it. It exists so a renderer can
+select those lines *by what they are*: the alternatives are sniffing `z-index` (which is
+presentation and may be restyled) or testing the level against a modulus (which the file
+does not carry — the interval and index step are packer config and never travel). The
+features of such a style are exactly the ones that carry a §5.2 level.
+
+> **Defining bits 4-6 is not what a version bump is for, and this section is why.**
+> Unlike a *feature*'s `Flags` (§5.2), where "a reader MUST reject a feature with any
+> [reserved bit] set", the reader obligation for a style record's undefined bits has
+> always been to **ignore** them — the reference reader masks bits 0-1 and tests bits
+> 2-3, and has never looked at the rest. So a reader meeting a record with bit 4 set
+> parses every field correctly and renders a contour at the ramped width instead of the
+> authored one: a presentation degrade, inside one style record, with no offset, length
+> or count affected anywhere in the file. A version is this format's hard cut — it makes
+> every existing map unreadable until repacked and every existing reader refuse every
+> new map — and it is reserved for changes that would otherwise be *misparsed*, not for
+> ones that are merely rendered older. Bits 4-5 were therefore defined inside v12, and
+> bit 6 would have qualified too; it rides v13 only because it is meaningless without
+> the level field that bump carries, and a half-shipped pair is worse than either half.
+> **Bit 7 keeps exactly this contract**: written `0`, ignored by readers, and definable
+> in place the same way.
 
 > **Style IDs are assigned by the packer, not authored.** A style ID is a
 > purely internal reference into this table — no reader depends on a specific
@@ -385,17 +426,19 @@ a quadtree leaf and is arbitrary in a corrupt map: `k < Chunk Count`,
 > `freiburg.obcm`, 65% of `grimsel.obcm`. One `uint32` per chunk buys all of it back
 > (freiburg: 1 534 chunks × 4 B = 6 KB of table for 3.8 MB of padding).
 
-### 5.2 Feature Header (7 or 12 bytes, v11)
+### 5.2 Feature Header (7 or 12 bytes, v11) + the optional level (v13)
 
 `Flags` is at byte **1** in both layouts — its `0x08` **WIDE** bit selects the
 layout, so a reader knows the header's width before it reads any field behind it.
+Its `0x10` **HAS_LEVEL** bit (v13) *appends* two bytes to whichever layout WIDE
+chose, so the two bits compose and neither moves a field of the other.
 
 **Compact** (WIDE clear), 7 bytes, `struct "<BBBHH"` — the common case:
 
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
 | 0 | Style ID | 1 | `uint8` | Reference into the Style Table |
-| 1 | Flags | 1 | `uint8` | `0x01` 16-bit deltas · `0x02` polygon · `0x04` has holes · `0x08` WIDE (**clear** here) |
+| 1 | Flags | 1 | `uint8` | `0x01` 16-bit deltas · `0x02` polygon · `0x04` has holes · `0x08` WIDE (**clear** here) · `0x10` HAS_LEVEL |
 | 2 | Pt Count | 1 | `uint8` | Vertex count of the **exterior** ring, `1..=255` |
 | 3 | Anchor X | 2 | `uint16` | Exterior start relative to the **leaf node's min longitude** (microdegrees), `0..=65535` |
 | 5 | Anchor Y | 2 | `uint16` | Exterior start relative to the leaf node's min latitude |
@@ -405,20 +448,51 @@ layout, so a reader knows the header's width before it reads any field behind it
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
 | 0 | Style ID | 1 | `uint8` | Reference into the Style Table |
-| 1 | Flags | 1 | `uint8` | Same bits, `0x08` WIDE **set** |
+| 1 | Flags | 1 | `uint8` | Same bits, `0x08` WIDE **set**, `0x10` HAS_LEVEL as above |
 | 2 | Pt Count | 2 | `uint16` | Vertex count of the exterior ring |
 | 4 | Anchor X | 4 | `int32` | Exterior start, relative to the leaf node's min longitude |
 | 8 | Anchor Y | 4 | `int32` | Exterior start, relative to the leaf node's min latitude |
 
-Bits 4-7 of `Flags` are reserved and written `0`; a reader MUST reject a feature with
-any of them set. `Pt Count == 0` is malformed in both layouts. Compact anchors are
+Bits **5-7** of `Flags` are reserved and written `0`; a reader MUST reject a feature
+with any of them set. `Pt Count == 0` is malformed in both layouts. Compact anchors are
 **unsigned** — zero-extended, never sign-extended.
 
 A writer MUST choose compact when `Pt Count` is in `1..=255` **and** both anchor
 components are in `0..=65535`, and wide otherwise. The escape is not hypothetical: a
 coarse-LOD leaf can span far more than 65 535 µdeg (~7 km), so an anchor inside it
-genuinely needs the wider field. Everything after the header — hole bookkeeping and
-the delta streams — is identical in both layouts and unchanged from v10.
+genuinely needs the wider field.
+
+#### Level (v13, 2 bytes, only when `Flags & 0x10`)
+
+| Offset | Field | Size | Type | Description |
+| :-- | :-- | :-- | :-- | :-- |
+| 7 (compact) / 12 (wide) | Level | 2 | `int16` | Elevation in **metres**, little-endian |
+
+```
+[Feature Header (7 B compact | 12 B wide)]
+[Level (int16)]                  (only when Flags & 0x10)
+[Exterior deltas]                ((Pt Count - 1) × (int8|int16) pairs)
+```
+
+Present **iff** `HAS_LEVEL` is set, and then always immediately after the header and
+before the first delta. Signed, because negative elevations are ordinary ground (a
+polder, a rift shore); the range `−32768..=32767` m covers the planet with room to
+spare, and the packer traces from an `int16` DEM, so no clamp is possible or needed.
+
+A reader MUST reject a feature that sets `HAS_LEVEL` **and** `0x02` POLYGON: a level
+describes a contour line and there is no meaning to assign it on an area, so a file
+claiming one is malformed rather than tolerated. A writer MUST NOT set the bit on a
+polygon.
+
+Only contours carry a level today. It is nonetheless a *feature* field and not a style
+property, because a map holds hundreds of levels and at most 254 styles; and it is in
+the file rather than sampled on the device because the packer knows it at trace time,
+whereas a device would have to read the terrain raster at render time to recover it.
+
+Everything after the level — hole bookkeeping and the delta streams — is identical in
+both layouts and unchanged from v10. The 2 bytes do not disturb the §5.1 chunk-capacity
+derivation: they only *raise* a leveled feature's packed size above the `2·V + 5`
+minimum the `Chunk Size ≤ 4101` bound is derived from, so the bound stays sufficient.
 
 The **anchor** is the feature's first absolute coordinate, stored relative to the
 containing leaf node's min corner to keep it small:
@@ -476,6 +550,8 @@ Lines use only the exterior ring (`Flags & 0x02 == 0`, no holes).
 > the 10 µdeg split floor the smallest holes are dropped to fit.
 
 ### Polygon-with-holes byte layout
+
+A polygon never carries a level, so the layout below is the whole of it.
 
 ```
 [Feature Header (7 B compact | 12 B wide)]
