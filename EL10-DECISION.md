@@ -12,6 +12,16 @@ shipped renderer, both unmodified.
 > Contours in this document are derived from Copernicus DEM GLO-30
 > (`obc_dem::COPERNICUS_ATTRIBUTION`) — the attribution obligation travels with them.
 
+> **Review outcome (2026-08-03): styling revised to E3; placement (b) unchanged.** The review
+> ([PR comment](https://github.com/timohueser/OpenBikeComputer/pull/1088#issuecomment-5164574881))
+> found two defects in the original option-D styling — §4.4's planning-zoom conclusion was drawn
+> from a frame that only ever showed 500 m index lines, and contours ride the road width ramp, so
+> "weight 2 vs 1" is **8 px vs 4 px** on glass at street zoom. The picked design is **E3**
+> (`option-e3-*.png`): 100 m from **LOD 3**, one grey, **all weight 1**, major **dashed** / index
+> solid, and a new fixed-width style flag that opts contours out of the ramp. §0, §4 and §5 below
+> are updated to match; the follow-ups are filed as
+> [#1094](https://github.com/timohueser/OpenBikeComputer/issues/1094)–[#1097](https://github.com/timohueser/OpenBikeComputer/issues/1097).
+
 ---
 
 ## 0. TL;DR
@@ -21,13 +31,14 @@ shipped renderer, both unmodified.
 | **Placement** | **(b) — bake contours into the existing `mid`/`fine` geometry cells.** Not a `relief` band. |
 | **Why** | A separate band cannot buy revision independence, because contours are *styled vector features* and the style table is shared and revision-locked (`MountedSet::mount` rejects a shard stamped from a different skin). And EL5 already coupled OBCM cells to the terrain revision by baking OBCT-derived ascent into §8.3 — (b) adds no coupling that is not already there. |
 | **Price** | A terrain-dataset bump (GLO-30 revision, or a posting retune) now stales `mid`/`fine` too, not just `network`. At DACH scale that is a geometry-corpus re-publish on the terrain cadence (years), on top of the one EL5's ascent field already forces. |
-| **Ladder** | 100 m interval, index every 500 m, `min_lod 4` (mpp ≤ 5). No 50 m. Source geometry clamped to 15 m before packing. |
-| **Style** | One grey (`0xAD55`), emphasis by **weight only** (2 vs 1). Not sepia. |
+| **Ladder** | 100 m interval, index every 500 m, `min_lod 3` (mpp ≤ 10). No 50 m. Source geometry clamped to 15 m before packing. |
+| **Style** | One grey (`0xAD55`), **all weight 1, off the width ramp** (a new fixed-width style flag — §5.3). Emphasis by **continuity**: major dashed, index solid. Not sepia. |
 | **Labels** | **No** in v1. Argued in §6, not assumed. |
-| **Cost** | **+17.7 % of an alpine map file** (grimsel, measured), **+1.4 % on flat ground** (Rhine plain, measured) = **0.77 MiB / 1000 km² alpine**, below the epic's reserved 1–2.5 MiB band. |
+| **Cost** | **+23.1 % of an alpine map file** (grimsel, re-measured for the LOD-3 rung), **+1.4 % on flat ground** (Rhine plain, measured) = **0.98 MiB / 1000 km² alpine**, inside the epic's reserved 1–2.5 MiB band. |
 
-**Recommended mockup: `design/el10-mockups/option-d-*.png`.** Options A/B/C are the three the issue
-asked for; D is the synthesis the measurements pushed me to, and it is the one I would build.
+**Picked mockup: `design/el10-mockups/option-e3-*.png`.** Options A/B/C are the three the issue
+asked for; D was the first synthesis, and E3 is the review's correction of D on the two findings
+in the banner above.
 
 ---
 
@@ -243,8 +254,8 @@ path costs ~11 ms of I/O per frame — a traced path would cost that plus the ma
 
 | class | interval | `min_lod` | style |
 | :-- | --: | --: | :-- |
-| `major` | 100 m | 4 (mpp ≤ 5) | `color 0xAD55`, `weight 1`, `z_index 8`, `priority 4` |
-| `index` | 500 m | 4 (mpp ≤ 5) | `color 0xAD55`, `weight 2`, `z_index 9`, `priority 4` |
+| `major` | 100 m | 3 (mpp ≤ 10) | `color 0xAD55`, `weight 1`, `line_style dashed`, fixed-width, `z_index 8`, `priority 4` |
+| `index` | 500 m | 3 (mpp ≤ 10) | `color 0xAD55`, `weight 1`, solid, fixed-width, `z_index 9`, `priority 4` |
 
 `z_index 8/9` puts contours above the landcover fills (z 2–6) and below buildings (10), water
 (14/16) and every road (24+) — terrain under everything a rider follows.
@@ -274,14 +285,23 @@ interpolation noise. Pre-simplifying the traced polylines at **15 m** before the
 **Nothing visible changes** — 15 m is still well inside the DEM's own resolution. This is free
 money and the implementation issue should treat it as a requirement, not a tuning knob.
 
-### 4.4 `min_lod 4`, not 3
+### 4.4 `min_lod 3` — the planning zoom gets contours after all (revised)
 
 The config ladder has **no `max_lod`** — a style's `min_lod` puts it in that tier *and every finer
-one*. So the only ladder lever is where contours *start*. Starting at LOD 3 (mpp ≤ 10) costs
-+31 KB and is worse than free: at that zoom a hairline index contour is invisible
-(`option-c-wide.png`) and a weight-2 one **reads as a road** (`option-a-wide.png` — those dark grey
-lines are 500 m contours, and they look exactly like the trunk roads two zoom steps out).
-Contours should appear when the rider zooms in to read terrain, not on the planning view.
+one*. So the only ladder lever is where contours *start*.
+
+This memo originally argued for `min_lod 4`: at the planning zoom a hairline index contour is
+invisible (`option-c-wide.png`) and a weight-2 one reads as a road (`option-a-wide.png`). **Both
+observations were true and the conclusion was wrong**, because every option rendered at LOD 3 in
+this package shows *500 m index lines only* — the 100 m ladder at the planning zoom was never in
+any frame. Three or four arbitrary greys can't produce the nesting cue, and the nesting cue is the
+whole signal. The review baked the missing frame (`option-e1-wide.png` / `option-e3-wide.png`):
+100 m spacing at LOD 3 reads as landform immediately. The sparseness was the defect, not the zoom.
+
+The LOD-3 rung costs **+157 KB** on grimsel (D → E, +17.5 % → +23.1 %, re-measured on a
+locally-cropped extract — see §7). At **0.98 MiB / 1000 km²** the epic's 1–2.5 reserve still
+holds on the corpus's worst-case map, so the original "+31 KB and worse than free" was the right
+shape of argument applied to the wrong variant.
 
 ---
 
@@ -305,12 +325,41 @@ most needs to pick out.
 reads as "not a thing you can ride" — which is exactly what a contour is.
 `option-c-ride.png` / `option-d-ride.png` show roads, trails and water all staying legible on top.
 
-### 5.3 Emphasis by weight, never by a second colour
+### 5.3 Emphasis by continuity, off the width ramp (revised)
 
-Option A emphasises the index contour with a darker grey (`0x52AA`). Two problems, both visible:
-`0x52AA` is the local-street casing colour in the default skin, and at the planning zoom the darker
-heavier line reads as a road (`option-a-wide.png`). **Option D keeps one grey and varies only
-weight (2 vs 1)**, which gives the index rhythm without inventing a second mark.
+Never by a second colour — that part stands. Option A emphasises the index contour with a darker
+grey (`0x52AA`), which is the local-street casing colour in the default skin and reads as a road
+at the planning zoom (`option-a-wide.png`).
+
+**But emphasis by weight fails too, and the reason is mechanical.** `scale_weight`
+(`firmware/obc-render/src/lib.rs`) multiplies *every* line's authored weight by `(10/mpp)^0.6`,
+clamped 1–12 px — correct for a road, which is wider on the ground, and wrong for a contour, which
+has no ground width at all. On glass, option D's "2 vs 1" is:
+
+| zoom | mpp | ramp | `major` (authored 1) | `index` (authored 2) |
+| :-- | --: | --: | --: | --: |
+| planning | 9.0 | ×1.07 | 1 px | 2 px |
+| riding | 4.0 | ×1.73 | 2 px | 3 px |
+| street | 1.0 | ×3.98 | **4 px** | **8 px** |
+
+Measured median stroke on the committed `option-d-*.png` framebuffers: **4 device pixels** at both
+riding and street zoom. The ramp is backwards for this feature class — thinnest where the original
+§4.4 wanted contours gone, fattest where they compete with `highway=track` for the same grey mass.
+And authored weight cannot fix it: `weight = weight.max(1)` in `stroke.rs`, and `0xAD55` is already
+the lightest grey on the RGB222 gamut. **Thinner is an opt-out from the ramp, not a config value.**
+
+**E3 therefore uses two levers, both cheap:**
+
+- **Dashed** — `line_style: "dashed"` already ships. It halves the ink, breaks the road read
+  outright (nothing dashed in this palette is rideable), and frees the *index* contour to be the
+  solid line among dashes — emphasis by continuity, costing no extra mass. Config-only, zero bytes:
+  E3 and E2 are byte-identical `.obcm` files.
+- **Fixed width** — a new style flag ("this weight is verbatim; skip `scale_weight`"). The OBCM
+  style record's `Flags` byte has bits 4–7 reserved, written 0 (`OBCM_Spec.md` §5), so this is one
+  spare bit, no record-length change. It is a general property — *a mark on the map, not a thing
+  with width on the ground* — and #1095 lands it as such, not as a contour special case.
+
+`option-e3-*.png` vs `option-d-*.png` at street zoom is the whole argument in one comparison.
 
 ### 5.4 Open item for the implementation issue
 
@@ -367,17 +416,45 @@ a reservoir east, tracks and a service road through the middle. Three zooms land
 | `option-b` | same as A | same as A | +25.2 % | sepia collides with the trail palette in both skins |
 | `option-b-dusk` | same as A | same as A | +25.2 % | dusk check for B — same collision, plus grey is taken by streets |
 | `option-c` | 100 m + 500 m index | index @3, major @4 | +18.8 % | clean; the LOD-3 index still buys nothing |
-| **`option-d`** | **100 m + 500 m index** | **both @4** | **+17.7 %** | **recommended** |
+| `option-d` | 100 m + 500 m index | both @4 | +17.7 % | the original recommendation, superseded by E3 |
 
 All options are the DEM-clamped geometry (§4.3) except where the table above says otherwise; A and
 B are byte-identical bakes differing only in the style table (both 3,576,558 B), which is itself a
 useful confirmation that colour is free.
 
+### 7.1 The E variants (review round, 2026-08-03)
+
+Baked for the [review comment](https://github.com/timohueser/OpenBikeComputer/pull/1088#issuecomment-5164574881)
+to test the two revised findings (§4.4, §5.3). Same tracer, terrain shard and viewport; the OSM
+side is a locally pre-cropped `grimsel.osm.pbf` rather than this branch's
+Switzerland-with-complete-ways crop, so the E set is internally consistent but sits ~2 % off the
+table above (D reproduces at +17.5 % against +17.7 %). E3/E4 frames additionally run a throwaway
+`scale_weight` bypass in `obc-render` standing in for the fixed-width flag #1095 specifies — the
+one deliberate exception to this document's "shipped renderer, unmodified" rule, marked here so
+nobody discovers it later.
+
+| option | ladder | style | file Δ | verdict |
+| :-- | :-- | :-- | --: | :-- |
+| `option-e1` | both @3 | solid w1 / w2, ramped | +23.1 % | planning reads as terrain; index still road-like at street |
+| `option-e2` | both @3 | dashed w1 / solid w1, ramped | +23.1 % | config-only, ships today; street dashes still chunky |
+| **`option-e3`** | **both @3** | **dashed w1 / solid w1, fixed-width** | **+23.1 %** | **picked** |
+| `option-e4` | both @3 | solid w1 / w2, fixed-width | +23.1 % | clean, but the w2 index still reads as a road |
+
+E3 renders E2's `.obcm` and E4 renders E1's — the fixed-width behaviour lives in the renderer
+probe, not the file — and E1 vs E2 differ only in the style table. All four bakes are 3,446,797 B:
+every distinction in this round is free, and only the LOD-3 rung costs bytes (+157 KB over D).
+
 ---
 
 ## 8. Drafted follow-up sub-issues
 
-**Not filed.** Ready to file once a pick is made; the text assumes option D and placement (b).
+**Superseded — the real subs are filed** against the E3 pick:
+[#1094 (EL10a, packer tracing)](https://github.com/timohueser/OpenBikeComputer/issues/1094),
+[#1095 (EL10b, E3 style + the fixed-width and terrain-layer flag bits)](https://github.com/timohueser/OpenBikeComputer/issues/1095),
+[#1096 (EL10c, provisional device Settings toggle)](https://github.com/timohueser/OpenBikeComputer/issues/1096),
+[#1097 (EL10d, on-glass keep-or-drop review)](https://github.com/timohueser/OpenBikeComputer/issues/1097).
+The drafts below are kept as written for the record; where they disagree with the filed issues
+(option D styling, `min_lod 4`, no toggle), **the filed issues win**.
 
 ---
 
