@@ -20,6 +20,8 @@ fn pack_style_dict_one_style() {
         priority: 2,
         dashed: false,
         color2: None,
+        fixed_width: false,
+        terrain_layer: false,
     }]);
     assert_eq!(data.len(), 9); // count(1) + 8-byte v10 record
     assert_eq!(data[0], 1); // count
@@ -43,6 +45,8 @@ fn pack_style_dict_line_style_and_color2() {
         priority: 3,
         dashed: true,
         color2: Some(0x8410),
+        fixed_width: false,
+        terrain_layer: false,
     }]);
     assert_eq!(data.len(), 9);
     assert_eq!(data[6], (3 - 1) | 0x04 | 0x08, "priority 3 + dashed bit 2 + color2 bit 3");
@@ -57,9 +61,39 @@ fn pack_style_dict_line_style_and_color2() {
         priority: 1,
         dashed: false,
         color2: Some(0x0000),
+        fixed_width: false,
+        terrain_layer: false,
     }]);
     assert_eq!(data[6] & 0x08, 0x08, "color2-present bit set even for black");
     assert_eq!(u16::from_le_bytes([data[7], data[8]]), 0x0000);
+}
+
+/// #1095: fixed width is bit 4 and terrain layer is bit 5, each independent of the other and of the
+/// priority/dashed/color2 bits below them. The record stays 8 bytes — both bits live in the byte
+/// that was already there, which is why defining them cost no format bump.
+#[test]
+fn pack_style_dict_fixed_width_and_terrain_layer_bits() {
+    let contour = |fixed_width, terrain_layer| Style {
+        id: 7,
+        z_index: 8,
+        color: 0xAD55,
+        weight: 1,
+        priority: 4,
+        dashed: true,
+        color2: None,
+        fixed_width,
+        terrain_layer,
+    };
+    let flags = |s: Style| {
+        let data = pack_style_dict(&[s]);
+        assert_eq!(data.len(), 9, "the record is still 8 bytes behind its count");
+        data[6]
+    };
+    assert_eq!(flags(contour(false, false)), (4 - 1) | 0x04, "priority 4 + dashed, neither new bit");
+    assert_eq!(flags(contour(true, false)), (4 - 1) | 0x04 | 0x10, "bit 4 alone");
+    assert_eq!(flags(contour(false, true)), (4 - 1) | 0x04 | 0x20, "bit 5 alone");
+    assert_eq!(flags(contour(true, true)), (4 - 1) | 0x04 | 0x10 | 0x20, "the shipped E3 contour style");
+    assert_eq!(flags(contour(true, true)) & 0xC0, 0, "bits 6-7 stay reserved, written 0");
 }
 
 #[test]
@@ -543,7 +577,17 @@ fn a_leaf_wider_than_the_u16_anchor_round_trips_through_both_forms() {
     let far = line(1, &[(0.9, 0.9), (0.900_001, 0.9)]); // anchor 900 000 → wide
     let lods =
         vec![LodLayer { max_mpp: None, chunk_size: 4096, root: Node::Leaf { bbox: BBOX, features: vec![near, far] } }];
-    let styles = vec![Style { id: 1, z_index: 0, color: 0x1234, weight: 1, priority: 1, dashed: false, color2: None }];
+    let styles = vec![Style {
+        id: 1,
+        z_index: 0,
+        color: 0x1234,
+        weight: 1,
+        priority: 1,
+        dashed: false,
+        color2: None,
+        fixed_width: false,
+        terrain_layer: false,
+    }];
     let (bin, dropped) = serialize_lods(
         &lods,
         &styles,

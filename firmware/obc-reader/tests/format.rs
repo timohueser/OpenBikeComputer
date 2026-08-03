@@ -142,7 +142,7 @@ fn styles_parse() {
     assert_eq!(s1.weight, 2);
     assert_eq!(s1.priority, 3);
     // The v10 tail defaults for a solid, single-color style.
-    assert!(!s1.dashed, "STYLES are solid");
+    assert!(!s1.flags.dashed(), "STYLES are solid");
     assert_eq!(s1.color2, None, "STYLES carry no color2");
 
     let s2 = r.style(2).expect("style 2");
@@ -176,19 +176,19 @@ fn style_record_round_trips_line_style_and_color2() {
     let r = Reader::new(&src, &tables, &cache);
 
     let s1 = r.style(1).unwrap();
-    assert!(!s1.dashed);
+    assert!(!s1.flags.dashed());
     assert_eq!(s1.color2, None);
 
     let s2 = r.style(2).unwrap();
-    assert!(s2.dashed);
+    assert!(s2.flags.dashed());
     assert_eq!(s2.color2, None);
 
     let s3 = r.style(3).unwrap();
-    assert!(!s3.dashed);
+    assert!(!s3.flags.dashed());
     assert_eq!(s3.color2, Some(0x0000), "black (0x0000) is a legit secondary color, not a sentinel");
 
     let s4 = r.style(4).unwrap();
-    assert!(s4.dashed);
+    assert!(s4.flags.dashed());
     assert_eq!(s4.color2, Some(0x8410));
 }
 
@@ -217,6 +217,42 @@ fn color2_wire_bytes_ignored_when_flag_clear() {
     let tables = MapTables::parse(&src).unwrap();
     let r = Reader::new(&src, &tables, &cache);
     assert_eq!(r.style(7).unwrap().color2, None, "nonzero color2 bytes are ignored when bit 3 is clear");
+}
+
+/// #1095's style-record bits 4 (fixed width) and 5 (terrain layer). The testkit oracle writes the
+/// v10 flags only, so the bits are forged onto the packed record exactly as
+/// `color2_wire_bytes_ignored_when_flag_clear` forges its color2 bytes — which is the point: the
+/// reader must pick them out of the byte that was already on the wire, and the record stays 8 bytes.
+/// Bits 6-7 stay reserved, and a reader **ignores** them rather than rejecting the record (§2,
+/// deliberately unlike a *feature*'s reserved flag bits in §5.2, which a reader MUST reject).
+#[test]
+fn style_record_round_trips_fixed_width_and_terrain_layer() {
+    let styles: &[Style] = &[(1, 8, 0xAD55, 1, 4, true, None), (2, 0, 0xF800, 2, 3, false, None)];
+    let line = seal(pack_line(1, 10, 10, &[(1, 1)]), CS);
+    let mut bytes = build_file(
+        GLOBAL,
+        styles,
+        &[LodSpec { max_mpp: f32::INFINITY, index: vec![0], chunks: vec![line], chunk_size: CS }],
+    );
+    // Record 0's flags: count byte at HEADER_LEN, then offset 5 within the record.
+    let flags_at = HEADER_LEN + 1 + 5;
+    assert_eq!(bytes[flags_at] & 0xF0, 0, "the oracle writes bits 4-7 clear");
+    bytes[flags_at] |= 0x10 | 0x20 | 0x80; // fixed width + terrain layer + one still-reserved bit
+
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
+
+    let s1 = r.style(1).expect("a record with a reserved bit set is still read, not rejected");
+    assert!(s1.flags.fixed_width(), "bit 4 ⇒ fixed width");
+    assert!(s1.flags.terrain_layer(), "bit 5 ⇒ terrain layer");
+    // The bits below are untouched by the ones above.
+    assert!(s1.flags.dashed());
+    assert_eq!((s1.weight, s1.priority, s1.color), (1, 4, 0xAD55));
+
+    let s2 = r.style(2).expect("style 2");
+    assert!(!s2.flags.fixed_width() && !s2.flags.terrain_layer(), "an ordinary style sets neither bit");
 }
 
 #[test]

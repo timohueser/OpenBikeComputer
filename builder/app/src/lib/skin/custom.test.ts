@@ -15,6 +15,7 @@ const schema = {
     styles: [
         { id: 1, feature_type: "highway.primary" },
         { id: 2, feature_type: "natural.water" },
+        { id: 3, feature_type: "contour.major" },
     ],
 } as SchemaEntry;
 
@@ -25,8 +26,41 @@ const hosted: SkinEntry = {
     version: 7,
     marker_color: 0xf800,
     styles: [
-        { feature_type: "highway.primary", color: 0xffff, weight: 3, z_index: 5, priority: 2, dashed: false, color2: null },
-        { feature_type: "natural.water", color: 0x001f, weight: 1, z_index: 1, priority: 3, dashed: false, color2: null },
+        {
+            feature_type: "highway.primary",
+            color: 0xffff,
+            weight: 3,
+            z_index: 5,
+            priority: 2,
+            dashed: false,
+            fixed_width: false,
+            terrain_layer: false,
+            color2: null,
+        },
+        {
+            feature_type: "natural.water",
+            color: 0x001f,
+            weight: 1,
+            z_index: 1,
+            priority: 3,
+            dashed: false,
+            fixed_width: false,
+            terrain_layer: false,
+            color2: null,
+        },
+        // A terrain style (#1095): the two structural flag bits must survive a clone → persist →
+        // reload round trip, or a custom skin would quietly put the contours back on the width ramp.
+        {
+            feature_type: "contour.major",
+            color: 0xad55,
+            weight: 1,
+            z_index: 8,
+            priority: 4,
+            dashed: true,
+            fixed_width: true,
+            terrain_layer: true,
+            color2: null,
+        },
     ],
     preview: null,
 };
