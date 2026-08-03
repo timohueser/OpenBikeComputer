@@ -101,7 +101,6 @@ pub(crate) fn add_contours(
     }
 
     let Some(window) = trace_window(bbox, set) else { return Ok(()) };
-    let posting_log2 = set.posting_log2().expect("a non-empty terrain set has a posting");
     progress.stage(
         Phase::Contours,
         format!("Tracing contours every {} m (index every {})...", cfg.interval_m, cfg.index_every),
@@ -114,7 +113,7 @@ pub(crate) fn add_contours(
     let (mut lines, mut vertices) = (0usize, 0usize);
     for strip in &strips {
         progress.check()?;
-        let grid = Grid::read(set, *strip, posting_log2)?;
+        let grid = Grid::read(set, *strip)?;
         let Some((lo, hi)) = grid.range() else { continue };
         // Levels are absolute multiples of the interval, so which levels exist is a property of the
         // terrain and not of where a strip boundary happened to fall.
@@ -267,8 +266,9 @@ struct Grid {
 }
 
 impl Grid {
-    fn read(set: &TerrainSet, window: Window, posting_log2: u8) -> Result<Grid, String> {
+    fn read(set: &TerrainSet, window: Window) -> Result<Grid, String> {
         let (rows, cols) = (window.rows(), window.cols());
+        let posting_log2 = window.posting_log2;
         // One sampler for the strip: it opens only the containers this rectangle touches, and its
         // tile cache is what turns a row sweep into a handful of reads.
         let mut sampler = set.sampler_for(Some((
