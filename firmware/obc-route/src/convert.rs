@@ -56,6 +56,22 @@ pub struct RouteStats {
     pub max_ele_m: i16,
     /// Waypoints stored in the waypoint section (0 when the GPX carried no `<wpt>`).
     pub waypoint_count: u16,
+    /// **Did a real height ever resolve while this route was emitted?** The producer's own
+    /// answer, not an inspection of the stored bytes: the GPX converter sets it when the track
+    /// carried at least one `<ele>`, the nav emit when at least one
+    /// [`ElevationSource`](obc_elevation::ElevationSource) sample answered `Some`
+    /// ([`EleFill::seen`](crate::nav)).
+    ///
+    /// It exists because `0 m` is a **real** height (a Dutch route is not an elevation-less one),
+    /// so no consumer can recover this by looking at the values. The detour splice reads it to
+    /// decide whether the detour's per-point heights are sampled terrain it must keep or the `0`
+    /// placeholder it must replace (#1091), and the detour preview to decide whether it has a
+    /// climb figure to show at all.
+    ///
+    /// Not a stored field: OBCR has no per-route "has elevation" flag and gains none here. What a
+    /// *reader* can say about already-stored bytes is the weaker
+    /// [`RouteReader::has_elevation`](crate::RouteReader::has_elevation).
+    pub has_elevation: bool,
 }
 
 /// Convert a GPX byte source into a `.obcr` written to `sink`, naming the route
@@ -149,6 +165,9 @@ pub fn gpx_to_obcr(src: &dyn ByteSource, name: &str, sink: &mut dyn ByteSink) ->
         prev_raw = Some((p.lon, p.lat));
     }
 
+    // The min/max pair is still crossed iff no `<ele>` was ever parsed — the producer's own
+    // "did elevation resolve?" answer, taken *before* the zeroing clamp erases the distinction.
+    let has_elevation = min_ele <= max_ele;
     if min_ele > max_ele {
         min_ele = 0;
         max_ele = 0;
@@ -159,14 +178,16 @@ pub fn gpx_to_obcr(src: &dyn ByteSource, name: &str, sink: &mut dyn ByteSink) ->
         ascent_m: elev.ascent() as u32,
         descent_m: elev.descent() as u32,
         total_distance_m: None,
+        has_elevation,
     };
     em.finish(sink, name, stats, &mut wps)
 }
 
 /// The producer-owned figures [`ObcrEmitter::finish`] bakes into the header: the elevation
-/// stats the caller tracked (GPX: dead-banded over raw `<ele>`; nav routes: all zero — no DEM)
-/// and an optional total-distance override (the router stores summed edge costs, the length
-/// #116 locked, rather than the emitter's re-measured polyline distance).
+/// stats the caller tracked (GPX: dead-banded over raw `<ele>`; nav routes: sampled from the
+/// map's terrain since EL7, all zero with a null source) and an optional total-distance override
+/// (the router stores summed edge costs, the length #116 locked, rather than the emitter's
+/// re-measured polyline distance).
 pub(crate) struct EmitStats {
     pub min_ele_m: i16,
     pub max_ele_m: i16,
@@ -174,6 +195,9 @@ pub(crate) struct EmitStats {
     pub descent_m: u32,
     /// `None` ⇒ the emitter's cumulative raw-path distance.
     pub total_distance_m: Option<u32>,
+    /// The producer's explicit "a real height resolved" answer — rides out on
+    /// [`RouteStats::has_elevation`] and is never written to the file.
+    pub has_elevation: bool,
 }
 
 /// The streaming OBCR writer shared by [`gpx_to_obcr`] and the nav router's emit
@@ -318,6 +342,7 @@ impl ObcrEmitter {
             min_ele_m: stats.min_ele_m,
             max_ele_m: stats.max_ele_m,
             waypoint_count: wps.len() as u16,
+            has_elevation: stats.has_elevation,
         };
 
         let header = build_header(name, &bbox, self.start, index_offset, wpt_offset, &stats);

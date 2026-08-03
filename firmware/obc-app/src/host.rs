@@ -327,14 +327,24 @@ pub enum HostEvent {
 
 /// A planned detour's preview figures (#882), carried on [`HostEvent::DetourPlanned`]: the cost
 /// delta the HUD line shows (`detour length − skipped span length`, signed — a detour around a
-/// wandering span *can* be shorter) and the detour's own length. Distance-only by decision: the
-/// nav graph carries no elevation, so no climb figure is shown.
+/// wandering span *can* be shorter), the detour's own length, and — since #1091 — its own climb,
+/// which the preview turns into the second signed figure beside the distance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DetourPreview {
-    /// `detour_total − (target_m − progress_m)`, meters.
+    /// `detour_total − (rejoin_m − progress_m)`, meters.
     pub cost_delta_m: i32,
     /// The planned detour's honest length (summed raw edge meters).
     pub total_distance_m: u32,
+    /// Where the plan actually rejoins the route — the chooser's `target_m`, or farther when the
+    /// approach was trimmed to its first sustained tail contact. The replaced span the climb
+    /// figure subtracts is `[anchor_m, rejoin_m]`, so it describes the same swap
+    /// [`cost_delta_m`](Self::cost_delta_m) already prices.
+    pub rejoin_m: u32,
+    /// The planned detour's own dead-banded ascent (m), or `None` when **no terrain sample
+    /// resolved** for it — the producer's explicit
+    /// [`RouteStats::has_elevation`](obc_route::RouteStats), never a guess at the values, because a
+    /// genuinely flat detour is `Some(0)` and must still show a figure.
+    pub ascent_m: Option<u32>,
 }
 
 /// What [`App::drain_host_commands`](crate::App::drain_host_commands) reports about a drain pass.
