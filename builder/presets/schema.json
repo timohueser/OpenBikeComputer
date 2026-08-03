@@ -3,7 +3,7 @@
         "id": "bikepacking",
         "name": "Bikepacking",
         "description": "The full touring map: roads by class, trails and cycleways, rail, water, forests and landuse, buildings up close.",
-        "version": 5,
+        "version": 6,
         "swatch": [
             "#FF5500",
             "#FFAA00",
@@ -91,8 +91,8 @@
             "2": {"z_index": 100, "color": "0xAAB5", "weight": 2, "min_lod": 0, "priority": 3, "line_style": "dashed"}
         },
         "contour": {
-            "major": {"z_index": 8, "color": "0xAD55", "weight": 1, "min_lod": 3, "priority": 4, "line_style": "dashed", "fixed_width": true, "terrain_layer": true},
-            "index": {"z_index": 9, "color": "0xAD55", "weight": 1, "min_lod": 3, "priority": 4, "fixed_width": true, "terrain_layer": true}
+            "major": {"z_index": 8, "color": "0xAD55", "weight": 1, "min_lod": 2, "priority": 4, "line_style": "dashed", "fixed_width": true, "terrain_layer": true},
+            "index": {"z_index": 9, "color": "0xAD55", "weight": 1, "min_lod": 2, "priority": 4, "fixed_width": true, "terrain_layer": true}
         }
     },
     "marker": {"color": "0xF800"},
