@@ -134,7 +134,7 @@ alternative — sampling the terrain raster at each label anchor, per frame — 
 read inside the render loop, which is the one thing the label work is not allowed to
 cost. Why it is a *feature* field rather than a style: a style says what a line looks
 like, and 2500 m is not a look; a map carries hundreds of levels and at most 254
-styles. Two bytes per contour feature is ~0.03 % of a contoured map.
+styles. Two bytes per contour feature is about **1 %** of a contoured map (on the alpine fixture: 17 925 contours, 35 850 B against 3.67 MB).
 
 Bit 6 could have been defined in place — §2's reader obligation for unknown style bits
 is to ignore them, as it was for bits 4-5 — but it rides this bump because it is
@@ -204,7 +204,7 @@ Packed as `struct "<4sBiiiiIBIHII"`.
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
 | 0 | Magic | 4 | `char[4]` | Must be `b"OBCM"` |
-| 4 | Version | 1 | `uint8` | `0x0C` |
+| 4 | Version | 1 | `uint8` | `0x0D` |
 | 5 | Min Lat | 4 | `int32` | Global bbox min latitude (microdegrees) |
 | 9 | Min Lon | 4 | `int32` | Global bbox min longitude |
 | 13 | Max Lat | 4 | `int32` | Global bbox max latitude |
