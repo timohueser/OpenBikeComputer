@@ -839,7 +839,9 @@ impl StatusMessage {
 /// **without** encryption.
 ///
 /// **`obcm_version`** (E1, #911) is the third field: the **OBCM map-format version this firmware's
-/// reader reads** — `10` today, the value of `obc_formats::obcm::VERSION`. It exists because nothing
+/// reader reads** — whatever `obc_formats::obcm::VERSION` is (`13` at the time of writing; the
+/// encoder reads the const, so this prose is the only thing that can go stale). It exists because
+/// nothing
 /// else the device says carries it: [`PROTOCOL_VERSION`](crate::PROTOCOL_VERSION) is the *wire*
 /// contract (a different number in a different sequence) and the DIS firmware-revision string maps
 /// to a format version only through a table that exists nowhere. A host that offers map artifacts

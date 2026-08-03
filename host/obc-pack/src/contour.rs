@@ -64,8 +64,9 @@ const STRIP_SAMPLE_BUDGET: usize = 4 << 20;
 const MIN_TRACED_VERTICES: usize = 3;
 
 /// What tracing one level of one strip produced: the style id and `min_lod` its class packs under,
-/// and the µdeg polylines themselves.
-type LevelTrace = (u8, usize, Vec<Vec<(i32, i32)>>);
+/// the **level in metres** the polylines are (OBCM v13 §5.2 carries it on every one of them), and
+/// the µdeg polylines themselves.
+type LevelTrace = (u8, usize, i16, Vec<Vec<(i32, i32)>>);
 
 /// Trace contours from `terrain` and append them to `ingested` as ordinary line features.
 ///
@@ -109,7 +110,7 @@ pub(crate) fn add_contours(
     let strips = split_strips(window);
     // Sequential over strips (each holds its sample window resident), parallel over levels inside
     // one — which is where the work is: an alpine strip carries dozens of levels over one grid.
-    let mut traced: Vec<(u8, usize, Geom)> = Vec::new();
+    let mut traced: Vec<(u8, usize, i16, Geom)> = Vec::new();
     let (mut lines, mut vertices) = (0usize, 0usize);
     for strip in &strips {
         progress.check()?;
@@ -129,14 +130,21 @@ pub(crate) fn add_contours(
             .filter_map(|&level| {
                 let class = if level.rem_euclid(index_step) == 0 { ContourClass::Index } else { ContourClass::Major };
                 let (_, style_id, min_lod) = *classes.iter().find(|(c, _, _)| *c == class)?;
-                Some((style_id, min_lod, march(&grid, level)))
+                // The levels come off an `i16` DEM through an `i16` reader, so the wire field
+                // (§5.2, metres) cannot overflow — but the trace walks them as `i32`, so the one
+                // narrowing in the whole path is stated here rather than left to a cast. It panics
+                // rather than skipping: an unrepresentable level would mean the DEM contract broke,
+                // and silently dropping a whole contour level would show up as a hole in the map
+                // that nothing in the log accounts for.
+                let wire = i16::try_from(level).expect("contour levels are traced from an i16 DEM (OBCT §5)");
+                Some((style_id, min_lod, wire, march(&grid, level)))
             })
             .collect();
-        for (style_id, min_lod, polylines) in per_level {
+        for (style_id, min_lod, level, polylines) in per_level {
             for line in polylines {
                 lines += 1;
                 vertices += line.len();
-                traced.push((style_id, min_lod, to_geom(&line)));
+                traced.push((style_id, min_lod, level, to_geom(&line)));
             }
         }
     }
@@ -144,23 +152,25 @@ pub(crate) fn add_contours(
 
     // The clamp, in the packer's own simplifier: everything after this point is the ordinary ladder,
     // and the ladder's two finest tiers are finer than the DEM's posting can justify (#1088 §4.3).
-    let kept: Vec<(u8, usize, Geom)> = if cfg.simplify_m > 0.0 {
+    let kept: Vec<(u8, usize, i16, Geom)> = if cfg.simplify_m > 0.0 {
         let tol = cfg.simplify_m / M_PER_DEG;
         traced
             .into_par_iter()
-            .filter_map(|(style_id, min_lod, geom)| {
+            .filter_map(|(style_id, min_lod, level, geom)| {
                 let simplified = topology_preserve_simplify(&geom, tol);
-                (!simplified.is_empty()).then_some((style_id, min_lod, simplified))
+                (!simplified.is_empty()).then_some((style_id, min_lod, level, simplified))
             })
             .collect()
     } else {
         traced
     };
 
-    let clamped: usize = kept.iter().map(|(_, _, g)| count_vertices(g)).sum();
+    let clamped: usize = kept.iter().map(|(_, _, _, g)| count_vertices(g)).sum();
     let n = kept.len();
-    for (style_id, min_lod, geom) in kept {
-        ingested.features.push(IngestFeature { style_id, min_lod, geom });
+    for (style_id, min_lod, level, geom) in kept {
+        // The one place in the packer that fills `level`: the trace is the only stage that knows
+        // one, and from here it is carried, never recomputed (v13, #1105).
+        ingested.features.push(IngestFeature { style_id, min_lod, level: Some(level), geom });
     }
     progress.log(format!(
         "  traced {lines} contour line(s), {vertices} vertices -> {n} feature(s), {clamped} vertices after the \

@@ -97,6 +97,11 @@ jobs:
               - '.github/workflows/ci.yml'
             ios:
               - 'companion-ios/**'
+              # The Swift suite pins the shared protocol vectors byte-for-byte, so a regenerated
+              # fixture is an iOS change even when no Swift file moved. Missing this is why the
+              # `obcm_version` assertion sat a version behind for the whole of v12 (#1105): the
+              # vector changed, the pin did not, and nothing ran to say so.
+              - 'specs/vectors/**'
               - '.github/workflows/ci.yml'
             desktop:
               # The Tauri shell embeds the same published-cell frontend, so either

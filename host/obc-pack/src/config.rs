@@ -549,6 +549,10 @@ pub struct FeatureStyle {
     /// The packer writes the bit and the reader carries it; the consumer is the device's Settings
     /// toggle (#1096). Nothing renders differently because of it today.
     pub terrain_layer: bool,
+    /// v13 (#1105): **index contour** (flag bit 6) — set by [`StyleDocument::normalize`] on the
+    /// `contour.index` rule and on nothing else. Derived rather than authored: it says which class
+    /// the packer traced, which is not a fact a style document is in a position to state.
+    pub contour_index: bool,
     /// v10: optional RGB565 secondary color (flag bit 3 + the trailing u16), parsed like `color`.
     pub color2: Option<u16>,
 }
@@ -566,6 +570,7 @@ impl FeatureStyle {
             color2: self.color2,
             fixed_width: self.fixed_width,
             terrain_layer: self.terrain_layer,
+            contour_index: self.contour_index,
         }
     }
 }
@@ -611,6 +616,12 @@ impl Default for Contours {
         }
     }
 }
+
+/// The synthetic tag key the two contour classes are styled under. Together with
+/// [`ContourClass::as_str`] it spells the feature types the catalog publishes — and
+/// `contour.index` is the one [`obc_formats::obcm::CONTOUR_INDEX_FEATURE_TYPE`] names, which
+/// `contour_index_feature_type_is_the_shared_spelling` pins.
+pub const CONTOUR_TAG_KEY: &str = "contour";
 
 /// The two feature classes a contour trace emits. They are ordinary style rules under the synthetic
 /// `contour` tag key — `features.contour.major` / `features.contour.index` — so the config styles
@@ -773,7 +784,7 @@ impl Config {
     /// The style for one traced contour class, if the config asks for it. `None` ⇒ that class is
     /// not packed (and not even traced).
     pub fn contour_style(&self, class: ContourClass) -> Option<&FeatureStyle> {
-        self.feature_style("contour", class.as_str())
+        self.feature_style(CONTOUR_TAG_KEY, class.as_str())
     }
 
     /// The full Style Table for the serializer (order is irrelevant; the
@@ -802,6 +813,11 @@ impl StyleDocument {
             line_style: self.line_style.unwrap_or_default(),
             fixed_width: self.fixed_width.unwrap_or(false),
             terrain_layer: self.terrain_layer.unwrap_or(false),
+            // v13 (#1105): derived from the feature type, never authored. Which class is the index
+            // one is the packer's own fact — it is what `contour.rs` traces every `index_every`th
+            // level under — so there is no config key to get wrong, and no way for a style document
+            // to claim the bit for a road. The cell assembler derives it from the same name.
+            contour_index: format!("{tag_key}.{tag_value}") == obc_formats::obcm::CONTOUR_INDEX_FEATURE_TYPE,
             color2: self.color2.map(|color| color.0),
         })
     }
@@ -1492,7 +1508,7 @@ mod tests {
         let env: Value = serde_json::from_str(&schema_envelope()).expect("envelope is valid JSON");
         assert_eq!(env["schema_version"].as_u64(), Some(CONFIG_SCHEMA_VERSION as u64));
         assert_eq!(env["format_version"].as_u64(), Some(OBCM_VERSION as u64));
-        assert_eq!(env["format_version"].as_u64(), Some(12), "#1073 bumps the OBCM format to v12");
+        assert_eq!(env["format_version"].as_u64(), Some(13), "#1105 bumps the OBCM format to v13");
         assert!(env["schema"]["$defs"]["style"].is_object(), "envelope embeds the schema");
     }
 
@@ -1580,6 +1596,25 @@ mod tests {
             "index is the solid one"
         );
         assert_eq!(cfg.contours, Contours { enabled: true, interval_m: 100, index_every: 5, simplify_m: 15.0 });
+        // v13 §2 bit 6 is derived from the feature type, so exactly the index class carries it.
+        assert!(cfg.contour_style(ContourClass::Index).unwrap().contour_index);
+        assert!(!cfg.contour_style(ContourClass::Major).unwrap().contour_index);
+    }
+
+    /// The one name two crates derive the same wire bit from. `obc-pack` builds it out of the
+    /// config's tag key + value; `obcm-assemble` matches it against the schema's published feature
+    /// type. If either spelling moved on its own, assembled maps would quietly lose bit 6 — so the
+    /// shared const is the definition and this is the tie-down.
+    #[test]
+    fn contour_index_feature_type_is_the_shared_spelling() {
+        assert_eq!(
+            format!("{CONTOUR_TAG_KEY}.{}", ContourClass::Index.as_str()),
+            obc_formats::obcm::CONTOUR_INDEX_FEATURE_TYPE
+        );
+        // …and no other feature type in the shipped schema claims it.
+        let cfg = corpus_config();
+        let claimed: Vec<u8> = cfg.styles().iter().filter(|s| s.contour_index).map(|s| s.id).collect();
+        assert_eq!(claimed, vec![cfg.contour_style(ContourClass::Index).unwrap().id]);
     }
 
     /// The schema's `contours` default parses back to the code default, and its bounds are the
