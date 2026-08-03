@@ -1,4 +1,4 @@
-//! Hand-written OBCM v11 byte builder shared by the `obc-reader` and `obc-render`
+//! Hand-written OBCM v13 byte builder shared by the `obc-reader` and `obc-render`
 //! integration tests.
 //!
 //! Both crates need to synthesise `.obcm` byte buffers by hand (rather than checking
@@ -21,7 +21,12 @@
 //! `color2` u16 (spec §2, epic #556). **v11** packs geometry chunks tight behind a
 //! per-LOD offset table ([`chunk_region`], [`seal`]) and reorders the feature header
 //! — `flags` to byte 1, then either the 7-byte compact or 12-byte wide layout
-//! (issue #1009). [`build_file`]/[`build_priority_tree`]
+//! (issue #1009). **v12** is a §8-only bump (directional ascent + profile climb weight,
+//! issue #1073) that the geometry builders here never see. **v13** appends an optional
+//! `int16` **level** behind the feature header under flag bit 4 ([`pack_line_level`]) and
+//! defines style-flag bit 6 (issue #1105); [`pack_poly_level`] and [`pack_line_flags`]
+//! author the two shapes §5.2 requires a reader to *refuse*, which is the half of a wire
+//! rule an oracle is uniquely placed to state. [`build_file`]/[`build_priority_tree`]
 //! write **empty** POI + nav sections so the reader accepts them; the directory,
 //! record, and pool builders ([`poi_directory`], [`pack_poi_record`], [`hours_pool`],
 //! [`nav_directory`], [`pack_nav_record`], [`pack_nav_edge_record`]) let the
