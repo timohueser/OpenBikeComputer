@@ -460,6 +460,52 @@ toolchain-artifact trap, not new drift. The compile-time allocation report is
 unchanged on both profiles — the signal is a module static, not a field of `App`
 or `ObjectStore`, so no named entry (`app`, `ble_object_store`, …) moved.
 
+### Boot-path stack gates (#1108 follow-up), 2026-08-03 — **0 B resident, four new gates**
+
+The re-baseline that exists because the guard **missed a boot-bricking regression**. Every
+image built from develop between #1084 (elevation EL7) and #1108 hard-faulted at boot — a
+stack overflow escalated to HardFault at `link::init_store`'s prologue, before either link
+plane spawned — and the whole `embedded` matrix stayed green through it.
+
+The gap was `poll_frame_limit`'s symbol match. It measures every
+`TaskStorage<F>::poll` prologue, but the embassy **main task's** frame is allocated in the
+out-of-line `____embassy_main_task::____embassy_main_task_inner_function::{{closure}}`,
+which that match excludes. EL7 inlined a `TerrainElevation::parse` chain into the ride
+task's async block, and because a non-await-crossing temporary in an async fn is a
+*permanent* poll-frame slot (not the transient the code comment claimed), the main task's
+frame grew 20,352 → 22,400 B entirely unobserved. Three individually reasonable changes
+then summed past the stack: that +2,048 B, `init_store`'s pre-existing 27.7 KB
+double-copy, and the epic's legitimate +3.7 KB of `.bss` — which is also a **stack cut**,
+since the statics grow up towards a stack that grows down.
+
+| | 5de00ce (bricked) | #1108 (`b7405542`) | gate |
+| :-- | --: | --: | :-- |
+| largest out-of-line task body | 22,400 B | **20,352 B** | `task_frame_limit` 21,504 B |
+| residual main stack (`_stack_start − __euninit`) | 48,600 B | 48,600 B | `residual_stack_min` 48,600 B |
+| boot-chain ceiling | 56,532 B | **41,556 B** | `boot_chain_ceiling` 43,008 B |
+| boot-chain headroom | **−7,932 B** | **+7,044 B** | `boot_chain_headroom_min` 4,096 B |
+| largest guarded poll frame | 9,728 B | 9,728 B | 12,288 B, unchanged |
+| linked resident | 462,376 B | 462,376 B | unchanged — this is a tooling change |
+
+The first two gates are **exact measurements** and either one alone fails the bricked
+image. The **boot-chain ceiling is deliberately conservative**: the walk follows every
+direct `bl` edge whether or not the path is feasible, so a `Mode::ReadOnly`
+`open_file_in_dir` monomorphization still drags in `alloc_cluster`/`update_fat` frames a
+rescan can never execute, and indirect calls (`blx`, `dyn` dispatch) are invisible to it.
+It is therefore a **drift detector, not a stack-safety proof** — the on-glass high-water
+below remains the only authority on real headroom. `boot_chain_headroom_min` earns its
+place as the invariant tying the other two together: ceiling and residual are
+independently re-approvable numbers, and #1084 failed precisely because separately
+reasonable changes summed, so the combination needs a gate of its own.
+
+`boot_chain_roots` names the `#[inline(never)]` boot constructors (`link::init_store`,
+`mount_terrain`) as substrings, so the mangling hash is not pinned. A root that stops
+resolving is a **hard error, not a skip** — "renamed, or inlined away" covers the #1084
+mechanism itself, where losing the attribute moves a fat temporary into a permanent frame.
+
+Baseline `schema_version` goes to **2** for the new keys. `resource_guard.py board` runs
+these gates on both profiles in the existing CI steps; no workflow change was needed.
+
 ### Device-side map storage (#927), 2026-07-27 — **+48 B resident, taken from CI**
 
 The first re-baseline whose numbers come from **CI rather than the pinned host**, and the
@@ -521,7 +567,10 @@ The framebuffer guard requires exactly one `FB` symbol of 240 × 320 × 1 byte
 and exactly one writable symbol at least that large. Both shipping profiles'
 disassembly guards check every `TaskStorage<F>::poll` prologue and retain the
 12,288 B safety ceiling; the current maxima are 52 B for default and 6,240 B
-for BLE.
+for BLE. Since the #1108 follow-up they **also** check the out-of-line
+`____embassy_*_task` bodies, which `TaskStorage<F>::poll` does not cover and
+where the main task's real frame lives, plus the residual stack and the
+boot-chain ceiling/headroom — see the 2026-08-03 entry above for why.
 
 ## Named compile-time allocations
 

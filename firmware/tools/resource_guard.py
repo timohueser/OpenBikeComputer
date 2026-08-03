@@ -47,6 +47,22 @@ class Symbol:
 
 
 @dataclass(frozen=True)
+class BootChain:
+    """The measured boot-path stack picture (see [`chain_cost`] for what "ceiling" means here)."""
+
+    residual_stack: int
+    task_frame: int
+    task_frame_symbol: str
+    chain_ceiling: int
+    chain_root: str
+    chain_path: tuple[str, ...]
+    # A stale baselined root (renamed, or — the regression this whole block exists for — inlined
+    # away into its caller). Held rather than raised at measure time so the two EXACT gates report
+    # first: on a genuinely regressed image their messages are the actionable ones.
+    chain_error: str | None = None
+
+
+@dataclass(frozen=True)
 class BoardMeasurement:
     bss: int
     data: int
@@ -55,6 +71,9 @@ class BoardMeasurement:
     framebuffer_symbols: tuple[Symbol, ...]
     full_frame_sized_writable: tuple[Symbol, ...]
     largest_poll_frame: int | None
+    # `None` for a profile that baselines no `boot_chain_roots` — same optional-check shape as
+    # `largest_poll_frame`.
+    boot: BootChain | None = None
 
     @property
     def resident(self) -> int:
@@ -75,6 +94,33 @@ def parse_size_output(output: str) -> dict[str, int]:
     return sections
 
 
+def parse_stack_bounds(output: str) -> tuple[int, int]:
+    """(`_stack_start`, `__euninit`) from `llvm-nm`: the residual main stack's two ends.
+
+    The M33's stack starts at the top of the linker's `RAM` region and grows **down**; the resident
+    statics grow **up** and end at `__euninit`. Their difference is the whole stack the main task,
+    every `#[inline(never)]` boot constructor and MPSL's ISRs share — which is why `.bss` growth is
+    a stack cut, not just a RAM cost (the elevation epic's +3.7 KB moved this from 52.3 to 48.6 KB).
+    """
+    addresses: dict[str, int] = {}
+    for line in output.splitlines():
+        match = re.match(r"^([0-9a-fA-F]+)\s+[A-Za-z?]\s+(\S+)\s*$", line.strip())
+        if match and match.group(2) in ("_stack_start", "__euninit"):
+            addresses[match.group(2)] = int(match.group(1), 16)
+    missing = sorted({"_stack_start", "__euninit"} - addresses.keys())
+    if missing:
+        raise GuardError(
+            f"stack-bounds parser is stale: llvm-nm did not report {', '.join(missing)}; "
+            "the linker script's symbol names moved (see obc-fw-nrf54l/build.rs)"
+        )
+    if addresses["_stack_start"] <= addresses["__euninit"]:
+        raise GuardError(
+            f"linked image has no residual stack: _stack_start {addresses['_stack_start']:#x} is "
+            f"not above __euninit {addresses['__euninit']:#x}; the statics overran the RAM region"
+        )
+    return addresses["_stack_start"], addresses["__euninit"]
+
+
 def parse_nm_output(output: str) -> list[Symbol]:
     symbols: list[Symbol] = []
     for line in output.splitlines():
@@ -91,32 +137,189 @@ def is_framebuffer_symbol(name: str) -> bool:
     return re.search(r"(?:^|::)FB(?:::h[0-9a-f]+)?$", name) is not None
 
 
-def parse_poll_frames(disassembly: str) -> dict[str, int]:
+SYMBOL_HEADER_RE = re.compile(r"^[0-9a-fA-F]+ <(.+)>:$")
+# `sub sp, #imm` / `sub.w sp, sp, #imm` / `subw sp, sp, #imm` — every spelling LLVM emits for a
+# frame allocation on thumbv8m. The `subw` arm is new and load-bearing: it is a distinct encoding
+# (wide 12-bit immediate), the previous `sub(?:\.w)?` could not match it, and #1108's own
+# `mount_terrain` prologue is `subw sp, sp, #0x8c4` — so the guard was blind to the very helper the
+# boot-stack fix introduced. Broadening it does not move any baselined figure (the largest poll
+# frame reads 9,728 B before and after).
+FRAME_DECREMENT_RE = re.compile(r"\bsubw?(?:\.w)?\s+sp,\s*(?:sp,\s*)?#(0x[0-9a-fA-F]+|\d+)")
+PUSH_RE = re.compile(r"\bpush(?:\.w)?\s+\{([^}]*)\}")
+CALL_RE = re.compile(r"\bbl\s+0x[0-9a-fA-F]+ <([^>]+)>")
+# The embassy **out-of-line task body**. `#[embassy_executor::task]` expands to
+# `____embassy_<name>_task::____embassy_<name>_task_inner_function::{{closure}}` (demangled with
+# `_$u7b$$u7b$closure$u7d$$u7d$`), and that closure — not `TaskStorage<F>::poll` — is where a task's
+# real frame is allocated once codegen outlines it. `parse_poll_frames` never saw these, which is
+# how #1084 grew the main task's frame by 2 KB unnoticed until it bricked boot.
+TASK_BODY_RE = re.compile(r"____embassy_\w*?_?task.*inner_function")
+
+
+@dataclass(frozen=True)
+class Disassembly:
+    """One pass over `llvm-objdump -d`, reused by every frame/chain check.
+
+    `frames` is the largest single stack decrement per symbol; `pushes` the bytes the prologue
+    pushes before it (callee-saved registers + `lr`), which a stack chain pays just as surely as
+    the `sub sp`; `callees` the direct `bl` edges, for the boot-chain walk.
+    """
+
+    frames: dict[str, int]
+    pushes: dict[str, int]
+    callees: dict[str, frozenset[str]]
+    # EVERY symbol header seen, including leaf functions with neither a frame nor a call. Kept
+    # separately so `select_frames` can tell "the naming convention moved" (symbol absent) from
+    # "the prologue spelling moved" (symbol present, frame unparsed) — a distinction that collapses
+    # if membership is inferred from `frames`/`callees`.
+    symbols: frozenset[str]
+
+    def entry_cost(self, function: str) -> int:
+        return self.frames.get(function, 0) + self.pushes.get(function, 0)
+
+
+def parse_disassembly(disassembly: str) -> Disassembly:
     frames: dict[str, int] = {}
+    pushes: dict[str, int] = {}
+    callees: dict[str, set[str]] = {}
+    symbols: set[str] = set()
     function = ""
-    saw_poll_symbol = False
-    for line in disassembly.splitlines():
-        header = re.match(r"^[0-9a-fA-F]+ <(.+)>:$", line.strip())
+    for raw_line in disassembly.splitlines():
+        line = raw_line.strip()
+        header = SYMBOL_HEADER_RE.match(line)
         if header:
             function = header.group(1)
-            if "TaskStorage" in function and "poll" in function:
-                saw_poll_symbol = True
+            symbols.add(function)
             continue
-        decrement = re.search(
-            r"\bsub(?:\.w)?\s+sp,\s*(?:sp,\s*)?#(0x[0-9a-fA-F]+|\d+)", line
-        )
-        if decrement and "TaskStorage" in function and "poll" in function:
-            value = int(decrement.group(1), 0)
-            frames[function] = max(value, frames.get(function, 0))
-    if not saw_poll_symbol:
+        if not function:
+            continue
+        decrement = FRAME_DECREMENT_RE.search(line)
+        if decrement:
+            frames[function] = max(int(decrement.group(1), 0), frames.get(function, 0))
+        # Prologue pushes only: once the frame is allocated, a later push is transient inside an
+        # already-counted frame, not a permanent addition to the function's stack cost.
+        if function not in frames:
+            push = PUSH_RE.search(line)
+            if push:
+                count = len([reg for reg in push.group(1).split(",") if reg.strip()])
+                pushes[function] = pushes.get(function, 0) + 4 * count
+        call = CALL_RE.search(line)
+        if call:
+            callees.setdefault(function, set()).add(call.group(1))
+    # No global "did we see any frame at all" check on purpose: every consumer goes through
+    # `select_frames`, whose per-selector diagnostics say *which* convention went stale. A global
+    # raise here would pre-empt those with a strictly less useful message.
+    return Disassembly(
+        frames=frames,
+        pushes=pushes,
+        callees={name: frozenset(edges) for name, edges in callees.items()},
+        symbols=frozenset(symbols),
+    )
+
+
+def select_frames(
+    parsed: Disassembly, predicate, description: str, symbol_hint: str
+) -> dict[str, int]:
+    """The frames of every symbol `predicate` accepts, with stale-parser diagnostics.
+
+    Two distinct failures are reported apart on purpose: symbols missing entirely means the naming
+    convention moved (a compiler/embassy upgrade), while symbols present but frameless means the
+    prologue spelling moved. Collapsed into one "no results" either would silently disable a guard,
+    which is the failure mode that let #1084 through in the first place.
+    """
+    matched = [name for name in parsed.symbols if predicate(name)]
+    if not matched:
         raise GuardError(
-            "poll-frame guard is stale: no `TaskStorage<F>::poll` symbols found in disassembly"
+            f"{description} guard is stale: no {symbol_hint} symbols found in disassembly"
         )
+    frames = {name: parsed.frames[name] for name in matched if name in parsed.frames}
     if not frames:
         raise GuardError(
-            "poll-frame guard is stale: poll symbols exist but no `sub sp, #imm` prologue was parsed"
+            f"{description} guard is stale: {symbol_hint} symbols exist but no `sub sp, #imm` "
+            "prologue was parsed"
         )
     return frames
+
+
+def is_poll_symbol(name: str) -> bool:
+    return "TaskStorage" in name and "poll" in name
+
+
+def is_task_body_symbol(name: str) -> bool:
+    return TASK_BODY_RE.search(name) is not None
+
+
+def select_poll_frames(parsed: Disassembly) -> dict[str, int]:
+    """`TaskStorage<F>::poll` frames — the #677 steady-state contract, unchanged."""
+    return select_frames(parsed, is_poll_symbol, "poll-frame", "`TaskStorage<F>::poll`")
+
+
+def select_task_body_frames(parsed: Disassembly) -> dict[str, int]:
+    """The out-of-line `____embassy_*_task` bodies — see [`TASK_BODY_RE`]."""
+    return select_frames(parsed, is_task_body_symbol, "task-body", "`____embassy_*_task` body")
+
+
+def parse_poll_frames(disassembly: str) -> dict[str, int]:
+    return select_poll_frames(parse_disassembly(disassembly))
+
+
+def parse_task_body_frames(disassembly: str) -> dict[str, int]:
+    return select_task_body_frames(parse_disassembly(disassembly))
+
+
+def chain_cost(parsed: Disassembly, root: str) -> tuple[int, tuple[str, ...]]:
+    """Deepest statically-reachable `bl` chain from `root`, as (bytes, path).
+
+    **A conservative ceiling, not the true peak.** Every direct call edge is followed whether or
+    not the path is feasible: a read-only `open_file_in_dir` monomorphization still references
+    `alloc_cluster`/`update_fat`, so the reported chain includes FAT-write frames a rescan can
+    never execute. That is why the boot-chain figure is gated against a baselined ceiling (drift
+    detection) and the on-glass stack high-water stays the authority for real headroom.
+
+    Indirect calls (`blx`, dyn dispatch) are invisible to it, so it is not a lower bound either.
+    """
+    memo: dict[str, tuple[int, tuple[str, ...]]] = {}
+
+    def walk(function: str, active: frozenset[str]) -> tuple[int, tuple[str, ...], bool]:
+        """(cost, path, truncated) — `truncated` when the recursion guard cut this subtree."""
+        if function in active:  # recursion: stop, don't unroll
+            return 0, (), True
+        if function in memo:
+            cost, path = memo[function]
+            return cost, path, False
+        deepest, deepest_path, truncated = 0, (), False
+        for callee in sorted(parsed.callees.get(function, ())):
+            cost, path, callee_truncated = walk(callee, active | {function})
+            truncated = truncated or callee_truncated
+            if cost > deepest:
+                deepest, deepest_path = cost, path
+        total = parsed.entry_cost(function) + deepest
+        result = (total, (f"{function} ({parsed.entry_cost(function)} B)", *deepest_path))
+        # Memoize only subtrees the recursion guard did NOT cut. A truncated value depends on which
+        # functions were already on the walk's stack, so reusing it elsewhere would under-report;
+        # caching the rest is what keeps a wide call graph from going exponential.
+        if not truncated:
+            memo[function] = result
+        return (*result, truncated)
+
+    sys.setrecursionlimit(max(sys.getrecursionlimit(), 20_000))
+    cost, path, _ = walk(root, frozenset())
+    return cost, path
+
+
+def resolve_symbol(parsed: Disassembly, needle: str, description: str) -> str:
+    """The one symbol containing `needle` (mangling-hash-insensitive), or a stale-parser error."""
+    matches = sorted(name for name in parsed.symbols if needle in name)
+    if not matches:
+        raise GuardError(
+            f"{description} guard is stale: no symbol contains `{needle}`; it was renamed, "
+            "inlined away, or is no longer reached from the boot path"
+        )
+    if len(matches) > 1:
+        raise GuardError(
+            f"{description} guard is ambiguous: `{needle}` matches {len(matches)} symbols "
+            f"({', '.join(name[:60] for name in matches[:4])}); tighten the baselined root"
+        )
+    return matches[0]
 
 
 def decode_resource_table(raw: bytes) -> dict[str, int]:
@@ -202,7 +405,43 @@ def extract_resource_table(elf: Path) -> dict[str, int]:
         return decode_resource_table(output.read_bytes())
 
 
-def measure_board(elf: Path, framebuffer_bytes: int, include_poll: bool) -> BoardMeasurement:
+def measure_boot_chain(parsed: Disassembly, elf: Path, chain_roots: list[str]) -> BootChain:
+    """The boot-path stack picture: residual stack, the largest task body, the deepest boot chain.
+
+    `chain_roots` are the baselined `#[inline(never)]` boot constructors (substring match on the
+    demangled symbol, so the mangling hash is not pinned). They are **sibling** steps — each one
+    returns before the next is called from the task body — so the chain is the task frame plus the
+    deepest single root, not their sum.
+    """
+    stack_start, euninit = parse_stack_bounds(run_tool("llvm-nm", "--demangle", elf))
+    task_frames = select_task_body_frames(parsed)
+    task_symbol = max(task_frames, key=lambda name: task_frames[name])
+    deepest = (0, "", ())
+    chain_error: str | None = None
+    for needle in chain_roots:
+        try:
+            root = resolve_symbol(parsed, needle, f"boot-chain root `{needle}`")
+        except GuardError as error:
+            chain_error = chain_error or str(error)
+            continue
+        cost, path = chain_cost(parsed, root)
+        if cost > deepest[0]:
+            deepest = (cost, root, path)
+    chain_ceiling, chain_root, chain_path = deepest
+    return BootChain(
+        residual_stack=stack_start - euninit,
+        task_frame=task_frames[task_symbol],
+        task_frame_symbol=task_symbol,
+        chain_ceiling=task_frames[task_symbol] + chain_ceiling,
+        chain_root=chain_root,
+        chain_path=chain_path,
+        chain_error=chain_error,
+    )
+
+
+def measure_board(
+    elf: Path, framebuffer_bytes: int, include_poll: bool, chain_roots: list[str] | None
+) -> BoardMeasurement:
     sections = parse_size_output(run_tool("llvm-size", "-A", elf))
     symbols = parse_nm_output(
         run_tool("llvm-nm", "--print-size", "--size-sort", "--demangle", elf)
@@ -214,9 +453,13 @@ def measure_board(elf: Path, framebuffer_bytes: int, include_poll: bool) -> Boar
         if symbol.kind in WRITABLE_SYMBOL_TYPES and symbol.size >= framebuffer_bytes
     )
     poll = None
-    if include_poll:
-        frames = parse_poll_frames(run_tool("llvm-objdump", "--demangle", "-d", elf))
-        poll = max(frames.values())
+    boot = None
+    if include_poll or chain_roots is not None:
+        parsed = parse_disassembly(run_tool("llvm-objdump", "--demangle", "-d", elf))
+        if include_poll:
+            poll = max(select_poll_frames(parsed).values())
+        if chain_roots is not None:
+            boot = measure_boot_chain(parsed, elf, chain_roots)
     return BoardMeasurement(
         bss=sections[".bss"],
         data=sections[".data"],
@@ -225,6 +468,7 @@ def measure_board(elf: Path, framebuffer_bytes: int, include_poll: bool) -> Boar
         framebuffer_symbols=framebuffer_symbols,
         full_frame_sized_writable=full_frame_sized,
         largest_poll_frame=poll,
+        boot=boot,
     )
 
 
@@ -233,8 +477,12 @@ def load_baseline(path: Path) -> dict[str, object]:
         baseline = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError) as error:
         raise GuardError(f"cannot read baseline {path}: {error}") from error
-    if baseline.get("schema_version") != 1:
-        raise GuardError(f"unsupported baseline schema in {path}; expected schema_version 1")
+    if baseline.get("schema_version") != 2:
+        raise GuardError(
+            f"unsupported baseline schema in {path}; expected schema_version 2 "
+            "(v2 added the boot-chain block: task_frame_limit / residual_stack_min / "
+            "boot_chain_ceiling / boot_chain_roots)"
+        )
     return baseline
 
 
@@ -247,7 +495,8 @@ def check_board(args: argparse.Namespace, baseline: dict[str, object]) -> None:
     profile = baseline["board"][args.profile]
     framebuffer_bytes = profile["framebuffer_bytes"]
     include_poll = "poll_frame_limit" in profile
-    measured = measure_board(args.elf, framebuffer_bytes, include_poll)
+    chain_roots = profile.get("boot_chain_roots")
+    measured = measure_board(args.elf, framebuffer_bytes, include_poll, chain_roots)
     print(
         f"{args.profile}: .bss {measured.bss:,} B + .data {measured.data:,} B "
         f"= {measured.resident:,} B linked resident; .uninit {measured.uninit:,} B; "
@@ -294,7 +543,55 @@ def check_board(args: argparse.Namespace, baseline: dict[str, object]) -> None:
             f"the {profile['poll_frame_limit']} B safety limit; move large construction "
             "temporaries behind an #[inline(never)] .bss initializer (see issue #677)",
         )
+    if measured.boot is not None:
+        check_boot_chain(args.profile, profile, measured.boot)
     print(f"{args.profile}: resource guards passed")
+
+
+def check_boot_chain(profile_name: str, profile: dict[str, object], boot: BootChain) -> None:
+    """The three boot-path stack gates added after the #1108 STKOF (see `parse_task_body_frames`).
+
+    Two are exact — the out-of-line task frame and the residual stack — and between them they would
+    have failed #1084 twice. The third, the chain ceiling, is a conservative over-approximation
+    ([`chain_cost`]) gated only against its own baseline, so it catches drift without pretending to
+    be a stack-safety proof; the on-glass high-water in ARCHITECTURE_RESOURCE_BASELINE.md is that.
+    """
+    print(
+        f"{profile_name}: residual main stack {boot.residual_stack:,} B; largest task body "
+        f"{boot.task_frame:,} B; boot-chain ceiling {boot.chain_ceiling:,} B"
+    )
+    require(
+        boot.task_frame <= profile["task_frame_limit"],
+        f"{profile_name} largest out-of-line task body is {boot.task_frame} B, above the "
+        f"{profile['task_frame_limit']} B limit (`{boot.task_frame_symbol[:70]}`); an async fn's "
+        "non-await-crossing temporary is still a PERMANENT poll-frame slot — move fat construction "
+        "behind an #[inline(never)] helper (issues #677, #1108)",
+    )
+    require(
+        boot.residual_stack >= profile["residual_stack_min"],
+        f"{profile_name} residual main stack fell to {boot.residual_stack} B, below the "
+        f"{profile['residual_stack_min']} B floor: resident statics grew into the stack. Every "
+        ".bss byte is a stack byte here — re-trim the nrf-mem caps or re-approve the floor",
+    )
+    require(
+        boot.chain_ceiling <= profile["boot_chain_ceiling"],
+        f"{profile_name} boot-chain ceiling grew to {boot.chain_ceiling} B (task body "
+        f"{boot.task_frame} B + deepest root `{boot.chain_root[:60]}`), above the baselined "
+        f"{profile['boot_chain_ceiling']} B. Deepest path:\n    "
+        + "\n    ".join(boot.chain_path[:10]),
+    )
+    require(
+        boot.chain_error is None,
+        f"{profile_name} {boot.chain_error}",
+    )
+    headroom = boot.residual_stack - boot.chain_ceiling
+    require(
+        headroom >= profile["boot_chain_headroom_min"],
+        f"{profile_name} boot-chain headroom is {headroom} B (residual {boot.residual_stack} B − "
+        f"ceiling {boot.chain_ceiling} B), under the {profile['boot_chain_headroom_min']} B floor "
+        "MPSL's ISRs and the unmodelled indirect calls need. This is the #1108 failure mode: it "
+        "goes red BEFORE the board stops booting",
+    )
 
 
 def check_report(args: argparse.Namespace, baseline: dict[str, object]) -> None:
