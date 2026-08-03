@@ -80,6 +80,10 @@
         },
         "admin_level": {
             "2": {"color": "0xAAB5", "z_index": 100, "weight": 2, "priority": 3, "line_style": "dashed"}
+        },
+        "contour": {
+            "major": {"color": "0xAD55", "z_index": 8, "weight": 1, "priority": 4, "line_style": "dashed"},
+            "index": {"color": "0xAD55", "z_index": 9, "weight": 1, "priority": 4}
         }
     },
     "marker": {"color": "0xF800"}

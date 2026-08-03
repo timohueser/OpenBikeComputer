@@ -69,3 +69,11 @@ and ESA; all rights reserved"*. The string lives once, in
 Refresh this fixture whenever the schema's style-id assignment or OBCM version
 changes. `obc-bake` checks the assignment before starting a region bake and
 fails with this path rather than publishing stale previews.
+
+One case deliberately does **not** owe a refresh: feature types *appended* to the
+schema take the next free ids and leave every id in this file meaning exactly
+what it meant, so the check requires the fixture's table to be a leading run of
+the schema's assignment rather than all of it, and the trailing styles are not
+stamped (`previews.rs`). A schema that stops covering an id this file carries
+still fails. `features.contour.*` (#1094) is the first type to ride that rule —
+the Rhine plain has no contours to show in a 1.2 km frame anyway.

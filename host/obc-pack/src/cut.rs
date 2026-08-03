@@ -243,6 +243,16 @@ fn run(
     let extract = opts.source_extent.unwrap_or_else(|| crate::pipeline::compute_bbox(&ingested));
     crate::pipeline::add_land(&mut ingested, config, extract, opts.no_land, progress)?;
     progress.check()?;
+    // Contours are generated **once** over the whole extract and then cut like any other feature,
+    // for the same reason land is: a cell's geometry must not depend on which cell asked for it.
+    // This opens the terrain set a second time (the cutter opens its own for the §8.3 ascent pass)
+    // — a header read and a directory validation per container, and only when contours are on.
+    let contour_terrain = match (&opts.terrain, config.contours.enabled) {
+        (Some(path), true) => Some(TerrainSet::open(path)?),
+        _ => None,
+    };
+    crate::contour::add_contours(&mut ingested, config, extract, contour_terrain.as_ref(), progress)?;
+    progress.check()?;
     cut_ingested(&ingested, &ways, config, out_dir, opts, progress)
 }
 

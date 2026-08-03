@@ -41,6 +41,8 @@ pub enum Phase {
     Bbox,
     /// Clipping the land-polygon dataset to that box.
     Land,
+    /// Tracing contours out of the run's OBCT terrain (only when the config asks for them).
+    Contours,
     /// Per-LOD simplify + quadtree build.
     Quadtree,
     /// Packing a tree into bytes and streaming it to the output.
@@ -49,8 +51,8 @@ pub enum Phase {
 
 impl Phase {
     /// Every phase, in order. The UI's percentage scale is derived from this.
-    pub const ALL: [Phase; 6] =
-        [Phase::Merging, Phase::Ingest, Phase::Bbox, Phase::Land, Phase::Quadtree, Phase::Serialize];
+    pub const ALL: [Phase; 7] =
+        [Phase::Merging, Phase::Ingest, Phase::Bbox, Phase::Land, Phase::Contours, Phase::Quadtree, Phase::Serialize];
 
     /// The wire name. Matches the strings in `jobs.svelte.ts`'s `PHASES`.
     pub fn as_str(self) -> &'static str {
@@ -59,6 +61,7 @@ impl Phase {
             Phase::Ingest => "ingest",
             Phase::Bbox => "bbox",
             Phase::Land => "land",
+            Phase::Contours => "contours",
             Phase::Quadtree => "quadtree",
             Phase::Serialize => "serialize",
         }
@@ -220,7 +223,7 @@ mod tests {
         // Mirrors PHASES in builder/app/src/lib/api/jobs.svelte.ts
         // (minus "downloading", which is the host's own phase — the packer is
         // handed local files and never downloads a source).
-        assert_eq!(names, ["merging", "ingest", "bbox", "land", "quadtree", "serialize"]);
+        assert_eq!(names, ["merging", "ingest", "bbox", "land", "contours", "quadtree", "serialize"]);
         assert!(Phase::ALL.windows(2).all(|w| w[0] < w[1]), "ALL must be in reported order");
     }
 
