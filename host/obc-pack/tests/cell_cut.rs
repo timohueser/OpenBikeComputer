@@ -88,12 +88,7 @@ fn deg(udeg: i64) -> f64 {
 
 /// A line feature from `(lat, lon)` µdeg pairs.
 fn line(style_id: u8, min_lod: usize, pts: &[(i64, i64)]) -> IngestFeature {
-    IngestFeature {
-        style_id,
-        min_lod,
-        level: None,
-        geom: Geom::Line(pts.iter().map(|&(lat, lon)| (deg(lon), deg(lat))).collect()),
-    }
+    IngestFeature { style_id, min_lod, geom: Geom::Line(pts.iter().map(|&(lat, lon)| (deg(lon), deg(lat))).collect()) }
 }
 
 /// A closed rectangle feature over `lat0..lat1 × lon0..lon1` µdeg.
@@ -105,7 +100,7 @@ fn rect(style_id: u8, min_lod: usize, lat0: i64, lon0: i64, lat1: i64, lon1: i64
         (deg(lon0), deg(lat1)),
         (deg(lon0), deg(lat0)),
     ];
-    IngestFeature { style_id, min_lod, level: None, geom: Geom::Polygon { exterior: ring, interiors: Vec::new() } }
+    IngestFeature { style_id, min_lod, geom: Geom::Polygon { exterior: ring, interiors: Vec::new() } }
 }
 
 fn way(id_base: i64, kind: u8, pts: &[(i64, i64)]) -> RoutableWay {

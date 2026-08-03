@@ -52,9 +52,7 @@ use obc_formats::obcm::VERSION as OBCM_VERSION;
 use obc_map_scene::M_PER_DEG;
 
 use crate::config::Config;
-use crate::geom::{
-    clip_to_box, footprint_below, strip_small_holes, topology_preserve_simplify, Bounds, Geom, LodFeature,
-};
+use crate::geom::{clip_to_box, footprint_below, strip_small_holes, topology_preserve_simplify, Bounds, Geom};
 use crate::grid::{
     cells_intersecting, on_grid_boundary, segment_crossing, Axis, Band, BandTable, CellId, UBox, GRID_ORIGIN,
 };
@@ -408,9 +406,7 @@ fn select_cells(band: &Band, extract: UBox, select: &[CellId]) -> Vec<CellId> {
 struct LodSet<'a> {
     /// Ladder index.
     lod: usize,
-    /// `(style_id, level, geom)` — the v13 §5.2 level rides along so a cell's copy of a contour
-    /// still says how high it is.
-    feats: Vec<(u8, Option<i16>, Cow<'a, Geom>)>,
+    feats: Vec<(u8, Cow<'a, Geom>)>,
     /// `(i, j)` → indices into `feats`. Membership is decided on **inclusive** bounds, so a feature
     /// reaching a seam line is a candidate on both sides and the two cells clip identical geometry.
     buckets: HashMap<(i64, i64), Vec<u32>>,
@@ -431,16 +427,16 @@ fn prepare_lod<'a>(ing: &'a Ingested, config: &Config, lod: usize, cell_log2: u3
     let l = &config.lods[lod];
     // `Geom::bounds` panics on an empty geometry, and a merge pass can hand one back, so empties are
     // dropped here — exactly where `build_lod_with` drops them on the whole-extract path.
-    let mut feats: Vec<(u8, Option<i16>, Cow<'a, Geom>)> = ing
+    let mut feats: Vec<(u8, Cow<'a, Geom>)> = ing
         .features
         .iter()
         .filter(|f| f.min_lod <= lod && !f.geom.is_empty())
-        .map(|f| (f.style_id, f.level, Cow::Borrowed(&f.geom)))
+        .map(|f| (f.style_id, Cow::Borrowed(&f.geom)))
         .collect();
     if config.merge_fills || config.merge_lines {
         let styles = config.styles();
-        let mut owned: Vec<LodFeature> =
-            feats.into_iter().map(|(s, l, g)| LodFeature::new(s, l, g.into_owned())).collect();
+        let owned: Vec<(u8, Geom)> = feats.into_iter().map(|(s, g)| (s, g.into_owned())).collect();
+        let mut owned = owned;
         if config.merge_fills {
             let (merged, m) = merge_fills_with(owned, &merge_classes(&styles), progress);
             crate::pipeline::report_merge(progress, m, "fill polygon", "into");
@@ -451,14 +447,10 @@ fn prepare_lod<'a>(ing: &'a Ingested, config: &Config, lod: usize, cell_log2: u3
             crate::pipeline::report_merge(progress, m, "line fragment", "into");
             owned = merged;
         }
-        feats = owned
-            .into_iter()
-            .filter(|f| !f.geom.is_empty())
-            .map(|f| (f.style_id, f.level, Cow::Owned(f.geom)))
-            .collect();
+        feats = owned.into_iter().filter(|(_, g)| !g.is_empty()).map(|(s, g)| (s, Cow::Owned(g))).collect();
     }
 
-    let bounds: Vec<Bounds> = feats.iter().map(|(_, _, g)| g.bounds()).collect();
+    let bounds: Vec<Bounds> = feats.iter().map(|(_, g)| g.bounds()).collect();
     let mut buckets: HashMap<(i64, i64), Vec<u32>> = HashMap::new();
     for (k, b) in bounds.iter().enumerate() {
         for cell in cells_intersecting(cell_log2, bounds_to_udeg(*b)) {
@@ -492,9 +484,9 @@ impl LodSet<'_> {
         let square = cell.square();
         let dbox = (square.0 as f64 / 1e6, square.1 as f64 / 1e6, square.2 as f64 / 1e6, square.3 as f64 / 1e6);
         let candidates = self.buckets.get(&(cell.i, cell.j)).map(Vec::as_slice).unwrap_or(&[]);
-        let mut out: Vec<LodFeature> = Vec::new();
+        let mut out: Vec<(u8, Geom)> = Vec::new();
         for &k in candidates {
-            let (style_id, level, geom) = &self.feats[k as usize];
+            let (style_id, geom) = &self.feats[k as usize];
             let simplified =
                 if self.tol > 0.0 { topology_preserve_simplify(geom, self.tol) } else { geom.as_ref().clone() };
             if simplified.is_empty() {
@@ -508,7 +500,7 @@ impl LodSet<'_> {
             } else {
                 clip_to_box(&simplified, square)
             };
-            flatten_culled(*style_id, *level, clipped, self.cull_mpp, self.min_area_px, &mut out);
+            flatten_culled(*style_id, clipped, self.cull_mpp, self.min_area_px, &mut out);
         }
         build_lod_with(out, square, chunk_size, progress)
     }
@@ -516,19 +508,12 @@ impl LodSet<'_> {
 
 /// Append `geom`'s simple parts to `out`, dropping the ones the sub-pixel footprint cull rejects and
 /// trimming sub-pixel holes from the survivors — the pipeline's cull, applied to clipped geometry.
-fn flatten_culled(
-    style_id: u8,
-    level: Option<i16>,
-    geom: Geom,
-    cull_mpp: Option<f64>,
-    min_area_px: f64,
-    out: &mut Vec<LodFeature>,
-) {
+fn flatten_culled(style_id: u8, geom: Geom, cull_mpp: Option<f64>, min_area_px: f64, out: &mut Vec<(u8, Geom)>) {
     match geom {
         Geom::Empty => {}
         Geom::Multi(parts) => {
             for p in parts {
-                flatten_culled(style_id, level, p, cull_mpp, min_area_px, out);
+                flatten_culled(style_id, p, cull_mpp, min_area_px, out);
             }
         }
         mut simple => {
@@ -538,7 +523,7 @@ fn flatten_culled(
                 }
                 strip_small_holes(&mut simple, mpp, min_area_px);
             }
-            out.push(LodFeature::new(style_id, level, simple));
+            out.push((style_id, simple));
         }
     }
 }

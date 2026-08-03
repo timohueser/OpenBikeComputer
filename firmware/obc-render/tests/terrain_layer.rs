@@ -50,7 +50,7 @@ const CONTOUR: Style = Style {
     color: 0x001F,
     weight: 1,
     priority: 2,
-    flags: StyleFlags::new(false, true, true, false),
+    flags: StyleFlags::new(false, true, true),
     color2: None,
 };
 

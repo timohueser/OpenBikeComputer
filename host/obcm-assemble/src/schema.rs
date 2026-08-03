@@ -8,7 +8,6 @@
 //! references those numbers. A skin may change only the other seven bytes of each 8-byte record plus
 //! the header's marker colour. That is why a restyle costs ~2 KB of output and no re-bake.
 
-use obc_formats::obcm::CONTOUR_INDEX_FEATURE_TYPE;
 use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
 
@@ -293,12 +292,6 @@ pub struct SkinStyle {
     /// OBCM §2 flag bit 5 (#1095): part of the suppressible terrain layer.
     #[serde(default)]
     pub terrain_layer: bool,
-    //
-    // There is deliberately **no `contour_index` field**. OBCM §2 bit 6 says which class the packer
-    // traced, which is a schema fact and not a presentation choice, so [`Skin::resolve`] derives it
-    // from the feature type. A skin that could author it could make a road labellable, and one that
-    // simply forgot it — every skin written before v13, and every hand-rolled one after — would
-    // silently clear the bit on a map that had it.
     #[serde(default, deserialize_with = "de_color_opt")]
     pub color2: Option<u16>,
 }
@@ -327,14 +320,11 @@ impl Skin {
     /// Resolve this skin against the schema's canonical id assignment: one 8-byte style record per
     /// schema style, in schema order.
     ///
-    /// Presentation comes from the skin; the **index-contour bit comes from the feature type**
-    /// (OBCM §2 bit 6, v13) — see [`SkinStyle`] for why that is not the skin's to state.
-    ///
     /// An assembler MUST reject a skin that does not cover every id in the schema's table, and MUST
     /// reject one naming a feature type the schema does not have — silently defaulting a missing
     /// style would ship a map with an invisible layer (OBCA §4.7).
     pub fn resolve(&self, schema: &Schema) -> Result<Vec<StyleRecord>, String> {
-        let record = |id: u8, feature_type: Option<&str>, v: &SkinStyle| StyleRecord {
+        let record = |id: u8, v: &SkinStyle| StyleRecord {
             id,
             z_index: v.z_index,
             color: v.color,
@@ -344,11 +334,6 @@ impl Skin {
             color2: v.color2,
             fixed_width: v.fixed_width,
             terrain_layer: v.terrain_layer,
-            // Derived, never authored: see the note on [`SkinStyle`]. `feature_type` is whichever
-            // name is known here — the schema's canonical one where an assignment travelled, else
-            // the skin entry's own — and `None` (an id-only skin over a schema with no assignment)
-            // simply cannot be an index contour, because nothing in that document says so.
-            contour_index: feature_type == Some(CONTOUR_INDEX_FEATURE_TYPE),
         };
         let mut out = Vec::with_capacity(self.styles.len());
         if schema.styles.is_empty() {
@@ -362,7 +347,7 @@ impl Skin {
                         v.feature_type.as_deref().unwrap_or("<unnamed>")
                     )
                 })?;
-                out.push(record(id, v.feature_type.as_deref(), v));
+                out.push(record(id, v));
             }
         } else {
             for s in &schema.styles {
@@ -371,7 +356,7 @@ impl Skin {
                     .iter()
                     .find(|k| k.feature_type.as_deref() == Some(s.feature_type.as_str()) || k.id == Some(s.id))
                     .ok_or_else(|| format!("skin covers no style for feature type {:?} (OBCA §4.7)", s.feature_type))?;
-                out.push(record(s.id, Some(s.feature_type.as_str()), v));
+                out.push(record(s.id, v));
             }
             for v in &self.styles {
                 let named = v
@@ -424,8 +409,6 @@ pub struct StyleRecord {
     pub fixed_width: bool,
     /// Flag bit 5 (#1095): part of the suppressible terrain layer.
     pub terrain_layer: bool,
-    /// Flag bit 6 (v13, #1105): the index contours.
-    pub contour_index: bool,
 }
 
 /// RGB565 as either a JSON number or a `"0x…"` / decimal string — the two spellings that exist in
@@ -577,26 +560,8 @@ mod tests {
         // from reordering ids, so a mis-ordered table is a refusal rather than a silent re-sort.
         let shuffled = Skin { styles: by_id.styles.iter().rev().cloned().collect(), ..by_id.clone() };
         assert!(shuffled.resolve(&bare).unwrap_err().contains("ids must ascend"));
-        let idless = Skin { styles: vec![style("natural.water", 1)], ..full.clone() };
+        let idless = Skin { styles: vec![style("natural.water", 1)], ..full };
         assert!(idless.resolve(&bare).unwrap_err().contains("must name its `id`"));
-
-        // v13 §2 bit 6 is the schema's fact, so it follows the **feature type** and not anything the
-        // skin says: the same skin entry resolves with the bit set under `contour.index` and clear
-        // under any other name. A skin cannot set it, and — the failure this guards — cannot lose it
-        // either, which is what every pre-v13 skin document would otherwise do to a v13 map.
-        let mut contoured = schema.clone();
-        contoured.styles = vec![
-            StyleId { id: 1, feature_type: CONTOUR_INDEX_FEATURE_TYPE.into() },
-            StyleId { id: 2, feature_type: "contour.major".into() },
-        ];
-        let plain_skin =
-            Skin { styles: vec![style(CONTOUR_INDEX_FEATURE_TYPE, 0xAD55), style("contour.major", 0xAD55)], ..full };
-        let recs = plain_skin.resolve(&contoured).expect("a covering skin resolves");
-        assert_eq!(
-            recs.iter().map(|r| (r.id, r.contour_index)).collect::<Vec<_>>(),
-            vec![(1, true), (2, false)],
-            "bit 6 is derived from the feature type — the skin document never mentions it"
-        );
     }
 
     #[test]
