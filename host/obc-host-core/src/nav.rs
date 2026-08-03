@@ -112,6 +112,11 @@ pub struct DetourReady {
     detour_len_m: u32,
     progress_m: u32,
     rejoin_m: u32,
+    /// The plan's own [`RouteStats::has_elevation`](obc_route::RouteStats) — did the mounted
+    /// terrain answer for this detour? Carried (never re-derived from the bytes: `0 m` is a real
+    /// height) so the splice knows whether the leg's stored heights are sampled terrain to keep or
+    /// the `0` placeholder to replace (#1091).
+    has_elevation: bool,
 }
 
 /// The detour plan finished (#882): answer the app — success hands over the preview figures
@@ -133,9 +138,11 @@ pub fn finish_detour_plan(
     match outcome {
         Ok(stats) => {
             let mut bytes = plan.sink.into_bytes();
-            // Default (no trim): rejoin at the chosen minimum, the planner's summed edge length.
+            // Default (no trim): rejoin at the chosen minimum, the planner's summed edge length and
+            // the plan's own dead-banded climb.
             let mut rejoin_m = plan.target_m;
             let mut detour_len_m = stats.total_distance_m;
+            let mut detour_ascent_m = stats.total_ascent_m;
 
             // Advance the rejoin to the detour's first sustained contact with the route tail: A*
             // legally rides the future route's own road to the goal (the tail past `target_m` is not
@@ -146,25 +153,34 @@ pub fn finish_detour_plan(
                 let didx = obc_route::RouteIndex::read(&src).ok()?;
                 let det = obc_route::RouteReader::new(&didx, &src);
                 let mut trim_sink = VecSink::default();
-                match obc_route::trim_detour_to_tail(orig, &det, plan.target_m, &mut trim_sink) {
-                    Ok(Some(o)) => Some((o.rejoin_m, o.detour_len_m, trim_sink.into_bytes())),
+                match obc_route::trim_detour_to_tail(orig, &det, plan.target_m, stats.has_elevation, &mut trim_sink) {
+                    Ok(Some(o)) => Some((o, trim_sink.into_bytes())),
                     _ => None,
                 }
             });
-            if let Some((rj, dl, tbytes)) = trimmed {
-                let saved =
-                    (stats.total_distance_m as i64 + (rj as i64 - plan.target_m as i64) - dl as i64).max(0) as u32;
-                eprintln!("detour plan: trimmed to first tail contact at {rj} m (−{saved} m)");
-                rejoin_m = rj;
-                detour_len_m = dl;
+            if let Some((o, tbytes)) = trimmed {
+                let saved = (stats.total_distance_m as i64 + (o.rejoin_m as i64 - plan.target_m as i64)
+                    - o.detour_len_m as i64)
+                    .max(0) as u32;
+                eprintln!("detour plan: trimmed to first tail contact at {} m (−{saved} m)", o.rejoin_m);
+                rejoin_m = o.rejoin_m;
+                detour_len_m = o.detour_len_m;
+                detour_ascent_m = o.ascent_m;
                 bytes = tbytes;
             }
 
             // Cost = detour length − skipped span (`rejoin_m − progress_m`); the trim lengthens the
             // skipped span and shortens the detour, so both terms improve the figure honestly.
+            //
+            // The climb side of the preview is the leg's *own* ascent (EL7-sampled, dead-banded);
+            // the replaced span's ascent is read app-side off the resident route profile, which is
+            // where `Profile::ascent_between_m` already lives. `None` when the terrain never
+            // answered — the explicit bit, so a genuinely flat detour still shows `+0`.
             let preview = obc_app::DetourPreview {
                 cost_delta_m: (detour_len_m as i64 - (rejoin_m as i64 - plan.progress_m as i64)) as i32,
                 total_distance_m: detour_len_m,
+                rejoin_m,
+                ascent_m: stats.has_elevation.then_some(detour_ascent_m),
             };
             // The preview polyline, decimated straight off the (possibly trimmed) in-RAM detour OBCR.
             let src = obc_formats::io::SliceSource(&bytes);
@@ -174,7 +190,13 @@ pub fn finish_detour_plan(
             }
             eprintln!("detour plan: ok len={detour_len_m} m (Δ {:+} m)", preview.cost_delta_m);
             app.apply_event(obc_app::HostEvent::DetourPlanned(Ok(preview)));
-            Some(DetourReady { bytes, detour_len_m, progress_m: plan.progress_m, rejoin_m })
+            Some(DetourReady {
+                bytes,
+                detour_len_m,
+                progress_m: plan.progress_m,
+                rejoin_m,
+                has_elevation: stats.has_elevation,
+            })
         }
         Err(e) => {
             eprintln!("detour plan: failed ({e:?})");
@@ -210,8 +232,16 @@ pub fn finish_detour_commit(
             let det_src = obc_formats::io::SliceSource(&ready.bytes);
             let det_idx = obc_route::RouteIndex::read(&det_src).map_err(|_| NavError::NoPath)?;
             let det = obc_route::RouteReader::new(&det_idx, &det_src);
-            obc_route::splice_detour(&orig, &det, ready.progress_m, ready.rejoin_m, ready.detour_len_m, &mut sink)
-                .map_err(|_| NavError::NoPath)?;
+            obc_route::splice_detour(
+                &orig,
+                &det,
+                ready.progress_m,
+                ready.rejoin_m,
+                ready.detour_len_m,
+                ready.has_elevation,
+                &mut sink,
+            )
+            .map_err(|_| NavError::NoPath)?;
         }
         let id = store.write_nav_route(sink.bytes()).ok_or(NavError::NoPath)?;
         app.set_routes_with_meta(store.catalog(), store.ids(), &store.retention_metas());

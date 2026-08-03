@@ -1103,7 +1103,17 @@ impl NavPlanner {
     #[inline(never)]
     fn finish_emit(&mut self, sink: &mut dyn ByteSink) -> Result<RouteStats, NavError> {
         let (min_ele_m, max_ele_m, ascent_m, descent_m) = self.ele.stats();
-        let stats = EmitStats { min_ele_m, max_ele_m, ascent_m, descent_m, total_distance_m: Some(self.total_m) };
+        let stats = EmitStats {
+            min_ele_m,
+            max_ele_m,
+            ascent_m,
+            descent_m,
+            total_distance_m: Some(self.total_m),
+            // The fill's own `seen` latch, handed out verbatim — the explicit "terrain answered"
+            // signal a detour splice needs (#1091). Never inferred from the values: a route at
+            // `0 m` throughout is a real sea-level route, not an elevation-less one.
+            has_elevation: self.ele.seen,
+        };
         let Some(em) = self.em.take() else {
             return Err(NavError::NoPath); // unreachable: Emit always arms it
         };

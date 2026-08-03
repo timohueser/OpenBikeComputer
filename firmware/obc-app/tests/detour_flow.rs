@@ -167,7 +167,12 @@ fn full_flow_plans_previews_commits_and_reanchors_at_the_seam() {
 
     // Host answers: preview polyline + figures → the preview screen with the cost line.
     app.set_detour_preview(&[(7_512_000, 43_501_000), (7_516_000, 43_501_000)]);
-    app.apply_event(HostEvent::DetourPlanned(Ok(DetourPreview { cost_delta_m: 420, total_distance_m: 1_220 })));
+    app.apply_event(HostEvent::DetourPlanned(Ok(DetourPreview {
+        cost_delta_m: 420,
+        total_distance_m: 1_220,
+        rejoin_m: 2_000,
+        ascent_m: None,
+    })));
     assert!(matches!(app.top_screen(), Screen::DetourPreview(_)), "success swaps the spinner for the preview");
 
     // Commit: Press drains the one-shot; the host splices, rescans (both files exist: the
@@ -225,7 +230,12 @@ fn commit_failure_keeps_the_old_route_and_the_preview_retries() {
     open_chooser(&mut app);
     app.apply_gesture(Gesture::Press);
     let _ = drained(&mut app);
-    app.apply_event(HostEvent::DetourPlanned(Ok(DetourPreview { cost_delta_m: 420, total_distance_m: 1_020 })));
+    app.apply_event(HostEvent::DetourPlanned(Ok(DetourPreview {
+        cost_delta_m: 420,
+        total_distance_m: 1_020,
+        rejoin_m: 2_000,
+        ascent_m: None,
+    })));
     app.apply_gesture(Gesture::Press); // commit
     let _ = drained(&mut app);
     app.apply_event(HostEvent::DetourCommitted(Err(NavError::NoPath)));
