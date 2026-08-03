@@ -64,11 +64,17 @@ fetch() { # fetch <url> <dest>
     curl -sSL -o "$2" "$1"
 }
 
-repack() { # repack <name> <source_pbf> <bbox>
-    local name="$1" src="$2" bbox="$3"
-    echo "packing $name.obcm (bbox $bbox) ..."
+repack() { # repack <name> <source_pbf> <bbox> [terrain_obcd]
+    local name="$1" src="$2" bbox="$3" terrain="${4:-}"
+    local extra=()
+    # A map with a committed terrain sidecar is packed WITH it, so the fixture
+    # carries real §8.3 ascent and (preset v5, #1094/#1095) the traced E3
+    # contours. The sidecar itself never changes here — `./repack.sh terrain`
+    # owns it, on the DEM's own revision track.
+    [[ -n "$terrain" ]] && extra=(--terrain "$terrain")
+    echo "packing $name.obcm (bbox $bbox${terrain:+, terrain $(basename "$terrain")}) ..."
     (cd "$FIRMWARE_DIR" && cargo run --release --bin obc-pack -- \
-        "$src" "$PRESET" "$ASSETS_DIR/$name.obcm" --bbox "$bbox")
+        "$src" "$PRESET" "$ASSETS_DIR/$name.obcm" --bbox "$bbox" "${extra[@]}")
     ls -la "$ASSETS_DIR/$name.obcm"
 }
 
@@ -78,7 +84,7 @@ do_grimsel() {
         src="$WORK/switzerland.osm.pbf"
         fetch "$GRIMSEL_SOURCE_URL" "$src"
     fi
-    repack grimsel "$src" "$GRIMSEL_BBOX"
+    repack grimsel "$src" "$GRIMSEL_BBOX" "$ASSETS_DIR/grimsel.obcd"
 }
 
 do_grimsel_demo() {

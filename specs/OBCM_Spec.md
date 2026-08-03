@@ -102,9 +102,11 @@ The degree cap survives untouched: `13 + 17 × 24 = 421 ≤ 512`, so a cap-degre
 junction record still fits one pinned nav chunk. Real maps grow ~0.3–0.6 %.
 
 A map packed **without** terrain writes `Ascent M = 0` everywhere and is
-decode-valid: it routes exactly as v11 did, which is both the degrade path and
-what every fixture in the tree carries until the terrain track (#1068 EL2) is
-baked. **v12 is the only supported version**; earlier maps get repacked.
+decode-valid: it routes exactly as v11 did — the degrade path, and what the
+smaller fixtures (`monaco.obcm`, `grimsel-demo.obcm`) still carry.
+`grimsel.obcm` is packed **with** its terrain sidecar since 2026-08-03 (#1096
+follow-up), so it exercises real integrated ascent and the traced contours.
+**v12 is the only supported version**; earlier maps get repacked.
 
 **Within v12** (issue #1095, same elevation epic) two of the style record's reserved
 flag bits gained meanings — bit 4 **fixed width** and bit 5 **terrain layer** (§2).
