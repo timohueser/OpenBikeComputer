@@ -6,17 +6,19 @@ table, and renders the fixed Teningen camera through the production map renderer
 It is never published itself.
 
 Provenance: Geofabrik `europe/germany/baden-wuerttemberg/freiburg-regbez`,
-snapshot `2026-08-01`, packed as OBCM v12 with
-`builder/presets/schema.json` (Bikepacking v4 at the time; the preset has since
-moved — v6 as of #1104 — without owing this preview a re-pack, because the
-staleness gate is style-**id** assignment, which none of those bumps changed)
-and this padded crop:
+snapshot `2026-08-03`, packed as OBCM v13 with
+`builder/presets/schema.json` (Bikepacking v6) and this padded crop:
 
 ```text
-obc pack freiburg-regbez-260801.osm.pbf builder/presets/schema.json \
+obc pack freiburg-regbez-260803.osm.pbf builder/presets/schema.json \
   /tmp/teningen-preview.obcm -- \
   --bbox 7.798,48.119,7.830,48.141
 ```
+
+No `--terrain`, as before: the Rhine plain has nothing to show in a 1.2 km frame,
+and a preview whose subject is the skin should not double as a contour test. So
+this file carries no contours at any tier and never uses the v13 §5.2 level field
+— the version bump is the whole of what forced its re-pack.
 
 The published 240×240 image is centred at `7.814,48.130` and uses `5 m/px`.
 The live skin editor starts at that camera, allows pan/zoom, and treats the bbox
@@ -37,6 +39,15 @@ the v12 §8.3 ascent field — `2 × 4 700` adjacency entries plus 4 B of profil
 table, realised as +18 whole 512-byte node chunks. The snapshot moved at the same
 time and cost nothing: the v11 packer produces the identical 472 061 B from the
 2026-08-01 extract.
+
+481 517 B at v12 → **481 533 B at v13** (#1105). The **+16 B is not v13**: this
+map has no terrain and therefore no contours, so the level field never occurs in
+it and the format change costs it nothing at all. The sixteen bytes are the two
+contour style records (ids 51/52, 8 B each) that #1094 appended to the schema,
+landing here for the first time — this file was last packed before them. Content
+is otherwise untouched: `obcm_diff --dump` is identical across the bump, feature
+for feature, and the two new records take the next free ids so nothing this file
+already carried was renumbered.
 
 ## `teningen-preview.obcd` — the terrain companion
 
@@ -78,5 +89,6 @@ schema take the next free ids and leave every id in this file meaning exactly
 what it meant, so the check requires the fixture's table to be a leading run of
 the schema's assignment rather than all of it, and the trailing styles are not
 stamped (`previews.rs`). A schema that stops covering an id this file carries
-still fails. `features.contour.*` (#1094) is the first type to ride that rule —
-the Rhine plain has no contours to show in a 1.2 km frame anyway.
+still fails. `features.contour.*` (#1094) was the first type to ride that rule,
+and rode it for exactly one version: the v13 re-pack (#1105) was owed for the
+version byte regardless, so the fixture now carries ids 51/52 like any other.

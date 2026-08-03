@@ -153,7 +153,7 @@ final class ProtocolVectorTests: XCTestCase {
         let decodedFull = decode(full)
         XCTAssertEqual(decodedFull.version, OBCProtocol.version)
         XCTAssertEqual(decodedFull.epoch, 0xA1B2_C3D4)
-        XCTAssertEqual(decodedFull.obcm, 11)
+        XCTAssertEqual(decodedFull.obcm, 13)
 
         // 6 bytes: a firmware predating the field. The epoch is present, so the ack gate is open;
         // the map version is simply unknown.
