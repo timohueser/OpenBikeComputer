@@ -817,20 +817,18 @@ fn a_skin_carrying_schema_keys_is_refused_by_name() {
     // #1095's two style-record flag bits are presentation, not schema: they are bits of the 8-byte
     // record a skin stamps, and neither changes which features are cut into which cells — so a skin
     // may carry them, exactly as it may carry `line_style`.
-    let doc = format!(
-        r#"{{
-  "_meta": {{ "id": "terrain", "name": "Terrain", "description": "Carries the flag bits.", "version": 1 }},
-  "marker": {{ "color": "0xF800" }},
-  "features": {{
-    "highway": {{
-      "track": {{ "color": "0xAA80", "z_index": 30, "weight": 1, "priority": 3, "line_style": "dashed",
-                  "fixed_width": true, "terrain_layer": true }}
-    }}
-  }}
-}}
-"#
-    );
-    super::check_skin_document(&doc, "terrain.json").expect("`fixed_width`/`terrain_layer` are presentation keys");
+    let doc = r#"{
+  "_meta": { "id": "terrain", "name": "Terrain", "description": "Carries the flag bits.", "version": 1 },
+  "marker": { "color": "0xF800" },
+  "features": {
+    "highway": {
+      "track": { "color": "0xAA80", "z_index": 30, "weight": 1, "priority": 3, "line_style": "dashed",
+                 "fixed_width": true, "terrain_layer": true }
+    }
+  }
+}
+"#;
+    super::check_skin_document(doc, "terrain.json").expect("`fixed_width`/`terrain_layer` are presentation keys");
 
     // The shipped documents are the ones this all has to hold for.
     super::check_skin_document(&repo_doc(SHIPPED_SKIN), SHIPPED_SKIN).expect("the shipped skin is presentation only");
