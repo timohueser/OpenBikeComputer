@@ -446,7 +446,7 @@ impl MapRenderer {
         let mut cased_mask = [0u32; 8];
         for id in 0..=255u8 {
             if let Some(s) = scene.style(id) {
-                if !s.dashed && s.color2.is_some() {
+                if !s.flags.dashed() && s.color2.is_some() {
                     cased_mask[(id >> 5) as usize] |= 1 << (id & 31);
                 }
             }
@@ -499,7 +499,7 @@ impl MapRenderer {
                 // it: a fixed-width cased style would case its verbatim `weight`. No shipped style
                 // is both (a contour carries no `color2`, and `is_cased` requires one), so this is
                 // dormant today; leaving `scale_weight` here would make it silently incoherent.
-                let fixed_width = style.is_some_and(|s| s.fixed_width);
+                let fixed_width = style.is_some_and(|s| s.flags.fixed_width());
                 draw_line(
                     target,
                     vp,
@@ -630,11 +630,11 @@ impl MapRenderer {
                 // style (never collected) falls back to today's solid stroke.
                 let n = ring_lens.first().copied().unwrap_or(0);
                 let style = scene.style(span.style_id);
-                let dashed = style.is_some_and(|s| s.dashed);
+                let dashed = style.is_some_and(|s| s.flags.dashed());
                 let color2 = style.and_then(|s| s.color2).map(color_fn);
                 // #1095: a fixed-width style strokes its authored `weight` verbatim (`line_px`); a
                 // missing style falls back to the ramp, exactly as it falls back to a solid stroke.
-                let fixed_width = style.is_some_and(|s| s.fixed_width);
+                let fixed_width = style.is_some_and(|s| s.flags.fixed_width());
                 draw_line(
                     target,
                     vp,

@@ -217,26 +217,29 @@ fn styles_round_trip() {
 
     let s1 = r.style(1).expect("style 1");
     assert_eq!((s1.z_index, s1.color, s1.weight, s1.priority), (-2, 0x07E0, 1, 1));
-    assert!(!s1.dashed);
+    assert!(!s1.flags.dashed());
     assert_eq!(s1.color2, None);
 
     let s5 = r.style(5).expect("style 5");
     assert_eq!((s5.z_index, s5.color, s5.weight, s5.priority), (3, 0xF800, 2, 4));
-    assert!(s5.dashed, "line_style survives the pack → read round trip");
+    assert!(s5.flags.dashed(), "line_style survives the pack → read round trip");
     assert_eq!(s5.color2, Some(0x8410), "color2 survives the pack → read round trip");
 
     let s12 = r.style(12).expect("style 12");
     assert_eq!((s12.z_index, s12.color, s12.weight, s12.priority), (0, 0x001F, 3, 2));
-    assert!(!s12.dashed);
+    assert!(!s12.flags.dashed());
     assert_eq!(s12.color2, None);
 
     // #1095's two bits survive the same round trip, and stay clear on the styles that don't set
     // them — a bit that is always on is not a bit.
     let s20 = r.style(20).expect("style 20");
     assert_eq!((s20.z_index, s20.color, s20.weight, s20.priority), (8, 0xAD55, 1, 4));
-    assert!(s20.dashed && s20.fixed_width && s20.terrain_layer, "the E3 contour style round-trips whole");
+    assert!(
+        s20.flags.dashed() && s20.flags.fixed_width() && s20.flags.terrain_layer(),
+        "the E3 contour style round-trips whole"
+    );
     for s in [s1, s5, s12] {
-        assert!(!s.fixed_width && !s.terrain_layer, "style {} sets neither new bit", s.id);
+        assert!(!s.flags.fixed_width() && !s.flags.terrain_layer(), "style {} sets neither new bit", s.id);
     }
 
     // Unused ids are absent.

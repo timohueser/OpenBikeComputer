@@ -142,7 +142,7 @@ fn styles_parse() {
     assert_eq!(s1.weight, 2);
     assert_eq!(s1.priority, 3);
     // The v10 tail defaults for a solid, single-color style.
-    assert!(!s1.dashed, "STYLES are solid");
+    assert!(!s1.flags.dashed(), "STYLES are solid");
     assert_eq!(s1.color2, None, "STYLES carry no color2");
 
     let s2 = r.style(2).expect("style 2");
@@ -176,19 +176,19 @@ fn style_record_round_trips_line_style_and_color2() {
     let r = Reader::new(&src, &tables, &cache);
 
     let s1 = r.style(1).unwrap();
-    assert!(!s1.dashed);
+    assert!(!s1.flags.dashed());
     assert_eq!(s1.color2, None);
 
     let s2 = r.style(2).unwrap();
-    assert!(s2.dashed);
+    assert!(s2.flags.dashed());
     assert_eq!(s2.color2, None);
 
     let s3 = r.style(3).unwrap();
-    assert!(!s3.dashed);
+    assert!(!s3.flags.dashed());
     assert_eq!(s3.color2, Some(0x0000), "black (0x0000) is a legit secondary color, not a sentinel");
 
     let s4 = r.style(4).unwrap();
-    assert!(s4.dashed);
+    assert!(s4.flags.dashed());
     assert_eq!(s4.color2, Some(0x8410));
 }
 
@@ -245,14 +245,14 @@ fn style_record_round_trips_fixed_width_and_terrain_layer() {
     let r = Reader::new(&src, &tables, &cache);
 
     let s1 = r.style(1).expect("a record with a reserved bit set is still read, not rejected");
-    assert!(s1.fixed_width, "bit 4 ⇒ fixed width");
-    assert!(s1.terrain_layer, "bit 5 ⇒ terrain layer");
+    assert!(s1.flags.fixed_width(), "bit 4 ⇒ fixed width");
+    assert!(s1.flags.terrain_layer(), "bit 5 ⇒ terrain layer");
     // The bits below are untouched by the ones above.
-    assert!(s1.dashed);
+    assert!(s1.flags.dashed());
     assert_eq!((s1.weight, s1.priority, s1.color), (1, 4, 0xAD55));
 
     let s2 = r.style(2).expect("style 2");
-    assert!(!s2.fixed_width && !s2.terrain_layer, "an ordinary style sets neither bit");
+    assert!(!s2.flags.fixed_width() && !s2.flags.terrain_layer(), "an ordinary style sets neither bit");
 }
 
 #[test]
