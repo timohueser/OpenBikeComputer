@@ -104,18 +104,22 @@ fn feature_line(key: &FeatureKey, count: usize) -> String {
     let (style_id, is_poly, level, exterior, interiors) = key;
     let pts =
         |ring: &[(i32, i32)]| -> String { ring.iter().map(|(x, y)| format!("{x},{y}")).collect::<Vec<_>>().join(" ") };
-    // `level=` appears only when there is one, so a listing of a map with no contours is
-    // character-for-character what the pre-v13 tool printed — which is what makes the cross-bump
-    // diff a proof about the *rest* of the map rather than a wall of noise.
     let mut line = format!(
-        "  feat style={style_id} kind={}{} n={count} ext[{}]={}",
+        "  feat style={style_id} kind={} n={count} ext[{}]={}",
         if *is_poly { "poly" } else { "line" },
-        level.map_or(String::new(), |m| format!(" level={m}")),
         exterior.len(),
         pts(exterior)
     );
     for hole in interiors {
         line.push_str(&format!(" hole[{}]={}", hole.len(), pts(hole)));
+    }
+    // The v13 level goes **last**, and only when there is one. Both halves of that matter for the
+    // cross-bump diff this listing exists for: a map with no contours prints character-for-character
+    // what the pre-v13 tool printed, and stripping ` level=N` off a map that has them leaves lines
+    // that still sort exactly as the old tool sorted them — which they would not if the annotation
+    // sat mid-line, because `dump` sorts on the whole rendered string.
+    if let Some(metres) = level {
+        line.push_str(&format!(" level={metres}"));
     }
     line
 }

@@ -132,8 +132,11 @@ pub(crate) fn add_contours(
                 let (_, style_id, min_lod) = *classes.iter().find(|(c, _, _)| *c == class)?;
                 // The levels come off an `i16` DEM through an `i16` reader, so the wire field
                 // (§5.2, metres) cannot overflow — but the trace walks them as `i32`, so the one
-                // narrowing in the whole path is stated here rather than left to a cast.
-                let wire = i16::try_from(level).ok()?;
+                // narrowing in the whole path is stated here rather than left to a cast. It panics
+                // rather than skipping: an unrepresentable level would mean the DEM contract broke,
+                // and silently dropping a whole contour level would show up as a hole in the map
+                // that nothing in the log accounts for.
+                let wire = i16::try_from(level).expect("contour levels are traced from an i16 DEM (OBCT §5)");
                 Some((style_id, min_lod, wire, march(&grid, level)))
             })
             .collect();
