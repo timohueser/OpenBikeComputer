@@ -482,8 +482,8 @@ since the statics grow up towards a stack that grows down.
 | :-- | --: | --: | :-- |
 | largest out-of-line task body | 22,400 B | **20,352 B** | `task_frame_limit` 21,504 B |
 | residual main stack (`_stack_start − __euninit`) | 48,600 B | 48,600 B | `residual_stack_min` 48,600 B |
-| boot-chain ceiling | 56,532 B | **41,556 B** | `boot_chain_ceiling` 43,008 B |
-| boot-chain headroom | **−7,932 B** | **+7,044 B** | `boot_chain_headroom_min` 4,096 B |
+| boot-chain ceiling | 56,532 B | **41,556 B** pinned host / **35,356 B** CI | `boot_chain_ceiling` 43,008 B |
+| boot-chain headroom | **−7,932 B** | **+7,044 B** pinned host / **+13,244 B** CI | `boot_chain_headroom_min` 4,096 B |
 | largest guarded poll frame | 9,728 B | 9,728 B | 12,288 B, unchanged |
 | linked resident | 462,376 B | 462,376 B | unchanged — this is a tooling change |
 
@@ -502,6 +502,17 @@ reasonable changes summed, so the combination needs a gate of its own.
 `mount_terrain`) as substrings, so the mangling hash is not pinned. A root that stops
 resolving is a **hard error, not a skip** — "renamed, or inlined away" covers the #1084
 mechanism itself, where losing the attribute moves a fat temporary into a permanent frame.
+
+**The ceiling figure is toolchain-sensitive; the task-frame figure is not.** Measured on
+this change's own CI run
+([30852527404](https://github.com/timohueser/OpenBikeComputer/actions/runs/30852527404)),
+floating stable links a 35,356 B ceiling against the pinned host's 41,556 B — 6.2 KB apart,
+because the walk's depth depends on which callees survive as distinct symbols under
+inlining. `boot_chain_ceiling` is set above **both** so neither host false-fails, so its
+slack differs per host (~7.6 KB on CI, ~1.4 KB locally). That is tolerable precisely
+because it is the drift detector: `task_frame_measured` reads exactly **20,352 B on CI and
+on the pinned host**, so the gate that actually catches the #1084 class is
+host-independent. Re-pin both figures from an `embedded` run, never from a laptop.
 
 Baseline `schema_version` goes to **2** for the new keys. `resource_guard.py board` runs
 these gates on both profiles in the existing CI steps; no workflow change was needed.
