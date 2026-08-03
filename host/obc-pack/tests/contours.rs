@@ -201,11 +201,11 @@ fn each_class_costs_only_what_it_is_asked_for() {
 
 // --- the ladder reach, through the cutter (#1104) ----------------------------------------------
 
-/// The shipped ladder's shape (7 tiers) with the shipped split reach: `major` from LOD 3, `index`
-/// one tier coarser at LOD 2. Only the numbers this test is about are the shipped ones — the styles
-/// are the minimum a contour class needs to be packed at all.
-const SPLIT_REACH: &str = r#", "contour": {
-    "major": {"color": "0xAD55", "weight": 1, "min_lod": 3, "priority": 4, "line_style": "dashed"},
+/// The shipped ladder's shape (7 tiers) with the shipped reach: **both** classes from LOD 2. Only
+/// the numbers this test is about are the shipped ones — the styles are the minimum a contour class
+/// needs to be packed at all.
+const SHIPPED_REACH: &str = r#", "contour": {
+    "major": {"color": "0xAD55", "weight": 1, "min_lod": 2, "priority": 4, "line_style": "dashed"},
     "index": {"color": "0xAD55", "weight": 1, "min_lod": 2, "priority": 4}
 }"#;
 
@@ -256,22 +256,24 @@ fn features_per_lod(bytes: &[u8]) -> BTreeMap<usize, BTreeMap<u8, usize>> {
     out
 }
 
-/// The reach is a per-class property all the way through the **cutter**, not only the whole-extract
-/// pipeline — and in particular the `coarse` band traces contours at all.
+/// The reach reaches the **cutter**, not only the whole-extract pipeline — and in particular the
+/// `coarse` band traces contours at all.
 ///
 /// #1103 named this as a risk: #1094 wired contours in as "the mid/fine cells", and if the cutter
 /// had hard-wired a band set the coarse cells would be silently contour-free no matter what the
 /// preset said. It does not — contours are traced once over the extract and then filtered by the
 /// ordinary `min_lod <= lod` ladder rule — and this is the test that keeps it that way:
 ///
-/// - LOD 2 (coarse band) carries index contours and **zero** major ones — the sparse 500 m rhythm.
+/// - LOD 2 (coarse band) carries **both** classes, each with a positive count. The two travel
+///   together on purpose: index-only at LOD 2 was tried and rejected on glass, because a solid grey
+///   line with no dashes around it reads as a path (#1104).
 /// - LODs 0–1 carry neither: the two coarsest tiers stay terrain-free.
-/// - LOD 3 (mid band) carries both — `major` starts exactly where #1095 put it.
+/// - LOD 3 (mid band) keeps both, so the tier below is not accidentally emptied either.
 #[test]
-fn the_coarse_band_carries_index_contours_only() {
+fn the_coarse_band_carries_both_contour_classes() {
     let dir = scratch("reach");
     let terrain = write_terrain(&dir);
-    let cfg = ladder_config(SPLIT_REACH);
+    let cfg = ladder_config(SHIPPED_REACH);
     let major = cfg.contour_style(ContourClass::Major).expect("major is styled").id;
     let index = cfg.contour_style(ContourClass::Index).expect("index is styled").id;
 
@@ -288,7 +290,6 @@ fn the_coarse_band_carries_index_contours_only() {
         match artifact.band.as_str() {
             "coarse" => {
                 coarse_cells += 1;
-                assert_eq!(n(2, major), 0, "{}: LOD 2 is the index rhythm alone — no major contours", artifact.path);
                 for lod in [0, 1] {
                     assert_eq!(n(lod, index), 0, "{}: LOD {lod} is below every contour's reach", artifact.path);
                     assert_eq!(n(lod, major), 0, "{}: LOD {lod} is below every contour's reach", artifact.path);
@@ -315,8 +316,9 @@ fn the_coarse_band_carries_index_contours_only() {
             .sum()
     };
     assert!(total("coarse", 2, index) > 0, "the coarse band must actually trace the index contours");
-    assert!(total("mid", 3, index) > 0, "and LOD 3 keeps them");
-    assert!(total("mid", 3, major) > 0, "where the major ones join in");
+    assert!(total("coarse", 2, major) > 0, "and the major ones beside them — LOD 2 is the full set");
+    assert!(total("mid", 3, index) > 0, "the tier below keeps them both");
+    assert!(total("mid", 3, major) > 0, "…major included");
 }
 
 /// The clamp is what keeps the fine tiers from storing interpolation noise: relaxing it to zero has
