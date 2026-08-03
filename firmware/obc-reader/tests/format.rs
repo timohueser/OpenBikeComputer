@@ -629,12 +629,16 @@ fn rejects_overflowing_chunk_region() {
 
 #[test]
 fn filtered_decode_skips_without_drifting() {
-    // Three heterogeneous features packed back-to-back in one chunk: an 8-bit
-    // line, a polygon-with-hole, and a 16-bit line. Skipping any of them must
-    // leave the reader's byte offset exactly where a full decode would, so the
-    // features *after* a skipped one decode byte-identically. This pins
-    // `skip_ring` to `read_ring`: if they ever drift, a trailing feature would
-    // decode garbage and these assertions break.
+    // Four heterogeneous features packed back-to-back in one chunk: an 8-bit line, a
+    // polygon-with-hole, a **v13 leveled line**, and a 16-bit line. Skipping any of them must leave
+    // the reader's byte offset exactly where a full decode would, so the features *after* a skipped
+    // one decode byte-identically. This pins `skip_ring` to `read_ring`: if they ever drift, a
+    // trailing feature would decode garbage and these assertions break.
+    //
+    // The leveled one is here because skipping it is the **terrain toggle's hot path** (#1096): with
+    // the terrain layer hidden every contour in the map goes through the skip branch and is never
+    // decoded, so a two-byte slip on the level field would misparse the whole rest of the chunk —
+    // and it would do it only for users who turned contours *off*.
     let mut chunk = Vec::new();
     chunk.extend_from_slice(&pack_line(1, 100, 200, &[(10, 0), (0, 10)]));
     chunk.extend_from_slice(&pack_poly_hole(
@@ -644,11 +648,16 @@ fn filtered_decode_skips_without_drifting() {
         &[(50, 0), (0, 50), (-50, 0)],
         &[(10, 10), (20, 0), (0, 20), (-20, 0)],
     ));
+    chunk.extend_from_slice(&pack_line_level(4, 500, 500, 2500, &[(5, 5), (5, -5)]));
     chunk.extend_from_slice(&pack_line16(3, 0, 0, &[(300, 400), (-200, 0)]));
     let chunk = seal(chunk, 128);
 
-    let styles: &[Style] =
-        &[(1, 3, 0xF800, 2, 3, false, None), (2, -1, 0x07E0, 1, 3, false, None), (3, 0, 0x001F, 1, 3, false, None)];
+    let styles: &[Style] = &[
+        (1, 3, 0xF800, 2, 3, false, None),
+        (2, -1, 0x07E0, 1, 3, false, None),
+        (3, 0, 0x001F, 1, 3, false, None),
+        (4, 8, 0xAD55, 1, 4, false, None),
+    ];
     let bytes = build_file(
         GLOBAL,
         styles,
@@ -661,19 +670,71 @@ fn filtered_decode_skips_without_drifting() {
     let node = r.bbox;
 
     let all = decode_chunk(&r, 0, 0, &node);
-    assert_eq!(all.len(), 3);
+    assert_eq!(all.len(), 4);
+    assert_eq!(all[2].level, Some(2500), "the third feature is the leveled one");
 
     // Keeping everything is identical to the unfiltered decode path.
     assert_eq!(decode_filtered(&r, 0, 0, &node, |_| true), all);
     // Keeping nothing visits nothing.
     assert!(decode_filtered(&r, 0, 0, &node, |_| false).is_empty());
 
-    // Skip the middle polygon: the trailing 16-bit line must still be exact.
-    assert_eq!(decode_filtered(&r, 0, 0, &node, |sid| sid != 2), vec![all[0].clone(), all[2].clone()]);
-    // Skip the leading line: both following features must be exact.
-    assert_eq!(decode_filtered(&r, 0, 0, &node, |sid| sid != 1), vec![all[1].clone(), all[2].clone()]);
-    // Skip the trailing line: the leading two are unaffected.
-    assert_eq!(decode_filtered(&r, 0, 0, &node, |sid| sid != 3), vec![all[0].clone(), all[1].clone()]);
+    // Skip the middle polygon: everything behind it must still be exact.
+    assert_eq!(decode_filtered(&r, 0, 0, &node, |sid| sid != 2), vec![all[0].clone(), all[2].clone(), all[3].clone()]);
+    // Skip the leading line: all three following features must be exact.
+    assert_eq!(decode_filtered(&r, 0, 0, &node, |sid| sid != 1), vec![all[1].clone(), all[2].clone(), all[3].clone()]);
+    // Skip the trailing line: the leading three are unaffected.
+    assert_eq!(decode_filtered(&r, 0, 0, &node, |sid| sid != 3), vec![all[0].clone(), all[1].clone(), all[2].clone()]);
+    // **Skip the leveled feature** — what the terrain toggle does to every contour on the map. The
+    // two level bytes must be consumed by the skip exactly as they are by the decode, or the 16-bit
+    // line behind it decodes garbage.
+    assert_eq!(
+        decode_filtered(&r, 0, 0, &node, |sid| sid != 4),
+        vec![all[0].clone(), all[1].clone(), all[3].clone()],
+        "skipping a v13 leveled feature must not shift the features behind it"
+    );
+    // …and skipping everything *but* it lands on it exactly.
+    assert_eq!(decode_filtered(&r, 0, 0, &node, |sid| sid == 4), vec![all[2].clone()]);
+}
+
+/// **The composition v13 is defined by**: `WIDE` widens the header, `HAS_LEVEL` appends two bytes to
+/// whichever header that was, and neither moves a field of the other. The compact case is covered by
+/// `feature_level_round_trips_and_shifts_nothing`; this is the wide one, which is the case a coarse
+/// LOD actually produces — a leaf spanning more than 65 535 µdeg puts the anchor out of `u16` range,
+/// and every contour at a planning tier lives in such a leaf.
+#[test]
+fn a_wide_header_carries_its_level_too() {
+    // An anchor past `u16::MAX` forces the wide layout (the testkit picks it by the same rule the
+    // packer does), and the deltas are 8-bit so the level is the only thing between the two.
+    let deltas: &[(i8, i8)] = &[(10, 10), (10, -10)];
+    let wide_plain = pack_line(1, 100_000, 200_000, deltas);
+    let wide_leveled = pack_line_level(1, 100_000, 200_000, -412, deltas);
+    assert_eq!(wide_plain[1] & 0x08, 0x08, "an anchor past u16::MAX is the wide layout");
+    assert_eq!(wide_leveled[1], 0x08 | 0x10, "…and the level bit rides beside the wide bit");
+    assert_eq!(wide_leveled.len(), wide_plain.len() + 2, "a level costs one int16 over the wide header too");
+    // The wide header is 12 bytes, so the level is at 12..14 and the deltas start at 14.
+    assert_eq!(i16::from_le_bytes([wide_leveled[12], wide_leveled[13]]), -412);
+    assert_eq!(&wide_leveled[14..], &wide_plain[12..], "everything behind the level is unchanged");
+
+    // A leaf spanning far more than 65 535 µdeg — the coarse-LOD shape the wide header exists for.
+    const BIG: (i32, i32, i32, i32) = (0, 0, 4_000_000, 4_000_000);
+    let chunk = seal([wide_plain, wide_leveled].concat(), CS);
+    let bytes = build_file(
+        BIG,
+        STYLES,
+        &[LodSpec { max_mpp: f32::INFINITY, index: vec![0], chunks: vec![chunk], chunk_size: CS }],
+    );
+    let cache = MapCache::new();
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let r = Reader::new(&src, &tables, &cache);
+    let node = query_all(&r, 0, &r.bbox)[0].1;
+    let feats = decode_chunk(&r, 0, 0, &node);
+
+    assert_eq!(feats.len(), 2);
+    assert_eq!(feats[0].level, None);
+    assert_eq!(feats[1].level, Some(-412));
+    assert_eq!(feats[0].exterior, feats[1].exterior, "the level moves no vertex of a wide feature either");
+    assert_eq!(feats[1].exterior, vec![(100_000, 200_000), (100_010, 200_010), (100_020, 200_000)]);
 }
 
 #[test]
