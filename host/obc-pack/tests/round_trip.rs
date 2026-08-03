@@ -30,9 +30,6 @@ const POLY12_EXT: &[(i32, i32)] =
     &[(100_000, 100_000), (120_000, 100_000), (120_000, 120_000), (100_000, 120_000), (100_000, 100_000)];
 const POLY12_HOLE: &[(i32, i32)] =
     &[(105_000, 105_000), (115_000, 105_000), (115_000, 115_000), (105_000, 115_000), (105_000, 105_000)];
-// The two contour lines, far enough apart that neither the quadtree nor `line_merge` joins them.
-const CONTOUR_HIGH: &[(i32, i32)] = &[(400_000, 400_000), (400_100, 400_050), (400_200, 400_000)];
-const CONTOUR_LOW: &[(i32, i32)] = &[(600_000, 600_000), (600_100, 600_050)];
 // Deltas of 500 µdeg exceed the int8 range, forcing the 16-bit delta path.
 const LINE16: &[(i32, i32)] = &[(300_000, 300_000), (300_500, 300_500), (301_000, 300_500)];
 
@@ -49,7 +46,6 @@ fn styles() -> Vec<Style> {
             color2: None,
             fixed_width: false,
             terrain_layer: false,
-            contour_index: false,
         },
         // Priority 4 (flags 3, the top of the clamped range). Dashed + a secondary color exercises
         // the v10 flag bits (2 and 3) and the trailing color2 u16 through the whole pack→read path.
@@ -63,7 +59,6 @@ fn styles() -> Vec<Style> {
             color2: Some(0x8410),
             fixed_width: false,
             terrain_layer: false,
-            contour_index: false,
         },
         // Mid priority; non-contiguous id exercises the sparse style lookup.
         Style {
@@ -76,10 +71,9 @@ fn styles() -> Vec<Style> {
             color2: None,
             fixed_width: false,
             terrain_layer: false,
-            contour_index: false,
         },
-        // The E3 major-contour shape (#1095): dashed, hairline, and carrying bit 4 (fixed width)
-        // and bit 5 (terrain layer) through the whole pack → read path.
+        // The E3 contour shape (#1095): dashed, hairline, and carrying both new flag bits — bit 4
+        // (fixed width) and bit 5 (terrain layer) — through the whole pack → read path.
         Style {
             id: 20,
             z_index: 8,
@@ -90,20 +84,6 @@ fn styles() -> Vec<Style> {
             color2: None,
             fixed_width: true,
             terrain_layer: true,
-            contour_index: false,
-        },
-        // Its index sibling (v13, #1105) adds bit 6 — the one the renderer selects labels by.
-        Style {
-            id: 21,
-            z_index: 9,
-            color: 0xAD55,
-            weight: 1,
-            priority: 4,
-            dashed: false,
-            color2: None,
-            fixed_width: true,
-            terrain_layer: true,
-            contour_index: true,
         },
     ]
 }
@@ -124,16 +104,11 @@ fn ring_deg(pts: &[(i32, i32)]) -> Vec<(f64, f64)> {
 }
 
 fn line(style_id: u8, pts: &[(i32, i32)]) -> Feature {
-    Feature { style_id, kind: PackKind::Line, level: None, rings: vec![ring_deg(pts)] }
-}
-
-/// A contour: a line that states its elevation (v13 §5.2).
-fn contour(style_id: u8, level: i16, pts: &[(i32, i32)]) -> Feature {
-    Feature { style_id, kind: PackKind::Line, level: Some(level), rings: vec![ring_deg(pts)] }
+    Feature { style_id, kind: PackKind::Line, rings: vec![ring_deg(pts)] }
 }
 
 fn polygon(style_id: u8, rings: &[&[(i32, i32)]]) -> Feature {
-    Feature { style_id, kind: PackKind::Polygon, level: None, rings: rings.iter().map(|r| ring_deg(r)).collect() }
+    Feature { style_id, kind: PackKind::Polygon, rings: rings.iter().map(|r| ring_deg(r)).collect() }
 }
 
 /// Build a two-LOD map and serialize it the way the packer really does:
@@ -144,17 +119,7 @@ fn packed() -> Vec<u8> {
     let lod0 = LodLayer {
         max_mpp: None, // coarsest layer ⇒ +inf
         chunk_size: 512,
-        root: Node::Leaf {
-            bbox: GLOBAL,
-            features: vec![
-                line(5, LINE5),
-                polygon(12, &[POLY12_EXT, POLY12_HOLE]),
-                // Two levels of the same style, so the reader has to tell them apart by the field
-                // and not by the style id — and one of them is negative, which is a real elevation.
-                contour(21, 2500, CONTOUR_HIGH),
-                contour(21, -412, CONTOUR_LOW),
-            ],
-        },
+        root: Node::Leaf { bbox: GLOBAL, features: vec![line(5, LINE5), polygon(12, &[POLY12_EXT, POLY12_HOLE])] },
     };
     let lod1 = LodLayer {
         max_mpp: Some(50.0),
@@ -180,24 +145,18 @@ fn packed() -> Vec<u8> {
 struct Decoded {
     style_id: u8,
     is_polygon: bool,
-    level: Option<i16>,
     exterior: Vec<(i32, i32)>,
     interiors: Vec<Vec<(i32, i32)>>,
 }
 
 fn expect_line(style_id: u8, pts: &[(i32, i32)]) -> Decoded {
-    Decoded { style_id, is_polygon: false, level: None, exterior: pts.to_vec(), interiors: vec![] }
-}
-
-fn expect_contour(style_id: u8, level: i16, pts: &[(i32, i32)]) -> Decoded {
-    Decoded { style_id, is_polygon: false, level: Some(level), exterior: pts.to_vec(), interiors: vec![] }
+    Decoded { style_id, is_polygon: false, exterior: pts.to_vec(), interiors: vec![] }
 }
 
 fn expect_poly(style_id: u8, ext: &[(i32, i32)], holes: &[&[(i32, i32)]]) -> Decoded {
     Decoded {
         style_id,
         is_polygon: true,
-        level: None,
         exterior: ext.to_vec(),
         interiors: holes.iter().map(|h| h.to_vec()).collect(),
     }
@@ -217,7 +176,6 @@ fn decode_lod(r: &Reader, lod: usize) -> Vec<Decoded> {
             out.push(Decoded {
                 style_id: f.style_id,
                 is_polygon: f.kind == ReadKind::Polygon,
-                level: f.level,
                 exterior: f.exterior().to_vec(),
                 interiors: f.interiors().map(|h| h.to_vec()).collect(),
             });
@@ -280,17 +238,8 @@ fn styles_round_trip() {
         s20.flags.dashed() && s20.flags.fixed_width() && s20.flags.terrain_layer(),
         "the E3 contour style round-trips whole"
     );
-    // v13's bit 6 rides the same round trip, on the index style alone.
-    let s21 = r.style(21).expect("style 21");
-    assert!(s21.flags.contour_index(), "the index-contour style round-trips its bit");
-    assert!(s21.flags.fixed_width() && s21.flags.terrain_layer(), "and keeps #1095's two");
-    assert!(!s20.flags.contour_index(), "the major-contour style is not an index one");
     for s in [s1, s5, s12] {
-        assert!(
-            !s.flags.fixed_width() && !s.flags.terrain_layer() && !s.flags.contour_index(),
-            "style {} sets none of the three bits",
-            s.id
-        );
+        assert!(!s.flags.fixed_width() && !s.flags.terrain_layer(), "style {} sets neither new bit", s.id);
     }
 
     // Unused ids are absent.
@@ -335,17 +284,7 @@ fn features_round_trip() {
     let r = Reader::new(&src, &tables, &cache);
 
     // LOD0: an 8-bit line and a 16-bit polygon-with-hole.
-    // The two contours ride the same chunk as the ordinary features: the level field must not
-    // disturb the ones around it, which is what asserting the whole LOD in order proves.
-    assert_eq!(
-        decode_lod(&r, 0),
-        vec![
-            expect_line(5, LINE5),
-            expect_poly(12, POLY12_EXT, &[POLY12_HOLE]),
-            expect_contour(21, 2500, CONTOUR_HIGH),
-            expect_contour(21, -412, CONTOUR_LOW),
-        ],
-    );
+    assert_eq!(decode_lod(&r, 0), vec![expect_line(5, LINE5), expect_poly(12, POLY12_EXT, &[POLY12_HOLE])],);
 
     // LOD1: a 16-bit line and the MAX_FEAT_PTS line.
     let big = big_line_points();

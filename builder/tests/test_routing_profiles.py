@@ -35,7 +35,7 @@ SURFACE_CLASSES = ["unknown", "paved", "compacted", "gravel", "dirt", "rough", "
 NAME_LEN = 12
 PROFILE_RECORD_LEN = 56  # 12 name + 32 highway + 8 surface + climb_weight + 3 reserved (v12)
 CLIMB_WEIGHT_OFF = 52
-OBCM_VERSION = 13
+OBCM_VERSION = 12
 
 
 def _pack_bin():
