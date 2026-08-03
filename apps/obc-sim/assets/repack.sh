@@ -73,8 +73,11 @@ repack() { # repack <name> <source_pbf> <bbox> [terrain_obcd]
     # owns it, on the DEM's own revision track.
     [[ -n "$terrain" ]] && extra=(--terrain "$terrain")
     echo "packing $name.obcm (bbox $bbox${terrain:+, terrain $(basename "$terrain")}) ..."
+    # `${extra[@]+…}`, not a bare `"${extra[@]}"`: under `set -u` the bash 3.2 that ships
+    # with macOS treats an EMPTY array expansion as an unbound variable, so the terrain-less
+    # targets (monaco, grimsel-demo) died on the guard meant to protect them.
     (cd "$FIRMWARE_DIR" && cargo run --release --bin obc-pack -- \
-        "$src" "$PRESET" "$ASSETS_DIR/$name.obcm" --bbox "$bbox" "${extra[@]}")
+        "$src" "$PRESET" "$ASSETS_DIR/$name.obcm" --bbox "$bbox" ${extra[@]+"${extra[@]}"})
     ls -la "$ASSETS_DIR/$name.obcm"
 }
 

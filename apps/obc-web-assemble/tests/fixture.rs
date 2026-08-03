@@ -304,6 +304,7 @@ fn skin_json(cfg: &Config) -> String {
                 "dashed": s.dashed,
                 "fixed_width": s.fixed_width,
                 "terrain_layer": s.terrain_layer,
+                "contour_index": s.contour_index,
                 "color2": s.color2,
             })
         })
