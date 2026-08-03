@@ -45,6 +45,13 @@ pub const STYLE_TERRAIN_LAYER_BIT: u8 = 0x20;
 /// renderer can label index contours without sniffing z-index or guessing a level modulus it was
 /// never told.
 pub const STYLE_CONTOUR_INDEX_BIT: u8 = 0x40;
+/// The **feature type** [`STYLE_CONTOUR_INDEX_BIT`] is derived from, and the reason the bit cannot
+/// be authored: which class the packer traced is a fact about the trace, so every producer computes
+/// the bit from this name rather than reading a boolean someone typed. It lives here because there
+/// are two such producers — the packer (from its config's `features.contour.index` rule) and the
+/// cell assembler (from the schema's canonical feature-type assignment) — and a wire bit set by two
+/// crates from two spellings of one name is a bug waiting for a rename.
+pub const CONTOUR_INDEX_FEATURE_TYPE: &str = "contour.index";
 /// Style-record flag bit 7 (§2): still reserved, written `0`. Unlike a *feature*'s flags
 /// (§5.2, [`FEATURE_RESERVED_MASK`]), a reader MUST **ignore** style bits it does not define rather
 /// than reject the record — that is what lets a bit be defined in place, as bits 4-6 were.

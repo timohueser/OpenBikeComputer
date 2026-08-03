@@ -12,7 +12,6 @@
       "dashed": false,
       "fixed_width": false,
       "terrain_layer": false,
-      "contour_index": false,
       "color2": null
     },
     {
@@ -24,7 +23,6 @@
       "dashed": false,
       "fixed_width": false,
       "terrain_layer": false,
-      "contour_index": false,
       "color2": null
     },
     {
@@ -36,7 +34,6 @@
       "dashed": false,
       "fixed_width": false,
       "terrain_layer": false,
-      "contour_index": false,
       "color2": null
     },
     {
@@ -48,7 +45,6 @@
       "dashed": true,
       "fixed_width": false,
       "terrain_layer": false,
-      "contour_index": false,
       "color2": 2047
     }
   ]
