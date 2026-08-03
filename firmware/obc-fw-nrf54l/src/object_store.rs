@@ -469,13 +469,16 @@ pub struct ObjectStore {
 }
 
 impl ObjectStore {
-    /// Mount-time construction: load settings, scan `/routes` into the id table, and sweep
-    /// aborted commits (files whose held-back magic never got patched — see `sd.rs`). Runs under a
-    /// boot-time lock of the shared store (`shared`), which it borrows for the settings load + scans.
-    pub fn new(shared: &mut SharedStore) -> Self {
-        let settings = shared.settings.load().unwrap_or_default();
-        let mut store = ObjectStore {
-            settings,
+    /// The empty store — no settings read, no card scan; [`hydrate`](Self::hydrate) does that,
+    /// in place. Construction is split in two because this struct is ~13.5 KB by value: the old
+    /// `new(shared)`-then-`RefCell::new` shape put **two** copies of it in `link::init_store`'s
+    /// frame (the return slot + the wrapper's argument), the measured ~27.6 KB boot spike that
+    /// overran the residual stack once EL7 grew the ride task's poll frame (STKOF HardFault at
+    /// the `init_store` prologue, 2026-08-03). One by-value hop into the `.bss` slot is the floor
+    /// for safe code; everything that scans stays in [`hydrate`], operating on the slot directly.
+    pub fn empty() -> Self {
+        ObjectStore {
+            settings: Settings::default(),
             routes: Vec::new(),
             rides: Vec::new(),
             trips: Vec::new(),
@@ -488,21 +491,28 @@ impl ObjectStore {
             trip_total: 0,
             list_buf: [0; LIST_BUF_LEN],
             set_upload: None,
-        };
-        store.rescan(shared);
-        store.rescan_rides(shared);
-        store.rescan_trips(shared);
+        }
+    }
+
+    /// Mount-time fill of an [`empty`](Self::empty) store, **in place**: load settings, scan
+    /// `/routes` into the id table, and sweep aborted commits (files whose held-back magic never
+    /// got patched — see `sd.rs`). Runs under a boot-time lock of the shared store (`shared`),
+    /// which it borrows for the settings load + scans.
+    pub fn hydrate(&mut self, shared: &mut SharedStore) {
+        self.settings = shared.settings.load().unwrap_or_default();
+        self.rescan(shared);
+        self.rescan_rides(shared);
+        self.rescan_trips(shared);
         // The durable id floor (#450): fresh upload ids start at `max(scan_max + 1, stored floor)`,
         // so an id deleted last session can't be re-issued (the phone's persisted `deviceObjectID`s
         // key on it). A blank/torn line is "no floor" → exactly the old scan-derived start.
         if let Some(m) = shared.settings.load_id_marks() {
-            store.next_id = store.next_id.max(m.next_route_id);
+            self.next_id = self.next_id.max(m.next_route_id);
         }
         // The trip-id floor draws from its own RRAM line (spec §4.1 — a separate counter).
         if let Some(floor) = shared.settings.load_trip_mark() {
-            store.next_trip_id = store.next_trip_id.max(floor);
+            self.next_trip_id = self.next_trip_id.max(floor);
         }
-        store
     }
 
     /// (Re)build the id table from the card. Uploaded files carry their **durable id in the
