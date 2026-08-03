@@ -320,6 +320,23 @@ impl RouteIndex {
     // (`Profile::ascent_to`) at column resolution, not from the coarse per-chunk
     // `cum_ascent_m` (too few chunks to place "to climb" accurately).
 
+    /// Does this **already-stored** route carry elevation at all?
+    ///
+    /// OBCR has no per-route "has elevation" flag and no per-point "unknown" encoding, so a reader
+    /// cannot recover the producer's [`RouteStats::has_elevation`](crate::RouteStats) — the honest
+    /// answer for a stored file is this one: the header's four elevation fields are **all zero**
+    /// exactly when its producer wrote the documented *no-elevation shape* (a GPX with no `<ele>`
+    /// at all, or a nav plan whose every terrain sample was a hole — see
+    /// [`EleFill::stats`](crate::nav)). A real route can only collide with it by being flat, at
+    /// sea level, for its whole length.
+    ///
+    /// Use [`RouteStats::has_elevation`](crate::RouteStats) whenever the route was just produced
+    /// in-process (the detour splice's detour side); this is for the other case — the resident
+    /// route the rider loaded, whose producer is long gone.
+    pub fn has_elevation(&self) -> bool {
+        !(self.min_ele_m == 0 && self.max_ele_m == 0 && self.total_ascent_m == 0 && self.total_descent_m == 0)
+    }
+
     /// A [`RouteSummary`] for this route (for the menu / centering).
     pub fn summary(&self) -> RouteSummary {
         RouteSummary {
@@ -445,8 +462,12 @@ impl<'a> RouteReader<'a> {
     /// The interpolated elevation at `progress_m`, clamped to the route end — the splice path's
     /// seam-endpoint sampler ([`locate_progress`](Self::locate_progress) keeps position only;
     /// this keeps the elevation those callers drop). Cold path with its own decode scratch.
+    ///
+    /// Public so the splice's seam contract ("the blended detour opens and lands on *these* two
+    /// heights, exactly") can be asserted against the same lookup the splice itself uses, rather
+    /// than against a test's re-derivation of it.
     #[inline(never)]
-    pub(crate) fn elevation_at(&self, progress_m: u32) -> Option<i16> {
+    pub fn elevation_at(&self, progress_m: u32) -> Option<i16> {
         let mut buf = Vec::<RoutePoint, MAX_POINTS_PER_CHUNK>::new();
         let target = progress_m.min(self.total_distance_m);
         Some(self.locate_interpolated(target, &mut buf)?.0.ele)
