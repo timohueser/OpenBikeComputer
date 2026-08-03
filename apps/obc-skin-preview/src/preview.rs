@@ -179,7 +179,6 @@ impl MapPreview {
     pub fn set_skin(&mut self, skin_json: &str) -> Result<(), PreviewFailure> {
         let skin = Skin::parse(skin_json).map_err(PreviewFailure::input)?;
         let styles = skin.resolve(&self.schema).map_err(PreviewFailure::input)?;
-        let packed = pack_style_table(&styles);
 
         if self.bytes.len() < HEADER_LEN {
             return Err(PreviewFailure::input("The Teningen preview is shorter than the OBCM header."));
@@ -201,14 +200,24 @@ impl MapPreview {
             .bytes
             .get_mut(style_offset..end)
             .ok_or_else(|| PreviewFailure::input("The Teningen preview style table is truncated."))?;
-        if slot.len() != packed.len() {
+        // Only the styles this map carries are stamped. A schema that has grown feature types since
+        // the preview map was cut keeps its trailing ones: style ids are assigned in schema document
+        // order, so an appended type takes the next free id and leaves every id in here meaning what
+        // it meant — and a type the sample has no geometry for cannot change the picture anyway.
+        // (`obc-bake`'s `previews.rs` holds the same rule for the published thumbnails.)
+        if styles.len() < count {
             return Err(PreviewFailure::input(format!(
-                "The preview has {count} styles, but this skin resolves to {}.",
+                "The preview has {count} styles, but this skin resolves to only {}.",
                 styles.len()
             )));
         }
+        let stamped = &styles[..count];
+        let packed = pack_style_table(stamped);
+        if slot.len() != packed.len() {
+            return Err(PreviewFailure::input("The Teningen preview style table is not the length it declares."));
+        }
         let have_ids: Vec<u8> = slot[1..].chunks_exact(STYLE_RECORD_LEN).map(|record| record[0]).collect();
-        let want_ids: Vec<u8> = styles.iter().map(|style| style.id).collect();
+        let want_ids: Vec<u8> = stamped.iter().map(|style| style.id).collect();
         if have_ids != want_ids {
             return Err(PreviewFailure::input(
                 "The preview map belongs to a different schema revision; refresh the builder deployment.",

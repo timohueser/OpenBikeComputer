@@ -40,6 +40,8 @@ struct TerrainFile {
     /// `(min_lat, min_lon, max_lat, max_lon)` µdeg, half-open on the max edges (`OBCT_Spec.md`
     /// §4.2). `i64` because the world box legally overhangs ±90/±180.
     bbox: (i64, i64, i64, i64),
+    /// `log2` of this container's sample posting in µdeg (`OBCT_Spec.md` §4.2).
+    posting_log2: u8,
 }
 
 /// The `--terrain` input: every OBCT container the operator pointed at, opened and header-validated,
@@ -73,14 +75,14 @@ impl TerrainSet {
         let mut files = Vec::with_capacity(paths.len());
         for path in paths {
             let src = FileSource::open(&path)?;
-            let bbox = {
+            let (bbox, posting_log2) = {
                 // Parse once for validation and for the rectangle. The reader is rebuilt per sampler
                 // — it borrows the source, and a sampler is what owns the tile caches.
                 let reader = TerrainReader::parse(&src)
                     .map_err(|e| format!("--terrain {}: not a usable OBCT container ({e:?})", path.display()))?;
-                reader.header().bbox_udeg()
+                (reader.header().bbox_udeg(), reader.header().posting_log2)
             };
-            files.push(TerrainFile { path, src, bbox });
+            files.push(TerrainFile { path, src, bbox, posting_log2 });
         }
         Ok(TerrainSet { files })
     }
@@ -104,6 +106,18 @@ impl TerrainSet {
                 Some(b) => (b.0.min(min_lon), b.1.min(min_lat), b.2.max(max_lon), b.3.max(max_lat)),
             })
         })
+    }
+
+    /// The **coarsest** sample posting in the set as a `log2`, or `None` when the set is empty.
+    ///
+    /// Read by the contour tracer ([`crate::contour`]), which walks one lattice across the whole
+    /// set. Taking the coarsest is what makes that single lattice legal everywhere: postings are
+    /// powers of two on the shared grid origin (`OBCT_Spec.md` §1), so every coarse lattice point is
+    /// also a lattice point of any finer container — and a query that lands exactly on a sample
+    /// reads that sample back rather than interpolating. Taking the *finest* would ask a coarse
+    /// container for points between its samples and trace the bilinear ramp instead of the DEM.
+    pub fn posting_log2(&self) -> Option<u8> {
+        self.files.iter().map(|f| f.posting_log2).max()
     }
 
     /// A sampler over every container whose rectangle intersects `bbox` (µdeg

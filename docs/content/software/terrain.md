@@ -109,9 +109,10 @@ tens of metres and nobody could say which was wrong.
 So the rule is stated once and obeyed everywhere: **the terrain cells are baked
 first, and everything downstream reads them.**
 
-- `obc-pack` samples **baked OBCT tiles** when it integrates per-edge ascent. It does
-  *not* read a GeoTIFF; it has no DEM decoder at all and gains no native dependency
-  (libGEOS stays the last one).
+- `obc-pack` samples **baked OBCT tiles** when it integrates per-edge ascent, and
+  again when it [traces contour lines](../packer-routing/#contours-traced-from-the-terrain)
+  out of them. It does *not* read a GeoTIFF; it has no DEM decoder at all and gains
+  no native dependency (libGEOS stays the last one).
 - The device samples the same tiles at route emit and at every GPS fix.
 - The host tools, the browser and the firmware run the *same* `no_std` crate —
   [`obc-elevation`](src:firmware/obc-elevation) — over the *same* bytes.
@@ -283,6 +284,11 @@ the map builder's download summary, beside the raster's own size — reads it **
 the catalog** rather than hard-coding it, so a change of dataset carries its own
 notice with it instead of leaving a stale credit behind. The bake tool also prints it
 at the end of every run, so nobody producing cells can fail to have seen it.
+
+The obligation follows the *derivation*, not the file type. A map with
+[traced contours](../packer-routing/#contours-traced-from-the-terrain) carries
+GLO-30-derived geometry in its own bytes, so the packer states the same credit, from
+the same `const`, whenever a run packs any.
 
 Map data remains © OpenStreetMap contributors.
 

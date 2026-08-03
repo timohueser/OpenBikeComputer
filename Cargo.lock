@@ -2629,6 +2629,7 @@ dependencies = [
  "geos",
  "heapless 0.8.0",
  "indexmap",
+ "obc-dem",
  "obc-elevation",
  "obc-formats",
  "obc-map-scene",
