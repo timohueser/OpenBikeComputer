@@ -3,16 +3,21 @@ import type { NavProfile, PackConfig, SchemaEnvelope } from "./model";
 import {
     addProfile,
     cellValue,
+    checkClimbWeight,
     checkMultiplier,
     clearCell,
+    clearClimbWeight,
     displayProfiles,
     ensureRouting,
+    hasClimbWeight,
     isExplicit,
+    profileClimbWeight,
     profileDefault,
     readProfileSchema,
     removeProfile,
     resetProfile,
     setCell,
+    setClimbWeight,
 } from "./profiles";
 
 // A schema envelope shaped like `obc-pack schema`'s routing bits (trimmed).
@@ -21,8 +26,9 @@ const road: NavProfile = {
     default: 3.0,
     highway: { cycleway: 1.0, primary: 1.8, steps: "forbidden" },
     surface: { paved: 1.0, gravel: 5.0 },
+    climb_weight: 10,
 };
-const gravel: NavProfile = { name: "Gravel", default: 2.0, highway: { track: 1.2 } };
+const gravel: NavProfile = { name: "Gravel", default: 2.0, highway: { track: 1.2 }, climb_weight: 8 };
 
 function schemaEnvelope(): SchemaEnvelope {
     return {
@@ -37,6 +43,7 @@ function schemaEnvelope(): SchemaEnvelope {
                     properties: {
                         name: { maxLength: 12, "x-maxUtf8Bytes": 12 },
                         default: { default: 2.0 },
+                        climb_weight: { minimum: 0, maximum: 255, default: 0 },
                         highway: {
                             propertyNames: {
                                 enum: ["cycleway", "path", "track", "steps", "primary"],
@@ -67,7 +74,17 @@ describe("readProfileSchema", () => {
         expect(PS.minProfiles).toBe(1);
         expect(PS.maxProfiles).toBe(8);
         expect(PS.nameMaxBytes).toBe(12);
+        expect(PS.climbMin).toBe(0);
+        expect(PS.climbMax).toBe(255);
+        expect(PS.climbDefault).toBe(0);
         expect(PS.defaultProfiles.map((p) => p.name)).toEqual(["Road", "Gravel"]);
+    });
+
+    it("falls back to the u8 range when the schema predates the v12 climb weight", () => {
+        const env = schemaEnvelope() as any;
+        delete env.schema.$defs.profile.properties.climb_weight;
+        const ps = readProfileSchema(env)!;
+        expect([ps.climbMin, ps.climbMax, ps.climbDefault]).toEqual([0, 255, 0]);
     });
 
     it("returns null when the schema doesn't describe routing", () => {
@@ -136,6 +153,49 @@ describe("multiplier validation", () => {
     });
 });
 
+describe("climb weight", () => {
+    it("reads the profile's own weight, and 0 (not NaN) for a pre-v12 config", () => {
+        expect(profileClimbWeight(road, PS)).toBe(10);
+        expect(hasClimbWeight(road)).toBe(true);
+        // A config written before OBCM v12 simply has no such key.
+        const legacy: NavProfile = { name: "Old", default: 2.0 };
+        expect(hasClimbWeight(legacy)).toBe(false);
+        expect(profileClimbWeight(legacy, PS)).toBe(0);
+        expect(Number.isNaN(profileClimbWeight(legacy, PS))).toBe(false);
+        // A hand-edited config could carry a null / string; still not NaN.
+        const junk = { name: "Junk", climb_weight: null } as unknown as NavProfile;
+        expect(profileClimbWeight(junk, PS)).toBe(0);
+    });
+
+    it("sets a weight and reverts to climb-blind by dropping the key", () => {
+        const p: NavProfile = { name: "X" };
+        setClimbWeight(p, 12);
+        expect(p.climb_weight).toBe(12);
+        expect(hasClimbWeight(p)).toBe(true);
+        clearClimbWeight(p);
+        expect("climb_weight" in p).toBe(false);
+        expect(profileClimbWeight(p, PS)).toBe(0);
+    });
+
+    it("accepts whole numbers across the schema range, including 0", () => {
+        for (const n of [0, 1, 6, 8, 10, 255]) {
+            expect(checkClimbWeight(n, PS.climbMin, PS.climbMax).ok).toBe(true);
+        }
+    });
+
+    it("rejects out-of-range, fractional and empty entries", () => {
+        expect(checkClimbWeight(256, PS.climbMin, PS.climbMax).ok).toBe(false);
+        expect(checkClimbWeight(-1, PS.climbMin, PS.climbMax).ok).toBe(false);
+        expect(checkClimbWeight(2.5, PS.climbMin, PS.climbMax).ok).toBe(false);
+        const empty = checkClimbWeight(NaN, PS.climbMin, PS.climbMax);
+        expect(empty.ok).toBe(false);
+        expect(empty.hint).toMatch(/whole number/);
+        // Unlike a multiplier there is no admissibility floor to name — the term
+        // is added, so nothing here talks about the A* bound.
+        expect(checkClimbWeight(256, PS.climbMin, PS.climbMax).hint).not.toMatch(/admissible/);
+    });
+});
+
 describe("routing lifecycle over a config", () => {
     function bareConfig(): PackConfig {
         return { lods: [{ max_mpp: null, simplify: 0 }], features: {}, marker: { color: "0xF800" } };
@@ -166,6 +226,9 @@ describe("routing lifecycle over a config", () => {
         const added = cfg.routing!.profiles[7];
         expect(added.default).toBe(2.0);
         expect(added.highway).toBeUndefined(); // every class inherits the default
+        // …and it states no climb weight, so the packer reads it as climb-blind.
+        expect(hasClimbWeight(added)).toBe(false);
+        expect(profileClimbWeight(added, PS)).toBe(0);
     });
 
     it("refuses to remove the last profile", () => {
@@ -179,8 +242,10 @@ describe("routing lifecycle over a config", () => {
         const cfg = bareConfig();
         ensureRouting(cfg, PS);
         cfg.routing!.profiles[0].highway = { cycleway: 9.0 }; // tamper with Road
+        setClimbWeight(cfg.routing!.profiles[0], 0); // …and make it climb-blind
         resetProfile(cfg, 0, PS);
         expect(cfg.routing!.profiles[0].highway).toEqual(road.highway);
         expect(cfg.routing!.profiles[0].highway!.cycleway).toBe(1.0);
+        expect(cfg.routing!.profiles[0].climb_weight).toBe(10); // the shipped weight is back
     });
 });
