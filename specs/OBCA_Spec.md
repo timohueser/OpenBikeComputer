@@ -16,7 +16,7 @@ carries. It defines four things:
    optionally the one [OBCT](OBCT_Spec.md) terrain shard that carries the map's elevation.
 
 OBCA introduces **no new OBCM version and changes no OBCM semantics**. Every cell and every
-shard is an ordinary [OBCM v12](OBCM_Spec.md) file that today's reader parses unchanged; the only
+shard is an ordinary [OBCM v13](OBCM_Spec.md) file that today's reader parses unchanged; the only
 new bytes on the card are the small [set manifest](#5-volume-sets) of §5.2 and, where a selection
 has elevation, the terrain shard §5.1 names. What OBCA adds is a set of *constraints* on how those
 files are produced, plus the discipline that makes assembling them cheap enough to run in a browser.
@@ -837,7 +837,7 @@ allocation — the `OBCU_Spec.md` §1.1 conventions. It is `72 + 56 × Shard Cou
 | :-- | :-- | :-- | :-- | :-- |
 | 0 | Magic | 4 | `char[4]` | Must be `b"OBCS"` |
 | 4 | Version | 1 | `uint8` | `0x02` (readers reject any other value) |
-| 5 | OBCM Version | 1 | `uint8` | The OBCM version of every **OBCM** shard, e.g. `0x0C` |
+| 5 | OBCM Version | 1 | `uint8` | The OBCM version of every **OBCM** shard, e.g. `0x0D` |
 | 6 | Shard Count | 1 | `uint8` | `1..=32`; readers reject `0` or `> 32`. Counts **every** record, the terrain one included |
 | 7 | Core Shard | 1 | `uint8` | Index of the core shard (§5.1); `< Shard Count`, and it MUST name an OBCM record |
 | 8 | Schema Revision | 4 | `uint32` | The schema revision every cell was baked at (§6.3) |
