@@ -62,15 +62,22 @@ pub(crate) const OBJECT_STORE_BYTES: usize = core::mem::size_of::<RefCell<Object
 ///
 /// `#[inline(never)]` is load-bearing: the ~13.5 KB construction temporary must land in **this**
 /// transient frame — popped immediately, at boot's shallow depth — and not become a permanent slot
-/// in a caller's async poll frame, which is allocated at entry on *every* poll (#677). Measured on
-/// the shipping ELF this frame is ~27.6 KB, which is exactly why it must not be inlined into
-/// `main`'s or a task's steady-state frame.
+/// in a caller's async poll frame, which is allocated at entry on *every* poll (#677).
+///
+/// Construction is two-phase on purpose: the **empty** store makes the one by-value hop into the
+/// slot, then [`ObjectStore::hydrate`] loads settings and scans the card **in place**. The old
+/// `RefCell::new(ObjectStore::new(shared))` shape stacked two ~13.5 KB copies (the `new` return
+/// slot + the wrapper argument) into a measured ~27.6 KB frame — which overran the residual main
+/// stack the moment EL7 grew the ride task's poll frame by 2 KB (STKOF HardFault at this
+/// function's prologue, every boot, 2026-08-03).
 ///
 /// # Safety
 /// Sole writer of [`STORE`]; called exactly once, from `main`, before any plane is spawned.
 #[inline(never)]
 pub(crate) fn init_store(shared: &mut crate::SharedStore) -> &'static RefCell<ObjectStore> {
-    unsafe { init_static(core::ptr::addr_of_mut!(STORE), RefCell::new(ObjectStore::new(shared))) }
+    let cell = unsafe { init_static(core::ptr::addr_of_mut!(STORE), RefCell::new(ObjectStore::empty())) };
+    cell.borrow_mut().hydrate(shared);
+    cell
 }
 
 /// The storage handles a link plane is composed with. They always travel together — every control
