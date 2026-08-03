@@ -54,7 +54,18 @@ impl FrameScratch {
     /// two-phase stub-select collect (see the module docs). On return, [`FrameScratch::spans`] /
     /// [`FrameScratch::spans_mut`] expose the drawn features' [`Span`]s (unordered — the caller
     /// sorts them into painter order).
-    pub(crate) fn collect<S: MapScene>(&mut self, scene: &S, lod: usize, view: &BBox, stats: &mut RenderStats) {
+    ///
+    /// `suppress_terrain` drops the whole **terrain layer** — every style carrying
+    /// [`StyleFlags::terrain_layer`](obc_map_scene::StyleFlags::terrain_layer) — out of the visible
+    /// mask, so pass A never even asks the source to decode those features (see below).
+    pub(crate) fn collect<S: MapScene>(
+        &mut self,
+        scene: &S,
+        lod: usize,
+        view: &BBox,
+        suppress_terrain: bool,
+        stats: &mut RenderStats,
+    ) {
         self.frame_points.clear();
         self.frame_ring_lens.clear();
         self.slots.clear();
@@ -62,10 +73,19 @@ impl FrameScratch {
 
         // A single "is this style drawn at all?" mask (bit set ⇔ the id has a style), built once —
         // the old per-priority-level masks are gone: pass A decodes every drawn feature in one walk.
+        //
+        // The terrain-layer suppression (#1096) is applied **here**, by clearing those styles' mask
+        // bits, and nowhere else: the mask is what pass A hands the source as its `should_decode`
+        // filter, so a suppressed contour is skipped before its geometry is decoded, never drawn and
+        // painted over. It costs no span, no point, no ring — a hidden terrain layer therefore also
+        // frees frame budget for everything else, which drawing-then-overpainting would not.
         let mut vis_mask = [0u32; 8];
         for id in 0..=255u8 {
-            if scene.style(id).is_some() {
-                vis_mask[(id >> 5) as usize] |= 1 << (id & 31);
+            match scene.style(id) {
+                Some(style) if !(suppress_terrain && style.flags.terrain_layer()) => {
+                    vis_mask[(id >> 5) as usize] |= 1 << (id & 31)
+                }
+                _ => {}
             }
         }
 
