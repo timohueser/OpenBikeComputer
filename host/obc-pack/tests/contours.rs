@@ -9,12 +9,17 @@
 //! Land generation is skipped throughout: it needs the ~950 MB global land-polygon dataset, which is
 //! a network download and not a fixture. Nothing here is about land.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use obc_pack::config::Config;
+use obc_map_scene::BBox;
+use obc_pack::config::{Config, ContourClass};
+use obc_pack::cut::{cut, CutOptions};
+use obc_pack::grid::BandTable;
 use obc_pack::pipeline::{pack, PackOptions};
 use obc_pack::progress::{Phase, Progress};
+use obc_reader::{MapCache, MapTables, Reader, SliceSource, MAX_FEAT_PTS, MAX_FEAT_RINGS};
 
 /// The synthetic terrain's posting and cell size — both legal OBCT v1 header values, both small, so
 /// the rectangle covering the fixture is tens of KB instead of the tens of MB a production 2^19 cell
@@ -192,6 +197,126 @@ fn each_class_costs_only_what_it_is_asked_for() {
         index.len(),
         both.len()
     );
+}
+
+// --- the ladder reach, through the cutter (#1104) ----------------------------------------------
+
+/// The shipped ladder's shape (7 tiers) with the shipped split reach: `major` from LOD 3, `index`
+/// one tier coarser at LOD 2. Only the numbers this test is about are the shipped ones — the styles
+/// are the minimum a contour class needs to be packed at all.
+const SPLIT_REACH: &str = r#", "contour": {
+    "major": {"color": "0xAD55", "weight": 1, "min_lod": 3, "priority": 4, "line_style": "dashed"},
+    "index": {"color": "0xAD55", "weight": 1, "min_lod": 2, "priority": 4}
+}"#;
+
+/// A 7-tier config the recommended band table partitions (`coarse` = LOD 0–2, `mid` = 3–4,
+/// `fine` = 5–6), so the cut this test drives is the one the bakery drives.
+fn ladder_config(contour_styles: &str) -> Config {
+    let text = format!(
+        r#"{{
+            "lods": [
+                {{"max_mpp": null, "simplify": 200}},
+                {{"max_mpp": 30, "simplify": 100}},
+                {{"max_mpp": 16, "simplify": 40}},
+                {{"max_mpp": 10, "simplify": 15}},
+                {{"max_mpp": 5, "simplify": 8}},
+                {{"max_mpp": 3, "simplify": 3}},
+                {{"max_mpp": 1.2, "simplify": 0.5}}
+            ],
+            "features": {{
+                "highway": {{"*": {{"color": "0x0001", "weight": 1}}}}
+                {contour_styles}
+            }},
+            "contours": {ON}
+        }}"#
+    );
+    Config::parse(&text).unwrap_or_else(|e| panic!("test config parses: {e}"))
+}
+
+/// `LOD → style id → feature count`, decoded from one cell with the real reader.
+fn features_per_lod(bytes: &[u8]) -> BTreeMap<usize, BTreeMap<u8, usize>> {
+    let src = SliceSource(bytes);
+    let tables = MapTables::parse(&src).expect("a cell parses");
+    let cache = MapCache::new();
+    let r = Reader::new(&src, &tables, &cache);
+    let mut out: BTreeMap<usize, BTreeMap<u8, usize>> = BTreeMap::new();
+    let mut points = heapless::Vec::<_, MAX_FEAT_PTS>::new();
+    let mut ring_lens = heapless::Vec::<_, MAX_FEAT_RINGS>::new();
+    for lod in 0..r.lods().len() {
+        let slot = out.entry(lod).or_default();
+        let mut chunks: Vec<(u32, BBox)> = Vec::new();
+        r.for_each_chunk(lod, &r.bbox, |cid, node| chunks.push((cid, node))).expect("walk the index");
+        for (cid, node) in chunks {
+            r.for_each_feature(lod, cid, &node, &mut points, &mut ring_lens, |f| {
+                *slot.entry(f.style_id).or_default() += 1;
+            })
+            .expect("decode");
+        }
+    }
+    out
+}
+
+/// The reach is a per-class property all the way through the **cutter**, not only the whole-extract
+/// pipeline — and in particular the `coarse` band traces contours at all.
+///
+/// #1103 named this as a risk: #1094 wired contours in as "the mid/fine cells", and if the cutter
+/// had hard-wired a band set the coarse cells would be silently contour-free no matter what the
+/// preset said. It does not — contours are traced once over the extract and then filtered by the
+/// ordinary `min_lod <= lod` ladder rule — and this is the test that keeps it that way:
+///
+/// - LOD 2 (coarse band) carries index contours and **zero** major ones — the sparse 500 m rhythm.
+/// - LODs 0–1 carry neither: the two coarsest tiers stay terrain-free.
+/// - LOD 3 (mid band) carries both — `major` starts exactly where #1095 put it.
+#[test]
+fn the_coarse_band_carries_index_contours_only() {
+    let dir = scratch("reach");
+    let terrain = write_terrain(&dir);
+    let cfg = ladder_config(SPLIT_REACH);
+    let major = cfg.contour_style(ContourClass::Major).expect("major is styled").id;
+    let index = cfg.contour_style(ContourClass::Index).expect("index is styled").id;
+
+    let out = dir.join("cells");
+    let opts =
+        CutOptions { bands: BandTable::recommended(), no_land: true, terrain: Some(terrain), ..CutOptions::default() };
+    let summary = cut(&[fixture_pbf()], &cfg, &out, &opts, &Progress::silent()).expect("the cut succeeds");
+
+    let mut coarse_cells = 0;
+    let mut mid_cells = 0;
+    for artifact in &summary.cells {
+        let counts = features_per_lod(&std::fs::read(out.join(&artifact.path)).expect("cell is readable"));
+        let n = |lod: usize, style: u8| counts.get(&lod).and_then(|c| c.get(&style)).copied().unwrap_or(0);
+        match artifact.band.as_str() {
+            "coarse" => {
+                coarse_cells += 1;
+                assert_eq!(n(2, major), 0, "{}: LOD 2 is the index rhythm alone — no major contours", artifact.path);
+                for lod in [0, 1] {
+                    assert_eq!(n(lod, index), 0, "{}: LOD {lod} is below every contour's reach", artifact.path);
+                    assert_eq!(n(lod, major), 0, "{}: LOD {lod} is below every contour's reach", artifact.path);
+                }
+            }
+            "mid" => mid_cells += 1,
+            _ => {}
+        }
+    }
+    assert!(coarse_cells > 0, "the fixture produced coarse cells at all");
+    assert!(mid_cells > 0, "…and mid cells to compare them against");
+
+    // The positive halves, summed over the band: one cell of the box may hold no contour at all, but
+    // the band as a whole must — otherwise every assertion above passes vacuously.
+    let total = |band: &str, lod: usize, style: u8| -> usize {
+        summary
+            .cells
+            .iter()
+            .filter(|a| a.band == band)
+            .map(|a| {
+                let counts = features_per_lod(&std::fs::read(out.join(&a.path)).expect("cell is readable"));
+                counts.get(&lod).and_then(|c| c.get(&style)).copied().unwrap_or(0)
+            })
+            .sum()
+    };
+    assert!(total("coarse", 2, index) > 0, "the coarse band must actually trace the index contours");
+    assert!(total("mid", 3, index) > 0, "and LOD 3 keeps them");
+    assert!(total("mid", 3, major) > 0, "where the major ones join in");
 }
 
 /// The clamp is what keeps the fine tiers from storing interpolation noise: relaxing it to zero has
