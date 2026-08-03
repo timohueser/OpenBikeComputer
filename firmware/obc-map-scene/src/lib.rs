@@ -39,6 +39,60 @@ pub enum Kind {
     Polygon,
 }
 
+/// A style's boolean draw properties, **packed into one byte**.
+///
+/// Packed rather than a field each because a source keeps the whole table resident — the OBCM
+/// reader holds `[Option<Style>; 256]` — so a `bool` field costs 256 bytes of the device's RAM
+/// budget (plus alignment) to carry one bit per style. The values here are the seam's own; a source
+/// translates its file's representation into them, exactly as it does for every other field.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StyleFlags(u8);
+
+impl StyleFlags {
+    const DASHED: u8 = 1 << 0;
+    const FIXED_WIDTH: u8 = 1 << 1;
+    const TERRAIN_LAYER: u8 = 1 << 2;
+
+    /// No property set: a solid, ramped, non-terrain style.
+    pub const NONE: Self = Self(0);
+
+    #[inline]
+    pub const fn new(dashed: bool, fixed_width: bool, terrain_layer: bool) -> Self {
+        let mut bits = 0;
+        if dashed {
+            bits |= Self::DASHED;
+        }
+        if fixed_width {
+            bits |= Self::FIXED_WIDTH;
+        }
+        if terrain_layer {
+            bits |= Self::TERRAIN_LAYER;
+        }
+        Self(bits)
+    }
+
+    /// Stroke this line dashed instead of solid. Ignored for polygons.
+    #[inline]
+    pub const fn dashed(self) -> bool {
+        self.0 & Self::DASHED != 0
+    }
+
+    /// Use `weight` as the on-screen stroke in **device pixels**, verbatim: the renderer's
+    /// zoom→width ramp does not apply. For a *mark on the map* — something with no width on the
+    /// ground, like a contour — where the ramp is not merely wrong but backwards.
+    #[inline]
+    pub const fn fixed_width(self) -> bool {
+        self.0 & Self::FIXED_WIDTH != 0
+    }
+
+    /// This style belongs to the **terrain layer**, the group a device setting may suppress
+    /// wholesale. Carried across the seam; nothing in the render path reads it.
+    #[inline]
+    pub const fn terrain_layer(self) -> bool {
+        self.0 & Self::TERRAIN_LAYER != 0
+    }
+}
+
 /// Complete draw metadata for one style. Sources keep the table; renderers borrow entries by id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Style {
@@ -47,9 +101,15 @@ pub struct Style {
     pub color: u16,
     pub weight: u8,
     pub priority: u8,
-    pub dashed: bool,
+    pub flags: StyleFlags,
     pub color2: Option<u16>,
 }
+
+// A source holds 256 of these resident (`[Option<Style>; 256]` in the OBCM reader), so this struct
+// is multiplied by 256 in the board's RAM budget — which is why the boolean properties live packed
+// in [`StyleFlags`] and not one `bool` field each. Twelve bytes is what the fields need with no
+// padding to spare; growing it is a budget decision, not a detail.
+const _: () = assert!(core::mem::size_of::<Style>() <= 12, "Style is resident ×256 — see StyleFlags");
 
 /// A source-defined identity for a candidate within one render.
 ///

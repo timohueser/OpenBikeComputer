@@ -378,7 +378,17 @@ mod tests {
     /// A fill-only style (no `color2`) at the given key fields; `weight`/`dashed`
     /// are set to non-default values to prove they never enter the class key.
     fn fill_style(id: u8, z_index: i8, color: u16, priority: u8) -> Style {
-        Style { id, z_index, color, weight: 7, priority, dashed: true, color2: None }
+        Style {
+            id,
+            z_index,
+            color,
+            weight: 7,
+            priority,
+            dashed: true,
+            color2: None,
+            fixed_width: false,
+            terrain_layer: false,
+        }
     }
 
     /// A closed square ring `[o, o+s]²` (µdeg-friendly degrees), first == last.
@@ -603,7 +613,7 @@ mod tests {
         dashed: bool,
         color2: Option<u16>,
     ) -> Style {
-        Style { id, z_index, color, weight, priority, dashed, color2 }
+        Style { id, z_index, color, weight, priority, dashed, color2, fixed_width: false, terrain_layer: false }
     }
 
     fn line(pts: &[(f64, f64)]) -> Geom {

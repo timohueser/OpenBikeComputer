@@ -10,6 +10,8 @@
       "z_index": 1,
       "priority": 3,
       "dashed": false,
+      "fixed_width": false,
+      "terrain_layer": false,
       "color2": null
     },
     {
@@ -19,6 +21,8 @@
       "z_index": 5,
       "priority": 3,
       "dashed": false,
+      "fixed_width": false,
+      "terrain_layer": false,
       "color2": null
     },
     {
@@ -28,6 +32,8 @@
       "z_index": 4,
       "priority": 3,
       "dashed": false,
+      "fixed_width": false,
+      "terrain_layer": false,
       "color2": null
     },
     {
@@ -37,6 +43,8 @@
       "z_index": 6,
       "priority": 2,
       "dashed": true,
+      "fixed_width": false,
+      "terrain_layer": false,
       "color2": 2047
     }
   ]
