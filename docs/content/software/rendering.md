@@ -365,7 +365,7 @@ Two mechanisms work together to solve this within the memory and time budget.
 
 **Priority, and cheap skipping.** Each feature's style carries a 2-bit **priority** (1 = keep first … 4 = drop first) — the axis the drop decision turns on. And a feature is cheap to *step over*: its header is a fixed 12 bytes, so the reader can advance past a feature it doesn't want with pure offset arithmetic — no coordinate math, no buffer writes. That skip primitive is what lets the collector touch a chunk's bytes selectively: past features whose style isn't drawn at all, and — the payoff below — straight to the handful of *winners* it must re-decode.
 
-"Whose style isn't drawn at all" is a **256-bit mask**, built once per frame from the style table and handed to the source as its decode filter. Normally it just says *this id has a style*, but it is also the one honest place to switch a whole class of feature off: with the rider's [contour toggle](../ui/#settings-a-second-level-of-focus) off, every style carrying the [terrain-layer bit](../formats/#the-header) is left out of the mask, so those features are skipped by offset arithmetic and never decoded, never ranked against the frame budget, never drawn. Suppressing at the mask rather than by painting over matters for a reason beyond speed: an overpaint would have to know what was *underneath* each contour, and it doesn't — so a hidden layer would scar every road it crossed. Suppressed here, the frame is pixel-identical to one rendered from a map that never carried contours at all.
+"Whose style isn't drawn at all" is a **256-bit mask**, built once per frame from the style table and handed to the source as its decode filter. Normally it just says *this id has a style*, but it is also the one honest place to switch a whole class of feature off: with the rider's [contour toggle](../ui/#settings-a-second-level-of-focus) off, every style carrying the [terrain-layer bit](../formats/#the-header) is left out of the mask, so those features are skipped by offset arithmetic and never decoded, never ranked against the frame budget, never drawn. Suppressing at the mask rather than by painting over matters for a reason beyond speed: an overpaint would have to know what was *underneath* each contour, and it doesn't — so a hidden layer would scar every road it crossed. Suppressed here, the frame is pixel-identical to one rendered from a map that never carried contours at all — and the [elevation labels](#numbers-on-the-contours-the-label-pass) go with it for free, since a label can only come from a contour that survived collection.
 
 <figure class="fig">
 <svg viewBox="0 0 720 168" role="img" aria-label="A chunk's byte stream is a row of feature cells. The OBCM adapter resolves each winning opaque token to its source position and seeks straight to that feature, skipping everything in between by advancing the read pointer.">
@@ -698,6 +698,74 @@ The fix reuses the same `(z, seq)` sort. Within each contiguous **equal-z group*
 </figure>
 
 **What the finest-LOD passes cost.** Both casing and outlines run **only at the finest LOD**, so every coarser zoom — where the frame budget is already tightest — pays exactly nothing. Where they do run, the numbers (measured `draw_us`, dense street scenes) are modest: casing adds **~20–25%** to the draw (at 4 m/px on a dense grid, ~170–179 µs climbs to ~206–250 µs for 152 cased roads; ~+55–80 µs at a busier zoom), because a casing is one extra wide stroke — wider than the fill it underlies, so its cost is the raster, not the re-projection. Building outlines are far cheaper still — **~7–9% of the casing pass** (about +10 µs at 2 m/px, +25 µs at 4 m/px) — because a hairline ring is the thin Bresenham line path, a fraction of a filled stroke.
+
+### Numbers on the contours: the label pass
+
+A contour with no number is a texture; with a number it is a map. The elevation is baked into the file — the packer knows it at trace time and writes it as an `int16` on the feature — so the renderer never samples terrain mid-frame, and a style flag says which isolines are the **index** contours, the every-fifth ones a map labels. Everything else about a label is decided at frame time, because a label is a *screen* object: where it fits depends on the zoom, the rotation and what else is already on screen.
+
+The whole pass is bounded by one rule: **no noticeable frame time**. It carries no state between frames, reads only geometry the collect pass already decoded, and returns on a single `is_empty` branch when the frame collected no index contour — so a map without terrain, and every frame with the [contour toggle](../ui/#settings-a-second-level-of-focus) off, is byte-identical to a renderer that had never heard of labels.
+
+**Horizontal, on a knockout pill.** The text tiers are bitmap glyph strips with no rotation at any angle, and heading-up rotates the whole viewport, so text along the line would need a new glyph blitter. The standard alternative is the one the device already uses for its status chips: horizontal digits on a filled parchment pill, which *breaks the contour line through the label* instead of laying a sticker over it — the classic knockout-gap treatment, and the reason the number reads at a glance on a busy hillside.
+
+**Anchors are ground positions, not screen positions.** Each polyline is walked by **world-space arc length** — the same trick the route chevrons use — with the stride set to a fixed screen cadence (~180 px) times the frame's metres-per-pixel. So the labels sit on fixed spots on the ground: pan and they travel with the terrain, rotate and they stay put, instead of crawling along the isoline. Each line starts its cadence at a **phase derived from its own first vertex** — a fixed hash, no randomness anywhere — because isolines run parallel, and without it every contour would anchor at the same arc length and the labels would stack into a column.
+
+**Placement is greedy, and refusing is free.** Candidates are tried in the order the collect pass published them; each one that fits reserves its pill (grown by a small margin) in a fixed array of at most twelve boxes. A candidate overlapping a reservation is skipped, and so is one that would touch the viewport edge or the bands where the screen's floating chrome — the clock, the scale bar, the bottom chip — is drawn *after* the map: half an elevation is worse than none, and a number with its last digit painted over reads as a different number. The cap is the frame-time backstop as much as a cartographic one: twelve labels are a few tens of thousands of pixel writes against a frame that already clears and redraws 76 800, and the walk stops the moment the twelfth is placed.
+
+<figure class="fig">
+<svg viewBox="0 0 780 300" role="img" aria-label="Left: a contour polyline walked by ground arc length. A phase offset from the line's first vertex sets the first anchor, then anchors repeat every stride, where the stride is 180 screen pixels converted to ground metres. Right: the screen. Three label pills are placed on contours; a fourth candidate overlapping a placed pill's reserved box is rejected, and a fifth near the top edge under the clock chrome band is rejected too.">
+  <text class="d-tag" x="20" y="24">Cadence on the ground · collision and chrome on the screen</text>
+
+  <!-- LEFT: arc-length cadence -->
+  <text class="d-sub" x="30" y="52">① walk the line by ground arc length</text>
+  <path d="M40 150 C 90 96, 150 200, 210 140 S 300 92, 350 148" fill="none" stroke="#8a8a8a" stroke-width="2" />
+  <circle cx="40" cy="150" r="4" fill="#3c6b39" />
+  <text class="d-sub" x="30" y="176" style="font-size:9px">first vertex</text>
+  <!-- phase -->
+  <path d="M40 118 h58" fill="none" stroke="#cf6a2a" stroke-width="1.5" stroke-dasharray="3 3" />
+  <text x="42" y="110" style="font-family:var(--mono);font-size:9px;fill:#cf6a2a">phase (hash of the vertex)</text>
+  <!-- anchors -->
+  <g fill="#cf6a2a">
+    <circle cx="98" cy="126" r="5" /><circle cx="212" cy="140" r="5" /><circle cx="330" cy="140" r="5" />
+  </g>
+  <path d="M98 168 h114" fill="none" stroke="#3c6b39" stroke-width="1.5" />
+  <text x="104" y="184" style="font-family:var(--mono);font-size:9px;fill:#3c6b39">stride = 180 px × m/px</text>
+  <text class="d-sub" x="30" y="230" style="font-size:9px">the stride is metres, so an anchor is a spot on the</text>
+  <text class="d-sub" x="30" y="244" style="font-size:9px">ground — it does not crawl when you pan or rotate</text>
+
+  <!-- divider -->
+  <line class="d-stroke" x1="400" y1="40" x2="400" y2="270" style="stroke:#9aa884;stroke-width:1" />
+
+  <!-- RIGHT: the screen -->
+  <text class="d-sub" x="430" y="52">② first fit wins, in publication order</text>
+  <rect x="430" y="62" width="300" height="200" fill="none" stroke="#9aa884" stroke-width="1.5" />
+  <!-- chrome band -->
+  <rect x="430" y="62" width="300" height="26" fill="#c0492e" opacity="0.10" />
+  <text x="438" y="80" style="font-family:var(--mono);font-size:9px;fill:#c0492e">chrome band — keep out</text>
+  <!-- contours -->
+  <path d="M430 130 C 500 108, 560 156, 730 128" fill="none" stroke="#8a8a8a" stroke-width="1.5" />
+  <path d="M430 170 C 510 150, 580 196, 730 168" fill="none" stroke="#8a8a8a" stroke-width="1.5" />
+  <path d="M430 214 C 520 196, 600 238, 730 210" fill="none" stroke="#8a8a8a" stroke-width="1.5" />
+  <!-- placed labels -->
+  <g>
+    <rect x="470" y="108" width="46" height="20" fill="#efe9d2" stroke="none" />
+    <text x="493" y="123" text-anchor="middle" style="font-family:var(--mono);font-size:11px;fill:#4a4a4a">2500</text>
+    <rect x="462" y="146" width="46" height="20" fill="#efe9d2" />
+    <text x="485" y="161" text-anchor="middle" style="font-family:var(--mono);font-size:11px;fill:#4a4a4a">2000</text>
+    <rect x="628" y="196" width="46" height="20" fill="#efe9d2" />
+    <text x="651" y="211" text-anchor="middle" style="font-family:var(--mono);font-size:11px;fill:#4a4a4a">1500</text>
+  </g>
+  <!-- reserved box around one -->
+  <rect x="456" y="102" width="58" height="32" fill="none" stroke="#3c6b39" stroke-width="1" stroke-dasharray="3 2" />
+  <text x="520" y="100" style="font-family:var(--mono);font-size:9px;fill:#3c6b39">reserved</text>
+  <!-- rejected: overlaps -->
+  <rect x="486" y="152" width="46" height="20" fill="none" stroke="#c0492e" stroke-width="1.5" stroke-dasharray="3 2" />
+  <text x="540" y="167" style="font-family:var(--mono);font-size:9px;fill:#c0492e">✗ overlaps a reservation</text>
+  <!-- rejected: chrome -->
+  <rect x="560" y="70" width="46" height="20" fill="none" stroke="#c0492e" stroke-width="1.5" stroke-dasharray="3 2" />
+  <text x="614" y="84" style="font-family:var(--mono);font-size:9px;fill:#c0492e">✗ under the chrome</text>
+</svg>
+<figcaption>The pill is filled in the palette's parchment and the digits in the contour grey, so the number reads as part of the line it belongs to. Only <b>index</b> contours are labelled — at 12×24 px, "2500" is a fifth of the panel wide, and numbering every 100 m line would be clutter, not information. Measured on a real alpine map: 6–7 labels at planning zoom and 1–2 at riding zoom, costing 2 µs each on the host — the label stage is reported next to <code>draw_us</code> in the render stats.</figcaption>
+</figure>
 
 ## 7 · The overlays
 
