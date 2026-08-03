@@ -184,7 +184,12 @@ fn deg(udeg: i64) -> f64 {
 }
 
 fn line(style_id: u8, min_lod: usize, pts: &[(i64, i64)]) -> IngestFeature {
-    IngestFeature { style_id, min_lod, geom: Geom::Line(pts.iter().map(|&(lat, lon)| (deg(lon), deg(lat))).collect()) }
+    IngestFeature {
+        style_id,
+        min_lod,
+        level: None,
+        geom: Geom::Line(pts.iter().map(|&(lat, lon)| (deg(lon), deg(lat))).collect()),
+    }
 }
 
 fn rect(style_id: u8, min_lod: usize, lat0: i64, lon0: i64, lat1: i64, lon1: i64) -> IngestFeature {
@@ -195,7 +200,7 @@ fn rect(style_id: u8, min_lod: usize, lat0: i64, lon0: i64, lat1: i64, lon1: i64
         (deg(lon0), deg(lat1)),
         (deg(lon0), deg(lat0)),
     ];
-    IngestFeature { style_id, min_lod, geom: Geom::Polygon { exterior: ring, interiors: vec![] } }
+    IngestFeature { style_id, min_lod, level: None, geom: Geom::Polygon { exterior: ring, interiors: vec![] } }
 }
 
 /// A routable way from explicit `(osm node id, (lat, lon))` vertices. The ids are explicit because

@@ -69,7 +69,7 @@ Where they differ is *shape*: a map is a 2-D area indexed by a quadtree; a route
 
 ### The file, front to back
 
-An OBCM file (current version **10**) opens with a fixed 40-byte header, then a global style table and a level-of-detail (LOD) table, then the LOD layers themselves — coarsest first. Each LOD layer is wholly self-contained: its own quadtree index immediately followed by its own geometry chunks. After the finest layer come three more sections — the [POIs](#pois-a-nearest-list-not-a-map-layer), their shared [hours pool](#opening-hours-a-pooled-weekly-schedule), and, at the very tail, the [navigation graph](#the-navigation-graph-a-routable-network) the device routes over — each reached, like everything else, by an offset stored earlier in the file.
+An OBCM file (current version **13**) opens with a fixed 40-byte header, then a global style table and a level-of-detail (LOD) table, then the LOD layers themselves — coarsest first. Each LOD layer is wholly self-contained: its own quadtree index immediately followed by its own geometry chunks. After the finest layer come three more sections — the [POIs](#pois-a-nearest-list-not-a-map-layer), their shared [hours pool](#opening-hours-a-pooled-weekly-schedule), and, at the very tail, the [navigation graph](#the-navigation-graph-a-routable-network) the device routes over — each reached, like everything else, by an offset stored earlier in the file.
 
 <figure class="fig">
 <svg viewBox="0 0 720 210" role="img" aria-label="The OBCM file as a horizontal ribbon: a 40-byte header, a global style table, an LOD table, LOD layer 0 (coarsest) through LOD layer N minus 1 (finest), then a POI section and a navigation-graph section at the tail. Detail increases left to right across the LOD layers. One LOD layer is exploded below to show it is a quadtree index followed by data chunks.">
@@ -159,7 +159,7 @@ The last table entry (`offsets[chunk_count]`) is the layer's total chunk bytes, 
 The 40-byte header is the one fixed-size, always-present part of the file. Everything else is found through offsets it stores.
 
 <figure class="fig">
-<svg viewBox="0 0 720 170" role="img" aria-label="The 40-byte OBCM header drawn as a byte ruler: bytes 0 to 3 are the magic OBCM, byte 4 is the version (12), bytes 5 to 20 are the global bounding box as four 32-bit integers, bytes 21 to 24 are the style-table offset, byte 25 is the LOD count, bytes 26 to 29 are the LOD-table offset, bytes 30 to 31 are the marker colour, bytes 32 to 35 are the POI-section offset, and bytes 36 to 39 are the navigation-graph offset appended in version 8.">
+<svg viewBox="0 0 720 170" role="img" aria-label="The 40-byte OBCM header drawn as a byte ruler: bytes 0 to 3 are the magic OBCM, byte 4 is the version (13), bytes 5 to 20 are the global bounding box as four 32-bit integers, bytes 21 to 24 are the style-table offset, byte 25 is the LOD count, bytes 26 to 29 are the LOD-table offset, bytes 30 to 31 are the marker colour, bytes 32 to 35 are the POI-section offset, and bytes 36 to 39 are the navigation-graph offset appended in version 8.">
   <text class="d-tag" x="20" y="24">The 40-byte header, byte by byte</text>
 
   <!-- field names -->
@@ -200,7 +200,7 @@ The 40-byte header is the one fixed-size, always-present part of the file. Every
   </g>
   <!-- value + byte ranges -->
   <text class="d-label" x="74" y="93" text-anchor="middle" style="fill:#fff;font-size:11px">OBCM</text>
-  <text class="d-label" x="112" y="93" text-anchor="middle" style="font-size:11px">12</text>
+  <text class="d-label" x="112" y="93" text-anchor="middle" style="font-size:11px">13</text>
   <text class="d-sub" x="74"  y="122" text-anchor="middle" style="font-size:9px">0–3</text>
   <text class="d-sub" x="112" y="122" text-anchor="middle" style="font-size:9px">4</text>
   <text class="d-sub" x="239" y="122" text-anchor="middle" style="font-size:9px">5–20</text>
@@ -213,7 +213,7 @@ The 40-byte header is the one fixed-size, always-present part of the file. Every
 
   <text class="d-sub" x="44" y="150" style="font-size:11px">A short read here is the only "is this even a map?" check the reader needs.</text>
 </svg>
-<figcaption>Fixed offsets, no surprises. A few details a reader notices: the bbox is stored <b>lat, lon</b> (a packer ordering quirk); the <b>marker colour</b> — the you-are-here chevron — rides in the header because the marker isn't an OpenStreetMap feature; and the <b>POI</b> (coral) and <b>navigation-graph</b> (teal) offsets at the tail are the growth that carried the header from 32 → 36 → 40 bytes. Earlier fields never move — a v7 reader that stops at byte 36 still parses everything it knew — and v9, v10, v11 and v12 changed section internals, the style record, the chunk layout and the navigation graph without touching the header, only ticking the version byte (now <code>12</code>).</figcaption>
+<figcaption>Fixed offsets, no surprises. A few details a reader notices: the bbox is stored <b>lat, lon</b> (a packer ordering quirk); the <b>marker colour</b> — the you-are-here chevron — rides in the header because the marker isn't an OpenStreetMap feature; and the <b>POI</b> (coral) and <b>navigation-graph</b> (teal) offsets at the tail are the growth that carried the header from 32 → 36 → 40 bytes. Earlier fields never move — a v7 reader that stops at byte 36 still parses everything it knew — and v9 through v13 changed section internals, the style record, the chunk layout, the navigation graph and the feature header without touching the header, only ticking the version byte (now <code>13</code>).</figcaption>
 </figure>
 
 The **style table** that follows maps small numeric ids to how a feature looks. Each record is eight bytes (v10 grew it from six):
@@ -229,14 +229,15 @@ pub struct Style {
     pub color2: Option<u16>,// flags bit 3 + a trailing RGB565 (v10)
     pub fixed_width: bool,  // flags bit 4 — weight is device px, off the zoom ramp
     pub terrain_layer: bool,// flags bit 5 — part of the suppressible terrain layer
+    pub contour_index: bool,// flags bit 6 — an index contour, the kind a map labels (v13)
 }
 ```
 
-Everything after `priority` is packed into the record's **flags byte** — dashed = bit 2, "color2 present" = bit 3, fixed width = bit 4, terrain layer = bit 5 — plus a trailing `u16`. `color2` is a **secondary** colour: **v10** carries it so a later render pass can draw road casings, dashed admin borders, railway stripes and building outlines at the finest zoom — the [line-styles work](https://github.com/timohueser/OpenBikeComputer/issues/556). It's written `0x0000` with the bit clear when unused, and readers ignore it then — black is a real colour (rails), not a "none" sentinel — so a map that uses no line styles is byte-for-byte the old record padded to eight, and renders identically.
+Everything after `priority` is packed into the record's **flags byte** — dashed = bit 2, "color2 present" = bit 3, fixed width = bit 4, terrain layer = bit 5, index contour = bit 6 — plus a trailing `u16`. `color2` is a **secondary** colour: **v10** carries it so a later render pass can draw road casings, dashed admin borders, railway stripes and building outlines at the finest zoom — the [line-styles work](https://github.com/timohueser/OpenBikeComputer/issues/556). It's written `0x0000` with the bit clear when unused, and readers ignore it then — black is a real colour (rails), not a "none" sentinel — so a map that uses no line styles is byte-for-byte the old record padded to eight, and renders identically.
 
-The two later bits are presentation of a different kind. **Fixed width** says the `weight` is the on-screen stroke in device pixels and the renderer's [zoom width ramp](../rendering/#lines-clip-first-then-stroke) does not apply — the style is *a mark on the map*, not a thing with width on the ground. **Terrain layer** files the style under the one group a device setting can suppress wholesale, rather than making the user name feature types. Contours take both; nothing else does yet.
+The three later bits are presentation of a different kind. **Fixed width** says the `weight` is the on-screen stroke in device pixels and the renderer's [zoom width ramp](../rendering/#lines-clip-first-then-stroke) does not apply — the style is *a mark on the map*, not a thing with width on the ground. **Terrain layer** files the style under the one group a device setting can suppress wholesale, rather than making the user name feature types. **Index contour** (v13) marks the every-fifth isoline — the sparse rhythm a paper map prints heavier and labels — so a renderer can pick those lines out by what they *are*, rather than by sniffing a z-index that a skin is free to restyle or by testing the elevation against a modulus the file never carries. Contours take all three; nothing else takes any of them yet.
 
-Those two bits are also a small lesson in what a format version is for. They were defined **without a version bump**, because the style record's undefined flag bits have always been ignorable by readers — deliberately unlike a *feature's* flags, where an unknown reserved bit means "refuse this feature", since there a wrong guess misreads the bytes that follow. Nothing in the file moves: same eight bytes, same offsets, same counts. A reader that has never heard of the fixed-width bit parses every field correctly and draws the contour a little thicker than intended. A version number is this format's hard cut — it makes every published map unreadable until it is repacked — and it's spent on changes that would otherwise be *misparsed*, not on ones that are merely rendered older.
+Those bits are also a small lesson in what a format version is for. The first two were defined **without a version bump**, because the style record's undefined flag bits have always been ignorable by readers — deliberately unlike a *feature's* flags, where an unknown reserved bit means "refuse this feature", since there a wrong guess misreads the bytes that follow. Nothing in the file moves: same eight bytes, same offsets, same counts. A reader that has never heard of the fixed-width bit parses every field correctly and draws the contour a little thicker than intended. A version number is this format's hard cut — it makes every published map unreadable until it is repacked — and it's spent on changes that would otherwise be *misparsed*, not on ones that are merely rendered older. The index-contour bit would have qualified for the same free ride, and did not take it: it is useless without the elevation beside it, and v13 was already carrying that.
 
 Two things worth knowing about style ids. First, they're **assigned by the packer, not authored** — the reader never depends on a specific value, only that ids are unique within the file, so the format can't be broken by an id collision. Second, `0xFF` is reserved as the "end of features" sentinel inside a chunk (more below), which caps a file at 254 distinct styles. The colour is stored once, device-independently, and resolved to the panel's palette at render time — the same RGB565 looks right on a true-colour desktop window and on the device's 64-colour panel.
 
@@ -360,7 +361,7 @@ px += dx;  py += dy;   // each delta steps to the next vertex
 A feature is introduced by a **7-byte header** — or a 12-byte one when it needs the room — and a flags byte in it says how to read the rest:
 
 <figure class="fig">
-<svg viewBox="0 0 720 300" role="img" aria-label="Two feature-header byte rulers drawn to the same scale, forty pixels per byte, sharing a left edge so the seven-byte compact header is visibly shorter than the twelve-byte wide one. Compact: one byte style id, one byte flags, one byte exterior point count, two bytes unsigned anchor X, two bytes unsigned anchor Y. Wide: one byte style id, one byte flags, two bytes point count, four bytes signed anchor X, four bytes signed anchor Y. The flags byte expands into four bits: 16-bit deltas, polygon, has-holes, and wide, with the wide bit highlighted as the one that selects the layout. Below, the polygon-with-holes byte layout as a ribbon: the header, the exterior deltas, a hole count, then each hole's point count and deltas.">
+<svg viewBox="0 0 720 300" role="img" aria-label="Two feature-header byte rulers drawn to the same scale, forty pixels per byte, sharing a left edge so the seven-byte compact header is visibly shorter than the twelve-byte wide one. Compact: one byte style id, one byte flags, one byte exterior point count, two bytes unsigned anchor X, two bytes unsigned anchor Y. Wide: one byte style id, one byte flags, two bytes point count, four bytes signed anchor X, four bytes signed anchor Y. The flags byte expands into five bits: 16-bit deltas, polygon, has-holes, wide (highlighted as the one that selects the layout), and level, which appends a two-byte elevation behind the header. Below, the polygon-with-holes byte layout as a ribbon: the header, the exterior deltas, a hole count, then each hole's point count and deltas.">
   <text class="d-tag" x="20" y="24">A feature on disk — both rulers to scale, 1 byte = 40 px</text>
 
   <!-- compact header ruler: 7 B -->
@@ -407,8 +408,11 @@ A feature is introduced by a **7-byte header** — or a 12-byte one when it need
     <text class="d-sub" x="313" y="197" text-anchor="middle" style="font-size:9px">bit 2 · holes</text>
     <rect x="360" y="182" width="80"  height="22" rx="4" class="d-hot-fill" />
     <text class="d-sub" x="400" y="197" text-anchor="middle" style="fill:#fff;font-size:9px">bit 3 · wide</text>
+    <rect x="446" y="182" width="84"  height="22" rx="4" class="d-panel-2" />
+    <text class="d-sub" x="488" y="197" text-anchor="middle" style="font-size:9px">bit 4 · level</text>
   </g>
-  <text class="d-sub" x="448" y="197" style="fill:#a9501c;font-size:9px">← picks the ruler</text>
+  <text class="d-sub" x="400" y="215" text-anchor="middle" style="fill:#a9501c;font-size:9px">↑ picks the ruler</text>
+  <text class="d-sub" x="538" y="197" style="fill:#a9501c;font-size:9px">← +2 B, contours only</text>
 
   <!-- holes layout ribbon -->
   <text class="d-tag" x="20" y="232">…and a polygon with holes, laid out</text>
@@ -429,10 +433,14 @@ A feature is introduced by a **7-byte header** — or a 12-byte one when it need
   <text class="d-sub" x="566" y="263" text-anchor="middle" style="fill:#fff;font-size:9px">h2 pts</text>
   <text class="d-sub" x="647" y="263" text-anchor="middle" style="font-size:9.5px">hole 2 …</text>
 </svg>
-<figcaption>Two layouts, one decision. <b>Flags sits at byte 1</b> in both, because its <b>wide</b> bit is what tells the reader how many bytes the header is — it has to be readable before anything behind it. The <b>compact</b> form spends one byte on the point count and two on each anchor; the <b>wide</b> form restores the <code>u16</code> count and signed <code>i32</code> anchors for the features that need them. Everything after the header is identical either way: the exterior ring first, then the hole count and each hole's deltas <b>only if</b> the holes flag is set, so a line or a simple polygon pays nothing for machinery it doesn't use. A <code>0xFF</code> style id — an impossible style — ends the features in a chunk.</figcaption>
+<figcaption>Two layouts, one decision. <b>Flags sits at byte 1</b> in both, because its <b>wide</b> bit is what tells the reader how many bytes the header is — it has to be readable before anything behind it. The <b>compact</b> form spends one byte on the point count and two on each anchor; the <b>wide</b> form restores the <code>u16</code> count and signed <code>i32</code> anchors for the features that need them. Everything after the header is identical either way: an optional two-byte <b>level</b> (v13, contours), then the exterior ring, then the hole count and each hole's deltas <b>only if</b> the holes flag is set — so a line or a simple polygon pays nothing for machinery it doesn't use. A <code>0xFF</code> style id — an impossible style — ends the features in a chunk.</figcaption>
 </figure>
 
 Why two forms? The 12-byte header was, at 66,910 features on that Freiburg map, **803 KB** — a third of the real data, for an average feature of 7.6 vertices, and eight of those twelve bytes were the anchor. But the anchor is already stored *relative to its leaf's corner*, and at fine zooms a leaf spans far less than the 65,535 µdeg (~7 km) a `u16` covers, so most of that width is zeroes. Hence the split: `u8` point count and `u16` anchors for the common feature, and a flag bit for the ones that genuinely don't fit — a feature with more than 255 vertices in its exterior, or a coarse-layer leaf big enough that its own corner is kilometres away. That is another ~335 KB, and it is why the reader must read flags first and derive the width, rather than assume it.
+
+**One feature can also say how high it is.** With bit 4 set — **v13**, and in practice only on [contours](../packer-routing/#contours-traced-from-the-terrain) — a signed 16-bit **elevation in metres** sits immediately behind the header, before the first delta, in whichever layout the wide bit chose. The two bits compose: `level` appends, `wide` widens, and neither moves a field of the other. It is legal on lines only; a polygon that claims one is malformed, because there is no meaning to give an area's elevation.
+
+Why carry it at all, when the packer could keep it to itself? Because the device wants to *label* those lines, and the only other way to know a contour's height on the glass is to sample the terrain raster at the label's anchor — an SD read inside the frame, which is the one thing labelling is not allowed to cost. And why on the feature rather than the style, when contours already have styles? Because a map holds hundreds of elevations and at most 254 styles. Two bytes per contour is about **1 %** of a contoured map — on the alpine test extract, 17,925 contour features and exactly 35,850 bytes against 3.67 MB.
 
 There's a quiet payoff to the holes layout: a polygon's holes are just extra rings appended after the exterior. The [scanline fill](../rendering/#polygons-even-odd-scanline-fill) treats them as additional edges in the same crossing list, so holes "fall out" of the even-odd rule with no special case — the format and the rasteriser were designed to meet in the middle.
 

@@ -17,8 +17,8 @@ use std::io::{self, Seek, SeekFrom, Write};
 
 use obc_formats::obcm::{
     BRANCH_BIT, CHUNK_END, EMPTY_LEAF, FEATURE_FLAG_16BIT, FEATURE_FLAG_HOLES, FEATURE_FLAG_POLYGON, FEATURE_FLAG_WIDE,
-    FEATURE_HEADER_COMPACT_LEN, MAGIC, STYLE_DASHED_BIT, STYLE_FIXED_WIDTH_BIT, STYLE_HAS_COLOR2_BIT,
-    STYLE_PRIORITY_MASK, STYLE_RECORD_LEN, STYLE_TERRAIN_LAYER_BIT,
+    FEATURE_HAS_LEVEL_BIT, FEATURE_HEADER_COMPACT_LEN, MAGIC, STYLE_CONTOUR_INDEX_BIT, STYLE_DASHED_BIT,
+    STYLE_FIXED_WIDTH_BIT, STYLE_HAS_COLOR2_BIT, STYLE_PRIORITY_MASK, STYLE_RECORD_LEN, STYLE_TERRAIN_LAYER_BIT,
 };
 
 // The OBCM constants the serializer lays out are owned by `obc-formats`; imported here (the
@@ -93,7 +93,9 @@ pub struct NavProfile {
 /// vertices, and `4101` is where that hits 2048. Above this the reader **silently
 /// truncates** past-cap vertices (`heapless` push fails, no error either side),
 /// corrupting the feature's fill/stroke. (v10's bound was 4106 off the 12-byte
-/// header; the compact header is what tightened it by 5 bytes.)
+/// header; the compact header is what tightened it by 5 bytes.) v13's level field
+/// leaves the bound alone in the safe direction: a feature carrying one is 2 bytes
+/// *bigger* than this minimum, so it reaches the vertex cap later, never sooner.
 pub const MAX_SAFE_CHUNK_SIZE: usize = (obc_reader::MAX_FEAT_PTS - 1) * 2 + FEATURE_HEADER_COMPACT_LEN;
 
 // The safe ceiling must itself fit the on-wire `u16` chunk_size field, or the bound is moot.
@@ -151,6 +153,10 @@ pub struct Style {
     pub fixed_width: bool,
     /// #1095: terrain layer (flag bit 5) — written here, consumed by the device's Settings toggle.
     pub terrain_layer: bool,
+    /// v13 (#1105): index contour (flag bit 6) — this style draws the every-Nth isoline, the one a
+    /// renderer labels. Derived by the config from the feature type (`contour.index`), never
+    /// authored: the packer is the only thing that knows which class it traced.
+    pub contour_index: bool,
 }
 
 /// f64 lon/lat, rounded to microdegrees and densified here. `rings[0]` is the
@@ -159,6 +165,9 @@ pub struct Style {
 pub struct Feature {
     pub style_id: u8,
     pub kind: Kind,
+    /// v13 §5.2: elevation in metres, written behind the header under `HAS_LEVEL`. `Some` only on
+    /// traced contour lines; a polygon never carries one (the reader rejects that).
+    pub level: Option<i16>,
     pub rings: Vec<Vec<(f64, f64)>>,
 }
 
@@ -229,8 +238,9 @@ fn push_deltas(data: &mut Vec<u8>, deltas: &[i64], is16: bool) {
 /// z_index, color, weight, flags, color2`. `flags = (priority-1) & STYLE_PRIORITY_MASK`, plus
 /// `STYLE_DASHED_BIT` when `dashed`, `STYLE_HAS_COLOR2_BIT` when `color2` is `Some`,
 /// `STYLE_FIXED_WIDTH_BIT` when `fixed_width` and `STYLE_TERRAIN_LAYER_BIT` when `terrain_layer`
-/// (#1095). `color2` writes its RGB565 value when present, else `0x0000` (which the reader ignores,
-/// bit 3 being clear). Bits 6-7 stay reserved and written `0`.
+/// (#1095), plus `STYLE_CONTOUR_INDEX_BIT` when `contour_index` (v13, #1105). `color2` writes its
+/// RGB565 value when present, else `0x0000` (which the reader ignores, bit 3 being clear). Bit 7
+/// stays reserved and written `0`.
 pub fn pack_style_dict(styles: &[Style]) -> Vec<u8> {
     let mut styles = styles.to_vec();
     styles.sort_by_key(|s| s.id);
@@ -251,6 +261,9 @@ pub fn pack_style_dict(styles: &[Style]) -> Vec<u8> {
         if s.terrain_layer {
             flags |= STYLE_TERRAIN_LAYER_BIT;
         }
+        if s.contour_index {
+            flags |= STYLE_CONTOUR_INDEX_BIT;
+        }
         data.push(s.id);
         data.push(s.z_index as u8);
         data.extend_from_slice(&s.color.to_le_bytes());
@@ -270,6 +283,11 @@ pub fn pack_style_dict(styles: &[Style]) -> Vec<u8> {
 /// leaf-relative anchor is small at fine LODs but genuinely isn't at coarse ones, where one leaf can
 /// span far more than 65 535 µdeg — the wide form is that escape (and covers a negative anchor, which
 /// clipping should never produce but the encoding must not silently mangle).
+///
+/// A feature carrying a `level` (v13, contours) additionally sets [`FEATURE_HAS_LEVEL_BIT`] and
+/// writes the `int16` metres **between the header and the deltas**, in whichever layout `WIDE`
+/// chose. Lines only: a level on an area is meaningless and the reader rejects it, so a polygon's is
+/// dropped here rather than written and refused.
 pub fn pack_feature(f: &Feature, node_bbox: (i64, i64, i64, i64)) -> Vec<u8> {
     let is_polygon = f.kind == Kind::Polygon;
     let mut flags: u8 = 0;
@@ -278,6 +296,10 @@ pub fn pack_feature(f: &Feature, node_bbox: (i64, i64, i64, i64)) -> Vec<u8> {
         if f.rings.len() > 1 {
             flags |= FEATURE_FLAG_HOLES;
         }
+    }
+    let level = if is_polygon { None } else { f.level };
+    if level.is_some() {
+        flags |= FEATURE_HAS_LEVEL_BIT;
     }
 
     let mut anchor_lon = 0i64;
@@ -366,6 +388,9 @@ pub fn pack_feature(f: &Feature, node_bbox: (i64, i64, i64, i64)) -> Vec<u8> {
         data.push(ext_pt_count as u8);
         data.extend_from_slice(&(anchor_lon as u16).to_le_bytes());
         data.extend_from_slice(&(anchor_lat as u16).to_le_bytes());
+    }
+    if let Some(level) = level {
+        data.extend_from_slice(&level.to_le_bytes());
     }
 
     push_deltas(&mut data, &packed_rings[0].1, is16);
@@ -1478,7 +1503,7 @@ mod tests {
         // `n` points 1 µdeg apart: tiny deltas ⇒ densest 8-bit encoding (2 bytes/
         // vertex), no densification.
         let coords: Vec<(f64, f64)> = (0..n).map(|i| (i as f64 * 1e-6, 0.0)).collect();
-        let f = Feature { style_id: 1, kind: Kind::Line, rings: vec![coords] };
+        let f = Feature { style_id: 1, kind: Kind::Line, level: None, rings: vec![coords] };
         let packed = pack_feature(&f, (0, 0, n as i64, 1));
 
         // 2048 vertices overflow the compact `pt_count u8`, so this is the wide header — read the
@@ -1535,6 +1560,7 @@ mod tests {
             color2: None,
             fixed_width: false,
             terrain_layer: false,
+            contour_index: false,
         }];
         let lods = vec![
             LodLayer {

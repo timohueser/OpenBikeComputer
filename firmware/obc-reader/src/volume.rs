@@ -44,8 +44,8 @@ use heapless::Vec;
 use obc_formats::io::ByteSource;
 use obc_formats::obcs::{ManifestError, Role, SetBBox, SetManifest, MAX_SHARDS};
 use obc_map_scene::{
-    BBox, Candidate, CandidateReport, DecodeReport, Diagnostics, Feature, FeatureToken, MapScene,
-    ReadError as SceneReadError, SelectedFeatures, Style,
+    BBox, Candidate, CandidateReport, DecodeReport, Diagnostics, FeatureToken, MapScene, ReadError as SceneReadError,
+    SelectedFeatures, Style,
 };
 
 use crate::reader::{parse_header, parse_lod_table, Lod};
@@ -558,16 +558,7 @@ impl MapScene for MountedSet<'_> {
                     let Some(token) = tag_token(FeatureToken::from_source_words(words), index) else {
                         return;
                     };
-                    visit(Candidate {
-                        token,
-                        feature: Feature::new(
-                            feature.style_id,
-                            feature.kind,
-                            feature.points(),
-                            feature.ring_lens(),
-                            feature.bbox(),
-                        ),
-                    });
+                    visit(Candidate { token, feature: crate::scene::scene_feature(&feature) });
                 }) {
                     Ok(status) => {
                         report.capacity_dropped = report.capacity_dropped.saturating_add(status.capacity_dropped);
@@ -616,16 +607,7 @@ impl MapScene for MountedSet<'_> {
                     }
                     match reader.decode_feature_at(lod, cid, offset, &node, points, ring_lens) {
                         Ok(feature) => {
-                            refetched |= selected.decoded(
-                                slot,
-                                Feature::new(
-                                    feature.style_id,
-                                    feature.kind,
-                                    feature.points(),
-                                    feature.ring_lens(),
-                                    feature.bbox(),
-                                ),
-                            );
+                            refetched |= selected.decoded(slot, crate::scene::scene_feature(&feature));
                         }
                         Err(error) => {
                             let _ = selected.failed(slot, feature_error(error));

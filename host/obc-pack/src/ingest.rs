@@ -97,6 +97,10 @@ use crate::progress::{Phase, Progress};
 pub struct IngestFeature {
     pub style_id: u8,
     pub min_lod: usize,
+    /// v13 §5.2 (#1105): elevation in metres, for a feature whose producer knows one. Only
+    /// [`crate::contour`] does — everything ingested from OSM passes `None`, because a way has no
+    /// height and inventing one from a `layer` tag would be a lie the renderer would then draw.
+    pub level: Option<i16>,
     pub geom: Geom,
 }
 
@@ -777,7 +781,7 @@ fn ingest_inner(
             continue;
         }
         for poly in assemble_multipolygon(&members) {
-            features.push(IngestFeature { style_id: pr.style_id, min_lod: pr.min_lod, geom: poly });
+            features.push(IngestFeature { style_id: pr.style_id, min_lod: pr.min_lod, level: None, geom: poly });
         }
     }
 
@@ -1096,6 +1100,7 @@ fn process_way(
                 IngestFeature {
                     style_id: style.id,
                     min_lod: style.min_lod,
+                    level: None,
                     geom: Geom::Polygon { exterior: coords.to_vec(), interiors: Vec::new() },
                 },
             );
@@ -1107,7 +1112,12 @@ fn process_way(
     if coords.len() >= 2 {
         features.push(
             w.id(),
-            IngestFeature { style_id: style.id, min_lod: style.min_lod, geom: Geom::Line(coords.to_vec()) },
+            IngestFeature {
+                style_id: style.id,
+                min_lod: style.min_lod,
+                level: None,
+                geom: Geom::Line(coords.to_vec()),
+            },
         );
     }
 }

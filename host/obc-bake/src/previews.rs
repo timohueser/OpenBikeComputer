@@ -335,6 +335,9 @@ mod tests {
                         "z_index": style.z_index,
                         "priority": style.priority,
                         "dashed": style.line_style == obc_pack::config::LineStyle::Dashed,
+                        // …and no `contour_index`: OBCM §2 bit 6 is derived from the feature type
+                        // by `Skin::resolve`, because which class was traced is the schema's fact
+                        // and not a presentation value a skin gets to state (v13, #1105).
                         "fixed_width": style.fixed_width,
                         "terrain_layer": style.terrain_layer,
                         "color2": style.color2,
