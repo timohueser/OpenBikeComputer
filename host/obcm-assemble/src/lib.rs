@@ -55,6 +55,7 @@ use std::collections::HashMap;
 
 use obc_formats::io::ByteSource;
 
+pub mod extsort;
 pub mod graft;
 pub mod grid;
 pub mod input;
@@ -62,6 +63,7 @@ pub mod nav;
 pub mod poi;
 pub mod qtree;
 pub mod schema;
+pub mod scratch;
 pub mod shard;
 pub mod terrain;
 pub mod verify;
@@ -79,6 +81,7 @@ pub struct KnownEmptyInput {
 }
 pub use nav::NavStats;
 pub use schema::{Band, BandRole, Schema, Skin, StyleRecord};
+pub use scratch::{MemoryScratch, ScratchId, ScratchStore};
 pub use shard::{ShardPlan, FILE_CEILING};
 pub use verify::VerifyReport;
 
@@ -101,6 +104,11 @@ pub enum Error {
     Verify(String),
     /// The byte source or sink failed.
     Io(obc_formats::io::Error),
+    /// The host's [`ScratchStore`] failed — the merge could not spill, or could not read back what
+    /// it spilled. Its own class rather than an [`Error::Io`] because it says something different to
+    /// a caller: the *inputs* and the *output* are fine, the working area is not (no room, no
+    /// permission, a quota), and the message names which.
+    Scratch(String),
 }
 
 impl std::fmt::Display for Error {
@@ -111,6 +119,7 @@ impl std::fmt::Display for Error {
             Error::Capacity(m) => write!(f, "{m}"),
             Error::Verify(m) => write!(f, "verify failed: {m}"),
             Error::Io(e) => write!(f, "byte source/sink error: {e:?}"),
+            Error::Scratch(m) => write!(f, "scratch store error: {m}"),
         }
     }
 }
@@ -223,7 +232,26 @@ pub struct Options {
     /// so this exists only to measure the phase split in a benchmark; a set written with it must not
     /// be handed to a device.
     pub skip_verify: bool,
+    /// The most memory the §4.6 merge's sorted passes may hold at once, in bytes (#1116 D2).
+    ///
+    /// It is the **budget, not the footprint**: a merge whose node stream is smaller than this never
+    /// spills at all, and one that is larger generates runs of exactly this size and merges them
+    /// back. Either way the answer is the same bytes — `the_merge_is_the_same_map_at_every_budget`
+    /// pins that, and the CLI's `--merge-budget-bytes` is how a real region is re-checked at a
+    /// budget it does not fit in.
+    ///
+    /// A host that is rationed (a browser tab) sets it from what it is allowed to use; the default
+    /// is deliberately modest, because the merge's *other* structures are still resident alongside
+    /// it and the sort is not where a country-scale assembly should spend its heap.
+    pub merge_budget_bytes: usize,
 }
+
+/// [`Options::merge_budget_bytes`]'s default: 64 MiB.
+///
+/// A state-sized bake's whole node stream is about that (3.0 M nodes × 16 B on baden-württemberg),
+/// so the common case sorts in one run and touches the scratch seam only for the stream itself,
+/// while a country-scale one spills in bounded pieces instead of asking for gigabytes.
+pub const DEFAULT_MERGE_BUDGET: usize = 64 << 20;
 
 impl Default for Options {
     fn default() -> Self {
@@ -235,6 +263,7 @@ impl Default for Options {
             accept_partial: false,
             force_split: false,
             skip_verify: false,
+            merge_budget_bytes: DEFAULT_MERGE_BUDGET,
         }
     }
 }
@@ -341,6 +370,27 @@ pub fn assemble(
     assemble_with_known_empty(cells, Vec::new(), schema, skin, opts, store, clock)
 }
 
+/// The scratch a caller that has not supplied one gets: [`MemoryScratch`].
+///
+/// It keeps the small API small, and it is honest about what it costs — a spill held in RAM is the
+/// residency the spill exists to remove, so a host that is rationed should hand in its own (the CLI
+/// hands in temp files) rather than take this.
+// The same eight things `assemble_full` takes, minus the seam this supplies.
+#[allow(clippy::too_many_arguments)]
+fn assemble_with_default_scratch(
+    cells: Vec<CellInput<'_>>,
+    known_empty: Vec<KnownEmptyInput>,
+    terrain: Option<TerrainJob<'_>>,
+    schema: &Schema,
+    skin: &Skin,
+    opts: &Options,
+    store: &mut dyn ShardStore,
+    clock: &dyn Clock,
+) -> Result<Summary> {
+    let scratch = MemoryScratch::new();
+    assemble_full(cells, known_empty, terrain, schema, skin, opts, store, clock, &scratch)
+}
+
 /// Assemble artifacts plus explicit zero-byte coverage from a pinned catalog.
 ///
 /// Kept beside [`assemble`] so native callers that only have artifacts retain
@@ -355,7 +405,7 @@ pub fn assemble_with_known_empty(
     store: &mut dyn ShardStore,
     clock: &dyn Clock,
 ) -> Result<Summary> {
-    assemble_full(cells, known_empty, None, schema, skin, opts, store, clock)
+    assemble_with_default_scratch(cells, known_empty, None, schema, skin, opts, store, clock)
 }
 
 /// Assemble a set, with the raster if there is one (EL4, #1072).
@@ -364,7 +414,11 @@ pub fn assemble_with_known_empty(
 /// the manifest, which is the only order §5.4 admits: the manifest is the atomicity token, so
 /// nothing it names may be missing when it lands, and a terrain failure must leave the set
 /// unmountable rather than half-elevated.
-// One assembly is exactly these eight things; a struct would restate the signature (see
+/// `scratch` is where the §4.6 merge spills the passes it may not hold in memory (#1116 D2) — the
+/// third host seam, alongside the store and the clock, and the reason the engine can sort a
+/// country-scale graph without a filesystem of its own. [`assemble`] and
+/// [`assemble_with_known_empty`] supply a [`MemoryScratch`] for callers that have nowhere to put it.
+// One assembly is exactly these nine things; a struct would restate the signature (see
 // `build_shard` for the same call).
 #[allow(clippy::too_many_arguments)]
 pub fn assemble_full(
@@ -376,6 +430,7 @@ pub fn assemble_full(
     opts: &Options,
     store: &mut dyn ShardStore,
     clock: &dyn Clock,
+    scratch: &dyn ScratchStore,
 ) -> Result<Summary> {
     let t_start = clock.now_us();
     schema.validate().map_err(Error::Input)?;
@@ -446,7 +501,14 @@ pub fn assemble_full(
     let merged_pois = poi::merge(&core_cells)?;
     let poi_section = poi::layout(&merged_pois, assembly.ubox());
     let t_poi = clock.now_us();
-    let merged_nav = nav::merge(&core_cells, core_band.cell_log2, schema.routing.min_component_edges, assembly.ubox())?;
+    let merged_nav = nav::merge(
+        &core_cells,
+        core_band.cell_log2,
+        schema.routing.min_component_edges,
+        assembly.ubox(),
+        scratch,
+        opts.merge_budget_bytes,
+    )?;
     let t_nav = clock.now_us();
 
     // --- 4. Plan the set. ---

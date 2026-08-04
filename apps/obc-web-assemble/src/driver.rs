@@ -112,8 +112,8 @@ use obc_formats::io::{ByteSource, SliceSource};
 use obcm_assemble::grid::CellId;
 use obcm_assemble::schema::{Schema, Skin};
 use obcm_assemble::{
-    assemble_full, CellInput, Clock, Error, KnownEmptyInput, MemorySource, Options, ShardPlan, ShardStore,
-    TerrainCellInput, TerrainJob, TerrainParams,
+    assemble_full, CellInput, Clock, Error, KnownEmptyInput, MemoryScratch, MemorySource, Options, ShardPlan,
+    ShardStore, TerrainCellInput, TerrainJob, TerrainParams,
 };
 use sha2::{Digest, Sha256};
 
@@ -227,6 +227,9 @@ pub struct BridgeOptions {
     /// because `1` turns the cache **off** — one host call per engine read — which is what both its
     /// transparency (the same bytes either way) and its cost are measured against.
     pub read_block_bytes: usize,
+    /// The most memory the §4.6 merge's sorted passes may hold (#1116 D2). A rationed host sets it
+    /// from what the tab is allowed to use; it changes what the merge holds, never what it writes.
+    pub merge_budget_bytes: usize,
 }
 
 impl Default for BridgeOptions {
@@ -240,6 +243,7 @@ impl Default for BridgeOptions {
             accept_partial: d.accept_partial,
             force_split: d.force_split,
             read_block_bytes: DEFAULT_READ_BLOCK,
+            merge_budget_bytes: d.merge_budget_bytes,
         }
     }
 }
@@ -280,6 +284,12 @@ impl BridgeOptions {
                     // Clamped rather than refused: it is a performance knob, and a browser that
                     // asks for something absurd should assemble the same map a little slower.
                     o.read_block_bytes = (n as usize).clamp(MIN_READ_BLOCK, MAX_READ_BLOCK);
+                }
+                // Clamped for the same reason the read block is: a budget of zero is not a smaller
+                // merge, it is one that cannot make progress, and the floor is one record.
+                "mergeBudgetBytes" => {
+                    let n = value.as_u64().ok_or("options.mergeBudgetBytes must be a number")?;
+                    o.merge_budget_bytes = (n as usize).max(MIN_MERGE_BUDGET);
                 }
                 _ => {}
             }
@@ -395,6 +405,11 @@ const MAX_READ_BLOCK: usize = 4 * 1024 * 1024;
 /// from one source cell to the next. Sixteen keeps the whole cache at 1 MiB and the miss scan at
 /// sixteen comparisons — which matters, because that scan runs on every engine read.
 const READ_CACHE_BLOCKS: usize = 16;
+
+/// The floor for [`BridgeOptions::merge_budget_bytes`]: 64 KiB. Below it the merge still produces
+/// the same map, one run per few thousand records, and spends all its time in the k-way merge — so
+/// a mistyped option is slow rather than wrong.
+const MIN_MERGE_BUDGET: usize = 64 * 1024;
 
 /// One resident block of one [`SourceCell`].
 struct CachedBlock {
@@ -1263,6 +1278,7 @@ pub fn assemble(
         force_split: opts.force_split,
         // Never. See `BridgeOptions`.
         skip_verify: false,
+        merge_budget_bytes: opts.merge_budget_bytes,
     };
 
     let hand_off = hooks.wants_shards();
@@ -1292,7 +1308,12 @@ pub fn assemble(
             .collect(),
         sink: &mut terrain_sink,
     });
-    let summary = match assemble_full(inputs, known_empty, job, &schema, &skin, &options, &mut store, &clock) {
+    // The engine's third seam (#1116 D2). In wasm linear memory for now: the browser's own scratch
+    // is an OPFS-backed store, and it lands with the passes that make it pay for itself — until
+    // then this is the same bytes at a peak that is a wash against the arrays it replaced.
+    let scratch = MemoryScratch::new();
+    let summary = match assemble_full(inputs, known_empty, job, &schema, &skin, &options, &mut store, &clock, &scratch)
+    {
         Ok(s) => s,
         Err(e) => {
             let p = progress.borrow();
@@ -1436,6 +1457,9 @@ fn map_error(e: Error, aborted: bool, failure: Option<AssembleFailure>) -> Assem
         Error::Capacity(_) => ErrorCode::Capacity,
         Error::Verify(_) => ErrorCode::Verify,
         Error::Io(_) => ErrorCode::Io,
+        // The scratch seam is storage like any other, and a browser's is OPFS — "the working area
+        // failed" is an `io` problem to a caller, and the engine's message says which one.
+        Error::Scratch(_) => ErrorCode::Io,
     };
     AssembleFailure::new(code, message)
 }
