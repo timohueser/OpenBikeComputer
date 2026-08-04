@@ -567,6 +567,168 @@ async function sweepOutputs(dir: Directory): Promise<void> {
     }
 }
 
+// --- the scratch store: the engine's spill (dedicated worker only) ------------
+
+/** Where the merge's spill lives (#1116 D2's third seam). A sibling of {@link ROOT}
+ *  and {@link OUT}: cells outlive runs, output outlives the worker, scratch
+ *  outlives **nothing** — it is swept at open and discarded at close. */
+const SCRATCH = "obc-scratch";
+
+/**
+ * How many spill files one run can hold open at once. Like the shard sink's pool
+ * ({@link openShardSink}), every handle is opened **before** the run — the opener
+ * is async and the assembly cannot await — so this is a hard concurrent-file
+ * ceiling, not a soft one.
+ *
+ * The number to size against is the external sort's run fan-out: a sort over `S`
+ * spilled bytes at budget `B` holds `⌈S / (B/2)⌉` run files open during its merge,
+ * plus the streams feeding and draining it. At the engine's 64 MiB default budget
+ * a DACH-scale edge stream (~2 GiB) is ~64 runs; 128 leaves the same again for
+ * the concurrent node/id streams and the next pass's output. Exhaustion is an
+ * `io` refusal naming the working area — the remedy is a bigger
+ * `mergeBudgetBytes`, which produces fewer, longer runs.
+ */
+const SCRATCH_SLOTS = 128;
+
+/**
+ * The engine's spill files, as the wasm scratch seam calls them: anonymous,
+ * append-only, read back at `u64` offsets, synchronous. Ids are minted here and
+ * **never reused** — a use-after-remove answers `false`/`-1` rather than serving
+ * some later stream's bytes, which is the failure mode that would corrupt a merge
+ * silently instead of failing it loudly.
+ */
+export interface ScratchFiles {
+    /** Mint a spill file: a non-negative id, or `-1` when the pool is exhausted. */
+    create(): number;
+    /** Append to `id`. A short write is a failure. */
+    append(id: number, bytes: Uint8Array): boolean;
+    /** Fill `into` with exactly `into.byteLength` bytes at `offset`. A short read
+     *  is a failure — a truncated spill read as data is a silently wrong map. */
+    readAt(id: number, offset: number, into: Uint8Array): boolean;
+    /** Bytes appended to `id` so far, or `-1` for an unknown/removed id. */
+    len(id: number): number;
+    /** Drop `id`; its pool slot becomes reusable, the id does not. */
+    remove(id: number): boolean;
+    /** Close every handle and delete the spill files. Idempotent. Call when the
+     *  run ends, success or not — spill held between runs is quota held for
+     *  nothing. */
+    discard(): Promise<void>;
+    /** How many pool handles are open. Diagnostics, and what the release test
+     *  asserts. */
+    readonly open: number;
+}
+
+/** The scratch name of one pool slot. Fixed, so the sweep and the pool agree. */
+function scratchEntry(slot: number): string {
+    return `x${slot.toString().padStart(3, "0")}.spill`;
+}
+
+/**
+ * Open the spill pool for one run: sweep whatever a previous run left, then open
+ * a sync access handle per slot. `null` where this browser cannot serve it —
+ * the caller's cue to let the engine spill into wasm memory instead, exactly as
+ * it does natively without a temp dir.
+ */
+export async function openScratchStore(slots = SCRATCH_SLOTS): Promise<ScratchFiles | null> {
+    const root = await opfsRoot();
+    if (!root) return null;
+    const handles: (SyncHandle | null)[] = [];
+    /** Pool slots with no live id, in LIFO order. */
+    const free: number[] = [];
+    /** Live id → its pool slot and append cursor. A removed id leaves the map. */
+    const live = new Map<number, { slot: number; written: number }>();
+    let next = 0;
+    let dir: Directory | null = null;
+    const sink: ScratchFiles = {
+        create() {
+            const slot = free.pop();
+            if (slot === undefined) return -1;
+            const handle = handles[slot];
+            if (!handle) {
+                free.push(slot);
+                return -1;
+            }
+            try {
+                handle.truncate(0);
+            } catch {
+                free.push(slot);
+                return -1;
+            }
+            const id = next++;
+            live.set(id, { slot, written: 0 });
+            return id;
+        },
+        append(id, bytes) {
+            const at = live.get(id);
+            const handle = at ? handles[at.slot] : null;
+            if (!at || !handle) return false;
+            try {
+                const n = handle.write(bytes, { at: at.written });
+                at.written += n;
+                return n === bytes.byteLength;
+            } catch {
+                return false;
+            }
+        },
+        readAt(id, offset, into) {
+            const at = live.get(id);
+            const handle = at ? handles[at.slot] : null;
+            if (!at || !handle) return false;
+            // Past-the-end reads must refuse here: the model below the engine
+            // zero-fills, and zeroes that parse are the worst kind of wrong.
+            if (offset + into.byteLength > at.written) return false;
+            try {
+                return handle.read(into, { at: offset }) === into.byteLength;
+            } catch {
+                return false;
+            }
+        },
+        len(id) {
+            return live.get(id)?.written ?? -1;
+        },
+        remove(id) {
+            const at = live.get(id);
+            if (!at) return false;
+            live.delete(id);
+            // The bytes are reclaimed at the slot's next `create` (truncate) or at
+            // `discard`; freeing the slot is what matters mid-run.
+            free.push(at.slot);
+            return true;
+        },
+        async discard() {
+            for (const handle of handles) {
+                try {
+                    handle?.close();
+                } catch {
+                    // Already closed, or the storage went away — the rest still
+                    // have to be released, and the sweep below still runs.
+                }
+            }
+            handles.length = 0;
+            live.clear();
+            free.length = 0;
+            if (dir) await sweepOutputs(dir).catch(() => {});
+        },
+        get open() {
+            return handles.filter((h) => h !== null).length;
+        },
+    };
+    try {
+        dir = await root.getDirectoryHandle(SCRATCH, { create: true });
+        await sweepOutputs(dir);
+        for (let slot = 0; slot < slots; slot++) {
+            handles.push(await (await dir.getFileHandle(scratchEntry(slot), { create: true })).createSyncAccessHandle());
+            free.push(slot);
+        }
+    } catch {
+        // A half-open pool is not a store — release the locks and refuse, so the
+        // caller falls back instead of failing at spill file 90.
+        await sink.discard().catch(() => {});
+        return null;
+    }
+    return sink;
+}
+
 /**
  * One written shard, as a `Blob` — for the **main thread**, after the worker has
  * closed its handles.
