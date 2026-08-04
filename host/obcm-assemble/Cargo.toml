@@ -11,6 +11,12 @@ description = "The OBCA cell assembly engine: baked grid cells → one .obcm or 
 [features]
 default = ["cli"]
 cli = []
+# The peak-allocation harness in `main.rs`: a counting global allocator plus a wrapped `Clock`, so
+# every phase boundary the engine ticks reports the heap high-water mark since the previous one.
+# **Off by default** — it is a measurement build (a global allocator is process-wide, and the CLI is
+# the only place one may be installed), never something a produced set should depend on. Native only:
+# it changes no engine code, so the wasm `--no-default-features --lib` surface never sees it.
+mem-profile = []
 
 [[bin]]
 name = "obcm-assemble"
