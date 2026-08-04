@@ -198,20 +198,28 @@ export interface AssembleSummary {
  * space. A selection can pass one and fail the other. The model and its measured constants are
  * documented in `apps/obc-web-assemble/src/estimate.rs`.
  *
- * **How much to trust these numbers.** The model is a **linear extrapolation from a single measured
- * run** (PR #1027's switzerland: 410 cells / 717 MB, peak RSS 1.73 GB), and {@link
- * MemoryEstimate.budgetBytes} is a judgement rather than a measurement — browsers do not publish
- * what they will grant, and an allocation wasm cannot serve aborts the module outright, with no
- * error to render. So: a comfortable `fits: false` is reliable and is the case this exists for
- * (refuse the impossible before a rider spends ten minutes downloading it); a `fits: true` with
- * little headroom means "probably", not "yes". Present a near-budget verdict as a warning with the
- * number, not as a green light — and never as a guarantee to the user.
+ * **How much to trust these numbers.** The engine term is a **linear fit through two measured
+ * runs** — epic #1116's phase-resolved allocation harness on freiburg-regbez (90 MB of nav) and
+ * Baden-Württemberg (296 MB), on the streamed engine — carried up with a stated margin. Nothing
+ * larger than BW has been measured, and {@link MemoryEstimate.budgetBytes} is a judgement rather
+ * than a measurement: browsers do not publish what they will grant, and an allocation wasm cannot
+ * serve aborts the module outright, with no error to render. So: a comfortable `fits: false` is
+ * reliable and is the case this exists for (refuse the impossible before a rider spends ten minutes
+ * downloading it); a `fits: true` with little headroom means "probably", not "yes". Present a
+ * near-budget verdict as a warning with the number, not as a green light — and never as a guarantee
+ * to the user.
+ *
+ * **Where the limit sits.** A Bundesland-sized selection now fits a desktop tab and a
+ * Regierungsbezirk fits a phone's. What still refuses is anything roughly twice BW and up, and the
+ * reason has moved: the two resident copies of the selection this bridge itself keeps — the cells
+ * copied in by `addCell`, the shards waiting to be taken — are now the majority of the projected
+ * peak, so it is streaming those, not further engine work, that would raise the ceiling again.
  */
 export interface MemoryEstimate {
-    /** The engine's working set — dominated by the nav rewrite. Measured 6.4 bytes resident per
-     *  byte of rebuilt nav section, on one run. */
+    /** The engine's working set — dominated by the nav rewrite. Measured 4.7 bytes resident per
+     *  byte of selected `network` band, across two runs with margin (#1116). */
     readonly engineBytes: number;
-    /** The downloaded cells, resident for the whole run. */
+    /** The downloaded cells — every band plus terrain — resident for the whole run. */
     readonly inputBytes: number;
     /** The assembled set, resident until each file is taken (§4.8 needs it addressable). */
     readonly outputBytes: number;
