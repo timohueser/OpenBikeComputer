@@ -721,8 +721,6 @@ pub fn merge(
     // holding all of it, so two of them at half a budget each are one budget — and the stream
     // between them is never written down at all. ---
     let by_b = join_first(scratch, budget, share, edge_file, &pruned, &dead, dense_by_id)?;
-    scratch.remove(edge_file)?;
-    scratch.remove(pruned.edge_comp)?;
     drop(pruned);
     drop(dead);
     let mut fill: Vec<u32> = vec![0; nodes.len()]; // uncapped degree, then entries written
@@ -918,6 +916,11 @@ fn join_first<'s>(
             }
         }
     }
+    // Both streams are spent, and the runs the sort is about to merge are the same bytes again —
+    // on a host whose scratch is its own linear memory that difference is the whole peak, so they
+    // go before the merge starts rather than when the merge returns.
+    scratch.remove(edge_file)?;
+    scratch.remove(pruned.edge_comp)?;
 
     let mut out = ExternalSort::<DENSE_REC>::new(scratch, budget / 2, by_endpoint_b);
     let mut dense = SpillReader::<JOIN_REC>::open(scratch, dense_by_id, share)?;
