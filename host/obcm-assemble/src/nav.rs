@@ -419,6 +419,10 @@ fn pool_ref(r: &[u8; POOL_REC]) -> EdgeRef {
 ///
 /// The neighbour's coordinate rides along because §8.3 stores it as an `int16` delta from the
 /// junction's own, and looking it up would be the whole-map node array this pass exists to remove.
+///
+/// `seq` is a `u32` by construction rather than by hope: step 6 refuses a pool past 4 GiB, an §8.4
+/// edge record is at least [`NAV_EDGE_FIXED_LEN`] bytes, and the walk writes at most two entries per
+/// edge — so `seq` cannot pass `2 × 2^32 / 15 ≈ 573 M`, a seventh of what a `u32` holds.
 const ADJ_REC: usize = 29;
 
 #[allow(clippy::too_many_arguments)]
