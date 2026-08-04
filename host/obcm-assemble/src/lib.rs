@@ -527,6 +527,7 @@ pub fn assemble_full(
             shard::write(
                 plan,
                 &cells,
+                &core_cells,
                 &styles,
                 skin.marker_color,
                 &poi_section,

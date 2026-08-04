@@ -111,6 +111,17 @@ impl<'a> Cell<'a> {
         read_at(self.src, offset, len)
     }
 
+    /// Read `buf.len()` bytes at `offset` into a buffer the caller owns — [`Cell::read`] without the
+    /// allocation, for a loop that runs once per record (§4.6.6's pool emission) and must not turn
+    /// each one into a `Vec`.
+    pub fn read_into(&self, offset: usize, buf: &mut [u8]) -> Result<()> {
+        if buf.is_empty() {
+            return Ok(());
+        }
+        let at = u32::try_from(offset).map_err(|_| Error::Io(obc_formats::io::Error::BadOffset))?;
+        self.src.read_at(at, buf).map_err(Error::Io)
+    }
+
     /// Stream `len` bytes at `offset` through `sink` in [`COPY_BLOCK`] pieces — the verbatim copy of
     /// §2.3, which never materialises a whole cell region.
     pub fn copy(&self, offset: usize, len: usize, sink: &mut dyn FnMut(&[u8]) -> Result<()>) -> Result<()> {

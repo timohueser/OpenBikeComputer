@@ -8,6 +8,12 @@
 //! absolute anchor plus deltas), so no polyline is ever decoded and re-encoded, and the costs and
 //! way kinds the packer measured travel through untouched.
 //!
+//! And because placement is the only thing that changes, a record's bytes are never *resident*
+//! either. The merge holds a ten-byte [`EdgeRef`] — which cell, which pool offset, how long — the
+//! new pool is laid out arithmetically over those lengths, and [`serialize`] reads each record out
+//! of the cell that wrote it straight into the sink. The graph's working set is therefore the merge's
+//! own bookkeeping, not a copy of the section it is about to write.
+//!
 //! The order of the passes is normative and each one depends on the last:
 //!
 //! 1. **Read the serialized node set** — not a graph builder's, the *serializer's*. The §8.4 splits
@@ -30,8 +36,8 @@
 //!    coordinate key would fuse the interior collisions that exist inside a single file — stacked
 //!    bridge/tunnel junctions, 9 in one regional bake and 28 in a country one.
 //! 3. **Deduplicate adjacency**, 4. **prune islands** over the merged graph (the pass the bake
-//!    deferred), 5. **renumber**, 6. **rebuild the edge pool**, 7. re-check the wire limits and
-//!    rebuild the node quadtree.
+//!    deferred), 5. **renumber**, 6. **lay out the edge pool** — its offsets, not its bytes — 7.
+//!    re-check the wire limits and rebuild the node quadtree.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -50,18 +56,35 @@ use crate::{Error, Result};
 /// re-check rather than assume.
 const MAX_NEIGHBOR_DELTA: i64 = i16::MAX as i64;
 
-/// An edge on its way into the merged pool: unified endpoints plus the source record, verbatim.
+/// Where an edge's §8.4 record is, in the cell that wrote it — ten bytes instead of the record.
+///
+/// The record itself is never held: §4.6.6 copies it verbatim, so the merge only has to remember
+/// *which* bytes, and [`serialize`] reads them back out of the cell at emission.
+#[derive(Clone, Copy)]
+struct EdgeRef {
+    /// Index into the `network` cells [`merge`] read — the same slice [`serialize`] streams from.
+    cell: u32,
+    /// The record's offset inside that cell's edge pool: §8.4's `Edge Id`, verbatim.
+    off: u32,
+    /// The record's length. §8.4 forbids a record straddling a 512-byte chunk, so it is at most one
+    /// chunk and a `u16` holds it by construction — which is also why one chunk-sized buffer is
+    /// enough to read any record into.
+    len: u16,
+}
+
+/// An edge on its way into the merged pool: unified endpoints plus the address of the source record.
 struct MergedEdge {
     a: u32,
     b: u32,
     cost_m: u32,
     kind: u8,
-    /// The §8.4 record exactly as its cell wrote it — `length_m`, `pt_count`, `way_kind`, anchor and
-    /// deltas. Only its *placement* is new.
-    rec: Vec<u8>,
-    /// FNV-1a over `rec`, computed **once** when the edge is interned. It is the content half of
-    /// both the §4.6.3 duplicate key and the §4.6.6 emission order, and re-hashing a 511-byte record
-    /// inside an `O(n log n)` comparator was measurable on a country-scale graph.
+    /// The §8.4 record its cell wrote — `length_m`, `pt_count`, `way_kind`, anchor and deltas —
+    /// named rather than copied. Only its *placement* is new.
+    rec: EdgeRef,
+    /// FNV-1a over the record's bytes, computed **once** while the cell's pool is in hand. It is the
+    /// content half of both the §4.6.3 duplicate key and the §4.6.6 emission order, and re-hashing a
+    /// 511-byte record inside an `O(n log n)` comparator was measurable on a country-scale graph —
+    /// the record is not resident to re-hash from anyway.
     hash: u64,
     /// The v12 §8.3 climb of riding `a → b`, and of riding `b → a`. Not part of the record and not
     /// derivable from it: the assembler carries both from the source adjacency entries, one per
@@ -127,16 +150,21 @@ pub struct NavStats {
     pub dropped_nodes: usize,
 }
 
-/// The merged graph, **already laid out**: the node quadtree, its bin-packed chunks and the edge
-/// pool, all in the file's own encoding. Only the directory's absolute offsets are left, which is
-/// what lets a shard's size be known before its header is written.
+/// The merged graph, **already laid out**: the node quadtree and its bin-packed chunks in the file's
+/// own encoding, and the edge pool as a plan rather than a buffer — every record's source address in
+/// emission order, plus the padded length the layout comes to. Only the directory's absolute offsets
+/// are left, which is what lets a shard's size be known before its header is written.
 pub struct MergedNav {
     index: Vec<u8>,
     node_count: u32,
     chunks: Vec<u8>,
     chunk_count: u32,
-    /// Edge pool bytes, chunk-aligned (§8.4).
-    pool: Vec<u8>,
+    /// Every kept edge's record, in emission order, named by where its cell wrote it. The pool's
+    /// bytes are streamed from those cells by [`serialize`] and are never held here.
+    pool: Vec<EdgeRef>,
+    /// What the pool comes to once §8.4's no-straddle padding and the chunk-aligned tail are
+    /// applied — the one number the directory and the shard projection need from it.
+    pool_len: usize,
     pub stats: NavStats,
 }
 
@@ -147,7 +175,7 @@ impl MergedNav {
 
     /// Bytes this section occupies once written after `profile_table`.
     pub fn section_len(&self, profile_table: &[u8]) -> usize {
-        NAV_DIR_LEN + profile_table.len() + self.index.len() + self.chunks.len() + self.pool.len()
+        NAV_DIR_LEN + profile_table.len() + self.index.len() + self.chunks.len() + self.pool_len
     }
 }
 
@@ -165,11 +193,12 @@ pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, gl
     // §3.3/§3.4(3) should already prevent it, so this is a net, not a mechanism.
     let mut seen_edges: HashMap<(u32, u32, u32, u8, u64), ()> = HashMap::new();
 
-    for cell in cells {
+    for (ci, cell) in cells.iter().enumerate() {
         let dir = &cell.nav;
         if dir.is_empty() {
             continue;
         }
+        let ci = u32::try_from(ci).expect("a cell list indexes in u32");
         let data_start =
             dir.data_start().ok_or_else(|| Error::Format(format!("cell {}: nav directory overflows", cell.id)))?;
         let pool = cell.read(dir.edge_pool_offset, dir.edge_chunk_count * dir.chunk_size)?;
@@ -262,6 +291,9 @@ pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, gl
                 let b = *local.get(&nbr_id).ok_or_else(|| {
                     Error::Format(format!("cell {}: neighbour id {nbr_id} resolves to no record", cell.id))
                 })?;
+                // Everything this pass needs from the record's bytes is taken here, while the cell's
+                // pool is still the buffer in hand: the orientation, the content hash, and the
+                // length. What survives the loop is the ten-byte address, not the record.
                 let rec = edge_record(&pool, edge_id, cell)?;
                 // The record's anchor is endpoint `a`'s coordinate, so a record whose anchor is not
                 // this node's coordinate belongs to the other direction — keep the orientation the
@@ -270,7 +302,8 @@ pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, gl
                 let anchor_lon = i32::from_le_bytes(rec[11..15].try_into().expect("4 bytes"));
                 let own_is_anchor = (anchor_lat, anchor_lon) == (lat, lon);
                 let (a, b) = if own_is_anchor { (a, b) } else { (b, a) };
-                let hash = fnv(&rec);
+                let hash = fnv(rec);
+                let rec = EdgeRef { cell: ci, off: edge_id, len: rec.len() as u16 };
                 let key = (a.min(b), a.max(b), cost_m, way_kind, hash);
                 if seen_edges.insert(key, ()).is_some() {
                     stats.duplicate_edges += 1;
@@ -323,29 +356,31 @@ pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, gl
         new_id[old as usize] = dense as u32;
     }
 
-    // --- 6. Rebuild the edge pool. `Edge Id` is a pool byte offset, so every record is re-emitted
-    // at a new place and the no-straddle rule re-applied at the 512-byte granularity. ---
+    // --- 6. Lay the edge pool out. `Edge Id` is a pool byte offset, so every record lands at a new
+    // place and the no-straddle rule is re-applied at the 512-byte granularity — but that is
+    // arithmetic over the records' *lengths*, so the pool is a cursor here and bytes only at
+    // emission (see [`serialize`]). ---
     let mut kept: Vec<&MergedEdge> = edges.iter().zip(&keep_edge).filter(|(_, &k)| k).map(|(e, _)| e).collect();
     kept.sort_by_key(|e| {
         let (a, b) = (new_id[e.a as usize], new_id[e.b as usize]);
         (a.min(b), a.max(b), e.cost_m, e.kind, e.hash)
     });
-    let mut pool: Vec<u8> = Vec::new();
+    let mut pool: Vec<EdgeRef> = Vec::with_capacity(kept.len());
     let mut edge_ids: Vec<u32> = Vec::with_capacity(kept.len());
+    let mut at = 0usize;
     for e in &kept {
-        let within = pool.len() % NAV_CHUNK_SIZE;
-        if within + e.rec.len() > NAV_CHUNK_SIZE {
-            pool.resize(pool.len() + (NAV_CHUNK_SIZE - within), CHUNK_END);
-        }
-        if pool.len() > u32::MAX as usize {
+        at = place(at, e.rec.len as usize);
+        if at > u32::MAX as usize {
             return Err(Error::Capacity(
                 "the merged edge pool passes 4 GiB: `Edge Id` is a uint32 pool byte offset (OBCA §5.7)".into(),
             ));
         }
-        edge_ids.push(pool.len() as u32);
-        pool.extend_from_slice(&e.rec);
+        edge_ids.push(at as u32);
+        pool.push(e.rec);
+        at += e.rec.len as usize;
     }
-    pool.resize(pool.len().div_ceil(NAV_CHUNK_SIZE) * NAV_CHUNK_SIZE, CHUNK_END);
+    // The tail pads to a whole chunk, because §8.1's `Edge Chunk Count` measures the pool in chunks.
+    let pool_len = at.div_ceil(NAV_CHUNK_SIZE) * NAV_CHUNK_SIZE;
 
     // --- 7. Adjacency with inline neighbour coords, degree-capped, wire limits re-checked. ---
     let mut adj: Vec<Vec<WireNeighbor>> = (0..order.len()).map(|_| Vec::new()).collect();
@@ -400,11 +435,29 @@ pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, gl
     let (index, node_count, chunks, chunk_count, dropped) =
         qtree::flatten(&tree, NAV_CHUNK_SIZE, true, &|p, out| pack_record(p, out));
     stats.dropped_nodes = dropped;
-    Ok(MergedNav { index, node_count, chunks, chunk_count, pool, stats })
+    Ok(MergedNav { index, node_count, chunks, chunk_count, pool, pool_len, stats })
 }
 
-/// One §8.4 edge record, sliced out of its cell's pool at `edge_id` (a pool-relative byte offset).
-fn edge_record(pool: &[u8], edge_id: u32, cell: &Cell<'_>) -> Result<Vec<u8>> {
+/// §8.4's placement rule: a record of `len` bytes goes at the cursor `at`, unless it would straddle
+/// a chunk boundary — then it goes at the next one, and the bytes it skips are `0xFF` padding.
+///
+/// One function because there are two callers and they must not drift: [`merge`] lays the pool out
+/// with it to mint the `Edge Id`s, and [`serialize`] walks the same rule to emit the padding those
+/// ids assume. A disagreement between the two would be a file whose adjacency points into the gaps.
+fn place(at: usize, len: usize) -> usize {
+    let within = at % NAV_CHUNK_SIZE;
+    if within + len > NAV_CHUNK_SIZE {
+        at + (NAV_CHUNK_SIZE - within)
+    } else {
+        at
+    }
+}
+
+/// One §8.4 edge record, located inside its cell's pool at `edge_id` (a pool-relative byte offset)
+/// and checked there: in the pool, a polyline of at least two vertices, and not straddling its
+/// chunk. The slice is borrowed from the pool buffer the caller has open — the merge reads what it
+/// needs from it and keeps only the address.
+fn edge_record<'p>(pool: &'p [u8], edge_id: u32, cell: &Cell<'_>) -> Result<&'p [u8]> {
     let at = edge_id as usize;
     let bad = |what: &str| Error::Format(format!("cell {}: edge id {edge_id} {what}", cell.id));
     if at % NAV_CHUNK_SIZE + NAV_EDGE_FIXED_LEN > NAV_CHUNK_SIZE || at + NAV_EDGE_FIXED_LEN > pool.len() {
@@ -418,7 +471,7 @@ fn edge_record(pool: &[u8], edge_id: u32, cell: &Cell<'_>) -> Result<Vec<u8>> {
     if at % NAV_CHUNK_SIZE + rec_len > NAV_CHUNK_SIZE || at + rec_len > pool.len() {
         return Err(bad("straddles its chunk"));
     }
-    Ok(pool[at..at + rec_len].to_vec())
+    Ok(&pool[at..at + rec_len])
 }
 
 /// FNV-1a 64 over a record's bytes — the identity half of the §4.6.3 duplicate key. Content, not
@@ -481,36 +534,90 @@ fn prune(
     (keep_node, keep_edge)
 }
 
-/// Serialize the whole §8 section at absolute byte `section_offset`:
+/// Write the whole §8 section at absolute byte `section_offset` through `sink`:
 /// `[directory][profile table][node index][node chunks][edge pool]`.
+///
+/// Every offset in the directory is known before the first byte goes out — that is what
+/// [`MergedNav::section_len`] already proves — so nothing is back-patched and nothing is staged. The
+/// pool is written last and written *through*: the layout says where each record goes, and the
+/// record's bytes come from the cell that wrote them, one read into one reusable buffer at a time.
+/// `cells` must therefore be the same `network` cells [`merge`] read, in the same order.
 ///
 /// `profile_table` is the cells' own, copied after every cell was checked to agree (§4.3) — it is
 /// schema data and the assembler has no business re-deriving it. An empty graph still writes the
 /// directory and the profile table, both regions zero-length just past it.
-pub fn serialize(nav: &MergedNav, profile_table: &[u8], section_offset: usize) -> Vec<u8> {
+pub fn serialize(
+    nav: &MergedNav,
+    profile_table: &[u8],
+    section_offset: usize,
+    cells: &[&Cell<'_>],
+    sink: &mut dyn FnMut(&[u8]) -> Result<()>,
+) -> Result<()> {
     let profile_count = profile_table.len() / obc_formats::obcm::NAV_PROFILE_LEN;
     let profile_table_offset = section_offset + NAV_DIR_LEN;
     let index_offset = profile_table_offset + profile_table.len();
     let edge_pool_offset = index_offset + nav.index.len() + nav.chunks.len();
-    let edge_chunk_count = (nav.pool.len() / NAV_CHUNK_SIZE) as u32;
+    let edge_chunk_count = (nav.pool_len / NAV_CHUNK_SIZE) as u32;
 
-    let mut out = Vec::with_capacity(nav.section_len(profile_table));
-    out.extend_from_slice(&(index_offset as u32).to_le_bytes());
-    out.extend_from_slice(&nav.node_count.to_le_bytes());
-    out.extend_from_slice(&nav.chunk_count.to_le_bytes());
-    out.extend_from_slice(&(edge_pool_offset as u32).to_le_bytes());
-    out.extend_from_slice(&edge_chunk_count.to_le_bytes());
-    out.extend_from_slice(&(NAV_CHUNK_SIZE as u16).to_le_bytes());
-    out.extend_from_slice(&(profile_table_offset as u32).to_le_bytes());
-    out.push(profile_count as u8);
-    out.push(0); // reserved
-    debug_assert_eq!(out.len(), NAV_DIR_LEN);
-    out.extend_from_slice(profile_table);
-    out.extend_from_slice(&nav.index);
-    out.extend_from_slice(&nav.chunks);
-    out.extend_from_slice(&nav.pool);
-    debug_assert_eq!(out.len(), nav.section_len(profile_table));
-    out
+    let mut written = 0usize;
+    let mut out = |buf: &[u8]| -> Result<()> {
+        written += buf.len();
+        sink(buf)
+    };
+
+    let mut dir = Vec::with_capacity(NAV_DIR_LEN);
+    dir.extend_from_slice(&(index_offset as u32).to_le_bytes());
+    dir.extend_from_slice(&nav.node_count.to_le_bytes());
+    dir.extend_from_slice(&nav.chunk_count.to_le_bytes());
+    dir.extend_from_slice(&(edge_pool_offset as u32).to_le_bytes());
+    dir.extend_from_slice(&edge_chunk_count.to_le_bytes());
+    dir.extend_from_slice(&(NAV_CHUNK_SIZE as u16).to_le_bytes());
+    dir.extend_from_slice(&(profile_table_offset as u32).to_le_bytes());
+    dir.push(profile_count as u8);
+    dir.push(0); // reserved
+    debug_assert_eq!(dir.len(), NAV_DIR_LEN);
+    out(&dir)?;
+    out(profile_table)?;
+    out(&nav.index)?;
+    out(&nav.chunks)?;
+
+    // The pool, record by record. `pad` is §8.3's `0xFF` sentinel run — the bytes a record's chunk
+    // gets instead of a record that would straddle it — and `rec` is the one buffer every record is
+    // read into. Both are a chunk long, which is the largest either can ever be.
+    let pad = [CHUNK_END; NAV_CHUNK_SIZE];
+    let mut rec = [0u8; NAV_CHUNK_SIZE];
+    let mut at = 0usize;
+    for r in &nav.pool {
+        let len = r.len as usize;
+        // The same rule the layout used, so the padding lands exactly where the `Edge Id`s say.
+        let start = place(at, len);
+        if start > at {
+            out(&pad[..start - at])?;
+            at = start;
+        }
+        // The layout named a cell by its index in the list the merge read. Handing a different list
+        // to the write would produce a file full of plausible-looking wrong polylines, so it is a
+        // refusal rather than an index.
+        let cell = cells.get(r.cell as usize).ok_or_else(|| {
+            Error::Verify(format!(
+                "the nav section names source cell {} but the write was handed {} cell(s) — this is not the cell list \
+                 the §4.6 merge read",
+                r.cell,
+                cells.len()
+            ))
+        })?;
+        let buf = &mut rec[..len];
+        cell.read_into(cell.nav.edge_pool_offset + r.off as usize, buf)?;
+        out(buf)?;
+        at += len;
+    }
+    // §8.1 measures the pool in whole chunks, so the tail pads out to one.
+    if at < nav.pool_len {
+        // `pad` is `[0xFF; 512]`; the remainder is at most one chunk by construction.
+        out(&pad[..nav.pool_len - at])?;
+    }
+    debug_assert_eq!(written, nav.section_len(profile_table));
+    Ok(())
 }
 
 /// The §8.3 junction record: `lat i32, lon i32, node_id u32, degree u8`, then 15 bytes per
@@ -535,7 +642,15 @@ impl MergedNav {
     /// The graph a shard with no nav carries: the directory plus the always-present profile table,
     /// both data regions zero-length (§5.1/§8.1).
     pub fn empty(stats: NavStats) -> MergedNav {
-        MergedNav { index: Vec::new(), node_count: 0, chunks: Vec::new(), chunk_count: 0, pool: Vec::new(), stats }
+        MergedNav {
+            index: Vec::new(),
+            node_count: 0,
+            chunks: Vec::new(),
+            chunk_count: 0,
+            pool: Vec::new(),
+            pool_len: 0,
+            stats,
+        }
     }
 }
 
@@ -543,14 +658,130 @@ impl MergedNav {
 mod tests {
     use super::*;
 
+    /// The section through the sink, for a test that wants it as one buffer.
+    fn serialized(nav: &MergedNav, profile_table: &[u8], section_offset: usize, cells: &[&Cell<'_>]) -> Vec<u8> {
+        let mut out = Vec::new();
+        serialize(nav, profile_table, section_offset, cells, &mut |b: &[u8]| {
+            out.extend_from_slice(b);
+            Ok(())
+        })
+        .expect("the section serializes");
+        out
+    }
+
     #[test]
     fn an_empty_section_still_carries_its_profiles() {
         let profiles = vec![0u8; obc_formats::obcm::NAV_PROFILE_LEN];
-        let bytes = serialize(&MergedNav::empty(NavStats::default()), &profiles, 500);
+        let bytes = serialized(&MergedNav::empty(NavStats::default()), &profiles, 500, &[]);
         assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()), 0, "empty graph ⇒ no index nodes");
         assert_eq!(u16::from_le_bytes(bytes[20..22].try_into().unwrap()) as usize, NAV_CHUNK_SIZE, "pinned 512");
         assert_eq!(u32::from_le_bytes(bytes[22..26].try_into().unwrap()) as usize, 500 + NAV_DIR_LEN);
         assert_eq!(bytes[26], 1, "one profile");
         assert_eq!(bytes.len(), NAV_DIR_LEN + profiles.len());
+    }
+
+    /// Where a synthetic cell's edge pool starts — deliberately not 0, so an emission that forgot to
+    /// add the cell's `edge_pool_offset` to an `Edge Id` reads the wrong bytes.
+    const SRC_POOL_AT: usize = 64;
+
+    /// A cell that is nothing but an edge pool: all [`serialize`] ever asks a cell for is
+    /// `nav.edge_pool_offset` and a byte range under it.
+    fn pool_cell<'a>(src: &'a dyn obc_formats::io::ByteSource, chunks: usize) -> Cell<'a> {
+        Cell {
+            id: crate::grid::CellId::parse("18/1052/1204").expect("a canonical id"),
+            band: "network".into(),
+            src,
+            partial: false,
+            lods: Vec::new(),
+            pois: obc_reader::PoiDirectory::EMPTY,
+            nav: obc_reader::NavDirectory {
+                edge_pool_offset: SRC_POOL_AT,
+                edge_chunk_count: chunks,
+                chunk_size: NAV_CHUNK_SIZE,
+                ..obc_reader::NavDirectory::EMPTY
+            },
+            profile_table: Vec::new(),
+            style_ids: Vec::new(),
+            bytes: src.len() as u64,
+        }
+    }
+
+    /// **The streaming pin.** The pool is laid out as offsets in [`merge`] and emitted as bytes in
+    /// [`serialize`], from two walks of [`place`] that never meet — so this builds the pool the old
+    /// way (a `Vec<u8>` records were appended to, padded with `0xFF` wherever the next one would
+    /// straddle) and asserts the streamed section is that buffer, byte for byte.
+    ///
+    /// The records are laid out in the source in a *different* order than they are emitted, which is
+    /// the whole point of §4.6.6: placement is the only thing the merge changes.
+    #[test]
+    fn the_streamed_pool_is_the_pool_the_merge_laid_out() {
+        // Source: two chunks holding A (200 B), B (300 B) and C (300 B), each a distinct fill.
+        let mut src = vec![0u8; SRC_POOL_AT + 2 * NAV_CHUNK_SIZE];
+        let source: [(usize, usize, u8); 3] = [(0, 200, 0xA1), (200, 300, 0xB2), (512, 300, 0xC3)];
+        for &(at, len, fill) in &source {
+            src[SRC_POOL_AT + at..SRC_POOL_AT + at + len].fill(fill);
+        }
+        let slice = obc_formats::io::SliceSource(&src);
+        let cell = pool_cell(&slice, 2);
+
+        // Emission order B, C, A: B fills 0..300, C would straddle and starts the next chunk, A fits
+        // behind it, and the tail pads out to a whole chunk.
+        let order = [source[1], source[2], source[0]];
+        let pool: Vec<EdgeRef> =
+            order.iter().map(|&(at, len, _)| EdgeRef { cell: 0, off: at as u32, len: len as u16 }).collect();
+
+        // The old formulation, verbatim, as the oracle.
+        let mut want: Vec<u8> = Vec::new();
+        for &(_, len, fill) in &order {
+            let within = want.len() % NAV_CHUNK_SIZE;
+            if within + len > NAV_CHUNK_SIZE {
+                want.resize(want.len() + (NAV_CHUNK_SIZE - within), CHUNK_END);
+            }
+            want.resize(want.len() + len, fill);
+        }
+        let pool_len = want.len().div_ceil(NAV_CHUNK_SIZE) * NAV_CHUNK_SIZE;
+        want.resize(pool_len, CHUNK_END);
+        assert_eq!(want.len(), 2 * NAV_CHUNK_SIZE, "the fixture is meant to straddle and to pad its tail");
+
+        let nav = MergedNav {
+            index: Vec::new(),
+            node_count: 3,
+            chunks: Vec::new(),
+            chunk_count: 0,
+            pool,
+            pool_len,
+            stats: NavStats::default(),
+        };
+        let bytes = serialized(&nav, &[], 0, &[&cell]);
+        assert_eq!(&bytes[NAV_DIR_LEN..], &want[..], "the streamed pool is not the laid-out pool");
+        assert_eq!(u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize, NAV_DIR_LEN, "edge pool offset");
+        assert_eq!(u32::from_le_bytes(bytes[16..20].try_into().unwrap()), 2, "edge chunk count");
+        assert_eq!(bytes.len(), nav.section_len(&[]), "the section is the length it was projected at");
+
+        // The rule both walks share, stated once: a record moves to the next chunk only when it
+        // would cross the boundary, and a record that ends exactly on one does not move.
+        assert_eq!(place(300, 300), NAV_CHUNK_SIZE, "a straddling record starts the next chunk");
+        assert_eq!(place(300, 212), 300, "…and one that ends exactly on the boundary stays");
+        assert_eq!(place(NAV_CHUNK_SIZE, 1), NAV_CHUNK_SIZE, "an aligned cursor never pads");
+    }
+
+    /// The layout names its source cells by index, so writing it against a different cell list is a
+    /// refusal rather than a plausible-looking file full of the wrong polylines.
+    #[test]
+    fn writing_the_pool_against_the_wrong_cells_is_refused() {
+        let nav = MergedNav {
+            index: Vec::new(),
+            node_count: 1,
+            chunks: Vec::new(),
+            chunk_count: 0,
+            pool: vec![EdgeRef { cell: 1, off: 0, len: 16 }],
+            pool_len: NAV_CHUNK_SIZE,
+            stats: NavStats::default(),
+        };
+        let src = vec![0u8; SRC_POOL_AT + NAV_CHUNK_SIZE];
+        let slice = obc_formats::io::SliceSource(&src);
+        let cell = pool_cell(&slice, 1);
+        let err = serialize(&nav, &[], 0, &[&cell], &mut |_: &[u8]| Ok(())).expect_err("cell 1 was not handed over");
+        assert!(format!("{err}").contains("not the cell list"), "got: {err}");
     }
 }
