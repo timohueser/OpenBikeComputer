@@ -248,7 +248,7 @@ describe("assembleCells", () => {
     });
 
     /**
-     * A bar that reaches its maximum and then waits three quarters of the run is worse than no bar.
+     * A bar that reaches its maximum and then waits three fifths of the run is worse than no bar.
      * The wasm side is where that would be seen, so it is checked here too: the read-back reports
      * many times, forward, over a wide span.
      */
@@ -259,7 +259,7 @@ describe("assembleCells", () => {
             if (phase === "verify") verify.push(fraction);
             else if (verify.length === 0) beforeVerify = fraction;
         });
-        expect(beforeVerify).toBeLessThanOrEqual(0.32); // the write phase ends at 0.318 by weight
+        expect(beforeVerify).toBeLessThanOrEqual(0.41); // the write phase ends at 0.167 + 0.240 by weight
         expect(verify.length).toBeGreaterThanOrEqual(8);
         expect(verify.at(-1)! - verify[0]).toBeGreaterThan(0.3);
         for (let i = 1; i < verify.length; i++) expect(verify[i]).toBeGreaterThan(verify[i - 1]);
