@@ -31,8 +31,8 @@
 //!   second whole-map `Vec` the component histogram used to need.
 //!
 //! What is left resident and proportional to the graph is 4.25 bytes per junction: the union-find
-//! (4 B) and two bitmaps (⅛ B each). Everything else — the band, the sort's buffers, the claim
-//! stream's read and write buffers — fits inside the budget by construction.
+//! (4 B) and two bitmaps (⅛ B each). Everything else is the band (at most the budget) plus the
+//! sort's buffers (an eighth of it) — a ceiling of `1.125 × budget`, whatever the map.
 
 use std::cmp::Ordering;
 
@@ -41,9 +41,9 @@ use obc_formats::obcm::{NAV_CHUNK_SIZE, NAV_EDGE_FIXED_LEN, NAV_MAX_DEGREE, NAV_
 use obc_map_scene::BBox;
 use obc_reader::{MapCache, MapTables, NavNodeRef, Reader, MAX_FEAT_PTS, MAX_FEAT_RINGS, NAV_MAX_CHUNK_BYTES};
 
-use crate::extsort::{ExternalSort, SpillReader, SpillWriter};
+use crate::extsort::ExternalSort;
 use crate::grid::AlignedBox;
-use crate::scratch::{ScratchId, ScratchStore};
+use crate::scratch::ScratchStore;
 use crate::{Error, Result};
 
 /// Vertices the longest legal `OBCM_Spec.md` §8.4 edge record can hold. Derived, not chosen: a
@@ -244,8 +244,11 @@ struct NodeTable {
 }
 
 impl NodeTable {
+    /// A band over `[lo, lo + span)`, clamped to the ids the section could possibly hold. The clamp
+    /// is what keeps a budget larger than the map from sizing anything: no id reaches `ceiling`, so
+    /// a band that stretched past it would only ever allocate for ids that cannot exist.
     fn new(lo: usize, span: usize, ceiling: usize) -> Self {
-        NodeTable { lo, span, ceiling, ..Default::default() }
+        NodeTable { lo, span: span.min(ceiling.saturating_sub(lo)), ceiling, ..Default::default() }
     }
 
     /// Record one §8.3 junction — or, when it is not this band's, just count it.
@@ -278,9 +281,7 @@ impl NodeTable {
             return; // another band's junction; its own pass records it.
         };
         if i >= self.coords.len() {
-            self.coords.resize(i + 1, (0, 0));
-            self.digest.resize(self.coords.len(), 0);
-            self.seen.resize(self.coords.len().div_ceil(64), 0);
+            self.grow_past(i);
         }
         let (word, bit) = (i / 64, 1u64 << (i % 64));
         if self.seen[word] & bit != 0 {
@@ -299,6 +300,26 @@ impl NodeTable {
         self.coords[i] = (lat, lon);
         self.digest[i] = digest;
         self.count += 1;
+    }
+
+    /// Extend the band's arrays past in-band index `i`, in **fixed steps of a sixteenth of the
+    /// band** and with `reserve_exact`.
+    ///
+    /// The obvious `resize(i + 1, …)` is what this replaces, and the reason is measured: `Vec`'s
+    /// amortised growth doubles, so a table that ends at 2.99 M junctions (Baden-Württemberg) sits in
+    /// capacity for 4.19 M — 46 MiB of slack across the coordinates and the digests, which is most of
+    /// a band. Growing in fixed steps caps the slack at one step (4 MiB at the default budget) for
+    /// at most sixteen reallocations over the whole walk.
+    fn grow_past(&mut self, i: usize) {
+        let step = (self.span / 16).max(1024);
+        let want = (i + 1).next_multiple_of(step).min(self.span);
+        self.coords.reserve_exact(want - self.coords.len());
+        self.coords.resize(want, (0, 0));
+        self.digest.reserve_exact(want - self.digest.len());
+        self.digest.resize(want, 0);
+        let words = want.div_ceil(64);
+        self.seen.reserve_exact(words - self.seen.len());
+        self.seen.resize(words, 0);
     }
 
     fn fail(&mut self, msg: String) {
@@ -336,12 +357,17 @@ impl NodeTable {
         self.top
     }
 
-    /// The junction's `(lat, lon)`, or `None` if `id` is outside this band. After
-    /// [`NodeTable::finish`] every in-band id below `total` has a record, so an in-band `None` is
-    /// impossible and the caller checks "resolves at all" against the graph's node count instead.
+    /// The junction's `(lat, lon)`, or `None` if `id` is outside this band or has no record in it.
+    ///
+    /// The seen bit, not the array's length, is what answers "has a record": [`NodeTable::grow_past`]
+    /// extends the arrays in steps, so an index inside them is not proof of a record. Answering from
+    /// the bitmap makes an unwritten slot unreachable rather than readable as `(0, 0)` — after
+    /// [`NodeTable::finish`] no in-band id below `total` can be missing anyway, so this costs one
+    /// bit test to make the failure mode impossible instead of merely unreachable.
     fn get(&self, id: u32) -> Option<(i32, i32)> {
         let i = (id as usize).checked_sub(self.lo).filter(|i| *i < self.span)?;
-        self.coords.get(i).copied()
+        let word = self.seen.get(i / 64)?;
+        (word & (1u64 << (i % 64)) != 0).then(|| self.coords[i])
     }
 }
 
@@ -484,12 +510,16 @@ fn union(parent: &mut [u32], a: u32, b: u32) {
     parent[keep as usize] = ROOT | (sa + sb);
 }
 
-/// The share of the budget the **claim sort** gets, as a divisor; the junction band takes the rest.
+/// The share of the budget the **claim sort** gets, as a divisor — on top of the band's, not out of
+/// it, so the pass's ceiling is `budget + budget / CLAIM_SHARE`.
 ///
-/// An eighth, because the two structures degrade in different currencies. The sort is a stream: a
-/// smaller buffer buys more runs and a deeper k-way merge, which is a few more comparisons per
-/// record. The band is random access: a smaller band buys another **whole walk of the nav section**,
-/// and §8.2 delivers each record ~2.3× at country scale. So the scarce byte belongs to the band.
+/// An eighth, and additive, because the two structures degrade in different currencies. The sort is
+/// a stream: a smaller buffer buys more runs and a deeper k-way merge, which is a fraction of a
+/// second either way. The band is random access: a smaller band buys another **whole walk of the nav
+/// section**, and §8.2 delivers each record ~2.3× at country scale, so a band one junction short of
+/// the graph costs seconds. Carving the sort's share out of the band's would put that cliff at 7/8
+/// of the budget instead of at the budget, to save an eighth of the peak — the wrong trade in both
+/// directions.
 const CLAIM_SHARE: usize = 8;
 
 /// Bytes one band spends per junction: `(lat, lon)` plus the record digest.
@@ -539,16 +569,16 @@ fn verify_nav(
     // trusting the record is what keeps a corrupt id from naming a multi-gigabyte allocation.
     let ceiling = dir.chunk_count.saturating_mul(dir.chunk_size) / NAV_NODE_FIXED_LEN;
 
+    // The band gets the **whole** budget and the claim sort an eighth on top, rather than the two
+    // dividing it. That is deliberate: what the sort's share buys is a shallower k-way merge (a
+    // fraction of a second either way at country scale), and what the band's buys is *not walking
+    // the section again*. Trading a ninth of the peak for a hard edge at exactly the budget would be
+    // paying seconds to save megabytes.
     let claim_budget = (budget / CLAIM_SHARE).max(4 * CLAIM_LEN);
-    // The claim phase's own split: the sort's cursors and the deduped stream's write buffer are live
-    // at the same moment, so together they are the claim budget and not one and a bit of it.
-    let stream_budget = (claim_budget / 4).max(CLAIM_LEN);
-    let sort_budget = claim_budget - stream_budget;
-    let span = (budget.saturating_sub(claim_budget) / BAND_BYTES_PER_NODE).max(1);
+    let span = (budget / BAND_BYTES_PER_NODE).max(1);
 
     let mut total = 0usize;
     let mut parent: Vec<u32> = Vec::new();
-    let mut sorted: Option<ScratchId> = None;
     let mut lo = 0usize;
     while lo == 0 || lo < total {
         let first = lo == 0;
@@ -585,7 +615,7 @@ fn verify_nav(
 
         // --- Walk 2: the adjacency checks, streaming; on band 0, the union-find and the claims. --
         let mut done: Vec<u64> = vec![0; words(total)];
-        let mut claims = first.then(|| ExternalSort::<CLAIM_LEN>::new(scratch, sort_budget, by_claim));
+        let mut claims = first.then(|| ExternalSort::<CLAIM_LEN>::new(scratch, claim_budget, by_claim));
         let mut fault: Option<String> = None;
         let mut spill: Option<Error> = None;
         reader
@@ -624,11 +654,15 @@ fn verify_nav(
                 }
             })
             .map_err(|e| Error::Verify(format!("the nav walk failed: {e:?}")))?;
-        if let Some(e) = spill {
-            return Err(e);
-        }
-        if let Some(msg) = fault {
-            return Err(Error::Verify(msg));
+        if fault.is_some() || spill.is_some() {
+            // Hand the sort its runs back before refusing. `ExternalSort::finish` is what owns them
+            // — the stream it returns deletes them as it drops — so abandoning the sort where it
+            // stands would leave a spill behind on a host that is about to be told the map is
+            // broken. A refusal must cost the host nothing but the message.
+            if let Some(sort) = claims.take() {
+                drop(sort.finish());
+            }
+            return Err(spill.unwrap_or_else(|| Error::Verify(fault.expect("a fault or a spill failure"))));
         }
         // The band and the delivery bitmap are dead the moment the walk ends, and what comes next
         // wants their bytes.
@@ -646,44 +680,34 @@ fn verify_nav(
             report.largest_component_permille = (largest * 1000 / total.max(1) as u64) as u32;
             parent = Vec::new();
 
-            sorted = Some(check_edges(reader, sort, scratch, stream_budget, report)?);
+            check_edges(reader, sort, report)?;
         }
         lo += span;
-    }
-    if let Some(id) = sorted {
-        let _ = scratch.remove(id);
     }
     Ok(())
 }
 
-/// §4.8.4's edge half, over the sorted claim stream: both directions agree, every `Edge Id` decodes,
-/// and the record's polyline ends at the junctions that claim it.
+/// §4.8.4's edge half, in **one pass over the sorted claim stream**: both directions agree, every
+/// `Edge Id` decodes, and the record's polyline ends at the junctions that claim it.
 ///
-/// Returns the deduped stream's scratch file, which the caller removes. It exists because the two
-/// checks are **two passes in a fixed order** — every disagreement is raised before any decode, as
-/// the in-memory pass raised them — and a sorted stream can only be read once. Writing the deduped
-/// records out and reading them back is one extra sequential pass over `2 × E` records, against
-/// holding all of them.
-fn check_edges(
-    reader: &Reader<'_>,
-    sort: ExternalSort<'_, CLAIM_LEN>,
-    scratch: &dyn ScratchStore,
-    budget: usize,
-    report: &mut VerifyReport,
-) -> Result<ScratchId> {
-    // Pass 1. The dedup is the old pass's `adjacency.sort_unstable(); adjacency.dedup()` in its new
-    // clothes: sorted, so equal records are adjacent. §8.2's re-deliveries are already gone (the
-    // `done` bitmap), so what it removes is the one case that survives — a junction with two
-    // neighbours over a single edge id at the same cost and kind. The old pass pushed the very same
-    // claim twice into that edge's list and checked it twice with the same answer, so collapsing the
-    // two changes no verdict.
-    //
-    // Both directions of an edge must agree on `Cost M` and `Way Kind` (§8.3), and that is checked
-    // here rather than at the decode below because that is the order the in-memory pass raised the
-    // two failures in.
-    let mut out = SpillWriter::<CLAIM_LEN>::create(scratch, budget)?;
+/// The dedup is the old pass's `adjacency.sort_unstable(); adjacency.dedup()` in its new clothes:
+/// the stream is sorted, so equal records are adjacent. §8.2's re-deliveries are already gone (the
+/// `done` bitmap), so what it removes is the one case that survives — a junction with two neighbours
+/// over a single edge id at the same cost and kind. The old pass pushed the very same claim twice
+/// into that edge's list and checked it twice with the same answer, so collapsing the two changes no
+/// verdict.
+///
+/// **The one ordering the in-memory pass had and this one does not**: it ran the whole `(Cost M, Way
+/// Kind)` agreement check before any decode, so a map with *both* a disagreeing edge and an
+/// undecodable one always named the disagreement. Grouped streaming names whichever comes first by
+/// edge id. Both are refusals, neither check is weakened, and every claim is still checked — the
+/// price of that ordering was writing the deduped `2 × E` records out and reading them back, which
+/// measured at ~1 s of Baden-Württemberg's verify and would be several at DACH. It is given up in
+/// the *message* a broken map gets, never in whether it is refused.
+fn check_edges(reader: &Reader<'_>, sort: ExternalSort<'_, CLAIM_LEN>, report: &mut VerifyReport) -> Result<()> {
+    let mut points: heapless::Vec<(i32, i32), MAX_EDGE_PTS> = heapless::Vec::new();
     let mut previous: Option<[u8; CLAIM_LEN]> = None;
-    let mut group: Option<(u32, (u32, u8))> = None;
+    let mut open: Option<Group> = None;
     let mut edges = 0u64;
     for record in sort.finish()? {
         let record = record?;
@@ -691,51 +715,34 @@ fn check_edges(
             continue;
         }
         previous = Some(record);
-        let (edge_id, agreement) = (claim_edge(&record), claim_agreement(&record));
-        match group {
-            Some((id, want)) if id == edge_id => {
-                if agreement != want {
-                    return Err(Error::Verify(format!(
-                        "edge {edge_id} is written with two different (cost, kind) pairs — the two directions disagree"
-                    )));
-                }
-            }
-            _ => {
-                edges += 1;
-                group = Some((edge_id, agreement));
-            }
-        }
-        out.push(record)?;
-    }
-    report.nav_edges = edges;
-    let (id, _) = out.seal()?;
-
-    // Pass 2. Every `Edge Id` decodes, and to a record whose polyline ends at the junctions that
-    // claim it. The stream is grouped by edge id, so the decode happens once per edge at the group's
-    // first claim and the group's `Cost M` is checked once at its last — the order the in-memory
-    // pass used, where every endpoint of an edge was checked before that edge's length.
-    let mut points: heapless::Vec<(i32, i32), MAX_EDGE_PTS> = heapless::Vec::new();
-    let mut open: Option<Group> = None;
-    for record in SpillReader::<CLAIM_LEN>::open(scratch, id, budget)? {
-        let record = record?;
         let edge_id = claim_edge(&record);
-        if open.is_none_or(|g| g.edge_id != edge_id) {
-            if let Some(g) = open.take() {
-                g.check_length()?;
+        match open {
+            // Both directions of an edge must agree on `Cost M` and `Way Kind` (§8.3).
+            Some(g) if g.edge_id == edge_id => g.check_agreement(&record)?,
+            _ => {
+                // A group's `Cost M` is checked against the §8.4 record's `length_m` once the last
+                // of its claims has gone by — the order the in-memory pass used, where every
+                // endpoint of an edge was checked before that edge's length.
+                if let Some(g) = open.take() {
+                    g.check_length()?;
+                }
+                let length = reader
+                    .nav_edge(edge_id, &mut points)
+                    .ok_or_else(|| Error::Verify(format!("edge {edge_id} does not decode (§4.8.4)")))?;
+                let first =
+                    *points.first().ok_or_else(|| Error::Verify(format!("edge {edge_id} decodes to nothing")))?;
+                let last = *points.last().expect("a non-empty polyline has a last vertex");
+                open = Some(Group { edge_id, length, agreement: claim_agreement(&record), first, last });
+                edges += 1;
             }
-            let length = reader
-                .nav_edge(edge_id, &mut points)
-                .ok_or_else(|| Error::Verify(format!("edge {edge_id} does not decode (§4.8.4)")))?;
-            let first = *points.first().ok_or_else(|| Error::Verify(format!("edge {edge_id} decodes to nothing")))?;
-            let last = *points.last().expect("a non-empty polyline has a last vertex");
-            open = Some(Group { edge_id, length, cost: claim_agreement(&record).0, first, last });
         }
         open.expect("the group is open").check_endpoint(&record)?;
     }
     if let Some(g) = open {
         g.check_length()?;
     }
-    Ok(id)
+    report.nav_edges = edges;
+    Ok(())
 }
 
 /// One edge's decoded record, held open across the run of claims that name it.
@@ -744,14 +751,24 @@ struct Group {
     edge_id: u32,
     /// The `length_m` the §8.4 record states.
     length: u32,
-    /// The `Cost M` its claims state — one value, because pass 1 refused a group with two.
-    cost: u32,
+    /// The `(Cost M, Way Kind)` the group's first claim states; every later one must match.
+    agreement: (u32, u8),
     /// The polyline's ends, in the reader's `(lon, lat)` order.
     first: (i32, i32),
     last: (i32, i32),
 }
 
 impl Group {
+    fn check_agreement(&self, record: &[u8; CLAIM_LEN]) -> Result<()> {
+        if claim_agreement(record) != self.agreement {
+            return Err(Error::Verify(format!(
+                "edge {} is written with two different (cost, kind) pairs — the two directions disagree",
+                self.edge_id
+            )));
+        }
+        Ok(())
+    }
+
     /// The polyline runs from endpoint `a` to endpoint `b` inclusive, so each claimant's stored
     /// coordinate must be one of its ends. The claim carries `(lat, lon)` and the reader hands
     /// polyline vertices back as `(lon, lat)`, so the comparison is made in the reader's order.
@@ -769,10 +786,10 @@ impl Group {
     }
 
     fn check_length(&self) -> Result<()> {
-        if self.length != self.cost {
+        if self.length != self.agreement.0 {
             return Err(Error::Verify(format!(
                 "edge {} records {} m but its adjacency entries say {} m",
-                self.edge_id, self.length, self.cost
+                self.edge_id, self.length, self.agreement.0
             )));
         }
         Ok(())
@@ -865,6 +882,42 @@ mod tests {
     fn one_id_with_two_adjacency_lists_is_refused() {
         let err = table(8, &[(0, 0, 1, 0xaaaa), (0, 0, 1, 0xbbbb)]).expect_err("two records under one id");
         assert!(format!("{err}").contains("different adjacency"), "{err}");
+    }
+
+    /// The band's arrays may never reach past one growth step above the highest id they have been
+    /// asked to hold, whatever order the ids arrive in. This is the property the mem-profile numbers
+    /// rest on: `Vec`'s own doubling left the table in capacity for 4.19 M junctions where 2.99 M
+    /// had records, which was 46 MiB of air inside a 64 MiB budget.
+    #[test]
+    fn a_band_never_reaches_more_than_one_growth_step_past_its_highest_id() {
+        let span = 1 << 16;
+        let step = span / 16;
+        for (name, ids) in [
+            ("ascending", (0..span as u32).collect::<Vec<u32>>()),
+            // The shape a real §8.2 walk produces: chunk-ordered, so the ids arrive scattered.
+            ("scattered", (0..span as u32).map(|i| (i * 40_507) % span as u32).collect()),
+        ] {
+            let mut t = NodeTable::new(0, span, span);
+            let mut highest = 0usize;
+            for id in ids {
+                t.see(id, id as i32, -(id as i32), id as u64);
+                highest = highest.max(id as usize + 1);
+                let bound = highest.next_multiple_of(step).min(span);
+                assert!(
+                    t.coords.capacity() <= bound,
+                    "{name}: capacity {} past the {bound} one step above id {}",
+                    t.coords.capacity(),
+                    highest - 1
+                );
+                assert_eq!(t.digest.capacity(), t.coords.capacity(), "{name}: the two arrays grow together");
+            }
+            t.finish(span).expect("a full band is dense");
+        }
+        // …and the worst order there is — highest id first — still allocates the band once and not
+        // twice, because the step rounds up rather than doubling.
+        let mut t = NodeTable::new(0, span, span);
+        t.see(span as u32 - 1, 0, 0, 0);
+        assert_eq!(t.coords.capacity(), span, "one allocation of exactly the band");
     }
 
     /// New in #1116: the old pass hashed such an id and carried on.

@@ -127,11 +127,13 @@ fn map() -> Vec<u8> {
 /// budget so small the junction table is banded and the claim sort genuinely merges runs.
 const BUDGETS: [usize; 2] = [DEFAULT_MERGE_BUDGET, 64];
 
+/// Verify at one budget, asserting the scratch area is empty afterwards **however it ends**. A
+/// refusal that leaves its spill behind would fill a host's disk one broken map at a time.
 fn verify_at(bytes: &[u8], budget: usize) -> Result<VerifyReport, Error> {
     let scratch = MemoryScratch::new();
-    let report = verify_shard(&MemorySource(bytes.to_vec()), BOX, true, &scratch, budget)?;
-    assert_eq!(scratch.resident_bytes(), 0, "the pass removed every scratch file it created");
-    Ok(report)
+    let out = verify_shard(&MemorySource(bytes.to_vec()), BOX, true, &scratch, budget);
+    assert_eq!(scratch.resident_bytes(), 0, "the pass removed every scratch file it created ({out:?})");
+    out
 }
 
 /// Mutate the packed map with `break_it`, then assert both budget shapes refuse it and say `wants`.
