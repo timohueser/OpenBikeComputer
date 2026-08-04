@@ -596,6 +596,7 @@ pub fn assemble_full(
                 &poi_section,
                 &merged_nav,
                 &profile_table,
+                scratch,
                 &mut sink,
             )?
         };
@@ -631,6 +632,9 @@ pub fn assemble_full(
         });
     }
     check_set_invariants(&plans, assembly)?;
+    // Every shard that could name the merged graph's scratch streams has been written and verified,
+    // so the terrain raster below gets the whole scratch area rather than sharing it (#1116 D4).
+    merged_nav.release(scratch);
 
     // The raster, between the last verified shard and the manifest (§5.4).
     let terrain_summary = match terrain {
