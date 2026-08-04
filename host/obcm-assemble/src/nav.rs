@@ -20,6 +20,36 @@
 //! — offsets into a single `Vec` — rather than a `Vec` per junction. Both are noted where they
 //! happen, because both trade an obvious formulation for one whose *order* has to be argued.
 //!
+//! # The node side does not live in memory (#1116 D2)
+//!
+//! Flat is not the same as small. At DACH scale the per-node arrays — coordinates, digests, the
+//! renumbering permutation — are gigabytes, and none of them is information that has to be resident:
+//! **cross-cell coupling exists only at seam nodes**, coordinates on a boundary line of the
+//! `network` band's grid (§4.6.2), measured at 19 337 of 3.0 M on a state-sized bake. Everything
+//! else is settled inside one cell.
+//!
+//! So the collect pass keeps only the *seam table* — coordinate → seam slot, its node id, and its
+//! accumulated digest — and spills every node's `(lat, lon, digest)` through the
+//! [scratch seam](crate::scratch), in id order, so the record's **position in the file is the node's
+//! id**. The §4.6.5 renumbering then reads that stream back once and sorts it
+//! [externally](crate::extsort), bounded by [`crate::Options::merge_budget_bytes`], instead of
+//! permuting an in-memory array.
+//!
+//! Two things had to be argued rather than assumed for that to be the same bytes:
+//!
+//! * **The digest may be accumulated during collection, before pruning.** §4.6.5's tie-break sums
+//!   only the *kept* edges' contributions. But an edge is kept exactly when its component is
+//!   (`prune` below), and an edge's two endpoints are in the same component by construction — so for
+//!   any node that survives the prune, *every* incident edge survives with it, and the two sums are
+//!   the same sum. Only nodes that are about to be dropped can differ, and they are dropped.
+//! * **…but not before the §4.6.3 dedup**, which really does remove contributions. A duplicate's
+//!   contribution is therefore *subtracted* when it dies, as a delta against the two node ids it
+//!   touched. Accumulation is `wrapping_add`, so the subtraction is exact, and there are as many
+//!   deltas as there are duplicate edges — none at all on either published region.
+//!
+//! The seam table's own digests are deltas of the same kind, because a seam node's record is written
+//! by the first cell that saw it and later cells go on adding to it.
+//!
 //! The order of the passes is normative and each one depends on the last:
 //!
 //! 1. **Read the serialized node set** — not a graph builder's, the *serializer's*. The §8.4 splits
@@ -52,15 +82,46 @@ use obc_formats::obcm::{
     NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN,
 };
 
+use crate::extsort::{ExternalSort, SpillReader, SpillWriter};
 use crate::grid::{on_grid_boundary, UBox};
 use crate::input::Cell;
 use crate::qtree::{self, Point};
+use crate::scratch::{ScratchId, ScratchStore};
 use crate::{Error, Result};
 
 /// Largest neighbour delta the `int16` fields hold (§8.3). The packer's own split bound is 32 000;
 /// unification never moves a coordinate, so an input that held it still holds it — but §4.8 says
 /// re-check rather than assume.
 const MAX_NEIGHBOR_DELTA: i64 = i16::MAX as i64;
+
+/// The record the collect pass spills, one per collected node: `lat i32, lon i32, digest u64`.
+///
+/// There is no node id in it because there does not need to be one — records are appended in id
+/// order, so a record's **offset is `id × NODE_REC`**. That is also what makes the read-back a plain
+/// forward scan whose index is the id.
+const NODE_REC: usize = 16;
+
+/// …and the record §4.6.5 sorts: the same three fields plus the id they were spilled under.
+const SORT_REC: usize = NODE_REC + 4;
+
+/// A collected node, as the cell that read it names it: the id it was minted under, and which seam
+/// slot it is — or [`NO_SEAM`].
+///
+/// This is the identity D3's edge stream joins against. It is dense over the whole collection and
+/// assigned in read order, so it is the pair *(cell, index within that cell's minted nodes)*
+/// flattened: cell `c`'s ids are the contiguous range that starts where cell `c − 1` stopped
+/// minting, and a reference to a node an *earlier* cell minted is a seam unification by
+/// construction (§4.6.2 is the only thing that unifies).
+#[derive(Clone, Copy)]
+struct NodeRef {
+    /// The node's collection id — its position in the spilled node stream.
+    id: u32,
+    /// Its slot in the seam table, or [`NO_SEAM`] for a node no other cell can see.
+    seam: u32,
+}
+
+/// [`NodeRef::seam`] for a node that is not on a grid boundary line.
+const NO_SEAM: u32 = u32::MAX;
 
 /// Where an edge's §8.4 record is, in the cell that wrote it — ten bytes instead of the record.
 ///
@@ -195,13 +256,29 @@ impl MergedNav {
 /// Read, unify, prune, renumber and rebuild — §4.6 end to end. `cells` are the `network`-band cells;
 /// `band_log2` is that band's cell size, which defines which coordinates are eligible for
 /// unification.
-pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, global_bbox: UBox) -> Result<MergedNav> {
+///
+/// `scratch` is where the node side is spilled and sorted (see the module header) and `budget` is
+/// the most memory those passes may hold at once.
+pub fn merge(
+    cells: &[&Cell<'_>],
+    band_log2: u32,
+    min_component_edges: usize,
+    global_bbox: UBox,
+    scratch: &dyn ScratchStore,
+    budget: usize,
+) -> Result<MergedNav> {
     let mut stats = NavStats::default();
 
-    // --- 1/2. The serialized node set, unified at boundary coordinates only. ---
-    let mut coords: Vec<(i32, i32)> = Vec::new();
-    let mut seam: HashMap<(i32, i32), u32> = HashMap::new();
+    // --- 1/2. The serialized node set, unified at boundary coordinates only.
+    //
+    // The only whole-map structure here is the seam table, which is the 0.6 % of nodes another cell
+    // can name. Everything else is per cell and is spilled as the cell ends. ---
+    let mut seam: HashMap<(i32, i32), u32> = HashMap::new(); // coordinate → seam slot
+    let mut seam_id: Vec<u32> = Vec::new(); // slot → the id its first cell minted
+    let mut seam_digest: Vec<u64> = Vec::new(); // slot → §4.6.5 digest, still accumulating
     let mut edges: Vec<MergedEdge> = Vec::new();
+    let mut node_out = SpillWriter::<NODE_REC>::create(scratch, budget / 8)?;
+    let mut id_count: u32 = 0;
 
     for (ci, cell) in cells.iter().enumerate() {
         let dir = &cell.nav;
@@ -216,8 +293,14 @@ pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, gl
         // Pass A: every junction record in the cell, straight off its chunks. Reading the chunk run
         // rather than walking the quadtree visits each record exactly once — §8.2's bin packing
         // makes the *walk* non-idempotent, not the storage.
-        let mut local: HashMap<u32, u32> = HashMap::new();
-        let mut records: Vec<(u32, i32, i32, usize, usize)> = Vec::new(); // (id, lat, lon, chunk, offset)
+        let base = id_count;
+        let mut local: HashMap<u32, NodeRef> = HashMap::new();
+        // (id, lat, lon, chunk, offset)
+        let mut records: Vec<(u32, i32, i32, usize, usize)> = Vec::new();
+        // The coordinates of the ids *this* cell minted, indexed by `id - base`. It is what the
+        // cell's own slice of the node stream is written from, and it is the only per-node array
+        // alive at any point — one cell's worth, not the map's.
+        let mut minted: Vec<(i32, i32)> = Vec::new();
         let mut chunks: Vec<Vec<u8>> = Vec::with_capacity(dir.chunk_count);
         for k in 0..dir.chunk_count {
             let chunk = cell.read(data_start + k * dir.chunk_size, dir.chunk_size)?;
@@ -235,25 +318,31 @@ pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, gl
                 let lon = i32::from_le_bytes(chunk[at + 4..at + 8].try_into().expect("4 bytes"));
                 let id = u32::from_le_bytes(chunk[at + 8..at + 12].try_into().expect("4 bytes"));
                 stats.cell_nodes += 1;
-                let global = if on_grid_boundary(lat as i64, lon as i64, band_log2) {
+                let mut mint = || {
+                    let id = id_count;
+                    id_count += 1;
+                    minted.push((lat, lon));
+                    id
+                };
+                let node = if on_grid_boundary(lat as i64, lon as i64, band_log2) {
                     match seam.get(&(lat, lon)) {
-                        Some(&g) => {
+                        Some(&slot) => {
                             stats.unified += 1;
-                            g
+                            NodeRef { id: seam_id[slot as usize], seam: slot }
                         }
                         None => {
-                            let g = coords.len() as u32;
-                            coords.push((lat, lon));
-                            seam.insert((lat, lon), g);
-                            g
+                            let slot = seam_id.len() as u32;
+                            let node = NodeRef { id: mint(), seam: slot };
+                            seam.insert((lat, lon), slot);
+                            seam_id.push(node.id);
+                            seam_digest.push(0);
+                            node
                         }
                     }
                 } else {
-                    let g = coords.len() as u32;
-                    coords.push((lat, lon));
-                    g
+                    NodeRef { id: mint(), seam: NO_SEAM }
                 };
-                if local.insert(id, global).is_some() {
+                if local.insert(id, node).is_some() {
                     return Err(Error::Format(format!("cell {}: node id {id} appears twice", cell.id)));
                 }
                 records.push((id, lat, lon, k, at));
@@ -268,6 +357,11 @@ pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, gl
         // value matters because the second direction writes back into the entry the first created.
         // Nothing here looks past the cell: cross-cell duplicates are settled once, after the whole
         // collection, by the sorted pass below.
+        //
+        // It is also where the §4.6.5 digest is accumulated (module header): a non-seam node's
+        // incident edges are all in its own cell, so its total is final when this loop ends, and a
+        // seam node's goes to the seam table where later cells can still add to it.
+        let mut cell_digest = vec![0u64; minted.len()];
         let mut cell_edges: HashMap<u32, usize> = HashMap::new();
         for &(own_id, lat, lon, k, at) in &records {
             let chunk = &chunks[k];
@@ -288,7 +382,7 @@ pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, gl
                     let edge: &mut MergedEdge = &mut edges[index];
                     // Orientation again: this entry runs from *this* record's node. It is the
                     // a→b direction exactly when this node is the edge's `a`.
-                    let own = *local.get(&own_id).expect("own id interned above");
+                    let own = local.get(&own_id).expect("own id interned above").id;
                     if own == edge.a {
                         edge.ascent_ab = ascent_m;
                     } else {
@@ -296,10 +390,11 @@ pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, gl
                     }
                     continue;
                 }
-                let a = *local.get(&own_id).expect("own id interned above");
-                let b = *local.get(&nbr_id).ok_or_else(|| {
+                let own_node = *local.get(&own_id).expect("own id interned above");
+                let nbr_node = *local.get(&nbr_id).ok_or_else(|| {
                     Error::Format(format!("cell {}: neighbour id {nbr_id} resolves to no record", cell.id))
                 })?;
+                let (a, b) = (own_node.id, nbr_node.id);
                 // Everything this pass needs from the record's bytes is taken here, while the cell's
                 // pool is still the buffer in hand: the orientation, the content hash, and the
                 // length. What survives the loop is the ten-byte address, not the record.
@@ -318,15 +413,36 @@ pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, gl
                 // never does (a degree-capped arc, or a self-loop, which §8.3 writes once) the
                 // other direction stays `0` — the same value a map packed without terrain carries.
                 let (ascent_ab, ascent_ba) = if own_is_anchor { (ascent_m, 0) } else { (0, ascent_m) };
+                // The tie-break's contribution, booked to both endpoints while they are in hand. A
+                // self-loop books twice, exactly as summing over the edge list would.
+                let h = digest_of(hash, cost_m, way_kind);
+                for node in [own_node, nbr_node] {
+                    add_digest(&mut seam_digest, &mut cell_digest, base, node, h);
+                }
                 cell_edges.insert(edge_id, edges.len());
                 edges.push(MergedEdge { a, b, cost_m, kind: way_kind, rec, hash, ascent_ab, ascent_ba });
             }
         }
+
+        // The cell is done: its nodes' coordinates are known and their digests are final (a seam
+        // node's stays 0 here and arrives as a delta below). Ids were minted in this order, so the
+        // appends land at exactly `id × NODE_REC`.
+        for (k, &(lat, lon)) in minted.iter().enumerate() {
+            node_out.push(node_record(lat, lon, cell_digest[k]))?;
+        }
     }
 
-    if coords.is_empty() {
+    let (node_file, spilled) = node_out.seal()?;
+    debug_assert_eq!(spilled, id_count as u64, "one spilled record per minted node id");
+    if id_count == 0 {
+        scratch.remove(node_file)?;
         return Ok(MergedNav::empty(stats));
     }
+
+    // The §4.6.5 digest corrections (module header): every seam node's accumulated total, plus a
+    // subtraction for each duplicate the pass below drops. Both are added to what the stream holds.
+    let mut deltas: Vec<(u32, u64)> =
+        seam_id.iter().copied().zip(seam_digest.iter().copied()).filter(|&(_, d)| d != 0).collect();
 
     // --- 3. Deduplicate (§4.6.3): an edge two cells both wrote *in full*, keyed on the unified
     // endpoint pair, `Cost M`, `Way Kind` and the record's content. The half-open ownership of
@@ -377,6 +493,15 @@ pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, gl
     }
     drop(by_hash);
     stats.duplicate_edges += dead.len();
+    // A dropped copy's digest contribution was booked during collection and has to come back off,
+    // at both of the endpoints it was booked to. `wrapping_neg` of what was added: exact, because
+    // the accumulation is a wrapping sum and nothing else about it is order-dependent.
+    for &d in &dead {
+        let e = &edges[d as usize];
+        let undo = digest_of(e.hash, e.cost_m, e.kind).wrapping_neg();
+        deltas.push((e.a, undo));
+        deltas.push((e.b, undo));
+    }
     if !dead.is_empty() {
         // Physically dropped rather than masked, so the memory goes too. `retain` preserves order,
         // so everything downstream sees the survivors in the order it always saw them.
@@ -393,7 +518,7 @@ pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, gl
 
     // --- 4. Island pruning over the *merged* graph: the only place the schema's threshold means
     // what it says — an island in the map, not in a cell (§3.5/§4.6.4). ---
-    let (keep_node, keep_edge) = prune(coords.len(), &edges, min_component_edges, &mut stats);
+    let (keep_node, keep_edge) = prune(id_count as usize, &edges, min_component_edges, &mut stats);
 
     // --- 5. Renumber densely by (lat, lon) ascending — deterministic and content-derived (§4.6.5).
     //
@@ -402,23 +527,14 @@ pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, gl
     // bridge/tunnel junctions — arrive here as separate nodes at one `(lat, lon)`. Their order must
     // still come from content, not from which cell happened to be read first, or two assemblies of
     // the same cells in a different order would produce different bytes. The tie-break is therefore
-    // an order-independent digest of the node's own incident edges. ---
-    let mut digest = vec![0u64; coords.len()];
-    for (e, &keep) in edges.iter().zip(&keep_edge) {
-        if !keep {
-            continue;
-        }
-        // Commutative accumulation: the sum does not depend on the order the edges were read in.
-        let h = e.hash ^ ((e.cost_m as u64) << 8) ^ e.kind as u64;
-        digest[e.a as usize] = digest[e.a as usize].wrapping_add(h);
-        digest[e.b as usize] = digest[e.b as usize].wrapping_add(h);
-    }
-    let mut order: Vec<u32> = (0..coords.len() as u32).filter(|&i| keep_node[i as usize]).collect();
-    order.sort_by_key(|&i| (coords[i as usize].0, coords[i as usize].1, digest[i as usize]));
-    let mut new_id = vec![u32::MAX; coords.len()];
-    for (dense, &old) in order.iter().enumerate() {
-        new_id[old as usize] = dense as u32;
-    }
+    // an order-independent digest of the node's own incident edges.
+    //
+    // Done as a sorted pass over the spilled node stream rather than a permutation of an in-memory
+    // array (module header) — the same key, and `nodes` comes out already in the emission order the
+    // quadtree wants. ---
+    deltas.sort_unstable();
+    let (mut nodes, new_id) = renumber(scratch, budget, node_file, id_count, &keep_node, &deltas)?;
+    drop(deltas);
 
     // --- 6. Lay the edge pool out. `Edge Id` is a pool byte offset, so every record lands at a new
     // place and the no-straddle rule is re-applied at the 512-byte granularity — but that is
@@ -458,7 +574,7 @@ pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, gl
     // walk order and refuses at exactly the point the growing `Vec` used to. (Reserving the capped
     // count is also exact: a node is pushed to `degree` times and stops accepting at 24, so it ends
     // with `min(degree, 24)` entries and the buffer has no slack.) ---
-    let mut fill: Vec<u32> = vec![0; order.len()]; // pass 1: uncapped degree, pass 2: entries written
+    let mut fill: Vec<u32> = vec![0; nodes.len()]; // pass 1: uncapped degree, pass 2: entries written
     for e in &kept {
         let (a, b) = (new_id[e.a as usize], new_id[e.b as usize]);
         fill[a as usize] += 1;
@@ -468,7 +584,7 @@ pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, gl
     }
     // An offset counts at most two entries per kept edge, and step 6 has already refused a pool past
     // 4 GiB of records that are 15 bytes at their smallest — so it is a `u32` by construction.
-    let mut offsets: Vec<u32> = Vec::with_capacity(order.len() + 1);
+    let mut offsets: Vec<u32> = Vec::with_capacity(nodes.len() + 1);
     let mut total = 0usize;
     for d in fill.iter_mut() {
         offsets.push(total as u32);
@@ -485,8 +601,10 @@ pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, gl
                 stats.degree_truncated += 1;
                 return Ok(());
             }
-            let (lat, lon) = coords[order[to as usize] as usize];
-            let (flat, flon) = coords[order[from as usize] as usize];
+            // The renumbered node list is already in dense-id order, so it *is* the coordinate
+            // table the deltas are measured against — there is no permutation left to look through.
+            let (lat, lon) = (nodes[to as usize].lat, nodes[to as usize].lon);
+            let (flat, flon) = (nodes[from as usize].lat, nodes[from as usize].lon);
             let (dlat, dlon) = (lat as i64 - flat as i64, lon as i64 - flon as i64);
             if dlat.abs() > MAX_NEIGHBOR_DELTA || dlon.abs() > MAX_NEIGHBOR_DELTA {
                 return Err(Error::Format(format!(
@@ -511,14 +629,12 @@ pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, gl
         }
     }
 
-    let nodes: Vec<NavPoint> = order
-        .iter()
-        .enumerate()
-        .map(|(dense, &old)| {
-            let (lat, lon) = coords[old as usize];
-            NavPoint { lat, lon, id: dense as u32, at: offsets[dense], degree: fill[dense] as u8 }
-        })
-        .collect();
+    // The CSR views, into the points that were renumbered into it. `degree` is what the walk above
+    // actually wrote, which is `min(uncapped, 24)`.
+    for (dense, p) in nodes.iter_mut().enumerate() {
+        p.at = offsets[dense];
+        p.degree = fill[dense] as u8;
+    }
     // The views are copied into the points; the two build vectors have no further reader.
     drop(offsets);
     drop(fill);
@@ -534,6 +650,118 @@ pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, gl
         qtree::flatten(&tree, NAV_CHUNK_SIZE, true, &|p, out| pack_record(p, &csr, out));
     stats.dropped_nodes = dropped;
     Ok(MergedNav { index, node_count, chunks, chunk_count, pool, pool_len, stats })
+}
+
+/// One edge's contribution to its endpoints' §4.6.5 tie-break digest.
+///
+/// Stated once because it is now computed in two places — when the edge is collected, and (negated)
+/// when a §4.6.3 duplicate is dropped — and a disagreement between them would move node ids.
+fn digest_of(hash: u64, cost_m: u32, kind: u8) -> u64 {
+    hash ^ ((cost_m as u64) << 8) ^ kind as u64
+}
+
+/// Book `h` to `node`: to the seam table when another cell can still add to it, and to the cell's
+/// own array otherwise. `base` is the first id this cell minted.
+fn add_digest(seam_digest: &mut [u64], cell_digest: &mut [u64], base: u32, node: NodeRef, h: u64) {
+    let slot = if node.seam == NO_SEAM {
+        &mut cell_digest[(node.id - base) as usize]
+    } else {
+        &mut seam_digest[node.seam as usize]
+    };
+    *slot = slot.wrapping_add(h);
+}
+
+/// The spilled node record — see [`NODE_REC`] for why it carries no id.
+fn node_record(lat: i32, lon: i32, digest: u64) -> [u8; NODE_REC] {
+    let mut r = [0u8; NODE_REC];
+    r[0..4].copy_from_slice(&lat.to_le_bytes());
+    r[4..8].copy_from_slice(&lon.to_le_bytes());
+    r[8..16].copy_from_slice(&digest.to_le_bytes());
+    r
+}
+
+/// …and the one §4.6.5 sorts, which is that record plus the id it was spilled under.
+fn sort_record(rec: &[u8; NODE_REC], id: u32) -> [u8; SORT_REC] {
+    let mut r = [0u8; SORT_REC];
+    r[0..NODE_REC].copy_from_slice(rec);
+    r[NODE_REC..SORT_REC].copy_from_slice(&id.to_le_bytes());
+    r
+}
+
+/// `(lat, lon, digest, id)` out of a [`SORT_REC`] record.
+fn node_key(r: &[u8; SORT_REC]) -> (i32, i32, u64, u32) {
+    (
+        i32::from_le_bytes(r[0..4].try_into().expect("4 bytes")),
+        i32::from_le_bytes(r[4..8].try_into().expect("4 bytes")),
+        u64::from_le_bytes(r[8..16].try_into().expect("8 bytes")),
+        u32::from_le_bytes(r[16..20].try_into().expect("4 bytes")),
+    )
+}
+
+/// §4.6.5's order, as a comparator.
+///
+/// It is a **total** order: the collection id is unique, so no two records compare equal and the
+/// result does not depend on the sort's stability. That matters because the spec's own key —
+/// `(lat, lon, digest)` — is *not* total (two stacked junctions with identical incident edges would
+/// tie), and the id is exactly the tie-break the previous formulation got from a stable sort over
+/// the collection order.
+fn by_node_key(a: &[u8; SORT_REC], b: &[u8; SORT_REC]) -> std::cmp::Ordering {
+    node_key(a).cmp(&node_key(b))
+}
+
+/// §4.6.5's renumbering, as a sorted pass over the spilled node stream.
+///
+/// Reads the stream once — its index *is* the collection id — applies the digest deltas
+/// (`(id, addend)`, sorted, possibly several per id), drops the pruned nodes, and sorts what is left
+/// externally. The walk over the sorted stream then hands out dense ids in order, which produces
+/// both halves the rest of the merge needs: the junctions **in emission order**, and the
+/// collection-id → dense-id map the edges are still resolved through.
+///
+/// That map is the one whole-map array left on the node side, and it is deliberate: this pass's
+/// caller still holds its edges in memory (#1116 D3 is what drains them), so it still needs random
+/// access to it. A caller whose edges are a sorted stream does not — it joins them against
+/// `(id, dense)` pairs instead, which this walk emits in dense order and a second external sort puts
+/// in id order.
+fn renumber(
+    scratch: &dyn ScratchStore,
+    budget: usize,
+    node_file: ScratchId,
+    id_count: u32,
+    keep_node: &[bool],
+    deltas: &[(u32, u64)],
+) -> Result<(Vec<NavPoint>, Vec<u32>)> {
+    // The reader and the sort are alive at the same time, so they split one budget rather than each
+    // taking it. The stream is read strictly forward, so its share is small on purpose.
+    let read_budget = (budget / 8).max(NODE_REC);
+    let mut sort =
+        ExternalSort::<SORT_REC>::new(scratch, budget.saturating_sub(read_budget).max(SORT_REC), by_node_key);
+    let mut next_delta = 0usize;
+    for (id, rec) in SpillReader::<NODE_REC>::open(scratch, node_file, read_budget)?.enumerate() {
+        let mut rec = rec?;
+        let id = id as u32;
+        // Deltas are sorted by id and the stream is walked in id order, so this cursor only ever
+        // moves forward — even when several deltas name the same node.
+        while next_delta < deltas.len() && deltas[next_delta].0 == id {
+            let digest = u64::from_le_bytes(rec[8..16].try_into().expect("8 bytes"));
+            rec[8..16].copy_from_slice(&digest.wrapping_add(deltas[next_delta].1).to_le_bytes());
+            next_delta += 1;
+        }
+        if keep_node[id as usize] {
+            sort.push(sort_record(&rec, id))?;
+        }
+    }
+    scratch.remove(node_file)?;
+
+    let mut nodes: Vec<NavPoint> = Vec::new();
+    let mut new_id = vec![u32::MAX; id_count as usize];
+    for rec in sort.finish()? {
+        let (lat, lon, _, id) = node_key(&rec?);
+        let dense = u32::try_from(nodes.len()).expect("a kept node count fits a u32");
+        new_id[id as usize] = dense;
+        // `at` and `degree` are the CSR view, which does not exist yet — step 7 fills them in.
+        nodes.push(NavPoint { lat, lon, id: dense, at: 0, degree: 0 });
+    }
+    Ok((nodes, new_id))
 }
 
 /// §8.4's placement rule: a record of `len` bytes goes at the cursor `at`, unless it would straddle
@@ -757,6 +985,43 @@ impl MergedNav {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scratch::MemoryScratch;
+
+    /// **The budget sweep.** Every whole-merge fixture goes through here rather than calling
+    /// [`merge`] directly, because §4.6.5's renumbering is now an external sort and a fixture is far
+    /// too small to reach its spill path on its own — at any sane budget a dozen nodes sort in one
+    /// run, and the k-way merge would never be exercised by this file at all.
+    ///
+    /// So each fixture is merged at four budgets, from *one record per run* upwards, and the results
+    /// are compared as bytes. The map may not depend on how much memory the merge was given; that is
+    /// the whole claim the pass rests on. It also asserts the scratch area is **empty** afterwards:
+    /// a merge that leaked a run would still produce the right map, and would fill a card.
+    fn merged(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, bbox: UBox) -> MergedNav {
+        // Everything a shard is written from — `pool` by address, since `EdgeRef` is not `PartialEq`.
+        #[allow(clippy::type_complexity)]
+        let shape = |n: &MergedNav| -> (Vec<u8>, Vec<u8>, u32, u32, usize, Vec<(u32, u32, u16)>, NavStats) {
+            (
+                n.index.clone(),
+                n.chunks.clone(),
+                n.node_count,
+                n.chunk_count,
+                n.pool_len,
+                n.pool.iter().map(|r| (r.cell, r.off, r.len)).collect(),
+                n.stats.clone(),
+            )
+        };
+        let mut out: Option<MergedNav> = None;
+        for budget in [1usize, 24, 200, 1 << 20] {
+            let scratch = MemoryScratch::new();
+            let nav = merge(cells, band_log2, min_component_edges, bbox, &scratch, budget).expect("the merge succeeds");
+            assert_eq!(scratch.resident_bytes(), 0, "budget {budget}: the merge left a scratch file behind");
+            match &out {
+                None => out = Some(nav),
+                Some(first) => assert_eq!(shape(&nav), shape(first), "budget {budget} merged to different bytes"),
+            }
+        }
+        out.expect("the sweep runs at least once")
+    }
 
     /// The section through the sink, for a test that wants it as one buffer.
     fn serialized(nav: &MergedNav, profile_table: &[u8], section_offset: usize, cells: &[&Cell<'_>]) -> Vec<u8> {
@@ -1077,7 +1342,7 @@ mod tests {
         let (s0, s1) = (obc_formats::io::SliceSource(&b0), obc_formats::io::SliceSource(&b1));
         let (c0, c1) = (nav_cell(&s0, d0), nav_cell(&s1, d1));
         let bbox = (SEAM_LON as i64 - 1000, lat_p as i64 - 1000, SEAM_LON as i64 + 1000, lat_q as i64 + 1000);
-        let nav = merge(&[&c0, &c1], 20, 0, bbox).expect("the merge succeeds");
+        let nav = merged(&[&c0, &c1], 20, 0, bbox);
 
         assert_eq!(nav.stats.unified, 2, "both endpoints sit on the seam line");
         assert_eq!((nav.stats.nodes, nav.stats.edges), (2, 1), "one edge survives, not two");
@@ -1128,7 +1393,7 @@ mod tests {
         let (s0, s1) = (obc_formats::io::SliceSource(&b0), obc_formats::io::SliceSource(&b1));
         let (c0, c1) = (nav_cell(&s0, d0), nav_cell(&s1, d1));
         let bbox = (SEAM_LON as i64 - 10, hub_lat as i64 - 10, SEAM_LON as i64 + 10, hub_lat as i64 + 100 * 27);
-        let nav = merge(&[&c0, &c1], 20, 0, bbox).expect("the merge succeeds");
+        let nav = merged(&[&c0, &c1], 20, 0, bbox);
 
         assert_eq!(nav.stats.unified, 1, "the hub is the only coordinate both cells wrote");
         assert_eq!((nav.stats.nodes, nav.stats.edges), (SPOKES + 1, SPOKES));

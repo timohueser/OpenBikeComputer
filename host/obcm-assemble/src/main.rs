@@ -48,8 +48,8 @@ use obc_formats::io::{ByteSource, Error as IoError};
 use obcm_assemble::grid::CellId;
 use obcm_assemble::schema::{Schema, Skin};
 use obcm_assemble::{
-    assemble_full, CellInput, Clock, Error, Options, Result, ShardPlan, ShardStore, TerrainCellInput, TerrainJob,
-    TerrainParams,
+    assemble_full, CellInput, Clock, Error, Options, Result, ScratchId, ScratchStore, ShardPlan, ShardStore,
+    TerrainCellInput, TerrainJob, TerrainParams,
 };
 
 /// A cell artifact read on demand. Cell regions are copied in 256 KB blocks, so the whole tree never
@@ -172,6 +172,104 @@ impl FileStore {
             .truncate(true)
             .open(&path)
             .map_err(|e| format!("create {}: {e}", path.display()))
+    }
+}
+
+/// The engine's spill area, as ordinary files under a directory of this run's own (#1116 D2).
+///
+/// Anonymous in the sense the seam means: the names are ordinals nothing outside this store knows,
+/// the directory is created per process and per invocation, and it is removed whole when the store
+/// drops — including after a failed assembly, which is the case a bare `remove_file` per file would
+/// miss. A file is also removed as soon as the engine says it is done with it, so a country-scale
+/// run's *live* scratch is one or two streams rather than all of them.
+struct FileScratch {
+    dir: PathBuf,
+    /// Open handles by [`ScratchId`], with each one's length so an append never has to seek to find
+    /// the end. `None` is a removed file, so an id is never reused.
+    files: RefCell<Vec<Option<(File, u64)>>>,
+}
+
+impl FileScratch {
+    fn new() -> std::result::Result<FileScratch, String> {
+        // The pid keeps two concurrent assemblies apart, and every file is opened `truncate`, so a
+        // directory left behind by a crashed run with a recycled pid is overwritten rather than read.
+        let dir = std::env::temp_dir().join(format!("obcm-assemble-scratch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).map_err(|e| format!("create scratch dir {}: {e}", dir.display()))?;
+        Ok(FileScratch { dir, files: RefCell::new(Vec::new()) })
+    }
+
+    /// Run `f` against the open handle, or refuse — never silently against the wrong file.
+    fn with<T>(&self, id: ScratchId, f: impl FnOnce(&mut (File, u64)) -> Result<T>) -> Result<T> {
+        let mut files = self.files.borrow_mut();
+        match files.get_mut(id.0 as usize).and_then(Option::as_mut) {
+            Some(entry) => f(entry),
+            None => Err(Error::Scratch(format!("{id} is not open"))),
+        }
+    }
+}
+
+impl ScratchStore for FileScratch {
+    fn create(&self) -> Result<ScratchId> {
+        let mut files = self.files.borrow_mut();
+        let id = ScratchId(u32::try_from(files.len()).map_err(|_| Error::Scratch("too many scratch files".into()))?);
+        let path = self.dir.join(format!("{}.spill", id.0));
+        let file = File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .map_err(|e| Error::Scratch(format!("create {}: {e}", path.display())))?;
+        files.push(Some((file, 0)));
+        Ok(id)
+    }
+
+    fn append(&self, id: ScratchId, buf: &[u8]) -> Result<()> {
+        self.with(id, |(file, len)| {
+            file.seek(SeekFrom::Start(*len)).map_err(|e| Error::Scratch(format!("{id}: seek: {e}")))?;
+            file.write_all(buf).map_err(|e| Error::Scratch(format!("{id}: write: {e}")))?;
+            *len += buf.len() as u64;
+            Ok(())
+        })
+    }
+
+    fn read_at(&self, id: ScratchId, offset: u64, buf: &mut [u8]) -> Result<()> {
+        self.with(id, |(file, len)| {
+            let end = offset.saturating_add(buf.len() as u64);
+            if end > *len {
+                return Err(Error::Scratch(format!(
+                    "{id}: a read of {} byte(s) at {offset} runs past the {len}-byte end",
+                    buf.len()
+                )));
+            }
+            file.seek(SeekFrom::Start(offset)).map_err(|e| Error::Scratch(format!("{id}: seek: {e}")))?;
+            file.read_exact(buf).map_err(|e| Error::Scratch(format!("{id}: read: {e}")))
+        })
+    }
+
+    fn len(&self, id: ScratchId) -> Result<u64> {
+        self.with(id, |(_, len)| Ok(*len))
+    }
+
+    fn remove(&self, id: ScratchId) -> Result<()> {
+        let mut files = self.files.borrow_mut();
+        match files.get_mut(id.0 as usize) {
+            Some(slot) => {
+                *slot = None; // closes the handle
+                let _ = std::fs::remove_file(self.dir.join(format!("{}.spill", id.0)));
+                Ok(())
+            }
+            None => Err(Error::Scratch(format!("{id} is not open"))),
+        }
+    }
+}
+
+impl Drop for FileScratch {
+    fn drop(&mut self) {
+        self.files.borrow_mut().clear();
+        // Best effort: the run is over either way, and a temp directory that could not be removed is
+        // not a reason to turn a written set into a failure.
+        let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 
@@ -452,6 +550,11 @@ OPTIONS:
     --target-shard-bytes <n>  split the geometry tiling wherever a node exceeds this (default 1 GiB).
                             It only takes effect once the map needs a set at all; below the 4 GiB
                             single-file threshold the fast path wins unless --force-split is given
+    --merge-budget-bytes <n>  the most memory the §4.6 merge's sorted passes may hold (default 64
+                            MiB). Everything above it spills to scratch files under the system temp
+                            directory, which are removed as the merge finishes with them. Lower it to
+                            assemble a region on a small machine — or to prove that the map is the
+                            same bytes at every budget, which is what it is here for
     --force-split           write a role-partitioned set even when the whole map would fit one file.
                             What each shard *contains* is unchanged — this only changes which files
                             it is written to (a smaller file is a better resumable upload unit)
@@ -512,6 +615,12 @@ fn run() -> std::result::Result<(), String> {
             }
             "--target-shard-bytes" => {
                 opts.target_shard_bytes = value(&mut i)?.parse().map_err(|_| "--target-shard-bytes takes a number")?
+            }
+            "--merge-budget-bytes" => {
+                opts.merge_budget_bytes = value(&mut i)?.parse().map_err(|_| "--merge-budget-bytes takes a number")?;
+                if opts.merge_budget_bytes == 0 {
+                    return Err("--merge-budget-bytes must be at least one record".into());
+                }
             }
             "--force-split" => opts.force_split = true,
             "--accept-holes" => opts.accept_holes = true,
@@ -596,8 +705,11 @@ fn run() -> std::result::Result<(), String> {
     let clock = StdClock(Instant::now());
     #[cfg(feature = "mem-profile")]
     let clock = mem_profile::ProfilingClock::new(StdClock(Instant::now()));
-    let summary =
-        assemble_full(inputs, Vec::new(), job, &schema, &skin, &opts, &mut store, &clock).map_err(|e| e.to_string())?;
+    // The engine's spill area. Real files, so the merge's sorted passes are genuinely off-heap —
+    // which is also what makes the `mem-profile` numbers mean anything.
+    let scratch = FileScratch::new()?;
+    let summary = assemble_full(inputs, Vec::new(), job, &schema, &skin, &opts, &mut store, &clock, &scratch)
+        .map_err(|e| e.to_string())?;
 
     // The engine returns what the spec says to report; the CLI is what has a stderr (§4.5.2, §5.7,
     // `OBCM_Spec.md` §8.3). Printed before the summary so a long JSON blob cannot bury them.
