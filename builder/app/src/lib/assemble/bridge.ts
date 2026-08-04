@@ -181,6 +181,13 @@ export interface AssembleOptions {
      *  `1` turns the cache **off** — one call per engine read. Nothing but a measurement should ask
      *  for that; it is here because "with the cache" only means something against "without". */
     readonly readBlockBytes?: number;
+    /** The most memory the §4.6 nav merge's sorted passes may hold (default 64 MiB, floor 64 KiB).
+     *
+     *  It bounds what the merge *holds*, never what it writes — the same selection assembles to the
+     *  same bytes at any budget. In this build the spill it bounds still lives in wasm memory, so
+     *  lowering it trades the sort's buffer for scratch of the same size; it starts paying once the
+     *  browser's scratch is OPFS-backed (#1116 phase D). */
+    readonly mergeBudgetBytes?: number;
 }
 
 /**
