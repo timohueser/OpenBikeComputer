@@ -63,6 +63,22 @@ describe("responseTransferList", () => {
         expect(responseTransferList(file)).toEqual([bytes.buffer]);
         expect(responseTransferList({ type: "progress", phase: "nav", fraction: 0.5 })).toEqual([]);
     });
+
+    /** A streamed shard was evicted from wasm memory to keep the peak down;
+     *  copying it across the port would put it straight back. */
+    it("moves a streamed shard's buffer too", () => {
+        const bytes = new Uint8Array([7]);
+        expect(
+            responseTransferList({
+                type: "shard",
+                name: "MS1S00.OBM",
+                role: "core",
+                sha256: "0".repeat(64),
+                byteLength: 1,
+                bytes,
+            }),
+        ).toEqual([bytes.buffer]);
+    });
 });
 
 describe("isWorkerResponse", () => {
@@ -84,6 +100,14 @@ describe("isWorkerResponse", () => {
                 byteLength: 128,
                 bytes: new Uint8Array(1),
             },
+            {
+                type: "shard",
+                name: "MS1S00.OBM",
+                role: "core",
+                sha256: "a".repeat(64),
+                byteLength: 4,
+                bytes: new Uint8Array(4),
+            },
             { type: "done", warnings: [], summary: { cells: 1, bytes: 2, manifest: "MS1.OBS", shards: [] } },
             { type: "error", code: "capacity", message: "too big" },
         ];
@@ -98,5 +122,17 @@ describe("isWorkerResponse", () => {
         expect(isWorkerResponse({ type: "file", name: "x", role: "core", sha256: "", byteLength: 1, bytes: [1] })).toBe(
             false,
         );
+        // Only OBCM shards are streamed: the terrain shard and the manifest are
+        // never evicted, so a `shard` claiming to be one is not this protocol.
+        expect(
+            isWorkerResponse({
+                type: "shard",
+                name: "MS1.OBS",
+                role: "manifest",
+                sha256: "",
+                byteLength: 1,
+                bytes: new Uint8Array(1),
+            }),
+        ).toBe(false);
     });
 });

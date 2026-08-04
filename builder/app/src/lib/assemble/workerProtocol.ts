@@ -17,6 +17,15 @@
 //     the worker's copy is gone the moment the message is queued. The worker
 //     then waits for `file-ack`, so the message port cannot become a second
 //     gigabyte-sized queue when the consumer is an SD card.
+//   * **`shard` is the same idea one step earlier, and it has no ack** (#1116
+//     B1). A request with `streamShards` makes the wasm side hand each shard
+//     over the moment its §4.8 verify passes, which frees it from wasm memory
+//     mid-run instead of at the end — the assembly's output residency becomes
+//     one shard. The catch is where the callback runs: *inside* the synchronous
+//     assembly, on this thread, with no way to await anything. So a `shard`
+//     posts and the run carries straight on, and these messages arrive **before
+//     `planned`**, unlike every `file`. A consumer that needs the set plan first
+//     (the device upload does) must not ask for them.
 //   * **Every failure is one `error` message carrying the bridge's own code.**
 //     The worker never rethrows into the void: an uncaught error in a worker is
 //     a console line the UI cannot read. `AssembleError`'s code survives the
@@ -84,6 +93,11 @@ export type AssembleWorkerRequest =
            *  the set is written without a `terrain` role. */
           terrain?: WorkerTerrain;
           terrainCells?: WorkerTerrainCell[];
+          /** Hand each shard back as `shard` the moment it is verified, instead
+           *  of holding the whole set in wasm memory until the run ends (#1116
+           *  B1). Off by default, and it must stay off for a consumer that
+           *  cannot take a file before `planned` — see this module's header. */
+          streamShards?: boolean;
       }
     | { type: "file-ack" };
 
@@ -97,9 +111,17 @@ export interface WorkerFile {
     bytes: Uint8Array;
 }
 
+/** One shard, evicted from wasm memory the moment §4.8 passed on it. Same
+ *  fields as a `file`; a different tag because it arrives **mid-run, before
+ *  `planned`, and is never acknowledged** (module header). */
+export interface WorkerShard extends WorkerFile {
+    role: "core" | "coarse" | "geometry";
+}
+
 export type AssembleWorkerResponse =
     | { type: "progress"; phase: AssemblePhase; fraction: number }
     | { type: "planned"; totalBytes: number; shardCount: number; warnings: string[]; summary: AssembleSummary }
+    | ({ type: "shard" } & WorkerShard)
     | ({ type: "file" } & WorkerFile)
     | { type: "done"; warnings: string[]; summary: AssembleSummary }
     | { type: "estimate-result"; estimate: MemoryEstimate }
@@ -113,9 +135,12 @@ export function requestTransferList(req: AssembleWorkerRequest): Transferable[] 
     return dedupedBuffers([...req.cells.map((c) => c.bytes), ...(req.terrainCells ?? []).map((c) => c.bytes)]);
 }
 
-/** The transfer list for a `file` response. */
+/** The transfer list for a `file` or `shard` response: the bytes *move*, so the
+ *  worker's copy is gone the moment the message is queued. For a `shard` that
+ *  matters twice over — it was evicted from wasm memory to keep the peak down,
+ *  and copying it here would put it straight back. */
 export function responseTransferList(res: AssembleWorkerResponse): Transferable[] {
-    if (res.type !== "file") return [];
+    if (res.type !== "file" && res.type !== "shard") return [];
     return dedupedBuffers([res.bytes]);
 }
 
@@ -140,7 +165,8 @@ const PHASES: ReadonlySet<string> = new Set([
     "manifest",
     "done",
 ]);
-const ROLES: ReadonlySet<string> = new Set(["core", "coarse", "geometry", "terrain", "manifest"]);
+const SHARD_ROLES: ReadonlySet<string> = new Set(["core", "coarse", "geometry"]);
+const ROLES: ReadonlySet<string> = new Set([...SHARD_ROLES, "terrain", "manifest"]);
 const CODES: ReadonlySet<string> = new Set(ASSEMBLE_ERROR_CODES);
 
 /**
@@ -165,11 +191,14 @@ export function isWorkerResponse(v: unknown): v is AssembleWorkerResponse {
                 typeof m.summary === "object" &&
                 m.summary !== null
             );
+        case "shard":
         case "file":
             return (
                 typeof m.name === "string" &&
                 typeof m.role === "string" &&
-                ROLES.has(m.role) &&
+                // A streamed one is always an OBCM shard: the terrain shard and
+                // the manifest are not evicted, they arrive as `file`s.
+                (m.type === "shard" ? SHARD_ROLES : ROLES).has(m.role) &&
                 typeof m.sha256 === "string" &&
                 typeof m.byteLength === "number" &&
                 m.bytes instanceof Uint8Array

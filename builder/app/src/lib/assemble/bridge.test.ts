@@ -176,6 +176,63 @@ describe("assembleCells", () => {
         }
     });
 
+    /**
+     * **The eviction pin** (#1116 B1). With a file sink, each shard crosses to JS the moment its
+     * §4.8 read-back passes and its wasm-side buffer is freed there and then — so the set's
+     * contribution to a tab's peak is one shard instead of all of it.
+     *
+     * What has to hold for that to be a saving rather than a bug: the stream, followed by whatever
+     * is left at the end, is the *same set* the CLI wrote — same files, same order, same bytes — and
+     * the wasm side really is holding nothing for the shards afterwards.
+     */
+    it("streams each shard out as it is verified and keeps nothing of it", async () => {
+        const streamed: { name: string; role: string; sha256: string; bytes: Uint8Array }[] = [];
+        const result = await assembleCells(
+            cells(),
+            sidecar,
+            skin,
+            { ...OPTIONS, forceSplit: true },
+            undefined,
+            [],
+            terrain(),
+            (file) => streamed.push(file),
+        );
+        expect(streamed.map((f) => f.role)).toEqual(["core", "coarse", "geometry"]);
+        // Only the raster and the manifest were still in wasm memory at the end — the three shards
+        // are gone from it, while the summary still knows all three.
+        expect(result.files.map((f) => f.role)).toEqual(["terrain", "manifest"]);
+        expect(result.summary.shards.length).toBe(3);
+
+        const want = expected("expected-split");
+        const delivered = [
+            ...streamed.map((f) => ({ name: f.name, bytes: f.bytes })),
+            ...result.files.map((f) => ({ name: f.name, bytes: f.take() })),
+        ];
+        expect(delivered.map((f) => f.name)).toEqual(want.map((f) => f.name));
+        for (const [i, file] of delivered.entries()) expectSameBytes(file.bytes, want[i].bytes, file.name);
+
+        // The digest a shard was handed over with is the one the manifest records for it — the
+        // identity a caller writes down next to a file it has already saved.
+        for (const [i, file] of streamed.entries()) {
+            expect(file.sha256).toBe(result.summary.shards[i].sha256);
+            expect(file.name).toBe(result.summary.shards[i].file);
+        }
+        result.release();
+    });
+
+    /** A sink that throws is not survivable: the bytes have already left wasm, so the run fails as
+     *  `io` rather than finish a set with a hole in it. */
+    it("fails the run when the file sink throws, instead of finishing a set with a hole in it", async () => {
+        const seen: string[] = [];
+        await expect(
+            assembleCells(cells(), sidecar, skin, { ...OPTIONS, forceSplit: true }, undefined, [], undefined, (file) => {
+                seen.push(file.name);
+                throw new Error("the card is full");
+            }),
+        ).rejects.toMatchObject({ code: "io" });
+        expect(seen).toHaveLength(1);
+    });
+
     it("reports the §4.8 verify pass it already ran", async () => {
         const { summary } = await assembleCells(cells(), sidecar, skin, OPTIONS);
         expect(summary.cells).toBe(5);
