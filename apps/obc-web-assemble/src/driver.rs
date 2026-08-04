@@ -21,8 +21,8 @@
 //!   done.
 //! * The verify pass itself is observed one level deeper. [`ShardStore::source`] is called **once
 //!   per shard** and everything after it happens inside the engine, so a bar driven by store calls
-//!   alone would sit still through §4.8 — which is **60 % of a measured region-scale run**, 9.6 s of
-//!   baden-württemberg's 16.1 s (#1116's harness). [`VerifySource`] therefore wraps the sealed shard
+//!   alone would sit still through §4.8 — which is **43 % of a measured region-scale run**, 11.4 s of
+//!   baden-württemberg's 26.2 s (#1116's phase-D harness). [`VerifySource`] therefore wraps the sealed shard
 //!   the engine reads back and reports from [`ByteSource::read_at`], which is the read-back's own
 //!   inner loop.
 //!
@@ -31,7 +31,7 @@
 //! [`Hooks::progress`] returns `true` to abort. It is called at every phase boundary, every time the
 //! accumulated write crosses [`PROGRESS_STEP`] of the projected output, and every time the verify
 //! read-back crosses the same step — i.e. roughly a hundred times over write+verify, which together
-//! are ~83 % of a run.
+//! are ~80 % of a run.
 //!
 //! The request takes effect at the **next store call or verify read**, whichever comes first. Two
 //! consequences worth stating plainly, because a UI's cancel button depends on them:
@@ -43,7 +43,7 @@
 //!   like a broken assembler).
 //! * **Inside the nav rewrite it is not.** §4.6 makes no store calls at all, so an abort requested
 //!   during it is honoured when the phase ends. That is now the *only* uninterruptible stretch, and
-//!   at a measured 16 % of the run it is the shorter of the two the bridge used to be blind to.
+//!   at a measured 20 % of the run it is the shorter of the two the bridge used to be blind to.
 //!   Making it finer needs a seam inside the engine (see the PR's engine-API follow-ups).
 //!
 //! And the constraint that outranks all of this: [`assemble_cells`] **blocks**. A Bundesland-scale
@@ -476,29 +476,28 @@ impl Phase {
 
     /// This phase's share of the wall clock, and everything before it.
     ///
-    /// Calibrated on the **measured** runs of #1116's `mem-profile` harness (macOS arm64, release,
-    /// published v12 catalog, single-file fast path), which is where these have to come from now:
-    /// the C-series (#1118, #1119, #1120) made the §4.8 read-back about a third faster and left
-    /// write a far larger share of the run than PR #1027's switzerland measurement had it.
+    /// Calibrated on the **measured** runs of #1116's `mem-profile` harness on the finished phase-D
+    /// engine (macOS arm64, release, published v12 catalog, 256 MiB merge budget, single-file fast
+    /// path). D3 made the nav merge external-sort-shaped and D4 made the write phase stream the
+    /// section out of scratch, so both grew relative to verify — the third recalibration this file
+    /// has carried, and each one moved because the engine did.
     ///
-    /// * baden-württemberg, 215 cells / 795 MB: open 0.016 s · poi 0.013 s · nav 2.58 s · plan
-    ///   0.004 s · write 3.82 s · verify 9.63 s of 16.05 s total — nav 0.160, write 0.238,
-    ///   verify 0.600.
-    /// * freiburg-regbez, 77 cells / 264 MB: open 0.029 s · poi 0.006 s · nav 0.82 s · plan 0.006 s
-    ///   · write 1.26 s · verify 2.80 s of 4.92 s total — nav 0.167, write 0.256, verify 0.569.
+    /// * baden-württemberg, 215 cells / 853 MB: open 6.1 ms · poi 12.8 · nav 5246.0 · plan 0.5 ·
+    ///   write 9505.3 · verify 11392.9 of 26173.2 total — nav 0.200, write 0.363, verify 0.435.
+    /// * freiburg-regbez, 77 cells / 287 MB: open 24.5 ms · poi 5.2 · nav 1312.0 · plan 5.3 ·
+    ///   write 2347.4 · verify 2833.4 of 6531.6 total — nav 0.201, write 0.359, verify 0.434.
     ///
-    /// The weights follow **BW**, which is the shape a long run has; freiburg spends a little more
-    /// of a shorter run in write and correspondingly less in verify, so the two bracket these
-    /// numbers rather than disagreeing about them. The superseded weights had the bar running some
-    /// 14 points behind reality all the way through write and then racing through verify.
+    /// The streaming engine made the split **scale-free**: the two regions now agree to half a
+    /// point on every phase, where every earlier calibration had them merely bracketing each other.
+    /// That is the property that lets one weight table serve a corridor and a country.
     const fn weight(self) -> f64 {
         match self {
-            Phase::Open => 0.002,
+            Phase::Open => 0.001,
             Phase::Poi => 0.001,
-            Phase::Nav => 0.163,
+            Phase::Nav => 0.200,
             Phase::Plan => 0.001,
-            Phase::Write => 0.240,
-            Phase::Verify => 0.593,
+            Phase::Write => 0.363,
+            Phase::Verify => 0.434,
             Phase::Manifest | Phase::Done => 0.0,
         }
     }
