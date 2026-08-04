@@ -51,8 +51,9 @@ export class AssembleError extends Error {
  * Which stage of the assembly is running. Mirrors `Phase::as_str` in
  * `apps/obc-web-assemble/src/driver.rs`.
  *
- * `nav` (the graph rewrite) and `verify` (the §4.8 read-back) are the two long ones — measured at
- * 20 % and 74 % of a country-scale run — so a bar that names the phase is worth having.
+ * `nav` (the graph rewrite), `write` (the geometry graft) and `verify` (the §4.8 read-back) are the
+ * long ones — measured at 16 %, 24 % and 60 % of a region-scale run (#1116's harness) — so a bar
+ * that names the phase is worth having.
  */
 export type AssemblePhase = "open" | "poi" | "nav" | "plan" | "write" | "verify" | "manifest" | "done";
 
