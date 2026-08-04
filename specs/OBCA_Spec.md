@@ -646,7 +646,11 @@ This is the most involved rebuild, and its order matters.
 4. **Prune islands** over the merged graph with the schema's `min_component_edges`, keeping the
    largest component plus every component at or above the threshold — the pass §3.5 deferred from
    bake time. This is the only place where the threshold means what it says: an island in the
-   *map*, not in a *cell*.
+   *map*, not in a *cell*. "Largest" is by node count, then by edge count, and — because two
+   components can tie on both while only one of them can be kept — then by the component holding
+   the **lowest-numbered node** of the collection order §4.6.1 read the cells in. The tie-break MUST
+   be a property of the graph rather than of the search that found the components, or two
+   assemblers of the same cells disagree about which islet reached the map.
 5. **Renumber** the surviving nodes densely from 0, in a deterministic order (`(lat, lon)`
    ascending is sufficient and content-derived).
 6. **Rebuild the edge pool.** `Edge Id` is a pool byte offset (`OBCM_Spec.md` §8.4), so every edge
