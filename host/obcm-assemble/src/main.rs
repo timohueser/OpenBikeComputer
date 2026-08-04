@@ -13,6 +13,29 @@
 //! cell's band, path and `partial` flag plus the schema they were baked at — so the common case
 //! needs no second document. `--schema` overrides it (an OBCC v2 root or a bare `SchemaEntry`),
 //! which is what a hosted catalog hands in.
+//!
+//! # Measuring the assembler's memory (`--features mem-profile`)
+//!
+//! The engine's peak heap is the thing a hosted (wasm) assembly is rationed on, and it is not
+//! something a benchmark can guess: it is dominated by one phase (the nav rewrite) at a multiple of
+//! the nav section it produces. The `mem-profile` feature — **off by default, native only** — wraps
+//! the global allocator and the CLI's [`Clock`], so every phase boundary the engine ticks also
+//! snapshots the peak since the previous one. It prints a table to **stderr**; the summary on stdout
+//! (including `--json`) is byte-for-byte unchanged.
+//!
+//! Two commands, the second of which is the measurement:
+//!
+//! ```text
+//! # 1. fetch a real region from the published catalog (resumable, stdlib python3)
+//! python3 host/obcm-assemble/dev/fetch_region.py \
+//!     europe/germany/baden-wuerttemberg/freiburg-regbez /tmp/obca/freiburg
+//!
+//! # 2. assemble it under the harness
+//! cargo run --release -p obcm-assemble --features mem-profile -- \
+//!     --cells /tmp/obca/freiburg/cells.json \
+//!     --skin  /tmp/obca/freiburg/skin.json \
+//!     --out   /tmp/obca/freiburg/out --accept-holes
+//! ```
 
 use std::cell::RefCell;
 use std::fs::File;
@@ -197,6 +220,185 @@ impl Clock for StdClock {
         self.0.elapsed().as_micros() as u64
     }
 }
+
+/// The peak-allocation harness (`--features mem-profile`). See this file's module docs for the
+/// two-command workflow; everything here is compiled out by default.
+#[cfg(feature = "mem-profile")]
+mod mem_profile {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::RefCell;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use obcm_assemble::{Clock, Summary};
+
+    /// Bytes currently owned by the process, as `Layout`s state them.
+    static LIVE: AtomicUsize = AtomicUsize::new(0);
+    /// The high-water mark since the last phase boundary; [`ProfilingClock`] swaps it on every tick.
+    static WINDOW: AtomicUsize = AtomicUsize::new(0);
+    /// The high-water mark over the whole run, never reset.
+    static PEAK: AtomicUsize = AtomicUsize::new(0);
+
+    /// Raise `slot` to `now` if `now` is higher. Relaxed throughout: each counter is a statistic, not
+    /// a lock — no other memory is published through it, and the assembly is single-threaded, so the
+    /// only contention is with whatever the runtime allocates on its own threads.
+    #[inline]
+    fn raise(slot: &AtomicUsize, now: usize) {
+        let mut seen = slot.load(Ordering::Relaxed);
+        while now > seen {
+            match slot.compare_exchange_weak(seen, now, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => break,
+                Err(actual) => seen = actual,
+            }
+        }
+    }
+
+    #[inline]
+    fn grew(now: usize) {
+        raise(&WINDOW, now);
+        raise(&PEAK, now);
+    }
+
+    /// A pass-through over [`System`] that counts. It charges the **net** size change of every
+    /// allocation, so a `Vec` growth that the system realloc satisfies by copying into a fresh block
+    /// is charged its increment, not `old + new` for the instant both exist. That undercount is
+    /// bounded by the largest single buffer and is why a run worth publishing is cross-checked
+    /// against `/usr/bin/time -l`'s peak RSS.
+    pub struct Tracking;
+
+    unsafe impl GlobalAlloc for Tracking {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            let p = unsafe { System.alloc(layout) };
+            if !p.is_null() {
+                grew(LIVE.fetch_add(layout.size(), Ordering::Relaxed) + layout.size());
+            }
+            p
+        }
+
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            let p = unsafe { System.alloc_zeroed(layout) };
+            if !p.is_null() {
+                grew(LIVE.fetch_add(layout.size(), Ordering::Relaxed) + layout.size());
+            }
+            p
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            LIVE.fetch_sub(layout.size(), Ordering::Relaxed);
+            unsafe { System.dealloc(ptr, layout) }
+        }
+
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            let p = unsafe { System.realloc(ptr, layout, new_size) };
+            if !p.is_null() {
+                let old = layout.size();
+                if new_size >= old {
+                    grew(LIVE.fetch_add(new_size - old, Ordering::Relaxed) + (new_size - old));
+                } else {
+                    LIVE.fetch_sub(old - new_size, Ordering::Relaxed);
+                }
+            }
+            p
+        }
+    }
+
+    /// One phase boundary: when the engine ticked, how high the heap got since the previous tick,
+    /// and how much of it was still owned at the tick itself.
+    struct Sample {
+        us: u64,
+        window_peak: usize,
+        live: usize,
+    }
+
+    /// The CLI's clock, plus a snapshot at every tick.
+    ///
+    /// The engine calls its [`Clock`] exactly once per phase boundary, in a documented order
+    /// (`assemble_full`): start, open, poi, nav, plan, then four ticks per shard, two for the
+    /// terrain shard if there is one, and one last for the total. [`ProfilingClock::report`] labels
+    /// the samples against the summary it is handed, and falls back to positional labels if the
+    /// engine ever ticks a different number of times than that arithmetic predicts — a wrong label
+    /// on a real number is worse than an honest `tick N`.
+    pub struct ProfilingClock<C: Clock> {
+        inner: C,
+        samples: RefCell<Vec<Sample>>,
+    }
+
+    impl<C: Clock> ProfilingClock<C> {
+        pub fn new(inner: C) -> Self {
+            // Reserved up front so the recording itself does not allocate mid-phase.
+            ProfilingClock { inner, samples: RefCell::new(Vec::with_capacity(256)) }
+        }
+
+        /// Print the per-phase table to stderr. `nav_section_bytes` is the assembly's one natural
+        /// yardstick: the section the whole rewrite exists to produce.
+        pub fn report(&self, summary: &Summary) {
+            let samples = self.samples.borrow();
+            let labels = labels_for(samples.len(), summary.shards.len(), summary.terrain.is_some());
+            eprintln!("\nmem-profile — peak heap per phase (the window resets at every phase boundary)");
+            eprintln!("  {:<28}{:>14}{:>14}{:>12}", "phase", "peak", "live after", "at");
+            for (s, label) in samples.iter().zip(&labels) {
+                eprintln!(
+                    "  {:<28}{:>14}{:>14}{:>11.1}s",
+                    label,
+                    mib(s.window_peak),
+                    mib(s.live),
+                    s.us as f64 / 1_000_000.0
+                );
+            }
+            let peak = PEAK.load(Ordering::Relaxed);
+            let nav = summary.stats.nav_section_bytes;
+            eprintln!("  {:-<68}", "");
+            eprintln!("  {:<28}{:>14}  ({peak} bytes)", "overall peak", mib(peak));
+            eprintln!("  {:<28}{:>14}  ({nav} bytes)", "nav section written", mib(nav as usize));
+            if nav > 0 {
+                eprintln!("  {:<28}{:>13.2}x", "overall peak / nav section", peak as f64 / nav as f64);
+            }
+        }
+    }
+
+    impl<C: Clock> Clock for ProfilingClock<C> {
+        fn now_us(&self) -> u64 {
+            let us = self.inner.now_us();
+            let live = LIVE.load(Ordering::Relaxed);
+            // Close the window at the level the heap is actually sitting at, so the next phase's
+            // number is what *that* phase added rather than what a previous one left behind.
+            let window_peak = WINDOW.swap(live, Ordering::Relaxed);
+            self.samples.borrow_mut().push(Sample { us, window_peak, live });
+            us
+        }
+    }
+
+    fn mib(bytes: usize) -> String {
+        format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
+    }
+
+    /// The tick order `assemble_full` documents, expanded for this run's shard count.
+    fn labels_for(ticks: usize, shards: usize, terrain: bool) -> Vec<String> {
+        let mut out: Vec<String> = ["start (CLI: sidecar + open)", "open cells", "merge POIs", "merge nav", "plan set"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        for k in 0..shards {
+            out.push(format!("shard {k}: (pre-write)"));
+            out.push(format!("shard {k}: write"));
+            out.push(format!("shard {k}: (pre-verify)"));
+            out.push(format!("shard {k}: verify"));
+        }
+        if terrain {
+            out.push("terrain: (pre-write)".into());
+            out.push("terrain: write + verify".into());
+        }
+        out.push("manifest".into());
+        if out.len() != ticks {
+            // The engine's tick order changed under us: number them rather than mislabel them.
+            out = (0..ticks).map(|k| format!("tick {k}")).collect();
+        }
+        out
+    }
+}
+
+#[cfg(feature = "mem-profile")]
+#[global_allocator]
+static TRACKING_ALLOCATOR: mem_profile::Tracking = mem_profile::Tracking;
 
 /// One cell as the cutter's sidecar states it.
 struct SidecarCell {
@@ -390,7 +592,10 @@ fn run() -> std::result::Result<(), String> {
         _ => None,
     };
 
+    #[cfg(not(feature = "mem-profile"))]
     let clock = StdClock(Instant::now());
+    #[cfg(feature = "mem-profile")]
+    let clock = mem_profile::ProfilingClock::new(StdClock(Instant::now()));
     let summary =
         assemble_full(inputs, Vec::new(), job, &schema, &skin, &opts, &mut store, &clock).map_err(|e| e.to_string())?;
 
@@ -404,6 +609,9 @@ fn run() -> std::result::Result<(), String> {
     } else {
         print_summary(&summary, &out_dir);
     }
+    // stderr, and last: the summary above is pinned by tests and by the builder's parser.
+    #[cfg(feature = "mem-profile")]
+    clock.report(&summary);
     Ok(())
 }
 
