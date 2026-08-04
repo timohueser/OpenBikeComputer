@@ -105,6 +105,34 @@
 //! the same pass asks the host about `795 MB / 64 KiB ≈ 12 k` times. The cache's own residency is
 //! [`READ_CACHE_BLOCKS`] × the block size — 1 MiB by default, independent of how many cells the
 //! selection has.
+//!
+//! # Writing the shards outside wasm memory (#1116 D1)
+//!
+//! B1 above bounds the *output* at one shard, which is the right answer only while a shard is small
+//! enough to be one. It is not: the **core shard cannot be split** — one nav graph, one file (OBCA
+//! §5.1) — so a DACH-scale core is a single ~3 GiB `Vec<u8>` in a 4 GiB address space, and no amount
+//! of streaming the merge helps while the sink is that vector.
+//!
+//! [`ShardWrites`] is the write-side twin of [`CellReads`], and it is the same four ideas: the host
+//! is handed a **slot** (the shard's index), the calls are synchronous so they can be made from
+//! inside the one blocking assembly, the bytes cross as a view rather than a copy, and everything
+//! the engine reads back comes through a [`BlockCache`]. In the browser it is one OPFS
+//! `FileSystemSyncAccessHandle` per shard, opened in the assembly worker.
+//!
+//! What changes inside this module is small on purpose, because the format knowledge must not move:
+//!
+//! * [`ShardStore::write`] forwards to the host instead of extending a vector.
+//! * [`ShardStore::source`] hands §4.8 a [`VerifySource`] whose body is a *file*, so the read-back
+//!   genuinely re-reads what was written — the property the whole verify pass exists for, and one
+//!   that an in-memory store can only assert. `a_shard_the_sink_corrupts_on_disk_fails_verify` is
+//!   the proof: flip a byte behind the driver's back and §4.8 must reject the set.
+//! * A sealed, verified shard is reported by identity ([`SealedShard`]) rather than handed over as
+//!   bytes — [`Hooks::shard_sealed`] — because the host already has the file. Nothing shard-sized
+//!   is ever in linear memory, so there is nothing to evict and nothing to `postMessage`.
+//!
+//! The buffered path stays exactly as it was, to the byte: no sink means [`ShardBody::Buffered`],
+//! `Vec<u8>`, [`Hooks::take_shard`], and every test in `tests/determinism.rs` that was written
+//! before any of this.
 
 use std::cell::{Cell as StdCell, RefCell};
 
@@ -167,6 +195,58 @@ pub trait CellReads {
     /// `Err(message)` fails the run as [`ErrorCode::Io`], with the message quoted after the cell's
     /// own name. A short read is a failure: the buffer must be filled or the call must refuse.
     fn read(&self, slot: usize, offset: u32, buf: &mut [u8]) -> Result<(), String>;
+}
+
+/// How a host takes the bytes of a shard — and gives them back (#1116 D1).
+///
+/// The write-side twin of [`CellReads`], and the reason the unsplittable core shard does not have to
+/// be a `Vec<u8>` in a 4 GiB address space. A shard is named by its **slot**, which is its index in
+/// the set: the number the engine plans with, so nothing has to be looked up per call.
+///
+/// Every method is called from **inside** the synchronous assembly, with the engine blocked behind
+/// it. In the browser that is a `FileSystemSyncAccessHandle` per shard, opened in the assembly
+/// worker before the run starts (they cannot be opened during it — the opener is async and the run
+/// cannot await), which is why the seam is blocking calls rather than futures.
+///
+/// The lifecycle per shard is fixed and the engine's own: `create` once, `write` many times in
+/// order, `seal` once, then any number of [`ShardWrites::read_at`] calls while §4.8 reads the shard
+/// back. `Err(message)` from any of them fails the run as [`ErrorCode::Io`] carrying that message —
+/// never as a §4.8 [`ErrorCode::Verify`] defect, which would tell a rider the assembler is broken
+/// because their disk filled up.
+pub trait ShardWrites {
+    /// Begin shard `slot`, which the set will call `name` (the derived §5.2 filename). Anything
+    /// already at that slot is superseded: a host that reuses a file must truncate it here.
+    fn create(&self, slot: usize, name: &str) -> Result<(), String>;
+    /// Append `bytes` to shard `slot`. A short write is a failure, not a partial success.
+    fn write(&self, slot: usize, bytes: &[u8]) -> Result<(), String>;
+    /// Fill `into` with `into.len()` bytes at `offset` of the **sealed** shard in `slot`, for the
+    /// §4.8 read-back. Served through a [`BlockCache`], so this is called on the order of once per
+    /// [`DEFAULT_READ_BLOCK`] rather than once per engine read.
+    fn read_at(&self, slot: usize, offset: u32, into: &mut [u8]) -> Result<(), String>;
+    /// No more bytes are coming for `slot`. A host that buffers must flush here: the very next thing
+    /// that happens is §4.8 reading the shard back.
+    fn seal(&self, slot: usize) -> Result<(), String>;
+}
+
+/// One shard the host wrote itself, once §4.8 has read it back and passed it (#1116 D1) — the
+/// write-side answer to [`Hooks::take_shard`], carrying an **identity instead of bytes** because the
+/// host already has the file.
+///
+/// The name and the digest are this crate's own arithmetic, computed mid-run because `Summary` does
+/// not exist yet, and both are cross-checked against the engine's when the run ends (see
+/// [`check_handoff`]). A shard reported here is **not** in [`Outcome::files`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SealedShard {
+    /// The slot it was written to — the `create`/`write`/`seal` argument, and the set index.
+    pub slot: usize,
+    /// The derived 8.3 filename (`MS<id>S<kk>.OBM`) the set calls it.
+    pub name: String,
+    /// `"core"`, `"coarse"` or `"geometry"`.
+    pub role: &'static str,
+    /// Lowercase-hex SHA-256 of the bytes the sink was handed, as the manifest will record it.
+    pub sha256: String,
+    /// How many bytes the sink was handed — what the host's file must be long.
+    pub byte_length: u64,
 }
 
 /// One selected cell which the pinned catalog asserts has canonical empty
@@ -411,8 +491,36 @@ struct CachedBlock {
     used: u64,
 }
 
-/// The bridge between [`CellReads`] and the engine's [`ByteSource`] reads: a fixed-size LRU of
-/// blocks shared by **every** source cell, so residency is a constant rather than a per-cell cost.
+/// One slotted, offset-addressed byte source on the **host's** side of the boundary.
+///
+/// Both seams have this shape — [`CellReads`] for the input cells (#1116 B2) and the read-back half
+/// of [`ShardWrites`] for the output shards (#1116 D1) — so one [`BlockCache`] serves either, and
+/// the argument for the cache (module header) is made once rather than twice.
+trait SlotReads {
+    fn read_slot(&self, slot: usize, offset: u32, buf: &mut [u8]) -> Result<(), String>;
+}
+
+/// The input cells, as a cache reads them.
+struct CellSlots<'r>(&'r dyn CellReads);
+
+impl SlotReads for CellSlots<'_> {
+    fn read_slot(&self, slot: usize, offset: u32, buf: &mut [u8]) -> Result<(), String> {
+        self.0.read(slot, offset, buf)
+    }
+}
+
+/// …and the sealed shards, which the §4.8 pass reads back through the same handle they were written
+/// through.
+struct SinkSlots<'w>(&'w dyn ShardWrites);
+
+impl SlotReads for SinkSlots<'_> {
+    fn read_slot(&self, slot: usize, offset: u32, buf: &mut [u8]) -> Result<(), String> {
+        self.0.read_at(slot, offset, buf)
+    }
+}
+
+/// The bridge between a [`SlotReads`] host and the engine's [`ByteSource`] reads: a fixed-size LRU
+/// of blocks shared by **every** slot, so residency is a constant rather than a per-cell cost.
 ///
 /// See the module header for why this exists at all. Two rules are load-bearing:
 ///
@@ -424,10 +532,14 @@ struct CachedBlock {
 ///   not be read is [`ErrorCode::Io`] with the cell's id in it, never a panic across the FFI seam
 ///   and never a §4.8 "the assembler wrote a set the reader cannot read".
 struct BlockCache<'r> {
-    reads: &'r dyn CellReads,
+    reads: &'r dyn SlotReads,
     block: usize,
-    /// Per slot, how a message names that cell. Built once, so the read path never formats.
-    labels: Vec<String>,
+    /// Per slot, how a message names that source. Set once per slot — the input's are all known
+    /// before the run, the sink's as each shard is created — so the read path never formats.
+    labels: RefCell<Vec<String>>,
+    /// What a message calls a slot no label was ever set for. Only reachable through a defect, but
+    /// the two seams' defects read very differently.
+    unnamed: &'static str,
     slots: RefCell<Vec<CachedBlock>>,
     clock: StdCell<u64>,
     /// The first host failure, kept for [`map_error`]. First rather than last: everything after it
@@ -436,22 +548,46 @@ struct BlockCache<'r> {
 }
 
 impl<'r> BlockCache<'r> {
-    fn new(reads: &'r dyn CellReads, block: usize, labels: Vec<String>) -> BlockCache<'r> {
+    fn new(reads: &'r dyn SlotReads, block: usize, labels: Vec<String>, unnamed: &'static str) -> BlockCache<'r> {
         BlockCache {
             reads,
             block,
-            labels,
+            labels: RefCell::new(labels),
+            unnamed,
             slots: RefCell::new(Vec::new()),
             clock: StdCell::new(0),
             failure: RefCell::new(None),
         }
     }
 
+    /// Name a slot that did not exist when the cache was built — the sink's, whose filenames are
+    /// derived one shard at a time as the engine plans them.
+    fn name_slot(&self, slot: usize, label: String) {
+        let mut labels = self.labels.borrow_mut();
+        if labels.len() <= slot {
+            labels.resize(slot + 1, String::new());
+        }
+        labels[slot] = label;
+    }
+
+    /// Drop everything cached for `slot`, because whatever is behind it is about to change.
+    ///
+    /// Only the sink needs this, and only in principle: a slot is a shard index, so a slot is
+    /// written once and read back once. It runs at `create` anyway, because a cache over a file that
+    /// something else may rewrite is the kind of thing that is correct until it silently is not.
+    fn forget_slot(&self, slot: usize) {
+        self.slots.borrow_mut().retain(|b| b.slot != slot);
+    }
+
     /// Record the host's own message and answer the engine in the only vocabulary the seam has.
     fn fail(&self, slot: usize, at: usize, message: String) -> obc_formats::io::Error {
+        let named = {
+            let labels = self.labels.borrow();
+            labels.get(slot).filter(|l| !l.is_empty()).cloned()
+        };
         let mut failure = self.failure.borrow_mut();
         if failure.is_none() {
-            let what = self.labels.get(slot).map(String::as_str).unwrap_or("an unknown cell");
+            let what = named.unwrap_or_else(|| self.unnamed.to_string());
             *failure = Some(format!("{what} could not be read at byte {at}: {message}"));
         }
         obc_formats::io::Error::Io
@@ -460,7 +596,7 @@ impl<'r> BlockCache<'r> {
     /// One host read, straight into `buf`.
     fn fetch(&self, slot: usize, at: usize, buf: &mut [u8]) -> Result<(), obc_formats::io::Error> {
         let offset = u32::try_from(at).map_err(|_| obc_formats::io::Error::BadOffset)?;
-        self.reads.read(slot, offset, buf).map_err(|e| self.fail(slot, at, e))
+        self.reads.read_slot(slot, offset, buf).map_err(|e| self.fail(slot, at, e))
     }
 
     /// The index of the cache slot holding block `index` of `slot`, filling it if it is not there.
@@ -532,13 +668,14 @@ impl<'r> BlockCache<'r> {
     }
 }
 
-/// The reader an assembly with no [`SourceCell`] inputs is given, so the cache needs no `Option`.
-/// Reaching it means a `KeyedSource` exists without a reader, which [`assemble`] refuses first.
+/// The reader an assembly with no [`SourceCell`] inputs — or no [`ShardWrites`] sink — is given, so
+/// neither cache needs an `Option`. Reaching it means a `KeyedSource` exists without a reader (which
+/// [`assemble`] refuses first) or a sunk shard exists without a sink (which cannot be constructed).
 struct NoReads;
 
-impl CellReads for NoReads {
-    fn read(&self, slot: usize, _offset: u32, _buf: &mut [u8]) -> Result<(), String> {
-        Err(format!("slot {slot} has no reader — this assembly was handed no source-backed cells"))
+impl SlotReads for NoReads {
+    fn read_slot(&self, slot: usize, _offset: u32, _buf: &mut [u8]) -> Result<(), String> {
+        Err(format!("slot {slot} has no reader — this assembly was wired without one"))
     }
 }
 
@@ -597,6 +734,24 @@ pub trait Hooks {
     /// [`ErrorCode::Internal`] — see [`assemble_everything`]).
     fn take_shard(&mut self, shard: OutputFile) -> Result<Option<OutputFile>, String> {
         Ok(Some(shard))
+    }
+
+    /// One shard the host's own [`ShardWrites`] sink wrote has passed its §4.8 read-back (#1116 D1).
+    ///
+    /// The same moment as [`Hooks::take_shard`] and the same consequences — the file is not in
+    /// [`Outcome::files`], a failed or cancelled run may already have reported some, and §5.4 makes
+    /// what it reported invisible as a map until the manifest exists. What differs is that there are
+    /// no bytes to hand over: the host wrote them, so it is told *what it has*.
+    ///
+    /// It is not gated on [`Hooks::wants_shards`]. The sink **is** the hand-off: bytes that never
+    /// entered linear memory cannot be kept there, so a caller that wires a sink is told about every
+    /// shard whether or not it also asked for the buffered eviction path.
+    ///
+    /// `Err(message)` stops the run as [`ErrorCode::Io`] with that message, because a set whose
+    /// files the caller could not record must not be reported as finished.
+    fn shard_sealed(&mut self, shard: SealedShard) -> Result<(), String> {
+        let _ = shard;
+        Ok(())
     }
 }
 
@@ -833,16 +988,45 @@ impl Clock for HookedClock<'_, '_> {
     }
 }
 
-/// A sealed shard as the §4.8 verify pass reads it back — an owned buffer, plus the progress and
-/// abort seam **inside the read-back's own loop**.
+/// Where one shard's bytes actually are.
+///
+/// The two are the same shard to the engine and to the format — the difference is only whether this
+/// address space is holding it. That is why the enum is here rather than two stores: everything
+/// about §4.8, the digest, the filename and the hand-off moment is shared, and only `read_at` and
+/// `len` branch.
+enum ShardBody<'a> {
+    /// In wasm memory, as it always was: no sink, or a native caller that wants the bytes.
+    Buffered(Vec<u8>),
+    /// In the host's own storage (#1116 D1) — a slot number, how many bytes were handed over, and
+    /// the cache the §4.8 read-back pulls them back through.
+    Sunk { slot: usize, len: u64, cache: &'a BlockCache<'a> },
+}
+
+impl ShardBody<'_> {
+    /// The shard's length. A shard is `< 4 GiB` by OBCA §5.7, which the engine refuses past long
+    /// before here; the clamp is so a defect reads as a truncated file rather than a wrapped one.
+    fn len(&self) -> u32 {
+        match self {
+            ShardBody::Buffered(bytes) => bytes.len() as u32,
+            ShardBody::Sunk { len, .. } => u32::try_from(*len).unwrap_or(u32::MAX),
+        }
+    }
+}
+
+/// A sealed shard as the §4.8 verify pass reads it back — the bytes, wherever they are, plus the
+/// progress and abort seam **inside the read-back's own loop**.
 ///
 /// This is [`obcm_assemble::MemorySource`] with two lines added, and those two lines are the reason
 /// this crate keeps its own store instead of delegating to [`obcm_assemble::MemoryStore`]:
 /// [`ShardStore::source`] hands the engine a `&dyn ByteSource` and everything §4.8 does happens
 /// behind it, so `read_at` is the only place a browser can learn that verify is moving — or tell it
 /// to stop.
+///
+/// With a sink the read-back is a *file* read (#1116 D1), which is what makes §4.8 the check it
+/// claims to be: the pass re-reads the bytes that were written rather than the ones this process
+/// still happens to be holding.
 struct VerifySource<'a, 'h> {
-    bytes: Vec<u8>,
+    body: ShardBody<'a>,
     p: &'a RefCell<Progress<'h>>,
 }
 
@@ -858,18 +1042,25 @@ impl ByteSource for VerifySource<'_, '_> {
             if p.aborted {
                 // The read-back's own error channel is all there is down here. `verify_shard` turns
                 // it into `Error::Verify`, which is why `map_error` reads the abort flag first.
+                // Checked *before* the read is issued, so a cancel during §4.8 costs at most one
+                // outstanding host call — and never reaches the sink at all.
                 return Err(obc_formats::io::Error::Io);
             }
         }
-        SliceSource(&self.bytes).read_at(offset, buf)
+        match &self.body {
+            ShardBody::Buffered(bytes) => SliceSource(bytes).read_at(offset, buf),
+            ShardBody::Sunk { slot, len, cache } => {
+                cache.read_at(*slot, offset, u32::try_from(*len).unwrap_or(u32::MAX), buf)
+            }
+        }
     }
 
     fn len(&self) -> u32 {
-        self.bytes.len() as u32
+        self.body.len()
     }
 }
 
-/// One shard's slot in the store: the buffer §4.8 reads back, the identity the hand-off needs before
+/// One shard's slot in the store: the bytes §4.8 reads back, the identity the hand-off needs before
 /// the run's `Summary` exists, and the digest of what was actually written.
 struct StoredShard<'a, 'h> {
     src: VerifySource<'a, 'h>,
@@ -892,13 +1083,13 @@ struct StoredShard<'a, 'h> {
     handed_out: bool,
 }
 
-/// The in-memory [`ShardStore`], plus the progress and abort seam.
+/// The [`ShardStore`] the browser assembles through, plus the progress and abort seam.
 ///
-/// In memory is not a shortcut: OBCA §4.8 requires every shard to be **read back through the real
-/// reader before the manifest is written**, so a sealed shard has to be randomly addressable, and
-/// the browser has nowhere else to put it. What it does *not* require is that it stay there
-/// afterwards — see the module header's hand-off section, which is what keeps this to at most one
-/// shard when the caller asks for it.
+/// A sealed shard has to be **randomly addressable**: OBCA §4.8 requires every one to be read back
+/// through the real reader before the manifest is written. Where it is addressable *from* is this
+/// store's one degree of freedom, and both answers are here — wasm memory, or the host's own storage
+/// through a [`ShardWrites`] sink (#1116 D1). The second is what a country-scale core shard needs,
+/// because it cannot be split and a browser cannot hold it.
 struct HookedStore<'a, 'h> {
     shards: Vec<StoredShard<'a, 'h>>,
     manifest: Vec<u8>,
@@ -906,7 +1097,28 @@ struct HookedStore<'a, 'h> {
     card_id: u16,
     /// [`Hooks::wants_shards`], read once before the assembly starts.
     hand_off: bool,
+    /// Where the shards' bytes go, when they do not go into this address space (#1116 D1). `None`
+    /// is the buffered store, unchanged to the byte.
+    sink: Option<&'a dyn ShardWrites>,
+    /// …and how §4.8 reads them back. Present whether or not `sink` is, so the borrow graph needs no
+    /// `Option`; unreachable without one, because only a `Sunk` body names it.
+    sink_cache: &'a BlockCache<'a>,
     p: &'a RefCell<Progress<'h>>,
+}
+
+/// Park a sink failure where [`map_error`] will find it, and answer the engine in the only
+/// vocabulary its sink contract has.
+///
+/// The `Error::Io` this returns says nothing about *why*; the host's own sentence is the whole value
+/// of the seam ("the disk is full", "the handle is closed"), so it is kept here and preferred over
+/// the engine's when the run unwinds. Free-standing rather than a method so a caller that is already
+/// holding a shard mutably can still raise it.
+fn sink_failed(p: &RefCell<Progress<'_>>, what: &str, name: &str, message: String) -> Error {
+    let mut p = p.borrow_mut();
+    if p.failure.is_none() {
+        p.failure = Some(AssembleFailure::new(ErrorCode::Io, format!("{name} could not be {what}: {message}")));
+    }
+    Error::Io(obc_formats::io::Error::Io)
 }
 
 impl HookedStore<'_, '_> {
@@ -920,7 +1132,8 @@ impl HookedStore<'_, '_> {
         Ok(())
     }
 
-    /// Offer every sealed-and-verified shard that is still resident to [`Hooks::take_shard`].
+    /// Report every sealed-and-verified shard exactly once — to [`Hooks::take_shard`] if its bytes
+    /// are here, to [`Hooks::shard_sealed`] if the host wrote them itself.
     ///
     /// Called from [`ShardStore::begin`] and [`ShardStore::manifest`] — the two observable moments
     /// at which the engine has finished with the previous shard (module header). Every shard in
@@ -930,23 +1143,48 @@ impl HookedStore<'_, '_> {
     /// Runs **after** each caller's `check_abort`, so a cancelled run hands nothing further out and
     /// a sink failure cannot be confused with a cancellation.
     fn hand_out_verified(&mut self) -> obcm_assemble::Result<()> {
-        if !self.hand_off {
+        if !self.hand_off && self.sink.is_none() {
             return Ok(());
         }
         // A copy of the shared handle, so the loop below can borrow `self.shards` mutably.
         let p = self.p;
         for shard in self.shards.iter_mut().filter(|s| !s.offered) {
             shard.offered = true;
+            if let ShardBody::Sunk { slot, len, .. } = shard.src.body {
+                // No bytes to hand over — the host has the file. What it is told is what it has.
+                let sealed = SealedShard {
+                    slot,
+                    name: shard.name.clone(),
+                    role: shard.role,
+                    sha256: shard.sha256.clone(),
+                    byte_length: len,
+                };
+                // Bound first: a `match` on the call itself would hold the borrow through the arm
+                // that takes it again.
+                let recorded = p.borrow_mut().hooks.shard_sealed(sealed);
+                match recorded {
+                    Ok(()) => shard.handed_out = true,
+                    Err(message) => {
+                        p.borrow_mut().failure = Some(AssembleFailure::new(ErrorCode::Io, message));
+                        return Err(Error::Io(obc_formats::io::Error::Io));
+                    }
+                }
+                continue;
+            }
+            if !self.hand_off {
+                continue;
+            }
+            let ShardBody::Buffered(bytes) = &mut shard.src.body else { unreachable!("the sunk case returned above") };
             let file = OutputFile {
                 name: shard.name.clone(),
                 role: shard.role,
                 sha256: shard.sha256.clone(),
-                bytes: core::mem::take(&mut shard.src.bytes),
+                bytes: core::mem::take(bytes),
             };
             let taken = p.borrow_mut().hooks.take_shard(file);
             match taken {
                 Ok(None) => shard.handed_out = true,
-                Ok(Some(back)) => shard.src.bytes = back.bytes,
+                Ok(Some(back)) => shard.src.body = ShardBody::Buffered(back.bytes),
                 Err(message) => {
                     // The bytes are already gone; the run must not go on to report a set.
                     p.borrow_mut().failure = Some(AssembleFailure::new(ErrorCode::Io, message));
@@ -970,18 +1208,34 @@ impl<'a, 'h> ShardStore for HookedStore<'a, 'h> {
             p.emit(Phase::Write, at);
         }
         debug_assert_eq!(plan.index, self.shards.len());
-        let mut bytes = Vec::new();
-        // §5 computes a shard's exact size before a byte of it is written, so the browser can have
-        // the buffer it needs in one allocation instead of a doubling ladder whose last step
-        // transiently holds 1.5× a gigabyte-scale shard — memory the estimate does not model and a
-        // tab may not have contiguously. `try_` because a refusal here is recoverable: the write
-        // path would then grow the vector itself and fail (or not) exactly as it used to, whereas a
-        // plain `reserve_exact` would abort the whole module on a capacity a shard might never
-        // actually reach.
-        let _ = bytes.try_reserve_exact(usize::try_from(plan.bytes).unwrap_or(0));
+        let name = obcm_assemble::shard::shard_filename(self.card_id, plan.index);
+        let body = match self.sink {
+            // The host takes the bytes. Nothing shard-sized is reserved here, which is the whole
+            // point: §5 may have just planned a 3 GiB core shard.
+            Some(sink) => {
+                sink.create(plan.index, &name).map_err(|e| sink_failed(self.p, "created", &name, e))?;
+                // So a failed read can say *which* shard, and so a slot that is being written for
+                // the first time cannot serve a block from anything else.
+                self.sink_cache.name_slot(plan.index, format!("shard {name}"));
+                self.sink_cache.forget_slot(plan.index);
+                ShardBody::Sunk { slot: plan.index, len: 0, cache: self.sink_cache }
+            }
+            None => {
+                let mut bytes = Vec::new();
+                // §5 computes a shard's exact size before a byte of it is written, so the browser
+                // can have the buffer it needs in one allocation instead of a doubling ladder whose
+                // last step transiently holds 1.5× a gigabyte-scale shard — memory the estimate does
+                // not model and a tab may not have contiguously. `try_` because a refusal here is
+                // recoverable: the write path would then grow the vector itself and fail (or not)
+                // exactly as it used to, whereas a plain `reserve_exact` would abort the whole
+                // module on a capacity a shard might never actually reach.
+                let _ = bytes.try_reserve_exact(usize::try_from(plan.bytes).unwrap_or(0));
+                ShardBody::Buffered(bytes)
+            }
+        };
         self.shards.push(StoredShard {
-            src: VerifySource { bytes, p: self.p },
-            name: obcm_assemble::shard::shard_filename(self.card_id, plan.index),
+            src: VerifySource { body, p: self.p },
+            name,
             role: plan.role.as_str(),
             hasher: Sha256::new(),
             sha256: String::new(),
@@ -999,27 +1253,45 @@ impl<'a, 'h> ShardStore for HookedStore<'a, 'h> {
             p.emit(Phase::Write, at);
         }
         // Checked *after* accounting so the callback that observes the abort request is the one
-        // that also reports where it got to.
+        // that also reports where it got to — and *before* the sink is touched, so a cancel costs at
+        // most the write already in flight.
         self.check_abort()?;
-        let hand_off = self.hand_off;
+        let digesting = self.hand_off || self.sink.is_some();
+        let sink = self.sink;
+        let p = self.p;
         let shard = self.shards.last_mut().expect("a shard is open");
         // The engine hashes the same bytes on its way through `shard::write`, but it keeps that
         // digest to itself (it lands in the plan *after* `seal`). Hashing here is therefore what
         // makes a mid-run hand-off able to name its own file — and the end-of-run comparison against
-        // the engine's figure is then a real check that the buffer handed out is the buffer the
-        // engine wrote, not a restatement.
-        if hand_off {
+        // the engine's figure is then a real check that the bytes handed out (or written to the
+        // host's own file) are the bytes the engine wrote, not a restatement.
+        if digesting {
             shard.hasher.update(buf);
         }
-        shard.src.bytes.extend_from_slice(buf);
+        match &mut shard.src.body {
+            ShardBody::Buffered(bytes) => bytes.extend_from_slice(buf),
+            ShardBody::Sunk { slot, len, .. } => {
+                let sink = sink.expect("a sunk shard has a sink");
+                sink.write(*slot, buf).map_err(|e| sink_failed(p, "written", &shard.name, e))?;
+                *len += buf.len() as u64;
+            }
+        }
         Ok(())
     }
 
     fn seal(&mut self) -> obcm_assemble::Result<()> {
-        if self.hand_off {
-            let shard = self.shards.last_mut().expect("a shard is open");
+        let digesting = self.hand_off || self.sink.is_some();
+        let sink = self.sink;
+        let p = self.p;
+        let shard = self.shards.last_mut().expect("a shard is open");
+        if digesting {
             let digest = core::mem::take(&mut shard.hasher).finalize();
             shard.sha256 = digest.iter().map(|b| format!("{b:02x}")).collect();
+        }
+        if let (Some(sink), ShardBody::Sunk { slot, .. }) = (sink, &shard.src.body) {
+            // Before the abort check and before §4.8: the very next thing the engine does is read
+            // this shard back, so a host that buffers has to have flushed by now.
+            sink.seal(*slot).map_err(|e| sink_failed(p, "sealed", &shard.name, e))?;
         }
         self.check_abort()
     }
@@ -1036,9 +1308,11 @@ impl<'a, 'h> ShardStore for HookedStore<'a, 'h> {
         // A handed-out shard reads as an empty file rather than as a missing one, which §4.8 would
         // report as a defect in the *engine*. It cannot happen — `source(i)` is only called inside
         // the iteration that wrote shard `i`, which is the whole premise of the hand-off — so if it
-        // ever does, it is this bridge that broke the premise, and it says so.
+        // ever does, it is this bridge that broke the premise, and it says so. A **sunk** shard has
+        // no such failure mode: reporting it to the host took nothing away, and the file is still
+        // there to read.
         match self.shards.get(index) {
-            Some(s) if s.handed_out => {
+            Some(s) if s.handed_out && matches!(s.src.body, ShardBody::Buffered(_)) => {
                 self.p.borrow_mut().failure = Some(AssembleFailure::new(
                     ErrorCode::Internal,
                     format!(
@@ -1104,7 +1378,8 @@ pub fn assemble_cells_with_known_empty(
 /// complete, ordinary map whose profiles are flat.
 ///
 /// This is [`assemble`] with every cell's bytes in hand. A caller whose cells live outside wasm
-/// memory (#1116 B2) builds an [`Inputs`] instead.
+/// memory (#1116 B2), or one that would rather the shards did not either (#1116 D1), builds a
+/// [`Wiring`] instead.
 // One assembly is exactly these eight things; a struct would restate the signature.
 #[allow(clippy::too_many_arguments)]
 pub fn assemble_everything(
@@ -1118,7 +1393,7 @@ pub fn assemble_everything(
     hooks: &mut dyn Hooks,
 ) -> Result<Outcome, AssembleFailure> {
     assemble(
-        Inputs { cells, known_empty, terrain, terrain_cells, ..Inputs::default() },
+        Wiring { cells, known_empty, terrain, terrain_cells, ..Wiring::default() },
         schema_json,
         skin_json,
         opts,
@@ -1126,8 +1401,9 @@ pub fn assemble_everything(
     )
 }
 
-/// Everything one assembly reads: the cells, in whichever of the two forms the host has them, the
-/// selection's canonical-empty coverage, and the raster.
+/// Everything one assembly is wired to: the cells, in whichever of the two forms the host has them,
+/// the selection's canonical-empty coverage, the raster — and, if the host would rather keep the
+/// output than have this address space hold it, where the shards go.
 ///
 /// The two cell lists are alternatives rather than halves — a host uses buffers ([`CellBytes`]) or
 /// keys ([`SourceCell`]), and the browser picks by capability — but both may be present, and the
@@ -1135,27 +1411,35 @@ pub fn assemble_everything(
 /// the output: §4.6.5 renumbers by content and §5 plans by role, which is what makes an assembly
 /// deterministic however the downloads finished.
 #[derive(Default)]
-pub struct Inputs<'r> {
+pub struct Wiring<'r> {
     /// Cells whose bytes are already in wasm memory.
     pub cells: Vec<CellBytes>,
-    /// Cells the host serves through [`Inputs::reads`], by slot — their index in **this** list.
+    /// Cells the host serves through [`Wiring::reads`], by slot — their index in **this** list.
     pub source_cells: Vec<SourceCell>,
     /// Required if `source_cells` is non-empty, and unused otherwise.
     pub reads: Option<&'r dyn CellReads>,
     pub known_empty: Vec<KnownEmptyCell>,
     pub terrain: Option<TerrainLattice>,
     pub terrain_cells: Vec<TerrainCellBytes>,
+    /// Where the OBCM shards are written, by slot — their index in the set (#1116 D1). `None` keeps
+    /// them in wasm memory, which is what every native caller wants and what the browser falls back
+    /// to. With one, no shard is ever resident and none appears in [`Outcome::files`]: each is
+    /// reported by identity to [`Hooks::shard_sealed`] as it passes §4.8.
+    ///
+    /// The **terrain** shard and the OBCS manifest are not affected — terrain is written through the
+    /// engine's own sink and the manifest is a few hundred bytes, so both stay in `files`.
+    pub sink: Option<&'r dyn ShardWrites>,
 }
 
 /// Assemble one selection into a `.obcm` or an OBCA volume set, reporting through `hooks`.
 pub fn assemble(
-    inputs: Inputs<'_>,
+    wiring: Wiring<'_>,
     schema_json: &str,
     skin_json: &str,
     opts: &BridgeOptions,
     hooks: &mut dyn Hooks,
 ) -> Result<Outcome, AssembleFailure> {
-    let Inputs { cells, source_cells, reads, known_empty, terrain, terrain_cells } = inputs;
+    let Wiring { cells, source_cells, reads, known_empty, terrain, terrain_cells, sink } = wiring;
     if cells.is_empty() && source_cells.is_empty() {
         return Err(AssembleFailure::new(
             ErrorCode::Input,
@@ -1205,9 +1489,26 @@ pub fn assemble(
         labels.push(format!("cell {} of band {:?} ({})", c.id, c.band, c.key));
     }
     // A cache is built even with nothing to read through it: it is one empty `Vec` and it keeps the
-    // borrow graph below free of an `Option`. `NO_READS` is never reached in that case — the loop
+    // borrow graph below free of an `Option`. `NoReads` is never reached in that case — the loop
     // that would call it has no iterations.
-    let cache = BlockCache::new(reads.unwrap_or(&NoReads), opts.read_block_bytes, labels);
+    let no_reads = NoReads;
+    let cell_slots = reads.map(CellSlots);
+    let cache = BlockCache::new(
+        cell_slots.as_ref().map_or(&no_reads as &dyn SlotReads, |c| c as &dyn SlotReads),
+        opts.read_block_bytes,
+        labels,
+        "an unknown cell",
+    );
+    // …and the same on the write side, for the §4.8 read-back of shards the host wrote itself. Its
+    // labels are filled in as the engine plans each shard, because a shard's derived filename does
+    // not exist until then.
+    let sink_slots = sink.map(SinkSlots);
+    let sink_cache = BlockCache::new(
+        sink_slots.as_ref().map_or(&no_reads as &dyn SlotReads, |s| s as &dyn SlotReads),
+        opts.read_block_bytes,
+        Vec::new(),
+        "an unnamed shard",
+    );
     let keyed: Vec<KeyedSource<'_, '_>> = keyed_ids
         .iter()
         .enumerate()
@@ -1280,8 +1581,15 @@ pub fn assemble(
         failure: None,
     });
     let clock = HookedClock { p: &progress };
-    let mut store =
-        HookedStore { shards: Vec::new(), manifest: Vec::new(), card_id: options.card_id, hand_off, p: &progress };
+    let mut store = HookedStore {
+        shards: Vec::new(),
+        manifest: Vec::new(),
+        card_id: options.card_id,
+        hand_off,
+        sink,
+        sink_cache: &sink_cache,
+        p: &progress,
+    };
     // The terrain shard is written into an ordinary in-memory buffer, like every OBCM shard: the
     // engine's OBCT writer seeks (it back-patches its directory), which a `Cursor` gives for free.
     let mut terrain_sink = std::io::Cursor::new(Vec::<u8>::new());
@@ -1300,9 +1608,16 @@ pub fn assemble(
             let p = progress.borrow();
             // An input cell that could not be read is the root cause of whatever the engine went on
             // to report — `Cell::open` turns a failed read into "not a readable OBCM", which would
-            // blame the catalog for the browser's storage. The host's own message wins.
-            let read_failure =
-                cache.failure.borrow().clone().map(|message| AssembleFailure::new(ErrorCode::Io, message));
+            // blame the catalog for the browser's storage. The host's own message wins. A shard that
+            // could not be read *back* is the same story one seam over, and it matters more: §4.8
+            // reports every read failure as a verify defect, so without this a full disk would tell
+            // a rider the assembler is broken.
+            let read_failure = cache
+                .failure
+                .borrow()
+                .clone()
+                .or_else(|| sink_cache.failure.borrow().clone())
+                .map(|message| AssembleFailure::new(ErrorCode::Io, message));
             return Err(map_error(e, p.aborted, read_failure.or_else(|| p.failure.clone())));
         }
     };
@@ -1331,13 +1646,28 @@ pub fn assemble(
         // a caller that already wrote `MS1S00.OBM` somewhere must have written the bytes the engine
         // says are in it. A disagreement is a defect in this bridge — and it is *reported* rather
         // than corrected, because the shard is already gone.
-        if hand_off {
+        // …and the same claim, made harder, when the host wrote the file itself: it saved bytes
+        // under this name and recorded this digest without ever seeing them, so the equality below
+        // is the only thing standing between a mislabelled file and a card.
+        if hand_off || sink.is_some() {
             check_handoff(s.index, (&shard.name, &shard.sha256), (&s.filename, &sha256))?;
         }
         if shard.handed_out {
             continue;
         }
-        files.push(OutputFile { name: s.filename.clone(), role: s.role.as_str(), sha256, bytes: shard.src.bytes });
+        let ShardBody::Buffered(bytes) = shard.src.body else {
+            // A sunk shard is always reported and always `handed_out`; reaching here would mean the
+            // hand-out loop skipped one, and the alternative to saying so is an empty `.OBM`.
+            return Err(AssembleFailure::new(
+                ErrorCode::Internal,
+                format!(
+                    "shard {} ({}) was written to the host's own sink but never reported as sealed — this bridge \
+                     would have handed back an empty file.",
+                    s.index, s.filename
+                ),
+            ));
+        };
+        files.push(OutputFile { name: s.filename.clone(), role: s.role.as_str(), sha256, bytes });
     }
     // The raster goes with the shards — before the manifest, because §5.4's rule is about the
     // manifest being last, and it names the terrain record too.

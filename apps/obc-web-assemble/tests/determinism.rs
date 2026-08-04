@@ -20,8 +20,8 @@ use std::path::{Path, PathBuf};
 
 use obc_web_assemble::{
     assemble, assemble_cells, assemble_cells_with_known_empty, assemble_everything, BridgeOptions, CellBytes,
-    CellReads, ErrorCode, Hooks, Inputs, KnownEmptyCell, NoHooks, OutputFile, Phase, SourceCell, TerrainCellBytes,
-    TerrainLattice,
+    CellReads, ErrorCode, Hooks, KnownEmptyCell, NoHooks, OutputFile, Phase, SealedShard, ShardWrites, SourceCell,
+    TerrainCellBytes, TerrainLattice, Wiring,
 };
 
 fn fixture_dir() -> PathBuf {
@@ -791,14 +791,14 @@ impl Stored {
             .collect()
     }
 
-    /// This store's cells, with the raster beside them — the same `Inputs` every test here builds.
-    fn inputs(&self) -> Inputs<'_> {
-        Inputs {
+    /// This store's cells, with the raster beside them — the same `Wiring` every test here builds.
+    fn wiring(&self) -> Wiring<'_> {
+        Wiring {
             source_cells: self.source_cells(),
             reads: Some(self),
             terrain: Some(terrain_lattice()),
             terrain_cells: terrain_cells(),
-            ..Inputs::default()
+            ..Wiring::default()
         }
     }
 }
@@ -825,7 +825,7 @@ impl CellReads for Stored {
 #[test]
 fn cells_read_through_the_host_produce_the_native_clis_bytes() {
     let store = Stored::new();
-    let out = assemble(store.inputs(), &sidecar(), &skin(), &options(), &mut NoHooks).expect("the assembly runs");
+    let out = assemble(store.wiring(), &sidecar(), &skin(), &options(), &mut NoHooks).expect("the assembly runs");
     let want = expected("expected");
     assert_eq!(out.files.len(), want.len(), "file count: {:?} vs {:?}", out.files, want);
     for (got, (name, bytes)) in out.files.iter().zip(&want) {
@@ -849,7 +849,7 @@ fn cells_read_through_the_host_produce_the_native_clis_bytes() {
 fn a_volume_set_assembles_the_same_from_host_reads() {
     let store = Stored::new();
     let opts = BridgeOptions { force_split: true, ..options() };
-    let out = assemble(store.inputs(), &sidecar(), &skin(), &opts, &mut NoHooks).expect("the assembly runs");
+    let out = assemble(store.wiring(), &sidecar(), &skin(), &opts, &mut NoHooks).expect("the assembly runs");
     let want = expected("expected-split");
     assert_eq!(out.files.len(), want.len(), "file count: {:?} vs {:?}", out.files, want);
     for (got, (name, bytes)) in out.files.iter().zip(&want) {
@@ -871,7 +871,7 @@ fn the_read_block_size_changes_the_call_count_and_not_the_bytes() {
     let run = |block: usize| {
         let store = Stored::new();
         let opts = BridgeOptions { read_block_bytes: block, ..options() };
-        let out = assemble(store.inputs(), &sidecar(), &skin(), &opts, &mut NoHooks).expect("the assembly runs");
+        let out = assemble(store.wiring(), &sidecar(), &skin(), &opts, &mut NoHooks).expect("the assembly runs");
         let reads = store.reads.borrow().len();
         (out.files.into_iter().map(|f| (f.name, f.bytes)).collect::<Vec<_>>(), reads)
     };
@@ -902,7 +902,7 @@ fn a_cell_the_host_cannot_read_fails_as_io_naming_the_cell() {
         let store = Stored::failing_at(1, at);
         let named = store.source_cells()[1].id.clone();
         let opts = BridgeOptions { read_block_bytes: block, ..options() };
-        let e = assemble(store.inputs(), &sidecar(), &skin(), &opts, &mut NoHooks).expect_err("slot 1 is unreadable");
+        let e = assemble(store.wiring(), &sidecar(), &skin(), &opts, &mut NoHooks).expect_err("slot 1 is unreadable");
         assert_eq!(e.code, ErrorCode::Io, "blocks of {block}, failing at {at}: {}", e.message);
         assert!(e.message.contains(&named), "the message must name the cell: {}", e.message);
         assert!(e.message.contains("the storage handle is closed"), "the host's own words: {}", e.message);
@@ -915,7 +915,7 @@ fn a_cell_the_host_cannot_read_fails_as_io_naming_the_cell() {
 fn cells_handed_over_by_key_without_a_reader_are_refused() {
     let store = Stored::new();
     let e = assemble(
-        Inputs { source_cells: store.source_cells(), reads: None, ..Inputs::default() },
+        Wiring { source_cells: store.source_cells(), reads: None, ..Wiring::default() },
         &sidecar(),
         &skin(),
         &options(),
@@ -924,4 +924,314 @@ fn cells_handed_over_by_key_without_a_reader_are_refused() {
     .expect_err("there is no way to fetch these");
     assert_eq!(e.code, ErrorCode::Internal, "{}", e.message);
     assert!(e.message.contains("no read callback"), "{}", e.message);
+}
+
+// --- the output shards, outside wasm memory (#1116 D1) ------------------------------------------
+
+/// One slot's file on the host's own storage.
+#[derive(Default, Clone)]
+struct DiskFile {
+    /// The derived §5.2 name the driver announced at `create`. Recorded rather than used: the
+    /// browser writes into a pre-opened scratch file and saves it under this name afterwards, so a
+    /// sink that quietly disagreed with the manifest would be invisible without checking it here.
+    name: String,
+    bytes: Vec<u8>,
+    sealed: bool,
+}
+
+/// The host's own storage, as this crate sees it through [`ShardWrites`]: one file per slot, plus
+/// the three things a real disk does that a `Vec<u8>` in the same process never would — refuse a
+/// write, refuse a read, and hand back bytes that are not the ones it was given.
+#[derive(Default)]
+struct Disk {
+    files: std::cell::RefCell<Vec<DiskFile>>,
+    /// Refuse `write` once this many bytes have been accepted for that slot — a disk filling up
+    /// mid-shard.
+    refuse_write_after: Option<(usize, usize)>,
+    /// Refuse every `read_at` of this slot: a handle closed under the §4.8 read-back's feet.
+    refuse_reads: Option<usize>,
+    /// Flip one byte of a slot at `seal`, **behind the driver's back**. Nothing in this process ever
+    /// sees the change: this crate's digest was taken from the bytes on the way in, and the engine's
+    /// from the same bytes by its own path. Only a §4.8 pass that genuinely re-reads the file can
+    /// notice.
+    corrupt: Option<(usize, usize)>,
+    /// How many times the host was asked for bytes — the read-back's own crossing count.
+    reads: std::cell::Cell<usize>,
+}
+
+impl Disk {
+    fn slot(&self, slot: usize) -> Result<std::cell::RefMut<'_, DiskFile>, String> {
+        let files = self.files.borrow_mut();
+        if slot >= files.len() {
+            return Err(format!("there is no slot {slot}"));
+        }
+        Ok(std::cell::RefMut::map(files, |f| &mut f[slot]))
+    }
+
+    /// What is on the host's storage, in slot order — the set as a rider would find it.
+    fn written(&self) -> Vec<(String, Vec<u8>)> {
+        self.files.borrow().iter().map(|f| (f.name.clone(), f.bytes.clone())).collect()
+    }
+}
+
+impl ShardWrites for Disk {
+    fn create(&self, slot: usize, name: &str) -> Result<(), String> {
+        let mut files = self.files.borrow_mut();
+        if files.len() <= slot {
+            files.resize(slot + 1, DiskFile::default());
+        }
+        files[slot] = DiskFile { name: name.to_string(), bytes: Vec::new(), sealed: false };
+        Ok(())
+    }
+
+    fn write(&self, slot: usize, bytes: &[u8]) -> Result<(), String> {
+        let mut file = self.slot(slot)?;
+        if let Some((s, after)) = self.refuse_write_after {
+            if slot == s && file.bytes.len() + bytes.len() > after {
+                return Err("the disk is full".into());
+            }
+        }
+        assert!(!file.sealed, "slot {slot} was written after it was sealed");
+        file.bytes.extend_from_slice(bytes);
+        Ok(())
+    }
+
+    fn read_at(&self, slot: usize, offset: u32, into: &mut [u8]) -> Result<(), String> {
+        self.reads.set(self.reads.get() + 1);
+        if self.refuse_reads == Some(slot) {
+            return Err("the storage handle is closed".into());
+        }
+        let file = self.slot(slot)?;
+        assert!(file.sealed, "slot {slot} was read back before it was sealed");
+        let at = offset as usize;
+        let want = file.bytes.get(at..at + into.len()).ok_or_else(|| format!("slot {slot} has no byte {at}"))?;
+        into.copy_from_slice(want);
+        Ok(())
+    }
+
+    fn seal(&self, slot: usize) -> Result<(), String> {
+        let mut file = self.slot(slot)?;
+        file.sealed = true;
+        if let Some((s, at)) = self.corrupt {
+            if slot == s {
+                file.bytes[at] ^= 0xff;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A caller whose shards are written by the host, recording what it was told it now has.
+#[derive(Default)]
+struct Sinking {
+    sealed: Vec<SealedShard>,
+    /// Refuse the `n`-th report, as a caller whose own bookkeeping failed.
+    fail_at: Option<usize>,
+}
+
+impl Hooks for Sinking {
+    fn now_us(&mut self) -> u64 {
+        0
+    }
+    fn progress(&mut self, _phase: Phase, _fraction: f64) -> bool {
+        false
+    }
+    fn shard_sealed(&mut self, shard: SealedShard) -> Result<(), String> {
+        if self.fail_at == Some(self.sealed.len()) {
+            return Err(format!("{} could not be recorded", shard.name));
+        }
+        self.sealed.push(shard);
+        Ok(())
+    }
+}
+
+/// The fixture assembled with its shards written through `disk` instead of into this address space.
+fn assemble_to_disk(
+    disk: &Disk,
+    opts: &BridgeOptions,
+    hooks: &mut dyn Hooks,
+) -> Result<obc_web_assemble::Outcome, obc_web_assemble::AssembleFailure> {
+    assemble(
+        Wiring {
+            cells: cells(),
+            terrain: Some(terrain_lattice()),
+            terrain_cells: terrain_cells(),
+            sink: Some(disk),
+            ..Wiring::default()
+        },
+        &sidecar(),
+        &skin(),
+        opts,
+        hooks,
+    )
+}
+
+/// **The D1 pin**: a volume set whose shards were never in this address space is the same set — the
+/// same files, the same names, the same digests, byte for byte — as the one the native CLI wrote in
+/// one piece.
+///
+/// This is the claim the whole phase rests on. The core shard cannot be split (one nav graph, one
+/// file), so at DACH scale it is a ~3 GiB allocation in a 4 GiB address space and the *only* answer
+/// is that it is not an allocation at all. The seam that makes that true must contribute no format
+/// knowledge, and this is where that is checked.
+#[test]
+fn shards_written_through_the_sink_are_the_native_clis_volume_set() {
+    let disk = Disk::default();
+    let mut hooks = Sinking::default();
+    let opts = BridgeOptions { force_split: true, ..options() };
+    let out = assemble_to_disk(&disk, &opts, &mut hooks).expect("the assembly runs");
+    let want = expected("expected-split");
+
+    // Nothing shard-sized came back: the raster (which the engine writes through its own sink) and
+    // the manifest are all that is left in wasm memory.
+    assert_eq!(out.files.iter().map(|f| f.role).collect::<Vec<_>>(), vec!["terrain", "manifest"]);
+    assert_eq!(hooks.sealed.iter().map(|s| s.role).collect::<Vec<_>>(), vec!["core", "coarse", "geometry"]);
+
+    // What the host has, then what is left here, is the set — in order, name by name, byte by byte.
+    let delivered: Vec<(String, Vec<u8>)> =
+        disk.written().into_iter().chain(out.files.iter().map(|f| (f.name.clone(), f.bytes.clone()))).collect();
+    assert_eq!(delivered.len(), want.len(), "file count: {:?} vs {}", delivered.iter().map(|f| &f.0), want.len());
+    for ((name, bytes), (want_name, want_bytes)) in delivered.iter().zip(&want) {
+        assert_eq!(name, want_name, "the derived filenames must match the CLI's (OBCA §5.2)");
+        assert_same_bytes(bytes, want_bytes, name);
+    }
+
+    // …and what the caller was *told* it has matches what the engine says it wrote. The host saved
+    // these bytes without ever seeing them, so this equality is the only thing between a mislabelled
+    // file and a card.
+    let s: serde_json::Value = serde_json::from_str(&out.summary_json).expect("the summary is JSON");
+    for (i, sealed) in hooks.sealed.iter().enumerate() {
+        assert_eq!(sealed.slot, i, "a shard's slot is its index in the set");
+        assert_eq!(s["shards"][i]["file"], sealed.name.as_str());
+        assert_eq!(s["shards"][i]["sha256"], sealed.sha256.as_str());
+        assert_eq!(s["shards"][i]["bytes"].as_u64(), Some(sealed.byte_length));
+        assert_eq!(sealed.byte_length as usize, want[i].1.len());
+    }
+}
+
+/// …and the single-file fast path, where "one shard" and "the whole set" are the same thing — the
+/// shape a country actually has, and the one an off-by-one in the sink would hide.
+#[test]
+fn a_single_file_assembly_writes_its_one_shard_through_the_sink() {
+    let disk = Disk::default();
+    let mut hooks = Sinking::default();
+    let out = assemble_to_disk(&disk, &options(), &mut hooks).expect("the assembly runs");
+    let want = expected("expected");
+    let on_disk = disk.written();
+    assert_eq!(on_disk.len(), 1);
+    assert_eq!(on_disk[0].0, want[0].0);
+    assert_same_bytes(&on_disk[0].1, &want[0].1, &want[0].0);
+    assert_eq!(hooks.sealed.len(), 1);
+    assert_eq!(out.files.iter().map(|f| f.role).collect::<Vec<_>>(), vec!["terrain", "manifest"]);
+    for (got, (name, bytes)) in out.files.iter().zip(want.iter().skip(1)) {
+        assert_eq!(&got.name, name);
+        assert_same_bytes(&got.bytes, bytes, name);
+    }
+}
+
+/// **The proof that §4.8 reads the file.** Flip one byte of a sealed shard behind the driver's
+/// back — the sink's own storage changed, nothing in this process did — and the verify pass must
+/// reject the set.
+///
+/// It is the test the buffered store could never pass. With the bytes in a `Vec`, "read the shard
+/// back" and "look at the shard" are the same operation, so §4.8 proves the *encoder* agrees with
+/// the *decoder* and nothing about the medium. With a sink the medium is the thing that can lie, and
+/// a read-back that quietly answered out of an in-memory copy would ship a corrupt map with a clean
+/// verdict. Byte 0 is the OBCM magic, so what fails is unmistakably the reader.
+#[test]
+fn a_shard_the_sink_corrupts_on_disk_fails_verify() {
+    let disk = Disk { corrupt: Some((0, 0)), ..Disk::default() };
+    let mut hooks = Sinking::default();
+    let e = assemble_to_disk(&disk, &options(), &mut hooks).expect_err("the shard on disk is not the one written");
+    assert_eq!(e.code, ErrorCode::Verify, "{}", e.message);
+    // Nothing was reported as sealed and nothing was written after it: §4.8 is a precondition of the
+    // manifest, so the corrupt shard never became part of a map (OBCA §5.4).
+    assert!(hooks.sealed.is_empty(), "a shard that failed its read-back was reported as finished");
+    assert!(disk.reads.get() > 0, "the read-back never asked the host for a byte");
+}
+
+/// A sink that cannot take a shard's bytes fails the **run**, as `io` and in the host's own words,
+/// naming the file it was writing. Not `verify`: a full disk is not a defect in the assembler.
+#[test]
+fn a_sink_that_refuses_a_write_fails_the_run_as_io() {
+    let disk = Disk { refuse_write_after: Some((0, 4096)), ..Disk::default() };
+    let mut hooks = Sinking::default();
+    let e = assemble_to_disk(&disk, &options(), &mut hooks).expect_err("the disk filled up");
+    assert_eq!(e.code, ErrorCode::Io, "{}", e.message);
+    assert!(e.message.contains("the disk is full"), "the host's own words: {}", e.message);
+    assert!(e.message.contains(".OBM"), "the message must name the shard: {}", e.message);
+    assert!(hooks.sealed.is_empty());
+}
+
+/// …and a sink that cannot give them **back** is `io` too, although §4.8 is where it surfaces.
+///
+/// This is the same rule as `map_error`'s abort-first one, one seam over: `verify_shard` reports any
+/// read failure as a §4.8 defect, so without the host's own message a closed handle would tell a
+/// rider that the assembler wrote a set the reader cannot read — the one verdict the docs say never
+/// to retry past.
+#[test]
+fn a_shard_the_sink_cannot_read_back_is_io_not_a_verify_defect() {
+    let disk = Disk { refuse_reads: Some(0), ..Disk::default() };
+    let e = assemble_to_disk(&disk, &options(), &mut NoHooks).expect_err("the read-back cannot read");
+    assert_eq!(e.code, ErrorCode::Io, "{}", e.message);
+    assert!(e.message.contains("the storage handle is closed"), "the host's own words: {}", e.message);
+    assert!(e.message.contains(".OBM"), "the message must name the shard: {}", e.message);
+}
+
+/// A caller that cannot record a finished shard stops the run as `io`. The file exists and its name
+/// is now the only thing that could find it again, so finishing the set would report a map whose
+/// files nobody wrote down.
+#[test]
+fn a_sealed_report_the_caller_refuses_fails_the_run_as_io() {
+    let disk = Disk::default();
+    let mut hooks = Sinking { fail_at: Some(1), ..Default::default() };
+    let opts = BridgeOptions { force_split: true, ..options() };
+    let e = assemble_to_disk(&disk, &opts, &mut hooks).expect_err("the caller refused the second shard");
+    assert_eq!(e.code, ErrorCode::Io, "{}", e.message);
+    assert!(e.message.contains("could not be recorded"), "{}", e.message);
+    assert_eq!(
+        hooks.sealed.len(),
+        1,
+        "the first was recorded before the refusal — that one is the caller's to clean up"
+    );
+}
+
+/// A cancel is a cancellation wherever it lands, sink or no sink: during the write, where it reaches
+/// the store's own abort check, and inside the §4.8 read-back, where it must be seen **before** the
+/// host is asked for a byte and must never be reported as a §4.8 defect.
+#[test]
+fn a_cancel_through_the_sink_path_is_still_a_cancellation() {
+    for phase in [Phase::Write, Phase::Verify] {
+        let disk = Disk::default();
+        let mut rec = Recorder { abort_at: Some((phase, 2)), ..Default::default() };
+        let e = assemble_to_disk(&disk, &options(), &mut rec).expect_err("cancelled");
+        assert_eq!(e.code, ErrorCode::Aborted, "cancelled during {phase:?}: {}", e.message);
+        assert!(e.message.contains("cancelled"), "{}", e.message);
+        // §5.4 is what makes that safe: whatever the host has, none of it is a map without the
+        // manifest, and the manifest was never asked for.
+        assert!(!rec.seen.iter().any(|(p, _)| matches!(p, Phase::Manifest | Phase::Done)));
+    }
+}
+
+/// The §4.8 read-back goes through the same block cache the input reads do, and for the same reason:
+/// the pass walks a sealed shard a record at a time, and one host call per read is one file read and
+/// one boundary crossing per record.
+///
+/// Transparency first — the same bytes either way — and then the count, because "with the cache"
+/// only means something against "without".
+#[test]
+fn the_read_back_is_cached_and_the_cache_changes_no_bytes() {
+    let run = |block: usize| {
+        let disk = Disk::default();
+        let opts = BridgeOptions { read_block_bytes: block, ..options() };
+        assemble_to_disk(&disk, &opts, &mut NoHooks).expect("the assembly runs");
+        (disk.written(), disk.reads.get())
+    };
+    let (uncached, engine_reads) = run(1);
+    let (cached, host_reads) = run(64 * 1024);
+    for ((name, a), (_, b)) in uncached.iter().zip(&cached) {
+        assert_same_bytes(a, b, &format!("{name} with the read-back cache off"));
+    }
+    eprintln!("read-back: {engine_reads} host reads with the cache off, {host_reads} at 64 KiB blocks");
+    assert!(host_reads * 10 < engine_reads, "the block cache saved only {engine_reads} → {host_reads} host reads");
 }
