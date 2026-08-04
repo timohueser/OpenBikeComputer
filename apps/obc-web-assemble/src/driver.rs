@@ -21,16 +21,17 @@
 //!   done.
 //! * The verify pass itself is observed one level deeper. [`ShardStore::source`] is called **once
 //!   per shard** and everything after it happens inside the engine, so a bar driven by store calls
-//!   alone would sit still through §4.8 — which is **74 % of a measured country-scale run**, 14.7 s
-//!   of switzerland's 19.9 s. [`VerifySource`] therefore wraps the sealed shard the engine reads
-//!   back and reports from [`ByteSource::read_at`], which is the read-back's own inner loop.
+//!   alone would sit still through §4.8 — which is **60 % of a measured region-scale run**, 9.6 s of
+//!   baden-württemberg's 16.1 s (#1116's harness). [`VerifySource`] therefore wraps the sealed shard
+//!   the engine reads back and reports from [`ByteSource::read_at`], which is the read-back's own
+//!   inner loop.
 //!
 //! # Abort granularity
 //!
 //! [`Hooks::progress`] returns `true` to abort. It is called at every phase boundary, every time the
 //! accumulated write crosses [`PROGRESS_STEP`] of the projected output, and every time the verify
 //! read-back crosses the same step — i.e. roughly a hundred times over write+verify, which together
-//! are ~80 % of a run.
+//! are ~83 % of a run.
 //!
 //! The request takes effect at the **next store call or verify read**, whichever comes first. Two
 //! consequences worth stating plainly, because a UI's cancel button depends on them:
@@ -42,11 +43,11 @@
 //!   like a broken assembler).
 //! * **Inside the nav rewrite it is not.** §4.6 makes no store calls at all, so an abort requested
 //!   during it is honoured when the phase ends. That is now the *only* uninterruptible stretch, and
-//!   at a measured 19.9 % of the run it is the shorter of the two the bridge used to be blind to.
+//!   at a measured 16 % of the run it is the shorter of the two the bridge used to be blind to.
 //!   Making it finer needs a seam inside the engine (see the PR's engine-API follow-ups).
 //!
-//! And the constraint that outranks all of this: [`assemble_cells`] **blocks**. A country-scale
-//! assembly is ~20 s of straight-line compute, so it must run in a **Web Worker** — see the contract
+//! And the constraint that outranks all of this: [`assemble_cells`] **blocks**. A Bundesland-scale
+//! assembly is ~16 s of straight-line compute, so it must run in a **Web Worker** — see the contract
 //! paragraph in `builder/app/src/lib/assemble/bridge.ts`. A cooperative abort cannot be observed
 //! from a main thread that is itself blocked; the UI's cancel is `worker.terminate()`, and this seam
 //! is for the policies the worker runs *itself* (a memory watchdog, a deadline).
@@ -218,18 +219,29 @@ impl Phase {
 
     /// This phase's share of the wall clock, and everything before it.
     ///
-    /// Calibrated on the **measured** switzerland run in PR #1027 (410 cells / 717 MB → 716 692 620
-    /// B, single-file fast path): open 0.06 s · poi 0.02 s · nav 3.96 s · plan 0.01 s · write 1.14 s
-    /// · verify 14.7 s of 19.9 s total. A bar built on equal-weight phases would sit at "nav" for a
-    /// fifth of the run and then crawl through the three quarters that verify actually takes.
+    /// Calibrated on the **measured** runs of #1116's `mem-profile` harness (macOS arm64, release,
+    /// published v12 catalog, single-file fast path), which is where these have to come from now:
+    /// the C-series (#1118, #1119, #1120) made the §4.8 read-back about a third faster and left
+    /// write a far larger share of the run than PR #1027's switzerland measurement had it.
+    ///
+    /// * baden-württemberg, 215 cells / 795 MB: open 0.016 s · poi 0.013 s · nav 2.58 s · plan
+    ///   0.004 s · write 3.82 s · verify 9.63 s of 16.05 s total — nav 0.160, write 0.238,
+    ///   verify 0.600.
+    /// * freiburg-regbez, 77 cells / 264 MB: open 0.029 s · poi 0.006 s · nav 0.82 s · plan 0.006 s
+    ///   · write 1.26 s · verify 2.80 s of 4.92 s total — nav 0.167, write 0.256, verify 0.569.
+    ///
+    /// The weights follow **BW**, which is the shape a long run has; freiburg spends a little more
+    /// of a shorter run in write and correspondingly less in verify, so the two bracket these
+    /// numbers rather than disagreeing about them. The superseded weights had the bar running some
+    /// 14 points behind reality all the way through write and then racing through verify.
     const fn weight(self) -> f64 {
         match self {
-            Phase::Open => 0.003,
+            Phase::Open => 0.002,
             Phase::Poi => 0.001,
-            Phase::Nav => 0.199,
+            Phase::Nav => 0.163,
             Phase::Plan => 0.001,
-            Phase::Write => 0.057,
-            Phase::Verify => 0.739,
+            Phase::Write => 0.240,
+            Phase::Verify => 0.593,
             Phase::Manifest | Phase::Done => 0.0,
         }
     }
@@ -406,9 +418,10 @@ struct Progress<'h> {
     written: u64,
     /// Bytes the §4.8 read-back has pulled through [`VerifySource::read_at`] so far.
     verified: u64,
-    /// Projected output size — the sum of the input cells' bytes. Measured 717 MB in → 716 692 620
-    /// B out on switzerland (PR #1027), i.e. 1.00: geometry is copied verbatim and the nav section
-    /// is rewritten to about the size the cells' own nav sections had.
+    /// Projected output size — the sum of the input cells' bytes. Re-measured on #1116's harness:
+    /// 794 735 626 B in → 793 891 927 B out on baden-württemberg and 263 616 395 → 263 309 260 on
+    /// freiburg-regbez, i.e. 1.00 both times (0.9989 and 0.9988): geometry is copied verbatim and
+    /// the nav section is rewritten to about the size the cells' own nav sections had.
     projected: u64,
     /// Overall fraction at the last emitted callback, so [`PROGRESS_STEP`] can throttle.
     last: f64,
@@ -442,11 +455,11 @@ impl Progress<'_> {
     ///
     /// Both are measured against the same denominator, the input cells' byte count: geometry is
     /// copied verbatim and the nav section is rewritten to about the size the cells' own had, so
-    /// output ≈ input (measured 1.00 on switzerland, PR #1027), and §4.8 reads that output back in
-    /// full through the real reader. Each term is a ratio of a counter that only grows to a constant,
-    /// hence monotone; both are clamped, so a projection that is off by a little costs bar accuracy
-    /// near the end of a phase and nothing else — the boundaries themselves are pinned by the store's
-    /// own calls, and `manifest` lands on exactly 1.0.
+    /// output ≈ input (measured 1.00 on both of #1116's harness regions), and §4.8 reads that output
+    /// back in full through the real reader. Each term is a ratio of a counter that only grows to a
+    /// constant, hence monotone; both are clamped, so a projection that is off by a little costs bar
+    /// accuracy near the end of a phase and nothing else — the boundaries themselves are pinned by
+    /// the store's own calls, and `manifest` lands on exactly 1.0.
     fn write_verify_fraction(&self) -> f64 {
         Phase::Write.prefix()
             + Phase::Write.weight() * self.ratio(self.written)
