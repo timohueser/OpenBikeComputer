@@ -113,6 +113,9 @@ export type AssembleWorkerRequest =
           /** The split the download path will stream shards at. The worker
            *  answers for **both** output modes; this sizes the streamed one. */
           streamedShardBytes: number;
+          /** The engine's sort budget (`mergeBudgetBytes` in the options), which
+           *  after phase D **is** the engine term on an OPFS host. */
+          mergeBudgetBytes: number;
           /** Lowered by a caller that knows it is on a phone (bridge docs). */
           budgetBytes?: number;
       }

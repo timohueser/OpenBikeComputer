@@ -604,10 +604,10 @@ fn the_clock_is_read_exactly_once_per_phase_boundary() {
     assert_eq!(rec.ticks, 10, "the engine read the clock {} times, not the 10 the phase mapping assumes", rec.ticks);
 }
 
-/// **The verify-progress pin.** §4.8 is 60 % of a measured region-scale run (9.6 s of
-/// baden-württemberg's 16.1 s, #1116's harness), and the engine makes exactly *one* store call for
+/// **The verify-progress pin.** §4.8 is 43 % of a measured region-scale run (11.4 s of
+/// baden-württemberg's 26.2 s, #1116's phase-D harness), and the engine makes exactly *one* store call for
 /// the whole pass — so a bar driven by store calls alone reaches its write-phase maximum and then
-/// freezes for three fifths of the wait. `VerifySource::read_at` is what stops that, and this is the
+/// freezes for two fifths of the wait. `VerifySource::read_at` is what stops that, and this is the
 /// test that says so: the pass reports many times, strictly forward, over a wide span of the bar.
 ///
 /// The inverted form is the shipped-then-fixed defect: before the wrapper, the write's own emits ran
@@ -618,10 +618,10 @@ fn the_verify_pass_reports_its_own_progress_instead_of_freezing_the_bar() {
     assemble_cells(cells(), &sidecar(), &skin(), &options(), &mut rec).expect("the assembly runs");
 
     // Nothing before the read-back may claim the run is nearly done. The write phase runs from 0.167
-    // to at most 0.167 + 0.240 = 0.407 of the bar by construction (`Phase::weight`); the defect this
+    // to at most 0.203 + 0.363 = 0.566 of the bar by construction (`Phase::weight`); the defect this
     // pins had it arriving at 1.0.
     for (p, f) in rec.seen.iter().take_while(|(p, _)| *p != Phase::Verify) {
-        assert!(*f <= 0.41, "{p:?} reported {f} before verify even started — the bar is spending verify's budget");
+        assert!(*f <= 0.57, "{p:?} reported {f} before verify even started — the bar is spending verify's budget");
     }
 
     let verify = rec.fractions(Phase::Verify);
@@ -630,17 +630,20 @@ fn the_verify_pass_reports_its_own_progress_instead_of_freezing_the_bar() {
         assert!(pair[1] > pair[0], "verify reported {} after {} — the bar stalled or went backwards", pair[1], pair[0]);
     }
     let (first, last) = (verify[0], verify[verify.len() - 1]);
+    // Verify's constructed sweep on this fixture is its 0.434 weight × the fixture's 0.61
+    // output/input ratio ≈ 0.26 of the bar; the floor asserts most of that actually happens
+    // rather than pinning the arithmetic twice.
     assert!(
-        last - first > 0.3,
-        "the §4.8 pass moved the bar from {first} to {last} — less than a third of it, for the phase that is three \
-         fifths of the run"
+        last - first > 0.2,
+        "the §4.8 pass moved the bar from {first} to {last} — a fraction of its ~0.26 constructed span, for the \
+         phase that is two fifths of the run"
     );
     // …and the boundaries still land where the phases say: verify opens where the write left the bar
-    // (0.167 + the write term) and the manifest is the 1.0. This fixture's output is 0.61× its input
+    // (0.203 + the write term) and the manifest is the 1.0. This fixture's output is 0.61× its input
     // bytes — the projection both terms are measured against — so neither term reaches its full span
     // and the manifest closes the gap. At the scale the 1.00 ratio was measured on (#1116's harness
     // regions), output ≈ input and they do.
-    assert!((0.28..=0.35).contains(&first), "verify started at {first}, not where the write phase ends");
+    assert!((0.39..=0.46).contains(&first), "verify started at {first}, not where the write phase ends");
     assert_eq!(rec.seen.last().expect("progress was reported"), &(Phase::Done, 1.0));
 }
 
