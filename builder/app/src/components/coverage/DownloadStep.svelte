@@ -448,7 +448,11 @@
         return (
             `Assembling this selection needs about ${formatBytes(estimate.peakBytes)} of browser memory — more than ` +
             `${isMobileUa ? "a phone's tab" : "a browser tab"} can be trusted with ` +
-            `(${formatBytes(estimate.budgetBytes)}). Use a smaller coverage area or split it into two maps.`
+            // A card carries **one** map — several files of one volume set, never
+            // several maps, because the device has no way to choose between them.
+            // So "split it in two" is not a remedy that exists here, and the only
+            // honest instruction is to cover less ground.
+            `(${formatBytes(estimate.budgetBytes)}). Reduce the coverage area.`
         );
     });
 
@@ -457,7 +461,11 @@
         if (estimate.headroomBytes >= estimate.budgetBytes * 0.15) return null;
         return (
             `Close to the browser's memory budget: about ${formatBytes(estimate.peakBytes)} projected of ` +
-            `${formatBytes(estimate.budgetBytes)}. It will probably assemble — the desktop app is the sure path.`
+            // No "use the desktop app" here: the desktop host runs this very
+            // worker in its webview, so it carries the identical wasm32 ceiling.
+            // It becomes the sure path when it assembles through the native
+            // engine, and this line can promise it then — not before.
+            `${formatBytes(estimate.budgetBytes)}. It will probably assemble; a smaller area is the sure thing.`
         );
     });
 
