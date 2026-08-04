@@ -103,6 +103,11 @@ pub fn projected_bytes(plan: &ShardPlan, style_len: usize, poi_len: usize, nav_l
 /// Nothing is back-patched. Every offset in the header and the LOD table is known before the first
 /// byte goes out, because the graft plan and both rebuilt sections were sized first — which is what
 /// lets the output stream straight into a file (or a browser's download stream) rather than a buffer.
+///
+/// `cells` are the shard's own grafted cells; `nav_cells` are the `network` cells the §4.6 merge
+/// read, in the order it read them. They are a second list because the merged graph holds its edge
+/// records as *addresses* into those cells (§4.6.6) — the core's nav section is streamed out of them
+/// here rather than out of a pool the merge would otherwise have had to keep.
 // The argument list is one shard's whole input: the plan, the cells it grafts, the three rebuilt
 // pieces every shard shares, and the sink. Bundling them into a struct would move the noise rather
 // than remove it — the same call the packer's `serialize_lods_streaming` makes, for the same reason.
@@ -110,6 +115,7 @@ pub fn projected_bytes(plan: &ShardPlan, style_len: usize, poi_len: usize, nav_l
 pub fn write(
     plan: &ShardPlan,
     cells: &[Cell<'_>],
+    nav_cells: &[&Cell<'_>],
     styles: &[StyleRecord],
     marker_color: u16,
     poi: &PoiSection,
@@ -167,7 +173,7 @@ pub fn write(
 
     // 5/6. The POI and nav sections — the core's rebuilt ones, or a legal empty pair (§5.1).
     out(&crate::poi::serialize(empty_poi.as_ref().unwrap_or(poi), l.poi_offset))?;
-    out(&crate::nav::serialize(empty_nav.as_ref().unwrap_or(nav), profile_table, l.nav_offset))?;
+    crate::nav::serialize(empty_nav.as_ref().unwrap_or(nav), profile_table, l.nav_offset, nav_cells, &mut out)?;
 
     // §4.8.6: the write must land exactly where §5.7's projection said it would. A `debug_assert`
     // would leave a release build emitting a file whose recorded `Bytes` and header offsets are a
