@@ -15,7 +15,7 @@
 //! | `.addCell(id, band, partial, bytes)` | hand over one downloaded cell; `bytes` crosses **once** |
 //! | `.addCellByKey(id, band, partial, byteLength, key)` | …or leave the bytes outside wasm and read them on demand (#1116 B2) |
 //! | `.setTerrain(postingLog2, cellLog2)` / `.addTerrainCell(id, sha256, bytes)` | the raster (EL4) |
-//! | `.run(onProgress?, onFile?, onRead?)` | assemble; returns the summary JSON, throws a typed error |
+//! | `.run(onProgress?, onFile?, onRead?, sink?)` | assemble; returns the summary JSON, throws a typed error |
 //! | `.fileCount` / `.fileName(i)` / `.fileRole(i)` / `.fileSha256(i)` / `.fileByteLength(i)` | whatever `onFile` did **not** take, shards first and the manifest **last** (OBCA §5.4) |
 //! | `.takeFile(i)` | move one file's bytes out to JS and free the wasm-side copy; twice throws |
 //! | `.warnings()` | what OBCA says a producer SHOULD report rather than refuse |
@@ -39,8 +39,8 @@ pub mod estimate;
 
 pub use driver::{
     assemble, assemble_cells, assemble_cells_with_known_empty, assemble_everything, AssembleFailure, BridgeOptions,
-    CellBytes, CellReads, ErrorCode, Hooks, Inputs, KnownEmptyCell, NoHooks, Outcome, OutputFile, Phase, SourceCell,
-    TerrainCellBytes, TerrainLattice,
+    CellBytes, CellReads, ErrorCode, Hooks, KnownEmptyCell, NoHooks, Outcome, OutputFile, Phase, SealedShard,
+    ShardWrites, SourceCell, TerrainCellBytes, TerrainLattice, Wiring,
 };
 pub use estimate::{
     estimate_memory, estimate_memory_with_budget, MemoryEstimate, Residency, OUTPUT_PER_CELL_BYTE, PEAK_PER_NAV_BYTE,
@@ -52,8 +52,8 @@ mod web {
     use wasm_bindgen::prelude::*;
 
     use crate::driver::{
-        assemble, AssembleFailure, BridgeOptions, CellBytes, CellReads, ErrorCode, Hooks, Inputs, KnownEmptyCell,
-        OutputFile, Phase, SourceCell, TerrainCellBytes, TerrainLattice,
+        assemble, AssembleFailure, BridgeOptions, CellBytes, CellReads, ErrorCode, Hooks, KnownEmptyCell, OutputFile,
+        Phase, SealedShard, ShardWrites, SourceCell, TerrainCellBytes, TerrainLattice, Wiring,
     };
 
     /// Module start (wasm-bindgen runs this during instantiation): surface Rust panics in the console
@@ -77,6 +77,9 @@ mod web {
         /// `on_file(name, role, sha256, bytes)`, called from inside `run` as each shard passes its
         /// §4.8 verify. Its presence is what turns the hand-off on at all.
         on_file: Option<js_sys::Function>,
+        /// `sealed(slot, name, role, sha256, byteLength)` — the sink's own version of `on_file`,
+        /// carrying an identity because the host already wrote the bytes (#1116 D1).
+        on_sealed: Option<js_sys::Function>,
         /// `Date.now()` is wall clock and can step backwards (NTP, a suspended tab). The engine
         /// subtracts consecutive readings, so a step back would underflow a `u64`; clamping here
         /// keeps the seam monotonic at the cost of a phase timing that reads as zero.
@@ -150,6 +153,115 @@ mod web {
                      OBCS manifest exists (OBCA §5.4), so discard whatever was saved and re-run."
                 )),
             }
+        }
+
+        /// Tell JS about one shard the host's own sink wrote and §4.8 has passed (#1116 D1).
+        ///
+        /// Nothing crosses but five scalars — the bytes were never here. A throw fails the run as
+        /// `io` for the same reason `take_shard`'s does: the file exists and the caller does not
+        /// know its name, so a set reported as finished would name a file nobody recorded.
+        fn shard_sealed(&mut self, shard: SealedShard) -> Result<(), String> {
+            let Some(f) = &self.on_sealed else { return Ok(()) };
+            let SealedShard { slot, name, role, sha256, byte_length } = shard;
+            let args = js_sys::Array::new();
+            args.push(&JsValue::from_f64(slot as f64));
+            args.push(&JsValue::from_str(&name));
+            args.push(&JsValue::from_str(role));
+            args.push(&JsValue::from_str(&sha256));
+            args.push(&JsValue::from_f64(byte_length as f64));
+            match f.apply(&JsValue::NULL, &args) {
+                Ok(_) => Ok(()),
+                Err(e) => Err(format!(
+                    "the shard sink threw while reporting {name} ({e:?}). The file is written but the set was not \
+                     finished; nothing that was written is a map until the OBCS manifest exists (OBCA §5.4), so \
+                     discard whatever was saved and re-run."
+                )),
+            }
+        }
+    }
+
+    /// The browser's [`ShardWrites`]: one OPFS `FileSystemSyncAccessHandle` per shard, on the far
+    /// side of four JS calls (#1116 D1).
+    ///
+    /// The mirror of [`JsReads`], and cheap for the same reason: `write` hands the host a view that
+    /// *is* the engine's buffer and `readAt` hands it one that *is* the destination, so bytes move
+    /// between linear memory and the file in one step with nothing copied on the JS side. What
+    /// crosses per call is a slot number, an offset, and one freshly-made view object.
+    struct JsSink {
+        create: js_sys::Function,
+        write: js_sys::Function,
+        read_at: js_sys::Function,
+        seal: js_sys::Function,
+    }
+
+    impl JsSink {
+        /// Read the four methods off the object a caller passed. Missing or non-callable is a
+        /// half-wired host and is refused before a byte is written, rather than at the first shard.
+        fn from_object(obj: &js_sys::Object) -> Result<JsSink, AssembleFailure> {
+            let method = |name: &str| -> Result<js_sys::Function, AssembleFailure> {
+                let v = js_sys::Reflect::get(obj, &JsValue::from_str(name)).map_err(|_| AssembleFailure {
+                    code: ErrorCode::Internal,
+                    message: format!("the shard sink has no {name:?}"),
+                })?;
+                v.dyn_into::<js_sys::Function>().map_err(|_| AssembleFailure {
+                    code: ErrorCode::Internal,
+                    message: format!(
+                        "the shard sink's {name:?} is not a function — a sink must provide create, write, readAt, \
+                         seal and sealed."
+                    ),
+                })
+            };
+            Ok(JsSink {
+                create: method("create")?,
+                write: method("write")?,
+                read_at: method("readAt")?,
+                seal: method("seal")?,
+            })
+        }
+
+        /// Every call answers the same way: truthy is success, anything else is the host refusing.
+        fn taken(call: Result<JsValue, JsValue>, what: &str) -> Result<(), String> {
+            match call {
+                Ok(v) if v.is_truthy() => Ok(()),
+                Ok(_) => Err(format!("the sink's {what} returned a falsy value")),
+                Err(e) => Err(format!("the sink's {what} threw ({e:?})")),
+            }
+        }
+    }
+
+    impl ShardWrites for JsSink {
+        fn create(&self, slot: usize, name: &str) -> Result<(), String> {
+            JsSink::taken(
+                self.create.call2(&JsValue::NULL, &JsValue::from_f64(slot as f64), &JsValue::from_str(name)),
+                "create",
+            )
+        }
+
+        fn write(&self, slot: usize, bytes: &[u8]) -> Result<(), String> {
+            // SAFETY: the same contract as `JsReads::read` — the view aliases linear memory and is
+            // made, passed and dropped inside one synchronous JS call that only reads from it. No
+            // Rust allocation can run in between, and the callback is documented not to re-enter
+            // the assembler or to keep the view.
+            let src = unsafe { js_sys::Uint8Array::view(bytes) };
+            JsSink::taken(self.write.call2(&JsValue::NULL, &JsValue::from_f64(slot as f64), &src), "write")
+        }
+
+        fn read_at(&self, slot: usize, offset: u32, into: &mut [u8]) -> Result<(), String> {
+            // SAFETY: as in `JsReads::read` — a per-call view, filled and dropped inside the call.
+            let dest = unsafe { js_sys::Uint8Array::view_mut_raw(into.as_mut_ptr(), into.len()) };
+            JsSink::taken(
+                self.read_at.call3(
+                    &JsValue::NULL,
+                    &JsValue::from_f64(slot as f64),
+                    &JsValue::from_f64(offset as f64),
+                    &dest,
+                ),
+                "readAt",
+            )
+        }
+
+        fn seal(&self, slot: usize) -> Result<(), String> {
+            JsSink::taken(self.seal.call1(&JsValue::NULL, &JsValue::from_f64(slot as f64)), "seal")
         }
     }
 
@@ -369,24 +481,62 @@ mod web {
         /// order of once per 64 KiB of a cell rather than once per engine read — which is what makes
         /// a per-call JS crossing affordable at all (see [`crate::driver`]'s module header).
         ///
+        /// `sink` is the output's version of `on_read` (#1116 D1), and the one that decides whether
+        /// a country-scale map can be assembled in a tab at all: an object with `create(slot,
+        /// name)`, `write(slot, bytes)`, `readAt(slot, offset, into)`, `seal(slot)` and
+        /// `sealed(slot, name, role, sha256, byteLength)`. In the browser those are one OPFS
+        /// `FileSystemSyncAccessHandle` per shard, opened in the worker before the run.
+        ///
+        /// With one, **no shard is ever in wasm memory**: `write` forwards straight to the host, the
+        /// §4.8 read-back reads the host's file back (through a block cache, like the input's), and
+        /// `sealed` reports each shard's identity as it passes — so nothing shard-sized is copied,
+        /// posted, or held. Shards reported that way are not in `fileCount`; `takeFile` still hands
+        /// on the terrain shard and the manifest. The core shard cannot be split (one nav graph, one
+        /// file), so this is the only thing that keeps a ~3 GiB one out of a 4 GiB address space.
+        ///
+        /// The four byte-moving methods return `true` for success; anything falsy, or a throw, fails
+        /// the run as `io`. `bytes` and `into` are views straight onto wasm's linear memory, valid
+        /// **only for the duration of the call** — the same rule as `on_read`'s `dest`. A `sealed`
+        /// that throws fails the run as `io` too: the file exists and the caller does not know its
+        /// name.
+        ///
         /// Throws an `Error` carrying `code` + `message` on failure; see [`crate::ErrorCode`].
         pub fn run(
             &mut self,
             on_progress: Option<js_sys::Function>,
             on_file: Option<js_sys::Function>,
             on_read: Option<js_sys::Function>,
+            sink: Option<js_sys::Object>,
         ) -> Result<String, JsValue> {
-            let mut hooks = JsHooks { on_progress, on_file, last_us: 0, warned: false };
+            let (shard_sink, on_sealed) = match &sink {
+                Some(obj) => {
+                    let sealed = js_sys::Reflect::get(obj, &JsValue::from_str("sealed"))
+                        .ok()
+                        .and_then(|v| v.dyn_into::<js_sys::Function>().ok())
+                        .ok_or_else(|| {
+                            to_js(AssembleFailure {
+                                code: ErrorCode::Internal,
+                                message: "the shard sink has no callable \"sealed\" — a sink that cannot report a \
+                                          finished shard would write files nobody can name."
+                                    .into(),
+                            })
+                        })?;
+                    (Some(JsSink::from_object(obj).map_err(to_js)?), Some(sealed))
+                }
+                None => (None, None),
+            };
+            let mut hooks = JsHooks { on_progress, on_file, on_sealed, last_us: 0, warned: false };
             let reads = on_read.map(|on_read| JsReads { on_read });
-            let inputs = Inputs {
+            let wiring = Wiring {
                 cells: core::mem::take(&mut self.cells),
                 source_cells: core::mem::take(&mut self.source_cells),
                 reads: reads.as_ref().map(|r| r as &dyn CellReads),
                 known_empty: core::mem::take(&mut self.known_empty),
                 terrain: self.terrain,
                 terrain_cells: core::mem::take(&mut self.terrain_cells),
+                sink: shard_sink.as_ref().map(|s| s as &dyn ShardWrites),
             };
-            let out = assemble(inputs, &self.schema_json, &self.skin_json, &self.options, &mut hooks).map_err(to_js)?;
+            let out = assemble(wiring, &self.schema_json, &self.skin_json, &self.options, &mut hooks).map_err(to_js)?;
             self.taken = vec![false; out.files.len()];
             self.files = out.files;
             self.warnings = out.warnings;

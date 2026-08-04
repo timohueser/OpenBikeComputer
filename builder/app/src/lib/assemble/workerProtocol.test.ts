@@ -132,6 +132,15 @@ describe("isWorkerResponse", () => {
                 bytes: new Uint8Array(4),
             },
             { type: "reading", mode: "streamed", cells: 412 },
+            { type: "writing", mode: "disk" },
+            {
+                type: "stored-shard",
+                name: "MS1S00.OBM",
+                role: "core",
+                sha256: "b".repeat(64),
+                byteLength: 2_800_000_000,
+                entry: "s00.part",
+            },
             { type: "done", warnings: [], summary: { cells: 1, bytes: 2, manifest: "MS1.OBS", shards: [] } },
             {
                 type: "estimate-result",
@@ -159,6 +168,7 @@ describe("isWorkerResponse", () => {
         expect(isWorkerResponse({})).toBe(false);
         expect(isWorkerResponse({ type: "progress", phase: "warp", fraction: 0.1 })).toBe(false);
         expect(isWorkerResponse({ type: "reading", mode: "telepathy", cells: 1 })).toBe(false);
+        expect(isWorkerResponse({ type: "writing", mode: "telepathy" })).toBe(false);
         // Both verdicts or neither: a one-estimate answer is a stale worker build, and letting it
         // through would leave the device gate reading `null` as "fits".
         expect(isWorkerResponse({ type: "estimate-result", estimate: est(true) })).toBe(false);
@@ -178,5 +188,49 @@ describe("isWorkerResponse", () => {
                 bytes: new Uint8Array(1),
             }),
         ).toBe(false);
+    });
+
+    /**
+     * A `stored-shard` names a file the **page then opens**, so its `entry` is the one field in this
+     * protocol that is resolved against a directory rather than displayed. A stray carrying `../`,
+     * an absolute path or an empty name has to be dropped like any other stray — the guard is the
+     * only thing between a message this screen did not send and a file it did not mean to read.
+     */
+    it("rejects a stored shard that names anything but a plain entry", () => {
+        const stored = {
+            type: "stored-shard",
+            name: "MS1S00.OBM",
+            role: "core" as const,
+            sha256: "c".repeat(64),
+            byteLength: 4,
+            entry: "s00.part",
+        };
+        expect(isWorkerResponse(stored)).toBe(true);
+        for (const entry of ["", "../obc-cells/" + "a".repeat(64), "/etc/passwd", "a/b", "s00.part\0", "x".repeat(65)]) {
+            expect(isWorkerResponse({ ...stored, entry }), `entry ${JSON.stringify(entry)}`).toBe(false);
+        }
+        // …and the rest of the shape, which a half-built message would get wrong first.
+        expect(isWorkerResponse({ ...stored, entry: undefined })).toBe(false);
+        expect(isWorkerResponse({ ...stored, name: "" })).toBe(false);
+        // A sunk file is always an OBCM shard: terrain goes through the engine's own sink and the
+        // manifest is a few hundred bytes, so both arrive as `file`s with their bytes.
+        expect(isWorkerResponse({ ...stored, role: "manifest" })).toBe(false);
+        expect(isWorkerResponse({ ...stored, byteLength: -1 })).toBe(false);
+        expect(isWorkerResponse({ ...stored, byteLength: 1.5 })).toBe(false);
+    });
+
+    /** Nothing crosses the port for a sunk shard — the bytes are in OPFS, which is the whole point.
+     *  A transfer list that invented one would throw at `postMessage`. */
+    it("transfers nothing for a shard that stayed on disk", () => {
+        expect(
+            responseTransferList({
+                type: "stored-shard",
+                name: "MS1S00.OBM",
+                role: "core",
+                sha256: "d".repeat(64),
+                byteLength: 4,
+                entry: "s00.part",
+            }),
+        ).toEqual([]);
     });
 });

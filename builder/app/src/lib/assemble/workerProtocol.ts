@@ -26,6 +26,15 @@
 //     posts and the run carries straight on, and these messages arrive **before
 //     `planned`**, unlike every `file`. A consumer that needs the set plan first
 //     (the device upload does) must not ask for them.
+//   * **…and so can the shards, in the other direction** (#1116 D1). With
+//     `shardSink`, the assembly writes each shard straight into OPFS and the
+//     worker posts a `stored-shard` — a name, a digest, a length and the OPFS
+//     entry to find it in — *after* it has closed its handles, because a sync
+//     access handle is an exclusive lock and the page cannot open the file
+//     while the worker holds one. Gigabytes stop crossing this port entirely:
+//     the page opens a `Blob` on the file and saves it. Unlike `shard`, these
+//     arrive **after `planned`** and **are acknowledged**, exactly like a
+//     `file` — the run is over by then, so there is nothing to block.
 //   * **Cells can travel as names instead of bytes** (#1116 B2). `sourceCells`
 //     carries an identity, a length and an OPFS filename per cell, and *nothing*
 //     is transferred: the download already put them on disk, and the worker is
@@ -132,6 +141,12 @@ export type AssembleWorkerRequest =
            *  B1). Off by default, and it must stay off for a consumer that
            *  cannot take a file before `planned` — see this module's header. */
           streamShards?: boolean;
+          /** Write the shards into OPFS instead of wasm memory (#1116 D1), if
+           *  this worker can. The core shard cannot be split, so this is the
+           *  only thing that keeps a country-scale one out of a 4 GiB address
+           *  space. Falls back to `streamShards` where the storage is not
+           *  there. Off for a consumer that needs the bytes in hand. */
+          shardSink?: boolean;
       }
     | { type: "file-ack" };
 
@@ -152,6 +167,20 @@ export interface WorkerShard extends WorkerFile {
     role: "core" | "coarse" | "geometry";
 }
 
+/** One shard the assembly wrote **into OPFS** (#1116 D1): everything a `file`
+ *  carries except the bytes, plus the entry they are in. The page opens a Blob on
+ *  that entry and saves it under `name`; nothing shard-sized crosses the port. */
+export interface WorkerStoredShard {
+    name: string;
+    role: "core" | "coarse" | "geometry";
+    sha256: string;
+    byteLength: number;
+    /** The OPFS filename under `obc-out/`, which is a scratch name and not `name`:
+     *  the handles are pooled and opened before the set is planned. Validated as a
+     *  plain entry name, because the page resolves it against a directory. */
+    entry: string;
+}
+
 /**
  * How the run that is starting gets at its cells (#1116 B2). Posted **before**
  * the assembly, not with its result, because the case where it matters most is
@@ -167,11 +196,26 @@ export interface WorkerShard extends WorkerFile {
  */
 export type CellReadMode = "streamed" | "buffered" | "memory";
 
+/**
+ * …and where this run's shards go (#1116 D1), posted for the same reason: the run
+ * that matters most is the one that fails, and its bug report has to say which path
+ * it took.
+ *
+ * - `disk` — straight into OPFS through sync access handles. No shard is ever in
+ *   wasm memory, which is what a country-scale core shard needs.
+ * - `memory` — held in wasm memory, evicted per shard (#1116 B1) or kept until the
+ *   run ends. What a browser without usable storage gets, and what the device path
+ *   asks for.
+ */
+export type ShardWriteMode = "disk" | "memory";
+
 export type AssembleWorkerResponse =
     | { type: "progress"; phase: AssemblePhase; fraction: number }
     | { type: "reading"; mode: CellReadMode; cells: number }
+    | { type: "writing"; mode: ShardWriteMode }
     | { type: "planned"; totalBytes: number; shardCount: number; warnings: string[]; summary: AssembleSummary }
     | ({ type: "shard" } & WorkerShard)
+    | ({ type: "stored-shard" } & WorkerStoredShard)
     | ({ type: "file" } & WorkerFile)
     | { type: "done"; warnings: string[]; summary: AssembleSummary }
     | {
@@ -225,9 +269,18 @@ const PHASES: ReadonlySet<string> = new Set([
     "done",
 ]);
 const READ_MODES: ReadonlySet<string> = new Set(["streamed", "buffered", "memory"]);
+const WRITE_MODES: ReadonlySet<string> = new Set(["disk", "memory"]);
 const SHARD_ROLES: ReadonlySet<string> = new Set(["core", "coarse", "geometry"]);
 const ROLES: ReadonlySet<string> = new Set([...SHARD_ROLES, "terrain", "manifest"]);
 const CODES: ReadonlySet<string> = new Set(ASSEMBLE_ERROR_CODES);
+
+/**
+ * What an OPFS entry name may look like. Deliberately strict: the page resolves this
+ * against a directory handle and opens whatever it names, so a message carrying
+ * `../` — or an empty string, or a `/` — must be dropped like any other stray rather
+ * than followed. The worker only ever sends `s00.part`…`s31.part`.
+ */
+const ENTRY_NAME = /^[A-Za-z0-9._-]{1,64}$/;
 
 /**
  * Whether a value that arrived over `onmessage` is a response this protocol
@@ -243,6 +296,22 @@ export function isWorkerResponse(v: unknown): v is AssembleWorkerResponse {
             return typeof m.phase === "string" && PHASES.has(m.phase) && typeof m.fraction === "number";
         case "reading":
             return typeof m.mode === "string" && READ_MODES.has(m.mode) && Number.isInteger(m.cells);
+        case "writing":
+            return typeof m.mode === "string" && WRITE_MODES.has(m.mode);
+        case "stored-shard":
+            return (
+                typeof m.name === "string" &&
+                m.name.length > 0 &&
+                typeof m.role === "string" &&
+                // Only OBCM shards are sunk: the terrain shard goes through the
+                // engine's own sink and the manifest is a few hundred bytes.
+                SHARD_ROLES.has(m.role) &&
+                typeof m.sha256 === "string" &&
+                Number.isSafeInteger(m.byteLength) &&
+                (m.byteLength as number) >= 0 &&
+                typeof m.entry === "string" &&
+                ENTRY_NAME.test(m.entry)
+            );
         case "planned":
             return (
                 Number.isSafeInteger(m.totalBytes) &&
