@@ -92,6 +92,17 @@ from pathlib import Path
 # Budgets re-based to the same ~10 % headroom (91 % / 91 %), sized so the remaining phase-D stage
 # (D4's streaming emission) fits without another bump while `obc-pack`/GEOS would still blow
 # straight through.
+#
+# That last sizing was one stage optimistic, and the reason is worth writing down rather than
+# quietly re-basing again. It was measured at D3 (546,661 B raw) and sized for D4 on top; D5's
+# verify rewrite and the OPFS scratch landed in between, so the branch point for D4 was already
+# 566,656 B raw / 238,465 B gzipped — 94 % of a budget that was supposed to have a stage of room
+# left in it. Re-measured 2026-08-04 with D4's streaming emission (the adjacency as an external
+# sort, the quadtree over a tree-ordered stream, the §8 section written from the scratch seam):
+# 612,200 B raw -> 252,123 B gzipped, +45,544 B raw over the branch point. Engine object code once
+# more — `cargo tree -p obc-web-assemble --target wasm32-unknown-unknown` is byte-identical to
+# develop's, so nothing new was linked. Budgets re-based to ~10 % headroom over the *measured*
+# artifact (91 % / 90 %) and deliberately not sized for an unmeasured future stage this time.
 # --- obc-skin-preview ------------------------------------------------------------------------
 #
 # Measured 2026-08-01 on #1045 (wasm-pack 0.15.0 / wasm-opt -Oz): 240,227 B raw wasm + 11,859 B
@@ -102,7 +113,7 @@ from pathlib import Path
 # Budgets leave ~14 % headroom while still catching a second engine or accidental packer link.
 BUDGETS = {
     "convert": {"gzipped": 62 * 1024, "raw_wasm": 112 * 1024},
-    "assemble": {"gzipped": 248 * 1024, "raw_wasm": 588 * 1024},
+    "assemble": {"gzipped": 276 * 1024, "raw_wasm": 656 * 1024},
     "preview": {"gzipped": 128 * 1024, "raw_wasm": 272 * 1024},
 }
 
