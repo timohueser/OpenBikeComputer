@@ -19,12 +19,29 @@
 // carry no ack and the consumer gets them before `planned`. The bytes are out of
 // wasm memory before the post; they are on this thread only until the transfer
 // queues them.
+//
+// The input side is the mirror of that (#1116 B2). A request with `sourceCells`
+// brings no cell buffers at all: the download left them in OPFS, and *this*
+// thread is where they can be read back synchronously, because
+// `FileSystemSyncAccessHandle` exists only in a dedicated worker. The handles are
+// opened before the run (they cannot be opened during it — the opener is async
+// and the run cannot await), handed to the engine as a read callback, and closed
+// in a `finally`, because a handle is an exclusive lock and a leaked one would
+// make the next run fail to open the same cell. A browser with OPFS but no sync
+// handles reads them back into memory instead and assembles as it always did.
+//
+// The `finally` covers every ending except the one that skips all code: a cancel,
+// which is `worker.terminate()`. A sync access handle's lock belongs to the agent
+// that opened it, so terminating this one releases them — which is just as well,
+// since there is no way to run anything here afterwards.
 
-import { AssembleError, assembleCells, estimateMemory } from "./bridge";
+import { AssembleError, assembleCells, estimateMemory, type AssembleCell, type AssembleSources } from "./bridge";
+import { openCellReader, readCellBytes, syncReadsAvailable, type CellReader } from "../cells/store";
 import {
     responseTransferList,
     type AssembleWorkerRequest,
     type AssembleWorkerResponse,
+    type WorkerSourceCell,
 } from "./workerProtocol";
 
 function post(res: AssembleWorkerResponse): void {
@@ -51,6 +68,34 @@ function waitForFileAck(): Promise<void> {
     });
 }
 
+/**
+ * Get at the cells a request left on disk, the best way this browser allows, and
+ * say which way that was.
+ *
+ * Both outcomes are honest paths, not a success and a failure: the `buffered` one
+ * is exactly today's memory profile with the download resumed, which is what a
+ * browser without sync access handles can have.
+ */
+interface Opened {
+    sources?: AssembleSources;
+    /** Cells read back whole, for the browsers that cannot read them any other
+     *  way. Empty on both other paths. */
+    extra: AssembleCell[];
+    reader: CellReader | null;
+}
+
+async function openSources(store: string, cells: WorkerSourceCell[]): Promise<Opened> {
+    const keys = cells.map((c) => c.key);
+    if (await syncReadsAvailable()) {
+        const reader = await openCellReader(store, keys);
+        post({ type: "reading", mode: "streamed", cells: cells.length });
+        return { sources: { cells, read: (slot, offset, into) => reader.read(slot, offset, into) }, extra: [], reader };
+    }
+    const bytes = await readCellBytes(store, keys);
+    post({ type: "reading", mode: "buffered", cells: cells.length });
+    return { extra: cells.map((c, i) => ({ ...c, bytes: bytes[i] })), reader: null };
+}
+
 self.onmessage = async (event: MessageEvent<AssembleWorkerRequest>) => {
     const req = event.data;
     if (req.type === "file-ack") {
@@ -70,26 +115,41 @@ self.onmessage = async (event: MessageEvent<AssembleWorkerRequest>) => {
         // Streamed shards are gone from `result.files`, so `planned` would
         // otherwise price a country-scale set at the manifest's 128 bytes.
         let streamedBytes = 0;
-        const result = await assembleCells(
-            req.cells,
-            req.schemaJson,
-            req.skinJson,
-            req.options,
-            (phase, fraction) => {
-                post({ type: "progress", phase, fraction });
-            },
-            req.knownEmpty,
-            // The raster, when the catalog publishes one. A terrain-less catalog
-            // sends nothing here and the set is written without a `terrain` role.
-            req.terrain ? { lattice: req.terrain, cells: req.terrainCells ?? [] } : undefined,
-            req.streamShards
-                ? (file) => {
-                      const byteLength = file.bytes.byteLength;
-                      streamedBytes += byteLength;
-                      post({ type: "shard", ...file, byteLength });
-                  }
-                : undefined,
-        );
+        const onDisk = req.sourceCells ?? [];
+        let opened: Opened = { extra: [], reader: null };
+        if (onDisk.length > 0 && req.cellStore) {
+            opened = await openSources(req.cellStore, onDisk);
+        } else {
+            post({ type: "reading", mode: "memory", cells: req.cells.length });
+        }
+        let result;
+        try {
+            result = await assembleCells(
+                [...req.cells, ...opened.extra],
+                req.schemaJson,
+                req.skinJson,
+                req.options,
+                (phase, fraction) => {
+                    post({ type: "progress", phase, fraction });
+                },
+                req.knownEmpty,
+                // The raster, when the catalog publishes one. A terrain-less catalog
+                // sends nothing here and the set is written without a `terrain` role.
+                req.terrain ? { lattice: req.terrain, cells: req.terrainCells ?? [] } : undefined,
+                req.streamShards
+                    ? (file) => {
+                          const byteLength = file.bytes.byteLength;
+                          streamedBytes += byteLength;
+                          post({ type: "shard", ...file, byteLength });
+                      }
+                    : undefined,
+                opened.sources,
+            );
+        } finally {
+            // The moment the run is over, whether it finished or threw: every
+            // handle is an exclusive lock on a file the next run will want.
+            opened.reader?.close();
+        }
         try {
             post({
                 type: "planned",

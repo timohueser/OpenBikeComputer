@@ -13,8 +13,9 @@
 //! | :-- | :-- |
 //! | `new Assembler(schemaJson, skinJson, optionsJson?)` | an empty assembly, waiting for cells |
 //! | `.addCell(id, band, partial, bytes)` | hand over one downloaded cell; `bytes` crosses **once** |
+//! | `.addCellByKey(id, band, partial, byteLength, key)` | …or leave the bytes outside wasm and read them on demand (#1116 B2) |
 //! | `.setTerrain(postingLog2, cellLog2)` / `.addTerrainCell(id, sha256, bytes)` | the raster (EL4) |
-//! | `.run(onProgress?, onFile?)` | assemble; returns the summary JSON, throws a typed error |
+//! | `.run(onProgress?, onFile?, onRead?)` | assemble; returns the summary JSON, throws a typed error |
 //! | `.fileCount` / `.fileName(i)` / `.fileRole(i)` / `.fileSha256(i)` / `.fileByteLength(i)` | whatever `onFile` did **not** take, shards first and the manifest **last** (OBCA §5.4) |
 //! | `.takeFile(i)` | move one file's bytes out to JS and free the wasm-side copy; twice throws |
 //! | `.warnings()` | what OBCA says a producer SHOULD report rather than refuse |
@@ -37,8 +38,9 @@ pub mod driver;
 pub mod estimate;
 
 pub use driver::{
-    assemble_cells, assemble_cells_with_known_empty, assemble_everything, AssembleFailure, BridgeOptions, CellBytes,
-    ErrorCode, Hooks, KnownEmptyCell, NoHooks, Outcome, OutputFile, Phase, TerrainCellBytes, TerrainLattice,
+    assemble, assemble_cells, assemble_cells_with_known_empty, assemble_everything, AssembleFailure, BridgeOptions,
+    CellBytes, CellReads, ErrorCode, Hooks, Inputs, KnownEmptyCell, NoHooks, Outcome, OutputFile, Phase, SourceCell,
+    TerrainCellBytes, TerrainLattice,
 };
 pub use estimate::{
     estimate_memory, estimate_memory_with_budget, MemoryEstimate, OUTPUT_PER_CELL_BYTE, PEAK_PER_NAV_BYTE,
@@ -50,8 +52,8 @@ mod web {
     use wasm_bindgen::prelude::*;
 
     use crate::driver::{
-        assemble_everything, AssembleFailure, BridgeOptions, CellBytes, ErrorCode, Hooks, KnownEmptyCell, OutputFile,
-        Phase, TerrainCellBytes, TerrainLattice,
+        assemble, AssembleFailure, BridgeOptions, CellBytes, CellReads, ErrorCode, Hooks, Inputs, KnownEmptyCell,
+        OutputFile, Phase, SourceCell, TerrainCellBytes, TerrainLattice,
     };
 
     /// Module start (wasm-bindgen runs this during instantiation): surface Rust panics in the console
@@ -151,6 +153,43 @@ mod web {
         }
     }
 
+    /// The browser's [`CellReads`]: one JS call per cache miss, filling a view over wasm's own
+    /// linear memory (#1116 B2).
+    ///
+    /// The view is the reason this is cheap. `FileSystemSyncAccessHandle.read(buffer, {at})` takes
+    /// any `ArrayBufferView`, so handing it one that *is* the destination block means the bytes go
+    /// from the file into the wasm heap in one step — no intermediate `ArrayBuffer`, nothing copied
+    /// on the JS side, nothing copied back. What crosses per call is a slot number, an offset and
+    /// one freshly-made view object.
+    struct JsReads {
+        /// `read(slot, offset, dest) -> boolean`. Falsy means the read failed; see
+        /// `builder/app/src/lib/assemble/bridge.ts` for the contract as callers see it.
+        on_read: js_sys::Function,
+    }
+
+    impl CellReads for JsReads {
+        fn read(&self, slot: usize, offset: u32, buf: &mut [u8]) -> Result<(), String> {
+            // SAFETY: `view_mut_raw` aliases linear memory and is invalidated by anything that grows
+            // it. This one is made, passed, and dropped inside a single synchronous JS call that
+            // does nothing but fill it — no Rust allocation can run in between, and the callback is
+            // documented not to re-enter the assembler. It is deliberately built per call rather
+            // than cached for exactly that reason: a stored view would be detached by the next heap
+            // growth, and the reads it served would silently return nothing.
+            let dest = unsafe { js_sys::Uint8Array::view_mut_raw(buf.as_mut_ptr(), buf.len()) };
+            let taken = self.on_read.call3(
+                &JsValue::NULL,
+                &JsValue::from_f64(slot as f64),
+                &JsValue::from_f64(offset as f64),
+                &dest,
+            );
+            match taken {
+                Ok(v) if v.is_truthy() => Ok(()),
+                Ok(_) => Err("the read callback returned a falsy value".into()),
+                Err(e) => Err(format!("the read callback threw ({e:?})")),
+            }
+        }
+    }
+
     /// One assembly: cells in, an OBCA set out.
     ///
     /// The lifecycle is fixed — construct, `addCell` for every downloaded cell, `run`, then take the
@@ -161,6 +200,10 @@ mod web {
         skin_json: String,
         options: BridgeOptions,
         cells: Vec<CellBytes>,
+        /// Cells the host keeps outside wasm memory and serves on demand (#1116 B2). A cell's
+        /// **slot** — what `run`'s read callback is given — is its index here, which is what
+        /// [`Assembler::add_cell_by_key`] returns.
+        source_cells: Vec<SourceCell>,
         known_empty: Vec<KnownEmptyCell>,
         /// The catalog's terrain lattice, once the caller declares one. `None` leaves the set
         /// without a `terrain` role — a complete map with flat profiles (`OBCC_Spec.md` §13).
@@ -192,6 +235,7 @@ mod web {
                 skin_json,
                 options,
                 cells: Vec::new(),
+                source_cells: Vec::new(),
                 known_empty: Vec::new(),
                 terrain: None,
                 terrain_cells: Vec::new(),
@@ -210,6 +254,33 @@ mod web {
         #[wasm_bindgen(js_name = addCell)]
         pub fn add_cell(&mut self, id: String, band: String, partial: bool, bytes: Vec<u8>) {
             self.cells.push(CellBytes { id, band, partial, bytes });
+        }
+
+        /// Hand over one downloaded cell **by reference**: the same identity and `partial` flag as
+        /// [`Assembler::add_cell`], the length the catalog published, and an opaque key the host's
+        /// own read callback resolves. The bytes never enter wasm memory (#1116 B2).
+        ///
+        /// Returns the cell's **slot** — the first argument `run`'s `on_read` is called with. Slots
+        /// are handed out in call order from `0`; the return value exists so a host never has to
+        /// assume that.
+        ///
+        /// The catalog's byte count is not a hint: it is what the engine reads as the cell's length,
+        /// so a read past it is refused here rather than left to whatever the host would return. A
+        /// wrong one surfaces as a format error at open, exactly as a truncated download does.
+        ///
+        /// Passing any of these without an `on_read` in [`Assembler::run`] fails the run as
+        /// `internal` before a byte is read.
+        #[wasm_bindgen(js_name = addCellByKey)]
+        pub fn add_cell_by_key(
+            &mut self,
+            id: String,
+            band: String,
+            partial: bool,
+            byte_length: u32,
+            key: String,
+        ) -> u32 {
+            self.source_cells.push(SourceCell { id, band, partial, byte_length, key });
+            (self.source_cells.len() - 1) as u32
         }
 
         /// Add one selected, canonical zero-byte cell. It affects the output
@@ -242,10 +313,10 @@ mod web {
             self.terrain_cells.push(TerrainCellBytes { id, sha256, bytes });
         }
 
-        /// How many selected cells are waiting, including zero-byte coverage.
+        /// How many selected cells are waiting, in either form, including zero-byte coverage.
         #[wasm_bindgen(getter, js_name = cellCount)]
         pub fn cell_count(&self) -> usize {
-            self.cells.len() + self.known_empty.len()
+            self.cells.len() + self.source_cells.len() + self.known_empty.len()
         }
 
         /// How many terrain cells are waiting.
@@ -282,27 +353,40 @@ mod web {
         /// already have handed shards out; cleaning them up is the caller's job (§5.4 makes them
         /// invisible as a map until the manifest exists, so nothing half-usable reaches a device).
         ///
+        /// `on_read(slot, offset, dest) -> boolean` is how the bytes of every cell added with
+        /// [`Assembler::add_cell_by_key`] are fetched (#1116 B2), and it must be present if any
+        /// were. It is called synchronously from inside the run — which is exactly what makes a
+        /// `FileSystemSyncAccessHandle` usable, since those exist only in a dedicated worker and
+        /// only synchronously — and it must **fill `dest` completely** and return `true`. Anything
+        /// falsy, or a throw, fails the run as `io` naming the cell; a short read is a failure, not
+        /// a partial success.
+        ///
+        /// `dest` is a view straight onto wasm's linear memory and is valid **only for the duration
+        /// of the call**. Fill it and return; do not keep it, do not hand it to anything
+        /// asynchronous, and do not call back into the assembler from inside it.
+        ///
+        /// Reads are served from a small block cache on the wasm side, so this is called on the
+        /// order of once per 64 KiB of a cell rather than once per engine read — which is what makes
+        /// a per-call JS crossing affordable at all (see [`crate::driver`]'s module header).
+        ///
         /// Throws an `Error` carrying `code` + `message` on failure; see [`crate::ErrorCode`].
         pub fn run(
             &mut self,
             on_progress: Option<js_sys::Function>,
             on_file: Option<js_sys::Function>,
+            on_read: Option<js_sys::Function>,
         ) -> Result<String, JsValue> {
             let mut hooks = JsHooks { on_progress, on_file, last_us: 0, warned: false };
-            let cells = core::mem::take(&mut self.cells);
-            let known_empty = core::mem::take(&mut self.known_empty);
-            let terrain_cells = core::mem::take(&mut self.terrain_cells);
-            let out = assemble_everything(
-                cells,
-                known_empty,
-                self.terrain,
-                terrain_cells,
-                &self.schema_json,
-                &self.skin_json,
-                &self.options,
-                &mut hooks,
-            )
-            .map_err(to_js)?;
+            let reads = on_read.map(|on_read| JsReads { on_read });
+            let inputs = Inputs {
+                cells: core::mem::take(&mut self.cells),
+                source_cells: core::mem::take(&mut self.source_cells),
+                reads: reads.as_ref().map(|r| r as &dyn CellReads),
+                known_empty: core::mem::take(&mut self.known_empty),
+                terrain: self.terrain,
+                terrain_cells: core::mem::take(&mut self.terrain_cells),
+            };
+            let out = assemble(inputs, &self.schema_json, &self.skin_json, &self.options, &mut hooks).map_err(to_js)?;
             self.taken = vec![false; out.files.len()];
             self.files = out.files;
             self.warnings = out.warnings;
@@ -389,6 +473,7 @@ mod web {
         #[wasm_bindgen(js_name = releaseCells)]
         pub fn release_cells(&mut self) {
             self.cells = Vec::new();
+            self.source_cells = Vec::new();
             self.known_empty = Vec::new();
             self.terrain_cells = Vec::new();
         }
