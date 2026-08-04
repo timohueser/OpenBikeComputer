@@ -48,10 +48,12 @@
 import { AssembleError, assembleCells, estimateMemory, type AssembleCell, type AssembleSources } from "./bridge";
 import {
     openCellReader,
+    openScratchStore,
     openShardSink,
     readCellBytes,
     syncReadsAvailable,
     type CellReader,
+    type ScratchFiles,
     type ShardSink,
 } from "../cells/store";
 import {
@@ -167,6 +169,12 @@ self.onmessage = async (event: MessageEvent<AssembleWorkerRequest>) => {
         // profile and an honest path rather than a failure.
         const sink: ShardSink | null = req.shardSink ? await openShardSink() : null;
         post({ type: "writing", mode: sink ? "disk" : "memory" });
+        // The engine's spill (#1116 D2) goes to OPFS whenever this worker can hold
+        // sync handles at all — it is worth wiring even when the cells arrived in
+        // memory, because from D3 on the spill is the merge's own edge stream.
+        // `null` falls back to spilling inside wasm, which is correct and priced
+        // honestly, just not the point.
+        const scratch: ScratchFiles | null = (await syncReadsAvailable()) ? await openScratchStore() : null;
         // Announced after the run, not from inside it: the page cannot open a file
         // this worker still holds a sync handle on.
         const stored: WorkerStoredShard[] = [];
@@ -212,13 +220,17 @@ self.onmessage = async (event: MessageEvent<AssembleWorkerRequest>) => {
                           },
                       }
                     : undefined,
+                scratch ?? undefined,
             );
         } finally {
             // The moment the run is over, whether it finished or threw: every
             // handle is an exclusive lock on a file the next run will want — and,
-            // for the sink, one the *page* is about to want.
+            // for the sink, one the *page* is about to want. The spill is further
+            // *deleted*, not just unlocked: it means nothing outside this run and
+            // holds country-scale quota.
             opened.reader?.close();
             sink?.close();
+            await scratch?.discard();
         }
         try {
             post({

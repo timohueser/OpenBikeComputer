@@ -531,3 +531,118 @@ describe("the shard sink", () => {
         }
     });
 });
+
+describe("the scratch store", () => {
+    /** What `obc-scratch/` holds. */
+    function scratchIn(root: FakeDir): FakeDir {
+        return root.dirs.get("obc-scratch")!;
+    }
+
+    it("round-trips a spill file: create, append, read back, len", async () => {
+        const root = opfs();
+        const { openScratchStore } = await withOpfs(root);
+        const scratch = (await openScratchStore(2))!;
+        try {
+            const id = scratch.create();
+            expect(id).toBeGreaterThanOrEqual(0);
+            expect(scratch.append(id, new Uint8Array([1, 2, 3, 4]))).toBe(true);
+            expect(scratch.append(id, new Uint8Array([5, 6]))).toBe(true);
+            expect(scratch.len(id)).toBe(6);
+            const into = new Uint8Array(3);
+            expect(scratch.readAt(id, 2, into)).toBe(true);
+            expect(into).toEqual(new Uint8Array([3, 4, 5]));
+        } finally {
+            await scratch.discard();
+        }
+    });
+
+    /** The contract the engine's `MemoryScratch` documents and the merge depends on: a removed id
+     *  refuses, it never resolves to some later stream's bytes — that failure mode is a silently
+     *  wrong map, the one thing worse than a failed run. */
+    it("never reuses an id — a use-after-remove refuses instead of reading another stream", async () => {
+        const root = opfs();
+        const { openScratchStore } = await withOpfs(root);
+        const scratch = (await openScratchStore(1))!;
+        try {
+            const dead = scratch.create();
+            expect(scratch.append(dead, new Uint8Array([9, 9]))).toBe(true);
+            expect(scratch.remove(dead)).toBe(true);
+            // The single pool slot is reused; the id is not, and the new stream starts empty.
+            const alive = scratch.create();
+            expect(alive).not.toBe(dead);
+            expect(scratch.len(alive)).toBe(0);
+            expect(scratch.append(alive, new Uint8Array([1]))).toBe(true);
+            // Every operation on the dead id refuses.
+            expect(scratch.append(dead, new Uint8Array([7]))).toBe(false);
+            expect(scratch.readAt(dead, 0, new Uint8Array(1))).toBe(false);
+            expect(scratch.len(dead)).toBe(-1);
+            expect(scratch.remove(dead)).toBe(false);
+        } finally {
+            await scratch.discard();
+        }
+    });
+
+    it("refuses a read past what was appended — zero-fill must not parse as data", async () => {
+        const { openScratchStore } = await withOpfs(opfs());
+        const scratch = (await openScratchStore(1))!;
+        try {
+            const id = scratch.create();
+            expect(scratch.append(id, new Uint8Array([1, 2]))).toBe(true);
+            expect(scratch.readAt(id, 1, new Uint8Array(2))).toBe(false);
+            expect(scratch.readAt(id, 0, new Uint8Array(2))).toBe(true);
+        } finally {
+            await scratch.discard();
+        }
+    });
+
+    it("refuses with -1 when the pool is exhausted, and recovers when a file is removed", async () => {
+        const { openScratchStore } = await withOpfs(opfs());
+        const scratch = (await openScratchStore(2))!;
+        try {
+            const a = scratch.create();
+            const b = scratch.create();
+            expect(a).toBeGreaterThanOrEqual(0);
+            expect(b).toBeGreaterThanOrEqual(0);
+            expect(scratch.create()).toBe(-1);
+            expect(scratch.remove(a)).toBe(true);
+            expect(scratch.create()).toBeGreaterThanOrEqual(0);
+        } finally {
+            await scratch.discard();
+        }
+    });
+
+    it("discard releases every handle and deletes the spill — quota is not held between runs", async () => {
+        const root = opfs();
+        const { openScratchStore } = await withOpfs(root);
+        const scratch = (await openScratchStore(2))!;
+        const id = scratch.create();
+        scratch.append(id, new Uint8Array(1024));
+        await scratch.discard();
+        expect(scratch.open).toBe(0);
+        expect(FakeDir.handles.filter((h) => !h.closed)).toEqual([]);
+        expect(scratchIn(root).files.size).toBe(0);
+        // Idempotent, as the seam promises.
+        await scratch.discard();
+    });
+
+    it("sweeps a crashed run's spill at open", async () => {
+        const root = opfs();
+        const { openScratchStore } = await withOpfs(root);
+        const home = await root.getDirectoryHandle("obc-scratch", { create: true });
+        const stale = await home.getFileHandle("x000.spill", { create: true });
+        (await stale.createSyncAccessHandle()).close();
+        const scratch = (await openScratchStore(1))!;
+        try {
+            // The stale file was removed and the slot's fresh file starts empty.
+            const id = scratch.create();
+            expect(scratch.len(id)).toBe(0);
+        } finally {
+            await scratch.discard();
+        }
+    });
+
+    it("answers null with no OPFS, which is the caller's cue to spill in memory", async () => {
+        const { openScratchStore } = await withOpfs(null);
+        expect(await openScratchStore()).toBeNull();
+    });
+});
