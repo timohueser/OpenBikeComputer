@@ -10,9 +10,11 @@
         requestTransferList,
         type AssembleWorkerRequest,
         type CellReadMode,
+        type ShardWriteMode,
         type WorkerCell,
         type WorkerFile,
         type WorkerSourceCell,
+        type WorkerStoredShard,
         type WorkerTerrainCell,
     } from "../../lib/assemble/workerProtocol";
     import {
@@ -20,6 +22,7 @@
         cellStoreWritable,
         hasRoomFor,
         openCellStore,
+        readShardOutput,
         type CellStore,
     } from "../../lib/cells/store";
     import { saveBlob } from "../../lib/download";
@@ -125,6 +128,8 @@
      *  reports it before the assembly starts. Shown, because a bug report about a
      *  failed country-scale run has to say which path ran. */
     let readMode = $state<CellReadMode | null>(null);
+    /** …and where its shards went (#1116 D1), for the same reason. */
+    let writeMode = $state<ShardWriteMode | null>(null);
     /** Cells this run did not have to fetch, because a previous one already put
      *  them in OPFS under the same digest. */
     let cachedCells = $state(0);
@@ -187,6 +192,9 @@
             case "reading":
                 readMode = msg.mode;
                 break;
+            case "writing":
+                writeMode = msg.mode;
+                break;
             case "planned":
                 runWarnings = msg.warnings;
                 if (output?.kind === "device") {
@@ -205,7 +213,18 @@
                 // assembly cannot wait for one (worker protocol header). So the
                 // write is queued rather than awaited here, and its failure has
                 // nobody to return to: it fails the run itself.
-                void queueSave(msg).catch((cause) => failRun(cause));
+                void queueSave(() => saveAssembledFile(msg)).catch((cause) => failRun(cause));
+                break;
+            case "stored-shard":
+                // The shard never crossed the port: it is in OPFS, the worker has
+                // let go of it, and this is where it becomes a file someone has.
+                // Acknowledged like a `file`, so the next one waits.
+                try {
+                    await queueSave(() => saveStoredShard(msg));
+                    worker?.postMessage({ type: "file-ack" } satisfies AssembleWorkerRequest);
+                } catch (cause) {
+                    await failRun(cause);
+                }
                 break;
             case "file":
                 try {
@@ -217,7 +236,7 @@
                     } else {
                         // The worker waits for this ack, so the next file never
                         // competes for memory or arrives before this write ends.
-                        await queueSave(msg);
+                        await queueSave(() => saveAssembledFile(msg));
                     }
                     worker?.postMessage({ type: "file-ack" } satisfies AssembleWorkerRequest);
                 } catch (cause) {
@@ -277,8 +296,8 @@
      * two `onmessage` handlers can be in flight at once, and `openMapOutput` is
      * a lazily-opened folder that must not be opened twice.
      */
-    function queueSave(file: WorkerFile): Promise<void> {
-        const done = sink.then(() => saveAssembledFile(file));
+    function queueSave(save: () => Promise<void>): Promise<void> {
+        const done = sink.then(save);
         // The chain itself must survive a failure — `failRun` closes the sink,
         // so what follows is a no-op rather than a write into a discarded
         // output — while the caller still sees the rejection.
@@ -287,18 +306,50 @@
     }
 
     async function saveAssembledFile(file: WorkerFile) {
+        await savePart(file, () => new Blob([file.bytes as unknown as BlobPart]), file.bytes);
+    }
+
+    /**
+     * One shard the assembly wrote into OPFS (#1116 D1): its bytes were never in
+     * wasm memory and never crossed the worker port, and on the browser host they
+     * never enter the tab's heap either — a `Blob` on an OPFS file is a handle, and
+     * that is what the downloader is given.
+     *
+     * The desktop host does read it back, because its output session takes bytes to
+     * write into a real folder. That is one shard resident, which is exactly what it
+     * was before this existed — the saving D1 is here for is on the *assembly*, and
+     * it is unaffected.
+     */
+    async function saveStoredShard(shard: WorkerStoredShard) {
+        const blob = await readShardOutput(shard.entry);
+        if (blob.size !== shard.byteLength) {
+            throw new Error(
+                `The assembled shard ${shard.name} is ${blob.size} bytes in this browser's storage, not the ` +
+                    `${shard.byteLength} the assembler wrote. Free some disk space and try again.`,
+            );
+        }
+        await savePart(shard, () => blob, null);
+    }
+
+    /** The two hosts' save, shared: a Blob for the browser, bytes for the desktop. */
+    async function savePart(
+        part: { name: string; role: string; byteLength: number },
+        blob: () => Blob,
+        bytes: Uint8Array | null,
+    ) {
         if (sinkClosed) return;
         if (platform.openMapOutput) {
             // The desktop writes every part into one new folder, as it lands.
             downloadOutput ??= await platform.openMapOutput(runMapName);
             outputPath = downloadOutput.path;
-            const path = await downloadOutput.write(file.name, file.bytes);
-            savedFiles.push({ name: file.name, role: file.role, byteLength: file.byteLength, path });
+            const body = bytes ?? new Uint8Array(await blob().arrayBuffer());
+            const path = await downloadOutput.write(part.name, body);
+            savedFiles.push({ name: part.name, role: part.role, byteLength: part.byteLength, path });
             persistedFiles += 1;
         } else {
             // The browser stages and saves at the end — see `staged`.
-            staged.push({ name: file.name, blob: new Blob([file.bytes as unknown as BlobPart]) });
-            savedFiles.push({ name: file.name, role: file.role, byteLength: file.byteLength });
+            staged.push({ name: part.name, blob: blob() });
+            savedFiles.push({ name: part.name, role: part.role, byteLength: part.byteLength });
         }
     }
 
@@ -430,6 +481,7 @@
         dlProgress = null;
         asmFraction = 0;
         readMode = null;
+        writeMode = null;
         cachedCells = 0;
         cachedBytes = 0;
         phase = "downloading";
@@ -559,6 +611,13 @@
             // exist until the run ends, so a device run keeps every shard in
             // wasm memory and takes them afterwards, exactly as before (#1116).
             streamShards: out.kind === "download",
+            // …and better still where the browser allows it: the shards go
+            // straight into OPFS, so not even one is in wasm memory (#1116 D1).
+            // The core shard cannot be split, so at country scale "one shard
+            // resident" is still a multi-gigabyte allocation. The device path
+            // opts out with `streamShards` and for the same reason — it needs the
+            // bytes in hand to push them over USB.
+            shardSink: out.kind === "download",
             options: {
                 name: runMapName,
                 // Split always, at 256 MB. Both halves are about handing the map
@@ -991,7 +1050,8 @@
                     </ul>
                     {#if readMode}
                         <p class="line faint small mono">
-                            cells {readMode}{#if cachedCells > 0}
+                            cells {readMode}{#if writeMode}
+                                · shards {writeMode}{/if}{#if cachedCells > 0}
                                 · {cachedCells} reused from this computer ({formatBytes(cachedBytes)} not
                                 downloaded){/if}
                         </p>

@@ -40,14 +40,44 @@
 // changes those pins, so its cells land in a fresh directory and the previous
 // one's are swept the next time a store is opened. Nothing accumulates, and there
 // is no setting to get wrong.
+//
+// ## The other direction: the assembled shards (#1116 D1)
+//
+// The same file system, the same worker, the same sync handles — pointed the other
+// way. {@link openShardSink} is where an assembly's OBCM shards go instead of into
+// wasm memory, which is what makes a country assemblable at all: the **core shard
+// cannot be split** (one nav graph, one file), so at DACH scale it is a single
+// ~3 GiB buffer in a 4 GiB address space.
+//
+// One thing about the platform shapes this: `createSyncAccessHandle()` is
+// asynchronous, and the engine asks for a shard *during* the blocking assembly,
+// where nothing can be awaited. So the handles cannot be opened on demand — a
+// **pool** of them is opened before the run instead, under fixed scratch names, and
+// a shard's real §5.2 filename is only recorded (`MS1S00.OBM` never exists on this
+// disk; it is the name the file is saved *as*). OBCA §5 caps a set at 32 shards, so
+// the pool is that big and a slot past it is a refusal rather than a surprise.
 
 import type { Catalog } from "../catalog/manifest";
 
 /** Where every generation of cached cells lives, under the origin's private root. */
 const ROOT = "obc-cells";
+/** …and where an assembly's shards are written (#1116 D1). A sibling of {@link ROOT}
+ *  rather than a child: cells are keyed by a catalog revision and swept when it
+ *  moves, output belongs to one run and is swept when the next starts. */
+const OUT = "obc-out";
 /** The write-side probe's file. A dot-name so it cannot collide with a digest. */
 const PROBE = ".probe";
 const PROBE_BYTES = new Uint8Array([0x4f, 0x42, 0x43, 0x32]); // "OBC2"
+/**
+ * How many shards one sink can take: OBCA §5's own ceiling, since a shard's derived
+ * filename is `MS<id>S<kk>.OBM` with `kk` in `00..31` and the OBCS manifest's
+ * `Shard Count` is `1..=32`.
+ *
+ * The whole pool is opened before every sunk run, because the alternative — open on
+ * demand — does not exist inside a blocking assembly. That costs 32 empty files and
+ * 32 handles on a run that needs one; it buys never having to guess the plan.
+ */
+const SINK_SLOTS = 32;
 
 // --- the platform, as far as this module uses it ------------------------------
 //
@@ -72,7 +102,16 @@ interface Writable {
 interface FileEntry {
     createWritable(options?: { keepExistingData?: boolean }): Promise<Writable>;
     createSyncAccessHandle(): Promise<SyncHandle>;
-    getFile(): Promise<{ size: number; arrayBuffer(): Promise<ArrayBuffer> }>;
+    getFile(): Promise<OpfsFile>;
+}
+
+/** What `getFile()` answers with. A `File` in the browser — which is a `Blob`, so it
+ *  can be handed to a download without its bytes ever entering the heap. Typed as
+ *  the two members this module uses plus the optional `Blob` shape, because the
+ *  test's model has no `File`. */
+interface OpfsFile {
+    size: number;
+    arrayBuffer(): Promise<ArrayBuffer>;
 }
 
 interface Directory {
@@ -375,6 +414,176 @@ export async function readCellBytes(revision: string, keys: readonly string[]): 
         }
     }
     return out;
+}
+
+// --- the write side of the output (dedicated worker only) ---------------------
+
+/**
+ * Where one assembly's OBCM shards go instead of into wasm memory (#1116 D1).
+ *
+ * The five byte-moving methods are the wasm sink seam verbatim, called from **inside**
+ * the blocking assembly: `create`/`write`/`seal` on the way out, `readAt` for the
+ * §4.8 read-back, all synchronous, all answering `false` rather than throwing —
+ * which fails the run as `io` naming the shard.
+ *
+ * A slot's bytes land in a **scratch file** ({@link ShardSink.entry}), not under the
+ * shard's map filename: the handles have to be opened before the run and the
+ * filenames do not exist until the engine plans the set. The page saves each file
+ * under the name the assembler reported for it.
+ */
+export interface ShardSink {
+    /** Begin shard `slot`, truncating whatever the pool file held. `false` if the
+     *  set wants more shards than the pool has (OBCA §5 caps it at 32). */
+    create(slot: number, name: string): boolean;
+    /** Append to shard `slot`. A short write is a failure. */
+    write(slot: number, bytes: Uint8Array): boolean;
+    /** Fill `into` from `offset` of the sealed shard in `slot` — the §4.8 read-back.
+     *  Served through the wasm side's block cache, so this runs about once per
+     *  64 KiB of a shard rather than once per engine read. */
+    readAt(slot: number, offset: number, into: Uint8Array): boolean;
+    /** No more bytes for `slot`: flush, because §4.8 reads it back next. */
+    seal(slot: number): boolean;
+    /** The OPFS entry a slot's bytes are in — what {@link readShardOutput} opens
+     *  once the handles are closed. */
+    entry(slot: number): string;
+    /** Release every handle. Idempotent, and **required**: a handle is an exclusive
+     *  lock, and the page cannot read a file back while the worker holds one. */
+    close(): void;
+    /** How many handles are open. Diagnostics, and what the release test asserts. */
+    readonly open: number;
+}
+
+/** The scratch name of one pool slot. Fixed, so the sweep and the reader agree. */
+function slotEntry(slot: number): string {
+    return `s${slot.toString().padStart(2, "0")}.part`;
+}
+
+/**
+ * Open the shard sink for one run: sweep whatever a previous one left, then open a
+ * sync access handle per pool slot.
+ *
+ * Returns `null` where this browser cannot serve it — no OPFS, no sync handles, no
+ * quota — which is the caller's cue to keep the shards in wasm memory exactly as it
+ * did before (`assemble.worker.ts` falls back to the buffered stream).
+ *
+ * The **sweep is the point of doing it here**: a cancelled or crashed run leaves its
+ * partial shards on disk, and they are invisible as a map (the OBCS manifest is
+ * written last, OBCA §5.4) but not invisible to the quota. This is the one moment
+ * nothing is reading them.
+ */
+export async function openShardSink(slots = SINK_SLOTS): Promise<ShardSink | null> {
+    const root = await opfsRoot();
+    if (!root) return null;
+    const handles: (SyncHandle | null)[] = [];
+    const names: string[] = [];
+    const written: number[] = [];
+    const sink: ShardSink = {
+        create(slot, name) {
+            const handle = handles[slot];
+            if (!handle) return false;
+            try {
+                handle.truncate(0);
+            } catch {
+                return false;
+            }
+            names[slot] = name;
+            written[slot] = 0;
+            return true;
+        },
+        write(slot, bytes) {
+            const handle = handles[slot];
+            if (!handle) return false;
+            try {
+                const n = handle.write(bytes, { at: written[slot] });
+                written[slot] += n;
+                return n === bytes.byteLength;
+            } catch {
+                return false;
+            }
+        },
+        readAt(slot, offset, into) {
+            const handle = handles[slot];
+            if (!handle) return false;
+            try {
+                // A short read is a failure, not a partial success — the same rule
+                // the input side has, and here it is §4.8 that would be misled.
+                return handle.read(into, { at: offset }) === into.byteLength;
+            } catch {
+                return false;
+            }
+        },
+        seal(slot) {
+            const handle = handles[slot];
+            if (!handle) return false;
+            try {
+                // Truncated to exactly what was written, so a pool file left longer
+                // by an earlier run cannot leave trailing bytes past the shard.
+                handle.truncate(written[slot]);
+                handle.flush();
+                return true;
+            } catch {
+                return false;
+            }
+        },
+        entry: slotEntry,
+        close() {
+            for (const handle of handles) {
+                try {
+                    handle?.close();
+                } catch {
+                    // Already closed, or the storage went away. The rest still have
+                    // to be released.
+                }
+            }
+            handles.length = 0;
+        },
+        get open() {
+            return handles.filter((h) => h !== null).length;
+        },
+    };
+    try {
+        const dir = await root.getDirectoryHandle(OUT, { create: true });
+        await sweepOutputs(dir);
+        for (let slot = 0; slot < slots; slot++) {
+            handles.push(await (await dir.getFileHandle(slotEntry(slot), { create: true })).createSyncAccessHandle());
+        }
+    } catch {
+        // Whatever opened is a lock nobody will use, and a half-open pool is not a
+        // sink — the caller must be told "no", not handed one that fails at shard 7.
+        sink.close();
+        return null;
+    }
+    return sink;
+}
+
+/** Delete everything a previous run left in the output directory. */
+async function sweepOutputs(dir: Directory): Promise<void> {
+    const stale: string[] = [];
+    for await (const [name] of dir.entries()) stale.push(name);
+    for (const name of stale) {
+        // One locked file must not strand the rest — another tab may still hold a
+        // handle on it, and that is not this run's problem to solve.
+        await dir.removeEntry(name, { recursive: true }).catch(() => {});
+    }
+}
+
+/**
+ * One written shard, as a `Blob` — for the **main thread**, after the worker has
+ * closed its handles.
+ *
+ * Nothing is read here: OPFS's `getFile()` answers with a `File`, which is a `Blob`,
+ * so the page can hand a gigabyte-scale shard to a download (or read it in pieces)
+ * without its bytes ever entering the tab's heap. That is the second half of what
+ * D1 buys — the first is that they never entered wasm's.
+ */
+export async function readShardOutput(entry: string): Promise<Blob> {
+    const root = await opfsRoot();
+    if (!root) throw new Error("this browser has no origin private file system to read the assembled map back from");
+    const dir = await root.getDirectoryHandle(OUT);
+    const file = await (await dir.getFileHandle(entry)).getFile();
+    // The local `FileEntry` names only the two members this module calls; the real
+    // `getFile()` returns a `File`, and a `File` is a `Blob`.
+    return file as unknown as Blob;
 }
 
 /**
