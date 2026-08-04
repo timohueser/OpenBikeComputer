@@ -106,9 +106,30 @@ self.onmessage = async (event: MessageEvent<AssembleWorkerRequest>) => {
     }
     try {
         if (req.type === "estimate") {
+            // The input mode is a conjunction and this thread owns the second half: the main
+            // thread says whether a writable store with room exists, only the worker can say
+            // whether *it* can read one synchronously. Probed here so the projection prices the
+            // run the assembly will actually be — a browser whose probe fails runs the buffered
+            // fallback, full cells resident, and must be priced as such.
+            const inputOnDisk = req.inputOnDisk && (await syncReadsAvailable());
             post({
                 type: "estimate-result",
-                estimate: await estimateMemory(req.networkBandBytes, req.totalCellBytes, req.budgetBytes),
+                estimate: await estimateMemory(
+                    req.networkBandBytes,
+                    req.totalCellBytes,
+                    req.terrainBytes,
+                    { inputOnDisk, streamedShardBytes: req.streamedShardBytes },
+                    req.budgetBytes,
+                ),
+                // The same selection priced as the device path runs it: set kept until `planned`
+                // (#1116 B1's opt-out). `sendToDevice` gates on this one.
+                deviceEstimate: await estimateMemory(
+                    req.networkBandBytes,
+                    req.totalCellBytes,
+                    req.terrainBytes,
+                    { inputOnDisk, streamedShardBytes: 0 },
+                    req.budgetBytes,
+                ),
             });
             return;
         }

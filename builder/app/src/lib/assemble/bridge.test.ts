@@ -626,17 +626,51 @@ describe("the wire contract with driver.rs", () => {
 });
 
 describe("estimateMemory", () => {
+    const MB = 1_000_000;
+    /** The builder's split (`DownloadStep.svelte`'s `TARGET_SHARD_BYTES`). */
+    const SHARD = 256 * 1024 * 1024;
+    const STREAMED = { inputOnDisk: true, streamedShardBytes: SHARD };
+    const DEVICE = { inputOnDisk: true, streamedShardBytes: 0 };
+
     it("passes a corridor and refuses DACH, before any download", async () => {
-        const MB = 1_000_000;
-        const corridor = await estimateMemory(20 * MB, 60 * MB);
+        const corridor = await estimateMemory(20 * MB, 60 * MB, 10 * MB, STREAMED);
         expect(corridor.fits).toBe(true);
         expect(corridor.headroomBytes).toBeGreaterThan(0);
 
-        // PR #1027's own DACH projection: nav ≈ 11.5× switzerland's 271 MB.
-        const dach = await estimateMemory(11.5 * 271 * MB, 11.5 * 717 * MB);
+        // DACH's engine term alone is past wasm32 — no residency mode argues with the merge itself.
+        const dach = await estimateMemory(3000 * MB, 8500 * MB, 500 * MB, STREAMED);
         expect(dach.fits).toBe(false);
-        expect(dach.peakBytes).toBeGreaterThan(dach.ceilingBytes);
+        expect(dach.engineBytes).toBeGreaterThan(dach.ceilingBytes);
         expect(dach.headroomBytes).toBeLessThan(0);
+    });
+
+    /**
+     * The two output modes are genuinely different verdicts (#1116 B1): the download path streams
+     * shards out and prices one of them; the device path keeps the set until `planned`. At
+     * Bayern-ish scale (1.7× BW's published bytes) the first fits and the second does not — which
+     * is why `DownloadStep` asks for both instead of gating everything on one.
+     */
+    it("prices the download and device paths apart, and they disagree at Bayern scale", async () => {
+        const nav = 1.7 * 295_921_548;
+        const cells = 1.7 * 853_456_890;
+        const terrain = 1.7 * 58_721_264;
+        const streamed = await estimateMemory(nav, cells, terrain, STREAMED);
+        const device = await estimateMemory(nav, cells, terrain, DEVICE);
+        expect(streamed.fits).toBe(true);
+        expect(device.fits).toBe(false);
+        expect(device.outputBytes).toBeGreaterThan(streamed.outputBytes);
+        expect(device.engineBytes).toBe(streamed.engineBytes);
+    });
+
+    /** The buffered fallback — no usable OPFS — is the pre-B shape: full cells resident. */
+    it("charges the whole selection when the input cannot stream", async () => {
+        const cells = 717 * MB;
+        const onDisk = await estimateMemory(271 * MB, cells, 0, STREAMED);
+        const buffered = await estimateMemory(271 * MB, cells, 0, { inputOnDisk: false, streamedShardBytes: SHARD });
+        expect(buffered.inputBytes).toBe(cells);
+        // The streamed input is the cache plus terrain, not the selection.
+        expect(onDisk.inputBytes).toBeLessThan(70 * MB);
+        expect(buffered.peakBytes - onDisk.peakBytes).toBeGreaterThan(600 * MB);
     });
 
     /**
@@ -645,9 +679,8 @@ describe("estimateMemory", () => {
      * is the caller's to lower. Nothing else moves: the projection is about the selection.
      */
     it("lets a caller lower the budget the verdict is measured against", async () => {
-        const MB = 1_000_000;
-        const desktop = await estimateMemory(271 * MB, 717 * MB);
-        const phone = await estimateMemory(271 * MB, 717 * MB, 1024 * 1024 * 1024);
+        const desktop = await estimateMemory(271 * MB, 717 * MB, 0, DEVICE);
+        const phone = await estimateMemory(271 * MB, 717 * MB, 0, DEVICE, 1024 * 1024 * 1024);
         expect(desktop.fits).toBe(true);
         expect(phone.fits).toBe(false);
         expect(phone.peakBytes).toBe(desktop.peakBytes);

@@ -12,6 +12,20 @@ function assembleReq(cells: WorkerCell[]): Extract<AssembleWorkerRequest, { type
     return { type: "assemble", cells, knownEmpty: [], schemaJson: "{}", skinJson: "{}", options: {} };
 }
 
+/** A structurally complete estimate, since the validator only checks the object's presence. */
+function est(fits: boolean) {
+    return {
+        engineBytes: 1,
+        inputBytes: 1,
+        outputBytes: 1,
+        peakBytes: 3,
+        budgetBytes: 4,
+        ceilingBytes: 5,
+        headroomBytes: fits ? 1 : -1,
+        fits,
+    };
+}
+
 describe("requestTransferList", () => {
     it("moves every cell's buffer, once each", () => {
         const a = new Uint8Array([1, 2, 3]);
@@ -39,7 +53,16 @@ describe("requestTransferList", () => {
     });
 
     it("transfers nothing for an estimate — there are no bytes in it", () => {
-        expect(requestTransferList({ type: "estimate", networkBandBytes: 1, totalCellBytes: 2 })).toEqual([]);
+        expect(
+            requestTransferList({
+                type: "estimate",
+                networkBandBytes: 1,
+                totalCellBytes: 2,
+                terrainBytes: 0,
+                inputOnDisk: true,
+                streamedShardBytes: 256 * 1024 * 1024,
+            }),
+        ).toEqual([]);
     });
 
     it("does not invent a transferable for a known-empty identity", () => {
@@ -110,6 +133,11 @@ describe("isWorkerResponse", () => {
             },
             { type: "reading", mode: "streamed", cells: 412 },
             { type: "done", warnings: [], summary: { cells: 1, bytes: 2, manifest: "MS1.OBS", shards: [] } },
+            {
+                type: "estimate-result",
+                estimate: est(true),
+                deviceEstimate: est(false),
+            },
             { type: "error", code: "capacity", message: "too big" },
         ];
         for (const msg of messages) expect(isWorkerResponse(msg)).toBe(true);
@@ -131,6 +159,9 @@ describe("isWorkerResponse", () => {
         expect(isWorkerResponse({})).toBe(false);
         expect(isWorkerResponse({ type: "progress", phase: "warp", fraction: 0.1 })).toBe(false);
         expect(isWorkerResponse({ type: "reading", mode: "telepathy", cells: 1 })).toBe(false);
+        // Both verdicts or neither: a one-estimate answer is a stale worker build, and letting it
+        // through would leave the device gate reading `null` as "fits".
+        expect(isWorkerResponse({ type: "estimate-result", estimate: est(true) })).toBe(false);
         expect(isWorkerResponse({ type: "error", code: "not-a-code", message: "x" })).toBe(false);
         expect(isWorkerResponse({ type: "file", name: "x", role: "core", sha256: "", byteLength: 1, bytes: [1] })).toBe(
             false,
