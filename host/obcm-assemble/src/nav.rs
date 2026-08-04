@@ -50,6 +50,37 @@
 //! The seam table's own digests are deltas of the same kind, because a seam node's record is written
 //! by the first cell that saw it and later cells go on adding to it.
 //!
+//! # …and neither does the edge side (#1116 D3)
+//!
+//! The same is now true of the edges. A collected edge is a 35-byte record on the scratch seam —
+//! endpoints, `Cost M`, `Way Kind`, the content hash, the ten-byte [`EdgeRef`] and both ascents —
+//! appended in collection order, so that (exactly as with the node stream) a record's **position is
+//! its collection index** and nothing has to store one. The only edges in memory at any moment are
+//! the ones the cell currently being read collected, because the second sighting of an edge writes
+//! the other direction's ascent back into the entry the first made and that write-back never crosses
+//! a cell.
+//!
+//! Every step that used to walk `Vec<MergedEdge>` is a sorted or streamed pass over that file:
+//!
+//! * **§4.6.3 dedup** sorts a 25-byte key — `(hash, endpoints, cost, kind, collection index)` — and
+//!   keeps the first member of each run of equal keys. The old formulation sorted by hash alone and
+//!   searched each equal-hash run for an earlier copy; sorting by the *whole* key makes "the first
+//!   copy" the first record of a run, so the pass is `O(1)` memory instead of `O(run²)` time, and
+//!   the survivor is the same one for the same reason it always was: the collection index is the
+//!   last component of the key, so the lowest one leads its group. What comes back is the list of
+//!   dead collection indices and the digest subtractions they owe.
+//! * **§4.6.4 island pruning** decomposes per cell — see [`crate::prune`], which owns the argument.
+//! * **§4.6.5's renumbering** hands out dense ids as before, but instead of a whole-map
+//!   collection → dense array it emits `(id, dense, lat, lon)` pairs, sorted by id, and the edges
+//!   are resolved against them by **merge join**: sort the surviving edges by `a`, walk the two
+//!   streams together, then again by `b`. The neighbour coordinates ride along, because that is what
+//!   the §8.3 adjacency deltas are measured from and re-reading them would need the node array back.
+//! * **§4.6.6's pool layout** sorts by the emission key over the *dense* ids and mints `Edge Id`s
+//!   with a running [`place`] cursor. That key is a total order on what survives the dedup — two
+//!   edges that tied on all five components would have been deduplicated — so the layout does not
+//!   depend on the sort's stability, and the same walk fills the adjacency, because a record's
+//!   `Edge Id` is known at exactly the moment it is placed.
+//!
 //! The order of the passes is normative and each one depends on the last:
 //!
 //! 1. **Read the serialized node set** — not a graph builder's, the *serializer's*. The §8.4 splits
@@ -75,7 +106,8 @@
 //!    deferred), 5. **renumber**, 6. **lay out the edge pool** — its offsets, not its bytes — 7.
 //!    re-check the wire limits and rebuild the node quadtree.
 
-use std::collections::{BTreeMap, HashMap};
+use std::cmp::Ordering;
+use std::collections::HashMap;
 
 use obc_formats::obcm::{
     CHUNK_END, NAV_CHUNK_SIZE, NAV_DIR_LEN, NAV_EDGE_FIXED_LEN, NAV_MAX_DEGREE, NAV_NEIGHBOR_ASCENT_OFF,
@@ -87,7 +119,7 @@ use crate::grid::{on_grid_boundary, UBox};
 use crate::input::Cell;
 use crate::qtree::{self, Point};
 use crate::scratch::{ScratchId, ScratchStore};
-use crate::{Error, Result};
+use crate::{prune, Error, Result};
 
 /// Largest neighbour delta the `int16` fields hold (§8.3). The packer's own split bound is 32 000;
 /// unification never moves a coordinate, so an input that held it still holds it — but §4.8 says
@@ -158,6 +190,175 @@ struct MergedEdge {
     /// direction, and re-emits them on the sides they came from.
     ascent_ab: u16,
     ascent_ba: u16,
+}
+
+/// [`MergedEdge`] on the scratch seam: `a u32, b u32, cost u32, hash u64, cell u32, off u32,
+/// len u16, ascent_ab u16, ascent_ba u16, kind u8`.
+///
+/// No collection index, for the same reason the node record carries no id — the stream is appended
+/// in collection order, so a record's **position is its index** and the passes that need one count.
+pub(crate) const EDGE_REC: usize = 35;
+
+impl MergedEdge {
+    fn encode(&self) -> [u8; EDGE_REC] {
+        let mut r = [0u8; EDGE_REC];
+        r[0..4].copy_from_slice(&self.a.to_le_bytes());
+        r[4..8].copy_from_slice(&self.b.to_le_bytes());
+        r[8..12].copy_from_slice(&self.cost_m.to_le_bytes());
+        r[12..20].copy_from_slice(&self.hash.to_le_bytes());
+        r[20..24].copy_from_slice(&self.rec.cell.to_le_bytes());
+        r[24..28].copy_from_slice(&self.rec.off.to_le_bytes());
+        r[28..30].copy_from_slice(&self.rec.len.to_le_bytes());
+        r[30..32].copy_from_slice(&self.ascent_ab.to_le_bytes());
+        r[32..34].copy_from_slice(&self.ascent_ba.to_le_bytes());
+        r[34] = self.kind;
+        r
+    }
+}
+
+/// The fields the passes read straight out of an [`EDGE_REC`] record, without decoding the rest.
+pub(crate) fn edge_a(r: &[u8; EDGE_REC]) -> u32 {
+    u32::from_le_bytes(r[0..4].try_into().expect("4 bytes"))
+}
+
+pub(crate) fn edge_b(r: &[u8; EDGE_REC]) -> u32 {
+    u32::from_le_bytes(r[4..8].try_into().expect("4 bytes"))
+}
+
+pub(crate) fn edge_cell(r: &[u8; EDGE_REC]) -> u32 {
+    u32::from_le_bytes(r[20..24].try_into().expect("4 bytes"))
+}
+
+/// The §4.6.3 key, as a record the external sort can order: `hash u64, lo u32, hi u32, cost u32,
+/// index u32, kind u8`. Twenty-five bytes rather than the edge, because the pass only ever compares
+/// keys and reports indices.
+const DUP_REC: usize = 25;
+
+/// `(hash, lo, hi, cost, kind)` — the whole §4.6.3 duplicate key, without the collection index that
+/// separates two copies of it.
+fn dup_key(r: &[u8; DUP_REC]) -> (u64, u32, u32, u32, u8) {
+    (
+        u64::from_le_bytes(r[0..8].try_into().expect("8 bytes")),
+        u32::from_le_bytes(r[8..12].try_into().expect("4 bytes")),
+        u32::from_le_bytes(r[12..16].try_into().expect("4 bytes")),
+        u32::from_le_bytes(r[16..20].try_into().expect("4 bytes")),
+        r[24],
+    )
+}
+
+/// The key one collected edge contributes, under the collection index it was appended at.
+fn dup_record(e: &MergedEdge, index: u32) -> [u8; DUP_REC] {
+    let mut r = [0u8; DUP_REC];
+    r[0..8].copy_from_slice(&e.hash.to_le_bytes());
+    r[8..12].copy_from_slice(&e.a.min(e.b).to_le_bytes());
+    r[12..16].copy_from_slice(&e.a.max(e.b).to_le_bytes());
+    r[16..20].copy_from_slice(&e.cost_m.to_le_bytes());
+    r[20..24].copy_from_slice(&index.to_le_bytes());
+    r[24] = e.kind;
+    r
+}
+
+fn dup_index(r: &[u8; DUP_REC]) -> u32 {
+    u32::from_le_bytes(r[20..24].try_into().expect("4 bytes"))
+}
+
+/// The dedup order: the full key, then the collection index — a **total** order, and one in which
+/// the first record of every equal-key run is the first-collected copy.
+fn by_dup_key(a: &[u8; DUP_REC], b: &[u8; DUP_REC]) -> Ordering {
+    (dup_key(a), dup_index(a)).cmp(&(dup_key(b), dup_index(b)))
+}
+
+/// The renumbering's output as a joinable stream: `id u32, dense u32, lat i32, lon i32`, sorted by
+/// the collection id the edges name their endpoints with.
+const JOIN_REC: usize = 16;
+
+fn join_id(r: &[u8; JOIN_REC]) -> u32 {
+    u32::from_le_bytes(r[0..4].try_into().expect("4 bytes"))
+}
+
+fn by_join_id(a: &[u8; JOIN_REC], b: &[u8; JOIN_REC]) -> Ordering {
+    join_id(a).cmp(&join_id(b))
+}
+
+/// A surviving edge once the joins have run: both endpoints as `dense u32, lat i32, lon i32`, then
+/// the fields the emission needs — `cost u32, hash u64, cell u32, off u32, len u16, ascent_ab u16,
+/// ascent_ba u16, kind u8`.
+///
+/// Between the two joins the `b` slot's first field still holds `b`'s **collection** id and its
+/// coordinate is unset; that is what the second join fills in.
+const DENSE_REC: usize = 51;
+
+/// Where each endpoint's `(dense, lat, lon)` triple starts.
+const A_AT: usize = 0;
+const B_AT: usize = 12;
+
+fn dense_id(r: &[u8; DENSE_REC], at: usize) -> u32 {
+    u32::from_le_bytes(r[at..at + 4].try_into().expect("4 bytes"))
+}
+
+fn dense_coord(r: &[u8; DENSE_REC], at: usize) -> (i32, i32) {
+    (
+        i32::from_le_bytes(r[at + 4..at + 8].try_into().expect("4 bytes")),
+        i32::from_le_bytes(r[at + 8..at + 12].try_into().expect("4 bytes")),
+    )
+}
+
+/// Overwrite one endpoint slot with what the join found for it.
+fn put_endpoint(r: &mut [u8; DENSE_REC], at: usize, j: &[u8; JOIN_REC]) {
+    r[at..at + 12].copy_from_slice(&j[4..16]);
+}
+
+fn dense_cost(r: &[u8; DENSE_REC]) -> u32 {
+    u32::from_le_bytes(r[24..28].try_into().expect("4 bytes"))
+}
+
+fn dense_hash(r: &[u8; DENSE_REC]) -> u64 {
+    u64::from_le_bytes(r[28..36].try_into().expect("8 bytes"))
+}
+
+fn dense_ref(r: &[u8; DENSE_REC]) -> EdgeRef {
+    EdgeRef {
+        cell: u32::from_le_bytes(r[36..40].try_into().expect("4 bytes")),
+        off: u32::from_le_bytes(r[40..44].try_into().expect("4 bytes")),
+        len: u16::from_le_bytes(r[44..46].try_into().expect("2 bytes")),
+    }
+}
+
+fn dense_ascents(r: &[u8; DENSE_REC]) -> (u16, u16) {
+    (
+        u16::from_le_bytes(r[46..48].try_into().expect("2 bytes")),
+        u16::from_le_bytes(r[48..50].try_into().expect("2 bytes")),
+    )
+}
+
+fn dense_kind(r: &[u8; DENSE_REC]) -> u8 {
+    r[50]
+}
+
+/// The `a`-side sort for the first join. Ties are the edges of one junction, and their order among
+/// themselves is invisible: the emission sort below is a total order over the same records, so it
+/// lands on the same permutation whatever order it is handed.
+fn by_edge_a(a: &[u8; EDGE_REC], b: &[u8; EDGE_REC]) -> Ordering {
+    edge_a(a).cmp(&edge_a(b))
+}
+
+/// …and the `b`-side sort for the second, over the slot that still holds a collection id.
+fn by_endpoint_b(a: &[u8; DENSE_REC], b: &[u8; DENSE_REC]) -> Ordering {
+    dense_id(a, B_AT).cmp(&dense_id(b, B_AT))
+}
+
+/// §4.6.6's emission order: `(min dense id, max dense id, Cost M, Way Kind, content hash)`.
+///
+/// A **total** order on what reaches it — two edges equal on all five would have collapsed in
+/// §4.6.3, because the dense ids are a bijection on the kept nodes and so agree with the collection
+/// ids about which pairs are the same pair. So the pool's layout, and with it every `Edge Id` in the
+/// file, is fixed by the records alone.
+fn by_emission(x: &[u8; DENSE_REC], y: &[u8; DENSE_REC]) -> Ordering {
+    let key = |r: &[u8; DENSE_REC]| {
+        let (a, b) = (dense_id(r, A_AT), dense_id(r, B_AT));
+        (a.min(b), a.max(b), dense_cost(r), dense_kind(r), dense_hash(r))
+    };
+    key(x).cmp(&key(y))
 }
 
 /// One junction ready to serialize: its coordinate, its dense id, and a *view* of the shared
@@ -268,6 +469,9 @@ pub fn merge(
     budget: usize,
 ) -> Result<MergedNav> {
     let mut stats = NavStats::default();
+    // What one streaming buffer may hold. Several of them are alive at once in every pass below —
+    // a reader, a writer, and a sort that takes half — so the share is deliberately small.
+    let share = budget / 8;
 
     // --- 1/2. The serialized node set, unified at boundary coordinates only.
     //
@@ -276,11 +480,20 @@ pub fn merge(
     let mut seam: HashMap<(i32, i32), u32> = HashMap::new(); // coordinate → seam slot
     let mut seam_id: Vec<u32> = Vec::new(); // slot → the id its first cell minted
     let mut seam_digest: Vec<u64> = Vec::new(); // slot → §4.6.5 digest, still accumulating
-    let mut edges: Vec<MergedEdge> = Vec::new();
-    let mut node_out = SpillWriter::<NODE_REC>::create(scratch, budget / 8)?;
+    let mut node_out = SpillWriter::<NODE_REC>::create(scratch, share)?;
+    let mut edge_out = SpillWriter::<EDGE_REC>::create(scratch, share)?;
+    // §4.6.3's keys are generated here rather than in a pass of their own: the key is a projection
+    // of the record, and the record is in hand exactly once.
+    let mut dups = ExternalSort::<DUP_REC>::new(scratch, budget / 2, by_dup_key);
     let mut id_count: u32 = 0;
+    let mut edge_count: u32 = 0;
+    // Where each cell's minted ids start, with the total appended — the map from a collection id
+    // back to the cell that named it, which is what lets §4.6.4 decompose per cell. One entry per
+    // cell, so it is the cell list's size and not the graph's.
+    let mut cell_base: Vec<u32> = Vec::with_capacity(cells.len() + 1);
 
     for (ci, cell) in cells.iter().enumerate() {
+        cell_base.push(id_count);
         let dir = &cell.nav;
         if dir.is_empty() {
             continue;
@@ -353,16 +566,19 @@ pub fn merge(
 
         // Pass B: adjacency → edges. Every edge shows up in both endpoints' records with the same
         // `Edge Id`, so the first sighting interns it and the second only has to agree — and, in
-        // v12, to hand over the other direction's ascent. `edge_id` → its index in `edges`; the
+        // v12, to hand over the other direction's ascent. `edge_id` → its index in `pending`; the
         // value matters because the second direction writes back into the entry the first created.
         // Nothing here looks past the cell: cross-cell duplicates are settled once, after the whole
-        // collection, by the sorted pass below.
+        // collection, by the sorted pass below — which is also why `pending` is a *cell's* edges and
+        // not the map's. The write-back is the only reason an edge is held at all, and it never
+        // crosses a cell, so the buffer dies with the cell that filled it.
         //
         // It is also where the §4.6.5 digest is accumulated (module header): a non-seam node's
         // incident edges are all in its own cell, so its total is final when this loop ends, and a
         // seam node's goes to the seam table where later cells can still add to it.
         let mut cell_digest = vec![0u64; minted.len()];
         let mut cell_edges: HashMap<u32, usize> = HashMap::new();
+        let mut pending: Vec<MergedEdge> = Vec::new();
         for &(own_id, lat, lon, k, at) in &records {
             let chunk = &chunks[k];
             let degree = chunk[at + 12] as usize;
@@ -379,7 +595,7 @@ pub fn merge(
                 // direction's ascent, which nothing else in the file states. So it is read rather
                 // than skipped, and only the edge itself is de-duplicated.
                 if let Some(&index) = cell_edges.get(&edge_id) {
-                    let edge: &mut MergedEdge = &mut edges[index];
+                    let edge: &mut MergedEdge = &mut pending[index];
                     // Orientation again: this entry runs from *this* record's node. It is the
                     // a→b direction exactly when this node is the edge's `a`.
                     let own = local.get(&own_id).expect("own id interned above").id;
@@ -419,8 +635,8 @@ pub fn merge(
                 for node in [own_node, nbr_node] {
                     add_digest(&mut seam_digest, &mut cell_digest, base, node, h);
                 }
-                cell_edges.insert(edge_id, edges.len());
-                edges.push(MergedEdge { a, b, cost_m, kind: way_kind, rec, hash, ascent_ab, ascent_ba });
+                cell_edges.insert(edge_id, pending.len());
+                pending.push(MergedEdge { a, b, cost_m, kind: way_kind, rec, hash, ascent_ab, ascent_ba });
             }
         }
 
@@ -430,12 +646,23 @@ pub fn merge(
         for (k, &(lat, lon)) in minted.iter().enumerate() {
             node_out.push(node_record(lat, lon, cell_digest[k]))?;
         }
+        // …and its edges go out in the order they were collected, so the stream stays *grouped by
+        // cell* — which is what §4.6.4's per-cell decomposition reads it as — and each one drops its
+        // §4.6.3 key into that pass's sort on the way past, while the record is in hand.
+        for e in &pending {
+            dups.push(dup_record(e, edge_count))?;
+            edge_count += 1;
+            edge_out.push(e.encode())?;
+        }
     }
+    cell_base.push(id_count);
 
     let (node_file, spilled) = node_out.seal()?;
+    let (edge_file, edge_total) = edge_out.seal()?;
     debug_assert_eq!(spilled, id_count as u64, "one spilled record per minted node id");
     if id_count == 0 {
         scratch.remove(node_file)?;
+        scratch.remove(edge_file)?;
         return Ok(MergedNav::empty(stats));
     }
 
@@ -443,82 +670,25 @@ pub fn merge(
     // subtraction for each duplicate the pass below drops. Both are added to what the stream holds.
     let mut deltas: Vec<(u32, u64)> =
         seam_id.iter().copied().zip(seam_digest.iter().copied()).filter(|&(_, d)| d != 0).collect();
+    drop(seam);
+    drop(seam_digest);
 
-    // --- 3. Deduplicate (§4.6.3): an edge two cells both wrote *in full*, keyed on the unified
-    // endpoint pair, `Cost M`, `Way Kind` and the record's content. The half-open ownership of
-    // §3.3/§3.4(3) should already prevent it, so this is a net, not a mechanism — and a net does not
-    // have to be a hash set carried through the entire collection. It runs once, here, over a sorted
-    // index permutation, and the **first-collected** copy of each key survives.
-    //
-    // *Why that is the same outcome as refusing duplicates at the door.* `cell_edges` is per-cell
-    // and unchanged, so a cell still interns each of its own `Edge Id`s once and still writes the
-    // second direction's ascent back into its **own** entry — no write-back ever crossed cells,
-    // because nothing outside a cell's own `cell_edges` could name another cell's entry. What
-    // changes is only the fate of a later copy: it used to be refused before it was pushed (its id
-    // mapped to `None`, so that cell's second direction wrote nowhere), and now it is pushed,
-    // collects that cell's own write-backs, and is dropped here. Either way the survivor is the
-    // first-collected entry carrying the first cell's ascents, which is what the bytes are. The
-    // counts agree for the same reason: exactly one entry per (cell, `Edge Id`) reaches this pass,
-    // and the ones that die here are exactly the ones the door used to refuse — one per refusal,
-    // with three copies of an edge counting two, as before. The argument does not depend on the
-    // duplicate being *cross-cell*: two distinct `Edge Id`s inside one cell with identical content
-    // and endpoints collapse the same way, the lower id surviving, because collection order inside a
-    // cell is the order the old first-sighting rule used too.
-    //
-    // The sort is over `(content hash, collection index)` — twelve bytes per edge rather than the
-    // 40-byte records — because equal keys necessarily have equal hashes, so every candidate pair
-    // lands inside one run of equal hashes. The full key is then what separates a real duplicate
-    // from an FNV collision between two genuinely different records, and runs are length 1
-    // everywhere a map is not actually duplicated. ---
-    let dup_key = |e: &MergedEdge| (e.a.min(e.b), e.a.max(e.b), e.cost_m, e.kind, e.hash);
-    let mut by_hash: Vec<(u64, u32)> = edges.iter().enumerate().map(|(i, e)| (e.hash, i as u32)).collect();
-    by_hash.sort_unstable();
-    let mut dead: Vec<u32> = Vec::new();
-    let mut run = 0usize;
-    while run < by_hash.len() {
-        let mut end = run + 1;
-        while end < by_hash.len() && by_hash[end].0 == by_hash[run].0 {
-            end += 1;
-        }
-        // Within a run the entries are in collection order, so "an earlier entry has this key"
-        // is exactly "this is not the first copy". Whether that earlier entry is itself a
-        // duplicate does not matter: it shares its key with a survivor further back.
-        for x in run + 1..end {
-            let e = &edges[by_hash[x].1 as usize];
-            if (run..x).any(|y| dup_key(&edges[by_hash[y].1 as usize]) == dup_key(e)) {
-                dead.push(by_hash[x].1);
-            }
-        }
-        run = end;
-    }
-    drop(by_hash);
-    stats.duplicate_edges += dead.len();
-    // A dropped copy's digest contribution was booked during collection and has to come back off,
-    // at both of the endpoints it was booked to. `wrapping_neg` of what was added: exact, because
-    // the accumulation is a wrapping sum and nothing else about it is order-dependent.
-    for &d in &dead {
-        let e = &edges[d as usize];
-        let undo = digest_of(e.hash, e.cost_m, e.kind).wrapping_neg();
-        deltas.push((e.a, undo));
-        deltas.push((e.b, undo));
-    }
-    if !dead.is_empty() {
-        // Physically dropped rather than masked, so the memory goes too. `retain` preserves order,
-        // so everything downstream sees the survivors in the order it always saw them.
-        dead.sort_unstable();
-        let (mut next, mut i) = (0usize, 0u32);
-        edges.retain(|_| {
-            let doomed = next < dead.len() && dead[next] == i;
-            next += usize::from(doomed);
-            i += 1;
-            !doomed
-        });
-    }
-    drop(dead);
-
-    // --- 4. Island pruning over the *merged* graph: the only place the schema's threshold means
-    // what it says — an island in the map, not in a cell (§3.5/§4.6.4). ---
-    let (keep_node, keep_edge) = prune(id_count as usize, &edges, min_component_edges, &mut stats);
+    // --- 3. Deduplicate (§4.6.3) from the keys the collection already handed over, then 4. prune
+    // islands over the spilled stream itself. ---
+    let dead = dedup(dups, &mut deltas, &mut stats)?;
+    let pruned = prune::prune(
+        scratch,
+        share,
+        (edge_file, edge_total),
+        &dead,
+        &cell_base,
+        &seam_id,
+        id_count,
+        min_component_edges,
+        &mut stats,
+    )?;
+    drop(cell_base);
+    drop(seam_id);
 
     // --- 5. Renumber densely by (lat, lon) ascending — deterministic and content-derived (§4.6.5).
     //
@@ -531,59 +701,52 @@ pub fn merge(
     //
     // Done as a sorted pass over the spilled node stream rather than a permutation of an in-memory
     // array (module header) — the same key, and `nodes` comes out already in the emission order the
-    // quadtree wants. ---
+    // quadtree wants. What the edges are resolved through is no longer an array either: it is the
+    // `(id, dense, lat, lon)` stream this returns, sorted by id and joined against below. ---
     deltas.sort_unstable();
-    let (mut nodes, new_id) = renumber(scratch, budget, node_file, id_count, &keep_node, &deltas)?;
+    let (mut nodes, dense_by_id) =
+        renumber(scratch, budget, share, node_file, pruned.node_comp, &pruned.keep, &deltas)?;
     drop(deltas);
 
-    // --- 6. Lay the edge pool out. `Edge Id` is a pool byte offset, so every record lands at a new
-    // place and the no-straddle rule is re-applied at the 512-byte granularity — but that is
-    // arithmetic over the records' *lengths*, so the pool is a cursor here and bytes only at
-    // emission (see [`serialize`]). ---
-    let mut kept: Vec<&MergedEdge> = edges.iter().zip(&keep_edge).filter(|(_, &k)| k).map(|(e, _)| e).collect();
-    kept.sort_by_key(|e| {
-        let (a, b) = (new_id[e.a as usize], new_id[e.b as usize]);
-        (a.min(b), a.max(b), e.cost_m, e.kind, e.hash)
-    });
-    let mut pool: Vec<EdgeRef> = Vec::with_capacity(kept.len());
-    let mut edge_ids: Vec<u32> = Vec::with_capacity(kept.len());
-    let mut at = 0usize;
-    for e in &kept {
-        at = place(at, e.rec.len as usize);
-        if at > u32::MAX as usize {
-            return Err(Error::Capacity(
-                "the merged edge pool passes 4 GiB: `Edge Id` is a uint32 pool byte offset (OBCA §5.7)".into(),
-            ));
-        }
-        edge_ids.push(at as u32);
-        pool.push(e.rec);
-        at += e.rec.len as usize;
-    }
-    // The tail pads to a whole chunk, because §8.1's `Edge Chunk Count` measures the pool in chunks.
-    let pool_len = at.div_ceil(NAV_CHUNK_SIZE) * NAV_CHUNK_SIZE;
+    // --- 5 (cont.). Attach the dense ids, by merge join rather than by lookup: sort what survived
+    // by `a`, walk it beside the id-ordered dense stream, then do the same for `b`. The endpoint
+    // coordinates come across with the ids, because §8.3's neighbour deltas are measured from them
+    // and re-reading them later would be exactly the whole-map array this pass is removing.
+    //
+    // The second pass also counts each junction's **uncapped** degree while both dense ids are in
+    // hand, which is what lets the emission walk below be a single pass.
+    //
+    // Each join hands its result straight into the **next** pass's sort rather than through a file:
+    // a sort that is generating runs is holding at most half its budget, and one that is merging is
+    // holding all of it, so two of them at half a budget each are one budget — and the stream
+    // between them is never written down at all. ---
+    let by_b = join_first(scratch, budget, share, edge_file, &pruned, &dead, dense_by_id)?;
+    scratch.remove(edge_file)?;
+    scratch.remove(pruned.edge_comp)?;
+    drop(pruned);
+    drop(dead);
+    let mut fill: Vec<u32> = vec![0; nodes.len()]; // uncapped degree, then entries written
+    let by_emit = join_second(scratch, budget, share, by_b, dense_by_id, &mut fill, &mut stats)?;
+    scratch.remove(dense_by_id)?;
 
-    // --- 7. Adjacency with inline neighbour coords, degree-capped, wire limits re-checked.
+    // --- 6/7. Lay the edge pool out and rebuild the adjacency, in **one** walk of the emission
+    // order (§4.6.6).
+    //
+    // `Edge Id` is a pool byte offset, so every record lands at a new place and the no-straddle rule
+    // is re-applied at the 512-byte granularity — but that is arithmetic over the records' *lengths*
+    // (see [`serialize`], which walks the same rule to emit the padding), so the cursor below mints
+    // the id of the record it is about to place, and the two adjacency entries that quote that id
+    // are written on the spot.
     //
     // One CSR buffer, not a `Vec` per junction: at state scale that was three million heap
-    // allocations and three million 24-byte headers for lists averaging under three entries. So the
-    // adjacency is a single `Vec<WireNeighbor>` with a per-node offset, built in two passes over
-    // `kept` — and the two passes have to walk it in the *same* order, because §8.3's degree cap is
-    // order-sensitive. The cap does not "keep 24 of the arcs", it refuses the ones that arrive after
-    // a node is already full, and which those are is a property of the walk. So pass 1 counts each
-    // node's **uncapped** degree and reserves `min(degree, 24)` slots for it, and pass 2 fills in
-    // walk order and refuses at exactly the point the growing `Vec` used to. (Reserving the capped
-    // count is also exact: a node is pushed to `degree` times and stops accepting at 24, so it ends
-    // with `min(degree, 24)` entries and the buffer has no slack.) ---
-    let mut fill: Vec<u32> = vec![0; nodes.len()]; // pass 1: uncapped degree, pass 2: entries written
-    for e in &kept {
-        let (a, b) = (new_id[e.a as usize], new_id[e.b as usize]);
-        fill[a as usize] += 1;
-        if a != b {
-            fill[b as usize] += 1;
-        }
-    }
-    // An offset counts at most two entries per kept edge, and step 6 has already refused a pool past
-    // 4 GiB of records that are 15 bytes at their smallest — so it is a `u32` by construction.
+    // allocations and three million 24-byte headers for lists averaging under three entries. §8.3's
+    // degree cap is order-sensitive — it does not "keep 24 of the arcs", it refuses the ones that
+    // arrive after a node is already full — so the offsets reserve `min(degree, 24)` from the
+    // uncapped degrees the join counted, and the walk refuses at exactly the point a growing `Vec`
+    // used to. (Reserving the capped count is exact: a node is pushed to `degree` times and stops
+    // accepting at 24, so it ends with `min(degree, 24)` entries and the buffer has no slack.) ---
+    // An offset counts at most two entries per kept edge, and step 6 refuses a pool past 4 GiB of
+    // records that are 15 bytes at their smallest — so it is a `u32` by construction.
     let mut offsets: Vec<u32> = Vec::with_capacity(nodes.len() + 1);
     let mut total = 0usize;
     for d in fill.iter_mut() {
@@ -593,41 +756,53 @@ pub fn merge(
     }
     offsets.push(total as u32);
     let mut csr: Vec<WireNeighbor> = vec![WireNeighbor::default(); total];
-    for (e, &edge_id) in kept.iter().zip(&edge_ids) {
-        let (a, b) = (new_id[e.a as usize], new_id[e.b as usize]);
-        let mut push = |from: u32, to: u32, ascent_m: u16| -> Result<()> {
-            let used = &mut fill[from as usize];
-            if *used as usize >= NAV_MAX_DEGREE {
-                stats.degree_truncated += 1;
-                return Ok(());
+    let mut pool: Vec<EdgeRef> = Vec::with_capacity(stats.edges);
+    let mut at = 0usize;
+    {
+        for rec in by_emit.finish()? {
+            let rec = rec?;
+            let r = dense_ref(&rec);
+            let len = r.len as usize;
+            at = place(at, len);
+            if at > u32::MAX as usize {
+                return Err(Error::Capacity(
+                    "the merged edge pool passes 4 GiB: `Edge Id` is a uint32 pool byte offset (OBCA §5.7)".into(),
+                ));
             }
-            // The renumbered node list is already in dense-id order, so it *is* the coordinate
-            // table the deltas are measured against — there is no permutation left to look through.
-            let (lat, lon) = (nodes[to as usize].lat, nodes[to as usize].lon);
-            let (flat, flon) = (nodes[from as usize].lat, nodes[from as usize].lon);
-            let (dlat, dlon) = (lat as i64 - flat as i64, lon as i64 - flon as i64);
-            if dlat.abs() > MAX_NEIGHBOR_DELTA || dlon.abs() > MAX_NEIGHBOR_DELTA {
-                return Err(Error::Format(format!(
-                    "a merged adjacency spans ({dlat}, {dlon}) µdeg, past the §8.3 int16 neighbour delta"
-                )));
-            }
-            csr[offsets[from as usize] as usize + *used as usize] = WireNeighbor {
-                id: to,
-                lat,
-                lon,
-                edge_id,
-                cost_m: e.cost_m.min(u16::MAX as u32),
-                way_kind: e.kind,
-                ascent_m,
+            let edge_id = at as u32;
+            pool.push(r);
+            at += len;
+
+            let (a, b) = (dense_id(&rec, A_AT), dense_id(&rec, B_AT));
+            let (a_at, b_at) = (dense_coord(&rec, A_AT), dense_coord(&rec, B_AT));
+            let (cost_m, way_kind) = (dense_cost(&rec), dense_kind(&rec));
+            let (ascent_ab, ascent_ba) = dense_ascents(&rec);
+            let mut push = |from: u32, (flat, flon): (i32, i32), to: u32, (lat, lon): (i32, i32), ascent_m: u16| {
+                let used = &mut fill[from as usize];
+                if *used as usize >= NAV_MAX_DEGREE {
+                    stats.degree_truncated += 1;
+                    return Ok(());
+                }
+                let (dlat, dlon) = (lat as i64 - flat as i64, lon as i64 - flon as i64);
+                if dlat.abs() > MAX_NEIGHBOR_DELTA || dlon.abs() > MAX_NEIGHBOR_DELTA {
+                    return Err(Error::Format(format!(
+                        "a merged adjacency spans ({dlat}, {dlon}) µdeg, past the §8.3 int16 neighbour delta"
+                    )));
+                }
+                csr[offsets[from as usize] as usize + *used as usize] =
+                    WireNeighbor { id: to, lat, lon, edge_id, cost_m: cost_m.min(u16::MAX as u32), way_kind, ascent_m };
+                *used += 1;
+                Ok(())
             };
-            *used += 1;
-            Ok(())
-        };
-        push(a, b, e.ascent_ab)?;
-        if a != b {
-            push(b, a, e.ascent_ba)?; // a self-loop appears once (§8.3)
+            push(a, a_at, b, b_at, ascent_ab)?;
+            if a != b {
+                push(b, b_at, a, a_at, ascent_ba)?; // a self-loop appears once (§8.3)
+            }
         }
     }
+    // The tail pads to a whole chunk, because §8.1's `Edge Chunk Count` measures the pool in chunks.
+    let pool_len = at.div_ceil(NAV_CHUNK_SIZE) * NAV_CHUNK_SIZE;
+    debug_assert_eq!(pool.len(), stats.edges, "one pool entry per kept edge");
 
     // The CSR views, into the points that were renumbered into it. `degree` is what the walk above
     // actually wrote, which is `min(uncapped, 24)`.
@@ -639,7 +814,6 @@ pub fn merge(
     drop(offsets);
     drop(fill);
     stats.nodes = nodes.len();
-    stats.edges = kept.len();
 
     // --- 7 (cont.). The node quadtree over the **assembly** bbox, with §8.2's bin-packed 512-byte
     // chunks. Laid out here so a shard's size is known before its header is written. The tree owns
@@ -650,6 +824,163 @@ pub fn merge(
         qtree::flatten(&tree, NAV_CHUNK_SIZE, true, &|p, out| pack_record(p, &csr, out));
     stats.dropped_nodes = dropped;
     Ok(MergedNav { index, node_count, chunks, chunk_count, pool, pool_len, stats })
+}
+
+/// §4.6.3's duplicate check, as one walk of the sorted key stream the collection filled.
+///
+/// An edge two cells both wrote *in full*, keyed on the unified endpoint pair, `Cost M`, `Way Kind`
+/// and the record's content. The half-open ownership of §3.3/§3.4(3) should already prevent it, so
+/// this is a net, not a mechanism — and a net does not have to be a hash set carried through the
+/// entire collection. It runs once, here, over a sorted stream of 25-byte keys, and the
+/// **first-collected** copy of each key survives.
+///
+/// *Why that is the same outcome as refusing duplicates at the door.* `cell_edges` is per-cell and
+/// unchanged, so a cell still interns each of its own `Edge Id`s once and still writes the second
+/// direction's ascent back into its **own** entry — no write-back ever crossed cells, because
+/// nothing outside a cell's own `cell_edges` could name another cell's entry. What changes is only
+/// the fate of a later copy: it used to be refused before it was pushed (its id mapped to `None`, so
+/// that cell's second direction wrote nowhere), and now it is collected, takes that cell's own
+/// write-backs, and is dropped here. Either way the survivor is the first-collected entry carrying
+/// the first cell's ascents, which is what the bytes are. The counts agree for the same reason:
+/// exactly one entry per (cell, `Edge Id`) reaches this pass, and the ones that die here are exactly
+/// the ones the door used to refuse — one per refusal, with three copies of an edge counting two, as
+/// before. The argument does not depend on the duplicate being *cross-cell*: two distinct `Edge Id`s
+/// inside one cell with identical content and endpoints collapse the same way, the lower index
+/// surviving, because collection order inside a cell is the order the old first-sighting rule used
+/// too.
+///
+/// *And why sorting by the whole key is the same set of deaths.* The previous formulation sorted by
+/// the content hash and, inside each run of equal hashes, killed an entry that any **earlier** entry
+/// of the run matched on the full key — which is exactly "every member of a full-key group except
+/// its first". Equal keys have equal hashes, so a group never spans two runs, and adding the rest of
+/// the key to the sort only orders the groups within a run. With the collection index last, the
+/// first record of each group is the lowest-indexed copy: the survivor, in one forward pass instead
+/// of a quadratic search.
+///
+/// What comes back is the dead copies' collection indices, ascending, and `deltas` has gained the
+/// §4.6.5 contributions each of them owes back to its two endpoints. Both are sized by the number of
+/// duplicates — a defect count, not a map size, and zero on both published regions.
+fn dedup(sort: ExternalSort<'_, DUP_REC>, deltas: &mut Vec<(u32, u64)>, stats: &mut NavStats) -> Result<Vec<u32>> {
+    let mut dead: Vec<u32> = Vec::new();
+    let mut previous: Option<(u64, u32, u32, u32, u8)> = None;
+    for rec in sort.finish()? {
+        let rec = rec?;
+        let key = dup_key(&rec);
+        if previous == Some(key) {
+            // A dropped copy's digest contribution was booked during collection and has to come back
+            // off, at both of the endpoints it was booked to. `wrapping_neg` of what was added:
+            // exact, because the accumulation is a wrapping sum and nothing else about it is
+            // order-dependent. The endpoints are the key's own `lo`/`hi`, in whichever order — the
+            // same two ids either way.
+            let undo = digest_of(key.0, key.3, key.4).wrapping_neg();
+            deltas.push((key.1, undo));
+            deltas.push((key.2, undo));
+            dead.push(dup_index(&rec));
+        }
+        previous = Some(key);
+    }
+    stats.duplicate_edges += dead.len();
+    // The later passes walk the stream in collection order with this as a cursor.
+    dead.sort_unstable();
+    Ok(dead)
+}
+
+/// The first join: the surviving, kept edges, with endpoint `a` resolved to its dense id and
+/// coordinate.
+///
+/// This is also where §4.6.4's verdict is applied to the edges. The prune's label stream runs beside
+/// the edge stream — one label per **surviving** edge, in collection order — so the two are read in
+/// lockstep with the dead list as the third cursor, and no edge is ever looked up by index.
+fn join_first<'s>(
+    scratch: &'s dyn ScratchStore,
+    budget: usize,
+    share: usize,
+    edge_file: ScratchId,
+    pruned: &prune::Pruned,
+    dead: &[u32],
+    dense_by_id: ScratchId,
+) -> Result<ExternalSort<'s, DENSE_REC>> {
+    let mut sort = ExternalSort::<EDGE_REC>::new(scratch, budget / 2, by_edge_a);
+    {
+        let mut labels = SpillReader::<4>::open(scratch, pruned.edge_comp, share)?;
+        let mut next_dead = 0usize;
+        for (index, rec) in SpillReader::<EDGE_REC>::open(scratch, edge_file, share)?.enumerate() {
+            let rec = rec?;
+            if next_dead < dead.len() && dead[next_dead] as usize == index {
+                next_dead += 1;
+                continue;
+            }
+            let label = labels.next().ok_or_else(|| {
+                Error::Scratch("the §4.6.4 label stream is shorter than the surviving edge stream".into())
+            })??;
+            if pruned.keep[u32::from_le_bytes(label) as usize] {
+                sort.push(rec)?;
+            }
+        }
+    }
+
+    let mut out = ExternalSort::<DENSE_REC>::new(scratch, budget / 2, by_endpoint_b);
+    let mut dense = SpillReader::<JOIN_REC>::open(scratch, dense_by_id, share)?;
+    let mut head = dense.next().transpose()?;
+    for rec in sort.finish()? {
+        let rec = rec?;
+        let a = edge_a(&rec);
+        // Both streams ascend, so the cursor only moves forward — this is a merge, not a lookup.
+        while head.map(|h| join_id(&h) < a).unwrap_or(false) {
+            head = dense.next().transpose()?;
+        }
+        let h = head.filter(|h| join_id(h) == a).ok_or_else(|| {
+            Error::Format(format!("a kept edge names node {a}, which §4.6.4 did not keep — the prune split an edge"))
+        })?;
+        let mut wide = [0u8; DENSE_REC];
+        put_endpoint(&mut wide, A_AT, &h);
+        wide[B_AT..B_AT + 4].copy_from_slice(&rec[4..8]); // `b`, still a collection id
+        wide[24..28].copy_from_slice(&rec[8..12]); // cost
+        wide[28..36].copy_from_slice(&rec[12..20]); // hash
+        wide[36..46].copy_from_slice(&rec[20..30]); // cell, off, len
+        wide[46..50].copy_from_slice(&rec[30..34]); // both ascents
+        wide[50] = rec[34]; // kind
+        out.push(wide)?;
+    }
+    Ok(out)
+}
+
+/// The second join: endpoint `b`, and the uncapped degrees the emission walk reserves from. What it
+/// returns is the emission sort, already loaded — see [`merge`] for why the streams between the
+/// joins are never written down.
+fn join_second<'s>(
+    scratch: &'s dyn ScratchStore,
+    budget: usize,
+    share: usize,
+    sort: ExternalSort<'s, DENSE_REC>,
+    dense_by_id: ScratchId,
+    fill: &mut [u32],
+    stats: &mut NavStats,
+) -> Result<ExternalSort<'s, DENSE_REC>> {
+    let mut out = ExternalSort::<DENSE_REC>::new(scratch, budget / 2, by_emission);
+    let mut dense = SpillReader::<JOIN_REC>::open(scratch, dense_by_id, share)?;
+    let mut head = dense.next().transpose()?;
+    let mut kept = 0usize;
+    for rec in sort.finish()? {
+        let mut rec = rec?;
+        let b = dense_id(&rec, B_AT);
+        while head.map(|h| join_id(&h) < b).unwrap_or(false) {
+            head = dense.next().transpose()?;
+        }
+        let h = head.filter(|h| join_id(h) == b).ok_or_else(|| {
+            Error::Format(format!("a kept edge names node {b}, which §4.6.4 did not keep — the prune split an edge"))
+        })?;
+        put_endpoint(&mut rec, B_AT, &h);
+        let (a, b) = (dense_id(&rec, A_AT), dense_id(&rec, B_AT));
+        fill[a as usize] += 1;
+        if a != b {
+            fill[b as usize] += 1;
+        }
+        kept += 1;
+        out.push(rec)?;
+    }
+    stats.edges = kept;
+    Ok(out)
 }
 
 /// One edge's contribution to its endpoints' §4.6.5 tie-break digest.
@@ -717,51 +1048,75 @@ fn by_node_key(a: &[u8; SORT_REC], b: &[u8; SORT_REC]) -> std::cmp::Ordering {
 /// both halves the rest of the merge needs: the junctions **in emission order**, and the
 /// collection-id → dense-id map the edges are still resolved through.
 ///
-/// That map is the one whole-map array left on the node side, and it is deliberate: this pass's
-/// caller still holds its edges in memory (#1116 D3 is what drains them), so it still needs random
-/// access to it. A caller whose edges are a sorted stream does not — it joins them against
-/// `(id, dense)` pairs instead, which this walk emits in dense order and a second external sort puts
-/// in id order.
+/// The second half used to be the one whole-map array left on the node side — a
+/// collection-id-indexed `Vec<u32>`, because the caller still held its edges in memory and looked
+/// them up in it. It does not any more (#1116 D3): the walk emits `(id, dense, lat, lon)` records,
+/// a second external sort puts them in **id** order, and the edges — which are a sorted stream now
+/// — are resolved against that by merge join. The coordinate rides along because the §8.3 adjacency
+/// deltas need the neighbour's, and the alternative is keeping the node array addressable.
+///
+/// `node_comp` is §4.6.4's label stream, one `u32` per collection id in id order, so it is read in
+/// lockstep with the node stream and `keep` is indexed by the label rather than by the node.
 fn renumber(
     scratch: &dyn ScratchStore,
     budget: usize,
+    share: usize,
     node_file: ScratchId,
-    id_count: u32,
-    keep_node: &[bool],
+    node_comp: ScratchId,
+    keep: &[bool],
     deltas: &[(u32, u64)],
-) -> Result<(Vec<NavPoint>, Vec<u32>)> {
-    // The reader and the sort are alive at the same time, so they split one budget rather than each
-    // taking it. The stream is read strictly forward, so its share is small on purpose.
-    let read_budget = (budget / 8).max(NODE_REC);
-    let mut sort =
-        ExternalSort::<SORT_REC>::new(scratch, budget.saturating_sub(read_budget).max(SORT_REC), by_node_key);
-    let mut next_delta = 0usize;
-    for (id, rec) in SpillReader::<NODE_REC>::open(scratch, node_file, read_budget)?.enumerate() {
-        let mut rec = rec?;
-        let id = id as u32;
-        // Deltas are sorted by id and the stream is walked in id order, so this cursor only ever
-        // moves forward — even when several deltas name the same node.
-        while next_delta < deltas.len() && deltas[next_delta].0 == id {
-            let digest = u64::from_le_bytes(rec[8..16].try_into().expect("8 bytes"));
-            rec[8..16].copy_from_slice(&digest.wrapping_add(deltas[next_delta].1).to_le_bytes());
-            next_delta += 1;
-        }
-        if keep_node[id as usize] {
-            sort.push(sort_record(&rec, id))?;
+) -> Result<(Vec<NavPoint>, ScratchId)> {
+    // Three things are alive at once here — the two readers, the §4.6.5 sort, and (in the walk
+    // below) the id-order sort it feeds. So the two sorts take half the budget each and the readers
+    // take a share; the streams are read strictly forward, which is why their share is small.
+    let read_budget = share.max(NODE_REC);
+    let mut sort = ExternalSort::<SORT_REC>::new(scratch, (budget / 2).max(SORT_REC), by_node_key);
+    {
+        let mut labels = SpillReader::<4>::open(scratch, node_comp, read_budget)?;
+        let mut next_delta = 0usize;
+        for (id, rec) in SpillReader::<NODE_REC>::open(scratch, node_file, read_budget)?.enumerate() {
+            let mut rec = rec?;
+            let id = id as u32;
+            // Deltas are sorted by id and the stream is walked in id order, so this cursor only ever
+            // moves forward — even when several deltas name the same node.
+            while next_delta < deltas.len() && deltas[next_delta].0 == id {
+                let digest = u64::from_le_bytes(rec[8..16].try_into().expect("8 bytes"));
+                rec[8..16].copy_from_slice(&digest.wrapping_add(deltas[next_delta].1).to_le_bytes());
+                next_delta += 1;
+            }
+            let label = labels
+                .next()
+                .ok_or_else(|| Error::Scratch("the §4.6.4 label stream is shorter than the node stream".into()))??;
+            if keep[u32::from_le_bytes(label) as usize] {
+                sort.push(sort_record(&rec, id))?;
+            }
         }
     }
     scratch.remove(node_file)?;
+    scratch.remove(node_comp)?;
 
     let mut nodes: Vec<NavPoint> = Vec::new();
-    let mut new_id = vec![u32::MAX; id_count as usize];
+    let mut by_id = ExternalSort::<JOIN_REC>::new(scratch, (budget / 2).max(JOIN_REC), by_join_id);
     for rec in sort.finish()? {
         let (lat, lon, _, id) = node_key(&rec?);
         let dense = u32::try_from(nodes.len()).expect("a kept node count fits a u32");
-        new_id[id as usize] = dense;
-        // `at` and `degree` are the CSR view, which does not exist yet — step 7 fills them in.
+        let mut join = [0u8; JOIN_REC];
+        join[0..4].copy_from_slice(&id.to_le_bytes());
+        join[4..8].copy_from_slice(&dense.to_le_bytes());
+        join[8..12].copy_from_slice(&lat.to_le_bytes());
+        join[12..16].copy_from_slice(&lon.to_le_bytes());
+        by_id.push(join)?;
+        // `at` and `degree` are the CSR view, which does not exist yet — the emission walk fills
+        // them in.
         nodes.push(NavPoint { lat, lon, id: dense, at: 0, degree: 0 });
     }
-    Ok((nodes, new_id))
+
+    // Materialized rather than handed back as a stream, because the two joins each read it whole.
+    let mut out = SpillWriter::<JOIN_REC>::create(scratch, share)?;
+    for rec in by_id.finish()? {
+        out.push(rec?)?;
+    }
+    Ok((nodes, out.seal()?.0))
 }
 
 /// §8.4's placement rule: a record of `len` bytes goes at the cursor `at`, unless it would straddle
@@ -809,55 +1164,6 @@ fn fnv(bytes: &[u8]) -> u64 {
         h = h.wrapping_mul(0x0000_0100_0000_01b3);
     }
     h
-}
-
-/// Union-find island pruning over the merged graph: keep the largest component plus every component
-/// with at least `min_component_edges` edges (§4.6.4). Ties are broken deterministically (edge
-/// count, then smallest root) so the result never depends on iteration order.
-fn prune(
-    node_count: usize,
-    edges: &[MergedEdge],
-    min_component_edges: usize,
-    stats: &mut NavStats,
-) -> (Vec<bool>, Vec<bool>) {
-    let mut parent: Vec<u32> = (0..node_count as u32).collect();
-    fn find(parent: &mut [u32], mut x: u32) -> u32 {
-        while parent[x as usize] != x {
-            parent[x as usize] = parent[parent[x as usize] as usize];
-            x = parent[x as usize];
-        }
-        x
-    }
-    for e in edges {
-        let (ra, rb) = (find(&mut parent, e.a), find(&mut parent, e.b));
-        if ra != rb {
-            parent[ra as usize] = rb;
-        }
-    }
-    let roots: Vec<u32> = (0..node_count as u32).map(|i| find(&mut parent, i)).collect();
-    let mut nodes_per: BTreeMap<u32, usize> = BTreeMap::new();
-    for &r in &roots {
-        *nodes_per.entry(r).or_insert(0) += 1;
-    }
-    let mut edges_per: BTreeMap<u32, usize> = BTreeMap::new();
-    for e in edges {
-        *edges_per.entry(roots[e.a as usize]).or_insert(0) += 1;
-    }
-    stats.components_found = nodes_per.len();
-    let largest = *nodes_per
-        .iter()
-        .max_by_key(|(r, n)| (**n, edges_per.get(r).copied().unwrap_or(0), std::cmp::Reverse(**r)))
-        .expect("a non-empty graph has a component")
-        .0;
-    let keep_root = |r: u32| r == largest || edges_per.get(&r).copied().unwrap_or(0) >= min_component_edges;
-    stats.components_kept = nodes_per.keys().filter(|r| keep_root(**r)).count();
-    stats.largest_component_permille = (nodes_per[&largest] as u64 * 1000 / node_count.max(1) as u64) as u32;
-
-    let keep_node: Vec<bool> = roots.iter().map(|&r| keep_root(r)).collect();
-    let keep_edge: Vec<bool> = edges.iter().map(|e| keep_root(roots[e.a as usize])).collect();
-    stats.pruned_nodes = keep_node.iter().filter(|k| !**k).count();
-    stats.pruned_edges = keep_edge.iter().filter(|k| !**k).count();
-    (keep_node, keep_edge)
 }
 
 /// Write the whole §8 section at absolute byte `section_offset` through `sink`:

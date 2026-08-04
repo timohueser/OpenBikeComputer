@@ -61,6 +61,7 @@ pub mod grid;
 pub mod input;
 pub mod nav;
 pub mod poi;
+pub mod prune;
 pub mod qtree;
 pub mod schema;
 pub mod scratch;
