@@ -19,8 +19,9 @@
 use std::path::{Path, PathBuf};
 
 use obc_web_assemble::{
-    assemble_cells, assemble_cells_with_known_empty, assemble_everything, BridgeOptions, CellBytes, ErrorCode, Hooks,
-    KnownEmptyCell, NoHooks, OutputFile, Phase, TerrainCellBytes, TerrainLattice,
+    assemble, assemble_cells, assemble_cells_with_known_empty, assemble_everything, BridgeOptions, CellBytes,
+    CellReads, ErrorCode, Hooks, Inputs, KnownEmptyCell, NoHooks, OutputFile, Phase, SourceCell, TerrainCellBytes,
+    TerrainLattice,
 };
 
 fn fixture_dir() -> PathBuf {
@@ -746,4 +747,181 @@ fn the_bar_stays_monotone_across_an_interleaved_volume_set() {
         last = *f;
     }
     assert_eq!(rec.seen.last().expect("progress was reported"), &(Phase::Done, 1.0));
+}
+
+// --- the input cells, from outside wasm memory (#1116 B2) --------------------------------------
+
+/// The fixture's cells as a browser has them once they live in OPFS: identities and lengths on this
+/// side, bytes on the other side of a read callback.
+///
+/// It also *counts*, because the read seam's affordability is the whole argument for the block cache
+/// and an assertion is the only thing that keeps that argument honest.
+#[derive(Default)]
+struct Stored {
+    blobs: Vec<Vec<u8>>,
+    /// One entry per host read: `(slot, offset, length)`.
+    reads: std::cell::RefCell<Vec<(usize, u32, usize)>>,
+    /// Refuse every read of this slot that *reaches* this byte, as a closed storage handle does.
+    /// Stated as a byte rather than as a request offset because the block cache decides how the
+    /// engine's reads are grouped, and the test is about the byte the host cannot serve.
+    fail_at: Option<(usize, u32)>,
+}
+
+impl Stored {
+    fn new() -> Stored {
+        Stored { blobs: cells().into_iter().map(|c| c.bytes).collect(), ..Default::default() }
+    }
+
+    fn failing_at(slot: usize, offset: u32) -> Stored {
+        Stored { fail_at: Some((slot, offset)), ..Stored::new() }
+    }
+
+    /// The identities, in the sidecar's order — slot `i` is `blobs[i]`.
+    fn source_cells(&self) -> Vec<SourceCell> {
+        cells()
+            .iter()
+            .zip(&self.blobs)
+            .map(|(c, bytes)| SourceCell {
+                id: c.id.clone(),
+                band: c.band.clone(),
+                partial: c.partial,
+                byte_length: bytes.len() as u32,
+                key: format!("{:02x}{:02x}-key", bytes[0], bytes[1]),
+            })
+            .collect()
+    }
+
+    /// This store's cells, with the raster beside them — the same `Inputs` every test here builds.
+    fn inputs(&self) -> Inputs<'_> {
+        Inputs {
+            source_cells: self.source_cells(),
+            reads: Some(self),
+            terrain: Some(terrain_lattice()),
+            terrain_cells: terrain_cells(),
+            ..Inputs::default()
+        }
+    }
+}
+
+impl CellReads for Stored {
+    fn read(&self, slot: usize, offset: u32, buf: &mut [u8]) -> Result<(), String> {
+        self.reads.borrow_mut().push((slot, offset, buf.len()));
+        if let Some((s, at)) = self.fail_at {
+            if slot == s && offset as usize + buf.len() > at as usize {
+                return Err("the storage handle is closed".into());
+            }
+        }
+        let blob = self.blobs.get(slot).ok_or_else(|| format!("no cell in slot {slot}"))?;
+        let start = offset as usize;
+        let want = blob.get(start..start + buf.len()).ok_or_else(|| format!("slot {slot} has no byte {start}"))?;
+        buf.copy_from_slice(want);
+        Ok(())
+    }
+}
+
+/// **The B2 pin**: an assembly whose cells were never copied into wasm memory produces the same
+/// bytes as one whose cells were. The read seam and its block cache are plumbing, and plumbing that
+/// changes the output is a defect rather than a trade-off.
+#[test]
+fn cells_read_through_the_host_produce_the_native_clis_bytes() {
+    let store = Stored::new();
+    let out = assemble(store.inputs(), &sidecar(), &skin(), &options(), &mut NoHooks).expect("the assembly runs");
+    let want = expected("expected");
+    assert_eq!(out.files.len(), want.len(), "file count: {:?} vs {:?}", out.files, want);
+    for (got, (name, bytes)) in out.files.iter().zip(&want) {
+        assert_eq!(&got.name, name);
+        assert_same_bytes(&got.bytes, bytes, name);
+    }
+    // Every cell really did come through the seam — a path that quietly found the bytes elsewhere
+    // would pass the comparison above and prove nothing.
+    let slots: std::collections::HashSet<usize> = store.reads.borrow().iter().map(|(s, _, _)| *s).collect();
+    assert_eq!(slots.len(), store.blobs.len(), "every source cell must have been read through the seam");
+    // …and never past its declared length, which is the cache's own bounds check rather than the
+    // host's: a catalog byte count is what the engine reads as the cell's size.
+    for (slot, offset, len) in store.reads.borrow().iter() {
+        assert!(*offset as usize + *len <= store.blobs[*slot].len(), "read {offset}+{len} past the end of slot {slot}");
+    }
+}
+
+/// …and the same for a volume set, where §2.3's 256 KiB verbatim geometry copies (which go around
+/// the cache) run beside §4.6.6's per-record nav emission (which is the reason it exists).
+#[test]
+fn a_volume_set_assembles_the_same_from_host_reads() {
+    let store = Stored::new();
+    let opts = BridgeOptions { force_split: true, ..options() };
+    let out = assemble(store.inputs(), &sidecar(), &skin(), &opts, &mut NoHooks).expect("the assembly runs");
+    let want = expected("expected-split");
+    assert_eq!(out.files.len(), want.len(), "file count: {:?} vs {:?}", out.files, want);
+    for (got, (name, bytes)) in out.files.iter().zip(&want) {
+        assert_eq!(&got.name, name);
+        assert_same_bytes(&got.bytes, bytes, name);
+    }
+}
+
+/// The block cache is **transparent and worth having**: the same bytes with it on or off, and two
+/// orders of magnitude fewer host reads with it on.
+///
+/// A block size of `1` is the cache switched off — every read takes the bypass — so the first count
+/// is literally the number of reads the engine makes, and the second is what the host is actually
+/// asked for. That ratio is the number the browser path lives or dies on: every host read is a JS
+/// crossing *and* an OPFS syscall, and §4.6.6 makes one engine read per nav record — 17.5 M of them
+/// at country scale (#1116 C3's measurement), which is not a thing to cross a language boundary for.
+#[test]
+fn the_read_block_size_changes_the_call_count_and_not_the_bytes() {
+    let run = |block: usize| {
+        let store = Stored::new();
+        let opts = BridgeOptions { read_block_bytes: block, ..options() };
+        let out = assemble(store.inputs(), &sidecar(), &skin(), &opts, &mut NoHooks).expect("the assembly runs");
+        let reads = store.reads.borrow().len();
+        (out.files.into_iter().map(|f| (f.name, f.bytes)).collect::<Vec<_>>(), reads)
+    };
+    let (uncached, engine_reads) = run(1);
+    let (cached, host_reads) = run(64 * 1024);
+    assert_eq!(uncached.len(), cached.len());
+    for ((name, a), (_, b)) in uncached.iter().zip(&cached) {
+        assert_same_bytes(a, b, &format!("{name} with the read cache off"));
+    }
+    eprintln!("host reads: {engine_reads} with the cache off, {host_reads} at 64 KiB blocks");
+    // 30× on a 20 KB fixture, where most regions already fit one read; the ratio a country's cells
+    // see is the one in the module header, because it is the per-record walks that grow with size.
+    assert!(host_reads * 10 < engine_reads, "the block cache saved only {engine_reads} → {host_reads} host reads");
+}
+
+/// A cell that cannot be read is [`ErrorCode::Io`] **naming the cell**, not a §4.8 verify defect and
+/// not a panic across the FFI boundary. The engine's own report would blame the format — a failed
+/// read inside `Cell::open` comes back as "not a readable OBCM", a true sentence about the wrong
+/// thing, because the browser's storage failed and the catalog did not.
+///
+/// Both cases matter. With the whole cell in one block the failure lands in `Cell::open`, where the
+/// engine's own class is `Format`; with 512-byte blocks the cell opens and the failure lands
+/// somewhere in the middle of a later phase, where it is `Io` or `Verify` depending on who was
+/// reading. All three must reach the caller as `io`, with the same sentence.
+#[test]
+fn a_cell_the_host_cannot_read_fails_as_io_naming_the_cell() {
+    for (block, at) in [(64 * 1024usize, 0u32), (512, 1024)] {
+        let store = Stored::failing_at(1, at);
+        let named = store.source_cells()[1].id.clone();
+        let opts = BridgeOptions { read_block_bytes: block, ..options() };
+        let e = assemble(store.inputs(), &sidecar(), &skin(), &opts, &mut NoHooks).expect_err("slot 1 is unreadable");
+        assert_eq!(e.code, ErrorCode::Io, "blocks of {block}, failing at {at}: {}", e.message);
+        assert!(e.message.contains(&named), "the message must name the cell: {}", e.message);
+        assert!(e.message.contains("the storage handle is closed"), "the host's own words: {}", e.message);
+    }
+}
+
+/// A key with no way to resolve it is a half-wired host, and it is refused before a byte is read —
+/// as `internal`, because it is a defect in the caller rather than anything about the selection.
+#[test]
+fn cells_handed_over_by_key_without_a_reader_are_refused() {
+    let store = Stored::new();
+    let e = assemble(
+        Inputs { source_cells: store.source_cells(), reads: None, ..Inputs::default() },
+        &sidecar(),
+        &skin(),
+        &options(),
+        &mut NoHooks,
+    )
+    .expect_err("there is no way to fetch these");
+    assert_eq!(e.code, ErrorCode::Internal, "{}", e.message);
+    assert!(e.message.contains("no read callback"), "{}", e.message);
 }

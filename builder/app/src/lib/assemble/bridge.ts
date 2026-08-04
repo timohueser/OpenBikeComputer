@@ -77,6 +77,54 @@ export interface AssembleCell {
     readonly bytes: Uint8Array;
 }
 
+/**
+ * One cell the caller keeps **outside** wasm memory and serves on demand (#1116 B2) — in the
+ * browser, a file in OPFS read through a `FileSystemSyncAccessHandle`.
+ *
+ * Same identity as {@link AssembleCell}; instead of the bytes, the length the catalog published and
+ * an opaque key. The key is the caller's own name for the bytes and is never interpreted here — it
+ * appears in the message when a read fails. Reads themselves name a cell by its **slot**: its index
+ * in the `cells` array passed to {@link AssembleSources}, because a number is what crosses the wasm
+ * boundary cheaply.
+ */
+export interface AssembleSourceCell {
+    /** The canonical cell id, `<log2>/<i>/<j>`. */
+    readonly id: string;
+    /** The catalog's band id — not inferable from the bytes (OBCA §3.1). */
+    readonly band: string;
+    /** The catalog's `partial` flag (OBCA §3.7). */
+    readonly partial?: boolean;
+    /** The catalog's byte count, which becomes the cell's length as the engine sees it. */
+    readonly byteLength: number;
+    /** Whatever the caller resolves reads against — the digest, for the OPFS store. */
+    readonly key: string;
+}
+
+/**
+ * Fill `into` with `into.byteLength` bytes at `offset` of the cell in `slot`. Return `true` on
+ * success; **anything else fails the assembly** as `io`, naming the cell. A short read is a failure.
+ *
+ * Called from **inside** the synchronous assembly, so it must be synchronous itself — which is the
+ * whole design: `FileSystemSyncAccessHandle.read()` is the one file read a browser has that can be
+ * made from in there, and it only exists in a dedicated worker.
+ *
+ * `into` is a view onto wasm's linear memory, valid only for the duration of the call. Fill it and
+ * return: do not keep it, do not pass it to anything asynchronous, and do not call back into the
+ * assembler.
+ *
+ * It is called far less often than the engine reads — the wasm side serves the record-at-a-time
+ * walks out of a 1 MiB block cache, so this is roughly one call per 64 KiB of a cell rather than one
+ * per read. That ratio is what makes a per-call boundary crossing (~0.4 µs, measured in Node) and a
+ * per-call file read affordable at country scale at all.
+ */
+export type AssembleRead = (slot: number, offset: number, into: Uint8Array) => boolean;
+
+/** The cells that are not in memory, and how to read them. Both or neither. */
+export interface AssembleSources {
+    readonly cells: readonly AssembleSourceCell[];
+    readonly read: AssembleRead;
+}
+
 /** A selected cell with canonical empty content and therefore no OBCM bytes. */
 export interface AssembleKnownEmpty {
     readonly id: string;
@@ -127,6 +175,12 @@ export interface AssembleOptions {
     /** Write a role-partitioned set even when the map would fit one file — smaller files are better
      *  resumable upload units. */
     readonly forceSplit?: boolean;
+    /** How much of a source cell one {@link AssembleRead} brings back (default 64 KiB, clamped to
+     *  4 MiB). The cache holds sixteen of these, so it is also the input's whole residency ÷ 16.
+     *
+     *  `1` turns the cache **off** — one call per engine read. Nothing but a measurement should ask
+     *  for that; it is here because "with the cache" only means something against "without". */
+    readonly readBlockBytes?: number;
 }
 
 /**
@@ -361,8 +415,11 @@ const abandoned =
  * in this module's header, including why the UI's cancel button is `worker.terminate()`.
  *
  * Cells cross into wasm memory once, as they are added — the caller may drop its own references
- * immediately. The §4.8 verify pass runs before this resolves, so a result is a set the real reader
- * has already read back; there is deliberately no way to skip it.
+ * immediately. Or they do not cross at all: pass `sources` and the cells named there are read a
+ * block at a time, from wherever the caller keeps them, for the length of the run (#1116 B2). The
+ * two forms may be mixed, and a caller uses whichever it has. The §4.8 verify pass runs before this
+ * resolves either way, so a result is a set the real reader has already read back; there is
+ * deliberately no way to skip it.
  *
  * The result keeps its files in wasm memory until each is `take()`n; call {@link
  * AssembleResult.release} when done, or the set stays resident. Pass `onFile` and that stops being
@@ -383,6 +440,7 @@ export async function assembleCells(
     knownEmpty: readonly AssembleKnownEmpty[] = [],
     terrain?: { readonly lattice: AssembleTerrain; readonly cells: readonly AssembleTerrainCell[] },
     onFile?: AssembleFileSink,
+    sources?: AssembleSources,
 ): Promise<AssembleResult> {
     if (assembling) {
         throw new AssembleError(
@@ -399,6 +457,19 @@ export async function assembleCells(
         for (const c of cells) {
             assembler.addCell(c.id, c.band, c.partial ?? false, c.bytes);
         }
+        // Slots are the order these are added in — the wasm side returns each one, and this asserts
+        // rather than assumes, because a resolver keyed on the wrong slot would read a *valid* cell
+        // and assemble a plausible wrong map.
+        for (const [slot, c] of (sources?.cells ?? []).entries()) {
+            const got = assembler.addCellByKey(c.id, c.band, c.partial ?? false, c.byteLength, c.key);
+            if (got !== slot) {
+                throw new AssembleError(
+                    "internal",
+                    `the assembler numbered cell ${c.id} slot ${got}, not ${slot} — the read callback would fetch ` +
+                        "the wrong cell's bytes.",
+                );
+            }
+        }
         for (const cell of knownEmpty) assembler.addKnownEmpty(cell.id, cell.band);
         if (terrain) {
             assembler.setTerrain(terrain.lattice.postingLog2, terrain.lattice.cellLog2);
@@ -411,7 +482,7 @@ export async function assembleCells(
             ? (name: string, role: string, sha256: string, bytes: Uint8Array) =>
                   onFile({ name, role: role as AssembleStreamedFile["role"], sha256, bytes })
             : undefined;
-        const summary = JSON.parse(assembler.run(onProgress, sink)) as AssembleSummary;
+        const summary = JSON.parse(assembler.run(onProgress, sink, sources?.read)) as AssembleSummary;
         const warnings = assembler.warnings().map((w) => String(w));
         // Bound to the live assembler on purpose: `take()` is what frees the wasm-side copy, so the
         // caller decides when each file's bytes stop being wasm's problem and start being the JS

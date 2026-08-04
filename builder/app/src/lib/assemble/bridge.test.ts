@@ -26,7 +26,13 @@ import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { ASSEMBLE_ERROR_CODES, AssembleError, assembleCells, estimateMemory, initAssemble } from "./bridge";
-import type { AssembleCell, AssemblePhase, AssembleTerrain, AssembleTerrainCell } from "./bridge";
+import type {
+    AssembleCell,
+    AssemblePhase,
+    AssembleSources,
+    AssembleTerrain,
+    AssembleTerrainCell,
+} from "./bridge";
 
 /** Walk up from this file to the repo root (the directory holding the fixture). */
 function repoRoot(): string {
@@ -111,6 +117,43 @@ function expectSameBytes(actual: Uint8Array, want: Uint8Array, what: string): vo
 }
 
 const OPTIONS = { name: "Bridge Fixture", acceptPartial: true };
+
+/**
+ * The fixture's cells as the browser has them after #1116 B2: identities and lengths on this side of
+ * the wasm boundary, bytes behind a synchronous read callback.
+ *
+ * In the browser that callback is `FileSystemSyncAccessHandle.read()`, which Node does not have and
+ * which is exactly why the seam takes a function: the engine's path is the same either way, and
+ * backing it with buffers here makes the streamed path testable at all.
+ */
+class Reads {
+    readonly blobs = cells().map((c) => c.bytes);
+    /** Every call, so the block cache's effect can be counted rather than assumed. */
+    readonly calls: { slot: number; offset: number; length: number }[] = [];
+    /** Refuse every read of this slot, as a closed handle does. */
+    refuse: number | null = null;
+    /** …and throw on this one, which a broken handle does instead. */
+    throwAt: number | null = null;
+
+    sources(): AssembleSources {
+        return {
+            cells: cells().map((c, i) => ({
+                id: c.id,
+                band: c.band,
+                partial: c.partial,
+                byteLength: this.blobs[i].length,
+                key: `cell-${i}`,
+            })),
+            read: (slot, offset, into) => {
+                this.calls.push({ slot, offset, length: into.byteLength });
+                if (slot === this.throwAt) throw new Error("the sync access handle is closed");
+                if (slot === this.refuse) return false;
+                into.set(this.blobs[slot].subarray(offset, offset + into.byteLength));
+                return true;
+            },
+        };
+    }
+}
 
 beforeAll(async () => {
     // `--target web` glue resolves the module relative to itself and fetches it; Node cannot fetch a
@@ -231,6 +274,150 @@ describe("assembleCells", () => {
             }),
         ).rejects.toMatchObject({ code: "io" });
         expect(seen).toHaveLength(1);
+    });
+
+    /**
+     * **The B2 determinism pin.** The same fixture, with the cells never copied into wasm memory —
+     * handed over as identities and read a block at a time through a callback, the way the browser
+     * reads them out of OPFS through a `FileSystemSyncAccessHandle`.
+     *
+     * Node has no OPFS, and that is the point of the seam: back the keys with buffers here and the
+     * *engine's* path is identical to the browser's. If this produces the CLI's bytes, the streamed
+     * path is not a different assembler.
+     */
+    it("reproduces the native CLI's bytes with the cells read from outside wasm memory", async () => {
+        const store = new Reads();
+        const result = await assembleCells(
+            [],
+            sidecar,
+            skin,
+            OPTIONS,
+            undefined,
+            [],
+            terrain(),
+            undefined,
+            store.sources(),
+        );
+        const want = expected("expected");
+        expect(result.files.map((f) => f.name)).toEqual(want.map((f) => f.name));
+        for (const [i, file] of result.files.entries()) expectSameBytes(file.take(), want[i].bytes, file.name);
+        // Every cell really came through the callback — a path that quietly found the bytes some
+        // other way would pass the comparison above and prove nothing.
+        expect(new Set(store.calls.map((c) => c.slot)).size).toBe(cells().length);
+        result.release();
+    });
+
+    /** …and the volume set, where §2.3's 256 KiB verbatim copies (which bypass the cache) run beside
+     *  §4.6.6's per-record emission (which is why it exists). */
+    it("reproduces the native CLI's volume set from outside wasm memory too", async () => {
+        const store = new Reads();
+        const result = await assembleCells(
+            [],
+            sidecar,
+            skin,
+            { ...OPTIONS, forceSplit: true },
+            undefined,
+            [],
+            terrain(),
+            undefined,
+            store.sources(),
+        );
+        const want = expected("expected-split");
+        expect(result.files.map((f) => f.name)).toEqual(want.map((f) => f.name));
+        for (const [i, file] of result.files.entries()) expectSameBytes(file.take(), want[i].bytes, file.name);
+        result.release();
+    });
+
+    /**
+     * **What makes the seam affordable**, measured here rather than argued: `readBlockBytes: 1` is
+     * the cache switched off, so its call count is exactly the number of reads the engine makes, and
+     * the default's is what the host is actually asked for.
+     *
+     * The ratio is what matters at scale. §4.6.6 emits the merged edge pool one record at a time —
+     * 17.5 M records at country scale (#1116 C3) — and every one of those, uncached, would be a JS
+     * crossing (~0.4 µs, measured in Node by the PR that added this) *and* an OPFS syscall. Cached,
+     * the host sees about one call per 64 KiB of cell.
+     */
+    it("serves the engine's reads from a block cache, without changing a byte", async () => {
+        const run = async (readBlockBytes: number) => {
+            const store = new Reads();
+            const result = await assembleCells(
+                [],
+                sidecar,
+                skin,
+                { ...OPTIONS, readBlockBytes },
+                undefined,
+                [],
+                undefined,
+                undefined,
+                store.sources(),
+            );
+            const files = result.files.map((f) => ({ name: f.name, bytes: f.take() }));
+            result.release();
+            return { files, calls: store.calls.length };
+        };
+        const uncached = await run(1);
+        const cached = await run(64 * 1024);
+        for (const [i, file] of uncached.files.entries()) {
+            expectSameBytes(file.bytes, cached.files[i].bytes, `${file.name} with the read cache off`);
+        }
+        expect(cached.calls * 10).toBeLessThan(uncached.calls);
+        // …and the reads it does make are whole blocks, not the engine's 30-byte records.
+        expect(cached.calls).toBeGreaterThan(0);
+    });
+
+    /** A read that fails is `io` **naming the cell**, not a §4.8 `verify` defect and not a wasm trap:
+     *  the browser's storage failed, and the message has to say which cell so a bug report can. */
+    it("fails as io naming the cell when a read refuses", async () => {
+        const store = new Reads();
+        store.refuse = 1;
+        await expect(
+            assembleCells([], sidecar, skin, OPTIONS, undefined, [], undefined, undefined, store.sources()),
+        ).rejects.toMatchObject({ code: "io" });
+        await expect(
+            assembleCells([], sidecar, skin, OPTIONS, undefined, [], undefined, undefined, store.sources()),
+        ).rejects.toThrow(new RegExp(cells()[1].id.replace(/\//g, "/")));
+    });
+
+    /** A callback that throws is the same failure as one that refuses — it must not escape as an
+     *  unclassified wasm exception, because the run's cleanup branches on the code. */
+    it("fails as io when a read throws", async () => {
+        const store = new Reads();
+        store.throwAt = 0;
+        await expect(
+            assembleCells([], sidecar, skin, OPTIONS, undefined, [], undefined, undefined, store.sources()),
+        ).rejects.toMatchObject({ code: "io" });
+    });
+
+    /**
+     * Two runs in a row over the same cells, through one resolver. The browser's real reason for
+     * this is that a `FileSystemSyncAccessHandle` is an exclusive lock — a run that leaks one makes
+     * the *next* run fail to open the same cell (pinned against a modelled lock in
+     * `../cells/store.test.ts`). Here it is the wasm side's half: no state from the first run — a
+     * cached block, a slot table — may reach the second.
+     */
+    it("assembles the same bytes on a second sequential run through the same reader", async () => {
+        const store = new Reads();
+        const once = async () => {
+            const result = await assembleCells(
+                [],
+                sidecar,
+                skin,
+                OPTIONS,
+                undefined,
+                [],
+                undefined,
+                undefined,
+                store.sources(),
+            );
+            const files = result.files.map((f) => ({ name: f.name, bytes: f.take() }));
+            result.release();
+            return files;
+        };
+        const first = await once();
+        const second = await once();
+        expect(second.map((f) => f.name)).toEqual(first.map((f) => f.name));
+        for (const [i, file] of second.entries()) expectSameBytes(file.bytes, first[i].bytes, `${file.name}, run two`);
     });
 
     it("reports the §4.8 verify pass it already ran", async () => {

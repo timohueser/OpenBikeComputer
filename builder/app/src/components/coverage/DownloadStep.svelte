@@ -9,16 +9,26 @@
         isWorkerResponse,
         requestTransferList,
         type AssembleWorkerRequest,
+        type CellReadMode,
         type WorkerCell,
         type WorkerFile,
+        type WorkerSourceCell,
         type WorkerTerrainCell,
     } from "../../lib/assemble/workerProtocol";
+    import {
+        cellStoreRevision,
+        cellStoreWritable,
+        hasRoomFor,
+        openCellStore,
+        type CellStore,
+    } from "../../lib/cells/store";
     import { saveBlob } from "../../lib/download";
     import { platform } from "../../lib/platform";
     import type { MapOutputSession } from "../../lib/platform/types";
     import {
         downloadCells,
         planCells,
+        type CellDownloadPlan,
         type CellDownloadProgress,
     } from "../../lib/catalog/download";
     import { coverageRings, type RingPoint } from "../../lib/catalog/outline";
@@ -111,6 +121,14 @@
     /** Set by `failRun`: whatever is still queued must not be written into an
      *  output that is being discarded. */
     let sinkClosed = false;
+    /** How this run's cells reached the assembler (#1116 B2), as the worker
+     *  reports it before the assembly starts. Shown, because a bug report about a
+     *  failed country-scale run has to say which path ran. */
+    let readMode = $state<CellReadMode | null>(null);
+    /** Cells this run did not have to fetch, because a previous one already put
+     *  them in OPFS under the same digest. */
+    let cachedCells = $state(0);
+    let cachedBytes = $state(0);
     let outputPath = $state<string | null>(null);
     let runWarnings = $state<string[]>([]);
     let errorMessage = $state<string | null>(null);
@@ -164,6 +182,9 @@
             case "progress":
                 asmPhase = msg.phase;
                 asmFraction = msg.fraction;
+                break;
+            case "reading":
+                readMode = msg.mode;
                 break;
             case "planned":
                 runWarnings = msg.warnings;
@@ -337,6 +358,41 @@
         output = null;
     }
 
+    /**
+     * The same plan minus every cell already in the store, and the tally of what
+     * that saved.
+     *
+     * A cell is "already here" when a file named by its catalog digest exists at
+     * the catalog's length. That is the whole identity check: the name **is** the
+     * SHA-256 `fetchVerified` matched before the file was written, and the length
+     * catches the one thing that can go wrong afterwards — a write torn by a
+     * crash or a quota refusal. Re-hashing every cell on every run would cost
+     * seconds and a full read of exactly the bytes this exists to stop reading.
+     *
+     * Terrain is never skipped: it is not in the store (see `begin`).
+     */
+    async function skipCached(
+        plan: CellDownloadPlan,
+        cells: CellStore,
+    ): Promise<CellDownloadPlan> {
+        const wanted: typeof plan.items = [];
+        let bytes = 0;
+        let have = 0;
+        let haveBytes = 0;
+        for (const item of plan.items) {
+            if (item.band !== null && (await cells.has(item.cell.sha256, item.cell.bytes))) {
+                have += 1;
+                haveBytes += item.cell.bytes;
+                continue;
+            }
+            wanted.push(item);
+            bytes += item.cell.bytes;
+        }
+        cachedCells = have;
+        cachedBytes = haveBytes;
+        return { ...plan, items: wanted, totalBytes: bytes };
+    }
+
     function mapName(): string {
         const parts = store.selection.parts;
         const base = parts.length === 0 ? "OBC map" : parts[0].name;
@@ -372,22 +428,63 @@
         runWarnings = [];
         dlProgress = null;
         asmFraction = 0;
+        readMode = null;
+        cachedCells = 0;
+        cachedBytes = 0;
         phase = "downloading";
-        if (out.kind === "device") out.ctx.phase("downloading", l.totalBytes);
 
         const plan = planCells(resolution, store.catalog, indices, store.terrain);
         const cells: WorkerCell[] = [];
+        const sourceCells: WorkerSourceCell[] = [];
         const terrainCells: WorkerTerrainCell[] = [];
         abortCtl = new AbortController();
+
+        // Cells go to disk when this browser will take them, which is what makes
+        // a reload resume rather than start over — and what keeps a country's
+        // worth of them out of the tab's heap. The raster deliberately does not:
+        // its objects are small and it is downloaded last, so it would buy the
+        // least of anything here (a B-series follow-up if that stops being true).
+        // Probed by writing and reading a file back, not by sniffing for a
+        // method: the fallback has to be chosen on what this browser actually
+        // does, and a store that cannot be written to is worse than no store.
+        let cellStore = (await cellStoreWritable()) ? await openCellStore(cellStoreRevision(store.catalog)) : null;
+        let fetchPlan = plan;
+        if (cellStore) {
+            fetchPlan = await skipCached(plan, cellStore);
+            // Asked once, before a byte is fetched: a quota refusal halfway
+            // through is half a country downloaded and a run that has to start
+            // again in memory. Falling back now costs the reload-resume and
+            // nothing else.
+            if (!(await hasRoomFor(fetchPlan.totalBytes - fetchPlan.terrainBytes))) {
+                cellStore = null;
+                fetchPlan = plan;
+                cachedCells = 0;
+                cachedBytes = 0;
+            }
+        }
+        if (out.kind === "device") out.ctx.phase("downloading", fetchPlan.totalBytes);
+
         try {
-            await downloadCells(plan, {
+            await downloadCells(fetchPlan, {
                 fetchImpl: store.client.fetchImpl,
-                onCell: (item, bytes) => {
+                onCell: async (item, bytes) => {
                     // `band === null` is what a terrain cell is (`OBCC_Spec.md`
                     // §13: a second artifact class, not a band), and it is the
                     // only thing that decides which door it goes in.
                     if (item.band === null) {
                         terrainCells.push({ id: item.cell.id, sha256: item.cell.sha256, bytes });
+                    } else if (cellStore) {
+                        // Verified once, on the way in: the file's name is the
+                        // digest `fetchVerified` just checked. Awaited, so a slow
+                        // disk applies backpressure instead of letting the
+                        // download queue gigabytes behind it.
+                        await cellStore.put(item.cell.sha256, bytes).catch((cause: unknown) => {
+                            throw new Error(
+                                `The map could not be saved to this browser's storage (${
+                                    cause instanceof Error ? cause.message : String(cause)
+                                }). Free some disk space and try again.`,
+                            );
+                        });
                     } else {
                         cells.push({
                             id: item.cell.id,
@@ -403,6 +500,21 @@
                 },
                 signal: abortCtl.signal,
             });
+            // In the plan's order, not the network's — cached and fetched cells
+            // are one list, and which of the two a cell came from must not be
+            // able to reach the bytes.
+            if (cellStore) {
+                for (const item of plan.items) {
+                    if (item.band === null) continue;
+                    sourceCells.push({
+                        id: item.cell.id,
+                        band: item.band,
+                        partial: "partial" in item.cell && item.cell.partial,
+                        byteLength: item.cell.bytes,
+                        key: item.cell.sha256,
+                    });
+                }
+            }
         } catch (e) {
             if (abortCtl.signal.aborted) {
                 phase = "cancelled";
@@ -422,6 +534,13 @@
         const req: AssembleWorkerRequest = {
             type: "assemble",
             cells,
+            // One or the other, never a mix: `cells` carries buffers when there
+            // was nowhere to put them, `sourceCells` names files in OPFS when
+            // there was. The worker decides how it reads the latter — through
+            // sync access handles if it has them (#1116 B2), by reading them
+            // back into memory if not.
+            sourceCells: cellStore ? sourceCells : undefined,
+            cellStore: cellStore?.revision,
             knownEmpty: plan.knownEmpty,
             // Terrain travels as its own pair: the lattice the catalog states
             // and the objects that were downloaded. A catalog with no terrain
@@ -784,10 +903,14 @@
                         <span class="small muted">
                             downloading cells — {dlProgress.completedCells}/{dlProgress.totalCells} ·
                             {formatBytes(dlProgress.receivedBytes)} of {formatBytes(dlProgress.totalBytes)}
+                            {#if cachedCells > 0}· {cachedCells} already on this computer ({formatBytes(
+                                    cachedBytes,
+                                )}){/if}
                         </span>
                     {:else if phase === "assembling"}
                         <span class="small muted">
-                            assembling — {ASM_PHASE_LABEL[asmPhase]} · {Math.round(asmFraction * 100)}%
+                            assembling — {ASM_PHASE_LABEL[asmPhase]} · {Math.round(asmFraction * 100)}%{#if readMode}
+                                · cells {readMode}{/if}
                         </span>
                     {/if}
                 </div>
@@ -820,6 +943,13 @@
                             </li>
                         {/each}
                     </ul>
+                    {#if readMode}
+                        <p class="line faint small mono">
+                            cells {readMode}{#if cachedCells > 0}
+                                · {cachedCells} reused from this computer ({formatBytes(cachedBytes)} not
+                                downloaded){/if}
+                        </p>
+                    {/if}
                     {#if lastRunKind === "download" && !outputPath && savedFiles.length > 1}
                         <p class="line faint small">
                             Your browser may ask to allow multiple downloads — the map is a set, and every
