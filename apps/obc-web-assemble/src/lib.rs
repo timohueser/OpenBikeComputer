@@ -20,7 +20,7 @@
 //! | `.takeFile(i)` | move one file's bytes out to JS and free the wasm-side copy; twice throws |
 //! | `.warnings()` | what OBCA says a producer SHOULD report rather than refuse |
 //! | `.releaseCells()` | drop the input buffers once the output is taken |
-//! | `obc_assemble_estimate(networkBandBytes, totalCellBytes, budgetBytes?)` | can this selection be assembled in a tab at all — **before** the download |
+//! | `obc_assemble_estimate(networkBandBytes, totalCellBytes, terrainBytes, inputOnDisk, streamedShardBytes, budgetBytes?)` | can this selection be assembled in a tab at all — **before** the download |
 //!
 //! `.run()` **blocks** for the whole assembly — ~20 s at country scale — so it belongs in a **Web
 //! Worker**, not on the main thread. That contract, and what a cancel button has to do given it, is
@@ -43,8 +43,8 @@ pub use driver::{
     TerrainCellBytes, TerrainLattice,
 };
 pub use estimate::{
-    estimate_memory, estimate_memory_with_budget, MemoryEstimate, OUTPUT_PER_CELL_BYTE, PEAK_PER_NAV_BYTE,
-    PRACTICAL_BUDGET, WASM32_ADDRESS_SPACE,
+    estimate_memory, estimate_memory_with_budget, MemoryEstimate, Residency, OUTPUT_PER_CELL_BYTE, PEAK_PER_NAV_BYTE,
+    PRACTICAL_BUDGET, READ_CACHE_BYTES, WASM32_ADDRESS_SPACE,
 };
 
 #[cfg(target_arch = "wasm32")]
@@ -489,9 +489,15 @@ mod web {
     }
 
     /// Project the peak memory of assembling a selection, **before** downloading it: pass the
-    /// catalog's own byte totals for the selected cells (`network` band alone, and every band) and
-    /// get `{engineBytes, inputBytes, outputBytes, peakBytes, budgetBytes, ceilingBytes, fits,
-    /// headroomBytes}`.
+    /// catalog's own byte totals for the selected cells (`network` band alone, every band, and the
+    /// terrain squares' share) plus the run's residency mode, and get `{engineBytes, inputBytes,
+    /// outputBytes, peakBytes, budgetBytes, ceilingBytes, fits, headroomBytes}`.
+    ///
+    /// The mode is #1116 phase B's two escapes, and the caller must state what this run will
+    /// actually have: `input_on_disk` only when the cells will stream from OPFS (a writable store
+    /// with room **and** a passing sync-read probe), `streamed_shard_bytes > 0` (the split size)
+    /// only for a consumer that takes shards mid-run — the download path, never the device path.
+    /// See [`crate::estimate::Residency`].
     ///
     /// This complements OBCA §5.7's file-size ledger rather than repeating it: §5.7 prices the
     /// *output* against the format's 4 GiB per-file ceiling, this prices the *run* against wasm32's
@@ -506,11 +512,16 @@ mod web {
     pub fn obc_assemble_estimate(
         network_band_bytes: f64,
         total_cell_bytes: f64,
+        terrain_bytes: f64,
+        input_on_disk: bool,
+        streamed_shard_bytes: f64,
         budget_bytes: Option<f64>,
     ) -> js_sys::Object {
         let e = crate::estimate::estimate_memory_with_budget(
             network_band_bytes,
             total_cell_bytes,
+            terrain_bytes,
+            crate::estimate::Residency { input_on_disk, streamed_shard_bytes },
             budget_bytes.unwrap_or(crate::estimate::PRACTICAL_BUDGET),
         );
         let obj = js_sys::Object::new();

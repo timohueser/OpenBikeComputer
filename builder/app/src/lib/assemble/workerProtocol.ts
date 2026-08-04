@@ -94,6 +94,16 @@ export type AssembleWorkerRequest =
           type: "estimate";
           networkBandBytes: number;
           totalCellBytes: number;
+          /** The terrain squares' share of the total — resident whatever the
+           *  mode, because they are never stored in OPFS (#1116 B2). */
+          terrainBytes: number;
+          /** The main thread's half of the input mode: a writable cell store
+           *  with room for the selection. The worker ANDs it with its own
+           *  sync-read probe — only the worker can assert that half. */
+          inputOnDisk: boolean;
+          /** The split the download path will stream shards at. The worker
+           *  answers for **both** output modes; this sizes the streamed one. */
+          streamedShardBytes: number;
           /** Lowered by a caller that knows it is on a phone (bridge docs). */
           budgetBytes?: number;
       }
@@ -164,7 +174,16 @@ export type AssembleWorkerResponse =
     | ({ type: "shard" } & WorkerShard)
     | ({ type: "file" } & WorkerFile)
     | { type: "done"; warnings: string[]; summary: AssembleSummary }
-    | { type: "estimate-result"; estimate: MemoryEstimate }
+    | {
+          type: "estimate-result";
+          /** The download path's verdict: shards stream out at the requested
+           *  split. What the screen's own refusal/caution lines show. */
+          estimate: MemoryEstimate;
+          /** The device path's verdict for the same selection: the set is kept
+           *  until `planned` (#1116 B1's opt-out), so it binds earlier. Gates
+           *  `sendToDevice` — the two genuinely differ from ~1.4× BW up. */
+          deviceEstimate: MemoryEstimate;
+      }
     | { type: "error"; code: AssembleErrorCode; message: string };
 
 /** The transfer list for an `assemble` request: every cell's buffer moves into
@@ -249,7 +268,12 @@ export function isWorkerResponse(v: unknown): v is AssembleWorkerResponse {
         case "done":
             return Array.isArray(m.warnings) && typeof m.summary === "object" && m.summary !== null;
         case "estimate-result":
-            return typeof m.estimate === "object" && m.estimate !== null;
+            return (
+                typeof m.estimate === "object" &&
+                m.estimate !== null &&
+                typeof m.deviceEstimate === "object" &&
+                m.deviceEstimate !== null
+            );
         case "error":
             return typeof m.code === "string" && CODES.has(m.code) && typeof m.message === "string";
         default:
