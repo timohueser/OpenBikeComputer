@@ -626,17 +626,51 @@ describe("the wire contract with driver.rs", () => {
 });
 
 describe("estimateMemory", () => {
+    const MB = 1_000_000;
+    /** The builder's split (`DownloadStep.svelte`'s `TARGET_SHARD_BYTES`). */
+    const SHARD = 256 * 1024 * 1024;
+    const STREAMED = { inputOnDisk: true, streamedShardBytes: SHARD };
+    const DEVICE = { inputOnDisk: true, streamedShardBytes: 0 };
+
     it("passes a corridor and refuses DACH, before any download", async () => {
-        const MB = 1_000_000;
-        const corridor = await estimateMemory(20 * MB, 60 * MB);
+        const corridor = await estimateMemory(20 * MB, 60 * MB, 10 * MB, STREAMED);
         expect(corridor.fits).toBe(true);
         expect(corridor.headroomBytes).toBeGreaterThan(0);
 
-        // PR #1027's own DACH projection: nav ≈ 11.5× switzerland's 271 MB.
-        const dach = await estimateMemory(11.5 * 271 * MB, 11.5 * 717 * MB);
+        // DACH's engine term alone is past wasm32 — no residency mode argues with the merge itself.
+        const dach = await estimateMemory(3000 * MB, 8500 * MB, 500 * MB, STREAMED);
         expect(dach.fits).toBe(false);
-        expect(dach.peakBytes).toBeGreaterThan(dach.ceilingBytes);
+        expect(dach.engineBytes).toBeGreaterThan(dach.ceilingBytes);
         expect(dach.headroomBytes).toBeLessThan(0);
+    });
+
+    /**
+     * The two output modes are genuinely different verdicts (#1116 B1): the download path streams
+     * shards out and prices one of them; the device path keeps the set until `planned`. At
+     * Bayern-ish scale (1.7× BW's published bytes) the first fits and the second does not — which
+     * is why `DownloadStep` asks for both instead of gating everything on one.
+     */
+    it("prices the download and device paths apart, and they disagree at Bayern scale", async () => {
+        const nav = 1.7 * 295_921_548;
+        const cells = 1.7 * 853_456_890;
+        const terrain = 1.7 * 58_721_264;
+        const streamed = await estimateMemory(nav, cells, terrain, STREAMED);
+        const device = await estimateMemory(nav, cells, terrain, DEVICE);
+        expect(streamed.fits).toBe(true);
+        expect(device.fits).toBe(false);
+        expect(device.outputBytes).toBeGreaterThan(streamed.outputBytes);
+        expect(device.engineBytes).toBe(streamed.engineBytes);
+    });
+
+    /** The buffered fallback — no usable OPFS — is the pre-B shape: full cells resident. */
+    it("charges the whole selection when the input cannot stream", async () => {
+        const cells = 717 * MB;
+        const onDisk = await estimateMemory(271 * MB, cells, 0, STREAMED);
+        const buffered = await estimateMemory(271 * MB, cells, 0, { inputOnDisk: false, streamedShardBytes: SHARD });
+        expect(buffered.inputBytes).toBe(cells);
+        // The streamed input is the cache plus terrain, not the selection.
+        expect(onDisk.inputBytes).toBeLessThan(70 * MB);
+        expect(buffered.peakBytes - onDisk.peakBytes).toBeGreaterThan(600 * MB);
     });
 
     /**
@@ -645,13 +679,214 @@ describe("estimateMemory", () => {
      * is the caller's to lower. Nothing else moves: the projection is about the selection.
      */
     it("lets a caller lower the budget the verdict is measured against", async () => {
-        const MB = 1_000_000;
-        const desktop = await estimateMemory(271 * MB, 717 * MB);
-        const phone = await estimateMemory(271 * MB, 717 * MB, 1024 * 1024 * 1024);
+        const desktop = await estimateMemory(271 * MB, 717 * MB, 0, DEVICE);
+        const phone = await estimateMemory(271 * MB, 717 * MB, 0, DEVICE, 1024 * 1024 * 1024);
         expect(desktop.fits).toBe(true);
         expect(phone.fits).toBe(false);
         expect(phone.peakBytes).toBe(desktop.peakBytes);
         expect(phone.budgetBytes).toBe(1024 * 1024 * 1024);
         expect(phone.ceilingBytes).toBe(desktop.ceilingBytes);
+    });
+});
+
+/**
+ * The host's own storage, as the wasm sink seam sees it (#1116 D1).
+ *
+ * In the browser these five methods are one OPFS `FileSystemSyncAccessHandle` per shard; Node has
+ * neither, and that is exactly why the seam takes functions. Backing them with buffers here makes
+ * the sunk path testable, and — because the *engine's* path is identical either way — makes a
+ * byte-comparison against the CLI's files mean something.
+ */
+class Sink {
+    readonly files: { name: string; bytes: Uint8Array; sealed: boolean }[] = [];
+    readonly sealed: { slot: number; name: string; role: string; sha256: string; byteLength: number }[] = [];
+    /** Flip one byte of a slot at `seal`, behind the assembler's back. */
+    corrupt: { slot: number; at: number } | null = null;
+    /** Refuse every `readAt` of this slot, as a closed handle does. */
+    refuseReads: number | null = null;
+    /** How many times the host was asked for bytes, so the read-back's cache can be counted. */
+    reads = 0;
+
+    create(slot: number, name: string): boolean {
+        this.files[slot] = { name, bytes: new Uint8Array(0), sealed: false };
+        return true;
+    }
+
+    write(slot: number, bytes: Uint8Array): boolean {
+        const file = this.files[slot];
+        if (!file || file.sealed) return false;
+        const grown = new Uint8Array(file.bytes.length + bytes.byteLength);
+        grown.set(file.bytes);
+        grown.set(bytes, file.bytes.length);
+        file.bytes = grown;
+        return true;
+    }
+
+    readAt(slot: number, offset: number, into: Uint8Array): boolean {
+        this.reads++;
+        if (slot === this.refuseReads) return false;
+        const file = this.files[slot];
+        if (!file || !file.sealed || offset + into.byteLength > file.bytes.length) return false;
+        into.set(file.bytes.subarray(offset, offset + into.byteLength));
+        return true;
+    }
+
+    seal(slot: number): boolean {
+        const file = this.files[slot];
+        if (!file) return false;
+        file.sealed = true;
+        if (this.corrupt?.slot === slot) file.bytes[this.corrupt.at] ^= 0xff;
+        return true;
+    }
+
+    sealed_(shard: { slot: number; name: string; role: string; sha256: string; byteLength: number }): void {
+        this.sealed.push(shard);
+    }
+
+    /** The seam as `assembleCells` takes it. */
+    seam() {
+        return {
+            create: (slot: number, name: string) => this.create(slot, name),
+            write: (slot: number, bytes: Uint8Array) => this.write(slot, bytes),
+            readAt: (slot: number, offset: number, into: Uint8Array) => this.readAt(slot, offset, into),
+            seal: (slot: number) => this.seal(slot),
+            sealed: (shard: { slot: number; name: string; role: string; sha256: string; byteLength: number }) =>
+                this.sealed_(shard),
+        };
+    }
+}
+
+describe("the shard sink (#1116 D1)", () => {
+    /**
+     * **The D1 determinism pin.** The same fixture, with the shards never entering wasm memory —
+     * written straight through the sink and read back through it for §4.8, the way the browser
+     * writes them into OPFS through a `FileSystemSyncAccessHandle`.
+     *
+     * If this produces the CLI's bytes, the sunk path is not a different assembler. It is the claim
+     * the whole phase rests on: the core shard cannot be split (one nav graph, one file), so at
+     * country scale "one shard resident" is still a multi-gigabyte allocation in a 4 GiB address
+     * space, and the only answer is that it is not an allocation at all.
+     */
+    it("writes the native CLI's volume set without a shard ever entering wasm memory", async () => {
+        const sink = new Sink();
+        const result = await assembleCells(
+            cells(),
+            sidecar,
+            skin,
+            { ...OPTIONS, forceSplit: true },
+            undefined,
+            [],
+            terrain(),
+            undefined,
+            undefined,
+            sink.seam(),
+        );
+        // Only the raster and the manifest came back — the three shards are on the host's side.
+        expect(result.files.map((f) => f.role)).toEqual(["terrain", "manifest"]);
+        expect(sink.sealed.map((s) => s.role)).toEqual(["core", "coarse", "geometry"]);
+        expect(result.summary.shards.length).toBe(3);
+
+        const want = expected("expected-split");
+        const delivered = [
+            ...sink.files.map((f) => ({ name: f.name, bytes: f.bytes })),
+            ...result.files.map((f) => ({ name: f.name, bytes: f.take() })),
+        ];
+        expect(delivered.map((f) => f.name)).toEqual(want.map((f) => f.name));
+        for (const [i, file] of delivered.entries()) expectSameBytes(file.bytes, want[i].bytes, file.name);
+
+        // What the caller was *told* it now has is what the manifest records — the host wrote these
+        // bytes without ever seeing them, so this is the only thing between a mislabelled file and a
+        // card.
+        for (const [i, shard] of sink.sealed.entries()) {
+            expect(shard.slot).toBe(i);
+            expect(shard.name).toBe(result.summary.shards[i].file);
+            expect(shard.sha256).toBe(result.summary.shards[i].sha256);
+            expect(shard.byteLength).toBe(want[i].bytes.length);
+        }
+        result.release();
+    });
+
+    /**
+     * **The proof that §4.8 reads the file.** Flip one byte of a sealed shard behind the
+     * assembler's back and the verify pass must reject the set.
+     *
+     * With the bytes in a `Vec`, "read the shard back" and "look at the shard" are the same
+     * operation, so §4.8 can only prove the encoder agrees with the decoder. With a sink the medium
+     * is the thing that can lie — and a read-back quietly answering out of an in-memory copy would
+     * ship a corrupt map with a clean verdict.
+     */
+    it("fails verify when the sink corrupts a byte on the way to disk", async () => {
+        const sink = new Sink();
+        sink.corrupt = { slot: 0, at: 0 }; // the OBCM magic, so what refuses is unmistakably the reader
+        await expect(
+            assembleCells(cells(), sidecar, skin, OPTIONS, undefined, [], undefined, undefined, undefined, sink.seam()),
+        ).rejects.toMatchObject({ code: "verify" });
+        expect(sink.reads).toBeGreaterThan(0);
+        // Nothing was reported as finished: §4.8 is a precondition of the manifest, so the corrupt
+        // shard never became part of a map (OBCA §5.4).
+        expect(sink.sealed).toEqual([]);
+    });
+
+    /** A sink that cannot give the bytes back is `io`, although §4.8 is where it surfaces — a full
+     *  or unplugged disk is not a defect in the assembler, and `verify` is the one verdict a caller
+     *  is told never to retry past. */
+    it("reports a sink that cannot read a shard back as io, not as a verify defect", async () => {
+        const sink = new Sink();
+        sink.refuseReads = 0;
+        await expect(
+            assembleCells(cells(), sidecar, skin, OPTIONS, undefined, [], undefined, undefined, undefined, sink.seam()),
+        ).rejects.toMatchObject({ code: "io" });
+    });
+
+    /** A caller that cannot record a finished shard stops the run: the file exists and its name is
+     *  the only thing that could find it again. */
+    it("fails the run when the sealed report throws", async () => {
+        const sink = new Sink();
+        const seam = { ...sink.seam(), sealed: () => { throw new Error("the browser's storage went away"); } };
+        await expect(
+            assembleCells(cells(), sidecar, skin, OPTIONS, undefined, [], undefined, undefined, undefined, seam),
+        ).rejects.toMatchObject({ code: "io" });
+    });
+
+    /** A half-wired sink is refused before a byte is written, as `internal` — it is a defect in the
+     *  caller, not anything about the selection. */
+    it("refuses a sink that is missing a method", async () => {
+        const sink = new Sink();
+        const { readAt: _dropped, ...missing } = sink.seam();
+        await expect(
+            assembleCells(
+                cells(),
+                sidecar,
+                skin,
+                OPTIONS,
+                undefined,
+                [],
+                undefined,
+                undefined,
+                undefined,
+                missing as unknown as Parameters<typeof assembleCells>[9],
+            ),
+        ).rejects.toMatchObject({ code: "internal" });
+    });
+
+    /** A cancel during the §4.8 read-back is a cancellation, not a §4.8 defect — the same rule as
+     *  the buffered path's, checked here because the sunk read-back is where a cancel now lands. */
+    it("calls a cancel during the sunk read-back a cancellation", async () => {
+        const sink = new Sink();
+        let seen = 0;
+        await expect(
+            assembleCells(
+                cells(),
+                sidecar,
+                skin,
+                OPTIONS,
+                (phase) => phase === "verify" && ++seen >= 1,
+                [],
+                undefined,
+                undefined,
+                undefined,
+                sink.seam(),
+            ),
+        ).rejects.toMatchObject({ code: "aborted" });
     });
 });

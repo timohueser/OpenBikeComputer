@@ -20,6 +20,16 @@
 // wasm memory before the post; they are on this thread only until the transfer
 // queues them.
 //
+// A `shardSink` request goes one better (#1116 D1): the shards are written
+// *into OPFS* from inside the assembly, so they are never in wasm memory and
+// never cross this port. The pool of sync access handles is opened before the
+// run for the same reason the input's are — the opener is async — and closed in
+// the same `finally`, which is also what lets the page open the files: a sync
+// handle is an exclusive lock. Each shard is then announced as a `stored-shard`
+// naming its OPFS entry, and the page saves a `Blob` from it. This is not the
+// same saving as `streamShards` by another route: that one still holds one whole
+// shard, and the core shard cannot be split, so a country's is one ~3 GiB buffer.
+//
 // The input side is the mirror of that (#1116 B2). A request with `sourceCells`
 // brings no cell buffers at all: the download left them in OPFS, and *this*
 // thread is where they can be read back synchronously, because
@@ -36,12 +46,20 @@
 // since there is no way to run anything here afterwards.
 
 import { AssembleError, assembleCells, estimateMemory, type AssembleCell, type AssembleSources } from "./bridge";
-import { openCellReader, readCellBytes, syncReadsAvailable, type CellReader } from "../cells/store";
+import {
+    openCellReader,
+    openShardSink,
+    readCellBytes,
+    syncReadsAvailable,
+    type CellReader,
+    type ShardSink,
+} from "../cells/store";
 import {
     responseTransferList,
     type AssembleWorkerRequest,
     type AssembleWorkerResponse,
     type WorkerSourceCell,
+    type WorkerStoredShard,
 } from "./workerProtocol";
 
 function post(res: AssembleWorkerResponse): void {
@@ -106,9 +124,30 @@ self.onmessage = async (event: MessageEvent<AssembleWorkerRequest>) => {
     }
     try {
         if (req.type === "estimate") {
+            // The input mode is a conjunction and this thread owns the second half: the main
+            // thread says whether a writable store with room exists, only the worker can say
+            // whether *it* can read one synchronously. Probed here so the projection prices the
+            // run the assembly will actually be — a browser whose probe fails runs the buffered
+            // fallback, full cells resident, and must be priced as such.
+            const inputOnDisk = req.inputOnDisk && (await syncReadsAvailable());
             post({
                 type: "estimate-result",
-                estimate: await estimateMemory(req.networkBandBytes, req.totalCellBytes, req.budgetBytes),
+                estimate: await estimateMemory(
+                    req.networkBandBytes,
+                    req.totalCellBytes,
+                    req.terrainBytes,
+                    { inputOnDisk, streamedShardBytes: req.streamedShardBytes },
+                    req.budgetBytes,
+                ),
+                // The same selection priced as the device path runs it: set kept until `planned`
+                // (#1116 B1's opt-out). `sendToDevice` gates on this one.
+                deviceEstimate: await estimateMemory(
+                    req.networkBandBytes,
+                    req.totalCellBytes,
+                    req.terrainBytes,
+                    { inputOnDisk, streamedShardBytes: 0 },
+                    req.budgetBytes,
+                ),
             });
             return;
         }
@@ -122,6 +161,15 @@ self.onmessage = async (event: MessageEvent<AssembleWorkerRequest>) => {
         } else {
             post({ type: "reading", mode: "memory", cells: req.cells.length });
         }
+        // Asked for and answered before the run, because the whole pool has to be
+        // open before the first shard is planned. A browser that cannot serve it
+        // falls back to whatever `streamShards` asked for, which is the pre-D1
+        // profile and an honest path rather than a failure.
+        const sink: ShardSink | null = req.shardSink ? await openShardSink() : null;
+        post({ type: "writing", mode: sink ? "disk" : "memory" });
+        // Announced after the run, not from inside it: the page cannot open a file
+        // this worker still holds a sync handle on.
+        const stored: WorkerStoredShard[] = [];
         let result;
         try {
             result = await assembleCells(
@@ -136,7 +184,9 @@ self.onmessage = async (event: MessageEvent<AssembleWorkerRequest>) => {
                 // The raster, when the catalog publishes one. A terrain-less catalog
                 // sends nothing here and the set is written without a `terrain` role.
                 req.terrain ? { lattice: req.terrain, cells: req.terrainCells ?? [] } : undefined,
-                req.streamShards
+                // With a sink, no shard is in wasm memory to hand over in the first
+                // place — the eviction seam is what a browser without one gets.
+                req.streamShards && !sink
                     ? (file) => {
                           const byteLength = file.bytes.byteLength;
                           streamedBytes += byteLength;
@@ -144,11 +194,31 @@ self.onmessage = async (event: MessageEvent<AssembleWorkerRequest>) => {
                       }
                     : undefined,
                 opened.sources,
+                sink
+                    ? {
+                          create: (slot, name) => sink.create(slot, name),
+                          write: (slot, bytes) => sink.write(slot, bytes),
+                          readAt: (slot, offset, into) => sink.readAt(slot, offset, into),
+                          seal: (slot) => sink.seal(slot),
+                          sealed: (shard) => {
+                              streamedBytes += shard.byteLength;
+                              stored.push({
+                                  name: shard.name,
+                                  role: shard.role,
+                                  sha256: shard.sha256,
+                                  byteLength: shard.byteLength,
+                                  entry: sink.entry(shard.slot),
+                              });
+                          },
+                      }
+                    : undefined,
             );
         } finally {
             // The moment the run is over, whether it finished or threw: every
-            // handle is an exclusive lock on a file the next run will want.
+            // handle is an exclusive lock on a file the next run will want — and,
+            // for the sink, one the *page* is about to want.
             opened.reader?.close();
+            sink?.close();
         }
         try {
             post({
@@ -158,6 +228,14 @@ self.onmessage = async (event: MessageEvent<AssembleWorkerRequest>) => {
                 warnings: [...result.warnings],
                 summary: result.summary,
             });
+            // The shards first, then the terrain shard and the manifest — §5.4's
+            // order, and the order a resumable transfer wants. Each is acknowledged
+            // like a `file`: the run is over, so waiting costs nothing and keeps the
+            // page from opening several gigabyte-scale Blobs at once.
+            for (const shard of stored) {
+                post({ type: "stored-shard", ...shard });
+                await waitForFileAck();
+            }
             for (const file of result.files) {
                 post({
                     type: "file",

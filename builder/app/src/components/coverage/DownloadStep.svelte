@@ -10,9 +10,11 @@
         requestTransferList,
         type AssembleWorkerRequest,
         type CellReadMode,
+        type ShardWriteMode,
         type WorkerCell,
         type WorkerFile,
         type WorkerSourceCell,
+        type WorkerStoredShard,
         type WorkerTerrainCell,
     } from "../../lib/assemble/workerProtocol";
     import {
@@ -20,6 +22,7 @@
         cellStoreWritable,
         hasRoomFor,
         openCellStore,
+        readShardOutput,
         type CellStore,
     } from "../../lib/cells/store";
     import { saveBlob } from "../../lib/download";
@@ -125,6 +128,8 @@
      *  reports it before the assembly starts. Shown, because a bug report about a
      *  failed country-scale run has to say which path ran. */
     let readMode = $state<CellReadMode | null>(null);
+    /** …and where its shards went (#1116 D1), for the same reason. */
+    let writeMode = $state<ShardWriteMode | null>(null);
     /** Cells this run did not have to fetch, because a previous one already put
      *  them in OPFS under the same digest. */
     let cachedCells = $state(0);
@@ -176,6 +181,7 @@
         switch (msg.type) {
             case "estimate-result":
                 estimate = msg.estimate;
+                deviceEstimate = msg.deviceEstimate;
                 estimatePending = false;
                 estimateError = null;
                 break;
@@ -185,6 +191,9 @@
                 break;
             case "reading":
                 readMode = msg.mode;
+                break;
+            case "writing":
+                writeMode = msg.mode;
                 break;
             case "planned":
                 runWarnings = msg.warnings;
@@ -204,7 +213,18 @@
                 // assembly cannot wait for one (worker protocol header). So the
                 // write is queued rather than awaited here, and its failure has
                 // nobody to return to: it fails the run itself.
-                void queueSave(msg).catch((cause) => failRun(cause));
+                void queueSave(() => saveAssembledFile(msg)).catch((cause) => failRun(cause));
+                break;
+            case "stored-shard":
+                // The shard never crossed the port: it is in OPFS, the worker has
+                // let go of it, and this is where it becomes a file someone has.
+                // Acknowledged like a `file`, so the next one waits.
+                try {
+                    await queueSave(() => saveStoredShard(msg));
+                    worker?.postMessage({ type: "file-ack" } satisfies AssembleWorkerRequest);
+                } catch (cause) {
+                    await failRun(cause);
+                }
                 break;
             case "file":
                 try {
@@ -216,7 +236,7 @@
                     } else {
                         // The worker waits for this ack, so the next file never
                         // competes for memory or arrives before this write ends.
-                        await queueSave(msg);
+                        await queueSave(() => saveAssembledFile(msg));
                     }
                     worker?.postMessage({ type: "file-ack" } satisfies AssembleWorkerRequest);
                 } catch (cause) {
@@ -276,8 +296,8 @@
      * two `onmessage` handlers can be in flight at once, and `openMapOutput` is
      * a lazily-opened folder that must not be opened twice.
      */
-    function queueSave(file: WorkerFile): Promise<void> {
-        const done = sink.then(() => saveAssembledFile(file));
+    function queueSave(save: () => Promise<void>): Promise<void> {
+        const done = sink.then(save);
         // The chain itself must survive a failure — `failRun` closes the sink,
         // so what follows is a no-op rather than a write into a discarded
         // output — while the caller still sees the rejection.
@@ -286,18 +306,50 @@
     }
 
     async function saveAssembledFile(file: WorkerFile) {
+        await savePart(file, () => new Blob([file.bytes as unknown as BlobPart]), file.bytes);
+    }
+
+    /**
+     * One shard the assembly wrote into OPFS (#1116 D1): its bytes were never in
+     * wasm memory and never crossed the worker port, and on the browser host they
+     * never enter the tab's heap either — a `Blob` on an OPFS file is a handle, and
+     * that is what the downloader is given.
+     *
+     * The desktop host does read it back, because its output session takes bytes to
+     * write into a real folder. That is one shard resident, which is exactly what it
+     * was before this existed — the saving D1 is here for is on the *assembly*, and
+     * it is unaffected.
+     */
+    async function saveStoredShard(shard: WorkerStoredShard) {
+        const blob = await readShardOutput(shard.entry);
+        if (blob.size !== shard.byteLength) {
+            throw new Error(
+                `The assembled shard ${shard.name} is ${blob.size} bytes in this browser's storage, not the ` +
+                    `${shard.byteLength} the assembler wrote. Free some disk space and try again.`,
+            );
+        }
+        await savePart(shard, () => blob, null);
+    }
+
+    /** The two hosts' save, shared: a Blob for the browser, bytes for the desktop. */
+    async function savePart(
+        part: { name: string; role: string; byteLength: number },
+        blob: () => Blob,
+        bytes: Uint8Array | null,
+    ) {
         if (sinkClosed) return;
         if (platform.openMapOutput) {
             // The desktop writes every part into one new folder, as it lands.
             downloadOutput ??= await platform.openMapOutput(runMapName);
             outputPath = downloadOutput.path;
-            const path = await downloadOutput.write(file.name, file.bytes);
-            savedFiles.push({ name: file.name, role: file.role, byteLength: file.byteLength, path });
+            const body = bytes ?? new Uint8Array(await blob().arrayBuffer());
+            const path = await downloadOutput.write(part.name, body);
+            savedFiles.push({ name: part.name, role: part.role, byteLength: part.byteLength, path });
             persistedFiles += 1;
         } else {
             // The browser stages and saves at the end — see `staged`.
-            staged.push({ name: file.name, blob: new Blob([file.bytes as unknown as BlobPart]) });
-            savedFiles.push({ name: file.name, role: file.role, byteLength: file.byteLength });
+            staged.push({ name: part.name, blob: blob() });
+            savedFiles.push({ name: part.name, role: part.role, byteLength: part.byteLength });
         }
     }
 
@@ -429,6 +481,7 @@
         dlProgress = null;
         asmFraction = 0;
         readMode = null;
+        writeMode = null;
         cachedCells = 0;
         cachedBytes = 0;
         phase = "downloading";
@@ -558,6 +611,13 @@
             // exist until the run ends, so a device run keeps every shard in
             // wasm memory and takes them afterwards, exactly as before (#1116).
             streamShards: out.kind === "download",
+            // …and better still where the browser allows it: the shards go
+            // straight into OPFS, so not even one is in wasm memory (#1116 D1).
+            // The core shard cannot be split, so at country scale "one shard
+            // resident" is still a multi-gigabyte allocation. The device path
+            // opts out with `streamShards` and for the same reason — it needs the
+            // bytes in hand to push them over USB.
+            shardSink: out.kind === "download",
             options: {
                 name: runMapName,
                 // Split always, at 256 MB. Both halves are about handing the map
@@ -590,6 +650,21 @@
     /** Assemble the current selection and stream its files directly to a connected device. */
     export function sendToDevice(client: ProtocolClient, ctx: JobContext): Promise<UploadResult> {
         return new Promise((resolve, reject) => {
+            // The device path keeps the whole set in wasm memory until `planned` (#1116 B1's
+            // opt-out), so it can refuse a selection the download button honestly accepts.
+            // Checked before a byte is fetched — failing here costs a click; failing at the
+            // engine's peak costs the download, the rewrite, and the tab.
+            if (deviceEstimate && !deviceEstimate.fits) {
+                reject(
+                    new Error(
+                        `Sending straight to the device holds the whole assembled map in browser memory — about ` +
+                            `${formatBytes(deviceEstimate.peakBytes)}, more than a tab can be trusted with ` +
+                            `(${formatBytes(deviceEstimate.budgetBytes)}). Download the map and copy it to the ` +
+                            `card instead, or reduce the coverage area.`,
+                    ),
+                );
+                return;
+            }
             const out: DeviceOutput = {
                 kind: "device",
                 client,
@@ -622,6 +697,10 @@
     // --- the memory projection, before the download -----------------------
 
     let estimate = $state<MemoryEstimate | null>(null);
+    /** The same selection priced as the device path runs it — set kept until
+     *  `planned` (#1116 B1's opt-out) — so it binds earlier than `estimate`.
+     *  Gates {@link sendToDevice}; the download button never reads it. */
+    let deviceEstimate = $state<MemoryEstimate | null>(null);
     let estimatePending = $state(false);
     /** The estimate's own failure channel (#1041 A3) — never mixed into the
      *  run's. Cleared by the next request; retried by bumping the nonce. */
@@ -643,22 +722,35 @@
             // empties or a run that starts must not leave "waiting for an
             // estimate" latched with nothing left to answer it.
             estimate = null;
+            deviceEstimate = null;
             estimatePending = false;
             return;
         }
         const networkBandBytes = l.core.bytes;
         const totalCellBytes = l.totalBytes;
+        const terrainBytes = l.terrain?.bytes ?? 0;
         estimatePending = true;
         estimateError = null;
         // Debounced: a slider mid-drag changes the figures every frame, and the
         // projection only matters once the selection settles.
         const timer = setTimeout(() => {
-            ensureWorker().postMessage({
-                type: "estimate",
-                networkBandBytes,
-                totalCellBytes,
-                budgetBytes: isMobileUa ? MOBILE_BUDGET : undefined,
-            } satisfies AssembleWorkerRequest);
+            // The main thread's half of the input mode, decided by the same two
+            // checks `begin` runs before a byte is fetched: a store this browser
+            // will write, with room for the cells (terrain never goes to disk).
+            // The worker ANDs in its own sync-read probe. Responses arrive in
+            // request order, so a stale answer is overwritten, never kept.
+            void (async () => {
+                const inputOnDisk = (await cellStoreWritable()) && (await hasRoomFor(totalCellBytes - terrainBytes));
+                ensureWorker().postMessage({
+                    type: "estimate",
+                    networkBandBytes,
+                    totalCellBytes,
+                    terrainBytes,
+                    inputOnDisk,
+                    streamedShardBytes: TARGET_SHARD_BYTES,
+                    budgetBytes: isMobileUa ? MOBILE_BUDGET : undefined,
+                } satisfies AssembleWorkerRequest);
+            })();
         }, 500);
         return () => clearTimeout(timer);
     });
@@ -673,6 +765,17 @@
             // So "split it in two" is not a remedy that exists here, and the only
             // honest instruction is to cover less ground.
             `(${formatBytes(estimate.budgetBytes)}). Reduce the coverage area.`
+        );
+    });
+
+    /** Said here, on the coverage screen, rather than first discovered when a device send
+     *  refuses: the selection downloads fine but will not fit a direct device send. */
+    const deviceCaution = $derived.by(() => {
+        if (!estimate?.fits || !deviceEstimate || deviceEstimate.fits) return null;
+        return (
+            `This map downloads fine, but sending it straight to a device would need about ` +
+            `${formatBytes(deviceEstimate.peakBytes)} of browser memory ` +
+            `(${formatBytes(deviceEstimate.budgetBytes)} available) — download it and copy it to the card instead.`
         );
     });
 
@@ -888,6 +991,8 @@
                 </p>
             {:else if memoryCaution}
                 <p class="line caution small">{memoryCaution}</p>
+            {:else if deviceCaution}
+                <p class="line caution small">{deviceCaution}</p>
             {/if}
 
             {#if phase === "idle" || phase === "cancelled" || phase === "error" || phase === "done"}
@@ -945,7 +1050,8 @@
                     </ul>
                     {#if readMode}
                         <p class="line faint small mono">
-                            cells {readMode}{#if cachedCells > 0}
+                            cells {readMode}{#if writeMode}
+                                · shards {writeMode}{/if}{#if cachedCells > 0}
                                 · {cachedCells} reused from this computer ({formatBytes(cachedBytes)} not
                                 downloaded){/if}
                         </p>
