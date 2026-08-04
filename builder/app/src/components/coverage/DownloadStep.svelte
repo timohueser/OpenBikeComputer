@@ -51,6 +51,24 @@
      *  country into dozens of files (§5's ceiling is 32 shards per set). */
     const TARGET_SHARD_BYTES = 256 * 1024 * 1024;
 
+    /** The engine's sort budget (#1116 phase D), which after the external merge **is** the wasm
+     *  engine term. 256 MB: big enough that a DACH-scale sort is ~a dozen runs (well inside the
+     *  scratch pool), small enough that engine + caches + terrain stays a fraction of a tab's
+     *  budget. Passed to both the assembly and the estimate, so the projection prices the run
+     *  that will actually happen. */
+    const SORT_BUDGET_BYTES = 256 * 1024 * 1024;
+
+    /** What a run of this ledger needs from OPFS, all three tenants together: the cells (minus
+     *  terrain, which never goes to disk), the assembled set the sink writes (≈ the cells, measured
+     *  1.00), and the merge's spill (edge + adjacency + claim streams; ≤ 2.5× the network band,
+     *  the estimate model's own coefficient). Used by the estimate effect and by `begin`, so the
+     *  projection and the run decide OPFS-or-fallback by the same arithmetic — a run that can
+     *  store its cells but not its shards would otherwise fail at shard one, after the download. */
+    function runDiskNeed(l: { totalBytes: number; core: { bytes: number }; terrain: { bytes: number } | null }) {
+        const terrain = l.terrain?.bytes ?? 0;
+        return l.totalBytes - terrain + l.totalBytes + 2.5 * l.core.bytes;
+    }
+
     const ledger = $derived(store.ledger);
     const detailBand = $derived(detailBandId(store.catalog));
 
@@ -504,11 +522,12 @@
         let fetchPlan = plan;
         if (cellStore) {
             fetchPlan = await skipCached(plan, cellStore);
-            // Asked once, before a byte is fetched: a quota refusal halfway
-            // through is half a country downloaded and a run that has to start
-            // again in memory. Falling back now costs the reload-resume and
-            // nothing else.
-            if (!(await hasRoomFor(fetchPlan.totalBytes - fetchPlan.terrainBytes))) {
+            // Asked once, before a byte is fetched, and asked about the WHOLE
+            // run — cells, the sink's output, the merge's spill — because after
+            // phase D all three live in OPFS: a store with room for the cells
+            // but not the shards would fail at shard one, after the download.
+            // Falling back now costs the reload-resume and nothing else.
+            if (!(await hasRoomFor(runDiskNeed(l))))  {
                 cellStore = null;
                 fetchPlan = plan;
                 cachedCells = 0;
@@ -729,6 +748,7 @@
         const networkBandBytes = l.core.bytes;
         const totalCellBytes = l.totalBytes;
         const terrainBytes = l.terrain?.bytes ?? 0;
+        const diskNeed = runDiskNeed(l);
         estimatePending = true;
         estimateError = null;
         // Debounced: a slider mid-drag changes the figures every frame, and the
@@ -736,11 +756,12 @@
         const timer = setTimeout(() => {
             // The main thread's half of the input mode, decided by the same two
             // checks `begin` runs before a byte is fetched: a store this browser
-            // will write, with room for the cells (terrain never goes to disk).
-            // The worker ANDs in its own sync-read probe. Responses arrive in
-            // request order, so a stale answer is overwritten, never kept.
+            // will write, with room for the WHOLE run (`runDiskNeed` — cells,
+            // output, spill; terrain never goes to disk). The worker ANDs in its
+            // own sync-read probe. Responses arrive in request order, so a stale
+            // answer is overwritten, never kept.
             void (async () => {
-                const inputOnDisk = (await cellStoreWritable()) && (await hasRoomFor(totalCellBytes - terrainBytes));
+                const inputOnDisk = (await cellStoreWritable()) && (await hasRoomFor(diskNeed));
                 ensureWorker().postMessage({
                     type: "estimate",
                     networkBandBytes,
@@ -748,6 +769,7 @@
                     terrainBytes,
                     inputOnDisk,
                     streamedShardBytes: TARGET_SHARD_BYTES,
+                    mergeBudgetBytes: SORT_BUDGET_BYTES,
                     budgetBytes: isMobileUa ? MOBILE_BUDGET : undefined,
                 } satisfies AssembleWorkerRequest);
             })();

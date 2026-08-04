@@ -20,7 +20,7 @@
 //! | `.takeFile(i)` | move one file's bytes out to JS and free the wasm-side copy; twice throws |
 //! | `.warnings()` | what OBCA says a producer SHOULD report rather than refuse |
 //! | `.releaseCells()` | drop the input buffers once the output is taken |
-//! | `obc_assemble_estimate(networkBandBytes, totalCellBytes, terrainBytes, inputOnDisk, streamedShardBytes, budgetBytes?)` | can this selection be assembled in a tab at all — **before** the download |
+//! | `obc_assemble_estimate(networkBandBytes, totalCellBytes, terrainBytes, mergeBudgetBytes, inputOnDisk, streamedShardBytes, budgetBytes?)` | can this selection be assembled in a tab at all — **before** the download |
 //!
 //! `.run()` **blocks** for the whole assembly — ~20 s at country scale — so it belongs in a **Web
 //! Worker**, not on the main thread. That contract, and what a cancel button has to do given it, is
@@ -43,8 +43,8 @@ pub use driver::{
     SealedShard, ShardWrites, SourceCell, TerrainCellBytes, TerrainLattice, Wiring,
 };
 pub use estimate::{
-    estimate_memory, estimate_memory_with_budget, MemoryEstimate, Residency, OUTPUT_PER_CELL_BYTE, PEAK_PER_NAV_BYTE,
-    PRACTICAL_BUDGET, READ_CACHE_BYTES, WASM32_ADDRESS_SPACE,
+    estimate_memory, estimate_memory_with_budget, MemoryEstimate, Residency, ENGINE_FLOOR, OUTPUT_PER_CELL_BYTE,
+    PRACTICAL_BUDGET, READ_CACHE_BYTES, SPILL_PER_NAV_BYTE, WASM32_ADDRESS_SPACE, WASM_ALLOC_MARGIN,
 };
 
 #[cfg(target_arch = "wasm32")]
@@ -776,6 +776,7 @@ mod web {
         network_band_bytes: f64,
         total_cell_bytes: f64,
         terrain_bytes: f64,
+        merge_budget_bytes: f64,
         input_on_disk: bool,
         streamed_shard_bytes: f64,
         budget_bytes: Option<f64>,
@@ -784,6 +785,7 @@ mod web {
             network_band_bytes,
             total_cell_bytes,
             terrain_bytes,
+            merge_budget_bytes,
             crate::estimate::Residency { input_on_disk, streamed_shard_bytes },
             budget_bytes.unwrap_or(crate::estimate::PRACTICAL_BUDGET),
         );
