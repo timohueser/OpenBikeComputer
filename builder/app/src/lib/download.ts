@@ -97,7 +97,17 @@ export async function fetchVerified(
 }
 
 export function saveBytes(bytes: Uint8Array, filename: string, type = "application/octet-stream"): void {
-    const url = URL.createObjectURL(new Blob([bytes as unknown as BlobPart], { type }));
+    saveBlob(new Blob([bytes as unknown as BlobPart], { type }), filename);
+}
+
+/**
+ * Save a Blob the caller already holds. The assembly stages its files as Blobs
+ * while the run is still going (#1116 B1) and saves them once the set is
+ * complete, so it has nothing left to wrap by then — and a Blob is what a
+ * browser can spill to disk rather than keep in the tab's heap.
+ */
+export function saveBlob(blob: Blob, filename: string): void {
+    const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
     anchor.download = filename;

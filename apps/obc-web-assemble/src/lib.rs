@@ -14,8 +14,8 @@
 //! | `new Assembler(schemaJson, skinJson, optionsJson?)` | an empty assembly, waiting for cells |
 //! | `.addCell(id, band, partial, bytes)` | hand over one downloaded cell; `bytes` crosses **once** |
 //! | `.setTerrain(postingLog2, cellLog2)` / `.addTerrainCell(id, sha256, bytes)` | the raster (EL4) |
-//! | `.run(onProgress?)` | assemble; returns the summary JSON, throws a typed error |
-//! | `.fileCount` / `.fileName(i)` / `.fileRole(i)` / `.fileSha256(i)` / `.fileByteLength(i)` | the finished set, shards first and the manifest **last** (OBCA §5.4) |
+//! | `.run(onProgress?, onFile?)` | assemble; returns the summary JSON, throws a typed error |
+//! | `.fileCount` / `.fileName(i)` / `.fileRole(i)` / `.fileSha256(i)` / `.fileByteLength(i)` | whatever `onFile` did **not** take, shards first and the manifest **last** (OBCA §5.4) |
 //! | `.takeFile(i)` | move one file's bytes out to JS and free the wasm-side copy; twice throws |
 //! | `.warnings()` | what OBCA says a producer SHOULD report rather than refuse |
 //! | `.releaseCells()` | drop the input buffers once the output is taken |
@@ -72,6 +72,9 @@ mod web {
     /// progress and abort.
     struct JsHooks {
         on_progress: Option<js_sys::Function>,
+        /// `on_file(name, role, sha256, bytes)`, called from inside `run` as each shard passes its
+        /// §4.8 verify. Its presence is what turns the hand-off on at all.
+        on_file: Option<js_sys::Function>,
         /// `Date.now()` is wall clock and can step backwards (NTP, a suspended tab). The engine
         /// subtracts consecutive readings, so a step back would underflow a `u64`; clamping here
         /// keeps the seam monotonic at the cost of a phase timing that reads as zero.
@@ -108,6 +111,42 @@ mod web {
                     }
                     false
                 }
+            }
+        }
+
+        fn wants_shards(&self) -> bool {
+            self.on_file.is_some()
+        }
+
+        /// Hand one verified shard to JS and free the wasm-side buffer.
+        ///
+        /// The order is the whole point. The bytes are copied into a JS `Uint8Array`, the Rust
+        /// `Vec` is dropped, and only *then* is the callback invoked — so the wasm heap is already
+        /// back down to the rest of the run before the worker starts transferring the buffer on.
+        /// The copy itself is unavoidable (linear memory cannot be donated to an `ArrayBuffer`), and
+        /// it is exactly what `takeFile` has always done; what changes is when.
+        ///
+        /// A callback that **throws** is not survivable the way a thrown progress callback is: the
+        /// shard's bytes are already gone, so continuing would produce a set that is missing a file
+        /// and report it as finished. It fails the run instead, as `io` — the sink did fail.
+        fn take_shard(&mut self, shard: OutputFile) -> Result<Option<OutputFile>, String> {
+            let Some(f) = &self.on_file else { return Ok(Some(shard)) };
+            let OutputFile { name, role, sha256, bytes } = shard;
+            let array = js_sys::Uint8Array::from(bytes.as_slice());
+            drop(bytes);
+            let args = js_sys::Array::of4(
+                &JsValue::from_str(&name),
+                &JsValue::from_str(role),
+                &JsValue::from_str(&sha256),
+                &array,
+            );
+            match f.apply(&JsValue::NULL, &args) {
+                Ok(_) => Ok(None),
+                Err(e) => Err(format!(
+                    "the file sink threw while taking {name} ({e:?}), and the shard's bytes had already been handed \
+                     to it. The set is incomplete and was not finished; nothing that was written is a map until the \
+                     OBCS manifest exists (OBCA §5.4), so discard whatever was saved and re-run."
+                )),
             }
         }
     }
@@ -229,9 +268,27 @@ mod web {
         /// write or verify read — see [`crate::driver`] for the granularity. A callback that
         /// *throws* is warned about once and otherwise ignored; it never cancels the run.
         ///
+        /// `on_file(name, role, sha256, bytes)` is the **eviction** seam (#1116 B1), and passing it
+        /// is what turns eviction on. It is called synchronously from inside `run`, once per shard,
+        /// as soon as that shard's §4.8 read-back has passed — and the wasm-side buffer is freed
+        /// before it runs, so the output's residency over a whole assembly is one shard rather than
+        /// the whole set. A file taken this way is **not** in `fileCount` afterwards; `takeFile`
+        /// still hands on everything that was not (the terrain shard, the manifest).
+        ///
+        /// Take the `Uint8Array` and return promptly: the assembly is blocked behind the callback,
+        /// and nothing can be awaited from inside it. Post it on and let the consumer do the slow
+        /// part. If it **throws**, the run fails as `io` — by then the bytes are gone, and a set with
+        /// a hole in it must not be reported as finished. A run that fails or is cancelled may
+        /// already have handed shards out; cleaning them up is the caller's job (§5.4 makes them
+        /// invisible as a map until the manifest exists, so nothing half-usable reaches a device).
+        ///
         /// Throws an `Error` carrying `code` + `message` on failure; see [`crate::ErrorCode`].
-        pub fn run(&mut self, on_progress: Option<js_sys::Function>) -> Result<String, JsValue> {
-            let mut hooks = JsHooks { on_progress, last_us: 0, warned: false };
+        pub fn run(
+            &mut self,
+            on_progress: Option<js_sys::Function>,
+            on_file: Option<js_sys::Function>,
+        ) -> Result<String, JsValue> {
+            let mut hooks = JsHooks { on_progress, on_file, last_us: 0, warned: false };
             let cells = core::mem::take(&mut self.cells);
             let known_empty = core::mem::take(&mut self.known_empty);
             let terrain_cells = core::mem::take(&mut self.terrain_cells);
@@ -252,7 +309,8 @@ mod web {
             Ok(out.summary_json)
         }
 
-        /// How many files the finished set has: every shard, then the OBCS manifest **last**.
+        /// How many files of the finished set are still here: every shard `on_file` did not take,
+        /// then the OBCS manifest **last**. With no `on_file`, that is the whole set.
         #[wasm_bindgen(getter, js_name = fileCount)]
         pub fn file_count(&self) -> usize {
             self.files.len()

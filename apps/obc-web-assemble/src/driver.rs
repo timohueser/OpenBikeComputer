@@ -51,6 +51,31 @@
 //! paragraph in `builder/app/src/lib/assemble/bridge.ts`. A cooperative abort cannot be observed
 //! from a main thread that is itself blocked; the UI's cancel is `worker.terminate()`, and this seam
 //! is for the policies the worker runs *itself* (a memory watchdog, a deadline).
+//!
+//! # Handing shards out as they are verified (#1116 B1)
+//!
+//! The store above keeps every sealed shard until the run ends, so a browser's peak carries the
+//! **whole output** on top of the whole input. It does not have to: in the engine's write/verify
+//! loop, [`ShardStore::source`] for shard *i* is only ever called inside the iteration that wrote
+//! shard *i*, and once that §4.8 pass returns nothing reads those bytes again — `check_set_invariants`
+//! and the manifest are built from the plans. So the moment the engine asks for the **next**
+//! [`ShardStore::begin`], or for the [`ShardStore::manifest`], shard *i*'s buffer is dead weight.
+//!
+//! [`Hooks::take_shard`] is that seam, and it is **opt-in**: a caller turns it on by returning `true`
+//! from [`Hooks::wants_shards`], and then receives each shard — name, role, digest, bytes — at the
+//! first store call after its verify. What it takes does **not** appear in [`Outcome::files`]. The
+//! default is the old behaviour to the byte: no hand-off, the whole set in `files`, which is what
+//! [`NoHooks`] and every native caller still get.
+//!
+//! Two consequences a caller must plan for:
+//!
+//! * **A failed or cancelled run may already have handed shards out.** Cleaning those up is the
+//!   caller's job. It is safe by construction rather than by cleanup, though: the OBCS manifest is
+//!   written **last** (OBCA §5.4), so a partial set is not a map to a device however many `.OBM`
+//!   files it has.
+//! * **The terrain shard and the manifest are not evicted.** Terrain is written through the engine's
+//!   own sink, not the store, and the manifest is the last thing that exists; both stay in
+//!   [`Outcome::files`].
 
 use std::cell::RefCell;
 
@@ -61,6 +86,7 @@ use obcm_assemble::{
     assemble_full, CellInput, Clock, Error, KnownEmptyInput, MemorySource, Options, ShardPlan, ShardStore,
     TerrainCellInput, TerrainJob, TerrainParams,
 };
+use sha2::{Digest, Sha256};
 
 /// One downloaded cell, as the caller hands it over: the catalog's identity plus the verified bytes.
 ///
@@ -274,6 +300,35 @@ pub trait Hooks {
     /// Report `phase` with the overall completed `fraction` (0.0..=1.0). Return `true` to abort;
     /// see the module header for the granularity that request is honoured at.
     fn progress(&mut self, phase: Phase, fraction: f64) -> bool;
+
+    /// Whether this caller wants each shard handed to it as soon as its §4.8 verify has passed,
+    /// instead of holding the whole set until the run ends (#1116 B1).
+    ///
+    /// **This is the switch**, and [`Hooks::take_shard`] is never called without it — overriding
+    /// that alone does nothing (`shards_are_only_handed_out_when_the_caller_asks` pins it). It is
+    /// read once, before the assembly starts, and it also decides whether the store pays for the
+    /// digest it hands over: a caller that keeps everything gets exactly the work it got before.
+    fn wants_shards(&self) -> bool {
+        false
+    }
+
+    /// Take ownership of one sealed, verified shard. Called at the first store call **after** the
+    /// shard's §4.8 read-back — the next [`ShardStore::begin`], or the manifest — and only when
+    /// [`Hooks::wants_shards`] said so.
+    ///
+    /// * `Ok(None)` — taken. The store frees its slot, and the file is **not** in [`Outcome::files`].
+    /// * `Ok(Some(shard))` — handed back, kept as before. The default, so a hook that ignores this
+    ///   method cannot silently lose a shard.
+    /// * `Err(message)` — the sink failed and the bytes are gone. The run stops with
+    ///   [`ErrorCode::Io`] carrying `message`, because a set missing a shard must never be reported
+    ///   as finished.
+    ///
+    /// The `sha256` handed over is computed by this crate's own store as the bytes were written, and
+    /// is cross-checked against the engine's digest when the run ends (a disagreement is
+    /// [`ErrorCode::Internal`] — see [`assemble_everything`]).
+    fn take_shard(&mut self, shard: OutputFile) -> Result<Option<OutputFile>, String> {
+        Ok(Some(shard))
+    }
 }
 
 /// Hooks that do nothing — the default for a caller that only wants the bytes.
@@ -427,6 +482,11 @@ struct Progress<'h> {
     last: f64,
     /// A [`Hooks::progress`] call asked to stop. Surfaced at the next store call.
     aborted: bool,
+    /// The hand-off path's own failure, if it raised one. The engine's sink contract has a single
+    /// refusal (`Error::Io`) which says nothing about *why*, so the driver keeps the real one here
+    /// and [`map_error`] prefers it — a sink that could not take a shard is [`ErrorCode::Io`] with
+    /// the caller's message, and a shard evicted too early is [`ErrorCode::Internal`].
+    failure: Option<AssembleFailure>,
 }
 
 impl Progress<'_> {
@@ -540,15 +600,43 @@ impl ByteSource for VerifySource<'_, '_> {
     }
 }
 
+/// One shard's slot in the store: the buffer §4.8 reads back, the identity the hand-off needs before
+/// the run's `Summary` exists, and the digest of what was actually written.
+struct StoredShard<'a, 'h> {
+    src: VerifySource<'a, 'h>,
+    /// The §5.2 derived filename, computed here rather than waited for: the hand-off happens
+    /// mid-run, and `Summary::shards` does not exist until the run ends. Cross-checked against it.
+    name: String,
+    role: &'static str,
+    /// Fed by every [`ShardStore::write`] and finalized at [`ShardStore::seal`] — but only when the
+    /// caller [`Hooks::wants_shards`], because a second SHA-256 pass over a gigabyte-scale set is
+    /// real time to spend on a digest nobody asked for.
+    hasher: Sha256,
+    /// Lowercase hex, once sealed. Empty while the shard is open, and for a run with no hand-off.
+    sha256: String,
+    /// [`Hooks::take_shard`] has already been offered this shard. Every slot is offered **once**:
+    /// the hand-off loop runs over all sealed shards at each of its two moments, and a caller that
+    /// handed one back (`Ok(Some(_))`) meant "keep it", not "ask me again next time".
+    offered: bool,
+    /// …and it took the bytes, so the slot is empty and the file is not this crate's to hand on
+    /// again.
+    handed_out: bool,
+}
+
 /// The in-memory [`ShardStore`], plus the progress and abort seam.
 ///
 /// In memory is not a shortcut: OBCA §4.8 requires every shard to be **read back through the real
 /// reader before the manifest is written**, so a sealed shard has to be randomly addressable, and
-/// the browser has nowhere else to put it. It is also why the memory estimate below counts the
-/// output as resident.
+/// the browser has nowhere else to put it. What it does *not* require is that it stay there
+/// afterwards — see the module header's hand-off section, which is what keeps this to at most one
+/// shard when the caller asks for it.
 struct HookedStore<'a, 'h> {
-    shards: Vec<VerifySource<'a, 'h>>,
+    shards: Vec<StoredShard<'a, 'h>>,
     manifest: Vec<u8>,
+    /// Needed to derive a shard's filename at hand-off time, mid-run.
+    card_id: u16,
+    /// [`Hooks::wants_shards`], read once before the assembly starts.
+    hand_off: bool,
     p: &'a RefCell<Progress<'h>>,
 }
 
@@ -562,11 +650,51 @@ impl HookedStore<'_, '_> {
         }
         Ok(())
     }
+
+    /// Offer every sealed-and-verified shard that is still resident to [`Hooks::take_shard`].
+    ///
+    /// Called from [`ShardStore::begin`] and [`ShardStore::manifest`] — the two observable moments
+    /// at which the engine has finished with the previous shard (module header). Every shard in
+    /// `self.shards` at those points has been through §4.8: `begin` is called before the new slot is
+    /// pushed, and the manifest is written after the whole loop.
+    ///
+    /// Runs **after** each caller's `check_abort`, so a cancelled run hands nothing further out and
+    /// a sink failure cannot be confused with a cancellation.
+    fn hand_out_verified(&mut self) -> obcm_assemble::Result<()> {
+        if !self.hand_off {
+            return Ok(());
+        }
+        // A copy of the shared handle, so the loop below can borrow `self.shards` mutably.
+        let p = self.p;
+        for shard in self.shards.iter_mut().filter(|s| !s.offered) {
+            shard.offered = true;
+            let file = OutputFile {
+                name: shard.name.clone(),
+                role: shard.role,
+                sha256: shard.sha256.clone(),
+                bytes: core::mem::take(&mut shard.src.bytes),
+            };
+            let taken = p.borrow_mut().hooks.take_shard(file);
+            match taken {
+                Ok(None) => shard.handed_out = true,
+                Ok(Some(back)) => shard.src.bytes = back.bytes,
+                Err(message) => {
+                    // The bytes are already gone; the run must not go on to report a set.
+                    p.borrow_mut().failure = Some(AssembleFailure::new(ErrorCode::Io, message));
+                    return Err(Error::Io(obc_formats::io::Error::Io));
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 impl<'a, 'h> ShardStore for HookedStore<'a, 'h> {
     fn begin(&mut self, plan: &ShardPlan) -> obcm_assemble::Result<()> {
         self.check_abort()?;
+        // Before the next buffer is reserved, not after: the whole point is that the peak carries
+        // one shard, and reserving first would make it two.
+        self.hand_out_verified()?;
         {
             let mut p = self.p.borrow_mut();
             let at = p.write_verify_fraction();
@@ -582,7 +710,15 @@ impl<'a, 'h> ShardStore for HookedStore<'a, 'h> {
         // plain `reserve_exact` would abort the whole module on a capacity a shard might never
         // actually reach.
         let _ = bytes.try_reserve_exact(usize::try_from(plan.bytes).unwrap_or(0));
-        self.shards.push(VerifySource { bytes, p: self.p });
+        self.shards.push(StoredShard {
+            src: VerifySource { bytes, p: self.p },
+            name: obcm_assemble::shard::shard_filename(self.card_id, plan.index),
+            role: plan.role.as_str(),
+            hasher: Sha256::new(),
+            sha256: String::new(),
+            offered: false,
+            handed_out: false,
+        });
         Ok(())
     }
 
@@ -596,11 +732,26 @@ impl<'a, 'h> ShardStore for HookedStore<'a, 'h> {
         // Checked *after* accounting so the callback that observes the abort request is the one
         // that also reports where it got to.
         self.check_abort()?;
-        self.shards.last_mut().expect("a shard is open").bytes.extend_from_slice(buf);
+        let hand_off = self.hand_off;
+        let shard = self.shards.last_mut().expect("a shard is open");
+        // The engine hashes the same bytes on its way through `shard::write`, but it keeps that
+        // digest to itself (it lands in the plan *after* `seal`). Hashing here is therefore what
+        // makes a mid-run hand-off able to name its own file — and the end-of-run comparison against
+        // the engine's figure is then a real check that the buffer handed out is the buffer the
+        // engine wrote, not a restatement.
+        if hand_off {
+            shard.hasher.update(buf);
+        }
+        shard.src.bytes.extend_from_slice(buf);
         Ok(())
     }
 
     fn seal(&mut self) -> obcm_assemble::Result<()> {
+        if self.hand_off {
+            let shard = self.shards.last_mut().expect("a shard is open");
+            let digest = core::mem::take(&mut shard.hasher).finalize();
+            shard.sha256 = digest.iter().map(|b| format!("{b:02x}")).collect();
+        }
         self.check_abort()
     }
 
@@ -613,11 +764,32 @@ impl<'a, 'h> ShardStore for HookedStore<'a, 'h> {
             p.emit(Phase::Verify, at);
         }
         self.check_abort()?;
-        self.shards.get(index).map(|s| s as &dyn ByteSource).ok_or(Error::Io(obc_formats::io::Error::BadOffset))
+        // A handed-out shard reads as an empty file rather than as a missing one, which §4.8 would
+        // report as a defect in the *engine*. It cannot happen — `source(i)` is only called inside
+        // the iteration that wrote shard `i`, which is the whole premise of the hand-off — so if it
+        // ever does, it is this bridge that broke the premise, and it says so.
+        match self.shards.get(index) {
+            Some(s) if s.handed_out => {
+                self.p.borrow_mut().failure = Some(AssembleFailure::new(
+                    ErrorCode::Internal,
+                    format!(
+                        "shard {index} ({}) was handed to the caller and then read back — the driver evicted a shard \
+                         the §4.8 pass still needed. This is a bug in obc-web-assemble, not in the assembler.",
+                        s.name
+                    ),
+                ));
+                Err(Error::Io(obc_formats::io::Error::BadOffset))
+            }
+            Some(s) => Ok(&s.src as &dyn ByteSource),
+            None => Err(Error::Io(obc_formats::io::Error::BadOffset)),
+        }
     }
 
     fn manifest(&mut self, bytes: &[u8]) -> obcm_assemble::Result<()> {
         self.check_abort()?;
+        // The last shard's own hand-off moment: §5.4's manifest is the first thing that happens
+        // after the final §4.8 pass.
+        self.hand_out_verified()?;
         {
             let mut p = self.p.borrow_mut();
             p.emit(Phase::Manifest, 1.0);
@@ -737,6 +909,7 @@ pub fn assemble_everything(
         skip_verify: false,
     };
 
+    let hand_off = hooks.wants_shards();
     let progress = RefCell::new(Progress {
         hooks,
         phase: Phase::Open,
@@ -746,9 +919,11 @@ pub fn assemble_everything(
         projected,
         last: -1.0,
         aborted: false,
+        failure: None,
     });
     let clock = HookedClock { p: &progress };
-    let mut store = HookedStore { shards: Vec::new(), manifest: Vec::new(), p: &progress };
+    let mut store =
+        HookedStore { shards: Vec::new(), manifest: Vec::new(), card_id: options.card_id, hand_off, p: &progress };
     // The terrain shard is written into an ordinary in-memory buffer, like every OBCM shard: the
     // engine's OBCT writer seeks (it back-patches its directory), which a `Cursor` gives for free.
     let mut terrain_sink = std::io::Cursor::new(Vec::<u8>::new());
@@ -763,7 +938,10 @@ pub fn assemble_everything(
     });
     let summary = match assemble_full(inputs, known_empty, job, &schema, &skin, &options, &mut store, &clock) {
         Ok(s) => s,
-        Err(e) => return Err(map_error(e, progress.borrow().aborted)),
+        Err(e) => {
+            let p = progress.borrow();
+            return Err(map_error(e, p.aborted, p.failure.clone()));
+        }
     };
     {
         let mut p = progress.borrow_mut();
@@ -771,14 +949,32 @@ pub fn assemble_everything(
     }
 
     let mut shards = store.shards;
+    if shards.len() != summary.shards.len() {
+        return Err(AssembleFailure::new(
+            ErrorCode::Internal,
+            format!(
+                "the engine reported {} shard(s) and the store holds {} — the write loop and this store no longer \
+                 agree on what a shard is.",
+                summary.shards.len(),
+                shards.len()
+            ),
+        ));
+    }
     let mut files = Vec::with_capacity(shards.len() + 2);
-    for (s, buf) in summary.shards.iter().zip(shards.drain(..)) {
-        files.push(OutputFile {
-            name: s.filename.clone(),
-            role: s.role.as_str(),
-            sha256: s.sha256.iter().map(|b| format!("{b:02x}")).collect(),
-            bytes: buf.bytes,
-        });
+    for (s, shard) in summary.shards.iter().zip(shards.drain(..)) {
+        let sha256: String = s.sha256.iter().map(|b| format!("{b:02x}")).collect();
+        // The hand-off names a file and digests it **mid-run**, from this store's own accounting,
+        // because `Summary` does not exist yet. This is where that accounting meets the engine's:
+        // a caller that already wrote `MS1S00.OBM` somewhere must have written the bytes the engine
+        // says are in it. A disagreement is a defect in this bridge — and it is *reported* rather
+        // than corrected, because the shard is already gone.
+        if hand_off {
+            check_handoff(s.index, (&shard.name, &shard.sha256), (&s.filename, &sha256))?;
+        }
+        if shard.handed_out {
+            continue;
+        }
+        files.push(OutputFile { name: s.filename.clone(), role: s.role.as_str(), sha256, bytes: shard.src.bytes });
     }
     // The raster goes with the shards — before the manifest, because §5.4's rule is about the
     // manifest being last, and it names the terrain record too.
@@ -799,6 +995,32 @@ pub fn assemble_everything(
 
     let summary_json = summary_json(&summary);
     Ok(Outcome { files, warnings: summary.warnings, summary_json })
+}
+
+/// The hand-off's identity check: what this store told the caller a shard was, against what the
+/// engine says it wrote.
+///
+/// It exists because [`Hooks::take_shard`] runs **mid-run**, before `Summary` does, so the filename
+/// and the digest it carries are this crate's own arithmetic — a derived §5.2 name and a SHA-256 of
+/// the bytes the store actually accumulated. Being right about both is a correctness claim, not a
+/// convenience: a caller writes that filename to a card and records that digest. This is where the
+/// claim is checked, and a failure is [`ErrorCode::Internal`] because the only way to reach it is a
+/// defect here — the engine's figures come from the same bytes by a different path.
+///
+/// It is a tripwire, not a gate: by the time it fires the shard has already been handed over. What
+/// it buys is that the *run* fails loudly instead of a mislabelled file being reported as a map.
+fn check_handoff(index: usize, got: (&str, &str), want: (&str, &str)) -> Result<(), AssembleFailure> {
+    if got == want {
+        return Ok(());
+    }
+    Err(AssembleFailure::new(
+        ErrorCode::Internal,
+        format!(
+            "shard {index} was handed over as {:?} / {} but the engine wrote {:?} / {} — this bridge's own filename \
+             or digest is wrong, and a caller may already have saved the shard under it.",
+            got.0, got.1, want.0, want.1
+        ),
+    ))
 }
 
 /// A lowercase-hex SHA-256 as the 32 bytes the engine compares against. A malformed one is this
@@ -831,13 +1053,20 @@ fn parse_digest(hex: &str, what: &str) -> Result<[u8; 32], AssembleFailure> {
 /// defect. A cancelled run must never be reported as "the assembler wrote a set the reader cannot
 /// read": that is the one code a caller is told never to retry past, and it would turn a cancel
 /// button into a bug report.
-fn map_error(e: Error, aborted: bool) -> AssembleFailure {
+///
+/// `failure` is the hand-off path's own, raised through the same one-shaped `Error::Io` channel and
+/// therefore just as unreadable without it. It is read next; it cannot coexist with an abort,
+/// because every store entry point checks the abort flag before it hands anything out.
+fn map_error(e: Error, aborted: bool, failure: Option<AssembleFailure>) -> AssembleFailure {
     if aborted {
         return AssembleFailure::new(
             ErrorCode::Aborted,
             "The assembly was cancelled. Nothing was written — the OBCS manifest is written last, so a cancelled run \
              leaves no set (OBCA §5.4).",
         );
+    }
+    if let Some(f) = failure {
+        return f;
     }
     let message = e.to_string();
     let code = match e {
@@ -942,7 +1171,7 @@ mod tests {
         ];
         let mut seen = std::collections::HashSet::new();
         for (err, code, wire) in cases {
-            let f = map_error(err, false);
+            let f = map_error(err, false, None);
             assert_eq!(f.code, code);
             assert_eq!(f.code.as_str(), wire, "the wire code is a contract with bridge.ts");
             assert!(seen.insert(wire), "two refusal classes share the code {wire:?}");
@@ -954,9 +1183,9 @@ mod tests {
     #[test]
     fn the_engines_message_is_not_rewritten() {
         let m = "band \"network\" is missing cell 18/1204/1053, which covers 18/1204/1053";
-        assert_eq!(map_error(Error::Input(m.into()), false).message, m);
+        assert_eq!(map_error(Error::Input(m.into()), false, None).message, m);
         // …except for `Verify`, whose `Display` prefixes it, exactly as the CLI prints it.
-        assert_eq!(map_error(Error::Verify("chunk 3".into()), false).message, "verify failed: chunk 3");
+        assert_eq!(map_error(Error::Verify("chunk 3".into()), false, None).message, "verify failed: chunk 3");
     }
 
     /// An abort raises whatever error channel it was standing in; the driver is what knows it was a
@@ -968,14 +1197,14 @@ mod tests {
     /// broken — the one code the docs say never to retry past — because they pressed cancel.
     #[test]
     fn an_abort_is_not_reported_as_an_io_failure_or_a_verify_defect() {
-        let f = map_error(Error::Io(obc_formats::io::Error::Io), true);
+        let f = map_error(Error::Io(obc_formats::io::Error::Io), true, None);
         assert_eq!(f.code, ErrorCode::Aborted);
         assert!(f.message.contains("cancelled"), "{}", f.message);
-        let v = map_error(Error::Verify("the output does not parse: Io".into()), true);
+        let v = map_error(Error::Verify("the output does not parse: Io".into()), true, None);
         assert_eq!(v.code, ErrorCode::Aborted, "a cancelled read-back is a cancellation, not a §4.8 defect");
         // …and both classes with no abort pending still read as themselves.
-        assert_eq!(map_error(Error::Io(obc_formats::io::Error::Io), false).code, ErrorCode::Io);
-        assert_eq!(map_error(Error::Verify("chunk 3 does not decode".into()), false).code, ErrorCode::Verify);
+        assert_eq!(map_error(Error::Io(obc_formats::io::Error::Io), false, None).code, ErrorCode::Io);
+        assert_eq!(map_error(Error::Verify("chunk 3 does not decode".into()), false, None).code, ErrorCode::Verify);
     }
 
     /// The phase weights are a probability distribution over the run, or the bar goes backwards.
@@ -1055,6 +1284,23 @@ mod tests {
             .expect_err("known-empty coverage cannot supply binary tables");
         assert_eq!(e.code, ErrorCode::Input);
         assert!(e.message.contains("at least one artifact"), "{}", e.message);
+    }
+
+    /// The hand-off's tripwire fires on either half of the identity, and says which shard.
+    #[test]
+    fn a_shard_handed_over_under_the_wrong_name_or_digest_is_an_internal_error() {
+        let sha = "ab".repeat(32);
+        let other = "cd".repeat(32);
+        assert!(check_handoff(0, ("MS1S00.OBM", &sha), ("MS1S00.OBM", &sha)).is_ok());
+
+        for (got, want) in [
+            (("MS1S00.OBM", sha.as_str()), ("MS1S01.OBM", sha.as_str())),
+            (("MS1S00.OBM", sha.as_str()), ("MS1S00.OBM", other.as_str())),
+        ] {
+            let e = check_handoff(3, got, want).expect_err("the identities differ");
+            assert_eq!(e.code, ErrorCode::Internal);
+            assert!(e.message.contains("shard 3"), "{}", e.message);
+        }
     }
 
     /// A cell id that is not `<log2>/<i>/<j>` is this bridge's problem, not the catalog's format.

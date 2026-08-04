@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 
 use obc_web_assemble::{
     assemble_cells, assemble_cells_with_known_empty, assemble_everything, BridgeOptions, CellBytes, ErrorCode, Hooks,
-    KnownEmptyCell, NoHooks, Phase, TerrainCellBytes, TerrainLattice,
+    KnownEmptyCell, NoHooks, OutputFile, Phase, TerrainCellBytes, TerrainLattice,
 };
 
 fn fixture_dir() -> PathBuf {
@@ -274,6 +274,205 @@ fn the_bridge_reproduces_the_native_clis_volume_set() {
     // The raster does not split with the geometry: one terrain shard per set, spanning the whole
     // assembly, however many OBCM files the map needs.
     assert_eq!(out.files.iter().filter(|f| f.role == "terrain").count(), 1);
+}
+
+/// A caller that takes every shard as it is verified (#1116 B1). Records what it was handed, in the
+/// order it was handed it, so the delivery *stream* can be held to the same checked-in bytes as the
+/// end-of-run set.
+#[derive(Default)]
+struct Evicting {
+    /// `(name, role, sha256, bytes)`, in delivery order.
+    taken: Vec<(String, String, String, Vec<u8>)>,
+    /// Refuse the `n`-th hand-off, as a sink that ran out of disk would.
+    fail_at: Option<usize>,
+    /// Hand everything straight back instead of taking it — the `Ok(Some(_))` half of the contract.
+    keep: bool,
+    /// Ask to stop at the first progress report after this many shards have been handed over — a
+    /// cancel button pressed by someone watching the files arrive.
+    abort_after_taken: Option<usize>,
+}
+
+impl Hooks for Evicting {
+    fn now_us(&mut self) -> u64 {
+        0
+    }
+    fn progress(&mut self, _phase: Phase, _fraction: f64) -> bool {
+        self.abort_after_taken.is_some_and(|n| self.taken.len() >= n)
+    }
+    fn wants_shards(&self) -> bool {
+        true
+    }
+    fn take_shard(&mut self, shard: OutputFile) -> Result<Option<OutputFile>, String> {
+        if self.fail_at == Some(self.taken.len()) {
+            return Err(format!("the card is full and {} could not be written", shard.name));
+        }
+        self.taken.push((shard.name.clone(), shard.role.to_string(), shard.sha256.clone(), shard.bytes.clone()));
+        if self.keep {
+            return Ok(Some(shard));
+        }
+        Ok(None)
+    }
+}
+
+/// **The eviction pin**: a set delivered shard-by-shard *during* the run, then the remainder at the
+/// end, is the same set — the same files, in the same order, byte for byte — as the one the native
+/// CLI wrote in one piece.
+///
+/// This is the claim B1 rests on. The output no longer stays resident until `takeFile`, so the
+/// question "did we lose or reorder anything by handing it over early" is exactly the question the
+/// determinism fixture already answers for the whole-set path, asked of the streamed one.
+#[test]
+fn the_evicted_stream_plus_the_remainder_is_the_native_clis_volume_set() {
+    let opts = BridgeOptions { force_split: true, ..options() };
+    let mut hooks = Evicting::default();
+    let out = assemble_fixture(&opts, &mut hooks);
+    let want = expected("expected-split");
+
+    // Every OBCM shard left during the run, in index order…
+    assert_eq!(
+        hooks.taken.iter().map(|(_, role, _, _)| role.as_str()).collect::<Vec<_>>(),
+        vec!["core", "coarse", "geometry"],
+        "the shards must arrive in the order the engine wrote them"
+    );
+    // …and only the raster and the manifest were still in the store at the end. That is the whole
+    // point: the set's residency over the run is one shard, not four.
+    assert_eq!(out.files.iter().map(|f| f.role).collect::<Vec<_>>(), vec!["terrain", "manifest"]);
+
+    // The stream, then the remainder, is the set — name by name and byte by byte.
+    let delivered: Vec<(String, Vec<u8>)> = hooks
+        .taken
+        .iter()
+        .map(|(name, _, _, bytes)| (name.clone(), bytes.clone()))
+        .chain(out.files.iter().map(|f| (f.name.clone(), f.bytes.clone())))
+        .collect();
+    assert_eq!(delivered.len(), want.len(), "file count: {:?} vs {:?}", delivered, want);
+    for ((name, bytes), (want_name, want_bytes)) in delivered.iter().zip(&want) {
+        assert_eq!(name, want_name, "the derived filenames must match the CLI's (OBCA §5.2)");
+        assert_same_bytes(bytes, want_bytes, name);
+    }
+
+    // The digest each shard was handed over with is the engine's own — the identity a caller records
+    // against a file it has already saved. (`assemble_everything` refuses the run outright if these
+    // ever disagree; this is the same equality, stated where a reader can see it.)
+    let s: serde_json::Value = serde_json::from_str(&out.summary_json).expect("the summary is JSON");
+    for (i, (name, role, sha256, bytes)) in hooks.taken.iter().enumerate() {
+        assert_eq!(s["shards"][i]["file"], name.as_str());
+        assert_eq!(s["shards"][i]["role"], role.as_str());
+        assert_eq!(s["shards"][i]["sha256"], sha256.as_str());
+        assert_eq!(s["shards"][i]["bytes"].as_u64(), Some(bytes.len() as u64));
+    }
+}
+
+/// …and the single-file fast path evicts too: one shard out during the run, terrain and the manifest
+/// after it. The shape where "one shard" and "the whole set" are the same thing is the one where an
+/// off-by-one in the hand-off would hide.
+#[test]
+fn a_single_file_assembly_hands_its_one_shard_over_too() {
+    let mut hooks = Evicting::default();
+    let out = assemble_fixture(&options(), &mut hooks);
+    let want = expected("expected");
+    assert_eq!(hooks.taken.len(), 1);
+    assert_eq!(hooks.taken[0].0, want[0].0);
+    assert_same_bytes(&hooks.taken[0].3, &want[0].1, &want[0].0);
+    assert_eq!(out.files.iter().map(|f| f.role).collect::<Vec<_>>(), vec!["terrain", "manifest"]);
+    for (got, (name, bytes)) in out.files.iter().zip(want.iter().skip(1)) {
+        assert_eq!(&got.name, name);
+        assert_same_bytes(&got.bytes, bytes, name);
+    }
+}
+
+/// Handing a shard **back** (`Ok(Some(_))`, the trait's default) is not a half-measure: the set comes
+/// out exactly as it does with no hand-off at all. This is what makes the seam safe to add to a
+/// caller that only wants to *watch* the files go by.
+#[test]
+fn a_shard_handed_back_stays_in_the_set() {
+    let opts = BridgeOptions { force_split: true, ..options() };
+    let mut hooks = Evicting { keep: true, ..Default::default() };
+    let out = assemble_fixture(&opts, &mut hooks);
+    let want = expected("expected-split");
+    assert_eq!(hooks.taken.len(), 3, "it still saw every shard");
+    assert_eq!(out.files.len(), want.len(), "…and kept every one of them");
+    for (got, (name, bytes)) in out.files.iter().zip(&want) {
+        assert_eq!(&got.name, name);
+        assert_same_bytes(&got.bytes, bytes, name);
+    }
+}
+
+/// A caller that never asks for shards is never handed one, however the rest of its hooks look. The
+/// two halves are one decision, and the default is the old behaviour — which is what keeps every
+/// other test in this file, and every native caller, on the path they were written for.
+#[test]
+fn a_caller_that_does_not_ask_is_handed_nothing() {
+    struct Silent(std::rc::Rc<std::cell::Cell<usize>>);
+    impl Hooks for Silent {
+        fn now_us(&mut self) -> u64 {
+            0
+        }
+        fn progress(&mut self, _phase: Phase, _fraction: f64) -> bool {
+            false
+        }
+        // Deliberately overridden *without* `wants_shards`: the driver must still never call it.
+        fn take_shard(&mut self, shard: OutputFile) -> Result<Option<OutputFile>, String> {
+            self.0.set(self.0.get() + 1);
+            Ok(Some(shard))
+        }
+    }
+    let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+    let opts = BridgeOptions { force_split: true, ..options() };
+    let out = assemble_fixture(&opts, &mut Silent(calls.clone()));
+    assert_eq!(calls.get(), 0, "take_shard was called without wants_shards");
+    assert_eq!(out.files.len(), expected("expected-split").len(), "the whole set is still here");
+}
+
+/// A sink that refuses a shard fails the **run**, as `io` and with its own words. It must not be
+/// swallowed: the bytes are already gone by then, so continuing would finish a set with a hole in it
+/// and report it as a map.
+#[test]
+fn a_sink_that_refuses_a_shard_fails_the_run_as_io() {
+    let opts = BridgeOptions { force_split: true, ..options() };
+    let mut hooks = Evicting { fail_at: Some(1), ..Default::default() };
+    let e = assemble_everything(
+        cells(),
+        Vec::new(),
+        Some(terrain_lattice()),
+        terrain_cells(),
+        &sidecar(),
+        &skin(),
+        &opts,
+        &mut hooks,
+    )
+    .expect_err("the sink refused the second shard");
+    assert_eq!(e.code, ErrorCode::Io, "{}", e.message);
+    assert!(e.message.contains("the card is full"), "the sink's own message must survive: {}", e.message);
+    // The first shard was taken before the refusal — which is the caller's to clean up, and is why
+    // the message says so rather than claiming nothing was written.
+    assert_eq!(hooks.taken.len(), 1);
+}
+
+/// A cancelled run may already have handed shards out — the property a UI's cleanup path is written
+/// against. It is safe because of §5.4, not because nothing was written: the OBCS manifest is last,
+/// so however many `.OBM` files a cancelled run left behind, none of them is a map to a device.
+#[test]
+fn a_cancelled_run_may_already_have_handed_shards_out() {
+    let opts = BridgeOptions { force_split: true, ..options() };
+    let mut hooks = Evicting { abort_after_taken: Some(1), ..Default::default() };
+    let e = assemble_everything(
+        cells(),
+        Vec::new(),
+        Some(terrain_lattice()),
+        terrain_cells(),
+        &sidecar(),
+        &skin(),
+        &opts,
+        &mut hooks,
+    )
+    .expect_err("cancelled");
+    assert_eq!(e.code, ErrorCode::Aborted, "{}", e.message);
+    assert!(e.message.contains("manifest is written last"), "{}", e.message);
+    assert!(!hooks.taken.is_empty(), "this fixture no longer cancels after a shard has been handed over");
+    // Nothing was handed over *after* the cancellation: every store entry point reads the abort flag
+    // before it hands anything out.
+    assert!(hooks.taken.len() < 3);
 }
 
 /// Same inputs, same bytes — twice, in one process. The engine renumbers nav nodes and re-bins POIs
