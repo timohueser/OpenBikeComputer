@@ -52,7 +52,8 @@ export class AssembleError extends Error {
  * `apps/obc-web-assemble/src/driver.rs`.
  *
  * `nav` (the graph rewrite), `write` (the geometry graft) and `verify` (the §4.8 read-back) are the
- * long ones — measured at 16 %, 24 % and 60 % of a region-scale run (#1116's harness) — so a bar
+ * long ones — measured at 20 %, 36 % and 43 % of a region-scale run (#1116's phase-D harness,
+ * where the split went scale-free: both measured regions agree to half a point) — so a bar
  * that names the phase is worth having.
  */
 export type AssemblePhase = "open" | "poi" | "nav" | "plan" | "write" | "verify" | "manifest" | "done";
@@ -727,6 +728,7 @@ export async function estimateMemory(
     networkBandBytes: number,
     totalCellBytes: number,
     terrainBytes: number,
+    mergeBudgetBytes: number,
     residency: Residency,
     budgetBytes?: number,
 ): Promise<MemoryEstimate> {
@@ -735,6 +737,7 @@ export async function estimateMemory(
         networkBandBytes,
         totalCellBytes,
         terrainBytes,
+        mergeBudgetBytes,
         residency.inputOnDisk,
         residency.streamedShardBytes,
         budgetBytes,

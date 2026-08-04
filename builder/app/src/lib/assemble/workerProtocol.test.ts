@@ -61,6 +61,7 @@ describe("requestTransferList", () => {
                 terrainBytes: 0,
                 inputOnDisk: true,
                 streamedShardBytes: 256 * 1024 * 1024,
+                mergeBudgetBytes: 256 * 1024 * 1024,
             }),
         ).toEqual([]);
     });
