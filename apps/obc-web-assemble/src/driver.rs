@@ -140,8 +140,8 @@ use obc_formats::io::{ByteSource, SliceSource};
 use obcm_assemble::grid::CellId;
 use obcm_assemble::schema::{Schema, Skin};
 use obcm_assemble::{
-    assemble_full, CellInput, Clock, Error, KnownEmptyInput, MemoryScratch, MemorySource, Options, ShardPlan,
-    ShardStore, TerrainCellInput, TerrainJob, TerrainParams,
+    assemble_full, CellInput, Clock, Error, KnownEmptyInput, MemoryScratch, MemorySource, Options, ScratchId,
+    ScratchStore, ShardPlan, ShardStore, TerrainCellInput, TerrainJob, TerrainParams,
 };
 use sha2::{Digest, Sha256};
 
@@ -254,6 +254,64 @@ pub struct SealedShard {
 pub struct KnownEmptyCell {
     pub id: String,
     pub band: String,
+}
+
+/// How a host takes the engine's **spill** — the third seam's host side (#1116 D2's
+/// [`obcm_assemble::ScratchStore`], crossed the way [`CellReads`] and [`ShardWrites`] cross).
+///
+/// The contract is the engine's own, restated over host errors: anonymous files named by the id the
+/// host minted, append-only writes, `u64` random-access reads, synchronous, `&self`. In the browser
+/// it is a pool of OPFS sync access handles opened before the run (the opener is async and the run
+/// cannot await — the same constraint that shaped [`ShardWrites`]), so `create` can refuse when the
+/// pool is exhausted: that is a budget too small for the selection, and the message should say so.
+///
+/// `Err(message)` from any method fails the run as [`ErrorCode::Io`] carrying that message — the
+/// engine classes it as `Error::Scratch`, which [`map_error`] reports as the *working area* failing
+/// (no room, no permission), never as a broken input or a §4.8 defect.
+pub trait ScratchWrites {
+    /// Mint an empty scratch file and answer its id. Ids are the host's; the driver never invents
+    /// one, and a host must never re-issue an id it has removed (a use-after-remove must refuse
+    /// rather than read someone else's bytes).
+    fn create(&self) -> Result<u32, String>;
+    /// Append `bytes` to `id`'s current end. A short write is a failure.
+    fn append(&self, id: u32, bytes: &[u8]) -> Result<(), String>;
+    /// Fill `into` with exactly `into.len()` bytes at `offset`. A short read is a failure — a
+    /// truncated spill read as data would corrupt the merge silently.
+    fn read_at(&self, id: u32, offset: u64, into: &mut [u8]) -> Result<(), String>;
+    /// How many bytes have been appended to `id`.
+    fn len(&self, id: u32) -> Result<u64, String>;
+    /// Drop `id` and reclaim its bytes.
+    fn remove(&self, id: u32) -> Result<(), String>;
+}
+
+/// [`ScratchWrites`] as the engine sees it: an [`obcm_assemble::ScratchStore`] whose every failure
+/// is `Error::Scratch` with the host's own sentence in it.
+///
+/// The id spaces are aligned by construction — [`obcm_assemble::ScratchId`] is a `u32` the store
+/// minted, and this store mints the host's. Nothing is tracked here: the engine already promises to
+/// remove what it creates, and the host sweeps the rest when the run ends.
+struct HostScratch<'a>(&'a dyn ScratchWrites);
+
+impl obcm_assemble::ScratchStore for HostScratch<'_> {
+    fn create(&self) -> obcm_assemble::Result<ScratchId> {
+        self.0.create().map(ScratchId).map_err(Error::Scratch)
+    }
+
+    fn append(&self, id: ScratchId, buf: &[u8]) -> obcm_assemble::Result<()> {
+        self.0.append(id.0, buf).map_err(Error::Scratch)
+    }
+
+    fn read_at(&self, id: ScratchId, offset: u64, buf: &mut [u8]) -> obcm_assemble::Result<()> {
+        self.0.read_at(id.0, offset, buf).map_err(Error::Scratch)
+    }
+
+    fn len(&self, id: ScratchId) -> obcm_assemble::Result<u64> {
+        self.0.len(id.0).map_err(Error::Scratch)
+    }
+
+    fn remove(&self, id: ScratchId) -> obcm_assemble::Result<()> {
+        self.0.remove(id.0).map_err(Error::Scratch)
+    }
 }
 
 /// One downloaded terrain cell (EL4): its id on the terrain grid, the whole `.obcd` object, and the
@@ -1444,6 +1502,12 @@ pub struct Wiring<'r> {
     /// The **terrain** shard and the OBCS manifest are not affected — terrain is written through the
     /// engine's own sink and the manifest is a few hundred bytes, so both stay in `files`.
     pub sink: Option<&'r dyn ShardWrites>,
+    /// Where the engine's spill goes (#1116 D2's third seam). `None` keeps it in wasm memory
+    /// ([`MemoryScratch`]) — honest for a native test, and the browser's fallback when OPFS is not
+    /// usable, at exactly the residency the spill exists to remove. A browser that can serve sync
+    /// reads should always wire this: from D3 on, the spill is the *edge stream*, which at country
+    /// scale is larger than the arrays it replaced.
+    pub scratch: Option<&'r dyn ScratchWrites>,
 }
 
 /// Assemble one selection into a `.obcm` or an OBCA volume set, reporting through `hooks`.
@@ -1454,7 +1518,7 @@ pub fn assemble(
     opts: &BridgeOptions,
     hooks: &mut dyn Hooks,
 ) -> Result<Outcome, AssembleFailure> {
-    let Wiring { cells, source_cells, reads, known_empty, terrain, terrain_cells, sink } = wiring;
+    let Wiring { cells, source_cells, reads, known_empty, terrain, terrain_cells, sink, scratch } = wiring;
     if cells.is_empty() && source_cells.is_empty() {
         return Err(AssembleFailure::new(
             ErrorCode::Input,
@@ -1618,12 +1682,22 @@ pub fn assemble(
             .collect(),
         sink: &mut terrain_sink,
     });
-    // The engine's third seam (#1116 D2). In wasm linear memory for now: the browser's own scratch
-    // is an OPFS-backed store, and it lands with the passes that make it pay for itself — until
-    // then this is the same bytes at a peak that is a wash against the arrays it replaced.
-    let scratch = MemoryScratch::new();
-    let summary = match assemble_full(inputs, known_empty, job, &schema, &skin, &options, &mut store, &clock, &scratch)
-    {
+    // The engine's third seam (#1116 D2). The host's own storage when it wired one — OPFS in the
+    // browser — and wasm linear memory otherwise, which is the honest fallback and the native
+    // tests' default. Two bindings so the trait object can borrow whichever exists.
+    let host_scratch;
+    let memory_scratch;
+    let scratch: &dyn ScratchStore = match scratch {
+        Some(host) => {
+            host_scratch = HostScratch(host);
+            &host_scratch
+        }
+        None => {
+            memory_scratch = MemoryScratch::new();
+            &memory_scratch
+        }
+    };
+    let summary = match assemble_full(inputs, known_empty, job, &schema, &skin, &options, &mut store, &clock, scratch) {
         Ok(s) => s,
         Err(e) => {
             let p = progress.borrow();

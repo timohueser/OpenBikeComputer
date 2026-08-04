@@ -287,6 +287,30 @@ export interface AssembleShardSink {
 }
 
 /**
+ * Where the engine's **spill** goes instead of into wasm memory (#1116 D2's third seam) — the
+ * sorted passes' working files, not the map's input or output. In the browser this is
+ * `openScratchStore()`'s pool of OPFS sync access handles; every method runs inside the blocking
+ * assembly, so all of them are synchronous and none may throw across the boundary on purpose.
+ *
+ * Without one the engine spills into linear memory — correct, byte-identical, and at exactly the
+ * residency the spill exists to remove: from D3 on the spill is the merge's *edge stream*, which at
+ * country scale is larger than the arrays it replaced. A worker that can serve sync handles should
+ * always wire this.
+ */
+export interface AssembleScratchStore {
+    /** Mint a spill file: a non-negative id, or `-1` to refuse (pool exhausted). */
+    create(): number;
+    /** Append to `id`. A short write is a failure. */
+    append(id: number, bytes: Uint8Array): boolean;
+    /** Fill `into` with exactly `into.byteLength` bytes at `offset`. A short read is a failure. */
+    readAt(id: number, offset: number, into: Uint8Array): boolean;
+    /** Bytes appended to `id`, or `-1` for an unknown/removed id. */
+    len(id: number): number;
+    /** Drop `id`. Ids are never reused; a later use of one must refuse. */
+    remove(id: number): boolean;
+}
+
+/**
  * One finished file. `take()` moves its bytes out of wasm memory and frees the wasm-side copy, so
  * call it once, and one file at a time: an assembled set can be gigabytes.
  */
@@ -518,6 +542,7 @@ export async function assembleCells(
     onFile?: AssembleFileSink,
     sources?: AssembleSources,
     shardSink?: AssembleShardSink,
+    scratch?: AssembleScratchStore,
 ): Promise<AssembleResult> {
     if (assembling) {
         throw new AssembleError(
@@ -592,7 +617,30 @@ export async function assembleCells(
                       }),
               }
             : undefined;
-        const summary = JSON.parse(assembler.run(onProgress, sink, sources?.read, shards)) as AssembleSummary;
+        // The scratch store crosses the same way the shard sink does: one plain object, methods
+        // read off once before the run. Checked here for the same reason the sink is — a half-wired
+        // store is the caller's defect (`internal`), not a storage failure (`io`).
+        if (scratch) {
+            for (const name of ["create", "append", "readAt", "len", "remove"] as const) {
+                if (typeof scratch[name] !== "function") {
+                    throw new AssembleError(
+                        "internal",
+                        `the scratch store has no ${name}() — a scratch store must provide create, append, readAt, ` +
+                            `len and remove.`,
+                    );
+                }
+            }
+        }
+        const spill = scratch
+            ? {
+                  create: () => scratch.create(),
+                  append: (id: number, bytes: Uint8Array) => scratch.append(id, bytes),
+                  readAt: (id: number, offset: number, into: Uint8Array) => scratch.readAt(id, offset, into),
+                  len: (id: number) => scratch.len(id),
+                  remove: (id: number) => scratch.remove(id),
+              }
+            : undefined;
+        const summary = JSON.parse(assembler.run(onProgress, sink, sources?.read, shards, spill)) as AssembleSummary;
         const warnings = assembler.warnings().map((w) => String(w));
         // Bound to the live assembler on purpose: `take()` is what frees the wasm-side copy, so the
         // caller decides when each file's bytes stop being wasm's problem and start being the JS

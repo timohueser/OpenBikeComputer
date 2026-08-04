@@ -890,3 +890,93 @@ describe("the shard sink (#1116 D1)", () => {
         ).rejects.toMatchObject({ code: "aborted" });
     });
 });
+
+describe("the scratch store (#1116 D2)", () => {
+    /** The browser's spill pool, modelled over buffers: minted ids, append-only streams, refusals
+     *  where the real pool refuses. `failAppendAfter` is the disk filling mid-run. */
+    class Scratch {
+        readonly files = new Map<number, Uint8Array>();
+        next = 0;
+        created = 0;
+        failAppendAfter = Infinity;
+        appends = 0;
+
+        seam() {
+            return {
+                create: () => {
+                    this.created += 1;
+                    const id = this.next++;
+                    this.files.set(id, new Uint8Array(0));
+                    return id;
+                },
+                append: (id: number, bytes: Uint8Array) => {
+                    const have = this.files.get(id);
+                    if (!have || ++this.appends > this.failAppendAfter) return false;
+                    const grown = new Uint8Array(have.length + bytes.byteLength);
+                    grown.set(have);
+                    grown.set(bytes, have.length);
+                    this.files.set(id, grown);
+                    return true;
+                },
+                readAt: (id: number, offset: number, into: Uint8Array) => {
+                    const have = this.files.get(id);
+                    if (!have || offset + into.byteLength > have.length) return false;
+                    into.set(have.subarray(offset, offset + into.byteLength));
+                    return true;
+                },
+                len: (id: number) => this.files.get(id)?.length ?? -1,
+                remove: (id: number) => this.files.delete(id),
+            };
+        }
+    }
+
+    /**
+     * **The D2 determinism pin, wasm side.** The same fixture with the engine's spill living
+     * outside wasm memory — the browser's OPFS pool, modelled — must produce the CLI's bytes, and
+     * the engine must leave the pool **empty**: it promises to remove what it creates, and a leak
+     * here is country-scale quota held for nothing in a real run.
+     */
+    it("spills through a wired scratch store, produces the same bytes, and removes what it made", async () => {
+        const scratch = new Scratch();
+        const result = await assembleCells(
+            cells(),
+            sidecar,
+            skin,
+            OPTIONS,
+            undefined,
+            [],
+            terrain(),
+            undefined,
+            undefined,
+            undefined,
+            scratch.seam(),
+        );
+        expect(scratch.created).toBeGreaterThan(0); // the seam was genuinely exercised
+        expect([...scratch.files.keys()]).toEqual([]); // …and the engine cleaned up after itself
+        const want = expected("expected");
+        expect(result.files.length).toBe(want.length);
+        for (const [i, file] of result.files.entries()) {
+            expect(file.name).toBe(want[i].name);
+            expectSameBytes(file.take(), want[i].bytes, file.name);
+        }
+        result.release();
+    });
+
+    /** A working area that fails mid-run — the disk filling under the spill — is `io` with the
+     *  host's own sentence, never a broken input and never a §4.8 defect. */
+    it("reports a failing scratch store as io, naming the working area", async () => {
+        const scratch = new Scratch();
+        scratch.failAppendAfter = 0;
+        await expect(
+            assembleCells(cells(), sidecar, skin, OPTIONS, undefined, [], undefined, undefined, undefined, undefined, scratch.seam()),
+        ).rejects.toMatchObject({ code: "io" });
+    });
+
+    /** A half-wired store is the caller's defect, refused before a byte is written. */
+    it("refuses a scratch store missing a method as internal, up front", async () => {
+        const half = { create: () => 0 } as unknown as Parameters<typeof assembleCells>[10];
+        await expect(
+            assembleCells(cells(), sidecar, skin, OPTIONS, undefined, [], undefined, undefined, undefined, undefined, half),
+        ).rejects.toMatchObject({ code: "internal" });
+    });
+});

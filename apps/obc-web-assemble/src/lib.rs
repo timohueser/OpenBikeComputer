@@ -39,8 +39,8 @@ pub mod estimate;
 
 pub use driver::{
     assemble, assemble_cells, assemble_cells_with_known_empty, assemble_everything, AssembleFailure, BridgeOptions,
-    CellBytes, CellReads, ErrorCode, Hooks, KnownEmptyCell, NoHooks, Outcome, OutputFile, Phase, SealedShard,
-    ShardWrites, SourceCell, TerrainCellBytes, TerrainLattice, Wiring,
+    CellBytes, CellReads, ErrorCode, Hooks, KnownEmptyCell, NoHooks, Outcome, OutputFile, Phase, ScratchWrites,
+    SealedShard, ShardWrites, SourceCell, TerrainCellBytes, TerrainLattice, Wiring,
 };
 pub use estimate::{
     estimate_memory, estimate_memory_with_budget, MemoryEstimate, Residency, OUTPUT_PER_CELL_BYTE, PEAK_PER_NAV_BYTE,
@@ -53,7 +53,7 @@ mod web {
 
     use crate::driver::{
         assemble, AssembleFailure, BridgeOptions, CellBytes, CellReads, ErrorCode, Hooks, KnownEmptyCell, OutputFile,
-        Phase, SealedShard, ShardWrites, SourceCell, TerrainCellBytes, TerrainLattice, Wiring,
+        Phase, ScratchWrites, SealedShard, ShardWrites, SourceCell, TerrainCellBytes, TerrainLattice, Wiring,
     };
 
     /// Module start (wasm-bindgen runs this during instantiation): surface Rust panics in the console
@@ -262,6 +262,99 @@ mod web {
 
         fn seal(&self, slot: usize) -> Result<(), String> {
             JsSink::taken(self.seal.call1(&JsValue::NULL, &JsValue::from_f64(slot as f64)), "seal")
+        }
+    }
+
+    /// The browser's [`ScratchWrites`] (#1116 D2): five JS methods over a pool of OPFS sync access
+    /// handles, crossed exactly the way [`JsSink`] crosses. `create` and `len` answer with a
+    /// number (`-1` is the refusal); the other three answer truthy-or-failed like the sink's.
+    struct JsScratch {
+        create: js_sys::Function,
+        append: js_sys::Function,
+        read_at: js_sys::Function,
+        len: js_sys::Function,
+        remove: js_sys::Function,
+    }
+
+    impl JsScratch {
+        fn from_object(obj: &js_sys::Object) -> Result<JsScratch, AssembleFailure> {
+            let method = |name: &str| -> Result<js_sys::Function, AssembleFailure> {
+                let v = js_sys::Reflect::get(obj, &JsValue::from_str(name)).map_err(|_| AssembleFailure {
+                    code: ErrorCode::Internal,
+                    message: format!("the scratch store has no {name:?}"),
+                })?;
+                v.dyn_into::<js_sys::Function>().map_err(|_| AssembleFailure {
+                    code: ErrorCode::Internal,
+                    message: format!(
+                        "the scratch store's {name:?} is not a function — a scratch store must provide create, \
+                         append, readAt, len and remove."
+                    ),
+                })
+            };
+            Ok(JsScratch {
+                create: method("create")?,
+                append: method("append")?,
+                read_at: method("readAt")?,
+                len: method("len")?,
+                remove: method("remove")?,
+            })
+        }
+
+        /// A truthy-or-failed call, like the sink's.
+        fn taken(call: Result<JsValue, JsValue>, what: &str) -> Result<(), String> {
+            match call {
+                Ok(v) if v.is_truthy() => Ok(()),
+                Ok(_) => Err(format!("the scratch store's {what} returned a falsy value")),
+                Err(e) => Err(format!("the scratch store's {what} threw ({e:?})")),
+            }
+        }
+
+        /// A call that answers a non-negative number, where `-1` (or anything else) is the refusal.
+        fn counted(call: Result<JsValue, JsValue>, what: &str) -> Result<f64, String> {
+            match call {
+                Ok(v) => match v.as_f64() {
+                    Some(n) if n >= 0.0 => Ok(n),
+                    _ => Err(format!("the scratch store's {what} refused (out of pool slots, or the id is gone)")),
+                },
+                Err(e) => Err(format!("the scratch store's {what} threw ({e:?})")),
+            }
+        }
+    }
+
+    impl ScratchWrites for JsScratch {
+        fn create(&self) -> Result<u32, String> {
+            JsScratch::counted(self.create.call0(&JsValue::NULL), "create").map(|n| n as u32)
+        }
+
+        fn append(&self, id: u32, bytes: &[u8]) -> Result<(), String> {
+            // SAFETY: the same contract as `JsSink::write` — a per-call view over linear memory,
+            // made, read and dropped inside one synchronous JS call.
+            let src = unsafe { js_sys::Uint8Array::view(bytes) };
+            JsScratch::taken(self.append.call2(&JsValue::NULL, &JsValue::from_f64(id as f64), &src), "append")
+        }
+
+        fn read_at(&self, id: u32, offset: u64, into: &mut [u8]) -> Result<(), String> {
+            // SAFETY: as in `JsSink::read_at` — a per-call view, filled and dropped inside the call.
+            let dest = unsafe { js_sys::Uint8Array::view_mut_raw(into.as_mut_ptr(), into.len()) };
+            // A spill offset can pass 4 GiB (that is the point of `u64` in the seam); `f64` carries
+            // it exactly to 2^53, far past any spill a 4 GiB address space could produce.
+            JsScratch::taken(
+                self.read_at.call3(
+                    &JsValue::NULL,
+                    &JsValue::from_f64(id as f64),
+                    &JsValue::from_f64(offset as f64),
+                    &dest,
+                ),
+                "readAt",
+            )
+        }
+
+        fn len(&self, id: u32) -> Result<u64, String> {
+            JsScratch::counted(self.len.call1(&JsValue::NULL, &JsValue::from_f64(id as f64)), "len").map(|n| n as u64)
+        }
+
+        fn remove(&self, id: u32) -> Result<(), String> {
+            JsScratch::taken(self.remove.call1(&JsValue::NULL, &JsValue::from_f64(id as f64)), "remove")
         }
     }
 
@@ -500,6 +593,20 @@ mod web {
         /// that throws fails the run as `io` too: the file exists and the caller does not know its
         /// name.
         ///
+        /// `scratch` is the third seam's host side (#1116 D2): where the engine's *spill* — the
+        /// sorted passes' working files, not the map's input or output — goes instead of into wasm
+        /// memory. An object with `create()` (returns a non-negative id, or `-1` to refuse),
+        /// `append(id, bytes)`, `readAt(id, offset, into)`, `len(id)` (returns the byte count, or
+        /// `-1`), and `remove(id)`. In the browser those are a pool of OPFS sync access handles
+        /// opened in the worker before the run — from D3 on the spill is the merge's *edge stream*,
+        /// which at country scale is larger than the arrays it replaced, so a browser that can wire
+        /// this must. Without one the spill stays in linear memory, which is honest but is the
+        /// residency the spill exists to remove.
+        ///
+        /// The same view rule as the sink's applies to `bytes` and `into`; a falsy return or a
+        /// throw fails the run as `io` naming the working area, never as a broken input or a §4.8
+        /// defect.
+        ///
         /// Throws an `Error` carrying `code` + `message` on failure; see [`crate::ErrorCode`].
         pub fn run(
             &mut self,
@@ -507,6 +614,7 @@ mod web {
             on_file: Option<js_sys::Function>,
             on_read: Option<js_sys::Function>,
             sink: Option<js_sys::Object>,
+            scratch: Option<js_sys::Object>,
         ) -> Result<String, JsValue> {
             let (shard_sink, on_sealed) = match &sink {
                 Some(obj) => {
@@ -527,6 +635,10 @@ mod web {
             };
             let mut hooks = JsHooks { on_progress, on_file, on_sealed, last_us: 0, warned: false };
             let reads = on_read.map(|on_read| JsReads { on_read });
+            let js_scratch = match &scratch {
+                Some(obj) => Some(JsScratch::from_object(obj).map_err(to_js)?),
+                None => None,
+            };
             let wiring = Wiring {
                 cells: core::mem::take(&mut self.cells),
                 source_cells: core::mem::take(&mut self.source_cells),
@@ -535,6 +647,7 @@ mod web {
                 terrain: self.terrain,
                 terrain_cells: core::mem::take(&mut self.terrain_cells),
                 sink: shard_sink.as_ref().map(|s| s as &dyn ShardWrites),
+                scratch: js_scratch.as_ref().map(|s| s as &dyn ScratchWrites),
             };
             let out = assemble(wiring, &self.schema_json, &self.skin_json, &self.options, &mut hooks).map_err(to_js)?;
             self.taken = vec![false; out.files.len()];
