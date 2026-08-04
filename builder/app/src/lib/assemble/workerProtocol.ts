@@ -26,6 +26,13 @@
 //     posts and the run carries straight on, and these messages arrive **before
 //     `planned`**, unlike every `file`. A consumer that needs the set plan first
 //     (the device upload does) must not ask for them.
+//   * **Cells can travel as names instead of bytes** (#1116 B2). `sourceCells`
+//     carries an identity, a length and an OPFS filename per cell, and *nothing*
+//     is transferred: the download already put them on disk, and the worker is
+//     the only thread that can read them synchronously — which is what the wasm
+//     engine needs, since it reads them from inside one blocking call. A request
+//     with `cells` is the same conversation with the bytes in it, for a browser
+//     with no usable storage.
 //   * **Every failure is one `error` message carrying the bridge's own code.**
 //     The worker never rethrows into the void: an uncaught error in a worker is
 //     a console line the UI cannot read. `AssembleError`'s code survives the
@@ -48,6 +55,17 @@ export interface WorkerCell {
     band: string;
     partial: boolean;
     bytes: Uint8Array;
+}
+
+/** One cell that stayed on disk (#1116 B2). Same identity as {@link WorkerCell},
+ *  with the catalog's byte count and the OPFS filename — its digest — instead of
+ *  the bytes. Nothing is transferred: that is the point. */
+export interface WorkerSourceCell {
+    id: string;
+    band: string;
+    partial: boolean;
+    byteLength: number;
+    key: string;
 }
 
 export interface WorkerKnownEmpty {
@@ -82,6 +100,12 @@ export type AssembleWorkerRequest =
     | {
           type: "assemble";
           cells: WorkerCell[];
+          /** The cells the download left in OPFS instead of in memory (#1116
+           *  B2), with `cellStore` naming the revision directory they are in.
+           *  A request may carry both lists; the browser sends one or the
+           *  other. */
+          sourceCells?: WorkerSourceCell[];
+          cellStore?: string;
           knownEmpty: WorkerKnownEmpty[];
           /** The catalog root body, verbatim — the engine reads the schema out
            *  of it (`Schema::parse` accepts an OBCC v2 root). */
@@ -118,8 +142,24 @@ export interface WorkerShard extends WorkerFile {
     role: "core" | "coarse" | "geometry";
 }
 
+/**
+ * How the run that is starting gets at its cells (#1116 B2). Posted **before**
+ * the assembly, not with its result, because the case where it matters most is
+ * the one that never produces a result: a bug report about a failed country-scale
+ * run has to say which path was taken.
+ *
+ * - `streamed` — from OPFS through sync access handles, the wasm engine reading a
+ *   block at a time. Input residency is the read cache, ~1 MiB.
+ * - `buffered` — from OPFS, but read back into memory first, because this browser
+ *   has no sync access handles. The download still resumed from disk; the memory
+ *   is what it always was.
+ * - `memory` — the cells arrived over the wire in this request. No store.
+ */
+export type CellReadMode = "streamed" | "buffered" | "memory";
+
 export type AssembleWorkerResponse =
     | { type: "progress"; phase: AssemblePhase; fraction: number }
+    | { type: "reading"; mode: CellReadMode; cells: number }
     | { type: "planned"; totalBytes: number; shardCount: number; warnings: string[]; summary: AssembleSummary }
     | ({ type: "shard" } & WorkerShard)
     | ({ type: "file" } & WorkerFile)
@@ -165,6 +205,7 @@ const PHASES: ReadonlySet<string> = new Set([
     "manifest",
     "done",
 ]);
+const READ_MODES: ReadonlySet<string> = new Set(["streamed", "buffered", "memory"]);
 const SHARD_ROLES: ReadonlySet<string> = new Set(["core", "coarse", "geometry"]);
 const ROLES: ReadonlySet<string> = new Set([...SHARD_ROLES, "terrain", "manifest"]);
 const CODES: ReadonlySet<string> = new Set(ASSEMBLE_ERROR_CODES);
@@ -181,6 +222,8 @@ export function isWorkerResponse(v: unknown): v is AssembleWorkerResponse {
     switch (m.type) {
         case "progress":
             return typeof m.phase === "string" && PHASES.has(m.phase) && typeof m.fraction === "number";
+        case "reading":
+            return typeof m.mode === "string" && READ_MODES.has(m.mode) && Number.isInteger(m.cells);
         case "planned":
             return (
                 Number.isSafeInteger(m.totalBytes) &&
