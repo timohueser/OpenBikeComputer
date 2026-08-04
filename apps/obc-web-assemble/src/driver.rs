@@ -76,8 +76,37 @@
 //! * **The terrain shard and the manifest are not evicted.** Terrain is written through the engine's
 //!   own sink, not the store, and the manifest is the last thing that exists; both stay in
 //!   [`Outcome::files`].
+//!
+//! # Reading the input cells from outside wasm memory (#1116 B2)
+//!
+//! The other half of a browser's peak is the **input**: [`CellBytes`] carries a whole downloaded
+//! cell into linear memory and it stays there for the run — ~795 MB at country scale, resident from
+//! the first `addCell` to the last file taken. It does not have to be there either. Everything the
+//! engine does with a cell it does through [`ByteSource::read_at`], so a cell can live anywhere the
+//! host can serve a byte range from — OPFS, in the browser's case.
+//!
+//! [`SourceCell`] is that input: identity, declared length, and an opaque host key. [`CellReads`] is
+//! the seam the host implements, and [`BlockCache`] is what stands between it and the engine.
+//!
+//! **The cache is not an optimisation, it is what makes the seam affordable.** §4.6.6 emits the
+//! merged edge pool one record at a time ([`obcm_assemble`]'s `nav::serialize`, a `read_into` per
+//! record — 17.5 M of them at country scale, ~13–100 bytes each), and the §4.6 merge walks every
+//! cell's node chunks 512 bytes at a time. Handed straight to a JS callback that does one OPFS read
+//! each, that is millions of boundary crossings and millions of syscalls. Both walks are strongly
+//! sequential *within* a cell, though, so a small LRU of [`DEFAULT_READ_BLOCK`]-sized blocks turns
+//! them into one host read per block — roughly `bytes / 64 KiB` calls for a whole pass, which is
+//! four orders of magnitude fewer. Reads at least a block long (§2.3's 256 KiB verbatim geometry
+//! copy, the merge's whole-edge-pool read) bypass the cache and land straight in the caller's
+//! buffer, so the big copies pay neither an extra copy nor an eviction.
+//!
+//! One crossing measured **~0.4 µs** in Node (V8), callback and memory view included, against the
+//! fixture with the cache switched off — so BW's nav emission alone would spend ~7 s crossing the
+//! boundary before a single byte is read, and each of those crossings is also a file read. Cached,
+//! the same pass asks the host about `795 MB / 64 KiB ≈ 12 k` times. The cache's own residency is
+//! [`READ_CACHE_BLOCKS`] × the block size — 1 MiB by default, independent of how many cells the
+//! selection has.
 
-use std::cell::RefCell;
+use std::cell::{Cell as StdCell, RefCell};
 
 use obc_formats::io::{ByteSource, SliceSource};
 use obcm_assemble::grid::CellId;
@@ -99,6 +128,45 @@ pub struct CellBytes {
     /// The catalog's `partial` flag (OBCA §3.7).
     pub partial: bool,
     pub bytes: Vec<u8>,
+}
+
+/// One downloaded cell whose bytes are **not** in wasm memory (#1116 B2): the same identity
+/// [`CellBytes`] carries, plus the length the catalog published and an opaque key the host resolves
+/// reads against.
+///
+/// `key` is never interpreted here — it is the browser's OPFS filename (a content digest), and to
+/// this crate it is a label that makes a read failure say *which* cell. Reads themselves go through
+/// [`CellReads`] and name the cell by its **slot**: its index in the `source_cells` list handed to
+/// [`assemble`], which is a number rather than a string precisely because it crosses the wasm
+/// boundary once per host read.
+pub struct SourceCell {
+    /// The canonical cell id, `<log2>/<i>/<j>`.
+    pub id: String,
+    pub band: String,
+    /// The catalog's `partial` flag (OBCA §3.7).
+    pub partial: bool,
+    /// The object's length, as the catalog pins it. It is what [`ByteSource::len`] answers, so a
+    /// wrong one is a format error at open rather than a silent truncation.
+    pub byte_length: u32,
+    /// The host's own name for the bytes. Only ever shown in a message.
+    pub key: String,
+}
+
+/// How a host serves the bytes of a [`SourceCell`].
+///
+/// One method, called from **inside** the synchronous assembly, with the engine blocked behind it —
+/// in the browser that is a `FileSystemSyncAccessHandle.read()` from the assembly worker, which is
+/// the whole reason this seam is shaped as a blocking call rather than a future.
+///
+/// It is called far less often than the engine reads: [`BlockCache`] serves the record-at-a-time
+/// walks out of a small LRU and only misses reach here (module header). Implementations should
+/// still be cheap and must be re-entrant-free — nothing may call back into the assembler.
+pub trait CellReads {
+    /// Fill `buf` with `buf.len()` bytes at `offset` of the object in `slot`.
+    ///
+    /// `Err(message)` fails the run as [`ErrorCode::Io`], with the message quoted after the cell's
+    /// own name. A short read is a failure: the buffer must be filled or the call must refuse.
+    fn read(&self, slot: usize, offset: u32, buf: &mut [u8]) -> Result<(), String>;
 }
 
 /// One selected cell which the pinned catalog asserts has canonical empty
@@ -151,6 +219,14 @@ pub struct BridgeOptions {
     /// Write a role-partitioned set even when the whole map would fit one file — smaller files are
     /// better resumable upload units.
     pub force_split: bool,
+    /// The block the input read cache fetches and evicts in, for [`SourceCell`] inputs only
+    /// (#1116 B2). Clamped to [`MIN_READ_BLOCK`]..=[`MAX_READ_BLOCK`]; the cache's whole residency
+    /// is this times [`READ_CACHE_BLOCKS`].
+    ///
+    /// Exposed because it is the one number that trades host calls against read amplification, and
+    /// because `1` turns the cache **off** — one host call per engine read — which is what both its
+    /// transparency (the same bytes either way) and its cost are measured against.
+    pub read_block_bytes: usize,
 }
 
 impl Default for BridgeOptions {
@@ -163,6 +239,7 @@ impl Default for BridgeOptions {
             accept_holes: d.accept_holes,
             accept_partial: d.accept_partial,
             force_split: d.force_split,
+            read_block_bytes: DEFAULT_READ_BLOCK,
         }
     }
 }
@@ -198,6 +275,12 @@ impl BridgeOptions {
                     o.accept_partial = value.as_bool().ok_or("options.acceptPartial must be a boolean")?
                 }
                 "forceSplit" => o.force_split = value.as_bool().ok_or("options.forceSplit must be a boolean")?,
+                "readBlockBytes" => {
+                    let n = value.as_u64().ok_or("options.readBlockBytes must be a number")?;
+                    // Clamped rather than refused: it is a performance knob, and a browser that
+                    // asks for something absurd should assemble the same map a little slower.
+                    o.read_block_bytes = (n as usize).clamp(MIN_READ_BLOCK, MAX_READ_BLOCK);
+                }
                 _ => {}
             }
         }
@@ -290,6 +373,190 @@ impl Phase {
 /// callbacks over a whole assembly, plus one per phase boundary. Also the abort poll interval: the
 /// flag can only be *set* by a callback, so polling it wherever one might have fired is exhaustive.
 const PROGRESS_STEP: f64 = 0.01;
+
+/// How much of a [`SourceCell`] one host read brings back by default (#1116 B2).
+///
+/// 64 KiB against the engine's two access patterns: §4.6.6's per-record emission and the §4.6
+/// merge's 512-byte node chunks are sequential inside a cell, so one block serves ~128 of them and
+/// the amplification of over-reading is nil; §2.3's verbatim geometry copy asks for 256 KiB at a
+/// time and skips the cache entirely. Smaller would cost calls for nothing; larger would make the
+/// first read of a small cell fetch most of it.
+const DEFAULT_READ_BLOCK: usize = 64 * 1024;
+/// The floor a caller can ask for: `1`, which is not a small cache but **no cache** — every read is
+/// at least one byte, so every read takes the bypass and becomes exactly one host call. That is the
+/// configuration the cache is measured against (`the_read_block_size_changes_the_call_count_and_not_
+/// the_bytes` natively, and `bridge.test.ts`'s per-crossing cost in Node), which is why the floor is
+/// a degenerate setting rather than a merely small one.
+const MIN_READ_BLOCK: usize = 1;
+/// …and the ceiling, so a mistyped option cannot reserve a quarter of the heap for read scratch.
+const MAX_READ_BLOCK: usize = 4 * 1024 * 1024;
+/// How many blocks the input read cache holds. The engine reads one cell at a time within a phase,
+/// so the working set is one or two blocks; the rest is slack for the seams where §4.6.6 crosses
+/// from one source cell to the next. Sixteen keeps the whole cache at 1 MiB and the miss scan at
+/// sixteen comparisons — which matters, because that scan runs on every engine read.
+const READ_CACHE_BLOCKS: usize = 16;
+
+/// One resident block of one [`SourceCell`].
+struct CachedBlock {
+    /// Which source, and which block of it. `slot == usize::MAX` marks a slot that has never been
+    /// filled, which no real source can collide with.
+    slot: usize,
+    index: usize,
+    /// The block's bytes. Exactly `len` of them are valid — the last block of a cell is short.
+    data: Vec<u8>,
+    len: usize,
+    /// The clock reading at the last hit, for the LRU eviction.
+    used: u64,
+}
+
+/// The bridge between [`CellReads`] and the engine's [`ByteSource`] reads: a fixed-size LRU of
+/// blocks shared by **every** source cell, so residency is a constant rather than a per-cell cost.
+///
+/// See the module header for why this exists at all. Two rules are load-bearing:
+///
+/// * **A read at least one block long bypasses it**, going straight from the host into the caller's
+///   buffer. The verbatim geometry copy is 256 KiB a time and would otherwise evict the cache on
+///   every block for bytes nothing reads twice.
+/// * **A miss is a failure the run can name.** [`ByteSource`]'s error type carries no message, so
+///   the host's own is parked here and [`assemble`] prefers it over the engine's — a cell that could
+///   not be read is [`ErrorCode::Io`] with the cell's id in it, never a panic across the FFI seam
+///   and never a §4.8 "the assembler wrote a set the reader cannot read".
+struct BlockCache<'r> {
+    reads: &'r dyn CellReads,
+    block: usize,
+    /// Per slot, how a message names that cell. Built once, so the read path never formats.
+    labels: Vec<String>,
+    slots: RefCell<Vec<CachedBlock>>,
+    clock: StdCell<u64>,
+    /// The first host failure, kept for [`map_error`]. First rather than last: everything after it
+    /// is the engine unwinding.
+    failure: RefCell<Option<String>>,
+}
+
+impl<'r> BlockCache<'r> {
+    fn new(reads: &'r dyn CellReads, block: usize, labels: Vec<String>) -> BlockCache<'r> {
+        BlockCache {
+            reads,
+            block,
+            labels,
+            slots: RefCell::new(Vec::new()),
+            clock: StdCell::new(0),
+            failure: RefCell::new(None),
+        }
+    }
+
+    /// Record the host's own message and answer the engine in the only vocabulary the seam has.
+    fn fail(&self, slot: usize, at: usize, message: String) -> obc_formats::io::Error {
+        let mut failure = self.failure.borrow_mut();
+        if failure.is_none() {
+            let what = self.labels.get(slot).map(String::as_str).unwrap_or("an unknown cell");
+            *failure = Some(format!("{what} could not be read at byte {at}: {message}"));
+        }
+        obc_formats::io::Error::Io
+    }
+
+    /// One host read, straight into `buf`.
+    fn fetch(&self, slot: usize, at: usize, buf: &mut [u8]) -> Result<(), obc_formats::io::Error> {
+        let offset = u32::try_from(at).map_err(|_| obc_formats::io::Error::BadOffset)?;
+        self.reads.read(slot, offset, buf).map_err(|e| self.fail(slot, at, e))
+    }
+
+    /// The index of the cache slot holding block `index` of `slot`, filling it if it is not there.
+    fn block_of(&self, slot: usize, index: usize, source_len: usize) -> Result<usize, obc_formats::io::Error> {
+        let now = self.clock.get().wrapping_add(1);
+        self.clock.set(now);
+        {
+            let mut slots = self.slots.borrow_mut();
+            if let Some(k) = slots.iter().position(|b| b.slot == slot && b.index == index) {
+                slots[k].used = now;
+                return Ok(k);
+            }
+        }
+        // Fill outside the borrow: the host call is arbitrary code, and holding a `RefCell` across
+        // it would turn a re-entrant caller into a panic instead of a refusal.
+        let start = index * self.block;
+        let len = self.block.min(source_len.saturating_sub(start));
+        if len == 0 {
+            return Err(obc_formats::io::Error::BadOffset);
+        }
+        let mut data = vec![0u8; len];
+        self.fetch(slot, start, &mut data)?;
+
+        let mut slots = self.slots.borrow_mut();
+        let k = if slots.len() < READ_CACHE_BLOCKS {
+            slots.push(CachedBlock { slot: usize::MAX, index: 0, data: Vec::new(), len: 0, used: 0 });
+            slots.len() - 1
+        } else {
+            // Least recently used. Sixteen entries, so a scan beats keeping an order.
+            slots.iter().enumerate().min_by_key(|(_, b)| b.used).map(|(k, _)| k).expect("the cache is not empty")
+        };
+        slots[k] = CachedBlock { slot, index, len: data.len(), data, used: now };
+        Ok(k)
+    }
+
+    /// [`ByteSource::read_at`] for one source cell: whole blocks through the LRU, big reads around
+    /// it.
+    fn read_at(&self, slot: usize, offset: u32, source_len: u32, buf: &mut [u8]) -> Result<(), obc_formats::io::Error> {
+        let at = offset as usize;
+        let end = at.checked_add(buf.len()).ok_or(obc_formats::io::Error::BadOffset)?;
+        // Checked here rather than left to the host: a read past a cell's declared end is a defect
+        // in the engine or a wrong length in the catalog, and it must read as one — not as whatever
+        // a short host read happens to leave in the buffer.
+        if end > source_len as usize {
+            return Err(obc_formats::io::Error::BadOffset);
+        }
+        if buf.is_empty() {
+            return Ok(());
+        }
+        if buf.len() >= self.block {
+            return self.fetch(slot, at, buf);
+        }
+        let mut done = 0usize;
+        while done < buf.len() {
+            let cursor = at + done;
+            let index = cursor / self.block;
+            let k = self.block_of(slot, index, source_len as usize)?;
+            let slots = self.slots.borrow();
+            let b = &slots[k];
+            let within = cursor - index * self.block;
+            let n = (b.len - within).min(buf.len() - done);
+            if n == 0 {
+                return Err(obc_formats::io::Error::BadOffset);
+            }
+            buf[done..done + n].copy_from_slice(&b.data[within..within + n]);
+            done += n;
+        }
+        Ok(())
+    }
+}
+
+/// The reader an assembly with no [`SourceCell`] inputs is given, so the cache needs no `Option`.
+/// Reaching it means a `KeyedSource` exists without a reader, which [`assemble`] refuses first.
+struct NoReads;
+
+impl CellReads for NoReads {
+    fn read(&self, slot: usize, _offset: u32, _buf: &mut [u8]) -> Result<(), String> {
+        Err(format!("slot {slot} has no reader — this assembly was handed no source-backed cells"))
+    }
+}
+
+/// One [`SourceCell`] as the engine reads it: a slot number, the catalog's length, and the shared
+/// cache. No bytes — that is the entire point.
+struct KeyedSource<'a, 'r> {
+    slot: usize,
+    len: u32,
+    cache: &'a BlockCache<'r>,
+}
+
+impl ByteSource for KeyedSource<'_, '_> {
+    fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), obc_formats::io::Error> {
+        self.cache.read_at(self.slot, offset, self.len, buf)
+    }
+
+    fn len(&self) -> u32 {
+        self.len
+    }
+}
 
 /// The host's side of the two seams: a clock the engine can read, and a progress sink that doubles
 /// as the abort signal.
@@ -833,6 +1100,9 @@ pub fn assemble_cells_with_known_empty(
 /// `terrain` is the catalog's lattice; `None` means the catalog publishes no terrain block, or the
 /// rider's selection covers no terrain object, and the set is written without a `terrain` role — a
 /// complete, ordinary map whose profiles are flat.
+///
+/// This is [`assemble`] with every cell's bytes in hand. A caller whose cells live outside wasm
+/// memory (#1116 B2) builds an [`Inputs`] instead.
 // One assembly is exactly these eight things; a struct would restate the signature.
 #[allow(clippy::too_many_arguments)]
 pub fn assemble_everything(
@@ -845,17 +1115,73 @@ pub fn assemble_everything(
     opts: &BridgeOptions,
     hooks: &mut dyn Hooks,
 ) -> Result<Outcome, AssembleFailure> {
-    if cells.is_empty() {
+    assemble(
+        Inputs { cells, known_empty, terrain, terrain_cells, ..Inputs::default() },
+        schema_json,
+        skin_json,
+        opts,
+        hooks,
+    )
+}
+
+/// Everything one assembly reads: the cells, in whichever of the two forms the host has them, the
+/// selection's canonical-empty coverage, and the raster.
+///
+/// The two cell lists are alternatives rather than halves — a host uses buffers ([`CellBytes`]) or
+/// keys ([`SourceCell`]), and the browser picks by capability — but both may be present, and the
+/// engine sees one list: the buffered cells first, then the source-backed ones. Order is not part of
+/// the output: §4.6.5 renumbers by content and §5 plans by role, which is what makes an assembly
+/// deterministic however the downloads finished.
+#[derive(Default)]
+pub struct Inputs<'r> {
+    /// Cells whose bytes are already in wasm memory.
+    pub cells: Vec<CellBytes>,
+    /// Cells the host serves through [`Inputs::reads`], by slot — their index in **this** list.
+    pub source_cells: Vec<SourceCell>,
+    /// Required if `source_cells` is non-empty, and unused otherwise.
+    pub reads: Option<&'r dyn CellReads>,
+    pub known_empty: Vec<KnownEmptyCell>,
+    pub terrain: Option<TerrainLattice>,
+    pub terrain_cells: Vec<TerrainCellBytes>,
+}
+
+/// Assemble one selection into a `.obcm` or an OBCA volume set, reporting through `hooks`.
+pub fn assemble(
+    inputs: Inputs<'_>,
+    schema_json: &str,
+    skin_json: &str,
+    opts: &BridgeOptions,
+    hooks: &mut dyn Hooks,
+) -> Result<Outcome, AssembleFailure> {
+    let Inputs { cells, source_cells, reads, known_empty, terrain, terrain_cells } = inputs;
+    if cells.is_empty() && source_cells.is_empty() {
         return Err(AssembleFailure::new(
             ErrorCode::Input,
             "No OBCM cell artifact was handed to the assembler. An assembly needs at least one artifact to verify \
              the schema revision's binary style and routing-profile tables (OBCA §3.8).",
         ));
     }
+    // A key with no way to resolve it is a host that wired half of the streamed path. Refused up
+    // front rather than at the first read, where it would arrive as an I/O failure and read like a
+    // storage problem.
+    let reads = match (source_cells.is_empty(), reads) {
+        (false, None) => {
+            return Err(AssembleFailure::new(
+                ErrorCode::Internal,
+                format!(
+                    "{} cell(s) were handed over by key, but no read callback was supplied — there is no way to \
+                     fetch their bytes.",
+                    source_cells.len()
+                ),
+            ))
+        }
+        (_, r) => r,
+    };
     let schema = Schema::parse(schema_json).map_err(|e| AssembleFailure::new(ErrorCode::Internal, e))?;
     let skin = Skin::parse(skin_json).map_err(|e| AssembleFailure::new(ErrorCode::Internal, e))?;
 
-    let projected: u64 = cells.iter().map(|c| c.bytes.len() as u64).sum();
+    let projected: u64 = cells.iter().map(|c| c.bytes.len() as u64).sum::<u64>()
+        + source_cells.iter().map(|c| c.byte_length as u64).sum::<u64>();
     // Split identity from payload so the payload can be moved into the byte sources without a copy.
     let mut ids = Vec::with_capacity(cells.len());
     let mut sources = Vec::with_capacity(cells.len());
@@ -866,10 +1192,40 @@ pub fn assemble_everything(
         ids.push((id, c.band, c.partial));
         sources.push(MemorySource(c.bytes));
     }
+    // …and the same for the cells that have no payload here at all: identity now, bytes on demand.
+    let mut keyed_ids = Vec::with_capacity(source_cells.len());
+    let mut labels = Vec::with_capacity(source_cells.len());
+    for c in &source_cells {
+        let id = CellId::parse(&c.id).map_err(|e| {
+            AssembleFailure::new(ErrorCode::Internal, format!("cell id {:?} is not a `<log2>/<i>/<j>` id: {e}", c.id))
+        })?;
+        keyed_ids.push((id, c.band.clone(), c.partial, c.byte_length));
+        labels.push(format!("cell {} of band {:?} ({})", c.id, c.band, c.key));
+    }
+    // A cache is built even with nothing to read through it: it is one empty `Vec` and it keeps the
+    // borrow graph below free of an `Option`. `NO_READS` is never reached in that case — the loop
+    // that would call it has no iterations.
+    let cache = BlockCache::new(reads.unwrap_or(&NoReads), opts.read_block_bytes, labels);
+    let keyed: Vec<KeyedSource<'_, '_>> = keyed_ids
+        .iter()
+        .enumerate()
+        .map(|(slot, (_, _, _, len))| KeyedSource { slot, len: *len, cache: &cache })
+        .collect();
     let inputs: Vec<CellInput<'_>> = ids
         .iter()
         .zip(&sources)
-        .map(|((id, band, partial), src)| CellInput { id: *id, band: band.clone(), src, partial: *partial })
+        .map(|((id, band, partial), src)| CellInput {
+            id: *id,
+            band: band.clone(),
+            src: src as &dyn ByteSource,
+            partial: *partial,
+        })
+        .chain(keyed_ids.iter().zip(&keyed).map(|((id, band, partial, _), src)| CellInput {
+            id: *id,
+            band: band.clone(),
+            src: src as &dyn ByteSource,
+            partial: *partial,
+        }))
         .collect();
     let known_empty: Vec<KnownEmptyInput> = known_empty
         .into_iter()
@@ -940,7 +1296,12 @@ pub fn assemble_everything(
         Ok(s) => s,
         Err(e) => {
             let p = progress.borrow();
-            return Err(map_error(e, p.aborted, p.failure.clone()));
+            // An input cell that could not be read is the root cause of whatever the engine went on
+            // to report — `Cell::open` turns a failed read into "not a readable OBCM", which would
+            // blame the catalog for the browser's storage. The host's own message wins.
+            let read_failure =
+                cache.failure.borrow().clone().map(|message| AssembleFailure::new(ErrorCode::Io, message));
+            return Err(map_error(e, p.aborted, read_failure.or_else(|| p.failure.clone())));
         }
     };
     {

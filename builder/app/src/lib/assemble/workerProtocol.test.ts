@@ -108,16 +108,29 @@ describe("isWorkerResponse", () => {
                 byteLength: 4,
                 bytes: new Uint8Array(4),
             },
+            { type: "reading", mode: "streamed", cells: 412 },
             { type: "done", warnings: [], summary: { cells: 1, bytes: 2, manifest: "MS1.OBS", shards: [] } },
             { type: "error", code: "capacity", message: "too big" },
         ];
         for (const msg of messages) expect(isWorkerResponse(msg)).toBe(true);
     });
 
+    /** A cell named by key carries no buffer, so there is nothing to transfer — and a request that
+     *  mistakenly listed one would throw at `postMessage`. */
+    it("transfers nothing for cells that stayed on disk", () => {
+        const req = assembleReq([]);
+        req.cellStore = "r0123456789abcdef";
+        req.sourceCells = [
+            { id: "18/0001/0001", band: "fine", partial: false, byteLength: 4096, key: "a".repeat(64) },
+        ];
+        expect(requestTransferList(req)).toEqual([]);
+    });
+
     it("rejects strays instead of letting them drive the download screen", () => {
         expect(isWorkerResponse(null)).toBe(false);
         expect(isWorkerResponse({})).toBe(false);
         expect(isWorkerResponse({ type: "progress", phase: "warp", fraction: 0.1 })).toBe(false);
+        expect(isWorkerResponse({ type: "reading", mode: "telepathy", cells: 1 })).toBe(false);
         expect(isWorkerResponse({ type: "error", code: "not-a-code", message: "x" })).toBe(false);
         expect(isWorkerResponse({ type: "file", name: "x", role: "core", sha256: "", byteLength: 1, bytes: [1] })).toBe(
             false,
