@@ -85,13 +85,11 @@ class FakeDir {
         }
         const entry = file;
         return {
+            // A real `getFile()` answers with a `File`, which is a `Blob` — the
+            // property `readShardOutput` rests on, since it is what lets the page
+            // hand a gigabyte-scale shard to a download without reading it.
             async getFile() {
-                return {
-                    size: entry.bytes.length,
-                    async arrayBuffer() {
-                        return entry.bytes.slice().buffer;
-                    },
-                };
+                return new Blob([entry.bytes.slice() as unknown as BlobPart]);
             },
             async createWritable() {
                 let staged = new Uint8Array(0);
@@ -119,6 +117,10 @@ class FakeDir {
 
     async removeEntry(name: string, options?: { recursive?: boolean }): Promise<void> {
         void options;
+        // A file another agent holds a sync handle on cannot be removed, exactly as in the browser.
+        // That is what makes a sweep best-effort rather than a guarantee — and what a half-open
+        // pool has to survive.
+        if (this.files.get(name)?.locked) throw new Error(`NoModificationAllowedError: ${name} is open`);
         this.files.delete(name);
         this.dirs.delete(name);
     }
@@ -351,5 +353,181 @@ describe("the read side", () => {
         expect(FakeDir.handles.filter((h) => !h.closed)).toEqual([]);
         const none = await withOpfs(null);
         expect(await none.syncReadsAvailable()).toBe(false);
+    });
+});
+
+describe("the shard sink", () => {
+    /** What `obc-out/` holds. */
+    function outIn(root: FakeDir): FakeDir {
+        return root.dirs.get("obc-out")!;
+    }
+
+    it("takes a shard by slot and reads it back through the same handle", async () => {
+        const root = opfs();
+        const { openShardSink } = await withOpfs(root);
+        const sink = (await openShardSink(2))!;
+        expect(sink).not.toBeNull();
+        try {
+            expect(sink.create(0, "MS1S00.OBM")).toBe(true);
+            expect(sink.write(0, new Uint8Array([1, 2, 3, 4]))).toBe(true);
+            expect(sink.write(0, new Uint8Array([5, 6]))).toBe(true);
+            expect(sink.seal(0)).toBe(true);
+            const into = new Uint8Array(3);
+            expect(sink.readAt(0, 2, into)).toBe(true);
+            expect(into).toEqual(new Uint8Array([3, 4, 5]));
+            expect(outIn(root).files.get(sink.entry(0))!.bytes).toEqual(new Uint8Array([1, 2, 3, 4, 5, 6]));
+        } finally {
+            sink.close();
+        }
+    });
+
+    /** A short read is a failure, not a partial success — here it is §4.8 that would be misled, and
+     *  a verify pass that accepts half a read is not a verify pass. */
+    it("refuses a read that runs off the end of a shard", async () => {
+        const { openShardSink } = await withOpfs(opfs());
+        const sink = (await openShardSink(1))!;
+        try {
+            sink.create(0, "MS1S00.OBM");
+            sink.write(0, new Uint8Array([1, 2]));
+            sink.seal(0);
+            expect(sink.readAt(0, 1, new Uint8Array(4))).toBe(false);
+        } finally {
+            sink.close();
+        }
+    });
+
+    /** OBCA §5 caps a set at 32 shards (`S<kk>`, `kk` in `00..31`), and the pool is opened before the
+     *  set is planned — so a slot past it has to be a refusal the run can name, not a crash. */
+    it("refuses a slot the pool does not have", async () => {
+        const { openShardSink } = await withOpfs(opfs());
+        const sink = (await openShardSink(2))!;
+        try {
+            expect(sink.create(1, "MS1S01.OBM")).toBe(true);
+            expect(sink.create(2, "MS1S02.OBM")).toBe(false);
+            expect(sink.write(2, new Uint8Array(1))).toBe(false);
+            expect(sink.readAt(2, 0, new Uint8Array(1))).toBe(false);
+            expect(sink.seal(2)).toBe(false);
+        } finally {
+            sink.close();
+        }
+    });
+
+    /**
+     * **The stale-partial sweep.** A cancelled or crashed run leaves its shards on disk. They are
+     * invisible as a map — the OBCS manifest is written last (OBCA §5.4), so a set without one is
+     * not a map — but they are not invisible to the quota, and a country's worth of them would stop
+     * the *next* run from having room to download anything. Opening the sink is the one moment
+     * nothing is reading them.
+     */
+    it("sweeps what a cancelled run left before opening the next one", async () => {
+        const root = opfs();
+        const { openShardSink } = await withOpfs(root);
+        const cancelled = (await openShardSink(2))!;
+        cancelled.create(0, "MS1S00.OBM");
+        cancelled.write(0, new Uint8Array([9, 9, 9, 9]));
+        // No seal, no manifest: the shape a `worker.terminate()` leaves behind.
+        cancelled.close();
+        expect(outIn(root).files.get("s00.part")!.bytes).toHaveLength(4);
+
+        const fresh = (await openShardSink(2))!;
+        try {
+            expect(outIn(root).files.get("s00.part")!.bytes).toHaveLength(0);
+        } finally {
+            fresh.close();
+        }
+    });
+
+    /** …and a file left by something else entirely goes with them: the directory belongs to one run
+     *  at a time, so anything in it when a run starts is dead. */
+    it("sweeps entries the pool does not even use", async () => {
+        const root = opfs();
+        const { openShardSink } = await withOpfs(root);
+        const home = await root.getDirectoryHandle("obc-out", { create: true });
+        await home.getFileHandle("MS1S00.OBM", { create: true });
+        const sink = (await openShardSink(1))!;
+        try {
+            expect([...outIn(root).files.keys()]).toEqual(["s00.part"]);
+        } finally {
+            sink.close();
+        }
+    });
+
+    /** Beginning a shard truncates its slot: a set whose second shard is shorter than the first must
+     *  not leave the first one's tail past the end of it. */
+    it("truncates a slot when a shard begins, and again when it is sealed", async () => {
+        const root = opfs();
+        const { openShardSink } = await withOpfs(root);
+        const sink = (await openShardSink(1))!;
+        try {
+            sink.create(0, "MS1S00.OBM");
+            sink.write(0, new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]));
+            sink.seal(0);
+            sink.create(0, "MS1S00.OBM");
+            sink.write(0, new Uint8Array([7, 7]));
+            sink.seal(0);
+            expect(outIn(root).files.get("s00.part")!.bytes).toEqual(new Uint8Array([7, 7]));
+        } finally {
+            sink.close();
+        }
+    });
+
+    /**
+     * **The handle-release pin, and the page's half of it.** A sync access handle is an exclusive
+     * lock: one left open makes the next run fail to open the pool *and* stops the page from ever
+     * reading the shard it is holding. Both endings are the same `close()`.
+     */
+    it("releases every handle, so the next run opens the same pool", async () => {
+        const { openShardSink } = await withOpfs(opfs());
+        for (let run = 0; run < 2; run++) {
+            const sink = (await openShardSink(3))!;
+            expect(sink.open).toBe(3);
+            sink.close();
+            expect(sink.open).toBe(0);
+            expect(() => sink.close()).not.toThrow();
+        }
+        expect(FakeDir.handles.filter((h) => !h.closed)).toEqual([]);
+    });
+
+    /**
+     * The page's side: a `Blob` of exactly what the assembler wrote, opened by entry name once the
+     * worker has let go. Nothing is read to produce it — that is the point, and it is what keeps a
+     * gigabyte-scale shard out of the tab's heap on its way to a download.
+     */
+    it("hands the page a Blob of exactly what was written", async () => {
+        const root = opfs();
+        const { openShardSink, readShardOutput } = await withOpfs(root);
+        const sink = (await openShardSink(1))!;
+        sink.create(0, "MS1S00.OBM");
+        sink.write(0, new Uint8Array([1, 2, 3, 4, 5]));
+        sink.seal(0);
+        const entry = sink.entry(0);
+        sink.close();
+
+        const blob = await readShardOutput(entry);
+        expect(blob.size).toBe(5);
+        expect(new Uint8Array(await blob.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3, 4, 5]));
+    });
+
+    it("reports no sink where the browser has no OPFS, so the run keeps its shards in memory", async () => {
+        const { openShardSink } = await withOpfs(null);
+        expect(await openShardSink(2)).toBeNull();
+    });
+
+    /** A pool that cannot be opened in full is not a sink: handing back a half-open one would fail
+     *  the run at shard 7 instead of falling back to memory before it starts. */
+    it("refuses a pool it could only half open, and strands no lock doing it", async () => {
+        const root = opfs();
+        const { openShardSink } = await withOpfs(root);
+        const home = await root.getDirectoryHandle("obc-out", { create: true });
+        const blocked = await home.getFileHandle("s01.part", { create: true });
+        const held = await blocked.createSyncAccessHandle();
+        try {
+            expect(await openShardSink(3)).toBeNull();
+            // Everything this attempt opened was released — only the lock the test itself holds is
+            // left, or the retry would fail on a lock this failure created.
+            expect(FakeDir.handles.filter((h) => !h.closed)).toEqual([held]);
+        } finally {
+            held.close();
+        }
     });
 });
