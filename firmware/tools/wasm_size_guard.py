@@ -84,6 +84,14 @@ from pathlib import Path
 # What the budget still guards is unchanged: `obc-pack`/libGEOS, a renderer, or the app itself would
 # each be an order of magnitude more than this. Budgets raised to keep the same ~10 % headroom over
 # the new measurement (94 % / 92 %).
+#
+# Re-measured 2026-08-04 for #1116 phase D (the external merge: the scratch/extsort machinery, the
+# hierarchical prune, the sort-merge id joins, the banded verify): 546,661 B raw -> 231,537 B
+# gzipped at D3. Engine object code again — the sorts and the join walks are real passes with real
+# code, and no new crate arrived (`cargo tree` diff is clean: the same dependency set as EL4).
+# Budgets re-based to the same ~10 % headroom (91 % / 91 %), sized so the remaining phase-D stage
+# (D4's streaming emission) fits without another bump while `obc-pack`/GEOS would still blow
+# straight through.
 # --- obc-skin-preview ------------------------------------------------------------------------
 #
 # Measured 2026-08-01 on #1045 (wasm-pack 0.15.0 / wasm-opt -Oz): 240,227 B raw wasm + 11,859 B
@@ -94,7 +102,7 @@ from pathlib import Path
 # Budgets leave ~14 % headroom while still catching a second engine or accidental packer link.
 BUDGETS = {
     "convert": {"gzipped": 62 * 1024, "raw_wasm": 112 * 1024},
-    "assemble": {"gzipped": 220 * 1024, "raw_wasm": 524 * 1024},
+    "assemble": {"gzipped": 248 * 1024, "raw_wasm": 588 * 1024},
     "preview": {"gzipped": 128 * 1024, "raw_wasm": 272 * 1024},
 }
 
