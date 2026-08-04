@@ -130,6 +130,41 @@ export interface AssembleOptions {
 }
 
 /**
+ * One shard, handed over the moment its §4.8 read-back passed — mid-assembly, from inside the
+ * blocking call (#1116 B1).
+ *
+ * Its bytes are **already out of wasm memory** when this arrives: the wasm-side buffer is freed
+ * before the callback runs, which is the entire point. What it costs is that the sink has to be
+ * synchronous. See {@link AssembleFileSink}.
+ */
+export interface AssembleStreamedFile {
+    /** The derived 8.3 filename (`MS<id>S<kk>.OBM`). */
+    readonly name: string;
+    /** Always a shard role — the terrain shard and the OBCS manifest are not streamed. */
+    readonly role: "core" | "coarse" | "geometry";
+    /** Lowercase-hex SHA-256, the same digest the manifest will record for it. */
+    readonly sha256: string;
+    readonly bytes: Uint8Array;
+}
+
+/**
+ * Where streamed shards go. Passing one is what turns streaming on, and it changes what the result
+ * contains: a shard the sink took is **not** in {@link AssembleResult.files} — only the terrain
+ * shard and the manifest are left there.
+ *
+ * The contract is narrow, because this runs *inside* the synchronous assembly:
+ *
+ * - **Do not block.** The assembly is stopped behind it and nothing can be awaited. Post the buffer
+ *   on (transfer it) or park it; do the slow part after the run.
+ * - **Do not throw.** A throw fails the run as `io` — by then the bytes have already left wasm, and
+ *   a set with a hole in it must never be reported as finished.
+ * - **A run that fails or is cancelled may already have called it.** Cleaning up what was handed
+ *   over is the caller's job. Nothing half-usable can reach a device either way: the OBCS manifest
+ *   is written last (OBCA §5.4), so a set without one is not a map.
+ */
+export type AssembleFileSink = (file: AssembleStreamedFile) => void;
+
+/**
  * One finished file. `take()` moves its bytes out of wasm memory and frees the wasm-side copy, so
  * call it once, and one file at a time: an assembled set can be gigabytes.
  */
@@ -154,6 +189,7 @@ export interface AssembledFile {
 
 /** What an assembly produced. Files come shards-first with the OBCS manifest **last** (OBCA §5.4). */
 export interface AssembleResult {
+    /** Everything an {@link AssembleFileSink} did not already take. With no sink, the whole set. */
     readonly files: readonly AssembledFile[];
     /** Everything OBCA says a producer SHOULD report rather than refuse. Ignoring these ships the
      *  same bytes; showing them tells the rider what the spec wanted them told. */
@@ -329,7 +365,10 @@ const abandoned =
  * has already read back; there is deliberately no way to skip it.
  *
  * The result keeps its files in wasm memory until each is `take()`n; call {@link
- * AssembleResult.release} when done, or the set stays resident.
+ * AssembleResult.release} when done, or the set stays resident. Pass `onFile` and that stops being
+ * true of the shards: each one leaves wasm as soon as it is verified, so the output's contribution
+ * to the peak is one shard rather than the whole set (#1116 B1). Read {@link AssembleFileSink}
+ * before you do — the sink runs inside the blocking call and may neither block nor throw.
  *
  * Only one assembly may be in flight at a time; a second overlapping call throws `internal`.
  *
@@ -343,6 +382,7 @@ export async function assembleCells(
     onProgress?: AssembleProgress,
     knownEmpty: readonly AssembleKnownEmpty[] = [],
     terrain?: { readonly lattice: AssembleTerrain; readonly cells: readonly AssembleTerrainCell[] },
+    onFile?: AssembleFileSink,
 ): Promise<AssembleResult> {
     if (assembling) {
         throw new AssembleError(
@@ -364,7 +404,14 @@ export async function assembleCells(
             assembler.setTerrain(terrain.lattice.postingLog2, terrain.lattice.cellLog2);
             for (const cell of terrain.cells) assembler.addTerrainCell(cell.id, cell.sha256, cell.bytes);
         }
-        const summary = JSON.parse(assembler.run(onProgress)) as AssembleSummary;
+        // The wasm side calls this once per shard, synchronously, with the bytes already out of its
+        // linear memory. It is adapted rather than passed through so the sink sees one object and
+        // the four-argument wasm-bindgen shape stays an implementation detail.
+        const sink = onFile
+            ? (name: string, role: string, sha256: string, bytes: Uint8Array) =>
+                  onFile({ name, role: role as AssembleStreamedFile["role"], sha256, bytes })
+            : undefined;
+        const summary = JSON.parse(assembler.run(onProgress, sink)) as AssembleSummary;
         const warnings = assembler.warnings().map((w) => String(w));
         // Bound to the live assembler on purpose: `take()` is what frees the wasm-side copy, so the
         // caller decides when each file's bytes stop being wasm's problem and start being the JS

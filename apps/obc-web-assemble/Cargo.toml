@@ -24,6 +24,12 @@ obc-formats = { path = "../../firmware/obc-formats" }
 # output and the browser's are one document to learn. serde_json is already in the engine's graph
 # (it parses the schema and the skin), so this costs the bundle nothing.
 serde_json = "1"
+# The digest a shard is handed over with when the caller evicts it mid-run (#1116 B1): the store must
+# name and digest a file *before* the run's `Summary` exists. Same crate and version the engine
+# already hashes its shards with, so it is code the wasm bundle carries either way — and hashing the
+# bytes the store actually holds is what makes the end-of-run comparison against the engine's own
+# digest a check rather than a restatement. Only paid for when `Hooks::wants_shards` says so.
+sha2 = "0.11"
 
 # --- Web (wasm32) surface — the only target this crate actually ships on. The driver above stays
 # target-independent so `cargo test` exercises it natively, exactly like obc-web-convert's core.
@@ -46,8 +52,6 @@ obc-pack = { path = "../../host/obc-pack" }
 # round-trip an actual check: the cells the assembler places were not produced by the code under
 # test. (It is the oracle crate; this is what it is for.)
 obc-vectors = { path = "../../host/obc-vectors" }
-# The digests the terrain sidecar pins its cells with, exactly as a catalog index would.
-sha2 = "0.11"
 
 # wasm-pack drives wasm-opt over the release artifact; `-Oz` is the size-first setting, and the
 # bundle-size budget CI enforces (firmware/tools/wasm_size_guard.py) is measured on its output.

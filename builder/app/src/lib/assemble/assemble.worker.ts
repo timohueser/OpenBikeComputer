@@ -12,6 +12,13 @@
 // Files post one at a time with their buffer in the transfer list, then wait
 // for the consumer's ack. The worker-side copy is gone when queued and the
 // next copy stays in wasm until the browser save or SD write has finished.
+//
+// A `streamShards` request posts each shard the same way but from *inside* the
+// assembly (#1116 B1), which is what lets wasm free it mid-run. Nothing can be
+// awaited there — the run is blocked behind the callback — so those messages
+// carry no ack and the consumer gets them before `planned`. The bytes are out of
+// wasm memory before the post; they are on this thread only until the transfer
+// queues them.
 
 import { AssembleError, assembleCells, estimateMemory } from "./bridge";
 import {
@@ -60,6 +67,9 @@ self.onmessage = async (event: MessageEvent<AssembleWorkerRequest>) => {
             });
             return;
         }
+        // Streamed shards are gone from `result.files`, so `planned` would
+        // otherwise price a country-scale set at the manifest's 128 bytes.
+        let streamedBytes = 0;
         const result = await assembleCells(
             req.cells,
             req.schemaJson,
@@ -72,11 +82,18 @@ self.onmessage = async (event: MessageEvent<AssembleWorkerRequest>) => {
             // The raster, when the catalog publishes one. A terrain-less catalog
             // sends nothing here and the set is written without a `terrain` role.
             req.terrain ? { lattice: req.terrain, cells: req.terrainCells ?? [] } : undefined,
+            req.streamShards
+                ? (file) => {
+                      const byteLength = file.bytes.byteLength;
+                      streamedBytes += byteLength;
+                      post({ type: "shard", ...file, byteLength });
+                  }
+                : undefined,
         );
         try {
             post({
                 type: "planned",
-                totalBytes: result.files.reduce((sum, file) => sum + file.byteLength, 0),
+                totalBytes: result.files.reduce((sum, file) => sum + file.byteLength, streamedBytes),
                 shardCount: result.summary.shards.length,
                 warnings: [...result.warnings],
                 summary: result.summary,
