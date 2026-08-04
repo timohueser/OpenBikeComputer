@@ -381,7 +381,7 @@ const PROGRESS_STEP: f64 = 0.01;
 /// the amplification of over-reading is nil; §2.3's verbatim geometry copy asks for 256 KiB at a
 /// time and skips the cache entirely. Smaller would cost calls for nothing; larger would make the
 /// first read of a small cell fetch most of it.
-const DEFAULT_READ_BLOCK: usize = 64 * 1024;
+pub(crate) const DEFAULT_READ_BLOCK: usize = 64 * 1024;
 /// The floor a caller can ask for: `1`, which is not a small cache but **no cache** — every read is
 /// at least one byte, so every read takes the bypass and becomes exactly one host call. That is the
 /// configuration the cache is measured against (`the_read_block_size_changes_the_call_count_and_not_
@@ -394,7 +394,9 @@ const MAX_READ_BLOCK: usize = 4 * 1024 * 1024;
 /// so the working set is one or two blocks; the rest is slack for the seams where §4.6.6 crosses
 /// from one source cell to the next. Sixteen keeps the whole cache at 1 MiB and the miss scan at
 /// sixteen comparisons — which matters, because that scan runs on every engine read.
-const READ_CACHE_BLOCKS: usize = 16;
+/// `pub(crate)` with [`DEFAULT_READ_BLOCK`] because `estimate.rs` prices the streamed input path
+/// as this cache — restating the product there would let the two drift.
+pub(crate) const READ_CACHE_BLOCKS: usize = 16;
 
 /// One resident block of one [`SourceCell`].
 struct CachedBlock {

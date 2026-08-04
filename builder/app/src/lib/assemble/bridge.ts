@@ -299,19 +299,22 @@ export interface AssembleSummary {
  * near-budget verdict as a warning with the number, not as a green light — and never as a guarantee
  * to the user.
  *
- * **Where the limit sits.** A Bundesland-sized selection now fits a desktop tab and a
- * Regierungsbezirk fits a phone's. What still refuses is anything roughly twice BW and up, and the
- * reason has moved: the two resident copies of the selection this bridge itself keeps — the cells
- * copied in by `addCell`, the shards waiting to be taken — are now the majority of the projected
- * peak, so it is streaming those, not further engine work, that would raise the ceiling again.
+ * **Where the limit sits.** With #1116 phase B's two escapes on — cells streaming from OPFS,
+ * shards handed out after their verify — the resident terms are constants and the projection is
+ * engine-bound: it refuses at roughly twice BW on the download path. The device path keeps the
+ * whole set until `planned` and binds earlier, at ~1.4× BW; a browser with no usable OPFS runs the
+ * pre-B shape and binds earlier still. The {@link Residency} passed in states which of these this
+ * run will be, and the verdicts genuinely differ — compute one per destination, never one for all.
  */
 export interface MemoryEstimate {
     /** The engine's working set — dominated by the nav rewrite. Measured 4.7 bytes resident per
      *  byte of selected `network` band, across two runs with margin (#1116). */
     readonly engineBytes: number;
-    /** The downloaded cells — every band plus terrain — resident for the whole run. */
+    /** The **resident** input: every band plus terrain, or the read cache plus terrain when the
+     *  cells stay in OPFS (#1116 B2). */
     readonly inputBytes: number;
-    /** The assembled set, resident until each file is taken (§4.8 needs it addressable). */
+    /** The **resident** output: the whole set (§4.8 needs written bytes addressable, and the device
+     *  path keeps them), or one shard plus the terrain sink when shards stream out (#1116 B1). */
     readonly outputBytes: number;
     /** The sum of the three. An estimate, not a measurement — see the interface docs. */
     readonly peakBytes: number;
@@ -531,8 +534,24 @@ export async function assembleCells(
 }
 
 /**
+ * Which of #1116 phase B's two escapes from linear memory the run being priced will actually have.
+ * Mirrors `Residency` in `apps/obc-web-assemble/src/estimate.rs` — the model's own docs live there.
+ */
+export interface Residency {
+    /** The cells will stream from OPFS (#1116 B2): a writable store with room **and** a passing
+     *  sync-read probe. Resident input becomes the read cache plus terrain instead of the
+     *  selection. Only the worker can assert the probe half — see `assemble.worker.ts`. */
+    readonly inputOnDisk: boolean;
+    /** `> 0`: shards are taken mid-run at this split size (#1116 B1) — the download path. `0`: the
+     *  set is kept until the run ends — the device path, which needs `planned`'s counts first. */
+    readonly streamedShardBytes: number;
+}
+
+/**
  * Project the peak memory of assembling a selection from the catalog's own byte totals, **before**
- * the download: the selected `network`-band cells (nav + POIs, no geometry) and every selected cell.
+ * the download: the selected `network`-band cells (nav + POIs, no geometry), every selected cell
+ * including the terrain squares, the terrain squares' own share, and the run's {@link Residency} —
+ * because one selection can honestly fit the download path and not a direct device send.
  *
  * `budgetBytes` overrides the number the {@link MemoryEstimate.fits} verdict is measured against.
  * The default is 3 GiB, a **desktop** judgement; a caller that knows it is on a phone should pass
@@ -552,10 +571,19 @@ export async function assembleCells(
 export async function estimateMemory(
     networkBandBytes: number,
     totalCellBytes: number,
+    terrainBytes: number,
+    residency: Residency,
     budgetBytes?: number,
 ): Promise<MemoryEstimate> {
     const mod = await ensure();
-    return mod.obc_assemble_estimate(networkBandBytes, totalCellBytes, budgetBytes) as unknown as MemoryEstimate;
+    return mod.obc_assemble_estimate(
+        networkBandBytes,
+        totalCellBytes,
+        terrainBytes,
+        residency.inputOnDisk,
+        residency.streamedShardBytes,
+        budgetBytes,
+    ) as unknown as MemoryEstimate;
 }
 
 function ensure(): Promise<Bridge> {

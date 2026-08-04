@@ -176,6 +176,7 @@
         switch (msg.type) {
             case "estimate-result":
                 estimate = msg.estimate;
+                deviceEstimate = msg.deviceEstimate;
                 estimatePending = false;
                 estimateError = null;
                 break;
@@ -590,6 +591,21 @@
     /** Assemble the current selection and stream its files directly to a connected device. */
     export function sendToDevice(client: ProtocolClient, ctx: JobContext): Promise<UploadResult> {
         return new Promise((resolve, reject) => {
+            // The device path keeps the whole set in wasm memory until `planned` (#1116 B1's
+            // opt-out), so it can refuse a selection the download button honestly accepts.
+            // Checked before a byte is fetched — failing here costs a click; failing at the
+            // engine's peak costs the download, the rewrite, and the tab.
+            if (deviceEstimate && !deviceEstimate.fits) {
+                reject(
+                    new Error(
+                        `Sending straight to the device holds the whole assembled map in browser memory — about ` +
+                            `${formatBytes(deviceEstimate.peakBytes)}, more than a tab can be trusted with ` +
+                            `(${formatBytes(deviceEstimate.budgetBytes)}). Download the map and copy it to the ` +
+                            `card instead, or reduce the coverage area.`,
+                    ),
+                );
+                return;
+            }
             const out: DeviceOutput = {
                 kind: "device",
                 client,
@@ -622,6 +638,10 @@
     // --- the memory projection, before the download -----------------------
 
     let estimate = $state<MemoryEstimate | null>(null);
+    /** The same selection priced as the device path runs it — set kept until
+     *  `planned` (#1116 B1's opt-out) — so it binds earlier than `estimate`.
+     *  Gates {@link sendToDevice}; the download button never reads it. */
+    let deviceEstimate = $state<MemoryEstimate | null>(null);
     let estimatePending = $state(false);
     /** The estimate's own failure channel (#1041 A3) — never mixed into the
      *  run's. Cleared by the next request; retried by bumping the nonce. */
@@ -643,22 +663,35 @@
             // empties or a run that starts must not leave "waiting for an
             // estimate" latched with nothing left to answer it.
             estimate = null;
+            deviceEstimate = null;
             estimatePending = false;
             return;
         }
         const networkBandBytes = l.core.bytes;
         const totalCellBytes = l.totalBytes;
+        const terrainBytes = l.terrain?.bytes ?? 0;
         estimatePending = true;
         estimateError = null;
         // Debounced: a slider mid-drag changes the figures every frame, and the
         // projection only matters once the selection settles.
         const timer = setTimeout(() => {
-            ensureWorker().postMessage({
-                type: "estimate",
-                networkBandBytes,
-                totalCellBytes,
-                budgetBytes: isMobileUa ? MOBILE_BUDGET : undefined,
-            } satisfies AssembleWorkerRequest);
+            // The main thread's half of the input mode, decided by the same two
+            // checks `begin` runs before a byte is fetched: a store this browser
+            // will write, with room for the cells (terrain never goes to disk).
+            // The worker ANDs in its own sync-read probe. Responses arrive in
+            // request order, so a stale answer is overwritten, never kept.
+            void (async () => {
+                const inputOnDisk = (await cellStoreWritable()) && (await hasRoomFor(totalCellBytes - terrainBytes));
+                ensureWorker().postMessage({
+                    type: "estimate",
+                    networkBandBytes,
+                    totalCellBytes,
+                    terrainBytes,
+                    inputOnDisk,
+                    streamedShardBytes: TARGET_SHARD_BYTES,
+                    budgetBytes: isMobileUa ? MOBILE_BUDGET : undefined,
+                } satisfies AssembleWorkerRequest);
+            })();
         }, 500);
         return () => clearTimeout(timer);
     });
@@ -673,6 +706,17 @@
             // So "split it in two" is not a remedy that exists here, and the only
             // honest instruction is to cover less ground.
             `(${formatBytes(estimate.budgetBytes)}). Reduce the coverage area.`
+        );
+    });
+
+    /** Said here, on the coverage screen, rather than first discovered when a device send
+     *  refuses: the selection downloads fine but will not fit a direct device send. */
+    const deviceCaution = $derived.by(() => {
+        if (!estimate?.fits || !deviceEstimate || deviceEstimate.fits) return null;
+        return (
+            `This map downloads fine, but sending it straight to a device would need about ` +
+            `${formatBytes(deviceEstimate.peakBytes)} of browser memory ` +
+            `(${formatBytes(deviceEstimate.budgetBytes)} available) — download it and copy it to the card instead.`
         );
     });
 
@@ -888,6 +932,8 @@
                 </p>
             {:else if memoryCaution}
                 <p class="line caution small">{memoryCaution}</p>
+            {:else if deviceCaution}
+                <p class="line caution small">{deviceCaution}</p>
             {/if}
 
             {#if phase === "idle" || phase === "cancelled" || phase === "error" || phase === "done"}
