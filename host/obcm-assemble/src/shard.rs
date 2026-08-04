@@ -22,6 +22,7 @@ use crate::input::Cell;
 use crate::nav::MergedNav;
 use crate::poi::PoiSection;
 use crate::schema::{BandRole, StyleRecord};
+use crate::scratch::ScratchStore;
 use crate::{Error, Result};
 
 /// The hard per-file ceiling: FAT32's `4 GiB − 1 B`, which is also `u32::MAX` and therefore also
@@ -108,6 +109,9 @@ pub fn projected_bytes(plan: &ShardPlan, style_len: usize, poi_len: usize, nav_l
 /// read, in the order it read them. They are a second list because the merged graph holds its edge
 /// records as *addresses* into those cells (§4.6.6) — the core's nav section is streamed out of them
 /// here rather than out of a pool the merge would otherwise have had to keep.
+///
+/// `scratch` must be the store the §4.6 merge spilled into: since #1116 D4 the nav section's index,
+/// chunks and pool plan live there too, and they stay valid until `MergedNav::release`.
 // The argument list is one shard's whole input: the plan, the cells it grafts, the three rebuilt
 // pieces every shard shares, and the sink. Bundling them into a struct would move the noise rather
 // than remove it — the same call the packer's `serialize_lods_streaming` makes, for the same reason.
@@ -121,6 +125,7 @@ pub fn write(
     poi: &PoiSection,
     nav: &MergedNav,
     profile_table: &[u8],
+    scratch: &dyn ScratchStore,
     sink: &mut dyn FnMut(&[u8]) -> Result<()>,
 ) -> Result<(u64, [u8; 32])> {
     let style_bytes = pack_style_table(styles);
@@ -173,7 +178,14 @@ pub fn write(
 
     // 5/6. The POI and nav sections — the core's rebuilt ones, or a legal empty pair (§5.1).
     out(&crate::poi::serialize(empty_poi.as_ref().unwrap_or(poi), l.poi_offset))?;
-    crate::nav::serialize(empty_nav.as_ref().unwrap_or(nav), profile_table, l.nav_offset, nav_cells, &mut out)?;
+    crate::nav::serialize(
+        empty_nav.as_ref().unwrap_or(nav),
+        profile_table,
+        l.nav_offset,
+        nav_cells,
+        scratch,
+        &mut out,
+    )?;
 
     // §4.8.6: the write must land exactly where §5.7's projection said it would. A `debug_assert`
     // would leave a release build emitting a file whose recorded `Bytes` and header offsets are a
