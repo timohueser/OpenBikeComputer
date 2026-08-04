@@ -312,14 +312,27 @@ impl<'s, const R: usize> ExternalSort<'s, R> {
             }
             cursors.push(cursor);
         }
-        let runs = self.runs.iter().map(|&(id, _)| id).collect();
+        let runs = self.runs.iter().map(|&(id, _)| Some(id)).collect();
         Ok(SortedRecords { source: Source::Merge { cursors, heap, runs }, scratch: self.scratch })
     }
 }
 
 enum Source<'s, const R: usize> {
-    Memory { buf: Vec<[u8; R]>, at: usize },
-    Merge { cursors: Vec<BlockReader<'s, R>>, heap: BinaryHeap<Head<R>>, runs: Vec<ScratchId> },
+    Memory {
+        buf: Vec<[u8; R]>,
+        at: usize,
+    },
+    Merge {
+        cursors: Vec<BlockReader<'s, R>>,
+        heap: BinaryHeap<Head<R>>,
+        /// `None` once a run's file is already deleted — which happens the moment its cursor
+        /// exhausts, not when the stream drops. On the merge's workloads push order correlates
+        /// with key order (collection-index keys are *equal* to it, spatial keys nearly), so runs
+        /// drain one after another and the spill shrinks **while** the next pass's spill grows —
+        /// without this, every sort's runs survive to the end of the stream and two chained passes
+        /// peak at twice the data (#1116 D3 measured 409 MiB of spill at BW where ~half is dead).
+        runs: Vec<Option<ScratchId>>,
+    },
 }
 
 /// The sorted stream. Read it once, front to back; the runs behind it are deleted when it drops.
@@ -338,12 +351,18 @@ impl<const R: usize> Iterator for SortedRecords<'_, R> {
                 *at += 1;
                 Some(Ok(rec))
             }
-            Source::Merge { cursors, heap, .. } => {
+            Source::Merge { cursors, heap, runs } => {
                 let head = heap.pop()?;
-                if let Some(next) = cursors[head.run].next() {
-                    match next {
-                        Ok(rec) => heap.push(Head { rec, run: head.run, order: head.order }),
-                        Err(e) => return Some(Err(e)),
+                match cursors[head.run].next() {
+                    Some(Ok(rec)) => heap.push(Head { rec, run: head.run, order: head.order }),
+                    Some(Err(e)) => return Some(Err(e)),
+                    None => {
+                        // This run's last record is the one being handed out — its file is dead
+                        // *now*, and on this crate's workloads "now" is early (see `Source::Merge`).
+                        // Best-effort for the same reason `Drop` is.
+                        if let Some(id) = runs[head.run].take() {
+                            let _ = self.scratch.remove(id);
+                        }
                     }
                 }
                 Some(Ok(head.rec))
@@ -362,7 +381,9 @@ impl<const R: usize> Drop for SortedRecords<'_, R> {
         if let Source::Merge { runs, cursors, heap } = &mut self.source {
             cursors.clear();
             heap.clear();
-            for id in runs.drain(..) {
+            // Only what the merge walk has not already deleted — a fully consumed stream leaves
+            // nothing for this to do.
+            for id in runs.drain(..).flatten() {
                 let _ = self.scratch.remove(id);
             }
         }
@@ -490,5 +511,77 @@ mod tests {
             panic!("a stream of one and a bit records must be refused");
         };
         assert!(format!("{err}").contains("whole number"), "got: {err}");
+    }
+
+    /// A [`ScratchStore`] that counts what is alive, so a spill-residency claim is measured rather
+    /// than assumed.
+    struct Counting {
+        inner: MemoryScratch,
+        live: std::cell::Cell<usize>,
+        peak: std::cell::Cell<usize>,
+    }
+
+    impl Counting {
+        fn new() -> Counting {
+            Counting { inner: MemoryScratch::new(), live: 0.into(), peak: 0.into() }
+        }
+    }
+
+    impl ScratchStore for Counting {
+        fn create(&self) -> Result<ScratchId> {
+            self.live.set(self.live.get() + 1);
+            self.peak.set(self.peak.get().max(self.live.get()));
+            self.inner.create()
+        }
+        fn append(&self, id: ScratchId, buf: &[u8]) -> Result<()> {
+            self.inner.append(id, buf)
+        }
+        fn read_at(&self, id: ScratchId, offset: u64, buf: &mut [u8]) -> Result<()> {
+            self.inner.read_at(id, offset, buf)
+        }
+        fn len(&self, id: ScratchId) -> Result<u64> {
+            self.inner.len(id)
+        }
+        fn remove(&self, id: ScratchId) -> Result<()> {
+            self.live.set(self.live.get() - 1);
+            self.inner.remove(id)
+        }
+    }
+
+    /// **The mid-stream eviction.** On a sequential workload — push order = key order, which is
+    /// what a collection-index key is exactly and a spatial key nearly — runs drain one after
+    /// another, so their files must die *during* the merge, not when the stream drops. Two chained
+    /// sorts otherwise hold both passes' spill at once, and #1116 D3 measured about half of BW's
+    /// 409 MiB peak spill being exactly that dead weight.
+    #[test]
+    fn a_drained_runs_file_dies_mid_stream_not_at_drop() {
+        let scratch = Counting::new();
+        // A budget of 8 records → runs of 4 → 64 sequential records spill 16 runs.
+        let mut sort = ExternalSort::<R>::new(&scratch, 8 * R * RUN_SHARE, by_key);
+        for i in 0..64u32 {
+            sort.push(rec(i, i)).expect("push");
+        }
+        let mut stream = sort.finish().expect("finish");
+        let total = scratch.live.get();
+        assert!(total >= 8, "the fixture must actually spill ({total} runs)");
+        // Halfway through a sequential stream, about half the runs are drained — and drained means
+        // deleted. One run of slack for the record in flight at the boundary.
+        for _ in 0..32 {
+            stream.next().expect("a record").expect("ok");
+        }
+        assert!(
+            scratch.live.get() <= total / 2 + 1,
+            "{} of {total} runs still alive at the halfway point — drained runs are not being evicted",
+            scratch.live.get()
+        );
+        // The rest of the stream still reads correctly after its predecessors' files are gone…
+        let rest: Vec<u32> = stream.by_ref().map(|r| key(&r.expect("ok"))).collect();
+        assert_eq!(rest, (32..64u32).collect::<Vec<_>>());
+        // …a fully consumed stream has deleted everything itself…
+        assert_eq!(scratch.live.get(), 0, "a consumed stream left runs behind");
+        // …and the drop after full consumption double-removes nothing (the seam allows a second
+        // remove to refuse, but the eviction must not *rely* on that).
+        drop(stream);
+        assert_eq!(scratch.live.get(), 0);
     }
 }
