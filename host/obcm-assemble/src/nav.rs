@@ -81,6 +81,30 @@
 //!   depend on the sort's stability, and the same walk fills the adjacency, because a record's
 //!   `Edge Id` is known at exactly the moment it is placed.
 //!
+//! # …and neither does the emission (#1116 D4)
+//!
+//! What was left after D3 was the *output* side: the rebuilt adjacency as one CSR buffer, the node
+//! set the quadtree takes **by value**, and the §8.2 index and §8.3 chunks built whole before a
+//! shard was planned — 176 + 57 + 175 MiB at a state-sized bake, and gigabytes at DACH. All three
+//! are streams now, and [`serialize`] writes the whole §8 section source→sink.
+//!
+//! * **The adjacency is a stream, not a buffer.** The emission walk explodes each edge into its ≤ 2
+//!   directed entries and pushes them into an external sort keyed by `(from, entry order)`, where
+//!   the entry order is the position the emission walk wrote them at. §8.3's degree cap is
+//!   *order*-sensitive — it refuses the entries that arrive after a junction is full, which is a
+//!   property of the walk — so reproducing the walk position is the whole requirement, and it is why
+//!   the key carries the counter explicitly instead of leaning on the sort's stability. A merge walk
+//!   of the dense node stream against that sorted stream then yields each junction's §8.3 record,
+//!   with the cap biting at exactly the entry it bit at before.
+//! * **The quadtree is built in passes.** Its *shape* is a pure function of the coordinates, the
+//!   record lengths, the 512-byte capacity and the recursion floor, so [`crate::qtree`]'s
+//!   `flatten_streaming` recovers it from the same records sorted in **tree order** — a different
+//!   key than the dense one, so one more external sort — and hands back the index, the bin packing
+//!   and a placement plan. Nothing holds a point.
+//! * **The section is written from the seam.** `MergedNav` is directories, counts and five scratch
+//!   ids; `section_len` is still arithmetic over them, so a shard is still planned before a byte is
+//!   written.
+//!
 //! The order of the passes is normative and each one depends on the last:
 //!
 //! 1. **Read the serialized node set** — not a graph builder's, the *serializer's*. The §8.4 splits
@@ -117,7 +141,7 @@ use obc_formats::obcm::{
 use crate::extsort::{ExternalSort, SpillReader, SpillWriter};
 use crate::grid::{on_grid_boundary, UBox};
 use crate::input::Cell;
-use crate::qtree::{self, Point};
+use crate::qtree;
 use crate::scratch::{ScratchId, ScratchStore};
 use crate::{prune, Error, Result};
 
@@ -361,43 +385,88 @@ fn by_emission(x: &[u8; DENSE_REC], y: &[u8; DENSE_REC]) -> Ordering {
     key(x).cmp(&key(y))
 }
 
-/// One junction ready to serialize: its coordinate, its dense id, and a *view* of the shared
-/// adjacency buffer — `degree` entries starting at `at`. The neighbours are not owned, because a
-/// `Vec` per junction was a heap allocation and a 24-byte header for a list that averages under
-/// three entries (2.99 M of them on a state-sized bake).
-struct NavPoint {
-    lat: i32,
-    lon: i32,
-    id: u32,
-    /// Index of this junction's first neighbour in the CSR buffer [`merge`] fills.
-    at: u32,
-    /// How many entries it kept — at most `OBCM_Spec.md` §8.3's cap of 24, so a byte.
-    degree: u8,
+/// The renumbered junctions as a stream: `lat i32, lon i32`, in dense order, so a record's
+/// **position is its dense id** — the same trick the collection stream plays with the collection id.
+const DENSE_NODE: usize = 8;
+
+/// The §4.6.6 pool plan on the seam: one [`EdgeRef`] per kept edge, in emission order —
+/// `cell u32, off u32, len u16`.
+const POOL_REC: usize = 10;
+
+fn pool_record(r: &EdgeRef) -> [u8; POOL_REC] {
+    let mut out = [0u8; POOL_REC];
+    out[0..4].copy_from_slice(&r.cell.to_le_bytes());
+    out[4..8].copy_from_slice(&r.off.to_le_bytes());
+    out[8..10].copy_from_slice(&r.len.to_le_bytes());
+    out
 }
 
-#[derive(Clone, Copy, Default)]
-struct WireNeighbor {
-    id: u32,
-    lat: i32,
-    lon: i32,
+fn pool_ref(r: &[u8; POOL_REC]) -> EdgeRef {
+    EdgeRef {
+        cell: u32::from_le_bytes(r[0..4].try_into().expect("4 bytes")),
+        off: u32::from_le_bytes(r[4..8].try_into().expect("4 bytes")),
+        len: u16::from_le_bytes(r[8..10].try_into().expect("2 bytes")),
+    }
+}
+
+/// One **directed** adjacency entry, as the emission walk wrote it: `from u32, seq u32, to u32,
+/// lat i32, lon i32, edge id u32, cost u16, ascent u16, kind u8`.
+///
+/// `seq` is the entry's position in the emission walk, and it is in the record rather than implied
+/// because §8.3's degree cap is a property of *that* order: the cap does not choose 24 arcs, it
+/// refuses the ones that arrive after the junction is full. `(from, seq)` is therefore both the sort
+/// key and a total order, and the merge walk it feeds refuses exactly what the CSR fill refused.
+///
+/// The neighbour's coordinate rides along because §8.3 stores it as an `int16` delta from the
+/// junction's own, and looking it up would be the whole-map node array this pass exists to remove.
+///
+/// `seq` is a `u32` by construction rather than by hope: step 6 refuses a pool past 4 GiB, an §8.4
+/// edge record is at least [`NAV_EDGE_FIXED_LEN`] bytes, and the walk writes at most two entries per
+/// edge — so `seq` cannot pass `2 × 2^32 / 15 ≈ 573 M`, a seventh of what a `u32` holds.
+const ADJ_REC: usize = 29;
+
+#[allow(clippy::too_many_arguments)]
+fn adj_record(
+    from: u32,
+    seq: u32,
+    to: u32,
+    (lat, lon): (i32, i32),
     edge_id: u32,
-    cost_m: u32,
-    way_kind: u8,
-    /// The v12 §8.3 climb of riding **toward** this neighbour. Carried through the merge per
-    /// direction, because it is the one adjacency field the two sides of an edge do not share.
-    ascent_m: u16,
+    cost: u16,
+    ascent: u16,
+    kind: u8,
+) -> [u8; ADJ_REC] {
+    let mut r = [0u8; ADJ_REC];
+    r[0..4].copy_from_slice(&from.to_le_bytes());
+    r[4..8].copy_from_slice(&seq.to_le_bytes());
+    r[8..12].copy_from_slice(&to.to_le_bytes());
+    r[12..16].copy_from_slice(&lat.to_le_bytes());
+    r[16..20].copy_from_slice(&lon.to_le_bytes());
+    r[20..24].copy_from_slice(&edge_id.to_le_bytes());
+    r[24..26].copy_from_slice(&cost.to_le_bytes());
+    r[26..28].copy_from_slice(&ascent.to_le_bytes());
+    r[28] = kind;
+    r
 }
 
-impl Point for NavPoint {
-    fn lat(&self) -> i32 {
-        self.lat
-    }
-    fn lon(&self) -> i32 {
-        self.lon
-    }
-    fn record_len(&self) -> usize {
-        NAV_NODE_FIXED_LEN + self.degree as usize * NAV_NEIGHBOR_LEN
-    }
+fn adj_from(r: &[u8; ADJ_REC]) -> u32 {
+    u32::from_le_bytes(r[0..4].try_into().expect("4 bytes"))
+}
+
+fn adj_seq(r: &[u8; ADJ_REC]) -> u32 {
+    u32::from_le_bytes(r[4..8].try_into().expect("4 bytes"))
+}
+
+fn adj_coord(r: &[u8; ADJ_REC]) -> (i32, i32) {
+    (
+        i32::from_le_bytes(r[12..16].try_into().expect("4 bytes")),
+        i32::from_le_bytes(r[16..20].try_into().expect("4 bytes")),
+    )
+}
+
+/// `(from, seq)` — the emission walk's own order, restored.
+fn by_adjacency(a: &[u8; ADJ_REC], b: &[u8; ADJ_REC]) -> Ordering {
+    (adj_from(a), adj_seq(a)).cmp(&(adj_from(b), adj_seq(b)))
 }
 
 /// What the merge is worth reporting about itself — the §4.8.5 reachability report plus the counters
@@ -425,21 +494,41 @@ pub struct NavStats {
     pub dropped_nodes: usize,
 }
 
-/// The merged graph, **already laid out**: the node quadtree and its bin-packed chunks in the file's
-/// own encoding, and the edge pool as a plan rather than a buffer — every record's source address in
-/// emission order, plus the padded length the layout comes to. Only the directory's absolute offsets
-/// are left, which is what lets a shard's size be known before its header is written.
+/// The five scratch streams a merged graph is: everything §8 needs, none of it resident.
+struct NavFiles {
+    /// The §8.2 index, already in wire form — `Node Count` little-endian `uint32`s.
+    index: ScratchId,
+    /// One `qtree::PLACE_REC` per non-empty leaf, in chunk-emission order.
+    places: ScratchId,
+    /// The junctions in tree order, which is what a leaf's run of the placement plan names.
+    points: ScratchId,
+    /// Every junction's packed §8.3 record, in dense order, addressed by the tree records.
+    recs: ScratchId,
+    /// Every kept edge's [`EdgeRef`], in emission order.
+    pool: ScratchId,
+}
+
+/// The merged graph, **already laid out** and living on the [scratch seam](crate::scratch): the node
+/// quadtree's index and its bin-packed chunks as a plan plus the packed records, and the edge pool
+/// as a plan rather than a buffer — every record's source address in emission order. What is in
+/// memory is the directory's counts, which is what lets a shard's size be known before its header is
+/// written.
+///
+/// The streams outlive the merge because the write does not happen until the set has been planned;
+/// [`MergedNav::release`] is what gives them back.
 pub struct MergedNav {
-    index: Vec<u8>,
+    /// `None` for the legal empty section every non-core shard carries (§5.1).
+    files: Option<NavFiles>,
+    /// Tree nodes in the §8.2 index — [`crate::qtree::Flattened::node_count`], not the junction
+    /// count.
     node_count: u32,
-    chunks: Vec<u8>,
     chunk_count: u32,
-    /// Every kept edge's record, in emission order, named by where its cell wrote it. The pool's
-    /// bytes are streamed from those cells by [`serialize`] and are never held here.
-    pool: Vec<EdgeRef>,
+    index_len: usize,
     /// What the pool comes to once §8.4's no-straddle padding and the chunk-aligned tail are
     /// applied — the one number the directory and the shard projection need from it.
     pool_len: usize,
+    /// What a read buffer in [`serialize`] may hold; the merge's own share of its budget.
+    read_budget: usize,
     pub stats: NavStats,
 }
 
@@ -448,9 +537,22 @@ impl MergedNav {
         self.node_count == 0
     }
 
-    /// Bytes this section occupies once written after `profile_table`.
+    /// Bytes this section occupies once written after `profile_table`. Every chunk is padded to
+    /// `NAV_CHUNK_SIZE`, so the chunk region is arithmetic over the count (§8.1).
     pub fn section_len(&self, profile_table: &[u8]) -> usize {
-        NAV_DIR_LEN + profile_table.len() + self.index.len() + self.chunks.len() + self.pool_len
+        NAV_DIR_LEN + profile_table.len() + self.index_len + self.chunk_count as usize * NAV_CHUNK_SIZE + self.pool_len
+    }
+
+    /// Give the scratch streams back, once the last shard that could name them has been written.
+    ///
+    /// Best-effort like every other scratch delete (see [`crate::scratch`]): the bytes are already
+    /// unreachable, and a host that fails to reclaim them is about to drop its whole scratch area.
+    pub fn release(&self, scratch: &dyn ScratchStore) {
+        if let Some(f) = &self.files {
+            for id in [f.index, f.places, f.points, f.recs, f.pool] {
+                let _ = scratch.remove(id);
+            }
+        }
     }
 }
 
@@ -704,17 +806,15 @@ pub fn merge(
     // quadtree wants. What the edges are resolved through is no longer an array either: it is the
     // `(id, dense, lat, lon)` stream this returns, sorted by id and joined against below. ---
     deltas.sort_unstable();
-    let (mut nodes, dense_by_id) =
+    let (nodes_file, node_count, dense_by_id) =
         renumber(scratch, budget, share, node_file, pruned.node_comp, &pruned.keep, &deltas)?;
     drop(deltas);
+    stats.nodes = node_count as usize;
 
     // --- 5 (cont.). Attach the dense ids, by merge join rather than by lookup: sort what survived
     // by `a`, walk it beside the id-ordered dense stream, then do the same for `b`. The endpoint
     // coordinates come across with the ids, because §8.3's neighbour deltas are measured from them
     // and re-reading them later would be exactly the whole-map array this pass is removing.
-    //
-    // The second pass also counts each junction's **uncapped** degree while both dense ids are in
-    // hand, which is what lets the emission walk below be a single pass.
     //
     // Each join hands its result straight into the **next** pass's sort rather than through a file:
     // a sort that is generating runs is holding at most half its budget, and one that is merging is
@@ -723,11 +823,10 @@ pub fn merge(
     let by_b = join_first(scratch, budget, share, edge_file, &pruned, &dead, dense_by_id)?;
     drop(pruned);
     drop(dead);
-    let mut fill: Vec<u32> = vec![0; nodes.len()]; // uncapped degree, then entries written
-    let by_emit = join_second(scratch, budget, share, by_b, dense_by_id, &mut fill, &mut stats)?;
+    let by_emit = join_second(scratch, budget, share, by_b, dense_by_id, &mut stats)?;
     scratch.remove(dense_by_id)?;
 
-    // --- 6/7. Lay the edge pool out and rebuild the adjacency, in **one** walk of the emission
+    // --- 6/7. Lay the edge pool out and explode the adjacency, in **one** walk of the emission
     // order (§4.6.6).
     //
     // `Edge Id` is a pool byte offset, so every record lands at a new place and the no-straddle rule
@@ -736,92 +835,200 @@ pub fn merge(
     // the id of the record it is about to place, and the two adjacency entries that quote that id
     // are written on the spot.
     //
-    // One CSR buffer, not a `Vec` per junction: at state scale that was three million heap
-    // allocations and three million 24-byte headers for lists averaging under three entries. §8.3's
-    // degree cap is order-sensitive — it does not "keep 24 of the arcs", it refuses the ones that
-    // arrive after a node is already full — so the offsets reserve `min(degree, 24)` from the
-    // uncapped degrees the join counted, and the walk refuses at exactly the point a growing `Vec`
-    // used to. (Reserving the capped count is exact: a node is pushed to `degree` times and stops
-    // accepting at 24, so it ends with `min(degree, 24)` entries and the buffer has no slack.) ---
-    // An offset counts at most two entries per kept edge, and step 6 refuses a pool past 4 GiB of
-    // records that are 15 bytes at their smallest — so it is a `u32` by construction.
-    let mut offsets: Vec<u32> = Vec::with_capacity(nodes.len() + 1);
-    let mut total = 0usize;
-    for d in fill.iter_mut() {
-        offsets.push(total as u32);
-        total += (*d as usize).min(NAV_MAX_DEGREE);
-        *d = 0;
-    }
-    offsets.push(total as u32);
-    let mut csr: Vec<WireNeighbor> = vec![WireNeighbor::default(); total];
-    let mut pool: Vec<EdgeRef> = Vec::with_capacity(stats.edges);
+    // What they are written *into* is a sort, not a CSR buffer. The buffer needed the uncapped
+    // degrees reserved in advance and 24 bytes per entry resident until the quadtree had read the
+    // last one — 176 MiB at a state bake, and the second-largest thing left in the merge. The
+    // entries carry the walk position instead, and `emit_nodes` puts them back in it. §8.3's degree
+    // cap is order-sensitive — it does not "keep 24 of the arcs", it refuses the ones that arrive
+    // after a node is already full — so reproducing that order is the whole requirement. ---
+    let mut pool_out = SpillWriter::<POOL_REC>::create(scratch, share)?;
+    let mut adj = ExternalSort::<ADJ_REC>::new(scratch, budget / 2, by_adjacency);
     let mut at = 0usize;
-    {
-        for rec in by_emit.finish()? {
-            let rec = rec?;
-            let r = dense_ref(&rec);
-            let len = r.len as usize;
-            at = place(at, len);
-            if at > u32::MAX as usize {
-                return Err(Error::Capacity(
-                    "the merged edge pool passes 4 GiB: `Edge Id` is a uint32 pool byte offset (OBCA §5.7)".into(),
-                ));
-            }
-            let edge_id = at as u32;
-            pool.push(r);
-            at += len;
+    let mut seq: u32 = 0;
+    for rec in by_emit.finish()? {
+        let rec = rec?;
+        let r = dense_ref(&rec);
+        let len = r.len as usize;
+        at = place(at, len);
+        if at > u32::MAX as usize {
+            return Err(Error::Capacity(
+                "the merged edge pool passes 4 GiB: `Edge Id` is a uint32 pool byte offset (OBCA §5.7)".into(),
+            ));
+        }
+        let edge_id = at as u32;
+        pool_out.push(pool_record(&r))?;
+        at += len;
 
-            let (a, b) = (dense_id(&rec, A_AT), dense_id(&rec, B_AT));
-            let (a_at, b_at) = (dense_coord(&rec, A_AT), dense_coord(&rec, B_AT));
-            let (cost_m, way_kind) = (dense_cost(&rec), dense_kind(&rec));
-            let (ascent_ab, ascent_ba) = dense_ascents(&rec);
-            let mut push = |from: u32, (flat, flon): (i32, i32), to: u32, (lat, lon): (i32, i32), ascent_m: u16| {
-                let used = &mut fill[from as usize];
-                if *used as usize >= NAV_MAX_DEGREE {
+        let (a, b) = (dense_id(&rec, A_AT), dense_id(&rec, B_AT));
+        let (a_at, b_at) = (dense_coord(&rec, A_AT), dense_coord(&rec, B_AT));
+        // §8.3 stores the cost as a `uint16`, so the entry is the width of the field it becomes.
+        let cost = dense_cost(&rec).min(u16::MAX as u32) as u16;
+        let kind = dense_kind(&rec);
+        let (ascent_ab, ascent_ba) = dense_ascents(&rec);
+        adj.push(adj_record(a, seq, b, b_at, edge_id, cost, ascent_ab, kind))?;
+        seq += 1;
+        if a != b {
+            // A self-loop appears once (§8.3), exactly as the CSR fill wrote it once.
+            adj.push(adj_record(b, seq, a, a_at, edge_id, cost, ascent_ba, kind))?;
+            seq += 1;
+        }
+    }
+    // The tail pads to a whole chunk, because §8.1's `Edge Chunk Count` measures the pool in chunks.
+    let pool_len = at.div_ceil(NAV_CHUNK_SIZE) * NAV_CHUNK_SIZE;
+    let (pool, pool_count) = pool_out.seal()?;
+    debug_assert_eq!(pool_count as usize, stats.edges, "one pool entry per kept edge");
+
+    // --- 7 (cont.). The junction records, and the node quadtree over the **assembly** bbox with
+    // §8.2's bin-packed 512-byte chunks — both in passes, and both laid out here so a shard's size
+    // is known before its header is written. ---
+    let (recs, flat) = emit_nodes(scratch, budget, share, nodes_file, node_count, adj, global_bbox, &mut stats)?;
+    Ok(MergedNav {
+        files: Some(NavFiles { index: flat.index, places: flat.places, points: flat.points, recs, pool }),
+        node_count: flat.node_count,
+        chunk_count: flat.chunk_count,
+        index_len: flat.node_count as usize * 4,
+        pool_len,
+        read_budget: share,
+        stats,
+    })
+}
+
+/// The §8.3 junction records and the tree over them, as a merge walk and two sorted passes.
+///
+/// One forward walk of the dense node stream against the adjacency sorted by `(from, seq)` produces
+/// every junction's record — the cap applied at the entry the emission walk applied it at, the
+/// `int16` neighbour deltas re-checked on the entries that survive it — and appends it to a byte
+/// stream in dense order. What goes into the tree's sort is eighteen bytes per junction: where the
+/// record is, how long it is, its tree key and its dense id.
+///
+/// Nothing here is sized by the graph. The record buffer is one junction's — 421 bytes at §8.3's
+/// degree cap — and the two sorts are bounded by the caller's budget.
+#[allow(clippy::too_many_arguments)]
+fn emit_nodes(
+    scratch: &dyn ScratchStore,
+    budget: usize,
+    share: usize,
+    nodes_file: ScratchId,
+    node_count: u32,
+    adj: ExternalSort<'_, ADJ_REC>,
+    global_bbox: UBox,
+    stats: &mut NavStats,
+) -> Result<(ScratchId, qtree::Flattened)> {
+    let mut recs = ByteSpill::create(scratch, share)?;
+    let mut points = ExternalSort::<{ qtree::TREE_REC }>::new(scratch, budget / 2, qtree::by_tree_order);
+    {
+        let mut entries = adj.finish()?;
+        let mut head = entries.next().transpose()?;
+        let mut buf: Vec<u8> = Vec::with_capacity(NAV_NODE_FIXED_LEN + NAV_MAX_DEGREE * NAV_NEIGHBOR_LEN);
+        for (dense, rec) in SpillReader::<DENSE_NODE>::open(scratch, nodes_file, share)?.enumerate() {
+            let rec = rec?;
+            let dense = dense as u32;
+            let lat = i32::from_le_bytes(rec[0..4].try_into().expect("4 bytes"));
+            let lon = i32::from_le_bytes(rec[4..8].try_into().expect("4 bytes"));
+            buf.clear();
+            buf.extend_from_slice(&lat.to_le_bytes());
+            buf.extend_from_slice(&lon.to_le_bytes());
+            buf.extend_from_slice(&dense.to_le_bytes());
+            buf.push(0); // degree, once the cap has had its say
+            let mut degree = 0usize;
+            while let Some(e) = head.filter(|e| adj_from(e) == dense) {
+                head = entries.next().transpose()?;
+                // The entries are in the emission walk's own order, so the ones past the cap are the
+                // same ones the CSR fill refused.
+                if degree >= NAV_MAX_DEGREE {
                     stats.degree_truncated += 1;
-                    return Ok(());
+                    continue;
                 }
-                let (dlat, dlon) = (lat as i64 - flat as i64, lon as i64 - flon as i64);
+                let (nlat, nlon) = adj_coord(&e);
+                let (dlat, dlon) = (nlat as i64 - lat as i64, nlon as i64 - lon as i64);
                 if dlat.abs() > MAX_NEIGHBOR_DELTA || dlon.abs() > MAX_NEIGHBOR_DELTA {
                     return Err(Error::Format(format!(
                         "a merged adjacency spans ({dlat}, {dlon}) µdeg, past the §8.3 int16 neighbour delta"
                     )));
                 }
-                csr[offsets[from as usize] as usize + *used as usize] =
-                    WireNeighbor { id: to, lat, lon, edge_id, cost_m: cost_m.min(u16::MAX as u32), way_kind, ascent_m };
-                *used += 1;
-                Ok(())
-            };
-            push(a, a_at, b, b_at, ascent_ab)?;
-            if a != b {
-                push(b, b_at, a, a_at, ascent_ba)?; // a self-loop appears once (§8.3)
+                buf.extend_from_slice(&e[8..12]); // neighbour id
+                buf.extend_from_slice(&(dlat as i16).to_le_bytes());
+                buf.extend_from_slice(&(dlon as i16).to_le_bytes());
+                buf.extend_from_slice(&e[20..26]); // edge id, cost
+                buf.push(e[28]); // way kind
+                buf.extend_from_slice(&e[26..28]); // ascent
+                degree += 1;
             }
+            buf[12] = degree as u8;
+            debug_assert_eq!(buf.len(), NAV_NODE_FIXED_LEN + degree * NAV_NEIGHBOR_LEN);
+            let at = recs.push(&buf)?;
+            points.push(qtree::tree_record(qtree::tree_key(lat, lon, global_bbox), dense, at, buf.len() as u16))?;
+        }
+        if let Some(e) = head {
+            return Err(Error::Format(format!(
+                "an adjacency entry names junction {}, past the {node_count} the renumbering handed out",
+                adj_from(&e)
+            )));
         }
     }
-    // The tail pads to a whole chunk, because §8.1's `Edge Chunk Count` measures the pool in chunks.
-    let pool_len = at.div_ceil(NAV_CHUNK_SIZE) * NAV_CHUNK_SIZE;
-    debug_assert_eq!(pool.len(), stats.edges, "one pool entry per kept edge");
+    scratch.remove(nodes_file)?;
+    let recs = recs.seal()?;
 
-    // The CSR views, into the points that were renumbered into it. `degree` is what the walk above
-    // actually wrote, which is `min(uncapped, 24)`.
-    for (dense, p) in nodes.iter_mut().enumerate() {
-        p.at = offsets[dense];
-        p.degree = fill[dense] as u8;
+    // The tree wants the same records in tree order, and every leaf is a *range* of that order — so
+    // it is written down rather than consumed: `flatten_streaming` reads it forward once and then
+    // one leaf at a time.
+    let mut sorted = SpillWriter::<{ qtree::TREE_REC }>::create(scratch, share)?;
+    for rec in points.finish()? {
+        sorted.push(rec?)?;
     }
-    // The views are copied into the points; the two build vectors have no further reader.
-    drop(offsets);
-    drop(fill);
-    stats.nodes = nodes.len();
+    let (sorted, count) = sorted.seal()?;
+    debug_assert_eq!(count, node_count as u64, "one tree record per renumbered junction");
+    let flat = qtree::flatten_streaming(scratch, budget, sorted, global_bbox, NAV_CHUNK_SIZE, NAV_CHUNK_SIZE)?;
+    stats.dropped_nodes = flat.dropped;
+    Ok((recs, flat))
+}
 
-    // --- 7 (cont.). The node quadtree over the **assembly** bbox, with §8.2's bin-packed 512-byte
-    // chunks. Laid out here so a shard's size is known before its header is written. The tree owns
-    // the points and borrows nothing, but the records they name live in `csr`, which therefore has
-    // to outlive the flatten below — it is a local of this function and does. ---
-    let tree = qtree::build(nodes, global_bbox, NAV_CHUNK_SIZE);
-    let (index, node_count, chunks, chunk_count, dropped) =
-        qtree::flatten(&tree, NAV_CHUNK_SIZE, true, &|p, out| pack_record(p, &csr, out));
-    stats.dropped_nodes = dropped;
-    Ok(MergedNav { index, node_count, chunks, chunk_count, pool, pool_len, stats })
+/// A stream of **variable-length** records on the scratch seam: append bytes, get back the offset
+/// they landed at.
+///
+/// [`crate::extsort`] is deliberately fixed-width — every sort key in the merge is one — and this is
+/// the one producer that is not: a §8.3 junction record is 13 bytes plus 17 per neighbour, and
+/// padding three million of them to the 421-byte maximum would cost seven times what they are. So it
+/// lives here rather than there, and adds nothing to that module's contract.
+struct ByteSpill<'s> {
+    scratch: &'s dyn ScratchStore,
+    id: ScratchId,
+    buf: Vec<u8>,
+    cap: usize,
+    at: u64,
+}
+
+impl<'s> ByteSpill<'s> {
+    fn create(scratch: &'s dyn ScratchStore, budget: usize) -> Result<ByteSpill<'s>> {
+        Ok(ByteSpill { scratch, id: scratch.create()?, buf: Vec::new(), cap: budget.max(NAV_CHUNK_SIZE), at: 0 })
+    }
+
+    /// Append one record; the offset it starts at is how it is found again.
+    fn push(&mut self, rec: &[u8]) -> Result<u32> {
+        let at = u32::try_from(self.at).map_err(|_| {
+            Error::Capacity("the merged node chunks pass 4 GiB, which no OBCM section can hold (OBCA §5.7)".into())
+        })?;
+        if self.buf.len() + rec.len() > self.cap {
+            self.flush()?;
+        }
+        self.buf.extend_from_slice(rec);
+        self.at += rec.len() as u64;
+        Ok(at)
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        if !self.buf.is_empty() {
+            self.scratch.append(self.id, &self.buf)?;
+            self.buf.clear();
+        }
+        Ok(())
+    }
+
+    fn seal(mut self) -> Result<ScratchId> {
+        self.flush()?;
+        self.buf = Vec::new();
+        Ok(self.id)
+    }
 }
 
 /// §4.6.3's duplicate check, as one walk of the sorted key stream the collection filled.
@@ -948,16 +1155,14 @@ fn join_first<'s>(
     Ok(out)
 }
 
-/// The second join: endpoint `b`, and the uncapped degrees the emission walk reserves from. What it
-/// returns is the emission sort, already loaded — see [`merge`] for why the streams between the
-/// joins are never written down.
+/// The second join: endpoint `b`. What it returns is the emission sort, already loaded — see
+/// [`merge`] for why the streams between the joins are never written down.
 fn join_second<'s>(
     scratch: &'s dyn ScratchStore,
     budget: usize,
     share: usize,
     sort: ExternalSort<'s, DENSE_REC>,
     dense_by_id: ScratchId,
-    fill: &mut [u32],
     stats: &mut NavStats,
 ) -> Result<ExternalSort<'s, DENSE_REC>> {
     let mut out = ExternalSort::<DENSE_REC>::new(scratch, budget / 2, by_emission);
@@ -974,11 +1179,6 @@ fn join_second<'s>(
             Error::Format(format!("a kept edge names node {b}, which §4.6.4 did not keep — the prune split an edge"))
         })?;
         put_endpoint(&mut rec, B_AT, &h);
-        let (a, b) = (dense_id(&rec, A_AT), dense_id(&rec, B_AT));
-        fill[a as usize] += 1;
-        if a != b {
-            fill[b as usize] += 1;
-        }
         kept += 1;
         out.push(rec)?;
     }
@@ -1060,6 +1260,10 @@ fn by_node_key(a: &[u8; SORT_REC], b: &[u8; SORT_REC]) -> std::cmp::Ordering {
 ///
 /// `node_comp` is §4.6.4's label stream, one `u32` per collection id in id order, so it is read in
 /// lockstep with the node stream and `keep` is indexed by the label rather than by the node.
+///
+/// The junctions themselves are no longer a `Vec` either (#1116 D4): they go out as a
+/// [`DENSE_NODE`] stream whose *position is the dense id*, which is all the emission walk and the
+/// quadtree ever asked of the array.
 fn renumber(
     scratch: &dyn ScratchStore,
     budget: usize,
@@ -1068,7 +1272,7 @@ fn renumber(
     node_comp: ScratchId,
     keep: &[bool],
     deltas: &[(u32, u64)],
-) -> Result<(Vec<NavPoint>, ScratchId)> {
+) -> Result<(ScratchId, u32, ScratchId)> {
     // Three things are alive at once here — the two readers, the §4.6.5 sort, and (in the walk
     // below) the id-order sort it feeds. So the two sorts take half the budget each and the readers
     // take a share; the streams are read strictly forward, which is why their share is small.
@@ -1098,28 +1302,34 @@ fn renumber(
     scratch.remove(node_file)?;
     scratch.remove(node_comp)?;
 
-    let mut nodes: Vec<NavPoint> = Vec::new();
+    let mut nodes = SpillWriter::<DENSE_NODE>::create(scratch, share)?;
+    let mut count = 0u32;
     let mut by_id = ExternalSort::<JOIN_REC>::new(scratch, (budget / 2).max(JOIN_REC), by_join_id);
     for rec in sort.finish()? {
         let (lat, lon, _, id) = node_key(&rec?);
-        let dense = u32::try_from(nodes.len()).expect("a kept node count fits a u32");
+        let dense = count;
+        count = count.checked_add(1).ok_or_else(|| {
+            Error::Capacity("the merged graph passes 4 G junctions, which §8.2's uint32 `Node Id` cannot name".into())
+        })?;
         let mut join = [0u8; JOIN_REC];
         join[0..4].copy_from_slice(&id.to_le_bytes());
         join[4..8].copy_from_slice(&dense.to_le_bytes());
         join[8..12].copy_from_slice(&lat.to_le_bytes());
         join[12..16].copy_from_slice(&lon.to_le_bytes());
         by_id.push(join)?;
-        // `at` and `degree` are the CSR view, which does not exist yet — the emission walk fills
-        // them in.
-        nodes.push(NavPoint { lat, lon, id: dense, at: 0, degree: 0 });
+        let mut node = [0u8; DENSE_NODE];
+        node[0..4].copy_from_slice(&lat.to_le_bytes());
+        node[4..8].copy_from_slice(&lon.to_le_bytes());
+        nodes.push(node)?;
     }
+    let (nodes, _) = nodes.seal()?;
 
     // Materialized rather than handed back as a stream, because the two joins each read it whole.
     let mut out = SpillWriter::<JOIN_REC>::create(scratch, share)?;
     for rec in by_id.finish()? {
         out.push(rec?)?;
     }
-    Ok((nodes, out.seal()?.0))
+    Ok((nodes, count, out.seal()?.0))
 }
 
 /// §8.4's placement rule: a record of `len` bytes goes at the cursor `at`, unless it would straddle
@@ -1173,10 +1383,14 @@ fn fnv(bytes: &[u8]) -> u64 {
 /// `[directory][profile table][node index][node chunks][edge pool]`.
 ///
 /// Every offset in the directory is known before the first byte goes out — that is what
-/// [`MergedNav::section_len`] already proves — so nothing is back-patched and nothing is staged. The
-/// pool is written last and written *through*: the layout says where each record goes, and the
-/// record's bytes come from the cell that wrote them, one read into one reusable buffer at a time.
+/// [`MergedNav::section_len`] already proves — so nothing is back-patched and nothing is staged.
+/// **Nothing section-sized exists at all** (#1116 D4): the index is copied off the scratch seam a
+/// block at a time, the chunks are assembled one 512-byte chunk at a time from the placement plan,
+/// and the pool's records come from the cells that wrote them, one read into one reusable buffer.
 /// `cells` must therefore be the same `network` cells [`merge`] read, in the same order.
+///
+/// `scratch` must likewise be the store the merge spilled into; the section is read out of it and
+/// the streams stay valid until [`MergedNav::release`].
 ///
 /// `profile_table` is the cells' own, copied after every cell was checked to agree (§4.3) — it is
 /// schema data and the assembler has no business re-deriving it. An empty graph still writes the
@@ -1186,12 +1400,13 @@ pub fn serialize(
     profile_table: &[u8],
     section_offset: usize,
     cells: &[&Cell<'_>],
+    scratch: &dyn ScratchStore,
     sink: &mut dyn FnMut(&[u8]) -> Result<()>,
 ) -> Result<()> {
     let profile_count = profile_table.len() / obc_formats::obcm::NAV_PROFILE_LEN;
     let profile_table_offset = section_offset + NAV_DIR_LEN;
     let index_offset = profile_table_offset + profile_table.len();
-    let edge_pool_offset = index_offset + nav.index.len() + nav.chunks.len();
+    let edge_pool_offset = index_offset + nav.index_len + nav.chunk_count as usize * NAV_CHUNK_SIZE;
     let edge_chunk_count = (nav.pool_len / NAV_CHUNK_SIZE) as u32;
 
     let mut written = 0usize;
@@ -1213,8 +1428,23 @@ pub fn serialize(
     debug_assert_eq!(dir.len(), NAV_DIR_LEN);
     out(&dir)?;
     out(profile_table)?;
-    out(&nav.index)?;
-    out(&nav.chunks)?;
+    let Some(files) = &nav.files else {
+        // The empty pair a non-core shard carries (§5.1): the directory and the profile table are
+        // the whole section, and `section_len` agrees by arithmetic (both data regions are zero).
+        debug_assert_eq!(NAV_DIR_LEN + profile_table.len(), nav.section_len(profile_table));
+        return Ok(());
+    };
+    // The §8.2 index is already in wire form on the seam, so it is a copy through one block buffer.
+    let mut block = vec![0u8; nav.read_budget.clamp(NAV_CHUNK_SIZE, 1 << 20)];
+    let mut at = 0u64;
+    let end = nav.index_len as u64;
+    while at < end {
+        let want = block.len().min((end - at) as usize);
+        scratch.read_at(files.index, at, &mut block[..want])?;
+        out(&block[..want])?;
+        at += want as u64;
+    }
+    emit_chunks(nav, files, scratch, &mut out)?;
 
     // The pool, record by record. `pad` is §8.3's `0xFF` sentinel run — the bytes a record's chunk
     // gets instead of a record that would straddle it — and `rec` is the one buffer every record is
@@ -1222,7 +1452,8 @@ pub fn serialize(
     let pad = [CHUNK_END; NAV_CHUNK_SIZE];
     let mut rec = [0u8; NAV_CHUNK_SIZE];
     let mut at = 0usize;
-    for r in &nav.pool {
+    for r in SpillReader::<POOL_REC>::open(scratch, files.pool, nav.read_budget)? {
+        let r = pool_ref(&r?);
         let len = r.len as usize;
         // The same rule the layout used, so the padding lands exactly where the `Edge Id`s say.
         let start = place(at, len);
@@ -1255,24 +1486,51 @@ pub fn serialize(
     Ok(())
 }
 
-/// The §8.3 junction record: `lat i32, lon i32, node_id u32, degree u8`, then 15 bytes per
-/// neighbour with the coord stored as an `int16` delta from this record's own. `csr` is the shared
-/// adjacency buffer the point's `(at, degree)` view names.
-fn pack_record(p: &NavPoint, csr: &[WireNeighbor], out: &mut Vec<u8>) {
-    let neighbors = &csr[p.at as usize..][..p.degree as usize];
-    out.extend_from_slice(&p.lat.to_le_bytes());
-    out.extend_from_slice(&p.lon.to_le_bytes());
-    out.extend_from_slice(&p.id.to_le_bytes());
-    out.push(neighbors.len() as u8);
-    for n in neighbors {
-        out.extend_from_slice(&n.id.to_le_bytes());
-        out.extend_from_slice(&((n.lat as i64 - p.lat as i64) as i16).to_le_bytes());
-        out.extend_from_slice(&((n.lon as i64 - p.lon as i64) as i16).to_le_bytes());
-        out.extend_from_slice(&n.edge_id.to_le_bytes());
-        out.extend_from_slice(&(n.cost_m.min(u16::MAX as u32) as u16).to_le_bytes());
-        out.push(n.way_kind);
-        out.extend_from_slice(&n.ascent_m.to_le_bytes());
+/// The §8.2 chunk region, one 512-byte chunk at a time.
+///
+/// The placement plan is in emission order — chunk, then offset inside it — and every chunk is
+/// opened by a leaf, so the walk fills one chunk, pads it with §8.3's `0xFF` sentinel and moves on.
+/// A leaf's records are read back in **dense** order, which is the order `qtree::build`'s partition
+/// left them in and therefore the order `qtree::flatten` packed them in, and the capacity guard is
+/// re-applied per record — the same guard, over the same running fill, that the plan counted
+/// `dropped_nodes` with.
+fn emit_chunks(
+    nav: &MergedNav,
+    files: &NavFiles,
+    scratch: &dyn ScratchStore,
+    out: &mut dyn FnMut(&[u8]) -> Result<()>,
+) -> Result<()> {
+    let mut chunk: Vec<u8> = Vec::with_capacity(NAV_CHUNK_SIZE);
+    let mut rec = [0u8; NAV_CHUNK_SIZE];
+    let mut current = 0u32;
+    let flush = |chunk: &mut Vec<u8>, out: &mut dyn FnMut(&[u8]) -> Result<()>| -> Result<()> {
+        chunk.resize(NAV_CHUNK_SIZE, CHUNK_END);
+        out(chunk)?;
+        chunk.clear();
+        Ok(())
+    };
+    for p in SpillReader::<{ qtree::PLACE_REC }>::open(scratch, files.places, nav.read_budget)? {
+        let p = p?;
+        while current < qtree::place_chunk(&p) {
+            flush(&mut chunk, out)?;
+            current += 1;
+        }
+        debug_assert_eq!(chunk.len(), qtree::place_at(&p) as usize, "the plan and the write disagree about a leaf");
+        for r in qtree::read_run(scratch, files.points, qtree::place_first(&p), qtree::place_count(&p))? {
+            let len = qtree::rec_len(&r) as usize;
+            if chunk.len() + len > NAV_CHUNK_SIZE {
+                continue; // co-located overflow inside one leaf — counted as `dropped_nodes`
+            }
+            let buf = &mut rec[..len];
+            scratch.read_at(files.recs, qtree::rec_at(&r) as u64, buf)?;
+            chunk.extend_from_slice(buf);
+        }
     }
+    if nav.chunk_count > 0 {
+        flush(&mut chunk, out)?;
+        debug_assert_eq!(current + 1, nav.chunk_count, "every chunk is opened by a leaf");
+    }
+    Ok(())
 }
 
 impl MergedNav {
@@ -1280,12 +1538,12 @@ impl MergedNav {
     /// both data regions zero-length (§5.1/§8.1).
     pub fn empty(stats: NavStats) -> MergedNav {
         MergedNav {
-            index: Vec::new(),
+            files: None,
             node_count: 0,
-            chunks: Vec::new(),
             chunk_count: 0,
-            pool: Vec::new(),
+            index_len: 0,
             pool_len: 0,
+            read_budget: NAV_CHUNK_SIZE,
             stats,
         }
     }
@@ -1305,37 +1563,55 @@ mod tests {
     /// are compared as bytes. The map may not depend on how much memory the merge was given; that is
     /// the whole claim the pass rests on. It also asserts the scratch area is **empty** afterwards:
     /// a merge that leaked a run would still produce the right map, and would fill a card.
-    fn merged(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, bbox: UBox) -> MergedNav {
-        // Everything a shard is written from — `pool` by address, since `EdgeRef` is not `PartialEq`.
-        #[allow(clippy::type_complexity)]
-        let shape = |n: &MergedNav| -> (Vec<u8>, Vec<u8>, u32, u32, usize, Vec<(u32, u32, u16)>, NavStats) {
-            (
-                n.index.clone(),
-                n.chunks.clone(),
-                n.node_count,
-                n.chunk_count,
-                n.pool_len,
-                n.pool.iter().map(|r| (r.cell, r.off, r.len)).collect(),
-                n.stats.clone(),
-            )
-        };
-        let mut out: Option<MergedNav> = None;
+    ///
+    /// Since #1116 D4 a `MergedNav` is five scratch streams and no bytes, so "the results are
+    /// compared as bytes" means the **section** — what [`serialize`] writes out of those streams,
+    /// which is the only thing a shard ever sees. Each budget's merge is written, released, and the
+    /// scratch is then asserted empty.
+    fn merged(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, bbox: UBox) -> Merged {
+        let mut out: Option<Merged> = None;
         for budget in [1usize, 24, 200, 1 << 20] {
             let scratch = MemoryScratch::new();
             let nav = merge(cells, band_log2, min_component_edges, bbox, &scratch, budget).expect("the merge succeeds");
+            let got = Merged { section: serialized(&nav, &[], 0, cells, &scratch), stats: nav.stats.clone() };
+            nav.release(&scratch);
             assert_eq!(scratch.resident_bytes(), 0, "budget {budget}: the merge left a scratch file behind");
             match &out {
-                None => out = Some(nav),
-                Some(first) => assert_eq!(shape(&nav), shape(first), "budget {budget} merged to different bytes"),
+                None => out = Some(got),
+                Some(first) => {
+                    assert_eq!(got.section, first.section, "budget {budget} merged to different bytes");
+                    assert_eq!(got.stats, first.stats, "budget {budget} reported different counters");
+                }
             }
         }
         out.expect("the sweep runs at least once")
     }
 
+    /// One merge as a shard sees it: the §8 section bytes at offset 0, and what the merge reported.
+    struct Merged {
+        section: Vec<u8>,
+        stats: NavStats,
+    }
+
+    impl Merged {
+        /// The §8.2 chunk region, located through the directory the write just emitted — so the
+        /// tests below read the junction records back the way a reader would.
+        fn chunks(&self) -> &[u8] {
+            let word = |at: usize| u32::from_le_bytes(self.section[at..at + 4].try_into().unwrap()) as usize;
+            &self.section[word(0) + word(4) * 4..][..word(8) * NAV_CHUNK_SIZE]
+        }
+    }
+
     /// The section through the sink, for a test that wants it as one buffer.
-    fn serialized(nav: &MergedNav, profile_table: &[u8], section_offset: usize, cells: &[&Cell<'_>]) -> Vec<u8> {
+    fn serialized(
+        nav: &MergedNav,
+        profile_table: &[u8],
+        section_offset: usize,
+        cells: &[&Cell<'_>],
+        scratch: &dyn ScratchStore,
+    ) -> Vec<u8> {
         let mut out = Vec::new();
-        serialize(nav, profile_table, section_offset, cells, &mut |b: &[u8]| {
+        serialize(nav, profile_table, section_offset, cells, scratch, &mut |b: &[u8]| {
             out.extend_from_slice(b);
             Ok(())
         })
@@ -1343,10 +1619,36 @@ mod tests {
         out
     }
 
+    /// A `MergedNav` that is **nothing but an edge pool**, on the caller's scratch: what the two
+    /// streaming pins below need, and the one place a test builds [`NavFiles`] by hand.
+    fn pool_nav(scratch: &dyn ScratchStore, pool: &[EdgeRef], pool_len: usize, node_count: u32) -> MergedNav {
+        let mut out = SpillWriter::<POOL_REC>::create(scratch, 1 << 16).expect("a scratch write");
+        for r in pool {
+            out.push(pool_record(r)).expect("a scratch write");
+        }
+        let empty = || scratch.create().expect("a scratch file");
+        MergedNav {
+            files: Some(NavFiles {
+                index: empty(),
+                places: empty(),
+                points: empty(),
+                recs: empty(),
+                pool: out.seal().expect("a scratch seal").0,
+            }),
+            node_count,
+            chunk_count: 0,
+            index_len: 0,
+            pool_len,
+            read_budget: 1 << 16,
+            stats: NavStats::default(),
+        }
+    }
+
     #[test]
     fn an_empty_section_still_carries_its_profiles() {
         let profiles = vec![0u8; obc_formats::obcm::NAV_PROFILE_LEN];
-        let bytes = serialized(&MergedNav::empty(NavStats::default()), &profiles, 500, &[]);
+        let scratch = MemoryScratch::new();
+        let bytes = serialized(&MergedNav::empty(NavStats::default()), &profiles, 500, &[], &scratch);
         assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()), 0, "empty graph ⇒ no index nodes");
         assert_eq!(u16::from_le_bytes(bytes[20..22].try_into().unwrap()) as usize, NAV_CHUNK_SIZE, "pinned 512");
         assert_eq!(u32::from_le_bytes(bytes[22..26].try_into().unwrap()) as usize, 500 + NAV_DIR_LEN);
@@ -1417,16 +1719,9 @@ mod tests {
         want.resize(pool_len, CHUNK_END);
         assert_eq!(want.len(), 2 * NAV_CHUNK_SIZE, "the fixture is meant to straddle and to pad its tail");
 
-        let nav = MergedNav {
-            index: Vec::new(),
-            node_count: 3,
-            chunks: Vec::new(),
-            chunk_count: 0,
-            pool,
-            pool_len,
-            stats: NavStats::default(),
-        };
-        let bytes = serialized(&nav, &[], 0, &[&cell]);
+        let scratch = MemoryScratch::new();
+        let nav = pool_nav(&scratch, &pool, pool_len, 3);
+        let bytes = serialized(&nav, &[], 0, &[&cell], &scratch);
         assert_eq!(&bytes[NAV_DIR_LEN..], &want[..], "the streamed pool is not the laid-out pool");
         assert_eq!(u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize, NAV_DIR_LEN, "edge pool offset");
         assert_eq!(u32::from_le_bytes(bytes[16..20].try_into().unwrap()), 2, "edge chunk count");
@@ -1443,19 +1738,13 @@ mod tests {
     /// refusal rather than a plausible-looking file full of the wrong polylines.
     #[test]
     fn writing_the_pool_against_the_wrong_cells_is_refused() {
-        let nav = MergedNav {
-            index: Vec::new(),
-            node_count: 1,
-            chunks: Vec::new(),
-            chunk_count: 0,
-            pool: vec![EdgeRef { cell: 1, off: 0, len: 16 }],
-            pool_len: NAV_CHUNK_SIZE,
-            stats: NavStats::default(),
-        };
+        let scratch = MemoryScratch::new();
+        let nav = pool_nav(&scratch, &[EdgeRef { cell: 1, off: 0, len: 16 }], NAV_CHUNK_SIZE, 1);
         let src = vec![0u8; SRC_POOL_AT + NAV_CHUNK_SIZE];
         let slice = obc_formats::io::SliceSource(&src);
         let cell = pool_cell(&slice, 1);
-        let err = serialize(&nav, &[], 0, &[&cell], &mut |_: &[u8]| Ok(())).expect_err("cell 1 was not handed over");
+        let err = serialize(&nav, &[], 0, &[&cell], &scratch, &mut |_: &[u8]| Ok(()))
+            .expect_err("cell 1 was not handed over");
         assert!(format!("{err}").contains("not the cell list"), "got: {err}");
     }
 
@@ -1593,9 +1882,9 @@ mod tests {
     /// The merged junction records, read back out of the chunks the merge packed, by dense id:
     /// `(lat, lon, id, [(neighbour id, edge id, cost, way kind, ascent)])`.
     #[allow(clippy::type_complexity)]
-    fn merged_nodes(nav: &MergedNav) -> Vec<(i32, i32, u32, Vec<(u32, u32, u16, u8, u16)>)> {
+    fn merged_nodes(nav: &Merged) -> Vec<(i32, i32, u32, Vec<(u32, u32, u16, u8, u16)>)> {
         let mut out = Vec::new();
-        for chunk in nav.chunks.chunks_exact(NAV_CHUNK_SIZE) {
+        for chunk in nav.chunks().chunks_exact(NAV_CHUNK_SIZE) {
             let mut at = 0usize;
             while at + NAV_NODE_FIXED_LEN <= chunk.len() && chunk[at + 12] != CHUNK_END {
                 let lat = i32::from_le_bytes(chunk[at..at + 4].try_into().unwrap());

@@ -824,6 +824,71 @@ fn the_output_is_a_legal_single_file_set() {
     assert_eq!(digest.to_vec(), sha256(&grafted), "the manifest's digest is the shard's own");
 }
 
+/// **The scratch is returned.** Since #1116 D4 the merged graph outlives the merge — the §8.2 index,
+/// the §8.3 records, the placement plan and the edge-pool plan stay on the scratch seam until the
+/// last shard that could name them has been written *and* verified, which is what lets the section be
+/// streamed instead of buffered. That makes "who deletes them" a real question with exactly one right
+/// answer, and a wrong one is invisible in the output: the map is correct and the working area fills.
+///
+/// So this runs a whole assembly through an observable store and asserts it ends empty. The split
+/// variant is the one that matters — it writes several shards from the *same* streams, so a release
+/// that fired after the first one would have produced a broken second shard, and a release that never
+/// fires at all shows up only here.
+#[test]
+fn an_assembly_hands_its_whole_scratch_back() {
+    use obcm_assemble::{assemble_full, MemoryScratch};
+
+    let cfg = config();
+    let (ing, ways) = fixture(&cfg);
+    let dir = scratch("scratch-returned");
+    let summary = cut(&dir, &cfg, &ing, &ways);
+    let sources: Vec<MemorySource> = summary
+        .cells
+        .iter()
+        .map(|c| MemorySource(std::fs::read(dir.join(&c.path)).expect("a cell artifact")))
+        .collect();
+
+    for force_split in [false, true] {
+        let inputs: Vec<CellInput<'_>> = summary
+            .cells
+            .iter()
+            .zip(&sources)
+            .map(|(c, src)| CellInput { id: to_engine_cell(c.id), band: c.band.clone(), src, partial: c.partial })
+            .collect();
+        let opts = Options {
+            name: "ScratchReturned".into(),
+            accept_partial: true,
+            force_split,
+            target_shard_bytes: 1,
+            ..Default::default()
+        };
+        let store_scratch = MemoryScratch::new();
+        let mut store = MemoryStore::default();
+        let out = assemble_full(
+            inputs,
+            Vec::new(),
+            None,
+            &schema_with(&cfg, BANDS),
+            &skin(&cfg),
+            &opts,
+            &mut store,
+            &NoClock,
+            &store_scratch,
+        )
+        .expect("the assembly runs");
+        assert!(!out.shards.is_empty());
+        if force_split {
+            assert!(out.shards.len() > 1, "the split variant has to actually split to be the test it claims");
+        }
+        assert_eq!(
+            store_scratch.resident_bytes(),
+            0,
+            "force_split={force_split}: the assembly left {} scratch byte(s) behind",
+            store_scratch.resident_bytes()
+        );
+    }
+}
+
 fn sha256(bytes: &[u8]) -> Vec<u8> {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
