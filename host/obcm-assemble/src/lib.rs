@@ -617,7 +617,7 @@ pub fn assemble_full(
                     src.len()
                 )));
             }
-            Some(verify::verify_shard(src, plan.box_, plan.core)?)
+            Some(verify::verify_shard(src, plan.box_, plan.core, scratch, opts.merge_budget_bytes)?)
         };
         verify_us += clock.now_us() - t1;
         summaries.push(ShardSummary {
