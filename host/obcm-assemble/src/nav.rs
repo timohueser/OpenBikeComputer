@@ -14,6 +14,12 @@
 //! of the cell that wrote it straight into the sink. The graph's working set is therefore the merge's
 //! own bookkeeping, not a copy of the section it is about to write.
 //!
+//! That bookkeeping is in turn flat. Nothing here keeps a map or a heap allocation *per edge* or
+//! *per node* over the whole graph: the §4.6.3 duplicate check is a sorted pass at the end of
+//! collection rather than a hash set carried through it, and the rebuilt adjacency is one CSR buffer
+//! — offsets into a single `Vec` — rather than a `Vec` per junction. Both are noted where they
+//! happen, because both trade an obvious formulation for one whose *order* has to be argued.
+//!
 //! The order of the passes is normative and each one depends on the last:
 //!
 //! 1. **Read the serialized node set** — not a graph builder's, the *serializer's*. The §8.4 splits
@@ -93,14 +99,21 @@ struct MergedEdge {
     ascent_ba: u16,
 }
 
-/// One junction ready to serialize.
+/// One junction ready to serialize: its coordinate, its dense id, and a *view* of the shared
+/// adjacency buffer — `degree` entries starting at `at`. The neighbours are not owned, because a
+/// `Vec` per junction was a heap allocation and a 24-byte header for a list that averages under
+/// three entries (2.99 M of them on a state-sized bake).
 struct NavPoint {
     lat: i32,
     lon: i32,
     id: u32,
-    neighbors: Vec<WireNeighbor>,
+    /// Index of this junction's first neighbour in the CSR buffer [`merge`] fills.
+    at: u32,
+    /// How many entries it kept — at most `OBCM_Spec.md` §8.3's cap of 24, so a byte.
+    degree: u8,
 }
 
+#[derive(Clone, Copy, Default)]
 struct WireNeighbor {
     id: u32,
     lat: i32,
@@ -121,7 +134,7 @@ impl Point for NavPoint {
         self.lon
     }
     fn record_len(&self) -> usize {
-        NAV_NODE_FIXED_LEN + self.neighbors.len() * NAV_NEIGHBOR_LEN
+        NAV_NODE_FIXED_LEN + self.degree as usize * NAV_NEIGHBOR_LEN
     }
 }
 
@@ -189,9 +202,6 @@ pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, gl
     let mut coords: Vec<(i32, i32)> = Vec::new();
     let mut seam: HashMap<(i32, i32), u32> = HashMap::new();
     let mut edges: Vec<MergedEdge> = Vec::new();
-    // Duplicate detection (§4.6.3): an edge two cells both wrote in full. The half-open ownership of
-    // §3.3/§3.4(3) should already prevent it, so this is a net, not a mechanism.
-    let mut seen_edges: HashMap<(u32, u32, u32, u8, u64), ()> = HashMap::new();
 
     for (ci, cell) in cells.iter().enumerate() {
         let dir = &cell.nav;
@@ -253,11 +263,12 @@ pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, gl
         }
 
         // Pass B: adjacency → edges. Every edge shows up in both endpoints' records with the same
-        // `Edge Id`, so the first sighting wins and the second only has to agree.
-        // `edge_id` → its index in `edges`, or `None` when that id resolved to a duplicate. The
-        // value matters in v12: the second direction of an edge writes back into the record the
-        // first one created.
-        let mut cell_edges: HashMap<u32, Option<usize>> = HashMap::new();
+        // `Edge Id`, so the first sighting interns it and the second only has to agree — and, in
+        // v12, to hand over the other direction's ascent. `edge_id` → its index in `edges`; the
+        // value matters because the second direction writes back into the entry the first created.
+        // Nothing here looks past the cell: cross-cell duplicates are settled once, after the whole
+        // collection, by the sorted pass below.
+        let mut cell_edges: HashMap<u32, usize> = HashMap::new();
         for &(own_id, lat, lon, k, at) in &records {
             let chunk = &chunks[k];
             let degree = chunk[at + 12] as usize;
@@ -273,17 +284,15 @@ pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, gl
                 // v12: the second sighting of an edge is no longer redundant — it carries the *other*
                 // direction's ascent, which nothing else in the file states. So it is read rather
                 // than skipped, and only the edge itself is de-duplicated.
-                if let Some(&existing) = cell_edges.get(&edge_id) {
-                    if let Some(index) = existing {
-                        let edge: &mut MergedEdge = &mut edges[index];
-                        // Orientation again: this entry runs from *this* record's node. It is the
-                        // a→b direction exactly when this node is the edge's `a`.
-                        let own = *local.get(&own_id).expect("own id interned above");
-                        if own == edge.a {
-                            edge.ascent_ab = ascent_m;
-                        } else {
-                            edge.ascent_ba = ascent_m;
-                        }
+                if let Some(&index) = cell_edges.get(&edge_id) {
+                    let edge: &mut MergedEdge = &mut edges[index];
+                    // Orientation again: this entry runs from *this* record's node. It is the
+                    // a→b direction exactly when this node is the edge's `a`.
+                    let own = *local.get(&own_id).expect("own id interned above");
+                    if own == edge.a {
+                        edge.ascent_ab = ascent_m;
+                    } else {
+                        edge.ascent_ba = ascent_m;
                     }
                     continue;
                 }
@@ -304,20 +313,12 @@ pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, gl
                 let (a, b) = if own_is_anchor { (a, b) } else { (b, a) };
                 let hash = fnv(rec);
                 let rec = EdgeRef { cell: ci, off: edge_id, len: rec.len() as u16 };
-                let key = (a.min(b), a.max(b), cost_m, way_kind, hash);
-                if seen_edges.insert(key, ()).is_some() {
-                    stats.duplicate_edges += 1;
-                    // Remember that this id was seen and resolved to nothing, so the other direction
-                    // does not re-intern it as a fresh edge.
-                    cell_edges.insert(edge_id, None);
-                    continue;
-                }
                 // This entry rides from the record's own node, so it books a→b when that node is
                 // `a`. The opposite direction arrives with the neighbour's own entry above; if it
                 // never does (a degree-capped arc, or a self-loop, which §8.3 writes once) the
                 // other direction stays `0` — the same value a map packed without terrain carries.
                 let (ascent_ab, ascent_ba) = if own_is_anchor { (ascent_m, 0) } else { (0, ascent_m) };
-                cell_edges.insert(edge_id, Some(edges.len()));
+                cell_edges.insert(edge_id, edges.len());
                 edges.push(MergedEdge { a, b, cost_m, kind: way_kind, rec, hash, ascent_ab, ascent_ba });
             }
         }
@@ -326,6 +327,69 @@ pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, gl
     if coords.is_empty() {
         return Ok(MergedNav::empty(stats));
     }
+
+    // --- 3. Deduplicate (§4.6.3): an edge two cells both wrote *in full*, keyed on the unified
+    // endpoint pair, `Cost M`, `Way Kind` and the record's content. The half-open ownership of
+    // §3.3/§3.4(3) should already prevent it, so this is a net, not a mechanism — and a net does not
+    // have to be a hash set carried through the entire collection. It runs once, here, over a sorted
+    // index permutation, and the **first-collected** copy of each key survives.
+    //
+    // *Why that is the same outcome as refusing duplicates at the door.* `cell_edges` is per-cell
+    // and unchanged, so a cell still interns each of its own `Edge Id`s once and still writes the
+    // second direction's ascent back into its **own** entry — no write-back ever crossed cells,
+    // because nothing outside a cell's own `cell_edges` could name another cell's entry. What
+    // changes is only the fate of a later copy: it used to be refused before it was pushed (its id
+    // mapped to `None`, so that cell's second direction wrote nowhere), and now it is pushed,
+    // collects that cell's own write-backs, and is dropped here. Either way the survivor is the
+    // first-collected entry carrying the first cell's ascents, which is what the bytes are. The
+    // counts agree for the same reason: exactly one entry per (cell, `Edge Id`) reaches this pass,
+    // and the ones that die here are exactly the ones the door used to refuse — one per refusal,
+    // with three copies of an edge counting two, as before. The argument does not depend on the
+    // duplicate being *cross-cell*: two distinct `Edge Id`s inside one cell with identical content
+    // and endpoints collapse the same way, the lower id surviving, because collection order inside a
+    // cell is the order the old first-sighting rule used too.
+    //
+    // The sort is over `(content hash, collection index)` — twelve bytes per edge rather than the
+    // 40-byte records — because equal keys necessarily have equal hashes, so every candidate pair
+    // lands inside one run of equal hashes. The full key is then what separates a real duplicate
+    // from an FNV collision between two genuinely different records, and runs are length 1
+    // everywhere a map is not actually duplicated. ---
+    let dup_key = |e: &MergedEdge| (e.a.min(e.b), e.a.max(e.b), e.cost_m, e.kind, e.hash);
+    let mut by_hash: Vec<(u64, u32)> = edges.iter().enumerate().map(|(i, e)| (e.hash, i as u32)).collect();
+    by_hash.sort_unstable();
+    let mut dead: Vec<u32> = Vec::new();
+    let mut run = 0usize;
+    while run < by_hash.len() {
+        let mut end = run + 1;
+        while end < by_hash.len() && by_hash[end].0 == by_hash[run].0 {
+            end += 1;
+        }
+        // Within a run the entries are in collection order, so "an earlier entry has this key"
+        // is exactly "this is not the first copy". Whether that earlier entry is itself a
+        // duplicate does not matter: it shares its key with a survivor further back.
+        for x in run + 1..end {
+            let e = &edges[by_hash[x].1 as usize];
+            if (run..x).any(|y| dup_key(&edges[by_hash[y].1 as usize]) == dup_key(e)) {
+                dead.push(by_hash[x].1);
+            }
+        }
+        run = end;
+    }
+    drop(by_hash);
+    stats.duplicate_edges += dead.len();
+    if !dead.is_empty() {
+        // Physically dropped rather than masked, so the memory goes too. `retain` preserves order,
+        // so everything downstream sees the survivors in the order it always saw them.
+        dead.sort_unstable();
+        let (mut next, mut i) = (0usize, 0u32);
+        edges.retain(|_| {
+            let doomed = next < dead.len() && dead[next] == i;
+            next += usize::from(doomed);
+            i += 1;
+            !doomed
+        });
+    }
+    drop(dead);
 
     // --- 4. Island pruning over the *merged* graph: the only place the schema's threshold means
     // what it says — an island in the map, not in a cell (§3.5/§4.6.4). ---
@@ -382,13 +446,42 @@ pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, gl
     // The tail pads to a whole chunk, because §8.1's `Edge Chunk Count` measures the pool in chunks.
     let pool_len = at.div_ceil(NAV_CHUNK_SIZE) * NAV_CHUNK_SIZE;
 
-    // --- 7. Adjacency with inline neighbour coords, degree-capped, wire limits re-checked. ---
-    let mut adj: Vec<Vec<WireNeighbor>> = (0..order.len()).map(|_| Vec::new()).collect();
+    // --- 7. Adjacency with inline neighbour coords, degree-capped, wire limits re-checked.
+    //
+    // One CSR buffer, not a `Vec` per junction: at state scale that was three million heap
+    // allocations and three million 24-byte headers for lists averaging under three entries. So the
+    // adjacency is a single `Vec<WireNeighbor>` with a per-node offset, built in two passes over
+    // `kept` — and the two passes have to walk it in the *same* order, because §8.3's degree cap is
+    // order-sensitive. The cap does not "keep 24 of the arcs", it refuses the ones that arrive after
+    // a node is already full, and which those are is a property of the walk. So pass 1 counts each
+    // node's **uncapped** degree and reserves `min(degree, 24)` slots for it, and pass 2 fills in
+    // walk order and refuses at exactly the point the growing `Vec` used to. (Reserving the capped
+    // count is also exact: a node is pushed to `degree` times and stops accepting at 24, so it ends
+    // with `min(degree, 24)` entries and the buffer has no slack.) ---
+    let mut fill: Vec<u32> = vec![0; order.len()]; // pass 1: uncapped degree, pass 2: entries written
+    for e in &kept {
+        let (a, b) = (new_id[e.a as usize], new_id[e.b as usize]);
+        fill[a as usize] += 1;
+        if a != b {
+            fill[b as usize] += 1;
+        }
+    }
+    // An offset counts at most two entries per kept edge, and step 6 has already refused a pool past
+    // 4 GiB of records that are 15 bytes at their smallest — so it is a `u32` by construction.
+    let mut offsets: Vec<u32> = Vec::with_capacity(order.len() + 1);
+    let mut total = 0usize;
+    for d in fill.iter_mut() {
+        offsets.push(total as u32);
+        total += (*d as usize).min(NAV_MAX_DEGREE);
+        *d = 0;
+    }
+    offsets.push(total as u32);
+    let mut csr: Vec<WireNeighbor> = vec![WireNeighbor::default(); total];
     for (e, &edge_id) in kept.iter().zip(&edge_ids) {
         let (a, b) = (new_id[e.a as usize], new_id[e.b as usize]);
         let mut push = |from: u32, to: u32, ascent_m: u16| -> Result<()> {
-            let list = &mut adj[from as usize];
-            if list.len() >= NAV_MAX_DEGREE {
+            let used = &mut fill[from as usize];
+            if *used as usize >= NAV_MAX_DEGREE {
                 stats.degree_truncated += 1;
                 return Ok(());
             }
@@ -400,7 +493,7 @@ pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, gl
                     "a merged adjacency spans ({dlat}, {dlon}) µdeg, past the §8.3 int16 neighbour delta"
                 )));
             }
-            list.push(WireNeighbor {
+            csr[offsets[from as usize] as usize + *used as usize] = WireNeighbor {
                 id: to,
                 lat,
                 lon,
@@ -408,7 +501,8 @@ pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, gl
                 cost_m: e.cost_m.min(u16::MAX as u32),
                 way_kind: e.kind,
                 ascent_m,
-            });
+            };
+            *used += 1;
             Ok(())
         };
         push(a, b, e.ascent_ab)?;
@@ -419,21 +513,25 @@ pub fn merge(cells: &[&Cell<'_>], band_log2: u32, min_component_edges: usize, gl
 
     let nodes: Vec<NavPoint> = order
         .iter()
-        .zip(adj)
         .enumerate()
-        .map(|(dense, (&old, neighbors))| {
+        .map(|(dense, &old)| {
             let (lat, lon) = coords[old as usize];
-            NavPoint { lat, lon, id: dense as u32, neighbors }
+            NavPoint { lat, lon, id: dense as u32, at: offsets[dense], degree: fill[dense] as u8 }
         })
         .collect();
+    // The views are copied into the points; the two build vectors have no further reader.
+    drop(offsets);
+    drop(fill);
     stats.nodes = nodes.len();
     stats.edges = kept.len();
 
     // --- 7 (cont.). The node quadtree over the **assembly** bbox, with §8.2's bin-packed 512-byte
-    // chunks. Laid out here so a shard's size is known before its header is written. ---
+    // chunks. Laid out here so a shard's size is known before its header is written. The tree owns
+    // the points and borrows nothing, but the records they name live in `csr`, which therefore has
+    // to outlive the flatten below — it is a local of this function and does. ---
     let tree = qtree::build(nodes, global_bbox, NAV_CHUNK_SIZE);
     let (index, node_count, chunks, chunk_count, dropped) =
-        qtree::flatten(&tree, NAV_CHUNK_SIZE, true, &|p, out| pack_record(p, out));
+        qtree::flatten(&tree, NAV_CHUNK_SIZE, true, &|p, out| pack_record(p, &csr, out));
     stats.dropped_nodes = dropped;
     Ok(MergedNav { index, node_count, chunks, chunk_count, pool, pool_len, stats })
 }
@@ -621,13 +719,15 @@ pub fn serialize(
 }
 
 /// The §8.3 junction record: `lat i32, lon i32, node_id u32, degree u8`, then 15 bytes per
-/// neighbour with the coord stored as an `int16` delta from this record's own.
-fn pack_record(p: &NavPoint, out: &mut Vec<u8>) {
+/// neighbour with the coord stored as an `int16` delta from this record's own. `csr` is the shared
+/// adjacency buffer the point's `(at, degree)` view names.
+fn pack_record(p: &NavPoint, csr: &[WireNeighbor], out: &mut Vec<u8>) {
+    let neighbors = &csr[p.at as usize..][..p.degree as usize];
     out.extend_from_slice(&p.lat.to_le_bytes());
     out.extend_from_slice(&p.lon.to_le_bytes());
     out.extend_from_slice(&p.id.to_le_bytes());
-    out.push(p.neighbors.len() as u8);
-    for n in &p.neighbors {
+    out.push(neighbors.len() as u8);
+    for n in neighbors {
         out.extend_from_slice(&n.id.to_le_bytes());
         out.extend_from_slice(&((n.lat as i64 - p.lat as i64) as i16).to_le_bytes());
         out.extend_from_slice(&((n.lon as i64 - p.lon as i64) as i16).to_le_bytes());
@@ -783,5 +883,265 @@ mod tests {
         let cell = pool_cell(&slice, 1);
         let err = serialize(&nav, &[], 0, &[&cell], &mut |_: &[u8]| Ok(())).expect_err("cell 1 was not handed over");
         assert!(format!("{err}").contains("not the cell list"), "got: {err}");
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Whole-merge fixtures. Two of the merge's outcomes are *order*-sensitive — which copy of a
+    // duplicated edge survives (§4.6.3) and which adjacency entries the §8.3 degree cap refuses —
+    // and neither is reachable from the assembler's oracle fixtures, which are real packed cells
+    // with no duplicates and no junction anywhere near degree 24. So they are built here, out of
+    // synthetic `network` cells laid out exactly as a packed one is.
+    // ---------------------------------------------------------------------------------------------
+
+    /// A longitude on the `2^20` grid: `GRID_ORIGIN + 280 · 2^20`. A node here is on a boundary line
+    /// and is therefore eligible for §4.6.2 unification; one a micro-degree away never is.
+    const SEAM_LON: i32 = crate::grid::GRID_ORIGIN as i32 + 280 * (1 << 20);
+
+    struct SrcNbr {
+        id: u32,
+        edge_id: u32,
+        cost: u16,
+        kind: u8,
+        ascent: u16,
+    }
+
+    struct SrcNode {
+        id: u32,
+        lat: i32,
+        lon: i32,
+        nbrs: Vec<SrcNbr>,
+    }
+
+    /// The `Edge Id`s a packed cell would mint for a run of records — §8.4's placement rule, which
+    /// is [`place`], applied from a zero cursor.
+    fn pool_layout(recs: &[Vec<u8>]) -> Vec<u32> {
+        let mut at = 0usize;
+        recs.iter()
+            .map(|r| {
+                at = place(at, r.len());
+                let id = at as u32;
+                at += r.len();
+                id
+            })
+            .collect()
+    }
+
+    /// One §8.4 edge record: `Length M`, `Pt Count`, `Way Kind`, the absolute anchor, then the
+    /// chained `int16` deltas. The anchor is endpoint `a`'s coordinate, which is what fixes the
+    /// merged edge's orientation.
+    fn edge_rec(length_m: u32, kind: u8, anchor: (i32, i32), deltas: &[(i16, i16)]) -> Vec<u8> {
+        let mut r = Vec::with_capacity(NAV_EDGE_FIXED_LEN + deltas.len() * 4);
+        r.extend_from_slice(&length_m.to_le_bytes());
+        r.extend_from_slice(&((deltas.len() + 1) as u16).to_le_bytes());
+        r.push(kind);
+        r.extend_from_slice(&anchor.0.to_le_bytes());
+        r.extend_from_slice(&anchor.1.to_le_bytes());
+        for &(dlat, dlon) in deltas {
+            r.extend_from_slice(&dlat.to_le_bytes());
+            r.extend_from_slice(&dlon.to_le_bytes());
+        }
+        r
+    }
+
+    /// A synthetic `network` cell's §8 section: a node index (never read — [`merge`] walks the chunk
+    /// run), the §8.3 node chunks, then the §8.4 edge pool at its own offset.
+    fn nav_bytes(nodes: &[SrcNode], recs: &[Vec<u8>]) -> (Vec<u8>, obc_reader::NavDirectory) {
+        const INDEX_LEN: usize = 16;
+        let coord = |id: u32| {
+            let n = nodes.iter().find(|n| n.id == id).expect("a neighbour is a node of the same cell");
+            (n.lat, n.lon)
+        };
+        let mut chunks: Vec<Vec<u8>> = vec![Vec::new()];
+        for n in nodes {
+            let mut rec = Vec::new();
+            rec.extend_from_slice(&n.lat.to_le_bytes());
+            rec.extend_from_slice(&n.lon.to_le_bytes());
+            rec.extend_from_slice(&n.id.to_le_bytes());
+            rec.push(n.nbrs.len() as u8);
+            for nb in &n.nbrs {
+                let (lat, lon) = coord(nb.id);
+                rec.extend_from_slice(&nb.id.to_le_bytes());
+                rec.extend_from_slice(&((lat as i64 - n.lat as i64) as i16).to_le_bytes());
+                rec.extend_from_slice(&((lon as i64 - n.lon as i64) as i16).to_le_bytes());
+                rec.extend_from_slice(&nb.edge_id.to_le_bytes());
+                rec.extend_from_slice(&nb.cost.to_le_bytes());
+                rec.push(nb.kind);
+                rec.extend_from_slice(&nb.ascent.to_le_bytes());
+            }
+            let open = chunks.last_mut().expect("a chunk is always open");
+            if open.len() + rec.len() > NAV_CHUNK_SIZE {
+                chunks.push(rec);
+            } else {
+                open.extend_from_slice(&rec);
+            }
+        }
+        let mut bytes = vec![0u8; INDEX_LEN];
+        for c in &chunks {
+            let mut c = c.clone();
+            c.resize(NAV_CHUNK_SIZE, CHUNK_END);
+            bytes.extend_from_slice(&c);
+        }
+        let pool_at = bytes.len();
+        let mut pool: Vec<u8> = Vec::new();
+        for (r, &off) in recs.iter().zip(&pool_layout(recs)) {
+            pool.resize(off as usize, CHUNK_END);
+            pool.extend_from_slice(r);
+        }
+        pool.resize(pool.len().div_ceil(NAV_CHUNK_SIZE) * NAV_CHUNK_SIZE, CHUNK_END);
+        let dir = obc_reader::NavDirectory {
+            index_offset: 0,
+            node_count: INDEX_LEN / 4,
+            chunk_count: chunks.len(),
+            edge_pool_offset: pool_at,
+            edge_chunk_count: pool.len() / NAV_CHUNK_SIZE,
+            chunk_size: NAV_CHUNK_SIZE,
+            ..obc_reader::NavDirectory::EMPTY
+        };
+        bytes.extend_from_slice(&pool);
+        (bytes, dir)
+    }
+
+    fn nav_cell<'a>(src: &'a dyn obc_formats::io::ByteSource, nav: obc_reader::NavDirectory) -> Cell<'a> {
+        Cell {
+            id: crate::grid::CellId::parse("20/280/280").expect("a canonical id"),
+            band: "network".into(),
+            src,
+            partial: false,
+            lods: Vec::new(),
+            pois: obc_reader::PoiDirectory::EMPTY,
+            nav,
+            profile_table: Vec::new(),
+            style_ids: Vec::new(),
+            bytes: src.len() as u64,
+        }
+    }
+
+    /// The merged junction records, read back out of the chunks the merge packed, by dense id:
+    /// `(lat, lon, id, [(neighbour id, edge id, cost, way kind, ascent)])`.
+    #[allow(clippy::type_complexity)]
+    fn merged_nodes(nav: &MergedNav) -> Vec<(i32, i32, u32, Vec<(u32, u32, u16, u8, u16)>)> {
+        let mut out = Vec::new();
+        for chunk in nav.chunks.chunks_exact(NAV_CHUNK_SIZE) {
+            let mut at = 0usize;
+            while at + NAV_NODE_FIXED_LEN <= chunk.len() && chunk[at + 12] != CHUNK_END {
+                let lat = i32::from_le_bytes(chunk[at..at + 4].try_into().unwrap());
+                let lon = i32::from_le_bytes(chunk[at + 4..at + 8].try_into().unwrap());
+                let id = u32::from_le_bytes(chunk[at + 8..at + 12].try_into().unwrap());
+                let degree = chunk[at + 12] as usize;
+                let nbrs = (0..degree)
+                    .map(|k| {
+                        let e = &chunk[at + NAV_NODE_FIXED_LEN + k * NAV_NEIGHBOR_LEN..][..NAV_NEIGHBOR_LEN];
+                        (
+                            u32::from_le_bytes(e[0..4].try_into().unwrap()),
+                            u32::from_le_bytes(e[8..12].try_into().unwrap()),
+                            u16::from_le_bytes(e[12..14].try_into().unwrap()),
+                            e[14],
+                            u16::from_le_bytes(
+                                e[NAV_NEIGHBOR_ASCENT_OFF..NAV_NEIGHBOR_ASCENT_OFF + 2].try_into().unwrap(),
+                            ),
+                        )
+                    })
+                    .collect();
+                out.push((lat, lon, id, nbrs));
+                at += NAV_NODE_FIXED_LEN + degree * NAV_NEIGHBOR_LEN;
+            }
+        }
+        out.sort_by_key(|n| n.2);
+        out
+    }
+
+    /// **The dedup pin.** One edge running *along* a seam line, written in full by both neighbours —
+    /// §4.6.3's case, and the one §3.4(3)'s collinear rule is meant to prevent. The record bytes are
+    /// identical in both cells (that is what makes them one edge), but the *ascents* are not, because
+    /// those live in the adjacency entry — so which copy survived is visible in the output.
+    ///
+    /// The survivor must be the **first-collected** one. The dedup now runs after the whole
+    /// collection rather than at the door, and the second cell's copy is pushed and does collect its
+    /// own cell's write-backs before it is discarded; if the pass ever kept the wrong end of a run,
+    /// this reads 33 / 44 instead of 11 / 22 and the bytes are silently different.
+    #[test]
+    fn a_duplicated_edge_keeps_the_first_cells_copy_and_its_ascents() {
+        let (lat_p, lat_q) = (6_000_000i32, 6_001_000i32);
+        let rec = edge_rec(1000, 3, (lat_p, SEAM_LON), &[(1000, 0)]);
+        let e = pool_layout(std::slice::from_ref(&rec))[0];
+        let cell = |ids: (u32, u32), asc: (u16, u16)| {
+            let nbr = |id: u32, ascent: u16| SrcNbr { id, edge_id: e, cost: 1000, kind: 3, ascent };
+            vec![
+                SrcNode { id: ids.0, lat: lat_p, lon: SEAM_LON, nbrs: vec![nbr(ids.1, asc.0)] },
+                SrcNode { id: ids.1, lat: lat_q, lon: SEAM_LON, nbrs: vec![nbr(ids.0, asc.1)] },
+            ]
+        };
+        // Different local node ids in the two cells, because §8.2 ids are file-local.
+        let (b0, d0) = nav_bytes(&cell((1, 2), (11, 22)), std::slice::from_ref(&rec));
+        let (b1, d1) = nav_bytes(&cell((7, 8), (33, 44)), std::slice::from_ref(&rec));
+        let (s0, s1) = (obc_formats::io::SliceSource(&b0), obc_formats::io::SliceSource(&b1));
+        let (c0, c1) = (nav_cell(&s0, d0), nav_cell(&s1, d1));
+        let bbox = (SEAM_LON as i64 - 1000, lat_p as i64 - 1000, SEAM_LON as i64 + 1000, lat_q as i64 + 1000);
+        let nav = merge(&[&c0, &c1], 20, 0, bbox).expect("the merge succeeds");
+
+        assert_eq!(nav.stats.unified, 2, "both endpoints sit on the seam line");
+        assert_eq!((nav.stats.nodes, nav.stats.edges), (2, 1), "one edge survives, not two");
+        assert_eq!(nav.stats.duplicate_edges, 1, "and the other is counted, not silently absorbed");
+        let nodes = merged_nodes(&nav);
+        assert_eq!(nodes.len(), 2, "the two unified junctions");
+        assert_eq!(nodes[0].3.iter().map(|n| n.4).collect::<Vec<_>>(), vec![11], "a→b is the first cell's climb");
+        assert_eq!(nodes[1].3.iter().map(|n| n.4).collect::<Vec<_>>(), vec![22], "and so is b→a");
+    }
+
+    /// **The degree-cap pin.** Unification unions adjacency (§4.6.2), so a junction two cells share
+    /// can pass §8.3's cap of 24 even though neither cell's own record does: a hub on a seam line
+    /// with 13 spokes in each of two cells merges to degree 26.
+    ///
+    /// The cap does not *choose* 24 entries — it refuses the ones that arrive after the node is
+    /// full, which makes it a property of the walk order. Emission order is by renumbered endpoint
+    /// pair, so the hub keeps its 24 lowest-numbered spokes and the last two lose their hub-side arc
+    /// while keeping their own, which §8.3 explicitly permits. A CSR that reserved slots by counting
+    /// degrees and then clamped could keep a different 24.
+    #[test]
+    fn the_degree_cap_refuses_the_entries_that_arrive_after_the_junction_is_full() {
+        const SPOKES: usize = 26;
+        let hub_lat = 6_000_000i32;
+        // One record per spoke, all anchored at the hub and all distinct — so no two are duplicates
+        // of each other and the only thing under test is the cap.
+        let recs: Vec<Vec<u8>> = (0..SPOKES)
+            .map(|k| edge_rec(100 + k as u32, 3, (hub_lat, SEAM_LON), &[(100 * (k as i16 + 1), 1)]))
+            .collect();
+        let half = |from: usize, to: usize| {
+            let own: Vec<Vec<u8>> = recs[from..to].to_vec();
+            let ids = pool_layout(&own);
+            let mut nodes = vec![SrcNode { id: 0, lat: hub_lat, lon: SEAM_LON, nbrs: Vec::new() }];
+            for (n, k) in (from..to).enumerate() {
+                let nbr = |id: u32, ascent: u16| SrcNbr { id, edge_id: ids[n], cost: 100 + k as u16, kind: 3, ascent };
+                let spoke = k as u32 + 1;
+                nodes[0].nbrs.push(nbr(spoke, 7));
+                nodes.push(SrcNode {
+                    id: spoke,
+                    lat: hub_lat + 100 * (k as i32 + 1),
+                    lon: SEAM_LON + 1,
+                    nbrs: vec![nbr(0, 9)],
+                });
+            }
+            nav_bytes(&nodes, &own)
+        };
+        let (b0, d0) = half(0, SPOKES / 2);
+        let (b1, d1) = half(SPOKES / 2, SPOKES);
+        let (s0, s1) = (obc_formats::io::SliceSource(&b0), obc_formats::io::SliceSource(&b1));
+        let (c0, c1) = (nav_cell(&s0, d0), nav_cell(&s1, d1));
+        let bbox = (SEAM_LON as i64 - 10, hub_lat as i64 - 10, SEAM_LON as i64 + 10, hub_lat as i64 + 100 * 27);
+        let nav = merge(&[&c0, &c1], 20, 0, bbox).expect("the merge succeeds");
+
+        assert_eq!(nav.stats.unified, 1, "the hub is the only coordinate both cells wrote");
+        assert_eq!((nav.stats.nodes, nav.stats.edges), (SPOKES + 1, SPOKES));
+        assert_eq!(nav.stats.degree_truncated, SPOKES - NAV_MAX_DEGREE, "two entries past the §8.3 cap");
+        let nodes = merged_nodes(&nav);
+        // The hub sorts first (lowest latitude), so its spokes are dense ids 1..=26 in walk order.
+        let hub = &nodes[0].3;
+        assert_eq!(hub.len(), NAV_MAX_DEGREE, "the junction is capped, not overfull");
+        assert_eq!(hub.iter().map(|n| n.0).collect::<Vec<_>>(), (1..=NAV_MAX_DEGREE as u32).collect::<Vec<_>>());
+        assert!(hub.windows(2).all(|w| w[0].1 < w[1].1), "and its entries are in emission order");
+        for (dense, n) in nodes.iter().enumerate().skip(1) {
+            assert_eq!(n.3.len(), 1, "every spoke keeps its own arc back to the hub");
+            assert_eq!(n.3[0].0, 0, "node {dense}'s neighbour is the hub");
+        }
     }
 }
