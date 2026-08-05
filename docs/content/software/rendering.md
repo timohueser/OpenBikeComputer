@@ -720,52 +720,9 @@ Everything above is shared — byte-for-byte identical on the simulator and the 
 
 The renderer draws into a single resident **RGB222** plane: one byte per pixel over the 240×320 panel — 75 KB, the whole frame held in `.bss`. Each byte is `0b00_RR_GG_BB`, the top two bits of each channel: the 64-colour gamut the [style table is tuned to](src:firmware/obc-reader/src/color.rs). The renderer's `color_fn` is the identity (styles are already RGB565) and the framebuffer quantises to those 64 colours *on store* — so the expensive geometry code from sections 1–7 is exactly the simulator's, and only the pixel sink differs. This is the [`DrawTarget` seam](../architecture/#two-hosts-one-core-and-the-seams-between-them) from the top of the page, realised for the device.
 
-### A band at a time (the bring-up path)
+### Getting it onto glass
 
-A finished frame now sits in RAM, but nothing is putting it on glass. During bring-up the firmware did it in software over SPI: walk the framebuffer top to bottom and DMA it to a stand-in panel a **band** of a few rows at a time. That band push *was* the visible refresh — a top-to-bottom wipe you could watch sweep down the panel. The shipping device hands that same job to the **FLPR** coprocessor (below), which scans the framebuffer itself; the banding picture still frames the shape of the problem — get a resident frame onto a panel with no host-side scan-out engine, a strip at a time — so it's worth seeing first.
-
-<figure class="fig">
-<svg viewBox="0 0 720 290" role="img" aria-label="The resident RGB222 framebuffer on the left is sliced into horizontal bands. One band is read out, packed to the panel's wire format in a small reused scratch buffer, and DMA'd over SPI into a matching CASET/RASET window on the panel to the right. The band scratch is only a few rows and is reused for every band, so there is never a second full-frame copy.">
-  <defs>
-    <marker id="aG" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
-  </defs>
-  <text class="d-tag" x="20" y="24">One finished frame → the panel, a band at a time</text>
-
-  <!-- framebuffer (left) -->
-  <rect class="d-panel-2" x="44" y="52" width="116" height="196" rx="8" />
-  <g stroke="#9aa884" stroke-opacity="0.5" stroke-width="1">
-    <line x1="44" y1="76" x2="160" y2="76"/><line x1="44" y1="100" x2="160" y2="100"/><line x1="44" y1="124" x2="160" y2="124"/><line x1="44" y1="148" x2="160" y2="148"/><line x1="44" y1="172" x2="160" y2="172"/><line x1="44" y1="196" x2="160" y2="196"/><line x1="44" y1="220" x2="160" y2="220"/>
-  </g>
-  <!-- the band being pushed -->
-  <rect x="44" y="100" width="116" height="24" class="d-hot-fill" />
-  <text class="d-label" x="102" y="40" text-anchor="middle" style="font-size:11px">RGB222 framebuffer</text>
-  <text class="d-sub" x="102" y="266" text-anchor="middle">240×320 · 75 KB · .bss</text>
-
-  <!-- pack box (middle) -->
-  <line class="d-flow" x1="160" y1="112" x2="300" y2="112" marker-end="url(#aG)" />
-  <rect class="d-hot" x="300" y="88" width="132" height="48" rx="10" style="fill:#f8efe4" />
-  <text class="d-label" x="366" y="108" text-anchor="middle" style="fill:#a9501c;font-size:11px">pack → RGB444</text>
-  <text class="d-sub" x="366" y="124" text-anchor="middle">2 px → 3 bytes</text>
-  <text class="d-sub" x="366" y="158" text-anchor="middle" style="font-size:10px">band scratch ≈ 7 KB · reused ×23</text>
-
-  <!-- arrow to panel -->
-  <line class="d-flow" x1="432" y1="112" x2="556" y2="112" marker-end="url(#aG)" />
-  <text class="d-sub" x="494" y="104" text-anchor="middle" style="font-size:10px">SPI · DMA</text>
-  <text class="d-sub" x="494" y="128" text-anchor="middle" style="font-size:10px">CASET/RASET</text>
-
-  <!-- panel (right) -->
-  <rect class="d-panel" x="560" y="52" width="116" height="196" rx="8" style="fill:#e7ead8" />
-  <rect x="560" y="100" width="116" height="24" class="d-hot-fill" style="fill-opacity:0.55" />
-  <text class="d-label" x="618" y="40" text-anchor="middle" style="font-size:11px">ST7789 · bring-up</text>
-  <text class="d-sub" x="618" y="266" text-anchor="middle">addressed window</text>
-  <!-- scanline progression -->
-  <line x1="690" y1="60" x2="690" y2="240" stroke="#cf6a2a" stroke-width="1.4" stroke-dasharray="3 3" marker-end="url(#aG)" />
-  <text class="d-sub" x="700" y="154" style="font-size:9px" transform="rotate(90 700 154)">top → bottom</text>
-</svg>
-<figcaption>The seam that hides the panel's wire format is the presenter half of the display contracts (in <b>obc-display</b>): the renderer draws each band through a frame-absolute <code>Band</code> view, and the backend reformats + transports it. The band scratch is only a few rows, <b>reused for every band</b>, so the frame lives once in the RGB222 plane and never as a second full RGB565 copy.</figcaption>
-</figure>
-
-The wire format lives behind the board-agnostic [display contracts](src:firmware/obc-display/src/display_contracts/mod.rs) (in **obc-display**), so the render stack never couples to it — and the seam has **two live implementations** keeping it honest: the LS021/FLPR panel on-device and the simulator on the host, the latter compiled and tested in the workspace on every CI run. The original bring-up stand-in was an **ST7789** over SPI: each band was packed to the panel's **12-bit RGB444** format — two pixels into three bytes, ~25% fewer bytes than RGB565, and the RGB222 gamut survives 4-bit channels losslessly — then a `CASET`/`RASET` window addressed and the bytes streamed by DMA. Because the scratch was just a few rows (~7 KB), the 320-row frame tiled through it in ~23 pushes; the frame itself never got a second full-frame buffer. The shipping panel drops the band scratch entirely — the FLPR packs each line straight from the resident frame.
+A finished frame now sits in RAM, but nothing is putting it on glass. During bring-up the firmware did that itself in software: walk the framebuffer top to bottom and DMA it to a stand-in **ST7789** a **band** of a few rows at a time, each band packed to the panel's 12-bit RGB444 wire in a ~7 KB scratch the 320-row frame tiled through ~23 times. That band push *was* the visible refresh — a wipe you could watch sweep down the panel — and the property that mattered is the one that survived it: the frame lives **once**, in the RGB222 plane, never as a second full-frame copy. The shipping device drops the band scratch entirely; the FLPR coprocessor (below) packs each line straight out of the resident frame. What made that swap a firmware detail rather than a rewrite is that the wire format lives behind the board-agnostic [display contracts](src:firmware/obc-display/src/display_contracts/mod.rs) (in **obc-display**), so the render stack never couples to it — and the seam has **two live implementations** keeping it honest: the LS021/FLPR panel on-device and the simulator on the host, the latter compiled and tested in the workspace on every CI run.
 
 That seam is **two separable contracts**, spelled out by the [generic display contracts](src:firmware/obc-display/src/display_contracts/mod.rs): a **native-frame format** — geometry, the device's own pixel storage, and a `DrawTarget` writing straight into the backing — and **presenter capabilities** — presenting the clean resident frame, and compositing a bounded transient overlay over it (next section). Rust's borrows encode when render and present may touch the bytes: rendering borrows the frame mutably, a base present shares it for the whole scan, and the overlay present borrows it mutably for its composite-and-restore. What counts as a *changed region* deliberately belongs to the presenter, not the contract: the per-row hashing and span masking below are the [LS021 pairing's own damage strategy](src:firmware/obc-display/src/ls021/mod.rs), and a different panel could diff tiles or lean on a controller's dirty window without the render stack noticing.
 
