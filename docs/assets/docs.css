@@ -279,6 +279,11 @@ figure.fig figcaption b, figure.fig figcaption strong { font-style: normal; colo
 .doc-foot .foot-legal a { color: var(--ink-soft); text-decoration: none; }
 .doc-foot .foot-legal a:hover { color: var(--ink); text-decoration: underline; }
 .doc-foot .foot-trail { font-family: var(--serif); font-style: italic; color: var(--ink-faint); }
+/* The OSM credit takes its own line under the three-item row — it is a licence notice, not
+   navigation, and it must not compete with the Impressum pair for the same horizontal space. */
+.doc-foot .foot-credit { flex-basis: 100%; font-size: 13px; color: var(--ink-faint); }
+.doc-foot .foot-credit a { color: var(--ink-soft); text-decoration: none; }
+.doc-foot .foot-credit a:hover { color: var(--ink); text-decoration: underline; }
 
 /* Postal addresses on the legal pages. A browser italicises <address> by default, but a
    ladungsfähige Anschrift is not emphasis — it's a block that has to read as an address. */

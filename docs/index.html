@@ -450,6 +450,9 @@
     footer .links a { color: var(--ink-soft); text-decoration: none; }
     footer .links a:hover { color: var(--ink); }
     footer .made { font-size: 13px; color: var(--ink-soft); }
+    footer .credit { flex-basis: 100%; font-size: 13px; color: var(--ink-soft); }
+    footer .credit a { color: var(--ink-soft); text-decoration: none; }
+    footer .credit a:hover { color: var(--ink); }
 
     /* ---------- work-in-progress note ---------- */
     .wip-band { padding: 10px 0 0; }
@@ -730,6 +733,10 @@
         <a href="docs/datenschutz/">Datenschutz</a>
       </div>
       <div class="made">Headed for the trail.</div>
+      <!-- ODbL § 4.3 (#1149): the live demo above draws a real map from OpenStreetMap data, so
+           the credit and the licence pointer belong on this page. Same line in the docs and blog
+           shells and in the builder's own footer. -->
+      <div class="credit">Map data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors, under the <a href="https://opendatacommons.org/licenses/odbl/" target="_blank" rel="noopener">ODbL</a>.</div>
     </div>
   </footer>
 

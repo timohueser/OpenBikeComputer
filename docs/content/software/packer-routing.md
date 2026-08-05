@@ -984,6 +984,36 @@ let (back, fwd) = if !self.started {
 
 ---
 
+## Attribution and share-alike
+
+Everything on this page starts with OpenStreetMap, and OSM data is licensed under the
+**Open Database Licence 1.0**. That licence attaches to two different artifacts the
+pipeline produces, and asks something different of each.
+
+**The rendered map is a Produced Work.** A frame drawn on the device screen is a picture
+*made from* the database, so § 4.3 wants a notice that the content came from OSM **and**
+that the database is available under the ODbL. The OSMF's attribution guidelines class
+GPS units as mobile devices, where attribution may sit one deliberate interaction deep —
+which is why the credit lives on the device's [About page](../ui/#about-the-credits-live-one-screen-deep)
+rather than on the map itself, where every pixel is already spoken for. The *offline*
+clause is the reason it is a string in the firmware and not a link: a device that may go
+weeks without a network cannot discharge the licence half by pointing at a URL.
+
+**A published `.obcm` is a Derivative Database.** A packed map is not a picture of OSM —
+it keeps geometry and tags, generalised and re-encoded, and the POI records keep names,
+categories and opening hours. So § 4.4 share-alike applies to what the bakery publishes:
+the store declares `ODbL-1.0` in its catalog manifest's `source` block and writes the
+licence text beside `catalog.json`, which
+[`OBCC_Spec.md`](src:specs/OBCC_Spec.md) makes a producer obligation rather than a
+courtesy. Anyone redistributing cells inherits the same terms.
+
+The credit is a single constant in the firmware today, deliberately: `obc-pack` ingests
+exactly one dataset, so a wire field for it would be speculative. The day a second source
+lands in the packer is the day the attribution moves onto the wire, the way terrain's
+[Copernicus credit](../terrain/#attribution) already travels in the catalog.
+
+---
+
 ## Where this lives
 
 - The packer pipeline, end to end and callable from either host: [`obc-pack/src/pipeline.rs`](src:host/obc-pack/src/pipeline.rs); the phase vocabulary and the cancel token it carries: [`obc-pack/src/progress.rs`](src:host/obc-pack/src/progress.rs); the CLI around it: [`obc-pack/src/main.rs`](src:host/obc-pack/src/main.rs)
