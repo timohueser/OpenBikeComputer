@@ -26,6 +26,9 @@ RESOURCE_SECTION = ".obc_resources"
 RESOURCE_NAME_BYTES = 32
 RESOURCE_ENTRY_BYTES = RESOURCE_NAME_BYTES + 4
 WRITABLE_SYMBOL_TYPES = frozenset("bBdDsS")
+# NOBITS (`.bss`, `.uninit`) as llvm-nm spells it — the arena is one of these, and a claim that it
+# is not (`d`/`D` = it acquired an initializer, `r` = it stopped being writable) is a real finding.
+NOBITS_SYMBOL_TYPES = frozenset("bB")
 STRICT_ALIGN_PROBE = HERE / "strict_align_probe.rs"
 EMBEDDED_TARGET = "thumbv8m.main-none-eabihf"
 EMBEDDED_TARGET_CFG = 'cfg(all(target_arch = "arm", target_os = "none"))'
@@ -66,28 +69,60 @@ class BootChain:
 class BoardMeasurement:
     bss: int
     data: int
+    # `.uninit` — cortex-m-rt's NOLOAD section, placed after `.bss` and skipped by the reset
+    # handler's zeroing loop. It used to be 1 KB of `defmt_rtt::BUFFER` and nothing else, which is
+    # where the historical `uninit_max` came from. Since #1146 P2 it is also where the ~92 KB
+    # **scratch arena** lives, so it is now the second-largest resident block in the image and is
+    # gated in earnest — see the `uninit_max` check in `check_board`.
     uninit: int
     flash: int
     framebuffer_symbols: tuple[Symbol, ...]
     full_frame_sized_writable: tuple[Symbol, ...]
     largest_poll_frame: int | None
+    # The linked scratch-arena statics (expected: exactly one), name-matched the way `FB` is. This
+    # is the *symbol*, not the section, and that is the point — see the arena block in `check_board`.
+    arena_symbols: tuple[Symbol, ...] = ()
     # `None` for a profile that baselines no `boot_chain_roots` — same optional-check shape as
     # `largest_poll_frame`.
     boot: BootChain | None = None
 
     @property
     def resident(self) -> int:
-        """The review/CI contract's linked resident figure: `.bss + .data`."""
+        """The review/CI contract's linked resident figure: `.bss + .data`.
+
+        **Not** "all the RAM the image holds" — `.uninit` is resident too, and since #1146 P2 it
+        carries the scratch arena. The two are gated separately (`resident_ram_max` + `uninit_max`)
+        because they are separately re-approvable, but a change that only *moves* bytes between the
+        two sections leaves this figure looking like a saving it is not. Read them together, and
+        read `residual_stack`, which is charged for both.
+        """
         return self.bss + self.data
 
 
-def parse_size_output(output: str) -> dict[str, int]:
+def parse_size_output(output: str, extra_required: frozenset[str] = frozenset()) -> dict[str, int]:
+    """Section sizes from `llvm-size -A`, failing loudly on a section the caller says must be there.
+
+    `extra_required` is how the **board** legs demand `.uninit`, the section that has held the
+    ~92 KB scratch arena since #1146 P2. It is not in the common set because the bootloader
+    legitimately links none.
+
+    **What this catches, exactly:** llvm-size no longer printing the section (a stale parser) or the
+    board linking no `.uninit` at all — either of which would otherwise measure it as zero and leave
+    `uninit_max` green over an unaccounted-for section. It is a staleness tripwire, nothing more.
+
+    **What it does not catch:** the *arena's* `#[link_section]` being renamed away from `.uninit`.
+    The section has a second tenant (`defmt_rtt::BUFFER`, 1,024 B), so it survives the arena leaving
+    it and this required-set check still passes — as do all four RAM gates, because `uninit_max` is
+    a `<=` ceiling and `residual_stack_min` a `>=` floor that a *departing* arena only raises. The
+    gate for that is the arena-symbol check in [`check_board`], which pins the linked static's size
+    and requires the section to be big enough to contain it.
+    """
     sections: dict[str, int] = {}
     for line in output.splitlines():
         match = re.match(r"^(\.[^\s]+)\s+(\d+)\s+", line.strip())
         if match:
             sections[match.group(1)] = int(match.group(2))
-    required = {".bss", ".data", *FLASH_SECTIONS}
+    required = {".bss", ".data", *FLASH_SECTIONS} | set(extra_required)
     missing = sorted(required - sections.keys())
     if missing:
         raise GuardError(f"llvm-size output is stale/incomplete; missing section(s): {', '.join(missing)}")
@@ -98,9 +133,12 @@ def parse_stack_bounds(output: str) -> tuple[int, int]:
     """(`_stack_start`, `__euninit`) from `llvm-nm`: the residual main stack's two ends.
 
     The M33's stack starts at the top of the linker's `RAM` region and grows **down**; the resident
-    statics grow **up** and end at `__euninit`. Their difference is the whole stack the main task,
-    every `#[inline(never)]` boot constructor and MPSL's ISRs share — which is why `.bss` growth is
-    a stack cut, not just a RAM cost (the elevation epic's +3.7 KB moved this from 52.3 to 48.6 KB).
+    statics grow **up** and end at `__euninit` — which, as the name says, is the end of `.uninit`,
+    i.e. past `.bss` **and** the arena. Their difference is the whole stack the main task, every
+    `#[inline(never)]` boot constructor and MPSL's ISRs share — which is why growth in *either*
+    resident section is a stack cut, not just a RAM cost (the elevation epic's +3.7 KB of `.bss`
+    moved this from 52.3 to 48.6 KB; #1146 P2 moving ~92 KB out of `.bss` into `.uninit` while
+    deleting ~76 KB net gave back exactly that net, not the 168 KB `.bss` alone suggests).
     """
     addresses: dict[str, int] = {}
     for line in output.splitlines():
@@ -135,6 +173,17 @@ def parse_nm_output(output: str) -> list[Symbol]:
 
 def is_framebuffer_symbol(name: str) -> bool:
     return re.search(r"(?:^|::)FB(?:::h[0-9a-f]+)?$", name) is not None
+
+
+def is_arena_symbol(name: str) -> bool:
+    """The scratch arena's linked static (#1146 P2), module path included.
+
+    Matched on `arena::ARENA` rather than a bare `ARENA` on purpose: "arena" is a common name for
+    somebody else's pool (the BLE host's, embassy's task arena), and this gate pins an exact size —
+    a foreign match would be a confusing failure, and a *second* match is reported as ambiguity
+    rather than silently maximised over.
+    """
+    return re.search(r"(?:^|::)arena::ARENA(?:::h[0-9a-f]+)?$", name) is not None
 
 
 SYMBOL_HEADER_RE = re.compile(r"^[0-9a-fA-F]+ <(.+)>:$")
@@ -442,7 +491,7 @@ def measure_boot_chain(parsed: Disassembly, elf: Path, chain_roots: list[str]) -
 def measure_board(
     elf: Path, framebuffer_bytes: int, include_poll: bool, chain_roots: list[str] | None
 ) -> BoardMeasurement:
-    sections = parse_size_output(run_tool("llvm-size", "-A", elf))
+    sections = parse_size_output(run_tool("llvm-size", "-A", elf), extra_required=frozenset({".uninit"}))
     symbols = parse_nm_output(
         run_tool("llvm-nm", "--print-size", "--size-sort", "--demangle", elf)
     )
@@ -463,11 +512,12 @@ def measure_board(
     return BoardMeasurement(
         bss=sections[".bss"],
         data=sections[".data"],
-        uninit=sections.get(".uninit", 0),
+        uninit=sections[".uninit"],
         flash=sum(sections[name] for name in FLASH_SECTIONS),
         framebuffer_symbols=framebuffer_symbols,
         full_frame_sized_writable=full_frame_sized,
         largest_poll_frame=poll,
+        arena_symbols=tuple(symbol for symbol in symbols if is_arena_symbol(symbol.name)),
         boot=boot,
     )
 
@@ -507,10 +557,20 @@ def check_board(args: argparse.Namespace, baseline: dict[str, object]) -> None:
         f"{args.profile} resident RAM grew to {measured.resident} B (.bss + .data), above the "
         f"approved {profile['resident_ram_max']} B baseline; itemize/approve the increase",
     )
+    # A plain ceiling, and it needs no more shape than that even now that it is a real budget: until
+    # #1146 P2 `.uninit` held only `defmt_rtt::BUFFER`, and the 1,024 B baseline was there to catch
+    # a NOLOAD section appearing by accident. It now also holds the ~92 KB scratch arena, so this is
+    # the growth gate for the arena's largest arm — pinned exactly, like `resident_ram_max`, so any
+    # arm crossing the max shows up here as a linked fact and not only as a `size_of` in the report.
+    # Being a ceiling, it says nothing about the arena *shrinking* or *leaving*; `check_arena` below
+    # is the gate for that, and the two are only tight together.
     require(
         measured.uninit <= profile["uninit_max"],
-        f"{args.profile} .uninit grew to {measured.uninit} B, above {profile['uninit_max']} B",
+        f"{args.profile} .uninit grew to {measured.uninit} B, above {profile['uninit_max']} B; "
+        "this is the scratch arena's section (#1146 P2) — an arm grew past the current maximum, or "
+        "a new NOLOAD static appeared. Itemize/approve it exactly as a resident increase",
     )
+    check_arena(args.profile, profile, measured)
     expected_count = profile["framebuffer_count"]
     require(
         len(measured.framebuffer_symbols) == expected_count,
@@ -524,10 +584,13 @@ def check_board(args: argparse.Namespace, baseline: dict[str, object]) -> None:
             f"{framebuffer_bytes} B (240 x 320 x 1)",
         )
     # Distinct from `framebuffer_count` (a *name*-matched count): this is the size-based
-    # "no accidental second framebuffer" net. It is not always 1 — the ~90 KB `RENDER_SCRATCH`
-    # legitimately exceeds a frame (#1146 P1 gave the render path's per-frame buffers their own
-    # static; before that the same bytes tripped this count from inside `APP`), so the expected
-    # count is pinned per profile and any *new* frame-sized allocation still trips the guard.
+    # "no accidental second framebuffer" net. It is not always 1 — the ~90 KB scratch `ARENA`
+    # legitimately exceeds a frame, so the expected count is pinned per profile and any *new*
+    # frame-sized allocation still trips the guard. Those bytes have moved twice and the count has
+    # stayed 2 throughout: they were inside `APP`, then #1146 P1 gave them their own `RENDER_SCRATCH`
+    # static, and #1146 P2 made them the render arm of `arena::ARENA` in `.uninit`. Membership, not
+    # the count, is what says which — so read the `candidates:` list in the failure, not just the
+    # number: today it is `FB` + `ARENA`.
     expected_full_frame = profile.get("full_frame_sized_writable_count", expected_count)
     require(
         len(measured.full_frame_sized_writable) == expected_full_frame,
@@ -547,6 +610,66 @@ def check_board(args: argparse.Namespace, baseline: dict[str, object]) -> None:
     if measured.boot is not None:
         check_boot_chain(args.profile, profile, measured.boot)
     print(f"{args.profile}: resource guards passed")
+
+
+def check_arena(profile_name: str, profile: dict[str, object], measured: BoardMeasurement) -> None:
+    """The scratch arena (#1146 P2) as a **linked symbol**, not only as a section total.
+
+    `.uninit`'s size alone cannot say the arena is in it. The section has a second tenant
+    (`defmt_rtt::BUFFER`, 1,024 B), so an arena whose `#[link_section]` is renamed to anything else
+    lands in a section nothing gates and leaves every RAM gate green: `.bss + .data` unmoved (the
+    bytes did not go to `.bss`), `.uninit` back to 1,024 under a `<=` ceiling, and the residual main
+    stack *risen*, comfortably over its `>=` floor. 92 KB would go missing behind four passes.
+
+    So the three requirements here are the ones that actually pin it:
+
+    * the static exists exactly once, under its module path (a rename or a second `arena::ARENA` is
+      a hard error, never a silent max-over-matches);
+    * it is NOBITS and its size is **exactly** `compile_time_allocations.arena_total` — the same
+      number the `report` leg pins `size_of::<ScratchArena>()` against, so the linked image and the
+      target-side table cannot drift apart;
+    * `.uninit` is large enough to **contain** it. That is the membership half: it fails the moment
+      the arena's bytes are somewhere else, which is precisely what the required-section check
+      cannot see.
+
+    What is still *not* proven here is that those bytes sit at the arena's address rather than
+    merely fitting — a `.uninit` that grew by 92 KB for an unrelated reason while the arena moved
+    out would satisfy the arithmetic. `uninit_max` is pinned at the exact shipping total, so that
+    combination cannot pass both gates today.
+    """
+    expected = profile.get("compile_time_allocations", {}).get("arena_total")
+    require(
+        expected is not None,
+        f"{profile_name} baseline has no compile_time_allocations.arena_total; the board leg pins "
+        "the linked scratch arena against the same figure the report leg pins (#1146 P2)",
+    )
+    names = [symbol.name for symbol in measured.arena_symbols]
+    require(
+        len(measured.arena_symbols) == 1,
+        f"{profile_name} links {len(measured.arena_symbols)} scratch-arena static(s), expected 1 "
+        f"(symbols: {names}); the `arena::ARENA` static was renamed, optimized out, or duplicated — "
+        "if it genuinely moved, move `is_arena_symbol` with it (#1146 P2)",
+    )
+    arena = measured.arena_symbols[0]
+    require(
+        arena.kind in NOBITS_SYMBOL_TYPES,
+        f"{profile_name} scratch arena `{arena.name}` is llvm-nm type `{arena.kind}`, not NOBITS; "
+        "it acquired an initializer or left writable RAM — the arena must cost flash nothing and "
+        "must never be zeroed at boot",
+    )
+    require(
+        arena.size == expected,
+        f"{profile_name} linked scratch arena is {arena.size} B, not the baselined "
+        f"{expected} B (`arena_total`); an arm changed size — re-pin it here and in "
+        "compile_time_allocations together, and mind the max-of-arms cliff in arena.rs",
+    )
+    require(
+        measured.uninit >= arena.size,
+        f"{profile_name} .uninit is {measured.uninit} B but the scratch arena is {arena.size} B: "
+        "the arena is no longer linked into `.uninit`. Its `#[link_section]` was renamed or "
+        "dropped, and the section's other tenant kept every other RAM gate green (#1146 P2)",
+    )
+    print(f"{profile_name}: scratch arena {arena.size:,} B inside .uninit {measured.uninit:,} B")
 
 
 def check_boot_chain(profile_name: str, profile: dict[str, object], boot: BootChain) -> None:
@@ -572,7 +695,8 @@ def check_boot_chain(profile_name: str, profile: dict[str, object], boot: BootCh
         boot.residual_stack >= profile["residual_stack_min"],
         f"{profile_name} residual main stack fell to {boot.residual_stack} B, below the "
         f"{profile['residual_stack_min']} B floor: resident statics grew into the stack. Every "
-        ".bss byte is a stack byte here — re-trim the nrf-mem caps or re-approve the floor",
+        ".bss AND .uninit byte is a stack byte here (the bound is `_stack_start - __euninit`, so "
+        "the scratch arena counts too) — re-trim the nrf-mem caps or re-approve the floor",
     )
     require(
         boot.chain_ceiling <= profile["boot_chain_ceiling"],

@@ -313,7 +313,7 @@ impl Demo {
             let src = SliceSource(self.bytes);
             let reader = Reader::new(&src, &self.tables, &self.cache);
             self.app.render_frame(
-                &mut self.scratch,
+                Some(&mut self.scratch),
                 &mut self.frame,
                 &reader,
                 route.as_ref(),

@@ -250,12 +250,26 @@ async fn serve_frame(
         host_frame::TRANSFER_CONTROL => {
             match classify_transfer(payload, store, &mut guard, crate::link::Transport::Usb) {
                 TransferDisposition::Arm(armed) => {
-                    info!("usb: [ctl] transfer armed");
                     // Claim the gate *before* the data plane can observe the arm, exactly as the
                     // GATT path does: the cross-transport `TRANSFER_ACTIVE` is what turns a second
                     // open — from either wire — into a typed `busy`.
-                    TRANSFER_ACTIVE.claim(crate::link::gate_owner(crate::link::Transport::Usb));
-                    TRANSFER_ARM.signal(armed);
+                    //
+                    // **The claim's answer is honoured** (#1146 P2). Nothing awaits between
+                    // `classify_transfer`'s `busy()` test and this claim, and every claimant runs on
+                    // the one cooperative executor, so a refusal here is unreachable today — which
+                    // is exactly why it used to be discarded, and exactly why that was the wrong
+                    // shape: the gate grew a second refuser (a live route search) without this call
+                    // site noticing, and the failure mode of arming anyway is a data plane streaming
+                    // into a store another claimant owns. Answer `busy` and arm nothing.
+                    if TRANSFER_ACTIVE.claim(crate::link::gate_owner(crate::link::Transport::Usb)) {
+                        info!("usb: [ctl] transfer armed");
+                        TRANSFER_ARM.signal(armed);
+                    } else {
+                        warn!("usb: [ctl] transfer_control lost the gate between classify and claim — answering busy");
+                        debug_assert!(false, "the gate moved between classify and claim with no await between them");
+                        status_msg =
+                            Some(crate::link::transfer_result(armed.object_id(), obc_ble::TransferStatus::Busy));
+                    }
                 }
                 TransferDisposition::AbortActive => {
                     info!("usb: [ctl] abort → data plane");

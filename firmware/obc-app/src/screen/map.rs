@@ -348,6 +348,14 @@ where
 {
     let scene = rx.scene?;
     let rx = &mut rx.render;
+    // The only reader of the host's lent scratch (#1146 P2) — which is why every other screen may
+    // be drawn with `None`. Reaching here without one means the host called a render entry point
+    // with `None` under a map-drawing base: skip the map rather than invent one, and say so loudly
+    // in a debug build.
+    let Some(scratch) = rx.scratch.as_deref_mut() else {
+        debug_assert!(false, "a map-drawing base needs the host's RenderScratch, but none was lent");
+        return None;
+    };
     let bg565 = scene.backdrop_style().map_or(DEFAULT_BG_RGB565, |style| style.color);
     let (target, color_fn) = cv.split();
     let bg = color_fn(bg565);
@@ -356,11 +364,11 @@ where
     // screen lands on the very next map frame with no reload and nothing to reset. Suppression drops
     // the terrain layer in the collect pass, so nothing is decoded, let alone drawn.
     let cfg = obc_render::RenderConfig { terrain_layer: rx.settings.map_contours };
-    let mut stats = rx.scratch.render_timed(target, scene, vp, bg, cfg, color_fn, rx.clock);
+    let mut stats = scratch.render_timed(target, scene, vp, bg, cfg, color_fn, rx.clock);
     let arrows_at = (skip.is_none() && vp.meters_per_pixel() <= CHEVRON_MAX_MPP).then_some(rx.activity.progress_m);
 
     if let Some(route) = rx.route {
-        let (route_chunks, route_points, route_points_drawn) = rx.scratch.draw_route(
+        let (route_chunks, route_points, route_points_drawn) = scratch.draw_route(
             target,
             vp,
             &crate::route::RouteOverlay(route),
@@ -375,18 +383,12 @@ where
 
         if let Some(selected) = skip {
             route.visit_points_between(selected.start_m, selected.end_m, |pts| {
-                rx.scratch.stroke_path(
-                    target,
-                    vp,
-                    pts.iter().copied(),
-                    color_fn(super::palette::WARNING),
-                    SKIPPED_WEIGHT,
-                );
+                scratch.stroke_path(target, vp, pts.iter().copied(), color_fn(super::palette::WARNING), SKIPPED_WEIGHT);
             });
             // The planned detour (#882): blue, so the replanned portion reads apart from the
             // magenta route it will replace and the warning-colored span it avoids.
             if selected.detour.len() >= 2 {
-                rx.scratch.stroke_path(
+                scratch.stroke_path(
                     target,
                     vp,
                     selected.detour.iter().copied(),
@@ -399,7 +401,7 @@ where
 
     if !rx.breadcrumb.is_empty() {
         let trail = color_fn(super::palette::BREADCRUMB);
-        rx.scratch.stroke_path(target, vp, rx.breadcrumb.points(), trail, BREADCRUMB_WEIGHT);
+        scratch.stroke_path(target, vp, rx.breadcrumb.points(), trail, BREADCRUMB_WEIGHT);
     }
     rx.stats = stats;
 
@@ -407,7 +409,7 @@ where
     let marker565 = if rx.activity.off_route { super::palette::WARNING } else { scene.marker_color() };
     if let Some(fix) = rx.state.user_fix {
         let (target, color_fn) = cv.split();
-        rx.scratch.draw_marker(target, vp, fix.lon, fix.lat, fix.course, color_fn(marker565));
+        scratch.draw_marker(target, vp, fix.lon, fix.lat, fix.course, color_fn(marker565));
     }
     if let Some(selected) = skip {
         let (x, y) = vp.to_screen(selected.candidate.0, selected.candidate.1);

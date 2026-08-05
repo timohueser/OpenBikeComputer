@@ -14,6 +14,7 @@ use crate::host::{
     DrainStatus, HostCommand, HostCommandClass, HostEvent, HostMailbox, HostPending, HOST_COMMAND_CLASSES,
 };
 use crate::input::Gesture;
+use crate::reroute_freeze::PlanFamily;
 use crate::ride::RideSummary;
 use crate::ride_engine::RideEngine;
 use crate::route::RouteSummary;
@@ -359,7 +360,7 @@ const GESTURE_BUF: usize = 16;
 ///     };
 ///     app.tick(RideClock(now_ms), sensors, route.as_ref());
 ///     app.handle_input(InputClock(now_ms), &mut input_source); // Select + Back → gestures
-///     app.render_frame(&mut scratch, &mut display, &reader, route.as_ref(), w, h, color_policy);
+///     app.render_frame(Some(&mut scratch), &mut display, &reader, route.as_ref(), w, h, color_policy);
 /// }
 /// ```
 /// Whether — and by which source — the wall clock has been established from a **real time source
@@ -431,6 +432,11 @@ pub struct App {
     /// (revision, handshake state, bounded retry pacing). Drained and answered only through the
     /// typed protocol below.
     host: HostPending,
+    /// The **Recalculating freeze** (issue #1146, P2): whether a host planner run is live, which
+    /// (over a map base) stops map redraws, pauses the matcher, and raises the overlay banner —
+    /// the product rule that makes the render and nav arms of the board's scratch arena disjoint.
+    /// See [`crate::reroute_freeze`].
+    freeze: crate::reroute_freeze::RerouteFreeze,
     /// The running firmware version string (T8 item 6) — the same value the DFU confirm shows as
     /// "Installed", fed by the host at boot via [`set_fw_version`](App::set_fw_version). The System
     /// settings screen's `Firmware` ledger row renders it (empty ⇒ `--`). Resident because that frame
@@ -487,6 +493,7 @@ impl App {
             clock_trust: ClockTrust::Untrusted,
             retention: crate::retention::RetentionRuntime::new(),
             host: HostPending::new(),
+            freeze: crate::reroute_freeze::RerouteFreeze::new(),
             fw_version: heapless::String::new(),
             map_name: heapless::String::new(),
             map_obcm_version: 0,
@@ -539,6 +546,7 @@ impl App {
             addr_of_mut!((*slot).clock_trust).write(ClockTrust::Untrusted);
             addr_of_mut!((*slot).retention).write(crate::retention::RetentionRuntime::new());
             addr_of_mut!((*slot).host).write(HostPending::new());
+            addr_of_mut!((*slot).freeze).write(crate::reroute_freeze::RerouteFreeze::new());
             addr_of_mut!((*slot).fw_version).write(heapless::String::new());
             addr_of_mut!((*slot).map_name).write(heapless::String::new());
             addr_of_mut!((*slot).map_obcm_version).write(0);
@@ -565,6 +573,7 @@ impl App {
                 clock_trust: _,
                 retention: _,
                 host: _,
+                freeze: _,
                 fw_version: _,
                 map_name: _,
                 map_obcm_version: _,
@@ -611,6 +620,10 @@ impl App {
         // `self.ui.now_ms` is wall time), and a tile reading `self.ui.now_ms` would blank to `--` seconds
         // into a replay — see the `sensor_tiles_…` test.
         self.activity.note_sensor_clock(now_ms);
+        // Read the freeze once, before anything below can move the stack: while a planner run holds
+        // the arena over a map base, this tick must not advance route-match progress (see the fix
+        // path below for why, and `crate::reroute_freeze` for the whole rule).
+        let frozen = self.reroute_freeze_active();
         // The once-per-load route/session sync — matcher re-lock, session restart (accumulators +
         // breadcrumb), the route-length mirror, and the climbs/waypoints cache builds — is the
         // ride engine's; a change there (route line appeared/vanished, breadcrumb cleared)
@@ -709,7 +722,21 @@ impl App {
             // tick through `sample_terrain`, at the fix cadence and never per frame.
             self.ride.pending_terrain = Some((fix.lat, fix.lon));
             if let Some(route) = route {
-                self.ride.match_fix(&mut self.activity, fix, route);
+                // The **Recalculating freeze** (issue #1146, P2) pauses exactly this: the matcher.
+                // The frozen frame on glass shows the progress of the fix it was drawn from, and a
+                // search can replace the geometry that progress is measured along — so advancing it
+                // under a map nobody is redrawing is drift the rider cannot see. Everything else
+                // this tick keeps running (the fix is recorded, the breadcrumb grows, the ride
+                // totals and the altimeter accumulate): a freeze pauses the map, not the ride. The
+                // two derived readouts below re-run against the *held* progress, so they are
+                // idempotent while frozen and re-lock from the fresh match the moment it lifts.
+                if frozen {
+                    // The cursor stands still while the fixes keep coming, so the next match must
+                    // not be judged against a one-fix-wide forward window: arm the wide re-lock.
+                    self.ride.note_unmatched_fix();
+                } else {
+                    self.ride.match_fix(&mut self.activity, fix, route);
+                }
                 // "Am I on a climb now?" is derived from the fresh match — with hysteresis, and a
                 // detail-profile refill only on a new climb entry (see `update_active_climb`).
                 self.update_active_climb(route);
@@ -971,6 +998,61 @@ impl App {
     /// chrome with zero map I/O.
     pub fn base_draws_map(&self) -> bool {
         self.ui.base_draws_map()
+    }
+
+    /// Whether the **Recalculating freeze** is engaged (issue #1146, P2): a host planner run is
+    /// live *and* the base screen would draw the map. While it is, a render-on-demand host must
+    /// **skip the map redraw** — the last frame stays on the reflective glass — and paint only
+    /// [`render_overlay`](App::render_overlay), which raises the "Recalculating..." banner over it.
+    /// [`tick`](App::tick) stops advancing route-match progress for the same span (everything else
+    /// about a fix keeps recording).
+    ///
+    /// The board reads it once per pass for two decisions: whether to render, and whether the nav
+    /// arm of the scratch arena may be claimed — the map plane must already be quiet before a
+    /// search overwrites the render scratch, so this is the proof
+    /// [`nav_arena_precondition`](App::nav_arena_precondition) hands to
+    /// [`ArenaGate::claim_nav`](crate::arena_gate::ArenaGate::claim_nav).
+    pub fn reroute_freeze_active(&self) -> bool {
+        self.freeze.active(self.ui.base_draws_map())
+    }
+
+    /// Whether a host planner run is live at all — including a **menu** plan, where no freeze is
+    /// engaged because the planning screen is itself the (chrome) base. The "is the arena's nav arm
+    /// claimed?" fact; hosts that arbitrate a search against something else (the cable transfer
+    /// gate's search arm, [`TransferGate::begin_search`](crate::TransferGate::begin_search)) read
+    /// this rather than the freeze.
+    pub fn plan_in_flight(&self) -> bool {
+        self.freeze.plan_live()
+    }
+
+    /// The proof that the map plane is quiesced, minted from this app's own state — `None` when a
+    /// search must not take the arena yet (a map base with no freeze engaged). The board's
+    /// `claim_nav` call site is `app.nav_arena_precondition().ok_or(…)?`, so the gate cannot be
+    /// called without the evidence.
+    pub fn nav_arena_precondition(&self) -> Option<crate::arena_gate::MapQuiesced> {
+        crate::arena_gate::MapQuiesced::prove(self.reroute_freeze_active(), self.base_draws_map())
+    }
+
+    /// Whether the map-transfer card (issue #927) is on the stack — the "the UI shows the transfer
+    /// screen" half of the arena's `render ⊥ usb` rule. Modal and opaque, so while it is up the base
+    /// draws no map; both facts are checked here rather than assumed, since the card is host-pushed
+    /// and the rule must hold whatever else the stack is doing.
+    pub fn transfer_screen_up(&self) -> bool {
+        self.ui.stack.iter().any(|s| matches!(s, Screen::MapTransfer(_))) && !self.base_draws_map()
+    }
+
+    /// The proof that a **cable transfer may take the arena**, minted from this app's state plus the
+    /// one fact the app does not own: whether a route search is live on the host's own transfer gate
+    /// ([`TransferGate::search_live`](crate::TransferGate::search_live) on the board — read from
+    /// there rather than from [`plan_in_flight`](App::plan_in_flight), so the control plane's `busy`
+    /// answer and this claim can never disagree).
+    ///
+    /// The typed twin of [`nav_arena_precondition`](App::nav_arena_precondition), and it exists for
+    /// the same reason: the board's `claim_usb` call site should read the precondition off the app
+    /// rather than re-derive it from two bare bools at the call site, where a second call site could
+    /// pass them in the wrong order or forget one.
+    pub fn usb_arena_precondition(&self, search_live: bool) -> Option<crate::arena_gate::TransferReady> {
+        crate::arena_gate::TransferReady::prove(self.transfer_screen_up(), search_live)
     }
 
     /// Whether the frame needs the streamed-map [`Reader`] built and passed to
@@ -1317,6 +1399,25 @@ impl App {
         self.ui.map_dirty = true;
     }
 
+    /// **Debug / snapshot only** (#1146 P2): engage the Recalculating freeze as if the host had just
+    /// begun a planner run — the same seam a drained `PlanRoute`/`PlanDetour` takes, so the banner,
+    /// the paused matcher and the skipped redraws are the real ones.
+    ///
+    /// It exists because the freeze's visible state is not reachable from a *scripted* headless
+    /// run: the flows that start a plan leave an opaque planning screen as the base (nothing to
+    /// freeze), and the one gesture that puts a map base back under a live search — Back on the
+    /// detour spinner — also cancels the plan, which the host drains in the same pass. The
+    /// simulator's `--freeze` flag drives this so the banner can be snapshotted over a live map.
+    /// No production path reaches it. Stands in for a [`Route`](PlanFamily::Route) run, so a stray
+    /// detour edge cannot release it (see [`PlanFamily`]).
+    pub fn debug_set_plan_live(&mut self, live: bool) {
+        if live {
+            self.note_plan_started(PlanFamily::Route);
+        } else {
+            self.note_plan_ended(PlanFamily::Route);
+        }
+    }
+
     /// **Debug / snapshot only** (epic #506, C4): open the [`Climb`](crate::screen::ClimbScreen)
     /// screen directly. The screen isn't reachable through any gesture until C5 wires its Back-cycle
     /// and auto-switch, so the UI-snapshot sweep drives it through this seam (the sim's `--open-climb`
@@ -1349,9 +1450,32 @@ impl App {
         self.ui.next_ahead.invalidate();
     }
 
+    /// Engage the Recalculating freeze (issue #1146, P2) — the host begins a planner run this pass.
+    /// Nothing is dirtied here, and both halves of that are deliberate. The *map* isn't, because the
+    /// host is about to stop redrawing it and a demand raised now would be drained and lost. The
+    /// *overlay* isn't either, because a plan start is not the banner's edge: this plan may well have
+    /// begun under the opaque planning spinner, where there is no map to freeze and no banner to
+    /// draw. [`take_dirty`](App::take_dirty) derives that edge from the engaged level instead.
+    fn note_plan_started(&mut self, family: PlanFamily) {
+        self.freeze.plan_started(family);
+    }
+
+    /// Release the freeze — the run answered, failed, or was cancelled. Dirties the **map**: it held
+    /// still for the whole search and has a fix, a route, or a whole new geometry to catch up on. The
+    /// banner comes off with the same [`take_dirty`](App::take_dirty) level edge that put it up.
+    /// Idempotent: several release edges can land for one run.
+    fn note_plan_ended(&mut self, family: PlanFamily) {
+        if self.freeze.plan_ended(family) {
+            self.ui.map_dirty = true;
+        }
+    }
+
     /// [`HostEvent::NavPlanned`]: land the plan answer in the planning screen, or drop it.
     fn on_nav_planned(&mut self, result: Result<u16, obc_route::nav::NavError>) {
         use obc_route::nav::NavError;
+        // The run is over whatever happens below — including for a *late* answer whose planning
+        // screen the rider already cancelled away, which returns early two lines down.
+        self.note_plan_ended(PlanFamily::Route);
         let Some(i) = self.ui.stack.iter().position(|s| matches!(s, Screen::NavPlanning(_))) else {
             return;
         };
@@ -1391,6 +1515,7 @@ impl App {
     /// cancelled) is dropped, and the stale preview slot cleared.
     fn on_detour_planned(&mut self, result: Result<crate::host::DetourPreview, obc_route::nav::NavError>) {
         use obc_route::nav::NavError;
+        self.note_plan_ended(PlanFamily::Detour); // the run is over — see `on_nav_planned` for the late-answer case
         let Some(i) = self
             .ui
             .stack
@@ -2138,11 +2263,14 @@ impl App {
     ///
     /// `scratch` is the caller's [`RenderScratch`] — the render path's per-frame working memory,
     /// owned by the host rather than by `App` (#1146), lent for the duration of the call and
-    /// meaningless between frames.
+    /// meaningless between frames. It is optional because only the map-drawing screens ever touch
+    /// it (#1146 P2): a host whose frame is pure chrome passes `None` and keeps its scratch memory
+    /// for something else. `None` under a map-drawing base is a caller bug — the map is skipped and
+    /// a `debug_assert!` fires.
     #[allow(clippy::too_many_arguments)]
     pub fn render_frame<D, F>(
         &mut self,
-        scratch: &mut RenderScratch,
+        scratch: Option<&mut RenderScratch>,
         target: &mut D,
         reader: &Reader,
         route: Option<&RouteReader>,
@@ -2166,7 +2294,7 @@ impl App {
     #[allow(clippy::too_many_arguments)]
     pub fn render_scene_frame<D, F, S>(
         &mut self,
-        scratch: &mut RenderScratch,
+        scratch: Option<&mut RenderScratch>,
         target: &mut D,
         scene: &S,
         core_reader: &Reader,
@@ -2194,7 +2322,7 @@ impl App {
     #[allow(clippy::too_many_arguments)]
     pub fn render_map<D, F>(
         &mut self,
-        scratch: &mut RenderScratch,
+        scratch: Option<&mut RenderScratch>,
         target: &mut D,
         reader: &Reader,
         route: Option<&RouteReader>,
@@ -2216,7 +2344,7 @@ impl App {
     #[allow(clippy::too_many_arguments)]
     pub fn render_scene_map<D, F, S>(
         &mut self,
-        scratch: &mut RenderScratch,
+        scratch: Option<&mut RenderScratch>,
         target: &mut D,
         scene: &S,
         core_reader: &Reader,
@@ -2240,7 +2368,7 @@ impl App {
     #[allow(clippy::too_many_arguments)]
     pub fn render_map_timed<D, F>(
         &mut self,
-        scratch: &mut RenderScratch,
+        scratch: Option<&mut RenderScratch>,
         target: &mut D,
         reader: Option<&Reader>,
         route: Option<&RouteReader>,
@@ -2262,7 +2390,7 @@ impl App {
     #[allow(clippy::too_many_arguments)]
     pub fn render_scene_map_timed<D, F, S>(
         &mut self,
-        scratch: &mut RenderScratch,
+        scratch: Option<&mut RenderScratch>,
         target: &mut D,
         scene: Option<&S>,
         core_reader: Option<&Reader>,
@@ -2410,14 +2538,29 @@ impl App {
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
-        self.ui.input.render_overlay(target, w, h, color_fn);
+        self.ui.input.render_overlay(target, w, h, &color_fn);
+        // The Recalculating banner (issue #1146, P2) rides the same plane as the bulge, and for the
+        // same reason: it must appear over a frame the map plane is *not* redrawing. Drawn last so
+        // a hold charging during a search still bulges over it.
+        if self.reroute_freeze_active() {
+            let text = crate::i18n::t(crate::Msg::MapRecalculating, self.settings.language);
+            crate::reroute_freeze::draw_banner(target, &color_fn, w, h, text);
+        }
+    }
+
+    /// The Recalculating banner's bounding rows `[y0, y0 + rows)` in a `w`×`h` frame, or `None` when
+    /// the freeze is not engaged — the twin of [`InputPlane::overlay_rows`](crate::InputPlane::overlay_rows)
+    /// for a partial-overlay host (the board re-presents overlay *rows*, not whole frames). A host
+    /// that pushes the union of this and the bulge's rows presents exactly what changed.
+    pub fn reroute_banner_rows(&self, h: f32) -> Option<(u16, u16)> {
+        self.reroute_freeze_active().then(|| crate::reroute_freeze::banner_rows(h))
     }
 
     /// Whether the overlay plane has live content this frame — a hold bulge charging, popping, or
     /// retracting. `false` exactly when [`render_overlay`](App::render_overlay) would draw nothing,
     /// so a host driving the overlay as a separate layer can leave it idle.
     pub fn overlay_active(&self) -> bool {
-        self.ui.input.overlay_active()
+        self.ui.input.overlay_active() || self.reroute_freeze_active()
     }
 
     /// Drain the repaint demand accumulated since the last call, resetting to [`Dirty::CLEAN`]. The
@@ -2434,7 +2577,16 @@ impl App {
     /// [`region`](Dirty::region) carries the accumulated region-scoped tick demand — but only when
     /// no full-frame demand joined it since the last drain: a set `map_dirty` covers any region, so
     /// the region folds away and the host full-repaints (over-redraw is safe; under-redraw is a bug).
+    ///
+    /// The **Recalculating banner** joins [`overlay`](Dirty::overlay) here, and here rather than at
+    /// the plan seams on purpose: the freeze is a *level* (a live plan **and** a map base), and
+    /// either half can move without the other. Deriving its repaint edge at the drain is what makes
+    /// the banner appear on the pass a map base lands back under a search that is still running —
+    /// see [`RerouteFreeze::take_engaged_edge`](crate::reroute_freeze::RerouteFreeze::take_engaged_edge).
     pub fn take_dirty(&mut self) -> Dirty {
+        if self.freeze.take_engaged_edge(self.ui.base_draws_map()) {
+            self.ui.overlay_edge = true;
+        }
         self.ui.take_dirty()
     }
 
@@ -2614,12 +2766,16 @@ impl App {
                 let commits = self.host.take_store_changed();
                 (commits > 0).then_some(HostCommand::RescanStore { commits })
             }
-            HostCommandClass::CancelRoutePlan => {
-                self.activity.take_nav_cancel().then_some(HostCommand::CancelRoutePlan)
-            }
+            HostCommandClass::CancelRoutePlan => self.activity.take_nav_cancel().then(|| {
+                // The host is being told to drop the planner: the run is over, so the freeze
+                // releases here rather than on an answer that will never come (#1146 P2).
+                self.note_plan_ended(PlanFamily::Route);
+                HostCommand::CancelRoutePlan
+            }),
             HostCommandClass::CancelDetour => self.activity.take_detour_cancel().then(|| {
                 // The preview polyline dies with the plan it previewed.
                 self.catalogs.clear_detour_preview();
+                self.note_plan_ended(PlanFamily::Detour);
                 HostCommand::CancelDetour
             }),
             HostCommandClass::DeleteRoute => {
@@ -2659,8 +2815,17 @@ impl App {
                 Some(HostCommand::StampRideSynced { id, utc })
             }
             HostCommandClass::FinishTrack => self.activity.take_track_action().map(HostCommand::FinishTrack),
-            HostCommandClass::PlanRoute => self.activity.take_nav_request().map(HostCommand::PlanRoute),
-            HostCommandClass::PlanDetour => self.activity.take_detour_request().map(HostCommand::PlanDetour),
+            // The two plan commands are the freeze's engaging edge: draining one is the moment the
+            // host actually begins a planner run (a request the rider cancelled first is
+            // annihilated in `Activity` and never drains, so it never freezes anything).
+            HostCommandClass::PlanRoute => self.activity.take_nav_request().map(|req| {
+                self.note_plan_started(PlanFamily::Route);
+                HostCommand::PlanRoute(req)
+            }),
+            HostCommandClass::PlanDetour => self.activity.take_detour_request().map(|req| {
+                self.note_plan_started(PlanFamily::Detour);
+                HostCommand::PlanDetour(req)
+            }),
             HostCommandClass::CommitDetour => self.activity.take_detour_commit().then_some(HostCommand::CommitDetour),
             HostCommandClass::Dfu => self.activity.take_dfu_request().map(HostCommand::Dfu),
             HostCommandClass::ForgetBond => {
@@ -4242,7 +4407,9 @@ mod tests {
             let idx = RouteIndex::read(&route_src).expect("valid .obcr");
             let route = RouteReader::new(&idx, &route_src);
             let mut scratch = Box::new(RenderScratch::new());
-            app.render_frame(&mut scratch, &mut Sink, &reader, Some(&route), 240.0, 320.0, |_| Rgb888::new(0, 0, 0));
+            app.render_frame(Some(&mut scratch), &mut Sink, &reader, Some(&route), 240.0, 320.0, |_| {
+                Rgb888::new(0, 0, 0)
+            });
         };
 
         let mut app = App::new(AppState::new(7_800_000, 48_000_000, 0.05));
