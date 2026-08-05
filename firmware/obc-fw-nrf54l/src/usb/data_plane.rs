@@ -64,6 +64,10 @@ enum TransferOutcome {
 /// latched abort first; an abort arriving after the clear belongs to the next descriptor.
 fn close_transfer() {
     let _ = TRANSFER_ABORT.try_take();
+    // Hand the scratch arena's staging arm back before the gate opens (#1146 P2): the ride loop
+    // reclaims off this level, and every terminal path in this module funnels through here, so
+    // "which way did the transfer end" is not a fact the arena has to know.
+    super::release_stage();
     TRANSFER_ACTIVE.release(crate::link::gate_owner(crate::link::Transport::Usb));
 }
 
@@ -75,7 +79,6 @@ pub(crate) async fn run(
     mut ep_in: EpIn,
     mut ep_out: EpOut,
     buf: &'static mut [u8],
-    stage_buf: &'static mut [u8],
     store: &RefCell<ObjectStore>,
     shared: &SharedStoreMutex,
 ) -> ! {
@@ -104,15 +107,15 @@ pub(crate) async fn run(
                 Armed::Echo(desc) => run_echo(tx, &mut ep_in, &mut ep_out, &desc, buf).await,
                 Armed::Upload(desc, rx) => {
                     let target = if desc.ty == ObjectType::Map { MapTarget::Map } else { MapTarget::Object };
-                    run_upload(tx, &mut ep_out, store, shared, &desc, rx, target, buf, stage_buf).await
+                    run_upload(tx, &mut ep_out, store, shared, &desc, rx, target, buf).await
                 }
                 Armed::SetShard(desc, rx, part) => {
                     let target = MapTarget::Shard(part);
-                    run_upload(tx, &mut ep_out, store, shared, &desc, rx, target, buf, stage_buf).await
+                    run_upload(tx, &mut ep_out, store, shared, &desc, rx, target, buf).await
                 }
                 Armed::SetManifest(desc, rx) => {
                     let target = MapTarget::Manifest;
-                    run_upload(tx, &mut ep_out, store, shared, &desc, rx, target, buf, stage_buf).await
+                    run_upload(tx, &mut ep_out, store, shared, &desc, rx, target, buf).await
                 }
                 Armed::Download(desc) => run_download(tx, &mut ep_in, store, shared, &desc, buf).await,
             };
@@ -135,6 +138,7 @@ pub(crate) async fn run(
             store.borrow_mut().link_reset(&mut guard);
             store.borrow_mut().set_upload_abort(&mut guard);
         }
+        super::release_stage(); // the arena's staging arm, if this teardown interrupted a transfer
         TRANSFER_ACTIVE.release(crate::link::gate_owner(crate::link::Transport::Usb));
         TRANSFER_ARM.reset();
         TRANSFER_ABORT.reset();
@@ -180,7 +184,6 @@ async fn run_upload(
     mut rx: Receiver,
     target: MapTarget,
     buf: &mut [u8],
-    stage_buf: &mut [u8],
 ) -> TransferOutcome {
     info!("usb: [bulk] upload start: {} bytes (type {})", desc.total_len, desc.ty.as_u8());
     // A **map** (#927) is the one type that does not stream into `/routes/UPLOAD.TMP`: at hundreds
@@ -233,9 +236,20 @@ async fn run_upload(
         // flight, and per-set aggregation needs a UI that knows a set is one map (P4d).
         crate::link::map_transfer_started(rx.total_len());
     }
+    // Ask the ride loop for the scratch arena's staging arm (#1146 P2), **after** the card above has
+    // been published: the loop's precondition is that the transfer screen is up, and the card is
+    // what puts it there, so asking in this order makes the answer available on the loop's very next
+    // pass. A refusal is not a failure — the stage degrades to unstaged appends (see [`Stage`]).
+    //
+    // Only a map-shaped payload asks. Everything else (a route, a trip, a firmware image) is
+    // megabytes at most, raises no card, and therefore could never satisfy the `render ⊥ usb`
+    // precondition — the staging dial was always about the map upload that saturates the bus for
+    // minutes (see [`STAGE_LEN`](crate::usb::STAGE_LEN)'s own note), and asking for the arm while
+    // the rider may still be browsing the map would be asking for the wrong thing.
+    let staged = holds_magic && crate::usb::request_stage().await;
     // A map's placeholder magic is already on the card (`map_upload_begin` and its set twins), so
     // its payload starts at file offset 4 — the stage needs that or every flush lands misaligned.
-    let mut stage = Stage::new(stage_buf, if holds_magic { obc_ble::MAGIC_LEN } else { 0 });
+    let mut stage = Stage::new(staged, if holds_magic { obc_ble::MAGIC_LEN } else { 0 });
     let started = Instant::now();
     while !rx.is_complete() {
         let n = match select(ep.read(buf), TRANSFER_ABORT.wait()).await {

@@ -168,12 +168,12 @@ static mut BULK_BUF: MaybeUninit<[u8; MAX_PACKET as usize]> = MaybeUninit::unini
 /// the measured peak is worth more than 6% of a transfer that is already minutes long — this is the
 /// crate where async frames overflow the stack silently. Raise it only against a fresh high-water
 /// measurement, never on the throughput arithmetic alone.
-const STAGE_LEN: usize = 16 * 1024;
-
-/// The staging buffer itself. One per plane rather than one shared: [`TRANSFER_ACTIVE`] does gate
-/// the two transports to one transfer at a time, but it gates *transfers*, not the `&'static mut`
-/// each plane's task holds for its whole life.
-static mut STAGE_BUF: MaybeUninit<[u8; STAGE_LEN]> = MaybeUninit::uninit();
+///
+/// **Since #1146 P2 these bytes are the scratch arena's USB arm**, not a static of their own — so
+/// the sentence above about a raise costing residual stack no longer holds while this is the
+/// *smallest* arm: it may grow to the render arm's size (~92 KB) at **zero** resident cost, and only
+/// past that does it cost 1:1 again. See [`crate::arena`]'s growth-asymmetry note.
+pub(crate) const STAGE_LEN: usize = 16 * 1024;
 
 /// The `iSerialNumber` string, pinned for the `'static` life the descriptor borrows it for.
 static mut SERIAL: MaybeUninit<heapless::String<16>> = MaybeUninit::uninit();
@@ -182,17 +182,106 @@ static mut SERIAL: MaybeUninit<heapless::String<16>> = MaybeUninit::uninit();
 /// of the map and BLE terms). The driver's own endpoint bookkeeping (`StateStorage<16>`) lives
 /// inside embassy-nrf and is not nameable here; it is a handful of wakers and atomics and shows up
 /// in the linked `.bss` measurement, which is the authority.
+/// **[`STAGE_LEN`] is deliberately not in this sum** since #1146 P2: the staging buffer is an arm of
+/// the scratch arena, counted once as [`crate::arena::ARENA_BYTES`] beside the render and nav arms
+/// it time-shares with.
 pub const RESIDENT_BYTES: usize = EP_OUT_BUFFER_LEN
     + CONFIG_DESC_LEN
     + BOS_DESC_LEN
     + MSOS_DESC_LEN
     + CONTROL_BUF_LEN
     + 2 * MAX_PACKET as usize
-    + STAGE_LEN
     + core::mem::size_of::<heapless::String<16>>()
     // [`VBUS_WAKER`] — 8 B, and itemized rather than waved through so the whole of #937's resident
     // cost is a named term instead of an unexplained step in the linked `.bss` gate.
     + core::mem::size_of::<AtomicWaker>();
+
+// ============================ The staging-arm handshake (#1146 P2) ============================
+//
+// The staging buffer stopped being this module's static and became an arm of the scratch arena, and
+// the arena has exactly one owner-switcher: the ride loop. So the data plane asks and the loop
+// grants between frames, through the same shape as every other cross-plane fact here — a level plus
+// a wake edge, never a queue.
+//
+// Two levels, one writer each, so neither side can lose an edge to the other:
+//   * [`STAGE_REQ`]     — the **plane** writes it. "A transfer is streaming and wants the arm."
+//     Raised before the wait below, cleared on every path that closes a transfer.
+//   * [`STAGE_GRANTED`] — the **loop** writes it, after it has actually claimed the arena.
+//
+// The bytes themselves never cross: the plane reaches them through
+// [`arena::with_usb_stage`](crate::arena::with_usb_stage), which answers only while the loop still
+// holds the guard. That is what makes an unplug survivable — see [`crate::arena::UsbGuard`].
+
+/// The plane's request level (see above).
+static STAGE_REQ: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// The loop's answer level (see above).
+static STAGE_GRANTED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// Plane → loop: look at [`STAGE_REQ`] now rather than at the next sensor/timer wake. The ride
+/// loop's sleep is event-driven and clamped up to 2 s during an upload, so without this the first
+/// flush of every map transfer would wait out a pace window for no reason.
+static STAGE_WAKE: embassy_sync::signal::Signal<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, ()> =
+    embassy_sync::signal::Signal::new();
+/// Loop → plane: the answer level moved.
+static STAGE_EDGE: embassy_sync::signal::Signal<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, ()> =
+    embassy_sync::signal::Signal::new();
+
+/// How long the plane waits for the loop to answer before streaming unstaged. One ride-loop pass is
+/// all it should take (the wake above is in the loop's select); this is the safety valve that keeps
+/// a transfer from ever *blocking* on the arena — an upload that runs at the unstaged 0.20 MB/s is a
+/// slow upload, an upload that never starts is a bug report.
+const STAGE_GRANT_TIMEOUT_MS: u64 = 1_000;
+
+/// Whether the data plane is asking for (or already using) the staging arm — read by the ride loop
+/// once per pass.
+pub(crate) fn stage_requested() -> bool {
+    STAGE_REQ.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// The ride loop's answer: `true` = it claimed the arena's USB arm for this transfer.
+pub(crate) fn set_stage_granted(granted: bool) {
+    STAGE_GRANTED.store(granted, core::sync::atomic::Ordering::Relaxed);
+    STAGE_EDGE.signal(());
+}
+
+/// The ride loop's wake arm: a transfer wants the staging arm.
+pub(crate) async fn wait_stage_request() {
+    STAGE_WAKE.wait().await
+}
+
+/// Ask the ride loop for the staging arm and wait (briefly) for its answer — the plane side of the
+/// handshake. `true` = stage into the arena; `false` = stream unstaged.
+///
+/// Called once per transfer, right after the target file is open and (for a map) the on-glass card
+/// has been published — which is what makes the loop's
+/// [`transfer_screen_up`](obc_app::App::transfer_screen_up) precondition answerable on its very next
+/// pass.
+pub(crate) async fn request_stage() -> bool {
+    STAGE_REQ.store(true, core::sync::atomic::Ordering::Relaxed);
+    STAGE_EDGE.reset();
+    STAGE_WAKE.signal(());
+    let deadline = embassy_time::Instant::now() + embassy_time::Duration::from_millis(STAGE_GRANT_TIMEOUT_MS);
+    while !STAGE_GRANTED.load(core::sync::atomic::Ordering::Relaxed) {
+        // The loop answers by flipping the level and ringing the edge; a wake for an edge we already
+        // observed just re-reads the level, which is why the level is the truth and the signal only
+        // the wake.
+        if embassy_time::with_deadline(deadline, STAGE_EDGE.wait()).await.is_err() {
+            break;
+        }
+    }
+    let granted = STAGE_GRANTED.load(core::sync::atomic::Ordering::Relaxed);
+    if !granted {
+        warn!("usb: [bulk] no staging arm granted — streaming unstaged (slower, never wrong)");
+    }
+    granted
+}
+
+/// Give the staging arm back: the transfer ended, was aborted, or the endpoint went away. Idempotent
+/// — every terminal path in the data plane calls it (through `close_transfer`), and so does the
+/// endpoint-lost teardown, because "which of them ran" is not a fact worth tracking.
+pub(crate) fn release_stage() {
+    STAGE_REQ.store(false, core::sync::atomic::Ordering::Relaxed);
+    STAGE_WAKE.signal(());
+}
 
 // ============================ The VBUS gate (#936) ============================
 //
@@ -495,7 +584,6 @@ pub async fn run(usb_p: Peri<'static, peripherals::USBHS>, stores: crate::link::
     // SAFETY: sole writer of each buffer; `run` is spawned once.
     let ctrl_rx = unsafe { init_static(core::ptr::addr_of_mut!(CTRL_RX), [0u8; MAX_PACKET as usize]) };
     let bulk_buf = unsafe { init_static(core::ptr::addr_of_mut!(BULK_BUF), [0u8; MAX_PACKET as usize]) };
-    let stage_buf = unsafe { init_static(core::ptr::addr_of_mut!(STAGE_BUF), [0u8; STAGE_LEN]) };
 
     // Both planes send on the control IN endpoint — the control loop its replies, the data plane
     // its announces and terminal results — so it lives behind one async mutex. That serialisation
@@ -509,7 +597,7 @@ pub async fn run(usb_p: Peri<'static, peripherals::USBHS>, stores: crate::link::
     // polled*, which keeps their signatures — and their `.bss` footprint — unchanged.
     let planes = join(
         control::run(&tx, ctrl_out, ctrl_rx, store, shared, store_epoch),
-        data_plane::run(&tx, bulk_in, bulk_out, bulk_buf, stage_buf, store, shared),
+        data_plane::run(&tx, bulk_in, bulk_out, bulk_buf, store, shared),
     );
     let mut planes = core::pin::pin!(planes);
 
@@ -534,6 +622,15 @@ pub async fn run(usb_p: Peri<'static, peripherals::USBHS>, stores: crate::link::
             // guard above re-reads the level. If a wake were somehow missed, the failure mode is a
             // plane that stays parked — never one that reads a powered-down core.
             warn!("usb: VBUS removed — device plane parked, endpoints idle until a cable returns");
+            // Give the scratch arena's staging arm back (#1146 P2) — **this is the unplug edge the
+            // arena's revocation depends on**. The transfer future is only *parked* here, not
+            // dropped: it is still suspended inside `run_upload` and will resume when a cable
+            // returns. So the arm cannot be handed back by that frame, and if the loop kept waiting
+            // for it the map would never redraw again on a cable that never comes back. Releasing
+            // here lets the loop reclaim now; the parked upload discovers on its next append that
+            // the arm is gone and discards its partial, which is what an interrupted upload does
+            // anyway (spec §1 principle 4: transfers restart, never resume).
+            release_stage();
             // Asleep on the VREGUSB vector, not on a timer (#937). The device pump keeps its place
             // in this same `join` while we are parked, and that is fine in both directions: the
             // return edge wakes the *task*, which re-polls `device.run()`, whose `Bus::poll`
