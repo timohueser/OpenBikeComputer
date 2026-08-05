@@ -44,6 +44,16 @@ ARTIFACTS=(
     "Desktop application|apps/obc-desktop/Cargo.toml|the Rust half of the desktop app — its web half ships its own notices beside the bundle"
 )
 
+# Make the output byte-stable across machines. cargo-about fills gaps in a crate's own licence
+# file from clearlydefined.io, and that service's whitespace is not reproducible — CI once
+# differed from a local run by a single blank line inside miniz_oxide's MIT text, which is
+# nothing to a reader and everything to a byte diff. Collapsing blank runs and stripping
+# trailing spaces removes that class of difference while leaving every word intact; the
+# alternative, --offline, would drop the enrichment and with it real copyright lines.
+canonicalize() {
+    awk '{ sub(/[ \t]+$/, ""); if ($0 == "") { if (!blank) print ""; blank = 1 } else { print; blank = 0 } }'
+}
+
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
 
@@ -58,6 +68,12 @@ trap 'rm -f "$tmp"' EXIT
     echo "**Generated — do not edit.** \`obc licenses\` rewrites it from the dependency graph;"
     echo "the \`deny\` CI job fails if it is out of date. Which licences are *allowed* in the tree"
     echo "is a separate question, answered by [\`deny.toml\`](deny.toml)."
+    echo
+    echo "Each text is reproduced as the crate ships it, with one normalisation: runs of blank"
+    echo "lines are collapsed to one and trailing spaces are dropped. cargo-about enriches some"
+    echo "texts from clearlydefined.io — which is how several of the copyright lines below"
+    echo "survive at all — and that service's whitespace is not stable between machines. Words,"
+    echo "copyright holders and terms are untouched; only the spacing between them is."
     echo
     echo "Two obligations live outside this file, because their artifacts are built elsewhere:"
     echo
@@ -85,7 +101,7 @@ trap 'rm -f "$tmp"' EXIT
         cargo about generate --manifest-path "$ROOT/$manifest" -c "$CFG" "$TPL"
         echo
     done
-} >"$tmp"
+} | canonicalize >"$tmp"
 
 if [ "$check" = 1 ]; then
     if ! diff -u "$OUT" "$tmp"; then
