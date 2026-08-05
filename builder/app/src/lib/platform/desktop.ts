@@ -95,9 +95,4 @@ export const platform: Platform = {
         const { openRideLibrary } = await import("../desktop/library");
         return openRideLibrary();
     },
-
-    storage: {
-        places: () => desktop.storagePlaces(),
-    },
-    revealFile: (path: string) => desktop.revealFile(path),
 };

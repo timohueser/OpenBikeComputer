@@ -31,7 +31,6 @@
 //! spelling of the path (§2).
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -46,6 +45,7 @@ use obc_formats::obcm::{HEADER_LEN, MAGIC, VERSION as OBCM_VERSION};
 use obc_formats::obct;
 
 use crate::config::{Config, LineStyle};
+use crate::grid::{axis_cells, id_width, CellId, UBox, GRID_ORIGIN, MAX_CELL_LOG2, MIN_CELL_LOG2, WORLD_SIDE};
 
 pub mod boundary;
 
@@ -72,115 +72,59 @@ pub const REGION_CELLS_EXAMPLE_JSON: &str = include_str!("../schema/region-cells
 pub const TERRAIN_INDEX_EXAMPLE_JSON: &str = include_str!("../schema/terrain-index.example.json");
 
 // --- the grid (OBCA_Spec.md §1) -----------------------------------------------------------
+//
+// The grid itself lives in [`crate::grid`] — one `CellId`, one origin, one padding rule for
+// the cutter, the catalog generator and every consumer of both. What is local here is the
+// *catalog's* two obligations on top of it: the JSON boundary is `i32`, and an id that
+// reaches a content-addressed store must be canonical.
 
-/// `GRID_ORIGIN`: the shared origin of every band and every cell size, on both axes
-/// (`OBCA_Spec.md` §1.1). `−2^28` rather than `−90 000 000` because it is divisible
-/// by every permitted cell size, which is what makes quadtree midpoints and cell
-/// boundaries coincide.
-pub const GRID_ORIGIN_UDEG: i32 = -268_435_456;
-
-/// `WORLD_SIDE`: `2^29` µdeg. The world box (≈ ±268°) is deliberately wider than the
-/// geographic domain, so a cell may overhang ±90°/±180° and MUST NOT be clamped.
-pub const WORLD_SIDE_UDEG: i32 = 536_870_912;
-
-/// Smallest permitted `log2(S)` (`OBCA_Spec.md` §1.1).
-pub const MIN_CELL_LOG2: u8 = 10;
-
-/// Largest permitted `log2(S)`.
-pub const MAX_CELL_LOG2: u8 = 28;
-
-/// A cell's identity: its size as `log2(µdeg)` and its row/column on the global grid.
+/// [`GRID_ORIGIN`] at the JSON boundary. [`GridEntry`] publishes the origin as an `i32`
+/// because that is the width an OBCM header stores a coordinate in, so the narrowing is
+/// spelled out once, here, rather than at each use.
 ///
-/// The id is the coverage statement — `square` derives the cell's box from it in
-/// exact integer arithmetic — which is why a catalog cell entry has no bbox and this
-/// generator checks the artifact's header against the id instead (§8).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct CellId {
-    pub log2: u8,
-    pub i: u32,
-    pub j: u32,
-}
+/// The value is `−2^28` rather than `−90 000 000` because it is divisible by every
+/// permitted cell size, which is what makes quadtree midpoints and cell boundaries
+/// coincide (`OBCA_Spec.md` §1.1).
+pub const GRID_ORIGIN_UDEG: i32 = GRID_ORIGIN as i32;
 
-/// A cell's grid square, in microdegrees: `[min, min + S)` on both axes. Half-open,
-/// with `max` the exclusive upper bound the OBCM header stores.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CellSquare {
-    pub min_lat: i32,
-    pub min_lon: i32,
-    pub max_lat: i32,
-    pub max_lon: i32,
-}
+/// [`WORLD_SIDE`] at the JSON boundary: `2^29` µdeg. The world box (≈ ±268°) is
+/// deliberately wider than the geographic domain, so a cell may overhang ±90°/±180° and
+/// MUST NOT be clamped.
+pub const WORLD_SIDE_UDEG: i32 = WORLD_SIDE as i32;
 
-impl CellId {
-    /// Parse the canonical `<log2>/<i>/<j>` id (`OBCA_Spec.md` §1.3).
-    ///
-    /// Strict about the zero padding: producers MUST widen rather than truncate, so
-    /// `18/1204/52` and `18/01204/1052` are *different strings for the same cell* and
-    /// exactly the kind of ambiguity a content-addressed store must not have.
-    pub fn parse(s: &str) -> Result<CellId, String> {
-        let mut parts = s.split('/');
-        let (Some(log2), Some(i), Some(j), None) = (parts.next(), parts.next(), parts.next(), parts.next()) else {
-            return Err(format!("cell id `{s}` is not `<log2>/<i>/<j>`"));
-        };
-        if log2.is_empty() || log2.len() > 2 || !log2.bytes().all(|b| b.is_ascii_digit()) {
-            return Err(format!("cell id `{s}`: `{log2}` is not a 1–2 digit cell size"));
+/// Parse the canonical `<log2>/<i>/<j>` id (`OBCA_Spec.md` §1.3), **strictly**.
+///
+/// [`CellId::parse`] is deliberately lenient about the zero padding — a human types ids at
+/// a CLI. A catalog cannot be: producers MUST widen rather than truncate, so `18/1204/52`
+/// and `18/01204/1052` are *different strings for the same cell* and exactly the kind of
+/// ambiguity a content-addressed store must not have. Every id this module reads out of a
+/// document or off a path comes through here.
+pub fn parse_strict_id(s: &str) -> Result<CellId, String> {
+    let mut parts = s.split('/');
+    let (Some(log2), Some(i), Some(j), None) = (parts.next(), parts.next(), parts.next(), parts.next()) else {
+        return Err(format!("cell id `{s}` is not `<log2>/<i>/<j>`"));
+    };
+    if log2.is_empty() || log2.len() > 2 || !log2.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(format!("cell id `{s}`: `{log2}` is not a 1–2 digit cell size"));
+    }
+    let log2: u32 = log2.parse().map_err(|_| format!("cell id `{s}`: bad cell size"))?;
+    if !(MIN_CELL_LOG2..=MAX_CELL_LOG2).contains(&log2) {
+        return Err(format!("cell id `{s}`: cell size 2^{log2} µdeg is outside 2^{MIN_CELL_LOG2}..=2^{MAX_CELL_LOG2}"));
+    }
+    let width = id_width(log2);
+    let count = axis_cells(log2);
+    let mut idx = [0i64; 2];
+    for (slot, (text, axis)) in idx.iter_mut().zip([(i, "i"), (j, "j")]) {
+        if text.len() != width || !text.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(format!("cell id `{s}`: `{axis}` must be {width} digits, zero-padded (got `{text}`)"));
         }
-        let log2: u8 = log2.parse().map_err(|_| format!("cell id `{s}`: bad cell size"))?;
-        if !(MIN_CELL_LOG2..=MAX_CELL_LOG2).contains(&log2) {
-            return Err(format!(
-                "cell id `{s}`: cell size 2^{log2} µdeg is outside 2^{MIN_CELL_LOG2}..=2^{MAX_CELL_LOG2}"
-            ));
+        let v: i64 = text.parse().map_err(|_| format!("cell id `{s}`: `{text}` is not a number"))?;
+        if v >= count {
+            return Err(format!("cell id `{s}`: `{axis}` = {v} is off the grid (0..{count})"));
         }
-        let width = Self::index_width(log2);
-        let count = Self::grid_side(log2);
-        let mut idx = [0u32; 2];
-        for (slot, (text, axis)) in idx.iter_mut().zip([(i, "i"), (j, "j")]) {
-            if text.len() != width || !text.bytes().all(|b| b.is_ascii_digit()) {
-                return Err(format!("cell id `{s}`: `{axis}` must be {width} digits, zero-padded (got `{text}`)"));
-            }
-            let v: u32 = text.parse().map_err(|_| format!("cell id `{s}`: `{text}` is not a number"))?;
-            if v >= count {
-                return Err(format!("cell id `{s}`: `{axis}` = {v} is off the grid (0..{count})"));
-            }
-            *slot = v;
-        }
-        Ok(CellId { log2, i: idx[0], j: idx[1] })
+        *slot = v;
     }
-
-    /// Cells per axis at this size: `WORLD_SIDE / S`.
-    pub fn grid_side(log2: u8) -> u32 {
-        (WORLD_SIDE_UDEG as u32) >> log2
-    }
-
-    /// Zero-padding width: `max(4, decimal_width(WORLD_SIDE / S − 1))`
-    /// (`OBCA_Spec.md` §1.3).
-    pub fn index_width(log2: u8) -> usize {
-        let last = Self::grid_side(log2) - 1;
-        let digits = last.to_string().len();
-        digits.max(4)
-    }
-
-    /// The half-open square this id names, in exact integer microdegrees. May
-    /// overhang the geographic domain (`OBCA_Spec.md` §1.4) — that is legal and the
-    /// box MUST NOT be clamped.
-    pub fn square(&self) -> CellSquare {
-        let side = 1i64 << self.log2;
-        let min_lat = i64::from(GRID_ORIGIN_UDEG) + i64::from(self.i) * side;
-        let min_lon = i64::from(GRID_ORIGIN_UDEG) + i64::from(self.j) * side;
-        CellSquare {
-            min_lat: min_lat as i32,
-            min_lon: min_lon as i32,
-            max_lat: (min_lat + side) as i32,
-            max_lon: (min_lon + side) as i32,
-        }
-    }
-}
-
-impl fmt::Display for CellId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let w = CellId::index_width(self.log2);
-        write!(f, "{}/{:0w$}/{:0w$}", self.log2, self.i, self.j, w = w)
-    }
+    Ok(CellId { log2, i: idx[0], j: idx[1] })
 }
 
 // --- the root document (§3) ------------------------------------------------------------
@@ -676,19 +620,11 @@ pub struct CatalogOptions {
     /// The root's `generated_at`, RFC 3339 UTC. Passed in so the generator is a pure
     /// function of (tree, options).
     pub generated_at: String,
-    /// Boundary simplification tolerance in microdegrees
-    /// ([`boundary::DEFAULT_TOLERANCE_UDEG`]).
-    pub boundary_tolerance_udeg: i32,
 }
 
 impl CatalogOptions {
-    /// Options with the default outline tolerance.
     pub fn new(base_url: impl Into<String>, generated_at: impl Into<String>) -> CatalogOptions {
-        CatalogOptions {
-            base_url: base_url.into(),
-            generated_at: generated_at.into(),
-            boundary_tolerance_udeg: boundary::DEFAULT_TOLERANCE_UDEG,
-        }
+        CatalogOptions { base_url: base_url.into(), generated_at: generated_at.into() }
     }
 }
 
@@ -905,7 +841,7 @@ pub fn generate(tree: &Path, opts: &CatalogOptions) -> Result<GeneratedCatalog, 
     }
 
     let regions =
-        read_regions(tree, &schema, &by_band, terrain_index.as_ref(), &base_url, opts, &mut satellites, &mut warnings)?;
+        read_regions(tree, &schema, &by_band, terrain_index.as_ref(), &base_url, &mut satellites, &mut warnings)?;
     if regions.is_empty() {
         warnings.push(
             "no regions — the catalog offers cells but no named selection, so a builder has nothing to pick from"
@@ -1151,7 +1087,7 @@ fn check_band_table(bands: &[BandDoc], lod_count: usize, path: &Path) -> Result<
         if !ids.insert(band.id.as_str()) {
             return Err(format!("{}: band `{}` is listed twice", at(), band.id));
         }
-        if !(MIN_CELL_LOG2..=MAX_CELL_LOG2).contains(&band.cell_log2) {
+        if !(MIN_CELL_LOG2..=MAX_CELL_LOG2).contains(&u32::from(band.cell_log2)) {
             return Err(format!(
                 "{}: band `{}`: cell size 2^{} µdeg is outside 2^{MIN_CELL_LOG2}..=2^{MAX_CELL_LOG2}",
                 at(),
@@ -1603,7 +1539,7 @@ struct KnownEmptyState {
 /// bytes or can be partial.
 struct BandIndex<'a> {
     cells: BTreeMap<String, &'a CellEntry>,
-    empty_by_row: BTreeMap<u32, Vec<(u32, u32)>>,
+    empty_by_row: BTreeMap<i64, Vec<(i64, i64)>>,
 }
 
 enum IndexedCell<'a> {
@@ -1613,10 +1549,10 @@ enum IndexedCell<'a> {
 
 impl<'a> BandIndex<'a> {
     fn new(cells: &'a [CellEntry], known_empty: &[KnownEmptyRun]) -> Result<Self, String> {
-        let mut empty_by_row: BTreeMap<u32, Vec<(u32, u32)>> = BTreeMap::new();
+        let mut empty_by_row: BTreeMap<i64, Vec<(i64, i64)>> = BTreeMap::new();
         for run in known_empty {
-            let start = CellId::parse(&run.start)?;
-            let end = CellId::parse(&run.end)?;
+            let start = parse_strict_id(&run.start)?;
+            let end = parse_strict_id(&run.end)?;
             empty_by_row.entry(start.i).or_default().push((start.j, end.j));
         }
         Ok(Self { cells: cells.iter().map(|cell| (cell.id.clone(), cell)).collect(), empty_by_row })
@@ -1626,7 +1562,7 @@ impl<'a> BandIndex<'a> {
         if let Some(cell) = self.cells.get(id) {
             return Ok(Some(IndexedCell::Artifact(cell)));
         }
-        let cell = CellId::parse(id)?;
+        let cell = parse_strict_id(id)?;
         let Some(runs) = self.empty_by_row.get(&cell.i) else { return Ok(None) };
         let at = runs.partition_point(|(_, end)| *end < cell.j);
         Ok(runs.get(at).filter(|(start, end)| *start <= cell.j && cell.j <= *end).map(|_| IndexedCell::KnownEmpty))
@@ -1766,7 +1702,7 @@ fn read_cell_row(
     }
 
     for (j_text, path) in artifacts {
-        let id = CellId::parse(&format!("{}/{i_text}/{j_text}", band.cell_log2))
+        let id = parse_strict_id(&format!("{}/{i_text}/{j_text}", band.cell_log2))
             .map_err(|e| format!("{}: {e}", path.display()))?;
         let sidecar_path = path.with_file_name(format!("{j_text}{CELL_SIDECAR_EXT}"));
         let sidecar = read_cell_sidecar(&sidecar_path)?;
@@ -1826,9 +1762,10 @@ fn read_cell_row(
         // §8: no bbox is stored, so this is where the identifier and the bytes are
         // made to agree. A cell whose header is not exactly its grid square would
         // graft into an assembly at the wrong place, silently.
-        let square = id.square();
-        let got = (header.bbox.min_lat, header.bbox.min_lon, header.bbox.max_lat, header.bbox.max_lon);
-        let want = (square.min_lat, square.min_lon, square.max_lat, square.max_lon);
+        let (sq_min_lon, sq_min_lat, sq_max_lon, sq_max_lat) = id.square();
+        let (hd_min_lon, hd_min_lat, hd_max_lon, hd_max_lat) = header.bbox;
+        let got = (hd_min_lat, hd_min_lon, hd_max_lat, hd_max_lon);
+        let want = (sq_min_lat, sq_min_lon, sq_max_lat, sq_max_lon);
         if got != want {
             return Err(format!(
                 "{}: cell `{id}`'s header bbox is {got:?} but its grid square is {want:?}. A cell's bbox MUST be \
@@ -1919,8 +1856,8 @@ fn read_known_empty_state(path: &Path, band: &BandEntry, schema: &SchemaDoc) -> 
 
     let mut previous: Option<(CellId, KnownEmptyRun)> = None;
     for run in &mut state.known_empty {
-        let start = CellId::parse(&run.start).map_err(|e| format!("{}: {e}", path.display()))?;
-        let end = CellId::parse(&run.end).map_err(|e| format!("{}: {e}", path.display()))?;
+        let start = parse_strict_id(&run.start).map_err(|e| format!("{}: {e}", path.display()))?;
+        let end = parse_strict_id(&run.end).map_err(|e| format!("{}: {e}", path.display()))?;
         if start.to_string() != run.start || end.to_string() != run.end {
             return Err(format!(
                 "{}: known-empty run {}..{} does not use canonical padded cell ids",
@@ -1929,7 +1866,7 @@ fn read_known_empty_state(path: &Path, band: &BandEntry, schema: &SchemaDoc) -> 
                 run.end
             ));
         }
-        if start.log2 != band.cell_log2 || end.log2 != band.cell_log2 {
+        if start.log2 != u32::from(band.cell_log2) || end.log2 != u32::from(band.cell_log2) {
             return Err(format!(
                 "{}: known-empty run {}..{} is not band `{}`'s 2^{} grid",
                 path.display(),
@@ -1988,9 +1925,14 @@ fn known_empty_count(runs: &[KnownEmptyRun]) -> Result<u32, String> {
 fn inclusive_run_count<'a>(runs: impl Iterator<Item = (&'a str, &'a str)>) -> Result<u32, String> {
     let mut total = 0u32;
     for (start, end) in runs {
-        let start = CellId::parse(start)?;
-        let end = CellId::parse(end)?;
-        let width = end.j.checked_sub(start.j).and_then(|n| n.checked_add(1)).ok_or("known-empty run overflow")?;
+        let start = parse_strict_id(start)?;
+        let end = parse_strict_id(end)?;
+        let width = end
+            .j
+            .checked_sub(start.j)
+            .and_then(|n| n.checked_add(1))
+            .and_then(|n| u32::try_from(n).ok())
+            .ok_or("known-empty run overflow")?;
         total = total.checked_add(width).ok_or("known-empty cell count exceeds u32")?;
     }
     Ok(total)
@@ -2067,7 +2009,7 @@ struct TerrainStore {
 /// verified-empty square, and nothing else is a published cell.
 struct TerrainIndex<'a> {
     cells: BTreeMap<&'a str, &'a TerrainCellEntry>,
-    empty_by_row: BTreeMap<u32, Vec<(u32, u32)>>,
+    empty_by_row: BTreeMap<i64, Vec<(i64, i64)>>,
 }
 
 enum IndexedTerrain<'a> {
@@ -2077,10 +2019,10 @@ enum IndexedTerrain<'a> {
 
 impl<'a> TerrainIndex<'a> {
     fn new(cells: &'a [TerrainCellEntry], known_empty: &[TerrainEmptyRun]) -> Result<Self, String> {
-        let mut empty_by_row: BTreeMap<u32, Vec<(u32, u32)>> = BTreeMap::new();
+        let mut empty_by_row: BTreeMap<i64, Vec<(i64, i64)>> = BTreeMap::new();
         for run in known_empty {
-            let start = CellId::parse(&run.start)?;
-            let end = CellId::parse(&run.end)?;
+            let start = parse_strict_id(&run.start)?;
+            let end = parse_strict_id(&run.end)?;
             empty_by_row.entry(start.i).or_default().push((start.j, end.j));
         }
         Ok(Self { cells: cells.iter().map(|cell| (cell.id.as_str(), cell)).collect(), empty_by_row })
@@ -2090,7 +2032,7 @@ impl<'a> TerrainIndex<'a> {
         if let Some(cell) = self.cells.get(id) {
             return Ok(Some(IndexedTerrain::Artifact(cell)));
         }
-        let cell = CellId::parse(id)?;
+        let cell = parse_strict_id(id)?;
         let Some(runs) = self.empty_by_row.get(&cell.i) else { return Ok(None) };
         let at = runs.partition_point(|(_, end)| *end < cell.j);
         Ok(runs.get(at).filter(|(start, end)| *start <= cell.j && cell.j <= *end).map(|_| IndexedTerrain::KnownEmpty))
@@ -2212,7 +2154,7 @@ fn read_terrain_row(
     }
 
     for (j_text, path) in artifacts {
-        let id = CellId::parse(&format!("{}/{i_text}/{j_text}", doc.cell_log2))
+        let id = parse_strict_id(&format!("{}/{i_text}/{j_text}", doc.cell_log2))
             .map_err(|e| format!("{}: {e}", path.display()))?;
         let sidecar_path = path.with_file_name(format!("{j_text}{TERRAIN_SIDECAR_EXT}"));
         let sidecar_text = std::fs::read_to_string(&sidecar_path).map_err(|e| {
@@ -2272,7 +2214,7 @@ fn read_terrain_row(
                 header.cols
             ));
         }
-        if (header.min_i, header.min_j) != (id.i, id.j) {
+        if (i64::from(header.min_i), i64::from(header.min_j)) != (id.i, id.j) {
             return Err(format!(
                 "{}: cell `{id}`'s container covers ({}, {}) — a cell whose header disagrees with its id would place \
                  its raster somewhere else, silently",
@@ -2324,8 +2266,8 @@ fn read_terrain_known_empty(path: &Path, doc: &TerrainDoc) -> Result<Vec<Terrain
 
     let mut previous: Option<(CellId, &TerrainEmptyRun)> = None;
     for run in &state.known_empty {
-        let start = CellId::parse(&run.start).map_err(|e| format!("{}: {e}", path.display()))?;
-        let end = CellId::parse(&run.end).map_err(|e| format!("{}: {e}", path.display()))?;
+        let start = parse_strict_id(&run.start).map_err(|e| format!("{}: {e}", path.display()))?;
+        let end = parse_strict_id(&run.end).map_err(|e| format!("{}: {e}", path.display()))?;
         if start.to_string() != run.start || end.to_string() != run.end {
             return Err(format!(
                 "{}: known-empty run {}..{} does not use canonical padded cell ids",
@@ -2334,7 +2276,7 @@ fn read_terrain_known_empty(path: &Path, doc: &TerrainDoc) -> Result<Vec<Terrain
                 run.end
             ));
         }
-        if start.log2 != doc.cell_log2 || end.log2 != doc.cell_log2 {
+        if start.log2 != u32::from(doc.cell_log2) || end.log2 != u32::from(doc.cell_log2) {
             return Err(format!(
                 "{}: known-empty run {}..{} is not the terrain grid's 2^{} cells",
                 path.display(),
@@ -2443,7 +2385,6 @@ fn read_regions(
     by_band: &BTreeMap<&str, BandIndex<'_>>,
     terrain: Option<&TerrainIndex<'_>>,
     base_url: &str,
-    opts: &CatalogOptions,
     satellites: &mut Vec<Satellite>,
     warnings: &mut Vec<String>,
 ) -> Result<Vec<RegionEntry>, String> {
@@ -2460,7 +2401,7 @@ fn read_regions(
         // The nearest enclosing *region* — not merely the parent directory, which for
         // `europe/switzerland` is the uncurated `europe`.
         let parent = ancestors(id).find(|a| ids.contains(*a)).map(str::to_string);
-        out.push(read_region(id, parent, dir, schema, by_band, terrain, base_url, opts, satellites, warnings)?);
+        out.push(read_region(id, parent, dir, schema, by_band, terrain, base_url, satellites, warnings)?);
     }
     out.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(out)
@@ -2523,7 +2464,6 @@ fn read_region(
     by_band: &BTreeMap<&str, BandIndex<'_>>,
     terrain: Option<&TerrainIndex<'_>>,
     base_url: &str,
-    opts: &CatalogOptions,
     satellites: &mut Vec<Satellite>,
     warnings: &mut Vec<String>,
 ) -> Result<RegionEntry, String> {
@@ -2546,8 +2486,8 @@ fn read_region(
         let mut band_bytes = 0u64;
         let mut band_partial_cell_count = 0u32;
         for text in listed {
-            let cell = CellId::parse(text).map_err(|e| format!("{}: {e}", doc_path.display()))?;
-            if cell.log2 != band.cell_log2 {
+            let cell = parse_strict_id(text).map_err(|e| format!("{}: {e}", doc_path.display()))?;
+            if cell.log2 != u32::from(band.cell_log2) {
                 return Err(format!(
                     "{}: cell `{text}` is 2^{} µdeg but band `{}` is 2^{}",
                     doc_path.display(),
@@ -2612,15 +2552,18 @@ fn read_region(
             poly_path.display()
         )
     })?;
-    let rings = boundary::simplified_rings(&poly, opts.boundary_tolerance_udeg)
+    // One tolerance, [`boundary::DEFAULT_TOLERANCE_UDEG`], and it is published in the
+    // document beside the rings it produced — a consumer reads what it was simplified at
+    // rather than assuming.
+    let rings = boundary::simplified_rings(&poly, boundary::DEFAULT_TOLERANCE_UDEG)
         .map_err(|e| format!("{}: {e}", poly_path.display()))?;
-    let boundary = Boundary { tolerance_udeg: opts.boundary_tolerance_udeg, rings };
+    let boundary = Boundary { tolerance_udeg: boundary::DEFAULT_TOLERANCE_UDEG, rings };
     let boundary_bytes = serde_json::to_string(&boundary).map_or(0, |json| json.len());
     if boundary_bytes > BOUNDARY_WARN_BYTES {
         warnings.push(format!(
             "region `{id}`: its outline is {boundary_bytes} bytes at a {} µdeg tolerance — §7 budgets a few KB per \
              region, and every one of them is in the root a consumer reads first",
-            opts.boundary_tolerance_udeg
+            boundary::DEFAULT_TOLERANCE_UDEG
         ));
     }
 
@@ -2690,7 +2633,7 @@ fn read_region_terrain(
     let mut ids = BTreeSet::new();
     let mut footprint = RegionTerrain { cell_count: 0, known_empty_count: 0, bytes: 0 };
     for text in &doc.terrain {
-        let cell = CellId::parse(text).map_err(|e| format!("{}: terrain: {e}", doc_path.display()))?;
+        let cell = parse_strict_id(text).map_err(|e| format!("{}: terrain: {e}", doc_path.display()))?;
         let canonical = cell.to_string();
         if !ids.insert(canonical.clone()) {
             return Err(format!("{}: terrain cell `{canonical}` is listed twice", doc_path.display()));
@@ -2728,7 +2671,9 @@ fn validate_region_id(id: &str) -> Result<(), String> {
 
 struct ObcmHeader {
     version: u8,
-    bbox: CellSquare,
+    /// The header's own bbox, in [`UBox`] order (`min_lon, min_lat, max_lon, max_lat`) so it
+    /// compares directly against [`CellId::square`].
+    bbox: UBox,
 }
 
 fn read_obcm_header(path: &Path) -> Result<ObcmHeader, String> {
@@ -2740,18 +2685,19 @@ fn read_obcm_header(path: &Path) -> Result<ObcmHeader, String> {
     if header[..4] != MAGIC {
         return Err(format!("{}: not an OBCM file (bad magic)", path.display()));
     }
-    let bbox = CellSquare {
-        min_lat: rd_i32(&header, 5),
-        min_lon: rd_i32(&header, 9),
-        max_lat: rd_i32(&header, 13),
-        max_lon: rd_i32(&header, 17),
-    };
-    if bbox.min_lat > bbox.max_lat || bbox.min_lon > bbox.max_lon {
-        return Err(format!("{}: header bbox is inverted ({bbox:?})", path.display()));
+    let bbox: UBox = (
+        i64::from(rd_i32(&header, 9)),
+        i64::from(rd_i32(&header, 5)),
+        i64::from(rd_i32(&header, 17)),
+        i64::from(rd_i32(&header, 13)),
+    );
+    let (min_lon, min_lat, max_lon, max_lat) = bbox;
+    if min_lat > max_lat || min_lon > max_lon {
+        return Err(format!("{}: header bbox is inverted ({bbox:?}, lon/lat µdeg)", path.display()));
     }
-    let limit = -GRID_ORIGIN_UDEG;
-    if bbox.min_lat < -limit || bbox.max_lat > limit || bbox.min_lon < -limit || bbox.max_lon > limit {
-        return Err(format!("{}: header bbox is outside the world ({bbox:?})", path.display()));
+    let limit = i64::from(-GRID_ORIGIN_UDEG);
+    if min_lat < -limit || max_lat > limit || min_lon < -limit || max_lon > limit {
+        return Err(format!("{}: header bbox is outside the world ({bbox:?}, lon/lat µdeg)", path.display()));
     }
     Ok(ObcmHeader { version: header[4], bbox })
 }

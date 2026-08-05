@@ -2105,6 +2105,13 @@ dependencies = [
 [[package]]
 name = "obc-ble"
 version = "0.1.0"
+dependencies = [
+ "obc-crc",
+]
+
+[[package]]
+name = "obc-crc"
+version = "0.1.0"
 
 [[package]]
 name = "obc-desktop"

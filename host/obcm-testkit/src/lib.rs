@@ -46,6 +46,11 @@
 /// are pixel-identical.
 pub mod set;
 
+/// Throwaway temp paths for tests — not an OBCM concern, but this crate is the one dev-dep every
+/// host tool and shell already shares, which makes it the cheapest common home (the alternative,
+/// `obc-host-core`, drags the whole device render path into a CLI tool's test build).
+pub mod scratch;
+
 /// A style record (OBCM §2, 8 bytes on the wire): `(id, z_index, color_rgb565, weight, priority,
 /// dashed, color2)`. `dashed` sets flag bit 2; `color2 = Some(_)` sets flag bit 3 and writes the
 /// secondary color, `None` writes `0x0000` with the bit clear.
@@ -852,8 +857,10 @@ fn uniform_quadtree(bbox: LeafBox, depth: u32) -> (Vec<u32>, Vec<LeafBox>) {
 
 /// One coarse-LOD chunk: a leaf-covering land backdrop, a lake on roughly half the leaves, and 225
 /// short 3-point road stubs cycling the three line styles. 16 leaves × ~226 features ≈ 3 620 —
-/// deliberately **over `obc_render::MAX_SPANS` (3072)** so a full-map overview scene saturates the
-/// span buffer and exercises the priority-drop path. ~3.7 KB, under the 4 KB chunk size.
+/// deliberately **over the frame's feature ceiling, `obc_render::MAX_FRAME_RINGS` (1,792)** — every
+/// one of these features is a single-ring polygon or line stub, so the ring budget is what stops
+/// the frame — and a full-map overview scene therefore saturates and exercises the priority-drop
+/// path. ~3.7 KB, under the 4 KB chunk size.
 fn bench_coarse_chunk(rng: &mut BenchRng, leaf: LeafBox) -> Vec<u8> {
     let (min_lon, min_lat, max_lon, max_lat) = leaf;
     let (w, h) = (max_lon - min_lon, max_lat - min_lat);
@@ -955,8 +962,9 @@ fn bench_fine_chunk(rng: &mut BenchRng, leaf: LeafBox) -> Vec<u8> {
 ///
 /// Shape:
 /// - **Coarse LOD** (`max_mpp = ∞`): a uniform depth-2 quadtree (16 leaves, one 4 KB chunk each)
-///   holding ≈ 3 620 features — over `obc_render::MAX_SPANS` (3072) in a full-map view, so the
-///   overview scenes saturate the span buffer and take the priority-drop path.
+///   holding ≈ 3 620 features — over the frame's feature ceiling `obc_render::MAX_FRAME_RINGS`
+///   (1,792) in a full-map view, so the overview scenes saturate the ring buffer and take the
+///   priority-drop path.
 /// - **Fine LOD** (`max_mpp = 2.0`): a real depth-3 multi-chunk quadtree (64 leaves, one chunk
 ///   each), built breadth-first exactly like the packer, holding the riding-zoom mix: per-leaf
 ///   backdrop polygons (16-bit deltas), buildings with and without holes, long 16-bit roads and

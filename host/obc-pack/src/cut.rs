@@ -311,7 +311,7 @@ pub fn cut_ingested(
         // Per-band preparation, done once and read by every cell of the band.
         let lod_sets: Vec<LodSet<'_>> =
             band.lods.iter().map(|&l| prepare_lod(ing, config, l, band.cell_log2, progress)).collect();
-        let nav_cut = if band.has_nav() { Some(prepare_nav(ways, band.cell_log2, progress)) } else { None };
+        let nav_cut = if band.has_nav() { Some(prepare_nav(ways, band.cell_log2, progress)?) } else { None };
         let poi_cells = if band.has_poi() { bucket_pois(&ing.pois, band.cell_log2) } else { HashMap::new() };
         progress.check()?;
 
@@ -574,9 +574,22 @@ struct NavCut {
 /// A vertex that already lies exactly on a line is *itself* the boundary junction (§3.4(1)) — no
 /// interpolation, and no new key: it keeps its OSM identity and becomes a junction because
 /// [`NavCut::cell_graph`]'s predicate tests the coordinate.
-fn prepare_nav(ways: &[RoutableWay], log2: u32, progress: &Progress) -> NavCut {
+///
+/// A [`RoutableWay`] whose `coords` and `node_ids` are not two parallel lists of at least two
+/// entries is rejected rather than indexed: every step below reads the two positionally, so a
+/// malformed one would have been an index panic or a length underflow deep inside the cut — and
+/// [`cut_ingested`] is a `pub` entry point the bakery hands ingested data to.
+fn prepare_nav(ways: &[RoutableWay], log2: u32, progress: &Progress) -> Result<NavCut, String> {
     let mut touch: HashMap<i64, u32> = HashMap::new();
     for w in ways {
+        if w.coords.len() < 2 || w.node_ids.len() != w.coords.len() {
+            return Err(format!(
+                "malformed routable way: {} coordinate(s) and {} node id(s) — a nav way needs at least two of \
+                 each, paired",
+                w.coords.len(),
+                w.node_ids.len()
+            ));
+        }
         for &nid in &w.node_ids {
             *touch.entry(nid).or_insert(0) += 1;
         }
@@ -620,7 +633,7 @@ fn prepare_nav(ways: &[RoutableWay], log2: u32, progress: &Progress) -> NavCut {
             "warning: {unconverged} segment(s) did not converge in {MAX_CUT_REFINE} boundary-cut refinements"
         ));
     }
-    NavCut { log2, ways: prepared, touch, cells }
+    Ok(NavCut { log2, ways: prepared, touch, cells })
 }
 
 /// Every grid line of size `2^log2` strictly between `v0` and `v1`, ascending.
@@ -1151,7 +1164,7 @@ mod tests {
         // pieces, which is orthogonal to what this test is about.
         let seam = seam_lon();
         let w = way(&[(1, pt(row_lat(), seam - 5_000)), (2, pt(row_lat(), seam + 5_000))]);
-        let prep = prepare_nav(&[w], LOG2, &Progress::silent());
+        let prep = prepare_nav(&[w], LOG2, &Progress::silent()).expect("prepare");
         let west = CellId::new(LOG2, 100, 100).unwrap();
         let east = CellId::new(LOG2, 100, 101).unwrap();
         let gw = prep.cell_graph(west, 50);
@@ -1179,7 +1192,7 @@ mod tests {
             (2, pt(row_lat(), seam)), // an OSM node sitting exactly on the edge line
             (3, pt(row_lat(), seam + 5_000)),
         ]);
-        let prep = prepare_nav(&[w], LOG2, &Progress::silent());
+        let prep = prepare_nav(&[w], LOG2, &Progress::silent()).expect("prepare");
         assert_eq!(prep.ways[0].coords.len(), 3, "nothing was inserted");
         assert!(matches!(prep.ways[0].keys[1], JunctionKey::Osm(2)), "the OSM node keeps its identity");
         let gw = prep.cell_graph(CellId::new(LOG2, 100, 100).unwrap(), 50);
@@ -1198,7 +1211,7 @@ mod tests {
         let seam = seam_lon();
         let crossing = way(&[(1, pt(row_lat(), seam - 5_000)), (2, pt(row_lat(), seam + 5_000))]);
         let islet = way(&[(10, at(100, 100, 100_000, 100_000)), (11, at(100, 100, 100_500, 100_500))]);
-        let prep = prepare_nav(&[crossing, islet], LOG2, &Progress::silent());
+        let prep = prepare_nav(&[crossing, islet], LOG2, &Progress::silent()).expect("prepare");
         let g = prep.cell_graph(CellId::new(LOG2, 100, 100).unwrap(), 50);
         assert!(g.nodes.iter().any(|n| n.coord.0 as i64 == seam), "the boundary stub survived pruning");
         assert!(

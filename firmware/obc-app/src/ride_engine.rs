@@ -627,6 +627,7 @@ impl RideEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::harness::support::wpts;
 
     // --- the pure climb resolver (C3, #509) ---
     //
@@ -635,7 +636,7 @@ mod tests {
     // the once-per-entry `ClimbProfile::fill`, the C5 auto-switch) stays pinned end-to-end in
     // `app.rs` over the committed Grimsel fixture.
 
-    use obc_route::{ClimbSeg, WptEntry};
+    use obc_route::ClimbSeg;
 
     /// A `ClimbSeg` over `[start_m, end_m]` — the other fields don't affect the interval hysteresis.
     fn seg(start_m: u32, end_m: u32) -> ClimbSeg {
@@ -646,7 +647,6 @@ mod tests {
             top_ele_m: (end_m - start_m) as i16,
             gain_m: (end_m - start_m) as u16,
             avg_grade_pct: 5,
-            category: 0,
         }
     }
 
@@ -736,19 +736,6 @@ mod tests {
     // table: the linger advance, the anti-flap jitter guard, the past-the-last `None`, and a fresh
     // route starting at index 0. (The App-side wiring — build-on-load, off-route freeze, re-window,
     // route-swap clear — rides the same `tick`/`Activity` machinery the climb wiring does.)
-
-    /// A `Waypoints` table from `(dist_along_m, name)` pairs, in route order.
-    fn wpts(items: &[(u32, &str)]) -> Waypoints {
-        let mut w = Waypoints::new();
-        for &(dist_along_m, name) in items {
-            let mut n = heapless::String::new();
-            n.push_str(name).unwrap();
-            w.entries
-                .push(WptEntry { dist_along_m, lon: 0, lat: 0, category: None, lateral_offset_m: 0, name: n })
-                .unwrap();
-        }
-        w
-    }
 
     /// The index advances at exactly `dist + WAYPOINT_LINGER_M`, and not one metre before — the
     /// passed waypoint lingers the whole 100 m band.

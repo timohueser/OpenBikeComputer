@@ -10,16 +10,21 @@ and the simulator + tests first-class.
 - The Rust is in **three trees**, one cargo workspace rooted at `Cargo.toml` (so
   one `Cargo.lock`, one `target/`). The rule is mechanical: a crate is in
   `firmware/` iff the device image reaches it through *normal* deps.
-  - `firmware/` — the shared `no_std` render path and the device: obc-reader →
-    obc-route → obc-render → obc-app, the platform adapters, the
-    `obc-fw-nrf54l` board crate and `obc-boot`.
+  - `firmware/` — the shared `no_std` render path and the device: the
+    dependency-free foundations (`obc-crc`, `obc-formats`, `obc-ports`,
+    `obc-map-scene`),
+    the render path (obc-reader → obc-elevation → obc-route → obc-render →
+    obc-app), the platform adapters (`obc-platform`, `obc-display`,
+    `obc-sensors`, `obc-storage`), `obc-ble`, `obc-dfu`, the `obc-fw-nrf54l`
+    board crate and `obc-boot`.
   - `host/` — tools and oracles, never on the device: `obc-pack` (the std-host
     map packer, OSM `.osm.pbf` → `.obcm`), `obc-bake` (the bakery: the curated
-    region list → a catalog tree → published objects), `obc-mkimage`,
-    `obc-bench`, `obcm-testkit`, `obc-vectors`, `obc-host-core`, `obc-replay`,
-    `obc-usb-host`.
+    region list → a catalog tree → published objects), `obc-dem` (the terrain
+    baker, GLO-30 → `.obcd`), `obcm-assemble` (the OBCA cell assembler),
+    `obc-mkimage`, `obc-bench`, `obcm-testkit`, `obc-vectors`, `obc-host-core`,
+    `obc-replay`, `obc-usb-host`.
   - `apps/` — the shells: `obc-sim`, `obc-web-demo`, `obc-web-convert`,
-    `obc-web-assemble`, `obc-desktop`.
+    `obc-web-assemble`, `obc-skin-preview`, `obc-desktop`.
 
   Dev-deps deliberately cross the boundary (obc-render → obcm-testkit,
   obc-route → obc-pack); they never touch the `no_std` build. `obc-pack` also
@@ -45,16 +50,18 @@ and the simulator + tests first-class.
 - `tools/` — the dev scripts: `justfile` (behind `obc <task>`), the GEOS and
   RISC-V installers, shell completion.
 
-Division of labor: **concepts** live in the docs site; **build / run / flash**
-specifics live in the READMEs (root + `firmware/` + the board crate). Keep each
-where it belongs — don't re-explain the architecture in a README.
 - `specs/` — the normative contracts, one directory, referenced from all three
   languages. `OBCM_Spec.md` / `OBCR_Spec.md` / `OBCU_Spec.md` are the normative
-  byte-level format specs (map / route / firmware-update image); the docs'
+  byte-level format specs (map / route / firmware-update image), plus `OBCA` /
+  `OBCC` (cells + catalog), `OBCT` (terrain) and the BLE wire contract; the docs'
   data-formats + firmware-updates pages are the readable tours and link to them.
   DFU crates: `obc-dfu` (shared `no_std` container + boot-state codec + install
   engine/armer), `obc-mkimage` (host tool: `UPDATE.BIN` wrap/inspect), `obc-boot`
   (the 32 KB bootloader — see Build & verify).
+
+Division of labor: **concepts** live in the docs site; **build / run / flash**
+specifics live in the READMEs (root + `firmware/` + the board crate). Keep each
+where it belongs — don't re-explain the architecture in a README.
 
 ## Build & verify
 

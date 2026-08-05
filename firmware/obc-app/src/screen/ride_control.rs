@@ -119,15 +119,7 @@ impl RideControl {
         }
 
         // Guarded rows fill warning-red — Finish/Discard are irreversible.
-        let geo = super::GuardedRowsGeometry {
-            x: 14,
-            w: w - 28,
-            top: OPTIONS_TOP,
-            row_h: OPTION_ROW_H,
-            gap: OPTION_GAP,
-            label_dx: 12,
-            label_dy: 5,
-        };
+        let geo = super::GuardedRowsGeometry::panel(w, OPTIONS_TOP, OPTION_ROW_H, OPTION_GAP);
         let items = [
             MenuItem { label: rx.t(Msg::RideControlResume), guard: GUARDS[0] },
             MenuItem { label: rx.t(Msg::RideControlFinish), guard: GUARDS[1] },

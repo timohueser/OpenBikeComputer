@@ -125,7 +125,7 @@ pub fn parse_line(line: &str) -> Option<Msg> {
         "R" => Some(Msg::Cadence(it.next()?.parse::<u8>().ok()?)),
         "Z" => Some(Msg::Zoom(it.next()?.parse::<f32>().ok()?)),
         // `N <from_lon> <from_lat> <to_lon> <to_lat>` — LON FIRST (the OBCM `(lon, lat)` tuple
-        // convention, matching `nav_repro`), unlike the lat-first `F` fix line.
+        // convention), unlike the lat-first `F` fix line.
         "N" => {
             let from_lon = it.next()?.parse::<i32>().ok()?;
             let from_lat = it.next()?.parse::<i32>().ok()?;

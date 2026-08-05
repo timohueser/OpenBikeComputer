@@ -1,10 +1,7 @@
 __pycache__/
 *.pyc
 *.obcm
-# ...except the small tile baked into the STM32 firmware via include_bytes! (issue
-# #34). It must ship in-repo so the board crate builds without a separate pack step.
-!firmware/obc-fw-stm32f429/tiles/*.obcm
-# ...and the style presets' demo maps (B2, #899). They must ship in-repo: they are what
+# ...except the style presets' demo maps (B2, #899). They must ship in-repo: they are what
 # a preset card on the hosted site renders, and baking one wants libGEOS, a 600 MB OSM
 # extract and minutes of CPU — none of which belongs in a static-site deploy. Regenerate
 # with builder/bake-previews.sh; the sizes are in previews.json beside them.
@@ -89,7 +86,6 @@ builder/server/static/dist/
 # The static tier's data files (#900): the Geofabrik index is ~1.7 MB of
 # generated JSON that goes stale weekly, and the catalog manifest belongs to the
 # bakery — both are produced at deploy time, never committed.
-# `python -m builder.server.static_data --out <this dir>`
 builder/app/public/data/
 
 # XcodeBuildMCP session defaults (local tool state)

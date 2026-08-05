@@ -171,7 +171,7 @@ static mut BULK_BUF: MaybeUninit<[u8; MAX_PACKET as usize]> = MaybeUninit::unini
 ///
 /// **Since #1146 P2 these bytes are the scratch arena's USB arm**, not a static of their own — so
 /// the sentence above about a raise costing residual stack no longer holds while this is the
-/// *smallest* arm: it may grow to the render arm's size (~92 KB) at **zero** resident cost, and only
+/// *smallest* arm: it may grow to the render arm's size (~117 KB) at **zero** resident cost, and only
 /// past that does it cost 1:1 again. See [`crate::arena`]'s growth-asymmetry note.
 pub(crate) const STAGE_LEN: usize = 16 * 1024;
 
@@ -272,7 +272,7 @@ pub(crate) async fn request_stage() -> bool {
     if !granted {
         // **Withdraw the request with the give-up.** The level is what the ride loop grants against,
         // and this transfer has already decided to stream unstaged: left raised, it would have the
-        // loop mint a `TransferReady`, claim the arena and hold ~92 KB for the rest of a transfer
+        // loop mint a `TransferReady`, claim the arena and hold ~117 KB for the rest of a transfer
         // that will never look at it — and hold it *against a route search*, which is the one thing
         // the `nav ⊥ usb` rule is there to arbitrate. If the grant lands anyway a beat later, the
         // loop's own `!wants_stage && guard.is_some()` reclaim on the next pass takes it back.

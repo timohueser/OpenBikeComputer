@@ -53,19 +53,19 @@
 use heapless::Vec;
 
 use crate::convert::{EmitStats, ObcrEmitter, RouteStats, WpPlace};
-use crate::geo::project_to_segment;
+use crate::geo::{inflated_bbox, project_to_segment};
 use crate::reader::{
     decode_route_points_between, for_each_waypoint, RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK, MAX_WAYPOINTS,
 };
 use obc_elevation::{DeadBand, ELE_DEADBAND_M};
 use obc_formats::io::{ByteSink, Error};
 use obc_formats::obcr::NAME_CAP;
+use obc_map_scene::BBox;
 use obc_map_scene::{cos_lat, ground_dist_m, ground_dist_m_cl};
-use obc_map_scene::{BBox, M_PER_DEG};
 
 /// Source chunks decoded per [`Splicer::step`] — the splice's pacing unit (one chunk ≈ one
 /// bounded decode + a burst of emitter pushes), mirroring the search's miss budget philosophy.
-pub const SPLICE_CHUNKS_PER_STEP: usize = 1;
+pub(crate) const SPLICE_CHUNKS_PER_STEP: usize = 1;
 
 /// The spliced route's name prefix. A re-spliced detour keeps its name unchanged instead of
 /// stacking prefixes.
@@ -79,7 +79,7 @@ const ELE_SPLICE_KEEP_M: i16 = ELE_DEADBAND_M as i16;
 
 /// One [`Splicer::step`] outcome.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum SpliceStep {
+pub(crate) enum SpliceStep {
     /// More work remains — step again next pass.
     Running,
     /// The spliced OBCR is complete (header patched); its [`RouteStats`].
@@ -111,7 +111,7 @@ enum Phase {
 /// [`step`](Self::step) with the same `orig`/`detour`/`sink` views each pass until it returns
 /// [`SpliceStep::Done`]/[`Failed`](SpliceStep::Failed). Like the planner, this is a caller-owned
 /// object (heap box on the host) — its one big field is the emitter.
-pub struct Splicer {
+pub(crate) struct Splicer {
     phase: Phase,
     split_m: u32,
     rejoin_m: u32,
@@ -500,12 +500,12 @@ fn blend_ele(sampled: i16, r0: f32, r1: f32, t: f32) -> i16 {
 /// the tail count as *sustained* contact — the same both-endpoints-proximity trick
 /// [`Corridor::blocks`](crate::corridor::Corridor) uses, so a single-point crossing or a bridge
 /// overpass never triggers. A deliberately-untuned first value (mirrors the corridor width scale).
-pub const TRIM_CONTACT_M: f32 = 25.0;
+pub(crate) const TRIM_CONTACT_M: f32 = 25.0;
 
 /// How far past `target_m` the tail is materialized when looking for the detour's first contact
 /// with it (m). The A* approach that rides the route backwards does so over at most a few hundred
 /// metres of tail; this window is generous. Deliberately-untuned first value.
-pub const TRIM_LOOKAHEAD_M: u32 = 1_500;
+pub(crate) const TRIM_LOOKAHEAD_M: u32 = 1_500;
 
 /// Max resident tail sample points (12 B each → ~1.5 KB) — a longer window widens its stride to
 /// fit, so this is a hard cap by construction (mirrors [`CORRIDOR_MAX_PTS`](crate::corridor)).
@@ -649,7 +649,7 @@ impl Tail {
             }
         }
 
-        let bbox = trim_inflated_bbox(&pts, cl);
+        let bbox = inflated_bbox(pts.iter().map(|&(lon, lat, _)| (lon, lat)), cl, TRIM_CONTACT_M);
         Tail { pts, bbox, cl }
     }
 
@@ -681,29 +681,6 @@ impl Tail {
     fn bbox_contains(&self, p: (i32, i32)) -> bool {
         p.0 >= self.bbox.min_lon && p.0 <= self.bbox.max_lon && p.1 >= self.bbox.min_lat && p.1 <= self.bbox.max_lat
     }
-}
-
-/// Union bbox of `pts`, inflated by [`TRIM_CONTACT_M`] (µdeg at band `cl`) — the tail's cheap
-/// reject. Mirrors the corridor's `inflated_bbox`.
-fn trim_inflated_bbox(pts: &[(i32, i32, u32)], cl: f32) -> BBox {
-    let mut bbox = BBox { min_lon: i32::MAX, min_lat: i32::MAX, max_lon: i32::MIN, max_lat: i32::MIN };
-    for &(lon, lat, _) in pts {
-        bbox.min_lon = bbox.min_lon.min(lon);
-        bbox.max_lon = bbox.max_lon.max(lon);
-        bbox.min_lat = bbox.min_lat.min(lat);
-        bbox.max_lat = bbox.max_lat.max(lat);
-    }
-    if pts.is_empty() {
-        return BBox { min_lon: 0, min_lat: 0, max_lon: 0, max_lat: 0 };
-    }
-    let m_per_udeg_lat = M_PER_DEG as f32 * 1e-6;
-    let pad_lat = (TRIM_CONTACT_M / m_per_udeg_lat) as i32 + 1;
-    let pad_lon = (TRIM_CONTACT_M / (m_per_udeg_lat * cl.max(0.05))) as i32 + 1;
-    bbox.min_lon -= pad_lon;
-    bbox.max_lon += pad_lon;
-    bbox.min_lat -= pad_lat;
-    bbox.max_lat += pad_lat;
-    bbox
 }
 
 /// Walk the detour in route order and return the first hugging pair: `(trim_index, rejoin_m)` where

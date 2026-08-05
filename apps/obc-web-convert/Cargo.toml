@@ -18,9 +18,12 @@ obc-route = { path = "../../firmware/obc-route" }
 # The byte-I/O seam (`ByteSource`/`ByteSink`/`Error`) and the recorded-track record width — the
 # byte authority, imported directly rather than through the route algorithms.
 obc-formats = { path = "../../firmware/obc-formats" }
-obc-ports = { path = "../../firmware/obc-ports" }
 # `RouteReader::decode_chunk` fills a fixed-capacity buffer; the version tracks obc-route's.
 heapless = "0.8"
+
+[dev-dependencies]
+# `TrackPoint` — the tests hand-encode recorded-track records to drive the track→GPX path.
+obc-ports = { path = "../../firmware/obc-ports" }
 
 # --- Web (wasm32) surface — the only target this crate actually ships on. The conversion core
 # above stays target-independent so `cargo test` exercises it natively in the workspace, exactly
