@@ -5,7 +5,8 @@
 //!
 //! The shared context is split by role: [`Ctx`] is the logic half handed to `handle`
 //! (mutable camera/mode + clock), [`Render`] is the draw half (read-only state plus the
-//! `Reader`, the reusable `MapRenderer`, and the in-flight hold-progress for the confirm ring).
+//! `Reader`, the host's borrowed `RenderScratch`, and the in-flight hold-progress for the confirm
+//! ring).
 
 use core::fmt::Write;
 use core::ops::{Deref, DerefMut};
@@ -17,7 +18,7 @@ use obc_reader::Reader;
 use obc_render::{
     rect,
     text::{text_width, Font, TextAlign},
-    Canvas, Clock, MapRenderer, RenderStats, Surface,
+    Canvas, Clock, RenderScratch, RenderStats, Surface,
 };
 use obc_route::{ClimbProfile, ClimbSeg, Profile, RouteReader, Waypoints};
 
@@ -207,10 +208,14 @@ pub struct ActiveClimb<'a> {
 }
 
 /// Render context handed to [`Screen::draw`]: the read-only state plus the map
-/// `Reader`, the reusable `MapRenderer`, and the in-flight Select hold-progress
+/// `Reader`, the host's borrowed `RenderScratch`, and the in-flight Select hold-progress
 /// (0.0–1.0) the guarded-action confirm ring fills with.
 pub struct Render<'a> {
-    pub renderer: &'a mut MapRenderer,
+    /// The frame's borrowed render scratch — the host owns it and lends it for this call (#1146).
+    /// Only the map-drawing screens touch it; it carries nothing between frames, so a screen that
+    /// wants a presentation switch to stick states it per frame in an
+    /// [`obc_render::RenderConfig`].
+    pub scratch: &'a mut RenderScratch,
     pub state: &'a AppState,
     pub activity: &'a Activity,
     /// The persisted device settings (read-only here) — the riding views read
@@ -326,7 +331,7 @@ pub struct Render<'a> {
     /// (the match is stale). Computed by [`App::has_live_fix`](crate::App::has_live_fix).
     pub no_fix: bool,
     /// Microsecond clock for the map render's per-stage timing, passed to
-    /// [`MapRenderer::render_timed`]. Hosts that don't profile pass
+    /// [`RenderScratch::render_timed`]. Hosts that don't profile pass
     /// [`NoopClock`](obc_render::NoopClock); the device passes its `Instant`-based clock. Part of the
     /// strippable render-instrumentation seam.
     pub clock: &'a dyn Clock,
@@ -350,7 +355,7 @@ pub struct Render<'a> {
 impl Render<'_> {
     /// The narrow live-data view the stat-field catalogue formats from — the one constructor of
     /// [`Readout`](crate::stat_fields::Readout), so `stat_fields` stays decoupled from the full
-    /// draw context (and its `MapRenderer`).
+    /// draw context (and its `RenderScratch`).
     pub fn readout(&self) -> crate::stat_fields::Readout<'_> {
         crate::stat_fields::Readout {
             fix: self.state.user_fix,
@@ -658,7 +663,7 @@ macro_rules! screens {
 
             /// Draw the screen into the frame's [`Canvas`]. The two host generics stop here: every
             /// screen below draws through `&mut impl Surface`, except the Map, which reaches the raw
-            /// target via [`Canvas::split`] for its `MapRenderer` calls (and writes [`Render::stats`]).
+            /// target via [`Canvas::split`] for its `RenderScratch` calls (and writes [`Render::stats`]).
             pub fn draw<D, F, S>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, S>)
             where
                 D: DrawTarget,

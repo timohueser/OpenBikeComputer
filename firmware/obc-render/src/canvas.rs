@@ -67,7 +67,7 @@ impl<'a, D, F> Canvas<'a, D, F> {
     }
 
     /// The raw-target escape hatch: the underlying target + colour policy, for the one consumer
-    /// (the Map screen) that must hand them to [`MapRenderer`](crate::MapRenderer) directly. Every
+    /// (the Map screen) that must hand them to [`RenderScratch`](crate::RenderScratch) directly. Every
     /// other caller draws through [`Surface`](crate::Surface) and never needs this.
     pub fn split(&mut self) -> (&mut D, &F) {
         (self.target, self.color_fn)

@@ -29,7 +29,7 @@ use obc_ble::{HeldMagic, ObjectType, Receiver, SetPart, TransferControl, Transfe
 use obc_formats::io::ByteSource;
 use obc_formats::obcs;
 use obc_reader::{rgb565_to_rgb888, FullSetShards, MapCache, MapTables, MountedSet, Reader, SliceSource};
-use obc_render::{MapRenderer, Viewport};
+use obc_render::{RenderConfig, RenderScratch, Viewport};
 use obc_usb_host::set_transfer::{plan, send, LinkError, Options, Part, PlanError, Progress, SetLink, SetPlan};
 use obcm_testkit::set::{matched_pair, SetFixture};
 use obcm_testkit::{pack_line16, pack_poly16, seal, Style};
@@ -667,7 +667,7 @@ fn render_monolith(bytes: &[u8]) -> Buf {
     let src = SliceSource(bytes);
     let tables = MapTables::parse(&src).expect("the monolith parses");
     let reader = Reader::new(&src, &tables, &cache);
-    MapRenderer::new().render(&mut buf, &reader, &viewport(), Rgb888::BLACK, color);
+    RenderScratch::new().render(&mut buf, &reader, &viewport(), Rgb888::BLACK, RenderConfig::default(), color);
     buf
 }
 
@@ -690,7 +690,7 @@ fn render_card_set(card: &SimCard, id: u16) -> Buf {
     let mut store = FullSetShards::new();
     let set = MountedSet::mount(&mut store, &manifest, &refs, &core, &cache).expect("the received set mounts");
     let mut buf = Buf::new(220, 220);
-    MapRenderer::new().render(&mut buf, &set, &viewport(), Rgb888::BLACK, color);
+    RenderScratch::new().render(&mut buf, &set, &viewport(), Rgb888::BLACK, RenderConfig::default(), color);
     buf
 }
 

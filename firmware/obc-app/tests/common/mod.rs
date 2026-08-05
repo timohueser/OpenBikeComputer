@@ -286,7 +286,8 @@ pub fn render_120(app: &mut App, bytes: &[u8]) -> Buf {
     let tables = MapTables::parse(&src).expect("valid obcm");
     let reader = Reader::new(&src, &tables, &cache);
     let mut buf = Buf::new(120, 120);
-    app.render_frame(&mut buf, &reader, None, 120.0, 120.0, |c| {
+    let mut scratch = Box::new(obc_render::RenderScratch::new());
+    app.render_frame(&mut scratch, &mut buf, &reader, None, 120.0, 120.0, |c| {
         let (r, g, b) = rgb565_to_rgb888(c);
         Rgb888::new(r, g, b)
     });

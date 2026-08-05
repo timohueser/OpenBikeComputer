@@ -767,8 +767,9 @@ pub struct Settings {
     /// toggle). **Device-only**, like [`map_clock`](Settings::map_clock): deliberately *not* one of
     /// the BLE-writable fields [`adopt_ble_fields`](Settings::adopt_ble_fields) pulls across.
     /// Default **on** — the point of the setting is to *see* contours without hunting for a switch.
-    /// Off drops every terrain-layer style from the renderer's collect pass
-    /// (`MapRenderer::set_terrain_layer`), so the geometry is never decoded.
+    /// Off drops every terrain-layer style from the renderer's collect pass (the Map screen
+    /// restates this switch as `RenderConfig::terrain_layer` each frame), so the geometry is never
+    /// decoded.
     ///
     /// **It hides the ink, not the bytes and not the I/O.** Contours are interleaved with everything
     /// else in the same `mid`/`fine` cells, so switching them off does not shrink the map on the card

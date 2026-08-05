@@ -632,7 +632,7 @@ impl Slot {
 }
 
 // The union reuses the span buffer for stubs, so a stub must fit a span slot, and the two must share
-// a size (or the `slots`-as-`[Span]` reinterpret in `spans()` / the `MCU_RENDERER_BYTES` accounting
+// a size (or the `slots`-as-`[Span]` reinterpret in `spans()` / the `MCU_SCRATCH_BYTES` accounting
 // would be wrong).
 const _: () = assert!(core::mem::size_of::<Stub>() <= core::mem::size_of::<Span>(), "Stub must fit a Span slot");
 const _: () = assert!(core::mem::size_of::<Slot>() == core::mem::size_of::<Span>(), "Slot must be Span-sized");
@@ -659,7 +659,7 @@ pub(crate) struct Span {
 }
 
 // `style_id` must land in the spare byte, not grow the struct — thousands are buffered per frame and
-// `MCU_RENDERER_BYTES` budgets `MAX_SPANS * size_of::<Span>()`.
+// `MCU_SCRATCH_BYTES` budgets `MAX_SPANS * size_of::<Span>()`.
 const _: () = assert!(core::mem::size_of::<Span>() == 14, "Span must stay 14 bytes");
 
 #[cfg(test)]

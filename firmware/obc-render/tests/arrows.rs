@@ -1,4 +1,4 @@
-//! Tests for the route direction-chevron overlay ([`MapRenderer::draw_route`]). Feeds a static
+//! Tests for the route direction-chevron overlay ([`RenderScratch::draw_route`]). Feeds a static
 //! route through the [`RouteOverlaySource`] seam (the renderer's whole view of a route — no OBCR
 //! bytes involved), strokes it into an in-memory `DrawTarget`, and counts the distinctly-coloured
 //! arrow pixels. The arc-length cadence itself is unit-tested inside the crate; this pins the
@@ -6,7 +6,7 @@
 
 use embedded_graphics::pixelcolor::Rgb888;
 use obc_map_scene::{ground_dist_m, BBox};
-use obc_render::{MapRenderer, OverlayChunk, RouteOverlaySource, Viewport};
+use obc_render::{OverlayChunk, RenderScratch, RouteOverlaySource, Viewport};
 
 mod common;
 use common::Buf;
@@ -59,7 +59,7 @@ fn vp() -> Viewport {
 #[test]
 fn no_arrows_when_disabled() {
     let mut buf = Buf::new(400, 400);
-    MapRenderer::new().draw_route(&mut buf, &vp(), &StaticRoute(NORTHWARD), ROUTE, 6, ARROW, None);
+    RenderScratch::new().draw_route(&mut buf, &vp(), &StaticRoute(NORTHWARD), ROUTE, 6, ARROW, None);
 
     assert!(buf.count(ROUTE) > 0, "the route line itself should be drawn");
     assert_eq!(buf.count(ARROW), 0, "no chevrons when arrows_at = None");
@@ -69,7 +69,7 @@ fn no_arrows_when_disabled() {
 fn arrows_drawn_near_the_rider_when_enabled() {
     // Rider ~150 m along the ~334 m route → chevrons cluster around the route midpoint.
     let mut buf = Buf::new(400, 400);
-    MapRenderer::new().draw_route(&mut buf, &vp(), &StaticRoute(NORTHWARD), ROUTE, 6, ARROW, Some(150));
+    RenderScratch::new().draw_route(&mut buf, &vp(), &StaticRoute(NORTHWARD), ROUTE, 6, ARROW, Some(150));
 
     assert!(buf.count(ROUTE) > 0, "the route line should still be drawn under the chevrons");
     assert!(buf.count(ARROW) > 0, "chevrons should be stencilled along the route near the rider");
@@ -85,7 +85,7 @@ fn arrows_are_windowed_to_the_rider() {
     // 250 m → up near the top; chevrons lead the remaining ~84 m (upper screen), and the
     // travelled lower screen is clear.
     let mut buf = Buf::new(400, 400);
-    MapRenderer::new().draw_route(&mut buf, &vp(), &StaticRoute(NORTHWARD), ROUTE, 6, ARROW, Some(250));
+    RenderScratch::new().draw_route(&mut buf, &vp(), &StaticRoute(NORTHWARD), ROUTE, 6, ARROW, Some(250));
 
     let arrows_in = |y0: i32, y1: i32| (y0..y1).any(|y| (0..400).any(|x| buf.get(x, y) == ARROW));
     assert!(arrows_in(40, 130), "chevrons expected ahead of the rider (toward route end, upper screen)");
@@ -97,7 +97,7 @@ fn route_stroke_has_the_requested_width() {
     // The fast quad stroke must render the line at ~`weight` px wide (the route is a vertical
     // line at screen x≈200; measure the run of route pixels across a clean row).
     let mut buf = Buf::new(400, 400);
-    MapRenderer::new().draw_route(&mut buf, &vp(), &StaticRoute(NORTHWARD), ROUTE, 6, ARROW, None);
+    RenderScratch::new().draw_route(&mut buf, &vp(), &StaticRoute(NORTHWARD), ROUTE, 6, ARROW, None);
 
     let row = 330; // within the route's on-screen extent, clear of any chevron
     let width = (0..400).filter(|&x| buf.get(x, row) == ROUTE).count();
@@ -135,7 +135,7 @@ fn chevron_spacing_is_held_in_screen_space() {
     let gaps_at = |zoom: f32| {
         let vp = Viewport::new(400.0, 400.0, 7_800_000, 48_001_500, zoom);
         let mut buf = Buf::new(400, 400);
-        MapRenderer::new().draw_route(&mut buf, &vp, &StaticRoute(LONG_NORTH), ROUTE, 11, ARROW, Some(0));
+        RenderScratch::new().draw_route(&mut buf, &vp, &StaticRoute(LONG_NORTH), ROUTE, 11, ARROW, Some(0));
         chevron_gaps(&buf)
     };
     let median = |mut v: Vec<i32>| {

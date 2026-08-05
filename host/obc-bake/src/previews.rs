@@ -4,7 +4,7 @@
 //! operator happened to refresh. The bakery therefore carries one small,
 //! canonical Teningen map. It restamps only that map's style table through
 //! [`obcm_assemble::Skin::resolve`] and renders the result through the production
-//! [`obc_render::MapRenderer`]. Geometry, LOD selection, RGB565 expansion and
+//! [`obc_render::RenderScratch`]. Geometry, LOD selection, RGB565 expansion and
 //! painter ordering are consequently the device's; only the host framebuffer and
 //! PNG encoder are preview-specific.
 //!
@@ -37,7 +37,7 @@ use obc_formats::obcm::{HEADER_LEN, STYLE_RECORD_LEN};
 use obc_pack::catalog::{feature_type_ids, Catalog};
 use obc_pack::config::Config;
 use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader};
-use obc_render::{zoom_for_mpp, MapRenderer, Viewport};
+use obc_render::{zoom_for_mpp, RenderConfig, RenderScratch, Viewport};
 use obcm_assemble::schema::{Schema, Skin};
 use obcm_assemble::shard::pack_style_table;
 
@@ -176,7 +176,7 @@ fn render(schema: &Schema, skin: &Skin) -> Result<Vec<u8>, String> {
     let mut frame = Frame::new(WIDTH, HEIGHT);
     let vp = Viewport::new(WIDTH as f32, HEIGHT as f32, CAMERA_LON, CAMERA_LAT, zoom_for_mpp(METERS_PER_PIXEL));
     let background = reader.backdrop_style().map_or(0xFFFF, |style| style.color);
-    let stats = MapRenderer::new().render(&mut frame, &reader, &vp, rgb(background), rgb);
+    let stats = RenderScratch::new().render(&mut frame, &reader, &vp, rgb(background), RenderConfig::default(), rgb);
     if stats.features_drawn == 0 {
         return Err("the canonical Teningen preview camera rendered no features".into());
     }

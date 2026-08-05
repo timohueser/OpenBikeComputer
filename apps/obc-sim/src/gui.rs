@@ -161,6 +161,10 @@ struct SimGui {
     /// "Map SD" stats track real device behaviour rather than a cold ≤75%.
     map: LoadedMap,
     app: App,
+    /// The render path's per-frame scratch — ~90 KB the *host* owns since #1146 (the app borrows it
+    /// for the duration of a render call and keeps nothing across frames). Boxed so it never rides
+    /// this struct's moves through the eframe setup.
+    scratch: Box<obc_render::RenderScratch>,
     /// The routes folder (the device-SD stand-in): the menu catalog + active geometry.
     store: RouteStore,
     /// The `.obt` trips beside the routes (epic #526, TR2): the grouped-route folders. Rescanned +
@@ -331,6 +335,7 @@ impl SimGui {
         let colorway = args.colorway.as_deref().and_then(Colorway::from_label).unwrap_or(Colorway::Forest);
         let mut gui = SimGui {
             app,
+            scratch: Box::new(obc_render::RenderScratch::new()),
             store,
             trip_store,
             ride_store,
@@ -585,10 +590,14 @@ impl SimGui {
         let mut fbdev = FbDevice64::new(&mut self.fb, dev_w, dev_h);
         let set = self.map.set();
         let scene = crate::map_set::Scene { set, reader: &reader, route: route.as_ref() };
-        let mut stats =
-            crate::map_set::render_frame(&mut self.app, &mut fbdev, scene, (dev_w as f32, dev_h as f32), |c| {
-                Rgb565::from(RawU16::new(c))
-            });
+        let mut stats = crate::map_set::render_frame(
+            &mut self.app,
+            &mut self.scratch,
+            &mut fbdev,
+            scene,
+            (dev_w as f32, dev_h as f32),
+            |c| Rgb565::from(RawU16::new(c)),
+        );
         stats.render_us = t0.elapsed().as_micros() as u32;
         self.last_stats = stats;
         // Drain the shared dirty signal for the stats readout (the sim always redraws, so this

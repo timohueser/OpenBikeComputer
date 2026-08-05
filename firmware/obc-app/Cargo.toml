@@ -17,7 +17,7 @@ obc-elevation = { path = "../obc-elevation" }
 # default-features = false keeps `std` OUT of the shared app layer, so this crate
 # (and everything it pulls) compiles for the nRF54L's bare-metal target. The host
 # simulator re-enables std on `obc-reader` through its own dependency edge. `render`
-# brings the `Viewport` + `MapRenderer` the app drives; it's no_std.
+# brings the `Viewport` + the `RenderScratch` the app draws through; it's no_std.
 obc-reader = { path = "../obc-reader" }
 obc-map-scene = { path = "../obc-map-scene" }
 obc-render = { path = "../obc-render" }

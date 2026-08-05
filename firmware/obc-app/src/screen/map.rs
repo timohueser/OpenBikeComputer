@@ -351,15 +351,16 @@ where
     let bg565 = scene.backdrop_style().map_or(DEFAULT_BG_RGB565, |style| style.color);
     let (target, color_fn) = cv.split();
     let bg = color_fn(bg565);
-    // #1096 (provisional): the rider's contour switch, re-applied every frame — the renderer keeps it
-    // between frames, so a flip on the Display screen lands on the very next map frame with no reload.
-    // Suppression drops the terrain layer in the collect pass, so nothing is decoded, let alone drawn.
-    rx.renderer.set_terrain_layer(rx.settings.map_contours);
-    let mut stats = rx.renderer.render_timed(target, scene, vp, bg, color_fn, rx.clock);
+    // #1096 (provisional): the rider's contour switch, restated every frame from `Settings` — the
+    // switch lives there, not in the scratch (#1146's Config/Scratch rule), so a flip on the Display
+    // screen lands on the very next map frame with no reload and nothing to reset. Suppression drops
+    // the terrain layer in the collect pass, so nothing is decoded, let alone drawn.
+    let cfg = obc_render::RenderConfig { terrain_layer: rx.settings.map_contours };
+    let mut stats = rx.scratch.render_timed(target, scene, vp, bg, cfg, color_fn, rx.clock);
     let arrows_at = (skip.is_none() && vp.meters_per_pixel() <= CHEVRON_MAX_MPP).then_some(rx.activity.progress_m);
 
     if let Some(route) = rx.route {
-        let (route_chunks, route_points, route_points_drawn) = rx.renderer.draw_route(
+        let (route_chunks, route_points, route_points_drawn) = rx.scratch.draw_route(
             target,
             vp,
             &crate::route::RouteOverlay(route),
@@ -374,7 +375,7 @@ where
 
         if let Some(selected) = skip {
             route.visit_points_between(selected.start_m, selected.end_m, |pts| {
-                rx.renderer.stroke_path(
+                rx.scratch.stroke_path(
                     target,
                     vp,
                     pts.iter().copied(),
@@ -385,7 +386,7 @@ where
             // The planned detour (#882): blue, so the replanned portion reads apart from the
             // magenta route it will replace and the warning-colored span it avoids.
             if selected.detour.len() >= 2 {
-                rx.renderer.stroke_path(
+                rx.scratch.stroke_path(
                     target,
                     vp,
                     selected.detour.iter().copied(),
@@ -398,7 +399,7 @@ where
 
     if !rx.breadcrumb.is_empty() {
         let trail = color_fn(super::palette::BREADCRUMB);
-        rx.renderer.stroke_path(target, vp, rx.breadcrumb.points(), trail, BREADCRUMB_WEIGHT);
+        rx.scratch.stroke_path(target, vp, rx.breadcrumb.points(), trail, BREADCRUMB_WEIGHT);
     }
     rx.stats = stats;
 
@@ -406,7 +407,7 @@ where
     let marker565 = if rx.activity.off_route { super::palette::WARNING } else { scene.marker_color() };
     if let Some(fix) = rx.state.user_fix {
         let (target, color_fn) = cv.split();
-        rx.renderer.draw_marker(target, vp, fix.lon, fix.lat, fix.course, color_fn(marker565));
+        rx.scratch.draw_marker(target, vp, fix.lon, fix.lat, fix.course, color_fn(marker565));
     }
     if let Some(selected) = skip {
         let (x, y) = vp.to_screen(selected.candidate.0, selected.candidate.1);

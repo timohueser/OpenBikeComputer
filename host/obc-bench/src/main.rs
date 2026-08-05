@@ -1,7 +1,7 @@
 //! Host render benchmark harness + pixel-hash tripwire (issue #327, epic #326).
 //!
 //! Renders a fixed 7-scene matrix through the **real pipeline** — `obcm-testkit`'s deterministic
-//! fixture → `SliceSource` → `MapTables`/`MapCache`/`Reader` → `MapRenderer::render_timed` → the
+//! fixture → `SliceSource` → `MapTables`/`MapCache`/`Reader` → `RenderScratch::render_timed` → the
 //! device-resolution [`Framebuffer565`] — and prints per-stage timings (min of 10 after a warm-up),
 //! the [`RenderStats`] counters, and an FNV-1a 64 hash of the frame's pixels.
 //!
@@ -31,7 +31,9 @@ use obc_map_scene::{ground_dist_m, BBox};
 use obc_reader::{
     CorridorPoi, MapCache, MapTables, PoiCategorySet, Reader, RoutePath, SliceSource, MAX_CORRIDOR_RESULTS,
 };
-use obc_render::{zoom_for_mpp, Clock, MapRenderer, OverlayChunk, RenderStats, RouteOverlaySource, Viewport};
+use obc_render::{
+    zoom_for_mpp, Clock, OverlayChunk, RenderConfig, RenderScratch, RenderStats, RouteOverlaySource, Viewport,
+};
 
 /// Device resolution — the LS021B7DD02 panel the shipping firmware renders at. The single
 /// [`obc_display`] frame authority, not a re-declared literal.
@@ -99,7 +101,7 @@ fn run_scene(map: &[u8], name: &str, mpp: f32, heading_deg: f32, clock: &StdCloc
     let tables = MapTables::parse(&src).expect("bench map must parse");
     let cache = MapCache::new();
     let reader = Reader::new(&src, &tables, &cache);
-    let mut renderer = MapRenderer::new();
+    let mut scratch = RenderScratch::new();
     let mut buf = vec![0u16; (WIDTH * HEIGHT) as usize];
 
     // Clear color + pixel policy: the backdrop style's color, mapped 1:1 to RGB565 — the host
@@ -114,14 +116,14 @@ fn run_scene(map: &[u8], name: &str, mpp: f32, heading_deg: f32, clock: &StdCloc
     // Warm-up: fills the chunk cache, so the timed iterations measure the steady state the device
     // sees (a slow pan re-hits last frame's chunks), not the cold SD-fill.
     let mut fb = Framebuffer565::new(&mut buf, WIDTH, HEIGHT);
-    renderer.render_timed(&mut fb, &reader, &vp, bg, color_fn, clock);
+    scratch.render_timed(&mut fb, &reader, &vp, bg, RenderConfig::default(), color_fn, clock);
 
     let (mut collect_us, mut sort_us, mut draw_us, mut total_us) = (u32::MAX, u32::MAX, u32::MAX, u64::MAX);
     let mut stats = RenderStats::default();
     for _ in 0..ITERS {
         let mut fb = Framebuffer565::new(&mut buf, WIDTH, HEIGHT);
         let t0 = clock.now_us();
-        stats = renderer.render_timed(&mut fb, &reader, &vp, bg, color_fn, clock);
+        stats = scratch.render_timed(&mut fb, &reader, &vp, bg, RenderConfig::default(), color_fn, clock);
         total_us = total_us.min(clock.now_us() - t0);
         collect_us = collect_us.min(stats.collect_us);
         sort_us = sort_us.min(stats.sort_us);
@@ -194,7 +196,7 @@ fn run_route_scene(map: &[u8], clock: &StdClock) -> SceneResult {
     let tables = MapTables::parse(&src).expect("bench map must parse");
     let cache = MapCache::new();
     let reader = Reader::new(&src, &tables, &cache);
-    let mut renderer = MapRenderer::new();
+    let mut scratch = RenderScratch::new();
     let mut buf = vec![0u16; (WIDTH * HEIGHT) as usize];
 
     let bg = Rgb565::from(RawU16::new(reader.backdrop_style().map(|s| s.color).unwrap_or(0xFFFF)));
@@ -214,20 +216,20 @@ fn run_route_scene(map: &[u8], clock: &StdClock) -> SceneResult {
     // would repaint the chevrons 0xF79D and break the hash for zero on-device difference.
     let (route_c, arrow_c) = (color_fn(obc_app::screen::palette::ROUTE), color_fn(0xFFFF));
 
-    let draw = |buf: &mut [u16], renderer: &mut MapRenderer| {
+    let draw = |buf: &mut [u16], scratch: &mut RenderScratch| {
         let mut fb = Framebuffer565::new(buf, WIDTH, HEIGHT);
-        let stats = renderer.render_timed(&mut fb, &reader, &vp, bg, color_fn, clock);
-        renderer.draw_route(&mut fb, &vp, &route, route_c, obc_app::screen::ROUTE_WEIGHT, arrow_c, arrows_at);
+        let stats = scratch.render_timed(&mut fb, &reader, &vp, bg, RenderConfig::default(), color_fn, clock);
+        scratch.draw_route(&mut fb, &vp, &route, route_c, obc_app::screen::ROUTE_WEIGHT, arrow_c, arrows_at);
         stats
     };
 
-    draw(&mut buf, &mut renderer); // warm-up: fills the chunk cache
+    draw(&mut buf, &mut scratch); // warm-up: fills the chunk cache
 
     let (mut collect_us, mut sort_us, mut draw_us, mut total_us) = (u32::MAX, u32::MAX, u32::MAX, u64::MAX);
     let mut stats = RenderStats::default();
     for _ in 0..ITERS {
         let t0 = clock.now_us();
-        stats = draw(&mut buf, &mut renderer);
+        stats = draw(&mut buf, &mut scratch);
         total_us = total_us.min(clock.now_us() - t0);
         collect_us = collect_us.min(stats.collect_us);
         sort_us = sort_us.min(stats.sort_us);
@@ -784,7 +786,7 @@ mod tests {
         let tables = MapTables::parse(&src).expect("bench map must parse");
         let cache = MapCache::new();
         let reader = Reader::new(&src, &tables, &cache);
-        let mut renderer = MapRenderer::new();
+        let mut scratch = RenderScratch::new();
         let color_fn = |c: u16| Rgb565::from(RawU16::new(c));
         let bg = color_fn(reader.backdrop_style().map(|s| s.color).unwrap_or(0xFFFF));
         let cx = (tables.bbox.min_lon + tables.bbox.max_lon) / 2;
@@ -795,9 +797,9 @@ mod tests {
         let mut frame = |arrows_at: Option<u32>| {
             let mut buf = vec![0u16; (WIDTH * HEIGHT) as usize];
             let mut fb = Framebuffer565::new(&mut buf, WIDTH, HEIGHT);
-            renderer.render(&mut fb, &reader, &vp, bg, color_fn);
+            scratch.render(&mut fb, &reader, &vp, bg, RenderConfig::default(), color_fn);
             let (chunks, _, drawn) =
-                renderer.draw_route(&mut fb, &vp, &route, color_fn(0xF81F), 11, color_fn(0xFFFF), arrows_at);
+                scratch.draw_route(&mut fb, &vp, &route, color_fn(0xF81F), 11, color_fn(0xFFFF), arrows_at);
             (buf, chunks, drawn)
         };
 

@@ -4,7 +4,7 @@
 use embedded_graphics::{draw_target::DrawTarget, primitives::Rectangle};
 use obc_elevation::ElevationSource;
 use obc_reader::Reader;
-use obc_render::{zoom_for_mpp, Canvas, Clock, NoopClock, RenderStats, Viewport};
+use obc_render::{zoom_for_mpp, Canvas, Clock, NoopClock, RenderScratch, RenderStats, Viewport};
 use obc_route::{Profile, RouteReader};
 
 use crate::activity::{Activity, Mode};
@@ -14,7 +14,6 @@ use crate::host::{
     DrainStatus, HostCommand, HostCommandClass, HostEvent, HostMailbox, HostPending, HOST_COMMAND_CLASSES,
 };
 use crate::input::Gesture;
-use crate::render_res::RenderResources;
 use crate::ride::RideSummary;
 use crate::ride_engine::RideEngine;
 use crate::route::RouteSummary;
@@ -85,7 +84,7 @@ pub struct Pan {
 /// the last known user fix.
 ///
 /// The shared core the host renders. The host owns the display size and the
-/// [`obc_render::MapRenderer`]/draw target; each frame it calls [`update`] with the platform's
+/// [`obc_render::RenderScratch`]/draw target; each frame it calls [`update`] with the platform's
 /// [`LocationSource`], then [`viewport`] for the camera to render through. The split keeps display
 /// dimensions out of the shared state.
 ///
@@ -333,7 +332,8 @@ const GESTURE_BUF: usize = 16;
 /// [`tick`](App::tick)s it with their [`LocationSource`], feeds raw controls through
 /// [`handle_input`](App::handle_input), and [`render_frame`](App::render_frame)s to their display.
 /// `App` owns the screen stack, the input + overlay plane ([`InputPlane`]), the camera
-/// [`AppState`], the ride [`Activity`], and the reusable [`MapRenderer`].
+/// [`AppState`] and the ride [`Activity`]. It does **not** own the render path's scratch: the host
+/// keeps a [`RenderScratch`] and lends it to each render call (#1146).
 ///
 /// The firmware can split the two planes across executors — recognising gestures on a
 /// high-priority [`InputPlane`] that preempts the map render and feeding them back through
@@ -342,6 +342,7 @@ const GESTURE_BUF: usize = 16;
 ///
 /// ```ignore
 /// let mut app = App::new(AppState::new(cx, cy, zoom));
+/// let mut scratch = RenderScratch::new(); // the host's, lent per frame
 /// loop {
 ///     // GPS + barometer + compass + active route → camera, map-match, ride stats.
 ///     let sensors = Sensors {
@@ -358,7 +359,7 @@ const GESTURE_BUF: usize = 16;
 ///     };
 ///     app.tick(RideClock(now_ms), sensors, route.as_ref());
 ///     app.handle_input(InputClock(now_ms), &mut input_source); // Select + Back → gestures
-///     app.render_frame(&mut display, &reader, route.as_ref(), w, h, color_policy);
+///     app.render_frame(&mut scratch, &mut display, &reader, route.as_ref(), w, h, color_policy);
 /// }
 /// ```
 /// Whether — and by which source — the wall clock has been established from a **real time source
@@ -406,10 +407,6 @@ pub struct App {
     /// idle-return policy, and the modal-reconciliation state for every host-pushed card
     /// (passkey, upload popups, warnings, post-update toasts, DFU landings).
     ui: UiRuntime,
-    /// The render-only resources: the reusable [`MapRenderer`] + its large per-frame scratch (the
-    /// dominant slice of `App`'s resident size), kept apart from the domain state so allocation
-    /// and placement ownership stay obvious.
-    render_res: RenderResources,
     /// The persisted device settings, seeded from the host's store at boot
     /// ([`set_settings`](App::set_settings)) and edited in place by the settings screens.
     settings: Settings,
@@ -481,7 +478,6 @@ impl App {
             ride: RideEngine::new(),
             ui: UiRuntime::new(),
             nav_profiles: crate::NavProfiles::new(),
-            render_res: RenderResources::new(),
             settings: Settings::default(),
             // The wall clock starts from the same default set-point at the boot origin; the host's
             // `set_settings` re-stamps it from the persisted clock a moment later.
@@ -499,15 +495,15 @@ impl App {
     }
 
     /// Build the idle power-on [`App`] **in place** at `slot` — the by-reference twin of
-    /// [`new_idle`](App::new_idle), the placement path the firmware uses to construct the ~200 KB
-    /// resident `App` straight into its reserved region without materializing it (or its renderer
-    /// scratch) on the 192 KB stack.
+    /// [`new_idle`](App::new_idle), the placement path the firmware uses to construct the resident
+    /// `App` straight into its reserved region without materializing it on the 192 KB stack.
     ///
     /// `new_idle` returns by value and only stays off the stack via return-value optimization — a
     /// fragile guarantee a debug build or different toolchain could drop, overflowing the stack.
     /// This writes each field through `addr_of_mut!` exactly once, so no by-value `App` is ever
-    /// formed. The renderer (the only large field) is zeroed in place via
-    /// [`MapRenderer::init_zeroed`] rather than built-and-moved.
+    /// formed; the KB-scale components (catalogs, ride caches, UI runtime) initialize themselves in
+    /// place, one level down. The render scratch is **not** among them since #1146 — the host owns
+    /// it and places it itself (see [`RenderScratch::init_zeroed`](obc_render::RenderScratch::init_zeroed)).
     ///
     /// The end state is identical to `new_idle`'s — keep the two in sync. A destructuring
     /// exhaustiveness guard at the tail (naming every field with no `..`) makes a field added to
@@ -538,9 +534,6 @@ impl App {
             // the profile-name mirror must be initialized like every other, or the board's first
             // render reads uninit memory through it.)
             addr_of_mut!((*slot).nav_profiles).write(crate::NavProfiles::new());
-            // The KB-scale scratch renderer: an empty renderer *is* the all-zero bit
-            // pattern, so it is zeroed straight into the slot — never on the stack.
-            RenderResources::init_zeroed(addr_of_mut!((*slot).render_res));
             addr_of_mut!((*slot).settings).write(Settings::default());
             addr_of_mut!((*slot).wall_clock).write(WallClock::new(Settings::default().local_clock()));
             addr_of_mut!((*slot).clock_trust).write(ClockTrust::Untrusted);
@@ -567,7 +560,6 @@ impl App {
                 ride: _,
                 ui: _,
                 nav_profiles: _,
-                render_res: _,
                 settings: _,
                 wall_clock: _,
                 clock_trust: _,
@@ -2143,8 +2135,14 @@ impl App {
     /// The single-target convenience that draws a whole frame: [`render_map`](App::render_map) then
     /// [`render_overlay`](App::render_overlay) into the *same* target. Hosts that keep the map and
     /// overlay on separate buffers call the two halves directly.
+    ///
+    /// `scratch` is the caller's [`RenderScratch`] — the render path's per-frame working memory,
+    /// owned by the host rather than by `App` (#1146), lent for the duration of the call and
+    /// meaningless between frames.
+    #[allow(clippy::too_many_arguments)]
     pub fn render_frame<D, F>(
         &mut self,
+        scratch: &mut RenderScratch,
         target: &mut D,
         reader: &Reader,
         route: Option<&RouteReader>,
@@ -2156,7 +2154,7 @@ impl App {
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
-        let stats = self.render_map(target, reader, route, w, h, &color_fn);
+        let stats = self.render_map(scratch, target, reader, route, w, h, &color_fn);
         self.render_overlay(target, w, h, &color_fn);
         stats
     }
@@ -2168,6 +2166,7 @@ impl App {
     #[allow(clippy::too_many_arguments)]
     pub fn render_scene_frame<D, F, S>(
         &mut self,
+        scratch: &mut RenderScratch,
         target: &mut D,
         scene: &S,
         core_reader: &Reader,
@@ -2181,7 +2180,7 @@ impl App {
         F: Fn(u16) -> D::Color,
         S: MapScene,
     {
-        let stats = self.render_scene_map(target, scene, core_reader, route, w, h, &color_fn);
+        let stats = self.render_scene_map(scratch, target, scene, core_reader, route, w, h, &color_fn);
         self.render_overlay(target, w, h, &color_fn);
         stats
     }
@@ -2192,8 +2191,10 @@ impl App {
     /// The expensive half (24–51 ms on the device); a host that keeps the overlay on its own buffer
     /// renders this only when the map changed, then repaints the cheap
     /// [`render_overlay`](App::render_overlay) over it at a higher rate.
+    #[allow(clippy::too_many_arguments)]
     pub fn render_map<D, F>(
         &mut self,
+        scratch: &mut RenderScratch,
         target: &mut D,
         reader: &Reader,
         route: Option<&RouteReader>,
@@ -2207,7 +2208,7 @@ impl App {
     {
         // Untimed: `NoopClock` leaves the per-stage `*_us` fields at 0 (the device uses
         // `render_map_timed` with a real clock for the benchmark). Always draws the map, so `Some`.
-        self.render_scene_map_timed(target, Some(reader), Some(reader), route, w, h, color_fn, &NoopClock)
+        self.render_scene_map_timed(scratch, target, Some(reader), Some(reader), route, w, h, color_fn, &NoopClock)
     }
 
     /// Render only the map plane from any [`MapScene`]. `core_reader` remains the authority for
@@ -2215,6 +2216,7 @@ impl App {
     #[allow(clippy::too_many_arguments)]
     pub fn render_scene_map<D, F, S>(
         &mut self,
+        scratch: &mut RenderScratch,
         target: &mut D,
         scene: &S,
         core_reader: &Reader,
@@ -2228,16 +2230,17 @@ impl App {
         F: Fn(u16) -> D::Color,
         S: MapScene,
     {
-        self.render_scene_map_timed(target, Some(scene), Some(core_reader), route, w, h, color_fn, &NoopClock)
+        self.render_scene_map_timed(scratch, target, Some(scene), Some(core_reader), route, w, h, color_fn, &NoopClock)
     }
 
     /// Like [`render_map`](App::render_map) but threads `clock` to the Map screen's
-    /// [`render_timed`](obc_render::MapRenderer::render_timed), so the returned [`RenderStats`]
+    /// [`render_timed`](obc_render::RenderScratch::render_timed), so the returned [`RenderStats`]
     /// carries the map's per-stage timings. The device's render benchmark uses this with its own
     /// microsecond clock. Part of the strippable render-instrumentation seam.
     #[allow(clippy::too_many_arguments)]
     pub fn render_map_timed<D, F>(
         &mut self,
+        scratch: &mut RenderScratch,
         target: &mut D,
         reader: Option<&Reader>,
         route: Option<&RouteReader>,
@@ -2250,7 +2253,7 @@ impl App {
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
-        self.render_scene_map_timed(target, reader, reader, route, w, h, color_fn, clock)
+        self.render_scene_map_timed(scratch, target, reader, reader, route, w, h, color_fn, clock)
     }
 
     /// Generic timed map-plane render. `scene` drives geometry through [`MapScene`];
@@ -2259,6 +2262,7 @@ impl App {
     #[allow(clippy::too_many_arguments)]
     pub fn render_scene_map_timed<D, F, S>(
         &mut self,
+        scratch: &mut RenderScratch,
         target: &mut D,
         scene: Option<&S>,
         core_reader: Option<&Reader>,
@@ -2321,7 +2325,6 @@ impl App {
             ride,
             ui,
             nav_profiles,
-            render_res,
             fw_version,
             map_name,
             map_obcm_version,
@@ -2341,7 +2344,7 @@ impl App {
             .and_then(|i| ride.climbs.as_slice().get(i))
             .map(|seg| screen::ActiveClimb { seg, profile: &ride.climb_profile });
         let rx = Render {
-            renderer: &mut render_res.renderer,
+            scratch,
             state,
             activity,
             settings,
@@ -4238,7 +4241,8 @@ mod tests {
             let route_src = SliceSource(&obcr);
             let idx = RouteIndex::read(&route_src).expect("valid .obcr");
             let route = RouteReader::new(&idx, &route_src);
-            app.render_frame(&mut Sink, &reader, Some(&route), 240.0, 320.0, |_| Rgb888::new(0, 0, 0));
+            let mut scratch = Box::new(RenderScratch::new());
+            app.render_frame(&mut scratch, &mut Sink, &reader, Some(&route), 240.0, 320.0, |_| Rgb888::new(0, 0, 0));
         };
 
         let mut app = App::new(AppState::new(7_800_000, 48_000_000, 0.05));
