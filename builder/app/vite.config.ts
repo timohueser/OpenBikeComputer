@@ -1,5 +1,6 @@
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { defineConfig } from "vite";
+import { thirdPartyLicenses } from "./vite/third-party-licenses";
 
 // One frontend, three hosts (#895). Which host `$host` resolves to is decided
 // here, at build time — a conditional alias, not a runtime `if` — so the two
@@ -37,7 +38,9 @@ export default defineConfig(({ mode }) => {
         // "/" (local FastAPI) or under a sub-path (a future single-server deployment
         // serving landing + docs + builder behind one reverse proxy).
         base: "./",
-        plugins: [svelte()],
+        // The licence notices ride along with every tier's bundle (#1149) — the static site
+        // and the Tauri app are the same build, and both are distributions.
+        plugins: [svelte(), thirdPartyLicenses()],
         resolve: {
             // Root-relative rather than an absolute path so the config needs no
             // node: builtins (and so no @types/node just to type-check itself).
