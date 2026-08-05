@@ -120,6 +120,11 @@
 #![no_main]
 
 mod sd;
+// The **scratch arena** (#1146 P2): one RAM block time-shared by the three biggest blocks that are
+// never live together — the per-frame render scratch, the nav block, and the USB staging buffer.
+// The only place this feature's `unsafe` lives; the owner rules it composes with are the
+// host-tested `obc_app::ArenaGate`.
+mod arena;
 // LS021 FLPR backend — the display: `main.rs` runs the real app on the reflective LS021
 // panel via the FLPR (the VPR coprocessor). The FLPR presenter backend + launch live in
 // `ls021_flpr`; `com::com_task` free-runs the COM lines (the FLPR drives frames; only the COM
@@ -278,15 +283,17 @@ bind_interrupts!(struct SensorIrqs {
 //   - `App`        the screen tree + ride/activity state: the resident elevation `Profile` (~2.3 KB at
 //                  PROFILE_COLS=256), the `Breadcrumb` (~3 KB at SPINE_CAP=256), the POI/corridor
 //                  scratches and the catalogs; ~44 KB total. It owns **no** render scratch since
-//                  #1146 P1 — that block is the `RENDER_SCRATCH` static below. (The #270 cull: these
+//                  #1146 P1 — that block is an arm of the scratch arena below. (The #270 cull: these
 //                  caps were roughly halved again so the map plane leaves room for the BLE
 //                  stack in one image — the LM20 re-decides them generously.)
-//   - render scratch
-//                  `obc_render::RenderScratch`, 92,320 B at the nrf-mem caps (the buffers
-//                  themselves are `obc_render::MCU_SCRATCH_BYTES`): every decode / collect / span /
-//                  draw buffer a frame needs, and nothing else — the `RENDER_SCRATCH` static below.
-//                  Immediate-mode: dead between frames, but resident, because a full redraw needs
-//                  all of it at once.
+//   - scratch arena
+//                  ONE block, `max(arms)` (#1146 P2 — `arena.rs`), replacing three that were never
+//                  live together: the per-frame **render** scratch (`obc_render::RenderScratch`,
+//                  92,320 B at the nrf-mem caps — every decode / collect / span / draw buffer a
+//                  redraw needs at once), the **nav** block (`NavScratch` + `NavTileCache` +
+//                  `NavPlanner`, ~59.9 KB, live only inside one route search), and the **USB**
+//                  staging buffer (16 KiB, live only while a cable transfer streams). Summed they
+//                  were 168,572 B; unioned they are the render arm's 92,320.
 //   - framebuffer  the single RGB222 frame: 240×320 × 1 B/px = 75 KB — the `FB` static below.
 //   - `MapCache`   the streamed-map geometry-chunk cache (2 slots + 8 KB scratch on nrf-mem, 14,444 B).
 //   - `RouteCache` the decoded-route-chunk cache (2 slots on nrf-mem, ~6 KB).
@@ -330,41 +337,41 @@ const STACK_RESERVE: usize = 64 * 1024;
 const FB_BYTES: usize = FRAME_W * FRAME_H;
 
 /// The map plane's residents (the table above). Includes the active route's `RouteIndex`, kept
-/// resident across frames, and the per-frame `RenderScratch` — which `App` used to embed and which
-/// #1146 P1 made a static of its own. Present in every build now (#270 — map + BLE coexist).
+/// resident across frames. The per-frame `RenderScratch` is **not** here any more: since #1146 P2 it
+/// is an arm of [`ARENA_RESIDENT`], counted once for all three arms. Present in every build now
+/// (#270 — map + BLE coexist).
 const MAP_RESIDENT: usize = core::mem::size_of::<obc_app::App>()
-    + core::mem::size_of::<obc_render::RenderScratch>()
     + core::mem::size_of::<obc_reader::MapCache>()
     + core::mem::size_of::<obc_reader::MapTables>()
     + core::mem::size_of::<obc_route::RouteCache>()
     + core::mem::size_of::<obc_route::RouteIndex>()
     + SET_RESIDENT
-    + NAV_RESIDENT;
+    + TERRAIN_RESIDENT;
 /// Device-native volume-set residents (#1033): the mount records are caller-placed here, while
 /// `sd.rs` owns the board-private direct-read tables/sources.
 const SET_RESIDENT: usize =
     core::mem::size_of::<sd::SetShardStore>() + sd::SET_EXTENT_TABLES_BYTES + sd::SET_SOURCES_BYTES;
-/// The on-device router's residents (epic #116, R4): the fixed A* scratch + graph-tile cache
-/// (~14.3 KB, the `NAV_*` statics below). Zero on the `ble` build — `has_nav` gates the router
-/// out of the combined image because these two statics push its stack region ~1.9 KB below the
-/// measured deep-render peak on the 256 KB DK (see build.rs); the LM20 deletes the gate.
-/// …plus the map's terrain (EL7, epic #1068): the [`TERRAIN`] slot (an OBCT reader + its four
-/// 512 B tiles, ~2.1 KB) and the sidecar's own extent table/source in `sd.rs` (~1.3 KB). Resident
+/// The map's **terrain** (EL7, epic #1068): the [`TERRAIN`] slot (an OBCT reader + its four 512 B
+/// tiles, ~2.1 KB) and the sidecar's own extent table/source in `sd.rs` (~1.3 KB). Resident
 /// whether or not a terrain file is on the card, deliberately: the slot is what makes the emit
 /// path's sampler a `.bss` object instead of a plan-frame local (#419/#501), and a budget that
 /// moved with the card's contents would not be a budget.
-#[cfg(has_nav)]
-const NAV_RESIDENT: usize = core::mem::size_of::<obc_route::NavScratch>()
-    + core::mem::size_of::<obc_reader::NavTileCache>()
-    + core::mem::size_of::<obc_route::NavPlanner>()
-    + TERRAIN_RESIDENT;
-/// The terrain half of [`NAV_RESIDENT`], itemized so the report table can name it.
+///
+/// **Its own term since #1146 P2, and deliberately not an arena arm.** It used to be counted inside
+/// the router's `NAV_RESIDENT` sum, which read as though it lived and died with a search — it does
+/// not: `App::sample_terrain` reads it at **every fresh fix** during a ride (EL8), i.e. exactly
+/// while the map plane is rendering and no search is running. Folding it into the nav arm would have
+/// handed the render arm's `memset` the altimeter's tile cache. It is state, not scratch.
 #[cfg(has_nav)]
 const TERRAIN_RESIDENT: usize = core::mem::size_of::<
     obc_elevation::TerrainElevation<'static, { obc_elevation::DEFAULT_TILE_SLOTS }>,
 >() + sd::TERRAIN_EXTENT_BYTES;
 #[cfg(not(has_nav))]
-const NAV_RESIDENT: usize = 0;
+const TERRAIN_RESIDENT: usize = 0;
+/// The **scratch arena** (#1146 P2, `arena.rs`): `max(render, nav, usb)`, once — the single term
+/// that replaced `RenderScratch` in [`MAP_RESIDENT`], the three `NAV_*` blocks in the router's old
+/// sum, and `STAGE_LEN` in [`usb::RESIDENT_BYTES`].
+const ARENA_RESIDENT: usize = arena::ARENA_BYTES;
 /// The BLE stack's residents (`ble::RESIDENT_BYTES`: the MPSL handle + SDC memory block + TrouBLE's
 /// host arena + its global packet pool + the CRACEN RNG); zero without the feature. Keeping both terms
 /// in one sum is what makes "`ble` + map don't fit on 256 KB" a *compile-time* fact: the map plane is
@@ -384,11 +391,26 @@ const USB_RESIDENT: usize = usb::RESIDENT_BYTES;
 const RESIDENT_BYTES: usize = FB_BYTES
     + core::mem::size_of::<RowDiff<FRAME_H>>() // the self-diffing present store (#201, 1.28 KB)
     + MAP_RESIDENT
+    + ARENA_RESIDENT
     + BLE_RESIDENT
     + USB_RESIDENT;
+// ⚠️ **The budget has a cliff in it now** (#1146 P2), and it points both ways — read this before
+// "optimizing" any of the three arena arms, and before waving one through:
+//
+//   * `ARENA_RESIDENT` is `max(render, nav, usb)`, not their sum. Growing an arm that is **below**
+//     the maximum is **free** — genuinely, byte-for-byte free, not merely cheap: the nav arm has
+//     ~32 KB of headroom and the USB stage ~76 KB before either would move this number at all. A
+//     change that shaves KBs off one of those buys the device nothing, and the review time spent on
+//     it is the whole cost.
+//   * Growing the arm that **is** the maximum (today: render) costs the full delta, 1:1, exactly as
+//     it did when each block owned its own RAM. #1146 P3 spends ~25 KB there deliberately.
+//   * Crossing the line is where the surprise lives: an arm growing *past* the current maximum costs
+//     only the part above it, and from then on it is the arm every future growth is measured
+//     against. `arena.rs` has a compile-time assert that fires if that ever happens, because at that
+//     point every note here names the wrong arm.
 const _: () = assert!(
     RESIDENT_BYTES + STACK_RESERVE <= NRF_RAM_BYTES,
-    "nRF resident set (framebuffer + RowDiff + map plane [App/RenderScratch/MapCache/MapTables/RouteCache/RouteIndex/volume-set tables] + BLE stack [MPSL/SDC mem/host arena]) + stack reserve overruns RAM — re-trim the `nrf-mem` caps (#270 culled them so map + BLE share the 256 KB DK; the LM20 relaxes everything)"
+    "nRF resident set (framebuffer + RowDiff + map plane [App/MapCache/MapTables/RouteCache/RouteIndex/terrain/volume-set tables] + the #1146 scratch arena [max of render/nav/usb] + BLE stack [MPSL/SDC mem/host arena] + the USB plane) + stack reserve overruns RAM — re-trim the `nrf-mem` caps, and mind the arena's max-of-arms cliff above: shrinking an arm that is not the largest frees nothing"
 );
 
 // A report-only table of exact target-side allocation sizes. Keeping the table in this crate gives
@@ -479,12 +501,16 @@ mod resource_report {
         entry("set_sources", sd::SET_SOURCES_BYTES),
         entry("route_cache", core::mem::size_of::<RouteCache>()),
         entry("route_index", core::mem::size_of::<obc_route::RouteIndex>()),
-        // The per-frame render scratch. Keeps the `renderer` name it has carried since the table
-        // existed — the block is the same bytes, they just stopped living inside `App` (#1146 P1).
-        entry("renderer", core::mem::size_of::<obc_render::RenderScratch>()),
-        entry("nav_scratch", core::mem::size_of::<obc_route::NavScratch>()),
-        entry("nav_tile_cache", core::mem::size_of::<obc_reader::NavTileCache>()),
-        entry("nav_planner", core::mem::size_of::<obc_route::NavPlanner>()),
+        // The **scratch arena** (#1146 P2) and its three arms. `arena_total` is the only one of the
+        // four that is resident RAM — it is `max` of the other three, not their sum, and the three
+        // are reported beside it precisely so a reader can see *which* arm sets the total and how
+        // much free headroom the other two still have (the growth asymmetry; see `arena.rs`). They
+        // replace the `renderer` / `nav_scratch` / `nav_tile_cache` / `nav_planner` rows, and
+        // `arena_usb` is the `STAGE_LEN` that left `usb_named` below.
+        entry("arena_total", arena::ARENA_BYTES),
+        entry("arena_render", arena::RENDER_ARM_BYTES),
+        entry("arena_nav", arena::NAV_ARM_BYTES),
+        entry("arena_usb", arena::USB_ARM_BYTES),
         // The terrain seam's two statics (EL7): the sampler + tile cache, and the sidecar's own
         // extent table/source. Named because they are the newest resident block on this path and a
         // change in the tile-slot count must be legible here, not as anonymous `.bss`.
@@ -506,7 +532,8 @@ mod resource_report {
         // resident block, and a growth in it should be legible in the report rather than only as a
         // few thousand anonymous bytes of `.bss`. This is the *named* half — the driver's own
         // endpoint bookkeeping and the task future are not nameable here and land in the linked
-        // `.bss + .data` gate, which is the authority for resident RAM.
+        // `.bss + .data` gate, which is the authority for resident RAM. The **staging buffer is no
+        // longer part of this sum** (#1146 P2): it is `arena_usb` above.
         entry("usb_named", usb::RESIDENT_BYTES),
     ];
 }
@@ -538,50 +565,18 @@ static mut MAP_TABLES: MaybeUninit<MapTables> = MaybeUninit::uninit();
 /// the ~5 KiB `SetShards<11>` through `main`'s async frame.
 static mut SET_SHARDS: sd::SetShardStore = sd::SetShardStore::new();
 static mut APP: MaybeUninit<App> = MaybeUninit::uninit();
-/// The render path's **per-frame scratch** (#1146 P1): every decode / cull / span / draw buffer a
-/// redraw needs, 92,320 B at the `nrf-mem` caps (`obc_render::MCU_SCRATCH_BYTES` sums the buffers
-/// behind that figure; [`MAP_RESIDENT`] budgets the struct itself). Until P1 these
-/// bytes sat inside [`APP`]; extracting them makes the render arm of the future #1146 arena a
-/// *named* block the budget table and the resource report can point at, and `App` a state object
-/// again. `.bss` for now — P2 gives the arena a region of its own and this static becomes a slice
-/// of it.
-///
-/// Immediate-mode: the buffers are cleared and refilled by every `render_*` call and mean nothing
-/// between frames, so nothing here is read before it is written and no frame can inherit the last
-/// one's state. Resident all the same — a full redraw needs all of it at once, so it is budgeted
-/// beside the framebuffer rather than borrowed from the stack.
-///
-/// Built **in place** via [`RenderScratch::init_zeroed`](obc_render::RenderScratch::init_zeroed) (a
-/// `.bss` memset over the all-zero empty state), never through [`init_static`] and never by value:
-/// a 92 KB by-value constructor only stays off the stack via return-value optimization, which is
-/// exactly the guarantee `RouteIndex::read_into` learned not to rely on (STKOF HardFault,
-/// 2026-07-12; see the budget table above).
-static mut RENDER_SCRATCH: MaybeUninit<obc_render::RenderScratch> = MaybeUninit::uninit();
 /// The decoded-route-geometry cache, placed in `.bss` and built in place like [`MAP_CACHE`]
 /// ([`RouteCache::new`](obc_route::RouteCache) is an all-zero `MaybeUninit::zeroed`). The session-long
 /// cache spares a redraw of the unchanged route + the matcher's per-fix decode from re-reading `.obcr`
 /// geometry off the card every frame.
 static mut ROUTE_CACHE: MaybeUninit<RouteCache> = MaybeUninit::uninit();
-/// The on-device router's fixed A* table (epic #116, R4): ~10 kB of open-addressed node slots +
-/// heap, in `.bss` (`NavScratch::new()` is `const` and all-zero → a memset), **never** a local —
-/// `plan_route` is sync and runs at the ride loop's shallow per-pass depth, but a ~10 kB frame
-/// there would still eat a third of the deep-render path's headroom (#270/#419). Reset per plan.
-/// `has_nav`-gated: the `ble` build ships without the router (see build.rs; the LM20 ungates it).
-#[cfg(has_nav)]
-static mut NAV_SCRATCH: MaybeUninit<obc_route::NavScratch> = MaybeUninit::uninit();
-/// The router's graph-tile cache (~4 kB, 2 whole nav chunks): the per-settle spatial re-fetch
-/// reads through it, so its `misses` count **is** the plan's SD-read count (the number the
-/// `nav route:` RTT line logs). Same `.bss` placement + `has_nav` gate as [`NAV_SCRATCH`].
-#[cfg(has_nav)]
-static mut NAV_TILES: MaybeUninit<obc_reader::NavTileCache> = MaybeUninit::uninit();
-/// The **resumable planner**'s slot (#499, ~9.5 KB — it owns the OBCR emitter across steps).
-/// Unlike the two buffers above it is *not* `init_static`-once: the ride loop `ptr::write`s a
-/// fresh planner per create-route request (no `Drop`, so overwriting is sound) and only reads it
-/// while its `NavRun` bookkeeping says a plan is active. Zero-sum note: this ~9.5 KB used to be
-/// the emit frame's stack local — moving it here trades the plan path's stack high-water for
-/// `.bss`, byte for byte.
-#[cfg(has_nav)]
-static mut NAV_PLANNER: MaybeUninit<obc_route::NavPlanner> = MaybeUninit::uninit();
+// (The router's fixed A* table, its graph-tile cache and the resumable planner's slot were three
+// `.bss` statics here until #1146 P2. They are one struct now — `arena::NavArm` — living in the
+// scratch arena, which the ride loop claims for the span of a search and the render path claims
+// back for its frames. Nothing about their per-request discipline changed: `NavScratch` /
+// `NavTileCache` are reset before the first step reads them and the planner is still
+// `ptr::write`-replaced per request, so nothing outlives one search. The terrain below is the block
+// that deliberately stayed resident — see `TERRAIN_RESIDENT`.)
 /// The mounted map's **terrain** (EL7, epic #1068): the OBCT reader plus its `N = 4` tile cache —
 /// ~2.1 KB of resident raster + a 32-byte header, in `.bss` for exactly the reason the caches above
 /// are (`TerrainElevation` embeds the cache; a stack copy of one inside the emit path is precisely
@@ -1310,17 +1305,6 @@ async fn main(_spawner: Spawner) {
             App::init_idle(slot, AppState::new(cam_lon, cam_lat, zoom_for_mpp(INIT_MPP)));
             &mut *slot
         };
-        // The render scratch beside it (#1146 P1), placed the same way and for the same reason —
-        // `init_zeroed` memsets the ~92 KB empty state where it sits, so the buffers never form on
-        // the stack. Threaded from here into the ride loop as the one `&'static mut` handle; every
-        // `render_*` call borrows it for the duration of a frame and nothing holds it across an await.
-        // SAFETY: sole owner of RENDER_SCRATCH; `init_zeroed` fully initialises the slot before the
-        // `&mut` below reads it, and the single map plane means no aliasing.
-        let render_scratch: &'static mut obc_render::RenderScratch = unsafe {
-            let slot = core::ptr::addr_of_mut!(RENDER_SCRATCH) as *mut obc_render::RenderScratch;
-            obc_render::RenderScratch::init_zeroed(slot);
-            &mut *slot
-        };
         {
             ride::load_routes(&mut storage, app);
             ride::load_rides(&mut storage, app);
@@ -1355,20 +1339,14 @@ async fn main(_spawner: Spawner) {
         // SAFETY: sole owner of ROUTE_CACHE; single map plane → no aliasing.
         let route_cache: &RouteCache = unsafe { init_static(core::ptr::addr_of_mut!(ROUTE_CACHE), RouteCache::new()) };
 
-        // The router's A* table + graph-tile cache (epic #116, R4), placed in `.bss` and built in
-        // place (both `new()`s are const all-zero → memsets). Threaded into the ride loop as one
-        // `NavBuffers` bundle, which `plan_nav` uses per drained create-route request — never
-        // stack locals. On the `ble` build (`not(has_nav)`, see build.rs) the bundle is the unit
-        // stand-in — no statics exist and the ride loop answers requests with the generic
-        // failure tier.
-        // SAFETY: sole owners of NAV_SCRATCH / NAV_TILES; single map plane → no aliasing.
+        // The router's **resident** half (epic #116 R4 + EL7): since #1146 P2 the A* table, the
+        // graph-tile cache and the planner slot are the scratch arena's nav arm — claimed per search,
+        // not owned here — so all that is threaded into the ride loop is the map's terrain (or the
+        // null source), which is sampled at fix cadence and therefore never joined the arena. On the
+        // `ble` build (`not(has_nav)`, see build.rs) it is the unit stand-in and the ride loop
+        // answers plan requests with the generic failure tier.
         #[cfg(has_nav)]
-        let nav = ride::NavBuffers {
-            scratch: unsafe { init_static(core::ptr::addr_of_mut!(NAV_SCRATCH), obc_route::NavScratch::new()) },
-            tiles: unsafe { init_static(core::ptr::addr_of_mut!(NAV_TILES), obc_reader::NavTileCache::new()) },
-            // SAFETY: the sole handle to the planner slot; the ride loop (re)writes it per
-            // request and reads it only while its plan bookkeeping is active.
-            planner: unsafe { &mut *core::ptr::addr_of_mut!(NAV_PLANNER) },
+        let nav = ride::NavResident {
             // The terrain the emit phase fills from, or the null source — both `.bss`, never a frame.
             // SAFETY: `NULL_ELEV` is a ZST written nowhere else; `terrain` is the sole reference to
             // the `TERRAIN` slot, moved here.
@@ -1378,7 +1356,7 @@ async fn main(_spawner: Spawner) {
             },
         };
         #[cfg(not(has_nav))]
-        let nav = ride::NavBuffers;
+        let nav = ride::NavResident;
 
         // The persistent settings store: takes the `RRAMC` peripheral, reads/writes the blob in the
         // carved RRAM page. Built here (where `p` is live) and moved into the ride loop, which seeds the
@@ -1620,7 +1598,6 @@ async fn main(_spawner: Spawner) {
         let app_fut = ride::run_app(
             display,
             app,
-            render_scratch,
             shared_store,
             map_tables,
             map_cache,
@@ -1639,7 +1616,6 @@ async fn main(_spawner: Spawner) {
         let app_fut = ride::run_app(
             display,
             app,
-            render_scratch,
             shared_store,
             map_tables,
             map_cache,

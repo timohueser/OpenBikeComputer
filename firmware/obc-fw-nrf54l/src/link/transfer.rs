@@ -87,7 +87,13 @@ pub(crate) fn classify_transfer(
         );
         return TransferDisposition::Answer(transfer_result(desc.object_id, TransferStatus::Aborted));
     }
-    if TRANSFER_ACTIVE.in_flight() {
+    // `busy()`, not `in_flight()` (#1146 P2): the gate arbitrates a second resource now — the
+    // scratch arena's `nav ⊥ usb` rule — so a live **route search** must answer `busy` here too.
+    // `claim` refuses either way, but a control plane that only tested the narrow predicate armed a
+    // transfer that then could not take the gate, leaving the host waiting on a `transferResult`
+    // nothing would send. `in_flight()` keeps its narrow meaning for the abort routing above, where
+    // "which wire is streaming" is exactly the question.
+    if TRANSFER_ACTIVE.busy() {
         warn!(
             "link: [ctl] transfer_control reject: op {} type {} id {} len {} -> status {} (active)",
             desc.op.as_u8(),

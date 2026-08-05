@@ -170,6 +170,18 @@ pub(crate) enum Armed {
     SetManifest(TransferControl, Receiver),
 }
 
+impl Armed {
+    /// The descriptor's `object_id` — what a control plane must echo when it has to refuse an
+    /// already-classified transfer (a lost [`TRANSFER_ACTIVE`] claim), so the host can correlate the
+    /// `busy` with the descriptor it sent.
+    pub(crate) fn object_id(&self) -> u16 {
+        match self {
+            Armed::Echo(desc) | Armed::Download(desc) => desc.object_id,
+            Armed::Upload(desc, ..) | Armed::SetShard(desc, ..) | Armed::SetManifest(desc, ..) => desc.object_id,
+        }
+    }
+}
+
 /// Which wire a descriptor arrived on — the *only* place transport identity crosses into the shared
 /// classifier, and it exists for exactly one rule: **a map is USB-only** (spec §10). A map is
 /// hundreds of megabytes; over BLE it would be days, which is why the type did not exist before a

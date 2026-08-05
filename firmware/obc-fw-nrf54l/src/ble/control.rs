@@ -101,9 +101,28 @@ pub(crate) async fn serve_connection(
                                 classify_transfer(data, store, &mut guard, crate::link::Transport::Ble)
                             }) {
                                 TransferDisposition::Arm(armed) => {
-                                    info!("ble: [gatt] transfer_control: transfer armed");
-                                    TRANSFER_ACTIVE.claim(crate::link::gate_owner(crate::link::Transport::Ble));
-                                    TRANSFER_ARM.signal(armed);
+                                    // **The claim's answer is honoured** (#1146 P2) — the radio twin
+                                    // of the USB control plane's site, and for the same reason: the
+                                    // gate grew a second refuser (a live route search holding the
+                                    // scratch arena's nav arm) without this call site noticing.
+                                    // Nothing awaits between `classify_transfer` and this claim on
+                                    // the one cooperative executor, so a refusal is unreachable
+                                    // today; arming against it anyway would hand the CoC plane a
+                                    // store someone else owns.
+                                    if TRANSFER_ACTIVE.claim(crate::link::gate_owner(crate::link::Transport::Ble)) {
+                                        info!("ble: [gatt] transfer_control: transfer armed");
+                                        TRANSFER_ARM.signal(armed);
+                                    } else {
+                                        warn!("ble: [gatt] transfer_control lost the gate after classify — busy");
+                                        debug_assert!(
+                                            false,
+                                            "the gate moved between classify and claim with no await between them"
+                                        );
+                                        status_msg = Some(crate::link::transfer_result(
+                                            armed.object_id(),
+                                            obc_ble::TransferStatus::Busy,
+                                        ));
+                                    }
                                 }
                                 TransferDisposition::AbortActive => {
                                     info!("ble: [gatt] transfer_control: abort → data plane");
