@@ -1264,7 +1264,7 @@ fn main() {
                         };
                         let mut fb = Framebuffer::new(rw, rh);
                         let _ = app.render_frame(
-                            &mut scratch,
+                            Some(&mut scratch),
                             &mut fb,
                             &reader,
                             route.as_ref(),

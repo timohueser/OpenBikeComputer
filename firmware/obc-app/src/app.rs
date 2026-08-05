@@ -359,7 +359,7 @@ const GESTURE_BUF: usize = 16;
 ///     };
 ///     app.tick(RideClock(now_ms), sensors, route.as_ref());
 ///     app.handle_input(InputClock(now_ms), &mut input_source); // Select + Back → gestures
-///     app.render_frame(&mut scratch, &mut display, &reader, route.as_ref(), w, h, color_policy);
+///     app.render_frame(Some(&mut scratch), &mut display, &reader, route.as_ref(), w, h, color_policy);
 /// }
 /// ```
 /// Whether — and by which source — the wall clock has been established from a **real time source
@@ -2245,11 +2245,14 @@ impl App {
     ///
     /// `scratch` is the caller's [`RenderScratch`] — the render path's per-frame working memory,
     /// owned by the host rather than by `App` (#1146), lent for the duration of the call and
-    /// meaningless between frames.
+    /// meaningless between frames. It is optional because only the map-drawing screens ever touch
+    /// it (#1146 P2): a host whose frame is pure chrome passes `None` and keeps its scratch memory
+    /// for something else. `None` under a map-drawing base is a caller bug — the map is skipped and
+    /// a `debug_assert!` fires.
     #[allow(clippy::too_many_arguments)]
     pub fn render_frame<D, F>(
         &mut self,
-        scratch: &mut RenderScratch,
+        scratch: Option<&mut RenderScratch>,
         target: &mut D,
         reader: &Reader,
         route: Option<&RouteReader>,
@@ -2273,7 +2276,7 @@ impl App {
     #[allow(clippy::too_many_arguments)]
     pub fn render_scene_frame<D, F, S>(
         &mut self,
-        scratch: &mut RenderScratch,
+        scratch: Option<&mut RenderScratch>,
         target: &mut D,
         scene: &S,
         core_reader: &Reader,
@@ -2301,7 +2304,7 @@ impl App {
     #[allow(clippy::too_many_arguments)]
     pub fn render_map<D, F>(
         &mut self,
-        scratch: &mut RenderScratch,
+        scratch: Option<&mut RenderScratch>,
         target: &mut D,
         reader: &Reader,
         route: Option<&RouteReader>,
@@ -2323,7 +2326,7 @@ impl App {
     #[allow(clippy::too_many_arguments)]
     pub fn render_scene_map<D, F, S>(
         &mut self,
-        scratch: &mut RenderScratch,
+        scratch: Option<&mut RenderScratch>,
         target: &mut D,
         scene: &S,
         core_reader: &Reader,
@@ -2347,7 +2350,7 @@ impl App {
     #[allow(clippy::too_many_arguments)]
     pub fn render_map_timed<D, F>(
         &mut self,
-        scratch: &mut RenderScratch,
+        scratch: Option<&mut RenderScratch>,
         target: &mut D,
         reader: Option<&Reader>,
         route: Option<&RouteReader>,
@@ -2369,7 +2372,7 @@ impl App {
     #[allow(clippy::too_many_arguments)]
     pub fn render_scene_map_timed<D, F, S>(
         &mut self,
-        scratch: &mut RenderScratch,
+        scratch: Option<&mut RenderScratch>,
         target: &mut D,
         scene: Option<&S>,
         core_reader: Option<&Reader>,
@@ -4377,7 +4380,9 @@ mod tests {
             let idx = RouteIndex::read(&route_src).expect("valid .obcr");
             let route = RouteReader::new(&idx, &route_src);
             let mut scratch = Box::new(RenderScratch::new());
-            app.render_frame(&mut scratch, &mut Sink, &reader, Some(&route), 240.0, 320.0, |_| Rgb888::new(0, 0, 0));
+            app.render_frame(Some(&mut scratch), &mut Sink, &reader, Some(&route), 240.0, 320.0, |_| {
+                Rgb888::new(0, 0, 0)
+            });
         };
 
         let mut app = App::new(AppState::new(7_800_000, 48_000_000, 0.05));
