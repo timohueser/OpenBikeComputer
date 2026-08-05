@@ -6,7 +6,7 @@ use obc_formats::obcm::{HEADER_LEN, STYLE_RECORD_LEN};
 use obc_host_core::RgbaFrame;
 use obc_map_scene::BBox;
 use obc_reader::{rgb565_to_device64, Error as ReadError, MapCache, MapTables, Reader};
-use obc_render::{zoom_for_mpp, MapRenderer, RenderStats, Viewport};
+use obc_render::{zoom_for_mpp, RenderConfig, RenderScratch, RenderStats, Viewport};
 use obcm_assemble::schema::{Schema, Skin};
 use obcm_assemble::shard::pack_style_table;
 
@@ -103,7 +103,7 @@ pub struct MapPreview {
     tables: MapTables,
     schema: Schema,
     cache: Box<MapCache>,
-    renderer: Box<MapRenderer>,
+    scratch: Box<RenderScratch>,
     frame: RgbaFrame,
     camera: Camera,
     default_camera: Camera,
@@ -121,7 +121,7 @@ pub struct SchemaMapPreview {
     bytes: Vec<u8>,
     tables: MapTables,
     cache: Box<MapCache>,
-    renderer: Box<MapRenderer>,
+    scratch: Box<RenderScratch>,
     frame: RgbaFrame,
     meters_per_pixel: f32,
     render_stats: RenderStats,
@@ -160,7 +160,7 @@ impl MapPreview {
             tables,
             schema,
             cache: MapCache::new_boxed(),
-            renderer: Box::new(MapRenderer::new()),
+            scratch: Box::new(RenderScratch::new()),
             frame: RgbaFrame::new(FRAME_W, FRAME_H),
             camera,
             default_camera: camera,
@@ -303,8 +303,14 @@ impl MapPreview {
             let reader = Reader::new(&source, &self.tables, &self.cache);
             let background = reader.backdrop_style().map_or(0xFFFF, |style| style.color);
             let viewport = self.viewport();
-            self.render_stats =
-                self.renderer.render(&mut self.frame, &reader, &viewport, device_color(background), device_color);
+            self.render_stats = self.scratch.render(
+                &mut self.frame,
+                &reader,
+                &viewport,
+                device_color(background),
+                RenderConfig::default(),
+                device_color,
+            );
             self.dirty = false;
         }
         self.frame.as_rgba()
@@ -362,7 +368,7 @@ impl SchemaMapPreview {
             bytes,
             tables,
             cache: MapCache::new_boxed(),
-            renderer: Box::new(MapRenderer::new()),
+            scratch: Box::new(RenderScratch::new()),
             frame: RgbaFrame::new(SCHEMA_FRAME_W, SCHEMA_FRAME_H),
             meters_per_pixel: DEFAULT_METERS_PER_PIXEL,
             render_stats: RenderStats::default(),
@@ -420,8 +426,14 @@ impl SchemaMapPreview {
                 camera_lat,
                 zoom_for_mpp(self.meters_per_pixel),
             );
-            self.render_stats =
-                self.renderer.render(&mut self.frame, &reader, &viewport, device_color(background), device_color);
+            self.render_stats = self.scratch.render(
+                &mut self.frame,
+                &reader,
+                &viewport,
+                device_color(background),
+                RenderConfig::default(),
+                device_color,
+            );
             self.dirty = false;
         }
         self.frame.as_rgba()

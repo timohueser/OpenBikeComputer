@@ -14,12 +14,14 @@ This page walks one frame from map bytes to lit pixels.
 The whole renderer is a single `no_std`, zero-allocation crate. The only things that differ between the desktop and the device are **where the pixels go** and **what colour they end up** — and both are injected as parameters, so the drawing code never knows which machine it's on.
 
 ```rust
-MapRenderer::render(target, scene, vp, bg, color_fn)
-//                  │       │       │   │   └ RGB565 → this panel's pixel
-//                  │       │       │   └ the backdrop colour
-//                  │       │       └ the camera (Viewport)
-//                  │       └ a streamed map scene
-//                  └ where pixels land (a DrawTarget)
+scratch.render(target, scene, vp, bg, cfg, color_fn)
+//  │          │       │      │   │   │    └ RGB565 → this panel's pixel
+//  │          │       │      │   │   └ what to draw (RenderConfig)
+//  │          │       │      │   └ the backdrop colour
+//  │          │       │      └ the camera (Viewport)
+//  │          │       └ a streamed map scene
+//  │          └ where pixels land (a DrawTarget)
+//  └ the caller's per-frame scratch buffers (RenderScratch)
 ```
 
 <figure class="fig">

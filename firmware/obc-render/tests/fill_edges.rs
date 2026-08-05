@@ -12,7 +12,7 @@ use embedded_graphics::prelude::*;
 use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader, SliceSource};
 use obc_render::text::{draw_text, Font, TextAlign};
 use obc_render::MAX_SPANS;
-use obc_render::{MapRenderer, Viewport};
+use obc_render::{RenderConfig, RenderScratch, Viewport};
 use obcm_testkit::{build_file, pack_poly, pack_poly16, pack_poly_decl, LodSpec, Style};
 
 mod common;
@@ -40,7 +40,7 @@ fn render_into(buf: &mut Buf, bytes: &[u8], vp: &Viewport) -> obc_render::Render
     let src = SliceSource(bytes);
     let tables = MapTables::parse(&src).expect("valid v5 file");
     let reader = Reader::new(&src, &tables, &cache);
-    MapRenderer::new().render(buf, &reader, vp, Rgb888::BLACK, green565)
+    RenderScratch::new().render(buf, &reader, vp, Rgb888::BLACK, RenderConfig::default(), green565)
 }
 
 /// A polygon straddling the **top** edge of the screen: its upper half projects above y=0. The fill
@@ -207,7 +207,7 @@ fn frame_points_saturate_before_spans_and_priority_still_wins() {
     let src = SliceSource(&bytes);
     let tables = MapTables::parse(&src).expect("valid v5 file");
     let reader = Reader::new(&src, &tables, &cache);
-    let stats = MapRenderer::new().render(&mut buf, &reader, &vp, Rgb888::BLACK, green565);
+    let stats = RenderScratch::new().render(&mut buf, &reader, &vp, Rgb888::BLACK, RenderConfig::default(), green565);
 
     // The point buffer saturated and dropped features…
     assert!(stats.features_dropped > 0, "the point buffer must saturate and drop features");
@@ -233,12 +233,12 @@ fn marker_within_margin_draws_past_margin_culls() {
     let vp = Viewport::new(200.0, 200.0, 0, 0, 1.0);
 
     let mut inside = Buf::new(200, 200);
-    MapRenderer::new().draw_marker(&mut inside, &vp, 106, 0, None, RED);
+    RenderScratch::new().draw_marker(&mut inside, &vp, 106, 0, None, RED);
     assert!(inside.count(RED) > 0, "an anchor just past the edge but within MARGIN still draws (clipped)");
 
     // Push the anchor to +120 µdeg = 20 px past the edge, beyond the 16-px margin → culled.
     let mut outside = Buf::new(200, 200);
-    MapRenderer::new().draw_marker(&mut outside, &vp, 120, 0, None, RED);
+    RenderScratch::new().draw_marker(&mut outside, &vp, 120, 0, None, RED);
     assert_eq!(outside.count(RED), 0, "an anchor past MARGIN is culled");
 }
 

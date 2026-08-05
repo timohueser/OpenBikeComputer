@@ -1,6 +1,6 @@
 //! A plain in-memory `DrawTarget` — a packed RGB888 pixel buffer the host owns.
 //!
-//! The shared [`obc_render::MapRenderer`] runs the firmware-identical rendering code but
+//! The shared [`obc_render::RenderScratch`] runs the firmware-identical rendering code but
 //! draws into this buffer; the host then uploads it to a GPU texture or encodes it to a PNG.
 //! The firmware draws into its real LS021B7DD02 driver instead — only this target differs.
 

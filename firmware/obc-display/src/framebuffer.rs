@@ -2,7 +2,7 @@
 //! [`FbDevice64`] map plane (the real target) and the [`Framebuffer565`] RGB565 plane (the per-band
 //! scratch the [`Band`](crate::Band) view wraps).
 //!
-//! The shared [`obc_render::MapRenderer`](../../obc_render) runs the same rendering code on host and
+//! The shared [`obc_render`](../../obc_render) render path runs the same code on host and
 //! MCU. On the nRF (no external RAM, no scan-out engine) the buffer is a resident `.bss` frame the
 //! banded display push streams to the panel a band at a time over SPI/DMA.
 //!

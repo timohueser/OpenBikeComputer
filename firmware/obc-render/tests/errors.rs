@@ -7,7 +7,7 @@ use embedded_graphics::prelude::*;
 use obc_formats::io::Error as IoError;
 use obc_formats::obcm::{BRANCH_BIT, EMPTY_LEAF};
 use obc_reader::{rgb565_to_rgb888, ByteSource, MapCache, MapTables, Reader};
-use obc_render::{MapRenderer, Viewport, MAX_DECODE_POINTS};
+use obc_render::{RenderConfig, RenderScratch, Viewport, MAX_DECODE_POINTS};
 use obcm_testkit::{build_file, pack_line, pack_line16, pack_line_decl, seal, LodSpec, Style};
 
 mod common;
@@ -26,8 +26,8 @@ fn file(chunk: Vec<u8>, chunk_size: usize) -> Vec<u8> {
 fn render(reader: &Reader) -> (RenderStatsView, Buf) {
     let vp = Viewport::new(64.0, 64.0, 100, 100, 0.2);
     let mut buf = Buf::new(64, 64);
-    let mut renderer = MapRenderer::new();
-    let stats = renderer.render(&mut buf, reader, &vp, Rgb888::BLACK, |color| {
+    let mut renderer = RenderScratch::new();
+    let stats = renderer.render(&mut buf, reader, &vp, Rgb888::BLACK, RenderConfig::default(), |color| {
         let (r, g, b) = rgb565_to_rgb888(color);
         Rgb888::new(r, g, b)
     });

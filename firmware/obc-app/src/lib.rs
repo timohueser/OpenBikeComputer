@@ -2,8 +2,9 @@
 //!
 //! `no_std`, so the **same** logic runs in the desktop simulator and on the nRF54L
 //! firmware. It owns *what the device is doing* and leaves *how pixels reach a screen* to
-//! the host. It adds no allocations of its own (the only heap use is the
-//! [`MapRenderer`](obc_render::MapRenderer) scratch, which clears-not-frees each frame).
+//! the host. It adds no allocations of its own — and since #1146 it does not even own the render
+//! path's working memory: the host lends a [`RenderScratch`](obc_render::RenderScratch) to each
+//! render call, and that scratch clears-not-frees its buffers per frame.
 //!
 //! The boundary is the dependency-light [`obc_ports`] layer: the app reads position from a
 //! [`LocationSource`] and buttons from an [`InputSource`], oblivious to whether those are a
@@ -37,7 +38,6 @@ pub mod link_gate;
 pub mod map_catalog;
 pub mod nav_profiles;
 pub mod next_ahead;
-pub(crate) mod render_res;
 pub mod retention;
 pub mod ride;
 pub(crate) mod ride_engine;

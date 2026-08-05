@@ -1228,6 +1228,9 @@ fn main() {
             // screen stays up (for its own snapshot, or for the injected answer to land in).
             let hold_nav = args.nav_hold || args.inject_nav_fail.is_some();
             let hold_detour = args.detour_hold || args.inject_detour_fail.is_some();
+            // One render scratch for the whole script run, lent to each throwaway frame — the
+            // host owns it since #1146, and ~90 KB is not something to re-allocate per token.
+            let mut scratch = Box::new(obc_render::RenderScratch::new());
             let mut hook = |app: &mut App, what: ScriptHook| match what {
                 ScriptHook::Render => {
                     // A pending Ride-detail track request (#680) fills before the draw, so a `d` frame
@@ -1252,8 +1255,15 @@ fn main() {
                             _ => None,
                         };
                         let mut fb = Framebuffer::new(rw, rh);
-                        let _ = app
-                            .render_frame(&mut fb, &reader, route.as_ref(), rw as f32, rh as f32, |c| color_of(c, rtc));
+                        let _ = app.render_frame(
+                            &mut scratch,
+                            &mut fb,
+                            &reader,
+                            route.as_ref(),
+                            rw as f32,
+                            rh as f32,
+                            |c| color_of(c, rtc),
+                        );
                     }
                     // Drain the typed host protocol each `d` (mirroring the GUI's per-frame dispatch):
                     // a create-route request's answer swaps the confirm for the overview/failure card
@@ -1565,9 +1575,15 @@ fn main() {
         let t0 = Instant::now();
         let set = map.set();
         let scene = map_set::Scene { set, reader: &reader, route: route.as_ref() };
-        let mut stats = map_set::render_frame(&mut app, &mut fb, scene, (args.width as f32, args.height as f32), |c| {
-            color_of(c, tc)
-        });
+        let mut scratch = Box::new(obc_render::RenderScratch::new());
+        let mut stats = map_set::render_frame(
+            &mut app,
+            &mut scratch,
+            &mut fb,
+            scene,
+            (args.width as f32, args.height as f32),
+            |c| color_of(c, tc),
+        );
         stats.render_us = t0.elapsed().as_micros() as u32;
         let cache_reqs = stats.map_chunk_hits + stats.map_chunk_misses;
         let hit_pct = if cache_reqs == 0 { 0.0 } else { 100.0 * stats.map_chunk_hits as f32 / cache_reqs as f32 };

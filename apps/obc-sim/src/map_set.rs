@@ -295,9 +295,12 @@ pub struct Scene<'a, 'm, 'd> {
     pub route: Option<&'a obc_route::RouteReader<'a>>,
 }
 
-/// Draw one whole frame through the app's real generic scene seam.
+/// Draw one whole frame through the app's real generic scene seam. `scratch` is the caller's
+/// render scratch — the app borrows it for the call and keeps nothing (#1146).
+#[allow(clippy::too_many_arguments)]
 pub fn render_frame<D, F>(
     app: &mut obc_app::App,
+    scratch: &mut obc_render::RenderScratch,
     target: &mut D,
     scene: Scene<'_, '_, '_>,
     (w, h): (f32, f32),
@@ -309,8 +312,8 @@ where
 {
     let Scene { set, reader, route } = scene;
     match set {
-        Some(set) => app.render_scene_frame(target, set, reader, route, w, h, color_fn),
-        None => app.render_frame(target, reader, route, w, h, color_fn),
+        Some(set) => app.render_scene_frame(scratch, target, set, reader, route, w, h, color_fn),
+        None => app.render_frame(scratch, target, reader, route, w, h, color_fn),
     }
 }
 
@@ -549,9 +552,10 @@ mod tests {
         let route =
             route_source.as_ref().zip(route_index.as_ref()).map(|(source, index)| RouteReader::new(index, source));
         let mut fb = crate::framebuffer::Framebuffer::new(w, h);
+        let mut scratch = Box::new(obc_render::RenderScratch::new());
         let set = map.set();
         let scene = Scene { set, reader: &reader, route: route.as_ref() };
-        render_frame(&mut app, &mut fb, scene, (w as f32, h as f32), |c| crate::color_of(c, true));
+        render_frame(&mut app, &mut scratch, &mut fb, scene, (w as f32, h as f32), |c| crate::color_of(c, true));
         fb.as_rgb888().to_vec()
     }
 
