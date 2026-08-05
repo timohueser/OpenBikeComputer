@@ -823,6 +823,13 @@ impl Activity {
     /// Called when a session starts, so tracking accumulators begin fresh.
     pub(crate) fn reset_ride(&mut self) {
         self.seam_request = None;
+        // Dropping the detour pair here cannot strand the Recalculating freeze's `Detour` level,
+        // even though no `note_plan_ended` runs with it (#1150 review). Both halves are covered
+        // without one: an **undrained request** never engaged the freeze (the drain is the engaging
+        // edge), and a dropped **cancel** only forfeits one of two release edges — the host is
+        // still running the plan that cancel would have aborted, and it answers every plan it was
+        // given, so `on_detour_planned`'s unconditional release lands anyway (idempotent, and it
+        // fires before its own late-answer early-return for exactly this kind of reason).
         self.detour_request = None;
         self.detour_commit = false;
         self.detour_cancel = false;

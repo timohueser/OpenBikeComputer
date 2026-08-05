@@ -138,9 +138,14 @@ impl RouteMatch {
     /// comfortably *less* than a rider's travel through a multi-second gap. The Recalculating
     /// freeze (#1146 P2) is exactly such a gap: it pauses matching for the length of a route search,
     /// and without this the first fix after it would find nothing in range, flag off-route and hold
-    /// progress still — a false "off route" chip at the very moment the recalculation was supposed
-    /// to have sorted things out. One wide search re-locks instead. Idempotent, and free when no
-    /// fix was skipped (nobody calls it).
+    /// progress still — a false "off route" chip on a rider who never left the line. One wide
+    /// search re-locks instead. Idempotent, and free when no fix was skipped (nobody calls it).
+    ///
+    /// Note what it is *not* for. A search that comes back with new geometry resets the matcher
+    /// outright ([`reset`](RouteMatch::reset) clears this flag with the rest of the lock), and an
+    /// unstarted matcher scans the whole route anyway — wider than wide. What this covers is the
+    /// freeze that ends with the *same* route still under the rider: a cancel, or a search that
+    /// found nothing.
     pub fn relock_wide(&mut self) {
         self.wide_next = true;
     }

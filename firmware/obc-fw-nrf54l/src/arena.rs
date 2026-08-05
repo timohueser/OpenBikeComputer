@@ -94,6 +94,11 @@ use obc_app::{ArenaError, ArenaGate, ArenaInit, ArenaOwner, MapQuiesced, Transfe
 /// everywhere: the report's arm figures are sizes of types, not sums of parts, and a hand-summed
 /// fallback silently loses the struct's tail padding (finding #1150-9 — it read 59,868 against the
 /// pinned 59,872).
+///
+/// **`has_nav` is currently always on** — `build.rs` emits it unconditionally (the router rides
+/// every LM20 build), so the `not(has_nav)` arms in this module are dormant, not dead-by-mistake.
+/// They are kept because the cfg is the one seam that would carve the router back out, and a
+/// `#[cfg]` site is cheaper to keep honest than to re-derive.
 #[cfg_attr(not(has_nav), allow(dead_code))]
 pub(crate) struct NavArm {
     /// The fixed A* table (~39.9 KB). Reset by the planner's first step of every request.
