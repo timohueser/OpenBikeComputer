@@ -437,6 +437,13 @@ fmt:
     _run cargo fmt --manifest-path firmware/obc-boot/Cargo.toml
     _run cargo fmt --manifest-path apps/obc-desktop/Cargo.toml
 
+# Regenerate THIRD-PARTY.md (the licence texts shipped binaries owe). Args: (none) | --check.
+licenses *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    _run "$OBC_TOOLS/licenses/gen-third-party.sh" "$@"
+
 # Render benchmark + pixel-hash tripwire. Args: (none) | check | write.
 bench *args:
     #!/usr/bin/env bash
