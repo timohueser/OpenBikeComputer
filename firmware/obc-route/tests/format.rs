@@ -425,6 +425,22 @@ fn rejects_chunk_data_region_past_end() {
     assert_eq!(RouteIndex::read(&src).err(), Some(Error::BadOffset));
 }
 
+/// A chunk whose `byte_len` disagrees with its `point_count` is rejected: the data region is
+/// exactly `point_count − 1` six-byte records (§3), and the decode path sizes its read from the
+/// count alone — a shrunken `byte_len` that still lies inside the file would otherwise let chunk 0
+/// decode chunk 1's bytes as its own geometry.
+#[test]
+fn rejects_chunk_byte_len_disagreeing_with_point_count() {
+    let len_off = HEADER_FULL_LEN + 40;
+    // Chunk 0 has 3 points ⇒ a truthful byte_len of 12; every other in-file value is a forgery.
+    for forged in [0u32, 6, 18] {
+        let mut bytes = two_chunk_route();
+        bytes[len_off..len_off + 4].copy_from_slice(&forged.to_le_bytes());
+        let src = SliceSource(&bytes);
+        assert_eq!(RouteIndex::read(&src).err(), Some(Error::BadOffset), "byte_len {forged}");
+    }
+}
+
 /// `preview_polyline` (#685 §4): the two-chunk fixture has 5 distinct points (the seam point
 /// deduped). `N` at/above that keeps all 5 verbatim; `N = 3` keeps first / middle / last; and
 /// every preview is a route-order subset with the endpoints exact.
