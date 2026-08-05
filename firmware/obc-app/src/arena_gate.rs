@@ -103,19 +103,45 @@ impl TransferReady {
     }
 }
 
-/// The arena's owner state machine: idle, or held by exactly one arm.
+/// Whether a successful claim must **initialize the block in place** before anything reads it.
+///
+/// The arms are not types of the same shape: each claim writes the block's bytes into its own arm's
+/// valid state first (a `RenderScratch`'s all-zero empty vectors, the nav arm's zero fill plus the
+/// tile cache's `u32::MAX` tags), because the bytes it inherits are the *previous* arm's — and a
+/// `heapless::Vec` whose `len` is a stale A\* node count would read past its own contents.
+///
+/// The exception is worth a type rather than a comment: when the previous claimant was the **same
+/// arm**, the bytes are already that arm's valid state, and re-initializing is a ~92 KB `memset`
+/// per map frame for nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArenaInit {
+    /// The block is another arm's (or boot garbage, on the first-ever claim): initialize it.
+    Required,
+    /// The block already holds this arm's initialized state — the last claimant was this same arm
+    /// and gave it back intact. Skippable **only** for an arm whose own use is write-before-read
+    /// within one span; see [`claim_render`](ArenaGate::claim_render), the one caller that acts on
+    /// it.
+    Skippable,
+}
+
+/// The arena's owner state machine: idle, or held by exactly one arm — plus which arm the block's
+/// bytes were last *initialized* as.
 ///
 /// Pure bookkeeping — it holds no memory and hands out no references. The board pairs it with the
 /// union and turns each successful claim into a guard whose `Drop` calls [`release`](Self::release).
 #[derive(Debug, Default)]
 pub struct ArenaGate {
     owner: ArenaOwner,
+    /// Which arm the block's bytes are currently set up as — **not** who holds it (`owner` is
+    /// `None` between every two claims). This is what makes [`ArenaInit::Skippable`] decidable, and
+    /// it lives here rather than beside the union so the rule is host-tested with the rest of them.
+    initialized_as: ArenaOwner,
 }
 
 impl ArenaGate {
     /// An idle gate — the boot state, and the state between every two claims.
     pub const fn new() -> ArenaGate {
-        ArenaGate { owner: ArenaOwner::None }
+        ArenaGate { owner: ArenaOwner::None, initialized_as: ArenaOwner::None }
     }
 
     /// Who holds the arena right now.
@@ -139,7 +165,14 @@ impl ArenaGate {
     ///
     /// A refusal is not a crash: the host skips the map redraw for that pass (the frozen map stays
     /// on glass) and tries again next frame.
-    pub fn claim_render(&mut self) -> Result<(), ArenaError> {
+    ///
+    /// Returns whether the scratch must be re-initialized ([`ArenaInit`]). This is the one arm that
+    /// can skip it: a render span leaves behind a fully valid, empty-on-next-use `RenderScratch`
+    /// (every buffer is written before it is read within a frame), which is exactly why the
+    /// pre-arena resident static could be zeroed once at boot and reused for every frame of the
+    /// device's life. Frames follow frames, so on the dominant path this is `Skippable` and the map
+    /// pays no `memset` at all.
+    pub fn claim_render(&mut self) -> Result<ArenaInit, ArenaError> {
         self.take(ArenaOwner::Render)
     }
 
@@ -148,15 +181,19 @@ impl ArenaGate {
     /// Requires [`MapQuiesced`]: the map plane must already have stopped drawing *before* the nav
     /// arm overwrites the render scratch. The freeze is engaged by the app when the plan starts, so
     /// the token is minted from state that is already true — never as a side effect of claiming.
+    ///
+    /// No [`ArenaInit`]: the nav arm re-initializes unconditionally. Two searches back to back would
+    /// report `Skippable`, and it would be wrong — the block would hold the *previous* search's A\*
+    /// table and its finished planner, which is state, not an empty arm.
     pub fn claim_nav(&mut self, _map_quiesced: MapQuiesced) -> Result<(), ArenaError> {
-        self.take(ArenaOwner::Nav)
+        self.take(ArenaOwner::Nav).map(|_| ())
     }
 
     /// Claim the arena for **USB staging**, for the whole transfer.
     ///
     /// Requires [`TransferReady`]: the transfer screen is up and no search is running.
     pub fn claim_usb(&mut self, _transfer_ready: TransferReady) -> Result<(), ArenaError> {
-        self.take(ArenaOwner::Usb)
+        self.take(ArenaOwner::Usb).map(|_| ())
     }
 
     /// Release the arena — **only** the arm that holds it. Releasing anything else is an
@@ -170,14 +207,19 @@ impl ArenaGate {
     }
 
     /// The one transition: idle → `owner`, or `Busy(holder)`. A claimant re-claiming what it
-    /// already holds is refused too — the arms re-initialize in place on every claim, so a
-    /// double-claim would reset a buffer someone upstack is mid-way through.
-    fn take(&mut self, owner: ArenaOwner) -> Result<(), ArenaError> {
+    /// already holds is refused too — an arm may re-initialize in place on claim, so a double-claim
+    /// would reset a buffer someone upstack is mid-way through.
+    fn take(&mut self, owner: ArenaOwner) -> Result<ArenaInit, ArenaError> {
         if self.owner != ArenaOwner::None {
             return Err(ArenaError::Busy(self.owner));
         }
         self.owner = owner;
-        Ok(())
+        let init = if core::mem::replace(&mut self.initialized_as, owner) == owner {
+            ArenaInit::Skippable
+        } else {
+            ArenaInit::Required
+        };
+        Ok(init)
     }
 }
 
@@ -213,7 +255,7 @@ mod tests {
         assert!(gate.is_idle());
         assert_eq!(gate.owner(), ArenaOwner::None);
 
-        assert_eq!(gate.claim_render(), Ok(()));
+        assert_eq!(gate.claim_render(), Ok(ArenaInit::Required));
         assert_eq!(gate.owner(), ArenaOwner::Render);
         assert!(!gate.is_idle());
 
@@ -236,7 +278,7 @@ mod tests {
         assert_eq!(gate.owner(), ArenaOwner::Nav, "and the refusal left the search untouched");
 
         assert_eq!(gate.release(ArenaOwner::Nav), Ok(()));
-        assert_eq!(gate.claim_render(), Ok(()), "the frame after the answer renders normally");
+        assert_eq!(gate.claim_render(), Ok(ArenaInit::Required), "the frame after the answer renders normally");
     }
 
     /// The render ⊥ usb half: browsing the map during a cable transfer is refused in the UI (the
@@ -257,7 +299,7 @@ mod tests {
     #[test]
     fn a_render_in_progress_refuses_a_search_and_a_transfer() {
         let mut gate = ArenaGate::new();
-        assert_eq!(gate.claim_render(), Ok(()));
+        assert_eq!(gate.claim_render(), Ok(ArenaInit::Required));
 
         let quiesced = MapQuiesced::prove(true, true).unwrap();
         assert_eq!(gate.claim_nav(quiesced), Err(ArenaError::Busy(ArenaOwner::Render)));
@@ -270,7 +312,7 @@ mod tests {
     #[test]
     fn re_claiming_what_you_already_hold_is_refused_not_a_no_op() {
         let mut gate = ArenaGate::new();
-        assert_eq!(gate.claim_render(), Ok(()));
+        assert_eq!(gate.claim_render(), Ok(ArenaInit::Required));
         assert_eq!(gate.claim_render(), Err(ArenaError::Busy(ArenaOwner::Render)));
         assert_eq!(gate.owner(), ArenaOwner::Render, "and the first claim still holds");
     }
@@ -297,11 +339,37 @@ mod tests {
         assert_eq!(gate.release(ArenaOwner::Render), Err(ArenaError::NotHeld(ArenaOwner::None)));
         assert_eq!(gate.release(ArenaOwner::None), Err(ArenaError::NotHeld(ArenaOwner::None)), "None is not an arm");
 
-        assert_eq!(gate.claim_render(), Ok(()));
+        assert_eq!(gate.claim_render(), Ok(ArenaInit::Required));
         assert_eq!(gate.release(ArenaOwner::Render), Ok(()));
         assert_eq!(gate.release(ArenaOwner::Render), Err(ArenaError::NotHeld(ArenaOwner::None)));
         assert!(gate.is_idle(), "and the gate is usable afterwards");
-        assert_eq!(gate.claim_render(), Ok(()));
+        assert_eq!(gate.claim_render(), Ok(ArenaInit::Skippable), "…still holding the last render's scratch");
+    }
+
+    /// The **~92 KB `memset` per map frame** this exists to avoid, and the two halves of when it is
+    /// safe. A render span hands the block back as a valid `RenderScratch`, so frame after frame
+    /// skips the re-init; anything that hands it to another arm — a search, a cable transfer — makes
+    /// the next render pay for it again. The first-ever claim pays too, which is what keeps
+    /// `.uninit`'s boot garbage from ever being read as a scratch.
+    #[test]
+    fn only_a_render_following_a_render_may_skip_the_re_init() {
+        let mut gate = ArenaGate::new();
+        assert_eq!(gate.claim_render(), Ok(ArenaInit::Required), "the first claim meets .uninit's boot garbage");
+        assert_eq!(gate.release(ArenaOwner::Render), Ok(()));
+        for _ in 0..5 {
+            assert_eq!(gate.claim_render(), Ok(ArenaInit::Skippable), "frame after frame: no memset");
+            assert_eq!(gate.release(ArenaOwner::Render), Ok(()));
+        }
+
+        for foreign in [ArenaOwner::Nav, ArenaOwner::Usb] {
+            match foreign {
+                ArenaOwner::Nav => assert_eq!(gate.claim_nav(MapQuiesced::prove(false, false).unwrap()), Ok(())),
+                _ => assert_eq!(gate.claim_usb(TransferReady::prove(true, false).unwrap()), Ok(())),
+            }
+            assert_eq!(gate.release(foreign), Ok(()));
+            assert_eq!(gate.claim_render(), Ok(ArenaInit::Required), "{foreign:?} left its own bytes behind");
+            assert_eq!(gate.release(ArenaOwner::Render), Ok(()));
+        }
     }
 
     /// The full ride-loop cycle the on-glass soak walks: frames render, a reroute takes over, the
@@ -309,13 +377,14 @@ mod tests {
     #[test]
     fn the_ride_loop_hands_the_arena_around_one_arm_at_a_time() {
         let mut gate = ArenaGate::new();
-        for _ in 0..2 {
-            assert_eq!(gate.claim_render(), Ok(()));
+        for i in 0..2 {
+            let init = if i == 0 { ArenaInit::Required } else { ArenaInit::Skippable };
+            assert_eq!(gate.claim_render(), Ok(init));
             assert_eq!(gate.release(ArenaOwner::Render), Ok(()));
         }
         assert_eq!(gate.claim_nav(MapQuiesced::prove(true, true).unwrap()), Ok(()));
         assert_eq!(gate.release(ArenaOwner::Nav), Ok(()));
-        assert_eq!(gate.claim_render(), Ok(()));
+        assert_eq!(gate.claim_render(), Ok(ArenaInit::Required), "the search left its A* table in the block");
         assert_eq!(gate.release(ArenaOwner::Render), Ok(()));
         assert_eq!(gate.claim_usb(TransferReady::prove(true, false).unwrap()), Ok(()));
         assert_eq!(gate.release(ArenaOwner::Usb), Ok(()));

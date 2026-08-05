@@ -260,7 +260,11 @@ pub(crate) struct NavResident;
 /// into the arena is ever live across an `.await`.
 #[cfg(has_nav)]
 struct NavBuffers<'a> {
-    arm: &'a mut crate::arena::NavArm,
+    /// The guard itself rather than the arm behind it: the planner slot is a `MaybeUninit` the
+    /// claim deliberately leaves unwritten, and the guard is what carries "a plan has been written
+    /// into it" (`NavGuard::plan_parts` / `planner_ref`). Reaching past it to `&mut NavArm` would
+    /// put that fact back in this loop's bookkeeping, where nothing checks it.
+    guard: &'a mut crate::arena::NavGuard,
     elev: &'a mut dyn obc_route::ElevationSource,
 }
 
@@ -287,16 +291,17 @@ struct NavRun {
 #[inline(never)]
 fn nav_begin(nav: &mut NavBuffers, req: &obc_app::NavRequest, profile_idx: u8) {
     // The rider's bike-type setting (N5 §8.6); an out-of-range index falls back to profile 0 in the router.
-    nav.arm.planner.write(obc_route::NavPlanner::new(req.from, req.to, req.name(), profile_idx));
+    nav.guard.begin_plan(obc_route::NavPlanner::new(req.from, req.to, req.name(), profile_idx));
     // One diagnostic line per plan start (#501 fault dossiers): the three addresses pin the memory
     // map without needing the ELF at hand. Since #1146 P2 they are offsets **inside the scratch
     // arena's nav arm** rather than three separate `.bss` statics — so the line now also says which
     // arm the block is serving, which is the first thing to check if a plan ever comes back wrong.
+    let (planner, scratch, tiles) = nav.guard.arm_addrs();
     defmt::debug!(
         "nav plan: start planner=0x{=usize:08x} scratch=0x{=usize:08x} tiles=0x{=usize:08x}",
-        nav.arm.planner.as_ptr() as usize,
-        core::ptr::from_ref(&nav.arm.scratch) as usize,
-        core::ptr::from_ref(&nav.arm.tiles) as usize
+        planner,
+        scratch,
+        tiles
     );
 }
 
@@ -388,11 +393,14 @@ fn nav_step(
     };
     let reader = Reader::new(&map_src, map_tables, map_cache);
     let mut sink = storage.nav_sink(file);
-    // SAFETY: only called while a `NavRun` is active, and the drain arm wrote the planner slot
-    // before creating that run (see `NavBuffers::planner`).
-    let arm = &mut *nav.arm;
-    let planner = unsafe { arm.planner.assume_init_mut() };
-    planner.step(&reader, &mut arm.scratch, &mut arm.tiles, &mut *nav.elev, &mut sink)
+    // Only called while a `NavRun` is active, and a run is only created after the drain wrote the
+    // planner — but the guard is what *knows* that, so ask it rather than assert it. An unwritten
+    // slot answers the generic failure tier instead of stepping a planner nobody built.
+    let Some((planner, scratch, tiles)) = nav.guard.plan_parts() else {
+        debug_assert!(false, "a plan step with no planner written — the run outlived (or preceded) its drain");
+        return obc_route::Step::Failed(obc_route::NavError::NoPath);
+    };
+    planner.step(&reader, scratch, tiles, &mut *nav.elev, &mut sink)
 }
 
 /// Finish a **completed** plan: flush/patch or delete the reserved file, rescan + re-feed the
@@ -434,12 +442,15 @@ fn nav_finish(
         Ok((id, len))
     });
     let rescan_us = tr.elapsed().as_micros();
-    let cache = nav.arm.tiles.stats();
-    // SAFETY: the run guarded the slot; the planner is initialized for this plan.
-    let settles = unsafe { nav.arm.planner.assume_init_ref() }.settles();
+    let cache = nav.guard.tiles.stats();
     // The ε rung the plan ended on (N8): 13/10 for a plain success or a fast no-path, 2/1 or 3/1 if
-    // the ε-escalation ladder retried on exhaustion. `settles` above is cumulative across the rungs.
-    let (eps_num, eps_den) = unsafe { nav.arm.planner.assume_init_ref() }.epsilon_used();
+    // the ε-escalation ladder retried on exhaustion. `settles` is cumulative across the rungs. Both
+    // read through the guard's checked accessor — a finish with no planner written reports zeroes
+    // rather than an uninitialized read.
+    let (settles, eps_num, eps_den) = nav.guard.planner_ref().map_or((0, 0, 0), |p| {
+        let (n, d) = p.epsilon_used();
+        (p.settles(), n, d)
+    });
     let hw = stackmeter::rescan(now);
     // `exhausted` is the range tier ("Too far to route here" on glass — no distance cap);
     // `no-path` the generic tier.
@@ -963,9 +974,10 @@ pub(crate) async fn run_app(
         {
             let wants_stage = crate::usb::stage_requested();
             if wants_stage && usb_stage_guard.is_none() {
-                if let Some(ready) =
-                    obc_app::TransferReady::prove(app.transfer_screen_up(), crate::link::TRANSFER_ACTIVE.search_live())
-                {
+                // Off the app, not re-derived here: `usb_arena_precondition` is the typed twin of
+                // `nav_arena_precondition` the search arm above uses, so neither call site can pass
+                // the wrong pair of bools.
+                if let Some(ready) = app.usb_arena_precondition(crate::link::TRANSFER_ACTIVE.search_live()) {
                     if let Ok(guard) = crate::arena::claim_usb(ready) {
                         usb_stage_guard = Some(guard);
                         crate::usb::set_stage_granted(true);
@@ -1020,7 +1032,7 @@ pub(crate) async fn run_app(
                         match nav_take_arena(app, &mut nav_guard) {
                             Ok(()) => {
                                 let mut bufs = NavBuffers {
-                                    arm: nav_guard.as_mut().expect("nav_take_arena left the guard held"),
+                                    guard: nav_guard.as_mut().expect("nav_take_arena left the guard held"),
                                     elev: &mut *nav.elev,
                                 };
                                 nav_begin(&mut bufs, &_req, app.settings().bike_profile_idx);
@@ -1505,9 +1517,11 @@ pub(crate) async fn run_app(
                     if let (Some(s), Some(guard)) = (storage.as_mut(), nav_guard.as_mut()) {
                         // The step's view over the arena arm + the resident terrain, alive only for
                         // the length of these synchronous calls.
-                        let mut bufs = NavBuffers { arm: guard, elev: &mut *nav.elev };
-                        // SAFETY: the run is active ⇒ the slot was written for this plan.
-                        let phase = unsafe { bufs.arm.planner.assume_init_ref() }.phase();
+                        let mut bufs = NavBuffers { guard, elev: &mut *nav.elev };
+                        // The run is active ⇒ the slot was written for this plan; a `None` here
+                        // would mean the bookkeeping and the arm disagree, and the step below
+                        // answers the failure tier for the same reason.
+                        let phase = bufs.guard.planner_ref().map_or(obc_route::NavPhase::Snap, |p| p.phase());
                         let ts = Instant::now();
                         let step = nav_step(s, map_tables, map_cache, &mut bufs, run.file);
                         let us = ts.elapsed().as_micros();

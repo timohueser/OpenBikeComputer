@@ -20,6 +20,19 @@ class ResourceGuardTests(unittest.TestCase):
         with self.assertRaisesRegex(resource_guard.GuardError, "missing section.*\\.rodata"):
             resource_guard.parse_size_output(".vector_table 10 0\n.text 20 10\n.data 4 30\n.bss 8 34\n")
 
+    def test_size_parser_requires_uninit_when_the_caller_asks(self):
+        """#1146 P2: the scratch arena lives in `.uninit`, so a board leg that cannot see the
+        section must fail rather than measure it as zero."""
+        full = ".vector_table 10 0\n.text 20 10\n.rodata 6 30\n.data 4 36\n.bss 8 40\n"
+        self.assertEqual(resource_guard.parse_size_output(full)[".bss"], 8)  # bootloader shape: fine
+        with self.assertRaisesRegex(resource_guard.GuardError, "missing section.*\\.uninit"):
+            resource_guard.parse_size_output(full, extra_required=frozenset({".uninit"}))
+        with_uninit = full + ".uninit 92320 48\n"
+        self.assertEqual(
+            resource_guard.parse_size_output(with_uninit, extra_required=frozenset({".uninit"}))[".uninit"],
+            92_320,
+        )
+
     def test_nm_parser_and_framebuffer_identity(self):
         symbols = resource_guard.parse_nm_output(
             "20000060 00012c00 b obc_fw_nrf54l::FB::h1234abcd\n"

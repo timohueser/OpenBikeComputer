@@ -7,8 +7,15 @@
 //! 16 KiB). This module time-shares them through a `union`, so the board pays **max(arms)** instead
 //! of their sum.
 //!
-//! **This is the only place in the feature `unsafe` lives.** Everything outside is ordinary
-//! borrow-checked code reaching the arms through guards.
+//! **This is the only place in the feature that names the block's bytes, and the only place that
+//! reads or writes them through a raw pointer.** Everything outside reaches an arm through a guard:
+//! a `Deref` for the render and nav arms, a scoped closure for the USB one, and — for the nav arm's
+//! `MaybeUninit` planner slot, the one field a guard cannot hand out unconditionally — the checked
+//! [`NavGuard::plan_parts`] / [`NavGuard::planner_ref`] accessors, which answer `None` until
+//! [`NavGuard::begin_plan`] has written it. That last one is why the claim is about *this* module
+//! rather than about the `unsafe` keyword: a `MaybeUninit` field reachable from outside would let
+//! any caller `assume_init` a slot nothing had written, with only loop-local bookkeeping standing
+//! between it and a garbage planner.
 //!
 //! # What makes the arms disjoint
 //!
@@ -72,7 +79,7 @@ use core::mem::{ManuallyDrop, MaybeUninit};
 use core::ops::{Deref, DerefMut};
 use core::ptr::addr_of_mut;
 
-use obc_app::{ArenaError, ArenaGate, ArenaOwner, MapQuiesced, TransferReady};
+use obc_app::{ArenaError, ArenaGate, ArenaInit, ArenaOwner, MapQuiesced, TransferReady};
 
 /// The **nav arm**: everything one route search needs, as one struct so the union has one member
 /// to name (epic #116 R4 + #499).
@@ -82,7 +89,12 @@ use obc_app::{ArenaError, ArenaGate, ArenaOwner, MapQuiesced, TransferReady};
 /// running — so it is genuinely always-live state and stays a resident static of its own. It is the
 /// one nav-adjacent block that would have been wrong to fold in here, and the budget names it
 /// separately for that reason.
-#[cfg(has_nav)]
+///
+/// Defined in **every** profile, `has_nav` or not, so [`NAV_ARM_BYTES`] can be the type's own size
+/// everywhere: the report's arm figures are sizes of types, not sums of parts, and a hand-summed
+/// fallback silently loses the struct's tail padding (finding #1150-9 — it read 59,868 against the
+/// pinned 59,872).
+#[cfg_attr(not(has_nav), allow(dead_code))]
 pub(crate) struct NavArm {
     /// The fixed A* table (~39.9 KB). Reset by the planner's first step of every request.
     pub(crate) scratch: obc_route::NavScratch,
@@ -92,7 +104,13 @@ pub(crate) struct NavArm {
     /// The resumable planner's slot (~15.8 KB, it owns the OBCR emitter across steps). Keeps its
     /// per-request `ptr::write` discipline (#499): the drain writes a fresh planner here and the
     /// step path reads it only while the loop's `NavRun` bookkeeping says a plan is active.
-    pub(crate) planner: MaybeUninit<obc_route::NavPlanner>,
+    ///
+    /// **Module-private on purpose.** It is the one field of any arm that a claim does not leave
+    /// initialized, so the type system cannot let a caller reach it: everything outside goes through
+    /// [`NavGuard::begin_plan`] / [`NavGuard::plan_parts`] / [`NavGuard::planner_ref`], which carry
+    /// the "was it written?" fact with the guard instead of leaving it in the ride loop's `NavRun`
+    /// bookkeeping.
+    planner: MaybeUninit<obc_route::NavPlanner>,
 }
 
 /// The arena itself: one block, three overlapping views.
@@ -117,14 +135,9 @@ union ScratchArena {
 pub(crate) const ARENA_BYTES: usize = core::mem::size_of::<ScratchArena>();
 /// The render arm's size, for the resource report.
 pub(crate) const RENDER_ARM_BYTES: usize = core::mem::size_of::<obc_render::RenderScratch>();
-/// The nav arm's size, for the resource report. Reported as the *type's* size in every profile,
-/// like the terrain entries, even where `has_nav` would keep it out of the image.
-#[cfg(has_nav)]
+/// The nav arm's size, for the resource report. The *type's* size in every profile, like the
+/// terrain entries, even where `has_nav` would keep it out of the image — see [`NavArm`].
 pub(crate) const NAV_ARM_BYTES: usize = core::mem::size_of::<NavArm>();
-#[cfg(not(has_nav))]
-pub(crate) const NAV_ARM_BYTES: usize = core::mem::size_of::<obc_route::NavScratch>()
-    + core::mem::size_of::<obc_reader::NavTileCache>()
-    + core::mem::size_of::<obc_route::NavPlanner>();
 /// The USB arm's size, for the resource report.
 pub(crate) const USB_ARM_BYTES: usize = crate::usb::STAGE_LEN;
 
@@ -265,16 +278,27 @@ impl Drop for RenderGuard {
 /// enforcement, because a live search or a live transfer is literally the holder. A refusal is not
 /// fatal: the caller skips this frame's map redraw and the reflective panel keeps the last one.
 ///
-/// Re-initializes the scratch in place on every claim
-/// ([`init_zeroed`](obc_render::RenderScratch::init_zeroed) — a `memset` of the all-zero empty
-/// state), because the bytes may have been the nav arm's A* table a moment ago and a
-/// `heapless::Vec` whose `len` is a stale node count would read past its own contents.
+/// Re-initializes the scratch in place ([`init_zeroed`](obc_render::RenderScratch::init_zeroed) — a
+/// `memset` of the all-zero empty state) **when the gate says the block was last another arm's**,
+/// because a `heapless::Vec` whose `len` is a stale A* node count would read past its own contents.
+///
+/// Not on every claim, though, and the difference is ~92 KB of `memset` per map frame. A
+/// `RenderScratch` that a render span just gave back is still a valid, fully initialized
+/// `RenderScratch`: every buffer in it is written before it is read within a frame (`collect` clears
+/// the frame buffers it fills; the fill/stroke scratch clears its own runs), which is exactly the
+/// discipline that made the pre-#1146 resident static — zeroed **once**, at boot, then reused for
+/// every frame of the device's life — correct. So a Render → Render sequence answers
+/// [`ArenaInit::Skippable`] and restores that, while every foreign-arm transition (and the
+/// first-ever claim, over `.uninit`'s boot garbage) still pays. The rule is host-tested in
+/// [`obc_app::arena_gate`], with the rest of them.
 pub(crate) fn claim_render() -> Result<RenderGuard, ArenaError> {
     // SAFETY: see `gate`.
-    unsafe { gate() }.claim_render().map_err(|e| refuse("render", e))?;
-    // SAFETY: the claim succeeded, so nothing else references the block; `init_zeroed` fully
-    // initializes the slot as an empty `RenderScratch` before the guard hands out a reference.
-    unsafe { obc_render::RenderScratch::init_zeroed(arena_ptr() as *mut obc_render::RenderScratch) };
+    let init = unsafe { gate() }.claim_render().map_err(|e| refuse("render", e))?;
+    if init == ArenaInit::Required {
+        // SAFETY: the claim succeeded, so nothing else references the block; `init_zeroed` fully
+        // initializes the slot as an empty `RenderScratch` before the guard hands out a reference.
+        unsafe { obc_render::RenderScratch::init_zeroed(arena_ptr() as *mut obc_render::RenderScratch) };
+    }
     Ok(RenderGuard { _not_send: PhantomData })
 }
 
@@ -288,7 +312,68 @@ pub(crate) fn claim_render() -> Result<RenderGuard, ArenaError> {
 /// `!Send` for the same reason [`RenderGuard`] is.
 #[cfg(has_nav)]
 pub(crate) struct NavGuard {
+    /// Whether [`begin_plan`](NavGuard::begin_plan) has written the arm's planner slot **for this
+    /// claim**. It rides on the guard rather than in the arm because that is what makes it
+    /// unforgeable: the guard is minted by [`claim_nav`] with the slot uninitialized, so the only
+    /// way to reach a planner is to have written one, and dropping the guard takes the fact with it.
+    planner_ready: bool,
     _not_send: PhantomData<*const ()>,
+}
+
+#[cfg(has_nav)]
+impl NavGuard {
+    /// Write a fresh planner into the arm's slot — the **only** way it is ever initialized (#499's
+    /// per-request `ptr::write` discipline, now with the fact recorded).
+    ///
+    /// Called from an `#[inline(never)]` frame at the request drain: `NavPlanner::new` materializes
+    /// a ~9 kB temporary, and inlined into the ride loop that temporary becomes a permanent slot in
+    /// the main task's poll frame (the #501 HardFault's true cause).
+    pub(crate) fn begin_plan(&mut self, planner: obc_route::NavPlanner) {
+        // SAFETY: the guard exists ⇒ `Nav` owns the block; the write initializes the slot in place
+        // and no other reference into the arena is live (module doc).
+        unsafe { (*(arena_ptr() as *mut NavArm)).planner.write(planner) };
+        self.planner_ready = true;
+    }
+
+    /// The three things one planner step touches, borrowed together — or `None` when no plan has
+    /// been written into this claim's slot yet.
+    ///
+    /// One call rather than three accessors because the step needs all three at once and they are
+    /// fields of one struct: splitting the borrow is the arena's job, not the caller's.
+    pub(crate) fn plan_parts(
+        &mut self,
+    ) -> Option<(&mut obc_route::NavPlanner, &mut obc_route::NavScratch, &mut obc_reader::NavTileCache)> {
+        if !self.planner_ready {
+            return None;
+        }
+        // SAFETY: the guard exists ⇒ `Nav` owns the block and `claim_nav` initialized the arm;
+        // `planner_ready` says the slot was written by `begin_plan`. Derived fresh from `arena_ptr`,
+        // and `&mut self` bounds all three borrows to this guard, so no second reference can exist.
+        let arm = unsafe { &mut *(arena_ptr() as *mut NavArm) };
+        let planner = unsafe { arm.planner.assume_init_mut() };
+        Some((planner, &mut arm.scratch, &mut arm.tiles))
+    }
+
+    /// The written planner, for the read-only diagnostics the finish path reports (`settles`, the ε
+    /// rung, the phase attribution) — `None` before [`begin_plan`](NavGuard::begin_plan).
+    pub(crate) fn planner_ref(&self) -> Option<&obc_route::NavPlanner> {
+        // SAFETY: as `plan_parts`, and the returned borrow is shared and bounded by `&self`.
+        self.planner_ready.then(|| unsafe { (*(arena_ptr() as *const NavArm)).planner.assume_init_ref() })
+    }
+
+    /// The addresses the one plan-start diagnostic line reports (#501 fault dossiers): planner slot,
+    /// A\* table, tile cache — offsets inside the arena since #1146 P2.
+    pub(crate) fn arm_addrs(&self) -> (usize, usize, usize) {
+        let arm = arena_ptr() as *const NavArm;
+        // SAFETY: address arithmetic only — `addr_of!` forms no reference into the block.
+        unsafe {
+            (
+                core::ptr::addr_of!((*arm).planner) as usize,
+                core::ptr::addr_of!((*arm).scratch) as usize,
+                core::ptr::addr_of!((*arm).tiles) as usize,
+            )
+        }
+    }
 }
 
 #[cfg(has_nav)]
@@ -335,7 +420,9 @@ pub(crate) fn claim_nav(quiesced: MapQuiesced) -> Result<NavGuard, ArenaError> {
         core::ptr::write_bytes(arm as *mut u8, 0, core::mem::size_of::<NavArm>());
         (*arm).tiles.reset();
     }
-    Ok(NavGuard { _not_send: PhantomData })
+    // `planner_ready: false` — the zero fill above left a *slot*, not a planner. `begin_plan` is the
+    // only thing that changes that, and it is what the accessors key on.
+    Ok(NavGuard { planner_ready: false, _not_send: PhantomData })
 }
 
 // ============================ The USB arm ============================
