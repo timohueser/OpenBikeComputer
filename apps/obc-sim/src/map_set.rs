@@ -334,10 +334,7 @@ mod tests {
 
     impl Dir {
         fn new(tag: &str) -> Dir {
-            let path = std::env::temp_dir().join(format!("obc-sim-set-{tag}-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&path);
-            std::fs::create_dir_all(&path).expect("scratch dir");
-            Dir(path)
+            Dir(obcm_testkit::scratch::scratch_dir("obc-sim-set", tag))
         }
         fn write(&self, name: &str, bytes: &[u8]) {
             std::fs::write(self.0.join(name), bytes).expect("write fixture");

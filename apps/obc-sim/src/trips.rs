@@ -183,9 +183,7 @@ mod tests {
     /// top-level route.
     fn stage_fixture(tag: &str) -> std::path::PathBuf {
         let route = std::fs::read(SAMPLE).expect("sample route asset readable");
-        let dir = std::env::temp_dir().join(format!("obc-trips-test-{}-{tag}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = obcm_testkit::scratch::scratch_dir("obc-trips-test", tag);
         for name in ["a.obcr", "b.obcr", "c.obcr"] {
             std::fs::write(dir.join(name), &route).unwrap();
         }
