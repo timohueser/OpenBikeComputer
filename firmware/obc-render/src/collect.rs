@@ -543,7 +543,7 @@ struct Stub {
     /// worst-level residents share a key; the heap then still makes the identical accept/reject
     /// decision and keeps the identical multiset of keys, but which of the tied-key features it
     /// evicts is fixed by heap order rather than by the old buffer's slot order. That regime is far
-    /// beyond `MAX_SPANS` (1152) and never reached by the OBCM source at its coarsest LOD; the
+    /// beyond `MAX_SPANS` (1,792) and never reached by the OBCM source at its coarsest LOD; the
     /// exactness claim and the reference-selector tests are scoped to it. See `collect_stubs`.
     seq: u16,
     /// Style id. z / weight / color re-derive `O(1)` from the style table.

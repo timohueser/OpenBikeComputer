@@ -49,21 +49,46 @@ use stroke::{draw_line, Stroker};
 // simulator and tests build too, so they render exactly what the device will — features start
 // dropping at the same busy coarse zooms (deliberate: an over-dense frame is slow on-glass, so the
 // sim shows that limit rather than an unattainable host-fidelity map). The renderer scratch
-// (`MCU_SCRATCH_BYTES` below, ~90 KB) is sized alongside the 75 KB RGB222 framebuffer, the
+// (`MCU_SCRATCH_BYTES` below, ~115 KB) is sized alongside the 75 KB RGB222 framebuffer, the
 // map/route caches, the on-device router, the BLE stack (issue #270 — map + BLE share one image),
 // and a ~75 KB stack reserve. The board crate's budget assert is the binding fit check.
+//
+// **Where the current numbers came from (#1146 P3).** The board's scratch arena made these caps
+// the *largest arm* of a three-way union (render ⊥ nav ⊥ usb), and max-of-arms accounting freed
+// ~76 KB of resident RAM; P3 spends ~25 KB of that back here, where it buys visible map. Growing
+// them still costs the device 1:1 — the render arm *is* the arena's maximum, so there is no free
+// headroom on this side of the union (`firmware/obc-fw-nrf54l/src/arena.rs` explains the cliff).
 // (The old `nrf-mem` feature — the culled 256 KB nRF54L15-DK profile — was deleted when the LM20
 // hardware arrived; its history lives in git and the #677/#270 discussions.)
 
-/// Maximum visible features per frame (each is a [`Span`] — 14 bytes). Saturates first at coarse
-/// zoom (many small features).
-pub const MAX_SPANS: usize = 1152;
+/// Capacity of pass-A's candidate reservoir — every stub the collector may hold before `select()`
+/// picks the winners (a slot is `Span`-sized, 14 bytes). This is **not** the frame's feature
+/// ceiling: `select()` budgets points and rings and never counts spans, so what a surplus of
+/// reservoir buys is *backfill* — the supply of lower-priority candidates still available to take
+/// a slot after a large feature is skipped on the point budget. The ceiling is
+/// [`MAX_FRAME_RINGS`]; a frame draws at most `min(MAX_SPANS, MAX_FRAME_RINGS)` features.
+/// 1,152 → 1,792 in #1146 P3, and level with the ring cap since this PR's review round, which is
+/// what makes the whole reservoir reachable rather than dead weight.
+pub const MAX_SPANS: usize = 1792;
 
-/// Maximum total vertices across all visible features per frame (8 bytes each).
-pub const MAX_FRAME_POINTS: usize = 4768;
+/// Maximum total vertices across all visible features per frame (8 bytes each) — one of the two
+/// budgets `select()` actually enforces. 4,768 → 6,208 across #1146 P3. Measured against the
+/// ring ceiling (the denominator that matters, not the span cap) that is a **cut**, 4,768/1,024 =
+/// 4.66 → 6,208/1,792 = 3.46 points per admitted feature; it is a safe cut because every busy
+/// frame measured for #1146 P3 sits well under that — 2.93–3.01 pts per admitted feature at these
+/// caps and never above 3.12 at any caps — so points still run out after rings. Point-dense scenes
+/// (contour bands) do not threaten it from the other side either: the 4 KB chunk budget bounds
+/// features × points, so they arrive a few hundred features at a time and cannot saturate.
+pub const MAX_FRAME_POINTS: usize = 6208;
 
-/// Maximum total ring entries across all visible features per frame.
-pub const MAX_FRAME_RINGS: usize = 1024;
+/// Maximum total ring entries across all visible features per frame — and with it **the frame's
+/// feature ceiling**. Every admitted feature costs at least one ring, `Kind::Line` included:
+/// `select()` charges `ring_count`, a candidate with empty `ring_lens` is rejected outright
+/// (`Feature::has_valid_rings`), and `ring_count == 0` is reserved as pass-B's failure sentinel.
+/// So no frame draws more features than this, however much span or point room is left over.
+/// 1,024 → 1,792 across #1146 P3 — the cap that was in fact doing the dropping, raised to meet
+/// [`MAX_SPANS`].
+pub const MAX_FRAME_RINGS: usize = 1792;
 
 /// Maximum vertices for a single feature during decode (reused per feature). Equals the OBCM
 /// production source's maximum feature size — full format fidelity.
@@ -81,14 +106,24 @@ pub const MAX_SCREEN_POINTS: usize = 2048;
 /// Maximum scanline crossings buffered for one polygon-fill row. A row whose
 /// outline crossings exceed this is skipped rather than mis-filled (see
 /// [`fill_polygon`]) — sized to fit the MCU RAM budget asserted below, not the
-/// worst-case comb (which could approach [`MAX_SCREEN_POINTS`]).
-pub const MAX_CROSSINGS: usize = 256;
+/// worst-case comb (which could approach [`MAX_SCREEN_POINTS`]). 256 → 640 in #1146 P3, as cheap
+/// insurance rather than a fix: no scene in the pinned corpus or the A/B fixtures was ever
+/// observed to exceed 256 crossings on a row, so this buys margin against a polygon more complex
+/// than anything measured — at 4 B a crossing, 1,536 B for that margin.
+pub const MAX_CROSSINGS: usize = 640;
 
 // `Span` packs its buffer offsets into `u16` to stay small, so the frame buffers
 // it indexes must fit in a `u16`. These guard that invariant at compile time.
 const _: () = assert!(MAX_FRAME_POINTS <= u16::MAX as usize, "Span::pt_start is u16");
 const _: () = assert!(MAX_FRAME_RINGS <= u16::MAX as usize, "Span::ring_start is u16");
 const _: () = assert!(MAX_SPANS <= u16::MAX as usize, "Span::seq is u16");
+// The two caps must not invert: `select()` never counts spans, so the ring cap is the real
+// feature ceiling and a reservoir larger than it is the only shape that pays.
+const _: () = assert!(
+    MAX_FRAME_RINGS >= MAX_SPANS,
+    "every feature costs one span and >=1 ring; a ring cap below the span cap makes MAX_SPANS unreachable dead weight"
+);
+
 // The draw path projects a whole decoded feature into `screen` before walking its rings
 // (`screen[base..base + len]`), so it must hold at least a full decode buffer or it indexes
 // past the points and panics.
@@ -98,7 +133,7 @@ const _: () = assert!(MAX_SCREEN_POINTS >= MAX_DECODE_POINTS, "`screen` must hol
 /// Static RAM a [`RenderScratch`]'s buffers occupy on the 32-bit MCU target (`usize` = 4
 /// bytes there). `pub` so a board crate's RAM-budget assert can add it to the framebuffer + caches
 /// without re-deriving the formula. (`(i32, i32)` and `Point` are 8 bytes; `usize`/`f32` are 4 on
-/// the MCU.) ~90 KB.
+/// the MCU.) ~115 KB.
 pub const MCU_SCRATCH_BYTES: usize = MAX_DECODE_POINTS * 8
     + MAX_DECODE_RINGS * 4
     + MAX_FRAME_POINTS * 8
