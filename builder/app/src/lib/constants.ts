@@ -22,6 +22,14 @@ export const LINKS = {
     docs: `${SITE_BASE}docs/`,
     /** The landing page — which is where the live device demo lives (#624). */
     simulator: SITE_BASE,
+    /**
+     * The legal pages, which § 5 DDG wants *ständig verfügbar* — from every page of
+     * the offering, and this app is the part of it that stores things on the visitor's
+     * device and talks to hardware. They live with the docs because that is the tree
+     * that renders markdown; only the footer link is ours.
+     */
+    impressum: `${SITE_BASE}docs/impressum/`,
+    datenschutz: `${SITE_BASE}docs/datenschutz/`,
     github: "https://github.com/timohueser/OpenBikeComputer",
     /** Where D3 (#908) publishes the desktop installers. */
     releases: "https://github.com/timohueser/OpenBikeComputer/releases",
