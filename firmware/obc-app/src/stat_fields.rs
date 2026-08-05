@@ -27,9 +27,9 @@ use obc_ports::Fix;
 
 /// The narrow live-data view a stat field formats from — exactly what [`StatField::cell`] reads,
 /// nothing more. Deliberately decoupled from the full draw context
-/// ([`Render`](crate::screen::Render), which drags in the `MapRenderer`): a cell is pure
+/// ([`Render`](crate::screen::Render), which drags in the borrowed `RenderScratch`): a cell is pure
 /// data-to-string, so a test — or a future non-draw host readout — builds a bare `Readout` instead
-/// of faking a renderer. Constructed from a frame by [`Render::readout`](crate::screen::Render).
+/// of faking a render context. Constructed from a frame by [`Render::readout`](crate::screen::Render).
 pub struct Readout<'a> {
     /// The current GPS fix, `None` when there isn't one (acquiring / lost).
     pub fix: Option<Fix>,
@@ -1063,7 +1063,7 @@ mod tests {
     }
 
     /// A bare readout over `activity` + a waypoint table — no fix, no route, no profile, no
-    /// next-waypoint. The point of [`Readout`]: formatting a cell needs no `MapRenderer`, no
+    /// next-waypoint. The point of [`Readout`]: formatting a cell needs no `RenderScratch`, no
     /// `Render`. Tests that exercise the next-waypoint tile set `waypoints` / `next_waypoint` on the
     /// returned value.
     /// An empty per-category cache: the tiles then answer from the resident waypoint table alone.

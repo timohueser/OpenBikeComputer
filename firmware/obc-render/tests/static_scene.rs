@@ -11,7 +11,7 @@ use obc_map_scene::{
     BBox, Candidate, CandidateReport, DecodeReport, Feature, FeatureError, FeatureToken, Kind, MapScene,
     SelectedFeatures, Style, StyleFlags,
 };
-use obc_render::{MapRenderer, Viewport};
+use obc_render::{RenderConfig, RenderScratch, Viewport};
 
 use common::Buf;
 
@@ -397,14 +397,17 @@ impl MapScene for MetadataScene {
 }
 
 fn hostile_render(mode: Hostility) -> (obc_render::RenderStats, Buf) {
-    let mut renderer = MapRenderer::new();
+    let mut renderer = RenderScratch::new();
     let mut target = Buf::new(64, 64);
     let viewport = Viewport::new(64.0, 64.0, 0, 0, 1.0);
-    let stats = renderer.render(&mut target, &HostileScene(mode), &viewport, Rgb888::BLACK, |color| match color {
-        0xF800 => Rgb888::RED,
-        0x001F => Rgb888::BLUE,
-        _ => Rgb888::WHITE,
-    });
+    let stats =
+        renderer.render(&mut target, &HostileScene(mode), &viewport, Rgb888::BLACK, RenderConfig::default(), |color| {
+            match color {
+                0xF800 => Rgb888::RED,
+                0x001F => Rgb888::BLUE,
+                _ => Rgb888::WHITE,
+            }
+        });
     (stats, target)
 }
 
@@ -454,10 +457,11 @@ fn invalid_pass_a_features_never_reach_the_painter() {
 
 #[test]
 fn zero_lod_scene_renders_only_the_background() {
-    let mut renderer = MapRenderer::new();
+    let mut renderer = RenderScratch::new();
     let mut target = Buf::new(64, 64);
     let viewport = Viewport::new(64.0, 64.0, 0, 0, 1.0);
-    let stats = renderer.render(&mut target, &ZeroLodScene, &viewport, Rgb888::BLUE, |_| Rgb888::RED);
+    let stats =
+        renderer.render(&mut target, &ZeroLodScene, &viewport, Rgb888::BLUE, RenderConfig::default(), |_| Rgb888::RED);
     assert_eq!(stats.features_tried, 0);
     assert_eq!(stats.features_drawn, 0);
     assert_eq!(target.count(Rgb888::BLUE), 64 * 64);
@@ -466,10 +470,11 @@ fn zero_lod_scene_renders_only_the_background() {
 #[test]
 fn lod_count_is_snapshotted_before_drawing() {
     let scene = MetadataScene::new(MetadataHostility::FluctuatingLodCount);
-    let mut renderer = MapRenderer::new();
+    let mut renderer = RenderScratch::new();
     let mut target = Buf::new(64, 64);
     let viewport = Viewport::new(64.0, 64.0, 0, 0, 1.0);
-    let stats = renderer.render(&mut target, &scene, &viewport, Rgb888::BLACK, |_| Rgb888::RED);
+    let stats =
+        renderer.render(&mut target, &scene, &viewport, Rgb888::BLACK, RenderConfig::default(), |_| Rgb888::RED);
 
     assert_eq!(scene.lod_count_calls.get(), 1);
     assert_eq!(stats.features_drawn, 1);
@@ -479,10 +484,11 @@ fn lod_count_is_snapshotted_before_drawing() {
 #[test]
 fn out_of_range_selected_lod_is_clamped_and_reported() {
     let scene = MetadataScene::new(MetadataHostility::OutOfRangeSelectedLod);
-    let mut renderer = MapRenderer::new();
+    let mut renderer = RenderScratch::new();
     let mut target = Buf::new(64, 64);
     let viewport = Viewport::new(64.0, 64.0, 0, 0, 1.0);
-    let stats = renderer.render(&mut target, &scene, &viewport, Rgb888::BLACK, |_| Rgb888::RED);
+    let stats =
+        renderer.render(&mut target, &scene, &viewport, Rgb888::BLACK, RenderConfig::default(), |_| Rgb888::RED);
 
     assert_eq!(scene.lod_count_calls.get(), 1);
     assert_eq!(stats.lod, 0);
@@ -513,11 +519,12 @@ fn hostile_pass_b_feature_is_omitted_without_stealing_later_winner_capacity() {
 
 #[test]
 fn renders_static_scene_without_reader_or_map_bytes() {
-    let mut renderer = MapRenderer::new();
+    let mut renderer = RenderScratch::new();
     let mut target = Buf::new(64, 64);
     let viewport = Viewport::new(64.0, 64.0, 0, 0, 1.0);
 
-    let stats = renderer.render(&mut target, &StaticScene, &viewport, Rgb888::BLACK, |_| Rgb888::RED);
+    let stats =
+        renderer.render(&mut target, &StaticScene, &viewport, Rgb888::BLACK, RenderConfig::default(), |_| Rgb888::RED);
 
     assert_eq!(stats.lod, 0);
     assert_eq!(stats.features_tried, 1);

@@ -1,4 +1,4 @@
-//! Terrain-layer suppression (elevation EL10c, #1096): `MapRenderer::set_terrain_layer(false)` drops
+//! Terrain-layer suppression (elevation EL10c, #1096): `RenderConfig { terrain_layer: false }` drops
 //! every style carrying [`StyleFlags::terrain_layer`] **in the collect pass**, before its geometry is
 //! decoded — not by drawing it and painting over.
 //!
@@ -9,9 +9,9 @@
 //! 2. **The frame is pixel-identical to a map with no terrain styles at all.** Suppressing the layer
 //!    must not perturb one pixel of everything else — same painter order, same widths, same colours.
 //!    A "draw then overpaint" implementation would fail this the moment a contour crossed a road.
-//! 3. **It flips both ways on the same renderer, with no reset.** The setter is sticky across frames
-//!    (that is why it can be a setter at all), so the on-frame after an off-frame is byte-for-byte
-//!    the frame a fresh renderer would have drawn.
+//! 3. **It flips both ways on one reused scratch, frame to frame.** The flag is a per-call argument
+//!    (#1146), so an on-frame drawn after an off-frame through the *same* `RenderScratch` must be
+//!    byte-for-byte the frame a fresh scratch would have drawn — no residue either way.
 //!
 //! **Provisional.** This whole file goes when #1096's toggle does.
 
@@ -26,7 +26,7 @@ use obc_map_scene::{
     BBox, Candidate, CandidateReport, DecodeReport, Feature, FeatureToken, Kind, MapScene, SelectedFeatures, Style,
     StyleFlags,
 };
-use obc_render::{MapRenderer, Viewport};
+use obc_render::{RenderConfig, RenderScratch, Viewport};
 
 use common::Buf;
 
@@ -164,22 +164,23 @@ fn viewport() -> Viewport {
 /// Render `scene` into a fresh buffer with the terrain layer shown or hidden.
 fn render(scene: &Scene, terrain: bool) -> (Buf, usize) {
     let mut buf = Buf::new(120, 120);
-    let mut renderer = MapRenderer::new();
-    renderer.set_terrain_layer(terrain);
-    let stats = renderer.render(&mut buf, scene, &viewport(), Rgb888::BLACK, |c| {
+    let mut scratch = RenderScratch::new();
+    let cfg = RenderConfig { terrain_layer: terrain };
+    let stats = scratch.render(&mut buf, scene, &viewport(), Rgb888::BLACK, cfg, |c| {
         let (r, g, b) = obc_reader::rgb565_to_rgb888(c);
         Rgb888::new(r, g, b)
     });
     (buf, stats.features_drawn)
 }
 
-/// The default renderer draws the terrain layer: nothing has to be switched on to see contours.
+/// The default config draws the terrain layer: nothing has to be switched on to see contours.
 #[test]
 fn terrain_layer_is_drawn_by_default() {
     let scene = Scene::new(true);
     let mut buf = Buf::new(120, 120);
-    // Deliberately *no* `set_terrain_layer` call — the fresh-renderer state is the shown state.
-    let stats = MapRenderer::new().render(&mut buf, &scene, &viewport(), Rgb888::BLACK, |c| {
+    // Deliberately the *default* config — a caller with no opinion sees the whole map.
+    let cfg = RenderConfig::default();
+    let stats = RenderScratch::new().render(&mut buf, &scene, &viewport(), Rgb888::BLACK, cfg, |c| {
         let (r, g, b) = obc_reader::rgb565_to_rgb888(c);
         Rgb888::new(r, g, b)
     });
@@ -225,28 +226,29 @@ fn a_map_without_terrain_styles_ignores_the_toggle() {
     assert_eq!(on.px, off.px, "no terrain styles ⇒ the toggle is a visual no-op");
 }
 
-/// The setter is sticky and reversible on one long-lived renderer — the on-glass requirement: flip
-/// it and the next frame changes, with no reboot and no renderer reset.
+/// The flag flips both ways on **one reused scratch** — the on-glass requirement: the rider flips
+/// the switch and the very next frame changes, with no reboot and no scratch reset. And because the
+/// scratch carries no state between frames, switching back restores the earlier frame exactly.
 #[test]
-fn the_toggle_flips_both_ways_on_one_renderer() {
+fn the_toggle_flips_both_ways_on_one_scratch() {
     let scene = Scene::new(true);
     let color = |c: u16| {
         let (r, g, b) = obc_reader::rgb565_to_rgb888(c);
         Rgb888::new(r, g, b)
     };
-    let mut renderer = MapRenderer::new();
+    let shown = RenderConfig { terrain_layer: true };
+    let hidden = RenderConfig { terrain_layer: false };
+    let mut scratch = RenderScratch::new();
 
     let mut on1 = Buf::new(120, 120);
-    renderer.render(&mut on1, &scene, &viewport(), Rgb888::BLACK, color);
+    scratch.render(&mut on1, &scene, &viewport(), Rgb888::BLACK, shown, color);
     assert!(on1.count(BLUE) > 0);
 
     let mut off = Buf::new(120, 120);
-    renderer.set_terrain_layer(false);
-    renderer.render(&mut off, &scene, &viewport(), Rgb888::BLACK, color);
+    scratch.render(&mut off, &scene, &viewport(), Rgb888::BLACK, hidden, color);
     assert_eq!(off.count(BLUE), 0, "the very next frame drops the layer");
 
     let mut on2 = Buf::new(120, 120);
-    renderer.set_terrain_layer(true);
-    renderer.render(&mut on2, &scene, &viewport(), Rgb888::BLACK, color);
+    scratch.render(&mut on2, &scene, &viewport(), Rgb888::BLACK, shown, color);
     assert_eq!(on2.px, on1.px, "and switching back restores the first frame exactly");
 }

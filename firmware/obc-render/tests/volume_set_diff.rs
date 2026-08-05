@@ -2,7 +2,7 @@
 //! to the monolithic file it was split from, at every zoom and — the case that matters — from
 //! viewports that straddle a shard boundary.
 //!
-//! This is the tripwire for the whole multi-shard map source. `MapRenderer::render` is generic
+//! This is the tripwire for the whole multi-shard map source. `RenderScratch::render` is generic
 //! over `MapScene`, so a `MountedSet` drops in where a `Reader` goes and the two sides differ
 //! only in *how the bytes were laid out on the card*. Anything the dispatch loop gets wrong —
 //! a shard skipped, a shard served another's chunks, a leaf bbox that no longer matches the
@@ -17,7 +17,7 @@ use embedded_graphics::prelude::*;
 use obc_formats::io::ByteSource;
 use obc_formats::obcs;
 use obc_reader::{rgb565_to_rgb888, FullSetShards, MapCache, MapTables, MountedSet, Reader, SliceSource};
-use obc_render::{MapRenderer, Viewport};
+use obc_render::{RenderConfig, RenderScratch, Viewport};
 use obcm_testkit::set::{deep_matched_pair, matched_pair, quadrants, DeepPair, SetFixture};
 use obcm_testkit::{pack_line16, pack_poly16, seal, Style};
 
@@ -91,7 +91,7 @@ fn render_monolith(bytes: &[u8], vp: &Viewport) -> Buf {
     let src = SliceSource(bytes);
     let tables = MapTables::parse(&src).expect("the monolith parses");
     let reader = Reader::new(&src, &tables, &cache);
-    MapRenderer::new().render(&mut buf, &reader, vp, Rgb888::BLACK, color);
+    RenderScratch::new().render(&mut buf, &reader, vp, Rgb888::BLACK, RenderConfig::default(), color);
     buf
 }
 
@@ -104,7 +104,7 @@ fn render_set(fixture: &SetFixture, vp: &Viewport) -> Buf {
     let cache = MapCache::new();
     let mut store = FullSetShards::new();
     let set = MountedSet::mount(&mut store, &manifest, &refs, &core, &cache).expect("a complete set mounts");
-    MapRenderer::new().render(&mut buf, &set, vp, Rgb888::BLACK, color);
+    RenderScratch::new().render(&mut buf, &set, vp, Rgb888::BLACK, RenderConfig::default(), color);
     buf
 }
 

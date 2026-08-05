@@ -4,9 +4,18 @@
 //! `SimulatorDisplay`) and the device (LS021B7DD02) share the same projection,
 //! LOD selection, painter ordering, polygon fill and line drawing.
 //!
-//! [`MapRenderer`] owns every scratch buffer and clears (not frees) them each
+//! [`RenderScratch`] owns every scratch buffer and clears (not frees) them each
 //! frame, so steady-state rendering does no heap allocation. Geometry math uses
 //! `libm` for `no_std`.
+//!
+//! **Config and scratch are two things (#1146).** [`RenderScratch`] is *only* per-frame working
+//! memory — buffers written before they are read, meaningless between frames. Everything that
+//! decides what a frame looks like travels as a per-call [`RenderConfig`] argument, and **no sticky
+//! setting is ever a field of the scratch**. That rule is structural, not stylistic: the scratch is
+//! headed for an arena the caller lends the render path one frame at a time, so a setting parked in
+//! it would quietly reset when the arena is re-lent (or, worse, arrive carrying another owner's
+//! choice). A caller that wants a switch to persist keeps it in its own state and re-states it each
+//! frame — which is exactly what the Map screen does with the rider's contour switch.
 
 #![no_std]
 
@@ -40,7 +49,7 @@ use stroke::{draw_line, Stroker};
 // simulator and tests build too, so they render exactly what the device will — features start
 // dropping at the same busy coarse zooms (deliberate: an over-dense frame is slow on-glass, so the
 // sim shows that limit rather than an unattainable host-fidelity map). The renderer scratch
-// (`MCU_RENDERER_BYTES` below, ~90 KB) is sized alongside the 75 KB RGB222 framebuffer, the
+// (`MCU_SCRATCH_BYTES` below, ~90 KB) is sized alongside the 75 KB RGB222 framebuffer, the
 // map/route caches, the on-device router, the BLE stack (issue #270 — map + BLE share one image),
 // and a ~75 KB stack reserve. The board crate's budget assert is the binding fit check.
 // (The old `nrf-mem` feature — the culled 256 KB nRF54L15-DK profile — was deleted when the LM20
@@ -86,11 +95,11 @@ const _: () = assert!(MAX_SPANS <= u16::MAX as usize, "Span::seq is u16");
 const _: () = assert!(MAX_SCREEN_POINTS >= MAX_DECODE_POINTS, "`screen` must hold a whole decoded feature");
 // These values are pinned by the production-source integration tests.
 
-/// Static RAM the [`MapRenderer`]'s scratch buffers occupy on the 32-bit MCU target (`usize` = 4
+/// Static RAM a [`RenderScratch`]'s buffers occupy on the 32-bit MCU target (`usize` = 4
 /// bytes there). `pub` so a board crate's RAM-budget assert can add it to the framebuffer + caches
 /// without re-deriving the formula. (`(i32, i32)` and `Point` are 8 bytes; `usize`/`f32` are 4 on
 /// the MCU.) ~90 KB.
-pub const MCU_RENDERER_BYTES: usize = MAX_DECODE_POINTS * 8
+pub const MCU_SCRATCH_BYTES: usize = MAX_DECODE_POINTS * 8
     + MAX_DECODE_RINGS * 4
     + MAX_FRAME_POINTS * 8
     + MAX_FRAME_RINGS * 4
@@ -99,7 +108,7 @@ pub const MCU_RENDERER_BYTES: usize = MAX_DECODE_POINTS * 8
     + MAX_CROSSINGS * 4;
 // Loose per-crate ceiling catching an accidental cap blow-up; the binding fit check is the board
 // crate's whole-resident-set budget assert.
-const _: () = assert!(MCU_RENDERER_BYTES <= 200 * 1024, "MapRenderer exceeds the 200 KB MCU budget");
+const _: () = assert!(MCU_SCRATCH_BYTES <= 200 * 1024, "RenderScratch exceeds the 200 KB MCU budget");
 
 /// Ground scale (metres per pixel) at which a style's configured `weight` renders at its **nominal**
 /// pixel width — i.e. the width ramp is the identity here. Chosen at mid-riding zoom so the presets
@@ -161,18 +170,18 @@ pub(crate) struct DrawScratch {
     pub(crate) xs: Vec<f32, MAX_CROSSINGS>,
 }
 
-/// A monotonic microsecond clock for **stage timing** inside [`MapRenderer::render_timed`].
+/// A monotonic microsecond clock for **stage timing** inside [`RenderScratch::render_timed`].
 ///
 /// `obc-render` is `no_std` and carries no clock, so a caller wanting the per-stage breakdown
 /// (collect / sort / draw) passes one in (the device an embassy-`Instant` clock, a host
-/// `std::time::Instant`). The plain [`MapRenderer::render`] path passes the zero-cost
+/// `std::time::Instant`). The plain [`RenderScratch::render`] path passes the zero-cost
 /// [`NoopClock`], leaving the stage fields at `0`.
 pub trait Clock {
     /// Microseconds since some fixed, monotonic epoch. Only differences are taken.
     fn now_us(&self) -> u64;
 }
 
-/// The zero-cost [`Clock`] for the untimed [`MapRenderer::render`] path: always `0`, so every stage
+/// The zero-cost [`Clock`] for the untimed [`RenderScratch::render`] path: always `0`, so every stage
 /// delta is `0` and the optimizer folds the timing away.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoopClock;
@@ -269,7 +278,7 @@ pub struct RenderStats {
     /// Filled by the host after timing the draw (sim uses `Instant`, device the DWT cycle counter).
     pub render_us: u32,
     /// Per-stage wall time of the **map** render, µs — filled by
-    /// [`render_timed`](MapRenderer::render_timed) from the caller's [`Clock`]; `0` on the untimed
+    /// [`render_timed`](RenderScratch::render_timed) from the caller's [`Clock`]; `0` on the untimed
     /// path. `collect_us` = visible-feature collection (walk + read + decode + cull + span build),
     /// `sort_us` = painter's-order span sort, `draw_us` = full-screen clear + rasterization. Base
     /// map only; overlays run after `render` returns, so overlay time is
@@ -279,84 +288,99 @@ pub struct RenderStats {
     pub draw_us: u32,
 }
 
-/// Reusable renderer holding every scratch buffer. Construct once, call
-/// [`MapRenderer::render`] per frame; buffers are cleared and reused, so no per-frame allocation.
+/// What a render call should draw — the presentation switches, stated **per frame** by the caller.
+///
+/// The Config half of #1146's Config/Scratch split (see the crate docs): every knob that changes
+/// what a frame looks like lives here and travels as an argument, so [`RenderScratch`] stays pure
+/// working memory and no setting can be smuggled between frames inside it. A caller that wants a
+/// switch to stick owns that state itself and re-states it each frame.
+///
+/// [`Default`] is "draw everything" — the config a caller with no opinion passes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RenderConfig {
+    /// Draw the **terrain layer** — every style carrying
+    /// [`StyleFlags::terrain_layer`](obc_map_scene::StyleFlags::terrain_layer) (today: the E3
+    /// contour styles, #1095). `true` (the [`Default`]) draws it.
+    ///
+    /// A hidden layer's features are dropped in the collect pass's visible-style mask, so their
+    /// geometry is never decoded — they cost no frame budget rather than being drawn and painted
+    /// over. What this does *not* do is skip any I/O: the map's cells interleave terrain with
+    /// everything else, so the same chunks are read either way (#1096).
+    ///
+    /// **Provisional (#1096).** This exists so the #1097 ride review can A/B contours on the same
+    /// ride; it is expected to be removed either way that review lands — this field and the mask
+    /// branch in `collect` are the whole of it.
+    pub terrain_layer: bool,
+}
+
+impl Default for RenderConfig {
+    fn default() -> Self {
+        // Shown, not hidden: a caller that has never heard of the toggle gets the whole map.
+        RenderConfig { terrain_layer: true }
+    }
+}
+
+/// The reusable **per-frame scratch** of the render path: every decode / collect / draw buffer.
+/// Construct once, hand `&mut` to [`render`](RenderScratch::render) per frame; buffers are cleared
+/// and reused, so steady-state rendering allocates nothing.
+///
+/// Pure working memory, and only that — see the crate docs' Config/Scratch rule. Nothing here
+/// decides what a frame looks like ([`RenderConfig`] does), and nothing here means anything between
+/// frames: every buffer is written before it is read.
+///
+/// **Never construct one by value on a device stack.** It is ~90 KB of `heapless::Vec`s
+/// ([`MCU_SCRATCH_BYTES`]); a by-value constructor only stays off the stack via return-value
+/// optimization, a guarantee a debug build or a different toolchain can decline — the way
+/// `RouteIndex::read_into` earned its own in-place constructor after a STKOF HardFault. The device
+/// places it with [`init_zeroed`](RenderScratch::init_zeroed); [`new`](RenderScratch::new) /
+/// [`Default`] are for hosts and tests, whose stacks are not 36 KB.
 #[derive(Default)]
-pub struct MapRenderer {
+pub struct RenderScratch {
     /// Collection scratch + the frame buffers (decode → cull → spans).
     frame: FrameScratch,
     /// Draw scratch (projected points / polyline runs + scanline crossings), shared by the map
     /// draw phase and the marker/route/breadcrumb overlays.
     pub(crate) draw: DrawScratch,
-    /// Hide the **terrain layer** — see [`set_terrain_layer`](MapRenderer::set_terrain_layer).
-    ///
-    /// Stored in the *suppressed* sense on purpose: `false` (the all-zero bit pattern, hence the
-    /// [`Default`] and [`init_zeroed`](MapRenderer::init_zeroed) state) means "draw everything",
-    /// which is the correct behaviour for every caller that never touches the setter.
-    suppress_terrain: bool,
 }
 
-impl MapRenderer {
+impl RenderScratch {
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Show or hide the **terrain layer** — every style carrying
-    /// [`StyleFlags::terrain_layer`](obc_map_scene::StyleFlags::terrain_layer) (today: the E3
-    /// contour styles, #1095). Sticky across frames; the next [`render`](MapRenderer::render) takes
-    /// it. Renderers start with the layer **shown**.
+    /// Initialize a scratch **in place** at `slot` as the empty, ready-to-render state — the MCU
+    /// placement path, building the resident scratch straight into a fixed RAM region without ever
+    /// materializing its ~90 KB of buffers on the stack.
     ///
-    /// Hidden features are dropped in the collect pass's visible-style mask, so their geometry is
-    /// never decoded — they cost no frame budget rather than being drawn and painted over. What this
-    /// does *not* do is skip any I/O: the map's cells interleave terrain with everything else, so the
-    /// same chunks are read either way (#1096).
-    ///
-    /// **Provisional (#1096).** This exists so the #1097 ride review can A/B contours on the same
-    /// ride; it is expected to be removed either way that review lands — the setter, the field, and
-    /// the mask branch in `collect` are the whole of it.
-    ///
-    /// A setter rather than a `render` argument deliberately: the renderer is long-lived and already
-    /// `&mut self`, this is board-agnostic ("does this scene's terrain layer draw?", phrased purely in
-    /// the map-scene seam's own vocabulary), and a temporary flag has no business in a hot signature
-    /// four call sites and every test share.
-    #[inline]
-    pub fn set_terrain_layer(&mut self, visible: bool) {
-        self.suppress_terrain = !visible;
-    }
-
-    /// Initialize a renderer **in place** at `slot` as the empty, ready-to-render state — the MCU
-    /// placement path, building the resident renderer straight into a fixed RAM region without ever
-    /// materializing the ~200 KB of scratch on the stack.
-    ///
-    /// Every scratch buffer is a [`heapless::Vec`], whose empty state (`len = 0` over an
-    /// uninitialized backing array) is exactly the all-zero bit pattern, so `write_bytes(0, 1)`
-    /// lowers to a `memset` with no temporary and no reliance on return-value optimization.
+    /// Every buffer is a [`heapless::Vec`], whose empty state (`len = 0` over an uninitialized
+    /// backing array) is exactly the all-zero bit pattern, so `write_bytes(0, 1)` lowers to a
+    /// `memset` with no temporary and no reliance on return-value optimization.
     ///
     /// # Safety
     /// `slot` must be valid for writes, aligned, and exclusively owned for the call.
-    /// On return the slot holds a fully initialized, empty [`MapRenderer`].
+    /// On return the slot holds a fully initialized, empty [`RenderScratch`].
     pub unsafe fn init_zeroed(slot: *mut Self) {
-        // SAFETY: a renderer is only `heapless::Vec`s plus one `bool` — no references, no
-        // non-zero-discriminant enum — so the all-zero bit pattern is the empty renderer (`len = 0`,
-        // write-before-read buffers) with `suppress_terrain: false`, i.e. the terrain layer shown,
-        // which is that field's intended initial state (see it). The caller guarantees a valid,
-        // owned, aligned slot.
+        // SAFETY: a scratch is only `heapless::Vec`s — no references, no non-zero-discriminant
+        // enum, and (since #1146 moved the terrain switch into `RenderConfig`) no settings at all —
+        // so the all-zero bit pattern is the empty scratch: `len = 0` over write-before-read
+        // buffers. The caller guarantees a valid, owned, aligned slot.
         unsafe { slot.write_bytes(0u8, 1) }
     }
 
-    /// Render the visible map into `target`.
+    /// Render the visible map into `target`, as `cfg` asks.
     ///
     /// Selects the LOD for the viewport's meters-per-pixel, clears to `bg`, collects visible
     /// features in global priority order ([`FrameScratch::collect`]), orders them by style z-index
     /// (painter's algorithm) and draws polygons (even-odd scanline fill) and lines. `color_fn` maps
     /// a style's RGB565 to the target's pixel color (host chooses true-color vs. device
-    /// quantization).
+    /// quantization). A caller with no presentation opinion passes [`RenderConfig::default`].
     pub fn render<D, F, S>(
         &mut self,
         target: &mut D,
         scene: &S,
         vp: &Viewport,
         bg: D::Color,
+        cfg: RenderConfig,
         color_fn: F,
     ) -> RenderStats
     where
@@ -364,17 +388,19 @@ impl MapRenderer {
         F: Fn(u16) -> D::Color,
         S: MapScene,
     {
-        self.render_timed(target, scene, vp, bg, color_fn, &NoopClock)
+        self.render_timed(target, scene, vp, bg, cfg, color_fn, &NoopClock)
     }
 
-    /// Like [`render`](MapRenderer::render) but fills the per-stage timings on the returned
+    /// Like [`render`](RenderScratch::render) but fills the per-stage timings on the returned
     /// [`RenderStats`] from `clock`. Base map only; see the [`RenderStats`] stage-field docs.
+    #[allow(clippy::too_many_arguments)]
     pub fn render_timed<D, F, S>(
         &mut self,
         target: &mut D,
         scene: &S,
         vp: &Viewport,
         bg: D::Color,
+        cfg: RenderConfig,
         color_fn: F,
         clock: &dyn Clock,
     ) -> RenderStats
@@ -407,7 +433,7 @@ impl MapRenderer {
         // reads the map source) and record the per-frame delta — robust whether the caller hands us
         // a fresh source adapter each frame or a reused one.
         let before = diagnostics(scene, &mut stats, Diagnostics::default());
-        self.frame.collect(scene, lod, &view, self.suppress_terrain, &mut stats);
+        self.frame.collect(scene, lod, &view, !cfg.terrain_layer, &mut stats);
         let after = diagnostics(scene, &mut stats, before);
         stats.map_chunk_hits = after.chunk_hits.wrapping_sub(before.chunk_hits);
         stats.map_chunk_misses = after.chunk_misses.wrapping_sub(before.chunk_misses);

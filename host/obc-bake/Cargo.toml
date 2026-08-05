@@ -29,7 +29,7 @@ obc-formats = { path = "../../firmware/obc-formats" }
 obc-dem = { path = "../obc-dem" }
 # Skin previews are not screenshots of a second renderer. The bakery restamps a
 # canonical tiny OBCM through the assembly engine's production skin resolver and
-# renders it through the same `MapRenderer` the device runs.
+# renders it through the same `RenderScratch` the device runs.
 obcm-assemble = { path = "../obcm-assemble", default-features = false }
 obc-render = { path = "../../firmware/obc-render" }
 embedded-graphics = "0.8"
