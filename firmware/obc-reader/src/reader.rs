@@ -1609,13 +1609,13 @@ impl<'a> Reader<'a> {
         let pool_len = dir.edge_chunk_count.checked_mul(cs)?;
         let id = edge_id as usize;
         let within = id % cs;
-        if within + NAV_EDGE_FIXED_LEN > cs || id + NAV_EDGE_FIXED_LEN > pool_len {
+        if within + NAV_EDGE_FIXED_LEN > cs || id.checked_add(NAV_EDGE_FIXED_LEN)? > pool_len {
             return None;
         }
         let start = dir.edge_pool_offset.checked_add(id)?;
         let mut head = [0u8; NAV_EDGE_FIXED_LEN];
         let head_off = u32::try_from(start).ok()?;
-        if start + NAV_EDGE_FIXED_LEN > self.src.len() as usize {
+        if start.checked_add(NAV_EDGE_FIXED_LEN)? > self.src.len() as usize {
             return None;
         }
         self.src.read_at(head_off, &mut head).ok()?;
@@ -1629,7 +1629,10 @@ impl<'a> Reader<'a> {
         }
         // The whole record must lie inside its chunk (the §8.4 no-straddle contract) and the file.
         let rec_len = NAV_EDGE_FIXED_LEN.checked_add((pt_count - 1).checked_mul(4)?)?;
-        if within + rec_len > cs || id + rec_len > pool_len || start + rec_len > self.src.len() as usize {
+        if within + rec_len > cs
+            || id.checked_add(rec_len)? > pool_len
+            || start.checked_add(rec_len)? > self.src.len() as usize
+        {
             return None;
         }
         if pt_count > P {

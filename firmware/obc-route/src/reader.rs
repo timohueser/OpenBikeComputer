@@ -266,7 +266,13 @@ impl RouteIndex {
         let mut seg_acc: u32 = 0;
         let mut meta = [0u8; CHUNK_META_LEN];
         for k in 0..h.chunk_count {
-            let off = h.index_offset + k * CHUNK_META_LEN as u32;
+            // Checked exactly as the waypoint walk: `index_offset` is untrusted header input
+            // (browser-supplied bytes reach here through obc-web-convert), and a forged offset near
+            // `u32::MAX` must surface as a bad offset — never wrap back into the file.
+            let off = k
+                .checked_mul(CHUNK_META_LEN as u32)
+                .and_then(|rel| h.index_offset.checked_add(rel))
+                .ok_or(Error::BadOffset)?;
             src.read_at(off, &mut meta)?;
             let cm = parse_chunk_meta(&meta, src.len())?;
             // Running segment prefix sum, built alongside the index so the matcher never
@@ -713,6 +719,13 @@ pub(crate) fn parse_chunk_meta(meta: &[u8; CHUNK_META_LEN], src_len: u32) -> Res
     // Bounds-check the chunk's data region up front (no per-decode checks).
     let end = cm.byte_offset.checked_add(cm.byte_len).ok_or(Error::BadOffset)?;
     if end > src_len {
+        return Err(Error::BadOffset);
+    }
+    // …and cross-check that region against the point count. The data is exactly the non-anchor
+    // points (§3: `point_count − 1` fixed 6-byte records) and every writer emits it that way, but
+    // the decode path sizes its read from `point_count` alone — so a forged meta whose `byte_len`
+    // disagrees would silently hand the decoder the *next* chunk's bytes as this chunk's geometry.
+    if cm.byte_len != (point_count as u32).saturating_sub(1) * POINT_RECORD_LEN as u32 {
         return Err(Error::BadOffset);
     }
     Ok(cm)

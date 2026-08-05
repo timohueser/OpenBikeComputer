@@ -1115,6 +1115,10 @@ fn populated_nav_section_round_trips_with_record_layout() {
     // check.
     assert_eq!(r.nav_edge(100, &mut pts), None, "padding is not a record");
     assert_eq!(r.nav_edge(512, &mut pts), None, "past the one-chunk pool");
+    // …and an id at the top of the `u32` range, where the pool/EOF bounds would wrap on a 32-bit
+    // `usize` (the device) if the adds weren't checked.
+    assert_eq!(r.nav_edge(u32::MAX, &mut pts), None, "an id that would wrap the bounds math");
+    assert_eq!(r.nav_edge(u32::MAX - 3, &mut pts), None, "…record-aligned, still out of pool");
 
     // A scratch smaller than chunk_size is a caller bug, surfaced loudly.
     let mut small = [0u8; 64];
