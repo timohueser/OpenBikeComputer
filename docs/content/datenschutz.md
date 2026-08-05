@@ -29,12 +29,22 @@ description: Welche personenbezogenen Daten openbikecomputer.com verarbeitet —
      für Pages keine veröffentlicht, auf die man sich berufen könnte. Art. 13 Abs. 2
      lit. a DSGVO will die Dauer ODER die Kriterien — hier stehen die Kriterien. Wenn
      GitHub eine Frist veröffentlicht, gehört sie hierher.
-  3. Die Kartenkacheln (Abschnitt 6.1) werden ohne Einwilligung geladen. Das ist
-     vertretbar, aber es ist die angreifbarste Stelle dieser Erklärung: wer die
-     Rechtsprechungslinie zu eingebetteten Drittinhalten streng liest, verlangt für das
-     Nachladen von einem fremden Server eine Einwilligung. Die saubere Alternative wäre,
-     die Kartenansicht erst nach einem Klick zu laden ("Karte anzeigen"). Das ist eine
-     Produktentscheidung, keine Textentscheidung.
+  3. Die Kartenkacheln (Abschnitt 6.1) werden ohne Einwilligung geladen, und das ist
+     Absicht — nicht eine offene Frage. § 25 TDDDG greift hier gar nicht: Ein Kachelabruf
+     überträgt Daten, er speichert oder liest nichts auf dem Endgerät. Zu prüfen ist also
+     nur Art. 6 Abs. 1 lit. f DSGVO, und die Abwägung ist nicht knapp: Die
+     OpenStreetMap Foundation ist ein Verein im Vereinigten Königreich (Angemessenheits-
+     beschluss), betreibt kein Werbegeschäft, bildet keine Profile — und die Karte ist
+     hier nicht Zierde, sondern die Funktion, wegen der die Seite geöffnet wird. Die aus
+     der Google-Maps- und Google-Fonts-Diskussion bekannte "Zwei-Klick-Lösung" adressiert
+     ein Risiko, das bei OSM nicht besteht; die übliche und tragfähige Umsetzung ist
+     genau die hiesige: Kacheln direkt von openstreetmap.org, Leaflet lokal gebündelt
+     (kein CDN) und der Empfänger hier benannt.
+
+     Eine Klarstellung dazu, weil Generator-Bausteine das oft falsch haben: Die
+     OpenStreetMap Foundation ist NICHT Auftragsverarbeiterin. Sie handelt in eigener
+     Verantwortung; ein Vertrag nach Art. 28 DSGVO ist weder nötig noch möglich. Sie
+     gehört als Empfängerin genannt — und ist es.
 
   ── Was diese Erklärung MITFÜHREN MUSS, wenn sich der Code ändert ──────────────────
 
