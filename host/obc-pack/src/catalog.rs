@@ -194,6 +194,14 @@ pub struct Catalog {
     /// When this root was generated, RFC 3339 UTC — the only wall clock on the
     /// generation path (`OBCC_Spec.md` §3).
     pub generated_at: String,
+    /// The cell store's data provenance and licence (§3.1). The store is a derivative
+    /// database of OpenStreetMap, and the ODbL's share-alike terms require the
+    /// published store to say so — this block is that statement, in the one document
+    /// every consumer reads first. The generator always writes it; `Option` only so
+    /// documents published before the field existed still deserialize (the bake
+    /// guard reads the live root).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<SourceEntry>,
     /// The catalog's **single** schema. Not an array: the hosted store carries the
     /// 7-LOD bikepacking ladder and nothing else, because a second schema would make
     /// the whole planet-shaped cell store exist twice (§3, epic #1016 D2).
@@ -220,6 +228,34 @@ pub struct Catalog {
     /// re-bake would look like a schema change to every consumer that compares schemas.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network_terrain_revision: Option<u32>,
+}
+
+/// §3.1's source declaration: what the cells derive from and what that obliges.
+///
+/// The values are [`OSM_SOURCE`]'s constants rather than tree inputs, because the packer
+/// ingests exactly one dataset — the day a second source exists is the day this becomes
+/// data, not before (the OBCM v13 lesson). Consumers that describe the map data take
+/// these strings from the catalog rather than hard-coding them (§3.1).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SourceEntry {
+    /// Kebab-case id of the source dataset.
+    pub dataset_id: String,
+    /// The dataset's required credit, verbatim.
+    pub attribution: String,
+    /// SPDX-style identifier of the licence the published store is offered under.
+    pub license: String,
+    /// Where that licence's text lives.
+    pub license_url: String,
+}
+
+/// The one source the packer ingests, as §3.1 publishes it.
+pub fn osm_source() -> SourceEntry {
+    SourceEntry {
+        dataset_id: "openstreetmap".into(),
+        attribution: "\u{00a9} OpenStreetMap contributors".into(),
+        license: "ODbL-1.0".into(),
+        license_url: "https://opendatacommons.org/licenses/odbl/1-0/".into(),
+    }
 }
 
 /// The schema: the identity of the cell store. Everything a consumer needs to price a
@@ -880,6 +916,7 @@ pub fn generate(tree: &Path, opts: &CatalogOptions) -> Result<GeneratedCatalog, 
     let root = Catalog {
         schema_version: CATALOG_SCHEMA_VERSION,
         generated_at: opts.generated_at.clone(),
+        source: Some(osm_source()),
         schema: SchemaEntry {
             id: schema.id,
             revision: schema.revision,
@@ -908,6 +945,37 @@ pub fn generate(tree: &Path, opts: &CatalogOptions) -> Result<GeneratedCatalog, 
 pub fn root_json(root: &Catalog) -> String {
     let mut text = serde_json::to_string_pretty(root).expect("catalog root serializes");
     text.push('\n');
+    text
+}
+
+/// The store's stable-keyed `LICENSE.txt` name (§2, §11).
+pub const LICENSE_NAME: &str = "LICENSE.txt";
+
+/// §3.1's human-readable twin: the provenance and licence statement published at the
+/// store root beside `catalog.json`. Derived from the root's `source` block — and from
+/// the terrain block's §13.5 attribution when one is published — so the machine-readable
+/// declaration and the text a person reads can never disagree.
+pub fn license_txt(root: &Catalog) -> String {
+    let source = root.source.as_ref().expect("a generated root always carries a source block (§3.1)");
+    let mut text = format!(
+        "The map cells (*.obcm) and documents in this store are derived from\n\
+         OpenStreetMap data.\n\
+         \n\
+         {attribution}\n\
+         \n\
+         As a derivative database, the store is made available under the\n\
+         {license} license: {url}\n\
+         See https://www.openstreetmap.org/copyright for details.\n",
+        attribution = source.attribution,
+        license = source.license,
+        url = source.license_url,
+    );
+    if let Some(terrain) = &root.terrain {
+        text.push_str(&format!(
+            "\nThe terrain artifacts (*.obcd) are a separate artifact class,\n{attribution}.\n",
+            attribution = terrain.attribution,
+        ));
+    }
     text
 }
 
@@ -955,6 +1023,8 @@ pub fn write_all_atomic(tree: &Path, generated: &GeneratedCatalog) -> Result<(),
         }
         write_atomic_bytes(&path, &satellite.body)?;
     }
+    // §3.1's human-readable twin, at its stable key beside the root.
+    write_atomic_bytes(&tree.join(LICENSE_NAME), &license_txt(&generated.root))?;
     write_atomic_bytes(&tree.join(DEFAULT_MANIFEST_NAME), &root_json(&generated.root))
 }
 

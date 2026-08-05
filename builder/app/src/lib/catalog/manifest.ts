@@ -203,9 +203,23 @@ export interface TerrainIndexRef {
     url: string;
 }
 
+/** §3.1's source declaration: what the cells derive from and the licence the
+ *  published store — a derivative database — is offered under. A consumer that
+ *  describes the map data takes these strings from here rather than hard-coding
+ *  them, the same rule §13.5 sets for terrain. */
+export interface SourceEntry {
+    dataset_id: string;
+    attribution: string;
+    license: string;
+    license_url: string;
+}
+
 export interface Catalog {
     schema_version: number;
     generated_at: string;
+    /** `null` only for catalogs published before §3.1 existed — every current
+     *  producer writes it. */
+    source: SourceEntry | null;
     schema: SchemaEntry;
     skins: SkinEntry[];
     regions: RegionEntry[];
@@ -655,6 +669,29 @@ function parseTerrain(v: unknown, where: string): TerrainEntry | null {
     };
 }
 
+/**
+ * §3.1's source block, or `null`.
+ *
+ * The block is required of every current producer; absence is tolerated only
+ * because catalogs published before the field existed are still live. When it
+ * is present, every field is required and non-empty — a half-stated licence
+ * declaration is worse than none, because it reads as authoritative.
+ */
+function parseSource(v: unknown, where: string): SourceEntry | null {
+    if (v === undefined || v === null) return null;
+    const o = obj(v, where);
+    const entry: SourceEntry = {
+        dataset_id: str(o, "dataset_id", where, KEBAB),
+        attribution: str(o, "attribution", where),
+        license: str(o, "license", where),
+        license_url: str(o, "license_url", where),
+    };
+    for (const key of ["attribution", "license", "license_url"] as const) {
+        if (!entry[key].trim()) fail(`${where}.${key}: must be non-empty when the block is present (§3.1)`);
+    }
+    return entry;
+}
+
 /** Parse the current catalog root, or throw. */
 export function parseRoot(body: string): Catalog {
     const root = obj(json(body, "catalog"), "catalog");
@@ -677,6 +714,7 @@ export function parseRoot(body: string): Catalog {
     return {
         schema_version: CATALOG_SCHEMA_VERSION,
         generated_at: instant(root, "generated_at", "catalog"),
+        source: parseSource(root.source, "catalog.source"),
         schema,
         skins: parseSkins(root.skins, "catalog.skins", schema),
         regions: parseRegions(root.regions, "catalog.regions", bandIds),

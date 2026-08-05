@@ -16,6 +16,17 @@
       "type": "string",
       "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
     },
+    "source": {
+      "description": "The cell store's data provenance and licence (§3.1). The store is a derivative database of OpenStreetMap, and the ODbL's share-alike terms require the published store to say so — this block is that statement, in the one document every consumer reads first. The generator always writes it; `Option` only so documents published before the field existed still deserialize (the bake guard reads the live root).",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SourceEntry"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "schema": {
       "description": "The catalog's **single** schema. Not an array: the hosted store carries the 7-LOD bikepacking ladder and nothing else, because a second schema would make the whole planet-shaped cell store exist twice (§3, epic #1016 D2).",
       "$ref": "#/$defs/SchemaEntry"
@@ -71,6 +82,34 @@
     "cell_index"
   ],
   "$defs": {
+    "SourceEntry": {
+      "description": "§3.1's source declaration: what the cells derive from and what that obliges. The values are [`OSM_SOURCE`]'s constants rather than tree inputs, because the packer ingests exactly one dataset — the day a second source exists is the day this becomes data, not before (the OBCM v13 lesson). Consumers that describe the map data take these strings from the catalog rather than hard-coding them (§3.1).",
+      "type": "object",
+      "properties": {
+        "dataset_id": {
+          "description": "Kebab-case id of the source dataset.",
+          "type": "string"
+        },
+        "attribution": {
+          "description": "The dataset's required credit, verbatim.",
+          "type": "string"
+        },
+        "license": {
+          "description": "SPDX-style identifier of the licence the published store is offered under.",
+          "type": "string"
+        },
+        "license_url": {
+          "description": "Where that licence's text lives.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "dataset_id",
+        "attribution",
+        "license",
+        "license_url"
+      ]
+    },
     "SchemaEntry": {
       "description": "The schema: the identity of the cell store. Everything a consumer needs to price a selection and an assembler needs to stamp a skin, with no out-of-band constant (§4).",
       "type": "object",

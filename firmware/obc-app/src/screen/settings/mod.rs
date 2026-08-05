@@ -30,6 +30,7 @@ use super::{palette, Ctx, Render, Screen, Transition};
 /// like Add field never reaches for `super::super::`.
 pub(super) use super::empty_state;
 
+mod about;
 mod add_field;
 /// Shared with the route-less ride-start card (T6, #684), which draws the selected profile's hero
 /// bike from the same sprites + colours the Bike-type screen uses.
@@ -49,6 +50,7 @@ mod sensors;
 mod system;
 mod units;
 
+pub use about::AboutScreen;
 pub use add_field::AddFieldScreen;
 pub use bike_type::BikeTypeScreen;
 pub use bluetooth::BluetoothScreen;
@@ -68,7 +70,7 @@ pub use units::UnitsScreen;
 /// The number of Settings list entries — five themed groups. The row *labels* are looked up
 /// per-language at draw time (see [`SettingsScreen::draw`]). Each row opens a group screen: Ride
 /// (routing + the riding grid + retention), Display, Connections (Phone + Sensors), Power, and
-/// System (Units / Date & Time / Language / Firmware update / Reset).
+/// System (Units / Date & Time / Language / Firmware update / About / Reset).
 const N_ITEMS: usize = 5;
 
 /// The Settings list — a nav menu whose rows open the individual settings screens. State is the

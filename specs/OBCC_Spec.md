@@ -50,6 +50,7 @@ The key words MUST, MUST NOT, SHOULD, and MAY are interpreted as in RFC 2119.
 
 ```text
 catalog.json
+LICENSE.txt
 schema.json
 terrain.json
 skins/<id>.json
@@ -73,8 +74,11 @@ band rather than only by cell size because two semantic bands MAY use the same
 `terrain` is a **reserved** segment under `cells/`: it holds the terrain artifact
 class (§13), which is not a band. A schema MUST NOT declare a band with that id.
 
-`schema.json`, skin documents, cell sidecars, region metadata, and boundaries are
-producer records and MAY retain stable keys because no root points at them.
+`LICENSE.txt` is the store's human-readable provenance and licence statement,
+generated from the root's `source` block (§3.1); it keeps a stable key because a
+person, not a pin, is its consumer. `schema.json`, skin documents, cell sidecars,
+region metadata, and boundaries are producer records and MAY retain stable keys
+because no root points at them.
 Every root-referenced cell, satellite, and preview uses the immutable form above;
 the digest immediately before its final extension is the same lowercase SHA-256
 carried by its pin. Local bake trees keep the unsuffixed names, so content
@@ -90,6 +94,7 @@ references, unsafe URLs, or invalid ordering MUST reject the containing document
 {
   "schema_version": 2,
   "generated_at": "2026-07-30T09:00:00Z",
+  "source": { /* SourceEntry, §3.1 */ },
   "schema": { /* SchemaEntry */ },
   "skins": [ /* SkinEntry, sorted by id */ ],
   "regions": [ /* RegionEntry, sorted by id */ ],
@@ -103,6 +108,7 @@ references, unsafe URLs, or invalid ordering MUST reject the containing document
 | :-- | :-- | :-- |
 | `schema_version` | integer | MUST equal `2`. |
 | `generated_at` | string | RFC 3339 UTC, exactly `YYYY-MM-DDTHH:MM:SSZ`. |
+| `source` | object | The cell store's data provenance and licence (§3.1). |
 | `schema` | object | The catalog's single `SchemaEntry`. |
 | `skins` | array | Non-empty presentation choices, sorted by `id`. |
 | `regions` | array | Named selections, sorted by `id`. |
@@ -110,10 +116,50 @@ references, unsafe URLs, or invalid ordering MUST reject the containing document
 | `terrain` | object | Optional. The terrain artifact class (§13). |
 | `network_terrain_revision` | integer | Optional. The terrain revision the `core` band's nav ascents were integrated from (§13.4). |
 
-Every field but `terrain` and `network_terrain_revision` is required; both of those
-are absent for a terrain-less catalog, which is complete and valid. `generated_at`
-is the only wall clock introduced while generating the catalog and MAY be supplied
-explicitly for reproducible output.
+Every field but `source`, `terrain` and `network_terrain_revision` is required.
+`terrain` and `network_terrain_revision` are absent for a terrain-less catalog,
+which is complete and valid; `source` is required of every producer (§3.1) and
+absent only from catalogs published before it existed, which consumers MUST
+tolerate. `generated_at` is the only wall clock introduced while generating the
+catalog and MAY be supplied explicitly for reproducible output.
+
+### 3.1 Source declaration
+
+```jsonc
+"source": {
+  "dataset_id": "openstreetmap",
+  "attribution": "© OpenStreetMap contributors",
+  "license": "ODbL-1.0",
+  "license_url": "https://opendatacommons.org/licenses/odbl/1-0/"
+}
+```
+
+| Field | Type | Meaning |
+| :-- | :-- | :-- |
+| `dataset_id` | string | Kebab-case id of the source dataset the cells derive from. |
+| `attribution` | string | The dataset's required credit, verbatim. |
+| `license` | string | SPDX-style identifier of the licence the store is offered under. |
+| `license_url` | string | Where that licence's text lives. |
+
+The cell store is a derivative database of its source dataset, and for
+OpenStreetMap-derived cells the ODbL's share-alike terms require the published
+store to say so: that it derives from OSM, and that it is itself available under
+the ODbL. This block is that statement, machine-readable and in the one document
+every consumer reads first.
+
+All four fields are required and MUST be non-empty when the block is present. A
+**producer MUST publish it** — the compat carve-out in §3 exists for documents
+that predate the field, not as a licence to omit it. §13.5's display rule applies
+here the same way it applies to terrain: a consumer that describes the map data —
+a builder's summary card, a docs page, a device credits screen — SHOULD take the
+strings from the catalog rather than hard-coding them, so a source change carries
+its own notice with it. (A device with no live catalog in reach hard-codes
+necessarily; the bound is that anything *reading this document* has no excuse.)
+
+The publish also carries the same statement for a human at a stable key:
+`LICENSE.txt` at the store root, beside `catalog.json` (§11). The generator
+derives it from this block — and from §13.1's `attribution` when terrain is
+published — so the two can never disagree.
 
 ## 4. SchemaEntry
 
@@ -369,8 +415,8 @@ independent in both directions.
 
 A publish MUST make all referenced content available before replacing the root:
 
-1. generate the satellites and root from the verified tree;
-2. upload cells, sidecars, schema, skins, previews, regions, and satellites;
+1. generate the satellites, `LICENSE.txt`, and root from the verified tree;
+2. upload cells, sidecars, schema, skins, previews, regions, `LICENSE.txt`, and satellites;
 3. verify that every uploaded object is fetchable at the expected size;
 4. replace `catalog.json` last.
 
