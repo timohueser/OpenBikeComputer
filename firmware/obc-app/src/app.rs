@@ -14,6 +14,7 @@ use crate::host::{
     DrainStatus, HostCommand, HostCommandClass, HostEvent, HostMailbox, HostPending, HOST_COMMAND_CLASSES,
 };
 use crate::input::Gesture;
+use crate::reroute_freeze::PlanFamily;
 use crate::ride::RideSummary;
 use crate::ride_engine::RideEngine;
 use crate::route::RouteSummary;
@@ -1389,12 +1390,13 @@ impl App {
     /// freeze), and the one gesture that puts a map base back under a live search — Back on the
     /// detour spinner — also cancels the plan, which the host drains in the same pass. The
     /// simulator's `--freeze` flag drives this so the banner can be snapshotted over a live map.
-    /// No production path reaches it.
+    /// No production path reaches it. Stands in for a [`Route`](PlanFamily::Route) run, so a stray
+    /// detour edge cannot release it (see [`PlanFamily`]).
     pub fn debug_set_plan_live(&mut self, live: bool) {
         if live {
-            self.note_plan_started();
+            self.note_plan_started(PlanFamily::Route);
         } else {
-            self.note_plan_ended();
+            self.note_plan_ended(PlanFamily::Route);
         }
     }
 
@@ -1436,16 +1438,16 @@ impl App {
     /// *overlay* isn't either, because a plan start is not the banner's edge: this plan may well have
     /// begun under the opaque planning spinner, where there is no map to freeze and no banner to
     /// draw. [`take_dirty`](App::take_dirty) derives that edge from the engaged level instead.
-    fn note_plan_started(&mut self) {
-        self.freeze.plan_started();
+    fn note_plan_started(&mut self, family: PlanFamily) {
+        self.freeze.plan_started(family);
     }
 
     /// Release the freeze — the run answered, failed, or was cancelled. Dirties the **map**: it held
     /// still for the whole search and has a fix, a route, or a whole new geometry to catch up on. The
     /// banner comes off with the same [`take_dirty`](App::take_dirty) level edge that put it up.
     /// Idempotent: several release edges can land for one run.
-    fn note_plan_ended(&mut self) {
-        if self.freeze.plan_ended() {
+    fn note_plan_ended(&mut self, family: PlanFamily) {
+        if self.freeze.plan_ended(family) {
             self.ui.map_dirty = true;
         }
     }
@@ -1455,7 +1457,7 @@ impl App {
         use obc_route::nav::NavError;
         // The run is over whatever happens below — including for a *late* answer whose planning
         // screen the rider already cancelled away, which returns early two lines down.
-        self.note_plan_ended();
+        self.note_plan_ended(PlanFamily::Route);
         let Some(i) = self.ui.stack.iter().position(|s| matches!(s, Screen::NavPlanning(_))) else {
             return;
         };
@@ -1495,7 +1497,7 @@ impl App {
     /// cancelled) is dropped, and the stale preview slot cleared.
     fn on_detour_planned(&mut self, result: Result<crate::host::DetourPreview, obc_route::nav::NavError>) {
         use obc_route::nav::NavError;
-        self.note_plan_ended(); // the run is over — see `on_nav_planned` for the late-answer case
+        self.note_plan_ended(PlanFamily::Detour); // the run is over — see `on_nav_planned` for the late-answer case
         let Some(i) = self
             .ui
             .stack
@@ -2749,13 +2751,13 @@ impl App {
             HostCommandClass::CancelRoutePlan => self.activity.take_nav_cancel().then(|| {
                 // The host is being told to drop the planner: the run is over, so the freeze
                 // releases here rather than on an answer that will never come (#1146 P2).
-                self.note_plan_ended();
+                self.note_plan_ended(PlanFamily::Route);
                 HostCommand::CancelRoutePlan
             }),
             HostCommandClass::CancelDetour => self.activity.take_detour_cancel().then(|| {
                 // The preview polyline dies with the plan it previewed.
                 self.catalogs.clear_detour_preview();
-                self.note_plan_ended();
+                self.note_plan_ended(PlanFamily::Detour);
                 HostCommand::CancelDetour
             }),
             HostCommandClass::DeleteRoute => {
@@ -2799,11 +2801,11 @@ impl App {
             // host actually begins a planner run (a request the rider cancelled first is
             // annihilated in `Activity` and never drains, so it never freezes anything).
             HostCommandClass::PlanRoute => self.activity.take_nav_request().map(|req| {
-                self.note_plan_started();
+                self.note_plan_started(PlanFamily::Route);
                 HostCommand::PlanRoute(req)
             }),
             HostCommandClass::PlanDetour => self.activity.take_detour_request().map(|req| {
-                self.note_plan_started();
+                self.note_plan_started(PlanFamily::Detour);
                 HostCommand::PlanDetour(req)
             }),
             HostCommandClass::CommitDetour => self.activity.take_detour_commit().then_some(HostCommand::CommitDetour),
