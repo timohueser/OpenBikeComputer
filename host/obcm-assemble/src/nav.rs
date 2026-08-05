@@ -523,10 +523,12 @@ pub struct MergedNav {
     /// count.
     node_count: u32,
     chunk_count: u32,
-    index_len: usize,
+    index_len: u64,
     /// What the pool comes to once §8.4's no-straddle padding and the chunk-aligned tail are
-    /// applied — the one number the directory and the shard projection need from it.
-    pool_len: usize,
+    /// applied — the one number the directory and the shard projection need from it. `u64` for the
+    /// same reason the projection chain is: on wasm32 a `usize` here wraps before the §5.7 ceiling
+    /// ever sees the number.
+    pool_len: u64,
     /// What a read buffer in [`serialize`] may hold; the merge's own share of its budget.
     read_budget: usize,
     pub stats: NavStats,
@@ -541,9 +543,9 @@ impl MergedNav {
     /// `NAV_CHUNK_SIZE`, so the chunk region is arithmetic over the count (§8.1).
     pub fn section_len(&self, profile_table: &[u8]) -> u64 {
         (NAV_DIR_LEN + profile_table.len()) as u64
-            + self.index_len as u64
+            + self.index_len
             + self.chunk_count as u64 * NAV_CHUNK_SIZE as u64
-            + self.pool_len as u64
+            + self.pool_len
     }
 
     /// Give the scratch streams back, once the last shard that could name them has been written.
@@ -846,14 +848,16 @@ pub fn merge(
     // after a node is already full — so reproducing that order is the whole requirement. ---
     let mut pool_out = SpillWriter::<POOL_REC>::create(scratch, share)?;
     let mut adj = ExternalSort::<ADJ_REC>::new(scratch, budget / 2, by_adjacency);
-    let mut at = 0usize;
+    let mut at = 0u64;
     let mut seq: u32 = 0;
     for rec in by_emit.finish()? {
         let rec = rec?;
         let r = dense_ref(&rec);
-        let len = r.len as usize;
+        let len = r.len as u64;
         at = place(at, len);
-        if at > u32::MAX as usize {
+        // `u64`, not `usize`: on wasm32 `u32::MAX as usize` is `usize::MAX`, which made this
+        // guard dead code and let the cursor wrap — the same B1 wrap, one level below the layout.
+        if at > u32::MAX as u64 {
             return Err(Error::Capacity(
                 "the merged edge pool passes 4 GiB: `Edge Id` is a uint32 pool byte offset (OBCA §5.7)".into(),
             ));
@@ -877,7 +881,7 @@ pub fn merge(
         }
     }
     // The tail pads to a whole chunk, because §8.1's `Edge Chunk Count` measures the pool in chunks.
-    let pool_len = at.div_ceil(NAV_CHUNK_SIZE) * NAV_CHUNK_SIZE;
+    let pool_len = at.div_ceil(NAV_CHUNK_SIZE as u64) * NAV_CHUNK_SIZE as u64;
     let (pool, pool_count) = pool_out.seal()?;
     debug_assert_eq!(pool_count as usize, stats.edges, "one pool entry per kept edge");
 
@@ -889,7 +893,7 @@ pub fn merge(
         files: Some(NavFiles { index: flat.index, places: flat.places, points: flat.points, recs, pool }),
         node_count: flat.node_count,
         chunk_count: flat.chunk_count,
-        index_len: flat.node_count as usize * 4,
+        index_len: flat.node_count as u64 * 4,
         pool_len,
         read_budget: share,
         stats,
@@ -1341,10 +1345,10 @@ fn renumber(
 /// One function because there are two callers and they must not drift: [`merge`] lays the pool out
 /// with it to mint the `Edge Id`s, and [`serialize`] walks the same rule to emit the padding those
 /// ids assume. A disagreement between the two would be a file whose adjacency points into the gaps.
-fn place(at: usize, len: usize) -> usize {
-    let within = at % NAV_CHUNK_SIZE;
-    if within + len > NAV_CHUNK_SIZE {
-        at + (NAV_CHUNK_SIZE - within)
+fn place(at: u64, len: u64) -> u64 {
+    let within = at % NAV_CHUNK_SIZE as u64;
+    if within + len > NAV_CHUNK_SIZE as u64 {
+        at + (NAV_CHUNK_SIZE as u64 - within)
     } else {
         at
     }
@@ -1409,8 +1413,10 @@ pub fn serialize(
     let profile_count = profile_table.len() / obc_formats::obcm::NAV_PROFILE_LEN;
     let profile_table_offset = section_offset + NAV_DIR_LEN;
     let index_offset = profile_table_offset + profile_table.len();
-    let edge_pool_offset = index_offset + nav.index_len + nav.chunk_count as usize * NAV_CHUNK_SIZE;
-    let edge_chunk_count = (nav.pool_len / NAV_CHUNK_SIZE) as u32;
+    // Post-ceiling, every section offset and length fits `u32`, so the `usize` narrowing here is
+    // exact on every host.
+    let edge_pool_offset = index_offset + nav.index_len as usize + nav.chunk_count as usize * NAV_CHUNK_SIZE;
+    let edge_chunk_count = (nav.pool_len / NAV_CHUNK_SIZE as u64) as u32;
 
     let mut written = 0usize;
     let mut out = |buf: &[u8]| -> Result<()> {
@@ -1440,7 +1446,7 @@ pub fn serialize(
     // The §8.2 index is already in wire form on the seam, so it is a copy through one block buffer.
     let mut block = vec![0u8; nav.read_budget.clamp(NAV_CHUNK_SIZE, 1 << 20)];
     let mut at = 0u64;
-    let end = nav.index_len as u64;
+    let end = nav.index_len;
     while at < end {
         let want = block.len().min((end - at) as usize);
         scratch.read_at(files.index, at, &mut block[..want])?;
@@ -1454,14 +1460,14 @@ pub fn serialize(
     // read into. Both are a chunk long, which is the largest either can ever be.
     let pad = [CHUNK_END; NAV_CHUNK_SIZE];
     let mut rec = [0u8; NAV_CHUNK_SIZE];
-    let mut at = 0usize;
+    let mut at = 0u64;
     for r in SpillReader::<POOL_REC>::open(scratch, files.pool, nav.read_budget)? {
         let r = pool_ref(&r?);
         let len = r.len as usize;
         // The same rule the layout used, so the padding lands exactly where the `Edge Id`s say.
-        let start = place(at, len);
+        let start = place(at, len as u64);
         if start > at {
-            out(&pad[..start - at])?;
+            out(&pad[..(start - at) as usize])?;
             at = start;
         }
         // The layout named a cell by its index in the list the merge read. Handing a different list
@@ -1478,12 +1484,12 @@ pub fn serialize(
         let buf = &mut rec[..len];
         cell.read_into(cell.nav.edge_pool_offset + r.off as usize, buf)?;
         out(buf)?;
-        at += len;
+        at += len as u64;
     }
     // §8.1 measures the pool in whole chunks, so the tail pads out to one.
     if at < nav.pool_len {
         // `pad` is `[0xFF; 512]`; the remainder is at most one chunk by construction.
-        out(&pad[..nav.pool_len - at])?;
+        out(&pad[..(nav.pool_len - at) as usize])?;
     }
     debug_assert_eq!(written as u64, nav.section_len(profile_table));
     Ok(())
@@ -1641,7 +1647,7 @@ mod tests {
             node_count,
             chunk_count: 0,
             index_len: 0,
-            pool_len,
+            pool_len: pool_len as u64,
             read_budget: 1 << 16,
             stats: NavStats::default(),
         }
@@ -1732,9 +1738,9 @@ mod tests {
 
         // The rule both walks share, stated once: a record moves to the next chunk only when it
         // would cross the boundary, and a record that ends exactly on one does not move.
-        assert_eq!(place(300, 300), NAV_CHUNK_SIZE, "a straddling record starts the next chunk");
+        assert_eq!(place(300, 300), NAV_CHUNK_SIZE as u64, "a straddling record starts the next chunk");
         assert_eq!(place(300, 212), 300, "…and one that ends exactly on the boundary stays");
-        assert_eq!(place(NAV_CHUNK_SIZE, 1), NAV_CHUNK_SIZE, "an aligned cursor never pads");
+        assert_eq!(place(NAV_CHUNK_SIZE as u64, 1), NAV_CHUNK_SIZE as u64, "an aligned cursor never pads");
     }
 
     /// The layout names its source cells by index, so writing it against a different cell list is a
@@ -1781,12 +1787,12 @@ mod tests {
     /// The `Edge Id`s a packed cell would mint for a run of records — §8.4's placement rule, which
     /// is [`place`], applied from a zero cursor.
     fn pool_layout(recs: &[Vec<u8>]) -> Vec<u32> {
-        let mut at = 0usize;
+        let mut at = 0u64;
         recs.iter()
             .map(|r| {
-                at = place(at, r.len());
+                at = place(at, r.len() as u64);
                 let id = at as u32;
-                at += r.len();
+                at += r.len() as u64;
                 id
             })
             .collect()

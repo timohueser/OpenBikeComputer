@@ -26,9 +26,11 @@ obc-formats = { path = "../../firmware/obc-formats" }
 # container OBCT defines, so shelling out would only insert a second naming scheme between the
 # rasteriser and the catalog's object layout. It also carries the Copernicus credit the catalog
 # stamps, so there is exactly one copy of that wording in the repository.
-# `geotiff` only: the bakery rasterises tiles an operator already has and never downloads one, so
-# no HTTP client (and no TLS stack behind it) follows `obc-dem` into this tree.
-obc-dem = { path = "../obc-dem", default-features = false, features = ["geotiff"] }
+# `fetch` too, not just `geotiff`: since the terrain stage runs itself (a248a4c3) the bakery
+# fetches missing GLO-30 tiles into its cache, so the HTTP client legitimately follows `obc-dem`
+# into this tree. Declared here rather than inherited by workspace feature unification, so a
+# standalone `cargo check -p obc-bake` matches what the workspace builds.
+obc-dem = { path = "../obc-dem", default-features = false, features = ["geotiff", "fetch"] }
 # Skin previews are not screenshots of a second renderer. The bakery restamps a
 # canonical tiny OBCM through the assembly engine's production skin resolver and
 # renders it through the same `RenderScratch` the device runs.

@@ -21,8 +21,11 @@
 //! [`DirEntry::entry_block`]/[`entry_offset`](embedded_sdmmc::DirEntry::entry_offset) (this
 //! module re-reads the 32-byte on-disk entry to get the first cluster, which `ClusterId` hides).
 //! The volume geometry (partition start, FAT/data offsets) is re-derived from the MBR + BPB with
-//! the same rules `open_raw_volume`/`parse_volume` use, so the two views can't disagree on a card
-//! the manager successfully mounted. The caller should still verify the table against the normal
+//! the same rules `open_raw_volume`/`parse_volume` use, so the two views agree on any card the
+//! manager successfully mounted — except that this module additionally refuses a BPB whose derived
+//! sums wrap `u32` (the manager computes them unchecked) and clamps the cluster count to what the
+//! FAT actually covers (as Linux and FreeBSD do), because its arithmetic must stay in bounds where
+//! the manager's merely has to limp. The caller should still verify the table against the normal
 //! read path once at build time (read a block through both, compare) and fall back on any
 //! mismatch — a geometry bug must degrade to *slow*, never to *wrong bytes*.
 //!
@@ -216,15 +219,17 @@ impl<const N: usize> ExtentTableWithCapacity<N> {
             return Err(BuildError::Geometry); // FAT12 — unsupported, like the manager itself
         }
         let fat32 = cluster_count >= 65525;
-        // Two bounds the walk below then relies on: FAT32 addresses at most 0x0FFF_FFF5 clusters
-        // (a FAT16 volume is already under 65,525 here), which keeps `2 + cluster_count` and
-        // `cluster * 4` inside `u32`; and the FAT must be large enough to hold an entry for every
-        // id the walk can reach, which keeps `fat_start + cluster * 4 / 512` inside the FAT region
-        // — and therefore inside the volume already bounded above.
+        // Two bounds the walk below then relies on, applied as a *clamp* rather than a refusal:
+        // FAT32 addresses at most 0x0FFF_FFF5 clusters (a FAT16 volume is already under 65,525
+        // here), which keeps `2 + cluster_count` and `cluster * 4` inside `u32`; and the walk may
+        // only reach ids the FAT holds an entry for, which keeps `fat_start + cluster * 4 / 512`
+        // inside the FAT region — and therefore inside the volume already bounded above. Clamping
+        // mirrors Linux/FreeBSD (data clusters the FAT can't describe simply don't exist) and
+        // keeps every volume the manager mounts mountable here: a chain id past the clamp fails
+        // that one file's walk below, degrading to the slow path instead of refusing the card.
         let entries_per_block = if fat32 { 128 } else { 256 };
-        if cluster_count > 0x0FFF_FFF5 || cluster_count + 2 > fat_size.saturating_mul(entries_per_block) {
-            return Err(BuildError::Geometry);
-        }
+        let addressable = fat_size.saturating_mul(entries_per_block).saturating_sub(2).min(0x0FFF_FFF5);
+        let cluster_count = cluster_count.min(addressable);
         // No wrap: `non_data <= total_blocks` (the `checked_sub` above) and `part_lba +
         // total_blocks` fits, so both sums — and every `data_start + (cluster - 2) * spc` the walk
         // derives from them — stay below the volume's end block.
@@ -705,8 +710,6 @@ mod tests {
             }),
             ("reserved + num_fats * fat_size", |img, b| put_u32(img, b + 36, 0xFFFF_FFFF)),
             ("part_lba + total_blocks", |img, b| put_u32(img, b + 32, 0xFFFF_FFFF)),
-            ("2 + cluster_count, and the walk's cluster * 4", |img, b| put_u32(img, b + 32, 0x2000_0000)),
-            ("fat_start + cluster * 4 / 512 (a FAT too small for its own clusters)", |img, b| put_u32(img, b + 36, 1)),
         ];
 
         let fs = setup(mkfs_fat32(), &["MAP.BIN"], 4);
@@ -725,6 +728,24 @@ mod tests {
                 "{what} must refuse the build, not wrap into a table"
             );
         }
+
+        // A cluster count the FAT can't cover is *clamped*, not refused — the manager mounts
+        // these (so do Linux and FreeBSD, by the same clamp), and a refusal here would take a
+        // working card's map with it. An inflated total_blocks leaves the rest of the geometry
+        // untouched, so the build must succeed with the same extents as the pristine card; only
+        // a chain id past the clamp may fail, and then per-file in the walk.
+        {
+            let img = &mut *fs.disk.0.borrow_mut();
+            img[b..b + 512].copy_from_slice(&pristine);
+        }
+        let pristine_runs: Vec<_> = ExtentTable::build(fs.disk, eb, eo, len).unwrap().runs().collect();
+        {
+            let img = &mut *fs.disk.0.borrow_mut();
+            put_u32(img, b + 32, 0x2000_0000);
+        }
+        let clamped = ExtentTable::build(fs.disk, eb, eo, len)
+            .expect("an oversized cluster count is clamped to the FAT's coverage, not refused");
+        assert_eq!(clamped.runs().collect::<Vec<_>>(), pristine_runs, "the clamp must not move the extents");
 
         // Same rule for the caller-supplied directory-entry offset: `off + 32` must not wrap
         // 32-bit `usize` into a window that looks in-range.
