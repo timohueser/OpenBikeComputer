@@ -730,7 +730,11 @@ impl App {
                 // totals and the altimeter accumulate): a freeze pauses the map, not the ride. The
                 // two derived readouts below re-run against the *held* progress, so they are
                 // idempotent while frozen and re-lock from the fresh match the moment it lifts.
-                if !frozen {
+                if frozen {
+                    // The cursor stands still while the fixes keep coming, so the next match must
+                    // not be judged against a one-fix-wide forward window: arm the wide re-lock.
+                    self.ride.note_unmatched_fix();
+                } else {
                     self.ride.match_fix(&mut self.activity, fix, route);
                 }
                 // "Am I on a climb now?" is derived from the fresh match — with hysteresis, and a

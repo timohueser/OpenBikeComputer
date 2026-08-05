@@ -71,6 +71,11 @@ pub struct RouteMatch {
     /// `false` until the first fix has been matched; the first match scans the whole route
     /// to establish an initial lock from anywhere.
     started: bool,
+    /// Widen the **next** match's forward window to the rejoin window
+    /// ([`relock_wide`](RouteMatch::relock_wide)), then clear. Set when the caller knows fixes went
+    /// unmatched — the cursor is stale by more than one fix's travel and the tight on-route window
+    /// would not reach the rider.
+    wide_next: bool,
     buf: Vec<RoutePoint, MAX_POINTS_PER_CHUNK>,
 }
 
@@ -90,6 +95,7 @@ impl RouteMatch {
             floor_global_seg: 0,
             off_route: false,
             started: false,
+            wide_next: false,
             buf: Vec::new(),
         }
     }
@@ -103,6 +109,7 @@ impl RouteMatch {
         self.floor_global_seg = 0;
         self.off_route = false;
         self.started = false;
+        self.wide_next = false;
         self.buf.clear();
     }
 
@@ -123,6 +130,21 @@ impl RouteMatch {
         Some(pos)
     }
 
+    /// Ask the **next** match to search the wide (rejoin-sized) forward window once, then fall back
+    /// to the tight one.
+    ///
+    /// For the caller that knows fixes went unmatched while the cursor stood still. The on-route
+    /// window is [`FWD_SEGS_ON`] segments ahead — comfortably more than one fix's travel, and
+    /// comfortably *less* than a rider's travel through a multi-second gap. The Recalculating
+    /// freeze (#1146 P2) is exactly such a gap: it pauses matching for the length of a route search,
+    /// and without this the first fix after it would find nothing in range, flag off-route and hold
+    /// progress still — a false "off route" chip at the very moment the recalculation was supposed
+    /// to have sorted things out. One wide search re-locks instead. Idempotent, and free when no
+    /// fix was skipped (nobody calls it).
+    pub fn relock_wide(&mut self) {
+        self.wide_next = true;
+    }
+
     /// Match `(lon, lat)` (microdegrees) onto `route`, advancing the cursor. See the
     /// module docs for the forward-bias / off-route-freeze behaviour.
     pub fn update(&mut self, lon: i32, lat: i32, route: &RouteReader) -> Match {
@@ -134,11 +156,14 @@ impl RouteMatch {
         let p = (lon, lat);
         let cur_gidx = route.global_seg_index(self.chunk, self.seg) as i64;
 
-        // Window: the first lock and off-route rejoin scan wide; on-route a tight forward
-        // window (with a little backward slack) keeps it O(window) and forward-biased.
+        // Window: the first lock, an off-route rejoin and a requested re-lock scan wide; on-route a
+        // tight forward window (with a little backward slack) keeps it O(window) and forward-biased.
+        // The re-lock request is consumed here whichever branch wins, so it costs at most one wide
+        // search.
+        let wide_relock = core::mem::take(&mut self.wide_next);
         let (first_chunk, back, fwd) = if !self.started {
             (0usize, i64::MAX, i64::MAX) // first lock: whole route
-        } else if self.off_route {
+        } else if self.off_route || wide_relock {
             (self.chunk.saturating_sub(1), BACK_SEGS, FWD_SEGS_OFF)
         } else {
             (self.chunk.saturating_sub(1), BACK_SEGS, FWD_SEGS_ON)
