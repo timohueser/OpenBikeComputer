@@ -16,22 +16,7 @@ const BERLIN: (i32, i32) = (52_520_000, 13_405_000); // (lat, lon) µdeg
 
 /// Tick with one (or no) fix at `t`, no route, no other sensors.
 fn tick(app: &mut App, loc: &mut dyn LocationSource, t: u32) {
-    app.tick(
-        RideClock(t),
-        Sensors {
-            loc,
-            altimeter: None,
-            temperature: None,
-            clock: None,
-            compass: None,
-            track: None,
-            fuel: None,
-            hr: None,
-            power: None,
-            cadence: None,
-        },
-        None,
-    );
+    app.tick(RideClock(t), Sensors::new(loc), None);
 }
 /// Drive a full frame (input + tick) and drain it. `evs` is this frame's input.
 fn frame(app: &mut App, loc: &mut dyn LocationSource, t: u32, evs: &[InputEvent]) -> Dirty {
@@ -180,18 +165,8 @@ fn battery_is_polled_on_a_slow_cadence_and_redraws_home_only_on_change() {
     let mut gauge = CountingGauge { value: 75, polls: 0 };
     // Tick on Home with the gauge, returning whether Home (the map plane) was dirtied.
     let beat = |app: &mut App, gauge: &mut CountingGauge, t: u32| {
-        let s = Sensors {
-            loc: &mut NoFix,
-            altimeter: None,
-            temperature: None,
-            clock: None,
-            compass: None,
-            track: None,
-            fuel: Some(gauge),
-            hr: None,
-            power: None,
-            cadence: None,
-        };
+        let mut nofix = NoFix;
+        let s = Sensors { fuel: Some(gauge), ..Sensors::new(&mut nofix) };
         app.tick(RideClock(t), s, None);
         app.take_dirty().map
     };
@@ -228,18 +203,8 @@ fn a_battery_change_does_not_redraw_the_riding_views() {
 
     let mut gauge = CountingGauge { value: 75, polls: 0 }; // 75 % = the boot default
     let beat = |app: &mut App, gauge: &mut CountingGauge, t: u32| {
-        let s = Sensors {
-            loc: &mut NoFix,
-            altimeter: None,
-            temperature: None,
-            clock: None,
-            compass: None,
-            track: None,
-            fuel: Some(gauge),
-            hr: None,
-            power: None,
-            cadence: None,
-        };
+        let mut nofix = NoFix;
+        let s = Sensors { fuel: Some(gauge), ..Sensors::new(&mut nofix) };
         app.tick(RideClock(t), s, None);
         app.take_dirty().map
     };

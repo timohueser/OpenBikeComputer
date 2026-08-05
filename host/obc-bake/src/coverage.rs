@@ -107,7 +107,11 @@ impl Coverage {
         Coverage { polys, rings, bbox }
     }
 
-    /// The coverage's bounding box, µdeg, in [`UBox`] order.
+    /// The coverage's bounding box, µdeg, in [`UBox`] order `(min_lon, min_lat, max_lon, max_lat)`.
+    ///
+    /// A box is *not* a coverage ([`Coverage::contains`] is the real test — see this module's own
+    /// note on why Germany's box is not Germany); it is the right input only where a box is what is
+    /// being asked for, e.g. which DEM tiles a curated coverage touches.
     pub fn bbox(&self) -> UBox {
         self.bbox
     }

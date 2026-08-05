@@ -20,9 +20,9 @@
 //! deliberately untuned first values — revisit on-glass.
 
 use heapless::Vec;
-use obc_map_scene::{BBox, M_PER_DEG};
+use obc_map_scene::BBox;
 
-use crate::geo::project_to_segment;
+use crate::geo::{inflated_bbox, project_to_segment};
 use crate::reader::RouteReader;
 use obc_map_scene::{cos_lat, ground_dist_m_cl};
 
@@ -32,17 +32,17 @@ pub const CORRIDOR_MAX_PTS: usize = 128;
 
 /// Along-route sampling interval floor, m — about half the corridor width, so the chord between
 /// samples deviates from the true route by less than the width tolerance at any plausible bend.
-pub const CORRIDOR_MIN_SAMPLE_M: f32 = 40.0;
+pub(crate) const CORRIDOR_MIN_SAMPLE_M: f32 = 40.0;
 
 /// Half-width of the blacklisted corridor, m (#882: "within ~30–50 m").
-pub const CORRIDOR_WIDTH_M: f32 = 40.0;
+pub(crate) const CORRIDOR_WIDTH_M: f32 = 40.0;
 
 /// Endpoint exemption radius, m: an edge with either endpoint within this of the detour's
 /// start- or goal-snap node is never blacklisted, so A* can always leave the start and reach
 /// the goal — both of which sit on or near the route line ([`SNAP_RADIUS_M`] = 250, + margin).
 ///
 /// [`SNAP_RADIUS_M`]: crate::nav::SNAP_RADIUS_M
-pub const CORRIDOR_EXEMPT_M: f32 = 300.0;
+pub(crate) const CORRIDOR_EXEMPT_M: f32 = 300.0;
 
 /// Below this skipped-span length the two exemption discs swallow the whole corridor and the
 /// "detour" can simply re-follow the route ([`Corridor::is_degenerate`]); the chooser uses the
@@ -117,7 +117,7 @@ impl Corridor {
             }
         }
 
-        let bbox = inflated_bbox(&pts, cl);
+        let bbox = inflated_bbox(pts.iter().copied(), cl, CORRIDOR_WIDTH_M);
         Corridor { pts, bbox, exempt: None, cl, degenerate }
     }
 
@@ -185,26 +185,4 @@ impl Corridor {
     pub fn is_empty(&self) -> bool {
         self.pts.is_empty()
     }
-}
-
-/// Union bbox of `pts`, inflated by [`CORRIDOR_WIDTH_M`] converted to microdegrees at band `cl`.
-fn inflated_bbox(pts: &[(i32, i32)], cl: f32) -> BBox {
-    let mut bbox = BBox { min_lon: i32::MAX, min_lat: i32::MAX, max_lon: i32::MIN, max_lat: i32::MIN };
-    for &(lon, lat) in pts {
-        bbox.min_lon = bbox.min_lon.min(lon);
-        bbox.max_lon = bbox.max_lon.max(lon);
-        bbox.min_lat = bbox.min_lat.min(lat);
-        bbox.max_lat = bbox.max_lat.max(lat);
-    }
-    if pts.is_empty() {
-        return BBox { min_lon: 0, min_lat: 0, max_lon: 0, max_lat: 0 };
-    }
-    let m_per_udeg_lat = M_PER_DEG as f32 * 1e-6;
-    let pad_lat = (CORRIDOR_WIDTH_M / m_per_udeg_lat) as i32 + 1;
-    let pad_lon = (CORRIDOR_WIDTH_M / (m_per_udeg_lat * cl.max(0.05))) as i32 + 1;
-    bbox.min_lon -= pad_lon;
-    bbox.max_lon += pad_lon;
-    bbox.min_lat -= pad_lat;
-    bbox.max_lat += pad_lat;
-    bbox
 }

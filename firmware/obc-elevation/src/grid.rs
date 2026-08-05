@@ -75,6 +75,32 @@ pub fn axis_cells(cell_log2: u8) -> u32 {
     WORLD_SIDE >> cell_log2
 }
 
+/// Zero-padding width of a cell index in a canonical cell id (`OBCA_Spec.md` §1.3):
+/// `max(4, digits(axis_cells − 1))`. Four digits at `2^16` and above, wider below.
+///
+/// The rule is here, in the one crate both sides of the terrain pipeline already depend on,
+/// because it is **content addressing**, not formatting: `18/1204/52` and `18/01204/1052` are two
+/// strings for one cell, and a store keyed by the string would then hold the same square twice
+/// under two names. `obc-pack`'s `grid::id_width` and `obc-dem`'s `bake::cell_file_name` are the
+/// two producers of those strings, they cannot see each other (a host tool must not depend on the
+/// packer), and a second transcription of `max(4, …)` is exactly how the two would drift apart.
+///
+/// Integer-only and allocation-free, like everything else in this crate — the digit count is a
+/// loop, not a `to_string().len()`.
+pub fn id_width(cell_log2: u8) -> usize {
+    let mut v = axis_cells(cell_log2) - 1;
+    let mut digits = 1;
+    while v >= 10 {
+        v /= 10;
+        digits += 1;
+    }
+    if digits < 4 {
+        4
+    } else {
+        digits
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

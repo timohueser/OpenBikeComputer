@@ -236,7 +236,7 @@ pub const NAV_SETTLES_PER_STEP_CAP: u32 = 64;
 /// Emit-phase step budget: path hops (edge-geometry fetches + OBCR pushes) per
 /// [`NavPlanner::step`] — the emit is short next to the search, so a few hops per
 /// step finishes it in a handful of passes without one long blocking tail.
-pub const NAV_EMIT_HOPS_PER_STEP: u16 = 4;
+pub(crate) const NAV_EMIT_HOPS_PER_STEP: u16 = 4;
 
 /// How the router surfaces failure — the two-tier UX maps [`NavError::Exhausted`] to
 /// "Too far to route here" (with no distance cap, running out of table **is** the
@@ -650,9 +650,6 @@ pub enum NavPhase {
     Done,
 }
 
-/// One snapped plan endpoint: `(node_id, (lon, lat))` µdeg — see [`NavPlanner::endpoints`].
-pub type NavEndpoint = (u32, (i32, i32));
-
 /// The fine-grained internal phase; [`NavPhase`] is its public projection.
 enum PhaseState {
     SnapFrom,
@@ -867,14 +864,6 @@ impl NavPlanner {
     /// line logs it as `eps=`.
     pub fn epsilon_used(&self) -> (u32, u32) {
         NAV_EPSILON_LADDER[self.rung]
-    }
-
-    /// The snapped endpoints — `((start_id, start_coord), (goal_id, goal_coord))`, `(lon, lat)`
-    /// µdeg; zeroes for an endpoint whose snap phase hasn't run yet. A diagnostic for the
-    /// `nav_repro` harness (#501): lets a host run report exactly which graph nodes the plan
-    /// ran between.
-    pub fn endpoints(&self) -> (NavEndpoint, NavEndpoint) {
-        ((self.start_id, self.start_c), (self.goal_id, self.goal_c))
     }
 
     /// Terminal-transition helper: latch and return the failure.

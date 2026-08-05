@@ -11,16 +11,13 @@ use obc_formats::obcm::{HEADER_LEN, NAV_PROFILE_LEN, STYLE_RECORD_LEN};
 use obc_reader::{Lod, MapCache, MapTables, NavDirectory, PoiDirectory, Reader};
 
 use crate::grid::CellId;
+use crate::shard::HEADER_STYLE_OFFSET_AT;
 use crate::{Error, Result};
 
 /// Block size for a verbatim region copy. Big enough that a cell's chunk region moves in a handful
 /// of reads, small enough that the engine's peak working set stays independent of cell size — which
 /// is what lets a browser assemble a country.
 const COPY_BLOCK: usize = 256 * 1024;
-
-/// Byte offset of the header's `Style Offset` field (`OBCM_Spec.md` §1: magic 4, version 1, four
-/// `int32` bbox fields — `4 + 1 + 16`).
-const HEADER_STYLE_OFFSET_AT: usize = 21;
 
 /// One cell handed to the assembler: which cell it is, which band it belongs to, and where its bytes
 /// are. `band` is **not** inferable from the bytes (§3.1: a legitimately empty cell is

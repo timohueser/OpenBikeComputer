@@ -82,22 +82,7 @@ impl LocationSource for OneFix {
 /// One route-aware tick with an optional fresh fix.
 fn tick(app: &mut App, now_ms: u32, fix: Option<Fix>, route: Option<&RouteReader>) {
     let mut loc = OneFix(fix);
-    app.tick(
-        RideClock(now_ms),
-        Sensors {
-            loc: &mut loc,
-            altimeter: None,
-            temperature: None,
-            clock: None,
-            compass: None,
-            track: None,
-            fuel: None,
-            hr: None,
-            power: None,
-            cadence: None,
-        },
-        route,
-    );
+    app.tick(RideClock(now_ms), Sensors::new(&mut loc), route);
 }
 
 /// The coordinate `frac` of the way along the road (good enough for fix placement).

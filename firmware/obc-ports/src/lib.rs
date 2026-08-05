@@ -96,72 +96,38 @@ impl DateTime {
         }
     }
 
-    const fn next_day(self) -> Self {
-        let mut dt = self;
-        if dt.day < Self::month_len(dt.year, dt.month) {
-            dt.day += 1;
-        } else if dt.month < 12 {
-            dt.month += 1;
-            dt.day = 1;
-        } else if dt.year < u16::MAX {
-            dt.year += 1;
-            dt.month = 1;
-            dt.day = 1;
-        }
-        dt
+    /// Re-pin an unsanitised `month`/`day` into the calendar, so a nonsense stamp can't smear the
+    /// arithmetic below. An out-of-range `hour`/`minute` needs no pinning: it carries.
+    fn pinned(self) -> Self {
+        let month = self.month.clamp(1, 12);
+        Self { month, day: self.day.clamp(1, Self::month_len(self.year, month)), ..self }
     }
 
-    const fn prev_day(self) -> Self {
-        let mut dt = self;
-        if dt.day > 1 {
-            dt.day -= 1;
-        } else if dt.month > 1 {
-            dt.month -= 1;
-            dt.day = Self::month_len(dt.year, dt.month);
-        } else if dt.year > 0 {
-            dt.year -= 1;
-            dt.month = 12;
-            dt.day = 31;
-        }
-        dt
-    }
-
-    /// Advance this stamp by `mins`, saturating only at the `u16` representation boundary.
+    /// Advance this stamp by `mins`.
+    ///
+    /// O(1): the whole shift is one epoch-second round trip, not a day-at-a-time walk — this is on
+    /// the per-frame path (`WallClock::now`, which Home and Map read every frame). The result
+    /// saturates at the representable window's edges (`1970-01-01 00:00` / `2106-02-07 06:28`, the
+    /// `u32` epoch-second ceiling) rather than wrapping; callers wanting a narrower calendar (the
+    /// app's 2020–2099) clamp on top.
     pub fn add_minutes(self, mins: u32) -> Self {
-        let mut dt = self;
-        dt.month = dt.month.clamp(1, 12);
-        dt.day = dt.day.clamp(1, Self::month_len(dt.year, dt.month));
-        let total_min = dt.minute as u32 + mins;
-        dt.minute = (total_min % 60) as u8;
-        let total_hour = dt.hour as u32 + total_min / 60;
-        dt.hour = (total_hour % 24) as u8;
-        let mut days = total_hour / 24;
-        while days > 0 {
-            dt = dt.next_day();
-            days -= 1;
-        }
-        dt
+        Self::from_unix_clamped(self.pinned().to_unix_i64() + mins as i64 * 60)
     }
 
-    /// Shift this UTC stamp by a signed minute offset, carrying across dates.
+    /// Shift this UTC stamp by a signed minute offset, carrying across dates. O(1) and saturating,
+    /// on the same terms as [`add_minutes`](Self::add_minutes).
     pub fn with_offset(self, offset: i16) -> Self {
-        let tod = self.hour as i32 * 60 + self.minute as i32 + offset as i32;
-        let local_tod = tod.rem_euclid(24 * 60);
-        let mut day_shift = tod.div_euclid(24 * 60);
-        let mut date = Self { hour: 0, minute: 0, ..self };
-        while day_shift > 0 {
-            date = date.next_day();
-            day_shift -= 1;
-        }
-        while day_shift < 0 {
-            date = date.prev_day();
-            day_shift += 1;
-        }
-        date.add_minutes(local_tod as u32)
+        Self::from_unix_clamped(self.pinned().to_unix_i64() + offset as i64 * 60)
     }
 
     /// Unix seconds at this stamp's `HH:MM:00`, interpreting it as UTC.
     pub fn to_unix(self) -> u32 {
+        self.to_unix_i64() as u32
+    }
+
+    /// [`to_unix`](Self::to_unix) without the `u32` truncation: negative before the epoch and past
+    /// `u32::MAX` beyond 2106, so the calendar arithmetic can clamp instead of wrap.
+    fn to_unix_i64(self) -> i64 {
         let y = self.year as i64 - (self.month <= 2) as i64;
         let era = y.div_euclid(400);
         let yoe = y - era * 400;
@@ -169,7 +135,13 @@ impl DateTime {
         let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + self.day as i64 - 1;
         let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
         let days = era * 146_097 + doe - 719_468;
-        (days * 86_400 + self.hour as i64 * 3_600 + self.minute as i64 * 60) as u32
+        days * 86_400 + self.hour as i64 * 3_600 + self.minute as i64 * 60
+    }
+
+    /// [`from_unix`](Self::from_unix) over the signed range, pinning anything outside the
+    /// representable window to its nearest edge instead of wrapping the `u32` conversion.
+    fn from_unix_clamped(secs: i64) -> Self {
+        Self::from_unix(secs.clamp(0, u32::MAX as i64) as u32)
     }
 
     /// Build a UTC date/time from Unix seconds, dropping seconds.
@@ -320,6 +292,26 @@ pub struct Sensors<'a> {
     pub power: Option<&'a mut dyn PowerSource>,
     /// Optional cadence source.
     pub cadence: Option<&'a mut dyn CadenceSource>,
+}
+
+impl<'a> Sensors<'a> {
+    /// The location-only set: every optional capability absent. A host that has more fills them in
+    /// with struct-update syntax (`Sensors { fuel: Some(g), ..Sensors::new(loc) }`), so adding a
+    /// tenth optional here doesn't ripple through every caller.
+    pub fn new(loc: &'a mut dyn LocationSource) -> Self {
+        Sensors {
+            loc,
+            altimeter: None,
+            temperature: None,
+            clock: None,
+            compass: None,
+            track: None,
+            fuel: None,
+            hr: None,
+            power: None,
+            cadence: None,
+        }
+    }
 }
 
 /// A physical control button whose press **edges** the gesture layer times.

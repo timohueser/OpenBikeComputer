@@ -4,14 +4,15 @@
 //! The renderer-facing half — a hand-split set drawing pixel-identically to the monolith it was
 //! split from — lives in `obc-render/tests/volume_set_diff.rs`, where the render harness is.
 
-use std::cell::Cell;
-
-use obc_formats::io::{ByteSource, Error as IoError};
+use obc_formats::io::ByteSource;
 use obc_formats::obcs::{self, ManifestError, Role};
 use obc_map_scene::BBox;
 use obc_reader::{FullSetShards, MapCache, MapTables, MountError, MountedSet, SetShards, ShardTables, SliceSource};
 use obcm_testkit::set::{build_set, empty_lod, matched_pair, quadrants, ShardSpec};
 use obcm_testkit::{pack_line, seal, LodSpec, Style};
+
+mod common;
+use common::CountingSource;
 
 /// (min_lon, min_lat, max_lon, max_lat) — 4000 µdeg square, so its quadrants and their midpoints
 /// are exact and the four-way split is lossless.
@@ -19,34 +20,6 @@ const ASSEMBLY: (i32, i32, i32, i32) = (0, 0, 4000, 4000);
 const COARSE_MPP: f32 = f32::INFINITY;
 const FINE_MPP: f32 = 4.0;
 const STYLES: &[Style] = &[(1, 0, 0x07E0, 1, 1, false, None)];
-
-/// A [`ByteSource`] that counts `read_at` calls, so a test can assert which *files* a query
-/// touched — the observable §5.6 property is the absence of I/O, not a return value.
-struct Counting<'a> {
-    bytes: &'a [u8],
-    reads: Cell<u32>,
-}
-
-impl<'a> Counting<'a> {
-    fn new(bytes: &'a [u8]) -> Counting<'a> {
-        Counting { bytes, reads: Cell::new(0) }
-    }
-    fn take(&self) -> u32 {
-        let count = self.reads.get();
-        self.reads.set(0);
-        count
-    }
-}
-
-impl ByteSource for Counting<'_> {
-    fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), IoError> {
-        self.reads.set(self.reads.get() + 1);
-        SliceSource(self.bytes).read_at(offset, buf)
-    }
-    fn len(&self) -> u32 {
-        self.bytes.len() as u32
-    }
-}
 
 /// One line per quadrant. The anchor is stored **relative to the leaf bbox**, which is the same
 /// quadrant on both sides of the split, so the four chunks are byte-identical in the monolith and
@@ -304,7 +277,7 @@ fn dangling_shards_are_ignored() {
     // A leftover seventh file sitting on the card next to the set.
     let mut with_orphan = fixture.shards.clone();
     with_orphan.push(fixture.shards[2].clone());
-    let sources: Vec<Counting> = with_orphan.iter().map(|f| Counting::new(f.as_slice())).collect();
+    let sources: Vec<CountingSource> = with_orphan.iter().map(|f| CountingSource::new(f.as_slice())).collect();
     let core = MapTables::parse(&sources[0]).unwrap();
 
     // Handing the mount the orphan too is a count mismatch, not a bigger set.
@@ -491,7 +464,7 @@ fn dispatch_touches_only_the_files_a_viewport_needs() {
     use obc_map_scene::MapScene;
 
     let (_, fixture) = pair();
-    let sources: Vec<Counting> = fixture.shards.iter().map(|f| Counting::new(f.as_slice())).collect();
+    let sources: Vec<CountingSource> = fixture.shards.iter().map(|f| CountingSource::new(f.as_slice())).collect();
     let refs: Vec<&dyn ByteSource> = sources.iter().map(|s| s as &dyn ByteSource).collect();
     let manifest = obcs::parse(&fixture.manifest).unwrap();
     let core = MapTables::parse(&sources[0]).unwrap();
@@ -538,7 +511,7 @@ fn dispatch_touches_only_the_files_a_viewport_needs() {
 #[test]
 fn nav_and_poi_always_go_to_the_core() {
     let (_, fixture) = pair();
-    let sources: Vec<Counting> = fixture.shards.iter().map(|f| Counting::new(f.as_slice())).collect();
+    let sources: Vec<CountingSource> = fixture.shards.iter().map(|f| CountingSource::new(f.as_slice())).collect();
     let refs: Vec<&dyn ByteSource> = sources.iter().map(|s| s as &dyn ByteSource).collect();
     let manifest = obcs::parse(&fixture.manifest).unwrap();
     let core = MapTables::parse(&sources[0]).unwrap();

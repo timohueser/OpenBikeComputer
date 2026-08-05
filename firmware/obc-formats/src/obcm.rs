@@ -8,10 +8,10 @@ pub const HEADER_LEN: usize = 40;
 pub const LOD_ENTRY_LEN: usize = 18;
 pub const STYLE_RECORD_LEN: usize = 8;
 
-/// Width of the v11 **compact** feature header (§5): `style, flags, pt_count u8, anchor u16 ×2`.
+/// Width of the **compact** feature header (§5): `style, flags, pt_count u8, anchor u16 ×2`.
 /// The common case — a feature of ≤ 255 vertices whose leaf-relative anchor fits `0..=65535`.
 pub const FEATURE_HEADER_COMPACT_LEN: usize = 7;
-/// Width of the v11 **wide** feature header (§5, `FEATURE_FLAG_WIDE` set): `style, flags,
+/// Width of the **wide** feature header (§5, `FEATURE_FLAG_WIDE` set): `style, flags,
 /// pt_count u16, anchor i32 ×2` — the escape for a big feature or a leaf spanning more than
 /// 65 535 µdeg. Both layouts put `flags` at byte 1, so a reader knows the width before it needs it.
 pub const FEATURE_HEADER_WIDE_LEN: usize = 12;

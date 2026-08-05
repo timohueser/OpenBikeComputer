@@ -4,7 +4,6 @@
 //! | capability | command |
 //! |---|---|
 //! | published map catalog | [`catalog`] |
-//! | app storage | [`storage_info`] |
 //! | — | [`usb`], because the webview has no WebUSB and this tier is the universal USB path |
 //! | — | [`rides`], because a durable copy of a ride is what a browser cannot promise |
 //!
@@ -19,7 +18,6 @@ mod http;
 mod map_output;
 mod paths;
 mod rides;
-mod storage;
 mod usb;
 
 use std::sync::Arc;
@@ -87,12 +85,6 @@ async fn map_output_discard(outputs: tauri::State<'_, Arc<map_output::Outputs>>,
 /// Where built maps go. Shown in the UI, so it is a fact the user can act on.
 fn maps_dir(app: &tauri::AppHandle) -> std::path::PathBuf {
     paths::maps_dir(app.path().document_dir().ok())
-}
-
-/// Every place the app has put bytes on this disk, with sizes.
-#[tauri::command]
-fn storage_info(app: tauri::AppHandle) -> Vec<storage::Place> {
-    storage::places(&maps_dir(&app), &paths::ride_archive_dir(app.path().app_data_dir().ok()))
 }
 
 /// Show a produced file in the platform's file manager.
@@ -229,7 +221,6 @@ fn main() {
             map_output_write,
             map_output_finish,
             map_output_discard,
-            storage_info,
             reveal_file,
             // E2 (#912). The library is a folder plus an index; the ack follows `rides_import`.
             rides_index,

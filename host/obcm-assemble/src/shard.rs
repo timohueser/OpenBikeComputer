@@ -69,33 +69,40 @@ pub struct ShardPlan {
 }
 
 impl ShardPlan {
-    /// Layout cursor: where each region starts, given the fixed prefix.
-    fn layout(&self, style_len: usize, poi_len: usize, nav_len: usize) -> Layout {
-        let lod_table_offset = HEADER_LEN + style_len;
-        let mut cursor = lod_table_offset + self.lods.len() * LOD_ENTRY_LEN;
+    /// Layout cursor: where each region starts, given the fixed prefix. `u64` throughout, never
+    /// `usize`: the crate's `--lib` target is wasm32, where a projection accumulated in a 32-bit
+    /// `usize` wraps past 4 GiB and hands §5.7's ceiling a small number it happily accepts.
+    fn layout(&self, style_len: usize, poi_len: u64, nav_len: u64) -> Result<Layout> {
+        let lod_table_offset = (HEADER_LEN + style_len) as u64;
+        let mut cursor = lod_table_offset + (self.lods.len() * LOD_ENTRY_LEN) as u64;
         let mut lod_offsets = Vec::with_capacity(self.lods.len());
         for l in &self.lods {
             lod_offsets.push(cursor);
-            cursor += l.region_bytes() as usize;
+            cursor = cursor.checked_add(l.region_bytes()).ok_or_else(|| self.past_u64())?;
         }
         let poi_offset = cursor;
-        let nav_offset = poi_offset + poi_len;
-        Layout { lod_table_offset, lod_offsets, poi_offset, nav_offset, total: (nav_offset + nav_len) as u64 }
+        let nav_offset = poi_offset.checked_add(poi_len).ok_or_else(|| self.past_u64())?;
+        let total = nav_offset.checked_add(nav_len).ok_or_else(|| self.past_u64())?;
+        Ok(Layout { lod_table_offset, lod_offsets, poi_offset, nav_offset, total })
+    }
+
+    fn past_u64(&self) -> Error {
+        Error::Capacity(format!("shard {}'s layout does not fit a u64 of bytes (OBCA §5.7)", self.index))
     }
 }
 
 struct Layout {
-    lod_table_offset: usize,
-    lod_offsets: Vec<usize>,
-    poi_offset: usize,
-    nav_offset: usize,
+    lod_table_offset: u64,
+    lod_offsets: Vec<u64>,
+    poi_offset: u64,
+    nav_offset: u64,
     total: u64,
 }
 
 /// Compute a shard's total size without writing it — §5.7's projection, applied to the assembler's
 /// own output so an over-size file is refused rather than emitted.
-pub fn projected_bytes(plan: &ShardPlan, style_len: usize, poi_len: usize, nav_len: usize) -> u64 {
-    plan.layout(style_len, poi_len, nav_len).total
+pub fn projected_bytes(plan: &ShardPlan, style_len: usize, poi_len: u64, nav_len: u64) -> Result<u64> {
+    Ok(plan.layout(style_len, poi_len, nav_len)?.total)
 }
 
 /// Write one shard: header, style table, LOD table, every LOD region, the POI section, the nav
@@ -136,7 +143,7 @@ pub fn write(
     let empty_nav = if plan.core { None } else { Some(MergedNav::empty(Default::default())) };
     let poi_bytes_len = empty_poi.as_ref().map_or_else(|| poi.section_len(), |p| p.section_len());
     let nav_len = empty_nav.as_ref().map_or(nav, |n| n).section_len(profile_table);
-    let l = plan.layout(style_bytes.len(), poi_bytes_len, nav_len);
+    let l = plan.layout(style_bytes.len(), poi_bytes_len, nav_len)?;
     if l.total > FILE_CEILING {
         return Err(Error::Capacity(format!(
             "shard {} would be {} bytes, past the {FILE_CEILING}-byte FAT32/uint32 ceiling — reduce the coverage \
@@ -177,11 +184,11 @@ pub fn write(
     }
 
     // 5/6. The POI and nav sections — the core's rebuilt ones, or a legal empty pair (§5.1).
-    out(&crate::poi::serialize(empty_poi.as_ref().unwrap_or(poi), l.poi_offset))?;
+    out(&crate::poi::serialize(empty_poi.as_ref().unwrap_or(poi), l.poi_offset as usize))?;
     crate::nav::serialize(
         empty_nav.as_ref().unwrap_or(nav),
         profile_table,
-        l.nav_offset,
+        l.nav_offset as usize,
         nav_cells,
         scratch,
         &mut out,
@@ -244,6 +251,80 @@ pub fn push_lod_entry(
     table.extend_from_slice(&node_count.to_le_bytes());
     table.extend_from_slice(&(chunk_size as u16).to_le_bytes());
     table.extend_from_slice(&chunk_count.to_le_bytes());
+}
+
+/// Byte offset of the header's `Style Offset` field (`OBCM_Spec.md` §1: magic 4, version 1, four
+/// `int32` bbox fields — `4 + 1 + 16`).
+pub const HEADER_STYLE_OFFSET_AT: usize = 21;
+
+/// Byte offset of the header's `Marker Color` field — the one other byte a skin owns.
+pub const HEADER_MARKER_COLOR_AT: usize = 30;
+
+/// Why a restamp could not happen. It carries the numbers rather than a sentence, because the two
+/// callers word their failures for very different readers: `obc-bake` tells a maintainer to refresh
+/// a fixture before a long bake, the skin editor tells a person in a browser tab why the picture
+/// did not change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RestampError {
+    /// Fewer than [`HEADER_LEN`] bytes — not an OBCM image at all.
+    ShorterThanHeader,
+    /// The header's `Style Offset` points past the end.
+    BadStyleOffset,
+    /// `offset + 1 + count · record` overflows `usize`.
+    TableOverflows,
+    /// The declared table runs past the end of the image.
+    TableTruncated,
+    /// The image declares `count` styles but the skin resolved to only `resolved`.
+    TooFewStyles { count: usize, resolved: usize },
+    /// The `count`-style table in the image is not the `packed` bytes a fresh pack produces.
+    LengthMismatch { count: usize, packed: usize },
+    /// The image's style ids are not the skin's — the image belongs to another schema revision.
+    IdMismatch { have: Vec<u8>, want: Vec<u8> },
+}
+
+/// Stamp a resolved skin onto an OBCM image **in place**: its style table and the header's marker
+/// colour, and nothing else. That is the whole of what applying a skin means (`OBCA_Spec.md` §5) —
+/// ≈ 2 KB and one `u16` — which is why a skin invalidates no cell and a preview needs no re-pack.
+///
+/// Only the styles the image actually carries are stamped. A schema that has grown feature types
+/// since the image was cut keeps its trailing ones: style ids are assigned in schema document order,
+/// so an appended type takes the next free id and leaves every id in the image meaning what it
+/// meant — and a type the image has no geometry for cannot change the picture anyway. The image's
+/// table must therefore be a **prefix** of the skin's assignment; ids that disagree are refused,
+/// because there the bytes mean something the schema no longer says.
+///
+/// Two callers share this: `obc-bake`'s published thumbnails and the builder's live skin editor.
+/// They used to hold a byte-for-byte copy each, down to the three header offsets.
+pub fn restamp_style_table(
+    map: &mut [u8],
+    styles: &[StyleRecord],
+    marker_color: u16,
+) -> core::result::Result<(), RestampError> {
+    if map.len() < HEADER_LEN {
+        return Err(RestampError::ShorterThanHeader);
+    }
+    let style_offset = u32::from_le_bytes(
+        map[HEADER_STYLE_OFFSET_AT..HEADER_STYLE_OFFSET_AT + 4].try_into().expect("four bytes inside the header"),
+    ) as usize;
+    let count = *map.get(style_offset).ok_or(RestampError::BadStyleOffset)? as usize;
+    let end = style_offset.checked_add(1 + count * STYLE_RECORD_LEN).ok_or(RestampError::TableOverflows)?;
+    let slot = map.get_mut(style_offset..end).ok_or(RestampError::TableTruncated)?;
+    if styles.len() < count {
+        return Err(RestampError::TooFewStyles { count, resolved: styles.len() });
+    }
+    let stamped = &styles[..count];
+    let packed = pack_style_table(stamped);
+    if slot.len() != packed.len() {
+        return Err(RestampError::LengthMismatch { count, packed: packed.len() });
+    }
+    let have: Vec<u8> = slot[1..].chunks_exact(STYLE_RECORD_LEN).map(|record| record[0]).collect();
+    let want: Vec<u8> = stamped.iter().map(|style| style.id).collect();
+    if have != want {
+        return Err(RestampError::IdMismatch { have, want });
+    }
+    slot.copy_from_slice(&packed);
+    map[HEADER_MARKER_COLOR_AT..HEADER_MARKER_COLOR_AT + 2].copy_from_slice(&marker_color.to_le_bytes());
+    Ok(())
 }
 
 /// The style table (`OBCM_Spec.md` §2): `Count` then one 8-byte record per style, id ascending.
@@ -410,6 +491,7 @@ pub fn terrain_filename(card_id: u16) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scratch::MemoryScratch;
 
     fn plan(index: usize, role: BandRole, core: bool) -> ShardPlan {
         ShardPlan {
@@ -498,6 +580,31 @@ mod tests {
         assert_eq!(parsed.record_count(), 2);
         assert_eq!(parsed.terrain().map(|t| t.bytes), Some(6_192));
         assert!(parsed.is_single_file(), "terrain is its own file, so this is still §5.5's fast path");
+    }
+
+    /// §5.7's ceiling is only a ceiling if the projection can exceed it. The layout is `u64` for
+    /// that reason: in the wasm32 `--lib` build a `usize` cursor wraps at 4 GiB, so an over-size
+    /// selection would project *small*, take the single-file path, and stream a file whose header
+    /// offsets belong to a layout that does not exist.
+    #[test]
+    fn a_layout_past_the_ceiling_is_refused_rather_than_wrapped() {
+        let mut p = plan(0, BandRole::Geometry, false);
+        p.lods = vec![LodPlan { node_count: 1, chunk_bytes: 3_000_000_000, ..LodPlan::empty(0, None, 4096) }; 2];
+        // The empty pair this non-core shard carries, which is what `write` will project against.
+        let poi = crate::poi::empty_layout(p.box_.ubox());
+        let nav = MergedNav::empty(Default::default());
+        let poi_len: u64 = poi.section_len();
+        let nav_len: u64 = nav.section_len(&[]);
+
+        let projected: u64 = projected_bytes(&p, 0, poi_len, nav_len).expect("a u64 holds it");
+        assert_eq!(projected, 2 * 3_000_000_008 + (HEADER_LEN + 2 * LOD_ENTRY_LEN) as u64 + poi_len + nav_len);
+        assert!(projected > FILE_CEILING);
+
+        let mut sink = |_: &[u8]| -> Result<()> { panic!("a refused shard writes no bytes") };
+        let err = write(&p, &[], &[], &[], 0, &poi, &nav, &[], &MemoryScratch::new(), &mut sink)
+            .expect_err("past the ceiling");
+        assert!(matches!(err, Error::Capacity(_)), "got: {err}");
+        assert!(format!("{err}").contains("past the"), "got: {err}");
     }
 
     #[test]

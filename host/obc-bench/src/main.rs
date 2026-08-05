@@ -46,7 +46,9 @@ const ITERS: usize = 10;
 
 /// The fixed scene matrix: `(name, meters-per-pixel, heading°)`. Rides the fixture's two LODs
 /// (riding = fine, mid/overview = coarse) both north-up and rotated; the overview pair must
-/// saturate the span buffer (`features_dropped > 0`) or the fixture has gone stale.
+/// saturate the frame budget (`features_dropped > 0`) or the fixture has gone stale. What fills
+/// first there is the **ring** buffer — the fixture's coarse features are all single-ring, so its
+/// ring count equals its feature count and `MAX_FRAME_RINGS` is the ceiling.
 const SCENES: [(&str, f32, f32); 6] = [
     ("riding", 0.5, 0.0),
     ("riding-rot", 0.5, 35.0),
@@ -252,7 +254,7 @@ fn run_matrix() -> Vec<SceneResult> {
             if name.starts_with("overview") {
                 assert!(
                     r.stats.features_dropped > 0,
-                    "scene `{name}` must saturate the span buffer (features_dropped > 0); \
+                    "scene `{name}` must saturate the frame budget (features_dropped > 0); \
                      the fixture isn't dense enough — grow obcm_testkit::build_bench_map"
                 );
             }
@@ -753,15 +755,22 @@ mod tests {
         assert_eq!(obcm_testkit::build_bench_map(), obcm_testkit::build_bench_map());
     }
 
-    /// A full-map overview view must push past `MAX_SPANS` so the priority-drop path is exercised —
-    /// through the real render, exactly as the runtime assert in `run_matrix` demands.
+    /// A full-map overview view must push past the frame's feature ceiling so the priority-drop
+    /// path is exercised — through the real render, exactly as the runtime assert in `run_matrix`
+    /// demands.
     #[test]
-    fn overview_scene_saturates_span_buffer() {
+    fn overview_scene_saturates_frame_budget() {
         let map = obcm_testkit::build_bench_map();
         let clock = StdClock(Instant::now());
         let r = run_scene(&map, "overview", 30.0, 0.0, &clock);
-        assert!(r.stats.features_tried > obc_render::MAX_SPANS, "fixture density under MAX_SPANS");
-        assert!(r.stats.features_dropped > 0, "overview must overflow the span buffer");
+        assert!(
+            r.stats.features_tried > obc_render::MAX_FRAME_RINGS,
+            "fixture density under the feature ceiling MAX_FRAME_RINGS"
+        );
+        assert!(r.stats.features_dropped > 0, "overview must overflow the frame budget");
+        // Single-ring features, so the ring buffer is what fills — assert it, since the whole point
+        // of this scene is to exercise the drop path at its real trigger.
+        assert!(r.stats.ring_utilization >= 1.0, "the ring buffer is the saturated one");
     }
 
     /// The riding scenes must land on the fine LOD and the overview on the coarse one, or the

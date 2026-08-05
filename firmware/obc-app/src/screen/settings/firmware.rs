@@ -181,28 +181,14 @@ fn draw_wrapped_label(cv: &mut impl Surface, text: &str, x: i32, top_y: i32, wid
 mod tests {
     use super::*;
     use crate::activity::{Activity, DfuAction};
-    use crate::screen::PoiScratch;
+    use crate::screen::test_ctx;
     use crate::settings::Settings;
     use crate::{AppState, Mode};
 
     fn run(scr: &mut FirmwareScreen, act: &mut Activity, g: Gesture) -> Transition {
         let mut st = AppState::new(0, 0, 1.0);
         let mut settings = Settings::default();
-        let scratch = PoiScratch::new();
-        let mut cx = Ctx {
-            state: &mut st,
-            activity: act,
-            settings: &mut settings,
-            routes: &[],
-            rides: &[],
-            trips: &[],
-            nav_profiles: &crate::NavProfiles::EMPTY,
-            poi_scratch: &scratch,
-            waypoints: &[],
-            corridor: &[],
-            sensor_scan_hits: &[],
-            now_ms: 0,
-        };
+        let mut cx = test_ctx(&mut st, act, &mut settings);
         scr.handle(g, &mut cx)
     }
 

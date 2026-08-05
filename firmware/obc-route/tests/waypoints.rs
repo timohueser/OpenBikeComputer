@@ -4,12 +4,12 @@
 //! route without waypoints.
 
 use obc_formats::io::SliceSource;
-use obc_formats::obcr::{HEADER_FULL_LEN, VERSION, WAYPOINT_ELE_NONE, WAYPOINT_LEN, WAYPOINT_NAME_OFF};
+use obc_formats::obcr::{WAYPOINT_ELE_NONE, WAYPOINT_LEN};
 use obc_reader::PoiCategory;
 use obc_route::{for_each_waypoint, gpx_to_obcr, RouteIndex, RouteReader, Waypoint, Waypoints, MAX_WAYPOINTS};
 
 mod common;
-use common::{convert, decode, VecSink};
+use common::{build_obcr, convert, decode, ChunkIn, IndexPlacement, RouteSpec, VecSink, WpRec};
 
 /// Collect every stored waypoint of an `.obcr` byte buffer.
 fn waypoints(bytes: &[u8]) -> Vec<Waypoint> {
@@ -20,77 +20,23 @@ fn waypoints(bytes: &[u8]) -> Vec<Waypoint> {
     out
 }
 
-/// A waypoint record to hand-encode: `(dist_along_m, lon, lat, ele, category, name_len,
-/// lateral_offset_m, name_bytes)` — `name_len` passed explicitly so a test can lie with it.
-type WpRec<'a> = (u32, i32, i32, i16, u8, u8, i16, &'a [u8]);
-
-/// Build a `.obcr` by hand, mirroring the spec's byte layout independently of the
-/// converter (the format.rs philosophy): a 128-byte header, one 2-point chunk, the
-/// index, then the waypoint table.
+/// Build a `.obcr` by hand, mirroring the spec's byte layout independently of the converter (the
+/// `format.rs` philosophy): a 128-byte header, one 2-point chunk `(1000, 2000, 100)` →
+/// `(1500, 2500, 110)`, the index, then the §4 waypoint table.
 fn v3_route(wps: &[WpRec]) -> Vec<u8> {
-    // Geometry: (1000, 2000, 100) → (1500, 2500, 110), one chunk.
-    let data_offset = HEADER_FULL_LEN as u32;
-    let index_offset = data_offset + 6; // one 6-byte delta record
-    let wpt_offset = index_offset + 44;
-
-    let mut f: Vec<u8> = Vec::new();
-    f.extend_from_slice(b"OBCR");
-    f.push(VERSION); // version
-    f.push(0); // flags
-    f.push(4); // name len
-    f.push(0); // reserved
-    for v in [1_000i32, 2_000, 1_500, 2_500, 1_000, 2_000] {
-        f.extend_from_slice(&v.to_le_bytes()); // bbox min/max + start
-    }
-    f.extend_from_slice(&2u32.to_le_bytes()); // point count
-    f.extend_from_slice(&70u32.to_le_bytes()); // total distance
-    f.extend_from_slice(&10u32.to_le_bytes()); // ascent
-    f.extend_from_slice(&0u32.to_le_bytes()); // descent
-    f.extend_from_slice(&100i16.to_le_bytes()); // min ele
-    f.extend_from_slice(&110i16.to_le_bytes()); // max ele
-    f.extend_from_slice(&1u32.to_le_bytes()); // chunk count
-    f.extend_from_slice(&index_offset.to_le_bytes());
-    f.extend_from_slice(&data_offset.to_le_bytes());
-    let mut name_field = [0u8; 48];
-    name_field[..4].copy_from_slice(b"Alps");
-    f.extend_from_slice(&name_field);
-    // v2 extension (§1.1): waypoint table offset + count + 10 reserved bytes.
-    f.extend_from_slice(&wpt_offset.to_le_bytes());
-    f.extend_from_slice(&(wps.len() as u16).to_le_bytes());
-    f.extend_from_slice(&[0u8; 10]);
-    assert_eq!(f.len(), HEADER_FULL_LEN, "the header must be 128 bytes");
-
-    // Chunk 0 data: the anchor is implicit; one delta record to the second point.
-    f.extend_from_slice(&500i16.to_le_bytes());
-    f.extend_from_slice(&500i16.to_le_bytes());
-    f.extend_from_slice(&110i16.to_le_bytes());
-
-    // ChunkMeta.
-    for v in [1_000i32, 2_000, 1_500, 2_500, 1_000, 2_000] {
-        f.extend_from_slice(&v.to_le_bytes()); // bbox + anchor
-    }
-    f.extend_from_slice(&100i16.to_le_bytes()); // anchor ele
-    f.extend_from_slice(&2u16.to_le_bytes()); // point count
-    f.extend_from_slice(&0u32.to_le_bytes()); // cum distance
-    f.extend_from_slice(&0u32.to_le_bytes()); // cum ascent
-    f.extend_from_slice(&data_offset.to_le_bytes());
-    f.extend_from_slice(&6u32.to_le_bytes());
-
-    // Waypoint records (§4): 44 bytes each.
-    for &(along, lon, lat, ele, category, name_len, offset, name) in wps {
-        let mut rec = [0u8; WAYPOINT_LEN];
-        rec[0..4].copy_from_slice(&along.to_le_bytes());
-        rec[4..8].copy_from_slice(&lon.to_le_bytes());
-        rec[8..12].copy_from_slice(&lat.to_le_bytes());
-        rec[12..14].copy_from_slice(&ele.to_le_bytes());
-        rec[14] = category;
-        rec[15] = name_len;
-        rec[16..18].copy_from_slice(&offset.to_le_bytes());
-        // rec[18..20] reserved, zero
-        rec[WAYPOINT_NAME_OFF..WAYPOINT_NAME_OFF + name.len()].copy_from_slice(name);
-        f.extend_from_slice(&rec);
-    }
-    f
+    build_obcr(&RouteSpec {
+        name: "Alps",
+        chunks: &[ChunkIn {
+            points: vec![(1_000, 2_000, 100), (1_500, 2_500, 110)],
+            cum_distance_m: 0,
+            cum_ascent_m: 0,
+        }],
+        totals: (70, 10, 0),
+        index: IndexPlacement::AfterData,
+        waypoints: Some(wps),
+        ..Default::default()
+    })
+    .0
 }
 
 /// A forged `Waypoint Offset` near `u32::MAX` must come back as the truncated-file error, not

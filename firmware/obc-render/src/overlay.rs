@@ -189,6 +189,12 @@ impl RenderScratch {
                     let (bx, by) = vp.to_screen(b.0, b.1);
                     let (ax, ay, bx, by) = (ax as f32, ay as f32, bx as f32, by as f32);
                     let (dx, dy) = (bx - ax, by - ay);
+                    // Segment length by alpha-max-plus-beta-min (α=1, β=0.41) — a `sqrtf`-free
+                    // magnitude estimate. It is *not* exact: `m/|d|` spans [0.997, 1.081] over the
+                    // angle, so the direction below is only approximately normalized (|fwd| in
+                    // [0.925, 1.003]) and a ~22°-diagonal chevron draws up to 7.5% smaller than an
+                    // axis-aligned one. Accepted: the chevron is a direction glyph, not a measure,
+                    // and switching to `sqrtf` would shift every route-arrow render golden.
                     let m = dx.abs().max(dy.abs()) + 0.41 * dx.abs().min(dy.abs());
                     if m < 1e-3 {
                         return;
@@ -248,9 +254,12 @@ where
     }
 }
 
-/// Fill a 3-point direction chevron centred at `c`, pointing along the unit vector `fwd`: a tip
-/// `tip` px ahead and two base corners swept `back` px behind and `half` px out each side. Shared by
-/// the user-position marker and the route arrows; the caller supplies `fwd` already normalized.
+/// Fill a 3-point direction chevron centred at `c`, pointing along `fwd`: a tip `tip` px ahead and
+/// two base corners swept `back` px behind and `half` px out each side. Shared by the user-position
+/// marker and the route arrows. `fwd` sets both the heading *and* the glyph's scale, so the caller
+/// normalizes it: the marker exactly (`sqrtf`), the route arrows only approximately (an
+/// alpha-max-plus-beta-min magnitude, |fwd| in [0.925, 1.003] — see [`draw_route`](RenderScratch::draw_route)), which is why a
+/// diagonal route chevron is drawn slightly smaller than an axis-aligned one.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn fill_chevron<D>(
     target: &mut D,

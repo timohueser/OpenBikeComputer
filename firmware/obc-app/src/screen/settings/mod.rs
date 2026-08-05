@@ -119,6 +119,36 @@ impl SettingsScreen {
 /// Left inset of every settings row (clears the framed outline).
 pub(super) const ROW_X: i32 = 14;
 
+/// The Forget row's height + bottom anchor — the Route overview Delete row's geometry family
+/// (38 px tall, the standard 10 px above the card bottom), so the button faces all match.
+pub(super) const FORGET_H: i32 = 38;
+
+/// **Back** on a settings page that has an editable field: an open field takes the press — `close`
+/// runs and the page stays put — otherwise Back climbs to the Settings list. That's the two levels
+/// of "inside" (row cursor, open field) unwinding one press at a time, identically on Display,
+/// Power, Ride and Date & time.
+pub(super) fn back_out_of_field(open: bool, close: impl FnOnce()) -> Transition {
+    if open {
+        close();
+        Transition::None
+    } else {
+        Transition::Pop
+    }
+}
+
+/// The bottom-anchored guarded **Forget** row shared by Bluetooth and Sensors — the Pause-menu
+/// guarded-row treatment (owner review round 3: the round-2 focus outline is retired everywhere):
+/// a plain left-aligned Body label while unselected, the shaded base + warning-red hold fill only
+/// while the cursor is on it, exactly the `ride_control` family's selected-guarded face at the
+/// delete rows' bottom anchor. Both pages draw it only while there *is* something to forget (the
+/// round-1 only-when-possible grammar), so the caller owns that condition.
+pub(super) fn forget_footer(cv: &mut impl Surface, w: i32, h: i32, label: &str, selected: bool, hold: f32) {
+    let fy = h - 10 - FORGET_H;
+    let row = row_rect(fy, w, FORGET_H);
+    super::confirm_row(cv, row, selected, true, hold, palette::WARNING, 6);
+    cv.text_vcentered(label, row.top_left.x + 12, (fy, FORGET_H), Font::Body, TextAlign::Left, palette::INK);
+}
+
 /// The full-width settings-row rectangle at `y` of height `h`.
 pub(super) fn row_rect(y: i32, w: i32, h: i32) -> Rectangle {
     rect(ROW_X, y, w - 2 * ROW_X, h)

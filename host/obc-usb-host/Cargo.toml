@@ -18,28 +18,9 @@ obc-platform = { path = "../../firmware/obc-platform" }
 # The shared GPX replay core — the same GpxPlayer/BaroSensor the simulator drives, so a recorded
 # ride plays back over USB exactly as it does in the sim.
 obc-replay = { path = "../obc-replay" }
-# The wire vocabulary, authored once on the device side: the 12-byte transfer descriptor, the
-# object types, `SetPart`, and the CRC-32 the descriptor announces. Linked rather than re-derived so
-# the volume-set send order and the device's refusals cannot drift (issue #1039).
-obc-ble = { path = "../../firmware/obc-ble" }
-# The OBCS manifest codec + the derived `MS{id}` filenames (`OBCA_Spec.md` §5.2).
-obc-formats = { path = "../../firmware/obc-formats" }
-# §5.3's host obligation: "a host writing a set MUST verify every digest before the manifest is
-# written". Same crate the assembler computes them with.
-sha2 = "0.11"
 # GUI: the same egui/eframe stack the simulator's control panel uses.
 eframe = "0.29"
 # Cross-platform serial port access for the USB-CDC link.
 serialport = "4"
 # Native "open file" dialog for picking a .gpx (same crate the sim uses).
 rfd = "0.14"
-
-[dev-dependencies]
-# The hand-split volume-set fixtures — an independent oracle (it calls no production serializer), so
-# the round trip's monolith-vs-set differential means something.
-obcm-testkit = { path = "../obcm-testkit" }
-# The real mount + the real renderer, so the round trip ends by drawing the map that landed rather
-# than by trusting a `committed`.
-obc-reader = { path = "../../firmware/obc-reader", features = ["alloc"] }
-obc-render = { path = "../../firmware/obc-render" }
-embedded-graphics = "0.8"

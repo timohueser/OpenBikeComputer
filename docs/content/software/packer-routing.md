@@ -717,9 +717,14 @@ Coverage is composed from three kinds of parts:
 
 The parts are unioned before pricing, so overlaps never charge or download a
 cell twice. Partial cells remain visible as warnings. The selected cells are
-downloaded with byte-length and SHA-256 checks, then passed to
-[`obc-web-assemble`](src:apps/obc-web-assemble) in a worker. Cancelling
-terminates the worker; there is no verification bypass.
+downloaded with byte-length and SHA-256 checks and written straight into
+origin-private storage under the digest the catalog already pins them with;
+[`obc-web-assemble`](src:apps/obc-web-assemble) reads them back inside its worker
+through a synchronous access handle behind a 1 MiB block cache, so the bytes never
+enter wasm memory and a reload resumes on what is already on disk instead of
+downloading it again. Cancelling terminates the worker; there is no verification
+bypass. The gate on a big selection is therefore **disk quota, checked before the
+download starts**, not the memory the run would have needed.
 
 **Elevation rides along with the selection, and there is no switch for it.** The
 terrain squares a map needs are the ones its selection touches — the same intersect
@@ -833,7 +838,7 @@ The resulting OBCM is opened without restamping and rendered through the same
 `obc-reader` + `obc-render` bridge on a 240×320 device map plane. Controls visit
 every authored LOD by its real m/px dispatch. The panel reports features tried,
 drawn and dropped; chunks and points; the 2,048-point/32-ring per-feature decode
-limits; and the production 1,152-span/4,768-point/1,024-ring frame limits and
+limits; and the production 1,792-span/6,208-point/1,792-ring frame limits and
 errors. It is therefore honest about the device's selection pressure, not a
 browser drawing of what the schema might mean.
 

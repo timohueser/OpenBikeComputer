@@ -111,7 +111,7 @@ impl TransferReady {
 /// `heapless::Vec` whose `len` is a stale A\* node count would read past its own contents.
 ///
 /// The exception is worth a type rather than a comment: when the previous claimant was the **same
-/// arm**, the bytes are already that arm's valid state, and re-initializing is a ~92 KB `memset`
+/// arm**, the bytes are already that arm's valid state, and re-initializing is a ~117 KB `memset`
 /// per map frame for nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArenaInit {
@@ -346,7 +346,7 @@ mod tests {
         assert_eq!(gate.claim_render(), Ok(ArenaInit::Skippable), "…still holding the last render's scratch");
     }
 
-    /// The **~92 KB `memset` per map frame** this exists to avoid, and the two halves of when it is
+    /// The **~117 KB `memset` per map frame** this exists to avoid, and the two halves of when it is
     /// safe. A render span hands the block back as a valid `RenderScratch`, so frame after frame
     /// skips the re-init; anything that hands it to another arm — a search, a cable transfer — makes
     /// the next render pay for it again. The first-ever claim pays too, which is what keeps

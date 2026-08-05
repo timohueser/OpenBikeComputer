@@ -34,7 +34,7 @@
     content="An open-source bikepacking computer with offline maps, on-device routing, and days of battery — try the real firmware live in your browser." />
   <meta name="twitter:image" content="https://openbikecomputer.com/og-card.png" />
 
-  <!-- Trunk builds the obc-web-demo crate (in firmware/) to wasm — the live device demo:
+  <!-- Trunk builds the obc-web-demo crate (in apps/) to wasm — the live device demo:
        the real firmware render path behind a thin obc_demo_* API (no egui/wgpu; the page's
        JS below owns the frame loop and the canvas). wasm-opt only runs on --release builds,
        so dev (trunk serve) stays fast while release ships a small, size-optimised binary. -->

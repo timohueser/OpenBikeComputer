@@ -17,6 +17,14 @@
 // `obc-reader` uses. Production code paths are `not(test)` and stay strictly `no_std`.
 #![cfg_attr(not(test), no_std)]
 
+// The shared test-support module ([`harness::support`]) is compiled **twice**: once in-crate for
+// the staging harnesses, once by `tests/common/mod.rs` as an integration-test module (a `#[path]`
+// include, so there is exactly one copy on disk). Its one crate-relative name is `obc_app::App` —
+// which the integration side resolves as an extern crate; this alias makes it resolve in-crate too,
+// so the same source compiles on both sides.
+#[cfg(test)]
+extern crate self as obc_app;
+
 pub mod activity;
 pub mod altitude;
 pub mod app;

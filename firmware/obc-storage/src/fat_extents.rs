@@ -21,8 +21,11 @@
 //! [`DirEntry::entry_block`]/[`entry_offset`](embedded_sdmmc::DirEntry::entry_offset) (this
 //! module re-reads the 32-byte on-disk entry to get the first cluster, which `ClusterId` hides).
 //! The volume geometry (partition start, FAT/data offsets) is re-derived from the MBR + BPB with
-//! the same rules `open_raw_volume`/`parse_volume` use, so the two views can't disagree on a card
-//! the manager successfully mounted. The caller should still verify the table against the normal
+//! the same rules `open_raw_volume`/`parse_volume` use, so the two views agree on any card the
+//! manager successfully mounted — except that this module additionally refuses a BPB whose derived
+//! sums wrap `u32` (the manager computes them unchecked) and clamps the cluster count to what the
+//! FAT actually covers (as Linux and FreeBSD do), because its arithmetic must stay in bounds where
+//! the manager's merely has to limp. The caller should still verify the table against the normal
 //! read path once at build time (read a block through both, compare) and fall back on any
 //! mismatch — a geometry bug must degrade to *slow*, never to *wrong bytes*.
 //!
@@ -35,7 +38,7 @@
 use core::cell::RefCell;
 
 use embedded_sdmmc::{Block, BlockCount, BlockDevice, BlockIdx};
-use obc_formats::io::{ByteSource, Error};
+use obc_formats::io::{rd_u16, rd_u32, ByteSource, Error};
 
 /// A [`BlockDevice`] by shared reference — what lets one card serve **both** the `VolumeManager`
 /// (which takes its device by value) and this module's raw extent reads. The board parks its
@@ -83,7 +86,8 @@ pub enum BuildError {
     /// A raw block read failed.
     Io,
     /// MBR/BPB/dir-entry contents outside what this module understands (no MBR partition 0, a
-    /// non-512-byte-sector or FAT12 volume, a corrupt directory entry…).
+    /// non-512-byte-sector or FAT12 volume, a corrupt directory entry, geometry whose derived
+    /// block sums don't fit the card's 32-bit LBA space…).
     Geometry,
     /// The FAT chain didn't cover the file's byte length (truncated chain, reserved/bad cluster
     /// id mid-chain, or a dir-entry size disagreeing with the open handle's length).
@@ -120,7 +124,7 @@ struct Geometry {
 /// Whole aligned blocks land directly in the caller's existing buffer; this cap changes command
 /// granularity, not resident RAM. Only an unaligned head/tail uses [`ExtentTable::bounce`], the
 /// same one-block buffer the pre-batching path already held.
-pub const READ_BATCH: usize = 8;
+pub(crate) const READ_BATCH: usize = 8;
 
 // `Block` is a dependency-owned `repr(Rust)` newtype-like struct, so do not assume its field layout
 // merely from the source. These compile-time checks prove the representation this build uses before
@@ -165,7 +169,7 @@ impl<const N: usize> ExtentTableWithCapacity<N> {
 
         // ── Volume geometry: MBR partition 0 → BPB, exactly `open_raw_volume`'s rules ──
         read_block(dev, 0, &mut block)?;
-        if read_u16(&block.contents, 510) != 0xAA55 {
+        if rd_u16(&block.contents, 510) != 0xAA55 {
             return Err(BuildError::Geometry);
         }
         let part = &block.contents[446..462];
@@ -173,55 +177,79 @@ impl<const N: usize> ExtentTableWithCapacity<N> {
         if (part[0] & 0x7F) != 0 || !matches!(part[4], 0x01 | 0x04 | 0x06 | 0x0B | 0x0C | 0x0E) {
             return Err(BuildError::Geometry);
         }
-        let part_lba = read_u32(part, 8);
+        let part_lba = rd_u32(part, 8);
 
         read_block(dev, part_lba, &mut block)?;
         let bpb = &block.contents;
-        if read_u16(bpb, 510) != 0xAA55 || read_u16(bpb, 11) as usize != 512 {
+        if rd_u16(bpb, 510) != 0xAA55 || rd_u16(bpb, 11) as usize != 512 {
             return Err(BuildError::Geometry);
         }
         let spc = bpb[13] as u32;
-        let reserved = read_u16(bpb, 14) as u32;
+        let reserved = rd_u16(bpb, 14) as u32;
         let num_fats = bpb[16] as u32;
-        let root_entries = read_u16(bpb, 17) as u32;
-        let total_blocks = match read_u16(bpb, 19) {
-            0 => read_u32(bpb, 32),
+        let root_entries = rd_u16(bpb, 17) as u32;
+        let total_blocks = match rd_u16(bpb, 19) {
+            0 => rd_u32(bpb, 32),
             n => n as u32,
         };
-        let fat_size = match read_u16(bpb, 22) {
-            0 => read_u32(bpb, 36),
+        let fat_size = match rd_u16(bpb, 22) {
+            0 => rd_u32(bpb, 36),
             n => n as u32,
         };
-        if spc == 0 || fat_size == 0 {
+        if spc == 0 || fat_size == 0 || num_fats == 0 {
             return Err(BuildError::Geometry);
         }
+        // Everything below is arithmetic on raw BPB `u32`s a malformed card fully controls, and a
+        // release build wraps them silently: a wrapped `non_data` slips *past* the `checked_sub`
+        // guard and yields a plausible-looking geometry that then reads the wrong blocks and
+        // reports `Ok(())` — precisely what this module forbids. So each step is checked, and the
+        // volume is bounded as a whole so the chain walk's own arithmetic can't wrap either.
+        if part_lba.checked_add(total_blocks).is_none() {
+            return Err(BuildError::Geometry); // the volume runs off the card's 32-bit LBA space
+        }
+        let root_dir_blocks = root_entries.checked_mul(32).ok_or(BuildError::Geometry)?.div_ceil(512);
+        let non_data = num_fats
+            .checked_mul(fat_size)
+            .and_then(|fats| fats.checked_add(reserved))
+            .and_then(|n| n.checked_add(root_dir_blocks))
+            .ok_or(BuildError::Geometry)?;
         // FAT type is decided by cluster count (the BPB's own rule — mirrors `Bpb::create_from_bytes`).
-        let root_dir_blocks = (root_entries * 32).div_ceil(512);
-        let non_data = reserved + num_fats * fat_size + root_dir_blocks;
         let cluster_count = total_blocks.checked_sub(non_data).ok_or(BuildError::Geometry)? / spc;
         if cluster_count < 4085 {
             return Err(BuildError::Geometry); // FAT12 — unsupported, like the manager itself
         }
-        let geo = Geometry {
-            fat_start: part_lba + reserved,
-            data_start: part_lba + non_data,
-            spc,
-            fat32: cluster_count >= 65525,
-            cluster_count,
-        };
+        let fat32 = cluster_count >= 65525;
+        // Two bounds the walk below then relies on, applied as a *clamp* rather than a refusal:
+        // FAT32 addresses at most 0x0FFF_FFF5 clusters (a FAT16 volume is already under 65,525
+        // here), which keeps `2 + cluster_count` and `cluster * 4` inside `u32`; and the walk may
+        // only reach ids the FAT holds an entry for, which keeps `fat_start + cluster * 4 / 512`
+        // inside the FAT region — and therefore inside the volume already bounded above. Clamping
+        // mirrors Linux/FreeBSD (data clusters the FAT can't describe simply don't exist) and
+        // keeps every volume the manager mounts mountable here: a chain id past the clamp fails
+        // that one file's walk below, degrading to the slow path instead of refusing the card.
+        let entries_per_block = if fat32 { 128 } else { 256 };
+        let addressable = fat_size.saturating_mul(entries_per_block).saturating_sub(2).min(0x0FFF_FFF5);
+        let cluster_count = cluster_count.min(addressable);
+        // No wrap: `non_data <= total_blocks` (the `checked_sub` above) and `part_lba +
+        // total_blocks` fits, so both sums — and every `data_start + (cluster - 2) * spc` the walk
+        // derives from them — stay below the volume's end block.
+        let geo =
+            Geometry { fat_start: part_lba + reserved, data_start: part_lba + non_data, spc, fat32, cluster_count };
 
         // ── The file's first cluster, from its raw 32-byte directory entry ──
         read_block(dev, entry_block.0, &mut block)?;
+        // `off + 32` is checked: `usize` is 32-bit on the device, so a caller-supplied offset near
+        // `u32::MAX` would otherwise wrap the window's end below its start.
         let off = entry_offset as usize;
-        let entry = block.contents.get(off..off + 32).ok_or(BuildError::Geometry)?;
+        let entry = off.checked_add(32).and_then(|end| block.contents.get(off..end)).ok_or(BuildError::Geometry)?;
         if entry[11] == 0x0F || entry[11] & 0x10 != 0 {
             return Err(BuildError::Geometry); // an LFN fragment or a directory, not a file entry
         }
-        if read_u32(entry, 28) != expected_len {
+        if rd_u32(entry, 28) != expected_len {
             return Err(BuildError::Mismatch);
         }
-        let hi = if geo.fat32 { read_u16(entry, 20) as u32 } else { 0 };
-        let first_cluster = (hi << 16) | read_u16(entry, 26) as u32;
+        let hi = if geo.fat32 { rd_u16(entry, 20) as u32 } else { 0 };
+        let first_cluster = (hi << 16) | rd_u16(entry, 26) as u32;
 
         // ── One walk of the chain, compressed into runs ──
         let bytes_per_cluster = geo.spc * 512;
@@ -271,9 +299,9 @@ impl<const N: usize> ExtentTableWithCapacity<N> {
                     cached_fat_lba = fat_lba;
                 }
                 cluster = if geo.fat32 {
-                    read_u32(&block.contents, ent_off) & 0x0FFF_FFFF
+                    rd_u32(&block.contents, ent_off) & 0x0FFF_FFFF
                 } else {
-                    read_u16(&block.contents, ent_off) as u32
+                    rd_u16(&block.contents, ent_off) as u32
                 };
             }
         }
@@ -344,7 +372,10 @@ impl<D: BlockDevice, const N: usize> ByteSource for ExtentSourceWithCapacity<'_,
     // multi-ms SD read.
     #[inline(never)]
     fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), Error> {
-        let end = offset.checked_add(buf.len() as u32).ok_or(Error::BadOffset)?;
+        // `try_from`, not `as`: a >4 GiB request (possible on a 64-bit host build of this crate)
+        // would truncate to a small length and sail through the bound check below.
+        let want = u32::try_from(buf.len()).map_err(|_| Error::BadOffset)?;
+        let end = offset.checked_add(want).ok_or(Error::BadOffset)?;
         if end > self.table.len {
             return Err(Error::BadOffset);
         }
@@ -400,14 +431,6 @@ fn read_block<D: BlockDevice>(dev: &D, lba: u32, block: &mut Block) -> Result<()
     dev.read(core::slice::from_mut(block), BlockIdx(lba)).map_err(|_| BuildError::Io)
 }
 
-fn read_u16(b: &[u8], off: usize) -> u16 {
-    u16::from_le_bytes([b[off], b[off + 1]])
-}
-
-fn read_u32(b: &[u8], off: usize) -> u32 {
-    u32::from_le_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]])
-}
-
 // The tests hand-build minimal-but-valid empty FAT16/FAT32 images in RAM, then create the actual
 // files through `embedded-sdmmc` itself — so the manager's own mount + write path vouches for the
 // image, and every extent read is differential-tested against the manager's seek+read of the same
@@ -422,6 +445,7 @@ mod tests {
     use std::vec::Vec;
 
     use embedded_sdmmc::{Mode, TimeSource, Timestamp, VolumeIdx, VolumeManager};
+    use obc_formats::io::{put_u16, put_u32};
 
     use super::*;
 
@@ -490,13 +514,6 @@ mod tests {
     }
 
     const PART_START: u32 = 64;
-
-    fn put_u16(img: &mut [u8], off: usize, v: u16) {
-        img[off..off + 2].copy_from_slice(&v.to_le_bytes());
-    }
-    fn put_u32(img: &mut [u8], off: usize, v: u32) {
-        img[off..off + 4].copy_from_slice(&v.to_le_bytes());
-    }
 
     /// An empty FAT32 volume: 1-block clusters (so single-block appends fragment maximally),
     /// 65,600 clusters (the FAT32 floor is 65,525), one FAT.
@@ -675,6 +692,69 @@ mod tests {
         let src = ExtentSource::new(fs.disk, &table);
         let mut buf = [0u8; 8];
         assert_eq!(src.read_at(len - 4, &mut buf).unwrap_err(), Error::BadOffset);
+    }
+
+    /// Malformed geometry must be *refused*, never wrapped into a plausible-looking table that
+    /// then serves the wrong blocks with `Ok(())` (this module's standing rule, top of file). Each
+    /// case patches one BPB field so a different derived sum or product would overflow `u32`; the
+    /// patch is applied to the mounted image's BPB block and rolled back afterwards, so one
+    /// fixture covers them all.
+    #[test]
+    fn wrapping_geometry_is_refused_not_wrapped() {
+        // Patches the image's BPB block, which starts at the given byte offset.
+        type Patch = fn(&mut Vec<u8>, usize);
+        let cases: &[(&str, Patch)] = &[
+            ("num_fats * fat_size", |img, b| {
+                img[b + 16] = 16; // 16 FATs × 0x1000_0000 blocks = exactly 2^32 → wraps to 0
+                put_u32(img, b + 36, 0x1000_0000);
+            }),
+            ("reserved + num_fats * fat_size", |img, b| put_u32(img, b + 36, 0xFFFF_FFFF)),
+            ("part_lba + total_blocks", |img, b| put_u32(img, b + 32, 0xFFFF_FFFF)),
+        ];
+
+        let fs = setup(mkfs_fat32(), &["MAP.BIN"], 4);
+        let (eb, eo, len) = fs.entry_facts("MAP.BIN");
+        let b = (PART_START * 512) as usize;
+        let pristine: Vec<u8> = fs.disk.0.borrow()[b..b + 512].to_vec();
+        for (what, patch) in cases {
+            {
+                let img = &mut *fs.disk.0.borrow_mut();
+                img[b..b + 512].copy_from_slice(&pristine);
+                patch(img, b);
+            }
+            assert_eq!(
+                ExtentTable::build(fs.disk, eb, eo, len).err(),
+                Some(BuildError::Geometry),
+                "{what} must refuse the build, not wrap into a table"
+            );
+        }
+
+        // A cluster count the FAT can't cover is *clamped*, not refused — the manager mounts
+        // these (so do Linux and FreeBSD, by the same clamp), and a refusal here would take a
+        // working card's map with it. An inflated total_blocks leaves the rest of the geometry
+        // untouched, so the build must succeed with the same extents as the pristine card; only
+        // a chain id past the clamp may fail, and then per-file in the walk.
+        {
+            let img = &mut *fs.disk.0.borrow_mut();
+            img[b..b + 512].copy_from_slice(&pristine);
+        }
+        let pristine_runs: Vec<_> = ExtentTable::build(fs.disk, eb, eo, len).unwrap().runs().collect();
+        {
+            let img = &mut *fs.disk.0.borrow_mut();
+            put_u32(img, b + 32, 0x2000_0000);
+        }
+        let clamped = ExtentTable::build(fs.disk, eb, eo, len)
+            .expect("an oversized cluster count is clamped to the FAT's coverage, not refused");
+        assert_eq!(clamped.runs().collect::<Vec<_>>(), pristine_runs, "the clamp must not move the extents");
+
+        // Same rule for the caller-supplied directory-entry offset: `off + 32` must not wrap
+        // 32-bit `usize` into a window that looks in-range.
+        fs.disk.0.borrow_mut()[b..b + 512].copy_from_slice(&pristine);
+        assert_eq!(
+            ExtentTable::build(fs.disk, eb, u32::MAX, len).err(),
+            Some(BuildError::Geometry),
+            "an entry offset whose 32-byte window wraps must refuse the build"
+        );
     }
 
     #[test]

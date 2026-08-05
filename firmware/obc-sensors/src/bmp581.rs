@@ -36,10 +36,11 @@ pub const INT_STATUS: u8 = 0x27;
 pub const STATUS_DRDY: u8 = 0x01;
 
 /// Temperature data, 24-bit signed, LSB-first across `XLSB|LSB|MSB`. → °C via [`raw_to_c`].
+///
+/// The only data address the driver needs: temperature at `0x1D..=0x1F` and pressure (24-bit
+/// unsigned, same byte order, → Pa via [`raw_to_pa`]) at `0x20..=0x22` are contiguous, so one
+/// six-byte burst from here carries both.
 pub const TEMP_DATA_XLSB: u8 = 0x1D;
-/// Pressure data, 24-bit unsigned, LSB-first across `XLSB|LSB|MSB`. → Pa via [`raw_to_pa`]. The six
-/// data bytes are contiguous `0x1D..=0x22`, so the driver reads them in one burst from `TEMP_DATA_XLSB`.
-pub const PRESS_DATA_XLSB: u8 = 0x20;
 
 /// Oversampling config: `osr_t[2:0] | osr_p[5:3] | press_en bit6`. [`OSR_DEFAULT`] enables pressure
 /// with ×8 pressure / ×1 temperature oversampling — a good climb-resolution vs. conversion-time

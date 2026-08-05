@@ -1,0 +1,13 @@
+[package]
+name = "obc-crc"
+version = "0.1.0"
+edition = "2021"
+publish = false # internal firmware crate — not published to crates.io
+description = "CRC-32/IEEE (zlib/gzip/PNG) — the one implementation the DFU byte formats and the BLE data plane both hash with. no_std, core-only, zero dependencies."
+
+# The smallest possible shared leaf: one table, one hasher, and — deliberately — no dependency
+# table at all. That emptiness is the point. `obc-ble` must stay free of the map and DFU stacks so
+# the phone-facing wire codec can never drag them into the link, and `obc-dfu` is `core`-only so
+# the 32 KB `obc-boot` bootloader links it cheaply; a CRC shared between the two may only exist if
+# it costs both of them nothing. A workspace member so plain `cargo test` pins the check vector on
+# the host, exactly like obc-ble / obc-dfu.
