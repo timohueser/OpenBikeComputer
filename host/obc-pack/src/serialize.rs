@@ -1,4 +1,4 @@
-//! OBCM v11 serializer — lay out the `.obcm` bytes per `OBCM_Spec.md`.
+//! OBCM v12 serializer — lay out the `.obcm` bytes per `OBCM_Spec.md`.
 //!
 //! Deterministic: same feature list + quadtree → same output. Geometry arrives
 //! already clipped + simplified; this module rounds lon/lat to microdegrees
@@ -1251,19 +1251,25 @@ fn push_lod_entry(table: &mut Vec<u8>, max_mpp: Option<f64>, index_offset: u32, 
     table.extend_from_slice(&cc.to_le_bytes());
 }
 
-/// Serialize a pyramid of LOD layers into the full v9 `.obcm` byte stream (header
-/// field order, LOD table layout, the bbox stored as lat,lon,lat,lon, the POI
-/// section §7, and the trailing nav-graph section §8). `pois` is the deduped
-/// classified POI list, `nav` the routable graph, and `profiles` the `1..=8` routing
-/// profiles (§8.6) — all **always** get a section, empty or not. The second return
-/// value is the total chunk-overflow feature drops (see [`pack_chunk`]).
+/// **Not an entry point — the in-memory parity oracle for [`serialize_lods_streaming`].**
 ///
-/// `terrain` is the OBCT source the §8.3 `Ascent M` is integrated from; pass
-/// [`NullElevation`](obc_elevation::NullElevation) for a map with no terrain.
+/// It lays out the same complete `.obcm` byte stream (header field order, LOD table layout, the
+/// bbox stored as lat,lon,lat,lon, the POI section §7, and the trailing nav-graph section §8) the
+/// obvious way: build every LOD's bytes, then concatenate. Every production caller writes through
+/// the streaming twin instead, which holds one tree at a time; this one exists so
+/// `streaming_matches_in_memory` can assert the two are byte-identical, and because a corpus-building
+/// test outside this crate wants a map in a `Vec<u8>` without a `Cursor`.
+///
+/// `pois` is the deduped classified POI list, `nav` the routable graph, and `profiles` the `1..=8`
+/// routing profiles (§8.6) — all **always** get a section, empty or not. The second return value is
+/// the total chunk-overflow feature drops (see [`pack_chunk`]). `terrain` is the OBCT source the
+/// §8.3 `Ascent M` is integrated from; pass [`NullElevation`](obc_elevation::NullElevation) for a
+/// map with no terrain.
 // Eight positional arguments, one past clippy's default. Grouping them into a struct would only
 // move the same eight names one indirection away and force every caller (and every test) to name a
-// type to say "no styles, no POIs, an empty graph"; the streaming twin below already carries the
+// type to say "no styles, no POIs, an empty graph"; the streaming twin below carries the
 // same list, and the two must stay in lockstep.
+#[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
 pub fn serialize_lods(
     lods: &[LodLayer],
@@ -1330,7 +1336,8 @@ pub fn serialize_lods(
     (out, dropped)
 }
 
-/// Streaming counterpart to [`serialize_lods`]: writes the **same** v8 byte stream,
+/// The production writer, and the streaming counterpart to [`serialize_lods`]: it writes the
+/// **same** byte stream,
 /// but builds, serializes, and drops one LOD tree at a time. Peak memory is ~one
 /// tree + one LOD's chunk bytes rather than all trees plus the whole output buffer.
 ///

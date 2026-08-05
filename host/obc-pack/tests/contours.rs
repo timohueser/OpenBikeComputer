@@ -49,10 +49,7 @@ fn fixture_pbf() -> String {
 }
 
 fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("obc-pack-contours-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
+    obcm_testkit::scratch::scratch_dir("obc-pack-contours", name)
 }
 
 /// The OBCA cell index of a µdeg coordinate at [`CELL_LOG2`].

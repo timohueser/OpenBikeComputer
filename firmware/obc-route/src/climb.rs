@@ -32,10 +32,10 @@ use obc_map_scene::ground_dist_m;
 // ---------------------------------------------------------------------------------------------
 // Tuning knobs — the whole "what counts as a climb" policy in five consts.
 //
-// These are the *initial* defaults; we tune them AFTER eyeballing real komoot routes with the
-// `detect_climbs` example, so they are grouped here and trivial to change. Keep them as plain
-// module consts (not a config struct): there's one policy for the device, and a struct would
-// invite per-call variation the ride loop doesn't want.
+// These are the *initial* defaults, tuned against real komoot routes, and they are grouped here
+// so re-tuning stays a one-screen edit. Keep them as plain module consts (not a config struct):
+// there's one policy for the device, and a struct would invite per-call variation the ride loop
+// doesn't want.
 // ---------------------------------------------------------------------------------------------
 
 /// Minimum net gain (m) for a candidate to be kept. Below this it's a bump, not a climb — the
@@ -90,10 +90,6 @@ pub struct ClimbSeg {
     /// Average grade over the climb, whole percent (`gain_m * 100 / len_m`). A summary figure
     /// for the climb readout; the per-point grade lives in the C2 detail profile.
     pub avg_grade_pct: i16,
-    /// Difficulty category placeholder — **reserved, unused this iteration**. Holds a raw
-    /// `gain² / len` difficulty score (saturated into the byte); the Cat 4..HC label mapping is
-    /// a later sub-issue. Zero until then carries no meaning callers should read.
-    pub category: u8,
 }
 
 impl ClimbSeg {
@@ -353,17 +349,7 @@ fn close_candidate(c: &Candidate) -> Option<ClimbSeg> {
         top_ele_m: c.max_ele as i16,
         gain_m: gain_m.min(u16::MAX as u32) as u16,
         avg_grade_pct: avg_grade,
-        category: difficulty_score(gain_m, len_m),
     })
-}
-
-/// Raw difficulty score `gain² / len`, saturated into a byte — parked in [`ClimbSeg::category`]
-/// for a future Cat 4..HC mapping. `gain² / len` is the classic climb-difficulty shape (a
-/// climb's score scales with its steepness and its size); the label thresholds are out of scope
-/// here, so this only stores the cheap raw number. Saturates so a giant HC climb doesn't wrap.
-fn difficulty_score(gain_m: u32, len_m: u32) -> u8 {
-    let score = gain_m.saturating_mul(gain_m) / len_m.max(1);
-    score.min(u8::MAX as u32) as u8
 }
 
 impl RouteReader<'_> {

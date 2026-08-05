@@ -145,28 +145,29 @@ fn write_skin(tree: &Path, id: &str, name: &str, description: &str, version: u32
 
 /// A minimal but *real* OBCM header — magic, version, bbox — which is everything this
 /// generator reads out of a cell and nothing it does not.
-fn obcm_bytes(version: u8, square: CellSquare, pad: usize) -> Vec<u8> {
+fn obcm_bytes(version: u8, square: UBox, pad: usize) -> Vec<u8> {
+    let (min_lon, min_lat, max_lon, max_lat) = square;
     let mut h = vec![0u8; HEADER_LEN + pad];
     h[..4].copy_from_slice(&MAGIC);
     h[4] = version;
-    put_i32(&mut h, 5, square.min_lat);
-    put_i32(&mut h, 9, square.min_lon);
-    put_i32(&mut h, 13, square.max_lat);
-    put_i32(&mut h, 17, square.max_lon);
+    put_i32(&mut h, 5, min_lat as i32);
+    put_i32(&mut h, 9, min_lon as i32);
+    put_i32(&mut h, 13, max_lat as i32);
+    put_i32(&mut h, 17, max_lon as i32);
     h
 }
 
-fn cell(log2: u8, i: u32, j: u32) -> CellId {
+fn cell(log2: u32, i: i64, j: i64) -> CellId {
     CellId { log2, i, j }
 }
 
 fn cell_dir(tree: &Path, band: &str, id: CellId) -> PathBuf {
-    let w = CellId::index_width(id.log2);
+    let w = id_width(id.log2);
     tree.join(CELLS_DIR).join(band).join(format!("{:0w$}", id.i, w = w))
 }
 
 fn cell_path(tree: &Path, band: &str, id: CellId, ext: &str) -> PathBuf {
-    let w = CellId::index_width(id.log2);
+    let w = id_width(id.log2);
     cell_dir(tree, band, id).join(format!("{:0w$}{ext}", id.j, w = w))
 }
 
@@ -194,7 +195,7 @@ fn write_cell_at(
     band: &str,
     id: CellId,
     version: u8,
-    square: CellSquare,
+    square: UBox,
     pad: usize,
     revision: u32,
     built_at: &str,
@@ -287,8 +288,8 @@ const TERRAIN_ATTRIBUTION: &str = "produced using Copernicus WorldDEM-30 © DLR 
                                    and ESA; all rights reserved";
 
 /// A terrain cell of the example's grid.
-fn terrain_cell(i: u32, j: u32) -> CellId {
-    cell(TERRAIN_CELL_LOG2, i, j)
+fn terrain_cell(i: i64, j: i64) -> CellId {
+    cell(u32::from(TERRAIN_CELL_LOG2), i, j)
 }
 
 /// The four terrain cells the example publishes, and the ocean square beside them. The first is the
@@ -307,14 +308,14 @@ fn terrain_sea() -> CellId {
 /// (`OBCT_Spec.md` §4.1). Hand-written from `obc-formats`' own field offsets for the same reason
 /// [`obcm_bytes`] is: a fixture built by the code that reads it proves only self-consistency.
 fn obct_bytes(posting_log2: u8, id: CellId, fill: u8) -> Vec<u8> {
-    let block_len = obct::cell_block_len(posting_log2, id.log2).expect("a pairing OBCT permits") as usize;
+    let block_len = obct::cell_block_len(posting_log2, id.log2 as u8).expect("a pairing OBCT permits") as usize;
     let mut out = vec![0u8; obct::HEADER_LEN + obct::DIR_ENTRY_LEN + block_len];
     out[obct::HDR_MAGIC..obct::HDR_MAGIC + 4].copy_from_slice(&obct::MAGIC);
     out[obct::HDR_VERSION] = obct::VERSION;
     out[obct::HDR_POSTING_LOG2] = posting_log2;
-    out[obct::HDR_CELL_LOG2] = id.log2;
-    out[obct::HDR_CELL_MIN_I..obct::HDR_CELL_MIN_I + 4].copy_from_slice(&id.i.to_le_bytes());
-    out[obct::HDR_CELL_MIN_J..obct::HDR_CELL_MIN_J + 4].copy_from_slice(&id.j.to_le_bytes());
+    out[obct::HDR_CELL_LOG2] = id.log2 as u8;
+    out[obct::HDR_CELL_MIN_I..obct::HDR_CELL_MIN_I + 4].copy_from_slice(&(id.i as u32).to_le_bytes());
+    out[obct::HDR_CELL_MIN_J..obct::HDR_CELL_MIN_J + 4].copy_from_slice(&(id.j as u32).to_le_bytes());
     out[obct::HDR_CELL_ROWS..obct::HDR_CELL_ROWS + 2].copy_from_slice(&1u16.to_le_bytes());
     out[obct::HDR_CELL_COLS..obct::HDR_CELL_COLS + 2].copy_from_slice(&1u16.to_le_bytes());
     let dir_at = obct::HEADER_LEN as u32;
@@ -334,7 +335,7 @@ fn terrain_doc_json(revision: u32, dataset_version: &str) -> String {
 }
 
 fn terrain_path(tree: &Path, id: CellId, ext: &str) -> PathBuf {
-    let w = CellId::index_width(id.log2);
+    let w = id_width(id.log2);
     tree.join(CELLS_DIR).join(TERRAIN_DIR).join(format!("{:0w$}", id.i, w = w)).join(format!(
         "{:0w$}{ext}",
         id.j,
@@ -488,45 +489,10 @@ fn cell_index_doc(g: &GeneratedCatalog, band: &str) -> CellIndexDocument {
 }
 
 // --- the grid ------------------------------------------------------------------------------
-
-/// The worked example of `OBCA_Spec.md` §7, to the microdegree: a cell id is a
-/// coverage statement, which is the whole reason a catalog cell entry has no bbox.
-#[test]
-fn a_cell_id_determines_its_square() {
-    assert_eq!(
-        fine_west().square(),
-        CellSquare { min_lat: 47_185_920, min_lon: 7_340_032, max_lat: 47_448_064, max_lon: 7_602_176 }
-    );
-    assert_eq!(
-        fine_east().square(),
-        CellSquare { min_lat: 47_185_920, min_lon: 7_602_176, max_lat: 47_448_064, max_lon: 7_864_320 }
-    );
-    // Bands nest, because every cell size divides the origin and the world side.
-    let (coarse, mid, fine) = (coarse_cell().square(), mid_cell().square(), fine_west().square());
-    assert_eq!((coarse.min_lat, coarse.min_lon), (fine.min_lat, fine.min_lon));
-    assert_eq!((mid.min_lat, mid.min_lon), (fine.min_lat, fine.min_lon));
-    assert!(coarse.max_lat > mid.max_lat && mid.max_lat > fine.max_lat);
-
-    // Row 0 sits at the origin and the top row overhangs the domain — legal, and it
-    // MUST NOT be clamped (OBCA_Spec.md §1.4).
-    assert_eq!(cell(20, 0, 0).square().min_lat, GRID_ORIGIN_UDEG);
-    let last = CellId::grid_side(20) - 1;
-    assert_eq!(cell(20, last, last).square().max_lat, -GRID_ORIGIN_UDEG);
-}
-
-#[test]
-fn cell_ids_round_trip_in_canonical_form() {
-    for id in [cell(20, 301, 263), cell(19, 602, 526), cell(18, 1204, 1052), cell(10, 0, 524_287)] {
-        let text = id.to_string();
-        assert_eq!(CellId::parse(&text).expect(&text), id, "{text}");
-    }
-    assert_eq!(fine_west().to_string(), "18/1204/1052");
-    // 2^10 cells make a 524 288-wide grid, so the padding widens to six digits rather
-    // than truncating (OBCA_Spec.md §1.3).
-    assert_eq!(CellId::index_width(10), 6);
-    assert_eq!(cell(10, 7, 9).to_string(), "10/000007/000009");
-    assert_eq!(CellId::index_width(20), 4, "every band at or above 2^16 is four digits");
-}
+//
+// The grid itself — the worked example's squares, the nesting, the padding widths — is
+// pinned once in `crate::grid`'s own tests. What is the *catalog's* is the strict reading
+// of an id, so that is what is pinned here.
 
 #[test]
 fn non_canonical_cell_ids_are_refused() {
@@ -541,7 +507,7 @@ fn non_canonical_cell_ids_are_refused() {
         "18/12o4/1052",       // not a number
         "eighteen/1204/1052", // nor is that
     ] {
-        assert!(CellId::parse(bad).is_err(), "`{bad}` must be refused");
+        assert!(parse_strict_id(bad).is_err(), "`{bad}` must be refused");
     }
 }
 
@@ -1074,7 +1040,7 @@ fn a_cell_whose_header_is_not_its_square_is_refused() {
     example_tree(t.path());
     let id = fine_west();
     let mut square = id.square();
-    square.max_lon -= 1; // the content-derived box a normal pack would compute
+    square.2 -= 1; // max_lon: the content-derived box a normal pack would compute
     write_cell_at(
         t.path(),
         "fine",

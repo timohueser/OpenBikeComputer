@@ -64,27 +64,6 @@ pub fn sanitize_basename(name: &str, ext: &str, fallback: &str) -> String {
     cleaned
 }
 
-/// Total bytes and file count under `dir`, or `(0, 0)` if it isn't there.
-pub fn dir_size(dir: &std::path::Path) -> (u64, usize) {
-    let mut bytes = 0;
-    let mut files = 0;
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return (0, 0);
-    };
-    for entry in entries.flatten() {
-        let Ok(meta) = entry.metadata() else { continue };
-        if meta.is_dir() {
-            let (b, f) = dir_size(&entry.path());
-            bytes += b;
-            files += f;
-        } else {
-            bytes += meta.len();
-            files += 1;
-        }
-    }
-    (bytes, files)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

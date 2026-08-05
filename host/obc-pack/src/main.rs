@@ -87,25 +87,16 @@ fn run() -> Result<(), String> {
 /// `obc-pack catalog <cell-tree> --base-url <url> [--out -] [--generated-at <ts>]`
 fn run_catalog(args: &[String]) -> Result<(), String> {
     const USAGE: &str = "usage: obc-pack catalog <cell-tree> --base-url <url> [--out -] \
-                         [--boundary-tolerance <udeg>] \
                          [--generated-at <ts>]";
     let mut tree: Option<PathBuf> = None;
     let mut base_url: Option<String> = None;
     let mut out: Option<String> = None;
     let mut generated_at: Option<String> = None;
-    let mut tolerance: Option<i32> = None;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--base-url" => base_url = Some(it.next().ok_or("--base-url needs a URL")?.clone()),
             "--out" => out = Some(it.next().ok_or("--out needs a path (or `-` for stdout)")?.clone()),
-            "--boundary-tolerance" => {
-                tolerance = Some(
-                    it.next()
-                        .and_then(|s| s.parse().ok())
-                        .ok_or("--boundary-tolerance needs a positive number of microdegrees")?,
-                );
-            }
             "--generated-at" => {
                 generated_at = Some(it.next().ok_or("--generated-at needs an RFC 3339 UTC instant")?.clone());
             }
@@ -125,11 +116,8 @@ fn run_catalog(args: &[String]) -> Result<(), String> {
     // written into the tree (satellites first, root last) rather than to one output;
     // written yet would be a half-published state. `--out -` prints the root for
     // inspection.
-    let mut opts =
+    let opts =
         obc_pack::catalog::CatalogOptions::new(base_url, generated_at.unwrap_or_else(obc_pack::catalog::now_timestamp));
-    if let Some(t) = tolerance {
-        opts.boundary_tolerance_udeg = t;
-    }
     let generated = obc_pack::catalog::generate(&tree, &opts)?;
     for w in &generated.warnings {
         eprintln!("obc-pack catalog: warning: {w}");
@@ -221,7 +209,11 @@ fn run_cells(args: &[String]) -> Result<(), String> {
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--version") {
-        println!("obc-pack {} (merge + ingest + relations + land + quadtree + serialize)", env!("CARGO_PKG_VERSION"));
+        println!(
+            "obc-pack {} (merge + ingest + relations + land + contours + quadtree + serialize + POIs & hours + nav \
+             graph + cell cutter + catalog)",
+            env!("CARGO_PKG_VERSION")
+        );
         return ExitCode::SUCCESS;
     }
     if args.first().map(String::as_str) == Some("schema") {

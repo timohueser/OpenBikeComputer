@@ -14,12 +14,13 @@
 //! which is why a skin is not a `--config` you can hand the packer, and why nothing
 //! here treats it as one.
 //!
-//! The bakery needs three things from either document: the parsed [`Config`] (the
-//! schema's to pack with, a skin's to check that it fits the schema), the
-//! `_meta.version` to **record**, and the file's bytes — both to copy verbatim into
-//! the bake tree (where `obc-pack catalog` reads its `_meta`) and to hash into the
-//! idempotency key, so a schema edit re-bakes exactly the cells it invalidates
-//! and nothing else.
+//! The bakery needs two things from either document: the parsed [`Config`] (the
+//! schema's to pack with, a skin's to check that it fits the schema) and the file's
+//! bytes — both to copy verbatim into the bake tree (where `obc-pack catalog` reads its
+//! `_meta`) and to hash into the idempotency key, so a schema edit re-bakes exactly the
+//! cells it invalidates and nothing else. `_meta.version` is *required* here and read by
+//! nobody here: the bakery copies the bytes that carry it, and refusing a document
+//! without it is what keeps that copy meaningful.
 //!
 
 use std::path::{Path, PathBuf};
@@ -40,9 +41,6 @@ pub struct StyleDoc {
     /// also be its filename stem — a skin is addressed by id at assembly time, and
     /// two names for one document is one name too many.
     pub id: String,
-    /// `_meta.version` at load time. The schema version becomes the cell-store revision;
-    /// a skin version is published in that skin's catalog entry.
-    pub version: u32,
     pub path: PathBuf,
     /// The file's bytes, copied verbatim into the bake tree.
     pub json: String,
@@ -126,16 +124,17 @@ fn read(path: &Path, stem: Option<&str>) -> Result<StyleDoc, String> {
             return Err(format!("{}: `_meta.id` is `{id}` but the filename says `{stem}`", path.display()));
         }
     }
-    let version = meta
-        .get("version")
+    // Required, and deliberately not kept: the version travels in `json` below, which is
+    // copied verbatim into the bake tree for `obc-pack catalog` to read. Validating it here
+    // is what makes that copy a promise rather than a hope.
+    meta.get("version")
         .and_then(serde_json::Value::as_u64)
-        .ok_or_else(|| format!("{}: `_meta.version` is missing — a sidecar has to record it", path.display()))?
-        as u32;
+        .ok_or_else(|| format!("{}: `_meta.version` is missing — a sidecar has to record it", path.display()))?;
     // Parse with the packer's own loader: a document that does not parse must fail
     // now, not per region, and not after the extract download.
     let config = Config::load(&path.to_string_lossy())?;
     let body_sha256 = body_sha256(&doc, path)?;
-    Ok(StyleDoc { id, version, path: path.to_path_buf(), json, body_sha256, config })
+    Ok(StyleDoc { id, path: path.to_path_buf(), json, body_sha256, config })
 }
 
 /// SHA-256 of a style document with `_meta` **stripped** — its packer-visible body.

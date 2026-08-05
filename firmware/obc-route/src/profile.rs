@@ -295,7 +295,7 @@ impl RouteReader<'_> {
             }
         }
 
-        fill_gaps(&mut cols[..PROFILE_COLS], (self.min_ele_m, self.max_ele_m));
+        fill_gaps(&mut cols[..PROFILE_COLS], band_fallback((self.min_ele_m, self.max_ele_m)), band_is_set);
         downsample_levels(&mut cols);
         let cum_ascent = cumulative_ascent(&casc, self.total_ascent_m);
         let peak_col = peak_column(&cols[..PROFILE_COLS]);
@@ -401,7 +401,7 @@ pub fn ride_elevation_profile(src: &dyn ByteSource) -> Result<Profile, Error> {
     if min_ele > max_ele {
         (min_ele, max_ele) = (0, 0);
     }
-    fill_gaps(&mut out.cols[..PROFILE_COLS], (min_ele, max_ele));
+    fill_gaps(&mut out.cols[..PROFILE_COLS], band_fallback((min_ele, max_ele)), band_is_set);
     downsample_levels(&mut out.cols);
     out.cum_ascent = cumulative_ascent(&casc, info.climb_m as u32);
     out.peak_col = peak_column(&out.cols[..PROFILE_COLS]);
@@ -613,13 +613,18 @@ fn peak_column(cols: &[(i16, i16)]) -> usize {
     peak_col
 }
 
-/// Make `cols` gap-free: each empty column (sentinel `min > max`) inherits the nearest
-/// filled column — forward first, then backward for any leading gap. A route with no
-/// points at all falls back to the header `(min, max)` so the band still has a shape.
-fn fill_gaps(cols: &mut [(i16, i16)], fallback: (i16, i16)) {
-    let is_set = |c: &(i16, i16)| c.0 <= c.1;
-
-    let mut last: Option<(i16, i16)> = None;
+/// Make `cols` gap-free: each empty column inherits the nearest filled column — forward carry
+/// first, then a backward carry for any leading run of empties the forward pass can't reach. A
+/// column still empty after both falls back to `fallback`, so the buffer is never left holding a
+/// sentinel.
+///
+/// Generic over the column payload and its emptiness test, because both elevation buffers want
+/// exactly this carry: the route [`Profile`]'s `(min, max)` band (sentinel `min > max`, falling
+/// back to the header extent so the band still has a shape when a route decodes to nothing) and
+/// the [`ClimbProfile`](crate::climb_profile::ClimbProfile)'s one-sample-per-column scalar
+/// (sentinel [`EMPTY`](crate::climb_profile), falling back to the seg's base).
+pub(crate) fn fill_gaps<T: Copy>(cols: &mut [T], fallback: T, is_set: impl Fn(&T) -> bool) {
+    let mut last: Option<T> = None;
     for c in cols.iter_mut() {
         if is_set(c) {
             last = Some(*c);
@@ -628,7 +633,7 @@ fn fill_gaps(cols: &mut [(i16, i16)], fallback: (i16, i16)) {
         }
     }
     // Backward carry fills columns before the first set one (forward carry can't reach).
-    let mut next: Option<(i16, i16)> = None;
+    let mut next: Option<T> = None;
     for c in cols.iter_mut().rev() {
         if is_set(c) {
             next = Some(*c);
@@ -636,11 +641,21 @@ fn fill_gaps(cols: &mut [(i16, i16)], fallback: (i16, i16)) {
             *c = v;
         }
     }
-    // Only reachable when the route had no decodable points.
-    let fallback = (fallback.0.min(fallback.1), fallback.0.max(fallback.1));
+    // Only reachable when the whole span had no decodable points.
     for c in cols.iter_mut() {
         if !is_set(c) {
             *c = fallback;
         }
     }
+}
+
+/// The band buffer's emptiness test: an unwritten column carries the inverted sentinel `min > max`.
+fn band_is_set(c: &(i16, i16)) -> bool {
+    c.0 <= c.1
+}
+
+/// Normalize a `(min, max)` band fallback so it reads as *set* — the header extent is trusted for
+/// its two values, not for their order.
+fn band_fallback(fallback: (i16, i16)) -> (i16, i16) {
+    (fallback.0.min(fallback.1), fallback.0.max(fallback.1))
 }

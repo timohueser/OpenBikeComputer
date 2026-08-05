@@ -50,6 +50,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [dev-dependencies]
+# The shared scratch-path helper the CLI/oracle tests build their throwaway trees with.
+# The tree's one hand-written OBCM byte builder, and deliberately independent of every production
+# serializer — which is what makes it an oracle. The §8 nav fixtures here are built with it rather
+# than with a private transcription, so this crate's tests and `obc-reader`'s read the same bytes.
+obcm-testkit = { path = "../obcm-testkit" }
 # The differential oracle (#1024's acceptance bar) packs and cuts the SAME synthetic extract with
 # the real packer, then compares `pack(X)` against `assemble(cut(X))`. A dev-dep only: obc-pack
 # carries libGEOS and never enters the engine's build graph (the same boundary obc-route ↔ obc-pack

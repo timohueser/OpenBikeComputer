@@ -92,9 +92,6 @@ use obc_display::ls021::wire::WIDTH;
 use obc_display::display_contracts::{Device64Frame, OverlayPresenter, PresentStats, Presenter};
 use obc_display::ls021::{composite_into_resident, OverlayScratch, RowDamage, RowDiff, RowWindow};
 use obc_display::Band;
-// The host-tested RGB565 → device-64 quantiser — the same one the map style table is tuned to, so the
-// re-quantised overlay window lands on the panel's RGB222 gamut exactly as the map style cards do.
-use obc_reader::rgb565_to_device64;
 
 use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::Rectangle;
@@ -657,8 +654,9 @@ impl OverlayPresenter<Frame64> for Ls021Flpr<'_> {
     /// **Composite-into-fb with save/restore** (#347): the FLPR scans the frame directly, so the
     /// composited window must transiently *be* in it — the shared
     /// [`composite_into_resident`] engine saves the clean window bytes (≤3 KB), writes the
-    /// composited window in (re-quantised to device-64 — `rgb565_to_device64` returns 0/85/170/255
-    /// per channel; `/85` recovers the 2-bit level), pushes the rows, and restores. Sound because
+    /// composited window in (re-quantised to device-64 by the same host-tested packer the frame
+    /// itself was rendered with, so the overlay lands on the panel's RGB222 gamut exactly as the map
+    /// style cards do), pushes the rows, and restores. Sound because
     /// the map plane owns the frame and is inside this call for the whole push (the `&mut Frame64`
     /// borrow — it can't render mid-push), and the input plane never touches the frame. The
     /// [`RowDiff`] store keeps tracking the **clean** frame throughout — after the restore the
@@ -697,10 +695,6 @@ impl OverlayPresenter<Frame64> for Ls021Flpr<'_> {
             Size::new(FB_W as u32, FB_H as u32),
             region,
             OverlayScratch { win: &mut win, save: &mut save },
-            |px| {
-                let (dr, dg, db) = rgb565_to_device64(px);
-                ((dr / 85) << 4) | ((dg / 85) << 2) | (db / 85)
-            },
             &mut |band| {
                 if let Some(d) = draw.take() {
                     d(band)

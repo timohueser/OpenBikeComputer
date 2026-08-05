@@ -2,16 +2,16 @@
 //!
 //! A [`MountedSet`] is a [`MapScene`] like a single [`Reader`] is, so the renderer needs no
 //! changes: a viewport query fans out to every shard whose bbox intersects the view, and the
-//! §5.6 mount-time empty-LOD cache means a shard that does not carry the requested LOD costs
-//! **no I/O** to skip. Nav and POI queries never fan out — they always go to the core shard
+//! §5.6 empty-LOD predicate — answered off the shard's own resident LOD table — means a shard
+//! that does not carry the requested LOD costs **no I/O** to skip. Nav and POI queries never fan out — they always go to the core shard
 //! (§5.1), which is why routing never crosses a file.
 //!
 //! # What is resident, and what is not
 //!
 //! The expensive part of a parsed map is the 256-slot style table, and §4.7 stamps the *same*
 //! skin into every shard of a set. So a mount keeps exactly one [`MapTables`] — the core's —
-//! and holds each extra shard as a [`ShardTables`]: its header bbox plus its LOD table plus the
-//! empty-LOD bitmask. [`ShardTables::parse`] never touches the style region, so mounting a shard
+//! and holds each extra shard as a [`ShardTables`]: its header bbox plus its LOD table, which is
+//! also what answers §5.6. [`ShardTables::parse`] never touches the style region, so mounting a shard
 //! also avoids `parse_styles`'s 2 KiB stack scratch; the whole mount path stays shallow.
 //!
 //! The ≈277 KB [`MapCache`] is shared by the whole set. That is safe because every per-shard
@@ -48,7 +48,8 @@ use obc_map_scene::{
     ReadError as SceneReadError, SelectedFeatures, Style,
 };
 
-use crate::reader::{parse_header, parse_lod_table, Lod};
+use crate::reader::{parse_lod_table, parse_prologue, Lod};
+use crate::scene::{feature_error, read_error};
 use crate::{Error, MapCache, MapTables, Reader};
 
 /// Highest shard index a [`FeatureToken`] can carry — the five bits stolen from the token's
@@ -100,42 +101,24 @@ impl From<ManifestError> for MountError {
     }
 }
 
-/// Everything a non-core shard needs resident: its header bbox, its OBCM version, its LOD table,
-/// and the §5.6 empty-LOD predicate. No style table, no POI directory, no nav directory — a
-/// geometry or coarse shard has none of those (§5.1), and the skin is the core's.
+/// Everything a non-core shard needs resident: its header bbox, its OBCM version, and its LOD
+/// table — which is also what answers the §5.6 empty-LOD predicate. No style table, no POI
+/// directory, no nav directory — a geometry or coarse shard has none of those (§5.1), and the
+/// skin is the core's.
 pub struct ShardTables {
     bbox: BBox,
     version: u8,
     lods: Vec<Lod, 16>,
-    /// Bit `k` set ⇔ LOD `k` has `Index Node Count == 0`. Seven bits at the v1 ladder (§5.6);
-    /// a `u16` covers the format's 16-LOD maximum and still costs two bytes per file.
-    empty: u16,
 }
 
 impl ShardTables {
-    /// Parse a shard's header + LOD table, and nothing else.
+    /// Parse a shard's header + LOD table, and nothing else — the shared prologue every OBCM parse
+    /// starts from (magic, version, bbox, marker, and the LOD table's bounds-checked position),
+    /// then the table itself. A shard carries no style, POI or nav section to read past it.
     pub fn parse(src: &dyn ByteSource) -> Result<ShardTables, Error> {
-        let total = src.len() as usize;
-        if total < obc_formats::obcm::HEADER_LEN {
-            return Err(Error::TooShort);
-        }
-        let mut header = [0u8; obc_formats::obcm::HEADER_LEN];
-        src.read_at(0, &mut header).map_err(Error::Source)?;
-        let parsed = parse_header(&header)?;
-        let lod_count = header[25] as usize;
-        let lod_table_offset = obc_formats::io::rd_u32(&header, 26) as usize;
-        if lod_count == 0 {
-            return Err(Error::BadOffset);
-        }
-        let lod_table_end = lod_count
-            .checked_mul(obc_formats::obcm::LOD_ENTRY_LEN)
-            .and_then(|len| lod_table_offset.checked_add(len))
-            .ok_or(Error::BadOffset)?;
-        if lod_table_end > total {
-            return Err(Error::BadOffset);
-        }
-        let lods = parse_lod_table(src, lod_table_offset, lod_count, total)?;
-        Ok(ShardTables { bbox: parsed.bbox, version: parsed.version, empty: empty_mask(&lods), lods })
+        let prologue = parse_prologue(src)?;
+        let lods = parse_lod_table(src, prologue.lod_table_offset, prologue.lod_count, prologue.total)?;
+        Ok(ShardTables { bbox: prologue.map.bbox, version: prologue.map.version, lods })
     }
 
     #[inline]
@@ -157,21 +140,13 @@ impl ShardTables {
 
     /// The §5.6 predicate: this file writes LOD `lod` empty, so a query for it can be skipped
     /// with **no I/O**. It is not a statement about band membership or role (§3.1: a
-    /// legitimately empty cell is indistinguishable from an out-of-band one).
+    /// legitimately empty cell is indistinguishable from an out-of-band one). Answered off the
+    /// resident table (`Index Node Count == 0`), exactly as [`MapTables::lod_is_empty`] does for
+    /// the core — a rung past the ladder's end counts as empty.
     #[inline]
     pub fn lod_is_empty(&self, lod: usize) -> bool {
-        lod >= self.lods.len() || self.empty & (1 << lod.min(15)) != 0
+        self.lods.get(lod).is_none_or(|entry| entry.node_count == 0)
     }
-}
-
-fn empty_mask(lods: &[Lod]) -> u16 {
-    let mut mask = 0u16;
-    for (index, lod) in lods.iter().enumerate().take(16) {
-        if lod.node_count == 0 {
-            mask |= 1 << index;
-        }
-    }
-    mask
 }
 
 /// Whether `shard` lists the same ladder as the core: the same number of rungs, each with the same
@@ -474,14 +449,6 @@ fn untag_token(token: FeatureToken) -> (usize, u32, usize) {
     ((hi >> 11) as usize, (((hi & 0x07FF) as u32) << 16) | lo as u32, offset as usize)
 }
 
-fn read_error(error: crate::MapReadError) -> SceneReadError {
-    match error {
-        crate::MapReadError::Source(_) => SceneReadError::Source,
-        crate::MapReadError::Cache(crate::CacheError::Busy) => SceneReadError::CacheBusy,
-        crate::MapReadError::Malformed => SceneReadError::Malformed,
-    }
-}
-
 fn set_bbox(view: &BBox) -> SetBBox {
     SetBBox { min_lat: view.min_lat, min_lon: view.min_lon, max_lat: view.max_lat, max_lon: view.max_lon }
 }
@@ -641,20 +608,6 @@ impl MapScene for MountedSet<'_> {
             }
         }
         report
-    }
-}
-
-fn feature_error(error: crate::FeatureReadError) -> obc_map_scene::FeatureError {
-    use obc_map_scene::{CapacityError as SceneCapacityError, FeatureError as SceneFeatureError};
-    match error {
-        crate::FeatureReadError::Decode(crate::FeatureDecodeError::Capacity(crate::CapacityError::Points)) => {
-            SceneFeatureError::Capacity(SceneCapacityError::Points)
-        }
-        crate::FeatureReadError::Decode(crate::FeatureDecodeError::Capacity(crate::CapacityError::Rings)) => {
-            SceneFeatureError::Capacity(SceneCapacityError::Rings)
-        }
-        crate::FeatureReadError::Decode(crate::FeatureDecodeError::Malformed) => SceneFeatureError::Malformed,
-        crate::FeatureReadError::Read(error) => SceneFeatureError::Read(read_error(error)),
     }
 }
 

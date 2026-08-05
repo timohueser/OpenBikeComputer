@@ -33,13 +33,12 @@ use embedded_graphics::primitives::Rectangle;
 use image::codecs::png::PngEncoder;
 use image::{ExtendedColorType, ImageEncoder};
 use obc_formats::io::SliceSource;
-use obc_formats::obcm::{HEADER_LEN, STYLE_RECORD_LEN};
 use obc_pack::catalog::{feature_type_ids, Catalog};
 use obc_pack::config::Config;
 use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader};
 use obc_render::{zoom_for_mpp, RenderConfig, RenderScratch, Viewport};
 use obcm_assemble::schema::{Schema, Skin};
-use obcm_assemble::shard::pack_style_table;
+use obcm_assemble::shard::{restamp_style_table, RestampError};
 
 /// Published beside `cells/`, `regions/`, and `skins/`.
 pub const PREVIEWS_DIR: &str = "previews";
@@ -53,9 +52,6 @@ const CAMERA_LON: i32 = 7_814_000;
 const CAMERA_LAT: i32 = 48_130_000;
 /// Mid-riding scale: 1.2 km across the 240 px square.
 const METERS_PER_PIXEL: f32 = 5.0;
-
-const HEADER_STYLE_OFFSET_AT: usize = 21;
-const HEADER_MARKER_COLOR_AT: usize = 30;
 
 /// What one regeneration wrote.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,42 +128,23 @@ fn prune(dir: &Path, skin_ids: &[&str]) -> Result<(), String> {
 fn render(schema: &Schema, skin: &Skin) -> Result<Vec<u8>, String> {
     let styles = skin.resolve(schema)?;
     let mut map = SOURCE.to_vec();
-    if map.len() < HEADER_LEN {
-        return Err("Teningen preview fixture is shorter than the OBCM header".into());
-    }
-    let style_offset = u32::from_le_bytes(
-        map[HEADER_STYLE_OFFSET_AT..HEADER_STYLE_OFFSET_AT + 4]
-            .try_into()
-            .expect("four bytes inside the checked header"),
-    ) as usize;
-    let count = *map.get(style_offset).ok_or("Teningen preview fixture has a bad style offset")? as usize;
-    let end = style_offset.checked_add(1 + count * STYLE_RECORD_LEN).ok_or("Teningen preview style table overflows")?;
-    let slot = map.get_mut(style_offset..end).ok_or("Teningen preview style table runs past the file")?;
-    // Only the styles the fixture actually carries are stamped; a schema that has grown feature
-    // types since the cut keeps its trailing ones (see the module header — the fixture's table must
-    // be a prefix, and a type with no geometry here cannot change the picture).
-    if styles.len() < count {
-        return Err(format!(
-            "Teningen preview fixture has {count} styles, but skin {:?} resolves to only {}",
-            skin.id,
-            styles.len()
-        ));
-    }
-    let stamped = &styles[..count];
-    let packed = pack_style_table(stamped);
-    if slot.len() != packed.len() {
-        return Err(format!("Teningen preview fixture's {count}-style table is not {} bytes", packed.len()));
-    }
-    let have_ids: Vec<u8> = slot[1..].chunks_exact(STYLE_RECORD_LEN).map(|record| record[0]).collect();
-    let want_ids: Vec<u8> = stamped.iter().map(|style| style.id).collect();
-    if have_ids != want_ids {
-        return Err(format!(
-            "Teningen preview fixture style ids {have_ids:?} do not match skin {:?}'s {want_ids:?}",
-            skin.id
-        ));
-    }
-    slot.copy_from_slice(&packed);
-    map[HEADER_MARKER_COLOR_AT..HEADER_MARKER_COLOR_AT + 2].copy_from_slice(&skin.marker_color.to_le_bytes());
+    // Style table + marker colour, in place — the assembler owns that algorithm (the fixture's
+    // table is allowed to be a *prefix* of the schema's assignment; see the module header).
+    restamp_style_table(&mut map, &styles, skin.marker_color).map_err(|e| match e {
+        RestampError::ShorterThanHeader => "Teningen preview fixture is shorter than the OBCM header".to_string(),
+        RestampError::BadStyleOffset => "Teningen preview fixture has a bad style offset".to_string(),
+        RestampError::TableOverflows => "Teningen preview style table overflows".to_string(),
+        RestampError::TableTruncated => "Teningen preview style table runs past the file".to_string(),
+        RestampError::TooFewStyles { count, resolved } => {
+            format!("Teningen preview fixture has {count} styles, but skin {:?} resolves to only {resolved}", skin.id)
+        }
+        RestampError::LengthMismatch { count, packed } => {
+            format!("Teningen preview fixture's {count}-style table is not {packed} bytes")
+        }
+        RestampError::IdMismatch { have, want } => {
+            format!("Teningen preview fixture style ids {have:?} do not match skin {:?}'s {want:?}", skin.id)
+        }
+    })?;
 
     let source = SliceSource(&map);
     let tables = MapTables::parse(&source).map_err(|e| format!("restamped preview map is not readable: {e:?}"))?;

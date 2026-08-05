@@ -1676,6 +1676,33 @@ mod tests {
         // Month → year carry: Dec 31 23:59 + 1 → Jan 1 of the next year.
         let y = DateTime { year: 2025, month: 12, day: 31, hour: 23, minute: 59 }.add_minutes(1);
         assert_eq!((y.year, y.month, y.day, y.hour, y.minute), (2026, 1, 1, 0, 0), "new year");
+        // Zero is identity on an already-sane stamp.
+        assert_eq!(base.add_minutes(0), base, "a zero advance changes nothing");
+    }
+
+    /// Multi-day, multi-month and multi-year advances land where an independent calendar
+    /// (`datetime.timedelta`) puts them — the cases that separate a correct bulk carry from a
+    /// day-at-a-time walk that quietly loses a leap day or a month length.
+    #[test]
+    fn datetime_add_minutes_matches_reference_over_long_advances() {
+        let f = |d: DateTime| (d.year, d.month, d.day, d.hour, d.minute);
+        // 400 days from New Year's Day 2025: across a year boundary into a common-year February.
+        let a = DateTime { year: 2025, month: 1, day: 1, hour: 0, minute: 0 }.add_minutes(400 * 24 * 60);
+        assert_eq!(f(a), (2026, 2, 5, 0, 0), "400 days from 2025-01-01");
+        // 366 days from a leap day: 2024 → 2025 has no Feb 29 to land on.
+        let b = DateTime { year: 2024, month: 2, day: 29, hour: 12, minute: 0 }.add_minutes(366 * 24 * 60);
+        assert_eq!(f(b), (2025, 3, 1, 12, 0), "366 days from the 2024 leap day");
+        // ~700 days in one call, with a minute-of-day carry on top.
+        let c = DateTime { year: 2025, month: 6, day: 29, hour: 14, minute: 40 }.add_minutes(1_000_000);
+        assert_eq!(f(c), (2027, 5, 25, 1, 20), "a million minutes");
+        // The century rule both ways: 2100 is not a leap year, 2000 is.
+        let d = DateTime { year: 2100, month: 2, day: 28, hour: 0, minute: 0 }.add_minutes(24 * 60);
+        assert_eq!(f(d), (2100, 3, 1, 0, 0), "2100 is div-by-100-not-400: no Feb 29");
+        let e = DateTime { year: 2000, month: 2, day: 28, hour: 0, minute: 0 }.add_minutes(24 * 60);
+        assert_eq!(f(e), (2000, 2, 29, 0, 0), "2000 is div-by-400: Feb 29 exists");
+        // Advancing in two steps is the same as advancing in one (the carry is associative).
+        let base = DateTime { year: 2025, month: 6, day: 29, hour: 14, minute: 40 };
+        assert_eq!(base.add_minutes(5_000).add_minutes(7_777), base.add_minutes(12_777), "split == whole");
     }
 
     /// February's length is taken from the year the advance *lands* in, so a leap-year Feb 28 + 1
@@ -1708,6 +1735,33 @@ mod tests {
         let month_edge = DateTime { year: 2025, month: 7, day: 1, hour: 0, minute: 0 };
         let back = month_edge.with_offset(-60); // → Jun 30 23:00
         assert_eq!((back.month, back.day, back.hour), (6, 30, 23), "the borrow steps into June (30 days)");
+    }
+
+    /// The offset's hard edges: a backward roll across a year boundary and across a leap day, and
+    /// the widest real zones (UTC+14 / UTC−12), which move the date by a whole day each way.
+    #[test]
+    fn datetime_with_offset_crosses_year_and_leap_boundaries() {
+        let f = |d: DateTime| (d.year, d.month, d.day, d.hour, d.minute);
+        // Backward past midnight on New Year's Day: the year borrows too.
+        let ny = DateTime { year: 2025, month: 1, day: 1, hour: 0, minute: 15 }.with_offset(-30);
+        assert_eq!(f(ny), (2024, 12, 31, 23, 45), "New Year's Day − 30 min is New Year's Eve");
+        // Backward into a leap day, and into the common-year Feb 28 for contrast.
+        let leap = DateTime { year: 2024, month: 3, day: 1, hour: 0, minute: 30 }.with_offset(-60);
+        assert_eq!(f(leap), (2024, 2, 29, 23, 30), "March 1 2024 borrows from Feb 29");
+        let common = DateTime { year: 2025, month: 3, day: 1, hour: 0, minute: 0 }.with_offset(-1);
+        assert_eq!(f(common), (2025, 2, 28, 23, 59), "March 1 2025 borrows from Feb 28");
+        // Forward past midnight on New Year's Eve.
+        let nye = DateTime { year: 2025, month: 12, day: 31, hour: 23, minute: 59 }.with_offset(1);
+        assert_eq!(f(nye), (2026, 1, 1, 0, 0), "New Year's Eve + 1 min is New Year's Day");
+        // The extreme zones: UTC+14 and UTC−12 from mid-morning both change the date.
+        let mid = DateTime { year: 2025, month: 6, day: 29, hour: 10, minute: 0 };
+        assert_eq!(f(mid.with_offset(14 * 60)), (2025, 6, 30, 0, 0), "UTC+14 pushes into tomorrow");
+        assert_eq!(f(mid.with_offset(-12 * 60)), (2025, 6, 28, 22, 0), "UTC−12 pulls into yesterday");
+        // Applying an offset and its negation is a round trip, in both directions and at an edge.
+        for offset in [1i16, -1, 60, -60, 840, -720, 1439, -1439] {
+            assert_eq!(mid.with_offset(offset).with_offset(-offset), mid, "round trip at {offset}");
+            assert_eq!(ny.with_offset(offset).with_offset(-offset), ny, "round trip at {offset} from {ny:?}");
+        }
     }
 
     /// `add_minutes` is defensive against an unsanitised stamp: a day past the month length doesn't

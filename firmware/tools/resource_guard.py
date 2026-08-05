@@ -71,7 +71,7 @@ class BoardMeasurement:
     data: int
     # `.uninit` — cortex-m-rt's NOLOAD section, placed after `.bss` and skipped by the reset
     # handler's zeroing loop. It used to be 1 KB of `defmt_rtt::BUFFER` and nothing else, which is
-    # where the historical `uninit_max` came from. Since #1146 P2 it is also where the ~92 KB
+    # where the historical `uninit_max` came from. Since #1146 P2 it is also where the ~117 KB
     # **scratch arena** lives, so it is now the second-largest resident block in the image and is
     # gated in earnest — see the `uninit_max` check in `check_board`.
     uninit: int
@@ -103,8 +103,8 @@ def parse_size_output(output: str, extra_required: frozenset[str] = frozenset())
     """Section sizes from `llvm-size -A`, failing loudly on a section the caller says must be there.
 
     `extra_required` is how the **board** legs demand `.uninit`, the section that has held the
-    ~92 KB scratch arena since #1146 P2. It is not in the common set because the bootloader
-    legitimately links none.
+    scratch arena (~117 KB since #1146 P3 spent the dividend on the render arm; ~92 KB as P2 left
+    it) since #1146 P2. It is not in the common set because the bootloader legitimately links none.
 
     **What this catches, exactly:** llvm-size no longer printing the section (a stale parser) or the
     board linking no `.uninit` at all — either of which would otherwise measure it as zero and leave
@@ -559,7 +559,7 @@ def check_board(args: argparse.Namespace, baseline: dict[str, object]) -> None:
     )
     # A plain ceiling, and it needs no more shape than that even now that it is a real budget: until
     # #1146 P2 `.uninit` held only `defmt_rtt::BUFFER`, and the 1,024 B baseline was there to catch
-    # a NOLOAD section appearing by accident. It now also holds the ~92 KB scratch arena, so this is
+    # a NOLOAD section appearing by accident. It now also holds the ~117 KB scratch arena, so this is
     # the growth gate for the arena's largest arm — pinned exactly, like `resident_ram_max`, so any
     # arm crossing the max shows up here as a linked fact and not only as a `size_of` in the report.
     # Being a ceiling, it says nothing about the arena *shrinking* or *leaving*; `check_arena` below
@@ -584,7 +584,7 @@ def check_board(args: argparse.Namespace, baseline: dict[str, object]) -> None:
             f"{framebuffer_bytes} B (240 x 320 x 1)",
         )
     # Distinct from `framebuffer_count` (a *name*-matched count): this is the size-based
-    # "no accidental second framebuffer" net. It is not always 1 — the ~90 KB scratch `ARENA`
+    # "no accidental second framebuffer" net. It is not always 1 — the ~117 KB scratch `ARENA`
     # legitimately exceeds a frame, so the expected count is pinned per profile and any *new*
     # frame-sized allocation still trips the guard. Those bytes have moved twice and the count has
     # stayed 2 throughout: they were inside `APP`, then #1146 P1 gave them their own `RENDER_SCRATCH`
@@ -619,7 +619,7 @@ def check_arena(profile_name: str, profile: dict[str, object], measured: BoardMe
     (`defmt_rtt::BUFFER`, 1,024 B), so an arena whose `#[link_section]` is renamed to anything else
     lands in a section nothing gates and leaves every RAM gate green: `.bss + .data` unmoved (the
     bytes did not go to `.bss`), `.uninit` back to 1,024 under a `<=` ceiling, and the residual main
-    stack *risen*, comfortably over its `>=` floor. 92 KB would go missing behind four passes.
+    stack *risen*, comfortably over its `>=` floor. 117 KB would go missing behind four passes.
 
     So the three requirements here are the ones that actually pin it:
 
@@ -633,7 +633,7 @@ def check_arena(profile_name: str, profile: dict[str, object], measured: BoardMe
       cannot see.
 
     What is still *not* proven here is that those bytes sit at the arena's address rather than
-    merely fitting — a `.uninit` that grew by 92 KB for an unrelated reason while the arena moved
+    merely fitting — a `.uninit` that grew by the arena's size for an unrelated reason while it moved
     out would satisfy the arithmetic. `uninit_max` is pinned at the exact shipping total, so that
     combination cannot pass both gates today.
     """

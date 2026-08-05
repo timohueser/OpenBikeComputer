@@ -143,10 +143,10 @@ impl Viewport {
     }
 }
 
-#[inline]
-pub(crate) fn aspect_for_lat(cam_lat: i32) -> f32 {
-    libm::cosf((cam_lat as f32 / 1e6).to_radians())
-}
+/// The longitude-compression factor at a latitude — `cos(lat)` in the shared local-equirectangular
+/// Earth model. The projection and the packer's ground-distance math must agree to the last bit, so
+/// there is one implementation: [`obc_map_scene::cos_lat`].
+pub(crate) use obc_map_scene::cos_lat as aspect_for_lat;
 
 /// Round to nearest, half away from zero — the shared rounding convention for every
 /// screen-space vertex. Same result as `libm::roundf` for all in-screen magnitudes,

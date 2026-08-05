@@ -146,7 +146,7 @@ MONACO="$repo_root/apps/obc-sim/assets/monaco.obcm"
 # step into the category list than Resupply.
 "$SIM" "$MONACO" --boot --center 7413793,43734832 --heading 0 --clock "2025-01-06T12:00" \
     --script "B d d w p d d d d p f p" --png "$OUT/poi-detail-split-hours.png"
-# POI create-route flow (epic #116, R4). The `d` token also drains a pending create-route request
+# POI create-route flow (epic #116, R4). The `f` token also drains a pending create-route request
 # (running the real A* router over the map's v8 nav graph), so one script walks the whole flow.
 # The confirm (#685: the category glyph in the T1 slot + the straight-line 'NNN m away' under
 # the name): detail of a resupply POI ~600 m away → press.
@@ -154,7 +154,7 @@ MONACO="$repo_root/apps/obc-sim/assets/monaco.obcm"
     --script "B d d w p d d d p f p p" --png "$OUT/nav-confirm.png"
 # The computed-route overview (length only — no elevation band, no climb/descent rows; #685:
 # static NEW ROUTE title, the destination name as the first body line, metres below 1 km, and the
-# decimated route-shape preview polyline in the middle): confirm → Create route → `d` runs the
+# decimated route-shape preview polyline in the middle): confirm → Create route → `f` runs the
 # router; the answer swaps in the overview and hands the app the ≤64-point preview.
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
     --script "B d d w p d d d p f p p p f" --png "$OUT/nav-overview.png"

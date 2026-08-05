@@ -63,7 +63,12 @@ pub fn get_text(url: &str) -> Result<String, String> {
 pub fn download(url: &str, dest: &Path, progress: &Progress, mut on_pct: impl FnMut(u8)) -> Result<u64, String> {
     let dir = dest.parent().ok_or("download destination has no directory")?;
     std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-    let part = dest.with_extension("part");
+    // Appended to the whole file name, not `with_extension`: that *replaces* the
+    // extension, so `x.zip` and `x.obcd` downloading side by side would share one
+    // `x.part`, and a dotted stem (`glo-30.n47e008.tif`) would lose a segment.
+    let mut part_name = dest.file_name().ok_or("download destination has no file name")?.to_os_string();
+    part_name.push(".part");
+    let part = dest.with_file_name(part_name);
 
     let mut last_err = String::new();
     for attempt in 1..=ATTEMPTS {
