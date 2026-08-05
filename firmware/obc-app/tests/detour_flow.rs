@@ -353,6 +353,109 @@ fn the_frozen_map_wears_a_recalculating_banner_on_the_overlay_plane() {
     assert_eq!(buf.count(rgb(palette::PARCHMENT)), 0, "nothing is drawn once the run ends");
 }
 
+/// What one ride-loop pass puts on glass.
+#[derive(Debug, PartialEq, Eq)]
+enum Painted {
+    /// The banner band only — the frozen branch (`ride.rs`: `dirty.overlay` while frozen).
+    Banner,
+    /// A whole frame — the ordinary render (`dirty.map` with no freeze).
+    Frame,
+    /// Nothing was pushed this pass.
+    Nothing,
+}
+
+/// The board's ride loop, reduced to the part that decides what gets painted — in the board's order
+/// and, crucially, with **one** `take_dirty` per pass. That single drain is the whole point: the
+/// flags are one-shots, so a test that drains twice per pass silently hands itself an edge the real
+/// loop would have spent on the previous frame.
+#[derive(Default)]
+struct BoardLoop {
+    /// `ride.rs`'s latch: a map redraw the freeze swallowed, replayed the pass it lifts.
+    pending_map_redraw: bool,
+}
+
+impl BoardLoop {
+    fn pass(&mut self, app: &mut App) -> Painted {
+        let _ = drained(app); // the pass's single host-command drain, before the dirty drain
+        let mut dirty = app.take_dirty();
+        if core::mem::take(&mut self.pending_map_redraw) {
+            dirty.map = true;
+        }
+        let frozen = app.reroute_freeze_active();
+        if frozen && dirty.map {
+            self.pending_map_redraw = true;
+            dirty.map = false;
+        }
+        if frozen {
+            match app.reroute_banner_rows(320.0).filter(|_| dirty.overlay) {
+                Some(_) => Painted::Banner,
+                None => Painted::Nothing,
+            }
+        } else if dirty.map {
+            Painted::Frame
+        } else {
+            Painted::Nothing
+        }
+    }
+}
+
+/// **The regression**, driven the way the board drives it: the freeze is a *level*, and the two
+/// facts it is made of move independently. A plan that starts under the opaque planning spinner
+/// freezes nothing — and that chrome frame is where a plan-start overlay edge goes to die. When a
+/// map base comes back under the still-running search there is no plan edge left to raise the
+/// banner, so a host keyed on it renders **nothing at all** for the rest of the search: stale pixels
+/// on glass, no explanation, and input going to the screen underneath.
+///
+/// The chrome interlude is the ride menu and the plan is the simulator's `--freeze` seam, because
+/// the detour flow's own way back to a map base (Back on the spinner) drains a cancel in the same
+/// pass and ends the run — see `the_freeze_covers_a_live_search_exactly_while_a_map_base_would_draw`
+/// for that path.
+#[test]
+fn the_banner_lands_when_a_map_base_returns_under_a_search_that_already_started() {
+    let (mut app, _obcr) = riding_app();
+    let mut board = BoardLoop::default();
+    let _ = board.pass(&mut app); // settle the start-of-ride dirt
+
+    app.apply_gesture(Gesture::BackHold); // the ride menu: an opaque chrome base
+    assert!(!app.base_draws_map(), "no map underneath the menu");
+    app.debug_set_plan_live(true); // the host begins a planner run
+    assert!(app.plan_in_flight());
+    assert!(!app.reroute_freeze_active(), "a chrome base freezes nothing — and needs no banner");
+    assert_eq!(board.pass(&mut app), Painted::Frame, "the menu frame renders normally");
+
+    app.apply_gesture(Gesture::Back); // …and a map base is back under the live search
+    assert!(app.reroute_freeze_active(), "THE window");
+    assert_eq!(board.pass(&mut app), Painted::Banner, "the banner must land on this pass");
+    assert_eq!(board.pass(&mut app), Painted::Nothing, "…once: a level, not a repaint per pass");
+    assert_eq!(board.pass(&mut app), Painted::Nothing);
+
+    app.debug_set_plan_live(false);
+    assert_eq!(board.pass(&mut app), Painted::Frame, "the run ends and the frozen map catches up");
+    assert!(app.reroute_banner_rows(320.0).is_none(), "with no banner over it");
+}
+
+/// The same single-drain loop over the flow's *own* exit: the spinner is popped by Back, whose
+/// cancel drains in the very next pass and ends the run — so the pass renders the map rather than a
+/// banner, and nothing is left frozen behind it.
+#[test]
+fn the_board_loop_renders_the_map_again_the_pass_a_cancel_lands() {
+    let (mut app, _obcr) = riding_app();
+    let mut board = BoardLoop::default();
+    let _ = board.pass(&mut app);
+
+    open_chooser(&mut app);
+    assert_eq!(board.pass(&mut app), Painted::Frame, "the chooser is a map base");
+    app.apply_gesture(Gesture::Press); // → the spinner, and the request
+    assert_eq!(board.pass(&mut app), Painted::Frame, "the spinner renders; the plan drains with it");
+    assert!(app.plan_in_flight());
+
+    app.apply_gesture(Gesture::Back); // pops the spinner *and* pends the cancel
+    assert!(app.reroute_freeze_active(), "frozen until the cancel actually reaches the host");
+    assert_eq!(board.pass(&mut app), Painted::Frame, "which it does on this pass — so the map redraws");
+    assert!(!app.plan_in_flight());
+    assert_eq!(board.pass(&mut app), Painted::Nothing, "and nothing is left demanding a repaint");
+}
+
 /// The freeze pauses **the matcher and nothing else**: progress holds still under the frozen frame
 /// (a search can replace the very geometry it is measured along), while the fix itself keeps being
 /// recorded — the camera, the breadcrumb, the ride totals and the altimeter all ride the same tick.

@@ -1431,23 +1431,21 @@ impl App {
     }
 
     /// Engage the Recalculating freeze (issue #1146, P2) — the host begins a planner run this pass.
-    /// Only the overlay plane is dirtied: the *map* deliberately isn't, because the host is about to
-    /// stop redrawing it, and a demand raised now would be drained and lost. The banner goes up over
-    /// the frame already on glass; [`note_plan_ended`](App::note_plan_ended) asks for the catch-up
-    /// repaint.
+    /// Nothing is dirtied here, and both halves of that are deliberate. The *map* isn't, because the
+    /// host is about to stop redrawing it and a demand raised now would be drained and lost. The
+    /// *overlay* isn't either, because a plan start is not the banner's edge: this plan may well have
+    /// begun under the opaque planning spinner, where there is no map to freeze and no banner to
+    /// draw. [`take_dirty`](App::take_dirty) derives that edge from the engaged level instead.
     fn note_plan_started(&mut self) {
-        if self.freeze.plan_started() {
-            self.ui.overlay_edge = true;
-        }
+        self.freeze.plan_started();
     }
 
-    /// Release the freeze — the run answered, failed, or was cancelled. Dirties the overlay (the
-    /// banner must come *off*) and the map (it held still for the whole search and has a fix, a
-    /// route, or a whole new geometry to catch up on). Idempotent: several release edges can land
-    /// for one run.
+    /// Release the freeze — the run answered, failed, or was cancelled. Dirties the **map**: it held
+    /// still for the whole search and has a fix, a route, or a whole new geometry to catch up on. The
+    /// banner comes off with the same [`take_dirty`](App::take_dirty) level edge that put it up.
+    /// Idempotent: several release edges can land for one run.
     fn note_plan_ended(&mut self) {
         if self.freeze.plan_ended() {
-            self.ui.overlay_edge = true;
             self.ui.map_dirty = true;
         }
     }
@@ -2559,7 +2557,16 @@ impl App {
     /// [`region`](Dirty::region) carries the accumulated region-scoped tick demand — but only when
     /// no full-frame demand joined it since the last drain: a set `map_dirty` covers any region, so
     /// the region folds away and the host full-repaints (over-redraw is safe; under-redraw is a bug).
+    ///
+    /// The **Recalculating banner** joins [`overlay`](Dirty::overlay) here, and here rather than at
+    /// the plan seams on purpose: the freeze is a *level* (a live plan **and** a map base), and
+    /// either half can move without the other. Deriving its repaint edge at the drain is what makes
+    /// the banner appear on the pass a map base lands back under a search that is still running —
+    /// see [`RerouteFreeze::take_engaged_edge`](crate::reroute_freeze::RerouteFreeze::take_engaged_edge).
     pub fn take_dirty(&mut self) -> Dirty {
+        if self.freeze.take_engaged_edge(self.ui.base_draws_map()) {
+            self.ui.overlay_edge = true;
+        }
         self.ui.take_dirty()
     }
 

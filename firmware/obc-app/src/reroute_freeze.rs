@@ -52,21 +52,26 @@ const BANNER_RADIUS: u32 = 9;
 /// under the banner is frozen, not gone — covering the marker would read as "lost").
 const BANNER_Y_FRAC: f32 = 0.3;
 
-/// Whether a host planner run is live — the freeze's whole state.
+/// Whether a host planner run is live — the freeze's whole state — plus the one bit that turns that
+/// *level* into the repaint *edge* a render-on-demand host can act on.
 ///
-/// One bool, because the *interesting* part is where it is set and cleared: the app engages it when
-/// a plan command is actually drained (the host will begin planning this pass) and releases it on
-/// the answer, on the failure, and on a cancel drain. Anything else — a plan the rider cancelled
-/// before the host ever saw it, a late answer whose screen is gone — must not leave it stuck, since
-/// a stuck freeze is a map that never redraws again.
+/// The interesting part is where the plan flag is set and cleared: the app engages it when a plan
+/// command is actually drained (the host will begin planning this pass) and releases it on the
+/// answer, on the failure, and on a cancel drain. Anything else — a plan the rider cancelled before
+/// the host ever saw it, a late answer whose screen is gone — must not leave it stuck, since a stuck
+/// freeze is a map that never redraws again.
 #[derive(Debug, Default)]
 pub(crate) struct RerouteFreeze {
     plan_live: bool,
+    /// Whether the *engaged* freeze — plan **and** map base — was already reported to the host by a
+    /// [`take_engaged_edge`](RerouteFreeze::take_engaged_edge) drain. See that method: this is the
+    /// difference between a banner that appears and one that is silently swallowed.
+    engaged_shown: bool,
 }
 
 impl RerouteFreeze {
     pub(crate) const fn new() -> RerouteFreeze {
-        RerouteFreeze { plan_live: false }
+        RerouteFreeze { plan_live: false, engaged_shown: false }
     }
 
     /// A plan command was drained: the host begins a planner run this pass. Returns whether this
@@ -90,6 +95,24 @@ impl RerouteFreeze {
     /// Whether the freeze is **engaged**: a live plan *and* a base screen that would draw the map.
     pub(crate) fn active(&self, base_draws_map: bool) -> bool {
         self.plan_live && base_draws_map
+    }
+
+    /// The level→edge converter the host's once-per-frame dirty drain runs: `true` on the pass the
+    /// *engaged* state flips, either way.
+    ///
+    /// **This is a level, and the plan flag alone is not it.** The plan's own start edge is useless
+    /// to the banner, because the two facts the freeze is made of move independently: a plan drained
+    /// under the opaque planning spinner engages nothing (chrome base), and the pass that puts a map
+    /// base back under that still-running search raises no plan edge at all — it is a screen change.
+    /// A host that keyed its overlay repaint on the plan edge would spend it on a chrome frame and
+    /// then draw *nothing* for the rest of the search: the map plane is frozen, the overlay plane was
+    /// never asked, and the last frame on glass belongs to a screen that is gone. Deriving the edge
+    /// from the engaged level here means the banner lands whenever a frozen map is what the rider is
+    /// actually looking at, however it got that way — and lands exactly **once**, so a freeze that
+    /// spans hundreds of ride-loop passes costs one overlay repaint, not one per pass.
+    pub(crate) fn take_engaged_edge(&mut self, base_draws_map: bool) -> bool {
+        let now = self.active(base_draws_map);
+        now != core::mem::replace(&mut self.engaged_shown, now)
     }
 }
 
@@ -158,6 +181,28 @@ mod tests {
         assert!(!f.active(true));
         assert!(f.plan_started(), "and the next reroute freezes again");
         assert!(f.active(true));
+    }
+
+    /// **The regression** the engaged edge exists for: the plan's own start edge fires under the
+    /// planning spinner, where nothing freezes — and the pass that puts a map base back under the
+    /// still-live search raises no plan edge at all. A host keyed on the start edge would never be
+    /// told to paint the banner for the whole of that search.
+    #[test]
+    fn the_repaint_edge_follows_the_engaged_level_not_the_plan() {
+        let mut f = RerouteFreeze::new();
+        assert!(!f.take_engaged_edge(true), "at rest there is nothing to repaint");
+
+        f.plan_started(); // …under the opaque spinner: a chrome base
+        assert!(!f.take_engaged_edge(false), "a plan with no map under it engages nothing");
+        assert!(!f.take_engaged_edge(false), "…and keeps engaging nothing");
+
+        // The spinner goes and a map base is back — no plan edge, but *this* is the freeze.
+        assert!(f.take_engaged_edge(true), "THE edge: a frozen map the rider is actually looking at");
+        assert!(!f.take_engaged_edge(true), "a level, so one repaint — not one per ride-loop pass");
+
+        f.plan_ended();
+        assert!(f.take_engaged_edge(true), "and one more to take the banner off");
+        assert!(!f.take_engaged_edge(true));
     }
 
     /// The banner sits in its own band: below the top-centre clock, above the centred rider marker,
