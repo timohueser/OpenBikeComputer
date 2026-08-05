@@ -1,7 +1,8 @@
 //! The System settings menu — the device drawer of standalone, rarely-touched pages: **Units**,
 //! **Date & Time** (the UTC offset + read-only clock info), **Language**, **Firmware update** (the
-//! SD-sideload page plus the device-info ledger), and the guarded factory **Reset**. A thin nav
-//! list; every row opens its own page unchanged, so nothing is crammed onto one screen.
+//! SD-sideload page plus the device-info ledger), **About** (the credits + licences page, #1149),
+//! and the guarded factory **Reset**, kept last so the destructive page stays at the end. A thin
+//! nav list; every row opens its own page unchanged, so nothing is crammed onto one screen.
 //!
 //! Opening the Firmware page kicks the one-shot free-cluster scan (the FAT free-space read that
 //! feeds its `Card free` ledger row), so the value is ready by the time it draws.
@@ -10,17 +11,19 @@ use obc_render::Surface;
 
 use crate::input::Gesture;
 use crate::screen::{
-    list, Ctx, DateTimeScreen, FirmwareScreen, LanguageScreen, Render, ResetScreen, Screen, Transition, UnitsScreen,
+    list, AboutScreen, Ctx, DateTimeScreen, FirmwareScreen, LanguageScreen, Render, ResetScreen, Screen, Transition,
+    UnitsScreen,
 };
 use crate::Msg;
 
-/// The five rows, in order.
+/// The six rows, in order — Reset stays last so the destructive page ends the list.
 const UNITS: usize = 0;
 const DATETIME: usize = 1;
 const LANGUAGE: usize = 2;
 const FIRMWARE: usize = 3;
-const RESET: usize = 4;
-const N_ITEMS: usize = 5;
+const ABOUT: usize = 4;
+const RESET: usize = 5;
+const N_ITEMS: usize = 6;
 
 /// The System menu. State is the highlighted row.
 #[derive(Debug, Default)]
@@ -47,6 +50,7 @@ impl SystemScreen {
                     cx.activity.request_card_scan();
                     Transition::Push(Screen::Firmware(FirmwareScreen::new()))
                 }
+                ABOUT => Transition::Push(Screen::About(AboutScreen::new())),
                 RESET => Transition::Push(Screen::Reset(ResetScreen::new())),
                 _ => Transition::None,
             },
@@ -61,6 +65,7 @@ impl SystemScreen {
             rx.t(Msg::SystemDatetime),
             rx.t(Msg::SystemLanguage),
             rx.t(Msg::SystemUpdate),
+            rx.t(Msg::SystemAbout),
             rx.t(Msg::SystemReset),
         ];
         list::nav_list(cv, rx.w, rx.h, rx.t(Msg::SystemTitle), &items, self.selected);
@@ -108,6 +113,9 @@ mod tests {
         assert_eq!(scr.selected, FIRMWARE);
         assert!(matches!(run(&mut scr, &mut act, Gesture::Press), Transition::Push(Screen::Firmware(_))));
         assert!(act.take_card_scan_request(), "opening Firmware arms the free-cluster scan");
+        run(&mut scr, &mut act, Gesture::Step(1)); // → About
+        assert_eq!(scr.selected, ABOUT);
+        assert!(matches!(run(&mut scr, &mut act, Gesture::Press), Transition::Push(Screen::About(_))));
         run(&mut scr, &mut act, Gesture::Step(1)); // → Reset
         assert!(matches!(run(&mut scr, &mut act, Gesture::Press), Transition::Push(Screen::Reset(_))));
         assert!(matches!(run(&mut scr, &mut act, Gesture::Back), Transition::Pop));
