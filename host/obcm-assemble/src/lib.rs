@@ -769,7 +769,7 @@ fn plan_set(
     assembly: AlignedBox,
     chunk_size: usize,
     opts: &Options,
-    lens: (usize, usize, usize, usize, usize),
+    lens: (usize, u64, u64, u64, u64),
 ) -> Result<Vec<ShardPlan>> {
     let (style_len, poi_len, nav_len, empty_poi_len, empty_nav_len) = lens;
 
@@ -778,7 +778,7 @@ fn plan_set(
     if !opts.force_split {
         let all_lods: Vec<usize> = (0..schema.lods.len()).collect();
         let mut single = build_shard(schema, cells, assembly, chunk_size, &all_lods, 0, BandRole::Core, true)?;
-        single.bytes = shard::projected_bytes(&single, style_len, poi_len, nav_len);
+        single.bytes = shard::projected_bytes(&single, style_len, poi_len, nav_len)?;
         if single.bytes <= FILE_CEILING {
             return Ok(vec![single]);
         }
@@ -787,7 +787,7 @@ fn plan_set(
     // Otherwise: the core carries no geometry at all, so every byte that can scale horizontally
     // does (§5.1).
     let mut plans = vec![build_shard(schema, cells, assembly, chunk_size, &[], 0, BandRole::Core, true)?];
-    let core_bytes = shard::projected_bytes(&plans[0], style_len, poi_len, nav_len);
+    let core_bytes = shard::projected_bytes(&plans[0], style_len, poi_len, nav_len)?;
     if core_bytes > FILE_CEILING {
         return Err(Error::Capacity(format!(
             "the core file projects to {core_bytes} bytes, past the {FILE_CEILING}-byte ceiling. The **navigation \
@@ -812,7 +812,7 @@ fn plan_set(
     let mut index = 1usize;
     let mut push = |plans: &mut Vec<ShardPlan>, box_: AlignedBox, lods: &[usize], role: BandRole| -> Result<()> {
         let mut plan = build_shard(schema, cells, box_, chunk_size, lods, index, role, false)?;
-        plan.bytes = shard::projected_bytes(&plan, style_len, empty_poi_len, empty_nav_len);
+        plan.bytes = shard::projected_bytes(&plan, style_len, empty_poi_len, empty_nav_len)?;
         if plan.bytes > FILE_CEILING {
             return Err(Error::Capacity(format!(
                 "a {} shard projects to {} bytes, past the ceiling — lower the target shard size",

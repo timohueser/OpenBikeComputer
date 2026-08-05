@@ -69,33 +69,40 @@ pub struct ShardPlan {
 }
 
 impl ShardPlan {
-    /// Layout cursor: where each region starts, given the fixed prefix.
-    fn layout(&self, style_len: usize, poi_len: usize, nav_len: usize) -> Layout {
-        let lod_table_offset = HEADER_LEN + style_len;
-        let mut cursor = lod_table_offset + self.lods.len() * LOD_ENTRY_LEN;
+    /// Layout cursor: where each region starts, given the fixed prefix. `u64` throughout, never
+    /// `usize`: the crate's `--lib` target is wasm32, where a projection accumulated in a 32-bit
+    /// `usize` wraps past 4 GiB and hands §5.7's ceiling a small number it happily accepts.
+    fn layout(&self, style_len: usize, poi_len: u64, nav_len: u64) -> Result<Layout> {
+        let lod_table_offset = (HEADER_LEN + style_len) as u64;
+        let mut cursor = lod_table_offset + (self.lods.len() * LOD_ENTRY_LEN) as u64;
         let mut lod_offsets = Vec::with_capacity(self.lods.len());
         for l in &self.lods {
             lod_offsets.push(cursor);
-            cursor += l.region_bytes() as usize;
+            cursor = cursor.checked_add(l.region_bytes()).ok_or_else(|| self.past_u64())?;
         }
         let poi_offset = cursor;
-        let nav_offset = poi_offset + poi_len;
-        Layout { lod_table_offset, lod_offsets, poi_offset, nav_offset, total: (nav_offset + nav_len) as u64 }
+        let nav_offset = poi_offset.checked_add(poi_len).ok_or_else(|| self.past_u64())?;
+        let total = nav_offset.checked_add(nav_len).ok_or_else(|| self.past_u64())?;
+        Ok(Layout { lod_table_offset, lod_offsets, poi_offset, nav_offset, total })
+    }
+
+    fn past_u64(&self) -> Error {
+        Error::Capacity(format!("shard {}'s layout does not fit a u64 of bytes (OBCA §5.7)", self.index))
     }
 }
 
 struct Layout {
-    lod_table_offset: usize,
-    lod_offsets: Vec<usize>,
-    poi_offset: usize,
-    nav_offset: usize,
+    lod_table_offset: u64,
+    lod_offsets: Vec<u64>,
+    poi_offset: u64,
+    nav_offset: u64,
     total: u64,
 }
 
 /// Compute a shard's total size without writing it — §5.7's projection, applied to the assembler's
 /// own output so an over-size file is refused rather than emitted.
-pub fn projected_bytes(plan: &ShardPlan, style_len: usize, poi_len: usize, nav_len: usize) -> u64 {
-    plan.layout(style_len, poi_len, nav_len).total
+pub fn projected_bytes(plan: &ShardPlan, style_len: usize, poi_len: u64, nav_len: u64) -> Result<u64> {
+    Ok(plan.layout(style_len, poi_len, nav_len)?.total)
 }
 
 /// Write one shard: header, style table, LOD table, every LOD region, the POI section, the nav
@@ -136,7 +143,7 @@ pub fn write(
     let empty_nav = if plan.core { None } else { Some(MergedNav::empty(Default::default())) };
     let poi_bytes_len = empty_poi.as_ref().map_or_else(|| poi.section_len(), |p| p.section_len());
     let nav_len = empty_nav.as_ref().map_or(nav, |n| n).section_len(profile_table);
-    let l = plan.layout(style_bytes.len(), poi_bytes_len, nav_len);
+    let l = plan.layout(style_bytes.len(), poi_bytes_len, nav_len)?;
     if l.total > FILE_CEILING {
         return Err(Error::Capacity(format!(
             "shard {} would be {} bytes, past the {FILE_CEILING}-byte FAT32/uint32 ceiling — reduce the coverage \
@@ -177,11 +184,11 @@ pub fn write(
     }
 
     // 5/6. The POI and nav sections — the core's rebuilt ones, or a legal empty pair (§5.1).
-    out(&crate::poi::serialize(empty_poi.as_ref().unwrap_or(poi), l.poi_offset))?;
+    out(&crate::poi::serialize(empty_poi.as_ref().unwrap_or(poi), l.poi_offset as usize))?;
     crate::nav::serialize(
         empty_nav.as_ref().unwrap_or(nav),
         profile_table,
-        l.nav_offset,
+        l.nav_offset as usize,
         nav_cells,
         scratch,
         &mut out,
@@ -484,6 +491,7 @@ pub fn terrain_filename(card_id: u16) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scratch::MemoryScratch;
 
     fn plan(index: usize, role: BandRole, core: bool) -> ShardPlan {
         ShardPlan {
@@ -572,6 +580,31 @@ mod tests {
         assert_eq!(parsed.record_count(), 2);
         assert_eq!(parsed.terrain().map(|t| t.bytes), Some(6_192));
         assert!(parsed.is_single_file(), "terrain is its own file, so this is still §5.5's fast path");
+    }
+
+    /// §5.7's ceiling is only a ceiling if the projection can exceed it. The layout is `u64` for
+    /// that reason: in the wasm32 `--lib` build a `usize` cursor wraps at 4 GiB, so an over-size
+    /// selection would project *small*, take the single-file path, and stream a file whose header
+    /// offsets belong to a layout that does not exist.
+    #[test]
+    fn a_layout_past_the_ceiling_is_refused_rather_than_wrapped() {
+        let mut p = plan(0, BandRole::Geometry, false);
+        p.lods = vec![LodPlan { node_count: 1, chunk_bytes: 3_000_000_000, ..LodPlan::empty(0, None, 4096) }; 2];
+        // The empty pair this non-core shard carries, which is what `write` will project against.
+        let poi = crate::poi::empty_layout(p.box_.ubox());
+        let nav = MergedNav::empty(Default::default());
+        let poi_len: u64 = poi.section_len();
+        let nav_len: u64 = nav.section_len(&[]);
+
+        let projected: u64 = projected_bytes(&p, 0, poi_len, nav_len).expect("a u64 holds it");
+        assert_eq!(projected, 2 * 3_000_000_008 + (HEADER_LEN + 2 * LOD_ENTRY_LEN) as u64 + poi_len + nav_len);
+        assert!(projected > FILE_CEILING);
+
+        let mut sink = |_: &[u8]| -> Result<()> { panic!("a refused shard writes no bytes") };
+        let err = write(&p, &[], &[], &[], 0, &poi, &nav, &[], &MemoryScratch::new(), &mut sink)
+            .expect_err("past the ceiling");
+        assert!(matches!(err, Error::Capacity(_)), "got: {err}");
+        assert!(format!("{err}").contains("past the"), "got: {err}");
     }
 
     #[test]
