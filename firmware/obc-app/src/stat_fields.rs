@@ -955,6 +955,7 @@ pub(crate) fn live_frac(a: &Activity) -> f32 {
 mod tests {
     use super::*;
     use crate::activity::Mode;
+    use crate::harness::support::wpts;
 
     /// A list built from a slice of fields, for the layout/reorder tests.
     fn list(fields: &[StatField]) -> StatFieldList {
@@ -1086,27 +1087,6 @@ mod tests {
             language: Language::En,
             next_ahead: EMPTY_CACHE,
         }
-    }
-
-    /// A `Waypoints` table from `(dist_along_m, name)` pairs, in route order — the stat-field
-    /// mirror of `app.rs`'s `wpts` helper, for the next-waypoint tile tests.
-    fn wpts(items: &[(u32, &str)]) -> Waypoints {
-        let mut w = Waypoints::new();
-        for &(dist_along_m, name) in items {
-            let mut n = heapless::String::new();
-            n.push_str(name).unwrap();
-            w.entries
-                .push(obc_route::WptEntry {
-                    dist_along_m,
-                    lon: 0,
-                    lat: 0,
-                    category: None,
-                    lateral_offset_m: 0,
-                    name: n,
-                })
-                .unwrap();
-        }
-        w
     }
 
     // ---------------------------------------------------------------------------------------

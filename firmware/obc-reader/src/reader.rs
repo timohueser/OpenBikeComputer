@@ -247,9 +247,9 @@ pub struct Lod {
     pub max_mpp: f32,
     pub index_offset: usize,
     pub node_count: usize,
-    /// The **capacity bound** on one chunk (v11 §3): the packer's leaf-split threshold and the
-    /// largest length any single chunk may have. No longer a stride — v11 chunks are packed tight
-    /// and addressed through the offset table.
+    /// The **capacity bound** on one chunk (spec §3): the packer's leaf-split threshold and the
+    /// largest length any single chunk may have. Not a stride — chunks are packed tight and
+    /// addressed through the offset table.
     pub chunk_size: usize,
     pub chunk_count: usize,
     /// Total bytes of this level's chunk-data region — `offsets[chunk_count]`, the last entry of
@@ -258,13 +258,44 @@ pub struct Lod {
     pub chunk_bytes_total: usize,
 }
 
+/// The convention every quadtree-indexed section shares (§3/§4): what follows a `node_count`-node
+/// index begins right behind it, at `index_offset + node_count * 4`. `None` on `usize` overflow —
+/// reachable on the 32-bit MCU from a corrupt `index_offset`/`node_count`. What "what follows"
+/// *is* differs per section (a LOD's offset table, a POI category's or the nav graph's chunks),
+/// which is why the callers below name it and this doesn't.
+#[inline]
+fn index_end(index_offset: usize, node_count: usize) -> Option<usize> {
+    node_count.checked_mul(4)?.checked_add(index_offset)
+}
+
+/// Byte range `[start, end)` of chunk `chunk_id` in a section whose chunks are a **fixed**
+/// `chunk_size` apart from `data_start` (the POI §7.1 and nav §8.1 sections; LOD chunk data is
+/// packed tight behind an offset table instead). `None` if `chunk_id` is out of range or any offset
+/// overflows `usize` — `chunk_id` comes straight from a quadtree leaf, so it is arbitrary in a
+/// corrupt map and is validated against `chunk_count` with checked arithmetic.
+#[inline]
+fn fixed_chunk_range(
+    data_start: Option<usize>,
+    chunk_count: usize,
+    chunk_size: usize,
+    chunk_id: u32,
+) -> Option<(usize, usize)> {
+    let id = chunk_id as usize;
+    if id >= chunk_count {
+        return None;
+    }
+    let start = id.checked_mul(chunk_size)?.checked_add(data_start?)?;
+    let end = start.checked_add(chunk_size)?;
+    Some((start, end))
+}
+
 impl Lod {
-    /// Byte offset of the LOD's per-chunk **offset table** (v11 §5): `chunk_count + 1` `uint32`
+    /// Byte offset of the LOD's per-chunk **offset table** (spec §5): `chunk_count + 1` `uint32`
     /// entries sitting between the quadtree index and the chunk data. `None` on `usize` overflow —
     /// reachable on the 32-bit MCU from a corrupt `index_offset`/`node_count`.
     #[inline]
     fn offset_table(&self) -> Option<usize> {
-        self.node_count.checked_mul(4)?.checked_add(self.index_offset)
+        index_end(self.index_offset, self.node_count)
     }
 
     /// Byte offset where this level's chunk **data** begins: after the index *and* the offset
@@ -315,26 +346,18 @@ impl PoiCatEntry {
 
     /// Byte offset where this category's data chunks begin (right after its index),
     /// or `None` if the arithmetic overflows `usize` (a corrupt directory on the
-    /// 32-bit MCU). Mirrors [`Lod::data_start`] — the shared §7.1 convention.
+    /// 32-bit MCU) — the shared §7.1 convention, see [`index_end`].
     #[inline]
     pub fn data_start(&self) -> Option<usize> {
-        self.node_count.checked_mul(4)?.checked_add(self.index_offset)
+        index_end(self.index_offset, self.node_count)
     }
 
-    /// Byte range `[start, end)` of POI chunk `chunk_id` given the directory's shared `chunk_size`,
-    /// or `None` if `chunk_id` is out of range or any offset overflows `usize`. Mirrors
-    /// [`Lod::chunk_range`] (the §7.1 chunk-size is directory-wide, not per-entry, so it's passed
-    /// in). `chunk_id` comes from a quadtree leaf (arbitrary in a corrupt map), so it's validated
-    /// against `chunk_count` with checked arithmetic.
+    /// Byte range `[start, end)` of POI chunk `chunk_id` given the directory's shared `chunk_size`
+    /// (the §7.1 chunk size is directory-wide, not per-entry, so it's passed in). See
+    /// [`fixed_chunk_range`].
     #[inline]
     fn chunk_range(&self, chunk_id: u32, chunk_size: usize) -> Option<(usize, usize)> {
-        let id = chunk_id as usize;
-        if id >= self.chunk_count {
-            return None;
-        }
-        let start = id.checked_mul(chunk_size)?.checked_add(self.data_start()?)?;
-        let end = start.checked_add(chunk_size)?;
-        Some((start, end))
+        fixed_chunk_range(self.data_start(), self.chunk_count, chunk_size, chunk_id)
     }
 }
 
@@ -387,23 +410,17 @@ impl NavDirectory {
     }
 
     /// Byte offset where the node data chunks begin (right after the index), or `None` on
-    /// `usize` overflow (a corrupt directory on the 32-bit MCU). Mirrors [`Lod::data_start`].
+    /// `usize` overflow (a corrupt directory on the 32-bit MCU) — see [`index_end`].
     #[inline]
     pub fn data_start(&self) -> Option<usize> {
-        self.node_count.checked_mul(4)?.checked_add(self.index_offset)
+        index_end(self.index_offset, self.node_count)
     }
 
     /// Byte range `[start, end)` of node chunk `chunk_id`, or `None` if out of range / on
-    /// overflow. Mirrors [`Lod::chunk_range`].
+    /// overflow. See [`fixed_chunk_range`]; the nav chunk size is directory-wide (§8.1).
     #[inline]
     fn chunk_range(&self, chunk_id: u32) -> Option<(usize, usize)> {
-        let id = chunk_id as usize;
-        if id >= self.chunk_count {
-            return None;
-        }
-        let start = id.checked_mul(self.chunk_size)?.checked_add(self.data_start()?)?;
-        let end = start.checked_add(self.chunk_size)?;
-        Some((start, end))
+        fixed_chunk_range(self.data_start(), self.chunk_count, self.chunk_size, chunk_id)
     }
 }
 
@@ -543,7 +560,7 @@ impl<'a> NavNodeRef<'a> {
 /// `chunk_size` to 512 B, eight slots cost the **same ~4 KB** the old `2 × 2048 B` geometry did — a
 /// pure win in the device's `.bss` next to the router's scratch, no extra RAM. Eviction stays
 /// round-robin (below): at 8 slots LRU bookkeeping bought nothing measurable.
-pub const NAV_TILE_SLOTS: usize = 8;
+pub(crate) const NAV_TILE_SLOTS: usize = 8;
 
 /// Empty-slot tag for [`NavTileCache`]: a chunk's absolute file offset never reaches `u32::MAX`
 /// (its whole extent must lie inside a `u32`-addressed source).
@@ -768,11 +785,12 @@ impl<'a> Iterator for Interiors<'a> {
     }
 }
 
-/// The OBCM header fields that describe a map without touching any geometry — a "which map is
-/// this?" probe. Read cache-free via [`read_header`] (no ≈277 KB [`MapCache`]); [`MapTables::parse`]
-/// parses the same prefix on its way to the full tables.
+/// The OBCM header fields that describe a map without touching any geometry — the "which map is
+/// this?" prefix every parse starts from, decoded before a single byte of style table, index or
+/// chunk is read. [`MapTables::parse`] carries on into the full tables; the volume-set
+/// [`ShardTables::parse`](crate::volume::ShardTables::parse) stops just past it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MapHeader {
+pub(crate) struct MapHeader {
     pub version: u8,
     pub bbox: BBox,
     /// User-position marker color (RGB565); see [`Reader::marker_color`].
@@ -780,8 +798,8 @@ pub struct MapHeader {
 }
 
 /// Decode + validate the fixed 40-byte OBCM header (magic, version, bbox, marker color).
-/// Shared by [`read_header`] and [`MapTables::parse`] so the byte layout lives in one place.
-/// Offsets follow `obc-pack`'s header pack (see OBCM_Spec.md).
+/// Shared by [`MapTables::parse`] and the volume-set shard parse so the byte layout lives in one
+/// place. Offsets follow `obc-pack`'s header pack (see OBCM_Spec.md).
 pub(crate) fn parse_header(h: &[u8; HEADER_LEN]) -> Result<MapHeader, Error> {
     if h[0..4] != MAGIC {
         return Err(Error::BadMagic);
@@ -799,16 +817,47 @@ pub(crate) fn parse_header(h: &[u8; HEADER_LEN]) -> Result<MapHeader, Error> {
     Ok(MapHeader { version, bbox: BBox { min_lon, min_lat, max_lon, max_lat }, marker_color })
 }
 
-/// Read just the OBCM header (version + bbox + marker color) from `src` — no style/LOD table,
-/// index, or geometry, so it allocates nothing and needs no [`MapCache`]. A map shorter than the
-/// header, with the wrong magic, or an unsupported version is rejected exactly as parsing would.
-pub fn read_header(src: &dyn ByteSource) -> Result<MapHeader, Error> {
-    if (src.len() as usize) < HEADER_LEN {
+/// The prefix **every** OBCM parse begins with, decoded and bounds-checked once: the fixed 40-byte
+/// header plus the LOD table's position. [`MapTables::parse`] goes on to the style table and the
+/// POI/nav sections (whose offsets it reads straight out of the retained `header` bytes); a
+/// volume-set shard ([`ShardTables::parse`](crate::volume::ShardTables::parse)) has none of those
+/// and stops here.
+pub(crate) struct HeaderPrologue {
+    /// The raw 40 header bytes, kept so a caller can decode the fields the prologue doesn't own.
+    pub header: [u8; HEADER_LEN],
+    pub map: MapHeader,
+    pub lod_count: usize,
+    pub lod_table_offset: usize,
+    /// The file's length, already read from the source — every offset check above used it.
+    pub total: usize,
+}
+
+/// Read + validate the shared prologue from `src`. A file shorter than the header, with the wrong
+/// magic / version, or with a LOD table that is empty, wraps `usize`, or runs past EOF is rejected
+/// here, so neither parse has to restate the check.
+pub(crate) fn parse_prologue(src: &dyn ByteSource) -> Result<HeaderPrologue, Error> {
+    let total = src.len() as usize;
+    if total < HEADER_LEN {
         return Err(Error::TooShort);
     }
-    let mut h = [0u8; HEADER_LEN];
-    src.read_at(0, &mut h).map_err(Error::Source)?;
-    parse_header(&h)
+    let mut header = [0u8; HEADER_LEN];
+    src.read_at(0, &mut header).map_err(Error::Source)?;
+    let map = parse_header(&header)?;
+    let lod_count = header[25] as usize;
+    let lod_table_offset = rd_u32(&header, 26) as usize;
+    if lod_count == 0 {
+        return Err(Error::BadOffset);
+    }
+    // Checked: `lod_table_offset` is an arbitrary header u32, so on the 32-bit
+    // target the table-end can wrap `usize` and slip past the guard below.
+    let lod_table_end = lod_count
+        .checked_mul(LOD_ENTRY_LEN)
+        .and_then(|len| lod_table_offset.checked_add(len))
+        .ok_or(Error::BadOffset)?;
+    if lod_table_end > total {
+        return Err(Error::BadOffset);
+    }
+    Ok(HeaderPrologue { header, map, lod_count, lod_table_offset, total })
 }
 
 /// The session-resident, immutable map tables — everything [`Reader`] needs that doesn't change
@@ -851,35 +900,17 @@ impl MapTables {
     /// allocating step (a 2048-byte style scratch plus the style/LOD-table SD reads), so do it
     /// **once** per map and hand the result to [`Reader::new`] each frame. A map shorter than the
     /// header, with the wrong magic / version, or with out-of-range table offsets is rejected. The
-    /// magic / version / bbox / marker prefix goes through the shared (private) `parse_header` (so
-    /// [`read_header`] validates identically); the style + LOD-table offsets are decoded here.
+    /// magic / version / bbox / marker prefix and the LOD table's position go through the shared
+    /// `parse_prologue` (so a shard's own parse validates identically); the style table and the
+    /// POI/nav section offsets are decoded here.
     pub fn parse(src: &dyn ByteSource) -> Result<MapTables, Error> {
-        let total = src.len() as usize;
-        if total < HEADER_LEN {
-            return Err(Error::TooShort);
-        }
-        let mut header = [0u8; HEADER_LEN];
-        src.read_at(0, &mut header).map_err(Error::Source)?;
-        let MapHeader { version, bbox, marker_color } = parse_header(&header)?;
+        let HeaderPrologue { header, map, lod_count, lod_table_offset, total } = parse_prologue(src)?;
+        let MapHeader { version, bbox, marker_color } = map;
         let style_offset = rd_u32(&header, 21) as usize;
-        let lod_count = header[25] as usize;
-        let lod_table_offset = rd_u32(&header, 26) as usize;
         let poi_section_offset = rd_u32(&header, 32) as usize;
         let nav_section_offset = rd_u32(&header, 36) as usize;
 
         if style_offset < HEADER_LEN || style_offset > total {
-            return Err(Error::BadOffset);
-        }
-        if lod_count == 0 {
-            return Err(Error::BadOffset);
-        }
-        // Checked: `lod_table_offset` is an arbitrary header u32, so on the 32-bit
-        // target the table-end can wrap `usize` and slip past the guard below.
-        let lod_table_end = lod_count
-            .checked_mul(LOD_ENTRY_LEN)
-            .and_then(|len| lod_table_offset.checked_add(len))
-            .ok_or(Error::BadOffset)?;
-        if lod_table_end > total {
             return Err(Error::BadOffset);
         }
 
@@ -1061,7 +1092,7 @@ impl<'a> Reader<'a> {
     /// Fallible cache-counter snapshot for callers that must distinguish legal contention from an
     /// actually empty cache. The compatibility [`Reader::chunk_cache_stats`] view never panics.
     #[inline]
-    pub fn try_chunk_cache_stats(&self) -> Result<CacheStats, CacheError> {
+    pub(crate) fn try_chunk_cache_stats(&self) -> Result<CacheStats, CacheError> {
         if !self.cache_ready {
             return Err(CacheError::Busy);
         }
@@ -1217,17 +1248,12 @@ impl<'a> Reader<'a> {
         }
     }
 
-    /// One expanding-ring pass: walk `entry`'s quadtree for leaves overlapping `search` and, for each
-    /// non-empty leaf, decode its 36-byte records through a single 512-byte stack scratch, folding
-    /// every valid record into the nearest-16 `out` set (deduped by `(lat, lon, subtype)`). `cl` is
-    /// the hoisted `cos_lat`; distances are equirectangular ground meters via the shared
-    /// shared `obc-map-scene` distance core.
-    ///
-    /// The chunk decode runs **inside** the walk callback: `walk_leaves` releases its index-cache
-    /// borrow before invoking the callback, and the POI chunk read goes through a plain
-    /// `src.read_at` stack scratch (never the `MapCache`), so the two never nest — and the pass is
-    /// truly streaming with **no per-leaf buffer**, so an exhaustive (map-covering) final pass can't
-    /// silently drop a leaf however dense the category.
+    /// One expanding-ring pass: walk `entry`'s quadtree for leaves overlapping `search` and fold
+    /// every valid record of every non-empty leaf into the nearest-16 `out` set (deduped by
+    /// `(lat, lon, subtype)`). `cl` is the hoisted `cos_lat`; distances are equirectangular ground
+    /// meters via the shared `obc-map-scene` distance core. The walk and the record streaming are
+    /// [`Reader::scan_poi_leaves`] / [`Reader::stream_poi_records`]; this is only the tail that
+    /// scores a record.
     fn poi_scan(
         &self,
         entry: &PoiCatEntry,
@@ -1236,6 +1262,35 @@ impl<'a> Reader<'a> {
         cl: f32,
         search: &BBox,
         out: &mut Vec<Poi, MAX_POI_RESULTS>,
+    ) -> Result<(), Error> {
+        self.scan_poi_leaves(entry, chunk_size, search, |start, record_cap| {
+            self.stream_poi_records(start, record_cap, |win, off, lat, lon, subtype| {
+                let distance_m = ground_dist_m_cl(pos, (lon, lat), cl) as u32;
+                consider_poi(out, PoiCand { lat, lon, subtype, distance_m }, win, off);
+            })
+        })
+    }
+
+    /// Walk `entry`'s quadtree for leaves overlapping `search` and stream every non-empty leaf's
+    /// chunk through `scan`, which is handed the chunk's byte offset and the per-chunk record cap.
+    /// The shared skeleton behind both POI queries — the expanding-ring
+    /// [`nearest_pois`](Reader::nearest_pois) pass and the per-route-chunk
+    /// [`corridor_pois`](Reader::corridor_pois) pass — which differ only in what they do with a
+    /// record.
+    ///
+    /// The chunk decode runs **inside** the walk callback: `walk_leaves` releases its index-cache
+    /// borrow before invoking the callback, and the POI chunk read goes through a plain
+    /// `src.read_at` stack scratch (never the `MapCache`), so the two never nest — and the pass is
+    /// truly streaming with **no per-leaf buffer**, so an exhaustive (map-covering) final pass can't
+    /// silently drop a leaf however dense the category. A leaf whose chunk id is out of range or
+    /// whose extent runs past EOF is skipped; the first read failure stops the walk and is replayed
+    /// as the return value (a `walk_leaves` callback cannot itself fail).
+    fn scan_poi_leaves(
+        &self,
+        entry: &PoiCatEntry,
+        chunk_size: usize,
+        search: &BBox,
+        mut scan: impl FnMut(u32, usize) -> Result<(), IoError>,
     ) -> Result<(), Error> {
         // The whole chunk's record count. A chunk with no sentinel room (records × 32 == chunk_size)
         // is bounded by this count instead (mirrors `for_each_feature_filtered`).
@@ -1252,7 +1307,7 @@ impl<'a> Reader<'a> {
             if end > self.src.len() as usize {
                 return;
             }
-            if let Err(error) = self.scan_poi_chunk(start as u32, records_per_chunk, pos, cl, out) {
+            if let Err(error) = scan(start as u32, records_per_chunk) {
                 read_error = Some(error);
             }
         })
@@ -1264,18 +1319,18 @@ impl<'a> Reader<'a> {
     }
 
     /// Stream one POI chunk's records through a single **512-byte** stack scratch — `POI_SCAN_WINDOW`
-    /// bytes (16 records) at a time — folding each valid record into `out`. Reading in a fixed window
-    /// keeps the scratch tiny regardless of the accepted `chunk_size` (up to `POI_MAX_CHUNK_BYTES`);
+    /// bytes (16 records) at a time — handing each *valid* record to `visit` as
+    /// `(window, record offset, lat, lon, subtype)`; the window slice stays borrowed so the caller
+    /// can pull the name/hours fields out of it without a copy. Reading in a fixed window keeps the
+    /// scratch tiny regardless of the accepted `chunk_size` (up to `POI_MAX_CHUNK_BYTES`);
     /// `POI_RECORD_LEN` divides the window so a record never straddles two reads. `start` is the
     /// chunk's byte offset, already bounds-checked by the caller. Terminates on the `0xFF` subtype
     /// sentinel or after `record_cap` records (a sentinel-less full chunk).
-    fn scan_poi_chunk(
+    fn stream_poi_records(
         &self,
         start: u32,
         record_cap: usize,
-        pos: (i32, i32),
-        cl: f32,
-        out: &mut Vec<Poi, MAX_POI_RESULTS>,
+        mut visit: impl FnMut(&[u8], usize, i32, i32, u8),
     ) -> Result<(), IoError> {
         const RECS_PER_WINDOW: usize = POI_SCAN_WINDOW / POI_RECORD_LEN;
         let mut scratch = [0u8; POI_SCAN_WINDOW];
@@ -1294,10 +1349,7 @@ impl<'a> Reader<'a> {
                 if obc_formats::obcm::poi_subtype_row(subtype).is_none() {
                     continue;
                 }
-                let lat = rd_i32(win, off);
-                let lon = rd_i32(win, off + 4);
-                let distance_m = ground_dist_m_cl(pos, (lon, lat), cl) as u32;
-                consider_poi(out, PoiCand { lat, lon, subtype, distance_m }, win, off);
+                visit(win, off, rd_i32(win, off), rd_i32(win, off + 4), subtype);
             }
             done += take;
         }
@@ -1414,9 +1466,10 @@ impl<'a> Reader<'a> {
     }
 
     /// Walk one category's quadtree over `search` and fold every record that projects inside the
-    /// corridor of `pts` into `out`. The per-leaf chunk decode runs **inside** the walk callback
-    /// (`walk_leaves` has released its index-cache borrow by then) through a plain stack read, so the
-    /// two never nest — the same streaming discipline as [`Reader::poi_scan`].
+    /// corridor of `pts` into `out`. Shares its walk and its record streaming with the nearest-N
+    /// query ([`Reader::scan_poi_leaves`] / [`Reader::stream_poi_records`], and so the same "no
+    /// per-leaf buffer, never nested with the index cache" discipline); this is only the tail that
+    /// projects a record onto the route.
     #[allow(clippy::too_many_arguments)]
     fn corridor_scan_category(
         &self,
@@ -1428,75 +1481,18 @@ impl<'a> Reader<'a> {
         progress_m: u32,
         out: &mut Vec<CorridorPoi, MAX_CORRIDOR_RESULTS>,
     ) -> Result<(), Error> {
-        let records_per_chunk = chunk_size / POI_RECORD_LEN;
-        let mut read_error = None;
-        self.walk_leaves(entry, 0, self.bbox, search, 0, &mut |cid, _node| {
-            if read_error.is_some() {
-                return;
-            }
-            let (start, end) = match entry.chunk_range(cid, chunk_size) {
-                Some(r) => r,
-                None => return,
-            };
-            if end > self.src.len() as usize {
-                return;
-            }
-            if let Err(error) =
-                self.scan_corridor_chunk(start as u32, records_per_chunk, pts, chunk_start_m, progress_m, out)
-            {
-                read_error = Some(error);
-            }
-        })
-        .map_err(Error::from)?;
-        if let Some(error) = read_error {
-            return Err(Error::Source(error));
-        }
-        Ok(())
-    }
-
-    /// Stream one POI chunk's records through the shared 512-byte stack window (see
-    /// [`Reader::scan_poi_chunk`]), projecting each valid record onto `pts` and folding the ones
-    /// inside the corridor into `out`. Terminates on the `0xFF` subtype sentinel or after
-    /// `record_cap` records.
-    #[allow(clippy::too_many_arguments)]
-    fn scan_corridor_chunk(
-        &self,
-        start: u32,
-        record_cap: usize,
-        pts: &[(i32, i32)],
-        chunk_start_m: u32,
-        progress_m: u32,
-        out: &mut Vec<CorridorPoi, MAX_CORRIDOR_RESULTS>,
-    ) -> Result<(), IoError> {
-        const RECS_PER_WINDOW: usize = POI_SCAN_WINDOW / POI_RECORD_LEN;
-        let mut scratch = [0u8; POI_SCAN_WINDOW];
-        let mut done = 0usize;
-        while done < record_cap {
-            let take = (record_cap - done).min(RECS_PER_WINDOW);
-            let win = &mut scratch[..take * POI_RECORD_LEN];
-            self.src.read_at(start + (done * POI_RECORD_LEN) as u32, win)?;
-            for r in 0..take {
-                let off = r * POI_RECORD_LEN;
-                let subtype = win[off + 8];
-                if subtype == CHUNK_END {
-                    return Ok(()); // end-of-records sentinel — nothing valid follows in this chunk
-                }
-                // Skip an out-of-range subtype (0, or past the table) cleanly — never panic/UB.
-                if obc_formats::obcm::poi_subtype_row(subtype).is_none() {
-                    continue;
-                }
-                let lat = rd_i32(win, off);
-                let lon = rd_i32(win, off + 4);
+        self.scan_poi_leaves(entry, chunk_size, search, |start, record_cap| {
+            self.stream_poi_records(start, record_cap, |win, off, lat, lon, subtype| {
                 // The corridor half-width is handed to the projection so it can prune segments as it
                 // walks (a chunk is up to 256 points); `None` **is** the outside-the-corridor reject.
                 let Some(proj) = project_onto_chunk(pts, chunk_start_m, (lon, lat), CORRIDOR_HALF_WIDTH_M) else {
-                    continue;
+                    return;
                 };
                 // The route axis is non-negative and the projection is clamped to the chunk, so the
                 // round is a plain truncation; entries behind the rider are dropped here.
                 let dist_along_m = proj.dist_along_m.max(0.0) as u32;
                 if dist_along_m < progress_m {
-                    continue;
+                    return;
                 }
                 let cand = CorridorCand {
                     lat,
@@ -1507,10 +1503,8 @@ impl<'a> Reader<'a> {
                     to_go_m: dist_along_m - progress_m,
                 };
                 consider_corridor_poi(out, cand, win, off);
-            }
-            done += take;
-        }
-        Ok(())
+            })
+        })
     }
 
     /// The parsed nav directory (spec §8.1). Always present in v9; `is_empty()` for a map with no
@@ -1615,19 +1609,19 @@ impl<'a> Reader<'a> {
         let pool_len = dir.edge_chunk_count.checked_mul(cs)?;
         let id = edge_id as usize;
         let within = id % cs;
-        if within + NAV_EDGE_FIXED_LEN > cs || id + NAV_EDGE_FIXED_LEN > pool_len {
+        if within + NAV_EDGE_FIXED_LEN > cs || id.checked_add(NAV_EDGE_FIXED_LEN)? > pool_len {
             return None;
         }
         let start = dir.edge_pool_offset.checked_add(id)?;
         let mut head = [0u8; NAV_EDGE_FIXED_LEN];
         let head_off = u32::try_from(start).ok()?;
-        if start + NAV_EDGE_FIXED_LEN > self.src.len() as usize {
+        if start.checked_add(NAV_EDGE_FIXED_LEN)? > self.src.len() as usize {
             return None;
         }
         self.src.read_at(head_off, &mut head).ok()?;
         let length_m = rd_u32(&head, 0);
         let pt_count = rd_u16(&head, 4) as usize;
-        // byte 6 is `way_kind` (v9); the anchor shifts to 7/11.
+        // byte 6 is `way_kind` (§8.4); the anchor sits behind it, at 7 (lat) / 11 (lon).
         let anchor_lat = rd_i32(&head, 7);
         let anchor_lon = rd_i32(&head, 11);
         if pt_count == 0 {
@@ -1635,7 +1629,10 @@ impl<'a> Reader<'a> {
         }
         // The whole record must lie inside its chunk (the §8.4 no-straddle contract) and the file.
         let rec_len = NAV_EDGE_FIXED_LEN.checked_add((pt_count - 1).checked_mul(4)?)?;
-        if within + rec_len > cs || id + rec_len > pool_len || start + rec_len > self.src.len() as usize {
+        if within + rec_len > cs
+            || id.checked_add(rec_len)? > pool_len
+            || start.checked_add(rec_len)? > self.src.len() as usize
+        {
             return None;
         }
         if pt_count > P {
@@ -1652,8 +1649,8 @@ impl<'a> Reader<'a> {
             let off = start + NAV_EDGE_FIXED_LEN + done * 4;
             self.src.read_at(off as u32, buf).ok()?;
             for pair in buf.chunks_exact(4) {
-                lat = lat.wrapping_add(i16::from_le_bytes([pair[0], pair[1]]) as i32);
-                lon = lon.wrapping_add(i16::from_le_bytes([pair[2], pair[3]]) as i32);
+                lat = lat.wrapping_add(rd_i16(pair, 0) as i32);
+                lon = lon.wrapping_add(rd_i16(pair, 2) as i32);
                 points.push((lon, lat)).ok()?;
             }
             done += take;
@@ -1748,7 +1745,7 @@ impl<'a> Reader<'a> {
         let chunk = tiles.chunk(self.src, u32::try_from(chunk_start).ok()?, cs)?;
         let length_m = rd_u32(chunk, within);
         let pt_count = rd_u16(chunk, within + 4) as usize;
-        // byte within+6 is `way_kind` (v9); the anchor shifts to +7 (lat) / +11 (lon).
+        // byte within+6 is `way_kind` (§8.4); the anchor sits behind it, at +7 (lat) / +11 (lon).
         let anchor = (rd_i32(chunk, within + 11), rd_i32(chunk, within + 7)); // (lon, lat)
         if pt_count == 0 {
             return None;
@@ -1759,10 +1756,7 @@ impl<'a> Reader<'a> {
         }
         let deltas = &chunk[within + NAV_EDGE_FIXED_LEN..within + rec_len];
         let step = |(lon, lat): (i32, i32), pair: &[u8]| {
-            (
-                lon.wrapping_add(i16::from_le_bytes([pair[2], pair[3]]) as i32),
-                lat.wrapping_add(i16::from_le_bytes([pair[0], pair[1]]) as i32),
-            )
+            (lon.wrapping_add(rd_i16(pair, 2) as i32), lat.wrapping_add(rd_i16(pair, 0) as i32))
         };
         if anchor == start {
             // Forward: the record already runs `start → …`.
@@ -1785,10 +1779,7 @@ impl<'a> Reader<'a> {
         // …then walk them backward, undoing one delta per point.
         emit(p);
         for pair in deltas.chunks_exact(4).rev() {
-            p = (
-                p.0.wrapping_sub(i16::from_le_bytes([pair[2], pair[3]]) as i32),
-                p.1.wrapping_sub(i16::from_le_bytes([pair[0], pair[1]]) as i32),
-            );
+            p = (p.0.wrapping_sub(rd_i16(pair, 2) as i32), p.1.wrapping_sub(rd_i16(pair, 0) as i32));
             emit(p);
         }
         Some(length_m)
@@ -1841,7 +1832,7 @@ impl<'a> Reader<'a> {
     }
 
     /// Byte range `[start, end)` of geometry chunk `chunk_id` in `l`, resolved through the LOD's
-    /// per-chunk offset table (v11 §5). `offsets[k]` and `offsets[k+1]` are adjacent, so this is a
+    /// per-chunk offset table (spec §5). `offsets[k]` and `offsets[k+1]` are adjacent, so this is a
     /// single 8-byte read — routed through the **index** block cache, the same one `read_node`
     /// uses: the table is index-like metadata and lies immediately after the index, so a walk's
     /// node reads and its chunk lookups share blocks instead of hitting the card twice.
@@ -2258,7 +2249,7 @@ fn decode_chunk_into<const P: usize, const R: usize>(
     let cs = chunk.len();
     let mut off = 0usize;
     let mut status = DecodeStatus::default();
-    // A v11 chunk is `features ++ [CHUNK_END]` — exactly one sentinel, no padding. Running off the
+    // A chunk is `features ++ [CHUNK_END]` (§5) — exactly one sentinel, no padding. Running off the
     // end without meeting it means the chunk was truncated or its offset-table length is wrong, so
     // the walk owes the caller a malformed drop rather than a silent clean finish. `verdict` also
     // covers the paths that already reported one and consumed the rest of the chunk.
@@ -2316,7 +2307,7 @@ fn decode_chunk_into<const P: usize, const R: usize>(
     status
 }
 
-/// One parsed v11 §5 feature header, in either layout, plus the header's own `len` so the caller
+/// One parsed §5 feature header, in either layout, plus the header's own `len` so the caller
 /// knows where the deltas start. Built only by [`read_feature_header`], which is the single place
 /// that decides what "malformed framing" means — the decode and the skip path share it, so they can
 /// never disagree about which byte a feature ends on.
@@ -2334,8 +2325,8 @@ struct FeatHeader {
 /// Read the feature header at `off`, or `None` for every malformed-framing case: the end-of-features
 /// sentinel, a header running past the chunk, an unknown flag bit, `pt_count == 0`, or holes on a
 /// line. `style` + `flags` are the fixed 2-byte prefix of both layouts, and the `WIDE` bit lives in
-/// `flags` — so v11 knows the header's width before it needs any field behind it (v10's trailing
-/// flags byte made that impossible, which is why the layout was reordered).
+/// `flags` — so the width is known before any field behind it is needed (v10's trailing flags byte
+/// made that impossible, which is why the layout was reordered).
 #[inline]
 fn read_feature_header(chunk: &[u8], off: usize) -> Option<FeatHeader> {
     if off.checked_add(2).is_none_or(|end| end > chunk.len()) || chunk[off] == CHUNK_END {
@@ -2532,10 +2523,7 @@ fn read_ring<const P: usize>(
     };
     for _ in 0..num_deltas {
         let (dx, dy) = if is_16 {
-            (
-                i16::from_le_bytes([chunk[off], chunk[off + 1]]) as i32,
-                i16::from_le_bytes([chunk[off + 2], chunk[off + 3]]) as i32,
-            )
+            (rd_i16(chunk, off) as i32, rd_i16(chunk, off + 2) as i32)
         } else {
             (chunk[off] as i8 as i32, chunk[off + 1] as i8 as i32)
         };
@@ -2616,7 +2604,7 @@ fn parse_styles(
 /// index/table/chunk region lies within the file (`total` bytes) so `for_each_chunk`/`decode_chunk`
 /// can skip bounds math, and that its `chunk_size` fits the decode scratch ([`MAX_CHUNK_BYTES`]).
 ///
-/// v11 costs one extra `uint32` read per LOD: the offset table's **last** entry is the layer's total
+/// The offset-table layout costs one extra `uint32` read per LOD: the table's **last** entry is the layer's total
 /// chunk bytes ([`Lod::chunk_bytes_total`]), which both bounds the region here and bounds every
 /// later per-chunk offset pair in [`Reader::chunk_range`] with no further reads.
 pub(crate) fn parse_lod_table(
@@ -2810,8 +2798,8 @@ fn parse_nav_directory(src: &dyn ByteSource, offset: usize, total: usize) -> Res
         profile_count: d[26] as usize,
     };
     // The nav chunk size is pinned to 512 (§8.1) — a v8 file, or any other value, is rejected. This
-    // is a distinct error from the header's version check, so an old file and a mis-sized v11 file
-    // are told apart.
+    // is a distinct error from the header's version check, so an old file and a mis-sized current
+    // one are told apart.
     if dir.chunk_size != NAV_CHUNK_SIZE {
         return Err(Error::BadOffset);
     }
@@ -3520,48 +3508,5 @@ mod tests {
         let before = inner.stats();
         inner.index_block(&src, 0, 0).unwrap();
         assert_eq!(inner.stats().sd_reads, before.sd_reads + 1, "post-clear index read must re-read");
-    }
-
-    /// A minimal 40-byte OBCM header with the given bbox/marker, enough for the cache-free
-    /// [`read_header`] (no style/LOD tables, which it doesn't touch).
-    fn synth_header(min_lon: i32, min_lat: i32, max_lon: i32, max_lat: i32, marker: u16) -> [u8; HEADER_LEN] {
-        let mut h = [0u8; HEADER_LEN];
-        h[0..4].copy_from_slice(b"OBCM");
-        h[4] = VERSION;
-        h[5..9].copy_from_slice(&min_lat.to_le_bytes()); // field order is lat,lon,lat,lon
-        h[9..13].copy_from_slice(&min_lon.to_le_bytes());
-        h[13..17].copy_from_slice(&max_lat.to_le_bytes());
-        h[17..21].copy_from_slice(&max_lon.to_le_bytes());
-        h[30..32].copy_from_slice(&marker.to_le_bytes());
-        // h[32..36] (POI section offset) and h[36..40] (nav offset) are untouched by read_header.
-        h
-    }
-
-    /// `read_header` pulls version + bbox + marker out of the header alone.
-    #[test]
-    fn read_header_decodes_bbox_and_marker() {
-        let h = synth_header(-34, 12, 78, 56, 0xBEEF);
-        let got = read_header(&SliceSource(&h)).unwrap();
-        assert_eq!(
-            got,
-            MapHeader {
-                version: VERSION,
-                bbox: BBox { min_lon: -34, min_lat: 12, max_lon: 78, max_lat: 56 },
-                marker_color: 0xBEEF
-            }
-        );
-    }
-
-    /// The same magic / version / length guards as `MapTables::parse` — a bad card never decodes to
-    /// a bogus bbox.
-    #[test]
-    fn read_header_rejects_short_bad_magic_and_version() {
-        assert_eq!(read_header(&SliceSource(&[0u8; HEADER_LEN - 1])), Err(Error::TooShort));
-        let mut h = synth_header(0, 0, 1, 1, 0);
-        h[0..4].copy_from_slice(b"NOPE");
-        assert_eq!(read_header(&SliceSource(&h)), Err(Error::BadMagic));
-        h[0..4].copy_from_slice(b"OBCM");
-        h[4] = 9; // v9 (and earlier) no longer supported — only v11 is read
-        assert_eq!(read_header(&SliceSource(&h)), Err(Error::BadVersion));
     }
 }

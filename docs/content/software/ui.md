@@ -60,13 +60,15 @@ The core idea: each screen is an enum variant wrapping a little struct of typed 
 </figure>
 
 ```rust
-// The one screen table. Each row declares a variant, its state type, and its capabilities (Caps);
-// a dumb local macro expands it into the Screen enum, the handle/draw/prepare delegation matches,
-// and the per-screen Caps table that every cross-cutting UI policy reads.
+// The one screen table (excerpted — the real table carries every screen, doc comments and all).
+// Each row declares a variant, its state type, and its capabilities (Caps); a dumb local macro
+// expands it into the Screen enum, the handle/draw/prepare delegation matches, and the per-screen
+// Caps table that every cross-cutting UI policy reads.
 screens! {
     Home(HomeScreen) => Caps::nav().timed(),         // screensaver clock ticks each minute → timed
     Map(MapScreen) => Caps::map().timed(),           // reads the map Reader; a ride view + browse-exempt
     Statistics(StatisticsScreen) => Caps::riding().timed(),
+    Climb(ClimbScreen) => Caps::riding(),            // the climb profile view — a full-screen ride view
     RideControl(RideControl) => Caps::nav().ride_view().hold_fill(), // the Paused page; guarded Finish/Discard
     RideStart(RideStartScreen) => Caps::nav(),       // the browse map's start card (route-less ride)
     Menu(MenuScreen) => Caps::nav().timed(),          // the compass dial sweeps its needle → timed
@@ -749,7 +751,7 @@ pub const fn t(msg: Msg, lang: Language) -> &'static str { TABLE[msg as usize][l
 draw_text(target, rx.t(Msg::MenuRoutes), at, Font::Body, TextAlign::Center, ink);
 ```
 
-The `Msg` enum and the `TABLE` it indexes are **generated at compile time**. Four per-language catalogs — `obc-app/i18n/{en,de,fr,es}.toml` — hold the copy as `[section]` + `key = "value"` TOML; a small `build.rs` parses all four and emits one `Msg` variant per key plus `const TABLE: [[&str; 4]; N]`, the columns ordered to match the `Language` discriminants (En, De, Fr, Es). Because the table is `const`, the whole catalogue lands in flash `.rodata` — nothing touches the device's tight 256 KB RAM. English is the canonical key set: the build **fails with a named list of offenders** if any of de/fr/es is missing a key, carries an extra one, or changes the load-bearing leading/trailing spaces English glues into a concatenated readout (`AVG ` + a value, `grade ` + a percent) — so a half-translated *or* mis-spaced string can't ship silently. (A separate `obc-app` test walks the finished table and asserts every character is in the device font's repertoire — Latin-1 + Latin Extended-A — so a stray curly quote or em-dash fails CI rather than rendering as a `?` on-glass.)
+The `Msg` enum and the `TABLE` it indexes are **generated at compile time**. Four per-language catalogs — `obc-app/i18n/{en,de,fr,es}.toml` — hold the copy as `[section]` + `key = "value"` TOML; a small `build.rs` parses all four and emits one `Msg` variant per key plus `const TABLE: [[&str; 4]; N]`, the columns ordered to match the `Language` discriminants (En, De, Fr, Es). Because the table is `const`, the whole catalogue lands in flash `.rodata` — nothing touches the device's tight 512 KB RAM. English is the canonical key set: the build **fails with a named list of offenders** if any of de/fr/es is missing a key, carries an extra one, or changes the load-bearing leading/trailing spaces English glues into a concatenated readout (`AVG ` + a value, `grade ` + a percent) — so a half-translated *or* mis-spaced string can't ship silently. (A separate `obc-app` test walks the finished table and asserts every character is in the device font's repertoire — Latin-1 + Latin Extended-A — so a stray curly quote or em-dash fails CI rather than rendering as a `?` on-glass.)
 
 The words are translated; the *formats* are not. The 24-hour clock, ISO / `Mon DD` dates, and the metric/imperial unit suffixes (`KPH`, `km`, `m`) stay identical across languages — only the twelve month abbreviations are localized. Symbol-like labels (`KPH`) are language-independent by design; only word-bearing enum labels (a `Units` name, a `ClimbMode` name) route through the catalogue.
 

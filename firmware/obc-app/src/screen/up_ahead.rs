@@ -718,6 +718,8 @@ fn draw_picker(
 mod tests {
     use super::*;
     use crate::activity::{Activity, Mode};
+    use crate::harness::support::wpts_detailed;
+    use crate::screen::test_ctx;
     use crate::{AppState, Settings};
     use embedded_graphics::primitives::Rectangle;
     use obc_formats::io::{ByteSink, Error, SliceSource};
@@ -803,19 +805,6 @@ mod tests {
         (route.load_waypoints(0), route.elevation_profile(), route.total_distance_m)
     }
 
-    /// A synthetic waypoint table (distance, name, category, lateral offset).
-    fn wpts(items: &[(u32, &str, Option<PoiCategory>, i16)]) -> Waypoints {
-        let mut w = Waypoints::new();
-        for (d, n, cat, off) in items {
-            let mut name = heapless::String::new();
-            name.push_str(n).unwrap();
-            w.entries
-                .push(WptEntry { dist_along_m: *d, lon: 0, lat: 0, category: *cat, lateral_offset_m: *off, name })
-                .unwrap();
-        }
-        w
-    }
-
     /// A synthetic corridor snapshot (distance, name, subtype, lateral offset).
     fn corridor(items: &[(u32, &str, u8, i32)]) -> std::vec::Vec<CorridorPoi> {
         items
@@ -849,7 +838,7 @@ mod tests {
     /// `dist_along_m`, and a tie puts the rider's own waypoint first.
     #[test]
     fn merge_interleaves_both_sources_by_distance() {
-        let w = wpts(&[(500, "Start gate", None, 0), (2_000, "Pass", None, 0), (3_000, "Tie", None, 0)]);
+        let w = wpts_detailed(&[(500, "Start gate", None, 0), (2_000, "Pass", None, 0), (3_000, "Tie", None, 0)]);
         let p = corridor(&[(100, "Fountain", WATER, 0), (2_500, "Bike shop", BIKE, 0), (3_000, "Tap", WATER, 0)]);
         assert_eq!(
             names(&w, &p, PoiCategorySet::ALL),
@@ -863,7 +852,7 @@ mod tests {
     /// with no category can't answer a category question).
     #[test]
     fn a_category_filter_cuts_both_sources() {
-        let w = wpts(&[(400, "Brunnen", Some(PoiCategory::Water), 0), (900, "Turn left", None, 0)]);
+        let w = wpts_detailed(&[(400, "Brunnen", Some(PoiCategory::Water), 0), (900, "Turn left", None, 0)]);
         let p = corridor(&[(600, "Fountain", WATER, 0), (700, "Cycles", BIKE, 0)]);
         assert_eq!(names(&w, &p, PoiCategorySet::ALL), ["Brunnen", "Fountain", "Cycles", "Turn left"]);
         assert_eq!(
@@ -879,7 +868,7 @@ mod tests {
     /// the rider's categorized GPX water stops, with no map fountain in sight.
     #[test]
     fn the_source_scope_picks_which_tables_feed_the_list() {
-        let w = wpts(&[(400, "Brunnen", Some(PoiCategory::Water), 0), (900, "Turn left", None, 0)]);
+        let w = wpts_detailed(&[(400, "Brunnen", Some(PoiCategory::Water), 0), (900, "Turn left", None, 0)]);
         let p = corridor(&[(600, "Fountain", WATER, 0), (700, "Cycles", BIKE, 0)]);
         let listed = |source, filter| {
             let mut s = UpAheadScreen::new(0, source);
@@ -945,7 +934,7 @@ mod tests {
     /// the query never returns one behind the rider.
     #[test]
     fn passed_waypoints_stay_and_clamp_while_passed_pois_never_arrive() {
-        let w = wpts(&[(100, "Behind", None, 0), (900, "Ahead", None, 0)]);
+        let w = wpts_detailed(&[(100, "Behind", None, 0), (900, "Ahead", None, 0)]);
         let p = corridor(&[(800, "Fountain", WATER, 0)]); // anchored at 500: nothing behind
         assert_eq!(names(&w, &p, PoiCategorySet::ALL), ["Behind", "Fountain", "Ahead"]);
 
@@ -985,7 +974,7 @@ mod tests {
     /// waypoint's stored offset (U1) and a POI's projected offset (U2) alike.
     #[test]
     fn the_side_hint_threshold_is_symmetric_and_source_blind() {
-        let w = wpts(&[(0, "On line", None, 50), (1, "Right", None, 300), (2, "Left", None, -300)]);
+        let w = wpts_detailed(&[(0, "On line", None, 50), (1, "Right", None, 300), (2, "Left", None, -300)]);
         let p = corridor(&[(3, "Near", WATER, -50), (4, "Far right", WATER, 51)]);
         let e: std::vec::Vec<Entry> = Merge::new(w.as_slice(), &p, PoiCategorySet::ALL).collect();
         let hint = |i: usize| side_hint(e[i].offset_m(), Units::Metric).map(|(r, s)| (r, s.as_str().to_string()));
@@ -1076,7 +1065,7 @@ mod tests {
     /// waypoint's three strings are all muted while the plan ahead stays full ink.
     #[test]
     fn render_keeps_route_order_and_mutes_passed_rows() {
-        let w = wpts(&[(100, "Behind", None, 0), (1_000, "Pass", None, 0)]);
+        let w = wpts_detailed(&[(100, "Behind", None, 0), (1_000, "Pass", None, 0)]);
         let p = corridor(&[(600, "Fountain", WATER, 0)]);
         let rec = render(&UpAheadScreen::new(200, UpAheadSource::Both), &w, &p, 200);
         let body = &texts(&rec)[2..]; // title + the pos/total slot
@@ -1095,7 +1084,7 @@ mod tests {
     /// climb slides left of the hint block rather than overprinting it on the 240 px panel.
     #[test]
     fn the_side_hint_sits_at_the_right_edge_clear_of_the_climb() {
-        let w = wpts(&[(2_000, "Spring in the valley", None, -280)]);
+        let w = wpts_detailed(&[(2_000, "Spring in the valley", None, -280)]);
         let rec = render(&UpAheadScreen::new(0, UpAheadSource::Both), &w, &[], 0);
         // Line 2 is everything sharing the distance's baseline; draw order is distance, hint, climb.
         let sy = rec.calls[3].at.y;
@@ -1128,7 +1117,7 @@ mod tests {
     /// pip; a POI row's draws SUBTEXT with no pip.
     #[test]
     fn waypoint_rows_carry_the_amber_icon_and_the_diamond_pip() {
-        let w = wpts(&[(1_000, "Pass", None, 0)]);
+        let w = wpts_detailed(&[(1_000, "Pass", None, 0)]);
         let p = corridor(&[(600, "Fountain", WATER, 0)]);
         let mut screen = UpAheadScreen::new(0, UpAheadSource::Both);
         screen.selected = Some(0); // the POI row is the cursor, so the waypoint row is unselected
@@ -1145,7 +1134,7 @@ mod tests {
     /// distinct sentences, never the same one twice.
     #[test]
     fn the_three_empty_states_are_distinct() {
-        let stale = wpts(&[(10, "Stale", None, 0)]);
+        let stale = wpts_detailed(&[(10, "Stale", None, 0)]);
         let none = Waypoints::new();
 
         let render_with = |screen: &UpAheadScreen, w: &Waypoints, route: bool, settled: bool| {
@@ -1178,7 +1167,7 @@ mod tests {
     /// draws no POI row and a Map-POIs-only frame draws no waypoint row (nor its amber source pip).
     #[test]
     fn the_rendered_list_shows_only_the_scoped_source() {
-        let w = wpts(&[(1_000, "Pass", None, 0), (2_000, "Col", None, 0)]);
+        let w = wpts_detailed(&[(1_000, "Pass", None, 0), (2_000, "Col", None, 0)]);
         let p = corridor(&[(600, "Fountain", WATER, 0)]);
         let drawn = |source| {
             let rec = render(&UpAheadScreen::new(0, source), &w, &p, 0);
@@ -1254,22 +1243,7 @@ mod tests {
     fn ctx<'a>(activity: &'a mut Activity, waypoints: &'a Waypoints, corridor: &'a [CorridorPoi]) -> Ctx<'a> {
         let state = std::boxed::Box::leak(std::boxed::Box::new(AppState::new(0, 0, 1.0)));
         let settings = std::boxed::Box::leak(std::boxed::Box::new(Settings::default()));
-        let scratch = std::boxed::Box::leak(std::boxed::Box::new(super::super::PoiScratch::new()));
-        let profiles = std::boxed::Box::leak(std::boxed::Box::new(crate::NavProfiles::new()));
-        Ctx {
-            state,
-            activity,
-            settings,
-            routes: &[],
-            rides: &[],
-            trips: &[],
-            nav_profiles: profiles,
-            poi_scratch: scratch,
-            waypoints: waypoints.as_slice(),
-            corridor,
-            sensor_scan_hits: &[],
-            now_ms: 0,
-        }
+        Ctx { waypoints: waypoints.as_slice(), corridor, ..test_ctx(state, activity, settings) }
     }
 
     fn riding() -> Activity {
@@ -1283,7 +1257,7 @@ mod tests {
     /// table's index — and a turn takes over from there.
     #[test]
     fn the_list_opens_at_the_first_unpassed_row() {
-        let w = wpts(&[(100, "Behind", None, 0), (1_000, "Pass", None, 0)]);
+        let w = wpts_detailed(&[(100, "Behind", None, 0), (1_000, "Pass", None, 0)]);
         let p = corridor(&[(600, "Fountain", WATER, 0)]);
         let mut act = riding();
         act.progress_m = 200;
@@ -1308,7 +1282,7 @@ mod tests {
     /// inert; Back leaves; and none of it touches the ride session.
     #[test]
     fn press_opens_poi_rows_only() {
-        let w = wpts(&[(1_000, "Pass", None, 0)]);
+        let w = wpts_detailed(&[(1_000, "Pass", None, 0)]);
         let p = corridor(&[(600, "Fountain", WATER, -220)]);
         let mut act = riding();
         act.start_session();
@@ -1331,7 +1305,7 @@ mod tests {
     /// re-homing the cursor); Back cancels, leaving both the filter and the key untouched.
     #[test]
     fn the_picker_applies_on_press_and_cancels_on_back() {
-        let w = wpts(&[(1_000, "Pass", None, 0)]);
+        let w = wpts_detailed(&[(1_000, "Pass", None, 0)]);
         let p = corridor(&[]);
         let mut act = riding();
         let mut screen = UpAheadScreen::new(4_000, UpAheadSource::Both);
@@ -1361,7 +1335,7 @@ mod tests {
     /// screen, and a Press never falls through to a row.
     #[test]
     fn the_open_picker_swallows_navigation() {
-        let w = wpts(&[(1_000, "Pass", None, 0)]);
+        let w = wpts_detailed(&[(1_000, "Pass", None, 0)]);
         let p = corridor(&[(600, "Fountain", WATER, 0)]);
         let mut act = riding();
         let mut screen = UpAheadScreen::new(0, UpAheadSource::Both);

@@ -6,7 +6,7 @@
 
 mod common;
 
-use common::{decode, VecSink};
+use common::{decode, route_points, VecSink};
 use obc_elevation::NullElevation;
 use obc_formats::io::SliceSource;
 use obc_pack::nav::{Edge, NavGraph, Node};
@@ -152,21 +152,6 @@ fn plan(
     name: &str,
 ) -> (Result<obc_route::RouteStats, NavError>, Vec<u8>, obc_reader::NavCacheStats) {
     plan_p(bytes, from, to, name, 0)
-}
-
-/// Decode an emitted OBCR's full point list (all chunks stitched).
-fn route_points(obcr: &[u8]) -> Vec<obc_route::RoutePoint> {
-    let src = SliceSource(obcr);
-    let idx = RouteIndex::read(&src).expect("the emitted OBCR parses");
-    let r = RouteReader::new(&idx, &src);
-    let mut pts = Vec::new();
-    for k in 0..idx.chunks().len() {
-        let chunk = decode(&r, k);
-        // Chunks share their seam point; drop the duplicate when stitching.
-        let skip = usize::from(k > 0);
-        pts.extend_from_slice(&chunk[skip..]);
-    }
-    pts
 }
 
 /// Corner-to-corner over the uniform grid: the optimum is `4 × EDGE_COST` whatever

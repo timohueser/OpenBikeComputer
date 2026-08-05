@@ -298,8 +298,12 @@ fn flash_pass(io: &mut impl InstallIo, staged: &StagedRef, slot: &Slot, buf: &mu
         // Pad the tail chunk up to a whole RRAM line (verify pinned padded_len ≤ slot.len, so
         // the pad never writes past the slot). Intermediate chunks are already line-multiples.
         let padded = n.div_ceil(RRAM_LINE_LEN) * RRAM_LINE_LEN;
-        buf[n..padded].fill(PAD_BYTE);
-        io.write_lines(slot.base + done as u32, &buf[..padded]).map_err(|_| PassError::Flash)?;
+        // `run` clamps `buf` to whole SD blocks (themselves line multiples), so the pad always fits.
+        // Fail the pass rather than panic if a buffer ever reaches here off-contract — `run`'s
+        // "never panics" promise holds for every caller, not just the one that obeys the clamp.
+        let chunk = buf.get_mut(..padded).ok_or(PassError::Flash)?;
+        chunk[n..].fill(PAD_BYTE);
+        io.write_lines(slot.base + done as u32, chunk).map_err(|_| PassError::Flash)?;
         done += n;
         io.progress(Phase::Flash, done as u32, len as u32);
     }

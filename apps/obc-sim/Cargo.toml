@@ -35,14 +35,20 @@ embedded-graphics = "0.8"
 eframe = "0.29"
 # PNG output for headless `--png` renders.
 image = { version = "0.25", default-features = false, features = ["png"] }
-# Minimal block-on to drive the `obc_platform::DisplayDriver` seam's async methods, which the sim
-# backend completes synchronously on the host. Already in the tree (eframe → wgpu pull it), so this
-# reuses the resolved 0.3 rather than adding a new executor dep.
-pollster = "0.3"
 # Native "open file" dialog for selecting a GPX track to replay.
 rfd = "0.14"
 
 [dev-dependencies]
+# The presenter suite in `present.rs` runs obc-display's reusable contract checks; the
+# `conformance` feature exists so that scaffolding stays out of the device image, and this
+# dev-dep turns it on for the sim's test builds only.
+obc-display = { path = "../../firmware/obc-display", features = ["conformance"] }
+
+# Minimal block-on to drive the `obc_platform::DisplayDriver` seam's async methods, which the sim
+# backend completes synchronously on the host — only the `present` conformance tests await them.
+# Already in the tree (eframe → wgpu pull it), so this reuses the resolved 0.3 rather than adding a
+# new executor dep.
+pollster = "0.3"
 # Hand-built OBCM / OBCA fixtures for the `--set` loader tests. An independent oracle that calls no
 # production serializer, so a set the simulator mounts was not built by the code under test.
 obcm-testkit = { path = "../../host/obcm-testkit" }

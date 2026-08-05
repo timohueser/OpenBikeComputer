@@ -242,6 +242,7 @@ mod tests {
     use super::*;
     use crate::activity::{Activity, Mode};
     use crate::ride::RideSummary;
+    use crate::screen::test_ctx;
     use crate::{AppState, Settings};
 
     fn summary(name: &str, synced: bool) -> RideSummary {
@@ -259,21 +260,7 @@ mod tests {
     fn run(scr: &mut RidesScreen, act: &mut Activity, rides: &[RideSummary], g: Gesture) -> Transition {
         let mut st = AppState::new(0, 0, 1.0);
         let mut settings = Settings::default();
-        let scratch = crate::screen::PoiScratch::new();
-        let mut cx = Ctx {
-            state: &mut st,
-            activity: act,
-            settings: &mut settings,
-            routes: &[],
-            rides,
-            trips: &[],
-            nav_profiles: &crate::NavProfiles::EMPTY,
-            poi_scratch: &scratch,
-            waypoints: &[],
-            corridor: &[],
-            sensor_scan_hits: &[],
-            now_ms: 0,
-        };
+        let mut cx = Ctx { rides, ..test_ctx(&mut st, act, &mut settings) };
         scr.handle(g, &mut cx)
     }
 

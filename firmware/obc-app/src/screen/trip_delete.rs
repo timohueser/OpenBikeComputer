@@ -97,15 +97,7 @@ impl TripDeleteScreen {
             super::wrapped(cv, rx.t(Msg::TripDeleteWarn), w / 2, super::TITLE_BAR_H + 40, w - 24, Font::Label, SUBTEXT);
 
         // The guarded Delete row fills warning-red (this IS destructive); Cancel is a plain amber row.
-        let geo = super::GuardedRowsGeometry {
-            x: 12,
-            w: w - 24,
-            top: warn_end + 8,
-            row_h: 46,
-            gap: 8,
-            label_dx: 16,
-            label_dy: 11,
-        };
+        let geo = super::GuardedRowsGeometry::card(w, warn_end + 8);
         let items = [
             MenuItem { label: rx.t(Msg::TripDeleteConfirm), guard: GUARDS[0] },
             MenuItem { label: rx.t(Msg::TripDeleteCancel), guard: GUARDS[1] },
@@ -128,26 +120,13 @@ fn fit_to_cap(s: &str) -> &str {
 mod tests {
     use super::*;
     use crate::activity::{Activity, Mode};
+    use crate::screen::test_ctx;
     use crate::{AppState, Settings};
 
     fn run(scr: &mut TripDeleteScreen, act: &mut Activity, g: Gesture) -> Transition {
         let mut st = AppState::new(0, 0, 1.0);
         let mut settings = Settings::default();
-        let scratch = crate::screen::PoiScratch::new();
-        let mut cx = Ctx {
-            state: &mut st,
-            activity: act,
-            settings: &mut settings,
-            routes: &[],
-            rides: &[],
-            trips: &[],
-            nav_profiles: &crate::NavProfiles::EMPTY,
-            poi_scratch: &scratch,
-            waypoints: &[],
-            corridor: &[],
-            sensor_scan_hits: &[],
-            now_ms: 0,
-        };
+        let mut cx = test_ctx(&mut st, act, &mut settings);
         scr.handle(g, &mut cx)
     }
 

@@ -13,12 +13,14 @@
 
 use std::cell::Cell;
 
-use obc_formats::io::ByteSource;
 use obc_map_scene::{cos_lat, ground_dist_m_cl, BBox};
 use obc_reader::{
     CorridorPoi, MapCache, MapTables, PoiCategory, PoiCategorySet, Reader, RoutePath, SliceSource, MAX_CORRIDOR_RESULTS,
 };
 use obcm_testkit::{build_poi_map, PoiSpec};
+
+mod common;
+use common::CountingSource;
 
 /// The fixture map bbox `(min_lon, min_lat, max_lon, max_lat)` — the 1°×1° square the other POI
 /// suites use.
@@ -107,31 +109,6 @@ impl RoutePath for FixturePath {
 }
 
 // ============================== harness ==============================
-
-/// A `ByteSource` that counts `read_at` calls and the bytes they move — the SD-read proxy the
-/// budget conversation runs on (the device reads one block per `read_at`).
-struct CountingSource<'a> {
-    inner: SliceSource<'a>,
-    reads: Cell<u32>,
-    bytes: Cell<u64>,
-}
-
-impl<'a> CountingSource<'a> {
-    fn new(bytes: &'a [u8]) -> CountingSource<'a> {
-        CountingSource { inner: SliceSource(bytes), reads: Cell::new(0), bytes: Cell::new(0) }
-    }
-}
-
-impl ByteSource for CountingSource<'_> {
-    fn read_at(&self, off: u32, buf: &mut [u8]) -> Result<(), obc_formats::io::Error> {
-        self.reads.set(self.reads.get() + 1);
-        self.bytes.set(self.bytes.get() + buf.len() as u64);
-        self.inner.read_at(off, buf)
-    }
-    fn len(&self) -> u32 {
-        self.inner.len()
-    }
-}
 
 /// Run the corridor query over a built map + route and return the results.
 fn query(bytes: &[u8], cats: PoiCategorySet, path: &FixturePath, progress_m: u32) -> Vec<CorridorPoi> {

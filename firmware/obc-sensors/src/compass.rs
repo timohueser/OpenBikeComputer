@@ -23,8 +23,11 @@
 /// frame** — `x` forward (top of screen), `y` right, `z` down. A driver scales raw counts to µT and
 /// remaps the sensor's own axes into this frame before building one.
 ///
-/// `z` is carried even though the flat heading ignores it: it's what an overflow check reads and
-/// what a future tilt-compensated heading would consume.
+/// `z` is carried even though the flat heading ignores it: a tilt-compensated heading — the
+/// natural next step once the IMU's accelerometer joins in — needs all three axes, and a driver
+/// that already reads the full burst would have to be re-plumbed to hand it back later. (It is
+/// **not** what the sensor's overflow check reads: [`icm20948::overflowed`](crate::icm20948::overflowed)
+/// looks at the raw burst bytes, before anything becomes a `MagSample`.)
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MagSample {
     /// Field along device-forward (top of screen), µT.

@@ -192,6 +192,33 @@ pub struct Ctx<'a> {
     pub now_ms: u32,
 }
 
+/// A [`Ctx`] over borrowed state/activity/settings with every catalog empty and the clock at zero —
+/// the shape essentially every screen test wants. The handful that need one field populated say so
+/// with struct-update syntax, so the other eleven stay out of the way:
+/// `Ctx { routes, ..test_ctx(&mut st, &mut act, &mut s) }`.
+#[cfg(test)]
+pub(crate) fn test_ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity, settings: &'a mut Settings) -> Ctx<'a> {
+    // Shared empty borrows: the screens under test read these but never fill them, so one immutable
+    // `'static` each serves every caller (and spares each test a local it has to keep alive — a
+    // temporary can't outlive this call).
+    static EMPTY_SCRATCH: PoiScratch = PoiScratch::new();
+    static EMPTY_PROFILES: crate::NavProfiles = crate::NavProfiles::EMPTY;
+    Ctx {
+        state,
+        activity,
+        settings,
+        routes: &[],
+        rides: &[],
+        trips: &[],
+        nav_profiles: &EMPTY_PROFILES,
+        poi_scratch: &EMPTY_SCRATCH,
+        waypoints: &[],
+        corridor: &[],
+        sensor_scan_hits: &[],
+        now_ms: 0,
+    }
+}
+
 /// The currently-tracked climb, surfaced to the riding views (C3). Bundles the active
 /// [`ClimbSeg`] with its resident detail [`ClimbProfile`], both borrowed from the App-owned climb
 /// state — present exactly when [`Activity::active_climb`](crate::activity::Activity) is `Some`, so
@@ -1555,6 +1582,22 @@ pub(crate) struct GuardedRowsGeometry {
     pub label_dy: i32,
 }
 
+impl GuardedRowsGeometry {
+    /// The **card** family — the option rows of a full-bleed confirm card (Route received /
+    /// updated, Trip received, Route swap, Trip delete, Nav route): a 12 px side inset, 46 px rows
+    /// 8 apart, the label 16 in and 11 down. Only where the block starts differs between them.
+    pub(crate) fn card(w: i32, top: i32) -> Self {
+        GuardedRowsGeometry { x: 12, w: w - 24, top, row_h: 46, gap: 8, label_dx: 16, label_dy: 11 }
+    }
+
+    /// The **panel** family — action rows inside a framed panel (Pause menu, Route overview, Ride
+    /// detail): the wider 14 px inset the frame wants, and a tighter label at 12 in / 5 down. Row
+    /// height and gap stay the caller's, since each panel sizes its block to the space it has.
+    pub(crate) fn panel(w: i32, top: i32, row_h: i32, gap: i32) -> Self {
+        GuardedRowsGeometry { x: 14, w: w - 28, top, row_h, gap, label_dx: 12, label_dy: 5 }
+    }
+}
+
 /// Draw a guarded-action menu's option rows (Ride control, Route swap): each [`MenuItem`] gets its
 /// [`confirm_row`] background — the amber cursor, or the hold-progress fill in `fill` on a guarded
 /// row — and its Body label. The caller draws its chrome (the PAUSED panel / the full-frame prompt)
@@ -1640,6 +1683,7 @@ pub mod palette {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::harness::support::wpts;
     use obc_render::text::text_width;
 
     /// A draw target that records only its text draws — the panel-content tests observe which strings
@@ -1662,27 +1706,6 @@ mod tests {
             let _ = self.calls.push((buf, font, align));
             at
         }
-    }
-
-    /// A `Waypoints` table from `(dist_along_m, name)` pairs, route order — the panel-drawer mirror
-    /// of `stat_fields`' `wpts` helper.
-    fn wpts(items: &[(u32, &str)]) -> Waypoints {
-        let mut w = Waypoints::new();
-        for &(dist_along_m, name) in items {
-            let mut n = heapless::String::new();
-            n.push_str(name).unwrap();
-            w.entries
-                .push(obc_route::WptEntry {
-                    dist_along_m,
-                    lon: 0,
-                    lat: 0,
-                    category: None,
-                    lateral_offset_m: 0,
-                    name: n,
-                })
-                .unwrap();
-        }
-        w
     }
 
     /// A bare metric readout over `activity` + `waypoints`, resolving `next` as the first waypoint

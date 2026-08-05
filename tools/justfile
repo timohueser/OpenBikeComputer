@@ -394,19 +394,10 @@ site *args:
     _say "building the static web tier…"
     ( cd "$fe" && export VITE_CATALOG_URL="${OBC_CATALOG_URL:-}" && _run npm run build:web )
     cd "$OBC_ROOT"
-    if [[ ! -x .venv/bin/python ]]; then
-      _say "creating .venv + installing packer deps…"
-      _run python3 -m venv .venv
-      _run .venv/bin/pip install -q --upgrade pip
-      _run .venv/bin/pip install -q -r builder/requirements.txt
-    fi
-    # The Geofabrik index the picker draws. The FastAPI host computes it per request;
-    # a site with no backend needs it as a file — the deploy runs this same module.
-    _run .venv/bin/python -m builder.server.static_data --out "$fe/dist/web/data"
     _say "serving http://localhost:$port  (Ctrl-C to stop)"
-    # Absolute interpreter + `--directory`, not `cd` + a relative `.venv/bin/python`: the relative
-    # form resolved against the *serving* directory and vanished the moment we left the repo root.
-    _run "$OBC_ROOT/.venv/bin/python" -m http.server "$port" --directory "$fe/dist/web"
+    # `--directory` rather than `cd` + a relative path: the relative form resolved against the
+    # *serving* directory and vanished the moment we left the repo root.
+    _run python3 -m http.server "$port" --directory "$fe/dist/web"
 
 # ── Host workspace chores ────────────────────────────────────────────────────
 
@@ -519,13 +510,21 @@ check *args:
     fi
     if want deny; then
       if command -v cargo-deny >/dev/null 2>&1; then
-        step "deny (workspace)"   cargo deny --manifest-path "$OBC_ROOT/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
-        step "deny (board crate)" cargo deny --manifest-path "$OBC_ROOT/firmware/obc-fw-nrf54l/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
+        step "deny (workspace)"    cargo deny --manifest-path "$OBC_ROOT/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
+        step "deny (board crate)"  cargo deny --manifest-path "$OBC_ROOT/firmware/obc-fw-nrf54l/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
+        step "deny (bootloader)"   cargo deny --manifest-path "$OBC_ROOT/firmware/obc-boot/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
+        step "deny (desktop app)"  cargo deny --manifest-path "$OBC_ROOT/apps/obc-desktop/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
       else _warn "skip deny — cargo-deny not installed (cargo install cargo-deny)"; SKIPPED+=("deny"); fi
     fi
     if want wasm; then
-      if command -v trunk >/dev/null 2>&1; then step "wasm (obc-sim → wasm)" trunk build --config "$OBC_ROOT/docs/Trunk.toml"
+      if command -v trunk >/dev/null 2>&1; then step "wasm (obc-web-demo → wasm)" trunk build --config "$OBC_ROOT/docs/Trunk.toml"
       else _warn "skip wasm — trunk not installed (cargo install trunk)"; SKIPPED+=("wasm"); fi
+      # The assembly engine has to stay browser-shippable: the `cli` feature owns every
+      # std::fs call, so building the library without it catches a stray one here.
+      if rustup target list --installed | grep -q wasm32-unknown-unknown; then
+        step "wasm (obcm-assemble engine)" \
+          cargo build -p obcm-assemble --lib --no-default-features --locked --target wasm32-unknown-unknown
+      else _warn "skip wasm engine — no wasm32 target (obc doctor --install)"; SKIPPED+=("wasm-engine"); fi
     fi
     want docs && step "docs link check" python3 "$OBC_ROOT/docs/build_docs.py" --check-links
     printf '\n'; _say "check summary"

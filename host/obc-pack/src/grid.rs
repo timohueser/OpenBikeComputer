@@ -52,16 +52,6 @@ pub struct CellId {
     pub j: i64,
 }
 
-/// Number of decimal digits of a non-negative integer.
-fn decimal_width(mut v: i64) -> usize {
-    let mut w = 1;
-    while v >= 10 {
-        v /= 10;
-        w += 1;
-    }
-    w
-}
-
 /// Cells per axis at size `2^log2`.
 #[inline]
 pub fn axis_cells(log2: u32) -> i64 {
@@ -70,8 +60,12 @@ pub fn axis_cells(log2: u32) -> i64 {
 
 /// Zero-padding width of a cell id's indices (OBCA §1.3): `max(4, digits(cells_per_axis − 1))`.
 /// Four for every size at or above `2^16`, wider below — producers MUST widen rather than truncate.
+///
+/// The rule itself lives in [`obc_elevation::grid::id_width`]: `obc-dem` names published terrain
+/// cells by the same id and cannot depend on this crate, so the arithmetic has one home in the
+/// `no_std` leaf both reach.
 pub fn id_width(log2: u32) -> usize {
-    decimal_width(axis_cells(log2) - 1).max(4)
+    obc_elevation::grid::id_width(log2 as u8)
 }
 
 impl CellId {
