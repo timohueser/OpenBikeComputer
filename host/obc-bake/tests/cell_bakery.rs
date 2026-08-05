@@ -665,9 +665,11 @@ fn co_baked_neighbours_share_one_plan_for_the_cells_they_straddle() {
     assert!(east.iter().all(|id| !id.ends_with("/1053")), "{east:?}");
     assert_eq!(west.len() + east.len() + both.len(), 15, "every touched cell is planned exactly once");
 
-    // The pair's run is cropped to its own cells; a single-extract run is not.
+    // EVERY plan crops to its supercell square — single-extract plans included. An
+    // uncropped interior plan ingests its whole extract once per bucket, which is the
+    // whole-country memory peak the run-span split exists to prevent.
     let cropped = cutter.cropped.lock().unwrap().clone();
-    assert_eq!(cropped.iter().filter(|c| **c).count(), 1, "only the multi-source plan crops: {cropped:?}");
+    assert!(cropped.iter().all(|c| *c), "every plan crops: {cropped:?}");
 }
 
 /// D3, the property the plan grouping exists for: a border cell is canonical only when

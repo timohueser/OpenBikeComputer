@@ -75,8 +75,8 @@
 //!
 //! # The crop, and the one determinism caveat
 //!
-//! A multi-source plan ingests two whole-country extracts, so it crops them to the
-//! union of its own cells widened by [`CROP_MARGIN_UDEG`] — the relation-complete
+//! Every plan crops its extracts to its supercell square widened by
+//! [`CROP_MARGIN_UDEG`] — the relation-complete
 //! `--bbox` crop, which keeps every way touching the area, every renderable area
 //! relation reached by those ways, and therefore every junction and polygon inside
 //! it. The crop is part of the pack key, so it is part of the cell's recipe rather
@@ -110,12 +110,12 @@ use crate::util::{human_bytes, write_json};
 /// re-cut that content hashing alone would not.
 pub const CELL_RECIPE_VERSION: u32 = 1;
 
-/// Bumped only when the in-process bbox selection changes. Single-source region
-/// plans and planet leaves do not crop in the cutter, so folding this into
-/// [`CELL_RECIPE_VERSION`] would force a vast re-cut whose bytes cannot change.
+/// Bumped only when the in-process bbox selection changes. Planet leaves do not crop
+/// in the cutter, so folding this into [`CELL_RECIPE_VERSION`] would force a re-cut
+/// whose bytes cannot change.
 const CROP_RECIPE_VERSION: u32 = 2;
 
-/// How far past its own cells a multi-source plan crops its extracts, µdeg
+/// How far past its supercell square a plan crops its extracts, µdeg
 /// (0.25° ≈ 28 km at DACH latitudes).
 ///
 /// Comfortably past Geofabrik's complete-ways overhang and past any single way, so
@@ -612,7 +612,17 @@ impl CellBakery<'_> {
                 .map(|log2| (log2, c.boundary_cells(log2)))
                 .collect(),
         };
-        let crop = if sources.len() > 1 { crop_box(&plan.cells)? } else { None };
+        // Every plan crops — single-source plans included (without a crop, an interior plan
+        // ingested its whole extract per bucket: the exact whole-country peak the span split
+        // exists to prevent). The box is the plan's SUPERCELL square, not its cells' union:
+        // the bucket is a pure function of each cell, so a cell's crop — and therefore its
+        // pack key — cannot depend on which neighbours happened to be selected or stale.
+        // Cropping to the cell union would re-cut a cell whenever the co-baked context
+        // changed its plan's shape, which is exactly the incrementality the skip state
+        // promises ("a re-run of a DACH bake is minutes"). A cell cut under the old
+        // uncropped or union-cropped rule is stale by key and re-cuts once — no mixed
+        // provenance.
+        let crop = crop_box(&plan.cells)?;
         let pack_key = self.pack_key(&sources, crop.as_deref());
 
         // Which cells this plan still owes, and which only need a sidecar rewrite.
@@ -1095,7 +1105,9 @@ fn build_plans(resolved: &[Resolved], bands: &BandTable) -> Vec<Plan> {
             }
         }
     }
-    let mut grouped: BTreeMap<(Vec<usize>, (i64, i64)), BTreeSet<CellId>> = BTreeMap::new();
+    // (sorted source indices, supercell bucket) — one plan per distinct pair.
+    type PlanKey = (Vec<usize>, (i64, i64));
+    let mut grouped: BTreeMap<PlanKey, BTreeSet<CellId>> = BTreeMap::new();
     for (cell, mut sources) in owners {
         sources.sort_unstable();
         sources.dedup();
@@ -1112,16 +1124,26 @@ fn build_plans(resolved: &[Resolved], bands: &BandTable) -> Vec<Plan> {
 /// the machine survives beats one it does not.
 const RUN_SPAN_UDEG: i64 = 1 << 21;
 
-/// The `--bbox` a multi-source plan crops its extracts to: the union of its own cell
-/// squares, widened by [`CROP_MARGIN_UDEG`], as the `W,S,E,N` degrees spelling the
-/// packer parses.
+/// The `--bbox` a plan crops its extracts to: its [`RUN_SPAN_UDEG`] **supercell square**,
+/// widened by [`CROP_MARGIN_UDEG`], as the `W,S,E,N` degrees spelling the packer parses.
+///
+/// The bucket square rather than the cells' union, deliberately: every cell lies wholly
+/// inside its min-corner bucket (cell sizes are ≤ 2^20, grid-aligned, and the span is 2^21),
+/// and the bucket is a pure function of the cell — so the crop a cell was cut under, which
+/// is in its pack key, is identical in every bake that selects it. A union box would vary
+/// with the plan's shape and re-cut cells whose own recipe never changed.
 fn crop_box(cells: &BTreeSet<CellId>) -> Result<Option<String>, String> {
     let mut b: Option<(i64, i64, i64, i64)> = None;
     for cell in cells {
-        let (min_lon, min_lat, max_lon, max_lat) = cell.square();
+        let (cell_lon, cell_lat, _, _) = cell.square();
+        let (blat, blon) = (cell_lat.div_euclid(RUN_SPAN_UDEG), cell_lon.div_euclid(RUN_SPAN_UDEG));
+        let square =
+            (blon * RUN_SPAN_UDEG, blat * RUN_SPAN_UDEG, (blon + 1) * RUN_SPAN_UDEG, (blat + 1) * RUN_SPAN_UDEG);
         b = Some(match b {
-            None => (min_lon, min_lat, max_lon, max_lat),
-            Some(v) => (v.0.min(min_lon), v.1.min(min_lat), v.2.max(max_lon), v.3.max(max_lat)),
+            None => square,
+            // Straddling buckets cannot happen for a single plan (`build_plans` buckets by the
+            // same function), but the box stays correct if a caller ever passes a mixed set.
+            Some(v) => (v.0.min(square.0), v.1.min(square.1), v.2.max(square.2), v.3.max(square.3)),
         });
     }
     let Some((min_lon, min_lat, max_lon, max_lat)) = b else { return Ok(None) };
@@ -1213,7 +1235,6 @@ mod tests {
         assert!(cell_area_km2(CellId::new(18, equator.i, equator.j).unwrap()) > area * 1.4);
     }
 
-    #[test]
     /// **The run-span split.** One source set can own a country's interior, and the packer
     /// ingests a plan's whole crop box before writing a cell — unbounded plans are how the DACH
     /// bake earned a `Killed: 9`. Two cells of one region far apart must land in different
