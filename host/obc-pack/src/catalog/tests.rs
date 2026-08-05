@@ -959,6 +959,28 @@ fn the_root_pins_every_satellite_by_size_and_digest() {
     assert_eq!(hash_str("abc"), (3, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad".to_string()));
 }
 
+/// §3.1: the root carries the source declaration, and its human-readable twin
+/// `LICENSE.txt` lands beside `catalog.json` with the same facts — the OSM credit,
+/// the ODbL, and (because the example publishes terrain) the Copernicus credit
+/// from §13.5. Derived from the root, so the two cannot disagree.
+#[test]
+fn the_source_declaration_and_its_license_txt() {
+    let t = TempTree::new("license");
+    example_tree(t.path());
+    let g = generated(t.path());
+
+    let source = g.root.source.as_ref().expect("a generated root always carries a source block");
+    assert_eq!(source.dataset_id, "openstreetmap");
+    assert_eq!(source.license, "ODbL-1.0");
+
+    write_all_atomic(t.path(), &g).expect("write");
+    let text = fs::read_to_string(t.path().join(LICENSE_NAME)).expect("LICENSE.txt beside the root");
+    assert!(text.contains(&source.attribution), "the credit travels verbatim:\n{text}");
+    assert!(text.contains(&source.license_url), "the licence is locatable:\n{text}");
+    let terrain = g.root.terrain.as_ref().expect("the example publishes terrain");
+    assert!(text.contains(&terrain.attribution), "the terrain credit travels too (§13.5):\n{text}");
+}
+
 #[test]
 fn write_all_atomic_writes_the_satellites_then_the_root() {
     let t = TempTree::new("write");

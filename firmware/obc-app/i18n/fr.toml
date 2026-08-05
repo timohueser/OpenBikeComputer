@@ -463,7 +463,16 @@ units = "Unités"
 datetime = "Date & heure"
 language = "Langue"
 update = "Firmware"
+about = "À propos"
 reset = "Réinitialiser"
+
+# --- About page (issue #1149): the credits + licences surface. Only the section
+# captions are translated; the attribution texts are legal formulas and stay canonical. ---
+[about]
+title = "À PROPOS"
+map_data = "Cartographie"
+elevation = "Altitudes"
+firmware = "Firmware"
 
 # --- Firmware page (device info ledger + the SD-sideload install action) ---
 [firmware]

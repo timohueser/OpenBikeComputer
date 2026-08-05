@@ -345,8 +345,10 @@ pub fn plan(tree: &Path, generated: &obc_pack::catalog::GeneratedCatalog) -> Res
     // The producer records: `schema.json` because the generator reads the style-id assignment out
     // of it and a re-generation on another machine needs it, and `terrain.json` for exactly the
     // same reason on the other revision track (`OBCC_Spec.md` §2, §13.1). Neither is root-pinned,
-    // so both keep their stable key and a revalidating cache policy.
-    for name in ["schema.json", crate::terrain::TERRAIN_DOC] {
+    // so both keep their stable key and a revalidating cache policy. `LICENSE.txt` rides the same
+    // class: the store's provenance + licence statement (§3.1), stable-keyed because a person, not
+    // a pin, is its consumer — the generator wrote it into the tree just above.
+    for name in ["schema.json", crate::terrain::TERRAIN_DOC, obc_pack::catalog::LICENSE_NAME] {
         let path = tree.join(name);
         if path.is_file() {
             let bytes = std::fs::metadata(&path).map_err(|e| format!("{}: {e}", path.display()))?.len();
