@@ -30,8 +30,15 @@
 //! multi-region bake does not cut each region separately and hope; it computes, for
 //! every cell, its **source set**:
 //!
-//! > A cell's source set is every co-baked extract whose **coverage polygon**
+//! > A cell's source set is every **maximal** co-baked extract whose coverage polygon
 //! > intersects the cell's square.
+//!
+//! *Maximal* because Geofabrik's extracts are hierarchical cutouts: a region nested in
+//! another baked region (`bayern` under `germany`) carries a strict subset of its
+//! parent's data, so reading its file adds bytes and a snapshot skew, never coverage.
+//! Nested regions are **selection-only** — their coverage still picks cells, their
+//! documents still publish, riders still select them — but plans read only the
+//! maximal extracts.
 //!
 //! and then cuts each cell exactly once, from an ingest of exactly that source set.
 //! `obc-bake bake europe/germany europe/switzerland` therefore runs three cut
@@ -401,8 +408,15 @@ impl CellRunSummary {
 /// A region resolved to everything a cut needs.
 struct Resolved {
     region: Region,
-    extract: Extract,
-    extract_sha: String,
+    /// `None` for a **selection-only** region: one nested inside another baked region
+    /// (`europe/germany/bayern` under `europe/germany`). Geofabrik's extracts are hierarchical
+    /// cutouts, so the child's data is a strict subset of the parent's and the merge would keep
+    /// the parent's copy anyway — reading the child's file per plan added bytes, wall time, and
+    /// a latent snapshot skew (a Tuesday germany blended with a Wednesday bayern), never data.
+    /// The region keeps every other role: its coverage still selects cells, its document and
+    /// boundary still publish, it is still a catalog entry a rider can pick.
+    extract: Option<Extract>,
+    extract_sha: Option<String>,
     poly: String,
     coverage: Coverage,
     /// Per cell size: the cells this region selects.
@@ -552,18 +566,27 @@ impl CellBakery<'_> {
         let mut out = Vec::new();
         for region in self.regions {
             progress.log(format!("\n--- resolving {} ({}) ---", region.id, region.name));
-            let resolved = self
-                .source
-                .fetch(region, progress)
-                .and_then(|extract| {
+            // A region nested inside another baked region contributes **selection only** — its
+            // extract is a Geofabrik cutout of the parent's, so its data is already in the run.
+            let parent = self
+                .regions
+                .iter()
+                .map(|p| &p.id)
+                .filter(|pid| is_path_parent(pid, &region.id))
+                .max_by_key(|pid| pid.len());
+            let resolved = if parent.is_some() {
+                Ok((None, None))
+            } else {
+                self.source.fetch(region, progress).and_then(|extract| {
                     let (_, sha) = crate::hash::file(&extract.path)?;
-                    Ok((extract, sha))
+                    Ok((Some(extract), Some(sha)))
                 })
-                .and_then(|(extract, sha)| {
-                    let poly = self.source.fetch_poly(region, progress)?;
-                    let coverage = Coverage::parse_poly(&poly).map_err(|e| format!("{}.poly: {e}", region.id))?;
-                    Ok((extract, sha, poly, coverage))
-                });
+            };
+            let resolved = resolved.and_then(|(extract, sha)| {
+                let poly = self.source.fetch_poly(region, progress)?;
+                let coverage = Coverage::parse_poly(&poly).map_err(|e| format!("{}.poly: {e}", region.id))?;
+                Ok((extract, sha, poly, coverage))
+            });
             let (extract, extract_sha, poly, coverage) = match resolved {
                 Ok(v) => v,
                 Err(e) => {
@@ -576,12 +599,18 @@ impl CellBakery<'_> {
             let cells: BTreeMap<u32, BTreeSet<CellId>> =
                 sizes.iter().map(|&log2| (log2, coverage.cells(log2))).collect();
             let counts: Vec<String> = cells.iter().map(|(log2, set)| format!("2^{log2}: {}", set.len())).collect();
-            progress.log(format!(
-                "  extract {} ({}); cells — {}",
-                human_bytes(extract.bytes),
-                extract.snapshot,
-                counts.join(", ")
-            ));
+            match (&extract, parent) {
+                (Some(e), _) => progress.log(format!(
+                    "  extract {} ({}); cells — {}",
+                    human_bytes(e.bytes),
+                    e.snapshot,
+                    counts.join(", ")
+                )),
+                (None, Some(pid)) => {
+                    progress.log(format!("  selection only (data comes from {pid}); cells — {}", counts.join(", ")))
+                }
+                (None, None) => unreachable!("a region without an extract always has a parent"),
+            }
             out.push(Resolved { region: region.clone(), extract, extract_sha, poly, coverage, cells });
         }
         out
@@ -650,7 +679,7 @@ impl CellBakery<'_> {
 
         let tmp = self.opts.out.join(format!(".cut-{}", pack_key.get(..16).unwrap_or("run")));
         let _ = std::fs::remove_dir_all(&tmp);
-        let pbfs: Vec<String> = sources.iter().map(|r| r.extract.path.to_string_lossy().into_owned()).collect();
+        let pbfs: Vec<String> = sources.iter().map(|r| sourcing(r).path.to_string_lossy().into_owned()).collect();
         let opts = CutOptions {
             bands: self.opts.bands.clone(),
             select: stale.clone(),
@@ -662,7 +691,7 @@ impl CellBakery<'_> {
                 .iter()
                 .map(|r| SourceExtent {
                     id: r.region.id.clone(),
-                    snapshot: Some(r.extract.snapshot.clone()),
+                    snapshot: Some(sourcing(r).snapshot.clone()),
                     coverage: None,
                 })
                 .collect(),
@@ -734,7 +763,7 @@ impl CellBakery<'_> {
     fn pack_key(&self, sources: &[&Resolved], crop: Option<&str>) -> String {
         let ids: Vec<String> = sources
             .iter()
-            .map(|r| format!("{}:{}", r.region.id, r.extract_sha))
+            .map(|r| format!("{}:{}", r.region.id, r.extract_sha.as_deref().expect("a plan source has an extract sha")))
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
@@ -773,7 +802,7 @@ impl CellBakery<'_> {
         };
         let mut sources: Vec<CellSource> = sources
             .iter()
-            .map(|r| CellSource { extract_id: r.region.id.clone(), snapshot: r.extract.snapshot.clone() })
+            .map(|r| CellSource { extract_id: r.region.id.clone(), snapshot: sourcing(r).snapshot.clone() })
             .collect();
         sources.sort();
         CellSidecar {
@@ -1095,13 +1124,46 @@ fn sidecar_drift(have: &CellSidecar, want: &CellSidecar) -> bool {
 /// choice (`crop_box` is the union of the plan's own cells). Bucketing is by the cell square's
 /// min corner in supercell units — `BTreeMap` all the way down, so the plan list stays a pure
 /// deterministic function of the inputs.
+/// `europe/germany` is a path-parent of `europe/germany/bayern` but not of
+/// `europe/germanton`: prefix plus a `/` boundary, proper (never itself).
+fn is_path_parent(parent: &str, child: &str) -> bool {
+    child.len() > parent.len() && child.starts_with(parent) && child.as_bytes()[parent.len()] == b'/'
+}
+
+/// A plan source's extract. Plans are built from sourcing regions only, so this cannot
+/// miss; the message is for the day that invariant breaks.
+fn sourcing(r: &Resolved) -> &Extract {
+    r.extract.as_ref().expect("a plan source region carries an extract")
+}
+
 fn build_plans(resolved: &[Resolved], bands: &BandTable) -> Vec<Plan> {
     let sizes: BTreeSet<u32> = bands.bands.iter().map(|b| b.cell_log2).collect();
     let mut owners: BTreeMap<CellId, Vec<usize>> = BTreeMap::new();
-    for log2 in sizes {
-        for (k, r) in resolved.iter().enumerate() {
-            for cell in r.cells.get(&log2).into_iter().flatten() {
+    for log2 in &sizes {
+        // Sources are the regions that carry an extract; a selection-only region's data is a
+        // subset of its parent's, so it can never complete a cell its parent could not.
+        for (k, r) in resolved.iter().enumerate().filter(|(_, r)| r.extract.is_some()) {
+            for cell in r.cells.get(log2).into_iter().flatten() {
                 owners.entry(*cell).or_default().push(k);
+            }
+        }
+        // A selection-only region's cells are almost always its parent's cells too; the
+        // exception is a cell its own `.poly` touches by a sliver the parent's polygon just
+        // misses (boundary jitter between the two files). Geofabrik's cutout still contains
+        // that ground, so attach the cell to the nearest sourcing ancestor rather than
+        // silently dropping it.
+        for r in resolved.iter().filter(|r| r.extract.is_none()) {
+            for cell in r.cells.get(log2).into_iter().flatten() {
+                if !owners.contains_key(cell) {
+                    let ancestor = resolved
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, a)| a.extract.is_some() && is_path_parent(&a.region.id, &r.region.id))
+                        .max_by_key(|(_, a)| a.region.id.len());
+                    if let Some((k, _)) = ancestor {
+                        owners.insert(*cell, vec![k]);
+                    }
+                }
             }
         }
     }
@@ -1235,6 +1297,46 @@ mod tests {
         assert!(cell_area_km2(CellId::new(18, equator.i, equator.j).unwrap()) > area * 1.4);
     }
 
+    /// **The maximal-source rule.** A nested region (`…/bayern` under `…/germany`) is
+    /// selection-only: its cells are owned by the parent's extract alone, so no plan ever
+    /// reads the child's file — and a sliver cell only the child's `.poly` touches still
+    /// lands with the sourcing ancestor instead of being dropped.
+    #[test]
+    fn a_nested_region_selects_cells_but_never_sources_them() {
+        let poly = "test\n1\n  5.0 45.0\n  18.0 45.0\n  18.0 56.0\n  5.0 56.0\n  5.0 45.0\nEND\nEND\n";
+        let coverage = || Coverage::parse_poly(poly).expect("a coverage");
+        let shared = CellId::parse("18/183/35").unwrap();
+        let sliver = CellId::parse("18/183/36").unwrap();
+        let parent = Resolved {
+            region: Region { id: "europe/germany".into(), name: "Germany".into() },
+            extract: Some(Extract {
+                path: "de.osm.pbf".into(),
+                snapshot: "2026-08-01".into(),
+                bytes: 1,
+                downloaded: false,
+            }),
+            extract_sha: Some("0".repeat(64)),
+            poly: poly.to_string(),
+            coverage: coverage(),
+            cells: BTreeMap::from([(18, BTreeSet::from([shared]))]),
+        };
+        let child = Resolved {
+            region: Region { id: "europe/germany/bayern".into(), name: "Bayern".into() },
+            extract: None,
+            extract_sha: None,
+            poly: poly.to_string(),
+            coverage: coverage(),
+            // `shared` is the parent's cell too; `sliver` is the boundary-jitter case only
+            // the child's polygon touched.
+            cells: BTreeMap::from([(18, BTreeSet::from([shared, sliver]))]),
+        };
+        let plans = build_plans(&[parent, child], &BandTable::recommended());
+        let with_cells: Vec<&Plan> = plans.iter().filter(|p| !p.cells.is_empty()).collect();
+        assert_eq!(with_cells.len(), 1, "{with_cells:?}");
+        assert_eq!(with_cells[0].sources, vec![0], "only the parent sources");
+        assert_eq!(with_cells[0].cells, BTreeSet::from([shared, sliver]), "the sliver is kept, not dropped");
+    }
+
     /// **The run-span split.** One source set can own a country's interior, and the packer
     /// ingests a plan's whole crop box before writing a cell — unbounded plans are how the DACH
     /// bake earned a `Killed: 9`. Two cells of one region far apart must land in different
@@ -1250,8 +1352,13 @@ mod tests {
         let far = CellId::parse("18/204/38").unwrap();
         let resolved = vec![Resolved {
             region: Region { id: "europe/germany".into(), name: "Germany".into() },
-            extract: Extract { path: "de.osm.pbf".into(), snapshot: "2026-08-01".into(), bytes: 1, downloaded: false },
-            extract_sha: "0".repeat(64),
+            extract: Some(Extract {
+                path: "de.osm.pbf".into(),
+                snapshot: "2026-08-01".into(),
+                bytes: 1,
+                downloaded: false,
+            }),
+            extract_sha: Some("0".repeat(64)),
             poly: poly.to_string(),
             coverage,
             cells: BTreeMap::from([(18, BTreeSet::from([near_a, near_b, far]))]),

@@ -32,7 +32,17 @@ regions = [
   { id = "europe/germany", name = "Germany" },
   { id = "europe/germany/baden-wuerttemberg", name = "Baden-Württemberg" },
   { id = "europe/germany/baden-wuerttemberg/freiburg-regbez", name = "Regierungsbezirk Freiburg" },
+  { id = "europe/germany/baden-wuerttemberg/karlsruhe-regbez", name = "Regierungsbezirk Karlsruhe" },
+  { id = "europe/germany/baden-wuerttemberg/stuttgart-regbez", name = "Regierungsbezirk Stuttgart" },
+  { id = "europe/germany/baden-wuerttemberg/tuebingen-regbez", name = "Regierungsbezirk Tübingen" },
   { id = "europe/germany/bayern", name = "Bayern" },
+  { id = "europe/germany/bayern/mittelfranken", name = "Mittelfranken" },
+  { id = "europe/germany/bayern/niederbayern", name = "Niederbayern" },
+  { id = "europe/germany/bayern/oberbayern", name = "Oberbayern" },
+  { id = "europe/germany/bayern/oberfranken", name = "Oberfranken" },
+  { id = "europe/germany/bayern/oberpfalz", name = "Oberpfalz" },
+  { id = "europe/germany/bayern/schwaben", name = "Schwaben" },
+  { id = "europe/germany/bayern/unterfranken", name = "Unterfranken" },
   { id = "europe/germany/berlin", name = "Berlin" },
   { id = "europe/germany/brandenburg", name = "Brandenburg" },
   { id = "europe/germany/bremen", name = "Bremen" },
@@ -41,14 +51,20 @@ regions = [
   { id = "europe/germany/mecklenburg-vorpommern", name = "Mecklenburg-Vorpommern" },
   { id = "europe/germany/niedersachsen", name = "Niedersachsen" },
   { id = "europe/germany/nordrhein-westfalen", name = "Nordrhein-Westfalen" },
+  { id = "europe/germany/nordrhein-westfalen/arnsberg-regbez", name = "Regierungsbezirk Arnsberg" },
+  { id = "europe/germany/nordrhein-westfalen/detmold-regbez", name = "Regierungsbezirk Detmold" },
+  { id = "europe/germany/nordrhein-westfalen/duesseldorf-regbez", name = "Regierungsbezirk Düsseldorf" },
+  { id = "europe/germany/nordrhein-westfalen/koeln-regbez", name = "Regierungsbezirk Köln" },
+  { id = "europe/germany/nordrhein-westfalen/muenster-regbez", name = "Regierungsbezirk Münster" },
   { id = "europe/germany/rheinland-pfalz", name = "Rheinland-Pfalz" },
   { id = "europe/germany/saarland", name = "Saarland" },
   { id = "europe/germany/sachsen", name = "Sachsen" },
   { id = "europe/germany/sachsen-anhalt", name = "Sachsen-Anhalt" },
   { id = "europe/germany/schleswig-holstein", name = "Schleswig-Holstein" },
   { id = "europe/germany/thueringen", name = "Thüringen" },
-  # Austria and Switzerland — whole countries; Geofabrik's sub-extracts for them
-  # are not offered until someone asks.
+  # Austria and Switzerland — whole countries. Geofabrik offers no sub-extracts (and
+  # therefore no boundary .poly files) below country level for either, so there is
+  # nothing finer to select yet.
   { id = "europe/austria", name = "Austria" },
   { id = "europe/switzerland", name = "Switzerland" },
 ]

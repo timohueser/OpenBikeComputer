@@ -127,14 +127,20 @@ mod tests {
         let regions = parse(BUILTIN_REGIONS_TOML).expect("the shipped region list parses");
         let ids: Vec<&str> = regions.iter().map(|r| r.id.as_str()).collect();
         // Germany + its sixteen Bundesländer + Austria + Switzerland (#898), plus
-        // the deliberately curated Freiburg government-region extract. The count
-        // is pinned so a dropped line is a failed test rather than a region that
-        // silently stops being offered.
-        assert_eq!(ids.len(), 20, "DACH plus the Freiburg sub-extract is 20 regions: {ids:?}");
+        // every Regierungsbezirk Geofabrik offers a boundary for: Baden-Württemberg's
+        // four, Bayern's seven, Nordrhein-Westfalen's five. (Austria and Switzerland
+        // have no Geofabrik subdivisions.) Regierungsbezirke are selection-only under
+        // the maximal-source rule, so a new line costs a `.poly` fetch and a catalog
+        // entry, never an extract. The count is pinned so a dropped line is a failed
+        // test rather than a region that silently stops being offered.
+        assert_eq!(ids.len(), 35, "DACH plus its sixteen Regierungsbezirke is 35 regions: {ids:?}");
         assert!(ids.contains(&"europe/germany"));
         assert!(ids.contains(&"europe/austria"));
         assert!(ids.contains(&"europe/switzerland"));
         assert!(ids.contains(&"europe/germany/baden-wuerttemberg/freiburg-regbez"));
+        let regbez =
+            ids.iter().filter(|id| id.strip_prefix("europe/germany/").is_some_and(|rest| rest.contains('/'))).count();
+        assert_eq!(regbez, 16, "4 BW + 7 Bayern + 5 NRW Regierungsbezirke");
         let laender =
             ids.iter().filter_map(|id| id.strip_prefix("europe/germany/")).filter(|rest| !rest.contains('/')).count();
         assert_eq!(laender, 16, "all sixteen Bundesländer");
