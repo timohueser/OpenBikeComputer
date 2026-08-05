@@ -15,16 +15,10 @@ fn test_key(ext: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../firmware/obc-dfu/keys/test").join(format!("obcu-test.{ext}"))
 }
 
-/// A unique scratch path under the target dir (no external tempdir dep). A process-local counter
-/// (not a timestamp) disambiguates calls: back-to-back `now()` reads can tie, and the temp dir is
-/// case-insensitive on macOS, so names differing only by case would alias to one file.
+/// A unique scratch path. Nothing is created: most of these name a file the CLI under test is
+/// asked to write, and one names a directory it must create itself.
 fn scratch(name: &str) -> PathBuf {
-    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let mut p = std::env::temp_dir();
-    let pid = std::process::id();
-    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    p.push(format!("obc-mkimage-{pid}-{seq}-{name}"));
-    p
+    obcm_testkit::scratch::scratch_path("obc-mkimage", name)
 }
 
 /// A plausible raw image: first word an in-RAM initial SP so the vector-table check passes.

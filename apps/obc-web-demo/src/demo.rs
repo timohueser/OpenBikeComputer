@@ -150,7 +150,7 @@ pub struct Demo {
     /// draw between them** (the single [`render_frame`](App::render_frame) happens after the whole
     /// queue is drained). A gesture that consumes *draw-time lazy state* — the canonical case is
     /// the POI list, whose first draw snapshots the nearest-POI ordering that a following `Press`
-    /// consumes (the `d` "draw a throwaway frame" token in `obc-sim`'s `apply_script` exists for
+    /// consumes (the `f` "draw a throwaway frame" token in `obc-sim`'s `apply_script` exists for
     /// exactly this) — must therefore land in a **separate tour step / separate tick** from the
     /// gesture that opens that screen, so a real render happens in between. Batching them in one
     /// step presses against un-filled lazy state. The page's step engine gets this for free: each

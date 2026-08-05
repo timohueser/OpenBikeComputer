@@ -32,10 +32,10 @@ use obc_route::{ElevationSource, NullElevation};
 
 /// The terrain artifact's extension (`OBCT_Spec.md` §4.6 — `.obcd`, *not* `.obct`, which is the
 /// recorded ride log).
-pub const TERRAIN_EXT: &str = "obcd";
+pub(crate) const TERRAIN_EXT: &str = "obcd";
 
 /// The sidecar path for a map file: the same path with [`TERRAIN_EXT`].
-pub fn sidecar_path(map: &Path) -> PathBuf {
+pub(crate) fn sidecar_path(map: &Path) -> PathBuf {
     map.with_extension(TERRAIN_EXT)
 }
 
@@ -62,7 +62,7 @@ fn manifest_terrain(path: &Path) -> Option<(PathBuf, u32)> {
 /// long as it lives, and a host mounts terrain once for a session exactly as it mounts the map.
 /// The device has the same shape with none of the awkwardness: there the bytes are the SD card and
 /// the source is a `'static` extent view.
-pub fn mount(bytes: Vec<u8>, what: &str) -> Box<dyn ElevationSource> {
+pub(crate) fn mount(bytes: Vec<u8>, what: &str) -> Box<dyn ElevationSource> {
     let src: &'static SliceSource<'static> = Box::leak(Box::new(SliceSource(Box::leak(bytes.into_boxed_slice()))));
     match TerrainElevation::<'static, DEFAULT_TILE_SLOTS>::parse(src) {
         Ok(terrain) => {

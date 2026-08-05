@@ -14,3 +14,7 @@ obc-dfu = { path = "../../firmware/obc-dfu" }
 # noise into every signature's nonce, and OBCU signing is required to be deterministic (pinned spec
 # vector, reproducible releases — see `obc_dfu::sig::sign_image`).
 getrandom = "0.4"
+
+[dev-dependencies]
+# The shared scratch-path helper the CLI tests build their throwaway paths with.
+obcm-testkit = { path = "../obcm-testkit" }
