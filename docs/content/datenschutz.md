@@ -57,14 +57,19 @@ description: Welche personenbezogenen Daten openbikecomputer.com verarbeitet —
     heute: die Kartenkacheln (lib/map/coverageMap.ts, components/device/RideMap.svelte,
     components/device/PreviewModal.svelte) und die Firmware-Prüfung
     (lib/firmware/release.ts).
-  - Sobald OBC_CATALOG_URL / VITE_CATALOG_URL im Deploy gesetzt ist (siehe
-    .github/workflows/deploy-site.yml), lädt der Kartenbaukasten Katalog-, Kartenzellen-
-    und Firmware-Objekte von einem weiteren fremden Origin, und die Kartenkacheln werden
-    schon auf der Startseite des Baukastens geladen statt erst mit einem Gerät.
-    Abschnitt 6.3 muss dann von "derzeit nicht konfiguriert" auf eine echte
-    Empfängerbeschreibung umgestellt werden. Erwägenswert: ein Deploy-Schritt, der den
-    Build abbricht, wenn die Variable gesetzt ist, während hier noch "derzeit nicht
-    konfiguriert" steht.
+  - Abschnitt 6.3 beschreibt den Katalog, der in der Repository-Variable
+    OBC_CATALOG_URL steht und den der Deploy als VITE_CATALOG_URL in den Build gibt
+    (siehe .github/workflows/deploy-site.yml). Stand dieser Fassung:
+    https://maps.openbikecomputer.com/cell-catalog/catalog.json, ausgeliefert von
+    Cloudflare R2. Wird die Variable auf einen anderen Host umgestellt oder geleert,
+    stimmt Abschnitt 6.3 nicht mehr — und das passiert in der GitHub-Oberfläche, ohne
+    Commit und ohne Review. Ein Deploy-Schritt, der Variable und Seitentext gegeneinander
+    prüft, wäre die einzige Absicherung, die nicht auf Disziplin beruht.
+
+    Diese Erklärung hat genau an dieser Stelle schon einmal falsch gelegen: Sie behauptete,
+    es sei "kein Katalog konfiguriert", weil der Kommentar im Deploy-Workflow das noch
+    sagte — die Variable war längst gesetzt. Der Workflow-Kommentar ist keine Quelle;
+    `gh variable list` ist eine.
   - Neue Speicherorte auf dem Endgerät gehören in die Tabelle in Abschnitt 7, und es ist
     jedes Mal neu zu prüfen, ob sie noch "unbedingt erforderlich" im Sinne des
     § 25 Abs. 2 Nr. 2 TDDDG sind. Sobald etwas gespeichert wird, das NICHT für die vom
@@ -112,10 +117,11 @@ unvermeidbar bleibt, ist die Übertragung Ihrer IP-Adresse an den Hoster — das
 Abschnitt 3.
 
 **Der Kartenbaukasten** unter `/builder/` ist eine Anwendung und hat eine deutlich
-größere Oberfläche: Er lädt Kartenkacheln von einem fremden Server, prüft auf neue
-Firmware, speichert Arbeitsstände auf Ihrem Endgerät und kann mit einem angeschlossenen
-Gerät sprechen. Auch er setzt keine Cookies und misst keine Reichweite. Die Abschnitte 6
-bis 9 beschreiben ihn im Einzelnen.
+größere Oberfläche: Er lädt Kartenkacheln von den OpenStreetMap-Servern und die
+Kartendaten selbst aus einem eigenen Objektspeicher, prüft auf neue Firmware, speichert
+Arbeitsstände auf Ihrem Endgerät und kann mit einem angeschlossenen Gerät sprechen. Auch
+er setzt keine Cookies und misst keine Reichweite. Die Abschnitte 6 bis 9 beschreiben ihn
+im Einzelnen.
 
 ## 3. Hosting und Server-Logfiles
 
@@ -192,13 +198,16 @@ lädt er die Kartenkacheln direkt von den Servern der **OpenStreetMap Foundation
 unter `tile.openstreetmap.org`. Dabei erfährt die OpenStreetMap Foundation Ihre
 IP-Adresse und den angefragten Kartenausschnitt.
 
+Die Abdeckungskarte ist die **erste Ansicht** des Baukastens: Kacheln werden daher
+bereits beim Öffnen von `/builder/` geladen, nicht erst nach einer Auswahl. Die
+Startseite dieser Website, die Dokumentation und der Blog laden keine Kacheln.
+
 **Rechtsgrundlage** ist Art. 6 Abs. 1 lit. f DSGVO; das berechtigte Interesse besteht
 darin, überhaupt eine Karte anzeigen zu können — ohne Kartenhintergrund ist die Auswahl
 einer Region nicht bedienbar. Für das Vereinigte Königreich besteht ein
-Angemessenheitsbeschluss der Europäischen Kommission (Art. 45 DSGVO). Es werden keine
-Kacheln geladen, solange keine Kartenansicht geöffnet ist; die Startseite, die
-Dokumentation und der Blog laden keine Kacheln. Die Datenschutzerklärung der
-OpenStreetMap Foundation ist unter
+Angemessenheitsbeschluss der Europäischen Kommission (Art. 45 DSGVO). Die
+OpenStreetMap Foundation ist nicht Auftragsverarbeiterin, sondern Empfängerin in eigener
+Verantwortung; ihre Datenschutzerklärung ist unter
 [wiki.osmfoundation.org](https://wiki.osmfoundation.org/wiki/Privacy_Policy) abrufbar.
 
 ### 6.2 Prüfung auf neue Firmware
@@ -221,13 +230,27 @@ angeschlossen ist, findet der Abruf nicht statt.
 darin, Nutzerinnen und Nutzer auf sicherheitsrelevante Aktualisierungen ihres Geräts
 hinweisen zu können.
 
-### 6.3 Kartenkatalog
+### 6.3 Kartendaten
 
-Fertige Kartendaten sollen künftig von einem eigenen Objektspeicher geladen werden. Zum
-unten genannten Stand ist für diese Website **kein solcher Katalog konfiguriert**; der
-Baukasten lädt daher keine Kartendaten von einem fremden Server. Sobald das der Fall
-ist, wird diese Erklärung vor der Freischaltung um den Betreiber, den Serverstandort und
-die Rechtsgrundlage ergänzt.
+Die fertigen Kartendaten liegen nicht auf dieser Website, sondern in einem eigenen
+Objektspeicher unter `maps.openbikecomputer.com`. Auch diese Domain gehört dem
+Verantwortlichen, und auch hier ist es **Cloudflare R2** der Cloudflare, Inc.
+(101 Townsend St., San Francisco, CA 94107, USA), das die Dateien ausliefert und dabei
+Ihre IP-Adresse verarbeitet. Für die Übermittlung in die USA gilt Abschnitt 6.2
+entsprechend.
+
+Von dort geladen werden: das Verzeichnis der verfügbaren Regionen (der Katalog), die
+Vorschaubilder der Darstellungsvarianten, die Verzeichnisse der Kartenzellen und
+schließlich die Kartenzellen selbst. Der Katalog wird **unmittelbar beim Öffnen** von
+`/builder/` abgerufen, damit die Seite überhaupt anzeigen kann, welche Regionen es gibt;
+alles Weitere folgt Ihren Klicks, und eine große Karte kann dabei aus vielen einzelnen
+Zellen bestehen.
+
+Die Abrufe sind Leseanfragen ohne Anmeldung und ohne Kennung; welche Regionen und Zellen
+angefragt werden, ergibt sich aus Ihrer Auswahl. **Rechtsgrundlage** ist Art. 6 Abs. 1
+lit. f DSGVO; das berechtigte Interesse besteht darin, Kartendaten überhaupt bereitstellen
+zu können, ohne sie in die Website selbst einbauen zu müssen — sie ändern sich
+unabhängig von ihr und sind zu groß dafür.
 
 ## 7. Speicherung auf Ihrem Endgerät (kein Cookie-Banner)
 
@@ -387,9 +410,10 @@ input**. What cannot be avoided is that your IP address reaches the host — sec
 describes this.
 
 **The map builder** at `/builder/` is an application and has a considerably larger
-surface: it loads map tiles from a third-party server, checks for new firmware, stores
-work in progress on your device, and can talk to a connected device. It too sets no
-cookies and measures no audience. Sections 6 to 9 describe it in detail.
+surface: it loads map tiles from the OpenStreetMap servers and the map data itself from a
+dedicated object store, checks for new firmware, stores work in progress on your device,
+and can talk to a connected device. It too sets no cookies and measures no audience.
+Sections 6 to 9 describe it in detail.
 
 ### 3. Hosting and server log files
 
@@ -453,11 +477,15 @@ the servers of the **OpenStreetMap Foundation** (St John's Innovation Centre, Co
 Road, Cambridge CB4 0WS, United Kingdom) at `tile.openstreetmap.org`. In doing so the
 OpenStreetMap Foundation learns your IP address and the map section requested.
 
+The coverage map is the builder's **first screen**, so tiles are loaded as soon as
+`/builder/` opens rather than after a selection. This site's landing page, the
+documentation and the blog load no tiles.
+
 The **legal basis** is Art. 6(1)(f) GDPR; the legitimate interest is being able to show a
 map at all — without a map background, selecting a region is not operable. An adequacy
-decision of the European Commission is in place for the United Kingdom (Art. 45 GDPR). No
-tiles are loaded while no map view is open; the landing page, the documentation and the
-blog load no tiles. The OpenStreetMap Foundation's privacy policy is available at
+decision of the European Commission is in place for the United Kingdom (Art. 45 GDPR). The
+OpenStreetMap Foundation is not a processor but a recipient acting on its own
+responsibility; its privacy policy is available at
 [wiki.osmfoundation.org](https://wiki.osmfoundation.org/wiki/Privacy_Policy).
 
 #### 6.2 Checking for new firmware
@@ -479,13 +507,24 @@ happen at all.
 The **legal basis** is Art. 6(1)(f) GDPR; the legitimate interest is being able to inform
 users about security-relevant updates to their device.
 
-#### 6.3 Map catalog
+#### 6.3 Map data
 
-Prepared map data is intended to be loaded from a dedicated object store in future. As of
-the date given below **no such catalog is configured** for this website, so the builder
-loads no map data from a third-party server. As soon as it does, this policy will be
-extended — before that feature goes live — to name the operator, the server location and
-the legal basis.
+The prepared map data does not live on this website but in a dedicated object store at
+`maps.openbikecomputer.com`. That domain also belongs to the controller, and here too it is
+**Cloudflare R2** of Cloudflare, Inc. (101 Townsend St., San Francisco, CA 94107, USA) that
+serves the files and processes your IP address in doing so. Section 6.2 applies accordingly
+to the transfer to the USA.
+
+Loaded from there are: the index of available regions (the catalog), the preview images of
+the skins, the indexes of map cells, and finally the map cells themselves. The catalog is
+retrieved **immediately when `/builder/` opens**, so the page can show which regions exist
+at all; everything after that follows your clicks, and one large map may consist of many
+individual cells.
+
+These are read requests without sign-in and without any identifier; which regions and cells
+are requested follows from your selection. The **legal basis** is Art. 6(1)(f) GDPR; the
+legitimate interest is being able to offer map data at all without building it into the
+website itself — it changes independently of the site and is far too large for it.
 
 ### 7. Storage on your device (no cookie banner)
 
