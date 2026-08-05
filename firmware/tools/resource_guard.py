@@ -524,9 +524,10 @@ def check_board(args: argparse.Namespace, baseline: dict[str, object]) -> None:
             f"{framebuffer_bytes} B (240 x 320 x 1)",
         )
     # Distinct from `framebuffer_count` (a *name*-matched count): this is the size-based
-    # "no accidental second framebuffer" net. It is not always 1 — since the LM20 retarget `APP`
-    # legitimately exceeds a frame (it embeds the ~90 KB renderer scratch), so the expected count
-    # is pinned per profile and any *new* frame-sized allocation still trips the guard.
+    # "no accidental second framebuffer" net. It is not always 1 — the ~90 KB `RENDER_SCRATCH`
+    # legitimately exceeds a frame (#1146 P1 gave the render path's per-frame buffers their own
+    # static; before that the same bytes tripped this count from inside `APP`), so the expected
+    # count is pinned per profile and any *new* frame-sized allocation still trips the guard.
     expected_full_frame = profile.get("full_frame_sized_writable_count", expected_count)
     require(
         len(measured.full_frame_sized_writable) == expected_full_frame,

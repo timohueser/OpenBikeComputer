@@ -8,7 +8,7 @@ use embedded_graphics::prelude::*;
 use crate::fill::fill_polygon;
 use crate::stroke::Stroker;
 use crate::viewport::round_pt;
-use crate::{DrawScratch, MapRenderer, Viewport, MAX_CROSSINGS};
+use crate::{DrawScratch, RenderScratch, Viewport, MAX_CROSSINGS};
 
 // Route direction chevrons. Anchored to route distance (not screen) so each stays pinned to a
 // ground spot, drawn only in a window around the rider. Spacing + window are screen-relative (a
@@ -55,10 +55,10 @@ pub trait RouteOverlaySource {
     fn visit_points(&self, k: usize, visit: &mut dyn FnMut(&[(i32, i32)]));
 }
 
-impl MapRenderer {
+impl RenderScratch {
     /// Draw the user-position marker: a chevron at `(lon, lat)` pointing along `course` (degrees CW
     /// from north), or a non-directional diamond when `course` is `None`. Fixed screen-space size.
-    /// Call **after** [`render`](MapRenderer::render). Skips drawing when the anchor projects outside
+    /// Call **after** [`render`](RenderScratch::render). Skips drawing when the anchor projects outside
     /// the view (with a small margin). `color` is the already-resolved device color.
     pub fn draw_marker<D>(
         &mut self,
@@ -113,7 +113,7 @@ impl MapRenderer {
     }
 
     /// Stroke an active route as a polyline overlay, with optional travel-direction chevrons. Call
-    /// **after** [`render`](MapRenderer::render).
+    /// **after** [`render`](RenderScratch::render).
     ///
     /// The route arrives through the [`RouteOverlaySource`] seam — chunked `(lon, lat)`
     /// microdegree polylines with per-chunk bbox + cumulative distance — so the renderer never
@@ -204,7 +204,7 @@ impl MapRenderer {
 
     /// Stroke a single polyline of `(lon, lat)` microdegree points as a view-clipped overlay — the
     /// recorded **breadcrumb**, whose two tiers (spine, recent) are each one call. Call after
-    /// [`render`](MapRenderer::render).
+    /// [`render`](RenderScratch::render).
     pub fn stroke_path<D, I>(&mut self, target: &mut D, vp: &Viewport, pts: I, color: D::Color, weight: u32)
     where
         D: DrawTarget,

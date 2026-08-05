@@ -101,7 +101,7 @@ pub(crate) fn fill_polygon<D>(
                     // whole; pairing a truncated list would break even-odd parity and paint
                     // background-colored gaps. Skip the row instead — an unfilled 1px seam on the
                     // densest features beats a mis-filled span, and the buffer can't grow without
-                    // busting the MCU_RENDERER_BYTES budget.
+                    // busting the MCU_SCRATCH_BYTES budget.
                     if xs.push(xi + (yc - yi) / (yj - yi) * (xj - xi)).is_err() {
                         saturated = true;
                         break 'rings;

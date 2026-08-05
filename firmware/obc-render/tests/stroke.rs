@@ -7,7 +7,7 @@
 //! public `stroke_path`.
 
 use embedded_graphics::pixelcolor::Rgb888;
-use obc_render::{MapRenderer, Viewport};
+use obc_render::{RenderScratch, Viewport};
 
 mod common;
 // These tests only probe pixel coverage (painted or not), so the 1-bit `BitBuf` is the
@@ -24,7 +24,7 @@ fn thick_line_end_gets_a_round_cap() {
     let pts = [(-30, 0), (30, 0)]; // x 30→90 at y=30, in µ°
     let weight = 11u32;
     let mut buf = Buf::new(120, 60);
-    MapRenderer::new().stroke_path(&mut buf, &vp, pts, LINE, weight);
+    RenderScratch::new().stroke_path(&mut buf, &vp, pts, LINE, weight);
 
     let (cx, cy) = (90, 30);
     assert!(buf.on(cx - 30, cy), "the line body is missing");
@@ -43,7 +43,7 @@ fn thick_line_body_matches_the_weight() {
     let vp = Viewport::new(120.0, 60.0, 0, 0, 1.0);
     let pts = [(-30, 0), (30, 0)];
     let mut buf = Buf::new(120, 60);
-    MapRenderer::new().stroke_path(&mut buf, &vp, pts, LINE, 11);
+    RenderScratch::new().stroke_path(&mut buf, &vp, pts, LINE, 11);
     let body = (0..60).filter(|&y| buf.on(60, y)).count();
     assert!((9..=11).contains(&body), "weight-11 body is {body}px tall, expected ~11");
 }
@@ -57,7 +57,7 @@ fn thick_diagonal_fills_contiguously() {
     let vp = Viewport::new(200.0, 200.0, 0, 0, 1.0);
     let pts = [(-60, 60), (60, -60)];
     let mut buf = Buf::new(200, 200);
-    MapRenderer::new().stroke_path(&mut buf, &vp, pts, LINE, 11);
+    RenderScratch::new().stroke_path(&mut buf, &vp, pts, LINE, 11);
 
     // The whole centreline is painted — no scanline drops a row inside the body.
     for x in 46..=154 {

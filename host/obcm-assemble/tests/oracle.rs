@@ -38,7 +38,7 @@ use obc_pack::progress::Progress;
 use obc_pack::quadtree::build_lod_with;
 use obc_pack::{serialize_lods, LodLayer};
 use obc_reader::{MapCache, MapTables, NavTileCache, Reader};
-use obc_render::{zoom_for_mpp, MapRenderer, Viewport};
+use obc_render::{zoom_for_mpp, RenderConfig, RenderScratch, Viewport};
 use obc_route::nav::{plan_route, NavScratch};
 use obcm_assemble::grid::{assembly_box, CellId};
 use obcm_assemble::schema::{Schema, Skin, SkinStyle};
@@ -503,7 +503,7 @@ fn render(map: &[u8], center: (i32, i32), mpp: f32, heading_deg: f32) -> Vec<u16
     let tables = MapTables::parse(&src).expect("the map parses");
     let cache = MapCache::new_boxed();
     let reader = Reader::new(&src, &tables, &cache);
-    let mut renderer = MapRenderer::new();
+    let mut render_scratch = RenderScratch::new();
     let mut buf = vec![0u16; (WIDTH * HEIGHT) as usize];
     let bg = Rgb565::from(RawU16::new(reader.backdrop_style().map(|s| s.color).unwrap_or(0xFFFF)));
     let vp = Viewport::new_rotated(
@@ -515,7 +515,7 @@ fn render(map: &[u8], center: (i32, i32), mpp: f32, heading_deg: f32) -> Vec<u16
         heading_deg.to_radians(),
     );
     let mut fb = Framebuffer565::new(&mut buf, WIDTH, HEIGHT);
-    renderer.render(&mut fb, &reader, &vp, bg, |c| Rgb565::from(RawU16::new(c)));
+    render_scratch.render(&mut fb, &reader, &vp, bg, RenderConfig::default(), |c| Rgb565::from(RawU16::new(c)));
     buf
 }
 

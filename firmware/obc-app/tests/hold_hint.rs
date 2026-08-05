@@ -27,7 +27,8 @@ fn render(app: &mut App, bytes: &[u8]) -> Buf {
     let tables = MapTables::parse(&src).expect("valid v7 file");
     let reader = Reader::new(&src, &tables, &cache);
     let mut buf = Buf::new(240, 320);
-    app.render_frame(&mut buf, &reader, None, 240.0, 320.0, rgb);
+    let mut scratch = Box::new(obc_render::RenderScratch::new());
+    app.render_frame(&mut scratch, &mut buf, &reader, None, 240.0, 320.0, rgb);
     buf
 }
 

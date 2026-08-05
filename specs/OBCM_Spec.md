@@ -1074,7 +1074,7 @@ legality) is the profile's job.
   the profile table in `MapTables`, `for_each_nav_node`, `NavNeighbor` delta
   decode, `nav_edge`, `MapProfile::multiplier`, `MapProfile::climb_weight`) — and
   `firmware/obc-render`
-  (`Viewport`, `MapRenderer`). Format-contract tests in
+  (`Viewport`, `RenderScratch`). Format-contract tests in
   `firmware/obc-reader/tests/format.rs` (byte pins) and
   `host/obc-pack/tests/nav_round_trip.rs` (writer↔reader §8 round trip, incl.
   the profile table, kinds, delta reconstruction, and the bin-packing fill floor).

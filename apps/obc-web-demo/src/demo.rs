@@ -126,6 +126,10 @@ pub struct Demo {
     /// The shared app (~136 KB — heap-allocated: a by-value `App` temporary is exactly the kind
     /// of silent wasm stack trap the NavScratch gotcha is about).
     app: Box<App>,
+    /// The render path's per-frame scratch (~90 KB), owned by the host since #1146 and lent to each
+    /// render call. **Boxed** for the same reason as the app: a by-value temporary of this size is
+    /// the wasm stack trap.
+    scratch: Box<obc_render::RenderScratch>,
     routes: MemRouteStore,
     rides: MemRideStore,
     tracks: MemTrackStore,
@@ -184,6 +188,7 @@ impl Demo {
             cache: MapCache::new_boxed(),
             // Placeholder app; `reset(Ambient)` below builds the real baseline (the one seam).
             app: Box::new(App::new(AppState::new(0, 0, 1.0))),
+            scratch: Box::new(obc_render::RenderScratch::new()),
             routes,
             rides,
             tracks: MemTrackStore::new(),
@@ -307,10 +312,18 @@ impl Demo {
         if dirty.map || dirty.overlay || !self.ready {
             let src = SliceSource(self.bytes);
             let reader = Reader::new(&src, &self.tables, &self.cache);
-            self.app.render_frame(&mut self.frame, &reader, route.as_ref(), FRAME_W as f32, FRAME_H as f32, |c| {
-                let (r, g, b) = rgb565_to_device64(c);
-                Rgb888::new(r, g, b)
-            });
+            self.app.render_frame(
+                &mut self.scratch,
+                &mut self.frame,
+                &reader,
+                route.as_ref(),
+                FRAME_W as f32,
+                FRAME_H as f32,
+                |c| {
+                    let (r, g, b) = rgb565_to_device64(c);
+                    Rgb888::new(r, g, b)
+                },
+            );
             self.ready = true;
             return true;
         }

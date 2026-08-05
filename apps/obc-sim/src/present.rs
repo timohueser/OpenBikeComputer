@@ -617,9 +617,11 @@ mod tests {
         // Render the whole frame into the resident device-64 plane, exactly as the GUI loop does —
         // the device color path (`Rgb565` → device-64 pack), not an RGB888 side buffer.
         let color_fn = |c: u16| Rgb565::from(RawU16::new(c));
-        let render = |app: &mut App, fb: &mut [u8]| {
+        // The host's render scratch, built once and lent to every frame below (#1146).
+        let mut scratch = Box::new(obc_render::RenderScratch::new());
+        let mut render = |app: &mut App, fb: &mut [u8]| {
             let mut fbdev = FbDevice64::new(fb, W, H);
-            app.render_frame(&mut fbdev, &reader, None, W as f32, H as f32, color_fn);
+            app.render_frame(&mut scratch, &mut fbdev, &reader, None, W as f32, H as f32, color_fn);
         };
 
         // --- Home idle + a minute tick ---
@@ -803,6 +805,7 @@ mod tests {
     #[allow(clippy::too_many_arguments)]
     fn tour_frame(
         app: &mut obc_app::App,
+        scratch: &mut obc_render::RenderScratch,
         fb: &mut [u8],
         present: &mut Present,
         player: &mut obc_replay::GpxPlayer,
@@ -858,7 +861,9 @@ mod tests {
 
         // Render the whole frame into the resident device-64 plane.
         let mut fbdev = FbDevice64::new(fb, W, H);
-        app.render_frame(&mut fbdev, reader, route.as_ref(), W as f32, H as f32, |c| Rgb565::from(RawU16::new(c)));
+        app.render_frame(scratch, &mut fbdev, reader, route.as_ref(), W as f32, H as f32, |c| {
+            Rgb565::from(RawU16::new(c))
+        });
 
         // Present (the oracle inside asserts no miss, with row diagnostics on failure), then the
         // full-strength postcondition: after a clean present the reconstruction equals the frame
@@ -917,6 +922,8 @@ mod tests {
         let mut fb = vec![0u8; (W * H) as usize];
         let mut present = Present::new(W, H);
         let mut frame_no = 0usize;
+        // One host-owned render scratch for the whole tour (#1146), lent to every frame.
+        let mut scratch = Box::new(obc_render::RenderScratch::new());
 
         let (cx, cy, zoom) = crate::initial_camera(&reader, W);
         let build_app = |settings: Settings, store: &crate::routes::RouteStore| {
@@ -944,6 +951,7 @@ mod tests {
                 for _ in 0..1200 {
                     tour_frame(
                         $app,
+                        &mut scratch,
                         &mut fb,
                         &mut present,
                         &mut player,
@@ -964,6 +972,7 @@ mod tests {
                 for _ in 0..$dwell {
                     tour_frame(
                         $app,
+                        &mut scratch,
                         &mut fb,
                         &mut present,
                         &mut player,
@@ -986,6 +995,7 @@ mod tests {
         for _ in 0..120 {
             tour_frame(
                 &mut app,
+                &mut scratch,
                 &mut fb,
                 &mut present,
                 &mut player,
@@ -1043,6 +1053,7 @@ mod tests {
         for _ in 0..300 {
             tour_frame(
                 &mut app,
+                &mut scratch,
                 &mut fb,
                 &mut present,
                 &mut player,
@@ -1096,6 +1107,8 @@ mod tests {
         let mut fb = vec![0u8; (W * H) as usize];
         let mut present = Present::new(W, H);
         let mut frame_no = 0usize;
+        // One host-owned render scratch for the whole tour (#1146), lent to every frame.
+        let mut scratch = Box::new(obc_render::RenderScratch::new());
 
         let (cx, cy, zoom) = crate::initial_camera(&reader, W);
         let build_app = |settings: Settings, store: &crate::routes::RouteStore| {
@@ -1123,7 +1136,20 @@ mod tests {
                        n: usize,
                        label: &str| {
             for _ in 0..n {
-                tour_frame(app, fb, present, player, baro, store, host, &reader, tour, &mut frame_no, label);
+                tour_frame(
+                    app,
+                    &mut scratch,
+                    fb,
+                    present,
+                    player,
+                    baro,
+                    store,
+                    host,
+                    &reader,
+                    tour,
+                    &mut frame_no,
+                    label,
+                );
             }
         };
 
