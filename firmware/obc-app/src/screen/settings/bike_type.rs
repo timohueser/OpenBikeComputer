@@ -116,6 +116,7 @@ mod tests {
     use super::*;
     use crate::activity::Activity;
     use crate::nav_profiles::NavProfiles;
+    use crate::screen::test_ctx;
     use crate::{AppState, Mode, Settings};
 
     /// A [`NavProfiles`] with the given names, for a handle `Ctx` (the multiplier arrays the router
@@ -127,21 +128,7 @@ mod tests {
     fn run(scr: &mut BikeTypeScreen, s: &mut Settings, profs: &NavProfiles, g: Gesture) -> Transition {
         let mut st = AppState::new(0, 0, 1.0);
         let mut act = Activity::new(Mode::Idle);
-        let scratch = crate::screen::PoiScratch::new();
-        let mut cx = Ctx {
-            state: &mut st,
-            activity: &mut act,
-            settings: s,
-            routes: &[],
-            rides: &[],
-            trips: &[],
-            nav_profiles: profs,
-            poi_scratch: &scratch,
-            waypoints: &[],
-            corridor: &[],
-            sensor_scan_hits: &[],
-            now_ms: 0,
-        };
+        let mut cx = Ctx { nav_profiles: profs, ..test_ctx(&mut st, &mut act, s) };
         scr.handle(g, &mut cx)
     }
 

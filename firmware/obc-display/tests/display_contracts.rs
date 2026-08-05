@@ -30,7 +30,6 @@ use obc_display::ls021::{
     composite_into_resident, spans_missed_changes, OverlayScratch, RowDamage, RowDiff, RowWindow,
 };
 use obc_display::{device64_to_rgb565, Band};
-use obc_reader::rgb565_to_device64;
 use pollster::block_on;
 
 fn rgb(raw: u16) -> Rgb565 {
@@ -144,10 +143,6 @@ impl<'b, const W: usize, const H: usize> OverlayPresenter<Device64Frame<'b, W, H
             Size::new(W as u32, H as u32),
             r,
             OverlayScratch { win: &mut scratch, save: &mut save },
-            |px| {
-                let (dr, dg, db) = rgb565_to_device64(px);
-                ((dr / 85) << 4) | ((dg / 85) << 2) | (db / 85)
-            },
             &mut |band| {
                 if let Some(d) = draw.take() {
                     d(band)

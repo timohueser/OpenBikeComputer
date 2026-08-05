@@ -102,27 +102,6 @@ impl FrameScratch {
         stats.span_utilization = drawn as f32 / self.slots.capacity() as f32;
         stats.point_utilization = self.frame_points.len() as f32 / self.frame_points.capacity() as f32;
         stats.ring_utilization = self.frame_ring_lens.len() as f32 / self.frame_ring_lens.capacity() as f32;
-
-        // TEMP debug (scratch-budget investigation): split the drawn geometry by kind so the sim can
-        // show which render path — lines or polygons — eats the span/point/ring scratch at the zoom
-        // levels that saturate it. A span's point count is the sum of its ring lengths.
-        for span in self.spans() {
-            let start = span.ring_start as usize;
-            let rings = span.ring_count as usize;
-            let points: usize = self.frame_ring_lens[start..start + rings].iter().sum();
-            match span.kind {
-                Kind::Line => {
-                    stats.line_spans += 1;
-                    stats.line_rings += rings;
-                    stats.line_points += points;
-                }
-                Kind::Polygon => {
-                    stats.poly_spans += 1;
-                    stats.poly_rings += rings;
-                    stats.poly_points += points;
-                }
-            }
-        }
     }
 
     /// **Pass A.** One source-native walk over the viewport, decoding every visible feature once
@@ -370,6 +349,24 @@ impl<S: MapScene> SelectedFeatures for DecodeSink<'_, S> {
         };
         self.drawn += 1;
         self.stats.points_drawn += feature.points().len();
+        // The by-kind scratch split, counted where the geometry is published rather than by a second
+        // walk over the finished spans: which render path — lines or polygons — eats the
+        // span/point/ring budget is what the sim's scratch panel shows, and every span that survives
+        // to `spans()` is published exactly here (a failed refetch lands in `finish_error` with
+        // `ring_count == 0` and is compacted away), so counting here is free and identical.
+        // `has_valid_rings` above makes a feature's point count the sum of its ring lengths.
+        match feature.kind {
+            Kind::Line => {
+                self.stats.line_spans += 1;
+                self.stats.line_rings += feature.ring_lens().len();
+                self.stats.line_points += feature.points().len();
+            }
+            Kind::Polygon => {
+                self.stats.poly_spans += 1;
+                self.stats.poly_rings += feature.ring_lens().len();
+                self.stats.poly_points += feature.points().len();
+            }
+        }
         let span = Span {
             kind: feature.kind,
             z: style.z_index,

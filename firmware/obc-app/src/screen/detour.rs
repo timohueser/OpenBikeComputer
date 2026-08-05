@@ -576,7 +576,8 @@ fn inspect_viewport(w: i32, h: i32, candidate: (i32, i32), overview_zoom: f32, f
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AppState, NavProfiles, Settings};
+    use crate::screen::test_ctx;
+    use crate::{AppState, Settings};
     use obc_ports::Fix;
 
     fn with_ctx<T>(activity: &mut Activity, f: impl FnOnce(&mut Ctx) -> T) -> T {
@@ -586,21 +587,7 @@ mod tests {
     /// A `Ctx` whose `AppState` has a nav graph, a fix, and whatever the test staged.
     fn with_state_ctx<T>(activity: &mut Activity, mut state: AppState, f: impl FnOnce(&mut Ctx) -> T) -> T {
         let mut settings = Settings::default();
-        let scratch = super::super::PoiScratch::new();
-        let mut cx = Ctx {
-            state: &mut state,
-            activity,
-            settings: &mut settings,
-            routes: &[],
-            rides: &[],
-            trips: &[],
-            nav_profiles: &NavProfiles::EMPTY,
-            poi_scratch: &scratch,
-            waypoints: &[],
-            corridor: &[],
-            sensor_scan_hits: &[],
-            now_ms: 0,
-        };
+        let mut cx = test_ctx(&mut state, activity, &mut settings);
         f(&mut cx)
     }
 

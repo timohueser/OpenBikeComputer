@@ -97,28 +97,14 @@ fn detour_available(activity: &crate::activity::Activity, has_nav_graph: bool) -
 mod tests {
     use super::*;
     use crate::activity::{Activity, Mode};
+    use crate::screen::test_ctx;
     use crate::screen::{apply, Stack};
     use crate::{AppState, Settings};
 
     fn station_ctx(activity: &mut Activity) -> Ctx<'_> {
         let state = Box::leak(Box::new(AppState::new(0, 0, 1.0)));
         let settings = Box::leak(Box::new(Settings::default()));
-        let scratch = Box::leak(Box::new(super::super::PoiScratch::new()));
-        let nav_profiles = Box::leak(Box::new(crate::NavProfiles::new()));
-        Ctx {
-            state,
-            activity,
-            settings,
-            routes: &[],
-            rides: &[],
-            trips: &[],
-            nav_profiles,
-            poi_scratch: scratch,
-            waypoints: &[],
-            corridor: &[],
-            sensor_scan_hits: &[],
-            now_ms: 0,
-        }
+        test_ctx(state, activity, settings)
     }
 
     fn run(scr: &mut RideMenuScreen, g: Gesture) -> Transition {
@@ -128,21 +114,7 @@ mod tests {
         let mut activity = Activity::new(Mode::Riding);
         activity.active_route = Some(0);
         let mut settings = Settings::default();
-        let scratch = super::super::PoiScratch::new();
-        let mut cx = Ctx {
-            state: &mut state,
-            activity: &mut activity,
-            settings: &mut settings,
-            routes: &[],
-            rides: &[],
-            trips: &[],
-            nav_profiles: &crate::NavProfiles::EMPTY,
-            poi_scratch: &scratch,
-            waypoints: &[],
-            corridor: &[],
-            sensor_scan_hits: &[],
-            now_ms: 0,
-        };
+        let mut cx = test_ctx(&mut state, &mut activity, &mut settings);
         scr.handle(g, &mut cx)
     }
 

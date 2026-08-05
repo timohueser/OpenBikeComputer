@@ -1,21 +1,26 @@
-//! Shared helpers for the `obc-app` integration tests:
+//! Shared helpers for the `obc-app` tests — the in-crate staging harnesses ([`super`]) and the
+//! integration tests alike, which pull this very file in through `tests/common/mod.rs`:
 //!
 //! - [`Buf`] — a recording `Rgb888` `DrawTarget` with per-test accessors ([`Buf::count`],
 //!   [`Buf::get`], [`Buf::edge_halves`]).
 //! - [`build_min_obcm`] — the minimal flat-backdrop `.obcm` builder.
 //! - The scripted hardware: [`Keys`] / [`keys`] / [`down`] / [`up`] / [`step`] / [`tap`] inputs, and
 //!   the [`LocationSource`] stand-ins [`ReplayFix`] (replay forever) vs [`OnceFix`] (emit once).
+//! - [`wpts`] / [`wpts_detailed`] — synthetic route waypoint tables.
 //!
-//! `#[allow(dead_code)]` keeps unused-per-binary items from warning.
+//! `#[allow(dead_code)]` keeps unused-per-binary items from warning. `App` is named through
+//! `obc_app::` so the source compiles unchanged on both sides of the crate boundary (lib.rs aliases
+//! the crate to itself under `cfg(test)`).
 
 #![allow(dead_code)]
 
 use std::collections::VecDeque;
 
-use crate::App;
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
+use obc_app::App;
 use obc_ports::{Button, ButtonEvent, Fix, InputEvent, InputSource, LocationSource, RideClock, Sensors};
-use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader, SliceSource};
+use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, PoiCategory, Reader, SliceSource};
+use obc_route::{Waypoints, WptEntry};
 
 // Recording DrawTarget.
 
@@ -265,22 +270,7 @@ impl LocationSource for NoFix {
 /// `120×120` recording [`Buf`] — the shared "drive to a screen, snapshot it" helper the screen and
 /// i18n suites use for their compositing assertions.
 pub fn render_120(app: &mut App, bytes: &[u8]) -> Buf {
-    app.tick(
-        RideClock(0),
-        Sensors {
-            loc: &mut NoFix,
-            altimeter: None,
-            temperature: None,
-            clock: None,
-            compass: None,
-            track: None,
-            fuel: None,
-            hr: None,
-            power: None,
-            cadence: None,
-        },
-        None,
-    );
+    app.tick(RideClock(0), Sensors::new(&mut NoFix), None);
     let cache = MapCache::new();
     let src = SliceSource(bytes);
     let tables = MapTables::parse(&src).expect("valid obcm");
@@ -292,4 +282,25 @@ pub fn render_120(app: &mut App, bytes: &[u8]) -> Buf {
         Rgb888::new(r, g, b)
     });
     buf
+}
+
+// Route waypoint fixtures.
+
+/// A synthetic waypoint table from `(distance, name)` pairs: every entry on the line, uncategorised
+/// — the plain shape the ride-engine / stat-field / panel suites want.
+pub fn wpts(items: &[(u32, &str)]) -> Waypoints {
+    let full: Vec<_> = items.iter().map(|&(d, n)| (d, n, None, 0)).collect();
+    wpts_detailed(&full)
+}
+
+/// The full shape — `(distance, name, category, lateral offset)` — for the Up-ahead timeline, the
+/// one suite that cares about categorised, off-the-line waypoints.
+pub fn wpts_detailed(items: &[(u32, &str, Option<PoiCategory>, i16)]) -> Waypoints {
+    let mut w = Waypoints::new();
+    for &(dist_along_m, name, category, lateral_offset_m) in items {
+        let mut n = heapless::String::new();
+        n.push_str(name).unwrap();
+        w.entries.push(WptEntry { dist_along_m, lon: 0, lat: 0, category, lateral_offset_m, name: n }).unwrap();
+    }
+    w
 }

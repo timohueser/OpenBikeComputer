@@ -346,17 +346,16 @@ const GESTURE_BUF: usize = 16;
 /// let mut scratch = RenderScratch::new(); // the host's, lent per frame
 /// loop {
 ///     // GPS + barometer + compass + active route → camera, map-match, ride stats.
+///     // Only the capabilities this host has; `Sensors::new` leaves the rest (here: the BLE
+///     // strap's heart rate / power / cadence) absent.
 ///     let sensors = Sensors {
-///         loc: &mut location_source,
 ///         altimeter: Some(&mut baro),
 ///         temperature: Some(&mut thermometer),
 ///         clock: Some(&mut gps_clock),
 ///         compass: Some(&mut compass),
 ///         track: Some(&mut track_log),
 ///         fuel: Some(&mut fuel_gauge),
-///         hr: None,
-///         power: None,
-///         cadence: None,
+///         ..Sensors::new(&mut location_source)
 ///     };
 ///     app.tick(RideClock(now_ms), sensors, route.as_ref());
 ///     app.handle_input(InputClock(now_ms), &mut input_source); // Select + Back → gestures
@@ -2055,7 +2054,7 @@ impl App {
 
     /// Recognise this frame's raw control input and apply each resulting gesture to the top screen,
     /// then advance the visible screens' timed content. Fuses the two planes into one call for the
-    /// simulator and the single-executor firmware; `clock` is the [`InputClock`] for hold timing.
+    /// single-loop hosts (the simulator, the web demos); `clock` is the [`InputClock`] for hold timing.
     /// Call once per frame even with no pending events — that is how a held button's long-press
     /// fires.
     ///
@@ -3085,22 +3084,7 @@ mod tests {
         app.ui.now_ms = now_ms; // mirror `advance_animations(now)` running right before `tick(now)`
         let mut loc = OneFix(None);
         let mut clock = OneClock(Some(t));
-        app.tick(
-            RideClock(now_ms),
-            Sensors {
-                loc: &mut loc,
-                altimeter: None,
-                temperature: None,
-                clock: Some(&mut clock),
-                compass: None,
-                track: None,
-                fuel: None,
-                hr: None,
-                power: None,
-                cadence: None,
-            },
-            None,
-        );
+        app.tick(RideClock(now_ms), Sensors { clock: Some(&mut clock), ..Sensors::new(&mut loc) }, None);
     }
 
     fn gps_time(hour: u8, minute: u8, second: u8) -> obc_ports::GpsTime {
@@ -3226,44 +3210,14 @@ mod tests {
     fn tick_fix(app: &mut App, fix: Fix, now_ms: u32) {
         app.ui.now_ms = now_ms; // mirror `advance_animations(now)` running right before `tick(now)`
         let mut loc = OneFix(Some(fix));
-        app.tick(
-            RideClock(now_ms),
-            Sensors {
-                loc: &mut loc,
-                altimeter: None,
-                temperature: None,
-                clock: None,
-                compass: None,
-                track: None,
-                fuel: None,
-                hr: None,
-                power: None,
-                cadence: None,
-            },
-            None,
-        );
+        app.tick(RideClock(now_ms), Sensors::new(&mut loc), None);
     }
 
     /// Tick once with no fix at all (the quiet per-frame tick), at the map-plane clock `now_ms`.
     fn tick_idle(app: &mut App, now_ms: u32) {
         app.ui.now_ms = now_ms;
         let mut loc = OneFix(None);
-        app.tick(
-            RideClock(now_ms),
-            Sensors {
-                loc: &mut loc,
-                altimeter: None,
-                temperature: None,
-                clock: None,
-                compass: None,
-                track: None,
-                fuel: None,
-                hr: None,
-                power: None,
-                cadence: None,
-            },
-            None,
-        );
+        app.tick(RideClock(now_ms), Sensors::new(&mut loc), None);
     }
 
     /// `has_live_fix` is `false` before the first fix (acquiring) and once the last fix ages past the
@@ -3356,22 +3310,7 @@ mod tests {
         let mut sink = CountSink::default();
         let mut loc = OneFix(None);
         app.ui.now_ms = 1_000;
-        app.tick(
-            RideClock(1_000),
-            Sensors {
-                loc: &mut loc,
-                altimeter: None,
-                temperature: None,
-                clock: None,
-                compass: None,
-                track: Some(&mut sink),
-                fuel: None,
-                hr: None,
-                power: None,
-                cadence: None,
-            },
-            None,
-        );
+        app.tick(RideClock(1_000), Sensors { track: Some(&mut sink), ..Sensors::new(&mut loc) }, None);
         assert!(app.activity.is_tracking(), "the session is armed immediately, fix or not");
         assert!(!app.has_live_fix(1_000), "no fix yet → the banner is up");
         assert_eq!(sink.0, 0, "nothing recorded while searching");
@@ -3380,22 +3319,7 @@ mod tests {
         // The first fix lands → it's logged (the segment anchor) and the banner clears.
         let mut loc = OneFix(Some(Fix::at(0, 0)));
         app.ui.now_ms = 2_000;
-        app.tick(
-            RideClock(2_000),
-            Sensors {
-                loc: &mut loc,
-                altimeter: None,
-                temperature: None,
-                clock: None,
-                compass: None,
-                track: Some(&mut sink),
-                fuel: None,
-                hr: None,
-                power: None,
-                cadence: None,
-            },
-            None,
-        );
+        app.tick(RideClock(2_000), Sensors { track: Some(&mut sink), ..Sensors::new(&mut loc) }, None);
         assert!(app.has_live_fix(2_000), "the fix landed → banner clears");
         assert_eq!(sink.0, 1, "the first fix logs the segment anchor");
     }
@@ -3415,22 +3339,7 @@ mod tests {
         let mut sink = FailSink;
         let mut loc = OneFix(Some(Fix::at(0, 0)));
         app.ui.now_ms = 1_000;
-        app.tick(
-            RideClock(1_000),
-            Sensors {
-                loc: &mut loc,
-                altimeter: None,
-                temperature: None,
-                clock: None,
-                compass: None,
-                track: Some(&mut sink),
-                fuel: None,
-                hr: None,
-                power: None,
-                cadence: None,
-            },
-            None,
-        );
+        app.tick(RideClock(1_000), Sensors { track: Some(&mut sink), ..Sensors::new(&mut loc) }, None);
         let card = app
             .ui
             .stack
@@ -3449,22 +3358,7 @@ mod tests {
         assert!(!app.ui.stack.iter().any(|s| matches!(s, Screen::Warning(_))), "dismiss pops the card");
         let mut loc = OneFix(Some(Fix::at(0, 100)));
         app.ui.now_ms = 2_000;
-        app.tick(
-            RideClock(2_000),
-            Sensors {
-                loc: &mut loc,
-                altimeter: None,
-                temperature: None,
-                clock: None,
-                compass: None,
-                track: Some(&mut sink),
-                fuel: None,
-                hr: None,
-                power: None,
-                cadence: None,
-            },
-            None,
-        );
+        app.tick(RideClock(2_000), Sensors { track: Some(&mut sink), ..Sensors::new(&mut loc) }, None);
         assert!(
             !app.ui.stack.iter().any(|s| matches!(s, Screen::Warning(_))),
             "an already-acknowledged recording error stays quiet",
@@ -3513,22 +3407,7 @@ mod tests {
     fn tick_with(app: &mut App, fix: Fix, compass_deg: f32) {
         let mut loc = OneFix(Some(fix));
         let mut compass = ConstCompass(compass_deg);
-        app.tick(
-            RideClock(1000),
-            Sensors {
-                loc: &mut loc,
-                altimeter: None,
-                temperature: None,
-                clock: None,
-                compass: Some(&mut compass),
-                track: None,
-                fuel: None,
-                hr: None,
-                power: None,
-                cadence: None,
-            },
-            None,
-        );
+        app.tick(RideClock(1000), Sensors { compass: Some(&mut compass), ..Sensors::new(&mut loc) }, None);
     }
 
     #[test]
@@ -3599,22 +3478,7 @@ mod tests {
     fn tick_alt(app: &mut App, alt_m: f32, now_ms: u32) {
         let mut loc = OneFix(None); // no fix this tick — isolate the altimeter path
         let mut alt = OneAlt(Some(alt_m));
-        app.tick(
-            RideClock(now_ms),
-            Sensors {
-                loc: &mut loc,
-                altimeter: Some(&mut alt),
-                temperature: None,
-                clock: None,
-                compass: None,
-                track: None,
-                fuel: None,
-                hr: None,
-                power: None,
-                cadence: None,
-            },
-            None,
-        );
+        app.tick(RideClock(now_ms), Sensors { altimeter: Some(&mut alt), ..Sensors::new(&mut loc) }, None);
     }
 
     #[test]
@@ -3676,22 +3540,7 @@ mod tests {
         let mut loc = OneFix(fix);
         let mut alt = OneAlt(Some(alt_m));
         app.ui.now_ms = now_ms;
-        app.tick(
-            RideClock(now_ms),
-            Sensors {
-                loc: &mut loc,
-                altimeter: Some(&mut alt),
-                temperature: None,
-                clock: None,
-                compass: None,
-                track: None,
-                fuel: None,
-                hr: None,
-                power: None,
-                cadence: None,
-            },
-            None,
-        );
+        app.tick(RideClock(now_ms), Sensors { altimeter: Some(&mut alt), ..Sensors::new(&mut loc) }, None);
         app.sample_terrain(terrain);
     }
 
@@ -3803,16 +3652,10 @@ mod tests {
         app.tick(
             RideClock(2_000),
             Sensors {
-                loc: &mut loc,
-                altimeter: None,
-                temperature: None,
-                clock: None,
-                compass: None,
-                track: None,
-                fuel: None,
                 hr: Some(&mut hr),
                 power: Some(&mut power),
                 cadence: Some(&mut cadence),
+                ..Sensors::new(&mut loc)
             },
             None,
         );
@@ -3847,18 +3690,7 @@ mod tests {
         let mut hr = OneHr(Some(142));
         app.tick(
             RideClock(30_000), // playback time — the clock the HR sample records on
-            Sensors {
-                loc: &mut loc,
-                altimeter: None,
-                temperature: None,
-                clock: None,
-                compass: None,
-                track: None,
-                fuel: None,
-                hr: Some(&mut hr),
-                power: None,
-                cadence: None,
-            },
+            Sensors { hr: Some(&mut hr), ..Sensors::new(&mut loc) },
             None,
         );
         // The tile path: fresh, because it compares against the recorded-on clock (30 s), not 90 s.
@@ -3882,22 +3714,7 @@ mod tests {
         app.ui.now_ms = at_ms;
         let mut loc = OneFix(None);
         let mut hr = OneHr(bpm);
-        app.tick(
-            RideClock(at_ms),
-            Sensors {
-                loc: &mut loc,
-                altimeter: None,
-                temperature: None,
-                clock: None,
-                compass: None,
-                track: None,
-                fuel: None,
-                hr: Some(&mut hr),
-                power: None,
-                cadence: None,
-            },
-            None,
-        );
+        app.tick(RideClock(at_ms), Sensors { hr: Some(&mut hr), ..Sensors::new(&mut loc) }, None);
     }
 
     /// Epic #744 SR3: a fresh BLE sample lands in `Activity`, which the `state != state_before`
@@ -4592,22 +4409,7 @@ mod tests {
 
     fn tick_without_fix(app: &mut App, route: Option<&RouteReader>) {
         let mut loc = OneFix(None);
-        app.tick(
-            RideClock(0),
-            Sensors {
-                loc: &mut loc,
-                altimeter: None,
-                temperature: None,
-                clock: None,
-                compass: None,
-                track: None,
-                fuel: None,
-                hr: None,
-                power: None,
-                cadence: None,
-            },
-            route,
-        );
+        app.tick(RideClock(0), Sensors::new(&mut loc), route);
     }
 
     #[test]
@@ -4635,22 +4437,7 @@ mod tests {
         // A fix in the skipped stretch cannot pull matching behind the durable floor.
         let p = route.position_at(2_000).unwrap();
         let mut loc = OneFix(Some(Fix { lon: p.lon, lat: p.lat, course: None, speed_mps: None }));
-        app.tick(
-            RideClock(1_000),
-            Sensors {
-                loc: &mut loc,
-                altimeter: None,
-                temperature: None,
-                clock: None,
-                compass: None,
-                track: None,
-                fuel: None,
-                hr: None,
-                power: None,
-                cadence: None,
-            },
-            Some(&route),
-        );
+        app.tick(RideClock(1_000), Sensors::new(&mut loc), Some(&route));
         assert!(app.activity.off_route);
         assert_eq!(app.activity.progress_m, 12_000);
 
@@ -4661,22 +4448,7 @@ mod tests {
         app.activity.active_route = Some(0);
         tick_without_fix(&mut app, Some(&route));
         let mut loc = OneFix(Some(Fix { lon: p.lon, lat: p.lat, course: None, speed_mps: None }));
-        app.tick(
-            RideClock(2_000),
-            Sensors {
-                loc: &mut loc,
-                altimeter: None,
-                temperature: None,
-                clock: None,
-                compass: None,
-                track: None,
-                fuel: None,
-                hr: None,
-                power: None,
-                cadence: None,
-            },
-            Some(&route),
-        );
+        app.tick(RideClock(2_000), Sensors::new(&mut loc), Some(&route));
         assert!(!app.activity.off_route);
         assert!(app.activity.progress_m < 3_000, "route reload cleared the old 12 km floor");
 
@@ -4990,22 +4762,7 @@ mod tests {
         // No route active yet → tick with a reader builds nothing (active_route is None).
         let no_loc = |app: &mut App, route: Option<&RouteReader>| {
             let mut loc = OneFix(None);
-            app.tick(
-                RideClock(0),
-                Sensors {
-                    loc: &mut loc,
-                    altimeter: None,
-                    temperature: None,
-                    clock: None,
-                    compass: None,
-                    track: None,
-                    fuel: None,
-                    hr: None,
-                    power: None,
-                    cadence: None,
-                },
-                route,
-            );
+            app.tick(RideClock(0), Sensors::new(&mut loc), route);
         };
         no_loc(&mut app, Some(&route));
         assert!(app.ride.climbs.is_empty(), "no active route → no climbs, even with a reader present");

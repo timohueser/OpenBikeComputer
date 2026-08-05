@@ -62,6 +62,7 @@
 //! run the same suite, alongside the tile-grained proof pairing that keeps the contracts honest
 //! about geometry, storage, and grain.
 
+#[cfg(feature = "conformance")]
 pub mod conformance;
 pub mod frame;
 pub mod presenter;

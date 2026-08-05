@@ -324,6 +324,7 @@ fn summit_glyph(cv: &mut impl Surface, right_x: i32, cy: i32, color: u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::screen::test_ctx;
     use obc_route::{ClimbProfile, ClimbSeg};
 
     /// Back closes the ring: the Climb screen's Back always returns to the Map (the last hop of the
@@ -335,21 +336,7 @@ mod tests {
         let mut st = AppState::new(0, 0, 1.0);
         let mut act = Activity::new(Mode::Riding);
         let mut s = Settings::default();
-        let scratch = crate::screen::PoiScratch::new();
-        let mut cx = Ctx {
-            state: &mut st,
-            activity: &mut act,
-            settings: &mut s,
-            routes: &[],
-            rides: &[],
-            trips: &[],
-            nav_profiles: &crate::NavProfiles::EMPTY,
-            poi_scratch: &scratch,
-            waypoints: &[],
-            corridor: &[],
-            sensor_scan_hits: &[],
-            now_ms: 0,
-        };
+        let mut cx = test_ctx(&mut st, &mut act, &mut s);
         assert!(matches!(ClimbScreen::new().handle(Gesture::Back, &mut cx), Transition::Replace(Screen::Map(_))));
     }
 
@@ -364,7 +351,6 @@ mod tests {
             top_ele_m: 1_400,
             gain_m: 400,
             avg_grade_pct: 10,
-            category: 0,
         };
         // A linear ramp base→summit across the columns, matching the seg. `at(f)` then reads
         // `1000 + 400·f` (to a column), `grade_at` a steady ~10 %.

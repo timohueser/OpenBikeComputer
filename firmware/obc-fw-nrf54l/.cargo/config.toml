@@ -1,4 +1,4 @@
-# Build for the nRF54L15's Cortex-M33 (ARMv8-M Mainline, hard-float ABI), and on
+# Build for the nRF54LM20's Cortex-M33 (ARMv8-M Mainline, hard-float ABI), and on
 # `cargo run` flash + stream defmt/RTT over the DK's onboard SEGGER J-Link via probe-rs.
 [build]
 target = "thumbv8m.main-none-eabihf"
