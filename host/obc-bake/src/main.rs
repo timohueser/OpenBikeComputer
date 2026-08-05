@@ -46,13 +46,20 @@ usage:
         --fail-fast          stop at the first failure
         --summary-json FILE  write the machine-readable run summary
         --all                update/bake the whole planet through resumable source shards
+        --no-terrain         skip the automatic terrain stage below
+        --dem-sources DIR    source DEM GeoTIFFs for it (default: fetched into <cache>/dem)
+
+      A bake runs the terrain stage FIRST, automatically: contours are traced and the
+      nav graph's ascents integrated from the terrain in the tree, so a bake without
+      it quietly produces a flatter map. Incremental like the cells — a tree whose
+      terrain is current pays one skip-pass.
 
   obc-bake terrain [REGION…] --sources DIR [flags]
       Bake the curated coverage's OBCT terrain cells into the tree's terrain band.
       Terrain has its OWN revision track: this never re-bakes an OBCM cell, and a
       schema bump never re-bakes a terrain cell (OBCC_Spec.md §13).
         --out TREE              output tree (default: ./obc-bake)
-        --sources DIR           source DEM GeoTIFFs (`obc-dem fetch --out DIR`)
+        --sources DIR           source DEM GeoTIFFs (default: fetched into <cache>/dem)
         --dataset-id ID         source dataset (default: copernicus-glo-30)
         --dataset-version V     its release identity (default: 2021-1)
         --terrain-revision N    terrain store revision (default: 1)
@@ -162,7 +169,7 @@ fn run_regions(args: &[String]) -> Result<(), String> {
 fn run_bake(args: &[String]) -> Result<(), String> {
     let (flags, positional) = Flags::parse(
         args,
-        &["force", "no-land", "fail-fast", "all"],
+        &["force", "no-land", "fail-fast", "all", "no-terrain"],
         &[
             "out",
             "schema-id",
@@ -177,6 +184,7 @@ fn run_bake(args: &[String]) -> Result<(), String> {
             "chunk-size",
             "summary-json",
             "base-url",
+            "dem-sources",
         ],
     )?;
     let out = PathBuf::from(flags.get("out").unwrap_or("obc-bake"));
@@ -243,6 +251,45 @@ fn run_cell_bake(
     let cache = flags.get("cache").map(PathBuf::from).unwrap_or_else(default_cache_dir);
     let source_spec = flags.get("source").unwrap_or(obc_bake::source::GeofabrikExtracts::DEFAULT_BASE_URL);
     let source = obc_bake::source::from_spec(source_spec, &cache);
+
+    // The terrain stage runs FIRST, and automatically: contours are traced and the nav graph's
+    // per-edge ascents integrated from whatever terrain is in the tree, so a bake without it
+    // quietly produces a flatter map — the failure mode is silence, which is why opting *out*
+    // is the explicit flag. Incremental like everything else: a tree whose terrain band is
+    // current pays one skip-pass over the cells. The tree's own terrain.json keeps the lattice
+    // and revision identity across runs; only a virgin tree takes the defaults.
+    if !flags.has("no-terrain") {
+        let doc_path = out.join(obc_bake::terrain::TERRAIN_DOC);
+        let doc = if doc_path.is_file() {
+            obc_bake::terrain::read_terrain_doc(&doc_path)?
+        } else {
+            obc_bake::terrain::TerrainDoc {
+                dataset_id: "copernicus-glo-30".to_string(),
+                dataset_version: "2021-1".to_string(),
+                posting_log2: obc_dem::bake::V1_POSTING_LOG2,
+                cell_log2: obc_dem::bake::V1_CELL_LOG2,
+                revision: 1,
+                attribution: obc_dem::COPERNICUS_ATTRIBUTION.to_string(),
+            }
+        };
+        let sources = match flags.get("dem-sources") {
+            Some(dir) => PathBuf::from(dir),
+            None => ensure_dem_sources(&regions, source.as_ref(), &cache)?,
+        };
+        let dem = obc_bake::terrain::DemCutter::open(&sources)?;
+        println!("{} source DEM tile(s) from {}", dem.tiles(), sources.display());
+        let summary = obc_bake::terrain::TerrainBakery {
+            regions: &regions,
+            source: source.as_ref(),
+            cutter: &dem,
+            opts: obc_bake::terrain::TerrainBakeOptions { out: out.clone(), doc, force: false },
+        }
+        .run(&obc_pack::progress::Progress::stdout())?;
+        print!("{}", summary.render());
+        // The credit is a licence obligation, printed wherever the dataset was used.
+        println!("{}\n", obc_dem::COPERNICUS_ATTRIBUTION);
+    }
+
     let cutter = obc_bake::cells::ObcCutter {
         no_land: flags.has("no-land"),
         chunk_size: match flags.get("chunk-size") {
@@ -379,6 +426,56 @@ fn run_planet_bake(
 /// `OBCC_Spec.md` §13.2 says: these are two stores with two revisions, and one is not a step of
 /// the other. It needs no OSM extract — only the `.poly` outlines, to know which squares the
 /// curated coverage touches.
+/// Download the GLO-30 tiles the curated coverage touches into `<cache>/dem`, and answer that
+/// directory — the automatic replacement for a hand-run `obc-dem fetch`.
+///
+/// The bbox is the union of the regions' `.poly` coverages, converted from the packer's
+/// `(min_lon, min_lat, max_lon, max_lat)` µdeg order into `obc-dem`'s latitude-first box — the
+/// one conversion in this file where the axes swap, so it is done in named fields rather than
+/// positionally. Tiles already in the cache are left alone, so a re-bake costs a directory scan.
+fn ensure_dem_sources(
+    regions: &[obc_bake::regions::Region],
+    source: &dyn obc_bake::source::ExtractSource,
+    cache: &Path,
+) -> Result<PathBuf, String> {
+    let progress = obc_pack::progress::Progress::stdout();
+    let mut bbox: Option<(i64, i64, i64, i64)> = None;
+    for region in regions {
+        let poly = source.fetch_poly(region, &progress)?;
+        let coverage =
+            obc_bake::coverage::Coverage::parse_poly(&poly).map_err(|e| format!("{}.poly: {e}", region.id))?;
+        let b = coverage.bbox();
+        bbox = Some(match bbox {
+            None => b,
+            Some(u) => (u.0.min(b.0), u.1.min(b.1), u.2.max(b.2), u.3.max(b.3)),
+        });
+    }
+    let (min_lon, min_lat, max_lon, max_lat) = bbox.ok_or("no region resolved to a coverage polygon")?;
+    let clamp = |v: i64, what: &str| -> Result<i32, String> {
+        i32::try_from(v).map_err(|_| format!("coverage {what} {v} µdeg does not fit an i32 — a broken .poly"))
+    };
+    let bbox = obc_dem::BboxUdeg {
+        min_lat: clamp(min_lat, "min_lat")?,
+        min_lon: clamp(min_lon, "min_lon")?,
+        max_lat: clamp(max_lat, "max_lat")?,
+        max_lon: clamp(max_lon, "max_lon")?,
+    };
+    let dir = cache.join("dem");
+    println!("Fetching GLO-30 tiles for the curated coverage into {}...", dir.display());
+    let mut downloaded = 0u64;
+    let mut cached = 0usize;
+    let paths = obc_dem::fetch::fetch_tiles(bbox, &dir, |tile, outcome| match outcome {
+        obc_dem::fetch::Fetched::Cached => cached += 1,
+        obc_dem::fetch::Fetched::Downloaded(len) => {
+            downloaded += len;
+            println!("  {} ({:.1} MB)", tile.file_name(), *len as f64 / 1e6);
+        }
+        obc_dem::fetch::Fetched::Absent => {}
+    })?;
+    println!("{} tile(s) present ({cached} cached, {:.1} MB fetched)", paths.len(), downloaded as f64 / 1e6);
+    Ok(dir)
+}
+
 fn run_terrain(args: &[String]) -> Result<(), String> {
     let (flags, positional) = Flags::parse(
         args,
@@ -400,11 +497,6 @@ fn run_terrain(args: &[String]) -> Result<(), String> {
         ],
     )?;
     let out = PathBuf::from(flags.get("out").unwrap_or("obc-bake"));
-    let sources = PathBuf::from(
-        flags
-            .get("sources")
-            .ok_or("terrain needs --sources DIR — a directory of source DEM GeoTIFFs (`obc-dem fetch --out DIR`)")?,
-    );
 
     let all_regions = obc_bake::regions::load(flags.get("regions").map(Path::new))?;
     let regions: Vec<_> = if positional.is_empty() {
@@ -441,6 +533,11 @@ fn run_terrain(args: &[String]) -> Result<(), String> {
     let cache = flags.get("cache").map(PathBuf::from).unwrap_or_else(default_cache_dir);
     let source_spec = flags.get("source").unwrap_or(obc_bake::source::GeofabrikExtracts::DEFAULT_BASE_URL);
     let source = obc_bake::source::from_spec(source_spec, &cache);
+    // No --sources: fetch the curated coverage's GLO-30 tiles ourselves, exactly as `bake` does.
+    let sources = match flags.get("sources") {
+        Some(dir) => PathBuf::from(dir),
+        None => ensure_dem_sources(&regions, source.as_ref(), &cache)?,
+    };
     let cutter = obc_bake::terrain::DemCutter::open(&sources)?;
     println!("{} source DEM tile(s) from {}", cutter.tiles(), sources.display());
 
