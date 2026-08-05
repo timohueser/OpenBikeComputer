@@ -248,6 +248,10 @@ mod tests {
         // The last visible line's full 24 px glyph cell stays inside the panel.
         let last_line_bottom = LIST_TOP + START_PAD + (VISIBLE_LINES as i32 - 1) * PITCH + 24;
         assert!(last_line_bottom <= h, "bottom line would clip: ends at {last_line_bottom} in a {h} px panel");
-        assert!(TOTAL_LINES > VISIBLE_LINES, "the page scrolls; if it stopped scrolling, drop the scrollbar");
+        // Re-derive the virtual-line total the way `draw` walks it, so `TOTAL_LINES` and the walk
+        // cannot disagree — and confirm the page still scrolls (if it stopped, drop the scrollbar).
+        let walked = SECTIONS.iter().map(|(_, lines)| 1 + lines.len()).sum::<usize>() + SECTIONS.len() - 1;
+        assert_eq!(walked, TOTAL_LINES);
+        assert!(walked > VISIBLE_LINES, "the page scrolls; if it stopped scrolling, drop the scrollbar");
     }
 }
