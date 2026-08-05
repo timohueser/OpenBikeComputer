@@ -104,6 +104,19 @@
             <p class="small faint attribution">{ledger.terrain.attribution}</p>
         {/if}
 
+        <!-- The map data's own credit (§3.1) — the catalog's string, the same
+             take-it-from-the-document rule as the terrain line above. The map
+             this card prices is a derivative database of OSM, and the licence
+             is part of what a rider downloads. -->
+        {#if store.catalog.source}
+            <p class="small faint attribution">
+                {store.catalog.source.attribution} · <a
+                    href={store.catalog.source.license_url}
+                    target="_blank"
+                    rel="noreferrer">{store.catalog.source.license}</a>
+            </p>
+        {/if}
+
         <p class="small faint fit">
             Whether it fits your SD card is checked against the connected card in step 4 — maps of any
             size arrive as a set of files.
