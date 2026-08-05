@@ -84,7 +84,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use osmpbf::{BlobReader, BlobType, ByteOffset, Element, RelMemberType};
+use osmpbf::{Blob, BlobReader, BlobType, ByteOffset, Element, RelMemberType};
 use rayon::prelude::*;
 
 use crate::config::Config;
@@ -230,6 +230,26 @@ enum Scan {
 /// coarsest unit that is still small (a few thousand elements, low single-digit
 /// milliseconds), and every reading pass goes through here, so one check covers
 /// passes 0, 1 and 2 on every source at once.
+///
+/// # Parallel decode, sequential fold
+///
+/// Decompressing and protobuf-parsing a blob is the expensive, embarrassingly
+/// parallel part of a scan — each blob is self-contained — while `f` is a
+/// stateful fold that must see elements in exactly file order (feature order
+/// decides the packed bytes; see the module docs on merging). So the scan runs
+/// as a chunked pipeline: read up to [`chunk_len`] raw (still-compressed) blobs
+/// off the file, decode them on the rayon pool, then hand the decoded blocks to
+/// `f` one after another in file order, and only then read the next chunk. `f`
+/// therefore observes the identical element sequence the old one-blob-at-a-time
+/// loop produced — parallelism never reorders, drops, or duplicates anything it
+/// sees — and memory stays bounded by the chunk, not the file.
+///
+/// A chunk can overshoot a [`Scan::StopAtThisBlob`]: blobs past the stop may
+/// already be read and decoded. That work is discarded unhandled — the returned
+/// resume offset is still the offset of the blob the stopping element came
+/// from, and decode/read *errors* in the overshoot are discarded with it (the
+/// sequential loop would never have read those blobs), so a stopping scan
+/// succeeds or fails exactly as it did before.
 fn scan_blobs<F>(
     path: &str,
     start: Option<ByteOffset>,
@@ -243,22 +263,59 @@ where
     if let Some(pos) = start {
         reader.seek(pos).map_err(|e| format!("seek {path}: {e}"))?;
     }
-    for blob in reader {
-        progress.check()?;
-        let blob = blob.map_err(|e| format!("read {path}: {e}"))?;
-        // The header blob carries no elements; only OSMData blocks do.
-        if !matches!(blob.get_type(), BlobType::OsmData) {
-            continue;
-        }
-        let offset = blob.offset();
-        let block = blob.to_primitiveblock().map_err(|e| format!("decode {path}: {e}"))?;
-        for el in block.elements() {
-            if let Scan::StopAtThisBlob = f(el) {
-                return Ok(offset);
+    let chunk = chunk_len();
+    let mut raw: Vec<Blob> = Vec::with_capacity(chunk);
+    loop {
+        // --- Read the next chunk of raw blobs (no decoding yet). A read error
+        // ends the chunk but is only reported after the blobs before it are
+        // handled — and not at all if the scan stops first, matching the lazy
+        // sequential reader. ---
+        raw.clear();
+        let mut read_err: Option<String> = None;
+        while raw.len() < chunk {
+            match reader.next() {
+                // The header blob carries no elements; only OSMData blocks do.
+                Some(Ok(blob)) if matches!(blob.get_type(), BlobType::OsmData) => raw.push(blob),
+                Some(Ok(_)) => {}
+                Some(Err(e)) => {
+                    read_err = Some(format!("read {path}: {e}"));
+                    break;
+                }
+                None => break,
             }
         }
+
+        // --- Decode the chunk in parallel. Errors are captured per blob and
+        // surfaced below, only if the scan actually reaches the failing blob. ---
+        progress.check()?;
+        let blocks: Vec<_> = raw.par_iter().map(|b| (b.offset(), b.to_primitiveblock())).collect();
+
+        // --- The fold: strictly sequential, strictly in file order. ---
+        for (offset, block) in blocks {
+            progress.check()?;
+            let block = block.map_err(|e| format!("decode {path}: {e}"))?;
+            for el in block.elements() {
+                if let Scan::StopAtThisBlob = f(el) {
+                    return Ok(offset);
+                }
+            }
+        }
+        if let Some(e) = read_err {
+            return Err(e);
+        }
+        if raw.len() < chunk {
+            // The reader is exhausted; the scan ran to the end of the file.
+            return Ok(None);
+        }
     }
-    Ok(None)
+}
+
+/// How many raw blobs one [`scan_blobs`] chunk holds: enough to keep every
+/// rayon worker busy through a decode round (2× so the pool never idles on the
+/// tail of a chunk), small enough that the in-flight raw + decoded blobs stay
+/// tens of megabytes, not the file.
+fn chunk_len() -> usize {
+    2 * rayon::current_num_threads().max(1)
 }
 
 /// Run `f` over every source in parallel, collecting the results **in source
