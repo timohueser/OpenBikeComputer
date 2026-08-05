@@ -319,9 +319,7 @@ mod tests {
     }
 
     fn temp_route_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("obc-route-conf-{}-{tag}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = obcm_testkit::scratch::scratch_dir("obc-route-conf", tag);
         std::fs::write(dir.join("a.obcr"), ROUTE).unwrap();
         std::fs::write(dir.join("b.obcr"), ROUTE).unwrap();
         dir

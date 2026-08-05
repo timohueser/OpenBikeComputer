@@ -32,12 +32,11 @@ fn retention_label(r: obc_app::Retention) -> &'static str {
     }
 }
 
-// TEMP debug (scratch-budget investigation): the two render paths, colored the same in the legend
-// and the stacked bars below.
+// The two render paths, colored the same in the legend and the stacked bars below.
 const KIND_LINE: egui::Color32 = egui::Color32::from_rgb(80, 150, 235); // lines = blue
 const KIND_POLY: egui::Color32 = egui::Color32::from_rgb(227, 165, 43); // polygons = amber
 
-/// TEMP debug: a stacked buffer-utilization bar splitting the fill into the line vs polygon
+/// A stacked buffer-utilization bar splitting the fill into the line vs polygon
 /// contribution. `line`/`poly` are this frame's counts of the resource; `cap` its scratch capacity.
 /// The blue segment is lines and the amber segment polygons, laid end to end, so the total fill is
 /// `(line + poly) / cap` — how close this frame is to the scratch limit, and which path is eating it.
@@ -780,8 +779,8 @@ impl SimGui {
         });
 
         ui.add_space(4.0);
-        // TEMP debug (scratch-budget investigation): scratch utilization split by render path, so
-        // the line vs polygon contribution to each buffer is visible at saturating zoom levels.
+        // Scratch utilization split by render path, so the line vs polygon contribution to each
+        // buffer is visible at saturating zoom levels.
         ui.horizontal(|ui| {
             ui.label("Scratch by kind");
             ui.colored_label(KIND_LINE, "■ lines");
