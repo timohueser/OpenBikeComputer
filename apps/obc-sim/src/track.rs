@@ -82,11 +82,6 @@ impl TrackStore {
         self.open.as_mut().map(|o| o as &mut dyn TrackSink)
     }
 
-    /// Whether a ride is currently being recorded.
-    pub fn is_recording(&self) -> bool {
-        self.open.is_some()
-    }
-
     /// Open a fresh temp `.obct` for session `id`, to be saved as `name`. Drops any prior log.
     fn begin(&mut self, id: u32, name: &str) {
         self.open = None; // close any previous handle first
@@ -100,7 +95,7 @@ impl TrackStore {
     /// Finalise the open log and drop the temp. Writes the durable `RD{id}.ORD` ride object (the
     /// device's Finish artifact — what the Rides screen lists) when `stats` are supplied, *and* a
     /// human-readable `<name>.gpx` (a simulator convenience export; the device no longer writes
-    /// GPX). With no stats (only possible on the headless `--save-track` path) it keeps just the GPX.
+    /// GPX). With no stats it keeps just the GPX.
     fn finalize(&mut self, stats: Option<RideStats>) {
         let Some(mut log) = self.open.take() else { return };
         let _ = log.file.flush();
@@ -216,8 +211,7 @@ mod tests {
     /// drained action) — it exposes a real recording sink, so `has_sink = true`.
     #[test]
     fn folder_track_store_passes_the_lifecycle_suite() {
-        let dir = std::env::temp_dir().join(format!("obc-track-conf-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = obcm_testkit::scratch::scratch_dir("obc-track-conf", "lifecycle");
         let mut store = TrackStore::open(&dir);
         obc_host_core::conformance::track_lifecycle(&mut store, true);
         let _ = std::fs::remove_dir_all(&dir);

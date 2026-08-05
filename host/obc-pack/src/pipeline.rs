@@ -70,6 +70,14 @@ pub struct PackSummary {
 /// `progress`, never by an error string: any failure that lands while the token is
 /// set is reported as [`PackError::Cancelled`], and the partial output is removed
 /// so a cancelled build leaves nothing behind that looks like a map.
+///
+/// The removal is **not** conditional on cancellation. A half-written `.obcm` has a
+/// valid header and truncated LODs, and the reader would accept the first tree and
+/// show a partial map — which is just as true of a GEOS failure, a full disk or a
+/// failed flush as it is of a cancel. Every error exit leaves the destination path
+/// empty rather than holding something that looks like a map. (Unconditionally, so
+/// a failed *re*-pack cannot leave the truncated new file where the old map was;
+/// the file is `create`d, so by then the old bytes are gone either way.)
 pub fn pack(
     pbfs: &[String],
     config: &Config,
@@ -80,10 +88,8 @@ pub fn pack(
     match run(pbfs, config, output, opts, progress) {
         Ok(summary) => Ok(summary),
         Err(e) => {
+            let _ = std::fs::remove_file(output);
             if progress.is_cancelled() {
-                // A half-written .obcm has a valid header and truncated LODs; the
-                // reader would accept the first tree and show a partial map.
-                let _ = std::fs::remove_file(output);
                 return Err(PackError::Cancelled);
             }
             Err(PackError::Failed(e))

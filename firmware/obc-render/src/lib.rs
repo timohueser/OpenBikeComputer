@@ -254,10 +254,10 @@ pub struct RenderStats {
     pub span_utilization: f32,
     pub point_utilization: f32,
     pub ring_utilization: f32,
-    // TEMP debug (scratch-budget investigation): how the drawn frame's span / point / ring scratch
-    // splits between the line and polygon render paths. Summed over the final drawn spans in
-    // [`collect`](crate::collect) by [`Kind`]. `line_* + poly_*` equals the totals behind
-    // `*_utilization`. Remove once the zoom-levels-that-saturate question is answered.
+    // How the drawn frame's span / point / ring scratch splits between the line and polygon render
+    // paths — which render path is eating the budget at the zoom levels that saturate it. Counted
+    // for free as [`collect`](crate::collect) publishes each drawn feature's geometry, so
+    // `line_* + poly_*` equals the totals behind `*_utilization`.
     pub line_spans: usize,
     pub line_points: usize,
     pub line_rings: usize,
@@ -497,31 +497,31 @@ impl RenderScratch {
         // thin zoomed out. The casing pass derives its width from this same ramped value.
         let wscale = width_scale(vp.meters_per_pixel());
 
-        // The 256-bit "cased" style mask, built once per frame (mirrors `collect`'s `vis_mask`): a
-        // style is cased ⇔ it's a **solid** line (`!dashed`) carrying a `color2`. Dashed + color2 is
-        // the railway stripe (#558), which never cases.
-        let mut cased_mask = [0u32; 8];
+        // Two 256-bit style masks, built once per frame in **one** walk of the id space (both mirror
+        // `collect`'s `vis_mask` shape) and threaded into both `draw_spans` calls so neither
+        // rebuilds them. They nest: a `color2` is what makes a style interesting at all.
+        //
+        // - **cased** (#557) — a style is cased ⇔ it's a **solid** line (`!dashed`) carrying a
+        //   `color2`. Dashed + color2 is the railway stripe (#558), which never cases.
+        // - **outlined** (#560) — a style is polygon-outline-eligible ⇔ it carries a `color2` at
+        //   all (`line_style`/`dashed` are irrelevant for polygons: `draw_spans`'s outline pass
+        //   filters to `Kind::Polygon`, so a cased *line* sharing this bit never triggers an
+        //   outline). An empty mask makes each `draw_spans` take today's exact single-loop path
+        //   (byte-identical, zero cost).
+        let (mut cased_mask, mut outlined_mask) = ([0u32; 8], [0u32; 8]);
         for id in 0..=255u8 {
             if let Some(s) = scene.style(id) {
-                if !s.flags.dashed() && s.color2.is_some() {
-                    cased_mask[(id >> 5) as usize] |= 1 << (id & 31);
+                if s.color2.is_some() {
+                    let (word, bit) = ((id >> 5) as usize, 1u32 << (id & 31));
+                    outlined_mask[word] |= bit;
+                    if !s.flags.dashed() {
+                        cased_mask[word] |= bit;
+                    }
                 }
             }
         }
         let any_cased = cased_mask.iter().any(|&w| w != 0);
         let is_cased = |sid: u8| cased_mask[(sid >> 5) as usize] & (1 << (sid & 31)) != 0;
-
-        // The 256-bit "outlined" style mask (#560): a style is polygon-outline-eligible ⇔ it carries a
-        // `color2` (`line_style`/`dashed` are irrelevant for polygons — `draw_spans`'s outline pass
-        // filters to `Kind::Polygon`, so a cased *line* sharing this bit never triggers an outline).
-        // Built **once per frame** and threaded into both `draw_spans` calls so neither rebuilds it; an
-        // empty mask makes each call take today's exact single-loop path (byte-identical, zero cost).
-        let mut outlined_mask = [0u32; 8];
-        for id in 0..=255u8 {
-            if scene.style(id).is_some_and(|s| s.color2.is_some()) {
-                outlined_mask[(id >> 5) as usize] |= 1 << (id & 31);
-            }
-        }
 
         // The z boundary: the first cased road **line** span. Everything before it is the low-z band
         // (land / water / landuse / buildings / low-z lines). No cased style ⇒ `split == spans.len()`,

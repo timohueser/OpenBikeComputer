@@ -136,6 +136,7 @@ The whole project is built around two ideas: **compact binary formats a microcon
 | :-- | :-- | :-- |
 | Map packer | [`obc-pack`](src:host/obc-pack) | OSM `.osm.pbf` → `.obcm` (ingest, multipolygon assembly, quadtree build, per-edge ascent) |
 | DEM rasteriser | [`obc-dem`](src:host/obc-dem) | Copernicus GLO-30 → `.obcd` terrain cells — the elevation raster carried beside a map |
+| Cell assembler | [`obcm-assemble`](src:host/obcm-assemble) | Downloaded OBCA cells → one `.obcm` (or a volume set): geometry grafted, the nav graph rewritten, verified against the spec |
 | Elevation | [`obc-elevation`](src:firmware/obc-elevation) | The OBCT reader, the sampling rules and the shared climb dead-band — one implementation, host and device |
 | Map reader | [`obc-reader`](src:firmware/obc-reader) | Parses OBCM directly off bytes — header, styles, LOD table, quadtree, chunk decode |
 | Route reader | [`obc-route`](src:firmware/obc-route) | OBCR reading, GPX → OBCR conversion, map-matching, elevation profile |

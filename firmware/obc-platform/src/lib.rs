@@ -55,9 +55,10 @@
 //! The only shared state is a lock-free `Channel<Gesture>` plus the two **disjoint** framebuffers,
 //! so the long map render holds no lock against the input plane. Whatever display resource the two
 //! planes genuinely share (the framebuffer/transport on a banded board, a frame-flip register on a
-//! scan-out board) is guarded by a short critical section in the board's present helper. A
-//! `single-executor` fallback drives both planes inline through
-//! the app's input handler; the preemptive split is the shipping default.
+//! scan-out board) is guarded by a short critical section in the board's present helper. On the
+//! board the preemptive split is the *only* shape — there is no single-executor build. The
+//! single-loop **hosts** (the simulator, the web demos) run the same two planes inline instead,
+//! fused into one call by the app's `handle_input`; the plane logic is shared either way.
 
 #![no_std]
 

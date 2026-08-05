@@ -46,11 +46,8 @@ pub mod volume;
 
 pub use color::rgb565_to_device64;
 pub use color::rgb565_to_rgb888;
-pub use corridor::{
-    project_onto_chunk, CorridorPoi, PathProjection, PoiCategorySet, RoutePath, CORRIDOR_HALF_WIDTH_M,
-    MAX_CORRIDOR_RESULTS,
-};
-pub use hours::{weekday_from_ymd, Interval, WeeklySchedule, MINUTES_PER_DAY};
+pub use corridor::{CorridorPoi, PoiCategorySet, RoutePath, MAX_CORRIDOR_RESULTS};
+pub use hours::{weekday_from_ymd, Interval, WeeklySchedule};
 // The byte-I/O seam is owned by `obc-formats`; re-exported here because the reader's public API
 // traffics in it (`Reader::new(&dyn ByteSource)`). Its `Error` is
 // **not** re-exported because it would shadow the map-parse [`Error`] below.
@@ -59,10 +56,10 @@ pub use obc_formats::io::{ByteSink, ByteSource, SliceSource};
 // lookups (`poi_category_of` / `poi_label_of` / `poi_subtype_row`) are imported from `obc_formats`.
 pub use obc_formats::obcm::{PoiCategory, PoiSubtype};
 pub use reader::{
-    read_header, CacheError, CacheStats, CapacityError, DecodeStatus, FeatureDecodeError, FeatureReadError, FeatureRef,
-    Lod, MapCache, MapHeader, MapProfile, MapReadError, MapTables, NavCacheStats, NavDirectory, NavNeighbor,
-    NavNodeRef, NavTileCache, Poi, PoiCatEntry, PoiDirectory, Reader, MAX_CHUNK_BYTES, MAX_FEAT_PTS, MAX_FEAT_RINGS,
-    MAX_POI_RESULTS, NAV_MAX_CHUNK_BYTES, NAV_TILE_SLOTS, POI_MAX_CATEGORIES, POI_MAX_CHUNK_BYTES,
+    CacheError, CacheStats, CapacityError, DecodeStatus, FeatureDecodeError, FeatureReadError, FeatureRef, Lod,
+    MapCache, MapProfile, MapReadError, MapTables, NavCacheStats, NavDirectory, NavNeighbor, NavNodeRef, NavTileCache,
+    Poi, PoiCatEntry, PoiDirectory, Reader, MAX_CHUNK_BYTES, MAX_FEAT_PTS, MAX_FEAT_RINGS, MAX_POI_RESULTS,
+    NAV_MAX_CHUNK_BYTES, POI_MAX_CATEGORIES, POI_MAX_CHUNK_BYTES,
 };
 pub use volume::{FullSetShards, MountError, MountedSet, SetShards, ShardTables};
 

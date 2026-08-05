@@ -1023,27 +1023,14 @@ fn arm(cv: &mut impl Surface, a: (f32, f32), b: (f32, f32), hw: f32, color: u16)
 mod tests {
     use super::*;
     use crate::activity::{Activity, Mode};
+    use crate::screen::test_ctx;
     use crate::screen::{Screen, Transition};
     use crate::Settings;
 
     fn run(act: &mut Activity, g: Gesture) -> Transition {
         let mut st = crate::AppState::new(0, 0, 1.0);
         let mut settings = Settings::default();
-        let scratch = crate::screen::PoiScratch::new();
-        let mut cx = super::Ctx {
-            state: &mut st,
-            activity: act,
-            settings: &mut settings,
-            routes: &[],
-            rides: &[],
-            trips: &[],
-            nav_profiles: &crate::NavProfiles::EMPTY,
-            poi_scratch: &scratch,
-            waypoints: &[],
-            corridor: &[],
-            sensor_scan_hits: &[],
-            now_ms: 0,
-        };
+        let mut cx = test_ctx(&mut st, act, &mut settings);
         MapScreen::new().handle(g, &mut cx)
     }
 

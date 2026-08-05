@@ -357,12 +357,6 @@ export function terrainEmptyAt(index: TerrainIndexDocument, id: string): Terrain
     return undefined;
 }
 
-/** Whether the terrain store explicitly covers a square, either with an object
- *  or as canonically void ground. */
-export function terrainIndexHas(index: TerrainIndexDocument, id: string): boolean {
-    return index.byId.has(id) || terrainEmptyAt(index, id) !== undefined;
-}
-
 /**
  * Parse the pinned terrain index against the root's `terrain` block.
  *

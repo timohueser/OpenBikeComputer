@@ -7,7 +7,7 @@ publish = false  # board firmware — not published to crates.io
 # `ble_central_repro`'s `required-features` satisfiable in a default build, so cargo could no
 # longer pick a binary on its own (the diagnostic bins are explicit `--bin` runs).
 default-run = "obc-fw-nrf54l"
-description = "nRF54L15-DK board firmware for OpenBikeComputer — the real hardware target (Cortex-M33 + the reflective LS021B7DD02 memory-LCD driven by the FLPR coprocessor). Brings the shared obc-app up on glass; board-agnostic glue stays in obc-platform / obc-app."
+description = "nRF54LM20-DK board firmware for OpenBikeComputer — the real hardware target (Cortex-M33 + the reflective LS021B7DD02 memory-LCD driven by the FLPR coprocessor). Brings the shared obc-app up on glass; board-agnostic glue stays in obc-platform / obc-app."
 
 # Standalone crate with its own (empty) workspace table so the firmware/ host
 # workspace — which builds its members for the host target — ignores this crate.

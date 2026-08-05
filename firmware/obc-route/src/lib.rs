@@ -64,9 +64,9 @@ pub use climb::{
 };
 pub use climb_profile::{ClimbProfile, COLS as CLIMB_PROFILE_COLS};
 pub use convert::{gpx_to_obcr, RouteStats};
-pub use corridor::{Corridor, CORRIDOR_WIDTH_M, MIN_DETOUR_SPAN_M};
-pub use eta::{k_climb_s_per_m, ride_time_s, route_time_s, time_to_go_s, v_flat_mps, K_CLIMB_S_PER_M, V_FLAT_KMH};
-pub use geo::{tri_area_m2, tri_area_m2_cl};
+pub use corridor::{Corridor, MIN_DETOUR_SPAN_M};
+pub use eta::{ride_time_s, route_time_s, time_to_go_s, v_flat_mps, K_CLIMB_S_PER_M, V_FLAT_KMH};
+pub use geo::tri_area_m2_cl;
 pub use gpx::{GpxScanner, RawPoint, RawWaypoint, WptScanner, WAYPOINT_SYMBOL_CAP};
 pub use matcher::{Match, RouteMatch};
 // The emit-time elevation seam (EL7): re-exported so a caller of `plan_route` / `NavPlanner::step`
@@ -82,9 +82,6 @@ pub use reader::{
     RouteSummary, Waypoint, Waypoints, WptEntry, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS, MAX_WAYPOINTS,
 };
 pub use ride::{track_to_ride, RideInfo, RideStats};
-pub use splice::{
-    splice_detour, trim_detour_to_tail, SpliceStep, Splicer, TrimOutcome, TRIM_CONTACT_M, TRIM_LOOKAHEAD_M,
-};
-pub use symbol::category_for_symbol;
+pub use splice::{splice_detour, trim_detour_to_tail, TrimOutcome};
 pub use track::track_to_gpx;
 pub use trip::{trip_object_len, write_trip, TripMeta, TripSummary, MAX_TRIP_STAGES, TRIP_HEADER_LEN, TRIP_VERSION};

@@ -65,7 +65,9 @@ impl ByteSource for SliceSource<'_> {
     }
 
     fn len(&self) -> u32 {
-        self.0.len() as u32
+        // Saturate rather than wrap: a ≥4 GiB slice reporting a truncated total would let
+        // downstream bounds checks pass against the wrong length. `u32::MAX` fails closed.
+        self.0.len().min(u32::MAX as usize) as u32
     }
 }
 
@@ -92,12 +94,6 @@ fn checked_field_mut<const N: usize>(bytes: &mut [u8], offset: usize) -> Result<
     bytes.get_mut(offset..end).ok_or(DecodeError::Bounds)?.try_into().map_err(|_| DecodeError::Bounds)
 }
 
-/// Read a little-endian `i16`, returning [`DecodeError::Bounds`] for a short or overflowing range.
-#[inline]
-pub fn checked_rd_i16(d: &[u8], o: usize) -> Result<i16, DecodeError> {
-    Ok(i16::from_le_bytes(*checked_field(d, o)?))
-}
-
 /// Read a little-endian `u16`, returning [`DecodeError::Bounds`] for a short or overflowing range.
 #[inline]
 pub fn checked_rd_u16(d: &[u8], o: usize) -> Result<u16, DecodeError> {
@@ -116,26 +112,6 @@ pub fn checked_rd_u32(d: &[u8], o: usize) -> Result<u32, DecodeError> {
     Ok(u32::from_le_bytes(*checked_field(d, o)?))
 }
 
-/// Read a little-endian `f32`, returning [`DecodeError::Bounds`] for a short or overflowing range.
-#[inline]
-pub fn checked_rd_f32(d: &[u8], o: usize) -> Result<f32, DecodeError> {
-    Ok(f32::from_le_bytes(*checked_field(d, o)?))
-}
-
-/// Write a little-endian `i16`, returning [`DecodeError::Bounds`] for a short or overflowing range.
-#[inline]
-pub fn checked_put_i16(b: &mut [u8], o: usize, v: i16) -> Result<(), DecodeError> {
-    checked_field_mut::<2>(b, o)?.copy_from_slice(&v.to_le_bytes());
-    Ok(())
-}
-
-/// Write a little-endian `u16`, returning [`DecodeError::Bounds`] for a short or overflowing range.
-#[inline]
-pub fn checked_put_u16(b: &mut [u8], o: usize, v: u16) -> Result<(), DecodeError> {
-    checked_field_mut::<2>(b, o)?.copy_from_slice(&v.to_le_bytes());
-    Ok(())
-}
-
 /// Write a little-endian `i32`, returning [`DecodeError::Bounds`] for a short or overflowing range.
 #[inline]
 pub fn checked_put_i32(b: &mut [u8], o: usize, v: i32) -> Result<(), DecodeError> {
@@ -152,7 +128,8 @@ pub fn checked_put_u32(b: &mut [u8], o: usize, v: u32) -> Result<(), DecodeError
 
 /// Read a little-endian `i16` after caller-side validation.
 ///
-/// Panics for an invalid range; new primitive decoders should use [`checked_rd_i16`].
+/// Panics for an invalid range; new primitive decoders should use the checked family
+/// ([`checked_rd_u16`] and friends), growing it by the missing width if there isn't one yet.
 #[inline]
 pub fn rd_i16(d: &[u8], o: usize) -> i16 {
     i16::from_le_bytes([d[o], d[o + 1]])
@@ -184,7 +161,8 @@ pub fn rd_u32(d: &[u8], o: usize) -> u32 {
 
 /// Read a little-endian `f32` after caller-side validation.
 ///
-/// Panics for an invalid range; new primitive decoders should use [`checked_rd_f32`].
+/// Panics for an invalid range; new primitive decoders should use the checked family
+/// ([`checked_rd_u16`] and friends), growing it by the missing width if there isn't one yet.
 #[inline]
 pub fn rd_f32(d: &[u8], o: usize) -> f32 {
     f32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]])
@@ -192,7 +170,8 @@ pub fn rd_f32(d: &[u8], o: usize) -> f32 {
 
 /// Write a little-endian `i16` after caller-side validation.
 ///
-/// Panics for an invalid range; new primitive encoders should use [`checked_put_i16`].
+/// Panics for an invalid range; new primitive encoders should use the checked family
+/// ([`checked_put_u32`] and friends), growing it by the missing width if there isn't one yet.
 #[inline]
 pub fn put_i16(b: &mut [u8], o: usize, v: i16) {
     b[o..o + 2].copy_from_slice(&v.to_le_bytes());
@@ -200,7 +179,8 @@ pub fn put_i16(b: &mut [u8], o: usize, v: i16) {
 
 /// Write a little-endian `u16` after caller-side validation.
 ///
-/// Panics for an invalid range; new primitive encoders should use [`checked_put_u16`].
+/// Panics for an invalid range; new primitive encoders should use the checked family
+/// ([`checked_put_u32`] and friends), growing it by the missing width if there isn't one yet.
 #[inline]
 pub fn put_u16(b: &mut [u8], o: usize, v: u16) {
     b[o..o + 2].copy_from_slice(&v.to_le_bytes());
@@ -251,15 +231,11 @@ mod tests {
     #[test]
     fn checked_primitives_reject_short_and_overflowing_ranges() {
         let short = [0u8; 3];
-        assert_eq!(checked_rd_i16(&short, 2), Err(DecodeError::Bounds));
         assert_eq!(checked_rd_u16(&short, usize::MAX), Err(DecodeError::Bounds));
         assert_eq!(checked_rd_i32(&short, 0), Err(DecodeError::Bounds));
         assert_eq!(checked_rd_u32(&short, usize::MAX), Err(DecodeError::Bounds));
-        assert_eq!(checked_rd_f32(&short, 0), Err(DecodeError::Bounds));
 
         let mut short = [0u8; 3];
-        assert_eq!(checked_put_i16(&mut short, 2, 1), Err(DecodeError::Bounds));
-        assert_eq!(checked_put_u16(&mut short, usize::MAX, 1), Err(DecodeError::Bounds));
         assert_eq!(checked_put_i32(&mut short, 0, 1), Err(DecodeError::Bounds));
         assert_eq!(checked_put_u32(&mut short, usize::MAX, 1), Err(DecodeError::Bounds));
     }
@@ -272,5 +248,6 @@ mod tests {
         assert_eq!(&out, b"cde");
         assert_eq!(source.read_at(5, &mut out), Err(Error::BadOffset));
         assert_eq!(source.read_at(u32::MAX, &mut out), Err(Error::BadOffset));
+        assert_eq!(source.len(), 6, "a sub-4-GiB slice reports its exact length");
     }
 }

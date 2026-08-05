@@ -71,14 +71,12 @@ struct CachedPlanet {
     snapshot: String,
 }
 
-/// Resolve the existing `--source` spelling for planet mode. A URL may name the
-/// PBF itself or a directory; a local value may name the file or its directory.
-pub fn resolve_planet(spec: Option<&str>, cache: &Path, progress: &Progress) -> Result<PlanetInput, String> {
-    resolve_planet_with(spec, cache, progress, &PyOsmiumUpdater::default())
-}
-
-/// Injectable form of [`resolve_planet`], used to prove replication and failure
-/// semantics without a network service or an 80 GB fixture.
+/// Resolve the existing `--source` spelling for planet mode. A URL may name the PBF
+/// itself or a directory; a local value may name the file or its directory.
+///
+/// The updater is a parameter rather than a default so replication and its failure
+/// semantics can be proved without a network service or an 80 GB fixture; production
+/// hands in [`PyOsmiumUpdater`].
 pub fn resolve_planet_with(
     spec: Option<&str>,
     cache: &Path,

@@ -1118,22 +1118,6 @@ fn crop_box(cells: &BTreeSet<CellId>) -> Result<Option<String>, String> {
     )))
 }
 
-/// The ground one cell covers, km². Cells are square in *microdegrees*, so their
-/// ground shape is latitude-dependent — which is exactly why `OBCA_Spec.md` §1.5
-/// tabulates density per 1000 km² rather than per square degree.
-///
-/// Not on the density path (that divides by the sources' own covered ground, see
-/// [`BandStats::mib_per_1000km2`]); it is what a shard planner sizes a cell with, and
-/// it is here because the arithmetic belongs next to the grid rather than in a
-/// spreadsheet.
-pub fn cell_area_km2(cell: CellId) -> f64 {
-    const KM_PER_DEG: f64 = 111.320;
-    let (_, min_lat, _, max_lat) = cell.square();
-    let side_deg = cell.size() as f64 / 1e6;
-    let mid_lat = ((min_lat + max_lat) as f64 / 2.0) / 1e6;
-    (side_deg * KM_PER_DEG) * (side_deg * KM_PER_DEG * mid_lat.to_radians().cos())
-}
-
 fn sidecar_name(artifact: &Path) -> String {
     let stem = artifact.file_name().and_then(|n| n.to_str()).unwrap_or_default();
     format!("{}{CELL_SIDECAR_EXT}", stem.trim_end_matches(CELL_EXT))
@@ -1173,26 +1157,9 @@ fn sorted_dir(dir: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(entries)
 }
 
-/// The tree's per-cell state files, for a caller that wants to list them.
-pub fn state_file_name(cell: CellId) -> String {
-    let w = obc_pack::grid::id_width(cell.log2);
-    format!(".{:0w$}.cell.json", cell.j, w = w)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_cells_area_shrinks_with_latitude() {
-        // A 2^18 cell is ≈ 29 x 20 km at 47°N (OBCA §1.5's table).
-        let alps = CellId::containing(18, 47_300_000, 7_700_000);
-        let area = cell_area_km2(CellId::new(18, alps.i, alps.j).unwrap());
-        assert!((550.0..640.0).contains(&area), "{area} km² for a 2^18 cell at 47°N");
-        // The same cell size at the equator covers more ground.
-        let equator = CellId::containing(18, 0, 0);
-        assert!(cell_area_km2(CellId::new(18, equator.i, equator.j).unwrap()) > area * 1.4);
-    }
 
     #[test]
     fn a_crop_box_wraps_the_plans_cells_with_a_margin() {
@@ -1205,12 +1172,5 @@ mod tests {
         assert!(w <= min_lon as f64 / 1e6 - margin + 1e-9 && e >= max_lon as f64 / 1e6 + margin - 1e-9);
         assert!(s <= min_lat as f64 / 1e6 - margin + 1e-9 && n >= max_lat as f64 / 1e6 + margin - 1e-9);
         assert_eq!(crop_box(&BTreeSet::new()).unwrap(), None);
-    }
-
-    #[test]
-    fn the_state_file_is_a_dotfile_the_catalog_walk_ignores() {
-        let cell = CellId::parse("18/1204/1052").unwrap();
-        assert_eq!(state_file_name(cell), ".1052.cell.json");
-        assert!(state_file_name(cell).starts_with('.'));
     }
 }

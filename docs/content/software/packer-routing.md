@@ -717,9 +717,14 @@ Coverage is composed from three kinds of parts:
 
 The parts are unioned before pricing, so overlaps never charge or download a
 cell twice. Partial cells remain visible as warnings. The selected cells are
-downloaded with byte-length and SHA-256 checks, then passed to
-[`obc-web-assemble`](src:apps/obc-web-assemble) in a worker. Cancelling
-terminates the worker; there is no verification bypass.
+downloaded with byte-length and SHA-256 checks and written straight into
+origin-private storage under the digest the catalog already pins them with;
+[`obc-web-assemble`](src:apps/obc-web-assemble) reads them back inside its worker
+through a synchronous access handle behind a 1 MiB block cache, so the bytes never
+enter wasm memory and a reload resumes on what is already on disk instead of
+downloading it again. Cancelling terminates the worker; there is no verification
+bypass. The gate on a big selection is therefore **disk quota, checked before the
+download starts**, not the memory the run would have needed.
 
 **Elevation rides along with the selection, and there is no switch for it.** The
 terrain squares a map needs are the ones its selection touches — the same intersect

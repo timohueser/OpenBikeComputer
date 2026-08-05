@@ -13,10 +13,7 @@ fn repo(rel: &str) -> PathBuf {
 }
 
 fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("obc-bake-cli-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
+    obcm_testkit::scratch::scratch_dir("obc-bake-cli", name)
 }
 
 fn obc_bake() -> Command {

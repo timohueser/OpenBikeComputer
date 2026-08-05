@@ -306,9 +306,6 @@ impl SimGui {
         // Boot at the device's real power-on state (Home / Idle, no route); the headless
         // `--png` path opens straight on the map instead (see `--boot`).
         let mut app = App::new_idle(state);
-        if let Some(seed) = args.home_seed {
-            app.reseed_home(seed);
-        }
         let store = RouteStore::open(args.routes_dir());
         let trip_store = TripStore::open(args.routes_dir());
         let ride_store = RideStore::open(args.tracks_dir());
@@ -434,7 +431,7 @@ impl SimGui {
         // battery — so pairing a hit (a Settings write) flips its row to Connected next frame, and
         // Forget drops it back to Not set. The board's ride loop drives the real thing the same shape.
         if self.app.sensor_scan_active() {
-            self.app.set_sensor_scan_hits(&fake_scan_hits());
+            self.app.set_sensor_scan_hits(&crate::fake_scan_hits());
         } else {
             self.app.set_sensor_scan_hits(&[]);
         }
@@ -472,7 +469,7 @@ impl SimGui {
                 &mut *self.elevation,
                 |app, cmd| match cmd {
                     HostCommand::ScanCardFree => {
-                        app.apply_event(HostEvent::CardScanned { free_bytes: Some(1_288_490_188) });
+                        app.apply_event(HostEvent::CardScanned { free_bytes: Some(crate::SIM_CARD_FREE) });
                     }
                     HostCommand::ForgetBond => panel.ble.paired = false,
                     HostCommand::PersistSettings { revision } => {
@@ -558,21 +555,18 @@ impl SimGui {
             // offset) each tick — booting the sim into a trusted clock like a real fix would, the
             // precondition the deletion sweep gates on.
             let mut sim_clock = SimClock { enabled: self.panel.gps_time, offset_secs: self.panel.clock_offset_secs };
+            // Defaulted away: no thermometer in manual control (BMP581 temperature is
+            // device-only) and no live fuel gauge (battery is set once from `--battery`).
             let sensors = Sensors {
-                loc: &mut self.loc,
-                altimeter: None,
-                // No thermometer in manual control — BMP581 temperature is device-only.
-                temperature: None,
                 clock: Some(&mut sim_clock),
                 compass: Some(&mut self.compass),
                 track: self.tracks.sink(),
-                // Battery is set once from `--battery`; no live sim gauge.
-                fuel: None,
                 // The panel's "Sensors" section drives these (SE8); each source honours the ~1 Hz
                 // fresh-mailbox contract, so a disabled quantity goes stale → `--` on its tile.
                 hr: Some(&mut self.sim_sensors.hr),
                 power: Some(&mut self.sim_sensors.power),
                 cadence: Some(&mut self.sim_sensors.cadence),
+                ..Sensors::new(&mut self.loc)
             };
             self.app.tick(RideClock(now_ms), sensors, route.as_ref());
         }
@@ -942,17 +936,6 @@ impl eframe::App for SimGui {
 }
 
 /// Save an egui `ColorImage` (the captured frame) to a PNG.
-/// A canned scan-hit set for the sim's fake sensor manager (SE7, epic #707): one HR strap, one power
-/// meter, one unnamed cadence sensor — so any kind's scan list shows something (the unnamed one
-/// exercises the address fallback). The scan-list screen filters to the row's quantity by `slot`.
-fn fake_scan_hits() -> [obc_app::SensorScanHit; 3] {
-    [
-        obc_app::SensorScanHit::new(0, 1, [0x66, 0x55, 0x44, 0x33, 0x22, 0x11], "HRM-Dual", -58),
-        obc_app::SensorScanHit::new(1, 0, [0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F], "Stages LR", -67),
-        obc_app::SensorScanHit::new(2, 0, [0x01, 0x02, 0x03, 0x04, 0x05, 0x06], "", -80),
-    ]
-}
-
 fn save_color_image(img: &egui::ColorImage, path: &str) -> Result<(), String> {
     let (w, h) = (img.size[0] as u32, img.size[1] as u32);
     let mut rgba = Vec::with_capacity((w * h * 4) as usize);

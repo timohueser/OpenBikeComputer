@@ -22,16 +22,12 @@ use obc_render::{
 
 use crate::ble::BleLink;
 use crate::input::Gesture;
-use crate::screen::{confirm_row, palette, title_frame, Ctx, Render, Transition, LIST_TOP};
+use crate::screen::{palette, title_frame, Ctx, Render, Transition, LIST_TOP};
 use crate::settings::{Language, Settings};
 use crate::Msg;
 
 /// Toggle-row height — matches the other settings screens' two-line rows.
 const ROW_H: i32 = 58;
-/// The Forget row's height + bottom anchor — the Route overview Delete row's geometry family
-/// (38 px tall, the standard 10 px above the card bottom), so the two button faces match.
-const FORGET_H: i32 = 38;
-
 /// The two selectable rows: the radio toggle and the Forget action (the status/paired lines
 /// between them are read-only). The Forget row exists only while a bond is stored — see
 /// [`rows`].
@@ -125,24 +121,10 @@ impl BluetoothScreen {
         let paired = if rx.state.ble_paired { rx.t(Msg::BluetoothYes) } else { rx.t(Msg::BluetoothNo) };
         cv.text(paired, Point::new(info_x, y1 + 24), Font::Body, TextAlign::Left, INK);
 
-        // The Forget row — the Pause-menu guarded-row treatment (owner review round 3: the round-2
-        // focus outline is retired everywhere): a plain left-aligned Body label while unselected,
-        // the shaded base + warning-red hold fill only while the cursor is on it — exactly the
-        // ride_control family's selected-guarded face, at the delete rows' bottom anchor. Drawn
-        // only while a bond is stored — with nothing to forget the row simply isn't there (the
-        // round-1 only-when-possible grammar).
+        // The Forget row, drawn only while a bond is stored — with nothing to forget the row simply
+        // isn't there (the round-1 only-when-possible grammar).
         if rx.state.ble_paired {
-            let fy = h - 10 - FORGET_H;
-            let row = super::row_rect(fy, w, FORGET_H);
-            confirm_row(cv, row, selected == FORGET, true, rx.hold_progress, WARNING, 6);
-            cv.text_vcentered(
-                rx.t(Msg::BluetoothForget),
-                row.top_left.x + 12,
-                (fy, FORGET_H),
-                Font::Body,
-                TextAlign::Left,
-                INK,
-            );
+            super::forget_footer(cv, w, h, rx.t(Msg::BluetoothForget), selected == FORGET, rx.hold_progress);
         }
     }
 }
@@ -164,25 +146,12 @@ fn status_label(settings: &Settings, link: BleLink, lang: Language) -> &'static 
 mod tests {
     use super::*;
     use crate::activity::Activity;
+    use crate::screen::test_ctx;
     use crate::{AppState, Mode};
 
     fn run(scr: &mut BluetoothScreen, st: &mut AppState, s: &mut Settings, g: Gesture) -> Transition {
         let mut act = Activity::new(Mode::Idle);
-        let scratch = crate::screen::PoiScratch::new();
-        let mut cx = Ctx {
-            state: st,
-            activity: &mut act,
-            settings: s,
-            routes: &[],
-            rides: &[],
-            trips: &[],
-            nav_profiles: &crate::NavProfiles::EMPTY,
-            poi_scratch: &scratch,
-            waypoints: &[],
-            corridor: &[],
-            sensor_scan_hits: &[],
-            now_ms: 0,
-        };
+        let mut cx = test_ctx(st, &mut act, s);
         scr.handle(g, &mut cx)
     }
 

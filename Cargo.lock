@@ -2519,6 +2519,7 @@ dependencies = [
  "obc-reader",
  "obc-render",
  "obcm-assemble",
+ "obcm-testkit",
  "serde",
  "serde_json",
  "sha2",
@@ -2546,9 +2547,14 @@ dependencies = [
 name = "obc-ble"
 version = "0.1.0"
 dependencies = [
+ "obc-crc",
  "obc-formats",
  "obc-vectors",
 ]
+
+[[package]]
+name = "obc-crc"
+version = "0.1.0"
 
 [[package]]
 name = "obc-dem"
@@ -2566,6 +2572,7 @@ name = "obc-dfu"
 version = "0.1.0"
 dependencies = [
  "ed25519-compact",
+ "obc-crc",
 ]
 
 [[package]]
@@ -2573,6 +2580,7 @@ name = "obc-display"
 version = "0.1.0"
 dependencies = [
  "embedded-graphics",
+ "obc-display",
  "obc-reader",
  "pollster",
 ]
@@ -2620,6 +2628,7 @@ version = "0.1.0"
 dependencies = [
  "getrandom 0.4.2",
  "obc-dfu",
+ "obcm-testkit",
 ]
 
 [[package]]
@@ -2636,6 +2645,7 @@ dependencies = [
  "obc-map-scene",
  "obc-reader",
  "obc-vectors",
+ "obcm-testkit",
  "osmpbf",
  "rayon",
  "schemars",
@@ -2775,19 +2785,12 @@ name = "obc-usb-host"
 version = "0.1.0"
 dependencies = [
  "eframe",
- "embedded-graphics",
  "obc-app",
- "obc-ble",
- "obc-formats",
  "obc-platform",
  "obc-ports",
- "obc-reader",
- "obc-render",
  "obc-replay",
- "obcm-testkit",
  "rfd",
  "serialport",
- "sha2",
 ]
 
 [[package]]
@@ -2862,6 +2865,7 @@ dependencies = [
  "obc-reader",
  "obc-render",
  "obc-route",
+ "obcm-testkit",
  "serde",
  "serde_json",
  "sha2",

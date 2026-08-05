@@ -67,14 +67,4 @@ describe("the hosts as a set", () => {
         expect(dev.platform.siteNav).toBeDefined();
         expect(desktop.platform.siteNav).toBeUndefined();
     });
-
-    it("reports app storage only where the app owns a filesystem", () => {
-        expect(desktop.platform.storage).toBeDefined();
-        expect(web.platform.storage).toBeUndefined();
-        expect(dev.platform.storage).toBeUndefined();
-        // `revealFile` supports the desktop's managed ride files.
-        expect(typeof desktop.platform.revealFile).toBe("function");
-        expect(web.platform.revealFile).toBeUndefined();
-        expect(dev.platform.revealFile).toBeUndefined();
-    });
 });

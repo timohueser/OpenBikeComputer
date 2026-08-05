@@ -489,7 +489,6 @@ fn run_terrain(args: &[String]) -> Result<(), String> {
             "posting-log2",
             "cell-log2",
             "regions",
-            "presets-dir",
             "source",
             "cache",
             "base-url",
@@ -550,9 +549,20 @@ fn run_terrain(args: &[String]) -> Result<(), String> {
     .run(&obc_pack::progress::Progress::stdout())?;
     print!("{}", summary.render());
 
-    finish_tree(&flags, &out)?;
+    // The catalog generator reads the tree's `schema.json` — the *cell* store's document, which a
+    // tree that has only ever been terrained does not have. Regenerating is right when the cells are
+    // already there (the terrain band has to reach the catalog) and a hard error at the very end of
+    // the whole bake when they are not, so it is gated on the file rather than attempted blind.
+    let finished = if out.join("schema.json").exists() {
+        finish_tree(&flags, &out)
+    } else {
+        println!("\nno `schema.json` in {} yet — bake the cells to generate the catalog", out.display());
+        Ok(())
+    };
+    // Unconditional, and before the `?`: the credit is a licence obligation of the data that was just
+    // written, so it cannot be something only a fully successful catalog pass gets to print.
     println!("\n{}", obc_dem::COPERNICUS_ATTRIBUTION);
-    Ok(())
+    finished
 }
 
 /// The catalog is generated even after a partial run: it is what `verify` reads,

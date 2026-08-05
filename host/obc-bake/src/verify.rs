@@ -25,6 +25,11 @@
 //! bake tree, so a failed artifact never exists at a path the catalog generator
 //! walks. That is the mechanism behind "a corrupted artifact never reaches the
 //! manifest": not a check the publisher performs, but a file that was never there.
+//!
+//! Since the cells cutover there is exactly one entrant, [`verify_cell`]: everything
+//! this bakery publishes is a cell. An **empty** cell is not a failure — open sea, or a
+//! `network`-band square with no roads — so the walk has no "must contain features"
+//! rule left; what it reports back is only what the caller then checks against the id.
 
 use std::cell::RefCell;
 use std::fs::File;
@@ -35,38 +40,26 @@ use obc_formats::io::{ByteSource, Error as IoError};
 use obc_map_scene::BBox;
 use obc_reader::{MapCache, MapTables, Reader, MAX_FEAT_PTS, MAX_FEAT_RINGS};
 
-/// What a verified artifact turned out to contain. Logged per artifact so a bake
-/// that produces a *readable but empty* map is still visible.
+/// What a verified artifact states about itself once the whole of it has been walked.
+///
+/// Only what a caller acts on: the walk's real product is the *absence* of an error,
+/// and the counters it accumulates along the way are a means to that, not a result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Verified {
     pub obcm_version: u8,
     pub bbox: BBox,
-    pub lods: usize,
-    pub chunks: u64,
-    pub features: u64,
-    /// POI categories with content (spec §7.4 ids 1..=6).
-    pub poi_categories: usize,
-    pub has_nav_graph: bool,
 }
 
-/// Open `path` with the real reader and walk all of it.
-pub fn verify(path: &Path) -> Result<Verified, String> {
-    walk(path, true)
-}
-
-/// The same full walk for one **cell** artifact, plus the one check that makes it a
-/// cell: its header bbox must be *exactly* its grid square
+/// The full walk for one **cell** artifact, plus the one check that makes it a cell:
+/// its header bbox must be *exactly* its grid square
 /// ([`OBCA_Spec.md` §3.1](../../../specs/OBCA_Spec.md)).
 ///
-/// Two differences from [`verify`], and both are about what a cell legitimately is.
-/// A cell may be **empty**: open sea, or a `network`-band cell in a square with no
-/// roads. A map covering a populated area with no features is a failed bake; a cell with no
-/// features is a fact about the ground. And the bbox is checked against the id rather
-/// than merely for sanity, because that identity is what lets an assembler graft the
-/// cell's chunk bytes in without decoding them — a cell whose header disagrees with
-/// its id would land its geometry somewhere else, silently.
+/// The bbox is checked against the id rather than merely for sanity, because that
+/// identity is what lets an assembler graft the cell's chunk bytes in without decoding
+/// them — a cell whose header disagrees with its id would land its geometry somewhere
+/// else, silently.
 pub fn verify_cell(path: &Path, square: (i64, i64, i64, i64)) -> Result<Verified, String> {
-    let verified = walk(path, false)?;
+    let verified = walk(path)?;
     let (min_lon, min_lat, max_lon, max_lat) = square;
     let got = (
         verified.bbox.min_lon as i64,
@@ -84,7 +77,7 @@ pub fn verify_cell(path: &Path, square: (i64, i64, i64, i64)) -> Result<Verified
     Ok(verified)
 }
 
-fn walk(path: &Path, require_features: bool) -> Result<Verified, String> {
+fn walk(path: &Path) -> Result<Verified, String> {
     let src = FileSource::open(path)?;
     let tables = MapTables::parse(&src).map_err(|e| format!("{}: not a readable OBCM map: {e:?}", path.display()))?;
     // The cache is ~277 KB — heap, never the stack (`alloc` feature).
@@ -104,8 +97,6 @@ fn walk(path: &Path, require_features: bool) -> Result<Verified, String> {
         return Err(format!("{}: inside-out header bbox {bbox:?}", path.display()));
     }
 
-    let mut chunks_total = 0u64;
-    let mut features_total = 0u64;
     let mut points = heapless::Vec::<_, MAX_FEAT_PTS>::new();
     let mut ring_lens = heapless::Vec::<_, MAX_FEAT_RINGS>::new();
     for lod in 0..reader.lods().len() {
@@ -114,7 +105,6 @@ fn walk(path: &Path, require_features: bool) -> Result<Verified, String> {
         reader
             .for_each_chunk(lod, &bbox, |id, node| chunks.push((id, node)))
             .map_err(|e| format!("{}: LOD{lod} index walk failed: {e:?}", path.display()))?;
-        chunks_total += chunks.len() as u64;
         for (chunk_id, node) in chunks {
             let status = reader
                 .for_each_feature(lod, chunk_id, &node, &mut points, &mut ring_lens, |_| {})
@@ -129,25 +119,10 @@ fn walk(path: &Path, require_features: bool) -> Result<Verified, String> {
                     status.capacity_dropped
                 ));
             }
-            features_total += u64::from(status.complete);
         }
     }
-    if require_features && features_total == 0 {
-        return Err(format!(
-            "{}: reads cleanly but contains no features — refusing to publish an empty map",
-            path.display()
-        ));
-    }
 
-    Ok(Verified {
-        obcm_version: reader.version,
-        bbox,
-        lods: reader.lods().len(),
-        chunks: chunks_total,
-        features: features_total,
-        poi_categories: reader.poi_directory().entries.iter().filter(|e| !e.is_empty()).count(),
-        has_nav_graph: tables.has_nav_graph(),
-    })
+    Ok(Verified { obcm_version: reader.version, bbox })
 }
 
 /// The header a cell states about itself: its OBCM version and its bbox, and nothing
@@ -246,7 +221,7 @@ impl CellTreeReport {
 /// Problems are collected rather than thrown, so one run names everything wrong with
 /// a store instead of the first thing.
 pub fn verify_cell_tree(tree: &Path, opts: CellTreeVerifyOptions) -> Result<CellTreeReport, String> {
-    use obc_pack::catalog::{Catalog, CellId, CellIndexDocument, RegionCellsDocument};
+    use obc_pack::catalog::{parse_strict_id, Catalog, CellIndexDocument, RegionCellsDocument};
     use std::collections::{BTreeMap, BTreeSet};
 
     crate::planet::check_publishable_tree(tree)?;
@@ -326,14 +301,14 @@ pub fn verify_cell_tree(tree: &Path, opts: CellTreeVerifyOptions) -> Result<Cell
             if entry.partial {
                 report.partial_cells += 1;
             }
-            let id = match CellId::parse(&entry.id) {
+            let id = match parse_strict_id(&entry.id) {
                 Ok(id) => id,
                 Err(e) => {
                     problem(format!("{rel}: {e}"), &mut report.problems);
                     continue;
                 }
             };
-            if id.log2 != band.cell_log2 {
+            if id.log2 != u32::from(band.cell_log2) {
                 problem(
                     format!("{rel}: cell `{}` is 2^{} but the band is 2^{}", entry.id, id.log2, band.cell_log2),
                     &mut report.problems,
@@ -357,7 +332,7 @@ pub fn verify_cell_tree(tree: &Path, opts: CellTreeVerifyOptions) -> Result<Cell
                 continue;
             }
             // Every cell: the header must be exactly the square its id names.
-            let square = id.square();
+            let (sq_min_lon, sq_min_lat, sq_max_lon, sq_max_lat) = id.square();
             match header_of(&path) {
                 Ok((version, bbox)) => {
                     if version != root.schema.obcm_version {
@@ -370,8 +345,13 @@ pub fn verify_cell_tree(tree: &Path, opts: CellTreeVerifyOptions) -> Result<Cell
                             &mut report.problems,
                         );
                     }
-                    let got = (bbox.min_lat, bbox.min_lon, bbox.max_lat, bbox.max_lon);
-                    let want = (square.min_lat, square.min_lon, square.max_lat, square.max_lon);
+                    let got = (
+                        i64::from(bbox.min_lat),
+                        i64::from(bbox.min_lon),
+                        i64::from(bbox.max_lat),
+                        i64::from(bbox.max_lon),
+                    );
+                    let want = (sq_min_lat, sq_min_lon, sq_max_lat, sq_max_lon);
                     if got != want {
                         problem(
                             format!(
@@ -388,13 +368,7 @@ pub fn verify_cell_tree(tree: &Path, opts: CellTreeVerifyOptions) -> Result<Cell
             // Spot check: the full walk and the digest.
             if opts.sample > 0 && n % opts.sample == 0 {
                 report.sampled += 1;
-                let sq = (
-                    i64::from(square.min_lon),
-                    i64::from(square.min_lat),
-                    i64::from(square.max_lon),
-                    i64::from(square.max_lat),
-                );
-                if let Err(e) = verify_cell(&path, sq) {
+                if let Err(e) = verify_cell(&path, (sq_min_lon, sq_min_lat, sq_max_lon, sq_max_lat)) {
                     problem(e, &mut report.problems);
                 }
                 match crate::hash::file(&path) {
