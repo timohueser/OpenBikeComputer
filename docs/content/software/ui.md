@@ -93,7 +93,7 @@ screens! {
     Settings(SettingsScreen) => Caps::settings(),      Ride(RideScreen) => Caps::settings(),
     Reset(ResetScreen) => Caps::settings().hold_fill(), Bluetooth(BluetoothScreen) => Caps::settings().hold_fill(),
     // Five groups: Ride, Display, Connections (→ Bluetooth / Sensors), Power, System (→ Units,
-    // Date&Time, Language, Firmware, Reset), plus Ride's Fields → AddField editor. All Caps::settings().
+    // Date&Time, Language, Firmware, About, Reset), plus Ride's Fields → AddField editor. All Caps::settings().
 }
 
 // Each variant is a module with typed state and two methods (plus an optional third for the two POI
@@ -657,6 +657,12 @@ pub trait SettingsStore {
 ```
 
 The nominal trait lives in dependency-free `obc-ports`; its associated value keeps that foundation from learning the app's `Settings` model. The simulator's [`FileSettingsStore`](src:apps/obc-sim/src/settings_store.rs) and the board's [`RramSettingsStore`](src:firmware/obc-fw-nrf54l/src/settings.rs) implement that port directly. The simulator writes the blob to a file; the device writes it to a reserved slice of the nRF54L's on-chip **RRAM** — its program memory is RRAM, which is byte-writable with no flash-style erase cycle, so a tiny key-value store is cheap and needs no SD card present. Both sides share one versioned, CRC-checked byte codec, so a blank or corrupted read cleanly falls back to defaults rather than loading garbage — and the factory Reset is just writing the default blob back.
+
+### About — the credits live one screen deep
+
+Settings ▸ System ▸ **About** is the device's one credits surface: the map data's `© OpenStreetMap contributors` line with the ODbL notice, the terrain layer's Copernicus credit, and the firmware's own GPL-3.0 licence with a pointer to the source. It exists because the rendered map is a *Produced Work* under OpenStreetMap's licence, and for an offline device the required "this data is available under the ODbL" statement has to ship **on the glass** — a link can't discharge it when there may be no network for weeks. The OSMF's attribution guidelines class GPS units as mobile devices, where attribution behind one deliberate interaction is acceptable; an About page under System is exactly that, and it keeps the credit off the map itself, where every pixel is spoken for.
+
+The page is taller than the panel, so it's the one screen that **scrolls plain text**: Rotate moves a line window over hand-wrapped constant lines, with a right-edge scrollbar for position. Hand-wrapped, because the legal formulas are fixed strings — pre-wrapping makes the on-glass layout reviewable in the source, a test holds every line (and every caption translation) to the panel's 17-character Label budget, and a second test re-joins the Copernicus lines and compares them word-for-word against `obc-dem`'s canonical constant, so the wording can't drift between the bakery and the glass. Only the three section captions translate; the attributions themselves stay canonical.
 
 ## Self-cleaning storage: routes and rides expire
 
