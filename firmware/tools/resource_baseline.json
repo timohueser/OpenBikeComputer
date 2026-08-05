@@ -28,7 +28,7 @@
       "measured_resident": 293776,
       "resident_ram_max": 293776,
       "uninit_max": 93344,
-      "measured_flash": 1298536,
+      "measured_flash": 1300320,
       "framebuffer_count": 1,
       "framebuffer_bytes": 76800,
       "poll_frame_measured": 9728,
@@ -75,7 +75,7 @@
         "link::init_store",
         "obc_fw_nrf54l::mount_terrain"
       ],
-      "boot_chain_measured_ci": null,
+      "boot_chain_measured_ci": 21884,
       "boot_chain_measured_pinned_host": 28116
     },
     "ble": {
@@ -94,7 +94,7 @@
       "measured_resident": 293776,
       "resident_ram_max": 293776,
       "uninit_max": 93344,
-      "measured_flash": 1298536,
+      "measured_flash": 1300320,
       "framebuffer_count": 1,
       "framebuffer_bytes": 76800,
       "poll_frame_measured": 9728,
@@ -155,7 +155,7 @@
         "link::init_store",
         "obc_fw_nrf54l::mount_terrain"
       ],
-      "boot_chain_measured_ci": null,
+      "boot_chain_measured_ci": 21884,
       "boot_chain_measured_pinned_host": 28116
     }
   },
