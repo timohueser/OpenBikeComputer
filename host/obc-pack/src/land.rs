@@ -19,7 +19,7 @@
 use std::fs::File;
 use std::io::{BufReader, ErrorKind, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex};
 
 use geos::{Geom as _, Geometry};
 
@@ -101,8 +101,8 @@ pub fn get_land_polygons(bbox_deg: (f64, f64, f64, f64), progress: &Progress) ->
     let box_geom = box_polygon(qbox).map_err(|e| format!("clip box: {e}"))?;
 
     let mut out = Vec::new();
-    let index = LAND_INDEX.get_or_init(|| index_shapefile(&shp, progress)).as_ref().map_err(Clone::clone)?;
-    read_shapefile(&shp, index, qbox, &box_geom, &mut out, progress)?;
+    let index = land_index(&shp, progress)?;
+    read_shapefile(&shp, &index, qbox, &box_geom, &mut out, progress)?;
     Ok(out)
 }
 
@@ -134,7 +134,29 @@ struct ShapeRecord {
     bbox: (f64, f64, f64, f64),
 }
 
-static LAND_INDEX: OnceLock<Result<Vec<ShapeRecord>, String>> = OnceLock::new();
+/// The process-wide record table, **memoized on success only**.
+///
+/// A `OnceLock<Result<..>>` would have cached the first *failure* just as durably as
+/// the first success, and one of the ways this call fails is the user pressing stop:
+/// a cancelled build inside the desktop app or the bakery — both of which link the
+/// packer in-process — would have poisoned land generation for the rest of the
+/// session, as would one transient read error. A failed or cancelled index leaves
+/// the slot empty, so the next call simply indexes again.
+static LAND_INDEX: Mutex<Option<Arc<Vec<ShapeRecord>>>> = Mutex::new(None);
+
+/// The record table for `shp`: the memoized one, or a fresh scan stored on success.
+fn land_index(shp: &Path, progress: &Progress) -> Result<Arc<Vec<ShapeRecord>>, String> {
+    // A poisoned lock means an earlier scan panicked, not that the slot is unusable —
+    // recovering keeps a panic from becoming the same session-long brick the cached
+    // `Err` was.
+    let mut slot = LAND_INDEX.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(index) = slot.as_ref() {
+        return Ok(Arc::clone(index));
+    }
+    let index = Arc::new(index_shapefile(shp, progress)?);
+    *slot = Some(Arc::clone(&index));
+    Ok(index)
+}
 
 /// Scan the record headers once per process. A planet bake calls the land clip
 /// hundreds of times; re-reading the 1.3 GB shapefile for every source leaf would
@@ -477,6 +499,51 @@ mod tests {
         let mut out = Vec::new();
         read_shapefile(&path, &index, query, &clip, &mut out, &Progress::silent()).unwrap();
         assert_eq!(out.len(), 1, "the far record is rejected from its cached MBR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A one-record shapefile, enough for the indexer to walk.
+    fn one_record_shp(path: &Path) {
+        let pts = box3857(1000.0, 1000.0, 1000.0);
+        let mut body = Vec::new();
+        body.extend_from_slice(&1i32.to_le_bytes()); // NumParts
+        body.extend_from_slice(&(pts.len() as i32).to_le_bytes()); // NumPoints
+        body.extend_from_slice(&0i32.to_le_bytes()); // part 0
+        for (x, y) in &pts {
+            body.extend_from_slice(&x.to_le_bytes());
+            body.extend_from_slice(&y.to_le_bytes());
+        }
+        let mut bytes = vec![0u8; 100];
+        bytes[0..4].copy_from_slice(&9994i32.to_be_bytes());
+        bytes.extend_from_slice(&1i32.to_be_bytes()); // record number
+        bytes.extend_from_slice(&(((4 + 32 + body.len()) / 2) as i32).to_be_bytes());
+        bytes.extend_from_slice(&SHP_POLYGON.to_le_bytes());
+        for v in [1000.0f64, 1000.0, 2000.0, 2000.0] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        bytes.extend_from_slice(&body);
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    /// A cancelled index must not be remembered as a failure: the packer is linked
+    /// in-process by the desktop app and the bakery, so one stopped build used to
+    /// leave land generation broken for the life of the process. (The only test that
+    /// touches the process-wide slot — it leaves the fixture's table memoized.)
+    #[test]
+    fn a_cancelled_index_is_not_memoized() {
+        let dir = std::env::temp_dir().join(format!("obc-land-retry-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("fixture.shp");
+        one_record_shp(&path);
+
+        let cancel = crate::progress::CancelToken::new();
+        cancel.cancel();
+        let cancelled = Progress::new(cancel, |_, _| {});
+        land_index(&path, &cancelled).expect_err("a cancelled scan fails");
+
+        let index = land_index(&path, &Progress::silent()).expect("the next call in the same process retries");
+        assert_eq!(index.len(), 1, "the retry indexed the record the cancelled run never reached");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
