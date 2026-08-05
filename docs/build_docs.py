@@ -74,6 +74,9 @@ RAW_BLOCK_TAGS = {
     "svg", "div", "figure", "figcaption", "table", "thead", "tbody", "tr", "td", "th",
     "details", "summary", "section", "aside", "nav", "header", "footer", "style",
     "script", "pre", "blockquote", "ul", "ol", "canvas", "video", "iframe", "picture",
+    # <address> is how the legal pages set a postal address: a paragraph would have its
+    # lines joined with spaces, and the whole point of an Impressum address is the shape.
+    "address",
 }
 VOID_TAGS = {"img", "hr", "br", "input", "meta", "link", "col", "area", "base",
              "embed", "source", "track", "wbr"}
