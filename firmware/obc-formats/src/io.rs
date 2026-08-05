@@ -65,7 +65,9 @@ impl ByteSource for SliceSource<'_> {
     }
 
     fn len(&self) -> u32 {
-        self.0.len() as u32
+        // Saturate rather than wrap: a ≥4 GiB slice reporting a truncated total would let
+        // downstream bounds checks pass against the wrong length. `u32::MAX` fails closed.
+        self.0.len().min(u32::MAX as usize) as u32
     }
 }
 
@@ -246,5 +248,6 @@ mod tests {
         assert_eq!(&out, b"cde");
         assert_eq!(source.read_at(5, &mut out), Err(Error::BadOffset));
         assert_eq!(source.read_at(u32::MAX, &mut out), Err(Error::BadOffset));
+        assert_eq!(source.len(), 6, "a sub-4-GiB slice reports its exact length");
     }
 }
