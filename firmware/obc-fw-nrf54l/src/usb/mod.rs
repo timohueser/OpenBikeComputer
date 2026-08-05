@@ -270,6 +270,13 @@ pub(crate) async fn request_stage() -> bool {
     }
     let granted = STAGE_GRANTED.load(core::sync::atomic::Ordering::Relaxed);
     if !granted {
+        // **Withdraw the request with the give-up.** The level is what the ride loop grants against,
+        // and this transfer has already decided to stream unstaged: left raised, it would have the
+        // loop mint a `TransferReady`, claim the arena and hold ~92 KB for the rest of a transfer
+        // that will never look at it — and hold it *against a route search*, which is the one thing
+        // the `nav ⊥ usb` rule is there to arbitrate. If the grant lands anyway a beat later, the
+        // loop's own `!wants_stage && guard.is_some()` reclaim on the next pass takes it back.
+        release_stage();
         warn!("usb: [bulk] no staging arm granted — streaming unstaged (slower, never wrong)");
     }
     granted

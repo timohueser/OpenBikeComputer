@@ -93,13 +93,22 @@ class BoardMeasurement:
         return self.bss + self.data
 
 
-def parse_size_output(output: str) -> dict[str, int]:
+def parse_size_output(output: str, extra_required: frozenset[str] = frozenset()) -> dict[str, int]:
+    """Section sizes from `llvm-size -A`, failing loudly on a section the caller says must be there.
+
+    `extra_required` is how the **board** legs demand `.uninit`. It is not in the common set because
+    the bootloader legitimately links none, and it is not optional for the board because since
+    #1146 P2 that section holds the ~92 KB scratch arena: a `sections.get(".uninit", 0)` would let a
+    renamed (or accidentally dropped) `#[link_section]` measure **zero** — `uninit_max` green,
+    `.bss + .data` green, `residual_stack` green, and 92 KB of resident RAM unaccounted for behind
+    four passing gates.
+    """
     sections: dict[str, int] = {}
     for line in output.splitlines():
         match = re.match(r"^(\.[^\s]+)\s+(\d+)\s+", line.strip())
         if match:
             sections[match.group(1)] = int(match.group(2))
-    required = {".bss", ".data", *FLASH_SECTIONS}
+    required = {".bss", ".data", *FLASH_SECTIONS} | set(extra_required)
     missing = sorted(required - sections.keys())
     if missing:
         raise GuardError(f"llvm-size output is stale/incomplete; missing section(s): {', '.join(missing)}")
@@ -457,7 +466,7 @@ def measure_boot_chain(parsed: Disassembly, elf: Path, chain_roots: list[str]) -
 def measure_board(
     elf: Path, framebuffer_bytes: int, include_poll: bool, chain_roots: list[str] | None
 ) -> BoardMeasurement:
-    sections = parse_size_output(run_tool("llvm-size", "-A", elf))
+    sections = parse_size_output(run_tool("llvm-size", "-A", elf), extra_required=frozenset({".uninit"}))
     symbols = parse_nm_output(
         run_tool("llvm-nm", "--print-size", "--size-sort", "--demangle", elf)
     )
@@ -478,7 +487,7 @@ def measure_board(
     return BoardMeasurement(
         bss=sections[".bss"],
         data=sections[".data"],
-        uninit=sections.get(".uninit", 0),
+        uninit=sections[".uninit"],
         flash=sum(sections[name] for name in FLASH_SECTIONS),
         framebuffer_symbols=framebuffer_symbols,
         full_frame_sized_writable=full_frame_sized,
