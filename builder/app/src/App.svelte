@@ -81,6 +81,7 @@
 <footer class="faint small">
     <span>Map data © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors</span>
     <span class="legal">
+        <a href={LINKS.licenses}>Licences</a>
         <a href={LINKS.impressum}>Impressum</a>
         <a href={LINKS.datenschutz}>Datenschutz</a>
     </span>
