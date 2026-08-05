@@ -489,7 +489,6 @@ fn run_terrain(args: &[String]) -> Result<(), String> {
             "posting-log2",
             "cell-log2",
             "regions",
-            "presets-dir",
             "source",
             "cache",
             "base-url",

@@ -107,11 +107,6 @@ impl Coverage {
         Coverage { polys, rings, bbox }
     }
 
-    /// The coverage's bounding box, µdeg, in [`UBox`] order.
-    pub fn bbox(&self) -> UBox {
-        self.bbox
-    }
-
     /// The ground this coverage encloses, km².
     ///
     /// The denominator of every density figure the bakery reports, so it is the

@@ -11,14 +11,22 @@ description = "Copernicus GLO-30 GeoTIFF -> OBCT terrain cells (obc-dem fetch / 
 # `container`, whose only dependencies are `obc-formats` and `obc-elevation`. The alternative was a
 # second OBCT writer inside the assembler, which is exactly the drift `container`'s module header
 # exists to refuse.
+#
+# The two producer halves are separate features because they are separate costs: `geotiff` is a
+# decoder, `fetch` is an HTTP client with a TLS stack behind it. The bakery (`obc-bake`) drives
+# `bake_cell` over tiles an operator already has and never downloads one, so it takes `geotiff`
+# alone and no `ureq`/rustls/ring reaches its dependency tree. `dem` is both, and stays the default
+# because the `obc-dem` binary is both.
 [features]
 default = ["dem"]
-dem = ["dep:tiff", "dep:ureq"]
+dem = ["geotiff", "fetch"]
+geotiff = ["dep:tiff"]
+fetch = ["dep:ureq"]
 
 [[bin]]
 name = "obc-dem"
 path = "src/main.rs"
-required-features = ["dem"]
+required-features = ["geotiff", "fetch"]
 
 [dependencies]
 # The OBCT byte authority: magic, header offsets, sentinels, and the layout arithmetic that turns a

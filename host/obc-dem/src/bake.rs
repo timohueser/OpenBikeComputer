@@ -38,16 +38,6 @@ pub struct BakeParams {
     pub bbox: BboxUdeg,
 }
 
-impl Default for BakeParams {
-    fn default() -> Self {
-        BakeParams {
-            posting_log2: V1_POSTING_LOG2,
-            cell_log2: V1_CELL_LOG2,
-            bbox: BboxUdeg { min_lat: 0, min_lon: 0, max_lat: 1, max_lon: 1 },
-        }
-    }
-}
-
 /// What one bake produced, for the operator's summary and for a caller that wants to check coverage
 /// without re-reading the file.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -184,12 +174,14 @@ pub fn bake_shard<W: Write + Seek>(
 
 /// The canonical file name of a published cell: the OBCA cell id with `/` replaced by `_`.
 ///
-/// The id itself (`<log2>/<i>/<j>`, zero-padded to `max(4, digits)` per `OBCA_Spec.md` §1.3) is the
-/// catalog's name for the square, so deriving the file name from it rather than inventing a second
-/// naming scheme keeps EL3's mapping a substitution instead of a lookup table.
+/// The id itself (`<log2>/<i>/<j>`, zero-padded per `OBCA_Spec.md` §1.3) is the catalog's name for
+/// the square, so deriving the file name from it rather than inventing a second naming scheme keeps
+/// EL3's mapping a substitution instead of a lookup table. The padding rule is
+/// [`obc_elevation::grid::id_width`] rather than a local `max(4, …)`, because it is what makes an
+/// id a *key*: one square, one string, in a store addressed by that string. This crate cannot see
+/// `obc-pack`'s `grid::id_width`, and both call the same leaf so they cannot drift.
 pub fn cell_file_name(cell_log2: u8, ci: u32, cj: u32) -> String {
-    let side = obc_formats::obct::WORLD_SIDE >> cell_log2;
-    let width = (side - 1).to_string().len().max(4);
+    let width = obc_elevation::grid::id_width(cell_log2);
     format!("{cell_log2}_{ci:0width$}_{cj:0width$}.obcd", width = width)
 }
 
