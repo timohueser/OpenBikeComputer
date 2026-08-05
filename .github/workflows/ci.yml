@@ -79,6 +79,12 @@ jobs:
               - 'builder/requirements*.txt'
               - 'rust-toolchain.toml'
               - 'deny.toml'
+              # The other half of the dependency-licence pair (#1149): the config, the template
+              # and the generator all decide what THIRD-PARTY.md should contain, and the `deny`
+              # job is what compares that to the committed file.
+              - 'about.toml'
+              - 'THIRD-PARTY.md'
+              - 'tools/licenses/**'
               - '.github/workflows/ci.yml'
               - '.github/actions/**'
             docs:
@@ -405,6 +411,18 @@ jobs:
       # one where a bad licence or a live advisory matters most.
       - name: cargo-deny (obc-desktop app)
         run: cargo deny --manifest-path apps/obc-desktop/Cargo.toml --all-features --config deny.toml check
+      # deny.toml gates which licences may enter the tree; THIRD-PARTY.md is the *text* those
+      # licences require us to hand over with a binary (#1149). Both belong to the same job:
+      # the dependency bump that changes one changes the other, and a stale notice file is only
+      # ever discovered at a release tag otherwise, where release.yml links it by tag.
+      # Pinned: the committed file is a byte-for-byte diff target, so a generator that changed
+      # its own formatting would fail this check with nothing wrong in the tree. Bump the pin
+      # and regenerate in the same commit.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about@0.9.1
+      - name: THIRD-PARTY.md is current
+        run: tools/licenses/gen-third-party.sh --check
 
   # The web demo (apps/obc-web-demo) is the firmware's own render path compiled to wasm
   # behind a thin JS-driven host; build it on PRs (not just on the deploy-to-Pages push) so a

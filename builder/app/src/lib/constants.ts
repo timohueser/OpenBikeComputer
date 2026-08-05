@@ -31,6 +31,14 @@ export const LINKS = {
     impressum: `${SITE_BASE}docs/impressum/`,
     datenschutz: `${SITE_BASE}docs/datenschutz/`,
     github: "https://github.com/timohueser/OpenBikeComputer",
+    /**
+     * The bundle's own third-party notices (#1149), emitted beside it at build time by
+     * `vite/third-party-licenses.ts` — so it stays relative in every tier, including the
+     * desktop app, where the file sits next to `index.html` inside the Tauri bundle.
+     * `vite dev` has no bundle and therefore no file; the link 404s there by design,
+     * because a stale checked-in copy would be worse than an absent one.
+     */
+    licenses: "./third-party-licenses.txt",
     /** Where D3 (#908) publishes the desktop installers. */
     releases: "https://github.com/timohueser/OpenBikeComputer/releases",
 };
