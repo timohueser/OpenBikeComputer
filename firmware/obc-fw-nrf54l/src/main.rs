@@ -275,11 +275,18 @@ bind_interrupts!(struct SensorIrqs {
 // is the true on-device size.
 //
 // The binding moment is a full redraw with everything resident at once:
-//   - `App`        embeds the renderer scratch (`obc_render::MCU_RENDERER_BYTES`, 8,352 B nrf-mem)
-//                  plus the resident elevation `Profile` (~2.3 KB at PROFILE_COLS=256) and
-//                  `Breadcrumb` (~3 KB at SPINE_CAP=256); 34,944 B total. (The #270 cull: these
+//   - `App`        the screen tree + ride/activity state: the resident elevation `Profile` (~2.3 KB at
+//                  PROFILE_COLS=256), the `Breadcrumb` (~3 KB at SPINE_CAP=256), the POI/corridor
+//                  scratches and the catalogs; ~44 KB total. It owns **no** render scratch since
+//                  #1146 P1 — that block is the `RENDER_SCRATCH` static below. (The #270 cull: these
 //                  caps were roughly halved again so the map plane leaves room for the BLE
 //                  stack in one image — the LM20 re-decides them generously.)
+//   - render scratch
+//                  `obc_render::RenderScratch`, 92,320 B at the nrf-mem caps (the buffers
+//                  themselves are `obc_render::MCU_SCRATCH_BYTES`): every decode / collect / span /
+//                  draw buffer a frame needs, and nothing else — the `RENDER_SCRATCH` static below.
+//                  Immediate-mode: dead between frames, but resident, because a full redraw needs
+//                  all of it at once.
 //   - framebuffer  the single RGB222 frame: 240×320 × 1 B/px = 75 KB — the `FB` static below.
 //   - `MapCache`   the streamed-map geometry-chunk cache (2 slots + 8 KB scratch on nrf-mem, 14,444 B).
 //   - `RouteCache` the decoded-route-chunk cache (2 slots on nrf-mem, ~6 KB).
@@ -323,8 +330,10 @@ const STACK_RESERVE: usize = 64 * 1024;
 const FB_BYTES: usize = FRAME_W * FRAME_H;
 
 /// The map plane's residents (the table above). Includes the active route's `RouteIndex`, kept
-/// resident across frames. Present in every build now (#270 — map + BLE coexist).
+/// resident across frames, and the per-frame `RenderScratch` — which `App` used to embed and which
+/// #1146 P1 made a static of its own. Present in every build now (#270 — map + BLE coexist).
 const MAP_RESIDENT: usize = core::mem::size_of::<obc_app::App>()
+    + core::mem::size_of::<obc_render::RenderScratch>()
     + core::mem::size_of::<obc_reader::MapCache>()
     + core::mem::size_of::<obc_reader::MapTables>()
     + core::mem::size_of::<obc_route::RouteCache>()
@@ -379,7 +388,7 @@ const RESIDENT_BYTES: usize = FB_BYTES
     + USB_RESIDENT;
 const _: () = assert!(
     RESIDENT_BYTES + STACK_RESERVE <= NRF_RAM_BYTES,
-    "nRF resident set (framebuffer + RowDiff + map plane [App/MapCache/MapTables/RouteCache/RouteIndex/volume-set tables] + BLE stack [MPSL/SDC mem/host arena]) + stack reserve overruns RAM — re-trim the `nrf-mem` caps (#270 culled them so map + BLE share the 256 KB DK; the LM20 relaxes everything)"
+    "nRF resident set (framebuffer + RowDiff + map plane [App/RenderScratch/MapCache/MapTables/RouteCache/RouteIndex/volume-set tables] + BLE stack [MPSL/SDC mem/host arena]) + stack reserve overruns RAM — re-trim the `nrf-mem` caps (#270 culled them so map + BLE share the 256 KB DK; the LM20 relaxes everything)"
 );
 
 // A report-only table of exact target-side allocation sizes. Keeping the table in this crate gives
@@ -470,7 +479,9 @@ mod resource_report {
         entry("set_sources", sd::SET_SOURCES_BYTES),
         entry("route_cache", core::mem::size_of::<RouteCache>()),
         entry("route_index", core::mem::size_of::<obc_route::RouteIndex>()),
-        entry("renderer", core::mem::size_of::<obc_render::MapRenderer>()),
+        // The per-frame render scratch. Keeps the `renderer` name it has carried since the table
+        // existed — the block is the same bytes, they just stopped living inside `App` (#1146 P1).
+        entry("renderer", core::mem::size_of::<obc_render::RenderScratch>()),
         entry("nav_scratch", core::mem::size_of::<obc_route::NavScratch>()),
         entry("nav_tile_cache", core::mem::size_of::<obc_reader::NavTileCache>()),
         entry("nav_planner", core::mem::size_of::<obc_route::NavPlanner>()),
@@ -514,9 +525,9 @@ static mut FB: [u8; FB_BYTES] = [0; FB_BYTES];
 static mut ROW_DIFF: RowDiff<FRAME_H> = RowDiff::new();
 
 /// The streamed-map geometry cache + the shared [`App`], placed in `.bss` and built **in place** (a
-/// `ptr::write` into the reserved region): the 34,944 B `App` (including 8,352 B renderer scratch) and
-/// 14,444 B cache must never form on the 256 KB part's small stack. [`MapCache::new`](obc_reader::MapCache)
-/// is an all-zero `MaybeUninit::zeroed`, so writing it is a `.bss` memset.
+/// `ptr::write` into the reserved region): the ~44 KB `App` and the 37 KB cache must never form on
+/// the part's small stack. [`MapCache::new`](obc_reader::MapCache) is an all-zero
+/// `MaybeUninit::zeroed`, so writing it is a `.bss` memset.
 static mut MAP_CACHE: MaybeUninit<MapCache> = MaybeUninit::uninit();
 /// The immutable map tables (header scalars + style table + LOD pyramid), parsed **once at boot** into
 /// `.bss` and borrowed by every per-frame [`Reader`]. Resident so the per-frame render reader carries
@@ -527,6 +538,25 @@ static mut MAP_TABLES: MaybeUninit<MapTables> = MaybeUninit::uninit();
 /// the ~5 KiB `SetShards<11>` through `main`'s async frame.
 static mut SET_SHARDS: sd::SetShardStore = sd::SetShardStore::new();
 static mut APP: MaybeUninit<App> = MaybeUninit::uninit();
+/// The render path's **per-frame scratch** (#1146 P1): every decode / cull / span / draw buffer a
+/// redraw needs, 92,320 B at the `nrf-mem` caps (`obc_render::MCU_SCRATCH_BYTES` sums the buffers
+/// behind that figure; [`MAP_RESIDENT`] budgets the struct itself). Until P1 these
+/// bytes sat inside [`APP`]; extracting them makes the render arm of the future #1146 arena a
+/// *named* block the budget table and the resource report can point at, and `App` a state object
+/// again. `.bss` for now — P2 gives the arena a region of its own and this static becomes a slice
+/// of it.
+///
+/// Immediate-mode: the buffers are cleared and refilled by every `render_*` call and mean nothing
+/// between frames, so nothing here is read before it is written and no frame can inherit the last
+/// one's state. Resident all the same — a full redraw needs all of it at once, so it is budgeted
+/// beside the framebuffer rather than borrowed from the stack.
+///
+/// Built **in place** via [`RenderScratch::init_zeroed`](obc_render::RenderScratch::init_zeroed) (a
+/// `.bss` memset over the all-zero empty state), never through [`init_static`] and never by value:
+/// a 92 KB by-value constructor only stays off the stack via return-value optimization, which is
+/// exactly the guarantee `RouteIndex::read_into` learned not to rely on (STKOF HardFault,
+/// 2026-07-12; see the budget table above).
+static mut RENDER_SCRATCH: MaybeUninit<obc_render::RenderScratch> = MaybeUninit::uninit();
 /// The decoded-route-geometry cache, placed in `.bss` and built in place like [`MAP_CACHE`]
 /// ([`RouteCache::new`](obc_route::RouteCache) is an all-zero `MaybeUninit::zeroed`). The session-long
 /// cache spares a redraw of the unchanged route + the matcher's per-fix decode from re-reading `.obcr`
@@ -1271,14 +1301,24 @@ async fn main(_spawner: Spawner) {
         };
 
         // Boot to **Home**: the user drives Home → Route menu → Map with the buttons. Built **in place**
-        // in `.bss` (`init_idle` writes each field where it sits; the 8,352 B renderer scratch is zeroed
-        // in place), never on the stack. The Route menu is filled from the card's catalog scanned above;
-        // selecting an entry opens the Map at that route's start and streams its geometry into the render
-        // + the map-matcher.
+        // in `.bss` (`init_idle` writes each field where it sits), never on the stack. The Route menu is
+        // filled from the card's catalog scanned above; selecting an entry opens the Map at that route's
+        // start and streams its geometry into the render + the map-matcher.
         // SAFETY: sole owner of APP; `init_idle` fully initialises it before the `&mut` below reads it.
         let app: &mut App = unsafe {
             let slot = core::ptr::addr_of_mut!(APP) as *mut App;
             App::init_idle(slot, AppState::new(cam_lon, cam_lat, zoom_for_mpp(INIT_MPP)));
+            &mut *slot
+        };
+        // The render scratch beside it (#1146 P1), placed the same way and for the same reason —
+        // `init_zeroed` memsets the ~92 KB empty state where it sits, so the buffers never form on
+        // the stack. Threaded from here into the ride loop as the one `&'static mut` handle; every
+        // `render_*` call borrows it for the duration of a frame and nothing holds it across an await.
+        // SAFETY: sole owner of RENDER_SCRATCH; `init_zeroed` fully initialises the slot before the
+        // `&mut` below reads it, and the single map plane means no aliasing.
+        let render_scratch: &'static mut obc_render::RenderScratch = unsafe {
+            let slot = core::ptr::addr_of_mut!(RENDER_SCRATCH) as *mut obc_render::RenderScratch;
+            obc_render::RenderScratch::init_zeroed(slot);
             &mut *slot
         };
         {
@@ -1580,6 +1620,7 @@ async fn main(_spawner: Spawner) {
         let app_fut = ride::run_app(
             display,
             app,
+            render_scratch,
             shared_store,
             map_tables,
             map_cache,
@@ -1598,6 +1639,7 @@ async fn main(_spawner: Spawner) {
         let app_fut = ride::run_app(
             display,
             app,
+            render_scratch,
             shared_store,
             map_tables,
             map_cache,

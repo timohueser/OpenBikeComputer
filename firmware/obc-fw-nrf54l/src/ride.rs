@@ -530,6 +530,11 @@ fn desired_gps_power(app: &App) -> GpsPower {
 pub(crate) async fn run_app(
     mut display: MapDisplay,
     app: &mut App,
+    // The render path's per-frame scratch (#1146 P1): `main`'s `RENDER_SCRATCH` static, threaded in
+    // beside `app` exactly like the `nav` buffers — never a local, and never held across an await.
+    // Each `render_*` call below reborrows it for the length of one synchronous render, so the ~92 KB
+    // stays a `.bss` block the loop points at rather than anything this task's future has to carry.
+    scratch: &mut obc_render::RenderScratch,
     // The SD card + RRAM settings behind one async mutex (#193, #270). The loop takes it in two
     // short scopes per pass — the store phase (reconcile + sources + the sync render) and the
     // post-present tail (trial confirm + deferred save) — and **never holds it across the present
@@ -1080,6 +1085,7 @@ pub(crate) async fn run_app(
                     display.render_frame(|f: &mut crate::ls021_flpr::Frame64| {
                         let mut fbdev = FbDevice64::new(f.bytes_mut(), FRAME_W as u32, FRAME_H as u32);
                         app.render_map_timed(
+                            scratch,
                             &mut fbdev,
                             None,
                             None,
@@ -1742,6 +1748,7 @@ pub(crate) async fn run_app(
                         }
                         match mounted_set.as_ref() {
                             Some(set) => app.render_scene_map_timed(
+                                scratch,
                                 &mut fbdev,
                                 needs_map.then_some(set),
                                 reader.as_ref(),
@@ -1752,6 +1759,7 @@ pub(crate) async fn run_app(
                                 &InstantClock,
                             ),
                             None => app.render_map_timed(
+                                scratch,
                                 &mut fbdev,
                                 reader.as_ref(),
                                 route.as_ref(),
