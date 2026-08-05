@@ -132,14 +132,7 @@ impl RideScreen {
                 _ => Transition::None,
             },
             // Back steps out of an open field first, else climbs to the Settings list.
-            Gesture::Back => {
-                if self.editing_cycle {
-                    self.editing_cycle = false;
-                    Transition::None
-                } else {
-                    Transition::Pop
-                }
-            }
+            Gesture::Back => super::back_out_of_field(self.editing_cycle, || self.editing_cycle = false),
             Gesture::Hold | Gesture::BackHold => Transition::None,
         }
     }
@@ -251,26 +244,13 @@ fn draw_subline_cycle_value(
 mod tests {
     use super::*;
     use crate::activity::Activity;
+    use crate::screen::test_ctx;
     use crate::{AppState, Mode, Settings};
 
     fn run(scr: &mut RideScreen, s: &mut Settings, g: Gesture) -> Transition {
         let mut st = AppState::new(0, 0, 1.0);
         let mut act = Activity::new(Mode::Idle);
-        let scratch = crate::screen::PoiScratch::new();
-        let mut cx = Ctx {
-            state: &mut st,
-            activity: &mut act,
-            settings: s,
-            routes: &[],
-            rides: &[],
-            trips: &[],
-            nav_profiles: &crate::NavProfiles::EMPTY,
-            poi_scratch: &scratch,
-            waypoints: &[],
-            corridor: &[],
-            sensor_scan_hits: &[],
-            now_ms: 0,
-        };
+        let mut cx = test_ctx(&mut st, &mut act, s);
         scr.handle(g, &mut cx)
     }
 

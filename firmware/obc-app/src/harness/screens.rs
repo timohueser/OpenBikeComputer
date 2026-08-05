@@ -4,7 +4,7 @@
 
 use crate::activity::Activity;
 use crate::screen::{
-    apply, ClimbScreen, Ctx, HomeScreen, MapScreen, MenuScreen, PoiScratch, RideControl, RouteMenuScreen,
+    apply, test_ctx, ClimbScreen, Ctx, HomeScreen, MapScreen, MenuScreen, RideControl, RouteMenuScreen,
     RouteOverviewScreen, RouteSwapScreen, Screen, ScreenTick, Stack, StatisticsScreen, Transition,
 };
 use crate::{
@@ -55,54 +55,15 @@ fn leaked_settings() -> &'static mut Settings {
     Box::leak(Box::new(Settings::default()))
 }
 
-/// An empty [`PoiScratch`] for the handle `Ctx` — leaked so it satisfies the `&'a` borrow without a
-/// lifetime dance in each helper. The non-POI screens under test never read it.
-fn leaked_scratch() -> &'static PoiScratch {
-    Box::leak(Box::new(PoiScratch::new()))
-}
-
-/// An empty [`NavProfiles`](crate::NavProfiles) for the handle `Ctx` — leaked for the same `&'a`
-/// reason as the scratch (a `&NavProfiles::EMPTY` const can't promote to `'static`). The screens
-/// under test aren't the Bike-type screen, so they never read it.
-fn leaked_profiles() -> &'static crate::NavProfiles {
-    Box::leak(Box::new(crate::NavProfiles::new()))
-}
-
 /// A handle [`Ctx`] over freshly-made state/activity. The Route-menu tests pass a catalog via
 /// [`route_ctx`].
 fn ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity) -> Ctx<'a> {
-    Ctx {
-        state,
-        activity,
-        settings: leaked_settings(),
-        routes: &[],
-        rides: &[],
-        trips: &[],
-        nav_profiles: leaked_profiles(),
-        poi_scratch: leaked_scratch(),
-        waypoints: &[],
-        corridor: &[],
-        sensor_scan_hits: &[],
-        now_ms: 0,
-    }
+    test_ctx(state, activity, leaked_settings())
 }
 
 /// A handle [`Ctx`] carrying a route catalog, for the Route-menu tests.
 fn route_ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity, routes: &'a [RouteSummary]) -> Ctx<'a> {
-    Ctx {
-        state,
-        activity,
-        settings: leaked_settings(),
-        routes,
-        rides: &[],
-        trips: &[],
-        nav_profiles: leaked_profiles(),
-        poi_scratch: leaked_scratch(),
-        waypoints: &[],
-        corridor: &[],
-        sensor_scan_hits: &[],
-        now_ms: 0,
-    }
+    Ctx { routes, ..ctx(state, activity) }
 }
 
 /// A small synthetic route catalog (names + totals + a unit bbox to center on).

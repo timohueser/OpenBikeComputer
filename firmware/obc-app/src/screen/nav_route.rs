@@ -122,15 +122,7 @@ impl NavConfirmScreen {
             cv.text(&away, Point::new(w / 2, name_y + 24), Font::Label, TextAlign::Center, SUBTEXT);
         }
 
-        let geo = super::GuardedRowsGeometry {
-            x: 12,
-            w: w - 24,
-            top: super::TITLE_BAR_H + 122,
-            row_h: 46,
-            gap: 8,
-            label_dx: 16,
-            label_dy: 11,
-        };
+        let geo = super::GuardedRowsGeometry::card(w, super::TITLE_BAR_H + 122);
         let items = [
             MenuItem { label: rx.t(Msg::NavRouteCreateRoute), guard: false },
             MenuItem { label: rx.t(Msg::NavRouteCancel), guard: false },

@@ -9,8 +9,8 @@
 //! On the firmware this plane runs on a **high-priority interrupt executor** that preempts the
 //! CPU-bound map render every few milliseconds: it samples the buttons, recognises gestures (into a
 //! channel the map plane drains), and animates the hold bulge on its own overlay layer — so
-//! press-to-feedback latency stays bounded regardless of map-frame length. On the simulator (and
-//! the firmware's single-executor fallback) the same plane runs inline via
+//! press-to-feedback latency stays bounded regardless of map-frame length. On the single-loop hosts
+//! (the simulator, the web demos) the same plane runs inline via
 //! [`App::handle_input`](crate::App::handle_input). Either way the logic is *this one struct*, so
 //! host and device behave identically.
 //!

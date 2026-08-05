@@ -116,18 +116,12 @@ pub(crate) fn fill_polygon<D>(
         xs.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
         let mut k = 0;
         while k + 1 < xs.len() {
-            // Round spans *outward* (floor left, ceil right) to close hairline gaps between
-            // adjacent fills. A feature clipped across a chunk boundary becomes two polygons whose
-            // shared edge is clipped independently, so their pixel staircases can disagree by ≤1px
-            // (most visible along a rotated diagonal seam). `to_screen`'s round-to-nearest collapses
-            // nearly all of it; this ≤1px overlap is cheap insurance (invisible for same-colored
-            // fills).
-            let x0 = (libm::floorf(xs[k]) as i32).max(0);
-            let x1 = (libm::ceilf(xs[k + 1]) as i32).min(w - 1);
-            if x1 >= x0 {
-                let _ =
-                    target.fill_solid(&Rectangle::new(Point::new(x0, y), Size::new((x1 - x0 + 1) as u32, 1)), color);
-            }
+            // Spans round *outward* — see [`fill_span`], which owns that rule for both fillers.
+            // A feature clipped across a chunk boundary becomes two polygons whose shared edge is
+            // clipped independently, so their pixel staircases can disagree by ≤1px (most visible
+            // along a rotated diagonal seam). `to_screen`'s round-to-nearest collapses nearly all of
+            // it; the ≤1px overlap is cheap insurance (invisible for same-colored fills).
+            fill_span(target, xs[k], xs[k + 1], y, w, color);
             k += 2;
         }
     }

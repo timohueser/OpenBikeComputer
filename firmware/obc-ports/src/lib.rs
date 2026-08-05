@@ -322,6 +322,26 @@ pub struct Sensors<'a> {
     pub cadence: Option<&'a mut dyn CadenceSource>,
 }
 
+impl<'a> Sensors<'a> {
+    /// The location-only set: every optional capability absent. A host that has more fills them in
+    /// with struct-update syntax (`Sensors { fuel: Some(g), ..Sensors::new(loc) }`), so adding a
+    /// tenth optional here doesn't ripple through every caller.
+    pub fn new(loc: &'a mut dyn LocationSource) -> Self {
+        Sensors {
+            loc,
+            altimeter: None,
+            temperature: None,
+            clock: None,
+            compass: None,
+            track: None,
+            fuel: None,
+            hr: None,
+            power: None,
+            cadence: None,
+        }
+    }
+}
+
 /// A physical control button whose press **edges** the gesture layer times.
 ///
 /// The device has four buttons: **Up** / **Down** on the left flank, **Select** / **Back** on the

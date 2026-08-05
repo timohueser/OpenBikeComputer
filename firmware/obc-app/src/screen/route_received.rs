@@ -178,15 +178,7 @@ impl RouteReceivedScreen {
 
         // With the band drawn the options sit below it; without it they move up into its slot.
         let rows_top = super::TITLE_BAR_H + if drew_spark { SPARK_TOP + SPARK_H + 10 } else { 78 };
-        let geo = super::GuardedRowsGeometry {
-            x: 12,
-            w: w - 24,
-            top: rows_top,
-            row_h: 46,
-            gap: 8,
-            label_dx: 16,
-            label_dy: 11,
-        };
+        let geo = super::GuardedRowsGeometry::card(w, rows_top);
         let items = [
             MenuItem { label: rx.t(Msg::RouteReceivedViewRoute), guard: false },
             MenuItem { label: rx.t(Msg::RouteReceivedDismiss), guard: false },
@@ -317,15 +309,7 @@ impl TripReceivedScreen {
 
         // The option rows sit under the three text lines — the route card's no-sparkline geometry,
         // shifted down by the extra count line.
-        let geo = super::GuardedRowsGeometry {
-            x: 12,
-            w: w - 24,
-            top: super::TITLE_BAR_H + 96,
-            row_h: 46,
-            gap: 8,
-            label_dx: 16,
-            label_dy: 11,
-        };
+        let geo = super::GuardedRowsGeometry::card(w, super::TITLE_BAR_H + 96);
         let items = [
             MenuItem { label: rx.t(Msg::TripReceivedViewTrip), guard: false },
             MenuItem { label: rx.t(Msg::TripReceivedDismiss), guard: false },

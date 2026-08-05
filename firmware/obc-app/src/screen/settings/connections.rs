@@ -45,27 +45,14 @@ impl ConnectionsScreen {
 mod tests {
     use super::*;
     use crate::activity::Activity;
+    use crate::screen::test_ctx;
     use crate::{AppState, Mode, Settings};
 
     fn run(scr: &mut ConnectionsScreen, g: Gesture) -> Transition {
         let mut st = AppState::new(0, 0, 1.0);
         let mut act = Activity::new(Mode::Idle);
         let mut s = Settings::default();
-        let scratch = crate::screen::PoiScratch::new();
-        let mut cx = Ctx {
-            state: &mut st,
-            activity: &mut act,
-            settings: &mut s,
-            routes: &[],
-            rides: &[],
-            trips: &[],
-            nav_profiles: &crate::NavProfiles::EMPTY,
-            poi_scratch: &scratch,
-            waypoints: &[],
-            corridor: &[],
-            sensor_scan_hits: &[],
-            now_ms: 0,
-        };
+        let mut cx = test_ctx(&mut st, &mut act, &mut s);
         scr.handle(g, &mut cx)
     }
 

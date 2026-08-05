@@ -6,10 +6,11 @@
 //! fields at `pub(crate)` visibility — so no public accessor exists purely for tests, and the
 //! fields drop out of the crate's public surface.
 //!
-//! [`support`] is the in-crate copy of the shared integration-test helpers these two harnesses
-//! need (`tests/common/mod.rs` stays for the remaining integration tests).
+//! [`support`] holds the shared test helpers these two harnesses need. It lives here rather than
+//! under `tests/` because in-crate code can't reach a `tests/` module — the integration tests get
+//! the same file through a `#[path]` include in `tests/common/mod.rs`, so there is one copy.
 
-mod support;
+pub(crate) mod support;
 
 mod screens;
 mod upload;

@@ -127,26 +127,13 @@ impl RideStartScreen {
 mod tests {
     use super::*;
     use crate::activity::{Activity, Mode};
+    use crate::screen::test_ctx;
     use crate::screen::Screen;
     use crate::{AppState, Settings};
 
     fn run(scr: &mut RideStartScreen, st: &mut AppState, act: &mut Activity, g: Gesture) -> Transition {
         let mut settings = Settings::default();
-        let scratch = crate::screen::PoiScratch::new();
-        let mut cx = Ctx {
-            state: st,
-            activity: act,
-            settings: &mut settings,
-            routes: &[],
-            rides: &[],
-            trips: &[],
-            nav_profiles: &crate::NavProfiles::EMPTY,
-            poi_scratch: &scratch,
-            waypoints: &[],
-            corridor: &[],
-            sensor_scan_hits: &[],
-            now_ms: 0,
-        };
+        let mut cx = test_ctx(st, act, &mut settings);
         scr.handle(g, &mut cx)
     }
 

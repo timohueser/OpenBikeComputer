@@ -2312,7 +2312,7 @@ impl Storage {
     }
 
     /// A [`ByteSource`](obc_formats::io::ByteSource) over the open map file, for reading the header
-    /// ([`obc_reader::read_header`]) or building a per-frame [`Reader`](obc_reader::Reader). `None` if
+    /// ([`obc_reader::MapTables::parse`]) or building a per-frame [`Reader`](obc_reader::Reader). `None` if
     /// no map was opened ([`open_map`](Self::open_map) returned `None`). Cheap — the source just wraps
     /// the already-open handle, so it's rebuilt every redraw, keeping no borrow across the `&mut self`
     /// route/track operations. Extent-mapped direct block reads when the table built (#500), the
