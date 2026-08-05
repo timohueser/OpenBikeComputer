@@ -16,8 +16,9 @@
 //!
 //! The freeze is engaged only when the base screen would actually draw a map. Planning from the
 //! menus already renders no map — `NavPlanning` is an opaque chrome screen, so it *is* the base
-//! while it is up — and freezing there would show a banner over the spinner that already says
-//! "Planning...".
+//! while it is up — and freezing there would put a banner over a spinner that is already saying
+//! the same thing in its own words ("Finding a route..." for a route plan, "Planning detour..." for
+//! a detour).
 //!
 //! The window that needs this is the **detour** path (#882), where the planning screen is *pushed
 //! over a map base*: Back pops it while the host's planner is still running, and the next frame
@@ -52,17 +53,40 @@ const BANNER_RADIUS: u32 = 9;
 /// under the banner is frozen, not gone — covering the marker would read as "lost").
 const BANNER_Y_FRAC: f32 = 0.3;
 
+/// Which of the two planner flows a start/end edge belongs to.
+///
+/// They are **typed apart because their terminal edges are not interchangeable.** Both families
+/// engage the same freeze and both take the same nav arm, but each has its own cancel command, its
+/// own answer event and its own failure tier — and every one of those fires unconditionally, on
+/// whatever is live. Shared as one flag, a detour's terminal edge (a drained `CancelDetour`, or the
+/// board's immediate `NoPath` answer for the detour half it has not built yet) would release a
+/// freeze a **route** search is still holding the arena behind: the map plane resumes, the next
+/// frame claims the render arm, and the gate answers `Busy(Nav)` — a `debug_assert` panic in debug,
+/// and in release a map that never redraws again with an unfrozen matcher drifting under it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlanFamily {
+    /// The route planner (#499): `PlanRoute` → `NavPlanned`, cancelled by `CancelRoutePlan`.
+    Route,
+    /// The detour planner (#882): `PlanDetour` → `DetourPlanned`, cancelled by `CancelDetour`.
+    Detour,
+}
+
 /// Whether a host planner run is live — the freeze's whole state — plus the one bit that turns that
 /// *level* into the repaint *edge* a render-on-demand host can act on.
 ///
-/// The interesting part is where the plan flag is set and cleared: the app engages it when a plan
+/// The interesting part is where the plan flags are set and cleared: the app engages one when a plan
 /// command is actually drained (the host will begin planning this pass) and releases it on the
-/// answer, on the failure, and on a cancel drain. Anything else — a plan the rider cancelled before
-/// the host ever saw it, a late answer whose screen is gone — must not leave it stuck, since a stuck
-/// freeze is a map that never redraws again.
+/// answer, on the failure, and on a cancel drain — **matched by [`PlanFamily`]**. Anything else — a
+/// plan the rider cancelled before the host ever saw it, a late answer whose screen is gone — must
+/// not leave it stuck, since a stuck freeze is a map that never redraws again.
 #[derive(Debug, Default)]
 pub(crate) struct RerouteFreeze {
-    plan_live: bool,
+    /// A live [`Route`](PlanFamily::Route) run.
+    route_live: bool,
+    /// A live [`Detour`](PlanFamily::Detour) run. One flag each rather than a family *tag*: two runs
+    /// live at once is not a state the UI can reach today, and a tag would have to pick a winner if
+    /// it ever did — two levels simply hold the freeze until both are done.
+    detour_live: bool,
     /// Whether the *engaged* freeze — plan **and** map base — was already reported to the host by a
     /// [`take_engaged_edge`](RerouteFreeze::take_engaged_edge) drain. See that method: this is the
     /// difference between a banner that appears and one that is silently swallowed.
@@ -71,30 +95,45 @@ pub(crate) struct RerouteFreeze {
 
 impl RerouteFreeze {
     pub(crate) const fn new() -> RerouteFreeze {
-        RerouteFreeze { plan_live: false, engaged_shown: false }
+        RerouteFreeze { route_live: false, detour_live: false, engaged_shown: false }
     }
 
-    /// A plan command was drained: the host begins a planner run this pass. Returns whether this
-    /// *changed* the state, so the caller can repaint the overlay exactly on the edge.
-    pub(crate) fn plan_started(&mut self) -> bool {
-        !core::mem::replace(&mut self.plan_live, true)
+    /// The flag `family` owns.
+    fn slot(&mut self, family: PlanFamily) -> &mut bool {
+        match family {
+            PlanFamily::Route => &mut self.route_live,
+            PlanFamily::Detour => &mut self.detour_live,
+        }
     }
 
-    /// The planner run is over — answered, failed, or cancelled. Idempotent (several of those edges
-    /// legitimately land for one run: a cancel drains and the late answer arrives behind it).
-    pub(crate) fn plan_ended(&mut self) -> bool {
-        core::mem::replace(&mut self.plan_live, false)
+    /// A plan command was drained: the host begins a `family` planner run this pass. Returns whether
+    /// this *changed* whether any run is live at all.
+    pub(crate) fn plan_started(&mut self, family: PlanFamily) -> bool {
+        let was = self.plan_live();
+        *self.slot(family) = true;
+        !was
+    }
+
+    /// A `family` planner run is over — answered, failed, or cancelled. Returns whether that ended
+    /// the *last* live run. Idempotent (several of those edges legitimately land for one run: a
+    /// cancel drains and the late answer arrives behind it), and it never touches the other family:
+    /// see [`PlanFamily`] for the regression that is.
+    pub(crate) fn plan_ended(&mut self, family: PlanFamily) -> bool {
+        let was = self.plan_live();
+        *self.slot(family) = false;
+        was && !self.plan_live()
     }
 
     /// Whether a planner run is live at all — true through a menu plan too, where no freeze is
-    /// engaged. This is the "is the arena's nav arm claimed?" fact.
+    /// engaged. This is the "is the arena's nav arm claimed?" fact, and it is deliberately the
+    /// **union**: the arm is one block, so it stays out until every family that took it is done.
     pub(crate) fn plan_live(&self) -> bool {
-        self.plan_live
+        self.route_live || self.detour_live
     }
 
     /// Whether the freeze is **engaged**: a live plan *and* a base screen that would draw the map.
     pub(crate) fn active(&self, base_draws_map: bool) -> bool {
-        self.plan_live && base_draws_map
+        self.plan_live() && base_draws_map
     }
 
     /// The level→edge converter the host's once-per-frame dirty drain runs: `true` on the pass the
@@ -158,13 +197,13 @@ mod tests {
         assert!(!f.plan_live());
         assert!(!f.active(true), "no plan, no freeze — the map renders normally");
 
-        assert!(f.plan_started(), "the drain is the engaging edge");
-        assert!(!f.plan_started(), "…and re-engaging is not an edge");
+        assert!(f.plan_started(PlanFamily::Route), "the drain is the engaging edge");
+        assert!(!f.plan_started(PlanFamily::Route), "…and re-engaging is not an edge");
         assert!(f.plan_live());
         assert!(!f.active(false), "menu planning draws no map: nothing to freeze, no banner");
         assert!(f.active(true), "a plan over a map base is the freeze");
 
-        assert!(f.plan_ended(), "the answer releases it");
+        assert!(f.plan_ended(PlanFamily::Route), "the answer releases it");
         assert!(!f.active(true));
     }
 
@@ -174,13 +213,50 @@ mod tests {
     #[test]
     fn releasing_twice_is_harmless_and_a_new_plan_re_engages() {
         let mut f = RerouteFreeze::new();
-        assert!(!f.plan_ended(), "releasing what was never engaged is not an edge");
-        assert!(f.plan_started());
-        assert!(f.plan_ended());
-        assert!(!f.plan_ended(), "the late answer behind the cancel is a no-op");
+        assert!(!f.plan_ended(PlanFamily::Detour), "releasing what was never engaged is not an edge");
+        assert!(f.plan_started(PlanFamily::Detour));
+        assert!(f.plan_ended(PlanFamily::Detour));
+        assert!(!f.plan_ended(PlanFamily::Detour), "the late answer behind the cancel is a no-op");
         assert!(!f.active(true));
-        assert!(f.plan_started(), "and the next reroute freezes again");
+        assert!(f.plan_started(PlanFamily::Detour), "and the next reroute freezes again");
         assert!(f.active(true));
+    }
+
+    /// **The regression** the families exist for, in both directions: every terminal edge fires
+    /// unconditionally on whatever is live, so one shared flag would let a detour's cancel (or the
+    /// board's immediate `NoPath` answer for the detour half it has not built) release a freeze a
+    /// *route* search is still holding the nav arm behind — and the very next frame would claim the
+    /// render arm the search is mid-way through.
+    #[test]
+    fn a_plan_is_released_only_by_its_own_familys_terminal_edge() {
+        let mut f = RerouteFreeze::new();
+        f.plan_started(PlanFamily::Route);
+        assert!(!f.plan_ended(PlanFamily::Detour), "a detour terminal edge is not this run's");
+        assert!(f.plan_live(), "the route search still holds the arm");
+        assert!(f.active(true), "…so the map stays frozen");
+        assert!(f.plan_ended(PlanFamily::Route), "only its own answer releases it");
+        assert!(!f.plan_live());
+
+        // And the mirror image.
+        f.plan_started(PlanFamily::Detour);
+        assert!(!f.plan_ended(PlanFamily::Route));
+        assert!(f.active(true));
+        assert!(f.plan_ended(PlanFamily::Detour));
+        assert!(!f.active(true));
+    }
+
+    /// Two runs live at once is not reachable through today's UI, but the arm is **one block** — so
+    /// if it ever becomes reachable the freeze must hold until the last of them is done, not the
+    /// first. Two levels give that for free; a single family *tag* would not.
+    #[test]
+    fn the_freeze_outlives_the_first_of_two_live_runs() {
+        let mut f = RerouteFreeze::new();
+        assert!(f.plan_started(PlanFamily::Route));
+        assert!(!f.plan_started(PlanFamily::Detour), "already live: not a fresh engaging edge");
+        assert!(!f.plan_ended(PlanFamily::Route), "one down, one to go — not the releasing edge");
+        assert!(f.plan_live());
+        assert!(f.plan_ended(PlanFamily::Detour), "the last one out releases the freeze");
+        assert!(!f.plan_live());
     }
 
     /// **The regression** the engaged edge exists for: the plan's own start edge fires under the
@@ -192,7 +268,7 @@ mod tests {
         let mut f = RerouteFreeze::new();
         assert!(!f.take_engaged_edge(true), "at rest there is nothing to repaint");
 
-        f.plan_started(); // …under the opaque spinner: a chrome base
+        f.plan_started(PlanFamily::Route); // …under the opaque spinner: a chrome base
         assert!(!f.take_engaged_edge(false), "a plan with no map under it engages nothing");
         assert!(!f.take_engaged_edge(false), "…and keeps engaging nothing");
 
@@ -200,7 +276,7 @@ mod tests {
         assert!(f.take_engaged_edge(true), "THE edge: a frozen map the rider is actually looking at");
         assert!(!f.take_engaged_edge(true), "a level, so one repaint — not one per ride-loop pass");
 
-        f.plan_ended();
+        f.plan_ended(PlanFamily::Route);
         assert!(f.take_engaged_edge(true), "and one more to take the banner off");
         assert!(!f.take_engaged_edge(true));
     }

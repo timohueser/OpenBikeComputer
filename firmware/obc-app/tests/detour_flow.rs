@@ -434,6 +434,51 @@ fn the_banner_lands_when_a_map_base_returns_under_a_search_that_already_started(
     assert!(app.reroute_banner_rows(320.0).is_none(), "with no banner over it");
 }
 
+/// **The regression** the plan families exist for, through the App: the board answers a
+/// `PlanDetour` with an immediate `NoPath` (it has no detour half yet, #882), and that terminal
+/// edge is unconditional. Shared as one flag with the route planner, it would release a freeze a
+/// *route* search is still holding the nav arm behind — the next frame claims the render arm, the
+/// arena answers `Busy(Nav)`, and the map is dead for the rest of the ride.
+#[test]
+fn a_detour_terminal_edge_leaves_a_live_route_search_frozen() {
+    let (mut app, _obcr) = riding_app();
+    app.debug_set_plan_live(true); // a route search, running over the map base
+    assert!(app.reroute_freeze_active(), "the route search froze the map");
+    assert!(app.nav_arena_precondition().is_some(), "…and holds the arm behind that freeze");
+
+    // A detour answer lands anyway — a stray event, or #882's board half answering its own request.
+    app.apply_event(HostEvent::DetourPlanned(Err(NavError::NoPath)));
+    assert!(app.plan_in_flight(), "the route search is untouched by another family's answer");
+    assert!(app.reroute_freeze_active(), "so the map stays frozen");
+    app.apply_event(HostEvent::DetourCommitted(Err(NavError::NoPath)));
+    assert!(app.reroute_freeze_active(), "…and by its commit failure too");
+
+    // Only the route family's own terminal edge releases it.
+    app.debug_set_plan_live(false);
+    assert!(!app.reroute_freeze_active());
+    assert!(!app.plan_in_flight());
+}
+
+/// And the mirror: a live **detour** plan is not released by the route family's cancel drain. Same
+/// arm, same freeze — different terminal edges.
+#[test]
+fn a_route_cancel_leaves_a_live_detour_plan_frozen() {
+    let (mut app, _obcr) = riding_app();
+    open_chooser(&mut app);
+    app.apply_gesture(Gesture::Press);
+    assert!(drained(&mut app).iter().any(|c| matches!(c, HostCommand::PlanDetour(_))));
+    app.apply_gesture(Gesture::Back); // a map base under the live detour search
+    assert!(app.reroute_freeze_active());
+
+    // A route answer for a run that isn't this one (a late `NavPlanned` behind a cancelled plan).
+    app.apply_event(HostEvent::NavPlanned(Err(NavError::NoPath)));
+    assert!(app.plan_in_flight(), "the detour search is still the arm's holder");
+    assert!(app.reroute_freeze_active());
+
+    assert!(drained(&mut app).iter().any(|c| matches!(c, HostCommand::CancelDetour)));
+    assert!(!app.reroute_freeze_active(), "its own cancel is what releases it");
+}
+
 /// The same single-drain loop over the flow's *own* exit: the spinner is popped by Back, whose
 /// cancel drains in the very next pass and ends the run — so the pass renders the map rather than a
 /// banner, and nothing is left frozen behind it.
