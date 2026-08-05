@@ -15,6 +15,18 @@ sys.modules[SPEC.name] = resource_guard
 SPEC.loader.exec_module(resource_guard)
 
 
+# The shipping scratch arena (#1146 P2), as `llvm-nm --print-size --demangle` really prints it:
+# 0x168a0 B of NOBITS at `__suninit`. Spelled out so a rename of the static fails these tests rather
+# than silently disabling the gate that pins it.
+ARENA_NAME = "obc_fw_nrf54l::arena::ARENA::ha27c553b3defd127"
+ARENA_BYTES = 92_320
+UNINIT_BYTES = 93_344  # the arena + `defmt_rtt::BUFFER`, its only other tenant
+
+
+def arena_symbol(size=ARENA_BYTES, kind="b", name=ARENA_NAME):
+    return resource_guard.Symbol(size, kind, name)
+
+
 class ResourceGuardTests(unittest.TestCase):
     def test_size_parser_requires_contract_sections(self):
         with self.assertRaisesRegex(resource_guard.GuardError, "missing section.*\\.rodata"):
@@ -118,37 +130,94 @@ other:
         with self.assertRaisesRegex(resource_guard.GuardError, "not a multiple"):
             resource_guard.decode_resource_table(b"short")
 
-    def test_board_guard_explains_resident_ram_growth(self):
-        measured = resource_guard.BoardMeasurement(101, 20, 0, 0, (), (), None)
-        baseline = {
-            "board": {
-                "default": {
-                    "framebuffer_bytes": 76_800,
-                    "resident_ram_max": 120,
-                    "uninit_max": 0,
-                    "framebuffer_count": 0,
-                }
-            }
+    def _board_baseline(self, **overrides):
+        profile = {
+            "framebuffer_bytes": 76_800,
+            "resident_ram_max": 120,
+            "uninit_max": UNINIT_BYTES,
+            "framebuffer_count": 0,
+            "compile_time_allocations": {"arena_total": ARENA_BYTES},
         }
+        profile.update(overrides)
+        return {"board": {"default": profile}}
+
+    def _board_measured(self, **overrides):
+        fields = {
+            "bss": 100,
+            "data": 20,
+            "uninit": UNINIT_BYTES,
+            "flash": 0,
+            "framebuffer_symbols": (),
+            "full_frame_sized_writable": (),
+            "largest_poll_frame": None,
+            "arena_symbols": (arena_symbol(),),
+        }
+        fields.update(overrides)
+        return resource_guard.BoardMeasurement(**fields)
+
+    def _check_board(self, measured, baseline):
         with mock.patch.object(resource_guard, "measure_board", return_value=measured):
-            with self.assertRaisesRegex(resource_guard.GuardError, "resident RAM grew.*itemize/approve"):
-                resource_guard.check_board(SimpleNamespace(profile="default", elf=Path("fake")), baseline)
+            resource_guard.check_board(SimpleNamespace(profile="default", elf=Path("fake")), baseline)
+
+    def test_board_guard_explains_resident_ram_growth(self):
+        with self.assertRaisesRegex(resource_guard.GuardError, "resident RAM grew.*itemize/approve"):
+            self._check_board(self._board_measured(bss=101), self._board_baseline())
 
     def test_board_guard_explains_missing_framebuffer_symbol(self):
-        measured = resource_guard.BoardMeasurement(100, 20, 0, 0, (), (), None)
-        baseline = {
-            "board": {
-                "default": {
-                    "framebuffer_bytes": 76_800,
-                    "resident_ram_max": 120,
-                    "uninit_max": 0,
-                    "framebuffer_count": 1,
-                }
-            }
-        }
-        with mock.patch.object(resource_guard, "measure_board", return_value=measured):
-            with self.assertRaisesRegex(resource_guard.GuardError, "framebuffer symbol count is 0"):
-                resource_guard.check_board(SimpleNamespace(profile="default", elf=Path("fake")), baseline)
+        with self.assertRaisesRegex(resource_guard.GuardError, "framebuffer symbol count is 0"):
+            self._check_board(self._board_measured(), self._board_baseline(framebuffer_count=1))
+
+    def test_arena_gate_catches_the_renamed_link_section(self):
+        """#1150 review: the finding this gate exists for.
+
+        `.uninit` has a second tenant, so an arena whose `#[link_section]` is renamed off it leaves
+        the section present at 1,024 B — the required-section check passes, `.bss + .data` is
+        unmoved (the bytes did not fall back to `.bss`, they went to the new section), `uninit_max`
+        is a ceiling, and the residual stack only *grew*. Every RAM gate green, 92 KB missing. Only
+        the arena-must-fit-in-.uninit half sees it.
+        """
+        resource_guard.parse_size_output(
+            ".vector_table 10 0\n.text 20 10\n.rodata 6 30\n.data 4 36\n.bss 8 40\n.uninit 1024 48\n",
+            extra_required=frozenset({".uninit"}),
+        )  # the required-set tripwire is happy: the section is still there
+        with self.assertRaisesRegex(resource_guard.GuardError, r"no longer linked into `\.uninit`"):
+            self._check_board(
+                self._board_measured(uninit=1_024),
+                self._board_baseline(uninit_max=UNINIT_BYTES),
+            )
+
+    def test_arena_gate_pins_the_linked_size_to_the_report_figure(self):
+        with self.assertRaisesRegex(resource_guard.GuardError, "arena is 92336 B, not the baselined 92320"):
+            self._check_board(
+                self._board_measured(arena_symbols=(arena_symbol(size=92_336),)),
+                self._board_baseline(),
+            )
+
+    def test_arena_gate_fails_loudly_when_the_static_is_renamed_or_doubled(self):
+        with self.assertRaisesRegex(resource_guard.GuardError, "links 0 scratch-arena static"):
+            self._check_board(self._board_measured(arena_symbols=()), self._board_baseline())
+        with self.assertRaisesRegex(resource_guard.GuardError, "links 2 scratch-arena static"):
+            self._check_board(
+                self._board_measured(arena_symbols=(arena_symbol(), arena_symbol(name="x::arena::ARENA"))),
+                self._board_baseline(),
+            )
+
+    def test_arena_gate_requires_a_nobits_static(self):
+        with self.assertRaisesRegex(resource_guard.GuardError, "not NOBITS"):
+            self._check_board(
+                self._board_measured(arena_symbols=(arena_symbol(kind="d"),)),
+                self._board_baseline(),
+            )
+
+    def test_arena_symbol_matcher_ignores_other_arenas(self):
+        self.assertTrue(resource_guard.is_arena_symbol(ARENA_NAME))
+        self.assertTrue(resource_guard.is_arena_symbol("obc_fw_nrf54l::arena::ARENA"))
+        self.assertFalse(resource_guard.is_arena_symbol("obc_fw_nrf54l::arena::GATE::ha95"))
+        self.assertFalse(resource_guard.is_arena_symbol("nrf_sdc::mem::ARENA::hbe"))
+        self.assertFalse(resource_guard.is_arena_symbol("embassy_executor::TASK_ARENA::hbe"))
+
+    def test_the_shipping_board_measurement_passes(self):
+        self._check_board(self._board_measured(), self._board_baseline())
 
 
 # The #1108 boot-STKOF guards. `MAIN_TASK` is the real demangled spelling of the symbol that was
@@ -232,8 +301,9 @@ class BootChainTests(unittest.TestCase):
         profile = {
             "framebuffer_bytes": 76_800,
             "resident_ram_max": 120,
-            "uninit_max": 0,
+            "uninit_max": UNINIT_BYTES,
             "framebuffer_count": 0,
+            "compile_time_allocations": {"arena_total": ARENA_BYTES},
             "task_frame_limit": 21_504,
             "residual_stack_min": 48_600,
             "boot_chain_ceiling": 43_008,
@@ -254,7 +324,15 @@ class BootChainTests(unittest.TestCase):
         }
         boot.update(overrides)
         return resource_guard.BoardMeasurement(
-            100, 20, 0, 0, (), (), None, resource_guard.BootChain(**boot)
+            bss=100,
+            data=20,
+            uninit=UNINIT_BYTES,
+            flash=0,
+            framebuffer_symbols=(),
+            full_frame_sized_writable=(),
+            largest_poll_frame=None,
+            arena_symbols=(arena_symbol(),),
+            boot=resource_guard.BootChain(**boot),
         )
 
     def _check(self, measured, baseline):
@@ -294,7 +372,12 @@ class BootChainTests(unittest.TestCase):
         baseline = self._boot_baseline()
         del baseline["board"]["default"]["boot_chain_roots"]
         # No BootChain measured, and no KeyError from the absent limits.
-        self._check(resource_guard.BoardMeasurement(100, 20, 0, 0, (), (), None), baseline)
+        self._check(
+            resource_guard.BoardMeasurement(
+                100, 20, UNINIT_BYTES, 0, (), (), None, (arena_symbol(),)
+            ),
+            baseline,
+        )
 
 
 if __name__ == "__main__":
