@@ -36,3 +36,8 @@ libm = { version = "0.2", default-features = false } # no arch asm: identical co
 # The hand-written OBCM v6 byte builder shared by the reader/renderer tests — the POIs-browser
 # integration tests (#425) use `build_poi_map` to synthesise a v6 map with real POIs to snapshot.
 obcm-testkit = { path = "../../host/obcm-testkit" }
+# The About page (#1149) hand-wraps the Copernicus attribution into on-glass lines; the parity
+# test re-joins them and compares against `obc_dem::COPERNICUS_ATTRIBUTION` — the one copy of the
+# wording in the repository — so the device text cannot drift from the host's. Dev-only: the
+# `no_std` device build never sees the host crate.
+obc-dem = { path = "../../host/obc-dem" }

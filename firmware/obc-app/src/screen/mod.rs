@@ -85,9 +85,9 @@ pub use route_overview::RouteOverviewScreen;
 pub use route_received::{RouteReceivedScreen, RouteUpdatedScreen, TripReceivedScreen};
 pub use route_swap::RouteSwapScreen;
 pub use settings::{
-    AddFieldScreen, BikeTypeScreen, BluetoothScreen, ConnectionsScreen, DateTimeScreen, DisplayScreen, FirmwareScreen,
-    LanguageScreen, PowerScreen, ResetScreen, RideScreen, SensorScanScreen, SensorsScreen, SettingsScreen,
-    StatFieldsScreen, SystemScreen, UnitsScreen,
+    AboutScreen, AddFieldScreen, BikeTypeScreen, BluetoothScreen, ConnectionsScreen, DateTimeScreen, DisplayScreen,
+    FirmwareScreen, LanguageScreen, PowerScreen, ResetScreen, RideScreen, SensorScanScreen, SensorsScreen,
+    SettingsScreen, StatFieldsScreen, SystemScreen, UnitsScreen,
 };
 pub use statistics::StatisticsScreen;
 pub use trip_delete::TripDeleteScreen;
@@ -821,12 +821,15 @@ screens! {
     /// The Language screen (epic #602): cycles the UI language by endonym. Persists the choice today;
     /// the translation catalog that reads it lands later in the epic.
     Language(LanguageScreen) => Caps::settings(),
-    /// The System settings menu: Units / Date & Time / Language / Firmware update / Reset — a thin
-    /// nav list whose rows open those pages.
+    /// The System settings menu: Units / Date & Time / Language / Firmware update / About / Reset —
+    /// a thin nav list whose rows open those pages.
     System(SystemScreen) => Caps::settings(),
     /// The Firmware page (epic #615 S5): the device-info ledger + the "Install update from card"
     /// door into the SD-sideload firmware-update flow.
     Firmware(FirmwareScreen) => Caps::settings(),
+    /// The About page (issue #1149): the device's credits surface — OpenStreetMap + ODbL,
+    /// Copernicus, and the firmware's GPL-3.0 + source pointer. A line-scrolling read-only page.
+    About(AboutScreen) => Caps::settings(),
     Reset(ResetScreen) => Caps::settings().hold_fill(),
     /// The "Checking card..." scan wait (epic #615 S5): a spinner up while the board validates
     /// `UPDATE.BIN`; the board's answer replaces it with the confirm screen or an error card.
