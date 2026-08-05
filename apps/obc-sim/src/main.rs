@@ -10,13 +10,10 @@
 
 use std::time::Instant;
 
-use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
-use obc_app::{App, AppState, TrackAction};
-use obc_ports::{
-    Button, ButtonEvent, Fix, InputClock, InputEvent, InputSource, LocationSource, TrackError, TrackPoint, TrackSink,
-};
+use embedded_graphics::pixelcolor::Rgb888;
+use obc_app::{App, AppState};
+use obc_ports::{Button, ButtonEvent, Fix, InputClock, InputEvent, InputSource, LocationSource, TrackSink};
 use obc_reader::{rgb565_to_device64, rgb565_to_rgb888, Reader};
-use obc_render::text::{draw_text, Font, TextAlign};
 
 mod calib;
 mod device_input;
@@ -67,13 +64,15 @@ struct Args {
     center: Option<(i32, i32)>,
     /// Headless zoom multiplier applied to the bbox-fit zoom (picks a finer LOD).
     zoom_mul: f32,
-    /// Render the font/palette preview instead of the map. Needs no map.
-    text_demo: bool,
     /// A gesture script applied before a headless `--png` render, to snapshot a specific
     /// screen. Tokens (one char, spaces ignored) mirror the four buttons: `d`/`u` = one Down /
     /// Up step, `p` = press (Select), `h` = Select hold, `b` = back, `B` = back-hold, `H`/`M` =
     /// leave Select / Back held partway (snapshots the in-flight long-press hint), `w` = wait
-    /// ~800 ms so an in-flight animation (the Menu needle sweep) settles before the snapshot.
+    /// ~800 ms so an in-flight animation (the Menu needle sweep) settles before the snapshot,
+    /// `f` = draw one throwaway frame so draw-time lazy state (the POI-list snapshot) is filled
+    /// before the next gesture, `T` = one route-aware tick (sync + open the active route and run
+    /// the once-per-load state builds), `I` = elapse 5 min with no input so the idle-return
+    /// timeout fires.
     script: Option<String>,
     /// Headless `--png` only: render from the device's real power-on state (Home / Idle,
     /// no route) instead of straight from the map.
@@ -82,9 +81,6 @@ struct Args {
     routes_dir: Option<String>,
     /// Folder for saved `.gpx` tracks + the in-progress `.obct` log; defaults to `tracks/`.
     tracks_dir: Option<String>,
-    /// Headless `--gpx` only: after replaying, finalise the active ride to a `.gpx`
-    /// (verifies the load→ride→save loop without the GUI).
-    save_track: bool,
     /// Convert this GPX into the routes folder and exit. Needs no map.
     import: Option<String>,
     /// Render the device window at the panel's true physical size (needs a saved
@@ -100,9 +96,6 @@ struct Args {
     /// Initial battery charge (0–100 %) shown on the Home gauge; stands in for the not-yet-
     /// wired fuel gauge. Defaults to full.
     battery: Option<u8>,
-    /// Seed for the Home screensaver's contour pattern. On the device the seed is the
-    /// wall-clock millis at each return to Home; this pins it for a headless render.
-    home_seed: Option<u32>,
     /// Headless `--png` only: seed the device's UTC wall-clock anchor to `YYYY-MM-DDTHH:MM`. With
     /// the default `+00:00` offset `local_clock()` returns it verbatim, pinning the POI-detail
     /// "today's hours" weekday + the OPEN/CLOSED-now badge for a reproducible render. Defaults to the
@@ -161,17 +154,11 @@ struct Args {
     /// buttons; the catalog is already scanned, so this is exactly the device's rescan-then-event
     /// order.
     inject_upload: Option<(u16, bool)>,
-    /// Headless `--png` only: inject a committed **trip** upload (the trip's durable object id)
-    /// after the script — the "TRIP RECEIVED" popup. On the device the trip object commits after
-    /// its member routes, so combining this with `--inject-upload` renders the exact end state of
-    /// a trip transfer: the trip card having replaced the last per-route popup. The `.obt` trips
-    /// beside the routes are already scanned, so this is the device's re-feed-then-event order.
-    inject_trip_upload: Option<u16>,
     /// Headless `--png` only: raise device warnings through the real `App::apply_event` seam
     /// after the script, so the advisory warning card renders. A comma-list of `gps` / `altimeter`
     /// / `compass` / `map` (issue #504) / `rec` (the mid-ride ride-log write error, issue #11) —
     /// e.g. `gps,map`. Stands in for hardware the sim can't trip for real. `rec` here renders the
-    /// card directly; to drive it through the *actual* record-failure path, use `--fail-track`.
+    /// card directly.
     inject_warning: Option<obc_app::WarningFlags>,
     /// Headless `--png` only: render the standalone **boot fault** screen (`nocard` | `nomap` |
     /// `badmap`) instead of the app — the undismissable storage-failure screen `main` shows before
@@ -201,12 +188,6 @@ struct Args {
     /// minimal stub — SE8 replaces it with the sim control panel's real sensor sliders. Requires a
     /// `--gpx` (the fixed source rides on the replay's location + clock).
     sensors_demo: bool,
-    /// Headless `--gpx` replay: make **every ride-log write fail**, as if the SD card were pulled
-    /// mid-ride (issue #11). Each logged fix's `TrackSink::record` returns `Err`, so the app raises
-    /// the "recording error" warning through the real record path (not the `--inject-warning rec`
-    /// shortcut). Pair with a script that starts a ride and a `--gpx`/`--at` that logs a point —
-    /// e.g. `--gpx <t> --at 30 --script "p p p p" --fail-track --png out.png`.
-    fail_track: bool,
     /// Headless `--png` only: after the script left the "Checking card..." wait on top (System menu
     /// → Install), answer the DFU scan (epic #615 S5, #620) through the real
     /// `App::apply_event` seam, swapping the wait for the confirm screen. The flavour
@@ -257,19 +238,16 @@ impl Default for Args {
             at: None,
             center: None,
             zoom_mul: 1.0,
-            text_demo: false,
             script: None,
             boot: false,
             routes_dir: None,
             tracks_dir: None,
-            save_track: false,
             import: None,
             physical: false,
             calibrate: false,
             palette: false,
             colorway: None,
             battery: None,
-            home_seed: None,
             clock: None,
             lang: None,
             stat_fields: None,
@@ -282,14 +260,12 @@ impl Default for Args {
             detour_hold: false,
             inject_detour_fail: None,
             inject_upload: None,
-            inject_trip_upload: None,
             inject_warning: None,
             boot_fault: None,
             open_climb: false,
             freeze: false,
             baro_drift: None,
             sensors_demo: false,
-            fail_track: false,
             dfu_scan: None,
             dfu_progress: false,
             dfu_installing: false,
@@ -466,12 +442,10 @@ fn parse_args() -> Result<Args, String> {
                 ));
             }
             "--zoom" => a.zoom_mul = it.next().and_then(|s| s.parse().ok()).ok_or("bad --zoom")?,
-            "--text-demo" => a.text_demo = true,
             "--script" => a.script = Some(it.next().ok_or("--script needs a token string")?),
             "--boot" => a.boot = true,
             "--routes-dir" => a.routes_dir = Some(it.next().ok_or("--routes-dir needs a path")?),
             "--tracks-dir" => a.tracks_dir = Some(it.next().ok_or("--tracks-dir needs a path")?),
-            "--save-track" => a.save_track = true,
             "--import" => a.import = Some(it.next().ok_or("--import needs a GPX path")?),
             "--physical" => a.physical = true,
             "--calibrate" => a.calibrate = true,
@@ -481,9 +455,6 @@ fn parse_args() -> Result<Args, String> {
                 a.battery = Some(
                     it.next().and_then(|s| s.parse().ok()).filter(|&b| b <= 100).ok_or("--battery needs 0..=100")?,
                 )
-            }
-            "--home-seed" => {
-                a.home_seed = Some(it.next().and_then(|s| s.parse().ok()).ok_or("--home-seed needs a u32")?)
             }
             "--clock" => {
                 a.clock = Some(parse_clock(&it.next().ok_or("--clock needs YYYY-MM-DDTHH:MM")?)?);
@@ -506,7 +477,6 @@ fn parse_args() -> Result<Args, String> {
                 a.baro_drift = Some(it.next().and_then(|s| s.parse().ok()).ok_or("bad --baro-drift (m per hour)")?)
             }
             "--sensors-demo" => a.sensors_demo = true,
-            "--fail-track" => a.fail_track = true,
             "--dfu-scan" => {
                 a.dfu_scan = Some(dfu::DfuScanKind::parse(&it.next().ok_or("--dfu-scan needs normal|same|first")?)?);
             }
@@ -546,10 +516,6 @@ fn parse_args() -> Result<Args, String> {
             "--inject-upload-replace" => {
                 let id = it.next().and_then(|s| s.parse().ok()).ok_or("--inject-upload-replace needs an object id")?;
                 a.inject_upload = Some((id, true));
-            }
-            "--inject-trip-upload" => {
-                let id = it.next().and_then(|s| s.parse().ok()).ok_or("--inject-trip-upload needs a trip id")?;
-                a.inject_trip_upload = Some(id);
             }
             "--inject-warning" => {
                 let spec = it.next().ok_or("--inject-warning needs gps,altimeter,compass,map")?;
@@ -599,8 +565,8 @@ fn parse_args() -> Result<Args, String> {
     if a.set.is_some() && !a.map.is_empty() {
         return Err("--set and a positional map path are mutually exclusive".into());
     }
-    // `--text-demo`, `--palette` and `--import` need no map file.
-    if a.map.is_empty() && a.set.is_none() && !a.text_demo && !a.palette && a.import.is_none() {
+    // `--palette` and `--import` need no map file.
+    if a.map.is_empty() && a.set.is_none() && !a.palette && a.import.is_none() {
         return Err("missing map path (a single .obcm, or --set MS<id>.OBS for a volume set)".into());
     }
     Ok(a)
@@ -609,60 +575,6 @@ fn parse_args() -> Result<Args, String> {
 fn color_of(c: u16, true_color: bool) -> Rgb888 {
     let (r, g, b) = if true_color { rgb565_to_rgb888(c) } else { rgb565_to_device64(c) };
     Rgb888::new(r, g, b)
-}
-
-/// Pack 8-bit RGB into RGB565 (the color space the renderer quantizes from), so the
-/// demo palette below can be written as the spec's hexes.
-const fn rgb565(r: u8, g: u8, b: u8) -> u16 {
-    (((r as u16) >> 3) << 11) | (((g as u16) >> 2) << 5) | ((b as u16) >> 3)
-}
-
-// The "explorer's field map" palette, in RGB565 so it travels through the same
-// `color_of` quantization as map styles.
-const PARCHMENT: u16 = rgb565(0xEA, 0xDF, 0xC0);
-const HUD: u16 = rgb565(0x2E, 0x25, 0x1A);
-const INK: u16 = rgb565(0x2C, 0x21, 0x14);
-const AMBER: u16 = rgb565(0xE3, 0xA5, 0x2B);
-const FOREST: u16 = rgb565(0x4F, 0x6B, 0x43);
-const WOOD: u16 = rgb565(0x5B, 0x3F, 0x28);
-const WARNING: u16 = rgb565(0xC0, 0x49, 0x2E);
-
-/// Render the font ladder + palette through the device-64 `color_of`, so the PNG
-/// shows exactly what the panel would (`--true-color` shows the un-quantized reference).
-fn render_text_demo(fb: &mut Framebuffer, true_color: bool) {
-    let col = |c: u16| color_of(c, true_color);
-    let w = fb.width() as i32;
-
-    let _ = fb.clear(col(PARCHMENT));
-    let _ = fb.fill_solid(&Rectangle::new(Point::zero(), Size::new(fb.width(), 28)), col(HUD));
-    draw_text(fb, "TERMINUS FONT DEMO", Point::new(w / 2, 3), Font::Label, TextAlign::Center, col(PARCHMENT));
-
-    // Font ladder: each tier's caption over a true-size sample, annotated with its measured
-    // cap height in mm so the size targets are checkable (render `--physical` for device scale).
-    let sample = "12.5 km/h";
-    let mut y = 36;
-    for (caption, font) in [
-        ("Label  ter24  2.0mm", Font::Label),
-        ("Body   ter28  2.4mm", Font::Body),
-        ("Disply ter32  2.7mm", Font::Display),
-    ] {
-        draw_text(fb, caption, Point::new(8, y), Font::Label, TextAlign::Left, col(WOOD));
-        y += Font::Label.line_height() as i32 + 2;
-        draw_text(fb, sample, Point::new(8, y), font, TextAlign::Left, col(INK));
-        y += font.line_height() as i32 + 8;
-    }
-
-    // Palette — each name in its own color, so the PNG shows whether they stay distinct
-    // and legible after device-64 quantization.
-    for (name, c) in [("amber", AMBER), ("forest", FOREST), ("wood", WOOD), ("warning", WARNING)] {
-        draw_text(fb, name, Point::new(8, y), Font::Label, TextAlign::Left, col(c));
-        y += Font::Label.line_height() as i32 + 2;
-    }
-
-    y += 6;
-    draw_text(fb, "LEFT", Point::new(8, y), Font::Label, TextAlign::Left, col(INK));
-    draw_text(fb, "CENTER", Point::new(w / 2, y), Font::Label, TextAlign::Center, col(INK));
-    draw_text(fb, "RIGHT", Point::new(w - 8, y), Font::Label, TextAlign::Right, col(INK));
 }
 
 /// Headless one-shot for a drained request: loop the planner to completion (`plan_route`), then
@@ -739,6 +651,20 @@ fn run_detour_commit(app: &mut obc_app::App, store: &mut RouteStore, ready: Opti
 /// The fixed card-free stand-in the sim answers a card-free scan with (the sim has no FAT to scan):
 /// ~1.2 GiB → the System screen reads "1.2 GB".
 const SIM_CARD_FREE: u64 = 1_288_490_188;
+
+/// A canned scan-hit set for the sim's fake sensor manager (SE7, epic #707): two HR straps, one
+/// power meter, one unnamed cadence sensor — so any kind's scan list shows something (the unnamed
+/// one exercises the address fallback, the second HR hit a multi-row list). The scan-list screen
+/// filters to the row's quantity by `slot`. Shared with the interactive GUI ([`gui`]) so the two
+/// sensor paths cannot drift.
+fn fake_scan_hits() -> [obc_app::SensorScanHit; 4] {
+    [
+        obc_app::SensorScanHit::new(0, 1, [0x66, 0x55, 0x44, 0x33, 0x22, 0x11], "HRM-Dual", -58),
+        obc_app::SensorScanHit::new(0, 1, [0x21, 0x43, 0x65, 0x87, 0xA9, 0xCB], "Forerunner", -74),
+        obc_app::SensorScanHit::new(1, 0, [0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F], "Stages LR", -67),
+        obc_app::SensorScanHit::new(2, 0, [0x01, 0x02, 0x03, 0x04, 0x05, 0x06], "", -80),
+    ]
+}
 
 /// Drain the app's pending host commands (FAR-19, #812) and apply them against the headless `--png`
 /// harness's folder-backed stores — the typed successor to its per-adapter `take_*` drains (the
@@ -822,16 +748,6 @@ fn reconcile_tracks(app: &mut App, tracks: &mut TrackStore) {
     tracks.reconcile(action, session, name.as_deref(), stats);
 }
 
-/// A [`TrackSink`] whose every append fails — the `--fail-track` stand-in for the SD card being
-/// pulled mid-ride (issue #11). It stores nothing and returns `Err`, so the app sees a genuine
-/// record failure and raises the recording-error card through the real path, not a shortcut.
-struct FailTrackSink;
-impl TrackSink for FailTrackSink {
-    fn record(&mut self, _p: TrackPoint) -> Result<(), TrackError> {
-        Err(TrackError)
-    }
-}
-
 /// Encode a framebuffer to a PNG, upscaling by `scale` with nearest-neighbor so the
 /// device's hard pixel edges stay crisp.
 fn write_png(fb: &Framebuffer, scale: u32, path: &str) -> Result<(), String> {
@@ -857,7 +773,7 @@ impl InputSource for ScriptInput {
 /// A host-side effect a script token requests from `apply_script`'s hook closure.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ScriptHook {
-    /// Draw one throwaway frame (the `d` token).
+    /// Draw one throwaway frame (the `f` token).
     Render,
     /// Run one route-aware tick (the `T` token).
     Tick,
@@ -961,23 +877,10 @@ fn main() {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: obc-sim <map.obcm> | --set <MS7.OBS> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--home-seed N] [--clock YYYY-MM-DDTHH:MM] [--route-retention LEVEL:AGE] [--lang en|de|fr|es] [--stat-fields LIST] [--ble-connected] [--ble-passkey N] [--ble-paired] [--sensors-screen] [--inject-upload ID] [--inject-upload-replace ID] [--inject-trip-upload ID] [--nav-hold] [--inject-nav-fail exhausted|nopath] [--detour-hold] [--inject-detour-fail exhausted|nopath] [--inject-warning gps,altimeter,compass,map] [--boot-fault nocard|nomap|badmap] [--open-climb] [--freeze] [--baro-drift M_PER_HOUR]\n\n  --set <MS7.OBS>  open an OBCA volume set (specs/OBCA_Spec.md §5): the manifest plus every\n                   MS7S<kk>.OBM shard beside it, mounted as one map. Every shard must be\n                   present and exactly its recorded size, or the set is refused whole (§5.4).");
+            eprintln!("error: {e}\nusage: obc-sim <map.obcm> | --set <MS7.OBS> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--clock YYYY-MM-DDTHH:MM] [--route-retention LEVEL:AGE] [--lang en|de|fr|es] [--stat-fields LIST] [--ble-connected] [--ble-passkey N] [--ble-paired] [--sensors-screen] [--inject-upload ID] [--inject-upload-replace ID] [--nav-hold] [--inject-nav-fail exhausted|nopath] [--detour-hold] [--inject-detour-fail exhausted|nopath] [--inject-warning gps,altimeter,compass,map] [--boot-fault nocard|nomap|badmap] [--open-climb] [--freeze] [--baro-drift M_PER_HOUR]\n\n  --set <MS7.OBS>  open an OBCA volume set (specs/OBCA_Spec.md §5): the manifest plus every\n                   MS7S<kk>.OBM shard beside it, mounted as one map. Every shard must be\n                   present and exactly its recorded size, or the set is refused whole (§5.4).");
             std::process::exit(2);
         }
     };
-
-    // Font/palette preview: render text on a blank panel and exit. Before the map read (needs none).
-    if args.text_demo {
-        let mut fb = Framebuffer::new(args.width, args.height);
-        render_text_demo(&mut fb, args.true_color);
-        let path = args.png.as_deref().unwrap_or("text_demo.png");
-        if let Err(e) = write_png(&fb, args.scale, path) {
-            eprintln!("{e}");
-            std::process::exit(1);
-        }
-        eprintln!("wrote {path}");
-        return;
-    }
 
     // `--palette`: the device's 64-color gamut on a standalone color-test screen. Needs no
     // map. With `--png` it writes the frame headlessly (diffable in CI); else a minimal window.
@@ -1108,9 +1011,6 @@ fn main() {
             }
         }
         let mut app = if args.boot { App::new_idle(state) } else { App::new(state) };
-        if let Some(seed) = args.home_seed {
-            app.reseed_home(seed);
-        }
         // `--clock` / `--lang` seed the headless Settings. `--clock` pins the UTC wall-clock anchor;
         // with the default `+00:00` offset `local_clock()` returns it verbatim for the POI-detail
         // weekday + OPEN/CLOSED-now badge. `--lang` selects the UI language (epic #602) so a scripted
@@ -1241,7 +1141,7 @@ fn main() {
             let mut scratch = Box::new(obc_render::RenderScratch::new());
             let mut hook = |app: &mut App, what: ScriptHook| match what {
                 ScriptHook::Render => {
-                    // A pending Ride-detail track request (#680) fills before the draw, so a `d` frame
+                    // A pending Ride-detail track request (#680) fills before the draw, so an `f` frame
                     // (and every gesture after it) sees the elevation band, mirroring the GUI's
                     // per-frame drain. `LoadRideTrack` is a derived level — answered off the pure
                     // predicate, nothing consumed.
@@ -1273,7 +1173,7 @@ fn main() {
                             |c| color_of(c, rtc),
                         );
                     }
-                    // Drain the typed host protocol each `d` (mirroring the GUI's per-frame dispatch):
+                    // Drain the typed host protocol each `f` (mirroring the GUI's per-frame dispatch):
                     // a create-route request's answer swaps the confirm for the overview/failure card
                     // so the next token acts on it; a scripted delete re-feeds the catalog.
                     apply_host_commands(
@@ -1307,23 +1207,12 @@ fn main() {
                         }
                     }
                     let mut loc = NoFix;
-                    let sensors = obc_ports::Sensors {
-                        loc: &mut loc,
-                        altimeter: None,
-                        temperature: None,
-                        clock: None,
-                        compass: None,
-                        track: None,
-                        fuel: None,
-                        hr: None,
-                        power: None,
-                        cadence: None,
-                    };
+                    let sensors = obc_ports::Sensors::new(&mut loc);
                     app.tick(obc_ports::RideClock(0), sensors, route.as_ref());
                 }
             };
             apply_script(&mut app, script, &mut hook);
-            // Anything the script's last press recorded with no trailing `d`: drain + apply it now so
+            // Anything the script's last press recorded with no trailing `f`: drain + apply it now so
             // the final render reflects the answer (the create-route commit, the detour plan/commit,
             // the hold-to-delete re-feed, the trip cascade — all in the canonical order).
             apply_host_commands(
@@ -1338,7 +1227,7 @@ fn main() {
                 &mut detour_ready,
             );
             // An open Ride detail's track request left by the script's last press (no trailing
-            // `d`): fill the resident ride profile now so the final render draws the band.
+            // `f`): fill the resident ride profile now so the final render draws the band.
             if let Some(id) = app.ride_track_request() {
                 app.set_ride_profile(ride_store.profile_by_id(id));
                 app.set_ride_preview(&ride_store.preview_by_id(id));
@@ -1370,12 +1259,6 @@ fn main() {
             // exactly the seam the board fills (#682) — the idle card draws it.
             let elevation = store.elevation_sparkline(id);
             app.apply_event(obc_app::HostEvent::RouteUploaded { id, replaced, elevation });
-        }
-        // Inject a committed trip upload, strictly after `--inject-upload` — the device's
-        // routes-then-trip commit order, so the trip card replaces any route popup (the single
-        // most-recent-wins prompt slot). The `.obt` trips were scanned above, so the id resolves.
-        if let Some(id) = args.inject_trip_upload {
-            app.apply_event(obc_app::HostEvent::TripUploaded { id, replaced: false });
         }
         // Raise device warnings (issue #504) through the real `Warning` event, so the advisory
         // card renders — the sim has no I²C probe / fragmented card to trip it for real.
@@ -1426,13 +1309,7 @@ fn main() {
                 obc_app::SensorStatus::default(),
             ];
             app.set_sensor_status(&status);
-            let hits = [
-                obc_app::SensorScanHit::new(0, 1, [0x66, 0x55, 0x44, 0x33, 0x22, 0x11], "HRM-Dual", -58),
-                obc_app::SensorScanHit::new(0, 1, [0x21, 0x43, 0x65, 0x87, 0xA9, 0xCB], "Forerunner", -74),
-                obc_app::SensorScanHit::new(1, 0, [0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F], "Stages LR", -67),
-                obc_app::SensorScanHit::new(2, 0, [0x01, 0x02, 0x03, 0x04, 0x05, 0x06], "", -80),
-            ];
-            app.set_sensor_scan_hits(&hits);
+            app.set_sensor_scan_hits(&fake_scan_hits());
         }
 
         // The script may have loaded a route; open its geometry for the Map.
@@ -1467,14 +1344,9 @@ fn main() {
             p.play();
             let step = (replay_to / 400.0).clamp(1.0, 8.0);
             let mut t = 0.0;
-            // `--fail-track` (issue #11): feed the app a sink whose every write fails, as if the card
-            // were pulled mid-ride, so a logged fix drives the real `record → Err → recording-error
-            // card` path. Kept out of the store so the live log (and `--save-track`) still work.
-            let mut fail_sink = FailTrackSink;
             while t < replay_to {
                 reconcile_tracks(&mut app, &mut tracks);
-                let sink: Option<&mut dyn TrackSink> =
-                    if args.fail_track { Some(&mut fail_sink) } else { tracks.sink() };
+                let sink: Option<&mut dyn TrackSink> = tracks.sink();
                 replay_step(&mut app, p, &mut baro, None, step, route.as_ref(), sink, ReplaySensors::default());
                 // The map-referenced altimeter's one terrain read per fix (EL8, #1076) — the same
                 // mounted `.obcd` the router emits from, drained right behind the tick exactly as
@@ -1529,16 +1401,10 @@ fn main() {
                 let now_ms = (p.time() * 1000.0) as u32;
                 let (mut hr, mut power, mut cadence) = (DemoHr, DemoPower, DemoCadence);
                 let sensors = obc_ports::Sensors {
-                    loc: p,
-                    altimeter: None,
-                    temperature: None,
-                    clock: None,
-                    compass: None,
-                    track: None,
-                    fuel: None,
                     hr: Some(&mut hr),
                     power: Some(&mut power),
                     cadence: Some(&mut cadence),
+                    ..obc_ports::Sensors::new(p)
                 };
                 app.tick(obc_ports::RideClock(now_ms), sensors, route.as_ref());
             }
@@ -1555,17 +1421,6 @@ fn main() {
         // plan command takes, so the snapshot shows the real banner over the real frozen map.
         if args.freeze {
             app.debug_set_plan_live(true);
-        }
-
-        // `--save-track`: finalise the active ride to a `.gpx` (verifies the save loop).
-        if args.save_track {
-            if tracks.is_recording() {
-                app.activity.request_track(TrackAction::Save);
-                app.activity.end_session();
-                reconcile_tracks(&mut app, &mut tracks);
-            } else {
-                eprintln!("--save-track: no active ride (start a route first, e.g. --boot --script ppp)");
-            }
         }
 
         let mut fb = Framebuffer::new(args.width, args.height);
@@ -1619,7 +1474,7 @@ fn main() {
             stats.map_sd_reads,
             stats.map_bytes_read
         );
-        // TEMP debug (scratch-budget investigation): span/point/ring scratch split by render path.
+        // The span/point/ring scratch split by render path (lines vs polygons).
         eprintln!(
             "  scratch by kind: spans {}L+{}P/{} · points {}L+{}P/{} · rings {}L+{}P/{}",
             stats.line_spans,

@@ -166,15 +166,7 @@ impl RouteSwapScreen {
         }
 
         // Guarded rows fill amber (not warning-red — this confirms a save, it isn't destructive).
-        let geo = super::GuardedRowsGeometry {
-            x: 12,
-            w: w - 24,
-            top: super::TITLE_BAR_H + 64,
-            row_h: 46,
-            gap: 8,
-            label_dx: 16,
-            label_dy: 11,
-        };
+        let geo = super::GuardedRowsGeometry::card(w, super::TITLE_BAR_H + 64);
         let items = [
             MenuItem { label: rx.t(Msg::RouteSwapSwap), guard: GUARDS[0] },
             MenuItem { label: rx.t(Msg::RouteSwapFinishNew), guard: GUARDS[1] },

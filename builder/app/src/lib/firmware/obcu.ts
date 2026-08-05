@@ -47,7 +47,6 @@ export const OBCU_SIG_SCHEME_ED25519 = 1;
 export const OBCU_SIG_LEN = 64;
 
 export const OBCU_MAX_IMAGE_LEN = 1_480_000;
-export const OBCU_MAX_CONTAINER_LEN = OBCU_MAX_IMAGE_LEN + OBCU_HEADER_LEN + OBCU_SIG_LEN;
 
 const MAGIC = 0x4f424355; // "OBCU"
 

@@ -265,8 +265,15 @@ mod web {
         }
     }
 
+    /// Build the JS exception: a real `Error` instance (so it carries a stack and survives
+    /// `instanceof Error`), renamed, with the stable code hung off it as a plain property — the
+    /// same shape `obc-web-convert` and `obc-web-assemble` throw.
     fn to_js(failure: PreviewFailure) -> JsValue {
         let err = js_sys::Error::new(&failure.message);
+        err.set_name("ObcSkinPreviewError");
+        // `Reflect::set` only fails on a frozen/exotic target; `err` is a fresh object, so this
+        // cannot. Ignored rather than unwrapped so a surprise here still throws a usable Error
+        // (with a message) instead of trapping the module.
         let _ = js_sys::Reflect::set(&err, &JsValue::from_str("code"), &JsValue::from_str(failure.code.as_str()));
         err.into()
     }

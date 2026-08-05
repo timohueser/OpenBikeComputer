@@ -12,14 +12,15 @@
 //! shared SD + settings store ([`SharedStore`] — the ride loop locks it per frame across the
 //! render but never across the present (#809), the object plane per chunk). Fits the 256 KB DK
 //! on the culled `nrf-mem`
-//! caps; the budget assert + the ~124.9 KB residual stack (deep-ride peak ~36 KB; deepest boot
+//! caps; the budget assert + the ~99.9 KB residual stack (deep-ride peak ~36 KB; deepest boot
 //! chain ~28.1 KB — the ride task's 6.9 KB poll frame under `link::init_store`'s ~14.7 KB
 //! transient) are the margins. Both numbers moved on 2026-08-03: the elevation epic's `.bss`
 //! (TERRAIN + its extent tables) shrank the residual by ~3.7 KB, and EL7's inlined terrain parse
 //! plus `init_store`'s double-copy briefly summed past it — a boot-bricking STKOF; `mount_terrain`
 //! and `ObjectStore::empty`/`hydrate` are the fix, and any future fat boot-path local belongs in
 //! the same `#[inline(never)]` pattern (#677). Both moved again with #1146 P2: the scratch arena
-//! handed the residual back ~76 KB (48.6 → 124.9), and the ride task's poll frame fell 20.4 → 6.9 KB
+//! handed the residual back ~76 KB (48.6 → 125.0; P3 then spent 24.5 KB of it on the render caps,
+//! leaving 99.9), and the ride task's poll frame fell 20.4 → 6.9 KB
 //! because LLVM stopped materialising a ~13.5 KB staging copy in it — measured, not designed, so
 //! read that half as slack the resource guard now pins rather than as budget to spend.
 //! `--no-default-features` stays mandatory — it swaps the critical-section impl to MPSL's.
@@ -292,11 +293,12 @@ bind_interrupts!(struct SensorIrqs {
 //   - scratch arena
 //                  ONE block, `max(arms)` (#1146 P2 — `arena.rs`), replacing three that were never
 //                  live together: the per-frame **render** scratch (`obc_render::RenderScratch`,
-//                  92,320 B at the nrf-mem caps — every decode / collect / span / draw buffer a
+//                  117,408 B at the nrf-mem caps — every decode / collect / span / draw buffer a
 //                  redraw needs at once), the **nav** block (`NavScratch` + `NavTileCache` +
 //                  `NavPlanner`, ~59.9 KB, live only inside one route search), and the **USB**
 //                  staging buffer (16 KiB, live only while a cable transfer streams). Summed they
-//                  were 168,572 B; unioned they are the render arm's 92,320.
+//                  were 168,572 B; unioned they are the render arm's 117,408 (#1146 P3 spent
+//                  +25,088 of the difference on the frame caps — still ~51 KB ahead).
 //   - framebuffer  the single RGB222 frame: 240×320 × 1 B/px = 75 KB — the `FB` static below.
 //   - `MapCache`   the streamed-map geometry-chunk cache (2 slots + 8 KB scratch on nrf-mem, 14,444 B).
 //   - `RouteCache` the decoded-route-chunk cache (2 slots on nrf-mem, ~6 KB).
@@ -327,8 +329,9 @@ bind_interrupts!(struct SensorIrqs {
 const NRF_RAM_BYTES: usize = ls021_flpr::M33_RAM_BYTES;
 /// Headroom kept free under the resident statics for the main stack + embassy's executor/task arenas
 /// (statics grow up from the RAM base, the stack down from the top). This is only the build-time
-/// *floor* the assert enforces — the real stack is the residual `RAM − statics` (~124.9 KB on the
-/// default build since #1146 P2's arena freed ~76 KB of them; ~48.6 KB before it, and the linked
+/// *floor* the assert enforces — the real stack is the residual `RAM − statics` (~99.9 KB on the
+/// default build: #1146 P2's arena freed ~76 KB of them and P3 spent ~24.5 KB back on the render
+/// caps; ~48.6 KB before either, and the linked
 /// figure is `resource_baseline.json`'s `residual_stack_measured`, which is charged for `.uninit`
 /// as well as `.bss`). Pinned above the **measured deep-path peak**: 35,808 / 37,760 B on 2026-07-04
 /// (debug-uart FLPR build, post-#351 split; VCOM-harness full ride — fix on Home → route load →
@@ -404,11 +407,12 @@ const RESIDENT_BYTES: usize = FB_BYTES
 //
 //   * `ARENA_RESIDENT` is `max(render, nav, usb)`, not their sum. Growing an arm that is **below**
 //     the maximum is **free** — genuinely, byte-for-byte free, not merely cheap: the nav arm has
-//     ~32 KB of headroom and the USB stage ~76 KB before either would move this number at all. A
+//     ~57.5 KB of headroom and the USB stage ~101 KB before either would move this number at all. A
 //     change that shaves KBs off one of those buys the device nothing, and the review time spent on
 //     it is the whole cost.
 //   * Growing the arm that **is** the maximum (today: render) costs the full delta, 1:1, exactly as
-//     it did when each block owned its own RAM. #1146 P3 spends ~25 KB there deliberately.
+//     it did when each block owned its own RAM. #1146 P3 spent 25,088 B there deliberately — that
+//     is why the other two arms' headroom figures above are as generous as they are.
 //   * Crossing the line is where the surprise lives: an arm growing *past* the current maximum costs
 //     only the part above it, and from then on it is the arm every future growth is measured
 //     against. `arena.rs` has a compile-time assert that fires if that ever happens, because at that

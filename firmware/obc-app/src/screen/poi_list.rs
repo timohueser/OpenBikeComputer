@@ -336,6 +336,7 @@ fn fit(s: &str, max: usize) -> heapless::String<24> {
 mod tests {
     use super::*;
     use crate::activity::{Activity, Mode};
+    use crate::screen::test_ctx;
     use crate::{AppState, Settings};
 
     /// A scratch holding `n` snapshotted Water POIs — the state after the first draw's query.
@@ -359,20 +360,7 @@ mod tests {
         let mut st = AppState::new(0, 0, 1.0);
         let mut act = Activity::new(Mode::Idle);
         let mut settings = Settings::default();
-        let mut cx = Ctx {
-            state: &mut st,
-            activity: &mut act,
-            settings: &mut settings,
-            routes: &[],
-            rides: &[],
-            trips: &[],
-            nav_profiles: &crate::NavProfiles::EMPTY,
-            poi_scratch: scratch,
-            waypoints: &[],
-            corridor: &[],
-            sensor_scan_hits: &[],
-            now_ms: 0,
-        };
+        let mut cx = Ctx { poi_scratch: scratch, ..test_ctx(&mut st, &mut act, &mut settings) };
         scr.handle(Gesture::Step(n), &mut cx);
     }
 

@@ -29,19 +29,33 @@ fn config_path() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-    Some(base.join("obc-sim").join("calibration"))
+    Some(config_path_under(base))
+}
+
+/// The same layout under an explicit config base. Split out so the tests can point at a scratch
+/// directory instead of writing `XDG_CONFIG_HOME` — a process-global mutation, and `cargo test`
+/// runs the suite on several threads.
+fn config_path_under(base: PathBuf) -> PathBuf {
+    base.join("obc-sim").join("calibration")
 }
 
 /// Load the saved points-per-mm, or `None` if never calibrated / unreadable / invalid.
 pub fn load() -> Option<f32> {
-    let s = std::fs::read_to_string(config_path()?).ok()?;
+    load_from(config_path()?)
+}
+
+fn load_from(path: PathBuf) -> Option<f32> {
+    let s = std::fs::read_to_string(path).ok()?;
     s.trim().parse::<f32>().ok().filter(|v| v.is_finite() && *v > 0.0)
 }
 
 /// Persist points-per-mm. Returns a human-readable error (for the panel to show) on
 /// failure; best-effort, never panics.
 pub fn save(points_per_mm: f32) -> Result<(), String> {
-    let path = config_path().ok_or("no $HOME / $XDG_CONFIG_HOME for the config dir")?;
+    save_to(config_path().ok_or("no $HOME / $XDG_CONFIG_HOME for the config dir")?, points_per_mm)
+}
+
+fn save_to(path: PathBuf, points_per_mm: f32) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("create config dir: {e}"))?;
     }
@@ -52,41 +66,37 @@ pub fn save(points_per_mm: f32) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    /// `save`/`load` round-trips, and garbage / negative contents read back as `None`.
-    /// Redirects the config dir via `XDG_CONFIG_HOME` (this is the only test, so nothing races
-    /// on the env).
+    /// `save`/`load` round-trips, and garbage / negative contents read back as `None`. Drives the
+    /// path-taking pair against a scratch config base, so nothing here touches the environment the
+    /// rest of the suite is reading on other threads.
     #[test]
     fn save_load_roundtrips_and_rejects_junk() {
-        let dir = std::env::temp_dir().join(format!("obc-sim-calibtest-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::env::set_var("XDG_CONFIG_HOME", &dir);
+        let base = obcm_testkit::scratch::scratch_dir("obc-sim-calibtest", "roundtrip");
+        let cal = config_path_under(base);
 
-        assert_eq!(load(), None, "nothing saved yet");
-        save(4.29).expect("save");
-        assert!((load().expect("loads back") - 4.29).abs() < 1e-4);
+        assert_eq!(load_from(cal.clone()), None, "nothing saved yet");
+        save_to(cal.clone(), 4.29).expect("save");
+        assert!((load_from(cal.clone()).expect("loads back") - 4.29).abs() < 1e-4);
 
         // Corrupt / nonsensical contents are ignored rather than trusted.
-        std::fs::write(dir.join("obc-sim").join("calibration"), "not a number").unwrap();
-        assert_eq!(load(), None);
-        std::fs::write(dir.join("obc-sim").join("calibration"), "-3").unwrap();
-        assert_eq!(load(), None, "non-positive is invalid");
+        let put = |bytes: &str| std::fs::write(&cal, bytes).unwrap();
+        put("not a number");
+        assert_eq!(load_from(cal.clone()), None);
+        put("-3");
+        assert_eq!(load_from(cal.clone()), None, "non-positive is invalid");
 
-        // The filter's `> 0.0` (not `>=`) and `is_finite()` boundaries. Extends this test rather
-        // than adding a second, since `load` reads the process-global `XDG_CONFIG_HOME` we own.
-        let cal = dir.join("obc-sim").join("calibration");
-        std::fs::write(&cal, "0").unwrap();
-        assert_eq!(load(), None, "exactly 0 fails `> 0.0` (a zero scale is degenerate)");
-        std::fs::write(&cal, "0.0").unwrap();
-        assert_eq!(load(), None, "0.0 fails `> 0.0`");
-        std::fs::write(&cal, "nan").unwrap();
-        assert_eq!(load(), None, "NaN fails `is_finite()`");
-        std::fs::write(&cal, "inf").unwrap();
-        assert_eq!(load(), None, "infinity fails `is_finite()`");
+        // The filter's `> 0.0` (not `>=`) and `is_finite()` boundaries.
+        put("0");
+        assert_eq!(load_from(cal.clone()), None, "exactly 0 fails `> 0.0` (a zero scale is degenerate)");
+        put("0.0");
+        assert_eq!(load_from(cal.clone()), None, "0.0 fails `> 0.0`");
+        put("nan");
+        assert_eq!(load_from(cal.clone()), None, "NaN fails `is_finite()`");
+        put("inf");
+        assert_eq!(load_from(cal.clone()), None, "infinity fails `is_finite()`");
         // The smallest positive finite value still loads — proves the filter rejects only
         // ≤ 0 and non-finite, not all small numbers.
-        std::fs::write(&cal, "0.001").unwrap();
-        assert!((load().expect("tiny positive is valid") - 0.001).abs() < 1e-6);
-
-        let _ = std::fs::remove_dir_all(&dir);
+        put("0.001");
+        assert!((load_from(cal).expect("tiny positive is valid") - 0.001).abs() < 1e-6);
     }
 }

@@ -40,22 +40,7 @@ fn marker_drawn_only_when_a_fix_is_set() {
     assert_eq!(render(&mut app, &bytes).count(RED), 0, "no fix ⇒ no marker");
 
     // A fix at the camera center → the marker is drawn.
-    app.tick(
-        RideClock(0),
-        Sensors {
-            loc: &mut ReplayFix(Some(Fix::at(0, 0))),
-            altimeter: None,
-            temperature: None,
-            clock: None,
-            compass: None,
-            track: None,
-            fuel: None,
-            hr: None,
-            power: None,
-            cadence: None,
-        },
-        None,
-    );
+    app.tick(RideClock(0), Sensors::new(&mut ReplayFix(Some(Fix::at(0, 0)))), None);
     assert!(render(&mut app, &bytes).count(RED) > 0, "fix ⇒ marker drawn");
 }
 
@@ -69,18 +54,7 @@ fn dot_and_chevron_glyphs_differ_by_course() {
     // Stationary (course None) → diamond dot.
     app.tick(
         RideClock(0),
-        Sensors {
-            loc: &mut ReplayFix(Some(Fix { lat: 0, lon: 0, course: None, speed_mps: None })),
-            altimeter: None,
-            temperature: None,
-            clock: None,
-            compass: None,
-            track: None,
-            fuel: None,
-            hr: None,
-            power: None,
-            cadence: None,
-        },
+        Sensors::new(&mut ReplayFix(Some(Fix { lat: 0, lon: 0, course: None, speed_mps: None }))),
         None,
     );
     let dot = render(&mut app, &bytes).count(RED);
@@ -88,18 +62,7 @@ fn dot_and_chevron_glyphs_differ_by_course() {
     // Moving (course Some) → directional chevron, a different glyph.
     app.tick(
         RideClock(0),
-        Sensors {
-            loc: &mut ReplayFix(Some(Fix { lat: 0, lon: 0, course: Some(0.0), speed_mps: Some(5.0) })),
-            altimeter: None,
-            temperature: None,
-            clock: None,
-            compass: None,
-            track: None,
-            fuel: None,
-            hr: None,
-            power: None,
-            cadence: None,
-        },
+        Sensors::new(&mut ReplayFix(Some(Fix { lat: 0, lon: 0, course: Some(0.0), speed_mps: Some(5.0) }))),
         None,
     );
     let chevron = render(&mut app, &bytes).count(RED);

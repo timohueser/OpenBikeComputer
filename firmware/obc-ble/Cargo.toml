@@ -9,6 +9,10 @@ description = "no_std S0 BLE data-plane core (obc-ble-interface-spec.md): the tr
 # (obc-fw-nrf54l, behind its `ble` feature) links against. Kept a workspace member so
 # `cargo test` exercises it on the host, exactly like obc-route / obc-reader.
 [dependencies]
+# The one exception to this crate's dependency-freedom, and only because it gives nothing up:
+# obc-crc is a leaf with no dependencies of its own (one table, one hasher). What the rule was
+# protecting — never linking the map or DFU stacks into the phone-facing wire codec — still holds.
+obc-crc = { path = "../obc-crc" }
 
 [dev-dependencies]
 # The shared S0 fixtures the vector tests read from ../../specs/vectors/ go through

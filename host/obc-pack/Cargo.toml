@@ -22,10 +22,11 @@ obc-map-scene = { path = "../../firmware/obc-map-scene" }
 # runs, so a climb-aware route costs the number the rider is later shown. Never a DEM library —
 # rasters are `obc-dem`'s business, one step earlier in the pipeline.
 obc-elevation = { path = "../../firmware/obc-elevation" }
-# The Copernicus credit, for the contours this crate traces out of GLO-30-derived terrain (#1094):
-# the licence obligation travels with the data and the wording has exactly one copy in the repo.
-# `default-features = false` takes that `const` and the OBCT container writer without the GeoTIFF
-# decoder or the HTTP client — rasters are `obc-dem`'s business, one step earlier in the pipeline.
+# The Copernicus credit and the dataset name, for the contours this crate traces out of
+# GLO-30-derived terrain (#1094): the licence obligation travels with the data and the wording has
+# exactly one copy in the repo. Two `&str` consts and nothing else — `default-features = false`
+# leaves the GeoTIFF decoder and the HTTP client out, because rasters are `obc-dem`'s business, one
+# step earlier in the pipeline.
 obc-dem = { path = "../obc-dem", default-features = false }
 # `preserve_order` is load-bearing: the config assigns style IDs 1-based in
 # config.json document order, so the parsed map must keep insertion order.
@@ -70,6 +71,8 @@ ureq = "3"
 zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
 
 [dev-dependencies]
+# The shared scratch-path helper the CLI/oracle tests build their throwaway trees with.
+obcm-testkit = { path = "../obcm-testkit" }
 # Validate generated manifests against the checked-in JSON Schema the hosted site
 # will use, so "it validates" is a test result and not an assumption. Draft 2020-12,
 # offline (no remote `$ref` resolution), test-only.

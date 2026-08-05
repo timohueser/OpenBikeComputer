@@ -178,8 +178,8 @@ pub struct PoiSection {
 
 impl PoiSection {
     /// Bytes this section occupies.
-    pub fn section_len(&self) -> usize {
-        self.len
+    pub fn section_len(&self) -> u64 {
+        self.len as u64
     }
 
     /// POI records the chunk-capacity guard dropped.

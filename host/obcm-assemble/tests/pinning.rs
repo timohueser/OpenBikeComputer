@@ -152,6 +152,47 @@ fn the_style_table_matches_the_packers_byte_for_byte() {
     assert_eq!(shard::pack_style_table(&engine_styles), pack_style_dict(&pack_styles));
 }
 
+/// Restamping a skin is the *same* table, written back into a map the packer produced — the
+/// operation the catalog's "a skin invalidates no cell" rests on. It has to touch the style table
+/// and the header's marker colour and **nothing else**, and it has to find the table through the
+/// header's own `Style Offset` rather than through an assumption about where the packer puts it.
+#[test]
+fn a_restamp_writes_the_style_table_and_the_marker_and_nothing_else() {
+    let (bytes, pack_styles, engine_styles, marker_color) = packed();
+    let len = 1 + pack_styles.len() * STYLE_RECORD_LEN;
+
+    // A real restyle: the same ids (a skin may not renumber), different presentation values.
+    let restyled: Vec<StyleRecord> =
+        engine_styles.iter().map(|s| StyleRecord { color: !s.color, weight: 7, dashed: !s.dashed, ..*s }).collect();
+    let mut map = bytes.clone();
+    shard::restamp_style_table(&mut map, &restyled, 0x1234).expect("the packer's own map restamps");
+
+    assert_eq!(&map[HEADER_LEN..HEADER_LEN + len], shard::pack_style_table(&restyled), "the restamped table");
+    assert_eq!(&map[30..32], &0x1234u16.to_le_bytes(), "the header's marker colour");
+    // Everything else is the file the packer wrote, byte for byte.
+    let mut untouched = map.clone();
+    untouched[HEADER_LEN..HEADER_LEN + len].copy_from_slice(&bytes[HEADER_LEN..HEADER_LEN + len]);
+    untouched[30..32].copy_from_slice(&marker_color.to_le_bytes());
+    assert_eq!(untouched, bytes, "a restamp moved a byte outside the table and the marker");
+
+    // A skin whose ids are not the map's is refused rather than stamped over: those ids are baked
+    // into every feature header in every chunk (§4.7).
+    let mut renumbered = restyled.clone();
+    renumbered[0].id = 200;
+    assert!(matches!(
+        shard::restamp_style_table(&mut bytes.clone(), &renumbered, 0),
+        Err(shard::RestampError::IdMismatch { .. })
+    ));
+    assert!(matches!(
+        shard::restamp_style_table(&mut bytes.clone(), &restyled[..1], 0),
+        Err(shard::RestampError::TooFewStyles { .. })
+    ));
+    assert!(matches!(
+        shard::restamp_style_table(&mut bytes[..HEADER_LEN - 1].to_vec(), &restyled, 0),
+        Err(shard::RestampError::ShorterThanHeader)
+    ));
+}
+
 /// The LOD table (§3): one 18-byte `<fIIHI>` entry per ladder level. `Max Meters/Pixel` is the trap
 /// — it is an `f32` with `+inf` at the top, and `null` and `0.0` are different maps.
 #[test]

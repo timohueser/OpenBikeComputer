@@ -519,7 +519,7 @@ impl DfuFailedScreen {
 mod tests {
     use super::*;
     use crate::activity::{Activity, DfuAction};
-    use crate::screen::PoiScratch;
+    use crate::screen::test_ctx;
     use crate::settings::Settings;
     use crate::{AppState, Mode};
 
@@ -533,22 +533,8 @@ mod tests {
         let mut st = AppState::new(0, 0, 1.0);
         let mut act = Activity::new(Mode::Idle);
         let mut settings = Settings::default();
-        let scratch = PoiScratch::new();
         let t = {
-            let mut cx = Ctx {
-                state: &mut st,
-                activity: &mut act,
-                settings: &mut settings,
-                routes: &[],
-                rides: &[],
-                trips: &[],
-                nav_profiles: &crate::NavProfiles::EMPTY,
-                poi_scratch: &scratch,
-                waypoints: &[],
-                corridor: &[],
-                sensor_scan_hits: &[],
-                now_ms: 0,
-            };
+            let mut cx = test_ctx(&mut st, &mut act, &mut settings);
             scr(&mut cx)
         };
         (t, act.take_dfu_request())

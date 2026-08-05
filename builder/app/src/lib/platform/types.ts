@@ -38,19 +38,6 @@ export interface Caps {
 
 export type { DeviceSession, RideLibrary };
 
-export interface StoragePlace {
-    readonly id: string;
-    readonly label: string;
-    readonly note: string;
-    readonly path: string;
-    readonly bytes: number;
-    readonly files: number;
-}
-
-export interface DiskStorage {
-    places(): Promise<StoragePlace[]>;
-}
-
 /** Native grouped output; browser hosts use their downloader instead. */
 export interface MapOutputSession {
     readonly path: string;
@@ -90,7 +77,5 @@ export interface Platform {
 
     readonly styleEditor: StyleEditorService | null;
 
-    readonly storage?: DiskStorage;
-    readonly revealFile?: (path: string) => Promise<void>;
     readonly siteNav?: { readonly docs: string; readonly simulator: string; readonly github: string };
 }

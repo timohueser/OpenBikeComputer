@@ -45,4 +45,4 @@ pub use replay::{initial_camera, replay_step, ReplaySensors};
 pub use repo::{RideRepository, RouteRepository, TrackRepository, TripCatalog};
 pub use session::{fill_nav_preview, ActiveRouteSession};
 pub use sink::VecSink;
-pub use stores::{MemRideStore, MemRouteStore, MemTrackStore, MEM_NAV_ID};
+pub use stores::{MemRideStore, MemRouteStore, MemTrackStore};

@@ -1,7 +1,8 @@
 //! The **scratch arena** (issue #1146, P2) — one block of RAM, three arms, one owner at a time.
 //!
 //! Three of the board's largest resident blocks are never live at the same moment, and each used to
-//! own its bytes permanently: the per-frame render scratch (`obc_render::RenderScratch`, 92,320 B),
+//! own its bytes permanently: the per-frame render scratch (`obc_render::RenderScratch`, 117,408 B
+//! since #1146 P3 grew the frame caps into the dividend; 92,320 B before it),
 //! the nav block ([`NavArm`] — `NavScratch` + `NavTileCache` + the resumable `NavPlanner`,
 //! ~59.9 KB), and the USB upload staging buffer ([`usb::STAGE_LEN`](crate::usb::STAGE_LEN),
 //! 16 KiB). This module time-shares them through a `union`, so the board pays **max(arms)** instead
@@ -61,7 +62,9 @@
 //! The budget is `max(arms)`, so growth is **not** linear:
 //!
 //! - An arm **below** the maximum grows at **zero** resident cost until it reaches the maximum arm.
-//!   Today that is ~32 KB of free headroom for the nav arm and ~76 KB for the USB stage.
+//!   Today that is ~57.5 KB of free headroom for the nav arm and ~101 KB for the USB stage — both
+//!   widened by P3, which spent the dividend on the *max* arm and so raised the bar the others
+//!   grow under.
 //! - Growing the **maximum** arm (today: render) costs the full delta, 1:1, exactly as before.
 //!
 //! Both halves are traps in opposite directions: nobody should "optimize" a growth that is free,
@@ -160,7 +163,7 @@ const _: () = assert!(
 /// The arena's storage, in the **`.uninit`** section (cortex-m-rt's `link.x`: `NOLOAD`, placed
 /// after `.bss`, never touched by the reset handler's zeroing loop).
 ///
-/// `.bss` would be wrong twice over. It would cost ~92 KB of `memset` on **every** boot for bytes
+/// `.bss` would be wrong twice over. It would cost ~117 KB of `memset` on **every** boot for bytes
 /// that are meaningless until an arm claims them and initializes itself in place — and it would say
 /// something false: `.bss` means "zero at boot", and the one thing that is never true of this block
 /// is that its contents mean anything before a claim.
@@ -287,7 +290,7 @@ impl Drop for RenderGuard {
 /// `memset` of the all-zero empty state) **when the gate says the block was last another arm's**,
 /// because a `heapless::Vec` whose `len` is a stale A* node count would read past its own contents.
 ///
-/// Not on every claim, though, and the difference is ~92 KB of `memset` per map frame. A
+/// Not on every claim, though, and the difference is ~117 KB of `memset` per map frame. A
 /// `RenderScratch` that a render span just gave back is still a valid, fully initialized
 /// `RenderScratch`: every buffer in it is written before it is read within a frame (`collect` clears
 /// the frame buffers it fills; the fill/stroke scratch clears its own runs), which is exactly the

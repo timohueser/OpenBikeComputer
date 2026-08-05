@@ -12,10 +12,10 @@
  * so every `if (!confirm(...)) return;` in this frontend is, inside the app, a statement that reads
  * *"never do this"*.
  *
- * That mattered for four controls, all of them ones only the app has: **Reset to preset**, **Reset
- * a routing profile**, **Remove a category**, and **Clear a cache**. The first is one of the three
- * working-config envelope semantics E3 is answerable for, and it was a no-op on macOS. The others
- * are the style editor and the storage card — the desktop tier's own features. A confirmation that
+ * That mattered for three controls, all of them ones only the app has: **Reset to preset**, **Reset
+ * a routing profile**, and **Remove a category**. The first is one of the three working-config
+ * envelope semantics E3 is answerable for, and it was a no-op on macOS. The others are the style
+ * editor's — the desktop tier's own feature. A confirmation that
  * silently answers "no" is worse than none at all: the control looks broken rather than cautious.
  *
  * WebView2 (Chromium) and a browser tab do show the native dialog, so the bug was invisible on two

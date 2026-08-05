@@ -48,7 +48,6 @@ impl CellRect {
 /// ~2 KB for a DACH-shaped rectangle) and whatever the caller hands it, never the raster.
 pub struct ShardWriter<W: Write + Seek> {
     out: W,
-    rect: CellRect,
     block_len: u32,
     /// Kept only so an overflow error can name the pairing that caused it.
     cell_log2: u8,
@@ -110,18 +109,12 @@ impl<W: Write + Seek> ShardWriter<W> {
 
         Ok(ShardWriter {
             out,
-            rect,
             block_len,
             cell_log2,
             directory: vec![DIR_ABSENT; slots],
             next_slot: 0,
             cursor: HEADER_LEN as u32 + (slots * DIR_ENTRY_LEN) as u32,
         })
-    }
-
-    /// The rectangle this container covers.
-    pub fn rect(&self) -> CellRect {
-        self.rect
     }
 
     /// Byte length of one cell block at this pairing.

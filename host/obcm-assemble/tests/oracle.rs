@@ -306,13 +306,9 @@ fn uncut_scenes() -> Vec<(&'static str, (i32, i32), f32, f32)> {
 
 // --- the two paths ----------------------------------------------------------------------------
 
-/// A scratch directory for one test's cell tree. The process id keeps concurrent workspace runs
-/// from deleting each other's artifacts.
+/// A scratch directory for one test's cell tree.
 fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("obcm-assemble-oracle-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
+    obcm_testkit::scratch::scratch_dir("obcm-assemble-oracle", name)
 }
 
 /// Cut the fixture into cells with the **real cutter**.

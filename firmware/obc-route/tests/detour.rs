@@ -10,7 +10,7 @@
 
 mod common;
 
-use common::{convert, VecSink};
+use common::{convert, route_points, VecSink};
 use obc_elevation::NullElevation;
 use obc_formats::io::SliceSource;
 use obc_pack::nav::{Edge, NavGraph, Node};
@@ -209,21 +209,6 @@ fn detour_over_terrain(
         &mut sink,
     );
     (res, sink.buf)
-}
-
-/// Decode an OBCR's full stitched point list.
-fn route_points(obcr: &[u8]) -> Vec<RoutePoint> {
-    let src = SliceSource(obcr);
-    let idx = RouteIndex::read(&src).unwrap();
-    let r = RouteReader::new(&idx, &src);
-    let mut pts = Vec::new();
-    for k in 0..idx.chunks().len() {
-        let mut chunk = heapless::Vec::<RoutePoint, { obc_route::MAX_POINTS_PER_CHUNK }>::new();
-        r.decode_chunk(k, &mut chunk).unwrap();
-        let skip = usize::from(k > 0);
-        pts.extend_from_slice(&chunk[skip..]);
-    }
-    pts
 }
 
 /// Measured polyline length of a stitched point list (the same metric the emitter uses).

@@ -2,13 +2,12 @@
 
 use embedded_graphics::pixelcolor::Rgb888;
 use obc_formats::io::SliceSource;
-use obc_formats::obcm::{HEADER_LEN, STYLE_RECORD_LEN};
 use obc_host_core::RgbaFrame;
 use obc_map_scene::BBox;
 use obc_reader::{rgb565_to_device64, Error as ReadError, MapCache, MapTables, Reader};
 use obc_render::{zoom_for_mpp, RenderConfig, RenderScratch, RenderStats, Viewport};
 use obcm_assemble::schema::{Schema, Skin};
-use obcm_assemble::shard::pack_style_table;
+use obcm_assemble::shard::{restamp_style_table, RestampError};
 
 pub const FRAME_W: u32 = 240;
 pub const FRAME_H: u32 = 240;
@@ -26,9 +25,6 @@ const DEFAULT_METERS_PER_PIXEL: f32 = 5.0;
 const MIN_METERS_PER_PIXEL: f32 = 0.5;
 const MAX_MPP_SEARCH: f32 = 100_000.0;
 const MAX_SCHEMA_MPP: f32 = 100_000.0;
-
-const HEADER_STYLE_OFFSET_AT: usize = 21;
-const HEADER_MARKER_COLOR_AT: usize = 30;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreviewErrorCode {
@@ -180,52 +176,25 @@ impl MapPreview {
         let skin = Skin::parse(skin_json).map_err(PreviewFailure::input)?;
         let styles = skin.resolve(&self.schema).map_err(PreviewFailure::input)?;
 
-        if self.bytes.len() < HEADER_LEN {
-            return Err(PreviewFailure::input("The Teningen preview is shorter than the OBCM header."));
-        }
-        let style_offset = u32::from_le_bytes(
-            self.bytes[HEADER_STYLE_OFFSET_AT..HEADER_STYLE_OFFSET_AT + 4]
-                .try_into()
-                .expect("four bytes inside the checked header"),
-        ) as usize;
-        let count = *self
-            .bytes
-            .get(style_offset)
-            .ok_or_else(|| PreviewFailure::input("The Teningen preview has a bad style offset."))?
-            as usize;
-        let end = style_offset
-            .checked_add(1 + count * STYLE_RECORD_LEN)
-            .ok_or_else(|| PreviewFailure::input("The Teningen preview style table overflows."))?;
-        let slot = self
-            .bytes
-            .get_mut(style_offset..end)
-            .ok_or_else(|| PreviewFailure::input("The Teningen preview style table is truncated."))?;
-        // Only the styles this map carries are stamped. A schema that has grown feature types since
-        // the preview map was cut keeps its trailing ones: style ids are assigned in schema document
-        // order, so an appended type takes the next free id and leaves every id in here meaning what
-        // it meant — and a type the sample has no geometry for cannot change the picture anyway.
-        // (`obc-bake`'s `previews.rs` holds the same rule for the published thumbnails.)
-        if styles.len() < count {
-            return Err(PreviewFailure::input(format!(
-                "The preview has {count} styles, but this skin resolves to only {}.",
-                styles.len()
-            )));
-        }
-        let stamped = &styles[..count];
-        let packed = pack_style_table(stamped);
-        if slot.len() != packed.len() {
-            return Err(PreviewFailure::input("The Teningen preview style table is not the length it declares."));
-        }
-        let have_ids: Vec<u8> = slot[1..].chunks_exact(STYLE_RECORD_LEN).map(|record| record[0]).collect();
-        let want_ids: Vec<u8> = stamped.iter().map(|style| style.id).collect();
-        if have_ids != want_ids {
-            return Err(PreviewFailure::input(
+        // Style table + marker colour, in place — the assembler owns that algorithm, and the
+        // published thumbnails in `obc-bake`'s `previews.rs` go through the same function.
+        restamp_style_table(&mut self.bytes, &styles, skin.marker_color).map_err(|e| match e {
+            RestampError::ShorterThanHeader => {
+                PreviewFailure::input("The Teningen preview is shorter than the OBCM header.")
+            }
+            RestampError::BadStyleOffset => PreviewFailure::input("The Teningen preview has a bad style offset."),
+            RestampError::TableOverflows => PreviewFailure::input("The Teningen preview style table overflows."),
+            RestampError::TableTruncated => PreviewFailure::input("The Teningen preview style table is truncated."),
+            RestampError::TooFewStyles { count, resolved } => PreviewFailure::input(format!(
+                "The preview has {count} styles, but this skin resolves to only {resolved}."
+            )),
+            RestampError::LengthMismatch { .. } => {
+                PreviewFailure::input("The Teningen preview style table is not the length it declares.")
+            }
+            RestampError::IdMismatch { .. } => PreviewFailure::input(
                 "The preview map belongs to a different schema revision; refresh the builder deployment.",
-            ));
-        }
-        slot.copy_from_slice(&packed);
-        self.bytes[HEADER_MARKER_COLOR_AT..HEADER_MARKER_COLOR_AT + 2]
-            .copy_from_slice(&skin.marker_color.to_le_bytes());
+            ),
+        })?;
         self.tables = MapTables::parse(&SliceSource(&self.bytes)).map_err(read_failure)?;
         self.dirty = true;
         Ok(())

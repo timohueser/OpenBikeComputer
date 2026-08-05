@@ -101,11 +101,6 @@ export function defaultProfiles(ps: ProfileSchema): NavProfile[] {
     return deepCopy(ps.defaultProfiles);
 }
 
-/** `true` for the "forbidden" sentinel. */
-export function isForbidden(v: Multiplier | undefined): v is "forbidden" {
-    return v === "forbidden";
-}
-
 /** The class names for a group, in canonical (schema) order. */
 export function classNames(ps: ProfileSchema, group: ClassGroup): string[] {
     return group === "highway" ? ps.highwayClasses : ps.surfaceClasses;

@@ -1,6 +1,26 @@
 /**
  * `BytePipe` — the transport seam the whole USB stack sits on (C3, issue #902).
  *
+ * ## Where this sits
+ *
+ * The stack is four layers, and this file is the bottom one:
+ *
+ * ```text
+ *   session.svelte.ts   reactive shell — what a Svelte component holds
+ *   client.ts           the object model: identity, lists, transfers, commands
+ *   transport.ts        the one byte USB adds: which control characteristic a frame is
+ *   pipe.ts             two byte pipes — WebUSB, nusb (`../desktop/usb.ts`) or loopback underneath
+ * ```
+ *
+ * The bottom layer really is swappable in isolation — that is what `BytePipe` is for, and the
+ * loopback and WebUSB implementations prove it. `transport.ts` is a weaker seam: it owns the frame
+ * *encoding* alone, but the assumption that control messages carry a leading selector is shared with
+ * `client.ts`'s dispatch. Its header says exactly what moves if #889 ratifies something else.
+ *
+ * There is no barrel over the stack: every consumer imports the module it actually needs, which is
+ * what keeps `loopback.ts` — a full simulated device the hosted bundle has no business carrying —
+ * out of the shipped chunks, and `platform/bundle.test.ts` honest about what ships.
+ *
  * The interface spec's principle #2 is that the bulk channel is a **raw byte pipe with no
  * per-chunk framing**: a control-plane descriptor announces the transfer, the channel carries
  * exactly the object's payload bytes, and one whole-object CRC-32 is verified at commit. That is

@@ -403,15 +403,7 @@ impl RouteOverviewScreen {
         // can't act, so it doesn't show) — and the `selection_is_guarded` guard keeps a hold a
         // no-op regardless. START keeps the two-row block's top slot either way, so nothing jumps
         // when the Delete row re-arms.
-        let geo = super::GuardedRowsGeometry {
-            x: 14,
-            w: w - 28,
-            top: action_rows_top(h),
-            row_h: OPTION_ROW_H,
-            gap: OPTION_GAP,
-            label_dx: 12,
-            label_dy: 5,
-        };
+        let geo = super::GuardedRowsGeometry::panel(w, action_rows_top(h), OPTION_ROW_H, OPTION_GAP);
         let items = [
             MenuItem { label: rx.t(Msg::RouteOverviewStartRide), guard: false },
             MenuItem { label: rx.t(Msg::RouteOverviewDelete), guard: true },
@@ -602,7 +594,7 @@ mod tests {
     use crate::activity::Mode;
     use crate::retention::Retention;
     use crate::route::RouteSummary;
-    use crate::screen::PoiScratch;
+    use crate::screen::test_ctx;
     use crate::settings::Settings;
     use crate::AppState;
     use obc_map_scene::BBox;
@@ -621,21 +613,7 @@ mod tests {
     fn run(scr: &mut RouteOverviewScreen, act: &mut Activity, routes: &[RouteSummary], g: Gesture) -> Transition {
         let mut st = AppState::new(0, 0, 1.0);
         let mut settings = Settings::default();
-        let scratch = PoiScratch::new();
-        let mut cx = Ctx {
-            state: &mut st,
-            activity: act,
-            settings: &mut settings,
-            routes,
-            rides: &[],
-            trips: &[],
-            nav_profiles: &crate::NavProfiles::EMPTY,
-            poi_scratch: &scratch,
-            waypoints: &[],
-            corridor: &[],
-            sensor_scan_hits: &[],
-            now_ms: 0,
-        };
+        let mut cx = Ctx { routes, ..test_ctx(&mut st, act, &mut settings) };
         scr.handle(g, &mut cx)
     }
 

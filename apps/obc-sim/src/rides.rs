@@ -240,9 +240,7 @@ mod tests {
     /// unlike the trackless memory store), and delete retires the id.
     #[test]
     fn folder_ride_store_passes_the_conformance_suite() {
-        let dir = std::env::temp_dir().join(format!("obc-ride-conf-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = obcm_testkit::scratch::scratch_dir("obc-ride-conf", "suite");
         record_ride(&dir, 1, "Ride One");
         record_ride(&dir, 2, "Ride Two");
 

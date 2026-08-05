@@ -458,6 +458,7 @@ fn draw_zoom_icon(cv: &mut impl Surface, x: i32, y: i32) {
 mod tests {
     use super::*;
     use crate::activity::Activity;
+    use crate::screen::test_ctx;
     use crate::settings::ClimbMode;
     use crate::AppState;
 
@@ -469,21 +470,7 @@ mod tests {
         let mut act = Activity::new(crate::activity::Mode::Riding);
         act.active_climb = active_climb;
         let mut s = Settings { climb_mode: mode, ..Settings::default() };
-        let scratch = crate::screen::PoiScratch::new();
-        let mut cx = Ctx {
-            state: &mut st,
-            activity: &mut act,
-            settings: &mut s,
-            routes: &[],
-            rides: &[],
-            trips: &[],
-            nav_profiles: &crate::NavProfiles::EMPTY,
-            poi_scratch: &scratch,
-            waypoints: &[],
-            corridor: &[],
-            sensor_scan_hits: &[],
-            now_ms: 0,
-        };
+        let mut cx = test_ctx(&mut st, &mut act, &mut s);
         StatisticsScreen::new().handle(Gesture::Back, &mut cx)
     }
 

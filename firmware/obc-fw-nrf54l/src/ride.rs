@@ -1755,10 +1755,7 @@ pub(crate) async fn run_app(
             app.tick(
                 RideClock(now),
                 Sensors {
-                    loc: &mut debug_loc,
                     altimeter: Some(&mut debug_alt),
-                    temperature: None,
-                    clock: None, // the host feed streams no GPS time yet
                     compass: Some(&mut debug_compass),
                     track: track_dyn,
                     fuel: Some(&mut fuel),
@@ -1767,6 +1764,8 @@ pub(crate) async fn run_app(
                     hr: Some(&mut consumer.hr()),
                     power: Some(&mut consumer.power()),
                     cadence: Some(&mut consumer.cadence()),
+                    // No thermometer on this build, and the host feed streams no GPS time yet.
+                    ..Sensors::new(&mut debug_loc)
                 },
                 route.as_ref(),
             );
@@ -1774,7 +1773,6 @@ pub(crate) async fn run_app(
             app.tick(
                 RideClock(now),
                 Sensors {
-                    loc: &mut consumer.location(),
                     altimeter: Some(&mut consumer.altimeter()),
                     temperature: Some(&mut consumer.temperature()),
                     clock: Some(&mut consumer.clock()), // SAM-M10Q UTC → the wall clock (always stamps; #641)
@@ -1782,37 +1780,23 @@ pub(crate) async fn run_app(
                     track: track_dyn,
                     fuel: Some(&mut fuel),
                     // On a `ble` build the central manager (SE6) feeds the shared hub
-                    // mailboxes; without `ble` there is no radio, so no sensor source.
+                    // mailboxes; without `ble` there is no radio, so no sensor source — the
+                    // `Sensors::new` base already leaves those three `None`.
                     #[cfg(feature = "ble")]
                     hr: Some(&mut consumer.hr()),
-                    #[cfg(not(feature = "ble"))]
-                    hr: None,
                     #[cfg(feature = "ble")]
                     power: Some(&mut consumer.power()),
-                    #[cfg(not(feature = "ble"))]
-                    power: None,
                     #[cfg(feature = "ble")]
                     cadence: Some(&mut consumer.cadence()),
-                    #[cfg(not(feature = "ble"))]
-                    cadence: None,
+                    ..Sensors::new(&mut consumer.location())
                 },
                 route.as_ref(),
             );
             #[cfg(all(not(feature = "debug-uart"), feature = "synth"))]
             app.tick(
                 RideClock(now),
-                Sensors {
-                    loc: &mut synth,
-                    altimeter: None,
-                    temperature: None,
-                    clock: None, // the synthetic loop has no clock source
-                    compass: None,
-                    track: track_dyn,
-                    fuel: Some(&mut fuel),
-                    hr: None,
-                    power: None,
-                    cadence: None,
-                },
+                // The synthetic loop has no sensors at all — not even a clock source.
+                Sensors { track: track_dyn, fuel: Some(&mut fuel), ..Sensors::new(&mut synth) },
                 route.as_ref(),
             );
 
