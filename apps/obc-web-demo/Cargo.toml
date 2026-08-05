@@ -12,7 +12,6 @@ description = "The landing page's thin wasm host (epic #624, S6): the shared fir
 obc-reader = { path = "../../firmware/obc-reader", features = ["alloc"] }
 # `alloc` gives us `NavScratch::new_boxed` — same story for the ~39 KB A* table.
 obc-route = { path = "../../firmware/obc-route", features = ["alloc"] }
-obc-render = { path = "../../firmware/obc-render" }
 obc-app = { path = "../../firmware/obc-app" }
 # The shared host glue (replay stepping, the frame-interleaved NavPlan, the in-memory stores) —
 # the same code obc-sim drives, so the two hosts can't drift.

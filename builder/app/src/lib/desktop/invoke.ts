@@ -8,7 +8,6 @@
 // file so a rename is one place on each side.
 
 import { invoke, type Channel } from "@tauri-apps/api/core";
-import type { StoragePlace } from "../platform/types";
 
 /** The catalog manifest, plus the URL relative references resolve against. */
 export interface FetchedCatalog {
@@ -94,8 +93,6 @@ export const desktop = {
         }),
     mapOutputFinish: (id: number) => invoke<void>("map_output_finish", { id }),
     mapOutputDiscard: (id: number) => invoke<void>("map_output_discard", { id }),
-
-    storagePlaces: () => invoke<StoragePlace[]>("storage_info"),
 
     revealFile: (path: string) => invoke<void>("reveal_file", { path }),
 
