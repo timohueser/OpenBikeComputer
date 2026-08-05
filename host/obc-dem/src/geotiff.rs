@@ -294,6 +294,12 @@ pub struct DemMosaic {
     /// It cannot change an answer: tile coverage boxes are disjoint by construction (§`owns`), so
     /// at most one tile ever matches and checking a different one first only reorders the search.
     last_hit: std::cell::Cell<usize>,
+    /// The same memo, for the corner resolver alone. `height` resolves an off-tile stencil corner
+    /// through [`DemMosaic::nearest_post`], which is a *different* tile by definition — sharing one
+    /// slot meant every seam-adjacent sample overwrote the memo with the neighbour and then the next
+    /// sample overwrote it back, i.e. two linear scans per sample exactly along the seams, where the
+    /// memo is worth the most.
+    last_corner_hit: std::cell::Cell<usize>,
 }
 
 impl DemMosaic {
@@ -328,7 +334,8 @@ impl DemMosaic {
     pub fn push(&mut self, tile: DemTile) {
         self.tiles.push(tile);
         self.tiles.sort_by_key(DemTile::order_key);
-        self.last_hit.set(0); // the sort invalidated the memo's index
+        self.last_hit.set(0); // the sort invalidated both memo indices
+        self.last_corner_hit.set(0);
     }
 
     /// How many tiles the mosaic holds.
@@ -342,13 +349,19 @@ impl DemMosaic {
 
     /// The tile that answers for `(lat, lon)`, or `None` outside coverage.
     fn tile_for(&self, lat_deg: f64, lon_deg: f64) -> Option<&DemTile> {
-        if let Some(tile) = self.tiles.get(self.last_hit.get()) {
+        self.tile_for_memo(lat_deg, lon_deg, &self.last_hit)
+    }
+
+    /// [`DemMosaic::tile_for`], against a caller-chosen memo slot. Which slot is used can only
+    /// change how long the search takes, never its answer (coverage boxes are disjoint).
+    fn tile_for_memo(&self, lat_deg: f64, lon_deg: f64, memo: &std::cell::Cell<usize>) -> Option<&DemTile> {
+        if let Some(tile) = self.tiles.get(memo.get()) {
             if tile.owns(lat_deg, lon_deg) {
                 return Some(tile);
             }
         }
         let (index, tile) = self.tiles.iter().enumerate().find(|(_, t)| t.owns(lat_deg, lon_deg))?;
-        self.last_hit.set(index);
+        memo.set(index);
         Some(tile)
     }
 
@@ -357,7 +370,7 @@ impl DemMosaic {
     /// index is what lets two tiles with different post spacings meet without inventing a lattice
     /// that neither of them is on.
     fn nearest_post(&self, lat_deg: f64, lon_deg: f64) -> Option<f64> {
-        let tile = self.tile_for(lat_deg, lon_deg)?;
+        let tile = self.tile_for_memo(lat_deg, lon_deg, &self.last_corner_hit)?;
         let row = ((lat_deg - tile.south_lat_deg) / tile.step_lat_deg).round();
         let col = ((lon_deg - tile.west_lon_deg) / tile.step_lon_deg).round();
         let row = (row as i64).clamp(0, tile.rows as i64 - 1) as usize;
