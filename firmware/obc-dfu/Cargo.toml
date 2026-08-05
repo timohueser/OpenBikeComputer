@@ -10,6 +10,9 @@ description = "OBCU update-image container + boot-state RRAM page codec + boot-d
 # links it cheaply; host-tested to the settings-codec bar. A workspace member so the plain
 # `cargo test` below exercises it on the host, exactly like obc-reader / obc-ble.
 [dependencies]
+# CRC-32/IEEE, shared with obc-ble. A dependency-free leaf, so it does not cost the bootloader's
+# link anything the old in-crate copy didn't.
+obc-crc = { path = "../obc-crc" }
 # The OBCU v2 signature check (#997), on BOTH sides of the pipeline: the armer verifies with it and
 # `obc-mkimage` signs with it, so host and device can never drift onto different implementations.
 # Chosen over ed25519-dalek because it is `core`-only with no RNG or `zeroize` machinery pulled in,
@@ -29,5 +32,3 @@ description = "OBCU update-image container + boot-state RRAM page codec + boot-d
 # slot for one signature check on a device that verifies once per update. With it the whole crate is
 # a few KB; the extra milliseconds are invisible next to the seconds-long SD read it rides along with.
 ed25519-compact = { version = "2.3", default-features = false, features = ["opt_size"] }
-
-[dev-dependencies]

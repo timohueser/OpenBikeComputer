@@ -12,15 +12,15 @@ use core::{
 
 use heapless::{String, Vec};
 
-use obc_formats::io::{rd_i16, rd_i32, rd_u16, rd_u32, ByteSource, Error};
+use obc_formats::io::{rd_i16, rd_i32, rd_u16, rd_u32, ByteSource, DecodeError, Error};
 use obc_map_scene::BBox;
 
 // The OBCR format constants this reader parses against are owned by `obc-formats`; imported here.
 // Not re-exported — consumers reach the format authority via `obc_formats::obcr`.
+use obc_formats::obcr::{validate_header_prefix, POINT_RECORD_LEN};
 use obc_formats::obcr::{
     CHUNK_META_LEN, HEADER_FULL_LEN, HEADER_LEN, NAME_CAP, WAYPOINT_LEN, WAYPOINT_NAME_CAP, WAYPOINT_NAME_OFF,
 };
-use obc_formats::obcr::{MAGIC, POINT_RECORD_LEN, VERSIONS};
 use obc_reader::PoiCategory;
 /// The device's waypoint cap — one number for both roles: the converter's `<wpt>` emission cap
 /// ([`gpx_to_obcr`](crate::gpx_to_obcr)) and the resident [`Waypoints`] table the ride loop holds
@@ -1004,11 +1004,15 @@ pub(crate) struct Header {
 pub(crate) fn read_header(src: &dyn ByteSource) -> Result<Header, Error> {
     let mut h = [0u8; HEADER_LEN];
     src.read_at(0, &mut h).map_err(|_| Error::BadOffset)?;
-    if &h[0..4] != MAGIC {
-        return Err(Error::BadMagic);
-    }
-    if !VERSIONS.contains(&h[4]) {
-        return Err(Error::BadVersion);
+    // The magic + version gate is `obc-formats`' to own, not this reader's: one prefix check for
+    // every OBCR consumer. It reports `Version` only *after* the magic matched, so the two-step
+    // "not an OBCR" / "an OBCR we can't read" distinction the callers pin survives the mapping.
+    // (`Bounds` is unreachable — `h` is a fixed 112-byte buffer — and would mean the same thing
+    // as a magic mismatch anyway: this is not a route.)
+    match validate_header_prefix(&h) {
+        Ok(_) => {}
+        Err(DecodeError::Version) => return Err(Error::BadVersion),
+        Err(_) => return Err(Error::BadMagic),
     }
     let name_len = (h[6] as usize).min(NAME_CAP);
     let mut name = String::new();

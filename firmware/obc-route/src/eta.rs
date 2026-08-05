@@ -93,7 +93,7 @@ pub fn v_flat_mps(idx: u8) -> f32 {
 
 /// Seconds per metre climbed for bike-profile `idx` — [`K_CLIMB_S_PER_M`]'s entry.
 #[inline]
-pub fn k_climb_s_per_m(idx: u8) -> f32 {
+pub(crate) fn k_climb_s_per_m(idx: u8) -> f32 {
     K_CLIMB_S_PER_M[row(idx)]
 }
 

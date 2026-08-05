@@ -53,8 +53,6 @@ pub const MAX_MANIFEST_LEN: usize = HEADER_LEN + SHARD_RECORD_LEN * MAX_SHARDS;
 
 /// Longest derived shard filename, `MS999S31.OBM` (§5.2) — every name is 8.3-safe.
 pub const MAX_SHARD_NAME_LEN: usize = 12;
-/// Longest derived manifest filename, `MS999.OBS` (§5.2).
-pub const MAX_MANIFEST_NAME_LEN: usize = 9;
 /// The filename prefix that marks a volume set, kept clear of single-map `MP<id>.OBM` (§5.2).
 pub const SET_PREFIX: &str = "MS";
 /// The manifest extension (§5.2).
@@ -99,13 +97,6 @@ impl Role {
             3 => Role::Terrain,
             _ => return None,
         })
-    }
-
-    /// Whether a record with this role names an **OBCM** file — the question every mount path
-    /// asks, spelled once here so no consumer re-derives it from a byte value.
-    #[inline]
-    pub const fn is_obcm(self) -> bool {
-        !matches!(self, Role::Terrain)
     }
 }
 
@@ -593,11 +584,6 @@ impl FileName {
         // Every byte written by the formatters below is printable ASCII.
         core::str::from_utf8(&self.buf[..self.len as usize]).unwrap_or("")
     }
-
-    #[inline]
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.buf[..self.len as usize]
-    }
 }
 
 fn push(buf: &mut [u8; MAX_SHARD_NAME_LEN], len: &mut usize, text: &[u8]) {
@@ -738,14 +724,6 @@ fn parse_id(digits: &[u8]) -> Option<u16> {
     Some(value)
 }
 
-/// Recover the set id from a `MS<id>.OBD` terrain filename, or `None` if `name` is not one.
-/// As strict as [`parse_manifest_name`], and for the same reason.
-pub fn parse_terrain_name(name: &[u8]) -> Option<u16> {
-    let rest = name.strip_prefix(SET_PREFIX.as_bytes())?;
-    let digits = rest.strip_suffix(TERRAIN_EXT.as_bytes())?;
-    parse_id(digits)
-}
-
 /// Recover `(set id, shard index)` from a `MS<id>S<kk>.OBM` shard filename. A file that only
 /// *looks* like a shard is still an orphan until a manifest names it (§5.4).
 pub fn parse_shard_name(name: &[u8]) -> Option<(u16, usize)> {
@@ -825,8 +803,6 @@ mod tests {
         assert_eq!(Role::Coarse.id(), 2);
         assert_eq!(Role::Terrain.id(), 3);
         assert_eq!(Role::from_id(4), None);
-        assert!(Role::Core.is_obcm() && Role::Geometry.is_obcm() && Role::Coarse.is_obcm());
-        assert!(!Role::Terrain.is_obcm());
         assert_eq!(VERSION, 2, "EL4 (#1072) is a hard cut, not a compatible extension");
     }
 
@@ -1113,7 +1089,7 @@ mod tests {
         assert_eq!(plan[MAX_SHARDS].as_str(), "MS7S31.OBM", "the sweep runs to the cap, not the set's count");
         assert_eq!(plan[MAX_SHARDS + 1].as_str(), "MS7.OBD", "…and the raster goes too (§5.4's orphan rule)");
         for (index, name) in plan[1..=MAX_SHARDS].iter().enumerate() {
-            assert_eq!(parse_shard_name(name.as_bytes()), Some((7, index)));
+            assert_eq!(parse_shard_name(name.as_str().as_bytes()), Some((7, index)));
         }
         assert!(delete_plan(1000).is_none(), "an id with no derived name has no plan");
     }
@@ -1241,9 +1217,9 @@ mod tests {
                 let (stem, ext) = text.split_at(text.len() - 4);
                 assert_eq!(ext, ".OBM");
                 assert!(stem.len() <= 8, "{text} is not 8.3-safe");
-                assert_eq!(parse_shard_name(name.as_bytes()), Some((id, index)));
+                assert_eq!(parse_shard_name(text.as_bytes()), Some((id, index)));
             }
-            assert_eq!(parse_manifest_name(manifest_name(id).unwrap().as_bytes()), Some(id));
+            assert_eq!(parse_manifest_name(manifest_name(id).unwrap().as_str().as_bytes()), Some(id));
         }
     }
 
