@@ -539,8 +539,11 @@ impl MergedNav {
 
     /// Bytes this section occupies once written after `profile_table`. Every chunk is padded to
     /// `NAV_CHUNK_SIZE`, so the chunk region is arithmetic over the count (§8.1).
-    pub fn section_len(&self, profile_table: &[u8]) -> usize {
-        NAV_DIR_LEN + profile_table.len() + self.index_len + self.chunk_count as usize * NAV_CHUNK_SIZE + self.pool_len
+    pub fn section_len(&self, profile_table: &[u8]) -> u64 {
+        (NAV_DIR_LEN + profile_table.len()) as u64
+            + self.index_len as u64
+            + self.chunk_count as u64 * NAV_CHUNK_SIZE as u64
+            + self.pool_len as u64
     }
 
     /// Give the scratch streams back, once the last shard that could name them has been written.
@@ -1431,7 +1434,7 @@ pub fn serialize(
     let Some(files) = &nav.files else {
         // The empty pair a non-core shard carries (§5.1): the directory and the profile table are
         // the whole section, and `section_len` agrees by arithmetic (both data regions are zero).
-        debug_assert_eq!(NAV_DIR_LEN + profile_table.len(), nav.section_len(profile_table));
+        debug_assert_eq!((NAV_DIR_LEN + profile_table.len()) as u64, nav.section_len(profile_table));
         return Ok(());
     };
     // The §8.2 index is already in wire form on the seam, so it is a copy through one block buffer.
@@ -1482,7 +1485,7 @@ pub fn serialize(
         // `pad` is `[0xFF; 512]`; the remainder is at most one chunk by construction.
         out(&pad[..nav.pool_len - at])?;
     }
-    debug_assert_eq!(written, nav.section_len(profile_table));
+    debug_assert_eq!(written as u64, nav.section_len(profile_table));
     Ok(())
 }
 
@@ -1725,7 +1728,7 @@ mod tests {
         assert_eq!(&bytes[NAV_DIR_LEN..], &want[..], "the streamed pool is not the laid-out pool");
         assert_eq!(u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize, NAV_DIR_LEN, "edge pool offset");
         assert_eq!(u32::from_le_bytes(bytes[16..20].try_into().unwrap()), 2, "edge chunk count");
-        assert_eq!(bytes.len(), nav.section_len(&[]), "the section is the length it was projected at");
+        assert_eq!(bytes.len() as u64, nav.section_len(&[]), "the section is the length it was projected at");
 
         // The rule both walks share, stated once: a record moves to the next chunk only when it
         // would cross the boundary, and a record that ends exactly on one does not move.
