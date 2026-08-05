@@ -246,6 +246,80 @@ pub fn push_lod_entry(
     table.extend_from_slice(&chunk_count.to_le_bytes());
 }
 
+/// Byte offset of the header's `Style Offset` field (`OBCM_Spec.md` §1: magic 4, version 1, four
+/// `int32` bbox fields — `4 + 1 + 16`).
+pub const HEADER_STYLE_OFFSET_AT: usize = 21;
+
+/// Byte offset of the header's `Marker Color` field — the one other byte a skin owns.
+pub const HEADER_MARKER_COLOR_AT: usize = 30;
+
+/// Why a restamp could not happen. It carries the numbers rather than a sentence, because the two
+/// callers word their failures for very different readers: `obc-bake` tells a maintainer to refresh
+/// a fixture before a long bake, the skin editor tells a person in a browser tab why the picture
+/// did not change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RestampError {
+    /// Fewer than [`HEADER_LEN`] bytes — not an OBCM image at all.
+    ShorterThanHeader,
+    /// The header's `Style Offset` points past the end.
+    BadStyleOffset,
+    /// `offset + 1 + count · record` overflows `usize`.
+    TableOverflows,
+    /// The declared table runs past the end of the image.
+    TableTruncated,
+    /// The image declares `count` styles but the skin resolved to only `resolved`.
+    TooFewStyles { count: usize, resolved: usize },
+    /// The `count`-style table in the image is not the `packed` bytes a fresh pack produces.
+    LengthMismatch { count: usize, packed: usize },
+    /// The image's style ids are not the skin's — the image belongs to another schema revision.
+    IdMismatch { have: Vec<u8>, want: Vec<u8> },
+}
+
+/// Stamp a resolved skin onto an OBCM image **in place**: its style table and the header's marker
+/// colour, and nothing else. That is the whole of what applying a skin means (`OBCA_Spec.md` §5) —
+/// ≈ 2 KB and one `u16` — which is why a skin invalidates no cell and a preview needs no re-pack.
+///
+/// Only the styles the image actually carries are stamped. A schema that has grown feature types
+/// since the image was cut keeps its trailing ones: style ids are assigned in schema document order,
+/// so an appended type takes the next free id and leaves every id in the image meaning what it
+/// meant — and a type the image has no geometry for cannot change the picture anyway. The image's
+/// table must therefore be a **prefix** of the skin's assignment; ids that disagree are refused,
+/// because there the bytes mean something the schema no longer says.
+///
+/// Two callers share this: `obc-bake`'s published thumbnails and the builder's live skin editor.
+/// They used to hold a byte-for-byte copy each, down to the three header offsets.
+pub fn restamp_style_table(
+    map: &mut [u8],
+    styles: &[StyleRecord],
+    marker_color: u16,
+) -> core::result::Result<(), RestampError> {
+    if map.len() < HEADER_LEN {
+        return Err(RestampError::ShorterThanHeader);
+    }
+    let style_offset = u32::from_le_bytes(
+        map[HEADER_STYLE_OFFSET_AT..HEADER_STYLE_OFFSET_AT + 4].try_into().expect("four bytes inside the header"),
+    ) as usize;
+    let count = *map.get(style_offset).ok_or(RestampError::BadStyleOffset)? as usize;
+    let end = style_offset.checked_add(1 + count * STYLE_RECORD_LEN).ok_or(RestampError::TableOverflows)?;
+    let slot = map.get_mut(style_offset..end).ok_or(RestampError::TableTruncated)?;
+    if styles.len() < count {
+        return Err(RestampError::TooFewStyles { count, resolved: styles.len() });
+    }
+    let stamped = &styles[..count];
+    let packed = pack_style_table(stamped);
+    if slot.len() != packed.len() {
+        return Err(RestampError::LengthMismatch { count, packed: packed.len() });
+    }
+    let have: Vec<u8> = slot[1..].chunks_exact(STYLE_RECORD_LEN).map(|record| record[0]).collect();
+    let want: Vec<u8> = stamped.iter().map(|style| style.id).collect();
+    if have != want {
+        return Err(RestampError::IdMismatch { have, want });
+    }
+    slot.copy_from_slice(&packed);
+    map[HEADER_MARKER_COLOR_AT..HEADER_MARKER_COLOR_AT + 2].copy_from_slice(&marker_color.to_le_bytes());
+    Ok(())
+}
+
 /// The style table (`OBCM_Spec.md` §2): `Count` then one 8-byte record per style, id ascending.
 pub fn pack_style_table(styles: &[StyleRecord]) -> Vec<u8> {
     let mut out = Vec::with_capacity(1 + styles.len() * STYLE_RECORD_LEN);

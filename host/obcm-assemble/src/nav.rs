@@ -1789,60 +1789,42 @@ mod tests {
             .collect()
     }
 
-    /// One §8.4 edge record: `Length M`, `Pt Count`, `Way Kind`, the absolute anchor, then the
-    /// chained `int16` deltas. The anchor is endpoint `a`'s coordinate, which is what fixes the
-    /// merged edge's orientation.
-    fn edge_rec(length_m: u32, kind: u8, anchor: (i32, i32), deltas: &[(i16, i16)]) -> Vec<u8> {
-        let mut r = Vec::with_capacity(NAV_EDGE_FIXED_LEN + deltas.len() * 4);
-        r.extend_from_slice(&length_m.to_le_bytes());
-        r.extend_from_slice(&((deltas.len() + 1) as u16).to_le_bytes());
-        r.push(kind);
-        r.extend_from_slice(&anchor.0.to_le_bytes());
-        r.extend_from_slice(&anchor.1.to_le_bytes());
-        for &(dlat, dlon) in deltas {
-            r.extend_from_slice(&dlat.to_le_bytes());
-            r.extend_from_slice(&dlon.to_le_bytes());
-        }
-        r
-    }
-
     /// A synthetic `network` cell's §8 section: a node index (never read — [`merge`] walks the chunk
     /// run), the §8.3 node chunks, then the §8.4 edge pool at its own offset.
+    ///
+    /// The records themselves come out of `obcm-testkit`, which is the tree's one hand-written OBCM
+    /// byte builder: an independent transcription of §8 here would be a *second* oracle for the same
+    /// bytes, free to drift from the one `obc-reader`'s and `obc-render`'s tests are checked against.
     fn nav_bytes(nodes: &[SrcNode], recs: &[Vec<u8>]) -> (Vec<u8>, obc_reader::NavDirectory) {
         const INDEX_LEN: usize = 16;
         let coord = |id: u32| {
             let n = nodes.iter().find(|n| n.id == id).expect("a neighbour is a node of the same cell");
             (n.lat, n.lon)
         };
-        let mut chunks: Vec<Vec<u8>> = vec![Vec::new()];
+        // Chunk packing is greedy, exactly as a packed cell's is: a record that does not fit opens
+        // the next chunk rather than being split.
+        let mut chunks: Vec<Vec<Vec<u8>>> = vec![Vec::new()];
+        let mut open_len = 0usize;
         for n in nodes {
-            let mut rec = Vec::new();
-            rec.extend_from_slice(&n.lat.to_le_bytes());
-            rec.extend_from_slice(&n.lon.to_le_bytes());
-            rec.extend_from_slice(&n.id.to_le_bytes());
-            rec.push(n.nbrs.len() as u8);
-            for nb in &n.nbrs {
-                let (lat, lon) = coord(nb.id);
-                rec.extend_from_slice(&nb.id.to_le_bytes());
-                rec.extend_from_slice(&((lat as i64 - n.lat as i64) as i16).to_le_bytes());
-                rec.extend_from_slice(&((lon as i64 - n.lon as i64) as i16).to_le_bytes());
-                rec.extend_from_slice(&nb.edge_id.to_le_bytes());
-                rec.extend_from_slice(&nb.cost.to_le_bytes());
-                rec.push(nb.kind);
-                rec.extend_from_slice(&nb.ascent.to_le_bytes());
+            let nbrs: Vec<obcm_testkit::NavNeighborSpec> = n
+                .nbrs
+                .iter()
+                .map(|nb| {
+                    let (lat, lon) = coord(nb.id);
+                    (nb.id, lat, lon, nb.edge_id, u32::from(nb.cost), nb.kind, nb.ascent)
+                })
+                .collect();
+            let rec = obcm_testkit::pack_nav_record(n.lat, n.lon, n.id, &nbrs);
+            if open_len + rec.len() > NAV_CHUNK_SIZE {
+                chunks.push(Vec::new());
+                open_len = 0;
             }
-            let open = chunks.last_mut().expect("a chunk is always open");
-            if open.len() + rec.len() > NAV_CHUNK_SIZE {
-                chunks.push(rec);
-            } else {
-                open.extend_from_slice(&rec);
-            }
+            open_len += rec.len();
+            chunks.last_mut().expect("a chunk is always open").push(rec);
         }
         let mut bytes = vec![0u8; INDEX_LEN];
         for c in &chunks {
-            let mut c = c.clone();
-            c.resize(NAV_CHUNK_SIZE, CHUNK_END);
-            bytes.extend_from_slice(&c);
+            bytes.extend_from_slice(&obcm_testkit::pack_nav_chunk(c, NAV_CHUNK_SIZE));
         }
         let pool_at = bytes.len();
         let mut pool: Vec<u8> = Vec::new();
@@ -1925,7 +1907,7 @@ mod tests {
     #[test]
     fn a_duplicated_edge_keeps_the_first_cells_copy_and_its_ascents() {
         let (lat_p, lat_q) = (6_000_000i32, 6_001_000i32);
-        let rec = edge_rec(1000, 3, (lat_p, SEAM_LON), &[(1000, 0)]);
+        let rec = obcm_testkit::pack_nav_edge_record(1000, 3, &[(lat_p, SEAM_LON), (lat_q, SEAM_LON)]);
         let e = pool_layout(std::slice::from_ref(&rec))[0];
         let cell = |ids: (u32, u32), asc: (u16, u16)| {
             let nbr = |id: u32, ascent: u16| SrcNbr { id, edge_id: e, cost: 1000, kind: 3, ascent };
@@ -1967,7 +1949,10 @@ mod tests {
         // One record per spoke, all anchored at the hub and all distinct — so no two are duplicates
         // of each other and the only thing under test is the cap.
         let recs: Vec<Vec<u8>> = (0..SPOKES)
-            .map(|k| edge_rec(100 + k as u32, 3, (hub_lat, SEAM_LON), &[(100 * (k as i16 + 1), 1)]))
+            .map(|k| {
+                let far = (hub_lat + 100 * (k as i32 + 1), SEAM_LON + 1);
+                obcm_testkit::pack_nav_edge_record(100 + k as u32, 3, &[(hub_lat, SEAM_LON), far])
+            })
             .collect();
         let half = |from: usize, to: usize| {
             let own: Vec<Vec<u8>> = recs[from..to].to_vec();

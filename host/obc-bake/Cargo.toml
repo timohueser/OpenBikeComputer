@@ -26,7 +26,9 @@ obc-formats = { path = "../../firmware/obc-formats" }
 # container OBCT defines, so shelling out would only insert a second naming scheme between the
 # rasteriser and the catalog's object layout. It also carries the Copernicus credit the catalog
 # stamps, so there is exactly one copy of that wording in the repository.
-obc-dem = { path = "../obc-dem" }
+# `geotiff` only: the bakery rasterises tiles an operator already has and never downloads one, so
+# no HTTP client (and no TLS stack behind it) follows `obc-dem` into this tree.
+obc-dem = { path = "../obc-dem", default-features = false, features = ["geotiff"] }
 # Skin previews are not screenshots of a second renderer. The bakery restamps a
 # canonical tiny OBCM through the assembly engine's production skin resolver and
 # renders it through the same `RenderScratch` the device runs.
@@ -51,3 +53,7 @@ sha2 = "0.11"
 # whether a cached PBF is still current, and the guard's manifest fetch. The bulk
 # download itself goes through `obc_pack::net`.
 ureq = "3"
+
+[dev-dependencies]
+# The shared scratch-path helper the CLI tests build their throwaway paths with.
+obcm-testkit = { path = "../obcm-testkit" }

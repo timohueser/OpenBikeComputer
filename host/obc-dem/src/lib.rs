@@ -50,15 +50,15 @@
 //! the catalog (EL3) and the builder (EL4) carry it onward to a rider. It is a `const` here so
 //! there is one copy of the wording in the repository.
 
-/// The producer half — a GeoTIFF decoder and an HTTP client — behind the default `dem` feature.
-/// [`container`] stands without them, so the assembler (EL4) can reuse the one OBCT writer from a
-/// browser tab; see the `[features]` note in `Cargo.toml`.
-#[cfg(feature = "dem")]
+/// The producer half — a GeoTIFF decoder (`geotiff`) and an HTTP client (`fetch`), together the
+/// default `dem` feature. [`container`] stands without either, so the assembler (EL4) can reuse the
+/// one OBCT writer from a browser tab; see the `[features]` note in `Cargo.toml`.
+#[cfg(feature = "geotiff")]
 pub mod bake;
 pub mod container;
-#[cfg(feature = "dem")]
+#[cfg(feature = "fetch")]
 pub mod fetch;
-#[cfg(feature = "dem")]
+#[cfg(feature = "geotiff")]
 pub mod geotiff;
 
 /// The credit the Copernicus DEM licence requires on any product derived from the dataset, verbatim.

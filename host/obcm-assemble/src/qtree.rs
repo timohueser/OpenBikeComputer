@@ -24,6 +24,20 @@
 //!
 //! The equivalence is not argued, it is *tested*: `the_streaming_tree_is_the_tree_build_and_flatten_
 //! make` runs both over the same random point sets and compares the index and the chunk bytes.
+//!
+//! # Which path is which, since D6
+//!
+//! The nav section — the one that is gigabytes at DACH scale, and the reason D4 happened — goes
+//! through [`flatten_streaming`] exclusively. [`build`] + [`flatten`] survive for two reasons and
+//! only two:
+//!
+//! - they are the **oracle** the equivalence test above measures the streaming path against, and
+//! - the POI section ([`crate::poi::layout`]) still uses them. That is deliberate, not an
+//!   oversight: §7.3 gives each non-empty leaf its **own** padded chunk (`bin_pack = false`), a
+//!   policy [`flatten_streaming`] does not implement, and a whole country's POIs are a few tens of
+//!   thousands of 36-byte records — tens of megabytes at the very worst, against a nav graph's
+//!   gigabytes. The in-memory path is where the cheap rebuild belongs; moving it would mean
+//!   teaching the streaming walk a second chunk policy to save nothing.
 
 use obc_formats::obcm::{BRANCH_BIT, EMPTY_LEAF};
 
@@ -70,6 +84,9 @@ pub enum Tree<T> {
 /// Build the tree over `bbox`, splitting a leaf once its records exceed `capacity` **bytes**
 /// (`Point::record_len` summed). A point exactly on a midline lands in the East / North child, which
 /// keeps it inside that child's bbox for the query.
+///
+/// Pre-D6 in the sense that the nav section no longer comes through here — see the module header for
+/// what still does (the POI section, and the streaming path's equivalence oracle) and why.
 pub fn build<T: Point>(points: Vec<T>, bbox: UBox, capacity: usize) -> Tree<T> {
     let (min_lon, min_lat, max_lon, max_lat) = bbox;
     let packed: usize = points.iter().map(Point::record_len).sum();

@@ -41,7 +41,7 @@ const GEOKEY_GEOGRAPHIC_TYPE: u16 = 2048;
 
 /// The GeoTIFF raster convention (`GTRasterTypeGeoKey`): what the tie point names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RasterType {
+enum RasterType {
     /// The tie point is a pixel **corner**; post centres sit half a step inside it.
     Area,
     /// The tie point is a post **centre** — the DEM convention, and what GLO-30 ships.
@@ -54,9 +54,9 @@ pub enum RasterType {
 /// north-up scanline order is undone.
 #[derive(Debug)]
 pub struct DemTile {
-    /// Where the tile came from — carried only so an error names a file.
-    pub path: PathBuf,
     /// Latitude of post row 0, degrees — the southernmost row after the ingest flip.
+    /// (No source path is kept: every error `open` can raise is raised while the local
+    /// `path` is still in scope, and nothing downstream names the file again.)
     south_lat_deg: f64,
     /// Longitude of post column 0, degrees.
     west_lon_deg: f64,
@@ -163,7 +163,6 @@ impl DemTile {
         }
 
         Ok(DemTile {
-            path: path.to_path_buf(),
             south_lat_deg: north_lat_deg - step_lat_deg * (rows - 1) as f64,
             west_lon_deg,
             step_lat_deg,
@@ -432,7 +431,6 @@ mod tests {
         let (rows, cols) = (8usize, 8usize);
         let mut mosaic = DemMosaic::default();
         mosaic.push(DemTile {
-            path: PathBuf::from("<flat>"),
             south_lat_deg: 46.0,
             west_lon_deg: 8.0,
             step_lat_deg: 1.0 / 3600.0,
@@ -495,7 +493,6 @@ mod tests {
                 }
             }
             mosaic.push(DemTile {
-                path: PathBuf::from("<seam>"),
                 south_lat_deg: 46.0,
                 west_lon_deg: west,
                 step_lat_deg: step,
