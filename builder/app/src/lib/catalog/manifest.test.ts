@@ -51,6 +51,32 @@ describe("parseRoot", () => {
         expect(catalog.cell_index.find((r) => r.band === "fine")?.known_empty_count).toBe(1);
     });
 
+    describe("the source declaration (§3.1)", () => {
+        it("reads the block the generator writes", () => {
+            const catalog = parseRoot(EXAMPLE_ROOT);
+            expect(catalog.source).toEqual({
+                dataset_id: "openstreetmap",
+                attribution: "© OpenStreetMap contributors",
+                license: "ODbL-1.0",
+                license_url: "https://opendatacommons.org/licenses/odbl/1-0/",
+            });
+        });
+
+        it("tolerates a root published before the field existed", () => {
+            const doc = mutated((d) => {
+                delete d.source;
+            });
+            expect(parseRoot(doc).source).toBeNull();
+        });
+
+        it("rejects a half-stated declaration rather than presenting it as authoritative", () => {
+            const doc = mutated((d) => {
+                d.source.attribution = "  ";
+            });
+            expect(() => parseRoot(doc)).toThrow(/attribution.*non-empty/);
+        });
+    });
+
     it("names the one band whose bytes become the core file", () => {
         const catalog = parseRoot(EXAMPLE_ROOT);
         const core = coreBand(catalog);
