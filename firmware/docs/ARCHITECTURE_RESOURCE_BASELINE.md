@@ -92,15 +92,16 @@ identical resident set:
 
 | Profile | `.bss` | `.data` | Linked resident | `.uninit` | Flash sections | Writable full frames | Largest guarded poll frame |
 | :-- | --: | --: | --: | --: | --: | --: | --: |
-| default | 288,672 B | 5,112 B | 293,784 B | 93,344 B | 1,300,320 B | 2 (76,800 B FB + 92,320 B arena) | 9,728 B |
-| BLE | 288,672 B | 5,112 B | 293,784 B | 93,344 B | 1,300,320 B | 2 (76,800 B FB + 92,320 B arena) | 9,728 B |
+| default | 288,672 B | 5,112 B | 293,784 B | 118,432 B | 1,300,320 B | 2 (76,800 B FB + 117,408 B arena) | 9,728 B |
+| BLE | 288,672 B | 5,112 B | 293,784 B | 118,432 B | 1,300,320 B | 2 (76,800 B FB + 117,408 B arena) | 9,728 B |
 | bootloader | — | — | — | — | 16,012 / 32,768 B | — | — |
 
 (Flash is **CI's** figure, re-pinned from #1146 P2's `embedded` run; the pinned local host
 links ~32 KB more for the same source, which is exactly why this column is not host-pinned.
 The RAM figures include #1150's review round: +8 B of `App`, itemized in the JSON's
-`_resident_note_1150_review`. Since #1146 the RAM story is `.bss + .data` **plus `.uninit`**
-— see the entry below.)
+`_resident_note_1150_review`, and #1146 P3's +25,088 B of `.uninit` — the arena's render arm
+growing into the frame caps, which is why `.bss + .data` is flat while `.uninit` is not.
+Since #1146 the RAM story is `.bss + .data` **plus `.uninit`** — see the entries below.)
 
 The rows below this line are the **historical** 256 KB-part figures kept for the
 narrative they carry; they were never updated through the LM20 retarget and are an
@@ -465,6 +466,65 @@ part-2 convention). **Default is byte-identical** (`.bss 200,800 + .data 72 =
 toolchain-artifact trap, not new drift. The compile-time allocation report is
 unchanged on both profiles — the signal is a module static, not a field of `App`
 or `ObjectStore`, so no named entry (`app`, `ble_object_store`, …) moved.
+
+### The frame caps spend the dividend (#1146 P3), 2026-08-05 — **+25,088 B of `.uninit`, 0 B of `.bss`**
+
+The other half of the arena trade, and the first change whose whole cost lands in `.uninit`.
+`obc-render`'s per-frame caps grow into the render arm: `MAX_SPANS` 1,152 → 1,792,
+`MAX_FRAME_POINTS` 4,768 → 6,208, `MAX_FRAME_RINGS` 1,024 → 1,792, `MAX_CROSSINGS`
+256 → 640. `size_of::<RenderScratch>()` — which *is* `arena_render` and, the render arm
+being the maximum, also `arena_total` — goes 92,320 → **117,408 B**, exactly the sum of the
+four deltas with no padding shift.
+
+What moved and what did not, on both profiles:
+
+- **Linked resident is unchanged at 293,688 B.** Not a rounding accident — the bytes live in
+  `.uninit`, so this is precisely the case P2 predicted the `.bss + .data` gate would sleep
+  through. `uninit_max` is what catches it: 93,344 → **118,432 B**. (The base is 293,688 and
+  not P2's 293,784 because #1143's cleaning took 96 B out of `App` underneath this branch;
+  that 96 B is its note's, not P3's.)
+- **`residual_stack` pays the same 25,088 B**, 124,968 → **99,880 B**, because the bound is
+  `_stack_start − __euninit`. Against the measured deep-path peak (35,808 / 37,760 B) that
+  still leaves ~62 KB, and the boot-chain ceiling (28,116 B pinned host) ~71 KB.
+- **Neither smaller arm changed, and both got cheaper to grow.** Free headroom before an arm
+  would cost a byte: nav 59,872 B → ~57.5 KB of room, USB 16,384 B → ~101 KB.
+
+**The net, which is the point.** The three blocks used to sum to 168,576 B of permanent
+residency; the arena costs `max(arms)` = 117,408 B — **51,168 B less even after the spend**.
+Measured end to end against pre-P2 develop it is 51,296 B: total RAM footprint
+(`.bss + .data + .uninit`) 463,416 → 412,120 B, and the residual main stack 48,584 →
+99,880 B — the same number arriving from the other side. **Both are correct and neither
+derives the other** — they differ by 128 B, and every byte of the 128 has a name: P2's own
+40 B accounting gap (its 76,256 by max-of-arms against 76,296 linked: the arena's
+8-alignment in `.uninit` plus `.bss` repadding), less the 8 B #1150's review round put *into*
+`App`, plus the 96 B #1143's cleaning took *out* of it. The linked figure charges all three;
+the arms sum charges none. 40 − 8 + 96 = 128. The check they provide is mutual corroboration
+to within named linker padding, not an identity.
+
+Renders change only where the old caps were doing the dropping. `obc-bench`'s `overview` /
+`overview-rot` now draw 1,792 of 3,625 features (was 1,024; 2,601 → 1,833 dropped) and their
+two frame hashes were re-blessed; `riding` / `mid` / `route` are byte-identical, as are
+headless sim frames at every zoom that never saturated.
+
+**Rings, not spans, are the feature ceiling** — the finding this PR's review round proved and
+then acted on. `select()` budgets points and rings and never counts spans, and every admitted
+feature is charged at least one ring (`Kind::Line` included; a candidate with no rings is
+rejected by `Feature::has_valid_rings`, and `ring_count == 0` is pass-B's failure sentinel), so
+a frame draws at most `min(MAX_SPANS, MAX_FRAME_RINGS)` features. On develop that minimum was
+`MAX_FRAME_RINGS`: every saturating A/B frame reads *rings 100 % / spans 89 %*. Hence the final
+split — the ring cap rose to meet `MAX_SPANS` at 1,792, funded by trimming `MAX_FRAME_POINTS`
+1,536 B, which leaves the arm cost-neutral at 117,408 B and makes the whole span reservoir
+reachable instead of dead weight. A `const` assert in `obc-render` now refuses the inverted
+shape. Points did not become the new limiter: the busy frames measure 2.93–3.01 points per
+admitted feature at the new caps (3.12 is the highest reading anywhere in the A/B, and it is on
+the *old*, tighter ring ceiling) against the 6,208 / 1,792 = 3.46 the budget now allows —
+`obc-bench`'s `overview` now saturates rings *and* spans at 100 % with points at 87 %.
+
+The frame-time price of the extra features is on the host bench, `overview` at develop's caps
+against these (min-of-10 per stage, same host): 1,024 → 1,792 features drawn (+75 %) costs
+collect 281 → 359 µs, sort 15 → 28 µs, draw 191 → 255 µs, total 488 → 643 µs (+32 %). Frame time
+grows sub-linearly in features. It is a host figure on an in-memory fixture and captures none of
+the device's SD-read cost, which dominates a real wide frame; the on-glass number is still owed.
 
 ### The scratch arena (#1146 P2), 2026-08-05 — **−76,296 B resident; `.uninit` becomes load-bearing**
 
