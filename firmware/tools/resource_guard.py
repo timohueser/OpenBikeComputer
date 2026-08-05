@@ -66,6 +66,11 @@ class BootChain:
 class BoardMeasurement:
     bss: int
     data: int
+    # `.uninit` — cortex-m-rt's NOLOAD section, placed after `.bss` and skipped by the reset
+    # handler's zeroing loop. It used to be 1 KB of `defmt_rtt::BUFFER` and nothing else, which is
+    # where the historical `uninit_max` came from. Since #1146 P2 it is also where the ~92 KB
+    # **scratch arena** lives, so it is now the second-largest resident block in the image and is
+    # gated in earnest — see the `uninit_max` check in `check_board`.
     uninit: int
     flash: int
     framebuffer_symbols: tuple[Symbol, ...]
@@ -77,7 +82,14 @@ class BoardMeasurement:
 
     @property
     def resident(self) -> int:
-        """The review/CI contract's linked resident figure: `.bss + .data`."""
+        """The review/CI contract's linked resident figure: `.bss + .data`.
+
+        **Not** "all the RAM the image holds" — `.uninit` is resident too, and since #1146 P2 it
+        carries the scratch arena. The two are gated separately (`resident_ram_max` + `uninit_max`)
+        because they are separately re-approvable, but a change that only *moves* bytes between the
+        two sections leaves this figure looking like a saving it is not. Read them together, and
+        read `residual_stack`, which is charged for both.
+        """
         return self.bss + self.data
 
 
@@ -98,9 +110,12 @@ def parse_stack_bounds(output: str) -> tuple[int, int]:
     """(`_stack_start`, `__euninit`) from `llvm-nm`: the residual main stack's two ends.
 
     The M33's stack starts at the top of the linker's `RAM` region and grows **down**; the resident
-    statics grow **up** and end at `__euninit`. Their difference is the whole stack the main task,
-    every `#[inline(never)]` boot constructor and MPSL's ISRs share — which is why `.bss` growth is
-    a stack cut, not just a RAM cost (the elevation epic's +3.7 KB moved this from 52.3 to 48.6 KB).
+    statics grow **up** and end at `__euninit` — which, as the name says, is the end of `.uninit`,
+    i.e. past `.bss` **and** the arena. Their difference is the whole stack the main task, every
+    `#[inline(never)]` boot constructor and MPSL's ISRs share — which is why growth in *either*
+    resident section is a stack cut, not just a RAM cost (the elevation epic's +3.7 KB of `.bss`
+    moved this from 52.3 to 48.6 KB; #1146 P2 moving ~92 KB out of `.bss` into `.uninit` while
+    deleting ~76 KB net gave back exactly that net, not the 168 KB `.bss` alone suggests).
     """
     addresses: dict[str, int] = {}
     for line in output.splitlines():
@@ -507,9 +522,16 @@ def check_board(args: argparse.Namespace, baseline: dict[str, object]) -> None:
         f"{args.profile} resident RAM grew to {measured.resident} B (.bss + .data), above the "
         f"approved {profile['resident_ram_max']} B baseline; itemize/approve the increase",
     )
+    # A plain ceiling, and it needs no more shape than that even now that it is a real budget: until
+    # #1146 P2 `.uninit` held only `defmt_rtt::BUFFER`, and the 1,024 B baseline was there to catch
+    # a NOLOAD section appearing by accident. It now also holds the ~92 KB scratch arena, so this is
+    # the growth gate for the arena's largest arm — pinned exactly, like `resident_ram_max`, so any
+    # arm crossing the max shows up here as a linked fact and not only as a `size_of` in the report.
     require(
         measured.uninit <= profile["uninit_max"],
-        f"{args.profile} .uninit grew to {measured.uninit} B, above {profile['uninit_max']} B",
+        f"{args.profile} .uninit grew to {measured.uninit} B, above {profile['uninit_max']} B; "
+        "this is the scratch arena's section (#1146 P2) — an arm grew past the current maximum, or "
+        "a new NOLOAD static appeared. Itemize/approve it exactly as a resident increase",
     )
     expected_count = profile["framebuffer_count"]
     require(
@@ -524,10 +546,13 @@ def check_board(args: argparse.Namespace, baseline: dict[str, object]) -> None:
             f"{framebuffer_bytes} B (240 x 320 x 1)",
         )
     # Distinct from `framebuffer_count` (a *name*-matched count): this is the size-based
-    # "no accidental second framebuffer" net. It is not always 1 — the ~90 KB `RENDER_SCRATCH`
-    # legitimately exceeds a frame (#1146 P1 gave the render path's per-frame buffers their own
-    # static; before that the same bytes tripped this count from inside `APP`), so the expected
-    # count is pinned per profile and any *new* frame-sized allocation still trips the guard.
+    # "no accidental second framebuffer" net. It is not always 1 — the ~90 KB scratch `ARENA`
+    # legitimately exceeds a frame, so the expected count is pinned per profile and any *new*
+    # frame-sized allocation still trips the guard. Those bytes have moved twice and the count has
+    # stayed 2 throughout: they were inside `APP`, then #1146 P1 gave them their own `RENDER_SCRATCH`
+    # static, and #1146 P2 made them the render arm of `arena::ARENA` in `.uninit`. Membership, not
+    # the count, is what says which — so read the `candidates:` list in the failure, not just the
+    # number: today it is `FB` + `ARENA`.
     expected_full_frame = profile.get("full_frame_sized_writable_count", expected_count)
     require(
         len(measured.full_frame_sized_writable) == expected_full_frame,
@@ -572,7 +597,8 @@ def check_boot_chain(profile_name: str, profile: dict[str, object], boot: BootCh
         boot.residual_stack >= profile["residual_stack_min"],
         f"{profile_name} residual main stack fell to {boot.residual_stack} B, below the "
         f"{profile['residual_stack_min']} B floor: resident statics grew into the stack. Every "
-        ".bss byte is a stack byte here — re-trim the nrf-mem caps or re-approve the floor",
+        ".bss AND .uninit byte is a stack byte here (the bound is `_stack_start - __euninit`, so "
+        "the scratch arena counts too) — re-trim the nrf-mem caps or re-approve the floor",
     )
     require(
         boot.chain_ceiling <= profile["boot_chain_ceiling"],

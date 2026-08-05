@@ -12,13 +12,16 @@
 //! shared SD + settings store ([`SharedStore`] — the ride loop locks it per frame across the
 //! render but never across the present (#809), the object plane per chunk). Fits the 256 KB DK
 //! on the culled `nrf-mem`
-//! caps; the budget assert + the ~48.6 KB residual stack (deep-ride peak ~36 KB; deepest boot
-//! chain ~35 KB — the ride task's 20.4 KB poll frame under `link::init_store`'s ~14.7 KB
+//! caps; the budget assert + the ~124.9 KB residual stack (deep-ride peak ~36 KB; deepest boot
+//! chain ~28.1 KB — the ride task's 6.9 KB poll frame under `link::init_store`'s ~14.7 KB
 //! transient) are the margins. Both numbers moved on 2026-08-03: the elevation epic's `.bss`
 //! (TERRAIN + its extent tables) shrank the residual by ~3.7 KB, and EL7's inlined terrain parse
 //! plus `init_store`'s double-copy briefly summed past it — a boot-bricking STKOF; `mount_terrain`
 //! and `ObjectStore::empty`/`hydrate` are the fix, and any future fat boot-path local belongs in
-//! the same `#[inline(never)]` pattern (#677).
+//! the same `#[inline(never)]` pattern (#677). Both moved again with #1146 P2: the scratch arena
+//! handed the residual back ~76 KB (48.6 → 124.9), and the ride task's poll frame fell 20.4 → 6.9 KB
+//! because LLVM stopped materialising a ~13.5 KB staging copy in it — measured, not designed, so
+//! read that half as slack the resource guard now pins rather than as budget to spend.
 //! `--no-default-features` stays mandatory — it swaps the critical-section impl to MPSL's.
 //!
 //! Clock: the M33 application core runs at 128 MHz; embassy-time is driven by the **GRTC**
@@ -324,8 +327,10 @@ bind_interrupts!(struct SensorIrqs {
 const NRF_RAM_BYTES: usize = ls021_flpr::M33_RAM_BYTES;
 /// Headroom kept free under the resident statics for the main stack + embassy's executor/task arenas
 /// (statics grow up from the RAM base, the stack down from the top). This is only the build-time
-/// *floor* the assert enforces — the real stack is the residual `RAM − statics` (~37.8 KB on the
-/// default build). Pinned above the **measured deep-path peak**: 35,808 / 37,760 B on 2026-07-04
+/// *floor* the assert enforces — the real stack is the residual `RAM − statics` (~124.9 KB on the
+/// default build since #1146 P2's arena freed ~76 KB of them; ~48.6 KB before it, and the linked
+/// figure is `resource_baseline.json`'s `residual_stack_measured`, which is charged for `.uninit`
+/// as well as `.bss`). Pinned above the **measured deep-path peak**: 35,808 / 37,760 B on 2026-07-04
 /// (debug-uart FLPR build, post-#351 split; VCOM-harness full ride — fix on Home → route load →
 /// ride → finish-to-save), so a change that squeezes the residual below what the deepest path
 /// actually reaches fails at compile time (e.g. a `ble` + map build on the 256 KB DK) instead of
