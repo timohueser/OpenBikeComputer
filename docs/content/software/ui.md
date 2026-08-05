@@ -782,7 +782,7 @@ There are **two** such buffers now, and the second one is shaped a little differ
     <text class="d-sub" x="404" y="166">hold_progress — the confirm ring</text>
   </g>
 </svg>
-<figcaption>Splitting the context by role is a small thing that pays off constantly: drawing is provably side-effect-free, and the heavy render resources (the streaming map <code>Reader</code>, the reusable <code>MapRenderer</code>) are gathered once by the host and lent to whichever screen is on top.</figcaption>
+<figcaption>Splitting the context by role is a small thing that pays off constantly: drawing is provably side-effect-free, and the heavy render resources (the streaming map <code>Reader</code>, the reusable <code>RenderScratch</code>) are gathered once by the host and lent to whichever screen is on top.</figcaption>
 </figure>
 
 ## Render on demand — and the idle path is free
