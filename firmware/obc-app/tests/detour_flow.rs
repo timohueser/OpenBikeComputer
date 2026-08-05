@@ -32,17 +32,30 @@ mod common;
 const LAT: f64 = 43.5;
 const LON0: f64 = 7.50;
 
-fn road_obcr() -> Vec<u8> {
+/// The road as `segs` even steps over the same ~3 230 m span, with every other vertex nudged
+/// `wobble` degrees north.
+///
+/// The wobble is not decoration: the converter decimates anything within 1 m of the chord, so a
+/// *straight* dense road comes back out of `gpx_to_obcr` as a handful of long segments. A test that
+/// needs the matcher's **segment**-counted forward window to be narrower than the ground the rider
+/// covers needs real vertices, and 2.2 m of alternating offset buys them for ~3.6 % of extra route
+/// length and about a metre of cross-track (well inside the 15 m on-route band).
+fn road_obcr_segs(segs: usize, wobble: f64) -> Vec<u8> {
     let mut g = String::from("<gpx><trk><trkseg>\n");
-    for i in 0..=10 {
-        let lon = LON0 + i as f64 * 0.004;
-        g.push_str(&format!("  <trkpt lat=\"{LAT:.7}\" lon=\"{lon:.7}\"><ele>100.0</ele></trkpt>\n"));
+    for i in 0..=segs {
+        let lon = LON0 + 0.04 * i as f64 / segs as f64;
+        let lat = LAT + if i % 2 == 1 { wobble } else { 0.0 };
+        g.push_str(&format!("  <trkpt lat=\"{lat:.7}\" lon=\"{lon:.7}\"><ele>100.0</ele></trkpt>\n"));
     }
     g.push_str("</trkseg></trk></gpx>");
     let src = SliceSource(g.as_bytes());
     let mut sink = VecSink::default();
     gpx_to_obcr(&src, "Road", &mut sink).unwrap();
     sink.0
+}
+
+fn road_obcr() -> Vec<u8> {
+    road_obcr_segs(10, 0.0)
 }
 
 /// Minimal in-test `ByteSink` (the shared test helper lives per-crate; this suite needs one write).
@@ -120,7 +133,10 @@ fn drained(app: &mut App) -> Vec<HostCommand> {
 /// A riding app with the matcher locked ~1 km along the real road, the Detour chooser reachable.
 /// Returns `(app, obcr_bytes)` — build the `RouteReader` per call from the bytes.
 fn riding_app() -> (App, Vec<u8>) {
-    let obcr = road_obcr();
+    riding_app_on(road_obcr())
+}
+
+fn riding_app_on(obcr: Vec<u8>) -> (App, Vec<u8>) {
     let mut app = App::new_idle(AppState::new((LON0 * 1e6) as i32, (LAT * 1e6) as i32, 0.05));
     app.set_map_nav_graph(true);
     app.set_routes_with_ids(&[summary("Road")], &[7]);
@@ -527,6 +543,38 @@ fn a_frozen_tick_holds_route_progress_but_still_records_the_fix() {
     assert!(!app.reroute_freeze_active());
     tick(&mut app, 2_000, Some(road_at(0.62)), Some(&route));
     assert!(app.activity.progress_m() > held, "the matcher resumes cleanly ({} m)", app.activity.progress_m());
+}
+
+/// …and it re-locks over the ground the rider covered *during* the search, not just the next fix's
+/// worth. The on-route window is 64 **segments** ahead — sized for one fix's travel — while a plan
+/// takes seconds on the SD-bound device, so on a route with real vertex density the rider rides
+/// clean out of it. Without the one-shot wide re-lock the first match after the freeze finds
+/// nothing in range: off-route chip up, progress still frozen, right at the moment the
+/// recalculation was supposed to have sorted things out.
+#[test]
+fn the_matcher_relocks_over_the_ground_covered_during_the_freeze() {
+    // 400 segments over the same road: ~8 m each, so the 64-segment on-route window reaches ~520 m
+    // and the ride below covers ~1.3 km of it.
+    let (mut app, obcr) = riding_app_on(road_obcr_segs(400, 0.00002));
+    let src = SliceSource(&obcr[..]);
+    let idx = RouteIndex::read(&src).unwrap();
+    let route = RouteReader::new(&idx, &src);
+
+    frozen_over_the_chooser(&mut app);
+    let held = app.activity.progress_m();
+    for (i, frac) in [0.40, 0.50, 0.60, 0.70].into_iter().enumerate() {
+        tick(&mut app, 1_000 + 1_000 * i as u32, Some(road_at(frac)), Some(&route));
+    }
+    assert_eq!(app.activity.progress_m(), held, "held still for the whole search, as designed");
+
+    assert!(drained(&mut app).iter().any(|c| matches!(c, HostCommand::CancelDetour)));
+    tick(&mut app, 9_000, Some(road_at(0.72)), Some(&route));
+    // Progress advancing *is* the on-route assertion: an off-route match freezes it.
+    assert!(
+        app.activity.progress_m() > 2_000,
+        "the first fix after the freeze must re-lock where the rider is, not {} m back",
+        app.activity.progress_m()
+    );
 }
 
 /// The other two exits from a planner run — the answer and the failure — release the freeze too. A

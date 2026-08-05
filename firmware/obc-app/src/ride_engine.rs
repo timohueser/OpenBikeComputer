@@ -396,6 +396,16 @@ impl RideEngine {
         activity.apply_match(m);
     }
 
+    /// A fresh fix went **unmatched** — the Recalculating freeze (#1146 P2) holds the matcher for
+    /// the length of a route search, which is seconds, not one fix. Arm a one-shot wide re-lock so
+    /// the first match after the freeze reaches wherever the rider actually got to: the tight
+    /// on-route window is sized for one fix's travel, and a rider who rode past it would otherwise
+    /// come out of the recalculation with a false off-route chip and frozen progress — the opposite
+    /// of what a recalculation is for.
+    pub(crate) fn note_unmatched_fix(&mut self) {
+        self.route_match.relock_wide();
+    }
+
     /// Apply a queued seam re-anchor (#882) once matching route geometry is available: install
     /// matcher progress + the forward-only floor at the splice seam. Returns `true` when the
     /// matcher/progress floor moved; a transient `None` reader leaves the request queued, while a
