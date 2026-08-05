@@ -16,9 +16,9 @@ trees — one `Cargo.lock`, one `target/`:
 
 | Tree | Holds | Reached by the device image? |
 | :-- | :-- | :-- |
-| `firmware/` | `obc-formats`, `obc-ports`, `obc-map-scene`, `obc-reader`, `obc-route`, `obc-render`, `obc-app`, `obc-ble`, `obc-dfu`, the platform adapters | **yes** — that is the rule |
+| `firmware/` | `obc-crc`, `obc-formats`, `obc-ports`, `obc-map-scene`, `obc-reader`, `obc-route`, `obc-render`, `obc-app`, `obc-ble`, `obc-dfu`, the platform adapters | **yes** — that is the rule |
 | `../host/` | the packer (`obc-pack`), the bakery (`obc-bake`), the terrain baker (`obc-dem`), the cell assembler (`obcm-assemble`), `obc-mkimage`, `obc-bench`, the oracles (`obcm-testkit`, `obc-vectors`), `obc-host-core`, `obc-replay`, `obc-usb-host` | no |
-| `../apps/` | `obc-sim`, `obc-web-demo`, `obc-web-convert`, `obc-web-assemble`, `obc-desktop` | no |
+| `../apps/` | `obc-sim`, `obc-web-demo`, `obc-web-convert`, `obc-web-assemble`, `obc-skin-preview`, `obc-desktop` | no |
 
 Dev-dependencies cross that boundary on purpose — `obc-render` and `obc-reader`
 test against `obcm-testkit`, `obc-route` against `obc-pack` — because a dev-dep
@@ -131,7 +131,7 @@ cargo fmt --manifest-path apps/obc-desktop/Cargo.toml       # the desktop app, s
 
 ## Run the simulator
 
-`obc-sim` renders `.obcm` maps (which must be **v5**) through the exact code the
+`obc-sim` renders `.obcm` maps (which must be **v12**) through the exact code the
 firmware runs. `freiburg.obcm` in the repo root is a current sample.
 
 ```sh

@@ -15,7 +15,7 @@ pipeline, the data formats, the UI, the display protocol — lives at
 own render path **live in your browser** (compiled to wasm).
 
 ```
-  .osm.pbf  ──►  obc-pack  ──►  *.obcm (v5)  ─┐
+  .osm.pbf  ──►  obc-pack  ──►  *.obcm (v12) ─┐
  (OSM data)    (Rust packer)   (binary map)   │
                                               ├─►  obc-app  ──►  obc-sim   (desktop simulator, today)
   *.gpx     ──►  obc-route ──►  *.obcr        │   (shared        └─►  nRF54L firmware (on the DK)
@@ -137,7 +137,9 @@ target/release/obc-pack region.osm.pbf builder/presets/schema.json region.obcm
 ```
 
 ```
-usage: obc-pack <pbf...> <config.json> <out.obcm> [--bbox W,S,E,N] [--chunk-size N] [--no-land]
+usage: obc-pack <pbf...> <config.json> <out.obcm> [--bbox W,S,E,N] [--chunk-size N]
+                [--no-land] [--terrain <path>] [--dump-pois] [--dump-hours]
+       obc-pack schema | catalog <bake-tree> --base-url <url> | cells <pbf...> <config.json> <out-dir>
 ```
 
 - **Multiple `.pbf` inputs** are merged **during ingest** — no external tool and
@@ -415,7 +417,7 @@ that do not exist until they are built. See
 ## Viewing & simulating
 
 `obc-sim` renders `.obcm` maps through the exact code path the firmware runs.
-Maps must be **v5**.
+Maps must be **v12**.
 
 ```sh
 # Interactive, simulating the device (240×320, 64 colors), 3× window scale:
@@ -430,9 +432,8 @@ target/release/obc-sim region.obcm --true-color
 
 **Interactive controls:** drag to pan, scroll to zoom, Esc/Q to quit. The
 simulator boots to the device's Home screen and drives the full on-device UI —
-a screen stack (Home, Map with a pan mode, Menu, Route menu, Ride control,
-Statistics) driven by the four-button input model, plus a control panel for
-feeding it a simulated GPS.
+the whole screen stack, driven by the four-button input model, plus a control
+panel for feeding it a simulated GPS.
 
 Useful flags:
 
@@ -548,26 +549,22 @@ The `obc-pack` tests use fixtures under `builder/tests/corpus/` — the committe
 
 ## Status & roadmap
 
-The full app runs on the desktop simulator **and on the nRF54L15-DK** today: the
+The full app runs on the desktop simulator **and on the nRF54LM20 DK** today: the
 shared stack (`obc-map-scene`, `obc-reader`, `obc-route`, `obc-render`, `obc-app`) runs `no_std`
 on the device, streaming maps/routes from a microSD card and driving the panel
 over SPI.
 
-**Working now:** OBCM v5 packing (CLI + web builder); the shared LOD-pyramid
-renderer (quadtree query, polygon fill with holes, weighted lines, z-ordering,
-RGB565 → RGB222 quantization); the on-device UI (screen stack + the four-button
-input); route loading with live map-matching, ride logging, and ride saving; the
-nRF54L firmware booting into the full load → ride → save loop on the DK (see
-[`firmware/obc-fw-nrf54l`](firmware/obc-fw-nrf54l)); and the reflective
-**LS021B7DD02** panel driver, its waveform backend running on the nRF54L's FLPR
-coprocessor with partial / dirty-row updates.
-
-**Next:** Settings / Shutdown screens and a Ride-control rework; and richer line
-styling (dashed / two-color lines — a future OBCM v6 — and road casing).
-
-> The packer was originally a Python pipeline; it has been ported to Rust
-> (`host/obc-pack`) and the Python pipeline removed. The port's design notes
-> live in `packer/docs/`.
+**Working now:** OBCM v12 packing (CLI + web builder) and the baked cell catalog
+behind it — `obc-bake` cuts regions or a whole planet snapshot into OBCA cells,
+and the browser assembles a selection back into one map without a server; the
+shared LOD-pyramid renderer (quadtree query, polygon fill with holes, weighted
+and two-color lines, z-ordering, RGB565 → RGB222 quantization) plus baked OBCT
+terrain drawn as contours; on-device routing over the packed nav graph, with
+route loading, live map-matching, detours, ride logging and ride saving; the
+whole screen stack driven by the four-button input; the BLE companion link
+(routes in, rides out) and self-service firmware updates from the card; and the
+reflective **LS021B7DD02** panel driver, its waveform backend running on the
+nRF54L's FLPR coprocessor with partial / dirty-row updates.
 
 ---
 
