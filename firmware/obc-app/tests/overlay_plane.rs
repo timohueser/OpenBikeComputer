@@ -40,7 +40,7 @@ fn render_overlay_touches_only_overlay_pixels() {
     // Render the map, snapshot it, then composite the overlay over the *same* buffer.
     let mut buf = Buf::new(w, h);
     let mut scratch = Box::new(obc_render::RenderScratch::new());
-    app.render_map(&mut scratch, &mut buf, &reader, None, w as f32, h as f32, rgb);
+    app.render_map(Some(&mut scratch), &mut buf, &reader, None, w as f32, h as f32, rgb);
     let map_only = buf.px.clone();
     app.render_overlay(&mut buf, w as f32, h as f32, rgb);
 
@@ -83,11 +83,11 @@ fn render_frame_equals_map_then_overlay() {
 
     let mut scratch = Box::new(obc_render::RenderScratch::new());
     let mut whole = Buf::new(w, h);
-    make_app().render_frame(&mut scratch, &mut whole, &reader, None, w as f32, h as f32, rgb);
+    make_app().render_frame(Some(&mut scratch), &mut whole, &reader, None, w as f32, h as f32, rgb);
 
     let mut split = Buf::new(w, h);
     let mut app = make_app();
-    app.render_map(&mut scratch, &mut split, &reader, None, w as f32, h as f32, rgb);
+    app.render_map(Some(&mut scratch), &mut split, &reader, None, w as f32, h as f32, rgb);
     app.render_overlay(&mut split, w as f32, h as f32, rgb);
 
     assert!(whole.px == split.px, "render_frame must equal render_map then render_overlay");

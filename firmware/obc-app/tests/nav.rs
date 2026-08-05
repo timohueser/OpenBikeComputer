@@ -41,7 +41,7 @@ fn render_into(app: &mut App, bytes: &[u8], buf: &mut Buf) {
     let tables = MapTables::parse(&src).expect("valid fixture");
     let reader = Reader::new(&src, &tables, &cache);
     let mut scratch = Box::new(obc_render::RenderScratch::new());
-    app.render_frame(&mut scratch, buf, &reader, None, 240.0, 320.0, |c| {
+    app.render_frame(Some(&mut scratch), buf, &reader, None, 240.0, 320.0, |c| {
         let (r, g, b) = rgb565_to_rgb888(c);
         Rgb888::new(r, g, b)
     });

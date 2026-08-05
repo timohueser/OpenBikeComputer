@@ -621,7 +621,7 @@ mod tests {
         let mut scratch = Box::new(obc_render::RenderScratch::new());
         let mut render = |app: &mut App, fb: &mut [u8]| {
             let mut fbdev = FbDevice64::new(fb, W, H);
-            app.render_frame(&mut scratch, &mut fbdev, &reader, None, W as f32, H as f32, color_fn);
+            app.render_frame(Some(&mut scratch), &mut fbdev, &reader, None, W as f32, H as f32, color_fn);
         };
 
         // --- Home idle + a minute tick ---
@@ -861,7 +861,7 @@ mod tests {
 
         // Render the whole frame into the resident device-64 plane.
         let mut fbdev = FbDevice64::new(fb, W, H);
-        app.render_frame(scratch, &mut fbdev, reader, route.as_ref(), W as f32, H as f32, |c| {
+        app.render_frame(Some(scratch), &mut fbdev, reader, route.as_ref(), W as f32, H as f32, |c| {
             Rgb565::from(RawU16::new(c))
         });
 

@@ -33,10 +33,11 @@
 //!
 //! # No two references at once
 //!
-//! Every reference into the arena — a guard's `Deref`, the chrome loan, the USB plane's scoped
-//! access — is derived **freshly from the one raw pointer** ([`arena_ptr`]) and dies before the next
-//! one is made. Nothing here stores a reference, so no two live borrows of the block can exist even
-//! though three types name the same bytes.
+//! Every reference into the arena — a guard's `Deref`, the USB plane's scoped access — is derived
+//! **freshly from the one raw pointer** ([`arena_ptr`]) and dies before the next one is made.
+//! Nothing here stores a reference, so no two live borrows of the block can exist even though three
+//! types name the same bytes. A frame that draws no map takes no reference at all: the app's render
+//! entry point wants an `Option<&mut RenderScratch>` and chrome passes `None` (#1146 P2).
 //!
 //! # The bug class this creates: sticky state
 //!
@@ -275,57 +276,6 @@ pub(crate) fn claim_render() -> Result<RenderGuard, ArenaError> {
     // initializes the slot as an empty `RenderScratch` before the guard hands out a reference.
     unsafe { obc_render::RenderScratch::init_zeroed(arena_ptr() as *mut obc_render::RenderScratch) };
     Ok(RenderGuard { _not_send: PhantomData })
-}
-
-/// How a frame reaches the render scratch: an owned claim, or the chrome **loan**.
-///
-/// The loan exists because `App::render_map_timed` takes `&mut RenderScratch` on *every* frame,
-/// including the ones that never touch it. Exactly one draw path in `obc-app` reads or writes the
-/// scratch — `screen/map.rs`, the base-screen Map draw — so a frame whose base is chrome (a menu,
-/// the nav-planning spinner, the map-transfer card) provably leaves the block alone. Those frames
-/// must keep rendering while a search or a transfer holds the arena: the spinner is the only sign of
-/// life during a plan, and the transfer card is the only explanation for a device whose SD bus is
-/// saturated for minutes. Claiming for them would refuse both.
-///
-/// So the loan hands out a `&mut RenderScratch` over bytes another arm may own, and its safety rests
-/// on three facts, all checked or checkable:
-///
-/// 1. **Aliasing.** The reference is derived fresh from [`arena_ptr`] and dies with the render call;
-///    the nav guard and the USB plane materialize their own references only inside their own
-///    synchronous calls, which never run inside a render.
-/// 2. **Validity.** `RenderScratch` is `heapless::Vec`s over `MaybeUninit` backing arrays plus
-///    `usize` lengths — every bit pattern is a *valid* value, so a `&mut` over foreign bytes is not
-///    itself UB. (It would of course be nonsense to *use*; see 3.)
-/// 3. **Nobody touches it.** Guarded by [`FrameScratch::chrome`]'s `debug_assert!` on
-///    `!base_draws_map()`, and by the audit above.
-///
-/// The honest fix is upstream — a `render_*` entry point that does not demand a scratch it will not
-/// use (or an `Option<&mut RenderScratch>`) — at which point the loan deletes itself. Until then
-/// this is the whole of it, in one type, with the reasoning attached.
-pub(crate) enum FrameScratch {
-    /// A map-base frame: the arena is ours for the render span.
-    Owned(RenderGuard),
-    /// A chrome frame: see above.
-    Loan,
-}
-
-impl FrameScratch {
-    /// The chrome loan. `base_draws_map` is the caller's claim that this frame's base screen is not
-    /// the map — the one predicate that decides whether the render will touch the scratch.
-    pub(crate) fn chrome(base_draws_map: bool) -> FrameScratch {
-        debug_assert!(!base_draws_map, "a map-base frame must claim the render arm, never borrow it");
-        FrameScratch::Loan
-    }
-
-    /// The `&mut` the render call takes, borrowed for the length of that call only.
-    pub(crate) fn get(&mut self) -> &mut obc_render::RenderScratch {
-        match self {
-            FrameScratch::Owned(guard) => &mut *guard,
-            // SAFETY: see the type doc — derived fresh from `arena_ptr`, bounded by `&mut self`, and
-            // never dereferenced by a chrome frame's draw.
-            FrameScratch::Loan => unsafe { &mut *(arena_ptr() as *mut obc_render::RenderScratch) },
-        }
-    }
 }
 
 // ============================ The nav arm ============================

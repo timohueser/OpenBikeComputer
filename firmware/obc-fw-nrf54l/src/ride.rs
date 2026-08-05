@@ -1238,14 +1238,12 @@ pub(crate) async fn run_app(
                     // normally via the `DfuInstallFailed` event.
                     app.apply_event(obc_app::HostEvent::DfuInstallBegan);
                     app.set_render_clip(None);
-                    // `DfuInstalling` is a chrome card, so this frame takes the arena's render arm
-                    // on loan rather than claiming it (#1146 P2 — see `arena::FrameScratch`). The
-                    // `debug_assert!` inside `chrome` is the check that the card really is opaque.
-                    let mut scratch = crate::arena::FrameScratch::chrome(app.base_draws_map());
+                    // `DfuInstalling` is a chrome card: it draws no map, so it needs no render
+                    // scratch and never goes near the arena (#1146 P2).
                     display.render_frame(|f: &mut crate::ls021_flpr::Frame64| {
                         let mut fbdev = FbDevice64::new(f.bytes_mut(), FRAME_W as u32, FRAME_H as u32);
                         app.render_map_timed(
-                            scratch.get(),
+                            None,
                             &mut fbdev,
                             None,
                             None,
@@ -1968,30 +1966,25 @@ pub(crate) async fn run_app(
                     // A base that **draws the map** claims it for the render span and gives it back
                     // at the end of this block — the arena's whole render ⊥ nav / render ⊥ usb
                     // enforcement, since a live search or a live transfer is literally the holder.
-                    // A chrome base borrows it without claiming: the app's render entry point takes
-                    // a `&mut RenderScratch` on every frame, but only the Map screen's draw touches
-                    // it, and those frames have to keep rendering *while* another arm is out — the
-                    // nav-planning spinner is the only sign of life during a menu plan, and the
-                    // map-transfer card the only explanation for a saturated SD bus. See
-                    // `arena::FrameScratch` for the loan's safety argument.
+                    // A chrome base claims nothing and renders with **no scratch at all**: only the
+                    // Map screen's draw touches it, and the app's render entry point takes it as an
+                    // `Option`. That's what keeps those frames drawing *while* another arm is out —
+                    // the nav-planning spinner is the only sign of life during a menu plan, and the
+                    // map-transfer card the only explanation for a saturated SD bus.
                     let draws_map = app.base_draws_map();
-                    let scratch = if draws_map {
-                        crate::arena::claim_render().ok().map(crate::arena::FrameScratch::Owned)
-                    } else {
-                        Some(crate::arena::FrameScratch::chrome(draws_map))
-                    };
+                    let mut render_guard = if draws_map { crate::arena::claim_render().ok() } else { None };
                     // Unreachable on the ordinary path (the freeze above skips map frames during a
                     // search, and a transfer puts its card over the map), so a refusal is a gating
                     // bug — already reported loudly by `arena::claim_render`. Degrade the way every
                     // other transient render failure does: keep the frame on glass, retry next pass.
-                    if scratch.is_none() {
+                    if draws_map && render_guard.is_none() {
                         pending_map_redraw = true;
                         defmt::warn!(
                             "map: the scratch arena is held by {} — skipping this map redraw, retrying next frame",
                             defmt::Debug2Format(&crate::arena::owner())
                         );
-                    }
-                    scratch.map(|mut scratch| {
+                        None
+                    } else {
                         // Render the whole frame into the resident RGB222 plane — the display boundary,
                         // behind `MapDisplay::render_frame`; the present below (after the guard is gone)
                         // scans it out, going *around* a live bulge's rows so the composite paints them.
@@ -2014,7 +2007,7 @@ pub(crate) async fn run_app(
                             }
                             match mounted_set.as_ref() {
                                 Some(set) => app.render_scene_map_timed(
-                                    scratch.get(),
+                                    render_guard.as_deref_mut(),
                                     &mut fbdev,
                                     needs_map.then_some(set),
                                     reader.as_ref(),
@@ -2025,7 +2018,7 @@ pub(crate) async fn run_app(
                                     &InstantClock,
                                 ),
                                 None => app.render_map_timed(
-                                    scratch.get(),
+                                    render_guard.as_deref_mut(),
                                     &mut fbdev,
                                     reader.as_ref(),
                                     route.as_ref(),
@@ -2036,11 +2029,11 @@ pub(crate) async fn run_app(
                                 ),
                             }
                         });
-                        // The guard dies here, at the end of the render span — before the present's
-                        // await, never across it (#677).
-                        drop(scratch);
-                        RenderedFrame { needs_map, stats, render_us }
-                    })
+                        // The guard (when a map base took one) dies here, at the end of the render
+                        // span — before the present's await, never across it (#677).
+                        drop(render_guard);
+                        Some(RenderedFrame { needs_map, stats, render_us })
+                    }
                 }
             } else {
                 None
