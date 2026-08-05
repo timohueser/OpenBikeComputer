@@ -1,6 +1,6 @@
 ---
 title: Datenschutzerklärung
-description: Welche personenbezogenen Daten openbikecomputer.com verarbeitet — Hosting bei GitHub Pages, Speicherung im Browser, keine Cookies und kein Tracking. Mit nicht verbindlicher englischer Übersetzung.
+description: Welche personenbezogenen Daten openbikecomputer.com verarbeitet — Hosting bei GitHub Pages, die Verbindungen und Speicherorte des Kartenbaukastens, keine Cookies und kein Tracking. Mit englischer Fassung.
 ---
 
 <!--
@@ -8,34 +8,59 @@ description: Welche personenbezogenen Daten openbikecomputer.com verarbeitet —
 
   Dieselben Platzhalter wie in impressum.md (Name, Anschrift, E-Mail, Telefon) plus:
 
-    <zuständige Landesbehörde> -> die Datenschutz-Aufsichtsbehörde des Bundeslandes,
-                                  in dem der Verantwortliche wohnt. Art. 77 DSGVO
-                                  verlangt nur den Hinweis auf das Beschwerderecht, nicht
-                                  die Benennung der Behörde — die Nennung ist Service und
-                                  sollte dann aber stimmen.
+    [zuständige Landesbehörde eintragen] -> die Datenschutz-Aufsichtsbehörde des
+                                  Bundeslandes, in dem der Verantwortliche wohnt. Art. 77
+                                  DSGVO verlangt nur den Hinweis auf das Beschwerderecht,
+                                  nicht die Benennung der Behörde — die Nennung ist
+                                  Service und sollte dann aber stimmen.
 
   Danach den Platzhalter-Hinweis (die Callout-Box unter der Überschrift) löschen.
 
-  Diese Erklärung beschreibt den Stand der Website zum unten genannten Datum. Sie ist
-  KEIN Generator-Baustein, sondern am tatsächlichen Verhalten des Deployments
-  entlanggeschrieben; wenn sich das Verhalten ändert, muss sie mitgeführt werden:
+  ── Was hier NOCH GEPRÜFT WERDEN MUSS ──────────────────────────────────────────────
 
-  - Ein Analyse- oder Fehler-Tracking-Dienst, eine eingebettete Schriftart von einem
-    fremden CDN, ein Video-Embed, ein Kontaktformular oder ein Spenden-Button ändern
-    Abschnitt 2 und brauchen jeweils einen eigenen Abschnitt.
+  1. Abschnitt 3 sagt bewusst NICHT mehr, dass mit GitHub ein Auftragsverarbeitungs-
+     vertrag nach Art. 28 DSGVO besteht. Die GitHub Data Protection Agreement hängt am
+     GitHub Customer Agreement; für einen kostenlosen persönlichen Account unter den
+     normalen Terms of Service ist sie nicht ohne Weiteres einschlägig, und sie nennt
+     GitHub Pages nirgends. Wenn ein Vertrag tatsächlich besteht (z. B. über eine
+     kostenpflichtige Organisation), gehört er hier wieder hinein — dann aber auch der
+     Fundort der Standardvertragsklauseln nach Art. 13 Abs. 1 lit. f DSGVO.
+  2. Abschnitt 3 nennt keine konkrete Speicherdauer für die Server-Logfiles, weil GitHub
+     für Pages keine veröffentlicht, auf die man sich berufen könnte. Art. 13 Abs. 2
+     lit. a DSGVO will die Dauer ODER die Kriterien — hier stehen die Kriterien. Wenn
+     GitHub eine Frist veröffentlicht, gehört sie hierher.
+  3. Die Kartenkacheln (Abschnitt 6.1) werden ohne Einwilligung geladen. Das ist
+     vertretbar, aber es ist die angreifbarste Stelle dieser Erklärung: wer die
+     Rechtsprechungslinie zu eingebetteten Drittinhalten streng liest, verlangt für das
+     Nachladen von einem fremden Server eine Einwilligung. Die saubere Alternative wäre,
+     die Kartenansicht erst nach einem Klick zu laden ("Karte anzeigen"). Das ist eine
+     Produktentscheidung, keine Textentscheidung.
+
+  ── Was diese Erklärung MITFÜHREN MUSS, wenn sich der Code ändert ──────────────────
+
+  Sie ist am tatsächlichen Verhalten des Deployments entlanggeschrieben, nicht aus einem
+  Generator zusammengesetzt. Wenn sich das Verhalten ändert, ändert sich die Erklärung:
+
+  - Ein Analyse- oder Fehler-Tracking-Dienst, eine Schriftart von einem fremden CDN, ein
+    Video-Embed, ein Kontaktformular oder ein Spenden-Button ändern Abschnitt 2.
+  - JEDE neue Verbindung zu einem fremden Origin gehört in Abschnitt 6. Der Bestand
+    heute: die Kartenkacheln (lib/map/coverageMap.ts, components/device/RideMap.svelte,
+    components/device/PreviewModal.svelte) und die Firmware-Prüfung
+    (lib/firmware/release.ts).
   - Sobald OBC_CATALOG_URL / VITE_CATALOG_URL im Deploy gesetzt ist (siehe
     .github/workflows/deploy-site.yml), lädt der Kartenbaukasten Katalog-, Kartenzellen-
-    und Firmware-Objekte von einem FREMDEN Origin. Damit fließt die IP-Adresse der
-    Besucher an dessen Betreiber — Abschnitt 8 muss dann von "derzeit nicht
-    konfiguriert" auf eine echte Empfängerbeschreibung umgestellt werden (Betreiber,
-    Ort, Rechtsgrundlage, ggf. Drittlandtransfer).
-  - Wenn ein Wechsel weg von GitHub Pages ansteht, betrifft das die Abschnitte 3 und 4
-    vollständig.
-  - Neue localStorage-Schlüssel im Builder gehören in die Tabelle in Abschnitt 6, und es
-    ist jedes Mal neu zu prüfen, ob sie noch "unbedingt erforderlich" im Sinne des
+    und Firmware-Objekte von einem weiteren fremden Origin, und die Kartenkacheln werden
+    schon auf der Startseite des Baukastens geladen statt erst mit einem Gerät.
+    Abschnitt 6.3 muss dann von "derzeit nicht konfiguriert" auf eine echte
+    Empfängerbeschreibung umgestellt werden. Erwägenswert: ein Deploy-Schritt, der den
+    Build abbricht, wenn die Variable gesetzt ist, während hier noch "derzeit nicht
+    konfiguriert" steht.
+  - Neue Speicherorte auf dem Endgerät gehören in die Tabelle in Abschnitt 7, und es ist
+    jedes Mal neu zu prüfen, ob sie noch "unbedingt erforderlich" im Sinne des
     § 25 Abs. 2 Nr. 2 TDDDG sind. Sobald etwas gespeichert wird, das NICHT für die vom
     Nutzer angeforderte Funktion nötig ist (Reichweitenmessung, Wiedererkennung), wird
     eine Einwilligung fällig — und damit ein Consent-Dialog.
+  - Ein Wechsel weg von GitHub Pages betrifft die Abschnitte 3 und 4 vollständig.
 -->
 
 # Datenschutzerklärung
@@ -46,17 +71,11 @@ description: Welche personenbezogenen Daten openbikecomputer.com verarbeitet —
 > dieser Hinweis entfernt werden.
 > *(Placeholder — not legally effective. The controller named below is fictional.)*
 
-Diese Website ist die Projektseite von OpenBikeComputer: eine Landingpage mit einer im
-Browser laufenden Gerätedemo, eine Dokumentation, ein Blog und ein Kartenbaukasten. Sie
-ist eine reine Sammlung statischer Dateien — es gibt **keine Benutzerkonten, keine
-Anmeldung, kein Kontaktformular, keinen Newsletter, keine Kommentarfunktion und keinen
-Server, der Eingaben entgegennimmt.**
-
 ## 1. Verantwortlicher
 
 Verantwortlicher im Sinne des Art. 4 Nr. 7 DSGVO ist:
 
-<address class="legal-addr">
+<address>
   Jonas Falkenrath<br>
   Musterstraße 12<br>
   12345 Musterstadt<br>
@@ -65,22 +84,34 @@ Verantwortlicher im Sinne des Art. 4 Nr. 7 DSGVO ist:
   Telefon: +49 30 23125 000
 </address>
 
-Ein Datenschutzbeauftragter ist nicht bestellt; die Voraussetzungen des § 38 BDSG liegen
-nicht vor.
+Ein Datenschutzbeauftragter ist nicht bestellt; die Voraussetzungen des Art. 37 DSGVO in
+Verbindung mit § 38 BDSG liegen nicht vor.
 
-## 2. Kurzfassung
+## 2. Zwei Bereiche, zwei Antworten
 
-- **Keine Cookies.** Diese Website setzt keine Cookies.
-- **Kein Tracking, keine Reichweitenmessung, keine Werbung.** Es sind keine Analysedienste, Zählpixel, Fehler-Tracker, Werbenetzwerke oder Social-Media-Plugins eingebunden.
-- **Keine externen Inhalte.** Skripte, Stylesheets und Bilder werden ausschließlich vom eigenen Server ausgeliefert, und für die Darstellung werden die auf Ihrem Gerät bereits vorhandenen Systemschriften verwendet. Es werden keine Web-Schriftarten und keine Inhalte von fremden CDNs, Kartendiensten oder Videoplattformen nachgeladen.
-- **Keine Eingabe von Daten.** Es gibt kein Formular und keinen Upload; Routen und Karten werden vollständig im Browser verarbeitet und verlassen das Gerät nicht.
-- Unvermeidbar bleibt, dass beim Abruf der Seiten die IP-Adresse an den Hoster übertragen wird. Das beschreibt Abschnitt 3.
+Dieses Angebot besteht aus zwei sehr unterschiedlichen Teilen, und es wäre irreführend,
+sie in einem Satz zusammenzufassen.
+
+**Die Website** — Startseite mit der im Browser laufenden Gerätedemo, Dokumentation und
+Blog — ist eine reine Sammlung statischer Dateien. Sie setzt **keine Cookies**, bindet
+**keine Analysedienste, Zählpixel, Fehler-Tracker, Werbenetzwerke oder
+Social-Media-Plugins** ein, lädt **keine Web-Schriftarten und keine Inhalte von fremden
+Servern** nach (Text wird in den auf Ihrem Gerät vorhandenen Systemschriften gesetzt),
+speichert **nichts auf Ihrem Endgerät** und nimmt **keine Eingaben** entgegen. Was
+unvermeidbar bleibt, ist die Übertragung Ihrer IP-Adresse an den Hoster — das beschreibt
+Abschnitt 3.
+
+**Der Kartenbaukasten** unter `/builder/` ist eine Anwendung und hat eine deutlich
+größere Oberfläche: Er lädt Kartenkacheln von einem fremden Server, prüft auf neue
+Firmware, speichert Arbeitsstände auf Ihrem Endgerät und kann mit einem angeschlossenen
+Gerät sprechen. Auch er setzt keine Cookies und misst keine Reichweite. Die Abschnitte 6
+bis 9 beschreiben ihn im Einzelnen.
 
 ## 3. Hosting und Server-Logfiles
 
 Die Website wird über **GitHub Pages** ausgeliefert, einen Dienst der
 
-<address class="legal-addr">
+<address>
   GitHub, Inc.<br>
   88 Colin P. Kelly Jr. Street<br>
   San Francisco, CA 94107<br>
@@ -92,26 +123,27 @@ Browser übermittelt — insbesondere die **IP-Adresse** des anfragenden Geräts
 Uhrzeit des Zugriffs, die abgerufene Adresse, den übertragenen Datenumfang, den
 HTTP-Statuscode sowie die vom Browser gemeldete Kennung (User-Agent). GitHub gibt für
 GitHub Pages ausdrücklich an, die IP-Adresse der Besucherinnen und Besucher aus
-Sicherheitsgründen zu protokollieren.
+Sicherheitsgründen zu protokollieren. Die Auslieferung erfolgt über ein Content Delivery
+Network, sodass die Anfrage von einem Server in der Nähe des Abrufs beantwortet wird.
 
 **Zweck** dieser Verarbeitung ist die technische Auslieferung der Seiten sowie die
-Sicherheit und Stabilität des Angebots (Abwehr von Angriffen und Missbrauch).
-**Rechtsgrundlage** ist Art. 6 Abs. 1 lit. f DSGVO; das berechtigte Interesse besteht
-darin, die Website überhaupt bereitstellen und gegen Angriffe schützen zu können.
+Sicherheit und Stabilität des Angebots. **Rechtsgrundlage** ist Art. 6 Abs. 1 lit. f
+DSGVO; das berechtigte Interesse besteht darin, die Website überhaupt bereitstellen und
+gegen Angriffe schützen zu können.
 
-Die Auslieferung erfolgt über ein Content Delivery Network, sodass die Anfrage von einem
-Server in der Nähe des Abrufs beantwortet wird.
+Die Übermittlung der IP-Adresse ist technisch unvermeidbar: Ohne sie kann keine Seite
+ausgeliefert werden. Eine gesetzliche oder vertragliche Pflicht zur Bereitstellung
+besteht nicht, und es entsteht Ihnen daraus kein Nachteil außer dem, dass die Seite dann
+nicht abrufbar ist.
 
-GitHub verarbeitet diese Daten für den Verantwortlichen als Auftragsverarbeiter auf
-Grundlage der GitHub Data Protection Agreement (Art. 28 DSGVO). Soweit GitHub die
-Zugriffsdaten darüber hinaus für eigene Zwecke der Sicherheit und Missbrauchsabwehr
-verwendet, geschieht das in eigener Verantwortung von GitHub.
-
-> **Hinweis zur Ehrlichkeit dieser Angabe:** Der Verantwortliche hat auf diese Logfiles
-> **keinen Zugriff** und kann ihre Speicherdauer nicht konfigurieren. Die Speicherdauer
-> richtet sich nach den Vorgaben von GitHub. Es findet keine Auswertung der Zugriffe
-> durch den Verantwortlichen statt, und es werden keine Zugriffsdaten mit anderen Daten
-> zusammengeführt.
+> **Hinweis zur Ehrlichkeit dieser Angabe:** Die Zugriffsdaten fallen bei GitHub im
+> Rahmen des Plattformbetriebs an. Der Verantwortliche hat auf sie **weder Zugriff noch
+> Einfluss**, erhält von GitHub keine Auswertung, wertet die Zugriffe nicht aus und
+> führt sie mit keinen anderen Daten zusammen. Er kann die Speicherdauer auch nicht
+> festlegen: Maßgeblich ist, wie lange GitHub die Daten für den Sicherheitszweck
+> benötigt; eine von GitHub veröffentlichte Frist für Pages-Zugriffsprotokolle, auf die
+> hier verwiesen werden könnte, existiert nicht. Insoweit verarbeitet GitHub die Daten
+> zu eigenen Sicherheitszwecken in eigener Verantwortung.
 
 ## 4. Datenübermittlung in die USA
 
@@ -121,79 +153,140 @@ die in Abschnitt 3 genannten Daten dorthin übermittelt.
 GitHub, Inc. ist nach dem **EU-U.S. Data Privacy Framework** zertifiziert. Für
 zertifizierte Unternehmen hat die Europäische Kommission mit dem Angemessenheitsbeschluss
 vom 10. Juli 2023 ein angemessenes Schutzniveau festgestellt; die Übermittlung stützt
-sich daher auf **Art. 45 Abs. 1 DSGVO**. Ergänzend hat GitHub die
-**Standardvertragsklauseln** der Kommission (Durchführungsbeschluss (EU) 2021/914)
-vereinbart, die als Grundlage nach Art. 46 Abs. 2 lit. c DSGVO tragen, falls der
-Angemessenheitsbeschluss entfällt.
+sich daher auf **Art. 45 Abs. 1 DSGVO**. Die aktuelle Zertifizierung ist über die
+Teilnehmerliste unter [dataprivacyframework.gov/list](https://www.dataprivacyframework.gov/list) abrufbar.
 
-Trotz dieser Grundlagen lässt sich nicht ausschließen, dass US-amerikanische Behörden
-auf Grundlage dortiger Gesetze auf die Daten zugreifen und dass der Rechtsschutz gegen
-einen solchen Zugriff nicht dem im Geltungsbereich der DSGVO entspricht.
-Der Angemessenheitsbeschluss wird zudem regelmäßig überprüft und ist Gegenstand
+Trotz dieser Grundlage lässt sich nicht ausschließen, dass US-amerikanische Behörden auf
+Grundlage dortiger Gesetze auf die Daten zugreifen und dass der Rechtsschutz gegen einen
+solchen Zugriff nicht dem im Geltungsbereich der DSGVO entspricht. Der
+Angemessenheitsbeschluss wird zudem regelmäßig überprüft und ist Gegenstand
 gerichtlicher Verfahren.
 
 ## 5. Verschlüsselung
 
-Die Website wird ausschließlich über eine mit TLS verschlüsselte Verbindung (HTTPS)
-ausgeliefert. Damit sind die Inhalte auf dem Transportweg gegen Mitlesen geschützt.
+Die Website wird über eine mit TLS verschlüsselte Verbindung (HTTPS) ausgeliefert. Damit
+sind die Inhalte auf dem Transportweg gegen Mitlesen geschützt.
 
-## 6. Speicherung auf Ihrem Endgerät (kein Cookie-Banner)
+## 6. Der Kartenbaukasten: Verbindungen zu fremden Servern
 
-Der Kartenbaukasten unter `/builder/` speichert Daten im **lokalen Speicher
-(`localStorage`) Ihres Browsers**. Das sind keine Cookies: Die Daten werden nicht an
-einen Server gesendet, sondern bleiben auf Ihrem Gerät.
+Der Kartenbaukasten unter `/builder/` stellt im Betrieb Verbindungen zu Servern her, die
+nicht vom Verantwortlichen betrieben werden. Dabei wird jeweils Ihre IP-Adresse an den
+angefragten Server übertragen — das ist bei einem Abruf technisch nicht vermeidbar.
+
+### 6.1 Kartenkacheln von OpenStreetMap
+
+Wo der Baukasten eine Landkarte zeigt — die Abdeckungskarte bei der Auswahl einer
+Region, die Vorschau einer Route und die Kartenansicht einer aufgezeichneten Fahrt —
+lädt er die Kartenkacheln direkt von den Servern der **OpenStreetMap Foundation**
+(St John's Innovation Centre, Cowley Road, Cambridge CB4 0WS, Vereinigtes Königreich)
+unter `tile.openstreetmap.org`. Dabei erfährt die OpenStreetMap Foundation Ihre
+IP-Adresse und den angefragten Kartenausschnitt.
+
+**Rechtsgrundlage** ist Art. 6 Abs. 1 lit. f DSGVO; das berechtigte Interesse besteht
+darin, überhaupt eine Karte anzeigen zu können — ohne Kartenhintergrund ist die Auswahl
+einer Region nicht bedienbar. Für das Vereinigte Königreich besteht ein
+Angemessenheitsbeschluss der Europäischen Kommission (Art. 45 DSGVO). Es werden keine
+Kacheln geladen, solange keine Kartenansicht geöffnet ist; die Startseite, die
+Dokumentation und der Blog laden keine Kacheln. Die Datenschutzerklärung der
+OpenStreetMap Foundation ist unter
+[wiki.osmfoundation.org](https://wiki.osmfoundation.org/wiki/Privacy_Policy) abrufbar.
+
+### 6.2 Prüfung auf neue Firmware
+
+Sobald ein OpenBikeComputer angeschlossen ist, prüft der Baukasten einmalig, ob für das
+Gerät eine neuere Firmware veröffentlicht ist. Dazu ruft er eine Datei unter
+`updates.openbikecomputer.com` ab. Diese Domain gehört dem Verantwortlichen; die Dateien
+werden über den Objektspeicher **Cloudflare R2** der Cloudflare, Inc. (101 Townsend St.,
+San Francisco, CA 94107, USA) ausgeliefert, die dabei Ihre IP-Adresse verarbeitet.
+Cloudflare, Inc. ist nach dem EU-U.S. Data Privacy Framework zertifiziert; im Übrigen
+gilt Abschnitt 4 entsprechend.
+
+Der Abruf ist eine reine **Leseanfrage ohne Parameter**: Es werden weder die
+Seriennummer noch die Firmware-Version noch sonstige Angaben zu Ihrem Gerät an den
+Server übertragen. Der Vergleich zwischen der veröffentlichten und der auf Ihrem Gerät
+laufenden Version findet vollständig in Ihrem Browser statt. Solange kein Gerät
+angeschlossen ist, findet der Abruf nicht statt.
+
+**Rechtsgrundlage** ist Art. 6 Abs. 1 lit. f DSGVO; das berechtigte Interesse besteht
+darin, Nutzerinnen und Nutzer auf sicherheitsrelevante Aktualisierungen ihres Geräts
+hinweisen zu können.
+
+### 6.3 Kartenkatalog
+
+Fertige Kartendaten sollen künftig von einem eigenen Objektspeicher geladen werden. Zum
+unten genannten Stand ist für diese Website **kein solcher Katalog konfiguriert**; der
+Baukasten lädt daher keine Kartendaten von einem fremden Server. Sobald das der Fall
+ist, wird diese Erklärung vor der Freischaltung um den Betreiber, den Serverstandort und
+die Rechtsgrundlage ergänzt.
+
+## 7. Speicherung auf Ihrem Endgerät (kein Cookie-Banner)
+
+Der Kartenbaukasten speichert Daten **auf Ihrem Endgerät** — im lokalen Speicher
+(`localStorage`) und im Dateispeicher (*Origin Private File System*) Ihres Browsers. Das
+sind keine Cookies, und die Daten werden **nicht an einen Server gesendet**; sie bleiben
+auf Ihrem Gerät. Website, Dokumentation und Blog speichern nichts.
 
 | Gespeichert wird | Wofür |
 | --- | --- |
 | Die aktuelle Kartenkonfiguration | damit die begonnene Arbeit einen Reload und einen späteren Besuch überlebt |
-| Die gewählte Darstellungsvariante (Skin) | damit die Auswahl erhalten bleibt |
-| Vorschaubilder der ausgewählten Karten | damit sie nicht bei jedem Öffnen neu berechnet werden müssen |
-| Zuletzt angebotene Firmware-Version je Gerät | damit derselbe Aktualisierungshinweis nicht bei jedem Besuch erneut erscheint |
+| Selbst angelegte Darstellungsvarianten (Skins) mit Namen und Farben | damit eine eigene Gestaltung wiederverwendet werden kann |
+| Heruntergeladene Kartenzellen und daraus zusammengesetzte Kartendateien (Dateispeicher) | damit eine große Karte nicht bei jedem Schritt neu geladen und neu gebaut werden muss |
+| Vereinfachte Streckenverläufe (Koordinatenlisten) der auf dem angeschlossenen Gerät gespeicherten Routen und Fahrten, zusammen mit der Seriennummer des Geräts | damit die Vorschaubilder der Geräteübersicht nicht bei jedem Öffnen erneut über das Kabel geladen werden müssen |
+| Die zuletzt angebotene Firmware-Version, zusammen mit der Seriennummer des Geräts | damit derselbe Aktualisierungshinweis nicht bei jedem Besuch erneut erscheint |
+
+Zwei Einträge verdienen eine ausdrückliche Erwähnung, weil ihre Bezeichnung sie
+harmloser klingen ließe, als sie sind: Die **Streckenverläufe sind Positionsdaten** —
+sie beschreiben, wo Sie gefahren sind — und die **Seriennummer ist eine dauerhafte
+Kennung Ihres Geräts**. Beides bleibt auf Ihrem Endgerät. Die Seriennummer wird nur
+verwendet, um die gespeicherten Einträge dem richtigen Gerät zuzuordnen; eine
+Wiedererkennung über Websites hinweg, eine Profilbildung oder eine Reichweitenmessung
+findet nicht statt, und keiner dieser Werte wird an einen Server übertragen.
 
 **Rechtsgrundlage für das Speichern und Auslesen** ist § 25 Abs. 2 Nr. 2 TDDDG: Die
-Speicherung ist unbedingt erforderlich, damit der ausdrücklich gewünschte Dienst — das
-Zusammenstellen einer Karte — überhaupt funktioniert. Eine Einwilligung ist dafür nicht
-erforderlich; deshalb erscheint auf dieser Website kein Cookie- oder Consent-Dialog.
-Eine Wiedererkennung über Websites hinweg, eine Profilbildung oder eine
-Reichweitenmessung findet nicht statt.
+Speicherung ist unbedingt erforderlich, damit der von Ihnen ausdrücklich gewünschte
+Dienst — das Zusammenstellen einer Karte und die Verwaltung eines angeschlossenen
+Geräts — funktioniert. Eine Einwilligung ist dafür nicht erforderlich; deshalb erscheint
+auf dieser Website kein Cookie- oder Consent-Dialog. Soweit dabei personenbezogene Daten
+verarbeitet werden, ist **Rechtsgrundlage Art. 6 Abs. 1 lit. f DSGVO**; das berechtigte
+Interesse besteht an einer benutzbaren Anwendung, die begonnene Arbeit nicht verwirft.
 
 Sie können diese Daten jederzeit selbst löschen, indem Sie in Ihrem Browser die
 Website-Daten für diese Domain entfernen. Der Kartenbaukasten funktioniert danach
-weiter, beginnt aber wieder ohne gespeicherte Konfiguration.
+weiter, beginnt aber wieder ohne gespeicherte Arbeitsstände.
 
-## 7. Verarbeitung im Browser: Routen, Karten und die Gerätedemo
+## 8. Verarbeitung im Browser: Routen, Karten und die Gerätedemo
 
 Die Gerätedemo auf der Startseite, die Umwandlung von Routendateien (z. B. GPX) und das
 Zusammensetzen von Karten laufen als WebAssembly **vollständig in Ihrem Browser**.
 
-Dateien, die Sie dabei auswählen, werden **nicht hochgeladen**. Das ist ausdrücklich
+Dateien, die Sie dazu auswählen oder in das Fenster ziehen, werden **nicht an einen
+Server übertragen**: Sie werden lokal gelesen und lokal verarbeitet. Das ist ausdrücklich
 festgehalten, weil Routendateien in aller Regel Positionsdaten enthalten und damit
-besonders schutzwürdig sind: Diese Daten verlassen Ihr Gerät nicht, und der
+besonders schutzwürdig sind — diese Daten verlassen Ihr Gerät nicht, und der
 Verantwortliche erhält sie zu keinem Zeitpunkt.
 
-## 8. Verbindung zu einem Gerät und Downloads
+## 9. Verbindung zu einem Gerät
 
-**Verbindung zum Gerät.** Der Kartenbaukasten kann über die WebUSB-Schnittstelle Ihres
-Browsers mit einem angeschlossenen OpenBikeComputer sprechen. Die Verbindung kommt nur
-zustande, wenn Sie das Gerät in dem vom Browser angezeigten Dialog selbst auswählen.
-Die Daten fließen dabei ausschließlich zwischen Ihrem Browser und dem Gerät; der
-Verantwortliche erhält davon nichts.
+Der Kartenbaukasten kann über die WebUSB-Schnittstelle Ihres Browsers mit einem
+angeschlossenen OpenBikeComputer sprechen. Die Verbindung kommt nur zustande, wenn Sie
+das Gerät in dem vom Browser angezeigten Dialog selbst auswählen. Die Daten fließen dabei
+ausschließlich zwischen Ihrem Browser und dem Gerät; der Verantwortliche erhält davon
+nichts. Was aus dieser Verbindung auf Ihrem Endgerät gespeichert wird, steht in
+Abschnitt 7.
 
-**Karten- und Firmware-Downloads.** Fertige Kartendaten und Firmware-Dateien sollen
-künftig von einem eigenen Objektspeicher geladen werden. Zum unten genannten Stand ist
-für diese Website **kein solcher Katalog konfiguriert**; der Kartenbaukasten stellt
-daher keine Verbindungen zu Servern Dritter her. Sobald das der Fall ist, wird diese
-Erklärung vor der Freischaltung um den Betreiber, den Serverstandort und die
-Rechtsgrundlage ergänzt.
+## 10. Links zu externen Angeboten
 
-## 9. Links zu externen Angeboten
+Die Seiten verlinken an mehreren Stellen auf fremde Angebote — insbesondere auf das
+Quelltext-Repository bei GitHub, auf OpenStreetMap und auf einzelne technische
+Referenzen. Diese Links werden erst beim Anklicken aufgerufen; es findet kein Vorabruf
+statt. Nach dem Anklicken verlassen Sie diese Website, und es gilt die
+Datenschutzerklärung des jeweiligen Anbieters.
 
-Die Seiten verlinken an mehreren Stellen auf das Quelltext-Repository bei GitHub. Diese
-Links werden erst beim Anklicken aufgerufen — es findet kein Vorabruf statt. Nach dem
-Anklicken verlassen Sie diese Website; dann gilt die Datenschutzerklärung des jeweiligen
-Anbieters.
+Für das Repository gilt zusätzlich: Wenn Sie sich dort beteiligen — etwa an einem Issue
+oder einer Pull-Request-Diskussion —, ist das eine Nutzung von GitHub, und die dort von
+Ihnen veröffentlichten Angaben sind öffentlich.
 
-## 10. Kontaktaufnahme per E-Mail
+## 11. Kontaktaufnahme per E-Mail
 
 Wenn Sie die oben genannte E-Mail-Adresse anschreiben, werden Ihre Angaben aus der
 E-Mail — Absenderadresse, Name, Inhalt und alle weiteren freiwillig gemachten Angaben —
@@ -206,12 +299,12 @@ vorgeschrieben — ohne sie kann eine Anfrage allerdings nicht beantwortet werde
 Nachrichten werden gelöscht, sobald die Anfrage abschließend bearbeitet ist und keine
 Aufbewahrungspflichten entgegenstehen.
 
-## 11. Keine automatisierte Entscheidungsfindung
+## 12. Keine automatisierte Entscheidungsfindung
 
 Eine automatisierte Entscheidungsfindung einschließlich Profiling nach Art. 22 DSGVO
 findet nicht statt.
 
-## 12. Ihre Rechte
+## 13. Ihre Rechte
 
 Sie haben gegenüber dem Verantwortlichen die folgenden Rechte, soweit die jeweiligen
 gesetzlichen Voraussetzungen vorliegen:
@@ -221,18 +314,29 @@ gesetzlichen Voraussetzungen vorliegen:
 - **Löschung** (Art. 17 DSGVO)
 - **Einschränkung der Verarbeitung** (Art. 18 DSGVO)
 - **Datenübertragbarkeit** (Art. 20 DSGVO)
-- **Widerspruch** gegen Verarbeitungen, die auf Art. 6 Abs. 1 lit. f DSGVO beruhen (Art. 21 DSGVO)
-
-> **Widerspruchsrecht:** Sie können der Verarbeitung nach Abschnitt 3 und Abschnitt 10
-> aus Gründen, die sich aus Ihrer besonderen Situation ergeben, jederzeit widersprechen.
-> Es genügt eine formlose Nachricht an die oben genannte Adresse.
 
 Unabhängig davon haben Sie nach Art. 77 DSGVO das Recht, sich bei einer
 **Datenschutz-Aufsichtsbehörde** zu beschweren, insbesondere in dem Mitgliedstaat Ihres
 Aufenthaltsorts, Ihres Arbeitsplatzes oder des Orts des mutmaßlichen Verstoßes. Für den
 Verantwortlichen zuständig ist **[zuständige Landesbehörde eintragen]**.
 
-## 13. Änderungen dieser Erklärung
+## 14. Widerspruchsrecht nach Art. 21 DSGVO
+
+**Sie haben das Recht, aus Gründen, die sich aus Ihrer besonderen Situation ergeben,
+jederzeit gegen die Verarbeitung Sie betreffender personenbezogener Daten Widerspruch
+einzulegen, die auf Grundlage von Art. 6 Abs. 1 lit. f DSGVO erfolgt.** Das betrifft
+alle in dieser Erklärung auf diese Vorschrift gestützten Verarbeitungen — die
+Server-Logfiles (Abschnitt 3), die Verbindungen des Kartenbaukastens (Abschnitt 6), die
+Speicherung auf Ihrem Endgerät (Abschnitt 7) und die Beantwortung von Anfragen
+(Abschnitt 11).
+
+Nach einem Widerspruch werden die betreffenden Daten nicht mehr verarbeitet, es sei
+denn, der Verantwortliche kann zwingende schutzwürdige Gründe für die Verarbeitung
+nachweisen, die Ihre Interessen, Rechte und Freiheiten überwiegen, oder die Verarbeitung
+dient der Geltendmachung, Ausübung oder Verteidigung von Rechtsansprüchen. Für einen
+Widerspruch genügt eine formlose Nachricht an die in Abschnitt 1 genannte Adresse.
+
+## 15. Änderungen dieser Erklärung
 
 Diese Erklärung wird angepasst, wenn sich die beschriebene Verarbeitung ändert — etwa
 weil die Website umzieht oder eine neue Funktion hinzukommt. Maßgeblich ist die jeweils
@@ -240,14 +344,14 @@ hier veröffentlichte Fassung.
 
 ## Privacy policy (English)
 
-> This is a **non-binding convenience translation**. The German text above is the
-> authoritative version.
+> Both versions describe the same processing. In case of any difference in
+> interpretation, the German version above governs.
 
 ### 1. Controller
 
 The controller within the meaning of Art. 4(7) GDPR is:
 
-<address class="legal-addr">
+<address>
   Jonas Falkenrath<br>
   Musterstraße 12<br>
   12345 Musterstadt<br>
@@ -256,15 +360,26 @@ The controller within the meaning of Art. 4(7) GDPR is:
   Phone: +49 30 23125 000
 </address>
 
-No data protection officer has been appointed; the conditions of § 38 BDSG are not met.
+No data protection officer has been appointed; the conditions of Art. 37 GDPR in
+conjunction with § 38 BDSG are not met.
 
-### 2. Summary
+### 2. Two parts, two answers
 
-- **No cookies.** This website sets no cookies.
-- **No tracking, no analytics, no advertising.** There are no analytics services, tracking pixels, error trackers, ad networks or social media plugins.
-- **No external content.** Scripts, stylesheets and images are served exclusively from our own origin, and text is set in the system fonts already present on your device. No web fonts and no content from third-party CDNs, map services or video platforms are loaded.
-- **No data entry.** There is no form and no upload; routes and maps are processed entirely in the browser and never leave your device.
-- What cannot be avoided is that your IP address reaches the host when a page is requested. Section 3 describes this.
+This offering consists of two very different parts, and summarising them in one sentence
+would be misleading.
+
+**The website** — landing page with the in-browser device demo, documentation and blog —
+is a plain collection of static files. It sets **no cookies**, embeds **no analytics
+services, tracking pixels, error trackers, ad networks or social media plugins**, loads
+**no web fonts and no content from third-party servers** (text is set in the system fonts
+already present on your device), stores **nothing on your device**, and accepts **no
+input**. What cannot be avoided is that your IP address reaches the host — section 3
+describes this.
+
+**The map builder** at `/builder/` is an application and has a considerably larger
+surface: it loads map tiles from a third-party server, checks for new firmware, stores
+work in progress on your device, and can talk to a connected device. It too sets no
+cookies and measures no audience. Sections 6 to 9 describe it in detail.
 
 ### 3. Hosting and server log files
 
@@ -275,20 +390,24 @@ When a page is requested, GitHub processes the technical access data every brows
 transmits — in particular the **IP address**, the date and time of the request, the
 address requested, the volume of data transferred, the HTTP status code and the browser
 identifier (user agent). GitHub explicitly states that for GitHub Pages a visitor's IP
-address is logged for security purposes.
+address is logged for security purposes. Delivery uses a content delivery network, so
+requests are answered from a nearby server.
 
 The **purpose** is the technical delivery of the pages and the security and stability of
 the service. The **legal basis** is Art. 6(1)(f) GDPR; the legitimate interest is being
-able to provide the website at all and to protect it against attacks. Delivery uses a
-content delivery network, so requests are answered from a nearby server.
+able to provide the website at all and to protect it against attacks.
 
-GitHub processes this data on behalf of the controller as a processor under the GitHub
-Data Protection Agreement (Art. 28 GDPR). Where GitHub additionally uses access data for
-its own security and abuse-prevention purposes, it does so as its own controller.
+Transmitting your IP address is technically unavoidable: without it no page can be
+delivered. There is no statutory or contractual obligation to provide it, and the only
+consequence of not doing so is that the site cannot be retrieved.
 
-> **A note on candour:** the controller has **no access** to these log files and cannot
-> configure their retention period, which is determined by GitHub. The controller
-> performs no analysis of access data and merges it with no other data.
+> **A note on candour:** this access data arises at GitHub as part of running the
+> platform. The controller has **neither access to it nor influence over it**, receives
+> no analysis of it from GitHub, does not evaluate visits and merges the data with
+> nothing else. Nor can the controller set the retention period: what governs is how long
+> GitHub needs the data for its security purpose, and GitHub publishes no retention
+> period for Pages access logs that could be cited here. To that extent GitHub processes
+> the data for its own security purposes as its own controller.
 
 ### 4. Transfers to the USA
 
@@ -297,102 +416,172 @@ described in section 3 there.
 
 GitHub, Inc. is certified under the **EU-U.S. Data Privacy Framework**. For certified
 organisations the European Commission established an adequate level of protection in its
-adequacy decision of 10 July 2023, so the transfer relies on **Art. 45(1) GDPR**. In
-addition, GitHub has agreed to the Commission's **Standard Contractual Clauses**
-(Implementing Decision (EU) 2021/914), which serve as a basis under Art. 46(2)(c) GDPR
-should the adequacy decision cease to apply.
+adequacy decision of 10 July 2023, so the transfer relies on **Art. 45(1) GDPR**. The
+current certification can be checked in the participant list at
+[dataprivacyframework.gov/list](https://www.dataprivacyframework.gov/list).
 
-Despite these safeguards it cannot be ruled out that US authorities access the data
-under US law, and that the legal remedies against such access do not match those
-available within the scope of the GDPR. The adequacy decision is also subject to
-periodic review and to pending litigation.
+Despite this basis it cannot be ruled out that US authorities access the data under US
+law, and that the legal remedies against such access do not match those available within
+the scope of the GDPR. The adequacy decision is also subject to periodic review and to
+pending litigation.
 
 ### 5. Encryption
 
-The website is served exclusively over a TLS-encrypted connection (HTTPS).
+The website is served over a TLS-encrypted connection (HTTPS).
 
-### 6. Storage on your device (no cookie banner)
+### 6. The map builder: connections to third-party servers
 
-The map builder at `/builder/` stores data in your browser's **local storage**. This is
-not a cookie: the data is never sent to a server, it stays on your device. Stored are
-your current map configuration, the selected skin, preview thumbnails of selected maps,
-and the firmware version last offered per device (so the same update prompt does not
-reappear on every visit).
+In operation, the map builder at `/builder/` connects to servers not operated by the
+controller. Each such request transmits your IP address to the server addressed — with a
+retrieval that is technically unavoidable.
 
-The **legal basis for storing and reading** this data is § 25(2)(2) TDDDG: the storage
-is strictly necessary for the service you explicitly requested — assembling a map — to
-work at all. No consent is required, which is why this website shows no cookie or
-consent dialog. There is no cross-site recognition, profiling or audience measurement.
+#### 6.1 Map tiles from OpenStreetMap
+
+Wherever the builder shows a map — the coverage map when selecting a region, the preview
+of a route, and the map view of a recorded ride — it loads the map tiles directly from
+the servers of the **OpenStreetMap Foundation** (St John's Innovation Centre, Cowley
+Road, Cambridge CB4 0WS, United Kingdom) at `tile.openstreetmap.org`. In doing so the
+OpenStreetMap Foundation learns your IP address and the map section requested.
+
+The **legal basis** is Art. 6(1)(f) GDPR; the legitimate interest is being able to show a
+map at all — without a map background, selecting a region is not operable. An adequacy
+decision of the European Commission is in place for the United Kingdom (Art. 45 GDPR). No
+tiles are loaded while no map view is open; the landing page, the documentation and the
+blog load no tiles. The OpenStreetMap Foundation's privacy policy is available at
+[wiki.osmfoundation.org](https://wiki.osmfoundation.org/wiki/Privacy_Policy).
+
+#### 6.2 Checking for new firmware
+
+Once an OpenBikeComputer is connected, the builder checks once whether newer firmware has
+been published for the device. To do so it retrieves a file from
+`updates.openbikecomputer.com`. That domain belongs to the controller; the files are
+served from the **Cloudflare R2** object store of Cloudflare, Inc. (101 Townsend St., San
+Francisco, CA 94107, USA), which processes your IP address in doing so. Cloudflare, Inc.
+is certified under the EU-U.S. Data Privacy Framework; section 4 otherwise applies
+accordingly.
+
+The retrieval is a plain **read request with no parameters**: neither the serial number
+nor the firmware version nor any other detail about your device is transmitted to the
+server. The comparison between the published version and the one running on your device
+happens entirely in your browser. While no device is connected, the request does not
+happen at all.
+
+The **legal basis** is Art. 6(1)(f) GDPR; the legitimate interest is being able to inform
+users about security-relevant updates to their device.
+
+#### 6.3 Map catalog
+
+Prepared map data is intended to be loaded from a dedicated object store in future. As of
+the date given below **no such catalog is configured** for this website, so the builder
+loads no map data from a third-party server. As soon as it does, this policy will be
+extended — before that feature goes live — to name the operator, the server location and
+the legal basis.
+
+### 7. Storage on your device (no cookie banner)
+
+The map builder stores data **on your device** — in your browser's local storage
+(`localStorage`) and file storage (*Origin Private File System*). This is not a cookie,
+and the data is **never sent to a server**; it stays on your device. The website, the
+documentation and the blog store nothing.
+
+Stored are: your current map configuration; skins you created yourself, with their names
+and colours; downloaded map cells and the map files assembled from them (file storage);
+simplified tracks — lists of coordinates — of the routes and rides held on the connected
+device, together with that device's serial number, so the previews on the device overview
+need not be fetched over the cable again; and the firmware version last offered, again
+together with the device's serial number, so the same update prompt does not reappear on
+every visit.
+
+Two of these deserve to be named explicitly, because their labels would make them sound
+more harmless than they are: the **tracks are location data** — they describe where you
+rode — and the **serial number is a persistent identifier of your device**. Both stay on
+your device. The serial number is used only to attribute stored entries to the right
+device; there is no cross-site recognition, profiling or audience measurement, and none of
+these values is transmitted to a server.
+
+The **legal basis for storing and reading** this data is § 25(2)(2) TDDDG: the storage is
+strictly necessary for the service you explicitly requested — assembling a map and
+managing a connected device — to work. No consent is required, which is why this website
+shows no cookie or consent dialog. Where personal data is processed in the course of
+this, the **legal basis is Art. 6(1)(f) GDPR**; the legitimate interest is a usable
+application that does not discard work in progress.
 
 You can delete this data at any time by clearing the site data for this domain in your
-browser. The map builder keeps working afterwards, simply without a saved
-configuration.
+browser. The map builder keeps working afterwards, simply without saved work.
 
-### 7. Processing in the browser: routes, maps and the device demo
+### 8. Processing in the browser: routes, maps and the device demo
 
 The device demo on the landing page, the conversion of route files (e.g. GPX) and the
 assembly of maps run as WebAssembly **entirely in your browser**.
 
-Files you select are **not uploaded**. This is stated explicitly because route files
-normally contain location data and are therefore particularly sensitive: that data never
-leaves your device and the controller never receives it.
+Files you select or drop into the window are **not transmitted to any server**: they are
+read locally and processed locally. This is stated explicitly because route files normally
+contain location data and are therefore particularly sensitive — that data never leaves
+your device and the controller never receives it.
 
-### 8. Connecting a device, and downloads
+### 9. Connecting a device
 
-**Device connection.** The map builder can talk to a connected OpenBikeComputer through
-your browser's WebUSB interface. The connection is only established if you pick the
-device yourself in the dialog shown by the browser. Data flows solely between your
-browser and the device; the controller receives none of it.
+The map builder can talk to a connected OpenBikeComputer through your browser's WebUSB
+interface. The connection is only established if you pick the device yourself in the
+dialog shown by the browser. Data flows solely between your browser and the device; the
+controller receives none of it. What is stored on your device as a result is covered in
+section 7.
 
-**Map and firmware downloads.** Prepared map data and firmware files are intended to be
-loaded from a dedicated object store in future. As of the date given below **no such
-catalog is configured** for this website, so the map builder makes no connections to
-third-party servers. As soon as it does, this policy will be extended — before that
-feature goes live — to name the operator, the server location and the legal basis.
+### 10. Links to external services
 
-### 9. Links to external services
-
-The pages link to the source repository on GitHub in several places. These links are
-only followed when clicked — nothing is fetched in advance. Once clicked you leave this
+The pages link to third-party offerings in several places — in particular the source
+repository on GitHub, OpenStreetMap, and individual technical references. These links are
+only followed when clicked; nothing is fetched in advance. Once clicked you leave this
 website and the privacy policy of the respective provider applies.
 
-### 10. Contact by email
+For the repository there is more: if you take part there — in an issue or a pull request
+discussion — that is a use of GitHub, and what you post there is public.
+
+### 11. Contact by email
 
 If you write to the email address given above, the information in your email — sender
 address, name, content and any other details you volunteer — is processed in order to
 handle your enquiry.
 
-The **legal basis** is Art. 6(1)(f) GDPR (legitimate interest in answering enquiries),
-or Art. 6(1)(b) GDPR where the enquiry concerns a contract. Providing data is neither
+The **legal basis** is Art. 6(1)(f) GDPR (legitimate interest in answering enquiries), or
+Art. 6(1)(b) GDPR where the enquiry concerns a contract. Providing data is neither
 required by law nor by contract — but without it an enquiry cannot be answered. Messages
 are deleted once the enquiry has been dealt with and no retention obligations apply.
 
-### 11. No automated decision-making
+### 12. No automated decision-making
 
 There is no automated decision-making, including profiling, within the meaning of
 Art. 22 GDPR.
 
-### 12. Your rights
+### 13. Your rights
 
 Subject to the respective statutory conditions you have the right to **access**
 (Art. 15), **rectification** (Art. 16), **erasure** (Art. 17), **restriction of
-processing** (Art. 18), **data portability** (Art. 20) and to **object** to processing
-based on Art. 6(1)(f) GDPR (Art. 21).
-
-> **Right to object:** you may object to the processing described in sections 3 and 10
-> at any time on grounds relating to your particular situation. An informal message to
-> the address above is enough.
+processing** (Art. 18) and **data portability** (Art. 20).
 
 Independently of this, Art. 77 GDPR gives you the right to lodge a complaint with a
 **data protection supervisory authority**, in particular in the Member State of your
 residence, place of work or the place of the alleged infringement. The authority
 competent for the controller is **[zuständige Landesbehörde eintragen]**.
 
-### 13. Changes to this policy
+### 14. Right to object under Art. 21 GDPR
 
-This policy is updated when the processing it describes changes — for instance because
-the site moves or a new feature is added. The version published here at the time is the
-one that applies.
+**You have the right to object at any time, on grounds relating to your particular
+situation, to the processing of personal data concerning you which is based on
+Art. 6(1)(f) GDPR.** This covers every processing in this policy that relies on that
+provision — the server log files (section 3), the map builder's connections (section 6),
+the storage on your device (section 7) and the answering of enquiries (section 11).
+
+Following an objection the data concerned will no longer be processed, unless the
+controller can demonstrate compelling legitimate grounds for the processing which override
+your interests, rights and freedoms, or the processing serves the establishment, exercise
+or defence of legal claims. An informal message to the address in section 1 is enough.
+
+### 15. Changes to this policy
+
+This policy is updated when the processing it describes changes — for instance because the
+site moves or a new feature is added. The version published here at the time is the one
+that applies.
 
 ---
 

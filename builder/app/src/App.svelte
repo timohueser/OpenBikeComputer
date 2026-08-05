@@ -4,6 +4,7 @@
     import UpdatePrompt from "./components/UpdatePrompt.svelte";
     import Desktop from "./routes/Desktop.svelte";
     import Home from "./routes/Home.svelte";
+    import { LINKS } from "./lib/constants";
     import { platform, type StyleEditorModule } from "./lib/platform";
     import { DESKTOP_ADDS } from "./lib/platform/gating";
     import { router } from "./lib/router.svelte";
@@ -78,7 +79,11 @@
 </main>
 
 <footer class="faint small">
-    Map data © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors
+    <span>Map data © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors</span>
+    <span class="legal">
+        <a href={LINKS.impressum}>Impressum</a>
+        <a href={LINKS.datenschutz}>Datenschutz</a>
+    </span>
 </footer>
 
 <!-- Mounted once, at the root: the app's own "are you sure?", because the browser's does not exist
@@ -90,6 +95,18 @@
 <UpdatePrompt />
 
 <style>
+    footer {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        gap: 6px 16px;
+    }
+
+    footer .legal {
+        display: flex;
+        gap: 14px;
+    }
+
     .backdrop {
         position: fixed;
         inset: 0;
