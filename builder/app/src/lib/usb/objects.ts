@@ -72,11 +72,6 @@ export function decodeListHeader(data: Uint8Array): ListHeader {
     return { entryLen, count: view.getUint16(2, true), total: view.getUint16(4, true) };
 }
 
-/** Whether the device truncated this list at its cap — `total - count` entries were dropped. */
-export function isTruncated(h: ListHeader): boolean {
-    return h.total > h.count;
-}
-
 /**
  * Walk a list object, decoding each entry with `decodeEntry`.
  *
