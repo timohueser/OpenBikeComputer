@@ -164,6 +164,7 @@ avg_grad = "P. MEDIA"
 no_gps_fix = "Sin GPS"
 off_route = "fuera ruta "
 press_to_start = "Pulsa para empezar"
+recalculating = "Recalculando..."
 
 # --- The Statistics riding screen ---
 [stats]

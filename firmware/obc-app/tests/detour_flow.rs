@@ -10,14 +10,22 @@
 //! The host itself is simulated at the protocol boundary (drained commands answered with typed
 //! events), exactly like `nav.rs`; the *real* corridor/A*/splice pipeline is pinned end to end
 //! in `obc-route/tests/detour.rs` and by the sim.
+//!
+//! The **Recalculating freeze** (issue #1146, P2) is pinned here too, at the tail: the detour flow
+//! is the one path that runs a search with a *map* base underneath it, so it is where the freeze
+//! engages, pauses the matcher, raises its banner, and — on every exit the flow has — releases.
 
-use obc_app::screen::Screen;
+use embedded_graphics::pixelcolor::Rgb888;
+use obc_app::screen::{palette, Screen};
 use obc_app::{
     App, AppState, DetourPreview, DetourRequest, Gesture, HostCommand, HostEvent, HostMailbox, RouteSummary,
 };
 use obc_formats::io::SliceSource;
 use obc_ports::{Fix, LocationSource, RideClock, Sensors};
+use obc_reader::rgb565_to_rgb888;
 use obc_route::{gpx_to_obcr, NavError, RouteIndex, RouteReader};
+
+mod common;
 
 /// The straight test road: lat 43.5°, lon 7.50° → 7.54° (~3 230 m ground). One `<trkpt>` per
 /// 0.004° so the converter keeps real vertices along the way.
@@ -246,6 +254,172 @@ fn commit_failure_keeps_the_old_route_and_the_preview_retries() {
     // The commit is retryable.
     app.apply_gesture(Gesture::Press);
     assert!(drained(&mut app).iter().any(|c| matches!(c, HostCommand::CommitDetour)));
+}
+
+// --- The Recalculating freeze (issue #1146, P2) ---
+
+/// Drive a riding app to the **exposure window** the freeze exists for: a planner run the host has
+/// started, with the map-base Detour chooser showing again because Back popped the spinner. Returns
+/// with the freeze engaged and the cancel still undrained.
+fn frozen_over_the_chooser(app: &mut App) {
+    open_chooser(app);
+    app.apply_gesture(Gesture::Press); // → the planning spinner, and the request
+    assert!(drained(app).iter().any(|c| matches!(c, HostCommand::PlanDetour(_))), "the host starts planning");
+    app.apply_gesture(Gesture::Back); // pops the spinner; the host's planner is still running
+    assert!(matches!(app.top_screen(), Screen::Detour(_)));
+}
+
+fn rgb(c: u16) -> Rgb888 {
+    let (r, g, b) = rgb565_to_rgb888(c);
+    Rgb888::new(r, g, b)
+}
+
+/// **The regression** the freeze exists for: `NavPlanning` is *pushed* over the map-base chooser,
+/// so Back lands a map base back under a search that is still running — and the next frame would
+/// have rendered straight into the arena the planner owns. Draining the plan is the engaging edge
+/// (not the gesture: a request the rider cancels first is annihilated and never reaches the host),
+/// and the base screen is what decides whether there is anything to freeze.
+#[test]
+fn the_freeze_covers_a_live_search_exactly_while_a_map_base_would_draw() {
+    let (mut app, _obcr) = riding_app();
+    assert!(app.base_draws_map(), "riding on the Map");
+    assert!(!app.plan_in_flight());
+    assert!(!app.reroute_freeze_active(), "no plan, no freeze");
+    assert!(app.nav_arena_precondition().is_none(), "…so a search may not take the arena yet");
+
+    open_chooser(&mut app);
+    app.apply_gesture(Gesture::Press);
+    assert!(drained(&mut app).iter().any(|c| matches!(c, HostCommand::PlanDetour(_))));
+    assert!(app.plan_in_flight(), "the drained command is what says the host began planning");
+    assert!(!app.base_draws_map(), "the spinner is an opaque chrome base — no map underneath to freeze");
+    assert!(!app.reroute_freeze_active(), "menu-shaped planning needs no freeze");
+    assert!(app.nav_arena_precondition().is_some(), "…and the arena is claimable: nothing will draw a map");
+
+    app.apply_gesture(Gesture::Back);
+    assert!(app.base_draws_map(), "the chooser is a map base again");
+    assert!(app.plan_in_flight(), "…while the host has not been told to stop yet");
+    assert!(app.reroute_freeze_active(), "THE window — the freeze covers it");
+
+    assert!(drained(&mut app).iter().any(|c| matches!(c, HostCommand::CancelDetour)));
+    assert!(!app.plan_in_flight(), "the cancel reaching the host ends the run");
+    assert!(!app.reroute_freeze_active());
+    assert!(app.nav_arena_precondition().is_none(), "a map base with no freeze refuses the nav claim again");
+}
+
+/// A silent freeze reads as a crash — the map stops answering and nothing says why. Pin that the
+/// banner is on the **overlay** plane (the map plane is exactly what is not being redrawn), that
+/// the host is told to paint it (`overlay_active`, the `Dirty::overlay` edge, the row band), and
+/// that all of it vanishes with the freeze.
+#[test]
+fn the_frozen_map_wears_a_recalculating_banner_on_the_overlay_plane() {
+    let (mut app, _obcr) = riding_app();
+    let _ = app.take_dirty();
+    frozen_over_the_chooser(&mut app);
+    assert!(app.reroute_freeze_active());
+
+    assert!(app.overlay_active(), "the host must paint the overlay layer while frozen");
+    let dirty = app.take_dirty();
+    assert!(dirty.overlay, "the freeze edge asks for one overlay repaint");
+    let (y0, rows) = app.reroute_banner_rows(320.0).expect("the banner has a row band to re-present");
+
+    let mut buf = common::Buf::new(240, 320);
+    app.render_overlay(&mut buf, 240.0, 320.0, rgb);
+    let ink = buf.count(rgb(palette::INK));
+    let parchment = buf.count(rgb(palette::PARCHMENT));
+    assert!(parchment > 500, "the pill fills its band ({parchment} px)");
+    assert!(ink > 50, "…and carries outlined copy ({ink} px)");
+    for y in 0..320 {
+        for x in 0..240 {
+            let drawn = buf.get(x, y) != Rgb888::new(0, 0, 0);
+            if drawn {
+                assert!(
+                    y >= y0 as i32 && y < (y0 + rows) as i32,
+                    "the banner drew at ({x},{y}), outside the band it reported"
+                );
+            }
+        }
+    }
+
+    // Release: the banner comes off, and the map — which held still for the whole search — is asked
+    // to repaint itself.
+    assert!(drained(&mut app).iter().any(|c| matches!(c, HostCommand::CancelDetour)));
+    let dirty = app.take_dirty();
+    assert!(dirty.overlay, "…and one more to clear it");
+    assert!(dirty.map, "the frozen map catches up");
+    assert!(!app.overlay_active());
+    assert!(app.reroute_banner_rows(320.0).is_none());
+    let mut buf = common::Buf::new(240, 320);
+    app.render_overlay(&mut buf, 240.0, 320.0, rgb);
+    assert_eq!(buf.count(rgb(palette::PARCHMENT)), 0, "nothing is drawn once the run ends");
+}
+
+/// The freeze pauses **the matcher and nothing else**: progress holds still under the frozen frame
+/// (a search can replace the very geometry it is measured along), while the fix itself keeps being
+/// recorded — the camera, the breadcrumb, the ride totals and the altimeter all ride the same tick.
+#[test]
+fn a_frozen_tick_holds_route_progress_but_still_records_the_fix() {
+    let (mut app, obcr) = riding_app();
+    frozen_over_the_chooser(&mut app);
+    let held = app.activity.progress_m();
+
+    let src = SliceSource(&obcr[..]);
+    let idx = RouteIndex::read(&src).unwrap();
+    let route = RouteReader::new(&idx, &src);
+    let ahead = road_at(0.62);
+    tick(&mut app, 1_000, Some(ahead), Some(&route));
+    assert_eq!(app.activity.progress_m(), held, "the matcher did not advance under the freeze");
+    assert_eq!(
+        app.state.user_fix.map(|f| (f.lon, f.lat)),
+        Some((ahead.lon, ahead.lat)),
+        "…but the fix landed: a freeze pauses the map, not the ride"
+    );
+
+    // The cancel lifts it, and the very next fix re-locks from wherever the rider actually is.
+    assert!(drained(&mut app).iter().any(|c| matches!(c, HostCommand::CancelDetour)));
+    assert!(!app.reroute_freeze_active());
+    tick(&mut app, 2_000, Some(road_at(0.62)), Some(&route));
+    assert!(app.activity.progress_m() > held, "the matcher resumes cleanly ({} m)", app.activity.progress_m());
+}
+
+/// The other two exits from a planner run — the answer and the failure — release the freeze too. A
+/// stuck freeze is a map that never redraws again, so every edge that ends a run must clear it,
+/// including a late answer whose planning screen the rider already cancelled away.
+#[test]
+fn every_way_a_plan_ends_releases_the_freeze() {
+    // The answer: it lands on the map-base preview, which must render immediately.
+    let (mut app, _obcr) = riding_app();
+    open_chooser(&mut app);
+    app.apply_gesture(Gesture::Press);
+    let _ = drained(&mut app);
+    assert!(app.plan_in_flight());
+    app.apply_event(HostEvent::DetourPlanned(Ok(DetourPreview {
+        cost_delta_m: 420,
+        total_distance_m: 1_020,
+        rejoin_m: 2_000,
+        ascent_m: None,
+    })));
+    assert!(matches!(app.top_screen(), Screen::DetourPreview(_)));
+    assert!(app.base_draws_map(), "the preview is a map base");
+    assert!(!app.plan_in_flight(), "the answer ended the run");
+    assert!(!app.reroute_freeze_active(), "so the preview's first frame renders");
+
+    // The failure tier: same release, on a card that isn't a map base at all.
+    let (mut app, _obcr) = riding_app();
+    open_chooser(&mut app);
+    app.apply_gesture(Gesture::Press);
+    let _ = drained(&mut app);
+    app.apply_event(HostEvent::DetourPlanned(Err(NavError::Exhausted)));
+    assert!(!app.plan_in_flight(), "a failed run is still a finished run");
+
+    // A late answer behind a cancel: the run already ended, and the stray event must not re-engage
+    // (or leave) anything.
+    let (mut app, _obcr) = riding_app();
+    frozen_over_the_chooser(&mut app);
+    let _ = drained(&mut app);
+    assert!(!app.plan_in_flight());
+    app.apply_event(HostEvent::DetourPlanned(Err(NavError::NoPath)));
+    assert!(!app.plan_in_flight());
+    assert!(!app.reroute_freeze_active(), "the map keeps rendering through a late answer");
 }
 
 /// A `DetourRequest` is `Copy` and its fields are what the host needs — pin the shape so a field
