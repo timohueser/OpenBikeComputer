@@ -17,8 +17,10 @@
 //! per-settle re-read into a resident-slot hit (the device is SD-bound — the cache's
 //! hit/miss counters are the number R4 logs on-glass).
 //!
-//! **The scratch is fixed** ([`NAV_MAX_NODES`] tracked nodes, per-target sized)
-//! because the router must coexist with the map cache and the render scratch in RAM.
+//! **The scratch is fixed** — [`NAV_MAX_NODES`] tracked nodes, **one size on every
+//! target**, host, sim and device alike, which is the point: the sim's plannable
+//! range *is* the device's — because the router must coexist with the map cache and
+//! the render scratch in RAM.
 //! On a dense graph it fills — but a full table no longer aborts (N4, epic #533):
 //! the first failed insert latches a `table_full` flag and the search **continues
 //! without inserting new nodes** (relaxing already-tracked nodes — decrease-key — still
@@ -443,11 +445,13 @@ impl ProfileMult {
 /// The router's entire mutable state: an open-addressed `node_id → NavEntry` table and
 /// a binary min-heap of table indices ordered by `f = g + ε·h` (heap-position
 /// back-pointers make decrease-key O(log n), so a node is queued at most once — the
-/// heap can never outgrow the table). Caller-owned; the device keeps one in `.bss`
-/// ([`NavScratch::new`] is `const` and all-zero — an all-zero struct **is** `new()`,
-/// which is what lets the sim heap-allocate it zeroed). `N` is generic so tests
+/// heap can never outgrow the table). Caller-owned: the sim heap-allocates one, and
+/// since #1146 P2 the device's is the nav arm of the board's scratch arena in
+/// `.uninit` — not a `.bss` static of its own — zero-filled in place each time a
+/// search claims it. Both rest on the same property: [`NavScratch::new`] is `const`
+/// and all-zero, so an all-zero block **is** `new()`. `N` is generic so tests
 /// exercise the exhaustion path with a deterministic tiny table; production uses the
-/// per-target [`NAV_MAX_NODES`] default.
+/// [`NAV_MAX_NODES`] default, the same on every target.
 pub struct NavScratch<const N: usize = NAV_MAX_NODES> {
     entries: [NavEntry; N],
     heap: [u16; N],

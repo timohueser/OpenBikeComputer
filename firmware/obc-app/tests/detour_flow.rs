@@ -549,8 +549,9 @@ fn a_frozen_tick_holds_route_progress_but_still_records_the_fix() {
 /// worth. The on-route window is 64 **segments** ahead — sized for one fix's travel — while a plan
 /// takes seconds on the SD-bound device, so on a route with real vertex density the rider rides
 /// clean out of it. Without the one-shot wide re-lock the first match after the freeze finds
-/// nothing in range: off-route chip up, progress still frozen, right at the moment the
-/// recalculation was supposed to have sorted things out.
+/// nothing in range: off-route chip up, progress still frozen, on a rider who never left the line.
+/// The exit under test is a **cancel** on purpose — that is the shape the wide window exists for. A
+/// search that comes back with new geometry resets the matcher instead and never spends the flag.
 #[test]
 fn the_matcher_relocks_over_the_ground_covered_during_the_freeze() {
     // 400 segments over the same road: ~8 m each, so the 64-segment on-route window reaches ~520 m
