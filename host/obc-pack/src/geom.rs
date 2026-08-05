@@ -690,10 +690,28 @@ pub(crate) fn collect_lines(g: Geom, out: &mut Vec<Geom>) {
 
 /// Clip `geom` to the node box (integer microdegrees → degrees) via GEOS
 /// `intersection`.
+///
+/// Real OSM data occasionally arrives here **invalid** — the DACH bake's first casualty was a
+/// merged fill whose union left a hole no shell contains (`TopologyException: unable to assign
+/// free hole to a shell`), which GEOS refuses to intersect. The repair runs **only on the failure
+/// path**: a geometry today's code clips cleanly takes exactly the code it always took, so no
+/// previously-baked cell can move a byte — `make_valid` is reached solely where the bake used to
+/// die, and its output is deterministic, so the recovered cell is too.
 pub fn clip_to_box(geom: &Geom, bbox: (i64, i64, i64, i64)) -> Geom {
     let (minx, miny, maxx, maxy) = (bbox.0 as f64 / 1e6, bbox.1 as f64 / 1e6, bbox.2 as f64 / 1e6, bbox.3 as f64 / 1e6);
     let box_geom = box_polygon((minx, miny, maxx, maxy)).expect("box polygon");
-    let clipped = to_geos(geom).intersection(&box_geom).expect("intersection");
+    let g = to_geos(geom);
+    let clipped = match g.intersection(&box_geom) {
+        Ok(c) => c,
+        Err(first) => {
+            let valid = g
+                .make_valid()
+                .unwrap_or_else(|e| panic!("intersection failed ({first}) and make_valid failed too ({e})"));
+            valid
+                .intersection(&box_geom)
+                .unwrap_or_else(|e| panic!("intersection failed even after make_valid ({first}; then {e})"))
+        }
+    };
     from_geos(&clipped)
 }
 
@@ -769,6 +787,36 @@ mod tests {
 
     fn bounds_of(g: &Geom) -> (f64, f64, f64, f64) {
         g.bounds()
+    }
+
+    /// **The DACH bake's crash, pinned.** A merged fill can arrive with a hole no shell contains
+    /// (`TopologyException: unable to assign free hole to a shell` at 10.4874°E 50.0780°N), which
+    /// GEOS refuses to intersect. The clip must repair-and-retry instead of dying: one degenerate
+    /// polygon out of a country's millions must never cost the whole bake. (Probe-verified: this
+    /// fixture genuinely takes the `Err` path — a panic stubbed into the `Ok` arm does not fire.)
+    #[test]
+    fn clip_repairs_a_free_hole_instead_of_panicking() {
+        // A shell with an interior ring entirely OUTSIDE it — the "free hole" GEOS cannot assign.
+        let invalid = Geom::Polygon {
+            exterior: ring(&[(0.0000, 0.0000), (0.0004, 0.0000), (0.0004, 0.0004), (0.0000, 0.0004), (0.0000, 0.0000)]),
+            interiors: vec![ring(&[
+                (0.0008, 0.0008),
+                (0.0009, 0.0008),
+                (0.0009, 0.0009),
+                (0.0008, 0.0009),
+                (0.0008, 0.0008),
+            ])],
+        };
+        let clipped = clip_to_box(&invalid, (0, 0, 1000, 1000));
+        // The repaired shell survives the clip; where exactly GEOS puts the freed hole is its
+        // business — what this pins is "a valid, in-box result, not a panic".
+        let (minx, miny, maxx, maxy) = bounds_of(&clipped);
+        assert!(minx >= 0.0 && miny >= 0.0 && maxx <= 0.001 && maxy <= 0.001, "{clipped:?}");
+        match &clipped {
+            Geom::Polygon { exterior, .. } => assert!(exterior.len() >= 4),
+            Geom::Multi(parts) => assert!(!parts.is_empty()),
+            other => panic!("the shell vanished: {other:?}"),
+        }
     }
 
     /// Pins the `bbox / 1e6` µdeg→deg scaling: box `(0,0,1000,1000)` µdeg is
