@@ -18,47 +18,8 @@ use obcm_testkit::{
     pack_poly_hole, pad, poi_dir_len, poi_directory, seal, LodSpec, PoiCat, Style, MARKER,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Feature {
-    pub style_id: u8,
-    pub kind: Kind,
-    pub exterior: Vec<(i32, i32)>,
-    pub interiors: Vec<Vec<(i32, i32)>>,
-}
-
-fn decode_chunk(r: &Reader, lod: usize, chunk_id: u32, node: &BBox) -> Vec<Feature> {
-    let mut out = Vec::new();
-    let mut points = heapless::Vec::<_, MAX_FEAT_PTS>::new();
-    let mut ring_lens = heapless::Vec::<_, MAX_FEAT_RINGS>::new();
-    r.for_each_feature(lod, chunk_id, node, &mut points, &mut ring_lens, |f| {
-        out.push(Feature {
-            style_id: f.style_id,
-            kind: f.kind,
-            exterior: f.exterior().to_vec(),
-            interiors: f.interiors().map(|h| h.to_vec()).collect(),
-        });
-    })
-    .unwrap();
-    out
-}
-
-/// Like [`decode_chunk`] but only the features for which `keep(style_id)` is
-/// true are decoded and returned; the rest are skipped in the reader.
-fn decode_filtered(r: &Reader, lod: usize, chunk_id: u32, node: &BBox, keep: impl Fn(u8) -> bool) -> Vec<Feature> {
-    let mut out = Vec::new();
-    let mut points = heapless::Vec::<_, MAX_FEAT_PTS>::new();
-    let mut ring_lens = heapless::Vec::<_, MAX_FEAT_RINGS>::new();
-    r.for_each_feature_filtered(lod, chunk_id, node, &mut points, &mut ring_lens, keep, |f| {
-        out.push(Feature {
-            style_id: f.style_id,
-            kind: f.kind,
-            exterior: f.exterior().to_vec(),
-            interiors: f.interiors().map(|h| h.to_vec()).collect(),
-        });
-    })
-    .unwrap();
-    out
-}
+mod common;
+use common::{decode_chunk, decode_filtered};
 
 /// Collect every leaf `for_each_chunk` yields — the uncapped replacement for the
 /// removed `Reader::query` test convenience.

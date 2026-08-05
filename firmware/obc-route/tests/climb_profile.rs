@@ -21,148 +21,23 @@ use obc_formats::io::{ByteSource, Error, SliceSource};
 use obc_map_scene::ground_dist_m;
 use obc_route::{ClimbProfile, ClimbSeg, RouteIndex, RouteReader, CLIMB_PROFILE_COLS};
 
-// -------------------------------------------------------------------------------------------
-// A hand-rolled OBCR writer with explicit chunk control.
-//
-// `gpx_to_obcr` decides chunk boundaries and decimation itself; these tests need to place points
-// in *specific* chunks with *specific* cumulative distances (to exercise the chunk-skip and
-// within-climb bucketing), so they emit the bytes directly against the OBCR §1–§2 layout the
-// reader parses. Only the fields the reader reads are populated.
-// -------------------------------------------------------------------------------------------
+mod common;
+use common::{ChunkExtent, ChunkIn, IndexPlacement, RouteSpec};
 
-const HEADER_FULL_LEN: usize = 128;
-const CHUNK_META_LEN: usize = 44;
-
-fn put_u16(b: &mut [u8], o: usize, v: u16) {
-    b[o..o + 2].copy_from_slice(&v.to_le_bytes());
-}
-fn put_i16(b: &mut [u8], o: usize, v: i16) {
-    b[o..o + 2].copy_from_slice(&v.to_le_bytes());
-}
-fn put_i32(b: &mut [u8], o: usize, v: i32) {
-    b[o..o + 4].copy_from_slice(&v.to_le_bytes());
-}
-fn put_u32(b: &mut [u8], o: usize, v: u32) {
-    b[o..o + 4].copy_from_slice(&v.to_le_bytes());
-}
-
-/// One chunk to serialize: its points (`(lon, lat, ele)`, microdegrees + meters) and the
-/// cumulative distance stamped at its first point (the value the builder re-anchors to).
-struct Chunk {
-    cum_distance_m: u32,
-    points: Vec<(i32, i32, i16)>,
-}
-
-/// The absolute file byte range each chunk's data region occupies — so the counting-source test
-/// can name "chunk k's bytes" precisely.
-#[derive(Clone, Copy)]
-struct ChunkExtent {
-    start: u32,
-    end: u32,
-}
-
-/// Serialize `chunks` into an in-memory `.obcr` (v2 header, no waypoints). Returns the bytes and
-/// each chunk's data-region byte extent. Body layout per chunk: `(point_count - 1)` fixed 6-byte
-/// delta records (the anchor lives in the chunk-meta, not the body), matching the reader's
-/// `decode_chunk`.
-fn build_obcr(chunks: &[Chunk], total_distance_m: u32) -> (Vec<u8>, Vec<ChunkExtent>) {
-    let mut body = Vec::new();
-    let mut extents = Vec::new();
-    let mut metas: Vec<[u8; CHUNK_META_LEN]> = Vec::new();
-
-    let data_start = HEADER_FULL_LEN as u32;
-    let mut pos = data_start;
-
-    let (mut gmin_lon, mut gmin_lat, mut gmax_lon, mut gmax_lat) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
-    let (mut gmin_ele, mut gmax_ele) = (i16::MAX, i16::MIN);
-
-    for ch in chunks {
-        let pts = &ch.points;
-        assert!(!pts.is_empty(), "a chunk needs at least one point");
-        let (a_lon, a_lat, a_ele) = pts[0];
-
-        // Body: delta records for points[1..].
-        let body_start = pos;
-        let (mut plon, mut plat) = (a_lon, a_lat);
-        let mut bbox = (a_lon, a_lat, a_lon, a_lat);
-        let (mut cmin_ele, mut cmax_ele) = (a_ele, a_ele);
-        for &(lon, lat, ele) in &pts[1..] {
-            let d = [((lon - plon) as i16).to_le_bytes(), ((lat - plat) as i16).to_le_bytes(), ele.to_le_bytes()];
-            body.extend_from_slice(&d[0]);
-            body.extend_from_slice(&d[1]);
-            body.extend_from_slice(&d[2]);
-            plon = lon;
-            plat = lat;
-            bbox.0 = bbox.0.min(lon);
-            bbox.1 = bbox.1.min(lat);
-            bbox.2 = bbox.2.max(lon);
-            bbox.3 = bbox.3.max(lat);
-            cmin_ele = cmin_ele.min(ele);
-            cmax_ele = cmax_ele.max(ele);
-        }
-        let body_len = (pts.len() as u32 - 1) * 6;
-        pos += body_len;
-        extents.push(ChunkExtent { start: body_start, end: body_start + body_len });
-
-        gmin_lon = gmin_lon.min(bbox.0);
-        gmin_lat = gmin_lat.min(bbox.1);
-        gmax_lon = gmax_lon.max(bbox.2);
-        gmax_lat = gmax_lat.max(bbox.3);
-        gmin_ele = gmin_ele.min(cmin_ele);
-        gmax_ele = gmax_ele.max(cmax_ele);
-
-        let mut m = [0u8; CHUNK_META_LEN];
-        put_i32(&mut m, 0, bbox.0);
-        put_i32(&mut m, 4, bbox.1);
-        put_i32(&mut m, 8, bbox.2);
-        put_i32(&mut m, 12, bbox.3);
-        put_i32(&mut m, 16, a_lon);
-        put_i32(&mut m, 20, a_lat);
-        put_i16(&mut m, 24, a_ele);
-        put_u16(&mut m, 26, pts.len() as u16);
-        put_u32(&mut m, 28, ch.cum_distance_m);
-        put_u32(&mut m, 32, 0); // cum_ascent_m — unused by the profile builder
-        put_u32(&mut m, 36, body_start);
-        put_u32(&mut m, 40, body_len);
-        metas.push(m);
-    }
-
-    let index_offset = pos;
-
-    // Header.
-    let mut h = [0u8; HEADER_FULL_LEN];
-    h[0..4].copy_from_slice(b"OBCR");
-    h[4] = 3; // version
-    let name = b"test";
-    h[6] = name.len() as u8;
-    h[64..64 + name.len()].copy_from_slice(name);
-    put_i32(&mut h, 8, gmin_lon);
-    put_i32(&mut h, 12, gmin_lat);
-    put_i32(&mut h, 16, gmax_lon);
-    put_i32(&mut h, 20, gmax_lat);
-    let (s_lon, s_lat, _) = chunks[0].points[0];
-    put_i32(&mut h, 24, s_lon);
-    put_i32(&mut h, 28, s_lat);
-    let point_count: u32 = chunks.iter().map(|c| c.points.len() as u32).sum();
-    put_u32(&mut h, 32, point_count);
-    put_u32(&mut h, 36, total_distance_m);
-    put_u32(&mut h, 40, 0); // total_ascent_m
-    put_u32(&mut h, 44, 0); // total_descent_m
-    put_i16(&mut h, 48, gmin_ele);
-    put_i16(&mut h, 50, gmax_ele);
-    put_u32(&mut h, 52, chunks.len() as u32);
-    put_u32(&mut h, 56, index_offset);
-    put_u32(&mut h, 60, HEADER_FULL_LEN as u32); // data_offset
-    put_u32(&mut h, 112, 0); // waypoint offset (none)
-    put_u16(&mut h, 116, 0); // waypoint count
-
-    let mut out = Vec::with_capacity(index_offset as usize + metas.len() * CHUNK_META_LEN);
-    out.extend_from_slice(&h);
-    out.extend_from_slice(&body);
-    for m in &metas {
-        out.extend_from_slice(m);
-    }
-    (out, extents)
+/// Serialize `chunks` into an in-memory `.obcr` through the shared hand-rolled writer, with the
+/// geometry right after the header and the index after it. Returns the bytes and each chunk's
+/// data-region byte extent — the ranges the counting source below checks were never read.
+///
+/// These chunks are **not** seam-sharing: each is an independent equatorial ramp starting at
+/// longitude 0, told apart by its stamped cumulative distance, so the header's point count is the
+/// plain sum. Ascent fields stay zero — the climb profile reads heights, not the header totals.
+fn build_obcr(chunks: &[ChunkIn], total_distance_m: u32) -> (Vec<u8>, Vec<ChunkExtent>) {
+    common::build_obcr(&RouteSpec {
+        chunks,
+        totals: (total_distance_m, 0, 0),
+        index: IndexPlacement::AfterData,
+        ..Default::default()
+    })
 }
 
 /// Longitude step (microdegrees) that yields a segment of ~`meters` at the equator, so a chunk of
@@ -178,7 +53,7 @@ fn lon_step_for_m(meters: f64) -> i32 {
 /// distance, with the first point at cumulative distance `start_dist_m`. Returns the points and
 /// the exact cumulative distance of the last point (`start_dist_m + (n-1) * seg_m`, where `seg_m`
 /// is the realized per-segment distance after microdegree rounding).
-fn ramp_chunk(start_dist_m: u32, n: usize, step_m: f64, base_ele: i16, top_ele: i16) -> (Chunk, u32) {
+fn ramp_chunk(start_dist_m: u32, n: usize, step_m: f64, base_ele: i16, top_ele: i16) -> (ChunkIn, u32) {
     let dl = lon_step_for_m(step_m);
     let seg_m = ground_dist_m((0, 0), (dl, 0)) as f64;
     let mut points = Vec::with_capacity(n);
@@ -188,7 +63,7 @@ fn ramp_chunk(start_dist_m: u32, n: usize, step_m: f64, base_ele: i16, top_ele: 
         points.push((lon, 0, ele.round() as i16));
     }
     let end_dist = start_dist_m + (seg_m * (n - 1) as f64).round() as u32;
-    (Chunk { cum_distance_m: start_dist_m, points }, end_dist)
+    (ChunkIn { cum_distance_m: start_dist_m, cum_ascent_m: 0, points }, end_dist)
 }
 
 // -------------------------------------------------------------------------------------------
@@ -244,15 +119,7 @@ fn column_placement_matches_within_climb_distance() {
     let ridx = RouteIndex::read(&src).unwrap();
     let r = RouteReader::new(&ridx, &src);
 
-    let seg = ClimbSeg {
-        start_m: 0,
-        end_m: end,
-        base_ele_m: 100,
-        top_ele_m: 500,
-        gain_m: 400,
-        avg_grade_pct: 10,
-        category: 0,
-    };
+    let seg = ClimbSeg { start_m: 0, end_m: end, base_ele_m: 100, top_ele_m: 500, gain_m: 400, avg_grade_pct: 10 };
     let prof = ClimbProfile::build(&r, &seg);
 
     // Each column's height should track the ideal ramp within ~one column's worth of gain plus a
@@ -276,15 +143,7 @@ fn column_placement_single_chunk() {
     let ridx = RouteIndex::read(&src).unwrap();
     let r = RouteReader::new(&ridx, &src);
 
-    let seg = ClimbSeg {
-        start_m: 0,
-        end_m: end,
-        base_ele_m: 100,
-        top_ele_m: 500,
-        gain_m: 400,
-        avg_grade_pct: 10,
-        category: 0,
-    };
+    let seg = ClimbSeg { start_m: 0, end_m: end, base_ele_m: 100, top_ele_m: 500, gain_m: 400, avg_grade_pct: 10 };
     let prof = ClimbProfile::build(&r, &seg);
 
     // Each column's height should track the ideal ramp within ~one column's worth of gain plus a
@@ -309,15 +168,7 @@ fn grade_at_sign_and_magnitude() {
     let src = SliceSource(&bytes);
     let ridx = RouteIndex::read(&src).unwrap();
     let r = RouteReader::new(&ridx, &src);
-    let seg = ClimbSeg {
-        start_m: 0,
-        end_m: end,
-        base_ele_m: 100,
-        top_ele_m: 500,
-        gain_m: 400,
-        avg_grade_pct: 10,
-        category: 0,
-    };
+    let seg = ClimbSeg { start_m: 0, end_m: end, base_ele_m: 100, top_ele_m: 500, gain_m: 400, avg_grade_pct: 10 };
     let prof = ClimbProfile::build(&r, &seg);
     for &frac in &[0.25f32, 0.5, 0.75] {
         let g = prof.grade_at(frac);
@@ -341,12 +192,11 @@ fn grade_at_sign_and_magnitude() {
         points.push((lon, 0, ele.round() as i16));
     }
     let end2 = (seg_m * (n - 1) as f64).round() as u32;
-    let (bytes2, _) = build_obcr(&[Chunk { cum_distance_m: 0, points }], end2);
+    let (bytes2, _) = build_obcr(&[ChunkIn { cum_distance_m: 0, cum_ascent_m: 0, points }], end2);
     let src2 = SliceSource(&bytes2);
     let ridx2 = RouteIndex::read(&src2).unwrap();
     let r2 = RouteReader::new(&ridx2, &src2);
-    let seg2 =
-        ClimbSeg { start_m: 0, end_m: end2, base_ele_m: 100, top_ele_m: 100, gain_m: 0, avg_grade_pct: 0, category: 0 };
+    let seg2 = ClimbSeg { start_m: 0, end_m: end2, base_ele_m: 100, top_ele_m: 100, gain_m: 0, avg_grade_pct: 0 };
     let prof2 = ClimbProfile::build(&r2, &seg2);
     assert!(prof2.grade_at(0.25) > 0, "rising first half should read positive grade");
     assert!(prof2.grade_at(0.75) < 0, "falling second half should read negative grade");
@@ -363,15 +213,7 @@ fn endpoints_equal_seg_base_and_top() {
     let src = SliceSource(&bytes);
     let ridx = RouteIndex::read(&src).unwrap();
     let r = RouteReader::new(&ridx, &src);
-    let seg = ClimbSeg {
-        start_m: 0,
-        end_m: end,
-        base_ele_m: 200,
-        top_ele_m: 900,
-        gain_m: 700,
-        avg_grade_pct: 20,
-        category: 0,
-    };
+    let seg = ClimbSeg { start_m: 0, end_m: end, base_ele_m: 200, top_ele_m: 900, gain_m: 700, avg_grade_pct: 20 };
     let prof = ClimbProfile::build(&r, &seg);
     assert_eq!(prof.col(0), 200, "column 0 must equal base_ele_m");
     assert_eq!(prof.col(CLIMB_PROFILE_COLS - 1), 900, "last column must equal top_ele_m");
@@ -392,15 +234,7 @@ fn gap_fill_leaves_no_empty_columns() {
     let src = SliceSource(&bytes);
     let ridx = RouteIndex::read(&src).unwrap();
     let r = RouteReader::new(&ridx, &src);
-    let seg = ClimbSeg {
-        start_m: 0,
-        end_m: end,
-        base_ele_m: 100,
-        top_ele_m: 600,
-        gain_m: 500,
-        avg_grade_pct: 10,
-        category: 0,
-    };
+    let seg = ClimbSeg { start_m: 0, end_m: end, base_ele_m: 100, top_ele_m: 600, gain_m: 500, avg_grade_pct: 10 };
     let prof = ClimbProfile::build(&r, &seg);
     // No column left at the empty sentinel, and the (rising) profile never steps backwards.
     let mut prev = i16::MIN;
@@ -431,15 +265,7 @@ fn only_overlapping_chunks_are_read() {
     src.reads.borrow_mut().clear();
 
     let r = RouteReader::new(&ridx, &src);
-    let seg = ClimbSeg {
-        start_m: e0,
-        end_m: e1,
-        base_ele_m: 200,
-        top_ele_m: 500,
-        gain_m: 300,
-        avg_grade_pct: 15,
-        category: 0,
-    };
+    let seg = ClimbSeg { start_m: e0, end_m: e1, base_ele_m: 200, top_ele_m: 500, gain_m: 300, avg_grade_pct: 15 };
     let mut prof = ClimbProfile::new();
     prof.fill(&r, &seg);
 
@@ -463,15 +289,7 @@ fn cursor_frac_maps_progress_to_fraction() {
     let src = SliceSource(&bytes);
     let ridx = RouteIndex::read(&src).unwrap();
     let r = RouteReader::new(&ridx, &src);
-    let seg = ClimbSeg {
-        start_m: start,
-        end_m: end,
-        base_ele_m: 100,
-        top_ele_m: 400,
-        gain_m: 300,
-        avg_grade_pct: 15,
-        category: 0,
-    };
+    let seg = ClimbSeg { start_m: start, end_m: end, base_ele_m: 100, top_ele_m: 400, gain_m: 300, avg_grade_pct: 15 };
     let prof = ClimbProfile::build(&r, &seg);
     let len = prof.len_m();
     assert_eq!(prof.start_m(), start);

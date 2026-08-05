@@ -21,10 +21,9 @@
 
 use obc_formats::obcm::{POI_HOURS_BLOB_LEN, POI_HOURS_DAYS, POI_HOURS_SLOTS_PER_DAY};
 // The normative flag bits are owned by `obc-formats`; imported under the module-local `HOURS_FLAG_*`
-// names this decoder reads. Not re-exported — consumers reach the flags via `obc_formats::obcm`.
-use obc_formats::obcm::{
-    POI_HOURS_FLAG_SEASONAL as HOURS_FLAG_SEASONAL, POI_HOURS_FLAG_TRUNCATED as HOURS_FLAG_TRUNCATED,
-};
+// name this decoder reads. Not re-exported — consumers reach the flags via `obc_formats::obcm`
+// (which is also where the seasonal bit is read from: the decoder only names the one it acts on).
+use obc_formats::obcm::POI_HOURS_FLAG_TRUNCATED as HOURS_FLAG_TRUNCATED;
 
 /// One open interval, quarter-hours from midnight (`0..=96`, `96` = 24:00). Mirrors
 /// the packer's `hours::Interval`; `close_q <= open_q` (both nonzero) is an overnight
@@ -63,7 +62,7 @@ pub struct WeeklySchedule {
 
 /// Minutes in a day. `minute_of_day` passed to [`WeeklySchedule::is_open`] is
 /// `0..=1439`; `24:00` (a `96`-quarter close) maps to this value.
-pub const MINUTES_PER_DAY: u16 = 1440;
+pub(crate) const MINUTES_PER_DAY: u16 = 1440;
 
 impl WeeklySchedule {
     /// Decode a 29-byte pool blob (spec §7.5) into a schedule. `blob` must be exactly
@@ -95,12 +94,6 @@ impl WeeklySchedule {
     #[inline]
     pub fn flags(&self) -> u8 {
         self.flags
-    }
-
-    /// True if the packer baked a representative in-season week (seasonal flag set).
-    #[inline]
-    pub fn is_seasonal(&self) -> bool {
-        self.flags & HOURS_FLAG_SEASONAL != 0
     }
 
     /// True if the packer dropped a rule it couldn't model (truncated flag set).
@@ -236,7 +229,8 @@ mod tests {
         let b = blob(HOURS_FLAG_TRUNCATED, days);
         let s = WeeklySchedule::decode(&b).expect("29-byte blob decodes");
         assert_eq!(s.flags(), HOURS_FLAG_TRUNCATED);
-        assert!(s.is_truncated() && !s.is_seasonal());
+        // The seasonal bit being clear is already pinned by the `flags()` equality above.
+        assert!(s.is_truncated());
         assert_eq!(s.today_intervals(0), &[iv(32, 72)], "Mon one interval");
         assert_eq!(s.today_intervals(1), &[iv(32, 48), iv(56, 72)], "Tue two intervals");
         for d in 2..7u8 {

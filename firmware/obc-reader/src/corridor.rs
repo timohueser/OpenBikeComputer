@@ -28,7 +28,7 @@ use obc_map_scene::{cos_lat, delta_m, BBox, M_PER_DEG};
 /// than this from the route line is not "up ahead on my route", it's somewhere else. **Tunable** —
 /// the epic wants it sim-validated on real routes; it is the one knob that trades list noise
 /// against missed water.
-pub const CORRIDOR_HALF_WIDTH_M: f32 = 300.0;
+pub(crate) const CORRIDOR_HALF_WIDTH_M: f32 = 300.0;
 
 /// Max results one corridor snapshot returns (locked on epic #946). The caller owns a
 /// `heapless::Vec<CorridorPoi, MAX_CORRIDOR_RESULTS>`; the query fills it ascending by
@@ -143,7 +143,7 @@ pub struct CorridorPoi {
 /// A point's projection onto one route chunk: where it lands on the route axis and how far to the
 /// side it sits. Floats — the query rounds once, at the end, into [`CorridorPoi`].
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct PathProjection {
+pub(crate) struct PathProjection {
     /// Along-route distance of the projection, meters from the route start.
     pub dist_along_m: f32,
     /// Signed lateral distance, meters; positive = right of the direction of travel.
@@ -172,7 +172,7 @@ pub struct PathProjection {
 /// the walk, which is what keeps the cost sane: a chunk carries up to 256 points and every candidate
 /// POI is projected against it, so each segment first takes a **four-integer** µdeg-bbox test and
 /// only the survivors pay for the dot/cross/`sqrt`.
-pub fn project_onto_chunk(
+pub(crate) fn project_onto_chunk(
     pts: &[(i32, i32)],
     chunk_start_m: u32,
     p: (i32, i32),

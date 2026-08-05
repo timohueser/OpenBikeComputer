@@ -1,20 +1,20 @@
 //! Format-contract tests for the OBCR reader.
 //!
-//! Each test builds a synthetic `.obcr` byte buffer with a small handwritten builder
-//! that mirrors `OBCR_Spec.md` exactly, then asserts the reader parses it back.
-//! Building the bytes here (rather than via the converter) pins the reader to the
-//! spec independently: if either drifts, these break.
+//! Each test builds a synthetic `.obcr` byte buffer with the shared handwritten builder
+//! ([`common::build_obcr`], which mirrors `OBCR_Spec.md` exactly), then asserts the reader
+//! parses it back. Hand-emitting the bytes rather than going through the converter pins the
+//! reader to the spec independently: if either drifts, these break.
 
 use core::cell::Cell;
 
 use obc_formats::io::{ByteSource, Error, SliceSource};
-use obc_formats::obcr::{CHUNK_META_LEN, HEADER_FULL_LEN, VERSION};
+use obc_formats::obcr::{HEADER_FULL_LEN, VERSION};
 use obc_route::{
     RouteCache, RouteIndex, RoutePoint, RouteReader, RouteSummary, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS,
 };
 
 mod common;
-use common::decode;
+use common::{build_obcr, decode, ChunkIn, IndexPlacement, RouteSpec};
 
 /// A [`ByteSource`] that wraps a [`SliceSource`] and counts `read_at` calls, so a test can prove
 /// the [`RouteCache`] really skips the source on a hit.
@@ -56,16 +56,9 @@ impl ByteSource for ReentrantSource<'_> {
     }
 }
 
-/// A chunk to encode: its absolute points (lon, lat, ele) plus the cumulative stats
-/// at its first point.
-struct ChunkIn {
-    points: Vec<(i32, i32, i16)>,
-    cum_distance_m: u32,
-    cum_ascent_m: u32,
-}
-
-/// Build a `.obcr` from chunks, mirroring the spec's byte layout. `start` is the
-/// first route point; `totals` is (distance_m, ascent_m, descent_m).
+/// Build a `.obcr` from seam-sharing chunks with the index right after the header — the layout
+/// the corruption tests below poke meta fields in at known absolute offsets. `start` is the
+/// first route point; `totals` is `(distance_m, ascent_m, descent_m)`.
 fn build_route(
     name: &str,
     start: (i32, i32),
@@ -73,87 +66,17 @@ fn build_route(
     ele_range: (i16, i16),
     chunks: &[ChunkIn],
 ) -> Vec<u8> {
-    let all = || chunks.iter().flat_map(|c| c.points.iter().copied());
-    let min_lon = all().map(|p| p.0).min().unwrap();
-    let min_lat = all().map(|p| p.1).min().unwrap();
-    let max_lon = all().map(|p| p.0).max().unwrap();
-    let max_lat = all().map(|p| p.1).max().unwrap();
-    // Distinct points: seams (each chunk's first == previous chunk's last) count once.
-    let distinct: usize = chunks.iter().map(|c| c.points.len()).sum::<usize>() - chunks.len().saturating_sub(1);
-
-    let index_offset = HEADER_FULL_LEN;
-    let data_offset = index_offset + chunks.len() * CHUNK_META_LEN;
-
-    let mut metas: Vec<u8> = Vec::new();
-    let mut data: Vec<u8> = Vec::new();
-    let mut cursor = data_offset;
-    for ch in chunks {
-        let p = &ch.points;
-        let anchor = p[0];
-        let (cmin_lon, cmin_lat) = (p.iter().map(|q| q.0).min().unwrap(), p.iter().map(|q| q.1).min().unwrap());
-        let (cmax_lon, cmax_lat) = (p.iter().map(|q| q.0).max().unwrap(), p.iter().map(|q| q.1).max().unwrap());
-
-        let mut body: Vec<u8> = Vec::new();
-        for w in p.windows(2) {
-            let (a, b) = (w[0], w[1]);
-            body.extend_from_slice(&((b.0 - a.0) as i16).to_le_bytes());
-            body.extend_from_slice(&((b.1 - a.1) as i16).to_le_bytes());
-            body.extend_from_slice(&b.2.to_le_bytes());
-        }
-
-        // ChunkMeta (44 bytes).
-        metas.extend_from_slice(&cmin_lon.to_le_bytes());
-        metas.extend_from_slice(&cmin_lat.to_le_bytes());
-        metas.extend_from_slice(&cmax_lon.to_le_bytes());
-        metas.extend_from_slice(&cmax_lat.to_le_bytes());
-        metas.extend_from_slice(&anchor.0.to_le_bytes());
-        metas.extend_from_slice(&anchor.1.to_le_bytes());
-        metas.extend_from_slice(&anchor.2.to_le_bytes());
-        metas.extend_from_slice(&(p.len() as u16).to_le_bytes());
-        metas.extend_from_slice(&ch.cum_distance_m.to_le_bytes());
-        metas.extend_from_slice(&ch.cum_ascent_m.to_le_bytes());
-        metas.extend_from_slice(&(cursor as u32).to_le_bytes());
-        metas.extend_from_slice(&(body.len() as u32).to_le_bytes());
-
-        cursor += body.len();
-        data.extend_from_slice(&body);
-    }
-    assert_eq!(metas.len(), chunks.len() * CHUNK_META_LEN);
-
-    // Header (128 bytes: the 112-byte core + the waypoint extension).
-    let mut f: Vec<u8> = Vec::new();
-    f.extend_from_slice(b"OBCR");
-    f.push(VERSION);
-    f.push(0); // flags
-    f.push(name.len() as u8);
-    f.push(0); // reserved
-    f.extend_from_slice(&min_lon.to_le_bytes());
-    f.extend_from_slice(&min_lat.to_le_bytes());
-    f.extend_from_slice(&max_lon.to_le_bytes());
-    f.extend_from_slice(&max_lat.to_le_bytes());
-    f.extend_from_slice(&start.0.to_le_bytes());
-    f.extend_from_slice(&start.1.to_le_bytes());
-    f.extend_from_slice(&(distinct as u32).to_le_bytes());
-    f.extend_from_slice(&totals.0.to_le_bytes());
-    f.extend_from_slice(&totals.1.to_le_bytes());
-    f.extend_from_slice(&totals.2.to_le_bytes());
-    f.extend_from_slice(&ele_range.0.to_le_bytes());
-    f.extend_from_slice(&ele_range.1.to_le_bytes());
-    f.extend_from_slice(&(chunks.len() as u32).to_le_bytes());
-    f.extend_from_slice(&(index_offset as u32).to_le_bytes());
-    f.extend_from_slice(&(data_offset as u32).to_le_bytes());
-    let mut name_field = [0u8; 48];
-    name_field[..name.len()].copy_from_slice(name.as_bytes());
-    f.extend_from_slice(&name_field);
-    // §1.1 extension: no waypoints, so offset and count are 0 and the rest is reserved.
-    f.extend_from_slice(&0u32.to_le_bytes());
-    f.extend_from_slice(&0u16.to_le_bytes());
-    f.extend_from_slice(&[0u8; 10]);
-    assert_eq!(f.len(), HEADER_FULL_LEN, "header must be 128 bytes");
-
-    f.extend_from_slice(&metas);
-    f.extend_from_slice(&data);
-    f
+    build_obcr(&RouteSpec {
+        name,
+        chunks,
+        totals,
+        index: IndexPlacement::BeforeData,
+        start: Some(start),
+        ele_range: Some(ele_range),
+        seam_shared: true,
+        ..Default::default()
+    })
+    .0
 }
 
 /// Two seam-sharing chunks: chunk 0 ends at (40,40,210), chunk 1 begins there.

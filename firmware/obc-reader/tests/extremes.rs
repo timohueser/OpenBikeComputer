@@ -7,9 +7,7 @@
 //! value (whole-feature drop status, bbox, cache hit/miss counts) rather than "didn't panic".
 
 use obc_map_scene::BBox;
-use obc_reader::{
-    DecodeStatus, Error, MapCache, MapTables, Reader, SliceSource, MAX_CHUNK_BYTES, MAX_FEAT_PTS, MAX_FEAT_RINGS,
-};
+use obc_reader::{Error, MapCache, MapTables, Reader, SliceSource, MAX_CHUNK_BYTES, MAX_FEAT_PTS, MAX_FEAT_RINGS};
 use obcm_testkit::{build_file, pack_line, pack_line_decl, pack_poly_decl, pack_poly_holes, seal, LodSpec, Style};
 
 const STYLES: &[Style] = &[(1, 3, 0xF800, 2, 3, false, None), (2, -1, 0x07E0, 1, 3, false, None)];
@@ -26,31 +24,16 @@ fn single_leaf(bbox: (i32, i32, i32, i32), chunk: Vec<u8>, chunk_size: usize) ->
     )
 }
 
-/// Decode every feature in `(lod, chunk_id)` into owned `(exterior, ring_lens, bbox)` triples,
-/// using exactly the reader's scratch capacities.
-struct Decoded {
-    style_id: u8,
-    exterior_len: usize,
-    bbox: BBox,
-}
+mod common;
+use common::{decode_chunk_status, Decoded};
 
+/// [`decode_chunk_status`] with the assertion this suite's happy-path cases all want: the walk
+/// dropped nothing, so a missing feature is a decode bug and not an over-capacity scratch.
 fn decode(r: &Reader, lod: usize, chunk_id: u32, node: &BBox) -> Vec<Decoded> {
-    let (out, status) = decode_status(r, lod, chunk_id, node);
+    let (out, status) = decode_chunk_status(r, lod, chunk_id, node);
     assert_eq!(status.capacity_dropped, 0);
     assert_eq!(status.malformed, 0);
     out
-}
-
-fn decode_status(r: &Reader, lod: usize, chunk_id: u32, node: &BBox) -> (Vec<Decoded>, DecodeStatus) {
-    let mut out = Vec::new();
-    let mut points = heapless::Vec::<_, MAX_FEAT_PTS>::new();
-    let mut ring_lens = heapless::Vec::<_, MAX_FEAT_RINGS>::new();
-    let status = r
-        .for_each_feature(lod, chunk_id, node, &mut points, &mut ring_lens, |f| {
-            out.push(Decoded { style_id: f.style_id, exterior_len: f.exterior().len(), bbox: f.bbox() });
-        })
-        .unwrap();
-    (out, status)
 }
 
 /// A single feature declaring more exterior points than the caller's scratch holds is consumed but
@@ -71,7 +54,7 @@ fn exterior_past_max_feat_pts_drops_whole_feature() {
     let tables = MapTables::parse(&src).unwrap();
     let r = Reader::new(&src, &tables, &cache);
 
-    let (feats, status) = decode_status(&r, 0, 0, &r.bbox);
+    let (feats, status) = decode_chunk_status(&r, 0, 0, &r.bbox);
     assert!(feats.is_empty(), "an over-capacity line must be dropped whole");
     assert_eq!(status.capacity_dropped, 1);
     assert_eq!(status.malformed, 0);
@@ -93,7 +76,7 @@ fn holes_past_max_feat_rings_are_dropped_at_capacity() {
     let tables = MapTables::parse(&src).unwrap();
     let r = Reader::new(&src, &tables, &cache);
 
-    let (feats, status) = decode_status(&r, 0, 0, &r.bbox);
+    let (feats, status) = decode_chunk_status(&r, 0, 0, &r.bbox);
     assert!(feats.is_empty(), "a polygon whose ring table overflows must be dropped whole");
     assert_eq!(status.capacity_dropped, 1);
     assert_eq!(status.malformed, 0);
@@ -126,7 +109,7 @@ fn oversized_chunk_decodes_through_scratch_and_never_caches() {
     let f0 = decode(&r, 0, 0, &r.bbox);
     let after = r.chunk_cache_stats();
     assert_eq!(f0.len(), feature_count);
-    assert_eq!(f0[0].exterior_len, 3);
+    assert_eq!(f0[0].exterior.len(), 3);
     assert_eq!(after.chunk_hits, before.chunk_hits, "an oversized chunk must not register a hit");
     assert_eq!(after.chunk_misses, before.chunk_misses + 1, "it counts as a miss");
 
@@ -138,7 +121,7 @@ fn oversized_chunk_decodes_through_scratch_and_never_caches() {
     assert_eq!(after2.chunk_hits, before2.chunk_hits, "the re-read of an oversized chunk still misses");
     assert_eq!(after2.chunk_misses, before2.chunk_misses + 1);
     // Same bytes, same decode both times.
-    assert_eq!(f1[0].exterior_len, f0[0].exterior_len);
+    assert_eq!(f1[0].exterior.len(), f0[0].exterior.len());
 }
 
 /// The point of the chunk cache, driven through the public `Reader` API (not `MapCacheInner`):
@@ -262,7 +245,7 @@ fn truncated_ring_drops_whole_feature() {
     let tables = MapTables::parse(&src).unwrap();
     let r = Reader::new(&src, &tables, &cache);
 
-    let (feats, status) = decode_status(&r, 0, 0, &r.bbox);
+    let (feats, status) = decode_chunk_status(&r, 0, 0, &r.bbox);
     assert!(feats.is_empty(), "a physically incomplete ring must not publish partial geometry");
     assert_eq!(status.malformed, 1);
     assert_eq!(status.capacity_dropped, 0);
@@ -353,9 +336,9 @@ fn header_straddling_chunk_end_is_a_malformed_drop() {
     let tables = MapTables::parse(&src).unwrap();
     let r = Reader::new(&src, &tables, &cache);
 
-    let (feats, status) = decode_status(&r, 0, 0, &r.bbox);
+    let (feats, status) = decode_chunk_status(&r, 0, 0, &r.bbox);
     assert_eq!(feats.len(), 1, "the one whole feature still decodes");
-    assert_eq!(feats[0].exterior_len, 3);
+    assert_eq!(feats[0].exterior.len(), 3);
     assert_eq!(status.complete, 1);
     assert_eq!(status.malformed, 1, "the runt tail is reported, not silently skipped");
     assert_eq!(status.capacity_dropped, 0);
@@ -467,7 +450,7 @@ fn index_read_crosses_block_boundary() {
     // And its chunk decodes through the multi-block index assembly.
     let feats = decode(&r, 0, found_cid.unwrap(), &r.bbox);
     assert_eq!(feats.len(), 1);
-    assert_eq!(feats[0].exterior_len, 2);
+    assert_eq!(feats[0].exterior.len(), 2);
 }
 
 /// Every coordinate in the format suite is positive; a southern/western map carries negative
@@ -495,7 +478,7 @@ fn negative_microdegrees_decode_with_correct_sign() {
     assert_eq!(feats.len(), 1);
     let f = &feats[0];
     // anchor (-1900, -950); +(-50,-25) → (-1950, -975); +(10,0) → (-1940, -975).
-    assert_eq!(f.exterior_len, 3);
+    assert_eq!(f.exterior.len(), 3);
     // bbox spans the negative coordinates exactly.
     assert_eq!(f.bbox, BBox { min_lon: -1950, min_lat: -975, max_lon: -1900, max_lat: -950 });
 }
@@ -513,7 +496,7 @@ fn polygon_exterior_overflow_drops_whole_feature() {
     let tables = MapTables::parse(&src).unwrap();
     let r = Reader::new(&src, &tables, &cache);
 
-    let (feats, status) = decode_status(&r, 0, 0, &r.bbox);
+    let (feats, status) = decode_chunk_status(&r, 0, 0, &r.bbox);
     assert!(feats.is_empty());
     assert_eq!(status.capacity_dropped, 1);
     assert_eq!(status.malformed, 0);

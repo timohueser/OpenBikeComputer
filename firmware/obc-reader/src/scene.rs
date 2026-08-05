@@ -8,8 +8,11 @@ use obc_map_scene::{
 
 use crate::{CacheError, CapacityError, FeatureDecodeError, FeatureReadError, MapReadError, Reader};
 
+/// Map a reader read failure onto the scene contract's coarser one. Shared by **both**
+/// [`MapScene`] impls — the single [`Reader`] below and the [`MountedSet`](crate::MountedSet) of
+/// `volume.rs` — so a set never reports a failure differently from the monolith it was split from.
 #[inline]
-fn read_error(error: MapReadError) -> SceneReadError {
+pub(crate) fn read_error(error: MapReadError) -> SceneReadError {
     match error {
         MapReadError::Source(_) => SceneReadError::Source,
         MapReadError::Cache(CacheError::Busy) => SceneReadError::CacheBusy,
@@ -17,8 +20,10 @@ fn read_error(error: MapReadError) -> SceneReadError {
     }
 }
 
+/// The same mapping for a per-feature failure (capacity / malformed / read), shared by both
+/// [`MapScene`] impls for the same reason as [`read_error`].
 #[inline]
-fn feature_error(error: FeatureReadError) -> SceneFeatureError {
+pub(crate) fn feature_error(error: FeatureReadError) -> SceneFeatureError {
     match error {
         FeatureReadError::Decode(FeatureDecodeError::Capacity(CapacityError::Points)) => {
             SceneFeatureError::Capacity(SceneCapacityError::Points)

@@ -148,7 +148,7 @@ const SYMBOLS: [SymbolRow; 6] = [
 ///
 /// Linear over ~70 short strings, run once per waypoint at import (≤ `MAX_WAYPOINTS` per route),
 /// never per frame.
-pub fn category_for_symbol(symbol: &str) -> Option<PoiCategory> {
+pub(crate) fn category_for_symbol(symbol: &str) -> Option<PoiCategory> {
     let norm = normalize(symbol);
     if norm.is_empty() {
         return None;

@@ -11,7 +11,8 @@
 //! - [`state`] — the **boot-state RRAM page** (`OBCU_Spec.md` §2): a CRC-framed, torn-write-safe
 //!   [`BootState`] blob (`Idle` / `Armed` / `Trial`) handed from the app to the bootloader, plus the
 //!   pure [`decide`] function that turns it into a [`BootDecision`].
-//! - [`crc32`] — the canonical DFU-side CRC-32/IEEE (the bootloader must not pull in the BLE stack).
+//! - [`crc32`] — the DFU-side name for the shared CRC-32/IEEE in [`obc_crc`], a dependency-free
+//!   leaf (the bootloader must not pull in the BLE stack, and now doesn't have to to share a CRC).
 //! - [`engine`] — the bootloader's **install engine** (S3, #618): the verify → flash → readback →
 //!   state-transition sequencing as a pure driver over the [`engine::InstallIo`] trait, so the
 //!   whole failure matrix (power loss, bad stage, readback retries) is host-tested with mock IO.
@@ -39,14 +40,17 @@ pub mod state;
 
 pub use armer::{ArmError, ArmIo, ArmTicket, ExtentsError, Rollback, ScanError, StageIo};
 pub use crc32::{crc32, Crc32};
-pub use engine::{InstallIo, IoError, Outcome, Phase, Slot, FLASH_RETRIES, PAD_BYTE, RRAM_LINE_LEN, SD_BLOCK_LEN};
+pub use engine::{InstallIo, IoError, Outcome, Phase, Slot, FLASH_RETRIES, PAD_BYTE, SD_BLOCK_LEN};
 pub use image::{
-    looks_like_vector_table, ImageHeader, FW_VERSION_LEN, HEADER_LEN, HEADER_VERSION, MAGIC, MAX_CONTAINER_LEN,
-    MAX_IMAGE_LEN, RAM_END, RAM_START,
+    looks_like_vector_table, ImageHeader, FW_VERSION_LEN, HEADER_LEN, MAGIC, MAX_CONTAINER_LEN, MAX_IMAGE_LEN, RAM_END,
+    RAM_START,
 };
+// No `hex32` / `SigError` / `Verifier` at the root: the key parser is a build-time detail of this
+// crate's own `RELEASE_PUBKEY`, and the streaming verifier is the armer's private machinery — a
+// caller wanting either reaches through `obc_dfu::sig::` and says so.
 pub use sig::{
-    hex32, public_key_of, sign_image, signing_prefix, verify_image, PublicKey, SigError, Verifier, PUBKEY_LEN,
-    RELEASE_PUBKEY, SEED_LEN, SIG_CONTEXT, SIG_LEN, SIG_PREFIX_LEN, SIG_SCHEME_ED25519, SIG_SCHEME_NONE,
+    public_key_of, sign_image, signing_prefix, verify_image, PublicKey, PUBKEY_LEN, RELEASE_PUBKEY, SEED_LEN,
+    SIG_CONTEXT, SIG_LEN, SIG_PREFIX_LEN, SIG_SCHEME_ED25519, SIG_SCHEME_NONE,
 };
 pub use state::{
     decide, verdict, BootDecision, BootState, EncodedPage, Extent, LastOutcome, OutcomeKind, StagedRef, Verdict,

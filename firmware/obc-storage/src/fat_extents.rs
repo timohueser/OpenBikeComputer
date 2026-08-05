@@ -35,7 +35,7 @@
 use core::cell::RefCell;
 
 use embedded_sdmmc::{Block, BlockCount, BlockDevice, BlockIdx};
-use obc_formats::io::{ByteSource, Error};
+use obc_formats::io::{rd_u16, rd_u32, ByteSource, Error};
 
 /// A [`BlockDevice`] by shared reference — what lets one card serve **both** the `VolumeManager`
 /// (which takes its device by value) and this module's raw extent reads. The board parks its
@@ -120,7 +120,7 @@ struct Geometry {
 /// Whole aligned blocks land directly in the caller's existing buffer; this cap changes command
 /// granularity, not resident RAM. Only an unaligned head/tail uses [`ExtentTable::bounce`], the
 /// same one-block buffer the pre-batching path already held.
-pub const READ_BATCH: usize = 8;
+pub(crate) const READ_BATCH: usize = 8;
 
 // `Block` is a dependency-owned `repr(Rust)` newtype-like struct, so do not assume its field layout
 // merely from the source. These compile-time checks prove the representation this build uses before
@@ -165,7 +165,7 @@ impl<const N: usize> ExtentTableWithCapacity<N> {
 
         // ── Volume geometry: MBR partition 0 → BPB, exactly `open_raw_volume`'s rules ──
         read_block(dev, 0, &mut block)?;
-        if read_u16(&block.contents, 510) != 0xAA55 {
+        if rd_u16(&block.contents, 510) != 0xAA55 {
             return Err(BuildError::Geometry);
         }
         let part = &block.contents[446..462];
@@ -173,23 +173,23 @@ impl<const N: usize> ExtentTableWithCapacity<N> {
         if (part[0] & 0x7F) != 0 || !matches!(part[4], 0x01 | 0x04 | 0x06 | 0x0B | 0x0C | 0x0E) {
             return Err(BuildError::Geometry);
         }
-        let part_lba = read_u32(part, 8);
+        let part_lba = rd_u32(part, 8);
 
         read_block(dev, part_lba, &mut block)?;
         let bpb = &block.contents;
-        if read_u16(bpb, 510) != 0xAA55 || read_u16(bpb, 11) as usize != 512 {
+        if rd_u16(bpb, 510) != 0xAA55 || rd_u16(bpb, 11) as usize != 512 {
             return Err(BuildError::Geometry);
         }
         let spc = bpb[13] as u32;
-        let reserved = read_u16(bpb, 14) as u32;
+        let reserved = rd_u16(bpb, 14) as u32;
         let num_fats = bpb[16] as u32;
-        let root_entries = read_u16(bpb, 17) as u32;
-        let total_blocks = match read_u16(bpb, 19) {
-            0 => read_u32(bpb, 32),
+        let root_entries = rd_u16(bpb, 17) as u32;
+        let total_blocks = match rd_u16(bpb, 19) {
+            0 => rd_u32(bpb, 32),
             n => n as u32,
         };
-        let fat_size = match read_u16(bpb, 22) {
-            0 => read_u32(bpb, 36),
+        let fat_size = match rd_u16(bpb, 22) {
+            0 => rd_u32(bpb, 36),
             n => n as u32,
         };
         if spc == 0 || fat_size == 0 {
@@ -217,11 +217,11 @@ impl<const N: usize> ExtentTableWithCapacity<N> {
         if entry[11] == 0x0F || entry[11] & 0x10 != 0 {
             return Err(BuildError::Geometry); // an LFN fragment or a directory, not a file entry
         }
-        if read_u32(entry, 28) != expected_len {
+        if rd_u32(entry, 28) != expected_len {
             return Err(BuildError::Mismatch);
         }
-        let hi = if geo.fat32 { read_u16(entry, 20) as u32 } else { 0 };
-        let first_cluster = (hi << 16) | read_u16(entry, 26) as u32;
+        let hi = if geo.fat32 { rd_u16(entry, 20) as u32 } else { 0 };
+        let first_cluster = (hi << 16) | rd_u16(entry, 26) as u32;
 
         // ── One walk of the chain, compressed into runs ──
         let bytes_per_cluster = geo.spc * 512;
@@ -271,9 +271,9 @@ impl<const N: usize> ExtentTableWithCapacity<N> {
                     cached_fat_lba = fat_lba;
                 }
                 cluster = if geo.fat32 {
-                    read_u32(&block.contents, ent_off) & 0x0FFF_FFFF
+                    rd_u32(&block.contents, ent_off) & 0x0FFF_FFFF
                 } else {
-                    read_u16(&block.contents, ent_off) as u32
+                    rd_u16(&block.contents, ent_off) as u32
                 };
             }
         }
@@ -400,14 +400,6 @@ fn read_block<D: BlockDevice>(dev: &D, lba: u32, block: &mut Block) -> Result<()
     dev.read(core::slice::from_mut(block), BlockIdx(lba)).map_err(|_| BuildError::Io)
 }
 
-fn read_u16(b: &[u8], off: usize) -> u16 {
-    u16::from_le_bytes([b[off], b[off + 1]])
-}
-
-fn read_u32(b: &[u8], off: usize) -> u32 {
-    u32::from_le_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]])
-}
-
 // The tests hand-build minimal-but-valid empty FAT16/FAT32 images in RAM, then create the actual
 // files through `embedded-sdmmc` itself — so the manager's own mount + write path vouches for the
 // image, and every extent read is differential-tested against the manager's seek+read of the same
@@ -422,6 +414,7 @@ mod tests {
     use std::vec::Vec;
 
     use embedded_sdmmc::{Mode, TimeSource, Timestamp, VolumeIdx, VolumeManager};
+    use obc_formats::io::{put_u16, put_u32};
 
     use super::*;
 
@@ -490,13 +483,6 @@ mod tests {
     }
 
     const PART_START: u32 = 64;
-
-    fn put_u16(img: &mut [u8], off: usize, v: u16) {
-        img[off..off + 2].copy_from_slice(&v.to_le_bytes());
-    }
-    fn put_u32(img: &mut [u8], off: usize, v: u32) {
-        img[off..off + 4].copy_from_slice(&v.to_le_bytes());
-    }
 
     /// An empty FAT32 volume: 1-block clusters (so single-block appends fragment maximally),
     /// 65,600 clusters (the FAT32 floor is 65,525), one FAT.
