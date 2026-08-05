@@ -1886,8 +1886,19 @@ pub(crate) async fn run_app(
             // both are load-bearing. The map redraw is **skipped, not queued** — latched into
             // `pending_map_redraw` so nothing is lost and the catch-up lands the pass the freeze
             // lifts (`App::note_plan_ended` dirties the map for exactly that). And the *overlay*
-            // still paints: `dirty.overlay` carries the freeze's own edge, and the banner is what
-            // turns a frozen screen from "the device wedged" into "it is recalculating".
+            // still paints: `dirty.overlay` carries the freeze's edge, and the banner is what turns
+            // a frozen screen from "the device wedged" into "it is recalculating".
+            //
+            // That edge is the **engaged level's**, minted inside `App::take_dirty` — not the plan
+            // start's. The two differ exactly where it matters: a plan drained under the opaque
+            // planning spinner freezes nothing (chrome base, and that frame renders normally), and
+            // the pass that puts a map base back under the still-running search is a screen change
+            // with no plan edge in it at all. Keyed on the plan's edge, this branch would find
+            // `dirty.overlay` already spent on the chrome frame and paint nothing for the rest of
+            // the search — a stale screen, no explanation, and input going to the base underneath.
+            // Whatever the frame under the banner happens to be (the last map, or the spinner the
+            // rider just left), the banner is what says the device is working; the full repaint when
+            // the freeze lifts restores the rest.
             //
             // This is also what makes the arena's `render ⊥ nav` rule hold in practice rather than
             // only at the gate: no map render is attempted while the nav arm is out, so the claim
