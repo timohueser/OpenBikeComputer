@@ -182,6 +182,12 @@ struct Args {
     /// before C5 wires the screen into the Back-cycle. A no-op unless the replay left a climb active
     /// (so pair it with a `--gpx`/`--at` that reaches one).
     open_climb: bool,
+    /// Headless `--png` only: engage the **Recalculating freeze** (#1146 P2) after the script, via
+    /// `App::debug_set_plan_live`, so the overlay-plane banner renders over whatever map base the
+    /// script left showing. The freeze's visible state is otherwise unreachable headlessly: the
+    /// flows that start a plan leave the opaque planning spinner as the base (no map to freeze),
+    /// and the one gesture that puts a map base back under a live search also cancels the plan.
+    freeze: bool,
     /// `--gpx` replay (headless **and** GUI): inject a synthetic **barometric weather drift** of
     /// this many metres of apparent altitude per hour of playback time — the one error a GPX replay
     /// otherwise cannot show, since the replayed baro is fed the track's own true elevation. The
@@ -280,6 +286,7 @@ impl Default for Args {
             inject_warning: None,
             boot_fault: None,
             open_climb: false,
+            freeze: false,
             baro_drift: None,
             sensors_demo: false,
             fail_track: false,
@@ -494,6 +501,7 @@ fn parse_args() -> Result<Args, String> {
             "--ble-connected" => a.ble_connected = true,
             "--nav-hold" => a.nav_hold = true,
             "--open-climb" => a.open_climb = true,
+            "--freeze" => a.freeze = true,
             "--baro-drift" => {
                 a.baro_drift = Some(it.next().and_then(|s| s.parse().ok()).ok_or("bad --baro-drift (m per hour)")?)
             }
@@ -953,7 +961,7 @@ fn main() {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: obc-sim <map.obcm> | --set <MS7.OBS> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--home-seed N] [--clock YYYY-MM-DDTHH:MM] [--route-retention LEVEL:AGE] [--lang en|de|fr|es] [--stat-fields LIST] [--ble-connected] [--ble-passkey N] [--ble-paired] [--sensors-screen] [--inject-upload ID] [--inject-upload-replace ID] [--inject-trip-upload ID] [--nav-hold] [--inject-nav-fail exhausted|nopath] [--detour-hold] [--inject-detour-fail exhausted|nopath] [--inject-warning gps,altimeter,compass,map] [--boot-fault nocard|nomap|badmap] [--open-climb] [--baro-drift M_PER_HOUR]\n\n  --set <MS7.OBS>  open an OBCA volume set (specs/OBCA_Spec.md §5): the manifest plus every\n                   MS7S<kk>.OBM shard beside it, mounted as one map. Every shard must be\n                   present and exactly its recorded size, or the set is refused whole (§5.4).");
+            eprintln!("error: {e}\nusage: obc-sim <map.obcm> | --set <MS7.OBS> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--text-demo] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--save-track] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--home-seed N] [--clock YYYY-MM-DDTHH:MM] [--route-retention LEVEL:AGE] [--lang en|de|fr|es] [--stat-fields LIST] [--ble-connected] [--ble-passkey N] [--ble-paired] [--sensors-screen] [--inject-upload ID] [--inject-upload-replace ID] [--inject-trip-upload ID] [--nav-hold] [--inject-nav-fail exhausted|nopath] [--detour-hold] [--inject-detour-fail exhausted|nopath] [--inject-warning gps,altimeter,compass,map] [--boot-fault nocard|nomap|badmap] [--open-climb] [--freeze] [--baro-drift M_PER_HOUR]\n\n  --set <MS7.OBS>  open an OBCA volume set (specs/OBCA_Spec.md §5): the manifest plus every\n                   MS7S<kk>.OBM shard beside it, mounted as one map. Every shard must be\n                   present and exactly its recorded size, or the set is refused whole (§5.4).");
             std::process::exit(2);
         }
     };
@@ -1541,6 +1549,12 @@ fn main() {
         // C5 makes it reachable by gesture; until then this debug seam is the only way in.
         if args.open_climb {
             app.debug_open_climb();
+        }
+
+        // `--freeze` (#1146 P2): engage the Recalculating freeze through the same seam a drained
+        // plan command takes, so the snapshot shows the real banner over the real frozen map.
+        if args.freeze {
+            app.debug_set_plan_live(true);
         }
 
         // `--save-track`: finalise the active ride to a `.gpx` (verifies the save loop).
