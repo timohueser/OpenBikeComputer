@@ -14,6 +14,10 @@ use embassy_nrf::gpio::Output;
 use embassy_nrf::wdt;
 use embassy_time::{Instant, Timer};
 use embedded_graphics::pixelcolor::{raw::RawU16, Rgb565};
+// The Recalculating banner's framebuffer clip (#1146 P2) — the band `App::reroute_banner_rows`
+// reports, expressed in the same `Rectangle` vocabulary `Dirty::region` already uses.
+use embedded_graphics::prelude::{Point, Size};
+use embedded_graphics::primitives::Rectangle;
 // `SettingsStore` (the load/save trait) is the ride loop's seam over the RRAM store; the `ble`
 // build's store lives inside `object_store` (which imports it itself).
 use obc_app::App;
@@ -114,12 +118,17 @@ async fn wait_ble_edge() {
 async fn wait_host_or_sensor_event(
     #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))] consumer: SensorConsumer<'static>,
 ) {
-    embassy_futures::select::select(
+    embassy_futures::select::select3(
         wait_sensor_event(
             #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
             consumer,
         ),
         crate::object_store::wait_store_changed(),
+        // …and the USB plane asking for the scratch arena's staging arm (#1146 P2). It has to be a
+        // wake arm rather than a level the next timer pass notices: the loop's sleep is event-driven
+        // and *clamped up* to the 2 s upload pace while a map is landing, so without this the first
+        // flush of every transfer would wait out a pace window for nothing.
+        crate::usb::wait_stage_request(),
     )
     .await;
 }
@@ -127,11 +136,14 @@ async fn wait_host_or_sensor_event(
 async fn wait_host_or_sensor_event(
     #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))] consumer: SensorConsumer<'static>,
 ) {
-    wait_sensor_event(
-        #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
-        consumer,
+    embassy_futures::select::select(
+        wait_sensor_event(
+            #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+            consumer,
+        ),
+        crate::usb::wait_stage_request(),
     )
-    .await
+    .await;
 }
 
 /// A `no_std` [`Clock`](obc_render::Clock) over embassy's monotonic `Instant`, in microseconds — the
@@ -217,28 +229,44 @@ fn fill_ride_profile(storage: &mut Option<sd::Storage>, app: &mut App) {
     app.set_ride_preview(&preview);
 }
 
-/// The on-device router's caller-owned buffers (epic #116, R4): the fixed A* table + graph-tile
-/// cache, `.bss` statics built in `main` and bundled so [`run_app`]'s signature and call sites
-/// stay identical across the `has_nav` gate.
+/// The router's **resident** half (epic #116 R4 + EL7, #1068) — everything the planner needs that
+/// is *not* an arm of the scratch arena.
+///
+/// Since #1146 P2 that is one field. The A* table, the graph-tile cache and the resumable planner's
+/// slot moved into [`arena::NavArm`](crate::arena::NavArm), claimed for the span of a search; the
+/// terrain stayed here because it is read at **fix** cadence during a ride
+/// (`App::sample_terrain`, EL8) — while the map plane is rendering and no search is running — so it
+/// is state, not scratch, and folding it into an arm would have handed the render arm's `memset` the
+/// altimeter's tile cache.
 #[cfg(has_nav)]
-pub(crate) struct NavBuffers {
-    pub(crate) scratch: &'static mut obc_route::NavScratch,
-    pub(crate) tiles: &'static mut obc_reader::NavTileCache,
-    /// The resumable planner's `.bss` slot (#499): ~9.5 KB (it owns the OBCR emitter across
-    /// steps), (re)written per request and only read while [`NavRun`] says a plan is active —
-    /// which is what makes the `assume_init` accesses in the step path sound.
-    pub(crate) planner: &'static mut core::mem::MaybeUninit<obc_route::NavPlanner>,
-    /// The map's terrain, or the null source (EL7, epic #1068): the emit phase samples it per
-    /// point. `&'static mut` for the same reason as the two buffers above — a `TerrainElevation`
-    /// carries its ~2.1 KB tile cache inline and must never be copied into a plan frame.
+pub(crate) struct NavResident {
+    /// The map's terrain, or the null source: the emit phase samples it per point, and the ride
+    /// loop's altimeter fuse samples it per fix. `&'static mut` because a `TerrainElevation` carries
+    /// its ~2.1 KB tile cache inline and must never be copied into a plan frame (#419/#501).
     pub(crate) elev: &'static mut dyn obc_route::ElevationSource,
 }
-/// The `ble` build's stand-in: the router isn't in the combined image — its ~14.3 KB of statics
-/// would push the 256 KB DK's stack region below the measured deep-render peak (see build.rs's
-/// `has_nav` note). The ride loop still drains create-route requests and answers the generic
-/// failure tier, so the POI confirm never hangs. The 512 KB LM20 deletes this arm.
+/// The `ble` build's stand-in: the router isn't in the combined image — its statics would push the
+/// 256 KB DK's stack region below the measured deep-render peak (see build.rs's `has_nav` note).
+/// The ride loop still drains create-route requests and answers the generic failure tier, so the POI
+/// confirm never hangs. The 512 KB LM20 deletes this arm.
 #[cfg(not(has_nav))]
-pub(crate) struct NavBuffers;
+pub(crate) struct NavResident;
+
+/// One plan step's view of everything the planner touches: the scratch arena's nav arm, borrowed
+/// from the guard the ride loop holds for the whole search, plus the resident terrain beside it.
+///
+/// A **view**, not an owner — rebuilt per call from `(&mut NavGuard, &mut NavResident)`, so the arm
+/// and the terrain are borrowed only for the length of one synchronous planner step and no reference
+/// into the arena is ever live across an `.await`.
+#[cfg(has_nav)]
+struct NavBuffers<'a> {
+    /// The guard itself rather than the arm behind it: the planner slot is a `MaybeUninit` the
+    /// claim deliberately leaves unwritten, and the guard is what carries "a plan has been written
+    /// into it" (`NavGuard::plan_parts` / `planner_ref`). Reaching past it to `&mut NavArm` would
+    /// put that fact back in this loop's bookkeeping, where nothing checks it.
+    guard: &'a mut crate::arena::NavGuard,
+    elev: &'a mut dyn obc_route::ElevationSource,
+}
 
 /// One in-flight plan's **board-side bookkeeping** (#499): the open reserved-file handle and the
 /// per-phase wall-time accumulators the RTT line reports. Loop-local (small); the ~9.5 KB planner
@@ -263,15 +291,55 @@ struct NavRun {
 #[inline(never)]
 fn nav_begin(nav: &mut NavBuffers, req: &obc_app::NavRequest, profile_idx: u8) {
     // The rider's bike-type setting (N5 §8.6); an out-of-range index falls back to profile 0 in the router.
-    nav.planner.write(obc_route::NavPlanner::new(req.from, req.to, req.name(), profile_idx));
-    // One diagnostic line per plan start (#501 fault dossiers): the three nav statics' addresses
-    // pin the memory map without needing the ELF at hand.
+    nav.guard.begin_plan(obc_route::NavPlanner::new(req.from, req.to, req.name(), profile_idx));
+    // One diagnostic line per plan start (#501 fault dossiers): the three addresses pin the memory
+    // map without needing the ELF at hand. Since #1146 P2 they are offsets **inside the scratch
+    // arena's nav arm** rather than three separate `.bss` statics — so the line now also says which
+    // arm the block is serving, which is the first thing to check if a plan ever comes back wrong.
+    let (planner, scratch, tiles) = nav.guard.arm_addrs();
     defmt::debug!(
         "nav plan: start planner=0x{=usize:08x} scratch=0x{=usize:08x} tiles=0x{=usize:08x}",
-        nav.planner.as_ptr() as usize,
-        core::ptr::from_ref(&*nav.scratch) as usize,
-        core::ptr::from_ref(&*nav.tiles) as usize
+        planner,
+        scratch,
+        tiles
     );
+}
+
+/// Take everything a fresh route search needs, in the order that leaves nothing half-held: the
+/// transfer gate's **search arm** first (a cable transfer streaming into the same store must win —
+/// the arena's `nav ⊥ usb` rule), then the scratch arena's **nav arm** against the app's own
+/// quiesced-map proof.
+///
+/// `Err(why)` = the caller must answer the failure tier now rather than arm a plan; every refusal
+/// path has already given back whatever it took, so no spinner can hang behind a half-claim. A
+/// request arriving while a plan is still in flight is *not* a refusal: we already hold both, and
+/// the drain overwrites the planner slot for the new plan exactly as it did before.
+#[cfg(has_nav)]
+fn nav_take_arena(app: &App, guard: &mut Option<crate::arena::NavGuard>) -> Result<(), &'static str> {
+    if guard.is_some() {
+        return Ok(());
+    }
+    if !crate::link::TRANSFER_ACTIVE.begin_search() {
+        return Err("a cable transfer holds the store");
+    }
+    let Some(quiesced) = app.nav_arena_precondition() else {
+        // Unreachable by construction: draining a plan command is what engages the Recalculating
+        // freeze, so by the time we are here the map plane is already quiet over a map base — and
+        // menu planning has no map base to quiet. Loud in debug, handled in release.
+        crate::link::TRANSFER_ACTIVE.end_search();
+        debug_assert!(false, "a plan drained with the map plane still drawing — the freeze did not engage");
+        return Err("the map plane is not quiesced");
+    };
+    match crate::arena::claim_nav(quiesced) {
+        Ok(g) => {
+            *guard = Some(g);
+            Ok(())
+        }
+        Err(_) => {
+            crate::link::TRANSFER_ACTIVE.end_search();
+            Err("the scratch arena is busy")
+        }
+    }
 }
 
 /// The fixed slot index (0 HR · 1 Power · 2 Cadence) a scanned sensor's kind maps to (SE7, #714) —
@@ -325,10 +393,14 @@ fn nav_step(
     };
     let reader = Reader::new(&map_src, map_tables, map_cache);
     let mut sink = storage.nav_sink(file);
-    // SAFETY: only called while a `NavRun` is active, and the drain arm wrote the planner slot
-    // before creating that run (see `NavBuffers::planner`).
-    let planner = unsafe { nav.planner.assume_init_mut() };
-    planner.step(&reader, &mut *nav.scratch, &mut *nav.tiles, &mut *nav.elev, &mut sink)
+    // Only called while a `NavRun` is active, and a run is only created after the drain wrote the
+    // planner — but the guard is what *knows* that, so ask it rather than assert it. An unwritten
+    // slot answers the generic failure tier instead of stepping a planner nobody built.
+    let Some((planner, scratch, tiles)) = nav.guard.plan_parts() else {
+        debug_assert!(false, "a plan step with no planner written — the run outlived (or preceded) its drain");
+        return obc_route::Step::Failed(obc_route::NavError::NoPath);
+    };
+    planner.step(&reader, scratch, tiles, &mut *nav.elev, &mut sink)
 }
 
 /// Finish a **completed** plan: flush/patch or delete the reserved file, rescan + re-feed the
@@ -370,12 +442,15 @@ fn nav_finish(
         Ok((id, len))
     });
     let rescan_us = tr.elapsed().as_micros();
-    let cache = nav.tiles.stats();
-    // SAFETY: the run guarded the slot; the planner is initialized for this plan.
-    let settles = unsafe { nav.planner.assume_init_ref() }.settles();
+    let cache = nav.guard.tiles.stats();
     // The ε rung the plan ended on (N8): 13/10 for a plain success or a fast no-path, 2/1 or 3/1 if
-    // the ε-escalation ladder retried on exhaustion. `settles` above is cumulative across the rungs.
-    let (eps_num, eps_den) = unsafe { nav.planner.assume_init_ref() }.epsilon_used();
+    // the ε-escalation ladder retried on exhaustion. `settles` is cumulative across the rungs. Both
+    // read through the guard's checked accessor — a finish with no planner written reports zeroes
+    // rather than an uninitialized read.
+    let (settles, eps_num, eps_den) = nav.guard.planner_ref().map_or((0, 0, 0), |p| {
+        let (n, d) = p.epsilon_used();
+        (p.settles(), n, d)
+    });
     let hw = stackmeter::rescan(now);
     // `exhausted` is the range tier ("Too far to route here" on glass — no distance cap);
     // `no-path` the generic tier.
@@ -530,11 +605,6 @@ fn desired_gps_power(app: &App) -> GpsPower {
 pub(crate) async fn run_app(
     mut display: MapDisplay,
     app: &mut App,
-    // The render path's per-frame scratch (#1146 P1): `main`'s `RENDER_SCRATCH` static, threaded in
-    // beside `app` exactly like the `nav` buffers — never a local, and never held across an await.
-    // Each `render_*` call below reborrows it for the length of one synchronous render, so the ~92 KB
-    // stays a `.bss` block the loop points at rather than anything this task's future has to carry.
-    scratch: &mut obc_render::RenderScratch,
     // The SD card + RRAM settings behind one async mutex (#193, #270). The loop takes it in two
     // short scopes per pass — the store phase (reconcile + sources + the sync render) and the
     // post-present tail (trial confirm + deferred save) — and **never holds it across the present
@@ -545,11 +615,12 @@ pub(crate) async fn run_app(
     map_cache: &MapCache,
     mounted_set: Option<MountedSet<'static>>,
     route_cache: &RouteCache,
-    // The router's fixed A* table + graph-tile cache (epic #116, R4): `.bss` statics threaded
-    // from `main` (never locals — the #270/#419 discipline), reset per plan inside `plan_route`.
-    // On `not(has_nav)` (the `ble` build) it's the unit stand-in — the router isn't in that image.
-    #[cfg(has_nav)] mut nav: NavBuffers,
-    #[cfg(not(has_nav))] nav: NavBuffers,
+    // The router's resident half (epic #116 R4 + EL7): the map's terrain, threaded from `main`
+    // (never a local — the #270/#419 discipline). Its A* table, tile cache and planner slot are the
+    // scratch arena's nav arm now (#1146 P2), claimed per search below. On `not(has_nav)` (the `ble`
+    // build) this is the unit stand-in — the router isn't in that image.
+    #[cfg(has_nav)] nav: NavResident,
+    #[cfg(not(has_nav))] nav: NavResident,
     led: &mut Output<'static>,
     // The hardware watchdog's feed handle (#349), `None` only if the boot-time `try_new` found the
     // dog already running with a foreign config. Fed once per pass below, gated on the input
@@ -604,9 +675,21 @@ pub(crate) async fn run_app(
     let mut prev_active: Option<usize> = None;
     let mut prev_session: Option<u32> = None;
     // The in-flight route plan's bookkeeping (#499): `Some` while a plan is being stepped, one
-    // bounded step per pass. Guards the `.bss` planner slot's initialization.
+    // bounded step per pass. Guards the planner slot's initialization.
     #[cfg(has_nav)]
     let mut nav_run: Option<NavRun> = None;
+    // The scratch arena's **nav arm**, held for the whole search (#1146 P2) — many passes, by
+    // design: the A* table, the tile cache and the planner all have to survive from one bounded step
+    // to the next. This loop is the arena's sole owner-switcher, and the Recalculating freeze is what
+    // keeps render claims away while it is held. Taken at the plan drain, given back on the answer
+    // and on every cancel/abort path.
+    #[cfg(has_nav)]
+    let mut nav_guard: Option<crate::arena::NavGuard> = None;
+    // The scratch arena's **USB staging arm**, held for the whole cable transfer — granted to the
+    // USB data plane between frames (the plane never claims; see `crate::arena::UsbGuard`) and
+    // reclaimed the moment its request level drops, which every transfer end, abort and unplug edge
+    // clears.
+    let mut usb_stage_guard: Option<crate::arena::UsbGuard> = None;
     // The active route's resident chunk-index slot. A bare `RouteIndex` + validity flag, NOT an
     // `Option<RouteIndex>` built by value: the slot is ~12.3 KB and permanently part of this frame
     // either way, but a by-value build (`RouteIndex::read`'s return) also transits the stack at
@@ -877,6 +960,37 @@ pub(crate) async fn run_app(
             }
         }
 
+        // ── The scratch arena's USB staging arm (#1146 P2) ──
+        // The data plane never claims the arena: it raises a request level and this loop — the
+        // arena's sole owner-switcher — grants it between frames. Placed **right after** the
+        // map-transfer reconcile above, because that block is what puts the transfer card on the
+        // stack, and the card is what makes `transfer_screen_up()` true: ask first and the answer
+        // would be a pass late, every transfer.
+        //
+        // A precondition that does not hold yet is not an answer — the request stays up and this
+        // retries next pass (the plane streams unstaged if nothing lands within its own timeout).
+        // What *is* an answer is the reclaim: the request level drops on every transfer end, abort
+        // and unplug edge, and the guard goes with it.
+        {
+            let wants_stage = crate::usb::stage_requested();
+            if wants_stage && usb_stage_guard.is_none() {
+                // Off the app, not re-derived here: `usb_arena_precondition` is the typed twin of
+                // `nav_arena_precondition` the search arm above uses, so neither call site can pass
+                // the wrong pair of bools.
+                if let Some(ready) = app.usb_arena_precondition(crate::link::TRANSFER_ACTIVE.search_live()) {
+                    if let Ok(guard) = crate::arena::claim_usb(ready) {
+                        usb_stage_guard = Some(guard);
+                        crate::usb::set_stage_granted(true);
+                        defmt::info!("arena: staging arm granted to the USB data plane");
+                    }
+                }
+            } else if !wants_stage && usb_stage_guard.is_some() {
+                usb_stage_guard = None; // the guard's Drop releases the arena
+                crate::usb::set_stage_granted(false);
+                defmt::info!("arena: staging arm reclaimed (transfer ended, aborted, or the cable went)");
+            }
+        }
+
         // ── Typed host-command drain (FAR-19, #812): the pass's single `drain_host_commands`, run
         // unconditionally here so it captures every gesture-posted command (applied above) plus the
         // BLE posting half's `open_remote_dfu_check` Scan and store-changed edge — and precedes
@@ -902,15 +1016,32 @@ pub(crate) async fn run_app(
                     obc_app::HostCommand::StampRideSynced { id, utc } => host_pass.stamp_ride = Some((id, utc)),
                     obc_app::HostCommand::FinishTrack(action) => host_pass.finish = Some(action),
                     obc_app::HostCommand::PlanRoute(_req) => {
-                        // Write the planner's `.bss` slot from the request **now** (synchronously,
-                        // no store lock needed) so the 44-byte `NavRequest` never rides into the
-                        // store phase across the pass's awaits (#808/#812) — only the flag does; the
-                        // store phase opens the reserved file and arms the run. The `ble` image ships
-                        // without the router, so it answers the failure tier here instead of arming.
+                        // Write the planner slot from the request **now** (synchronously, no store
+                        // lock needed) so the 44-byte `NavRequest` never rides into the store phase
+                        // across the pass's awaits (#808/#812) — only the flag does; the store phase
+                        // opens the reserved file and arms the run. The `ble` image ships without the
+                        // router, so it answers the failure tier here instead of arming.
+                        //
+                        // Since #1146 P2 the slot lives in the scratch arena, so the search must
+                        // *take* the arena first — and the gate's search arm before it, because a
+                        // cable transfer streaming into the same store outranks a reroute. Either
+                        // refusal answers the app immediately (the polite failure path): a plan whose
+                        // spinner never resolves would now also hold the Recalculating freeze, i.e. a
+                        // map that never redraws again.
                         #[cfg(has_nav)]
-                        {
-                            nav_begin(&mut nav, &_req, app.settings().bike_profile_idx);
-                            host_pass.plan_armed = true;
+                        match nav_take_arena(app, &mut nav_guard) {
+                            Ok(()) => {
+                                let mut bufs = NavBuffers {
+                                    guard: nav_guard.as_mut().expect("nav_take_arena left the guard held"),
+                                    elev: &mut *nav.elev,
+                                };
+                                nav_begin(&mut bufs, &_req, app.settings().bike_profile_idx);
+                                host_pass.plan_armed = true;
+                            }
+                            Err(why) => {
+                                defmt::warn!("nav: cannot start a plan ({=str}) — answering the failure tier", why);
+                                app.apply_event(obc_app::HostEvent::NavPlanned(Err(obc_route::NavError::NoPath)));
+                            }
                         }
                         #[cfg(not(has_nav))]
                         {
@@ -920,6 +1051,43 @@ pub(crate) async fn run_app(
                             app.apply_event(obc_app::HostEvent::NavPlanned(Err(obc_route::NavError::NoPath)));
                         }
                     }
+                    // ── The detour family (#882) — answered, not swallowed ──
+                    // These three used to fall into the `_ => {}` arm below, and that was a real bug
+                    // rather than a gap: the Detour chooser is reachable from the ride menu, so a
+                    // rider who confirmed one got a spinner that ran until they pressed Back. Since
+                    // #1146 P2 it is worse than a stuck spinner — draining a plan command engages the
+                    // Recalculating freeze, so an unanswered detour would freeze the map for the rest
+                    // of the ride.
+                    //
+                    // The board has no detour half yet, and this is not the PR to invent one: #882's
+                    // flow holds the planned detour's OBCR **in RAM** from `DetourPlanned` until the
+                    // rider commits, then stream-splices `original[0..anchor] + detour +
+                    // original[rejoin..]` into a derived route. The host does both with a `Vec`; the
+                    // board has one reserved computed-route file (`_NAV.OBR`) and no heap, so the
+                    // splice has nowhere to read the detour from while it writes. That is a storage
+                    // design, with its own on-glass acceptance — a separate issue.
+                    //
+                    // So: answer the typed failure the moment the request drains, exactly as the
+                    // router-less image answers `PlanRoute`. `on_detour_planned` swaps the spinner for
+                    // the "Try a farther rejoin." card and releases the freeze in the same pass.
+                    obc_app::HostCommand::PlanDetour(_) => {
+                        defmt::warn!("nav: detour planning has no board half yet (#882) — answering the failure tier");
+                        app.apply_event(obc_app::HostEvent::DetourPlanned(Err(obc_route::NavError::NoPath)));
+                    }
+                    // Unreachable while the plan above always fails (no preview screen ⇒ nothing to
+                    // commit), and wired anyway: the day the plan half lands, a commit that fell into
+                    // `_ => {}` would strand the preview's "Applying..." exactly as the spinner was
+                    // stranded. The old route is untouched either way.
+                    obc_app::HostCommand::CommitDetour => {
+                        defmt::warn!("nav: detour commit has no board half yet (#882) — answering the failure tier");
+                        app.apply_event(obc_app::HostEvent::DetourCommitted(Err(obc_route::NavError::NoPath)));
+                    }
+                    // Back on the detour planning or preview screen. Nothing board-side is in flight
+                    // to cancel (the plan is answered at its drain), and the app has already dropped
+                    // its preview and released the freeze — but the arm exists so the command is
+                    // *consumed* here rather than silently, which is the whole lesson of the three
+                    // above.
+                    obc_app::HostCommand::CancelDetour => {}
                     obc_app::HostCommand::Dfu(action) => host_pass.dfu = Some(action),
                     #[cfg(feature = "ble")]
                     obc_app::HostCommand::ForgetBond => host_pass.forget = true,
@@ -1082,10 +1250,12 @@ pub(crate) async fn run_app(
                     // normally via the `DfuInstallFailed` event.
                     app.apply_event(obc_app::HostEvent::DfuInstallBegan);
                     app.set_render_clip(None);
+                    // `DfuInstalling` is a chrome card: it draws no map, so it needs no render
+                    // scratch and never goes near the arena (#1146 P2).
                     display.render_frame(|f: &mut crate::ls021_flpr::Frame64| {
                         let mut fbdev = FbDevice64::new(f.bytes_mut(), FRAME_W as u32, FRAME_H as u32);
                         app.render_map_timed(
-                            scratch,
+                            None,
                             &mut fbdev,
                             None,
                             None,
@@ -1298,12 +1468,17 @@ pub(crate) async fn run_app(
             let nav_cancel = host_pass.cancel_plan;
             #[cfg(has_nav)]
             {
+                // Whether this pass ended the search — the one place the arena's nav arm and the
+                // gate's search arm are given back. A flag rather than an inline release because the
+                // guard is borrowed by the step view below and must die first.
+                let mut search_ended = false;
                 if host_pass.plan_armed {
                     // The planner slot was already written from the request at the pass-top drain
-                    // (`nav_begin`, no store lock); here we just open the reserved file and arm the
-                    // run against it. A request while a plan is somehow still in flight replaces it
-                    // (can't happen through the UI — the planning screen blocks a second confirm —
-                    // but stay safe; the drain already overwrote the slot for the new plan).
+                    // (`nav_begin`, no store lock) — which is also where the arena's nav arm was
+                    // claimed; here we just open the reserved file and arm the run against it. A
+                    // request while a plan is somehow still in flight replaces it (can't happen
+                    // through the UI — the planning screen blocks a second confirm — but stay safe;
+                    // the drain already overwrote the slot for the new plan and kept the same guard).
                     if let (Some(run), Some(s)) = (nav_run.take(), storage.as_mut()) {
                         s.nav_route_finish(run.file, false);
                     }
@@ -1311,11 +1486,21 @@ pub(crate) async fn run_app(
                         Some(file) => {
                             nav_run = Some(NavRun { file, t0: Instant::now(), phase_us: [0; 3] });
                         }
-                        // No card / no dir: nothing to route against — the generic failure tier.
-                        None => app.apply_event(obc_app::HostEvent::NavPlanned(Err(obc_route::NavError::NoPath))),
+                        // No card / no dir: nothing to route against — the generic failure tier, and
+                        // the arena goes straight back. A plan that never started must not leave the
+                        // map frozen behind a search nobody is running.
+                        None => {
+                            app.apply_event(obc_app::HostEvent::NavPlanned(Err(obc_route::NavError::NoPath)));
+                            search_ended = true;
+                        }
                     }
                 }
-                if nav_cancel {
+                // `&& !plan_armed` because the canonical drain order puts a cancel *before* the plan
+                // behind it: a pass carrying both is cancelling the **old** plan — which the arm above
+                // already closed — while arming a fresh one whose file and arena guard must survive.
+                // Without the guard the cancel would close the new run's file and hand back the arena
+                // the new search is about to step on.
+                if nav_cancel && !host_pass.plan_armed {
                     if let Some(run) = nav_run.take() {
                         if let Some(s) = storage.as_mut() {
                             s.nav_route_finish(run.file, false); // close + delete the partial file
@@ -1323,13 +1508,22 @@ pub(crate) async fn run_app(
                         defmt::info!("nav route: cancelled after {=u64} ms", run.t0.elapsed().as_millis());
                         // No notify: the planning screen is already gone (Back popped it).
                     }
+                    // Outside the `if let`, not inside it: a cancel landing between the drain's claim
+                    // and the file open has no `NavRun` to close but does hold the arena, and a
+                    // freeze that outlives its search is a map that never redraws again.
+                    search_ended = true;
                 }
                 if let Some(run) = nav_run.as_mut() {
-                    if let Some(s) = storage.as_mut() {
-                        // SAFETY: the run is active ⇒ the slot was written for this plan.
-                        let phase = unsafe { nav.planner.assume_init_ref() }.phase();
+                    if let (Some(s), Some(guard)) = (storage.as_mut(), nav_guard.as_mut()) {
+                        // The step's view over the arena arm + the resident terrain, alive only for
+                        // the length of these synchronous calls.
+                        let mut bufs = NavBuffers { guard, elev: &mut *nav.elev };
+                        // The run is active ⇒ the slot was written for this plan; a `None` here
+                        // would mean the bookkeeping and the arm disagree, and the step below
+                        // answers the failure tier for the same reason.
+                        let phase = bufs.guard.planner_ref().map_or(obc_route::NavPhase::Snap, |p| p.phase());
                         let ts = Instant::now();
-                        let step = nav_step(s, map_tables, map_cache, &mut nav, run.file);
+                        let step = nav_step(s, map_tables, map_cache, &mut bufs, run.file);
                         let us = ts.elapsed().as_micros();
                         match phase {
                             obc_route::NavPhase::Snap => run.phase_us[0] += us,
@@ -1338,19 +1532,27 @@ pub(crate) async fn run_app(
                         }
                         if !matches!(step, obc_route::Step::Running) {
                             let run = nav_run.take().expect("just borrowed it");
-                            nav_finish(s, app, &mut nav, run, step, now);
+                            nav_finish(s, app, &mut bufs, run, step, now);
+                            search_ended = true;
                             prev_active = None; // reopen geometry / rebuild the index off the fresh scan
                             index_route = None;
                         }
                     }
                 }
+                if search_ended {
+                    // Drop the guard (releasing the arena so the next frame can render the map
+                    // again), then the gate's search arm — in that order, because a transfer that
+                    // arms the instant the search arm opens must find the arena free.
+                    nav_guard = None;
+                    crate::link::TRANSFER_ACTIVE.end_search();
+                }
             }
             #[cfg(not(has_nav))]
             {
                 let _ = nav_cancel; // no plan can be in flight — the cancel is inert here
-                let _: &NavBuffers = &nav; // the unit stand-in — nothing to plan with
-                                           // A `PlanRoute` was already answered with the failure tier at the pass-top drain (the
-                                           // `ble` image ships no router), so nothing to do here.
+                let _: &NavResident = &nav; // the unit stand-in — nothing to plan with
+                                            // A `PlanRoute` was already answered with the failure tier at the pass-top drain (the
+                                            // `ble` image ships no router), so nothing to do here.
             }
 
             // The upload-arrived event (#451), applied strictly **after** the rescan above so the id
@@ -1692,10 +1894,69 @@ pub(crate) async fn run_app(
                 dirty.map = false;
             }
 
+            // ── The Recalculating freeze (#1146 P2) ──
+            // A planner run is live over a map base: the map plane holds still until it answers, and
+            // the reflective panel keeps the last frame on glass for free. Two things follow, and
+            // both are load-bearing. The map redraw is **skipped, not queued** — latched into
+            // `pending_map_redraw` so nothing is lost and the catch-up lands the pass the freeze
+            // lifts (`App::note_plan_ended` dirties the map for exactly that). And the *overlay*
+            // still paints: `dirty.overlay` carries the freeze's edge, and the banner is what turns
+            // a frozen screen from "the device wedged" into "it is recalculating".
+            //
+            // That edge is the **engaged level's**, minted inside `App::take_dirty` — not the plan
+            // start's. The two differ exactly where it matters: a plan drained under the opaque
+            // planning spinner freezes nothing (chrome base, and that frame renders normally), and
+            // the pass that puts a map base back under the still-running search is a screen change
+            // with no plan edge in it at all. Keyed on the plan's edge, this branch would find
+            // `dirty.overlay` already spent on the chrome frame and paint nothing for the rest of
+            // the search — a stale screen, no explanation, and input going to the base underneath.
+            // Whatever the frame under the banner happens to be (the last map, or the spinner the
+            // rider just left), the banner is what says the device is working; the full repaint when
+            // the freeze lifts restores the rest.
+            //
+            // This is also what makes the arena's `render ⊥ nav` rule hold in practice rather than
+            // only at the gate: no map render is attempted while the nav arm is out, so the claim
+            // below is never refused on the ordinary path.
+            let frozen = app.reroute_freeze_active();
+            if frozen && dirty.map {
+                pending_map_redraw = true;
+                dirty.map = false;
+                dirty.region = None;
+            }
             // Build this pass's frame — **render only**, still under the guard: the map render reads
             // the `reader`/`route` built just below, whose borrows of the open SD handles live here.
             // The push to glass happens after the store phase closes, guard-free (#809).
-            let rendered: Option<RenderedFrame> = if dirty.map {
+            let rendered: Option<RenderedFrame> = if frozen {
+                // The banner rides the overlay plane, which on this board means: draw it straight
+                // into the resident framebuffer and let the self-diffing present push the handful of
+                // rows it changed. It deliberately does **not** go through the FLPR's
+                // `present_overlay` composite path the hold bulge uses — that path's scratch is
+                // bounded at 16 columns (`MAX_OVERLAY_COLS`), because the bulge is a 16 px strip at
+                // the right edge; a 240-px-wide banner band would need a ~26 KB transient on the
+                // overlay frame's stack, on the crate where transients overflow it. Painting into the
+                // frame is free instead, and safe because the map render that would otherwise own
+                // those pixels is precisely what is not running — the full repaint when the freeze
+                // lifts restores them.
+                match app.reroute_banner_rows(FRAME_H as f32).filter(|_| dirty.overlay) {
+                    Some((y0, rows)) => {
+                        let (stats, render_us) = display.render_frame(|f: &mut crate::ls021_flpr::Frame64| {
+                            let mut fbdev = FbDevice64::new(f.bytes_mut(), FRAME_W as u32, FRAME_H as u32);
+                            // Clip the framebuffer to the banner's own band — belt and braces over
+                            // the drawing itself, so a future overlay item cannot quietly repaint
+                            // map pixels the freeze is preserving.
+                            fbdev.set_clip(Rectangle::new(
+                                Point::new(0, y0 as i32),
+                                Size::new(FRAME_W as u32, rows as u32),
+                            ));
+                            app.render_overlay(&mut fbdev, FRAME_W as f32, FRAME_H as f32, color_fn);
+                            obc_render::RenderStats::default()
+                        });
+                        Some(RenderedFrame { needs_map: false, stats, render_us })
+                    }
+                    // Mid-freeze with no edge: nothing changed on either plane, so nothing to push.
+                    None => None,
+                }
+            } else if dirty.map {
                 // The map pipeline runs **only when the base screen needs the streamed `Reader`** — the
                 // Map view, and the POI list on the frame it takes its one-shot snapshot (#425, its
                 // query runs in the draw path off `rx.reader`). On a menu / Statistics / Home redraw, or
@@ -1726,51 +1987,78 @@ pub(crate) async fn run_app(
                     );
                     None
                 } else {
-                    // Render the whole frame into the resident RGB222 plane — the display boundary,
-                    // behind `MapDisplay::render_frame`; the present below (after the guard is gone)
-                    // scans it out, going *around* a live bulge's rows so the composite paints them.
-                    // `render_map_timed` threads `InstantClock` so the stats
-                    // carry the collect/sort/draw timings; the hold bulge is **not** composited here — it
-                    // rides `present_bulge` on its own plane.
-                    //
-                    // A surviving `dirty.region` (the nav spinner's needle disc — only ever on a non-map
-                    // chrome frame) clips the render at both layers (#500 follow-up): the app's Canvas
-                    // rejects whole primitives whose bounds miss the region (the glyph/scanline machinery
-                    // a pixel clip can't skip), and the framebuffer discards any straddler's out-of-region
-                    // pixel writes — so a spinner frame costs the disc instead of the whole chrome, and
-                    // the row-diffed push scales down with it.
-                    let clip = if needs_map { None } else { dirty.region };
-                    app.set_render_clip(clip);
-                    let (stats, render_us) = display.render_frame(|f: &mut crate::ls021_flpr::Frame64| {
-                        let mut fbdev = FbDevice64::new(f.bytes_mut(), FRAME_W as u32, FRAME_H as u32);
-                        if let Some(r) = clip {
-                            fbdev.set_clip(r);
-                        }
-                        match mounted_set.as_ref() {
-                            Some(set) => app.render_scene_map_timed(
-                                scratch,
-                                &mut fbdev,
-                                needs_map.then_some(set),
-                                reader.as_ref(),
-                                route.as_ref(),
-                                FRAME_W as f32,
-                                FRAME_H as f32,
-                                color_fn,
-                                &InstantClock,
-                            ),
-                            None => app.render_map_timed(
-                                scratch,
-                                &mut fbdev,
-                                reader.as_ref(),
-                                route.as_ref(),
-                                FRAME_W as f32,
-                                FRAME_H as f32,
-                                color_fn,
-                                &InstantClock,
-                            ),
-                        }
-                    });
-                    Some(RenderedFrame { needs_map, stats, render_us })
+                    // ── The scratch arena's render arm (#1146 P2) ──
+                    // A base that **draws the map** claims it for the render span and gives it back
+                    // at the end of this block — the arena's whole render ⊥ nav / render ⊥ usb
+                    // enforcement, since a live search or a live transfer is literally the holder.
+                    // A chrome base claims nothing and renders with **no scratch at all**: only the
+                    // Map screen's draw touches it, and the app's render entry point takes it as an
+                    // `Option`. That's what keeps those frames drawing *while* another arm is out —
+                    // the nav-planning spinner is the only sign of life during a menu plan, and the
+                    // map-transfer card the only explanation for a saturated SD bus.
+                    let draws_map = app.base_draws_map();
+                    let mut render_guard = if draws_map { crate::arena::claim_render().ok() } else { None };
+                    // Unreachable on the ordinary path (the freeze above skips map frames during a
+                    // search, and a transfer puts its card over the map), so a refusal is a gating
+                    // bug — already reported loudly by `arena::claim_render`. Degrade the way every
+                    // other transient render failure does: keep the frame on glass, retry next pass.
+                    if draws_map && render_guard.is_none() {
+                        pending_map_redraw = true;
+                        defmt::warn!(
+                            "map: the scratch arena is held by {} — skipping this map redraw, retrying next frame",
+                            defmt::Debug2Format(&crate::arena::owner())
+                        );
+                        None
+                    } else {
+                        // Render the whole frame into the resident RGB222 plane — the display boundary,
+                        // behind `MapDisplay::render_frame`; the present below (after the guard is gone)
+                        // scans it out, going *around* a live bulge's rows so the composite paints them.
+                        // `render_map_timed` threads `InstantClock` so the stats
+                        // carry the collect/sort/draw timings; the hold bulge is **not** composited here — it
+                        // rides `present_bulge` on its own plane.
+                        //
+                        // A surviving `dirty.region` (the nav spinner's needle disc — only ever on a non-map
+                        // chrome frame) clips the render at both layers (#500 follow-up): the app's Canvas
+                        // rejects whole primitives whose bounds miss the region (the glyph/scanline machinery
+                        // a pixel clip can't skip), and the framebuffer discards any straddler's out-of-region
+                        // pixel writes — so a spinner frame costs the disc instead of the whole chrome, and
+                        // the row-diffed push scales down with it.
+                        let clip = if needs_map { None } else { dirty.region };
+                        app.set_render_clip(clip);
+                        let (stats, render_us) = display.render_frame(|f: &mut crate::ls021_flpr::Frame64| {
+                            let mut fbdev = FbDevice64::new(f.bytes_mut(), FRAME_W as u32, FRAME_H as u32);
+                            if let Some(r) = clip {
+                                fbdev.set_clip(r);
+                            }
+                            match mounted_set.as_ref() {
+                                Some(set) => app.render_scene_map_timed(
+                                    render_guard.as_deref_mut(),
+                                    &mut fbdev,
+                                    needs_map.then_some(set),
+                                    reader.as_ref(),
+                                    route.as_ref(),
+                                    FRAME_W as f32,
+                                    FRAME_H as f32,
+                                    color_fn,
+                                    &InstantClock,
+                                ),
+                                None => app.render_map_timed(
+                                    render_guard.as_deref_mut(),
+                                    &mut fbdev,
+                                    reader.as_ref(),
+                                    route.as_ref(),
+                                    FRAME_W as f32,
+                                    FRAME_H as f32,
+                                    color_fn,
+                                    &InstantClock,
+                                ),
+                            }
+                        });
+                        // The guard (when a map base took one) dies here, at the end of the render
+                        // span — before the present's await, never across it (#677).
+                        drop(render_guard);
+                        Some(RenderedFrame { needs_map, stats, render_us })
+                    }
                 }
             } else {
                 None

@@ -76,7 +76,7 @@ fn render_with_route(app: &mut App, map: &[u8], obcr: &[u8]) {
 
     let mut buf = Buf::new(240, 320);
     let mut scratch = Box::new(obc_render::RenderScratch::new());
-    app.render_frame(&mut scratch, &mut buf, &reader, Some(&route), 240.0, 320.0, |c| {
+    app.render_frame(Some(&mut scratch), &mut buf, &reader, Some(&route), 240.0, 320.0, |c| {
         let (r, g, b) = rgb565_to_rgb888(c);
         Rgb888::new(r, g, b)
     });
@@ -91,7 +91,7 @@ fn render_without_route(app: &mut App, map: &[u8]) {
     let reader = Reader::new(&map_src, &tables, &cache);
     let mut buf = Buf::new(240, 320);
     let mut scratch = Box::new(obc_render::RenderScratch::new());
-    app.render_frame(&mut scratch, &mut buf, &reader, None, 240.0, 320.0, |c| {
+    app.render_frame(Some(&mut scratch), &mut buf, &reader, None, 240.0, 320.0, |c| {
         let (r, g, b) = rgb565_to_rgb888(c);
         Rgb888::new(r, g, b)
     });
@@ -127,7 +127,7 @@ fn render_with_failing_map(app: &mut App, map: &[u8], obcr: &[u8]) {
 
     let mut buf = Buf::new(240, 320);
     let mut scratch = Box::new(obc_render::RenderScratch::new());
-    app.render_frame(&mut scratch, &mut buf, &reader, Some(&route), 240.0, 320.0, |c| {
+    app.render_frame(Some(&mut scratch), &mut buf, &reader, Some(&route), 240.0, 320.0, |c| {
         let (r, g, b) = rgb565_to_rgb888(c);
         Rgb888::new(r, g, b)
     });

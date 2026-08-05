@@ -312,8 +312,8 @@ where
 {
     let Scene { set, reader, route } = scene;
     match set {
-        Some(set) => app.render_scene_frame(scratch, target, set, reader, route, w, h, color_fn),
-        None => app.render_frame(scratch, target, reader, route, w, h, color_fn),
+        Some(set) => app.render_scene_frame(Some(scratch), target, set, reader, route, w, h, color_fn),
+        None => app.render_frame(Some(scratch), target, reader, route, w, h, color_fn),
     }
 }
 

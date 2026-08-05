@@ -14,8 +14,27 @@
 //! The rule lives here rather than on the board for the reason [`crate::set_upload`] does: the
 //! board crate has no `test` harness in CI, and "a teardown releases only its own claim" is exactly
 //! the kind of statement that should be asserted rather than reviewed.
+//!
+//! # The search arm (issue #1146, P2)
+//!
+//! The gate arbitrates a second resource now: the scratch arena's `nav ⊥ usb` rule (no reroute
+//! while docked-transferring). A route search and a cable transfer want the same RAM, and neither
+//! belongs to a wire, so the gate carries a **search flag** beside the transfer owner —
+//! [`begin_search`](TransferGate::begin_search) / [`end_search`](TransferGate::end_search) — and the
+//! two exclude each other: a live search refuses [`claim`](TransferGate::claim), a held transfer
+//! refuses `begin_search`.
+//!
+//! Deliberately a second flag rather than a third [`GateOwner`]: `GateOwner` answers *which wire*,
+//! and a search is on no wire. Folding it in would have made [`holder`](TransferGate::holder) —
+//! which routes an `Abort` to the data plane actually transferring — answer with something no
+//! transport can equal, quietly turning aborts during a search into `busy`. So the split predicates
+//! stay honest: [`in_flight`](TransferGate::in_flight) means *a transfer is streaming* (unchanged),
+//! and [`busy`](TransferGate::busy) is the "may a new transfer start?" test a control plane answers
+//! `busy` from. A control plane that still tests `in_flight` is not *wrong* — [`claim`](TransferGate::claim)
+//! is the hard gate and refuses regardless — it is merely late and impolite, arming a transfer that
+//! then cannot take the gate.
 
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 /// Which wire holds the transfer gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,17 +70,21 @@ impl GateOwner {
 /// rather than a store, so the gate cannot be taken twice even if that ever changes.
 pub struct TransferGate {
     owner: AtomicU8,
+    searching: AtomicBool,
 }
 
 impl TransferGate {
     /// An idle gate.
     pub const fn new() -> TransferGate {
-        TransferGate { owner: AtomicU8::new(0) }
+        TransferGate { owner: AtomicU8::new(0), searching: AtomicBool::new(false) }
     }
 
-    /// Take the gate for `owner`. `false` = someone already holds it, and the caller must answer
-    /// `busy` rather than arm.
+    /// Take the gate for `owner`. `false` = someone already holds it **or a route search is
+    /// running**, and the caller must answer `busy` rather than arm.
     pub fn claim(&self, owner: GateOwner) -> bool {
+        if self.search_live() {
+            return false;
+        }
         self.owner.compare_exchange(0, owner.tag(), Ordering::Relaxed, Ordering::Relaxed).is_ok()
     }
 
@@ -83,6 +106,41 @@ impl TransferGate {
     /// that is not listening.
     pub fn holder(&self) -> Option<GateOwner> {
         GateOwner::from_tag(self.owner.load(Ordering::Relaxed))
+    }
+
+    /// Take the **search** side of the gate (issue #1146: the nav arm of the scratch arena).
+    /// `false` = a transfer is streaming, so the search must not start — the rider's reroute waits
+    /// for the cable, because the alternative is a planner writing its A* table over the bytes the
+    /// USB data plane is staging into.
+    ///
+    /// Not owner-tracked: there is exactly one searcher (the ride loop), whereas transfers arrive on
+    /// two independent wires.
+    #[must_use = "a refused search must not start planning — the arena belongs to the transfer"]
+    pub fn begin_search(&self) -> bool {
+        if self.in_flight() {
+            return false;
+        }
+        self.searching.compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed).is_ok()
+    }
+
+    /// End the search (the plan answered, failed, or was cancelled). Idempotent, and it releases
+    /// **only** the search — a transfer that started after it is untouched, exactly as
+    /// [`release`](TransferGate::release) leaves the other wire's claim alone.
+    pub fn end_search(&self) {
+        self.searching.store(false, Ordering::Relaxed);
+    }
+
+    /// Whether a route search holds the gate's search side. The
+    /// [`TransferReady`](crate::arena_gate::TransferReady) precondition reads this.
+    pub fn search_live(&self) -> bool {
+        self.searching.load(Ordering::Relaxed)
+    }
+
+    /// Whether a **new transfer** would be refused — a transfer already streaming *or* a live
+    /// search. The `busy` test a `transferControl` open should answer from; [`in_flight`](TransferGate::in_flight)
+    /// stays the narrower "is a transfer streaming" fact that abort routing and the data planes use.
+    pub fn busy(&self) -> bool {
+        self.in_flight() || self.search_live()
     }
 }
 
@@ -141,5 +199,70 @@ mod tests {
         gate.release(GateOwner::Ble);
         assert!(!gate.in_flight());
         assert!(gate.claim(GateOwner::Usb), "and the gate is usable afterwards");
+    }
+
+    // --- The `search ⊕ transfer` arm (issue #1146, P2) ---
+
+    /// **The regression** the arm prevents: the rider reroutes while docked and the phone (or the
+    /// cable) opens a transfer a moment later. Both want the scratch arena, and the transfer's
+    /// staging buffer would land on the planner's live A* table.
+    #[test]
+    fn a_live_search_refuses_transfers_on_both_wires() {
+        let gate = TransferGate::new();
+        assert!(gate.begin_search(), "nothing streaming — the reroute may plan");
+        assert!(gate.search_live());
+        assert!(gate.busy(), "…and the gate answers busy to a new transfer");
+        assert!(!gate.in_flight(), "though no transfer is streaming — the two facts stay distinct");
+
+        assert!(!gate.claim(GateOwner::Usb), "the cable waits for the search");
+        assert!(!gate.claim(GateOwner::Ble), "and so does the radio");
+        assert_eq!(gate.holder(), None, "a refused claim leaves the gate unowned, so an abort still routes");
+
+        gate.end_search();
+        assert!(!gate.busy());
+        assert!(gate.claim(GateOwner::Usb), "the transfer arms the moment the plan answers");
+    }
+
+    /// The mirror: a multi-gigabyte volume set is streaming and the rider asks for a detour. The
+    /// search is refused (the UI answers "not while transferring"), never started half-owned.
+    #[test]
+    fn a_held_transfer_refuses_a_search() {
+        let gate = TransferGate::new();
+        assert!(gate.claim(GateOwner::Usb));
+        assert!(!gate.begin_search(), "no reroute while docked-transferring");
+        assert!(!gate.search_live(), "and the refusal left no half-set flag behind");
+
+        gate.release(GateOwner::Usb);
+        assert!(gate.begin_search(), "the transfer concluded — now it may plan");
+    }
+
+    /// Each side releases only itself. The two teardowns run on different clocks (a plan answers
+    /// while a transfer streams, a link drops while a plan runs), so a release that cleared "the
+    /// gate" wholesale would re-open the door on work still in flight — the #1039 lesson, applied
+    /// to the second resource.
+    #[test]
+    fn tearing_down_one_side_never_releases_the_other() {
+        let gate = TransferGate::new();
+        assert!(gate.begin_search());
+        gate.release(GateOwner::Usb); // a cable teardown arriving mid-search
+        gate.release(GateOwner::Ble);
+        assert!(gate.search_live(), "the search is untouched by a transfer teardown");
+
+        gate.end_search();
+        assert!(gate.claim(GateOwner::Ble), "the radio takes the gate once the search ends");
+        gate.end_search(); // a stray second end_search behind the answer
+        assert_eq!(gate.holder(), Some(GateOwner::Ble), "…and it does not release the radio's transfer");
+        assert!(!gate.begin_search(), "which still refuses a new search");
+    }
+
+    /// `begin_search` twice is a bug, not a nesting: there is one searcher, and the second call
+    /// would pair with an `end_search` that releases the first search's arena.
+    #[test]
+    fn a_second_search_claim_is_refused() {
+        let gate = TransferGate::new();
+        assert!(gate.begin_search());
+        assert!(!gate.begin_search(), "one searcher, one claim");
+        gate.end_search();
+        assert!(gate.begin_search(), "and a fresh search after it ends is fine");
     }
 }

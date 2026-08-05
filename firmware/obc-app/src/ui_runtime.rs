@@ -81,6 +81,12 @@ pub(crate) struct UiRuntime {
     /// drained once per frame. Starts `true` so the host's first frame paints. (The overlay flag
     /// isn't accumulated here — it's derived from the live hold-bulge state at drain time.)
     pub(crate) map_dirty: bool,
+    /// A one-shot **overlay** repaint demand from something other than the hold bulge — today only
+    /// the Recalculating freeze flipping (issue #1146, P2), whose banner appears and clears on the
+    /// overlay plane. The bulge's own demand is derived from its live state at drain time
+    /// ([`InputPlane::take_overlay_dirty`]); a freeze edge has no such continuous state to derive
+    /// from, so it is latched here and OR'd in at [`take_dirty`](UiRuntime::take_dirty).
+    pub(crate) overlay_edge: bool,
     /// Accumulated **region-scoped** repaint demand (#500 follow-up): the union of every
     /// region-carrying screen-tick change since the last drain — the nav-planning spinner's
     /// needle disc. Kept apart from [`map_dirty`](App::map_dirty) so the two can't blur: any
@@ -206,6 +212,7 @@ impl UiRuntime {
             now_ms: 0,
             // Force the host's first frame: nothing has been drawn yet, so the map is dirty.
             map_dirty: true,
+            overlay_edge: false,
             region_dirty: None,
             frame_size: (0, 0),
             render_clip: None,
@@ -246,6 +253,7 @@ impl UiRuntime {
             addr_of_mut!((*slot).now_ms).write(0);
             // Force the host's first frame: nothing has been drawn yet, so the map is dirty.
             addr_of_mut!((*slot).map_dirty).write(true);
+            addr_of_mut!((*slot).overlay_edge).write(false);
             addr_of_mut!((*slot).region_dirty).write(None);
             addr_of_mut!((*slot).frame_size).write((0, 0));
             addr_of_mut!((*slot).render_clip).write(None);
@@ -272,6 +280,7 @@ impl UiRuntime {
                 input: _,
                 now_ms: _,
                 map_dirty: _,
+                overlay_edge: _,
                 region_dirty: _,
                 frame_size: _,
                 render_clip: _,
@@ -1065,7 +1074,9 @@ impl UiRuntime {
         let region = self.region_dirty.take();
         Dirty {
             map: full || region.is_some(),
-            overlay: self.input.take_overlay_dirty(),
+            // Drain the bulge's trailing edge unconditionally (it must be called exactly once per
+            // frame, whatever else is on the overlay), then fold in a freeze flip.
+            overlay: self.input.take_overlay_dirty() | core::mem::take(&mut self.overlay_edge),
             region: if full { None } else { region },
         }
     }

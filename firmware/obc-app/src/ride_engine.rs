@@ -396,6 +396,22 @@ impl RideEngine {
         activity.apply_match(m);
     }
 
+    /// A fresh fix went **unmatched** — the Recalculating freeze (#1146 P2) holds the matcher for
+    /// the length of a route search, which is seconds, not one fix. Arm a one-shot wide re-lock so
+    /// the first match after the freeze reaches wherever the rider actually got to: the tight
+    /// on-route window is sized for one fix's travel, and a rider who rode past it would otherwise
+    /// come out of the freeze with a false off-route chip and frozen progress.
+    ///
+    /// **The freezes this covers are the ones that end *without* new geometry** — a cancel, a
+    /// `NoPath`/`Exhausted` answer, a detour's terminal edge. A search that *succeeds* never needs
+    /// it: committing the result runs `drop_route_derived_state`, and its `RouteMatch::reset`
+    /// clears this flag along with the rest of the lock, leaving the matcher unstarted so the next
+    /// fix scans the whole new route regardless. This is for the rider who was shown
+    /// "Recalculating" and then handed back the route they were already riding.
+    pub(crate) fn note_unmatched_fix(&mut self) {
+        self.route_match.relock_wide();
+    }
+
     /// Apply a queued seam re-anchor (#882) once matching route geometry is available: install
     /// matcher progress + the forward-only floor at the splice seam. Returns `true` when the
     /// matcher/progress floor moved; a transient `None` reader leaves the request queued, while a
@@ -529,6 +545,9 @@ impl RideEngine {
     /// remap deliberately preserves same-id state, and these are exactly the cases where that
     /// preservation would carry stale state onto new geometry. The recording session is untouched.
     pub(crate) fn drop_route_derived_state(&mut self, activity: &mut Activity) {
+        // `reset` also clears any wide re-lock armed by a freeze (`note_unmatched_fix`), and should:
+        // an unstarted matcher scans the whole route on its next fix, which is wider still. That is
+        // why the wide window is only ever spent on a freeze that ended without new geometry.
         self.route_match.reset();
         self.matched_route = None; // tick re-locks the matcher from the current fix
         self.profile = None;

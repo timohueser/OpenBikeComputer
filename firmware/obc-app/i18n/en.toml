@@ -186,6 +186,9 @@ no_gps_fix = "No GPS Fix"
 off_route = "off route "
 # The route-less browse map's one-shot start hint chip (auto-hides after a few seconds).
 press_to_start = "Press to start a ride"
+# The Recalculating freeze banner (#1146): up on the overlay plane while the host plans a
+# reroute and the map is held still.
+recalculating = "Recalculating..."
 
 # --- The Statistics riding screen ---
 [stats]

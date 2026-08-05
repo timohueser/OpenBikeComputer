@@ -92,9 +92,15 @@ identical resident set:
 
 | Profile | `.bss` | `.data` | Linked resident | `.uninit` | Flash sections | Writable full frames | Largest guarded poll frame |
 | :-- | --: | --: | --: | --: | --: | --: | --: |
-| default | 416,088 B | 5,136 B | 421,224 B | 1,024 B | 1,185,668 B | 2 × 76,800 B | 9,728 B |
-| BLE | 416,088 B | 5,136 B | 421,224 B | 1,024 B | 1,185,668 B | 2 × 76,800 B | 9,728 B |
+| default | 288,672 B | 5,112 B | 293,784 B | 93,344 B | 1,300,320 B | 2 (76,800 B FB + 92,320 B arena) | 9,728 B |
+| BLE | 288,672 B | 5,112 B | 293,784 B | 93,344 B | 1,300,320 B | 2 (76,800 B FB + 92,320 B arena) | 9,728 B |
 | bootloader | — | — | — | — | 16,012 / 32,768 B | — | — |
+
+(Flash is **CI's** figure, re-pinned from #1146 P2's `embedded` run; the pinned local host
+links ~32 KB more for the same source, which is exactly why this column is not host-pinned.
+The RAM figures include #1150's review round: +8 B of `App`, itemized in the JSON's
+`_resident_note_1150_review`. Since #1146 the RAM story is `.bss + .data` **plus `.uninit`**
+— see the entry below.)
 
 The rows below this line are the **historical** 256 KB-part figures kept for the
 narrative they carry; they were never updated through the LM20 retarget and are an
@@ -459,6 +465,43 @@ part-2 convention). **Default is byte-identical** (`.bss 200,800 + .data 72 =
 toolchain-artifact trap, not new drift. The compile-time allocation report is
 unchanged on both profiles — the signal is a module static, not a field of `App`
 or `ObjectStore`, so no named entry (`app`, `ble_object_store`, …) moved.
+
+### The scratch arena (#1146 P2), 2026-08-05 — **−76,296 B resident; `.uninit` becomes load-bearing**
+
+Three blocks that are never live at once — the ~90 KB render scratch, the ~58 KB nav
+block (`NavScratch` + `NavTileCache` + `NavPlanner`; the terrain sampler stays out, it is
+read at fix cadence), and the 16 KiB USB staging buffer — now time-share one
+`ScratchArena` union (`arena.rs`, the only place the feature's `unsafe` lives). Owner
+bookkeeping is the host-tested `obc_app::ArenaGate`; the product rules that make the arms
+disjoint (the Recalculating freeze, the transfer screen, the transfer gate's new
+`search ⊕ transfer` arm) live in `obc-app` where they are unit-tested.
+
+Two accounting consequences outlive the feature:
+
+- **The budget is max-of-arms, with cliff semantics.** The arena costs
+  `size_of::<ScratchArena>()` = the largest arm (92,320 B, render). Growing any smaller
+  arm is **free** until it crosses the max arm — nav has ~32.4 KB and USB ~75.9 KB of
+  free headroom — and growing the max arm costs 1:1. Stated at the budget assert so
+  neither a free growth is "optimized" nor a 1:1 one waved through.
+- **`.uninit` is no longer a 1 KB sidelight.** The arena lives there
+  (`.uninit.OBC_SCRATCH_ARENA`, never zeroed at boot — arms init in place on claim), so
+  `uninit_max` is now a real growth gate (93,344 B = arena + defmt's ring), and the RAM
+  story is `.bss + .data` *plus* `.uninit`: the stack boundary (`_stack_end = __euninit`)
+  charges both. "Linked resident" in the CI contract remains `.bss + .data`.
+
+Gate figures moved with it, measured on the pinned host (whose merge-base build
+reproduces the old baseline exactly): linked resident 462,392 → 293,776 B, residual main
+stack 48,584 → **124,880 B** (the net drop, to the byte), largest task body
+20,352 → 6,912 B (the old figure carried a ~13.5 KB incidental `memcpy` the P2 codegen
+no longer emits — the tightened 8,192 B limit will correctly fire if it returns),
+boot-chain ceiling re-pinned 29,696 B against a `boot_chain_measured_ci` of **21,884**,
+re-pinned from P2's own `embedded` run — ~6.2 KB under the pinned host's 28,116, the host
+spread P1 recorded. The two full-frame-sized writables are now `FB` + `ARENA`.
+
+The review round on that PR moved the resident figures 8 B: `App` grew by three `bool`s
+(the freeze's two per-family plan levels + its engaged-level repaint bit, and the matcher's
+one-shot wide re-lock), so linked resident is **293,784 B** and the residual stack
+**124,872 B**. No arm of the arena changed size.
 
 ### Boot-path stack gates (#1108 follow-up), 2026-08-03 — **0 B resident, four new gates**
 

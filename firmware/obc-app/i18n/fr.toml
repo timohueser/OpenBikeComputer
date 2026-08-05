@@ -164,6 +164,7 @@ avg_grad = "PENTE M."
 no_gps_fix = "Pas de GPS"
 off_route = "hors route "
 press_to_start = "Appuyer pour partir"
+recalculating = "Recalcul..."
 
 # --- The Statistics riding screen ---
 [stats]

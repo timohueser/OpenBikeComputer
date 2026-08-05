@@ -215,7 +215,11 @@ pub struct Render<'a> {
     /// Only the map-drawing screens touch it; it carries nothing between frames, so a screen that
     /// wants a presentation switch to stick states it per frame in an
     /// [`obc_render::RenderConfig`].
-    pub scratch: &'a mut RenderScratch,
+    ///
+    /// `None` when the host lent no scratch (#1146 P2) — legitimate for a chrome-only frame, which
+    /// is exactly the set of frames that never reach the map scene's draw, the one place this is
+    /// unwrapped.
+    pub scratch: Option<&'a mut RenderScratch>,
     pub state: &'a AppState,
     pub activity: &'a Activity,
     /// The persisted device settings (read-only here) — the riding views read
