@@ -1,0 +1,57 @@
+# cargo-about: the licence *texts* that have to travel with a distributed binary (#1149).
+#
+# The sibling of deny.toml, and deliberately a separate file: deny.toml decides *which*
+# licences may enter the tree (a policy gate, run on every PR), while this one collects the
+# text each of them requires us to hand over (an artifact, regenerated when deps move).
+# Both are needed — passing the gate does not discharge MIT § "shall be included".
+#
+# Regenerate THIRD-PARTY.md with:  obc licenses
+# The `deny` CI job checks the result is current, so a dependency bump that forgets it fails
+# there rather than at a release tag.
+#
+# Every root is generated separately, because the obligation is per *artifact*: what ships in
+# UPDATE.BIN is not what ships in the desktop installer, and a reader of one should not have to
+# sift the other's crates. The host tools are omitted on purpose — they are distributed as
+# source, where the crates carry their own licence files already.
+
+# The SPDX ids a dependency may resolve to. Same set as deny.toml's `[licenses] allow`, minus
+# the copyleft-adjacent ones nothing currently hits: a crate that lands outside this list stops
+# the generator, so the two files cannot silently disagree about what is in the tree.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unlicense",
+    "0BSD",
+    "BSL-1.0",
+    "CC0-1.0",
+    "MPL-2.0",
+    "OFL-1.1",
+    "CDLA-Permissive-2.0",
+    # The BLE controller. `nrf-sdc-sys` / `nrf-mpsl-sys` carry no `license` *expression* — they
+    # point at Nordic's nrfxlib LICENSE with `license-file`, which is why deny.toml never had to
+    # name anything here (cargo-deny only warns on a missing field). cargo-about reads that file
+    # and resolves it to what it actually contains: Apache-2.0 + BSD-3-Clause + the HP variant.
+    # Listed so the text ships with UPDATE.BIN — which is the whole point, since the SoftDevice
+    # Controller is a binary blob inside our image and Nordic's terms travel with it.
+    "BSD-3-Clause-HP",
+]
+
+# The workspace's own obc-* crates are never published and carry no `license` field; the repo's
+# GPL-3.0 covers them, and their notice is the LICENSE file beside this one.
+private = { ignore = true }
+
+# Build scripts and test-only crates are not in the shipped binary, so their notices do not
+# have to travel with it. Transitive dependencies emphatically are, and stay in.
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+ignore-transitive-dependencies = false
+
+# Crates whose licence files cargo-about cannot find from the registry alone; each is a
+# known-good mapping maintained upstream rather than a guess of ours.
+workarounds = ["ring", "rustls", "wasmtime"]

@@ -268,6 +268,7 @@ jobs:
         if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
         run: |
           set -euo pipefail
           ASSETS=(dist/UPDATE.BIN dist/manifest.json dist/obc-boot.elf dist/obc-fw-nrf54l.elf dist/SHA256SUMS.txt)
@@ -277,8 +278,24 @@ jobs:
           else
             PRERELEASE_FLAG=""
             if [ "$IS_PRERELEASE" = "true" ]; then PRERELEASE_FLAG="--prerelease"; fi
+            # The GPL-3 § 6 source offer (#1149). Serving UPDATE.BIN from this page and from
+            # updates.openbikecomputer.com is distribution of an object-code work, so the
+            # corresponding source has to be offered with it. A public repository covers it in
+            # practice; naming the tag makes "corresponding" exact rather than implied, because
+            # only that commit built this image. `gh` puts --notes-file first and appends the
+            # generated changelog after it, so this rides above the commit list.
+            #
+            # The create path only: a re-run tops up assets on an existing release and must not
+            # rewrite notes a human may have edited (the create path is where every tag lands).
+            printf '%s\n' \
+              "**Source and licences.** This firmware is free software under the [GPL-3.0](${REPO_URL}/blob/${VERSION}/LICENSE)." \
+              "The complete corresponding source for this image is the tagged commit — [${VERSION}](${REPO_URL}/tree/${VERSION}) —" \
+              "which is the source offer for every copy distributed from this page and from \`updates.openbikecomputer.com\`." \
+              "Third-party components and their licence texts: [THIRD-PARTY.md](${REPO_URL}/blob/${VERSION}/THIRD-PARTY.md)." \
+              > dist/notes-head.md
             gh release create "$VERSION" \
               --title "$VERSION" \
+              --notes-file dist/notes-head.md \
               --generate-notes \
               $PRERELEASE_FLAG \
               "${ASSETS[@]}"
