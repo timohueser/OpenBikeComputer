@@ -31,6 +31,13 @@
       "pages": [
         { "path": "build/index", "title": "Build guide", "soon": true }
       ]
+    },
+    {
+      "title": "Rechtliches",
+      "pages": [
+        { "path": "impressum", "title": "Impressum" },
+        { "path": "datenschutz", "title": "Datenschutzerklärung" }
+      ]
     }
   ]
 }
