@@ -11,8 +11,8 @@ use embedded_graphics::pixelcolor::Rgb888;
 use embedded_graphics::prelude::*;
 use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader, SliceSource};
 use obc_render::text::{draw_text, Font, TextAlign};
-use obc_render::MAX_SPANS;
 use obc_render::{RenderConfig, RenderScratch, Viewport};
+use obc_render::{MAX_FRAME_POINTS, MAX_SPANS};
 use obcm_testkit::{build_file, pack_poly, pack_poly16, pack_poly_decl, LodSpec, Style};
 
 mod common;
@@ -133,32 +133,50 @@ fn zero_area_collinear_polygon_fills_nothing() {
 /// has room. A high-priority feature must still survive while low-priority big ones are dropped for
 /// lack of point room.
 ///
-/// The premise: `MAX_FRAME_POINTS` (4768) holds three of the test's ~1580-pt blobs, so a few
-/// pack in before saturation and `point_utilization` sits near 3×1582/4768 ≈ 0.99 — far past
-/// anything the span buffer could explain.
+/// The premise is **derived from the cap, not restated beside it**: the blob is sized so that
+/// exactly `BLOBS` of them plus the 4-point high-priority square consume the point budget, one more
+/// blob cannot, and `point_utilization` lands on 1.0 — far past anything the span or ring buffers
+/// could explain. `const` asserts hold that shape, so moving `MAX_FRAME_POINTS` (as this PR's review
+/// round did, 6,400 → 6,208) re-sizes the blob instead of quietly demoting the test to a
+/// non-saturating one. At the flat cap with the old hand-picked 1,582-point blob, only three would
+/// have fitted and utilization would have fallen to 0.76 — over the 0.75 floor by luck, not design.
 #[test]
 fn frame_points_saturate_before_spans_and_priority_still_wins() {
-    // ~1580 points per feature. MAX_FRAME_POINTS = 4768, so ~3 fit; the 4th+ are dropped on the
-    // point check, long before MAX_SPANS (1152) could fill. Two styles: low priority (4) blue and
-    // high priority (1) red, both big.
+    /// How many blobs the budget must admit — several, so "a few pack in before saturation" is a
+    /// real claim and not a single-feature edge case.
+    const BLOBS: usize = 4;
+    /// The high-priority square's vertex count. Priority 1, so `select()` charges it first.
+    const HI_PTS: usize = 4;
+    /// Densified vertices per long edge — derived from whatever divides the remaining budget
+    /// `BLOBS` ways, inverting the blob's `2·DENSIFY + 3` vertex count below.
+    const DENSIFY: usize = ((MAX_FRAME_POINTS - HI_PTS) / BLOBS - 3) / 2;
+    /// Points per blob: the exterior anchor, two densified edges and the two turns.
+    const BLOB_PTS: usize = 2 * DENSIFY + 3;
+    // The premise, asserted: `BLOBS` fit beside the square and one more does not, so the point
+    // check — not the span or ring check — is provably what drops the rest.
+    const _: () = assert!(HI_PTS + BLOBS * BLOB_PTS <= MAX_FRAME_POINTS, "the premised blobs must fit");
+    const _: () = assert!(HI_PTS + (BLOBS + 1) * BLOB_PTS > MAX_FRAME_POINTS, "one more blob must not fit");
+    // A blob must also survive per-feature decode to reach the frame buffer at all.
+    const _: () = assert!(BLOB_PTS <= obc_render::MAX_DECODE_POINTS, "a blob must decode whole");
+
     const LOW_565: u16 = 0x001F; // blue, priority 4
     const HIGH_565: u16 = 0xF800; // red, priority 1
     let styles: &[Style] = &[(1, 0, LOW_565, 1, 4, false, None), (2, 1, HIGH_565, 1, 1, false, None)];
 
-    // A low-priority "blob": a ~1580-vertex thin filled rectangle (densified edges). Its vertex
+    // A low-priority "blob": a `BLOB_PTS`-vertex thin filled rectangle (densified edges). Its vertex
     // count is what matters — every vertex lands in `frame_points`, the buffer under test. Anchored
     // at its leaf-local (10,10); 8-bit deltas keep each step ≤127 µdeg, well inside a quadrant.
     let big_blob = |style: u8| -> Vec<u8> {
         let mut deltas: Vec<(i8, i8)> = Vec::new();
-        for _ in 0..790 {
+        for _ in 0..DENSIFY {
             deltas.push((1, 0)); // densified east edge
         }
         deltas.push((0, 40)); // up
-        for _ in 0..790 {
+        for _ in 0..DENSIFY {
             deltas.push((-1, 0)); // densified west edge back
         }
         deltas.push((0, -40)); // close
-        pack_poly(style, 10, 10, &deltas) // 1582 exterior points
+        pack_poly(style, 10, 10, &deltas) // BLOB_PTS exterior points (anchor + deltas)
     };
     // The high-priority feature: a solid 10000-µdeg red square (16-bit deltas) so it unmistakably
     // fills pixels (≈30 px across at the test zoom) yet fits inside its 25000-µdeg quadrant. Far
@@ -169,10 +187,10 @@ fn frame_points_saturate_before_spans_and_priority_still_wins() {
     // A complete depth-2 quadtree: root branch (node 0, children 1..4), four sub-branches
     // (nodes 1..4) whose children are the 16 leaves (nodes 5..20). One feature per leaf, each
     // anchored at its own quadrant's (10,10) so it sits inside that quadrant and (at a whole-map
-    // zoom) on-screen. Leaves 0..6 carry low-priority blobs (7 × 1582 = 11074 points, already past
-    // MAX_FRAME_POINTS = 4768 → the point buffer overflows); leaf 7 carries the high-priority
-    // square; leaves 8..15 carry more low-priority blobs, all dropped, keeping the buffer pinned
-    // full so the saturation is unambiguous.
+    // zoom) on-screen. Leaves 0..6 carry low-priority blobs — 7 × `BLOB_PTS`, already well past
+    // `MAX_FRAME_POINTS`, so the point buffer overflows; leaf 7 carries the high-priority square;
+    // leaves 8..15 carry more low-priority blobs, all dropped, keeping the buffer pinned full so
+    // the saturation is unambiguous.
     const BRANCH: u32 = 0x8000_0000;
     let mut index = vec![BRANCH | 1, BRANCH | 5, BRANCH | 9, BRANCH | 13, BRANCH | 17];
     for leaf in 0..16u32 {
@@ -214,7 +232,12 @@ fn frame_points_saturate_before_spans_and_priority_still_wins() {
     // …but the *span* buffer was nowhere near full (proving the point check, not the span check,
     // was the drop trigger — the distinct path from priority.rs).
     assert!(stats.features_drawn < MAX_SPANS, "spans were not the limiting buffer");
-    // Three ~1582-pt blobs in a 4768 buffer land at ≈0.99 — the point buffer is what filled.
+    // Nor the ring buffer: a handful of single-ring features cannot approach the ring cap, which on
+    // busy real frames is the ceiling — here it is not, and that is the point.
+    assert!(stats.ring_utilization < 0.1, "rings were not the limiting buffer (util {})", stats.ring_utilization);
+    // `BLOBS` blobs plus the square consume the budget to within a few points, so utilization lands
+    // just under 1.0 — the point buffer is unambiguously what filled.
+    assert_eq!(stats.features_drawn, BLOBS + 1, "exactly the premised blobs plus the square are admitted");
     assert!(stats.point_utilization > 0.75, "frame_points is the saturated buffer (util {})", stats.point_utilization);
 
     // The high-priority red square (priority 1, collected first) survived the saturation and

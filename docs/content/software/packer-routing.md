@@ -838,7 +838,7 @@ The resulting OBCM is opened without restamping and rendered through the same
 `obc-reader` + `obc-render` bridge on a 240×320 device map plane. Controls visit
 every authored LOD by its real m/px dispatch. The panel reports features tried,
 drawn and dropped; chunks and points; the 2,048-point/32-ring per-feature decode
-limits; and the production 1,152-span/4,768-point/1,024-ring frame limits and
+limits; and the production 1,792-span/6,208-point/1,792-ring frame limits and
 errors. It is therefore honest about the device's selection pressure, not a
 browser drawing of what the schema might mean.
 

@@ -268,11 +268,16 @@ mod tests {
         // the same polygon still fill correctly.
         use embedded_graphics::{pixelcolor::BinaryColor, prelude::*, primitives::Rectangle};
 
-        const P: usize = 200; // prongs → 2·P scanline crossings in the prong band
+        // Prongs → 2·P scanline crossings in the prong band. Derived from the cap rather than
+        // hand-picked, so growing `MAX_CROSSINGS` (as #1146 P3 did, 256 → 640) re-sizes the comb
+        // instead of quietly turning the saturation case into a non-saturating one.
+        const P: usize = MAX_CROSSINGS / 2 + 40;
         const W: i32 = 2 * P as i32; // one column per prong + its gap
         const H: i32 = 8;
         const HBASE: i32 = 4; // prongs span y ∈ [0, HBASE); a solid base sits below
         const HBOTTOM: i32 = 6;
+        /// Outline capacity: the comb pushes `4·P + 1` points (see the walk below).
+        const POLY_CAP: usize = 4 * P + 8;
         // The comb only proves anything if it actually overflows the buffer.
         const { assert!(2 * P > MAX_CROSSINGS, "comb must exceed MAX_CROSSINGS to exercise saturation") };
 
@@ -312,7 +317,7 @@ mod tests {
         // A comb: P vertical 1px prongs (1px gaps) standing on a solid base. A
         // scanline through the prongs crosses both walls of every prong (2·P);
         // one through the base crosses only the two outer walls.
-        let mut poly: Vec<Point, 1024> = Vec::new();
+        let mut poly: Vec<Point, POLY_CAP> = Vec::new();
         poly.push(Point::new(0, 0)).unwrap();
         for i in 0..P as i32 {
             let x1 = 2 * i + 1;
