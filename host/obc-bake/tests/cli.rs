@@ -29,7 +29,7 @@ fn regions_lists_the_curated_coverage() {
     assert!(out.status.success());
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.contains("europe/germany/bayern"), "{text}");
-    assert!(text.contains("20 regions"), "{text}");
+    assert!(text.contains("35 regions"), "{text}");
 }
 
 #[test]
