@@ -124,6 +124,14 @@
 #![no_main]
 
 mod sd;
+// The microSD host over Nordic's sEMMC soft peripheral on the FLPR (epic #1158): the card in
+// native 4-bit SD mode at 32 MHz, the replacement for `sd.rs`'s SPI transport.
+// **Build-only in this PR** — nothing constructs a `Semmc` and the `VPR00` vector is unclaimed, so
+// the whole module is dead code until the integration PR of #1158 swaps the transport, adds the
+// display/storage mode scheduler, binds `VPR00` to `semmc::on_vpr00_irq`, and deletes the SPI path.
+// Remove this `allow` there.
+#[allow(dead_code)]
+mod semmc;
 // The **scratch arena** (#1146 P2): one RAM block time-shared by the three biggest blocks that are
 // never live together — the per-frame render scratch, the nav block, and the USB staging buffer.
 // The only place this feature's `unsafe` lives; the owner rules it composes with are the
