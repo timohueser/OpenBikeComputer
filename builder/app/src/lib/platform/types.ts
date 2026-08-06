@@ -38,10 +38,23 @@ export interface Caps {
 
 export type { DeviceSession, RideLibrary };
 
-/** Native grouped output; browser hosts use their downloader instead. */
+/**
+ * Grouped file output for an assembled set — a native folder on the desktop, a
+ * picked directory on a browser that has `showDirectoryPicker`. Hosts without
+ * either export `openMapOutput: null` and the UI falls back to its downloader.
+ *
+ * `openMapOutput` must be called **under the user gesture that starts the
+ * run**: the browser implementation opens a directory picker, and a picker not
+ * backed by a fresh activation is refused by the browser. A dismissed picker
+ * rejects with an `AbortError`, which callers treat as "changed my mind", not
+ * as a failure.
+ */
 export interface MapOutputSession {
     readonly path: string;
-    write(name: string, bytes: Uint8Array): Promise<string>;
+    /** Accepts a `Blob` so an OPFS-backed shard can stream to disk without
+     *  entering the tab's heap; hosts that need contiguous bytes (the desktop
+     *  IPC) do their own conversion — the residency is theirs to own. */
+    write(name: string, body: Uint8Array | Blob): Promise<string>;
     finish(): Promise<void>;
     discard(): Promise<void>;
 }

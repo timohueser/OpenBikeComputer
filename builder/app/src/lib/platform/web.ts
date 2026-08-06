@@ -10,7 +10,19 @@
 // "/" or under a sub-path without a rebuild.
 
 import { LINKS } from "../constants";
-import type { Platform } from "./types";
+import type { MapOutputSession, Platform } from "./types";
+
+// WICG File System Access — Chromium's picker, absent from lib.dom and from
+// Firefox/Safari. Feature-detected below; never called where it does not exist.
+declare global {
+    interface Window {
+        showDirectoryPicker?(options?: {
+            id?: string;
+            mode?: "read" | "readwrite";
+            startIn?: string;
+        }): Promise<FileSystemDirectoryHandle>;
+    }
+}
 
 // `||`, not `??`: a deployment that has no catalog to point at yet (the site deploy
 // passes the repository variable straight through, and an unset variable arrives as
@@ -70,6 +82,45 @@ function fetchCatalog(): Promise<{ url: string; body: string }> {
 
 const catalogOnce = once(fetchCatalog);
 
+/**
+ * The assembled set, written straight into a directory the user picks — the SD
+ * card itself, when it is mounted. One permission prompt when the run starts,
+ * zero download prompts when it ends; the browsers without the picker (Firefox,
+ * Safari) export `null` here and get the single-archive download instead.
+ *
+ * Files land at the picked directory's top level, because that is where the
+ * device reads a set from — a wrapping folder would only add a step the done
+ * message would then have to explain away.
+ */
+async function openMapOutput(_name: string): Promise<MapOutputSession> {
+    // `id` keys the browser's remembered location per purpose, so the second
+    // map defaults to where the first one went (ideally: the card).
+    const dir = await window.showDirectoryPicker!({ id: "obc-map-output", mode: "readwrite" });
+    const written: string[] = [];
+    return {
+        path: dir.name,
+        async write(filename, body) {
+            const file = await dir.getFileHandle(filename, { create: true });
+            const stream = await file.createWritable(); // truncates an old copy
+            // The cast mirrors cells/store.ts: lib.dom's write chunk type is
+            // pickier than a Uint8Array over an unshared buffer actually is.
+            await stream.write(body as unknown as FileSystemWriteChunkType);
+            await stream.close();
+            written.push(filename);
+            return `${dir.name}/${filename}`;
+        },
+        async finish() {},
+        async discard() {
+            // A failed or cancelled run takes its partial files with it. Every
+            // removal is attempted even if one refuses (a lock, a pulled card).
+            const results = await Promise.allSettled(written.map((f) => dir.removeEntry(f)));
+            written.length = 0;
+            const failed = results.find((r) => r.status === "rejected");
+            if (failed) throw (failed as PromiseRejectedResult).reason;
+        },
+    };
+}
+
 export const platform: Platform = {
     name: "web",
     caps: {
@@ -90,7 +141,9 @@ export const platform: Platform = {
 
     catalog: catalogOnce,
     catalogFetch: globalThis.fetch,
-    openMapOutput: null,
+    // Gated on the API, not the browser name: exactly the Chromiums that can
+    // show a directory picker offer the write-straight-to-card path.
+    openMapOutput: typeof window !== "undefined" && window.showDirectoryPicker ? openMapOutput : null,
 
     // WebUSB, loaded on demand. The import is dynamic so the transport, the
     // protocol codecs and the client land in their own chunk: a visitor who only

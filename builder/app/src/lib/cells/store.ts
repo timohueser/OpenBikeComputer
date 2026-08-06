@@ -352,17 +352,21 @@ export async function openCellReader(revision: string, keys: readonly string[]):
     // index rather than a hash lookup.
     const bySlot: (SyncHandle | undefined)[] = [];
     const reader: CellReader = {
-        read(slot, offset, into) {
-            const handle = bySlot[slot];
-            if (!handle) return false;
-            try {
-                // A short read is a failure, not a partial success: the engine
-                // asked for a byte range and half of one is not it.
-                return handle.read(into, { at: offset }) === into.byteLength;
-            } catch {
-                return false;
-            }
-        },
+        read: counted(
+            () => ioStats.cellRead,
+            (_slot: number, _offset: number, into: Uint8Array) => into.byteLength,
+            (slot: number, offset: number, into: Uint8Array) => {
+                const handle = bySlot[slot];
+                if (!handle) return false;
+                try {
+                    // A short read is a failure, not a partial success: the engine
+                    // asked for a byte range and half of one is not it.
+                    return handle.read(into, { at: offset }) === into.byteLength;
+                } catch {
+                    return false;
+                }
+            },
+        ),
         close() {
             bySlot.length = 0;
             for (const handle of opened.values()) {
@@ -414,6 +418,68 @@ export async function readCellBytes(revision: string, keys: readonly string[]): 
         }
     }
     return out;
+}
+
+// --- I/O accounting (dedicated worker only) -----------------------------------
+
+/** One channel's tally: how often the engine crossed into OPFS, and what it cost. */
+export interface IoCounter {
+    calls: number;
+    bytes: number;
+    ms: number;
+}
+
+/**
+ * The run's I/O ledger, by channel. The wasm engine's every OPFS crossing lands
+ * in one of these — which is exactly the number an in-tab assembly's wall clock
+ * is made of, and the thing a slowness report needs before anyone theorizes.
+ * Read-and-reset by {@link takeIoStats}; the worker sends it with `done`. The
+ * `performance.now()` pair per call is nanoseconds against calls that cost
+ * microseconds.
+ */
+export interface IoStats {
+    cellRead: IoCounter;
+    sinkWrite: IoCounter;
+    sinkRead: IoCounter;
+    scratchWrite: IoCounter;
+    scratchRead: IoCounter;
+}
+
+const counter = (): IoCounter => ({ calls: 0, bytes: 0, ms: 0 });
+
+function freshIoStats(): IoStats {
+    return {
+        cellRead: counter(),
+        sinkWrite: counter(),
+        sinkRead: counter(),
+        scratchWrite: counter(),
+        scratchRead: counter(),
+    };
+}
+
+let ioStats: IoStats = freshIoStats();
+
+/** The ledger so far, handing the caller the totals and starting a fresh one. */
+export function takeIoStats(): IoStats {
+    const taken = ioStats;
+    ioStats = freshIoStats();
+    return taken;
+}
+
+function counted<A extends unknown[]>(
+    tally: () => IoCounter,
+    size: (...args: A) => number,
+    op: (...args: A) => boolean,
+): (...args: A) => boolean {
+    return (...args) => {
+        const t0 = performance.now();
+        const ok = op(...args);
+        const c = tally();
+        c.calls += 1;
+        c.ms += performance.now() - t0;
+        if (ok) c.bytes += size(...args);
+        return ok;
+    };
 }
 
 // --- the write side of the output (dedicated worker only) ---------------------
@@ -490,28 +556,36 @@ export async function openShardSink(slots = SINK_SLOTS): Promise<ShardSink | nul
             written[slot] = 0;
             return true;
         },
-        write(slot, bytes) {
-            const handle = handles[slot];
-            if (!handle) return false;
-            try {
-                const n = handle.write(bytes, { at: written[slot] });
-                written[slot] += n;
-                return n === bytes.byteLength;
-            } catch {
-                return false;
-            }
-        },
-        readAt(slot, offset, into) {
-            const handle = handles[slot];
-            if (!handle) return false;
-            try {
-                // A short read is a failure, not a partial success — the same rule
-                // the input side has, and here it is §4.8 that would be misled.
-                return handle.read(into, { at: offset }) === into.byteLength;
-            } catch {
-                return false;
-            }
-        },
+        write: counted(
+            () => ioStats.sinkWrite,
+            (_slot: number, bytes: Uint8Array) => bytes.byteLength,
+            (slot: number, bytes: Uint8Array) => {
+                const handle = handles[slot];
+                if (!handle) return false;
+                try {
+                    const n = handle.write(bytes, { at: written[slot] });
+                    written[slot] += n;
+                    return n === bytes.byteLength;
+                } catch {
+                    return false;
+                }
+            },
+        ),
+        readAt: counted(
+            () => ioStats.sinkRead,
+            (_slot: number, _offset: number, into: Uint8Array) => into.byteLength,
+            (slot: number, offset: number, into: Uint8Array) => {
+                const handle = handles[slot];
+                if (!handle) return false;
+                try {
+                    // A short read is a failure, not a partial success — the same rule
+                    // the input side has, and here it is §4.8 that would be misled.
+                    return handle.read(into, { at: offset }) === into.byteLength;
+                } catch {
+                    return false;
+                }
+            },
+        ),
         seal(slot) {
             const handle = handles[slot];
             if (!handle) return false;
@@ -658,31 +732,39 @@ export async function openScratchStore(slots = SCRATCH_SLOTS): Promise<ScratchFi
             live.set(id, { slot, written: 0 });
             return id;
         },
-        append(id, bytes) {
-            const at = live.get(id);
-            const handle = at ? handles[at.slot] : null;
-            if (!at || !handle) return false;
-            try {
-                const n = handle.write(bytes, { at: at.written });
-                at.written += n;
-                return n === bytes.byteLength;
-            } catch {
-                return false;
-            }
-        },
-        readAt(id, offset, into) {
-            const at = live.get(id);
-            const handle = at ? handles[at.slot] : null;
-            if (!at || !handle) return false;
-            // Past-the-end reads must refuse here: the model below the engine
-            // zero-fills, and zeroes that parse are the worst kind of wrong.
-            if (offset + into.byteLength > at.written) return false;
-            try {
-                return handle.read(into, { at: offset }) === into.byteLength;
-            } catch {
-                return false;
-            }
-        },
+        append: counted(
+            () => ioStats.scratchWrite,
+            (_id: number, bytes: Uint8Array) => bytes.byteLength,
+            (id: number, bytes: Uint8Array) => {
+                const at = live.get(id);
+                const handle = at ? handles[at.slot] : null;
+                if (!at || !handle) return false;
+                try {
+                    const n = handle.write(bytes, { at: at.written });
+                    at.written += n;
+                    return n === bytes.byteLength;
+                } catch {
+                    return false;
+                }
+            },
+        ),
+        readAt: counted(
+            () => ioStats.scratchRead,
+            (_id: number, _offset: number, into: Uint8Array) => into.byteLength,
+            (id: number, offset: number, into: Uint8Array) => {
+                const at = live.get(id);
+                const handle = at ? handles[at.slot] : null;
+                if (!at || !handle) return false;
+                // Past-the-end reads must refuse here: the model below the engine
+                // zero-fills, and zeroes that parse are the worst kind of wrong.
+                if (offset + into.byteLength > at.written) return false;
+                try {
+                    return handle.read(into, { at: offset }) === into.byteLength;
+                } catch {
+                    return false;
+                }
+            },
+        ),
         len(id) {
             return live.get(id)?.written ?? -1;
         },
