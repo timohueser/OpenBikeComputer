@@ -34,6 +34,16 @@ mod com;
 #[allow(dead_code)]
 #[path = "../ls021_flpr.rs"]
 mod ls021_flpr;
+// The display backend reaches the FLPR through the mode mux since the storage pivot (#1158) — every
+// push asks it for the coprocessor. Pulled in for that one seam; this checker never brings storage
+// up, so the mux simply records that the display owns the hart and the sEMMC side stays dormant
+// (its image is never copied into the carve and the card pads are only ever parked as inputs).
+#[allow(dead_code)]
+#[path = "../flpr_mux.rs"]
+mod flpr_mux;
+#[allow(dead_code)]
+#[path = "../semmc.rs"]
+mod semmc;
 
 use defmt::{info, warn};
 use defmt_rtt as _;

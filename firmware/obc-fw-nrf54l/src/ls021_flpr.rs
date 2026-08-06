@@ -69,8 +69,24 @@
 //! ([`run_spans_blocking`](Ls021Flpr::run_spans_blocking)): its ~9 KB composite/save scratch must
 //! stay a stack transient — alive across an `await` it becomes task-future state in a *static*,
 //! permanently shrinking the residual stack (the on-glass boot HardFault that taught this).
+//!
+//! ## The FLPR is shared with storage (epic #1158)
+//!
+//! Since the storage pivot the same coprocessor also runs Nordic's sEMMC soft peripheral — the two
+//! images are **time-multiplexed**, and [`crate::flpr_mux`] owns which one has the hart. Two seams
+//! reach out of this module into it:
+//!
+//! - every push funnels through [`ring_spans`](Ls021Flpr::ring_spans), which calls
+//!   [`flpr_mux::ensure_display`](crate::flpr_mux::ensure_display) first — so a push after a
+//!   storage burst pays the measured 138 µs to take the hart back and nothing else in the display
+//!   path has to know the mux exists;
+//! - a scan **in flight** must never be parked ([`scan_in_flight`] / [`wait_scan_settled`]) — that
+//!   is the one window in which handing the FLPR to storage would abandon a half-drawn frame. The
+//!   flag is a *sequence*, not a boolean, so a late ack of the previous frame cannot clear the
+//!   current one's.
 
 use core::ptr::{addr_of, addr_of_mut};
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use defmt::{debug, error, info};
 // The `#[interrupt]` attribute + the `EGU20` vector both live under this name (the module carries
@@ -215,6 +231,58 @@ unsafe fn EGU20() {
     FRAME_ACK.signal(());
 }
 
+/// **The sequence of the scan currently on the wire, or 0 when the panel is idle** (epic #1158).
+///
+/// A *sequence* rather than a flag, because the two are not equivalent: the EGU20 ISR fires per
+/// frame and a late ack of frame *N* can land after [`Ls021Flpr::ring_spans`] has already rung
+/// *N+1*, so a boolean cleared by "an ack arrived" would report the panel idle with a frame
+/// half-drawn. Comparing against the FLPR's own `flpr_seq` echo cannot get that wrong, and it is
+/// readable from **any** task — which matters, because the whole point is that a task other than
+/// the one awaiting the ack can ask the question (see [`scan_in_flight`]).
+static SCAN_SEQ: AtomicU32 = AtomicU32::new(0);
+
+/// **Is a frame on the wire right now?** — the one window in which the FLPR must not be handed to
+/// storage (epic #1158 / #1145 §3: *never park mid-scan*). Parking here abandons a half-scanned
+/// frame; every other instant is fair game, because the display side only ever touches the
+/// coprocessor from the map plane and the storage side's transfers are synchronous.
+///
+/// Reads the FLPR's `flpr_seq` echo directly instead of consulting the pushing task, so it stays
+/// truthful while that task is suspended on [`FRAME_ACK`] — which is exactly the situation it
+/// exists for.
+pub fn scan_in_flight() -> bool {
+    let s = SCAN_SEQ.load(Ordering::Relaxed);
+    // SAFETY: a volatile read of one `u32` in the SHARED handshake page, which no Rust object
+    // aliases and the FLPR writes concurrently.
+    s != 0 && unsafe { addr_of!((*CONTROL).flpr_seq).read_volatile() } != s
+}
+
+/// Spin until [`scan_in_flight`] clears — the synchronous half of the mux's *never park mid-scan*
+/// rule, for the paths that have no `await` (the `BlockDevice` seam).
+///
+/// Bounded by [`FRAME_DEADLINE`], the same window the pushing task gives the ack: past it the
+/// coprocessor is wedged, not busy, and the caller is better served by taking the hart (the display
+/// path's own timeout then escalates to a relaunch) than by waiting forever. Returns whether the
+/// scan settled.
+///
+/// This spins rather than yields on purpose: it is reached from synchronous storage code, and the
+/// task it is waiting on cannot make progress by being polled anyway — the FLPR finishes the frame
+/// on its own and stamps `flpr_seq`, which this reads directly. Async callers should wait through
+/// [`crate::flpr_mux::storage_session`] instead, which yields.
+pub fn wait_scan_settled() -> bool {
+    let deadline = Instant::now() + FRAME_DEADLINE;
+    while scan_in_flight() {
+        if Instant::now() >= deadline {
+            error!(
+                "LS021 FLPR: scan never settled within {=u64} ms — taking the hart anyway",
+                FRAME_DEADLINE.as_millis()
+            );
+            return false;
+        }
+        core::hint::spin_loop();
+    }
+    true
+}
+
 /// Deadline for one frame ack: the worst full-frame scan is ~44 ms (#348), so 250 ms (>5×)
 /// only ever fires when the FLPR has genuinely stalled — turning a hang into a reported error the
 /// caller retries (and #349's relaunch escalation hooks).
@@ -240,6 +308,10 @@ pub enum FlprError {
 
 /// Copy the blob into FLPR RAM, set the boot vector, and release the core from reset.
 /// `INITPC` = the entry address; `CPURUN.EN = 1` starts execution there.
+///
+/// **The caller owns parking the hart first.** The boot path reaches a core that never ran; the
+/// mode-switch path reaches one [`crate::semmc::park_hart`] has just reset. Re-copying the blob
+/// under a live core is the one thing this must never do.
 fn start_flpr() {
     unsafe {
         core::ptr::copy_nonoverlapping(FLPR_BLOB.as_ptr(), FLPR_RAM_BASE as *mut u8, FLPR_BLOB.len());
@@ -250,37 +322,85 @@ fn start_flpr() {
     }
 }
 
-/// Bring the FLPR up: zero + arm the control block (write the layout magic the FLPR checks first),
-/// launch the core, and poll for its `ALIVE` stamp. Returns once the FLPR has booted and agreed on
-/// the control-block layout — after this the [`Ls021Flpr`] backend can drive frames.
-pub async fn launch_flpr() -> Result<(), FlprError> {
+/// Zero + arm the control block (the layout magic the FLPR checks first), then release the core —
+/// the shared front half of [`launch_flpr`] and [`launch_flpr_blocking`].
+fn arm_and_start() {
     // SAFETY: CONTROL is the SHARED-page control block at a fixed address no Rust object aliases; the
     // FLPR is not yet running, so this pre-launch zero/arm races nothing.
     unsafe {
         core::ptr::write_bytes(CONTROL as *mut u8, 0, core::mem::size_of::<Control>());
         addr_of_mut!((*CONTROL).magic).write_volatile(LAYOUT_MAGIC); // FLPR reads magic first thing
     }
+    // A relaunch (recovery or a storage→display mode switch) hands the core a control block whose
+    // `flpr_seq` has just been zeroed; the in-flight marker must go with it, or `scan_in_flight`
+    // would compare a live sequence against a counter that will never reach it again.
+    SCAN_SEQ.store(0, Ordering::Relaxed);
     start_flpr();
+}
+
+/// Arm the frame-ack doorbell (#347): EGU20 TRIGGERED[0] → its IRQ → [`FRAME_ACK`]. P1 = the
+/// default peripheral lane (below the P0 GRTC time-driver; the ISR is one store + a signal). Armed
+/// before the first push so no ack is ever missed, and re-run on every relaunch — every step is
+/// idempotent (`INTENSET` is a set-mask write).
+fn arm_frame_ack() {
+    // SAFETY: fixed EGU20 secure-alias MMIO; set-mask writes only.
+    unsafe {
+        EGU20_INTENSET.write_volatile(1); // bit0 = TRIGGERED[0]
+        interrupt::EGU20.set_priority(Priority::P1);
+        interrupt::EGU20.enable();
+    }
+}
+
+/// Bring the FLPR up: zero + arm the control block (write the layout magic the FLPR checks first),
+/// launch the core, and poll for its `ALIVE` stamp. Returns once the FLPR has booted and agreed on
+/// the control-block layout — after this the [`Ls021Flpr`] backend can drive frames.
+///
+/// The **boot / recovery** path: it yields between polls because a panel that is going to come up
+/// late (a cold core, a stalled relaunch) may take a chunk of the 1 s [`ALIVE_DEADLINE`], and there
+/// is nothing to gain from holding the executor for it. The per-switch path is
+/// [`launch_flpr_blocking`].
+pub async fn launch_flpr() -> Result<(), FlprError> {
+    arm_and_start();
     info!("LS021 FLPR: released (INITPC=0x{=u32:08x}) — waiting for alive", FLPR_RAM_BASE as u32);
 
     let deadline = Instant::now() + ALIVE_DEADLINE;
     loop {
         match unsafe { addr_of!((*CONTROL).status).read_volatile() } {
             FLPR_ALIVE => {
-                // Arm the frame-ack doorbell (#347): EGU20 TRIGGERED[0] → its IRQ → [`FRAME_ACK`].
-                // P1 = the default peripheral lane (below the P0 GRTC time-driver; the ISR is one
-                // store + a signal). Armed before the first push so no ack is ever missed. On a
-                // relaunch this re-runs — every step is idempotent (INTENSET is a set-mask write).
-                unsafe {
-                    EGU20_INTENSET.write_volatile(1); // bit0 = TRIGGERED[0]
-                    interrupt::EGU20.set_priority(Priority::P1);
-                    interrupt::EGU20.enable();
-                }
+                arm_frame_ack();
+                crate::flpr_mux::note_display_live();
                 return Ok(());
             }
             FLPR_BADMAG => return Err(FlprError::BadMagic),
             _ if Instant::now() >= deadline => return Err(FlprError::NoBoot),
             _ => Timer::after_millis(5).await,
+        }
+    }
+}
+
+/// **The mode-switch launch** (epic #1158): [`launch_flpr`]'s contract with a spin instead of a
+/// yield.
+///
+/// [`crate::flpr_mux::ensure_display`] runs from synchronous code — the overlay push and the
+/// `BlockDevice` seam both reach it with no `await` available — so the storage→display half of the
+/// mux cannot use the async launch. Spinning is also simply the right shape here: the whole switch
+/// measured **138 µs** on glass (the blob stamps `ALIVE` within a few of its poll periods, and it
+/// has just been re-copied into RAM that was never powered down), so a yield would cost more in
+/// scheduler round-trips than the wait itself. The deadline stays [`ALIVE_DEADLINE`] — reaching it
+/// means the coprocessor is gone, not slow, and the caller's push then fails into the existing
+/// relaunch escalation.
+pub fn launch_flpr_blocking() -> Result<(), FlprError> {
+    arm_and_start();
+    let deadline = Instant::now() + ALIVE_DEADLINE;
+    loop {
+        match unsafe { addr_of!((*CONTROL).status).read_volatile() } {
+            FLPR_ALIVE => {
+                arm_frame_ack();
+                return Ok(());
+            }
+            FLPR_BADMAG => return Err(FlprError::BadMagic),
+            _ if Instant::now() >= deadline => return Err(FlprError::NoBoot),
+            _ => core::hint::spin_loop(),
         }
     }
 }
@@ -308,6 +428,11 @@ pub async fn launch_flpr() -> Result<(), FlprError> {
 /// counting across the relaunch — the blob services any `m33_seq` different from the last one it
 /// saw (zeroed to 0 here), so a stale-ack/fresh-ack mixup is impossible.
 pub async fn relaunch_flpr() -> Result<(), FlprError> {
+    // 0. If storage happens to hold the hart, quiesce the sEMMC peripheral first (epic #1158) —
+    //    latched completions cleared, the shared VPR00 interrupt gate disarmed, the pads handed
+    //    back — so the halt below lands on a coprocessor nothing is still talking to. A no-op on
+    //    the path this is actually reached from (a failed display push, mode already Display).
+    crate::flpr_mux::quiesce_storage_if_active();
     // 1. Force-halt via the DM (works mid-busy-loop, unlike CPURUN), then bounded-wait for the ack.
     unsafe {
         VPR00_DMCONTROL.write_volatile(DM_DMACTIVE); // wake the DM first (its fields gate on dmactive)
@@ -455,6 +580,7 @@ impl<'b> Ls021Flpr<'b> {
                     FRAME_DEADLINE.as_millis()
                 );
                 dump_flpr_state(s);
+                SCAN_SEQ.store(0, Ordering::Relaxed); // the panel is wedged, not scanning — release storage
                 return false;
             }
             // The FLPR writes `status`/`frame_count` *before* the `flpr_seq` ack (its fence orders
@@ -465,6 +591,7 @@ impl<'b> Ls021Flpr<'b> {
                 break;
             }
         }
+        SCAN_SEQ.store(0, Ordering::Relaxed); // the frame is on glass — storage may take the hart
         self.check_ack(total, t_frame)
     }
 
@@ -494,10 +621,12 @@ impl<'b> Ls021Flpr<'b> {
                     FRAME_DEADLINE.as_millis()
                 );
                 dump_flpr_state(s);
+                SCAN_SEQ.store(0, Ordering::Relaxed);
                 return false;
             }
             core::hint::spin_loop();
         }
+        SCAN_SEQ.store(0, Ordering::Relaxed);
         cortex_m::asm::dmb(); // ack-read ordering, as in the async path (issue #346)
         self.check_ack(total, t_frame)
     }
@@ -505,9 +634,19 @@ impl<'b> Ls021Flpr<'b> {
     /// Publish the span list + the framebuffer address, drop any stale ack signal, and ring one
     /// `CMD_RUN_FRAME` — the shared front half of [`run_spans`](Self::run_spans) /
     /// [`run_spans_blocking`](Self::run_spans_blocking). Returns the rung sequence + the frame's t0.
+    ///
+    /// **This is the display side's single seam onto the mode mux** (epic #1158): both pushes go
+    /// through here, so taking the coprocessor back from storage is one call in one place. It is
+    /// deliberately *not* fallible — a failed relaunch rings the doorbell at a dead core, the ack
+    /// times out, and the existing `MapDisplay` escalation (`relaunch_flpr` after
+    /// `PUSH_FAILS_PER_RELAUNCH`) handles it, rather than this growing a second recovery ladder.
     fn ring_spans(&mut self, fb: &[u8], spans: &[(u16, u16)]) -> (u32, Instant) {
+        crate::flpr_mux::ensure_display();
         self.seq += 1;
         let s = self.seq;
+        // Publish before the doorbell: from here until the ack the FLPR owns the hart, and storage
+        // must wait (`scan_in_flight`). Cleared by both run paths, success or timeout.
+        SCAN_SEQ.store(s, Ordering::Relaxed);
         set_spans(spans);
         // SAFETY: plain volatile store into the SHARED-page control block (no Rust object aliases
         // it); the FLPR reads it only after the `ring_cmd` doorbell below orders it.
