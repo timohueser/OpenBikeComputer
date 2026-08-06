@@ -391,13 +391,15 @@ The USB writes (map, route, firmware) need an OBC on the other end of a cable.
 The device half ships in every firmware build (#889, `obc-fw-nrf54l/src/usb/`)
 and is verified on hardware. `dev-harness/` is a second
 entry point that mounts the whole app against the **simulated device** —
-`lib/usb/loopback.ts`, the real protocol over an in-memory pipe, paced to the SD
-card's measured **~0.5 MB/s write** ceiling so progress, throughput and the
-remaining-time estimate behave the way they do on hardware. (Reads are faster;
-uploads are write-bound. That ceiling is the **retired SPI transport's** — the
-sEMMC pivot of #1158 raised the card's raw write bandwidth to 8.2 MB/s, so the
-harness now paces pessimistically until it is re-measured end to end through the
-FAT layer.) It lives outside `src/` because no build has it as
+`lib/usb/loopback.ts`, the real protocol over an in-memory pipe, paced to a fixed
+**~0.68 MB/s** so progress, throughput and the remaining-time estimate behave
+plausibly. That pacing is **deliberately pessimistic and not a measurement**: it
+was the retired SPI transport's write ceiling, and the sEMMC pivot (#1158) raised
+the card's raw write bandwidth to 8.2 MB/s. The upload pipeline was retuned for
+that (windowed host writes, a double-buffered cluster-sized device stage, FAT
+pre-allocation), but nothing end to end has been measured on glass yet — so the
+harness stays slow on purpose rather than promising a number the hardware has not
+confirmed. It lives outside `src/` because no build has it as
 an input, which is what keeps the simulated device out of every shipped bundle.
 
 ```sh
@@ -554,8 +556,9 @@ The `obc-pack` tests use fixtures under `builder/tests/corpus/` — the committe
 
 The full app runs on the desktop simulator **and on the nRF54LM20 DK** today: the
 shared stack (`obc-map-scene`, `obc-reader`, `obc-route`, `obc-render`, `obc-app`) runs `no_std`
-on the device, streaming maps/routes from a microSD card and driving the panel
-over SPI.
+on the device, streaming maps/routes from a microSD card over a native 4-bit
+sEMMC transport and driving the panel over a parallel bus — both clocked by the
+FLPR coprocessor.
 
 **Working now:** OBCM v12 packing (CLI + web builder) and the baked cell catalog
 behind it — `obc-bake` cuts regions or a whole planet snapshot into OBCA cells,

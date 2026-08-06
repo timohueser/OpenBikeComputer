@@ -136,7 +136,7 @@
     </div>
 
     <p class="small faint hint">
-        Maps write at the card's speed, not the cable's — a regional map takes several minutes.
+        A regional map is hundreds of megabytes — expect minutes, and keep the cable in.
     </p>
 
     <TransferBar {job} />

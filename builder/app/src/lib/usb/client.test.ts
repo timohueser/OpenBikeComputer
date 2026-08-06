@@ -94,8 +94,8 @@ describe("streaming", () => {
 describe("backpressure", () => {
     it("makes a writer wait for the reader to drain", async () => {
         // Real backpressure is the device NAKing an endpoint it has not drained. Faking it here is
-        // what makes a fire-and-forget writer — one that would outrun an SD card topping out in the
-        // high hundreds of KB/s — fail in CI instead of on a rider's desk.
+        // what makes a fire-and-forget writer — one that queues an object without ever retiring a
+        // transfer — fail in CI instead of on a rider's desk.
         const link = loopbackLink({ bulkHighWaterMark: 256, bulkPacketSize: 64 });
         let resolved = false;
         const write = link.host.bulk.write(payload(1024)).then(() => {
