@@ -12,7 +12,7 @@
 //! shared SD + settings store ([`SharedStore`] — the ride loop locks it per frame across the
 //! render but never across the present (#809), the object plane per chunk). Fits the 256 KB DK
 //! on the culled `nrf-mem`
-//! caps; the budget assert + the ~99.9 KB residual stack (deep-ride peak ~36 KB; deepest boot
+//! caps; the budget assert + the ~79.4 KB residual stack (deep-ride peak ~36 KB; deepest boot
 //! chain ~28.1 KB — the ride task's 6.9 KB poll frame under `link::init_store`'s ~14.7 KB
 //! transient) are the margins. Both numbers moved on 2026-08-03: the elevation epic's `.bss`
 //! (TERRAIN + its extent tables) shrank the residual by ~3.7 KB, and EL7's inlined terrain parse
@@ -124,6 +124,14 @@
 #![no_main]
 
 mod sd;
+// The microSD host over Nordic's sEMMC soft peripheral on the FLPR (epic #1158): the card in
+// native 4-bit SD mode at 32 MHz, the replacement for `sd.rs`'s SPI transport.
+// **Build-only in this PR** — nothing constructs a `Semmc` and the `VPR00` vector is unclaimed, so
+// the whole module is dead code until the integration PR of #1158 swaps the transport, adds the
+// display/storage mode scheduler, binds `VPR00` to `semmc::on_vpr00_irq`, and deletes the SPI path.
+// Remove this `allow` there.
+#[allow(dead_code)]
+mod semmc;
 // The **scratch arena** (#1146 P2): one RAM block time-shared by the three biggest blocks that are
 // never live together — the per-frame render scratch, the nav block, and the USB staging buffer.
 // The only place this feature's `unsafe` lives; the owner rules it composes with are the
@@ -318,20 +326,22 @@ bind_interrupts!(struct SensorIrqs {
 // stack temporary, plus its own ~4 KB read scratch): the ride loop rebuilds it each frame, so the
 // stack reserve carries that spike.
 //
-// The FLPR carve-out leaves the M33 the SRAM below `FLPR_RAM_BASE` (not the full 256 KB), but the
-// production blob is ~820 B so the carve is only ~8 KB; and the FLPR map path packs the framebuffer
-// straight to the LS021 wire, so there is no RGB565 band scratch to reserve — the same caps clear
-// the budget.
+// The coprocessor carve-out leaves the M33 the SRAM below `SEMMC_RAM_BASE` (not the full 512 KB).
+// It is **24 KB** now (#1158): the display blob is ~820 B in a 4 KB image/stack region plus the 4 KB
+// handshake page, and below them sits the 20 KB sEMMC soft-peripheral carve — the SD host
+// controller the FLPR runs in storage mode. And the FLPR map path packs the framebuffer straight to
+// the LS021 wire, so there is no RGB565 band scratch to reserve — the same caps clear the budget.
 
-/// Total SRAM the M33 app core sees — what the FLPR carve leaves, taken straight from the generated
-/// contract (`build.rs` derives the carved `memory.x` and this constant from the same `FLPR_RAM_BASE`,
-/// so the budget can't fork from the linker map).
+/// Total SRAM the M33 app core sees — what the coprocessor carves leave, taken straight from the
+/// generated contract (`build.rs` derives the carved `memory.x` and this constant from the same
+/// `SEMMC_RAM_BASE` — the bottom of the lowest carve — so the budget can't fork from the linker map).
 const NRF_RAM_BYTES: usize = ls021_flpr::M33_RAM_BYTES;
 /// Headroom kept free under the resident statics for the main stack + embassy's executor/task arenas
 /// (statics grow up from the RAM base, the stack down from the top). This is only the build-time
-/// *floor* the assert enforces — the real stack is the residual `RAM − statics` (~99.9 KB on the
-/// default build: #1146 P2's arena freed ~76 KB of them and P3 spent ~24.5 KB back on the render
-/// caps; ~48.6 KB before either, and the linked
+/// *floor* the assert enforces — the real stack is the residual `RAM − statics` (~79.4 KB on the
+/// default build: #1146 P2's arena freed ~76 KB of them, P3 spent ~24.5 KB back on the render caps,
+/// and #1158's sEMMC carve took 20 KB more out of the `RAM` region itself; ~48.6 KB before any of
+/// them, and the linked
 /// figure is `resource_baseline.json`'s `residual_stack_measured`, which is charged for `.uninit`
 /// as well as `.bss`). Pinned above the **measured deep-path peak**: 35,808 / 37,760 B on 2026-07-04
 /// (debug-uart FLPR build, post-#351 split; VCOM-harness full ride — fix on Home → route load →
