@@ -32,16 +32,15 @@
 //!
 //! ============================ Peripheral / pin plan ============================
 //! Pin names are the embassy-nrf `P{port}_{pin}` form (e.g. `P2_09` = GPIO port 2, pin 9).
-//! LED/button/VCOM/SPI assignments are the nRF54L15-DK's, from Zephyr's `nrf54l15dk` DTS and
-//! the DK HW user guide pin maps (Tables 3–5). The three GPIO ports have different reach: P2 =
-//! MCU domain (fast, ≤64 MHz, the SERIAL00 home), P1 = PERI domain (≤8 MHz), P0 = LP domain.
+//! LED/button/VCOM assignments are the nRF54LM20-DK's. The three GPIO ports have different reach: P2 =
+//! MCU domain (fast, ≤64 MHz — the FLPR's toggle domain), P1 = PERI domain (≤8 MHz), P0 = LP domain.
 //!
-//! ## On-board LEDs (active-HIGH) — Zephyr `led0..3`
-//!   LED0 P2_09 | LED1 P1_10 | LED2 P2_07 | LED3 P1_14
-//! LED0 (P2_09) blinks once per drawn frame as a liveness heartbeat.
+//! ## On-board LEDs (active-HIGH)
+//!   LED1 **P1_25** is the liveness heartbeat. (LED0's pin P1.22 carries `VCOM`, so its buffered LED
+//!   shimmers at 60 Hz — a free "COM is alive" light.)
 //!
-//! ## Push-buttons (active-LOW, internal pull-up) — Zephyr `sw0..3`, the UI input
-//!   BTN0 P1_13 UP | BTN1 P1_09 DOWN | BTN2 P1_08 BACK | BTN3 P0_04 SELECT
+//! ## Push-buttons (active-LOW, internal pull-up) — the UI input
+//!   BTN0 P1_26 UP | BTN1 P1_09 DOWN | BTN2 P1_08 BACK | BTN3 P0_05 SELECT
 //! Map to obc-platform's board-agnostic `ButtonInput` debouncer → the shared gesture recogniser.
 //! Roles: BTN0/1 → Up/Down Step∓1, BTN3 → Select press/hold, BTN2 → Back/back-hold
 //! (`ButtonInput::new` order is up, down, select, back). Read as plain **polled** `gpio::Input`
@@ -52,32 +51,40 @@
 //!   The reflective memory-LCD is driven by the nRF's **FLPR** (VPR RISC-V) coprocessor, which
 //!   scans the resident RGB222 framebuffer straight out of shared SRAM and packs each line to the
 //!   panel's parallel gate/source wire itself — no SPIM, no full-frame second buffer (issue #347).
-//!   The M33 holds the panel's gate + source + COM lines as plain GPIO for the program's life; the
-//!   authoritative pin map (GSP/GCK/GEN/INTB on P1, BSP on P1.14, BCK + the 6 data lines on P2, COM
-//!   on P2 or — with `com-hw` — GPIOTE-capable P1) lives at the FLPR bring-up block below. The DK's
-//!   on-board QSPI-flash pins (P2.00–P2.05) carry the source bus; we never use that flash (maps
-//!   live on SD), so the **Board Configurator** electronically disconnects it ("external memory →
-//!   GPIO on the P2 header") — no soldering on current board revisions. The panel's logic wants
-//!   3–5 V, so the DK I/O rail is raised from its 1.8 V default to **3.3 V** (VDDM, also in the
-//!   Board Configurator — HW guide §2.2.1). The display path presents through the board-agnostic
-//!   display contracts (`obc_display::display_contracts`), so the rendering stack never couples to
-//!   the panel.
-//!   (SERIAL00 / SPIM00 — the only 32 MHz instance — is now unused; the FLPR needs no SPI bus.)
+//!   The M33 holds the panel's gate + source + COM lines as plain GPIO for the program's life. The
+//!   panel's logic wants 3–5 V, so the DK I/O rail is raised from its 1.8 V default to **3.3 V**
+//!   (VDDM, in the Board Configurator — HW guide §2.2.1). The display path presents through the
+//!   board-agnostic display contracts (`obc_display::display_contracts`), so the rendering stack
+//!   never couples to the panel.
 //!
-//! ## microSD SPIM — map/route/track storage
-//!   Instance **SERIAL22 / SPIM22** — a standard-speed instance (SD doesn't need 32 MHz),
-//!   *separate* from the display bus, on its own software CS. DK expansion-header SPI pins:
-//!     SCK P1_11 | MISO P1_07 | MOSI P1_06 | CS P0_00   (P1.12 carries the FLPR's GEN, see below)
-//!   CS is a free GPIO held LOW for the whole session (the held-low-CS workaround embedded-sdmmc's
-//!   per-byte framing needs over embassy SPI — see `sd::NoCs`); the bus inits ≤400 kHz then
-//!   re-clocks to 8 MHz (`sd::init`). embassy-nrf's `Spim` exposes **no** internal MISO pull-up,
-//!   so the card's DO line is pulled high by the breakout (or an external 10 kΩ to 3V3). The
-//!   EYESPI connector also carries a microSD that *shares the display bus*; we leave that slot
-//!   **unpopulated** and use this dedicated SPIM instead. P1_06/P1_07 are the VCOM's RTS/CTS pins
-//!   (below) — we drive them as SD MOSI/MISO instead, which is only safe because the VCOM runs
-//!   **without** hardware flow control (HWFC OFF in the Board Configurator — see the crate README);
-//!   with HWFC on, the J-Link gates host→device bytes on the device's RTS (P1_06), so this firmware
-//!   never asserts it and host→device RX would be dead.
+//! ## P2 — the one fast port, shared between the panel and the card (epic #1158)
+//!   All 11 P2 pins are in use. The microSD card's six pads are **fixed** by Nordic's sEMMC soft
+//!   peripheral; the panel's six source-data lines take the four pins the retired SD-SPI path freed
+//!   plus two pads time-shared with the card:
+//! ```text
+//!   sEMMC:    P2_00 D3   P2_01 CLK  P2_02 D0   P2_03 D2   P2_04 D1   P2_05 CMD
+//!   display:  R0 P2_06   R1 P2_08   G0 P2_09   G1 P2_10   B0 P2_00*  B1 P2_04*   BCK P2_07
+//!             (* shared — CTRLSEL flips per mode: GPIO for the display blob, VPR for sEMMC)
+//!   gate:     GSP P1_10  GCK P1_11  GEN P1_12  INTB P1_13     BSP P1_14
+//!   COM:      P1_22/23/24  (M33-driven, or GPIOTE toggles with `com-hw`)
+//! ```
+//!   `main` claims the display's six data lines + `BCK` as plain `Output`s so the M33 owns their
+//!   direction and drive for the program's life. The four **card-only** pads (P2.01/02/03/05) are
+//!   deliberately *not* embassy peripherals: they belong to the soft peripheral, which configures
+//!   them per mode itself (`semmc::configure_storage_pads` / `configure_display_pads`). Two owners
+//!   for one pad would mean an `Output` drop could re-drive a card line mid-transfer.
+//!
+//!   The DK's on-board QSPI flash also lands on P2.00–P2.05; we never use it (maps live on the
+//!   card), so the **Board Configurator** electronically disconnects it ("external memory → GPIO on
+//!   the P2 header") — no soldering on current board revisions.
+//!
+//! ## microSD — map/route/track storage, in native 4-bit SD mode
+//!   **No SPI instance, no chip-select.** The FLPR runs Nordic's sEMMC image and *is* the SD host
+//!   controller: 4-bit, 32 MHz reads (14.7 MB/s measured) and 21.3 MHz writes (8.2 MB/s), against
+//!   1.07 MB/s over the SPI path this replaced. `semmc.rs` is the M33-side driver, `flpr_mux.rs`
+//!   decides which of the two soft-peripheral images owns the coprocessor at any instant (29 µs to
+//!   storage, 138 µs back; the card keeps its state across a switch), and `sd.rs` is unchanged above
+//!   its `BlockDevice`. Bring-up is deliberately **synchronous** — see `sd::init`'s frame note.
 //!
 //! ## VCOM UARTE — debug-sensor / telemetry stream
 //!   Instance **SERIAL20 / UARTE20**, the DK's `chosen` console wired to the onboard J-Link's
@@ -101,8 +108,8 @@
 //!     timing-critical lane (`RADIO_0`, `TIMER10`, `GRTC_3`; MPSL raises these itself).
 //!   - **P1 (embassy default)**: on `ble` builds MPSL's low-priority scheduling (**`SWI00`** — why
 //!     the input executor sits on SWI01) + `CLOCK_POWER`; plus the default-priority peripheral
-//!     ISRs every build has (display/SD SPIM, VCOM UARTE, RRAMC, and the EGU20 frame-ack — the
-//!     FLPR's per-frame doorbell the async present awaits, #347).
+//!     ISRs every build has (VCOM UARTE, RRAMC, the EGU20 frame-ack — the FLPR's per-frame doorbell
+//!     the async present awaits, #347 — and `VPR00`, the sEMMC completion event, #1158).
 //!   - **P3**: the SWI01 `InterruptExecutor` (input/bulge plane + the DK COM task) and the
 //!     SERIAL22 sensor-bus ISR.
 //!   - **Thread mode**: the map plane (`run_app`), the BLE stack (`ble::run`, `ble` builds), and the sensor task.
@@ -125,13 +132,12 @@
 
 mod sd;
 // The microSD host over Nordic's sEMMC soft peripheral on the FLPR (epic #1158): the card in
-// native 4-bit SD mode at 32 MHz, the replacement for `sd.rs`'s SPI transport.
-// **Build-only in this PR** — nothing constructs a `Semmc` and the `VPR00` vector is unclaimed, so
-// the whole module is dead code until the integration PR of #1158 swaps the transport, adds the
-// display/storage mode scheduler, binds `VPR00` to `semmc::on_vpr00_irq`, and deletes the SPI path.
-// Remove this `allow` there.
-#[allow(dead_code)]
+// native 4-bit SD mode, 32 MHz reads / 21.3 MHz writes. `sd.rs`'s whole transport.
 mod semmc;
+// Which of the two soft-peripheral images owns the FLPR right now (epic #1158) — the display scan
+// blob or the sEMMC host. The mode scheduler: lazy switching, one *never park mid-scan* gate, and
+// the storage bring-up that holds the mode across `Semmc::start`.
+mod flpr_mux;
 // The **scratch arena** (#1146 P2): one RAM block time-shared by the three biggest blocks that are
 // never live together — the per-frame render scratch, the nav block, and the USB staging buffer.
 // The only place this feature's `unsafe` lives; the owner rules it composes with are the
@@ -210,7 +216,7 @@ mod object_store;
 use defmt::info;
 use embassy_executor::Spawner;
 use embassy_nrf::gpio::{Level, Output, OutputDrive};
-use embassy_nrf::{bind_interrupts, peripherals, spim};
+use embassy_nrf::{bind_interrupts, peripherals};
 use embassy_time::Timer;
 use {defmt_rtt as _, panic_probe as _};
 
@@ -264,11 +270,19 @@ use embassy_nrf::buffered_uarte::{self, BufferedUarte, BufferedUarteRx, Buffered
 #[cfg(feature = "debug-uart")]
 use embassy_nrf::uarte;
 
-// SERIAL00 backs the microSD SPIM (the only 32 MHz instance). Both handlers are always registered
-// (harmless when a feature is off — the peripheral is never constructed, so its interrupt never fires).
-bind_interrupts!(struct Irqs {
-    SERIAL00 => spim::InterruptHandler<peripherals::SERIAL00>;
-});
+/// **The sEMMC completion vector** (epic #1158). VEVIF event 20 → `VPR00_IRQn`: the soft
+/// peripheral's transfer-complete signal, the short circuit in `Semmc::wait_completion`'s bounded
+/// poll. Bound raw (not through `bind_interrupts!`) for the same reason the display's `EGU20` is —
+/// there is no embassy driver behind it, just a VRI event and a latched VEVIF flag the handler must
+/// clear or the level-triggered line re-fires forever.
+///
+/// The NVIC line is enabled once at bring-up (below, beside `EGU20`'s); the *gates* — the VRI
+/// `INTEN` and `VPR00.INTENSET` bit 20 — are armed by `Semmc::boot_firmware` on every boot, because
+/// `INTENSET` writes are silently dropped while the VPR core is stopped (measured 2026-08-05).
+#[interrupt]
+unsafe fn VPR00() {
+    semmc::on_vpr00_irq();
+}
 
 // VCOM UARTE20 RX/TX → the `BufferedUarte`'s interrupt-fed ring buffers.
 #[cfg(feature = "debug-uart")]
@@ -276,9 +290,9 @@ bind_interrupts!(struct UartIrqs {
     SERIAL20 => buffered_uarte::InterruptHandler<peripherals::SERIAL20>;
 });
 
-// TWIM22 (== SERIAL22, the instance the SD freed when it moved to SPIM00) backs the shared
-// GPS + altimeter I²C bus on P1 — one header for the whole harness; bound only on the
-// real-sensor build. (TWIM30 would force the bus onto P0: the LP-domain instance is P0-only.)
+// TWIM22 (== SERIAL22) backs the shared GPS + altimeter I²C bus on P1 — one header for the whole
+// harness; bound only on the real-sensor build. (TWIM30 would force the bus onto P0: the LP-domain
+// instance is P0-only.)
 #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
 bind_interrupts!(struct SensorIrqs {
     SERIAL22 => twim::InterruptHandler<peripherals::SERIAL22>;
@@ -665,7 +679,48 @@ pub(crate) struct SharedStore {
     pub(crate) settings: settings::RramSettingsStore,
 }
 /// The shared-store handle threaded into [`ride::run_app`] and the BLE object plane (#270).
-pub(crate) type SharedStoreMutex = Mutex<NoopRawMutex, SharedStore>;
+///
+/// A newtype over the async [`Mutex`] rather than an alias, because since the storage pivot
+/// (#1158) taking the card means two things, not one: getting the `Storage` value **and** getting
+/// the FLPR into storage mode. Wrapping the lock is what makes every one of the ~50 `.lock().await`
+/// sites acquire both without a single one of them changing — and what makes it impossible to add a
+/// site that forgets. See [`flpr_mux::storage_session`](crate::flpr_mux::storage_session) for what
+/// the second half does (it waits out a live panel scan by yielding; it is deliberately *not* a
+/// second lock, so it can be held across an `await` and cannot deadlock against a frame push).
+pub(crate) struct SharedStoreMutex(Mutex<NoopRawMutex, SharedStore>);
+
+impl SharedStoreMutex {
+    pub(crate) const fn new(store: SharedStore) -> Self {
+        Self(Mutex::new(store))
+    }
+
+    /// Take the card: the store value, plus the FLPR in storage mode.
+    pub(crate) async fn lock(&self) -> StoreGuard<'_> {
+        let inner = self.0.lock().await;
+        StoreGuard { inner, _flpr: flpr_mux::storage_session().await }
+    }
+}
+
+/// What [`SharedStoreMutex::lock`] hands back — the mutex guard with the storage session riding
+/// along, so the mode is ensured for exactly the scope the store is held. Derefs to [`SharedStore`],
+/// which is why no call site had to move.
+pub(crate) struct StoreGuard<'a> {
+    inner: embassy_sync::mutex::MutexGuard<'a, NoopRawMutex, SharedStore>,
+    _flpr: flpr_mux::StorageSession,
+}
+
+impl core::ops::Deref for StoreGuard<'_> {
+    type Target = SharedStore;
+    fn deref(&self) -> &SharedStore {
+        &self.inner
+    }
+}
+
+impl core::ops::DerefMut for StoreGuard<'_> {
+    fn deref_mut(&mut self) -> &mut SharedStore {
+        &mut self.inner
+    }
+}
 
 /// Spawn-trampoline for the BLE stack (#270). Constructing [`ble::run`]'s spawn token
 /// materializes its future as a **stack temporary in the constructing function's poll frame** —
@@ -1053,16 +1108,28 @@ async fn main(_spawner: Spawner) {
                 Output::new(p.P1_12, Level::Low, OutputDrive::Standard), // GEN
                 Output::new(p.P1_13, Level::Low, OutputDrive::Standard), // INTB
             ];
-            // Source bus: BSP on P1.14 (the lone P1 source line), BCK + the 6 data lines on P2.
+            // Source bus on the **rehomed** map (epic #1158): BSP on P1.14 (the lone P1 source
+            // line), BCK unchanged on P2.07, and the six data lines split between the four pads the
+            // retired SD-SPI path freed and the two shared with the card.
+            //
+            // `B0`/`B1` (P2.00/P2.04) are the shared ones: claimed here as plain `Output`s so the
+            // M33 owns their direction and drive for the program's life, exactly like every other
+            // display line — but their `CTRLSEL` is flipped per mode by `flpr_mux` (GPIO for the
+            // display blob's `OUTSET`/`OUTCLR`, VPR for the sEMMC peripheral). The four **card-only**
+            // pads (P2.01/02/03/05 = CLK/D0/D2/CMD) are deliberately *not* embassy peripherals: they
+            // belong to the soft peripheral, which configures them itself, and their display-mode
+            // parking (Input, no pull — the external pull-ups hold the SD bus idle-high) is
+            // `semmc::configure_display_pads`'s job. Claiming them here would mean two owners for
+            // one pad and an `Output` drop could re-drive a card line mid-transfer.
             let src_bus = [
                 Output::new(p.P1_14, Level::Low, OutputDrive::Standard), // BSP
-                Output::new(p.P2_07, Level::Low, OutputDrive::Standard), // BCK (P2.06 is the SD's SPIM00 SCK clock pin)
-                Output::new(p.P2_00, Level::Low, OutputDrive::Standard), // R0 (odd)
-                Output::new(p.P2_01, Level::Low, OutputDrive::Standard), // R1 (even)
-                Output::new(p.P2_02, Level::Low, OutputDrive::Standard), // G0
-                Output::new(p.P2_03, Level::Low, OutputDrive::Standard), // G1
-                Output::new(p.P2_04, Level::Low, OutputDrive::Standard), // B0
-                Output::new(p.P2_05, Level::Low, OutputDrive::Standard), // B1
+                Output::new(p.P2_07, Level::Low, OutputDrive::Standard), // BCK (unchanged)
+                Output::new(p.P2_06, Level::Low, OutputDrive::Standard), // R0 (was SD-SPI SCK)
+                Output::new(p.P2_08, Level::Low, OutputDrive::Standard), // R1 (was SD-SPI MOSI)
+                Output::new(p.P2_09, Level::Low, OutputDrive::Standard), // G0 (was SD-SPI MISO)
+                Output::new(p.P2_10, Level::Low, OutputDrive::Standard), // G1 (was SD-SPI CS)
+                Output::new(p.P2_00, Level::Low, OutputDrive::Standard), // B0 (shared: sEMMC D3)
+                Output::new(p.P2_04, Level::Low, OutputDrive::Standard), // B1 (shared: sEMMC D1)
             ];
             // COM electrode lines (56–77 nF load each → high-drive), boot `Lo` and held `Lo` through the
             // init-black frame below, then started. Default (DK): three plain `Output`s the M33
@@ -1170,36 +1237,27 @@ async fn main(_spawner: Spawner) {
             }
         };
 
-        // microSD on **SERIAL00 / SPIM00** — the LM20's only high-speed (PLL-clocked, 32 MHz)
-        // instance, on the fast P2 pads: SCK P2.06 (a dedicated clock pin — SPIM00's SCK mux
-        // reaches only P2.01/P2.06, and P2.01 carries display data), MOSI/SDO P2.08, MISO/SDI
-        // P2.09. Init ≤400 kHz (SD spec); `sd::init` re-clocks to `sd::SD_FAST_HZ` once the card
-        // answers. CS idles HIGH, then `init` holds it LOW for the session (the per-byte-CS
-        // workaround — see `sd::NoCs`). `orc = 0xFF` so any over-read clocks the SD idle byte.
-        let mut sd_cfg = spim::Config::default();
-        sd_cfg.frequency = sd::SD_INIT_HZ;
-        sd_cfg.orc = 0xFF;
-        let sd_spi = spim::Spim::new(p.SERIAL00, Irqs, p.P2_06, p.P2_09, p.P2_08, sd_cfg);
-        // 32 MHz on the fast pads needs **extra-high drive (E0/E1)** on SCK/MOSI plus the highest
-        // HS-pad slew (datasheet §8.9.6 — "always use the highest slew rate"). embassy's
-        // `OutputDrive` can't express E0/E1, so poke the retained PIN_CNF/BIAS registers directly
-        // after `Spim::new` has claimed the pins. (High drive alone caps the timing budget at
-        // ~16 MHz — tSPIM,SUMI 34 ns vs 13 ns at extra-high.)
-        {
-            use embassy_nrf::pac;
-            use embassy_nrf::pac::gpio::vals::Drive;
-            for pin in [6usize, 8, 9] {
-                pac::P2_S.pin_cnf(pin).modify(|w| {
-                    w.set_drive0(Drive::E);
-                    w.set_drive1(Drive::E);
-                });
-            }
-            pac::GPIOHSPADCTRL_S.bias().modify(|w| w.set_hsbias(3));
+        // microSD in **native 4-bit SD mode over Nordic's sEMMC soft peripheral** (epic #1158) —
+        // the same FLPR the panel runs on, time-multiplexed by `flpr_mux`. No SPI instance, no
+        // chip-select, no bus config: the six card pads (P2.00–05) belong to the soft peripheral,
+        // which owns their direction, drive (E0/E1 + `GPIOHSPADCTRL.BIAS = 2`) and `CTRLSEL` per
+        // mode — see `semmc::configure_storage_pads` / `configure_display_pads`.
+        //
+        // Ordering is load-bearing: the display comes up **first** (above), so bring-up flips the
+        // FLPR from display to storage exactly once and every later switch is the measured
+        // 29 µs / 138 µs pair. `bring_up_storage` holds the mode across the whole `Semmc::start`
+        // await — nothing else that touches the coprocessor has been spawned yet (the BLE and USB
+        // planes come hundreds of lines below), which is what makes that contract structural.
+        //
+        // Arm the completion vector first: P1, the default peripheral lane, beside the display's
+        // EGU20 frame-ack (the ISR is one store + a latched-event clear, so priority only has to
+        // stay under the P0 GRTC driver). The per-boot *gates* are `Semmc::boot_firmware`'s.
+        // SAFETY: enabling an NVIC line whose handler is the `VPR00` vector above.
+        unsafe {
+            interrupt::VPR00.set_priority(Priority::P1);
+            interrupt::VPR00.enable();
         }
-        // CS is a plain GPIO held LOW for the session (the `sd::NoCs` workaround), not a SPIM-bus
-        // pin — it sits on **P2.10** so the whole SD bus lives on one port next to its clock.
-        let sd_cs = Output::new(p.P2_10, Level::High, OutputDrive::Standard);
-        let storage = sd::init(sd_spi, sd_cs);
+        let storage = sd::init();
         // A missing/bad card is fatal — the map streams from it. The display is already up (brought
         // up above, before the card), so instead of failing silently we put an **undismissable**
         // fault screen on glass, then heartbeat-idle. (SharedStore keeps an Option seam for a future
@@ -1435,7 +1493,7 @@ async fn main(_spawner: Spawner) {
         let shared_store: &'static SharedStoreMutex = unsafe {
             init_static(
                 core::ptr::addr_of_mut!(SHARED_STORE),
-                Mutex::new(SharedStore { storage: Some(storage), settings: settings_store }),
+                SharedStoreMutex::new(SharedStore { storage: Some(storage), settings: settings_store }),
             )
         };
 
