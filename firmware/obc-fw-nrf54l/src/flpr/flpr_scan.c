@@ -10,7 +10,7 @@
  * both row buffers, and the M33's whole-frame busy-poll packing loop are gone. The M33's present
  * becomes "publish spans, ring the doorbell, await the EGU20 ack".
  *
- * **The pack is a line-for-line port of `obc-platform/src/ls021_wire.rs`** (`pack_pair` /
+ * **The pack is a line-for-line port of `obc-display/src/ls021/wire.rs`** (`pack_pair` /
  * `pack_row`) — the host-tested normative reference; its test module (golden-reference words,
  * odd/even interleave, area-gradation split) is the spec for `pack_word` below. Wire behavior is
  * byte-identical to the M33-packed path.

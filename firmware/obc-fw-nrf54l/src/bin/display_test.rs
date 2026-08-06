@@ -1,14 +1,17 @@
 //! **LS021 wiring checker** — the smallest possible binary that exercises the *real* display
-//! path end to end: pin claims exactly as the app (`main.rs`), the real FLPR blob + launch, the
-//! real `Ls021Flpr` presenter, and the real `com_task` — but no SD, no sensors, no BLE, no app.
-//! It cycles a solid full-screen colour every second (black → red → green → blue → white →
-//! colour bars), logging each step over RTT, so a black panel can be bisected:
+//! path end to end: pin claims on the **rehomed** source bus (issue #1158), the real FLPR blob +
+//! launch, the real `Ls021Flpr` presenter, and the real `com_task` — but no SD, no sensors, no
+//! BLE, no app. It cycles a solid full-screen colour every second (black → red → green → blue →
+//! white → colour bars), logging each step over RTT, so a black panel can be bisected:
 //!
 //! - RTT shows `FLPR alive` + colour steps but the glass stays black → wiring (or panel power):
 //!   probe BCK/data on P2, the gate run on P1.10–14, COM on P1.22–24, and the 5 V/3.3 V rails.
 //! - No `FLPR alive` → the blob/carve (memory-map drift) — a firmware problem, not wiring.
-//! - Colours show here but the app stays black → an app-side bug; come back with RTT from the
-//!   full build.
+//! - Colours show here but the app stays black → normally an app-side bug (come back with RTT from
+//!   the full build) — **except in the #1158 window**: until the storage-pivot integration PR
+//!   merges, `main.rs` still claims the display data on the OLD pads (`P2.00–05`) plus SD-SPI, so
+//!   the app build simply does not drive the rehomed harness. On that harness a black app screen is
+//!   expected, not a bug. This checker is the only build on the new map until then.
 //!
 //! Flash with `cargo run --release --bin display_test` (rides the default feature set; the tiny
 //! image flashes much faster than the app). LED1 heartbeats once per colour step; LED0 shimmers
