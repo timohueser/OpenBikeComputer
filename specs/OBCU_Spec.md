@@ -2,7 +2,7 @@
 
 OBCU (OpenBikeComputer Update) is the byte format of a **field firmware update** —
 the SD-staged DFU foundation (epic #615), signed since **v2** (epic #773, issue
-#997). It has two parts, both defined here and both implemented by the shared
+#997). It has three parts, all defined here and all implemented by the shared
 `no_std` crate `firmware/obc-dfu` (host-tested to the same bar as the settings codec,
 and linked by the `obc-boot` bootloader, `firmware/obc-boot`):
 
@@ -12,6 +12,9 @@ and linked by the `obc-boot` bootloader, `firmware/obc-boot`):
 2. **The boot-state page** (§2) — the CRC-framed blob in a dedicated **4 KB RRAM
    page**, the sole handoff channel between the app (the *armer*) and the bootloader
    (the *installer*).
+3. **The storage-blob stage carve** (§3, epic #1158) — the CRC-framed **20 KB RRAM
+   carve** through which the armer hands the bootloader the sEMMC soft-peripheral
+   image it boots the card with.
 
 It shares the conventions of the [`OBCM`](OBCM_Spec.md) map and
 [`OBCR`](OBCR_Spec.md) route formats so the reader/writer code feels identical:
@@ -30,7 +33,9 @@ It shares the conventions of the [`OBCM`](OBCM_Spec.md) map and
    pending update, jump to the app", never a garbage install (invariant 4).
 3. **The bootloader has no FAT.** Extents in the boot-state page are **absolute
    512-byte SD block runs**, pre-resolved by the app-side armer, so the installer
-   reads raw SPI blocks with no filesystem in the 32 KB bootloader budget.
+   reads raw blocks with no filesystem in the 32 KB bootloader budget. Since the
+   storage pivot (#1158) the same budget argument gives the bootloader its card
+   *transport*: the sEMMC image arrives pre-staged through §3 rather than compiled in.
 4. **CRC-32 is the corruption check; the signature is the trust check.** v1 shipped
    with the CRC alone (physical card access is already root on an open device) and
    reserved header space for "a future signature-scheme marker if internet-sourced OTA
@@ -443,6 +448,85 @@ strands a device that holds perfectly good firmware.
 
 ---
 
+## 3. Storage-blob stage carve
+
+Since the storage pivot (epic #1158) the microSD card is only reachable through Nordic's
+**sEMMC soft peripheral** — a position-independent RISC-V image the FLPR coprocessor
+executes. The app embeds that image in its own flash; the 32 KB bootloader cannot
+(image + driver + engine overflow its carve), and it must not read it out of the app
+slot, because the install engine rewrites the slot **while still streaming the staged
+image from the card** — a power cut mid-flash could then destroy the only reachable
+copy of the thing needed to finish the install. The armer therefore **stages the blob
+into a dedicated RRAM carve** the bootloader reads instead.
+
+### 3.1 Layout
+
+A fixed 20 480-byte (`obc_dfu::blobstage::STAGE_LEN`, five 4 KB RRAM pages) region
+directly **below the BOOT_STATE page**, taken off the top of the app slot. Nothing else
+moves — the app base, BOOT_STATE and SETTINGS keep their addresses:
+
+```
+0x0000_0000  obc-boot           32 KB
+0x0000_8000  app slot         1976 KB
+0x001F_6000  SEMMC_STAGE        20 KB   ← this section
+0x001F_B000  BOOT_STATE page     4 KB   (§2)
+0x001F_C000  SETTINGS page       4 KB
+```
+
+The addresses live only in the linker scripts (`__semmc_stage_base`, the
+`__boot_state_base` convention): the board crate's `build.rs` emits the `SEMMC_STAGE`
+region and sizes it from the shared constant; `obc-boot`'s static `memory.x` mirrors it.
+The carve length matches the RAM carve the image executes in (`SEMMC_CARVE_BYTES`), so a
+grown future blob never forces a second layout change.
+
+### 3.2 Contents
+
+One 16-byte header line (the RRAMC write-line granularity), then the raw image bytes:
+
+| Offset | Size | Field |
+| --: | --: | :-- |
+| 0 | 4 | Magic `"OBSB"` |
+| 4 | 2 | Stage Version, `0x0001`, little-endian |
+| 6 | 4 | Blob Len (bytes), little-endian |
+| 10 | 4 | CRC-32/IEEE over the Blob Len blob bytes, little-endian |
+| 14 | 2 | Reserved (zero) |
+| 16 | Blob Len | The soft-peripheral image, byte-exact |
+
+Decode follows the crate-wide rule: **valid CRC ⇒ staged blob, anything else ⇒ "no blob
+staged"** (`blobstage::validate_stage`), total over arbitrary bytes.
+
+### 3.3 Armer ordering (normative)
+
+The stage is written **before** the `Armed` page, on the costs-nothing side of §1.4's
+commit point: blob body first (16-byte lines, zero-padded tail), the CRC-framed header
+line **last**, readback-verified through the same validator the bootloader uses, and
+only then the boot-state page write. A power cut anywhere before the page write leaves
+nothing armed; a torn stage fails its CRC and reads as "never staged". Corollary: **a
+valid `Armed` or `Trial`/`Rollback` page implies a valid stage carve.** The stage is
+idempotent — a re-arm with the same app image skips the write — and inert without a
+boot-state record, like the rollback snapshot. A stage that cannot be written or
+verified aborts the arm (`ArmError::BlobStage`) with the page untouched.
+
+### 3.4 Bootloader validation (normative)
+
+Before executing a staged image on the FLPR, the bootloader validates — in order — the
+§3.2 frame, then the image's own `softperipheral_metadata_t` header
+(`blobstage::sp_geometry`): soft-peripheral magic, metadata header version 2, comm id
+REGIF, not self-booting, the **sEMMC** `softperiph_id` (`0xE33C` — a different soft
+peripheral must never be booted as an SD host), the internal footprint consistency
+checks, and that the declared image fits the execution carve. The *platform* half of the
+id word is deliberately **not** pinned: the bootloader is flashed once, and a future
+blob revision for a newer platform of the same peripheral must remain usable. The VRI
+offset is taken from the validated metadata, never hard-coded.
+
+An `Armed` decision whose carve fails validation is **abandoned** like an unreadable
+card past its retry budget (§2.4's DR3 path — the slot is untouched); a `Rollback`
+decision whose carve fails validation parks (SOS) rather than guessing — unreachable
+from the §3.3 ordering short of RRAM decay or SWD interference, and a power cycle
+retries.
+
+---
+
 ## Reference implementation
 
 `firmware/obc-dfu` (`no_std`, `core`-only apart from the Ed25519 verifier): `image.rs`
@@ -451,7 +535,9 @@ strands a device that holds perfectly good firmware.
 16-byte-line-aligned page codec), `crc32.rs` (the canonical DFU-side CRC-32/IEEE),
 `engine.rs` (the bootloader's install engine — the verify → flash → readback →
 state-transition sequencing over a small `InstallIo` trait, host-tested with mock IO in
-`tests/engine.rs`, including the §2.3 header-skip arithmetic), `sig.rs` (§1.3: the
+`tests/engine.rs`, including the §2.3 header-skip arithmetic), `blobstage.rs` (§3: the
+stage frame codec and the soft-peripheral metadata validation, host-tested in
+`tests/blobstage.rs` including against the vendored image), `sig.rs` (§1.3: the
 `signing_prefix` message layout — the single definition both the host signer and the
 device verifier go through — the embedded `RELEASE_PUBKEY`, and a **streaming**
 `Verifier` so §1.4's steps 6–7 share one pass), and `armer.rs` (§1.4's ordered

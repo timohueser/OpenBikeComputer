@@ -222,11 +222,16 @@ pub enum ArmError {
     /// The rollback snapshot couldn't be written/resolved. The arm is **aborted** (never
     /// silently armed without the rollback the state implied) — the boot-state page is untouched.
     Snapshot(ScanError),
+    /// The storage-blob stage (`OBCU_Spec.md` §3, #1158) couldn't be written/verified. The arm is
+    /// **aborted** — an `Armed` page whose carve the bootloader can't validate would only ever be
+    /// abandoned next boot, so failing here (where the app can show a card) is strictly better.
+    BlobStage,
     /// The boot-state page write failed. Nothing was armed (a torn page decodes to `Idle`).
     StateWrite,
 }
 
-/// The board-side effects [`arm`] sequences — a rollback snapshot and the page write.
+/// The board-side effects [`arm`] sequences — a rollback snapshot, the storage-blob stage, and
+/// the page write.
 pub trait ArmIo {
     /// Snapshot the running image (RRAM, `installed.image_len` bytes at the app slot base) to
     /// `/ROLLBACK.BIN` as a full OBCU container and extent-resolve it (whole-file chain, spec
@@ -239,14 +244,24 @@ pub trait ArmIo {
     /// CRC. Marking it signed would be a lie in a file `obc-mkimage inspect` reads.
     fn snapshot(&mut self, installed: &ImageHeader) -> Result<Option<StagedRef>, ScanError>;
 
+    /// Stage the storage-bringup blob — the sEMMC soft-peripheral image the bootloader boots the
+    /// card through — into the `SEMMC_STAGE` RRAM carve (`OBCU_Spec.md` §3, #1158): blob body
+    /// first, the CRC-framed header line **last**, and verify the readback. Idempotent (the board
+    /// skips the write when the carve already stages these exact bytes), and inert without an
+    /// `Armed` record pointing past it — like the snapshot file.
+    fn stage_boot_blob(&mut self) -> Result<(), IoError>;
+
     /// Persist `state` to the BOOT_STATE page (encode + 16-byte-line RRAM writes).
     fn write_state(&mut self, state: &BootState) -> Result<(), IoError>;
 }
 
-/// The arm sequence (issue #619 §3), order **normative**: snapshot the rollback *first*, then
-/// compose and write the `Armed` page. A power cut before the page write = nothing happened (the
-/// snapshot file is inert without the record pointing at it); after = the install proceeds. No
-/// torn intermediate exists — the page is one CRC-framed blob.
+/// The arm sequence (issue #619 §3, extended by #1158), order **normative**: snapshot the
+/// rollback *first*, then stage the storage blob, then compose and write the `Armed` page. A
+/// power cut before the page write = nothing happened (the snapshot file and the staged blob are
+/// both inert without the record pointing at them); after = the install proceeds — and the write
+/// ordering means a valid `Armed` page **implies a valid blob carve**, which is what lets the
+/// bootloader treat an unvalidatable carve as the near-unreachable fault it is. No torn
+/// intermediate exists — the page is one CRC-framed blob.
 ///
 /// `current` is the decoded boot-state page (read **before** composing — the generation bump is
 /// `current.generation() + 1`). Only `Idle { installed: Some(_) }` yields a snapshot; a fresh
@@ -266,6 +281,9 @@ pub fn arm(io: &mut impl ArmIo, current: &BootState, update: StagedRef) -> Resul
         },
         None => (None, Rollback::FirstInstall),
     };
+    // The blob stage sits between the snapshot and the page write: still on the costs-nothing
+    // side of the commit point, so a failed stage aborts with the page untouched.
+    io.stage_boot_blob().map_err(|_| ArmError::BlobStage)?;
     let generation = current.generation().wrapping_add(1);
     io.write_state(&BootState::Armed { generation, update, rollback }).map_err(|_| ArmError::StateWrite)?;
     Ok(ArmTicket { generation, rollback: kind })
