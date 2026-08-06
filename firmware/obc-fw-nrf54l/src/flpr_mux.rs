@@ -79,7 +79,7 @@
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use defmt::{error, warn};
-use embassy_time::{Duration, Timer};
+use embassy_time::{Duration, Instant, Timer};
 
 use crate::semmc::{self, CardInfo, Semmc, SemmcError};
 
@@ -177,11 +177,20 @@ pub fn ensure_display() {
 /// Hand the sEMMC peripheral back if it holds the hart: latched completions cleared, the shared
 /// `VPR00` interrupt gate disarmed, the hart parked, the pads returned to the display map.
 ///
-/// Idempotent and safe to call in any mode — a no-op unless storage is actually live. Used by
-/// [`ensure_display`] and by [`relaunch_flpr`](crate::ls021_flpr::relaunch_flpr), whose Debug-Module
-/// halt should never land on a coprocessor the M33 is still mid-conversation with.
+/// Idempotent and safe to call in any mode — a no-op only when the display already holds the hart.
+/// Used by [`ensure_display`] and by [`relaunch_flpr`](crate::ls021_flpr::relaunch_flpr), whose
+/// Debug-Module halt should never land on a coprocessor the M33 is still mid-conversation with.
+///
+/// **Gated on `!= Display`, not `== Storage`, and that distinction is load-bearing.**
+/// `Semmc::start` arms the shared `VPR00` gate (`INTENSET` bit 20) inside `boot_firmware`, *before*
+/// `enable`/`init_card` can fail — so a failed bring-up leaves `Mode::Unknown` with the completion
+/// gate armed and possibly a latched `EVENTS_TRIGGERED[20]`. Skipping the quiesce there would let
+/// [`ensure_display`]'s unconditional park launch the display blob with the sEMMC gate still live,
+/// which is exactly what `leave_storage_mode` exists to prevent ("a completion event left pending
+/// would fire `on_vpr00_irq` against a peripheral that no longer exists"). The disarm must travel
+/// with the park, so it runs for `Unknown` too.
 pub fn quiesce_storage_if_active() {
-    if mode() != Mode::Storage {
+    if mode() == Mode::Display {
         return;
     }
     with_semmc(|sd| sd.leave_storage_mode());
@@ -238,16 +247,40 @@ pub fn with_storage<R>(f: impl FnOnce(&mut Semmc) -> R) -> Result<R, SemmcError>
 /// - it **waits out a live scan by yielding**, so a BLE or USB chunk arriving mid-frame costs the
 ///   executor nothing while the FLPR finishes drawing (the synchronous [`ensure_storage`] would
 ///   spin for the same wall-clock time);
-/// - it puts the FLPR in storage mode up front, so the burst's first block read does not pay a mode
-///   check inside the FAT layer;
+/// - it does **not** switch the mode. That is [`with_storage`]'s job, lazily, at the point of use —
+///   see below;
 /// - it is **not a lock**. Holding it does not stop the map plane pushing a frame — see the hold
 ///   policy in this module's docs. That is deliberate: a session that blocked the panel would turn
 ///   a multi-megabyte upload into a frozen screen.
+///
+/// **Why no eager `ensure_storage`.** It used to call one, to save the burst's first block read a
+/// mode check. That check is one relaxed atomic load — and the eager switch charged every acquirer a
+/// 29 µs park + warm boot, plus 138 µs to get the panel back on the next frame, whether or not it
+/// ever touched the card. `SharedStoreMutex::lock` has ~50 call sites and plenty of them never
+/// reach the device: RRAM settings saves, and in-memory checks like `ride.rs`'s DFU go/no-go. On a
+/// soft peripheral that will not boot it was worse than a tax — a 500 ms `BOOT_DEADLINE` spin per
+/// lock. Dropping it restores this module's own rule, *the mode must match the work, ensured lazily
+/// at the point of use*.
+///
+/// The scan wait is bounded by [`FRAME_DEADLINE`](crate::ls021_flpr::FRAME_DEADLINE) — the house
+/// rule is that no wait in this subsystem is unbounded, and this one is held inside the store mutex,
+/// so an FLPR that never finishes a frame would otherwise wedge every plane that wants the card.
+/// On expiry it **proceeds with a log** rather than failing: the session carries no capability (the
+/// mode is re-checked per operation), so proceeding only means "stop yielding". The real guard is
+/// still ahead — each operation's [`with_storage`] runs `wait_scan_settled`, which applies the same
+/// bound synchronously and hands the caller a `NoBoot` if the coprocessor is genuinely wedged.
 pub async fn storage_session() -> StorageSession {
+    let deadline = Instant::now() + crate::ls021_flpr::FRAME_DEADLINE;
     while crate::ls021_flpr::scan_in_flight() {
+        if Instant::now() >= deadline {
+            warn!(
+                "flpr_mux: storage session waited out {=u64} ms of scan and gave up yielding — the operation's own guard takes it from here",
+                crate::ls021_flpr::FRAME_DEADLINE.as_millis()
+            );
+            break;
+        }
         Timer::after(SCAN_POLL).await;
     }
-    ensure_storage();
     StorageSession(())
 }
 

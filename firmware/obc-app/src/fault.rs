@@ -29,8 +29,21 @@ use crate::{t, Msg};
 /// that fails [`obc_reader`]'s header parse.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BootFault {
-    /// No card, or the card wouldn't mount — the map streams from it, so this is fatal.
+    /// Card identification never completed — no card, an unpowered socket, or a broken bus. This is
+    /// the *narrow* class: it means the host came up and the card did not answer. A storage
+    /// subsystem that never got as far as asking is [`StorageFault`](Self::StorageFault), because
+    /// telling someone their card is missing when the reader never started sends them to the wrong
+    /// place entirely.
     NoCard,
+    /// The card answered but is not an SDHC/SDXC (CSD v2) card. SDSC is byte-addressed and caps at
+    /// 2 GB — no map this device stores fits — so it is rejected outright. Distinct from
+    /// [`NoCard`](Self::NoCard) on purpose: the card is *present and working*, just too small, and a
+    /// card that worked over the retired SPI path lands here.
+    CardUnsupported,
+    /// The storage subsystem itself failed: the sEMMC soft peripheral would not boot, a barrier
+    /// never echoed, or the volume would not mount. The honest superset for "something below the
+    /// filesystem broke, and it was not the card's absence".
+    StorageFault,
     /// The card mounted but holds no `.obcm` map file.
     NoMap,
     /// A map file is present but isn't valid OBCM (truncated / corrupt / wrong format).
@@ -50,6 +63,12 @@ impl BootFault {
         const EN: Language = Language::En;
         match self {
             BootFault::NoCard => ("NO SD CARD", t(Msg::FaultNocardWhat, EN), t(Msg::FaultNocardFix, EN)),
+            BootFault::CardUnsupported => {
+                ("CARD UNSUPPORTED", t(Msg::FaultCardtypeWhat, EN), t(Msg::FaultCardtypeFix, EN))
+            }
+            BootFault::StorageFault => {
+                ("STORAGE FAULT", t(Msg::FaultStoragefaultWhat, EN), t(Msg::FaultStoragefaultFix, EN))
+            }
             BootFault::NoMap => ("NO MAP", t(Msg::FaultNomapWhat, EN), t(Msg::FaultNomapFix, EN)),
             BootFault::BadMap => ("MAP UNREADABLE", t(Msg::FaultBadmapWhat, EN), t(Msg::FaultBadmapFix, EN)),
         }
@@ -119,9 +138,17 @@ mod tests {
     /// catalog columns.
     #[test]
     fn copy_is_present_and_distinct() {
-        let all = [BootFault::NoCard, BootFault::NoMap, BootFault::BadMap];
+        let all = [
+            BootFault::NoCard,
+            BootFault::CardUnsupported,
+            BootFault::StorageFault,
+            BootFault::NoMap,
+            BootFault::BadMap,
+        ];
         let keys = [
             (Msg::FaultNocardWhat, Msg::FaultNocardFix),
+            (Msg::FaultCardtypeWhat, Msg::FaultCardtypeFix),
+            (Msg::FaultStoragefaultWhat, Msg::FaultStoragefaultFix),
             (Msg::FaultNomapWhat, Msg::FaultNomapFix),
             (Msg::FaultBadmapWhat, Msg::FaultBadmapFix),
         ];
@@ -146,8 +173,14 @@ mod tests {
             // The English column is what the pre-app card actually renders.
             assert_eq!((what, fix), (t(what_key, Language::En), t(fix_key, Language::En)));
         }
-        // Distinct titles so the three fatal sites are told apart on glass.
-        assert_ne!(BootFault::NoCard.copy().0, BootFault::NoMap.copy().0);
-        assert_ne!(BootFault::NoMap.copy().0, BootFault::BadMap.copy().0);
+        // Distinct titles so every fatal site is told apart on glass. `NoCard` vs `StorageFault` vs
+        // `CardUnsupported` is the point of the #1163 review's P3: a reader that never started and a
+        // 2 GB card must not both read as "NO SD CARD".
+        let titles: heapless::Vec<&str, 8> = all.into_iter().map(|f| f.copy().0).collect();
+        for (i, a) in titles.iter().enumerate() {
+            for b in titles.iter().skip(i + 1) {
+                assert_ne!(a, b, "two boot faults share a title: {a:?}");
+            }
+        }
     }
 }
