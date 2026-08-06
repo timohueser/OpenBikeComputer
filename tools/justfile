@@ -348,12 +348,10 @@ desktop *args:
     fe="$OBC_ROOT/builder/app"
     [[ -d "$fe/node_modules" ]] || { _say "installing frontend deps…"; ( cd "$fe" && _run npm ci ); }
     # All three wasm bridges are imported by the app: GPX↔OBCR conversion, cell
-    # assembly, and the live skin preview. Build them before type-checking or bundling.
-    if [[ ! -f "$fe/src/lib/convert/pkg/obc_web_convert_bg.wasm" || \
-          ! -f "$fe/src/lib/assemble/pkg/obc_web_assemble_bg.wasm" || \
-          ! -f "$fe/src/lib/skin/pkg/obc_skin_preview_bg.wasm" ]]; then
-      _say "building the wasm bridges…"; ( cd "$fe" && _run npm run build:wasm )
-    fi
+    # assembly, and the live skin preview. Generated bindings are gitignored;
+    # existence cannot prove that any bridge matches its Rust source, so always
+    # rebuild — warm wasm-pack builds are incremental.
+    _say "refreshing the wasm bridges…"; ( cd "$fe" && _run npm run build:wasm )
     if [[ "$mode" == dev ]]; then
       # `custom-protocol` is a default feature here, which is what makes plain
       # `cargo run` embed dist/desktop; opt out of it and the window follows Vite.
@@ -361,6 +359,9 @@ desktop *args:
       ( cd "$fe" && npm run dev -- --mode desktop & )
       cd "$OBC_ROOT/apps/obc-desktop"; _run cargo run --no-default-features
     else
+      # vite/esbuild strips types without checking them; svelte-check is what
+      # fails loudly when the app drifts from a bridge's generated bindings.
+      _say "type-checking the frontend…"; ( cd "$fe" && _run npm run check )
       _say "building the desktop frontend bundle…"
       ( cd "$fe" && _run npm run build:desktop )
       cd "$OBC_ROOT/apps/obc-desktop"
@@ -386,11 +387,12 @@ site *args:
     port="${1:-4173}"
     fe="$OBC_ROOT/builder/app"
     [[ -d "$fe/node_modules" ]] || { _say "installing frontend deps…"; ( cd "$fe" && _run npm ci ); }
-    if [[ ! -f "$fe/src/lib/convert/pkg/obc_web_convert_bg.wasm" || \
-          ! -f "$fe/src/lib/assemble/pkg/obc_web_assemble_bg.wasm" || \
-          ! -f "$fe/src/lib/skin/pkg/obc_skin_preview_bg.wasm" ]]; then
-      _say "building the wasm bridges…"; ( cd "$fe" && _run npm run build:wasm )
-    fi
+    # Generated bindings are gitignored; existence cannot prove that any bridge
+    # matches its Rust source, so always rebuild — warm builds are incremental.
+    _say "refreshing the wasm bridges…"; ( cd "$fe" && _run npm run build:wasm )
+    # vite/esbuild strips types without checking them; svelte-check is what
+    # fails loudly when the app drifts from a bridge's generated bindings.
+    _say "type-checking the frontend…"; ( cd "$fe" && _run npm run check )
     _say "building the static web tier…"
     ( cd "$fe" && export VITE_CATALOG_URL="${OBC_CATALOG_URL:-}" && _run npm run build:web )
     cd "$OBC_ROOT"
