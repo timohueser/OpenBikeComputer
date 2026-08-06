@@ -145,28 +145,30 @@ export const UPLOAD_WINDOW = 4;
 export const DEFAULT_TIMEOUT_MS = 15_000;
 
 /**
- * The extra budget the **last** wait of an upload gets, on top of {@link DEFAULT_TIMEOUT_MS}.
+ * The base budget for a commit the caller has told us is **expensive**, via
+ * {@link TransferOptions.commitBytes}.
  *
- * Every other device answer is a register read or a small file write. A commit is not: it re-opens
- * the object, re-reads it and validates it, and for a **volume-set manifest** it also cross-checks
- * every shard header already on the card (`Storage::set_manifest_commit` → `set_shard_totals`,
+ * **This is opt-in, and deliberately so.** Almost every commit is cheap and bounded: a map's is a
+ * close, an open, a 40-byte header read, a 4-byte write and a flush
+ * (`Storage::map_upload_commit`), and a route's is smaller still — {@link DEFAULT_TIMEOUT_MS} is
+ * already generous for those, and raising it globally would only mean a genuinely wedged device
+ * takes four times longer to say so. The failure this exists for has exactly one instance.
+ *
+ * A **volume-set manifest** is a file under 2 KB whose commit re-opens and cross-checks every shard
+ * header already on the card (`Storage::set_manifest_commit` → `set_shard_totals`,
  * `firmware/obc-fw-nrf54l/src/sd.rs`) — up to 32 directory lookups and header reads, behind a card
- * that may still be finishing the program cycle of the shard before it.
- *
- * Getting this wrong is not a slow spinner, it is **data loss**: on timeout the client throws *and*
- * `withTransferSlot` fires an `op = 3` abort, which makes the device discard a set it may have just
- * committed successfully. So the commit wait is budgeted generously and scaled by how much the
- * device has to re-read — {@link commitTimeoutMs}.
+ * that may still be finishing the program cycle of the shard before it. Timing that out is not a
+ * slow spinner, it is **data loss**: the client throws *and* `withTransferSlot` fires an `op = 3`
+ * abort, which makes the device delete a set it may have just committed successfully.
  */
 const COMMIT_TIMEOUT_BASE_MS = 60_000;
 
 /**
- * Extra commit budget per megabyte announced, capped by {@link COMMIT_TIMEOUT_MAX_MS}.
+ * Extra commit budget per megabyte the device has to re-read, capped by
+ * {@link COMMIT_TIMEOUT_MAX_MS}.
  *
- * A set's manifest is under 2 KB, but the work its commit does is proportional to the *set*, not to
- * the manifest — and the only proxy the client has for set size at that moment is what it has
- * uploaded. Deliberately loose: this bound exists to stop an infinite spinner, not to police the
- * device's timing.
+ * Deliberately loose: this bound exists to stop an infinite spinner, not to police the device's
+ * timing.
  */
 const COMMIT_TIMEOUT_PER_MB_MS = 200;
 
@@ -278,20 +280,30 @@ export interface TransferOptions {
     /** Override {@link DEFAULT_CHUNK_SIZE} for one upload. */
     chunkSize?: number;
     /**
-     * How many bytes the device has to **re-read** to commit this object, when that is not the
-     * object's own length.
+     * How many bytes the device has to **re-read** to commit this object — set this *only* where the
+     * commit is more than a header check, because it is what buys the terminal wait a much larger
+     * budget than {@link DEFAULT_TIMEOUT_MS}.
      *
-     * One caller sets it, and it is the one that would otherwise lose data: a volume-set manifest is
-     * under 2 KB, but committing it cross-checks every shard already on the card, so its wait has to
-     * be budgeted against the *set*. Defaults to the object's announced length.
+     * One caller sets it today, and it is the one that would otherwise lose data: a volume-set
+     * manifest is under 2 KB, but committing it cross-checks every shard already on the card, so its
+     * wait has to be budgeted against the *set*. Left unset, an upload waits the ordinary timeout,
+     * which is what keeps a wedged device quick to surface.
      */
     commitBytes?: number;
+    /**
+     * Called once the last byte has been handed to the transport, before the wait for the device's
+     * verdict.
+     *
+     * The gap between those two is invisible from the outside — the bar is at 100 %, the rate is 0,
+     * and nothing is moving — so a caller that shows progress wants to say what is happening.
+     */
+    onSent?: () => void;
 }
 
 /**
- * The wait budget for the terminal `transferResult` of an upload, given how much the device has to
- * re-read to commit it. See {@link COMMIT_TIMEOUT_BASE_MS} for why this is not
- * {@link DEFAULT_TIMEOUT_MS}.
+ * The wait budget for the terminal `transferResult` of an upload whose commit was declared expensive
+ * ({@link TransferOptions.commitBytes}). Ordinary uploads do not come here — see
+ * {@link COMMIT_TIMEOUT_BASE_MS} for why the scaling is opt-in.
  */
 export function commitTimeoutMs(commitBytes: number): number {
     const megabytes = Math.ceil(Math.max(commitBytes, 0) / (1024 * 1024));
@@ -458,11 +470,12 @@ export class ProtocolClient {
                 );
             }
 
-            const result = await this.awaitTransferResult(
-                signal,
-                "upload",
-                commitTimeoutMs(options.commitBytes ?? src.totalLen),
-            );
+            options.onSent?.();
+            // Only a caller that declared an expensive commit gets the scaled budget; everything else
+            // keeps the ordinary one, so a wedged device still surfaces in seconds.
+            const commitWaitMs =
+                options.commitBytes === undefined ? undefined : commitTimeoutMs(options.commitBytes);
+            const result = await this.awaitTransferResult(signal, "upload", commitWaitMs);
             this.transferClosed = true;
             if (result.status !== TransferStatus.Committed) throw this.transferFailure(result, "upload");
             // A fresh upload's result carries the assigned id, so correlation is only meaningful for
@@ -852,16 +865,25 @@ export class ProtocolClient {
         try {
             for await (const chunk of src.chunks(chunkSize)) {
                 check();
-                queued.push({ promise: this.link.bulk.write(chunk, signal), length: chunk.length });
+                const promise = this.link.bulk.write(chunk, signal);
+                // **Observed at queue time, awaited at retire time.** A rejection is "unhandled"
+                // from the microtask turn it happens in until *something* has attached a handler,
+                // and with a window open the fourth chunk can reject while the first three are still
+                // pending — an `unhandledrejection` in the console, over the top of the caller's real
+                // error. This throwaway `.catch` is the handler; `retireOldest` still awaits the
+                // original promise, so nothing is swallowed.
+                void promise.catch(() => {});
+                queued.push({ promise, length: chunk.length });
                 if (queued.length >= UPLOAD_WINDOW) await retireOldest();
             }
             while (queued.length > 0) await retireOldest();
         } catch (cause) {
-            // Settle what is still queued before unwinding, and the reason is not tidiness. An
-            // unobserved rejection is an "unhandled promise rejection" the browser reports over the
-            // caller's real error; and `withTransferSlot`'s failure path calls `reset()`, which
-            // decides whether an endpoint can be cleared from `writesInFlight` — a decision it would
-            // get wrong while these are still on the wire.
+            // Wait for the rest of the window before unwinding, so the caller's error is not raced
+            // by a later chunk's. It does **not** mean the endpoint is idle: on a cancel, `write`
+            // rejects the caller while the `transferOut` stays on the wire (WebUSB cannot cancel a
+            // submitted transfer), so `WebUsbPipe.writesInFlight` may still be non-zero afterwards.
+            // That is fine and is the safe direction — `reset()` reads it precisely so it can *skip*
+            // `clearHalt` on a half that still has a transfer on it.
             await Promise.allSettled(queued.map((entry) => entry.promise));
             throw cause;
         }

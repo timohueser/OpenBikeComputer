@@ -19,6 +19,10 @@
  * ride is pulled (C5 #904). `converting` is the ride export's second half: the wasm exporter turning
  * the pulled object into GPX, which moves no bytes over the cable and so deserves its own word
  * rather than a progress bar that looks stalled at 100%.
+ *
+ * `committing` is the same argument at the other end of a write: the last byte is on the wire and
+ * the device is now closing the file, validating it and making it durable. Nothing moves, the bar is
+ * at 100 % and the rate is zero — a state that reads as "stuck" unless it is named.
  */
 export type JobPhase =
     | "idle"
@@ -28,6 +32,7 @@ export type JobPhase =
     | "converting"
     | "assembling"
     | "sending"
+    | "committing"
     | "done"
     | "error";
 

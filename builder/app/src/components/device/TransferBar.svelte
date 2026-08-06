@@ -19,6 +19,7 @@
         converting: "Converting to GPX",
         assembling: "Assembling the map",
         sending: "Writing to the device",
+        committing: "Finishing on the device",
     };
 
     const heading = $derived(PHASES[job.phase] ?? label ?? "Working");
