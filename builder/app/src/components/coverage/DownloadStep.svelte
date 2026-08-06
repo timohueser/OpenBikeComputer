@@ -26,6 +26,7 @@
         type CellStore,
     } from "../../lib/cells/store";
     import { saveBlob } from "../../lib/download";
+    import { storeZip } from "../../lib/zip";
     import { platform } from "../../lib/platform";
     import type { MapOutputSession } from "../../lib/platform/types";
     import {
@@ -130,12 +131,21 @@
      *  the list populated and the disk untouched — and "discard the 3 files you
      *  downloaded" about files nobody downloaded is the wrong instruction. */
     let persistedFiles = $state(0);
-    /** The browser host's staging area (#1116 B1). Shards now arrive *during*
-     *  the assembly, and saving each one as it lands would drop half a map into
-     *  someone's Downloads folder the moment they pressed cancel. They are held
-     *  as Blobs — the browser may spill those to disk, which is the point — and
-     *  saved together once the set is complete. B2 replaces this with OPFS. */
+    /** The no-picker browser host's staging area (#1116 B1). Shards arrive
+     *  *during* the assembly, and saving each one as it lands would drop half a
+     *  map into someone's Downloads folder the moment they pressed cancel. They
+     *  are held as Blobs — the big ones are OPFS-backed Files, so no heap is
+     *  pinned — and delivered together once the set is complete, as ONE zip
+     *  download: a save per file is how Firefox ends up with a stack of dialogs
+     *  and orphaned `.part` files. */
     let staged: { name: string; blob: Blob }[] = [];
+    /** True while the staged set is being packaged into its archive — the CRC
+     *  pass reads every staged byte once, which at country scale is seconds. */
+    let packaging = $state(false);
+    let packFraction = $state(0);
+    /** How the finished set reached the disk, for the done message: files in a
+     *  picked folder, or one archive in the downloads. */
+    let deliveredAs = $state<"folder" | "zip" | null>(null);
     /** Files arrive with no acknowledgement now, so two can be in flight at
      *  once; every sink write chains onto this instead of racing. */
     let sink: Promise<void> = Promise.resolve();
@@ -278,7 +288,7 @@
                         await sink;
                         // …and only now, with a complete set, does the browser
                         // host actually hand anything to the downloader.
-                        flushStaged();
+                        await packageStaged();
                         await closeDownloadOutput(false);
                     } catch (cause) {
                         await failRun(cause);
@@ -356,26 +366,57 @@
         bytes: Uint8Array | null,
     ) {
         if (sinkClosed) return;
-        if (platform.openMapOutput) {
-            // The desktop writes every part into one new folder, as it lands.
-            downloadOutput ??= await platform.openMapOutput(runMapName);
-            outputPath = downloadOutput.path;
-            const body = bytes ?? new Uint8Array(await blob().arrayBuffer());
-            const path = await downloadOutput.write(part.name, body);
+        if (downloadOutput) {
+            // A grouped output (desktop folder, or the picked directory of a
+            // browser with the File System Access API) takes every part as it
+            // lands. The session streams a Blob without buffering it; only a
+            // host that needs contiguous bytes converts, on its side.
+            const path = await downloadOutput.write(part.name, bytes ?? blob());
             savedFiles.push({ name: part.name, role: part.role, byteLength: part.byteLength, path });
             persistedFiles += 1;
         } else {
-            // The browser stages and saves at the end — see `staged`.
+            // The no-picker browser stages and delivers at the end — see `staged`.
             staged.push({ name: part.name, blob: blob() });
             savedFiles.push({ name: part.name, role: part.role, byteLength: part.byteLength });
         }
     }
 
-    /** The browser host's save moment: the set is complete, so it may exist. */
-    function flushStaged() {
-        for (const f of staged) saveBlob(f.blob, f.name);
-        persistedFiles += staged.length;
+    /**
+     * The no-picker browser's delivery moment: the set is complete, so it may
+     * exist — as **one** download. A save per file is ten simultaneous
+     * downloads for a country, which Firefox presents as a stack of modal
+     * dialogs whose losers die as `.part` files. One archive is one prompt.
+     */
+    async function packageStaged() {
+        if (staged.length === 0 || sinkClosed) return;
+        if (staged.length === 1) {
+            // Nothing to bundle — a single file saves as itself.
+            saveBlob(staged[0].blob, staged[0].name);
+        } else {
+            packaging = true;
+            packFraction = 0;
+            try {
+                const archive = await storeZip(
+                    staged.map((f) => ({ name: f.name, blob: f.blob })),
+                    (done, total) => (packFraction = total > 0 ? done / total : 0),
+                );
+                // A cancel that raced the CRC pass closed the sink: the archive
+                // is dropped, not handed to a downloader nobody asked for.
+                if (sinkClosed) return;
+                saveBlob(archive, `${zipStem(runMapName)}.zip`);
+            } finally {
+                packaging = false;
+            }
+            deliveredAs = "zip";
+        }
+        persistedFiles += 1;
         staged = [];
+    }
+
+    /** The map's name as a filename: what the OS forbids becomes a dash. */
+    function zipStem(name: string): string {
+        const stem = name.replace(/[\\/:*?"<>|]/g, "-").trim();
+        return stem.length > 0 ? stem : "OBC map";
     }
 
     async function closeDownloadOutput(discard: boolean) {
@@ -484,16 +525,33 @@
         ) {
             throw new Error("This map is not ready to assemble yet.");
         }
+        // A grouped output opens under the click that started the run: the
+        // browser's implementation is a directory picker, and a picker without
+        // a fresh user activation is refused (the platform contract). A
+        // dismissed picker is "changed my mind" — the run never starts, and
+        // the screen stays exactly as it was.
+        let grouped: MapOutputSession | null = null;
+        if (out.kind === "download" && platform.openMapOutput) {
+            try {
+                grouped = await platform.openMapOutput(mapName());
+            } catch (cause) {
+                if (cause instanceof DOMException && cause.name === "AbortError") return;
+                throw cause;
+            }
+        }
         output = out;
         lastRunKind = out.kind;
         errorMessage = null;
         savedFiles = [];
         persistedFiles = 0;
         staged = [];
+        packaging = false;
+        packFraction = 0;
+        deliveredAs = grouped ? "folder" : null;
         sink = Promise.resolve();
         sinkClosed = false;
-        outputPath = null;
-        downloadOutput = null;
+        outputPath = grouped?.path ?? null;
+        downloadOutput = grouped;
         outputCleanupFailed = false;
         runWarnings = [];
         dlProgress = null;
@@ -1036,8 +1094,12 @@
                         </span>
                     {:else if phase === "assembling"}
                         <span class="small muted">
-                            assembling — {ASM_PHASE_LABEL[asmPhase]} · {Math.round(asmFraction * 100)}%{#if readMode}
-                                · cells {readMode}{/if}
+                            {#if packaging}
+                                packaging the download — {Math.round(packFraction * 100)}%
+                            {:else}
+                                assembling — {ASM_PHASE_LABEL[asmPhase]} · {Math.round(asmFraction * 100)}%{#if readMode}
+                                    · cells {readMode}{/if}
+                            {/if}
                         </span>
                     {/if}
                 </div>
@@ -1053,11 +1115,20 @@
                 <div class="done">
                     {#if lastRunKind === "download"}
                         <p class="line small">
-                            Saved {savedFiles.length}
-                            {savedFiles.length === 1 ? "file" : "files"}{#if outputPath} in
-                                <span class="mono">{outputPath}</span>{/if} — copy
-                            {savedFiles.length === 1 ? "it" : "all of them"} to the top level of the device's
-                            card.
+                            {#if outputPath}
+                                Saved {savedFiles.length}
+                                {savedFiles.length === 1 ? "file" : "files"} in
+                                <span class="mono">{outputPath}</span> — if that folder isn't the device's
+                                card, copy {savedFiles.length === 1 ? "it" : "them"} to its top level.
+                            {:else if deliveredAs === "zip"}
+                                Saved the whole set as one archive — unzip it and put the files at the top
+                                level of the device's card.
+                            {:else}
+                                Saved {savedFiles.length}
+                                {savedFiles.length === 1 ? "file" : "files"} — copy
+                                {savedFiles.length === 1 ? "it" : "all of them"} to the top level of the
+                                device's card.
+                            {/if}
                         </p>
                     {/if}
                     <ul class="files mono small">
@@ -1076,12 +1147,6 @@
                                 · shards {writeMode}{/if}{#if cachedCells > 0}
                                 · {cachedCells} reused from this computer ({formatBytes(cachedBytes)} not
                                 downloaded){/if}
-                        </p>
-                    {/if}
-                    {#if lastRunKind === "download" && !outputPath && savedFiles.length > 1}
-                        <p class="line faint small">
-                            Your browser may ask to allow multiple downloads — the map is a set, and every
-                            file of it matters.
                         </p>
                     {/if}
                     {#each runWarnings as w, k (k)}
