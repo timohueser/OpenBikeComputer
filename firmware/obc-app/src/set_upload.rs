@@ -125,11 +125,32 @@ impl SetUpload {
     }
 
     /// Record this set's terrain shard as committed. Idempotent, for the same reason [`mark`] is:
-    /// a re-sent raster overwrites the one file and changes nothing about the set's shape.
+    /// a re-sent raster that *succeeds* overwrites the one file and changes nothing about the set's
+    /// shape. A re-send that **fails** is not idempotent and must be undone with
+    /// [`clear_terrain`](Self::clear_terrain) — the file is deleted, so the session's memory of it
+    /// would otherwise outlive the raster.
     ///
     /// [`mark`]: Self::mark
     pub fn mark_terrain(&mut self) {
         self.terrain = true;
+    }
+
+    /// Forget this set's terrain shard — the card no longer holds one.
+    ///
+    /// Called when a raster's transfer is discarded, which deletes `MS{id}.OBD` whether or not an
+    /// earlier attempt had committed. Without this, a failed **re-send** of an already-committed
+    /// raster left the session claiming `N + 1` records with only `N` files on the card: the
+    /// manifest then *passed* the announce-length check and was refused at its commit instead,
+    /// taking the whole set with it. Clearing the mark moves that refusal back to the announce,
+    /// where it costs the host one descriptor instead of a manifest transfer and a deleted set —
+    /// and, better, tells a host that simply re-sends the raster that it may still do so.
+    ///
+    /// The OBCM shard bitmap has the same shape of gap and it is deliberately **not** fixed the
+    /// same way: `set_shard_discard` deletes one shard of a set whose session must survive so the
+    /// host can re-send it, and clearing its bit is a separate change with its own blast radius.
+    /// Terrain is one optional file with one bit, so it is cheap to keep honest here.
+    pub fn clear_terrain(&mut self) {
+        self.terrain = false;
     }
 
     /// Whether this set's terrain shard has committed — the fact that decides whether the manifest
@@ -247,6 +268,52 @@ pub fn manifest_announce(open: Option<&SetUpload>, total_len: u32) -> Result<(),
         return Err(SetReject::Length);
     }
     Ok(())
+}
+
+/// Whether a **just-uploaded** manifest's `terrain` record agrees with the raster that landed
+/// beside it (#1044) — the commit-time half of the cross-check, as a pure rule so it can be read
+/// and tested without a card.
+///
+/// `recorded` is the `Bytes` of the manifest's `Role == 3` record, or `None` when the manifest
+/// names no raster. `on_card` is the length of `MS{id}.OBD` **if** it opened and its header parses
+/// as an OBCT container this firmware reads, and `None` for every way that can fail at once —
+/// absent, unopenable, too short, or not an OBCT.
+///
+/// ## Why this is strict here and deliberately *not* strict at the boot scan
+///
+/// [`OBCA_Spec.md` §5.3](../../../specs/OBCA_Spec.md) is explicit, and it is the one exception in
+/// the whole validation list: **a missing or unreadable terrain shard does not fail the mount.** A
+/// reader MUST mount such a set, MUST fall back to no elevation, and MUST NOT present it as a
+/// fault, because elevation is an enhancement and a set whose raster will not open is exactly the
+/// map it would have been if it had been baked without one.
+///
+/// That clemency is about a *card*, over time: a rider who deleted `MS7.OBD` to reclaim space, a
+/// hand-copied set whose raster was truncated, a transient read glitch, a future OBCT version this
+/// firmware will not read. None of those make the map a lie.
+///
+/// A **commit** is the opposite situation. The host is on the other end of a cable, it built the
+/// manifest and the raster together seconds ago, and it has already been told the exact length its
+/// manifest must have. A disagreement here is not a card that aged — it is the two ends
+/// disagreeing about what was just transferred, which is precisely the class of bug #1044 was. So
+/// the manifest is refused and the set deleted whole, and the rider re-sends rather than mounting
+/// a map whose manifest does not describe its own files.
+///
+/// The asymmetry is the point, and it is stated in both directions so neither call site can be
+/// "simplified" into the other.
+pub const fn terrain_record_agrees(recorded: Option<u32>, on_card: Option<u32>) -> bool {
+    match (recorded, on_card) {
+        // The manifest names a raster and one of exactly that size is beside it. Its bbox needs no
+        // check here: §5.3 pins it to the assembly bbox at *parse*, and an OBCT header carries no
+        // bbox to compare against anyway.
+        (Some(bytes), Some(len)) => bytes == len,
+        // The manifest names a raster and there is none. The upload said otherwise.
+        (Some(_), None) => false,
+        // No terrain record. Whatever `MS{id}.OBD` may be beside it is not this set's business:
+        // `set_upload_begin` clears every derived name of the id before the first byte streams, so
+        // an upload cannot leave one, and a leftover from a hand-made card is debris the next
+        // upload's supersede pass reclaims — not grounds to refuse a manifest that never claimed it.
+        (None, _) => true,
+    }
 }
 
 /// What the boot sweep should do with one `MS{id}.OBS` the card root holds.
@@ -481,9 +548,35 @@ mod tests {
             Err(SetReject::Length),
             "the terrain-less length is now the wrong one"
         );
-        // Idempotent: a re-sent raster is one file overwritten, not a second record.
+        // Idempotent: a re-sent raster that lands is one file overwritten, not a second record.
         session.mark_terrain();
         assert_eq!(session.manifest_len(), with);
+    }
+
+    /// A re-send that **fails** deletes `MS{id}.OBD`, so the session must stop counting it — and
+    /// the manifest that follows must be refused at the *announce*, not at the commit that would
+    /// delete the whole set.
+    #[test]
+    fn a_discarded_raster_stops_counting_toward_the_manifest() {
+        let mut session = SetUpload::new(8, 2);
+        session.mark(0);
+        session.mark(1);
+        session.mark_terrain();
+        let with = session.manifest_len();
+
+        session.clear_terrain();
+        assert!(!session.has_terrain());
+        assert_eq!(session.manifest_len(), with - obcs::SHARD_RECORD_LEN as u32);
+        assert_eq!(
+            manifest_announce(Some(&session), with),
+            Err(SetReject::Length),
+            "the host is told before it sends a manifest naming a raster the card no longer has"
+        );
+        // …and the set is still whole: re-sending the raster puts it back.
+        assert!(session.is_complete());
+        assert_eq!(terrain_announce(Some(&session)), Ok(()));
+        session.mark_terrain();
+        assert_eq!(manifest_announce(Some(&session), with), Ok(()));
     }
 
     /// A set with **no** terrain is byte-for-byte the set it was before #1044 — the property that
@@ -517,6 +610,30 @@ mod tests {
         assert_eq!(terrain_announce(Some(&full)), Err(SetReject::Shards));
         let one_short = SetUpload::new(1, 31);
         assert_eq!(terrain_announce(Some(&one_short)), Ok(()), "31 shards + terrain is exactly the cap");
+    }
+
+    /// The commit-time terrain cross-check, and the boundary of what it is allowed to judge.
+    #[test]
+    fn a_committed_manifests_terrain_record_must_match_the_raster_beside_it() {
+        assert!(terrain_record_agrees(Some(6_192), Some(6_192)), "the record and the file agree");
+        assert!(!terrain_record_agrees(Some(6_192), Some(6_191)), "one byte out is still a lie");
+        assert!(!terrain_record_agrees(Some(6_192), None), "a manifest that names a raster there is none of");
+        // A manifest with no terrain record judges nothing about a file it never claimed. The
+        // upload cannot have left one (`set_upload_begin` clears the id first) and a hand-made
+        // card's leftover is debris, not grounds to refuse a set.
+        assert!(terrain_record_agrees(None, None));
+        assert!(terrain_record_agrees(None, Some(4_096)));
+    }
+
+    /// **The asymmetry, pinned.** §5.3 makes a missing or unreadable raster a *mount-time*
+    /// non-failure — the set MUST still mount, flat. This predicate is the **commit** rule and is
+    /// deliberately harsher; asserting that difference here is what stops a later reader from
+    /// "unifying" the two and taking a rider's whole map away because they deleted an `.OBD`.
+    #[test]
+    fn the_commit_rule_is_stricter_than_the_mount_rule_on_purpose() {
+        // At commit: refused. At mount: §5.3 says the set is a map with flat profiles, which is
+        // why `Storage::set_file_totals` never consults this and only the commit path does.
+        assert!(!terrain_record_agrees(Some(1), None));
     }
 
     /// The ceiling is a *first-announce* refusal, which is the whole reason the shard count rides

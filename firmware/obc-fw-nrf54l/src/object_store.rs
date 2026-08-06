@@ -1488,6 +1488,13 @@ impl ObjectStore {
             if let Some(storage) = &mut shared.storage {
                 storage.set_terrain_discard(id);
             }
+            // The discard deleted `MS{id}.OBD` — including one an *earlier* attempt had already
+            // committed — so the session must stop counting a record the card no longer holds.
+            // Otherwise the manifest passes the announce-length check and dies at its commit,
+            // taking the whole set with it (see `SetUpload::clear_terrain`).
+            if let Some(session) = &mut self.set_upload {
+                session.clear_terrain();
+            }
             return outcome.status;
         }
         let Some(storage) = &mut shared.storage else { return TransferStatus::Error };
