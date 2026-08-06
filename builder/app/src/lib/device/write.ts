@@ -38,7 +38,8 @@ import { Sha256 } from "./sha256";
  *  how often progress moves and how much is in flight, so it stays modest. */
 const MAP_CHUNK = 32 * 1024;
 
-/** One file streamed out of the assembler worker. Shards precede the manifest. */
+/** One file streamed out of the assembler worker, in `OBCA_Spec.md` §5.4's order: every OBCM shard,
+ *  then the terrain raster if the set has one, then the manifest that makes them a map. */
 export interface AssembledSetFile {
     readonly name: string;
     readonly role: "core" | "coarse" | "geometry" | "terrain" | "manifest";
@@ -53,6 +54,9 @@ export interface SetSendState {
     readonly totalBytes: number;
     committedBytes: number;
     nextShard: number;
+    /** Whether the set's terrain shard has been sent (#1044). The manifest is one 56-byte record
+     *  longer when it has, which is exactly what the device checks at the manifest's announce. */
+    terrainSent: boolean;
     setId: number | null;
 }
 
@@ -63,10 +67,19 @@ export function setSendState(shardCount: number, totalBytes: number): SetSendSta
     if (!Number.isInteger(shardCount) || shardCount < 1 || shardCount > 32) {
         throw new Error(`The assembled map contains ${shardCount} shards; a set must contain 1–32.`);
     }
-    return { shardCount, totalBytes, committedBytes: 0, nextShard: 0, setId: null };
+    return { shardCount, totalBytes, committedBytes: 0, nextShard: 0, terrainSent: false, setId: null };
 }
 
-/** Verify and send one worker-produced file, retrying one whole-file CRC refusal. */
+/**
+ * Verify and send one worker-produced file, retrying one whole-file CRC refusal.
+ *
+ * **The one rule that is not local to a file** (#1044): the manifest's announced length is
+ * `72 + 56 × Shard Count`, and `OBCA_Spec.md` §5.2's `Shard Count` counts every **record** — the
+ * terrain one included. A device therefore derives the length it expects from what it has actually
+ * received, so the raster must reach it *before* the manifest or the whole set is refused at its
+ * last transfer. The assembler already emits shards → terrain → manifest; this asserts that order
+ * rather than assuming it, because getting it wrong costs a multi-gigabyte upload.
+ */
 export async function sendAssembledSetFile(
     client: ProtocolClient,
     state: SetSendState,
@@ -78,27 +91,33 @@ export async function sendAssembledSetFile(
             `${file.name} arrived as ${file.bytes.byteLength} bytes; the assembler announced ${file.byteLength}.`,
         );
     }
-    // The terrain shard has no `mapShard` object type yet — the device-side set
-    // transfer (#1044) predates EL4's `terrain` role and knows nothing about a
-    // raster. Sending it as an ordinary shard would consume a shard index the
-    // manifest does not name and desynchronise the whole set, so it is skipped
-    // **loudly** rather than misfiled: the map still arrives complete, without
-    // elevation, which is exactly what a terrain-less set already is (§13).
-    if (file.role === "terrain") {
-        console.warn(
-            `obc: skipping ${file.name} — sending a set's terrain shard to a device needs the transfer step ` +
-                "(#1044) to learn the terrain role. The map is sent whole; its profiles will be flat.",
-        );
-        return;
-    }
     const manifest = file.role === "manifest";
+    const terrain = file.role === "terrain";
+    // Everything but the manifest is content-addressed by the assembler, so its digest is checked
+    // here — before the bytes cost minutes on the wire — rather than trusted.
     if (!manifest) {
-        if (state.nextShard >= state.shardCount) {
-            throw new Error("The assembler produced more shards than its summary.");
-        }
         const digest = new Sha256().update(file.bytes).hex();
         if (digest !== file.sha256.toLowerCase()) {
             throw new Error(`${file.name} failed its SHA-256 check before it reached the device.`);
+        }
+    }
+    if (terrain) {
+        // The raster goes out under its own object type (#1044). It is **not** a shard: a shard's
+        // object id is a `(count, index)` pair naming one of the OBCM files the manifest's leading
+        // records describe, and sending the raster as one would consume an index the manifest never
+        // names. Its place in the order is fixed by the device's manifest-length check — every
+        // shard first, then this, then the manifest — which is also the order the assembler emits.
+        if (state.nextShard !== state.shardCount) {
+            throw new Error(
+                `The terrain shard arrived after ${state.nextShard} of ${state.shardCount} shards; ` +
+                    "a set's raster follows every shard and precedes the manifest.",
+            );
+        }
+        if (state.terrainSent) throw new Error("The assembler produced a second terrain shard; a set carries one.");
+        ctx.part?.(state.shardCount, state.shardCount, "elevation");
+    } else if (!manifest) {
+        if (state.nextShard >= state.shardCount) {
+            throw new Error("The assembler produced more shards than its summary.");
         }
         ctx.part?.(state.nextShard + 1, state.shardCount);
     } else {
@@ -108,8 +127,8 @@ export async function sendAssembledSetFile(
         ctx.part?.(state.shardCount, state.shardCount, "sealing map");
     }
 
-    const type = manifest ? ObjectType.MapSet : ObjectType.MapShard;
-    const objectId = manifest ? NEW_OBJECT_ID : setPartId(state.shardCount, state.nextShard);
+    const type = manifest ? ObjectType.MapSet : terrain ? ObjectType.TerrainShard : ObjectType.MapShard;
+    const objectId = manifest || terrain ? NEW_OBJECT_ID : setPartId(state.shardCount, state.nextShard);
     let result: UploadResult | null = null;
     for (let attempt = 0; attempt < 2; attempt++) {
         try {
@@ -127,6 +146,7 @@ export async function sendAssembledSetFile(
     state.committedBytes += file.byteLength;
     ctx.progress(state.committedBytes, state.totalBytes);
     if (manifest) state.setId = result.objectId;
+    else if (terrain) state.terrainSent = true;
     else state.nextShard += 1;
 }
 
