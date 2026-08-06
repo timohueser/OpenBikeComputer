@@ -53,6 +53,7 @@ import {
     encodeConfig,
     encodeStatusMessage,
     encodeVersionRead,
+    manifestLen,
     viewOf,
     type DeviceConfig,
     type StatusMessage,
@@ -367,6 +368,16 @@ export class MockDevice {
     /** Staged volume-set shards, keyed by packed `(count,index)`; invisible until a manifest. */
     private readonly mapShards = new Map<number, Stored>();
     private readonly mapSets = new Map<number, Stored>();
+    /** The committed sets' terrain shards, by set id — the mock's `MS<id>.OBD`. Lets a test assert
+     *  the raster actually landed rather than only that the manifest was accepted. */
+    private readonly mapSetTerrain = new Map<number, Stored>();
+    /** The staged set's terrain shard (#1044), or `null` when this set carries no raster. A raster
+     *  is **not** a shard: it has no index, so it cannot live in `mapShards` without occupying a
+     *  slot the manifest never names — the very confusion the separate object type exists to end. */
+    private mapTerrain: Stored | null = null;
+    /** The shard count every staged `mapShard` has agreed on, or `null` with no set in flight. The
+     *  real device holds this in its upload session and refuses a descriptor that contradicts it. */
+    private mapShardCount: number | null = null;
     private readonly routeEntries = new Map<number, RouteListEntry>();
     private readonly rideEntries = new Map<number, RideListEntry>();
     private readonly tripEntries = new Map<number, TripListEntry>();
@@ -400,6 +411,23 @@ export class MockDevice {
     /** Test/dev-harness visibility into the otherwise invisible staged set. */
     get stagedMapShardCount(): number {
         return this.mapShards.size;
+    }
+
+    /** Whether the staged set carries a terrain shard (#1044) — invisible on the wire otherwise. */
+    get stagedTerrain(): boolean {
+        return this.mapTerrain !== null;
+    }
+
+    /** The committed set's terrain shard, or `undefined` when it carried no raster. */
+    committedTerrain(setId: number): Stored | undefined {
+        return this.mapSetTerrain.get(setId);
+    }
+
+    /** Drop everything staged for the set in flight — a commit, an abort, or a torn link. */
+    private clearStagedSet(): void {
+        this.mapShards.clear();
+        this.mapTerrain = null;
+        this.mapShardCount = null;
     }
 
     private running = false;
@@ -590,8 +618,12 @@ export class MockDevice {
         if (d.op === Op.Abort) {
             const active = this.active;
             if (!active) {
-                if (d.type === ObjectType.MapShard || d.type === ObjectType.MapSet) {
-                    this.mapShards.clear();
+                if (
+                    d.type === ObjectType.MapShard ||
+                    d.type === ObjectType.MapSet ||
+                    d.type === ObjectType.TerrainShard
+                ) {
+                    this.clearStagedSet();
                     await this.status({
                         msg: "transferResult",
                         objectId: d.objectId,
@@ -687,13 +719,39 @@ export class MockDevice {
         if (d.type === ObjectType.FwImage) {
             return d.totalLen > this.maxFwImageLen ? TransferStatus.Error : null;
         }
+        // ---- volume sets: the rules that live *between* transfers (spec §4.1, OBCA §5.4) ----
+        //
+        // These were once "accept anything with a plausible shape", and that hole is what let #1044
+        // ship: a host that skipped the terrain shard and a device that counted records disagreed
+        // about the manifest's length by exactly 56 bytes, and no test in this repo could see it
+        // because the mock had no length rule to break. What the mock enforces is now what the
+        // firmware enforces, expressed the same way — count, order, and the manifest's exact length.
         if (d.type === ObjectType.MapShard) {
             const count = d.objectId >>> 8;
             const index = d.objectId & 0xff;
-            return count >= 1 && count <= 32 && index < count ? null : TransferStatus.NotFound;
+            if (!(count >= 1 && count <= 32 && index < count)) return TransferStatus.NotFound;
+            // Every shard restates the set's shape; one that contradicts the set in flight is a
+            // mismatch, not a second set silently merged into the first.
+            if (this.mapShardCount !== null && this.mapShardCount !== count) return TransferStatus.Error;
+            return null;
+        }
+        if (d.type === ObjectType.TerrainShard) {
+            if (d.objectId !== NEW_OBJECT_ID) return TransferStatus.NotFound;
+            // A raster names no set of its own — the set id is minted by the first shard.
+            if (this.mapShardCount === null) return TransferStatus.Error;
+            // OBCA §5.2 caps a manifest at 32 records, so a full set has no room for a terrain one.
+            if (this.mapShardCount + 1 > 32) return TransferStatus.StorageFull;
+            return null;
         }
         if (d.type === ObjectType.MapSet) {
-            return d.objectId === NEW_OBJECT_ID && this.mapShards.size > 0 ? null : TransferStatus.NotFound;
+            if (d.objectId !== NEW_OBJECT_ID) return TransferStatus.NotFound;
+            const count = this.mapShardCount;
+            if (count === null) return TransferStatus.Error;
+            // Manifest-last: every shard the manifest will name must already have committed.
+            if (this.mapShards.size !== count) return TransferStatus.Error;
+            // …and its announced length is fixed by the *record* count — shards plus the raster.
+            if (d.totalLen !== manifestLen(count + (this.mapTerrain ? 1 : 0))) return TransferStatus.Error;
+            return null;
         }
         const store = this.storeFor(d.type);
         if (!store) return TransferStatus.NotFound;
@@ -714,13 +772,22 @@ export class MockDevice {
             return SINGLETON_OBJECT_ID;
         }
         if (d.type === ObjectType.MapShard) {
+            this.mapShardCount = d.objectId >>> 8;
             this.mapShards.set(d.objectId, { bytes, crc32: d.crc32, byteLen });
             return d.objectId;
+        }
+        if (d.type === ObjectType.TerrainShard) {
+            // A re-sent raster overwrites the one file; it is never a second record.
+            this.mapTerrain = { bytes, crc32: d.crc32, byteLen };
+            // The result echoes the set id, as the manifest's does — a raster has no part to
+            // correlate against. The mock has no id until the manifest commits, so it answers 0.
+            return SINGLETON_OBJECT_ID;
         }
         if (d.type === ObjectType.MapSet) {
             const id = this.nextMapId++;
             this.mapSets.set(id, { bytes, crc32: d.crc32, byteLen });
-            this.mapShards.clear();
+            if (this.mapTerrain) this.mapSetTerrain.set(id, this.mapTerrain);
+            this.clearStagedSet();
             return id;
         }
         const store = this.storeFor(d.type);

@@ -21,7 +21,7 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { DeviceError, type ProtocolClient } from "../usb/client";
 import { loopbackDevice } from "../usb/loopback";
-import { ObjectType, SINGLETON_OBJECT_ID } from "../usb/protocol";
+import { ObjectType, SINGLETON_OBJECT_ID, manifestLen } from "../usb/protocol";
 import { initConvert } from "../convert/bridge";
 import { prepareRoute } from "./route";
 import {
@@ -113,6 +113,153 @@ describe("assembled volume-set upload", () => {
             expect(state.setId).toBe(1);
             expect(state.committedBytes).toBe(state.totalBytes);
             expect(device.stagedMapShardCount).toBe(0);
+        } finally {
+            await close();
+        }
+    });
+
+    /**
+     * **#1044, the regression this file could not previously see.**
+     *
+     * Since the first terrain band went live in the catalog, an assembled set carries a `terrain`
+     * shard — and `OBCA_Spec.md` §5.2's `Shard Count` counts *every* record, so its manifest is one
+     * 56-byte record longer than the OBCM shard count implies. The host used to skip the raster with
+     * a `console.warn` and then announce that longer manifest anyway, so the device refused the set
+     * at its very last transfer and swept the whole multi-gigabyte upload at the next boot.
+     *
+     * Both halves are asserted here, because fixing either alone leaves the bug: the raster reaches
+     * the device under its own object type, **and** the manifest it is followed by is the length the
+     * device now expects.
+     */
+    it("sends a set's terrain shard and seals it with a manifest one record longer", async () => {
+        const { client, device, close } = loopbackDevice();
+        try {
+            const shard = syntheticBytes(4096);
+            const raster = syntheticBytes(2048);
+            const manifest = syntheticBytes(manifestLen(2)); // one OBCM shard + the terrain record
+            const state = setSendState(1, shard.length + raster.length + manifest.length);
+            const ctx = context();
+
+            await sendAssembledSetFile(
+                client,
+                state,
+                { name: "MS1S00.OBM", role: "core", sha256: digest(shard), byteLength: shard.length, bytes: shard },
+                ctx,
+            );
+            expect(device.stagedMapShardCount).toBe(1);
+            expect(device.stagedTerrain).toBe(false);
+
+            await sendAssembledSetFile(
+                client,
+                state,
+                { name: "MS1.OBD", role: "terrain", sha256: digest(raster), byteLength: raster.length, bytes: raster },
+                ctx,
+            );
+            expect(device.stagedTerrain).toBe(true);
+            expect(state.terrainSent).toBe(true);
+            // A raster consumes no shard index — not on the device, and not in the host's own
+            // accounting either. That is the whole reason it is not a `mapShard`.
+            expect(device.stagedMapShardCount).toBe(1);
+            expect(state.nextShard).toBe(1);
+
+            await sendAssembledSetFile(
+                client,
+                state,
+                { name: "MS1.OBS", role: "manifest", sha256: "", byteLength: manifest.length, bytes: manifest },
+                ctx,
+            );
+            expect(state.setId).toBe(1);
+            // Every file of the set was paid for, and the raster landed beside it.
+            expect(state.committedBytes).toBe(state.totalBytes);
+            expect(device.committedTerrain(1)?.byteLen).toBe(raster.length);
+            expect(device.stagedMapShardCount).toBe(0);
+            expect(device.stagedTerrain).toBe(false);
+        } finally {
+            await close();
+        }
+    });
+
+    /** The other half of the same rule: a set with no raster announces the length it always did. */
+    it("leaves a terrain-less set exactly as it was", async () => {
+        const { client, device, close } = loopbackDevice();
+        try {
+            const shard = syntheticBytes(4096);
+            const manifest = syntheticBytes(manifestLen(1));
+            const state = setSendState(1, shard.length + manifest.length);
+            const ctx = context();
+            await sendAssembledSetFile(
+                client,
+                state,
+                { name: "MS1S00.OBM", role: "core", sha256: digest(shard), byteLength: shard.length, bytes: shard },
+                ctx,
+            );
+            await sendAssembledSetFile(
+                client,
+                state,
+                { name: "MS1.OBS", role: "manifest", sha256: "", byteLength: manifest.length, bytes: manifest },
+                ctx,
+            );
+            expect(state.setId).toBe(1);
+            expect(state.terrainSent).toBe(false);
+            expect(device.committedTerrain(1)).toBeUndefined();
+        } finally {
+            await close();
+        }
+    });
+
+    /**
+     * The mock now holds the device's announce rule, so the exact shape of #1044 fails *here* —
+     * a manifest sized for a terrain record on a set whose raster was never sent.
+     */
+    it("refuses a manifest whose length does not match what the device received", async () => {
+        const { client, close } = loopbackDevice();
+        try {
+            const shard = syntheticBytes(1024);
+            const manifest = syntheticBytes(manifestLen(2)); // the terrain-bearing length…
+            const state = setSendState(1, shard.length + manifest.length);
+            const ctx = context();
+            await sendAssembledSetFile(
+                client,
+                state,
+                { name: "MS1S00.OBM", role: "core", sha256: digest(shard), byteLength: shard.length, bytes: shard },
+                ctx,
+            );
+            // …on a set that sent no raster. This is the upload that used to die on the glass
+            // saying "Map installed".
+            await expect(
+                sendAssembledSetFile(
+                    client,
+                    state,
+                    { name: "MS1.OBS", role: "manifest", sha256: "", byteLength: manifest.length, bytes: manifest },
+                    ctx,
+                ),
+            ).rejects.toThrow();
+            expect(state.setId).toBeNull();
+        } finally {
+            await close();
+        }
+    });
+
+    /** A raster names no set of its own: the set id is minted by the first OBCM shard. */
+    it("refuses a terrain shard sent before any shard of the set", async () => {
+        const { client, close } = loopbackDevice();
+        try {
+            const raster = syntheticBytes(512);
+            const state = setSendState(2, 4096);
+            await expect(
+                sendAssembledSetFile(
+                    client,
+                    state,
+                    {
+                        name: "MS1.OBD",
+                        role: "terrain",
+                        sha256: digest(raster),
+                        byteLength: raster.length,
+                        bytes: raster,
+                    },
+                    context(),
+                ),
+            ).rejects.toThrow(/raster follows every shard/);
         } finally {
             await close();
         }

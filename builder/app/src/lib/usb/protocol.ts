@@ -72,6 +72,20 @@ export const ObjectType = {
     MapShard: 17,
     /** The OBCA manifest that commits a previously uploaded shard set (USB only). */
     MapSet: 18,
+    /**
+     * The set's **terrain shard** — an OBCT raster, `MS<id>.OBD` on the card (USB only, #1044).
+     *
+     * It is not a {@link MapShard}, and the difference is load-bearing rather than cosmetic. A
+     * shard's `object_id` is a packed `(shard_count, index)` naming one of the OBCM files the
+     * manifest's *leading* records describe; a raster has no index, is not an OBCM file, and lands
+     * under a different name. Sent as a shard it would consume an index the manifest never names.
+     *
+     * New-only (`object_id` = {@link NEW_OBJECT_ID}): there is at most one per set. It goes out
+     * **after every `mapShard` and before the `mapSet`**, because `OBCA_Spec.md` §5.2's `Shard
+     * Count` counts every record — terrain included — so the manifest is 56 bytes longer than the
+     * shard count alone implies and the device checks that length at the announce.
+     */
+    TerrainShard: 19,
 } as const;
 export type ObjectType = (typeof ObjectType)[keyof typeof ObjectType];
 
@@ -86,6 +100,24 @@ export const NEW_OBJECT_ID = 0xffff;
 
 /** Object id of the singletons: the list objects, diagnostics, and the `fwImage` staging slot. */
 export const SINGLETON_OBJECT_ID = 0;
+
+/** The OBCS set manifest's fixed header width (`OBCA_Spec.md` §5.2). */
+export const OBCS_HEADER_LEN = 72;
+/** The OBCS manifest's fixed per-record width (§5.2). */
+export const OBCS_RECORD_LEN = 56;
+
+/**
+ * The exact byte length of a set manifest carrying `records` records — `72 + 56 × Shard Count`.
+ *
+ * **`records` is not the shard count** (#1044). §5.2's `Shard Count` field counts *every* record,
+ * and a set with elevation carries one more: the `terrain` role's. A device refuses a `mapSet`
+ * announce whose `total_len` is anything else, before a byte streams — so a host that sends every
+ * OBCM shard and skips the raster announces a manifest 56 bytes longer than the device can expect,
+ * and loses the whole upload at its last transfer.
+ */
+export function manifestLen(records: number): number {
+    return OBCS_HEADER_LEN + OBCS_RECORD_LEN * records;
+}
 
 /** Pack a volume-set shard's `(shard_count, index)` into the descriptor's object id (§4.2). */
 export function setPartId(shardCount: number, index: number): number {
