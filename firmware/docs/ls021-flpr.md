@@ -200,12 +200,18 @@ COM, FLPR source), so the epic's rule is **absolute**:
 
   | line | pin | port.bit | mask | role |
   |---|---|---|---|---|
-  | `R0` | P2.06 | bit 6 | `1<<6` | source data, odd pixel — red |
-  | `R1` | P2.08 | bit 8 | `1<<8` | source data, even pixel — red |
-  | `G0` | P2.09 | bit 9 | `1<<9` | source data, odd pixel — green |
-  | `G1` | P2.10 | bit 10 | `1<<10` | source data, even pixel — green |
-  | `B0` | P2.00 | bit 0 | `1<<0` | source data, odd pixel — blue **(shared: sEMMC `D3`)** |
-  | `B1` | P2.04 | bit 4 | `1<<4` | source data, even pixel — blue **(shared: sEMMC `D1`)** |
+  | `R0` | P2.06 | bit 6 | `1<<6` | source data, even-`x` pixel — red |
+  | `R1` | P2.08 | bit 8 | `1<<8` | source data, odd-`x` pixel — red |
+  | `G0` | P2.09 | bit 9 | `1<<9` | source data, even-`x` pixel — green |
+  | `G1` | P2.10 | bit 10 | `1<<10` | source data, odd-`x` pixel — green |
+  | `B0` | P2.00 | bit 0 | `1<<0` | source data, even-`x` pixel — blue **(shared: sEMMC `D3`)** |
+  | `B1` | P2.04 | bit 4 | `1<<4` | source data, odd-`x` pixel — blue **(shared: sEMMC `D1`)** |
+
+  > **`even`/`odd` here is 0-based `x`**, matching [`ls021_pack_row`](../obc-display/src/ls021/wire.rs)
+  > — the `*0` lines carry `x = 0, 2, 4, …`. The datasheet (and the public
+  > [display-protocol page](../../docs/content/hardware/display-protocol.md)) number columns from 1
+  > and so call that same physical line the *odd* column. Same wire, different origin; don't "fix"
+  > one to match the other's wording.
   | `BCK` | P2.07 | bit 7 | `1<<7` | source/shift clock (FLPR's own pulse) |
   | `BSP` | **P1.14** | bit 14 | `1<<14` | sub-line start pulse (the lone P1 source line) |
 
@@ -386,10 +392,10 @@ data = buf[col] & 0x751;         // the 6 data bits, already at their P2 positio
 P2.OUTCLR = (~data) & 0x751;     // lower the 0 bits  ── present the column
 P2.OUTSET = data;                // raise the 1 bits  ──  (one xori, no 2nd word)
 busy(DATA_SETUP_ITERS);          // data setup before BCK rises
-P2.OUTSET = 1<<6;                // BCK high (latches the pixel-pair into the source SR)
+P2.OUTSET = 1<<7;                // BCK high (latches the pixel-pair into the source SR)
 if (col == 0) P1.OUTCLR = 1<<7;  // BCK(1) rose within BSP high → release BSP
 busy(BCK_HALF_ITERS);
-P2.OUTCLR = 1<<6;                // BCK low
+P2.OUTCLR = 1<<7;                // BCK low
 busy(BCK_HALF_ITERS);
 ```
 
@@ -638,7 +644,7 @@ write-buffer words:
 - **area-gradation split** — each channel's 2-bit level → the MSB plane's 2/3-area bit (`level >> 1`)
   and the LSB plane's 1/3-area bit (`level & 1`), exactly `PanelBus::plane_bits`;
 - **odd/even column interleave** — each `BCK` clocks a pixel *pair*: the even-`x` pixel on `R0/G0/B0`
-  (bits 0/2/4), the odd-`x` pixel on `R1/G1/B1` (bits 1/3/5);
+  (word bits 6/9/0), the odd-`x` pixel on `R1/G1/B1` (word bits 8/10/4);
 - **pre-shift** — the 6 bits land already at their P2 GPIO positions (`= DATA_MASK 0x751`), so the
   FLPR inner loop stays the bit-twiddle-free `store → pulse BCK` from F2;
 - **4 trailing dummy/flush columns** per sub-line = black.

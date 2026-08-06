@@ -634,11 +634,9 @@ struct PendingSave {
 /// 32 MHz reads) and mount the FAT volume. Returns `None` on any failure (no card, not FAT,
 /// unreadable) so the caller degrades gracefully — never panicking (acceptance criterion).
 ///
-/// `async` because card identification is: the ACMD41 power-up poll is bounded at 1.5 s, and the
-/// panel's anti-DC-bias COM square wave is a 60 Hz M33 task that must not be starved for that long.
+/// Card identification is the slow part — the ACMD41 power-up poll is bounded at 1.5 s.
 /// [`flpr_mux::bring_up_storage`](crate::flpr_mux::bring_up_storage) is what holds the FLPR in
-/// storage mode across the whole await — the one place in the system where an `await` happens with
-/// a command on the wire (see its doc, and PR #1160's `Semmc::start` contract).
+/// storage mode across the whole of it (see its doc, and PR #1160's `Semmc::start` contract).
 ///
 /// ## ⚠️ Synchronous on purpose — the async-fn frame trap (#677, #1108)
 ///
