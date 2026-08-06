@@ -305,11 +305,20 @@ fn assert_semmc_blob_metadata(bytes: &[u8]) {
     assert!(bytes.len() >= 32, "sEMMC image is {} B — too short to carry a metadata header", bytes.len());
     let w = |i: usize| u32::from_le_bytes([bytes[i * 4], bytes[i * 4 + 1], bytes[i * 4 + 2], bytes[i * 4 + 3]]);
 
-    let (w0, w3, w6) = (w(0), w(3), w(6));
+    let (w0, w1, w3, w6) = (w(0), w(1), w(3), w(6));
     assert_eq!(w0 & 0xFFFF, 0xA005, "sEMMC image: bad soft-peripheral magic");
     assert_eq!((w0 >> 16) & 0xF, 2, "sEMMC image: unexpected metadata header version");
     assert_eq!((w0 >> 20) & 0xFF, 1, "sEMMC image: comm id is not REGIF — this driver speaks the register interface");
     assert_eq!(w0 >> 31, 0, "sEMMC image declares self_boot — the host must NOT copy it to RAM any more");
+    // The platform word, pinned to what the shipped v0.1.1 image actually declares:
+    // `softperiph_id` 0xE33C and platform.raw 0x2208 = series 54 / platform L / **device 8**, which
+    // in the v2 metadata's device enum is `DEVICE_15` — the nRF54L15, not the LM20 (16) this crate
+    // targets. That mismatch is real and deliberate to record: the image lives under nrfxlib's
+    // `nrf54l/` directory, and it is glass-verified working on the LM20 (#1145, 2026-08-05/06), so
+    // the declared device is narrower than the silicon it runs on. Asserting *what is* rather than
+    // what we would like means a future image built for a different part — or a different soft
+    // peripheral entirely — fails here instead of being copied into the carve and run.
+    assert_eq!(w1, 0x2208_E33C, "sEMMC image: unexpected soft-peripheral id / platform word");
     assert!(
         bytes.len() <= SEMMC_CODE_BYTES,
         "sEMMC image ({} B) does not fit the {SEMMC_CODE_BYTES} B code region",
