@@ -307,7 +307,7 @@ pub fn wait_scan_settled() -> bool {
 /// Deadline for one frame ack: the worst full-frame scan is ~44 ms (#348), so 250 ms (>5×)
 /// only ever fires when the FLPR has genuinely stalled — turning a hang into a reported error the
 /// caller retries (and #349's relaunch escalation hooks).
-const FRAME_DEADLINE: Duration = Duration::from_millis(250);
+pub const FRAME_DEADLINE: Duration = Duration::from_millis(250);
 
 /// Deadline for the boot/relaunch `ALIVE` stamp: the FLPR stamps within a few of its 5 ms poll
 /// periods normally, so a full second only ever expires when the core genuinely didn't come up

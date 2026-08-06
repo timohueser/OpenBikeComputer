@@ -1133,13 +1133,15 @@ async fn main(_spawner: Spawner) {
             ];
             // COM electrode lines (56–77 nF load each → high-drive), boot `Lo` and held `Lo` through the
             // init-black frame below, then started. Default (DK): three plain `Output`s the M33
-            // `com_task` toggles at 60 Hz — COM is on P2, which has **no GPIOTE**, so it must be
-            // M33-driven (VCOM=P2.07, VB=P2.08 in phase, VA=P2.10 inverse). With `com-hw` (production
-            // board): the COM lines are GPIOTE **toggle** channels a TIMER+DPPI free-runs with zero CPU
-            // (so the M33 can WFI between events) — so they move off P2 onto GPIOTE-capable P1 pins (all
-            // on GPIOTE20 → one DPPI channel toggles them in lockstep). The pins here are **placeholders**
-            // (P1.04/05/15) to be matched to the production board's COM routing; the freed P2.07/08/10
-            // then go unused. `HwCom::start` establishes VA's inverse phase before enabling the toggle.
+            // `com_task` toggles at 60 Hz — VCOM=P1.22, VB=P1.23 in phase, VA=P1.24 inverse. COM lived
+            // on P2.07/08/10 until the #1158 rehome gave the whole of P2 to the source bus + the microSD
+            // card (those three are `BCK`/`R1`/`G1` now); P1.22–24 have no GPIOTE either, so the default
+            // build still drives them from the M33. With `com-hw` (production board): the COM lines are
+            // GPIOTE **toggle** channels a TIMER+DPPI free-runs with zero CPU (so the M33 can WFI
+            // between events) — GPIOTE-capable P1 pins, all on GPIOTE20, so one DPPI channel toggles
+            // them in lockstep. Those pins are **placeholders** (P1.04/05/15) to be matched to the
+            // production board's COM routing. `HwCom::start` establishes VA's inverse phase before
+            // enabling the toggle.
             #[cfg(not(feature = "com-hw"))]
             let (vcom, vb, va) = (
                 Output::new(p.P1_22, Level::Low, OutputDrive::HighDrive),
@@ -1262,10 +1264,20 @@ async fn main(_spawner: Spawner) {
         // up above, before the card), so instead of failing silently we put an **undismissable**
         // fault screen on glass, then heartbeat-idle. (SharedStore keeps an Option seam for a future
         // card-less variant where BLE config/bond/diagnostics still serve.)
-        let Some(mut storage) = storage else {
-            defmt::error!("SD: no card / mount failed — showing the NO SD CARD fault screen, then heartbeat idle");
-            show_boot_fault(&mut display, obc_app::BootFault::NoCard).await;
-            idle_blink(&mut led).await
+        let mut storage = match storage {
+            Ok(s) => s,
+            Err(fault) => {
+                // The *reason* travels with the failure (#1163 review, P3): a reader that never
+                // booted and a card that is merely too small each get their own screen, because
+                // "NO SD CARD" would send the rider to the wrong fix. `sd::init` has already logged
+                // the specific class.
+                defmt::error!(
+                    "SD: storage unusable — showing the {=str} fault screen, then heartbeat idle",
+                    fault.copy().0
+                );
+                show_boot_fault(&mut display, fault).await;
+                idle_blink(&mut led).await
+            }
         };
 
         // Reclaim any map upload that never committed (issue #927) before the catalog is read: a

@@ -15,19 +15,12 @@
 //! the M33's `RAM` region to match, and which cross-checks them against the image's own metadata
 //! header so a blob update cannot silently mis-size the carve.
 //!
-//! ## Not wired up yet
-//!
-//! This module is **build-only in this PR**: nothing in `main.rs` constructs a [`Semmc`] and the
-//! `VPR00` interrupt vector is unclaimed. The integration PR of epic #1158 swaps `sd.rs`'s
-//! transport onto it, adds the display/storage mode scheduler around
-//! [`enter_storage_mode`](Semmc::enter_storage_mode) / [`leave_storage_mode`](Semmc::leave_storage_mode),
-//! binds the vector to [`on_vpr00_irq`], deletes the SPI path, and updates
-//! `firmware/docs/ls021-flpr.md` + the board README. Until then the module carries an
-//! `#[allow(dead_code)]` at its declaration in `main.rs`.
-//!
 //! The public surface is deliberately the whole sequence and nothing below it —
-//! [`Semmc::start`] once per power-on (async: it is the only path that waits in milliseconds),
-//! then `enter_storage_mode` / `leave_storage_mode` per handover and the two sync transfer calls.
+//! [`Semmc::start`] once per power-on, then `enter_storage_mode` / `leave_storage_mode` per
+//! handover and the two transfer calls. Every one of them is **synchronous**: `start` waits in
+//! milliseconds (the ACMD41 power-up poll) but blocks rather than yields, because awaiting it from
+//! `main` flattens the whole chain into `main`'s permanent task-body poll frame — the #677 / #1108
+//! trap, itemized in `sd::init`'s note.
 //! Boot, enable and card identification are private on purpose: law 1 is only a law if a caller
 //! cannot boot the firmware without powering it on.
 //!
@@ -270,8 +263,8 @@ static WARNED_NO_IRQ: AtomicBool = AtomicBool::new(false);
 
 /// **The `VPR00_IRQn` handler body** — call this from the vector.
 ///
-/// Kept as a plain function rather than an `#[interrupt] fn VPR00` because the integration PR owns
-/// the vector table alongside the display side's `EGU20`; it declares
+/// Kept as a plain function rather than an `#[interrupt] fn VPR00` because `main.rs` owns the
+/// vector table alongside the display side's `EGU20`; it declares
 ///
 /// ```ignore
 /// #[interrupt]
@@ -295,7 +288,7 @@ pub fn on_vpr00_irq() {
 /// Why a storage operation failed. Every variant is *returned*, never panicked or hung on.
 ///
 /// `Debug` is not decoration: `embedded_sdmmc::BlockDevice::Error` requires it, and this type is
-/// that error since the integration PR (#1158) made `sd::SemmcCard` the transport. The real
+/// that error now that `sd::SemmcCard` (#1158) is the transport. The real
 /// diagnostics stay `defmt::Format`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, defmt::Format)]
 pub enum SemmcError {
@@ -387,9 +380,8 @@ fn vri_write(off: usize, v: u32) {
 /// `ls021_flpr::relaunch_flpr`, which additionally issues a `haltreq` and waits for `DMSTATUS.
 /// allhalted` before resetting. Both stop the hart; the display side's is the more careful one
 /// (a clean instruction boundary), this one is the 29 µs one the mode-switch numbers were measured
-/// with. ⚠️ The integration PR owns the question of whether the scheduler should use one recipe for
-/// both directions — they are equivalent for a park, but only one of them has been measured at
-/// switch cadence.
+/// with. ⚠️ Open question the scheduler has not settled: whether both directions should share one
+/// recipe — they are equivalent for a park, but only this one has been measured at switch cadence.
 pub fn park_hart() {
     // SAFETY: fixed VPR00 MMIO; parking the coprocessor cannot corrupt M33 state.
     unsafe {
@@ -411,6 +403,20 @@ fn cfg_pad(pin: usize, dir: Dir, input: Input, pull: Pull, drive: Drive, ctrl: C
     });
 }
 
+/// **The high-speed pad bias — one constant global value, deliberately.**
+///
+/// `GPIOHSPADCTRL.BIAS` is a *port*-wide trim, not a per-pin field, so the two modes cannot each own
+/// one: whatever the last writer set is what both buses run at. The decision is therefore to pick a
+/// single value and apply it from **both** pad configurations, rather than to restore per mode.
+///
+/// 2 is Nordic's porting-guide value for the card at 32 MHz, and it is the binding constraint — the
+/// panel's source bus is specified at ≤0.758 MHz `BCK`, three orders of magnitude below anything the
+/// bias trim is there to help, so it is indifferent. Setting it in both places is what makes it
+/// *constant*: applied only in `configure_storage_pads`, the panel would run at the reset default
+/// until the first card access and at 2 forever after — a value that depends on session history,
+/// which is exactly the kind of thing that makes an on-glass difference impossible to bisect.
+const HS_PAD_BIAS: u8 = 2;
+
 /// **Storage mode pads** (issue #1158's table): all six card pads become VPR-controlled outputs
 /// with the input buffer disconnected and the extra-high E0/E1 drive 32 MHz needs, plus the
 /// high-speed pad bias. Internal pull-ups go on D3/D1 only — the other four carry the breakout's
@@ -420,8 +426,7 @@ pub fn configure_storage_pads() {
         let pull = if SHARED_PADS.contains(&pin) { Pull::Pullup } else { Pull::Disabled };
         cfg_pad(pin, Dir::Output, Input::Disconnect, pull, Drive::E, Ctrlsel::Vpr);
     }
-    // High-speed pad bias for 32 MHz (Nordic's porting guide: BIAS = 2).
-    pac::GPIOHSPADCTRL_S.bias().modify(|w| w.set_hsbias(2));
+    pac::GPIOHSPADCTRL_S.bias().modify(|w| w.set_hsbias(HS_PAD_BIAS));
 }
 
 /// **Display mode pads**: hand the two shared pads back to the display blob (which drives them as
@@ -436,6 +441,10 @@ pub fn configure_display_pads() {
     for pin in CARD_ONLY_PADS {
         cfg_pad(pin, Dir::Input, Input::Disconnect, Pull::Disabled, Drive::S, Ctrlsel::Gpio);
     }
+    // The same port-global bias as storage mode, and set here too on purpose — see [`HS_PAD_BIAS`].
+    // This is what takes the panel off the reset default at the first display-pad configuration,
+    // rather than at whenever the first card access happens to land.
+    pac::GPIOHSPADCTRL_S.bias().modify(|w| w.set_hsbias(HS_PAD_BIAS));
 }
 
 /// Response landing zone. Nordic documents four words; twice that is 32 B of `.bss` bought as
@@ -450,8 +459,8 @@ struct AlignedBlock([u8; BLOCK_BYTES]);
 
 // ═════════════════════════════════ the host driver ═════════════════════════════════
 
-/// The sEMMC host. One instance owns the FLPR while it is in storage mode; the integration PR's
-/// mode scheduler owns *when* that is.
+/// The sEMMC host. One instance owns the FLPR while it is in storage mode; `flpr_mux`'s mode
+/// scheduler owns *when* that is.
 pub struct Semmc {
     /// Clock the next command is configured with.
     clk_hz: u32,
@@ -548,8 +557,11 @@ impl Semmc {
     ///    every poll for the life of the program: measured **6,912 → 13,376 B** of task body, for a
     ///    function that runs once at boot. `#[inline(never)]` does not fix it — it governs the
     ///    future constructor, not the coroutine body (measured across four placements: 17,152 /
-    ///    14,976 / 13,376 / 13,504). Synchronous, the same build measures 6,880 B. This is exactly
-    ///    the trap of #677 / #1108, and the resource guard's `task_frame_limit` is what caught it.
+    ///    14,976 / 13,376 / 13,504). Synchronous — the shape that ships — the same build measures
+    ///    **7,328 B**, the figure the resource guard pins as `task_frame_measured` (so the async
+    ///    shape's true cost against what ships is 6,048 B, and 6,464 B against the pre-#1158
+    ///    baseline). This is exactly the trap of #677 / #1108, and the guard's `task_frame_limit` is
+    ///    what caught it.
     ///
     /// The waits are unchanged in duration — [`block_for`] busy-waits the same GRTC ticks
     /// [`Timer`](embassy_time::Timer) would have slept — and they only ever run at boot, before the
@@ -778,8 +790,8 @@ impl Semmc {
     /// returns when the event register is set, and nothing in this system guarantees that ever
     /// happens. Embassy's cortex-m platform does not set `SCB.SCR.SEVONPEND`, the GRTC time driver
     /// only interrupts when a timer is actually scheduled, and the two cases this wait exists to
-    /// survive — an unbound `VPR00` vector (which is the state until the integration PR binds it)
-    /// and a firmware that wedged mid-transfer and will never raise its completion event — are
+    /// survive — a `VPR00` vector that is unbound or disarmed, and a firmware that wedged
+    /// mid-transfer and will never raise its completion event — are
     /// exactly the cases where no interrupt arrives at all. The deadline below would then never be
     /// evaluated and the "every wait is bounded" promise would be a lie.
     ///
@@ -1110,9 +1122,11 @@ impl Semmc {
     /// [`SemmcError::CardStatus`].
     ///
     /// `buf` must be a non-empty whole number of 512 B blocks and **32-bit aligned** (the
-    /// firmware's DMA requirement); otherwise [`SemmcError::BadBuffer`]. ⚠️ Note for the
-    /// integration PR: `embedded_sdmmc::Block` has no alignment attribute, so the `BlockDevice`
-    /// impl must either align it in the fork we already carry or bounce through an aligned buffer.
+    /// firmware's DMA requirement); otherwise [`SemmcError::BadBuffer`]. `embedded_sdmmc::Block`
+    /// carries no alignment attribute and cannot gain one (`#[repr(transparent)]` over `[u8; 512]`
+    /// is what makes `Block::slice_from_bytes` sound, i.e. what lets the fork hand a whole cluster
+    /// run to one command), so `sd::SemmcCard` meets the requirement by bouncing through the
+    /// aligned `sd::BOUNCE` in 4-block batches.
     ///
     /// Blocking, and it holds the core while the transfer runs — the same profile the SPI transport
     /// had, and what `embedded_sdmmc`'s synchronous `BlockDevice` needs. See

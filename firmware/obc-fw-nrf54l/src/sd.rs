@@ -645,19 +645,17 @@ struct PendingSave {
 /// chain's coroutine flattens into `main`'s **task-body poll frame**, whose slot set is allocated on
 /// entry on *every* poll for the life of the program — measured **6,912 → 13,376 B** for a function
 /// that runs once at boot, and `#[inline(never)]` does not fix it (it governs the future
-/// constructor, not the coroutine body). Synchronous, the same build measures 6,880 B.
+/// constructor, not the coroutine body). Synchronous — the shape that ships — the same build
+/// measures **7,328 B**, which is what the resource guard pins as `task_frame_measured`.
 ///
 /// It is safe to block here: bring-up runs before the ride loop, the BLE stack and the USB plane
 /// exist, and the panel's anti-DC-bias COM wave is on the P3 `InterruptExecutor` (or, on `com-hw`,
 /// on TIMER + DPPI + GPIOTE), so it preempts thread mode rather than competing with it. See
 /// `Semmc::start`'s note for the full accounting.
-pub fn init() -> Option<Storage> {
+pub fn init() -> Result<Storage, obc_app::BootFault> {
     let info = match crate::flpr_mux::bring_up_storage() {
         Ok(info) => info,
-        Err(e) => {
-            defmt::warn!("SD: no card / sEMMC init failed: {}", e);
-            return None;
-        }
+        Err(e) => return Err(bring_up_fault(e)),
     };
     defmt::info!(
         "SD: card up over sEMMC — {=u32} MB, 4-bit, {=u32} MHz reads (high-speed {=bool}), RCA 0x{=u16:04x}; FLPR mode: {=str}",
@@ -672,7 +670,41 @@ pub fn init() -> Option<Storage> {
     // SAFETY: sole writer of SD_CARD; `init` runs once per boot on the one thread-mode executor,
     // and a warm-reset re-run overwrites in place (no `Drop`), the `init_static` contract.
     let card: &'static Sd = unsafe { crate::init_static(core::ptr::addr_of_mut!(SD_CARD), SemmcCard) };
-    Storage::mount(card)
+    Storage::mount(card).ok_or_else(|| {
+        defmt::error!("SD: the card is up but the FAT volume would not mount — STORAGE FAULT");
+        obc_app::BootFault::StorageFault
+    })
+}
+
+/// **Which fault screen a failed bring-up earns** — the honesty rule (#1163 review, P3): a fault
+/// line the rider can act on, not one catch-all.
+///
+/// Three classes, because the driver can genuinely tell them apart:
+///
+/// - [`SemmcError::NoCard`] is the only one that means what "NO SD CARD" says — the host came up and
+///   identification found nothing (empty socket, dead card, broken bus).
+/// - [`SemmcError::UnsupportedCard`] means a working card that is SDSC. Dropping SDSC is deliberate
+///   (byte-addressed, ≤2 GB, no map fits), but a card that worked over the retired SPI path now
+///   fails, and "NO SD CARD" would send its owner hunting for a card that is already inserted.
+/// - everything else is the storage subsystem itself — the soft peripheral that would not boot, a
+///   barrier that never echoed, a transport error during identification. None of those are evidence
+///   about whether a card is present, so they read as the honest superset.
+fn bring_up_fault(e: crate::semmc::SemmcError) -> obc_app::BootFault {
+    use crate::semmc::SemmcError;
+    match e {
+        SemmcError::NoCard => {
+            defmt::warn!("SD: card identification found no card — NO SD CARD");
+            obc_app::BootFault::NoCard
+        }
+        SemmcError::UnsupportedCard => {
+            defmt::error!("SD: card is SDSC (CSD v1, <=2 GB) — rejected; CARD UNSUPPORTED");
+            obc_app::BootFault::CardUnsupported
+        }
+        other => {
+            defmt::error!("SD: the sEMMC host did not come up ({}) — STORAGE FAULT, not a missing card", other);
+            obc_app::BootFault::StorageFault
+        }
+    }
 }
 
 // ═══════════════════════════ the block device ═══════════════════════════
