@@ -3,9 +3,9 @@
  * that actually reaches the transport.
  *
  * All three of C4's flows run through this, because the interesting behaviour is identical in all
- * three and only one of them is short. A map is hundreds of megabytes over a link whose ceiling is
- * the **SD card** — the proven ~8 MHz SPI to the card is high-hundreds of KB/s, so a large map is
- * *minutes*, not "USB is fast". A progress bar that only counts percent invites the rider to think
+ * three and only one of them is short. A map is hundreds of megabytes, and no stage of the pipeline
+ * that carries it is fast enough to make that instant, so a large map is *minutes* rather than "USB
+ * is fast". A progress bar that only counts percent invites the rider to think
  * something is stuck at 12%; a rate and a remaining time say what is actually happening.
  *
  * The rate is measured over a short trailing window rather than since the start, because the two

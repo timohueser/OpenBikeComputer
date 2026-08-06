@@ -948,7 +948,8 @@ a map that plans, renders and rides exactly as one baked without terrain, while 
 missing is not a map at all. A reader MUST mount such a set, MUST fall back to no elevation, and MUST
 NOT present it as a fault.
 
-A device MAY defer the SHA-256 check (hashing gigabytes off an SD card is minutes of work) but
+A device MAY defer the SHA-256 check (hashing gigabytes is minutes of work — the cost is the hash
+itself, not the card, which reads at 14.7 MB/s) but
 MUST verify `Bytes` and the header bbox at mount, and a **host** writing a set MUST verify every
 digest before the manifest is written.
 

@@ -78,8 +78,9 @@ type ChannelMode = "message" | "stream";
  *
  * **Backpressure** is a byte high-water mark: a writer that has filled the channel waits for the
  * reader to drain it. Real backpressure comes from the device NAKing an endpoint it hasn't drained,
- * and a client that fires writes without awaiting them would outrun a device whose SD card tops out
- * in the high hundreds of KB/s. Faking it here is what makes that bug fail in CI.
+ * and a client that queues writes without ever retiring them would outrun any real device. Faking it
+ * here is what makes that bug fail in CI. (A *bounded* window of outstanding writes is fine and is
+ * what the upload loop does — the high-water mark is what keeps it bounded.)
  *
  * **Segmentation**: a `stream` channel re-slices to `packetSize`, so the reader sees the arbitrary
  * boundaries a bulk endpoint produces. A `message` channel keeps writes whole, which is the control
