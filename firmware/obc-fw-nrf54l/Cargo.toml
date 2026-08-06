@@ -38,11 +38,7 @@ description = "nRF54LM20-DK board firmware for OpenBikeComputer — the real har
 # shape any more, and since 2026-07-26 no separate non-USB shape either (the 512 KB part fits them
 # together; the budget assert + measured-residual notes in main.rs are the margins). The
 # critical-section impl therefore comes from MPSL on every build.
-default = ["ble", "sd-bench"]
-
-# Marker for the SD throughput diagnostic bin. Rides the default (ble) feature set — MPSL's
-# critical-section impl works from reset without MPSL init, so the harness needs nothing special.
-sd-bench = []
+default = ["ble"]
 
 # Replace the real GPS/altimeter with the always-compiled `SynthLocation` square-loop stand-in (no
 # I²C hardware needed) — indoor testing without a sky view, where a real fix never comes. A runtime
@@ -103,14 +99,6 @@ ble = ["dep:nrf-sdc", "dep:nrf-mpsl", "dep:bt-hci", "dep:trouble-host", "dep:sta
 name = "ble_central_repro"
 required-features = ["ble"]
 
-# Throwaway microSD read-speed harness (renderer is SD-bound): sweeps block batches
-# (CMD17 vs CMD18) × read shapes (seq / rand-4k / rand-512) at SERIAL22's proven 8 MHz ceiling
-# against the real `.obcm` on the card, with an FNV integrity guard.
-#   cargo run --release --bin sd_bench
-[[bin]]
-name = "sd_bench"
-required-features = ["sd-bench"]
-
 [dependencies]
 # embassy HAL for the nRF54L15 app core. `nrf54lm20-app-s` selects the secure-app die
 # (the only partition we use — no TF-M split, BLE deferred); `time-driver-grtc` backs
@@ -151,10 +139,6 @@ panic-probe = { version = "1.0", features = ["print-defmt"] }
 cortex-m = { version = "0.7", features = ["inline-asm"] }
 cortex-m-rt = "0.7"
 
-# embedded-hal 1.0 digital traits: `sd::NoCs` implements `ErrorType` / `OutputPin` for the
-# held-low chip-select the embedded-sdmmc `SpiDevice` wants (the per-byte-CS workaround).
-# embedded-hal-bus (below) also re-exports these; the direct dep pins the version they unify on.
-embedded-hal = "1.0"
 # `NorFlash`/`ReadNorFlash` — the traits embassy-nrf's `Rramc` (RRAM controller) driver implements;
 # the persistent settings store (#193) reads/writes its 16-byte blob to the carved RRAM page through
 # them. Pinned to the 0.3 embassy-nrf 0.11 resolves so the trait types unify.
@@ -208,11 +192,6 @@ obc-dfu = { path = "../obc-dfu" }
 # the no-op fallback and card/FS errors are surfaced via this crate's `defmt::Debug2Format`.
 # Matches obc-storage's own `embedded-sdmmc` resolve so the `VolumeManager` types unify.
 embedded-sdmmc = { version = "0.9", default-features = false }
-# `ExclusiveDevice` turns the embassy-nrf `Spim` bus + a GPIO CS into the `SpiDevice` `SdCard` wants.
-embedded-hal-bus = "0.3"
-# `SetConfig` — embassy-nrf's `Spim` re-clock seam (no inherent `set_config`):
-# init the card ≤400 kHz then bump to bulk speed. Pinned to the 0.6 embassy-nrf 0.11 resolves.
-embassy-embedded-hal = { version = "0.6.0", default-features = false }
 # `String` / `Vec` for the route catalog + GPX 8.3 names the SD `Storage` builds. Same 0.8 the
 # shared crates use, so heapless types unify.
 heapless = "0.8"
@@ -288,11 +267,12 @@ debug = 2
 
 # ---------------------------------------------------------------------------------------------
 # Our embedded-sdmmc fork, branched from the v0.9.0 tag: `VolumeManager::write` batches the
-# block-aligned run inside the current cluster into ONE `BlockDevice::write`, which `SdCard`
-# issues as ACMD23 + CMD25. Stock 0.9's one-block `BlockCache` can never hand the device more
-# than a block, so a map upload paid a CMD24 + the card's whole program cycle + CMD13 per 512 B.
-# Measured on the shipping card at M16 (`sd_bench`): 2458 us/block through the FAT layer against
-# 479 us/block at 64-block batches — the 5.3x behind #889's upload speed.
+# block-aligned run inside the current cluster into ONE `BlockDevice::write`, which the transport
+# then issues as a single multi-block command. Stock 0.9's one-block `BlockCache` can never hand
+# the device more than a block, so a map upload paid a whole card program cycle per 512 B.
+# The batching is transport-agnostic and is exactly what feeds CMD25 runs to the sEMMC host that
+# replaced the SPI path (epic #1158): the same edge that was worth 5.3x over SPI is what turns
+# 8.2 MB/s of raw write bandwidth into upload throughput instead of one program cycle per block.
 #
 # **This stanza is per resolve root, and there are three.** The workspace root carries the same
 # patch so `obc-storage`'s host tests exercise the crate the device actually runs; `obc-boot`
