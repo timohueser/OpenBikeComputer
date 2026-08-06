@@ -237,10 +237,15 @@ const CARD_STATE_PRG: u8 = 7;
 /// address/CRC/ECC complaint is how corrupted map bytes reach the renderer. It is on #1158's
 /// on-glass checklist to confirm no flag trips it during a long ride.
 ///
-/// Deliberately **excluded** — these are informational, and failing a read on any of them would be
-/// a bug: `CARD_ECC_DISABLED` (14), `ERASE_RESET` (13, set by any command that interrupts a queued
-/// erase — routine), `AKE_SEQ_ERROR` (3, authentication sequence, which this driver never uses), and
-/// `CARD_IS_LOCKED` (25, a state, not a fault).
+/// Deliberately **excluded**, for two different reasons:
+///
+/// - *Not errors in the spec's own classification*: `CARD_ECC_DISABLED` (14) and `ERASE_RESET`
+///   (13, set by any command that interrupts a queued erase — routine) are S-type status bits, and
+///   `CARD_IS_LOCKED` (25) is a state. Failing a read on any of them would be a bug.
+/// - *A product decision*: `AKE_SEQ_ERROR` (3) **is** an E-type error bit in the spec. It is
+///   excluded because this driver never runs the authentication sequence it reports on, so it
+///   cannot legitimately fire — and if a card ever set it anyway, failing every subsequent read
+///   over a feature we do not use would be the worse outcome.
 const R1_ERROR_MASK: u32 = (1 << 31)  // OUT_OF_RANGE
     | (1 << 30)                       // ADDRESS_ERROR
     | (1 << 29)                       // BLOCK_LEN_ERROR
@@ -511,6 +516,22 @@ impl Semmc {
     /// blocking bring-up would starve it for long enough to be a DC-bias hazard on the glass, so
     /// every long wait in here yields. The per-transfer paths stay synchronous: they are
     /// microsecond-scale and `embedded_sdmmc`'s `BlockDevice` is a sync trait.
+    ///
+    /// ## ⚠️ Contract for the integration PR's mode scheduler
+    ///
+    /// **The storage mode lock must be held across the entire `start().await`, not merely across
+    /// its synchronous stretches.** This function yields three times — the card settle, the CMD8
+    /// deliver-and-abort's 3 ms wait, and each ACMD41 poll interval — and at every one of them the
+    /// FLPR is *live in storage mode*: the sEMMC image is running, `CTRLSEL` on all six pads is
+    /// `VPR`, and at the CMD8 yield there is an actual command in flight on the wire that this
+    /// function is about to abort by hand. A scheduler that treats an `await` point as a chance to
+    /// hand the coprocessor to the display plane would repoint `INITPC`, reset the hart and flip
+    /// B0/B1 (P2.00/P2.04) out from under a transaction — leaving the card mid-command with no host
+    /// to finish it, which is the one failure this driver cannot recover from.
+    ///
+    /// The same applies to every `&mut self` method here, but those are all synchronous and so the
+    /// borrow enforces it on its own; `start` is the one place where the type system does not, and
+    /// the lock has to.
     pub async fn start(&mut self) -> Result<CardInfo, SemmcError> {
         park_hart();
         configure_storage_pads();
@@ -744,10 +765,13 @@ impl Semmc {
     /// reachable with **zero** interrupts arriving. The tradeoff, stated plainly: the core spins
     /// for the duration of a transfer instead of idling. That is the same profile the SPI transport
     /// it replaces had (a blocking `Spim` transfer held the CPU too), and the transfers are ~30×
-    /// shorter now. The completion ISR still matters — it is what lets the slice be a *polling*
-    /// granularity rather than the mechanism, and [`COMPLETION`] short-circuits the VRI read — but
-    /// correctness no longer depends on it firing. A completion that arrives with no interrupt at
-    /// all is diagnosed once, loudly, because that is a wiring-up bug and not a card fault.
+    /// shorter now.
+    ///
+    /// The completion interrupt is therefore **diagnostic, not load-bearing**: the VRI events are
+    /// read unconditionally on every slice, and [`COMPLETION`] is not consulted to decide whether
+    /// to read them — it only records whether an interrupt accompanied the completion we found, so
+    /// that "the vector is not bound" can be reported once instead of silently costing latency
+    /// forever. Nothing here gets faster or slower depending on whether the ISR fires.
     fn wait_completion(&mut self, timeout: Duration) -> Result<(), SemmcError> {
         let deadline = Instant::now() + timeout;
         loop {
@@ -889,7 +913,16 @@ impl Semmc {
     /// Returns whether the switch is confirmed. Failure here is not fatal — the bus simply stays at
     /// Default Speed.
     fn cmd6_high_speed(&mut self) -> Result<bool, SemmcError> {
-        self.cmd(6, 0x80FF_FFF1, RESP_R1B, PROC_PROCESS, None, CMD_DEADLINE)?;
+        // The send has the same trap as the post-drain CMD13 (see below): a plain `?` here leaves
+        // by the one door that skips the whole rescue. CMD6 is an R1b — the card holds D0 low while
+        // it applies the switch — so a card that never releases busy times out, `wait_completion`
+        // warm-reboots the *host*, and the early return sails past the drain, the tolerant loop and
+        // the CMD12, while `init_card`'s `unwrap_or(false)` turns it into a cheerful `Ok`. The card
+        // is meanwhile in `data` with its status block undelivered, and every later read is illegal.
+        if let Err(e) = self.cmd(6, 0x80FF_FFF1, RESP_R1B, PROC_PROCESS, None, CMD_DEADLINE) {
+            self.stop_transmission();
+            return Err(e);
+        }
 
         let mut drain = AlignedBlock([0xEE; BLOCK_BYTES]);
         let addr = drain.0.as_mut_ptr() as u32;
