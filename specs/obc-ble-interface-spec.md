@@ -461,9 +461,20 @@ unchanged. Eight rules govern the sequence, and they are **normative**:
    shard it would consume an index the manifest never names. The rules:
    - `object_id` MUST be `0xFFFF`; a named id is answered `notFound`. There is at
      most **one** terrain shard per set, so there is nothing for an id to select.
+     This refusal is checked **first**, ahead of the session rules below, for the
+     same reason rule 1 answers a malformed part before a device's shard ceiling:
+     a host that packed the field wrong is told *that*, not something about a set.
    - A `terrainShard` announced with **no set in flight** MUST be refused with
      `error`. The set id is minted by the first `mapShard`, so a raster arriving
      first names no set at all.
+   - An announced `total_len` below one OBCT header is answered `error` — map
+     rule 3 above, against the raster's format instead of OBCM's.
+   - A device that **discards** a raster's transfer (a failed CRC, a card that
+     refused the write) MUST stop counting it toward rule 8's length, because the
+     discard removes the file — including one an earlier attempt had committed.
+     The host is then refused at the *manifest's announce*, where it costs one
+     descriptor and the raster can still be re-sent, rather than at the commit
+     that would delete the whole set.
    - A host MUST send it after every `mapShard` of the set and **before** the
      `mapSet`. That is not house style: rule 8 makes the manifest's expected
      length depend on whether the raster has arrived, so a device can only be
@@ -511,6 +522,20 @@ unchanged. Eight rules govern the sequence, and they are **normative**:
    manifest's commit a device re-checks every shard against the manifest's own
    record of it, and MUST refuse a manifest that does not describe the files
    beside it — deleting the whole set rather than leaving it half-present.
+
+   **The terrain record is checked here and only here.** A device MUST refuse a
+   just-uploaded manifest whose `terrain` record does not match the raster on the
+   card (absent, a different length, or not a readable OBCT). That is *not* in
+   tension with [`OBCA_Spec.md` §5.3](OBCA_Spec.md)'s rule that a missing or
+   unreadable terrain shard MUST NOT fail a **mount** — the two are different
+   moments and must stay different. At mount the device is judging a card that has
+   aged: a rider deleted the `.OBD` to reclaim space, a hand copy was truncated, a
+   read glitched, a later OBCT version arrived. None of that makes the map a lie,
+   and §5.3 requires it to mount flat. At commit the host built the manifest and
+   the raster together seconds ago and was told the exact length to announce, so a
+   disagreement is the two ends contradicting each other about this very transfer.
+   A device MUST NOT let a stored set's terrain record affect whether that set
+   lists or mounts.
 8. **`Shard Count` counts every record, and the manifest's announced length
    follows from that** (#1044). Rule 2's `72 + 56 × Shard Count` uses the
    manifest's own field, and [`OBCA_Spec.md` §5.2](OBCA_Spec.md) is explicit

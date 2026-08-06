@@ -93,8 +93,8 @@ pub use route::{Catalog, RouteSummary, MAX_ROUTES};
 pub use screen::{Screen, ScreenKind, Transition, WarningFlags, WarningScreen};
 pub use sensors::{SensorPhase, SensorScanHit, SensorScanHits, SensorStatus};
 pub use set_upload::{
-    manifest_announce, orphan_shard_verdict, shard_announce, sweep_verdict, terrain_announce, RootMagic, SetReject,
-    SetUpload, SweepVerdict,
+    manifest_announce, orphan_shard_verdict, shard_announce, sweep_verdict, terrain_announce, terrain_record_agrees,
+    RootMagic, SetReject, SetUpload, SweepVerdict,
 };
 pub use settings::{
     ClimbMode, DateTimeEditorExt, IdleReturn, SavedSensor, Settings, Units, WaypointMode, DATETIME_MAX_YEAR,

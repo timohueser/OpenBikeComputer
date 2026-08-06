@@ -409,7 +409,9 @@ struct SetIdentity {
     shard_count: u8,
     obcm_version: u8,
     bbox: BBox,
-    /// Summed over the shards; the manifest's own bytes are added by the caller.
+    /// Summed over every record the manifest carries — the OBCM shards **and** the terrain raster,
+    /// as `OBCA_Spec.md` §5.4 requires of the one size figure a UI may show (#1044). The manifest's
+    /// own bytes are added by the caller.
     total_bytes: u64,
     /// The manifest's display name (§5.2), empty when it carries none.
     name: String<24>,
@@ -2145,22 +2147,28 @@ impl Storage {
     /// `OBCS` magic is allowed to be written. Running the same code at both is the point — a set
     /// this device accepts is by construction one it will still accept at the next boot.
     ///
-    /// **The terrain record is checked, and the check is deliberately narrower than a shard's**
-    /// (#1044). §5.3 makes a missing or unreadable raster a *mount-time* non-failure — a set whose
-    /// terrain will not open is a complete map with flat profiles — but that clemency is about a
-    /// file the manifest cannot vouch for at read time, not about a manifest that is lying. Here the
-    /// manifest is the thing being judged, and a `terrain` record whose `Bytes` do not match the
-    /// file beside it means the two do not belong together. Its bbox needs no check: §5.3 already
-    /// pins it to the assembly bbox at parse, and an OBCT header carries no bbox to compare anyway.
+    /// **The terrain record is counted here and never judged here** (#1044), and that is a rule
+    /// [`OBCA_Spec.md` §5.3](../../../specs/OBCA_Spec.md) states in so many words: *a missing or
+    /// unreadable terrain shard does not fail the mount — a reader MUST mount such a set, MUST fall
+    /// back to no elevation, and MUST NOT present it as a fault.* This function's `None` is
+    /// "**this is not a map**": the boot scan drops the set from the catalog and counts it toward
+    /// the unlistable tally that raises MAP UNREADABLE. Letting a raster reach that verdict would
+    /// take a rider's entire map away because they deleted an `.OBD` to reclaim space, or because a
+    /// hand-copied one was truncated, or because one 32-byte header read glitched at boot, or
+    /// because a future OBCT version bump made every card on earth stop listing.
+    ///
+    /// So the record contributes its **recorded** `Bytes` to the total and nothing else happens.
+    /// The manifest is the authority on what the set claims to be (it is what `total_bytes()` sums
+    /// too), the figure stays stable whatever state the file is in, and the scan does no I/O for it
+    /// at all. Whether the raster actually opens is decided later and locally, by
+    /// [`open_terrain`](Self::open_terrain), which already degrades to *no elevation* by design.
+    ///
+    /// The **upload's** commit is the one place that judges it, because there the two ends built
+    /// the manifest and the raster together seconds ago — see
+    /// [`validate_committed_manifest`](Self::validate_committed_manifest) and the asymmetry written
+    /// out in `obc_app::terrain_record_agrees`.
     fn set_file_totals(&self, parsed: &obc_formats::obcs::SetManifest, id: u16) -> Option<u64> {
-        let mut total = 0u64;
-        if let Some(terrain) = parsed.terrain() {
-            let name = derived_short_name(obc_formats::obcs::terrain_name(id))?;
-            if self.terrain_shard_len(&name)? != terrain.bytes {
-                return None;
-            }
-            total += terrain.bytes as u64;
-        }
+        let mut total = parsed.terrain().map_or(0u64, |terrain| terrain.bytes as u64);
         for (index, shard) in parsed.shards().iter().enumerate() {
             let name = set_shard_name_for(id, index)?;
             let (bytes, version, bbox) = self.shard_identity(&name)?;
@@ -3620,9 +3628,18 @@ impl Storage {
     }
 
     /// Parse the streamed `MS{id}.OBS` with `magic` spliced over its placeholder and check it
-    /// against the card, returning the shards' total bytes. Split out of
+    /// against the card, returning the set's total bytes. Split out of
     /// [`set_manifest_commit`](Self::set_manifest_commit) so the 1,864 B manifest buffer leaves the
     /// frame before the commit write (the ~36 KB stack rule).
+    ///
+    /// Everything [`set_file_totals`](Self::set_file_totals) checks, **plus** the one check that is
+    /// the commit's alone: the `terrain` record against the raster actually on the card (#1044).
+    /// The boot scan must not make that judgement — §5.3 makes an unreadable raster a mount-time
+    /// non-failure and the scan's `None` means *this is not a map* — but here the host built both
+    /// files seconds ago and was told the exact manifest length it had to announce, so a
+    /// disagreement is the two ends contradicting each other about this very transfer. The rule and
+    /// the reason it differs by call site live in `obc_app::terrain_record_agrees`, where they are
+    /// tested.
     #[inline(never)]
     fn validate_committed_manifest(&self, id: u16, magic: [u8; 4]) -> Option<u64> {
         let derived = obc_formats::obcs::manifest_name(id)?;
@@ -3633,6 +3650,16 @@ impl Storage {
         bytes.get_mut(..4)?.copy_from_slice(&magic);
         let parsed = obc_formats::obcs::parse(bytes).ok()?;
         if parsed.encoded_len() != read {
+            return None;
+        }
+        let recorded = parsed.terrain().map(|terrain| terrain.bytes);
+        let on_card = derived_short_name(obc_formats::obcs::terrain_name(id))
+            .and_then(|terrain_name| self.terrain_shard_len(&terrain_name));
+        if !obc_app::terrain_record_agrees(recorded, on_card) {
+            defmt::warn!(
+                "SD: the MS{=u16} manifest's terrain record does not describe the raster beside it — set discarded",
+                id
+            );
             return None;
         }
         self.set_file_totals(&parsed, id)
