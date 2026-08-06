@@ -35,7 +35,7 @@ mod ls021_flpr;
 use defmt::{info, warn};
 use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_nrf::gpio::{Level, Output, OutputDrive};
+use embassy_nrf::gpio::{Input, Level, Output, OutputDrive, Pull};
 use embassy_time::Timer;
 // The critical-section impl comes from linking nrf-mpsl (the default `ble` feature set) — MPSL is
 // never initialised here; its cs impl works from reset, exactly as in `sd_bench`.
@@ -73,16 +73,27 @@ async fn main(spawner: Spawner) {
         Output::new(p.P1_12, Level::Low, OutputDrive::Standard), // GEN
         Output::new(p.P1_13, Level::Low, OutputDrive::Standard), // INTB
     ];
-    // Source bus: BSP on P1.14, BCK + the 6 data lines on P2 (P2.06 stays the SD's — untouched).
+    // Source bus on the REHOMED map (issue #1145 — the sEMMC storage pivot moved the display
+    // data off the fixed card pads): BSP on P1.14, BCK on P2.07 (unchanged), data on the four
+    // freed SD-SPI pins + the two pads time-shared with sEMMC D3/D1. Matches flpr_scan.c's
+    // DATA_MASK 0x751.
     let _src_bus = [
         Output::new(p.P1_14, Level::Low, OutputDrive::Standard), // BSP
-        Output::new(p.P2_07, Level::Low, OutputDrive::Standard), // BCK
-        Output::new(p.P2_00, Level::Low, OutputDrive::Standard), // R0 (odd)
-        Output::new(p.P2_01, Level::Low, OutputDrive::Standard), // R1 (even)
-        Output::new(p.P2_02, Level::Low, OutputDrive::Standard), // G0
-        Output::new(p.P2_03, Level::Low, OutputDrive::Standard), // G1
-        Output::new(p.P2_04, Level::Low, OutputDrive::Standard), // B0
-        Output::new(p.P2_05, Level::Low, OutputDrive::Standard), // B1
+        Output::new(p.P2_07, Level::Low, OutputDrive::Standard), // BCK (unchanged)
+        Output::new(p.P2_06, Level::Low, OutputDrive::Standard), // R0 (was SD-SPI SCK)
+        Output::new(p.P2_08, Level::Low, OutputDrive::Standard), // R1 (was SD-SPI MOSI)
+        Output::new(p.P2_09, Level::Low, OutputDrive::Standard), // G0 (was SD-SPI MISO)
+        Output::new(p.P2_10, Level::Low, OutputDrive::Standard), // G1 (was SD-SPI CS)
+        Output::new(p.P2_00, Level::Low, OutputDrive::Standard), // B0 (shared: sEMMC D3)
+        Output::new(p.P2_04, Level::Low, OutputDrive::Standard), // B1 (shared: sEMMC D1)
+    ];
+    // Park the four card-only sEMMC pads as inputs: the SD breakout's pull-ups hold CLK/CMD/D0/D2
+    // high = an idle SD bus, and with no clock edges the card stays inert while we drive the panel.
+    let _sd_parked = [
+        Input::new(p.P2_01, Pull::None), // sEMMC CLK
+        Input::new(p.P2_02, Pull::None), // sEMMC D0
+        Input::new(p.P2_03, Pull::None), // sEMMC D2
+        Input::new(p.P2_05, Pull::None), // sEMMC CMD
     ];
     // COM electrodes, boot `Lo`, held `Lo` through the init-black frame, then free-running.
     let (vcom, vb, va) = (
