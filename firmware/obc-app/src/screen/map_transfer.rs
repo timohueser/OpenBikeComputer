@@ -49,6 +49,14 @@ const BAR_H: i32 = 14;
 /// transfer, so it never reaches the glass — the host that asked for it is told instead. An abort
 /// or an unplug clears the card rather than raising one: the rider caused it, and a red card
 /// explaining what they just did is noise.
+///
+/// **[`Refused`](Self::Refused) is the one exception to that first sentence, and it was bought with
+/// a real lie** (#1044). A volume set is several transfers, and the last of them — the manifest —
+/// is what turns the files already on the card into a map. When *that* announce is refused, every
+/// preceding shard has already ended in [`MapTransfer::Installed`], so the glass sat on "Map
+/// installed / Restart" while the host was told `error` and the set was swept away at the next
+/// boot. An announce-time refusal reaches the glass exactly when there is a stale success on it to
+/// correct.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MapTransferError {
     /// The card refused the write, or the commit could not finish — nothing durable landed.
@@ -58,6 +66,10 @@ pub enum MapTransferError {
     /// The bytes arrived intact and are not an OBCM this firmware reads (wrong format, or a map
     /// built for a different OBCM version).
     NotAMap,
+    /// A file of a **volume set** was refused before it streamed, mid-set: the set is incomplete
+    /// and nothing of it will mount. The rider's action is the same either way — send it again from
+    /// a builder this device agrees with.
+    Refused,
 }
 
 impl MapTransferError {
@@ -67,6 +79,7 @@ impl MapTransferError {
             MapTransferError::Storage => Msg::MapTransferFailedStorage,
             MapTransferError::Damaged => Msg::MapTransferFailedDamaged,
             MapTransferError::NotAMap => Msg::MapTransferFailedFormat,
+            MapTransferError::Refused => Msg::MapTransferFailedRefused,
         }
     }
 }

@@ -1,7 +1,8 @@
 //! Receiving a **volume set** over the link (issue #1039, epic #1016 P3b).
 //!
 //! A single map is one file and one transfer, so the device needed no state between them. A set is
-//! `1..=32` shard files plus a manifest ([`OBCA_Spec.md` §5](../../../specs/OBCA_Spec.md)), and the
+//! `1..=32` shard files — optionally one of them a **terrain raster** rather than an OBCM shard
+//! (#1044) — plus a manifest ([`OBCA_Spec.md` §5](../../../specs/OBCA_Spec.md)), and the
 //! one rule that makes a half-uploaded set harmless — **the manifest is written last** (§5.4) — is a
 //! rule about the *order of several transfers*. That is state, and this module is it.
 //!
@@ -62,10 +63,17 @@ pub enum SetReject {
     Length,
 }
 
+/// How many **records** the manifest of this session must carry: the OBCM shards plus the terrain
+/// shard, if one committed. `OBCA_Spec.md` §5.2's `Shard Count` counts every record, terrain
+/// included, so this is the number the announce-time length check is derived from.
+const fn records(shard_count: u8, terrain: bool) -> usize {
+    shard_count as usize + terrain as usize
+}
+
 /// The set upload in flight, or the absence of one. One of these is held by the board's object
 /// store for the life of a link; `link_reset` drops it.
 ///
-/// Eight bytes, and deliberately no per-shard sizes: what the manifest records about a shard is
+/// Small, and deliberately no per-shard sizes: what the manifest records about a shard is
 /// re-checked against the card at commit by reading the shards back (the same pass the boot scan
 /// runs), so remembering it here would be a second copy of a fact the card already holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,12 +84,17 @@ pub struct SetUpload {
     shard_count: u8,
     /// One bit per committed shard index. `u32` is exactly the spec's 32-shard cap.
     committed: u32,
+    /// Whether this set's **terrain shard** has committed (#1044). Not part of `committed`: a
+    /// raster is not an OBCM shard, it holds no index in that bitmap, and every rule that counts
+    /// shards — the completeness test, the device ceiling — must keep counting only the OBCM files.
+    /// What it *does* change is the manifest's length, because §5.2's `Shard Count` counts records.
+    terrain: bool,
 }
 
 impl SetUpload {
     /// Open a session for a set of `shard_count` shards under the minted set `id`.
     pub const fn new(id: u16, shard_count: u8) -> SetUpload {
-        SetUpload { id, shard_count, committed: 0 }
+        SetUpload { id, shard_count, committed: 0, terrain: false }
     }
 
     pub const fn id(&self) -> u16 {
@@ -111,15 +124,42 @@ impl SetUpload {
         }
     }
 
+    /// Record this set's terrain shard as committed. Idempotent, for the same reason [`mark`] is:
+    /// a re-sent raster overwrites the one file and changes nothing about the set's shape.
+    ///
+    /// [`mark`]: Self::mark
+    pub fn mark_terrain(&mut self) {
+        self.terrain = true;
+    }
+
+    /// Whether this set's terrain shard has committed — the fact that decides whether the manifest
+    /// this session will accept is `72 + 56 × N` or `72 + 56 × (N + 1)`.
+    pub const fn has_terrain(&self) -> bool {
+        self.terrain
+    }
+
     /// Every shard the set names has committed — the precondition §5.4 puts on the manifest.
+    ///
+    /// Terrain is deliberately **not** part of this. The device cannot know whether the host's
+    /// manifest will carry a `terrain` record until the raster arrives (or does not), so
+    /// "complete" can only ever mean *every OBCM shard the descriptor promised*. What catches a
+    /// host that sent a terrain-bearing manifest without the raster — or a raster the manifest does
+    /// not name — is the length check below, which is exact in both directions.
     pub const fn is_complete(&self) -> bool {
         let all = if self.shard_count >= 32 { u32::MAX } else { (1u32 << self.shard_count) - 1 };
         self.committed == all
     }
 
-    /// The manifest length this set's shard count implies (§5.2), for the announce check.
+    /// The manifest length this session's **record** count implies (§5.2), for the announce check:
+    /// `72 + 56 × (shards + terrain)`.
+    ///
+    /// This is the whole of #1044's bug, stated as one expression. The host builds its manifest
+    /// over every record — `OBCA_Spec.md` §5.2 is explicit that `Shard Count` counts the terrain
+    /// one too — so a set with a raster announces 56 bytes more than a device counting only OBCM
+    /// shards expects, and the manifest is refused at the very last transfer of a multi-gigabyte
+    /// upload. A set with no terrain is unchanged: `terrain` is false and this is the old formula.
     pub const fn manifest_len(&self) -> u32 {
-        obcs::manifest_len(self.shard_count as usize) as u32
+        obcs::manifest_len(records(self.shard_count, self.terrain)) as u32
     }
 }
 
@@ -161,6 +201,29 @@ pub fn shard_announce(open: Option<&SetUpload>, shard_count: u8, index: u8, max_
     }
 }
 
+/// Whether the set's **terrain shard** announce may proceed (#1044).
+///
+/// Two refusals, both before a byte streams:
+///
+/// - no set is in flight → [`SetReject::Mismatch`]. A raster on its own is not a map and names no
+///   set: the set id it would be written under is minted by the *first shard*, so a terrain shard
+///   arriving first has no `MS{id}` to belong to. The host's own order — shards, then terrain, then
+///   the manifest — is the order §5.4 already asks for, and this is the receiver's half of it.
+/// - the set already fills the record space → [`SetReject::Shards`]. §5.2 caps a manifest at 32
+///   **records**, so a 32-shard set has no room for a terrain record and the manifest it would need
+///   could not be written at all. Refusing here costs the raster's transfer; refusing at the
+///   manifest would cost the whole set.
+///
+/// A **re-sent** terrain shard is allowed, exactly as a re-sent OBCM shard is: it is one
+/// independent file, and overwriting it is the cheapest recovery from a single bad transfer.
+pub fn terrain_announce(open: Option<&SetUpload>) -> Result<(), SetReject> {
+    let Some(session) = open else { return Err(SetReject::Mismatch) };
+    if records(session.shard_count, true) > obcs::MAX_SHARDS {
+        return Err(SetReject::Shards);
+    }
+    Ok(())
+}
+
 /// Whether the **manifest** announce may proceed: §5.4's manifest-last rule, as a receiver states
 /// it. `total_len` is the announced object size.
 ///
@@ -171,9 +234,10 @@ pub fn shard_announce(open: Option<&SetUpload>, shard_count: u8, index: u8, max_
 /// - a shard the manifest will name has not committed → [`SetReject::ManifestEarly`]. **This is
 ///   the enforcement.** It is checked against the *session*, not against the card, because the
 ///   card cannot tell a shard this upload wrote from one that was already there.
-/// - the announced length is not `72 + 56 × Shard Count` → [`SetReject::Length`]. §5.3 rejects a
-///   manifest of any other length at parse anyway; catching it here means the rider is not told
-///   after the transfer what could be said before it.
+/// - the announced length is not `72 + 56 × Shard Count` → [`SetReject::Length`], where
+///   `Shard Count` is every **record** the session saw: the OBCM shards plus the terrain shard, if
+///   one committed (#1044). §5.3 rejects a manifest of any other length at parse anyway; catching
+///   it here means the rider is not told after the transfer what could be said before it.
 pub fn manifest_announce(open: Option<&SetUpload>, total_len: u32) -> Result<(), SetReject> {
     let Some(session) = open else { return Err(SetReject::Mismatch) };
     if !session.is_complete() {
@@ -387,6 +451,72 @@ mod tests {
         assert_eq!(manifest_announce(Some(&session), right), Ok(()));
         assert_eq!(manifest_announce(Some(&session), right - 1), Err(SetReject::Length));
         assert_eq!(manifest_announce(Some(&session), right + 56), Err(SetReject::Length));
+    }
+
+    /// **The #1044 regression, pinned.** A set that carries a terrain shard has one more *record*
+    /// than it has OBCM shards, so its manifest is 56 bytes longer — and a device that counted only
+    /// shards refused it with `Length` at the very last transfer of a multi-gigabyte upload.
+    #[test]
+    fn a_terrain_shard_lengthens_the_manifest_by_one_record() {
+        let mut session = SetUpload::new(5, 3);
+        for index in 0..3 {
+            session.mark(index);
+        }
+        let without = session.manifest_len();
+        assert_eq!(without, obcs::manifest_len(3) as u32, "three shards, three records");
+        assert!(!session.has_terrain());
+
+        assert_eq!(terrain_announce(Some(&session)), Ok(()));
+        session.mark_terrain();
+        assert!(session.has_terrain());
+        assert!(session.is_complete(), "a raster is not a shard — completeness is unchanged");
+        assert_eq!(session.shard_count(), 3, "…and neither is the shard count");
+
+        let with = session.manifest_len();
+        assert_eq!(with, without + obcs::SHARD_RECORD_LEN as u32, "exactly one more 56-byte record");
+        assert_eq!(with, obcs::manifest_len(4) as u32);
+        assert_eq!(manifest_announce(Some(&session), with), Ok(()));
+        assert_eq!(
+            manifest_announce(Some(&session), without),
+            Err(SetReject::Length),
+            "the terrain-less length is now the wrong one"
+        );
+        // Idempotent: a re-sent raster is one file overwritten, not a second record.
+        session.mark_terrain();
+        assert_eq!(session.manifest_len(), with);
+    }
+
+    /// A set with **no** terrain is byte-for-byte the set it was before #1044 — the property that
+    /// makes the wire change additive rather than a break.
+    #[test]
+    fn a_set_without_terrain_is_unchanged() {
+        let mut session = SetUpload::new(6, 2);
+        session.mark(0);
+        session.mark(1);
+        assert_eq!(session.manifest_len(), (obcs::HEADER_LEN + 2 * obcs::SHARD_RECORD_LEN) as u32);
+        assert_eq!(manifest_announce(Some(&session), session.manifest_len()), Ok(()));
+        assert_eq!(
+            manifest_announce(Some(&session), session.manifest_len() + obcs::SHARD_RECORD_LEN as u32),
+            Err(SetReject::Length),
+            "a manifest that names a raster this set never sent is refused too"
+        );
+    }
+
+    /// A terrain shard names no set of its own: the id is minted by the first OBCM shard, so a
+    /// raster with nothing in flight has no `MS{id}` to be written under.
+    #[test]
+    fn a_terrain_shard_with_no_set_in_flight_is_refused() {
+        assert_eq!(terrain_announce(None), Err(SetReject::Mismatch));
+    }
+
+    /// §5.2 caps a manifest at 32 **records**, so a 32-shard set has no room for a terrain record —
+    /// and the honest moment to say so is the raster's announce, not the manifest's.
+    #[test]
+    fn a_full_set_has_no_room_for_a_terrain_record() {
+        let full = SetUpload::new(1, 32);
+        assert_eq!(terrain_announce(Some(&full)), Err(SetReject::Shards));
+        let one_short = SetUpload::new(1, 31);
+        assert_eq!(terrain_announce(Some(&one_short)), Ok(()), "31 shards + terrain is exactly the cap");
     }
 
     /// The ceiling is a *first-announce* refusal, which is the whole reason the shard count rides

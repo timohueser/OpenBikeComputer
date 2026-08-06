@@ -2072,11 +2072,11 @@ impl Storage {
     }
 
     /// The reader's half of `OBCA_Spec.md` §5.3 for a `MS{id}.OBS` manifest, at **scan** time:
-    /// parse and validate the manifest itself, then check that every shard it names exists, is
-    /// exactly the recorded `Bytes`, opens as OBCM at the recorded version, and carries the
-    /// recorded header bbox. `None` means *this is not a map* — §5.4 admits no partial acceptance,
-    /// so a set with a shard missing or still growing is simply absent from the catalog rather
-    /// than a map with holes in it.
+    /// parse and validate the manifest itself, then check that every record it names exists and is
+    /// exactly the recorded `Bytes` — shards additionally opening as OBCM at the recorded version
+    /// with the recorded header bbox. `None` means *this is not a map* — §5.4 admits no partial
+    /// acceptance, so a set with a shard missing or still growing is simply absent from the catalog
+    /// rather than a map with holes in it.
     ///
     /// The SHA-256 digests are deliberately **not** checked: §5.3 lets a device defer them, and
     /// hashing gigabytes off an SD card is minutes of work at boot.
@@ -2105,7 +2105,7 @@ impl Storage {
             );
         }
 
-        let total = self.set_shard_totals(&parsed, id)?;
+        let total = self.set_file_totals(&parsed, id)?;
         let mut identity = set_identity_from_manifest(&parsed);
         identity.total_bytes = total;
         Some(identity)
@@ -2134,17 +2134,33 @@ impl Storage {
         obc_formats::obcs::parse(buf.get(..read)?).ok()
     }
 
-    /// The other half of `OBCA_Spec.md` §5.3: every shard a parsed manifest names exists, is
-    /// exactly the recorded `Bytes`, opens as OBCM at the manifest's version, and carries the
-    /// recorded header bbox. Returns the shards' total bytes, or `None` for *this is not a map* —
-    /// there is no partial acceptance.
+    /// The other half of `OBCA_Spec.md` §5.3: every record a parsed manifest names exists and is
+    /// exactly the recorded `Bytes` — each OBCM shard opening as OBCM at the manifest's version
+    /// with the recorded header bbox, and the terrain record (if any) opening as an OBCT container.
+    /// Returns the set's total bytes on the card, or `None` for *this is not a map* — there is no
+    /// partial acceptance.
     ///
     /// Shared by the two moments it has to be true: the boot scan, which decides whether a set on
     /// the card is listed at all, and the upload's own manifest commit, which decides whether the
     /// `OBCS` magic is allowed to be written. Running the same code at both is the point — a set
     /// this device accepts is by construction one it will still accept at the next boot.
-    fn set_shard_totals(&self, parsed: &obc_formats::obcs::SetManifest, id: u16) -> Option<u64> {
+    ///
+    /// **The terrain record is checked, and the check is deliberately narrower than a shard's**
+    /// (#1044). §5.3 makes a missing or unreadable raster a *mount-time* non-failure — a set whose
+    /// terrain will not open is a complete map with flat profiles — but that clemency is about a
+    /// file the manifest cannot vouch for at read time, not about a manifest that is lying. Here the
+    /// manifest is the thing being judged, and a `terrain` record whose `Bytes` do not match the
+    /// file beside it means the two do not belong together. Its bbox needs no check: §5.3 already
+    /// pins it to the assembly bbox at parse, and an OBCT header carries no bbox to compare anyway.
+    fn set_file_totals(&self, parsed: &obc_formats::obcs::SetManifest, id: u16) -> Option<u64> {
         let mut total = 0u64;
+        if let Some(terrain) = parsed.terrain() {
+            let name = derived_short_name(obc_formats::obcs::terrain_name(id))?;
+            if self.terrain_shard_len(&name)? != terrain.bytes {
+                return None;
+            }
+            total += terrain.bytes as u64;
+        }
         for (index, shard) in parsed.shards().iter().enumerate() {
             let name = set_shard_name_for(id, index)?;
             let (bytes, version, bbox) = self.shard_identity(&name)?;
@@ -2163,6 +2179,18 @@ impl Storage {
             total += bytes as u64;
         }
         Some(total)
+    }
+
+    /// The terrain shard's byte length, or `None` when the file is absent, unreadable, or does not
+    /// open as an OBCT container this firmware reads (#1044).
+    fn terrain_shard_len(&self, name: &ShortFileName) -> Option<u32> {
+        let file = self.vmgr.open_file_in_dir(self.root, name, Mode::ReadOnly).ok()?;
+        let len = self.vmgr.file_length(file).unwrap_or(0);
+        let mut header = [0u8; obc_formats::obct::HEADER_LEN];
+        let src = SdByteSource::new(&self.vmgr, file, len);
+        let ok = (len as usize) >= header.len() && src.read_at(0, &mut header).is_ok();
+        let _ = self.vmgr.close_file(file);
+        (ok && obc_formats::obct::validate_header_prefix(&header).is_ok()).then_some(len)
     }
 
     /// One shard's `(byte length, OBCM version, header bbox)`, or `None` when the file is absent,
@@ -3450,6 +3478,88 @@ impl Storage {
         Some(len)
     }
 
+    /// Open the set's **terrain shard** `MS{id}.OBD` for streaming (#1044) — the raster twin of
+    /// [`set_shard_begin`](Self::set_shard_begin), with the four zero bytes that stand in for the
+    /// held-back `OBCT` magic.
+    ///
+    /// The name is derived, not indexed: there is at most one terrain shard per set, and
+    /// `MS{id}.OBD` is exactly the `OBCT_Spec.md` §4.6 sidecar of `MS{id}.OBS`, which is what lets
+    /// the read side resolve it by the sidecar convention without consulting the manifest at all.
+    pub fn set_terrain_begin(&mut self, id: u16) -> bool {
+        self.upload_close();
+        let Some(name) = obc_formats::obcs::terrain_name(id) else { return false };
+        match self.vmgr.open_file_in_dir(self.root, name.as_str(), Mode::ReadWriteCreateOrTruncate) {
+            Ok(file) => {
+                if self.vmgr.write(file, &[0u8; 4]).is_err() {
+                    defmt::warn!("SD: cannot start the MS{=u16} terrain shard — the card refused", id);
+                    let _ = self.vmgr.close_file(file);
+                    return false;
+                }
+                self.open_upload = Some((file, UploadOwner::Set));
+                defmt::info!("SD: terrain shard of MS{=u16} streaming (magic held back)", id);
+                true
+            }
+            Err(e) => {
+                defmt::warn!("SD: cannot create /MS{=u16}.OBD: {}", id, defmt::Debug2Format(&e));
+                false
+            }
+        }
+    }
+
+    /// Commit the streamed terrain shard: patch the held-back `OBCT` magic into `MS{id}.OBD` after
+    /// the header prefix validates. Returns the stored length, or `None` with **that file deleted**.
+    ///
+    /// Same shape as [`set_shard_commit`](Self::set_shard_commit) and same reasoning: a failed
+    /// raster is one independent file the host may re-send, and what it must not leave behind is a
+    /// zero-magic decoy the manifest commit would then have to reason about. What differs is the
+    /// format it is checked against — an OBCT container, not an OBCM file — and that is the whole
+    /// reason terrain needed its own object type rather than a shard index (#1044).
+    pub fn set_terrain_commit(&mut self, id: u16, magic: [u8; 4]) -> Option<u32> {
+        self.upload_close();
+        let derived = obc_formats::obcs::terrain_name(id)?;
+        let name = ShortFileName::create_from_str(derived.as_str()).ok()?;
+        let file = self.vmgr.open_file_in_dir(self.root, &name, Mode::ReadWriteAppend).ok()?;
+        let len = self.vmgr.file_length(file).unwrap_or(0);
+        let mut header = [0u8; obc_formats::obct::HEADER_LEN];
+        let read = self.vmgr.file_seek_from_start(file, 0).is_ok()
+            && matches!(self.vmgr.read(file, &mut header), Ok(n) if n == header.len());
+        header[0..4].copy_from_slice(&magic);
+        if !read || obc_formats::obct::validate_header_prefix(&header).is_err() {
+            let _ = self.vmgr.close_file(file);
+            let _ = self.vmgr.delete_file_in_dir(self.root, &name);
+            defmt::warn!("SD: the MS{=u16} terrain shard is not a readable OBCT — rejected, file deleted", id);
+            return None;
+        }
+        let patched = self.vmgr.file_seek_from_start(file, 0).is_ok()
+            && self.vmgr.write(file, &magic).is_ok()
+            && self.vmgr.flush_file(file).is_ok();
+        let _ = self.vmgr.close_file(file);
+        if !patched {
+            defmt::warn!("SD: MS{=u16} terrain magic patch failed — left inert", id);
+            return None;
+        }
+        defmt::info!("SD: terrain shard of MS{=u16} committed ({=u32} B)", id, len);
+        Some(len)
+    }
+
+    /// Drop the in-flight terrain shard: close the streaming handle and delete just that
+    /// `MS{id}.OBD`. The set's session survives, exactly as it does for a failed OBCM shard.
+    pub fn set_terrain_discard(&mut self, id: u16) {
+        if let Some((file, _)) = self.open_upload.take() {
+            let _ = self.vmgr.close_file(file);
+        }
+        let Some(derived) = obc_formats::obcs::terrain_name(id) else { return };
+        let Ok(name) = ShortFileName::create_from_str(derived.as_str()) else { return };
+        match self.vmgr.delete_file_in_dir(self.root, &name) {
+            Ok(()) => defmt::info!("SD: dropped the partial terrain shard of MS{=u16}", id),
+            Err(e) => defmt::warn!(
+                "SD: could not drop the partial terrain shard of MS{=u16} ({}) — a re-send truncates it",
+                id,
+                defmt::Debug2Format(&e)
+            ),
+        }
+    }
+
     /// Re-open the set's `MS{id}.OBS` token for the manifest stream, truncating it back to the four
     /// zero bytes. The manifest is the **last** file of the set (§5.4), and it is written into the
     /// same name the token already occupies, so the set is never without its in-flight marker —
@@ -3525,7 +3635,7 @@ impl Storage {
         if parsed.encoded_len() != read {
             return None;
         }
-        self.set_shard_totals(&parsed, id)
+        self.set_file_totals(&parsed, id)
     }
 
     /// Read a whole card-root file into `buf`, returning how many bytes landed, or `None` when it
