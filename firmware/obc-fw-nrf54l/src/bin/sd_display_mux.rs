@@ -264,7 +264,14 @@ impl Semmc {
         self.power_on();
     }
 
-    fn cmd_start(&mut self, idx: u32, arg: u32, resp: u32, proc: u32, data: Option<(u32, u32, u32)>) -> Result<(), SdErr> {
+    fn cmd_start(
+        &mut self,
+        idx: u32,
+        arg: u32,
+        resp: u32,
+        proc: u32,
+        data: Option<(u32, u32, u32)>,
+    ) -> Result<(), SdErr> {
         vri_write(VRI_CFG_CLKFREQHZ, self.clk_hz);
         vri_write(VRI_CFG_BUSWIDTH, self.bus_width);
         vri_write(VRI_CFG_NUMRETRIES, self.num_retries);
@@ -283,7 +290,15 @@ impl Semmc {
         Ok(())
     }
 
-    fn cmd(&mut self, idx: u32, arg: u32, resp: u32, proc: u32, data: Option<(u32, u32, u32)>, timeout_ms: u64) -> Result<[u32; 4], SdErr> {
+    fn cmd(
+        &mut self,
+        idx: u32,
+        arg: u32,
+        resp: u32,
+        proc: u32,
+        data: Option<(u32, u32, u32)>,
+        timeout_ms: u64,
+    ) -> Result<[u32; 4], SdErr> {
         self.cmd_start(idx, arg, resp, proc, data)?;
         let t0 = Instant::now();
         loop {
@@ -316,7 +331,15 @@ impl Semmc {
         ])
     }
 
-    fn acmd(&mut self, idx: u32, arg: u32, resp: u32, proc: u32, data: Option<(u32, u32, u32)>, timeout_ms: u64) -> Result<[u32; 4], SdErr> {
+    fn acmd(
+        &mut self,
+        idx: u32,
+        arg: u32,
+        resp: u32,
+        proc: u32,
+        data: Option<(u32, u32, u32)>,
+        timeout_ms: u64,
+    ) -> Result<[u32; 4], SdErr> {
         self.cmd(55, self.rca << 16, RESP_R1, PROC_PROCESS, None, timeout_ms)?;
         self.cmd(idx, arg, resp, proc, data, timeout_ms)
     }
@@ -524,15 +547,7 @@ async fn main(spawner: Spawner) {
     // ── Phase 1: storage first — boot the sEMMC firmware and bring the card all the way up. ──
     info!("═══ phase 1 — storage: card init over sEMMC (new harness) ═══");
     storage_pads();
-    let mut sd = Semmc {
-        clk_hz: 400_000,
-        bus_width: 1,
-        read_delay: 0,
-        num_retries: 3,
-        counter: 0,
-        rca: 0,
-        ccs: false,
-    };
+    let mut sd = Semmc { clk_hz: 400_000, bus_width: 1, read_delay: 0, num_retries: 3, counter: 0, rca: 0, ccs: false };
     if !sd.boot_firmware(true) || !sd.power_on() {
         error!("sEMMC firmware did not come up — check the six SD pads");
         loop {
@@ -589,7 +604,14 @@ async fn main(spawner: Spawner) {
         let t1 = Instant::now();
         let mut read_ok = true;
         for i in 0..4u32 {
-            if sd.read_blocks(2_097_152 + (round * 4 + i) * XFER_BLOCKS as u32, XFER_BLOCKS as u32, xfer_buf().as_mut_ptr()).is_err() {
+            if sd
+                .read_blocks(
+                    2_097_152 + (round * 4 + i) * XFER_BLOCKS as u32,
+                    XFER_BLOCKS as u32,
+                    xfer_buf().as_mut_ptr(),
+                )
+                .is_err()
+            {
                 read_ok = false;
                 break;
             }
