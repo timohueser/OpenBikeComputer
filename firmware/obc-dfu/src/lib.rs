@@ -20,6 +20,10 @@
 //!   matrix, the snapshot-before-page-write arm sequencing, the generation bump, and the trial
 //!   confirm, as pure drivers over the [`armer::StageIo`]/[`armer::ArmIo`] traits — host-tested
 //!   with mocks (`tests/armer.rs`) exactly like the engine.
+//! - [`blobstage`] — the **storage-blob stage carve** (`OBCU_Spec.md` §3, #1158): the CRC-framed
+//!   RRAM handoff of the sEMMC soft-peripheral image from the armer to the bootloader (which
+//!   cannot carry it and must not read it out of the slot it is about to rewrite), plus the
+//!   runtime validation of the image's own soft-peripheral metadata header.
 //! - [`sig`] — the **OBCU v2 signature** (`OBCU_Spec.md` §1.3, #997): the domain-separated signed
 //!   message, the embedded release public key, and a streaming Ed25519 [`sig::Verifier`]. The
 //!   armer is the only place it runs — verify **before arm**; the flash-once bootloader stays
@@ -32,6 +36,7 @@
 #![cfg_attr(not(test), no_std)]
 
 pub mod armer;
+pub mod blobstage;
 pub mod crc32;
 pub mod engine;
 pub mod image;
@@ -39,6 +44,10 @@ pub mod sig;
 pub mod state;
 
 pub use armer::{ArmError, ArmIo, ArmTicket, ExtentsError, Rollback, ScanError, StageIo};
+pub use blobstage::{
+    encode_stage_header, sp_geometry, validate_stage, SpImageGeometry, MAX_BLOB_LEN, SP_ID_SEMMC, STAGE_HEADER_LEN,
+    STAGE_LEN, STAGE_MAGIC, STAGE_VERSION,
+};
 pub use crc32::{crc32, Crc32};
 pub use engine::{InstallIo, IoError, Outcome, Phase, Slot, FLASH_RETRIES, PAD_BYTE, SD_BLOCK_LEN};
 pub use image::{
