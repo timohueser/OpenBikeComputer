@@ -24,72 +24,94 @@ unwritten). No soldering / solder-bridge cuts are needed on current board revisi
 1. **VDD / VDDM → 3.3 V.** The default is 1.8 V, which is too low for the LS021's logic. (Also feed
    the panel's `Vin` from the DK's 5 V / VBUS so its on-board 3.3 V LDO has headroom.)
 2. **External memory → OFF** ("external memory → GPIO on the P2 header"). This
-   electronically disconnects the on-board QSPI flash, freeing **P2.00–P2.05** so the
-   display can use them. We never use that flash (maps live on SD).
+   electronically disconnects the on-board QSPI flash, freeing **P2.00–P2.05**. Since the storage
+   pivot (#1158) those six pads carry the **microSD card** in native 4-bit SD mode, not the display;
+   either way we never use that flash (maps live on the card).
 3. **VCOM hardware flow control (HWFC) → OFF.** *Required for the `debug-uart`
    build.* The DK's J-Link VCOM defaults to RTS/CTS flow control; with it on, the
-   interface MCU gates **host→device** bytes on the device asserting RTS (P1.06) —
-   which this firmware never does (it runs the VCOM 2-wire, and P1.06/P1.07 are reused
-   as the SD bus). The symptom of leaving HWFC on: device→host **telemetry works** but
-   injected GPS fixes / button presses are silently ignored.
+   interface MCU gates **host→device** bytes on the device asserting RTS — which this
+   firmware never does (it runs the VCOM 2-wire). The symptom of leaving HWFC on:
+   device→host **telemetry works** but injected GPS fixes / button presses are silently ignored.
 
 ## Wiring (DK headers)
 
 Full detail is in the `src/main.rs` module doc. The **build drives the LS021 panel** — its FLPR
-wiring is in the [LS021 section below](#ls021-flpr-builds--dk-wiring-issue-165). Also on the board:
-a **microSD** breakout on the **P1** header (SCK P1_11 / MISO P1_07 / MOSI P1_06 / CS P0.00, with a
-pull-up on MISO — see below); the four DK buttons and LED0 are on-board; the J-Link **VCOM**
-(P1_04/P1_05) and RTT both ride the DK's USB.
+wiring is in the [LS021 section below](#ls021-flpr-builds--dk-wiring-issue-165). Also on the board: a
+**microSD** breakout on **P2.00–05** (native 4-bit SD, no SPI — see
+[microSD over sEMMC](#microsd-over-semmc-the-storage-transport)); the four DK buttons; the J-Link
+**VCOM** and RTT both ride the DK's USB.
 
 ### Full pin map (LS021 / FLPR build)
 
-**Port P2 — MCU/fast domain (panel source bus + COM) — all 11 pins used:**
+**Port P2 — MCU/fast domain. All 11 pins used: the microSD bus and the panel's source bus, two of
+them shared** (epic #1158). The card's six pads are *fixed* by Nordic's sEMMC soft peripheral; the
+display's six data lines take the four pins the retired SD-SPI path freed plus the two shared pads,
+whose `CTRLSEL` flips per mode (`GPIO` for the display blob, `VPR` for the soft peripheral). Display
+and storage never run at the same instant — `src/flpr_mux.rs` time-multiplexes the one FLPR.
 
-| Pin   | Signal | Notes                                   |
-|-------|--------|-----------------------------------------|
-| P2.00 | R0     | source data (odd-pixel R)               |
-| P2.01 | R1     | source data (even-pixel R)              |
-| P2.02 | G0     |                                         |
-| P2.03 | G1     |                                         |
-| P2.04 | B0     |                                         |
-| P2.05 | B1     |                                         |
-| P2.06 | BCK    | source shift clock                      |
-| P2.07 | VCOM   | COM electrode (HighDrive); LED2 pin     |
-| P2.08 | VB     | COM                                     |
-| P2.09 | LED0   | per-frame heartbeat blink               |
-| P2.10 | VA     | COM                                     |
+| Pin   | sEMMC | Display | Notes                                                        |
+|-------|-------|---------|--------------------------------------------------------------|
+| P2.00 | D3    | **B0**  | **shared** — `CTRLSEL` per mode; internal pull-up in storage mode |
+| P2.01 | CLK   | —       | card only; parked as an input in display mode                 |
+| P2.02 | D0    | —       | card only; parked as an input in display mode                 |
+| P2.03 | D2    | —       | card only; parked as an input in display mode                 |
+| P2.04 | D1    | **B1**  | **shared** — `CTRLSEL` per mode; internal pull-up in storage mode |
+| P2.05 | CMD   | —       | card only; parked as an input in display mode                 |
+| P2.06 | —     | R0      | source data (odd-pixel R) — was SD-SPI SCK                    |
+| P2.07 | —     | BCK     | source shift clock (unchanged)                                |
+| P2.08 | —     | R1      | source data (even-pixel R) — was SD-SPI MOSI                  |
+| P2.09 | —     | G0      | source data (odd-pixel G) — was SD-SPI MISO                   |
+| P2.10 | —     | G1      | source data (even-pixel G) — was SD-SPI CS                    |
 
-**Port P1 — PERI domain ≤8 MHz (gate/BSP + SD + VCOM + buttons) — all broken-out pins used:**
+The packed wire word is therefore `DATA_MASK = 0x751` (`B0`→0, `B1`→4, `R0`→6, `R1`→8, `G0`→9,
+`G1`→10) — pinned from both sides by `obc_display::ls021::wire`'s goldens and by a test that parses
+`src/flpr/flpr_scan.c`.
 
-| Pin   | Signal  | Notes                                  |
-|-------|---------|----------------------------------------|
-| P1.00 | GSP     | gate start pulse                       |
-| P1.01 | GCK     | gate clock                             |
-| P1.02 | —       | **NFC, off-limits**                    |
-| P1.03 | —       | **NFC, off-limits**                    |
-| P1.04 | VCOM TX | UARTE20 → host                         |
-| P1.05 | VCOM RX | UARTE20 ← host (needs HWFC OFF)        |
-| P1.06 | SD MOSI | SPIM22                                 |
-| P1.07 | SD MISO | SPIM22 (external pull-up to 3V3)       |
-| P1.08 | BTN2    | BACK                                   |
-| P1.09 | BTN1    | DOWN                                   |
-| P1.10 | INTB    | frame envelope; LED1 pin               |
-| P1.11 | SD SCK  | SPIM22                                 |
-| P1.12 | GEN     | gate enable (the freed SD-CS pin)      |
-| P1.13 | BTN0    | UP                                     |
-| P1.14 | BSP     | source sub-line start                  |
+**Pad configuration per mode** (`src/semmc.rs`, `configure_storage_pads` / `configure_display_pads`):
 
-**Port P0 — low-power domain (P0.00–P0.04):**
+| | the six card pads | the four card-only pads |
+|---|---|---|
+| **storage** | Output, input Disconnect, **E0/E1** drive, `CTRLSEL = VPR`, `GPIOHSPADCTRL.BIAS = 2`; internal pull-up on `D3`/`D1` only | (same — all six are the card's) |
+| **display** | `P2.00`/`P2.04` → Output, S drive, no pull, `CTRLSEL = GPIO` | Input, no pull, `CTRLSEL = GPIO` — the external pull-ups hold the bus idle-high and the card stays inert |
 
-| Pin   | Signal     | Notes                                          |
-|-------|------------|------------------------------------------------|
-| P0.00 | SD CS      | held LOW (freed P1.12 for GEN)                  |
-| P0.01 | I²C SDA    | shared GPS + altimeter + compass bus (TWIM30, #218) |
-| P0.02 | I²C SCL    | shared GPS + altimeter + compass bus (TWIM30, #218) |
-| P0.03 | GPS TX-Ready | *optional* DDC data-ready IRQ (active-high)     |
-| P0.04 | BTN3       | SELECT                                          |
+Only `D3`/`D1` get an *internal* pull-up: this desk breakout carries its own resistors on
+`CLK`/`D0`/`D2`/`CMD`, and 13 kΩ ∥ 10 kΩ would sit under the SD spec's floor. **The production board
+should fit external 10–100 kΩ pull-ups on `CMD`/`DAT0–3` (none on `CLK`) and then run all internal
+pulls off.**
 
-The shared **I²C / Qwiic** bus on TWIM30 (the low-power-domain instance that reaches P0) carries the
+**Port P1 — PERI domain ≤8 MHz (gate/BSP + sensors + COM + VCOM + buttons):**
+
+| Pin   | Signal       | Notes                                                     |
+|-------|--------------|-----------------------------------------------------------|
+| P1.03 | I²C SCL      | shared GPS + altimeter + compass bus (TWIM22, #218)        |
+| P1.04 | I²C SDA      | same bus                                                   |
+| P1.05 | GPS TX-Ready | *optional* DDC data-ready IRQ (active-high)                |
+| P1.08 | BTN2         | BACK                                                       |
+| P1.09 | BTN1         | DOWN                                                       |
+| P1.10 | GSP          | gate start pulse                                           |
+| P1.11 | GCK          | gate clock                                                 |
+| P1.12 | GEN          | gate enable                                                |
+| P1.13 | INTB         | frame envelope                                             |
+| P1.14 | BSP          | source sub-line start (the lone P1 source line)            |
+| P1.16 | VCOM TX      | UARTE20 → host (`debug-uart` builds only)                  |
+| P1.17 | VCOM RX      | UARTE20 ← host (`debug-uart` only; needs HWFC OFF)         |
+| P1.22 | VCOM (COM)   | COM electrode, HighDrive — or a GPIOTE toggle on `com-hw`  |
+| P1.23 | VB           | COM electrode                                              |
+| P1.24 | VA           | COM electrode (inverse phase)                              |
+| P1.25 | LED1         | liveness heartbeat                                         |
+| P1.26 | BTN0         | UP                                                         |
+
+**Port P0 — low-power domain:**
+
+| Pin   | Signal | Notes    |
+|-------|--------|----------|
+| P0.05 | BTN3   | SELECT   |
+
+> **This table is `src/main.rs`'s claims, read off the code.** The pin plan in that module doc is the
+> other half of the same statement; if the two ever disagree, the code wins and both should be fixed.
+
+The shared **I²C / Qwiic** bus on TWIM22 (the instance the SD freed when storage moved onto the FLPR)
+carries the
 real sensors (issue #218 + compass): the u-blox **SAM-M10Q** GNSS (DDC address `0x42`), the Bosch
 **BMP581** altimeter (`0x47`, or `0x46` if the breakout straps `SDO` low), and an electronic compass
 — the **AK09916** magnetometer inside a TDK **ICM-20948** (the IMU itself at `0x68`/`0x69`; the ICM is
@@ -103,7 +125,7 @@ silent while moving or idle. A dead-band suppresses noise-only updates. The ship
 to drop the 9-axis IMU for a plain 3-axis magnetometer, which the [`obc_platform::compass`] (heading
 geometry) / [`obc_platform::icm20948`] (chip register map) split is designed for.
 
-The GPS **TX-Ready** line on P0.03 is an *optional* data-ready interrupt: when present it asserts as a
+The GPS **TX-Ready** line is an *optional* data-ready interrupt: when present it asserts as a
 NAV-PVT message becomes ready and wakes the event-driven sensor task, so the bus does **zero** work
 between fixes. **The SparkFun SAM-M10Q breakout (GPS-21834) does not break out TX-Ready** (it exposes
 SDA/SCL/INT/SAFE/RST/PPS — where `INT` is the EXTINT *wake input*, not data-ready), so on that board
@@ -156,47 +178,66 @@ cargo run --release --no-default-features --features ble
 **There is no `usb` feature.** The USB device plane (#889) is in every build above — see the
 "USB device plane" section further down for the bring-up recipe.
 
-### SD throughput diagnostic
-
-`sd_bench` measures the real SPIM00 → embedded-sdmmc → card path against the first `.obcm` its
-own scan finds in the card root — deliberately *not* the app's selected map (`/MAP.SEL`, #927): the
-benchmark wants a large file to read, not the one the renderer would pick. It compares
-CMD17-per-block reads with CMD18 batches across sequential, random 4 KB,
-and random 512-byte shapes, and checks sequential passes against an FNV integrity hash.
-It also prices **writes** (the map-upload path, #889): the FAT-layer single-block baseline
-against raw CMD25 batches into a scratch file, every block stamped and read back; plus a
-bulk-clock sweep over the even PRESCALER divisors (⚠️ odd divisors hard-wedge the bus — see
-`sd::SD_FAST_DIVISOR`), each rung integrity-guarded:
-
-```sh
-cargo run --release --bin sd_bench
-```
-
-The harness is gated to the default non-BLE feature set; the BLE CI/build command above skips it
-because that profile uses MPSL's mutually exclusive critical-section implementation.
-
 (The standalone FLPR waveform bench bin `ls021_flpr_bringup` was retired in #177 once the app drove
 the LS021 on glass; the M33-direct `ls021_bringup` bench was retired earlier in #176; the A1 BLE
-spike bin `ble_spike` was retired at #270 when the stack moved into `main.rs`/`src/ble/`. All are
-in git history if an isolation bring-up is ever needed again — the FLPR transport is
-`src/ls021_flpr.rs`, exercised by the default build.)
+spike bin `ble_spike` was retired at #270 when the stack moved into `main.rs`/`src/ble/`; the
+`sd_bench` SD-throughput harness went with the SPI storage path it measured, at #1158 — a fresh
+sEMMC bench would be written, never ported. All are in git history if an isolation bring-up is ever
+needed again — the FLPR transport is `src/ls021_flpr.rs`, exercised by the default build.)
 
-### LS021 FLPR builds — DK wiring (issue #165)
+### LS021 FLPR builds — DK wiring
 
-The source bus + `BCK` + COM stay on **P2** (P2.00–06 data/clock, P2.07/08/10 COM, P2.09 heartbeat
-LED); the four gate lines + `BSP` sit on **free P1 pins** — `GSP P1.00 / GCK P1.01 / GEN P1.12 /
-INTB P1.10 / BSP P1.14` — deliberately **off** the SD-SPI bus (P1.06/07/11/12) and VCOM (P1.04/05)
-the app needs.
+The source bus + `BCK` stay on **P2** (see [the pin map](#full-pin-map-ls021--flpr-build)); the four
+gate lines + `BSP` sit on `GSP P1.10 / GCK P1.11 / GEN P1.12 / INTB P1.13 / BSP P1.14`, and COM on
+`P1.22–24`. Since #1158 the display shares P2 with the microSD card rather than with an SPI bus:
+`R0/R1/G0/G1` took `P2.06/.08/.09/.10` — the four pins the retired SD-SPI path freed — and `B0/B1`
+time-share `P2.00/.04` with the card's `D3/D1`.
 
-The DK breaks out only **P1.00–14** (P1.02/03 are NFC), which is one pin short for everything the app
-puts on P1 — so SD **`CS` moves from P1.12 to P0.00** (one jumper on the SD breakout; it's a plain
-GPIO, and the M33 already drives P0 for BTN3). That frees P1.12 for `GEN`. The SD bus pins (SCK P1.11
-/ MISO P1.07 / MOSI P1.06) are unchanged.
-
-The five gate/`BSP` DK pins, the masks in `src/flpr/flpr_pingpong.c`, and the physical 21-pin FPC
-harness must all agree; if a gate line stays dark on glass, confirm the pin is broken out on your DK
-header and remap all three together. Full pin/protocol detail:
+The gate/`BSP` pins, the masks in `src/flpr/flpr_scan.c`, and the physical 21-pin FPC harness must
+all agree; if a gate line stays dark on glass, confirm the pin is broken out on your DK header and
+remap all three together. Full pin/protocol detail:
 [firmware/docs/ls021-flpr.md](../docs/ls021-flpr.md).
+
+### microSD over sEMMC — the storage transport
+
+**There is no SPI.** The card runs in **native 4-bit SD mode** on the same FLPR that drives the
+panel, through Nordic's **sEMMC soft peripheral** — a 13,636 B position-independent RISC-V image
+(vendored at `vendor/semmc/`, `LicenseRef-Nordic-5-Clause`) that turns `P2.00–05` into a real SD host
+controller. The M33 fills in a register block in the image's RAM carve and pokes VPR tasks; the
+coprocessor does the clocking, CRC and framing. Measured on glass 2026-08-05/06 (LM20-DK + SanDisk
+SDXC 64 GB), against the SPI path this replaced:
+
+| | sEMMC | SPI (retired) |
+| :-- | --: | --: |
+| read, CMD18 × 256 blocks @ 32 MHz 4-bit | **14.7 MB/s** | 1.07 MB/s |
+| write, CMD25 × 256 blocks @ 21.3 MHz | **8.2 MB/s** | ~1.1 MB/s |
+| single-block read | 430 µs | 1.1 ms |
+
+**Wiring.** Six jumpers, no chip-select: `P2.00 D3 · P2.01 CLK · P2.02 D0 · P2.03 D2 · P2.04 D1 ·
+P2.05 CMD`, plus GND and 3V3. The pin assignment is fixed by the soft peripheral, not by us. Pull-ups
+per [the pad table above](#full-pin-map-ls021--flpr-build).
+
+**Sharing the coprocessor.** `src/flpr_mux.rs` time-multiplexes it: a switch to storage is 29 µs
+(park the hart, flip the pads, warm-boot the resident image, power it on), a switch back 138 µs
+(quiesce, park, flip, relaunch the display blob). The card keeps its `tran` + High-Speed state across
+a switch and is **never** re-initialised — measured 12/12 rounds. The mode is *lazy*, so a run of
+reads pays 29 µs once and a run of frames 138 µs once; the panel keeps getting frames throughout a
+multi-megabyte upload because storage sessions never outlive one synchronous burst.
+
+**Writes cap at 21.3 MHz.** 32 MHz writes fail card-side CRC on the jumper harness — a clean failure,
+nothing programmed — while 32 MHz reads are spotless. The clock is per-transaction, so mixed-rate is
+free. Re-test on soldered hardware.
+
+**If the card does not come up**, the RTT log names which rung failed (`SemmcError`), and an aborted
+transfer is decoded (`command timeout` / `command CRC` / `data CRC (clock too high for the wiring?)`
+/ `retries exceeded` / `protocol error`). A `data CRC` at 32 MHz on a long harness is the one worth
+trying `Semmc::set_read_delay` for.
+
+> ⚠️ **The bootloader cannot read the card.** `obc-boot` still carries the SPI path and there is no
+> room in its 32 KB carve for the 13.6 KB soft-peripheral image, so **SD-staged DFU (install and
+> rollback) does not work on this hardware** until the epic gives the bootloader a storage story. It
+> fails safely — bring-up reports no card and the old app boots — but it does fail. See
+> `obc-boot/src/sd.rs`.
 
 #### COM on P2 is a DK artifact — route it onto GPIOTE pins on the production board
 
