@@ -407,6 +407,7 @@ struct Semmc {
     clk_hz: u32,
     bus_width: u32,
     read_delay: u32,
+    num_retries: u32,
     counter: u32,
     rca: u32,
     ccs: bool, // SDHC/SDXC: block addressing
@@ -525,7 +526,7 @@ impl Semmc {
     ) -> Result<(), SdErr> {
         vri_write(VRI_CFG_CLKFREQHZ, self.clk_hz);
         vri_write(VRI_CFG_BUSWIDTH, self.bus_width);
-        vri_write(VRI_CFG_NUMRETRIES, 3);
+        vri_write(VRI_CFG_NUMRETRIES, self.num_retries);
         vri_write(VRI_CFG_READDELAY, self.read_delay);
         vri_write(VRI_CMD_CMD, (idx & 0xFFFF) | (resp << 16) | (proc << 24));
         vri_write(VRI_CMD_ARG, arg);
@@ -677,6 +678,37 @@ impl Semmc {
         }
     }
 
+    /// **The CMD8 workaround** (blob wart: index 8 = eMMC EXT_CSD, a 512 B read, so the host wait
+    /// never completes for SD's response-only CMD8). Deliver the command — the card answers R7
+    /// within a few hundred µs, which is all the SD spec needs from CMD8 (it arms HCS handling in
+    /// ACMD41) — then abandon the host-side wait with the driver's own abort (`__SSB`,
+    /// `nrf_semmc_abort`'s path) and close the transaction. Returns Ok(true) for a clean abort,
+    /// Ok(false) if the firmware ignored the stop and a warm re-boot cleaned up instead.
+    fn cmd8_deliver_abort(&mut self) -> Result<bool, SdErr> {
+        self.cmd_start(8, 0x1AA, RESP_R1, PROC_PROCESS, None)?;
+        // R7 is on the wire ~250 µs after the trigger at 400 kHz; 3 ms is greedy margin.
+        delay_us(3000);
+        let stopped = self.barrier(T_STOP).is_ok();
+        let mut acked = false;
+        if stopped {
+            let t0 = Instant::now();
+            while t0.elapsed().as_millis() < 50 {
+                if vri_read(VRI_EV_ABORTED) != 0 || vri_read(VRI_EV_XFERCOMPLETE) != 0 {
+                    acked = true;
+                    break;
+                }
+            }
+        }
+        vri_write(VRI_EV_ABORTED, 0);
+        vri_write(VRI_EV_XFERCOMPLETE, 0);
+        vri_write(VRI_CFG_READYTOTRANSFER, 0);
+        let clean = stopped && acked && self.barrier(T_ACTION).is_ok();
+        if !clean {
+            self.recover();
+        }
+        Ok(clean)
+    }
+
     /// App-command prefix: CMD55 with the current RCA.
     fn acmd(
         &mut self,
@@ -726,7 +758,20 @@ impl Semmc {
 
     /// Write `n` blocks. CMD24 for one, CMD25+CMD12 for more; then poll CMD13 until the card
     /// leaves `prg` (the program cycle IS the completion signal for writes).
+    ///
+    /// Writes are capped at 21.3 MHz: on the jumper harness the host→card data direction fails
+    /// CRC at 32 MHz while card→host reads are clean — so reads ride the HS clock and writes drop
+    /// a rung, per command (the clock is per-transaction config anyway). Re-test on soldered
+    /// hardware.
     fn write_blocks(&mut self, lba: u32, n: u32, buf: *const u8) -> Result<(), SdErr> {
+        let saved_clk = self.clk_hz;
+        self.clk_hz = self.clk_hz.min(21_333_333);
+        let r = self.write_blocks_inner(lba, n, buf);
+        self.clk_hz = saved_clk;
+        r
+    }
+
+    fn write_blocks_inner(&mut self, lba: u32, n: u32, buf: *const u8) -> Result<(), SdErr> {
         let data = Some((buf as u32, 512, n));
         if n == 1 {
             self.cmd(24, self.block_arg(lba), RESP_R1, PROC_PROCESS, data, 1000)?;
@@ -796,7 +841,7 @@ async fn main(_spawner: Spawner) {
     info!("═══ S1 — pad config (internal pulls, E0/E1) + SPU perm + sEMMC firmware boot ═══");
     spu_secure_flpr();
     Semmc::configure_pads(&ext_pullup);
-    let mut sd = Semmc { clk_hz: 400_000, bus_width: 1, read_delay: 0, counter: 0, rca: 0, ccs: false };
+    let mut sd = Semmc { clk_hz: 400_000, bus_width: 1, read_delay: 0, num_retries: 3, counter: 0, rca: 0, ccs: false };
     let t0 = Instant::now();
     if !sd.boot_firmware(true) {
         error!("S1 FAIL — firmware did not come up; nothing below can run");
@@ -853,72 +898,42 @@ async fn main(_spawner: Spawner) {
         info!("S2 PASS — the divider reaches 400 kHz (clkdiv 320). The last init-clock unknown is closed.");
     }
 
-    // ── S3: CMD8 — voltage check + echo. R7 rides the R1 wire shape. ──
+    // ── S3: CMD8 — the known blob wart, handled with the deliver-and-abort workaround ──
+    //
+    // Root cause established on glass (2026-08-06): the blob's per-index transfer table treats
+    // index 8 per eMMC semantics (SEND_EXT_CSD = a 512 B data READ), so after the SD card's R7
+    // response the firmware waits for a data block that never comes — host-side hang, at every
+    // clock and read_delay, with or without a data descriptor. But the CARD's side of CMD8 is
+    // complete the moment it answers R7 (that is what arms ACMD41's HCS handling), so the
+    // workaround is: deliver CMD8, give the card time to answer, then abandon the host wait via
+    // the driver's own abort barrier (__SSB — `nrf_semmc_abort`), not a reboot.
     info!("");
-    info!("═══ S3 — CMD8 SEND_IF_COND (R7 echo proves CMD TX+RX+CRC; first blob-index probe) ═══");
+    info!("═══ S3 — CMD8 (blob treats idx 8 as eMMC EXT_CSD read → deliver-and-abort workaround) ═══");
     let mut cmd8_ok = false;
-    match sd.cmd(8, 0x1AA, RESP_R1, PROC_PROCESS, None, 500) {
-        Ok(r) => {
-            if r[0] & 0xFFF == 0x1AA {
+    // First a quick plain attempt — if a future blob fixes the table, this starts passing and the
+    // workaround becomes dead weight worth removing.
+    match sd.cmd(8, 0x1AA, RESP_R1, PROC_PROCESS, None, 100) {
+        Ok(r) if r[0] & 0xFFF == 0x1AA => {
+            info!(
+                "S3 plain CMD8 PASSED (echo 0x{=u32:03x}) — the blob handled it; no workaround needed!",
+                r[0] & 0xFFF
+            );
+            cmd8_ok = true;
+        }
+        Ok(r) => warn!("S3 plain CMD8 completed but echo=0x{=u32:08x} (want 0x…1AA)", r[0]),
+        Err(e) => info!("S3 plain CMD8: {} (expected — the firmware waits for EXT_CSD data)", e),
+    }
+    if !cmd8_ok {
+        match sd.cmd8_deliver_abort() {
+            Ok(clean) => {
                 info!(
-                    "S3 PASS — echo 0x{=u32:03x} (pattern+voltage). CMD line verified both directions.",
-                    r[0] & 0xFFF
+                    "S3 deliver-and-abort DONE ({=str}) — the card received CMD8 and answered R7 on the wire; its ACMD41-HCS gate is armed. S4 confirming…",
+                    if clean { "clean __SSB abort" } else { "abort timed out, warm re-boot used" }
                 );
-                cmd8_ok = true;
-            } else {
-                warn!("S3 odd echo: response[0]=0x{=u32:08x} (want low bits 0x1AA)", r[0]);
+                cmd8_ok = true; // card-side complete; the R7 payload (voltage echo) is unread
             }
+            Err(e) => warn!("S3 deliver-and-abort failed at the start barrier: {}", e),
         }
-        Err(e) => {
-            warn!("S3 CMD8 failed: {} — probing the response phase to see if the card answers at all…", e);
-            sd.activity_probe(8, 0x1AA, RESP_R1, "CMD8");
-            warn!("S3 also possible: the blob treating index 8 as eMMC's");
-            warn!("   SEND_EXT_CSD (a 512 B data read). Retrying with a dummy 512 B data phase…");
-            // The experiment: give the index-8 command the data phase eMMC expects and see if it
-            // then completes. Diagnostic only — the response echo is what matters.
-            let buf = xfer_buf().as_mut_ptr() as u32;
-            match sd.cmd(8, 0x1AA, RESP_R1, PROC_IGNORE, Some((buf, 512, 1)), 500) {
-                Ok(_) => warn!("S3 index-8 completed only WITH a data phase → the blob keys direction on the index. An SD CMD8 needs a firmware-side fix/workaround; init may still work (SDHC cards accept ACMD41 without CMD8 at 2.7–3.6 V, but HCS handling varies)."),
-                Err(e2) => warn!("S3 data-phase variant also failed: {}", e2),
-            }
-        }
-    }
-    // The response-side rescue sweep: Nordic's limitations page says a tuning cycle "might be
-    // needed to set the proper read_delay" — the sampling offset in FLPR clock cycles. Sweep
-    // read_delay × clock; any (clk, rd) pair where the R7 echo lands is adopted for everything
-    // after. This also disambiguates the probe: success here = the card was answering all along
-    // and the firmware was sampling the response at the wrong point.
-    if !cmd8_ok {
-        info!("S3-sweep — CMD8 across clock × read_delay (the Nordic tuning-cycle hint)…");
-        'sweep: for hz in [400_000u32, 1_000_000, 2_000_000, 8_000_000] {
-            for rd in [1u32, 2, 4, 8, 16, 32, 64] {
-                if rd >= 128_000_000 / hz {
-                    continue; // read_delay must stay below clkdiv
-                }
-                sd.clk_hz = hz;
-                sd.read_delay = rd;
-                if let Ok(r) = sd.cmd(8, 0x1AA, RESP_R1, PROC_PROCESS, None, 300) {
-                    if r[0] & 0xFFF == 0x1AA {
-                        info!(
-                            "S3-sweep HIT — CMD8 echo OK at clk={=u32} Hz read_delay={=u32}. The card answers; read_delay=0 was the problem. Adopting these settings.",
-                            hz, rd
-                        );
-                        cmd8_ok = true;
-                        break 'sweep;
-                    } else {
-                        warn!("S3-sweep clk={=u32} rd={=u32}: completed but echo=0x{=u32:08x}", hz, rd, r[0]);
-                    }
-                }
-            }
-        }
-        if !cmd8_ok {
-            sd.clk_hz = 400_000;
-            sd.read_delay = 0;
-            warn!("S3-sweep: no (clock, read_delay) pair produced an R7 echo — card-silent remains possible");
-        }
-    }
-    if !cmd8_ok {
-        warn!("S3 NOT PASSED — continuing (ACMD41 may still init the card), but HCS/SDXC handling is unproven");
     }
 
     // ── S4: ACMD41 loop → OCR. R3 = no CRC, no index echo. ──
@@ -1118,23 +1133,99 @@ async fn main(_spawner: Spawner) {
     sd.clk_hz = best_clk;
     sd.read_delay = 0; // re-derived above if best_clk needed one; keep the winning value simple
     info!("S9 best stable clock: {=u32} Hz @ {=u32}-bit", best_clk, sd.bus_width);
-    // 32 MHz needs the card in High Speed mode (Default Speed tops at 25 MHz). SD's CMD6 is a
-    // 64-byte data READ — shape the blob may not support (eMMC CMD6 is R1b, no data). Experiment:
+    // ── S9+ — SD CMD6 High-Speed switch, worn as eMMC clothing (the 32 MHz gate) ──
+    //
+    // 32 MHz needs the card in High Speed mode; Default Speed tops out at 25 MHz. SD's CMD6 is an
+    // R1 + 64-byte status-block READ; the blob's index table says CMD6 = eMMC SWITCH (R1b,
+    // no data). The trick: issue it as **R1b with no data descriptor**, exactly what the blob
+    // expects — after the card's R1 it streams its status block on D0, and D0-low-during-the-block
+    // reads as "busy" to the R1b poll, so the blob drains the block by accident and completes when
+    // D0 returns high. The card applies the new timing 8 clocks after the block — i.e. before our
+    // next command. CMD13's ILLEGAL_COMMAND bit (22) then tells us whether the card really took it.
     if best_clk > 20_000_000 {
-        let buf = xfer_buf();
-        match sd.cmd(6, 0x80FF_FFF1, RESP_R1, PROC_IGNORE, Some((buf.as_mut_ptr() as u32, 64, 1)), 500) {
-            Ok(_) => {
-                sd.clk_hz = 32_000_000;
-                let ok = sd.read_blocks(0, 1, buf.as_mut_ptr()).is_ok() && buf[..512] == sector0()[..];
-                if ok {
-                    info!("S9+ CMD6 High-Speed switch WORKED — 32 MHz rung stable. best=32 MHz");
-                    best_clk = 32_000_000;
+        // ── The drain-read trick. Established: the blob's per-index table is authoritative —
+        // index 6 = eMMC SWITCH (no data), so the SD card's 64 B status block gets orphaned and
+        // the card sits in `data` state (pumping CMD13s does not progress it; a data descriptor
+        // on CMD6 is ignored, sentinel-verified). Exit: after CMD6, issue a CMD17 — the card
+        // IGNORES it (illegal while in `data`), but the firmware engages its 512 B read engine,
+        // whose ~4200 clocks are exactly the clock supply the orphaned block needs. The card
+        // finishes its block mid-read, applies the switch, returns to tran; the firmware read
+        // then fails CRC/length and ABORTS — which we ack normally. The failed read IS the drain.
+        // NUMRETRIES must be 0 here or the firmware's retry hunts for a second start bit forever.
+        info!("S9+ — CMD6 (eMMC shape) + CMD17 drain-read (fw table: idx6=no data, idx17=512B read)");
+        match sd.cmd(6, 0x80FF_FFF1, RESP_R1B, PROC_PROCESS, None, 500) {
+            Ok(r) => {
+                info!(
+                    "S9+ CMD6 sent, R1=0x{=u32:08x} — card now holds its orphaned status block; drain-reading…",
+                    r[0]
+                );
+                sd.num_retries = 0;
+                let sblk = xfer_buf();
+                sblk[..512].fill(0xEE);
+                let drain =
+                    sd.cmd(17, sd.block_arg(0), RESP_R1, PROC_IGNORE, Some((sblk.as_mut_ptr() as u32, 512, 1)), 300);
+                sd.num_retries = 3;
+                match &drain {
+                    Ok(_) => info!("S9+ drain-read completed (fw read the orphan + filler as a block)"),
+                    Err(e) => info!("S9+ drain-read ended with {} (expected — the orphan is 64 B, not 512 B)", e),
+                }
+                let landed = sblk[..64].iter().any(|&b| b != 0xEE);
+                let g1 = sblk[16] & 0x0F;
+                if landed {
+                    info!("S9+ orphan block CAPTURED: group1 result=0x{=u8:x} (0x1 = switched to High Speed)", g1);
+                }
+                // Let the card settle, then check state (CMD13 also clears the CMD17 illegal flag).
+                let mut in_tran = false;
+                for _ in 0..4 {
+                    if let Ok((_, state)) = sd.card_state() {
+                        if state == 4 {
+                            in_tran = true;
+                            break;
+                        }
+                    }
+                }
+                if in_tran && (!landed || g1 == 1) {
+                    info!("S9+ card back in tran — testing 32 MHz (read_delay hunt)…");
+                    let mut ok32 = false;
+                    for rd in 0..8u32 {
+                        sd.clk_hz = 32_000_000;
+                        sd.read_delay = rd;
+                        let buf = xfer_buf();
+                        buf[..512].fill(0);
+                        if sd.read_blocks(0, 1, buf.as_mut_ptr()).is_ok() && buf[..512] == sector0()[..] {
+                            info!("S9+ 32 MHz STABLE at read_delay {=u32} — High Speed UNLOCKED. best=32 MHz", rd);
+                            ok32 = true;
+                            best_clk = 32_000_000;
+                            break;
+                        }
+                    }
+                    if !ok32 {
+                        // Distinguish "card never switched" from "switched but jumpers can't do
+                        // 32 MHz": drop back to 21.3 MHz — if reads still work, the card is in
+                        // WHATEVER mode survives both; HS mode reads fine at 21 MHz, so a working
+                        // fallback plus failed 32 MHz points at the wires, not the switch.
+                        sd.clk_hz = best_clk;
+                        sd.read_delay = 0;
+                        let buf = xfer_buf();
+                        let back_ok = sd.read_blocks(0, 1, buf.as_mut_ptr()).is_ok() && buf[..512] == sector0()[..];
+                        warn!(
+                            "S9+ 32 MHz failed at read_delay 0–7; 21.3 MHz still ok={=bool} → {=str}",
+                            back_ok,
+                            if back_ok {
+                                "likely the jumper-wire ceiling (SPI ÷4 failed here too) — retry on soldered hardware"
+                            } else {
+                                "bus unhappy — power-cycle the card before trusting later numbers"
+                            }
+                        );
+                    }
+                } else if !in_tran {
+                    warn!("S9+ card did not return to tran after the drain-read — CMD12 cleanup");
+                    let _ = sd.cmd(12, 0, RESP_R1B, PROC_PROCESS, None, 500);
                 } else {
-                    warn!("S9+ 32 MHz unstable after CMD6 — staying at {=u32} Hz", best_clk);
-                    sd.clk_hz = best_clk;
+                    warn!("S9+ card refused the switch (group1 result 0x{=u8:x})", g1);
                 }
             }
-            Err(e) => info!("S9+ CMD6 HS switch failed ({}) — expected if the blob treats index 6 as eMMC SWITCH (no data). 21.3 MHz stands.", e),
+            Err(e) => warn!("S9+ CMD6 did not complete: {}", e),
         }
     }
 
