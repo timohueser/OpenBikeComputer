@@ -43,9 +43,18 @@
 //! measurable wins in this file are the ones the halves make safe to take: a **cluster-sized**
 //! flush (one CMD25, no partial ends) and half as many mutex acquisitions per megabyte.
 //!
-//! Lives here rather than in either plane because `usb::data_plane` and `ble::data_plane` are
-//! deliberate line-for-line twins (see the module doc on either), and a staging buffer copied into
-//! both is exactly the kind of duplication this module exists to prevent.
+//! # Who uses this
+//!
+//! **Only [`usb::data_plane`](crate::usb::data_plane) today.** The BLE plane still hands each
+//! arriving SDU straight to `ObjectStore::upload_append`, because the arena arm it would stage into
+//! is granted against a *transfer screen* that only a cable upload raises, and a 244-byte CoC moving
+//! a route is not what the batching was built for.
+//!
+//! It lives in `link/` rather than in the USB plane all the same, and the reason is unchanged: the
+//! two data planes are deliberate line-for-line twins (see the module doc on either), so the moment
+//! BLE wants batching it takes this type rather than growing a second copy of it. What both planes
+//! *do* share today is the reservation one level down — `ObjectStore::upload_reserve`, which needs
+//! no staging buffer.
 
 use core::cell::RefCell;
 

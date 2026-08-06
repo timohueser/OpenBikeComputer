@@ -77,11 +77,17 @@ resource-report = []
 # Reserve a streamed upload's whole cluster chain up front, so the per-cluster FAT writes leave the
 # streaming hot path (`sd::Storage::upload_reserve`).
 #
-# **Off until the fork carries the API**, and that is the whole reason this is a feature rather than
-# plain code: it calls `VolumeManager::preallocate`, which exists as a written, host-tested patch in
-# `firmware/patches/` and not yet on `timohueser/embedded-sdmmc-rs`. Pushing to a repository outside
-# this one is an owner action. The moment the fork has it and both `Cargo.lock`s are updated, this
-# becomes `default` and the feature can go — see `firmware/patches/README.md` for the two-step.
+# ⚠️ **Turning this on today does not compile.** It calls `VolumeManager::preallocate`, which exists
+# as a written, host-tested patch in `firmware/patches/` and is **not yet on**
+# `timohueser/embedded-sdmmc-rs` — so `cargo build --features sdmmc-prealloc` fails with
+# `E0599: no method named `preallocate`` at `sd.rs`'s `upload_reserve` until the fork carries it.
+# That is the whole reason this is a feature rather than plain code: pushing to a repository outside
+# this one is an owner action, and the tree has to build in the meantime.
+#
+# Nothing warns about this at build time — a cargo feature cannot check a dependency's API — so the
+# check is: apply the patch to the fork first (`firmware/patches/README.md` has the two-step), then
+# `cargo update -p embedded-sdmmc` in **both** resolve roots, then flip this into `default` and
+# delete the feature.
 sdmmc-prealloc = []
 
 # The all-features stack (issue #270, epic #267): nrf-sdc/MPSL/TrouBLE folded into `main.rs`.

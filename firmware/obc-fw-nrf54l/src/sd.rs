@@ -760,6 +760,54 @@ fn warn_bounce(addr: usize) {
     }
 }
 
+/// **Report the mounted volume's cluster size, once, at mount.**
+///
+/// Purely diagnostic, and it exists because a *constant* depends on the answer:
+/// [`STAGE_HALF_LEN`](crate::usb::STAGE_HALF_LEN) is 32 KiB precisely so that one staging flush is
+/// one whole cluster — one CMD25 with no partial ends. That claim is true of a card this firmware
+/// formats for and is **not checked anywhere**, so on a card formatted with 4 KiB or 64 KiB clusters
+/// the upload's shape silently changes and an on-glass throughput number becomes uninterpretable.
+/// This is the line that says which case you are in.
+///
+/// Read straight off the card rather than asked of `VolumeManager`, which does not expose it: MBR
+/// partition 0's start LBA (`0x1BE + 8`), then that sector's BPB — `BPB_BytsPerSec` at 11 and
+/// `BPB_SecPerClus` at 13 (Microsoft's FAT spec, unchanged since FAT12). Two block reads at boot,
+/// and nothing downstream depends on the result.
+fn report_cluster_size() {
+    let mut block = [0u8; 512];
+    // `with_storage` answers `Err` when the FLPR is not in storage mode; the inner result is the
+    // card's. Either failure means "no answer", and no answer is not worth a fault here.
+    let read =
+        |lba: u32, buf: &mut [u8]| matches!(crate::flpr_mux::with_storage(|sd| sd.read_blocks(lba, buf)), Ok(Ok(())));
+    if !read(0, &mut block) {
+        return;
+    }
+    // A partition table entry is 16 B at 0x1BE; bytes 8..12 are the LBA of its first sector. A card
+    // formatted without an MBR (superfloppy) has its BPB in block 0, which reads as `start == 0`.
+    let start = u32::from_le_bytes([block[0x1BE + 8], block[0x1BE + 9], block[0x1BE + 10], block[0x1BE + 11]]);
+    if start != 0 && !read(start, &mut block) {
+        return;
+    }
+    let bytes_per_sector = u16::from_le_bytes([block[11], block[12]]) as u32;
+    let sectors_per_cluster = block[13] as u32;
+    let cluster = bytes_per_sector * sectors_per_cluster;
+    if cluster == 0 {
+        defmt::warn!("SD: could not read a cluster size from the BPB — upload flush shape unknown");
+        return;
+    }
+    let half = crate::usb::STAGE_HALF_LEN as u32;
+    if cluster == half {
+        defmt::info!("SD: {=u32} B clusters — one upload staging half is exactly one cluster", cluster);
+    } else {
+        defmt::warn!(
+            "SD: {=u32} B clusters against a {=u32} B staging half — upload flushes are not \
+             one-cluster, so throughput will not match the bench numbers (see usb::STAGE_HALF_LEN)",
+            cluster,
+            half
+        );
+    }
+}
+
 /// Log a failed transfer at the transport boundary, decoding an abort's `STATUS` word.
 ///
 /// The FAT layer above swallows the error type into its own `Error::DeviceError`, so this is the
@@ -885,6 +933,7 @@ impl Storage {
             }
         };
         defmt::info!("SD: mounted; /routes {=bool}, /tracks {=bool}", routes_dir.is_some(), tracks_dir.is_some());
+        report_cluster_size();
         Some(Storage {
             vmgr,
             card,

@@ -467,6 +467,44 @@ toolchain-artifact trap, not new drift. The compile-time allocation report is
 unchanged on both profiles — the signal is a module static, not a field of `App`
 or `ObjectStore`, so no named entry (`app`, `ble_object_store`, …) moved.
 
+### The upload retune's staging halves (#1158 follow-up), 2026-08-07 — **0 B of anything**
+
+The USB staging arm goes 16 KiB → **two 32 KiB halves** (`usb::STAGE_HALF_LEN`), so the transport
+fills one while the other is the card's, and each flush is exactly one FAT cluster — one 64-block
+CMD25 with no partial ends. The interesting part of the entry is that there is nothing to pay:
+
+| | before | after |
+| :-- | --: | --: |
+| `compile_time_allocations.arena_usb` | 16,384 B | **65,536 B** |
+| `arena_total` (= `max(arms)`, render) | 117,408 B | 117,408 B |
+| `.bss + .data` | 295,816 B | 295,816 B |
+| `.uninit` | 118,432 B | 118,432 B |
+| largest guarded poll frame | 9,728 B | 9,728 B |
+| residual main stack | 77,272 B | 77,272 B |
+
+**This is the growth asymmetry working exactly as #1146 P2 documented it.** The arena is
+`max(arms)`, not their sum, so an arm below the maximum grows free until it reaches the render
+arm's 117,408 B — and 65,536 is still comfortably under. Measured locally as this branch against
+the same tree with the halves back at 16 KiB: every figure above is byte-identical, so the only
+line that moves in the JSON is `arena_usb` itself. The `#[inline(never)] drain_bulk_out` future the
+same branch adds to the USB data plane lands inside existing slack: `task_frame_measured` is
+unmoved at 7,328 B.
+
+The trap this entry exists to close is the *old* argument, which read "16 KiB takes 94% of the
+batching win and a second 16 KiB would halve the margin over the 35,808 B deep-ride peak". That was
+a **`.bss`** argument, written when the staging buffer was a static of its own, and #1146 P2
+retired it by moving those bytes into the arena. It survived in `usb::STAGE_LEN`'s doc for two
+epics; it is gone now, and the doc says what actually bounds the constant (the card's cluster size,
+then the render arm).
+
+**Two report rows were also added rather than dropped.** The sEMMC pivot pinned `sd_bounce` and
+`semmc_driver` in `resource_baseline.json` but never added them to
+`main.rs`'s `resource_report::OBC_RESOURCE_TABLE`, so `resource_guard.py report` has failed
+"missing entries" on every build since. Both are real resident blocks the pivot introduced and the
+report exists to make exactly that kind of block legible by name, so the table grew the rows.
+`semmc_driver` re-pins 52 → **44 B** at the same time: `size_of::<Semmc>()` links 44 on the current
+tree and the baseline was carrying the pivot's figure. Neither is this branch's own cost.
+
 ### The sEMMC carve (#1158 PR1), 2026-08-06 — **0 B of `.bss`/`.uninit`, −20,480 B of stack**
 
 The first change that costs RAM without linking a single byte. The microSD host moves off SPI
