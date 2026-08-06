@@ -156,8 +156,8 @@ jobs:
           fi
           echo "obcu-release.pub is not the committed test key — OK to publish a signed release"
 
-      # The shipping firmware shape: the flag-less default build (`default = ["ble", "sd-bench"]`
-      # since the LM20 retarget — the default IS the all-features shipping image), release,
+      # The shipping firmware shape: the flag-less default build (`default = ["ble"]` since the
+      # LM20 retarget — the default IS the all-features shipping image), release,
       # --locked. From inside the crate dir so .cargo/config.toml selects the thumbv8m target (a
       # --manifest-path build would target the host).
       - name: Build obc-fw-nrf54l (release)

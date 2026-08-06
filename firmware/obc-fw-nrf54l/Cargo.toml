@@ -139,10 +139,6 @@ panic-probe = { version = "1.0", features = ["print-defmt"] }
 cortex-m = { version = "0.7", features = ["inline-asm"] }
 cortex-m-rt = "0.7"
 
-# embedded-hal 1.0 digital traits: `sd::NoCs` implements `ErrorType` / `OutputPin` for the
-# held-low chip-select the embedded-sdmmc `SpiDevice` wants (the per-byte-CS workaround).
-# embedded-hal-bus (below) also re-exports these; the direct dep pins the version they unify on.
-embedded-hal = "1.0"
 # `NorFlash`/`ReadNorFlash` — the traits embassy-nrf's `Rramc` (RRAM controller) driver implements;
 # the persistent settings store (#193) reads/writes its 16-byte blob to the carved RRAM page through
 # them. Pinned to the 0.3 embassy-nrf 0.11 resolves so the trait types unify.
@@ -196,11 +192,6 @@ obc-dfu = { path = "../obc-dfu" }
 # the no-op fallback and card/FS errors are surfaced via this crate's `defmt::Debug2Format`.
 # Matches obc-storage's own `embedded-sdmmc` resolve so the `VolumeManager` types unify.
 embedded-sdmmc = { version = "0.9", default-features = false }
-# `ExclusiveDevice` turns the embassy-nrf `Spim` bus + a GPIO CS into the `SpiDevice` `SdCard` wants.
-embedded-hal-bus = "0.3"
-# `SetConfig` — embassy-nrf's `Spim` re-clock seam (no inherent `set_config`):
-# init the card ≤400 kHz then bump to bulk speed. Pinned to the 0.6 embassy-nrf 0.11 resolves.
-embassy-embedded-hal = { version = "0.6.0", default-features = false }
 # `String` / `Vec` for the route catalog + GPX 8.3 names the SD `Storage` builds. Same 0.8 the
 # shared crates use, so heapless types unify.
 heapless = "0.8"
