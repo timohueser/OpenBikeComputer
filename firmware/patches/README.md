@@ -24,6 +24,15 @@ so a FAT32 block's 128 entries turn 4 MiB of file into the four writes 32 KiB us
 Measured by the patch's own test on the RAM-disk image (2 KiB clusters): writing 256 KiB leaves
 **511 → 1** single-block writes in the write path, with byte-identical read-back.
 
+### Until it is landed, the feature does not build
+
+`sdmmc-prealloc` is **off by default and cannot be turned on against the fork as it stands**:
+`cargo build --features sdmmc-prealloc` fails with `E0599: no method named `preallocate` found for
+struct `VolumeManager`` at `sd::Storage::upload_reserve`. Nothing warns earlier than that — a cargo
+feature has no way to assert an API on a dependency — so treat the step order below as required
+rather than advisory. (The feature-on build *was* verified against a local clone carrying this
+patch, so the failure is purely "the fork does not have it yet".)
+
 ### How to land it
 
 ```sh
