@@ -1,12 +1,12 @@
-//! microSD storage for the nRF54L15 board: map / routes / track log over FatFs.
+//! microSD storage for the nRF54L board: map / routes / track log over FatFs.
 //!
-//! This owns the concrete SPI bus → [`SdCard`] → [`VolumeManager`] stack and reconciles the FAT
-//! filesystem to the shared app's *intent*, exactly as the simulator's `RouteStore`/`TrackStore`
-//! reconcile a folder of files on the host. The reusable, board-agnostic adapters it hands the
-//! format code live in [`obc_storage::sd`] ([`SdByteSource`]/[`SdByteSink`]/[`SdTrackSink`]);
-//! everything here is nRF-specific (a dedicated SPIM + a GPIO chip-select).
+//! This owns the concrete transport → [`VolumeManager`] stack and reconciles the FAT filesystem to
+//! the shared app's *intent*, exactly as the simulator's `RouteStore`/`TrackStore` reconcile a
+//! folder of files on the host. The reusable, board-agnostic adapters it hands the format code live
+//! in [`obc_storage::sd`] ([`SdByteSource`]/[`SdByteSink`]/[`SdTrackSink`]); everything here is
+//! nRF-specific.
 //!
-//! The `Storage` impl and every adapter below are generic over the concrete [`SdCard`] **bus type**
+//! The `Storage` impl and every adapter below are generic over the concrete **block-device type**
 //! (they speak `embedded_sdmmc`'s `BlockDevice` / `TimeSource`). So routes and the chosen map both
 //! **stream** from the card and the ride is logged to a temp `.obct` converted to the durable ride
 //! object on Finish.
@@ -30,21 +30,26 @@
 //!                      lives in the name, mirroring `RT{id}.OBR`). The device writes no GPX —
 //!                      the phone owns human-format export after sync.
 //!
-//! ## SPI wiring (nRF54LM20-DK, **SERIAL00 / SPIM00** — the fast P2 pads, beside the display's)
-//!   SCK P2_06 · MISO P2_09 · MOSI P2_08 · CS **P2_10** (software, held low) · GND · 3V3.
-//! The card is initialised at [`SD_INIT_HZ`] (≤400 kHz, SD spec) then the bus is re-clocked to
-//! [`SD_FAST_HZ`] for bulk transfer — see [`init`]. embassy-nrf's `Spim` exposes no internal MISO
-//! pull-up (its `Config` has no `miso_pull`), so the card's DO line must be pulled high externally
-//! — most microSD breakouts include this; if not, add a 10 kΩ from MISO (P2_09) to 3V3. (DO
-//! floating low during init reads `0x00`, which looks like a hung card.)
+//! ## The transport: **native 4-bit SD over Nordic's sEMMC soft peripheral** (epic #1158)
+//!
+//! The card is not on a SPI bus. The FLPR (VPR00) runs Nordic's sEMMC image and *is* the SD host
+//! controller; [`crate::semmc`] is the M33-side driver and [`crate::flpr_mux`] decides whether the
+//! coprocessor is currently drawing the panel or clocking the card. Wiring (fixed by the soft
+//! peripheral, not by us):
+//!
+//! ```text
+//!   P2.00 D3   P2.01 CLK   P2.02 D0   P2.03 D2   P2.04 D1   P2.05 CMD
+//! ```
+//!
+//! Reads run 4-bit at **32 MHz** (14.7 MB/s measured, CMD18 × 256 blocks) and writes at 21.3 MHz
+//! (8.2 MB/s, card-program-limited) — against 1.07 MB/s over the SPI transport this replaced. The
+//! only thing this file does about any of that is [`SemmcCard`]: a `BlockDevice` over
+//! [`crate::semmc::Semmc`]. Everything above it — [`Storage`], the FAT layer, the extent fast path,
+//! the object store, the boot-fault rule — is transport-agnostic and did not move.
 
-use embassy_embedded_hal::SetConfig;
-use embassy_nrf::gpio::Output;
-use embassy_nrf::spim::{Config as SpiConfig, Frequency, Spim};
-use embassy_time::Delay;
-use embedded_hal_bus::spi::ExclusiveDevice;
 use embedded_sdmmc::{
-    LfnBuffer, Mode, RawDirectory, RawFile, SdCard, ShortFileName, TimeSource, Timestamp, VolumeIdx, VolumeManager,
+    Block, BlockCount, BlockDevice, BlockIdx, LfnBuffer, Mode, RawDirectory, RawFile, ShortFileName, TimeSource,
+    Timestamp, VolumeIdx, VolumeManager,
 };
 use heapless::{String, Vec};
 use obc_app::retention::{
@@ -66,37 +71,6 @@ use obc_storage::fat_extents::{
     BuildError, ExtentSource, ExtentSourceWithCapacity, ExtentTable, ExtentTableWithCapacity, SharedBlockDevice,
 };
 use obc_storage::{SdByteSink, SdByteSource, SdTrackSink};
-
-/// SD clock config during the init handshake. ⚠️ **SPIM00 cannot reach the SD spec's ≤400 kHz
-/// identification clock**: its PRESCALER divisor is 7 bits (÷127 max) off the 128 MHz PLL, so the
-/// floor is ~1.008 MHz — and embassy's `Frequency::K250`/`K500`/`M1` all silently truncate to a
-/// **zero divisor** on this instance (`(clk/freq) as u8`, then a 7-bit field), which stops SCK
-/// entirely and hangs the blocking init forever. So: the caller configures `M2` (÷64, a *valid*
-/// divisor) and [`init`] immediately overrides the prescaler to the true floor, ÷127 ≈ 1.008 MHz,
-/// for the acquire. Initialising SD cards at ~1 MHz in SPI mode is a documented spec deviation
-/// that virtually all SDHC/SDXC cards accept; there is no slower path on the fast P2 pads (PSEL
-/// cannot cross power domains, so no 16 MHz-base SERIAL2x instance can drive these pins).
-pub const SD_INIT_HZ: Frequency = Frequency::M2;
-
-/// The init-phase prescaler divisor poked directly (see [`SD_INIT_HZ`]): 128 MHz / 127 ≈ 1.008 MHz.
-const SD_INIT_DIVISOR: u8 = 127;
-
-/// SD clock for bulk transfer once the card is initialised. SPIM00 is PLL-clocked (128 MHz base)
-/// and rated 32 Mbps on the extra-high-drive P2 pads (main.rs sets E0/E1 + max HS-pad slew).
-/// **M32 failed on-glass over the DK jumper harness (2026-07-24)**; [`Frequency::M16`] (÷8) is
-/// the proven `SetConfig` base — but the enum only names the powers of two, so [`init`]
-/// immediately overrides the prescaler to [`SD_FAST_DIVISOR`], the same raw-poke pattern the
-/// ~1 MHz acquire floor uses.
-pub const SD_FAST_HZ: Frequency = Frequency::M16;
-
-/// The bulk clock's true divisor: **÷6 ≈ 21.3 MHz**, inside the SD spec's 25 MHz SPI ceiling.
-/// Passed both of `sd_bench`'s integrity guards on the DK jumper harness (2026-07-30: whole-map
-/// FNV read + stamped 4 MB write verified at ÷8) for +12% reads / +14% writes over ÷8.
-/// ⚠️ **Even divisors only**: an odd divisor cannot produce a symmetric SCK, and ÷5 hard-wedged
-/// the bus on glass (a blocking spim spin, power-cycle to recover — same date). ÷4 = 32 MHz is
-/// the next rung, to be re-tried on the production PCB's short traces; ÷8 is the proven fallback
-/// if a card/harness combination misbehaves.
-pub const SD_FAST_DIVISOR: u8 = 6;
 
 /// The in-progress ride log on the card — a header-less array of fixed track records (8.3
 /// name). Truncated-and-reused per ride, converted to the `RD{id}.ORD` ride object, then
@@ -234,9 +208,8 @@ const NAV_ROUTE_FILE: &str = "_NAV.OBR";
 /// 0 and reject at this floor — 65,024 lifetime uploads before a card must be cleared, i.e. never.
 pub(crate) const SIDELOAD_ID_BASE: u16 = 0xFF00;
 
-/// The concrete SD stack for this board: embassy-nrf's blocking `Spim` wrapped as the `SpiDevice`
-/// the card driver wants, an [`SdCard`], and a 16-file/4-dir [`VolumeManager`]. The chip-select is
-/// a no-op [`NoCs`] — the *real* CS (P1_12) is held low for the whole session (see [`NoCs`]/[`init`]).
+/// The concrete SD stack for this board: [`SemmcCard`] — the card in native 4-bit mode on the FLPR
+/// — under a 16-file/4-dir [`VolumeManager`].
 ///
 /// **Why more than 4 open files** (the default 4 loses mid-ride uploads): riding with tracking holds three
 /// handles for the whole session — the map stream, the active route's geometry, and the ORD track
@@ -245,9 +218,7 @@ pub(crate) const SIDELOAD_ID_BASE: u16 = 0xFF00;
 /// the final `.OBR` at once — a 5-handle peak, which the 4-slot default answered with a failed
 /// commit exactly and only mid-ride. A mounted volume set adds one handle per shard on top of
 /// that (see [`SD_MAX_FILES`]); each slot is 64 bytes of `FileInfo`, so the RAM cost is noise.
-type SdSpi = Spim<'static>;
-type SdDev = ExclusiveDevice<SdSpi, NoCs, Delay>;
-type Sd = SdCard<SdDev, Delay>;
+type Sd = SemmcCard;
 /// What the manager actually owns: the card **by shared reference** ([`SharedBlockDevice`]), so
 /// the raw `&'static Sd` twin stays available for the map's extent-mapped direct block reads
 /// (#500) — `VolumeManager::device()` can't hand it back out (its 0.9 signature can only return
@@ -311,9 +282,11 @@ type Sink<'a> = SdByteSink<'a, SdShared, NullTime, SD_MAX_DIRS, SD_MAX_FILES, SD
 /// [`SdTrackSink`] over this board's manager.
 type TrackSinkT<'a> = SdTrackSink<'a, SdShared, NullTime, SD_MAX_DIRS, SD_MAX_FILES, SD_MAX_VOLUMES>;
 
-/// The concrete [`SdCard`]'s home — a `.bss` slot written once by [`init`] (the warm-reset-safe
+/// The block device's home — a `.bss` slot written once by [`init`] (the warm-reset-safe
 /// `init_static` pattern, see `main.rs`), so both the [`VolumeManager`] (via [`SdShared`]) and the
-/// extent read path can borrow it for `'static`.
+/// extent read path can borrow it for `'static`. [`SemmcCard`] is a zero-sized handle (the driver
+/// state lives in `flpr_mux`), so this slot costs nothing; it stays because the `'static` borrow
+/// shape above it is what the extent fast path is built on.
 static mut SD_CARD: core::mem::MaybeUninit<Sd> = core::mem::MaybeUninit::uninit();
 
 /// The mutually-exclusive homes of either one standalone map table or every mounted-set table.
@@ -639,10 +612,6 @@ pub struct Storage {
     /// (T8 item 6). Empty until a map opens; the System settings screen renders it (`grimsel · v10`)
     /// via [`App::set_map_info`](obc_app::App::set_map_info).
     map_name: String<24>,
-    /// The real chip-select (P1_12), held LOW for the whole session so the card stays selected.
-    /// embedded-sdmmc drives a no-op [`NoCs`] instead; toggling a real CS breaks CMD0 on embassy.
-    /// Kept here only to keep the pin driven low — never touched after [`init`].
-    _cs: Output<'static>,
 }
 
 /// One open `.obct` ride log: the session it belongs to, its file handle, and the save name
@@ -661,67 +630,220 @@ struct PendingSave {
     stats: RideStats,
 }
 
-/// Bring up the SD card: wrap the SPI bus + CS as a `SpiDevice`, initialise the card at the
-/// bus's current (slow) clock, re-clock to [`SD_FAST_HZ`], then mount the FAT volume. Returns
-/// `None` on any failure (no card, not FAT, unreadable) so the caller degrades gracefully — never
-/// panicking (acceptance criterion). `spi` must already be configured at [`SD_INIT_HZ`].
-pub fn init(mut spi: SdSpi, mut cs: Output<'static>) -> Option<Storage> {
-    // ≥74 wake-up clocks with CS high (SD spec), then hold CS LOW for the whole session.
-    // `ExclusiveDevice` drives a no-op [`NoCs`], so the real CS never toggles high between a command
-    // and its reply — which embassy's SPI can't survive (the card drops the bus and CMD0's `0x01` is
-    // lost; toggling = CardNotFound, held low = mounts).
-    // Drop the bus to SPIM00's true minimum (~1.008 MHz) for the whole acquire — see the
-    // [`SD_INIT_HZ`] doc for why this is a raw prescaler poke and not a `Frequency` value.
-    embassy_nrf::pac::SPIM00.prescaler().write(|w| w.set_divisor(SD_INIT_DIVISOR));
-    cs.set_high();
-    let _ = spi.blocking_write(&[0xFFu8; 10]);
-    cs.set_low();
-    let dev = ExclusiveDevice::new(spi, NoCs, Delay).ok()?;
+/// Bring up the SD card: boot the sEMMC soft peripheral, identify the card (4-bit, High Speed,
+/// 32 MHz reads) and mount the FAT volume. Returns `None` on any failure (no card, not FAT,
+/// unreadable) so the caller degrades gracefully — never panicking (acceptance criterion).
+///
+/// Card identification is the slow part — the ACMD41 power-up poll is bounded at 1.5 s.
+/// [`flpr_mux::bring_up_storage`](crate::flpr_mux::bring_up_storage) is what holds the FLPR in
+/// storage mode across the whole of it (see its doc, and PR #1160's `Semmc::start` contract).
+///
+/// ## ⚠️ Synchronous on purpose — the async-fn frame trap (#677, #1108)
+///
+/// The obvious shape for this is `async fn`, and it was one for a while: `Semmc::start` yields at
+/// the card settle, the CMD8 deliver-and-abort and each ACMD41 poll. Awaited from `main`, that
+/// chain's coroutine flattens into `main`'s **task-body poll frame**, whose slot set is allocated on
+/// entry on *every* poll for the life of the program — measured **6,912 → 13,376 B** for a function
+/// that runs once at boot, and `#[inline(never)]` does not fix it (it governs the future
+/// constructor, not the coroutine body). Synchronous — the shape that ships — the same build
+/// measures **7,328 B**, which is what the resource guard pins as `task_frame_measured`.
+///
+/// It is safe to block here: bring-up runs before the ride loop, the BLE stack and the USB plane
+/// exist, and the panel's anti-DC-bias COM wave is on the P3 `InterruptExecutor` (or, on `com-hw`,
+/// on TIMER + DPPI + GPIOTE), so it preempts thread mode rather than competing with it. See
+/// `Semmc::start`'s note for the full accounting.
+pub fn init() -> Result<Storage, obc_app::BootFault> {
+    let info = match crate::flpr_mux::bring_up_storage() {
+        Ok(info) => info,
+        Err(e) => return Err(bring_up_fault(e)),
+    };
+    defmt::info!(
+        "SD: card up over sEMMC — {=u32} MB, 4-bit, {=u32} MHz reads (high-speed {=bool}), RCA 0x{=u16:04x}; FLPR mode: {=str}",
+        (info.blocks >> 11),
+        info.read_clk_hz / 1_000_000,
+        info.high_speed,
+        info.rca,
+        crate::flpr_mux::mode_name()
+    );
     // Into its `.bss` slot before anything else: the manager and the extent read path both want
     // `'static` borrows of the one card.
     // SAFETY: sole writer of SD_CARD; `init` runs once per boot on the one thread-mode executor,
     // and a warm-reset re-run overwrites in place (no `Drop`), the `init_static` contract.
-    let card: &'static Sd = unsafe { crate::init_static(core::ptr::addr_of_mut!(SD_CARD), SdCard::new(dev, Delay)) };
-    // `num_bytes` forces the SPI init sequence (at the ~1 MHz floor set above).
-    match card.num_bytes() {
-        Ok(bytes) => defmt::info!("SD: card initialised, {=u64} MB", bytes >> 20),
-        Err(e) => {
-            defmt::warn!("SD: no card / init failed: {}", defmt::Debug2Format(&e));
-            return None;
-        }
-    }
-    // Card is up — re-clock the bus for bulk reads/writes (init speed would crawl the 1.4 MB map).
-    // embassy-nrf's `Spim` has no inherent setter, so the bump goes through the `SetConfig` seam;
-    // a full default config + the fast frequency, with `orc = 0xFF` so any over-read clocks the SD
-    // idle byte on MOSI (the card expects 0xFF during read padding).
-    card.spi(|dev| {
-        let mut fast = SpiConfig::default();
-        fast.frequency = SD_FAST_HZ;
-        fast.orc = 0xFF;
-        let _ = dev.bus_mut().set_config(&fast);
-    });
-    // Then the true bulk clock: `Frequency` only names the powers of two, so the ÷6 = 21.3 MHz
-    // rung is a raw prescaler poke over the config just set — see [`SD_FAST_DIVISOR`].
-    embassy_nrf::pac::SPIM00.prescaler().write(|w| w.set_divisor(SD_FAST_DIVISOR));
-    Storage::mount(card, cs)
+    let card: &'static Sd = unsafe { crate::init_static(core::ptr::addr_of_mut!(SD_CARD), SemmcCard) };
+    Storage::mount(card).ok_or_else(|| {
+        defmt::error!("SD: the card is up but the FAT volume would not mount — STORAGE FAULT");
+        obc_app::BootFault::StorageFault
+    })
 }
 
-/// A no-op chip-select for [`ExclusiveDevice`]. embedded-sdmmc issues each byte as its own
-/// `SpiDevice` op, so a real CS would toggle high between a command and its reply — which
-/// embassy's SPI doesn't survive (the card drops the bus in the gap; CMD0's `0x01` is lost).
-/// Holding the *real* CS low for the whole session and feeding `ExclusiveDevice` this no-op
-/// keeps the card selected across commands (the validated held-low workaround).
-/// `pub(crate)` only because it surfaces in the adapter return types (like [`NullTime`]).
-pub(crate) struct NoCs;
-impl embedded_hal::digital::ErrorType for NoCs {
-    type Error = core::convert::Infallible;
-}
-impl embedded_hal::digital::OutputPin for NoCs {
-    fn set_low(&mut self) -> Result<(), Self::Error> {
-        Ok(())
+/// **Which fault screen a failed bring-up earns** — the honesty rule (#1163 review, P3): a fault
+/// line the rider can act on, not one catch-all.
+///
+/// Three classes, because the driver can genuinely tell them apart:
+///
+/// - [`SemmcError::NoCard`] is the only one that means what "NO SD CARD" says — the host came up and
+///   identification found nothing (empty socket, dead card, broken bus).
+/// - [`SemmcError::UnsupportedCard`] means a working card that is SDSC. Dropping SDSC is deliberate
+///   (byte-addressed, ≤2 GB, no map fits), but a card that worked over the retired SPI path now
+///   fails, and "NO SD CARD" would send its owner hunting for a card that is already inserted.
+/// - everything else is the storage subsystem itself — the soft peripheral that would not boot, a
+///   barrier that never echoed, a transport error during identification. None of those are evidence
+///   about whether a card is present, so they read as the honest superset.
+fn bring_up_fault(e: crate::semmc::SemmcError) -> obc_app::BootFault {
+    use crate::semmc::SemmcError;
+    match e {
+        SemmcError::NoCard => {
+            defmt::warn!("SD: card identification found no card — NO SD CARD");
+            obc_app::BootFault::NoCard
+        }
+        SemmcError::UnsupportedCard => {
+            defmt::error!("SD: card is SDSC (CSD v1, <=2 GB) — rejected; CARD UNSUPPORTED");
+            obc_app::BootFault::CardUnsupported
+        }
+        other => {
+            defmt::error!("SD: the sEMMC host did not come up ({}) — STORAGE FAULT, not a missing card", other);
+            obc_app::BootFault::StorageFault
+        }
     }
-    fn set_high(&mut self) -> Result<(), Self::Error> {
-        Ok(())
+}
+
+// ═══════════════════════════ the block device ═══════════════════════════
+
+/// **The card as an `embedded_sdmmc::BlockDevice`** — the whole transport (epic #1158).
+///
+/// A zero-sized handle: the driver state is the one [`Semmc`](crate::semmc::Semmc) in
+/// [`crate::flpr_mux`], which also decides whether the FLPR is currently drawing the panel or
+/// clocking the card. Every method here is one `flpr_mux::with_storage` call — mode ensured, driver
+/// borrowed, transfer issued — so there is exactly one place that can get the ordering wrong.
+///
+/// Blocking, like the SPI transport before it: `BlockDevice` is a synchronous trait and everything
+/// above it (FAT, extents, the object store) is built on that. The transfers are ~30× shorter now.
+#[derive(Clone, Copy)]
+pub(crate) struct SemmcCard;
+
+/// **The alignment bounce** (epic #1158).
+///
+/// The sEMMC firmware's DMA requires 32-bit-aligned buffers, and `embedded_sdmmc::Block` cannot
+/// promise one: it is `#[repr(transparent)]` over `[u8; 512]`, and that transparency is
+/// load-bearing — `Block::slice_from_bytes` reinterprets a caller's plain byte buffer as `&[Block]`
+/// without copying, which is exactly what lets the fork's `VolumeManager::write` hand a whole
+/// cluster run to one CMD25. `#[repr(align(4))]` cannot coexist with `#[repr(transparent)]`, and
+/// adding it in our fork would make that reinterpretation unsound for every misaligned byte buffer
+/// in the tree. So the fork is left alone and the alignment is handled here.
+///
+/// A block is 512 B — itself a multiple of 4 — so the *whole span* is aligned iff its first byte is:
+/// one test, no per-block arithmetic. When it fails, the transfer is chunked through this buffer
+/// instead of degrading to one command per block: a misaligned run still moves in
+/// [`BOUNCE_BLOCKS`]-block CMD18/CMD25 batches. It should never fire in practice — the ride path's
+/// buffers are aligned — so [`WARNED_BOUNCE`] reports the first one, which is how a future
+/// regression that quietly cut read throughput would be noticed on glass rather than in a profile.
+const BOUNCE_BLOCKS: usize = 4;
+#[repr(C, align(4))]
+struct Bounce([u8; BOUNCE_BLOCKS * BLOCK_LEN]);
+static mut BOUNCE: Bounce = Bounce([0; BOUNCE_BLOCKS * BLOCK_LEN]);
+/// One-shot latch so a misaligned buffer is diagnosed once, not per block.
+static WARNED_BOUNCE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+const BLOCK_LEN: usize = Block::LEN;
+
+/// `Block` is `#[repr(transparent)]` over `[u8; 512]`, which is what makes the byte views below
+/// sound. Pinned here because the whole bounce/fast-path split is built on it.
+const _: () = assert!(core::mem::size_of::<Block>() == BLOCK_LEN);
+
+fn warn_bounce(addr: usize) {
+    if !WARNED_BOUNCE.swap(true, core::sync::atomic::Ordering::Relaxed) {
+        defmt::warn!("SD: misaligned block buffer at 0x{=usize:08x} — bouncing (throughput cost)", addr);
+    }
+}
+
+/// Log a failed transfer at the transport boundary, decoding an abort's `STATUS` word.
+///
+/// The FAT layer above swallows the error type into its own `Error::DeviceError`, so this is the
+/// last place the *reason* exists — and the reason is the difference between "the card is gone",
+/// "the clock is too high for this wiring" and "the firmware wedged", which is exactly the triage a
+/// bad card or a marginal harness needs from an RTT log.
+fn log_transfer_error(op: &'static str, lba: u32, blocks: usize, e: crate::semmc::SemmcError) {
+    match e {
+        crate::semmc::SemmcError::Aborted(status) => defmt::warn!(
+            "SD: {=str} of {=usize} block(s) @ {=u32} aborted — {=str} (STATUS 0x{=u32:08x})",
+            op,
+            blocks,
+            lba,
+            crate::semmc::SemmcError::abort_reason(status),
+            status
+        ),
+        other => {
+            defmt::warn!("SD: {=str} of {=usize} block(s) @ {=u32} failed — {}", op, blocks, lba, other)
+        }
+    }
+}
+
+impl BlockDevice for SemmcCard {
+    type Error = crate::semmc::SemmcError;
+
+    fn read(&self, blocks: &mut [Block], start_block_idx: BlockIdx) -> Result<(), Self::Error> {
+        if blocks.is_empty() {
+            return Ok(());
+        }
+        let (addr, n) = (blocks.as_ptr() as usize, blocks.len());
+        let r = crate::flpr_mux::with_storage(|sd| {
+            if addr.is_multiple_of(4) {
+                // SAFETY: `Block` is `#[repr(transparent)]` over `[u8; 512]` (asserted above), so a
+                // `&mut [Block]` is exactly this byte span, exclusively borrowed for the call.
+                let buf = unsafe { core::slice::from_raw_parts_mut(blocks.as_mut_ptr().cast::<u8>(), n * BLOCK_LEN) };
+                return sd.read_blocks(start_block_idx.0, buf);
+            }
+            warn_bounce(addr);
+            // SAFETY: sole borrow — this runs inside `with_storage`, which is non-re-entrant, and
+            // no interrupt handler touches the bounce.
+            let bounce = unsafe { &mut *core::ptr::addr_of_mut!(BOUNCE) };
+            for (i, chunk) in blocks.chunks_mut(BOUNCE_BLOCKS).enumerate() {
+                let len = chunk.len() * BLOCK_LEN;
+                sd.read_blocks(start_block_idx.0 + (i * BOUNCE_BLOCKS) as u32, &mut bounce.0[..len])?;
+                for (b, src) in chunk.iter_mut().zip(bounce.0[..len].chunks_exact(BLOCK_LEN)) {
+                    b.contents.copy_from_slice(src);
+                }
+            }
+            Ok(())
+        })?;
+        if let Err(e) = r {
+            log_transfer_error("read", start_block_idx.0, n, e);
+        }
+        r
+    }
+
+    fn write(&self, blocks: &[Block], start_block_idx: BlockIdx) -> Result<(), Self::Error> {
+        if blocks.is_empty() {
+            return Ok(());
+        }
+        let (addr, n) = (blocks.as_ptr() as usize, blocks.len());
+        let r = crate::flpr_mux::with_storage(|sd| {
+            if addr.is_multiple_of(4) {
+                // SAFETY: as in `read` — `Block` is `#[repr(transparent)]` over `[u8; 512]`, and the
+                // shared borrow covers the whole span for the call.
+                let buf = unsafe { core::slice::from_raw_parts(blocks.as_ptr().cast::<u8>(), n * BLOCK_LEN) };
+                return sd.write_blocks(start_block_idx.0, buf);
+            }
+            warn_bounce(addr);
+            // SAFETY: as in `read`.
+            let bounce = unsafe { &mut *core::ptr::addr_of_mut!(BOUNCE) };
+            for (i, chunk) in blocks.chunks(BOUNCE_BLOCKS).enumerate() {
+                let len = chunk.len() * BLOCK_LEN;
+                for (b, dst) in chunk.iter().zip(bounce.0[..len].chunks_exact_mut(BLOCK_LEN)) {
+                    dst.copy_from_slice(&b.contents);
+                }
+                sd.write_blocks(start_block_idx.0 + (i * BOUNCE_BLOCKS) as u32, &bounce.0[..len])?;
+            }
+            Ok(())
+        })?;
+        if let Err(e) = r {
+            log_transfer_error("write", start_block_idx.0, n, e);
+        }
+        r
+    }
+
+    fn num_blocks(&self) -> Result<BlockCount, Self::Error> {
+        crate::flpr_mux::with_storage(|sd| sd.num_blocks())?.map(BlockCount)
     }
 }
 
@@ -737,7 +859,7 @@ impl Storage {
     }
 
     /// Mount the first FAT volume and open the root / `routes` / `tracks` directories.
-    fn mount(card: &'static Sd, cs: Output<'static>) -> Option<Storage> {
+    fn mount(card: &'static Sd) -> Option<Storage> {
         // `new()` is pinned to the 4,4,1 defaults — the custom budget goes through `new_with_limits`
         // (5000 = the id offset `new()` itself uses).
         let vmgr: Vmgr = VolumeManager::new_with_limits(SharedBlockDevice(card), NullTime, 5000);
@@ -788,7 +910,6 @@ impl Storage {
             open_object: None,
             open_upload: None,
             map_name: String::new(),
-            _cs: cs,
         })
     }
 

@@ -394,7 +394,10 @@ entry point that mounts the whole app against the **simulated device** —
 `lib/usb/loopback.ts`, the real protocol over an in-memory pipe, paced to the SD
 card's measured **~0.5 MB/s write** ceiling so progress, throughput and the
 remaining-time estimate behave the way they do on hardware. (Reads are faster;
-uploads are write-bound — `sd_bench`'s `wr-*` shapes are the source of truth.) It lives outside `src/` because no build has it as
+uploads are write-bound. That ceiling is the **retired SPI transport's** — the
+sEMMC pivot of #1158 raised the card's raw write bandwidth to 8.2 MB/s, so the
+harness now paces pessimistically until it is re-measured end to end through the
+FAT layer.) It lives outside `src/` because no build has it as
 an input, which is what keeps the simulated device out of every shipped bundle.
 
 ```sh

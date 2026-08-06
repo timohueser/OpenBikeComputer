@@ -392,7 +392,7 @@ Two mechanisms work together to solve this within the memory and time budget.
 <figcaption>A feature header is 12 bytes, so skipping is pure offset arithmetic inside the OBCM adapter. Pass A saves an <b>opaque source token</b> in each winner's stub; pass B gives it back to the source, which seeks straight to the feature — re-decoding only survivors without exposing byte offsets to the renderer.</figcaption>
 </figure>
 
-**Stub-select.** The global-priority drop is easy to state and hard to do cheaply, because the device streams chunks off the SD card through a cache that holds **one** at a time. An earlier design made four passes over the visible chunks — one per priority level — filling the buffers level by level. That kept the guarantee, but it re-read every visible chunk *four times*; the one-slot cache absorbed none of it, so a wide view cost `4 × N` chunk reads off SPI SD and the frame crawled. The fix (issue #564) splits **selection** from **geometry**:
+**Stub-select.** The global-priority drop is easy to state and hard to do cheaply, because the device streams chunks off the SD card through a cache that holds **one** at a time. An earlier design made four passes over the visible chunks — one per priority level — filling the buffers level by level. That kept the guarantee, but it re-read every visible chunk *four times*; the one-slot cache absorbed none of it, so a wide view cost `4 × N` chunk reads off the card and the frame crawled. The fix (issue #564) splits **selection** from **geometry**:
 
 ```rust
 let candidates = self.collect_stubs(scene, lod, view, &vis_mask, stats); // pass A

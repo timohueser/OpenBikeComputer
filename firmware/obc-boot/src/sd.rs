@@ -6,11 +6,26 @@
 //! filesystem inside its 32 KB budget; the linker keeps the FAT code out because nothing here
 //! references it).
 //!
-//! Pins + frequencies are deliberate **duplicates** of the board crate's SD bring-up — the
-//! source of truth is `../obc-fw-nrf54l/src/sd.rs` (`SD_INIT_HZ`/`SD_FAST_HZ`, the `NoCs`
-//! held-low-CS workaround) and the SPIM/CS construction in `../obc-fw-nrf54l/src/main.rs`
-//! (SERIAL00: SCK P2_06 · MISO P2_09 · MOSI P2_08 · CS **P2_10** held low for the session).
-//! The crates don't share a pins module today; keep the copies in lockstep by hand.
+//! # ⛔ BROKEN ON THE CURRENT HARDWARE — SD-staged DFU does not work (epic #1158)
+//!
+//! The app's storage moved off SPI entirely: the card now runs in **native 4-bit SD mode on the
+//! FLPR**, through Nordic's sEMMC soft peripheral, on `P2.00–05`. `P2.06/.08/.09/.10` — the pins
+//! this file still drives as SCK/MISO/MOSI/CS — are the panel's rehomed source-data lines. So on
+//! the wiring the app ships against, this bring-up finds **no card**, and the install / rollback
+//! decisions that need one abandon and boot the old app. That is the safe direction (nothing is
+//! erased and nothing is half-flashed), but it *is* a lost capability, not a graceful degradation.
+//!
+//! **Why it was not ported in the same PR.** The soft-peripheral image alone is 13,636 B and the
+//! bootloader's whole carve is 32,768 B, of which it already uses 16,736 B — the sEMMC path does not
+//! fit, and making it fit is a boot-chain layout decision (grow the carve and move the app base, or
+//! stage updates somewhere other than the card), not a code change. Tracked on #1158.
+//!
+//! The SPI code below is kept deliberately, against the pre-release "delete the old path" rule,
+//! because deleting it would remove the only implementation of card-side DFU with nothing to replace
+//! it. It is dead on this hardware; it is not a fallback.
+//!
+//! Pins + frequencies were duplicates of the board crate's SD bring-up, which no longer has any:
+//! SERIAL00 SCK P2_06 · MISO P2_09 · MOSI P2_08 · CS **P2_10**, held low for the session.
 //!
 //! The one genuine difference from the app: there is no executor and no `embassy_time`, so the
 //! `DelayNs` the card driver wants is a cycle-counted busy-wait ([`BusyDelay`]).

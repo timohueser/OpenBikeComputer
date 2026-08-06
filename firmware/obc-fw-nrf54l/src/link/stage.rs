@@ -2,11 +2,15 @@
 //!
 //! Both data planes used to hand every arriving chunk straight to
 //! [`ObjectStore::upload_append`], so the card saw a write per chunk: 512 B on USB, 244 B on BLE.
-//! `VolumeManager::write` turns each of those into one single-block device write, which on SD over
-//! SPI is a CMD24, the card's whole internal program cycle and a CMD13 status query — measured at
-//! 2458 µs per 512 B on the shipping card (`sd_bench`, `wr-fat b1`). Handing the same card 32
-//! blocks at a time instead costs 517 µs per block, because our embedded-sdmmc fork batches a
-//! contiguous run into one ACMD23 + CMD25 (see the `[patch.crates-io]` note in `Cargo.toml`).
+//! `VolumeManager::write` turns each of those into one single-block device write — a CMD24, the
+//! card's **whole internal program cycle**, and a CMD13 status query. That cost is card-side, so it
+//! survived the transport pivot untouched: it was 2458 µs per 512 B over the retired SPI path
+//! (measured 2026-07-30) and it is the same program cycle over sEMMC, where a single block costs
+//! 430 µs on the wire and the program dominates by an order of magnitude. Handing the card 32
+//! blocks at a time instead amortises one program cycle over the whole run, because our
+//! embedded-sdmmc fork batches a contiguous run into one CMD25 (see the `[patch.crates-io]` note in
+//! `Cargo.toml`) — which is exactly what turns the sEMMC host's 8.2 MB/s of raw write bandwidth
+//! into upload throughput rather than one stall per block.
 //!
 //! So: pile chunks up in RAM and append a batch at a time. The fork does the rest.
 //!
