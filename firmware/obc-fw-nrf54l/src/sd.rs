@@ -3710,6 +3710,16 @@ impl Storage {
     ///    all, whose own magic never landed. The residue of a torn transfer whose token delete
     ///    landed and whose shard delete did not.
     ///
+    /// **The terrain shard needs no third pass**, and that is a decision rather than an omission
+    /// (#1044). Pass 1 reclaims it with the rest of the set — `delete_plan` names `MS{id}.OBD` —
+    /// which covers every way this device abandons an upload, because a raster is only ever
+    /// accepted while a set session is open and that session's token is on the card. What is left
+    /// is an `MS{id}.OBD` whose manifest *and* every shard have already been reclaimed, and
+    /// probing for that would mean claiming a bare `.OBD` — which is exactly what a rider's own
+    /// card-reader copy looks like mid-copy, and what the orphan rule below refuses to touch for
+    /// precisely that reason. It costs one file's bytes until the id is reused, and
+    /// [`set_upload_begin`](Self::set_upload_begin) clears the whole id before it writes.
+    ///
     /// What it will **not** touch is the case §5.4 leaves to a MAY: a *complete* orphan shard with
     /// no manifest. That is precisely the shape a rider copying a set over a card reader leaves
     /// mid-copy, and deleting it would destroy a map that was minutes from working, unrecoverably.
