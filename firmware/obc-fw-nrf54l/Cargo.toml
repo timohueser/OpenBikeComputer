@@ -111,6 +111,16 @@ required-features = ["ble"]
 name = "sd_bench"
 required-features = ["sd-bench"]
 
+# ⚠️ THROWAWAY (issue #1145 feasibility): microSD-in-native-4-bit-mode-over-sEMMC bring-up +
+# throughput bench. Wiring diagnostics → step-by-step card init → clock ladder → read/write
+# throughput. Includes Nordic's sEMMC blob from OUTSIDE the repo (~/.cache/obc/semmc_fw.bin —
+# LicenseRef-Nordic-5-Clause, never commit it; regeneration one-liner in the bin's module doc).
+# Lives on the feasibility branch only — DELETE this stanza + the bin before the #1145
+# implementation merges.
+#   cargo run --release --bin sd_semmc_bringup
+[[bin]]
+name = "sd_semmc_bringup"
+
 [dependencies]
 # embassy HAL for the nRF54L15 app core. `nrf54lm20-app-s` selects the secure-app die
 # (the only partition we use — no TF-M split, BLE deferred); `time-driver-grtc` backs
