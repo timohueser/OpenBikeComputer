@@ -204,9 +204,10 @@ Four more rules fall out of the same size:
 
 Past roughly Germany scale a map stops being a file. FAT32 caps one file at 4 GiB
 and the map format's own offsets are 32-bit, so a logical map becomes a **volume
-set**: a small manifest plus one to thirty-two ordinary map files ([more on the
-shape](../formats/#one-map-several-files)). Every interface still shows
-one map — that part is a rule, not a convention.
+set**: a small manifest plus up to thirty-two other files — ordinary map files,
+and at most one [terrain raster](../terrain/) carrying the whole map's elevation
+([more on the shape](../formats/#one-map-several-files)). Every interface still
+shows one map — that part is a rule, not a convention.
 
 Sending one is therefore several transfers instead of one, and the order matters
 in a way nothing else on this link does. The manifest is what says those files
@@ -228,6 +229,16 @@ addressed to the sender is not a guarantee. So the device enforces it:
   most: a device that cannot hold enough files open for a set that large says so
   at *shard zero*. Learning it at the manifest would mean learning it after the
   whole upload.
+- **The terrain raster is a piece too, and it is not a shard.** A map file's
+  announcement is "piece *k* of *n*", which is a sentence about the map files the
+  manifest lists first; the raster has no *k*, is not a map file, and lands under
+  a different name. So it travels as its own kind of object, after every map file
+  and before the manifest. That ordering is not tidiness: the manifest describes
+  every piece, raster included, so its length depends on whether the raster
+  arrived — and the device checks that length at the announce, against what this
+  upload actually delivered. Send the manifest for a set with elevation and skip
+  the elevation, and the two ends disagree by one 56-byte record, which is enough
+  to lose the whole upload at its final transfer.
 - **An interrupted set leaves nothing to explain.** The device writes the
   manifest's name as a four-zero-byte placeholder before the first shard and fills
   it in only at the very end, so a manifest whose first four bytes are *not* a
