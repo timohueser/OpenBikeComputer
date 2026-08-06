@@ -7,8 +7,8 @@
 //! of device-64 bytes into the LS021's parallel **source bus** wire words — the format the FLPR
 //! clocks out over `BSP`/`BCK` + the 6 data lines (`R0/G0/B0`, `R1/G1/B1`). The trickiest bits (the
 //! area-gradation split, the odd/even column interleave, the pre-shift to GPIO bit positions) live
-//! here, unit-tested against the M33 `PanelBus` reference, so the FLPR side stays a dumb
-//! `store → pulse BCK` loop.
+//! here, unit-tested against a longhand re-derivation of the analyzer-verified protocol, so the
+//! FLPR side stays a dumb `store → pulse BCK` loop.
 //!
 //! ## What a packed row is
 //!
@@ -45,15 +45,15 @@
 //! **The panel is DDR**: it latches the source bus on *both* `BCK` edges, so the FLPR drains these
 //! words **one per edge** — word `2k` before the rising edge, `2k+1` before the falling — clocking
 //! the 120 pairs out in ~60 `BCK` cycles. The pack is edge-agnostic (it lays the pairs out in
-//! order); the rising/falling split lives in the FLPR's `drive_subline` and the M33 `PanelBus`.
+//! order); the rising/falling split lives in the FLPR's `drive_subline`.
 //!
 //! ## Area-gradation split
 //!
 //! Each channel's device-64 level is 2 bits (`0..=3`): the **MSB plane** carries the high bit
 //! (`level >> 1`, the 2/3-area block), the **LSB plane** the low bit (`level & 1`, the 1/3-area
-//! block). This mirrors `PanelBus::plane_bits` / `fill_with` (the board's `src/ls021.rs`
-//! analyzer-verified reference); the test module re-derives the split and asserts byte-for-byte
-//! agreement.
+//! block). This is the split the retired M33 bit-bang driver proved on a logic analyzer (epic
+//! #139, driver deleted in #176 — the FLPR blob inherited the protocol); the test module
+//! re-derives it longhand and asserts byte-for-byte agreement.
 
 /// Panel width in pixels — 240 columns, clocked as 120 pixel pairs per sub-line.
 pub const WIDTH: usize = 240;
@@ -110,6 +110,11 @@ pub fn pack_row(row: &[u8], out: &mut [u32]) {
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+
+    use std::string::String;
+    use std::vec::Vec;
+
     use super::*;
 
     /// device-64 byte from a `(r, g, b)` RGB222 level triple (`0..=3` each) — the
@@ -148,8 +153,101 @@ mod tests {
         assert_eq!(BLUE_LINES, 0x011);
     }
 
-    /// Independent longhand re-derivation of the golden reference word (mirrors `PanelBus::plane_bits`
-    /// + the `R0..B1` pin map above), so the test fails if `pack_pair` drifts.
+    // ── Cross-language drift guard (added by the #1159 review) ────────────────────────────────
+    //
+    // Nothing else in CI pins the C blob. An edit to `flpr_scan.c` that keeps `DATA_MASK 0x751`
+    // but permutes `pack_word`'s shifts (say `re << 8` / `ro << 6`) scrambles the panel and passes
+    // 100 % of the host suite, because the host pack and the blob are two independent encodings of
+    // the same layout. So: read the C source at compile time and assert its `DATA_MASK` and its six
+    // `pack_word` shift amounts against the pin map above.
+    //
+    // The parse is tolerant of whitespace and parentheses but **strict on structure** — a missing
+    // define, a missing `pack_word`, a reworded return expression, or a moved file all make this
+    // test FAIL loudly rather than silently pass on nothing. It deliberately does not model which
+    // device-64 channel feeds which variable. The proper long-term home for the whole M33↔FLPR
+    // contract is build.rs's single-definition mechanism (issue #346, which already emits
+    // `flpr_contract.h`); folding the pin map in there is a follow-up.
+
+    /// The FLPR scan blob's C source, embedded at test-compile time. `obc-display` is `publish =
+    /// false`, so reaching across the crate boundary here costs nothing at package time, and this
+    /// is a `cfg(test)` item — no device build ever sees it.
+    const FLPR_SCAN_C: &str = include_str!("../../../obc-fw-nrf54l/src/flpr/flpr_scan.c");
+
+    /// `#define DATA_MASK 0x751u` → `0x751`. Panics (= test failure) if the define is gone or is
+    /// not a `0x`-prefixed literal.
+    fn c_data_mask(src: &str) -> u32 {
+        let line = src
+            .lines()
+            .map(str::trim)
+            .find(|l| l.starts_with("#define DATA_MASK"))
+            .expect("flpr_scan.c: no `#define DATA_MASK` line — did the blob move or get reworded?");
+        let tok: String =
+            line["#define DATA_MASK".len()..].trim_start().chars().take_while(char::is_ascii_alphanumeric).collect();
+        let hex = tok
+            .strip_prefix("0x")
+            .or_else(|| tok.strip_prefix("0X"))
+            .unwrap_or_else(|| panic!("flpr_scan.c: DATA_MASK `{tok}` is not a 0x-prefixed literal"))
+            .trim_end_matches(['u', 'U']);
+        u32::from_str_radix(hex, 16)
+            .unwrap_or_else(|e| panic!("flpr_scan.c: DATA_MASK `{tok}` is not a hex literal: {e}"))
+    }
+
+    /// The `name << shift` terms of `pack_word`'s return expression, in source order. A bare term
+    /// (`be`) is shift 0. Panics (= test failure) unless there are exactly six single-variable
+    /// terms.
+    fn c_pack_word_shifts(src: &str) -> Vec<(String, u32)> {
+        let fn_at = src
+            .find("uint32_t pack_word(")
+            .expect("flpr_scan.c: `pack_word` not found — did the blob move or get renamed?");
+        let ret_at =
+            fn_at + src[fn_at..].find("return ").expect("flpr_scan.c: `pack_word` has no `return` — reworded?");
+        let end =
+            ret_at + src[ret_at..].find(';').expect("flpr_scan.c: `pack_word`'s return statement is unterminated");
+        let expr = &src[ret_at + "return ".len()..end];
+
+        let terms: Vec<(String, u32)> = expr
+            .split('|')
+            .map(|term| {
+                let t: String = term.chars().filter(|c| !c.is_whitespace() && *c != '(' && *c != ')').collect();
+                match t.split_once("<<") {
+                    None => (t, 0),
+                    Some((name, shift)) => {
+                        let parsed = shift.trim_end_matches(['u', 'U']).parse::<u32>().unwrap_or_else(|e| {
+                            panic!("flpr_scan.c: pack_word term `{t}` has a non-numeric shift: {e}")
+                        });
+                        (name.into(), parsed)
+                    }
+                }
+            })
+            .collect();
+        assert_eq!(
+            terms.len(),
+            6,
+            "flpr_scan.c: pack_word's return should OR exactly 6 terms (one per data line), got {terms:?}"
+        );
+        terms
+    }
+
+    /// The blob and this module must encode the *same* pin map — mask **and** per-line positions.
+    /// This is the only thing standing between a permuted `pack_word` and a scrambled panel.
+    #[test]
+    fn flpr_blob_carries_the_same_pin_map() {
+        assert_eq!(c_data_mask(FLPR_SCAN_C), DATA_MASK, "flpr_scan.c's DATA_MASK disagrees with this module's pin map");
+
+        // `pack_word`'s locals: `*e` = the even pixel (the `*0` lines), `*o` = the odd (`*1`).
+        let expected = [("re", R0_PIN), ("ro", R1_PIN), ("ge", G0_PIN), ("go", G1_PIN), ("be", B0_PIN), ("bo", B1_PIN)];
+        let got = c_pack_word_shifts(FLPR_SCAN_C);
+        for (name, pin) in expected {
+            let (_, shift) = got
+                .iter()
+                .find(|(n, _)| n.as_str() == name)
+                .unwrap_or_else(|| panic!("flpr_scan.c: pack_word's return has no `{name}` term (parsed: {got:?})"));
+            assert_eq!(*shift, pin, "flpr_scan.c: `{name}` is shifted to bit {shift}, the pin map says {pin}");
+        }
+    }
+
+    /// Independent longhand re-derivation of the golden reference word (the analyzer-verified
+    /// plane split + the `R0..B1` pin map above), so the test fails if `pack_pair` drifts.
     fn golden_word(even: (u8, u8, u8), odd: (u8, u8, u8), msb: bool) -> u32 {
         // plane_bits: MSB plane = level>>1, LSB plane = level&1.
         let plane = |l: u8| if msb { (l >> 1) & 1 } else { l & 1 } as u32;
@@ -244,17 +342,25 @@ mod tests {
     /// This is the tightest pin on the rehomed map: the pattern test below only compares *pairs*,
     /// so a `G0`↔`G1` (or `B0`↔`B1`) swap can hide there whenever the two pixels of a pair happen
     /// to carry the same level; here it cannot.
+    ///
+    /// Each case also asserts the **literal** word (#1159 review): the derived `1 << *_PIN` form
+    /// alone would survive a *joint* swap that moves `pack_pair`'s shift and the pin constant
+    /// together — `DATA_MASK`/`GREEN_LINES` only pin the unordered set `{9, 10}`. The literals are
+    /// hand-computed from the pin numbers, so nothing in this file can be edited into agreement
+    /// with a wrong panel wiring.
     #[test]
     fn each_line_is_addressable_on_its_own() {
+        // (even pixel RGB, odd pixel RGB, the line's bit, that bit written out longhand)
         let cases = [
-            ((3, 0, 0), (0, 0, 0), 1u32 << R0_PIN),
-            ((0, 0, 0), (3, 0, 0), 1 << R1_PIN),
-            ((0, 3, 0), (0, 0, 0), 1 << G0_PIN),
-            ((0, 0, 0), (0, 3, 0), 1 << G1_PIN),
-            ((0, 0, 3), (0, 0, 0), 1 << B0_PIN),
-            ((0, 0, 0), (0, 0, 3), 1 << B1_PIN),
+            ((3, 0, 0), (0, 0, 0), 1u32 << R0_PIN, 0x040u32), // R0 = P2.06
+            ((0, 0, 0), (3, 0, 0), 1 << R1_PIN, 0x100),       // R1 = P2.08
+            ((0, 3, 0), (0, 0, 0), 1 << G0_PIN, 0x200),       // G0 = P2.09
+            ((0, 0, 0), (0, 3, 0), 1 << G1_PIN, 0x400),       // G1 = P2.10
+            ((0, 0, 3), (0, 0, 0), 1 << B0_PIN, 0x001),       // B0 = P2.00
+            ((0, 0, 0), (0, 0, 3), 1 << B1_PIN, 0x010),       // B1 = P2.04
         ];
-        for (even, odd, line) in cases {
+        for (even, odd, line, literal) in cases {
+            assert_eq!(line, literal, "pin map drifted: even {even:?} / odd {odd:?}");
             let mut row = empty_row();
             for (x, px) in row.iter_mut().enumerate() {
                 let (r, g, b) = if x % 2 == 0 { even } else { odd };
@@ -263,8 +369,8 @@ mod tests {
             let mut out = [0u32; ROW_WORDS];
             pack_row(&row, &mut out);
             // Level 3 sets the channel's bit in both area planes and nothing else anywhere.
-            assert_eq!(out[0], line, "MSB plane: even {even:?} / odd {odd:?} is not one-hot");
-            assert_eq!(out[BCK_PER_SUBLINE], line, "LSB plane: even {even:?} / odd {odd:?} is not one-hot");
+            assert_eq!(out[0], literal, "MSB plane: even {even:?} / odd {odd:?} is not one-hot");
+            assert_eq!(out[BCK_PER_SUBLINE], literal, "LSB plane: even {even:?} / odd {odd:?} is not one-hot");
         }
     }
 
