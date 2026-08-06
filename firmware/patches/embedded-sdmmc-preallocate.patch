@@ -1,0 +1,577 @@
+From c8b243a0d8f214ed02250b3030bba744291185f2 Mon Sep 17 00:00:00 2001
+From: Timo Hueser <timo.hueser@gmail.com>
+Date: Thu, 6 Aug 2026 23:09:08 +0200
+Subject: [PATCH] feat: pre-allocate a file's cluster chain in FAT-block-sized
+ runs
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+`VolumeManager::write` extends a file one cluster at a time, at the moment it
+runs off the end, and each extension costs four single-block device writes:
+`update_fat` twice (end-of-file on the new cluster, then the link from the old
+tail), each mirrored across both FATs. On an SD card a single-block write is a
+whole internal program cycle, so streaming a large file pays those cycles
+*interleaved with the data* — exactly between the multi-block bursts the CMD25
+batching exists to produce.
+
+`VolumeManager::preallocate(file, len)` lets a caller that already knows the
+final length hoist all of it out of the streaming path, and makes the allocation
+itself much cheaper than the sum of the per-cluster ones: `FatVolume::
+alloc_cluster_run` chains a run of consecutive free clusters inside **one** FAT
+block and writes that block back once. One FAT32 block holds 128 entries, so a
+4 MiB span of file costs the four writes that 32 KiB used to.
+
+Runs stop at FAT-block boundaries and at the first non-free entry, which is what
+keeps the one-block `BlockCache` sound: a run that stayed inside one block needs
+no read between `read_mut` and `write_back`, so nothing can evict the dirty
+block. The chain-tail link is written *before* the run's own block goes dirty,
+for the same reason.
+
+Pre-allocation deliberately does not change the file's length — only `write`
+does — and returns short rather than failing when the volume fills, so an
+optimistic caller can carry on and let the write path report `DiskFull`.
+
+tests/preallocate.rs pins the claim on the RAM-disk image: writing 256 KiB costs
+511 single-block writes in the write path without pre-allocation and 1 with it,
+with byte-identical read-back. Short writes into a reservation, double
+reservations and a second file allocated afterwards are covered too.
+---
+ src/fat/volume.rs    | 177 +++++++++++++++++++++++++++++++
+ src/volume_mgr.rs    |  77 ++++++++++++++
+ tests/preallocate.rs | 247 +++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 501 insertions(+)
+ create mode 100644 tests/preallocate.rs
+
+diff --git a/src/fat/volume.rs b/src/fat/volume.rs
+index ed39b6a..ae3b7ad 100644
+--- a/src/fat/volume.rs
++++ b/src/fat/volume.rs
+@@ -1097,6 +1097,183 @@ impl FatVolume {
+         Err(Error::NotEnoughSpace)
+     }
+ 
++    /// How many FAT entries one 512-byte block holds, and how wide one entry is.
++    fn fat_entry_shape(&self) -> (u32, u32) {
++        match &self.fat_specific_info {
++            FatSpecificInfo::Fat16(_) => (2, Block::LEN_U32 / 2),
++            FatSpecificInfo::Fat32(_) => (4, Block::LEN_U32 / 4),
++        }
++    }
++
++    /// Where `cluster`'s FAT entry lives: its block in FAT 1, the mirror in FAT 2 (if there is one),
++    /// and the byte offset inside the block.
++    fn fat_entry_site(&self, cluster: ClusterId) -> (BlockIdx, Option<BlockIdx>, usize) {
++        let (width, _) = self.fat_entry_shape();
++        let fat_offset = cluster.0 * width;
++        let primary = self.lba_start + self.fat_start.offset_bytes(fat_offset);
++        let duplicate = self
++            .second_fat_start
++            .map(|second| self.lba_start + second.offset_bytes(fat_offset));
++        (primary, duplicate, (fat_offset % Block::LEN_U32) as usize)
++    }
++
++    /// How many clusters starting at `first` are free **and** share `first`'s FAT block, capped at
++    /// `want`.
++    ///
++    /// The FAT-block bound is what makes the run allocator below sound with a one-block cache: a run
++    /// that stayed inside one block can have all its entries written with a single `read_mut` and a
++    /// single write-back, with no read in between to evict the dirty block.
++    ///
++    /// At least 1 — the caller has already established that `first` is free.
++    fn free_run_within_block<D>(
++        &self,
++        block_cache: &mut BlockCache<D>,
++        first: ClusterId,
++        end_cluster: ClusterId,
++        want: u32,
++    ) -> Result<u32, Error<D::Error>>
++    where
++        D: BlockDevice,
++    {
++        let (width, per_block) = self.fat_entry_shape();
++        let (block_idx, _, offset) = self.fat_entry_site(first);
++        let index_in_block = offset as u32 / width;
++        let ceiling = want
++            .min(per_block - index_in_block)
++            .min(end_cluster.0.saturating_sub(first.0));
++        if ceiling <= 1 {
++            return Ok(1);
++        }
++        let block = block_cache.read(block_idx).map_err(Error::DeviceError)?;
++        let mut run = 0;
++        while run < ceiling {
++            let at = offset + (run * width) as usize;
++            let free = match &self.fat_specific_info {
++                FatSpecificInfo::Fat16(_) => LittleEndian::read_u16(&block[at..=at + 1]) == 0,
++                FatSpecificInfo::Fat32(_) => {
++                    LittleEndian::read_u32(&block[at..=at + 3]) & 0x0FFF_FFFF == 0
++                }
++            };
++            if !free {
++                break;
++            }
++            run += 1;
++        }
++        Ok(run.max(1))
++    }
++
++    /// Chain `first ..= first + run - 1` together, the last entry marked end-of-file, with **one**
++    /// write-back (two device writes where the volume mirrors its FAT).
++    ///
++    /// Every entry is in one block by construction — see [`free_run_within_block`].
++    fn write_chain_run<D>(
++        &mut self,
++        block_cache: &mut BlockCache<D>,
++        first: ClusterId,
++        run: u32,
++    ) -> Result<(), Error<D::Error>>
++    where
++        D: BlockDevice,
++    {
++        let (width, _) = self.fat_entry_shape();
++        let (block_idx, duplicate, offset) = self.fat_entry_site(first);
++        let block = block_cache.read_mut(block_idx).map_err(Error::DeviceError)?;
++        for step in 0..run {
++            let at = offset + (step * width) as usize;
++            let last = step + 1 == run;
++            match &self.fat_specific_info {
++                FatSpecificInfo::Fat16(_) => {
++                    let entry = if last {
++                        0xFFFF
++                    } else {
++                        (first.0 + step + 1) as u16
++                    };
++                    LittleEndian::write_u16(&mut block[at..=at + 1], entry);
++                }
++                FatSpecificInfo::Fat32(_) => {
++                    let entry = if last {
++                        0x0FFF_FFFF
++                    } else {
++                        first.0 + step + 1
++                    };
++                    let existing = LittleEndian::read_u32(&block[at..=at + 3]);
++                    let new = (existing & 0xF000_0000) | (entry & 0x0FFF_FFFF);
++                    LittleEndian::write_u32(&mut block[at..=at + 3], new);
++                }
++            }
++        }
++        match duplicate {
++            Some(duplicate) => block_cache.write_back_with_duplicate(duplicate)?,
++            None => block_cache.write_back()?,
++        }
++        Ok(())
++    }
++
++    /// **Extend `prev_cluster`'s chain by up to `count` clusters, in runs rather than one at a
++    /// time.** Returns the chain's new last cluster and how many clusters were actually added.
++    ///
++    /// This exists for one reason: streaming a large file with
++    /// [`VolumeManager::write`](crate::VolumeManager::write) calls
++    /// [`alloc_cluster`](Self::alloc_cluster) once per cluster, and each of those costs **four**
++    /// single-block device writes — `update_fat` twice (end-of-file on the new cluster, then the
++    /// link from the old tail), each of which writes both copies of the FAT. On an SD card a
++    /// single-block write is a whole internal program cycle, so a 32 KiB cluster pays four of them
++    /// on top of the 32 KiB of data. Allocating ahead in runs writes each FAT block **once**: one
++    /// FAT32 block covers 128 entries, so a 4 MiB span of file costs the same four writes that
++    /// 32 KiB used to.
++    ///
++    /// Runs stop at FAT-block boundaries and at the first non-free entry, so the chain may still be
++    /// fragmented — this is an allocator, not a defragmenter. It returns short (`allocated < count`)
++    /// rather than failing when the volume runs out of space, so a caller pre-allocating optimis-
++    /// tically can carry on and let the ordinary write path report `DiskFull`.
++    pub(crate) fn alloc_cluster_run<D>(
++        &mut self,
++        block_cache: &mut BlockCache<D>,
++        prev_cluster: ClusterId,
++        count: u32,
++    ) -> Result<(ClusterId, u32), Error<D::Error>>
++    where
++        D: BlockDevice,
++    {
++        let end_cluster = ClusterId(self.cluster_count + RESERVED_ENTRIES);
++        let mut prev = prev_cluster;
++        let mut allocated = 0;
++        while allocated < count {
++            let start = match self.next_free_cluster {
++                Some(cluster) if cluster.0 < end_cluster.0 => cluster,
++                _ => ClusterId(RESERVED_ENTRIES),
++            };
++            // The cache is clean here — the previous iteration's `write_chain_run` was the last
++            // thing to touch it — so these scans are free to evict.
++            let first = match self.find_next_free_cluster(block_cache, start, end_cluster) {
++                Ok(cluster) => cluster,
++                Err(_) if start.0 > RESERVED_ENTRIES => {
++                    match self.find_next_free_cluster(
++                        block_cache,
++                        ClusterId(RESERVED_ENTRIES),
++                        end_cluster,
++                    ) {
++                        Ok(cluster) => cluster,
++                        Err(_) => break,
++                    }
++                }
++                Err(_) => break,
++            };
++            let run = self.free_run_within_block(block_cache, first, end_cluster, count - allocated)?;
++            // Link the existing tail at the new run **before** the run's own block goes dirty: the
++            // two are usually different FAT blocks, and the one-block cache cannot hold both.
++            self.update_fat(block_cache, prev, first)?;
++            self.write_chain_run(block_cache, first, run)?;
++            prev = ClusterId(first.0 + run - 1);
++            allocated += run;
++            self.next_free_cluster = Some(ClusterId(prev.0 + 1));
++            if let Some(free) = self.free_clusters_count.as_mut() {
++                *free = free.saturating_sub(run);
++            }
++        }
++        Ok((prev, allocated))
++    }
++
+     /// Tries to allocate a cluster
+     pub(crate) fn alloc_cluster<D>(
+         &mut self,
+diff --git a/src/volume_mgr.rs b/src/volume_mgr.rs
+index 85a88f5..9ff8f0b 100644
+--- a/src/volume_mgr.rs
++++ b/src/volume_mgr.rs
+@@ -777,6 +777,83 @@ where
+         Ok(read)
+     }
+ 
++    /// **Reserve the cluster chain for a file whose final length is already known.**
++    ///
++    /// Answers how many clusters were added (0 when the chain is already long enough).
++    ///
++    /// [`write`](Self::write) extends a file one cluster at a time, at the moment it runs off the
++    /// end — and each of those extensions costs four single-block device writes (`update_fat` twice,
++    /// each mirrored across both FATs). On an SD card a single-block write is a whole internal
++    /// program cycle, so streaming a 300 MB file pays ~38,000 of them *interleaved with the data*,
++    /// which is exactly where they hurt: they land between the multi-block bursts that
++    /// [`write`](Self::write) exists to produce.
++    ///
++    /// A caller that knows the length up front — a network or USB transfer that announced it — can
++    /// hoist all of that out of the streaming path with one call. The allocation itself is also much
++    /// cheaper than the sum of the per-cluster ones, because it fills whole FAT blocks before
++    /// writing them back: one FAT32 block chains 128 clusters, so 4 MiB of file costs the four
++    /// writes that 32 KiB used to.
++    ///
++    /// **This does not change the file's length.** Only [`write`](Self::write) does that, so a file
++    /// pre-allocated and then written short leaves a chain longer than its size — allocated space
++    /// that no data uses. Pre-allocate what you will actually write, or truncate afterwards.
++    ///
++    /// Returns short rather than failing if the volume runs out of room, so an optimistic caller can
++    /// carry on and let the ordinary write path report [`Error::DiskFull`].
++    pub fn preallocate(&self, file: RawFile, len: u32) -> Result<u32, Error<D::Error>> {
++        let mut data = self.data.try_borrow_mut().map_err(|_| Error::LockError)?;
++        let data = data.deref_mut();
++        let file_idx = data.get_file_by_id(file)?;
++        let volume_idx = data.get_volume_by_id(data.open_files[file_idx].raw_volume)?;
++        if data.open_files[file_idx].mode == Mode::ReadOnly {
++            return Err(Error::ReadOnly);
++        }
++
++        // A chain to extend has to exist first. Same first-cluster allocation `write` does, so a
++        // freshly created (zero-length) file is a valid target.
++        if data.open_files[file_idx].entry.cluster.0 < fat::RESERVED_ENTRIES {
++            data.open_files[file_idx].entry.cluster = match data.open_volumes[volume_idx].volume_type
++            {
++                VolumeType::Fat(ref mut fat) => fat.alloc_cluster(&mut data.block_cache, None, false)?,
++            };
++            data.open_files[file_idx].dirty = true;
++        }
++
++        let bytes_per_cluster = match &data.open_volumes[volume_idx].volume_type {
++            VolumeType::Fat(fat) => fat.bytes_per_cluster(),
++        };
++        let wanted = len / bytes_per_cluster + u32::from(len % bytes_per_cluster != 0);
++
++        // Walk to the end of whatever the file already has. Cheap for the case this exists for — a
++        // file that was just created and holds one cluster — and correct for any other.
++        let mut last = data.open_files[file_idx].entry.cluster;
++        let mut held: u32 = 1;
++        loop {
++            let next = match data.open_volumes[volume_idx].volume_type {
++                VolumeType::Fat(ref fat) => fat.next_cluster(&mut data.block_cache, last),
++            };
++            match next {
++                Ok(cluster) => {
++                    last = cluster;
++                    held = held.saturating_add(1);
++                }
++                Err(Error::EndOfFile) => break,
++                Err(e) => return Err(e),
++            }
++        }
++        if wanted <= held {
++            return Ok(0);
++        }
++
++        let (_, allocated) = match data.open_volumes[volume_idx].volume_type {
++            VolumeType::Fat(ref mut fat) => {
++                fat.alloc_cluster_run(&mut data.block_cache, last, wanted - held)?
++            }
++        };
++        debug!("Pre-allocated {} cluster(s) for {:?}", allocated, file);
++        Ok(allocated)
++    }
++
+     /// Write to a open file.
+     pub fn write(&self, file: RawFile, buffer: &[u8]) -> Result<(), Error<D::Error>> {
+         #[cfg(feature = "defmt-log")]
+diff --git a/tests/preallocate.rs b/tests/preallocate.rs
+new file mode 100644
+index 0000000..773e0f6
+--- /dev/null
++++ b/tests/preallocate.rs
+@@ -0,0 +1,247 @@
++//! Cluster pre-allocation tests.
++//!
++//! `VolumeManager::write` extends a file one cluster at a time, at the moment it runs off the end,
++//! and each of those extensions is four single-block device writes (`update_fat` twice, mirrored
++//! across both FATs). `VolumeManager::preallocate` hoists all of them out of the streaming path and
++//! fills whole FAT blocks before writing them back, so the FAT traffic drops by roughly the number
++//! of entries a block holds.
++//!
++//! These tests pin both halves: that the bookkeeping actually leaves the write path, and that a file
++//! written into a pre-allocated chain still reads back byte for byte.
++
++use embedded_sdmmc::{Block, BlockCount, BlockDevice, BlockIdx, Mode, VolumeIdx, VolumeManager};
++
++mod utils;
++
++/// A block device that records the shape of every write, so a test can assert on how much
++/// bookkeeping reached the card rather than only on the bytes coming back.
++struct Counting<D> {
++    inner: D,
++    writes: std::cell::RefCell<Vec<usize>>,
++}
++
++impl<D> Counting<D> {
++    fn new(inner: D) -> Self {
++        Counting {
++            inner,
++            writes: std::cell::RefCell::new(Vec::new()),
++        }
++    }
++
++    /// Write calls carrying exactly one block — the FAT and directory bookkeeping, plus any
++    /// read-modify-write of a partial end.
++    fn single_block_writes(&self) -> usize {
++        self.writes.borrow().iter().filter(|&&n| n == 1).count()
++    }
++
++    fn reset(&self) {
++        self.writes.borrow_mut().clear();
++    }
++}
++
++impl<D: BlockDevice> BlockDevice for Counting<D> {
++    type Error = D::Error;
++
++    fn read(&self, blocks: &mut [Block], start_block_idx: BlockIdx) -> Result<(), Self::Error> {
++        self.inner.read(blocks, start_block_idx)
++    }
++
++    fn write(&self, blocks: &[Block], start_block_idx: BlockIdx) -> Result<(), Self::Error> {
++        self.writes.borrow_mut().push(blocks.len());
++        self.inner.write(blocks, start_block_idx)
++    }
++
++    fn num_blocks(&self) -> Result<BlockCount, Self::Error> {
++        self.inner.num_blocks()
++    }
++}
++
++struct Shared<'a, D>(&'a D);
++
++impl<D: BlockDevice> BlockDevice for Shared<'_, D> {
++    type Error = D::Error;
++
++    fn read(&self, blocks: &mut [Block], start_block_idx: BlockIdx) -> Result<(), Self::Error> {
++        self.0.read(blocks, start_block_idx)
++    }
++
++    fn write(&self, blocks: &[Block], start_block_idx: BlockIdx) -> Result<(), Self::Error> {
++        self.0.write(blocks, start_block_idx)
++    }
++
++    fn num_blocks(&self) -> Result<BlockCount, Self::Error> {
++        self.0.num_blocks()
++    }
++}
++
++type Disk<'a> = Shared<'a, Counting<utils::RamDisk<Vec<u8>>>>;
++type Mgr<'a> = VolumeManager<Disk<'a>, utils::TestTimeSource, 4, 2, 1>;
++
++fn pattern(len: usize) -> Vec<u8> {
++    (0..len)
++        .map(|i| ((i / Block::LEN) as u8).wrapping_mul(31) ^ (i % 251) as u8)
++        .collect()
++}
++
++/// Write `data` to a fresh `NAME`, optionally pre-allocating first, and read it back through a new
++/// handle. Answers the read-back bytes and the single-block writes the *streaming* half cost.
++fn round_trip(dev: &Counting<utils::RamDisk<Vec<u8>>>, name: &str, data: &[u8], prealloc: bool) -> (Vec<u8>, usize) {
++    let volume_mgr: Mgr<'_> =
++        VolumeManager::new_with_limits(Shared(dev), utils::make_time_source(), 0xAA00_0000);
++    let volume = volume_mgr
++        .open_raw_volume(VolumeIdx(0))
++        .expect("open volume");
++    let root_dir = volume_mgr.open_root_dir(volume).expect("open root dir");
++
++    let f = volume_mgr
++        .open_file_in_dir(root_dir, name, Mode::ReadWriteCreateOrTruncate)
++        .expect("open file");
++    if prealloc {
++        let clusters = volume_mgr
++            .preallocate(f, data.len() as u32)
++            .expect("preallocate");
++        assert!(clusters > 0, "pre-allocation added no clusters");
++    }
++    // Only the streaming half is measured — pre-allocation's whole claim is about what the *write*
++    // path costs, not about moving the same work earlier.
++    dev.reset();
++    volume_mgr.write(f, data).expect("file write");
++    volume_mgr.close_file(f).expect("close file");
++    let streaming_singles = dev.single_block_writes();
++
++    let f = volume_mgr
++        .open_file_in_dir(root_dir, name, Mode::ReadOnly)
++        .expect("reopen file");
++    assert_eq!(
++        volume_mgr.file_length(f).expect("length"),
++        data.len() as u32,
++        "pre-allocation must not change the file's length"
++    );
++    let mut back = vec![0u8; data.len()];
++    let n = volume_mgr.read(f, &mut back).expect("file read");
++    assert_eq!(n, back.len(), "short read");
++    volume_mgr.close_file(f).expect("close file");
++
++    volume_mgr.close_dir(root_dir).expect("close dir");
++    volume_mgr.close_volume(volume).expect("close volume");
++    (back, streaming_singles)
++}
++
++/// The headline: pre-allocating takes the per-cluster FAT writes out of the streaming path, and the
++/// bytes still land exactly where they belong.
++#[test]
++fn preallocation_takes_fat_writes_out_of_the_write_path() {
++    const LEN: usize = 256 * 1024;
++    let data = pattern(LEN);
++
++    let plain_dev = Counting::new(utils::make_block_device(utils::DISK_SOURCE).unwrap());
++    let (plain_back, plain_singles) = round_trip(&plain_dev, "PLAIN.BIN", &data, false);
++    assert!(plain_back == data, "read-back differs without pre-allocation");
++
++    let pre_dev = Counting::new(utils::make_block_device(utils::DISK_SOURCE).unwrap());
++    let (pre_back, pre_singles) = round_trip(&pre_dev, "PRE.BIN", &data, true);
++    assert!(pre_back == data, "read-back differs with pre-allocation");
++
++    println!("SAVING: {LEN} B: single-block writes in the write path {plain_singles} -> {pre_singles}");
++    assert!(
++        pre_singles < plain_singles,
++        "pre-allocation left {pre_singles} single-block writes in the write path against \
++         {plain_singles} without it — the FAT bookkeeping never moved"
++    );
++}
++
++/// Pre-allocating a chain and then *not* filling it must not corrupt the volume: the file reads back
++/// at its written length, and the tail clusters are simply allocated and unused.
++#[test]
++fn a_short_write_into_a_preallocated_chain_is_still_correct() {
++    const RESERVED: usize = 128 * 1024;
++    const WRITTEN: usize = 3 * 1024;
++
++    let dev = Counting::new(utils::make_block_device(utils::DISK_SOURCE).unwrap());
++    let volume_mgr: Mgr<'_> =
++        VolumeManager::new_with_limits(Shared(&dev), utils::make_time_source(), 0xAA00_0000);
++    let volume = volume_mgr
++        .open_raw_volume(VolumeIdx(0))
++        .expect("open volume");
++    let root_dir = volume_mgr.open_root_dir(volume).expect("open root dir");
++
++    let data = pattern(WRITTEN);
++    let f = volume_mgr
++        .open_file_in_dir(root_dir, "SHORT.BIN", Mode::ReadWriteCreateOrTruncate)
++        .expect("open file");
++    volume_mgr
++        .preallocate(f, RESERVED as u32)
++        .expect("preallocate");
++    volume_mgr.write(f, &data).expect("file write");
++    volume_mgr.close_file(f).expect("close file");
++
++    let f = volume_mgr
++        .open_file_in_dir(root_dir, "SHORT.BIN", Mode::ReadOnly)
++        .expect("reopen file");
++    assert_eq!(
++        volume_mgr.file_length(f).expect("length"),
++        WRITTEN as u32,
++        "the file grew to its reservation"
++    );
++    let mut back = vec![0u8; WRITTEN];
++    assert_eq!(volume_mgr.read(f, &mut back).expect("read"), WRITTEN);
++    assert!(back == data, "read-back differs after a short write");
++    volume_mgr.close_file(f).expect("close file");
++
++    // A second file must still be allocatable — i.e. the reservation did not leave the free-cluster
++    // bookkeeping pointing into the middle of a chain it had just built.
++    let g = volume_mgr
++        .open_file_in_dir(root_dir, "AFTER.BIN", Mode::ReadWriteCreateOrTruncate)
++        .expect("open second file");
++    let more = pattern(64 * 1024);
++    volume_mgr.write(g, &more).expect("second write");
++    volume_mgr.close_file(g).expect("close second file");
++    let g = volume_mgr
++        .open_file_in_dir(root_dir, "AFTER.BIN", Mode::ReadOnly)
++        .expect("reopen second file");
++    let mut back = vec![0u8; more.len()];
++    assert_eq!(volume_mgr.read(g, &mut back).expect("read"), more.len());
++    assert!(back == more, "the second file was written over the first's reservation");
++    volume_mgr.close_file(g).expect("close second file");
++
++    volume_mgr.close_dir(root_dir).expect("close dir");
++    volume_mgr.close_volume(volume).expect("close volume");
++}
++
++/// Pre-allocating what the file already holds is a no-op, and pre-allocating twice does not
++/// double-book: the chain is measured, not assumed.
++#[test]
++fn preallocation_is_idempotent() {
++    const LEN: usize = 64 * 1024;
++
++    let dev = Counting::new(utils::make_block_device(utils::DISK_SOURCE).unwrap());
++    let volume_mgr: Mgr<'_> =
++        VolumeManager::new_with_limits(Shared(&dev), utils::make_time_source(), 0xAA00_0000);
++    let volume = volume_mgr
++        .open_raw_volume(VolumeIdx(0))
++        .expect("open volume");
++    let root_dir = volume_mgr.open_root_dir(volume).expect("open root dir");
++
++    let f = volume_mgr
++        .open_file_in_dir(root_dir, "TWICE.BIN", Mode::ReadWriteCreateOrTruncate)
++        .expect("open file");
++    let first = volume_mgr.preallocate(f, LEN as u32).expect("preallocate");
++    assert!(first > 0);
++    let second = volume_mgr.preallocate(f, LEN as u32).expect("preallocate again");
++    assert_eq!(second, 0, "the second reservation allocated {second} more clusters");
++
++    let data = pattern(LEN);
++    volume_mgr.write(f, &data).expect("file write");
++    volume_mgr.close_file(f).expect("close file");
++
++    let f = volume_mgr
++        .open_file_in_dir(root_dir, "TWICE.BIN", Mode::ReadOnly)
++        .expect("reopen file");
++    let mut back = vec![0u8; LEN];
++    assert_eq!(volume_mgr.read(f, &mut back).expect("read"), LEN);
++    assert!(back == data, "read-back differs after a double reservation");
++    volume_mgr.close_file(f).expect("close file");
++
++    volume_mgr.close_dir(root_dir).expect("close dir");
++    volume_mgr.close_volume(volume).expect("close volume");
++}
+-- 
+2.54.0
+

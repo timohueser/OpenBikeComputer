@@ -187,7 +187,14 @@ async fn run_upload(
     // lock's `.await`.
     let began = {
         let mut guard = shared.lock().await;
-        store.borrow_mut().upload_begin(&mut guard)
+        let opened = store.borrow_mut().upload_begin(&mut guard);
+        if opened {
+            // Same reservation the cable's twin makes, for the same reason: the announced length is
+            // known here, and every cluster booked now is four single-block FAT writes that would
+            // otherwise land in the middle of the transfer. Advisory — a refusal only costs pace.
+            store.borrow_mut().upload_reserve(&mut guard, rx.total_len());
+        }
+        opened
     };
     if !began {
         warn!("ble: [coc] cannot open upload temp — rejecting");

@@ -738,6 +738,10 @@ pub(crate) struct SemmcCard;
 /// buffers are aligned — so [`WARNED_BOUNCE`] reports the first one, which is how a future
 /// regression that quietly cut read throughput would be noticed on glass rather than in a profile.
 const BOUNCE_BLOCKS: usize = 4;
+/// The bounce buffer's resident size, for the compile-time allocation report (`sd_bounce`).
+/// Read only by `main.rs`'s `resource_report` module, so it is dead in a shipping build by design.
+#[cfg_attr(not(feature = "resource-report"), allow(dead_code))]
+pub const BOUNCE_BYTES: usize = BOUNCE_BLOCKS * BLOCK_LEN;
 #[repr(C, align(4))]
 struct Bounce([u8; BOUNCE_BLOCKS * BLOCK_LEN]);
 static mut BOUNCE: Bounce = Bounce([0; BOUNCE_BLOCKS * BLOCK_LEN]);
@@ -2889,6 +2893,50 @@ impl Storage {
     pub fn upload_append(&mut self, bytes: &[u8]) -> bool {
         let Some((file, _)) = self.open_upload else { return false };
         self.vmgr.write(file, bytes).is_ok()
+    }
+
+    /// **Reserve the whole of an announced upload's cluster chain before the first payload byte.**
+    ///
+    /// `false` = nothing was reserved; the caller carries on regardless, because a refusal costs
+    /// throughput and never correctness — `VolumeManager::write` still extends the chain a cluster
+    /// at a time, exactly as it did before this existed.
+    ///
+    /// Without it, every 32 KiB cluster of a streaming upload costs **four** single-block writes
+    /// (`update_fat` twice, each mirrored across both FATs), and each of those is a whole internal
+    /// program cycle landing *between* the multi-block bursts the stage exists to produce. With it,
+    /// a FAT block's worth of entries is chained and written back once — 128 clusters, i.e. 4 MiB of
+    /// map, for the same four writes.
+    ///
+    /// `total_len` is the announced object length (`TransferControl::total_len`), which for a map
+    /// includes the four magic bytes already on the card, so the reservation is exact and no
+    /// allocated-but-unused tail survives the commit.
+    ///
+    /// Compiled only under the `sdmmc-prealloc` feature: the API is a written, host-tested patch
+    /// against our `embedded-sdmmc` fork that has not been pushed to it yet. See
+    /// `firmware/patches/README.md`.
+    #[cfg(feature = "sdmmc-prealloc")]
+    pub fn upload_reserve(&mut self, total_len: u32) -> bool {
+        let Some((file, _)) = self.open_upload else { return false };
+        match self.vmgr.preallocate(file, total_len) {
+            Ok(clusters) => {
+                defmt::info!("SD: reserved {=u32} cluster(s) for a {=u32} B upload", clusters, total_len);
+                true
+            }
+            Err(e) => {
+                // Not a failure of the upload. The chain simply grows the old way from here, which
+                // is slower and just as correct — so this is a warn, not a rejection.
+                defmt::warn!("SD: upload pre-allocation refused ({}) — streaming unreserved", defmt::Debug2Format(&e));
+                false
+            }
+        }
+    }
+
+    /// The no-op this compiles to while the fork lacks `VolumeManager::preallocate`. Kept as a real
+    /// function rather than `#[cfg]`-ing the call sites so the data planes read the same either way
+    /// and the seam is one line, not four.
+    #[cfg(not(feature = "sdmmc-prealloc"))]
+    pub fn upload_reserve(&mut self, _total_len: u32) -> bool {
+        false
     }
 
     /// Flush + close the streaming handle, keeping the bytes on the card — the step
