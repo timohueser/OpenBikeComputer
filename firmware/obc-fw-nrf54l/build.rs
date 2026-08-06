@@ -78,6 +78,26 @@ mod contract {
     pub const SEMMC_VRI_OFFSET: usize = SEMMC_CODE_BYTES + SEMMC_EXEC_DATA_BYTES;
     /// Everything the image actually occupies: code + exec/data + VRI.
     pub const SEMMC_IMAGE_BYTES: usize = SEMMC_VRI_OFFSET + SEMMC_VRI_BYTES;
+    // ── The RRAM blob-stage carve (#1158, OBCU_Spec.md §3) ─────────────────────────────────────
+    //
+    // The armer copies the vendored sEMMC image (plus a 16 B CRC-framed header line) into this
+    // flash carve before every arm, so the 32 KB bootloader — which cannot afford to embed the
+    // image, and must not read it out of the app slot it is about to rewrite — can boot the card
+    // through it on the Install/Rollback paths. The length is `obc_dfu::blobstage::STAGE_LEN`,
+    // the one definition the armer, the bootloader and the spec share; the base is BOOT_STATE
+    // minus that length, i.e. the carve is taken off the *top* of the app slot, and nothing else
+    // (app base, BOOT_STATE, SETTINGS) moves. `obc-boot/memory.x` mirrors these by hand — the
+    // existing keep-the-two-maps-in-agreement convention.
+
+    /// The DFU boot-state handoff page (#617) — named here because the stage carve sits against it.
+    pub const BOOT_STATE_BASE: usize = 0x001F_B000;
+    /// The blob-stage carve's length — the shared `obc-dfu` constant.
+    pub const SEMMC_STAGE_LEN: usize = obc_dfu::blobstage::STAGE_LEN;
+    /// The blob-stage carve's base: directly below the BOOT_STATE page.
+    pub const SEMMC_STAGE_BASE: usize = BOOT_STATE_BASE - SEMMC_STAGE_LEN;
+    /// The app slot's base — linked at 0x8000, above the 32 KB bootloader (#617).
+    pub const APP_SLOT_BASE: usize = 0x0000_8000;
+
     /// The reserved carve, [`SEMMC_IMAGE_BYTES`] rounded **up to 4 KiB**.
     ///
     /// Why round: the bench placed the image in a `#[repr(C, align(4096))]` static and every
@@ -116,16 +136,18 @@ mod contract {
 /// [`contract::SRAM_TOP`]). The M33 reaches both coprocessor regions only by hardcoded address
 /// (`memcpy` + the handshake word / the VRI), never via the linker, so shrinking `RAM` is all
 /// that's needed here. It *also*
-/// carves the RRAM tail (epic #615 S2, #617): the app is linked at **0x8000** — the 32 KB below
-/// belong to the `obc-boot` bootloader (`firmware/obc-boot`, its own static `memory.x` — keep the
-/// two maps in agreement) — and the top two 4 KB pages are the named `BOOT_STATE` (the obc-dfu
-/// handoff page, #617) and `SETTINGS` (the persistent settings store, #193) regions:
+/// carves the RRAM tail (epic #615 S2, #617; #1158 for the stage carve): the app is linked at
+/// **0x8000** — the 32 KB below belong to the `obc-boot` bootloader (`firmware/obc-boot`, its own
+/// static `memory.x` — keep the two maps in agreement) — and the top of RRAM holds, in order, the
+/// `SEMMC_STAGE` blob carve (the armer→bootloader handoff of the sEMMC image, #1158), the named
+/// `BOOT_STATE` page (the obc-dfu handoff page, #617) and the `SETTINGS` page (#193):
 ///
 /// ```text
-///   0x0000_0000  obc-boot          32 KB
-///   0x0000_8000  app slot        1996 KB   (FLASH below)
-///   0x001F_B000  BOOT_STATE page    4 KB
-///   0x001F_C000  SETTINGS page      4 KB   (top of the LM20's 2036 KB RRAM)
+///   0x0000_0000  obc-boot           32 KB
+///   0x0000_8000  app slot         1976 KB   (FLASH below)
+///   0x001F_6000  SEMMC_STAGE        20 KB   (staged sEMMC blob — OBCU_Spec.md §3)
+///   0x001F_B000  BOOT_STATE page     4 KB
+///   0x001F_C000  SETTINGS page       4 KB   (top of the LM20's 2036 KB RRAM)
 /// ```
 fn flpr_memory_x() -> String {
     use contract::*;
@@ -133,10 +155,11 @@ fn flpr_memory_x() -> String {
         "\
 MEMORY
 {{
-    FLASH      : ORIGIN = 0x00008000, LENGTH = 0x1F3000 /* app slot (1996K) above the 32K obc-boot (#617) */
-    BOOT_STATE : ORIGIN = 0x001FB000, LENGTH = 4K    /* DFU boot-state handoff page (#617, OBCU_Spec.md §2) */
-    SETTINGS   : ORIGIN = 0x001FC000, LENGTH = 4K    /* persistent settings page (#193) — top of RRAM */
-    RAM        : ORIGIN = {SRAM_BASE:#010X}, LENGTH = {ram_kb}K   /* M33 .data/.bss/stack */
+    FLASH       : ORIGIN = {APP_SLOT_BASE:#010X}, LENGTH = {app_len:#X} /* app slot ({app_kb}K) above the 32K obc-boot (#617) */
+    SEMMC_STAGE : ORIGIN = {SEMMC_STAGE_BASE:#010X}, LENGTH = {stage_kb}K   /* staged sEMMC blob — armer→boot handoff (#1158, OBCU_Spec.md §3) */
+    BOOT_STATE  : ORIGIN = {BOOT_STATE_BASE:#010X}, LENGTH = 4K    /* DFU boot-state handoff page (#617, OBCU_Spec.md §2) */
+    SETTINGS    : ORIGIN = 0x001FC000, LENGTH = 4K    /* persistent settings page (#193) — top of RRAM */
+    RAM         : ORIGIN = {SRAM_BASE:#010X}, LENGTH = {ram_kb}K   /* M33 .data/.bss/stack */
     /* Reserved for the FLPR (not linked by the M33; see the generated flpr.ld):
          SEMMC    {SEMMC_RAM_BASE:#010X} .. {FLPR_RAM_BASE:#010X}  ({semmc_kb}K)  sEMMC soft-peripheral image (INITPC = {SEMMC_RAM_BASE:#010X}, VRI at +{SEMMC_VRI_OFFSET})
          FLPR_RAM {FLPR_RAM_BASE:#010X} .. {CONTROL_ADDR:#010X}  ({flpr_kb}K)   FLPR display image + stack (INITPC = {FLPR_RAM_BASE:#010X})
@@ -146,10 +169,16 @@ MEMORY
 PROVIDE(__settings_base = ORIGIN(SETTINGS));
 /* Base of the carved boot-state page (#617) — the armer's write target (S4). */
 PROVIDE(__boot_state_base = ORIGIN(BOOT_STATE));
+/* Base of the blob-stage carve (#1158) — where the armer copies the sEMMC image for the
+   bootloader's Install/Rollback card bring-up (OBCU_Spec.md §3). */
+PROVIDE(__semmc_stage_base = ORIGIN(SEMMC_STAGE));
 /* Base of the app slot (#619) — where the armer's rollback snapshot reads the running image
    from (memory-mapped; RRAM is XIP-readable). The linker map stays the only address authority. */
 PROVIDE(__app_slot_base = ORIGIN(FLASH));
 ",
+        app_len = SEMMC_STAGE_BASE - APP_SLOT_BASE,
+        app_kb = (SEMMC_STAGE_BASE - APP_SLOT_BASE) / 1024,
+        stage_kb = SEMMC_STAGE_LEN / 1024,
         ram_kb = (SEMMC_RAM_BASE - SRAM_BASE) / 1024,
         semmc_kb = SEMMC_CARVE_BYTES / 1024,
         flpr_kb = (CONTROL_ADDR - FLPR_RAM_BASE) / 1024,
@@ -273,6 +302,19 @@ fn emit_semmc_contract(manifest: &Path, out: &Path) {
     let bytes =
         fs::read(&blob).unwrap_or_else(|e| panic!("cannot read the vendored sEMMC image {}: {e}", blob.display()));
     assert_semmc_blob_metadata(&bytes);
+    // The armer must be able to stage this exact image for the bootloader (#1158): header line +
+    // blob must fit the RRAM stage carve. The shared runtime validator agreeing is the same check
+    // the arm path will make on the device — a blob update that outgrows the carve fails here.
+    assert!(
+        bytes.len() + obc_dfu::blobstage::STAGE_HEADER_LEN <= SEMMC_STAGE_LEN,
+        "sEMMC image ({} B) + stage header does not fit the {SEMMC_STAGE_LEN} B SEMMC_STAGE carve",
+        bytes.len()
+    );
+    assert!(
+        obc_dfu::blobstage::sp_geometry(&bytes, SEMMC_CARVE_BYTES).is_some(),
+        "the shared runtime validator (obc_dfu::blobstage::sp_geometry) rejects the vendored image \
+         the build-time asserts accepted — keep the two in agreement"
+    );
 
     let rs = format!(
         "\
