@@ -10,7 +10,7 @@
  * both row buffers, and the M33's whole-frame busy-poll packing loop are gone. The M33's present
  * becomes "publish spans, ring the doorbell, await the EGU20 ack".
  *
- * **The pack is a line-for-line port of `obc-platform/src/ls021_wire.rs`** (`pack_pair` /
+ * **The pack is a line-for-line port of `obc-display/src/ls021/wire.rs`** (`pack_pair` /
  * `pack_row`) — the host-tested normative reference; its test module (golden-reference words,
  * odd/even interleave, area-gradation split) is the spec for `pack_word` below. Wire behavior is
  * byte-identical to the M33-packed path.
@@ -70,12 +70,21 @@
 #define GPIO1_OUTSET (*(volatile uint32_t *)0x500D8204u)
 #define GPIO1_OUTCLR (*(volatile uint32_t *)0x500D8208u)
 
-/* Source-bus pin masks on P2. Bit position = P2 pin index (the harness map in ls021-bringup.md):
- * R0=P2.00 G0=P2.02 B0=P2.04 are the **even** pixel, R1=P2.01 G1=P2.03 B1=P2.05 the **odd** pixel.
+/* Source-bus pin masks on P2. Bit position = P2 pin index.
+ *
+ * The six data lines are **sparse** on P2 since the sEMMC storage pivot (issue #1158): the fixed
+ * card pads own P2.00–05, so the display data sits on the four pins the retired SD-SPI path freed
+ * (P2.06/.08/.09/.10) plus two pads time-shared with the card — B0=P2.00 (sEMMC D3) and B1=P2.04
+ * (sEMMC D1). Their CTRLSEL flips per mode: GPIO while the panel scans (this blob drives them via
+ * OUTSET/OUTCLR), VPR while the card transfers; display and storage never run simultaneously.
+ * `*0` lines carry the **even** pixel, `*1` lines the **odd** pixel, exactly as before:
+ *   R0=P2.06  R1=P2.08  G0=P2.09  G1=P2.10  B0=P2.00  B1=P2.04
  * `pack_word` below packs a pixel pair's 6 data bits already shifted to these positions
- * (DATA_MASK), so presenting a column is `OUTCLR the zeros, OUTSET the ones`. */
-#define DATA_MASK 0x3Fu        /* P2.00..05 = R0,R1,G0,G1,B0,B1 (the 6 source data lines) */
-#define BCK_MASK  (1u << 7)    /* P2.07 = BCK (source/shift clock; P2.06 is the SD's SPIM00 SCK) */
+ * (DATA_MASK), so presenting a column is `OUTCLR the zeros, OUTSET the ones`. The normative,
+ * host-tested pack (`obc-display/src/ls021/wire.rs`) carries the same positions and its golden
+ * tests pin them — the two sides move together. */
+#define DATA_MASK 0x751u       /* P2.00,.04,.06,.08,.09,.10 = B0,B1,R0,R1,G0,G1 (the 6 data lines) */
+#define BCK_MASK  (1u << 7)    /* P2.07 = BCK (source/shift clock) — unchanged by the rehome */
 
 /* Gate + frame pin masks on P1 (bit position = P1 pin index). All µs-scale, so P1 is fine — P2 is
  * reserved for the fast bus.
@@ -184,10 +193,10 @@ static void busy(uint32_t iters)
 /* Pack one source-bus wire word straight from the framebuffer row — the C port of
  * `obc_display::ls021::wire::pack_pair` (the normative, host-tested reference; its tests are the
  * spec). Word `k` of a sub-line is the pixel pair `(row[2k], row[2k+1])`: the even-x pixel on the
- * `*0` lines (bits 0/2/4), the odd-x pixel on the `*1` lines (bits 1/3/5), pre-shifted to the P2
- * GPIO positions (DATA_MASK). `shift` selects the area-gradation bit of each 2-bit device-64
- * channel (`0b00_RR_GG_BB`): 1 = the MSB plane (level>>1, the 2/3-area block), 0 = the LSB plane
- * (level&1, the 1/3-area block).
+ * `*0` lines (R0/G0/B0 = bits 6/9/0), the odd-x pixel on the `*1` lines (R1/G1/B1 = bits 8/10/4),
+ * pre-shifted to the P2 GPIO positions (DATA_MASK). `shift` selects the area-gradation bit of
+ * each 2-bit device-64 channel (`0b00_RR_GG_BB`): 1 = the MSB plane (level>>1, the 2/3-area
+ * block), 0 = the LSB plane (level&1, the 1/3-area block).
  *
  * #348 lever 3: the loads are **not volatile** — the fb is stable for the whole scan by contract
  * (the M33 awaits the ack before touching it), so gcc may schedule/hoist them freely — and the
@@ -201,12 +210,14 @@ static inline uint32_t pack_word(const uint8_t *row, uint32_t k, uint32_t shift)
     uint32_t re = (even >> (4u + shift)) & 1u, ro = (odd >> (4u + shift)) & 1u;
     uint32_t ge = (even >> (2u + shift)) & 1u, go = (odd >> (2u + shift)) & 1u;
     uint32_t be = (even >> shift) & 1u, bo = (odd >> shift) & 1u;
-    return re | (ro << 1) | (ge << 2) | (go << 3) | (be << 4) | (bo << 5);
+    /* Shifted straight to the P2 positions of the rehomed bus (see DATA_MASK above):
+     * R0<<6  R1<<8  G0<<9  G1<<10  B0<<0  B1<<4. */
+    return (re << 6) | (ro << 8) | (ge << 9) | (go << 10) | be | (bo << 4);
 }
 
 /* Shift one source sub-line (one area plane of one pixel row) straight from the framebuffer:
- * pulse BSP, then clock the BCK_PER_SUBLINE wire words out over P2.00..05, packing each word from
- * `row` on the fly (`pack_word`).
+ * pulse BSP, then clock the BCK_PER_SUBLINE wire words out over the six DATA_MASK data lines,
+ * packing each word from `row` on the fly (`pack_word`).
  *
  * **DDR drive (F5, verified on glass)** — the panel latches the source bus on **BOTH BCK edges**:
  * word `2k` set up before the **rising** edge, word `2k+1` before the **falling** edge, one
