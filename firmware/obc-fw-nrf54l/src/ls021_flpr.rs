@@ -228,8 +228,22 @@ static FRAME_ACK: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 #[interrupt]
 unsafe fn EGU20() {
     EGU20_EVENTS_TRIGGERED0.write_volatile(0);
+    // The FLPR stamps `flpr_seq` (fenced) *before* poking this doorbell, so the sequence this ack
+    // belongs to is readable right here. Publishing it is what lets [`scan_in_flight`] stay honest
+    // across the gap between that stamp and this poke — see its two-gate note.
+    ACKED_SEQ.store(addr_of!((*CONTROL).flpr_seq).read_volatile(), Ordering::Release);
     FRAME_ACK.signal(());
 }
+
+/// **The sequence the EGU20 ISR has actually observed an ack for** — the second gate of
+/// [`scan_in_flight`].
+///
+/// `flpr_seq` alone is not enough to call a frame finished. The FLPR stamps it and only *then* pokes
+/// EGU20, so between those two stores the frame looks done to the M33 while the doorbell is still in
+/// flight. Parking the hart in that window ([`crate::semmc::park_hart`] resets the core) destroys the
+/// poke, and the push awaiting [`FRAME_ACK`] then waits out the whole [`FRAME_DEADLINE`] for an ack
+/// that can no longer come. Tracking what the ISR *saw* closes the window.
+static ACKED_SEQ: AtomicU32 = AtomicU32::new(0);
 
 /// **The sequence of the scan currently on the wire, or 0 when the panel is idle** (epic #1158).
 ///
@@ -251,9 +265,16 @@ static SCAN_SEQ: AtomicU32 = AtomicU32::new(0);
 /// exists for.
 pub fn scan_in_flight() -> bool {
     let s = SCAN_SEQ.load(Ordering::Relaxed);
+    if s == 0 {
+        return false; // no push outstanding — both run paths clear this, success or timeout
+    }
     // SAFETY: a volatile read of one `u32` in the SHARED handshake page, which no Rust object
     // aliases and the FLPR writes concurrently.
-    s != 0 && unsafe { addr_of!((*CONTROL).flpr_seq).read_volatile() } != s
+    let echoed = unsafe { addr_of!((*CONTROL).flpr_seq).read_volatile() };
+    // **Two gates, not one.** `flpr_seq` goes idle one store early — the FLPR stamps it, then pokes
+    // EGU20 — and parking the hart in that gap eats the doorbell (see [`ACKED_SEQ`]). The frame is
+    // only over once the ISR has observed *this* sequence's ack.
+    echoed != s || ACKED_SEQ.load(Ordering::Acquire) != s
 }
 
 /// Spin until [`scan_in_flight`] clears — the synchronous half of the mux's *never park mid-scan*
@@ -333,8 +354,10 @@ fn arm_and_start() {
     }
     // A relaunch (recovery or a storage→display mode switch) hands the core a control block whose
     // `flpr_seq` has just been zeroed; the in-flight marker must go with it, or `scan_in_flight`
-    // would compare a live sequence against a counter that will never reach it again.
+    // would compare a live sequence against a counter that will never reach it again. `ACKED_SEQ`
+    // is the same story one gate along — a stale ack sequence would outlive the core that set it.
     SCAN_SEQ.store(0, Ordering::Relaxed);
+    ACKED_SEQ.store(0, Ordering::Relaxed);
     start_flpr();
 }
 
