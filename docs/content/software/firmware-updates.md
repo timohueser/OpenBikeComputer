@@ -623,11 +623,11 @@ is "flash `obc-boot` once, then iterate on the app exactly as before".
   <text class="d-sub" x="652" y="178" text-anchor="middle">ROLLBACK</text>
   <text class="d-sub" x="652" y="192" text-anchor="middle">.BIN</text>
 </svg>
-<figcaption>The bootloader lives in its own 32 KB slot below the app and is flashed once; the app never moves it. <code>BOOT_STATE</code> is the single 4 KB handoff page — the armer writes an <code>Armed</code> record there and the bootloader reads it, both through the shared codec, and any unclean read is <code>Idle</code>. The staged <code>UPDATE.BIN</code> and the <code>ROLLBACK.BIN</code> snapshot live on the card, not in RRAM: the app resolves them to raw SD block runs so the FAT-free bootloader can read them with plain SPI block reads.</figcaption>
+<figcaption>The bootloader lives in its own 32 KB slot below the app and is flashed once; the app never moves it. <code>BOOT_STATE</code> is the single 4 KB handoff page — the armer writes an <code>Armed</code> record there and the bootloader reads it, both through the shared codec, and any unclean read is <code>Idle</code>. The staged <code>UPDATE.BIN</code> and the <code>ROLLBACK.BIN</code> snapshot live on the card, not in RRAM: the app resolves them to raw SD block runs so the FAT-free bootloader can read them with plain block reads, no filesystem.</figcaption>
 </figure>
 
 The bootloader is deliberately tiny and dumb — no FAT, no BLE, no display driver,
-no async executor, just blocking GPIO + SPI + RRAMC. All the logic that could be
+no async executor, just blocking GPIO + a block-read transport + RRAMC. All the logic that could be
 *wrong* (the decode, the boot decision, the install sequencing) lives upstream in
 `obc-dfu` and is host-tested with mock IO; the bootloader is a thin driver that
 maps the engine's outcome onto an LED code. That split is what lets the safety

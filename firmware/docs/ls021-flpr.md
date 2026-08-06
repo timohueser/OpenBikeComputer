@@ -192,39 +192,51 @@ COM, FLPR source), so the epic's rule is **absolute**:
   **P1.10** (M33 heartbeat). GPIO P2 secure base `0x5005_0400` (`OUT 0x00`, `OUTSET 0x04`,
   `OUTCLR 0x08`, `DIR 0x10`, `DIRSET 0x14`); LED0 mask = `1<<9`.
 - **F2 source-bus pins** (the [bring-up harness map](ls021-bringup.md#pinout-21-pin-fpc--dk-pin-map)).
-  The **timing-critical bus is single-port P2** — `BCK` and the 6 data lines sit on `P2.00..06`, so
+  The **timing-critical bus is single-port P2** — `BCK` and the 6 data lines all sit on P2, so
   the FLPR's hot 124× loop is one `OUTCLR`/`OUTSET` to present data + one to pulse `BCK`, all on the
   fast trace domain. `BSP` is the **one exception**: pulsed once per sub-line (outside the hot loop),
   it lives on `P1.07`, so F2 is also the first proof the FLPR can drive a **non-P2 (P1)** GPIO — the
   thing F3's gate scan fully depends on. GPIO P1 secure base `0x500D_8200` (same offsets as P2).
 
-  | line | DK pin | port.bit | mask | role |
+  | line | pin | port.bit | mask | role |
   |---|---|---|---|---|
-  | `R0` `G0` `B0` (odd) | P2.00/02/04 | bit 0/2/4 | — | source data, odd pixel |
-  | `R1` `G1` `B1` (even) | P2.01/03/05 | bit 1/3/5 | — | source data, even pixel |
-  | `BCK` | P2.06 | bit 6 | `1<<6` | source/shift clock (FLPR's own pulse) |
+  | `R0` | P2.06 | bit 6 | `1<<6` | source data, odd pixel — red |
+  | `R1` | P2.08 | bit 8 | `1<<8` | source data, even pixel — red |
+  | `G0` | P2.09 | bit 9 | `1<<9` | source data, odd pixel — green |
+  | `G1` | P2.10 | bit 10 | `1<<10` | source data, even pixel — green |
+  | `B0` | P2.00 | bit 0 | `1<<0` | source data, odd pixel — blue **(shared: sEMMC `D3`)** |
+  | `B1` | P2.04 | bit 4 | `1<<4` | source data, even pixel — blue **(shared: sEMMC `D1`)** |
+  | `BCK` | P2.07 | bit 7 | `1<<7` | source/shift clock (FLPR's own pulse) |
   | `BSP` | **P1.14** | bit 14 | `1<<14` | sub-line start pulse (the lone P1 source line) |
 
-  The 6 data bits, pre-shifted to their P2 positions, are exactly `DATA_MASK = 0x3F` — the
-  write-buffer word ([format below](#write-buffer-format-v0)). `COM` (`P2.07/08/10`, M33-driven) and
-  LED0 (`P2.09`) fill the rest of P2; the FLPR's masks never touch them, so the atomic-set/clear rule
-  keeps the two cores off each other's pins.
+  The 6 data bits, pre-shifted to their P2 positions, are exactly `DATA_MASK = 0x751` — the
+  write-buffer word ([format below](#write-buffer-format-v0)). The rest of P2 is the **microSD card**
+  (`P2.01` `CLK`, `P2.02` `D0`, `P2.03` `D2`, `P2.05` `CMD`, plus the two shared pads above): since
+  the storage pivot of **#1158** the card runs in native 4-bit SD mode on the *same* FLPR, so P2 is
+  fully allocated and `COM` lives on P1.22–24. The FLPR's masks still never touch a pin it does not
+  own, so the atomic-set/clear rule keeps the two cores off each other's pins.
+
+  > **The two shared pads are a `CTRLSEL` flip, not a race.** Display and storage never run at the
+  > same instant — [`flpr_mux`](../obc-fw-nrf54l/src/flpr_mux.rs) time-multiplexes the one
+  > coprocessor — so `P2.00`/`P2.04` are `CTRLSEL = GPIO` (display blob drives them via
+  > `OUTSET`/`OUTCLR`) or `CTRLSEL = VPR` (the sEMMC soft peripheral drives them as `D3`/`D1`),
+  > never both. See [the pin map](../obc-fw-nrf54l/README.md) for the full allocation.
 
   > **`BSP` was P1.07 during bring-up.** It (and the four F3 gate lines) moved to free P1 pins for the
   > app integration (#165) — P1.06/07/11/12 are the SD-SPI bus the app needs and P1.04 the VCOM. See
   > [#165 — the app on glass](#165--the-real-app-on-the-ls021) for the full relocated map.
 
-> **Product pin-planning (forward note, not an F2 constraint).** P2 has only **11 pins
-> (`P2.00..10`)** — that is the whole of the FLPR's fast-toggle domain, and on the product PCB it is
-> the **scarce, contended resource**. The two things that *must* toggle fast both want it: the
-> display **source bus** (6 data + `BCK` = 7) and the SD-card **high-speed SPI** (4) — together
-> exactly 11. That fits **only if everything slow is pushed to P0/P1**: `COM` (≤60 Hz), the gate
-> lines (`GSP`/`GCK`/`GEN`/`INTB`, µs-scale), sensor **I²C** (GPS/altimeter), the **IMU SPI** can
-> share or sit on P1 and the **buttons** — none need the fast domain. **USB** (future,
-> nRF54LM20) is on dedicated USB pads, not GPIO, so it does not compete. The DK bench map here is
-> *not* this allocation — it reuses UART/SD/flash pins because nothing else runs during bring-up
-> (see the bring-up doc) — but the principle (**reserve P2 for source-bus + SD-SPI; slow signals →
-> P0/P1**) is what the custom board should follow.
+> **Product pin-planning — settled, and P2 is now full (#1158).** P2 has only **11 pins
+> (`P2.00..10`)**: the whole of the FLPR's fast-toggle domain, and the scarce, contended resource on
+> the product PCB. The two things that must toggle fast both want it — the display **source bus**
+> (6 data + `BCK` = 7) and the **microSD** bus (6) — which is 13, two more than exist. The storage
+> pivot resolved that by *sharing* rather than splitting: the card's six pads are fixed by Nordic's
+> sEMMC soft peripheral at `P2.00–05`, `BCK` keeps `P2.07`, and four display data lines take the
+> pins the retired SD-SPI path freed (`P2.06/.08/.09/.10`) while the last two ride `P2.00`/`P2.04`
+> under a per-mode `CTRLSEL`. Eleven pins, all in use, nothing left. Everything slow stays on
+> P0/P1 as always: `COM` (≤60 Hz, P1.22–24), the gate lines (`GSP`/`GCK`/`GEN`/`INTB`, µs-scale),
+> sensor **I²C**, and the buttons. **USB** is on dedicated USB pads, not GPIO, so it does not
+> compete.
 
 > **SPU / secure-GPIO fallback.** F0/F1 drive the **secure** P2 alias (`0x5005_0400`), matching
 > the all-secure `nrf54l15-app-s` build, and LED0 on P2.09 confirmed the FLPR *has* secure-GPIO
@@ -296,7 +308,27 @@ alternative.
 
 ### Why not VEVIF
 
-Mapped on glass, both VEVIF directions are unusable from the bare-metal secure M33:
+> ### ⚠️ Scope: this section is about a **stopped** VPR core on the **nRF54L15**, and #1145 measured
+> both walls away on the LM20 with the core RUNNING
+>
+> Two of the three findings below have been re-measured on the LM20 (2026-08-05/06, epic #1158's
+> feasibility work) and do **not** generalise:
+>
+> - **M33 → FLPR does work.** The whole sEMMC soft peripheral is driven by M33 writes to
+>   `VPR00.TASKS_TRIGGER[16..19]` — the `__CSB`/`__ASB`/`__SSB` barrier, ~2.2 µs a round trip,
+>   thousands of them per second. The doorbell latches fine.
+> - **`VPR00.INTEN` arms fine — once the core is RUNNING.** `INTENSET` writes are silently dropped
+>   while the VPR is stopped, which is what the reading below actually caught; armed after
+>   `CPURUN = 1`, VEVIF event 20 delivers `VPR00_IRQn` end to end (thousands of ISRs observed). The
+>   sEMMC driver's completion interrupt is exactly that path.
+>
+> The RT-peripheral unlock (first bullet) is unchanged and still required. The rest is kept as
+> written because it is the honest record of what F1 saw on the L15 — and because "*compiles + runs*
+> ≠ *routes*" earned its place — but read it as **stopped-core, L15-era** rather than as a property
+> of the part.
+
+Mapped on glass during F1 (nRF54L15, VPR stopped), both VEVIF directions looked unusable from the
+bare-metal secure M33:
 
 - **First**, *any* VEVIF CSR access on the FLPR (`csrr 0x7e0` etc.) **faults** until RT peripherals
   are unlocked: write `VPRNORDICCTRL` (CSR `0x7c0`) = `NORDICKEY 0x507D`<<16 | `ENABLERTPERIPH` (=
@@ -306,13 +338,18 @@ Mapped on glass, both VEVIF directions are unusable from the bare-metal secure M
   `INTEN` CSR (`0x7e4`) enabled, an M33 `TASKS_TRIGGER[0]` write never latched into the FLPR's
   readable `TASKS` CSR (`0x7e0`) — the FLPR never saw the doorbell.
 - **FLPR → M33 (VEVIF event):** the FLPR's `csrs 0x7e2` *does* set the app's `EVENTS_TRIGGERED[16]`,
-  but it can't be gated to the NVIC — writing the app-side `VPR00.INTEN`/`INTENSET`
-  (`0x5004_C300/304`) **does nothing** (reads back `0`; an all-ones write yields `0`), so the
-  interrupt never fires. The non-secure alias (`0x4004_Cxxx`) BusFaults, confirming VPR00 is
-  secure-only. Arming VPR00's app interrupt needs SoC-level init Zephyr does and we don't.
+  but it could not be gated to the NVIC — writing the app-side `VPR00.INTEN`/`INTENSET`
+  (`0x5004_C300/304`) **did nothing** (read back `0`; an all-ones write yielded `0`), so the
+  interrupt never fired. The non-secure alias (`0x4004_Cxxx`) BusFaults, confirming VPR00 is
+  secure-only. **Superseded**: the register is write-ignored *while the core is stopped*, which is
+  the state F1 measured it in. On the LM20 with `CPURUN = 1` the same write sticks and the interrupt
+  fires (#1145) — it is a sequencing rule, not a wall, and the sEMMC driver re-arms it on every boot
+  for exactly that reason.
 
 Lesson (echoing L1's "PWM won't route to the COM pins"): on this part, *compiles + runs* ≠
-*routes*. The shared-RAM + EGU path sidesteps all of the above and is verified end-to-end.
+*routes* — and its corollary, learned the expensive way in #1145: *does not route* is a claim with a
+**state** attached. The display path keeps the shared-RAM + EGU channel because it is verified end
+to end and costs nothing to keep, not because VEVIF cannot work.
 
 ### Memory ordering
 
@@ -338,14 +375,15 @@ LA-diffed against the M33 `PanelBus` (epic #139), which #139 already proved corr
 
 One sub-line is **`BCK_PER_SUBLINE = 124` u32 words** (120 data columns + 4 trailing dummy/flush,
 matching the datasheet horizontal chart and `PanelBus`). Each word holds the **6 data bits already
-shifted to their P2 pin positions** — `bit0 R0 … bit5 B1` = `DATA_MASK 0x3F` (the [pin
+shifted to their P2 pin positions** — `B0`→bit 0, `B1`→bit 4, `R0`→bit 6, `R1`→bit 8, `G0`→bit 9,
+`G1`→bit 10 = `DATA_MASK 0x751` (the [pin
 table](#pin-ownership--the-shared-p2-rule)); `BCK` is *not* in the word (it's the FLPR's own pulse).
 The 4 dummy words are `0` (black). So the FLPR inner loop is bit-twiddle-free — *store → pulse BCK →
 next* (the issue's explicit goal):
 
 ```c
-data = buf[col] & 0x3F;          // 6 data bits in P2.00..05 positions
-P2.OUTCLR = (~data) & 0x3F;      // lower the 0 bits  ── present the column
+data = buf[col] & 0x751;         // the 6 data bits, already at their P2 positions
+P2.OUTCLR = (~data) & 0x751;     // lower the 0 bits  ── present the column
 P2.OUTSET = data;                // raise the 1 bits  ──  (one xori, no 2nd word)
 busy(DATA_SETUP_ITERS);          // data setup before BCK rises
 P2.OUTSET = 1<<6;                // BCK high (latches the pixel-pair into the source SR)
@@ -355,10 +393,10 @@ P2.OUTCLR = 1<<6;                // BCK low
 busy(BCK_HALF_ITERS);
 ```
 
-> **Why a set/clear word, not a raw `OUT` write.** Presenting a column is "make `P2.00..05` equal
+> **Why a set/clear word, not a raw `OUT` write.** Presenting a column is "make the six data pins equal
 > these 6 bits." A single `P2.OUT = word` would do it in one store — but it would also clobber the
-> M33's `COM` pins (`P2.07/08/10`) and LED0, breaking the [shared-P2 rule](#pin-ownership--the-shared-p2-rule).
-> `OUTCLR (~w & 0x3F)` then `OUTSET (w & 0x3F)` touches only the 6 data bits, atomically; the
+> `BCK` (`P2.07`) and the four card-only sEMMC pads, breaking the [shared-P2 rule](#pin-ownership--the-shared-p2-rule).
+> `OUTCLR (~w & 0x751)` then `OUTSET (w & 0x751)` touches only the 6 data bits, atomically; the
 > complement is one on-the-fly `xori`, so the format still needs just **one word per column**.
 
 The buffer lives in the **SHARED page** (`WRITE_BUF_ADDR = 0x2003_F100`, clear of the 64-byte control
@@ -601,7 +639,7 @@ write-buffer words:
   and the LSB plane's 1/3-area bit (`level & 1`), exactly `PanelBus::plane_bits`;
 - **odd/even column interleave** — each `BCK` clocks a pixel *pair*: the even-`x` pixel on `R0/G0/B0`
   (bits 0/2/4), the odd-`x` pixel on `R1/G1/B1` (bits 1/3/5);
-- **pre-shift** — the 6 bits land already at their P2 GPIO positions (`= DATA_MASK 0x3F`), so the
+- **pre-shift** — the 6 bits land already at their P2 GPIO positions (`= DATA_MASK 0x751`), so the
   FLPR inner loop stays the bit-twiddle-free `store → pulse BCK` from F2;
 - **4 trailing dummy/flush columns** per sub-line = black.
 
@@ -800,7 +838,14 @@ later brought a full frame to **~44 ms** (see `flpr-timing.md`); partial/dirty-r
   on this backend — the FLPR scans a whole frame at once, so the partial-window overlay is a #163
   follow-up; the hold *gestures* still fire, only the fluid bulge preview is absent.
 
-### The relocated DK pin map (⚠️ verify on your DK)
+### The relocated DK pin map (⚠️ historical — see the board README for the live map)
+
+> **Superseded twice.** This table is the **#165 nRF54L15-DK** map, kept as the record of that
+> relocation. Since then the LM20 retarget moved `COM` to P1.22–24 and the heartbeat LED to P1.25,
+> and **#1158** rehomed the whole source bus to give `P2.00–05` to the microSD card. The authority
+> for the pins the firmware actually drives today is
+> [the board README's pin map](../obc-fw-nrf54l/README.md) and `main.rs`'s module doc; everything
+> below this heading is a dated record, not a wiring instruction.
 
 The bring-up reused the SD/UART pins ("safe this epic only"). The app needs the SD bus to load the
 map + the VCOM for sensors, so the five P1 gate/`BSP` lines moved to free P1 pins. The source bus,
