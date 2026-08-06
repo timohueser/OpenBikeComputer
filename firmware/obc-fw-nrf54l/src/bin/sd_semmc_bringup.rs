@@ -216,11 +216,44 @@ fn delay_us(us: u32) {
     cortex_m::asm::delay(us * 128); // CK128
 }
 
+/// Hex-dump the interesting VRI region (events, config, command, data, status, AUX) — the
+/// firmware-state snapshot for any stall diagnosis.
+fn dump_vri(tag: &str) {
+    info!(
+        "{=str}: EV(x/a/r)={=u32}/{=u32}/{=u32} EN={=u32} RTT={=u32} CLK={=u32} W={=u32} STATUS=0x{=u32:08x} AUX[0]={=u32} AUX[1]={=u32}",
+        tag,
+        vri_read(VRI_EV_XFERCOMPLETE),
+        vri_read(VRI_EV_ABORTED),
+        vri_read(VRI_EV_READYTOTRANSFER),
+        vri_read(VRI_ENABLE),
+        vri_read(VRI_CFG_READYTOTRANSFER),
+        vri_read(VRI_CFG_CLKFREQHZ),
+        vri_read(VRI_CFG_BUSWIDTH),
+        vri_read(VRI_STATUS),
+        vri_read(VRI_SPSYNC_AUX),
+        vri_read(VRI_SPSYNC_AUX + 4),
+    );
+}
+
+/// The porting guide's secure-environment requirement (skipped so far — the boot handshake worked
+/// without it, but the *bus/data* path may not): make the FLPR a secure bus master.
+/// `NRF_SPU00_S->PERIPH[0xC].PERM.SECATTR = Secure` — index 0xC because VPR00 sits at
+/// 0x5004_C000 = SPU00's slave slot 12.
+fn spu_secure_flpr() {
+    let perm = pac::SPU00_S.periph(0xC).perm();
+    let before = perm.read().0;
+    perm.modify(|w| w.set_secattr(true));
+    let after = perm.read().0;
+    info!("SPU00.PERIPH[0xC].PERM (VPR00): 0x{=u32:08x} → 0x{=u32:08x} (SECATTR=bit4)", before, after);
+}
+
 // ═════════════════════════════════ S0 — wiring diagnostics ═════════════════════════════════
 
 /// Pure-GPIO checks, run BEFORE the soft peripheral exists — so a failure here is a WIRE, never
-/// firmware. Returns whether a card looks present (DAT3 high through its own pull-up).
-fn s0_wiring_diagnostics() -> bool {
+/// firmware. Returns (card present via DAT3's pull-up, per-pin external-pull-up map — pins where
+/// the breakout carries its own resistor, so [`Semmc::configure_pads`] must NOT parallel our
+/// internal ~13 kΩ on top of it or the combined pull drops below the SD spec's 10 kΩ floor).
+fn s0_wiring_diagnostics() -> (bool, [bool; 6]) {
     info!("");
     info!("═══ S0 — wiring diagnostics (plain GPIO — failures here are wires, not firmware) ═══");
     for (pin, role, wire) in SD_PINS {
@@ -244,39 +277,64 @@ fn s0_wiring_diagnostics() -> bool {
         warn!("    socket, or the DAT3 wire (breakout 'CS' → P2.00) is missing. Continuing anyway.");
     }
 
-    // (b) Stuck-at: each pin alone must follow our pull both ways (the card's CMD/DAT are high-Z
-    // inputs until clocked, so nothing fights us). pull-up→1 & pull-down→0 = pass;
-    // 0/0 = shorted to GND; 1/1 = shorted to 3V3. Exception: DAT3's card pull-up (~50 k) against
-    // our ~13 k pull-down still reads 0, so DAT3 behaves like the rest here.
+    // (b) Per-pin characterisation. Three probes, and the COMBINATION is what diagnoses:
+    //   pull test  — internal pull-up then pull-down, read. A lone pin follows both.
+    //   self-drive — output WITH the input buffer connected, drive 0 and 1, read the pad back.
+    //                Our driver (~mA) beats any resistor, so a pad that will not follow its own
+    //                driver has a HARD short to a rail; a pad that follows the driver but not the
+    //                ~13 kΩ pull is loaded by an EXTERNAL RESISTOR (breakout pull-up array) — a
+    //                completely different (and benign) diagnosis.
     let mut stuck = 0u32;
-    for (pin, role, _) in SD_PINS {
+    let mut ext_pullup = [false; 6];
+    for (i, (pin, role, _)) in SD_PINS.iter().enumerate() {
+        let (pin, role) = (*pin, *role);
         cfg_pin(pin, Dir::Input, Input::Connect, Pull::Pullup, false, Ctrlsel::Gpio);
         delay_us(500);
         let up = read_pin(pin);
         cfg_pin(pin, Dir::Input, Input::Connect, Pull::Pulldown, false, Ctrlsel::Gpio);
         delay_us(500);
         let down = read_pin(pin);
+        // Self-drive with read-back.
+        cfg_pin(pin, Dir::Output, Input::Connect, Pull::Disabled, false, Ctrlsel::Gpio);
+        unsafe { GPIO2_OUTCLR.write_volatile(1 << pin) };
+        delay_us(200);
+        let drv_lo = read_pin(pin);
+        unsafe { GPIO2_OUTSET.write_volatile(1 << pin) };
+        delay_us(200);
+        let drv_hi = read_pin(pin);
+        unsafe { GPIO2_OUTCLR.write_volatile(1 << pin) };
         cfg_pin(pin, Dir::Input, Input::Connect, Pull::Disabled, false, Ctrlsel::Gpio);
-        if up == 1 && down == 0 {
-            info!("S0b P2.{=usize:02} {=str}: follows pull (up→1, down→0) — not stuck", pin, role);
-        } else {
+
+        let self_ok = drv_lo == 0 && drv_hi == 1;
+        if self_ok && up == 1 && down == 0 {
+            info!("S0b P2.{=usize:02} {=str}: clean (pull ↑1 ↓0, self-drive ok)", pin, role);
+        } else if !self_ok {
             stuck += 1;
             error!(
-                "S0b P2.{=usize:02} {=str}: STUCK — pull-up reads {=u32}, pull-down reads {=u32} ({=str})",
-                pin,
-                role,
-                up,
-                down,
-                if up == 0 { "looks shorted to GND" } else { "looks shorted to 3V3" }
+                "S0b P2.{=usize:02} {=str}: HARD SHORT — self-drive lo→{=u32} hi→{=u32} (a rail short overpowers the GPIO driver)",
+                pin, role, drv_lo, drv_hi
+            );
+        } else if down == 1 {
+            ext_pullup[i] = true;
+            info!(
+                "S0b P2.{=usize:02} {=str}: EXTERNAL PULL-UP (self-drive ok, but internal ~13k pull-down reads {=u32}) — breakout resistor, benign for SD",
+                pin, role, down
+            );
+        } else {
+            info!(
+                "S0b P2.{=usize:02} {=str}: EXTERNAL PULL-DOWN? (self-drive ok, internal pull-up reads {=u32}) — unusual, note it",
+                pin, role, up
             );
         }
     }
 
-    // (c) Bridges: drive one pin, sense the other five against the opposite pull. A neighbour
-    // that follows the driven pin instead of its own pull = solder/jumper bridge between exactly
-    // those two wires. Brief drive, standard strength, card inputs are high-Z — safe.
-    let mut bridges = 0u32;
-    for (drv, drv_role, _) in SD_PINS {
+    // (c) Bridges — the pull-artifact-proof version. A neighbour is only a BRIDGE if it follows
+    // the driven pin in BOTH directions: a breakout pull-up can fake a follow to 1 (it fights our
+    // sense pull-down into the undefined band) but never a follow to 0 (it agrees with the sense
+    // pull-up), so requiring both kills that artifact; a real bridge (~0 Ω) wins both ways.
+    let mut follows = [[0u8; 6]; 6]; // bit0 = followed to 0, bit1 = followed to 1
+    for (di, (drv, _, _)) in SD_PINS.iter().enumerate() {
+        let drv = *drv;
         for level in [0u32, 1u32] {
             for (other, _, _) in SD_PINS {
                 if other != drv {
@@ -293,27 +351,47 @@ fn s0_wiring_diagnostics() -> bool {
                 }
             }
             delay_us(500);
-            for (other, other_role, _) in SD_PINS {
-                if other != drv && read_pin(other) == level {
-                    bridges += 1;
-                    error!(
-                        "S0c BRIDGE? P2.{=usize:02} ({=str}) follows P2.{=usize:02} ({=str}) driven {=u32} — check for a solder/jumper short between these two",
-                        other, other_role, drv, drv_role, level
-                    );
+            for (oi, (other, _, _)) in SD_PINS.iter().enumerate() {
+                if *other != drv && read_pin(*other) == level {
+                    follows[di][oi] |= 1 << level;
                 }
             }
             cfg_pin(drv, Dir::Input, Input::Connect, Pull::Disabled, false, Ctrlsel::Gpio);
         }
     }
+    let mut bridges = 0u32;
+    for di in 0..6 {
+        for oi in 0..6 {
+            if di != oi && follows[di][oi] == 0b11 {
+                bridges += 1;
+                error!(
+                    "S0c BRIDGE — P2.{=usize:02} ({=str}) follows P2.{=usize:02} ({=str}) BOTH ways: solder/jumper short between these two wires",
+                    SD_PINS[oi].0, SD_PINS[oi].1, SD_PINS[di].0, SD_PINS[di].1
+                );
+            }
+        }
+    }
+    let one_way: u32 = (0..6)
+        .flat_map(|d| (0..6).map(move |o| (d, o)))
+        .filter(|&(d, o)| d != o && follows[d][o] != 0 && follows[d][o] != 0b11)
+        .count() as u32;
+    if one_way > 0 {
+        info!("S0c {=u32} one-way follow(s) — consistent with external pull resistors (see S0b), NOT bridges", one_way);
+    }
+
     if stuck == 0 && bridges == 0 {
-        info!("S0 PASS — no stuck pins, no bridges{=str}", if card_present { ", card present" } else { "" });
+        info!("S0 PASS — no hard shorts, no bridges{=str}", if card_present { ", card present" } else { "" });
     } else {
         error!(
-            "S0 FAIL — {=u32} stuck pin(s), {=u32} bridge indication(s). Fix wiring before trusting later steps.",
+            "S0 FAIL — {=u32} hard short(s), {=u32} bridge(s). Fix wiring before trusting later steps.",
             stuck, bridges
         );
     }
-    card_present
+    if ext_pullup.iter().any(|&b| b) {
+        info!("S0 note: external pull-ups detected — if ALL of CMD/DAT have them, the S0a card-present");
+        info!("         check is inconclusive (a breakout resistor also holds DAT3 high, card or not).");
+    }
+    (card_present, ext_pullup)
 }
 
 // ═════════════════════════════ the minimal sEMMC host ═════════════════════════════
@@ -337,9 +415,18 @@ struct Semmc {
 impl Semmc {
     /// Nordic's reference pad config (porting guide table), then hand the pads to the VPR.
     /// CLK pull-DOWN, everything else pull-UP; Output + input Disconnected + E0/E1 drive.
-    fn configure_pads() {
-        for (pin, _, _) in SD_PINS {
-            let pull = if pin == 1 { Pull::Pulldown } else { Pull::Pullup };
+    /// Where S0 found an EXTERNAL pull-up (breakout resistor), the internal pull is disabled —
+    /// 13 kΩ ∥ ~10 kΩ ≈ 5.6 kΩ would sit below the SD spec's 10 kΩ floor and over-load the lines.
+    fn configure_pads(ext_pullup: &[bool; 6]) {
+        for (i, (pin, _, _)) in SD_PINS.iter().enumerate() {
+            let pin = *pin;
+            let pull = if ext_pullup[i] {
+                Pull::Disabled
+            } else if pin == 1 {
+                Pull::Pulldown
+            } else {
+                Pull::Pullup
+            };
             cfg_pin(pin, Dir::Output, Input::Disconnect, pull, true, Ctrlsel::Gpio);
         }
         for (pin, _, _) in SD_PINS {
@@ -397,29 +484,45 @@ impl Semmc {
         Ok(())
     }
 
+    /// `nrf_semmc_enable()` — the step the first run MISSED (and why the S2 probe saw a dead
+    /// bus): after boot the firmware is *initialized* but not *powered on*, and it ignores start
+    /// triggers until `ENABLE = 1` + an `__ASB` moves it to POWERED_ON. Mirrors the driver:
+    /// enable, barrier, clear the three events.
+    fn power_on(&mut self) -> bool {
+        vri_write(VRI_ENABLE, 1);
+        let ok = self.barrier(T_ACTION).is_ok();
+        vri_write(VRI_EV_XFERCOMPLETE, 0);
+        vri_write(VRI_EV_ABORTED, 0);
+        vri_write(VRI_EV_READYTOTRANSFER, 0);
+        if !ok {
+            error!("power_on: __ASB after ENABLE=1 timed out");
+        }
+        ok
+    }
+
     /// Firmware wedge recovery: try a stop barrier, then warm re-boot (image stays resident,
-    /// ~21 µs measured). Card-side state is untouched — the card keeps its RCA/state.
+    /// ~21 µs measured) + power back on. Card-side state is untouched — the card keeps its
+    /// RCA/state.
     fn recover(&mut self) {
         let _ = self.barrier(T_STOP);
         if !self.boot_firmware(false) {
             error!("recover: warm re-boot failed — re-copying the image");
             self.boot_firmware(true);
         }
+        self.power_on();
     }
 
-    /// Run one SD command, mirroring `nrf_semmc_cmd()` step for step: CONFIG + COMMAND + DATA
-    /// registers → `__CSB` → READYTOTRANSFER=1 → `__ASB` → trigger DPPI task → poll the VRI
-    /// completion events. `data = (buffer_addr, block_size, block_count)`; direction comes from
-    /// the firmware's command-index table (17/18 read, 24/25 write — indices SD and eMMC share).
-    fn cmd(
+    /// The front half of `nrf_semmc_cmd()`: CONFIG + COMMAND + DATA registers → `__CSB` →
+    /// READYTOTRANSFER=1 → `__ASB` → trigger the DPPI start task. Split out so the S2 activity
+    /// probe can sample the pads while the transfer runs.
+    fn cmd_start(
         &mut self,
         idx: u32,
         arg: u32,
         resp: u32,
         proc: u32,
         data: Option<(u32, u32, u32)>,
-        timeout_ms: u64,
-    ) -> Result<[u32; 4], SdErr> {
+    ) -> Result<(), SdErr> {
         vri_write(VRI_CFG_CLKFREQHZ, self.clk_hz);
         vri_write(VRI_CFG_BUSWIDTH, self.bus_width);
         vri_write(VRI_CFG_NUMRETRIES, 3);
@@ -435,7 +538,22 @@ impl Semmc {
         vri_write(VRI_CFG_READYTOTRANSFER, 1);
         self.barrier(T_ACTION)?;
         unsafe { VPR00_TASKS_TRIGGER.add(T_DPPI0).write_volatile(1) };
+        Ok(())
+    }
 
+    /// Run one SD command: [`cmd_start`](Self::cmd_start) + poll the VRI completion events.
+    /// `data = (buffer_addr, block_size, block_count)`; direction comes from the firmware's
+    /// command-index table (17/18 read, 24/25 write — indices SD and eMMC share).
+    fn cmd(
+        &mut self,
+        idx: u32,
+        arg: u32,
+        resp: u32,
+        proc: u32,
+        data: Option<(u32, u32, u32)>,
+        timeout_ms: u64,
+    ) -> Result<[u32; 4], SdErr> {
+        self.cmd_start(idx, arg, resp, proc, data)?;
         let t0 = Instant::now();
         loop {
             if vri_read(VRI_EV_XFERCOMPLETE) != 0 {
@@ -445,7 +563,10 @@ impl Semmc {
                 let status = vri_read(VRI_STATUS);
                 vri_write(VRI_EV_ABORTED, 0);
                 vri_write(VRI_EV_XFERCOMPLETE, 0);
+                // Close the transaction: RTT=0 **plus the __ASB ack** — the driver's abort path
+                // does exactly this; without the barrier the firmware never re-arms.
                 vri_write(VRI_CFG_READYTOTRANSFER, 0);
+                let _ = self.barrier(T_ACTION);
                 return Err(SdErr::Aborted(status));
             }
             if t0.elapsed().as_millis() > timeout_ms {
@@ -456,13 +577,104 @@ impl Semmc {
         }
         vri_write(VRI_EV_XFERCOMPLETE, 0);
         vri_write(VRI_EV_READYTOTRANSFER, 0);
+        // Close the transaction: RTT=0 **plus the __ASB ack**. The driver's IRQ handler does this
+        // on every XFERCOMPLETE; skipping the barrier leaves the firmware considering the old
+        // transaction open, and it ignores the next start trigger — the measured
+        // "first-command-after-boot works, second one times out" alternation.
         vri_write(VRI_CFG_READYTOTRANSFER, 0);
+        self.barrier(T_ACTION)?;
         Ok([
             vri_read(VRI_CMD_RESPONSE0),
             vri_read(VRI_CMD_RESPONSE0 + 4),
             vri_read(VRI_CMD_RESPONSE0 + 8),
             vri_read(VRI_CMD_RESPONSE0 + 12),
         ])
+    }
+
+    /// **The S2 oscilloscope-free probe**: run one CMD0 while sampling the CLK/CMD/D0 pads through
+    /// their (temporarily connected) input buffers, counting transitions. This splits the world:
+    ///   - CLK toggles seen → the firmware IS driving the bus; a stall is protocol/card-side.
+    ///   - zero toggles     → the firmware never touches the pads; the problem is CTRLSEL/SPU/VIO
+    ///     on our side — no amount of rewiring would change anything.
+    /// The M33 samples at a few MHz, plenty to *count* edges at a 400 kHz CLK (it need not be
+    /// cycle-accurate — zero vs nonzero is the verdict).
+    fn cmd0_activity_probe(&mut self) {
+        self.activity_probe(0, 0, RESP_NONE, "CMD0");
+    }
+
+    /// Generalised pad-activity probe: run `idx` while counting CLK/CMD/D0 transitions. For a
+    /// response-carrying command the CMD count separates "card answered" (extra transitions after
+    /// the 48-bit TX burst) from "card silent" (TX-only count, then a flat line + our timeout).
+    fn activity_probe(&mut self, idx: u32, arg: u32, resp: u32, label: &str) {
+        for pin in [1usize, 2, 5] {
+            pac::P2_S.pin_cnf(pin).modify(|w| w.set_input(Input::Connect));
+        }
+        let started = self.cmd_start(idx, arg, resp, PROC_PROCESS, None);
+        let (mut clk_t, mut cmd_t, mut d0_t) = (0u32, 0u32, 0u32);
+        let mut complete = false;
+        if started.is_ok() {
+            let mut last = unsafe { GPIO2_IN.read_volatile() };
+            let t0 = Instant::now();
+            while t0.elapsed().as_millis() < 50 {
+                let now = unsafe { GPIO2_IN.read_volatile() };
+                let ch = now ^ last;
+                if ch & (1 << 1) != 0 {
+                    clk_t += 1;
+                }
+                if ch & (1 << 5) != 0 {
+                    cmd_t += 1;
+                }
+                if ch & (1 << 2) != 0 {
+                    d0_t += 1;
+                }
+                last = now;
+                if vri_read(VRI_EV_XFERCOMPLETE) != 0 || vri_read(VRI_EV_ABORTED) != 0 {
+                    complete = true;
+                    break;
+                }
+            }
+        } else {
+            warn!("S2-probe: cmd_start failed ({}) before any sampling", started.unwrap_err());
+        }
+        info!(
+            "probe {=str}: CLK transitions={=u32} CMD={=u32} D0={=u32}, completed={=bool}",
+            label, clk_t, cmd_t, d0_t, complete
+        );
+        if clk_t == 0 {
+            warn!("probe: NO CLOCK ACTIVITY — the firmware is not driving the pads. This is a");
+            warn!("       CTRLSEL/SPU/VPR-IO problem on our side, NOT wiring. Rewiring won't help.");
+        } else if !complete && cmd_t <= 6 {
+            warn!("probe: bus driven, command sent, but the CMD line shows NO response burst —");
+            warn!("       the CARD is silent. Wedged card (power-cycle it) or CMD wire RX-side.");
+        } else if !complete {
+            warn!("probe: card activity seen on CMD but the firmware never completed — response");
+            warn!("       sampling/CRC on the firmware side (read_delay?), not the card.");
+        }
+        dump_vri("probe VRI");
+        // Clean up whatever state the probe left — including the RTT=0 + __ASB transaction-close
+        // ack when it completed (the same ack cmd() does).
+        vri_write(VRI_EV_XFERCOMPLETE, 0);
+        vri_write(VRI_EV_ABORTED, 0);
+        vri_write(VRI_CFG_READYTOTRANSFER, 0);
+        if complete {
+            let _ = self.barrier(T_ACTION);
+        } else {
+            self.recover();
+        }
+        for pin in [1usize, 2, 5] {
+            pac::P2_S.pin_cnf(pin).modify(|w| w.set_input(Input::Disconnect));
+        }
+    }
+
+    /// Put the card AND the host back into 1-bit mode — the S8 unwind. Without this a failed
+    /// 4-bit experiment strands the card in wide-bus mode that the wiring can't serve, and every
+    /// later 1-bit read mysteriously fails too.
+    fn revert_to_1bit(&mut self) {
+        self.bus_width = 1;
+        match self.acmd(6, 0, RESP_R1, PROC_PROCESS, None, 500) {
+            Ok(_) => info!("S8 card reverted to 1-bit (ACMD6 arg 0)"),
+            Err(e) => warn!("S8 could not revert the card to 1-bit ({}) — later reads may fail until re-init", e),
+        }
     }
 
     /// App-command prefix: CMD55 with the current RCA.
@@ -561,6 +773,10 @@ async fn main(_spawner: Spawner) {
     }
     let mut led = Output::new(p.P1_25, Level::Low, OutputDrive::Standard);
 
+    // Let probe-rs finish attaching its RTT reader before the log torrent starts — the first run
+    // lost the whole S0 section to the flash-to-attach gap overrunning the RTT ring.
+    Timer::after_millis(1500).await;
+
     info!("");
     info!("╔════════════════════════════════════════════════════════════════════════════╗");
     info!("║  sd_semmc_bringup — microSD in native 4-bit mode over sEMMC (issue #1145)   ║");
@@ -573,12 +789,13 @@ async fn main(_spawner: Spawner) {
     );
 
     // ── S0: wiring, before any firmware ──
-    let card_present = s0_wiring_diagnostics();
+    let (card_present, ext_pullup) = s0_wiring_diagnostics();
 
     // ── S1: pads → Nordic config, boot the firmware, arm the completion ISR ──
     info!("");
-    info!("═══ S1 — pad config (internal pulls, E0/E1) + sEMMC firmware boot ═══");
-    Semmc::configure_pads();
+    info!("═══ S1 — pad config (internal pulls, E0/E1) + SPU perm + sEMMC firmware boot ═══");
+    spu_secure_flpr();
+    Semmc::configure_pads(&ext_pullup);
     let mut sd = Semmc { clk_hz: 400_000, bus_width: 1, read_delay: 0, counter: 0, rca: 0, ccs: false };
     let t0 = Instant::now();
     if !sd.boot_firmware(true) {
@@ -592,12 +809,24 @@ async fn main(_spawner: Spawner) {
         interrupt::VPR00.set_priority(Priority::P2);
         interrupt::VPR00.enable();
     }
-    info!("S1 PASS — firmware ready in {=u64} µs; completion ISR armed", t0.elapsed().as_micros());
+    // The step the first run missed: power the peripheral ON (ENABLE=1 + __ASB) — boot alone
+    // leaves it in INITIALIZED, where start triggers are ignored (measured: dead bus, S2-probe).
+    if !sd.power_on() {
+        error!("S1 FAIL — power-on __ASB timed out");
+    }
+    info!(
+        "S1 PASS — firmware ready in {=u64} µs, POWERED ON (ENABLE={=u32}); completion ISR armed",
+        t0.elapsed().as_micros(),
+        vri_read(VRI_ENABLE)
+    );
     Timer::after_millis(100).await; // card power-up grace (spec: 74 clocks + ramp; NUMRETRIES pads the rest)
 
     // ── S2: CMD0 at the 400 kHz init clock — the firmware-divider unknown ──
     info!("");
     info!("═══ S2 — CMD0 GO_IDLE_STATE @ 400 kHz (does the divider reach the SD init clock?) ═══");
+    // First: the activity probe — is the firmware driving the pads AT ALL? Splits "our side
+    // (CTRLSEL/SPU/VIO)" from "wiring/card side" before the retry ladder muddies the water.
+    sd.cmd0_activity_probe();
     let mut init_clk = 0u32;
     'ladder: for hz in [400_000u32, 1_000_000, 2_000_000, 8_000_000] {
         sd.clk_hz = hz;
@@ -641,7 +870,9 @@ async fn main(_spawner: Spawner) {
             }
         }
         Err(e) => {
-            warn!("S3 CMD8 failed: {} — if S2 passed, suspect the blob treating index 8 as eMMC's", e);
+            warn!("S3 CMD8 failed: {} — probing the response phase to see if the card answers at all…", e);
+            sd.activity_probe(8, 0x1AA, RESP_R1, "CMD8");
+            warn!("S3 also possible: the blob treating index 8 as eMMC's");
             warn!("   SEND_EXT_CSD (a 512 B data read). Retrying with a dummy 512 B data phase…");
             // The experiment: give the index-8 command the data phase eMMC expects and see if it
             // then completes. Diagnostic only — the response echo is what matters.
@@ -650,6 +881,40 @@ async fn main(_spawner: Spawner) {
                 Ok(_) => warn!("S3 index-8 completed only WITH a data phase → the blob keys direction on the index. An SD CMD8 needs a firmware-side fix/workaround; init may still work (SDHC cards accept ACMD41 without CMD8 at 2.7–3.6 V, but HCS handling varies)."),
                 Err(e2) => warn!("S3 data-phase variant also failed: {}", e2),
             }
+        }
+    }
+    // The response-side rescue sweep: Nordic's limitations page says a tuning cycle "might be
+    // needed to set the proper read_delay" — the sampling offset in FLPR clock cycles. Sweep
+    // read_delay × clock; any (clk, rd) pair where the R7 echo lands is adopted for everything
+    // after. This also disambiguates the probe: success here = the card was answering all along
+    // and the firmware was sampling the response at the wrong point.
+    if !cmd8_ok {
+        info!("S3-sweep — CMD8 across clock × read_delay (the Nordic tuning-cycle hint)…");
+        'sweep: for hz in [400_000u32, 1_000_000, 2_000_000, 8_000_000] {
+            for rd in [1u32, 2, 4, 8, 16, 32, 64] {
+                if rd >= 128_000_000 / hz {
+                    continue; // read_delay must stay below clkdiv
+                }
+                sd.clk_hz = hz;
+                sd.read_delay = rd;
+                if let Ok(r) = sd.cmd(8, 0x1AA, RESP_R1, PROC_PROCESS, None, 300) {
+                    if r[0] & 0xFFF == 0x1AA {
+                        info!(
+                            "S3-sweep HIT — CMD8 echo OK at clk={=u32} Hz read_delay={=u32}. The card answers; read_delay=0 was the problem. Adopting these settings.",
+                            hz, rd
+                        );
+                        cmd8_ok = true;
+                        break 'sweep;
+                    } else {
+                        warn!("S3-sweep clk={=u32} rd={=u32}: completed but echo=0x{=u32:08x}", hz, rd, r[0]);
+                    }
+                }
+            }
+        }
+        if !cmd8_ok {
+            sd.clk_hz = 400_000;
+            sd.read_delay = 0;
+            warn!("S3-sweep: no (clock, read_delay) pair produced an R7 echo — card-silent remains possible");
         }
     }
     if !cmd8_ok {
@@ -699,14 +964,14 @@ async fn main(_spawner: Spawner) {
         match sd.cmd(2, 0, RESP_R2, PROC_PROCESS, None, 500) {
             Ok(r) => {
                 info!("S5 CID raw: {=u32:08x} {=u32:08x} {=u32:08x} {=u32:08x}", r[0], r[1], r[2], r[3]);
-                // Heuristic decode, assuming response[0] = CID[127:96] (MID | OID | PNM[0]).
-                let mid = (r[0] >> 24) & 0xFF;
+                // Word order verified on glass: response[3] = CID[127:96] (LSW-first from the VRI).
+                let mid = (r[3] >> 24) & 0xFF;
                 let pnm = [
-                    (r[0] & 0xFF) as u8,
-                    ((r[1] >> 24) & 0xFF) as u8,
-                    ((r[1] >> 16) & 0xFF) as u8,
-                    ((r[1] >> 8) & 0xFF) as u8,
-                    (r[1] & 0xFF) as u8,
+                    (r[3] & 0xFF) as u8,
+                    ((r[2] >> 24) & 0xFF) as u8,
+                    ((r[2] >> 16) & 0xFF) as u8,
+                    ((r[2] >> 8) & 0xFF) as u8,
+                    (r[2] & 0xFF) as u8,
                 ];
                 if pnm.iter().all(|c| c.is_ascii_graphic() || *c == b' ') {
                     if let Ok(name) = core::str::from_utf8(&pnm) {
@@ -728,9 +993,8 @@ async fn main(_spawner: Spawner) {
                 info!("S6 RCA = 0x{=u32:04x}", sd.rca);
                 if let Ok(r) = sd.cmd(9, sd.rca << 16, RESP_R2, PROC_PROCESS, None, 500) {
                     info!("S6 CSD raw: {=u32:08x} {=u32:08x} {=u32:08x} {=u32:08x}", r[0], r[1], r[2], r[3]);
-                    // CSD v2 heuristic: C_SIZE = bits [69:48]. With response[0]=CSD[127:96]:
-                    // C_SIZE = (r[1] & 0x3F) << 16 | r[2] >> 16. Capacity = (C_SIZE+1) * 512 KiB.
-                    let c_size = ((r[1] & 0x3F) << 16) | (r[2] >> 16);
+                    // CSD v2, LSW-first (verified): C_SIZE[69:48] spans r[2] low bits + r[1] high.
+                    let c_size = ((r[2] & 0x3F) << 16) | (r[1] >> 16);
                     let cap_mb = ((c_size as u64 + 1) * 512) / 1024;
                     if cap_mb > 1000 && cap_mb < 2_000_000 {
                         capacity_blocks = ((c_size + 1) as u64 * 1024) as u32; // ×512 KiB / 512 B
@@ -813,12 +1077,12 @@ async fn main(_spawner: Spawner) {
                         } else {
                             let first = buf[..512].iter().zip(sector0().iter()).position(|(a, b)| a != b);
                             error!("S8 MISMATCH at byte {=u32} — data arrives but scrambled: check DAT1 (P2.04) and DAT2 (P2.03), the two new wires", first.unwrap_or(0) as u32);
-                            sd.bus_width = 1;
+                            sd.revert_to_1bit();
                         }
                     }
                     Err(e) => {
                         error!("S8 4-bit read failed ({}) where 1-bit worked → DAT1/DAT2/DAT3 wiring (the two new wires + 'CS'→D3), or the card ignored ACMD6", e);
-                        sd.bus_width = 1;
+                        sd.revert_to_1bit();
                     }
                 }
             }
