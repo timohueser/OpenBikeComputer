@@ -975,12 +975,20 @@ files, so per-shard resume, parallel transfer, and re-uploading only the shards 
 touched all become possible later without a manifest change.
 
 > **Transferring a set to a device.** The rules above address a *writer*, and a device cannot hold a
-> host to them by reading them. The receiving half — the `mapShard` / `mapSet` object types, the
-> packed `(shard_count, index)` a shard announces itself with, the **refusal** of a manifest sent
-> before every shard it names has committed, a device's own shard ceiling, and the cleanup a torn
-> upload gets — is normative in
+> host to them by reading them. The receiving half — the `mapShard` / `terrainShard` / `mapSet`
+> object types, the packed `(shard_count, index)` a shard announces itself with, the **refusal** of a
+> manifest sent before every shard it names has committed, a device's own shard ceiling, and the
+> cleanup a torn upload gets — is normative in
 > [`obc-ble-interface-spec.md` §4.1](obc-ble-interface-spec.md), "Volume sets: several transfers, one
 > map". Nothing there changes this section; it is what makes it enforceable.
+>
+> **§5.2's `Shard Count` reaches across that seam**, and it is worth restating where the count is
+> defined rather than only where it is checked (#1044). The field counts every record, so the
+> manifest of a set with terrain is `72 + 56 × (N + 1)` bytes for `N` OBCM shards. A device checks
+> that length at the manifest's *announce*, against the files this upload actually delivered — which
+> is why the terrain shard is transferred under its own object type and before the manifest, rather
+> than skipped. A host that omits it and sends the longer manifest anyway loses the whole set at its
+> last transfer.
 
 ### 5.5 Single-file fast path
 
