@@ -52,6 +52,59 @@ pub(crate) static TRANSFER_ABORT: Signal<CriticalSectionRawMutex, ()> = Signal::
 /// transfers the endpoint allows; the SD card is the real ceiling either way (#889).
 const CHUNK_LEN: usize = MAX_PACKET as usize;
 
+/// How long the bulk OUT endpoint must stay silent before [`drain_bulk_out`] calls it empty.
+///
+/// Generous next to a high-speed microframe (125 µs): the host's queued transfers are delivered
+/// back to back once the endpoint stops NAKing, so a gap this long means there is nothing left
+/// rather than that the next one is slow.
+const DRAIN_QUIET_MS: u64 = 20;
+
+/// Ceiling on one drain. A host that never stops writing must not be able to hold the abort's
+/// answer — and it is the answer the host is waiting for before it stops.
+///
+/// Well inside the host's own `ABORT_ACK_TIMEOUT_MS` (2 s, `builder/app/src/lib/usb/client.ts`), so
+/// a drain that runs its full budget still produces an answer the host accepts.
+const DRAIN_BUDGET_MS: u64 = 750;
+
+/// **Read and discard whatever the host still had queued, before this transfer's answer goes out.**
+///
+/// The host does not wait for the device between chunks — the bulk channel is unframed and
+/// unacknowledged, which is what lets an upload keep several `transferOut`s on the wire at once
+/// (`UPLOAD_WINDOW × DEFAULT_CHUNK_SIZE`, 256 KiB today). When a transfer ends early — an `op = 3`
+/// abort, a rejected descriptor, a card that refused an append — those queued bytes are still
+/// coming, and WebUSB cannot cancel a submitted transfer.
+///
+/// Without this they are still on the endpoint when the *next* descriptor arms, and the idle loop's
+/// discard does not save us: it deliberately lets `TRANSFER_ARM` win its `select`, so a retry's
+/// first `ep.read` takes the previous exchange's tail as its own first payload bytes. The
+/// whole-object CRC catches that at commit, so it is a spurious retry failure rather than a corrupt
+/// map — but a retry that cannot succeed until the window happens to drain is not a recovery path.
+///
+/// Draining **before** the terminal answer is what makes it work: the host holds its abort open
+/// until it sees `transferResult`, so its queued transfers are delivered into this loop rather than
+/// after it.
+#[inline(never)]
+async fn drain_bulk_out(ep: &mut EpOut, buf: &mut [u8]) {
+    let deadline = Instant::now() + embassy_time::Duration::from_millis(DRAIN_BUDGET_MS);
+    let mut dropped = 0usize;
+    loop {
+        match select(ep.read(buf), Timer::after_millis(DRAIN_QUIET_MS)).await {
+            Either::First(Ok(n)) => dropped += n,
+            // The endpoint went away — an unplug drains it far more thoroughly than we can.
+            Either::First(Err(_)) => break,
+            // Quiet for a whole window: the host has nothing more queued.
+            Either::Second(()) => break,
+        }
+        if Instant::now() >= deadline {
+            warn!("usb: [bulk] still receiving {} ms after a transfer ended — answering anyway", DRAIN_BUDGET_MS);
+            break;
+        }
+    }
+    if dropped > 0 {
+        info!("usb: [bulk] drained {} stray bytes the host had already queued", dropped);
+    }
+}
+
 /// Whether a transfer runner answered, or the endpoint went away under it.
 enum TransferOutcome {
     Answered,
@@ -230,6 +283,9 @@ async fn run_upload(
         if holds_magic {
             crate::link::map_transfer_storage_failed();
         }
+        // The host started writing the moment it sent the descriptor, so a reject is asynchronous
+        // relative to bytes already on the wire.
+        drain_bulk_out(ep, buf).await;
         close_transfer();
         tx.send_status(transfer_result(rx.object_id(), TransferStatus::Error)).await;
         return TransferOutcome::Answered;
@@ -279,6 +335,7 @@ async fn run_upload(
                     discard_upload(&mut store.borrow_mut(), &mut guard, target, map_id);
                 }
                 info!("usb: [bulk] upload aborted by the host");
+                drain_bulk_out(ep, buf).await;
                 close_transfer();
                 tx.send_status(transfer_result(rx.object_id(), TransferStatus::Aborted)).await;
                 return TransferOutcome::Answered;
@@ -299,11 +356,15 @@ async fn run_upload(
             if holds_magic {
                 crate::link::map_transfer_storage_failed();
             }
+            drain_bulk_out(ep, buf).await;
             close_transfer();
             tx.send_status(transfer_result(rx.object_id(), TransferStatus::Error)).await;
             return TransferOutcome::Answered;
         }
         if holds_magic {
+            // Received, not durable: up to one staging half (32 KiB) is still in RAM, and the host
+            // may be another `UPLOAD_WINDOW` of chunks ahead of that. The card the rider sees is a
+            // liveness indicator, not a commit count — the commit is the terminal result.
             crate::link::map_transfer_progress(rx.committed_offset());
         }
     }
@@ -318,6 +379,9 @@ async fn run_upload(
         if holds_magic {
             crate::link::map_transfer_storage_failed();
         }
+        // The host has sent everything by now, but the last chunks may still be queued behind the
+        // NAKs this flush produced.
+        drain_bulk_out(ep, buf).await;
         close_transfer();
         tx.send_status(transfer_result(rx.object_id(), TransferStatus::Error)).await;
         return TransferOutcome::Answered;
