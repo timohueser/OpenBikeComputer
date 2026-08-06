@@ -34,6 +34,7 @@
       "resident_ram_max": 295816,
       "uninit_max": 118432,
       "measured_flash": 1300320,
+      "_upload_retune_note": "**Upload retune (perf/upload-pipeline-retune): resident, `.uninit`, poll frame and residual stack all UNMOVED; two `compile_time_allocations` entries re-pinned.** `arena_usb` 16,384 -> 65,536 B: the USB staging arm became **two** 32 KiB halves (`usb::STAGE_HALF_LEN`), one filled by the transport while the other is the card's, and 32 KiB is one FAT cluster so each flush is a single 64-block CMD25 with no partial ends. **This costs zero resident bytes** and that is the arena's growth asymmetry working exactly as documented: the arena is `max(arms)`, the render arm is 117,408 B, and 65,536 is still comfortably under it - so `arena_total` is unchanged at 117,408 and `.uninit` is unchanged at 118,432. Measured locally against the same tree with the halves back at 16 KiB: `.bss` 290,704 + `.data` 5,112 = 295,816 B either way, largest guarded poll frame 9,728 B either way, residual main stack 77,272 B either way. The old \"a second 16 KiB would halve the margin over the 35,808 B deep-ride peak\" argument in `usb::STAGE_LEN`'s doc was a `.bss` argument and #1146 P2 retired it; the doc now says so. `semmc_driver` 52 -> 44 B is **not this change** - it is a pre-existing record reconciled here because it was in the way: `size_of::<semmc::Semmc>()` links 44 B on the current tree and the baseline still carried the figure the sEMMC pivot pinned. Related: the same pivot pinned `sd_bounce` and `semmc_driver` in this table without adding the rows to `main.rs`'s `resource_report::OBC_RESOURCE_TABLE`, so `resource_guard.py report` failed \"missing entries\" on every build since; the two rows are added in this branch.",
       "framebuffer_count": 1,
       "framebuffer_bytes": 76800,
       "poll_frame_measured": 9728,
@@ -52,7 +53,7 @@
         "arena_total": 117408,
         "arena_render": 117408,
         "arena_nav": 59872,
-        "arena_usb": 16384,
+        "arena_usb": 65536,
         "terrain": 2152,
         "terrain_extents": 1300,
         "stack_reserve": 65536,
@@ -68,7 +69,7 @@
         "ble_sensor_manager": 358,
         "usb_named": 2652,
         "sd_bounce": 2048,
-        "semmc_driver": 52
+        "semmc_driver": 44
       },
       "full_frame_sized_writable_count": 2,
       "_boot_chain_note_1108": "**Boot-path stack gates, added after the #1108 STKOF (schema v2).** Every image built from develop between #1084 (EL7) and #1108 hard-faulted at boot — a stack overflow at `link::init_store`'s prologue — and NOTHING in CI went red. The gap: `poll_frame_limit` only measures `TaskStorage<F>::poll` symbols, but the embassy **main task's** frame is allocated in the out-of-line `____embassy_main_task_inner_function::{{closure}}`, which that match excludes. EL7 inlined a ~2 KB terrain-parse temporary into it (20,352 -> 22,400 B) completely unseen. Three gates now cover it. `task_frame_limit` and `residual_stack_min` are EXACT measurements. `boot_chain_ceiling` is a deliberately CONSERVATIVE over-approximation: the walk follows every direct `bl` edge whether or not the path is feasible (a `Mode::ReadOnly` `open_file_in_dir` monomorphization still references `alloc_cluster`/`update_fat`, so FAT-write frames a rescan can never execute are counted) and is blind to indirect calls, so it is a drift detector, NOT a stack-safety proof — the on-glass high-water in ARCHITECTURE_RESOURCE_BASELINE.md is that. `boot_chain_headroom_min` is the invariant tying the other two together: ceiling and residual are independently re-approvable numbers, and #1084 failed precisely because three individually-reasonable changes summed past the stack, so the combination needs its own gate. Validated against the bricked image: on 5de00ce the same code reports task frame 22,400 B and headroom -7,932 B (chain 56,532 vs residual 48,600), versus 20,352 B and +7,044 B on the fix. **Host spread, measured on this PR's own CI run ([30852527404](https://github.com/timohueser/OpenBikeComputer/actions/runs/30852527404)).** `boot_chain_measured` is TOOLCHAIN-SENSITIVE in a way the resident figures are not: CI's floating stable links a 35,356 B ceiling where the pinned host links 41,556 B — 6.2 KB of inlining difference, since the walk's depth depends on which callees survive as separate symbols. `boot_chain_ceiling` 43,008 B therefore sits above BOTH so neither host false-fails, which does mean its sensitivity differs per host (~7.6 KB of slack on CI, ~1.4 KB locally). That is acceptable because the ceiling is the fuzzy drift detector, not the sharp gate: `task_frame_measured` reads exactly 20,352 B on CI *and* on the pinned host, so `task_frame_limit` — the gate that actually catches the #1084 class — is host-independent. Re-pin both figures from an `embedded` run, not a laptop.",
@@ -108,6 +109,7 @@
       "resident_ram_max": 295816,
       "uninit_max": 118432,
       "measured_flash": 1300320,
+      "_upload_retune_note": "**Upload retune (perf/upload-pipeline-retune): resident, `.uninit`, poll frame and residual stack all UNMOVED; two `compile_time_allocations` entries re-pinned.** `arena_usb` 16,384 -> 65,536 B: the USB staging arm became **two** 32 KiB halves (`usb::STAGE_HALF_LEN`), one filled by the transport while the other is the card's, and 32 KiB is one FAT cluster so each flush is a single 64-block CMD25 with no partial ends. **This costs zero resident bytes** and that is the arena's growth asymmetry working exactly as documented: the arena is `max(arms)`, the render arm is 117,408 B, and 65,536 is still comfortably under it - so `arena_total` is unchanged at 117,408 and `.uninit` is unchanged at 118,432. Measured locally against the same tree with the halves back at 16 KiB: `.bss` 290,704 + `.data` 5,112 = 295,816 B either way, largest guarded poll frame 9,728 B either way, residual main stack 77,272 B either way. The old \"a second 16 KiB would halve the margin over the 35,808 B deep-ride peak\" argument in `usb::STAGE_LEN`'s doc was a `.bss` argument and #1146 P2 retired it; the doc now says so. `semmc_driver` 52 -> 44 B is **not this change** - it is a pre-existing record reconciled here because it was in the way: `size_of::<semmc::Semmc>()` links 44 B on the current tree and the baseline still carried the figure the sEMMC pivot pinned. Related: the same pivot pinned `sd_bounce` and `semmc_driver` in this table without adding the rows to `main.rs`'s `resource_report::OBC_RESOURCE_TABLE`, so `resource_guard.py report` failed \"missing entries\" on every build since; the two rows are added in this branch.",
       "framebuffer_count": 1,
       "framebuffer_bytes": 76800,
       "poll_frame_measured": 9728,
@@ -140,7 +142,7 @@
         "arena_total": 117408,
         "arena_render": 117408,
         "arena_nav": 59872,
-        "arena_usb": 16384,
+        "arena_usb": 65536,
         "terrain": 2152,
         "terrain_extents": 1300,
         "stack_reserve": 65536,
@@ -156,7 +158,7 @@
         "ble_sensor_manager": 358,
         "usb_named": 2652,
         "sd_bounce": 2048,
-        "semmc_driver": 52
+        "semmc_driver": 44
       },
       "full_frame_sized_writable_count": 2,
       "_boot_chain_note_1108": "**Boot-path stack gates, added after the #1108 STKOF (schema v2).** Every image built from develop between #1084 (EL7) and #1108 hard-faulted at boot — a stack overflow at `link::init_store`'s prologue — and NOTHING in CI went red. The gap: `poll_frame_limit` only measures `TaskStorage<F>::poll` symbols, but the embassy **main task's** frame is allocated in the out-of-line `____embassy_main_task_inner_function::{{closure}}`, which that match excludes. EL7 inlined a ~2 KB terrain-parse temporary into it (20,352 -> 22,400 B) completely unseen. Three gates now cover it. `task_frame_limit` and `residual_stack_min` are EXACT measurements. `boot_chain_ceiling` is a deliberately CONSERVATIVE over-approximation: the walk follows every direct `bl` edge whether or not the path is feasible (a `Mode::ReadOnly` `open_file_in_dir` monomorphization still references `alloc_cluster`/`update_fat`, so FAT-write frames a rescan can never execute are counted) and is blind to indirect calls, so it is a drift detector, NOT a stack-safety proof — the on-glass high-water in ARCHITECTURE_RESOURCE_BASELINE.md is that. `boot_chain_headroom_min` is the invariant tying the other two together: ceiling and residual are independently re-approvable numbers, and #1084 failed precisely because three individually-reasonable changes summed past the stack, so the combination needs its own gate. Validated against the bricked image: on 5de00ce the same code reports task frame 22,400 B and headroom -7,932 B (chain 56,532 vs residual 48,600), versus 20,352 B and +7,044 B on the fix. **Host spread, measured on this PR's own CI run ([30852527404](https://github.com/timohueser/OpenBikeComputer/actions/runs/30852527404)).** `boot_chain_measured` is TOOLCHAIN-SENSITIVE in a way the resident figures are not: CI's floating stable links a 35,356 B ceiling where the pinned host links 41,556 B — 6.2 KB of inlining difference, since the walk's depth depends on which callees survive as separate symbols. `boot_chain_ceiling` 43,008 B therefore sits above BOTH so neither host false-fails, which does mean its sensitivity differs per host (~7.6 KB of slack on CI, ~1.4 KB locally). That is acceptable because the ceiling is the fuzzy drift detector, not the sharp gate: `task_frame_measured` reads exactly 20,352 B on CI *and* on the pinned host, so `task_frame_limit` — the gate that actually catches the #1084 class — is host-independent. Re-pin both figures from an `embedded` run, not a laptop.",
