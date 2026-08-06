@@ -467,6 +467,38 @@ toolchain-artifact trap, not new drift. The compile-time allocation report is
 unchanged on both profiles — the signal is a module static, not a field of `App`
 or `ObjectStore`, so no named entry (`app`, `ble_object_store`, …) moved.
 
+### The sEMMC carve (#1158 PR1), 2026-08-06 — **0 B of `.bss`/`.uninit`, −20,480 B of stack**
+
+The first change that costs RAM without linking a single byte. The microSD host moves off SPI
+onto Nordic's sEMMC soft peripheral, which the FLPR executes from its own **permanent** carve —
+permanent because storage reads happen mid-render, which rules out the #1146 arena. `build.rs`
+places it directly below the display FLPR's carve and shrinks the M33's linked `RAM` to match:
+
+| | |
+| :-- | --: |
+| image (code 15,360 + exec/data 1,536 + VRI 512) | 17,408 B |
+| reserved carve (4 KiB-aligned, `0x2007_8000 .. 0x2007_D000`) | 20,480 B |
+| M33 `RAM` | 500 KiB → **480 KiB** |
+
+- **Linked resident is unchanged** on both profiles — `.bss + .data` 293,688 B and `.uninit`
+  118,432 B to the byte. The carve is not a static; it is RAM the linker never sees. (The driver
+  itself is dead code in this PR, so even its ~32 B of statics are absent; expect a few dozen
+  bytes when the integration PR wires it up.)
+- **`residual_stack` pays all of it**, 99,880 → **79,400 B**, −20,480 exactly, because the bound
+  is `_stack_start − __euninit` and `_stack_start` is the top of the `RAM` region. This is the
+  gate that catches a carve, and the only one — a reviewer reading `.bss + .data` alone would see
+  nothing at all.
+- Against the measured deep-path peak (35,808 / 37,760 B) that still leaves ~42 KB, and against
+  the boot-chain ceiling (28,116 B, unchanged) 51,284 B — an order of magnitude over the 4,096 B
+  `boot_chain_headroom_min` floor. `main.rs`'s compile-time budget assert reads the same
+  generated `M33_RAM_BYTES` and clears with ~13.8 KB of margin.
+
+**Where the 20 KB came from.** #1146's net ~51 KB win, of which P3 had already spent ~25 KB on
+the frame caps; this is the rest of it, and it is what made the carve possible at all (the carve
+without #1146 HardFaulted on the first deep render — measured, #1145). 2,560 B of the region is
+slack: 17,408 rounds up to 20,480 to keep the image 4 KiB-aligned, the alignment every on-glass
+measurement was taken at. If Nordic documents a weaker `INITPC` alignment those bytes come back.
+
 ### The frame caps spend the dividend (#1146 P3), 2026-08-05 — **+25,088 B of `.uninit`, 0 B of `.bss`**
 
 The other half of the arena trade, and the first change whose whole cost lands in `.uninit`.
