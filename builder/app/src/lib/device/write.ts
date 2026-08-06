@@ -34,9 +34,10 @@ import type { JobContext } from "./progress";
 import type { PreparedRoute } from "./route";
 import { Sha256 } from "./sha256";
 
-/** Bytes handed to the bulk pipe at a time. A map is minutes long either way; this only decides
- *  how often progress moves and how much is in flight, so it stays modest. */
-const MAP_CHUNK = 32 * 1024;
+// The chunk size is deliberately **not** overridden here any more. It used to be a local 32 KiB —
+// half the client's own default since the upload retune, so a map (the one object where the number
+// matters) was quietly getting the *smaller* chunk. There is one throughput dial and it lives with
+// the transport that pays for it: `DEFAULT_CHUNK_SIZE` / `UPLOAD_WINDOW` in `../usb/client`.
 
 /** One file streamed out of the assembler worker. Shards precede the manifest. */
 export interface AssembledSetFile {
@@ -115,8 +116,14 @@ export async function sendAssembledSetFile(
         try {
             result = await client.upload(type, objectId, bytesSource(file.bytes), {
                 signal: ctx.signal,
-                chunkSize: MAP_CHUNK,
                 onProgress: (done) => ctx.progress(state.committedBytes + done, state.totalBytes),
+                // **The manifest is the set's commit point, and it is tiny.** Committing it re-opens
+                // and cross-checks every shard header already on the card, so its wait has to be
+                // budgeted against the set rather than against the ~2 KB that just moved. Getting
+                // this wrong loses data rather than time: a timed-out wait fires an `op = 3` abort,
+                // and the device answers that by deleting the whole set — including one it may have
+                // just committed successfully.
+                commitBytes: manifest ? state.totalBytes : undefined,
             });
             break;
         } catch (cause) {
@@ -155,7 +162,6 @@ export async function sendMapFile(client: ProtocolClient, file: File, ctx: JobCo
     ctx.phase("sending", source.totalLen);
     return client.upload(ObjectType.Map, NEW_OBJECT_ID, source, {
         signal: ctx.signal,
-        chunkSize: MAP_CHUNK,
         onProgress: (done, total) => ctx.progress(done, total),
     });
 }

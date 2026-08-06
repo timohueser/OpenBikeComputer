@@ -153,8 +153,15 @@ class WebUsbPipe implements BytePipe {
      *  one-transfer gate (§4.1) serialises every bulk read. Two concurrent readers would share this
      *  one transfer and be handed the same bytes twice rather than a packet each. */
     private heldIn: HeldTransfer | null = null;
-    /** OUT transfers still on the wire. Only ever 0 or 1 (the client serialises writes), counted
-     *  rather than flagged so an overlapping pair could not clear it early. */
+    /** OUT transfers still on the wire.
+     *
+     *  Counted rather than flagged, and that stopped being a precaution: an upload keeps up to
+     *  `UPLOAD_WINDOW` (`client.ts`) transfers queued at the endpoint, so this is routinely > 1 and
+     *  a flag would be cleared by the first of them to settle. Only {@link reset} reads it, to
+     *  decide whether the OUT half is idle enough to `clearHalt` — which stays correct at any depth,
+     *  because "anything still on the wire" is exactly the question. Ordering between concurrent
+     *  writes is WebUSB's: transfers submitted to one endpoint are delivered in submission order,
+     *  which is what makes a windowed upload a byte stream rather than a race. */
     private writesInFlight = 0;
 
     constructor(
