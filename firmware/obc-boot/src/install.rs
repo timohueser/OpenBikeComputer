@@ -1,4 +1,4 @@
-//! The [`obc_dfu::engine::InstallIo`] wiring: real SPI block reads + RRAMC line writes behind
+//! The [`obc_dfu::engine::InstallIo`] wiring: real sEMMC block reads + RRAMC line writes behind
 //! the host-tested install engine. This file is deliberately free of *sequencing* — ordering,
 //! retries, and failure policy all live (and are unit-tested) in `obc-dfu`; everything here is
 //! a one-line adapter plus the LED heartbeat and the `rtt` throughput meter.
@@ -10,7 +10,7 @@ use obc_dfu::BootState;
 
 use crate::com::Com;
 use crate::led::Led;
-use crate::sd::SdBlocks;
+use crate::semmc::BootSemmc;
 use crate::wdt::BootDog;
 
 /// Toggle the LED every this many progress chunks (~4 KB each) while verifying — the *slow*
@@ -23,7 +23,8 @@ const FLASH_TOGGLE_CHUNKS: u32 = 8;
 pub struct BootIo<'a> {
     /// The raw-block card — `None` for decisions that never stream extents (`AcceptAndClear`),
     /// which is why `read_blocks` on `None` is unreachable rather than a real error path.
-    sd: Option<&'a SdBlocks>,
+    /// `&mut` since the sEMMC port: the transport tracks the barrier counter and bus state.
+    sd: Option<&'a mut BootSemmc>,
     rram: &'a mut Rramc<'static, Unbuffered>,
     led: &'a mut Led,
     /// The boot-chain watchdog (DR1, #729) — pet from [`progress`](InstallIo::progress), the
@@ -42,7 +43,7 @@ pub struct BootIo<'a> {
 
 impl<'a> BootIo<'a> {
     pub fn new(
-        sd: Option<&'a SdBlocks>,
+        sd: Option<&'a mut BootSemmc>,
         rram: &'a mut Rramc<'static, Unbuffered>,
         led: &'a mut Led,
         dog: &'a mut BootDog,
@@ -65,7 +66,7 @@ impl<'a> BootIo<'a> {
 
 impl InstallIo for BootIo<'_> {
     fn read_blocks(&mut self, start_block: u32, buf: &mut [u8]) -> Result<(), IoError> {
-        self.sd.ok_or(IoError)?.read_blocks(start_block, buf).map_err(|_| IoError)
+        self.sd.as_mut().ok_or(IoError)?.read_blocks(start_block, buf).map_err(|_| IoError)
     }
 
     /// Blocking RRAMC line writes to the app slot. The engine only ever hands us 16-byte-aligned
