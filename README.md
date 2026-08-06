@@ -392,7 +392,7 @@ The device half ships in every firmware build (#889, `obc-fw-nrf54l/src/usb/`)
 and is verified on hardware. `dev-harness/` is a second
 entry point that mounts the whole app against the **simulated device** —
 `lib/usb/loopback.ts`, the real protocol over an in-memory pipe, paced to a fixed
-**~0.68 MB/s** so progress, throughput and the remaining-time estimate behave
+**~0.72 MB/s** so progress, throughput and the remaining-time estimate behave
 plausibly. That pacing is **deliberately pessimistic and not a measurement**: it
 was the retired SPI transport's write ceiling, and the sEMMC pivot (#1158) raised
 the card's raw write bandwidth to 8.2 MB/s. The upload pipeline was retuned for
