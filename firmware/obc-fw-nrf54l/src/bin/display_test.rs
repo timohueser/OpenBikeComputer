@@ -17,7 +17,7 @@
 //! Probing the drive signals (each frame push is a ~45 ms burst, once per second):
 //! INTB P1.13 goes HIGH for the whole burst (the easiest scope trigger), GSP P1.10 pulses once
 //! per frame, GCK P1.11 clocks 640 sub-lines, BSP P1.14 pulses per sub-line, BCK P2.07 runs the
-//! ~0.75 MHz shift clock, data on P2.00–05.
+//! ~0.75 MHz shift clock, data on P2.06/.08/.09/.10 + P2.00/.04 (the rehomed bus, issue #1158).
 #![no_std]
 #![no_main]
 
@@ -35,7 +35,7 @@ mod ls021_flpr;
 use defmt::{info, warn};
 use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_nrf::gpio::{Level, Output, OutputDrive};
+use embassy_nrf::gpio::{Input, Level, Output, OutputDrive, Pull};
 use embassy_time::Timer;
 // The critical-section impl comes from linking nrf-mpsl (the default `ble` feature set) — MPSL is
 // never initialised here; its cs impl works from reset, exactly as in `sd_bench`.
@@ -64,8 +64,10 @@ async fn main(spawner: Spawner) {
     // LED1 heartbeat (one blink per colour step). LED0's pin carries VCOM below.
     let mut led = Output::new(p.P1_25, Level::Low, OutputDrive::Standard);
 
-    // Pin claims — byte-for-byte the app's map (`main.rs`): the FLPR only toggles OUT bits, the
-    // M33 owns direction/drive, so every line must be configured here before launch.
+    // Pin claims — the FLPR only toggles OUT bits, the M33 owns direction/drive, so every line
+    // must be configured here before launch. (`main.rs` still claims the display data on the old
+    // pads plus SD-SPI; the storage-pivot integration PR rewires it and deletes the SPI path in
+    // one step — until then this checker is the only build on the rehomed map.)
     // Gate + frame lines: the contiguous P1.10–14 run.
     let _gate_bus = [
         Output::new(p.P1_10, Level::Low, OutputDrive::Standard), // GSP
@@ -73,16 +75,27 @@ async fn main(spawner: Spawner) {
         Output::new(p.P1_12, Level::Low, OutputDrive::Standard), // GEN
         Output::new(p.P1_13, Level::Low, OutputDrive::Standard), // INTB
     ];
-    // Source bus: BSP on P1.14, BCK + the 6 data lines on P2 (P2.06 stays the SD's — untouched).
+    // Source bus on the rehomed map (issue #1158 — the sEMMC storage pivot gave the six fixed card
+    // pads P2.00–05 to the card, so the display data moved onto the four pins the retired SD-SPI
+    // path freed plus the two pads time-shared with sEMMC D3/D1). Matches `flpr_scan.c`'s
+    // `DATA_MASK 0x751` and `obc_display::ls021::wire`.
     let _src_bus = [
         Output::new(p.P1_14, Level::Low, OutputDrive::Standard), // BSP
-        Output::new(p.P2_07, Level::Low, OutputDrive::Standard), // BCK
-        Output::new(p.P2_00, Level::Low, OutputDrive::Standard), // R0 (odd)
-        Output::new(p.P2_01, Level::Low, OutputDrive::Standard), // R1 (even)
-        Output::new(p.P2_02, Level::Low, OutputDrive::Standard), // G0
-        Output::new(p.P2_03, Level::Low, OutputDrive::Standard), // G1
-        Output::new(p.P2_04, Level::Low, OutputDrive::Standard), // B0
-        Output::new(p.P2_05, Level::Low, OutputDrive::Standard), // B1
+        Output::new(p.P2_07, Level::Low, OutputDrive::Standard), // BCK (unchanged)
+        Output::new(p.P2_06, Level::Low, OutputDrive::Standard), // R0 (was SD-SPI SCK)
+        Output::new(p.P2_08, Level::Low, OutputDrive::Standard), // R1 (was SD-SPI MOSI)
+        Output::new(p.P2_09, Level::Low, OutputDrive::Standard), // G0 (was SD-SPI MISO)
+        Output::new(p.P2_10, Level::Low, OutputDrive::Standard), // G1 (was SD-SPI CS)
+        Output::new(p.P2_00, Level::Low, OutputDrive::Standard), // B0 (shared: sEMMC D3)
+        Output::new(p.P2_04, Level::Low, OutputDrive::Standard), // B1 (shared: sEMMC D1)
+    ];
+    // Park the four card-only sEMMC pads as inputs: the card breakout's pull-ups hold CLK/CMD/D0/D2
+    // high = an idle SD bus, and with no clock edges the card stays inert while we drive the panel.
+    let _sd_parked = [
+        Input::new(p.P2_01, Pull::None), // sEMMC CLK
+        Input::new(p.P2_02, Pull::None), // sEMMC D0
+        Input::new(p.P2_03, Pull::None), // sEMMC D2
+        Input::new(p.P2_05, Pull::None), // sEMMC CMD
     ];
     // COM electrodes, boot `Lo`, held `Lo` through the init-black frame, then free-running.
     let (vcom, vb, va) = (

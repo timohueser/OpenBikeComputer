@@ -23,10 +23,24 @@
 //!
 //! Each word is one **pixel pair**: the even-`x` pixel on the `*0` lines (`R0/G0/B0`) and the
 //! odd-`x` pixel on the `*1` lines (`R1/G1/B1`). A packed word holds those 6 data bits already
-//! shifted to their P2 GPIO positions — `bit0 R0, bit1 R1, bit2 G0, bit3 G1, bit4 B0, bit5 B1`
-//! (`= DATA_MASK 0x3F`) — so the FLPR presents a column with one `OUTCLR (~w & 0x3F)` + one
-//! `OUTSET (w & 0x3F)` and no bit-twiddling. `BCK` is *not* in the word; it is the FLPR's own pulse.
+//! shifted to their P2 GPIO positions — `bit6 R0, bit8 R1, bit9 G0, bit10 G1, bit0 B0, bit4 B1`
+//! (`= DATA_MASK 0x751`) — so the FLPR presents a column with one `OUTCLR (~w & 0x751)` + one
+//! `OUTSET (w & 0x751)` and no bit-twiddling. `BCK` is *not* in the word; it is the FLPR's own pulse.
 //! The 4 trailing dummy/flush columns of each sub-line are black (`0`).
+//!
+//! The positions are **sparse** because the six fixed sEMMC card pads own `P2.00–05` since the
+//! storage pivot (issue #1158): the display data lines live on the four pins the retired SD-SPI
+//! path freed plus the two pads time-shared with the card's `D3`/`D1`, whose `CTRLSEL` hands them
+//! to the display blob or to the sEMMC soft peripheral per mode (the two never run at once).
+//!
+//! | line | `R0` | `R1` | `G0` | `G1` | `B0` | `B1` |
+//! |---|---|---|---|---|---|---|
+//! | P2 pin | `.06` | `.08` | `.09` | `.10` | `.00` (`D3`) | `.04` (`D1`) |
+//! | word bit | 6 | 8 | 9 | 10 | 0 | 4 |
+//!
+//! This module is the **normative** definition of that layout; the FLPR's C port
+//! (`obc-fw-nrf54l/src/flpr/flpr_scan.c`, `pack_word` + `DATA_MASK`) mirrors it bit-for-bit and
+//! the two always move in the same commit — the goldens below pin the host side.
 //!
 //! **The panel is DDR**: it latches the source bus on *both* `BCK` edges, so the FLPR drains these
 //! words **one per edge** — word `2k` before the rising edge, `2k+1` before the falling — clocking
@@ -53,8 +67,8 @@ pub const BCK_PER_SUBLINE: usize = COLS_PER_SUBLINE + 4;
 pub const ROW_WORDS: usize = 2 * BCK_PER_SUBLINE;
 
 /// Pack one pixel pair (two device-64 bytes, `0b00_RR_GG_BB`) into one source-bus word for the
-/// given area plane. `even` is the even-`x` pixel → `R0/G0/B0` (bits 0/2/4); `odd` is the
-/// odd-`x` pixel → `R1/G1/B1` (bits 1/3/5). `msb` selects the area-gradation bit
+/// given area plane. `even` is the even-`x` pixel → `R0/G0/B0` (word bits 6/9/0); `odd` is the
+/// odd-`x` pixel → `R1/G1/B1` (word bits 8/10/4). `msb` selects the area-gradation bit
 /// (`level >> 1` for the 2/3-area MSB plane, `level & 1` for the 1/3-area LSB plane).
 #[inline]
 fn pack_pair(even: u8, odd: u8, msb: bool) -> u32 {
@@ -63,7 +77,10 @@ fn pack_pair(even: u8, odd: u8, msb: bool) -> u32 {
     let bit = |byte: u8, ch_shift: u32| (((byte >> ch_shift) >> shift) & 1) as u32;
     let (re, ge, be) = (bit(even, 4), bit(even, 2), bit(even, 0)); // even x → R0/G0/B0
     let (ro, go, bo) = (bit(odd, 4), bit(odd, 2), bit(odd, 0)); // odd  x → R1/G1/B1
-    re | (ro << 1) | (ge << 2) | (go << 3) | (be << 4) | (bo << 5)
+
+    // Shifted straight to the P2 pin positions of the rehomed bus (module doc's pin table):
+    // R0→P2.06, R1→P2.08, G0→P2.09, G1→P2.10, B0→P2.00, B1→P2.04.
+    (re << 6) | (ro << 8) | (ge << 9) | (go << 10) | be | (bo << 4)
 }
 
 /// Pack one **row** of device-64 ([`FbDevice64`](crate::FbDevice64)) pixels into the LS021 FLPR
@@ -101,8 +118,38 @@ mod tests {
         (r << 4) | (g << 2) | b
     }
 
+    /// The rehomed source-bus **pin map** (issue #1158), written as P2 pin indexes rather than as
+    /// word shifts: a packed word's bit position *is* the pin index, so re-deriving the goldens
+    /// from these catches a bit-position slip in `pack_pair` instead of mirroring it.
+    const R0_PIN: u32 = 6; // P2.06 (was SD-SPI SCK)
+    const R1_PIN: u32 = 8; // P2.08 (was SD-SPI MOSI)
+    const G0_PIN: u32 = 9; // P2.09 (was SD-SPI MISO)
+    const G1_PIN: u32 = 10; // P2.10 (was SD-SPI CS)
+    const B0_PIN: u32 = 0; // P2.00, time-shared with sEMMC D3
+    const B1_PIN: u32 = 4; // P2.04, time-shared with sEMMC D1
+
+    /// The six data lines together — the FLPR's `OUTCLR`/`OUTSET` mask, `DATA_MASK` in
+    /// `obc-fw-nrf54l/src/flpr/flpr_scan.c`. Also the packed word of a solid-white column.
+    const DATA_MASK: u32 =
+        (1 << R0_PIN) | (1 << R1_PIN) | (1 << G0_PIN) | (1 << G1_PIN) | (1 << B0_PIN) | (1 << B1_PIN);
+    /// Per-channel line pairs (`*0` even + `*1` odd), derived from the pin map above.
+    const RED_LINES: u32 = (1 << R0_PIN) | (1 << R1_PIN);
+    const GREEN_LINES: u32 = (1 << G0_PIN) | (1 << G1_PIN);
+    const BLUE_LINES: u32 = (1 << B0_PIN) | (1 << B1_PIN);
+
+    /// Cross-language pin: the mask this module packs to must be the literal the FLPR blob clears
+    /// and sets. If this fails, `flpr_scan.c`'s `DATA_MASK` and the pin map above have diverged —
+    /// the panel would show garbage on glass.
+    #[test]
+    fn data_mask_matches_the_flpr_blob() {
+        assert_eq!(DATA_MASK, 0x751, "DATA_MASK must equal flpr_scan.c's 0x751");
+        assert_eq!(RED_LINES, 0x140);
+        assert_eq!(GREEN_LINES, 0x600);
+        assert_eq!(BLUE_LINES, 0x011);
+    }
+
     /// Independent longhand re-derivation of the golden reference word (mirrors `PanelBus::plane_bits`
-    /// + the `R0..B1` bit positions from `src/ls021.rs`), so the test fails if `pack_pair` drifts.
+    /// + the `R0..B1` pin map above), so the test fails if `pack_pair` drifts.
     fn golden_word(even: (u8, u8, u8), odd: (u8, u8, u8), msb: bool) -> u32 {
         // plane_bits: MSB plane = level>>1, LSB plane = level&1.
         let plane = |l: u8| if msb { (l >> 1) & 1 } else { l & 1 } as u32;
@@ -112,7 +159,7 @@ mod tests {
         let r1 = plane(odd.0);
         let g1 = plane(odd.1);
         let b1 = plane(odd.2);
-        r0 | (r1 << 1) | (g0 << 2) | (g1 << 3) | (b0 << 4) | (b1 << 5)
+        (r0 << R0_PIN) | (r1 << R1_PIN) | (g0 << G0_PIN) | (g1 << G1_PIN) | (b0 << B0_PIN) | (b1 << B1_PIN)
     }
 
     fn empty_row() -> [u8; WIDTH] {
@@ -126,16 +173,18 @@ mod tests {
         assert!(out.iter().all(|&w| w == 0), "black row must pack to all-zero words");
     }
 
-    /// Solid white: every data column is `0x3F` in both planes (all 6 lines high, odd == even),
-    /// the 4 dummy columns are `0`. This is exactly the `pack_solid(3,3,3)` stand-in F3 used.
+    /// Solid white: every data column is `DATA_MASK` (`0x751`) in both planes (all 6 lines high,
+    /// odd == even), the 4 dummy columns are `0`. This is exactly the `pack_solid(3,3,3)` stand-in
+    /// F3 used. It also proves the pack never sets a bit outside the six data lines — anything
+    /// stray would be an `OUTSET` on a pin the FLPR does not own (BCK, or an sEMMC card pad).
     #[test]
     fn solid_white_matches_pack_solid() {
         let row = [dev64(3, 3, 3); WIDTH];
         let mut out = [0u32; ROW_WORDS];
         pack_row(&row, &mut out);
         for col in 0..COLS_PER_SUBLINE {
-            assert_eq!(out[col], 0x3F, "MSB data col {col}");
-            assert_eq!(out[BCK_PER_SUBLINE + col], 0x3F, "LSB data col {col}");
+            assert_eq!(out[col], DATA_MASK, "MSB data col {col}");
+            assert_eq!(out[BCK_PER_SUBLINE + col], DATA_MASK, "LSB data col {col}");
         }
         for col in COLS_PER_SUBLINE..BCK_PER_SUBLINE {
             assert_eq!(out[col], 0, "MSB dummy col {col}");
@@ -144,11 +193,11 @@ mod tests {
     }
 
     /// Pure channels at level 3 land on the right line pairs (catches an R/G/B swap): red lights
-    /// only `R0|R1` (bits 0,1 → `0x03`), green only `G0|G1` (bits 2,3 → `0x0C`), blue only
-    /// `B0|B1` (bits 4,5 → `0x30`). At full level both planes carry the bit.
+    /// only `R0|R1` (bits 6,8 → `0x140`), green only `G0|G1` (bits 9,10 → `0x600`), blue only
+    /// `B0|B1` (bits 0,4 → `0x011`). At full level both planes carry the bit.
     #[test]
     fn pure_channels_hit_the_right_lines() {
-        for (level, mask) in [((3, 0, 0), 0x03u32), ((0, 3, 0), 0x0C), ((0, 0, 3), 0x30)] {
+        for (level, mask) in [((3, 0, 0), RED_LINES), ((0, 3, 0), GREEN_LINES), ((0, 0, 3), BLUE_LINES)] {
             let row = [dev64(level.0, level.1, level.2); WIDTH];
             let mut out = [0u32; ROW_WORDS];
             pack_row(&row, &mut out);
@@ -165,18 +214,18 @@ mod tests {
         let two = [dev64(2, 0, 0); WIDTH];
         let mut out = [0u32; ROW_WORDS];
         pack_row(&two, &mut out);
-        assert_eq!(out[0], 0x03, "level 2 → MSB plane only");
+        assert_eq!(out[0], RED_LINES, "level 2 → MSB plane only");
         assert_eq!(out[BCK_PER_SUBLINE], 0x00, "level 2 → nothing in LSB plane");
 
         let one = [dev64(1, 0, 0); WIDTH];
         pack_row(&one, &mut out);
         assert_eq!(out[0], 0x00, "level 1 → nothing in MSB plane");
-        assert_eq!(out[BCK_PER_SUBLINE], 0x03, "level 1 → LSB plane only");
+        assert_eq!(out[BCK_PER_SUBLINE], RED_LINES, "level 1 → LSB plane only");
     }
 
     /// Odd and even columns are distinct lines: a row whose even pixels are red and odd pixels are
-    /// blue must put red only on `R0` (bit0) and blue only on `B1` (bit5) — proves no odd/even
-    /// interleave error and that the pair maps `even→*0, odd→*1`.
+    /// blue must put red only on `R0` (bit6 = P2.06) and blue only on `B1` (bit4 = P2.04) —
+    /// proves no odd/even interleave error and that the pair maps `even→*0, odd→*1`.
     #[test]
     fn odd_even_interleave_is_distinct() {
         let mut row = empty_row();
@@ -185,20 +234,51 @@ mod tests {
         }
         let mut out = [0u32; ROW_WORDS];
         pack_row(&row, &mut out);
-        // R0 (bit0, even=red) and B1 (bit5, odd=blue) → 0b10_0001 = 0x21.
-        assert_eq!(out[0], 0x21, "even red on R0, odd blue on B1");
+        // R0 (bit6, even=red) and B1 (bit4, odd=blue) → 0x40 | 0x10 = 0x50.
+        assert_eq!(out[0], (1 << R0_PIN) | (1 << B1_PIN), "even red on R0, odd blue on B1");
+        assert_eq!(out[0], 0x50);
+    }
+
+    /// **The pin map, one line at a time.** Light exactly one channel of exactly one parity and the
+    /// packed word must be exactly that line's bit — six one-hot assertions covering all six pins.
+    /// This is the tightest pin on the rehomed map: the pattern test below only compares *pairs*,
+    /// so a `G0`↔`G1` (or `B0`↔`B1`) swap can hide there whenever the two pixels of a pair happen
+    /// to carry the same level; here it cannot.
+    #[test]
+    fn each_line_is_addressable_on_its_own() {
+        let cases = [
+            ((3, 0, 0), (0, 0, 0), 1u32 << R0_PIN),
+            ((0, 0, 0), (3, 0, 0), 1 << R1_PIN),
+            ((0, 3, 0), (0, 0, 0), 1 << G0_PIN),
+            ((0, 0, 0), (0, 3, 0), 1 << G1_PIN),
+            ((0, 0, 3), (0, 0, 0), 1 << B0_PIN),
+            ((0, 0, 0), (0, 0, 3), 1 << B1_PIN),
+        ];
+        for (even, odd, line) in cases {
+            let mut row = empty_row();
+            for (x, px) in row.iter_mut().enumerate() {
+                let (r, g, b) = if x % 2 == 0 { even } else { odd };
+                *px = dev64(r, g, b);
+            }
+            let mut out = [0u32; ROW_WORDS];
+            pack_row(&row, &mut out);
+            // Level 3 sets the channel's bit in both area planes and nothing else anywhere.
+            assert_eq!(out[0], line, "MSB plane: even {even:?} / odd {odd:?} is not one-hot");
+            assert_eq!(out[BCK_PER_SUBLINE], line, "LSB plane: even {even:?} / odd {odd:?} is not one-hot");
+        }
     }
 
     /// Full-row agreement against the longhand golden re-derivation across an arbitrary spatial
-    /// pattern (every pixel a different RGB222 value) for both planes — the catch-all that would
-    /// flag any bit-position or plane drift `pack_pair` might pick up.
+    /// pattern for both planes — the catch-all that would flag any bit-position or plane drift
+    /// `pack_pair` might pick up. Every channel changes level between *neighbouring* pixels (the
+    /// multipliers are coprime with 4), so an odd/even swap on any line shows up here too.
     #[test]
     fn matches_golden_reference_over_a_pattern() {
         let mut row = empty_row();
         let levels = |x: usize| {
-            let r = (x % 4) as u8;
-            let g = ((x / 4) % 4) as u8;
-            let b = ((x / 16) % 4) as u8;
+            let r = ((x + 1) % 4) as u8;
+            let g = ((3 * x + 2) % 4) as u8;
+            let b = ((7 * x) % 4) as u8;
             (r, g, b)
         };
         for (x, px) in row.iter_mut().enumerate() {
