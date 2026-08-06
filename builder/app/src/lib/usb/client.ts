@@ -103,9 +103,37 @@ export class DeviceError extends Error {
     }
 }
 
-/** How many bytes an upload hands the bulk pipe at a time. Sized for a high-speed bulk endpoint;
- *  the pipe is free to re-segment, and the device must accept any segmentation anyway. */
-export const DEFAULT_CHUNK_SIZE = 16 * 1024;
+/**
+ * How many bytes an upload hands the bulk pipe at a time.
+ *
+ * 64 KiB = 128 packets on a 512-byte high-speed endpoint. The pipe is free to re-segment and the
+ * device must accept any segmentation anyway, so this is not a protocol number — it is the unit of
+ * *host-side* work. Each `transferOut` costs a renderer → USB-service round trip, so a small chunk
+ * pays that latency more often, and with {@link UPLOAD_WINDOW} > 1 the only cost of a large one is
+ * how coarsely the progress bar moves.
+ *
+ * Sweep it together with `UPLOAD_WINDOW`: the bytes the browser keeps queued at the endpoint are
+ * their product (256 KiB today), which is what has to cover a device-side flush without the wire
+ * going idle.
+ */
+export const DEFAULT_CHUNK_SIZE = 64 * 1024;
+
+/**
+ * How many `transferOut`s an upload keeps in flight at once.
+ *
+ * **The single biggest host-side lever, and the reason is latency, not bandwidth.** WebUSB hands a
+ * transfer from the renderer process to the browser's USB service and back; with exactly one
+ * outstanding, the wire is idle for that round trip between *every* chunk, and the device — which
+ * NAKs anyway while it writes a staging half to the card — has nothing queued to absorb the moment
+ * it comes back. A small window keeps the endpoint fed across both gaps.
+ *
+ * Small on purpose. Backpressure is what stops a 300 MB map from being read into the tab faster
+ * than the card can take it ({@link BytePipe.write}'s doc), and a deep queue would defeat it; four
+ * chunks is enough to cover a round trip and a flush, and no more. The window also bounds how far
+ * the progress bar can run ahead of what the device has actually taken — see the loop in
+ * {@link ProtocolClient.upload}, which only counts a chunk once its transfer has settled.
+ */
+export const UPLOAD_WINDOW = 4;
 
 /**
  * How long to wait for a device answer before giving up.
@@ -115,6 +143,35 @@ export const DEFAULT_CHUNK_SIZE = 16 * 1024;
  * error, never a spinner that outlives the ride.
  */
 export const DEFAULT_TIMEOUT_MS = 15_000;
+
+/**
+ * The extra budget the **last** wait of an upload gets, on top of {@link DEFAULT_TIMEOUT_MS}.
+ *
+ * Every other device answer is a register read or a small file write. A commit is not: it re-opens
+ * the object, re-reads it and validates it, and for a **volume-set manifest** it also cross-checks
+ * every shard header already on the card (`Storage::set_manifest_commit` → `set_shard_totals`,
+ * `firmware/obc-fw-nrf54l/src/sd.rs`) — up to 32 directory lookups and header reads, behind a card
+ * that may still be finishing the program cycle of the shard before it.
+ *
+ * Getting this wrong is not a slow spinner, it is **data loss**: on timeout the client throws *and*
+ * `withTransferSlot` fires an `op = 3` abort, which makes the device discard a set it may have just
+ * committed successfully. So the commit wait is budgeted generously and scaled by how much the
+ * device has to re-read — {@link commitTimeoutMs}.
+ */
+const COMMIT_TIMEOUT_BASE_MS = 60_000;
+
+/**
+ * Extra commit budget per megabyte announced, capped by {@link COMMIT_TIMEOUT_MAX_MS}.
+ *
+ * A set's manifest is under 2 KB, but the work its commit does is proportional to the *set*, not to
+ * the manifest — and the only proxy the client has for set size at that moment is what it has
+ * uploaded. Deliberately loose: this bound exists to stop an infinite spinner, not to police the
+ * device's timing.
+ */
+const COMMIT_TIMEOUT_PER_MB_MS = 200;
+
+/** Ceiling on the commit wait, so a mis-announced length cannot produce an unbounded spinner. */
+const COMMIT_TIMEOUT_MAX_MS = 10 * 60_000;
 
 /**
  * The two checks the upload loop makes between chunks, handed to a source that does its own I/O.
@@ -220,6 +277,25 @@ export interface TransferOptions {
     onProgress?: (done: number, total: number) => void;
     /** Override {@link DEFAULT_CHUNK_SIZE} for one upload. */
     chunkSize?: number;
+    /**
+     * How many bytes the device has to **re-read** to commit this object, when that is not the
+     * object's own length.
+     *
+     * One caller sets it, and it is the one that would otherwise lose data: a volume-set manifest is
+     * under 2 KB, but committing it cross-checks every shard already on the card, so its wait has to
+     * be budgeted against the *set*. Defaults to the object's announced length.
+     */
+    commitBytes?: number;
+}
+
+/**
+ * The wait budget for the terminal `transferResult` of an upload, given how much the device has to
+ * re-read to commit it. See {@link COMMIT_TIMEOUT_BASE_MS} for why this is not
+ * {@link DEFAULT_TIMEOUT_MS}.
+ */
+export function commitTimeoutMs(commitBytes: number): number {
+    const megabytes = Math.ceil(Math.max(commitBytes, 0) / (1024 * 1024));
+    return Math.min(COMMIT_TIMEOUT_BASE_MS + megabytes * COMMIT_TIMEOUT_PER_MB_MS, COMMIT_TIMEOUT_MAX_MS);
 }
 
 /** What an upload committed to. */
@@ -371,12 +447,9 @@ export class ProtocolClient {
                     check,
                 });
             } else {
-                for await (const chunk of src.chunks(chunkSize)) {
-                    check();
-                    await this.link.bulk.write(chunk, signal);
-                    sent += chunk.length;
-                    onProgress?.(sent, src.totalLen);
-                }
+                sent = await this.pumpChunks(src, chunkSize, signal, check, (done) =>
+                    onProgress?.(done, src.totalLen),
+                );
             }
             if (sent !== src.totalLen) {
                 throw new DeviceError(
@@ -385,7 +458,11 @@ export class ProtocolClient {
                 );
             }
 
-            const result = await this.awaitTransferResult(signal, "upload");
+            const result = await this.awaitTransferResult(
+                signal,
+                "upload",
+                commitTimeoutMs(options.commitBytes ?? src.totalLen),
+            );
             this.transferClosed = true;
             if (result.status !== TransferStatus.Committed) throw this.transferFailure(result, "upload");
             // A fresh upload's result carries the assigned id, so correlation is only meaningful for
@@ -737,6 +814,61 @@ export class ProtocolClient {
     }
 
     /**
+     * Stream a source's chunks with up to {@link UPLOAD_WINDOW} `transferOut`s outstanding, and
+     * answer with the bytes the transport actually took.
+     *
+     * **Why a window at all.** One outstanding transfer means the wire is idle for a renderer →
+     * USB-service round trip between every chunk, *and* that the device has nothing queued to absorb
+     * the moment it comes back from writing a staging half to the card. Both gaps are covered by
+     * keeping a few chunks queued at the endpoint. The device needs no protocol change for this: the
+     * bulk channel is unframed (spec principle #2) and the firmware reads it a packet at a time
+     * regardless of how the host segmented it.
+     *
+     * **Backpressure survives.** The window is bounded, so a source is still pulled at the device's
+     * pace rather than read whole into the tab — the property {@link BytePipe.write}'s doc rests on.
+     * It is bounded in *chunks*, so the bytes in flight are `UPLOAD_WINDOW × chunkSize`.
+     *
+     * **Progress counts settled bytes only.** A queued transfer is not yet the device's, so
+     * reporting on hand-off would run the bar up to 100% while a quarter-megabyte was still on the
+     * wire — and would make a failure look like it happened after the bytes landed.
+     */
+    private async pumpChunks(
+        src: ObjectSource,
+        chunkSize: number,
+        signal: AbortSignal | undefined,
+        check: () => void,
+        onProgress: (done: number) => void,
+    ): Promise<number> {
+        /** Handed to the transport and not yet settled, oldest first. */
+        const queued: Array<{ promise: Promise<void>; length: number }> = [];
+        let settled = 0;
+        const retireOldest = async () => {
+            const oldest = queued.shift();
+            if (!oldest) return;
+            await oldest.promise;
+            settled += oldest.length;
+            onProgress(settled);
+        };
+        try {
+            for await (const chunk of src.chunks(chunkSize)) {
+                check();
+                queued.push({ promise: this.link.bulk.write(chunk, signal), length: chunk.length });
+                if (queued.length >= UPLOAD_WINDOW) await retireOldest();
+            }
+            while (queued.length > 0) await retireOldest();
+        } catch (cause) {
+            // Settle what is still queued before unwinding, and the reason is not tidiness. An
+            // unobserved rejection is an "unhandled promise rejection" the browser reports over the
+            // caller's real error; and `withTransferSlot`'s failure path calls `reset()`, which
+            // decides whether an endpoint can be cleared from `writesInFlight` — a decision it would
+            // get wrong while these are still on the wire.
+            await Promise.allSettled(queued.map((entry) => entry.promise));
+            throw cause;
+        }
+        return settled;
+    }
+
+    /**
      * May the upload keep pushing bytes?
      *
      * The two conditions the chunk loop used to check inline, hoisted so a source that streams
@@ -800,8 +932,8 @@ export class ProtocolClient {
         return d;
     }
 
-    private async awaitTransferResult(signal: AbortSignal | undefined, what: string) {
-        const msg = await this.statuses.take(this.timeoutMs, signal, `the ${what} result`);
+    private async awaitTransferResult(signal: AbortSignal | undefined, what: string, timeoutMs?: number) {
+        const msg = await this.statuses.take(timeoutMs ?? this.timeoutMs, signal, `the ${what} result`);
         if (msg.msg !== "transferResult") {
             throw new DeviceError("protocol", `expected a transfer result, got a ${msg.msg}.`);
         }
