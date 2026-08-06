@@ -526,6 +526,7 @@ failed = "Carte non enregistrée"
 failed_storage = "La carte SD n'a pas pu enregistrer la carte."
 failed_damaged = "La carte est arrivée endommagée. Renvoyez-la."
 failed_format = "Ce fichier n'est pas une carte lisible par cet appareil."
+failed_refused = "La carte est arrivée incomplète. Renvoyez-la."
 
 # --- Boot-fault cards (pre-app; the device renders the English column) ---
 [fault]

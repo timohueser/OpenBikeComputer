@@ -1431,6 +1431,75 @@ impl ObjectStore {
         Receiver::new(desc).map(|rx| (rx, part)).map_err(|_| TransferStatus::Error)
     }
 
+    /// Validate + arm the set's **terrain shard** upload (#1044) — the raster that carries the
+    /// set's elevation (`OBCA_Spec.md` §5.1's `terrain` role, an OBCT container).
+    ///
+    /// New-only, like the manifest: there is at most one terrain shard per set, so a named
+    /// `object_id` is `notFound` — there is nothing for an id to select. What the session owns is
+    /// the ordering (`obc_app::terrain_announce`): a raster with no set in flight names no set at
+    /// all, because the set id is minted by the first OBCM shard.
+    ///
+    /// The free-space and minimum-length guards are the shard path's, against an OBCT header
+    /// instead of an OBCM one.
+    pub fn set_terrain_open(&self, shared: &SharedStore, desc: &TransferControl) -> Result<Receiver, TransferStatus> {
+        let Some(storage) = shared.storage.as_ref() else { return Err(TransferStatus::Error) };
+        if desc.object_id != TransferControl::NEW_OBJECT_ID {
+            return Err(TransferStatus::NotFound);
+        }
+        obc_app::terrain_announce(self.set_upload.as_ref()).map_err(set_reject_status)?;
+        if desc.total_len < obc_formats::obct::HEADER_LEN as u32 {
+            return Err(TransferStatus::Error);
+        }
+        if let Some(free) = storage.card_free_bytes() {
+            if desc.total_len as u64 + crate::sd::MAP_FREE_HEADROOM > free {
+                return Err(TransferStatus::StorageFull);
+            }
+        }
+        Receiver::new(desc).map_err(|_| TransferStatus::Error)
+    }
+
+    /// Open the card file for the armed terrain shard — `MS{id}.OBD` under the open session's id.
+    /// Unlike a shard this never mints a set: `set_terrain_open` already refused a raster with no
+    /// session, and a terrain shard is not something a set can begin with.
+    pub fn set_terrain_begin(&mut self, shared: &mut SharedStore) -> Option<u16> {
+        let id = self.set_upload.as_ref()?.id();
+        shared.storage.as_mut()?.set_terrain_begin(id).then_some(id)
+    }
+
+    /// The terrain shard's bytes have all arrived: verify the whole-object CRC, patch the held-back
+    /// `OBCT` magic in, and record the raster in the session — the fact
+    /// `obc_app::manifest_announce` reads to know the manifest is one record longer.
+    ///
+    /// A failed raster leaves the **session** open, exactly as a failed shard does: it is one
+    /// independent file, and the honest recovery is to re-send it rather than the gigabytes beside
+    /// it.
+    pub fn set_terrain_finish(
+        &mut self,
+        shared: &mut SharedStore,
+        rx: &Receiver,
+        id: u16,
+        magic: [u8; 4],
+    ) -> TransferStatus {
+        let outcome = match rx.outcome() {
+            Some(o) => o,
+            None => return TransferStatus::Error, // caller bug: not complete
+        };
+        if outcome.status != TransferStatus::Committed {
+            if let Some(storage) = &mut shared.storage {
+                storage.set_terrain_discard(id);
+            }
+            return outcome.status;
+        }
+        let Some(storage) = &mut shared.storage else { return TransferStatus::Error };
+        if storage.set_terrain_commit(id, magic).is_none() {
+            return TransferStatus::Error;
+        }
+        if let Some(session) = &mut self.set_upload {
+            session.mark_terrain();
+        }
+        TransferStatus::Committed
+    }
+
     /// Validate + arm the **manifest** upload — `OBCA_Spec.md` §5.4's manifest-last rule, enforced
     /// before a byte streams (`obc_app::manifest_announce`). New-only like a map, so a named
     /// `object_id` is `notFound`: the manifest is the set's identity, not a slot to write into.
@@ -1548,6 +1617,12 @@ impl ObjectStore {
             }
         }
         TransferStatus::Committed
+    }
+
+    /// Whether a volume-set upload session is open — i.e. whether a refusal here lands *mid-set*,
+    /// with a previous file's outcome already on the glass (#1044).
+    pub fn set_upload_active(&self) -> bool {
+        self.set_upload.is_some()
     }
 
     /// Abandon the set in flight: close the session and delete every file of it, token first

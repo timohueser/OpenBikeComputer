@@ -526,6 +526,7 @@ failed = "Karte nicht gespeichert"
 failed_storage = "Die Karte konnte nicht gespeichert werden."
 failed_damaged = "Die Karte kam beschädigt an. Bitte erneut senden."
 failed_format = "Diese Datei ist keine Karte für dieses Gerät."
+failed_refused = "Die Karte kam unvollständig an. Bitte erneut senden."
 
 # --- Boot-fault cards (pre-app; the device renders the English column) ---
 [fault]

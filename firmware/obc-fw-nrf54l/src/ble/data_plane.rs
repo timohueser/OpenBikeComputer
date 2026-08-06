@@ -114,7 +114,7 @@ pub(crate) async fn serve_coc(
                 // on the radio (spec §10 — a DACH-shaped volume set is 7.6–8.9 GiB), so a set
                 // descriptor never arms a BLE data plane. Answered rather than `unreachable!()`,
                 // because a panic here would be a reset on a link a peer can drive.
-                Armed::SetShard(desc, ..) | Armed::SetManifest(desc, ..) => {
+                Armed::SetShard(desc, ..) | Armed::SetTerrain(desc, ..) | Armed::SetManifest(desc, ..) => {
                     warn!("ble: [coc] a volume-set transfer reached the radio — refusing (spec §10)");
                     close_transfer();
                     notify_status(server, stack, transfer_result(desc.object_id, TransferStatus::Error)).await;
