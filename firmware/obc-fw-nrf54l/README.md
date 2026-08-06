@@ -57,22 +57,31 @@ and storage never run at the same instant — `src/flpr_mux.rs` time-multiplexes
 | P2.03 | D2    | —       | card only; parked as an input in display mode                 |
 | P2.04 | D1    | **B1**  | **shared** — `CTRLSEL` per mode; internal pull-up in storage mode |
 | P2.05 | CMD   | —       | card only; parked as an input in display mode                 |
-| P2.06 | —     | R0      | source data (odd-pixel R) — was SD-SPI SCK                    |
+| P2.06 | —     | R0      | source data (even-`x` R) — was SD-SPI SCK                     |
 | P2.07 | —     | BCK     | source shift clock (unchanged)                                |
-| P2.08 | —     | R1      | source data (even-pixel R) — was SD-SPI MOSI                  |
-| P2.09 | —     | G0      | source data (odd-pixel G) — was SD-SPI MISO                   |
-| P2.10 | —     | G1      | source data (even-pixel G) — was SD-SPI CS                    |
+| P2.08 | —     | R1      | source data (odd-`x` R) — was SD-SPI MOSI                     |
+| P2.09 | —     | G0      | source data (even-`x` G) — was SD-SPI MISO                    |
+| P2.10 | —     | G1      | source data (odd-`x` G) — was SD-SPI CS                       |
 
 The packed wire word is therefore `DATA_MASK = 0x751` (`B0`→0, `B1`→4, `R0`→6, `R1`→8, `G0`→9,
 `G1`→10) — pinned from both sides by `obc_display::ls021::wire`'s goldens and by a test that parses
 `src/flpr/flpr_scan.c`.
+
+`even`/`odd` above is **0-based `x`**, matching those goldens: the `*0` lines carry `x = 0, 2, 4, …`.
+The panel datasheet numbers columns from 1 and so calls that same physical line the *odd* column —
+same wire, different origin.
 
 **Pad configuration per mode** (`src/semmc.rs`, `configure_storage_pads` / `configure_display_pads`):
 
 | | the six card pads | the four card-only pads |
 |---|---|---|
 | **storage** | Output, input Disconnect, **E0/E1** drive, `CTRLSEL = VPR`, `GPIOHSPADCTRL.BIAS = 2`; internal pull-up on `D3`/`D1` only | (same — all six are the card's) |
-| **display** | `P2.00`/`P2.04` → Output, S drive, no pull, `CTRLSEL = GPIO` | Input, no pull, `CTRLSEL = GPIO` — the external pull-ups hold the bus idle-high and the card stays inert |
+| **display** | `P2.00`/`P2.04` → Output, S drive, no pull, `CTRLSEL = GPIO`, `GPIOHSPADCTRL.BIAS = 2` | Input, no pull, `CTRLSEL = GPIO` — the external pull-ups hold the bus idle-high and the card stays inert |
+
+`GPIOHSPADCTRL.BIAS` is a **port-global** trim, not per-pin, so it is not restored per mode — both
+configurations set the same constant 2 (`semmc::HS_PAD_BIAS`). 2 is Nordic's value for the card at
+32 MHz and the panel's ≤0.758 MHz `BCK` is indifferent to it; writing it from both sides is what
+keeps the value independent of whether a card access has happened yet.
 
 Only `D3`/`D1` get an *internal* pull-up: this desk breakout carries its own resistors on
 `CLK`/`D0`/`D2`/`CMD`, and 13 kΩ ∥ 10 kΩ would sit under the SD spec's floor. **The production board
