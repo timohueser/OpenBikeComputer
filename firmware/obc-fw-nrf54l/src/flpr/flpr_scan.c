@@ -70,12 +70,22 @@
 #define GPIO1_OUTSET (*(volatile uint32_t *)0x500D8204u)
 #define GPIO1_OUTCLR (*(volatile uint32_t *)0x500D8208u)
 
-/* Source-bus pin masks on P2. Bit position = P2 pin index (the harness map in ls021-bringup.md):
- * R0=P2.00 G0=P2.02 B0=P2.04 are the **even** pixel, R1=P2.01 G1=P2.03 B1=P2.05 the **odd** pixel.
+/* Source-bus pin masks on P2. Bit position = P2 pin index.
+ *
+ * ⚠️ REMAPPED for the sEMMC storage pivot (issue #1145): the six fixed sEMMC pads P2.00–05 own
+ * the card bus, so the display data moved onto the four pins the retired SD-SPI freed
+ * (P2.06/.08/.09/.10) plus the two time-shared sEMMC data pads (B0=P2.00=D3, B1=P2.04=D1 —
+ * CTRLSEL flips them between GPIO/display and VPR/storage per mode; display and storage never
+ * run simultaneously). `*0` lines carry the even pixel, `*1` the odd, exactly as before — only
+ * the bit positions moved:
+ *   R0=P2.06  R1=P2.08  G0=P2.09  G1=P2.10  B0=P2.00  B1=P2.04
  * `pack_word` below packs a pixel pair's 6 data bits already shifted to these positions
- * (DATA_MASK), so presenting a column is `OUTCLR the zeros, OUTSET the ones`. */
-#define DATA_MASK 0x3Fu        /* P2.00..05 = R0,R1,G0,G1,B0,B1 (the 6 source data lines) */
-#define BCK_MASK  (1u << 7)    /* P2.07 = BCK (source/shift clock; P2.06 is the SD's SPIM00 SCK) */
+ * (DATA_MASK), so presenting a column is `OUTCLR the zeros, OUTSET the ones`.
+ * NOTE: the host-tested normative pack (`obc-display/src/ls021/wire.rs`) still carries the OLD
+ * bit positions — the production PR moves both + goldens together; until then the blob is the
+ * on-glass truth for the new harness. */
+#define DATA_MASK 0x751u       /* P2.00,.04,.06,.08,.09,.10 = B0,B1,R0,R1,G0,G1 */
+#define BCK_MASK  (1u << 7)    /* P2.07 = BCK (source/shift clock) — unchanged */
 
 /* Gate + frame pin masks on P1 (bit position = P1 pin index). All µs-scale, so P1 is fine — P2 is
  * reserved for the fast bus.
@@ -201,7 +211,9 @@ static inline uint32_t pack_word(const uint8_t *row, uint32_t k, uint32_t shift)
     uint32_t re = (even >> (4u + shift)) & 1u, ro = (odd >> (4u + shift)) & 1u;
     uint32_t ge = (even >> (2u + shift)) & 1u, go = (odd >> (2u + shift)) & 1u;
     uint32_t be = (even >> shift) & 1u, bo = (odd >> shift) & 1u;
-    return re | (ro << 1) | (ge << 2) | (go << 3) | (be << 4) | (bo << 5);
+    /* Shifted straight to the REMAPPED P2 positions (see DATA_MASK above):
+     * R0<<6 R1<<8 G0<<9 G1<<10 B0<<0 B1<<4. */
+    return (re << 6) | (ro << 8) | (ge << 9) | (go << 10) | be | (bo << 4);
 }
 
 /* Shift one source sub-line (one area plane of one pixel row) straight from the framebuffer:
