@@ -145,6 +145,12 @@ impl Clock for NoClock {
     }
 }
 
+/// How many shard bytes accumulate before [`ShardStore::write`] is called — the write-combining
+/// buffer in the shard loop. 1 MiB: big enough that a per-call cost of tens of microseconds (the
+/// wasm host's OPFS crossing) disappears into the stream, small enough to be noise against the
+/// engine's memory budget.
+const SINK_COMBINE: usize = 1024 * 1024;
+
 /// Where a set's bytes go. The engine writes shards sequentially and hands each sealed shard back
 /// for the §4.8 verify, then writes the manifest **last** (§5.4) — a half-written set therefore has
 /// no manifest and is invisible as a map.
@@ -586,8 +592,33 @@ pub fn assemble_full(
         let t0 = clock.now_us();
         store.begin(plan)?;
         let (bytes, digest) = {
-            let mut sink = |buf: &[u8]| store.write(buf);
-            shard::write(
+            // Write-combining, because the emitters hand this sink records of
+            // tens of bytes — §8.2 chunks, pool records, pad runs — millions of
+            // times at country scale. A native file absorbs that at a
+            // microsecond a call; the wasm host's every call is an OPFS
+            // crossing at tens of them, which turned a measured 25 s native
+            // Switzerland into a projected hour in a tab. Combining *here*
+            // keeps every ShardStore dumb and the byte stream identical; the
+            // flush sits before `seal` because the wasm sink's append cursor is
+            // the truncation point seal pins the shard's length to.
+            let mut pending: Vec<u8> = Vec::with_capacity(SINK_COMBINE);
+            let mut sink = |buf: &[u8]| -> Result<()> {
+                if buf.len() >= SINK_COMBINE {
+                    // Already big — flush what waits (order!) and pass through.
+                    if !pending.is_empty() {
+                        store.write(&pending)?;
+                        pending.clear();
+                    }
+                    return store.write(buf);
+                }
+                if pending.len() + buf.len() > SINK_COMBINE {
+                    store.write(&pending)?;
+                    pending.clear();
+                }
+                pending.extend_from_slice(buf);
+                Ok(())
+            };
+            let written = shard::write(
                 plan,
                 &cells,
                 &core_cells,
@@ -598,7 +629,11 @@ pub fn assemble_full(
                 &profile_table,
                 scratch,
                 &mut sink,
-            )?
+            )?;
+            if !pending.is_empty() {
+                store.write(&pending)?;
+            }
+            written
         };
         store.seal()?;
         plan.bytes = bytes;

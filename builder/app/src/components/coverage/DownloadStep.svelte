@@ -272,6 +272,9 @@
                 }
                 break;
             case "done":
+                // The worker's OPFS ledger, for anyone profiling an assembly
+                // from DevTools — a worker's own console does not surface.
+                if (msg.io) console.debug("[assemble] opfs i/o", msg.io);
                 if (output?.kind === "device") {
                     runWarnings = msg.warnings;
                     phase = "done";

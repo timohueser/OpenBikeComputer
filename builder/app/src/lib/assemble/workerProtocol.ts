@@ -56,6 +56,7 @@ import type {
     MemoryEstimate,
 } from "./bridge";
 import { ASSEMBLE_ERROR_CODES } from "./bridge";
+import type { IoStats } from "../cells/store";
 
 /** One cell crossing into the worker. Same fields as `AssembleCell`, restated
  *  here because this is a wire shape: everything must structured-clone. */
@@ -220,7 +221,7 @@ export type AssembleWorkerResponse =
     | ({ type: "shard" } & WorkerShard)
     | ({ type: "stored-shard" } & WorkerStoredShard)
     | ({ type: "file" } & WorkerFile)
-    | { type: "done"; warnings: string[]; summary: AssembleSummary }
+    | { type: "done"; warnings: string[]; summary: AssembleSummary; io?: IoStats }
     | {
           type: "estimate-result";
           /** The download path's verdict: shards stream out at the requested
