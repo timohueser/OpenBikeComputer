@@ -123,7 +123,11 @@ export async function sendAssembledSetFile(
                 // this wrong loses data rather than time: a timed-out wait fires an `op = 3` abort,
                 // and the device answers that by deleting the whole set — including one it may have
                 // just committed successfully.
+                //
+                // A **shard** deliberately does not get this: its commit is a header check like any
+                // other upload's, so it keeps the ordinary timeout and stays quick to fail.
                 commitBytes: manifest ? state.totalBytes : undefined,
+                onSent: manifest ? () => ctx.phase("committing") : undefined,
             });
             break;
         } catch (cause) {
@@ -163,6 +167,11 @@ export async function sendMapFile(client: ProtocolClient, file: File, ctx: JobCo
     return client.upload(ObjectType.Map, NEW_OBJECT_ID, source, {
         signal: ctx.signal,
         onProgress: (done, total) => ctx.progress(done, total),
+        // No `commitBytes`: a map's commit is a close, an open, a 40-byte header read, a 4-byte
+        // write and a flush (`Storage::map_upload_commit`) — bounded work the ordinary timeout
+        // covers with room to spare. It does still take long enough to be worth naming, because the
+        // device also has to land the last staging half before it starts.
+        onSent: () => ctx.phase("committing"),
     });
 }
 
