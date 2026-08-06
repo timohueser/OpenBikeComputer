@@ -155,30 +155,51 @@ static mut CTRL_RX: MaybeUninit<[u8; MAX_PACKET as usize]> = MaybeUninit::uninit
 /// One bulk chunk, in either direction — the USB analogue of the CoC's SDU scratch.
 static mut BULK_BUF: MaybeUninit<[u8; MAX_PACKET as usize]> = MaybeUninit::uninit();
 
-/// An upload's [`Stage`](crate::link::stage::Stage) buffer — how many bytes pile up in RAM before
-/// they reach the card as one batch.
+/// **One half** of an upload's [`Stage`](crate::link::stage::Stage) buffer — how many bytes pile up
+/// in RAM before they reach the card as one batch, and therefore how big one `CMD25` is.
 ///
-/// **A RAM-against-minutes dial, and RAM is the scarce one.** Measured on the shipping card over
-/// the **retired SPI transport** (2026-07-30), per 32 KB of map (one cluster, so one
-/// cluster-allocation's worth of FAT writes either way): 4 KB → 0.70 MB/s, 8 KB → 0.76,
-/// 16 KB → 0.81, 32 KB → 0.86, against 0.20 unstaged. The absolute figures are obsolete since the
-/// sEMMC pivot (#1158) — the bus is ~7.6× faster — but the *shape* is not: what these rungs price
-/// is how often the card's internal program cycle is paid, which is card-side and did not change.
-/// A fresh sweep on the new transport is on #1158's follow-up list; it can only make the case for
-/// the smaller buffer stronger.
+/// # The number, and how to sweep it
 ///
-/// 16 KB takes 94% of what is on the table. The last 6% wants a full 32 KB cluster per flush, and
-/// that second 16 KB buys less than it costs: the deep-ride stack peak measured 35,808 B, and this
-/// build's residual is ~70 KB with 16 KB staged against ~54 KB with 32 KB. Doubling the margin over
-/// the measured peak is worth more than 6% of a transfer that is already minutes long — this is the
-/// crate where async frames overflow the stack silently. Raise it only against a fresh high-water
-/// measurement, never on the throughput arithmetic alone.
+/// **32 KiB, because that is one FAT cluster on a card this firmware formats for.** The bound that
+/// matters is not RAM any more (see below) but the fork's batching rule: `VolumeManager::write`
+/// hands the device the contiguous run *inside the current cluster* and no further
+/// (`blocks_to_cluster_end` in the `[patch.crates-io]` fork), so a flush longer than a cluster is
+/// silently chopped into per-cluster commands anyway, and a flush shorter than a cluster pays a
+/// command + program cycle for a fraction of one. Landing exactly on the cluster makes every flush
+/// **one 64-block CMD25** with no partial ends.
 ///
-/// **Since #1146 P2 these bytes are the scratch arena's USB arm**, not a static of their own — so
-/// the sentence above about a raise costing residual stack no longer holds while this is the
-/// *smallest* arm: it may grow to the render arm's size (~117 KB) at **zero** resident cost, and only
-/// past that does it cost 1:1 again. See [`crate::arena`]'s growth-asymmetry note.
-pub(crate) const STAGE_LEN: usize = 16 * 1024;
+/// It follows that this constant should move *with* the card's cluster size, not independently.
+/// To sweep it: change this one line, re-pin `compile_time_allocations.arena_usb` in
+/// `firmware/tools/resource_baseline.json` to `2 * STAGE_HALF_LEN`, and read the `~{} kB/s` line
+/// `run_upload` prints at the end of every transfer over RTT. The only hard ceiling is the arena's
+/// (below); the useful rungs are 16 K / 32 K / 64 K.
+///
+/// # The historical rungs (SPI-era — kept because the *shape* survived, not the numbers)
+///
+/// Measured on the shipping card over the **retired SPI transport** (2026-07-30), per 32 KB of map:
+/// 4 KB → 0.70 MB/s, 8 KB → 0.76, 16 KB → 0.81, 32 KB → 0.86, against 0.20 unstaged. Those absolute
+/// figures are **obsolete** — the sEMMC pivot (#1158) made the bus ~7.6× faster and the whole table
+/// now sits below what the transport alone can do. What survives is the shape: the rungs price how
+/// often the card's internal program cycle is paid, which is card-side and did not change. The old
+/// "16 KB takes 94% of what is on the table, and the second 16 KB costs residual stack" argument is
+/// **retired on both halves** — the sEMMC transport changed the numerator, and #1146 P2 moved these
+/// bytes out of `.bss`.
+///
+/// # Why the RAM argument no longer bites
+///
+/// **Since #1146 P2 these bytes are the scratch arena's USB arm**, not a static of their own. The
+/// arena is `max(arms)` and the render arm is 117,408 B, so the USB arm grows at **zero** resident
+/// cost until it reaches that — see [`crate::arena`]'s growth-asymmetry note. Two 32 KiB halves is
+/// 65,536 B, comfortably under, and costs nothing. Past ~117 KB it would cost 1:1 again *and* move
+/// the max-of-arms cliff, which the const assert in [`crate::arena`] fails the build over.
+pub(crate) const STAGE_HALF_LEN: usize = 32 * 1024;
+
+/// The whole staging arm: **two** [`STAGE_HALF_LEN`] halves (#1158 follow-up).
+///
+/// The transport fills one half while the other is the card's — see [`Stage`](crate::link::stage)
+/// for what that does and does not buy today. Sized here rather than in `stage.rs` because the arena
+/// names these bytes and the resource baseline pins them.
+pub(crate) const STAGE_LEN: usize = 2 * STAGE_HALF_LEN;
 
 /// The `iSerialNumber` string, pinned for the `'static` life the descriptor borrows it for.
 static mut SERIAL: MaybeUninit<heapless::String<16>> = MaybeUninit::uninit();
