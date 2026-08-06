@@ -51,7 +51,7 @@ use embassy_executor::Spawner;
 use embassy_nrf::gpio::{Input, Level, Output, OutputDrive, Pull};
 use embassy_time::Timer;
 // The critical-section impl comes from linking nrf-mpsl (the default `ble` feature set) — MPSL is
-// never initialised here; its cs impl works from reset, exactly as in `sd_bench`.
+// never initialised here; its cs impl works from reset, exactly as in the main app.
 use nrf_mpsl as _;
 use panic_probe as _;
 
@@ -104,6 +104,13 @@ async fn main(spawner: Spawner) {
     ];
     // Park the four card-only sEMMC pads as inputs: the card breakout's pull-ups hold CLK/CMD/D0/D2
     // high = an idle SD bus, and with no clock edges the card stays inert while we drive the panel.
+    //
+    // ⚠️ **Deliberately different from `main.rs`**, which forbids exactly this: these four pads are
+    // also owned by `semmc::configure_display_pads` (linked in via the `flpr_mux`/`semmc` modules
+    // above), so claiming them here as embassy `Input`s is the double ownership main.rs's comment
+    // rules out. It is harmless *only* because both owners want the identical end state — high-Z
+    // input, no pull — and this bench never enters storage mode, so `configure_storage_pads` never
+    // runs and the two can't diverge. Do not copy the pattern into the app.
     let _sd_parked = [
         Input::new(p.P2_01, Pull::None), // sEMMC CLK
         Input::new(p.P2_02, Pull::None), // sEMMC D0
