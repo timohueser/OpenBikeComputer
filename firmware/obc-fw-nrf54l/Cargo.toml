@@ -121,6 +121,14 @@ required-features = ["sd-bench"]
 [[bin]]
 name = "sd_semmc_bringup"
 
+# ⚠️ THROWAWAY (issue #1145): the Option A integration demo — display on the REHOMED pins +
+# microSD over sEMMC, time-multiplexed on the one FLPR, switching per round like the real
+# firmware. Same out-of-repo blob include as sd_semmc_bringup. DELETE before the implementation
+# merges.
+#   cargo run --release --bin sd_display_mux
+[[bin]]
+name = "sd_display_mux"
+
 [dependencies]
 # embassy HAL for the nRF54L15 app core. `nrf54lm20-app-s` selects the secure-app die
 # (the only partition we use — no TF-M split, BLE deferred); `time-driver-grtc` backs
