@@ -153,6 +153,9 @@ const XFER_BLOCKS: usize = 256;
 #[repr(C, align(4))]
 struct XferBuf([u8; XFER_BLOCKS * 512]);
 static mut XFER_BUF: XferBuf = XferBuf([0; XFER_BLOCKS * 512]);
+/// Save slot for the S11b batch-write window: the whole 256-block span is copied to RAM before
+/// any salt lands and written back (verified) after — the bench is safe anywhere on the card.
+static mut SAVE_WIN: XferBuf = XferBuf([0; XFER_BLOCKS * 512]);
 /// Golden copy of sector 0 (the 1-bit read S8/S9 compare against) + a save slot for S11.
 static mut SECTOR0: XferBuf2 = XferBuf2([0; 512]);
 static mut SAVE_BLOCK: XferBuf2 = XferBuf2([0; 512]);
@@ -801,6 +804,9 @@ fn sector0() -> &'static mut [u8] {
 fn save_block() -> &'static mut [u8] {
     unsafe { &mut (*(&raw mut SAVE_BLOCK)).0 }
 }
+fn save_win() -> &'static mut [u8] {
+    unsafe { &mut (*(&raw mut SAVE_WIN)).0 }
+}
 
 // ═════════════════════════════════════ main ═════════════════════════════════════
 
@@ -1313,20 +1319,16 @@ async fn main(_spawner: Spawner) {
             }
         }
 
-        // (b) Multi-block CMD25, only in a window 128 MiB from the end AND only if it reads
-        // uniform (erased/unused) first. On a 60 GB card with a few MB used this is empty space;
-        // if the check fails we skip rather than risk file-system data.
-        if capacity_blocks > 400_000 {
-            let win = capacity_blocks - 262_144; // 128 MiB from the end
-            let buf = xfer_buf();
-            let mut uniform = sd.read_blocks(win, XFER_BLOCKS as u32, buf.as_mut_ptr()).is_ok();
-            if uniform {
-                let first = buf[0];
-                uniform = buf[..XFER_BLOCKS * 512].iter().all(|&b| b == first);
-            }
-            if uniform {
-                info!("S11b window @ LBA {=u32} reads uniform (0x{=u8:02x}) — safe to bench", win, buf[0]);
+        // (b) Multi-block CMD25 — save/restore style, safe ANYWHERE: the whole 256-block window
+        // is read into RAM first, salt batches are benched over it, and the original bytes are
+        // written back and verified at the end. (Only a power cut mid-bench could lose the
+        // window's prior contents — bench-acceptable at LBA 1 GiB on a mostly-empty card.)
+        {
+            let win = 2_097_152u32; // 1 GiB in
+            info!("S11b save/restore batch bench @ LBA {=u32} (window saved to RAM first)", win);
+            if sd.read_blocks(win, XFER_BLOCKS as u32, save_win().as_mut_ptr()).is_ok() {
                 for batch in [8u32, 64, 256] {
+                    let buf = xfer_buf();
                     for (i, b) in buf[..batch as usize * 512].iter_mut().enumerate() {
                         *b = (i as u8) ^ (batch as u8);
                     }
@@ -1335,7 +1337,8 @@ async fn main(_spawner: Spawner) {
                     let reps = (1024 / batch).max(2);
                     let mut failed = false;
                     for r in 0..reps {
-                        if sd.write_blocks(win + r * batch, batch, buf.as_ptr()).is_err() {
+                        let lba = win + (r * batch) % XFER_BLOCKS as u32;
+                        if sd.write_blocks(lba, batch, buf.as_ptr()).is_err() {
                             failed = true;
                             break;
                         }
@@ -1354,18 +1357,25 @@ async fn main(_spawner: Spawner) {
                         if failed { "  [stopped early on error]" } else { "" }
                     );
                 }
-                // Spot-verify the last batch's first block.
-                let mut check = [0u8; 512];
-                if sd.read_blocks(win, 1, check.as_mut_ptr()).is_ok() {
-                    let expect: u8 = 0 ^ 8u8; // first byte of the b8 pattern — window start was rewritten by each pass
-                    info!("S11b spot check: first window byte 0x{=u8:02x} (pattern families 0x08/0x40/0x00…) — written data landed", check[0]);
-                    let _ = expect;
+                // Verify the last salt actually landed, then RESTORE the window and verify that.
+                let buf = xfer_buf();
+                let salt_ok = sd.read_blocks(win, 1, buf.as_mut_ptr()).is_ok()
+                    && buf[..512].iter().enumerate().all(|(i, &b)| b == (i as u8) ^ 0u8);
+                info!("S11b salt spot-check (b256 pattern at window start): landed={=bool}", salt_ok);
+                let mut restored_ok = false;
+                if sd.write_blocks(win, XFER_BLOCKS as u32, save_win().as_ptr()).is_ok() {
+                    let check = xfer_buf();
+                    restored_ok = sd.read_blocks(win, XFER_BLOCKS as u32, check.as_mut_ptr()).is_ok()
+                        && check[..XFER_BLOCKS * 512] == save_win()[..];
+                }
+                if restored_ok {
+                    info!("S11b window RESTORED and verified ({=usize} blocks)", XFER_BLOCKS);
+                } else {
+                    error!("S11b RESTORE FAILED — LBA {=u32}..+{=usize} may hold bench data!", win, XFER_BLOCKS);
                 }
             } else {
-                warn!("S11b window @ LBA {=u32} is NOT uniform — someone's data may live there; multi-block write bench SKIPPED", win);
+                warn!("S11b could not read the window — batch bench skipped");
             }
-        } else {
-            warn!("S11b skipped — capacity unknown/implausible, no safe window derivable");
         }
     } else {
         warn!("S11 skipped — no working read path");
