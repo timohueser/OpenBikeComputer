@@ -41,6 +41,12 @@ import {
     CommandStatus,
     MAX_RETENTION,
     NEW_OBJECT_ID,
+    OBCS_HEADER_LEN,
+    OBCS_RECORD_LEN,
+    OBCS_VERSION,
+    OBCT_HEADER_LEN,
+    OBCT_MAGIC,
+    OBCT_VERSION,
     ObjectType,
     Op,
     PROTOCOL_VERSION,
@@ -378,6 +384,10 @@ export class MockDevice {
     /** The shard count every staged `mapShard` has agreed on, or `null` with no set in flight. The
      *  real device holds this in its upload session and refuses a descriptor that contradicts it. */
     private mapShardCount: number | null = null;
+    /** The id minted for the set in flight. The device mints it at the **first shard** — it names
+     *  the files on the card — and both the raster and the manifest echo it, so the mock must have
+     *  one before the manifest commits rather than inventing it there. */
+    private mapSetId = 1;
     private readonly routeEntries = new Map<number, RouteListEntry>();
     private readonly rideEntries = new Map<number, RideListEntry>();
     private readonly tripEntries = new Map<number, TripListEntry>();
@@ -423,11 +433,48 @@ export class MockDevice {
         return this.mapSetTerrain.get(setId);
     }
 
-    /** Drop everything staged for the set in flight — a commit, an abort, or a torn link. */
+    /** Drop everything staged for the set in flight — a commit, an abort, or a torn link.
+     *
+     *  The id is deliberately **not** advanced here: the device derives set ids from the names on
+     *  the card, so an abandoned set frees its id for the next attempt. Only a committed manifest
+     *  spends one. */
     private clearStagedSet(): void {
         this.mapShards.clear();
         this.mapTerrain = null;
         this.mapShardCount = null;
+    }
+
+    /**
+     * The device's commit-time cross-check, as the mock can see it: does this manifest describe the
+     * files this session actually staged?
+     *
+     * The firmware re-reads the manifest, validates it against `OBCA_Spec.md` §5.3 and against the
+     * card, and deletes the whole set when it does not match. The mock holds the three parts of
+     * that a test can reach without a filesystem: the record count, the terrain record against the
+     * raster it received, and each OBCM record's `Bytes` against the shard it holds.
+     */
+    private manifestDescribesTheStagedSet(manifest: Uint8Array): boolean {
+        const parsed = parseSetManifest(manifest);
+        if (!parsed) return false;
+        const shards = parsed.records.filter((r) => r.role !== SET_ROLE_TERRAIN);
+        const terrain = parsed.records.filter((r) => r.role === SET_ROLE_TERRAIN);
+        // A terrain record is legal only as the last one, and there is at most one (§5.2).
+        if (terrain.length > 1) return false;
+        if (terrain.length === 1 && parsed.records[parsed.records.length - 1].role !== SET_ROLE_TERRAIN) return false;
+        if (shards.length !== this.mapShards.size) return false;
+        // The record the manifest keeps for the raster, against the raster that arrived. This is
+        // the check the announce's length rule cannot make: a manifest with N+1 shard records and
+        // no terrain record is the *same length* as one with N shards plus terrain.
+        const recorded = terrain.length === 1 ? terrain[0].bytes : null;
+        const onCard = this.mapTerrain ? this.mapTerrain.byteLen : null;
+        if (recorded !== onCard) return false;
+        // Each OBCM record against the shard staged at its index (§5.2 derives the filename from
+        // the index, so record k is shard k).
+        for (let index = 0; index < shards.length; index++) {
+            const staged = this.mapShards.get((shards.length << 8) | index);
+            if (!staged || staged.byteLen !== shards[index].bytes) return false;
+        }
+        return true;
     }
 
     private running = false;
@@ -705,12 +752,16 @@ export class MockDevice {
             });
             return;
         }
+        // The device's commit is not a formality — it validates the bytes it just took and can
+        // still refuse them (a raster that is not an OBCT, a manifest that does not describe the
+        // files beside it). `null` is that refusal, and it must reach the host as a status rather
+        // than as a silently-accepted object, or a whole class of firmware behaviour goes untested.
         const objectId = this.commit(d, buffer, got);
         await this.status({
             msg: "transferResult",
-            objectId,
-            status: TransferStatus.Committed,
-            committedOffset: d.totalLen,
+            objectId: objectId ?? d.objectId,
+            status: objectId === null ? TransferStatus.Error : TransferStatus.Committed,
+            committedOffset: objectId === null ? 0 : d.totalLen,
         });
     }
 
@@ -736,11 +787,14 @@ export class MockDevice {
             return null;
         }
         if (d.type === ObjectType.TerrainShard) {
+            // A malformed id is answered before anything about the session, as it is for a shard.
             if (d.objectId !== NEW_OBJECT_ID) return TransferStatus.NotFound;
             // A raster names no set of its own — the set id is minted by the first shard.
             if (this.mapShardCount === null) return TransferStatus.Error;
             // OBCA §5.2 caps a manifest at 32 records, so a full set has no room for a terrain one.
             if (this.mapShardCount + 1 > 32) return TransferStatus.StorageFull;
+            // …and it has to be long enough to be an OBCT at all (map rule 3, against OBCT).
+            if (d.totalLen < OBCT_HEADER_LEN) return TransferStatus.Error;
             return null;
         }
         if (d.type === ObjectType.MapSet) {
@@ -764,7 +818,8 @@ export class MockDevice {
         return d.objectId === NEW_OBJECT_ID ? null : TransferStatus.NotFound;
     }
 
-    private commit(d: TransferControl, bytes: Uint8Array | null, byteLen: number): number {
+    /** The assigned object id, or `null` when the commit itself refuses the bytes it just took. */
+    private commit(d: TransferControl, bytes: Uint8Array | null, byteLen: number): number | null {
         if (d.type === ObjectType.FwImage) {
             // A CRC-verified commit promotes the staged bytes over any existing UPDATE.BIN, and
             // the singleton slot means the result echoes id 0 rather than assigning one.
@@ -772,19 +827,38 @@ export class MockDevice {
             return SINGLETON_OBJECT_ID;
         }
         if (d.type === ObjectType.MapShard) {
+            // The set id is minted by the **first** shard, as the device's is: it is what a raster
+            // and the manifest both echo, and what a set is called on the card.
+            if (this.mapShardCount === null) this.mapSetId = this.nextMapId;
             this.mapShardCount = d.objectId >>> 8;
             this.mapShards.set(d.objectId, { bytes, crc32: d.crc32, byteLen });
             return d.objectId;
         }
         if (d.type === ObjectType.TerrainShard) {
-            // A re-sent raster overwrites the one file; it is never a second record.
+            // The device patches the held-back magic in only after the OBCT header prefix
+            // validates, and deletes the file and answers `error` when it does not.
+            if (bytes && !isObct(bytes)) {
+                this.mapTerrain = null;
+                return null;
+            }
+            // A re-sent raster that lands overwrites the one file; it is never a second record.
             this.mapTerrain = { bytes, crc32: d.crc32, byteLen };
-            // The result echoes the set id, as the manifest's does — a raster has no part to
-            // correlate against. The mock has no id until the manifest commits, so it answers 0.
-            return SINGLETON_OBJECT_ID;
+            // The result echoes the **set id**, as the manifest's does — a raster has no part to
+            // correlate against, and the set id is the only identity it has.
+            return this.mapSetId;
         }
         if (d.type === ObjectType.MapSet) {
-            const id = this.nextMapId++;
+            // **The commit-time cross-check** (spec §4.1 rule 7): the manifest is re-read and
+            // checked against the files actually staged, and a manifest that does not describe them
+            // is refused with the whole set deleted. The announce's length rule cannot see any of
+            // this — a same-length impostor passes it — so modelling it here is what gives that
+            // firmware path its only coverage.
+            if (bytes && !this.manifestDescribesTheStagedSet(bytes)) {
+                this.clearStagedSet();
+                return null;
+            }
+            const id = this.mapSetId;
+            this.nextMapId = id + 1;
             this.mapSets.set(id, { bytes, crc32: d.crc32, byteLen });
             if (this.mapTerrain) this.mapSetTerrain.set(id, this.mapTerrain);
             this.clearStagedSet();
@@ -1032,6 +1106,54 @@ export function loopbackDevice(
             await link.device.close();
         },
     };
+}
+
+// --- the two card formats the mock has to judge, not just store -----------------
+//
+// A device's *commit* is where a volume set stops being bytes and becomes a map, and it is where
+// the firmware does its only real parsing: the raster must open as an OBCT container, and the
+// manifest must describe the files beside it. Neither is visible to the announce rules above — a
+// same-length impostor manifest passes every one of them — so a mock that only stored what it was
+// handed left that whole firmware path untested. These are the smallest readers that let it judge.
+
+/** `OBCA_Spec.md` §5.2's `Role == 3`: the set's terrain record, and always the last one. */
+const SET_ROLE_TERRAIN = 3;
+
+/** One record of a parsed OBCS manifest — the two fields a cross-check needs. */
+interface SetManifestRecord {
+    readonly role: number;
+    readonly bytes: number;
+}
+
+/**
+ * Parse an OBCS set manifest (`OBCA_Spec.md` §5.2), or `null` when it is not one.
+ *
+ * Deliberately partial: magic, version, `Shard Count`, the exact length that count fixes, and each
+ * record's role + `Bytes`. Everything else (bboxes, the set id, digests) is checked by the device
+ * against files this mock does not model, and inventing checks it cannot really make would be worse
+ * than having none.
+ */
+function parseSetManifest(bytes: Uint8Array): { readonly records: SetManifestRecord[] } | null {
+    if (bytes.length < OBCS_HEADER_LEN) return null;
+    if (String.fromCharCode(...bytes.subarray(0, 4)) !== "OBCS") return null;
+    if (bytes[4] !== OBCS_VERSION) return null;
+    const count = bytes[6];
+    if (count < 1 || count > 32) return null;
+    if (bytes.length !== manifestLen(count)) return null;
+    if (bytes[7] >= count) return null; // Core Shard is an index into the records
+    const view = viewOf(bytes);
+    const records: SetManifestRecord[] = [];
+    for (let i = 0; i < count; i++) {
+        const at = OBCS_HEADER_LEN + i * OBCS_RECORD_LEN;
+        records.push({ role: bytes[at], bytes: view.getUint32(at + 20, true) });
+    }
+    return { records };
+}
+
+/** Whether these bytes open as an OBCT terrain container this firmware reads (`OBCT_Spec.md` §4). */
+function isObct(bytes: Uint8Array): boolean {
+    if (bytes.length < OBCT_HEADER_LEN) return false;
+    return String.fromCharCode(...bytes.subarray(0, 4)) === OBCT_MAGIC && bytes[4] === OBCT_VERSION;
 }
 
 // --- the synced-ride sidecar --------------------------------------------------

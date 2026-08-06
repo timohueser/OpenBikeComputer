@@ -101,10 +101,19 @@ export const NEW_OBJECT_ID = 0xffff;
 /** Object id of the singletons: the list objects, diagnostics, and the `fwImage` staging slot. */
 export const SINGLETON_OBJECT_ID = 0;
 
+/** The OBCT terrain container's fixed header width (`OBCT_Spec.md` §4) — the floor a
+ *  {@link ObjectType.TerrainShard} announce has to clear, as an OBCM header is for a map. */
+export const OBCT_HEADER_LEN = 32;
+/** `b"OBCT"` — the terrain container's magic, and the version this firmware reads. */
+export const OBCT_MAGIC = "OBCT";
+export const OBCT_VERSION = 1;
+
 /** The OBCS set manifest's fixed header width (`OBCA_Spec.md` §5.2). */
 export const OBCS_HEADER_LEN = 72;
 /** The OBCS manifest's fixed per-record width (§5.2). */
 export const OBCS_RECORD_LEN = 56;
+/** The one manifest version a reader accepts — `2` since the `terrain` role (§5.2). */
+export const OBCS_VERSION = 2;
 
 /**
  * The exact byte length of a set manifest carrying `records` records — `72 + 56 × Shard Count`.
