@@ -797,7 +797,7 @@ or assembly algorithms.
 | Regions, boxes, GPX corridors | yes | yes | yes |
 | Shared wasm assembly | yes | yes | yes |
 | Product skin editor | yes | yes | yes |
-| Output | browser downloads | grouped local folder | browser downloads |
+| Output | picked folder, or one zip | grouped local folder | one zip download |
 | Advanced schema editor | no | no | yes |
 | Native fixed-crop schema preview | no | no | yes |
 | Product PBF build | no | no | no |
@@ -810,9 +810,13 @@ policy. The desktop writes every file of one assembled volume set into a unique
 folder under `Documents/OpenBikeComputer`, using a temporary file and atomic
 rename for each part. It closes the folder only after the assembler emits and
 verifies the manifest; cancellation or failure discards the incomplete folder.
-In a browser, files already handed to the download manager cannot be recalled,
-so the failure card names how many incomplete downloads the user should discard.
-Saving changes where bytes land, never what the assembler emitted.
+A browser with the File System Access API does the equivalent through a
+directory the user picks when the run starts — ideally the card itself — with
+files streamed in as they are verified and removed again if the run fails. A
+browser without the picker is handed the finished set as **one** stored-zip
+download at the very end: one save prompt for a map of any size, and a failed or
+cancelled run has handed the download manager nothing at all. Saving changes
+where bytes land, never what the assembler emitted.
 
 The local Python server remains useful while developing the one hosted schema.
 Its Maps tab resolves `OBC_CATALOG_URL` at server runtime and proxies only the
