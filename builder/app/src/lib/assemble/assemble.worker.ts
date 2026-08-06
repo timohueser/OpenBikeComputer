@@ -52,7 +52,9 @@ import {
     openShardSink,
     readCellBytes,
     syncReadsAvailable,
+    takeIoStats,
     type CellReader,
+    type IoStats,
     type ScratchFiles,
     type ShardSink,
 } from "../cells/store";
@@ -180,6 +182,7 @@ self.onmessage = async (event: MessageEvent<AssembleWorkerRequest>) => {
         // Announced after the run, not from inside it: the page cannot open a file
         // this worker still holds a sync handle on.
         const stored: WorkerStoredShard[] = [];
+        let io: IoStats | undefined;
         let result;
         try {
             result = await assembleCells(
@@ -233,6 +236,12 @@ self.onmessage = async (event: MessageEvent<AssembleWorkerRequest>) => {
             opened.reader?.close();
             sink?.close();
             await scratch?.discard();
+            // The run's OPFS ledger, whatever the outcome: every crossing into
+            // the browser's storage, by channel, with its wall-clock cost. It
+            // rides the `done` message because a worker's own console does not
+            // reliably surface — and it is the first number an in-tab slowness
+            // report needs.
+            io = takeIoStats();
         }
         try {
             post({
@@ -264,7 +273,7 @@ self.onmessage = async (event: MessageEvent<AssembleWorkerRequest>) => {
                 // the page's message port while the worker runs ahead.
                 await waitForFileAck();
             }
-            post({ type: "done", warnings: [...result.warnings], summary: result.summary });
+            post({ type: "done", warnings: [...result.warnings], summary: result.summary, io });
         } finally {
             result.release();
         }

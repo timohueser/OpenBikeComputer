@@ -112,5 +112,9 @@ export function saveBlob(blob: Blob, filename: string): void {
     anchor.href = url;
     anchor.download = filename;
     anchor.click();
-    setTimeout(() => URL.revokeObjectURL(url), 0);
+    // Deliberately never revoked. Firefox resolves the URL when the user
+    // *accepts* the save dialog, not when `click()` runs — a revoke on a timer
+    // is a race that kills the download and strands a `.part` file. The cost of
+    // keeping it is one registry entry per save (the big blobs are OPFS-backed
+    // Files, so no heap is pinned), and the registry dies with the document.
 }

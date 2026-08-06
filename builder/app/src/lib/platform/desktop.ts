@@ -55,7 +55,14 @@ async function openMapOutput(name: string): Promise<MapOutputSession> {
     const opened = await desktop.mapOutputBegin(name);
     return {
         path: opened.path,
-        write: (filename, bytes) => desktop.mapOutputWrite(opened.id, filename, bytes),
+        // The IPC takes contiguous bytes; a Blob is read back here, which is
+        // one shard resident — exactly the residency this host had before.
+        write: async (filename, body) =>
+            desktop.mapOutputWrite(
+                opened.id,
+                filename,
+                body instanceof Uint8Array ? body : new Uint8Array(await body.arrayBuffer()),
+            ),
         finish: () => desktop.mapOutputFinish(opened.id),
         discard: () => desktop.mapOutputDiscard(opened.id),
     };
