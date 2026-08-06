@@ -74,6 +74,16 @@ com-hw = []
 # table costs them no flash or RAM. See `firmware/docs/ARCHITECTURE_RESOURCE_BASELINE.md`.
 resource-report = []
 
+# Reserve a streamed upload's whole cluster chain up front, so the per-cluster FAT writes leave the
+# streaming hot path (`sd::Storage::upload_reserve`).
+#
+# **Off until the fork carries the API**, and that is the whole reason this is a feature rather than
+# plain code: it calls `VolumeManager::preallocate`, which exists as a written, host-tested patch in
+# `firmware/patches/` and not yet on `timohueser/embedded-sdmmc-rs`. Pushing to a repository outside
+# this one is an owner action. The moment the fork has it and both `Cargo.lock`s are updated, this
+# becomes `default` and the feature can go — see `firmware/patches/README.md` for the two-step.
+sdmmc-prealloc = []
+
 # The all-features stack (issue #270, epic #267): nrf-sdc/MPSL/TrouBLE folded into `main.rs`.
 # **Part of `default` since the LM20 retarget** — map + router + BLE run in one image, sharing
 # the SD + settings store. MPSL provides the critical-section impl (its radio timing forbids

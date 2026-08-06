@@ -1001,6 +1001,13 @@ impl ObjectStore {
         shared.storage.as_mut().is_some_and(|s| s.upload_begin())
     }
 
+    /// Reserve the announced object's cluster chain before the first payload byte, so the FAT's
+    /// per-cluster writes leave the streaming path. Advisory: `false` only means the upload runs at
+    /// the old pace. See [`Storage::upload_reserve`](crate::sd::Storage::upload_reserve).
+    pub fn upload_reserve(&mut self, shared: &mut SharedStore, total_len: u32) -> bool {
+        shared.storage.as_mut().is_some_and(|s| s.upload_reserve(total_len))
+    }
+
     /// Sink one CoC chunk: append to the temp. False = storage failure (the caller aborts).
     pub fn upload_append(&mut self, shared: &mut SharedStore, bytes: &[u8]) -> bool {
         shared.storage.as_mut().is_some_and(|s| s.upload_append(bytes))

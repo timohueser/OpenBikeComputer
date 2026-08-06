@@ -215,6 +215,11 @@ async fn run_upload(
         match opened {
             Some(id) => {
                 map_id = id;
+                // Reserve the whole chain now that the length is known and the file is open, under
+                // the lock that opened it. Advisory — a refusal costs throughput, never correctness
+                // — and the point is *when* it runs: every cluster it books here is four
+                // single-block FAT writes that would otherwise land between the staged bursts.
+                store.borrow_mut().upload_reserve(&mut guard, rx.total_len());
                 true
             }
             None => false,
