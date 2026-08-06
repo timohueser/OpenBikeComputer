@@ -158,9 +158,14 @@ static mut BULK_BUF: MaybeUninit<[u8; MAX_PACKET as usize]> = MaybeUninit::unini
 /// An upload's [`Stage`](crate::link::stage::Stage) buffer — how many bytes pile up in RAM before
 /// they reach the card as one batch.
 ///
-/// **A RAM-against-minutes dial, and RAM is the scarce one.** From `sd_bench` on the shipping card,
-/// per 32 KB of map (one cluster, so one cluster-allocation's worth of FAT writes either way):
-/// 4 KB → 0.70 MB/s, 8 KB → 0.76, 16 KB → 0.81, 32 KB → 0.86, against 0.20 unstaged.
+/// **A RAM-against-minutes dial, and RAM is the scarce one.** Measured on the shipping card over
+/// the **retired SPI transport** (2026-07-30), per 32 KB of map (one cluster, so one
+/// cluster-allocation's worth of FAT writes either way): 4 KB → 0.70 MB/s, 8 KB → 0.76,
+/// 16 KB → 0.81, 32 KB → 0.86, against 0.20 unstaged. The absolute figures are obsolete since the
+/// sEMMC pivot (#1158) — the bus is ~7.6× faster — but the *shape* is not: what these rungs price
+/// is how often the card's internal program cycle is paid, which is card-side and did not change.
+/// A fresh sweep on the new transport is on #1158's follow-up list; it can only make the case for
+/// the smaller buffer stronger.
 ///
 /// 16 KB takes 94% of what is on the table. The last 6% wants a full 32 KB cluster per flush, and
 /// that second 16 KB buys less than it costs: the deep-ride stack peak measured 35,808 B, and this
