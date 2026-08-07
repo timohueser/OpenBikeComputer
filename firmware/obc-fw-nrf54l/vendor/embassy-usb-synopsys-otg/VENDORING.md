@@ -24,7 +24,10 @@ The board crate redirects `embassy-nrf`'s dependency here with a `[patch.crates-
 `src/`, `README.md` and `CHANGELOG.md` are the published crate's files. `Cargo.toml` is the
 upstream `Cargo.toml.orig` with the three `path = "../embassy-*"` attributes dropped (they point
 into the embassy monorepo, which is not here) and an empty `[workspace]` table added so the board
-crate's workspace does not adopt this directory as a member.
+crate's workspace does not adopt this directory as a member. It deliberately carries **no**
+`publish = false`: `about.toml` sets `private.ignore = true`, so that field would drop the crate
+out of `THIRD-PARTY.md` — and this code ships inside `UPDATE.BIN`, where embassy's MIT/Apache-2.0
+terms have to travel with it like every other third-party crate in the image.
 
 ## Regenerating the pristine copy
 
