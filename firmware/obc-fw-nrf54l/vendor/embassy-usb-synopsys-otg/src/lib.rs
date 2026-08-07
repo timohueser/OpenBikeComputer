@@ -75,11 +75,28 @@ pub unsafe fn on_interrupt(r: Otg, state: &State<'_>) {
             vals::Pktstsd::OUT_DATA_RX => {
                 trace!("OUT_DATA_RX ep={} len={}", ep_num, len);
 
-                if state.ep_states[ep_num].out_size.load(Ordering::Acquire) == EP_OUT_BUFFER_EMPTY {
-                    // SAFETY: Buffer size is allocated to be equal to endpoint's maximum packet size
-                    // We trust the peripheral to not exceed its configured MPSIZ
+                // ===== OpenBikeComputer fork (#1173) =====
+                // **Append** at the fill cursor rather than overwrite a one-packet slot, and
+                // publish per packet rather than per completed transfer. Per packet, because the
+                // burst's *end* is not a boundary the application can wait for: the last chunk of
+                // an object is whatever the host had left, so a transfer armed for N packets may
+                // legitimately go quiet after k < N with no short packet to close it. Waking on
+                // each packet keeps every received byte reachable immediately; the burst's job is
+                // only to stop the endpoint NAKing between them.
+                let ep = &state.ep_states[ep_num];
+                let alloc = state.ep_alloc_get(Direction::Out, ep_num);
+                let cap = alloc.map_or(0, |ep| ep.out_buf_bytes) as usize;
+                let off = ep.out_fill.load(Ordering::Acquire) as usize;
+                // `alloc.is_some()` is not implied by the capacity test: an unallocated slot has a
+                // null `out_buffer`, and a zero-length packet on it would satisfy `0 + 0 <= 0` and
+                // reach `from_raw_parts_mut(null, 0)`. The core should never deliver on a slot it
+                // was never given, so this is a guard rather than a case.
+                if alloc.is_some() && off + len <= cap {
+                    // SAFETY: the write stays inside the endpoint's `out_buf_bytes` slice of the
+                    // driver's OUT buffer (checked above), and the reader hands the region back by
+                    // resetting `out_fill`, so this and the reader's copy never overlap.
                     let buf =
-                        unsafe { core::slice::from_raw_parts_mut(*state.ep_states[ep_num].out_buffer.get(), len) };
+                        unsafe { core::slice::from_raw_parts_mut((*ep.out_buffer.get()).add(off), len) };
 
                     let mut chunks = buf.chunks_exact_mut(4);
                     for chunk in &mut chunks {
@@ -93,8 +110,22 @@ pub unsafe fn on_interrupt(r: Otg, state: &State<'_>) {
                         rem.copy_from_slice(&data.to_ne_bytes()[0..rem.len()]);
                     }
 
-                    state.ep_states[ep_num].out_size.store(len as u16, Ordering::Release);
-                    state.ep_states[ep_num].out_waker.wake();
+                    ep.out_fill.store((off + len) as u16, Ordering::Release);
+                    if len == 0 {
+                        ep.out_zlp.store(true, Ordering::Release);
+                    }
+                    // Has the armed transfer ended? The USB rule decides it, not a status word we
+                    // have to hope the core emits: a transfer closes on a short packet or when the
+                    // armed packet count is spent. (`OUT_DATA_DONE` below sets the same flag, so
+                    // the two agree; this arm is what makes the flag independent of it.)
+                    let pkts = ep.out_pkts.load(Ordering::Relaxed).wrapping_add(1);
+                    ep.out_pkts.store(pkts, Ordering::Relaxed);
+                    if let Some(alloc) = alloc {
+                        if len < alloc.max_packet_size as usize || pkts >= alloc.burst_packets {
+                            ep.out_done.store(true, Ordering::Release);
+                        }
+                    }
+                    ep.out_waker.wake();
                 } else {
                     error!("ep_out buffer overflow index={}", ep_num);
 
@@ -107,6 +138,12 @@ pub unsafe fn on_interrupt(r: Otg, state: &State<'_>) {
             }
             vals::Pktstsd::OUT_DATA_DONE => {
                 trace!("OUT_DATA_DONE ep={}", ep_num);
+                // The core's own end-of-transfer marker. Redundant with the packet-count rule
+                // above and kept anyway: it costs one store and it is the authority if a core ever
+                // ends a transfer for a reason the USB rule does not predict.
+                let ep = &state.ep_states[ep_num];
+                ep.out_done.store(true, Ordering::Release);
+                ep.out_waker.wake();
             }
             vals::Pktstsd::SETUP_DATA_DONE => {
                 trace!("SETUP_DATA_DONE ep={}", ep_num);
@@ -265,22 +302,61 @@ impl PhyType {
     }
 }
 
-/// Indicates that [State::ep_out_buffers] is empty.
-const EP_OUT_BUFFER_EMPTY: u16 = u16::MAX;
+// ===== OpenBikeComputer fork (#1173): the OUT staging buffer is a burst, not a packet =====
+//
+// Upstream held exactly one max packet per OUT endpoint and used `out_size == u16::MAX` as an
+// "empty" sentinel: the interrupt handler filled it, the reader emptied it, and anything that
+// arrived in between was dropped with an `ep_out buffer overflow` error. That could not be
+// otherwise, because upstream also arms exactly one packet (`PKTCNT = 1`), so nothing *can* arrive
+// until the reader has cleared NAK.
+//
+// A **bursting** endpoint (see [`Config::out_burst_endpoints`]) arms `PKTCNT = N`, so up to N
+// packets land back to back while the application is busy. The single sentinel is replaced by a
+// running fill cursor with one writer on each side:
+//
+//   * the interrupt handler only ever **grows** `out_fill`, appending each packet at the cursor;
+//   * the reader only ever **resets** it, and does so with a compare-exchange, so a packet that
+//     lands between its snapshot and its reset is taken on the next turn of the drain loop rather
+//     than overwritten.
+//
+// That is the whole synchronisation story — no critical section on the data path, single producer,
+// single consumer, and it degenerates to exactly the upstream behaviour at `N = 1`.
 
 struct EpState {
     in_waker: AtomicWaker,
     out_waker: AtomicWaker,
     /// RX FIFO is shared so extra buffers are needed to dequeue all data without waiting on each endpoint.
-    /// Buffers are ready when associated [State::ep_out_size] != [EP_OUT_BUFFER_EMPTY].
+    /// Its capacity is [`EndpointData::out_buf_bytes`].
     out_buffer: UnsafeCell<*mut u8>,
-    out_size: AtomicU16,
+    /// Bytes staged in [`out_buffer`](EpState::out_buffer) and not yet read. Grown by the interrupt
+    /// handler, reset by [`EndpointOut::read`].
+    out_fill: AtomicU16,
+    /// Packets received into the currently armed transfer. Reset when the reader arms the next one.
+    out_pkts: AtomicU16,
+    /// The armed transfer has ended — `PKTCNT` reached zero or a short packet closed it early — so
+    /// the reader must arm the next one. The core NAKs the endpoint until it does.
+    out_done: AtomicBool,
+    /// A zero-length packet arrived. Kept apart from [`out_fill`](EpState::out_fill), which cannot
+    /// represent one, so that `read` can still answer `Ok(0)` for it as it always has.
+    out_zlp: AtomicBool,
     // Written once during endpoint allocation (before Driver::start), read-only afterward.
     in_alloc: UnsafeCell<Option<EndpointData>>,
     out_alloc: UnsafeCell<Option<EndpointData>>,
 }
 
-// SAFETY: `out_buffer` access is synchronized via `out_size`. `in_alloc`/`out_alloc` are written
+impl EpState {
+    /// Forget everything staged for this OUT endpoint. Called wherever the endpoint's transfer is
+    /// (re-)armed from outside a read — a bus reset or an enable/disable edge — so that a packet
+    /// staged before a reconnect can never be read as the first bytes after it.
+    fn reset_out(&self) {
+        self.out_fill.store(0, Ordering::Release);
+        self.out_pkts.store(0, Ordering::Release);
+        self.out_done.store(false, Ordering::Release);
+        self.out_zlp.store(false, Ordering::Release);
+    }
+}
+
+// SAFETY: `out_buffer` access is synchronized via `out_fill`. `in_alloc`/`out_alloc` are written
 // only during endpoint allocation before the USB stack starts; afterward they are read-only.
 unsafe impl Send for EpState {}
 unsafe impl Sync for EpState {}
@@ -296,6 +372,13 @@ struct EndpointData {
     ep_type: EndpointType,
     max_packet_size: u16,
     fifo_size_words: u16,
+    /// How many max packets one armed transfer accepts (`DOEPTSIZ.PKTCNT`). `1` everywhere except
+    /// the OUT endpoints named in [`Config::out_burst_endpoints`]; always `1` for IN endpoints,
+    /// which this field is meaningless for.
+    burst_packets: u16,
+    /// The endpoint's share of the driver's OUT staging buffer:
+    /// `burst_packets * max_packet_size`, and therefore also `DOEPTSIZ.XFRSIZ`. Zero for IN.
+    out_buf_bytes: u16,
 }
 
 /// Type-erased borrow of [`State`] passed to [`OtgInstance`], [`Driver`](crate::Driver), [`Bus`](crate::Bus),
@@ -391,7 +474,10 @@ impl<const EP_COUNT: usize> StateStorage<EP_COUNT> {
                     in_waker: AtomicWaker::new(),
                     out_waker: AtomicWaker::new(),
                     out_buffer: UnsafeCell::new(0 as _),
-                    out_size: AtomicU16::new(EP_OUT_BUFFER_EMPTY),
+                    out_fill: AtomicU16::new(0),
+                    out_pkts: AtomicU16::new(0),
+                    out_done: AtomicBool::new(false),
+                    out_zlp: AtomicBool::new(false),
                     in_alloc: UnsafeCell::new(None),
                     out_alloc: UnsafeCell::new(None),
                 }
@@ -430,6 +516,35 @@ pub struct Config {
     /// voltage divider. See ST application note AN4879 and the reference manual for more details.
     pub vbus_detection: bool,
 
+    // ===== OpenBikeComputer fork (#1173) =====
+    /// Bitmask of OUT endpoint **indices** whose transfers are armed as a burst of
+    /// [`out_burst_packets`](Config::out_burst_packets) max packets (bit `i` ⇒ endpoint `i`).
+    ///
+    /// Upstream arms one packet at a time and re-arms only once the application has read it, so the
+    /// endpoint NAKs for the whole ISR → waker → executor → poll → copy → `CNAK` round trip — per
+    /// 512 B packet. On a high-speed bulk pipe that round trip, not the wire, is the throughput
+    /// ceiling. A bursting endpoint arms `PKTCNT = N` instead, so the core keeps absorbing the
+    /// stream into its RX FIFO and this driver's staging buffer while the application is busy, and
+    /// the application picks up everything that accumulated in one read.
+    ///
+    /// The cost is RAM, paid per named endpoint: `N × max_packet_size` more of the `ep_out_buffer`
+    /// handed to [`Driver::new`], and the same again out of the core's shared RX FIFO. Name only
+    /// the endpoint that streams bulk data — a control or interrupt endpoint gains nothing, and an
+    /// endpoint whose peer sends one message per transfer gains nothing either (a short packet
+    /// closes the burst immediately, which is correct but makes the arming pure overhead).
+    ///
+    /// **Endpoint indices are assigned in allocation order** by
+    /// [`alloc_endpoint_out`](embassy_usb_driver::Driver::alloc_endpoint_out), so a mask is only as
+    /// stable as the order the application allocates in. Check
+    /// [`EndpointInfo::addr`](embassy_usb_driver::EndpointInfo::addr) after building if that matters.
+    ///
+    /// `0` (the default) is upstream behaviour everywhere.
+    pub out_burst_endpoints: u16,
+
+    /// How many max packets an endpoint named in [`out_burst_endpoints`](Config::out_burst_endpoints)
+    /// arms at once. Values below 2 disable bursting. Defaults to 1.
+    pub out_burst_packets: u16,
+
     /// Enable transceiver delay.
     ///
     /// Some ULPI PHYs like the Microchip USB334x series require a delay between the ULPI register write that initiates
@@ -444,6 +559,8 @@ impl Default for Config {
         Self {
             vbus_detection: false,
             xcvrdly: false,
+            out_burst_endpoints: 0,
+            out_burst_packets: 1,
         }
     }
 }
@@ -462,8 +579,9 @@ impl<'d> Driver<'d> {
     /// # Arguments
     ///
     /// * `ep_out_buffer` - An internal buffer used to temporarily store received packets.
-    /// Must be large enough to fit all OUT endpoint max packet sizes.
-    /// Endpoint allocation will fail if it is too small.
+    /// Must be large enough to fit all OUT endpoint max packet sizes — times
+    /// [`Config::out_burst_packets`] for each endpoint named in
+    /// [`Config::out_burst_endpoints`]. Endpoint allocation will fail if it is too small.
     /// * `instance` - The USB OTG peripheral instance and its configuration.
     /// * `config` - The USB driver configuration.
     pub fn new(ep_out_buffer: &'d mut [u8], instance: OtgInstance<'d>, config: Config) -> Self {
@@ -497,29 +615,15 @@ impl<'d> Driver<'d> {
             D::dir()
         );
 
-        if D::dir() == Direction::Out {
-            if self.ep_out_buffer_offset + max_packet_size as usize > self.ep_out_buffer.len() {
-                error!("Not enough endpoint out buffer capacity");
-                return Err(EndpointAllocError);
-            }
-        };
-
-        let fifo_size_words = match D::dir() {
-            Direction::Out => (max_packet_size + 3) / 4,
-            // INEPTXFD requires minimum size of 16 words
-            Direction::In => u16::max((max_packet_size + 3) / 4, 16),
-        };
-
-        if fifo_size_words + self.allocated_fifo_words() > self.instance.fifo_depth_words {
-            error!("Not enough FIFO capacity");
-            return Err(EndpointAllocError);
-        }
-
         let dir = D::dir();
         let st = self.instance.state;
         let endpoint_count = st.endpoint_count();
 
         // Find endpoint slot
+        //
+        // (OpenBikeComputer fork: this block moved **above** the buffer/FIFO sizing, which is
+        // otherwise unchanged. The burst factor is keyed on the endpoint index, so the slot has to
+        // be picked before the two capacities that depend on it can be computed.)
         let index = if let Some(addr) = ep_addr {
             // Use the specified endpoint address
             let requested_index = addr.index();
@@ -552,6 +656,45 @@ impl<'d> Driver<'d> {
             }
         };
 
+        // ===== OpenBikeComputer fork (#1173) =====
+        // How many packets this endpoint's transfers are armed for, and therefore how much staging
+        // buffer and shared RX FIFO it needs. `1` unless the application named this OUT index in
+        // `Config::out_burst_endpoints`, which is what keeps EP0, the control pipe and every IN
+        // endpoint on the upstream path byte for byte.
+        let burst_packets = if dir == Direction::Out
+            && index < 16
+            && self.config.out_burst_endpoints & (1 << index) != 0
+        {
+            self.config.out_burst_packets.max(1)
+        } else {
+            1
+        };
+        let out_buf_bytes = match dir {
+            Direction::Out => burst_packets * max_packet_size,
+            Direction::In => 0,
+        };
+
+        if dir == Direction::Out && self.ep_out_buffer_offset + out_buf_bytes as usize > self.ep_out_buffer.len() {
+            error!("Not enough endpoint out buffer capacity");
+            return Err(EndpointAllocError);
+        }
+
+        let fifo_size_words = match dir {
+            // The RX FIFO is shared across OUT endpoints, and the burst is only real if it can
+            // land there while the CPU is elsewhere — so a bursting endpoint asks for `N` packets'
+            // worth, plus one word per packet for the status entry the core pushes alongside each.
+            // (At `N = 1` the `+ burst_packets` is the one deviation from upstream's formula, and
+            // it is one word: cheap insurance in a FIFO this driver already over-allocates.)
+            Direction::Out => burst_packets * ((max_packet_size + 3) / 4) + burst_packets,
+            // INEPTXFD requires minimum size of 16 words
+            Direction::In => u16::max((max_packet_size + 3) / 4, 16),
+        };
+
+        if fifo_size_words + self.allocated_fifo_words() > self.instance.fifo_depth_words {
+            error!("Not enough FIFO capacity");
+            return Err(EndpointAllocError);
+        }
+
         unsafe {
             st.alloc_slot_write(
                 dir,
@@ -560,27 +703,31 @@ impl<'d> Driver<'d> {
                     ep_type,
                     max_packet_size,
                     fifo_size_words,
+                    burst_packets,
+                    out_buf_bytes,
                 },
             );
         };
 
-        trace!("  index={}", index);
+        trace!("  index={} burst_packets={}", index, burst_packets);
 
         let ep_state = &self.instance.state.ep_states[index];
-        if D::dir() == Direction::Out {
+        if dir == Direction::Out {
             // Buffer capacity check was done above, now allocation cannot fail
             unsafe {
                 *ep_state.out_buffer.get() = self.ep_out_buffer.as_mut_ptr().offset(self.ep_out_buffer_offset as _);
             }
-            self.ep_out_buffer_offset += max_packet_size as usize;
+            self.ep_out_buffer_offset += out_buf_bytes as usize;
+            ep_state.reset_out();
         }
 
         Ok(Endpoint {
             _phantom: PhantomData,
             regs: self.instance.regs,
             state: ep_state,
+            burst_packets,
             info: EndpointInfo {
-                addr: EndpointAddress::from_parts(index, D::dir()),
+                addr: EndpointAddress::from_parts(index, dir),
                 ep_type,
                 max_packet_size,
                 interval_ms,
@@ -947,12 +1094,16 @@ impl<'d> Bus<'d> {
                         }
                     });
 
+                    // (OpenBikeComputer fork: `burst_packets`/`out_buf_bytes` in place of the
+                    // literal `1`/`max_packet_size`. Both are `1`/`mps` for every endpoint the
+                    // application did not name in `Config::out_burst_endpoints`, EP0 included.)
+                    st.ep_states[index].reset_out();
                     regs.doeptsiz(index).modify(|w| {
-                        w.set_xfrsiz(ep.max_packet_size as _);
+                        w.set_xfrsiz(ep.out_buf_bytes as _);
                         if index == 0 {
                             w.set_rxdpid_stupcnt(3);
                         } else {
-                            w.set_pktcnt(1);
+                            w.set_pktcnt(ep.burst_packets);
                         }
                     });
 
@@ -1162,13 +1313,19 @@ impl<'d> embassy_usb_driver::Bus for Bus<'d> {
                         w.set_usbaep(enabled);
                     });
 
+                    // Whatever was staged belongs to the connection that just went away (or to the
+                    // one before this re-enable); it must not be read as the first bytes of the
+                    // next one. Upstream left it, which was survivable only because a single
+                    // stale packet is what the whole-transfer CRC catches.
+                    st.ep_states[ep_addr.index()].reset_out();
+
                     // When re-enabling a non-EP0 OUT endpoint, prime it to receive a packet.
                     // Without this, the endpoint stays idle after reconnect and silently drops data.
                     if enabled && ep_addr.index() != 0 {
                         if let Some(ep) = st.ep_alloc_get(Direction::Out, ep_addr.index()) {
                             regs.doeptsiz(ep_addr.index()).modify(|w| {
-                                w.set_xfrsiz(ep.max_packet_size as _);
-                                w.set_pktcnt(1);
+                                w.set_xfrsiz(ep.out_buf_bytes as _);
+                                w.set_pktcnt(ep.burst_packets);
                             });
                             regs.doepctl(ep_addr.index()).modify(|w| {
                                 w.set_cnak(true);
@@ -1283,6 +1440,10 @@ pub struct Endpoint<'d, D> {
     regs: Otg,
     info: EndpointInfo,
     state: &'d EpState,
+    /// OpenBikeComputer fork (#1173): packets per armed transfer — see
+    /// [`Config::out_burst_endpoints`]. `1` for every IN endpoint and for any OUT endpoint the
+    /// application did not name.
+    burst_packets: u16,
 }
 
 impl<'d> embassy_usb_driver::Endpoint for Endpoint<'d, In> {
@@ -1327,6 +1488,45 @@ impl<'d> embassy_usb_driver::Endpoint for Endpoint<'d, Out> {
     }
 }
 
+impl<'d> Endpoint<'d, Out> {
+    /// Arm the next transfer: `burst_packets` max packets, and clear NAK so the core starts
+    /// accepting them. The endpoint is NAKing when this runs (its previous transfer has ended), so
+    /// resetting the staging cursors here cannot race the interrupt handler.
+    ///
+    /// OpenBikeComputer fork (#1173): factored out of `read` unchanged apart from the packet count
+    /// — same registers, same order, same critical section.
+    fn arm_transfer(&self) {
+        let index = self.info.addr.index();
+        critical_section::with(|_| {
+            self.state.out_pkts.store(0, Ordering::Relaxed);
+            self.regs.doeptsiz(index).modify(|w| {
+                w.set_xfrsiz((self.burst_packets * self.info.max_packet_size) as _);
+                w.set_pktcnt(self.burst_packets);
+            });
+
+            if self.info.ep_type == EndpointType::Isochronous {
+                // Isochronous endpoints must set the correct even/odd frame bit to
+                // correspond with the next frame's number.
+                let frame_number = self.regs.dsts().read().fnsof();
+                let frame_is_odd = frame_number & 0x01 == 1;
+
+                self.regs.doepctl(index).modify(|r| {
+                    if frame_is_odd {
+                        r.set_sd0pid_sevnfrm(true);
+                    } else {
+                        r.set_soddfrm(true);
+                    }
+                });
+            }
+
+            // Clear NAK to indicate we are ready to receive more data
+            self.regs.doepctl(index).modify(|w| {
+                w.set_cnak(true);
+            });
+        });
+    }
+}
+
 impl<'d> embassy_usb_driver::EndpointOut for Endpoint<'d, Out> {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, EndpointError> {
         trace!("read start len={}", buf.len());
@@ -1342,50 +1542,56 @@ impl<'d> embassy_usb_driver::EndpointOut for Endpoint<'d, Out> {
                 return Poll::Ready(Err(EndpointError::Disabled));
             }
 
-            let len = self.state.out_size.load(Ordering::Acquire);
-            if len != EP_OUT_BUFFER_EMPTY {
-                trace!("read ep={:?} done len={}", self.info.addr, len);
-
-                if len as usize > buf.len() {
+            // ===== OpenBikeComputer fork (#1173) =====
+            // Take **everything** the interrupt handler has staged, not one packet. The loop is
+            // what makes the hand-off safe without a lock: `out_fill` is copied out up to the
+            // snapshot, then compare-exchanged back to zero, and a packet that landed during the
+            // copy fails that exchange and is picked up on the next turn instead of being
+            // overwritten. It runs at most `burst_packets` turns, because that is all the core was
+            // armed to deliver.
+            let mut len = 0usize;
+            loop {
+                let filled = self.state.out_fill.load(Ordering::Acquire) as usize;
+                if filled == len {
+                    if self
+                        .state
+                        .out_fill
+                        .compare_exchange(len as u16, 0, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok()
+                    {
+                        break;
+                    }
+                    continue;
+                }
+                if filled > buf.len() {
+                    // Unreadable into this buffer. Leave it staged — same as upstream, where an
+                    // over-long packet also stayed put — so the caller can retry with a bigger one.
                     return Poll::Ready(Err(EndpointError::BufferOverflow));
                 }
+                // SAFETY: the interrupt handler only ever writes at or above `filled`, and it is
+                // the sole writer of the region below it, so this copy has exclusive access to
+                // `[len, filled)`.
+                let data = unsafe { core::slice::from_raw_parts(*self.state.out_buffer.get(), filled) };
+                buf[len..filled].copy_from_slice(&data[len..filled]);
+                len = filled;
+            }
 
-                // SAFETY: exclusive access ensured by `out_size` atomic variable
-                let data = unsafe { core::slice::from_raw_parts(*self.state.out_buffer.get(), len as usize) };
-                buf[..len as usize].copy_from_slice(data);
+            // Whether the armed transfer has ended is a separate question from whether any bytes
+            // arrived: a burst that the peer stopped part-way through is still live, and re-arming
+            // it would rewrite `DOEPTSIZ` under the core. Arm only what the core has finished with.
+            if self.state.out_done.swap(false, Ordering::AcqRel) {
+                self.arm_transfer();
+            }
 
-                // Release buffer
-                self.state.out_size.store(EP_OUT_BUFFER_EMPTY, Ordering::Release);
-
-                critical_section::with(|_| {
-                    // Receive 1 packet
-                    self.regs.doeptsiz(index).modify(|w| {
-                        w.set_xfrsiz(self.info.max_packet_size as _);
-                        w.set_pktcnt(1);
-                    });
-
-                    if self.info.ep_type == EndpointType::Isochronous {
-                        // Isochronous endpoints must set the correct even/odd frame bit to
-                        // correspond with the next frame's number.
-                        let frame_number = self.regs.dsts().read().fnsof();
-                        let frame_is_odd = frame_number & 0x01 == 1;
-
-                        self.regs.doepctl(index).modify(|r| {
-                            if frame_is_odd {
-                                r.set_sd0pid_sevnfrm(true);
-                            } else {
-                                r.set_soddfrm(true);
-                            }
-                        });
-                    }
-
-                    // Clear NAK to indicate we are ready to receive more data
-                    self.regs.doepctl(index).modify(|w| {
-                        w.set_cnak(true);
-                    });
-                });
-
-                Poll::Ready(Ok(len as usize))
+            // A zero-length packet carries no bytes but is still an event the caller may be waiting
+            // on (the control pipe's status stage is exactly that), so it answers `Ok(0)` as it
+            // always has — after any real bytes that arrived with it, never instead of them.
+            if len > 0 {
+                trace!("read ep={:?} done len={}", self.info.addr, len);
+                Poll::Ready(Ok(len))
+            } else if self.state.out_zlp.swap(false, Ordering::AcqRel) {
+                trace!("read ep={:?} done zlp", self.info.addr);
+                Poll::Ready(Ok(0))
             } else {
                 Poll::Pending
             }
@@ -1531,6 +1737,12 @@ impl<'d> embassy_usb_driver::ControlPipe for ControlPipe<'d> {
                 data[0..4].copy_from_slice(&self.setup_state.setup_data[0].load(Ordering::Relaxed).to_ne_bytes());
                 data[4..8].copy_from_slice(&self.setup_state.setup_data[1].load(Ordering::Relaxed).to_ne_bytes());
                 self.setup_state.setup_ready.store(false, Ordering::Release);
+
+                // OpenBikeComputer fork (#1173): a SETUP starts a new control transfer, so
+                // anything staged for EP0-OUT belongs to the previous one and must not be handed
+                // to this one's data stage. This arms the endpoint itself (below), so it owns the
+                // reset the same way `read` does for the transfers it arms.
+                self.ep_out.state.reset_out();
 
                 // EP0 should not be controlled by `Bus` so this RMW does not need a critical section
                 self.regs.doeptsiz(self.ep_out.info.addr.index()).modify(|w| {

@@ -39,7 +39,34 @@ The first commit of the PR that introduced this directory is the pristine copy, 
 `git diff <that commit> -- firmware/obc-fw-nrf54l/vendor/embassy-usb-synopsys-otg` is always the
 complete local fork.
 
-## The local fork
+## The local fork: multi-packet bulk OUT (issue #1173)
 
-None yet — this commit is the pristine vendored copy, so that the functional change that follows is
-reviewable on its own.
+**One change, one endpoint.** Upstream `EndpointOut::read` arms exactly one max packet
+(`DOEPTSIZ.PKTCNT = 1`, `XFRSIZ = max_packet_size`) and re-arms it only after the application task
+has copied the packet out and cleared NAK. The endpoint therefore NAKs from the moment a packet
+lands until the executor gets round to polling the reader — ISR → waker → executor scan → poll →
+copy → CNAK per 512 B — which measured ~342 µs/packet on glass (2026-08-07), of which ~240 µs was
+that serialization. Map uploads ran at 1416–1459 kB/s on both hosts as a result.
+
+The fork adds an **opt-in per-endpoint burst** to that arming:
+
+* `Config::out_burst_endpoints` — a bitmask of OUT endpoint *indices* that burst.
+* `Config::out_burst_packets` — how many max packets those endpoints arm at once.
+
+For a bursting endpoint the driver arms `PKTCNT = N` / `XFRSIZ = N × mps`, gives it `N × mps` of
+staging buffer instead of one packet, and sizes its share of the shared RX FIFO for `N` packets.
+The interrupt handler **appends** each arriving packet to that buffer instead of overwriting it, and
+`read` drains everything staged in one pass. The endpoint stops NAKing between packets, so the core
+keeps absorbing the stream while the CPU is busy folding CRC and writing the card.
+
+Everything else — EP0, the control pipe, every IN endpoint, and any OUT endpoint not named in the
+mask — keeps the upstream `PKTCNT = 1` behaviour byte for byte. `out_burst_endpoints = 0` (the
+default) is upstream.
+
+Details, including why `read` publishes per packet rather than per completed transfer, are in the
+`// ===== OpenBikeComputer fork =====` comments in `src/lib.rs`.
+
+## Upstreaming
+
+The shape is deliberately upstreamable: a `Config` field, no API break, no behaviour change at the
+default. If it goes to embassy, this directory and the `[patch.crates-io]` entry both go away.
