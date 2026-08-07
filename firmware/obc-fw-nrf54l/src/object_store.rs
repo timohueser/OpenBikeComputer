@@ -1008,6 +1008,16 @@ impl ObjectStore {
         shared.storage.as_mut().is_some_and(|s| s.upload_reserve(total_len))
     }
 
+    /// Arm the map-only deferred writer after the scratch arena granted two stable halves.
+    pub fn upload_fast_begin(&mut self, shared: &mut SharedStore) -> bool {
+        shared.storage.as_mut().is_some_and(Storage::upload_fast_begin)
+    }
+
+    /// Join the last deferred card write before a map's header/magic commit.
+    pub fn upload_sync(&mut self, shared: &mut SharedStore) -> bool {
+        shared.storage.as_mut().is_some_and(Storage::upload_sync)
+    }
+
     /// Sink one CoC chunk: append to the temp. False = storage failure (the caller aborts).
     pub fn upload_append(&mut self, shared: &mut SharedStore, bytes: &[u8]) -> bool {
         shared.storage.as_mut().is_some_and(|s| s.upload_append(bytes))

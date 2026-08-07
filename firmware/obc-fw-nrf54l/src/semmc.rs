@@ -299,6 +299,8 @@ pub fn on_vpr00_irq() {
 /// diagnostics stay `defmt::Format`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, defmt::Format)]
 pub enum SemmcError {
+    /// A second command tried to start while a deferred write still owned the peripheral.
+    Busy,
     /// The firmware never echoed a barrier counter — it is wedged (or was never booted).
     Barrier,
     /// The image never stamped ready after a boot.
@@ -485,6 +487,17 @@ pub struct Semmc {
     card: Option<CardInfo>,
     read_clk_hz: u32,
     write_clk_hz: u32,
+    /// Whether this card accepted SD's optional pre-erase hint (ACMD23). Start optimistic and
+    /// permanently fall back after the first refusal; the hint affects throughput, never
+    /// correctness.
+    preerase_supported: bool,
+    /// Block count of a write whose data phase is running on the FLPR. Zero means idle.
+    ///
+    /// Normal callers only use [`write_blocks`](Self::write_blocks), which starts and finishes in
+    /// one call. The USB map uploader may split those halves through
+    /// [`start_write_blocks`](Self::start_write_blocks) / [`finish_write_blocks`](Self::finish_write_blocks)
+    /// so the M33 can receive into the other half while the coprocessor clocks this one.
+    pending_write_blocks: u32,
 }
 
 impl Default for Semmc {
@@ -506,6 +519,8 @@ impl Semmc {
             card: None,
             read_clk_hz: CLK_DS_HZ,
             write_clk_hz: CLK_WRITE_MAX_HZ,
+            preerase_supported: true,
+            pending_write_blocks: 0,
         }
     }
 
@@ -612,6 +627,12 @@ impl Semmc {
     /// returning, so this only has to clear latched events and stop the core. The caller relaunches
     /// the display blob afterwards (`ls021_flpr::launch_flpr`).
     pub fn leave_storage_mode(&mut self) {
+        // A deferred map write is normally joined before the store lock is released. Keep the mux
+        // total on error/abort paths too: the display must never park the FLPR while its DMA still
+        // owns a staging half.
+        if self.pending_write_blocks != 0 {
+            let _ = self.finish_write_blocks();
+        }
         // Plain VRI writes, no barrier: nothing is in flight (the transfer paths ack their own
         // completions), and the hart is about to be reset anyway.
         vri_write(VRI_CFG_READYTOTRANSFER, 0);
@@ -1160,28 +1181,55 @@ impl Semmc {
         self.check_after_transfer()
     }
 
-    /// **Write `buf.len() / 512` blocks starting at `lba`.**
+    /// **Start writing `buf.len() / 512` blocks at `lba`, leaving the data phase in flight.**
     ///
-    /// CMD24 for one block, CMD25 + CMD12 for more, then CMD13 until the card leaves `prg` — the
-    /// program cycle *is* the completion signal for a write. Runs at [`CLK_WRITE_MAX_HZ`]
-    /// regardless of the read clock (see that constant).
+    /// # Safety
     ///
-    /// Same buffer rules as [`read_blocks`](Self::read_blocks).
-    pub fn write_blocks(&mut self, lba: u32, buf: &[u8]) -> Result<(), SemmcError> {
+    /// The FLPR DMA keeps reading `buf` after this function returns. The caller must keep that
+    /// allocation alive, aligned, and byte-for-byte unchanged until [`finish_write_blocks`](Self::finish_write_blocks)
+    /// returns. It must also serialize every other sEMMC command behind that finish. The USB map
+    /// pipeline satisfies this with two disjoint scratch-arena halves and one store owner; generic
+    /// block-device callers deliberately never use this entry point.
+    pub unsafe fn start_write_blocks(&mut self, lba: u32, buf: &[u8]) -> Result<(), SemmcError> {
+        if self.pending_write_blocks != 0 {
+            return Err(SemmcError::Busy);
+        }
         let n = self.check_request(buf.as_ptr() as usize, buf.len(), lba)?;
         self.clk_hz = self.write_clk_hz;
+        if n > 1 && self.preerase_supported {
+            let prepared = self.acmd(23, n, RESP_R1, CMD_DEADLINE).and_then(|r| check_r1(r[0]));
+            if let Err(e) = prepared {
+                // SET_WR_BLK_ERASE_COUNT is a performance hint. Older or unusual cards may reject
+                // it; remember that answer and continue with the ordinary CMD25 path.
+                self.preerase_supported = false;
+                warn!("sEMMC: ACMD23 pre-erase hint unavailable ({}) — continuing without it", e);
+            }
+        }
         let data = Some((buf.as_ptr() as u32, BLOCK_BYTES as u32, n));
+        let idx = if n == 1 { 24 } else { 25 };
+        self.cmd_start(idx, self.block_arg(lba), RESP_R1, PROC_PROCESS, data)?;
+        self.pending_write_blocks = n;
+        Ok(())
+    }
+
+    /// Join the write started by [`start_write_blocks`](Self::start_write_blocks), stop a
+    /// multi-block stream, and wait until the card has left `prg`.
+    pub fn finish_write_blocks(&mut self) -> Result<(), SemmcError> {
+        let n = core::mem::take(&mut self.pending_write_blocks);
+        if n == 0 {
+            return Ok(());
+        }
+        let transfer = self.wait_completion(WRITE_DEADLINE);
         if n == 1 {
-            if let Err(e) = self.cmd(24, self.block_arg(lba), RESP_R1, PROC_PROCESS, data, WRITE_DEADLINE) {
+            if let Err(e) = transfer {
                 self.stop_transmission();
                 return Err(e);
             }
         } else {
-            // Same reasoning as the read path: the card must be told to stop even when the
-            // multi-block write failed, or it stays in `rcv` waiting for data that never comes.
-            let r = self.cmd(25, self.block_arg(lba), RESP_R1, PROC_PROCESS, data, WRITE_DEADLINE);
+            // Even a failed CMD25 leaves the card waiting in `rcv`; stop it before surfacing the
+            // original result, exactly as the synchronous path did.
             let stop = self.cmd(12, 0, RESP_R1B, PROC_PROCESS, None, CMD_DEADLINE);
-            r?;
+            transfer?;
             stop?;
         }
         let deadline = Instant::now() + PROGRAM_DEADLINE;
@@ -1197,6 +1245,20 @@ impl Semmc {
                 return Err(SemmcError::CardBusy);
             }
         }
+    }
+
+    /// **Write `buf.len() / 512` blocks starting at `lba`.**
+    ///
+    /// CMD24 for one block, CMD25 + CMD12 for more, then CMD13 until the card leaves `prg` — the
+    /// program cycle *is* the completion signal for a write. Runs at [`CLK_WRITE_MAX_HZ`]
+    /// regardless of the read clock (see that constant).
+    ///
+    /// Same buffer rules as [`read_blocks`](Self::read_blocks).
+    pub fn write_blocks(&mut self, lba: u32, buf: &[u8]) -> Result<(), SemmcError> {
+        // SAFETY: this synchronous wrapper retains `buf` unchanged until the immediately following
+        // finish returns and issues no intervening command.
+        unsafe { self.start_write_blocks(lba, buf)? };
+        self.finish_write_blocks()
     }
 
     /// The card's own verdict on the transfer that just ran (reads ignore the in-band response).

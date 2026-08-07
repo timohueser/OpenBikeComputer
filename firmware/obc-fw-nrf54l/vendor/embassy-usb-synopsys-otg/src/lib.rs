@@ -10,10 +10,11 @@ mod fmt;
 use core::cell::UnsafeCell;
 use core::future::poll_fn;
 use core::marker::PhantomData;
-use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
-use core::task::Poll;
+use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering, fence};
+use core::task::{Context, Poll};
 
 use embassy_sync::waitqueue::AtomicWaker;
+use embassy_time::Duration;
 use embassy_usb_driver::{
     Bus as _, Direction, EndpointAddress, EndpointAllocError, EndpointError, EndpointIn, EndpointInfo, EndpointOut,
     EndpointType, Event, Unsupported,
@@ -39,13 +40,13 @@ pub unsafe fn on_interrupt(r: Otg, state: &State<'_>) {
         r.gintmsk().write(|w| {
             w.set_iepint(true);
             w.set_oepint(true);
-            w.set_rxflvlm(true);
+            w.set_rxflvlm(!state.buffer_dma.load(Ordering::Relaxed));
         });
         state.bus_waker.wake();
     }
 
     // Handle RX
-    while r.gintsts().read().rxflvl() {
+    while !state.buffer_dma.load(Ordering::Acquire) && r.gintsts().read().rxflvl() {
         let status = r.grxstsp().read();
         trace!("=== status {:08x}", status.0);
         let ep_num = status.epnum() as usize;
@@ -219,7 +220,41 @@ pub unsafe fn on_interrupt(r: Otg, state: &State<'_>) {
                 // clear all
                 r.doepint(ep_num).write_value(ep_ints);
 
-                if ep_ints.stup() {
+                if state.buffer_dma.load(Ordering::Acquire) {
+                    let is_setup = ep_num == 0 && ep_ints.stup();
+                    if is_setup {
+                        // In buffer-DMA mode the core writes SETUP directly to EP0's buffer and
+                        // advances DOEPDMA past the eight-byte frame. This is the same hand-off
+                        // recommended by the DWC2 programming guide and used by Zephyr's driver.
+                        let end = r.doepdma(0).read();
+                        assert!(end >= 8, "EP0 DMA address did not advance for SETUP");
+                        fence(Ordering::Acquire);
+                        let setup = (end - 8) as *const u32;
+                        state
+                            .cp_state
+                            .setup_data[0]
+                            .store(unsafe { setup.read_volatile() }, Ordering::Relaxed);
+                        state
+                            .cp_state
+                            .setup_data[1]
+                            .store(unsafe { setup.add(1).read_volatile() }, Ordering::Relaxed);
+                        state.cp_state.setup_ready.store(true, Ordering::Release);
+                    }
+
+                    if ep_ints.xfrc() && !is_setup {
+                        let ep = &state.ep_states[ep_num];
+                        if let Some(alloc) = state.ep_alloc_get(Direction::Out, ep_num) {
+                            let remaining = r.doeptsiz(ep_num).read().xfrsiz() as usize;
+                            let received = (alloc.out_buf_bytes as usize).saturating_sub(remaining);
+                            fence(Ordering::Acquire);
+                            ep.out_fill.store(received as u16, Ordering::Release);
+                            if received == 0 {
+                                ep.out_zlp.store(true, Ordering::Release);
+                            }
+                            ep.out_done.store(true, Ordering::Release);
+                        }
+                    }
+                } else if ep_ints.stup() {
                     state.cp_state.setup_ready.store(true, Ordering::Release);
                 }
                 state.ep_states[ep_num].out_waker.wake();
@@ -348,12 +383,17 @@ impl PhyType {
 struct EpState {
     in_waker: AtomicWaker,
     out_waker: AtomicWaker,
+    /// DMA-safe bounce storage for one IN packet. Null when buffer DMA is disabled.
+    in_buffer: UnsafeCell<*mut u8>,
     /// RX FIFO is shared so extra buffers are needed to dequeue all data without waiting on each endpoint.
     /// Its capacity is [`EndpointData::out_buf_bytes`].
     out_buffer: UnsafeCell<*mut u8>,
     /// Bytes staged in [`out_buffer`](EpState::out_buffer) and not yet read. Grown by the interrupt
     /// handler, reset by [`EndpointOut::read`].
     out_fill: AtomicU16,
+    /// Bytes already handed to the application from the current buffer-DMA transfer. In
+    /// completer mode the reader empties the staging area atomically, so this stays zero.
+    out_read: AtomicU16,
     /// Packets received into the currently armed transfer. Reset when the reader arms the next one.
     out_pkts: AtomicU16,
     /// The armed transfer has ended — `PKTCNT` reached zero or a short packet closed it early — so
@@ -379,14 +419,16 @@ impl EpState {
     /// staged before a reconnect can never be read as the first bytes after it.
     fn reset_out(&self) {
         self.out_fill.store(0, Ordering::Release);
+        self.out_read.store(0, Ordering::Release);
         self.out_pkts.store(0, Ordering::Release);
         self.out_done.store(false, Ordering::Release);
         self.out_zlp.store(false, Ordering::Release);
     }
 }
 
-// SAFETY: `out_buffer` access is synchronized via `out_fill`. `in_alloc`/`out_alloc` are written
-// only during endpoint allocation before the USB stack starts; afterward they are read-only.
+// SAFETY: `out_buffer` access is synchronized via `out_fill`; `in_buffer` is written only after
+// the previous IN transfer completes. `in_alloc`/`out_alloc` are written only during endpoint
+// allocation before the USB stack starts; afterward they are read-only.
 unsafe impl Send for EpState {}
 unsafe impl Sync for EpState {}
 
@@ -419,6 +461,7 @@ pub struct State<'d> {
     cp_state: &'d ControlPipeSetupState,
     ep_states: &'d [EpState],
     bus_waker: &'d AtomicWaker,
+    buffer_dma: &'d AtomicBool,
 }
 
 impl State<'_> {
@@ -488,6 +531,7 @@ pub struct StateStorage<const EP_COUNT: usize> {
     cp_state: ControlPipeSetupState,
     ep_states: [EpState; EP_COUNT],
     bus_waker: AtomicWaker,
+    buffer_dma: AtomicBool,
 }
 
 impl<const EP_COUNT: usize> StateStorage<EP_COUNT> {
@@ -502,8 +546,10 @@ impl<const EP_COUNT: usize> StateStorage<EP_COUNT> {
                 EpState {
                     in_waker: AtomicWaker::new(),
                     out_waker: AtomicWaker::new(),
+                    in_buffer: UnsafeCell::new(0 as _),
                     out_buffer: UnsafeCell::new(0 as _),
                     out_fill: AtomicU16::new(0),
+                    out_read: AtomicU16::new(0),
                     out_pkts: AtomicU16::new(0),
                     out_done: AtomicBool::new(false),
                     out_zlp: AtomicBool::new(false),
@@ -512,6 +558,7 @@ impl<const EP_COUNT: usize> StateStorage<EP_COUNT> {
                 }
             }; EP_COUNT],
             bus_waker: AtomicWaker::new(),
+            buffer_dma: AtomicBool::new(false),
         }
     }
 
@@ -521,6 +568,7 @@ impl<const EP_COUNT: usize> StateStorage<EP_COUNT> {
             cp_state: &self.cp_state,
             ep_states: self.ep_states.as_slice(),
             bus_waker: &self.bus_waker,
+            buffer_dma: &self.buffer_dma,
         }
     }
 }
@@ -544,6 +592,15 @@ pub struct Config {
     /// If you set this to true, you must connect VBUS to PA9 for FS, PB13 for HS, possibly with a
     /// voltage divider. See ST application note AN4879 and the reference manual for more details.
     pub vbus_detection: bool,
+
+    /// Use the core's internal buffer-DMA engine instead of moving endpoint payloads through its
+    /// FIFOs in software.
+    ///
+    /// The supplied endpoint buffer must be 4-byte aligned and large enough for every OUT
+    /// transfer plus one max packet for every IN endpoint. DMA is a core-wide mode, so control
+    /// and data endpoints use it together; endpoint allocation fails if either side has no bounce
+    /// space. The hardware must report the DWC2 "internal DMA" architecture in `GHWCFG2`.
+    pub buffer_dma: bool,
 
     // ===== OpenBikeComputer fork (#1173) =====
     /// Bitmask of OUT endpoint **indices** whose transfers are armed as a burst of
@@ -587,6 +644,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             vbus_detection: false,
+            buffer_dma: false,
             xcvrdly: false,
             out_burst_endpoints: 0,
             out_burst_packets: 1,
@@ -599,6 +657,7 @@ pub struct Driver<'d> {
     config: Config,
     ep_out_buffer: &'d mut [u8],
     ep_out_buffer_offset: usize,
+    ep_in_buffer_offset: usize,
     instance: OtgInstance<'d>,
 }
 
@@ -614,10 +673,25 @@ impl<'d> Driver<'d> {
     /// * `instance` - The USB OTG peripheral instance and its configuration.
     /// * `config` - The USB driver configuration.
     pub fn new(ep_out_buffer: &'d mut [u8], instance: OtgInstance<'d>, config: Config) -> Self {
+        if config.buffer_dma {
+            assert_eq!(
+                ep_out_buffer.as_ptr().align_offset(4),
+                0,
+                "buffer DMA requires a 4-byte-aligned endpoint buffer"
+            );
+            assert_eq!(
+                ep_out_buffer.len() & 3,
+                0,
+                "buffer DMA requires endpoint-buffer capacity to be a multiple of 4"
+            );
+        }
+        instance.state.buffer_dma.store(config.buffer_dma, Ordering::Release);
+        let ep_in_buffer_offset = ep_out_buffer.len();
         Self {
             config,
             ep_out_buffer,
             ep_out_buffer_offset: 0,
+            ep_in_buffer_offset,
             instance,
         }
     }
@@ -713,8 +787,24 @@ impl<'d> Driver<'d> {
             Direction::In => 0,
         };
 
-        if dir == Direction::Out && self.ep_out_buffer_offset + out_buf_bytes as usize > self.ep_out_buffer.len() {
-            error!("Not enough endpoint out buffer capacity");
+        // Buffer DMA is a core-wide mode. OUT transfers occupy the buffer from the front and one
+        // max-packet IN bounce slot per endpoint occupies it from the back, so the existing public
+        // constructor remains sufficient and the two allocators meet (or fail) deterministically.
+        // Round each reservation independently: DWC2 DMA addresses must be DWORD-aligned even for
+        // an unusual endpoint whose MPS is not a multiple of four.
+        let out_storage_bytes = if self.config.buffer_dma {
+            (out_buf_bytes as usize + 3) & !3
+        } else {
+            out_buf_bytes as usize
+        };
+        let in_storage_bytes = if self.config.buffer_dma && dir == Direction::In {
+            (max_packet_size as usize + 3) & !3
+        } else {
+            0
+        };
+        let available_end = self.ep_in_buffer_offset.saturating_sub(in_storage_bytes);
+        if self.ep_out_buffer_offset + out_storage_bytes > available_end {
+            error!("Not enough endpoint buffer capacity");
             return Err(EndpointAllocError);
         }
 
@@ -763,14 +853,20 @@ impl<'d> Driver<'d> {
             unsafe {
                 *ep_state.out_buffer.get() = self.ep_out_buffer.as_mut_ptr().offset(self.ep_out_buffer_offset as _);
             }
-            self.ep_out_buffer_offset += out_buf_bytes as usize;
+            self.ep_out_buffer_offset += out_storage_bytes;
             ep_state.reset_out();
+        } else if self.config.buffer_dma {
+            self.ep_in_buffer_offset = available_end;
+            unsafe {
+                *ep_state.in_buffer.get() = self.ep_out_buffer.as_mut_ptr().add(self.ep_in_buffer_offset);
+            }
         }
 
         Ok(Endpoint {
             _phantom: PhantomData,
             regs: self.instance.regs,
             state: ep_state,
+            buffer_dma: self.config.buffer_dma,
             burst_packets,
             info: EndpointInfo {
                 addr: EndpointAddress::from_parts(index, dir),
@@ -855,7 +951,10 @@ impl<'d> Bus<'d> {
             w.set_wuim(true);
             w.set_iepint(true);
             w.set_oepint(true);
-            w.set_rxflvlm(true);
+            // In buffer-DMA mode payload bytes never pass through the software-visible RX FIFO.
+            // Leaving RXFLVL enabled would pop status entries out from under the DMA endpoint
+            // completion path (and tempt the ISR to read data that is not there).
+            w.set_rxflvlm(!self.config.buffer_dma);
             w.set_srqim(true);
             w.set_otgint(true);
         });
@@ -1013,6 +1112,14 @@ impl<'d> Bus<'d> {
         let r = self.instance.regs;
         let phy_type = self.instance.phy_type;
 
+        if self.config.buffer_dma {
+            assert_eq!(
+                r.hwcfg2().read().otg_arch(),
+                2,
+                "buffer DMA requested on a DWC2 core without internal DMA"
+            );
+        }
+
         // Soft disconnect.
         r.dctl().write(|w| w.set_sdis(true));
 
@@ -1030,8 +1137,10 @@ impl<'d> Bus<'d> {
             w.set_xfrcm(true);
         });
 
-        // Unmask SETUP received EP interrupt
+        // Buffer DMA publishes OUT payloads at endpoint transfer completion; completer mode gets
+        // them from RXFLVL and only needs the SETUP endpoint interrupt.
         r.doepmsk().write(|w| {
+            w.set_xfrcm(self.config.buffer_dma);
             w.set_stupm(true);
         });
 
@@ -1042,6 +1151,7 @@ impl<'d> Bus<'d> {
         // Unmask global interrupt
         r.gahbcfg().write(|w| {
             w.set_gint(true); // unmask global interrupt
+            w.set_dmaen(self.config.buffer_dma);
         });
 
         // Connect
@@ -1152,6 +1262,11 @@ impl<'d> Bus<'d> {
                             w.set_pktcnt(ep.burst_packets);
                         }
                     });
+
+                    if self.config.buffer_dma {
+                        let buffer = unsafe { *st.ep_states[index].out_buffer.get() };
+                        regs.doepdma(index).write_value(buffer as u32);
+                    }
 
                     if index == 0 {
                         regs.doepctl(index).modify(|w| {
@@ -1373,6 +1488,10 @@ impl<'d> embassy_usb_driver::Bus for Bus<'d> {
                                 w.set_xfrsiz(ep.out_buf_bytes as _);
                                 w.set_pktcnt(ep.burst_packets);
                             });
+                            if self.config.buffer_dma {
+                                let buffer = unsafe { *st.ep_states[ep_addr.index()].out_buffer.get() };
+                                regs.doepdma(ep_addr.index()).write_value(buffer as u32);
+                            }
                             regs.doepctl(ep_addr.index()).modify(|w| {
                                 w.set_cnak(true);
                                 w.set_epena(true);
@@ -1486,6 +1605,8 @@ pub struct Endpoint<'d, D> {
     regs: Otg,
     info: EndpointInfo,
     state: &'d EpState,
+    /// The core-wide transfer mode, copied from [`Config`] when endpoints are allocated.
+    buffer_dma: bool,
     /// OpenBikeComputer fork (#1173): packets per armed transfer — see
     /// [`Config::out_burst_endpoints`]. `1` for every IN endpoint and for any OUT endpoint the
     /// application did not name.
@@ -1568,6 +1689,11 @@ impl<'d> Endpoint<'d, Out> {
                 w.set_xfrsiz((self.burst_packets * self.info.max_packet_size) as _);
                 w.set_pktcnt(self.burst_packets);
             });
+            if self.buffer_dma {
+                let buffer = unsafe { *self.state.out_buffer.get() };
+                fence(Ordering::Release);
+                self.regs.doepdma(index).write_value(buffer as u32);
+            }
 
             if self.info.ep_type == EndpointType::Isochronous {
                 // Isochronous endpoints must set the correct even/odd frame bit to
@@ -1587,8 +1713,67 @@ impl<'d> Endpoint<'d, Out> {
             // Clear NAK to indicate we are ready to receive more data
             self.regs.doepctl(index).modify(|w| {
                 w.set_cnak(true);
+                if self.buffer_dma {
+                    w.set_epena(true);
+                }
             });
         });
+    }
+
+    /// Poll a buffer-DMA OUT transfer without taking ownership of its storage before the core is
+    /// finished with it. Full bursts wake through XFRC. A transfer that stops after one or more
+    /// full-size packets but before the programmed burst count has no completion interrupt, so
+    /// [`EndpointOut::read`] also polls this at a low-rate timer and publishes the committed DMA
+    /// prefix. `out_read` keeps that prefix live until the eventual completion/re-arm.
+    fn poll_dma_read(&mut self, cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<Result<usize, EndpointError>> {
+        let index = self.info.addr.index();
+        self.state.out_waker.register(cx.waker());
+
+        let doepctl = self.regs.doepctl(index).read();
+        if !doepctl.usbaep() {
+            return Poll::Ready(Err(EndpointError::Disabled));
+        }
+
+        let capacity = self.burst_packets as usize * self.info.max_packet_size as usize;
+        let done = self.state.out_done.load(Ordering::Acquire);
+        let filled = if done {
+            self.state.out_fill.load(Ordering::Acquire) as usize
+        } else {
+            let remaining = self.regs.doeptsiz(index).read().xfrsiz() as usize;
+            let observed = capacity.saturating_sub(remaining);
+            let published = self.state.out_fill.load(Ordering::Acquire) as usize;
+            observed.max(published)
+        };
+        let read = self.state.out_read.load(Ordering::Acquire) as usize;
+        let available = filled.saturating_sub(read);
+        if available > buf.len() {
+            return Poll::Ready(Err(EndpointError::BufferOverflow));
+        }
+
+        if available != 0 {
+            // DWC2 decrements DOEPTSIZ only after the corresponding AHB writes. This compiler
+            // hardware fence keeps the buffer read behind that volatile register observation and
+            // the DMA bus master's completed SRAM writes.
+            fence(Ordering::Acquire);
+            let data = unsafe { core::slice::from_raw_parts((*self.state.out_buffer.get()).add(read), available) };
+            buf[..available].copy_from_slice(data);
+            self.state.out_read.store((read + available) as u16, Ordering::Release);
+        }
+
+        let drained = read + available == filled;
+        let zlp = done && drained && self.state.out_zlp.swap(false, Ordering::AcqRel);
+        if done && drained {
+            self.state.reset_out();
+            self.arm_transfer();
+        }
+
+        if available != 0 {
+            Poll::Ready(Ok(available))
+        } else if zlp {
+            Poll::Ready(Ok(0))
+        } else {
+            Poll::Pending
+        }
     }
 }
 
@@ -1611,6 +1796,23 @@ impl<'d> embassy_usb_driver::EndpointOut for Endpoint<'d, Out> {
                 buf.len() >= self.burst_packets as usize * self.info.max_packet_size as usize,
                 "a bursting OUT endpoint must be read into a buffer of at least one whole burst"
             );
+        }
+
+        if self.buffer_dma {
+            // XFRC wakes every complete/short transfer. The timeout covers the one case DWC2 has
+            // no event for: the host pauses after a full-size packet before spending the whole
+            // programmed burst. It is tail latency only; a streaming burst never waits for it.
+            loop {
+                match embassy_time::with_timeout(
+                    Duration::from_millis(1),
+                    poll_fn(|cx| self.poll_dma_read(cx, buf)),
+                )
+                .await
+                {
+                    Ok(result) => return result,
+                    Err(_) => continue,
+                }
+            }
         }
 
         poll_fn(|cx| {
@@ -1750,6 +1952,41 @@ impl<'d> embassy_usb_driver::EndpointIn for Endpoint<'d, In> {
         })
         .await?;
 
+        if self.buffer_dma {
+            let dma_buffer = unsafe { *self.state.in_buffer.get() };
+            assert!(!dma_buffer.is_null(), "buffer-DMA IN endpoint has no bounce buffer");
+            if !buf.is_empty() {
+                unsafe { core::ptr::copy_nonoverlapping(buf.as_ptr(), dma_buffer, buf.len()) };
+            }
+            fence(Ordering::Release);
+
+            critical_section::with(|_| {
+                self.regs.dieptsiz(index).write(|w| {
+                    w.set_mcnt(1);
+                    w.set_pktcnt(1);
+                    w.set_xfrsiz(buf.len() as _);
+                });
+                self.regs.diepdma(index).write_value(dma_buffer as u32);
+
+                if self.info.ep_type == EndpointType::Isochronous {
+                    let frame_number = self.regs.dsts().read().fnsof();
+                    if frame_number & 0x01 == 1 {
+                        self.regs.diepctl(index).modify(|w| w.set_sd0pid_sevnfrm(true));
+                    } else {
+                        self.regs.diepctl(index).modify(|w| w.set_soddfrm_sd1pid(true));
+                    }
+                }
+
+                self.regs.diepctl(index).modify(|w| {
+                    w.set_cnak(true);
+                    w.set_epena(true);
+                });
+            });
+
+            trace!("write done ep={:?} (buffer DMA)", self.info.addr);
+            return Ok(());
+        }
+
         if buf.len() > 0 {
             poll_fn(|cx| {
                 self.state.in_waker.register(cx.waker());
@@ -1867,10 +2104,17 @@ impl<'d> embassy_usb_driver::ControlPipe for ControlPipe<'d> {
                     w.set_rxdpid_stupcnt(3);
                 });
 
-                // Clear NAK to indicate we are ready to receive more data
-                self.regs
-                    .doepctl(self.ep_out.info.addr.index())
-                    .modify(|w| w.set_cnak(true));
+                if self.ep_out.buffer_dma {
+                    // DMAAddr advanced past the SETUP frame. Point it back at EP0's buffer and
+                    // program a fresh one-packet transfer for either the data/status stage or the
+                    // next SETUP token.
+                    self.ep_out.arm_transfer();
+                } else {
+                    // Clear NAK to indicate we are ready to receive more data
+                    self.regs
+                        .doepctl(self.ep_out.info.addr.index())
+                        .modify(|w| w.set_cnak(true));
+                }
 
                 trace!("SETUP received: {:?}", Bytes(&data));
                 Poll::Ready(data)
