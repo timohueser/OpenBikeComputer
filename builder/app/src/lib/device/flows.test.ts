@@ -58,6 +58,18 @@ const ROOT = repoRoot();
 const vector = (name: string) => new Uint8Array(readFileSync(join(ROOT, "specs/vectors", name)));
 const digest = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
+/**
+ * Spin the event loop until `ready`, or give up.
+ *
+ * Used to *observe* a race window rather than assume one: a fixed number of microtask turns is a
+ * guess about how many awaits the host takes to get its bytes onto the wire, and a guess that runs
+ * short makes the test pass for the wrong reason.
+ */
+async function waitFor(ready: () => boolean, timeoutMs = 2_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (!ready() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 1));
+}
+
 beforeAll(async () => {
     const wasm = join(dirname(fileURLToPath(import.meta.url)), "..", "convert", "pkg", "obc_web_convert_bg.wasm");
     if (!existsSync(wasm)) {
@@ -118,6 +130,74 @@ describe("assembled volume-set upload", () => {
                 { name: "MS1.OBS", role: "manifest", sha256: "", byteLength: manifest.length, bytes: manifest },
                 ctx,
             );
+            expect(state.setId).toBe(1);
+            expect(state.committedBytes).toBe(state.totalBytes);
+            expect(device.stagedMapShardCount).toBe(0);
+        } finally {
+            await close();
+        }
+    });
+
+    /**
+     * **#1173, the wedge that ended the first complete set upload on glass.**
+     *
+     * The manifest is the one file in a set small enough to be fully in flight before its announce
+     * is even looked at: shards are megabytes and terrain is a raster, but a one-shard manifest is
+     * 128 bytes. The host writes the announce and starts pumping without waiting to hear it was
+     * accepted, and the device classifies behind the shared store lock — a map render holds that for
+     * tens of milliseconds. So the manifest's bytes land on a device with nothing armed.
+     *
+     * The firmware used to read and discard them there, and the field log shows exactly that: a
+     * 296-byte manifest discarded 18 ms *before* its announce was answered, then "receiving map,
+     * 0%" until the cable came out, with every shard and the terrain band already committed and the
+     * set unmountable for want of its last 296 bytes. Nothing reads the pipe while nothing is armed
+     * now — it NAKs, and the bytes wait.
+     *
+     * `holdNextAnnounce` widens that window to certainty rather than inventing a new one.
+     */
+    it("commits a manifest whose bytes arrived before the device processed its announce", async () => {
+        const { client, device, link, close } = loopbackDevice();
+        try {
+            const shard = syntheticBytes(4096);
+            const manifest = obcsManifest([shard.length]);
+            const state = setSendState(1, shard.length + manifest.length);
+            const ctx = context();
+            await sendAssembledSetFile(
+                client,
+                state,
+                { name: "MS1S00.OBM", role: "core", sha256: digest(shard), byteLength: shard.length, bytes: shard },
+                ctx,
+            );
+            expect(device.stagedMapShardCount).toBe(1);
+
+            // The manifest's announce stalls in the control loop while its whole payload arrives.
+            const release = device.holdNextAnnounce();
+            const sealing = sendAssembledSetFile(
+                client,
+                state,
+                { name: "MS1.OBS", role: "manifest", sha256: "", byteLength: manifest.length, bytes: manifest },
+                ctx,
+            );
+            // Wait for the manifest's bytes to actually be sitting on the channel before letting the
+            // announce through — the window has to be *observed*, not assumed. Without this the test
+            // passes against the old discard too, because the payload simply arrives after the
+            // release and the race is never run.
+            await waitFor(() => link.bulkDepth("to-device") >= manifest.length);
+            expect(link.bulkDepth("to-device"), "the manifest never reached the un-armed device").toBe(
+                manifest.length,
+            );
+            // And they must still be there a beat later. This is the assertion that makes the test a
+            // regression pin rather than a happy-path replay: a device that consumes unclaimed bytes
+            // takes them during this pause, and the count drops.
+            await new Promise((resolve) => setTimeout(resolve, 60));
+            expect(link.bulkDepth("to-device"), "the manifest was consumed with nothing armed").toBe(
+                manifest.length,
+            );
+            release();
+            await sealing;
+
+            // The set is sealed, not starved: an id assigned, every byte accounted for, nothing left
+            // staged. Before the fix this call never returned.
             expect(state.setId).toBe(1);
             expect(state.committedBytes).toBe(state.totalBytes);
             expect(device.stagedMapShardCount).toBe(0);
