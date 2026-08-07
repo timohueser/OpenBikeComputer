@@ -218,6 +218,39 @@ describe("the upload window", () => {
         });
     });
 
+    it("delivers a payload that arrived before the device processed its announce", async () => {
+        // **The field wedge, #1173.** The host pipelines: it writes the announce and starts pumping
+        // the payload without waiting to hear the announce was accepted. The device classifies that
+        // announce behind the shared store lock, which a map render can hold for tens of
+        // milliseconds — so the bytes land first, on a device with nothing armed.
+        //
+        // The firmware used to *read and discard* them there. A 296-byte set manifest — the only
+        // object in a volume set small enough to fit entirely inside that window — was therefore
+        // eaten 18 ms before the announce claiming it was answered, and the transfer that then armed
+        // waited forever for bytes that no longer existed: "receiving map, 0%", until the cable came
+        // out. Nothing reads the pipe while nothing is armed now; the endpoint NAKs and the bytes
+        // wait on the wire.
+        //
+        // Negative check: restore the discard (an idle read loop in `MockDevice`) and this test
+        // fails exactly as the field did — the upload never completes and the timeout is what ends
+        // it, not an error the device sent.
+        await withDevice({ bulkPacketSize: 64 }, async ({ client, device }) => {
+            const release = device.holdNextAnnounce();
+            const bytes = payload(296);
+            const upload = client.upload(ObjectType.Route, NEW_OBJECT_ID, bytes, { chunkSize: 4096 });
+            // Let the whole payload reach the device while its control loop is still stalled on the
+            // announce. Several turns, because the client writes the descriptor, then the chunk.
+            for (let i = 0; i < 20; i++) await Promise.resolve();
+            await new Promise((resolve) => setTimeout(resolve, 5));
+            release();
+
+            const { objectId } = await upload;
+            // The bytes that waited are the bytes that landed — a whole-object CRC the device
+            // verified, over content that never went through a discard.
+            expect(device.stored(ObjectType.Route, objectId)).toEqual(bytes);
+        });
+    });
+
     it("goes through the abort handshake after any failed upload, not only a cancel", async () => {
         // The handshake is what quiesces the pipe before a retry, so it has to happen on *both*
         // shapes of failure — a cancel, where the host's transfers stay on the wire, and a
