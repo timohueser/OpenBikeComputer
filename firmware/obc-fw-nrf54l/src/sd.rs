@@ -2074,11 +2074,16 @@ impl Storage {
     }
 
     /// The reader's half of `OBCA_Spec.md` §5.3 for a `MS{id}.OBS` manifest, at **scan** time:
-    /// parse and validate the manifest itself, then check that every record it names exists and is
-    /// exactly the recorded `Bytes` — shards additionally opening as OBCM at the recorded version
-    /// with the recorded header bbox. `None` means *this is not a map* — §5.4 admits no partial
-    /// acceptance, so a set with a shard missing or still growing is simply absent from the catalog
-    /// rather than a map with holes in it.
+    /// parse and validate the manifest itself, then check that every **OBCM shard** it names exists,
+    /// is exactly the recorded `Bytes`, and opens as OBCM at the recorded version with the recorded
+    /// header bbox. `None` means *this is not a map* — §5.4 admits no partial acceptance, so a set
+    /// with a shard missing or still growing is simply absent from the catalog rather than a map
+    /// with holes in it.
+    ///
+    /// **The `terrain` record is counted and not checked**, which is §5.3's one exception and is
+    /// why the sentence above says *OBCM shard* rather than *record*: a raster that is absent or
+    /// unreadable MUST NOT keep the set out of the catalog. See
+    /// [`set_file_totals`](Self::set_file_totals).
     ///
     /// The SHA-256 digests are deliberately **not** checked: §5.3 lets a device defer them, and
     /// hashing gigabytes off an SD card is minutes of work at boot.

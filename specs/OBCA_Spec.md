@@ -938,15 +938,27 @@ speak of is the number of those — `Shard Count` minus the terrain record, if t
   assembly bbox (§5.1), which for a single shard of that role means its bbox equals the assembly
   bbox. The terrain record takes no part in that tiling — it spans the whole assembly, so counting it
   would read as an overlapping shard of some role;
-- every OBCM shard file named by §5.2 exists, has exactly the recorded `Bytes`, opens as OBCM with
-  the recorded `OBCM Version`, and has a header bbox equal to its recorded bbox; the terrain file, if
-  named, exists, has exactly the recorded `Bytes`, and parses per `OBCT_Spec.md` §4.5.
+- every **OBCM shard** file named by §5.2 exists, has exactly the recorded `Bytes`, opens as OBCM
+  with the recorded `OBCM Version`, and has a header bbox equal to its recorded bbox.
+
+The `terrain` record is deliberately **not** in that list, and this is the one place the two halves
+of §5.3 have to be read together rather than as a checklist:
 
 **A missing or unreadable terrain shard does not fail the mount.** It is the one exception, and it
 follows from `OBCC_Spec.md` §13: elevation is an enhancement, so a set whose raster will not open is
 a map that plans, renders and rides exactly as one baked without terrain, while a set whose *core* is
 missing is not a map at all. A reader MUST mount such a set, MUST fall back to no elevation, and MUST
-NOT present it as a fault.
+NOT present it as a fault. A reader MUST NOT let the terrain record's agreement with the file — its
+presence, its `Bytes`, or whether it parses per `OBCT_Spec.md` §4.5 — decide whether the **set**
+mounts or lists.
+
+That clemency is about reading a card that has aged: a rider deleted the raster to reclaim space, a
+hand copy was truncated, a read glitched, a later OBCT version arrived. It is **not** a licence for a
+*writer* to publish a manifest whose terrain record does not describe the file it ships beside it —
+a writer MUST verify the record like any other, and a device receiving a set over the wire MUST
+refuse a manifest whose terrain record disagrees with the raster it just took
+([`obc-ble-interface-spec.md` §4.1](obc-ble-interface-spec.md) rule 7). The asymmetry is between
+*reading an old card* and *accepting a new upload*, not between terrain and everything else.
 
 A device MAY defer the SHA-256 check (hashing gigabytes off an SD card is minutes of work) but
 MUST verify `Bytes` and the header bbox at mount, and a **host** writing a set MUST verify every
