@@ -467,6 +467,35 @@ toolchain-artifact trap, not new drift. The compile-time allocation report is
 unchanged on both profiles — the signal is a module static, not a field of `App`
 or `ObjectStore`, so no named entry (`app`, `ble_object_store`, …) moved.
 
+### The abort drain (#1158 follow-up, review round), 2026-08-07 — **+184 B resident**
+
+The one place this branch costs RAM, and it buys the stray-byte hole being closed rather than
+narrowed. Answering an abort now empties the bulk endpoint first, and because a descriptor-level
+reject never reaches the data plane at all, that has to work for an abort with **nothing armed**
+too — which means a control-plane → data-plane handshake, since the endpoint belongs to the data
+plane's task.
+
+Itemised by symbol diff against the identical tree without the redesign (`llvm-nm`, `.bss`/`.data`
+only):
+
+| Symbol | before | after | |
+| :-- | --: | --: | :-- |
+| `usb::run::POOL` | 1,784 B | 1,944 B | **+160** — the USB task's `TaskStorage`. Both halves of the joined future grew: the data plane's idle `select` gained a third arm holding a `drain_bulk_out` future, and the control plane gained the `drain_before_idle_abort` await plus the guard drop/re-lock around it. |
+| `DRAIN_REQ`, `DRAIN_DONE` | 0 B | 24 B | **+24** — two `Signal<CriticalSectionRawMutex, ()>` at 12 B each. |
+| `.L_MergedGlobals.*` | — | — | **−37** net, small statics being regrouped. |
+| section alignment | — | — | **+37**, the difference between the named sum (147 B) and the linked 184 B. |
+
+Everything else holds: `.uninit` 118,432 B, largest guarded poll frame 9,728 B and largest task body
+7,328 B are all unmoved — the drain future is `#[inline(never)]` and fits in the task body's existing
+slack, so it costs pool bytes rather than frame bytes. `residual_stack` pays the 184 B like every
+resident byte does (77,272 → **77,088 B**), which is still 2.1× the measured deep-ride peak of
+35,808 B and leaves 51,388 B over the boot-chain ceiling against a 4,096 B floor.
+
+**Why it is worth 184 B.** The alternative was leaving a retry-after-failure able to pick up the
+previous exchange's tail as its own opening bytes — recoverable (the whole-object CRC catches it) but
+only by luck, since whether the retry succeeds depends on whether the window happened to drain
+first. 184 B against a 500 KiB part, for a failure path that a rider hits by pressing Cancel.
+
 ### The upload retune's staging halves (#1158 follow-up), 2026-08-07 — **0 B of anything**
 
 The USB staging arm goes 16 KiB → **two 32 KiB halves** (`usb::STAGE_HALF_LEN`), so the transport

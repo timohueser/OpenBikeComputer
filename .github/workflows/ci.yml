@@ -335,6 +335,27 @@ jobs:
           python3 ../tools/resource_guard.py report --profile ble \
             --elf target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l
 
+      # The `sdmmc-prealloc` feature calls `VolumeManager::preallocate`, which lives in
+      # `firmware/patches/` and is not on the embedded-sdmmc fork yet — so it CANNOT be built from
+      # the pinned dependency, and without this step it has zero coverage and rots silently against
+      # the fork. Clone the fork, apply every patch in `firmware/patches/`, and type-check the
+      # feature against that tree via a command-line `[patch]` override, so nothing in the repo has
+      # to point at a scratch checkout. Delete this step together with the patch, the day it lands.
+      - name: "obc-fw-nrf54l: the pending fork patch still applies and builds"
+        if: matrix.name == 'build (default = LS021/FLPR, release)'
+        run: |
+          git clone --depth 50 --branch cmd25-multiblock-write \
+            https://github.com/timohueser/embedded-sdmmc-rs /tmp/sdmmc-fork
+          git -C /tmp/sdmmc-fork -c user.name=ci -c user.email=ci@local am \
+            "$GITHUB_WORKSPACE"/firmware/patches/*.patch
+          cargo test --manifest-path /tmp/sdmmc-fork/Cargo.toml
+          cd firmware/obc-fw-nrf54l
+          cargo check --release --features sdmmc-prealloc \
+            --config 'patch.crates-io.embedded-sdmmc.path="/tmp/sdmmc-fork"'
+          # The override re-resolves the dependency, so it rewrites Cargo.lock. Put it back, or the
+          # `--locked` in every other step would fail against a lock this diagnostic dirtied.
+          git checkout -- Cargo.lock
+
   # The obc-boot bootloader (epic #615, #617): workspace-excluded like the board crate, built
   # from its own directory so its .cargo/config.toml selects thumbv8m. No test harness and no
   # FLPR blob (no RISC-V gcc needed). The size guard is the real gate: the shipping (default,
