@@ -92,6 +92,13 @@ impl Receiver {
         take
     }
 
+    /// Diagnostic probe: the running CRC as it stands (finalized) and the announced expectation.
+    /// Read-only — the running digest is not consumed. Meaningful once
+    /// [`is_complete`](Receiver::is_complete); before that the running value is a prefix CRC.
+    pub fn crc_probe(&self) -> (u32, u32) {
+        (self.crc.finalize(), self.expected_crc)
+    }
+
     /// The terminal [`TransferResult`] once [`is_complete`](Receiver::is_complete): [`Committed`] if
     /// the whole-object CRC matches (`committed_offset = total_len`), else [`CrcMismatch`]
     /// (`committed_offset = 0` — nothing durable). `None` while bytes are still expected.
