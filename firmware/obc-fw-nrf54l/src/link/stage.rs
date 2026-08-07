@@ -6,8 +6,8 @@
 //! card's **whole internal program cycle**, and a CMD13 status query. That cost is card-side, so it
 //! survived the transport pivot untouched: it was 2458 µs per 512 B over the retired SPI path
 //! (measured 2026-07-30) and it is the same program cycle over sEMMC, where a single block costs
-//! 430 µs on the wire and the program dominates by an order of magnitude. Handing the card a whole
-//! cluster at a time instead amortises one program cycle over the whole run, because our
+//! 430 µs on the wire and the program dominates by an order of magnitude. Handing the card an
+//! aligned multi-block run instead amortises one program cycle over the whole run, because our
 //! embedded-sdmmc fork batches a contiguous run into one CMD25 (see the `[patch.crates-io]` note in
 //! `Cargo.toml`) — which is exactly what turns the sEMMC host's 8.2 MB/s of raw write bandwidth
 //! into upload throughput rather than one stall per block.
@@ -27,24 +27,16 @@
 //! halves. The transport always fills the half the card is *not* holding, so a full half is handed
 //! over and the very next packet lands in the other one rather than waiting behind an append.
 //!
-//! **What this does not buy today, stated plainly so nobody re-derives it as a win.** The sEMMC
-//! block device is synchronous by construction: `Semmc::write_blocks` busy-polls
-//! `wait_completion`, and that is a *deliberate* decision (its doc explains why a `WFE` sleep is
-//! unsound on this part), so a card write burns the one thread-mode CPU for its whole duration.
-//! On a cooperative executor nothing of ours runs meanwhile — **the hardware does, though, and
-//! since #1173 it runs further than it used to.** The bulk OUT endpoint is armed for a burst of
-//! `BULK_OUT_BURST_PACKETS` max packets rather than one (the vendored
-//! `embassy-usb-synopsys-otg` fork, `vendor/embassy-usb-synopsys-otg/VENDORING.md`), so the core
-//! keeps taking the wire into its RX FIFO and the driver's staging buffer for the whole of a flush
-//! instead of NAKing after 512 bytes. Reception during a flush is now bounded by the burst, not by
-//! one packet.
+//! The halves now provide real hardware overlap. A full half is passed through FAT, adjacent
+//! cluster writes are coalesced, and `Semmc::start_write_blocks` starts the FLPR DMA without
+//! waiting for the card's data/program phase. USB then fills the other half. Before a half can be
+//! reused, the next append joins the previous DMA and starts the newly-filled half, preserving
+//! byte order and the DMA buffer lifetime. The M33 never keeps a borrowed arena slice across an
+//! await; only the FLPR's address remains live under that explicit handoff rule.
 //!
-//! So the halves are still the *structure* for overlap rather than the overlap itself — nothing
-//! here overlaps a card write with our own CPU work. The day the sEMMC transfer grows an awaitable
-//! completion (#1174), the change here is local — `drain` becomes a future and the caller `join`s
-//! it with `ep.read` into the other half — and nothing above has to move. Until then the measurable
-//! wins in this file are the ones the halves make safe to take: a **cluster-sized** flush (one
-//! CMD25, no partial ends) and half as many mutex acquisitions per megabyte.
+//! USB uses the controller's buffer-DMA mode too, so neither side spends the upload copying 512 B
+//! packets in an interrupt. The remaining ceiling is the card itself: one aligned 128-block CMD25
+//! per normal half, with ACMD23 offered as a best-effort pre-erase hint.
 //!
 //! # Who uses this
 //!
@@ -68,7 +60,7 @@ use crate::SharedStoreMutex;
 ///
 /// Holds no lock between flushes — the store mutex is taken for the append and released, so the
 /// ride loop's map render still interleaves. The flush is longer than the old per-chunk append
-/// (one cluster against 512 B), which is still frame-scale over sEMMC.
+/// (two clusters against 512 B), which is still frame-scale over sEMMC.
 ///
 /// **The buffer is not this type's** (issue #1146, P2). It is the scratch arena's USB arm, owned by
 /// the ride loop for the duration of the transfer and reached — synchronously, one access at a time
@@ -97,11 +89,19 @@ pub(crate) struct Stage {
     /// placeholder. Deliberately excludes [`parked`](Stage::parked), which is why
     /// [`target`](Stage::target) adds it back.
     offset: usize,
+    /// Store offset at the last explicit executor yield. USB reads naturally yield whenever the
+    /// controller has no burst ready; this is the bounded backstop for a permanently-ready host.
+    yielded_at: usize,
 }
 
 /// One half's capacity — what a single flush hands the card, and what the alignment arithmetic is
-/// modulo. See [`STAGE_HALF_LEN`](crate::usb::STAGE_HALF_LEN) for why it is a cluster.
+/// modulo. See [`STAGE_HALF_LEN`](crate::usb::STAGE_HALF_LEN) for the block/cluster sizing.
 const CAP: usize = crate::usb::STAGE_HALF_LEN;
+
+/// Guaranteed cooperative cadence under a saturating host. At the measured card rate this is
+/// about 30 ms: responsive enough for the transfer card and far inside the watchdog budget, while
+/// no longer scheduling a whole ride-loop pass after every FAT cluster.
+const YIELD_BYTES: usize = 4 * CAP;
 
 impl Stage {
     /// A stage for a file whose write offset is already `store_offset` bytes in. `staged` is the
@@ -112,7 +112,7 @@ impl Stage {
     /// zero magic placeholder into `MP{id}.OBM`, so the payload's first staged byte lands at file
     /// offset 4 and an unseeded stage would misalign every flush of the transfer.
     pub(crate) fn new(staged: bool, store_offset: usize) -> Self {
-        Stage { staged, fill: 0, used: 0, parked: 0, offset: store_offset }
+        Stage { staged, fill: 0, used: 0, parked: 0, offset: store_offset, yielded_at: store_offset }
     }
 
     /// Where in the arm half `which` starts.
@@ -169,15 +169,20 @@ impl Stage {
             self.used += take;
             bytes = &bytes[take..];
             if self.used == target {
-                // This half is full. Send the *older* half to the card first — byte order is write
-                // order — then park this one and swap, so the transport's next packet lands in the
-                // half the drain just freed rather than behind an append.
+                // This half is full. Send the older half first, then hand this half to the store
+                // immediately. The fast map writer starts its FLPR DMA and returns; its next
+                // append joins that DMA before starting this half's successor. In particular, do
+                // not leave the just-filled half merely parked while swapping back to the older
+                // half: the older half may still be the DMA source and must not be overwritten.
                 if !self.drain(store, shared).await {
                     return false;
                 }
                 self.parked = self.used;
                 self.used = 0;
                 self.fill ^= 1;
+                if !self.drain(store, shared).await {
+                    return false;
+                }
             }
         }
         true
@@ -196,15 +201,14 @@ impl Stage {
         if !self.drain(store, shared).await {
             return false;
         }
-        if self.used == 0 {
-            return true;
+        if self.used != 0 {
+            let (at, len) = (Self::base(self.fill), self.used);
+            if !self.append_arm(at, len, store, shared).await {
+                return false;
+            }
+            self.used = 0;
         }
-        let (at, len) = (Self::base(self.fill), self.used);
-        if !self.append_arm(at, len, store, shared).await {
-            return false;
-        }
-        self.used = 0;
-        true
+        self.sync(store, shared).await
     }
 
     /// Hand the parked half to the card, if there is one. The whole of the double buffer's ordering
@@ -225,11 +229,11 @@ impl Stage {
 
     /// One card append out of the arena arm: `len` bytes at arm offset `at`.
     ///
-    /// Ends on an explicit `yield_now`, and this is **liveness, not politeness**: a saturating
+    /// Periodically ends on an explicit `yield_now`, and this is **liveness, not politeness**: a saturating
     /// host keeps a completed packet waiting at every `ep.read`, so the upload task's own awaits
     /// are always instantly ready and it never returns `Pending` on its own — first observed as a
     /// map upload that froze the whole UI (an 18.7 s frame push on glass, 2026-07-30). The yield
-    /// is the one point where the ride loop is guaranteed a turn, once per flush, which is what
+    /// is the one point where the ride loop is guaranteed a turn, once per [`YIELD_BYTES`], which is what
     /// makes the data planes' "the map render interleaves between chunks" doc claim actually true
     /// under load. It is also what keeps #1014's WDT fix honest: the feed rides the ride loop's
     /// pass, so a flush that never yielded would starve it.
@@ -247,11 +251,27 @@ impl Stage {
             crate::arena::with_usb_stage(|buf| store.borrow_mut().upload_append(&mut guard, &buf[at..at + len]))
                 .unwrap_or(false)
         };
-        if appended {
+        let should_yield = if appended {
             self.offset += len;
+            self.offset.saturating_sub(self.yielded_at) >= YIELD_BYTES
+        } else {
+            true
+        };
+        if should_yield {
+            self.yielded_at = self.offset;
+            embassy_futures::yield_now().await;
         }
-        embassy_futures::yield_now().await;
         appended
+    }
+
+    /// Join the final FLPR write before the caller validates or exposes the file's magic.
+    async fn sync(&mut self, store: &RefCell<ObjectStore>, shared: &SharedStoreMutex) -> bool {
+        let synced = {
+            let mut guard = shared.lock().await;
+            store.borrow_mut().upload_sync(&mut guard)
+        };
+        embassy_futures::yield_now().await;
+        synced
     }
 
     /// Append `bytes` straight to the card — the unstaged path's whole implementation, and the

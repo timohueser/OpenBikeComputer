@@ -8,9 +8,10 @@
 //! per-chunk framing** — is the whole reason this module is small. BLE's L2CAP CoC and a USB bulk
 //! endpoint are the same thing (reliable, ordered, unframed), so the object stream needs *zero*
 //! translation: the identical [`obc_ble::Receiver`] / [`obc_ble::StreamSender`] state machine, the
-//! identical descriptors, the identical whole-object CRC-32, and the identical
-//! `specs/vectors/` fixtures. Everything that decides *what* a message means lives in
-//! [`crate::link`], shared with the radio.
+//! identical descriptors, and the identical `specs/vectors/` fixtures. The descriptor CRC remains
+//! on the wire; map-shaped USB uploads may omit its redundant device-side whole-object pass because
+//! USB and sEMMC already protect the transfer block by block. Everything that decides *what* a
+//! message means lives in [`crate::link`], shared with the radio.
 //!
 //! Only one thing genuinely differs. BLE's control plane is GATT: seven separately-addressed
 //! characteristics, where "which characteristic" is carried by the transport rather than by any
@@ -122,17 +123,17 @@ const MAX_PACKET: u16 = 512;
 /// 2026-08-07: ~342 µs per packet, of which ~240 µs was that serialisation, capping map uploads at
 /// 1416–1459 kB/s on *both* hosts (WebUSB and desktop), which is what said the ceiling was here and
 /// not on the wire. Arming N packets amortises the round trip over N: the core keeps absorbing the
-/// stream while the CPU folds CRC-32 and writes the card, and the reader picks up everything that
+/// stream while the CPU advances the transfer and writes the card, and the reader picks up everything that
 /// accumulated in one go.
 ///
 /// # The number, and how to sweep it
 ///
 /// **8, for 4 KiB bursts.** Two bounds meet there. Below it the serialisation term is still the
 /// biggest one (it falls as 240/N µs per packet: N=4 leaves ~60 µs, N=8 ~30 µs, against the ~99 µs
-/// of card write + CRC + UI that remains after it). Above it the return shrinks — at N=8 the
+/// of card write + transfer bookkeeping + UI that remains after it). Above it the return shrinks — at N=8 the
 /// serialisation is already a fifth of the residue — while the RAM cost stays strictly linear at
 /// **two** buffers of `N × 512 B` (this crate's [`BULK_BUF`] and the driver's own per-endpoint
-/// staging area inside [`EP_OUT_BUFFER`]), so N=16 would cost another 8 KiB of `.bss` for a few
+/// staging area inside [`EP_BUFFER`]), so N=16 would cost another 8 KiB of `.bss` for a few
 /// percent. It must also stay within the core's RX FIFO: 3040 words total, of which a bursting
 /// endpoint takes `N × 129`, so N=16 (2064 words) is the last rung that fits beside everything else.
 ///
@@ -179,7 +180,17 @@ const DEVICE_INTERFACE_GUID: &str = "{5A8B1CE4-2D3F-4E7A-9B10-6F2C8D41E9A3}";
 /// [`BULK_OUT_BURST_PACKETS`] at a time — see there). Undersizing this fails endpoint allocation, so
 /// it is derived rather than guessed.
 const EP_OUT_BUFFER_LEN: usize = 64 + MAX_PACKET as usize + BULK_BURST_LEN;
-static mut EP_OUT_BUFFER: MaybeUninit<[u8; EP_OUT_BUFFER_LEN]> = MaybeUninit::uninit();
+/// Buffer DMA is core-wide, so every IN endpoint owns one stable max-packet bounce slot until its
+/// transfer completes: EP0-IN (64) + control-IN (512) + bulk-IN (512).
+const EP_IN_BUFFER_LEN: usize = 64 + 2 * MAX_PACKET as usize;
+const EP_BUFFER_LEN: usize = EP_OUT_BUFFER_LEN + EP_IN_BUFFER_LEN;
+
+/// DWC2 buffer-DMA addresses must be DWORD-aligned. The driver sub-allocates both ends in aligned
+/// units; this wrapper supplies the base guarantee that a plain `[u8; N]` static does not have.
+#[repr(C, align(4))]
+struct AlignedEndpointBuffer([u8; EP_BUFFER_LEN]);
+
+static mut EP_BUFFER: MaybeUninit<AlignedEndpointBuffer> = MaybeUninit::uninit();
 
 /// Configuration descriptor: config (9) + interface (9) + 4 × endpoint (7) = 46 bytes.
 const CONFIG_DESC_LEN: usize = 96;
@@ -212,19 +223,15 @@ static mut BULK_BUF: MaybeUninit<[u8; BULK_BURST_LEN]> = MaybeUninit::uninit();
 ///
 /// # The number, and how to sweep it
 ///
-/// **32 KiB, because that is one FAT cluster on a card this firmware formats for.** The bound that
-/// matters is not RAM any more (see below) but the fork's batching rule: `VolumeManager::write`
-/// hands the device the contiguous run *inside the current cluster* and no further
-/// (`blocks_to_cluster_end` in the `[patch.crates-io]` fork), so a flush longer than a cluster is
-/// silently chopped into per-cluster commands anyway, and a flush shorter than a cluster pays a
-/// command + program cycle for a fraction of one. Landing exactly on the cluster makes every flush
-/// **one 64-block CMD25** with no partial ends.
+/// **64 KiB: two 32 KiB FAT clusters and one 128-block card command.** The map-upload block device
+/// coalesces the FAT layer's per-cluster calls back into one disk-contiguous run, so a normal half
+/// reaches the card as one CMD25. A fragmented chain safely splits at its LBA discontinuity.
 ///
 /// It follows that this constant should move *with* the card's cluster size, not independently.
 /// To sweep it: change this one line, re-pin `compile_time_allocations.arena_usb` in
 /// `firmware/tools/resource_baseline.json` to `2 * STAGE_HALF_LEN`, and read the `~{} kB/s` line
-/// `run_upload` prints at the end of every transfer over RTT. The only hard ceiling is the arena's
-/// (below); the useful rungs are 16 K / 32 K / 64 K.
+/// `run_upload` prints at the end of every transfer over RTT. At 64 KiB the USB arm is 128 KiB,
+/// 13,664 B larger than the render arm; the resource guard therefore prices that growth directly.
 ///
 /// # The historical rungs (SPI-era — kept because the *shape* survived, not the numbers)
 ///
@@ -240,11 +247,12 @@ static mut BULK_BUF: MaybeUninit<[u8; BULK_BURST_LEN]> = MaybeUninit::uninit();
 /// # Why the RAM argument no longer bites
 ///
 /// **Since #1146 P2 these bytes are the scratch arena's USB arm**, not a static of their own. The
-/// arena is `max(arms)` and the render arm is 117,408 B, so the USB arm grows at **zero** resident
-/// cost until it reaches that — see [`crate::arena`]'s growth-asymmetry note. Two 32 KiB halves is
-/// 65,536 B, comfortably under, and costs nothing. Past ~117 KB it would cost 1:1 again *and* move
-/// the max-of-arms cliff, which the const assert in [`crate::arena`] fails the build over.
-pub(crate) const STAGE_HALF_LEN: usize = 32 * 1024;
+/// arena is `max(arms)` and the render arm is 117,408 B, so the USB arm grew at **zero** resident
+/// cost until it reached that — see [`crate::arena`]'s growth-asymmetry note. Two 64 KiB halves put
+/// the USB arm 13,664 B above the render arm, a deliberate resident cost that buys the card's
+/// measured 128-block write-efficiency while leaving the linked stack margin pinned by the
+/// resource guard.
+pub(crate) const STAGE_HALF_LEN: usize = 64 * 1024;
 
 /// The whole staging arm: **two** [`STAGE_HALF_LEN`] halves (#1158 follow-up).
 ///
@@ -263,7 +271,7 @@ static mut SERIAL: MaybeUninit<heapless::String<16>> = MaybeUninit::uninit();
 /// **[`STAGE_LEN`] is deliberately not in this sum** since #1146 P2: the staging buffer is an arm of
 /// the scratch arena, counted once as [`crate::arena::ARENA_BYTES`] beside the render and nav arms
 /// it time-shares with.
-pub const RESIDENT_BYTES: usize = EP_OUT_BUFFER_LEN
+pub const RESIDENT_BYTES: usize = EP_BUFFER_LEN
     + CONFIG_DESC_LEN
     + BOS_DESC_LEN
     + MSOS_DESC_LEN
@@ -555,7 +563,8 @@ struct UsbPlane {
 fn build_plane(usb_p: Peri<'static, peripherals::USBHS>) -> UsbPlane {
     // SAFETY: each slot is written exactly once here, and the returned `&'static mut` is the sole
     // reference — `run` is spawned once from `main`.
-    let ep_out_buffer = unsafe { init_static(core::ptr::addr_of_mut!(EP_OUT_BUFFER), [0u8; EP_OUT_BUFFER_LEN]) };
+    let ep_buffer =
+        unsafe { init_static(core::ptr::addr_of_mut!(EP_BUFFER), AlignedEndpointBuffer([0u8; EP_BUFFER_LEN])) };
     let config_desc = unsafe { init_static(core::ptr::addr_of_mut!(CONFIG_DESC), [0u8; CONFIG_DESC_LEN]) };
     let bos_desc = unsafe { init_static(core::ptr::addr_of_mut!(BOS_DESC), [0u8; BOS_DESC_LEN]) };
     let msos_desc = unsafe { init_static(core::ptr::addr_of_mut!(MSOS_DESC), [0u8; MSOS_DESC_LEN]) };
@@ -567,14 +576,17 @@ fn build_plane(usb_p: Peri<'static, peripherals::USBHS>) -> UsbPlane {
     // VREGUSB, not the OTG core's session events), so the default config is otherwise the right one.
     // The one field we set is the fork's (#1173): arm the **bulk OUT** endpoint — and only that one
     // — as a burst of [`BULK_OUT_BURST_PACKETS`] packets, so it stops NAKing between them while the
-    // CPU is folding CRC and writing the card. Everything else on this device (EP0, the control
+    // CPU advances the transfer and services the card. Everything else on this device (EP0, the control
     // frame pipe, both IN endpoints) keeps stock one-packet arming.
     let mut usb_config = nrf_usb::Config::default();
+    // Let the controller DMA directly between USB SRAM and the endpoint
+    // buffers. This removes the per-packet CPU copy from the upload hot path.
+    usb_config.buffer_dma = true;
     usb_config.out_burst_endpoints = 1 << BULK_OUT_EP_INDEX;
     usb_config.out_burst_packets = BULK_OUT_BURST_PACKETS;
     // [`BoardVbusDetect`] rather than embassy's `HardwareVbusDetect` so the driver and the poll
     // guard read the one register, not two views of it — the arming still happened in [`run`].
-    let driver = UsbhsDriver::new(usb_p, Irqs, BoardVbusDetect, ep_out_buffer, usb_config);
+    let driver = UsbhsDriver::new(usb_p, Irqs, BoardVbusDetect, &mut ep_buffer.0, usb_config);
 
     let mut config = Config::new(VENDOR_ID, PRODUCT_ID);
     config.manufacturer = Some(MANUFACTURER);

@@ -723,6 +723,182 @@ fn bring_up_fault(e: crate::semmc::SemmcError) -> obc_app::BootFault {
 #[derive(Clone, Copy)]
 pub(crate) struct SemmcCard;
 
+// ═══════════════════════ map-upload write pipeline ═══════════════════════
+
+/// One USB map append's raw writes, collected until the FAT call returns.
+///
+/// `VolumeManager::write` deliberately stops a device write at every cluster, even when the
+/// pre-allocated chain continues at the next LBA. During a staged map upload those calls all point
+/// into one immutable arena half. Coalescing adjacent `(LBA, pointer)` spans here turns them back
+/// into the single CMD25 the card can execute efficiently, without teaching the generic FAT layer
+/// anything board-specific.
+#[derive(Clone, Copy)]
+struct QueuedUploadWrite {
+    lba: u32,
+    ptr: *const u8,
+    len: usize,
+}
+
+#[repr(C, align(4))]
+struct UploadCacheBlock([u8; BLOCK_LEN]);
+
+struct UploadWritePipe {
+    enabled: bool,
+    queued: Option<QueuedUploadWrite>,
+    active_lba: u32,
+    active_blocks: u32,
+    cache_lba: u32,
+    cache_valid: bool,
+    cache: UploadCacheBlock,
+}
+
+impl UploadWritePipe {
+    const fn new() -> Self {
+        Self {
+            enabled: false,
+            queued: None,
+            active_lba: 0,
+            active_blocks: 0,
+            cache_lba: 0,
+            cache_valid: false,
+            cache: UploadCacheBlock([0; BLOCK_LEN]),
+        }
+    }
+}
+
+/// Solely accessed while the cooperative executor holds the shared store. The USB stage is the
+/// only code that enables it, and it disables it before releasing the upload handle. No ISR reads
+/// this state (the VPR IRQ only sets `semmc::COMPLETION`).
+static mut UPLOAD_WRITE_PIPE: UploadWritePipe = UploadWritePipe::new();
+
+#[inline(always)]
+fn upload_pipe() -> &'static mut UploadWritePipe {
+    // SAFETY: the shared-store/one-executor rule above provides the unique access; references are
+    // never retained across an await or returned to a caller.
+    unsafe { &mut *core::ptr::addr_of_mut!(UPLOAD_WRITE_PIPE) }
+}
+
+fn upload_pipe_enabled() -> bool {
+    upload_pipe().enabled
+}
+
+fn upload_pipe_begin() -> bool {
+    let pipe = upload_pipe();
+    if pipe.enabled || pipe.active_blocks != 0 || pipe.queued.is_some() {
+        defmt::error!("SD: deferred upload pipe was not idle at begin");
+        return false;
+    }
+    pipe.enabled = true;
+    pipe.cache_valid = false;
+    true
+}
+
+fn upload_pipe_finish_active() -> Result<(), crate::semmc::SemmcError> {
+    let (lba, blocks) = {
+        let pipe = upload_pipe();
+        if pipe.active_blocks == 0 {
+            return Ok(());
+        }
+        let out = (pipe.active_lba, pipe.active_blocks);
+        // Clear before entering the driver so an error path cannot leave a phantom DMA owner.
+        pipe.active_blocks = 0;
+        out
+    };
+    let result = crate::flpr_mux::with_storage(|sd| sd.finish_write_blocks())?;
+    if let Err(e) = result {
+        log_transfer_error("deferred write", lba, blocks as usize, e);
+    }
+    result
+}
+
+fn upload_pipe_start_queued() -> Result<(), crate::semmc::SemmcError> {
+    let queued = match upload_pipe().queued.take() {
+        Some(queued) => queued,
+        None => return Ok(()),
+    };
+    debug_assert!(queued.len.is_multiple_of(BLOCK_LEN));
+    let blocks = (queued.len / BLOCK_LEN) as u32;
+    // SAFETY: the queue was formed from a currently borrowed immutable staging slice. Stage does
+    // not reuse that arena half until the next append has joined this write; the pipe stores no
+    // slice, only the DMA address needed to start the transfer here.
+    let bytes = unsafe { core::slice::from_raw_parts(queued.ptr, queued.len) };
+    let result = crate::flpr_mux::with_storage(|sd| {
+        // SAFETY: the double-buffer lifetime rule above holds until `upload_pipe_finish_active`.
+        unsafe { sd.start_write_blocks(queued.lba, bytes) }
+    })?;
+    if result.is_ok() {
+        let pipe = upload_pipe();
+        pipe.active_lba = queued.lba;
+        pipe.active_blocks = blocks;
+    }
+    result
+}
+
+fn upload_pipe_flush() -> Result<(), crate::semmc::SemmcError> {
+    upload_pipe_finish_active()?;
+    upload_pipe_start_queued()?;
+    upload_pipe_finish_active()
+}
+
+fn upload_pipe_end() -> bool {
+    let result = upload_pipe_flush();
+    let pipe = upload_pipe();
+    pipe.enabled = false;
+    pipe.queued = None;
+    pipe.cache_valid = false;
+    result.is_ok()
+}
+
+fn upload_pipe_queue(lba: u32, buf: &[u8]) -> Result<(), crate::semmc::SemmcError> {
+    debug_assert!(upload_pipe_enabled());
+    debug_assert!(buf.len().is_multiple_of(BLOCK_LEN));
+    let next = QueuedUploadWrite { lba, ptr: buf.as_ptr(), len: buf.len() };
+    let merge = upload_pipe().queued.is_some_and(|queued| {
+        queued.lba + (queued.len / BLOCK_LEN) as u32 == next.lba && queued.ptr.addr() + queued.len == next.ptr.addr()
+    });
+    if merge {
+        upload_pipe().queued.as_mut().unwrap().len += next.len;
+        return Ok(());
+    }
+    if upload_pipe().queued.is_some() {
+        // Fragmented chain, a FAT-cache miss, or a partial-block bounce broke the run. Complete the
+        // earlier run synchronously before queuing this one; correctness degrades gracefully while
+        // a contiguous pre-allocation stays on the deferred fast path.
+        upload_pipe_start_queued()?;
+        upload_pipe_finish_active()?;
+    }
+    upload_pipe().queued = Some(next);
+    Ok(())
+}
+
+fn upload_cache_read(blocks: &mut [Block], lba: u32) -> bool {
+    if blocks.len() != 1 {
+        return false;
+    }
+    let pipe = upload_pipe();
+    if !pipe.enabled || !pipe.cache_valid || pipe.cache_lba != lba {
+        return false;
+    }
+    blocks[0].contents.copy_from_slice(&pipe.cache.0);
+    true
+}
+
+fn upload_cache_note_read(blocks: &[Block], lba: u32) {
+    if blocks.len() == 1 && upload_pipe_enabled() {
+        let pipe = upload_pipe();
+        pipe.cache.0.copy_from_slice(&blocks[0].contents);
+        pipe.cache_lba = lba;
+        pipe.cache_valid = true;
+    }
+}
+
+fn upload_cache_note_write(lba: u32, blocks: usize) {
+    let pipe = upload_pipe();
+    if pipe.cache_valid && pipe.cache_lba >= lba && pipe.cache_lba < lba.saturating_add(blocks as u32) {
+        pipe.cache_valid = false;
+    }
+}
+
 /// **The alignment bounce** (epic #1158).
 ///
 /// The sEMMC firmware's DMA requires 32-bit-aligned buffers, and `embedded_sdmmc::Block` cannot
@@ -763,12 +939,9 @@ fn warn_bounce(addr: usize) {
 
 /// **Report the mounted volume's cluster size, once, at mount.**
 ///
-/// Purely diagnostic, and it exists because a *constant* depends on the answer:
-/// [`STAGE_HALF_LEN`](crate::usb::STAGE_HALF_LEN) is 32 KiB precisely so that one staging flush is
-/// one whole cluster — one CMD25 with no partial ends. That claim is true of a card this firmware
-/// formats for and is **not checked anywhere**, so on a card formatted with 4 KiB or 64 KiB clusters
-/// the upload's shape silently changes and an on-glass throughput number becomes uninterpretable.
-/// This is the line that says which case you are in.
+/// Purely diagnostic. The fast uploader coalesces adjacent FAT cluster calls into one physical
+/// write, so correctness and batching no longer depend on one exact cluster size; the line keeps
+/// an on-glass throughput result interpretable.
 ///
 /// Read straight off the card rather than asked of `VolumeManager`, which does not expose it. The
 /// checks are `obc-storage`'s `fat_extents.rs`, borrowed rather than re-invented — with one
@@ -819,14 +992,20 @@ fn report_cluster_size() {
     let sectors_per_cluster = block[13] as u32;
     let cluster = bytes_per_sector * sectors_per_cluster;
     let half = crate::usb::STAGE_HALF_LEN as u32;
-    if cluster == half {
-        defmt::info!("SD: {=u32} B clusters — one upload staging half is exactly one cluster", cluster);
-    } else {
-        defmt::warn!(
-            "SD: {=u32} B clusters against a {=u32} B staging half — upload flushes are not \
-             one-cluster, so throughput will not match the bench numbers (see usb::STAGE_HALF_LEN)",
+    if half.is_multiple_of(cluster) {
+        defmt::info!(
+            "SD: {=u32} B clusters; staged upload run {=u32} B / {=u32} blocks / {=u32} cluster(s)",
             cluster,
-            half
+            half,
+            half / BLOCK_LEN as u32,
+            half / cluster
+        );
+    } else {
+        defmt::info!(
+            "SD: {=u32} B clusters; staged upload run {=u32} B / {=u32} blocks (cross-cluster coalescing active)",
+            cluster,
+            half,
+            half / BLOCK_LEN as u32
         );
     }
 }
@@ -860,6 +1039,15 @@ impl BlockDevice for SemmcCard {
         if blocks.is_empty() {
             return Ok(());
         }
+        if upload_pipe_enabled() {
+            if upload_cache_read(blocks, start_block_idx.0) {
+                return Ok(());
+            }
+            // A real card command cannot overlap the queued/deferred write. A FAT-sector hit above
+            // is RAM-only and intentionally can: that is what lets one `VolumeManager::write`
+            // coalesce across its cluster boundaries.
+            upload_pipe_flush()?;
+        }
         let (addr, n) = (blocks.as_ptr() as usize, blocks.len());
         let r = crate::flpr_mux::with_storage(|sd| {
             if addr.is_multiple_of(4) {
@@ -883,6 +1071,8 @@ impl BlockDevice for SemmcCard {
         })?;
         if let Err(e) = r {
             log_transfer_error("read", start_block_idx.0, n, e);
+        } else {
+            upload_cache_note_read(blocks, start_block_idx.0);
         }
         r
     }
@@ -892,6 +1082,21 @@ impl BlockDevice for SemmcCard {
             return Ok(());
         }
         let (addr, n) = (blocks.as_ptr() as usize, blocks.len());
+        upload_cache_note_write(start_block_idx.0, n);
+        let byte_len = n * BLOCK_LEN;
+        let stable_stage = addr.is_multiple_of(4) && crate::arena::usb_stage_contains(addr, byte_len);
+        if upload_pipe_enabled() && stable_stage {
+            // SAFETY is carried by the arena-range check: Stage holds this immutable half until
+            // the deferred transfer is joined.
+            let buf = unsafe { core::slice::from_raw_parts(blocks.as_ptr().cast::<u8>(), n * BLOCK_LEN) };
+            return upload_pipe_queue(start_block_idx.0, buf);
+        }
+        if upload_pipe_enabled() {
+            // Partial file sectors and FAT/directory metadata live in dependency-owned temporary
+            // `Block`s. Whether aligned or not, their lifetime ends at this call, so drain the fast
+            // pipe and write them synchronously. Misaligned values use the established bounce path.
+            upload_pipe_flush()?;
+        }
         let r = crate::flpr_mux::with_storage(|sd| {
             if addr.is_multiple_of(4) {
                 // SAFETY: as in `read` — `Block` is `#[repr(transparent)]` over `[u8; 512]`, and the
@@ -918,6 +1123,9 @@ impl BlockDevice for SemmcCard {
     }
 
     fn num_blocks(&self) -> Result<BlockCount, Self::Error> {
+        if upload_pipe_enabled() {
+            upload_pipe_flush()?;
+        }
         crate::flpr_mux::with_storage(|sd| sd.num_blocks())?.map(BlockCount)
     }
 }
@@ -1966,6 +2174,26 @@ impl Storage {
         self.map_boot_fault.unwrap_or(obc_app::BootFault::NoMap)
     }
 
+    /// Release boot-only map handles before the no-map USB recovery composition takes ownership.
+    ///
+    /// No reader task exists on that path, so the resident extent/source records are already dead;
+    /// closing the handles simply returns their file slots and prevents a replacement upload from
+    /// competing with the unreadable map it is replacing.
+    pub fn prepare_map_recovery(&mut self) {
+        #[cfg(has_nav)]
+        if let Some((file, _)) = self.open_terrain.take() {
+            let _ = self.vmgr.close_file(file);
+        }
+        if let Some((file, _)) = self.open_map.take() {
+            let _ = self.vmgr.close_file(file);
+        }
+        if let Some(mut set) = self.open_set.take() {
+            self.close_set_shards(&mut set.shards);
+        }
+        self.open_map_name = None;
+        self.map_extents = None;
+    }
+
     /// Delete the uploaded maps the one just opened superseded — the card side of the **one map**
     /// rule (#992). Returns how many were reclaimed.
     ///
@@ -3003,7 +3231,31 @@ impl Storage {
     /// that opened the handle is the only thing that appends to it.
     pub fn upload_append(&mut self, bytes: &[u8]) -> bool {
         let Some((file, _)) = self.open_upload else { return false };
-        self.vmgr.write(file, bytes).is_ok()
+        if upload_pipe_enabled() && upload_pipe_finish_active().is_err() {
+            let _ = upload_pipe_end();
+            return false;
+        }
+        if self.vmgr.write(file, bytes).is_err() {
+            let _ = upload_pipe_end();
+            return false;
+        }
+        if upload_pipe_enabled() && upload_pipe_start_queued().is_err() {
+            let _ = upload_pipe_end();
+            return false;
+        }
+        true
+    }
+
+    /// Enable the deferred/coalesced writer for a staged USB map. This is deliberately separate
+    /// from reservation: BLE and unstaged fallbacks use the same pre-allocation but cannot promise
+    /// the double-buffer lifetime the FLPR DMA requires after `BlockDevice::write` returns.
+    pub fn upload_fast_begin(&mut self) -> bool {
+        self.open_upload.is_some() && upload_pipe_begin()
+    }
+
+    /// Join the last deferred write before format validation or magic commit.
+    pub fn upload_sync(&mut self) -> bool {
+        !upload_pipe_enabled() || upload_pipe_flush().is_ok()
     }
 
     /// **Reserve the whole of an announced upload's cluster chain before the first payload byte.**
@@ -3041,6 +3293,9 @@ impl Storage {
     /// [`upload_commit`] runs before it re-opens the temp to validate + promote it, and every map /
     /// set commit runs before it re-opens its own file to patch the magic in.
     pub fn upload_close(&mut self) {
+        if upload_pipe_enabled() && !upload_pipe_end() {
+            defmt::warn!("SD: deferred upload write failed while closing — target remains inert");
+        }
         if let Some((file, _)) = self.open_upload.take() {
             let _ = self.vmgr.flush_file(file);
             let _ = self.vmgr.close_file(file);
@@ -3225,20 +3480,20 @@ impl Storage {
     // **Why this path is not the route path.** Every other upload streams into `/routes/UPLOAD.TMP`
     // and is *copied* to its final name at commit with the magic held back — an invisible temp, an
     // atomic promote, no half-object ever visible. A map cannot afford that copy: at hundreds of
-    // megabytes it would double both the write time (already minutes) and the free space the card
+    // megabytes it would double both the write time and the free space the card
     // must have, to buy atomicity for a file that is, uniquely, re-derivable from the builder that
     // made it.
     //
     // So a map streams **straight into its final `MP{id}.OBM`** and gets the same commit point
     // another way: the file opens with four zero bytes standing in for the magic, the stream's own
     // first four bytes are withheld by the caller's `obc_ble::HeldMagic`, and `map_upload_commit`
-    // patches them in after the whole-object CRC and the header have both validated. The torn state
+    // patches them in after the upload's transport policy and the header have both validated. The torn state
     // is byte-identical to the copy path's — a zero-magic file `is_map_entry` may list but
     // `map_identity` refuses, so it never reaches a catalog, is never chosen by `open_map`, and is
     // reclaimed by the boot sweep.
     //
     // The consequence is the one policy this path enforces: a map upload is **new-only**. Writing
-    // into an existing map's file would destroy it as the new bytes arrive, and §4.2's "a failed CRC
+    // into an existing map's file would destroy it as the new bytes arrive, and §4.2's "a failed upload
     // never touches the old copy" is not a guarantee to give up on the one object the device cannot
     // rebuild. `TransferStatus::map_announce_reject` turns every named id away before a byte moves;
     // replacing a map is "upload the new one, then delete the old one".
@@ -3307,11 +3562,10 @@ impl Storage {
     /// payload is not a map and must not linger as a zero-magic decoy the sweep would have to reason
     /// about).
     ///
-    /// The header check is what stops a well-CRC'd non-map — the transfer CRC only proved the bytes
-    /// are the ones the host sent. It is the direct analogue of the route path's OBCR parse and the
-    /// fwImage path's OBCU decode, and it rejects a map built for another OBCM version too: the
-    /// device would only reach the *MAP UNREADABLE* fault screen on the next boot, which is a much
-    /// worse way to learn it.
+    /// The header check is what stops a non-map after the USB/sEMMC link and media checks. It is the
+    /// direct analogue of the route path's OBCR parse and the fwImage path's OBCU decode, and it
+    /// rejects a map built for another OBCM version too: the device would only reach the *MAP
+    /// UNREADABLE* fault screen on the next boot, which is a much worse way to learn it.
     pub fn map_upload_commit(&mut self, id: u16, magic: [u8; 4]) -> Option<u32> {
         self.upload_close();
         let name = map_file_name_for(id)?;
@@ -3797,7 +4051,7 @@ impl Storage {
     }
 
     /// Drop one in-flight shard: close the streaming handle and delete just that
-    /// `MS{id}S{kk}.OBM`. The set's session survives — a shard that failed its CRC is one file the
+    /// `MS{id}S{kk}.OBM`. The set's session survives — a shard that failed validation is one file the
     /// host can re-send, and the gigabytes already committed beside it are still good.
     pub fn set_shard_discard(&mut self, id: u16, index: usize) {
         if let Some((file, _)) = self.open_upload.take() {

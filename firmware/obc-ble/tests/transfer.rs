@@ -80,6 +80,18 @@ fn corrupt_payload_same_len_is_rejected() {
 }
 
 #[test]
+fn link_checked_receiver_counts_without_software_crc() {
+    let object = payload(128);
+    let mut desc = upload_desc(&object);
+    desc.crc32 ^= 1;
+    let mut rx = Receiver::new_link_checked(&desc).unwrap();
+    assert_eq!(rx.push(&object[..63]), 63);
+    assert_eq!(rx.push(&object[63..]), 65);
+    assert_eq!(rx.committed_offset(), 128);
+    assert_eq!(rx.outcome().unwrap().status, TransferStatus::Committed);
+}
+
+#[test]
 fn push_clamps_to_remaining() {
     // A receiver never consumes past total_len; the surplus is the caller's protocol error to see.
     let object = payload(50);
