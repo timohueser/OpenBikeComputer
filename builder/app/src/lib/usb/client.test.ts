@@ -9,11 +9,18 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-import { DeviceError, ProtocolClient } from "./client";
+import { DEFAULT_TIMEOUT_MS, DeviceError, ProtocolClient, commitTimeoutMs } from "./client";
 import { Crc32 } from "./crc32";
 import { MockDevice, loopbackDevice, loopbackLink } from "./loopback";
-import { PipeError } from "./pipe";
-import { Command, CommandStatus, NEW_OBJECT_ID, ObjectType, SINGLETON_OBJECT_ID } from "./protocol";
+import { PipeError, type BytePipe } from "./pipe";
+import {
+    Command,
+    CommandStatus,
+    NEW_OBJECT_ID,
+    ObjectType,
+    SINGLETON_OBJECT_ID,
+    TransferStatus,
+} from "./protocol";
 
 /** A recognisable, incompressible-looking payload of `n` bytes. */
 function payload(n: number) {
@@ -94,8 +101,8 @@ describe("streaming", () => {
 describe("backpressure", () => {
     it("makes a writer wait for the reader to drain", async () => {
         // Real backpressure is the device NAKing an endpoint it has not drained. Faking it here is
-        // what makes a fire-and-forget writer — one that would outrun an SD card topping out in the
-        // high hundreds of KB/s — fail in CI instead of on a rider's desk.
+        // what makes a fire-and-forget writer — one that queues an object without ever retiring a
+        // transfer — fail in CI instead of on a rider's desk.
         const link = loopbackLink({ bulkHighWaterMark: 256, bulkPacketSize: 64 });
         let resolved = false;
         const write = link.host.bulk.write(payload(1024)).then(() => {
@@ -110,6 +117,278 @@ describe("backpressure", () => {
         await write;
         expect(resolved).toBe(true);
         await link.host.close();
+    });
+});
+
+describe("the upload window", () => {
+    it("keeps more than one write on the wire and still delivers them in order", async () => {
+        // The whole point of `pumpChunks`: several `transferOut`s outstanding at once. A pipe that
+        // reordered them, or a loop that awaited each one, would both pass a byte-equality check on
+        // a *serial* upload — so this asserts the depth as well as the bytes.
+        let peakOutstanding = 0;
+        await withDevice({ bulkPacketSize: 64, chunkSize: 61 }, async ({ client, device, link }) => {
+            const bulk = link.host.bulk;
+            const realWrite = bulk.write.bind(bulk);
+            let outstanding = 0;
+            vi.spyOn(bulk, "write").mockImplementation(async (bytes, signal) => {
+                outstanding += 1;
+                peakOutstanding = Math.max(peakOutstanding, outstanding);
+                try {
+                    return await realWrite(bytes, signal);
+                } finally {
+                    outstanding -= 1;
+                }
+            });
+            const bytes = payload(120_000);
+            const { objectId } = await client.upload(ObjectType.Route, NEW_OBJECT_ID, bytes, {
+                chunkSize: 4096,
+            });
+            // Byte-for-byte through a device that verifies its own whole-object CRC, so a reordered
+            // window could not reach here.
+            expect(device.stored(ObjectType.Route, objectId)).toEqual(bytes);
+        });
+        expect(peakOutstanding, "the upload never had more than one write on the wire").toBeGreaterThan(1);
+    });
+
+    it("never reports progress for bytes the transport has not taken", async () => {
+        // The claim is about *lag*, so the assertion has to be against what the transport has
+        // actually accepted at the moment each callback fires — monotonicity and a correct total
+        // hold just as well for a bar driven by hand-off, which would run to 100% while a
+        // quarter-megabyte was still queued and make a failure look like it happened after the bytes
+        // landed.
+        const link = loopbackLink({ bulkPacketSize: 64 });
+        const device = new MockDevice(link.device, {});
+        void device.run();
+        let accepted = 0;
+        const bulk: BytePipe = {
+            ...link.host.bulk,
+            transport: "counting",
+            open: true,
+            read: (signal) => link.host.bulk.read(signal),
+            reset: () => link.host.bulk.reset(),
+            close: () => link.host.bulk.close(),
+            write: async (bytes, signal) => {
+                await link.host.bulk.write(bytes, signal);
+                accepted += bytes.length;
+            },
+        };
+        const client = new ProtocolClient({ control: link.host.control, bulk, close: () => link.host.close() });
+        const bytes = payload(120_000);
+        const overruns: string[] = [];
+        await client.upload(ObjectType.Route, NEW_OBJECT_ID, bytes, {
+            chunkSize: 4096,
+            onProgress: (done) => {
+                if (done > accepted) overruns.push(`reported ${done} with only ${accepted} taken`);
+            },
+        });
+        expect(overruns, "progress ran ahead of the transport").toEqual([]);
+        device.stop();
+        await link.host.close();
+    });
+
+    it("survives an async descriptor reject mid-window and retries cleanly", async () => {
+        // The stray-byte hole in one test. The device rejects the descriptor *after* the host has
+        // queued several chunks (`checkUploadOpen` is what notices), so those bytes are already on
+        // their way to a transfer that will never read them. If they are still in the pipe when the
+        // retry arms, they become its opening payload and its whole-object CRC fails — a retry that
+        // cannot succeed until the window happens to drain.
+        await withDevice({ bulkPacketSize: 64, maxFwImageLen: 1024 }, async ({ client, device, link }) => {
+            // Bytes on the endpoint that belong to no armed transfer — what a host that was mid-send
+            // when a descriptor was refused leaves behind. Injected directly, because *how many*
+            // chunks escape before `checkUploadOpen` notices is a timing detail of the loopback and
+            // the property under test is not.
+            await link.host.bulk.write(payload(9_000));
+
+            // A refused descriptor. Its failure path is what has to leave the pipe clean: the device
+            // answered, so nothing about this transfer is outstanding — but the strays above are.
+            await expect(
+                client.upload(ObjectType.FwImage, SINGLETON_OBJECT_ID, payload(200_000), { chunkSize: 4096 }),
+            ).rejects.toMatchObject({ name: "DeviceError" });
+
+            // The retry is an ordinary first attempt. Anything left over shows up here and nowhere
+            // else: prepended to this object, it fails the whole-object CRC.
+            const bytes = payload(60_000);
+            const { objectId } = await client.upload(ObjectType.Route, NEW_OBJECT_ID, bytes, {
+                chunkSize: 4096,
+            });
+            expect(device.stored(ObjectType.Route, objectId)).toEqual(bytes);
+            expect(device.strayBytesDiscarded, "the stray bytes were never discarded").toBeGreaterThanOrEqual(
+                9_000,
+            );
+        });
+    });
+
+    it("goes through the abort handshake after any failed upload, not only a cancel", async () => {
+        // The handshake is what quiesces the pipe before a retry, so it has to happen on *both*
+        // shapes of failure — a cancel, where the host's transfers stay on the wire, and a
+        // device-originated reject, where they do not but the leftovers are just as unrecallable.
+        // Skipping it on the second was the hole the reject-retry test above lands on.
+        const seen: number[] = [];
+        const link = loopbackLink({ bulkPacketSize: 64 });
+        const device = new MockDevice(link.device, { maxFwImageLen: 1024 });
+        void device.run();
+        const control: BytePipe = {
+            ...link.host.control,
+            transport: "counting-control",
+            open: true,
+            read: (signal) => link.host.control.read(signal),
+            reset: () => link.host.control.reset(),
+            close: () => link.host.control.close(),
+            write: (frameBytes, signal) => {
+                // Selector 2 is `transferControl`; the descriptor's first payload byte is the op.
+                if (frameBytes[0] === 2) seen.push(frameBytes[1]);
+                return link.host.control.write(frameBytes, signal);
+            },
+        };
+        const client = new ProtocolClient({
+            control,
+            bulk: link.host.bulk,
+            close: () => link.host.close(),
+        });
+
+        // 1. A device-originated reject: the device answered, so the old code sent no abort.
+        await expect(
+            client.upload(ObjectType.FwImage, SINGLETON_OBJECT_ID, payload(200_000), { chunkSize: 4096 }),
+        ).rejects.toMatchObject({ name: "DeviceError" });
+        expect(seen.filter((op) => op === 3), "a device-originated reject must still be followed by op=3")
+            .toHaveLength(1);
+
+        // 2. A rider's cancel, which always did.
+        seen.length = 0;
+        const controller = new AbortController();
+        const upload = client.upload(ObjectType.Route, NEW_OBJECT_ID, payload(200_000), {
+            chunkSize: 4096,
+            signal: controller.signal,
+            onProgress: (done) => {
+                if (done > 8192) controller.abort();
+            },
+        });
+        await expect(upload).rejects.toMatchObject({ name: "DeviceError" });
+        expect(seen.filter((op) => op === 3), "a cancel must send op=3").toHaveLength(1);
+
+        device.stop();
+        await link.host.close();
+    });
+
+    it("surfaces a mid-window write failure without an unhandled rejection", async () => {
+        // The shape that produces one: a chunk rejects while its *predecessors are still pending*,
+        // so nothing has awaited it yet. Node calls that unhandled the moment the turn ends, and the
+        // report lands on top of the caller's real error. The window makes it reachable — with one
+        // write outstanding the rejection is awaited immediately and this cannot happen.
+        const unhandled: unknown[] = [];
+        const onUnhandled = (reason: unknown) => unhandled.push(reason);
+        process.on("unhandledRejection", onUnhandled);
+        try {
+            const link = loopbackLink({ bulkPacketSize: 64 });
+            const device = new MockDevice(link.device, {});
+            void device.run();
+            // A hand-rolled bulk half rather than a spy: a spy records what it returns, which
+            // attaches a handler to a rejected promise and hides the very thing under test.
+            let calls = 0;
+            const failingBulk: BytePipe = {
+                ...link.host.bulk,
+                transport: "failing",
+                open: true,
+                read: (signal) => link.host.bulk.read(signal),
+                reset: () => link.host.bulk.reset(),
+                close: () => link.host.bulk.close(),
+                write: () => {
+                    calls += 1;
+                    // Writes 1 and 2 stay pending; write 3 fails underneath them, so nothing has
+                    // awaited it yet.
+                    if (calls === 3) return Promise.reject(new PipeError("device-error", "the endpoint stalled"));
+                    return new Promise<void>((resolve) => setTimeout(resolve, 40));
+                },
+            };
+            const client = new ProtocolClient({
+                control: link.host.control,
+                bulk: failingBulk,
+                close: () => link.host.close(),
+            });
+            await expect(
+                client.upload(ObjectType.Route, NEW_OBJECT_ID, payload(120_000), { chunkSize: 4096 }),
+            ).rejects.toMatchObject({ name: "DeviceError", code: "device-error" });
+            device.stop();
+            // Node reports an unhandled rejection at the end of the turn it happened in, so give it
+            // one clear macrotask before deciding there was none.
+            await new Promise((resolve) => setTimeout(resolve, 10));
+            expect(unhandled, "a queued write rejected with nobody watching").toEqual([]);
+        } finally {
+            process.off("unhandledRejection", onUnhandled);
+        }
+    });
+});
+
+describe("stale results", () => {
+    it("does not let a late `aborted` become the next upload's verdict", async () => {
+        // A quiesce abort whose ack arrives after its 2 s wait gave up is still queued when the
+        // retry starts. The mailbox is a plain FIFO — `take` shifts the head whatever it is — so a
+        // predicate that merely declines to *match* the stale message leaves it there for the next
+        // unfiltered take. That is the shape this pins: the message has to be consumed and dropped.
+        //
+        // `aborted` is the worst code for it to arrive as: `sendAssembledSetFile` retries only
+        // `crc-mismatch`, so a set upload would die outright on a result the device never issued
+        // about it.
+        await withDevice({ bulkPacketSize: 64, chunkSize: 61 }, async ({ client, device }) => {
+            const statuses = (client as unknown as { statuses: { push: (v: unknown) => void } }).statuses;
+            const bytes = payload(40_000);
+            let injected = false;
+            const result = await client.upload(ObjectType.Route, NEW_OBJECT_ID, bytes, {
+                chunkSize: 4096,
+                onProgress: () => {
+                    // Mid-flight, so it is queued ahead of this upload's own terminal result and is
+                    // past the drain that runs when the slot is taken.
+                    if (injected) return;
+                    injected = true;
+                    statuses.push({
+                        msg: "transferResult",
+                        objectId: 0xff_ff,
+                        status: TransferStatus.Aborted,
+                        committedOffset: 0,
+                    });
+                },
+            });
+            expect(injected, "the stale result was never injected — the test proves nothing").toBe(true);
+            expect(device.stored(ObjectType.Route, result.objectId)).toEqual(bytes);
+        });
+    });
+});
+
+describe("commitTimeoutMs", () => {
+    it("is opt-in: an ordinary upload keeps the default answer budget", async () => {
+        // The regression this pins is a quiet one — routing every upload through the scaled budget
+        // makes a wedged device take 4-40x longer to surface, and nothing about the happy path
+        // changes. So assert on the wait the client actually applies.
+        await withDevice({ bulkPacketSize: 64, chunkSize: 61 }, async ({ client }) => {
+            const timeouts: number[] = [];
+            const client_ = client as unknown as {
+                statuses: { take: (ms: number, signal: unknown, what: string) => Promise<unknown> };
+            };
+            const realTake = client_.statuses.take.bind(client_.statuses);
+            vi.spyOn(client_.statuses, "take").mockImplementation((ms, signal, what) => {
+                if (what.includes("upload")) timeouts.push(ms);
+                return realTake(ms, signal, what);
+            });
+            await client.upload(ObjectType.Route, NEW_OBJECT_ID, payload(4096));
+            expect(timeouts).toEqual([DEFAULT_TIMEOUT_MS]);
+
+            timeouts.length = 0;
+            await client.upload(ObjectType.Route, NEW_OBJECT_ID, payload(4097), {
+                commitBytes: 300 * 1024 * 1024,
+            });
+            expect(timeouts).toEqual([commitTimeoutMs(300 * 1024 * 1024)]);
+        });
+    });
+
+    it("scales with the bytes the device has to re-read, and is capped", () => {
+        // A set manifest is ~2 KB but its commit walks the whole set, which is what `commitBytes`
+        // exists to say. The cap is what stops a mis-announced length becoming a forever spinner.
+        expect(commitTimeoutMs(0)).toBe(60_000);
+        expect(commitTimeoutMs(1)).toBe(60_200);
+        expect(commitTimeoutMs(300 * 1024 * 1024)).toBe(60_000 + 300 * 200);
+        expect(commitTimeoutMs(Number.MAX_SAFE_INTEGER)).toBe(10 * 60_000);
+        // Never below the ordinary budget, whatever it is given.
+        expect(commitTimeoutMs(-1)).toBeGreaterThanOrEqual(DEFAULT_TIMEOUT_MS);
     });
 });
 

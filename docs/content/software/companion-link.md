@@ -130,9 +130,14 @@ format: the browser cannot hold the artifact (it streams the download into a
 scratch file, checksums it against the [catalog
 manifest](src:specs/OBCC_Spec.md) and only then opens the transfer, because the
 descriptor has to announce a whole-object CRC before the first byte moves), and
-the transfer takes *minutes* — the ceiling is the SD card at a few hundred KB/s,
-not the cable. How maps are named and enumerated on the card is the device side's
-answer to the same size, and it is worth its own section below.
+the transfer takes *minutes* — a few hundred megabytes is a few hundred megabytes
+whichever end is the slower one. Which end that is has actually changed: the card
+was the obvious ceiling while it was reached over SPI, and since the storage
+transport moved to native 4-bit sEMMC it writes at 8.2 MB/s raw, which is no
+longer obviously below what the cable delivers. What sits between the two is
+filesystem bookkeeping and how much of the pipeline can overlap — see the
+pipeline notes further down. How maps are named and enumerated on the card is the
+device side's answer to the same size, and it is worth its own section below.
 
 ## Objects are files the device already speaks
 
@@ -413,6 +418,60 @@ and back.
 > count**, so the close of a preceding catalog read can never complete an
 > upload; a data-plane stall under a live link is failed by a watchdog and
 > surfaces as a plain retryable failure, never a progress bar parked at 99 %.
+
+### Abort means two things, and the descriptor says which
+
+Cancelling is the obvious use of `abort`, and not the common one. The other is
+**quiescing**: after a transfer the device has already refused — a rejected
+descriptor, a shard whose checksum did not match — the host sends an abort not to
+stop anything but to get the channel *empty* before it retries. On an unframed
+pipe the sender does not wait between chunks, so bytes it queued for the refused
+transfer are still arriving, and neither end can recall them; land them in front
+of the retry and the retry fails a checksum for reasons nothing in the exchange
+explains. The abort handshake is the one moment both ends are synchronised — the
+host has stopped and is waiting for an answer — so it is the one moment the
+device can read the channel dry.
+
+Which makes the descriptor's **type** load-bearing when a volume set is staged.
+Giving up on a set deletes every file of it; quiescing after one refused shard
+must delete nothing at all, because the caller is about to re-send that shard and
+the rest of the set has to still be there. So abandonment names the *set*, and
+everything else is a quiesce. Getting that wrong is not a slow retry, it is a map
+that seals a manifest over no files.
+
+### What actually limits an upload
+
+The protocol is not the limit and never has been: the bulk channel carries the
+object's bytes with **no per-chunk framing and no per-chunk acknowledgement**, so
+nothing in the exchange makes the host wait for the device between chunks. What
+makes a map take minutes is the pipeline underneath, and it has four distinct
+stages:
+
+- **How much the host keeps queued.** A browser hands each write to the USB
+  service and back, so with a single transfer outstanding the wire is idle for
+  that round trip between every chunk. The host keeps a small bounded window of
+  transfers queued instead — bounded, because the promise settling *is* the
+  backpressure that stops a 300 MB map being read into the tab faster than the
+  device can take it.
+- **How the device receives.** Bulk packets arrive one at a time and each costs
+  an interrupt and a software re-arm of the endpoint. This is the stage with the
+  least headroom: the USB core buffers exactly one packet on its own, so anything
+  that stops the firmware from re-arming stops the wire.
+- **How much reaches the card per command.** Handing the filesystem 512 bytes
+  makes it issue one single-block write — one whole internal program cycle of the
+  card — per packet. The firmware therefore stages arriving bytes in RAM and
+  hands the card a **whole cluster** at a time, so one program cycle is amortised
+  over the whole run. The staging buffer is double-ended: one half fills from the
+  cable while the other is the card's.
+- **Filesystem bookkeeping.** Extending a file by one cluster costs several
+  single-block writes of the allocation table — and they land *between* the bulk
+  bursts, which is exactly where they hurt. An upload announces its length before
+  the first byte, so the whole chain can be reserved up front and that traffic
+  leaves the streaming path entirely.
+
+The honest summary is that the *card* stopped being the obvious answer when the
+storage transport moved off SPI, and the pipeline's stages now sit close enough
+together that the ceiling is whichever one is measured last.
 
 ### When a route lands — the device's side
 

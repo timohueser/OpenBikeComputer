@@ -34,9 +34,10 @@ import type { JobContext } from "./progress";
 import type { PreparedRoute } from "./route";
 import { Sha256 } from "./sha256";
 
-/** Bytes handed to the bulk pipe at a time. A map is minutes long either way; this only decides
- *  how often progress moves and how much is in flight, so it stays modest. */
-const MAP_CHUNK = 32 * 1024;
+// The chunk size is deliberately **not** overridden here any more. It used to be a local 32 KiB —
+// half the client's own default since the upload retune, so a map (the one object where the number
+// matters) was quietly getting the *smaller* chunk. There is one throughput dial and it lives with
+// the transport that pays for it: `DEFAULT_CHUNK_SIZE` / `UPLOAD_WINDOW` in `../usb/client`.
 
 /** One file streamed out of the assembler worker, in `OBCA_Spec.md` §5.4's order: every OBCM shard,
  *  then the terrain raster if the set has one, then the manifest that makes them a map. */
@@ -132,10 +133,29 @@ export async function sendAssembledSetFile(
     let result: UploadResult | null = null;
     for (let attempt = 0; attempt < 2; attempt++) {
         try {
+            // The manifest's first attempt leaves the phase at `committing`; a CRC refusal means the
+            // bytes go again, so put the label back before they do. Without this the retry streams
+            // under "Finishing on the device", which is the one phase that promises nothing is
+            // moving.
+            if (attempt > 0) ctx.phase("sending", state.totalBytes);
             result = await client.upload(type, objectId, bytesSource(file.bytes), {
                 signal: ctx.signal,
-                chunkSize: MAP_CHUNK,
                 onProgress: (done) => ctx.progress(state.committedBytes + done, state.totalBytes),
+                // **The manifest is the set's commit point, and it is tiny.** Committing it re-opens
+                // and cross-checks every shard header already on the card, so its wait has to be
+                // budgeted against the set rather than against the ~2 KB that just moved.
+                //
+                // Timing it out no longer *destroys* the set — the abort that follows a failed
+                // exchange is a quiesce now, and quiesces delete nothing (`sendQuiesceAbort`). What
+                // it still costs is the truth: the device may be seconds into a commit that will
+                // succeed, and giving up on it reports a failure for a map that landed, then re-sends
+                // a manifest over a set that already has one. Budgeting it properly is how the
+                // rider's answer stays the device's answer.
+                //
+                // A **shard** deliberately does not get this: its commit is a header check like any
+                // other upload's, so it keeps the ordinary timeout and stays quick to fail.
+                commitBytes: manifest ? state.totalBytes : undefined,
+                onSent: manifest ? () => ctx.phase("committing") : undefined,
             });
             break;
         } catch (cause) {
@@ -154,7 +174,7 @@ export async function sendAssembledSetFile(
 export async function abandonAssembledSet(client: ProtocolClient, state: SetSendState): Promise<void> {
     if (state.nextShard === 0 || state.setId !== null) return;
     try {
-        await client.abandonMapSet(setPartId(state.shardCount, Math.min(state.nextShard, state.shardCount - 1)));
+        await client.abandonMapSet();
     } catch {
         // Best effort: preserve the original assembly/transport failure. A disconnect also makes
         // firmware delete the staged set when its USB plane tears down.
@@ -175,8 +195,12 @@ export async function sendMapFile(client: ProtocolClient, file: File, ctx: JobCo
     ctx.phase("sending", source.totalLen);
     return client.upload(ObjectType.Map, NEW_OBJECT_ID, source, {
         signal: ctx.signal,
-        chunkSize: MAP_CHUNK,
         onProgress: (done, total) => ctx.progress(done, total),
+        // No `commitBytes`: a map's commit is a close, an open, a 40-byte header read, a 4-byte
+        // write and a flush (`Storage::map_upload_commit`) — bounded work the ordinary timeout
+        // covers with room to spare. It does still take long enough to be worth naming, because the
+        // device also has to land the last staging half before it starts.
+        onSent: () => ctx.phase("committing"),
     });
 }
 

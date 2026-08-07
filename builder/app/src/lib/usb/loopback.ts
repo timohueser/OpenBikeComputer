@@ -85,8 +85,9 @@ type ChannelMode = "message" | "stream";
  *
  * **Backpressure** is a byte high-water mark: a writer that has filled the channel waits for the
  * reader to drain it. Real backpressure comes from the device NAKing an endpoint it hasn't drained,
- * and a client that fires writes without awaiting them would outrun a device whose SD card tops out
- * in the high hundreds of KB/s. Faking it here is what makes that bug fail in CI.
+ * and a client that queues writes without ever retiring them would outrun any real device. Faking it
+ * here is what makes that bug fail in CI. (A *bounded* window of outstanding writes is fine and is
+ * what the upload loop does — the high-water mark is what keeps it bounded.)
  *
  * **Segmentation**: a `stream` channel re-slices to `packetSize`, so the reader sees the arbitrary
  * boundaries a bulk endpoint produces. A `message` channel keeps writes whole, which is the control
@@ -225,11 +226,23 @@ class LoopbackPipe implements BytePipe {
         return this.outbound.push(bytes, signal);
     }
 
-    /** Clear **both** directions: an abandoned exchange leaves stale bytes at both ends, and the
-     *  device discarding its partial is half of what makes the channel reusable. */
+    /**
+     * Return this end to a known state — and **only the end this side owns**.
+     *
+     * `inbound` is what has been delivered *to* this side and nobody read; dropping it is what a
+     * host does when it walks away from a transfer, and it is genuine.
+     *
+     * `outbound` is emphatically **not** cleared, and this used to be the mock's most misleading
+     * line. On the host side, `outbound` models bytes already handed to the transport — for WebUSB,
+     * submitted `transferOut`s. `reset()` there is `clearHalt`, a `CLEAR_FEATURE(ENDPOINT_HALT)`
+     * control request that cancels no transfer and un-queues no byte; the data is the device's and
+     * arrives whatever the host does next. Clearing it here made every stray-byte scenario
+     * self-healing in tests and self-healing nowhere else: a test could "prove" a fix that was doing
+     * nothing, because `withTransferSlot` calls `resetBulk()` on every failure and the strays
+     * vanished either way.
+     */
     async reset(): Promise<void> {
         this.inbound.clear();
-        this.outbound.clear();
     }
 
     async close(): Promise<void> {
@@ -587,8 +600,63 @@ export class MockDevice {
     // --- the control loop ------------------------------------------------------
 
     /** Serve until the link closes. Rejects only on a defect, never on a normal disconnect. */
+    /**
+     * Read and drop bulk bytes while **no** exchange is armed — the mock's copy of the firmware's
+     * idle branch (`usb::data_plane::run`'s `select` over `TRANSFER_ARM` and `ep_out.read`).
+     *
+     * Without it this device models a bulk channel that silently accumulates the bytes a host had
+     * already queued when a descriptor was rejected, and hands them to the *next* transfer — which
+     * is a failure mode the real device does not have and a test written against it would be
+     * chasing a ghost. With it, the one case that genuinely needs the abort handshake (a cancel,
+     * where the host's transfers are still on the wire) is the only one left.
+     */
+    private async idleDiscard(): Promise<void> {
+        while (this.running) {
+            if (this.active) {
+                // Parked, not spinning: a transfer's runner owns the channel and this loop has
+                // nothing to do until it ends. `setTimeout(0)` here would busy-poll for the whole of
+                // a multi-megabyte upload, which the dev-harness runs for real.
+                await new Promise((resolve) => setTimeout(resolve, 25));
+                continue;
+            }
+            this.idleReader = new AbortController();
+            // `stop()` has to be able to end this loop even when it is parked on a read that will
+            // never resolve — the harness stops the device far more often than it closes the pipe.
+            this.idleStop = () => this.idleReader?.abort();
+            try {
+                const stray = await this.link.bulk.read(this.idleReader.signal);
+                if (stray.length) this.strayBytesDiscarded += stray.length;
+            } catch {
+                // Armed underneath us, stopped, or the pipe closed. Either way, look again.
+            }
+        }
+        this.idleStop = null;
+    }
+
+    /**
+     * Empty the bulk channel before answering an abort — the firmware's `drain_bulk_out`.
+     *
+     * Only correct at the abort handshake, and for the same reason it is only correct there on the
+     * device: that is the one moment the peer has stopped pumping and is waiting for an answer.
+     */
+    private async drainBulk(): Promise<void> {
+        for (;;) {
+            const stop = new AbortController();
+            const timer = setTimeout(() => stop.abort(), 0);
+            try {
+                const stray = await this.link.bulk.read(stop.signal);
+                this.strayBytesDiscarded += stray.length;
+            } catch {
+                return;
+            } finally {
+                clearTimeout(timer);
+            }
+        }
+    }
+
     async run(): Promise<void> {
         this.running = true;
+        this.detach(this.idleDiscard());
         while (this.running) {
             let frame: Uint8Array;
             try {
@@ -611,6 +679,7 @@ export class MockDevice {
 
     stop(): void {
         this.running = false;
+        this.idleStop?.();
     }
 
     private async handle(frame: { selector: number; payload: Uint8Array }): Promise<void> {
@@ -660,17 +729,39 @@ export class MockDevice {
 
     /** Non-null while an exchange is armed — the gate that answers a second open with `busy`. */
     private active: { descriptor: TransferControl; abort: AbortController } | null = null;
+    /** The idle discard's current read, so arming a transfer can take the channel back from it. */
+    private idleReader: AbortController | null = null;
+    /** Releases the idle discard from a parked read, so `stop()` settles it without closing the pipe. */
+    private idleStop: (() => void) | null = null;
+    /** Unclaimed bulk bytes this device has thrown away — what a test asserts a drain actually did. */
+    strayBytesDiscarded = 0;
 
     private async transfer(d: TransferControl): Promise<void> {
         if (d.op === Op.Abort) {
             const active = this.active;
             if (!active) {
-                if (
-                    d.type === ObjectType.MapShard ||
-                    d.type === ObjectType.MapSet ||
-                    d.type === ObjectType.TerrainShard
-                ) {
+                // The firmware's `TransferDisposition::AnswerIdleAbort`: the peer is about to retry
+                // and its queued bytes are still arriving, so empty the pipe before confirming.
+                await this.drainBulk();
+                // **Only `mapSet` abandons the staged set** (interface spec §5 rule 6). A
+                // `mapShard` or `terrainShard` abort here is the quiesce the host sends after a
+                // file the device refused, and the caller is about to re-send that one file —
+                // deleting the set under it is how a single CRC refusal used to take the whole map
+                // with it. `clearStagedSet` drops the terrain band too, which is exactly why the
+                // quiesce must not reach it.
+                if (d.type === ObjectType.MapSet) {
                     this.clearStagedSet();
+                    await this.status({
+                        msg: "transferResult",
+                        objectId: d.objectId,
+                        status: TransferStatus.Aborted,
+                        committedOffset: 0,
+                    });
+                    return;
+                }
+                if (d.type === ObjectType.MapShard || d.type === ObjectType.TerrainShard) {
+                    // Quiesce only: the pipe is empty, the set — terrain band included — is
+                    // untouched.
                     await this.status({
                         msg: "transferResult",
                         objectId: d.objectId,
@@ -705,6 +796,9 @@ export class MockDevice {
         this.active = { descriptor: d, abort };
         // Run the body detached: the control loop has to keep serving while bytes move, which is
         // how an abort reaches a device that is mid-stream.
+        // Take the channel back from the idle discard before the runner reads it — the mock's copy
+        // of `TRANSFER_ARM` winning its `select` arm.
+        this.idleReader?.abort();
         this.detach(
             (d.op === Op.Upload ? this.receive(d, abort.signal) : this.serve(d, abort.signal)).finally(() => {
                 this.active = null;
@@ -712,7 +806,34 @@ export class MockDevice {
         );
     }
 
+    /**
+     * Refuse the next upload with `status` **after** its bytes have moved — the shape of a torn
+     * transfer, as opposed to `uploadReject`'s descriptor-time refusals.
+     *
+     * A test hook, and the only way to drive the one failure `sendAssembledSetFile` retries without
+     * stubbing the client out from under it.
+     */
+    failNextUploadWith(status: TransferStatus): void {
+        this.failNextUpload = status;
+    }
+
+    private failNextUpload: TransferStatus | null = null;
+
     private async receive(d: TransferControl, signal: AbortSignal): Promise<void> {
+        const forced = this.failNextUpload;
+        if (forced !== null) {
+            this.failNextUpload = null;
+            // Drain the object first: a real device consumes what it was announced before it
+            // verifies, and the host must not be left blocked on an endpoint nobody is reading.
+            let drained = 0;
+            try {
+                while (drained < d.totalLen) drained += (await this.link.bulk.read(signal)).length;
+            } catch {
+                // The peer gave up first; the answer below is still the honest one.
+            }
+            await this.status({ msg: "transferResult", objectId: d.objectId, status: forced, committedOffset: 0 });
+            return;
+        }
         const reject = this.uploadReject(d);
         if (reject !== null) {
             await this.status({ msg: "transferResult", objectId: d.objectId, status: reject, committedOffset: 0 });

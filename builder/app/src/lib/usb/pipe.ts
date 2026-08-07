@@ -104,9 +104,15 @@ export interface BytePipe {
      * Hand `bytes` to the transport, resolving only once it has taken them.
      *
      * That resolution *is* the backpressure: on WebUSB the promise settles when the device's
-     * endpoint has drained the transfer, so a writer that awaits every call cannot outrun a device
-     * whose SD card is the real bottleneck (high-hundreds of KB/s — #889). A writer that fires and
-     * forgets defeats it, so callers await.
+     * endpoint has drained the transfer, so a writer that keeps a *bounded* number of calls
+     * outstanding cannot outrun the device — the card writes at 8.2 MB/s over sEMMC (#1158) and the
+     * FAT layer above it takes a cut of that, so it is still the slower end of the cable. A writer
+     * that fires and forgets defeats it entirely, which is why the upload loop retires an old
+     * transfer for every new one it queues (`client.ts::pumpChunks`) rather than queueing the object.
+     *
+     * **Concurrent writes are allowed on this call, in submission order.** They were not, before the
+     * upload pipeline was windowed; an implementation that cannot preserve order between two
+     * outstanding writes cannot back this interface.
      */
     write(bytes: Uint8Array, signal?: AbortSignal): Promise<void>;
 

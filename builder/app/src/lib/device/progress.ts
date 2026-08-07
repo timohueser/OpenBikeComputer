@@ -10,14 +10,19 @@
 /**
  * Where a job is.
  *
- * `downloading` and `sending` are deliberately distinct: they run at completely different speeds
- * (a CDN fills a scratch file at network speed; the device drains it at SD-card speed), they fail
- * for different reasons, and the second is the one that takes the minutes.
+ * `downloading` and `sending` are deliberately distinct: they run at different speeds, they fail
+ * for different reasons, and which of them dominates is not fixed — a CDN fills a scratch file at
+ * whatever the rider's line does, and the device drains it at whatever the upload pipeline manages.
+ * Both are minutes for a regional map; neither is reliably the longer one.
  *
  * `downloading` covers both directions a byte can arrive from — a CDN, or the device itself when a
  * ride is pulled (C5 #904). `converting` is the ride export's second half: the wasm exporter turning
  * the pulled object into GPX, which moves no bytes over the cable and so deserves its own word
  * rather than a progress bar that looks stalled at 100%.
+ *
+ * `committing` is the same argument at the other end of a write: the last byte is on the wire and
+ * the device is now closing the file, validating it and making it durable. Nothing moves, the bar is
+ * at 100 % and the rate is zero — a state that reads as "stuck" unless it is named.
  */
 export type JobPhase =
     | "idle"
@@ -27,6 +32,7 @@ export type JobPhase =
     | "converting"
     | "assembling"
     | "sending"
+    | "committing"
     | "done"
     | "error";
 

@@ -21,7 +21,15 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { DeviceError, type ProtocolClient } from "../usb/client";
 import { loopbackDevice } from "../usb/loopback";
-import { NEW_OBJECT_ID, OBCT_HEADER_LEN, ObjectType, SINGLETON_OBJECT_ID, manifestLen, setPartId } from "../usb/protocol";
+import {
+    NEW_OBJECT_ID,
+    OBCT_HEADER_LEN,
+    ObjectType,
+    SINGLETON_OBJECT_ID,
+    TransferStatus,
+    manifestLen,
+    setPartId,
+} from "../usb/protocol";
 import { initConvert } from "../convert/bridge";
 import { prepareRoute } from "./route";
 import {
@@ -261,6 +269,149 @@ describe("assembled volume-set upload", () => {
                     context(),
                 ),
             ).rejects.toThrow(/raster follows every shard/);
+        } finally {
+            await close();
+        }
+    });
+
+    it("survives a mid-set shard CRC refusal: the set lives, the shard retries, the manifest commits", async () => {
+        // **The regression this exists for deleted a rider's whole map.** A refused shard throws out
+        // of `client.upload`, whose failure path sends `op = 3` to quiesce the endpoint before the
+        // retry. That abort used to name the shard — indistinguishable from `abandonMapSet`'s — so
+        // the device abandoned the entire staged set, the retry re-sent one shard into nothing, and
+        // the manifest sealed a set that no longer had any files.
+        //
+        // Driven end to end against the loopback device, deliberately: the shard-retry test below
+        // stubs `client.upload` with `vi.fn()`, so it cannot see the abort, the descriptor type, or
+        // what the device did with the set.
+        const { client, device, close } = loopbackDevice();
+        try {
+            const first = syntheticBytes(2048);
+            const second = syntheticBytes(3072);
+            const manifest = obcsManifest([first.length, second.length]);
+            const state = setSendState(2, first.length + second.length + manifest.length);
+            const ctx = context();
+
+            await sendAssembledSetFile(
+                client,
+                state,
+                { name: "MS1S00.OBM", role: "core", sha256: digest(first), byteLength: first.length, bytes: first },
+                ctx,
+            );
+            expect(device.stagedMapShardCount).toBe(1);
+
+            // Refuse the second shard exactly once, the way a torn transfer looks from the host:
+            // a `crcMismatch` result, which is the one failure `sendAssembledSetFile` retries.
+            device.failNextUploadWith(TransferStatus.CrcMismatch);
+            await sendAssembledSetFile(
+                client,
+                state,
+                {
+                    name: "MS1S01.OBM",
+                    role: "coarse",
+                    sha256: digest(second),
+                    byteLength: second.length,
+                    bytes: second,
+                },
+                ctx,
+            );
+
+            // The retry landed in a set that still had its first shard.
+            expect(device.stagedMapShardCount, "the refusal took the rest of the set with it").toBe(2);
+            expect(state.nextShard).toBe(2);
+
+            await sendAssembledSetFile(
+                client,
+                state,
+                { name: "MS1.OBS", role: "manifest", sha256: "", byteLength: manifest.length, bytes: manifest },
+                ctx,
+            );
+            expect(state.setId, "the manifest sealed nothing").not.toBeNull();
+            expect(device.stagedMapShardCount).toBe(0);
+        } finally {
+            await close();
+        }
+    });
+
+    it("survives a manifest CRC refusal: the set lives and the manifest retry commits", async () => {
+        // **The other half of the same regression, and the one with no coverage at all.** A refused
+        // *manifest* is announced as `mapSet`, so the quiesce that follows it would name `mapSet`
+        // too — the device's signal to abandon the set. `sendQuiesceAbort` rewrites that descriptor
+        // to a shard-shaped one precisely so it cannot, and deleting the rewrite left every test
+        // green.
+        //
+        // The retry is what notices: with the set gone, the loopback answers a `mapSet` descriptor
+        // with `notFound` (it has no staged shards), so the manifest can never commit.
+        const { client, device, close } = loopbackDevice();
+        try {
+            const shard = syntheticBytes(2048);
+            const manifest = obcsManifest([shard.length]);
+            const state = setSendState(1, shard.length + manifest.length);
+            const ctx = context();
+
+            await sendAssembledSetFile(
+                client,
+                state,
+                { name: "MS1S00.OBM", role: "core", sha256: digest(shard), byteLength: shard.length, bytes: shard },
+                ctx,
+            );
+            expect(device.stagedMapShardCount).toBe(1);
+
+            device.failNextUploadWith(TransferStatus.CrcMismatch);
+            await sendAssembledSetFile(
+                client,
+                state,
+                { name: "MS1.OBS", role: "manifest", sha256: "", byteLength: manifest.length, bytes: manifest },
+                ctx,
+            );
+            expect(state.setId, "the manifest retry never committed").not.toBeNull();
+            expect(device.stagedMapShardCount).toBe(0);
+        } finally {
+            await close();
+        }
+    });
+
+    it("leaves a set's terrain band alone when a shard is quiesced", async () => {
+        // The terrain band is part of the staged set (#1044), and `clearStagedSet` drops it with
+        // everything else — so the quiesce that follows a refused shard must not reach it either.
+        const { client, device, close } = loopbackDevice();
+        try {
+            const shard = syntheticBytes(2048);
+            const raster = obctRaster(2048);
+            const manifest = obcsManifest([shard.length], raster.length);
+            const state = setSendState(1, shard.length + raster.length + manifest.length);
+            const ctx = context();
+
+            await sendAssembledSetFile(
+                client,
+                state,
+                { name: "MS1S00.OBM", role: "core", sha256: digest(shard), byteLength: shard.length, bytes: shard },
+                ctx,
+            );
+            await sendAssembledSetFile(
+                client,
+                state,
+                {
+                    name: "MS1.OBD",
+                    role: "terrain",
+                    sha256: digest(raster),
+                    byteLength: raster.length,
+                    bytes: raster,
+                },
+                ctx,
+            );
+
+            // A refused *manifest* quiesces with a rewritten shard descriptor; if that reached
+            // `clearStagedSet` the raster would go too and the retry's manifest — which counts the
+            // terrain record — could not be sealed.
+            device.failNextUploadWith(TransferStatus.CrcMismatch);
+            await sendAssembledSetFile(
+                client,
+                state,
+                { name: "MS1.OBS", role: "manifest", sha256: "", byteLength: manifest.length, bytes: manifest },
+                ctx,
+            );
+            expect(state.setId, "the terrain-bearing set did not survive the quiesce").not.toBeNull();
         } finally {
             await close();
         }

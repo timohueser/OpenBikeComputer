@@ -761,6 +761,76 @@ fn warn_bounce(addr: usize) {
     }
 }
 
+/// **Report the mounted volume's cluster size, once, at mount.**
+///
+/// Purely diagnostic, and it exists because a *constant* depends on the answer:
+/// [`STAGE_HALF_LEN`](crate::usb::STAGE_HALF_LEN) is 32 KiB precisely so that one staging flush is
+/// one whole cluster — one CMD25 with no partial ends. That claim is true of a card this firmware
+/// formats for and is **not checked anywhere**, so on a card formatted with 4 KiB or 64 KiB clusters
+/// the upload's shape silently changes and an on-glass throughput number becomes uninterpretable.
+/// This is the line that says which case you are in.
+///
+/// Read straight off the card rather than asked of `VolumeManager`, which does not expose it. The
+/// checks are `obc-storage`'s `fat_extents.rs`, borrowed rather than re-invented — with one
+/// deliberate difference: that one requires an MBR and fails a superfloppy card outright, because it
+/// is building extents the ride path depends on and would rather refuse than guess. This is a boot
+/// log line, so it reads sector 0 as a BPB first and only then looks for a partition table. The two
+/// therefore disagree about a superfloppy: `fat_extents` rejects it, this reports its cluster size.
+/// That is not drift to reconcile — a card the volume manager cannot mount never reaches an upload,
+/// so the only cost of being lenient here is a truthful log line for a card nothing else will use.
+///
+/// **A boot signature alone does not tell an MBR from a BPB.** A *superfloppy* card — no partition
+/// table, the volume boot record directly in sector 0, common on SD — carries `0xAA55` at 510 too,
+/// so a signature check that then read bytes 0x1C6.. as a partition LBA would take part of the BPB
+/// or the boot code as a sector number. What separates them is what sector 0 looks like *as a BPB*:
+/// a real BPB declares `BPB_BytsPerSec == 512` and a non-zero `BPB_SecPerClus`. So: parse sector 0
+/// as a BPB first, and only go looking for a partition table when it is not one.
+///
+/// Two block reads at boot, and nothing downstream depends on the result.
+fn report_cluster_size() {
+    let mut block = [0u8; 512];
+    // `with_storage` answers `Err` when the FLPR is not in storage mode; the inner result is the
+    // card's. Either failure means "no answer", and no answer is not worth a fault here.
+    let read =
+        |lba: u32, buf: &mut [u8]| matches!(crate::flpr_mux::with_storage(|sd| sd.read_blocks(lba, buf)), Ok(Ok(())));
+    /// Does this block parse as a FAT BPB the volume manager would mount?
+    fn is_bpb(block: &[u8; 512]) -> bool {
+        u16::from_le_bytes([block[510], block[511]]) == 0xAA55
+            && u16::from_le_bytes([block[11], block[12]]) == 512
+            && block[13] != 0
+    }
+    if !read(0, &mut block) {
+        return;
+    }
+    if !is_bpb(&block) {
+        // Not a volume boot record, so sector 0 should be an MBR. Partition entry 0 is 16 B at
+        // 0x1BE; bytes 8..12 are the LBA of its first sector, and byte 4 its type — checked against
+        // the same FAT types the manager mounts, so a foreign first partition is reported as
+        // unknown rather than followed.
+        let part = &block[0x1BE..0x1BE + 16];
+        let fat_type = matches!(part[4], 0x01 | 0x04 | 0x06 | 0x0B | 0x0C | 0x0E);
+        let start = u32::from_le_bytes([part[8], part[9], part[10], part[11]]);
+        if (part[0] & 0x7F) != 0 || !fat_type || start == 0 || !read(start, &mut block) || !is_bpb(&block) {
+            defmt::warn!("SD: no FAT BPB in sector 0 or partition 0 — upload flush shape unknown");
+            return;
+        }
+    }
+    let bytes_per_sector = u16::from_le_bytes([block[11], block[12]]) as u32;
+    let sectors_per_cluster = block[13] as u32;
+    let cluster = bytes_per_sector * sectors_per_cluster;
+    let half = crate::usb::STAGE_HALF_LEN as u32;
+    if cluster == half {
+        defmt::info!("SD: {=u32} B clusters — one upload staging half is exactly one cluster", cluster);
+    } else {
+        defmt::warn!(
+            "SD: {=u32} B clusters against a {=u32} B staging half — upload flushes are not \
+             one-cluster, so throughput will not match the bench numbers (see usb::STAGE_HALF_LEN)",
+            cluster,
+            half
+        );
+    }
+}
+
 /// Log a failed transfer at the transport boundary, decoding an abort's `STATUS` word.
 ///
 /// The FAT layer above swallows the error type into its own `Error::DeviceError`, so this is the
@@ -886,6 +956,7 @@ impl Storage {
             }
         };
         defmt::info!("SD: mounted; /routes {=bool}, /tracks {=bool}", routes_dir.is_some(), tracks_dir.is_some());
+        report_cluster_size();
         Some(Storage {
             vmgr,
             card,
@@ -2933,6 +3004,37 @@ impl Storage {
     pub fn upload_append(&mut self, bytes: &[u8]) -> bool {
         let Some((file, _)) = self.open_upload else { return false };
         self.vmgr.write(file, bytes).is_ok()
+    }
+
+    /// **Reserve the whole of an announced upload's cluster chain before the first payload byte.**
+    ///
+    /// `false` = nothing was reserved; the caller carries on regardless, because a refusal costs
+    /// throughput and never correctness — `VolumeManager::write` still extends the chain a cluster
+    /// at a time, exactly as it did before this existed.
+    ///
+    /// Without it, every 32 KiB cluster of a streaming upload costs **four** single-block writes
+    /// (`update_fat` twice, each mirrored across both FATs), and each of those is a whole internal
+    /// program cycle landing *between* the multi-block bursts the stage exists to produce. With it,
+    /// a FAT block's worth of entries is chained and written back once — 128 clusters, i.e. 4 MiB of
+    /// map, for the same four writes.
+    ///
+    /// `total_len` is the announced object length (`TransferControl::total_len`), which for a map
+    /// includes the four magic bytes already on the card, so the reservation is exact and no
+    /// allocated-but-unused tail survives the commit.
+    pub fn upload_reserve(&mut self, total_len: u32) -> bool {
+        let Some((file, _)) = self.open_upload else { return false };
+        match self.vmgr.preallocate(file, total_len) {
+            Ok(clusters) => {
+                defmt::info!("SD: reserved {=u32} cluster(s) for a {=u32} B upload", clusters, total_len);
+                true
+            }
+            Err(e) => {
+                // Not a failure of the upload. The chain simply grows the old way from here, which
+                // is slower and just as correct — so this is a warn, not a rejection.
+                defmt::warn!("SD: upload pre-allocation refused ({}) — streaming unreserved", defmt::Debug2Format(&e));
+                false
+            }
+        }
     }
 
     /// Flush + close the streaming handle, keeping the bytes on the card — the step
