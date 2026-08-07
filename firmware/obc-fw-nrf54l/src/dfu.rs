@@ -99,6 +99,7 @@ struct ArmReport {
 enum ArmFailure {
     Scan(ScanError),
     Snapshot(ScanError),
+    BlobStage,
     StateWrite,
 }
 
@@ -128,6 +129,17 @@ impl armer::ArmIo for BoardArmIo<'_> {
             h.pet();
         }
         result
+    }
+
+    fn stage_boot_blob(&mut self) -> Result<(), obc_dfu::engine::IoError> {
+        // The sEMMC image the bootloader boots the card through (#1158, OBCU_Spec.md §3) — the
+        // same bytes this firmware's own storage bring-up copies to the FLPR carve. Idempotent:
+        // the store skips the write when the carve already stages exactly these bytes.
+        if self.settings.stage_semmc_blob(crate::semmc::firmware_image()) {
+            Ok(())
+        } else {
+            Err(obc_dfu::engine::IoError)
+        }
     }
 
     fn write_state(&mut self, state: &BootState) -> Result<(), obc_dfu::engine::IoError> {
@@ -180,6 +192,7 @@ fn arm_update(
     let mut io = BoardArmIo { storage, settings, wdt };
     let ticket = armer::arm(&mut io, &current, staged).map_err(|e| match e {
         ArmError::Snapshot(s) => ArmFailure::Snapshot(s),
+        ArmError::BlobStage => ArmFailure::BlobStage,
         ArmError::StateWrite => ArmFailure::StateWrite,
     })?;
     Ok(ArmReport { generation: ticket.generation, rollback: ticket.rollback, staged_version, staged_len, extent_count })
@@ -247,6 +260,13 @@ pub(crate) async fn run_install(
         Err(ArmFailure::Snapshot(e)) => {
             report_scan_error("rollback snapshot", e);
             Some(obc_app::DfuInstallError::SnapshotFailed)
+        }
+        // The blob stage and the page write are both RRAM writes with the same user story
+        // ("could not prepare the update, nothing changed"), so they share the app bucket; the
+        // `D`-line breadcrumb keeps them apart for diagnostics.
+        Err(ArmFailure::BlobStage) => {
+            status("install failed: sEMMC blob stage write failed -- nothing armed");
+            Some(obc_app::DfuInstallError::StateWriteFailed)
         }
         Err(ArmFailure::StateWrite) => {
             status("install failed: boot-state page write failed -- nothing armed");

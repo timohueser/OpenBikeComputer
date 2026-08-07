@@ -102,7 +102,10 @@ pub enum DfuInstallError {
     /// Writing the rollback snapshot (`ROLLBACK.BIN`) to the card failed — an SD IO error before
     /// anything was armed.
     SnapshotFailed,
-    /// The boot-state page write failed — nothing was armed; the device keeps running the old image.
+    /// An RRAM write on the arm path failed — the boot-state page, or (#1158) the sEMMC blob
+    /// stage the bootloader needs to read the card. Either way nothing was armed; the device
+    /// keeps running the old image. One bucket because the user story is identical ("could not
+    /// prepare the update, nothing changed"); the board's `D`-line breadcrumb tells them apart.
     StateWriteFailed,
 }
 

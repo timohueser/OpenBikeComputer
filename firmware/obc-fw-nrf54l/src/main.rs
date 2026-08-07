@@ -517,14 +517,6 @@ mod resource_report {
         entry("terrain_extents", sd::TERRAIN_EXTENT_BYTES),
     ];
 
-    /// The storage transport's two named blocks (#1158). The baseline has pinned `sd_bounce` and
-    /// `semmc_driver` since the sEMMC pivot, but the table they are pinned *against* never grew the
-    /// rows — so `resource_guard.py report` has been failing "missing entries" on every build since.
-    /// Added here rather than dropped from the baseline: both are real resident blocks the pivot
-    /// introduced, and the report exists so exactly that kind of block is legible by name.
-    const STORAGE_ENTRIES: [Entry; 2] =
-        [entry("sd_bounce", sd::BOUNCE_BYTES), entry("semmc_driver", core::mem::size_of::<semmc::Semmc>())];
-
     const ENTRIES: usize = 31;
 
     #[used]
@@ -576,8 +568,12 @@ mod resource_report {
         // `.bss + .data` gate, which is the authority for resident RAM. The **staging buffer is no
         // longer part of this sum** (#1146 P2): it is `arena_usb` above.
         entry("usb_named", usb::RESIDENT_BYTES),
-        STORAGE_ENTRIES[0],
-        STORAGE_ENTRIES[1],
+        // The sEMMC storage transport's two resident blocks (#1158) — the baseline named these
+        // when the pivot landed, but the rows themselves were forgotten, which broke the report
+        // gate on every PR: the 4-block alignment bounce (`sd.rs`, fires only for misaligned
+        // callers) and the `Semmc` host-driver state itself.
+        entry("sd_bounce", sd::BOUNCE_BYTES),
+        entry("semmc_driver", core::mem::size_of::<semmc::Semmc>()),
     ];
 }
 

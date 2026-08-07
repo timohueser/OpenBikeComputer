@@ -738,13 +738,12 @@ pub(crate) struct SemmcCard;
 /// buffers are aligned — so [`WARNED_BOUNCE`] reports the first one, which is how a future
 /// regression that quietly cut read throughput would be noticed on glass rather than in a profile.
 const BOUNCE_BLOCKS: usize = 4;
-/// The bounce buffer's resident size, for the compile-time allocation report (`sd_bounce`).
-/// Read only by `main.rs`'s `resource_report` module, so it is dead in a shipping build by design.
-#[cfg_attr(not(feature = "resource-report"), allow(dead_code))]
-pub const BOUNCE_BYTES: usize = BOUNCE_BLOCKS * BLOCK_LEN;
+/// The bounce buffer's resident size — named in the `resource-report` table (`sd_bounce`) so its
+/// 2 KB of `.data` stays legible in the report rather than anonymous.
+pub(crate) const BOUNCE_BYTES: usize = BOUNCE_BLOCKS * BLOCK_LEN;
 #[repr(C, align(4))]
-struct Bounce([u8; BOUNCE_BLOCKS * BLOCK_LEN]);
-static mut BOUNCE: Bounce = Bounce([0; BOUNCE_BLOCKS * BLOCK_LEN]);
+struct Bounce([u8; BOUNCE_BYTES]);
+static mut BOUNCE: Bounce = Bounce([0; BOUNCE_BYTES]);
 /// One-shot latch so a misaligned buffer is diagnosed once, not per block.
 static WARNED_BOUNCE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 

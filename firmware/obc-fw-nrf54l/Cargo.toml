@@ -275,6 +275,12 @@ obc-ble = { path = "../obc-ble", optional = true }
 # Zadig, which is the difference between "plug it in" and "install a driver first".
 embassy-usb = { version = "0.6.0", default-features = false, features = ["defmt"] }
 
+[build-dependencies]
+# build.rs sizes the SEMMC_STAGE linker region (the armer→bootloader blob handoff, #1158) from
+# `obc_dfu::blobstage::STAGE_LEN` — the one definition the armer, the bootloader and the spec
+# share — and asserts the vendored image (+ header line) fits it. Host-compiled; core-only.
+obc-dfu = { path = "../obc-dfu" }
+
 [profile.release]
 opt-level = 3
 lto = "fat"
