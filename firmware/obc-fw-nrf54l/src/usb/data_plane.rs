@@ -71,10 +71,12 @@ const DRAIN_QUIET_MS: u64 = 20;
 ///
 /// Overrunning is survivable rather than harmless: the host's `sendAbort` swallows the timeout and
 /// its busy latch still holds the slot, so the answer arriving late costs a retry some seconds
-/// rather than correctness. (It is **not** `statuses.drain()` that saves it — that runs when a
-/// transfer slot is *taken*, so a result landing after this one was given up on is still in the
-/// mailbox when the next upload starts. What keeps it harmless is that the host ignores a late
-/// `aborted` specifically: `checkUploadOpen` only stops a send on a terminal *failure*.)
+/// rather than correctness. What makes that true is on the host side and is worth naming, because
+/// it is not what it looks like: `statuses.drain()` runs when a transfer slot is *taken*, so a
+/// result landing after this one was given up on is still queued when the next upload starts. Both
+/// of the host's readers therefore **consume and discard** a stale `aborted` rather than merely
+/// declining to match it (`checkUploadOpen` and `awaitTransferResult`) — a mailbox that is a plain
+/// FIFO hands an unmatched message straight to the next taker.
 const DRAIN_BUDGET_MS: u64 = 750;
 
 /// Control plane → data plane: "drain the bulk pipe before I answer this idle abort."
@@ -133,14 +135,14 @@ pub(crate) async fn drain_before_idle_abort() {
 /// does not save us: it deliberately lets `TRANSFER_ARM` win its `select`, so a retry's descriptor
 /// can arm while the leftovers are still coming and they become its opening payload.
 ///
-/// # Where this is allowed to run, and why it is only two places
+/// # Where this is allowed to run, and why every call site is an abort
 ///
 /// **Draining only works where the peer has stopped pumping**, and there is exactly one such moment
 /// in the protocol: the **abort handshake**. The host has thrown out of its send loop, it is holding
 /// an `op = 3` open, and the spec has it wait for `transferResult(aborted)` before it does anything
-/// else. Both call sites are that moment — an abort against a live transfer (the arm in
-/// [`run_upload`]) and an abort that found nothing armed (the control plane, through
-/// [`drain_before_idle_abort`]).
+/// else. All three call sites are that moment — an abort against a live upload (the arm in
+/// [`run_upload`]), an abort against a live echo (the arm in [`run_echo`]), and an abort that found
+/// nothing armed (the control plane, through [`drain_before_idle_abort`]).
 ///
 /// **It is deliberately *not* run on a device-originated termination** — a rejected descriptor, a
 /// card that refused an append, a failed final flush. That reads like the same situation and is the
@@ -726,6 +728,11 @@ async fn run_echo(
         // Racing the abort matters more than it looks: the host now follows *every* failed exchange
         // with an `op = 3` and waits for the answer, so an echo with no abort arm would make the
         // host sit out its whole abort budget before it could retry anything.
+        //
+        // Only the OUT read is raced, not the echo-back below it. A host that has stopped reading
+        // could still park this loop in `ep_in.write` past the abort — accepted, because echo is a
+        // bring-up harness driven by a host that is always draining, and the endpoint teardown is
+        // the backstop. The upload path, which is the one a rider hits, races at every await.
         let n = match select(ep_out.read(buf), TRANSFER_ABORT.wait()).await {
             Either::First(Ok(0)) => continue, // a zero-length packet is not data
             Either::First(Ok(n)) => n,

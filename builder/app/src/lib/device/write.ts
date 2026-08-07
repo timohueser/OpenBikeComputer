@@ -124,10 +124,14 @@ export async function sendAssembledSetFile(
                 onProgress: (done) => ctx.progress(state.committedBytes + done, state.totalBytes),
                 // **The manifest is the set's commit point, and it is tiny.** Committing it re-opens
                 // and cross-checks every shard header already on the card, so its wait has to be
-                // budgeted against the set rather than against the ~2 KB that just moved. Getting
-                // this wrong loses data rather than time: a timed-out wait fires an `op = 3` abort,
-                // and the device answers that by deleting the whole set — including one it may have
-                // just committed successfully.
+                // budgeted against the set rather than against the ~2 KB that just moved.
+                //
+                // Timing it out no longer *destroys* the set — the abort that follows a failed
+                // exchange is a quiesce now, and quiesces delete nothing (`sendQuiesceAbort`). What
+                // it still costs is the truth: the device may be seconds into a commit that will
+                // succeed, and giving up on it reports a failure for a map that landed, then re-sends
+                // a manifest over a set that already has one. Budgeting it properly is how the
+                // rider's answer stays the device's answer.
                 //
                 // A **shard** deliberately does not get this: its commit is a header check like any
                 // other upload's, so it keeps the ordinary timeout and stays quick to fail.
