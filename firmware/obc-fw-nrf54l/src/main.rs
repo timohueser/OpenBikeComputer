@@ -318,9 +318,9 @@ bind_interrupts!(struct SensorIrqs {
 //                  117,408 B at the nrf-mem caps — every decode / collect / span / draw buffer a
 //                  redraw needs at once), the **nav** block (`NavScratch` + `NavTileCache` +
 //                  `NavPlanner`, ~59.9 KB, live only inside one route search), and the **USB**
-//                  staging buffer (16 KiB, live only while a cable transfer streams). Summed they
-//                  were 168,572 B; unioned they are the render arm's 117,408 (#1146 P3 spent
-//                  +25,088 of the difference on the frame caps — still ~51 KB ahead).
+//                  staging buffer (128 KiB, live only while a cable transfer streams). The USB arm
+//                  is now the maximum: 13,664 B above the 117,408 B render arm, deliberately spent
+//                  on two 64 KiB halves for efficient 128-block card writes.
 //   - framebuffer  the single RGB222 frame: 240×320 × 1 B/px = 75 KB — the `FB` static below.
 //   - `MapCache`   the streamed-map geometry-chunk cache (2 slots + 8 KB scratch on nrf-mem, 14,444 B).
 //   - `RouteCache` the decoded-route-chunk cache (2 slots on nrf-mem, ~6 KB).
@@ -430,13 +430,12 @@ const RESIDENT_BYTES: usize = FB_BYTES
 // "optimizing" any of the three arena arms, and before waving one through:
 //
 //   * `ARENA_RESIDENT` is `max(render, nav, usb)`, not their sum. Growing an arm that is **below**
-//     the maximum is **free** — genuinely, byte-for-byte free, not merely cheap: the nav arm has
-//     ~57.5 KB of headroom and the USB stage ~101 KB before either would move this number at all. A
+//     the maximum is **free** — genuinely, byte-for-byte free, not merely cheap: the nav and render
+//     arms are both below today's 128 KiB USB arm. A
 //     change that shaves KBs off one of those buys the device nothing, and the review time spent on
 //     it is the whole cost.
-//   * Growing the arm that **is** the maximum (today: render) costs the full delta, 1:1, exactly as
-//     it did when each block owned its own RAM. #1146 P3 spent 25,088 B there deliberately — that
-//     is why the other two arms' headroom figures above are as generous as they are.
+//   * Growing the arm that **is** the maximum (today: USB) costs the full delta, 1:1, exactly as
+//     it did when each block owned its own RAM.
 //   * Crossing the line is where the surprise lives: an arm growing *past* the current maximum costs
 //     only the part above it, and from then on it is the arm every future growth is measured
 //     against. `arena.rs` has a compile-time assert that fires if that ever happens, because at that
@@ -609,6 +608,9 @@ static mut APP: MaybeUninit<App> = MaybeUninit::uninit();
 /// cache spares a redraw of the unchanged route + the matcher's per-fix decode from re-reading `.obcr`
 /// geometry off the card every frame.
 static mut ROUTE_CACHE: MaybeUninit<RouteCache> = MaybeUninit::uninit();
+/// The SD/settings mutex is initialized on exactly one boot path: the normal ride application or
+/// the USB recovery plane used when the selected map is structurally unreadable.
+static mut SHARED_STORE_SLOT: MaybeUninit<SharedStoreMutex> = MaybeUninit::uninit();
 // (The router's fixed A* table, its graph-tile cache and the resumable planner's slot were three
 // `.bss` statics here until #1146 P2. They are one struct now — `arena::NavArm` — living in the
 // scratch arena, which the ride loop claims for the span of a search and the render path claims
@@ -764,6 +766,40 @@ async fn spawn_usb_stack(
     stores: link::LinkStores,
 ) {
     spawner.spawn(defmt::unwrap!(usb::run(usb_p, stores)));
+}
+
+/// Keep map replacement available when boot cannot parse the selected map.
+///
+/// The ordinary composition point sits after map parsing because the ride loop needs the parsed
+/// tables. A damaged map must not make the very cable used to replace it disappear, though. This
+/// reduced boot path owns the same storage/settings/object-store values, starts only USB, and
+/// reserves the scratch arena for staging permanently (there is no render or route planner in the
+/// fault idle). The next successful upload becomes selectable on reboot.
+async fn spawn_map_recovery_usb(
+    spawner: Spawner,
+    usb_p: embassy_nrf::Peri<'static, embassy_nrf::peripherals::USBHS>,
+    rramc: embassy_nrf::Peri<'static, embassy_nrf::peripherals::RRAMC>,
+    mut storage: sd::Storage,
+) -> Option<arena::UsbGuard> {
+    storage.prepare_map_recovery();
+    let mut settings_store = settings::RramSettingsStore::new(rramc);
+    dfu::seed_firmware_revision(&mut settings_store);
+    let shared_store: &'static SharedStoreMutex = unsafe {
+        init_static(
+            core::ptr::addr_of_mut!(SHARED_STORE_SLOT),
+            SharedStoreMutex::new(SharedStore { storage: Some(storage), settings: settings_store }),
+        )
+    };
+    let objects = {
+        let mut guard = shared_store.lock().await;
+        link::init_store(&mut guard)
+    };
+    let stores = link::LinkStores { shared: shared_store, objects, epoch: None };
+    let stage_guard = obc_app::TransferReady::prove(true, false).and_then(|ready| arena::claim_usb(ready).ok());
+    usb::set_stage_granted(stage_guard.is_some());
+    spawner.spawn(defmt::unwrap!(spawn_usb_stack(spawner, usb_p, stores)));
+    defmt::warn!("usb: map-recovery plane active — upload a replacement map and reboot");
+    stage_guard
 }
 
 /// Idle camera zoom for the boot map, in ground metres-per-pixel (the 0.5–4 mpp riding band). A
@@ -1336,25 +1372,32 @@ async fn main(_spawner: Spawner) {
         // the `map_source` borrow so the `else` arm is free of it.
         let map_fault = storage.boot_fault();
         let map_tables: &MapTables = unsafe {
-            let Some(init_src) = storage.map_source() else {
-                defmt::error!(
-                    "SD: no map to stream from — showing the {} fault screen, then heartbeat idle",
-                    defmt::Debug2Format(&map_fault)
-                );
-                show_boot_fault(&mut display, map_fault).await;
-                idle_blink(&mut led).await
+            // Keep the source in a lexical scope: the recovery arm needs `&mut storage`, and the
+            // temporary map source must have released its borrow before that async call begins.
+            let parsed = {
+                let Some(init_src) = storage.map_source() else {
+                    defmt::error!(
+                        "SD: no map to stream from — showing the {} fault screen, then heartbeat idle",
+                        defmt::Debug2Format(&map_fault)
+                    );
+                    let _recovery_stage = spawn_map_recovery_usb(_spawner, p.USBHS, p.RRAMC, storage).await;
+                    show_boot_fault(&mut display, map_fault).await;
+                    idle_blink(&mut led).await
+                };
+                MapTables::parse(&init_src)
             };
             let slot = core::ptr::addr_of_mut!(MAP_TABLES) as *mut MapTables;
-            match MapTables::parse(&init_src) {
+            match parsed {
                 Ok(t) => {
                     slot.write(t);
                     &*slot
                 }
                 Err(e) => {
                     defmt::error!(
-                        "map: not valid OBCM: {} — showing the MAP UNREADABLE fault screen, then idle",
+                        "map: not valid OBCM: {} — showing MAP UNREADABLE with USB recovery",
                         defmt::Debug2Format(&e)
                     );
+                    let _recovery_stage = spawn_map_recovery_usb(_spawner, p.USBHS, p.RRAMC, storage).await;
                     show_boot_fault(&mut display, obc_app::BootFault::BadMap).await;
                     idle_blink(&mut led).await
                 }
@@ -1382,9 +1425,10 @@ async fn main(_spawner: Spawner) {
             Ok(set) => set,
             Err(error) => {
                 defmt::error!(
-                    "map: volume set failed mount ({}) — showing MAP UNREADABLE",
+                    "map: volume set failed mount ({}) — showing MAP UNREADABLE with USB recovery",
                     defmt::Debug2Format(&error)
                 );
+                let _recovery_stage = spawn_map_recovery_usb(_spawner, p.USBHS, p.RRAMC, storage).await;
                 show_boot_fault(&mut display, obc_app::BootFault::BadMap).await;
                 idle_blink(&mut led).await
             }
@@ -1507,10 +1551,9 @@ async fn main(_spawner: Spawner) {
         // consumed here; both planes reach them through the guard. `storage` was unwrapped to a
         // `Storage` at boot (the build idles without a card), so it goes in as `Some` — the `Option`
         // is the seam a future card-less variant would use.
-        static mut SHARED_STORE: MaybeUninit<SharedStoreMutex> = MaybeUninit::uninit();
         let shared_store: &'static SharedStoreMutex = unsafe {
             init_static(
-                core::ptr::addr_of_mut!(SHARED_STORE),
+                core::ptr::addr_of_mut!(SHARED_STORE_SLOT),
                 SharedStoreMutex::new(SharedStore { storage: Some(storage), settings: settings_store }),
             )
         };

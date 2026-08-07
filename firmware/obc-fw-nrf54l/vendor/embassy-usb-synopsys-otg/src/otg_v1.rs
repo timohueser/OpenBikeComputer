@@ -405,6 +405,12 @@ impl Otg {
         core::assert!(n < 16usize);
         unsafe { Reg::from_ptr(self.ptr.add(0x0910usize + n * 32usize) as _) }
     }
+    #[doc = "Device IN endpoint DMA address register"]
+    #[inline(always)]
+    pub const fn diepdma(self, n: usize) -> Reg<u32, RW> {
+        core::assert!(n < 16usize);
+        unsafe { Reg::from_ptr(self.ptr.add(0x0914usize + n * 32usize) as _) }
+    }
     #[doc = "Device IN endpoint transmit FIFO status register"]
     #[inline(always)]
     pub const fn dtxfsts(self, n: usize) -> Reg<regs::Dtxfsts, R> {
@@ -3879,6 +3885,13 @@ pub mod regs {
     #[derive(Copy, Clone, Eq, PartialEq)]
     pub struct Ghwcfg2(pub u32);
     impl Ghwcfg2 {
+        #[doc = "OTG architecture (0=slave only, 1=external DMA, 2=internal DMA)"]
+        #[inline(always)]
+        pub const fn otg_arch(&self) -> u8 {
+            let val = (self.0 >> 3usize) & 0x03;
+            val as u8
+        }
+
         #[doc = "High-speed PHY type (0=not supported, 1=UTMI+, 2=ULPI, 3=UTMI+ and ULPI)"]
         #[inline(always)]
         pub const fn hs_phy_type(&self) -> u8 {

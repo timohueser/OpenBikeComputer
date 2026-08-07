@@ -1,14 +1,16 @@
-//! The whole-object transfer state machine — a pure, radio-free core the board feeds CoC bytes in
-//! and out of. There is **no per-chunk framing**: the [`TransferControl`] descriptor announces the
-//! transfer, the CoC carries exactly the payload bytes, and one whole-object [`Crc32`] is verified
-//! at commit.
+//! The object transfer state machine — a pure, radio-free core the board feeds link bytes in and
+//! out of. There is **no per-chunk framing**: the [`TransferControl`] descriptor announces the
+//! transfer and the link carries exactly the payload bytes. Receivers normally verify one
+//! whole-object [`Crc32`] at commit; a transport with sufficient link/media integrity may opt into
+//! length-only receive while retaining the same descriptor and terminal result.
 //!
 //! Two directions, neither buffering the whole object. Interrupted transfers **restart rather than
 //! resume in both directions** — there is no offset field on the wire (v2 dropped it), so a receiver
 //! or sender only ever starts fresh:
 //!
-//! - [`Receiver`] — the **upload** direction (app → device): sink bytes with a running CRC, verify
-//!   once at `total_len`, report [`TransferStatus::Committed`] or [`TransferStatus::CrcMismatch`].
+//! - [`Receiver`] — the **upload** direction (app → device): count bytes and, by default, fold a
+//!   running CRC; at `total_len`, report [`TransferStatus::Committed`] or
+//!   [`TransferStatus::CrcMismatch`].
 //! - [`StreamSender`] — the **download** direction (device → app): emit the
 //!   [`StreamSender::announce`] descriptor, then hand out `object[position…]` in CoC-sized chunks. The
 //!   bytes never sit in this core: the board supplies `total_len` + the precomputed whole-object
@@ -41,12 +43,29 @@ pub struct Receiver {
     /// Absolute offset of the next expected byte.
     position: u32,
     crc: Crc32,
+    verify_crc: bool,
 }
 
 impl Receiver {
     /// A fresh receiver from an upload descriptor. Rejects a non-upload op (uploads restart, not
     /// resume — there is no offset to reject in v2).
     pub fn new(desc: &TransferControl) -> Result<Self, TransferError> {
+        Self::new_inner(desc, true)
+    }
+
+    /// A length-tracking receiver for a transport/storage path whose link and media already
+    /// provide CRC/retry at lower cost than a second whole-object software digest on this CPU.
+    ///
+    /// This keeps the descriptor, byte-count clamp and typed close identical to [`new`](Self::new)
+    /// but does not fold payload bytes or compare `crc32`. It is intended for the nRF54L USB map
+    /// path, where USB 2.0 CRC/retry protects each packet, sEMMC CRC/ECC protects each stored block,
+    /// and the format-specific commit validates the stored length/header before exposing the held
+    /// magic. BLE and firmware-image uploads continue to use the full whole-object CRC.
+    pub fn new_link_checked(desc: &TransferControl) -> Result<Self, TransferError> {
+        Self::new_inner(desc, false)
+    }
+
+    fn new_inner(desc: &TransferControl, verify_crc: bool) -> Result<Self, TransferError> {
         if desc.op != Op::Upload {
             return Err(TransferError::WrongOp);
         }
@@ -56,6 +75,7 @@ impl Receiver {
             expected_crc: desc.crc32,
             position: 0,
             crc: Crc32::new(),
+            verify_crc,
         })
     }
 
@@ -72,6 +92,11 @@ impl Receiver {
         self.position
     }
 
+    /// Whether [`outcome`](Self::outcome) also requires the descriptor's whole-object CRC.
+    pub fn verifies_crc(&self) -> bool {
+        self.verify_crc
+    }
+
     /// Bytes still expected before the transfer completes.
     pub fn remaining(&self) -> u32 {
         self.total_len - self.position
@@ -82,12 +107,15 @@ impl Receiver {
         self.position == self.total_len
     }
 
-    /// Feed CoC bytes, folding up to [`remaining`](Receiver::remaining) into the running CRC and
-    /// returning **how many were consumed**. Only one transfer is ever in flight, so any surplus
-    /// (`bytes.len() > consumed`) is an over-run the caller treats as a protocol error.
+    /// Feed link bytes, consuming up to [`remaining`](Receiver::remaining) and returning **how many
+    /// were consumed**. A CRC-checking receiver also folds the consumed prefix into its digest.
+    /// Only one transfer is ever in flight, so any surplus (`bytes.len() > consumed`) is an
+    /// over-run the caller treats as a protocol error.
     pub fn push(&mut self, bytes: &[u8]) -> usize {
         let take = core::cmp::min(bytes.len(), self.remaining() as usize);
-        self.crc.update(&bytes[..take]);
+        if self.verify_crc {
+            self.crc.update(&bytes[..take]);
+        }
         self.position += take as u32;
         take
     }
@@ -99,9 +127,10 @@ impl Receiver {
         (self.crc.finalize(), self.expected_crc)
     }
 
-    /// The terminal [`TransferResult`] once [`is_complete`](Receiver::is_complete): [`Committed`] if
-    /// the whole-object CRC matches (`committed_offset = total_len`), else [`CrcMismatch`]
-    /// (`committed_offset = 0` — nothing durable). `None` while bytes are still expected.
+    /// The terminal [`TransferResult`] once [`is_complete`](Receiver::is_complete): [`Committed`]
+    /// if this receiver is link-checked or its whole-object CRC matches
+    /// (`committed_offset = total_len`), else [`CrcMismatch`] (`committed_offset = 0` — nothing
+    /// durable). `None` while bytes are still expected.
     ///
     /// [`Committed`]: TransferStatus::Committed
     /// [`CrcMismatch`]: TransferStatus::CrcMismatch
@@ -109,7 +138,7 @@ impl Receiver {
         if !self.is_complete() {
             return None;
         }
-        Some(if self.crc.finalize() == self.expected_crc {
+        Some(if !self.verify_crc || self.crc.finalize() == self.expected_crc {
             TransferResult::new(self.object_id, TransferStatus::Committed, self.total_len)
         } else {
             TransferResult::new(self.object_id, TransferStatus::CrcMismatch, 0)
