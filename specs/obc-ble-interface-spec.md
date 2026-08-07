@@ -746,8 +746,8 @@ A transport that closes and reopens its channel around a failed exchange (BLE's
 CoC) has nothing to drain and answers immediately.
 
 **Draining is an explicit act, at a termination the host already knows about.**
-There are exactly two such moments, and the difference between them is only
-whether the answer has gone out yet:
+There are two such moments, and the difference between them is only whether the
+answer has gone out yet:
 
 - The **abort handshake**, *before* the answer — with or without a transfer in
   flight, since either way the host has stopped and is waiting for `aborted`
@@ -768,6 +768,14 @@ send.
 
 A transfer that consumed its full announced length leaves nothing behind, so a
 commit refusal or a failed final flush needs no drain of its own.
+
+There is a third moment, and it belongs to the transport rather than to the
+protocol: **immediately after the channel is (re-)established**, before anything
+can be armed on it. A device whose endpoint hardware stages a received packet
+may still be holding one from the session that ended — a cable pulled mid-write
+does not clear it — and it would otherwise become the *next* session's opening
+bytes. A device SHOULD sweep there, and it is unambiguously safe: the peer
+cannot have opened an exchange on a channel that has only just come up.
 
 **Bytes for an announce that has not been accepted are not consumed.** A device
 MUST NOT read and discard payload bytes while no transfer is armed. Senders are
