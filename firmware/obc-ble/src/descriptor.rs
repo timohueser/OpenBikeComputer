@@ -80,6 +80,22 @@ pub enum ObjectType {
     /// trusting the order it arrives in — a manifest announced before every shard it will name has
     /// committed is refused before a byte streams.
     MapSet = 18,
+    /// The set's **terrain shard** (`OBCA_Spec.md` §5.1's `terrain` role, an
+    /// [OBCT](../../../specs/OBCT_Spec.md) container), host → device, upload only — **USB only**.
+    ///
+    /// **Why terrain is its own type and not a `MapShard`** (#1044): a shard's `object_id` is a
+    /// [`SetPart`], i.e. a `(shard_count, index)` pair naming one of the OBCM files the manifest's
+    /// leading records describe. A raster is not one of those — it has no index, it is not an OBCM
+    /// file, and it lands on the card as `MS{id}.OBD` rather than `MS{id}S{kk}.OBM`. Sending it as
+    /// a shard would consume an index the manifest does not name and desynchronise the whole set.
+    ///
+    /// New-only like `MapSet`, so `object_id` is `0xFFFF`: there is at most one terrain shard per
+    /// set, so there is nothing for an id to select. It MUST arrive **after** the set is in flight
+    /// (i.e. after at least one `MapShard`) and **before** the `MapSet` manifest, because the
+    /// manifest's `Shard Count` covers every record — terrain included — and the device's
+    /// announce-time length check `72 + 56 × (shards + terrain)` can only be right if it has
+    /// already seen the raster.
+    TerrainShard = 19,
 }
 
 impl ObjectType {
@@ -104,16 +120,17 @@ impl ObjectType {
             16 => Self::Map,
             17 => Self::MapShard,
             18 => Self::MapSet,
+            19 => Self::TerrainShard,
             other => return Err(DescriptorError::UnknownType(other)),
         })
     }
 
-    /// Whether this type is part of a map upload — the three types the reference firmware streams
+    /// Whether this type is part of a map upload — the four types the reference firmware streams
     /// straight into their final file with the format magic held back, rather than through the
-    /// invisible `UPLOAD.TMP` every small object uses. Also the three types that are **USB only**
+    /// invisible `UPLOAD.TMP` every small object uses. Also the four types that are **USB only**
     /// (spec §10).
     pub const fn is_map_payload(self) -> bool {
-        matches!(self, Self::Map | Self::MapShard | Self::MapSet)
+        matches!(self, Self::Map | Self::MapShard | Self::MapSet | Self::TerrainShard)
     }
 }
 

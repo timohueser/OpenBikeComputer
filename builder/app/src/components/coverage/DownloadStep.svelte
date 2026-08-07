@@ -200,6 +200,7 @@
         core: "routing + places",
         coarse: "zoomed-out overview",
         geometry: "map detail",
+        terrain: "elevation",
         manifest: "set manifest",
     };
 
@@ -231,6 +232,7 @@
                         totalBytes: msg.totalBytes,
                         committedBytes: 0,
                         nextShard: 0,
+                        terrainSent: false,
                         setId: null,
                     };
                     output.ctx.phase("sending", msg.totalBytes);

@@ -526,6 +526,7 @@ failed = "Mapa no guardado"
 failed_storage = "La tarjeta no pudo guardar el mapa."
 failed_damaged = "El mapa llegó dañado. Envíalo de nuevo."
 failed_format = "Ese archivo no es un mapa que lea este dispositivo."
+failed_refused = "El mapa llegó incompleto. Envíalo de nuevo."
 
 # --- Boot-fault cards (pre-app; the device renders the English column) ---
 [fault]
