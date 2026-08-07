@@ -130,12 +130,12 @@ format: the browser cannot hold the artifact (it streams the download into a
 scratch file, checksums it against the [catalog
 manifest](src:specs/OBCC_Spec.md) and only then opens the transfer, because the
 descriptor has to announce a whole-object CRC before the first byte moves), and
-the transfer takes *minutes* — a few hundred megabytes is a few hundred megabytes
-whichever end is the slower one. Which end that is has actually changed: the card
-was the obvious ceiling while it was reached over SPI, and since the storage
-transport moved to native 4-bit sEMMC it writes at 8.2 MB/s raw, which is no
-longer obviously below what the cable delivers. What sits between the two is
-filesystem bookkeeping and how much of the pipeline can overlap — see the
+the transfer is still measured in *tens of seconds* — a few hundred megabytes is
+a few hundred megabytes whichever end is slower. Which end that is has actually
+changed: the card was the obvious ceiling while it was reached over SPI, and
+since the storage transport moved to native 4-bit sEMMC it writes at 8.2 MB/s raw,
+which is no longer obviously below what the cable delivers. What sits between the
+two is filesystem bookkeeping and how much of the pipeline can overlap — see the
 pipeline notes further down. How maps are named and enumerated on the card is the
 device side's answer to the same size, and it is worth its own section below.
 
@@ -461,24 +461,29 @@ stages:
   task scheduler, per 512 bytes, and it was the largest single term in the budget
   when this was first measured. The device now arms the endpoint for a **burst**
   of packets instead, so the controller keeps taking the wire into its own
-  buffers while the processor is busy with the checksum and the card, and the
-  firmware collects the whole burst in one go. The dial is a single constant;
-  what it buys is that the stage below can run without stopping the wire.
+  buffers while the processor is busy with the card, and the firmware collects
+  the whole burst in one go. Buffer DMA also moves that burst between USB SRAM
+  and memory without an interrupt and CPU copy per packet. The dial is a single
+  constant; what it buys is that the stage below can run without stopping the
+  wire.
 - **How much reaches the card per command.** Handing the filesystem 512 bytes
   makes it issue one single-block write — one whole internal program cycle of the
-  card — per packet. The firmware therefore stages arriving bytes in RAM and
-  hands the card a **whole cluster** at a time, so one program cycle is amortised
-  over the whole run. The staging buffer is double-ended: one half fills from the
-  cable while the other is the card's.
+  card — per packet. The firmware therefore stages arriving bytes in two **64 KiB
+  halves**, coalesces their adjacent FAT clusters, and hands the card one
+  128-block multi-write. One half fills from the cable while FLPR DMA writes the
+  other; ownership does not return to USB until that DMA has completed.
 - **Filesystem bookkeeping.** Extending a file by one cluster costs several
   single-block writes of the allocation table — and they land *between* the bulk
   bursts, which is exactly where they hurt. An upload announces its length before
-  the first byte, so the whole chain can be reserved up front and that traffic
-  leaves the streaming path entirely.
+  the first byte, so the whole chain can be reserved up front. A one-sector FAT
+  cache then absorbs the residual updates, and the card gets a best-effort
+  pre-erase hint before each long run.
 
-The honest summary is that the *card* stopped being the obvious answer when the
-storage transport moved off SPI, and the pipeline's stages now sit close enough
-together that the ceiling is whichever one is measured last.
+The result measured on the LM20-DK is roughly **7.3–7.9 MB/s** for real map-set
+files, versus about 2.0 MB/s for the original synchronous path with a software
+CRC pass. A final 73.4 MB builder set measured 7.50, 7.27 and 7.85 MB/s for its
+three map shards and 7.65 MB/s for terrain. At that point the card and filesystem
+are again the visible ceiling, not USB framing or checksum work.
 
 ### When a route lands — the device's side
 
@@ -1090,9 +1095,13 @@ on the table.
 Look again at what a transfer actually needs from its transport. The bulk plane
 needs a channel that is **reliable, ordered, and unframed**; that is exactly what
 principle two asks of the CoC, and exactly what a **USB bulk endpoint** is. So
-the object stream — the descriptors, the payload bytes, the single whole-object
-CRC — crosses a cable with *no translation whatsoever*. The same state machine,
-the same fixtures, the same bytes.
+the object stream — descriptors, payload bytes, terminal result — crosses a
+cable with *no translation whatsoever*. The descriptor still carries the same
+whole-object CRC, but verification is policy rather than framing: routes, trips,
+firmware and BLE traffic keep the end-to-end pass; USB map files avoid doing the
+same serial work twice and lean on USB packet CRC/retry, the card's block CRC/ECC,
+the exact announced length, format validation and the magic-last commit. Same
+state machine, same fixtures, same bytes on the wire.
 
 Only the control plane needs anything at all, and it needs one byte. GATT gives
 each control message its own addressed characteristic, so "which message is
@@ -1102,7 +1111,7 @@ of the frame is the *exact* payload the matching characteristic would have
 carried. That is the whole delta. USB is a second **transport**, not a second
 protocol.
 
-Three consequences are worth naming, because they are what makes the wired path a
+Five consequences are worth naming, because they are what makes the wired path a
 real product rather than a demo:
 
 - **The cable is what brings the plane into existence.** A bike computer spends
@@ -1124,6 +1133,10 @@ real product rather than a demo:
   the firmware to release the card entirely (two filesystem writers is
   corruption), and you would be back to a device that becomes a disk instead of
   remaining a bike computer.
+- **A broken map cannot lock out its replacement.** If no map mounts at boot, the
+  fault screen stays visible but the device still brings up the USB plane and
+  grants it the upload arena. The builder can replace the unreadable map at full
+  speed; a successful reboot then returns to the normal ride application.
 - **One transfer at a time means one across *both* wires.** The gate is shared
   rather than per-transport, because what it protects is the device's single
   upload temp and open download source — not the wire. Start a transfer over the
