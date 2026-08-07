@@ -1431,6 +1431,95 @@ impl ObjectStore {
         Receiver::new(desc).map(|rx| (rx, part)).map_err(|_| TransferStatus::Error)
     }
 
+    /// Validate + arm the set's **terrain shard** upload (#1044) — the raster that carries the
+    /// set's elevation (`OBCA_Spec.md` §5.1's `terrain` role, an OBCT container).
+    ///
+    /// New-only, like the manifest: there is at most one terrain shard per set, so a named
+    /// `object_id` is `notFound` — there is nothing for an id to select. What the session owns is
+    /// the ordering (`obc_app::terrain_announce`): a raster with no set in flight names no set at
+    /// all, because the set id is minted by the first OBCM shard.
+    ///
+    /// The free-space and minimum-length guards are the shard path's, against an OBCT header
+    /// instead of an OBCM one.
+    pub fn set_terrain_open(&self, shared: &SharedStore, desc: &TransferControl) -> Result<Receiver, TransferStatus> {
+        let Some(storage) = shared.storage.as_ref() else { return Err(TransferStatus::Error) };
+        if desc.object_id != TransferControl::NEW_OBJECT_ID {
+            return Err(TransferStatus::NotFound);
+        }
+        obc_app::terrain_announce(self.set_upload.as_ref()).map_err(set_reject_status)?;
+        if desc.total_len < obc_formats::obct::HEADER_LEN as u32 {
+            return Err(TransferStatus::Error);
+        }
+        if let Some(free) = storage.card_free_bytes() {
+            if desc.total_len as u64 + crate::sd::MAP_FREE_HEADROOM > free {
+                return Err(TransferStatus::StorageFull);
+            }
+        }
+        Receiver::new(desc).map_err(|_| TransferStatus::Error)
+    }
+
+    /// Open the card file for the armed terrain shard — `MS{id}.OBD` under the open session's id.
+    /// Unlike a shard this never mints a set: `set_terrain_open` already refused a raster with no
+    /// session, and a terrain shard is not something a set can begin with.
+    pub fn set_terrain_begin(&mut self, shared: &mut SharedStore) -> Option<u16> {
+        let id = self.set_upload.as_ref()?.id();
+        if shared.storage.as_mut().is_some_and(|storage| storage.set_terrain_begin(id)) {
+            return Some(id);
+        }
+        // As for a shard: the open truncates, so a failure here has already destroyed any raster a
+        // previous attempt committed, and nothing downstream runs to notice.
+        self.set_upload.as_mut()?.clear_terrain();
+        None
+    }
+
+    /// The terrain shard's bytes have all arrived: verify the whole-object CRC, patch the held-back
+    /// `OBCT` magic in, and record the raster in the session — the fact
+    /// `obc_app::manifest_announce` reads to know the manifest is one record longer.
+    ///
+    /// A failed raster leaves the **session** open but stops it counting the record, exactly as a
+    /// failed shard does: it is one independent file, and the honest recovery is to re-send it
+    /// rather than the gigabytes beside it.
+    pub fn set_terrain_finish(
+        &mut self,
+        shared: &mut SharedStore,
+        rx: &Receiver,
+        id: u16,
+        magic: [u8; 4],
+    ) -> TransferStatus {
+        let outcome = match rx.outcome() {
+            Some(o) => o,
+            None => return TransferStatus::Error, // caller bug: not complete
+        };
+        if outcome.status != TransferStatus::Committed {
+            if let Some(storage) = &mut shared.storage {
+                storage.set_terrain_discard(id);
+            }
+            self.forget_terrain();
+            return outcome.status;
+        }
+        let Some(storage) = &mut shared.storage else { return TransferStatus::Error };
+        if storage.set_terrain_commit(id, magic).is_none() {
+            // The commit either deleted `MS{id}.OBD` (it is not a readable OBCT — a wrong file, or
+            // a container version this firmware does not read) or left it zero-magic. Either way
+            // the card has no raster this set can mount, so the session must stop naming one.
+            self.forget_terrain();
+            return TransferStatus::Error;
+        }
+        if let Some(session) = &mut self.set_upload {
+            session.mark_terrain();
+        }
+        TransferStatus::Committed
+    }
+
+    /// The session stops counting this set's raster: the card no longer holds a readable
+    /// `MS{id}.OBD` (#1044). The terrain twin of [`forget_shard`](Self::forget_shard), and the same
+    /// rule — a session never claims a file the card cannot supply.
+    fn forget_terrain(&mut self) {
+        if let Some(session) = &mut self.set_upload {
+            session.clear_terrain();
+        }
+    }
+
     /// Validate + arm the **manifest** upload — `OBCA_Spec.md` §5.4's manifest-last rule, enforced
     /// before a byte streams (`obc_app::manifest_announce`). New-only like a map, so a named
     /// `object_id` is `notFound`: the manifest is the set's identity, not a slot to write into.
@@ -1468,15 +1557,24 @@ impl ObjectStore {
                 id
             }
         };
-        shared.storage.as_mut()?.set_shard_begin(id, part.index as usize).then_some(id)
+        if shared.storage.as_mut().is_some_and(|storage| storage.set_shard_begin(id, part.index as usize)) {
+            return Some(id);
+        }
+        // The open is `ReadWriteCreateOrTruncate`, so by the time it can fail the shard that was
+        // under this name is **already gone**. Nothing streams and `set_shard_finish` is never
+        // reached, so this is the only place that can keep the session honest about it (#1044).
+        self.set_upload.as_mut()?.clear(part.index);
+        None
     }
 
     /// One shard's bytes have all arrived: verify the whole-object CRC, patch the held-back OBCM
     /// magic in, and record the shard as committed in the session — the fact
     /// `obc_app::manifest_announce` later reads to decide whether the manifest may be sent.
     ///
-    /// A failed shard leaves the **session** open. Shards are independent files (§5.4), so the
-    /// honest recovery is for the host to re-send this one rather than the gigabytes beside it.
+    /// A failed shard leaves the **session** open but stops it counting this shard. Shards are
+    /// independent files (§5.4), so the honest recovery is for the host to re-send this one rather
+    /// than the gigabytes beside it — and for that to work the session has to admit the shard is
+    /// gone, or the manifest sails through its announce and dies at the set-deleting commit.
     pub fn set_shard_finish(
         &mut self,
         shared: &mut SharedStore,
@@ -1493,16 +1591,34 @@ impl ObjectStore {
             if let Some(storage) = &mut shared.storage {
                 storage.set_shard_discard(id, part.index as usize);
             }
+            self.forget_shard(part.index);
             return outcome.status;
         }
         let Some(storage) = &mut shared.storage else { return TransferStatus::Error };
         if storage.set_shard_commit(id, part.index as usize, magic).is_none() {
+            // The commit either deleted the shard (its header is not a readable OBCM) or left it
+            // zero-magic, which no reader accepts either. Both are "there is no shard here now".
+            self.forget_shard(part.index);
             return TransferStatus::Error;
         }
         if let Some(session) = &mut self.set_upload {
             session.mark(part.index);
         }
         TransferStatus::Committed
+    }
+
+    /// The session stops counting shard `index`: the card no longer holds a readable one under
+    /// that name, whatever the reason (#1044).
+    ///
+    /// Every failure path of a shard transfer routes through here rather than each remembering to
+    /// clear the bit, because the one that did not was the bug: a session claiming a file the card
+    /// cannot supply passes the manifest's announce-length check and dies at the *commit*, which
+    /// deletes the whole set. Cleared, the same host is refused at the announce with
+    /// `manifestEarly` — the answer that says which file to send again.
+    fn forget_shard(&mut self, index: u8) {
+        if let Some(session) = &mut self.set_upload {
+            session.clear(index);
+        }
     }
 
     /// Open the card file for the armed manifest — the same `MS{id}.OBS` the session's token
@@ -1548,6 +1664,12 @@ impl ObjectStore {
             }
         }
         TransferStatus::Committed
+    }
+
+    /// Whether a volume-set upload session is open — i.e. whether a refusal here lands *mid-set*,
+    /// with a previous file's outcome already on the glass (#1044).
+    pub fn set_upload_active(&self) -> bool {
+        self.set_upload.is_some()
     }
 
     /// Abandon the set in flight: close the session and delete every file of it, token first

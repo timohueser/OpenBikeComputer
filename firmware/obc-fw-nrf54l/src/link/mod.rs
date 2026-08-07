@@ -166,6 +166,10 @@ pub(crate) enum Armed {
     /// [`obc_ble::SetPart`] rides along because `object_id` is not an id here — it says *which file
     /// of the set this is*, and the data plane needs it to name the file at the first byte.
     SetShard(TransferControl, Receiver, obc_ble::SetPart),
+    /// The set's terrain shard (#1044) — an OBCT raster, not an OBCM file, so it carries no
+    /// [`obc_ble::SetPart`]: there is at most one per set and its name is derived from the set id
+    /// alone (`MS{id}.OBD`).
+    SetTerrain(TransferControl, Receiver),
     /// The set manifest — the last file of a set, and its commit point (`OBCA_Spec.md` §5.4).
     SetManifest(TransferControl, Receiver),
 }
@@ -177,7 +181,10 @@ impl Armed {
     pub(crate) fn object_id(&self) -> u16 {
         match self {
             Armed::Echo(desc) | Armed::Download(desc) => desc.object_id,
-            Armed::Upload(desc, ..) | Armed::SetShard(desc, ..) | Armed::SetManifest(desc, ..) => desc.object_id,
+            Armed::Upload(desc, ..)
+            | Armed::SetShard(desc, ..)
+            | Armed::SetTerrain(desc, ..)
+            | Armed::SetManifest(desc, ..) => desc.object_id,
         }
     }
 }
@@ -205,7 +212,8 @@ pub(crate) enum Transport {
 // a missed intermediate is simply a frame that showed the previous percentage.
 
 /// The transfer phase, as a `u8` so it fits an atomic: 0 = idle, 1 = receiving, 2 = installed,
-/// 3 = storage failure, 4 = damaged (CRC), 5 = not a readable map.
+/// 3 = storage failure, 4 = damaged (CRC), 5 = not a readable map, 6 = a file of a volume set was
+/// refused before it streamed (#1044).
 static MAP_PHASE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 /// Kibibytes received so far, and the announced total. KiB rather than bytes so a 4 GiB map still
 /// fits a `u32` with room, and finer than any bar 240 px can resolve.
@@ -247,6 +255,21 @@ pub(crate) fn map_transfer_storage_failed() {
     MAP_PHASE.store(3, Ordering::Relaxed);
 }
 
+/// Publish "a file of the volume set in flight was refused **before** it streamed" (#1044).
+///
+/// Every other announce-time refusal deliberately never reaches the glass: no transfer starts, so
+/// there is nothing on screen to correct and the host that asked is the one told. A set is the one
+/// case where that reasoning fails. Its files are separate transfers, so by the time the manifest
+/// is announced the last shard has already ended in [`MapTransfer::Installed`](obc_app::screen::MapTransfer::Installed)
+/// — "Map installed / Restart", on a set that is about to be refused whole and swept at the next
+/// boot. Leaving the card there is the device telling the rider the opposite of what happened.
+///
+/// Called only while a set session is open, which is exactly the condition under which a stale
+/// success can be on the glass.
+pub(crate) fn map_transfer_refused() {
+    MAP_PHASE.store(6, Ordering::Relaxed);
+}
+
 /// The app-facing map-transfer state, or `None` when there is nothing to show — read once per pass
 /// by the ride loop and handed to [`obc_app::App::set_map_transfer`].
 pub fn map_transfer_state() -> Option<obc_app::screen::MapTransfer> {
@@ -260,6 +283,7 @@ pub fn map_transfer_state() -> Option<obc_app::screen::MapTransfer> {
         3 => MapTransfer::Failed(MapTransferError::Storage),
         4 => MapTransfer::Failed(MapTransferError::Damaged),
         5 => MapTransfer::Failed(MapTransferError::NotAMap),
+        6 => MapTransfer::Failed(MapTransferError::Refused),
         _ => return None,
     })
 }

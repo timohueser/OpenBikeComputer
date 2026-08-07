@@ -355,6 +355,7 @@ Every bulk payload is a typed **object**:
 | `16` | `map` | host → device (upload) | an `.obcm` map — **USB only** (§10), see below |
 | `17` | `mapShard` | host → device (upload) | one OBCM shard of a volume set ([`OBCA_Spec.md` §5.1](OBCA_Spec.md)) — **USB only** |
 | `18` | `mapSet` | host → device (upload) | the OBCS set manifest ([`OBCA_Spec.md` §5.2](OBCA_Spec.md)) — **USB only** |
+| `19` | `terrainShard` | host → device (upload) | the set's OBCT terrain shard ([`OBCA_Spec.md` §5.1](OBCA_Spec.md)'s `terrain` role) — **USB only** |
 
 `map` is the one type BLE could never have carried: a map is hundreds of
 megabytes, so the type would have been dead weight until a USB bulk endpoint
@@ -365,8 +366,9 @@ the payload is opaque bytes.
 
 `mapShard` and `mapSet` (#1039) are the same argument at a larger scale, so they
 join `map` in the USB-only band without a new one: a DACH-shaped **volume set**
-is 7.6–8.9 GiB across ~8 files ([`OBCA_Spec.md` §5.1](OBCA_Spec.md)). A device
-MUST answer any of the three with `error` on the radio.
+is 7.6–8.9 GiB across ~8 files ([`OBCA_Spec.md` §5.1](OBCA_Spec.md)).
+`terrainShard` (#1044) is the fourth: it is one more file of that same set. A
+device MUST answer any of the four with `error` on the radio.
 
 A map upload carries **four rules the other upload types do not** (#927). All of
 them follow from one fact: a map is hundreds of megabytes, which makes it the
@@ -409,11 +411,11 @@ only object whose transfer is measured in minutes rather than frames.
 ### Volume sets: several transfers, one map (#1039)
 
 A **volume set** ([`OBCA_Spec.md` §5](OBCA_Spec.md)) is one logical map spread
-over `1..=32` OBCM shards plus an OBCS manifest, so it is the first object on
-this link whose correctness lives *between* transfers. Each file is an ordinary
-upload — its own descriptor, its own whole-object CRC-32, its own commit — and
-the five map rules above apply to each of them unchanged. Six rules govern the
-sequence, and they are **normative**:
+over OBCM shards, optionally one OBCT **terrain shard**, and an OBCS manifest, so
+it is the first object on this link whose correctness lives *between* transfers.
+Each file is an ordinary upload — its own descriptor, its own whole-object
+CRC-32, its own commit — and the five map rules above apply to each of them
+unchanged. Eight rules govern the sequence, and they are **normative**:
 
 1. **The `object_id` of a `mapShard` is not an object id.** It carries the set's
    `Shard Count` in the **high** byte and this shard's `index` in the **low**
@@ -424,7 +426,7 @@ sequence, and they are **normative**:
    widened. A device MUST answer a pair outside those ranges with `notFound`.
    Restating `shard_count` in **every** shard rather than only the first buys two
    things, and it is worth being exact about the second:
-   - a device can refuse an over-large set at the **first** announce (rule 3)
+   - a device can refuse an over-large set at the **first** announce (rule 4)
      rather than after the whole upload;
    - a `mapShard` whose `shard_count` **differs** from the set already in flight
      MUST be refused with `error`, so a host that starts sending a
@@ -433,7 +435,7 @@ sequence, and they are **normative**:
    What the announce **cannot** see is a switch between two sets with the *same*
    shard count: the pair names a file, not a set, and no field in the descriptor
    identifies which set a shard belongs to. That case is caught at the manifest's
-   commit instead — rule 6 — which is later but is still before anything is a
+   commit instead — rule 7 — which is later but is still before anything is a
    map. Closing it at the announce would need a set identifier on the wire, i.e.
    a descriptor change; it is left open deliberately, because §5.3 already
    obliges a host to have proven its own set before offering a byte of it, and
@@ -446,8 +448,47 @@ sequence, and they are **normative**:
    **before any byte streams**. §5.4 addresses the writer; this is the receiver's
    half of the same sentence, and it exists because a device cannot hold a host
    to a MUST it merely read. An announced `total_len` that is not
-   `72 + 56 × Shard Count` is likewise refused at the descriptor.
-3. **A device's own shard ceiling is announced-time, not commit-time.** A device
+   `72 + 56 × Shard Count` is likewise refused at the descriptor, where
+   `Shard Count` is the manifest's own field and therefore counts **every**
+   record — see rule 8, which is where that word did real damage.
+3. **The terrain shard is its own type, and it precedes the manifest** (#1044).
+   A set with elevation carries one OBCT raster
+   ([`OBCA_Spec.md` §5.1](OBCA_Spec.md)'s `terrain` role, stored as
+   `MS<id>.OBD`). It is uploaded as `terrainShard` (`19`), **not** as a
+   `mapShard`: a shard's `object_id` is a `(shard_count, index)` pair naming one
+   of the OBCM files the manifest's *leading* records describe, and a raster has
+   no index, is not an OBCM file, and lands under a different name — sent as a
+   shard it would consume an index the manifest never names. The rules:
+   - `object_id` MUST be `0xFFFF`; a named id is answered `notFound`. There is at
+     most **one** terrain shard per set, so there is nothing for an id to select.
+     This refusal is checked **first**, ahead of the session rules below, for the
+     same reason rule 1 answers a malformed part before a device's shard ceiling:
+     a host that packed the field wrong is told *that*, not something about a set.
+   - A `terrainShard` announced with **no set in flight** MUST be refused with
+     `error`. The set id is minted by the first `mapShard`, so a raster arriving
+     first names no set at all.
+   - An announced `total_len` below one OBCT header is answered `error` — map
+     rule 3 above, against the raster's format instead of OBCM's.
+   - A device that **discards** a raster's transfer (a failed CRC, a card that
+     refused the write) MUST stop counting it toward rule 8's length, because the
+     discard removes the file — including one an earlier attempt had committed.
+     The host is then refused at the *manifest's announce*, where it costs one
+     descriptor and the raster can still be re-sent, rather than at the commit
+     that would delete the whole set.
+   - A host MUST send it after every `mapShard` of the set and **before** the
+     `mapSet`. That is not house style: rule 8 makes the manifest's expected
+     length depend on whether the raster has arrived, so a device can only be
+     right about it if it has already seen the file.
+   - A device whose set already holds 32 records MUST refuse it with
+     `storageFull` — §5.2 caps a manifest at 32 records, so such a set has no
+     room for a terrain one and no legal manifest could be written.
+   - A **re-sent** terrain shard is legal and overwrites the file, exactly as a
+     re-sent `mapShard` does. It is never a second record.
+   - Its `transferResult` echoes the device-assigned **set id**, like the
+     manifest's: a raster has no part to correlate against.
+   - A set that carries **no** terrain sends no `terrainShard`, and nothing in
+     this section changes for it.
+4. **A device's own shard ceiling is announced-time, not commit-time.** A device
    that can hold fewer than 32 shards open MUST refuse a set whose declared
    `shard_count` exceeds its ceiling with `storageFull`, at the **first** shard —
    the same "this catalog cannot take another entry" meaning `storageFull`
@@ -456,7 +497,7 @@ sequence, and they are **normative**:
    (its FAT handle budget); the format's is 32. A device with no id left to name
    a new set answers the same `storageFull` at the same moment, for the same
    reason: it is a catalog refusal, not a storage failure discovered mid-write.
-4. **`transferResult` correlation.** A shard's result echoes its **part**
+5. **`transferResult` correlation.** A shard's result echoes its **part**
    (`object_id` = the same packed pair), because that is what a host correlates
    its transfer slot against and what says *which* file committed. A host MUST
    check it: a result naming a different part is not "this file committed", and
@@ -464,7 +505,7 @@ sequence, and they are **normative**:
    about. The **manifest's** result carries the **device-assigned set id** — the
    one moment a set's identity crosses the wire, and the answer to "what did my
    upload become".
-5. **A staged set can be abandoned, and `op=3` is how.** A set spans several
+6. **A staged set can be abandoned, and `op=3` is how.** A set spans several
    descriptors, so an abort most often arrives when *nothing is in flight* — in
    the gap between two of them. A device MUST treat an `op=3` there as
    abandoning the set in flight, not merely as a confirmed no-op: the session
@@ -472,7 +513,7 @@ sequence, and they are **normative**:
    Without it a host that cancelled would be told `aborted` while gigabytes
    stayed staged and every differently-shaped set went on being refused (rule 1)
    until the transport was torn down. The answer is `aborted`, as it already is.
-6. **A shard after a committed manifest begins a new set.** Once a `mapSet` has
+7. **A shard after a committed manifest begins a new set.** Once a `mapSet` has
    committed, the set it completed is closed: a later `mapShard` MUST NOT be
    added to it, because its manifest names exactly the files it names and any
    addition would make that manifest false. Such a shard opens a **new** set,
@@ -481,6 +522,44 @@ sequence, and they are **normative**:
    manifest's commit a device re-checks every shard against the manifest's own
    record of it, and MUST refuse a manifest that does not describe the files
    beside it — deleting the whole set rather than leaving it half-present.
+
+   **The terrain record is checked here and only here.** A device MUST refuse a
+   just-uploaded manifest whose `terrain` record does not match the raster on the
+   card (absent, a different length, or not a readable OBCT). That is *not* in
+   tension with [`OBCA_Spec.md` §5.3](OBCA_Spec.md)'s rule that a missing or
+   unreadable terrain shard MUST NOT fail a **mount** — the two are different
+   moments and must stay different. At mount the device is judging a card that has
+   aged: a rider deleted the `.OBD` to reclaim space, a hand copy was truncated, a
+   read glitched, a later OBCT version arrived. None of that makes the map a lie,
+   and §5.3 requires it to mount flat. At commit the host built the manifest and
+   the raster together seconds ago and was told the exact length to announce, so a
+   disagreement is the two ends contradicting each other about this very transfer.
+   A device MUST NOT let a stored set's terrain record affect whether that set
+   lists or mounts.
+8. **`Shard Count` counts every record, and the manifest's announced length
+   follows from that** (#1044). Rule 2's `72 + 56 × Shard Count` uses the
+   manifest's own field, and [`OBCA_Spec.md` §5.2](OBCA_Spec.md) is explicit
+   that the field counts **every** record — the `terrain` one included. So the
+   length a device expects at the `mapSet` announce is
+
+   ```text
+   72 + 56 × (mapShards committed + terrainShards committed)
+   ```
+
+   …computed from what **this upload session actually received**, not from the
+   `shard_count` the descriptors carried. A device MUST compute it that way, and
+   a host MUST have sent the terrain shard (rule 3) before the manifest that
+   names it.
+
+   The reason this is a numbered rule rather than a clause is that it was a real
+   and expensive bug. A host that built a terrain-bearing manifest and skipped
+   the raster announced 56 bytes more than a device counting only OBCM shards
+   could expect; the manifest was refused with `error` at the **last** transfer
+   of a multi-gigabyte upload, every shard already on the card was swept at the
+   next boot, and — because an announce-time refusal never reaches the glass —
+   the device sat on the previous shard's "Map installed" card while the host
+   reported failure. The two ends must derive the number the same way or a set
+   is lost after all of it has moved.
 
 **Atomicity, and what an interrupted set leaves.** A device MUST NOT let a
 half-received set be mountable, which §5.4 already guarantees (no manifest ⇒ no
@@ -1387,12 +1466,15 @@ The USB transport (§10, #889) and the identity read's `obcm_version` byte (§1,
 - **USB is a second transport, not a second protocol** — it re-binds §3's GATT
   routing to a leading selector byte and carries §4's bytes unchanged, so nothing
   in this document's object model moved.
-- **The volume-set types** `mapShard` (`17`) and `mapSet` (`18`, §4.1, #1039) are
-  additive in the same sense `map` was, and for a stronger version of the same
-  reason: a set is *larger* than the map BLE could not carry. Two `ObjectType`
-  values out of the 237 still free, no descriptor change (a shard's part rides
-  the existing `object_id`), no new status, no new command. A peer that does not
-  know them simply never sends them.
+- **The volume-set types** `mapShard` (`17`), `mapSet` (`18`, §4.1, #1039) and
+  `terrainShard` (`19`, #1044) are additive in the same sense `map` was, and for
+  a stronger version of the same reason: a set is *larger* than the map BLE could
+  not carry. Three `ObjectType` values out of the 237 still free, no descriptor
+  change (a shard's part rides the existing `object_id`; a raster is new-only), no
+  new status, no new command. A peer that does not know them simply never sends
+  them — a host that never sends `terrainShard` simply assembles maps with no
+  raster, which is a complete map with flat profiles
+  ([`OBCC_Spec.md` §13](OBCC_Spec.md)).
 - **`protocolVersion` read 6 → 7 bytes** (§1): a trailing `obcm_version u8` on a
   read that was already decoded by length. Bytes 0–5 keep their meaning and their
   offsets, absent trailing fields have defined "unknown" behaviour on both sides,

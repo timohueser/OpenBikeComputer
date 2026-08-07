@@ -710,6 +710,10 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
     let (plain_len, plain_crc) = (route_plain.len() as u32, crc32(&route_plain));
     let trip = trip_v1(TRIP_NAME, &[TRIP_STAGE_IDS[0], TRIP_STAGE_IDS[1], TRIP_DANGLING_STAGE]);
     let (trip_len, trip_crc) = (trip.len() as u32, crc32(&trip));
+    // The `terrainShard` descriptor announces the terrain fixture itself, so the two files are one
+    // decodable pair rather than a descriptor pointing at a made-up length (#1044).
+    let terrain = terrain_shard();
+    let (terrain_len, terrain_crc) = (terrain.len() as u32, crc32(&terrain));
     vec![
         ("route-waypoints.obcr", route_wp),
         ("route-plain.obcr", route_plain),
@@ -723,7 +727,7 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         // `track-log.obct` beside it — and it is here because three implementations will sample it
         // (the device, the `obc-dem` baker's cross-check, and eventually the browser), and the
         // spec's guarantee is that they agree bit-for-bit on the same coordinate.
-        ("terrain-shard.obcd", terrain_shard()),
+        ("terrain-shard.obcd", terrain.clone()),
         ("ride-v1.bin", ride_v1()),
         ("ride-v2.bin", ride_v2()),
         ("config-v1.bin", config_v1()),
@@ -749,10 +753,17 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         // "shard 8 of 2" and be answered `notFound`. len/crc are the waypoint route's, so this is a
         // complete decodable descriptor rather than a stub.
         ("transfer-set-shard.bin", transfer_control(1, 17, 0x0802, len, crc)),
+        // op=1 upload, type=19 terrainShard (#1044): the set's OBCT raster, `MS{id}.OBD`. New-only
+        // like the manifest — there is at most one per set, so `object_id` is 0xFFFF and there is
+        // nothing for an id to select. `total_len` is the checked-in `terrain-shard.obcd` fixture's,
+        // so this is a descriptor that actually announces a file both languages can decode.
+        ("transfer-set-terrain.bin", transfer_control(1, 19, 0xFFFF, terrain_len, terrain_crc)),
         // op=1 upload, type=18 mapSet: the manifest that makes those shards one map, and the last
-        // file of the set (§5.4). New-only, so `object_id` is 0xFFFF; `total_len` is the length its
-        // shard count fixes, `72 + 56 × 8`, which a device checks at the announce.
-        ("transfer-set-manifest.bin", transfer_control(1, 18, 0xFFFF, 72 + 56 * 8, 0x8B2C_4E17)),
+        // file of the set (§5.4). New-only, so `object_id` is 0xFFFF; `total_len` is the length the
+        // set's **record** count fixes — `72 + 56 × 9`, the eight OBCM shards *plus* the terrain
+        // record, because §5.2's `Shard Count` counts every record (#1044). A device checks it at
+        // the announce, against the shards **and** the raster it actually received.
+        ("transfer-set-manifest.bin", transfer_control(1, 18, 0xFFFF, 72 + 56 * 9, 0x8B2C_4E17)),
         // op=2 download request: type=7 rideList, id 0, len/crc unknown.
         ("transfer-download-request.bin", transfer_control(2, 7, 0, 0, 0)),
         // op=3 abort of the active route upload.
