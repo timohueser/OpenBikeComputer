@@ -337,21 +337,47 @@ jobs:
 
       # The `sdmmc-prealloc` feature calls `VolumeManager::preallocate`, which lives in
       # `firmware/patches/` and is not on the embedded-sdmmc fork yet — so it CANNOT be built from
-      # the pinned dependency, and without this step it has zero coverage and rots silently against
-      # the fork. Clone the fork, apply every patch in `firmware/patches/`, and type-check the
-      # feature against that tree via a command-line `[patch]` override, so nothing in the repo has
-      # to point at a scratch checkout. Delete this step together with the patch, the day it lands.
-      - name: "obc-fw-nrf54l: the pending fork patch still applies and builds"
+      # the pinned dependency, and without this gate it has zero coverage and rots silently against
+      # the fork. Clone the fork, apply every patch in `firmware/patches/`, run the fork's own
+      # tests, and type-check the feature against that tree. Delete all of it together with the
+      # patch, the day it lands.
+      #
+      # **Pinned to the rev the patch was written against** — the same rev `Cargo.lock` names — not
+      # to the branch tip: a gate that floats on somebody else's HEAD turns their next commit into
+      # our red CI. `git am` then replays the patch onto a local `patched` branch, so a conflict
+      # here means the patch has genuinely gone stale and needs rebasing, which is exactly the
+      # signal this step exists to give.
+      - name: "obc-fw-nrf54l: the pending fork patch still applies and passes its own tests"
         if: matrix.name == 'build (default = LS021/FLPR, release)'
+        env:
+          FORK_BASE_REV: 4cada7b388f4e4bf9f8de1fcdba33f22c1245aa7
+          # `setup-rust-toolchain` exports `RUSTFLAGS: -D warnings` for the whole job, and the fork
+          # is built here as a **workspace root**, so its upstream lint churn gets promoted to
+          # errors under whatever rustc the floating toolchain resolves to. That is this repo's
+          # warning policy being applied to third-party code on a compiler nobody pinned: it failed
+          # on `mismatched_lifetime_syntaxes` and would fail on the next new lint tomorrow. Cap the
+          # lints instead — the tests stay strict, so a real failure still fails.
+          RUSTFLAGS: --cap-lints=warn
         run: |
-          git clone --depth 50 --branch cmd25-multiblock-write \
+          git clone --branch cmd25-multiblock-write \
             https://github.com/timohueser/embedded-sdmmc-rs /tmp/sdmmc-fork
+          git -C /tmp/sdmmc-fork checkout -B patched "$FORK_BASE_REV"
           git -C /tmp/sdmmc-fork -c user.name=ci -c user.email=ci@local am \
             "$GITHUB_WORKSPACE"/firmware/patches/*.patch
           cargo test --manifest-path /tmp/sdmmc-fork/Cargo.toml
-          cd firmware/obc-fw-nrf54l
+      - name: "obc-fw-nrf54l: the sdmmc-prealloc feature type-checks against the patched fork"
+        if: matrix.name == 'build (default = LS021/FLPR, release)'
+        working-directory: firmware/obc-fw-nrf54l
+        # A **git** `[patch]` source rather than a `path` one, and that is load-bearing: cargo caps
+        # lints (`--cap-lints allow`) on anything that is not a local path or workspace member, so
+        # the fork polices itself here while `-D warnings` stays in force for *our* crate — which is
+        # the half worth gating. No `RUSTFLAGS` override on this step either, so it compiles under
+        # exactly the flags the real build legs in this job get, which is what makes it a check
+        # rather than a different build.
+        run: |
           cargo check --release --features sdmmc-prealloc \
-            --config 'patch.crates-io.embedded-sdmmc.path="/tmp/sdmmc-fork"'
+            --config 'patch.crates-io.embedded-sdmmc.git="file:///tmp/sdmmc-fork"' \
+            --config 'patch.crates-io.embedded-sdmmc.branch="patched"'
           # The override re-resolves the dependency, so it rewrites Cargo.lock. Put it back, or the
           # `--locked` in every other step would fail against a lock this diagnostic dirtied.
           git checkout -- Cargo.lock
