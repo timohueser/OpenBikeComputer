@@ -261,8 +261,8 @@ jobs:
           # `ble` named explicitly. This leg used to be "the BLE build" against a map-only default,
           # and later carried a --no-default-features that existed only to keep `cs-single-core` out
           # of a BLE image. `ble` has been part of `default` since the LM20 retarget,
-          # `cs-single-core` is gone (#931), and `sd-bench` went with the SPI storage path (#1158) —
-          # so `default` and this pair are now the same feature set, built two ways. Kept because
+          # `cs-single-core` is gone (#931), and the new `sd-bench` map profiler is opt-in — so
+          # `default` and this pair are still the same feature set, built two ways. Kept because
           # `--no-default-features --features ble` is the invocation the README documents and the one
           # a future optional feature would first break.
           - { name: "clippy (ble)", cmd: "cargo clippy --locked --no-default-features --features ble -- -D warnings" }

@@ -2009,6 +2009,8 @@ pub(crate) async fn run_app(
                         // the row-diffed push scales down with it.
                         let clip = if needs_map { None } else { dirty.region };
                         app.set_render_clip(clip);
+                        #[cfg(feature = "sd-bench")]
+                        let read_before = sd::read_perf_snapshot();
                         let (stats, render_us) = display.render_frame(|f: &mut crate::ls021_flpr::Frame64| {
                             let mut fbdev = FbDevice64::new(f.bytes_mut(), FRAME_W as u32, FRAME_H as u32);
                             if let Some(r) = clip {
@@ -2038,6 +2040,20 @@ pub(crate) async fn run_app(
                                 ),
                             }
                         });
+                        #[cfg(feature = "sd-bench")]
+                        if needs_map {
+                            let reads = sd::read_perf_snapshot().since(read_before);
+                            defmt::info!(
+                                "map SD bench: {=u32} us | logical {=u32} read(s) / {=u32} B | physical {=u32} command(s) / {=u32} block(s) ({=u32} single + {=u32} multi)",
+                                reads.us,
+                                stats.map_sd_reads,
+                                stats.map_bytes_read,
+                                reads.commands,
+                                reads.blocks,
+                                reads.single_commands,
+                                reads.multi_commands
+                            );
+                        }
                         // The guard (when a map base took one) dies here, at the end of the render
                         // span — before the present's await, never across it (#677).
                         drop(render_guard);

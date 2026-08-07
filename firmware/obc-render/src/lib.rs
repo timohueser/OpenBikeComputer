@@ -273,9 +273,8 @@ pub struct RenderStats {
     pub points_drawn: usize,
     /// Stub-select accounting (issue #564). `stub_evictions`: pass-A stub-buffer overflows where a
     /// higher-priority candidate displaced the lowest-priority resident stub (only under span
-    /// saturation). `chunks_refetched`: chunks pass B re-read because they owned an admitted winner
-    /// — so `map_chunk_misses ≈ chunks_visited + chunks_refetched`, versus `4 × chunks_visited` for
-    /// the old level-major collector.
+    /// saturation). `chunks_refetched`: distinct chunks that owned an admitted pass-B winner,
+    /// whether decoded from a resident cache slot or re-read after eviction.
     pub stub_evictions: u32,
     pub chunks_refetched: u32,
     /// Active-route overlay this frame: chunks decoded (bbox met the viewport), total points across
@@ -299,11 +298,10 @@ pub struct RenderStats {
     pub poly_spans: usize,
     pub poly_points: usize,
     pub poly_rings: usize,
-    /// Streamed-map cache accounting for this frame. Stub-select touches each visible chunk once in
-    /// pass A and once more in pass B only if it owns a winner (`chunks_refetched`), so
-    /// `map_chunk_misses ≈ chunks_visited + chunks_refetched`. `map_chunk_hits` are fetches served
-    /// from a resident cache slot (e.g. a chunk's later winners in pass B), `map_chunk_misses` the
-    /// ones that read from SD. `map_sd_reads` / `map_bytes_read` are the raw source overhead (index
+    /// Streamed-map cache accounting for this frame. Stub-select reads each visible chunk once in
+    /// pass A; pass B decodes winners directly from resident slots and only re-reads chunks that
+    /// were evicted. `map_chunk_hits` are requests served from RAM and `map_chunk_misses` the ones
+    /// that read from SD. `map_sd_reads` / `map_bytes_read` are the raw source overhead (index
     /// blocks + chunk fills). Hit rate is `hits / (hits + misses)`.
     pub map_chunk_hits: u32,
     pub map_chunk_misses: u32,

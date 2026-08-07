@@ -216,6 +216,7 @@ mod object_store;
 use defmt::info;
 use embassy_executor::Spawner;
 use embassy_nrf::gpio::{Level, Output, OutputDrive};
+#[cfg(any(feature = "debug-uart", not(feature = "synth")))]
 use embassy_nrf::{bind_interrupts, peripherals};
 use embassy_time::Timer;
 use {defmt_rtt as _, panic_probe as _};
@@ -322,7 +323,7 @@ bind_interrupts!(struct SensorIrqs {
 //                  is now the maximum: 13,664 B above the 117,408 B render arm, deliberately spent
 //                  on two 64 KiB halves for efficient 128-block card writes.
 //   - framebuffer  the single RGB222 frame: 240×320 × 1 B/px = 75 KB — the `FB` static below.
-//   - `MapCache`   the streamed-map geometry-chunk cache (2 slots + 8 KB scratch on nrf-mem, 14,444 B).
+//   - `MapCache`   the streamed-map geometry/index cache (4 slots + 16 KB scratch, 37,084 B).
 //   - `RouteCache` the decoded-route-chunk cache (2 slots on nrf-mem, ~6 KB).
 //   - `RouteIndex` the active route's resident chunk index — the ride loop holds it across frames in
 //                  the map plane's task future to stream geometry without re-walking it (128 chunks on
@@ -985,9 +986,10 @@ async fn vcom_tx_task(mut tx: BufferedUarteTx<'static, peripherals::SERIAL20>) {
 /// producer/consumer/control handles wired to the sensor task, the ride loop, the BLE central
 /// manager, and the debug-uart injection path at composition (below) — the successor to the former
 /// process-global `sensor_link`/`sensor_values` mailboxes. `const`-constructed, so its `.bss`
-/// footprint is exactly the scattered statics it replaces. Absent on the pure `synth` build (which
-/// drives `SynthLocation` and reads no hub stream).
-#[cfg(not(all(not(feature = "debug-uart"), feature = "synth")))]
+/// footprint is exactly the scattered statics it replaces. Absent only on a radio-less pure
+/// `synth` build: a `synth + ble` build still needs the injector for BLE sensor connections even
+/// though the ride loop itself drives `SynthLocation` and consumes no hub stream.
+#[cfg(any(feature = "ble", not(all(not(feature = "debug-uart"), feature = "synth"))))]
 static SENSOR_HUB: obc_platform::SensorHub = obc_platform::SensorHub::new();
 
 #[embassy_executor::main]
@@ -1434,14 +1436,19 @@ async fn main(_spawner: Spawner) {
             }
         };
 
-        // Boot to **Home**: the user drives Home → Route menu → Map with the buttons. Built **in place**
-        // in `.bss` (`init_idle` writes each field where it sits), never on the stack. The Route menu is
+        // Boot to **Home**: the user drives Home → Route menu → Map with the buttons. The opt-in
+        // `sd-bench` image instead starts directly on the live Map so an unattended RTT run exercises
+        // the real map-reader path as SynthLocation moves. Built **in place**
+        // in `.bss` (`init_idle`/`init_map` write each field where it sits), never on the stack. The Route menu is
         // filled from the card's catalog scanned above; selecting an entry opens the Map at that route's
         // start and streams its geometry into the render + the map-matcher.
         // SAFETY: sole owner of APP; `init_idle` fully initialises it before the `&mut` below reads it.
         let app: &mut App = unsafe {
             let slot = core::ptr::addr_of_mut!(APP) as *mut App;
+            #[cfg(not(feature = "sd-bench"))]
             App::init_idle(slot, AppState::new(cam_lon, cam_lat, zoom_for_mpp(INIT_MPP)));
+            #[cfg(feature = "sd-bench")]
+            App::init_map(slot, AppState::new(cam_lon, cam_lat, zoom_for_mpp(INIT_MPP)));
             &mut *slot
         };
         {
