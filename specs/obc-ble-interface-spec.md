@@ -742,14 +742,44 @@ they become that object's opening payload and fail its whole-object CRC.
 A device on a transport whose pipe it can read (a USB bulk endpoint) SHOULD
 therefore **read and discard until the pipe is quiet, and only then answer**
 `aborted`. It MUST bound that drain and answer regardless when the bound is hit.
-Draining is correct at the **abort handshake and nowhere else** — with or
-without a transfer in flight, since either way the host has stopped and is
-waiting for the answer before it does anything else. On any other termination —
-a reject, a refused commit — the host has not been told yet and refills as fast
-as the device discards, so a device MUST NOT drain there; the host's own send loop settling, plus the device's discard of
-bytes that arrive with nothing armed, is what covers those. A transport that
-closes and reopens its channel around a failed exchange (BLE's CoC) has nothing
-to drain and answers immediately.
+A transport that closes and reopens its channel around a failed exchange (BLE's
+CoC) has nothing to drain and answers immediately.
+
+**Draining is an explicit act, at a termination the host already knows about.**
+There are exactly two such moments, and the difference between them is only
+whether the answer has gone out yet:
+
+- The **abort handshake**, *before* the answer — with or without a transfer in
+  flight, since either way the host has stopped and is waiting for `aborted`
+  before it does anything else.
+- A **device-originated termination that left announced bytes unread**, *after*
+  the answer: a refused announce, a storage failure mid-object. Here the host has
+  not been told yet and refills as fast as a device could discard, so a device
+  MUST NOT drain first — the terminal `transferResult` is what makes it stop, and
+  queuing that behind a drain only delays it. Once the answer is out, a device on
+  a readable pipe SHOULD empty it, bounded as above.
+
+That second case is an obligation rather than tidying, because of the rule
+below: with nothing armed the pipe is not being read at all, so the sender's
+already-submitted writes are held by transport flow control and never settle. A
+device that answers a refusal and then leaves the pipe full does not fail that
+sender's upload — it stops it, in front of the very abort it would otherwise
+send.
+
+A transfer that consumed its full announced length leaves nothing behind, so a
+commit refusal or a failed final flush needs no drain of its own.
+
+**Bytes for an announce that has not been accepted are not consumed.** A device
+MUST NOT read and discard payload bytes while no transfer is armed. Senders are
+permitted to pipeline — §4.2 has no upload-accepted handshake, so an upload's
+first bytes may be on the wire before its descriptor has been classified — and a
+device that eats them has silently destroyed the payload of a transfer it is
+about to arm. There is no ordering a device can rely on to make that safe: its
+own classification may be delayed behind unrelated work, and an object shorter
+than that delay is lost in full rather than in part. Unclaimed bytes MUST instead
+be left to the transport's flow control (a bulk endpoint NAKs; a CoC withholds
+credit), where they wait until a transfer arms and reads them or until one of the
+two drains above discards them.
 
 Such an abort is a **pure quiesce**: apart from discarding an in-flight partial
 it MUST change no stored state — see §5 rule 6 for the one descriptor that is
@@ -770,9 +800,13 @@ over BLE the sender resets the CoC as described above, which discards them. Over
 a transport with no channel to reopen — a USB bulk endpoint — resetting cannot
 un-queue a submitted transfer, so the sender MUST instead complete the idle-abort
 handshake above (`op=3`, wait for `aborted`) before it retries, which is what
-makes the device empty the pipe. A sender that skips it is not broken so much as
-unlucky: the leftovers usually clear on their own, and when they do not the retry
-fails its whole-object CRC for reasons nothing in the exchange explains.
+guarantees the pipe is empty when the retry's descriptor arms. A sender that
+skips it is not merely unlucky: nothing clears the leftovers on their own — with
+no transfer armed they are not read at all — so the retry inherits them as its
+opening payload and fails a whole-object CRC for reasons nothing in the exchange
+explains. What keeps such a sender from stopping outright is the device's
+post-answer drain above; what keeps it from *converging* is skipping the
+handshake, so the retry can fail the same way again.
 **Replace-by-id uploads of
 an existing route are exempt** — they reuse a catalog slot rather than growing
 it, so updating a stored (or actively-navigated) route never hits the cap. The
