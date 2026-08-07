@@ -56,6 +56,18 @@ class NativePipe implements BytePipe {
     private closedByUs = false;
     /** Rejectors for {@link dead}, released when the pipe closes or fails. */
     private readonly mourners: Array<(error: PipeError) => void> = [];
+    /**
+     * The previous {@link write}'s settlement — each write chains on it, so **submission order is
+     * wire order**. Without the chain, `pumpChunks`'s `UPLOAD_WINDOW` concurrent writes each travel
+     * as an independent IPC invoke, and the backend gives concurrent invokes no ordering: each
+     * lands in its own task racing for the endpoint lock, so two in-flight chunks can swap on the
+     * wire — right total length, wrong whole-object CRC, and the bigger the object the more likely
+     * (the on-glass shard-CRC rejections of 2026-08-07). The device's per-packet turnaround is the
+     * throughput ceiling by an order of magnitude, so what the chain costs is one IPC round-trip of
+     * idle bridge per chunk, not wire idle. WebUSB needs none of this: the browser queues
+     * per-endpoint transfers in call order.
+     */
+    private writeTail: Promise<void> = Promise.resolve();
 
     constructor(
         readonly kind: UsbPlane,
@@ -98,17 +110,27 @@ class NativePipe implements BytePipe {
                 `a ${bytes.length}-byte control frame does not fit the ${this.packetSize}-byte endpoint.`,
             );
         }
-        const release = this.cancelOnAbort(signal, "out");
-        try {
-            await Promise.race([
-                withAbort(desktop.usbWrite(this.handle, this.kind, bytes), signal, "the write"),
-                this.dead(),
-            ]);
-        } catch (cause) {
-            throw this.asPipeError(cause, "write");
-        } finally {
-            release();
-        }
+        const run = async () => {
+            const release = this.cancelOnAbort(signal, "out");
+            try {
+                await Promise.race([
+                    withAbort(desktop.usbWrite(this.handle, this.kind, bytes), signal, "the write"),
+                    this.dead(),
+                ]);
+            } catch (cause) {
+                throw this.asPipeError(cause, "write");
+            } finally {
+                release();
+            }
+        };
+        // Chain on the predecessor whether it settled well or badly — its caller owns its error;
+        // this write only needs it to be off the bridge. See `writeTail` for why order is load-bearing.
+        const chained = this.writeTail.then(run, run);
+        this.writeTail = chained.then(
+            () => {},
+            () => {},
+        );
+        return chained;
     }
 
     /**
