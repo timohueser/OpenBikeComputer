@@ -662,11 +662,11 @@ they become that object's opening payload and fail its whole-object CRC.
 A device on a transport whose pipe it can read (a USB bulk endpoint) SHOULD
 therefore **read and discard until the pipe is quiet, and only then answer**
 `aborted`. It MUST bound that drain and answer regardless when the bound is hit.
-This is the *only* point in the protocol where draining is correct: it works
-because §4.2 has the host stop and wait for the answer before doing anything
-else. On any other termination — a reject, a refused commit — the host has not
-been told yet and refills as fast as the device discards, so a device MUST NOT
-drain there; the host's own send loop settling, plus the device's discard of
+Draining is correct at the **abort handshake and nowhere else** — with or
+without a transfer in flight, since either way the host has stopped and is
+waiting for the answer before it does anything else. On any other termination —
+a reject, a refused commit — the host has not been told yet and refills as fast
+as the device discards, so a device MUST NOT drain there; the host's own send loop settling, plus the device's discard of
 bytes that arrive with nothing armed, is what covers those. A transport that
 closes and reopens its channel around a failed exchange (BLE's CoC) has nothing
 to drain and answers immediately.

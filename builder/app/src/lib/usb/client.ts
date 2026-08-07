@@ -505,10 +505,12 @@ export class ProtocolClient {
     /**
      * Abandon a volume set between whole-file transfers.
      *
-     * Cancelling an active shard already sends `op=abort`; this is the other
-     * edge: the worker or host can fail after one shard committed and before
-     * the next descriptor opens. Naming any valid part of the in-flight shape
-     * asks the device to delete every staged shard.
+     * Cancelling an active shard already sends `op=abort`; this is the other edge: the worker or
+     * host can fail after one shard committed and before the next descriptor opens.
+     *
+     * **Naming the set is what asks for the deletion.** An idle `op = 3` naming anything else is a
+     * quiesce that leaves every staged file alone (interface spec §5 rule 5) — which is what makes
+     * a refused shard retryable, and what this call is deliberately not.
      */
     async abandonMapSet(): Promise<void> {
         await this.withTransferSlot(
@@ -529,7 +531,7 @@ export class ProtocolClient {
                     totalLen: 0,
                     crc32: 0,
                 });
-                await this.awaitTransferResult(undefined, "set-abandon");
+                await this.awaitTransferResult(undefined, "set-abandon", undefined, true);
             },
         );
     }
@@ -832,6 +834,27 @@ export class ProtocolClient {
     }
 
     /**
+     * The failure path's `op = 3`: get the device to empty its endpoint before we retry, and change
+     * nothing else.
+     *
+     * **Never names a `mapSet`.** An idle abort naming the set is the device's signal to abandon it —
+     * every staged file deleted — and this abort fires after *any* failed exchange, including a
+     * single shard or the manifest refused on CRC, which the caller is about to re-send. So a
+     * set-shaped descriptor is rewritten to a shard-shaped one before it goes out: same exchange
+     * named, none of the abandonment. Giving up on a set is
+     * {@link ProtocolClient.abandonMapSet}, and it is always an explicit decision by the caller.
+     *
+     * The rewritten id is a shard index the set may not have (a manifest's `objectId` is not a part
+     * id at all). That is deliberate and harmless: an idle abort's descriptor selects *which
+     * cleanup*, and the quiesce is the one that does none — the device never looks the part up.
+     */
+    private async sendQuiesceAbort(target: { type: ObjectType; objectId: number }): Promise<void> {
+        const quiesce =
+            target.type === ObjectType.MapSet ? { type: ObjectType.MapShard, objectId: target.objectId } : target;
+        await this.sendAbort(quiesce);
+    }
+
+    /**
      * Best-effort `op = 3`, then wait for the device to say it has stopped.
      *
      * The wait is the load-bearing half. A device that is mid-stream keeps pushing bytes for as
@@ -840,23 +863,6 @@ export class ProtocolClient {
      * has drained and discarded the partial, which is the moment the pipe is safe to reset. Bounded
      * short, because this runs on the failure path and the caller is already waiting.
      */
-    /**
-     * The failure path's `op = 3`: get the device to empty its endpoint before we retry, and change
-     * nothing else.
-     *
-     * **Never names a `mapSet`.** An idle abort naming the set is the device's signal to abandon it —
-     * every staged file deleted — and this abort fires after *any* failed exchange, including a
-     * single shard the device refused on CRC, which the caller is about to re-send. So a set-shaped
-     * descriptor is rewritten to a shard-shaped one before it goes out: same exchange named, none of
-     * the abandonment. Giving up on a set is {@link ProtocolClient.abandonMapSet}, and it is always
-     * an explicit decision by the caller.
-     */
-    private async sendQuiesceAbort(target: { type: ObjectType; objectId: number }): Promise<void> {
-        const quiesce =
-            target.type === ObjectType.MapSet ? { type: ObjectType.MapShard, objectId: target.objectId } : target;
-        await this.sendAbort(quiesce);
-    }
-
     private async sendAbort(target: { type: ObjectType; objectId: number }): Promise<void> {
         try {
             await this.sendDescriptor({ op: Op.Abort, ...target, totalLen: 0, crc32: 0 });
@@ -943,16 +949,19 @@ export class ProtocolClient {
         // answers while these bytes are already queued. Stop at the first sign of it rather than
         // pushing a whole map at a device that has said no.
         //
-        // The mailbox is drained at the *start* of a transfer slot, not at its release, so a result
-        // that lands late — the `aborted` confirming the previous exchange's quiesce, say — is still
-        // sitting here when the next upload starts. Taking it would fail an upload the device never
-        // rejected, so the match is by status: only a **terminal failure** stops this send, and a
-        // late `aborted` is dropped as the stale confirmation it is.
-        const isTerminalFailure = (msg: StatusMessage): msg is Extract<StatusMessage, { msg: "transferResult" }> =>
-            isTransferResult(msg) && msg.status !== TransferStatus.Aborted;
-        const early = this.statuses.tryTake(isTerminalFailure);
-        if (early) {
-            throw this.transferFailure(early, "upload");
+        // The mailbox is drained when a transfer slot is *taken*, not when it is released, so a
+        // result that lands late — the `aborted` confirming the previous exchange's quiesce, say —
+        // is still sitting here when the next upload starts. It must be **consumed and thrown
+        // away**, not skipped over: a predicate that merely fails to match leaves it queued, and
+        // the very next unfiltered `take` in `awaitTransferResult` hands it back as this upload's
+        // terminal result — the same spurious failure one step later, and as `aborted` rather than
+        // `crcMismatch` nothing upstream retries it.
+        for (;;) {
+            const early = this.statuses.tryTake(isTransferResult);
+            if (!early) return;
+            if (early.status !== TransferStatus.Aborted) throw this.transferFailure(early, "upload");
+            // A stale confirmation of an exchange that is already over. Dropped, and the loop goes
+            // on in case a real reject is queued behind it.
         }
     }
 
@@ -1000,12 +1009,35 @@ export class ProtocolClient {
         return d;
     }
 
-    private async awaitTransferResult(signal: AbortSignal | undefined, what: string, timeoutMs?: number) {
-        const msg = await this.statuses.take(timeoutMs ?? this.timeoutMs, signal, `the ${what} result`);
-        if (msg.msg !== "transferResult") {
-            throw new DeviceError("protocol", `expected a transfer result, got a ${msg.msg}.`);
+    /**
+     * The terminal `transferResult` of an exchange.
+     *
+     * **Skips stale `aborted` results unless one is what was asked for**, and the reason is that the
+     * mailbox is a plain FIFO: `take` shifts the head whatever it is. A quiesce abort whose ack
+     * arrived after its 2 s wait gave up is still queued, so without this the *next* upload's wait
+     * returns that `aborted` as its own verdict — a failure the device never issued, on a code
+     * (`aborted`) that `sendAssembledSetFile` does not retry. `expectAborted` is for the two callers
+     * that legitimately want one: the abort handshake itself, and `abandonMapSet`.
+     *
+     * The skip shares the caller's budget rather than restarting it, so a device that says nothing
+     * useful still times out on schedule.
+     */
+    private async awaitTransferResult(
+        signal: AbortSignal | undefined,
+        what: string,
+        timeoutMs?: number,
+        expectAborted = false,
+    ) {
+        const deadline = Date.now() + (timeoutMs ?? this.timeoutMs);
+        for (;;) {
+            const remaining = Math.max(0, deadline - Date.now());
+            const msg = await this.statuses.take(remaining, signal, `the ${what} result`);
+            if (msg.msg !== "transferResult") {
+                throw new DeviceError("protocol", `expected a transfer result, got a ${msg.msg}.`);
+            }
+            if (!expectAborted && msg.status === TransferStatus.Aborted) continue;
+            return msg;
         }
-        return msg;
     }
 
     private async awaitCommandResult(commandByte: number, signal?: AbortSignal) {

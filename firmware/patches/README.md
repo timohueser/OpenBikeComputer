@@ -48,7 +48,7 @@ cd embedded-sdmmc-rs
 git checkout -B patched 4cada7b388f4e4bf9f8de1fcdba33f22c1245aa7
 git am /path/to/OSM/firmware/patches/embedded-sdmmc-preallocate.patch
 cargo test                       # 5 tests in tests/preallocate.rs + 1 unit test, plus the suite
-git push HEAD:cmd25-multiblock-write
+git push origin HEAD:cmd25-multiblock-write
 ```
 
 If the fork has moved on since that rev, rebase `patched` onto the branch tip first and re-export

@@ -177,6 +177,44 @@ describe("assembled volume-set upload", () => {
         }
     });
 
+    it("survives a manifest CRC refusal: the set lives and the manifest retry commits", async () => {
+        // **The other half of the same regression, and the one with no coverage at all.** A refused
+        // *manifest* is announced as `mapSet`, so the quiesce that follows it would name `mapSet`
+        // too — the device's signal to abandon the set. `sendQuiesceAbort` rewrites that descriptor
+        // to a shard-shaped one precisely so it cannot, and deleting the rewrite left every test
+        // green.
+        //
+        // The retry is what notices: with the set gone, the loopback answers a `mapSet` descriptor
+        // with `notFound` (it has no staged shards), so the manifest can never commit.
+        const { client, device, close } = loopbackDevice();
+        try {
+            const shard = syntheticBytes(2048);
+            const manifest = syntheticBytes(128);
+            const state = setSendState(1, shard.length + manifest.length);
+            const ctx = context();
+
+            await sendAssembledSetFile(
+                client,
+                state,
+                { name: "MS1S00.OBM", role: "core", sha256: digest(shard), byteLength: shard.length, bytes: shard },
+                ctx,
+            );
+            expect(device.stagedMapShardCount).toBe(1);
+
+            device.failNextUploadWith(TransferStatus.CrcMismatch);
+            await sendAssembledSetFile(
+                client,
+                state,
+                { name: "MS1.OBS", role: "manifest", sha256: "", byteLength: manifest.length, bytes: manifest },
+                ctx,
+            );
+            expect(state.setId, "the manifest retry never committed").not.toBeNull();
+            expect(device.stagedMapShardCount).toBe(0);
+        } finally {
+            await close();
+        }
+    });
+
     it("abandons already committed shards when assembly stops between files", async () => {
         const { client, device, close } = loopbackDevice();
         try {

@@ -768,9 +768,14 @@ fn warn_bounce(addr: usize) {
 /// the upload's shape silently changes and an on-glass throughput number becomes uninterpretable.
 /// This is the line that says which case you are in.
 ///
-/// Read straight off the card rather than asked of `VolumeManager`, which does not expose it, and
-/// by the same rules `open_raw_volume` mounts with — the discrimination this repo already gets right
-/// in `obc-storage`'s `fat_extents.rs`, mirrored here rather than re-invented.
+/// Read straight off the card rather than asked of `VolumeManager`, which does not expose it. The
+/// checks are `obc-storage`'s `fat_extents.rs`, borrowed rather than re-invented — with one
+/// deliberate difference: that one requires an MBR and fails a superfloppy card outright, because it
+/// is building extents the ride path depends on and would rather refuse than guess. This is a boot
+/// log line, so it reads sector 0 as a BPB first and only then looks for a partition table. The two
+/// therefore disagree about a superfloppy: `fat_extents` rejects it, this reports its cluster size.
+/// That is not drift to reconcile — a card the volume manager cannot mount never reaches an upload,
+/// so the only cost of being lenient here is a truthful log line for a card nothing else will use.
 ///
 /// **A boot signature alone does not tell an MBR from a BPB.** A *superfloppy* card — no partition
 /// table, the volume boot record directly in sector 0, common on SD — carries `0xAA55` at 510 too,

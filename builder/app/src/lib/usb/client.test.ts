@@ -13,7 +13,14 @@ import { DEFAULT_TIMEOUT_MS, DeviceError, ProtocolClient, commitTimeoutMs } from
 import { Crc32 } from "./crc32";
 import { MockDevice, loopbackDevice, loopbackLink } from "./loopback";
 import { PipeError, type BytePipe } from "./pipe";
-import { Command, CommandStatus, NEW_OBJECT_ID, ObjectType, SINGLETON_OBJECT_ID } from "./protocol";
+import {
+    Command,
+    CommandStatus,
+    NEW_OBJECT_ID,
+    ObjectType,
+    SINGLETON_OBJECT_ID,
+    TransferStatus,
+} from "./protocol";
 
 /** A recognisable, incompressible-looking payload of `n` bytes. */
 function payload(n: number) {
@@ -309,6 +316,41 @@ describe("the upload window", () => {
         } finally {
             process.off("unhandledRejection", onUnhandled);
         }
+    });
+});
+
+describe("stale results", () => {
+    it("does not let a late `aborted` become the next upload's verdict", async () => {
+        // A quiesce abort whose ack arrives after its 2 s wait gave up is still queued when the
+        // retry starts. The mailbox is a plain FIFO — `take` shifts the head whatever it is — so a
+        // predicate that merely declines to *match* the stale message leaves it there for the next
+        // unfiltered take. That is the shape this pins: the message has to be consumed and dropped.
+        //
+        // `aborted` is the worst code for it to arrive as: `sendAssembledSetFile` retries only
+        // `crc-mismatch`, so a set upload would die outright on a result the device never issued
+        // about it.
+        await withDevice({ bulkPacketSize: 64, chunkSize: 61 }, async ({ client, device }) => {
+            const statuses = (client as unknown as { statuses: { push: (v: unknown) => void } }).statuses;
+            const bytes = payload(40_000);
+            let injected = false;
+            const result = await client.upload(ObjectType.Route, NEW_OBJECT_ID, bytes, {
+                chunkSize: 4096,
+                onProgress: () => {
+                    // Mid-flight, so it is queued ahead of this upload's own terminal result and is
+                    // past the drain that runs when the slot is taken.
+                    if (injected) return;
+                    injected = true;
+                    statuses.push({
+                        msg: "transferResult",
+                        objectId: 0xff_ff,
+                        status: TransferStatus.Aborted,
+                        committedOffset: 0,
+                    });
+                },
+            });
+            expect(injected, "the stale result was never injected — the test proves nothing").toBe(true);
+            expect(device.stored(ObjectType.Route, result.objectId)).toEqual(bytes);
+        });
     });
 });
 
