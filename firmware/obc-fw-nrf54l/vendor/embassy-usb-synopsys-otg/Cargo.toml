@@ -8,7 +8,11 @@ keywords = ["embedded", "async", "usb", "hal", "embedded-hal"]
 categories = ["embedded", "hardware-support", "no-std", "asynchronous"]
 repository = "https://github.com/embassy-rs/embassy"
 documentation = "https://docs.embassy.dev/embassy-usb-synopsys-otg"
-publish = false # vendored fork — see VENDORING.md
+# No `publish = false`, deliberately, and it is not because anything here is publishable: this
+# crate is reached only through `[patch.crates-io]` and `cargo publish` is never run on it. It is
+# because `about.toml` sets `private.ignore = true`, which keys on exactly that field — marking the
+# crate private would drop it out of THIRD-PARTY.md, and embassy's MIT/Apache-2.0 code ships inside
+# `UPDATE.BIN` and must be attributed there like every other third-party crate in the image.
 
 # Its own workspace root, so the board crate's `[workspace]` does not adopt it as a member (it is
 # reached only through `[patch.crates-io]`, and a patched path dep that is also a member would make
