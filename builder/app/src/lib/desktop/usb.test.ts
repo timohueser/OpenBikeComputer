@@ -69,6 +69,8 @@ let openFault: { code: string; message: string; onlyId?: string } | null = null;
 /** Gates shifted per `usb_open` call — an entry parks that open until its promise resolves,
  *  which is how a test freezes one connect flow mid-open while another overtakes it. */
 let openGates: Array<(() => Promise<void>) | undefined> = [];
+/** Per-call gates for `usb_write` on the bulk plane, modelling the backend's free ordering of concurrent invokes. */
+let writeGates: Array<(() => Promise<void>) | undefined> = [];
 /** In-flight reads/writes, so `usb_cancel` can settle them the way a cancelled URB does. */
 const inFlight = new Map<string, AbortController>();
 /**
@@ -156,6 +158,10 @@ async function backend(cmd: string, args: unknown, options?: { headers?: Record<
             // The real command takes the bytes as the whole invoke body, with the handle and plane
             // in headers — which is exactly what is asserted here rather than assumed.
             const plane = options?.headers?.plane ?? "";
+            if (plane === "bulk") {
+                const gate = writeGates.shift();
+                if (gate) await gate();
+            }
             const key = `${plane}:out`;
             const controller = new AbortController();
             inFlight.set(key, controller);
@@ -274,6 +280,7 @@ beforeEach(() => {
     watchChannel = null;
     openFault = null;
     openGates = [];
+    writeGates = [];
     inFlight.clear();
     sendable = new Map();
     sendStallAfter = Number.POSITIVE_INFINITY;
@@ -326,6 +333,25 @@ describe("the native pipe under C3's client", () => {
         await client.writeConfig({ name: "Alps", units: 1 });
         expect(await client.readConfig()).toEqual({ name: "Alps", units: 1 });
 
+        await watcher.close();
+    });
+
+    it("keeps concurrent chunk writes in submission order across the bridge", async () => {
+        // The backend gives concurrent invokes no ordering guarantee — each lands in its own task
+        // racing for the endpoint lock. Delaying the first bulk invoke a few ticks models the race:
+        // without the pipe's submission chain the second chunk reaches the wire first and the
+        // object arrives with its middle swapped — right total length, wrong whole-object CRC, the
+        // on-glass desktop shard rejections of 2026-08-07. With the chain, the delay just delays.
+        const { watcher, ok } = await connected();
+        expect(ok).toBe(true);
+        const client = watcher.current.client!;
+        // Big enough that `pumpChunks` has several chunks in its window, plus an odd tail.
+        const bytes = new Uint8Array(200_003);
+        for (let i = 0; i < bytes.length; i++) bytes[i] = (i * 31 + (i >> 9)) & 0xff;
+        writeGates.push(() => new Promise<void>((resolve) => setTimeout(resolve, 10)));
+        const result = await client.upload(ObjectType.Route, NEW_OBJECT_ID, bytes);
+        expect(result.committedOffset).toBe(bytes.length);
+        expect(device!.stored(ObjectType.Route, result.objectId)).toEqual(bytes);
         await watcher.close();
     });
 
