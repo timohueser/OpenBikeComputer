@@ -510,14 +510,22 @@ export class ProtocolClient {
      * the next descriptor opens. Naming any valid part of the in-flight shape
      * asks the device to delete every staged shard.
      */
-    async abandonMapSet(shardObjectId: number): Promise<void> {
+    async abandonMapSet(): Promise<void> {
         await this.withTransferSlot(
-            () => ({ type: ObjectType.MapShard, objectId: shardObjectId }),
+            () => ({ type: ObjectType.MapSet, objectId: SINGLETON_OBJECT_ID }),
             async () => {
+                // **`mapSet`, not `mapShard`, and that is the whole disambiguation.** An `op = 3`
+                // with nothing in flight now means two different things, and the descriptor's type
+                // is what tells the device which: naming the *set* abandons it, naming anything else
+                // is a pure quiesce that touches no stored state.
+                //
+                // It used to name a shard, which was indistinguishable from the abort the failure
+                // path sends after a shard the device refused — so one refused shard deleted the
+                // whole set, and the retry sealed a manifest over nothing.
                 await this.sendDescriptor({
                     op: Op.Abort,
-                    type: ObjectType.MapShard,
-                    objectId: shardObjectId,
+                    type: ObjectType.MapSet,
+                    objectId: SINGLETON_OBJECT_ID,
                     totalLen: 0,
                     crc32: 0,
                 });
@@ -815,7 +823,7 @@ export class ProtocolClient {
             // and then confirming** (`TransferDisposition::AnswerIdleAbort`). So the abort is what
             // makes the retry an ordinary first attempt rather than a coin flip. It costs one
             // control round trip, on the failure path only.
-            await this.sendAbort(descriptorOf());
+            await this.sendQuiesceAbort(descriptorOf());
             await this.resetBulk();
             throw asDeviceError(cause);
         } finally {
@@ -832,6 +840,23 @@ export class ProtocolClient {
      * has drained and discarded the partial, which is the moment the pipe is safe to reset. Bounded
      * short, because this runs on the failure path and the caller is already waiting.
      */
+    /**
+     * The failure path's `op = 3`: get the device to empty its endpoint before we retry, and change
+     * nothing else.
+     *
+     * **Never names a `mapSet`.** An idle abort naming the set is the device's signal to abandon it —
+     * every staged file deleted — and this abort fires after *any* failed exchange, including a
+     * single shard the device refused on CRC, which the caller is about to re-send. So a set-shaped
+     * descriptor is rewritten to a shard-shaped one before it goes out: same exchange named, none of
+     * the abandonment. Giving up on a set is {@link ProtocolClient.abandonMapSet}, and it is always
+     * an explicit decision by the caller.
+     */
+    private async sendQuiesceAbort(target: { type: ObjectType; objectId: number }): Promise<void> {
+        const quiesce =
+            target.type === ObjectType.MapSet ? { type: ObjectType.MapShard, objectId: target.objectId } : target;
+        await this.sendAbort(quiesce);
+    }
+
     private async sendAbort(target: { type: ObjectType; objectId: number }): Promise<void> {
         try {
             await this.sendDescriptor({ op: Op.Abort, ...target, totalLen: 0, crc32: 0 });
@@ -917,7 +942,15 @@ export class ProtocolClient {
         // A descriptor-open reject (storage full, a size ceiling, busy) is asynchronous: the device
         // answers while these bytes are already queued. Stop at the first sign of it rather than
         // pushing a whole map at a device that has said no.
-        const early = this.statuses.tryTake(isTransferResult);
+        //
+        // The mailbox is drained at the *start* of a transfer slot, not at its release, so a result
+        // that lands late — the `aborted` confirming the previous exchange's quiesce, say — is still
+        // sitting here when the next upload starts. Taking it would fail an upload the device never
+        // rejected, so the match is by status: only a **terminal failure** stops this send, and a
+        // late `aborted` is dropped as the stale confirmation it is.
+        const isTerminalFailure = (msg: StatusMessage): msg is Extract<StatusMessage, { msg: "transferResult" }> =>
+            isTransferResult(msg) && msg.status !== TransferStatus.Aborted;
+        const early = this.statuses.tryTake(isTerminalFailure);
         if (early) {
             throw this.transferFailure(early, "upload");
         }

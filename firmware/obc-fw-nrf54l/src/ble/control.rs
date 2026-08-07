@@ -128,15 +128,21 @@ pub(crate) async fn serve_connection(
                                     info!("ble: [gatt] transfer_control: abort → data plane");
                                     TRANSFER_ABORT.signal(());
                                 }
-                                // `AnswerIdleAbort` carries a transport obligation the radio does not
-                                // have: it exists so a transport with an unrecallable byte pipe can
-                                // empty it before the peer retries (the cable's bulk endpoint). The
-                                // CoC is closed and reopened around any failed exchange — that *is*
-                                // the discard, and it is the peer that performs it — so here the two
-                                // dispositions are the same answer.
-                                TransferDisposition::Answer(bytes) | TransferDisposition::AnswerIdleAbort(bytes) => {
+                                TransferDisposition::Answer(bytes) => {
                                     info!("ble: [gatt] transfer_control: answered on status");
                                     status_msg = Some(bytes);
+                                }
+                                // The *drain* half of an idle abort is a transport obligation the
+                                // radio does not have — it exists so a transport with an unrecallable
+                                // byte pipe can empty it before the peer retries (the cable's bulk
+                                // endpoint), and the CoC is closed and reopened around any failed
+                                // exchange, which *is* the discard and is the peer's to perform. The
+                                // **store** half is not transport-specific, so it still runs; there
+                                // is simply nothing to sequence it behind.
+                                TransferDisposition::AnswerIdleAbort(abort) => {
+                                    info!("ble: [gatt] transfer_control: idle abort answered on status");
+                                    crate::link::transfer::finish_idle_abort(store, &mut guard, &abort);
+                                    status_msg = Some(abort.bytes);
                                 }
                             }
                             e.accept()
