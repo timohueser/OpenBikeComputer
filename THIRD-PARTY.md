@@ -1807,7 +1807,7 @@ DEALINGS IN THE SOFTWARE.
 
 ### MIT License
 
-Applies to: `embedded-hal-async 1.0.0`, `embedded-hal-bus 0.3.0`
+Applies to: `embedded-hal-async 1.0.0`
 
 ```text
 Copyright (c) 2021-2022 The Rust embedded HAL team and contributors.
