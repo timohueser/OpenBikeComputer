@@ -489,8 +489,22 @@ second protocol. What is **board-specific** and worth knowing:
   `BULK_OUT_BURST_PACKETS` in `src/usb/mod.rs`; the sweep recipe is on the constant, and both RAM
   baselines move with it. **Bench it from RTT:** flash `cargo run --release`, upload a multi-shard
   map from the web builder, and read the `~{} kB/s` figure on each
-  `usb: [bulk] upload finished` line. `usb: [bulk] drained …` / `discarded … unclaimed bytes` and
-  the `reject probe:` warn are the lines that say a burst went wrong rather than slow.
+  `usb: [bulk] upload finished` line. The watch-list — each line says something different went
+  wrong, and none of them is "slow":
+
+  | RTT line | What it means |
+  | :-- | :-- |
+  | `ep_out buffer overflow index=2` (driver) | **The burst reader armed with bytes still staged.** Should be structurally impossible — `arm_transfer` asserts against it — so a panic is the expected form. Either way it is 512 B of silent loss and a CRC failure minutes later. |
+  | the endpoint goes dead after exactly one burst | The core cleared `EPENA` on transfer completion and the stock `DOEPTSIZ`+`CNAK` re-arm is not enough on this part. Nothing else looks like this. |
+  | `discarded N unclaimed bytes while idle` with **N > 512** | Payload racing its own announce, now absorbed a whole burst deep. Expected to disappear once the idle-read fix lands; before it, this is bytes being thrown away. |
+  | `reject probe: first payload bytes …` | A CRC failure, with the discriminator inline: a **clean format magic** means the stream was offset-free and lost or gained bytes mid-way (look for the overflow line above); **garbage** means it arrived offset. |
+  | `host overran the announced length by N B` | The peer sent more than it announced — a host bug, not a device one. |
+  | `still receiving … into an abort drain` | The drain is not keeping up with a burst-armed endpoint; harmless, but it means the abort answer is late. |
+
+  Two cases worth constructing deliberately, because natural traffic almost never produces them:
+  an object whose length is an **exact multiple of 512** (no short packet anywhere, so the final
+  burst stays armed across the gap to the next announce), and an **unplug** and a host **abort**
+  in the middle of a burst.
 - **Windows needs no driver install**: MS OS 2.0 BOS descriptors declare the `WINUSB` compatible id
   and a stable `DeviceInterfaceGUIDs` property, so Windows auto-binds WinUSB with no `.inf` and no
   Zadig.
