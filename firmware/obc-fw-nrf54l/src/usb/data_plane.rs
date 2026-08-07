@@ -97,6 +97,24 @@ static DRAIN_DONE: Signal<CriticalSectionRawMutex, u32> = Signal::new();
 /// Which drain request is current. Bumped by every request, echoed by the completion.
 static DRAIN_GEN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
+/// Control plane → data plane: "the endpoints went away — tear the link down."
+///
+/// The idle loop used to learn this from its own `ep_out.read` failing, and that read is gone (see
+/// the `select` in [`run`]: reading while nothing is armed is what ate a pipelined manifest). The
+/// control plane reads *its* OUT endpoint continuously and cannot stop, so it observes the same edge
+/// on the same poll — and it genuinely is the same edge, because a configuration change enables and
+/// disables every endpoint of the interface together, never one half of the pair.
+///
+/// It matters that something still observes it while idle: the teardown this triggers is what
+/// abandons a half-uploaded volume set when the cable goes between two of its shards (spec §1
+/// principle 4 — transfers restart, never resume, and a set with no manifest is not a map).
+///
+/// Latched, and deliberately so: a disable landing *during* a transfer is answered by that
+/// transfer's own read failing, and the teardown that follows clears this. What it must never do is
+/// outlive the teardown it caused — a stale one standing over the next enumeration would abandon a
+/// healthy set — so the teardown resets it on every path out of the inner loop.
+pub(crate) static LINK_DOWN: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
 /// How long the control plane waits for the data plane to finish draining before answering anyway.
 /// A little over [`DRAIN_BUDGET_MS`], since that is what it is waiting on.
 const DRAIN_ACK_TIMEOUT_MS: u64 = DRAIN_BUDGET_MS + 250;
@@ -109,6 +127,27 @@ const DRAIN_ACK_TIMEOUT_MS: u64 = DRAIN_BUDGET_MS + 250;
 /// `DRAIN_REQ` left standing is the first arm of the data plane's idle `select`, so it would fire
 /// against the *next* transfer and eat up to a full drain window of its opening payload.
 pub(crate) async fn drain_before_idle_abort() {
+    request_drain().await
+}
+
+/// Ask the data plane to empty the bulk pipe **after** an announce was refused on the control plane
+/// with its payload already in flight.
+///
+/// The same handshake as [`drain_before_idle_abort`], at the other end of the same problem. The host
+/// pipelines an upload's bytes behind its announce, so a descriptor-open reject (storage full, a
+/// size ceiling, a set rule) is answered with a window of `transferOut`s already submitted — and
+/// with nothing armed to read them the endpoint NAKs, which means those transfers never settle and
+/// the host's own send loop blocks in front of the abort it would otherwise send. Emptying the pipe
+/// is what lets it unwind.
+///
+/// **After the answer, never before.** Draining first would spend the whole budget with the host
+/// still pumping, because the thing that makes it stop is the very status sitting behind the drain —
+/// the mistake `drain_bulk_out`'s own note records. Answer, then empty.
+pub(crate) async fn drain_after_refused_announce() {
+    request_drain().await
+}
+
+async fn request_drain() {
     let generation = DRAIN_GEN.fetch_add(1, core::sync::atomic::Ordering::Relaxed).wrapping_add(1);
     DRAIN_DONE.reset();
     DRAIN_REQ.signal(());
@@ -131,37 +170,50 @@ pub(crate) async fn drain_before_idle_abort() {
 /// The host does not wait for the device between chunks — the bulk channel is unframed and
 /// unacknowledged, which is what lets an upload keep several `transferOut`s on the wire at once
 /// (`UPLOAD_WINDOW` × `DEFAULT_CHUNK_SIZE`, 256 KiB today) — and WebUSB cannot cancel a submitted
-/// transfer. So a transfer that ends early leaves bytes still arriving, and the idle loop's discard
-/// does not save us: it deliberately lets `TRANSFER_ARM` win its `select`, so a retry's descriptor
-/// can arm while the leftovers are still coming and they become its opening payload.
+/// transfer. So a transfer that ends early leaves bytes still arriving, and nothing else in this
+/// module will take them: with no descriptor armed the endpoint is un-armed and simply NAKs, which
+/// holds the leftovers on the wire indefinitely rather than clearing them.
 ///
-/// # Where this is allowed to run, and why every call site is an abort
+/// # Where this is allowed to run, and why every call site is a termination the host knows about
 ///
-/// **Draining only works where the peer has stopped pumping**, and there is exactly one such moment
-/// in the protocol: the **abort handshake**. The host has thrown out of its send loop, it is holding
-/// an `op = 3` open, and the spec has it wait for `transferResult(aborted)` before it does anything
-/// else. All three call sites are that moment — an abort against a live upload (the arm in
-/// [`run_upload`]), an abort against a live echo (the arm in [`run_echo`]), and an abort that found
-/// nothing armed (the control plane, through [`drain_before_idle_abort`]).
+/// **Draining only works where the peer has stopped pumping**, and what makes it stop is being told
+/// the exchange is over. So every call site is either side of that message:
 ///
-/// **It is deliberately *not* run on a device-originated termination** — a rejected descriptor, a
-/// card that refused an append, a failed final flush. That reads like the same situation and is the
-/// opposite one: the host has not been told anything yet, so it refills the window exactly as fast
-/// as this discards, and the thing that would make it stop — the terminal `transferResult` — is
-/// sitting *behind* the drain. An earlier cut of this branch did drain there, and all it bought was
-/// up to [`DRAIN_BUDGET_MS`] of delay before the host could learn to stop, plus a warn on every
-/// large upload that hit a storage failure.
+/// - The **abort handshake**, before the answer: the host has thrown out of its send loop, it is
+///   holding an `op = 3` open, and the spec has it wait for `transferResult(aborted)` before it does
+///   anything else. That is an abort against a live upload (the arm in [`run_upload`]), against a
+///   live echo (the arm in [`run_echo`]), or against nothing at all (the control plane, through
+///   [`drain_before_idle_abort`]).
+/// - A **device-originated termination**, *after* the answer: a refused announce, a card that
+///   refused an append. The host had a window in flight and no way to recall it; those transfers
+///   settle only when something reads them, and until they settle the host cannot even reach the
+///   abort that would ask us to. So the terminal `transferResult` goes out first — that is what
+///   makes the host stop generating chunks — and the pipe is emptied immediately behind it.
 ///
-/// Those paths need no drain of their own: the host's send loop settles every outstanding write
-/// before it unwinds (`pumpChunks`), and the bytes it is waiting on are consumed by this module's
-/// idle loop, which is reading the whole time. Where that guarantee does *not* hold — a rider's
-/// cancel, where the write promises reject while their transfers stay on the wire — the host
-/// follows up with the abort that brings us back to the handshake above.
+/// **The order is the whole lesson.** An earlier cut drained *before* answering on those paths and
+/// bought nothing but [`DRAIN_BUDGET_MS`] of delay and a warn, because the host cannot stop until it
+/// has been told and the telling was queued behind the drain. It was then deleted outright, which
+/// was correct only while the idle loop was reading unclaimed bytes the whole time; it no longer is
+/// (that read is what ate a pipelined manifest — see [`run`]), so the drain is back, on the far side
+/// of the answer.
+///
+/// A **completed** transfer needs none of this: the receiver consumed exactly the announced length,
+/// so a commit refusal or a failed final flush leaves nothing behind.
 #[inline(never)]
 async fn drain_bulk_out(ep: &mut EpOut, buf: &mut [u8]) {
     let deadline = Instant::now() + embassy_time::Duration::from_millis(DRAIN_BUDGET_MS);
     let mut dropped = 0usize;
     loop {
+        // **A drain never outranks an armed transfer.** Every call site above runs where the host is
+        // provably not opening one, so this should be unreachable — but "should" is exactly the
+        // reasoning the idle discard was built on, and its failure mode was a transfer starving
+        // forever on bytes something else had eaten. Yielding instead costs a poisoned first chunk
+        // at worst, which fails one whole-object CRC and is retried; the alternative does not
+        // converge.
+        if TRANSFER_ARM.signaled() {
+            warn!("usb: [bulk] a transfer armed mid-drain — stopping rather than eating its payload");
+            break;
+        }
         match select(ep.read(buf), Timer::after_millis(DRAIN_QUIET_MS)).await {
             Either::First(Ok(n)) => dropped += n,
             // The endpoint went away — an unplug drains it far more thoroughly than we can.
@@ -213,16 +265,32 @@ pub(crate) async fn run(
         ep_out.wait_enabled().await;
         info!("usb: [bulk] endpoint enabled — data plane ready");
         loop {
-            // Watch the byte pipe even while no descriptor is armed. A reject is asynchronous
-            // relative to the sender, so raw bytes may already be queued; discard those unclaimed
-            // bytes rather than letting them be read as the next transfer's first chunk. A valid
-            // sender waits for its control-frame reply, and the control plane signals TRANSFER_ARM
-            // before sending that reply, so its descriptor always wins the race.
-            // The first arm is the control plane asking for a drain before it answers an abort
+            // **Nothing reads the bulk pipe while nothing is armed.** With the OUT endpoint
+            // un-armed the USB core simply NAKs, and the bytes a pipelining host already put on the
+            // wire wait there until a transfer arms and reads them — hardware flow control, which is
+            // the only buffer that cannot lose a race.
+            //
+            // This arm used to be `ep_out.read(buf)`, discarding whatever it found on the reasoning
+            // that a valid sender waits for its control-frame reply. It does not, by design: the
+            // host pipelines an object's payload behind its announce because a descriptor reject is
+            // asynchronous (`builder/app/src/lib/usb/client.ts`). So the discard was racing the
+            // control plane's `classify` — which awaits the shared store lock and can therefore sit
+            // behind a map render for tens of milliseconds — for the same bytes, and a small enough
+            // object lost outright: the field log has a whole 296-byte set manifest discarded 18 ms
+            // *before* the announce that claimed it was answered, leaving `run_upload` armed for
+            // bytes that no longer existed and the upload wedged at 0% forever.
+            //
+            // What still cleans up genuinely unclaimed bytes is the **explicit** drain handshake
+            // (the first arm below): the host follows every failed exchange with an `op = 3` and
+            // waits, which is the one moment it is provably not pumping. That protocol postdates
+            // this discard and subsumes it.
+            //
+            // The first arm is the control plane asking for that drain before it answers an abort
             // that found nothing in flight (see `drain_before_idle_abort`). It lives here rather
             // than in the control plane because this task owns the endpoint, and it sits ahead of
             // the arm branch because the whole point is to finish before the peer's next descriptor.
-            let armed = match select3(DRAIN_REQ.wait(), TRANSFER_ARM.wait(), ep_out.read(buf)).await {
+            // The third is the endpoint-lost edge the idle read used to carry (see [`LINK_DOWN`]).
+            let armed = match select3(DRAIN_REQ.wait(), TRANSFER_ARM.wait(), LINK_DOWN.wait()).await {
                 Either3::First(()) => {
                     let generation = DRAIN_GEN.load(core::sync::atomic::Ordering::Relaxed);
                     drain_bulk_out(&mut ep_out, buf).await;
@@ -230,13 +298,8 @@ pub(crate) async fn run(
                     continue;
                 }
                 Either3::Second(armed) => armed,
-                Either3::Third(Ok(n)) if n > 0 => {
-                    warn!("usb: [bulk] discarded {} unclaimed bytes while idle", n);
-                    continue;
-                }
-                Either3::Third(Ok(_)) => continue, // a zero-length packet is not data
-                Either3::Third(Err(e)) => {
-                    info!("usb: [bulk] idle read ended: {:?} — re-arming", defmt::Debug2Format(&e));
+                Either3::Third(()) => {
+                    info!("usb: [bulk] endpoints disabled while idle — re-arming");
                     break;
                 }
             };
@@ -289,6 +352,12 @@ pub(crate) async fn run(
         // enumeration's first transfer and eats up to a drain window of its opening payload.
         DRAIN_REQ.reset();
         DRAIN_DONE.reset();
+        // And the endpoint-lost edge, for the sharper half of the same reason: this teardown *is*
+        // the answer to it, so carrying it into the next enumeration would abandon the next set
+        // between two of its shards. A disable arriving after this point is not lost — the
+        // `wait_enabled` below is what the next one waits on, and the control plane latches the one
+        // after that.
+        LINK_DOWN.reset();
         // `wait_enabled` returns immediately while the endpoint is still up, so a *persistent*
         // driver-level error would hot-spin this loop — and on a cooperative executor that starves
         // the ride loop, freezing the map. Back off a beat, like the BLE CoC accept loop.
@@ -381,12 +450,13 @@ async fn run_upload(
         if holds_magic {
             crate::link::map_transfer_storage_failed();
         }
-        // No drain here, and that is the design rather than an omission - see `drain_bulk_out`.
-        // The host has not been told anything yet, so it would refill the window as fast as we
-        // emptied it, and the answer that makes it stop is the very thing we would be delaying. Its
-        // own send loop settles what it queued, and this module's idle loop consumes those bytes.
+        // Answer first, *then* empty the pipe — see `drain_bulk_out`. The host announced this
+        // object's whole length and has a window of it already submitted; the status is what stops
+        // it generating more, and the drain is what lets the transfers it already handed to the
+        // controller settle, since with nothing armed the endpoint only NAKs them.
         close_transfer();
         tx.send_status(transfer_result(rx.object_id(), TransferStatus::Error)).await;
+        drain_bulk_out(ep, buf).await;
         return TransferOutcome::Answered;
     }
     if holds_magic {
@@ -462,6 +532,9 @@ async fn run_upload(
             }
             close_transfer();
             tx.send_status(transfer_result(rx.object_id(), TransferStatus::Error)).await;
+            // The rest of the announced object is still coming and nothing will be armed to read
+            // it. Same order as the open failure above: answer, then empty.
+            drain_bulk_out(ep, buf).await;
             return TransferOutcome::Answered;
         }
         if holds_magic {

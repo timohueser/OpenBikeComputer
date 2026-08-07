@@ -127,6 +127,61 @@ describe("assembled volume-set upload", () => {
     });
 
     /**
+     * **#1173, the wedge that ended the first complete set upload on glass.**
+     *
+     * The manifest is the one file in a set small enough to be fully in flight before its announce
+     * is even looked at: shards are megabytes and terrain is a raster, but a one-shard manifest is
+     * 128 bytes. The host writes the announce and starts pumping without waiting to hear it was
+     * accepted, and the device classifies behind the shared store lock — a map render holds that for
+     * tens of milliseconds. So the manifest's bytes land on a device with nothing armed.
+     *
+     * The firmware used to read and discard them there, and the field log shows exactly that: a
+     * 296-byte manifest discarded 18 ms *before* its announce was answered, then "receiving map,
+     * 0%" until the cable came out, with every shard and the terrain band already committed and the
+     * set unmountable for want of its last 296 bytes. Nothing reads the pipe while nothing is armed
+     * now — it NAKs, and the bytes wait.
+     *
+     * `holdNextAnnounce` widens that window to certainty rather than inventing a new one.
+     */
+    it("commits a manifest whose bytes arrived before the device processed its announce", async () => {
+        const { client, device, close } = loopbackDevice();
+        try {
+            const shard = syntheticBytes(4096);
+            const manifest = obcsManifest([shard.length]);
+            const state = setSendState(1, shard.length + manifest.length);
+            const ctx = context();
+            await sendAssembledSetFile(
+                client,
+                state,
+                { name: "MS1S00.OBM", role: "core", sha256: digest(shard), byteLength: shard.length, bytes: shard },
+                ctx,
+            );
+            expect(device.stagedMapShardCount).toBe(1);
+
+            // The manifest's announce stalls in the control loop while its whole payload arrives.
+            const release = device.holdNextAnnounce();
+            const sealing = sendAssembledSetFile(
+                client,
+                state,
+                { name: "MS1.OBS", role: "manifest", sha256: "", byteLength: manifest.length, bytes: manifest },
+                ctx,
+            );
+            for (let i = 0; i < 20; i++) await Promise.resolve();
+            await new Promise((resolve) => setTimeout(resolve, 5));
+            release();
+            await sealing;
+
+            // The set is sealed, not starved: an id assigned, every byte accounted for, nothing left
+            // staged. Before the fix this call never returned.
+            expect(state.setId).toBe(1);
+            expect(state.committedBytes).toBe(state.totalBytes);
+            expect(device.stagedMapShardCount).toBe(0);
+        } finally {
+            await close();
+        }
+    });
+
+    /**
      * **#1044, the regression this file could not previously see.**
      *
      * Since the first terrain band went live in the catalog, an assembled set carries a `terrain`
