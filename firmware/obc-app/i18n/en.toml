@@ -555,6 +555,7 @@ failed = "Map not stored"
 failed_storage = "The card could not store the map."
 failed_damaged = "The map arrived damaged. Send it again."
 failed_format = "That file is not a map this device reads."
+failed_refused = "The map arrived incomplete. Send it again."
 
 # --- Boot-fault cards (fault.rs; drawn pre-app, so the device renders the English
 # column in every build — catalogued so the repertoire test pins the copy) ---

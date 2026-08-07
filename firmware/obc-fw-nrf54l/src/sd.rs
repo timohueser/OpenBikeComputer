@@ -409,7 +409,9 @@ struct SetIdentity {
     shard_count: u8,
     obcm_version: u8,
     bbox: BBox,
-    /// Summed over the shards; the manifest's own bytes are added by the caller.
+    /// Summed over every record the manifest carries — the OBCM shards **and** the terrain raster,
+    /// as `OBCA_Spec.md` §5.4 requires of the one size figure a UI may show (#1044). The manifest's
+    /// own bytes are added by the caller.
     total_bytes: u64,
     /// The manifest's display name (§5.2), empty when it carries none.
     name: String<24>,
@@ -2146,11 +2148,16 @@ impl Storage {
     }
 
     /// The reader's half of `OBCA_Spec.md` §5.3 for a `MS{id}.OBS` manifest, at **scan** time:
-    /// parse and validate the manifest itself, then check that every shard it names exists, is
-    /// exactly the recorded `Bytes`, opens as OBCM at the recorded version, and carries the
-    /// recorded header bbox. `None` means *this is not a map* — §5.4 admits no partial acceptance,
-    /// so a set with a shard missing or still growing is simply absent from the catalog rather
-    /// than a map with holes in it.
+    /// parse and validate the manifest itself, then check that every **OBCM shard** it names exists,
+    /// is exactly the recorded `Bytes`, and opens as OBCM at the recorded version with the recorded
+    /// header bbox. `None` means *this is not a map* — §5.4 admits no partial acceptance, so a set
+    /// with a shard missing or still growing is simply absent from the catalog rather than a map
+    /// with holes in it.
+    ///
+    /// **The `terrain` record is counted and not checked**, which is §5.3's one exception and is
+    /// why the sentence above says *OBCM shard* rather than *record*: a raster that is absent or
+    /// unreadable MUST NOT keep the set out of the catalog. See
+    /// [`set_file_totals`](Self::set_file_totals).
     ///
     /// The SHA-256 digests are deliberately **not** checked: §5.3 lets a device defer them, and
     /// hashing gigabytes off an SD card is minutes of work at boot.
@@ -2179,7 +2186,7 @@ impl Storage {
             );
         }
 
-        let total = self.set_shard_totals(&parsed, id)?;
+        let total = self.set_file_totals(&parsed, id)?;
         let mut identity = set_identity_from_manifest(&parsed);
         identity.total_bytes = total;
         Some(identity)
@@ -2208,17 +2215,39 @@ impl Storage {
         obc_formats::obcs::parse(buf.get(..read)?).ok()
     }
 
-    /// The other half of `OBCA_Spec.md` §5.3: every shard a parsed manifest names exists, is
-    /// exactly the recorded `Bytes`, opens as OBCM at the manifest's version, and carries the
-    /// recorded header bbox. Returns the shards' total bytes, or `None` for *this is not a map* —
-    /// there is no partial acceptance.
+    /// The other half of `OBCA_Spec.md` §5.3: every record a parsed manifest names exists and is
+    /// exactly the recorded `Bytes` — each OBCM shard opening as OBCM at the manifest's version
+    /// with the recorded header bbox, and the terrain record (if any) opening as an OBCT container.
+    /// Returns the set's total bytes on the card, or `None` for *this is not a map* — there is no
+    /// partial acceptance.
     ///
     /// Shared by the two moments it has to be true: the boot scan, which decides whether a set on
     /// the card is listed at all, and the upload's own manifest commit, which decides whether the
     /// `OBCS` magic is allowed to be written. Running the same code at both is the point — a set
     /// this device accepts is by construction one it will still accept at the next boot.
-    fn set_shard_totals(&self, parsed: &obc_formats::obcs::SetManifest, id: u16) -> Option<u64> {
-        let mut total = 0u64;
+    ///
+    /// **The terrain record is counted here and never judged here** (#1044), and that is a rule
+    /// [`OBCA_Spec.md` §5.3](../../../specs/OBCA_Spec.md) states in so many words: *a missing or
+    /// unreadable terrain shard does not fail the mount — a reader MUST mount such a set, MUST fall
+    /// back to no elevation, and MUST NOT present it as a fault.* This function's `None` is
+    /// "**this is not a map**": the boot scan drops the set from the catalog and counts it toward
+    /// the unlistable tally that raises MAP UNREADABLE. Letting a raster reach that verdict would
+    /// take a rider's entire map away because they deleted an `.OBD` to reclaim space, or because a
+    /// hand-copied one was truncated, or because one 32-byte header read glitched at boot, or
+    /// because a future OBCT version bump made every card on earth stop listing.
+    ///
+    /// So the record contributes its **recorded** `Bytes` to the total and nothing else happens.
+    /// The manifest is the authority on what the set claims to be (it is what `total_bytes()` sums
+    /// too), the figure stays stable whatever state the file is in, and the scan does no I/O for it
+    /// at all. Whether the raster actually opens is decided later and locally, by
+    /// [`open_terrain`](Self::open_terrain), which already degrades to *no elevation* by design.
+    ///
+    /// The **upload's** commit is the one place that judges it, because there the two ends built
+    /// the manifest and the raster together seconds ago — see
+    /// [`validate_committed_manifest`](Self::validate_committed_manifest) and the asymmetry written
+    /// out in `obc_app::terrain_record_agrees`.
+    fn set_file_totals(&self, parsed: &obc_formats::obcs::SetManifest, id: u16) -> Option<u64> {
+        let mut total = parsed.terrain().map_or(0u64, |terrain| terrain.bytes as u64);
         for (index, shard) in parsed.shards().iter().enumerate() {
             let name = set_shard_name_for(id, index)?;
             let (bytes, version, bbox) = self.shard_identity(&name)?;
@@ -2237,6 +2266,18 @@ impl Storage {
             total += bytes as u64;
         }
         Some(total)
+    }
+
+    /// The terrain shard's byte length, or `None` when the file is absent, unreadable, or does not
+    /// open as an OBCT container this firmware reads (#1044).
+    fn terrain_shard_len(&self, name: &ShortFileName) -> Option<u32> {
+        let file = self.vmgr.open_file_in_dir(self.root, name, Mode::ReadOnly).ok()?;
+        let len = self.vmgr.file_length(file).unwrap_or(0);
+        let mut header = [0u8; obc_formats::obct::HEADER_LEN];
+        let src = SdByteSource::new(&self.vmgr, file, len);
+        let ok = (len as usize) >= header.len() && src.read_at(0, &mut header).is_ok();
+        let _ = self.vmgr.close_file(file);
+        (ok && obc_formats::obct::validate_header_prefix(&header).is_ok()).then_some(len)
     }
 
     /// One shard's `(byte length, OBCM version, header bbox)`, or `None` when the file is absent,
@@ -3555,6 +3596,88 @@ impl Storage {
         Some(len)
     }
 
+    /// Open the set's **terrain shard** `MS{id}.OBD` for streaming (#1044) — the raster twin of
+    /// [`set_shard_begin`](Self::set_shard_begin), with the four zero bytes that stand in for the
+    /// held-back `OBCT` magic.
+    ///
+    /// The name is derived, not indexed: there is at most one terrain shard per set, and
+    /// `MS{id}.OBD` is exactly the `OBCT_Spec.md` §4.6 sidecar of `MS{id}.OBS`, which is what lets
+    /// the read side resolve it by the sidecar convention without consulting the manifest at all.
+    pub fn set_terrain_begin(&mut self, id: u16) -> bool {
+        self.upload_close();
+        let Some(name) = obc_formats::obcs::terrain_name(id) else { return false };
+        match self.vmgr.open_file_in_dir(self.root, name.as_str(), Mode::ReadWriteCreateOrTruncate) {
+            Ok(file) => {
+                if self.vmgr.write(file, &[0u8; 4]).is_err() {
+                    defmt::warn!("SD: cannot start the MS{=u16} terrain shard — the card refused", id);
+                    let _ = self.vmgr.close_file(file);
+                    return false;
+                }
+                self.open_upload = Some((file, UploadOwner::Set));
+                defmt::info!("SD: terrain shard of MS{=u16} streaming (magic held back)", id);
+                true
+            }
+            Err(e) => {
+                defmt::warn!("SD: cannot create /MS{=u16}.OBD: {}", id, defmt::Debug2Format(&e));
+                false
+            }
+        }
+    }
+
+    /// Commit the streamed terrain shard: patch the held-back `OBCT` magic into `MS{id}.OBD` after
+    /// the header prefix validates. Returns the stored length, or `None` with **that file deleted**.
+    ///
+    /// Same shape as [`set_shard_commit`](Self::set_shard_commit) and same reasoning: a failed
+    /// raster is one independent file the host may re-send, and what it must not leave behind is a
+    /// zero-magic decoy the manifest commit would then have to reason about. What differs is the
+    /// format it is checked against — an OBCT container, not an OBCM file — and that is the whole
+    /// reason terrain needed its own object type rather than a shard index (#1044).
+    pub fn set_terrain_commit(&mut self, id: u16, magic: [u8; 4]) -> Option<u32> {
+        self.upload_close();
+        let derived = obc_formats::obcs::terrain_name(id)?;
+        let name = ShortFileName::create_from_str(derived.as_str()).ok()?;
+        let file = self.vmgr.open_file_in_dir(self.root, &name, Mode::ReadWriteAppend).ok()?;
+        let len = self.vmgr.file_length(file).unwrap_or(0);
+        let mut header = [0u8; obc_formats::obct::HEADER_LEN];
+        let read = self.vmgr.file_seek_from_start(file, 0).is_ok()
+            && matches!(self.vmgr.read(file, &mut header), Ok(n) if n == header.len());
+        header[0..4].copy_from_slice(&magic);
+        if !read || obc_formats::obct::validate_header_prefix(&header).is_err() {
+            let _ = self.vmgr.close_file(file);
+            let _ = self.vmgr.delete_file_in_dir(self.root, &name);
+            defmt::warn!("SD: the MS{=u16} terrain shard is not a readable OBCT — rejected, file deleted", id);
+            return None;
+        }
+        let patched = self.vmgr.file_seek_from_start(file, 0).is_ok()
+            && self.vmgr.write(file, &magic).is_ok()
+            && self.vmgr.flush_file(file).is_ok();
+        let _ = self.vmgr.close_file(file);
+        if !patched {
+            defmt::warn!("SD: MS{=u16} terrain magic patch failed — left inert", id);
+            return None;
+        }
+        defmt::info!("SD: terrain shard of MS{=u16} committed ({=u32} B)", id, len);
+        Some(len)
+    }
+
+    /// Drop the in-flight terrain shard: close the streaming handle and delete just that
+    /// `MS{id}.OBD`. The set's session survives, exactly as it does for a failed OBCM shard.
+    pub fn set_terrain_discard(&mut self, id: u16) {
+        if let Some((file, _)) = self.open_upload.take() {
+            let _ = self.vmgr.close_file(file);
+        }
+        let Some(derived) = obc_formats::obcs::terrain_name(id) else { return };
+        let Ok(name) = ShortFileName::create_from_str(derived.as_str()) else { return };
+        match self.vmgr.delete_file_in_dir(self.root, &name) {
+            Ok(()) => defmt::info!("SD: dropped the partial terrain shard of MS{=u16}", id),
+            Err(e) => defmt::warn!(
+                "SD: could not drop the partial terrain shard of MS{=u16} ({}) — a re-send truncates it",
+                id,
+                defmt::Debug2Format(&e)
+            ),
+        }
+    }
+
     /// Re-open the set's `MS{id}.OBS` token for the manifest stream, truncating it back to the four
     /// zero bytes. The manifest is the **last** file of the set (§5.4), and it is written into the
     /// same name the token already occupies, so the set is never without its in-flight marker —
@@ -3615,9 +3738,18 @@ impl Storage {
     }
 
     /// Parse the streamed `MS{id}.OBS` with `magic` spliced over its placeholder and check it
-    /// against the card, returning the shards' total bytes. Split out of
+    /// against the card, returning the set's total bytes. Split out of
     /// [`set_manifest_commit`](Self::set_manifest_commit) so the 1,864 B manifest buffer leaves the
     /// frame before the commit write (the ~36 KB stack rule).
+    ///
+    /// Everything [`set_file_totals`](Self::set_file_totals) checks, **plus** the one check that is
+    /// the commit's alone: the `terrain` record against the raster actually on the card (#1044).
+    /// The boot scan must not make that judgement — §5.3 makes an unreadable raster a mount-time
+    /// non-failure and the scan's `None` means *this is not a map* — but here the host built both
+    /// files seconds ago and was told the exact manifest length it had to announce, so a
+    /// disagreement is the two ends contradicting each other about this very transfer. The rule and
+    /// the reason it differs by call site live in `obc_app::terrain_record_agrees`, where they are
+    /// tested.
     #[inline(never)]
     fn validate_committed_manifest(&self, id: u16, magic: [u8; 4]) -> Option<u64> {
         let derived = obc_formats::obcs::manifest_name(id)?;
@@ -3630,7 +3762,17 @@ impl Storage {
         if parsed.encoded_len() != read {
             return None;
         }
-        self.set_shard_totals(&parsed, id)
+        let recorded = parsed.terrain().map(|terrain| terrain.bytes);
+        let on_card = derived_short_name(obc_formats::obcs::terrain_name(id))
+            .and_then(|terrain_name| self.terrain_shard_len(&terrain_name));
+        if !obc_app::terrain_record_agrees(recorded, on_card) {
+            defmt::warn!(
+                "SD: the MS{=u16} manifest's terrain record does not describe the raster beside it — set discarded",
+                id
+            );
+            return None;
+        }
+        self.set_file_totals(&parsed, id)
     }
 
     /// Read a whole card-root file into `buf`, returning how many bytes landed, or `None` when it
@@ -3704,6 +3846,16 @@ impl Storage {
     /// 2. **An uncommitted orphan shard** — an `MS{id}S{kk}.OBM` with no `MS{id}.OBS` beside it at
     ///    all, whose own magic never landed. The residue of a torn transfer whose token delete
     ///    landed and whose shard delete did not.
+    ///
+    /// **The terrain shard needs no third pass**, and that is a decision rather than an omission
+    /// (#1044). Pass 1 reclaims it with the rest of the set — `delete_plan` names `MS{id}.OBD` —
+    /// which covers every way this device abandons an upload, because a raster is only ever
+    /// accepted while a set session is open and that session's token is on the card. What is left
+    /// is an `MS{id}.OBD` whose manifest *and* every shard have already been reclaimed, and
+    /// probing for that would mean claiming a bare `.OBD` — which is exactly what a rider's own
+    /// card-reader copy looks like mid-copy, and what the orphan rule below refuses to touch for
+    /// precisely that reason. It costs one file's bytes until the id is reused, and
+    /// [`set_upload_begin`](Self::set_upload_begin) clears the whole id before it writes.
     ///
     /// What it will **not** touch is the case §5.4 leaves to a MAY: a *complete* orphan shard with
     /// no manifest. That is precisely the shape a rider copying a set over a card reader leaves

@@ -250,6 +250,10 @@ pub(crate) async fn run(
                     let target = MapTarget::Shard(part);
                     run_upload(tx, &mut ep_out, store, shared, &desc, rx, target, buf).await
                 }
+                Armed::SetTerrain(desc, rx) => {
+                    let target = MapTarget::Terrain;
+                    run_upload(tx, &mut ep_out, store, shared, &desc, rx, target, buf).await
+                }
                 Armed::SetManifest(desc, rx) => {
                     let target = MapTarget::Manifest;
                     run_upload(tx, &mut ep_out, store, shared, &desc, rx, target, buf).await
@@ -303,6 +307,9 @@ enum MapTarget {
     Map,
     /// One shard of the volume set in flight — `MS{id}S{kk}.OBM` (#1039). The part says which.
     Shard(obc_ble::SetPart),
+    /// The set's terrain shard — `MS{id}.OBD`, an OBCT raster (#1044). There is at most one per
+    /// set, so unlike a shard it needs nothing to say *which* file it is.
+    Terrain,
     /// The set manifest — `MS{id}.OBS`, and the commit point of the whole set (`OBCA_Spec.md` §5.4).
     Manifest,
 }
@@ -353,6 +360,7 @@ async fn run_upload(
             MapTarget::Object => store.borrow_mut().upload_begin(&mut guard).then_some(0),
             MapTarget::Map => store.borrow_mut().map_upload_begin(&mut guard),
             MapTarget::Shard(part) => store.borrow_mut().set_shard_begin(&mut guard, part),
+            MapTarget::Terrain => store.borrow_mut().set_terrain_begin(&mut guard),
             MapTarget::Manifest => store.borrow_mut().set_manifest_begin(&mut guard),
         };
         match opened {
@@ -510,6 +518,16 @@ async fn run_upload(
                 };
                 (part.encode(), status)
             }
+            // The terrain shard's result echoes the **set id**, like the manifest's: a raster has
+            // no part to correlate against, and the set id is the only identity it has. The host
+            // sends it as `new`, so it correlates on the transfer slot rather than the id.
+            MapTarget::Terrain => {
+                let status = match held.take() {
+                    Some(magic) => st.set_terrain_finish(&mut guard, &rx, map_id, magic),
+                    None => TransferStatus::Error,
+                };
+                (map_id, status)
+            }
             // The manifest's result carries the **assigned set id** — the one moment the set's
             // identity crosses the wire, and the answer to "what did my upload become".
             MapTarget::Manifest => {
@@ -577,7 +595,7 @@ fn discard_upload(store: &mut ObjectStore, shared: &mut crate::SharedStore, targ
                 storage.map_upload_abort(map_id);
             }
         }
-        MapTarget::Shard(_) | MapTarget::Manifest => {
+        MapTarget::Shard(_) | MapTarget::Terrain | MapTarget::Manifest => {
             crate::link::map_transfer_ended(None);
             store.set_upload_abort(shared);
         }

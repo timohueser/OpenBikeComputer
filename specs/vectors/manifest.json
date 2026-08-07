@@ -212,14 +212,23 @@
       "crc32": "0x1BFB6E3C",
       "note": "mapShard: object_id is NOT an object id — it is (shard_count << 8) | index, so 0x0802 is shard 2 of 8 (OBCA 5.1). The count rides every shard, not just the first, so a device refuses an over-large set at shard 0"
     },
+    "transfer-set-terrain.bin": {
+      "format": "transferControl (spec 4.2) — 12 bytes, protocol v2",
+      "op": 1,
+      "type": 19,
+      "object_id": 65535,
+      "total_len": 6192,
+      "crc32": "0xD86F2651",
+      "note": "terrainShard: the set's OBCT raster, MS<id>.OBD (OBCA 5.1's terrain role). New-only like the manifest — at most one per set, so there is nothing for an id to select. total_len/crc32 are terrain-shard.obcd's own, and it is sent after every mapShard and before the mapSet"
+    },
     "transfer-set-manifest.bin": {
       "format": "transferControl (spec 4.2) — 12 bytes, protocol v2",
       "op": 1,
       "type": 18,
       "object_id": 65535,
-      "total_len": 520,
+      "total_len": 576,
       "crc32": "0x8B2C4E17",
-      "note": "mapSet: the OBCS manifest, new-only and written last (OBCA 5.4). total_len is fixed by the shard count: 72 + 56 x 8"
+      "note": "mapSet: the OBCS manifest, new-only and written last (OBCA 5.4). total_len is fixed by the RECORD count, not the shard count: 72 + 56 x 9 = the eight OBCM shards plus the terrain record, because OBCA 5.2's Shard Count counts every record (#1044)"
     },
     "transfer-download-request.bin": {
       "format": "transferControl (spec 4.2) — 12 bytes, protocol v2",

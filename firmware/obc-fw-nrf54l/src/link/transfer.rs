@@ -234,6 +234,31 @@ pub(crate) fn classify_transfer(
                 }
                 Err(status) => {
                     log_transfer_reject(&desc, status);
+                    set_refusal_to_glass(store, &desc);
+                    TransferDisposition::Answer(transfer_result(desc.object_id, status))
+                }
+            }
+        }
+        // The set's **terrain shard** (#1044, `OBCA_Spec.md` §5.1's `terrain` role): an OBCT raster
+        // rather than an OBCM file, so it needs its own type — a shard's `object_id` is a
+        // `(shard_count, index)` pair naming one of the files the manifest's *leading* records
+        // describe, and a raster is none of those. Same streaming shape as everything else in this
+        // band: straight into `MS{id}.OBD` with the OBCT magic held back.
+        //
+        // Why the type exists at all rather than the host simply skipping the raster: §5.2's
+        // `Shard Count` counts **every** record, terrain included, so a set whose host holds a
+        // terrain-bearing manifest announces 56 more bytes than a device that never saw the raster
+        // expects — and the manifest is refused at the very last transfer of a multi-gigabyte
+        // upload.
+        (Op::Upload, ObjectType::TerrainShard) if transport == Transport::Usb => {
+            match store.borrow().set_terrain_open(shared, &desc) {
+                Ok(rx) => {
+                    log_transfer_arm(&desc);
+                    TransferDisposition::Arm(Armed::SetTerrain(desc, rx))
+                }
+                Err(status) => {
+                    log_transfer_reject(&desc, status);
+                    set_refusal_to_glass(store, &desc);
                     TransferDisposition::Answer(transfer_result(desc.object_id, status))
                 }
             }
@@ -250,12 +275,13 @@ pub(crate) fn classify_transfer(
                 }
                 Err(status) => {
                     log_transfer_reject(&desc, status);
+                    set_refusal_to_glass(store, &desc);
                     TransferDisposition::Answer(transfer_result(desc.object_id, status))
                 }
             }
         }
-        // A map, a shard or a manifest on the radio. All three are refused by the same rule and for
-        // the same reason: §10 makes a map USB-only because BLE could never move one in a rider's
+        // A map, a shard, a raster or a manifest on the radio. All four are refused by the same rule
+        // and for the same reason: §10 makes a map USB-only because BLE could never move one in a rider's
         // lifetime, and a **set** is strictly larger than the map that argument was made about — a
         // DACH-shaped set is 7.6–8.9 GiB (`OBCA_Spec.md` §5.1). No new argument is needed and none
         // is made; the reject is typed and logged rather than a silent fall-through, so a host that
@@ -303,6 +329,29 @@ pub(crate) fn classify_transfer(
             log_transfer_reject(&desc, TransferStatus::Error);
             TransferDisposition::Answer(transfer_result(desc.object_id, TransferStatus::Error))
         }
+    }
+}
+
+/// Correct the glass when a file of the **volume set in flight** is refused before it streams
+/// (#1044).
+///
+/// An announce-time refusal is normally invisible on the device by design: no transfer starts, so
+/// there is nothing on screen and the host is the one told. A set breaks that, because it is
+/// several transfers and each of them ends its own card — so the shard before this one left "Map
+/// installed / Restart" up, on a set that is now refused whole and will be swept at the next boot.
+/// That is the device stating the opposite of the truth, and it is worth one atomic store to fix.
+///
+/// Scoped to a **session in flight**: with no set open there is no stale success to correct, and
+/// raising a red card at a host that opened with a malformed descriptor would be noise the rider
+/// cannot act on.
+fn set_refusal_to_glass(store: &RefCell<ObjectStore>, desc: &TransferControl) {
+    if store.borrow().set_upload_active() {
+        warn!(
+            "link: [ctl] volume-set file refused mid-set (type {} id {}) — raising the failure card",
+            desc.ty.as_u8(),
+            desc.object_id
+        );
+        super::map_transfer_refused();
     }
 }
 

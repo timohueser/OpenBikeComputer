@@ -509,7 +509,7 @@ export class ProtocolClient {
      * host can fail after one shard committed and before the next descriptor opens.
      *
      * **Naming the set is what asks for the deletion.** An idle `op = 3` naming anything else is a
-     * quiesce that leaves every staged file alone (interface spec §5 rule 5) — which is what makes
+     * quiesce that leaves every staged file alone (interface spec §5 rule 6) — which is what makes
      * a refused shard retryable, and what this call is deliberately not.
      */
     async abandonMapSet(): Promise<void> {
