@@ -46,9 +46,10 @@ binary test vectors pinning these layouts live in
 2. **The CoC is a raw byte pipe.** The BLE Link Layer already CRCs and
    retransmits every packet, so the channel is reliable and ordered. Bulk
    transfer therefore has **no per-chunk framing**: a control-plane descriptor
-   announces the transfer, the CoC carries exactly the object's payload bytes,
-   and one whole-object CRC-32 is verified at commit. The MCU sinks bytes
-   straight to storage with a running CRC — no reassembly buffer.
+   announces the transfer and the CoC carries exactly the object's payload
+   bytes. Uploads normally verify the descriptor's whole-object CRC-32 while
+   streaming straight to storage — no reassembly buffer. §6 defines the one
+   transport-specific exception for USB-only map objects.
 3. **Objects are files the device already speaks.** A route crosses the wire as
    OBCR v3 bytes and is written to SD verbatim; a ride crosses as the compact
    ride object (§7.2). The phone does all format conversion (GPX/TCX → OBCR);
@@ -377,7 +378,7 @@ only object whose transfer is measured in minutes rather than frames.
 1. **New-only.** `object_id` MUST be `0xFFFF`. A named id is answered
    `notFound` — for a map there is no id an upload may target. Replacing a map in
    place would mean destroying the stored bytes as the new ones arrive, which
-   forfeits the "a failed CRC never touches the old copy" guarantee below on the
+   forfeits the "a failed upload never touches the old copy" guarantee below on the
    one object a device cannot rebuild for itself. Replacing a map is *upload the
    new one; the device retires the old one itself* — see rule 5. A host has no
    verb for it: `deleteObject` (§4.4) takes routes and trips, and no map
@@ -392,7 +393,7 @@ only object whose transfer is measured in minutes rather than frames.
    map in a temp file and copying it would double both the write time and the
    free space required, the reference firmware streams a map straight into its
    final file with the leading 4-byte `OBCM` magic held back, and writes that
-   magic only after the whole-object CRC *and* the header have validated. An
+   magic only after the upload's §6 integrity policy *and* the header have validated. An
    interrupted transfer therefore leaves a zero-magic file that every reader
    refuses and a boot sweep reclaims — the same durability the other types get
    from an invisible temp, reached without the copy.
@@ -413,9 +414,9 @@ only object whose transfer is measured in minutes rather than frames.
 A **volume set** ([`OBCA_Spec.md` §5](OBCA_Spec.md)) is one logical map spread
 over OBCM shards, optionally one OBCT **terrain shard**, and an OBCS manifest, so
 it is the first object on this link whose correctness lives *between* transfers.
-Each file is an ordinary upload — its own descriptor, its own whole-object
-CRC-32, its own commit — and the five map rules above apply to each of them
-unchanged. Eight rules govern the sequence, and they are **normative**:
+Each file is an ordinary upload — its own descriptor (including the real
+whole-object CRC-32), its own commit — and the five map rules above apply to each
+of them unchanged. Eight rules govern the sequence, and they are **normative**:
 
 1. **The `object_id` of a `mapShard` is not an object id.** It carries the set's
    `Shard Count` in the **high** byte and this shard's `index` in the **low**
@@ -469,7 +470,7 @@ unchanged. Eight rules govern the sequence, and they are **normative**:
      first names no set at all.
    - An announced `total_len` below one OBCT header is answered `error` — map
      rule 3 above, against the raster's format instead of OBCM's.
-   - A device that **discards** a raster's transfer (a failed CRC, a card that
+   - A device that **discards** a raster's transfer (failed validation, a card that
      refused the write) MUST stop counting it toward rule 8's length, because the
      discard removes the file — including one an earlier attempt had committed.
      The host is then refused at the *manifest's announce*, where it costs one
@@ -606,7 +607,7 @@ such an id and then clearing it (§5.4's replace rule) would delete, at the next
 upload, the map the sweep deliberately spared.
 
 **Resume.** Per **file**, and free: shards are independent files, so a shard
-whose CRC failed is re-sent on its own while the rest stand. This is the property
+whose validation failed is re-sent on its own while the rest stand. This is the property
 rule 6's `mapSet`-only abandonment exists to protect — a re-send is preceded by
 the idle-abort quiesce (§4.2), and that abort must not take the set with it. Across a
 **disconnect**, no — the set is gone, and resuming would need a device → host
@@ -649,7 +650,7 @@ foreign-card hole (#776). Conventions:
 
 - `0xFFFF` on an upload means "new" — the device assigns an id and reports it
   in the `transferResult` (§4.3). Uploading to an existing id replaces that
-  object atomically (commit-then-swap; a failed CRC never touches the old copy).
+  object atomically (commit-then-swap; a failed upload never touches the old copy).
   **`map` is the exception**: it is new-only, because atomic replacement of a
   several-hundred-megabyte object is not something a device can offer — see the
   map rules above.
@@ -705,13 +706,13 @@ restart, never resume (§1 principle 4), so the byte and its `error`-on-nonzero
 reject were dead weight.
 
 **Upload (app → device).** The app writes `op=1` with the object's real
-`total_len` + `crc32`, then streams the whole object over the CoC as raw bytes.
-The device sinks them to storage, CRC-ing as it writes. When `total_len` bytes
-have arrived it verifies the CRC and notifies a `transferResult` (§4.3):
-`committed` on match — a mismatch **rejects** the object (`crcMismatch`), never
-commits it. Uploads are **not resumable** (§1 principle 4): an interrupted upload
-(a dropped link or an `op=3` abort) is discarded, and the app re-sends the object
-from the start.
+`total_len` + `crc32`, then streams the whole object over the active bulk channel
+as raw bytes. The device sinks them to storage and applies §6's integrity policy.
+When `total_len` bytes have arrived it notifies a `transferResult` (§4.3):
+`committed` after the required checks pass; a checked CRC mismatch **rejects** the
+object (`crcMismatch`) and never commits it. Uploads are **not resumable** (§1
+principle 4): an interrupted upload (a dropped link or an `op=3` abort) is
+discarded, and the app re-sends the object from the start.
 
 **Download (app → device request, device → app announce).** The app writes
 `op=2` with `total_len = crc32 = 0`. The device answers with a **`downloadAnnounce`
@@ -732,12 +733,12 @@ already abandoned.
 **Abort with nothing in flight — the quiesce, and the one place a device may
 empty its byte pipe.** An `op=3` also arrives when the device has *already*
 closed the exchange: a descriptor-open reject the host noticed late, a cancel
-that raced the device's verdict, a whole-object CRC the device refused. The host
+that raced the device's verdict, or an integrity check the device refused. The host
 is not confused — it is about to retry, and it needs the channel empty first.
 This matters on an unframed, unacknowledged pipe where the sender does not wait
 between chunks: bytes it queued for the abandoned exchange are still arriving,
 neither end can recall them, and if the retry's descriptor arms while they land
-they become that object's opening payload and fail its whole-object CRC.
+they become that object's opening payload and fail its validation.
 
 A device on a transport whose pipe it can read (a USB bulk endpoint) SHOULD
 therefore **read and discard until the pipe is quiet, and only then answer**
@@ -811,7 +812,7 @@ handshake above (`op=3`, wait for `aborted`) before it retries, which is what
 guarantees the pipe is empty when the retry's descriptor arms. A sender that
 skips it is not merely unlucky: nothing clears the leftovers on their own — with
 no transfer armed they are not read at all — so the retry inherits them as its
-opening payload and fails a whole-object CRC for reasons nothing in the exchange
+opening payload and fails validation for reasons nothing in the exchange
 explains. What keeps such a sender from stopping outright is the device's
 post-answer drain above; what keeps it from *converging* is skipping the
 handshake, so the retry can fail the same way again.
@@ -865,7 +866,7 @@ Every `status` notification is one message: a `u8` discriminator + fixed body.
 msg = 1  transferResult (8 bytes total):
   msg               u8   = 1
   object_id         u16       for a fresh upload (0xFFFF), the ASSIGNED id
-  status            u8   0 = committed     stored + CRC verified
+  status            u8   0 = committed     stored + §6 integrity policy passed
                          1 = crcMismatch   rejected, nothing committed
                          2 = aborted       §4.2 op=3, either side
                          3 = error         storage / internal failure
@@ -1137,14 +1138,28 @@ retired, §3.3.)*
 
 ## 6. CRC-32
 
-Whole-object end-to-end check, verified once at commit. **CRC-32/IEEE**
+The descriptor always carries the real whole-object **CRC-32/IEEE**
 (zlib/gzip/PNG): reflected, polynomial `0x04C11DB7` (reflected form
 `0xEDB88320`), initial value `0xFFFFFFFF`, final XOR `0xFFFFFFFF`.
 Check value: `CRC32("123456789") = 0xCBF43926`.
 
-This is deliberately *not* a per-chunk CRC — the Link Layer already covers the
-air. It covers what the link can't: encode bugs, storage errors, resume-logic
-mistakes, end to end from phone encode to device flash (and back).
+Receivers normally verify it once at commit. This is deliberately *not* a
+per-chunk CRC — the link already covers each packet — and it catches errors
+outside that link, end to end from the sender's encoding to the stored object.
+It is mandatory for BLE uploads, every download receiver, `route`, `trip`,
+`fwImage`, and `echo` on USB, and any future type unless its definition says
+otherwise.
+
+The one exception is an upload of the USB-only map-shaped types `map`,
+`mapShard`, `terrainShard`, and `mapSet`. A device **MAY** omit the second serial
+whole-object calculation for those types while retaining the descriptor and its
+real `crc32`. Such a device MUST instead rely on the USB packet CRC/retry, the
+storage transport's block CRC/ECC, the exact announced byte count, the
+format-specific length/header validation, and the magic-last commit rules in
+§4.1. The reference nRF54L firmware uses this policy: a checked failure is
+reported as `error`, not `crcMismatch`, and an unreadable result cannot mount;
+its no-map boot path keeps USB available so the host can replace it. This is a
+receiver policy only — it changes no wire bytes, fixture, or protocol version.
 
 ---
 
@@ -1603,10 +1618,12 @@ endpoints, all at the high-speed-mandated 512 bytes:
 | `0x82` / `0x02` | the L2CAP CoC (§5) | the unframed object stream, byte for byte |
 
 **The bulk plane needs no translation at all.** Principle #2 holds for a USB bulk
-endpoint exactly as it holds for a CoC — reliable, ordered, unframed — so §4.2's
-"the channel carries exactly the object's payload bytes, one whole-object CRC-32
-at commit" is unchanged, as are §4.1's one-transfer-at-a-time rule and principle
-#4's restart-don't-resume.
+endpoint exactly as it holds for a CoC — reliable, ordered, unframed — so the
+channel carries exactly the object's payload bytes and the descriptor retains
+its whole-object CRC-32. §6 permits a receiver to omit that redundant calculation
+for the four USB-only map-shaped upload types; this changes policy, not the byte
+stream. §4.1's one-transfer-at-a-time rule and principle #4's
+restart-don't-resume are unchanged.
 
 **The control plane needs exactly one byte.** GATT carries "which
 characteristic" in the transport; USB has one endpoint pair, so that routing

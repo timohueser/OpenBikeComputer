@@ -494,10 +494,10 @@ second protocol. What is **board-specific** and worth knowing:
 
   | RTT line | What it means |
   | :-- | :-- |
-  | `ep_out buffer overflow index=2` (driver) | **The burst reader armed with bytes still staged.** Should be structurally impossible — `arm_transfer` asserts against it — so a panic is the expected form. Either way it is 512 B of silent loss and a CRC failure minutes later. |
+  | `ep_out buffer overflow index=2` (driver) | **The burst reader armed with bytes still staged.** Should be structurally impossible — `arm_transfer` asserts against it — so a panic is the expected form. Treat any occurrence as possible silent loss; map uploads intentionally do not spend a second whole-file CRC pass looking for driver bugs. |
   | the endpoint goes dead after exactly one burst | The core cleared `EPENA` on transfer completion and the stock `DOEPTSIZ`+`CNAK` re-arm is not enough on this part. Nothing else looks like this. |
   | `discarded N unclaimed bytes while idle` with **N > 512** | Payload racing its own announce, now absorbed a whole burst deep. Expected to disappear once the idle-read fix lands; before it, this is bytes being thrown away. |
-  | `reject probe: first payload bytes …` | A CRC failure, with the discriminator inline: a **clean format magic** means the stream was offset-free and lost or gained bytes mid-way (look for the overflow line above); **garbage** means it arrived offset. |
+  | `reject probe: first payload bytes …` | A CRC-checked object failed, with the discriminator inline: a **clean format magic** means the stream was offset-free and lost or gained bytes mid-way; **garbage** means it arrived offset. The probe is deliberately absent for link-checked map objects. |
   | `host overran the announced length by N B` | The peer sent more than it announced — a host bug, not a device one. |
   | `still receiving … into an abort drain` | The drain is not keeping up with a burst-armed endpoint; harmless, but it means the abort answer is late. |
 
@@ -505,6 +505,23 @@ second protocol. What is **board-specific** and worth knowing:
   an object whose length is an **exact multiple of 512** (no short packet anywhere, so the final
   burst stays armed across the gap to the next announce), and an **unplug** and a host **abort**
   in the middle of a burst.
+- **Map uploads use DMA at both ends of the pipeline.** The vendored OTG driver runs in buffer-DMA
+  mode, including aligned IN bounce storage and burst-sized OUT DMA. The scratch arena contributes
+  two 64 KiB halves: USB fills one while the storage path coalesces two adjacent 32 KiB FAT
+  clusters from the other into one 128-block CMD25 on the FLPR. The next append joins that DMA
+  before reusing its half; this ownership rule is correctness-critical. `UPLOAD_WRITE_PIPE` also
+  caches one FAT sector and the sEMMC driver offers ACMD23 as a best-effort pre-erase hint.
+- **The descriptor CRC remains on the wire, but USB map verification is link-checked.** `map`,
+  `mapShard`, `terrainShard`, and `mapSet` skip the redundant device-side whole-object fold. USB
+  packet CRC/retry, sEMMC block CRC/ECC, the exact announced length, the format header, and the
+  magic-last commit remain. Routes, trips, firmware images, echo, BLE uploads, and downloads retain
+  the whole-object check. This policy avoids roughly 20 serial CPU cycles per map byte without a
+  protocol-version or host change.
+- **Measured 2026-08-07 on the LM20-DK + reference SanDisk card:** a final 73.4 MB builder set's
+  three OBCM shards sustained 7.50, 7.27 and 7.85 MB/s; its 6 MB terrain shard sustained 7.65 MB/s.
+  That is about 7.3–7.9 MB/s across real artifacts, up from about 2.0 MB/s on the original
+  synchronous/CRC path. RTT's `usb: [bulk] upload finished` line is the authority for a particular
+  card and file.
 - **Windows needs no driver install**: MS OS 2.0 BOS descriptors declare the `WINUSB` compatible id
   and a stable `DeviceInterfaceGUIDs` property, so Windows auto-binds WinUSB with no `.inf` and no
   Zadig.
@@ -515,8 +532,8 @@ second protocol. What is **board-specific** and worth knowing:
 ### Bring-up recipe
 
 Steps 1–2 are the **cable-less boot**, and they are the ones that matter most: that is how the
-device is used. Steps 3–6 are the transfer path. Steps 1–3 were confirmed on glass under #936;
-step 4 on is still **unverified**.
+device is used. Steps 3–6 are the ordinary transfer path; step 7 is recovery. All seven were
+confirmed on glass, with the burst/DMA map path and recovery upload re-checked on 2026-08-07.
 
 1. With **J3 empty**, flash `cargo run --release` over **J4** — the plain default build; no feature
    flag selects the plane any more (remember the flash-twice quirk and keep `--verify`; retry 2–3×
@@ -545,6 +562,10 @@ step 4 on is still **unverified**.
    cycle is a loop, not a one-shot, and this is also where a lost VREGUSB edge would show up, since
    the park after an unplug is the one that has to be woken by an interrupt rather than entered
    with the answer already known.
+7. **Recovery path:** boot once with an unreadable or absent map. Keep the fault screen visible,
+   connect the builder, and upload a valid map/set; USB must enumerate and run at the ordinary map
+   rate even though the ride loop and BLE were never spawned. Restart and confirm the normal BLE
+   stack starts — that proves the replacement parsed and mounted rather than merely committed.
 
 **Known failure modes.** *No* `usb:` line at all → the task never started (it is spawned
 unconditionally, so this is a real bring-up failure, not a missing build flag — check for a panic

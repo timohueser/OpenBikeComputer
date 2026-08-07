@@ -521,9 +521,11 @@ resident byte does (77,272 → **77,088 B**), which is still 2.1× the measured 
 35,808 B and leaves 51,388 B over the boot-chain ceiling against a 4,096 B floor.
 
 **Why it is worth 184 B.** The alternative was leaving a retry-after-failure able to pick up the
-previous exchange's tail as its own opening bytes — recoverable (the whole-object CRC catches it) but
-only by luck, since whether the retry succeeds depends on whether the window happened to drain
-first. 184 B against a 500 KiB part, for a failure path that a rider hits by pressing Cancel.
+previous exchange's tail as its own opening bytes. A CRC-checked object rejects that; the USB map
+fast path deliberately does not spend a second whole-file pass, so it may only fail later format
+validation or mount. The quiesce is therefore the correctness boundary, not a best-effort aid to a
+checksum retry. 184 B against a 500 KiB part, for a failure path that a rider hits by pressing
+Cancel.
 
 ### The upload retune's staging halves (#1158 follow-up), 2026-08-07 — **0 B of anything**
 
@@ -562,6 +564,33 @@ then the render arm).
 report exists to make exactly that kind of block legible by name, so the table grew the rows.
 `semmc_driver` re-pins 52 → **44 B** at the same time: `size_of::<Semmc>()` links 44 on the current
 tree and the baseline was carrying the pivot's figure. Neither is this branch's own cost.
+
+### USB + storage DMA follow-up, 2026-08-07 — **+1,832 B resident, +13,664 B `.uninit`**
+
+The completed upload pipeline deliberately crosses the arena cliff. Each staging half is now
+**64 KiB**, so one handoff covers two adjacent 32 KiB FAT clusters and becomes one 128-block CMD25.
+USB buffer DMA fills the other half while the FLPR writes; the next handoff joins the prior DMA
+before reusing its buffer. A one-sector FAT cache coalesces allocation-table writes, and ACMD23 is
+a best-effort pre-erase hint. The USB-only map types also skip the redundant device-side whole-file
+CRC while retaining the descriptor and the link/media/format/commit integrity stack. On glass, real
+10–42 MB map shards and a 6 MB terrain file sustained about **7.3–7.9 MB/s**, up from ~2.0 MB/s.
+
+| | before | after | delta |
+| :-- | --: | --: | --: |
+| `arena_usb` / `arena_total` | 65,536 / 117,408 B | **131,072 / 131,072 B** | +65,536 / +13,664 B |
+| `.uninit` | 118,432 B | **132,096 B** | +13,664 B |
+| `.bss + .data` | 303,360 B | **305,192 B** | +1,832 B |
+| `usb_named` / `semmc_driver` | 9,820 / 44 B | **10,908 / 52 B** | +1,088 / +8 B |
+| residual main stack | 69,728 B | **54,232 B** | −15,496 B |
+| guarded poll frame / main task body | 9,728 / 7,328 B | **9,728 / 7,296 B** | 0 / −32 B |
+
+The resident +1,832 B is itemised from a same-host writable-symbol diff: unified USB endpoint DMA
+storage replaces `EP_OUT_BUFFER` for +1,088 B net; `sd::UPLOAD_WRITE_PIPE` adds 544 B (512 B is the
+FAT sector); USBHS instance state adds 68 B; `usb::run::POOL` adds 128 B (including the retained
+throughput counters); merged globals reclaim 8 B and the main task pool reclaims 16 B; section
+alignment is the remaining +28 B. The measured boot-chain ceiling is 25,636 B, leaving 28,596 B
+against the 4,096 B required floor.
+Default and BLE profiles link identically.
 
 ### The sEMMC carve (#1158 PR1), 2026-08-06 — **0 B of `.bss`/`.uninit`, −20,480 B of stack**
 
