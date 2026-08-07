@@ -4,13 +4,15 @@
 //! This is a near line-for-line twin of [`crate::ble::data_plane`], and that is the point — the two
 //! differ only in `ch.receive`/`ch.send` becoming `ep.read`/`ep.write`. The bulk endpoints carry
 //! **only the object's payload bytes** (no per-chunk framing); the whole transfer state machine and
-//! the CRC codecs are the host-tested [`obc_ble`] crate, unchanged and unforked:
+//! the transfer state machine is the host-tested [`obc_ble`] crate, unchanged and unforked:
 //!
 //! - **Echo loopback** ([`run_echo`]): stream each packet straight back through an
 //!   [`obc_ble::Receiver`] (a running CRC, no reassembly buffer), verify **one** whole-object
 //!   CRC — the data plane proven end to end with zero storage.
-//! - **Uploads** ([`run_upload`]): bytes sink through the [`Receiver`] into an SD temp; commit
-//!   validates (CRC + header) and atomically promotes. Uploads don't resume: an unplug, a stall or
+//! - **Uploads** ([`run_upload`]): bytes sink through the [`Receiver`] into storage. Routes, trips
+//!   and firmware images verify the descriptor's whole-object CRC. Map-shaped USB uploads instead
+//!   trust USB packet CRC/retry plus sEMMC block CRC/ECC, then validate byte length and format
+//!   header before atomically exposing the held magic. Uploads don't resume: an unplug, a stall or
 //!   an `op=3` abort discards the partial and the host re-sends from the start.
 //! - **Downloads** ([`run_download`]): the announce rides the control plane's `status` envelope
 //!   (`downloadAnnounce`) first, then raw chunks, one whole-object CRC.
@@ -133,8 +135,10 @@ const DRAIN_ACK_TIMEOUT_MS: u64 = DRAIN_BUDGET_MS + 250;
 /// Ask the data plane to empty the bulk pipe, and wait for it. Called from the control plane when it
 /// is about to answer an abort that found nothing in flight.
 ///
-/// Bounded, and a timeout is not an error: the worst case is the stray bytes this exists to prevent,
-/// which the whole-object CRC still catches. **A timeout must withdraw the request**, though — a
+/// Bounded, and a timeout is not a control-plane error: the host still receives its abort answer
+/// and can reset the link. A CRC-checked object rejects any stray prefix; a link-checked map is
+/// expected to fail its held-magic/header checks, but must not rely on a whole-file digest here.
+/// **A timeout must withdraw the request**, though — a
 /// `DRAIN_REQ` left standing is the first arm of the data plane's idle `select`, so it would fire
 /// against the *next* transfer and eat up to a full drain window of its opening payload.
 pub(crate) async fn drain_before_idle_abort() {
@@ -234,8 +238,8 @@ async fn drain_bulk_out(ep: &mut EpOut, buf: &mut [u8]) {
         // an idle-abort drain and a set's worth of file deletes against the host's 2 s abort budget,
         // and `sendAbort` swallows that timeout — so a retry's pipelined payload *can* reach a drain
         // that is still running. This test is what keeps that from starving the retry; the retry
-        // still pays a poisoned first chunk, which fails one whole-object CRC and is retried, and
-        // that converges where starvation does not. In practice each drain ends one
+        // still pays a poisoned first chunk, which fails the target's validation and is retried,
+        // and that converges where starvation does not. In practice each drain ends one
         // [`DRAIN_QUIET_MS`] window (20 ms) after the peer stops, so the window is small — small,
         // not absent.
         //
@@ -245,7 +249,7 @@ async fn drain_bulk_out(ep: &mut EpOut, buf: &mut [u8]) {
         // reached sooner. Against that, whatever the host sends *after* the drain gives up stages a
         // burst deep rather than a packet deep before the endpoint NAKs, so the poisoned first
         // chunk the paragraph above accepts can be 4 KiB rather than 512 B. It is the same one
-        // failed CRC either way: the retry is per object, not per byte.
+        // failed object either way: the retry is per object, not per byte.
         if TRANSFER_ARM.signaled() {
             warn!("usb: [bulk] a transfer armed mid-drain — stopping rather than eating its payload");
             break;
@@ -304,8 +308,8 @@ pub(crate) async fn run(
         // stages received packets per endpoint, and that staging was cleared at construction and
         // inside `read()` and *nowhere else*, so `endpoint_set_enabled` re-primed `pktcnt`/`EPENA`
         // over the top of a packet latched by a cable pulled mid-flush, and the next session's
-        // first `read` opened with up to 512 B of a dead upload. Self-healing through the
-        // whole-object CRC, at the price of a whole map transfer.
+        // first `read` opened with up to 512 B of a dead upload. That poisoned the next object's
+        // opening validation and cost a whole retry.
         //
         // **That fact no longer holds, and this stays anyway.** The vendored driver (#1173,
         // `vendor/embassy-usb-synopsys-otg`) resets the staging cursors on the enable/disable edge
@@ -457,8 +461,8 @@ impl MapTarget {
     }
 }
 
-/// An upload: sink bulk bytes through the [`Receiver`] into the SD temp, then commit — CRC verify,
-/// header validate, atomic promote — and answer with the assigned id.
+/// An upload: sink bulk bytes through the [`Receiver`] into storage, validate according to object
+/// policy, atomically commit, and answer with the assigned id.
 #[allow(clippy::too_many_arguments)]
 async fn run_upload(
     tx: &ControlTx,
@@ -472,7 +476,7 @@ async fn run_upload(
 ) -> TransferOutcome {
     info!("usb: [bulk] upload start: {} bytes (type {})", desc.total_len, desc.ty.as_u8());
     // A **map** (#927) is the one type that does not stream into `/routes/UPLOAD.TMP`: at hundreds
-    // of megabytes the temp-then-copy promote would double both the minutes of writing and the free
+    // of megabytes the temp-then-copy promote would double both the write time and the free
     // space required, so a map streams straight into its final `MP{id}.OBM` with its first four bytes
     // — the OBCM magic — withheld here and patched in at commit. `map_id` is the assigned object id,
     // carried in this frame because a map holds no slot in the store to remember it in.
@@ -482,6 +486,15 @@ async fn run_upload(
     // the store minted at the first shard. The one difference that matters is *between* the
     // transfers, and it lives in the store's session, not here.
     let holds_magic = target.holds_magic();
+    if holds_magic {
+        // Maps use the USB/sEMMC path's packet/block integrity instead of spending ~20 CPU
+        // cycles/byte on a second serial CRC pass. The descriptor CRC remains on the wire (and in
+        // the set metadata the host built); only this device-side fold is skipped. Atomicity still
+        // comes from the held magic below, and every commit validates the stored length/header
+        // before that magic is exposed. Routes, trips, firmware images and echo keep the full
+        // whole-object check because they use the shared object protocol's fingerprint/DFU rules.
+        rx = Receiver::new_link_checked(desc).expect("an armed upload descriptor is an upload");
+    }
     let mut held = obc_ble::HeldMagic::new();
     let mut map_id = 0u16;
     // Open the SD file here — at the first real byte — rather than when the control plane armed it:
@@ -526,7 +539,7 @@ async fn run_upload(
         return TransferOutcome::Answered;
     }
     if holds_magic {
-        // Raise the on-glass card now: from here the SD bus is saturated for minutes and the map
+        // Raise the on-glass card now: from here the SD bus is saturated for the transfer and the map
         // plane's own reads queue behind this transfer. Unexplained, that reads as a wedged device.
         // A set raises it once per file rather than once per set — the card tracks the transfer in
         // flight, and per-set aggregation needs a UI that knows a set is one map (P4d).
@@ -540,28 +553,50 @@ async fn run_upload(
     // Only a map-shaped payload asks. Everything else (a route, a trip, a firmware image) is
     // megabytes at most, raises no card, and therefore could never satisfy the `render ⊥ usb`
     // precondition — the staging dial was always about the map upload that saturates the bus for
-    // minutes (see [`STAGE_LEN`](crate::usb::STAGE_LEN)'s own note), and asking for the arm while
+    // sustained bulk traffic (see [`STAGE_LEN`](crate::usb::STAGE_LEN)'s own note), and asking for the arm while
     // the rider may still be browsing the map would be asking for the wrong thing.
     let staged = holds_magic && crate::usb::request_stage().await;
+    if staged {
+        let armed = {
+            let mut guard = shared.lock().await;
+            store.borrow_mut().upload_fast_begin(&mut guard)
+        };
+        if !armed {
+            // Staging still preserves correctness and batching; only the overlap/coalescing layer
+            // degrades. This should be unreachable unless an earlier upload failed to tear down.
+            warn!("usb: [bulk] deferred map writer unavailable — keeping synchronous staged writes");
+        }
+    }
     // A map's placeholder magic is already on the card (`map_upload_begin` and its set twins), so
     // its payload starts at file offset 4 — the stage needs that or every flush lands misaligned.
     let mut stage = Stage::new(staged, if holds_magic { obc_ble::MAGIC_LEN } else { 0 });
     let started = Instant::now();
+    // Retain the investigation's three-bucket accounting in the shipping path. `receive_time`
+    // makes the CRC-policy change visible: it contains Receiver::push (including CRC when enabled),
+    // while `store_time` contains Stage::push/flush and therefore the FAT, mux and deferred FLPR
+    // joins. Printed on completion and abort so a partial hardware run is still evidence.
+    let mut usb_wait = embassy_time::Duration::from_ticks(0);
+    let mut receive_time = embassy_time::Duration::from_ticks(0);
+    let mut store_time = embassy_time::Duration::from_ticks(0);
     while !rx.is_complete() {
         // One read is a **burst**, not a packet (#1173): up to
         // [`BULK_BURST_LEN`](crate::usb::BULK_BURST_LEN) of whatever the core absorbed while the
-        // previous pass was folding CRC and writing the card. Everything below is length-agnostic
+        // previous pass was advancing the receiver and writing the card. Everything below is length-agnostic
         // and was already — `Receiver::push`, `HeldMagic::feed` and `Stage::push` all take a slice
         // of any size — so the burst changes how *often* this loop turns, not what it does.
         //
-        // The yield cadence is unchanged where it matters: `Stage::append_arm` still ends every
-        // card flush with an explicit `yield_now`, which is the ride loop's guaranteed turn and
-        // therefore the watchdog feed. A burst makes the loop turn ~8× less often, but a flush is
-        // 32 KiB either way, so the interval between yields is the same number of *bytes* — the
-        // unit the WDT budget was ever about.
+        // A saturating host is bounded by Stage's explicit cooperative cadence: every four 64 KiB
+        // halves it gives the ride loop a guaranteed turn (and therefore a watchdog feed).
+        let read_began = Instant::now();
         let n = match select(ep.read(buf), TRANSFER_ABORT.wait()).await {
-            Either::First(Ok(n)) if n > 0 => n,
-            Either::First(Ok(_)) => continue, // a zero-length packet advances nothing
+            Either::First(Ok(n)) if n > 0 => {
+                usb_wait += read_began.elapsed();
+                n
+            }
+            Either::First(Ok(_)) => {
+                usb_wait += read_began.elapsed();
+                continue; // a zero-length packet advances nothing
+            }
             Either::First(Err(e)) => {
                 // The endpoint failed or was disabled with bytes still expected. Discard the
                 // partial; the host re-uploads from the start. There is no live exchange left to
@@ -586,13 +621,23 @@ async fn run_upload(
                     let mut guard = shared.lock().await;
                     discard_upload(&mut store.borrow_mut(), &mut guard, target, map_id);
                 }
+                info!(
+                    "usb: [bulk] split over {} B: usb-wait {} ms, receive {} ms, store {} ms, total {} ms",
+                    rx.committed_offset(),
+                    usb_wait.as_millis(),
+                    receive_time.as_millis(),
+                    store_time.as_millis(),
+                    started.elapsed().as_millis()
+                );
                 info!("usb: [bulk] upload aborted by the host");
                 close_transfer();
                 tx.send_status(transfer_result(rx.object_id(), TransferStatus::Aborted)).await;
                 return TransferOutcome::Answered;
             }
         };
+        let receive_began = Instant::now();
         let consumed = rx.push(&buf[..n]);
+        receive_time += receive_began.elapsed();
         // `push` clamps at the announced length, and a peer that overruns it is a protocol error
         // its own docs say the caller must treat as one — so say so rather than dropping the
         // surplus in silence. Structurally unreachable while the endpoint armed one packet at a
@@ -608,11 +653,14 @@ async fn run_upload(
                 rx.total_len()
             );
         }
-        // The receiver's CRC always sees every payload byte; only the *write* skips the held magic.
+        // The receiver always counts every payload byte and, when policy requires it, also folds
+        // the CRC. Only the *write* skips a map-shaped object's held magic.
         let write = if holds_magic { held.feed(&buf[..consumed]) } else { &buf[..consumed] };
         // Into RAM, not onto the card: `stage` appends a batch at a time so the card gets one
         // multi-block burst instead of a CMD24 per 512 B. It is what makes the fork worth having.
+        let store_began = Instant::now();
         let appended = stage.push(write, store, shared).await;
+        store_time += store_began.elapsed();
         if !appended {
             {
                 let mut guard = shared.lock().await;
@@ -630,7 +678,7 @@ async fn run_upload(
             return TransferOutcome::Answered;
         }
         if holds_magic {
-            // Received, not durable: up to one staging half (32 KiB) is still in RAM, and the host
+            // Received, not durable: up to one staging half (64 KiB) is still in RAM, and the host
             // may be another `UPLOAD_WINDOW` of chunks ahead of that. The card the rider sees is a
             // liveness indicator, not a commit count — the commit is the terminal result.
             crate::link::map_transfer_progress(rx.committed_offset());
@@ -638,7 +686,10 @@ async fn run_upload(
     }
     // The tail. An object almost never ends on a batch boundary, so the last flush is short by
     // definition — and until it lands, those bytes exist only in RAM.
-    if !stage.flush(store, shared).await {
+    let store_began = Instant::now();
+    let flushed = stage.flush(store, shared).await;
+    store_time += store_began.elapsed();
+    if !flushed {
         {
             let mut guard = shared.lock().await;
             discard_upload(&mut store.borrow_mut(), &mut guard, target, map_id);
@@ -717,15 +768,30 @@ async fn run_upload(
         // offset (stray leading bytes), while a clean magic with a CRC delta points past the
         // front. `take` is non-consuming, so reading it here costs the commit path nothing.
         let magic = held.take().unwrap_or([0; obc_ble::MAGIC_LEN]);
-        let (got, want) = rx.crc_probe();
-        warn!(
-            "usb: [bulk] reject probe: first payload bytes {=[u8]:#04x}, crc got {=u32:#010x} want {=u32:#010x}",
-            &magic[..],
-            got,
-            want
-        );
+        if rx.verifies_crc() {
+            let (got, want) = rx.crc_probe();
+            warn!(
+                "usb: [bulk] reject probe: first payload bytes {=[u8]:#04x}, crc got {=u32:#010x} want {=u32:#010x}",
+                &magic[..],
+                got,
+                want
+            );
+        } else {
+            warn!(
+                "usb: [bulk] link-checked map rejected by length/format commit; first payload bytes {=[u8]:#04x}",
+                &magic[..]
+            );
+        }
     }
     let elapsed_ms = started.elapsed().as_millis().max(1);
+    info!(
+        "usb: [bulk] split over {} B: usb-wait {} ms, receive {} ms, store {} ms, total {} ms",
+        rx.committed_offset(),
+        usb_wait.as_millis(),
+        receive_time.as_millis(),
+        store_time.as_millis(),
+        elapsed_ms
+    );
     if committed && target == MapTarget::Map {
         info!("usb: [bulk] map {} is now the selected map — it loads on the next boot", id);
     }

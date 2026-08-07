@@ -5,7 +5,7 @@
 //! since #1146 P3 grew the frame caps into the dividend; 92,320 B before it),
 //! the nav block ([`NavArm`] — `NavScratch` + `NavTileCache` + the resumable `NavPlanner`,
 //! ~59.9 KB), and the USB upload staging buffer ([`usb::STAGE_LEN`](crate::usb::STAGE_LEN),
-//! two 32 KiB halves = 64 KiB since the upload retune; 16 KiB when this module was written). This
+//! two 64 KiB halves = 128 KiB since the upload retune; 16 KiB when this module was written). This
 //! module time-shares them through a `union`, so the board pays **max(arms)** instead of their sum.
 //!
 //! **This is the only place in the feature that names the block's bytes, and the only place that
@@ -31,13 +31,15 @@
 //! | render ⊥ usb | a cable transfer shows the transfer screen, not the map | [`TransferReady`] |
 //! | nav ⊥ usb | no reroute while docked-transferring | [`TransferReady`] + `TransferGate`'s search arm |
 //!
-//! # The ride loop is the sole owner-switcher
+//! # One thread-mode owner-switcher
 //!
 //! [`ArenaGate`] takes `&mut self`, so this module keeps it in a `static mut` reachable only from
-//! here and every claim/release runs on the one thread-mode ride loop (the #677 async-frame
-//! discipline: guards are `!Send` and are never held across an `.await` where another claimant
-//! could run). The USB data plane never claims — it *asks*, and the loop grants between frames (see
-//! [`with_usb_stage`]).
+//! here and every claim/release runs in thread mode. During a normal ride the ride loop is the
+//! owner-switcher (the #677 async-frame discipline: guards are `!Send` and are never held across an
+//! `.await` where another claimant could run). The USB data plane never claims — it *asks*, and the
+//! loop grants between frames (see [`with_usb_stage`]). If no map can mount at boot, the recovery
+//! entry point claims the USB arm before spawning the otherwise-isolated USB task; no render or nav
+//! owner exists in that boot mode.
 //!
 //! # No two references at once
 //!
@@ -62,11 +64,9 @@
 //! The budget is `max(arms)`, so growth is **not** linear:
 //!
 //! - An arm **below** the maximum grows at **zero** resident cost until it reaches the maximum arm.
-//!   Today that is ~57.5 KB of free headroom for the nav arm and ~51 KB for the USB stage — both
-//!   widened by P3, which spent the dividend on the *max* arm and so raised the bar the others
-//!   grow under. The upload retune spent 48 KB of the USB stage's share on a second (and
-//!   cluster-sized) staging half, at exactly the zero resident cost this bullet promises.
-//! - Growing the **maximum** arm (today: render) costs the full delta, 1:1, exactly as before.
+//!   Today USB is the maximum; render has 13,664 B of free headroom and nav about 68 KB.
+//! - Growing the **maximum** arm (today: USB) costs the full delta, 1:1, exactly as before. Its
+//!   128 KiB size is deliberate: two 64 KiB halves let normal uploads issue 128-block writes.
 //!
 //! Both halves are traps in opposite directions: nobody should "optimize" a growth that is free,
 //! and nobody should wave through one that is not. The compile-time assert in `main.rs` says the
@@ -130,7 +130,7 @@ pub(crate) struct NavArm {
 /// misaligned in-place `ptr::write` of the planner would fault on this strict-align target.
 #[repr(C, align(8))]
 union ScratchArena {
-    /// The per-frame render scratch — the **largest** arm, so it sets the arena's size.
+    /// The per-frame render scratch.
     render: ManuallyDrop<obc_render::RenderScratch>,
     #[cfg(has_nav)]
     nav: ManuallyDrop<NavArm>,
@@ -152,13 +152,13 @@ pub(crate) const NAV_ARM_BYTES: usize = core::mem::size_of::<NavArm>();
 pub(crate) const USB_ARM_BYTES: usize = crate::usb::STAGE_LEN;
 
 // **`max(arms)`, stated rather than assumed** — and the equality half is the one that bites. If a
-// future edit grows the nav or USB arm past the render arm, the budget is still *correct* (it is a
+// future edit grows the nav or render arm past the USB arm, the budget is still *correct* (it is a
 // `size_of` either way), but the cliff has moved: every growth note in this module and at `main.rs`'s
 // budget assert would then name the wrong arm, and the next reviewer would price a free growth as a
 // 1:1 one (or the reverse). Fail the build rather than let the docs go quietly stale.
 const _: () = assert!(
-    NAV_ARM_BYTES <= ARENA_BYTES && USB_ARM_BYTES <= ARENA_BYTES && ARENA_BYTES == RENDER_ARM_BYTES,
-    "the render arm is no longer the largest — the max-of-arms cliff moved; re-read the growth-asymmetry \
+    NAV_ARM_BYTES <= ARENA_BYTES && RENDER_ARM_BYTES <= ARENA_BYTES && ARENA_BYTES == USB_ARM_BYTES,
+    "the USB arm is no longer the largest — the max-of-arms cliff moved; re-read the growth-asymmetry \
      notes in arena.rs and at main.rs's budget assert before re-pinning anything"
 );
 
@@ -469,7 +469,7 @@ pub(crate) fn claim_usb(ready: TransferReady) -> Result<UsbGuard, ArenaError> {
 }
 
 /// Run `f` over the USB staging arm — the data plane's **only** access path, and it succeeds only
-/// while the ride loop holds [`UsbGuard`].
+/// while the normal ride loop or the no-map recovery entry point holds [`UsbGuard`].
 ///
 /// `None` means the arm is not (or is no longer) the plane's: the loop never granted it, or it
 /// revoked the grant on an unplug. The plane treats that exactly as a failed card append — discard
@@ -485,4 +485,18 @@ pub(crate) fn with_usb_stage<R>(f: impl FnOnce(&mut [u8; crate::usb::STAGE_LEN])
     // SAFETY: the gate says `Usb` owns the block, so no other arm's reference is live; the
     // reference is derived fresh from `arena_ptr` and dies with `f`.
     Some(f(unsafe { &mut *(arena_ptr() as *mut [u8; crate::usb::STAGE_LEN]) }))
+}
+
+/// Whether `[address, address + len)` lies wholly inside the USB arm while USB owns it.
+///
+/// The deferred block writer uses this numeric check before retaining a DMA address past
+/// `BlockDevice::write`: payload blocks borrow an arena half, while FAT/directory blocks may be
+/// temporary stack values that must be written synchronously. No reference is created here.
+pub(crate) fn usb_stage_contains(address: usize, len: usize) -> bool {
+    if owner() != ArenaOwner::Usb {
+        return false;
+    }
+    let start = arena_ptr() as usize;
+    let Some(end) = address.checked_add(len) else { return false };
+    address >= start && end <= start + crate::usb::STAGE_LEN
 }
