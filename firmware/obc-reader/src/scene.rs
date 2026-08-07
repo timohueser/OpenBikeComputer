@@ -6,7 +6,9 @@ use obc_map_scene::{
     FeatureError as SceneFeatureError, FeatureToken, MapScene, ReadError as SceneReadError, SelectedFeatures,
 };
 
-use crate::{CacheError, CapacityError, FeatureDecodeError, FeatureReadError, MapReadError, Reader};
+use crate::{
+    reader::MAP_CHUNK_SLOTS, CacheError, CapacityError, FeatureDecodeError, FeatureReadError, MapReadError, Reader,
+};
 
 /// Map a reader read failure onto the scene contract's coarser one. Shared by **both**
 /// [`MapScene`] impls — the single [`Reader`] below and the [`MountedSet`](crate::MountedSet) of
@@ -135,6 +137,47 @@ impl MapScene for Reader<'_> {
     ) -> DecodeReport {
         let mut report = DecodeReport::default();
         if selected.is_empty() {
+            return report;
+        }
+
+        // Pass A just streamed every candidate chunk through the geometry cache. Decode winners
+        // whose chunks survived directly from those slots; their leaf bbox is stored with the
+        // bytes, so neither the quadtree nor the chunk-offset table needs to be read again. Only a
+        // winner not held in one of the four dedicated slots falls through to the ordinary path;
+        // the fifth scratch-backed slot and cached leaf list can still make that path SD-free.
+        let mut cached_chunks: Vec<u32, MAP_CHUNK_SLOTS> = Vec::new();
+        for i in 0..selected.len() {
+            if !selected.is_pending(i) {
+                continue;
+            }
+            let Some(token) = selected.token(i) else {
+                continue;
+            };
+            let (cid, offset) = token_parts(token);
+            match self.decode_cached_feature_at(lod, cid, offset, points, ring_lens) {
+                Ok(Some(feature)) => {
+                    let admitted = selected.decoded(
+                        i,
+                        Feature::new(
+                            feature.style_id,
+                            feature.kind,
+                            feature.points(),
+                            feature.ring_lens(),
+                            feature.bbox(),
+                        ),
+                    );
+                    if admitted && !cached_chunks.contains(&cid) {
+                        let _ = cached_chunks.push(cid);
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    let _ = selected.failed(i, feature_error(error));
+                }
+            }
+        }
+        report.chunks_refetched = cached_chunks.len() as u32;
+        if !(0..selected.len()).any(|i| selected.is_pending(i)) {
             return report;
         }
 

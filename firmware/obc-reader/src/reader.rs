@@ -16,9 +16,10 @@
 //! [`MapCache`] behind a `RefCell`: a geometry-chunk cache (the renderer walks the
 //! visible chunks twice — pass A to select candidates, pass B to re-decode the
 //! winners — so this keeps pass B's winner chunks resident and reuses chunks across
-//! frames) plus a small block cache coalescing the 4-byte quadtree-node reads. The
-//! cache changes only *when* a byte is read, never *what* decodes, so renders stay
-//! byte-identical.
+//! frames), a small block cache coalescing the 4-byte quadtree-node reads, and a
+//! bounded expanded-view leaf cache that avoids repeating the walk during a slow
+//! pan. The cache changes only *when* a byte is read, never *what* decodes, so
+//! renders stay byte-identical.
 
 use core::cell::{RefCell, RefMut};
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -113,22 +114,28 @@ pub const MAX_CHUNK_BYTES: usize = 16384;
 /// (4096) so the maps the device actually loads are fully cacheable.
 const CACHE_SLOT_BYTES: usize = 4096;
 
-/// Geometry-chunk cache slots (each [`CACHE_SLOT_BYTES`]). The renderer walks the visible-chunk set
-/// twice per frame (pass A selects candidates, pass B re-decodes the winners), so the cache should
-/// hold the working set or pass B re-reads every winner chunk and SD I/O dominates. 12 slots cover
-/// the riding-zoom working set with room across frames (a slow pan re-hits last frame's chunks) —
-/// the cache-or-thrash knee: a cache smaller than the working set measured ~0 hits on the old
-/// 256 KB DK, and the coarse-overview set (LOD1, ~3–4 m/px, ~50 chunks in view) is too big to
-/// cache on the LM20's budget, so those zooms stay SD-bound by design. 4 × ~4.5 KB ≈ 18 KB of
-/// slots+tags (~35 KB with the decode scratch); the one knob to re-tune against the measured ELF
-/// budget — 6/8/12 slots were tried and ate the ≥65 KB stack target of the all-features build.
-const MAP_CHUNK_SLOTS: usize = 4;
+/// Dedicated geometry-chunk buffers (each [`CACHE_SLOT_BYTES`]). The first 4 KiB of the oversized
+/// decode scratch doubles as a fifth slot, so the common four/five-chunk riding views remain fully
+/// resident without increasing [`MapCache`]. Replacement is scan-resistant RRIP: a view just over
+/// capacity retains protected chunks instead of cyclically missing every one. Coarse overview
+/// zooms can expose dozens of chunks and remain intentionally streaming on the LM20 RAM budget.
+pub(crate) const MAP_CHUNK_SLOTS: usize = 4;
 
 /// Block size + count of the quadtree-index cache. The leaf walk reads 4-byte nodes (siblings
 /// adjacent in the file); caching a few aligned blocks coalesces those into a handful of SD
-/// reads per walk rather than one read per node. ≈4 KB total.
+/// reads per walk rather than one read per node. ≈3.5 KB total. Its replacement is scan-resistant
+/// RRIP rather than LRU: the renderer repeats an ordered walk whose working set can exceed these
+/// seven slots, and LRU otherwise evicts every block just before the next frame asks for it. The
+/// eighth former block's 520-byte budget holds the expanded-view leaf cache below.
 const INDEX_BLOCK: usize = 512;
-const INDEX_BLOCKS: usize = 8;
+const INDEX_BLOCKS: usize = 7;
+
+/// Two recent geometry walks (normally the one or two volume shards touching the viewport), each
+/// retaining up to twelve `(chunk, leaf bbox)` results over a view widened by 1/8 on every side.
+/// A moving camera can then reuse the list until it crosses that margin without reading the
+/// quadtree again. Two 260-byte records exactly replace the eighth tagged index block: no net RAM.
+const WALK_CACHE_SLOTS: usize = 2;
+const WALK_CACHE_ENTRIES: usize = 12;
 
 // A slot must fit any chunk it caches, and the scratch any chunk the reader accepts; `chunk_size`
 // is a `u16`, so the accepted cap stays within range.
@@ -985,7 +992,7 @@ pub struct Reader<'a> {
     /// The session-resident immutable tables (style table + LOD pyramid), parsed once and borrowed
     /// here so a per-frame `Reader` carries no styles/lods of its own.
     tables: &'a MapTables,
-    /// Borrowed lazy-read cache for the streamed index + geometry — the ≈84 KB of buffers live in
+    /// Borrowed lazy-read cache for the streamed index + geometry — the ≈36 KB of buffers live in
     /// the caller's [`MapCache`], reusable across frames. It keeps its own `RefCell` because
     /// `read_at` takes `&self` but the cache mutates; the borrows are tightly scoped so the
     /// index-node read and the chunk decode never overlap.
@@ -995,7 +1002,7 @@ pub struct Reader<'a> {
     cache_ready: bool,
     /// Which file of a mounted map this reader reads — `0` for a single `.obcm`, the shard index
     /// for a member of a volume set (`OBCA_Spec.md` §5). It tags every cache key so the shards of
-    /// one set can share a single ≈277 KB [`MapCache`] (and one parse generation) without
+    /// one set can share a single ≈37 KB [`MapCache`] (and one parse generation) without
     /// cross-serving each other's chunks.
     file: u8,
     /// A volume-set shard's **own** LOD table, borrowed from its [`crate::volume::ShardTables`].
@@ -1030,7 +1037,7 @@ impl<'a> Reader<'a> {
 
     /// Build a reader over shard `file` of a mounted volume set. Identical to [`Reader::new`]
     /// except that every cache key it writes is tagged with the shard index, which is what lets a
-    /// set's shards share one ≈277 KB [`MapCache`] without cross-serving each other's chunks.
+    /// set's shards share one ≈37 KB [`MapCache`] without cross-serving each other's chunks.
     ///
     /// `tables` is always the **core**'s: the whole set is stamped from one skin (`OBCA_Spec.md`
     /// §4.7), so one style table serves every shard, and one parse generation means no shard
@@ -1884,10 +1891,102 @@ impl<'a> Reader<'a> {
         view: &BBox,
         mut visit: impl FnMut(u32, BBox),
     ) -> Result<(), MapReadError> {
-        if let Some(l) = self.lods().get(lod) {
-            if l.node_count > 0 {
-                self.walk_leaves(l, 0, self.bbox, view, 0, &mut visit)?;
+        let Some(l) = self.lods().get(lod) else {
+            return Ok(());
+        };
+        if l.node_count == 0 {
+            return Ok(());
+        }
+        let Some(query) = intersect_bbox(view, &self.bbox) else {
+            return Ok(());
+        };
+        if !self.cache_ready {
+            return Err(MapReadError::Cache(CacheError::Busy));
+        }
+
+        // A successful prior expanded walk is a complete ordered leaf list for every query wholly
+        // inside its cover. Copy it out before invoking the callback: a callback loads geometry and
+        // therefore borrows this same RefCell.
+        let cached =
+            self.cache.try_borrow_mut().map_err(MapReadError::Cache)?.cached_walk(self.file, lod as u8, &query);
+        if let Some(entries) = cached {
+            for entry in entries {
+                if entry.node.intersects(&query) {
+                    visit(entry.cid, entry.node);
+                }
             }
+            return Ok(());
+        }
+
+        let cover = expand_walk_bbox(&query, &self.bbox);
+        let mut entries: Vec<WalkEntry, WALK_CACHE_ENTRIES> = Vec::new();
+        let mut cacheable = true;
+        self.walk_geometry_prefetch(l, 0, self.bbox, &query, &cover, 0, &mut entries, &mut cacheable, &mut visit)?;
+        if cacheable {
+            self.cache.try_borrow_mut().map_err(MapReadError::Cache)?.store_walk(self.file, lod as u8, cover, &entries);
+        }
+        Ok(())
+    }
+
+    /// Geometry-only walk that opportunistically explores `cover`, but preserves the exact
+    /// `primary` query's behavior. Once the twelve-entry result budget overflows, subsequent
+    /// recursion immediately shrinks back to `primary`; errors found solely in the speculative
+    /// margin likewise abandon caching rather than failing a query that never touched that node.
+    /// Leaves in `primary` are always streamed once and in ordinary quadtree order.
+    #[allow(clippy::too_many_arguments)]
+    fn walk_geometry_prefetch<F: FnMut(u32, BBox)>(
+        &self,
+        index: &dyn QuadIndex,
+        idx: usize,
+        node: BBox,
+        primary: &BBox,
+        cover: &BBox,
+        depth: u32,
+        entries: &mut Vec<WalkEntry, WALK_CACHE_ENTRIES>,
+        cacheable: &mut bool,
+        visit: &mut F,
+    ) -> Result<(), MapReadError> {
+        let target = if *cacheable { cover } else { primary };
+        if idx >= index.node_count() || depth > MAX_QUADTREE_DEPTH || !node.intersects(target) {
+            return Ok(());
+        }
+        let val = match self.read_node(index, idx) {
+            Ok(val) => val,
+            Err(error) if node.intersects(primary) => return Err(error),
+            Err(_) => {
+                *cacheable = false;
+                return Ok(());
+            }
+        };
+        if val & BRANCH_BIT == 0 {
+            if val != EMPTY_LEAF {
+                if *cacheable && entries.push(WalkEntry { cid: val, node }).is_err() {
+                    *cacheable = false;
+                }
+                if node.intersects(primary) {
+                    visit(val, node);
+                }
+            }
+            return Ok(());
+        }
+        let child = (val & !BRANCH_BIT) as usize;
+        if child <= idx {
+            if node.intersects(primary) {
+                return Err(MapReadError::Malformed);
+            }
+            *cacheable = false;
+            return Ok(());
+        }
+        let mid_lon = (node.min_lon + node.max_lon).div_euclid(2);
+        let mid_lat = (node.min_lat + node.max_lat).div_euclid(2);
+        let kids = [
+            BBox { min_lon: node.min_lon, min_lat: mid_lat, max_lon: mid_lon, max_lat: node.max_lat },
+            BBox { min_lon: mid_lon, min_lat: mid_lat, max_lon: node.max_lon, max_lat: node.max_lat },
+            BBox { min_lon: node.min_lon, min_lat: node.min_lat, max_lon: mid_lon, max_lat: mid_lat },
+            BBox { min_lon: mid_lon, min_lat: node.min_lat, max_lon: node.max_lon, max_lat: mid_lat },
+        ];
+        for (i, kb) in kids.iter().enumerate() {
+            self.walk_geometry_prefetch(index, child + i, *kb, primary, cover, depth + 1, entries, cacheable, visit)?;
         }
         Ok(())
     }
@@ -2005,7 +2104,7 @@ impl<'a> Reader<'a> {
             return Err(MapReadError::Cache(CacheError::Busy));
         }
         let mut cache = self.cache.try_borrow_mut().map_err(MapReadError::Cache)?;
-        let loc = match cache.load_chunk(self.src, self.file, lod as u8, chunk_id, start as u32, len) {
+        let loc = match cache.load_chunk(self.src, self.file, lod as u8, chunk_id, start as u32, len, node) {
             Ok(loc) => loc,
             Err(error) => return Err(MapReadError::Source(error)),
         };
@@ -2068,7 +2167,7 @@ impl<'a> Reader<'a> {
         let mut cache =
             self.cache.try_borrow_mut().map_err(|error| FeatureReadError::Read(MapReadError::Cache(error)))?;
         let loc = cache
-            .load_chunk(self.src, self.file, lod as u8, cid, start as u32, len)
+            .load_chunk(self.src, self.file, lod as u8, cid, start as u32, len, node)
             .map_err(|error| FeatureReadError::Read(MapReadError::Source(error)))?;
         let chunk = match loc {
             ChunkLoc::Slot(i) => &cache.chunks[i].buf[..len],
@@ -2078,6 +2177,49 @@ impl<'a> Reader<'a> {
         // cache bytes, so it outlives the `cache` borrow dropped at return.
         match decode_one_feature(chunk, offset, node, points, ring_lens) {
             DecodeOne::Complete(fref, _) => Ok(fref),
+            DecodeOne::Dropped(error, _) => Err(FeatureReadError::Decode(error)),
+        }
+    }
+
+    /// Decode a pass-A feature straight from its resident geometry slot, without re-walking the
+    /// quadtree or re-reading the chunk-offset table. The renderer's pass B asks for features that
+    /// pass A selected only moments earlier; when the chunk survived the four-slot cache, its leaf
+    /// bbox is resident beside the bytes and is the complete anchor needed by `decode_one_feature`.
+    ///
+    /// `Ok(None)` is an ordinary cache miss (the caller may fall back to the index walk). Errors
+    /// retain the same typed cache/decode behavior as [`Reader::decode_feature_at`].
+    pub(crate) fn decode_cached_feature_at<'p, const P: usize, const R: usize>(
+        &self,
+        lod: usize,
+        cid: u32,
+        offset: usize,
+        points: &'p mut Vec<(i32, i32), P>,
+        ring_lens: &'p mut Vec<usize, R>,
+    ) -> Result<Option<FeatureRef<'p>>, FeatureReadError> {
+        if !self.cache_ready {
+            return Err(FeatureReadError::Read(MapReadError::Cache(CacheError::Busy)));
+        }
+        let mut cache =
+            self.cache.try_borrow_mut().map_err(|error| FeatureReadError::Read(MapReadError::Cache(error)))?;
+        let Some(i) = cache
+            .chunks
+            .iter()
+            .position(|slot| slot.valid() && slot.file == self.file && slot.lod() == lod as u8 && slot.cid == cid)
+        else {
+            return Ok(None);
+        };
+
+        points.clear();
+        ring_lens.clear();
+        let len = cache.chunks[i].len as usize;
+        if offset >= len {
+            return Err(FeatureReadError::Decode(FeatureDecodeError::Malformed));
+        }
+        cache.chunk_hits = cache.chunk_hits.saturating_add(1);
+        cache.chunks[i].used = 0;
+        let slot = &cache.chunks[i];
+        match decode_one_feature(&slot.buf[..len], offset, &slot.node, points, ring_lens) {
+            DecodeOne::Complete(fref, _) => Ok(Some(fref)),
             DecodeOne::Dropped(error, _) => Err(FeatureReadError::Decode(error)),
         }
     }
@@ -2908,44 +3050,188 @@ pub struct CacheStats {
 #[derive(Clone, Copy)]
 enum ChunkLoc {
     Slot(usize),
+    /// The shared oversized-decode scratch doubles as a fifth 4-KiB cache slot while no oversized
+    /// chunk is using it. `load_chunk` invalidates that tag before a larger read.
+    Scratch,
+}
+
+#[derive(Clone, Copy)]
+enum ChunkVictim {
+    Slot(usize),
     Scratch,
 }
 
 /// One geometry-chunk cache slot: a resident copy of a `chunk_size`-byte chunk, tagged with its
-/// `(lod, chunk_id)` and a recency stamp for LRU eviction. `valid` (over `Option`) makes the
-/// all-zero state a valid *empty* slot, so [`MapCacheInner::new`] can zero-init the whole cache.
+/// `(lod, chunk_id)` and an RRIP prediction in `used`. The validity bit makes the all-zero state a
+/// valid *empty* slot, so [`MapCacheInner::new`] can zero-init the whole cache.
+const CHUNK_META_LOD_MASK: u8 = 0x0f;
+const CHUNK_META_VALID: u8 = 0x80;
+
+#[repr(C)]
 struct ChunkSlot {
-    valid: bool,
+    cid: u32,
+    used: u32,
+    /// Leaf anchor captured with the chunk fill. This lets pass B decode a resident winner without
+    /// repeating the whole quadtree walk merely to reconstruct the same bbox.
+    node: BBox,
+    len: u16,
     /// Which mounted file the bytes came from (a volume set's shard index, `0` for a single
     /// map). Part of the key, not decoration: a set shares one cache and one parse generation
     /// across its shards, so `(lod, cid)` alone would cross-serve one shard's chunk for
-    /// another's. Sits in the padding after `valid`, so it costs no RAM.
+    /// another's.
     file: u8,
-    lod: u8,
-    cid: u32,
-    len: usize,
-    used: u32,
+    /// Validity plus the four-bit LOD. Packing the former fields makes each slot four bytes smaller;
+    /// across four slots that funds the scratch-cache tag below without growing `MapCache`.
+    meta: u8,
     buf: [u8; CACHE_SLOT_BYTES],
 }
 
-/// One quadtree-index cache block: a resident, block-aligned window of the index region. `valid`
-/// plays the same all-zero-is-empty role as in [`ChunkSlot`].
-struct IndexBlock {
-    valid: bool,
-    /// The mounted file this block belongs to — see [`ChunkSlot::file`]. Free: it lands in the
-    /// padding between `valid` and `off`.
+impl ChunkSlot {
+    #[inline]
+    fn valid(&self) -> bool {
+        self.meta & CHUNK_META_VALID != 0
+    }
+
+    #[inline]
+    fn lod(&self) -> u8 {
+        self.meta & CHUNK_META_LOD_MASK
+    }
+
+    #[inline]
+    fn commit(&mut self, lod: u8) {
+        debug_assert!(lod <= CHUNK_META_LOD_MASK);
+        self.meta = CHUNK_META_VALID | (lod & CHUNK_META_LOD_MASK);
+    }
+}
+
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::size_of::<ChunkSlot>() == CACHE_SLOT_BYTES + 28);
+
+const SCRATCH_META_LOD_MASK: u8 = 0x0f;
+const SCRATCH_META_RRPV_SHIFT: u8 = 4;
+const SCRATCH_META_VALID: u8 = 0x80;
+
+/// Tag for the fifth cache slot backed by the first 4 KiB of `MapCacheInner::scratch`. It needs no
+/// length or bbox: a hit is checked only after `chunk_range` supplied the current length, and the
+/// caller already carries the leaf bbox used for decode.
+#[repr(C)]
+struct ScratchSlot {
+    cid: u32,
     file: u8,
+    meta: u8,
+    _reserved: [u8; 2],
+}
+
+impl ScratchSlot {
+    #[inline]
+    fn valid(&self) -> bool {
+        self.meta & SCRATCH_META_VALID != 0
+    }
+
+    #[inline]
+    fn lod(&self) -> u8 {
+        self.meta & SCRATCH_META_LOD_MASK
+    }
+
+    #[inline]
+    fn rrpv(&self) -> u8 {
+        (self.meta >> SCRATCH_META_RRPV_SHIFT) & 0x03
+    }
+
+    #[inline]
+    fn set_rrpv(&mut self, rrpv: u8) {
+        self.meta = (self.meta & !(0x03 << SCRATCH_META_RRPV_SHIFT)) | ((rrpv & 0x03) << SCRATCH_META_RRPV_SHIFT);
+    }
+
+    #[inline]
+    fn commit(&mut self, file: u8, lod: u8, rrpv: u8) {
+        debug_assert!(lod <= SCRATCH_META_LOD_MASK);
+        self.file = file;
+        self.meta = SCRATCH_META_VALID | (lod & SCRATCH_META_LOD_MASK) | ((rrpv & 0x03) << SCRATCH_META_RRPV_SHIFT);
+    }
+}
+
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::size_of::<ScratchSlot>() == 8);
+
+const INDEX_META_FILE_MASK: u8 = 0x1f;
+const INDEX_META_RRPV_SHIFT: u8 = 5;
+const INDEX_META_VALID: u8 = 0x80;
+
+/// One quadtree-index cache block: a resident, block-aligned window of the index region. The
+/// validity bit, five-bit shard index, and two-bit RRIP prediction share `meta`; `len` is bounded
+/// by the 512-byte window. Compacting those tags pays for the leaf bbox stored in each chunk slot,
+/// so the pass-B fast path adds no net resident RAM.
+#[repr(C)]
+struct IndexBlock {
     off: u32,
-    len: usize,
-    used: u32,
+    len: u16,
+    meta: u8,
+    /// Keep `buf` word-aligned so a full-sector extent read bypasses the board's alignment bounce.
+    _align: u8,
     buf: [u8; INDEX_BLOCK],
 }
 
-/// The streamed-map cache: an LRU set of geometry-chunk slots (absorbing the renderer's
-/// per-priority-pass re-reads) plus a small block cache for the quadtree-node reads, with the
-/// streaming counters. Caller-owned and reusable across frames (a chunk read one frame can hit the
-/// next). ≈277 KB, dominated by the slots + decode scratch; tune the slot count / `CACHE_SLOT_BYTES`
-/// against the on-device RAM budget.
+// On-device each compact tagged window is 520 bytes including alignment.
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::size_of::<IndexBlock>() == INDEX_BLOCK + 8);
+
+impl IndexBlock {
+    #[inline]
+    fn valid(&self) -> bool {
+        self.meta & INDEX_META_VALID != 0
+    }
+
+    #[inline]
+    fn file(&self) -> u8 {
+        self.meta & INDEX_META_FILE_MASK
+    }
+
+    /// Re-reference prediction (0 = near, 3 = distant). A hit promotes to 0; most one-pass fills
+    /// enter at 3 so an ordered tree scan churns one probation slot instead of flushing all seven.
+    #[inline]
+    fn rrpv(&self) -> u8 {
+        (self.meta >> INDEX_META_RRPV_SHIFT) & 0x03
+    }
+
+    #[inline]
+    fn set_rrpv(&mut self, rrpv: u8) {
+        self.meta = (self.meta & !(0x03 << INDEX_META_RRPV_SHIFT)) | ((rrpv & 0x03) << INDEX_META_RRPV_SHIFT);
+    }
+
+    #[inline]
+    fn commit(&mut self, file: u8, rrpv: u8) {
+        debug_assert!(file <= INDEX_META_FILE_MASK);
+        self.meta = INDEX_META_VALID | (file & INDEX_META_FILE_MASK) | ((rrpv & 0x03) << INDEX_META_RRPV_SHIFT);
+    }
+}
+
+#[derive(Clone, Copy)]
+struct WalkEntry {
+    cid: u32,
+    node: BBox,
+}
+
+/// One complete expanded-view leaf result. The all-zero form is an empty cache record, like the
+/// geometry/index slots. Field order and `repr(C)` pin this to 260 B on the 32-bit target; two
+/// records replace one 520-byte [`IndexBlock`] exactly.
+#[repr(C)]
+struct WalkCache {
+    cover: BBox,
+    entries: [WalkEntry; WALK_CACHE_ENTRIES],
+    valid: bool,
+    file: u8,
+    lod: u8,
+    len: u8,
+}
+
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::size_of::<WalkCache>() * WALK_CACHE_SLOTS == core::mem::size_of::<IndexBlock>());
+
+/// The streamed-map cache: a scan-resistant five-slot geometry working set (absorbing the
+/// renderer's per-priority-pass re-reads), a small block cache for quadtree-node reads, and two
+/// bounded expanded-walk results. Caller-owned and reusable across frames. ≈37 KB, dominated by
+/// the geometry buffers and decode scratch.
 ///
 /// Wraps its mutable state in a `RefCell` so a [`Reader`] can read through it on `&self` paths; the
 /// borrows are tightly scoped (one index-node read, or one chunk load + decode) so they never overlap.
@@ -2960,15 +3246,15 @@ impl Default for MapCache {
 }
 
 impl MapCache {
-    /// A fresh, empty cache. ≈277 KB of zeroed buffers — on the device, place it once in the
-    /// reserved region (e.g. `ptr::write`, like the `App`) so it stays off the 192 KB main stack.
+    /// A fresh, empty cache. ≈37 KB of zeroed buffers — on the device, place it once in the
+    /// reserved region (e.g. `ptr::write`, like the `App`) so it stays off the main stack.
     pub fn new() -> Self {
         MapCache { inner: RefCell::new(MapCacheInner::new()) }
     }
 
     /// Allocate a fresh, empty cache **directly on the heap**, never on the stack.
     ///
-    /// The cache is ≈277 KB, so `Box::new(MapCache::new())` first builds the whole value on the
+    /// The cache is ≈37 KB, so `Box::new(MapCache::new())` first builds the whole value on the
     /// stack and then copies it — and a debug build walks [`MapCacheInner::new`]'s `zeroed()`
     /// interior across the stack several more un-elided-copy times — a silent overflow on a
     /// small stack (the web demo's default 1 MiB wasm shadow stack, PR #661). Like `obc-route`'s
@@ -2989,11 +3275,9 @@ impl MapCache {
         unsafe { alloc::boxed::Box::<Self>::new_zeroed().assume_init() }
     }
 
-    /// Drop every resident chunk + index slot. Slots are keyed only by `(lod, chunk_id, len)` /
-    /// index offset, *not* by which map produced them, so a slot left resident across a map switch
-    /// would cross-serve as a (wrong-geometry) hit — but [`Reader::new`] guards that structurally
-    /// via [`MapCache::adopt`], so calling this on a switch is still correct, just no longer
-    /// load-bearing. Cheap — only the `valid` flags + counters are touched, not the buffers.
+    /// Drop every resident chunk, index block, and expanded walk. Slots are keyed only inside one
+    /// parse generation, so [`Reader::new`] also guards map switches via [`MapCache::adopt`]. Cheap
+    /// — only validity metadata and counters are touched, not the backing buffers.
     pub fn clear(&self) -> Result<(), CacheError> {
         self.inner.try_borrow_mut().map_err(|_| CacheError::Busy)?.clear();
         Ok(())
@@ -3024,8 +3308,8 @@ impl MapCache {
     }
 }
 
-/// The cache's mutable interior (see [`MapCache`]). Recency is a monotonic `tick` stamped on each
-/// access; eviction picks the lowest stamp.
+/// The cache's mutable interior (see [`MapCache`]). `tick` counts geometry fills and supplies the
+/// occasional protected RRIP insertion used to resist a repeated scan just over capacity.
 struct MapCacheInner {
     /// The [`MapTables::parse`] generation the resident slots belong to; 0 (the zero-init state)
     /// means "unowned". Written only by [`MapCache::adopt`] — deliberately *not* reset by `clear`,
@@ -3034,8 +3318,15 @@ struct MapCacheInner {
     tick: u32,
     chunks: [ChunkSlot; MAP_CHUNK_SLOTS],
     index: [IndexBlock; INDEX_BLOCKS],
+    walks: [WalkCache; WALK_CACHE_SLOTS],
+    scratch_slot: ScratchSlot,
+    /// The packed four regular chunk tags save sixteen bytes; the scratch tag uses eight. Keep the
+    /// other eight explicit so the resource baseline stays byte-identical and future fields have a
+    /// named place to live rather than silently spending stack margin.
+    _chunk_layout_reserve: [u8; 8],
     /// Decode buffer for a chunk too large to cache (`> CACHE_SLOT_BYTES`, up to the accepted
-    /// `MAX_CHUNK_BYTES`); never keyed, so such a chunk is re-read every pass.
+    /// `MAX_CHUNK_BYTES`). Its first 4 KiB are also the fifth ordinary-chunk slot; an oversized
+    /// load invalidates that tag before overwriting it.
     scratch: [u8; MAX_CHUNK_BYTES],
     chunk_hits: u32,
     chunk_misses: u32,
@@ -3046,7 +3337,7 @@ struct MapCacheInner {
 impl MapCacheInner {
     fn new() -> Self {
         // Zero-init via `zeroed()` (all-zero is a valid empty state for every field). This lowers
-        // to a `memset` / `.bss`, whereas a struct literal zeroing the ~84 KB of buffers emits them
+        // to a `memset` / `.bss`, whereas a struct literal zeroing the ~36 KB of buffers emits them
         // as a `.rodata` const that is then `memcpy`'d — which overflowed flash on the device.
         //
         // SAFETY: `MapCacheInner` is inhabited and valid for the all-zero bit pattern — it has no
@@ -3056,13 +3347,17 @@ impl MapCacheInner {
     }
 
     /// Drop every resident slot and zero the counters, touching only the `valid` flags + counters,
-    /// not the ≈84 KB of backing buffers. See [`MapCache::clear`].
+    /// not the ≈36 KB of backing buffers. See [`MapCache::clear`].
     fn clear(&mut self) {
         for s in &mut self.chunks {
-            s.valid = false;
+            s.meta = 0;
         }
+        self.scratch_slot.meta = 0;
         for b in &mut self.index {
-            b.valid = false;
+            b.meta = 0;
+        }
+        for walk in &mut self.walks {
+            walk.valid = false;
         }
         self.tick = 0;
         self.chunk_hits = 0;
@@ -3082,21 +3377,47 @@ impl MapCacheInner {
     }
 
     #[inline]
-    fn touch(&mut self) -> u32 {
-        self.tick = self.tick.wrapping_add(1);
-        self.tick
-    }
-
-    #[inline]
     fn count_read(&mut self, bytes: usize) {
         self.sd_reads = self.sd_reads.saturating_add(1);
         self.bytes_read = self.bytes_read.saturating_add(bytes as u32);
     }
 
+    fn cached_walk(&self, file: u8, lod: u8, query: &BBox) -> Option<Vec<WalkEntry, WALK_CACHE_ENTRIES>> {
+        let slot = self
+            .walks
+            .iter()
+            .find(|slot| slot.valid && slot.file == file && slot.lod == lod && bbox_contains(&slot.cover, query))?;
+        let mut out = Vec::new();
+        for entry in slot.entries.iter().take(slot.len as usize) {
+            let _ = out.push(*entry);
+        }
+        Some(out)
+    }
+
+    fn store_walk(&mut self, file: u8, lod: u8, cover: BBox, entries: &Vec<WalkEntry, WALK_CACHE_ENTRIES>) {
+        let i = self
+            .walks
+            .iter()
+            .position(|slot| slot.valid && slot.file == file && slot.lod == lod)
+            .or_else(|| self.walks.iter().position(|slot| !slot.valid))
+            .unwrap_or(file as usize % WALK_CACHE_SLOTS);
+        let slot = &mut self.walks[i];
+        slot.valid = false;
+        slot.cover = cover;
+        for (dst, src) in slot.entries.iter_mut().zip(entries.iter()) {
+            *dst = *src;
+        }
+        slot.file = file;
+        slot.lod = lod;
+        slot.len = entries.len() as u8;
+        slot.valid = true;
+    }
+
     /// Ensure chunk `(lod, cid)` — the `len` bytes at `start` — is resident, returning where its
-    /// bytes are. A chunk that fits a cache slot is cached: a hit bumps recency + the hit
-    /// counter, a miss evicts the LRU slot and reads from the source. A chunk larger than a slot
-    /// is read into the uncached scratch every call (counted as a miss + a read).
+    /// bytes are. A chunk that fits a cache slot is cached across the four dedicated buffers plus
+    /// the otherwise-idle decode scratch. A larger chunk invalidates that fifth tag and uses the
+    /// scratch uncached. Both paths count source fills as misses and resident service as hits.
+    #[allow(clippy::too_many_arguments)]
     fn load_chunk(
         &mut self,
         src: &dyn ByteSource,
@@ -3105,37 +3426,68 @@ impl MapCacheInner {
         cid: u32,
         start: u32,
         len: usize,
+        node: &BBox,
     ) -> Result<ChunkLoc, IoError> {
         if len > CACHE_SLOT_BYTES {
+            self.scratch_slot.meta = 0;
             src.read_at(start, &mut self.scratch[..len])?;
             self.chunk_misses = self.chunk_misses.saturating_add(1);
             self.count_read(len);
             return Ok(ChunkLoc::Scratch);
         }
-        if let Some(i) =
-            self.chunks.iter().position(|s| s.valid && s.file == file && s.lod == lod && s.cid == cid && s.len == len)
+        if let Some(i) = self
+            .chunks
+            .iter()
+            .position(|s| s.valid() && s.file == file && s.lod() == lod && s.cid == cid && s.len as usize == len)
         {
             self.chunk_hits = self.chunk_hits.saturating_add(1);
-            let t = self.touch();
-            self.chunks[i].used = t;
+            self.chunks[i].used = 0;
             return Ok(ChunkLoc::Slot(i));
         }
-        let i = lru(self.chunks.iter().map(|s| (!s.valid, s.used)));
+        if self.scratch_slot.valid()
+            && self.scratch_slot.file == file
+            && self.scratch_slot.lod() == lod
+            && self.scratch_slot.cid == cid
+        {
+            self.chunk_hits = self.chunk_hits.saturating_add(1);
+            self.scratch_slot.set_rrpv(0);
+            return Ok(ChunkLoc::Scratch);
+        }
+        let (victim, empty) = if let Some(i) = self.chunks.iter().position(|slot| !slot.valid()) {
+            (ChunkVictim::Slot(i), true)
+        } else if !self.scratch_slot.valid() {
+            (ChunkVictim::Scratch, true)
+        } else {
+            (chunk_rrip_victim(&mut self.chunks, &mut self.scratch_slot), false)
+        };
         // Invalidate before the read: a flaky source can fail partway, half-overwriting the buffer.
         // Committing `valid`/keys only after the read succeeds means a failed read leaves an empty
         // slot, not a poisoned one keyed to the old chunk (which would serve as a corrupt hit).
-        self.chunks[i].valid = false;
-        src.read_at(start, &mut self.chunks[i].buf[..len])?;
-        self.chunks[i].valid = true;
-        self.chunks[i].file = file;
-        self.chunks[i].lod = lod;
-        self.chunks[i].cid = cid;
-        self.chunks[i].len = len;
-        let t = self.touch();
-        self.chunks[i].used = t;
+        self.tick = self.tick.wrapping_add(1);
+        let rrpv = if empty || self.tick.is_multiple_of(5) { 2 } else { 3 };
+        let loc = match victim {
+            ChunkVictim::Slot(i) => {
+                self.chunks[i].meta = 0;
+                src.read_at(start, &mut self.chunks[i].buf[..len])?;
+                self.chunks[i].file = file;
+                self.chunks[i].cid = cid;
+                self.chunks[i].len = len as u16;
+                self.chunks[i].node = *node;
+                self.chunks[i].used = rrpv;
+                self.chunks[i].commit(lod);
+                ChunkLoc::Slot(i)
+            }
+            ChunkVictim::Scratch => {
+                self.scratch_slot.meta = 0;
+                src.read_at(start, &mut self.scratch[..len])?;
+                self.scratch_slot.cid = cid;
+                self.scratch_slot.commit(file, lod, rrpv as u8);
+                ChunkLoc::Scratch
+            }
+        };
         self.chunk_misses = self.chunk_misses.saturating_add(1);
         self.count_read(len);
-        Ok(ChunkLoc::Slot(i))
+        Ok(loc)
     }
 
     /// Fill `out` from index-region offset `off`, assembling from cached blocks (reading any
@@ -3148,7 +3500,7 @@ impl MapCacheInner {
             let block_off = cur - cur % INDEX_BLOCK as u32;
             let slot = self.index_block(src, file, block_off)?;
             let within = (cur - block_off) as usize;
-            let blen = self.index[slot].len;
+            let blen = self.index[slot].len as usize;
             if within >= blen {
                 return Err(IoError::BadOffset);
             }
@@ -3161,47 +3513,92 @@ impl MapCacheInner {
 
     /// Ensure the `INDEX_BLOCK`-aligned block at `block_off` is resident, returning its slot.
     fn index_block(&mut self, src: &dyn ByteSource, file: u8, block_off: u32) -> Result<usize, IoError> {
-        if let Some(i) = self.index.iter().position(|b| b.valid && b.file == file && b.off == block_off) {
-            let t = self.touch();
-            self.index[i].used = t;
+        if let Some(i) = self.index.iter().position(|b| b.valid() && b.file() == file && b.off == block_off) {
+            self.index[i].set_rrpv(0);
             return Ok(i);
         }
         let want = ((src.len() - block_off) as usize).min(INDEX_BLOCK);
         if want == 0 {
             return Err(IoError::BadOffset);
         }
-        let i = lru(self.index.iter().map(|b| (!b.valid, b.used)));
+        let empty = self.index.iter().position(|b| !b.valid());
+        let i = empty.unwrap_or_else(|| rrip_victim(&mut self.index));
         // Invalidate before the read (see `load_chunk`): a partial read failure must not leave a
         // poisoned slot still keyed to the old block offset.
-        self.index[i].valid = false;
+        self.index[i].meta = 0;
         src.read_at(block_off, &mut self.index[i].buf[..want])?;
-        self.index[i].valid = true;
-        self.index[i].file = file;
         self.index[i].off = block_off;
-        self.index[i].len = want;
-        let t = self.touch();
-        self.index[i].used = t;
+        self.index[i].len = want as u16;
+        // Bimodal RRIP insertion: an initial fill gets a normal prediction so all slots seed;
+        // thereafter seven of eight source misses enter as immediate probation (3), while the
+        // periodic 2 ages out stale protected blocks after the viewport genuinely moves. Stable
+        // repeated scans keep their hit blocks at 0 and churn the probation slot.
+        let rrpv = if empty.is_some() || self.sd_reads.is_multiple_of(8) { 2 } else { 3 };
+        self.index[i].commit(file, rrpv);
         self.count_read(want);
         Ok(i)
     }
 }
 
-/// Pick a slot to (re)fill: the first empty slot if any, else the least-recently-used. Input is
-/// `(is_empty, used)` per slot in order; returns the chosen index. Never empty in practice (the
-/// cache always has ≥ 1 slot).
-fn lru(slots: impl Iterator<Item = (bool, u32)>) -> usize {
-    let mut best = 0usize;
-    let mut best_used = u32::MAX;
-    for (i, (empty, used)) in slots.enumerate() {
-        if empty {
+/// Pick the next RRIP victim. If no entry currently predicts a distant re-reference, age every
+/// entry one step and try again. Bounded: predictions saturate at 3, so at most three passes.
+fn rrip_victim(slots: &mut [IndexBlock]) -> usize {
+    loop {
+        if let Some(i) = slots.iter().position(|slot| slot.rrpv() >= 3) {
             return i;
         }
-        if used < best_used {
-            best_used = used;
-            best = i;
+        for slot in slots.iter_mut() {
+            slot.set_rrpv((slot.rrpv() + 1).min(3));
         }
     }
-    best
+}
+
+fn chunk_rrip_victim(slots: &mut [ChunkSlot], scratch: &mut ScratchSlot) -> ChunkVictim {
+    loop {
+        if let Some(i) = slots.iter().position(|slot| slot.used >= 3) {
+            return ChunkVictim::Slot(i);
+        }
+        if scratch.rrpv() >= 3 {
+            return ChunkVictim::Scratch;
+        }
+        for slot in slots.iter_mut() {
+            slot.used = (slot.used + 1).min(3);
+        }
+        scratch.set_rrpv((scratch.rrpv() + 1).min(3));
+    }
+}
+
+#[inline]
+fn bbox_contains(outer: &BBox, inner: &BBox) -> bool {
+    outer.min_lon <= inner.min_lon
+        && outer.min_lat <= inner.min_lat
+        && outer.max_lon >= inner.max_lon
+        && outer.max_lat >= inner.max_lat
+}
+
+fn intersect_bbox(a: &BBox, b: &BBox) -> Option<BBox> {
+    let out = BBox {
+        min_lon: a.min_lon.max(b.min_lon),
+        min_lat: a.min_lat.max(b.min_lat),
+        max_lon: a.max_lon.min(b.max_lon),
+        max_lat: a.max_lat.min(b.max_lat),
+    };
+    (out.min_lon <= out.max_lon && out.min_lat <= out.max_lat).then_some(out)
+}
+
+/// Widen a query by one eighth of its span per side, clamped to the quadtree root. Arithmetic is
+/// promoted so a hostile header at the i32 extremes cannot overflow while the margin is formed.
+fn expand_walk_bbox(query: &BBox, root: &BBox) -> BBox {
+    let lon_span = i64::from(query.max_lon) - i64::from(query.min_lon);
+    let lat_span = i64::from(query.max_lat) - i64::from(query.min_lat);
+    let lon_margin = (lon_span + 7) / 8;
+    let lat_margin = (lat_span + 7) / 8;
+    BBox {
+        min_lon: (i64::from(query.min_lon) - lon_margin).max(i64::from(root.min_lon)) as i32,
+        min_lat: (i64::from(query.min_lat) - lat_margin).max(i64::from(root.min_lat)) as i32,
+        max_lon: (i64::from(query.max_lon) + lon_margin).min(i64::from(root.max_lon)) as i32,
+        max_lat: (i64::from(query.max_lat) + lat_margin).min(i64::from(root.max_lat)) as i32,
+    }
 }
 
 #[cfg(test)]
@@ -3236,6 +3633,90 @@ mod tests {
         fn len(&self) -> u32 {
             self.data.len() as u32
         }
+    }
+
+    /// The map renderer replays an ordered quadtree walk every frame. When that cycle is larger
+    /// than the seven-window index cache, LRU has zero hits forever (the next scan evicts every
+    /// block just before reuse). BRRIP must retain a protected subset while one probation slot
+    /// absorbs the scan: the device's measured 18-sector pattern warms to five hits / thirteen reads.
+    #[test]
+    fn index_cache_resists_a_repeated_scan_larger_than_capacity() {
+        const WORKING_BLOCKS: usize = 18;
+        let data = [0u8; WORKING_BLOCKS * INDEX_BLOCK];
+        let src = SliceSource(&data);
+        let cache = MapCache::new();
+        let mut inner = cache.inner.borrow_mut();
+        let mut word = [0u8; 4];
+
+        for block in 0..WORKING_BLOCKS {
+            inner.index_read(&src, 0, (block * INDEX_BLOCK) as u32, &mut word).unwrap();
+        }
+        assert_eq!(inner.stats().sd_reads, WORKING_BLOCKS as u32, "the cold scan fills from the source");
+
+        for block in 0..WORKING_BLOCKS {
+            inner.index_read(&src, 0, (block * INDEX_BLOCK) as u32, &mut word).unwrap();
+        }
+        assert_eq!(
+            inner.stats().sd_reads,
+            (WORKING_BLOCKS + 13) as u32,
+            "the repeated scan must retain five protected windows instead of LRU-thrashing all eighteen"
+        );
+    }
+
+    #[test]
+    fn expanded_walk_cache_hits_only_inside_its_cover_and_clear_invalidates_it() {
+        let cache = MapCache::new();
+        let cover = BBox { min_lon: -100, min_lat: -80, max_lon: 100, max_lat: 80 };
+        let entry = WalkEntry { cid: 7, node: BBox { min_lon: -50, min_lat: -40, max_lon: 0, max_lat: 0 } };
+        let mut entries = Vec::new();
+        assert!(entries.push(entry).is_ok());
+        cache.inner.borrow_mut().store_walk(2, 3, cover, &entries);
+
+        let inside = BBox { min_lon: -20, min_lat: -10, max_lon: 20, max_lat: 10 };
+        let hit = cache.inner.borrow().cached_walk(2, 3, &inside).unwrap();
+        assert_eq!(hit.len(), 1);
+        assert_eq!(hit[0].cid, 7);
+        assert_eq!(hit[0].node, entry.node);
+
+        let outside = BBox { min_lon: -20, min_lat: -10, max_lon: 101, max_lat: 10 };
+        assert!(cache.inner.borrow().cached_walk(2, 3, &outside).is_none());
+        assert!(cache.inner.borrow().cached_walk(2, 4, &inside).is_none());
+        cache.clear().unwrap();
+        assert!(cache.inner.borrow().cached_walk(2, 3, &inside).is_none());
+    }
+
+    #[test]
+    fn expanded_walk_bbox_clamps_without_overflow_at_i32_extremes() {
+        let root = BBox { min_lon: i32::MIN, min_lat: i32::MIN, max_lon: i32::MAX, max_lat: i32::MAX };
+        let query = BBox { min_lon: -8, min_lat: -16, max_lon: 8, max_lat: 16 };
+        assert_eq!(expand_walk_bbox(&query, &root), BBox { min_lon: -10, min_lat: -20, max_lon: 10, max_lat: 20 });
+
+        let edge = BBox { min_lon: i32::MIN, min_lat: i32::MAX - 8, max_lon: i32::MIN + 8, max_lat: i32::MAX };
+        assert_eq!(expand_walk_bbox(&edge, &root).min_lon, i32::MIN);
+        assert_eq!(expand_walk_bbox(&edge, &root).max_lat, i32::MAX);
+    }
+
+    #[test]
+    fn decode_scratch_is_a_fifth_chunk_cache_slot() {
+        const LEN: usize = 64;
+        const CHUNKS: usize = MAP_CHUNK_SLOTS + 1;
+        let data = [0u8; CHUNKS * LEN];
+        let src = SliceSource(&data);
+        let cache = MapCache::new();
+        let mut inner = cache.inner.borrow_mut();
+        let node = BBox { min_lon: 0, min_lat: 0, max_lon: 1, max_lat: 1 };
+
+        for cid in 0..CHUNKS as u32 {
+            inner.load_chunk(&src, 0, 0, cid, cid * LEN as u32, LEN, &node).unwrap();
+        }
+        assert_eq!(inner.stats().chunk_misses, CHUNKS as u32);
+
+        for cid in 0..CHUNKS as u32 {
+            inner.load_chunk(&src, 0, 0, cid, cid * LEN as u32, LEN, &node).unwrap();
+        }
+        let stats = inner.stats();
+        assert_eq!(stats.chunk_misses, CHUNKS as u32, "all five chunks should remain resident");
+        assert_eq!(stats.chunk_hits, CHUNKS as u32, "the second five-chunk scan must be entirely RAM-only");
     }
 
     /// The N4 graph-tile cache holds [`NAV_TILE_SLOTS`] (8) distinct chunks resident at once, and
@@ -3286,26 +3767,32 @@ mod tests {
     #[test]
     fn partial_read_failure_does_not_poison_evicted_slot() {
         const LEN: usize = 64;
-        // One LEN-chunk per slot, plus one more past them for the failing eviction read — sized off
-        // MAP_CHUNK_SLOTS so the test tracks the cache size rather than a hard-coded buffer length.
-        let mut data = [0u8; (MAP_CHUNK_SLOTS + 1) * LEN];
+        const CACHE_SLOTS: usize = MAP_CHUNK_SLOTS + 1; // four dedicated buffers + decode scratch
+                                                        // One LEN-chunk per slot, plus one more past them for the failing eviction read — sized off
+                                                        // MAP_CHUNK_SLOTS so the test tracks the cache size rather than a hard-coded buffer length.
+        let mut data = [0u8; (CACHE_SLOTS + 1) * LEN];
         for (k, b) in data.iter_mut().enumerate() {
             *b = (k as u8).wrapping_mul(31).wrapping_add(7); // distinct, offset-derived bytes
         }
         // The eviction read (K_new) lives past the primed chunks (one per slot) and fails partway.
-        let fail_at = (MAP_CHUNK_SLOTS as u32) * LEN as u32;
+        let fail_at = CACHE_SLOTS as u32 * LEN as u32;
         let src = FlakySource { data: &data, fail_at, partial: 8 };
 
         let cache = MapCache::new();
         let mut inner = cache.inner.borrow_mut();
+        let node = BBox { min_lon: 0, min_lat: 0, max_lon: 1, max_lat: 1 };
 
-        // Prime all slots, oldest first — so the LRU victim of the next miss is slot 0 (cid 0).
-        for cid in 0..MAP_CHUNK_SLOTS as u32 {
-            let loc = inner.load_chunk(&src, 0, 0, cid, cid * LEN as u32, LEN).unwrap();
-            assert!(matches!(loc, ChunkLoc::Slot(_)));
+        // Prime all five slots. RRIP's first victim of the next miss is slot 0 (cid 0).
+        for cid in 0..CACHE_SLOTS as u32 {
+            let loc = inner.load_chunk(&src, 0, 0, cid, cid * LEN as u32, LEN, &node).unwrap();
+            if cid < MAP_CHUNK_SLOTS as u32 {
+                assert!(matches!(loc, ChunkLoc::Slot(_)));
+            } else {
+                assert!(matches!(loc, ChunkLoc::Scratch));
+            }
         }
         let primed = inner.stats();
-        assert_eq!(primed.chunk_misses, MAP_CHUNK_SLOTS as u32);
+        assert_eq!(primed.chunk_misses, CACHE_SLOTS as u32);
         assert_eq!(primed.chunk_hits, 0);
 
         // The true bytes of K_old (cid 0), for an uncorrupted-content check after re-read.
@@ -3313,11 +3800,11 @@ mod tests {
         src.read_at(0, &mut k_old).unwrap();
 
         // Eviction read of K_new fails partway through filling slot 0's buffer.
-        assert!(matches!(inner.load_chunk(&src, 0, 0, 99, fail_at, LEN), Err(IoError::Io)));
+        assert!(matches!(inner.load_chunk(&src, 0, 0, 99, fail_at, LEN, &node), Err(IoError::Io)));
 
         // Request K_old again: it must be a *miss* (re-read), not a hit on the poisoned slot.
         let before = inner.stats();
-        let loc = inner.load_chunk(&src, 0, 0, 0, 0, LEN).unwrap();
+        let loc = inner.load_chunk(&src, 0, 0, 0, 0, LEN, &node).unwrap();
         let after = inner.stats();
         assert_eq!(after.chunk_hits, before.chunk_hits, "K_old must not hit the poisoned slot");
         assert_eq!(after.chunk_misses, before.chunk_misses + 1, "K_old must be re-read");
@@ -3344,7 +3831,8 @@ mod tests {
         const LEN: usize = 64;
         let data = [0xA5u8; LEN];
         let src = SliceSource(&data);
-        let loc = inner.load_chunk(&src, 0, 0, 0, 0, LEN).unwrap();
+        let node = BBox { min_lon: 0, min_lat: 0, max_lon: 1, max_lat: 1 };
+        let loc = inner.load_chunk(&src, 0, 0, 0, 0, LEN, &node).unwrap();
         match loc {
             ChunkLoc::Slot(i) => assert_eq!(&inner.chunks[i].buf[..LEN], &data[..]),
             ChunkLoc::Scratch => panic!("a slot-sized chunk should land in a slot"),

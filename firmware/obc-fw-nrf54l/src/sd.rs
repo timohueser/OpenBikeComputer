@@ -47,6 +47,8 @@
 //! [`crate::semmc::Semmc`]. Everything above it — [`Storage`], the FAT layer, the extent fast path,
 //! the object store, the boot-fault rule — is transport-agnostic and did not move.
 
+#[cfg(feature = "sd-bench")]
+use embassy_time::Instant;
 use embedded_sdmmc::{
     Block, BlockCount, BlockDevice, BlockIdx, LfnBuffer, Mode, RawDirectory, RawFile, ShortFileName, TimeSource,
     Timestamp, VolumeIdx, VolumeManager,
@@ -723,6 +725,72 @@ fn bring_up_fault(e: crate::semmc::SemmcError) -> obc_app::BootFault {
 #[derive(Clone, Copy)]
 pub(crate) struct SemmcCard;
 
+// ── On-device map-read profiler (`sd-bench`) ────────────────────────────────────────────────
+
+/// Cumulative physical-read counters at the concrete block-device boundary.
+///
+/// The renderer already counts logical `ByteSource::read_at` calls and requested bytes. These
+/// counters deliberately sit lower: one sample covers the complete `with_storage` span (FLPR mode
+/// acquisition, sEMMC command(s), and a rare alignment-bounce copy), so their delta is the M33's
+/// actual awake time attributable to card reads. Relaxed atomics are enough: storage is synchronous
+/// on the one thread-mode executor; atomics only make a snapshot unambiguously race-free to read.
+#[cfg(feature = "sd-bench")]
+#[derive(Clone, Copy)]
+pub(crate) struct ReadPerf {
+    pub(crate) us: u32,
+    pub(crate) commands: u32,
+    pub(crate) blocks: u32,
+    pub(crate) single_commands: u32,
+    pub(crate) multi_commands: u32,
+}
+
+#[cfg(feature = "sd-bench")]
+impl ReadPerf {
+    pub(crate) fn since(self, before: Self) -> Self {
+        Self {
+            us: self.us.wrapping_sub(before.us),
+            commands: self.commands.wrapping_sub(before.commands),
+            blocks: self.blocks.wrapping_sub(before.blocks),
+            single_commands: self.single_commands.wrapping_sub(before.single_commands),
+            multi_commands: self.multi_commands.wrapping_sub(before.multi_commands),
+        }
+    }
+}
+
+#[cfg(feature = "sd-bench")]
+static READ_US: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+#[cfg(feature = "sd-bench")]
+static READ_COMMANDS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+#[cfg(feature = "sd-bench")]
+static READ_BLOCKS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+#[cfg(feature = "sd-bench")]
+static READ_SINGLE_COMMANDS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+#[cfg(feature = "sd-bench")]
+static READ_MULTI_COMMANDS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+#[cfg(feature = "sd-bench")]
+pub(crate) fn read_perf_snapshot() -> ReadPerf {
+    use core::sync::atomic::Ordering::Relaxed;
+    ReadPerf {
+        us: READ_US.load(Relaxed),
+        commands: READ_COMMANDS.load(Relaxed),
+        blocks: READ_BLOCKS.load(Relaxed),
+        single_commands: READ_SINGLE_COMMANDS.load(Relaxed),
+        multi_commands: READ_MULTI_COMMANDS.load(Relaxed),
+    }
+}
+
+#[cfg(feature = "sd-bench")]
+fn note_read_perf(started: Instant, commands: usize, blocks: usize, single_commands: usize) {
+    use core::sync::atomic::Ordering::Relaxed;
+    let elapsed = started.elapsed().as_micros().min(u64::from(u32::MAX)) as u32;
+    READ_US.fetch_add(elapsed, Relaxed);
+    READ_COMMANDS.fetch_add(commands as u32, Relaxed);
+    READ_BLOCKS.fetch_add(blocks as u32, Relaxed);
+    READ_SINGLE_COMMANDS.fetch_add(single_commands as u32, Relaxed);
+    READ_MULTI_COMMANDS.fetch_add((commands - single_commands) as u32, Relaxed);
+}
+
 // ═══════════════════════ map-upload write pipeline ═══════════════════════
 
 /// One USB map append's raw writes, collected until the FAT call returns.
@@ -1049,6 +1117,8 @@ impl BlockDevice for SemmcCard {
             upload_pipe_flush()?;
         }
         let (addr, n) = (blocks.as_ptr() as usize, blocks.len());
+        #[cfg(feature = "sd-bench")]
+        let bench_started = Instant::now();
         let r = crate::flpr_mux::with_storage(|sd| {
             if addr.is_multiple_of(4) {
                 // SAFETY: `Block` is `#[repr(transparent)]` over `[u8; 512]` (asserted above), so a
@@ -1069,6 +1139,18 @@ impl BlockDevice for SemmcCard {
             }
             Ok(())
         })?;
+        #[cfg(feature = "sd-bench")]
+        {
+            let commands = if addr.is_multiple_of(4) { 1 } else { n.div_ceil(BOUNCE_BLOCKS) };
+            let single_commands = if addr.is_multiple_of(4) {
+                usize::from(n == 1)
+            } else {
+                // Every full bounce chunk is one BOUNCE_BLOCKS-block CMD18. Only a one-block
+                // remainder is CMD17; 2- and 3-block remainders are still CMD18, not singles.
+                usize::from(n % BOUNCE_BLOCKS == 1)
+            };
+            note_read_perf(bench_started, commands, n, single_commands);
+        }
         if let Err(e) = r {
             log_transfer_error("read", start_block_idx.0, n, e);
         } else {

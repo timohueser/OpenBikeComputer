@@ -1144,15 +1144,15 @@ On the host that's a slice of memory; on the device it's a file on the SD card. 
   <!-- streamed box -->
   <rect class="d-panel" x="324" y="124" width="360" height="64" rx="10" />
   <text class="d-label" x="340" y="144">streamed — pulled on demand</text>
-  <text class="d-sub" x="340" y="162">index nodes → 512 B block cache</text>
-  <text class="d-sub" x="340" y="178">geometry chunks → 4 KB slot cache</text>
+  <text class="d-sub" x="340" y="162">index nodes → 512 B blocks + bounded leaf lists</text>
+  <text class="d-sub" x="340" y="178">geometry chunks → five 4 KiB working slots</text>
 
   <!-- route contrast -->
   <rect class="d-panel-2" x="324" y="200" width="360" height="40" rx="10" />
   <text class="d-sub" x="340" y="218" style="font-size:10px"><tspan style="fill:#a9501c">OBCR:</tspan> header + the whole (small, flat) index resident;</text>
   <text class="d-sub" x="340" y="232" style="font-size:10px">only geometry chunks stream. The list is cheap to keep.</text>
 </svg>
-<figcaption>A map never has to fit in RAM — the device has 512 KB and no external memory to hold the whole file. Even the quadtree index streams, through a small block cache that coalesces the 4-byte node reads; geometry chunks stream through a slot cache too, and the renderer touches each visible chunk at most twice a frame (once to pick features, once to draw the survivors) so the SD reads stay bounded. The route's index is a short flat list, so it's read whole at open; its geometry streams chunk-by-chunk through a small resident cache of its own, so a redraw of the same route re-reads nothing either.</figcaption>
+<figcaption>A map never has to fit in RAM — the device has 512 KB and no external memory to hold the whole file. Even the quadtree index streams, through a small block cache that coalesces the 4-byte node reads; two bounded expanded-view leaf lists avoid repeating that walk during a slow pan. Geometry chunks stream through a five-slot working set, and the renderer touches each visible chunk at most twice a frame (once to pick features, once to draw the survivors) so SD reads stay bounded. The route's index is a short flat list, so it's read whole at open; its geometry streams chunk-by-chunk through a small resident cache of its own, so a redraw of the same route re-reads nothing either.</figcaption>
 </figure>
 
 The terrain raster is the extreme case of the same instinct: **nothing but its
@@ -1165,7 +1165,7 @@ and touch exactly four tiles: fewer would thrash on the one access pattern the
 sampler is guaranteed to make. A 430 MiB raster therefore costs under 4 KB of RAM to
 read, which is what makes it affordable to sample inside the route-emit loop at all.
 
-The map's caches matter because the [stub-select collector](../rendering/#4-decode-by-priority) walks the same visible chunks twice per frame — once in pass A to pick the surviving features, once in pass B to re-decode the winners; without a cache, pass B would re-read every winner chunk off the SD. With it, pass B's winner chunks are already resident, and a slow pan re-hits last frame's chunks. The cache changes *when* a byte is read, never *what* decodes — so a render stays byte-identical whether the whole file was resident or streamed one chunk at a time.
+The map's caches matter because the [stub-select collector](../rendering/#4-decode-by-priority) visits the same visible chunks twice per frame — once in pass A to pick the surviving features, once in pass B to re-decode the winners; without a cache, pass B would re-read every winner chunk off the SD. Four dedicated geometry buffers plus the otherwise-idle first 4 KiB of the oversized decode scratch keep the common four/five-chunk riding views resident. Both geometry and index blocks use scan-resistant replacement, while two complete leaf lists cover the current viewport plus a 1/8 margin. A slow pan therefore reuses both the tree answer and last frame's chunk bytes. Every cache is bounded and has the ordinary streaming fallback, and changes only *when* a byte is read, never *what* decodes — so a render stays byte-identical whether the whole file was resident or streamed one chunk at a time.
 
 ## The catalog — the map builder's source of truth
 
