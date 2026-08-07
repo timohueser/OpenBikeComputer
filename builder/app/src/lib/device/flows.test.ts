@@ -21,7 +21,7 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { DeviceError, type ProtocolClient } from "../usb/client";
 import { loopbackDevice } from "../usb/loopback";
-import { ObjectType, SINGLETON_OBJECT_ID } from "../usb/protocol";
+import { ObjectType, SINGLETON_OBJECT_ID, TransferStatus } from "../usb/protocol";
 import { initConvert } from "../convert/bridge";
 import { prepareRoute } from "./route";
 import {
@@ -112,6 +112,65 @@ describe("assembled volume-set upload", () => {
             );
             expect(state.setId).toBe(1);
             expect(state.committedBytes).toBe(state.totalBytes);
+            expect(device.stagedMapShardCount).toBe(0);
+        } finally {
+            await close();
+        }
+    });
+
+    it("survives a mid-set shard CRC refusal: the set lives, the shard retries, the manifest commits", async () => {
+        // **The regression this exists for deleted a rider's whole map.** A refused shard throws out
+        // of `client.upload`, whose failure path sends `op = 3` to quiesce the endpoint before the
+        // retry. That abort used to name the shard — indistinguishable from `abandonMapSet`'s — so
+        // the device abandoned the entire staged set, the retry re-sent one shard into nothing, and
+        // the manifest sealed a set that no longer had any files.
+        //
+        // Driven end to end against the loopback device, deliberately: the existing shard-retry test
+        // stubs `client.upload` with `vi.fn()`, so it cannot see the abort, the descriptor type, or
+        // what the device did with the set.
+        const { client, device, close } = loopbackDevice();
+        try {
+            const first = syntheticBytes(2048);
+            const second = syntheticBytes(3072);
+            const manifest = syntheticBytes(128);
+            const state = setSendState(2, first.length + second.length + manifest.length);
+            const ctx = context();
+
+            await sendAssembledSetFile(
+                client,
+                state,
+                { name: "MS1S00.OBM", role: "core", sha256: digest(first), byteLength: first.length, bytes: first },
+                ctx,
+            );
+            expect(device.stagedMapShardCount).toBe(1);
+
+            // Refuse the second shard exactly once, the way a torn transfer looks from the host:
+            // a `crcMismatch` result, which is the one failure `sendAssembledSetFile` retries.
+            device.failNextUploadWith(TransferStatus.CrcMismatch);
+            await sendAssembledSetFile(
+                client,
+                state,
+                {
+                    name: "MS1S01.OBM",
+                    role: "coarse",
+                    sha256: digest(second),
+                    byteLength: second.length,
+                    bytes: second,
+                },
+                ctx,
+            );
+
+            // The retry landed in a set that still had its first shard.
+            expect(device.stagedMapShardCount, "the refusal took the rest of the set with it").toBe(2);
+            expect(state.nextShard).toBe(2);
+
+            await sendAssembledSetFile(
+                client,
+                state,
+                { name: "MS1.OBS", role: "manifest", sha256: "", byteLength: manifest.length, bytes: manifest },
+                ctx,
+            );
+            expect(state.setId, "the manifest sealed nothing").not.toBeNull();
             expect(device.stagedMapShardCount).toBe(0);
         } finally {
             await close();

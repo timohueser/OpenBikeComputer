@@ -349,6 +349,9 @@ jobs:
       # signal this step exists to give.
       - name: "obc-fw-nrf54l: the pending fork patch still applies and passes its own tests"
         if: matrix.name == 'build (default = LS021/FLPR, release)'
+        # Bounded like the toolchain download above, and for the same reason: this step reaches the
+        # network, and a stalled clone would otherwise sit on the workflow's 6 h default.
+        timeout-minutes: 10
         env:
           FORK_BASE_REV: 4cada7b388f4e4bf9f8de1fcdba33f22c1245aa7
           # `setup-rust-toolchain` exports `RUSTFLAGS: -D warnings` for the whole job, and the fork
@@ -367,6 +370,7 @@ jobs:
           cargo test --manifest-path /tmp/sdmmc-fork/Cargo.toml
       - name: "obc-fw-nrf54l: the sdmmc-prealloc feature type-checks against the patched fork"
         if: matrix.name == 'build (default = LS021/FLPR, release)'
+        timeout-minutes: 10
         working-directory: firmware/obc-fw-nrf54l
         # A **git** `[patch]` source rather than a `path` one, and that is load-bearing: cargo caps
         # lints (`--cap-lints allow`) on anything that is not a local path or workspace member, so
@@ -378,9 +382,14 @@ jobs:
           cargo check --release --features sdmmc-prealloc \
             --config 'patch.crates-io.embedded-sdmmc.git="file:///tmp/sdmmc-fork"' \
             --config 'patch.crates-io.embedded-sdmmc.branch="patched"'
-          # The override re-resolves the dependency, so it rewrites Cargo.lock. Put it back, or the
-          # `--locked` in every other step would fail against a lock this diagnostic dirtied.
-          git checkout -- Cargo.lock
+      # The override re-resolves the dependency, so it rewrites Cargo.lock, and a later `--locked`
+      # step would then fail against a lock this diagnostic dirtied. Its own step with
+      # `if: always()`, because the restore has to happen precisely when it is easiest to forget:
+      # the check above failing. Inside that step's `run:` it would be skipped by `bash -e`.
+      - name: "obc-fw-nrf54l: put Cargo.lock back after the override"
+        if: always() && matrix.name == 'build (default = LS021/FLPR, release)'
+        working-directory: firmware/obc-fw-nrf54l
+        run: git checkout -- Cargo.lock
 
   # The obc-boot bootloader (epic #615, #617): workspace-excluded like the board crate, built
   # from its own directory so its .cargo/config.toml selects thumbv8m. No test harness and no
