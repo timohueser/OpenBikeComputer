@@ -114,6 +114,11 @@ export async function sendAssembledSetFile(
     let result: UploadResult | null = null;
     for (let attempt = 0; attempt < 2; attempt++) {
         try {
+            // The manifest's first attempt leaves the phase at `committing`; a CRC refusal means the
+            // bytes go again, so put the label back before they do. Without this the retry streams
+            // under "Finishing on the device", which is the one phase that promises nothing is
+            // moving.
+            if (attempt > 0) ctx.phase("sending", state.totalBytes);
             result = await client.upload(type, objectId, bytesSource(file.bytes), {
                 signal: ctx.signal,
                 onProgress: (done) => ctx.progress(state.committedBytes + done, state.totalBytes),

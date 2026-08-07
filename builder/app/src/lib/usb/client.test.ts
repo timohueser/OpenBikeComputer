@@ -143,21 +143,124 @@ describe("the upload window", () => {
         expect(peakOutstanding, "the upload never had more than one write on the wire").toBeGreaterThan(1);
     });
 
-    it("reports progress only for writes the transport has taken", async () => {
-        // A bar driven by hand-off rather than settlement would run to 100% while a quarter-megabyte
-        // was still queued, and would make a failure look like it happened after the bytes landed.
-        await withDevice({ bulkPacketSize: 64, chunkSize: 61 }, async ({ client }) => {
-            const seen: number[] = [];
-            const bytes = payload(40_000);
-            await client.upload(ObjectType.Route, NEW_OBJECT_ID, bytes, {
-                chunkSize: 4096,
-                onProgress: (done) => seen.push(done),
-            });
-            expect(seen.at(-1)).toBe(bytes.length);
-            // Monotonic, and never ahead of the object.
-            for (let i = 1; i < seen.length; i++) expect(seen[i]).toBeGreaterThanOrEqual(seen[i - 1]);
-            expect(Math.max(...seen)).toBeLessThanOrEqual(bytes.length);
+    it("never reports progress for bytes the transport has not taken", async () => {
+        // The claim is about *lag*, so the assertion has to be against what the transport has
+        // actually accepted at the moment each callback fires — monotonicity and a correct total
+        // hold just as well for a bar driven by hand-off, which would run to 100% while a
+        // quarter-megabyte was still queued and make a failure look like it happened after the bytes
+        // landed.
+        const link = loopbackLink({ bulkPacketSize: 64 });
+        const device = new MockDevice(link.device, {});
+        void device.run();
+        let accepted = 0;
+        const bulk: BytePipe = {
+            ...link.host.bulk,
+            transport: "counting",
+            open: true,
+            read: (signal) => link.host.bulk.read(signal),
+            reset: () => link.host.bulk.reset(),
+            close: () => link.host.bulk.close(),
+            write: async (bytes, signal) => {
+                await link.host.bulk.write(bytes, signal);
+                accepted += bytes.length;
+            },
+        };
+        const client = new ProtocolClient({ control: link.host.control, bulk, close: () => link.host.close() });
+        const bytes = payload(120_000);
+        const overruns: string[] = [];
+        await client.upload(ObjectType.Route, NEW_OBJECT_ID, bytes, {
+            chunkSize: 4096,
+            onProgress: (done) => {
+                if (done > accepted) overruns.push(`reported ${done} with only ${accepted} taken`);
+            },
         });
+        expect(overruns, "progress ran ahead of the transport").toEqual([]);
+        device.stop();
+        await link.host.close();
+    });
+
+    it("survives an async descriptor reject mid-window and retries cleanly", async () => {
+        // The stray-byte hole in one test. The device rejects the descriptor *after* the host has
+        // queued several chunks (`checkUploadOpen` is what notices), so those bytes are already on
+        // their way to a transfer that will never read them. If they are still in the pipe when the
+        // retry arms, they become its opening payload and its whole-object CRC fails — a retry that
+        // cannot succeed until the window happens to drain.
+        await withDevice({ bulkPacketSize: 64, maxFwImageLen: 1024 }, async ({ client, device, link }) => {
+            // Bytes on the endpoint that belong to no armed transfer — what a host that was mid-send
+            // when a descriptor was refused leaves behind. Injected directly, because *how many*
+            // chunks escape before `checkUploadOpen` notices is a timing detail of the loopback and
+            // the property under test is not.
+            await link.host.bulk.write(payload(9_000));
+
+            // A refused descriptor. Its failure path is what has to leave the pipe clean: the device
+            // answered, so nothing about this transfer is outstanding — but the strays above are.
+            await expect(
+                client.upload(ObjectType.FwImage, SINGLETON_OBJECT_ID, payload(200_000), { chunkSize: 4096 }),
+            ).rejects.toMatchObject({ name: "DeviceError" });
+
+            // The retry is an ordinary first attempt. Anything left over shows up here and nowhere
+            // else: prepended to this object, it fails the whole-object CRC.
+            const bytes = payload(60_000);
+            const { objectId } = await client.upload(ObjectType.Route, NEW_OBJECT_ID, bytes, {
+                chunkSize: 4096,
+            });
+            expect(device.stored(ObjectType.Route, objectId)).toEqual(bytes);
+            expect(device.strayBytesDiscarded, "the stray bytes were never discarded").toBeGreaterThanOrEqual(
+                9_000,
+            );
+        });
+    });
+
+    it("goes through the abort handshake after any failed upload, not only a cancel", async () => {
+        // The handshake is what quiesces the pipe before a retry, so it has to happen on *both*
+        // shapes of failure — a cancel, where the host's transfers stay on the wire, and a
+        // device-originated reject, where they do not but the leftovers are just as unrecallable.
+        // Skipping it on the second was the hole the reject-retry test above lands on.
+        const seen: number[] = [];
+        const link = loopbackLink({ bulkPacketSize: 64 });
+        const device = new MockDevice(link.device, { maxFwImageLen: 1024 });
+        void device.run();
+        const control: BytePipe = {
+            ...link.host.control,
+            transport: "counting-control",
+            open: true,
+            read: (signal) => link.host.control.read(signal),
+            reset: () => link.host.control.reset(),
+            close: () => link.host.control.close(),
+            write: (frameBytes, signal) => {
+                // Selector 2 is `transferControl`; the descriptor's first payload byte is the op.
+                if (frameBytes[0] === 2) seen.push(frameBytes[1]);
+                return link.host.control.write(frameBytes, signal);
+            },
+        };
+        const client = new ProtocolClient({
+            control,
+            bulk: link.host.bulk,
+            close: () => link.host.close(),
+        });
+
+        // 1. A device-originated reject: the device answered, so the old code sent no abort.
+        await expect(
+            client.upload(ObjectType.FwImage, SINGLETON_OBJECT_ID, payload(200_000), { chunkSize: 4096 }),
+        ).rejects.toMatchObject({ name: "DeviceError" });
+        expect(seen.filter((op) => op === 3), "a device-originated reject must still be followed by op=3")
+            .toHaveLength(1);
+
+        // 2. A rider's cancel, which always did.
+        seen.length = 0;
+        const controller = new AbortController();
+        const upload = client.upload(ObjectType.Route, NEW_OBJECT_ID, payload(200_000), {
+            chunkSize: 4096,
+            signal: controller.signal,
+            onProgress: (done) => {
+                if (done > 8192) controller.abort();
+            },
+        });
+        await expect(upload).rejects.toMatchObject({ name: "DeviceError" });
+        expect(seen.filter((op) => op === 3), "a cancel must send op=3").toHaveLength(1);
+
+        device.stop();
+        await link.host.close();
     });
 
     it("surfaces a mid-window write failure without an unhandled rejection", async () => {

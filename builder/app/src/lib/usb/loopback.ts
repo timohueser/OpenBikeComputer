@@ -513,8 +513,56 @@ export class MockDevice {
     // --- the control loop ------------------------------------------------------
 
     /** Serve until the link closes. Rejects only on a defect, never on a normal disconnect. */
+    /**
+     * Read and drop bulk bytes while **no** exchange is armed — the mock's copy of the firmware's
+     * idle branch (`usb::data_plane::run`'s `select` over `TRANSFER_ARM` and `ep_out.read`).
+     *
+     * Without it this device models a bulk channel that silently accumulates the bytes a host had
+     * already queued when a descriptor was rejected, and hands them to the *next* transfer — which
+     * is a failure mode the real device does not have and a test written against it would be
+     * chasing a ghost. With it, the one case that genuinely needs the abort handshake (a cancel,
+     * where the host's transfers are still on the wire) is the only one left.
+     */
+    private async idleDiscard(): Promise<void> {
+        while (this.running) {
+            if (this.active) {
+                await new Promise((resolve) => setTimeout(resolve, 0));
+                continue;
+            }
+            this.idleReader = new AbortController();
+            try {
+                const stray = await this.link.bulk.read(this.idleReader.signal);
+                if (stray.length) this.strayBytesDiscarded += stray.length;
+            } catch {
+                // Armed underneath us, or the pipe closed. Either way, look again.
+            }
+        }
+    }
+
+    /**
+     * Empty the bulk channel before answering an abort — the firmware's `drain_bulk_out`.
+     *
+     * Only correct at the abort handshake, and for the same reason it is only correct there on the
+     * device: that is the one moment the peer has stopped pumping and is waiting for an answer.
+     */
+    private async drainBulk(): Promise<void> {
+        for (;;) {
+            const stop = new AbortController();
+            const timer = setTimeout(() => stop.abort(), 0);
+            try {
+                const stray = await this.link.bulk.read(stop.signal);
+                this.strayBytesDiscarded += stray.length;
+            } catch {
+                return;
+            } finally {
+                clearTimeout(timer);
+            }
+        }
+    }
+
     async run(): Promise<void> {
         this.running = true;
+        this.detach(this.idleDiscard());
         while (this.running) {
             let frame: Uint8Array;
             try {
@@ -586,11 +634,18 @@ export class MockDevice {
 
     /** Non-null while an exchange is armed — the gate that answers a second open with `busy`. */
     private active: { descriptor: TransferControl; abort: AbortController } | null = null;
+    /** The idle discard's current read, so arming a transfer can take the channel back from it. */
+    private idleReader: AbortController | null = null;
+    /** Unclaimed bulk bytes this device has thrown away — what a test asserts a drain actually did. */
+    strayBytesDiscarded = 0;
 
     private async transfer(d: TransferControl): Promise<void> {
         if (d.op === Op.Abort) {
             const active = this.active;
             if (!active) {
+                // The firmware's `TransferDisposition::AnswerIdleAbort`: the peer is about to retry
+                // and its queued bytes are still arriving, so empty the pipe before confirming.
+                await this.drainBulk();
                 if (d.type === ObjectType.MapShard || d.type === ObjectType.MapSet) {
                     this.mapShards.clear();
                     await this.status({
@@ -627,6 +682,9 @@ export class MockDevice {
         this.active = { descriptor: d, abort };
         // Run the body detached: the control loop has to keep serving while bytes move, which is
         // how an abort reaches a device that is mid-stream.
+        // Take the channel back from the idle discard before the runner reads it — the mock's copy
+        // of `TRANSFER_ARM` winning its `select` arm.
+        this.idleReader?.abort();
         this.detach(
             (d.op === Op.Upload ? this.receive(d, abort.signal) : this.serve(d, abort.signal)).finally(() => {
                 this.active = null;
