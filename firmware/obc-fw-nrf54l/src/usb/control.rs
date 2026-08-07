@@ -55,7 +55,7 @@ use crate::link::{StatusBytes, TRANSFER_ACTIVE};
 use crate::object_store::ObjectStore;
 use crate::SharedStoreMutex;
 
-use super::data_plane::{TRANSFER_ABORT, TRANSFER_ARM};
+use super::data_plane::{self, TRANSFER_ABORT, TRANSFER_ARM};
 use super::{EpIn, EpOut};
 
 // ============================ The envelope ============================
@@ -277,6 +277,21 @@ async fn serve_frame(
                 }
                 TransferDisposition::Answer(bytes) => {
                     info!("usb: [ctl] transfer answered immediately");
+                    status_msg = Some(bytes);
+                }
+                // An abort that found nothing in flight, which on this transport comes with an
+                // obligation: the peer is about to retry, its already-queued bulk bytes are still
+                // arriving, and answering blind would let them open the retry. This is the one
+                // moment it is provably not pumping, so the pipe gets emptied before the answer —
+                // the data plane owns the endpoint, so it does the emptying.
+                TransferDisposition::AnswerIdleAbort(bytes) => {
+                    info!("usb: [ctl] idle abort — draining the bulk pipe before answering");
+                    // The store guard is dropped first: the drain awaits the data plane, which takes
+                    // the same lock on every other path, and holding it across that await would be
+                    // the one place these two planes could deadlock.
+                    drop(guard);
+                    data_plane::drain_before_idle_abort().await;
+                    guard = shared.lock().await;
                     status_msg = Some(bytes);
                 }
             }
