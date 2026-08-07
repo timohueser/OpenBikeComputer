@@ -467,6 +467,35 @@ toolchain-artifact trap, not new drift. The compile-time allocation report is
 unchanged on both profiles — the signal is a module static, not a field of `App`
 or `ObjectStore`, so no named entry (`app`, `ble_object_store`, …) moved.
 
+### Pre-allocation goes unconditional, 2026-08-07 — **+1,968 B flash, 0 B resident**
+
+`VolumeManager::preallocate` landed on the embedded-sdmmc fork (rev `e846db66`), so the
+`sdmmc-prealloc` feature — which existed only so the tree would build while the fork lacked the
+method — is deleted and `Storage::upload_reserve` compiles always. Both `Cargo.lock`s pin the new
+rev, the `firmware/patches/` directory is gone, and so is the CI gate that cloned the fork and
+replayed the patch: the ordinary `--locked` build legs exercise the real dependency now, which is a
+stronger gate than the scaffolding was.
+
+The whole cost is flash, and it is code that was previously dead: the fork's `alloc_cluster_run`,
+`free_run_within_block` and `write_chain_run`, plus our call sites, which LTO stripped while
+`upload_reserve` was a `false`-returning stub. Measured on the pinned local host, same toolchain,
+before and after the flip:
+
+| | before | after |
+| :-- | --: | --: |
+| flash sections | 1,358,016 B | **1,359,984 B** |
+| `.bss + .data` | 296,008 B | 296,008 B |
+| `.uninit` | 118,432 B | 118,432 B |
+| largest guarded poll frame | 9,728 B | 9,728 B |
+| largest task body | 7,328 B | 7,328 B |
+| residual main stack | 77,080 B | 77,080 B |
+
+Zero resident is the expected answer rather than a lucky one: a reservation is a burst of FAT writes
+at the open, not a buffer — nothing about it is state the device has to hold. `measured_flash` in the
+JSON is deliberately **not** re-pinned from these numbers; it is CI's figure by convention (this host
+links ~58 KB more for the same source) and is a record rather than a gate for board profiles, so it
+wants the next `embedded` run.
+
 ### The abort drain (#1158 follow-up, review round), 2026-08-07 — **+184 B resident**
 
 The one place this branch costs RAM, and it buys the stray-byte hole being closed rather than
