@@ -74,22 +74,6 @@ com-hw = []
 # table costs them no flash or RAM. See `firmware/docs/ARCHITECTURE_RESOURCE_BASELINE.md`.
 resource-report = []
 
-# Reserve a streamed upload's whole cluster chain up front, so the per-cluster FAT writes leave the
-# streaming hot path (`sd::Storage::upload_reserve`).
-#
-# ⚠️ **Turning this on today does not compile.** It calls `VolumeManager::preallocate`, which exists
-# as a written, host-tested patch in `firmware/patches/` and is **not yet on**
-# `timohueser/embedded-sdmmc-rs` — so `cargo build --features sdmmc-prealloc` fails with
-# `E0599: no method named `preallocate`` at `sd.rs`'s `upload_reserve` until the fork carries it.
-# That is the whole reason this is a feature rather than plain code: pushing to a repository outside
-# this one is an owner action, and the tree has to build in the meantime.
-#
-# Nothing warns about this at build time — a cargo feature cannot check a dependency's API — so the
-# check is: apply the patch to the fork first (`firmware/patches/README.md` has the two-step), then
-# `cargo update -p embedded-sdmmc` in **both** resolve roots, then flip this into `default` and
-# delete the feature.
-sdmmc-prealloc = []
-
 # The all-features stack (issue #270, epic #267): nrf-sdc/MPSL/TrouBLE folded into `main.rs`.
 # **Part of `default` since the LM20 retarget** — map + router + BLE run in one image, sharing
 # the SD + settings store. MPSL provides the critical-section impl (its radio timing forbids
@@ -295,6 +279,12 @@ debug = 2
 # The batching is transport-agnostic and is exactly what feeds CMD25 runs to the sEMMC host that
 # replaced the SPI path (epic #1158): the same edge that was worth 5.3x over SPI is what turns
 # 8.2 MB/s of raw write bandwidth into upload throughput instead of one program cycle per block.
+#
+# The fork carries a **second** edge now, from the upload retune: `VolumeManager::preallocate`
+# reserves a streamed file's whole cluster chain up front, chaining a run of free clusters inside one
+# FAT block and writing that block back once. Without it, `write` extends the file a cluster at a
+# time and each extension is four single-block writes — four program cycles landing *between* the
+# CMD25 bursts above, which is where they cost the most. `sd::Storage::upload_reserve` is the caller.
 #
 # **This stanza is per resolve root, and there are three.** The workspace root carries the same
 # patch so `obc-storage`'s host tests exercise the crate the device actually runs; `obc-boot`

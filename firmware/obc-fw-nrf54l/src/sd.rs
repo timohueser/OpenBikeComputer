@@ -2980,11 +2980,6 @@ impl Storage {
     /// `total_len` is the announced object length (`TransferControl::total_len`), which for a map
     /// includes the four magic bytes already on the card, so the reservation is exact and no
     /// allocated-but-unused tail survives the commit.
-    ///
-    /// Compiled only under the `sdmmc-prealloc` feature: the API is a written, host-tested patch
-    /// against our `embedded-sdmmc` fork that has not been pushed to it yet. See
-    /// `firmware/patches/README.md`.
-    #[cfg(feature = "sdmmc-prealloc")]
     pub fn upload_reserve(&mut self, total_len: u32) -> bool {
         let Some((file, _)) = self.open_upload else { return false };
         match self.vmgr.preallocate(file, total_len) {
@@ -2999,14 +2994,6 @@ impl Storage {
                 false
             }
         }
-    }
-
-    /// The no-op this compiles to while the fork lacks `VolumeManager::preallocate`. Kept as a real
-    /// function rather than `#[cfg]`-ing the call sites so the data planes read the same either way
-    /// and the seam is one line, not four.
-    #[cfg(not(feature = "sdmmc-prealloc"))]
-    pub fn upload_reserve(&mut self, _total_len: u32) -> bool {
-        false
     }
 
     /// Flush + close the streaming handle, keeping the bytes on the card — the step
