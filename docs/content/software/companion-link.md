@@ -453,10 +453,17 @@ stages:
   transfers queued instead — bounded, because the promise settling *is* the
   backpressure that stops a 300 MB map being read into the tab faster than the
   device can take it.
-- **How the device receives.** Bulk packets arrive one at a time and each costs
-  an interrupt and a software re-arm of the endpoint. This is the stage with the
-  least headroom: the USB core buffers exactly one packet on its own, so anything
-  that stops the firmware from re-arming stops the wire.
+- **How the device receives.** A USB controller only accepts what the firmware
+  has told it to expect, and the obvious instruction — *expect one packet* — is
+  the expensive one: the endpoint then refuses everything after that packet until
+  the firmware has been scheduled, copied it out and asked for the next. That
+  refusal is not free, it is a round trip through an interrupt, a wake-up and the
+  task scheduler, per 512 bytes, and it was the largest single term in the budget
+  when this was first measured. The device now arms the endpoint for a **burst**
+  of packets instead, so the controller keeps taking the wire into its own
+  buffers while the processor is busy with the checksum and the card, and the
+  firmware collects the whole burst in one go. The dial is a single constant;
+  what it buys is that the stage below can run without stopping the wire.
 - **How much reaches the card per command.** Handing the filesystem 512 bytes
   makes it issue one single-block write — one whole internal program cycle of the
   card — per packet. The firmware therefore stages arriving bytes in RAM and
