@@ -7,14 +7,18 @@
 //! `obc_dfu::engine`, unit-tested with mock IO), then act on the returned outcome: jump to the
 //! app at [`app_slot_base`] (after an install, that IS the freshly-written image's one trial boot —
 //! never a reset, which would re-enter here and roll the trial back), or park with an LED code. This
-//! crate contributes only resource bring-up (SPI card, RRAMC, LED) via `sd`/`install`/`led`;
-//! the bootloader itself must never be able to panic on any page content.
+//! crate contributes only resource bring-up (the sEMMC card transport, RRAMC, LED) via
+//! `semmc`/`install`/`led`; the bootloader itself must never be able to panic on any page content.
 //!
 //! LED0 is the entire UI (blink codes — table in the README): the bootloader never draws.
 //! On the slow paths it does keep the *panel* alive — the app pre-paints an "Installing
 //! update" frame the Memory-in-Pixel glass holds, and `com.rs` parks the scan pins + keeps
-//! the anti-DC-bias COM wave alternating under it. No executor, no timers, no FAT, no FLPR —
-//! blocking embassy-nrf HAL only; the app starts the FLPR core itself.
+//! the anti-DC-bias COM wave alternating under it. No executor, no timers, no FAT —
+//! blocking embassy-nrf HAL plus, since the storage pivot (#1158), the one coprocessor use
+//! this crate cannot avoid: the card only exists behind the sEMMC soft peripheral, so on the
+//! Install/Rollback paths `semmc.rs` boots the **armer-staged** image on the FLPR
+//! (`OBCU_Spec.md` §3) and parks the hart + resets the pads again before the jump. The app
+//! still owns the display blob's whole lifecycle.
 
 #![no_std]
 #![no_main]
@@ -22,7 +26,7 @@
 mod com;
 mod install;
 mod led;
-mod sd;
+mod semmc;
 mod wdt;
 
 use cortex_m_rt::entry;
@@ -37,6 +41,11 @@ use obc_dfu::{decide, BootDecision, BootState, PAGE_LEN};
 
 /// The engine's SD↔RRAM staging buffer: 8 whole SD blocks between card reads and line writes.
 const INSTALL_BUF_LEN: usize = 4096;
+
+/// The staging buffer's 32-bit-aligned home — the sEMMC firmware DMAs whole-block reads straight
+/// into it (`semmc.rs` documents the alignment rule; a plain `[u8; N]` local has no guarantee).
+#[repr(C, align(4))]
+struct AlignedBuf([u8; INSTALL_BUF_LEN]);
 
 /// Initial retry backoff after an SD failure; doubles per attempt up to [`BACKOFF_MAX_MS`].
 const BACKOFF_MIN_MS: u32 = 250;
@@ -73,9 +82,10 @@ fn boot_state_page() -> &'static [u8; PAGE_LEN] {
 /// crate's `__app_slot_base`: the slot geometry lives only in the linker scripts, never as a
 /// literal here. The board crate's `build.rs` links the app's `FLASH` at this exact origin, and
 /// its raw first words are the initial MSP + reset vector this bootloader jumps through. The
-/// slot *end* is [`boot_state_base`] (the app slot runs right up to the BOOT_STATE page), so the
-/// slot length is `boot_state_base() - app_slot_base()` — the install engine takes that size and
-/// owns the "padded image must fit" gate, host-tested.
+/// slot *end* is [`semmc_stage_base`] (#1158 — the blob-stage carve sits between the slot and
+/// the BOOT_STATE page), so the slot length is `semmc_stage_base() - app_slot_base()` — the
+/// install engine takes that size and owns the "padded image must fit" gate, host-tested; that
+/// same gate is what keeps every possible flash clear of the staged blob.
 fn app_slot_base() -> u32 {
     extern "C" {
         static __app_slot_base: u8;
@@ -83,19 +93,30 @@ fn app_slot_base() -> u32 {
     core::ptr::addr_of!(__app_slot_base) as u32
 }
 
+/// Base of the blob-stage carve (`OBCU_Spec.md` §3) — the app slot's end. Same linker-symbol
+/// convention as the rest; `semmc.rs` reads the carve's *contents*, this is only the slot bound.
+fn semmc_stage_base() -> u32 {
+    extern "C" {
+        static __semmc_stage_base: u8;
+    }
+    core::ptr::addr_of!(__semmc_stage_base) as u32
+}
+
 #[entry]
 fn main() -> ! {
     // HAL init: trims, debug unlock, glitch-detector off, default clocks (internal HF osc,
-    // 64 MHz — the app raises itself to 128 MHz with its own config after the jump). With no
-    // `gpiote`/`time-driver` features compiled in, this enables no interrupt sources beyond
-    // what the SPIM bring-up registers (and `jump_to_app` quiesces the NVIC regardless).
-    // `FlprReset::Leave`: the bootloader never touches the FLPR coprocessor — the app owns
-    // its whole lifecycle (its own init resets it, then loads + starts the panel blob).
+    // 64 MHz — the app raises itself to 128 MHz with its own config after the jump; semmc.rs
+    // documents what the halved clock means for the card rates). With no `gpiote`/`time-driver`
+    // features compiled in this enables no interrupt sources at all — the sEMMC transport is
+    // polled, vectorless MMIO (and `jump_to_app` quiesces the NVIC regardless).
+    // `FlprReset::Leave`: embassy must not touch the FLPR behind our back — its lifecycle is
+    // explicit now: parked + booted by `semmc.rs` on the card paths, parked again and pads
+    // reset before the jump; the app then re-takes it from scratch for the display blob.
     let mut config = embassy_nrf::config::Config::default();
     config.flpr_reset = embassy_nrf::config::FlprReset::Leave;
     let p = embassy_nrf::init(config);
 
-    // Everything with a Drop (LED pin, SPI bus, CS) lives inside `boot` — when it returns
+    // Everything with a Drop (LED pin, parked panel pins) lives inside `boot` — when it returns
     // ("run the app"), the drops restore the pins to their reset state before the jump.
     boot(p);
     jump_to_app()
@@ -116,39 +137,48 @@ fn boot(p: embassy_nrf::Peripherals) {
     #[cfg(feature = "rtt")]
     defmt::info!("obc-boot: generation={=u32} → deciding", state.generation());
 
-    // Fast path: nothing pending — no SPI, no RRAMC, no DWT; straight to the app.
+    // Fast path: nothing pending — no FLPR, no RRAMC, no DWT; straight to the app.
     if matches!(decision, BootDecision::Jump) {
         return;
     }
 
-    // The DWT cycle counter paces the panel's COM wave (`com.rs`) — and feeds the rtt
-    // throughput meter. If the take somehow fails the COM poll just never fires (CYCCNT
-    // stays 0 — a no-op, never a hang).
-    if let Some(mut cp) = cortex_m::Peripherals::take() {
+    // The DWT cycle counter paces the panel's COM wave (`com.rs`), bounds every sEMMC deadline
+    // (`semmc.rs`), and feeds the rtt throughput meter. If the take somehow fails the COM poll
+    // just never fires (CYCCNT stays 0 — a no-op, never a hang) — but the card transport's
+    // "every wait is bounded" promise would be a lie on a frozen counter, so the card is only
+    // constructed when the counter is genuinely running (`cyccnt_ok` below); without it the
+    // decision falls into the same abandon/park path as an unvalidatable blob.
+    let cyccnt_ok = if let Some(mut cp) = cortex_m::Peripherals::take() {
         cp.DCB.enable_trace();
         cp.DWT.enable_cycle_counter();
-    }
+        true
+    } else {
+        false
+    };
 
     // Panel keep-alive for everything past the fast path (see `com.rs`): park the LS021's
     // gate + source lines driven-low so nothing floats into the glass while the app slot is
     // rewritten, and free-run the COM wave on the three COM pins so the app's pre-painted
     // "Installing update" frame survives the install without a DC bias. Pins are copied from
-    // the app's bring-up (`obc-fw-nrf54l/src/main.rs`, the FLPR pin block) — deliberate
-    // duplication, the same policy as the SD pins in `sd.rs`. All of it drops back to the
-    // reset state when `boot` returns, exactly like the SPI/LED pins.
+    // the app's bring-up (`obc-fw-nrf54l/src/main.rs`, the FLPR pin block, post-#1159 rehome) —
+    // deliberate duplication, the same policy as the card pads in `semmc.rs`. All of it drops
+    // back to the reset state when `boot` returns, exactly like the LED pin.
+    //
+    // The two source lines NOT parked here are the point of the whole pivot: B0/B1 live on
+    // P2.00/P2.04, which are card pads (D3/D1) during the install. SD traffic wiggles them
+    // under the held frame — harmless, because with BCK parked low the panel never latches a
+    // source bit; the same reasoning as the app's storage/display mux (#1158).
     let _panel_pins = [
         Output::new(p.P1_10, Level::Low, OutputDrive::Standard), // GSP
         Output::new(p.P1_11, Level::Low, OutputDrive::Standard), // GCK (P1.01 is NFC on the LM20-DK)
         Output::new(p.P1_12, Level::Low, OutputDrive::Standard), // GEN
         Output::new(p.P1_13, Level::Low, OutputDrive::Standard), // INTB
         Output::new(p.P1_14, Level::Low, OutputDrive::Standard), // BSP
-        Output::new(p.P2_07, Level::Low, OutputDrive::Standard), // BCK (P2.06 is the app's SD SCK)
-        Output::new(p.P2_00, Level::Low, OutputDrive::Standard), // R0 (odd)
-        Output::new(p.P2_01, Level::Low, OutputDrive::Standard), // R1 (even)
-        Output::new(p.P2_02, Level::Low, OutputDrive::Standard), // G0
-        Output::new(p.P2_03, Level::Low, OutputDrive::Standard), // G1
-        Output::new(p.P2_04, Level::Low, OutputDrive::Standard), // B0
-        Output::new(p.P2_05, Level::Low, OutputDrive::Standard), // B1
+        Output::new(p.P2_07, Level::Low, OutputDrive::Standard), // BCK
+        Output::new(p.P2_06, Level::Low, OutputDrive::Standard), // R0
+        Output::new(p.P2_08, Level::Low, OutputDrive::Standard), // R1
+        Output::new(p.P2_09, Level::Low, OutputDrive::Standard), // G0
+        Output::new(p.P2_10, Level::Low, OutputDrive::Standard), // G1
     ];
     // The COM electrodes are a 56–77 nF load → high-drive, like the app's COM pins. These are
     // the DK's COM pins (the app's M33 `com` driver); the production board reroutes COM onto
@@ -169,8 +199,12 @@ fn boot(p: embassy_nrf::Peripherals) {
     let mut rram = Rramc::new(p.RRAMC);
 
     let app_base = app_slot_base();
-    let slot = Slot { base: app_base, len: boot_state_base() - app_base };
-    let mut buf = [0u8; INSTALL_BUF_LEN];
+    // The slot ends at the blob-stage carve (#1158) — the engine's padded-fit gate is what keeps
+    // every flash clear of the staged sEMMC image and the BOOT_STATE page beyond it.
+    let slot = Slot { base: app_base, len: semmc_stage_base() - app_base };
+    // 32-bit aligned so the engine's whole-block reads DMA straight into it (the sEMMC firmware's
+    // requirement; `semmc.rs` bounces the engine's unaligned mid-buffer slices per-block).
+    let mut buf = AlignedBuf([0u8; INSTALL_BUF_LEN]);
 
     // The card is life-support (no maps ⇒ no device), so a card that won't read is retried with a
     // triple-blink + growing backoff rather than a hard failure. Two cases differ (DR3, #731):
@@ -187,10 +221,30 @@ fn boot(p: embassy_nrf::Peripherals) {
     let mut backoff = BACKOFF_MIN_MS;
     let mut pre_erase_rounds = 0u32;
 
-    // Only decisions that stream extents need the card at all.
+    // Only decisions that stream extents need the card at all — and since #1158 the card only
+    // exists behind the armer-staged sEMMC blob, validated (CRC frame + the image's own metadata,
+    // OBCU_Spec.md §3.4) before the FLPR runs a byte of it. An unvalidatable carve is not a
+    // retryable card wobble — nothing on the card side can heal it — so it skips the backoff
+    // loop entirely: an untouched `Armed` arm is abandoned like DR3's unreadable card (the app
+    // then shows the abandon card), and a `Rollback` parks on SOS (a power cycle retries; the
+    // armer's stage-before-arm ordering makes this near-unreachable short of RRAM decay).
     let mut card = match decision {
         BootDecision::Install { .. } | BootDecision::Rollback { .. } => {
-            Some(sd::SdBlocks::new(p.SERIAL00, p.P2_06, p.P2_09, p.P2_08, p.P2_10))
+            match semmc::staged_blob().filter(|_| cyccnt_ok) {
+                Some((blob, geom)) => Some(semmc::BootSemmc::new(blob, geom)),
+                None => {
+                    #[cfg(feature = "rtt")]
+                    defmt::warn!("obc-boot: no valid staged sEMMC blob — storage is unreachable");
+                    if abandonable {
+                        let mut io =
+                            install::BootIo::new(None, &mut rram, &mut led, &mut dog, &mut com, boot_state_base());
+                        let outcome = engine::abandon_arm(&state, &mut io);
+                        finish(outcome, abandonable, &mut led, &mut com, &mut dog);
+                        return;
+                    }
+                    led.sos_forever(&mut com, || dog.pet())
+                }
+            }
         }
         _ => None,
     };
@@ -225,8 +279,8 @@ fn boot(p: embassy_nrf::Peripherals) {
             }
         }
 
-        let mut io = install::BootIo::new(card.as_ref(), &mut rram, &mut led, &mut dog, &mut com, boot_state_base());
-        match engine::run(&state, &slot, &mut io, &mut buf) {
+        let mut io = install::BootIo::new(card.as_mut(), &mut rram, &mut led, &mut dog, &mut com, boot_state_base());
+        match engine::run(&state, &slot, &mut io, &mut buf.0) {
             Outcome::SdError { pre_erase } => {
                 // Same pet-per-lap as the bring-up above; inside the engine the progress hook pets
                 // every chunk (`install.rs`). The next loop iteration re-inits the card at the top.
@@ -256,6 +310,18 @@ fn boot(p: embassy_nrf::Peripherals) {
             outcome => break outcome,
         }
     };
+    // Hand the FLPR back before the jump: hart parked, card pads reset — the app's own bring-up
+    // re-takes the coprocessor from scratch and must start from what reset would have given it.
+    if let Some(card) = card.as_mut() {
+        card.shutdown();
+    }
+    finish(outcome, abandonable, &mut led, &mut com, &mut dog);
+}
+
+/// Map the engine's outcome onto the LED + the jump/park endgame — shared by the normal
+/// install path and the invalid-blob early abandon. `install_decision` = the decision was
+/// `Install` (only that outcome's trial jump starts the watchdog).
+fn finish(outcome: Outcome, install_decision: bool, led: &mut Led, com: &mut com::Com, dog: &mut wdt::BootDog) {
     led.off();
 
     match outcome {
@@ -267,16 +333,17 @@ fn boot(p: embassy_nrf::Peripherals) {
         Outcome::StageRejected => {
             #[cfg(feature = "rtt")]
             defmt::warn!("obc-boot: staged image invalid — arm cleared, booting the old app");
-            led.blink_code(2, &mut com);
+            led.blink_code(2, com);
         }
-        // DR3 (#731): the card never came up for an untouched `Armed` arm within the retry budget,
-        // so it was cleared to `Idle` and the intact old app is booted. Same end state as a rejected
-        // stage — arm cleared, old app intact — so the same 2-blink code; the *cause* (unreadable
-        // card vs. bad image) is surfaced to the rider by the app's verdict card, not the LED.
+        // DR3 (#731): the card never came up for an untouched `Armed` arm within the retry budget
+        // — or (#1158) the staged sEMMC blob failed validation, which no retry heals — so it was
+        // cleared to `Idle` and the intact old app is booted. Same end state as a rejected stage
+        // — arm cleared, old app intact — so the same 2-blink code; the *cause* (unreadable card
+        // vs. bad image) is surfaced to the rider by the app's verdict card, not the LED.
         Outcome::ArmAbandoned => {
             #[cfg(feature = "rtt")]
-            defmt::warn!("obc-boot: arm abandoned (card unreadable) — booting the old app");
-            led.blink_code(2, &mut com);
+            defmt::warn!("obc-boot: arm abandoned (storage unreachable) — booting the old app");
+            led.blink_code(2, com);
         }
         // The slot holds the readback-verified image and the follow-up state (`Trial` after an
         // install, `Idle` after a rollback) is written: jump straight into it. Never reset
@@ -293,7 +360,7 @@ fn boot(p: embassy_nrf::Peripherals) {
             // *rollback's* jump (also `Installed`) re-enters the previously confirmed image —
             // the same trust level as a plain `Idle` boot, so it deliberately stays dog-less
             // on a cold boot, like the fast path.
-            if matches!(decision, BootDecision::Install { .. }) {
+            if install_decision {
                 dog.start_for_trial();
             }
             #[cfg(feature = "rtt")]
@@ -308,11 +375,11 @@ fn boot(p: embassy_nrf::Peripherals) {
         Outcome::FlashError => {
             #[cfg(feature = "rtt")]
             defmt::error!("obc-boot: flash/readback failed after retries — halting (power cycle retries)");
-            led.sos_forever(&mut com, || dog.pet());
+            led.sos_forever(com, || dog.pet());
         }
-        // The retry loop above never breaks with SdError (a pre-erase one is retried then
-        // abandoned; a mid-flash one is retried forever); keep the match total without a panic path.
-        Outcome::SdError { .. } => led.sos_forever(&mut com, || dog.pet()),
+        // The retry loop never breaks with SdError (a pre-erase one is retried then abandoned;
+        // a mid-flash one is retried forever); keep the match total without a panic path.
+        Outcome::SdError { .. } => led.sos_forever(com, || dog.pet()),
     }
 }
 
@@ -325,9 +392,10 @@ fn boot(p: embassy_nrf::Peripherals) {
 fn jump_to_app() -> ! {
     let app_base = app_slot_base();
     unsafe {
-        // 1. Quiesce the NVIC: disable + clear-pend every external interrupt line, so nothing
-        //    a bootloader HAL touched (the S3 SPIM bring-up registers SERIAL00) can vector
-        //    into the app before it is ready. PRIMASK is deliberately left CLEAR: we never
+        // 1. Quiesce the NVIC: disable + clear-pend every external interrupt line — nothing
+        //    here arms one today (the sEMMC transport is polled, vectorless MMIO), but this
+        //    stays as the belt-and-braces reset contract for whatever a future HAL init does.
+        //    PRIMASK is deliberately left CLEAR: we never
         //    set it, the app's cortex-m-rt entry does not re-enable interrupts, and at reset
         //    PRIMASK is clear — masking here would hand the app a dead interrupt system.
         let nvic = &*cortex_m::peripheral::NVIC::PTR;
