@@ -22,7 +22,7 @@
 use core::cell::RefCell;
 
 use defmt::{info, warn};
-use embassy_futures::select::{select, Either};
+use embassy_futures::select::{select, select3, Either, Either3};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Instant, Timer};
@@ -54,35 +54,87 @@ const CHUNK_LEN: usize = MAX_PACKET as usize;
 
 /// How long the bulk OUT endpoint must stay silent before [`drain_bulk_out`] calls it empty.
 ///
-/// Generous next to a high-speed microframe (125 µs): the host's queued transfers are delivered
-/// back to back once the endpoint stops NAKing, so a gap this long means there is nothing left
+/// Generous next to a high-speed microframe (125 µs): once the endpoint stops NAKing, a host's
+/// queued transfers are delivered back to back, so a gap this long means there is nothing left
 /// rather than that the next one is slow.
 const DRAIN_QUIET_MS: u64 = 20;
 
-/// Ceiling on one drain. A host that never stops writing must not be able to hold the abort's
-/// answer — and it is the answer the host is waiting for before it stops.
+/// Ceiling on one drain.
 ///
-/// Well inside the host's own `ABORT_ACK_TIMEOUT_MS` (2 s, `builder/app/src/lib/usb/client.ts`), so
-/// a drain that runs its full budget still produces an answer the host accepts.
+/// **The budget has to fit inside the peer's abort-ack wait, and it is not the only thing in
+/// there.** The host gives an abort 2 s (`ABORT_ACK_TIMEOUT_MS`, `builder/app/src/lib/usb/
+/// client.ts`) and this drain is one term; the other is whatever the abort's own cleanup costs,
+/// which for a **volume set** is deleting up to 32 shard files. Both run before the answer goes
+/// out. The drain is therefore sequenced *first* (see the abort arm in [`run_upload`]), so the
+/// endpoint goes quiet while the deletes are still running rather than after them, and the two do
+/// not stack in front of the same deadline.
+///
+/// Overrunning is survivable rather than harmless: the host's `sendAbort` swallows the timeout, its
+/// busy latch still holds the slot, and `statuses.drain()` clears the late result before the next
+/// exchange — so a slow drain costs a retry some seconds, not correctness.
 const DRAIN_BUDGET_MS: u64 = 750;
 
-/// **Read and discard whatever the host still had queued, before this transfer's answer goes out.**
+/// Control plane → data plane: "drain the bulk pipe before I answer this idle abort."
+///
+/// The bulk OUT endpoint belongs to this task, so the control plane cannot read it; it asks, waits
+/// for [`DRAIN_DONE`], and answers. See
+/// [`TransferDisposition::AnswerIdleAbort`](crate::link::transfer::TransferDisposition) for why that
+/// moment and no other.
+static DRAIN_REQ: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+/// Data plane → control plane: the pipe is quiet (or the drain gave up), answer now.
+static DRAIN_DONE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+/// How long the control plane waits for the data plane to finish draining before answering anyway.
+/// A little over [`DRAIN_BUDGET_MS`], since that is what it is waiting on.
+const DRAIN_ACK_TIMEOUT_MS: u64 = DRAIN_BUDGET_MS + 250;
+
+/// Ask the data plane to empty the bulk pipe, and wait for it. Called from the control plane when it
+/// is about to answer an abort that found nothing in flight.
+///
+/// Bounded, and a timeout is not an error: the worst case is the stray bytes this exists to prevent,
+/// which the whole-object CRC still catches.
+pub(crate) async fn drain_before_idle_abort() {
+    DRAIN_DONE.reset();
+    DRAIN_REQ.signal(());
+    if embassy_time::with_timeout(embassy_time::Duration::from_millis(DRAIN_ACK_TIMEOUT_MS), DRAIN_DONE.wait())
+        .await
+        .is_err()
+    {
+        warn!("usb: [bulk] idle-abort drain did not answer in time — answering the abort anyway");
+    }
+}
+
+/// **Read and discard whatever the peer still had queued, before this exchange's answer goes out.**
 ///
 /// The host does not wait for the device between chunks — the bulk channel is unframed and
 /// unacknowledged, which is what lets an upload keep several `transferOut`s on the wire at once
-/// (`UPLOAD_WINDOW × DEFAULT_CHUNK_SIZE`, 256 KiB today). When a transfer ends early — an `op = 3`
-/// abort, a rejected descriptor, a card that refused an append — those queued bytes are still
-/// coming, and WebUSB cannot cancel a submitted transfer.
+/// (`UPLOAD_WINDOW` × `DEFAULT_CHUNK_SIZE`, 256 KiB today) — and WebUSB cannot cancel a submitted
+/// transfer. So a transfer that ends early leaves bytes still arriving, and the idle loop's discard
+/// does not save us: it deliberately lets `TRANSFER_ARM` win its `select`, so a retry's descriptor
+/// can arm while the leftovers are still coming and they become its opening payload.
 ///
-/// Without this they are still on the endpoint when the *next* descriptor arms, and the idle loop's
-/// discard does not save us: it deliberately lets `TRANSFER_ARM` win its `select`, so a retry's
-/// first `ep.read` takes the previous exchange's tail as its own first payload bytes. The
-/// whole-object CRC catches that at commit, so it is a spurious retry failure rather than a corrupt
-/// map — but a retry that cannot succeed until the window happens to drain is not a recovery path.
+/// # Where this is allowed to run, and why it is only two places
 ///
-/// Draining **before** the terminal answer is what makes it work: the host holds its abort open
-/// until it sees `transferResult`, so its queued transfers are delivered into this loop rather than
-/// after it.
+/// **Draining only works where the peer has stopped pumping**, and there is exactly one such moment
+/// in the protocol: the **abort handshake**. The host has thrown out of its send loop, it is holding
+/// an `op = 3` open, and the spec has it wait for `transferResult(aborted)` before it does anything
+/// else. Both call sites are that moment — an abort against a live transfer (the arm in
+/// [`run_upload`]) and an abort that found nothing armed (the control plane, through
+/// [`drain_before_idle_abort`]).
+///
+/// **It is deliberately *not* run on a device-originated termination** — a rejected descriptor, a
+/// card that refused an append, a failed final flush. That reads like the same situation and is the
+/// opposite one: the host has not been told anything yet, so it refills the window exactly as fast
+/// as this discards, and the thing that would make it stop — the terminal `transferResult` — is
+/// sitting *behind* the drain. An earlier cut of this branch did drain there, and all it bought was
+/// up to [`DRAIN_BUDGET_MS`] of delay before the host could learn to stop, plus a warn on every
+/// large upload that hit a storage failure.
+///
+/// Those paths need no drain of their own: the host's send loop settles every outstanding write
+/// before it unwinds (`pumpChunks`), and the bytes it is waiting on are consumed by this module's
+/// idle loop, which is reading the whole time. Where that guarantee does *not* hold — a rider's
+/// cancel, where the write promises reject while their transfers stay on the wire — the host
+/// follows up with the abort that brings us back to the handshake above.
 #[inline(never)]
 async fn drain_bulk_out(ep: &mut EpOut, buf: &mut [u8]) {
     let deadline = Instant::now() + embassy_time::Duration::from_millis(DRAIN_BUDGET_MS);
@@ -92,11 +144,11 @@ async fn drain_bulk_out(ep: &mut EpOut, buf: &mut [u8]) {
             Either::First(Ok(n)) => dropped += n,
             // The endpoint went away — an unplug drains it far more thoroughly than we can.
             Either::First(Err(_)) => break,
-            // Quiet for a whole window: the host has nothing more queued.
+            // Quiet for a whole window: the peer has nothing more queued.
             Either::Second(()) => break,
         }
         if Instant::now() >= deadline {
-            warn!("usb: [bulk] still receiving {} ms after a transfer ended — answering anyway", DRAIN_BUDGET_MS);
+            warn!("usb: [bulk] still receiving {} ms into an abort drain — answering anyway", DRAIN_BUDGET_MS);
             break;
         }
     }
@@ -144,14 +196,23 @@ pub(crate) async fn run(
             // bytes rather than letting them be read as the next transfer's first chunk. A valid
             // sender waits for its control-frame reply, and the control plane signals TRANSFER_ARM
             // before sending that reply, so its descriptor always wins the race.
-            let armed = match select(TRANSFER_ARM.wait(), ep_out.read(buf)).await {
-                Either::First(armed) => armed,
-                Either::Second(Ok(n)) if n > 0 => {
+            // The first arm is the control plane asking for a drain before it answers an abort
+            // that found nothing in flight (see `drain_before_idle_abort`). It lives here rather
+            // than in the control plane because this task owns the endpoint, and it sits ahead of
+            // the arm branch because the whole point is to finish before the peer's next descriptor.
+            let armed = match select3(DRAIN_REQ.wait(), TRANSFER_ARM.wait(), ep_out.read(buf)).await {
+                Either3::First(()) => {
+                    drain_bulk_out(&mut ep_out, buf).await;
+                    DRAIN_DONE.signal(());
+                    continue;
+                }
+                Either3::Second(armed) => armed,
+                Either3::Third(Ok(n)) if n > 0 => {
                     warn!("usb: [bulk] discarded {} unclaimed bytes while idle", n);
                     continue;
                 }
-                Either::Second(Ok(_)) => continue, // a zero-length packet is not data
-                Either::Second(Err(e)) => {
+                Either3::Third(Ok(_)) => continue, // a zero-length packet is not data
+                Either3::Third(Err(e)) => {
                     info!("usb: [bulk] idle read ended: {:?} — re-arming", defmt::Debug2Format(&e));
                     break;
                 }
@@ -283,9 +344,10 @@ async fn run_upload(
         if holds_magic {
             crate::link::map_transfer_storage_failed();
         }
-        // The host started writing the moment it sent the descriptor, so a reject is asynchronous
-        // relative to bytes already on the wire.
-        drain_bulk_out(ep, buf).await;
+        // No drain here, and that is the design rather than an omission - see `drain_bulk_out`.
+        // The host has not been told anything yet, so it would refill the window as fast as we
+        // emptied it, and the answer that makes it stop is the very thing we would be delaying. Its
+        // own send loop settles what it queued, and this module's idle loop consumes those bytes.
         close_transfer();
         tx.send_status(transfer_result(rx.object_id(), TransferStatus::Error)).await;
         return TransferOutcome::Answered;
@@ -329,13 +391,17 @@ async fn run_upload(
                 return TransferOutcome::LinkDropped;
             }
             Either::Second(()) => {
-                // The host aborted (op 3): discard and confirm.
+                // The host aborted (op 3). **Drain before anything else**: this is the one moment
+                // the host is provably quiet (see `drain_bulk_out`), and the discard below can be a
+                // whole set's worth of shard deletes - running those first would spend the host's
+                // abort-ack budget before the endpoint had even started emptying, and would hold the
+                // arena's staging arm across the drain for no reason.
+                drain_bulk_out(ep, buf).await;
                 {
                     let mut guard = shared.lock().await;
                     discard_upload(&mut store.borrow_mut(), &mut guard, target, map_id);
                 }
                 info!("usb: [bulk] upload aborted by the host");
-                drain_bulk_out(ep, buf).await;
                 close_transfer();
                 tx.send_status(transfer_result(rx.object_id(), TransferStatus::Aborted)).await;
                 return TransferOutcome::Answered;
@@ -356,7 +422,6 @@ async fn run_upload(
             if holds_magic {
                 crate::link::map_transfer_storage_failed();
             }
-            drain_bulk_out(ep, buf).await;
             close_transfer();
             tx.send_status(transfer_result(rx.object_id(), TransferStatus::Error)).await;
             return TransferOutcome::Answered;
@@ -379,9 +444,6 @@ async fn run_upload(
         if holds_magic {
             crate::link::map_transfer_storage_failed();
         }
-        // The host has sent everything by now, but the last chunks may still be queued behind the
-        // NAKs this flush produced.
-        drain_bulk_out(ep, buf).await;
         close_transfer();
         tx.send_status(transfer_result(rx.object_id(), TransferStatus::Error)).await;
         return TransferOutcome::Answered;

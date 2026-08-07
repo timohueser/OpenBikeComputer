@@ -128,7 +128,13 @@ pub(crate) async fn serve_connection(
                                     info!("ble: [gatt] transfer_control: abort → data plane");
                                     TRANSFER_ABORT.signal(());
                                 }
-                                TransferDisposition::Answer(bytes) => {
+                                // `AnswerIdleAbort` carries a transport obligation the radio does not
+                                // have: it exists so a transport with an unrecallable byte pipe can
+                                // empty it before the peer retries (the cable's bulk endpoint). The
+                                // CoC is closed and reopened around any failed exchange — that *is*
+                                // the discard, and it is the peer that performs it — so here the two
+                                // dispositions are the same answer.
+                                TransferDisposition::Answer(bytes) | TransferDisposition::AnswerIdleAbort(bytes) => {
                                     info!("ble: [gatt] transfer_control: answered on status");
                                     status_msg = Some(bytes);
                                 }

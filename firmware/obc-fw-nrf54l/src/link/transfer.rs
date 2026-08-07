@@ -20,8 +20,25 @@ use super::{transfer_result, Armed, StatusBytes, Transport, TRANSFER_ACTIVE};
 pub(crate) enum TransferDisposition {
     /// Validated — hand to this transport's data plane, which answers when the transfer ends.
     Arm(Armed),
-    /// Answer immediately (a reject, or an abort with nothing in flight).
+    /// Answer immediately (a reject, or an abort the store had nothing to do about).
     Answer(StatusBytes),
+    /// An abort that found **nothing in flight** — answer it, but only after the transport has made
+    /// sure its byte pipe is empty.
+    ///
+    /// Split out of [`Answer`](Self::Answer) because it is the one disposition with a transport-side
+    /// obligation attached. A peer sends an abort with nothing armed when it gave up on a transfer
+    /// the device had already closed — a reject it noticed late, a rider's cancel that raced the
+    /// device's own verdict — and it is *about to retry*. Its already-queued bytes are still
+    /// arriving, and on a bulk endpoint they cannot be recalled; answered blind, they become the
+    /// retry's opening payload and fail its whole-object CRC.
+    ///
+    /// This is also the **one moment the peer is provably quiet**: it has stopped pumping, it is
+    /// holding the abort open, and it will not send another descriptor until this answer arrives. A
+    /// transport with a pipe it can drain should do it here and nowhere else — see
+    /// `usb::data_plane::drain_bulk_out`. A transport with nothing to drain treats this exactly like
+    /// [`Answer`](Self::Answer); BLE does, because its CoC is closed and reopened around a failure
+    /// anyway.
+    AnswerIdleAbort(StatusBytes),
     /// An abort aimed at the in-flight transfer — signal the data plane; *it* answers.
     AbortActive,
 }
@@ -85,7 +102,7 @@ pub(crate) fn classify_transfer(
             desc.total_len,
             TransferStatus::Aborted.as_u8()
         );
-        return TransferDisposition::Answer(transfer_result(desc.object_id, TransferStatus::Aborted));
+        return TransferDisposition::AnswerIdleAbort(transfer_result(desc.object_id, TransferStatus::Aborted));
     }
     // `busy()`, not `in_flight()` (#1146 P2): the gate arbitrates a second resource now — the
     // scratch arena's `nav ⊥ usb` rule — so a live **route search** must answer `busy` here too.
