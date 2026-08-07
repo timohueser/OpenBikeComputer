@@ -93,6 +93,13 @@ include!(concat!(env!("OUT_DIR"), "/semmc_contract.rs"));
 /// `LicenseRef-Nordic-5-Clause`; see `vendor/semmc/README.md` for provenance + regeneration.
 static SEMMC_FW: &[u8] = include_bytes!("../vendor/semmc/semmc_firmware_v0.1.1.bin");
 
+/// The vendored image's bytes — what the DFU armer stages into the `SEMMC_STAGE` RRAM carve for
+/// the bootloader (#1158, `OBCU_Spec.md` §3). The one copy this crate ships; the armer and this
+/// driver must agree on it, so both read this accessor rather than a second `include_bytes!`.
+pub fn firmware_image() -> &'static [u8] {
+    SEMMC_FW
+}
+
 const _: () = assert!(SEMMC_IMAGE_BYTES <= SEMMC_CARVE_BYTES);
 const _: () = assert!(SEMMC_VRI_OFFSET >= SEMMC_CODE_BYTES, "the VRI window must sit above the image's code region");
 const _: () = assert!(SEMMC_RAM_BASE.is_multiple_of(4096), "the image base must stay 4 KiB aligned");
