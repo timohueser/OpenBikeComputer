@@ -33,15 +33,27 @@ feature has no way to assert an API on a dependency — so treat the step order 
 rather than advisory. (The feature-on build *was* verified against a local clone carrying this
 patch, so the failure is purely "the fork does not have it yet".)
 
+### The rev it is written against
+
+`4cada7b388f4e4bf9f8de1fcdba33f22c1245aa7` — the tip of `cmd25-multiblock-write` when the patch was
+written, and the same rev `Cargo.lock` pins in both resolve roots. **CI checks out this rev, not the
+branch tip**, so a commit landing on the fork cannot turn into red CI here; if the patch ever needs
+rebasing, the `git am` in that step is what says so.
+
 ### How to land it
 
 ```sh
 git clone --branch cmd25-multiblock-write https://github.com/timohueser/embedded-sdmmc-rs
 cd embedded-sdmmc-rs
+git checkout -B patched 4cada7b388f4e4bf9f8de1fcdba33f22c1245aa7
 git am /path/to/OSM/firmware/patches/embedded-sdmmc-preallocate.patch
-cargo test                       # 3 new tests in tests/preallocate.rs, plus the existing suite
-git push
+cargo test                       # 5 tests in tests/preallocate.rs + 1 unit test, plus the suite
+git push HEAD:cmd25-multiblock-write
 ```
+
+If the fork has moved on since that rev, rebase `patched` onto the branch tip first and re-export
+the patch (`git format-patch -1 --stdout > .../embedded-sdmmc-preallocate.patch`), updating the rev
+recorded above and in `.github/workflows/ci.yml`'s `FORK_BASE_REV`.
 
 Then, back in this repo:
 
