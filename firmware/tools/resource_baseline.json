@@ -177,7 +177,8 @@
   },
   "bootloader": {
     "features": "default (no RTT)",
-    "measured_flash": 16012,
+    "_note_1158": "Re-pinned for the sEMMC port (#1158): the SPI SD stack left and the blocking sEMMC transport (semmc.rs, incl. the blob-stage validation via obc-dfu) came in — net +696 B over the pre-pivot 16,012, because the 13,636 B soft-peripheral image is NOT in this budget at all: the armer stages it into the SEMMC_STAGE RRAM carve (OBCU_Spec.md §3). measured_flash is a record; flash_budget is the gate.",
+    "measured_flash": 16708,
     "flash_budget": 32768
   }
 }
