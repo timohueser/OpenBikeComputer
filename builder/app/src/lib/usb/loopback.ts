@@ -718,6 +718,15 @@ export class MockDevice {
             await this.status({ msg: "transferResult", objectId: d.objectId, status: reject, committedOffset: 0 });
             return;
         }
+        // **A re-send destroys what it re-sends, at its first byte.** The device streams a shard or
+        // a raster straight into its final name with `ReadWriteCreateOrTruncate`, so the moment a
+        // re-send starts, the file that was under that name is gone — and if the re-send then fails,
+        // the set is one file short. A mock that only added files on success could never reach that
+        // state, and the firmware bug it hides (a session still counting a file the card no longer
+        // holds, so the manifest passes its announce and dies at the set-deleting commit) is exactly
+        // what #1044's last review round found. Un-stage first, re-add at commit.
+        if (d.type === ObjectType.MapShard) this.mapShards.delete(d.objectId);
+        if (d.type === ObjectType.TerrainShard) this.mapTerrain = null;
 
         // A sinking device holds nothing: the real one writes each slice to the card and keeps only
         // the running CRC, which is the *only* way a 300 MB map fits on a microcontroller at all.

@@ -401,6 +401,92 @@ describe("volume-set rules the device enforces", () => {
         }
     });
 
+    /**
+     * **A raster whose commit fails leaves the set recoverable, both ways.**
+     *
+     * The device's commit deletes (or inerts) `MS{id}.OBD` and its session stops counting the
+     * record, so the host has two honest continuations and both must work: send the manifest for a
+     * set with no raster, or send the raster again. Before the final review round the firmware kept
+     * the record marked here while the file was gone — the manifest then passed its announce and
+     * died at the commit, deleting the whole set — and the mock modelled the *opposite*. They agree
+     * now, and this is the test that says on which behaviour.
+     */
+    it("lets a set finish without the raster after a terrain commit fails", async () => {
+        const { client, device, close } = loopbackDevice();
+        try {
+            await stageOneShard(client, syntheticBytes(1024));
+            await expect(
+                upload(client, ObjectType.TerrainShard, NEW_OBJECT_ID, syntheticBytes(2048)),
+            ).rejects.toThrow();
+            expect(device.stagedTerrain).toBe(false);
+            // The session now expects N records, not N+1 — so the terrain-less manifest is right.
+            const result = await upload(client, ObjectType.MapSet, NEW_OBJECT_ID, obcsManifest([1024]));
+            expect(result.objectId).toBe(1);
+            expect(device.committedTerrain(1)).toBeUndefined();
+        } finally {
+            await close();
+        }
+    });
+
+    it("lets the raster be re-sent after a terrain commit fails", async () => {
+        const { client, device, close } = loopbackDevice();
+        try {
+            await stageOneShard(client, syntheticBytes(1024));
+            await expect(
+                upload(client, ObjectType.TerrainShard, NEW_OBJECT_ID, syntheticBytes(2048)),
+            ).rejects.toThrow();
+            const raster = obctRaster(2048);
+            await upload(client, ObjectType.TerrainShard, NEW_OBJECT_ID, raster);
+            expect(device.stagedTerrain).toBe(true);
+            const result = await upload(client, ObjectType.MapSet, NEW_OBJECT_ID, obcsManifest([1024], raster.length));
+            expect(result.objectId).toBe(1);
+            expect(device.committedTerrain(1)?.byteLen).toBe(raster.length);
+        } finally {
+            await close();
+        }
+    });
+
+    /**
+     * **The OBCM shard bitmap's half of the same rule.** A shard re-send truncates the shard it is
+     * replacing before a byte lands, so a re-send that fails leaves the set one file short — and
+     * the session has to say so. The device answers the following manifest at its *announce*
+     * (`manifestEarly`, which names the missing shard); before the final review round it counted
+     * the shard anyway and killed the set at the commit instead.
+     */
+    it("treats a failed shard re-send as a set that is no longer complete", async () => {
+        const { client, device, close } = loopbackDevice();
+        try {
+            const shard = syntheticBytes(1024);
+            await stageOneShard(client, shard);
+            expect(device.stagedMapShardCount).toBe(1);
+
+            // Re-send the same shard and cancel it mid-stream. The device truncated the good copy
+            // at the re-send's first byte, so what is left is nothing.
+            const controller = new AbortController();
+            await expect(
+                client.upload(ObjectType.MapShard, setPartId(1, 0), shard, {
+                    signal: controller.signal,
+                    chunkSize: 64,
+                    onProgress: (done) => {
+                        if (done > 0) controller.abort();
+                    },
+                }),
+            ).rejects.toThrow();
+            expect(device.stagedMapShardCount).toBe(0);
+
+            // …so the manifest is refused, and the answer is about the missing shard rather than
+            // about the manifest's length.
+            await expect(upload(client, ObjectType.MapSet, NEW_OBJECT_ID, obcsManifest([shard.length]))).rejects.toThrow();
+
+            // Re-sending it properly puts the set back together.
+            await stageOneShard(client, shard);
+            const result = await upload(client, ObjectType.MapSet, NEW_OBJECT_ID, obcsManifest([shard.length]));
+            expect(result.objectId).toBe(1);
+        } finally {
+            await close();
+        }
+    });
+
     it("echoes the assigned set id on a committed terrain shard, not a singleton", async () => {
         const { client, close } = loopbackDevice();
         try {
@@ -427,7 +513,17 @@ describe("volume-set rules the device enforces", () => {
     // expects, and the third is a *byte-identical* length. They are caught only by re-reading the
     // manifest against the files beside it, which is the firmware path that had no coverage at all.
 
-    it("refuses a manifest that claims terrain when no raster was received", async () => {
+    /**
+     * A manifest that spends its last record on a second *shard* while the set holds one shard and
+     * a raster. The record count is what catches it — one OBCM record too many for what was staged.
+     *
+     * The direction this test used to claim in its name — "claims terrain when no raster was
+     * received" — is **unreachable** and worth saying so rather than pretending to cover it: a
+     * manifest with a terrain record on a raster-less set is 56 bytes longer than the session's
+     * length rule allows, so both the mock and the device refuse it at the announce and it never
+     * reaches a commit.
+     */
+    it("refuses a manifest with one more shard record than the set staged", async () => {
         const { client, device, close } = loopbackDevice();
         try {
             await stageOneShard(client, syntheticBytes(1024));
