@@ -48,7 +48,7 @@ use obc_map_scene::{
     ReadError as SceneReadError, SelectedFeatures, Style,
 };
 
-use crate::reader::{parse_lod_table, parse_prologue, Lod};
+use crate::reader::{parse_lod_table, parse_prologue, Lod, MAP_CHUNK_SLOTS};
 use crate::scene::{feature_error, read_error};
 use crate::{Error, MapCache, MapTables, Reader};
 
@@ -512,6 +512,7 @@ impl MapScene for MountedSet<'_> {
                 continue;
             }
             let reader = self.reader_over(index, mounted);
+
             let walk = reader.for_each_chunk(lod, view, |cid, node| {
                 report.chunks_visited += 1;
                 // A chunk id past the tag budget cannot be addressed again in pass B, so it is
@@ -568,6 +569,52 @@ impl MapScene for MountedSet<'_> {
                 continue;
             }
             let reader = self.reader_over(index, mounted);
+
+            // Decode every winner in a dedicated pass-A slot before touching this shard's
+            // quadtree again. The scratch-backed fifth slot has no retained leaf bbox, so its
+            // winner takes the ordinary path below; the expanded leaf list and scratch hit still
+            // make that path SD-free. Track unique owner chunks for `chunks_refetched` accounting.
+            let mut cached_chunks: Vec<u32, MAP_CHUNK_SLOTS> = Vec::new();
+            for slot in 0..selected.len() {
+                if !selected.is_pending(slot) {
+                    continue;
+                }
+                let Some(token) = selected.token(slot) else {
+                    continue;
+                };
+                let (shard, cid, offset) = untag_token(token);
+                if shard != index {
+                    continue;
+                }
+                match reader.decode_cached_feature_at(lod, cid, offset, points, ring_lens) {
+                    Ok(Some(feature)) => {
+                        let admitted = selected.decoded(
+                            slot,
+                            Feature::new(
+                                feature.style_id,
+                                feature.kind,
+                                feature.points(),
+                                feature.ring_lens(),
+                                feature.bbox(),
+                            ),
+                        );
+                        if admitted && !cached_chunks.contains(&cid) {
+                            let _ = cached_chunks.push(cid);
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        let _ = selected.failed(slot, feature_error(error));
+                    }
+                }
+            }
+            report.chunks_refetched = report.chunks_refetched.saturating_add(cached_chunks.len() as u32);
+            let shard_has_pending = (0..selected.len())
+                .any(|slot| selected.token(slot).map(|token| untag_token(token).0 == index).unwrap_or(false));
+            if !shard_has_pending {
+                continue;
+            }
+
             let walk = reader.for_each_chunk(lod, view, |cid, node| {
                 let mut refetched = false;
                 for slot in 0..selected.len() {

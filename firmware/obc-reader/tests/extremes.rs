@@ -153,21 +153,19 @@ fn second_pass_over_same_chunk_hits_the_cache_via_public_api() {
     assert_eq!(s2.sd_reads, reads_after_cold, "a hit reads nothing from the source");
 }
 
-/// LRU eviction ordering observed at the `Reader` level: once more distinct chunks are queried than
-/// the cache has slots, the least-recently-used chunk is evicted, so re-querying it misses again
-/// while a recently-touched one still hits. The cache has 4 chunk slots (reader.rs
-/// `MAP_CHUNK_SLOTS`); this drives 5 distinct chunks so exactly one is evicted, and asserts it is
-/// the oldest. Two leaves are *not* enough — this needs the full slot set, which only a public-API
-/// walk over many leaves exercises.
+/// Initial RRIP eviction observed at the `Reader` level: once more distinct chunks are queried than
+/// the cache's four buffers plus scratch slot, the first resident chunk is evicted, so re-querying
+/// it misses while the newest still hits. Two leaves are not enough — this needs the full five-slot
+/// set, which only a public-API walk over many leaves exercises.
 #[test]
-fn lru_evicts_the_oldest_chunk_at_the_reader_level() {
+fn rrip_evicts_the_first_chunk_after_five_slots_fill() {
     // We need more *distinct cached chunks* in one viewport than the cache has slots. An NW-chain
     // where each level hangs three leaf chunks (NE/SW/SE) off it and continues NW yields 3 leaves
     // per level, so a couple of levels give 5 leaves — all overlapping a whole-bbox view, and the chain
     // stays well under the depth cap (`MAX_QUADTREE_DEPTH` = 32). Every child index strictly exceeds
     // its parent's, so the well-formed `child > idx` invariant holds.
-    const SLOTS: usize = 4; // reader.rs MAP_CHUNK_SLOTS
-    const LEAVES: usize = SLOTS + 1; // 65 → exactly one eviction
+    const SLOTS: usize = 5; // four dedicated slots + the shared decode scratch
+    const LEAVES: usize = SLOTS + 1; // six → exactly one eviction
     const CS: usize = 64;
 
     // Node 0 is the root branch. Each level appends four children: NW (continues the chain, or the
@@ -208,7 +206,7 @@ fn lru_evicts_the_oldest_chunk_at_the_reader_level() {
     r.for_each_chunk(0, &r.bbox, |cid, _| walk_order.push(cid)).unwrap();
     assert!(walk_order.len() > SLOTS, "need more leaves than slots to force an eviction");
 
-    // Pass 1: decode every leaf — fills all 64 slots, then evicts the oldest as the 65th loads.
+    // Pass 1: decode every leaf — fills all five slots, then evicts the first as the sixth loads.
     let oldest = walk_order[0];
     let newest = *walk_order.last().unwrap();
     for &cid in &walk_order {
@@ -220,9 +218,9 @@ fn lru_evicts_the_oldest_chunk_at_the_reader_level() {
     let before = r.chunk_cache_stats();
     let _ = decode(&r, 0, newest, &r.bbox);
     let after = r.chunk_cache_stats();
-    assert_eq!(after.chunk_hits, before.chunk_hits + 1, "the most-recently-used chunk is still cached");
+    assert_eq!(after.chunk_hits, before.chunk_hits + 1, "the newest chunk is still cached");
 
-    // Re-decode the *oldest* chunk: it was the LRU victim → a miss (re-read).
+    // Re-decode the first chunk: it was the initial RRIP victim → a miss (re-read).
     let before = r.chunk_cache_stats();
     let _ = decode(&r, 0, oldest, &r.bbox);
     let after = r.chunk_cache_stats();
