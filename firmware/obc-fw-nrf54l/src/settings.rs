@@ -70,6 +70,15 @@ fn boot_state_base() -> u32 {
     core::ptr::addr_of!(__boot_state_base) as u32
 }
 
+/// Base address of the **blob-stage carve** (#1158, `OBCU_Spec.md` §3): the `__semmc_stage_base`
+/// linker symbol (`ORIGIN(SEMMC_STAGE)`), read at runtime like [`boot_state_base`].
+fn semmc_stage_base() -> u32 {
+    extern "C" {
+        static __semmc_stage_base: u8;
+    }
+    core::ptr::addr_of!(__semmc_stage_base) as u32
+}
+
 // The armer writes whole 16-byte RRAMC lines with no read-modify-write — the shared codec pads
 // every encoded blob to a line multiple (pinned in obc-dfu too; mirrored here like the settings
 // SLOT_LEN guard so a codec change fails loud at this write site's crate).
@@ -327,6 +336,59 @@ impl RramSettingsStore {
                 false
             }
         }
+    }
+
+    /// Stage the sEMMC soft-peripheral image into the `SEMMC_STAGE` carve (#1158,
+    /// `OBCU_Spec.md` §3) — the armer's blob handoff to the bootloader, which boots the card
+    /// through this copy on the Install/Rollback paths.
+    ///
+    /// Write ordering inside the carve is the commit story: the blob body lands first (16-byte
+    /// RRAMC lines, zero-padded tail), the CRC-framed header line **last** — so a power cut
+    /// mid-stage leaves a carve that fails [`obc_dfu::validate_stage`], indistinguishable from
+    /// "never staged". Idempotent and cheap on re-arms: when the carve already validates to these
+    /// exact bytes (the common case — the blob only changes when the app image does), nothing is
+    /// written. Returns `false` on a controller error or a failed readback — the armer then aborts
+    /// with the boot-state page untouched (`ArmError::BlobStage`).
+    pub fn stage_semmc_blob(&mut self, blob: &[u8]) -> bool {
+        let base = semmc_stage_base();
+        // SAFETY: the linker reserves the SEMMC_STAGE carve; RRAM is memory-mapped and always
+        // readable, and this store is the sole writer (one thread-mode executor).
+        let carve = unsafe { core::slice::from_raw_parts(base as *const u8, obc_dfu::STAGE_LEN) };
+        if obc_dfu::validate_stage(carve) == Some(blob) {
+            defmt::info!("dfu: sEMMC blob already staged ({=usize} B) — skipping the write", blob.len());
+            return true;
+        }
+        let Some(header) = obc_dfu::encode_stage_header(blob) else {
+            defmt::warn!("dfu: sEMMC blob ({=usize} B) cannot be staged (empty/oversize)", blob.len());
+            return false;
+        };
+        // Blob body first, in whole 16-byte lines (a 256 B stack chunk keeps the RRAMC write
+        // sizes in the same family as the settings blobs; the tail line is zero-padded).
+        let mut off = base + obc_dfu::STAGE_HEADER_LEN as u32;
+        for chunk in blob.chunks(256) {
+            let mut lines = [0u8; 256];
+            lines[..chunk.len()].copy_from_slice(chunk);
+            let padded = chunk.len().div_ceil(RRAM_WRITE_LINE) * RRAM_WRITE_LINE;
+            if let Err(e) = self.rram.write(off, &lines[..padded]) {
+                defmt::warn!("dfu: sEMMC blob stage write failed @ {=u32:#010x}: {}", off, e);
+                return false;
+            }
+            off += padded as u32;
+        }
+        // The header line is the commit point.
+        if let Err(e) = self.rram.write(base, &header) {
+            defmt::warn!("dfu: sEMMC blob stage header write failed: {}", e);
+            return false;
+        }
+        // Readback through the same validator the bootloader uses — a stage the bootloader would
+        // reject must fail the arm here, where the app can say so.
+        let ok = obc_dfu::validate_stage(carve) == Some(blob);
+        if ok {
+            defmt::info!("dfu: staged sEMMC blob ({=usize} B) to RRAM @ {=u32:#010x}", blob.len(), base);
+        } else {
+            defmt::warn!("dfu: sEMMC blob stage readback mismatch @ {=u32:#010x}", base);
+        }
+        ok
     }
 
     /// Persist the DFU **arm marker** — the armer's breadcrumb, written right after the `Armed`

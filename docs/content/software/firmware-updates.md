@@ -584,17 +584,22 @@ bootloader and the big application both agree on. The app is *always* linked at
 is "flash `obc-boot` once, then iterate on the app exactly as before".
 
 <figure class="fig">
-<svg viewBox="0 0 720 300" role="img" aria-label="A memory map of the device's RRAM as a horizontal bar, and the SD card beside it. The RRAM bar has four segments left to right: obc-boot, the 32-kilobyte bootloader at address 0x0; a large app slot of about 1484 kilobytes starting at 0x8000; a 4-kilobyte BOOT_STATE page at 0x17B000; and a 4-kilobyte SETTINGS page at 0x17C000. Below the segments their start addresses are labelled. To the right, a smaller SD card panel lists two files in the card root: UPDATE.BIN, the staged OBCU container, and ROLLBACK.BIN, the snapshot of the running image written by the armer.">
-  <text class="d-tag" x="20" y="22">RRAM partition — one app slot, a 32 KB bootloader, two small pages</text>
+<svg viewBox="0 0 720 300" role="img" aria-label="A memory map of the device's RRAM as a horizontal bar, and the SD card beside it. The RRAM bar has five segments left to right: obc-boot, the 32-kilobyte bootloader at address 0x0; a large app slot of 1976 kilobytes starting at 0x8000; a 20-kilobyte SEMMC_STAGE carve at 0x1F6000 holding the staged sEMMC soft-peripheral image; a 4-kilobyte BOOT_STATE page at 0x1FB000; and a 4-kilobyte SETTINGS page at 0x1FC000. Below the segments their start addresses are labelled. To the right, a smaller SD card panel lists two files in the card root: UPDATE.BIN, the staged OBCU container, and ROLLBACK.BIN, the snapshot of the running image written by the armer.">
+  <text class="d-tag" x="20" y="22">RRAM partition — one app slot, a 32 KB bootloader, the blob-stage carve, two small pages</text>
 
   <!-- RRAM bar -->
   <rect class="d-panel-2" x="24" y="70" width="60" height="72" rx="6" style="fill:#f4ecd6" />
   <text class="d-sub" x="54" y="102" text-anchor="middle" style="fill:#a9501c">obc-boot</text>
   <text class="d-sub" x="54" y="118" text-anchor="middle">32 KB</text>
 
-  <rect class="d-panel" x="86" y="70" width="360" height="72" rx="6" />
-  <text class="d-title" x="266" y="102" text-anchor="middle">app slot</text>
-  <text class="d-sub" x="266" y="120" text-anchor="middle">obc-fw-nrf54l, linked at 0x8000 · ~1484 KB</text>
+  <rect class="d-panel" x="86" y="70" width="290" height="72" rx="6" />
+  <text class="d-title" x="231" y="102" text-anchor="middle">app slot</text>
+  <text class="d-sub" x="231" y="120" text-anchor="middle">obc-fw-nrf54l, linked at 0x8000 · 1976 KB</text>
+
+  <rect class="d-panel-2" x="378" y="70" width="68" height="72" rx="6" style="fill:#f8efe4" />
+  <text class="d-sub" x="412" y="98" text-anchor="middle" style="fill:#a9501c">SEMMC_</text>
+  <text class="d-sub" x="412" y="112" text-anchor="middle" style="fill:#a9501c">STAGE</text>
+  <text class="d-sub" x="412" y="130" text-anchor="middle">20 KB</text>
 
   <rect class="d-panel-2" x="448" y="70" width="66" height="72" rx="6" style="fill:#eef2df" />
   <text class="d-sub" x="481" y="98" text-anchor="middle" style="fill:#3c6b39">BOOT_</text>
@@ -608,10 +613,11 @@ is "flash `obc-boot` once, then iterate on the app exactly as before".
   <!-- addresses -->
   <text class="d-sub" x="24" y="160" style="fill:#6b7758;font-size:9.5px">0x0000</text>
   <text class="d-sub" x="86" y="160" style="fill:#6b7758;font-size:9.5px">0x8000</text>
-  <text class="d-sub" x="440" y="176" style="fill:#6b7758;font-size:9.5px">0x17B000</text>
-  <text class="d-sub" x="516" y="160" style="fill:#6b7758;font-size:9.5px">0x17C000</text>
+  <text class="d-sub" x="372" y="176" style="fill:#6b7758;font-size:9.5px">0x1F6000</text>
+  <text class="d-sub" x="448" y="160" style="fill:#6b7758;font-size:9.5px">0x1FB000</text>
+  <text class="d-sub" x="516" y="176" style="fill:#6b7758;font-size:9.5px">0x1FC000</text>
 
-  <text class="d-sub" x="303" y="206" text-anchor="middle" style="fill:#3c6b39">the BOOT_STATE page is the only app ↔ bootloader channel — a CRC-framed blob, torn ⇒ Idle</text>
+  <text class="d-sub" x="303" y="206" text-anchor="middle" style="fill:#3c6b39">the BOOT_STATE page is the only app ↔ bootloader control channel — a CRC-framed blob, torn ⇒ Idle</text>
 
   <!-- SD card -->
   <rect class="d-panel" x="600" y="70" width="104" height="150" rx="10" />
@@ -623,7 +629,7 @@ is "flash `obc-boot` once, then iterate on the app exactly as before".
   <text class="d-sub" x="652" y="178" text-anchor="middle">ROLLBACK</text>
   <text class="d-sub" x="652" y="192" text-anchor="middle">.BIN</text>
 </svg>
-<figcaption>The bootloader lives in its own 32 KB slot below the app and is flashed once; the app never moves it. <code>BOOT_STATE</code> is the single 4 KB handoff page — the armer writes an <code>Armed</code> record there and the bootloader reads it, both through the shared codec, and any unclean read is <code>Idle</code>. The staged <code>UPDATE.BIN</code> and the <code>ROLLBACK.BIN</code> snapshot live on the card, not in RRAM: the app resolves them to raw SD block runs so the FAT-free bootloader can read them with plain block reads, no filesystem.</figcaption>
+<figcaption>The bootloader lives in its own 32 KB slot below the app and is flashed once; the app never moves it. <code>BOOT_STATE</code> is the single 4 KB handoff page — the armer writes an <code>Armed</code> record there and the bootloader reads it, both through the shared codec, and any unclean read is <code>Idle</code>. <code>SEMMC_STAGE</code> is the second, bulkier handoff: since the storage pivot the card is only reachable through the sEMMC soft peripheral — a ~13.6 KB coprocessor image the 32 KB bootloader cannot afford to embed — so the armer copies the app's image into this CRC-framed carve before every arm, and the bootloader validates and boots the card through it (<code>OBCU_Spec.md</code> §3). The staged <code>UPDATE.BIN</code> and the <code>ROLLBACK.BIN</code> snapshot live on the card, not in RRAM: the app resolves them to raw SD block runs so the FAT-free bootloader can read them with plain block reads, no filesystem.</figcaption>
 </figure>
 
 The bootloader is deliberately tiny and dumb — no FAT, no BLE, no display driver,
@@ -646,7 +652,7 @@ a frozen COM line would apply for the multi-ten-second install.
 
 ## Where this lives
 
-- The byte formats — the `UPDATE.BIN` container and the boot-state page — normative: [`OBCU_Spec.md`](src:specs/OBCU_Spec.md)
+- The byte formats — the `UPDATE.BIN` container, the boot-state page, and the blob-stage carve — normative: [`OBCU_Spec.md`](src:specs/OBCU_Spec.md)
 - The shared `no_std` core: [`obc-dfu`](src:firmware/obc-dfu) — the container + state codecs ([`image.rs`](src:firmware/obc-dfu/src/image.rs) · [`state.rs`](src:firmware/obc-dfu/src/state.rs)), the bootloader's install engine ([`engine.rs`](src:firmware/obc-dfu/src/engine.rs)), and the app-side armer ([`armer.rs`](src:firmware/obc-dfu/src/armer.rs))
 - The bootloader itself, its LED codes and flash-once workflow: [`obc-boot`](src:firmware/obc-boot) ([README](src:firmware/obc-boot/README.md))
 - The host tool that builds and inspects `UPDATE.BIN`: [`obc-mkimage`](src:host/obc-mkimage) — the `objcopy → wrap` pipeline is in the [firmware README](src:firmware/README.md)
