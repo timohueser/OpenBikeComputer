@@ -769,6 +769,10 @@ export class MockDevice {
             if (!active) {
                 // The firmware's `TransferDisposition::AnswerIdleAbort`: the peer is about to retry
                 // and its queued bytes are still arriving, so empty the pipe before confirming.
+                //
+                // A post-answer drain still running means the device is not idle yet — on the
+                // firmware this request would simply wait its turn at the data plane's `select`.
+                await this.draining;
                 await this.drainBulk();
                 // **Only `mapSet` abandons the staged set** (interface spec §5 rule 6). A
                 // `mapShard` or `terrainShard` abort here is the quiesce the host sends after a
@@ -854,9 +858,24 @@ export class MockDevice {
         // idle reader first: with the eager idle read gone, whatever the host queued ahead of this
         // descriptor is still sitting in the channel, which is precisely the point.
         this.detach(
-            (d.op === Op.Upload ? this.receive(d, abort.signal) : this.serve(d, abort.signal)).finally(() => {
-                this.active = null;
-            }),
+            (d.op === Op.Upload ? this.receive(d, abort.signal) : this.serve(d, abort.signal))
+                .finally(() => {
+                    this.active = null;
+                })
+                .then(async () => {
+                    // The post-answer drain, run with the exchange already closed — see `receive`.
+                    if (!this.drainAfterAnswer) return;
+                    this.drainAfterAnswer = false;
+                    // Published while it runs, because the firmware's data plane is **one task**:
+                    // its idle-abort drain is only serviced once `run_upload` has returned to the
+                    // idle `select`, so an abort can never be answered while a post-answer drain is
+                    // still going. Modelling that ordering is what keeps the retry's payload — which
+                    // the host sends the moment it sees `aborted` — from landing in this drain.
+                    this.draining = this.drainBulk(DRAIN_QUIET_MS).finally(() => {
+                        this.draining = null;
+                    });
+                    await this.draining;
+                }),
         );
     }
 
@@ -871,9 +890,45 @@ export class MockDevice {
         this.failNextUpload = status;
     }
 
+    /**
+     * Give up on the next upload **partway through its bytes** — the shape of a card that refuses an
+     * append, which is the firmware's `run_upload` SD-failure exit and the third of its three drain
+     * sites.
+     *
+     * Distinct from {@link failNextUploadWith}, and the difference is the whole point: a CRC or
+     * commit refusal happens *after* the announced length has been consumed, so nothing is left on
+     * the wire, whereas this one answers with most of the object still coming. Only the second needs
+     * a drain, and without one the sender blocks against an endpoint nobody is reading.
+     */
+    failNextUploadMidObject(status: TransferStatus): void {
+        this.failMidObject = status;
+    }
+
     private failNextUpload: TransferStatus | null = null;
+    private failMidObject: TransferStatus | null = null;
+    /** Set by a mid-object failure: empty the pipe once the exchange is closed. See {@link receive}. */
+    private drainAfterAnswer = false;
+    /** A post-answer drain in progress — the device is not idle until it settles. */
+    private draining: Promise<void> | null = null;
 
     private async receive(d: TransferControl, signal: AbortSignal): Promise<void> {
+        const midObject = this.failMidObject;
+        if (midObject !== null) {
+            this.failMidObject = null;
+            // Take a slice and stop, exactly as the firmware does when `stage.push` returns false.
+            try {
+                await this.link.bulk.read(signal);
+            } catch {
+                // The peer gave up first; the answer below is still the honest one.
+            }
+            await this.status({ msg: "transferResult", objectId: d.objectId, status: midObject, committedOffset: 0 });
+            // Requested rather than run here, because the firmware's `close_transfer` releases the
+            // gate *before* this answer: by the time it drains, the exchange is closed, so a quiesce
+            // abort arriving during the drain finds nothing armed and is answered. Draining while
+            // this runner still counted as active would swallow that abort instead.
+            this.drainAfterAnswer = true;
+            return;
+        }
         const forced = this.failNextUpload;
         if (forced !== null) {
             this.failNextUpload = null;

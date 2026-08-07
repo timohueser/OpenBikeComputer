@@ -295,13 +295,19 @@ async fn serve_frame(
                     // host's send loop cannot even unwind to the abort that would ask us to clear
                     // them — the drain has to be ours, and it is sequenced *after* the status below.
                     //
-                    // Not for `busy`, which is the one `Answer` raised with a transfer in flight:
-                    // the pipe belongs to that transfer, and a drain queued behind it would fire at
-                    // the next idle moment and eat the following object's opening bytes. The gate is
-                    // the honest test for it, since `busy` is precisely what a claimed gate answers.
+                    // Skipped only while a transfer is **streaming**, because then the pipe belongs
+                    // to that transfer and a drain queued behind it would fire at the next idle
+                    // moment and eat the following object's opening bytes.
+                    //
+                    // `in_flight`, deliberately, and not `busy`: `busy` is `in_flight ||
+                    // search_live` (`obc_app::TransferGate`), and a refusal raised by a live **route
+                    // search** is exactly the case that needs this drain most — nothing is
+                    // streaming, so nothing is reading the endpoint, and the host's queued writes
+                    // would never settle. Answering `busy` and draining is right there; answering
+                    // `busy` and staying silent is the hang this whole change exists to remove.
                     drain_after_answer = TransferControl::decode(payload)
                         .is_ok_and(|d| d.op == Op::Upload && d.total_len > 0)
-                        && !TRANSFER_ACTIVE.busy();
+                        && !TRANSFER_ACTIVE.in_flight();
                 }
                 // An abort that found nothing in flight, which on this transport comes with an
                 // obligation: the peer is about to retry, its already-queued bulk bytes are still
