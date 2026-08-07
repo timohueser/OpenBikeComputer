@@ -111,6 +111,52 @@ const PRODUCT: &str = "OpenBikeComputer";
 /// zero-length packet). The largest frame the protocol sends is a `config` write at ~130 bytes.
 const MAX_PACKET: u16 = 512;
 
+/// **How many max packets the bulk OUT endpoint arms at once** — the upload throughput dial
+/// (#1173), and the reason `embassy-usb-synopsys-otg` is vendored (`vendor/…/VENDORING.md`).
+///
+/// # What the number does
+///
+/// Stock, the driver arms exactly one packet and re-arms it only after this firmware's task has
+/// been scheduled, copied the packet out and cleared NAK. The endpoint NAKs for that whole round
+/// trip — ISR → waker → executor scan → poll → copy → `CNAK` — once per 512 B. Measured on glass
+/// 2026-08-07: ~342 µs per packet, of which ~240 µs was that serialisation, capping map uploads at
+/// 1416–1459 kB/s on *both* hosts (WebUSB and desktop), which is what said the ceiling was here and
+/// not on the wire. Arming N packets amortises the round trip over N: the core keeps absorbing the
+/// stream while the CPU folds CRC-32 and writes the card, and the reader picks up everything that
+/// accumulated in one go.
+///
+/// # The number, and how to sweep it
+///
+/// **8, for 4 KiB bursts.** Two bounds meet there. Below it the serialisation term is still the
+/// biggest one (it falls as 240/N µs per packet: N=4 leaves ~60 µs, N=8 ~30 µs, against the ~99 µs
+/// of card write + CRC + UI that remains after it). Above it the return shrinks — at N=8 the
+/// serialisation is already a fifth of the residue — while the RAM cost stays strictly linear at
+/// **two** buffers of `N × 512 B` (this crate's [`BULK_BUF`] and the driver's own per-endpoint
+/// staging area inside [`EP_OUT_BUFFER`]), so N=16 would cost another 8 KiB of `.bss` for a few
+/// percent. It must also stay within the core's RX FIFO: 3040 words total, of which a bursting
+/// endpoint takes `N × 129`, so N=16 (2064 words) is the last rung that fits beside everything else.
+///
+/// To sweep it: change this one line, re-pin `compile_time_allocations.usb_named` +
+/// `resident_ram_max`/`measured_resident` (they move by `2 × 512 × ΔN`) and `residual_stack_min`
+/// (down by the same) in `firmware/tools/resource_baseline.json` on **both** profiles, then read the
+/// `~{} kB/s` line `run_upload` prints at the end of every transfer over RTT. Prediction, not a
+/// measurement: ~4–5 MB/s, where the card's busy-polled write becomes the ceiling (#1174).
+const BULK_OUT_BURST_PACKETS: u16 = 8;
+
+/// One burst: what [`BULK_BUF`] holds and what the bulk OUT endpoint arms.
+const BULK_BURST_LEN: usize = BULK_OUT_BURST_PACKETS as usize * MAX_PACKET as usize;
+
+/// The endpoint **index** the bulk OUT pipe lands on, which is what the driver's burst mask is
+/// keyed on ([`Config::out_burst_endpoints`](nrf_usb::Config)).
+///
+/// It is 2 because of the allocation order in [`build_plane`] — EP0 is the control pipe, EP1 is the
+/// control-frame pair, EP2 is the bulk pair — and that order is already the host's wire contract, so
+/// this is not a second fragile assumption but the same one. [`build_plane`] asserts it against the
+/// endpoint the builder actually handed back, so a reordering fails loudly at bring-up instead of
+/// silently bursting the control-frame endpoint (which would be wrong in the other direction too:
+/// it would spend 4 KiB of staging on an endpoint that carries ~130-byte frames).
+const BULK_OUT_EP_INDEX: usize = 2;
+
 /// The `bRequest` value Windows uses for `GET_MS_OS_20_DESCRIPTOR`. Any non-zero byte; `0x01` is
 /// the conventional pick and collides with nothing else we answer.
 const MSOS_VENDOR_CODE: u8 = 0x01;
@@ -128,10 +174,11 @@ const DEVICE_INTERFACE_GUID: &str = "{5A8B1CE4-2D3F-4E7A-9B10-6F2C8D41E9A3}";
 // — small buffers are exactly the thing that quietly eats it.
 
 /// The driver's EP-OUT staging area: it copies each received packet here out of the core's shared
-/// RX FIFO, and allocates `max_packet_size` from it **per OUT endpoint**. Ours are EP0-OUT (64) +
-/// control-OUT (512) + bulk-OUT (512). Undersizing this panics at endpoint allocation, so it is
-/// derived rather than guessed.
-const EP_OUT_BUFFER_LEN: usize = 64 + 2 * MAX_PACKET as usize;
+/// RX FIFO, and allocates one **armed transfer's worth** from it per OUT endpoint. Ours are EP0-OUT
+/// (64) + control-OUT (512, one packet) + bulk-OUT ([`BULK_BURST_LEN`], because that endpoint arms
+/// [`BULK_OUT_BURST_PACKETS`] at a time — see there). Undersizing this fails endpoint allocation, so
+/// it is derived rather than guessed.
+const EP_OUT_BUFFER_LEN: usize = 64 + MAX_PACKET as usize + BULK_BURST_LEN;
 static mut EP_OUT_BUFFER: MaybeUninit<[u8; EP_OUT_BUFFER_LEN]> = MaybeUninit::uninit();
 
 /// Configuration descriptor: config (9) + interface (9) + 4 × endpoint (7) = 46 bytes.
@@ -152,8 +199,13 @@ static mut CONTROL_BUF: MaybeUninit<[u8; CONTROL_BUF_LEN]> = MaybeUninit::uninit
 /// One received control frame. Sized to the endpoint because `EndpointOut::read` refuses a buffer
 /// smaller than one max packet.
 static mut CTRL_RX: MaybeUninit<[u8; MAX_PACKET as usize]> = MaybeUninit::uninit();
-/// One bulk chunk, in either direction — the USB analogue of the CoC's SDU scratch.
-static mut BULK_BUF: MaybeUninit<[u8; MAX_PACKET as usize]> = MaybeUninit::uninit();
+/// One bulk **burst**, in either direction — the USB analogue of the CoC's SDU scratch.
+///
+/// Sized to [`BULK_BURST_LEN`] rather than one packet since #1173: the driver hands back everything
+/// the core absorbed while the CPU was busy, and a buffer shorter than the armed transfer would
+/// simply refuse it (`EndpointError::BufferOverflow`). The IN direction still writes one max packet
+/// per transfer — see `CHUNK_LEN` in [`data_plane`].
+static mut BULK_BUF: MaybeUninit<[u8; BULK_BURST_LEN]> = MaybeUninit::uninit();
 
 /// **One half** of an upload's [`Stage`](crate::link::stage::Stage) buffer — how many bytes pile up
 /// in RAM before they reach the card as one batch, and therefore how big one `CMD25` is.
@@ -216,7 +268,9 @@ pub const RESIDENT_BYTES: usize = EP_OUT_BUFFER_LEN
     + BOS_DESC_LEN
     + MSOS_DESC_LEN
     + CONTROL_BUF_LEN
-    + 2 * MAX_PACKET as usize
+    // CTRL_RX + BULK_BUF (the latter is a whole burst since #1173).
+    + MAX_PACKET as usize
+    + BULK_BURST_LEN
     + core::mem::size_of::<heapless::String<16>>()
     // [`VBUS_WAKER`] — 8 B, and itemized rather than waved through so the whole of #937's resident
     // cost is a named term instead of an unexplained step in the linked `.bss` gate.
@@ -510,10 +564,17 @@ fn build_plane(usb_p: Peri<'static, peripherals::USBHS>) -> UsbPlane {
         unsafe { init_static(core::ptr::addr_of_mut!(SERIAL), identity::serial_string()) };
 
     // The driver forces `vbus_detection = false` itself on this part (VBUS events arrive through
-    // VREGUSB, not the OTG core's session events), so the default config is the right one.
+    // VREGUSB, not the OTG core's session events), so the default config is otherwise the right one.
+    // The one field we set is the fork's (#1173): arm the **bulk OUT** endpoint — and only that one
+    // — as a burst of [`BULK_OUT_BURST_PACKETS`] packets, so it stops NAKing between them while the
+    // CPU is folding CRC and writing the card. Everything else on this device (EP0, the control
+    // frame pipe, both IN endpoints) keeps stock one-packet arming.
+    let mut usb_config = nrf_usb::Config::default();
+    usb_config.out_burst_endpoints = 1 << BULK_OUT_EP_INDEX;
+    usb_config.out_burst_packets = BULK_OUT_BURST_PACKETS;
     // [`BoardVbusDetect`] rather than embassy's `HardwareVbusDetect` so the driver and the poll
     // guard read the one register, not two views of it — the arming still happened in [`run`].
-    let driver = UsbhsDriver::new(usb_p, Irqs, BoardVbusDetect, ep_out_buffer, nrf_usb::Config::default());
+    let driver = UsbhsDriver::new(usb_p, Irqs, BoardVbusDetect, ep_out_buffer, usb_config);
 
     let mut config = Config::new(VENDOR_ID, PRODUCT_ID);
     config.manufacturer = Some(MANUFACTURER);
@@ -561,6 +622,17 @@ fn build_plane(usb_p: Peri<'static, peripherals::USBHS>) -> UsbPlane {
         let bulk_out = alt.endpoint_bulk_out(None, MAX_PACKET);
         (ctrl_in, ctrl_out, bulk_in, bulk_out)
     };
+
+    // The burst mask above named an endpoint *index*, and indices are handed out in the allocation
+    // order those four lines fix. Check the one the builder actually returned: a reordering that
+    // slipped past the wire-contract comment would otherwise burst the wrong endpoint — the bulk
+    // pipe back to one packet at a time (silently, at 1.4 MB/s) and 4 KiB of staging spent on
+    // ~130-byte control frames.
+    assert_eq!(
+        embassy_usb::driver::Endpoint::info(&bulk_out).addr.index(),
+        BULK_OUT_EP_INDEX,
+        "bulk OUT landed on the wrong endpoint index — the burst mask in `build_plane` is keyed on it"
+    );
 
     UsbPlane { device: builder.build(), ctrl_in, ctrl_out, bulk_in, bulk_out }
 }
@@ -616,7 +688,7 @@ pub async fn run(usb_p: Peri<'static, peripherals::USBHS>, stores: crate::link::
 
     // SAFETY: sole writer of each buffer; `run` is spawned once.
     let ctrl_rx = unsafe { init_static(core::ptr::addr_of_mut!(CTRL_RX), [0u8; MAX_PACKET as usize]) };
-    let bulk_buf = unsafe { init_static(core::ptr::addr_of_mut!(BULK_BUF), [0u8; MAX_PACKET as usize]) };
+    let bulk_buf = unsafe { init_static(core::ptr::addr_of_mut!(BULK_BUF), [0u8; BULK_BURST_LEN]) };
 
     // Both planes send on the control IN endpoint — the control loop its replies, the data plane
     // its announces and terminal results — so it lives behind one async mutex. That serialisation

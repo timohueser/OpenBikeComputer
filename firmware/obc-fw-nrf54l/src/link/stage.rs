@@ -31,17 +31,20 @@
 //! block device is synchronous by construction: `Semmc::write_blocks` busy-polls
 //! `wait_completion`, and that is a *deliberate* decision (its doc explains why a `WFE` sleep is
 //! unsound on this part), so a card write burns the one thread-mode CPU for its whole duration.
-//! On a cooperative executor nothing else — including the USB endpoint's software re-arm — runs
-//! meanwhile. Wire-level reception during a flush is therefore bounded by what the USBHS core
-//! buffers on its own, which is exactly **one** max packet: embassy's
-//! `EndpointOut::read` re-arms with `pktcnt = 1` and a `max_packet_size` staging buffer
-//! (`embassy-usb-synopsys-otg` 0.4, `lib.rs::read`), and the endpoint NAKs from there.
+//! On a cooperative executor nothing of ours runs meanwhile — **the hardware does, though, and
+//! since #1173 it runs further than it used to.** The bulk OUT endpoint is armed for a burst of
+//! `BULK_OUT_BURST_PACKETS` max packets rather than one (the vendored
+//! `embassy-usb-synopsys-otg` fork, `vendor/embassy-usb-synopsys-otg/VENDORING.md`), so the core
+//! keeps taking the wire into its RX FIFO and the driver's staging buffer for the whole of a flush
+//! instead of NAKing after 512 bytes. Reception during a flush is now bounded by the burst, not by
+//! one packet.
 //!
-//! So the halves are the *structure* for overlap, not the overlap. The day the sEMMC transfer grows
-//! an awaitable completion, the change here is local — `drain` becomes a future and the caller
-//! `join`s it with `ep.read` into the other half — and nothing above has to move. Until then the
-//! measurable wins in this file are the ones the halves make safe to take: a **cluster-sized**
-//! flush (one CMD25, no partial ends) and half as many mutex acquisitions per megabyte.
+//! So the halves are still the *structure* for overlap rather than the overlap itself — nothing
+//! here overlaps a card write with our own CPU work. The day the sEMMC transfer grows an awaitable
+//! completion (#1174), the change here is local — `drain` becomes a future and the caller `join`s
+//! it with `ep.read` into the other half — and nothing above has to move. Until then the measurable
+//! wins in this file are the ones the halves make safe to take: a **cluster-sized** flush (one
+//! CMD25, no partial ends) and half as many mutex acquisitions per megabyte.
 //!
 //! # Who uses this
 //!
