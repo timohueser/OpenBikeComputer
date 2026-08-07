@@ -517,7 +517,7 @@ mod resource_report {
         entry("terrain_extents", sd::TERRAIN_EXTENT_BYTES),
     ];
 
-    const ENTRIES: usize = 29;
+    const ENTRIES: usize = 31;
 
     #[used]
     #[no_mangle]
@@ -568,6 +568,12 @@ mod resource_report {
         // `.bss + .data` gate, which is the authority for resident RAM. The **staging buffer is no
         // longer part of this sum** (#1146 P2): it is `arena_usb` above.
         entry("usb_named", usb::RESIDENT_BYTES),
+        // The sEMMC storage transport's two resident blocks (#1158) — the baseline named these
+        // when the pivot landed, but the rows themselves were forgotten, which broke the report
+        // gate on every PR: the 4-block alignment bounce (`sd.rs`, fires only for misaligned
+        // callers) and the `Semmc` host-driver state itself.
+        entry("sd_bounce", sd::BOUNCE_BYTES),
+        entry("semmc_driver", core::mem::size_of::<semmc::Semmc>()),
     ];
 }
 
