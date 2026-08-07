@@ -291,3 +291,18 @@ debug = 2
 # does not (it only reads the card, so it gains nothing).
 [patch.crates-io]
 embedded-sdmmc = { git = "https://github.com/timohueser/embedded-sdmmc-rs", branch = "cmd25-multiblock-write" }
+
+# ---------------------------------------------------------------------------------------------
+# The vendored Synopsys OTG driver `embassy-nrf`'s USBHS wrapper is a thin shell over. It is where
+# the bulk OUT endpoint's transfer arming lives, and upstream arms exactly **one** max packet at a
+# time — the endpoint NAKs from the moment a packet lands until this firmware's task has been
+# scheduled, copied it out and cleared NAK, which is ~70% of the measured 342 µs/packet that capped
+# map uploads at ~1.4 MB/s (#1173). The fork arms a burst of packets on that one endpoint.
+#
+# **Vendored rather than git-pinned** for the same reasons `vendor/semmc` is: CI must build offline
+# and reproducibly, and a fork this small is easier to review as a diff against a pristine copy
+# committed beside it. Provenance, license and the exact local change:
+# `vendor/embassy-usb-synopsys-otg/VENDORING.md`.
+#
+# **Board crate only.** The workspace root and `obc-boot` never resolve this crate — neither has USB.
+embassy-usb-synopsys-otg = { path = "vendor/embassy-usb-synopsys-otg" }
