@@ -46,7 +46,7 @@ use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_time::{with_timeout, Duration, Timer};
 use embassy_usb::driver::{Endpoint as _, EndpointError, EndpointIn, EndpointOut};
-use obc_ble::{ObjectType, StatusMessage, StoreChanged};
+use obc_ble::{ObjectType, Op, StatusMessage, StoreChanged, TransferControl};
 
 use crate::link::command::run_command;
 use crate::link::identity;
@@ -193,6 +193,13 @@ pub(crate) async fn run(
                 Ok(n) => n,
                 Err(EndpointError::Disabled) => {
                     info!("usb: [ctl] endpoint disabled — waiting for the next configuration");
+                    // Tell the data plane, which no longer has a read of its own to learn it from
+                    // (see [`data_plane::LINK_DOWN`]). Only on `Disabled`: that is the one error
+                    // that means the *configuration* went away, and a configuration change takes
+                    // every endpoint of the interface with it, so it speaks for the bulk pair too.
+                    // A transient driver failure below must not abandon a set the cable is still
+                    // mid-way through uploading.
+                    data_plane::LINK_DOWN.signal(());
                     break;
                 }
                 Err(e) => {
@@ -236,6 +243,9 @@ async fn serve_frame(
     let mut status_msg: Option<StatusBytes> = None;
     let mut store_changed: Option<ObjectType> = None;
     let mut forget_after_ack = false;
+    // Whether this frame refused an upload whose payload the host had already put on the wire, so
+    // the pipe has to be emptied once the refusal is out. See the `Answer` arm below.
+    let mut drain_after_answer = false;
     // A reply whose payload is assembled under the lock but sent after it is released.
     let mut reply: Option<(u8, [u8; MAX_CONTROL_PAYLOAD], usize)> = None;
 
@@ -278,6 +288,26 @@ async fn serve_frame(
                 TransferDisposition::Answer(bytes) => {
                     info!("usb: [ctl] transfer answered immediately");
                     status_msg = Some(bytes);
+                    // A refused **upload** announce is answered while its payload is already on the
+                    // wire: the host pipelines the two, so a reject (storage full, a size ceiling, a
+                    // set rule) lands with a window of `transferOut`s submitted against an endpoint
+                    // that will now never be armed to read them. Those transfers only NAK, so the
+                    // host's send loop cannot even unwind to the abort that would ask us to clear
+                    // them — the drain has to be ours, and it is sequenced *after* the status below.
+                    //
+                    // Skipped only while a transfer is **streaming**, because then the pipe belongs
+                    // to that transfer and a drain queued behind it would fire at the next idle
+                    // moment and eat the following object's opening bytes.
+                    //
+                    // `in_flight`, deliberately, and not `busy`: `busy` is `in_flight ||
+                    // search_live` (`obc_app::TransferGate`), and a refusal raised by a live **route
+                    // search** is exactly the case that needs this drain most — nothing is
+                    // streaming, so nothing is reading the endpoint, and the host's queued writes
+                    // would never settle. Answering `busy` and draining is right there; answering
+                    // `busy` and staying silent is the hang this whole change exists to remove.
+                    drain_after_answer = TransferControl::decode(payload)
+                        .is_ok_and(|d| d.op == Op::Upload && d.total_len > 0)
+                        && !TRANSFER_ACTIVE.in_flight();
                 }
                 // An abort that found nothing in flight, which on this transport comes with an
                 // obligation: the peer is about to retry, its already-queued bulk bytes are still
@@ -355,6 +385,11 @@ async fn serve_frame(
     }
     if let Some(bytes) = status_msg {
         tx.send_status(bytes).await;
+    }
+    if drain_after_answer {
+        // The refusal is out, so the host has stopped generating chunks. Now take what it had
+        // already handed to the controller, or its writes never settle.
+        data_plane::drain_after_refused_announce().await;
     }
     if forget_after_ack {
         // Same ordering the spec pins for BLE: the `commandResult(ok)` ack is out, so it is now
