@@ -24,10 +24,10 @@ use obc_formats::obcm::{
 // The OBCM constants the serializer lays out are owned by `obc-formats`; imported here (the
 // `VERSION as OBCM_VERSION` rename is a module-local readability alias). Not re-exported.
 use obc_formats::obcm::{
-    HEADER_LEN, LOD_ENTRY_LEN, NAV_CHUNK_SIZE, NAV_DIR_LEN, NAV_EDGE_FIXED_LEN, NAV_MAX_DEGREE, NAV_MAX_PROFILES,
-    NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN, NAV_PROFILE_LEN, NAV_PROFILE_NAME_LEN, NAV_PROFILE_RESERVED_LEN,
-    POI_CATEGORY_COUNT, POI_CAT_ENTRY_LEN, POI_CHUNK_SIZE, POI_HOURS_BLOB_LEN, POI_HOURS_REF_NONE, POI_NAME_LEN,
-    POI_RECORD_LEN, VERSION as OBCM_VERSION,
+    nav_index_padding, HEADER_LEN, LOD_ENTRY_LEN, NAV_CHUNK_SIZE, NAV_DIR_LEN, NAV_EDGE_FIXED_LEN, NAV_MAX_DEGREE,
+    NAV_MAX_PROFILES, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN, NAV_PROFILE_LEN, NAV_PROFILE_NAME_LEN,
+    NAV_PROFILE_RESERVED_LEN, POI_CATEGORY_COUNT, POI_CAT_ENTRY_LEN, POI_CHUNK_SIZE, POI_HOURS_BLOB_LEN,
+    POI_HOURS_REF_NONE, POI_NAME_LEN, POI_RECORD_LEN, VERSION as OBCM_VERSION,
 };
 
 use crate::nav::{polyline_len_m, NavGraph};
@@ -1057,13 +1057,15 @@ pub fn serialize_nav_section(
     terrain: &mut dyn ElevationSource,
 ) -> Vec<u8> {
     let profile_table = pack_profile_table(profiles);
-    // The profile table sits right after the 28-byte directory; the node index (and, for an empty
-    // graph, the zero-length edge pool) start after it.
+    // The profile table sits right after the 28-byte directory. A populated graph may insert up to
+    // one sector of compatibility padding before its node index; its exact size is known once the
+    // index has been built. An empty graph stays compact.
     let profile_table_offset = section_offset + NAV_DIR_LEN;
-    let index_offset = profile_table_offset + profile_table.len();
+    let unpadded_index_offset = profile_table_offset + profile_table.len();
 
     // Directory writer, shared by the empty and populated paths. `idx_off`/`edge_off` point at the
-    // node index and edge pool; an empty graph passes `index_offset` for both (zero-length regions).
+    // node index and edge pool; an empty graph passes `unpadded_index_offset` for both zero-length
+    // regions.
     let write_dir =
         |out: &mut Vec<u8>, idx_off: usize, node_count: u32, node_chunks: u32, edge_off: usize, edge_chunks: u32| {
             out.extend_from_slice(&(idx_off as u32).to_le_bytes()); // index_offset
@@ -1082,7 +1084,7 @@ pub fn serialize_nav_section(
         // Empty graph: 28-byte directory (both regions zero-length, just past the profile table) +
         // the always-present profile table.
         let mut out = Vec::with_capacity(NAV_DIR_LEN + profile_table.len());
-        write_dir(&mut out, index_offset, 0, 0, index_offset, 0);
+        write_dir(&mut out, unpadded_index_offset, 0, 0, unpadded_index_offset, 0);
         out.extend_from_slice(&profile_table);
         return out;
     }
@@ -1196,13 +1198,18 @@ pub fn serialize_nav_section(
         eprintln!("warning: {dropped} nav node record(s) dropped (leaf overflow at the split floor)");
     }
 
-    // Layout: [directory][profile table][node index][node chunks][edge pool]. `index_offset` was
-    // fixed above (after the profile table); the edge pool follows the node chunks.
-    debug_assert_eq!(index_offset, section_offset + NAV_DIR_LEN + profile_table.len());
+    // Layout: [directory][profile table][0-padding][node index][node chunks][edge pool]. Choose the
+    // gap so `index_offset + index.len()` — the first node chunk — is a physical-sector boundary.
+    // The directory already carries absolute offsets, so old v12 readers accept the gap without a
+    // format bump; the edge pool stays aligned because the node region is whole 512-byte chunks.
+    let index_pad = nav_index_padding(unpadded_index_offset as u64, index.len() as u64);
+    let index_offset = unpadded_index_offset + index_pad;
     let edge_pool_offset = index_offset + index.len() + chunks.len();
-    let mut out = Vec::with_capacity(NAV_DIR_LEN + profile_table.len() + index.len() + chunks.len() + pool.len());
+    let mut out =
+        Vec::with_capacity(NAV_DIR_LEN + profile_table.len() + index_pad + index.len() + chunks.len() + pool.len());
     write_dir(&mut out, index_offset, node_count, chunk_count, edge_pool_offset, edge_chunk_count);
     out.extend_from_slice(&profile_table);
+    out.resize(out.len() + index_pad, 0);
     out.extend_from_slice(&index);
     out.extend_from_slice(&chunks);
     out.extend_from_slice(&pool);

@@ -74,6 +74,21 @@ pub const NAV_PROFILE_RESERVED_LEN: usize = 3;
 pub const NAV_MAX_PROFILES: usize = 8;
 pub const NAV_MAX_DEGREE: usize = 24;
 
+/// Padding inserted immediately before a populated §8.2 node index so the fixed 512-byte node
+/// chunks following that index begin on a physical sector boundary. `index_offset` is the absolute
+/// file offset the index would have without padding; the index itself may remain unaligned because
+/// readers fetch its cache windows at aligned absolute offsets. The return is always `0..512`.
+///
+/// This is wire-compatible with every v12 reader: the directory carries the absolute index offset,
+/// while node chunks start at `index_offset + index_len`. Keeping the arithmetic here makes the
+/// standalone packer and streaming volume assembler agree exactly.
+#[inline]
+pub const fn nav_index_padding(index_offset: u64, index_len: u64) -> usize {
+    let sector = NAV_CHUNK_SIZE as u64;
+    let data_rem = (index_offset % sector + index_len % sector) % sector;
+    ((sector - data_rem) % sector) as usize
+}
+
 /// The browsable POI categories from OBCM spec §7.4. Discriminants are stable wire ids.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
@@ -214,6 +229,17 @@ mod tests {
         // The §8.3 degree-cap derivation: 13 + 17 × 24 = 421 ≤ 512, so the pinned nav chunk still
         // holds a cap-degree record whole.
         assert_eq!(NAV_NODE_FIXED_LEN + NAV_MAX_DEGREE * NAV_NEIGHBOR_LEN, 421);
+    }
+
+    #[test]
+    fn nav_index_padding_aligns_the_first_data_chunk_without_overflow() {
+        assert_eq!(nav_index_padding(84, 4), 424);
+        assert_eq!(nav_index_padding(508, 4), 0);
+        assert_eq!(nav_index_padding(500, 20), 504);
+        let near_max = u64::MAX - 3;
+        let pad = nav_index_padding(near_max, 12);
+        assert!(pad < NAV_CHUNK_SIZE);
+        assert_eq!(((near_max % 512) + (pad as u64 % 512) + 12) % 512, 0);
     }
 
     #[test]

@@ -521,20 +521,22 @@ pub fn assemble_full(
     // --- 4. Plan the set. ---
     let style_len = shard::pack_style_table(&styles).len();
     let poi_len = poi_section.section_len();
-    let nav_len = merged_nav.section_len(&profile_table);
+    let nav_projection = merged_nav.projection(&profile_table);
     let empty_poi_len = poi::empty_layout(assembly.ubox()).section_len();
-    let empty_nav_len = nav::MergedNav::empty(Default::default()).section_len(&profile_table);
+    let empty_nav_projection = nav::MergedNav::empty(Default::default()).projection(&profile_table);
     let mut plans = plan_set(
         schema,
         &cells,
         assembly,
         chunk_size,
         opts,
-        (style_len, poi_len, nav_len, empty_poi_len, empty_nav_len),
+        (style_len, poi_len, nav_projection, empty_poi_len, empty_nav_projection),
     )?;
     let t_plan = clock.now_us();
 
     // --- 5. Write, verify, then the manifest — in that order, always (§5.4). ---
+    let core_plan = plans.iter().find(|p| p.core).expect("the set plan always has one core");
+    let nav_len = shard::projected_nav_bytes(core_plan, style_len, poi_len, nav_projection)?;
     let mut stats = Stats {
         cells: coverage.len(),
         open_us: t_open - t_start,
@@ -545,7 +547,7 @@ pub fn assemble_full(
         poi_records: merged_pois.pois.len(),
         poi_duplicates: merged_pois.duplicates,
         poi_dropped: poi_section.dropped(),
-        nav_section_bytes: nav_len as u64,
+        nav_section_bytes: nav_len,
         poi_section_bytes: poi_len as u64,
         ..Default::default()
     };
@@ -804,16 +806,16 @@ fn plan_set(
     assembly: AlignedBox,
     chunk_size: usize,
     opts: &Options,
-    lens: (usize, u64, u64, u64, u64),
+    lens: (usize, u64, nav::NavProjection, u64, nav::NavProjection),
 ) -> Result<Vec<ShardPlan>> {
-    let (style_len, poi_len, nav_len, empty_poi_len, empty_nav_len) = lens;
+    let (style_len, poi_len, nav_projection, empty_poi_len, empty_nav_projection) = lens;
 
     // The single-file fast path: try the whole map as one core shard (§5.5). Skipped outright under
     // `force_split`, which would otherwise plan the whole map twice to throw the first one away.
     if !opts.force_split {
         let all_lods: Vec<usize> = (0..schema.lods.len()).collect();
         let mut single = build_shard(schema, cells, assembly, chunk_size, &all_lods, 0, BandRole::Core, true)?;
-        single.bytes = shard::projected_bytes(&single, style_len, poi_len, nav_len)?;
+        single.bytes = shard::projected_bytes(&single, style_len, poi_len, nav_projection)?;
         if single.bytes <= FILE_CEILING {
             return Ok(vec![single]);
         }
@@ -822,7 +824,7 @@ fn plan_set(
     // Otherwise: the core carries no geometry at all, so every byte that can scale horizontally
     // does (§5.1).
     let mut plans = vec![build_shard(schema, cells, assembly, chunk_size, &[], 0, BandRole::Core, true)?];
-    let core_bytes = shard::projected_bytes(&plans[0], style_len, poi_len, nav_len)?;
+    let core_bytes = shard::projected_bytes(&plans[0], style_len, poi_len, nav_projection)?;
     if core_bytes > FILE_CEILING {
         return Err(Error::Capacity(format!(
             "the core file projects to {core_bytes} bytes, past the {FILE_CEILING}-byte ceiling. The **navigation \
@@ -847,7 +849,7 @@ fn plan_set(
     let mut index = 1usize;
     let mut push = |plans: &mut Vec<ShardPlan>, box_: AlignedBox, lods: &[usize], role: BandRole| -> Result<()> {
         let mut plan = build_shard(schema, cells, box_, chunk_size, lods, index, role, false)?;
-        plan.bytes = shard::projected_bytes(&plan, style_len, empty_poi_len, empty_nav_len)?;
+        plan.bytes = shard::projected_bytes(&plan, style_len, empty_poi_len, empty_nav_projection)?;
         if plan.bytes > FILE_CEILING {
             return Err(Error::Capacity(format!(
                 "a {} shard projects to {} bytes, past the ceiling — lower the target shard size",

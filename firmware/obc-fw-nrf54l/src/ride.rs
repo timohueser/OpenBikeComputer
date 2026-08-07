@@ -279,6 +279,10 @@ struct NavRun {
     /// Per-phase step time (µs), attributed by the planner's phase **before** each step:
     /// `[snap, search, emit]`.
     phase_us: [u64; 3],
+    /// Physical-card reads issued inside planner steps, split by the same phase. Unlike the cache
+    /// counters this sees sector-splitting and alignment bounces at the block-device boundary.
+    #[cfg(feature = "sd-bench")]
+    read_perf: [sd::ReadPerf; 3],
 }
 
 /// Construct + write a fresh request's planner into its `.bss` slot, in this immediately-popped
@@ -412,9 +416,10 @@ fn nav_step(
 /// The RTT line (grep `nav route:`): outcome; route length; `total_ms` = wall time from the
 /// request drain (it spans every pass the plan was spread over); `snap/search/emit_ms` = step
 /// time attributed to the planner's phase before each step (emit includes the finishing header
-/// patch); `write_ms` = the file flush/close; `rescan_ms` = the catalog rescan; `sd_reads` =
-/// the tile-cache misses (each is one chunk read); `settles`; and the stackmeter high-water,
+/// patch); `write_ms` = the file flush/close; `rescan_ms` = the catalog rescan; `source_reads` =
+/// logical graph-chunk plus index-window fills; `settles`; and the stackmeter high-water,
 /// force-rescanned here — sentinel evidence is permanent, so it still reads the in-step peak.
+/// With `sd-bench`, a second line reports the planner steps' physical card commands and time.
 #[cfg(has_nav)]
 #[inline(never)]
 #[allow(clippy::too_many_arguments)]
@@ -461,7 +466,7 @@ fn nav_finish(
     };
     let len = result.map(|(_, len)| len).unwrap_or(0);
     defmt::info!(
-        "nav route: {=str} len={=u32} total_ms={=u64} snap_ms={=u64} search_ms={=u64} emit_ms={=u64} write_ms={=u64} rescan_ms={=u64} sd_reads={=u32} settles={=u32} eps={=u32}/{=u32} stack_hw={=usize}/{=usize}",
+        "nav route: {=str} len={=u32} total_ms={=u64} snap_ms={=u64} search_ms={=u64} emit_ms={=u64} write_ms={=u64} rescan_ms={=u64} source_reads={=u32} graph_reads={=u32} index_reads={=u32} settles={=u32} eps={=u32}/{=u32} stack_hw={=usize}/{=usize}",
         outcome_str,
         len,
         run.t0.elapsed().as_millis(),
@@ -470,13 +475,36 @@ fn nav_finish(
         run.phase_us[2] / 1000,
         write_us / 1000,
         rescan_us / 1000,
+        cache.source_reads(),
         cache.misses,
+        cache.index_misses,
         settles,
         eps_num,
         eps_den,
         hw,
         stackmeter::total()
     );
+    #[cfg(feature = "sd-bench")]
+    {
+        let mut total = sd::ReadPerf::ZERO;
+        for phase in run.read_perf {
+            total.add_assign(phase);
+        }
+        defmt::info!(
+            "nav SD bench: total_us={=u32} commands={=u32} blocks={=u32} single={=u32} multi={=u32} snap_us={=u32} snap_cmds={=u32} search_us={=u32} search_cmds={=u32} emit_us={=u32} emit_cmds={=u32}",
+            total.us,
+            total.commands,
+            total.blocks,
+            total.single_commands,
+            total.multi_commands,
+            run.read_perf[0].us,
+            run.read_perf[0].commands,
+            run.read_perf[1].us,
+            run.read_perf[1].commands,
+            run.read_perf[2].us,
+            run.read_perf[2].commands
+        );
+    }
     app.apply_event(obc_app::HostEvent::NavPlanned(result.map(|(id, _)| id)));
 }
 
@@ -1484,7 +1512,13 @@ pub(crate) async fn run_app(
                     }
                     match storage.as_mut().and_then(|s| s.nav_route_begin()) {
                         Some(file) => {
-                            nav_run = Some(NavRun { file, t0: Instant::now(), phase_us: [0; 3] });
+                            nav_run = Some(NavRun {
+                                file,
+                                t0: Instant::now(),
+                                phase_us: [0; 3],
+                                #[cfg(feature = "sd-bench")]
+                                read_perf: [sd::ReadPerf::ZERO; 3],
+                            });
                         }
                         // No card / no dir: nothing to route against — the generic failure tier, and
                         // the arena goes straight back. A plan that never started must not leave the
@@ -1522,14 +1556,19 @@ pub(crate) async fn run_app(
                         // would mean the bookkeeping and the arm disagree, and the step below
                         // answers the failure tier for the same reason.
                         let phase = bufs.guard.planner_ref().map_or(obc_route::NavPhase::Snap, |p| p.phase());
+                        let phase_idx = match phase {
+                            obc_route::NavPhase::Snap => 0,
+                            obc_route::NavPhase::Search => 1,
+                            obc_route::NavPhase::Emit | obc_route::NavPhase::Done => 2,
+                        };
+                        #[cfg(feature = "sd-bench")]
+                        let reads_before = sd::read_perf_snapshot();
                         let ts = Instant::now();
                         let step = nav_step(s, map_tables, map_cache, &mut bufs, run.file);
                         let us = ts.elapsed().as_micros();
-                        match phase {
-                            obc_route::NavPhase::Snap => run.phase_us[0] += us,
-                            obc_route::NavPhase::Search => run.phase_us[1] += us,
-                            obc_route::NavPhase::Emit | obc_route::NavPhase::Done => run.phase_us[2] += us,
-                        }
+                        run.phase_us[phase_idx] += us;
+                        #[cfg(feature = "sd-bench")]
+                        run.read_perf[phase_idx].add_assign(sd::read_perf_snapshot().since(reads_before));
                         if !matches!(step, obc_route::Step::Running) {
                             let run = nav_run.take().expect("just borrowed it");
                             nav_finish(s, app, &mut bufs, run, step, now);

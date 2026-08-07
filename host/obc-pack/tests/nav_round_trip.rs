@@ -11,7 +11,7 @@ use obc_elevation::{ElevationSource, NullElevation};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use obc_formats::obcm::{NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN};
+use obc_formats::obcm::{NAV_CHUNK_SIZE, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN, NAV_PROFILE_LEN};
 use obc_pack::config::default_profiles;
 use obc_pack::nav::{Edge, NavGraph, Node};
 use obc_pack::terrain::TerrainSet;
@@ -171,6 +171,35 @@ fn empty_graph_round_trips() {
     assert!(r.nav_directory().is_empty());
     let decoded = decode_all(&bytes);
     assert!(decoded.is_empty());
+}
+
+/// Populated nav payloads begin on physical-card sector boundaries. This is a producer guarantee,
+/// not a new reader requirement: directory offsets keep older compact v12 maps valid.
+#[test]
+fn populated_nav_chunk_regions_are_sector_aligned() {
+    let graph = NavGraph {
+        nodes: vec![Node { id: 0, coord: (100_000, 100_000) }, Node { id: 1, coord: (110_000, 110_000) }],
+        edges: vec![Edge {
+            a: 0,
+            b: 1,
+            polyline: vec![(100_000, 100_000), (110_000, 110_000)],
+            length_m: 1_560,
+            kind: 0,
+        }],
+    };
+    let bytes = map_with(&graph);
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let cache = MapCache::new();
+    let reader = Reader::new(&src, &tables, &cache);
+    let nav = reader.nav_directory();
+    let profile_end = nav.profile_table_offset as usize + nav.profile_count as usize * NAV_PROFILE_LEN;
+    let index_start = nav.index_offset as usize;
+
+    assert_ne!(nav.node_count, 0);
+    assert!(bytes[profile_end..index_start].iter().all(|&byte| byte == 0), "alignment padding is zero-filled");
+    assert_eq!(nav.data_start().unwrap() % NAV_CHUNK_SIZE, 0, "node chunks start on a sector boundary");
+    assert_eq!(nav.edge_pool_offset % NAV_CHUNK_SIZE, 0, "edge chunks start on a sector boundary");
 }
 
 /// A segment past the 30 000-µdeg delta bound is densified at pack time (same

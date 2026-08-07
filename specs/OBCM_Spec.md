@@ -713,6 +713,7 @@ Layout, in file order:
 ```
 [Nav Directory]     (28 bytes — the graph's resident header, §8.1)
 [Profile Table]     (§8.6 — 1..=8 bike profiles, always present)
+[Alignment Padding] (0..511 zero bytes in populated files)
 [Node Quadtree]     (§4 encoding over the header global bbox)
 [Node Chunks]       (variable-length junction records, bin-packed, §8.3)
 [Edge Pool]         (chunked edge records addressed by byte offset, §8.4)
@@ -743,6 +744,14 @@ Node data chunks begin at `Index Offset + Index Node Count * 4` — the §3/§4
 convention, so the reader's leaf-walk and chunk-offset math are reused verbatim.
 The packer writes the **profile table immediately after this 28-byte directory**
 (before the node index), so `Index Offset` and `Edge Pool Offset` point past it.
+For a populated graph, current producers insert `0..511` zero bytes after the
+profile table such that `Index Offset + Index Node Count × 4` (the first node
+chunk) is a 512-byte file offset. Because every node chunk is 512 bytes, this
+also makes `Edge Pool Offset` 512-byte aligned. A full-chunk read can therefore
+be served by one physical card command instead of the two commands required when
+the same logical read straddles sectors. This is a **producer guarantee, not a
+reader validity requirement**: existing compact v12 files remain valid because
+all boundaries are explicitly addressed by the directory.
 An empty graph still writes `Chunk Size` and the profile table, and points both
 data offsets just past the profile table (zero-length regions), exactly like an
 empty POI category.
@@ -906,14 +915,14 @@ A minimal graph — two junctions `A`(lat 100, lon 200) and `B`(lat 900, lon 800
 joined by one 3-vertex edge of 1234 m and way-kind `0x2A` (tertiary/paved: highway
 class 10 `| (`surface class 1 `<< 5)`) that climbs 300 m from `A` to `B` and
 re-climbs 42 m of dips on the way back — with one profile "`Road`" (climb weight
-10) and the section at file offset `S`:
+10), with the section at a 512-byte-aligned file offset `S`:
 
 ```
 S+0    Nav Directory (28 B):
-         index_offset          = S+84      (= S+28 + 56 profile table)
+         index_offset          = S+508     (node chunks begin at S+512)
          index_node_count      = 1
          node_chunk_count      = 1
-         edge_pool_offset      = S+600     (= S+84 + 4 index + 512 node chunk)
+         edge_pool_offset      = S+1024    (= S+508 + 4 index + 512 node chunk)
          edge_chunk_count      = 1
          chunk_size            = 512
          profile_table_offset  = S+28
@@ -925,8 +934,9 @@ S+28   Profile Table (56 B):
                     surface[8]
                     climb_weight=10   (1 B)
                     reserved          (3 B, zero)
-S+84   Node Quadtree (4 B):  [0x00000000]        single leaf → node chunk 0
-S+88   Node Chunk 0 (512 B):
+S+84   Alignment Padding (424 B, zero)
+S+508  Node Quadtree (4 B):  [0x00000000]        single leaf → node chunk 0
+S+512  Node Chunk 0 (512 B):
          rec A: lat=100 lon=200 id=0 degree=1
                 nbr { id=1, dLat=+800, dLon=+600, edge_id=0, cost_m=1234,
                       way_kind=0x2A, ascent_m=300 }                          (30 B)
@@ -934,7 +944,7 @@ S+88   Node Chunk 0 (512 B):
                 nbr { id=0, dLat=-800, dLon=-600, edge_id=0, cost_m=1234,
                       way_kind=0x2A, ascent_m=42 }                           (30 B)
          0xFF × 452                                (padding = sentinel)
-S+600  Edge Pool chunk 0 (512 B):
+S+1024 Edge Pool chunk 0 (512 B):
          edge 0 (at pool offset 0 ⇒ edge_id = 0):
            length_m=1234  pt_count=3  way_kind=0x2A  anchor=(lat 100, lon 200)
            deltas: (+400,+300) (+400,+300)          → (500,500), (900,800)   (23 B)

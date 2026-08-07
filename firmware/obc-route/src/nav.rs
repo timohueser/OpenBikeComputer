@@ -215,16 +215,19 @@ const ELE_KEEP_M: i16 = ELE_DEADBAND_M as i16;
 /// suboptimality note).
 pub const NAV_EPSILON_LADDER: [(u32, u32); 3] = [(13, 10), (2, 1), (3, 1)];
 
-/// Search-phase step budget, **by cache misses** (N4, epic #533): a [`NavPlanner::step`] settles
-/// nodes until it has incurred this many [`NavTileCache`] misses, then returns. A miss is the only
-/// expensive unit of a settle — one ~512 B SD chunk read; a hit reads nothing. Budgeting by misses
-/// (read `tiles.stats().misses` delta inside the loop — no clock, no new dependency) makes a step's
-/// wall time roughly constant at ~6 SD reads whatever the cache hit rate, instead of the old fixed
+/// Search-phase step budget, **by logical source fills** (graph chunks plus route-private quadtree
+/// index windows): a [`NavPlanner::step`] settles until it has incurred this many reads, then returns.
+/// Sector-aligned v12 maps turn each 512-byte fill into one physical command; old unaligned maps may
+/// need two. Budgeting by reads (no clock, no new dependency) makes a step's wall time roughly
+/// constant whatever the cache hit rate, instead of the old fixed
 /// "8 settles per step" which paced by *work attempted* and so ran a warm step (mostly hits) far
-/// under the SD envelope while still charging a full pass. With the 8-slot cache the same real
-/// route now paces to far fewer steps (measured on grimsel: the search's step count drops several-
-/// fold), which is where the board's per-plan wall-time floor (`LOOP_MS` × steps) comes down.
-pub const NAV_MISSES_PER_STEP: u32 = 6;
+/// under the SD envelope while still charging a full pass. The enlarged route working set turns
+/// more settles into hits, which is where the board's per-plan wall-time floor (`LOOP_MS` × steps)
+/// comes down.
+///
+/// Twelve aligned fills preserve the former worst-case physical envelope of six unaligned graph
+/// misses (twelve CMD17s), while halving the 8 ms scheduler floor on the newly-resident routes.
+pub const NAV_MISSES_PER_STEP: u32 = 12;
 
 /// Hard settle cap per search [`NavPlanner::step`] (N4): even a **fully warm** step (every settle a
 /// cache hit ⇒ [`NAV_MISSES_PER_STEP`] never reached) returns after this many settles, so a step's
@@ -236,7 +239,8 @@ pub const NAV_SETTLES_PER_STEP_CAP: u32 = 64;
 /// Emit-phase step budget: path hops (edge-geometry fetches + OBCR pushes) per
 /// [`NavPlanner::step`] — the emit is short next to the search, so a few hops per
 /// step finishes it in a handful of passes without one long blocking tail.
-pub(crate) const NAV_EMIT_HOPS_PER_STEP: u16 = 4;
+/// Eight aligned edge chunks likewise preserve the former four-unaligned-hop command envelope.
+pub(crate) const NAV_EMIT_HOPS_PER_STEP: u16 = 8;
 
 /// How the router surfaces failure — the two-tier UX maps [`NavError::Exhausted`] to
 /// "Too far to route here" (with no distance cap, running out of table **is** the
@@ -951,7 +955,7 @@ impl NavPlanner {
             // neighbors. Terminates: a settle closes a node or (re-open) strictly lowers an integer
             // g ≥ 0, the frontier is bounded by the table, and no new node enters once full.
             PhaseState::Search => {
-                let miss_start = tiles.stats().misses;
+                let read_start = tiles.stats().source_reads();
                 let mut settled_this_step: u32 = 0;
                 loop {
                     let Some(idx) = scratch.heap_pop() else {
@@ -1004,7 +1008,7 @@ impl NavPlanner {
                     // so a step's wall time is ~constant whatever the hit rate; the settle cap bounds
                     // a fully-warm (hit-only) step. The check trails the settle, so a step always
                     // makes at least one node of progress.
-                    if tiles.stats().misses - miss_start >= NAV_MISSES_PER_STEP
+                    if tiles.stats().source_reads() - read_start >= NAV_MISSES_PER_STEP
                         || settled_this_step >= NAV_SETTLES_PER_STEP_CAP
                     {
                         break;
