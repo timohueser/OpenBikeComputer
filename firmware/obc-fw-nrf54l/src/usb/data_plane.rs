@@ -48,15 +48,23 @@ pub(crate) static TRANSFER_ARM: Signal<CriticalSectionRawMutex, Armed> = Signal:
 /// result goes out, so it can't leak into the next transfer.
 pub(crate) static TRANSFER_ABORT: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
-/// One chunk of the object stream. A full max packet, so a multi-megabyte map moves in the fewest
-/// transfers the endpoint allows; the SD card is the real ceiling either way (#889).
+/// One chunk of the object stream **device → host** — a download's `ep.write`, and the echo
+/// loopback's write-back. A full max packet, which for an IN endpoint is also the ceiling: the
+/// driver's `write` refuses anything longer, because one call is one packet.
+///
+/// The **OUT** direction has no such constant any more (#1173): a bulk read now returns whatever
+/// the core absorbed while the CPU was busy, up to [`BULK_BURST_LEN`](super::BULK_BURST_LEN), and
+/// the loops below take `n` as it comes. That asymmetry is the point of the change — the IN path is
+/// untouched by it.
 const CHUNK_LEN: usize = MAX_PACKET as usize;
 
 /// How long the bulk OUT endpoint must stay silent before [`drain_bulk_out`] calls it empty.
 ///
 /// Generous next to a high-speed microframe (125 µs): once the endpoint stops NAKing, a host's
 /// queued transfers are delivered back to back, so a gap this long means there is nothing left
-/// rather than that the next one is slow.
+/// rather than that the next one is slow. Still true with burst arming (#1173) — a burst that the
+/// host stops part-way through is not held back, because the driver publishes every packet as it
+/// lands and only the *re-arm* waits for the burst to close.
 const DRAIN_QUIET_MS: u64 = 20;
 
 /// Ceiling on one drain.
@@ -412,6 +420,17 @@ async fn run_upload(
     let mut stage = Stage::new(staged, if holds_magic { obc_ble::MAGIC_LEN } else { 0 });
     let started = Instant::now();
     while !rx.is_complete() {
+        // One read is a **burst**, not a packet (#1173): up to
+        // [`BULK_BURST_LEN`](crate::usb::BULK_BURST_LEN) of whatever the core absorbed while the
+        // previous pass was folding CRC and writing the card. Everything below is length-agnostic
+        // and was already — `Receiver::push`, `HeldMagic::feed` and `Stage::push` all take a slice
+        // of any size — so the burst changes how *often* this loop turns, not what it does.
+        //
+        // The yield cadence is unchanged where it matters: `Stage::append_arm` still ends every
+        // card flush with an explicit `yield_now`, which is the ride loop's guaranteed turn and
+        // therefore the watchdog feed. A burst makes the loop turn ~8× less often, but a flush is
+        // 32 KiB either way, so the interval between yields is the same number of *bytes* — the
+        // unit the WDT budget was ever about.
         let n = match select(ep.read(buf), TRANSFER_ABORT.wait()).await {
             Either::First(Ok(n)) if n > 0 => n,
             Either::First(Ok(_)) => continue, // a zero-length packet advances nothing
@@ -782,10 +801,16 @@ async fn run_echo(
             }
         };
         let consumed = rx.push(&buf[..n]);
-        if let Err(e) = ep_in.write(&buf[..consumed]).await {
-            info!("usb: [bulk] echo send failed: {:?}", defmt::Debug2Format(&e));
-            close_transfer();
-            return TransferOutcome::LinkDropped;
+        // The read is a burst now (#1173), the write is not: `EndpointIn::write` is one packet per
+        // call and refuses anything longer, so the echo-back is re-cut into max packets. Only the
+        // *last* one may be short, which keeps the loopback's framing identical to a download's
+        // (and is why the terminating-ZLP rule below still reads the same).
+        for packet in buf[..consumed].chunks(CHUNK_LEN) {
+            if let Err(e) = ep_in.write(packet).await {
+                info!("usb: [bulk] echo send failed: {:?}", defmt::Debug2Format(&e));
+                close_transfer();
+                return TransferOutcome::LinkDropped;
+            }
         }
     }
     // Same end-of-object rule as a download (see `run_download`): the echoed stream is delimited by
