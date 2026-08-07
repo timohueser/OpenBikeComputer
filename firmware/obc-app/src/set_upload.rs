@@ -124,6 +124,28 @@ impl SetUpload {
         }
     }
 
+    /// Forget shard `index` — the card no longer holds a readable one under that name.
+    ///
+    /// **The session's bits are a claim about the card, and every path that unmakes a file has to
+    /// unmake the claim too.** A re-send is the whole point of §5.4's independent files, and a
+    /// re-send *opens the existing file truncating*: the instant it starts, the shard that was
+    /// there is gone. If it then fails — a CRC mismatch, a payload that is not an OBCM this
+    /// firmware reads, a card that refuses the magic patch, an open that never got its first write
+    /// — the file is deleted or left inert, and a session that still counted it would let the
+    /// manifest through the announce and kill it at the *commit* instead, **deleting the whole
+    /// set**. Clearing the bit moves that refusal back to the announce, where it names the real
+    /// problem ([`SetReject::ManifestEarly`]) and the host can simply send the one file again.
+    ///
+    /// The same rule as [`clear_terrain`](Self::clear_terrain), and deliberately no longer stated
+    /// as an asymmetry: an earlier cut of #1044 fixed only the raster and argued this bitmap's
+    /// identical hole had "its own blast radius". It does not — it is the same bug on a file that
+    /// costs gigabytes more to re-send.
+    pub fn clear(&mut self, index: u8) {
+        if index < 32 {
+            self.committed &= !(1u32 << index);
+        }
+    }
+
     /// Record this set's terrain shard as committed. Idempotent, for the same reason [`mark`] is:
     /// a re-sent raster that *succeeds* overwrites the one file and changes nothing about the set's
     /// shape. A re-send that **fails** is not idempotent and must be undone with
@@ -145,10 +167,9 @@ impl SetUpload {
     /// where it costs the host one descriptor instead of a manifest transfer and a deleted set —
     /// and, better, tells a host that simply re-sends the raster that it may still do so.
     ///
-    /// The OBCM shard bitmap has the same shape of gap and it is deliberately **not** fixed the
-    /// same way: `set_shard_discard` deletes one shard of a set whose session must survive so the
-    /// host can re-send it, and clearing its bit is a separate change with its own blast radius.
-    /// Terrain is one optional file with one bit, so it is cheap to keep honest here.
+    /// The OBCM shard bitmap has exactly the same shape of gap and is fixed exactly the same way —
+    /// see [`clear`](Self::clear). The two are one rule: *a session never claims a file the card
+    /// cannot supply.*
     pub fn clear_terrain(&mut self) {
         self.terrain = false;
     }
@@ -579,6 +600,56 @@ mod tests {
         assert_eq!(manifest_announce(Some(&session), with), Ok(()));
     }
 
+    /// **The same hole in the OBCM shard bitmap.** A re-send opens the existing shard truncating,
+    /// so a re-send that fails leaves no shard under that name — and a session that went on
+    /// counting it let the manifest through the announce and lost the whole set at the commit. The
+    /// honest answer is the one a host can act on: *you have not sent every shard yet*.
+    #[test]
+    fn a_discarded_shard_stops_counting_toward_completeness() {
+        let mut session = SetUpload::new(9, 3);
+        for index in 0..3 {
+            session.mark(index);
+        }
+        assert!(session.is_complete());
+        let len = session.manifest_len();
+
+        // Shard 1 is re-sent and the re-send fails: the file it truncated is gone.
+        session.clear(1);
+        assert!(!session.has(1));
+        assert!(!session.is_complete());
+        assert_eq!(session.received(), 2);
+        assert_eq!(
+            manifest_announce(Some(&session), len),
+            Err(SetReject::ManifestEarly),
+            "refused at the announce, naming the missing shard — not at the set-deleting commit"
+        );
+        // The shard count is a property of the *set*, not of what has landed, so it is untouched
+        // and the manifest length it implies is unchanged.
+        assert_eq!(session.shard_count(), 3);
+        assert_eq!(session.manifest_len(), len);
+
+        // Re-sending it successfully puts the set back together.
+        assert_eq!(shard_announce(Some(&session), 3, 1, DEVICE_MAX), Ok(false));
+        session.mark(1);
+        assert!(session.is_complete());
+        assert_eq!(manifest_announce(Some(&session), len), Ok(()));
+    }
+
+    /// `clear` is bounds-safe at both ends of the bitmap, like `mark` and `has`.
+    #[test]
+    fn clearing_an_index_off_the_end_is_a_no_op() {
+        let mut session = SetUpload::new(1, 32);
+        for index in 0..32u8 {
+            session.mark(index);
+        }
+        session.clear(32);
+        session.clear(255);
+        assert!(session.is_complete(), "nothing off the end can unmake the set");
+        session.clear(31);
+        assert!(!session.is_complete());
+        assert!(!session.has(31));
+    }
+
     /// A set with **no** terrain is byte-for-byte the set it was before #1044 — the property that
     /// makes the wire change additive rather than a break.
     #[test]
@@ -625,16 +696,14 @@ mod tests {
         assert!(terrain_record_agrees(None, Some(4_096)));
     }
 
-    /// **The asymmetry, pinned.** §5.3 makes a missing or unreadable raster a *mount-time*
-    /// non-failure — the set MUST still mount, flat. This predicate is the **commit** rule and is
-    /// deliberately harsher; asserting that difference here is what stops a later reader from
-    /// "unifying" the two and taking a rider's whole map away because they deleted an `.OBD`.
-    #[test]
-    fn the_commit_rule_is_stricter_than_the_mount_rule_on_purpose() {
-        // At commit: refused. At mount: §5.3 says the set is a map with flat profiles, which is
-        // why `Storage::set_file_totals` never consults this and only the commit path does.
-        assert!(!terrain_record_agrees(Some(1), None));
-    }
+    // **The other half of the asymmetry is not testable here, and pretending otherwise would be
+    // worse than saying so.** §5.3's mount rule — a missing or unreadable raster MUST still mount,
+    // flat — is enforced by `Storage::set_file_totals` in the board crate, which is
+    // workspace-excluded and has no test harness in CI. What holds it are the doc comments at both
+    // call sites (each naming the other), the fact that this predicate has exactly one caller, and
+    // the on-glass checklist step that deletes an `.OBD` by hand and requires the map to still
+    // list. A host test asserting `!terrain_record_agrees(Some(1), None)` would only restate the
+    // line above and would claim to cover a rule it cannot reach.
 
     /// The ceiling is a *first-announce* refusal, which is the whole reason the shard count rides
     /// every descriptor: a set this device cannot mount costs zero bytes to refuse.
