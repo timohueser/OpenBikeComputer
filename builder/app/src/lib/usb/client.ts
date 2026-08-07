@@ -357,9 +357,6 @@ export class ProtocolClient {
 
     /** Held for the whole of one transfer, descriptor write through correlated close (§4.1). */
     private transferBusy = false;
-    /** Set once the active exchange has consumed a terminal `transferResult`, so a failure after
-     *  that point does not send the device an abort for a transfer it has already closed. */
-    private transferClosed = false;
     /** Serialises `command` writes so a `commandResult` correlates by its echoed command byte. */
     private commandChain: Promise<unknown> = Promise.resolve();
 
@@ -470,13 +467,21 @@ export class ProtocolClient {
                 );
             }
 
-            options.onSent?.();
+            // Guarded, and the guard is load-bearing: this hook runs *inside* the transfer slot's
+            // try, so a caller whose UI update threw would unwind into `withTransferSlot`'s catch
+            // and fire an `op = 3` abort — against a transfer the device is at that moment
+            // committing. That is the exact data-loss shape the commit budget above exists to
+            // prevent, and a progress label is not worth it.
+            try {
+                options.onSent?.();
+            } catch (cause) {
+                console.warn("obc: an upload's onSent hook threw; ignoring it", cause);
+            }
             // Only a caller that declared an expensive commit gets the scaled budget; everything else
             // keeps the ordinary one, so a wedged device still surfaces in seconds.
             const commitWaitMs =
                 options.commitBytes === undefined ? undefined : commitTimeoutMs(options.commitBytes);
             const result = await this.awaitTransferResult(signal, "upload", commitWaitMs);
-            this.transferClosed = true;
             if (result.status !== TransferStatus.Committed) throw this.transferFailure(result, "upload");
             // A fresh upload's result carries the assigned id, so correlation is only meaningful for
             // a named one — but a *named* upload answered about some other object is a stale or
@@ -517,7 +522,6 @@ export class ProtocolClient {
                     crc32: 0,
                 });
                 await this.awaitTransferResult(undefined, "set-abandon");
-                this.transferClosed = true;
             },
         );
     }
@@ -564,7 +568,6 @@ export class ProtocolClient {
             }
 
             const result = await this.awaitTransferResult(signal, "download");
-            this.transferClosed = true;
             if (result.status !== TransferStatus.Committed) throw this.transferFailure(result, "download");
             return out;
         }, options.signal);
@@ -788,18 +791,31 @@ export class ProtocolClient {
         }
         if (signal?.aborted) throw new DeviceError("aborted", "The transfer was cancelled.", { cause: signal.reason });
         this.transferBusy = true;
-        this.transferClosed = false;
         // Anything the device said about a previous, already-closed exchange is stale by
         // definition; clearing it here keeps a late answer from correlating with this transfer.
         this.statuses.drain();
         try {
             return await body();
         } catch (cause) {
-            // The device only learns about a peer-side cancel or timeout if we tell it: §4.2's
-            // `op = 3` is what makes it drain and discard the partial. A device-originated reject
-            // has already cleared its own gate, so an abort then would name a transfer that no
-            // longer exists.
-            if (!this.transferClosed) await this.sendAbort(descriptorOf());
+            // **Always, even when the device has already answered.** This used to be skipped once a
+            // terminal `transferResult` had been consumed, on the reasoning that the device's gate
+            // was already clear so an abort would name a transfer that no longer exists. That
+            // reasoning was about the *gate*, and it missed what the handshake is actually for here
+            // — which is also why the flag that tracked it is gone: nothing else read it.
+            //
+            // The bulk channel is unframed and unacknowledged, so this upload may have several
+            // `transferOut`s queued at the endpoint — and neither end can recall them. WebUSB cannot
+            // cancel a submitted transfer, and the device cannot tell a leftover from the next
+            // object's opening bytes. If the retry's descriptor arms while they are still arriving,
+            // they *are* its opening bytes and its whole-object CRC fails; the device's own
+            // discard-while-idle is a race against the next descriptor, not a guarantee.
+            //
+            // `op = 3` is the one point where both ends are synchronised: §4.2 has the host stop and
+            // wait, and the firmware answers an abort-with-nothing-armed by **draining the endpoint
+            // and then confirming** (`TransferDisposition::AnswerIdleAbort`). So the abort is what
+            // makes the retry an ordinary first attempt rather than a coin flip. It costs one
+            // control round trip, on the failure path only.
+            await this.sendAbort(descriptorOf());
             await this.resetBulk();
             throw asDeviceError(cause);
         } finally {
@@ -903,7 +919,6 @@ export class ProtocolClient {
         // pushing a whole map at a device that has said no.
         const early = this.statuses.tryTake(isTransferResult);
         if (early) {
-            this.transferClosed = true;
             throw this.transferFailure(early, "upload");
         }
     }
@@ -936,9 +951,7 @@ export class ProtocolClient {
     ): Promise<TransferControl> {
         const msg = await this.statuses.take(this.timeoutMs, signal, "the download announce");
         if (msg.msg === "transferResult") {
-            // A reject instead of an announce: the device never armed the transfer, so its gate is
-            // already clear and an abort would name nothing.
-            this.transferClosed = true;
+            // A reject instead of an announce: the device never armed the transfer.
             throw this.transferFailure(msg, "download");
         }
         if (msg.msg !== "downloadAnnounce") {
