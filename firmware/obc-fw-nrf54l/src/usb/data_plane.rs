@@ -110,9 +110,12 @@ static DRAIN_GEN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32:
 /// principle 4 — transfers restart, never resume, and a set with no manifest is not a map).
 ///
 /// Latched, and deliberately so: a disable landing *during* a transfer is answered by that
-/// transfer's own read failing, and the teardown that follows clears this. What it must never do is
-/// outlive the teardown it caused — a stale one standing over the next enumeration would abandon a
-/// healthy set — so the teardown resets it on every path out of the inner loop.
+/// transfer's own read failing, and the teardown that follows clears this. The teardown therefore
+/// resets it on every path out of the inner loop — which **narrows** the window rather than closing
+/// it: the control plane may observe the same disable just after that reset, and then the next
+/// enumeration's idle loop takes this arm immediately. That costs one no-op teardown (there is
+/// nothing in flight and the set it would abandon is already gone) and a second pass through
+/// `wait_enabled`, which is why the race is left rather than interlocked.
 pub(crate) static LINK_DOWN: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 /// How long the control plane waits for the data plane to finish draining before answering anyway.
@@ -204,12 +207,29 @@ async fn drain_bulk_out(ep: &mut EpOut, buf: &mut [u8]) {
     let deadline = Instant::now() + embassy_time::Duration::from_millis(DRAIN_BUDGET_MS);
     let mut dropped = 0usize;
     loop {
-        // **A drain never outranks an armed transfer.** Every call site above runs where the host is
-        // provably not opening one, so this should be unreachable — but "should" is exactly the
-        // reasoning the idle discard was built on, and its failure mode was a transfer starving
-        // forever on bytes something else had eaten. Yielding instead costs a poisoned first chunk
-        // at worst, which fails one whole-object CRC and is retried; the alternative does not
-        // converge.
+        // **A drain yields to an armed transfer**, and it is worth being exact about where that can
+        // actually happen rather than claiming it closes the whole bug class.
+        //
+        // `TRANSFER_ARM` has exactly one signaller, the control task. So at the two drains that task
+        // *awaits* — the idle-abort handshake and the post-refusal one, both through
+        // [`request_drain`] — no arm can appear while the drain runs, because the only thing that
+        // could raise one is parked on it. This test is dead there in the ordinary case, and live in
+        // one: [`drain_before_idle_abort`] gives up after [`DRAIN_ACK_TIMEOUT_MS`] and withdraws its
+        // request, which frees the control task to classify the next descriptor while this drain is
+        // still running.
+        //
+        // Where it is plainly live is the drains this task reaches on its own: [`run_upload`]'s two
+        // post-answer drains (`close_transfer` has already released the gate, so the control task is
+        // free to arm the retry) and the re-enumeration sweep in [`run`].
+        //
+        // The residual, stated rather than waved away: a device can serialise a post-answer drain,
+        // an idle-abort drain and a set's worth of file deletes against the host's 2 s abort budget,
+        // and `sendAbort` swallows that timeout — so a retry's pipelined payload *can* reach a drain
+        // that is still running. This test is what keeps that from starving the retry; the retry
+        // still pays a poisoned first chunk, which fails one whole-object CRC and is retried, and
+        // that converges where starvation does not. In practice each drain ends one
+        // [`DRAIN_QUIET_MS`] window (20 ms) after the peer stops, so the window is small — small,
+        // not absent.
         if TRANSFER_ARM.signaled() {
             warn!("usb: [bulk] a transfer armed mid-drain — stopping rather than eating its payload");
             break;
@@ -264,6 +284,19 @@ pub(crate) async fn run(
     loop {
         ep_out.wait_enabled().await;
         info!("usb: [bulk] endpoint enabled — data plane ready");
+        // **The re-enumeration stray sweep**, and it is a driver fact rather than a protocol one.
+        // The OTG core stages one received packet in `EpState::out_size`, which is cleared at
+        // construction and inside `read()` and **nowhere else** — `endpoint_set_enabled` re-primes
+        // `pktcnt`/`EPENA` without touching it, and a bus reset does not either. So a cable pulled
+        // while this task was inside an SD flush leaves one packet latched across the whole
+        // disable/enable cycle, and the next session's *first* `read` would take up to 512 B of a
+        // dead upload as its opening bytes. That is self-healing — the whole-object CRC fails and
+        // the host quiesce-retries — at the price of a full map transfer, which is minutes.
+        //
+        // This is the one place a drain needs no handshake to be safe: the endpoint has only just
+        // been configured, so the host cannot yet have opened anything, and there is by
+        // construction nothing armed to claim what it finds.
+        drain_bulk_out(&mut ep_out, buf).await;
         loop {
             // **Nothing reads the bulk pipe while nothing is armed.** With the OUT endpoint
             // un-armed the USB core simply NAKs, and the bytes a pipelining host already put on the
@@ -354,9 +387,9 @@ pub(crate) async fn run(
         DRAIN_DONE.reset();
         // And the endpoint-lost edge, for the sharper half of the same reason: this teardown *is*
         // the answer to it, so carrying it into the next enumeration would abandon the next set
-        // between two of its shards. A disable arriving after this point is not lost — the
-        // `wait_enabled` below is what the next one waits on, and the control plane latches the one
-        // after that.
+        // between two of its shards. The reset narrows that window without closing it — the control
+        // plane can observe the same disable a moment later — and the leftover costs one no-op
+        // teardown, which is why it is not interlocked. See [`LINK_DOWN`].
         LINK_DOWN.reset();
         // `wait_enabled` returns immediately while the endpoint is still up, so a *persistent*
         // driver-level error would hot-spin this loop — and on a cooperative executor that starves

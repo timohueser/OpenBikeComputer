@@ -58,6 +58,18 @@ const ROOT = repoRoot();
 const vector = (name: string) => new Uint8Array(readFileSync(join(ROOT, "specs/vectors", name)));
 const digest = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
+/**
+ * Spin the event loop until `ready`, or give up.
+ *
+ * Used to *observe* a race window rather than assume one: a fixed number of microtask turns is a
+ * guess about how many awaits the host takes to get its bytes onto the wire, and a guess that runs
+ * short makes the test pass for the wrong reason.
+ */
+async function waitFor(ready: () => boolean, timeoutMs = 2_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (!ready() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 1));
+}
+
 beforeAll(async () => {
     const wasm = join(dirname(fileURLToPath(import.meta.url)), "..", "convert", "pkg", "obc_web_convert_bg.wasm");
     if (!existsSync(wasm)) {
@@ -144,7 +156,7 @@ describe("assembled volume-set upload", () => {
      * `holdNextAnnounce` widens that window to certainty rather than inventing a new one.
      */
     it("commits a manifest whose bytes arrived before the device processed its announce", async () => {
-        const { client, device, close } = loopbackDevice();
+        const { client, device, link, close } = loopbackDevice();
         try {
             const shard = syntheticBytes(4096);
             const manifest = obcsManifest([shard.length]);
@@ -166,8 +178,21 @@ describe("assembled volume-set upload", () => {
                 { name: "MS1.OBS", role: "manifest", sha256: "", byteLength: manifest.length, bytes: manifest },
                 ctx,
             );
-            for (let i = 0; i < 20; i++) await Promise.resolve();
-            await new Promise((resolve) => setTimeout(resolve, 5));
+            // Wait for the manifest's bytes to actually be sitting on the channel before letting the
+            // announce through — the window has to be *observed*, not assumed. Without this the test
+            // passes against the old discard too, because the payload simply arrives after the
+            // release and the race is never run.
+            await waitFor(() => link.bulkDepth("to-device") >= manifest.length);
+            expect(link.bulkDepth("to-device"), "the manifest never reached the un-armed device").toBe(
+                manifest.length,
+            );
+            // And they must still be there a beat later. This is the assertion that makes the test a
+            // regression pin rather than a happy-path replay: a device that consumes unclaimed bytes
+            // takes them during this pause, and the count drops.
+            await new Promise((resolve) => setTimeout(resolve, 60));
+            expect(link.bulkDepth("to-device"), "the manifest was consumed with nothing armed").toBe(
+                manifest.length,
+            );
             release();
             await sealing;
 
