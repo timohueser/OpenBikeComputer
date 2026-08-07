@@ -408,6 +408,26 @@ and back.
 > upload; a data-plane stall under a live link is failed by a watchdog and
 > surfaces as a plain retryable failure, never a progress bar parked at 99 %.
 
+### Abort means two things, and the descriptor says which
+
+Cancelling is the obvious use of `abort`, and not the common one. The other is
+**quiescing**: after a transfer the device has already refused — a rejected
+descriptor, a shard whose checksum did not match — the host sends an abort not to
+stop anything but to get the channel *empty* before it retries. On an unframed
+pipe the sender does not wait between chunks, so bytes it queued for the refused
+transfer are still arriving, and neither end can recall them; land them in front
+of the retry and the retry fails a checksum for reasons nothing in the exchange
+explains. The abort handshake is the one moment both ends are synchronised — the
+host has stopped and is waiting for an answer — so it is the one moment the
+device can read the channel dry.
+
+Which makes the descriptor's **type** load-bearing when a volume set is staged.
+Giving up on a set deletes every file of it; quiescing after one refused shard
+must delete nothing at all, because the caller is about to re-send that shard and
+the rest of the set has to still be there. So abandonment names the *set*, and
+everything else is a quiesce. Getting that wrong is not a slow retry, it is a map
+that seals a manifest over no files.
+
 ### What actually limits an upload
 
 The protocol is not the limit and never has been: the bulk channel carries the
