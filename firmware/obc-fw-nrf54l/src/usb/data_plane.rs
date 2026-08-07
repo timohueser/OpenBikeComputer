@@ -465,6 +465,21 @@ async fn run_upload(
             }
         };
         let consumed = rx.push(&buf[..n]);
+        // `push` clamps at the announced length, and a peer that overruns it is a protocol error
+        // its own docs say the caller must treat as one — so say so rather than dropping the
+        // surplus in silence. Structurally unreachable while the endpoint armed one packet at a
+        // time (the announce guard rejects an over-long object before a byte lands); with bursts
+        // it is a real diagnostic, and it is the line that distinguishes "the host sent too much"
+        // from the reject probe's "the bytes were not the ones announced".
+        if consumed < n {
+            warn!(
+                "usb: [bulk] host overran the announced length by {} B (read {}, {} of {} taken) — surplus dropped",
+                n - consumed,
+                n,
+                rx.committed_offset(),
+                rx.total_len()
+            );
+        }
         // The receiver's CRC always sees every payload byte; only the *write* skips the held magic.
         let write = if holds_magic { held.feed(&buf[..consumed]) } else { &buf[..consumed] };
         // Into RAM, not onto the card: `stage` appends a batch at a time so the card gets one

@@ -91,6 +91,16 @@ pub unsafe fn on_interrupt(r: Otg, state: &State<'_>) {
                 // null `out_buffer`, and a zero-length packet on it would satisfy `0 + 0 <= 0` and
                 // reach `from_raw_parts_mut(null, 0)`. The core should never deliver on a slot it
                 // was never given, so this is a guard rather than a case.
+                //
+                // **This guard is a capacity test where upstream's was an emptiness test**, which
+                // is worth naming because one caller depends on the difference *not* mattering: a
+                // control frame is one frame per `read` (`usb/control.rs`), so two frames
+                // concatenating in this buffer would be a parse error rather than a slow read. It
+                // cannot happen, and not by luck. The control endpoint is not a bursting one, so
+                // its armed transfer ends on its first packet and the core NAKs; the only thing
+                // that re-arms it is `read`, which arms strictly on a successful exchange of
+                // `out_fill` to zero. So at every arming the buffer is empty, and at most one
+                // packet is ever staged between two reads.
                 if alloc.is_some() && off + len <= cap {
                     // SAFETY: the write stays inside the endpoint's `out_buf_bytes` slice of the
                     // driver's OUT buffer (checked above), and the reader hands the region back by
@@ -139,11 +149,24 @@ pub unsafe fn on_interrupt(r: Otg, state: &State<'_>) {
             vals::Pktstsd::OUT_DATA_DONE => {
                 trace!("OUT_DATA_DONE ep={}", ep_num);
                 // The core's own end-of-transfer marker. Redundant with the packet-count rule
-                // above and kept anyway: it costs one store and it is the authority if a core ever
-                // ends a transfer for a reason the USB rule does not predict.
+                // above — which covers both ways a bulk OUT transfer can end — and kept anyway,
+                // because it costs one store and it is the authority if a core ever ends a
+                // transfer for a reason the USB rule does not predict.
+                //
+                // **Gated on having consumed a packet into the current arming**, and that is not
+                // tidiness. This status can be popped in a *later* interrupt than the data packet
+                // that ended the transfer (the handler drains until `RXFLVL` clears, and the core
+                // may push the completion just after it read zero), by which time the reader may
+                // already have armed the next burst off the packet-count rule. Setting the flag
+                // then would have the *next* read rewrite `DOEPTSIZ` mid-burst. `out_pkts` is
+                // reset by that arming, and the RX status queue is FIFO — so a stale completion is
+                // always popped before any packet of the new burst, i.e. while `out_pkts` is still
+                // zero. The gate therefore swallows exactly the stale ones and no genuine one.
                 let ep = &state.ep_states[ep_num];
-                ep.out_done.store(true, Ordering::Release);
-                ep.out_waker.wake();
+                if ep.out_pkts.load(Ordering::Relaxed) > 0 {
+                    ep.out_done.store(true, Ordering::Release);
+                    ep.out_waker.wake();
+                }
             }
             vals::Pktstsd::SETUP_DATA_DONE => {
                 trace!("SETUP_DATA_DONE ep={}", ep_num);
@@ -338,6 +361,12 @@ struct EpState {
     out_done: AtomicBool,
     /// A zero-length packet arrived. Kept apart from [`out_fill`](EpState::out_fill), which cannot
     /// represent one, so that `read` can still answer `Ok(0)` for it as it always has.
+    ///
+    /// A **latch**, not an event: a poll that also has real bytes answers those and leaves this
+    /// set, so the `Ok(0)` follows on a later poll. It is therefore only ordered against the bytes
+    /// of the *same* poll — a ZLP is never dropped, but neither is its position in the stream
+    /// meaningful, which is exactly right for the one thing that sends them here (a control status
+    /// stage, where the caller is waiting for the ZLP and nothing else).
     out_zlp: AtomicBool,
     // Written once during endpoint allocation (before Driver::start), read-only afterward.
     in_alloc: UnsafeCell<Option<EndpointData>>,
@@ -669,6 +698,16 @@ impl<'d> Driver<'d> {
         } else {
             1
         };
+        // `burst_packets * max_packet_size` is both the staging size and `DOEPTSIZ.XFRSIZ`, and it
+        // is computed in `u16` in four places. A silently wrapping product would size the buffer
+        // *below* what the core is armed to deliver, which is the one arithmetic mistake here that
+        // corrupts data instead of failing — so it is a panic at allocation, before any endpoint
+        // exists, rather than a saturation nobody would notice. (A 1024 B high-speed bulk endpoint
+        // wraps at N = 64; the useful range is ≤ 16.)
+        assert!(
+            burst_packets == 1 || (max_packet_size as u32) * (burst_packets as u32) <= u16::MAX as u32,
+            "out_burst_packets * max_packet_size overflows the u16 the transfer size is programmed in"
+        );
         let out_buf_bytes = match dir {
             Direction::Out => burst_packets * max_packet_size,
             Direction::In => 0,
@@ -685,6 +724,13 @@ impl<'d> Driver<'d> {
             // worth, plus one word per packet for the status entry the core pushes alongside each.
             // (At `N = 1` the `+ burst_packets` is the one deviation from upstream's formula, and
             // it is one word: cheap insurance in a FIFO this driver already over-allocates.)
+            //
+            // Strictly the worst case is one word more than this — `N` data-packet statuses *plus*
+            // the single transfer-complete status the core pushes when the burst closes, so
+            // `N × (mps/4) + N + 1`. It is left out of the per-endpoint sum on purpose: it is one
+            // word per *endpoint*, not per packet, and `OtgInstance::extra_rx_fifo_words` (30 on
+            // this part) is exactly the global allowance those entries come out of. Naming it here
+            // rather than adding it keeps this formula about the endpoint's own packets.
             Direction::Out => burst_packets * ((max_packet_size + 3) / 4) + burst_packets,
             // INEPTXFD requires minimum size of 16 words
             Direction::In => u16::max((max_packet_size + 3) / 4, 16),
@@ -1490,12 +1536,31 @@ impl<'d> embassy_usb_driver::Endpoint for Endpoint<'d, Out> {
 
 impl<'d> Endpoint<'d, Out> {
     /// Arm the next transfer: `burst_packets` max packets, and clear NAK so the core starts
-    /// accepting them. The endpoint is NAKing when this runs (its previous transfer has ended), so
-    /// resetting the staging cursors here cannot race the interrupt handler.
+    /// accepting them.
+    ///
+    /// # The two preconditions, and who establishes them
+    ///
+    /// 1. **The endpoint is NAKing** — its armed transfer has ended (`out_done`), so no packet can
+    ///    land between here and the `CNAK` below.
+    /// 2. **The staging buffer is empty** (`out_fill == 0`). This is the one the caller has to
+    ///    work for, and getting it wrong is silent data loss rather than a fault: arming while
+    ///    bytes are still staged lets the next burst append *above* them, and its last packet then
+    ///    runs off the end of the buffer and is discarded by the overflow arm in `on_interrupt`.
+    ///    [`EndpointOut::read`] establishes it by only calling this on a successful
+    ///    compare-exchange of `out_fill` to zero, which is also what proves no packet slipped in.
+    ///
+    /// The assert is deliberately not a `debug_assert`: this firmware ships release-only, the
+    /// invariant is the difference between a correct upload and a CRC failure after minutes of
+    /// streaming, and one `ldrh`/`cmp` per burst is not a cost.
     ///
     /// OpenBikeComputer fork (#1173): factored out of `read` unchanged apart from the packet count
     /// — same registers, same order, same critical section.
     fn arm_transfer(&self) {
+        assert_eq!(
+            self.state.out_fill.load(Ordering::Acquire),
+            0,
+            "arm_transfer with bytes still staged: the next burst would append above them and overflow"
+        );
         let index = self.info.addr.index();
         critical_section::with(|_| {
             self.state.out_pkts.store(0, Ordering::Relaxed);
@@ -1531,6 +1596,23 @@ impl<'d> embassy_usb_driver::EndpointOut for Endpoint<'d, Out> {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, EndpointError> {
         trace!("read start len={}", buf.len());
 
+        // ===== OpenBikeComputer fork (#1173) =====
+        // **A bursting endpoint's reader must offer at least one whole burst.** Anything less and
+        // a full burst is unreadable into it: the drain below answers `BufferOverflow` and leaves
+        // the bytes staged *without* arming, so an endpoint whose reader keeps offering the same
+        // short buffer wedges rather than losing a packet. That is upstream's behaviour for an
+        // over-long packet and is the right shape for a one-off caller with a retry, but it is a
+        // silent trap for a data plane with one fixed buffer — so the contract is asserted here
+        // instead of being a convention two files apart. Costs one compare per read call; a
+        // non-bursting endpoint (EP0 and the control pipe, which read into `&mut []` for a status
+        // stage) is not subject to it at all.
+        if self.burst_packets > 1 {
+            assert!(
+                buf.len() >= self.burst_packets as usize * self.info.max_packet_size as usize,
+                "a bursting OUT endpoint must be read into a buffer of at least one whole burst"
+            );
+        }
+
         poll_fn(|cx| {
             let index = self.info.addr.index();
             self.state.out_waker.register(cx.waker());
@@ -1543,22 +1625,61 @@ impl<'d> embassy_usb_driver::EndpointOut for Endpoint<'d, Out> {
             }
 
             // ===== OpenBikeComputer fork (#1173) =====
-            // Take **everything** the interrupt handler has staged, not one packet. The loop is
-            // what makes the hand-off safe without a lock: `out_fill` is copied out up to the
-            // snapshot, then compare-exchanged back to zero, and a packet that landed during the
-            // copy fails that exchange and is picked up on the next turn instead of being
+            // Take **everything** the interrupt handler has staged, not one packet, and arm the
+            // next burst in the same breath as emptying the buffer.
+            //
+            // The loop is what makes the hand-off safe without a lock: `out_fill` is copied out up
+            // to the snapshot, then compare-exchanged back to zero, and a packet that landed during
+            // the copy fails that exchange and is picked up on the next turn instead of being
             // overwritten. It runs at most `burst_packets` turns, because that is all the core was
             // armed to deliver.
+            //
+            // # Why `out_done` is read *before* the compare-exchange
+            //
+            // Arming is only sound while the staging buffer is empty (see [`arm_transfer`]), and
+            // "empty" is a fact with a lifetime of nanoseconds. Reading `out_done` *after* a
+            // successful exchange loses a packet, and the interleaving is not exotic — it is the
+            // ordinary end of every burst:
+            //
+            //   reader: drains 7 packets, exchanges `out_fill` 3584 -> 0, succeeds
+            //   ISR:    packet 8 lands, appends at 0, `out_fill = 512`, `out_pkts = 8` -> done
+            //   reader: reads done -> arms `PKTCNT = 8` **with 512 B still staged**
+            //   ISR:    the next burst appends from 512; its 8th packet runs past the 4 KiB cap
+            //           and is discarded as an overflow -> 512 B hole -> whole-object CRC failure
+            //
+            // A ~200 ns window, entered once per burst end, is ~75,000 chances in a 300 MB map:
+            // rare per event, near-certain per upload, and silent until the CRC at the end.
+            //
+            // Reading it first closes it, because the exchange is the witness. Two cases, and they
+            // are exhaustive:
+            //
+            //   * **A packet lands between the read and the exchange** — it grew `out_fill`, so the
+            //     exchange *fails*, and the loop takes another turn. Nothing is armed, nothing is
+            //     stranded.
+            //   * **The exchange succeeds** — then no packet landed in that window. If `done` was
+            //     true the core is NAKing (its transfer ended before the read), so none can land
+            //     before the `CNAK` inside `arm_transfer` either, and the buffer is provably empty.
+            //     If `done` was false, a packet may land right after the exchange; it appends at 0,
+            //     this poll returns what it already has, and the *next* read drains it and arms.
+            //     A stale-false `done` therefore costs one extra turn, never a lost packet.
+            //
+            // The waker is registered above and the ISR wakes on every packet, so the "next read"
+            // in that last case is never a read that has to be waited for.
             let mut len = 0usize;
             loop {
                 let filled = self.state.out_fill.load(Ordering::Acquire) as usize;
                 if filled == len {
+                    let done = self.state.out_done.load(Ordering::Acquire);
                     if self
                         .state
                         .out_fill
                         .compare_exchange(len as u16, 0, Ordering::AcqRel, Ordering::Acquire)
                         .is_ok()
                     {
+                        if done {
+                            self.state.out_done.store(false, Ordering::Release);
+                            self.arm_transfer();
+                        }
                         break;
                     }
                     continue;
@@ -1566,6 +1687,8 @@ impl<'d> embassy_usb_driver::EndpointOut for Endpoint<'d, Out> {
                 if filled > buf.len() {
                     // Unreadable into this buffer. Leave it staged — same as upstream, where an
                     // over-long packet also stayed put — so the caller can retry with a bigger one.
+                    // Unreachable for a bursting endpoint: the assert at the top of `read` requires
+                    // the caller's buffer to hold a whole burst, which is all the core can deliver.
                     return Poll::Ready(Err(EndpointError::BufferOverflow));
                 }
                 // SAFETY: the interrupt handler only ever writes at or above `filled`, and it is
@@ -1576,16 +1699,11 @@ impl<'d> embassy_usb_driver::EndpointOut for Endpoint<'d, Out> {
                 len = filled;
             }
 
-            // Whether the armed transfer has ended is a separate question from whether any bytes
-            // arrived: a burst that the peer stopped part-way through is still live, and re-arming
-            // it would rewrite `DOEPTSIZ` under the core. Arm only what the core has finished with.
-            if self.state.out_done.swap(false, Ordering::AcqRel) {
-                self.arm_transfer();
-            }
-
             // A zero-length packet carries no bytes but is still an event the caller may be waiting
             // on (the control pipe's status stage is exactly that), so it answers `Ok(0)` as it
-            // always has — after any real bytes that arrived with it, never instead of them.
+            // always has. Real bytes take precedence *within a poll*; a ZLP that arrived alongside
+            // them is answered by the next one, which is why it is a latch rather than a flag read
+            // and dropped.
             if len > 0 {
                 trace!("read ep={:?} done len={}", self.info.addr, len);
                 Poll::Ready(Ok(len))
