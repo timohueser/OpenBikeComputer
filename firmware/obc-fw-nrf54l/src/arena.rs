@@ -5,8 +5,8 @@
 //! since #1146 P3 grew the frame caps into the dividend; 92,320 B before it),
 //! the nav block ([`NavArm`] — `NavScratch` + `NavTileCache` + the resumable `NavPlanner`,
 //! ~59.9 KB), and the USB upload staging buffer ([`usb::STAGE_LEN`](crate::usb::STAGE_LEN),
-//! 16 KiB). This module time-shares them through a `union`, so the board pays **max(arms)** instead
-//! of their sum.
+//! two 32 KiB halves = 64 KiB since the upload retune; 16 KiB when this module was written). This
+//! module time-shares them through a `union`, so the board pays **max(arms)** instead of their sum.
 //!
 //! **This is the only place in the feature that names the block's bytes, and the only place that
 //! reads or writes them through a raw pointer.** Everything outside reaches an arm through a guard:
@@ -62,9 +62,10 @@
 //! The budget is `max(arms)`, so growth is **not** linear:
 //!
 //! - An arm **below** the maximum grows at **zero** resident cost until it reaches the maximum arm.
-//!   Today that is ~57.5 KB of free headroom for the nav arm and ~101 KB for the USB stage — both
+//!   Today that is ~57.5 KB of free headroom for the nav arm and ~51 KB for the USB stage — both
 //!   widened by P3, which spent the dividend on the *max* arm and so raised the bar the others
-//!   grow under.
+//!   grow under. The upload retune spent 48 KB of the USB stage's share on a second (and
+//!   cluster-sized) staging half, at exactly the zero resident cost this bullet promises.
 //! - Growing the **maximum** arm (today: render) costs the full delta, 1:1, exactly as before.
 //!
 //! Both halves are traps in opposite directions: nobody should "optimize" a growth that is free,
@@ -133,7 +134,8 @@ union ScratchArena {
     render: ManuallyDrop<obc_render::RenderScratch>,
     #[cfg(has_nav)]
     nav: ManuallyDrop<NavArm>,
-    /// The USB upload staging buffer. A plain byte buffer: it needs no initialization, the plane
+    /// The USB upload staging buffer — **two** halves laid end to end (see
+    /// [`Stage`](crate::link::stage)). A plain byte buffer: it needs no initialization, the plane
     /// fills it before it reads it.
     usb: ManuallyDrop<[u8; crate::usb::STAGE_LEN]>,
 }

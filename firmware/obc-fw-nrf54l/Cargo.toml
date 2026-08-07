@@ -280,6 +280,12 @@ debug = 2
 # replaced the SPI path (epic #1158): the same edge that was worth 5.3x over SPI is what turns
 # 8.2 MB/s of raw write bandwidth into upload throughput instead of one program cycle per block.
 #
+# The fork carries a **second** edge now, from the upload retune: `VolumeManager::preallocate`
+# reserves a streamed file's whole cluster chain up front, chaining a run of free clusters inside one
+# FAT block and writing that block back once. Without it, `write` extends the file a cluster at a
+# time and each extension is four single-block writes — four program cycles landing *between* the
+# CMD25 bursts above, which is where they cost the most. `sd::Storage::upload_reserve` is the caller.
+#
 # **This stanza is per resolve root, and there are three.** The workspace root carries the same
 # patch so `obc-storage`'s host tests exercise the crate the device actually runs; `obc-boot`
 # does not (it only reads the card, so it gains nothing).

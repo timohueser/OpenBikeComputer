@@ -30,15 +30,16 @@ const IDLE: DeviceState = { status: "idle", client: null, identity: null, info: 
 /**
  * The rate the simulated device moves bytes to and from its card.
  *
- * ~700 KB/s is the measured ceiling of the real thing: SPI to the SD card at the proven 8 MHz, not
- * anything about USB (#889, and `sd-read-speed-levers`). An unthrottled loopback finishes a 100 MB
- * "map" in seconds, which would make every progress bar, rate and remaining-time estimate in the
- * UI untestable — and those exist precisely because the real transfer takes minutes.
+ * ~700 KB/s was the retired SPI transport's write ceiling, and it is kept **deliberately
+ * pessimistic** rather than re-pinned: the sEMMC pivot (#1158) took the card to 8.2 MB/s raw and the
+ * upload pipeline was retuned for it, but nothing end to end has been measured on glass. A harness
+ * that promised a number the hardware has not confirmed would be worse than one that is honestly
+ * slow. What it has to do is only this: an unthrottled loopback finishes a 100 MB "map" in seconds,
+ * which would make every progress bar, rate and remaining-time estimate in the UI untestable.
  *
- * **Both directions.** The card is the bottleneck whichever way the bytes are going, and the read
- * side is if anything the tighter one. Pacing only what the device *receives* left a ride pull
- * (C5 #904) running at memory speed, so its progress bar and Cancel button existed for about four
- * milliseconds — a surface that could not be looked at, let alone driven.
+ * **Both directions**, and for the same reason. Pacing only what the device *receives* left a ride
+ * pull (C5 #904) running at memory speed, so its progress bar and Cancel button existed for about
+ * four milliseconds — a surface that could not be looked at, let alone driven.
  */
 const CARD_BYTES_PER_SECOND = 700 * 1024;
 

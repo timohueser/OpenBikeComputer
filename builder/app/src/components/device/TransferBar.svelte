@@ -1,10 +1,10 @@
 <!--
   A device write in progress: what phase, how far, how fast, how much longer, and a Cancel.
 
-  The rate and the estimate are here because of one fact about this hardware: the cable is not the
-  bottleneck, the SD card is (~high-hundreds of KB/s over the proven SPI clock), so a regional map
-  is minutes. A bare percentage invites "it's stuck at 12%"; a number of MB/s and a remaining time
-  say what is happening, and the phase says which half of the job it is happening in.
+  The rate and the estimate are here because of one fact about this hardware: a regional map is
+  hundreds of megabytes, so the transfer is minutes however fast the slowest stage of the pipeline
+  turns out to be. A bare percentage invites "it's stuck at 12%"; a number of MB/s and a remaining
+  time say what is happening, and the phase says which half of the job it is happening in.
 -->
 <script lang="ts">
     import { formatBytes, formatDuration, formatRate } from "../../lib/format";
@@ -19,6 +19,7 @@
         converting: "Converting to GPX",
         assembling: "Assembling the map",
         sending: "Writing to the device",
+        committing: "Finishing on the device",
     };
 
     const heading = $derived(PHASES[job.phase] ?? label ?? "Working");

@@ -960,7 +960,8 @@ refuse a manifest whose terrain record disagrees with the raster it just took
 ([`obc-ble-interface-spec.md` §4.1](obc-ble-interface-spec.md) rule 7). The asymmetry is between
 *reading an old card* and *accepting a new upload*, not between terrain and everything else.
 
-A device MAY defer the SHA-256 check (hashing gigabytes off an SD card is minutes of work) but
+A device MAY defer the SHA-256 check (hashing gigabytes is minutes of work on a microcontroller,
+and the cost is the hash itself rather than the storage it is read from) but
 MUST verify `Bytes` and the header bbox at mount, and a **host** writing a set MUST verify every
 digest before the manifest is written.
 

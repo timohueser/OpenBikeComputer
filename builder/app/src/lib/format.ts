@@ -7,8 +7,8 @@ export function formatBytes(n: number): string {
     return n + " B";
 }
 
-/** Throughput, for a transfer whose speed is worth stating — a map upload runs
- *  at the SD card's pace, and the number is what makes "minutes" credible. */
+/** Throughput, for a transfer whose speed is worth stating — a map upload is minutes long, and the
+ *  number is what makes that credible instead of alarming. */
 export function formatRate(bytesPerSecond: number): string {
     return formatBytes(Math.round(bytesPerSecond)) + "/s";
 }

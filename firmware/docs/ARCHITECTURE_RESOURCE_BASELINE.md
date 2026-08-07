@@ -467,6 +467,102 @@ toolchain-artifact trap, not new drift. The compile-time allocation report is
 unchanged on both profiles — the signal is a module static, not a field of `App`
 or `ObjectStore`, so no named entry (`app`, `ble_object_store`, …) moved.
 
+### Pre-allocation goes unconditional, 2026-08-07 — **+1,968 B flash, 0 B resident**
+
+`VolumeManager::preallocate` landed on the embedded-sdmmc fork (rev `e846db66`), so the
+`sdmmc-prealloc` feature — which existed only so the tree would build while the fork lacked the
+method — is deleted and `Storage::upload_reserve` compiles always. Both `Cargo.lock`s pin the new
+rev, the `firmware/patches/` directory is gone, and so is the CI gate that cloned the fork and
+replayed the patch: the ordinary `--locked` build legs exercise the real dependency now, which is a
+stronger gate than the scaffolding was.
+
+The whole cost is flash, and it is code that was previously dead: the fork's `alloc_cluster_run`,
+`free_run_within_block` and `write_chain_run`, plus our call sites, which LTO stripped while
+`upload_reserve` was a `false`-returning stub. Measured on the pinned local host, same toolchain,
+before and after the flip:
+
+| | before | after |
+| :-- | --: | --: |
+| flash sections | 1,358,016 B | **1,359,984 B** |
+| `.bss + .data` | 296,008 B | 296,008 B |
+| `.uninit` | 118,432 B | 118,432 B |
+| largest guarded poll frame | 9,728 B | 9,728 B |
+| largest task body | 7,328 B | 7,328 B |
+| residual main stack | 77,080 B | 77,080 B |
+
+Zero resident is the expected answer rather than a lucky one: a reservation is a burst of FAT writes
+at the open, not a buffer — nothing about it is state the device has to hold. `measured_flash` in the
+JSON is deliberately **not** re-pinned from these numbers; it is CI's figure by convention (this host
+links ~58 KB more for the same source) and is a record rather than a gate for board profiles, so it
+wants the next `embedded` run.
+
+### The abort drain (#1158 follow-up, review round), 2026-08-07 — **+184 B resident**
+
+The one place this branch costs RAM, and it buys the stray-byte hole being closed rather than
+narrowed. Answering an abort now empties the bulk endpoint first, and because a descriptor-level
+reject never reaches the data plane at all, that has to work for an abort with **nothing armed**
+too — which means a control-plane → data-plane handshake, since the endpoint belongs to the data
+plane's task.
+
+Itemised by symbol diff against the identical tree without the redesign (`llvm-nm`, `.bss`/`.data`
+only):
+
+| Symbol | before | after | |
+| :-- | --: | --: | :-- |
+| `usb::run::POOL` | 1,784 B | 1,944 B | **+160** — the USB task's `TaskStorage`. Both halves of the joined future grew: the data plane's idle `select` gained a third arm holding a `drain_bulk_out` future, and the control plane gained the `drain_before_idle_abort` await plus the guard drop/re-lock around it. |
+| `DRAIN_REQ`, `DRAIN_DONE` | 0 B | 24 B | **+24** — two `Signal<CriticalSectionRawMutex, ()>` at 12 B each. |
+| `.L_MergedGlobals.*` | — | — | **−37** net, small statics being regrouped. |
+| section alignment | — | — | **+37**, the difference between the named sum (147 B) and the linked 184 B. |
+
+Everything else holds: `.uninit` 118,432 B, largest guarded poll frame 9,728 B and largest task body
+7,328 B are all unmoved — the drain future is `#[inline(never)]` and fits in the task body's existing
+slack, so it costs pool bytes rather than frame bytes. `residual_stack` pays the 184 B like every
+resident byte does (77,272 → **77,088 B**), which is still 2.1× the measured deep-ride peak of
+35,808 B and leaves 51,388 B over the boot-chain ceiling against a 4,096 B floor.
+
+**Why it is worth 184 B.** The alternative was leaving a retry-after-failure able to pick up the
+previous exchange's tail as its own opening bytes — recoverable (the whole-object CRC catches it) but
+only by luck, since whether the retry succeeds depends on whether the window happened to drain
+first. 184 B against a 500 KiB part, for a failure path that a rider hits by pressing Cancel.
+
+### The upload retune's staging halves (#1158 follow-up), 2026-08-07 — **0 B of anything**
+
+The USB staging arm goes 16 KiB → **two 32 KiB halves** (`usb::STAGE_HALF_LEN`), so the transport
+fills one while the other is the card's, and each flush is exactly one FAT cluster — one 64-block
+CMD25 with no partial ends. The interesting part of the entry is that there is nothing to pay:
+
+| | before | after |
+| :-- | --: | --: |
+| `compile_time_allocations.arena_usb` | 16,384 B | **65,536 B** |
+| `arena_total` (= `max(arms)`, render) | 117,408 B | 117,408 B |
+| `.bss + .data` | 295,816 B | 295,816 B |
+| `.uninit` | 118,432 B | 118,432 B |
+| largest guarded poll frame | 9,728 B | 9,728 B |
+| residual main stack | 77,272 B | 77,272 B |
+
+**This is the growth asymmetry working exactly as #1146 P2 documented it.** The arena is
+`max(arms)`, not their sum, so an arm below the maximum grows free until it reaches the render
+arm's 117,408 B — and 65,536 is still comfortably under. Measured locally as this branch against
+the same tree with the halves back at 16 KiB: every figure above is byte-identical, so the only
+line that moves in the JSON is `arena_usb` itself. The `#[inline(never)] drain_bulk_out` future the
+same branch adds to the USB data plane lands inside existing slack: `task_frame_measured` is
+unmoved at 7,328 B.
+
+The trap this entry exists to close is the *old* argument, which read "16 KiB takes 94% of the
+batching win and a second 16 KiB would halve the margin over the 35,808 B deep-ride peak". That was
+a **`.bss`** argument, written when the staging buffer was a static of its own, and #1146 P2
+retired it by moving those bytes into the arena. It survived in `usb::STAGE_LEN`'s doc for two
+epics; it is gone now, and the doc says what actually bounds the constant (the card's cluster size,
+then the render arm).
+
+**Two report rows were also added rather than dropped.** The sEMMC pivot pinned `sd_bounce` and
+`semmc_driver` in `resource_baseline.json` but never added them to
+`main.rs`'s `resource_report::OBC_RESOURCE_TABLE`, so `resource_guard.py report` has failed
+"missing entries" on every build since. Both are real resident blocks the pivot introduced and the
+report exists to make exactly that kind of block legible by name, so the table grew the rows.
+`semmc_driver` re-pins 52 → **44 B** at the same time: `size_of::<Semmc>()` links 44 on the current
+tree and the baseline was carrying the pivot's figure. Neither is this branch's own cost.
+
 ### The sEMMC carve (#1158 PR1), 2026-08-06 — **0 B of `.bss`/`.uninit`, −20,480 B of stack**
 
 The first change that costs RAM without linking a single byte. The microSD host moves off SPI

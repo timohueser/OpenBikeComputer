@@ -505,14 +505,31 @@ unchanged. Eight rules govern the sequence, and they are **normative**:
    about. The **manifest's** result carries the **device-assigned set id** — the
    one moment a set's identity crosses the wire, and the answer to "what did my
    upload become".
-6. **A staged set can be abandoned, and `op=3` is how.** A set spans several
-   descriptors, so an abort most often arrives when *nothing is in flight* — in
-   the gap between two of them. A device MUST treat an `op=3` there as
-   abandoning the set in flight, not merely as a confirmed no-op: the session
-   closes and every file of the set is deleted, exactly as a dropped link would.
-   Without it a host that cancelled would be told `aborted` while gigabytes
-   stayed staged and every differently-shaped set went on being refused (rule 1)
-   until the transport was torn down. The answer is `aborted`, as it already is.
+6. **A staged set can be abandoned, and an `op=3` naming `mapSet` is how.** A set
+   spans several descriptors, so an abort most often arrives when *nothing is in
+   flight* — in the gap between two of them. A device MUST treat an `op=3` whose
+   descriptor names **`mapSet`** as abandoning the set in flight, not merely as a
+   confirmed no-op: the session closes and every file of the set is deleted,
+   exactly as a dropped link would. Without it a host that cancelled would be
+   told `aborted` while gigabytes stayed staged and every differently-shaped set
+   went on being refused (rule 1) until the transport was torn down. The answer
+   is `aborted`, as it already is.
+
+   **The type is load-bearing, because an idle `op=3` has a second meaning.** A
+   host also sends one to *quiesce* the byte pipe after an exchange the device
+   had already closed — a reject it noticed late, a rider's cancel, a shard the
+   device refused on CRC — and in that case it is about to **retry** (§4.2's
+   idle-abort drain). A device MUST NOT abandon the set for such an abort: a
+   descriptor naming `mapShard`, `terrainShard` (or any type other than
+   `mapSet`) is a quiesce, and MUST leave the session and every staged file
+   untouched — including the terrain band, which rule 3 lets a set carry or
+   omit. A host MUST likewise name `mapSet` only when it means abandonment.
+
+   Conflating the two is not a corner case, it is a map-shaped hole: a failed
+   shard drops only itself (**Resume**, below), so a host that re-sends that one
+   shard is doing exactly what this spec tells it to — and if the quiesce that
+   preceded the retry deleted the set, the re-sent shard lands in nothing and the
+   manifest seals a set with no files.
 7. **A shard after a committed manifest begins a new set.** Once a `mapSet` has
    committed, the set it completed is closed: a later `mapShard` MUST NOT be
    added to it, because its manifest names exactly the files it names and any
@@ -575,9 +592,10 @@ write). A set arriving over a card reader is copied from a host that already
 holds a finished manifest and writes it front to back, so its `.OBS` carries the
 whole magic from its first block — the shapes above are, to within one block of a
 copy that was itself interrupted, unreachable any other way, and a manifest in
-one of them cannot be read as a map by anyone regardless. A dropped link or an
-`op=3` abort deletes the whole set immediately; a power cut is reclaimed by the
-boot sweep. Complete shard files with no manifest at all are left alone: §5.4
+one of them cannot be read as a map by anyone regardless. A dropped link, or an `op=3` abort **naming
+`mapSet`** (rule 6), deletes the whole set immediately; a power cut is reclaimed
+by the boot sweep. An `op=3` naming anything else is a quiesce and leaves the set
+alone. Complete shard files with no manifest at all are left alone: §5.4
 makes deleting orphans a MAY, and that shape is a rider mid-copy.
 
 A device MUST NOT let a set's *id allocation* undo that care. Whatever scheme
@@ -588,7 +606,9 @@ such an id and then clearing it (§5.4's replace rule) would delete, at the next
 upload, the map the sweep deliberately spared.
 
 **Resume.** Per **file**, and free: shards are independent files, so a shard
-whose CRC failed is re-sent on its own while the rest stand. Across a
+whose CRC failed is re-sent on its own while the rest stand. This is the property
+rule 6's `mapSet`-only abandonment exists to protect — a re-send is preceded by
+the idle-abort quiesce (§4.2), and that abort must not take the set with it. Across a
 **disconnect**, no — the set is gone, and resuming would need a device → host
 query for "which shards of which set do you hold", which is a new §4.4 command
 rather than a change to this section.
@@ -709,6 +729,32 @@ nothing is retained). Closing the CoC is the implicit-abort/reset form: the
 device performs the same discard but sends no result for a channel the peer has
 already abandoned.
 
+**Abort with nothing in flight — the quiesce, and the one place a device may
+empty its byte pipe.** An `op=3` also arrives when the device has *already*
+closed the exchange: a descriptor-open reject the host noticed late, a cancel
+that raced the device's verdict, a whole-object CRC the device refused. The host
+is not confused — it is about to retry, and it needs the channel empty first.
+This matters on an unframed, unacknowledged pipe where the sender does not wait
+between chunks: bytes it queued for the abandoned exchange are still arriving,
+neither end can recall them, and if the retry's descriptor arms while they land
+they become that object's opening payload and fail its whole-object CRC.
+
+A device on a transport whose pipe it can read (a USB bulk endpoint) SHOULD
+therefore **read and discard until the pipe is quiet, and only then answer**
+`aborted`. It MUST bound that drain and answer regardless when the bound is hit.
+Draining is correct at the **abort handshake and nowhere else** — with or
+without a transfer in flight, since either way the host has stopped and is
+waiting for the answer before it does anything else. On any other termination —
+a reject, a refused commit — the host has not been told yet and refills as fast
+as the device discards, so a device MUST NOT drain there; the host's own send loop settling, plus the device's discard of
+bytes that arrive with nothing armed, is what covers those. A transport that
+closes and reopens its channel around a failed exchange (BLE's CoC) has nothing
+to drain and answers immediately.
+
+Such an abort is a **pure quiesce**: apart from discarding an in-flight partial
+it MUST change no stored state — see §5 rule 6 for the one descriptor that is
+also an instruction (`mapSet`).
+
 A descriptor that names an unknown type/id or arrives mid-transfer is answered
 with a `transferResult` carrying `error` / `notFound` / `busy` (§4.3) and does not
 disturb an active transfer.
@@ -718,8 +764,15 @@ route type, `object_id = 0xFFFF` (or a route id the device doesn't hold) —
 that would grow the catalog past its cap is rejected at the `transferControl`
 write, **before the device consumes payload bytes**, with `transferResult` status
 `storageFull` (§4.3); no partial file is created. Because v2 has no separate
-upload-accepted handshake, the sender may already have queued raw CoC bytes when
-that asynchronous result arrives; it resets the CoC as described above.
+upload-accepted handshake, the sender may already have queued raw payload bytes
+when that asynchronous result arrives. Recovering from that is transport-shaped:
+over BLE the sender resets the CoC as described above, which discards them. Over
+a transport with no channel to reopen — a USB bulk endpoint — resetting cannot
+un-queue a submitted transfer, so the sender MUST instead complete the idle-abort
+handshake above (`op=3`, wait for `aborted`) before it retries, which is what
+makes the device empty the pipe. A sender that skips it is not broken so much as
+unlucky: the leftovers usually clear on their own, and when they do not the retry
+fails its whole-object CRC for reasons nothing in the exchange explains.
 **Replace-by-id uploads of
 an existing route are exempt** — they reuse a catalog slot rather than growing
 it, so updating a stored (or actively-navigated) route never hits the cap. The
