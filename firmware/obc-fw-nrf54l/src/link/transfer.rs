@@ -359,11 +359,12 @@ fn set_refusal_to_glass(store: &RefCell<ObjectStore>, desc: &TransferControl) {
 /// on-device trace correlates both sides of the exchange.
 fn log_transfer_arm(desc: &TransferControl) {
     info!(
-        "link: [ctl] transfer_control arm: op {} type {} id {} len {}",
+        "link: [ctl] transfer_control arm: op {} type {} id {} len {} crc {=u32:#010x}",
         desc.op.as_u8(),
         desc.ty.as_u8(),
         desc.object_id,
-        desc.total_len
+        desc.total_len,
+        desc.crc32
     );
 }
 

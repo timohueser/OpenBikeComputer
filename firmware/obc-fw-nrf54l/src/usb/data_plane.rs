@@ -546,6 +546,20 @@ async fn run_upload(
         crate::link::map_transfer_ended(Some(status));
     }
     let committed = status == TransferStatus::Committed;
+    if !committed {
+        // Reject forensics (#1169 follow-up): the held magic is the object's first four payload
+        // bytes exactly as received — anything but the format magic proves the stream arrived
+        // offset (stray leading bytes), while a clean magic with a CRC delta points past the
+        // front. `take` is non-consuming, so reading it here costs the commit path nothing.
+        let magic = held.take().unwrap_or([0; obc_ble::MAGIC_LEN]);
+        let (got, want) = rx.crc_probe();
+        warn!(
+            "usb: [bulk] reject probe: first payload bytes {=[u8]:#04x}, crc got {=u32:#010x} want {=u32:#010x}",
+            &magic[..],
+            got,
+            want
+        );
+    }
     let elapsed_ms = started.elapsed().as_millis().max(1);
     if committed && target == MapTarget::Map {
         info!("usb: [bulk] map {} is now the selected map — it loads on the next boot", id);
