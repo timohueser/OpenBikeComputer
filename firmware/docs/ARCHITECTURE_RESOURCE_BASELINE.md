@@ -592,6 +592,10 @@ alignment is the remaining +28 B. The measured boot-chain ceiling is 25,636 B, l
 against the 4,096 B required floor.
 Default and BLE profiles link identically.
 
+Those table values are the pinned-host itemisation. The authoritative Linux CI link retains the
+repository's documented 8 B host spread: **305,200 B** resident, **54,224 B** residual stack and
+**1,345,728 B** flash on both profiles. The baseline gate uses those CI values.
+
 ### The sEMMC carve (#1158 PR1), 2026-08-06 — **0 B of `.bss`/`.uninit`, −20,480 B of stack**
 
 The first change that costs RAM without linking a single byte. The microSD host moves off SPI
