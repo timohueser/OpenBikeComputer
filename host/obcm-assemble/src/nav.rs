@@ -102,8 +102,8 @@
 //!   key than the dense one, so one more external sort — and hands back the index, the bin packing
 //!   and a placement plan. Nothing holds a point.
 //! * **The section is written from the seam.** `MergedNav` is directories, counts and five scratch
-//!   ids; `section_len` is still arithmetic over them, so a shard is still planned before a byte is
-//!   written.
+//!   ids; its size projection is still arithmetic over them, so a shard is still planned before a
+//!   byte is written.
 //!
 //! The order of the passes is normative and each one depends on the last:
 //!
@@ -134,8 +134,8 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use obc_formats::obcm::{
-    CHUNK_END, NAV_CHUNK_SIZE, NAV_DIR_LEN, NAV_EDGE_FIXED_LEN, NAV_MAX_DEGREE, NAV_NEIGHBOR_ASCENT_OFF,
-    NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN,
+    nav_index_padding, CHUNK_END, NAV_CHUNK_SIZE, NAV_DIR_LEN, NAV_EDGE_FIXED_LEN, NAV_MAX_DEGREE,
+    NAV_NEIGHBOR_ASCENT_OFF, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN,
 };
 
 use crate::extsort::{ExternalSort, SpillReader, SpillWriter};
@@ -534,18 +534,45 @@ pub struct MergedNav {
     pub stats: NavStats,
 }
 
+/// Exact §8 section sizing before a shard is written. Alignment depends on the section's absolute
+/// file offset, so the projection carries the unpadded lengths and answers once the shard layout has
+/// placed the nav section. This preserves the assembler's "project exactly, then stream" invariant.
+#[derive(Clone, Copy)]
+pub struct NavProjection {
+    base_len: u64,
+    prefix_len: u64,
+    index_len: u64,
+    populated: bool,
+}
+
+impl NavProjection {
+    pub fn bytes_at(self, section_offset: u64) -> u64 {
+        // Only the position inside a sector matters. Reducing before adding keeps even a deliberately
+        // absurd projection total from wrapping here; `ShardPlan::layout` remains the checked owner
+        // of the full-file arithmetic.
+        let sector = NAV_CHUNK_SIZE as u64;
+        let relative_data_end = self.prefix_len % sector + self.index_len % sector;
+        let pad = if self.populated { nav_index_padding(section_offset % sector, relative_data_end) as u64 } else { 0 };
+        self.base_len + pad
+    }
+}
+
 impl MergedNav {
     pub fn is_empty(&self) -> bool {
         self.node_count == 0
     }
 
-    /// Bytes this section occupies once written after `profile_table`. Every chunk is padded to
-    /// `NAV_CHUNK_SIZE`, so the chunk region is arithmetic over the count (§8.1).
-    pub fn section_len(&self, profile_table: &[u8]) -> u64 {
-        (NAV_DIR_LEN + profile_table.len()) as u64
-            + self.index_len
-            + self.chunk_count as u64 * NAV_CHUNK_SIZE as u64
-            + self.pool_len
+    /// Exact section-size projection. Every data chunk is padded to `NAV_CHUNK_SIZE`; the only
+    /// offset-dependent term is the compatibility gap before a populated index that aligns the node
+    /// chunk run.
+    pub fn projection(&self, profile_table: &[u8]) -> NavProjection {
+        let prefix_len = (NAV_DIR_LEN + profile_table.len()) as u64;
+        NavProjection {
+            base_len: prefix_len + self.index_len + self.chunk_count as u64 * NAV_CHUNK_SIZE as u64 + self.pool_len,
+            prefix_len,
+            index_len: self.index_len,
+            populated: self.files.is_some(),
+        }
     }
 
     /// Give the scratch streams back, once the last shard that could name them has been written.
@@ -1387,10 +1414,10 @@ fn fnv(bytes: &[u8]) -> u64 {
 }
 
 /// Write the whole §8 section at absolute byte `section_offset` through `sink`:
-/// `[directory][profile table][node index][node chunks][edge pool]`.
+/// `[directory][profile table][0-padding][node index][node chunks][edge pool]`.
 ///
 /// Every offset in the directory is known before the first byte goes out — that is what
-/// [`MergedNav::section_len`] already proves — so nothing is back-patched and nothing is staged.
+/// [`MergedNav::projection`] already proves — so nothing is back-patched and nothing is staged.
 /// **Nothing section-sized exists at all** (#1116 D4): the index is copied off the scratch seam a
 /// block at a time, the chunks are assembled one 512-byte chunk at a time from the placement plan,
 /// and the pool's records come from the cells that wrote them, one read into one reusable buffer.
@@ -1412,7 +1439,10 @@ pub fn serialize(
 ) -> Result<()> {
     let profile_count = profile_table.len() / obc_formats::obcm::NAV_PROFILE_LEN;
     let profile_table_offset = section_offset + NAV_DIR_LEN;
-    let index_offset = profile_table_offset + profile_table.len();
+    let unpadded_index_offset = profile_table_offset + profile_table.len();
+    let index_pad =
+        if nav.files.is_some() { nav_index_padding(unpadded_index_offset as u64, nav.index_len) } else { 0 };
+    let index_offset = unpadded_index_offset + index_pad;
     // Post-ceiling, every section offset and length fits `u32`, so the `usize` narrowing here is
     // exact on every host.
     let edge_pool_offset = index_offset + nav.index_len as usize + nav.chunk_count as usize * NAV_CHUNK_SIZE;
@@ -1439,10 +1469,16 @@ pub fn serialize(
     out(profile_table)?;
     let Some(files) = &nav.files else {
         // The empty pair a non-core shard carries (§5.1): the directory and the profile table are
-        // the whole section, and `section_len` agrees by arithmetic (both data regions are zero).
-        debug_assert_eq!((NAV_DIR_LEN + profile_table.len()) as u64, nav.section_len(profile_table));
+        // the whole section, and the projection agrees by arithmetic (both data regions are zero).
+        debug_assert_eq!(
+            (NAV_DIR_LEN + profile_table.len()) as u64,
+            nav.projection(profile_table).bytes_at(section_offset as u64)
+        );
         return Ok(());
     };
+    if index_pad != 0 {
+        out(&[0; NAV_CHUNK_SIZE][..index_pad])?;
+    }
     // The §8.2 index is already in wire form on the seam, so it is a copy through one block buffer.
     let mut block = vec![0u8; nav.read_budget.clamp(NAV_CHUNK_SIZE, 1 << 20)];
     let mut at = 0u64;
@@ -1491,7 +1527,7 @@ pub fn serialize(
         // `pad` is `[0xFF; 512]`; the remainder is at most one chunk by construction.
         out(&pad[..(nav.pool_len - at) as usize])?;
     }
-    debug_assert_eq!(written as u64, nav.section_len(profile_table));
+    debug_assert_eq!(written as u64, nav.projection(profile_table).bytes_at(section_offset as u64));
     Ok(())
 }
 
@@ -1562,6 +1598,15 @@ impl MergedNav {
 mod tests {
     use super::*;
     use crate::scratch::MemoryScratch;
+
+    #[test]
+    fn projection_alignment_depends_only_on_the_sector_remainder() {
+        let projection = NavProjection { base_len: 1_000, prefix_len: 84, index_len: 4, populated: true };
+        assert_eq!(projection.bytes_at(0), 1_424);
+        assert_eq!(projection.bytes_at(512), 1_424);
+        assert_eq!(projection.bytes_at(u64::MAX - 511), 1_424);
+        assert_eq!(NavProjection { populated: false, ..projection }.bytes_at(u64::MAX), 1_000);
+    }
 
     /// **The budget sweep.** Every whole-merge fixture goes through here rather than calling
     /// [`merge`] directly, because §4.6.5's renumbering is now an external sort and a fixture is far
@@ -1730,11 +1775,17 @@ mod tests {
 
         let scratch = MemoryScratch::new();
         let nav = pool_nav(&scratch, &pool, pool_len, 3);
-        let bytes = serialized(&nav, &[], 0, &[&cell], &scratch);
-        assert_eq!(&bytes[NAV_DIR_LEN..], &want[..], "the streamed pool is not the laid-out pool");
-        assert_eq!(u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize, NAV_DIR_LEN, "edge pool offset");
+        const SECTION_OFFSET: usize = 123;
+        let bytes = serialized(&nav, &[], SECTION_OFFSET, &[&cell], &scratch);
+        let pool_offset = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        assert_eq!(&bytes[pool_offset - SECTION_OFFSET..], &want[..], "the streamed pool is not the laid-out pool");
+        assert_eq!(pool_offset % NAV_CHUNK_SIZE, 0, "edge pool is sector-aligned");
         assert_eq!(u32::from_le_bytes(bytes[16..20].try_into().unwrap()), 2, "edge chunk count");
-        assert_eq!(bytes.len() as u64, nav.section_len(&[]), "the section is the length it was projected at");
+        assert_eq!(
+            bytes.len() as u64,
+            nav.projection(&[]).bytes_at(SECTION_OFFSET as u64),
+            "the section is the length it was projected at"
+        );
 
         // The rule both walks share, stated once: a record moves to the next chunk only when it
         // would cross the boundary, and a record that ends exactly on one does not move.

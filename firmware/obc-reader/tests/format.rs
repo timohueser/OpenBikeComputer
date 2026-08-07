@@ -1009,10 +1009,12 @@ fn empty_nav_directory_parses_and_walks_nothing() {
 fn populated_nav_section_round_trips_with_record_layout() {
     let (bytes, nav_off) = nav_two_node_map();
 
-    // Directory bytes (§8.1) at their fixed offsets. The index follows the directory + the profile
-    // table (1 profile × 56 B in v12).
+    // Directory bytes (§8.1) at their fixed offsets. Populated producers may insert zero padding
+    // between the profile table and index so the first node chunk is sector-aligned.
     let index_offset = u32::from_le_bytes(bytes[nav_off..nav_off + 4].try_into().unwrap()) as usize;
-    assert_eq!(index_offset, nav_off + NAV_DIR_LEN + 56, "index follows the directory + 1-profile table");
+    let profile_end = nav_off + NAV_DIR_LEN + 56;
+    assert!(index_offset >= profile_end, "the index follows the directory + 1-profile table");
+    assert!(index_offset - profile_end < NAV_CHUNK_SIZE, "alignment padding is less than one sector");
     assert_eq!(u32::from_le_bytes(bytes[nav_off + 4..nav_off + 8].try_into().unwrap()), 1, "index_node_count");
     assert_eq!(u32::from_le_bytes(bytes[nav_off + 8..nav_off + 12].try_into().unwrap()), 1, "node_chunk_count");
     let edge_pool_offset = u32::from_le_bytes(bytes[nav_off + 12..nav_off + 16].try_into().unwrap()) as usize;

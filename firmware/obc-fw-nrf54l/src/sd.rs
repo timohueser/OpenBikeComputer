@@ -746,6 +746,8 @@ pub(crate) struct ReadPerf {
 
 #[cfg(feature = "sd-bench")]
 impl ReadPerf {
+    pub(crate) const ZERO: Self = Self { us: 0, commands: 0, blocks: 0, single_commands: 0, multi_commands: 0 };
+
     pub(crate) fn since(self, before: Self) -> Self {
         Self {
             us: self.us.wrapping_sub(before.us),
@@ -754,6 +756,14 @@ impl ReadPerf {
             single_commands: self.single_commands.wrapping_sub(before.single_commands),
             multi_commands: self.multi_commands.wrapping_sub(before.multi_commands),
         }
+    }
+
+    pub(crate) fn add_assign(&mut self, other: Self) {
+        self.us = self.us.wrapping_add(other.us);
+        self.commands = self.commands.wrapping_add(other.commands);
+        self.blocks = self.blocks.wrapping_add(other.blocks);
+        self.single_commands = self.single_commands.wrapping_add(other.single_commands);
+        self.multi_commands = self.multi_commands.wrapping_add(other.multi_commands);
     }
 }
 
