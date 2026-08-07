@@ -768,32 +768,49 @@ fn warn_bounce(addr: usize) {
 /// the upload's shape silently changes and an on-glass throughput number becomes uninterpretable.
 /// This is the line that says which case you are in.
 ///
-/// Read straight off the card rather than asked of `VolumeManager`, which does not expose it: MBR
-/// partition 0's start LBA (`0x1BE + 8`), then that sector's BPB — `BPB_BytsPerSec` at 11 and
-/// `BPB_SecPerClus` at 13 (Microsoft's FAT spec, unchanged since FAT12). Two block reads at boot,
-/// and nothing downstream depends on the result.
+/// Read straight off the card rather than asked of `VolumeManager`, which does not expose it, and
+/// by the same rules `open_raw_volume` mounts with — the discrimination this repo already gets right
+/// in `obc-storage`'s `fat_extents.rs`, mirrored here rather than re-invented.
+///
+/// **A boot signature alone does not tell an MBR from a BPB.** A *superfloppy* card — no partition
+/// table, the volume boot record directly in sector 0, common on SD — carries `0xAA55` at 510 too,
+/// so a signature check that then read bytes 0x1C6.. as a partition LBA would take part of the BPB
+/// or the boot code as a sector number. What separates them is what sector 0 looks like *as a BPB*:
+/// a real BPB declares `BPB_BytsPerSec == 512` and a non-zero `BPB_SecPerClus`. So: parse sector 0
+/// as a BPB first, and only go looking for a partition table when it is not one.
+///
+/// Two block reads at boot, and nothing downstream depends on the result.
 fn report_cluster_size() {
     let mut block = [0u8; 512];
     // `with_storage` answers `Err` when the FLPR is not in storage mode; the inner result is the
     // card's. Either failure means "no answer", and no answer is not worth a fault here.
     let read =
         |lba: u32, buf: &mut [u8]| matches!(crate::flpr_mux::with_storage(|sd| sd.read_blocks(lba, buf)), Ok(Ok(())));
+    /// Does this block parse as a FAT BPB the volume manager would mount?
+    fn is_bpb(block: &[u8; 512]) -> bool {
+        u16::from_le_bytes([block[510], block[511]]) == 0xAA55
+            && u16::from_le_bytes([block[11], block[12]]) == 512
+            && block[13] != 0
+    }
     if !read(0, &mut block) {
         return;
     }
-    // A partition table entry is 16 B at 0x1BE; bytes 8..12 are the LBA of its first sector. A card
-    // formatted without an MBR (superfloppy) has its BPB in block 0, which reads as `start == 0`.
-    let start = u32::from_le_bytes([block[0x1BE + 8], block[0x1BE + 9], block[0x1BE + 10], block[0x1BE + 11]]);
-    if start != 0 && !read(start, &mut block) {
-        return;
+    if !is_bpb(&block) {
+        // Not a volume boot record, so sector 0 should be an MBR. Partition entry 0 is 16 B at
+        // 0x1BE; bytes 8..12 are the LBA of its first sector, and byte 4 its type — checked against
+        // the same FAT types the manager mounts, so a foreign first partition is reported as
+        // unknown rather than followed.
+        let part = &block[0x1BE..0x1BE + 16];
+        let fat_type = matches!(part[4], 0x01 | 0x04 | 0x06 | 0x0B | 0x0C | 0x0E);
+        let start = u32::from_le_bytes([part[8], part[9], part[10], part[11]]);
+        if (part[0] & 0x7F) != 0 || !fat_type || start == 0 || !read(start, &mut block) || !is_bpb(&block) {
+            defmt::warn!("SD: no FAT BPB in sector 0 or partition 0 — upload flush shape unknown");
+            return;
+        }
     }
     let bytes_per_sector = u16::from_le_bytes([block[11], block[12]]) as u32;
     let sectors_per_cluster = block[13] as u32;
     let cluster = bytes_per_sector * sectors_per_cluster;
-    if cluster == 0 {
-        defmt::warn!("SD: could not read a cluster size from the BPB — upload flush shape unknown");
-        return;
-    }
     let half = crate::usb::STAGE_HALF_LEN as u32;
     if cluster == half {
         defmt::info!("SD: {=u32} B clusters — one upload staging half is exactly one cluster", cluster);
