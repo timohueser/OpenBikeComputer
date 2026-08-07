@@ -482,6 +482,15 @@ second protocol. What is **board-specific** and worth knowing:
 - **Endpoint layout** (the host reads it off the descriptors): one interface, class `0xFF`, four
   bulk endpoints at the high-speed-mandated 512 B — `0x81/0x01` control frames, `0x82/0x02` the
   object stream. Control frames are `selector u8 · payload`, one frame per transfer.
+- **The bulk OUT endpoint is armed in bursts** (#1173), which is why
+  `embassy-usb-synopsys-otg` is vendored under `vendor/` — stock, it arms one packet and re-arms
+  only after the firmware task has copied it out, so the endpoint NAKs for a whole scheduler round
+  trip per 512 B (~342 µs measured on glass 2026-08-07, capping uploads at ~1.4 MB/s). The dial is
+  `BULK_OUT_BURST_PACKETS` in `src/usb/mod.rs`; the sweep recipe is on the constant, and both RAM
+  baselines move with it. **Bench it from RTT:** flash `cargo run --release`, upload a multi-shard
+  map from the web builder, and read the `~{} kB/s` figure on each
+  `usb: [bulk] upload finished` line. `usb: [bulk] drained …` / `discarded … unclaimed bytes` and
+  the `reject probe:` warn are the lines that say a burst went wrong rather than slow.
 - **Windows needs no driver install**: MS OS 2.0 BOS descriptors declare the `WINUSB` compatible id
   and a stable `DeviceInterfaceGUIDs` property, so Windows auto-binds WinUSB with no `.inf` and no
   Zadig.
