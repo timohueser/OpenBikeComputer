@@ -284,15 +284,23 @@ async fn serve_frame(
                 // arriving, and answering blind would let them open the retry. This is the one
                 // moment it is provably not pumping, so the pipe gets emptied before the answer —
                 // the data plane owns the endpoint, so it does the emptying.
-                TransferDisposition::AnswerIdleAbort(bytes) => {
+                //
+                // **Drain first, store work second.** Abandoning a set is up to 32 file deletions;
+                // running them ahead of the drain would spend the peer's abort-ack budget before the
+                // endpoint had even started emptying. Everything the classifier deferred runs in
+                // `finish_idle_abort`, on the far side of the drain.
+                TransferDisposition::AnswerIdleAbort(abort) => {
                     info!("usb: [ctl] idle abort — draining the bulk pipe before answering");
                     // The store guard is dropped first: the drain awaits the data plane, which takes
                     // the same lock on every other path, and holding it across that await would be
-                    // the one place these two planes could deadlock.
+                    // the one place these two planes could deadlock. It is re-taken after, because
+                    // the cleanup on the far side genuinely needs it — this is a hand-off around an
+                    // await, not a round trip for its own sake.
                     drop(guard);
                     data_plane::drain_before_idle_abort().await;
                     guard = shared.lock().await;
-                    status_msg = Some(bytes);
+                    crate::link::transfer::finish_idle_abort(store, &mut guard, &abort);
+                    status_msg = Some(abort.bytes);
                 }
             }
         }

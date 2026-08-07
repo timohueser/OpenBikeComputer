@@ -22,25 +22,60 @@ pub(crate) enum TransferDisposition {
     Arm(Armed),
     /// Answer immediately (a reject, or an abort the store had nothing to do about).
     Answer(StatusBytes),
-    /// An abort that found **nothing in flight** — answer it, but only after the transport has made
-    /// sure its byte pipe is empty.
+    /// An abort that found **nothing in flight**: quiesce the byte pipe, run the cleanup the
+    /// descriptor asked for, then answer.
     ///
-    /// Split out of [`Answer`](Self::Answer) because it is the one disposition with a transport-side
-    /// obligation attached. A peer sends an abort with nothing armed when it gave up on a transfer
-    /// the device had already closed — a reject it noticed late, a rider's cancel that raced the
-    /// device's own verdict — and it is *about to retry*. Its already-queued bytes are still
-    /// arriving, and on a bulk endpoint they cannot be recalled; answered blind, they become the
-    /// retry's opening payload and fail its whole-object CRC.
-    ///
-    /// This is also the **one moment the peer is provably quiet**: it has stopped pumping, it is
-    /// holding the abort open, and it will not send another descriptor until this answer arrives. A
-    /// transport with a pipe it can drain should do it here and nowhere else — see
-    /// `usb::data_plane::drain_bulk_out`. A transport with nothing to drain treats this exactly like
-    /// [`Answer`](Self::Answer); BLE does, because its CoC is closed and reopened around a failure
-    /// anyway.
-    AnswerIdleAbort(StatusBytes),
+    /// Split out of [`Answer`](Self::Answer) because it is the one disposition with work still owed
+    /// on both sides, and the caller has to sequence it. See [`IdleAbort`].
+    AnswerIdleAbort(IdleAbort),
     /// An abort aimed at the in-flight transfer — signal the data plane; *it* answers.
     AbortActive,
+}
+
+/// An `op = 3` that arrived with nothing in flight, and what the transport still owes it.
+///
+/// # The two meanings of an idle abort, and why they are told apart by type
+///
+/// A peer sends an abort with nothing armed for two unrelated reasons, and conflating them deletes
+/// a rider's map:
+///
+///   * **Quiesce** — it gave up on a transfer the device had *already* closed (a reject it noticed
+///     late, a cancel that raced the device's verdict, a shard the device refused on CRC) and it is
+///     about to retry. Its already-queued bulk bytes are still arriving and cannot be recalled; if
+///     the retry's descriptor arms while they land, they become that object's opening payload and
+///     fail its whole-object CRC. This abort must touch **no stored state** — the whole point is
+///     that a retry follows.
+///   * **Abandon** — it is giving up on the staged **volume set** itself (`OBCA_Spec.md` §5.4). The
+///     session closes and every file of the set is deleted, exactly as a dropped link would.
+///
+/// Both used to be "an idle abort on USB", and the set was destroyed either way. That was survivable
+/// only because the host never sent the first kind; the moment it did — quiescing after a shard's
+/// CRC refusal, so the retry would start clean — a single refused shard deleted the whole set and
+/// the retry sealed a manifest over nothing.
+///
+/// So the descriptor's **type** carries the difference, and the host names what it means:
+/// `mapSet` abandons, everything else quiesces. `mapShard` deliberately does **not** abandon —
+/// a failed shard drops only itself (`ObjectStore::set_shard_finish`), which is the property the
+/// per-shard retry depends on.
+pub(crate) struct IdleAbort {
+    /// The `aborted` result to send once the transport has done its part.
+    pub(crate) bytes: StatusBytes,
+    /// Whether this abort also abandons the staged volume set.
+    pub(crate) abandon_set: bool,
+}
+
+/// The store-side half of an idle abort, run by the transport **after** it has quiesced its pipe.
+///
+/// Split out of [`classify_transfer`] for ordering: on the cable, abandoning a set is up to 32 file
+/// deletions, and running them first would spend the peer's abort-ack budget before the endpoint had
+/// even started emptying — the sequencing `usb::data_plane::DRAIN_BUDGET_MS` documents.
+pub(crate) fn finish_idle_abort(store: &RefCell<ObjectStore>, shared: &mut SharedStore, abort: &IdleAbort) {
+    // Any stray temp from a transfer that never reached its commit. A no-op when there is none.
+    store.borrow_mut().upload_discard(shared);
+    if abort.abandon_set {
+        info!("link: [ctl] idle abort names the set — abandoning every staged file of it");
+        store.borrow_mut().set_upload_abort(shared);
+    }
 }
 
 /// Decode + classify against the store: echo uploads, route/trip/firmware/**map** uploads, and
@@ -82,18 +117,16 @@ pub(crate) fn classify_transfer(
             }
             None => {}
         }
-        // Nothing in flight: discard any stray temp and confirm the abort.
-        store.borrow_mut().upload_discard(shared);
-        // …and, on the cable, abandon a **volume set** staged between transfers (issue #1039). A
-        // set lives across several descriptors, so the gap between them is exactly where an `op=3`
-        // lands — and before this, an abort there was confirmed while gigabytes stayed staged and
-        // every set with a different shard count was refused as a mismatch until the cable was
-        // unplugged. Scoped to USB because a set is only ever received there (spec §10), and
-        // because this classifier runs on the radio too: an abort from the phone must not delete
-        // the set the cable is between shards of.
-        if transport == Transport::Usb {
-            store.borrow_mut().set_upload_abort(shared);
-        }
+        // Nothing in flight. **The store work does not happen here** — the transport runs it through
+        // `finish_idle_abort` once it has quiesced its pipe, because on the cable it can be a whole
+        // set's worth of deletions and those must not run in front of the drain.
+        //
+        // A **volume set** is abandoned only when the descriptor names one (issue #1039 for the
+        // abandonment; see `IdleAbort` for why the type is what tells the two meanings apart).
+        // Scoped to USB because a set is only ever received there (spec §10), and because this
+        // classifier runs on the radio too: an abort from the phone must not delete the set the
+        // cable is between shards of.
+        let abandon_set = transport == Transport::Usb && desc.ty == ObjectType::MapSet;
         info!(
             "link: [ctl] transfer_control answer: op {} type {} id {} len {} -> status {}",
             desc.op.as_u8(),
@@ -102,7 +135,10 @@ pub(crate) fn classify_transfer(
             desc.total_len,
             TransferStatus::Aborted.as_u8()
         );
-        return TransferDisposition::AnswerIdleAbort(transfer_result(desc.object_id, TransferStatus::Aborted));
+        return TransferDisposition::AnswerIdleAbort(IdleAbort {
+            bytes: transfer_result(desc.object_id, TransferStatus::Aborted),
+            abandon_set,
+        });
     }
     // `busy()`, not `in_flight()` (#1146 P2): the gate arbitrates a second resource now — the
     // scratch arena's `nav ⊥ usb` rule — so a live **route search** must answer `busy` here too.

@@ -150,7 +150,7 @@ export async function sendAssembledSetFile(
 export async function abandonAssembledSet(client: ProtocolClient, state: SetSendState): Promise<void> {
     if (state.nextShard === 0 || state.setId !== null) return;
     try {
-        await client.abandonMapSet(setPartId(state.shardCount, Math.min(state.nextShard, state.shardCount - 1)));
+        await client.abandonMapSet();
     } catch {
         // Best effort: preserve the original assembly/transport failure. A disconnect also makes
         // firmware delete the staged set when its USB plane tears down.
