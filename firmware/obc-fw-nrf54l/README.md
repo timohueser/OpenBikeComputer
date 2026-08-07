@@ -190,9 +190,11 @@ cargo run --release --no-default-features --features ble
 (The standalone FLPR waveform bench bin `ls021_flpr_bringup` was retired in #177 once the app drove
 the LS021 on glass; the M33-direct `ls021_bringup` bench was retired earlier in #176; the A1 BLE
 spike bin `ble_spike` was retired at #270 when the stack moved into `main.rs`/`src/ble/`; the
-`sd_bench` SD-throughput harness went with the SPI storage path it measured, at #1158 — a fresh
-sEMMC bench would be written, never ported. All are in git history if an isolation bring-up is ever
-needed again — the FLPR transport is `src/ls021_flpr.rs`, exercised by the default build.)
+`sd_bench` raw-throughput harness went with the SPI storage path it measured, at #1158. Its sEMMC
+successor is the nonshipping `sd-bench` feature described below: it profiles the real map renderer
+rather than adding another standalone binary. All retired bins remain in git history if an isolation
+bring-up is ever needed again — the FLPR transport is `src/ls021_flpr.rs`, exercised by the default
+build.)
 
 ### LS021 FLPR builds — DK wiring
 
@@ -221,6 +223,35 @@ SDXC 64 GB), against the SPI path this replaced:
 | read, CMD18 × 256 blocks @ 32 MHz 4-bit | **14.7 MB/s** | 1.07 MB/s |
 | write, CMD25 × 256 blocks @ 21.3 MHz | **8.2 MB/s** | ~1.1 MB/s |
 | single-block read | 430 µs | 1.1 ms |
+
+The bulk number is not the whole map-rendering story. The 2026-08-07 on-device profile used the
+shipping FAT extent path and the actual `MS7.OBS` three-shard map (394,075,657 B, 32 KiB clusters)
+while `SynthLocation` moved the camera. Counters at the `ByteSource` and concrete `BlockDevice`
+boundaries separate logical reader requests from physical sEMMC commands; the time includes FLPR
+mode acquisition, the card commands and any alignment-bounce copy.
+
+| Live map frame | Before reader tuning | Final warm result | Change |
+| :-- | --: | --: | --: |
+| four chunks | 36 commands / 18,432 B / **12.48–12.70 ms** | **0 commands / 0 B / 0 ms** on most frames | storage sleeps between refreshes |
+| five chunks | ~66 commands / ~30.8 KiB / **25.1–25.7 ms** | **0 commands / 0 B / 0 ms** once resident | eliminates steady five-chunk thrash |
+
+The raw bus was already healthy; command latency was the bottleneck. Pass B had been walking the
+quadtree again to reconstruct a leaf bbox even when pass A's geometry chunk was resident. The
+repeated ordered scans could also cyclically thrash both the index and geometry caches. Cached
+chunks now keep their leaf anchor; both caches use scan-resistant RRIP; the otherwise-idle first
+4 KiB of the oversized decode scratch acts as a fifth geometry slot; and two bounded leaf lists
+prefetch 1/8 of a viewport around the current view. The latter replaces one tagged index sector,
+so the complete change leaves `MapCache` at the same 37,084-byte resource baseline.
+
+Zero is the steady state, not a claim that panning never reads storage: crossing into two new
+chunks measured **4.45 ms**, while a periodic expanded-index refresh measured **5.9–7.6 ms** and
+was followed by zero-command frames again. A measured 1 KiB index-window experiment was rejected:
+despite turning reads into CMD18, it raised the earlier four-chunk warm result from 4.55–4.81 ms to
+8.6–9.0 ms by halving useful cache capacity.
+
+To reproduce, build and flash `cargo run --release --features synth,sd-bench`. The benchmark image
+boots directly to Map and emits one `map SD bench:` RTT line per redraw. `sd-bench` is absent from
+normal builds and adds no counters or automatic map boot to shipping firmware.
 
 **Wiring.** Six jumpers, no chip-select: `P2.00 D3 · P2.01 CLK · P2.02 D0 · P2.03 D2 · P2.04 D1 ·
 P2.05 CMD`, plus GND and 3V3. The pin assignment is fixed by the soft peripheral, not by us. Pull-ups

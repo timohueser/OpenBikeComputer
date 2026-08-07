@@ -46,6 +46,12 @@ default = ["ble"]
 # unused) since Cargo can't disable a default feature. See issue #218.
 synth = []
 
+# On-device SD read profiler. Adds relaxed counters at the concrete BlockDevice boundary and one
+# RTT line per map redraw, splitting the renderer's logical ByteSource requests from the physical
+# sEMMC command shape and wall time. Off in every shipping build; use with `synth` so a moving
+# camera generates repeatable cold/warm map frames without the debug-UART control path.
+sd-bench = []
+
 # Stream fake GPS / altimeter / compass from a host over the **VCOM UART** (issue #127). The
 # nRF54L15 has no USB peripheral, so the debug-sensor /
 # telemetry stream rides the DK's onboard J-Link USB-CDC **VCOM** (UARTE20, TX P1_04 / RX P1_05);

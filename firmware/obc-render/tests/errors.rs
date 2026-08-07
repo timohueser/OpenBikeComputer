@@ -258,8 +258,8 @@ fn sparse_index_chain(levels: usize) -> Vec<u32> {
 }
 
 #[test]
-fn second_index_walk_failure_never_reinterprets_unplaced_stubs() {
-    const LEVELS: usize = 24; // beyond the 16-block index cache
+fn resident_winner_skips_the_second_index_walk() {
+    const LEVELS: usize = 24; // beyond the seven-block index cache
     let bytes = build_file(
         (0, 0, 10_000, 10_000),
         STYLES,
@@ -290,8 +290,53 @@ fn second_index_walk_failure_never_reinterprets_unplaced_stubs() {
 
     let (stats, buf) = render(&reader);
     assert!(src.armed.get(), "fixture must arm only after pass A completes");
-    assert_eq!(stats, RenderStatsView { drawn: 0, capacity: 0, malformed: 0, structure: 0, reads: 1 });
-    assert_eq!(buf.count(Rgb888::new(255, 0, 0)), 0);
+    assert_eq!(stats, RenderStatsView { drawn: 1, capacity: 0, malformed: 0, structure: 0, reads: 0 });
+    assert!(buf.count(Rgb888::new(255, 0, 0)) > 0, "the resident pass-A chunk must decode without another walk");
+}
+
+#[test]
+fn cached_leaf_list_skips_second_index_walk_for_uncached_geometry() {
+    const LEVELS: usize = 24; // beyond the seven-block index cache
+    const CHUNK_SIZE: usize = 8192;
+    // Make the sole chunk larger than the four-KiB geometry slots. Pass A can still select the
+    // first tiny line, but pass B has no resident geometry and must read the chunk again. The leaf
+    // list should still avoid a second index walk; the armed source turns any such walk into a
+    // failure, so both features drawing proves the index stayed quiet.
+    let mut chunk = pack_line(1, 100, 100, &[(20, 0)]);
+    chunk.extend_from_slice(&pack_line16(1, 100, 100, &vec![(1, 0); 1024]));
+    assert!(chunk.len() > 4096);
+    let bytes = build_file(
+        (0, 0, 10_000, 10_000),
+        STYLES,
+        &[LodSpec {
+            max_mpp: f32::INFINITY,
+            index: sparse_index_chain(LEVELS),
+            chunks: vec![seal(chunk, CHUNK_SIZE)],
+            chunk_size: CHUNK_SIZE,
+        }],
+    );
+    let layout_src = obc_reader::SliceSource(&bytes);
+    let layout = MapTables::parse(&layout_src).unwrap();
+    let layout_cache = MapCache::new();
+    let layout_reader = Reader::new(&layout_src, &layout, &layout_cache);
+    let lod = layout_reader.lods()[0];
+    let index_offset = lod.index_offset as u32;
+    let chunk_offset = chunk_data_offset(&lod);
+    let block = |offset: u32| offset - offset % 512;
+    let src = FailSecondIndexWalk {
+        bytes: &bytes,
+        arm_after: chunk_offset,
+        fail_block: block(index_offset),
+        armed: Cell::new(false),
+    };
+    let tables = MapTables::parse(&src).unwrap();
+    let cache = MapCache::new();
+    let reader = Reader::new(&src, &tables, &cache);
+
+    let (stats, buf) = render(&reader);
+    assert!(src.armed.get(), "fixture must arm only after pass A completes");
+    assert_eq!(stats, RenderStatsView { drawn: 2, capacity: 0, malformed: 0, structure: 0, reads: 0 });
+    assert!(buf.count(Rgb888::new(255, 0, 0)) > 0);
 }
 
 #[test]
