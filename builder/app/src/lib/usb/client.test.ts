@@ -27,6 +27,18 @@ function payload(n: number) {
     return Uint8Array.from({ length: n }, (_, i) => (i * 31 + 7) & 0xff);
 }
 
+/**
+ * Spin the event loop until `ready`, or give up.
+ *
+ * Used to *observe* a race window rather than assume one: a fixed number of microtask turns is a
+ * guess about how many awaits the host takes to get its bytes onto the wire, and a guess that runs
+ * short makes the test pass for the wrong reason.
+ */
+async function waitFor(ready: () => boolean, timeoutMs = 2_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (!ready() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 1));
+}
+
 /** Run `body` against a fresh loopback device, closing it whatever happens. */
 async function withDevice(
     options: Parameters<typeof loopbackDevice>[0],
@@ -215,6 +227,91 @@ describe("the upload window", () => {
             expect(device.strayBytesDiscarded, "the stray bytes were never discarded").toBeGreaterThanOrEqual(
                 9_000,
             );
+        });
+    });
+
+    it("delivers a payload that arrived before the device processed its announce", async () => {
+        // **The field wedge, #1173.** The host pipelines: it writes the announce and starts pumping
+        // the payload without waiting to hear the announce was accepted. The device classifies that
+        // announce behind the shared store lock, which a map render can hold for tens of
+        // milliseconds — so the bytes land first, on a device with nothing armed.
+        //
+        // The firmware used to *read and discard* them there. A 296-byte set manifest — the only
+        // object in a volume set small enough to fit entirely inside that window — was therefore
+        // eaten 18 ms before the announce claiming it was answered, and the transfer that then armed
+        // waited forever for bytes that no longer existed: "receiving map, 0%", until the cable came
+        // out. Nothing reads the pipe while nothing is armed now; the endpoint NAKs and the bytes
+        // wait on the wire.
+        //
+        // Negative check: restore the discard (an idle read loop in `MockDevice`) and this test
+        // fails exactly as the field did — the upload never completes and the timeout is what ends
+        // it, not an error the device sent.
+        //
+        // Scope: this payload fits inside the channel's high-water mark, so what it proves is that
+        // the bytes are *not eaten* — the writer never has to block. The test below is the other
+        // half, where it does.
+        await withDevice({ bulkPacketSize: 64 }, async ({ client, device, link }) => {
+            const release = device.holdNextAnnounce();
+            const bytes = payload(296);
+            const upload = client.upload(ObjectType.Route, NEW_OBJECT_ID, bytes, { chunkSize: 4096 });
+            // The window has to be *observed* rather than assumed: wait until the whole payload is
+            // actually queued against the un-armed device, and assert it. A fixed number of turns
+            // would let this pass for the wrong reason on a host that got its bytes out later.
+            await waitFor(() => link.bulkDepth("to-device") >= bytes.length);
+            expect(link.bulkDepth("to-device"), "the payload never reached the un-armed device").toBe(bytes.length);
+            release();
+
+            const { objectId } = await upload;
+            // The bytes that waited are the bytes that landed — a whole-object CRC the device
+            // verified, over content that never went through a discard.
+            expect(device.stored(ObjectType.Route, objectId)).toEqual(bytes);
+        });
+    });
+
+    it("lets a held announce back-pressure the sender instead of eating or dropping it", async () => {
+        // The settlement half of the test above: a payload several times the channel's high-water
+        // mark, so the host's writer genuinely blocks while the announce is held. Nothing on the
+        // device is reading, so the only thing that can release it is the transfer that eventually
+        // arms — which is exactly the NAK semantics the firmware now relies on, where an un-armed
+        // bulk endpoint holds the sender on the wire rather than absorbing it.
+        //
+        // This is the property the old idle discard destroyed in the other direction: it kept the
+        // writer flowing by throwing the bytes away.
+        await withDevice({ bulkPacketSize: 512, bulkHighWaterMark: 4096 }, async ({ client, device, link }) => {
+            const release = device.holdNextAnnounce();
+            const bytes = payload(40_000);
+            const upload = client.upload(ObjectType.Route, NEW_OBJECT_ID, bytes, { chunkSize: 4096 });
+            // Backed up against the mark rather than consumed: the device is holding the announce
+            // and reading nothing, so the bytes pile up on the channel and the writer blocks.
+            await waitFor(() => link.bulkDepth("to-device") > 4096);
+            expect(link.bulkDepth("to-device"), "the sender was not back-pressured").toBeGreaterThan(4096);
+            release();
+
+            const { objectId } = await upload;
+            expect(device.stored(ObjectType.Route, objectId)).toEqual(bytes);
+        });
+    });
+
+    it("fails a mid-object storage refusal without blocking the sender on the wire", async () => {
+        // The firmware's third drain site: `run_upload`'s SD-append failure answers `error` with
+        // most of the announced object still coming. Nothing is armed after that answer, so nothing
+        // reads the endpoint — the host's submitted writes would never settle and `pumpChunks` would
+        // block in `Promise.allSettled` *in front of* the abort that would clear them. The device
+        // therefore drains behind its own answer.
+        //
+        // Asserted as a rejection rather than a hang: before the drain existed on this path, this
+        // test times out instead of failing.
+        await withDevice({ bulkPacketSize: 512, bulkHighWaterMark: 4096 }, async ({ client, device }) => {
+            device.failNextUploadMidObject(TransferStatus.Error);
+            await expect(
+                client.upload(ObjectType.Route, NEW_OBJECT_ID, payload(40_000), { chunkSize: 4096 }),
+            ).rejects.toMatchObject({ name: "DeviceError" });
+
+            // And the link is usable afterwards, which is what says the pipe was actually emptied
+            // rather than merely abandoned.
+            const bytes = payload(2_048);
+            const { objectId } = await client.upload(ObjectType.Route, NEW_OBJECT_ID, bytes);
+            expect(device.stored(ObjectType.Route, objectId)).toEqual(bytes);
         });
     });
 

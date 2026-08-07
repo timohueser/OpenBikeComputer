@@ -91,6 +91,22 @@ pub(crate) async fn serve_coc(
             // stale closed channel. A valid sender waits for its GATT write ack;
             // the control task signals TRANSFER_ARM before accepting that write,
             // so its descriptor wins before its first payload can be observed.
+            //
+            // **The cable's twin of this arm was deleted, and the radio's stays.**
+            // Over USB the same discard ate a pipelined manifest, because that
+            // host deliberately does *not* wait for its announce to be answered
+            // before queuing the payload — a bulk endpoint has no channel to
+            // reopen, so the protocol lets it pipeline and recovers with an
+            // explicit drain handshake instead. The app has no such licence and
+            // takes none: `BLETransport` writes `transferControl` **with
+            // response** and awaits it (`try await write(descriptor.encode(),
+            // to: GATT.transferControl)`), and the ack it awaits is `e.accept()`
+            // — issued *after* this signal. So the ordering the sentence above
+            // claims is real here and only here, and the CoC's own credit flow
+            // control is what holds a well-behaved sender's bytes meanwhile. The
+            // second job has no cable equivalent at all: a closed channel is how
+            // the app resets a failed exchange, which is why the radio needs no
+            // `drain_bulk_out` and has none.
             let armed = match select(TRANSFER_ARM.wait(), ch.receive(stack, &mut buf)).await {
                 Either::First(armed) => armed,
                 Either::Second(Ok(n)) if n > 0 => {
