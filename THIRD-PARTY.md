@@ -2036,7 +2036,7 @@ DEALINGS IN THE SOFTWARE.
 
 ### MIT License
 
-Applies to: `bt-hci 0.9.0`
+Applies to: `embassy-usb-synopsys-otg 0.4.0`, `bt-hci 0.9.0`
 
 ```text
 Copyright (c) Embassy project contributors
@@ -2490,7 +2490,7 @@ SOFTWARE.
 
 ### MIT License
 
-Applies to: `btuuid 0.1.1`, `cortex-m-rt-macros 0.7.5`, `cortex-m-rt 0.7.5`, `defmt-parser 1.0.0`, `defmt-rtt 1.2.0`, `defmt 0.3.100`, `embassy-embedded-hal 0.6.0`, `embassy-executor-macros 0.8.0`, `embassy-executor-timer-queue 0.1.0`, `embassy-executor 0.10.0`, `embassy-futures 0.1.2`, `embassy-hal-internal 0.4.0`, `embassy-hal-internal 0.5.0`, `embassy-net-driver-channel 0.4.0`, `embassy-net-driver 0.2.0`, `embassy-nrf 0.11.0`, `embassy-sync 0.8.0`, `embassy-time-driver 0.2.2`, `embassy-time-queue-utils 0.3.2`, `embassy-time 0.5.1`, `embassy-usb-driver 0.2.2`, `embassy-usb-synopsys-otg 0.4.0`, `embassy-usb 0.6.0`, `embedded-graphics-core 0.4.1`, `libm 0.2.16`, `panic-probe 1.0.0`, `trouble-host-macros 0.5.0`, `trouble-host 0.7.0`, `void 1.0.2`, `windows-link 0.2.1`, `windows-result 0.4.1`, `windows-sys 0.61.2`
+Applies to: `btuuid 0.1.1`, `cortex-m-rt-macros 0.7.5`, `cortex-m-rt 0.7.5`, `defmt-parser 1.0.0`, `defmt-rtt 1.2.0`, `defmt 0.3.100`, `embassy-embedded-hal 0.6.0`, `embassy-executor-macros 0.8.0`, `embassy-executor-timer-queue 0.1.0`, `embassy-executor 0.10.0`, `embassy-futures 0.1.2`, `embassy-hal-internal 0.4.0`, `embassy-hal-internal 0.5.0`, `embassy-net-driver-channel 0.4.0`, `embassy-net-driver 0.2.0`, `embassy-nrf 0.11.0`, `embassy-sync 0.8.0`, `embassy-time-driver 0.2.2`, `embassy-time-queue-utils 0.3.2`, `embassy-time 0.5.1`, `embassy-usb-driver 0.2.2`, `embassy-usb 0.6.0`, `embedded-graphics-core 0.4.1`, `libm 0.2.16`, `panic-probe 1.0.0`, `trouble-host-macros 0.5.0`, `trouble-host 0.7.0`, `void 1.0.2`, `windows-link 0.2.1`, `windows-result 0.4.1`, `windows-sys 0.61.2`
 
 ```text
 MIT License

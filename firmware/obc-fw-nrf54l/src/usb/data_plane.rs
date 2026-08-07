@@ -48,15 +48,23 @@ pub(crate) static TRANSFER_ARM: Signal<CriticalSectionRawMutex, Armed> = Signal:
 /// result goes out, so it can't leak into the next transfer.
 pub(crate) static TRANSFER_ABORT: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
-/// One chunk of the object stream. A full max packet, so a multi-megabyte map moves in the fewest
-/// transfers the endpoint allows; the SD card is the real ceiling either way (#889).
+/// One chunk of the object stream **device → host** — a download's `ep.write`, and the echo
+/// loopback's write-back. A full max packet, which for an IN endpoint is also the ceiling: the
+/// driver's `write` refuses anything longer, because one call is one packet.
+///
+/// The **OUT** direction has no such constant any more (#1173): a bulk read now returns whatever
+/// the core absorbed while the CPU was busy, up to [`BULK_BURST_LEN`](super::BULK_BURST_LEN), and
+/// the loops below take `n` as it comes. That asymmetry is the point of the change — the IN path is
+/// untouched by it.
 const CHUNK_LEN: usize = MAX_PACKET as usize;
 
 /// How long the bulk OUT endpoint must stay silent before [`drain_bulk_out`] calls it empty.
 ///
 /// Generous next to a high-speed microframe (125 µs): once the endpoint stops NAKing, a host's
 /// queued transfers are delivered back to back, so a gap this long means there is nothing left
-/// rather than that the next one is slow.
+/// rather than that the next one is slow. Still true with burst arming (#1173) — a burst that the
+/// host stops part-way through is not held back, because the driver publishes every packet as it
+/// lands and only the *re-arm* waits for the burst to close.
 const DRAIN_QUIET_MS: u64 = 20;
 
 /// Ceiling on one drain.
@@ -230,6 +238,14 @@ async fn drain_bulk_out(ep: &mut EpOut, buf: &mut [u8]) {
         // that converges where starvation does not. In practice each drain ends one
         // [`DRAIN_QUIET_MS`] window (20 ms) after the peer stops, so the window is small — small,
         // not absent.
+        //
+        // Burst arming (#1173) moves that residual in both directions, and neither is large. Each
+        // `read` here now discards up to a whole burst instead of one packet, so a given backlog is
+        // emptied in an eighth of the turns — the drain converges sooner and the yield above is
+        // reached sooner. Against that, whatever the host sends *after* the drain gives up stages a
+        // burst deep rather than a packet deep before the endpoint NAKs, so the poisoned first
+        // chunk the paragraph above accepts can be 4 KiB rather than 512 B. It is the same one
+        // failed CRC either way: the retry is per object, not per byte.
         if TRANSFER_ARM.signaled() {
             warn!("usb: [bulk] a transfer armed mid-drain — stopping rather than eating its payload");
             break;
@@ -284,24 +300,41 @@ pub(crate) async fn run(
     loop {
         ep_out.wait_enabled().await;
         info!("usb: [bulk] endpoint enabled — data plane ready");
-        // **The re-enumeration stray sweep**, and it is a driver fact rather than a protocol one.
-        // The OTG core stages one received packet in `EpState::out_size`, which is cleared at
-        // construction and inside `read()` and **nowhere else** — `endpoint_set_enabled` re-primes
-        // `pktcnt`/`EPENA` without touching it, and a bus reset does not either. So a cable pulled
-        // while this task was inside an SD flush leaves one packet latched across the whole
-        // disable/enable cycle, and the next session's *first* `read` would take up to 512 B of a
-        // dead upload as its opening bytes. That is self-healing — the whole-object CRC fails and
-        // the host quiesce-retries — at the price of a full map transfer, which is minutes.
+        // **The re-enumeration stray sweep.** It was written against a driver fact — the OTG core
+        // stages received packets per endpoint, and that staging was cleared at construction and
+        // inside `read()` and *nowhere else*, so `endpoint_set_enabled` re-primed `pktcnt`/`EPENA`
+        // over the top of a packet latched by a cable pulled mid-flush, and the next session's
+        // first `read` opened with up to 512 B of a dead upload. Self-healing through the
+        // whole-object CRC, at the price of a whole map transfer.
+        //
+        // **That fact no longer holds, and this stays anyway.** The vendored driver (#1173,
+        // `vendor/embassy-usb-synopsys-otg`) resets the staging cursors on the enable/disable edge
+        // and on a bus reset's `configure_endpoints`, so nothing of the old session survives into
+        // this one by construction — the sweep can no longer find the packet it was written for.
+        // What it can still find is anything a host queued between the endpoint coming up and this
+        // task reaching the idle loop, which is cheap to look for and impossible to reason away
+        // from here; and being the same shape as the fix in the driver, it is what would keep the
+        // failure survivable if that driver is ever swapped back or bumped.
         //
         // This is the one place a drain needs no handshake to be safe: the endpoint has only just
         // been configured, so the host cannot yet have opened anything, and there is by
         // construction nothing armed to claim what it finds.
         drain_bulk_out(&mut ep_out, buf).await;
         loop {
-            // **Nothing reads the bulk pipe while nothing is armed.** With the OUT endpoint
-            // un-armed the USB core simply NAKs, and the bytes a pipelining host already put on the
-            // wire wait there until a transfer arms and reads them — hardware flow control, which is
-            // the only buffer that cannot lose a race.
+            // **Nothing reads the bulk pipe while nothing is armed**, so nothing is discarded: the
+            // bytes a pipelining host already put on the wire wait until a transfer arms and reads
+            // them — hardware flow control, which is the only buffer that cannot lose a race.
+            //
+            // Being exact about where they wait, because it is not all on the wire and the number
+            // moved with #1173. The driver keeps the endpoint armed one *transfer* ahead of the
+            // reader, so the core absorbs up to one armed transfer into the driver's per-endpoint
+            // staging buffer before it starts NAKing — 512 B when that transfer was one packet,
+            // `BULK_BURST_LEN` (4 KiB) now that the bulk OUT endpoint arms a burst. Those bytes are
+            // **delivered, not discarded**: the next armed `read` drains everything staged in one
+            // call, in order, which is precisely what this arm's deletion is for. Past that the
+            // endpoint NAKs and the rest genuinely does wait on the wire. So the burst widens the
+            // soft buffer in front of the hard one and changes nothing about who gets the bytes —
+            // it is the 296-byte manifest below fitting with three and a half kilobytes to spare.
             //
             // This arm used to be `ep_out.read(buf)`, discarding whatever it found on the reasoning
             // that a valid sender waits for its control-frame reply. It does not, by design: the
@@ -515,6 +548,17 @@ async fn run_upload(
     let mut stage = Stage::new(staged, if holds_magic { obc_ble::MAGIC_LEN } else { 0 });
     let started = Instant::now();
     while !rx.is_complete() {
+        // One read is a **burst**, not a packet (#1173): up to
+        // [`BULK_BURST_LEN`](crate::usb::BULK_BURST_LEN) of whatever the core absorbed while the
+        // previous pass was folding CRC and writing the card. Everything below is length-agnostic
+        // and was already — `Receiver::push`, `HeldMagic::feed` and `Stage::push` all take a slice
+        // of any size — so the burst changes how *often* this loop turns, not what it does.
+        //
+        // The yield cadence is unchanged where it matters: `Stage::append_arm` still ends every
+        // card flush with an explicit `yield_now`, which is the ride loop's guaranteed turn and
+        // therefore the watchdog feed. A burst makes the loop turn ~8× less often, but a flush is
+        // 32 KiB either way, so the interval between yields is the same number of *bytes* — the
+        // unit the WDT budget was ever about.
         let n = match select(ep.read(buf), TRANSFER_ABORT.wait()).await {
             Either::First(Ok(n)) if n > 0 => n,
             Either::First(Ok(_)) => continue, // a zero-length packet advances nothing
@@ -549,6 +593,21 @@ async fn run_upload(
             }
         };
         let consumed = rx.push(&buf[..n]);
+        // `push` clamps at the announced length, and a peer that overruns it is a protocol error
+        // its own docs say the caller must treat as one — so say so rather than dropping the
+        // surplus in silence. Structurally unreachable while the endpoint armed one packet at a
+        // time (the announce guard rejects an over-long object before a byte lands); with bursts
+        // it is a real diagnostic, and it is the line that distinguishes "the host sent too much"
+        // from the reject probe's "the bytes were not the ones announced".
+        if consumed < n {
+            warn!(
+                "usb: [bulk] host overran the announced length by {} B (read {}, {} of {} taken) — surplus dropped",
+                n - consumed,
+                n,
+                rx.committed_offset(),
+                rx.total_len()
+            );
+        }
         // The receiver's CRC always sees every payload byte; only the *write* skips the held magic.
         let write = if holds_magic { held.feed(&buf[..consumed]) } else { &buf[..consumed] };
         // Into RAM, not onto the card: `stage` appends a batch at a time so the card gets one
@@ -652,6 +711,20 @@ async fn run_upload(
         crate::link::map_transfer_ended(Some(status));
     }
     let committed = status == TransferStatus::Committed;
+    if !committed {
+        // Reject forensics (#1169 follow-up): the held magic is the object's first four payload
+        // bytes exactly as received — anything but the format magic proves the stream arrived
+        // offset (stray leading bytes), while a clean magic with a CRC delta points past the
+        // front. `take` is non-consuming, so reading it here costs the commit path nothing.
+        let magic = held.take().unwrap_or([0; obc_ble::MAGIC_LEN]);
+        let (got, want) = rx.crc_probe();
+        warn!(
+            "usb: [bulk] reject probe: first payload bytes {=[u8]:#04x}, crc got {=u32:#010x} want {=u32:#010x}",
+            &magic[..],
+            got,
+            want
+        );
+    }
     let elapsed_ms = started.elapsed().as_millis().max(1);
     if committed && target == MapTarget::Map {
         info!("usb: [bulk] map {} is now the selected map — it loads on the next boot", id);
@@ -874,10 +947,16 @@ async fn run_echo(
             }
         };
         let consumed = rx.push(&buf[..n]);
-        if let Err(e) = ep_in.write(&buf[..consumed]).await {
-            info!("usb: [bulk] echo send failed: {:?}", defmt::Debug2Format(&e));
-            close_transfer();
-            return TransferOutcome::LinkDropped;
+        // The read is a burst now (#1173), the write is not: `EndpointIn::write` is one packet per
+        // call and refuses anything longer, so the echo-back is re-cut into max packets. Only the
+        // *last* one may be short, which keeps the loopback's framing identical to a download's
+        // (and is why the terminating-ZLP rule below still reads the same).
+        for packet in buf[..consumed].chunks(CHUNK_LEN) {
+            if let Err(e) = ep_in.write(packet).await {
+                info!("usb: [bulk] echo send failed: {:?}", defmt::Debug2Format(&e));
+                close_transfer();
+                return TransferOutcome::LinkDropped;
+            }
         }
     }
     // Same end-of-object rule as a download (see `run_download`): the echoed stream is delimited by
