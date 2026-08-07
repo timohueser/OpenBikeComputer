@@ -183,6 +183,7 @@ fn scan_maps_read_failures_to_io() {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Call {
     Snapshot(ImageHeader),
+    StageBlob,
     WriteState(Box<BootState>),
 }
 
@@ -190,13 +191,15 @@ struct FakeArmIo {
     calls: Vec<Call>,
     /// What `snapshot` answers.
     snapshot: Result<Option<StagedRef>, ScanError>,
+    /// Whether `stage_boot_blob` fails (#1158).
+    stage_fails: bool,
     /// Whether `write_state` fails.
     write_fails: bool,
 }
 
 impl FakeArmIo {
     fn new(snapshot: Result<Option<StagedRef>, ScanError>) -> FakeArmIo {
-        FakeArmIo { calls: Vec::new(), snapshot, write_fails: false }
+        FakeArmIo { calls: Vec::new(), snapshot, stage_fails: false, write_fails: false }
     }
 }
 
@@ -204,6 +207,14 @@ impl ArmIo for FakeArmIo {
     fn snapshot(&mut self, installed: &ImageHeader) -> Result<Option<StagedRef>, ScanError> {
         self.calls.push(Call::Snapshot(*installed));
         self.snapshot
+    }
+    fn stage_boot_blob(&mut self) -> Result<(), IoError> {
+        self.calls.push(Call::StageBlob);
+        if self.stage_fails {
+            Err(IoError)
+        } else {
+            Ok(())
+        }
     }
     fn write_state(&mut self, state: &BootState) -> Result<(), IoError> {
         self.calls.push(Call::WriteState(Box::new(state.clone())));
@@ -236,11 +247,13 @@ fn arm_snapshots_before_the_page_write_and_bumps_the_generation() {
     let ticket = arm(&mut io, &current, update).expect("arm succeeds");
     assert_eq!(ticket, ArmTicket { generation: 1, rollback: Rollback::Snapshot }, "Idle carries generation 0 → 1");
 
-    // THE ordering assertion: the rollback snapshot lands on the card strictly before the
-    // boot-state page write — a power cut between the two leaves nothing armed.
-    assert_eq!(io.calls.len(), 2);
+    // THE ordering assertion: the rollback snapshot lands on the card, then the blob stage lands
+    // in RRAM (#1158), and only then the boot-state page write — a power cut anywhere before the
+    // page write leaves nothing armed, and a valid Armed page implies a staged blob.
+    assert_eq!(io.calls.len(), 3);
     assert_eq!(io.calls[0], Call::Snapshot(old));
-    match &io.calls[1] {
+    assert_eq!(io.calls[1], Call::StageBlob);
+    match &io.calls[2] {
         Call::WriteState(s) => {
             assert_eq!(
                 **s,
@@ -248,7 +261,7 @@ fn arm_snapshots_before_the_page_write_and_bumps_the_generation() {
                 "the written record carries the update, the snapshot, and the bumped generation"
             );
         }
-        other => panic!("expected the page write second, got {other:?}"),
+        other => panic!("expected the page write last, got {other:?}"),
     }
 }
 
@@ -262,7 +275,8 @@ fn arm_generation_is_old_plus_one_even_from_a_stale_armed_page() {
     let ticket = arm(&mut io, &current, update).expect("arm stays total");
     assert_eq!(ticket.generation, 8);
     assert_eq!(ticket.rollback, Rollback::FirstInstall);
-    assert_eq!(io.calls.len(), 1, "no snapshot call for an unknown installed image");
+    assert_eq!(io.calls.len(), 2, "no snapshot call for an unknown installed image");
+    assert_eq!(io.calls[0], Call::StageBlob, "the blob stage still runs — the install needs the card");
 }
 
 #[test]
@@ -271,12 +285,13 @@ fn arm_first_install_skips_the_snapshot_and_records_no_rollback() {
     let mut io = FakeArmIo::new(Err(ScanError::Io)); // must never be consulted
     let ticket = arm(&mut io, &BootState::Idle { installed: None, last_outcome: None }, update).expect("arm succeeds");
     assert_eq!(ticket, ArmTicket { generation: 1, rollback: Rollback::FirstInstall });
-    assert_eq!(io.calls.len(), 1, "snapshot skipped on a fresh device");
-    match &io.calls[0] {
+    assert_eq!(io.calls.len(), 2, "snapshot skipped on a fresh device");
+    assert_eq!(io.calls[0], Call::StageBlob);
+    match &io.calls[1] {
         Call::WriteState(s) => {
             assert_eq!(**s, BootState::Armed { generation: 1, update, rollback: None });
         }
-        other => panic!("expected only the page write, got {other:?}"),
+        other => panic!("expected the page write after the blob stage, got {other:?}"),
     }
 }
 
@@ -289,9 +304,9 @@ fn arm_running_mismatch_arms_without_a_rollback_and_says_so() {
     let ticket = arm(&mut io, &BootState::Idle { installed: Some(installed_header()), last_outcome: None }, update)
         .expect("arm succeeds");
     assert_eq!(ticket.rollback, Rollback::RunningMismatch);
-    match &io.calls[1] {
+    match &io.calls[2] {
         Call::WriteState(s) => assert!(matches!(**s, BootState::Armed { rollback: None, .. })),
-        other => panic!("expected the page write second, got {other:?}"),
+        other => panic!("expected the page write last, got {other:?}"),
     }
 }
 
@@ -302,8 +317,23 @@ fn arm_aborts_on_a_failed_snapshot_without_touching_the_page() {
     let err =
         arm(&mut io, &BootState::Idle { installed: Some(installed_header()), last_outcome: None }, update).unwrap_err();
     assert_eq!(err, ArmError::Snapshot(ScanError::Io));
-    assert_eq!(io.calls.len(), 1, "the boot-state page is untouched after a failed snapshot");
+    assert_eq!(io.calls.len(), 1, "the blob stage and the boot-state page are untouched after a failed snapshot");
     assert!(matches!(io.calls[0], Call::Snapshot(_)));
+}
+
+#[test]
+fn arm_aborts_on_a_failed_blob_stage_without_touching_the_page() {
+    // #1158: an Armed page whose blob carve can't be validated would only ever be abandoned next
+    // boot — so a failed stage aborts the arm here, page untouched, where the app can say why.
+    let update = staged(1);
+    let mut io = FakeArmIo::new(Ok(Some(staged(2))));
+    io.stage_fails = true;
+    let err =
+        arm(&mut io, &BootState::Idle { installed: Some(installed_header()), last_outcome: None }, update).unwrap_err();
+    assert_eq!(err, ArmError::BlobStage);
+    assert_eq!(io.calls.len(), 2, "the boot-state page is untouched after a failed blob stage");
+    assert!(matches!(io.calls[0], Call::Snapshot(_)));
+    assert_eq!(io.calls[1], Call::StageBlob);
 }
 
 #[test]
@@ -332,14 +362,14 @@ fn arm_records_the_carried_scan_ref_verbatim() {
 
     // The armed record carries exactly the scanned image — same header/len/CRC/extents the one
     // CRC pass validated.
-    match &io.calls[1] {
+    match &io.calls[2] {
         Call::WriteState(s) => match **s {
             BootState::Armed { update, .. } => {
                 assert_eq!(update, carried, "the Armed page records the carried ref verbatim")
             }
             ref other => panic!("expected an Armed page, got {other:?}"),
         },
-        other => panic!("expected the page write second, got {other:?}"),
+        other => panic!("expected the page write last, got {other:?}"),
     }
 }
 
