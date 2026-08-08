@@ -211,6 +211,16 @@ fn detour_over_terrain(
     (res, sink.buf)
 }
 
+/// Coordinate the original route asks the detour planner to snap to at `distance_m`. Exact edge
+/// snapping deliberately returns this projection rather than quantizing it to the nearest graph
+/// node, so detour endpoint assertions use the request itself as their oracle.
+fn route_coord_at(route_obcr: &[u8], distance_m: u32) -> (i32, i32) {
+    let src = SliceSource(route_obcr);
+    let idx = RouteIndex::read(&src).unwrap();
+    let p = RouteReader::new(&idx, &src).position_at(distance_m).unwrap();
+    (p.lon, p.lat)
+}
+
 /// Measured polyline length of a stitched point list (the same metric the emitter uses).
 fn measured_len(pts: &[RoutePoint]) -> f32 {
     pts.windows(2).map(|w| obc_map_scene::ground_dist_m((w[0].lon, w[0].lat), (w[1].lon, w[1].lat))).sum()
@@ -302,8 +312,12 @@ fn detour_routes_via_parallel_street() {
         let in_middle = p.lon > BASE.0 + SP && p.lon < BASE.0 + (SEGS - 1) * SP;
         assert!(!(on_road_lat && in_middle), "the detour re-entered the blocked span at ({}, {})", p.lon, p.lat);
     }
-    assert_eq!((pts[0].lon, pts[0].lat), road_at(0), "starts at the start snap node");
-    assert_eq!((pts.last().unwrap().lon, pts.last().unwrap().lat), road_at(SEGS), "ends at the goal snap node");
+    assert_eq!((pts[0].lon, pts[0].lat), route_coord_at(&obcr, 0), "starts at the exact requested projection");
+    assert_eq!(
+        (pts.last().unwrap().lon, pts.last().unwrap().lat),
+        route_coord_at(&obcr, total),
+        "ends at the exact requested projection"
+    );
 }
 
 /// A mid-route span (rider at ~600 m, rejoin at ~2 800 m): the exemption discs let the plan use
@@ -314,8 +328,14 @@ fn detour_mid_span_uses_exempt_take_off_and_landing() {
     let obcr = road_route_obcr();
     let (res, detour) = detour_over(&bytes, &obcr, 600, 2_800);
     let stats = res.expect("the mid-span detour plans");
-    // node2 →1→0 → connector → street ×12 → connector → 12→11→ node10.
-    assert_eq!(stats.total_distance_m, 4 * SEG_COST + 2 * CONN_COST + 12 * SEG_COST);
+    // Near node2 →1→0 → connector → street ×12 → connector → 12→11→ near node10. The exact
+    // virtual endpoints add only their two sub-edge fragments to the old node-quantized cost.
+    let node_path = 4 * SEG_COST + 2 * CONN_COST + 12 * SEG_COST;
+    assert!(
+        (node_path..=node_path + 2 * SEG_COST).contains(&stats.total_distance_m),
+        "exact endpoint fragments moved the known node path from {node_path} to {}",
+        stats.total_distance_m
+    );
     let pts = route_points(&detour);
     // The blocked middle (nodes 5..=8 at ~1 390..2 230 m) is never touched.
     for p in &pts {
@@ -653,7 +673,11 @@ fn trim_rejoins_at_first_tail_contact_and_removes_the_retrace() {
         "the untrimmed plan overshoots to road12 (the ring)"
     );
     let last = untrimmed.last().unwrap();
-    assert_eq!((last.lon, last.lat), road_at(9), "…then descends the tail to land at the goal node9");
+    assert_eq!(
+        (last.lon, last.lat),
+        route_coord_at(&obcr, target),
+        "…then descends the tail to land at the exact requested projection near node9"
+    );
 
     // Trim: rejoin advances to the first contact near the road end, past the chosen minimum.
     let (out, trimmed) = trim_run(&obcr, &detour, target, dstats.has_elevation);
@@ -770,11 +794,22 @@ fn splice_span_at_route_end() {
     let idx = RouteIndex::read(&src).unwrap();
     let pts = route_points(&sink.buf);
     let end = pts.last().unwrap();
-    assert_eq!((end.lon, end.lat), road_at(SEGS), "ends at the detour's goal node — the tail is empty");
+    let goal = orig.position_at(total).unwrap();
+    assert_eq!(
+        (end.lon, end.lat),
+        (goal.lon, goal.lat),
+        "ends at the detour's exact goal projection — the tail is empty"
+    );
     let mut names: Vec<String> = Vec::new();
     for_each_waypoint(&src, |w| names.push(w.name.as_str().into())).unwrap();
     assert_eq!(names, ["W-head"], "span-to-end drops the mid and tail waypoints");
-    assert!(idx.total_distance_m >= 600 + dstats.total_distance_m);
+    let component_total = 600 + dstats.total_distance_m;
+    assert!(
+        idx.total_distance_m.abs_diff(component_total) <= 1,
+        "spliced {} differs from the independently rounded 600 m head + {} m detour",
+        idx.total_distance_m,
+        dstats.total_distance_m
+    );
 }
 
 // ------------------------------------------------------- climb-aware dispatch (EL6, epic #1068)
@@ -1025,14 +1060,12 @@ fn whole_route_seams() -> (i16, i16) {
 }
 
 /// **The degrade is an identity.** A detour that resolved no terrain at all (`NullElevation` ⇒
-/// `has_elevation == false`) splices to exactly what it spliced before #1091: every detour point on
-/// the straight seam-to-seam lerp, recomputed here independently, and the whole file on a pinned
-/// digest.
-///
-/// The digest is `origin/develop`'s six-argument `splice_detour` over this same fixture (see the PR
-/// body) — it is what makes "the old behaviour is untouched" a claim about bytes rather than intent.
+/// `has_elevation == false`) keeps every detour point on the straight seam-to-seam lerp, recomputed
+/// here independently, and the whole file on a pinned digest. #1184 intentionally moved the
+/// detour's ends from nearby graph nodes to the exact route projections, so the digest pins that
+/// new geometry while the independent check below continues to pin the elevation behaviour.
 #[test]
-fn splice_without_detour_elevation_is_the_old_seam_lerp() {
+fn splice_without_detour_elevation_keeps_the_seam_lerp() {
     let (spliced, _, _) = spliced_road();
     let bytes = map_with(&road_graph(true, false));
     let (res, _) = detour_over(&bytes, &road_route_obcr(), 600, 2_800);
@@ -1040,8 +1073,8 @@ fn splice_without_detour_elevation_is_the_old_seam_lerp() {
 
     assert_eq!(
         digest(&spliced),
-        DEVELOP_SPLICE_DIGEST,
-        "an elevation-less detour must splice byte-identically to the pre-#1091 seam lerp"
+        EXACT_SNAP_SPLICE_DIGEST,
+        "an elevation-less detour must preserve the exact-snap seam lerp bytes"
     );
 
     // …and independently, on the whole-route splice (where the output *is* the detour span): every
@@ -1067,8 +1100,8 @@ fn splice_without_detour_elevation_is_the_old_seam_lerp() {
     assert_eq!(pts.last().unwrap().ele, hi, "…and landing exactly on the rejoin seam");
 }
 
-/// The pinned pre-#1091 digest — see [`splice_without_detour_elevation_is_the_old_seam_lerp`].
-const DEVELOP_SPLICE_DIGEST: u64 = 0x3908_7aa0_c87c_ed01;
+/// The pinned exact-snap digest — see [`splice_without_detour_elevation_keeps_the_seam_lerp`].
+const EXACT_SNAP_SPLICE_DIGEST: u64 = 0x2418_d9c2_316b_e301;
 
 /// The planned detour's points keyed to their arc fraction along it — the blend's independent
 /// denominator, measured with the same per-segment metric the splice accumulates.
