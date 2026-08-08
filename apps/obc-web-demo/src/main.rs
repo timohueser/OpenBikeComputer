@@ -84,7 +84,8 @@ mod web {
     }
 
     /// Queue one command (drained on the next tick). Vocabulary: `press`, `back`, `hold`,
-    /// `backhold`, `step:<n>`, `play`, `pause`, `seek:<secs>`, `enter`, `exit`, `ambient`.
+    /// `backhold`, `step:<n>`, `play`, `pause`, `seek:<secs>`, `enter`, `exit`, `ambient`,
+    /// `upload` (stage an idle device), `receive` (post the real route-upload completion event).
     /// Unknown or malformed input is ignored — the page can't crash the demo with a typo.
     #[wasm_bindgen]
     pub fn obc_demo_cmd(cmd: &str) {

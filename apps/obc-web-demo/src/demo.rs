@@ -12,7 +12,7 @@
 //! from `firmware/`); only the thin `#[wasm_bindgen]` surface in `main.rs` is wasm-only.
 
 use embedded_graphics::pixelcolor::Rgb888;
-use obc_app::{App, AppState, CameraMode, Gesture};
+use obc_app::{App, AppState, CameraMode, Gesture, HostEvent};
 use obc_host_core::{
     fill_nav_preview, initial_camera, replay_step, HostLoop, MemRideStore, MemRouteStore, MemTrackStore, ReplaySensors,
     RgbaFrame, TrackRepository,
@@ -58,6 +58,10 @@ pub enum Cmd {
     Play,
     Pause,
     Seek(f64),
+    /// Rebuild the idle device that waits underneath the phone-to-device handoff.
+    StageUpload,
+    /// Deliver the same typed upload event the BLE host posts after committing the embedded route.
+    ReceiveRoute,
     /// Enter guided-demo mode: reset to the staged mid-climb baseline (the tour engine drives
     /// playback + gestures from here; the ambient summit auto-restart is suspended).
     Enter,
@@ -71,7 +75,7 @@ pub enum Cmd {
 
 /// Parse one command string — the page-facing vocabulary (exact strings): `press`, `back`,
 /// `hold`, `backhold`, `step:<n>` (signed Up/Down steps), `play`, `pause`, `seek:<secs>`, `enter`,
-/// `exit`, `ambient`. `None` for unknown or malformed input — the page can't crash the demo
+/// `exit`, `ambient`, `upload`, `receive`. `None` for unknown or malformed input — the page can't crash the demo
 /// with a typo.
 pub fn parse_cmd(cmd: &str) -> Option<Cmd> {
     match cmd {
@@ -84,6 +88,8 @@ pub fn parse_cmd(cmd: &str) -> Option<Cmd> {
         "enter" => Some(Cmd::Enter),
         "exit" => Some(Cmd::Exit),
         "ambient" => Some(Cmd::Ambient),
+        "upload" => Some(Cmd::StageUpload),
+        "receive" => Some(Cmd::ReceiveRoute),
         other => {
             if let Some(n) = other.strip_prefix("step:") {
                 n.trim().parse::<i32>().ok().map(|n| Cmd::Gesture(Gesture::Step(n)))
@@ -111,6 +117,10 @@ pub enum Baseline {
     Tour,
     /// The page-opening state: ride from the start, visitor in control.
     Ambient,
+    /// The upload bookend: an idle device whose catalog already contains the committed route.
+    /// `ReceiveRoute` posts the host event immediately after this reset, producing the real
+    /// `ROUTE RECEIVED` card instead of a page-authored imitation.
+    Upload,
 }
 
 pub struct Demo {
@@ -337,6 +347,12 @@ impl Demo {
             Cmd::Play => self.player.play(),
             Cmd::Pause => self.player.pause(),
             Cmd::Seek(t) => self.player.seek(t),
+            Cmd::StageUpload => self.reset(Baseline::Upload),
+            Cmd::ReceiveRoute => {
+                if let Some(&id) = self.routes.ids().first() {
+                    self.app.apply_event(HostEvent::RouteUploaded { id, replaced: false, elevation: None });
+                }
+            }
             Cmd::Enter => self.reset(Baseline::Tour),
             Cmd::Exit => {
                 // "Take control": leave the device where the demo parked it, controls live.
@@ -360,7 +376,9 @@ impl Demo {
     fn reset(&mut self, baseline: Baseline) {
         use obc_app::settings::{ClimbMode, Settings};
 
-        self.tour_active = baseline == Baseline::Tour;
+        // Both bookend baselines are page-driven. In particular, Upload must stay idle instead of
+        // being caught by the ambient "replay ended → start a fresh session" loop.
+        self.tour_active = baseline != Baseline::Ambient;
 
         let (cx, cy, zoom) = {
             let src = SliceSource(self.bytes);
@@ -370,7 +388,7 @@ impl Demo {
         let mut state = AppState::new(cx, cy, zoom * DEMO_ZOOM);
         state.mode = CameraMode::Follow;
         state.heading_up = true;
-        let mut app = App::new(state);
+        let mut app = if baseline == Baseline::Upload { App::new_idle(state) } else { App::new(state) };
         // Mirror the map's §8.6 routing-profile names for the Bike-type screen + overview label.
         app.set_nav_profiles(self.tables.nav_profiles());
         app.set_map_nav_graph(self.tables.has_nav_graph());
@@ -381,18 +399,48 @@ impl Demo {
         app.set_settings(Settings { climb_mode: ClimbMode::Manual, ..Settings::default() });
         // Select the embedded demo route and open a session so its line + ride stats show
         // (through the invariant-preserving `activate_route`, never a direct field poke).
-        if !self.routes.catalog().is_empty() {
+        if baseline != Baseline::Upload && !self.routes.catalog().is_empty() {
             app.activate_route(0);
             app.activity.start_session();
         }
         // Overwrite in the existing heap slot (no fresh allocation, no lingering old app).
         *self.app = app;
 
-        self.player.seek(match baseline {
-            Baseline::Tour => TOUR_BASELINE_S,
-            Baseline::Ambient => 0.0,
-        });
-        self.player.play();
+        self.player.seek(0.0);
+        if baseline == Baseline::Upload {
+            self.player.pause();
+        } else {
+            self.player.play();
+        }
+
+        if baseline == Baseline::Tour {
+            // Arrive at the same mid-climb camera through real replay ticks instead of a teleport.
+            // Nothing renders during this deterministic pre-roll, but Activity sees the genuine
+            // one-Hz fixes and barometric samples, so the Pause → Finish bookend saves believable
+            // distance/time/climb totals from the exact GPX it later shows in the phone capture.
+            // About 500 cheap, render-free ticks at 3×; paid only when a guided chapter starts.
+            self.baro = BaroSensor::new();
+            let changed = self.routes.sync_active(self.app.active_route_index());
+            self.host.session.reparse(changed, &self.routes);
+            let route_src = self.routes.active_source();
+            let route = match (self.host.session.index(), route_src.as_ref()) {
+                (Some(idx), Some(src)) => Some(RouteReader::new(idx, src)),
+                _ => None,
+            };
+            while self.player.time() < TOUR_BASELINE_S {
+                let wall_dt = ((TOUR_BASELINE_S - self.player.time()) / self.player.speed() as f64).min(1.0);
+                replay_step(
+                    &mut self.app,
+                    &mut self.player,
+                    &mut self.baro,
+                    None,
+                    wall_dt,
+                    route.as_ref(),
+                    self.tracks.sink(),
+                    ReplaySensors::default(),
+                );
+            }
+        }
     }
 }
 
@@ -499,6 +547,43 @@ mod tests {
         assert_eq!(d.state(), "Map", "take-control keeps the device where the demo left it");
     }
 
+    #[test]
+    fn upload_bookend_uses_the_real_route_received_event() {
+        let mut d = Demo::new();
+        d.tick(0.0);
+        d.cmd("upload");
+        d.tick(8.0);
+        assert_eq!(d.state(), "Home");
+        d.cmd("receive");
+        d.tick(16.0);
+
+        assert_eq!(d.state(), "RouteReceived");
+        assert!(d.tour_active, "the idle upload card must not be restarted as an ambient ride");
+        assert!(!d.app.activity.is_tracking(), "a phone upload lands before the ride starts");
+
+        let mut now = 16.0;
+        drive(&mut d, &mut now, "press", "RouteOverview");
+        drive(&mut d, &mut now, "press", "Map");
+        assert!(d.app.activity.is_tracking(), "Start ride begins the session before the next chapter");
+    }
+
+    #[test]
+    fn ride_log_bookend_pauses_selects_finish_and_saves() {
+        let mut d = Demo::new();
+        let mut now = 0.0;
+        d.tick(now);
+
+        drive(&mut d, &mut now, "enter", "Map");
+        let stats = d.app.ride_stats();
+        assert!(stats.distance_m > 1_000, "the visible Finish flow should contain a real partial ride");
+        assert!(stats.moving_time_s > 60);
+        assert!(stats.climb_m > 50);
+        drive(&mut d, &mut now, "press", "RideControl");
+        drive(&mut d, &mut now, "step:1", "RideControl");
+        drive(&mut d, &mut now, "hold", "Home");
+        assert!(!d.app.activity.is_tracking());
+    }
+
     /// `Screen::NAMES` (the drift-guard export) contains every state this host can report — a
     /// rename in the screens! table breaks this before it breaks the page.
     #[test]
@@ -509,7 +594,7 @@ mod tests {
     }
 
     #[test]
-    fn climb_tour_cycles_the_current_riding_views() {
+    fn climb_tour_stays_on_the_climb_view() {
         let mut d = Demo::new();
         let mut now = 0.0;
         d.tick(now);
@@ -517,7 +602,6 @@ mod tests {
         drive(&mut d, &mut now, "enter", "Map");
         drive(&mut d, &mut now, "back", "Statistics");
         drive(&mut d, &mut now, "back", "Climb");
-        drive(&mut d, &mut now, "back", "Map");
     }
 
     #[test]
@@ -535,17 +619,15 @@ mod tests {
     }
 
     #[test]
-    fn reroute_tour_reaches_pois_through_both_menus() {
+    fn reroute_tour_reaches_pois_directly_from_the_ride_menu() {
         let mut d = Demo::new();
         let mut now = 0.0;
         d.tick(now);
 
         drive(&mut d, &mut now, "enter", "Map");
         drive(&mut d, &mut now, "backhold", "RideMenu");
-        drive(&mut d, &mut now, "step:-1", "RideMenu");
-        drive(&mut d, &mut now, "press", "Menu");
-        drive(&mut d, &mut now, "step:1", "Menu");
-        drive(&mut d, &mut now, "step:1", "Menu");
+        drive(&mut d, &mut now, "step:1", "RideMenu");
+        drive(&mut d, &mut now, "step:1", "RideMenu");
         drive(&mut d, &mut now, "press", "PoiMenu");
         drive(&mut d, &mut now, "step:1", "PoiMenu");
         drive(&mut d, &mut now, "step:1", "PoiMenu");

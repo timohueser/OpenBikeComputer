@@ -48,6 +48,13 @@
   <link data-trunk rel="copy-file" href="assets/device-poster.png" />
   <!-- The share-card image the og:image/twitter:image meta above points at. -->
   <link data-trunk rel="copy-file" href="assets/og-card.png" />
+  <!-- Real companion-app bookend screens. Individual files keep the initial page payload lazy:
+       the browser requests only the selected story's pair. -->
+  <link data-trunk rel="copy-file" href="assets/companion/route-imported.webp" />
+  <link data-trunk rel="copy-file" href="assets/companion/route-on-device.webp" />
+  <link data-trunk rel="copy-file" href="assets/companion/rides-before-sync.webp" />
+  <link data-trunk rel="copy-file" href="assets/companion/rides-synced.webp" />
+  <link data-trunk rel="copy-file" href="assets/companion/ride-detail.webp" />
   <base data-trunk-public-url />
 
   <style>
@@ -130,16 +137,16 @@
     .hero-grid {
       display: grid;
       grid-template-columns: 1.05fr 0.95fr;
-      grid-template-areas: "head device" "cta device" "tour device";
-      grid-template-rows: auto auto 1fr;
+      grid-template-areas: "head head" "tour device" "cta device";
+      grid-template-rows: auto 1fr auto;
       column-gap: 44px;
       row-gap: 20px;
       align-items: start;
       padding: 22px 0 34px;
     }
-    .hero-head { grid-area: head; }
+    .hero-head { grid-area: head; max-width: 48rem; }
     .hero-cta { grid-area: cta; }
-    .tour { grid-area: tour; }
+    .tour { grid-area: tour; align-self: stretch; }
     .device-col { grid-area: device; justify-self: center; }
 
     .eyebrow {
@@ -185,20 +192,35 @@
       border-radius: 16px;
     }
 
-    /* ---------- the feature-tour card ---------- */
-    .tour { padding: 18px 22px 14px; display: flex; flex-direction: column; }
-    .tour .kicker {
-      display: flex; align-items: baseline; gap: 8px; font-family: var(--mono);
-      font-size: 11px; font-weight: 700; letter-spacing: 0.07em; color: var(--coral);
-      text-transform: uppercase; margin: 0 0 8px;
+    /* ---------- the ride-story card ----------
+       Four simulator scenarios plus two companion handoffs make one day rather than a feature
+       carousel. The route motif stays inside this card, with no
+       animated trail or page-wide decoration competing with the live device. */
+    .tour { padding: 0 22px 14px; display: flex; flex-direction: column; overflow: hidden; }
+    .ride-log-head {
+      margin: 0 -22px 16px;
+      padding: 11px 22px;
+      display: flex; align-items: baseline; justify-content: space-between; gap: 14px;
+      border-bottom: 1px solid var(--parchment-3);
+      background: rgba(214, 205, 168, 0.22);
     }
-    .tour .kicker .n { color: var(--ink-soft); }
+    .ride-log-head .label {
+      font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: 0.12em;
+      color: var(--forest); text-transform: uppercase;
+    }
+    .ride-log-head .route {
+      font-family: var(--serif); font-size: 13px; color: var(--ink-soft); text-align: right;
+    }
     .tour h2 { font-family: var(--serif); font-size: clamp(20px, 2.2vw, 25px); margin: 0 0 7px; line-height: 1.12; }
     .tour .blurb { font-size: 14.5px; color: var(--ink-soft); margin: 0 0 12px; max-width: 34rem; }
     .tour .blurb b { color: var(--ink); font-weight: 600; }
     .highlights { list-style: none; margin: 0 0 14px; padding: 0; display: flex; flex-direction: column; gap: 7px; }
     .highlights li { display: flex; align-items: flex-start; gap: 9px; font-size: 13.5px; color: var(--ink); }
     .highlights svg { flex: none; width: 16px; height: 16px; margin-top: 2px; stroke: var(--wood); fill: none; stroke-width: 2; }
+    .tour.companion-active .blurb,
+    .tour.companion-active .highlights,
+    .tour.companion-active .now { display: none; }
+    .tour.companion-active .ride-chapters-label { margin-top: auto; }
 
     /* "on device" step strip — which step of a staged demo is actually confirmed on the
        device (advanced only once `until` resolves, never on a timeout). */
@@ -218,27 +240,86 @@
     .tick.done { background: var(--wood); }
     .tick.at { background: var(--coral); }
 
-    /* scenario dots — the carousel nav, inside the card. Numbered pips + labels;
-       the labels drop on phones (numbered pips + the card title carry it). */
-    .dots { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; border-top: 1px solid var(--parchment-3); padding-top: 12px; }
-    .dot {
-      display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-width: 0;
-      font-family: var(--sans); font-size: 13px; font-weight: 600; color: var(--ink-soft);
-      background: transparent; border: 1px solid transparent; border-radius: 9px;
-      cursor: pointer; padding: 6px; min-height: 36px;
-      user-select: none; -webkit-user-select: none;
-      transition: background .12s ease, color .12s ease, border-color .12s ease;
+    /* The ride's six chapters live on a tiny strip map rather than in a carousel. Contours,
+       waypoints and the wandered line make the journey tangible, but the map stays inside the
+       story card and never animates continuously — the simulator remains the moving centrepiece. */
+    .ride-chapters-label {
+      border-top: 1px solid var(--parchment-3); padding-top: 11px;
+      font-family: var(--mono); font-size: 9.5px; font-weight: 700; letter-spacing: 0.08em;
+      color: var(--ink-soft); text-transform: uppercase;
     }
-    .dot:hover { background: var(--parchment-3); }
+    .dots {
+      position: relative; height: 156px; margin: 5px 0 -3px;
+      border-radius: 12px; overflow: hidden;
+      background: rgba(236, 232, 207, 0.5);
+    }
+    .ride-strip-map {
+      position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none;
+    }
+    .ride-contour { fill: none; stroke: var(--line); stroke-width: 1; opacity: 0.75; }
+    .ride-route-bed {
+      fill: none; stroke: var(--parchment-3); stroke-width: 6; stroke-linecap: round;
+    }
+    .ride-leg {
+      fill: none; stroke: var(--wood); stroke-width: 2.4; stroke-linecap: round;
+      stroke-dasharray: 3 7; transition: stroke .18s ease, stroke-width .18s ease;
+    }
+    .ride-leg.traveled { stroke: var(--coral); stroke-width: 4; stroke-dasharray: none; }
+    .dot {
+      position: absolute; z-index: 2; left: var(--ride-x); top: var(--ride-y);
+      width: 44px; height: 44px; transform: translate(-50%, -50%);
+      display: grid; place-items: center;
+      font-family: var(--sans); font-size: 11px; font-weight: 600; line-height: 1.1;
+      color: var(--ink-soft); text-align: center;
+      background: transparent; border: 0; border-radius: 50%;
+      cursor: pointer; padding: 0;
+      user-select: none; -webkit-user-select: none;
+      transition: color .12s ease;
+    }
+    .dot:nth-of-type(1) { --ride-x: 13%; --ride-y: 69%; }
+    .dot:nth-of-type(2) { --ride-x: 28%; --ride-y: 35%; }
+    .dot:nth-of-type(3) { --ride-x: 43%; --ride-y: 67%; }
+    .dot:nth-of-type(4) { --ride-x: 57%; --ride-y: 34%; }
+    .dot:nth-of-type(5) { --ride-x: 72%; --ride-y: 68%; }
+    .dot:nth-of-type(6) { --ride-x: 87%; --ride-y: 28%; }
+    .dot:hover .pip { transform: scale(1.08); background: var(--parchment-2); }
+    .dot:focus-visible { outline: none; }
+    .dot:focus-visible .pip { outline: 2px solid var(--amber); outline-offset: 3px; }
+    .dot .ride-stop-copy {
+      position: absolute; left: 50%; width: 84px; transform: translateX(-50%);
+      display: flex; flex-direction: column; align-items: center; gap: 2px;
+      pointer-events: none;
+    }
+    .dot:nth-of-type(odd) .ride-stop-copy { bottom: 38px; }
+    .dot:nth-of-type(even) .ride-stop-copy { top: 38px; }
+    .dot .ride-time {
+      font-family: var(--mono); font-size: 8.5px; font-weight: 700;
+      letter-spacing: 0.04em; color: var(--ink-soft);
+    }
+    .dot .dot-label { font-size: 11px; color: var(--ink); }
     .dot .pip {
+      position: relative; z-index: 2;
       display: inline-flex; align-items: center; justify-content: center;
       width: 24px; height: 24px; border-radius: 50%; flex: none;
       font-family: var(--mono); font-size: 11.5px; font-weight: 700;
-      color: var(--ink-soft); background: var(--parchment-3);
-      transition: background .15s ease, color .15s ease;
+      color: var(--ink-soft); background: var(--parchment);
+      border: 2px solid var(--wood); box-shadow: 0 0 0 3px rgba(236, 232, 207, 0.78);
+      transition: background .15s ease, color .15s ease, transform .12s ease;
     }
-    .dot[aria-selected="true"] { color: var(--ink); border-color: var(--parchment-3); background: var(--parchment); }
-    .dot[aria-selected="true"] .pip { background: var(--coral); color: var(--parchment); }
+    .dot .pip svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.8; }
+    .dot.past .pip { color: var(--parchment); background: var(--wood); }
+    .ride-here {
+      display: none; margin-top: 2px; padding: 2px 5px; border-radius: 999px;
+      font-family: var(--mono); font-size: 7.5px; font-weight: 700; letter-spacing: 0.05em;
+      color: var(--parchment); background: var(--coral); text-transform: uppercase; white-space: nowrap;
+    }
+    .dot:nth-of-type(odd) .ride-here { order: -1; margin: 0 0 2px; }
+    .dot[aria-selected="true"] { color: var(--ink); }
+    .dot[aria-selected="true"] .pip {
+      background: var(--coral); border-color: var(--coral); color: var(--parchment);
+      box-shadow: 0 0 0 4px rgba(207, 106, 42, 0.18), 0 0 0 7px rgba(236, 232, 207, 0.72);
+    }
+    .dot[aria-selected="true"] .ride-here { display: inline-block; }
 
     /* ---------- the device ----------
        The housing is real DOM (the wasm draws only the 240×320 screen), tracing the current
@@ -414,6 +495,26 @@
       border-radius: 4px; padding: 1px 5px;
     }
 
+    /* ---------- companion handoff preview ----------
+       Real, CI-captured app screens in a deliberately small phone frame. The images are requested
+       only when a bookend chapter is selected, so the simulator remains the visual and payload
+       centre of the page. */
+    .companion-preview { display: none; position: relative; width: 136px; margin: 10px auto 12px; }
+    .companion-preview.visible { display: block; }
+    .companion-phone {
+      padding: 5px; border-radius: 23px; background: #21342a;
+      border: 2px solid #5f7d3d;
+      box-shadow: 0 12px 24px rgba(44, 33, 20, 0.28), inset 0 0 0 1px rgba(236, 232, 207, 0.18);
+    }
+    .companion-screen {
+      position: relative; overflow: hidden; aspect-ratio: 402 / 874; border-radius: 17px;
+      background: #f5f2df; border: 1px solid rgba(36, 51, 28, 0.18);
+    }
+    .companion-screen img { display: block; width: 100%; height: 100%; object-fit: cover; }
+    .companion-frame-dots { display: flex; justify-content: center; gap: 5px; margin-top: 7px; }
+    .companion-frame-dots i { width: 4px; height: 4px; border-radius: 50%; background: var(--parchment-3); }
+    .companion-frame-dots i.active { background: var(--coral); }
+
     /* ---------- features ---------- */
     section.band { position: relative; z-index: 1; padding: 46px 0; }
     .section-head { margin: 0 0 28px; }
@@ -488,6 +589,7 @@
       .lede { margin: 0 auto; }
       .cta { justify-content: center; }
       .tour { width: min(480px, 100%); }
+      .companion-preview { width: 136px; }
       .features { grid-template-columns: 1fr; }
       h1 { font-size: clamp(30px, 8vw, 40px); }
     }
@@ -500,14 +602,21 @@
       /* the long name collides with the nav on phones — the mark carries the brand */
       .brand .name { display: none; }
       .nav-links { gap: 16px; }
-      /* numbered pips + the current title (the card's h2) only — labels would wrap */
-      .dot .dot-label { display: none; }
-      .dot { padding: 6px; }
+      .ride-log-head { align-items: flex-start; }
+      .ride-log-head .route { max-width: 12rem; }
+      .dots { height: 156px; }
+      .dot .ride-stop-copy { display: none; width: 64px; gap: 1px; }
+      .dot[aria-selected="true"] .ride-stop-copy { display: flex; }
+      .dot .ride-time { font-size: 7.5px; }
+      .dot .dot-label { font-size: 9.5px; }
+      .dot[aria-selected="true"] .ride-here { display: none; }
+      .now .label { flex: 1; }
+      .now .ticks { display: none; }
       footer .wrap { gap: 10px; }
     }
     @media (prefers-reduced-motion: reduce) {
       html { scroll-behavior: auto; }
-      .btn, .ctl, .dot, .demo-toggle, .side, .tick { transition: none; }
+      .btn, .ctl, .dot, .demo-toggle, .side, .tick, .ride-leg, .dot .pip { transition: none; }
       .mode-dot, .spinner { animation: none !important; }
     }
   </style>
@@ -582,23 +691,62 @@
           </a>
         </div>
 
-        <!-- The feature-tour card: what the device is showing and why it matters.
-             The dots switch scenarios; the step strip tracks the confirmed device screen. -->
+        <!-- One ride, told in six interactive moments: a small companion-app handoff at either
+             end around the four real-firmware chapters. Every chapter keeps its shareable
+             #demo/<id> URL; both the strip map and phone preview stay secondary to the device. -->
         <div class="card tour" id="tour_card">
-          <span class="kicker"><span id="tour_tag">Navigation</span><span class="n" id="tour_n">· 1 / 4</span></span>
-          <h2 id="tour_title">Ride it yourself</h2>
+          <div class="ride-log-head">
+            <span class="label">Today’s ride</span>
+            <span class="route">Grimsel Pass · plan to ride log</span>
+          </div>
+          <h2 id="tour_title">Put today’s route on the device</h2>
+          <div class="companion-preview" id="companion_preview" aria-hidden="true">
+            <div class="companion-phone" aria-label="Companion app preview captured from the iOS app">
+              <div class="companion-screen" id="companion_screen"></div>
+            </div>
+            <span class="companion-frame-dots" id="companion_frame_dots" aria-hidden="true"></span>
+          </div>
           <p class="blurb" id="tour_blurb"></p>
           <ul class="highlights" id="tour_highlights"></ul>
           <div class="now">
-            <span class="badge">On device</span>
+            <span class="badge" id="now_badge">In app</span>
             <span class="label" id="step_label">Warming up…</span>
             <span class="ticks hidden" id="demo_ticks" aria-hidden="true"></span>
           </div>
-          <div class="dots" id="scenarios" role="tablist" aria-label="Guided demos">
-            <button class="dot" type="button" role="tab" data-scn="0" disabled><span class="pip">1</span><span class="dot-label">Ride it</span></button>
-            <button class="dot" type="button" role="tab" data-scn="1" disabled><span class="pip">2</span><span class="dot-label">Climb ahead</span></button>
-            <button class="dot" type="button" role="tab" data-scn="2" disabled><span class="pip">3</span><span class="dot-label">Up ahead</span></button>
-            <button class="dot" type="button" role="tab" data-scn="3" disabled><span class="pip">4</span><span class="dot-label">Reroute</span></button>
+          <div class="ride-chapters-label">From route upload to ride log</div>
+          <div class="dots" id="scenarios" role="tablist" aria-label="The ride’s six demo chapters">
+            <svg class="ride-strip-map" viewBox="0 0 520 174" preserveAspectRatio="none" aria-hidden="true">
+              <g class="ride-contour">
+                <path d="M-24 37 C70 3 132 57 225 29 S399 12 552 39" />
+                <path d="M-31 68 C57 35 130 86 223 60 S399 43 549 69" />
+                <path d="M-36 103 C62 69 131 120 229 94 S402 77 555 105" />
+                <path d="M-28 139 C68 105 139 156 236 130 S407 112 548 142" />
+              </g>
+              <path class="ride-route-bed" d="M68 120 C99 118 116 64 146 61 C176 58 194 117 224 116 C254 115 266 61 296 59 C326 57 344 119 374 118 C404 117 422 51 452 49" />
+              <path class="ride-leg" data-ride-leg="0" d="M68 120 C99 118 116 64 146 61" />
+              <path class="ride-leg" data-ride-leg="1" d="M146 61 C176 58 194 117 224 116" />
+              <path class="ride-leg" data-ride-leg="2" d="M224 116 C254 115 266 61 296 59" />
+              <path class="ride-leg" data-ride-leg="3" d="M296 59 C326 57 344 119 374 118" />
+              <path class="ride-leg" data-ride-leg="4" d="M374 118 C404 117 422 51 452 49" />
+            </svg>
+            <button class="dot" type="button" role="tab" data-scn="0" aria-label="05:55 — Load route" disabled>
+              <span class="pip"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="1.5" width="9" height="13" rx="2"/><path d="M7 12h2"/></svg></span><span class="ride-stop-copy"><span class="ride-time">05:55</span><span class="dot-label">Load route</span><span class="ride-here">You are here</span></span>
+            </button>
+            <button class="dot" type="button" role="tab" data-scn="1" aria-label="06:40 — Roll out" disabled>
+              <span class="pip">1</span><span class="ride-stop-copy"><span class="ride-time">06:40</span><span class="dot-label">Roll out</span><span class="ride-here">You are here</span></span>
+            </button>
+            <button class="dot" type="button" role="tab" data-scn="2" aria-label="10:15 — The pass" disabled>
+              <span class="pip">2</span><span class="ride-stop-copy"><span class="ride-time">10:15</span><span class="dot-label">The pass</span><span class="ride-here">You are here</span></span>
+            </button>
+            <button class="dot" type="button" role="tab" data-scn="3" aria-label="13:05 — Next stop" disabled>
+              <span class="pip">3</span><span class="ride-stop-copy"><span class="ride-time">13:05</span><span class="dot-label">Next stop</span><span class="ride-here">You are here</span></span>
+            </button>
+            <button class="dot" type="button" role="tab" data-scn="4" aria-label="16:45 — Plan B" disabled>
+              <span class="pip">4</span><span class="ride-stop-copy"><span class="ride-time">16:45</span><span class="dot-label">Plan B</span><span class="ride-here">You are here</span></span>
+            </button>
+            <button class="dot" type="button" role="tab" data-scn="5" aria-label="20:10 — Ride log" disabled>
+              <span class="pip"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="1.5" width="9" height="13" rx="2"/><path d="M7 12h2"/></svg></span><span class="ride-stop-copy"><span class="ride-time">20:10</span><span class="dot-label">Ride log</span><span class="ride-here">You are here</span></span>
+            </button>
           </div>
         </div>
 
@@ -769,8 +917,8 @@
     //     not from the dots and not from a `#demo/<scenario>` deep link (the link still selects
     //     the scenario and scrolls; the visitor presses Play). The ambient ride rides on.
     //
-    // What S5 adds: the tour card chrome (kicker/title/blurb/highlights + the step strip live in
-    // the card, scenario dots switch it), `#demo/<scenario>` deep links (open → scroll + start;
+    // What S5 adds: the tour card chrome (title/blurb/highlights + the step strip live in
+    // the card, route waypoints switch it), `#demo/<scenario>` deep links (open → scroll + start;
     // switch → history.replaceState, no scroll jump), and the DOM housing's pressed/held states.
     // ============================================================================================
     (function () {
@@ -788,14 +936,18 @@
       var toggleLabel = toggle && toggle.querySelector('.dt-label');
       var toggleIcon = toggle && toggle.querySelector('.dt-icon');
       var modeNote = document.getElementById('mode_note');
-      var tourTag = document.getElementById('tour_tag');
-      var tourN = document.getElementById('tour_n');
+      var tourCard = document.getElementById('tour_card');
       var tourTitle = document.getElementById('tour_title');
       var tourBlurb = document.getElementById('tour_blurb');
       var tourHighlights = document.getElementById('tour_highlights');
+      var nowBadge = document.getElementById('now_badge');
       var stepLabel = document.getElementById('step_label');
       var ticksEl = document.getElementById('demo_ticks');
       var scnButtons = Array.prototype.slice.call(document.querySelectorAll('.dot'));
+      var rideLegs = Array.prototype.slice.call(document.querySelectorAll('[data-ride-leg]'));
+      var companionPreview = document.getElementById('companion_preview');
+      var companionScreen = document.getElementById('companion_screen');
+      var companionFrameDots = document.getElementById('companion_frame_dots');
       var sideUp = document.getElementById('side_up');
       var sideDown = document.getElementById('side_down');
       var sideSelect = document.getElementById('side_select');
@@ -807,6 +959,60 @@
         return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
       }
 
+      // Real screenshots captured by companion-ios/scripts/capture-website-screenshots.sh. Only
+      // the selected bookend's two small WebP files are fetched; the simulator remains the page's
+      // largest and only interactive payload.
+      var COMPANION_STORIES = {
+        upload: [
+          {
+            src: 'route-imported.webp',
+            alt: 'The OBC iOS app showing an imported route ready to upload'
+          },
+          {
+            src: 'route-on-device.webp',
+            alt: 'The OBC iOS app confirming that the route is on the bike computer'
+          }
+        ],
+        download: [
+          {
+            src: 'rides-before-sync.webp',
+            alt: 'The OBC iOS app waiting for the finished Grimsel Pass ride'
+          },
+          {
+            src: 'rides-synced.webp',
+            alt: 'The OBC iOS app showing the finished Grimsel Pass ride downloaded from the bike computer'
+          },
+          {
+            src: 'ride-detail.webp',
+            alt: 'The OBC iOS app showing the downloaded Grimsel Pass ride and its track on the map'
+          }
+        ]
+      };
+      var companionStoryKind = '';
+      function setCompanionFrame(frameIndex) {
+        var frames = COMPANION_STORIES[companionStoryKind];
+        if (!companionScreen || !frames || !frames.length) return;
+        var index = Math.max(0, Math.min(frameIndex, frames.length - 1));
+        var frame = frames[index];
+        companionScreen.innerHTML = '<img src="' + frame.src + '" alt="' + frame.alt + '">';
+        if (companionFrameDots) {
+          companionFrameDots.innerHTML = frames.map(function (_, i) { return '<i class="' + (i === index ? 'active' : '') + '"></i>'; }).join('');
+        }
+      }
+      function showCompanionStory(kind) {
+        if (!companionPreview || !companionScreen || !kind || !COMPANION_STORIES[kind]) {
+          companionStoryKind = '';
+          if (companionPreview) { companionPreview.classList.remove('visible'); companionPreview.setAttribute('aria-hidden', 'true'); }
+          return;
+        }
+        companionStoryKind = kind;
+        companionPreview.classList.add('visible');
+        companionPreview.setAttribute('aria-hidden', 'false');
+        // The device script advances the phone only after it confirms the corresponding device
+        // state. This is a synchronized storyboard, not an unrelated timer-driven slideshow.
+        setCompanionFrame(0);
+      }
+
       // ------------------------------------------------------------------------------------------
       // DRIFT-GUARD convention (read by apps/obc-web-demo's `tour_targets_are_real_screens`
       // test): every screen a guided step waits for is written as a double-quoted string inside a
@@ -815,13 +1021,29 @@
       // rename fails `cargo test` instead of silently turning a tour into a timeout march. Keep each
       // `until:` array on ONE line with plain "String" literals (no comments, no expressions).
       //
-      // Scenario order tells the story: navigation → climbing → ride awareness → route planning.
+      // Scenario order is the whole loop: load route → ride → climb → next stop → plan B → ride log.
       // Each scenario's `id` is its shareable #demo/<id> deep link.
       // ------------------------------------------------------------------------------------------
       var SCENARIOS = [
         {
-          id: 'ride', tag: 'Navigation', title: 'Ride it yourself',
-          blurb: '<b>Ride it yourself.</b> The device is replaying a climb up the Grimsel Pass — drive it with the controls, exactly like the computer on your bars.',
+          id: 'load-route', title: 'Put today’s route on the device',
+          blurb: '<b>The ride starts in the companion app.</b> Import a GPX, check the route, and send it straight to the OBC over Bluetooth.',
+          highlights: [
+            'Import a GPX from your planner or files',
+            'Send the route directly to the nearby device',
+            'No account, sync service, or cloud copy'
+          ],
+          companion: 'upload', staged: true,
+          steps: [
+            { cmds: ['upload'], until: ["Home"], label: 'The device is ready for today’s route', companionFrame: 0, dwell: 1500 },
+            { cmds: ['receive'], until: ["RouteReceived"], label: 'Route received on the device', companionFrame: 1, dwell: 2200 },
+            { cmds: ['press'], until: ["RouteOverview"], label: 'View the route on the device', dwell: 2800 },
+            { cmds: ['press'], until: ["Map"], label: 'Start the ride — the route is on the map', dwell: 3600 }
+          ]
+        },
+        {
+          id: 'ride', title: 'Roll out: ride it yourself',
+          blurb: '<b>The road starts climbing out of the valley.</b> Take the device from here and ride it exactly like the computer on your bars.',
           highlights: [
             'The map follows your position as you climb',
             'Scroll to zoom · hold Back for the menu',
@@ -830,8 +1052,8 @@
           staged: false, steps: []
         },
         {
-          id: 'climb', tag: 'Climbing', title: 'See the climb ahead',
-          blurb: '<b>See the climb ahead.</b> One button cycles the riding views — ending on the ClimbPro-style profile of everything still between you and the top.',
+          id: 'climb', title: 'The pass begins',
+          blurb: '<b>By late morning, the Grimsel is the whole horizon.</b> One button cycles to the climb profile and shows everything still between you and the top.',
           highlights: [
             'Gradient-coloured ramps, green through red',
             'Distance and ascent remaining to the summit',
@@ -841,13 +1063,12 @@
           steps: [
             { cmds: ['enter'], until: ["Map"], label: 'Riding the Grimsel climb' },
             { cmds: ['back'], until: ["Statistics"], label: 'Back cycles to ride statistics' },
-            { cmds: ['back'], until: ["Climb"], label: 'Back again — the climb ahead' },
-            { cmds: ['back'], until: ["Map"], label: 'Back closes the ring' }
+            { cmds: ['back'], until: ["Climb"], label: 'The climb ahead — stay here' }
           ]
         },
         {
-          id: 'ahead', tag: 'Ride awareness', title: 'Know what’s up ahead',
-          blurb: '<b>Plan the next stop without leaving the ride.</b> Up ahead merges your route’s waypoints with nearby map POIs into one distance-ordered timeline.',
+          id: 'ahead', title: 'Time to find the next stop',
+          blurb: '<b>Lunch, water, and the next bed are still up the road.</b> Up ahead merges your waypoints with nearby map POIs into one ride-ordered timeline.',
           highlights: [
             'Water, food, lodging and your own waypoints',
             'Distance, climbing and off-route side at a glance',
@@ -863,8 +1084,8 @@
           ]
         },
         {
-          id: 'reroute', tag: 'Route planning', title: 'Reroute to a point of interest',
-          blurb: '<b>Reroute on the spot.</b> Open the map’s points of interest, pick the nearest, and the device plans a route there — fully offline.',
+          id: 'reroute', title: 'The plan changes',
+          blurb: '<b>The day goes off-script before camp.</b> Pick a nearby place and let the device plan a new route there — fully offline, right on the bars.',
           highlights: [
             'Nearest food, water & shelter from the offline map',
             'On-device route planning — no phone, no signal',
@@ -874,8 +1095,7 @@
           steps: [
             { cmds: ['enter'], until: ["Map"], label: 'Riding the Grimsel climb' },
             { cmds: ['backhold'], until: ["RideMenu"], label: 'Hold Back for mid-ride tools' },
-            { cmds: ['step:-1', 'press'], until: ["Menu"], label: 'Open the full main menu' },
-            { cmds: ['step:2', 'press'], until: ["PoiMenu"], label: 'Open Points of Interest' },
+            { cmds: ['step:2', 'press'], until: ["PoiMenu"], label: 'POIs — directly from the ride menu' },
             { cmds: ['step:2', 'press'], until: ["PoiList"], label: 'Browse to a category' },
             { cmds: ['press'], until: ["PoiDetail"], label: 'Open the nearest place' },
             { cmds: ['press'], until: ["NavConfirm"], label: 'Create a route to it' },
@@ -898,12 +1118,29 @@
             // few ticks so the swap is visible. START RIDE opens the RouteSwap prompt (a ride is
             // active, so the device asks) with "Swap route" pre-selected — the second paced press
             // confirms it, and the beat between them lets the reader see the prompt. Mutating the
-            // session is safe — every staged run (`enter`) and every carousel switch (`ambient`)
+            // session is safe — every staged run (`enter`) and every chapter switch (`ambient`)
             // rebuilds the device from scratch. (On the theoretical NavFail path the press
             // dismisses the card instead; the demo map is fully connected so a plan never fails
             // there, and a timeout just re-syncs.)
             { cmds: ['press', 'press'], until: ["Map"], label: 'Start riding it' },
             { cmds: ['step:-4'], until: ["Map"], label: 'Your new route, on the map' }
+          ]
+        },
+        {
+          id: 'ride-log', title: 'Bring the ride back with you',
+          blurb: '<b>At the end of the day, the handoff runs the other way.</b> Download the finished ride from the OBC and open its track and climbing in the companion app.',
+          highlights: [
+            'Download the recorded ride directly from the device',
+            'Review the track, moving time, and climbing',
+            'Keep it locally or export the GPX'
+          ],
+          companion: 'download', staged: true,
+          steps: [
+            { cmds: ['enter'], until: ["Map"], label: 'Finish the ride on the device', companionFrame: 0, dwell: 1200 },
+            { cmds: ['press'], until: ["RideControl"], label: 'Select pauses the ride', dwell: 1700 },
+            { cmds: ['step:1'], until: ["RideControl"], label: 'Move down to Finish', dwell: 1700 },
+            { cmds: ['hold'], until: ["Home"], label: 'Hold Select to finish and save', companionFrame: 1, dwell: 2600 },
+            { cmds: [], until: ["Home"], label: 'Open the saved track in the app', companionFrame: 2, dwell: 3600 }
           ]
         }
       ];
@@ -922,6 +1159,7 @@
 
       var LIVE_NOTE = '<span class="mode-live"><span class="mode-dot"></span>Live</span> — your device, your controls';
       var DEMO_NOTE = '<span class="mode-live playing"><span class="mode-dot"></span>Guided demo</span> — tap any control to take over';
+      var COMPANION_NOTE = '<span class="mode-live"><span class="mode-dot"></span>Companion app</span> — captured from the real iOS build';
 
       function haveApi() { return !!(api && api.obc_demo_cmd && api.obc_demo_state); }
       function ready() { return haveApi() && !!api.obc_demo_ready && api.obc_demo_ready(); }
@@ -979,9 +1217,16 @@
       // scenario it points at Play.
       function setStepLive() {
         if (!wentLive) { setStep('Warming up…'); return; }
-        setStep(SCENARIOS[scnIdx].staged
-          ? 'Your turn — drive it, or press <b>Play</b> to watch'
-          : 'Your turn — drive it with the controls');
+        var s = SCENARIOS[scnIdx];
+        if (s.companion) {
+          setStep(s.companion === 'upload'
+            ? 'Companion preview — the route lands on the device'
+            : 'Companion preview — the finished ride opens in the app');
+        } else {
+          setStep(s.staged
+            ? 'Your turn — drive it, or press <b>Play</b> to watch'
+            : 'Your turn — drive it with the controls');
+        }
       }
 
       // ---- mode / scenario UI ------------------------------------------------------------------
@@ -999,18 +1244,23 @@
             toggle.classList.remove('live');
           }
         }
-        if (modeNote) modeNote.innerHTML = running ? DEMO_NOTE : LIVE_NOTE;
+        if (modeNote) modeNote.innerHTML = running ? DEMO_NOTE : (SCENARIOS[scnIdx].companion ? COMPANION_NOTE : LIVE_NOTE);
       }
 
       function renderScenarioChrome() {
         var s = SCENARIOS[scnIdx];
         scnButtons.forEach(function (b) {
-          b.setAttribute('aria-selected', +b.getAttribute('data-scn') === scnIdx ? 'true' : 'false');
+          var buttonIndex = +b.getAttribute('data-scn');
+          b.setAttribute('aria-selected', buttonIndex === scnIdx ? 'true' : 'false');
+          b.classList.toggle('past', buttonIndex < scnIdx);
         });
-        if (tourTag) tourTag.textContent = s.tag;
-        if (tourN) tourN.textContent = '· ' + (scnIdx + 1) + ' / ' + SCENARIOS.length;
+        rideLegs.forEach(function (leg) {
+          leg.classList.toggle('traveled', +leg.getAttribute('data-ride-leg') < scnIdx);
+        });
+        if (tourCard) tourCard.classList.toggle('companion-active', !!s.companion);
         if (tourTitle) tourTitle.textContent = s.title;
         if (tourBlurb) tourBlurb.innerHTML = s.blurb;
+        if (nowBadge) nowBadge.textContent = s.companion ? 'In app' : 'On device';
         if (tourHighlights) {
           var html = '';
           s.highlights.forEach(function (h) {
@@ -1018,6 +1268,8 @@
           });
           tourHighlights.innerHTML = html;
         }
+        showCompanionStory(s.companion || '');
+        if (modeNote && !demoRunning) modeNote.innerHTML = s.companion ? COMPANION_NOTE : LIVE_NOTE;
         // The toggle only makes sense for a staged scenario; on the live ride it's hidden.
         if (toggle) toggle.style.display = s.staged ? '' : 'none';
       }
@@ -1099,6 +1351,9 @@
             cmd(inputs[k].cmd);
             if (inputs[k].paced && k < inputs.length - 1) await sleep(CLICK_MS);
           }
+          // A step that stays on the same screen (e.g. moving the Pause-page selection from
+          // Resume to Finish) still needs one rendered frame before its state is claimed.
+          if (inputs.length) await sleep(120);
           var status = await until(step.until, token);
           if (status === 'cancelled') return;
           if (status === 'timeout') {
@@ -1115,7 +1370,8 @@
           var reached = screenName();
           var label = (step.labelFor && step.labelFor[reached]) || step.label;
           setStep('<b>' + label + '</b>', i);
-          await sleep(2600); // deliberate dwell so a reader can follow
+          if (typeof step.companionFrame === 'number') setCompanionFrame(step.companionFrame);
+          await sleep(step.dwell || 2600); // deliberate dwell so a reader can follow
           if (token !== runToken) return;
           i++;
         }
@@ -1300,7 +1556,7 @@
         select: selectScenario, forceFallback: enterFallback, ticking: ticking
       };
 
-      // ---- scenario dots + toggle wiring --------------------------------------------------------
+      // ---- route waypoints + toggle wiring ------------------------------------------------------
       scnButtons.forEach(function (b) {
         b.addEventListener('click', function (e) {
           e.preventDefault();

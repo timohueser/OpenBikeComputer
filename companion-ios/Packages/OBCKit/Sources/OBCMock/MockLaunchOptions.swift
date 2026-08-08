@@ -12,12 +12,13 @@ import OBCDomain
 /// | argument | values | effect |
 /// |---|---|---|
 /// | `-OBCScenario <name>` | any `Scenario.rawValue` | boot into that scenario |
-/// | `-OBCFixtures <name>` | `default` / `empty` / `large` / `trips` | override the fixture set (`trips` = the TR6 trip-grouping demo) |
+/// | `-OBCFixtures <name>` | `default` / `empty` / `large` / `trips` / `website` | override the fixture set (`website` is generated from the landing-page GPX) |
 /// | `-OBCConnection <state>` | `disconnected` / `connecting` / `connected` / `outOfRange` | override the initial link state |
 /// | `-OBCTransport <kind>` | `ble` / `mock` | force the real `BLETransport` in a Debug build |
 /// | `-OBCShowDevPanel` | (flag) | present the dev control panel at launch |
 /// | `-OBCShowUIGallery` | (flag) | present the B11 component gallery at launch |
-/// | `-OBCImportSample [kind]` | bare flag = `gpx`; or `gpx` / `tcx` / `bad` | feed a bundled sample file to the import path at launch (E1; `bad` → H5) |
+/// | `-OBCHideMockHUD` | (flag) | hide the Debug scenario HUD for clean automated captures |
+/// | `-OBCImportSample [kind]` | bare flag = `gpx`; or `gpx` / `tcx` / `bad` / `grimsel` | feed a bundled sample file to the import path at launch (E1; `bad` → H5; `grimsel` = generated website route) |
 /// | `-OBCNetwork <state>` | `offline` / `online` | pin the MapKit-basemap reachability (#294) — `offline` forces the grid fallback |
 /// | `-OBCFirmwareDemo` | (flag) | open the S7 firmware-update screen with a pre-staged sample update (the Files picker can't be automated) |
 /// | `-OBCDeviceRoutesFull` | (flag) | pad the device's route catalog to one below the cap so a multi-stage trip fails the whole-trip precheck (TR8 storage-precheck demo/test) |
@@ -25,7 +26,7 @@ import OBCDomain
 ///
 /// Env fallbacks (used when the argument is absent): `OBC_SCENARIO`,
 /// `OBC_FIXTURES`, `OBC_CONNECTION`, `OBC_TRANSPORT`, `OBC_SHOW_DEV_PANEL=1`,
-/// `OBC_SHOW_UI_GALLERY=1`, `OBC_IMPORT_SAMPLE=1` (or a kind token), `OBC_NETWORK`,
+/// `OBC_SHOW_UI_GALLERY=1`, `OBC_HIDE_MOCK_HUD=1`, `OBC_IMPORT_SAMPLE=1` (or a kind token), `OBC_NETWORK`,
 /// `OBC_FIRMWARE_DEMO=1`.
 /// How far the `-OBCFirmwareDemo` hook drives the S7 screen. Raw values are the
 /// launch tokens (`-OBCFirmwareDemo` bare = `staged`, `-OBCFirmwareDemo send`).
@@ -47,8 +48,11 @@ public struct MockLaunchOptions: Equatable, Sendable {
     /// Present the OBCUI component gallery immediately at launch (B11
     /// screenshot review).
     public var showUIGallery: Bool
+    /// Suppress the bottom-right Debug scenario tag for product screenshots. The mock transport
+    /// remains active; ordinary XCUITests keep the HUD unless they opt out explicitly.
+    public var hideMockHUD: Bool
     /// Feed a `SampleRouteFile` to the import path at launch (XCUITests /
-    /// demos — the Files picker can't be driven from automation): `gpx`/`tcx`
+    /// demos — the Files picker can't be driven from automation): `gpx`/`tcx`/`grimsel`
     /// land on E1 (or H4 when unpaired), `bad` raises H5. `nil` = no import.
     public var importSample: SampleRouteFile.Kind?
     /// Force the MapKit-basemap reachability (#294): `false` pins the grid
@@ -78,6 +82,7 @@ public struct MockLaunchOptions: Equatable, Sendable {
         useBLETransport: Bool = false,
         showDevPanel: Bool = false,
         showUIGallery: Bool = false,
+        hideMockHUD: Bool = false,
         importSample: SampleRouteFile.Kind? = nil,
         networkOnline: Bool? = nil,
         firmwareDemo: FirmwareDemoStage? = nil,
@@ -90,6 +95,7 @@ public struct MockLaunchOptions: Equatable, Sendable {
         self.useBLETransport = useBLETransport
         self.showDevPanel = showDevPanel
         self.showUIGallery = showUIGallery
+        self.hideMockHUD = hideMockHUD
         self.importSample = importSample
         self.networkOnline = networkOnline
         self.firmwareDemo = firmwareDemo
@@ -119,6 +125,8 @@ public struct MockLaunchOptions: Equatable, Sendable {
             || environment["OBC_SHOW_DEV_PANEL"] == "1"
         let showGallery = arguments.contains("-OBCShowUIGallery")
             || environment["OBC_SHOW_UI_GALLERY"] == "1"
+        let hideMockHUD = arguments.contains("-OBCHideMockHUD")
+            || environment["OBC_HIDE_MOCK_HUD"] == "1"
         // Flag with an optional kind token: bare `-OBCImportSample` (or
         // `OBC_IMPORT_SAMPLE=1`) means gpx; an unknown kind degrades to gpx
         // (never crash — automation typo rule).
@@ -167,6 +175,7 @@ public struct MockLaunchOptions: Equatable, Sendable {
             useBLETransport: transport == "ble",
             showDevPanel: showPanel,
             showUIGallery: showGallery,
+            hideMockHUD: hideMockHUD,
             importSample: importSample,
             networkOnline: networkOnline,
             firmwareDemo: firmwareDemo,
