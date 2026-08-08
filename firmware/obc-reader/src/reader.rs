@@ -1,4 +1,4 @@
-//! OBCM **v12** format reader: header, style table, LOD table, per-LOD
+//! OBCM **v13** format reader: header, style table, LOD table, per-LOD
 //! quadtree query + chunk decode, the POI directory + hours-pool section, and
 //! the trailing nav-graph section (parse + leaf-walk/record-decode only here —
 //! the A* traversal over it is R3, #465).
@@ -44,7 +44,7 @@ use obc_formats::obcm::{
 use obc_formats::obcm::{
     HEADER_LEN, LOD_ENTRY_LEN, NAV_CHUNK_SIZE, NAV_EDGE_FIXED_LEN, NAV_MAX_PROFILES, NAV_NEIGHBOR_ASCENT_OFF,
     NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN, NAV_PROFILE_CLIMB_WEIGHT_OFF, NAV_PROFILE_LEN, NAV_PROFILE_NAME_LEN,
-    POI_HOURS_BLOB_LEN, POI_NAME_LEN,
+    NAV_SNAP_RECORD_LEN, POI_HOURS_BLOB_LEN, POI_NAME_LEN,
 };
 use obc_map_scene::{cos_lat, ground_dist_m_cl, BBox, Kind, Style, StyleFlags, M_PER_DEG};
 
@@ -391,6 +391,12 @@ pub struct NavDirectory {
     pub profile_table_offset: usize,
     /// Number of 56-byte profile records at `profile_table_offset` (1..=8; parse rejects otherwise).
     pub profile_count: usize,
+    /// Byte offset to the v13 §8.7 snap-anchor quadtree index.
+    pub snap_index_offset: usize,
+    /// Number of `uint32` nodes in the snap-anchor quadtree; `0` means no interior anchors.
+    pub snap_node_count: usize,
+    /// Number of fixed-size snap-anchor data chunks following that index.
+    pub snap_chunk_count: usize,
 }
 
 impl NavDirectory {
@@ -407,6 +413,9 @@ impl NavDirectory {
         chunk_size: 0,
         profile_table_offset: 0,
         profile_count: 0,
+        snap_index_offset: 0,
+        snap_node_count: 0,
+        snap_chunk_count: 0,
     };
 
     /// The map carries no routable graph (no quadtree, no chunks, no edges).
@@ -428,9 +437,38 @@ impl NavDirectory {
     fn chunk_range(&self, chunk_id: u32) -> Option<(usize, usize)> {
         fixed_chunk_range(self.data_start(), self.chunk_count, self.chunk_size, chunk_id)
     }
+
+    /// Byte offset where v13's snap-anchor chunks begin (right after their quadtree index).
+    #[inline]
+    pub fn snap_data_start(&self) -> Option<usize> {
+        index_end(self.snap_index_offset, self.snap_node_count)
+    }
+
+    /// Byte range of one v13 snap-anchor chunk.
+    #[inline]
+    fn snap_chunk_range(&self, chunk_id: u32) -> Option<(usize, usize)> {
+        fixed_chunk_range(self.snap_data_start(), self.snap_chunk_count, self.chunk_size, chunk_id)
+    }
 }
 
 impl QuadIndex for NavDirectory {
+    #[inline]
+    fn index_offset(&self) -> usize {
+        self.index_offset
+    }
+    #[inline]
+    fn node_count(&self) -> usize {
+        self.node_count
+    }
+}
+
+#[derive(Clone, Copy)]
+struct NavSnapIndex {
+    index_offset: usize,
+    node_count: usize,
+}
+
+impl QuadIndex for NavSnapIndex {
     #[inline]
     fn index_offset(&self) -> usize {
         self.index_offset
@@ -515,6 +553,75 @@ pub struct NavNeighbor {
     pub ascent_m: u16,
 }
 
+/// One exact position along a §8.4 edge polyline. `segment` names the forward `a → b` segment and
+/// `fraction` is its 0..=65535 interpolation parameter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NavEdgePosition {
+    pub segment: u16,
+    pub fraction: u16,
+    pub coord: (i32, i32),
+}
+
+/// A projected candidate before its graph endpoints are resolved. Keeping endpoint lookup out of
+/// the candidate scan means only the winning edge pays the two point-quadtree queries.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NavEdgeCandidate {
+    pub edge_id: u32,
+    pub way_kind: u8,
+    pub length_m: u32,
+    pub from_a_m: u32,
+    pub distance_m: f32,
+    pub position: NavEdgePosition,
+    pub a_coord: (i32, i32),
+    pub b_coord: (i32, i32),
+    pub a_position: NavEdgePosition,
+    pub b_position: NavEdgePosition,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NavEdgeEndpoint {
+    pub id: u32,
+    pub coord: (i32, i32),
+    pub position: NavEdgePosition,
+}
+
+/// A winning exact edge projection, connected to its two real graph endpoints. Directional ascent
+/// is carried so the virtual partial edges use the same climb-aware cost model as ordinary A* arcs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NavEdgeSnap {
+    pub edge_id: u32,
+    pub way_kind: u8,
+    pub length_m: u32,
+    pub from_a_m: u32,
+    pub distance_m: f32,
+    pub position: NavEdgePosition,
+    pub a: NavEdgeEndpoint,
+    pub b: NavEdgeEndpoint,
+    pub ascent_ab: u16,
+    pub ascent_ba: u16,
+}
+
+#[inline]
+fn project_to_nav_segment(a: (i32, i32), b: (i32, i32), p: (i32, i32), cl: f32) -> (f32, f32) {
+    let scale = M_PER_DEG as f32 / 1_000_000.0;
+    let bx = (b.0 - a.0) as f32 * scale * cl;
+    let by = (b.1 - a.1) as f32 * scale;
+    let px = (p.0 - a.0) as f32 * scale * cl;
+    let py = (p.1 - a.1) as f32 * scale;
+    let len2 = bx * bx + by * by;
+    if len2 <= 1e-9 {
+        return (0.0, libm::sqrtf(px * px + py * py));
+    }
+    let t = ((px * bx + py * by) / len2).clamp(0.0, 1.0);
+    let (dx, dy) = (px - bx * t, py - by * t);
+    (t, libm::sqrtf(dx * dx + dy * dy))
+}
+
+#[inline]
+fn candidate_beats(new: &NavEdgeCandidate, old: &NavEdgeCandidate) -> bool {
+    new.distance_m < old.distance_m || (new.distance_m == old.distance_m && new.edge_id < old.edge_id)
+}
+
 /// One §8.3 junction record, borrowed from the chunk scratch for a single
 /// [`Reader::for_each_nav_node`] callback. Neighbor entries decode lazily through
 /// [`NavNodeRef::neighbors`] — A* relaxes them straight off the record with no intermediate copy.
@@ -576,7 +683,7 @@ const NAV_INDEX_BLOCKS: usize = 16;
 const NAV_TILE_EMPTY: u32 = u32::MAX;
 
 /// A snapshot of the [`NavTileCache`] counters. These are **logical** `ByteSource::read_at` counts;
-/// physical command counts are lower-level transport diagnostics. Sector-aligned v12 producers make
+/// physical command counts are lower-level transport diagnostics. Sector-aligned current producers make
 /// every full node/edge/index fill one physical command, while old unaligned maps may need two.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct NavCacheStats {
@@ -1762,10 +1869,9 @@ impl<'a> Reader<'a> {
     /// [`NavTileCache`] instead of a bare scratch — the router's settle primitive (#465). A*'s
     /// spatial re-fetch settles one node at a time (a degenerate one-point `view`). It does **not**
     /// walk a single advancing neighborhood: the heap pops the globally best-`f` node, so successive
-    /// settles scatter across the frontier's several live quadtree leaves (measured 2026-07-07 —
-    /// grimsel, giant-component endpoints — the reason N4 widened [`NAV_TILE_SLOTS`] to 8, where the
-    /// several live leaves stay resident and the per-settle re-fetch mostly hits). Same decode, same
-    /// corrupt-input posture, same reentrancy rule as the uncached walk.
+    /// settles scatter across the frontier's several live quadtree leaves. The route-private
+    /// [`NAV_TILE_SLOTS`] working set keeps those leaves resident so the per-settle re-fetch mostly
+    /// hits. Same decode, same corrupt-input posture, same reentrancy rule as the uncached walk.
     pub fn for_each_nav_node_cached(
         &self,
         view: &BBox,
@@ -1806,6 +1912,315 @@ impl<'a> Reader<'a> {
         Ok(())
     }
 
+    /// Find the nearest exact edge projection among (a) edges incident to graph nodes in `view`
+    /// and (b) edges named by v13 interior anchors in `view`. The two indexes together are the
+    /// completeness argument: endpoints cover short edges; long edges have interior anchors no
+    /// farther than 300 m apart. Endpoint graph ids are deliberately resolved only after the
+    /// lookup windows have selected a winner; see
+    /// [`resolve_nav_edge_candidate_cached`](Self::resolve_nav_edge_candidate_cached).
+    #[inline(never)] // keep the one 512-byte node-chunk copy in this bounded snap-only frame
+    pub fn nearest_nav_edge_candidate_cached(
+        &self,
+        view: &BBox,
+        tiles: &mut NavTileCache,
+        p: (i32, i32),
+        max_distance_m: f32,
+    ) -> Result<Option<NavEdgeCandidate>, Error> {
+        let dir = *self.nav_directory();
+        if dir.is_empty() {
+            return Ok(None);
+        }
+        let mut best: Option<NavEdgeCandidate> = None;
+        let mut read_error = None;
+
+        // First the ordinary node tree: this supplies every short edge and also helps long edges
+        // near a junction. Copy each chunk before edge-pool reads are allowed to evict its cache
+        // slot.
+        self.walk_nav_leaves(&dir, 0, self.bbox, view, 0, tiles, &mut |tiles, cid, _node| {
+            if read_error.is_some() {
+                return;
+            }
+            let Some((start, end)) = dir.chunk_range(cid) else { return };
+            if end > self.src.len() as usize {
+                return;
+            }
+            let Some(off) = u32::try_from(start).ok() else { return };
+            let mut local = [0u8; NAV_MAX_CHUNK_BYTES];
+            {
+                let Some(chunk) = tiles.chunk(self.src, off, dir.chunk_size) else {
+                    read_error = Some(IoError::Io);
+                    return;
+                };
+                local[..dir.chunk_size].copy_from_slice(chunk);
+            }
+            decode_nav_chunk(&local[..dir.chunk_size], &mut |n| {
+                if n.lon < view.min_lon || n.lon > view.max_lon || n.lat < view.min_lat || n.lat > view.max_lat {
+                    return;
+                }
+                for nb in n.neighbors() {
+                    let Some(candidate) = self.project_nav_edge_cached(tiles, nb.edge_id, p) else { continue };
+                    if candidate.distance_m <= max_distance_m
+                        && best.is_none_or(|old| candidate_beats(&candidate, &old))
+                    {
+                        best = Some(candidate);
+                    }
+                }
+            });
+        })
+        .map_err(Error::from)?;
+
+        // Then the sparse long-edge anchors. Leaves may share chunks, so filter by the absolute
+        // record coordinate; repeated edge ids are harmless and normally hit the edge cache.
+        if dir.snap_node_count > 0 && read_error.is_none() {
+            let index = NavSnapIndex { index_offset: dir.snap_index_offset, node_count: dir.snap_node_count };
+            self.walk_nav_leaves(&index, 0, self.bbox, view, 0, tiles, &mut |tiles, cid, _node| {
+                if read_error.is_some() {
+                    return;
+                }
+                let Some((start, end)) = dir.snap_chunk_range(cid) else { return };
+                if end > self.src.len() as usize {
+                    return;
+                }
+                let Some(off) = u32::try_from(start).ok() else { return };
+                let mut local = [CHUNK_END; NAV_CHUNK_SIZE];
+                {
+                    let Some(chunk) = tiles.chunk(self.src, off, dir.chunk_size) else {
+                        read_error = Some(IoError::Io);
+                        return;
+                    };
+                    local[..dir.chunk_size].copy_from_slice(chunk);
+                }
+                for rec in local[..dir.chunk_size].chunks_exact(NAV_SNAP_RECORD_LEN) {
+                    let edge_id = rd_u32(rec, 8);
+                    if edge_id == u32::MAX {
+                        break;
+                    }
+                    let (lat, lon) = (rd_i32(rec, 0), rd_i32(rec, 4));
+                    if lon < view.min_lon || lon > view.max_lon || lat < view.min_lat || lat > view.max_lat {
+                        continue;
+                    }
+                    let Some(candidate) = self.project_nav_edge_cached(tiles, edge_id, p) else { continue };
+                    if candidate.distance_m <= max_distance_m
+                        && best.is_none_or(|old| candidate_beats(&candidate, &old))
+                    {
+                        best = Some(candidate);
+                    }
+                }
+            })
+            .map_err(Error::from)?;
+        }
+        if let Some(error) = read_error {
+            return Err(Error::Source(error));
+        }
+        Ok(best)
+    }
+
+    /// Resolve the winning candidate's endpoint ids and directional ascents through two degenerate
+    /// node-tree queries. Only this winner pays the lookups; all rejected candidates needed only
+    /// their edge-pool geometry.
+    pub fn resolve_nav_edge_candidate_cached(
+        &self,
+        candidate: NavEdgeCandidate,
+        tiles: &mut NavTileCache,
+    ) -> Result<Option<NavEdgeSnap>, Error> {
+        let mut ids: Option<(u32, u32)> = None;
+        let mut ascent_ab = None;
+        let mut ascent_ba = None;
+        for (coord, other, forward) in
+            [(candidate.a_coord, candidate.b_coord, true), (candidate.b_coord, candidate.a_coord, false)]
+        {
+            let view = BBox { min_lon: coord.0, min_lat: coord.1, max_lon: coord.0, max_lat: coord.1 };
+            self.for_each_nav_node_cached(&view, tiles, |n| {
+                if (n.lon, n.lat) != coord {
+                    return;
+                }
+                for nb in n.neighbors() {
+                    if nb.edge_id != candidate.edge_id || (nb.lon, nb.lat) != other {
+                        continue;
+                    }
+                    let pair = if forward { (n.id, nb.id) } else { (nb.id, n.id) };
+                    if ids.is_none_or(|old| old == pair) {
+                        ids = Some(pair);
+                        if forward {
+                            ascent_ab = Some(nb.ascent_m);
+                        } else {
+                            ascent_ba = Some(nb.ascent_m);
+                        }
+                    }
+                }
+            })?;
+        }
+        let Some((a_id, b_id)) = ids else { return Ok(None) };
+        Ok(Some(NavEdgeSnap {
+            edge_id: candidate.edge_id,
+            way_kind: candidate.way_kind,
+            length_m: candidate.length_m,
+            from_a_m: candidate.from_a_m,
+            distance_m: candidate.distance_m,
+            position: candidate.position,
+            a: NavEdgeEndpoint { id: a_id, coord: candidate.a_coord, position: candidate.a_position },
+            b: NavEdgeEndpoint { id: b_id, coord: candidate.b_coord, position: candidate.b_position },
+            ascent_ab: ascent_ab.unwrap_or(0),
+            ascent_ba: ascent_ba.unwrap_or(0),
+        }))
+    }
+
+    /// Stream an inclusive edge slice between two exact projected positions, in either direction.
+    pub fn nav_edge_slice_oriented(
+        &self,
+        tiles: &mut NavTileCache,
+        edge_id: u32,
+        from: NavEdgePosition,
+        to: NavEdgePosition,
+        mut emit: impl FnMut((i32, i32)),
+    ) -> Option<u32> {
+        let dir = self.nav_directory();
+        let cs = dir.chunk_size;
+        if dir.edge_chunk_count == 0 || cs == 0 {
+            return None;
+        }
+        let id = edge_id as usize;
+        let within = id % cs;
+        if id / cs >= dir.edge_chunk_count || within + NAV_EDGE_FIXED_LEN > cs {
+            return None;
+        }
+        let chunk_start = dir.edge_pool_offset.checked_add(id - within)?;
+        if chunk_start.checked_add(cs)? > self.src.len() as usize {
+            return None;
+        }
+        let chunk = tiles.chunk(self.src, u32::try_from(chunk_start).ok()?, cs)?;
+        let length_m = rd_u32(chunk, within);
+        let pt_count = rd_u16(chunk, within + 4) as usize;
+        if pt_count < 2 || from.segment as usize + 1 >= pt_count || to.segment as usize + 1 >= pt_count {
+            return None;
+        }
+        let rec_len = NAV_EDGE_FIXED_LEN.checked_add((pt_count - 1).checked_mul(4)?)?;
+        if within + rec_len > cs {
+            return None;
+        }
+        let deltas = &chunk[within + NAV_EDGE_FIXED_LEN..within + rec_len];
+        let anchor = (rd_i32(chunk, within + 11), rd_i32(chunk, within + 7));
+        let step = |(lon, lat): (i32, i32), pair: &[u8]| {
+            (
+                lon.wrapping_add(i16::from_le_bytes([pair[2], pair[3]]) as i32),
+                lat.wrapping_add(i16::from_le_bytes([pair[0], pair[1]]) as i32),
+            )
+        };
+        let forward = (from.segment, from.fraction) <= (to.segment, to.fraction);
+        emit(from.coord);
+        if forward {
+            let mut point = anchor;
+            for (i, pair) in deltas.chunks_exact(4).enumerate() {
+                point = step(point, pair);
+                let vertex = i + 1;
+                if vertex > from.segment as usize && vertex <= to.segment as usize {
+                    emit(point);
+                }
+            }
+        } else {
+            let mut point = anchor;
+            for pair in deltas.chunks_exact(4) {
+                point = step(point, pair);
+            }
+            for (i, pair) in deltas.chunks_exact(4).enumerate().rev() {
+                point = (
+                    point.0.wrapping_sub(i16::from_le_bytes([pair[2], pair[3]]) as i32),
+                    point.1.wrapping_sub(i16::from_le_bytes([pair[0], pair[1]]) as i32),
+                );
+                let vertex = i;
+                if vertex <= from.segment as usize && vertex > to.segment as usize {
+                    emit(point);
+                }
+            }
+        }
+        if to.coord != from.coord {
+            emit(to.coord);
+        }
+        Some(length_m)
+    }
+
+    fn project_nav_edge_cached(
+        &self,
+        tiles: &mut NavTileCache,
+        edge_id: u32,
+        p: (i32, i32),
+    ) -> Option<NavEdgeCandidate> {
+        let dir = self.nav_directory();
+        let cs = dir.chunk_size;
+        if dir.edge_chunk_count == 0 || cs == 0 {
+            return None;
+        }
+        let id = edge_id as usize;
+        let within = id % cs;
+        if id / cs >= dir.edge_chunk_count || within + NAV_EDGE_FIXED_LEN > cs {
+            return None;
+        }
+        let chunk_start = dir.edge_pool_offset.checked_add(id - within)?;
+        if chunk_start.checked_add(cs)? > self.src.len() as usize {
+            return None;
+        }
+        let chunk = tiles.chunk(self.src, u32::try_from(chunk_start).ok()?, cs)?;
+        let length_m = rd_u32(chunk, within);
+        let pt_count = rd_u16(chunk, within + 4) as usize;
+        if pt_count < 2 || pt_count - 1 > u16::MAX as usize {
+            return None;
+        }
+        let way_kind = chunk[within + 6];
+        let rec_len = NAV_EDGE_FIXED_LEN.checked_add((pt_count - 1).checked_mul(4)?)?;
+        if within + rec_len > cs {
+            return None;
+        }
+        let deltas = &chunk[within + NAV_EDGE_FIXED_LEN..within + rec_len];
+        let anchor = (rd_i32(chunk, within + 11), rd_i32(chunk, within + 7));
+        let step = |(lon, lat): (i32, i32), pair: &[u8]| {
+            (
+                lon.wrapping_add(i16::from_le_bytes([pair[2], pair[3]]) as i32),
+                lat.wrapping_add(i16::from_le_bytes([pair[0], pair[1]]) as i32),
+            )
+        };
+        let cl = cos_lat(p.1).max(1e-3);
+        let mut a = anchor;
+        let mut along = 0.0f32;
+        let mut best_distance = f32::INFINITY;
+        let mut best_along = 0.0f32;
+        let mut best_position = NavEdgePosition { segment: 0, fraction: 0, coord: anchor };
+        for (i, pair) in deltas.chunks_exact(4).enumerate() {
+            let b = step(a, pair);
+            let (t, distance) = project_to_nav_segment(a, b, p, cl);
+            let segment_m = ground_dist_m_cl(a, b, cl);
+            if distance < best_distance {
+                best_distance = distance;
+                best_along = along + t * segment_m;
+                let lon = a.0.saturating_add(libm::roundf((b.0 - a.0) as f32 * t) as i32);
+                let lat = a.1.saturating_add(libm::roundf((b.1 - a.1) as f32 * t) as i32);
+                best_position = NavEdgePosition {
+                    segment: i as u16,
+                    fraction: libm::roundf(t * u16::MAX as f32) as u16,
+                    coord: (lon, lat),
+                };
+            }
+            along += segment_m;
+            a = b;
+        }
+        let from_a_m = if along <= f32::EPSILON {
+            0
+        } else {
+            (libm::roundf(length_m as f32 * best_along / along) as u32).min(length_m)
+        };
+        Some(NavEdgeCandidate {
+            edge_id,
+            way_kind,
+            length_m,
+            from_a_m,
+            distance_m: best_distance,
+            position: best_position,
+            a_coord: anchor,
+            b_coord: a,
+            a_position: NavEdgePosition { segment: 0, fraction: 0, coord: anchor },
+            b_position: NavEdgePosition { segment: (pt_count - 2) as u16, fraction: u16::MAX, coord: a },
+        })
+    }
+
     /// Route-private §8.2 walk. Unlike the renderer/POI [`Reader::walk_leaves`] path, node words are
     /// served from [`NavTileCache`]'s sixteen-window working set, so thousands of point descents do
     /// not churn the seven render-index windows. The callback receives the same mutable cache only
@@ -1814,7 +2229,7 @@ impl<'a> Reader<'a> {
     #[allow(clippy::too_many_arguments)]
     fn walk_nav_leaves<F: FnMut(&mut NavTileCache, u32, BBox)>(
         &self,
-        index: &NavDirectory,
+        index: &dyn QuadIndex,
         idx: usize,
         node: BBox,
         view: &BBox,
@@ -1822,7 +2237,7 @@ impl<'a> Reader<'a> {
         tiles: &mut NavTileCache,
         visit: &mut F,
     ) -> Result<(), MapReadError> {
-        if idx >= index.node_count || depth > MAX_QUADTREE_DEPTH || !node.intersects(view) {
+        if idx >= index.node_count() || depth > MAX_QUADTREE_DEPTH || !node.intersects(view) {
             return Ok(());
         }
         let val = tiles.index_node(self.src, self.file, index, idx).map_err(MapReadError::Source)?;
@@ -3053,7 +3468,7 @@ fn decode_nav_chunk(chunk: &[u8], visit: &mut impl FnMut(NavNodeRef)) {
     }
 }
 
-/// Parse the v9 nav directory (spec §8.1) at `offset` from `src` (file is `total` bytes).
+/// Parse the current v13 nav directory (spec §8.1) at `offset` from `src` (file is `total` bytes).
 /// Parse-only: validates the directory scalars, the node index + chunk region, the edge-pool
 /// region, and the profile-table region lie in-file, but walks/decodes nothing (the profiles
 /// themselves are read by [`parse_nav_profiles`]). The section is always present, so `offset`
@@ -3075,6 +3490,9 @@ fn parse_nav_directory(src: &dyn ByteSource, offset: usize, total: usize) -> Res
         chunk_size: rd_u16(&d, 20) as usize,
         profile_table_offset: rd_u32(&d, 22) as usize,
         profile_count: d[26] as usize,
+        snap_index_offset: rd_u32(&d, 28) as usize,
+        snap_node_count: rd_u32(&d, 32) as usize,
+        snap_chunk_count: rd_u32(&d, 36) as usize,
     };
     // The nav chunk size is pinned to 512 (§8.1) — a v8 file, or any other value, is rejected. This
     // is a distinct error from the header's version check, so an old file and a mis-sized current
@@ -3122,6 +3540,19 @@ fn parse_nav_directory(src: &dyn ByteSource, offset: usize, total: usize) -> Res
         .and_then(|len| dir.edge_pool_offset.checked_add(len))
         .ok_or(Error::BadOffset)?;
     if pool_end > total {
+        return Err(Error::BadOffset);
+    }
+    // v13 snap-anchor index + chunks. An empty anchor index is legal (a graph whose every edge is
+    // short); a populated one follows the same fixed-chunk bounds contract as the node index.
+    if dir.snap_node_count > 0 {
+        let region_end = dir
+            .snap_data_start()
+            .and_then(|start| dir.snap_chunk_count.checked_mul(dir.chunk_size).and_then(|len| start.checked_add(len)))
+            .ok_or(Error::BadOffset)?;
+        if dir.snap_index_offset < HEADER_LEN || region_end > total {
+            return Err(Error::BadOffset);
+        }
+    } else if dir.snap_index_offset > total || dir.snap_chunk_count != 0 {
         return Err(Error::BadOffset);
     }
     Ok(dir)
