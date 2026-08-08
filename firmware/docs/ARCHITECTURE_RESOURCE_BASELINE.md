@@ -902,6 +902,36 @@ reference host's noise allowance: a larger change is a reason to repeat and
 investigate, not an automatic percentage-based failure. Pixel hashes remain the
 deterministic CI gate.
 
+## Route-planner I/O baseline (2026-08-08)
+
+The route planner now has a route-private 16-sector RRIP index cache and 32 graph
+chunk slots. Populated nav producers align node and edge chunks to 512-byte file
+offsets; existing compact v12 maps remain readable. The planner scheduler admits
+12 source fills and emits 8 hops per cooperative step, up from 6 and 4.
+
+The measurement harness runs the real `Reader` and `NavPlanner` against the
+committed Grimsel and Monaco maps. It applies the FAT extent source's sector-split
+rules to a contiguous map object; for the candidate it applies the new producer
+alignment to the same payload. These are command counts, not MCU wall times:
+
+| Route | Develop commands | Candidate commands | Reduction | Ratio |
+| :-- | --: | --: | --: | --: |
+| Grimsel, known 8.9 km | 603 | 167 | 72.3% | 3.61× |
+| Grimsel, long 24.8 km | 6,211 | 1,358 | 78.1% | 4.57× |
+| Grimsel, sparse 42.1 km | 505 | 232 | 54.1% | 2.18× |
+| Monaco, 2.6 km | 2,936 | 617 | 79.0% | 4.76× |
+| Grimsel, exhausted search | 11,834 | 1,520 | 87.2% | 7.79× |
+
+Where card reads dominate, this supports an expected roughly 2–5× reduction in
+planner latency on ordinary routes, with larger gains on an exhausted search;
+the `sd-bench` build now logs physical command/time totals by snap, search and
+emit phase so the estimate can be replaced by on-device evidence.
+
+`NavTileCache` grows from 4,140 B to 24,852 B and the exact target-side nav arm
+from 59,872 B to 80,584 B (+20,712 B). This costs **zero resident RAM** because
+the 131,072-byte USB arm remains the scratch-arena maximum; the nav arm retains
+50,488 B of headroom before it can change `.uninit` or residual stack.
+
 ## Dependency-direction baseline
 
 `tools/dependency_rules.json` groups the production packages into foundation,

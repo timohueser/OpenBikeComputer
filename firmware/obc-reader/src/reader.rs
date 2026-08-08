@@ -87,8 +87,7 @@ const POI_SCAN_WINDOW: usize = 512;
 /// Upper bound on the nav `chunk_size` the reader accepts (spec §8.1), and the byte size of one
 /// [`NavTileCache`] slot. v9 pins the wire value to exactly [`NAV_CHUNK_SIZE`] (512), so this equals
 /// it: the cache holds whole 512 B chunks and [`NavTileCache::chunk`]'s `debug_assert` guards that
-/// no larger chunk is ever routed through a slot. Pinning the two together is what lets N4 fit **8**
-/// slots in the same ~4 KB the pre-N4 `2 × 2048 B` geometry used (see [`NAV_TILE_SLOTS`]).
+/// no larger chunk is ever routed through a slot.
 pub const NAV_MAX_CHUNK_BYTES: usize = NAV_CHUNK_SIZE;
 
 /// The per-read window of [`Reader::nav_edge`]'s delta stream, bytes (a multiple of the 4-byte
@@ -557,31 +556,47 @@ impl<'a> NavNodeRef<'a> {
     }
 }
 
-/// Graph-tile cache slots. **Eight** (N4, epic #533): the earlier "two slots cover the working set"
-/// assumption did not survive measurement. An A\* frontier pops the *globally* best-`f` node, so it
-/// hops between many simultaneously-active quadtree leaves, not one advancing neighborhood — a
-/// 2-slot cache thrashed at ~33 % hit rate on the real `grimsel.obcm` probe (giant-component
-/// endpoints, 2026-07-07). Rebuilding at 8 slots roughly doubled that (~55–67 % depending on the
-/// route) on the same runs; 16 bought little more (the frontier's live-leaf set is small but well
-/// above two). Because N2 pins nav
-/// `chunk_size` to 512 B, eight slots cost the **same ~4 KB** the old `2 × 2048 B` geometry did — a
-/// pure win in the device's `.bss` next to the router's scratch, no extra RAM. Eviction stays
-/// round-robin (below): at 8 slots LRU bookkeeping bought nothing measurable.
-pub(crate) const NAV_TILE_SLOTS: usize = 8;
+/// Graph-tile cache slots. **Thirty-two**: the earlier 8-slot measurement covered one route, while
+/// the 2026-08-08 physical-command study covered Grimsel, Monaco and failure/escalation paths. The
+/// larger frontier working set remained useful through 32 slots, cutting node-chunk misses by
+/// roughly 1.5–2.5× over 8 depending on density. The cache lives in the route-only scratch-arena arm,
+/// which had ~69 KiB below the 128 KiB USB maximum, so this growth costs zero linked resident RAM.
+/// Fully-associative round-robin is retained: 32 tag compares are negligible beside a card command
+/// and preserve the measured hit rate without conflict misses.
+pub(crate) const NAV_TILE_SLOTS: usize = 32;
+
+/// Route-private aligned quadtree-index windows. Real nav indexes are about 8 KiB; the render cache's
+/// seven windows repeatedly scanned and thrashed because every settled node re-descends the tree.
+/// Sixteen scan-resistant RRIP windows keep that working set inside the route-only arena arm and
+/// leave the renderer's carefully-budgeted seven-window cache untouched.
+const NAV_INDEX_BLOCKS: usize = 16;
 
 /// Empty-slot tag for [`NavTileCache`]: a chunk's absolute file offset never reaches `u32::MAX`
 /// (its whole extent must lie inside a `u32`-addressed source).
 const NAV_TILE_EMPTY: u32 = u32::MAX;
 
-/// A snapshot of the [`NavTileCache`] counters. `misses` doubles as the SD-read count: every miss
-/// is exactly one `chunk_size`-byte `read_at`, and hits read nothing — the number R4 logs on-glass
-/// (the device is SD-bound; this cache is the epic's named thrash mitigation).
+/// A snapshot of the [`NavTileCache`] counters. These are **logical** `ByteSource::read_at` counts;
+/// physical command counts are lower-level transport diagnostics. Sector-aligned v12 producers make
+/// every full node/edge/index fill one physical command, while old unaligned maps may need two.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct NavCacheStats {
     /// Nav-chunk requests served from a resident slot (no SD read).
     pub hits: u32,
     /// Nav-chunk requests that missed and read `chunk_size` bytes from the source.
     pub misses: u32,
+    /// Quadtree-index node reads served by one of the route-private aligned windows.
+    pub index_hits: u32,
+    /// Route-private index windows filled from the source.
+    pub index_misses: u32,
+}
+
+impl NavCacheStats {
+    /// Total logical source fills attributable to route traversal. This is the scheduler's expensive
+    /// unit: graph chunks plus index windows, never resident hits.
+    #[inline]
+    pub const fn source_reads(self) -> u32 {
+        self.misses.saturating_add(self.index_misses)
+    }
 }
 
 /// A tiny caller-owned cache of whole nav chunks (node **and** edge-pool — both are `chunk_size`
@@ -592,9 +607,10 @@ pub struct NavCacheStats {
 /// the [`NAV_TILE_SLOTS`] slots the measured hit rate matches LRU's within noise (the frontier's
 /// live-leaf set has no strong recency skew), so the cheaper cursor is kept.
 ///
-/// ~4 KB, owned by the caller (the device puts it in `.bss`); `new()` is `const` so a `static`
-/// lands zero-initialized. The tags are only meaningful against one map/source — the router
-/// resets it per `plan_route`, so a map switch can never cross-serve a stale chunk.
+/// ~25 KB, owned by the caller (the device puts it in the route-only scratch-arena arm); `new()` is
+/// `const` so a static/arena initialization stays deterministic. The tags are only meaningful
+/// against one map/source — the router resets it per plan, so a map switch cannot cross-serve stale
+/// graph or index bytes.
 pub struct NavTileCache {
     slots: [[u8; NAV_MAX_CHUNK_BYTES]; NAV_TILE_SLOTS],
     /// Absolute file offset of the chunk each slot holds, or [`NAV_TILE_EMPTY`].
@@ -603,7 +619,14 @@ pub struct NavTileCache {
     next: u8,
     hits: u32,
     misses: u32,
+    index: [IndexBlock; NAV_INDEX_BLOCKS],
+    index_hits: u32,
+    index_misses: u32,
 }
+
+// On-device: 32 graph sectors + tags/counters and sixteen 520-byte index windows.
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::size_of::<NavTileCache>() == 24_852);
 
 impl NavTileCache {
     pub const fn new() -> Self {
@@ -613,6 +636,9 @@ impl NavTileCache {
             next: 0,
             hits: 0,
             misses: 0,
+            index: [IndexBlock::EMPTY; NAV_INDEX_BLOCKS],
+            index_hits: 0,
+            index_misses: 0,
         }
     }
 
@@ -624,12 +650,22 @@ impl NavTileCache {
         self.next = 0;
         self.hits = 0;
         self.misses = 0;
+        for block in &mut self.index {
+            block.meta = 0;
+        }
+        self.index_hits = 0;
+        self.index_misses = 0;
     }
 
     /// Snapshot of the hit/miss counters since the last [`NavTileCache::reset`].
     #[inline]
     pub fn stats(&self) -> NavCacheStats {
-        NavCacheStats { hits: self.hits, misses: self.misses }
+        NavCacheStats {
+            hits: self.hits,
+            misses: self.misses,
+            index_hits: self.index_hits,
+            index_misses: self.index_misses,
+        }
     }
 
     /// The `len`-byte chunk at absolute `offset`, from a resident slot or (on miss) read from
@@ -650,6 +686,63 @@ impl NavTileCache {
         self.next = self.next.wrapping_add(1);
         self.misses += 1;
         Some(&self.slots[i][..len])
+    }
+
+    /// Read one quadtree node through the route-private aligned index working set.
+    fn index_node(
+        &mut self,
+        src: &dyn ByteSource,
+        file: u8,
+        index: &dyn QuadIndex,
+        idx: usize,
+    ) -> Result<u32, IoError> {
+        let byte_index = idx.checked_mul(4).ok_or(IoError::BadOffset)?;
+        let off = u32::try_from(index.index_offset().checked_add(byte_index).ok_or(IoError::BadOffset)?)
+            .map_err(|_| IoError::BadOffset)?;
+        let mut word = [0u8; 4];
+        self.index_read(src, file, off, &mut word)?;
+        Ok(u32::from_le_bytes(word))
+    }
+
+    fn index_read(&mut self, src: &dyn ByteSource, file: u8, off: u32, out: &mut [u8]) -> Result<(), IoError> {
+        let mut filled = 0usize;
+        while filled < out.len() {
+            let cur = off.checked_add(filled as u32).ok_or(IoError::BadOffset)?;
+            let block_off = cur - cur % INDEX_BLOCK as u32;
+            let slot = self.index_block(src, file, block_off)?;
+            let within = (cur - block_off) as usize;
+            let blen = self.index[slot].len as usize;
+            if within >= blen {
+                return Err(IoError::BadOffset);
+            }
+            let take = (blen - within).min(out.len() - filled);
+            out[filled..filled + take].copy_from_slice(&self.index[slot].buf[within..within + take]);
+            filled += take;
+        }
+        Ok(())
+    }
+
+    fn index_block(&mut self, src: &dyn ByteSource, file: u8, block_off: u32) -> Result<usize, IoError> {
+        if let Some(i) = self.index.iter().position(|b| b.valid() && b.file() == file && b.off == block_off) {
+            self.index[i].set_rrpv(0);
+            self.index_hits = self.index_hits.saturating_add(1);
+            return Ok(i);
+        }
+        let remaining = src.len().checked_sub(block_off).ok_or(IoError::BadOffset)? as usize;
+        let want = remaining.min(INDEX_BLOCK);
+        if want == 0 {
+            return Err(IoError::BadOffset);
+        }
+        let empty = self.index.iter().position(|b| !b.valid());
+        let i = empty.unwrap_or_else(|| rrip_victim(&mut self.index));
+        self.index[i].meta = 0;
+        src.read_at(block_off, &mut self.index[i].buf[..want])?;
+        self.index[i].off = block_off;
+        self.index[i].len = want as u16;
+        self.index_misses = self.index_misses.saturating_add(1);
+        let rrpv = if empty.is_some() || self.index_misses.is_multiple_of(8) { 2 } else { 3 };
+        self.index[i].commit(file, rrpv);
+        Ok(i)
     }
 }
 
@@ -1685,7 +1778,7 @@ impl<'a> Reader<'a> {
             return Ok(());
         }
         let mut read_error = None;
-        self.walk_leaves(&dir, 0, self.bbox, view, 0, &mut |cid, _node| {
+        self.walk_nav_leaves(&dir, 0, self.bbox, view, 0, tiles, &mut |tiles, cid, _node| {
             if read_error.is_some() {
                 return;
             }
@@ -1709,6 +1802,50 @@ impl<'a> Reader<'a> {
         .map_err(Error::from)?;
         if let Some(error) = read_error {
             return Err(Error::Source(error));
+        }
+        Ok(())
+    }
+
+    /// Route-private §8.2 walk. Unlike the renderer/POI [`Reader::walk_leaves`] path, node words are
+    /// served from [`NavTileCache`]'s sixteen-window working set, so thousands of point descents do
+    /// not churn the seven render-index windows. The callback receives the same mutable cache only
+    /// after the node-word borrow has ended, allowing a leaf to fetch its graph chunk without nested
+    /// mutable borrows.
+    #[allow(clippy::too_many_arguments)]
+    fn walk_nav_leaves<F: FnMut(&mut NavTileCache, u32, BBox)>(
+        &self,
+        index: &NavDirectory,
+        idx: usize,
+        node: BBox,
+        view: &BBox,
+        depth: u32,
+        tiles: &mut NavTileCache,
+        visit: &mut F,
+    ) -> Result<(), MapReadError> {
+        if idx >= index.node_count || depth > MAX_QUADTREE_DEPTH || !node.intersects(view) {
+            return Ok(());
+        }
+        let val = tiles.index_node(self.src, self.file, index, idx).map_err(MapReadError::Source)?;
+        if val & BRANCH_BIT == 0 {
+            if val != EMPTY_LEAF {
+                visit(tiles, val, node);
+            }
+            return Ok(());
+        }
+        let child = (val & !BRANCH_BIT) as usize;
+        if child <= idx {
+            return Err(MapReadError::Malformed);
+        }
+        let mid_lon = (node.min_lon + node.max_lon).div_euclid(2);
+        let mid_lat = (node.min_lat + node.max_lat).div_euclid(2);
+        let kids = [
+            BBox { min_lon: node.min_lon, min_lat: mid_lat, max_lon: mid_lon, max_lat: node.max_lat },
+            BBox { min_lon: mid_lon, min_lat: mid_lat, max_lon: node.max_lon, max_lat: node.max_lat },
+            BBox { min_lon: node.min_lon, min_lat: node.min_lat, max_lon: mid_lon, max_lat: mid_lat },
+            BBox { min_lon: mid_lon, min_lat: node.min_lat, max_lon: node.max_lon, max_lat: mid_lat },
+        ];
+        for (i, child_bbox) in kids.iter().enumerate() {
+            self.walk_nav_leaves(index, child + i, *child_bbox, view, depth + 1, tiles, visit)?;
         }
         Ok(())
     }
@@ -3162,6 +3299,7 @@ const INDEX_META_VALID: u8 = 0x80;
 /// validity bit, five-bit shard index, and two-bit RRIP prediction share `meta`; `len` is bounded
 /// by the 512-byte window. Compacting those tags pays for the leaf bbox stored in each chunk slot,
 /// so the pass-B fast path adds no net resident RAM.
+#[derive(Clone, Copy)]
 #[repr(C)]
 struct IndexBlock {
     off: u32,
@@ -3177,6 +3315,8 @@ struct IndexBlock {
 const _: () = assert!(core::mem::size_of::<IndexBlock>() == INDEX_BLOCK + 8);
 
 impl IndexBlock {
+    const EMPTY: Self = Self { off: 0, len: 0, meta: 0, _align: 0, buf: [0; INDEX_BLOCK] };
+
     #[inline]
     fn valid(&self) -> bool {
         self.meta & INDEX_META_VALID != 0
@@ -3719,12 +3859,10 @@ mod tests {
         assert_eq!(stats.chunk_hits, CHUNKS as u32, "the second five-chunk scan must be entirely RAM-only");
     }
 
-    /// The N4 graph-tile cache holds [`NAV_TILE_SLOTS`] (8) distinct chunks resident at once, and
-    /// round-robin eviction drops the **oldest** on the next miss: prime 8 → re-touch all 8 hit → a
-    /// 9th evicts slot 0's chunk while the rest stay resident. Guards the widened geometry (2→8) the
-    /// measurements motivated.
+    /// The graph-tile cache holds [`NAV_TILE_SLOTS`] distinct chunks resident at once, and
+    /// round-robin eviction drops the **oldest** on the next miss.
     #[test]
-    fn nav_tile_cache_holds_eight_and_evicts_round_robin() {
+    fn nav_tile_cache_holds_the_full_working_set_and_evicts_round_robin() {
         const LEN: usize = NAV_CHUNK_SIZE; // 512, = one pinned v9 nav chunk
                                            // NAV_TILE_SLOTS + 1 distinct chunks; every byte of chunk k is `k`, so contents are checkable.
         let mut data = [0u8; (NAV_TILE_SLOTS + 1) * LEN];
@@ -3735,19 +3873,22 @@ mod tests {
         let mut cache = NavTileCache::new();
         let off = |i: usize| (i * LEN) as u32;
 
-        // Prime all 8 slots: 8 misses, contents correct.
+        // Prime every slot: misses only, contents correct.
         for i in 0..NAV_TILE_SLOTS {
             assert_eq!(cache.chunk(&src, off(i), LEN).unwrap()[0], i as u8);
         }
-        assert_eq!(cache.stats(), NavCacheStats { hits: 0, misses: NAV_TILE_SLOTS as u32 });
+        assert_eq!(cache.stats(), NavCacheStats { hits: 0, misses: NAV_TILE_SLOTS as u32, ..NavCacheStats::default() });
 
-        // Re-touch all 8 — every one still resident ⇒ 8 hits, no new read.
+        // Re-touch all slots — every one still resident, so no new read.
         for i in 0..NAV_TILE_SLOTS {
             assert_eq!(cache.chunk(&src, off(i), LEN).unwrap()[0], i as u8);
         }
-        assert_eq!(cache.stats(), NavCacheStats { hits: NAV_TILE_SLOTS as u32, misses: NAV_TILE_SLOTS as u32 });
+        assert_eq!(
+            cache.stats(),
+            NavCacheStats { hits: NAV_TILE_SLOTS as u32, misses: NAV_TILE_SLOTS as u32, ..NavCacheStats::default() }
+        );
 
-        // A 9th distinct chunk misses and evicts the oldest (round-robin cursor = slot 0 = chunk 0).
+        // One more distinct chunk evicts the oldest (round-robin cursor = slot 0 = chunk 0).
         assert_eq!(cache.chunk(&src, off(NAV_TILE_SLOTS), LEN).unwrap()[0], NAV_TILE_SLOTS as u8);
         assert_eq!(cache.stats().misses, NAV_TILE_SLOTS as u32 + 1);
 
@@ -3759,6 +3900,29 @@ mod tests {
         let s = cache.stats();
         cache.chunk(&src, off(0), LEN).unwrap();
         assert_eq!(cache.stats().misses, s.misses + 1, "the evicted oldest re-reads");
+    }
+
+    /// A route re-descends the same quadtree for every settled node. The private index cache is
+    /// deliberately scan-resistant: a cycle one sector larger than capacity should churn one
+    /// probation slot, not evict the entire warm index as LRU would.
+    #[test]
+    fn nav_index_cache_resists_a_repeated_scan_larger_than_capacity() {
+        const WORKING_BLOCKS: usize = NAV_INDEX_BLOCKS + 1;
+        let data = [0u8; WORKING_BLOCKS * INDEX_BLOCK];
+        let src = SliceSource(&data);
+        let mut cache = NavTileCache::new();
+        let mut word = [0u8; 4];
+
+        for block in 0..WORKING_BLOCKS {
+            cache.index_read(&src, 0, (block * INDEX_BLOCK) as u32, &mut word).unwrap();
+        }
+        assert_eq!(cache.stats().index_misses, WORKING_BLOCKS as u32);
+
+        for block in 0..WORKING_BLOCKS {
+            cache.index_read(&src, 0, (block * INDEX_BLOCK) as u32, &mut word).unwrap();
+        }
+        assert_eq!(cache.stats().index_hits, (WORKING_BLOCKS - 2) as u32);
+        assert_eq!(cache.stats().index_misses, (WORKING_BLOCKS + 2) as u32);
     }
 
     /// A read that fails partway must leave the evicted slot *empty*, not poisoned with the old key
