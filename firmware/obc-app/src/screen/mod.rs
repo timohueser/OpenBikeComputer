@@ -964,7 +964,7 @@ impl Screen {
     /// deadline so the M33 sleeps rather than free-running the loop.
     ///
     /// Most screens change only on input or a fresh fix and return [`ScreenTick::idle`]. The
-    /// Statistics view runs its cursor spring-back + page auto-cycle off `now_ms`; the Home clock
+    /// Statistics view runs its stat-grid page auto-cycle off `now_ms`; the Home clock
     /// ticks over each minute off the wall-clock `now`, adopting `ms_to_next_minute` — the minute
     /// boundary the host pre-computes (it owns the clock); the Menu sweeps its compass needle
     /// toward the selection at frame cadence until it lands.
@@ -988,7 +988,8 @@ impl Screen {
             Screen::Statistics(s) => s.tick_timers(now_ms, settings),
             Screen::Home(s) => s.tick_timers(now, ms_to_next_minute),
             // The Map's clock overlay ticks over each minute (region-clipped to the pill), armed only
-            // when the pill is visible — the setting on and not panning (the pan chevron owns the slot);
+            // when the pill is visible — the setting on and not panning (Inspect keeps the map free
+            // of unrelated clock chrome);
             // it also runs the route-less browse map's one-shot start-hint timer (T6, gated on `tracking`).
             Screen::Map(s) => {
                 s.tick_timers(now_ms, now, ms_to_next_minute, w, pan_active, settings.map_clock, tracking)
