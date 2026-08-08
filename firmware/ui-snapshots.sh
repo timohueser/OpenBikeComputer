@@ -380,6 +380,11 @@ DFU_PRE="B u p d d d d p d d d p p"
 # the bottom-centre one-slot warning chip.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --script "p p p p"   --gpx "$GPX" --at 30 --png "$OUT/map.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p b" --gpx "$GPX" --at 30 --png "$OUT/statistics.png"
+# Elevation-profile Inspect mirrors the Map: hold enters Pan, Select tap toggles Zoom, and another
+# Select tap returns to Pan without discarding the magnification. `w` clears the entry hold bulge.
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p b h w" --gpx "$GPX" --at 30 --png "$OUT/statistics-pan.png"
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p b h p d d d w" --gpx "$GPX" --at 30 --png "$OUT/statistics-zoom.png"
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p b h p d d d p d d w" --gpx "$GPX" --at 30 --png "$OUT/statistics-pan-zoomed.png"
 # The live BLE-sensor stat tiles (epic #707, SE5): the Statistics grid pinned to HR / PWR / RPM (the
 # three new single-column raw-int tiles) alongside a couple of live neighbours. `--sensors-demo` seeds
 # that grid and feeds a fixed synthetic HR/power/cadence through SE2's HAL traits for one tick, so the
@@ -570,9 +575,14 @@ U5CLIMBOFF="B u p p d d d p b b b"
 # (`d p`). Choosing a route while a ride is live raises the Swap / Finish & new / Cancel card
 # instead of opening the overview.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p B d d d p d p" --png "$OUT/routeswap.png"
-# Pan mode: the pan HUD (chevrons + compass) plus the bottom-left scale bar (visible in pan too);
-# the clock digits are suppressed while panning (the top chevron owns the slot).
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --script "p p p p h" --png "$OUT/map-pan.png"
+# Inspect mode: a thin rounded amber/ink frame follows the panel corners across Route, Free, and
+# Zoom; only the active action's edge cues and the bottom-left scale bar join it. The clock and
+# redundant labels stay out. A final `w` lets the entry hold's edge bulge retract before capture.
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --script "p p p p h w" --png "$OUT/map-pan.png"
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --script "p p p p h p w" --png "$OUT/map-pan-zoom.png"
+# Back-hold changes Route/Free; Select-hold changes the axis only after Free is active.
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --script "p p p p h B w" --png "$OUT/map-pan-free-v.png"
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --script "p p p p h B h w" --png "$OUT/map-pan-free-h.png"
 # BLE connected indicator (#448): the static Bluetooth rune on the Home battery row and the menu
 # title bar. `--ble-connected` injects a linked phone, exactly as the sim control-panel toggle does.
 "$SIM" "$MAP" --boot --ble-connected --clock "2025-07-10T09:41" --png "$OUT/home-ble.png" --battery 45

@@ -64,7 +64,7 @@ pub mod wall_clock;
 
 pub use activity::{Activity, DetourRequest, DfuAction, Mode, NavRequest, TrackAction};
 pub use altitude::AltitudeFusion;
-pub use app::{App, AppState, CameraMode, ClockTrust, Pan, PanAxis, NAV_PREVIEW_MAX};
+pub use app::{App, AppState, CameraMode, ClockTrust, Pan, PanBasis, PanTool, NAV_PREVIEW_MAX};
 pub use arena_gate::{ArenaError, ArenaGate, ArenaInit, ArenaOwner, MapQuiesced, TransferReady};
 pub use ble::{BleLink, BleStatus};
 pub use breadcrumb::Breadcrumb;
