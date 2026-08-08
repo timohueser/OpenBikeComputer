@@ -302,9 +302,9 @@ obc bake publish
 obc bake publish --target r2
 
 # A deliberate full-store replacement may instead preview and then purge every
-# object below the configured catalog prefix. The second command leaves the
-# catalog offline until the publish succeeds, so verify the tree first and run
-# the purge and publish back-to-back.
+# object in the configured maps bucket. The second command leaves the catalog
+# offline until the publish succeeds, so verify the tree first and run the purge
+# and publish back-to-back.
 obc bake verify
 obc bake clean-r2
 obc bake clean-r2 --apply && obc bake publish --target r2
@@ -312,10 +312,11 @@ obc bake clean-r2 --apply && obc bake publish --target r2
 
 `clean-r2` requires an explicit non-root `OBC_R2_PREFIX`, requires
 `OBC_MAPS_BASE_URL` to end in that same prefix, and confirms that the prefix's
-current `catalog.json` is readable before either a dry run or a real purge. It
-deletes the complete prefix but never another prefix or unrelated bucket data.
-Use it for an intentionally disruptive format cutover, not for an ordinary
-incremental publish.
+current `catalog.json` is readable before either a dry run or a real purge. That
+check proves the configured R2 bucket is the one serving the catalog; cleanup
+then deletes every object in that bucket, including objects outside the catalog
+prefix. Use it for an intentionally disruptive format cutover, not for an
+ordinary incremental publish.
 
 When `OBC_R2_PREFIX` is set, `OBC_MAPS_BASE_URL` must be the public URL of that
 same prefix. For example, `OBC_R2_PREFIX=cell-catalog` pairs with
@@ -572,7 +573,7 @@ on the device, streaming maps/routes from a microSD card over a native 4-bit
 sEMMC transport and driving the panel over a parallel bus — both clocked by the
 FLPR coprocessor.
 
-**Working now:** OBCM v12 packing (CLI + web builder) and the baked cell catalog
+**Working now:** OBCM v13 packing (CLI + web builder) and the baked cell catalog
 behind it — `obc-bake` cuts regions or a whole planet snapshot into OBCA cells,
 and the browser assembles a selection back into one map without a server; the
 shared LOD-pyramid renderer (quadtree query, polygon fill with holes, weighted
