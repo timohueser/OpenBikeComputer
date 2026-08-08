@@ -4,7 +4,7 @@
 //! own its bytes permanently: the per-frame render scratch (`obc_render::RenderScratch`, 117,408 B
 //! since #1146 P3 grew the frame caps into the dividend; 92,320 B before it),
 //! the nav block ([`NavArm`] — `NavScratch` + `NavTileCache` + the resumable `NavPlanner`,
-//! ~59.9 KB), and the USB upload staging buffer ([`usb::STAGE_LEN`](crate::usb::STAGE_LEN),
+//! ~80.6 KB), and the USB upload staging buffer ([`usb::STAGE_LEN`](crate::usb::STAGE_LEN),
 //! two 64 KiB halves = 128 KiB since the upload retune; 16 KiB when this module was written). This
 //! module time-shares them through a `union`, so the board pays **max(arms)** instead of their sum.
 //!
@@ -64,7 +64,7 @@
 //! The budget is `max(arms)`, so growth is **not** linear:
 //!
 //! - An arm **below** the maximum grows at **zero** resident cost until it reaches the maximum arm.
-//!   Today USB is the maximum; render has 13,664 B of free headroom and nav about 68 KB.
+//!   Today USB is the maximum; render has 13,664 B of free headroom and nav 50,488 B.
 //! - Growing the **maximum** arm (today: USB) costs the full delta, 1:1, exactly as before. Its
 //!   128 KiB size is deliberate: two 64 KiB halves let normal uploads issue 128-block writes.
 //!
@@ -97,7 +97,7 @@ use obc_app::{ArenaError, ArenaGate, ArenaInit, ArenaOwner, MapQuiesced, Transfe
 /// Defined in **every** profile, `has_nav` or not, so [`NAV_ARM_BYTES`] can be the type's own size
 /// everywhere: the report's arm figures are sizes of types, not sums of parts, and a hand-summed
 /// fallback silently loses the struct's tail padding (finding #1150-9 — it read 59,868 against the
-/// pinned 59,872).
+/// pinned 80,584).
 ///
 /// **`has_nav` is currently always on** — `build.rs` emits it unconditionally (the router rides
 /// every LM20 build), so the `not(has_nav)` arms in this module are dormant, not dead-by-mistake.
@@ -107,8 +107,8 @@ use obc_app::{ArenaError, ArenaGate, ArenaInit, ArenaOwner, MapQuiesced, Transfe
 pub(crate) struct NavArm {
     /// The fixed A* table (~39.9 KB). Reset by the planner's first step of every request.
     pub(crate) scratch: obc_route::NavScratch,
-    /// The graph-tile cache (~4.1 KB). Warmth across searches was never correctness — losing it
-    /// costs cold 512 B tile reads on the next search, which is what its `misses` counter measures.
+    /// The route-private graph/index cache (~24.9 KB). Warmth across searches was never correctness
+    /// — losing it costs cold 512 B source reads on the next search, which its counters measure.
     pub(crate) tiles: obc_reader::NavTileCache,
     /// The resumable planner's slot (~15.8 KB, it owns the OBCR emitter across steps). Keeps its
     /// per-request `ptr::write` discipline (#499): the drain writes a fresh planner here and the

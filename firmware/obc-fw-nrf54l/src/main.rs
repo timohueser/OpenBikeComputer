@@ -318,7 +318,7 @@ bind_interrupts!(struct SensorIrqs {
 //                  live together: the per-frame **render** scratch (`obc_render::RenderScratch`,
 //                  117,408 B at the nrf-mem caps — every decode / collect / span / draw buffer a
 //                  redraw needs at once), the **nav** block (`NavScratch` + `NavTileCache` +
-//                  `NavPlanner`, ~59.9 KB, live only inside one route search), and the **USB**
+//                  `NavPlanner`, ~80.6 KB, live only inside one route search), and the **USB**
 //                  staging buffer (128 KiB, live only while a cable transfer streams). The USB arm
 //                  is now the maximum: 13,664 B above the 117,408 B render arm, deliberately spent
 //                  on two 64 KiB halves for efficient 128-block card writes.

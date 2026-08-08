@@ -187,12 +187,16 @@ fn each_class_costs_only_what_it_is_asked_for() {
     let (index, _) = run(&dir, "index", &config(ON, INDEX_ONLY), Some(terrain.clone()));
     let (both, _) = run(&dir, "both", &config(ON, BOTH_CLASSES), Some(terrain));
 
-    assert!(none.len() < index.len(), "the index ladder alone still costs bytes");
+    // Compare the nav-section offset, not total file length: the nav serializer now spends up to one
+    // sector of padding to align its 512-byte chunks, and a larger geometry prefix can legitimately
+    // consume padding while leaving the final file the same size. Byte 36 is the absolute nav offset.
+    let nav_offset = |bytes: &[u8]| u32::from_le_bytes(bytes[36..40].try_into().unwrap());
+    assert!(nav_offset(&none) < nav_offset(&index), "the index ladder alone still costs bytes");
     assert!(
-        index.len() < both.len(),
+        nav_offset(&index) < nav_offset(&both),
         "every 5th level must be a small fraction of every level: {} vs {}",
-        index.len(),
-        both.len()
+        nav_offset(&index),
+        nav_offset(&both)
     );
 }
 

@@ -50,7 +50,7 @@ impl NavPlan {
         self.sink.bytes()
     }
 
-    /// The plan's cumulative tile-cache counters (misses = chunk reads).
+    /// The plan's cumulative graph-chunk and route-index cache counters.
     pub fn tile_stats(&self) -> obc_reader::NavCacheStats {
         self.tiles.stats()
     }
@@ -280,8 +280,13 @@ pub fn finish_nav_plan(
         store.invalidate_active();
         // (eprintln! is a silent no-op on wasm32-unknown-unknown, so this stays unconditional.)
         eprintln!(
-            "nav route: ok len={} m | tile-cache {} hit / {} miss (misses = chunk reads)",
-            stats.total_distance_m, tile_stats.hits, tile_stats.misses
+            "nav route: ok len={} m | graph {} hit / {} read, index {} hit / {} read, {} source reads total",
+            stats.total_distance_m,
+            tile_stats.hits,
+            tile_stats.misses,
+            tile_stats.index_hits,
+            tile_stats.index_misses,
+            tile_stats.source_reads()
         );
         Ok(id)
     });
