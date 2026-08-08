@@ -33,6 +33,7 @@ final class MockLaunchOptionsTests: XCTestCase {
             "-OBCTransport", "ble",
             "-OBCShowDevPanel",
             "-OBCShowUIGallery",
+            "-OBCHideMockHUD",
         ])
         XCTAssertEqual(options.scenario, .outOfRange)
         XCTAssertEqual(options.fixtures, "large")
@@ -40,6 +41,7 @@ final class MockLaunchOptionsTests: XCTestCase {
         XCTAssertTrue(options.useBLETransport)
         XCTAssertTrue(options.showDevPanel)
         XCTAssertTrue(options.showUIGallery)
+        XCTAssertTrue(options.hideMockHUD)
     }
 
     func testEnvironmentFallbacksApplyWhenArgsAbsent() {
@@ -48,11 +50,13 @@ final class MockLaunchOptionsTests: XCTestCase {
             "OBC_CONNECTION": "outOfRange",
             "OBC_SHOW_DEV_PANEL": "1",
             "OBC_SHOW_UI_GALLERY": "1",
+            "OBC_HIDE_MOCK_HUD": "1",
         ])
         XCTAssertEqual(options.scenario, .emptyLibrary)
         XCTAssertEqual(options.connection, .outOfRange)
         XCTAssertTrue(options.showDevPanel)
         XCTAssertTrue(options.showUIGallery)
+        XCTAssertTrue(options.hideMockHUD)
         // The argument wins over the environment when both are present.
         let overridden = parse(["-OBCScenario", "readError"], env: ["OBC_SCENARIO": "emptyLibrary"])
         XCTAssertEqual(overridden.scenario, .readError)
@@ -78,6 +82,7 @@ final class MockLaunchOptionsTests: XCTestCase {
         XCTAssertEqual(parse(["-OBCImportSample", "-OBCShowDevPanel"]).importSample, .gpx)
         XCTAssertEqual(parse(["-OBCImportSample", "tcx"]).importSample, .tcx)
         XCTAssertEqual(parse(["-OBCImportSample", "bad"]).importSample, .bad)
+        XCTAssertEqual(parse(["-OBCImportSample", "grimsel"]).importSample, .grimsel)
         // Unknown kind degrades to gpx, never crashes.
         XCTAssertEqual(parse(["-OBCImportSample", "fit"]).importSample, .gpx)
         // Env fallback: 1 = gpx, kind tokens pass through, 0/empty = off.
@@ -116,12 +121,13 @@ final class MockLaunchOptionsTests: XCTestCase {
     }
 
     func testSampleRouteFileServesEveryKind() {
-        for kind in [SampleRouteFile.Kind.gpx, .tcx, .bad] {
+        for kind in [SampleRouteFile.Kind.gpx, .tcx, .bad, .grimsel] {
             XCTAssertNotNil(SampleRouteFile.data(kind), "\(kind) sample must load")
         }
         XCTAssertEqual(SampleRouteFile.fileName(.gpx), "sample-import.gpx")
         XCTAssertEqual(SampleRouteFile.fileName(.tcx), "sample-import.tcx")
         XCTAssertEqual(SampleRouteFile.fileName(.bad), "packing-list.pdf")
+        XCTAssertEqual(SampleRouteFile.fileName(.grimsel), "website-import.gpx")
     }
 
     func testMakeControlAppliesScenarioThenOverrides() async throws {

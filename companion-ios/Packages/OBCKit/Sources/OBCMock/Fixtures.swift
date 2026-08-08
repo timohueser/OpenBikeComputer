@@ -244,12 +244,13 @@ extension FixtureSet {
 public enum SampleRouteFile {
     /// Raw values are the `-OBCImportSample <kind>` launch tokens.
     public enum Kind: String, Sendable {
-        case gpx, tcx, bad
+        case gpx, tcx, bad, grimsel
     }
 
     public static func fileName(_ kind: Kind = .gpx) -> String {
         switch kind {
         case .gpx, .tcx: "sample-import.\(kind.rawValue)"
+        case .grimsel: "website-import.gpx"
         case .bad: "packing-list.pdf"
         }
     }
@@ -258,6 +259,9 @@ public enum SampleRouteFile {
         switch kind {
         case .gpx, .tcx:
             Bundle.module.url(forResource: "sample-import", withExtension: kind.rawValue)
+                .flatMap { try? Data(contentsOf: $0) }
+        case .grimsel:
+            Bundle.module.url(forResource: "website-import", withExtension: "gpx")
                 .flatMap { try? Data(contentsOf: $0) }
         case .bad:
             Data("socks · stove · sleeping bag — definitely not a route\n".utf8)
