@@ -651,7 +651,7 @@ fn walk_caps_depth_on_forward_chain() {
 
 /// `build_file` (empty-POI, empty-nav) is a valid map: 40-byte header, a POI-section
 /// offset pointing just past the LOD payload, a six-category empty directory, an empty
-/// hours pool, and an empty nav section (28-byte directory + the always-present profile table)
+/// hours pool, and an empty nav section (40-byte directory + the always-present profile table)
 /// at the tail.
 #[test]
 fn header_is_40_bytes_with_poi_and_nav_offsets() {
@@ -674,12 +674,12 @@ fn header_is_40_bytes_with_poi_and_nav_offsets() {
     assert_eq!(u16::from_le_bytes(bytes[poi_off + 1..poi_off + 3].try_into().unwrap()), 512, "shared chunk_size");
 
     // The nav-graph offset lives at header byte 36 and is likewise never 0 — an empty graph still
-    // writes its 28-byte directory + profile table. The directory sits at the section start; the
+    // writes its 40-byte directory + profile table. The directory sits at the section start; the
     // profile table (≥ 1 record) follows it, so the section — not the directory — ends the file.
     let nav_off = u32::from_le_bytes(bytes[36..40].try_into().unwrap()) as usize;
     assert!(nav_off >= HEADER_LEN && nav_off + NAV_DIR_LEN <= bytes.len(), "nav offset {nav_off} points into the file");
     let profile_off = u32::from_le_bytes(bytes[nav_off + 22..nav_off + 26].try_into().unwrap()) as usize;
-    assert_eq!(profile_off, nav_off + NAV_DIR_LEN, "profile table immediately follows the 28-byte directory");
+    assert_eq!(profile_off, nav_off + NAV_DIR_LEN, "profile table immediately follows the 40-byte directory");
     let profile_count = bytes[nav_off + 26] as usize;
     assert!((1..=8).contains(&profile_count), "1..=8 profiles always present");
     assert_eq!(
@@ -900,10 +900,10 @@ fn empty_poi_directory_builder_matches_reader() {
     assert_eq!(u16::from_le_bytes([dir[count_field], dir[count_field + 1]]), 0, "empty pool");
 }
 
-// === Nav-graph section (v12, spec §8) — byte-pinned contract =================
+// === Nav-graph section (v13, spec §8) — byte-pinned contract =================
 //
-// These pin the §8 layout explicitly: the 28-byte nav directory (with the profile-table
-// offset/count fields), the always-present §8.6 profile table right after it (56 B per record in
+// These pin the §8 layout explicitly: the 40-byte nav directory (with the profile-table and sparse
+// snap-index offset/count fields), the always-present §8.6 profile table right after it (56 B per record in
 // v12: the multipliers plus `climb_weight` and its three reserved zeros), the §8.3
 // variable-length junction record with **17-byte** inline neighbor entries (i16 coord deltas +
 // cost_m u16 + way_kind + the v12 directional `ascent_m` u16, the 0xFF degree sentinel + padding),
@@ -924,12 +924,12 @@ const NAV_TEST_ASCENT_BA: u16 = 42;
 
 /// Replace `base`'s tail (empty) nav section with a hand-assembled populated one: two junction
 /// nodes joined by one 3-point edge that climbs 300 m eastward. Returns `(bytes, nav_off)`. Layout
-/// at `nav_off`: `[28-byte directory][profile table (1 profile, 56 B)][1-node index]
-/// [one 512 B node chunk][one 512 B edge-pool chunk]`.
+/// at `nav_off`: `[40-byte directory][profile table (1 profile, 56 B)][1-node index]
+/// [one 512 B node chunk][one 512 B edge-pool chunk][empty snap index]`.
 fn nav_two_node_map() -> (Vec<u8>, usize) {
     let base = two_lod_file();
     let nav_off = u32::from_le_bytes(base[36..40].try_into().unwrap()) as usize;
-    // `build_file` writes the empty nav section (28-byte dir + profile table) as the file tail;
+    // `build_file` writes the empty nav section (40-byte dir + profile table) as the file tail;
     // truncate at the section start and hand-assemble a populated section.
     let mut bytes = base[..nav_off].to_vec();
 
@@ -984,6 +984,8 @@ fn empty_nav_directory_parses_and_walks_nothing() {
     assert_eq!(nav.node_count, 0);
     assert_eq!(nav.chunk_count, 0);
     assert_eq!(nav.edge_chunk_count, 0);
+    assert_eq!(nav.snap_node_count, 0);
+    assert_eq!(nav.snap_chunk_count, 0);
     assert_eq!(nav.chunk_size, 512, "chunk_size is written even for an empty graph");
     // The profile table is always present, even for an empty graph.
     assert_eq!(nav.profile_count, 1, "the testkit's empty nav carries one profile");
@@ -998,8 +1000,8 @@ fn empty_nav_directory_parses_and_walks_nothing() {
     assert_eq!(r.nav_edge(0, &mut pts), None, "no edge pool ⇒ no edge");
 }
 
-/// Pin the populated v12 §8 bytes: the 28-byte directory fields (incl. the profile-table
-/// offset/count), the §8.6 profile table right after the directory (climb weight + reserved zeros),
+/// Pin the populated v13 §8 bytes: the 40-byte directory fields (incl. the profile-table and empty
+/// snap-index offset/count), the §8.6 profile table right after the directory (climb weight + reserved zeros),
 /// the exact junction-record layout (lat, lon, id, degree, then a 17-byte neighbor entry — id, i16
 /// dlat/dlon, edge_id, u16 cost_m, way_kind, u16 ascent_m), the 0xFF degree sentinel + padding, and
 /// the §8.4 edge record (length, pt_count, way_kind, anchor, i16 delta pairs) — then parse it all
@@ -1026,6 +1028,11 @@ fn populated_nav_section_round_trips_with_record_layout() {
     assert_eq!(profile_off, nav_off + NAV_DIR_LEN, "profile table immediately after the directory");
     assert_eq!(bytes[nav_off + 26], 1, "profile_count");
     assert_eq!(bytes[nav_off + 27], 0, "reserved");
+    let snap_index_offset = u32::from_le_bytes(bytes[nav_off + 28..nav_off + 32].try_into().unwrap()) as usize;
+    assert_eq!(snap_index_offset, edge_pool_offset + NAV_CHUNK_SIZE, "the empty snap index follows the edge pool");
+    assert_eq!(snap_index_offset, bytes.len(), "an empty snap index contributes no tail bytes");
+    assert_eq!(u32::from_le_bytes(bytes[nav_off + 32..nav_off + 36].try_into().unwrap()), 0, "snap_index_node_count");
+    assert_eq!(u32::from_le_bytes(bytes[nav_off + 36..nav_off + 40].try_into().unwrap()), 0, "snap_chunk_count");
     // The profile record: 12-byte name ("Default", 0xFF-padded), 32 highway + 8 surface bytes, then
     // v12's climb weight and its three reserved bytes — which are **zero**, not 0xFF padding.
     assert_eq!(&bytes[profile_off..profile_off + 7], b"Default", "profile name");
@@ -1174,6 +1181,22 @@ fn nav_directory_rejects_corrupt_fields() {
     let mut forged = bytes.clone();
     forged[nav_off + 16..nav_off + 20].copy_from_slice(&u32::MAX.to_le_bytes());
     assert!(matches!(MapTables::parse(&SliceSource(&forged)), Err(Error::BadOffset)), "edge pool overruns");
+
+    // The empty v13 snap index still carries an in-file offset and must carry zero chunks.
+    let mut forged = bytes.clone();
+    forged[nav_off + 28..nav_off + 32].copy_from_slice(&u32::MAX.to_le_bytes());
+    assert!(matches!(MapTables::parse(&SliceSource(&forged)), Err(Error::BadOffset)), "empty snap offset past EOF");
+
+    let mut forged = bytes.clone();
+    forged[nav_off + 36..nav_off + 40].copy_from_slice(&1u32.to_le_bytes());
+    assert!(matches!(MapTables::parse(&SliceSource(&forged)), Err(Error::BadOffset)), "empty snap index has chunks");
+
+    // A populated-looking snap index whose node/chunk region overruns the file is rejected before
+    // any quadtree walk.
+    let mut forged = bytes.clone();
+    forged[nav_off + 32..nav_off + 36].copy_from_slice(&u32::MAX.to_le_bytes());
+    forged[nav_off + 36..nav_off + 40].copy_from_slice(&u32::MAX.to_le_bytes());
+    assert!(matches!(MapTables::parse(&SliceSource(&forged)), Err(Error::BadOffset)), "snap region overruns");
 }
 
 // === v11 chunk-offset table (§5, issue #1009) ================================

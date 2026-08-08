@@ -165,13 +165,13 @@ fn serialize_lods_header_single_empty_leaf() {
     // offset table(4) = 67, then the empty POI directory
     // — count(1) + chunk_size(2) + 6 entries × 13 + the two v7 pool fields (offset u32 + count u16 =
     // 6) = 87 bytes — the empty hours pool (a bare `count u16` = 2 bytes), and the empty nav
-    // section (28-byte directory + the always-present profile table) at the tail.
+    // section (40-byte directory + the always-present profile table) at the tail.
     let poi_dir_len = 1 + 2 + 6 * 13 + 6;
     let hours_pool_len = 2; // an empty pool is just its count
-                            // Empty graph: the 28-byte directory + the four default profiles (56 B
+                            // Empty graph: the 40-byte directory + the four default profiles (56 B
                             // each in v12), always present.
     let profile_table_len = 4 * obc_formats::obcm::NAV_PROFILE_LEN;
-    let nav_section_len = 28 + profile_table_len;
+    let nav_section_len = obc_formats::obcm::NAV_DIR_LEN + profile_table_len;
     assert_eq!(bin.len(), 67 + poi_dir_len + hours_pool_len + nav_section_len);
     assert_eq!(&bin[0..4], b"OBCM");
     assert_eq!(bin[4], obc_formats::obcm::VERSION); // version
@@ -197,7 +197,7 @@ fn serialize_lods_header_single_empty_leaf() {
     assert_eq!(u16::from_le_bytes(bin[hours_pool_off..hours_pool_off + 2].try_into().unwrap()), 0, "empty pool count");
 
     // The nav section offset (header byte 36) points just past the hours pool; an empty graph is the
-    // 28-byte directory followed by the always-present profile table — zero index nodes / chunks /
+    // 40-byte directory followed by the always-present profile table — zero index nodes / chunks /
     // edges, chunk_size pinned to 512, profile_count 4, profile table right after the directory.
     let nav_off = u32::from_le_bytes(bin[36..40].try_into().unwrap()) as usize;
     assert_eq!(nav_off, hours_pool_off + hours_pool_len, "nav section at the file tail");
@@ -207,8 +207,8 @@ fn serialize_lods_header_single_empty_leaf() {
     assert_eq!(u16::from_le_bytes(bin[nav_off + 20..nav_off + 22].try_into().unwrap()), 512, "nav chunk_size pinned");
     assert_eq!(
         u32::from_le_bytes(bin[nav_off + 22..nav_off + 26].try_into().unwrap()) as usize,
-        nav_off + 28,
-        "profile table sits immediately after the 28-byte directory"
+        nav_off + obc_formats::obcm::NAV_DIR_LEN,
+        "profile table sits immediately after the 40-byte directory"
     );
     assert_eq!(bin[nav_off + 26], 4, "profile_count = the 4 default profiles");
     assert_eq!(bin[nav_off + 27], 0, "reserved byte is 0");

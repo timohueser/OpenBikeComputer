@@ -505,8 +505,9 @@ describe("assembleCells", () => {
         });
         expect(beforeVerify).toBeLessThanOrEqual(0.57); // the write phase ends at 0.203 + 0.363 by weight
         expect(verify.length).toBeGreaterThanOrEqual(8);
-        // Verify's constructed sweep = its 0.434 weight × this fixture's 0.61 output ratio ≈ 0.26.
-        expect(verify.at(-1)! - verify[0]).toBeGreaterThan(0.2);
+        // Verify's constructed sweep = its 0.434 weight × this v13 fixture's 0.39 verified/input
+        // ratio ≈ 0.17. The locator index deliberately makes these tiny source cells much larger.
+        expect(verify.at(-1)! - verify[0]).toBeGreaterThan(0.15);
         for (let i = 1; i < verify.length; i++) expect(verify[i]).toBeGreaterThan(verify[i - 1]);
     });
 

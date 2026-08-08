@@ -1,4 +1,4 @@
-# OBCM File Format Specification (v12)
+# OBCM File Format Specification (v13)
 
 OBCM (OpenStreetMap Binary Chunked Map) is a compact binary map format designed
 for efficient rendering on memory-constrained devices such as microcontrollers
@@ -106,7 +106,25 @@ decode-valid: it routes exactly as v11 did — the degrade path, and what the
 smaller fixtures (`monaco.obcm`, `grimsel-demo.obcm`) still carry.
 `grimsel.obcm` is packed **with** its terrain sidecar since 2026-08-03 (#1096
 follow-up), so it exercises real integrated ascent and the traced contours.
-**v12 is the only supported version**; earlier maps get repacked.
+**Version 13** adds a sparse exact-edge lookup index to §8 so routing can recover when the rider is
+close to a road but farther than 250 m from every graph junction. Only final serialized edge pieces
+longer than 300 m receive interior anchors, evenly spaced so every endpoint/anchor gap is at most
+300 m. Each 12-byte anchor stores an absolute coordinate plus its edge-pool id; it is a lookup aid,
+not a graph node and not the snapped position. The router projects the rider onto the named full
+§8.4 polyline and connects that exact point virtually to the edge's real endpoints. The §8.1
+directory grows 28 → 40 bytes to address the new quadtree and fixed 512-byte chunks (§8.7). All
+other records retain their v12 layouts.
+
+The coverage bound is geometric: a point on a road is at most 150 m along the polyline from an edge
+endpoint or anchor. A rider at most 100 m from that road point is therefore at most 250 m from one
+lookup record by the triangle inequality, regardless of curvature. The reference router uses a
+251 m node-or-anchor search (the mathematical 250 m plus one metre of coordinate-rounding slack),
+which is thus complete for the stated 100 m road-proximity envelope; the final projection is exact
+within the stored polyline geometry. The guarantee assumes the producer reports zero dropped snap anchors;
+shipping pack jobs treat any quadtree split-floor capacity warning as a failed coverage audit rather
+than silently claiming complete lookup coverage.
+
+**v13 is the only supported version**; earlier maps get repacked.
 
 **Within v12** (issue #1095, same elevation epic) two of the style record's reserved
 flag bits gained meanings — bit 4 **fixed width** and bit 5 **terrain layer** (§2).
@@ -723,10 +741,12 @@ Design intent: the device is too RAM-tight for any id → offset table (a real
 region has millions of graph elements), so A\* **re-fetches spatially** — settling
 a node is one quadtree descent to its coord's leaf + one chunk read — and each
 record carries its neighbors' coords **inline** so relaxation (`f = g + h`) needs
-no second fetch. Edge geometry is touched only when the final route is emitted.
+no second fetch. Edge geometry is touched while resolving the two exact projected endpoints and
+when the final route is emitted; the A\* search between those virtual endpoints still never fetches
+geometry.
 Only the directory and the profile table (≤ `8 × 56 = 448` B) are resident.
 
-### 8.1 Nav Directory (28 bytes)
+### 8.1 Nav Directory (40 bytes)
 
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
@@ -739,10 +759,13 @@ Only the directory and the profile table (≤ `8 × 56 = 448` B) are resident.
 | 22 | Profile Table Offset | 4 | `uint32` | Absolute byte offset of the §8.6 profile table |
 | 26 | Profile Count | 1 | `uint8` | Number of 56-byte profile records; **`1..=8`** (reader rejects `0` or `> 8`) |
 | 27 | Reserved | 1 | `uint8` | `0` (keeps the directory even-sized; no other meaning) |
+| 28 | Snap Index Offset | 4 | `uint32` | Byte offset to the §8.7 snap-anchor quadtree index |
+| 32 | Snap Index Node Count | 4 | `uint32` | Number of `uint32` nodes in the snap index; `0` ⇒ no interior anchors |
+| 36 | Snap Chunk Count | 4 | `uint32` | Number of fixed 512-byte snap-anchor chunks following that index |
 
 Node data chunks begin at `Index Offset + Index Node Count * 4` — the §3/§4
 convention, so the reader's leaf-walk and chunk-offset math are reused verbatim.
-The packer writes the **profile table immediately after this 28-byte directory**
+The packer writes the **profile table immediately after this 40-byte directory**
 (before the node index), so `Index Offset` and `Edge Pool Offset` point past it.
 For a populated graph, current producers insert `0..511` zero bytes after the
 profile table such that `Index Offset + Index Node Count × 4` (the first node
@@ -752,9 +775,11 @@ be served by one physical card command instead of the two commands required when
 the same logical read straddles sectors. This is a **producer guarantee, not a
 reader validity requirement**: existing compact v12 files remain valid because
 all boundaries are explicitly addressed by the directory.
-An empty graph still writes `Chunk Size` and the profile table, and points both
-data offsets just past the profile table (zero-length regions), exactly like an
-empty POI category.
+The edge pool is followed by optional zero padding, the §8.7 snap index, and its chunks. Producers
+align the first snap chunk to a 512-byte file offset just like the node chunks. An empty graph still
+writes `Chunk Size` and the profile table, and points all zero-length data offsets just past the
+profile table, exactly like an empty POI category. A populated graph with no edge longer than 300 m
+sets both snap counts to zero and points `Snap Index Offset` just past the edge pool.
 
 **`Chunk Size` is pinned to 512 in v9.** Earlier versions let it vary (up to
 2048); v9 fixes it so a leaf holds a handful of junction records — one chunk read
@@ -861,11 +886,11 @@ Rules:
 
 ### 8.4 Edge pool
 
-*(Byte-identical to v9/v11. The v12 climb lives in the adjacency entry, not here:
-the pool is fetched only at route emit, and A\* must not have to touch it.)*
+*(Byte-identical to v9/v11. The v12 climb lives in the adjacency entry, not here: v13 reads the
+pool during endpoint projection, but A\* relaxation still must not have to touch it.)*
 
-Deduplicated edge geometry, fetched **only at route emit** (stitching the A\*
-came-from chain into the output polyline; also the sum of `Length M` over the
+Deduplicated edge geometry, fetched at route emit (stitching the A\*
+came-from chain into the output polyline) and by v13's endpoint projection; also the sum of `Length M` over the
 chain is the route's **displayed** distance — the weighted `g` is no longer a
 distance). The pool is a run of `Edge Chunk Count` × 512-byte chunks; records are
 packed back-to-back, and a record that would cross a chunk boundary is pushed to
@@ -918,23 +943,26 @@ re-climbs 42 m of dips on the way back — with one profile "`Road`" (climb weig
 10), with the section at a 512-byte-aligned file offset `S`:
 
 ```
-S+0    Nav Directory (28 B):
+S+0    Nav Directory (40 B):
          index_offset          = S+508     (node chunks begin at S+512)
          index_node_count      = 1
          node_chunk_count      = 1
          edge_pool_offset      = S+1024    (= S+508 + 4 index + 512 node chunk)
          edge_chunk_count      = 1
          chunk_size            = 512
-         profile_table_offset  = S+28
+         profile_table_offset  = S+40
          profile_count         = 1
          reserved              = 0
-S+28   Profile Table (56 B):
+         snap_index_offset     = S+2044   (snap chunks begin at S+2048)
+         snap_index_node_count = 1
+         snap_chunk_count      = 1
+S+40   Profile Table (56 B):
          profile 0: name="Road"      (12 B, 0xFF-padded)
                     highway[32]       (u8 1/16 multipliers)
                     surface[8]
                     climb_weight=10   (1 B)
                     reserved          (3 B, zero)
-S+84   Alignment Padding (424 B, zero)
+S+96   Alignment Padding (412 B, zero)
 S+508  Node Quadtree (4 B):  [0x00000000]        single leaf → node chunk 0
 S+512  Node Chunk 0 (512 B):
          rec A: lat=100 lon=200 id=0 degree=1
@@ -949,6 +977,11 @@ S+1024 Edge Pool chunk 0 (512 B):
            length_m=1234  pt_count=3  way_kind=0x2A  anchor=(lat 100, lon 200)
            deltas: (+400,+300) (+400,+300)          → (500,500), (900,800)   (23 B)
          0xFF × 489                                 (padding)
+S+1536 Snap Alignment Padding (508 B, zero)
+S+2044 Snap Quadtree (4 B): [0x00000000]            single leaf → snap chunk 0
+S+2048 Snap Chunk 0 (512 B):
+         four 12-byte interior anchors naming edge_id=0
+         0xFF × 464                                 (padding = sentinel)
 ```
 
 Node `A` reconstructs neighbor `B` as `(100 + 800, 200 + 600) = (900, 800)` — no
@@ -1061,6 +1094,40 @@ class names.
 `motorroad=yes`; `bicycle=no|use_sidepath`; or `access=no|private`. Everything else
 — including `footway`/`steps` (legal to *walk* a bike) — is kept; preference (not
 legality) is the profile's job.
+
+### 8.7 Sparse exact-edge snap index (v13)
+
+The edge pool is followed by a second quadtree index and `Snap Chunk Count` fixed 512-byte chunks.
+The quadtree has §8.2's identical flat encoding, global bbox, subdivision, split floor and first-fit
+leaf bin packing. Consequently distinct leaves may reference one shared chunk and readers MUST
+filter records by their absolute coordinate.
+
+Each record is 12 bytes:
+
+| Offset | Field | Size | Type | Description |
+| :-- | :-- | :-- | :-- | :-- |
+| 0 | Lat | 4 | `int32` | Anchor latitude, absolute microdegrees |
+| 4 | Lon | 4 | `int32` | Anchor longitude, absolute microdegrees |
+| 8 | Edge Id | 4 | `uint32` | Pool-relative id of the §8.4 edge geometry to project |
+
+Unused chunk tails are `0xFF`; `Edge Id == 0xFFFFFFFF` is the sentinel. A final serialized edge
+piece contributes no record when its measured geometry is at most 300 m. Otherwise the producer
+chooses `ceil(length / 300)` equal-length intervals along the polyline and writes the `intervals − 1`
+interior boundaries. Thus endpoint/anchor gaps are no more than 300 m without adding routable graph
+nodes or changing A* topology.
+
+The coverage guarantee above requires every generated record to reach the index. A producer MUST
+report a split-floor leaf overflow and its dropped-record count; a map release claiming complete
+100 m lookup coverage MUST have a dropped count of zero.
+
+The anchor coordinate is never returned as the route endpoint. A reader uses it only to obtain a
+small candidate `Edge Id` set, projects the requested coordinate segment-by-segment onto each full
+§8.4 polyline, selects the nearest projection (lower `Edge Id` breaks an exact distance tie), and
+resolves the winning edge's two endpoint node records. Routing represents an interior projection as
+a virtual node with two partial-edge arcs; emission clips the first/last polyline at the same stored
+segment/fraction. Exact edge projection is the normal endpoint operation; the 251 m query is only
+the candidate-discovery window, while the final result is accepted against its true point-to-road
+distance (100 m in the reference router).
 
 ---
 
