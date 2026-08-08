@@ -91,10 +91,14 @@ Debug defaults to `MockTransport` (no Bluetooth in the simulator). Scenarios,
 fixtures, and connection state are chosen via **launch arguments** — the
 authoritative list is [`MockLaunchOptions.swift`](Packages/OBCKit/Sources/OBCMock/MockLaunchOptions.swift)
 and the scenario presets are [`Scenario.swift`](Packages/OBCKit/Sources/OBCMock/Scenario.swift).
-Common ones: `-OBCScenario <name>`, `-OBCFixtures default|empty|large`,
-`-OBCConnection <state>`, `-OBCImportSample gpx|tcx|bad`, `-OBCTransport ble`
+Common ones: `-OBCScenario <name>`, `-OBCFixtures default|empty|large|trips|website`,
+`-OBCConnection <state>`, `-OBCImportSample gpx|tcx|bad|grimsel`, `-OBCTransport ble`
 (force real BLE, device only). These names are **stable automation API** —
 XCUITests depend on them.
+
+`-OBCHideMockHUD` keeps the mock transport but removes its Debug status tag for clean automated
+captures. The landing-page captures and their CI drift check live in
+`scripts/capture-website-screenshots.sh`.
 
 Dev control panel (Debug): shake the sim (⌃⌘Z) or launch with
 `-OBCShowDevPanel` for live `MockControl` knobs; `-OBCShowUIGallery` opens the
