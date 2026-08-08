@@ -133,14 +133,16 @@ for image in route-imported.webp route-on-device.webp rides-before-sync.webp rid
   if [[ "$mode" == "check" ]]; then
     current="$work_dir/rendered/current-$image.ppm"
     baseline="$work_dir/rendered/baseline-$image.ppm"
+    pixels_match=0
     if [[ -f "$committed" ]]; then
-      # cwebp's RIFF container bytes can vary while decoding to the exact same pixels. Compare the
-      # rendered image instead, which is both strict about UI drift and immune to container noise.
+      # cwebp's RIFF container bytes can vary, and Homebrew versions can move a small amount of
+      # lossy encoder noise between decoded pixels. Compare the rendered image, accepting only the
+      # tightly bounded drift measured across all five GitHub-hosted captures.
       dwebp -quiet -ppm "$generated" -o "$current"
       dwebp -quiet -ppm "$committed" -o "$baseline"
-    fi
-    if [[ -f "$committed" ]] && ! cmp -s "$current" "$baseline"; then
-      python3 - "$current" "$baseline" <<'PY'
+      if cmp -s "$current" "$baseline"; then
+        pixels_match=1
+      elif python3 - "$current" "$baseline" <<'PY'
 import pathlib
 import sys
 
@@ -188,18 +190,26 @@ for offset in range(0, len(current), 3):
     maximum = max(maximum, delta)
     total_delta += sum(abs(current[offset + channel] - baseline[offset + channel]) for channel in range(3))
 pixels = width * height
+mean_delta = total_delta / (pixels * 3)
+significant_fraction = significant / pixels
+large_fraction = large / pixels
+within_tolerance = mean_delta <= 0.60 and significant_fraction <= 0.005 and large_fraction <= 0.003
 print(
     "screenshot pixel drift: "
     f"changed={changed}/{pixels} ({changed / pixels:.3%}), "
-    f">8={significant}/{pixels} ({significant / pixels:.3%}), "
-    f">32={large}/{pixels} ({large / pixels:.3%}), "
-    f"mean-channel-delta={total_delta / (pixels * 3):.4f}, max={maximum}",
+    f">8={significant}/{pixels} ({significant_fraction:.3%}), "
+    f">32={large}/{pixels} ({large_fraction:.3%}), "
+    f"mean-channel-delta={mean_delta:.4f}, max={maximum}, "
+    f"accepted={'yes' if within_tolerance else 'no'}",
     file=sys.stderr,
 )
-raise SystemExit(0)
+raise SystemExit(0 if within_tolerance else 1)
 PY
+      then
+        pixels_match=1
+      fi
     fi
-    if [[ ! -f "$committed" ]] || ! cmp -s "$current" "$baseline"; then
+    if [[ "$pixels_match" -ne 1 ]]; then
       echo "stale companion screenshot: docs/assets/companion/$image" >&2
       stale=1
     fi
