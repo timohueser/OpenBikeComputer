@@ -466,7 +466,7 @@ A real pack run logs the graph next to the POI counts, so a glance at the build 
 nav graph: 12874 nodes, 15903 edges, 8421.6 km
 ```
 
-The in-memory build — the way-kind classification, the bike-legality filter, junction detection, edge split and dedup, island pruning, and great-circle lengths — lives in [`obc-pack/src/nav.rs`](src:host/obc-pack/src/nav.rs); turning that graph into the tiled, chunked [§8 section](../formats/#the-navigation-graph-a-routable-network) (the node quadtree, the inline-adjacency records, the byte-addressed edge pool, and the densify + long-edge split that keep every record inside one chunk) is the serializer's job, described in [`OBCM_Spec.md` §8](src:specs/OBCM_Spec.md). What the device *does* with it — snap, profile-weighted A\*, emit — is [the router seam](../architecture/#on-device-routing-the-router-seam).
+The in-memory build — the way-kind classification, the bike-legality filter, junction detection, edge split and dedup, island pruning, and great-circle lengths — lives in [`obc-pack/src/nav.rs`](src:host/obc-pack/src/nav.rs); turning that graph into the tiled, chunked [§8 section](../formats/#the-navigation-graph-a-routable-network) (the node quadtree, the inline-adjacency records, the byte-addressed edge pool, the sparse exact-snap anchors, and the densify + long-edge split that keep every record inside one chunk) is the serializer's job, described in [`OBCM_Spec.md` §8](src:specs/OBCM_Spec.md). What the device *does* with it — exact edge projection, profile-weighted A\*, emit — is [the router seam](../architecture/#on-device-routing-the-router-seam).
 
 ### Weighting the graph: bike profiles
 

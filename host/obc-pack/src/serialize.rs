@@ -1,4 +1,4 @@
-//! OBCM v12 serializer — lay out the `.obcm` bytes per `OBCM_Spec.md`.
+//! OBCM v13 serializer — lay out the `.obcm` bytes per `OBCM_Spec.md`.
 //!
 //! Deterministic: same feature list + quadtree → same output. Geometry arrives
 //! already clipped + simplified; this module rounds lon/lat to microdegrees
@@ -26,13 +26,15 @@ use obc_formats::obcm::{
 use obc_formats::obcm::{
     nav_index_padding, HEADER_LEN, LOD_ENTRY_LEN, NAV_CHUNK_SIZE, NAV_DIR_LEN, NAV_EDGE_FIXED_LEN, NAV_MAX_DEGREE,
     NAV_MAX_PROFILES, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN, NAV_PROFILE_LEN, NAV_PROFILE_NAME_LEN,
-    NAV_PROFILE_RESERVED_LEN, POI_CATEGORY_COUNT, POI_CAT_ENTRY_LEN, POI_CHUNK_SIZE, POI_HOURS_BLOB_LEN,
-    POI_HOURS_REF_NONE, POI_NAME_LEN, POI_RECORD_LEN, VERSION as OBCM_VERSION,
+    NAV_PROFILE_RESERVED_LEN, NAV_SNAP_ANCHOR_GAP_M, NAV_SNAP_EDGE_MIN_M, NAV_SNAP_RECORD_LEN, POI_CATEGORY_COUNT,
+    POI_CAT_ENTRY_LEN, POI_CHUNK_SIZE, POI_HOURS_BLOB_LEN, POI_HOURS_REF_NONE, POI_NAME_LEN, POI_RECORD_LEN,
+    VERSION as OBCM_VERSION,
 };
 
 use crate::nav::{polyline_len_m, NavGraph};
 use crate::poi::{table_row, Poi};
 use obc_elevation::ElevationSource;
+use obc_map_scene::ground_dist_m;
 
 /// Max delta (microdegrees) before a segment is densified to keep deltas in
 /// 16-bit range. Crate-visible so `geom::packed_size_budget` can count the
@@ -966,6 +968,139 @@ struct WorkEdge {
     kind: u8,
 }
 
+/// One v13 §8.7 interior lookup anchor. It is deliberately not a graph node: the coordinate only
+/// gets the router to a small candidate set, after which the full §8.4 geometry is projected
+/// exactly and connected virtually to the edge's real endpoints.
+struct SnapPoint {
+    lat: i32,
+    lon: i32,
+    edge_id: u32,
+}
+
+enum SnapTreeNode {
+    Leaf(Vec<SnapPoint>),
+    Branch(Box<[SnapTreeNode; 4]>),
+}
+
+/// Place evenly-spaced interior anchors on one final serialized edge piece. Endpoints need no
+/// records because they already live in the node quadtree. `ceil(length / 300)` intervals make
+/// every gap at most 300 m even when the edge's rounded wire cost differs slightly from the sum of
+/// its floating segment lengths.
+fn append_snap_points(edge: &WorkEdge, edge_id: u32, out: &mut Vec<SnapPoint>) {
+    let seg_lens: Vec<f32> = edge.polyline.windows(2).map(|w| ground_dist_m(w[0], w[1])).collect();
+    let length: f32 = seg_lens.iter().sum();
+    if length <= NAV_SNAP_EDGE_MIN_M as f32 {
+        return;
+    }
+    let intervals = (length / NAV_SNAP_ANCHOR_GAP_M as f32).ceil() as usize;
+    let mut segment = 0usize;
+    let mut before = 0.0f32;
+    for i in 1..intervals {
+        let target = length * i as f32 / intervals as f32;
+        while segment + 1 < seg_lens.len() && before + seg_lens[segment] < target {
+            before += seg_lens[segment];
+            segment += 1;
+        }
+        let a = edge.polyline[segment];
+        let b = edge.polyline[segment + 1];
+        let t = ((target - before) / seg_lens[segment].max(f32::EPSILON)).clamp(0.0, 1.0);
+        // Interpolate the small delta rather than the absolute microdegree coordinate: at real
+        // latitudes an f32 cannot represent every i32 microdegree, while the per-segment delta can.
+        let lon = a.0.saturating_add(((b.0 - a.0) as f32 * t).round() as i32);
+        let lat = a.1.saturating_add(((b.1 - a.1) as f32 * t).round() as i32);
+        out.push(SnapPoint { lat, lon, edge_id });
+    }
+}
+
+fn build_snap_tree(points: Vec<SnapPoint>, bbox: (i64, i64, i64, i64)) -> SnapTreeNode {
+    let (min_lon, min_lat, max_lon, max_lat) = bbox;
+    if points.len() * NAV_SNAP_RECORD_LEN <= NAV_CHUNK_SIZE || max_lon - min_lon < 10 || max_lat - min_lat < 10 {
+        return SnapTreeNode::Leaf(points);
+    }
+    let mid_lon = (min_lon + max_lon).div_euclid(2);
+    let mid_lat = (min_lat + max_lat).div_euclid(2);
+    let (mut nw, mut ne, mut sw, mut se) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for p in points {
+        match ((p.lon as i64) < mid_lon, (p.lat as i64) < mid_lat) {
+            (true, false) => nw.push(p),
+            (false, false) => ne.push(p),
+            (true, true) => sw.push(p),
+            (false, true) => se.push(p),
+        }
+    }
+    SnapTreeNode::Branch(Box::new([
+        build_snap_tree(nw, (min_lon, mid_lat, mid_lon, max_lat)),
+        build_snap_tree(ne, (mid_lon, mid_lat, max_lon, max_lat)),
+        build_snap_tree(sw, (min_lon, min_lat, mid_lon, mid_lat)),
+        build_snap_tree(se, (mid_lon, min_lat, max_lon, mid_lat)),
+    ]))
+}
+
+/// Flatten the anchor quadtree with the graph node tree's first-fit leaf bin packing. Records keep
+/// absolute coordinates because distinct spatial leaves may share one chunk.
+fn flatten_snap_tree(root: &SnapTreeNode) -> (Vec<u8>, u32, Vec<u8>, u32, usize) {
+    let mut nodes: Vec<&SnapTreeNode> = vec![root];
+    let mut first_child = vec![0usize];
+    let mut i = 0;
+    while i < nodes.len() {
+        if let SnapTreeNode::Branch(children) = nodes[i] {
+            first_child[i] = nodes.len();
+            for child in children.iter() {
+                nodes.push(child);
+                first_child.push(0);
+            }
+        }
+        i += 1;
+    }
+
+    let mut index = Vec::with_capacity(nodes.len());
+    let mut bins: Vec<Vec<u8>> = Vec::new();
+    let mut dropped = 0usize;
+    for (idx, node) in nodes.iter().enumerate() {
+        let points = match node {
+            SnapTreeNode::Branch(_) => {
+                index.push(BRANCH_BIT | first_child[idx] as u32);
+                continue;
+            }
+            SnapTreeNode::Leaf(points) if !points.is_empty() => points,
+            SnapTreeNode::Leaf(_) => {
+                index.push(EMPTY_LEAF);
+                continue;
+            }
+        };
+        let leaf_len = points.len() * NAV_SNAP_RECORD_LEN;
+        let bin = match bins.iter().position(|b| b.len() + leaf_len <= NAV_CHUNK_SIZE) {
+            Some(bin) => bin,
+            None => {
+                bins.push(Vec::with_capacity(NAV_CHUNK_SIZE));
+                bins.len() - 1
+            }
+        };
+        index.push(bin as u32 & !BRANCH_BIT);
+        for p in points {
+            if bins[bin].len() + NAV_SNAP_RECORD_LEN > NAV_CHUNK_SIZE {
+                dropped += 1;
+                continue;
+            }
+            bins[bin].extend_from_slice(&p.lat.to_le_bytes());
+            bins[bin].extend_from_slice(&p.lon.to_le_bytes());
+            bins[bin].extend_from_slice(&p.edge_id.to_le_bytes());
+        }
+    }
+
+    let chunk_count = bins.len() as u32;
+    let mut chunks = Vec::with_capacity(bins.len() * NAV_CHUNK_SIZE);
+    for mut bin in bins {
+        bin.resize(NAV_CHUNK_SIZE, CHUNK_END);
+        chunks.extend_from_slice(&bin);
+    }
+    let mut index_bytes = Vec::with_capacity(index.len() * 4);
+    for value in index {
+        index_bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    (index_bytes, nodes.len() as u32, chunks, chunk_count, dropped)
+}
+
 /// Densify one nav polyline: insert midpoints on any segment whose lon **or** lat
 /// delta exceeds [`MAX_SEGMENT`] so every §8.4 `(dlat, dlon)` fits an `i16` — the
 /// exact [`densify`] the geometry rings use, over the same 30 000-µdeg threshold.
@@ -1022,7 +1157,8 @@ fn pack_profile_table(profiles: &[NavProfile]) -> Vec<u8> {
 }
 
 /// Serialize the full nav-graph section (spec §8, v9) at absolute byte `section_offset`:
-/// `[directory (28 B)][profile table (§8.6)][node quadtree index][node chunks][edge pool]`. The
+/// `[directory (40 B)][profile table (§8.6)][node quadtree index][node chunks][edge pool]
+/// [snap-anchor quadtree index][snap-anchor chunks]`. The
 /// **profile table is written immediately after the directory**, before the node index, so even an
 /// empty graph (no routable ways) still carries its profiles; the section is **always present**.
 /// `profiles` is `1..=8` entries (validated in [`crate::config`]).
@@ -1057,7 +1193,7 @@ pub fn serialize_nav_section(
     terrain: &mut dyn ElevationSource,
 ) -> Vec<u8> {
     let profile_table = pack_profile_table(profiles);
-    // The profile table sits right after the 28-byte directory. A populated graph may insert up to
+    // The profile table sits right after the 40-byte directory. A populated graph may insert up to
     // one sector of compatibility padding before its node index; its exact size is known once the
     // index has been built. An empty graph stays compact.
     let profile_table_offset = section_offset + NAV_DIR_LEN;
@@ -1066,25 +1202,35 @@ pub fn serialize_nav_section(
     // Directory writer, shared by the empty and populated paths. `idx_off`/`edge_off` point at the
     // node index and edge pool; an empty graph passes `unpadded_index_offset` for both zero-length
     // regions.
-    let write_dir =
-        |out: &mut Vec<u8>, idx_off: usize, node_count: u32, node_chunks: u32, edge_off: usize, edge_chunks: u32| {
-            out.extend_from_slice(&(idx_off as u32).to_le_bytes()); // index_offset
-            out.extend_from_slice(&node_count.to_le_bytes()); // index_node_count
-            out.extend_from_slice(&node_chunks.to_le_bytes()); // node_chunk_count
-            out.extend_from_slice(&(edge_off as u32).to_le_bytes()); // edge_pool_offset
-            out.extend_from_slice(&edge_chunks.to_le_bytes()); // edge_chunk_count
-            out.extend_from_slice(&(NAV_CHUNK_SIZE as u16).to_le_bytes()); // chunk_size (pinned 512)
-            out.extend_from_slice(&(profile_table_offset as u32).to_le_bytes()); // profile_table_offset
-            out.push(profiles.len() as u8); // profile_count
-            out.push(0u8); // reserved
-            debug_assert_eq!(out.len(), NAV_DIR_LEN);
-        };
+    let write_dir = |out: &mut Vec<u8>,
+                     idx_off: usize,
+                     node_count: u32,
+                     node_chunks: u32,
+                     edge_off: usize,
+                     edge_chunks: u32,
+                     snap_idx_off: usize,
+                     snap_node_count: u32,
+                     snap_chunks: u32| {
+        out.extend_from_slice(&(idx_off as u32).to_le_bytes()); // index_offset
+        out.extend_from_slice(&node_count.to_le_bytes()); // index_node_count
+        out.extend_from_slice(&node_chunks.to_le_bytes()); // node_chunk_count
+        out.extend_from_slice(&(edge_off as u32).to_le_bytes()); // edge_pool_offset
+        out.extend_from_slice(&edge_chunks.to_le_bytes()); // edge_chunk_count
+        out.extend_from_slice(&(NAV_CHUNK_SIZE as u16).to_le_bytes()); // chunk_size (pinned 512)
+        out.extend_from_slice(&(profile_table_offset as u32).to_le_bytes()); // profile_table_offset
+        out.push(profiles.len() as u8); // profile_count
+        out.push(0u8); // reserved
+        out.extend_from_slice(&(snap_idx_off as u32).to_le_bytes()); // snap_index_offset
+        out.extend_from_slice(&snap_node_count.to_le_bytes()); // snap_index_node_count
+        out.extend_from_slice(&snap_chunks.to_le_bytes()); // snap_chunk_count
+        debug_assert_eq!(out.len(), NAV_DIR_LEN);
+    };
 
     if graph.nodes.is_empty() {
-        // Empty graph: 28-byte directory (both regions zero-length, just past the profile table) +
+        // Empty graph: 40-byte directory (all regions zero-length, just past the profile table) +
         // the always-present profile table.
         let mut out = Vec::with_capacity(NAV_DIR_LEN + profile_table.len());
-        write_dir(&mut out, unpadded_index_offset, 0, 0, unpadded_index_offset, 0);
+        write_dir(&mut out, unpadded_index_offset, 0, 0, unpadded_index_offset, 0, unpadded_index_offset, 0, 0);
         out.extend_from_slice(&profile_table);
         return out;
     }
@@ -1198,21 +1344,66 @@ pub fn serialize_nav_section(
         eprintln!("warning: {dropped} nav node record(s) dropped (leaf overflow at the split floor)");
     }
 
-    // Layout: [directory][profile table][0-padding][node index][node chunks][edge pool]. Choose the
+    // The lookup-only interior anchors name the final pool ids, so they are generated after every
+    // geometry split and after pool placement. A short edge contributes none: its endpoints in the
+    // node quadtree already provide the same 300 m spacing contract.
+    let mut snap_points = Vec::new();
+    for (edge, &edge_id) in edges.iter().zip(&edge_ids) {
+        append_snap_points(edge, edge_id, &mut snap_points);
+    }
+    let (snap_index, snap_node_count, snap_chunks, snap_chunk_count, snap_dropped) = if snap_points.is_empty() {
+        (Vec::new(), 0, Vec::new(), 0, 0)
+    } else {
+        flatten_snap_tree(&build_snap_tree(snap_points, global_bbox))
+    };
+    if snap_dropped > 0 {
+        eprintln!("warning: {snap_dropped} nav snap anchor(s) dropped (leaf overflow at the split floor)");
+    }
+
+    // Layout: [directory][profile table][0-padding][node index][node chunks][edge pool]
+    // [0-padding][snap index][snap chunks]. Choose the
     // gap so `index_offset + index.len()` — the first node chunk — is a physical-sector boundary.
-    // The directory already carries absolute offsets, so old v12 readers accept the gap without a
-    // format bump; the edge pool stays aligned because the node region is whole 512-byte chunks.
+    // The edge pool stays aligned because the node region is whole 512-byte chunks.
     let index_pad = nav_index_padding(unpadded_index_offset as u64, index.len() as u64);
     let index_offset = unpadded_index_offset + index_pad;
     let edge_pool_offset = index_offset + index.len() + chunks.len();
-    let mut out =
-        Vec::with_capacity(NAV_DIR_LEN + profile_table.len() + index_pad + index.len() + chunks.len() + pool.len());
-    write_dir(&mut out, index_offset, node_count, chunk_count, edge_pool_offset, edge_chunk_count);
+    let unpadded_snap_index_offset = edge_pool_offset + pool.len();
+    let snap_index_pad = if snap_node_count == 0 {
+        0
+    } else {
+        nav_index_padding(unpadded_snap_index_offset as u64, snap_index.len() as u64)
+    };
+    let snap_index_offset = unpadded_snap_index_offset + snap_index_pad;
+    let mut out = Vec::with_capacity(
+        NAV_DIR_LEN
+            + profile_table.len()
+            + index_pad
+            + index.len()
+            + chunks.len()
+            + pool.len()
+            + snap_index_pad
+            + snap_index.len()
+            + snap_chunks.len(),
+    );
+    write_dir(
+        &mut out,
+        index_offset,
+        node_count,
+        chunk_count,
+        edge_pool_offset,
+        edge_chunk_count,
+        snap_index_offset,
+        snap_node_count,
+        snap_chunk_count,
+    );
     out.extend_from_slice(&profile_table);
     out.resize(out.len() + index_pad, 0);
     out.extend_from_slice(&index);
     out.extend_from_slice(&chunks);
     out.extend_from_slice(&pool);
+    out.resize(out.len() + snap_index_pad, 0);
+    out.extend_from_slice(&snap_index);
+    out.extend_from_slice(&snap_chunks);
     out
 }
 

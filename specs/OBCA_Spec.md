@@ -16,7 +16,7 @@ carries. It defines four things:
    optionally the one [OBCT](OBCT_Spec.md) terrain shard that carries the map's elevation.
 
 OBCA introduces **no new OBCM version and changes no OBCM semantics**. Every cell and every
-shard is an ordinary [OBCM v12](OBCM_Spec.md) file that today's reader parses unchanged; the only
+shard is an ordinary [OBCM v13](OBCM_Spec.md) file that today's reader parses unchanged; the only
 new bytes on the card are the small [set manifest](#5-volume-sets) of §5.2 and, where a selection
 has elevation, the terrain shard §5.1 names. What OBCA adds is a set of *constraints* on how those
 files are produced, plus the discipline that makes assembling them cheap enough to run in a browser.

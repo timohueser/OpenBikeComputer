@@ -135,8 +135,10 @@ use std::collections::HashMap;
 
 use obc_formats::obcm::{
     nav_index_padding, CHUNK_END, NAV_CHUNK_SIZE, NAV_DIR_LEN, NAV_EDGE_FIXED_LEN, NAV_MAX_DEGREE,
-    NAV_NEIGHBOR_ASCENT_OFF, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN,
+    NAV_NEIGHBOR_ASCENT_OFF, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN, NAV_SNAP_ANCHOR_GAP_M, NAV_SNAP_EDGE_MIN_M,
+    NAV_SNAP_RECORD_LEN,
 };
+use obc_map_scene::ground_dist_m;
 
 use crate::extsort::{ExternalSort, SpillReader, SpillWriter};
 use crate::grid::{on_grid_boundary, UBox};
@@ -492,9 +494,21 @@ pub struct NavStats {
     /// Junction records the §8.3 chunk-capacity guard refused (co-located nodes past the quadtree's
     /// recursion floor). Never silent: truncating the chunk instead would drop its `0xFF` sentinel.
     pub dropped_nodes: usize,
+    /// Interior lookup anchors written for exact start/end edge snapping.
+    pub snap_anchors: usize,
+    /// Lookup anchors refused by the quadtree chunk-capacity guard.
+    pub dropped_snap_anchors: usize,
 }
 
-/// The five scratch streams a merged graph is: everything §8 needs, none of it resident.
+/// One laid-out quadtree whose fixed-width records live on the scratch seam.
+struct SnapFiles {
+    index: ScratchId,
+    places: ScratchId,
+    points: ScratchId,
+    recs: ScratchId,
+}
+
+/// The graph's scratch streams: everything §8 needs, none of it resident.
 struct NavFiles {
     /// The §8.2 index, already in wire form — `Node Count` little-endian `uint32`s.
     index: ScratchId,
@@ -506,6 +520,8 @@ struct NavFiles {
     recs: ScratchId,
     /// Every kept edge's [`EdgeRef`], in emission order.
     pool: ScratchId,
+    /// v13's sparse interior edge-lookup anchors; absent when every edge is short.
+    snap: Option<SnapFiles>,
 }
 
 /// The merged graph, **already laid out** and living on the [scratch seam](crate::scratch): the node
@@ -529,6 +545,9 @@ pub struct MergedNav {
     /// same reason the projection chain is: on wasm32 a `usize` here wraps before the §5.7 ceiling
     /// ever sees the number.
     pool_len: u64,
+    snap_node_count: u32,
+    snap_chunk_count: u32,
+    snap_index_len: u64,
     /// What a read buffer in [`serialize`] may hold; the merge's own share of its budget.
     read_budget: usize,
     pub stats: NavStats,
@@ -567,8 +586,17 @@ impl MergedNav {
     /// chunk run.
     pub fn projection(&self, profile_table: &[u8]) -> NavProjection {
         let prefix_len = (NAV_DIR_LEN + profile_table.len()) as u64;
+        // Node chunks start sector-aligned. Their run and the edge pool are whole sectors, so the
+        // snap index starts aligned too and its padding depends only on its own width.
+        let snap_pad = if self.snap_node_count > 0 { nav_index_padding(0, self.snap_index_len) as u64 } else { 0 };
         NavProjection {
-            base_len: prefix_len + self.index_len + self.chunk_count as u64 * NAV_CHUNK_SIZE as u64 + self.pool_len,
+            base_len: prefix_len
+                + self.index_len
+                + self.chunk_count as u64 * NAV_CHUNK_SIZE as u64
+                + self.pool_len
+                + snap_pad
+                + self.snap_index_len
+                + self.snap_chunk_count as u64 * NAV_CHUNK_SIZE as u64,
             prefix_len,
             index_len: self.index_len,
             populated: self.files.is_some(),
@@ -583,6 +611,11 @@ impl MergedNav {
         if let Some(f) = &self.files {
             for id in [f.index, f.places, f.points, f.recs, f.pool] {
                 let _ = scratch.remove(id);
+            }
+            if let Some(snap) = &f.snap {
+                for id in [snap.index, snap.places, snap.points, snap.recs] {
+                    let _ = scratch.remove(id);
+                }
             }
         }
     }
@@ -875,6 +908,10 @@ pub fn merge(
     // after a node is already full — so reproducing that order is the whole requirement. ---
     let mut pool_out = SpillWriter::<POOL_REC>::create(scratch, share)?;
     let mut adj = ExternalSort::<ADJ_REC>::new(scratch, budget / 2, by_adjacency);
+    let mut snap_recs = ByteSpill::create(scratch, share)?;
+    let mut snap_points = SpillWriter::<{ qtree::TREE_REC }>::create(scratch, share)?;
+    let mut snap_ord = 0u32;
+    let mut source_edge = [0u8; NAV_CHUNK_SIZE];
     let mut at = 0u64;
     let mut seq: u32 = 0;
     for rec in by_emit.finish()? {
@@ -892,6 +929,16 @@ pub fn merge(
         let edge_id = at as u32;
         pool_out.push(pool_record(&r))?;
         at += len;
+
+        // The final pool id is now known. Decode this one bounded source record and add lookup-only
+        // anchors before moving on; no edge geometry survives the iteration.
+        let cell = cells
+            .get(r.cell as usize)
+            .ok_or_else(|| Error::Format(format!("a merged edge names missing source cell {}", r.cell)))?;
+        let source = &mut source_edge[..r.len as usize];
+        cell.read_into(cell.nav.edge_pool_offset + r.off as usize, source)?;
+        stats.snap_anchors +=
+            append_snap_anchors(source, edge_id, global_bbox, &mut snap_recs, &mut snap_points, &mut snap_ord)?;
 
         let (a, b) = (dense_id(&rec, A_AT), dense_id(&rec, B_AT));
         let (a_at, b_at) = (dense_coord(&rec, A_AT), dense_coord(&rec, B_AT));
@@ -912,16 +959,59 @@ pub fn merge(
     let (pool, pool_count) = pool_out.seal()?;
     debug_assert_eq!(pool_count as usize, stats.edges, "one pool entry per kept edge");
 
+    // Anchor records are already packed; sort only their tiny tree references, then run the same
+    // streaming quadtree/bin-packing implementation as the junction index.
+    let snap_recs = snap_recs.seal()?;
+    let (snap_points, unsorted_snap_count) = snap_points.seal()?;
+    let mut snap_sort = ExternalSort::<{ qtree::TREE_REC }>::new(scratch, budget / 2, qtree::by_tree_order);
+    for rec in SpillReader::<{ qtree::TREE_REC }>::open(scratch, snap_points, share)? {
+        snap_sort.push(rec?)?;
+    }
+    scratch.remove(snap_points)?;
+    let mut sorted_snap = SpillWriter::<{ qtree::TREE_REC }>::create(scratch, share)?;
+    for rec in snap_sort.finish()? {
+        sorted_snap.push(rec?)?;
+    }
+    let (sorted_snap, snap_count) = sorted_snap.seal()?;
+    debug_assert_eq!(snap_count, unsorted_snap_count);
+    debug_assert_eq!(snap_count as usize, stats.snap_anchors);
+    let snap_flat = if snap_count == 0 {
+        scratch.remove(snap_recs)?;
+        scratch.remove(sorted_snap)?;
+        None
+    } else {
+        let flat = qtree::flatten_streaming(scratch, budget, sorted_snap, global_bbox, NAV_CHUNK_SIZE, NAV_CHUNK_SIZE)?;
+        stats.dropped_snap_anchors = flat.dropped;
+        Some((snap_recs, flat))
+    };
+
     // --- 7 (cont.). The junction records, and the node quadtree over the **assembly** bbox with
     // §8.2's bin-packed 512-byte chunks — both in passes, and both laid out here so a shard's size
     // is known before its header is written. ---
     let (recs, flat) = emit_nodes(scratch, budget, share, nodes_file, node_count, adj, global_bbox, &mut stats)?;
+    let (snap, snap_node_count, snap_chunk_count, snap_index_len) = match snap_flat {
+        Some((recs, flat)) => {
+            let node_count = flat.node_count;
+            let chunk_count = flat.chunk_count;
+            let index_len = node_count as u64 * 4;
+            (
+                Some(SnapFiles { index: flat.index, places: flat.places, points: flat.points, recs }),
+                node_count,
+                chunk_count,
+                index_len,
+            )
+        }
+        None => (None, 0, 0, 0),
+    };
     Ok(MergedNav {
-        files: Some(NavFiles { index: flat.index, places: flat.places, points: flat.points, recs, pool }),
+        files: Some(NavFiles { index: flat.index, places: flat.places, points: flat.points, recs, pool, snap }),
         node_count: flat.node_count,
         chunk_count: flat.chunk_count,
         index_len: flat.node_count as u64 * 4,
         pool_len,
+        snap_node_count,
+        snap_chunk_count,
+        snap_index_len,
         read_budget: share,
         stats,
     })
@@ -1040,7 +1130,9 @@ impl<'s> ByteSpill<'s> {
     /// Append one record; the offset it starts at is how it is found again.
     fn push(&mut self, rec: &[u8]) -> Result<u32> {
         let at = u32::try_from(self.at).map_err(|_| {
-            Error::Capacity("the merged node chunks pass 4 GiB, which no OBCM section can hold (OBCA §5.7)".into())
+            Error::Capacity(
+                "the merged quadtree record bytes pass 4 GiB, which no OBCM section can hold (OBCA §5.7)".into(),
+            )
         })?;
         if self.buf.len() + rec.len() > self.cap {
             self.flush()?;
@@ -1063,6 +1155,80 @@ impl<'s> ByteSpill<'s> {
         self.buf = Vec::new();
         Ok(self.id)
     }
+}
+
+/// Decode one final §8.4 edge record and spill evenly spaced lookup-only anchors for it. The edge
+/// record is at most one 512-byte chunk, so the temporary polyline is strictly bounded even though
+/// the whole graph remains streaming.
+fn append_snap_anchors(
+    record: &[u8],
+    edge_id: u32,
+    global_bbox: UBox,
+    recs: &mut ByteSpill<'_>,
+    points: &mut SpillWriter<'_, { qtree::TREE_REC }>,
+    ord: &mut u32,
+) -> Result<usize> {
+    if record.len() < NAV_EDGE_FIXED_LEN {
+        return Err(Error::Format("a merged edge record is shorter than the §8.4 fixed header".into()));
+    }
+    let point_count = u16::from_le_bytes(record[4..6].try_into().expect("2 bytes")) as usize;
+    let expected = NAV_EDGE_FIXED_LEN + point_count.saturating_sub(1) * 4;
+    if point_count < 2 || expected != record.len() {
+        return Err(Error::Format(format!(
+            "a merged edge record declares {point_count} points but occupies {} byte(s)",
+            record.len()
+        )));
+    }
+
+    let mut polyline: Vec<(i32, i32)> = Vec::with_capacity(point_count);
+    let mut lat = i32::from_le_bytes(record[7..11].try_into().expect("4 bytes"));
+    let mut lon = i32::from_le_bytes(record[11..15].try_into().expect("4 bytes"));
+    polyline.push((lon, lat));
+    let mut at = NAV_EDGE_FIXED_LEN;
+    for _ in 1..point_count {
+        lat += i16::from_le_bytes(record[at..at + 2].try_into().expect("2 bytes")) as i32;
+        lon += i16::from_le_bytes(record[at + 2..at + 4].try_into().expect("2 bytes")) as i32;
+        polyline.push((lon, lat));
+        at += 4;
+    }
+    let lengths: Vec<f32> = polyline.windows(2).map(|w| ground_dist_m(w[0], w[1])).collect();
+    let length: f32 = lengths.iter().sum();
+    if length <= NAV_SNAP_EDGE_MIN_M as f32 {
+        return Ok(0);
+    }
+
+    let intervals = (length / NAV_SNAP_ANCHOR_GAP_M as f32).ceil() as usize;
+    let mut segment = 0usize;
+    let mut before = 0.0f32;
+    for i in 1..intervals {
+        let target = length * i as f32 / intervals as f32;
+        while segment + 1 < lengths.len() && before + lengths[segment] < target {
+            before += lengths[segment];
+            segment += 1;
+        }
+        let a = polyline[segment];
+        let b = polyline[segment + 1];
+        let t = ((target - before) / lengths[segment].max(f32::EPSILON)).clamp(0.0, 1.0);
+        // Preserve microdegree precision by interpolating only the small segment delta. Casting
+        // the absolute coordinate to f32 first would quantize latitude by several microdegrees.
+        let anchor_lon = a.0.saturating_add(((b.0 - a.0) as f32 * t).round() as i32);
+        let anchor_lat = a.1.saturating_add(((b.1 - a.1) as f32 * t).round() as i32);
+        let mut packed = [0u8; NAV_SNAP_RECORD_LEN];
+        packed[0..4].copy_from_slice(&anchor_lat.to_le_bytes());
+        packed[4..8].copy_from_slice(&anchor_lon.to_le_bytes());
+        packed[8..12].copy_from_slice(&edge_id.to_le_bytes());
+        let rec_at = recs.push(&packed)?;
+        points.push(qtree::tree_record(
+            qtree::tree_key(anchor_lat, anchor_lon, global_bbox),
+            *ord,
+            rec_at,
+            NAV_SNAP_RECORD_LEN as u16,
+        ))?;
+        *ord = ord.checked_add(1).ok_or_else(|| {
+            Error::Capacity("more than 4 G snap anchors: the quadtree input order is a uint32".into())
+        })?;
+    }
+    Ok(intervals - 1)
 }
 
 /// §4.6.3's duplicate check, as one walk of the sorted key stream the collection filled.
@@ -1414,7 +1580,8 @@ fn fnv(bytes: &[u8]) -> u64 {
 }
 
 /// Write the whole §8 section at absolute byte `section_offset` through `sink`:
-/// `[directory][profile table][0-padding][node index][node chunks][edge pool]`.
+/// `[directory][profile table][0-padding][node index][node chunks][edge pool]
+/// [0-padding][snap index][snap chunks]`.
 ///
 /// Every offset in the directory is known before the first byte goes out — that is what
 /// [`MergedNav::projection`] already proves — so nothing is back-patched and nothing is staged.
@@ -1447,6 +1614,13 @@ pub fn serialize(
     // exact on every host.
     let edge_pool_offset = index_offset + nav.index_len as usize + nav.chunk_count as usize * NAV_CHUNK_SIZE;
     let edge_chunk_count = (nav.pool_len / NAV_CHUNK_SIZE as u64) as u32;
+    let unpadded_snap_index_offset = edge_pool_offset + nav.pool_len as usize;
+    let snap_index_pad = if nav.snap_node_count > 0 {
+        nav_index_padding(unpadded_snap_index_offset as u64, nav.snap_index_len)
+    } else {
+        0
+    };
+    let snap_index_offset = unpadded_snap_index_offset + snap_index_pad;
 
     let mut written = 0usize;
     let mut out = |buf: &[u8]| -> Result<()> {
@@ -1464,6 +1638,9 @@ pub fn serialize(
     dir.extend_from_slice(&(profile_table_offset as u32).to_le_bytes());
     dir.push(profile_count as u8);
     dir.push(0); // reserved
+    dir.extend_from_slice(&(snap_index_offset as u32).to_le_bytes());
+    dir.extend_from_slice(&nav.snap_node_count.to_le_bytes());
+    dir.extend_from_slice(&nav.snap_chunk_count.to_le_bytes());
     debug_assert_eq!(dir.len(), NAV_DIR_LEN);
     out(&dir)?;
     out(profile_table)?;
@@ -1489,7 +1666,7 @@ pub fn serialize(
         out(&block[..want])?;
         at += want as u64;
     }
-    emit_chunks(nav, files, scratch, &mut out)?;
+    emit_tree_chunks(nav.chunk_count, nav.read_budget, files.places, files.points, files.recs, scratch, &mut out)?;
 
     // The pool, record by record. `pad` is §8.3's `0xFF` sentinel run — the bytes a record's chunk
     // gets instead of a record that would straddle it — and `rec` is the one buffer every record is
@@ -1527,6 +1704,27 @@ pub fn serialize(
         // `pad` is `[0xFF; 512]`; the remainder is at most one chunk by construction.
         out(&pad[..(nav.pool_len - at) as usize])?;
     }
+    if let Some(snap) = &files.snap {
+        if snap_index_pad != 0 {
+            out(&[0; NAV_CHUNK_SIZE][..snap_index_pad])?;
+        }
+        let mut at = 0u64;
+        while at < nav.snap_index_len {
+            let want = block.len().min((nav.snap_index_len - at) as usize);
+            scratch.read_at(snap.index, at, &mut block[..want])?;
+            out(&block[..want])?;
+            at += want as u64;
+        }
+        emit_tree_chunks(
+            nav.snap_chunk_count,
+            nav.read_budget,
+            snap.places,
+            snap.points,
+            snap.recs,
+            scratch,
+            &mut out,
+        )?;
+    }
     debug_assert_eq!(written as u64, nav.projection(profile_table).bytes_at(section_offset as u64));
     Ok(())
 }
@@ -1539,9 +1737,12 @@ pub fn serialize(
 /// left them in and therefore the order `qtree::flatten` packed them in, and the capacity guard is
 /// re-applied per record — the same guard, over the same running fill, that the plan counted
 /// `dropped_nodes` with.
-fn emit_chunks(
-    nav: &MergedNav,
-    files: &NavFiles,
+fn emit_tree_chunks(
+    chunk_count: u32,
+    read_budget: usize,
+    places: ScratchId,
+    points: ScratchId,
+    recs: ScratchId,
     scratch: &dyn ScratchStore,
     out: &mut dyn FnMut(&[u8]) -> Result<()>,
 ) -> Result<()> {
@@ -1554,26 +1755,26 @@ fn emit_chunks(
         chunk.clear();
         Ok(())
     };
-    for p in SpillReader::<{ qtree::PLACE_REC }>::open(scratch, files.places, nav.read_budget)? {
+    for p in SpillReader::<{ qtree::PLACE_REC }>::open(scratch, places, read_budget)? {
         let p = p?;
         while current < qtree::place_chunk(&p) {
             flush(&mut chunk, out)?;
             current += 1;
         }
         debug_assert_eq!(chunk.len(), qtree::place_at(&p) as usize, "the plan and the write disagree about a leaf");
-        for r in qtree::read_run(scratch, files.points, qtree::place_first(&p), qtree::place_count(&p))? {
+        for r in qtree::read_run(scratch, points, qtree::place_first(&p), qtree::place_count(&p))? {
             let len = qtree::rec_len(&r) as usize;
             if chunk.len() + len > NAV_CHUNK_SIZE {
                 continue; // co-located overflow inside one leaf — counted as `dropped_nodes`
             }
             let buf = &mut rec[..len];
-            scratch.read_at(files.recs, qtree::rec_at(&r) as u64, buf)?;
+            scratch.read_at(recs, qtree::rec_at(&r) as u64, buf)?;
             chunk.extend_from_slice(buf);
         }
     }
-    if nav.chunk_count > 0 {
+    if chunk_count > 0 {
         flush(&mut chunk, out)?;
-        debug_assert_eq!(current + 1, nav.chunk_count, "every chunk is opened by a leaf");
+        debug_assert_eq!(current + 1, chunk_count, "every chunk is opened by a leaf");
     }
     Ok(())
 }
@@ -1588,6 +1789,9 @@ impl MergedNav {
             chunk_count: 0,
             index_len: 0,
             pool_len: 0,
+            snap_node_count: 0,
+            snap_chunk_count: 0,
+            snap_index_len: 0,
             read_budget: NAV_CHUNK_SIZE,
             stats,
         }
@@ -1688,11 +1892,15 @@ mod tests {
                 points: empty(),
                 recs: empty(),
                 pool: out.seal().expect("a scratch seal").0,
+                snap: None,
             }),
             node_count,
             chunk_count: 0,
             index_len: 0,
             pool_len: pool_len as u64,
+            snap_node_count: 0,
+            snap_chunk_count: 0,
+            snap_index_len: 0,
             read_budget: 1 << 16,
             stats: NavStats::default(),
         }
@@ -1708,6 +1916,42 @@ mod tests {
         assert_eq!(u32::from_le_bytes(bytes[22..26].try_into().unwrap()) as usize, 500 + NAV_DIR_LEN);
         assert_eq!(bytes[26], 1, "one profile");
         assert_eq!(bytes.len(), NAV_DIR_LEN + profiles.len());
+    }
+
+    /// The country-scale path derives anchors from one bounded final edge record at a time. Pin the
+    /// decode/interpolation/spill seam directly: a ~334 m two-point edge gets one midpoint anchor,
+    /// naming the caller's final pool id, without retaining a graph-sized geometry collection.
+    #[test]
+    fn a_long_streamed_edge_spills_its_lookup_anchor() {
+        let mut edge = Vec::new();
+        edge.extend_from_slice(&334u32.to_le_bytes());
+        edge.extend_from_slice(&2u16.to_le_bytes());
+        edge.push(0);
+        edge.extend_from_slice(&500_000i32.to_le_bytes());
+        edge.extend_from_slice(&500_000i32.to_le_bytes());
+        edge.extend_from_slice(&0i16.to_le_bytes());
+        edge.extend_from_slice(&3_000i16.to_le_bytes());
+
+        let scratch = MemoryScratch::new();
+        let mut recs = ByteSpill::create(&scratch, 1 << 10).unwrap();
+        let mut points = SpillWriter::<{ qtree::TREE_REC }>::create(&scratch, 1 << 10).unwrap();
+        let mut ord = 0;
+        let count =
+            append_snap_anchors(&edge, 123, (0, 0, 1_000_000, 1_000_000), &mut recs, &mut points, &mut ord).unwrap();
+        assert_eq!((count, ord), (1, 1));
+
+        let recs = recs.seal().unwrap();
+        let (points, point_count) = points.seal().unwrap();
+        assert_eq!(point_count, 1);
+        let mut anchor = [0u8; NAV_SNAP_RECORD_LEN];
+        scratch.read_at(recs, 0, &mut anchor).unwrap();
+        assert_eq!(i32::from_le_bytes(anchor[0..4].try_into().unwrap()), 500_000);
+        assert_eq!(i32::from_le_bytes(anchor[4..8].try_into().unwrap()), 501_500);
+        assert_eq!(u32::from_le_bytes(anchor[8..12].try_into().unwrap()), 123);
+        let mut point = [0u8; qtree::TREE_REC];
+        scratch.read_at(points, 0, &mut point).unwrap();
+        assert_eq!(qtree::rec_at(&point), 0);
+        assert_eq!(qtree::rec_len(&point) as usize, NAV_SNAP_RECORD_LEN);
     }
 
     /// Where a synthetic cell's edge pool starts — deliberately not 0, so an emission that forgot to
