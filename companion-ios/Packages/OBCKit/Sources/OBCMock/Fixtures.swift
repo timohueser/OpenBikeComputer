@@ -222,7 +222,7 @@ extension FixtureSet {
     /// overrides it (E1 / #911) — what the reference firmware's reader reads
     /// (`obc_formats::obcm::VERSION`). A mock device is a device, so it states
     /// one rather than serving the pre-E1 short read by default.
-    public static let defaultObcmVersion: UInt8 = 10
+    public static let defaultObcmVersion: UInt8 = 13
 
     /// Minimal safety net when no JSON is present (keeps the mock alive without resources).
     public static let builtIn = FixtureSet(
