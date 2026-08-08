@@ -168,7 +168,7 @@ MONACO="$repo_root/apps/obc-sim/assets/monaco.obcm"
 # fixture graphs can't reach (grimsel plans even ~25 km routes inside the 1536-node table), so
 # the card is injected through the real notify_nav_result seam with the planning screen on top,
 # pinning the exhausted→range-tier mapping. The generic tier ("Couldn't find a route.") stays a
-# real plan: a mountain fix with no routable node within the 250 m snap radius.
+# real plan: a mountain fix with no routable road within the 100 m acceptance envelope.
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
     --script "B d d w p d d d p f p p p" --inject-nav-fail exhausted --png "$OUT/nav-toofar.png"
 "$SIM" "$MAP" --boot --routes-dir "$NAVDIR" --center 8140000,46480000 --heading 0 \

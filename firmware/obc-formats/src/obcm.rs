@@ -3,7 +3,7 @@
 use crate::io::{validate_prefix, DecodeError};
 
 pub const MAGIC: [u8; 4] = *b"OBCM";
-pub const VERSION: u8 = 12;
+pub const VERSION: u8 = 13;
 pub const HEADER_LEN: usize = 40;
 pub const LOD_ENTRY_LEN: usize = 18;
 pub const STYLE_RECORD_LEN: usize = 8;
@@ -51,7 +51,9 @@ pub const POI_CHUNK_SIZE: usize = 512;
 pub const POI_CAT_ENTRY_LEN: usize = 13;
 pub const POI_DIR_POOL_FIELDS_LEN: usize = 6;
 
-pub const NAV_DIR_LEN: usize = 28;
+/// Width of the v13 §8.1 navigation directory. The v12 28-byte graph/profile prefix is followed by
+/// the sparse exact-edge snap index's `(index offset, node count, chunk count)` triple.
+pub const NAV_DIR_LEN: usize = 40;
 pub const NAV_CHUNK_SIZE: usize = 512;
 pub const NAV_NODE_FIXED_LEN: usize = 13;
 /// Width of one §8.3 adjacency entry. **17 in v12** (#1073): `id u32, dlat i16, dlon i16,
@@ -73,6 +75,14 @@ pub const NAV_PROFILE_CLIMB_WEIGHT_OFF: usize = 52;
 pub const NAV_PROFILE_RESERVED_LEN: usize = 3;
 pub const NAV_MAX_PROFILES: usize = 8;
 pub const NAV_MAX_DEGREE: usize = 24;
+/// One §8.7 snap-anchor record: absolute `lat i32`, absolute `lon i32`, and §8.4 `edge_id u32`.
+pub const NAV_SNAP_RECORD_LEN: usize = 12;
+/// Edges no longer than this need no interior anchor: every on-edge position is already within
+/// half this distance of a graph endpoint. Together with [`NAV_SNAP_ANCHOR_GAP_M`], this gives the
+/// 250 m node-or-anchor lookup a 100 m road-proximity guarantee.
+pub const NAV_SNAP_EDGE_MIN_M: u32 = 300;
+/// Maximum along-polyline gap between graph endpoints / interior snap anchors.
+pub const NAV_SNAP_ANCHOR_GAP_M: u32 = 300;
 
 /// Padding inserted immediately before a populated §8.2 node index so the fixed 512-byte node
 /// chunks following that index begin on a physical sector boundary. `index_offset` is the absolute

@@ -1,4 +1,4 @@
-//! Hand-written OBCM v11 byte builder shared by the `obc-reader` and `obc-render`
+//! Hand-written current-OBCM byte builder shared by the `obc-reader` and `obc-render`
 //! integration tests.
 //!
 //! Both crates need to synthesise `.obcm` byte buffers by hand (rather than checking
@@ -21,7 +21,8 @@
 //! `color2` u16 (spec §2, epic #556). **v11** packs geometry chunks tight behind a
 //! per-LOD offset table ([`chunk_region`], [`seal`]) and reorders the feature header
 //! — `flags` to byte 1, then either the 7-byte compact or 12-byte wide layout
-//! (issue #1009). [`build_file`]/[`build_priority_tree`]
+//! (issue #1009). **v12** adds directional ascent and profile climb weight. **v13** grows the nav
+//! directory to 40 bytes for the sparse exact-edge snap index. [`build_file`]/[`build_priority_tree`]
 //! write **empty** POI + nav sections so the reader accepts them; the directory,
 //! record, and pool builders ([`poi_directory`], [`pack_poi_record`], [`hours_pool`],
 //! [`nav_directory`], [`pack_nav_record`], [`pack_nav_edge_record`]) let the
@@ -199,8 +200,8 @@ pub fn empty_poi_directory(section_off: usize) -> Vec<u8> {
     d
 }
 
-/// Build a v9 nav directory (spec §8.1). The caller supplies the (already-computed) absolute
-/// offsets/counts — this only lays out the 28 directory bytes, not the profile table / index /
+/// Build a current nav directory (spec §8.1). The caller supplies the (already-computed) absolute
+/// offsets/counts — this only lays out the 40 directory bytes, not the profile table / index /
 /// chunks / pool that follow. `chunk_size` must be 512 (the reader rejects anything else).
 #[allow(clippy::too_many_arguments)]
 pub fn nav_directory(
@@ -223,6 +224,13 @@ pub fn nav_directory(
     d.extend_from_slice(&profile_table_offset.to_le_bytes());
     d.push(profile_count);
     d.push(0); // reserved
+
+    // Testkit graphs carry no long-edge lookup anchors. Point the empty §8.7 region just past the
+    // edge pool, matching the production writer's empty-index convention.
+    let snap_offset = edge_pool_offset + edge_chunk_count * u32::from(chunk_size);
+    d.extend_from_slice(&snap_offset.to_le_bytes());
+    d.extend_from_slice(&0u32.to_le_bytes());
+    d.extend_from_slice(&0u32.to_le_bytes());
     assert_eq!(d.len(), NAV_DIR_LEN);
     d
 }
@@ -250,10 +258,10 @@ pub fn default_nav_profile_table() -> Vec<u8> {
     nav_profile_record("Default", [16; 32], [16; 8], 0)
 }
 
-/// An **empty** v9 nav directory + its (always-present) profile table: no quadtree, no chunks, no
+/// An **empty** current nav directory + its (always-present) profile table: no quadtree, no chunks, no
 /// edges — what a map with no routable ways carries, and what [`build_file`]/[`build_priority_tree`]
-/// append so the v9 reader accepts them. The profile table sits right after the 28-byte directory;
-/// the zero-length index and edge pool "start" just past it. Returns dir + table (80 bytes).
+/// append so the current reader accepts them. The profile table sits right after the 40-byte
+/// directory; the zero-length index and edge pool "start" just past it.
 pub fn empty_nav_directory(section_off: usize) -> Vec<u8> {
     let table = default_nav_profile_table();
     let profile_table_offset = (section_off + NAV_DIR_LEN) as u32;

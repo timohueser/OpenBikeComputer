@@ -131,7 +131,7 @@ cargo fmt --manifest-path apps/obc-desktop/Cargo.toml       # the desktop app, s
 
 ## Run the simulator
 
-`obc-sim` renders `.obcm` maps (which must be **v12**) through the exact code the
+`obc-sim` renders `.obcm` maps (which must be **v13**) through the exact code the
 firmware runs. `freiburg.obcm` in the repo root is a current sample.
 
 ```sh

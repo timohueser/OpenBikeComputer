@@ -179,13 +179,13 @@ pack *args:
 #   obc bake verify
 #   obc bake publish                  # plan only
 #   obc bake publish --target r2      # upload content first, catalog root last
-#   obc bake remove-old-r2            # dry-run old whole-region removal
-#   obc bake remove-old-r2 --apply    # perform that exact removal
+#   obc bake clean-r2                 # dry-run removal of the complete maps bucket
+#   obc bake clean-r2 --apply         # purge that bucket before a fresh publish
 #
 # Publish reads its public URL and R2 credentials from tools/obc.local or the
-# environment. The removal command requires a non-root OBC_R2_PREFIX and verifies
-# that prefix contains the replacement catalog before touching old root objects.
-# Bake, verify, publish, or retire old R2 objects using $OBC_BAKE_TREE
+# environment. The clean command verifies the configured bucket by reading the
+# live catalog at OBC_R2_PREFIX, then deletes every object in that bucket.
+# Bake, verify, publish, or replace R2 objects using $OBC_BAKE_TREE
 bake *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -224,12 +224,12 @@ bake *args:
         fi
         export OBC_MAPS_BASE_URL="$maps_base"
         _run "$bin" publish "$publish_tree" "$@" ;;
-      remove-old-r2)
+      clean-r2)
         shift
         apply=0
         for arg in "$@"; do case "$arg" in
           --apply) apply=1 ;;
-          *) _err "unknown remove-old-r2 option: '$arg'  (want: --apply)"; exit 1 ;;
+          *) _err "unknown clean-r2 option: '$arg'  (want: --apply)"; exit 1 ;;
         esac; done
         command -v rclone >/dev/null 2>&1 || { _err "rclone is required for R2 cleanup"; exit 1; }
         missing=()
@@ -244,13 +244,20 @@ bake *args:
         fi
         prefix="${OBC_R2_PREFIX:-}"; prefix="${prefix#/}"; prefix="${prefix%/}"
         [[ -n "$prefix" && "$prefix" != . ]] || {
-          _err "OBC_R2_PREFIX must name the fresh replacement prefix (for example: cell-catalog)"
+          _err "OBC_R2_PREFIX must name the catalog prefix used to verify the bucket (for example: cell-catalog)"
           exit 1
         }
-        case "$prefix" in
-          catalog.json|regions|regions/*|presets|presets/*)
-            _err "unsafe replacement prefix '$prefix' overlaps an old root target"; exit 1 ;;
+        case "/$prefix/" in
+          */../*|*/./*)
+            _err "unsafe OBC_R2_PREFIX '$prefix' contains a dot path segment"; exit 1 ;;
         esac
+        maps_base="${OBC_MAPS_BASE_URL:-}"
+        [[ -n "$maps_base" ]] || { _err "OBC_MAPS_BASE_URL is required for R2 cleanup"; exit 1; }
+        maps_base="${maps_base%/}"
+        [[ "$maps_base" == */"$prefix" ]] || {
+          _err "OBC_MAPS_BASE_URL '$maps_base' does not end in OBC_R2_PREFIX '$prefix'"
+          exit 1
+        }
         endpoint="${OBC_R2_ENDPOINT:-https://${OBC_R2_ACCOUNT_ID}.r2.cloudflarestorage.com}"
         export RCLONE_CONFIG_OBCR2_TYPE=s3
         export RCLONE_CONFIG_OBCR2_PROVIDER=Cloudflare
@@ -260,23 +267,19 @@ bake *args:
         export RCLONE_CONFIG_OBCR2_SECRET_ACCESS_KEY="$OBC_R2_SECRET_ACCESS_KEY"
         export RCLONE_CONFIG_OBCR2_NO_CHECK_BUCKET=true
         root="obcr2:${OBC_R2_BUCKET}"
-        replacement="$root/$prefix/catalog.json"
-        _say "checking replacement catalog: $replacement"
-        rclone lsjson "$replacement" --stat >/dev/null || {
-          _err "replacement catalog is not readable; refusing to touch old R2 data"
+        catalog="$root/$prefix/catalog.json"
+        _say "checking live catalog before cleanup: $catalog"
+        rclone lsjson "$catalog" --stat >/dev/null || {
+          _err "catalog is not readable at the configured prefix; refusing to purge it"
           exit 1
         }
         if (( apply )); then
-          _warn "deleting only the obsolete bucket-root catalog.json, regions/, and presets/"
-          _run rclone deletefile "$root/catalog.json"
-          _run rclone purge "$root/regions"
-          _run rclone purge "$root/presets"
-          _ok "old whole-region objects removed; $prefix was untouched"
+          _warn "deleting every object in the R2 bucket: $root"
+          _run rclone delete "$root" --rmdirs
+          _ok "R2 bucket emptied; publish the verified bake tree immediately"
         else
-          _say "dry run — review this list, then repeat with: obc bake remove-old-r2 --apply"
-          _run rclone deletefile "$root/catalog.json" --dry-run
-          _run rclone purge "$root/regions" --dry-run
-          _run rclone purge "$root/presets" --dry-run
+          _say "dry run — review this list, then repeat with: obc bake clean-r2 --apply"
+          _run rclone delete "$root" --rmdirs --dry-run
         fi ;;
       terrain)
         # The terrain artifact class, on its own revision track (OBCC_Spec.md §13). Same

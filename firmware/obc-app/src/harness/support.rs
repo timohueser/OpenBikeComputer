@@ -158,11 +158,11 @@ pub fn build_min_obcm_profiles(marker: u16, profiles: &[&str]) -> Vec<u8> {
     poi_dir.extend_from_slice(&0u16.to_le_bytes()); // hours_pool_count = 0
     poi_dir.extend_from_slice(&0u16.to_le_bytes()); // the empty pool's own `count u16` = 0
 
-    // Empty nav section at the tail: the 28-byte directory + the always-present §8.6 profile
+    // Empty nav section at the tail: the 40-byte directory + the always-present §8.6 profile
     // table (the caller's names, every multiplier 16 = 1.0×, climb-blind — this fixture has no
     // graph to climb). Zero-length index + edge pool "start" just past the profile table.
     let nav_section_off = poi_section_off + poi_dir.len();
-    let profile_table_off = (nav_section_off + 28) as u32;
+    let profile_table_off = (nav_section_off + obc_formats::obcm::NAV_DIR_LEN) as u32;
     let mut profile_table = Vec::new();
     for name in profiles {
         let base = profile_table.len();
@@ -184,6 +184,9 @@ pub fn build_min_obcm_profiles(marker: u16, profiles: &[&str]) -> Vec<u8> {
     nav_dir.extend_from_slice(&profile_table_off.to_le_bytes()); // profile_table_offset
     nav_dir.push(profiles.len() as u8); // profile_count
     nav_dir.push(0); // reserved
+    nav_dir.extend_from_slice(&after_nav.to_le_bytes()); // snap_index_offset (zero-length)
+    nav_dir.extend_from_slice(&0u32.to_le_bytes()); // snap_index_node_count
+    nav_dir.extend_from_slice(&0u32.to_le_bytes()); // snap_chunk_count
     nav_dir.extend_from_slice(&profile_table);
 
     let mut f = Vec::new();

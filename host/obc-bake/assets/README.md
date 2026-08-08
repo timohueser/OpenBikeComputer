@@ -6,7 +6,7 @@ table, and renders the fixed Teningen camera through the production map renderer
 It is never published itself.
 
 Provenance: Geofabrik `europe/germany/baden-wuerttemberg/freiburg-regbez`,
-snapshot `2026-08-03`, packed as OBCM v12 with
+snapshot `2026-08-03`, packed as OBCM v13 with
 `builder/presets/schema.json` (Bikepacking v6) and this padded crop:
 
 ```text
@@ -48,10 +48,16 @@ stay. Content is otherwise untouched: `obcm_diff --dump` is identical feature fo
 feature, and the two new records take the next free ids so nothing this file
 already carried was renumbered.
 
-The version byte went 12 → 13 → 12 in between, which cost this file nothing in
-either direction: v13's only substance was a feature field for contours and a
-style bit for index ones, and the Rhine plain has neither. The map is byte-identical
-across that round trip apart from the header's version byte.
+The earlier temporary version byte went 12 → 13 → 12 in between, which cost this
+file nothing in either direction: that draft v13's only substance was a feature
+field for contours and a style bit for index ones, and the Rhine plain has
+neither. The map was byte-identical across that round trip apart from the
+header's version byte.
+
+481 533 B → **483 328 B at v13** (#1184). Exact road-edge snapping adds the
+v13 navigation-directory fields plus a sparse quadtree of interior anchors for
+long graph edges. This crop grows by 1 795 B (+0.37%); the rendered geometry and
+the no-contour choice are unchanged.
 
 ## `teningen-preview.obcd` — the terrain companion
 

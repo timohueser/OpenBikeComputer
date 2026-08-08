@@ -133,13 +133,83 @@ for image in route-imported.webp route-on-device.webp rides-before-sync.webp rid
   if [[ "$mode" == "check" ]]; then
     current="$work_dir/rendered/current-$image.ppm"
     baseline="$work_dir/rendered/baseline-$image.ppm"
+    pixels_match=0
     if [[ -f "$committed" ]]; then
-      # cwebp's RIFF container bytes can vary while decoding to the exact same pixels. Compare the
-      # rendered image instead, which is both strict about UI drift and immune to container noise.
+      # cwebp's RIFF container bytes can vary, and Homebrew versions can move a small amount of
+      # lossy encoder noise between decoded pixels. Compare the rendered image, accepting only the
+      # tightly bounded drift measured across all five GitHub-hosted captures.
       dwebp -quiet -ppm "$generated" -o "$current"
       dwebp -quiet -ppm "$committed" -o "$baseline"
+      if cmp -s "$current" "$baseline"; then
+        pixels_match=1
+      elif python3 - "$current" "$baseline" <<'PY'
+import pathlib
+import sys
+
+WHITESPACE = b" \t\r\n"
+
+def read_ppm(path: str) -> tuple[int, int, bytes]:
+    raw = pathlib.Path(path).read_bytes()
+    offset = 0
+    tokens = []
+    while len(tokens) < 4:
+        while offset < len(raw) and raw[offset] in WHITESPACE:
+            offset += 1
+        if offset < len(raw) and raw[offset] == ord("#"):
+            while offset < len(raw) and raw[offset] not in b"\r\n":
+                offset += 1
+            continue
+        start = offset
+        while offset < len(raw) and raw[offset] not in WHITESPACE:
+            offset += 1
+        tokens.append(raw[start:offset])
+    if tokens[0] != b"P6" or tokens[3] != b"255":
+        raise SystemExit(f"unsupported PPM header in {path}")
+    if raw[offset:offset + 2] == b"\r\n":
+        offset += 2
+    elif offset < len(raw) and raw[offset] in WHITESPACE:
+        offset += 1
+    width, height = map(int, tokens[1:3])
+    pixels = raw[offset:]
+    if len(pixels) != width * height * 3:
+        raise SystemExit(f"truncated PPM in {path}")
+    return width, height, pixels
+
+width, height, current = read_ppm(sys.argv[1])
+base_width, base_height, baseline = read_ppm(sys.argv[2])
+if (width, height) != (base_width, base_height):
+    print(f"screenshot dimensions differ: {width}x{height} vs {base_width}x{base_height}", file=sys.stderr)
+    raise SystemExit(1)
+
+changed = significant = large = total_delta = maximum = 0
+for offset in range(0, len(current), 3):
+    delta = max(abs(current[offset + channel] - baseline[offset + channel]) for channel in range(3))
+    changed += delta > 0
+    significant += delta > 8
+    large += delta > 32
+    maximum = max(maximum, delta)
+    total_delta += sum(abs(current[offset + channel] - baseline[offset + channel]) for channel in range(3))
+pixels = width * height
+mean_delta = total_delta / (pixels * 3)
+significant_fraction = significant / pixels
+large_fraction = large / pixels
+within_tolerance = mean_delta <= 0.60 and significant_fraction <= 0.005 and large_fraction <= 0.003
+print(
+    "screenshot pixel drift: "
+    f"changed={changed}/{pixels} ({changed / pixels:.3%}), "
+    f">8={significant}/{pixels} ({significant_fraction:.3%}), "
+    f">32={large}/{pixels} ({large_fraction:.3%}), "
+    f"mean-channel-delta={mean_delta:.4f}, max={maximum}, "
+    f"accepted={'yes' if within_tolerance else 'no'}",
+    file=sys.stderr,
+)
+raise SystemExit(0 if within_tolerance else 1)
+PY
+      then
+        pixels_match=1
+      fi
     fi
-    if [[ ! -f "$committed" ]] || ! cmp -s "$current" "$baseline"; then
+    if [[ "$pixels_match" -ne 1 ]]; then
       echo "stale companion screenshot: docs/assets/companion/$image" >&2
       stale=1
     fi
