@@ -2210,6 +2210,7 @@ impl App {
         // Any recognised gesture is user activity: reset the idle-return clock (see
         // `apply_idle_return`). A gesture the screen ignores still counts — a step on Home, say.
         self.ui.last_input_ms = self.ui.now_ms;
+        self.ui.idle_return_timing = true;
         // Snapshot the settings so a settings-screen edit is detected by one `==` (Settings is
         // `Copy + Eq`). A change flags a save for the host to pick up via `take_settings_dirty`.
         let settings_before = self.settings;
@@ -5032,6 +5033,33 @@ mod tests {
         }
     }
 
+    /// Time spent behind an idle-exempt wait is not banked against the screen that follows it.
+    /// This is the #859 failure mode: a plan taking longer than the timeout used to reveal the
+    /// overview and have it swept Home in the same pass.
+    #[test]
+    fn idle_exemption_suspends_then_restarts_the_clock() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.settings.idle_return = IdleReturn::S15;
+        let _ = app.ui.stack.push(Screen::NavPlanning(NavPlanningScreen::new("Slow route")));
+        app.ui.last_input_ms = 0;
+
+        idle_tick(&mut app, 120_000);
+        assert!(matches!(app.top_screen(), Screen::NavPlanning(_)), "the slow plan stays visible");
+        assert!(!app.ui.idle_return_timing, "the exempt screen suspended, rather than aged, the clock");
+
+        *app.ui.stack.last_mut().unwrap() =
+            Screen::RouteOverview(crate::screen::RouteOverviewScreen::computed(0, None));
+        idle_tick(&mut app, 120_000);
+        assert!(matches!(app.top_screen(), Screen::RouteOverview(_)), "completion receives a fresh window");
+        assert_eq!(app.ui.last_input_ms, 120_000, "the ordinary screen starts a new idle window");
+        assert_eq!(app.ms_until_next_wake(120_000), Some(15_000), "the full timeout is armed");
+
+        idle_tick(&mut app, 134_999);
+        assert!(matches!(app.top_screen(), Screen::RouteOverview(_)), "the overview keeps the whole window");
+        idle_tick(&mut app, 135_000);
+        assert!(matches!(app.top_screen(), Screen::Home(_)), "the restarted timeout eventually fires");
+    }
+
     /// The route-less **browse map** (Map on top, not tracking — Menu → Map) is a deliberate view,
     /// so it's exempt from the idle-return timeout even though it isn't the Home root: elapse well
     /// past the deadline and it stays put (unlike a menu, which would return to Home).
@@ -5051,6 +5079,7 @@ mod tests {
         // A menu over Home, by contrast, does return.
         *app.ui.stack.last_mut().unwrap() = Screen::Menu(MenuScreen::new());
         app.ui.last_input_ms = 60_000;
+        app.ui.idle_return_timing = true; // model the gesture that opened the menu
         idle_tick(&mut app, 120_000);
         assert!(matches!(app.top_screen(), Screen::Home(_)), "a menu still returns to Home on the timeout");
     }
