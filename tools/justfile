@@ -274,12 +274,12 @@ bake *args:
           exit 1
         }
         if (( apply )); then
-          _warn "purging the complete R2 bucket: $root"
-          _run rclone purge "$root"
+          _warn "deleting every object in the R2 bucket: $root"
+          _run rclone delete "$root" --rmdirs
           _ok "R2 bucket emptied; publish the verified bake tree immediately"
         else
           _say "dry run — review this list, then repeat with: obc bake clean-r2 --apply"
-          _run rclone purge "$root" --dry-run
+          _run rclone delete "$root" --rmdirs --dry-run
         fi ;;
       terrain)
         # The terrain artifact class, on its own revision track (OBCC_Spec.md §13). Same
