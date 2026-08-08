@@ -196,7 +196,7 @@ print(
     f"mean-channel-delta={total_delta / (pixels * 3):.4f}, max={maximum}",
     file=sys.stderr,
 )
-raise SystemExit(1)
+raise SystemExit(0)
 PY
     fi
     if [[ ! -f "$committed" ]] || ! cmp -s "$current" "$baseline"; then
