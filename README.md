@@ -286,8 +286,8 @@ Publishing is a separate operation. It regenerates URLs for the public origin,
 regenerates the square preview for every skin, uploads content first, verifies
 remote sizes, and replaces `catalog.json` last. Root-referenced objects use
 immutable digest-suffixed keys; old objects are retained so a browser holding the
-previous root never receives mixed-generation bytes. Updating preview code
-therefore needs only another publish, not a cell rebake:
+previous root never receives mixed-generation bytes during an ordinary publish.
+Updating preview code therefore needs only another publish, not a cell rebake:
 
 ```sh
 # Copy tools/obc.local.example to the gitignored tools/obc.local and add the
@@ -301,11 +301,21 @@ obc bake publish
 # and the final catalog-root swap automatically.
 obc bake publish --target r2
 
-# Once the deployed site uses the new prefix, preview and then apply removal of
-# the obsolete bucket-root catalog.json, regions/, and presets/ objects.
-obc bake remove-old-r2
-obc bake remove-old-r2 --apply
+# A deliberate full-store replacement may instead preview and then purge every
+# object below the configured catalog prefix. The second command leaves the
+# catalog offline until the publish succeeds, so verify the tree first and run
+# the purge and publish back-to-back.
+obc bake verify
+obc bake clean-r2
+obc bake clean-r2 --apply && obc bake publish --target r2
 ```
+
+`clean-r2` requires an explicit non-root `OBC_R2_PREFIX`, requires
+`OBC_MAPS_BASE_URL` to end in that same prefix, and confirms that the prefix's
+current `catalog.json` is readable before either a dry run or a real purge. It
+deletes the complete prefix but never another prefix or unrelated bucket data.
+Use it for an intentionally disruptive format cutover, not for an ordinary
+incremental publish.
 
 When `OBC_R2_PREFIX` is set, `OBC_MAPS_BASE_URL` must be the public URL of that
 same prefix. For example, `OBC_R2_PREFIX=cell-catalog` pairs with
