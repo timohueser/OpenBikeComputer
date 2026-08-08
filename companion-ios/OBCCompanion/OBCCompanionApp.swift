@@ -62,7 +62,8 @@ struct OBCCompanionApp: App {
                 .devMockOverlay(
                     control: Self.mockControl,
                     showPanelAtLaunch: Self.launchOptions.showDevPanel,
-                    showGalleryAtLaunch: Self.launchOptions.showUIGallery
+                    showGalleryAtLaunch: Self.launchOptions.showUIGallery,
+                    hideHUD: Self.launchOptions.hideMockHUD
                 )
             #endif
         }
@@ -100,7 +101,7 @@ struct OBCCompanionApp: App {
         return BLETransport()
     }
 
-    /// The `-OBCImportSample [gpx|tcx|bad]` hook: hand a bundled sample file to
+    /// The `-OBCImportSample [gpx|tcx|bad|grimsel]` hook: hand a bundled sample file to
     /// the import path at launch, exactly as a Files pick would — the E1/H4/H5
     /// XCUITests and demos run the real decoders. Debug-only, like every launch arg.
     static func launchImport() -> (data: Data, fileName: String)? {

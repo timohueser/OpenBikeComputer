@@ -35,6 +35,7 @@ struct DevMockOverlay: ViewModifier {
     let control: MockControl?
     let showPanelAtLaunch: Bool
     let showGalleryAtLaunch: Bool
+    let hideHUD: Bool
     @State private var panelShown = false
     @State private var galleryShown = false
 
@@ -55,9 +56,11 @@ struct DevMockOverlay: ViewModifier {
         if let control {
             content
                 .overlay(alignment: .bottomTrailing) {
-                    MockStatusHUD(control: control)
-                        .padding(6)
-                        .allowsHitTesting(false)
+                    if !hideHUD {
+                        MockStatusHUD(control: control)
+                            .padding(6)
+                            .allowsHitTesting(false)
+                    }
                 }
                 .sheet(isPresented: $panelShown) {
                     MockControlPanel(control: control)
@@ -78,12 +81,14 @@ extension View {
     func devMockOverlay(
         control: MockControl?,
         showPanelAtLaunch: Bool,
-        showGalleryAtLaunch: Bool = false
+        showGalleryAtLaunch: Bool = false,
+        hideHUD: Bool = false
     ) -> some View {
         modifier(DevMockOverlay(
             control: control,
             showPanelAtLaunch: showPanelAtLaunch,
-            showGalleryAtLaunch: showGalleryAtLaunch
+            showGalleryAtLaunch: showGalleryAtLaunch,
+            hideHUD: hideHUD
         ))
     }
 }

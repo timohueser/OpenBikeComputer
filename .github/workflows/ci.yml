@@ -545,8 +545,10 @@ jobs:
       - name: swift test (OBCKit package, host)
         run: swift test --package-path companion-ios/Packages/OBCKit
 
-  # iOS companion, app tier: xcodegen + a simulator-SDK build of the app target (build-only —
-  # XCUITests on a booted sim are deliberately deferred; they'd be the slow/flaky tier).
+  # iOS companion, app tier: xcodegen + simulator-SDK builds of the app target. One deliberately
+  # narrow XCUITest flow also refreshes the five real app screens used by the landing page and
+  # compares them with the committed, compressed assets; this keeps the marketing surface honest
+  # without paying for the full simulator suite on every PR.
   # The pbxproj is gitignored, so running xcodegen here also validates the fresh-clone setup
   # and catches project.yml drift. The Debug/Release pair doubles as the mock-seam gate:
   # OBCMock's build marker must be present in the Debug binary (proves the grep isn't
@@ -559,8 +561,8 @@ jobs:
       DEVELOPER_DIR: /Applications/Xcode_26.5.app
     steps:
       - uses: actions/checkout@v4
-      - name: Install XcodeGen
-        run: brew install xcodegen
+      - name: Install XcodeGen and WebP tools
+        run: brew install xcodegen webp
       - name: xcodegen generate
         working-directory: companion-ios
         run: xcodegen generate
@@ -576,6 +578,10 @@ jobs:
       - name: Mock marker present in Debug
         working-directory: companion-ios
         run: grep -raq "OBCMock:DEBUG-only" DerivedData/Build/Products/Debug-iphonesimulator/OBCCompanion.app
+      - name: Companion website screenshots are current
+        env:
+          OBC_DERIVED_DATA_PATH: ${{ github.workspace }}/companion-ios/DerivedData
+        run: companion-ios/scripts/capture-website-screenshots.sh --check
       - name: Build (Release, simulator SDK)
         working-directory: companion-ios
         run: |
