@@ -8,8 +8,8 @@ use crate::screen::{
     RouteOverviewScreen, RouteSwapScreen, Screen, ScreenTick, Stack, StatisticsScreen, Transition,
 };
 use crate::{
-    App, AppState, CameraMode, Gesture, HostCommand, HostMailbox, Mode, PanAxis, RouteSummary, Settings, TrackAction,
-    MAX_ROUTES,
+    App, AppState, CameraMode, Gesture, HostCommand, HostMailbox, Mode, PanBasis, PanTool, RouteSummary, Settings,
+    TrackAction, MAX_ROUTES,
 };
 use embedded_graphics::prelude::RgbColor; // for `Rgb888::r()` in the compositing snapshot
 use obc_map_scene::BBox;
@@ -857,19 +857,19 @@ fn pausing_swaps_the_map_for_the_paused_page() {
     assert!(page.r() > backdrop.r(), "the parchment page is lighter than the sea backdrop");
 }
 
-// Pan mode (a Map sub-mode driven by the shared `AppState::pan`): enter/exit, the axis + orientation
-// toggles, panning, and the camera freeze.
+// Inspect/Pan mode (a Map sub-mode driven by the shared `AppState::pan`): enter/exit, the Move/Zoom
+// tool toggle, separate Route/Free and Free-axis holds, route/free movement, and the camera freeze.
 
 /// `hold` on the Follow map enters pan: the camera detaches (Free) and a pan state
-/// appears — axis Vertical, orientation matching the map (here north-up).
+/// appears. With no route, Free Vertical is the useful default and Move is active.
 #[test]
 fn map_hold_enters_pan_mode() {
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Riding));
     let t = MapScreen::new().handle(Gesture::Hold, &mut ctx(&mut st, &mut act));
     assert!(matches!(t, Transition::None));
     let pan = st.pan.expect("hold enters pan");
-    assert_eq!(pan.axis, PanAxis::Vertical);
-    assert!(pan.north_up, "a north-up map enters pan north-up");
+    assert_eq!(pan.basis, PanBasis::Vertical);
+    assert_eq!(pan.tool, PanTool::Move);
     assert_eq!(st.mode, CameraMode::Free, "the camera detaches while panning");
 }
 
@@ -878,10 +878,27 @@ fn map_hold_enters_pan_mode() {
 #[test]
 fn pan_freezes_camera_against_fixes() {
     let (mut st, _act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Riding));
-    st.enter_pan();
+    st.enter_pan(false, 0);
     st.update(&mut ReplayFix(Some(Fix::at(5000, 7000))));
     assert_eq!((st.cam_lon, st.cam_lat), (0, 0), "the frozen camera ignores the fix");
     assert_eq!(st.user_fix.map(|f| (f.lon, f.lat)), Some((7000, 5000)), "but the fix is recorded");
+}
+
+/// Inspect snapshots the live heading once. Removing the old orientation toggle must not let
+/// later GPS courses rotate the map under a detached camera.
+#[test]
+fn pan_freezes_orientation_at_entry() {
+    let mut st = AppState::new(0, 0, 1.0);
+    st.heading_up = true;
+    st.user_fix = Some(Fix { lat: 0, lon: 0, course: Some(90.0), speed_mps: Some(5.0) });
+    st.enter_pan(false, 0);
+    assert!((st.viewport(240.0, 320.0).course_rad - std::f32::consts::FRAC_PI_2).abs() < 1e-3);
+
+    st.user_fix = Some(Fix { lat: 0, lon: 0, course: Some(180.0), speed_mps: Some(5.0) });
+    assert!(
+        (st.viewport(240.0, 320.0).course_rad - std::f32::consts::FRAC_PI_2).abs() < 1e-3,
+        "the frozen 90° orientation ignores later heading changes"
+    );
 }
 
 /// Up/Down moves the frozen camera along the active axis: a positive step on a
@@ -890,7 +907,7 @@ fn pan_freezes_camera_against_fixes() {
 #[test]
 fn pan_turn_moves_camera_along_axis() {
     let (mut st, mut act) = (AppState::new(0, 0, 4.0), Activity::new(Mode::Riding));
-    st.enter_pan(); // north-up (heading_up defaults false)
+    st.enter_pan(false, 0); // north-up (heading_up defaults false)
     MapScreen::new().handle(Gesture::Step(1), &mut ctx(&mut st, &mut act));
     assert!(st.cam_lat > 0, "a positive step pans up = +latitude");
     assert_eq!(st.cam_lon, 0, "the vertical axis leaves longitude unchanged");
@@ -898,51 +915,122 @@ fn pan_turn_moves_camera_along_axis() {
     assert!(st.cam_lat.abs() <= 1 && st.cam_lon.abs() <= 1, "reversing returns to the start (±1 µdeg)");
 }
 
-/// `press` toggles the pan axis; `hold` flips N-up ↔ heading-up and freezes the new
-/// angle, so the map orientation never drifts while panning.
+/// `press` toggles Move ↔ Zoom in place. Up/Down can therefore change zoom without leaving
+/// Inspect or moving the camera, and another tap restores the prior movement basis.
 #[test]
-fn pan_press_toggles_axis_hold_toggles_orientation() {
+fn pan_press_toggles_move_and_zoom() {
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Riding));
-    st.heading_up = true;
-    st.user_fix = Some(Fix { lat: 0, lon: 0, course: Some(90.0), speed_mps: Some(5.0) });
-    st.enter_pan();
-    assert!(!st.pan.unwrap().north_up, "a heading-up map enters pan heading-up");
-    let rot0 = st.viewport(240.0, 320.0).course_rad;
-    assert!((rot0 - std::f32::consts::FRAC_PI_2).abs() < 1e-3, "frozen at the 90° course");
+    st.enter_pan(false, 0);
+    let camera = (st.cam_lon, st.cam_lat);
+    let zoom = st.zoom;
 
     MapScreen::new().handle(Gesture::Press, &mut ctx(&mut st, &mut act));
-    assert_eq!(st.pan.unwrap().axis, PanAxis::Horizontal);
+    assert_eq!(st.pan.unwrap().tool, PanTool::Zoom);
+    MapScreen::new().handle(Gesture::Step(1), &mut ctx(&mut st, &mut act));
+    assert!(st.zoom > zoom, "Down changes zoom while inspecting");
+    assert_eq!((st.cam_lon, st.cam_lat), camera, "zooming keeps the detached centre fixed");
 
-    MapScreen::new().handle(Gesture::Hold, &mut ctx(&mut st, &mut act));
-    assert!(st.pan.unwrap().north_up, "hold flips to north-up");
-    assert!(st.viewport(240.0, 320.0).course_rad.abs() < 1e-6, "north-up = 0 rotation");
-
-    MapScreen::new().handle(Gesture::Hold, &mut ctx(&mut st, &mut act));
-    assert!(!st.pan.unwrap().north_up, "hold flips back to heading-up");
-    assert!(
-        (st.viewport(240.0, 320.0).course_rad - std::f32::consts::FRAC_PI_2).abs() < 1e-3,
-        "and re-freezes the course"
-    );
+    MapScreen::new().handle(Gesture::Press, &mut ctx(&mut st, &mut act));
+    assert_eq!(st.pan.unwrap().tool, PanTool::Move);
+    assert_eq!(st.pan.unwrap().basis, PanBasis::Vertical, "the movement basis survives the tool toggle");
 }
 
-/// `back` recenters on the rider but stays in pan; `back-hold` exits to Follow and
-/// does *not* fall through to the global `back-hold` = Ride menu.
+/// With a route loaded, Back-hold changes the Route/Free family while Select-hold changes only an
+/// already-active Free axis. Select-hold is inert in Zoom; Back-hold remains the deliberate family
+/// switch and always lands in Move, avoiding a dead-feeling hold.
 #[test]
-fn pan_back_recenters_and_back_hold_exits() {
+fn pan_holds_separate_route_family_from_free_axis() {
+    let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Riding));
+    act.active_route = Some(0);
+    act.progress_m = 500;
+    st.enter_pan(true, act.progress_m);
+    assert_eq!(st.pan.unwrap().basis, PanBasis::Route);
+
+    MapScreen::new().handle(Gesture::Press, &mut ctx(&mut st, &mut act));
+    assert_eq!(st.pan.unwrap().tool, PanTool::Zoom);
+    let zoom_state = st.pan.unwrap();
+    MapScreen::new().handle(Gesture::Hold, &mut ctx(&mut st, &mut act));
+    assert_eq!(st.pan.unwrap(), zoom_state, "Select-hold is inert in Zoom");
+    MapScreen::new().handle(Gesture::BackHold, &mut ctx(&mut st, &mut act));
+    assert_eq!((st.pan.unwrap().basis, st.pan.unwrap().tool), (PanBasis::Vertical, PanTool::Move));
+
+    MapScreen::new().handle(Gesture::Hold, &mut ctx(&mut st, &mut act));
+    assert_eq!(st.pan.unwrap().basis, PanBasis::Horizontal);
+    MapScreen::new().handle(Gesture::Hold, &mut ctx(&mut st, &mut act));
+    assert_eq!(st.pan.unwrap().basis, PanBasis::Vertical, "Select-hold stays inside Free");
+
+    MapScreen::new().handle(Gesture::Press, &mut ctx(&mut st, &mut act));
+    assert_eq!(st.pan.unwrap().tool, PanTool::Zoom);
+    MapScreen::new().handle(Gesture::BackHold, &mut ctx(&mut st, &mut act));
+    assert_eq!(
+        (st.pan.unwrap().basis, st.pan.unwrap().tool),
+        (PanBasis::Route, PanTool::Move),
+        "Free Zoom switches to ordinary Route Move"
+    );
+    MapScreen::new().handle(Gesture::BackHold, &mut ctx(&mut st, &mut act));
+    assert_eq!(st.pan.unwrap().basis, PanBasis::Vertical, "Back-hold restores the last-used Free axis");
+}
+
+/// Without a route, Back-hold has no other family to enter. In Zoom it still returns to Free Move,
+/// avoiding a dead gesture; in Move it is inert. Select-hold alternates the two usable Free axes.
+#[test]
+fn pan_without_route_stays_in_free_axes() {
+    let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Riding));
+    st.enter_pan(false, 0);
+    MapScreen::new().handle(Gesture::Press, &mut ctx(&mut st, &mut act));
+    assert_eq!(st.pan.unwrap().tool, PanTool::Zoom);
+    MapScreen::new().handle(Gesture::BackHold, &mut ctx(&mut st, &mut act));
+    assert_eq!(
+        (st.pan.unwrap().basis, st.pan.unwrap().tool),
+        (PanBasis::Vertical, PanTool::Move),
+        "route-less Zoom returns to Free Move"
+    );
+    MapScreen::new().handle(Gesture::BackHold, &mut ctx(&mut st, &mut act));
+    assert_eq!(st.pan.unwrap().basis, PanBasis::Vertical, "Free Move has no Route family to enter");
+    MapScreen::new().handle(Gesture::Hold, &mut ctx(&mut st, &mut act));
+    assert_eq!(st.pan.unwrap().basis, PanBasis::Horizontal);
+    MapScreen::new().handle(Gesture::BackHold, &mut ctx(&mut st, &mut act));
+    assert_eq!(st.pan.unwrap().basis, PanBasis::Horizontal, "Back-hold remains inert");
+    MapScreen::new().handle(Gesture::Hold, &mut ctx(&mut st, &mut act));
+    assert_eq!(st.pan.unwrap().basis, PanBasis::Vertical);
+}
+
+/// Route movement advances and retreats the distance cursor rather than forcing north/south or
+/// east/west movement. Large turns clamp at the route ends.
+#[test]
+fn pan_route_steps_move_and_clamp_progress() {
+    let (mut st, mut act) = (AppState::new(0, 0, 4.0), Activity::new(Mode::Riding));
+    act.active_route = Some(0);
+    act.route_total_m = 1_000;
+    act.progress_m = 500;
+    st.enter_pan(true, act.progress_m);
+
+    MapScreen::new().handle(Gesture::Step(1), &mut ctx(&mut st, &mut act));
+    assert!(st.pan.unwrap().route_progress_m > 500, "Down looks farther ahead on the route");
+    MapScreen::new().handle(Gesture::Step(-10_000), &mut ctx(&mut st, &mut act));
+    assert_eq!(st.pan.unwrap().route_progress_m, 0, "route movement clamps at the start");
+    MapScreen::new().handle(Gesture::Step(10_000), &mut ctx(&mut st, &mut act));
+    assert_eq!(st.pan.unwrap().route_progress_m, 1_000, "route movement clamps at the end");
+}
+
+/// Back tap is the reserved, one-gesture exit to Follow and implicitly recenters. Back-hold remains
+/// scoped to the Inspect family action and never falls through to the Ride menu.
+#[test]
+fn pan_back_exits_while_back_hold_stays_scoped() {
     let (mut st, mut act) = (AppState::new(0, 0, 4.0), Activity::new(Mode::Riding));
     st.user_fix = Some(Fix::at(5000, 7000));
-    st.enter_pan();
+    st.enter_pan(false, 0);
     MapScreen::new().handle(Gesture::Step(2), &mut ctx(&mut st, &mut act)); // pan away
     assert_ne!((st.cam_lon, st.cam_lat), (7000, 5000));
 
-    let t = MapScreen::new().handle(Gesture::Back, &mut ctx(&mut st, &mut act));
-    assert!(matches!(t, Transition::None));
-    assert_eq!((st.cam_lon, st.cam_lat), (7000, 5000), "back recenters on the fix");
-    assert!(st.pan.is_some(), "back stays in pan");
-
     let t = MapScreen::new().handle(Gesture::BackHold, &mut ctx(&mut st, &mut act));
     assert!(matches!(t, Transition::None), "back-hold doesn't open the Ride menu while panning");
-    assert!(st.pan.is_none(), "back-hold exits pan");
+    assert_eq!(st.pan.unwrap().basis, PanBasis::Vertical, "without a route, the family action is inert");
+
+    let t = MapScreen::new().handle(Gesture::Back, &mut ctx(&mut st, &mut act));
+    assert!(matches!(t, Transition::None));
+    assert!(st.pan.is_none(), "Back tap exits Inspect");
+    assert_eq!((st.cam_lon, st.cam_lat), (7000, 5000), "exit implicitly recenters on the fix");
     assert_eq!(st.mode, CameraMode::Follow, "exiting resumes Follow");
 }
 

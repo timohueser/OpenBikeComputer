@@ -25,6 +25,7 @@ use obc_render::{
 };
 
 use crate::activity::{Activity, DetourRequest};
+use crate::app::{MAX_ZOOM, MIN_ZOOM};
 use crate::host::DetourPreview;
 use crate::input::Gesture;
 use crate::Msg;
@@ -554,9 +555,9 @@ fn fit_viewport(w: i32, h: i32, b: BBox) -> Viewport {
     let usable_w = (w as f32 - 2.0 * FIT_MARGIN).max(1.0);
     let usable_bottom = (h - HUD_H - 2 * HUD_MARGIN) as f32;
     let usable_h = (usable_bottom - FIT_MARGIN).max(1.0);
-    let zx = if span_x > 0.0 { usable_w / span_x } else { super::map::MAX_ZOOM };
-    let zy = if span_y > 0.0 { usable_h / span_y } else { super::map::MAX_ZOOM };
-    let zoom = zx.min(zy).clamp(super::map::MIN_ZOOM, super::map::MAX_ZOOM);
+    let zx = if span_x > 0.0 { usable_w / span_x } else { MAX_ZOOM };
+    let zy = if span_y > 0.0 { usable_h / span_y } else { MAX_ZOOM };
+    let zoom = zx.min(zy).clamp(MIN_ZOOM, MAX_ZOOM);
     let desired_y = FIT_MARGIN + usable_h / 2.0;
     let cam_lat = centre_lat - ((h as f32 / 2.0 - desired_y) / zoom) as i32;
     Viewport::new(w as f32, h as f32, cam_lon, cam_lat, zoom)
@@ -565,7 +566,7 @@ fn fit_viewport(w: i32, h: i32, b: BBox) -> Viewport {
 /// Candidate-centred north-up camera for the inspection sub-mode. The ring sits at the same usable
 /// map-area centre as the overview bounds, never behind the floating HUD.
 fn inspect_viewport(w: i32, h: i32, candidate: (i32, i32), overview_zoom: f32, factor: f32) -> Viewport {
-    let zoom = (overview_zoom * factor).clamp(super::map::MIN_ZOOM, super::map::MAX_ZOOM);
+    let zoom = (overview_zoom * factor).clamp(MIN_ZOOM, MAX_ZOOM);
     let usable_bottom = (h - HUD_H - 2 * HUD_MARGIN) as f32;
     let usable_h = (usable_bottom - FIT_MARGIN).max(1.0);
     let desired_y = FIT_MARGIN + usable_h / 2.0;

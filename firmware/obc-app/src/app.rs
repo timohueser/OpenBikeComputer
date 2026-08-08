@@ -35,32 +35,45 @@ pub enum CameraMode {
     Free,
 }
 
-/// The screen-space axis Up/Down pans along in [pan mode](Pan).
+/// What Up/Down moves along while [pan mode](Pan) is in [`Move`](PanTool::Move).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PanAxis {
-    /// Up / down in screen space — the default on entering pan.
+pub enum PanBasis {
+    /// Back / ahead on the active route's cumulative-distance axis.
+    Route,
+    /// Up / down in screen space.
     Vertical,
     /// Left / right in screen space.
     Horizontal,
 }
 
-impl PanAxis {
-    /// The other axis — Select `press` toggles between the two.
-    pub fn toggled(self) -> Self {
+impl PanBasis {
+    /// The other screen-space Free axis. Route falls back to Vertical; callers normally use the
+    /// remembered Free basis instead so Route can reach either axis intentionally.
+    fn toggled_free(self) -> Self {
         match self {
-            PanAxis::Vertical => PanAxis::Horizontal,
-            PanAxis::Horizontal => PanAxis::Vertical,
+            PanBasis::Vertical => PanBasis::Horizontal,
+            PanBasis::Route | PanBasis::Horizontal => PanBasis::Vertical,
         }
     }
 
-    /// Unit screen-space direction a **positive** step pans the camera centre
-    /// toward: vertical → up (`-y`), horizontal → right (`+x`).
-    fn unit(self) -> (f32, f32) {
+    /// Unit screen-space direction a **positive** step pans the camera centre toward. Route motion
+    /// has no screen-space unit: it is resolved against the streamed route by [`AppState::sync_pan_route`].
+    fn screen_unit(self) -> Option<(f32, f32)> {
         match self {
-            PanAxis::Vertical => (0.0, -1.0),
-            PanAxis::Horizontal => (1.0, 0.0),
+            PanBasis::Route => None,
+            PanBasis::Vertical => Some((0.0, -1.0)),
+            PanBasis::Horizontal => Some((1.0, 0.0)),
         }
     }
+}
+
+/// What Up/Down does in pan mode. A Select tap toggles this independently of [`PanBasis`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanTool {
+    /// Move the camera along the selected route/free basis.
+    Move,
+    /// Change zoom while keeping the detached camera centre fixed.
+    Zoom,
 }
 
 /// Active **pan-mode** state. While this is `Some`, the camera is detached
@@ -70,15 +83,22 @@ impl PanAxis {
 /// the map under the pan. `None` = the normal Follow map.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Pan {
-    /// Which screen axis Up/Down pans along.
-    pub axis: PanAxis,
-    /// `true` = north-up; `false` = heading-up at
-    /// [`frozen_course_rad`](Pan::frozen_course_rad). Select `hold` toggles it.
-    pub north_up: bool,
-    /// The frozen heading-up rotation (radians CW from north), snapshotted on entry
-    /// and re-snapshotted whenever `hold` flips back to heading-up — so the map never
-    /// rotates *while* panning.
+    /// The route/free axis Up/Down moves along when [`tool`](Pan::tool) is [`Move`](PanTool::Move).
+    pub basis: PanBasis,
+    /// Whether Up/Down moves or zooms.
+    pub tool: PanTool,
+    /// The frozen map rotation (radians CW from north), snapshotted on entry so the map never
+    /// rotates while it is being inspected.
     pub frozen_course_rad: f32,
+    /// The inspection cursor on the route's cumulative-distance axis. Kept when moving freely so
+    /// returning to Route resumes at the same inspected point rather than at the live rider.
+    pub route_progress_m: u32,
+    /// Free is a stable mode family, not two adjacent stops in a three-state ring. Remember its
+    /// last axis while Route is active so Select-hold can return without changing direction.
+    last_free_basis: PanBasis,
+    /// A route step or basis change owes one cold `position_at` lookup at the pre-draw boundary.
+    /// Private to the app: screens may inspect the mode, never acknowledge route I/O.
+    route_camera_dirty: bool,
 }
 
 /// The device's view state: where the camera looks, how zoomed in it is, what mode it's in, and
@@ -206,7 +226,6 @@ impl AppState {
     /// the two never disagree.
     pub(crate) fn course_rad(&self) -> f32 {
         match self.pan {
-            Some(pan) if pan.north_up => 0.0,
             Some(pan) => pan.frozen_course_rad,
             None if self.heading_up => self.live_course_rad(),
             None => 0.0,
@@ -215,7 +234,7 @@ impl AppState {
 
     /// The heading-up angle to freeze from the latest fix right now: the GPS course, or the
     /// electronic compass when stopped (no course), or 0 (north) when neither is known. Used by
-    /// [`course_rad`](AppState::course_rad), on entering pan, and when `hold` flips to heading-up.
+    /// [`course_rad`](AppState::course_rad) and snapshotted once on entering Inspect.
     fn live_course_rad(&self) -> f32 {
         self.effective_heading_deg().map_or(0.0, |deg| deg.to_radians())
     }
@@ -244,15 +263,18 @@ impl AppState {
         self.zoom = zoom_for_mpp(RIDING_MPP);
     }
 
-    /// Enter **pan mode**: detach the camera ([`Free`](CameraMode::Free)) so fixes stop
-    /// recentering it, and snapshot the current orientation (keeping north-up vs
-    /// heading-up) with its angle frozen. Axis starts [`Vertical`](PanAxis::Vertical).
-    pub fn enter_pan(&mut self) {
+    /// Enter **pan mode**: detach the camera ([`Free`](CameraMode::Free)) so fixes stop recentering
+    /// it, snapshot the current orientation, and start in Move. A loaded route makes route-relative
+    /// movement the default; a route-less browse starts on the vertical free axis.
+    pub fn enter_pan(&mut self, has_route: bool, route_progress_m: u32) {
         self.mode = CameraMode::Free;
         self.pan = Some(Pan {
-            axis: PanAxis::Vertical,
-            north_up: !self.heading_up,
+            basis: if has_route { PanBasis::Route } else { PanBasis::Vertical },
+            tool: PanTool::Move,
             frozen_course_rad: self.live_course_rad(),
+            route_progress_m,
+            last_free_basis: PanBasis::Vertical,
+            route_camera_dirty: has_route,
         });
     }
 
@@ -264,8 +286,8 @@ impl AppState {
         self.recenter_on_user();
     }
 
-    /// Recenter the camera on the last known fix — Select `back` in pan mode (which
-    /// stays in pan). No-op before the first fix.
+    /// Recenter the camera on the last known fix. Pan mode has no standalone recenter action;
+    /// leaving it returns to Follow and calls this helper. No-op before the first fix.
     pub fn recenter_on_user(&mut self) {
         if let Some(fix) = self.user_fix {
             self.cam_lon = fix.lon;
@@ -273,33 +295,105 @@ impl AppState {
         }
     }
 
-    /// Toggle the active pan axis (Select `press`). No-op when not panning.
-    pub fn toggle_pan_axis(&mut self) {
+    /// Toggle Move ↔ Zoom (Select tap). No-op when not panning.
+    pub fn toggle_pan_tool(&mut self) {
         if let Some(pan) = self.pan.as_mut() {
-            pan.axis = pan.axis.toggled();
+            pan.tool = match pan.tool {
+                PanTool::Move => PanTool::Zoom,
+                PanTool::Zoom => PanTool::Move,
+            };
         }
     }
 
-    /// Toggle north-up ↔ heading-up while panning (Select `hold`), re-freezing the
-    /// heading-up angle from the latest fix so it tracks the rider's current heading.
-    /// No-op when not panning.
-    pub fn toggle_pan_orientation(&mut self) {
-        let frozen = self.live_course_rad();
+    /// Toggle the movement **family** Route ↔ Free (Back hold). The last Free axis is restored, so
+    /// changing families never also changes axis. Back hold is authoritative even from Zoom: the
+    /// destination always opens in Move, avoiding a dead-feeling hold and a second gesture. With no
+    /// active route it can only leave Zoom for Free Move; in Free Move it remains a no-op.
+    pub fn toggle_pan_family(&mut self, has_route: bool) {
         if let Some(pan) = self.pan.as_mut() {
-            pan.north_up = !pan.north_up;
-            if !pan.north_up {
-                pan.frozen_course_rad = frozen;
+            if !has_route {
+                pan.tool = PanTool::Move;
+                return;
             }
+            if pan.basis == PanBasis::Route {
+                pan.basis = pan.last_free_basis;
+            } else {
+                pan.last_free_basis = pan.basis;
+                pan.basis = PanBasis::Route;
+                pan.route_camera_dirty = true;
+            }
+            pan.tool = PanTool::Move;
         }
     }
 
-    /// Pan the camera by `steps` Up/Down steps along the active axis
-    /// ([`PAN_STEP_PX`] each). No-op when not panning.
-    pub fn pan_step(&mut self, steps: i32) {
+    /// Toggle Free Vertical ↔ Free Horizontal (Select hold). No-op in Route and Zoom: this gesture
+    /// changes only an already-active Free axis, never the movement family or tool.
+    pub fn toggle_pan_free_axis(&mut self) {
+        if let Some(pan) = self.pan.as_mut() {
+            if pan.tool == PanTool::Zoom || pan.basis == PanBasis::Route {
+                return;
+            }
+            pan.basis = pan.basis.toggled_free();
+            pan.last_free_basis = pan.basis;
+        }
+    }
+
+    /// Apply `steps` from Up/Down to the active pan tool. Zoom uses the normal map's fixed 1.2×
+    /// steps. Free movement travels [`PAN_STEP_PX`] screen pixels. Route movement travels the same
+    /// visual distance converted to ground metres, then defers its one geometry lookup to
+    /// [`sync_pan_route`](Self::sync_pan_route).
+    pub fn pan_step(&mut self, steps: i32, route_total_m: u32) {
         let Some(pan) = self.pan else { return };
-        let (ux, uy) = pan.axis.unit();
-        let d = steps as f32 * PAN_STEP_PX;
-        self.pan_by_pixels(ux * d, uy * d);
+        if pan.tool == PanTool::Zoom {
+            self.zoom_step(steps);
+            return;
+        }
+        if pan.basis == PanBasis::Route {
+            let vp = Viewport::new_rotated(0.0, 0.0, self.cam_lon, self.cam_lat, self.zoom, self.course_rad());
+            let metres_per_step = (vp.meters_per_pixel() * PAN_STEP_PX + 0.5).max(1.0) as i64;
+            let next =
+                (pan.route_progress_m as i64 + steps as i64 * metres_per_step).clamp(0, route_total_m as i64) as u32;
+            if let Some(pan) = self.pan.as_mut() {
+                pan.route_camera_dirty |= next != pan.route_progress_m;
+                pan.route_progress_m = next;
+            }
+            return;
+        }
+        if let Some((ux, uy)) = pan.basis.screen_unit() {
+            let d = steps as f32 * PAN_STEP_PX;
+            self.pan_by_pixels(ux * d, uy * d);
+        }
+    }
+
+    /// Multiply zoom once per signed Up/Down step. Positive (Down) zooms in, matching the normal
+    /// map binding; negative (Up) zooms out.
+    pub(crate) fn zoom_step(&mut self, steps: i32) {
+        let step = if steps >= 0 { ZOOM_STEP } else { 1.0 / ZOOM_STEP };
+        let mut zoom = self.zoom;
+        for _ in 0..steps.unsigned_abs() {
+            zoom *= step;
+        }
+        self.zoom = zoom.clamp(MIN_ZOOM, MAX_ZOOM);
+    }
+
+    /// Resolve a dirty route inspection cursor to its coordinate. Called once at the App's
+    /// pre-draw boundary, where the active [`RouteReader`] exists; gesture handling deliberately
+    /// owns no reader and drawing remains read-only.
+    fn sync_pan_route(&mut self, route: &RouteReader) {
+        let Some(pan) = self.pan else { return };
+        if pan.basis != PanBasis::Route || !pan.route_camera_dirty {
+            return;
+        }
+        let progress_m = pan.route_progress_m.min(route.total_distance_m);
+        let position = route.position_at(progress_m);
+        if let Some(pan) = self.pan.as_mut() {
+            pan.route_progress_m = progress_m;
+            pan.route_camera_dirty = false;
+        }
+        if let Some(position) = position {
+            self.cam_lon = position.lon;
+            self.cam_lat = position.lat;
+        }
     }
 
     /// Shift the camera centre by a screen-space pixel offset, honouring the current
@@ -321,6 +415,12 @@ const RIDING_MPP: f32 = 0.5;
 /// Camera travel **per Up/Down step** in pan mode, in screen pixels — a *screen* amount (not
 /// ground metres), so panning is finer when zoomed in.
 pub const PAN_STEP_PX: f32 = 40.0;
+
+/// Zoom multiplier per Up/Down step, shared by the Follow map and pan mode's Zoom tool.
+pub(crate) const ZOOM_STEP: f32 = 1.2;
+/// Zoom clamps (pixels per microdegree-lat), shared by both map modes.
+pub(crate) const MIN_ZOOM: f32 = 1e-6;
+pub(crate) const MAX_ZOOM: f32 = 1e4;
 
 /// Capacity of [`handle_input`](App::handle_input)'s per-frame gesture buffer. One frame yields at
 /// most one gesture per raw event (the input queue is bounded — `ButtonInput`'s is 8) plus the
@@ -2187,7 +2287,7 @@ impl App {
 
     /// Advance the **map plane's** clock to `clock` and poll each visible screen's timers
     /// ([`Screen::tick_timers`]) in one pass: any time-driven repaint that fired (the Statistics
-    /// cursor's spring-back, the Home clock's minute rollover) dirties the map — so a screen
+    /// page flip, the Home clock's minute rollover) dirties the map — so a screen
     /// surfaces its own timed-refresh rather than the host re-rendering on a blind heartbeat — and
     /// the soonest residual deadline is stored for [`ms_until_next_wake`](App::ms_until_next_wake).
     /// Cheap: a clock comparison per drawn screen, over the same `base..` range
@@ -2407,6 +2507,12 @@ impl App {
         // Record the panel size for the screen ticks' region reporting (`advance_animations`) —
         // the one place every host states its real frame dimensions.
         self.ui.frame_size = (w as i16, h as i16);
+        // Route-relative pan steps are recorded by gesture handling as a cumulative-distance
+        // cursor because `Ctx` deliberately owns no streamed reader. Resolve that cursor here,
+        // once per dirty step, before `Render` borrows state read-only for the draw pass.
+        if let Some(route) = route {
+            self.state.sync_pan_route(route);
+        }
         // Drain the one-shot region clip (see `set_render_clip`) — `None` on every normal frame.
         let render_clip = self.ui.render_clip.take();
 
@@ -4405,6 +4511,29 @@ mod tests {
     fn grimsel_index() -> RouteIndex {
         let src = SliceSource(GRIMSEL);
         RouteIndex::read(&src).unwrap()
+    }
+
+    /// Route-relative Inspect keeps a distance cursor in the input path, then resolves it to the
+    /// streamed route exactly once at the pre-draw seam. That makes Up/Down follow real bends
+    /// without giving gesture handling ownership of route I/O.
+    #[test]
+    fn pan_route_cursor_syncs_camera_to_route_geometry() {
+        let idx = grimsel_index();
+        let src = SliceSource(GRIMSEL);
+        let route = RouteReader::new(&idx, &src);
+        let mut state = AppState::new(0, 0, 1.0);
+        state.enter_pan(true, 1_000);
+
+        let start = route.position_at(1_000).unwrap();
+        state.sync_pan_route(&route);
+        assert_eq!((state.cam_lon, state.cam_lat), (start.lon, start.lat), "entry centres the route cursor");
+
+        state.pan_step(1, route.total_distance_m);
+        let ahead_m = state.pan.unwrap().route_progress_m;
+        assert!(ahead_m > 1_000, "a positive step advances cumulative route distance");
+        let ahead = route.position_at(ahead_m).unwrap();
+        state.sync_pan_route(&route);
+        assert_eq!((state.cam_lon, state.cam_lat), (ahead.lon, ahead.lat), "the camera lands on the curved route");
     }
 
     fn tick_without_fix(app: &mut App, route: Option<&RouteReader>) {

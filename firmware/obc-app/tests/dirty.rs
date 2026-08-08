@@ -105,7 +105,7 @@ fn fixes_do_not_redraw_the_home_screensaver() {
     }
 }
 
-// --- the Statistics spring-back is a timed, observable map dirty -------------
+// --- Statistics Inspect is persistent and redraws only on explicit input -----
 
 /// One minimal route summary so the Route menu has something to load.
 fn one_route() -> RouteSummary {
@@ -116,9 +116,9 @@ fn one_route() -> RouteSummary {
 }
 
 #[test]
-fn statistics_spring_back_is_wired_into_the_dirty_signal() {
-    // Navigate to Statistics, then prove the cursor's timed spring-back surfaces as a map-dirty
-    // through `handle_input`'s timer-poll sweep — with no input and no fix in between.
+fn statistics_inspect_has_no_automatic_snap_back_dirty_edge() {
+    // Navigate to Statistics, enter profile Inspect with a step, then prove it remains quiet and
+    // persistent until an explicit Back resets it.
     let mut app = App::new_idle(AppState::new(0, 0, 0.05)); // [Home]
     app.set_routes(&[one_route()]);
 
@@ -128,17 +128,18 @@ fn statistics_spring_back_is_wired_into_the_dirty_signal() {
     let _ = frame(&mut app, &mut NoFix, 15, &tap(Button::Select)); // START RIDE → Map
     let _ = frame(&mut app, &mut NoFix, 20, &tap(Button::Back)); // Map `back` → Statistics
 
-    // Scrub the cursor (a Step on Statistics) → that frame is dirty (the scrub moved it)…
+    // Scrub the cursor (a Step on Statistics) → that frame is dirty (the scrub moved it and entered
+    // Inspect/Pan)…
     assert!(frame(&mut app, &mut NoFix, 30, &[step(1)]).map, "the scrub itself dirties the map");
-    // …then idle frames inside the spring-back window are quiet — the frozen cursor draws the
-    // same thing, so the map must not re-render.
+    // …then idle frames remain quiet indefinitely — no old four-second spring-back may redraw or
+    // throw away the chosen point.
     assert_eq!(idle_frame(&mut app, 100), Dirty::CLEAN, "frozen cursor → no idle redraw");
-    assert_eq!(idle_frame(&mut app, 2_000), Dirty::CLEAN, "still frozen mid-window");
-    // …and at the 4 s idle deadline the cursor springs back to live: a redraw driven purely by
-    // the timer, with no input and no fix.
-    assert!(idle_frame(&mut app, 30 + 4_000).map, "the spring-back dirties the map at the deadline");
-    // One-shot: the frame after is quiet again.
-    assert_eq!(idle_frame(&mut app, 30 + 4_100), Dirty::CLEAN, "spring-back fires only once");
+    assert_eq!(idle_frame(&mut app, 30 + 4_000), Dirty::CLEAN, "the old spring-back deadline is gone");
+    assert_eq!(idle_frame(&mut app, 60_000), Dirty::CLEAN, "Inspect remains explicit even much later");
+
+    // Back is the one reset edge; its gesture dirties the Statistics frame, then Follow is quiet.
+    assert!(frame(&mut app, &mut NoFix, 60_010, &tap(Button::Back)).map, "Back resets Inspect visibly");
+    assert_eq!(idle_frame(&mut app, 60_100), Dirty::CLEAN, "the reset adds no follow-up timer redraw");
 }
 
 // --- the battery gauge: slow polling + redraw only on an actual change -------
