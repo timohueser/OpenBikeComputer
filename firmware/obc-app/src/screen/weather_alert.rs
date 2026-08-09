@@ -77,8 +77,8 @@ impl WeatherAlertScreen {
         };
         title_frame(cv, w, h, rx.t(title), "");
 
-        card_triangle(cv, Point::new(w / 2, 82), 22);
-        let after = wrapped(cv, rx.t(body), w / 2, 122, w - 48, Font::Body, INK);
+        card_triangle(cv, Point::new(w / 2, 78), 20);
+        let after = wrapped(cv, rx.t(body), w / 2, 116, w - 44, Font::Label, INK);
 
         // The timing line: minutes-to-impact in the big Display face (`IN 28 MIN`), or the
         // localized NOW for an alert already on the rider.
@@ -88,7 +88,7 @@ impl WeatherAlertScreen {
         } else {
             let _ = write!(timing, "{} {} {}", rx.t(Msg::WeatherIn), self.minutes, rx.t(Msg::WeatherMin));
         }
-        cv.text(&timing, Point::new(w / 2, after + 14), Font::Display, TextAlign::Center, INK);
+        cv.text(&timing, Point::new(w / 2, after + 10), Font::Display, TextAlign::Center, INK);
 
         let items =
             [MenuItem { label: rx.t(Msg::WeatherViewRainMap), guard: false }, MenuItem { label: rx.t(Msg::WeatherDismiss), guard: false }];

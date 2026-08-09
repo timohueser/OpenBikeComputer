@@ -190,7 +190,7 @@ fn draw_row(
     };
     wind_arrow(cv, Point::new(182, mid), 8, record.wind_from_deg, color);
     let speed = match rx.settings.units {
-        Units::Metric => (record.wind_speed_deci_ms as u32 * 36 + 500) / 1_000, // deci-m/s → km/h
+        Units::Metric => (record.wind_speed_deci_ms as u32 * 36 + 50) / 100, // deci-m/s → km/h
         Units::Imperial => (record.wind_speed_deci_ms as u32 * 2_237 + 5_000) / 10_000, // → mph
     };
     let mut wind: heapless::String<8> = heapless::String::new();

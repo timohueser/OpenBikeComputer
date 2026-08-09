@@ -113,7 +113,7 @@ impl WeatherRainMapScreen {
                 if index == current {
                     let _ = write!(label, "{hh:02}:{mm:02} {}", rx.t(Msg::WeatherNow));
                 } else {
-                    let ahead_min = (frame.valid_at - now).max(0) / 60;
+                    let ahead_min = ((frame.valid_at - now).max(0) + 59) / 60;
                     let _ = write!(label, "{hh:02}:{mm:02} +{ahead_min}");
                 }
                 draw_halo_label(cv, w, &label);
@@ -158,7 +158,7 @@ fn draw_banner(cv: &mut impl Surface, w: i32, h: i32, text: &str, sub: Option<&s
     use palette::*;
     // Measure the wrapped line count first (dry run against a no-op surface is overkill — the
     // greedy wrap is deterministic, so estimate from the same cell math `wrapped` uses).
-    let budget_px = w - 56;
+    let budget_px = w - 44;
     let cell = Font::Label.char_width() as i32;
     let per_line = (budget_px / cell).max(1) as usize;
     let mut lines = 0usize;
@@ -177,7 +177,7 @@ fn draw_banner(cv: &mut impl Surface, w: i32, h: i32, text: &str, sub: Option<&s
     let body_h = lines as i32 * line_h + sub.map_or(0, |_| line_h + 2);
     let ph = body_h + 20;
     let py = h - ph - 12;
-    let pw = w - 32;
+    let pw = w - 24;
     let px = (w - pw) / 2;
     cv.round(obc_render::rect(px, py, pw, ph), 9, PARCHMENT);
     cv.round_outline(obc_render::rect(px, py, pw, ph), 9, WARNING);
