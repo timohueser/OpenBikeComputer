@@ -32,8 +32,25 @@ impl<'a, S: ByteSource + ?Sized> RainOverlayAdapter<'a, S> {
     /// bounds and the frame's cell dimensions, so the renderer's fixed-point sampler and
     /// `obc-weather`'s own `cell_index` name the same provider cell for the same coordinate.
     pub fn current(reader: &'a WeatherReader<'a, S>, cache: &'a mut WeatherCache, now_unix: i64) -> Option<Self> {
-        let (frame_index, frame) = reader.current_frame(now_unix, cache).ok().flatten()?;
+        Self::at_step(reader, cache, now_unix, 0)
+    }
+
+    /// The adapter for the `step`-th **future** frame past the one current at `now_unix` — the
+    /// rain map's time-step navigation (WX11). `step == 0` is exactly [`current`](Self::current);
+    /// a step past the table clamps to the last frame (the timeline's end is an end). Forecast
+    /// frames carry their real future timestamps, so stepping forward is not a freshness
+    /// violation — but the *anchor* stays the freshness-gated current frame: with nothing current
+    /// there is nothing to step from, and no adapter exists at any step.
+    pub fn at_step(
+        reader: &'a WeatherReader<'a, S>,
+        cache: &'a mut WeatherCache,
+        now_unix: i64,
+        step: u8,
+    ) -> Option<Self> {
+        let (current_index, current) = reader.current_frame(now_unix, cache).ok().flatten()?;
         let header = reader.header();
+        let frame_index = (current_index + step as usize).min(header.frame_count.saturating_sub(1) as usize);
+        let frame = if frame_index == current_index { current } else { reader.frame(frame_index).ok()? };
         Some(Self {
             reader,
             cache,

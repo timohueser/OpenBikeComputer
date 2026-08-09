@@ -79,7 +79,17 @@ fn render(app: &mut App, map: &[u8], rain: Option<&mut dyn RainOverlaySource>) -
     let reader = Reader::new(&src, &tables, &cache);
     let mut buf = Buf::new(120, 120);
     let mut scratch = Box::new(obc_render::RenderScratch::new());
-    app.render_frame_with_rain(Some(&mut scratch), &mut buf, &reader, None, rain, 120.0, 120.0, rgb888);
+    app.render_frame_with_rain(
+        Some(&mut scratch),
+        &mut buf,
+        &reader,
+        None,
+        rain,
+        obc_app::WeatherFeed::NONE,
+        120.0,
+        120.0,
+        rgb888,
+    );
     buf
 }
 

@@ -10,11 +10,15 @@ use obc_render::Surface;
 use crate::input::Gesture;
 use crate::Msg;
 
-use super::menu::{CompassDial, CompassIcons, N_ITEMS};
+use super::menu::{CompassDial, CompassIcons};
 use super::{
     Ctx, DetourScreen, MenuScreen, PoiMenuScreen, Render, RouteMenuScreen, Screen, ScreenTick, Transition,
     UpAheadScreen,
 };
+
+/// The fixed five-station ride-menu ring (epic #789's locked count — independent of the main
+/// menu's, which grew a Weather station in WX11; the shared dial takes the count per call).
+const N_ITEMS: usize = 5;
 
 /// The fixed ride-menu ring. The selected station always starts at Up ahead (north); keeping all
 /// five entries present on route-less rides preserves the dial geometry and muscle memory.
@@ -30,7 +34,7 @@ impl RideMenuScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Step(n) => self.dial.step(n),
+            Gesture::Step(n) => self.dial.step(n, N_ITEMS),
             Gesture::Press => match self.dial.selected() {
                 // The timeline anchors its corridor snapshot on live progress **at entry**, takes
                 // the rider's source scope from Ride settings at the same moment (U4), and homes

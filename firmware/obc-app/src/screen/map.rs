@@ -451,7 +451,7 @@ fn draw_waypoint_diamonds(cv: &mut impl Surface, vp: &Viewport, wpts: &[WptEntry
 /// Route/Free family and Select-hold changes only an active Free axis. Select-hold is inert in Zoom;
 /// Back-hold switches family and lands in Move. `back` exits to Follow. The holds override the
 /// riding map's normal long-press actions in Inspect.
-fn handle_pan(g: Gesture, cx: &mut Ctx) -> Transition {
+pub(super) fn handle_pan(g: Gesture, cx: &mut Ctx) -> Transition {
     let has_route = cx.activity.active_route.is_some();
     match g {
         Gesture::Step(n) => cx.state.pan_step(n, cx.activity.route_total_m),

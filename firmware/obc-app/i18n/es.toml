@@ -13,6 +13,7 @@ routes = "Rutas"
 rides = "Salidas"
 pois = "POIs"
 map = "Mapa"
+weather = "Tiempo"
 settings = "Ajustes"
 
 # --- El menú brújula en ruta, la lista Próximo y el selector Saltar tramo ---
@@ -181,6 +182,7 @@ ride = "Salida"
 display = "Pantalla"
 connections = "Conexiones"
 power = "Energía"
+weather = "Tiempo"
 system = "Sistema"
 
 # --- Date & Time settings screen ---
@@ -540,3 +542,57 @@ cardtype_what = "Tarjeta pequeña"
 cardtype_fix = "Usa una tarjeta SDHC o SDXC"
 storagefault_what = "Fallo del lector"
 storagefault_fix = "Reinicia el dispositivo"
+
+# --- The Weather surfaces (epic #1185, WX11): dashboard, hourly, rain map, alert ---
+[weather]
+title = "TIEMPO"
+hourly = "POR HORA"
+rain_map = "MAPA LLUVIA"
+updated = "Actualizado"
+updating = "ACTUALIZANDO"
+dry_1 = "SECO POR"
+dry_2 = "2 HORAS"
+rain = "LLUVIA"
+storm = "TORMENTA"
+rain_in = "LLUVIA EN"
+storm_in = "TORMENTA EN"
+now = "AHORA"
+min = "MIN"
+in = "EN"
+update_needed = "ACTUALIZACIÓN NECESARIA"
+hourly_only = "SIN DATOS DE LLUVIA"
+hourly_only_sub = "Solo por hora"
+no_data = "SIN DATOS DEL TIEMPO"
+no_data_sub = "Conecta el teléfono"
+zoom_for_rain = "ACERCA PARA LLUVIA"
+alert_rain = "LLUVIA CERCA"
+alert_storm = "TORMENTA CERCA"
+alert_rain_body = "Lluvia fuerte en la ruta."
+alert_storm_body = "Tormenta en la ruta."
+view_rain_map = "VER MAPA LLUVIA"
+dismiss = "CERRAR"
+
+# --- WeatherRefresh enum labels (Weather settings screen picker) ---
+[weather_refresh]
+off = "No"
+m15 = "15 min"
+m30 = "30 min"
+m60 = "60 min"
+m120 = "120 min"
+
+# --- The Weather settings screen ---
+[weather_settings]
+title = "TIEMPO"
+refresh = "Actualizar"
+refresh_sub = "vía teléfono"
+
+# --- Cardinal/octant letters (the hourly rows' meteorological wind-from labels) ---
+[compass]
+n = "N"
+ne = "NE"
+e = "E"
+se = "SE"
+s = "S"
+sw = "SO"
+w = "O"
+nw = "NO"
