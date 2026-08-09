@@ -331,6 +331,30 @@ pub trait MapScene {
     ) -> DecodeReport;
 }
 
+/// The **rain band boundary** (WX10, epic #1185): styles with `z_index >= RAIN_BELOW_Z` (the road
+/// band and everything above it) paint **over** the precipitation raster; styles below it (the
+/// ground fills) paint under. The renderer inserts rain at this z split; roads above rain is
+/// locked UX.
+///
+/// Skins **do** carry `z_index` (`obcm-assemble` stamps it), so this boundary is a *contract on
+/// the z ladder*, not a fact about skins: the packer schema and every skin keep the band gap
+/// `(16, 24)` empty — ground/water/buildings at `z <= 16`, the road band at `z >= 24` — and no
+/// style may sit inside the gap or cross the boundary when a skin is stamped. Enforced at the
+/// stamp/resolve path (`obcm-assemble`: a resolved skin may not place a style inside the gap, and
+/// a restamp may not move a style across the boundary relative to the image it stamps onto) and
+/// pinned by the presets test over `builder/presets/schema.json` + both shipped skins. Lives here
+/// — the style/z contract crate — so the renderer and the assembler share one authority.
+pub const RAIN_BELOW_Z: i8 = 20;
+
+/// The rain **band gap**: the open z interval `(RAIN_BAND_GAP_LOW, RAIN_BAND_GAP_HIGH)` no style
+/// may occupy — ground fills top out at `RAIN_BAND_GAP_LOW`, the road band starts at
+/// `RAIN_BAND_GAP_HIGH`, and [`RAIN_BELOW_Z`] sits inside the gap. Keeping the gap empty is what
+/// makes the boundary unambiguous for every stamped skin; `obcm-assemble` refuses a skin that
+/// places a style inside it.
+pub const RAIN_BAND_GAP_LOW: i8 = 16;
+pub const RAIN_BAND_GAP_HIGH: i8 = 24;
+const _: () = assert!(RAIN_BAND_GAP_LOW < RAIN_BELOW_Z && RAIN_BELOW_Z <= RAIN_BAND_GAP_HIGH);
+
 /// Meters of ground per degree in the shared local-equirectangular Earth model.
 pub const M_PER_DEG: f64 = 111_320.0;
 

@@ -144,6 +144,11 @@ fn render(schema: &Schema, skin: &Skin) -> Result<Vec<u8>, String> {
         RestampError::IdMismatch { have, want } => {
             format!("Teningen preview fixture style ids {have:?} do not match skin {:?}'s {want:?}", skin.id)
         }
+        RestampError::RainBandMoved { id, from, to } => format!(
+            "skin {:?} moves style {id} across the rain band boundary (z {from} -> {to}) — roads must stay above \
+             precipitation (WX10)",
+            skin.id
+        ),
     })?;
 
     let source = SliceSource(&map);
