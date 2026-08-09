@@ -62,12 +62,46 @@ pub const GEOMETRY: GridGeometry = GridGeometry {
 const NATIVE_COLS: usize = 1_440;
 const NATIVE_ROWS: usize = 721;
 
-/// Retained forward leads in hours. Twelve hourly frames keep at least +2 h of forward coverage
-/// at every wall-clock moment: a run lands ~4 h after its reference and the next run ~10 h after
-/// it, so `10 h + 2 h = 12 h` (the same reasoning as ICON-EU's retention).
-pub const LEADS_H: [u32; 12] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-/// The product must not outlive its own last retained frame.
-pub const STALENESS_SECONDS: i64 = 12 * 3_600;
+/// Retained forward leads in hours, sized so the product never stops offering +2 h of forward
+/// coverage while it is the newest one published. The arithmetic is over the real operational
+/// numbers, not a round guess:
+///
+/// ```text
+/// leads >= run interval + publication delay + poll pickup lag + forward coverage
+///       =      6 h      +       <= 6 h      +    1 h 05 min   +       2 h        = 15.1 h
+/// ```
+///
+/// - **run interval 6 h**: the 00/06/12/18 Z cycles.
+/// - **publication delay**: WX1 measured f003 of the 06 Z run appearing 3 h 32 min after its
+///   reference, and this crate's own fixture capture found the 12 Z run's last retained lead
+///   published just under 5 h after it. Six hours is the *tolerated* worst case, not the typical
+///   one — a run later than that briefly costs the floor its forward window rather than its
+///   existence, because the deadline below moves with the last frame.
+/// - **poll pickup lag**: `ops/weather/adapters.conf` runs this adapter hourly (`*:25`) with
+///   `RandomizedDelaySec=300`, so a run that completes just after a tick waits at most 1 h 05 min
+///   to be picked up. A cadence change there must be re-checked against this constant — the
+///   `retention_covers_two_hours_ahead_until_the_next_run_is_picked_up` test is that check.
+///
+/// Sixteen leads round that 15.1 h up with an hour of slack. Four extra leads over the naive
+/// twelve cost ~1.9 MB of ingress and ~1 MB of published objects per run — noise against WX1's
+/// 15.5 MB/run ceiling and the R2 budget, and cheap insurance for the tier every rideable
+/// coordinate on Earth falls back to.
+pub const LEADS_H: [u32; 16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+/// The product must not outlive its own last retained frame — which, by the sizing above, is also
+/// always later than the worst-case moment its replacement is picked up.
+pub const STALENESS_SECONDS: i64 = 16 * 3_600;
+/// The sizing inputs of [`LEADS_H`], public because they are an operational contract shared with
+/// `ops/weather/adapters.conf`: changing the cadence there without re-checking them here is
+/// exactly the drift the retention test guards against.
+///
+/// The `adapters.conf` pickup lag: an hourly timer plus its 300 s randomized delay.
+pub const POLL_PICKUP_LAG_SECONDS: i64 = 3_600 + 300;
+/// The publication delay a complete run may suffer before the floor loses its forward window.
+pub const TOLERATED_PUBLICATION_DELAY_SECONDS: i64 = 6 * 3_600;
+/// The forward coverage the floor promises whenever it is the newest published run.
+pub const FORWARD_COVERAGE_SECONDS: i64 = 2 * 3_600;
+/// The upstream cycle interval.
+pub const RUN_INTERVAL_SECONDS: i64 = 6 * 3_600;
 /// WX1's enforced ingress ceiling for one run's selected spans.
 pub const MAX_RUN_SPAN_BYTES: u64 = 15_500_000;
 /// One APCP span is 300-700 KB; the cap bounds a single range far below a whole object.
@@ -350,6 +384,34 @@ mod tests {
             let native_row = native_index(0, row).unwrap() / NATIVE_COLS;
             assert!((1..=NATIVE_ROWS - 2).contains(&native_row), "pole row {native_row} must not be published");
         }
+    }
+
+    /// The retention promise, pinned at its worst wall-clock moment: a run that lands 5 h 55 min
+    /// late is not picked up until the following hourly tick plus its randomized delay, and right
+    /// up to that instant the *previous* run must still offer two hours of forward frames — and
+    /// must not have expired underneath them.
+    #[test]
+    fn retention_covers_two_hours_ahead_until_the_next_run_is_picked_up() {
+        let run = 0i64;
+        let next_run = run + RUN_INTERVAL_SECONDS;
+        // The worst tolerated moment the replacement becomes visible to a client.
+        let pickup = next_run + TOLERATED_PUBLICATION_DELAY_SECONDS + POLL_PICKUP_LAG_SECONDS;
+        let last_frame = run + i64::from(*LEADS_H.last().expect("leads are non-empty")) * 3_600;
+        assert!(
+            last_frame >= pickup + FORWARD_COVERAGE_SECONDS,
+            "the last retained frame {last_frame} is inside the +2 h window of the worst-case pickup {pickup}"
+        );
+        // And the product must not expire before its replacement arrives, or the worldwide floor
+        // — the tier with no fallback beneath it — briefly vanishes.
+        assert!(run + STALENESS_SECONDS >= pickup, "the floor expires before its replacement is picked up");
+        // The review's named scenario, spelled out: a run 5 h 55 min late, evaluated one second
+        // before the tick that picks it up.
+        let late_replacement = next_run + 5 * 3_600 + 55 * 60;
+        let evaluated_at = late_replacement + POLL_PICKUP_LAG_SECONDS - 1;
+        assert!(last_frame >= evaluated_at + FORWARD_COVERAGE_SECONDS);
+        assert!(run + STALENESS_SECONDS > evaluated_at);
+        // Leads are the consecutive hours the de-accumulation walk requires.
+        assert!(LEADS_H.windows(2).all(|pair| pair[1] == pair[0] + 1) && LEADS_H[0] == 1);
     }
 
     #[test]

@@ -113,7 +113,9 @@ fn decode_field_inner(bytes: &[u8], expected: &ExpectedGrib) -> Result<DecodedFi
     if bytes.is_empty() || bytes.len() as u64 > MAX_DECOMPRESSED_BYTES {
         return Err("decompressed GRIB size is outside the WX1 limits".into());
     }
-    let context = grib::from_reader(Cursor::new(bytes.to_vec())).map_err(|error| format!("GRIB parse: {error}"))?;
+    // Borrow the caller's bytes rather than copying them: the MRMS body is ~100 MB decompressed,
+    // and a `to_vec()` here would double the transient on the largest decode the baker runs.
+    let context = grib::from_reader(Cursor::new(bytes)).map_err(|error| format!("GRIB parse: {error}"))?;
     let mut decoded: Option<DecodedField> = None;
     let mut messages = 0usize;
     for (_, submessage) in context.iter() {

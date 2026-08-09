@@ -10,7 +10,7 @@ one was used, the length and the SHA-256 of the checked-in bytes. Terms are DWD 
 data, no endorsement implied) for the NOAA ones; the license record lives in
 [`docs/decisions/WX1-weather-source-contracts.md`](../../../../docs/decisions/WX1-weather-source-contracts.md).
 
-Total checked-in fixture bytes: 14,902,481.
+Total checked-in fixture bytes: 16,939,558.
 
 ## DWD RV composite
 
@@ -77,7 +77,7 @@ Upstream object lengths (the `Content-Length` the range arithmetic is bounded by
 
 ## NOAA GFS APCP (worldwide floor)
 
-The 2026-08-09 12Z run's first twelve hourly indexes and the exact `APCP:surface:0-N hour acc
+The 2026-08-09 12Z run's first sixteen hourly indexes and the exact `APCP:surface:0-N hour acc
 fcst` spans. Objects are
 `https://noaa-gfs-bdp-pds.s3.amazonaws.com/gfs.20260809/12/atmos/gfs.t12z.pgrb2.0p25.fFFF`
 (`.idx` for the indexes), retrieved 2026-08-09 17:05-17:20 UTC. Each object is ~540 MB and is
@@ -86,7 +86,8 @@ both copies must decode identically); leads 7-12 resolve to a single message.
 
 Upstream object lengths: f001 537,540,348, f002 538,822,727, f003 539,798,514, f004 540,724,755,
 f005 542,923,155, f006 544,451,780, f007 542,096,820, f008 543,890,390, f009 543,734,730,
-f010 544,255,893, f011 544,322,108, f012 545,133,960. The twelve selected spans total 6,415,845
+f010 544,255,893, f011 544,322,108, f012 545,133,960, f013 541,397,261, f014 541,818,663,
+f015 542,144,204, f016 546,445,777. The sixteen selected spans total 8,287,888
 bytes, inside WX1's 15,500,000-byte per-run ceiling.
 
 - `gfs-global-20260809T12-f001.idx` — 40,472 bytes, sha256 `ec6d58b4e473899badbe152fce6cebe5bdc2858113b2b1ad80d598804b91a1b7`.
@@ -101,6 +102,10 @@ bytes, inside WX1's 15,500,000-byte per-run ceiling.
 - `gfs-global-20260809T12-f010.idx` — 41,218 bytes, sha256 `81e7acf2c1d99aad758adec34d8cfd2fc4269b78d4710992e8cc20b9b9c610ee`.
 - `gfs-global-20260809T12-f011.idx` — 41,219 bytes, sha256 `af4887e80af1d7c49047a7fdb70c8237eabe3cc4cf9ea5397df2871372d775f0`.
 - `gfs-global-20260809T12-f012.idx` — 41,219 bytes, sha256 `dbed2d57a68d07d9316db2408ea3458ef93a27466df51e6e9110752deb6c3747`.
+- `gfs-global-20260809T12-f013.idx` — 41,258 bytes, sha256 `d6a5b821cfd9310b4a3a4cbf493bd992f1bee1e97a6cd43b122fcde0d83f954e`.
+- `gfs-global-20260809T12-f014.idx` — 41,257 bytes, sha256 `27227747a769aec0bfa8e4da4edd61ebce5f4c93acb5b988e8c4e139a2825754`.
+- `gfs-global-20260809T12-f015.idx` — 41,259 bytes, sha256 `df11f12232a448d766e417446380075f55dc483a565c709cf54455c4c3d6aa4b`.
+- `gfs-global-20260809T12-f016.idx` — 41,260 bytes, sha256 `753a98a61cd672e375152abf50359e100ed0b5a7a0088bbb710fcea49098bd9f`.
 
 - `gfs-global-20260809T12-apcp-f001.grib2` — 488,920 bytes, bytes `427603385-428092304` of that object, sha256 `35fce3acac40fd09b314f7fe6210c33cb8541c54e736189e45a10a39dd454ebb`.
 - `gfs-global-20260809T12-apcp-f002.grib2` — 587,546 bytes, bytes `428091880-428679425` of that object, sha256 `aba63ddc21e014b083aad91a87eaa532a4c85ad1022d5d8e43808bffb237df05`.
@@ -114,6 +119,10 @@ bytes, inside WX1's 15,500,000-byte per-run ceiling.
 - `gfs-global-20260809T12-apcp-f010.grib2` — 426,897 bytes, bytes `432328102-432754998` of that object, sha256 `420707baa4f956e9271bb22fc3d702206d86572377a47668d8b43989f2d46927`.
 - `gfs-global-20260809T12-apcp-f011.grib2` — 436,221 bytes, bytes `431989179-432425399` of that object, sha256 `5b6f2f1c50b0f5e4881687e7e386cc5087bee40852c1cfcb168ea368f0b1c894`.
 - `gfs-global-20260809T12-apcp-f012.grib2` — 448,745 bytes, bytes `432276114-432724858` of that object, sha256 `821310bd859a37fadaa9ba8c62474101591d9c3fbb64af00575d9d705eef1472`.
+- `gfs-global-20260809T12-apcp-f013.grib2` — 457,103 bytes, bytes `431060039-431517141` of that object, sha256 `b3141a045fc4435ff478bad6870d5f6a89f8c79c1464bee7f79f570e7204df74`.
+- `gfs-global-20260809T12-apcp-f014.grib2` — 464,512 bytes, bytes `430713865-431178376` of that object, sha256 `02d1f90586bde0915faba346ed56dd1cf604864090e1a2ed57e3da8ac18bc1c6`.
+- `gfs-global-20260809T12-apcp-f015.grib2` — 471,616 bytes, bytes `430643461-431115076` of that object, sha256 `d8f6b8684ed74a24ef42c7271c16409f3fa33894ad15c2d361363cc9a7745aff`.
+- `gfs-global-20260809T12-apcp-f016.grib2` — 478,812 bytes, bytes `433214890-433693701` of that object, sha256 `2acff7f2ceea49f019d3228315555da7a156c7fdf70b96839c81897cdf63abe1`.
 
 Corrupt-upstream negatives are derived in-test by truncating/flipping/splicing these bytes; no
 corrupt fixture is checked in.
