@@ -48,8 +48,14 @@ impl WeatherRainMapScreen {
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         // Inspect/pan is a sub-mode exactly as on the Map: while the shared camera holds a pan,
         // Select/Back drive panning (move/zoom) and Back-tap returns to the rain map's bindings.
+        // One rain-map difference: every pan gesture ends with the zoom-out clamp, so an Inspect
+        // zoom step can never leave the active product's regime (owner tuning round 2 — the
+        // rider zooms out to the product's edge and simply stops there, clamp per product's
+        // cell density via `rain_min_zoom`).
         if cx.state.pan.is_some() {
-            return handle_pan(g, cx);
+            let t = handle_pan(g, cx);
+            cx.state.clamp_rain_zoom();
+            return t;
         }
         match g {
             // Time-step through the forecast frames: clamped to the frames that actually exist
@@ -136,6 +142,12 @@ impl WeatherRainMapScreen {
                 None => draw_banner(cv, w, h, rx.t(Msg::WeatherNoData), Some(rx.t(Msg::WeatherNoDataSub))),
             }
         } else if rx.stats.rain_out_of_regime {
+            // DEFENSIVE FALLBACK ONLY (owner tuning round 2): the zoom-out clamp
+            // (`AppState::clamp_rain_zoom`, applied on entry and after every Inspect zoom step)
+            // keeps this screen inside the product's regime, so this banner should be
+            // unreachable. It stays because the honesty law is absolute — if a regime miss ever
+            // slips through (a host that skipped the floor feed, a product/frame edge case),
+            // the frame must still declare itself rather than pass as dry.
             draw_banner(cv, w, h, rx.t(Msg::WeatherZoomForRain), None);
         }
     }

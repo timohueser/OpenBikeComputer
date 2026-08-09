@@ -71,6 +71,12 @@ pub struct WeatherSnapshot {
     /// The bundle carried more frames than [`SNAPSHOT_MAX_FRAMES`]; coverage past the last kept
     /// frame is unknown and the outlook refuses the dry claim there.
     pub frames_truncated: bool,
+    /// The rain product's grid at its **densest** frame (the OBCW header bbox with the maximum
+    /// cell dimensions across the whole table), or `None` for a frameless bundle — what the rain
+    /// map's zoom clamp derives its floor from ([`rain_zoom_floor`](Self::rain_zoom_floor)).
+    /// Densest-frame dims make the clamp the strictest any frame needs, so time-stepping between
+    /// frames of different resolutions can never step out of regime.
+    pub rain_grid: Option<obc_render::RainGrid>,
 }
 
 impl WeatherSnapshot {
@@ -104,8 +110,10 @@ impl WeatherSnapshot {
         let mut frame_cap_s = FRAME_CURRENT_CAP_S;
         let mut previous: Option<i64> = None;
         let mut pos_in_grid = false;
+        let mut max_cells = (0u16, 0u16);
         for index in 0..frame_count {
             let frame = reader.frame(index)?;
+            max_cells = (max_cells.0.max(frame.width), max_cells.1.max(frame.height));
             if let Some(prior) = previous {
                 // Validated strictly increasing, so every spacing is positive. The cap must scan
                 // the *whole* table (not just the kept prefix) to stay the reader's exact rule.
@@ -130,6 +138,14 @@ impl WeatherSnapshot {
             let _ = frames.push(FrameSample { valid_at: frame.valid_at, intensity });
         }
 
+        let rain_grid = (frame_count > 0).then_some(obc_render::RainGrid {
+            west_udeg: header.west_lon_udeg,
+            south_udeg: header.south_lat_udeg,
+            east_udeg: header.east_lon_udeg,
+            north_udeg: header.north_lat_udeg,
+            width_cells: max_cells.0,
+            height_cells: max_cells.1,
+        });
         Ok(Self {
             generated_at: header.generated_at,
             valid_from: header.valid_from,
@@ -140,6 +156,7 @@ impl WeatherSnapshot {
             sampled_at: pos,
             pos_in_grid,
             frames_truncated: frame_count > SNAPSHOT_MAX_FRAMES,
+            rain_grid,
         })
     }
 
@@ -187,6 +204,15 @@ impl WeatherSnapshot {
             None => capped,
         };
         end.min(self.valid_until)
+    }
+
+    /// The rain map's zoom-out floor at the camera latitude — the smallest zoom at which the
+    /// product still renders ([`obc_render::rain_min_zoom`] over [`rain_grid`](Self::rain_grid)),
+    /// or `None` with no rain product (the clamp then stays disengaged). Hosts feed it into
+    /// [`AppState::rain_zoom_min`](crate::AppState) alongside the snapshot.
+    pub fn rain_zoom_floor(&self, cam_lat_udeg: i32) -> Option<f32> {
+        let grid = self.rain_grid.as_ref()?;
+        obc_render::rain_min_zoom(grid, obc_map_scene::cos_lat(cam_lat_udeg))
     }
 
     /// The sampled intensity governing instant `t`, or `None` when no frame's honest window

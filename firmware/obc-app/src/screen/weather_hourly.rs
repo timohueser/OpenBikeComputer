@@ -25,13 +25,26 @@ use super::weather_dash::hourly_icon;
 use super::{empty_state, list, palette, stroke2, title_frame, Ctx, Render, Transition, LIST_TOP};
 
 use obc_formats::obcw::{
-    HOURLY_COUNT, HOURLY_INTERVAL_SECONDS, PRECIP_UNAVAILABLE, TEMP_UNAVAILABLE, WIND_DIRECTION_UNAVAILABLE,
-    WIND_SPEED_UNAVAILABLE,
+    HOURLY_COUNT, HOURLY_INTERVAL_SECONDS, PRECIP_UNAVAILABLE, WIND_DIRECTION_UNAVAILABLE, WIND_SPEED_UNAVAILABLE,
 };
 
-/// Nominal row pitch; `filling_below_title` folds the leftover back in so the last row lands
-/// flush (8 rows on the 320-px panel).
-const ROW_H: i32 = 34;
+/// Nominal row pitch — doubled from the round-one 34 (owner tuning round: the crammed rows were
+/// the complaint); four rows fill the 320-px panel, with the leftover folded back into the pitch
+/// so the last row lands flush.
+const ROW_H: i32 = 64;
+
+/// Fixed column geometry, left to right. Every box is bounded at its widest legal content, so no
+/// two columns can collide at any string width in any catalog language: the time is two digits,
+/// the icon 24 px, the temperature is clamped to `-99°` (4 cells of Display), the precipitation
+/// to `99+mm` (5 cells of Label), and the wind text to octant (≤ 2 cells in every language:
+/// N/NE/... , de N/O/SO/... , fr/es N/SO/O/...) + space + speed ≤ 2 digits = 5 Label cells,
+/// right-anchored at [`WIND_TEXT_X`] so it can never reach back past [`WIND_ARROW_CX`]'s box.
+const TIME_X: i32 = 14;
+const ICON_CX: i32 = 62;
+const TEMP_X: i32 = 84;
+const PRECIP_X: i32 = 84;
+const WIND_ARROW_CX: i32 = 150;
+const WIND_TEXT_X: i32 = 228;
 
 /// The eight compass-octant catalog keys, clockwise from north — indexed by
 /// [`wind_octant`](crate::weather::wind_octant).
@@ -115,13 +128,16 @@ impl WeatherHourlyScreen {
     }
 }
 
-/// One hourly row, columns left to right: local hour, icon, temperature, precipitation amount,
-/// wind (arrow + from-octant + speed). Even spacing, no separators (locked); every column
-/// degrades to `--` on its wire sentinel rather than inventing a value.
+/// One hourly row — two visual lines in a double-height slot (owner tuning round). Left to
+/// right: the local hour and the WX17 icon in their own columns, then a stacked temperature
+/// (Display, line 1) over the precipitation amount (Label, line 2), then the wind cluster —
+/// the direction arrow in its own fixed box, the from-octant + speed right-anchored beside it.
+/// Even spacing, no separators (locked); every column degrades to `--` on its wire sentinel
+/// rather than inventing a value.
 fn draw_row(
     cv: &mut impl Surface,
     rx: &Render,
-    w: i32,
+    _w: i32,
     y: i32,
     row_h: i32,
     valid_at: i64,
@@ -130,56 +146,59 @@ fn draw_row(
     use palette::*;
     let mid = y + row_h / 2;
     let offset = rx.settings.utc_offset_min;
+    // The two text baselines of the stacked columns: Display cap 26 on top, Label cap 18 below,
+    // the pair centred in the row.
+    let line1 = y + (row_h - 50) / 2;
+    let line2 = line1 + 32;
 
-    // Local hour, two digits.
+    // Local hour, two digits, its own quiet column.
     let (hh, _) = local_hour_minute(valid_at, offset);
     let mut time: heapless::String<4> = heapless::String::new();
     let _ = write!(time, "{hh:02}");
-    cv.text_vcentered(&time, 14, (y, row_h), Font::Label, TextAlign::Left, SUBTEXT);
+    cv.text_vcentered(&time, TIME_X, (y, row_h), Font::Label, TextAlign::Left, SUBTEXT);
 
-    // The WX17 icon, unchanged masters at hourly scale.
+    // The WX17 icon, unchanged masters at hourly scale, centred in its column.
     let icon = hourly_icon(record.condition, valid_at, offset);
     super::weather_icons::draw(
         cv,
         icon,
-        54,
+        ICON_CX,
         y + (row_h - super::weather_icons::MASTER_EDGE) / 2,
         super::weather_icons::HOURLY_SCALE,
         super::weather_icons::WeatherIconTheme::Parchment,
     );
 
-    // Temperature, right-aligned; clamped to two digits so the longest value never collides.
-    let mut temp: heapless::String<8> = heapless::String::new();
-    if record.temperature_deci_c == TEMP_UNAVAILABLE {
-        let _ = temp.push_str("--");
-    } else {
-        let deg = ((record.temperature_deci_c as i32) + if record.temperature_deci_c >= 0 { 5 } else { -5 }) / 10;
-        let _ = write!(temp, "{}°", deg.clamp(-99, 99));
-    }
-    cv.text_vcentered(&temp, 124, (y, row_h), Font::Body, TextAlign::Right, INK);
+    // Temperature — the row's glanceable number, Display tier on the top line (clamped to two
+    // digits, so its box is bounded at 4 cells).
+    match super::weather_dash::fmt_temp(record.temperature_deci_c) {
+        Some(temp) => cv.text(&temp, Point::new(TEMP_X, line1), Font::Display, TextAlign::Left, INK),
+        None => cv.text("--", Point::new(TEMP_X, line1), Font::Display, TextAlign::Left, SUBTEXT),
+    };
 
-    // Precipitation over the hour, in mm tenths ("0.4"); dry hours mute to olive so wet hours
-    // pop; the unavailable sentinel is an honest `--`.
+    // Precipitation over the hour, `N.Nmm`, on the second line; dry hours mute to olive so wet
+    // hours pop; the unavailable sentinel is an honest `--`.
     let mut precip: heapless::String<8> = heapless::String::new();
     let precip_color = if record.precipitation_tenth_mm == PRECIP_UNAVAILABLE {
         let _ = precip.push_str("--");
         SUBTEXT
     } else if record.precipitation_tenth_mm == 0 {
-        let _ = precip.push_str("0.0");
+        let _ = precip.push_str("0.0mm");
         SUBTEXT
     } else if record.precipitation_tenth_mm >= 990 {
-        let _ = precip.push_str("99+");
+        let _ = precip.push_str("99+mm");
         INK
     } else {
-        let _ = write!(precip, "{}.{}", record.precipitation_tenth_mm / 10, record.precipitation_tenth_mm % 10);
+        let _ = write!(precip, "{}.{}mm", record.precipitation_tenth_mm / 10, record.precipitation_tenth_mm % 10);
         INK
     };
-    cv.text_vcentered(&precip, 172, (y, row_h), Font::Label, TextAlign::Right, precip_color);
+    cv.text(&precip, Point::new(PRECIP_X, line2), Font::Label, TextAlign::Left, precip_color);
 
-    // Wind: arrow in the *to*-direction (route-relative color when WX12 supplies the travel
-    // direction; neutral ink until then), then the meteorological from-octant + speed.
+    // Wind: the arrow in its own fixed box (the *to*-direction on a north-up rose;
+    // route-relative color when WX12 supplies the travel direction, neutral ink until then),
+    // then the meteorological from-octant + speed right-anchored clear of it. The text is
+    // bounded at 5 Label cells (see the column-geometry note), so the two can never touch.
     if record.wind_from_deg == WIND_DIRECTION_UNAVAILABLE || record.wind_speed_deci_ms == WIND_SPEED_UNAVAILABLE {
-        cv.text_vcentered("--", w - 10, (y, row_h), Font::Label, TextAlign::Right, SUBTEXT);
+        cv.text_vcentered("--", WIND_TEXT_X, (y, row_h), Font::Label, TextAlign::Right, SUBTEXT);
         return;
     }
     let color = match wind_class(record.wind_from_deg, None) {
@@ -188,14 +207,14 @@ fn draw_row(
         Some(WindClass::Head) => RED,
         None => INK,
     };
-    wind_arrow(cv, Point::new(182, mid), 8, record.wind_from_deg, color);
+    wind_arrow(cv, Point::new(WIND_ARROW_CX, mid), 9, record.wind_from_deg, color);
     let speed = match rx.settings.units {
         Units::Metric => (record.wind_speed_deci_ms as u32 * 36 + 50) / 100, // deci-m/s → km/h
         Units::Imperial => (record.wind_speed_deci_ms as u32 * 2_237 + 5_000) / 10_000, // → mph
     };
     let mut wind: heapless::String<8> = heapless::String::new();
-    let _ = write!(wind, "{}{}", rx.t(OCTANTS[wind_octant(record.wind_from_deg)]), speed.min(99));
-    cv.text_vcentered(&wind, w - 10, (y, row_h), Font::Label, TextAlign::Right, INK);
+    let _ = write!(wind, "{} {}", rx.t(OCTANTS[wind_octant(record.wind_from_deg)]), speed.min(99));
+    cv.text_vcentered(&wind, WIND_TEXT_X, (y, row_h), Font::Label, TextAlign::Right, INK);
 }
 
 /// A small full arrow (shaft + barbs) pointing in the wind's *to*-direction on a north-up rose —

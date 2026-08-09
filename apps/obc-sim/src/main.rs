@@ -1528,6 +1528,7 @@ fn main() {
         if let Some(snap) = &wx_snapshot {
             app.state.rain_steps_ahead = snap.steps_ahead(app.wall_unix_now() as i64);
             app.state.rain_step = app.state.rain_step.min(app.state.rain_steps_ahead);
+            app.state.rain_zoom_min = snap.rain_zoom_floor(app.state.cam_lat).unwrap_or(0.0);
         }
         let rain_step = app.state.rain_step;
         let refreshing = args.weather_refreshing;

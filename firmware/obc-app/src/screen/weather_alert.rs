@@ -57,8 +57,10 @@ impl WeatherAlertScreen {
             Gesture::Press => match self.selected {
                 0 => {
                     // VIEW RAIN MAP replaces the card, so Back from the map returns to whatever
-                    // the rider was doing — the alert is answered, not parked underneath.
+                    // the rider was doing — the alert is answered, not parked underneath. Entry
+                    // is at the current frame and inside the product's zoom regime.
                     cx.state.rain_step = 0;
+                    cx.state.clamp_rain_zoom();
                     Transition::Replace(Screen::WeatherRainMap(WeatherRainMapScreen::new()))
                 }
                 _ => Transition::Pop, // DISMISS
