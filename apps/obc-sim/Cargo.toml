@@ -11,6 +11,9 @@ obc-reader = { path = "../../firmware/obc-reader" }
 # (the headless one-shot planner builds its own scratch; the stepped NavPlan lives in obc-host-core).
 obc-route = { path = "../../firmware/obc-route", features = ["alloc"] }
 obc-formats = { path = "../../firmware/obc-formats" } # the byte-I/O seam (ByteSource/ByteSink/SliceSource/Error) — the authority, not via obc-route
+# Shared production OBCW reader/cache + A/B generation selector. WX7 adds only the file-backed
+# seam/tests here; WX14 owns simulator controls and companion behavior.
+obc-weather = { path = "../../firmware/obc-weather" }
 obc-render = { path = "../../firmware/obc-render" }
 obc-app = { path = "../../firmware/obc-app" }
 # Semantic sensor/input/track/settings ports implemented by the simulator host.

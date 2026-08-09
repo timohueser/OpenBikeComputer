@@ -11,6 +11,10 @@ pipeline, formats, UI) read the docs site:
 <https://openbikecomputer.com/>. Per-crate roles are tabulated
 in the [repo README](../README.md#repository-layout).
 
+The device weather reader, fixed `WEATHER.A`/`WEATHER.B` slots, generation selection, and
+crash-safe commit sequence are documented in
+[`docs/WEATHER_STORAGE.md`](docs/WEATHER_STORAGE.md).
+
 The workspace is rooted at the **repo root** (`../Cargo.toml`), and spans three
 trees — one `Cargo.lock`, one `target/`:
 

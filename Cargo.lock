@@ -2748,6 +2748,7 @@ dependencies = [
  "obc-render",
  "obc-replay",
  "obc-route",
+ "obc-weather",
  "obcm-testkit",
  "pollster",
  "rfd",
@@ -2777,8 +2778,10 @@ version = "0.1.0"
 dependencies = [
  "embedded-sdmmc",
  "heapless 0.8.0",
+ "obc-crc",
  "obc-formats",
  "obc-ports",
+ "obc-weather",
 ]
 
 [[package]]
