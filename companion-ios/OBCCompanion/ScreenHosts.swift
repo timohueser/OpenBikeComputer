@@ -181,6 +181,9 @@ struct RouteDetailScreen: View {
                     deviceName: deviceName,
                     retention: uploadRetentionSeed,
                     supportsRetention: supportsRetention,
+                    // Normally the shipped 2.6 s self-dismiss; parked under
+                    // `-OBCHoldConfirmations` so a capture can't lose the sheet (#1212).
+                    timing: OBCCompanionApp.launchUploadTiming(),
                     activity: activity,
                     onCompleted: { [model] objectID, crc, retention in
                         // Pin the committed id + fingerprint on the live model
@@ -339,6 +342,9 @@ struct ImportLandingHost: View {
                     deviceName: deviceName,
                     retention: uploadRetentionSeed,
                     supportsRetention: supportsRetention,
+                    // Normally the shipped 2.6 s self-dismiss; parked under
+                    // `-OBCHoldConfirmations` so a capture can't lose the sheet (#1212).
+                    timing: OBCCompanionApp.launchUploadTiming(),
                     activity: activity,
                     onCompleted: { [model] objectID, crc, retention in
                         uploadCompleted = true

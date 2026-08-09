@@ -102,8 +102,11 @@ runs one bounded authenticated read of the weather-request context without the o
 link, and logs it. No UI, no scheduler, no bundle upload.
 
 `-OBCHideMockHUD` keeps the mock transport but removes its Debug status tag for clean automated
-captures. The landing-page captures and their CI drift check live in
-`scripts/capture-website-screenshots.sh`.
+captures; `-OBCDisableAnimations` runs the UI unanimated so a capture can't catch a transition
+mid-flight, and `-OBCHoldConfirmations` parks the timed confirmation states (sync check, synced
+line, the upload sheet's self-dismiss) so a shot of one isn't a race. The landing-page captures and their CI drift check live in
+`scripts/capture-website-screenshots.sh` — that gate compares pixels, so anything the capture
+screenshots must be *waited for*, never assumed (see `WebsiteScreenshotTests`).
 
 Dev control panel (Debug): shake the sim (⌃⌘Z) or launch with
 `-OBCShowDevPanel` for live `MockControl` knobs; `-OBCShowUIGallery` opens the

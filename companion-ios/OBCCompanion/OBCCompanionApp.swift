@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import UserNotifications
 import OBCDomain
 import OBCTransport
@@ -38,6 +39,13 @@ struct OBCCompanionApp: App {
         // (see `UpdateSurfaceModel`).
         UNUserNotificationCenter.current().delegate = Self.notificationDelegate
         #if DEBUG
+        // `-OBCDisableAnimations` (#1212): the screenshot capture must never catch a transition
+        // mid-flight. UIKit's switch covers the presentation machinery SwiftUI drives underneath
+        // (sheets, full-screen covers, nav pushes); the SwiftUI-side transaction override lives on
+        // the root view below and covers implicit view-update animations.
+        if Self.launchOptions.disableAnimations {
+            UIView.setAnimationsEnabled(false)
+        }
         // Log a DEBUG-only symbol at launch so the mock-exclusion seam is exercised
         // by a real build and lands in the Debug binary — but never the Release one
         // (B0 acceptance). See CLAUDE.md → "Prove the seam".
@@ -56,7 +64,8 @@ struct OBCCompanionApp: App {
                 updateSurface: Self.makeUpdateSurfaceStore(),
                 updateNotifier: SystemUpdateNotifier(),
                 importAtLaunch: Self.launchImport(),
-                firmwareDemoAtLaunch: Self.launchFirmwareDemo()
+                firmwareDemoAtLaunch: Self.launchFirmwareDemo(),
+                syncTiming: Self.launchSyncTiming()
             )
             #if DEBUG
                 .devMockOverlay(
@@ -65,6 +74,13 @@ struct OBCCompanionApp: App {
                     showGalleryAtLaunch: Self.launchOptions.showUIGallery,
                     hideHUD: Self.launchOptions.hideMockHUD
                 )
+                // The SwiftUI half of `-OBCDisableAnimations`: every state change in this subtree
+                // lands unanimated, presentations included. A no-op without the flag.
+                .transaction { transaction in
+                    guard Self.launchOptions.disableAnimations else { return }
+                    transaction.animation = nil
+                    transaction.disablesAnimations = true
+                }
             #endif
         }
         // #773 U5 — the background update check. This modifier *is* the `BGTaskScheduler`
@@ -143,6 +159,34 @@ struct OBCCompanionApp: App {
         #else
         return nil
         #endif
+    }
+
+    /// The `-OBCHoldConfirmations` hook (#1212), sync half: the coordinator normally returns the
+    /// top-bar check to idle two seconds after a sync lands, and drops the "Synced N new rides just
+    /// now" line a minute later. Both beats are real product behaviour and both are wall clocks —
+    /// an automated capture aiming at one is racing, which is how the landing-page gate ended up
+    /// flaky. The flag parks them instead of expiring them. Ordinary runs get the shipped timing.
+    static func launchSyncTiming() -> RideSyncCoordinator.Timing {
+        #if DEBUG
+        if launchOptions.holdConfirmations {
+            return RideSyncCoordinator.Timing(syncDoneHold: .seconds(3_600), syncedLineHold: .seconds(3_600))
+        }
+        #endif
+        return RideSyncCoordinator.Timing()
+    }
+
+    /// The same hook's upload half: the B5 sheet dismisses **itself** 2.6 s after it says "On the
+    /// device", so the landing page's finished-upload screenshot has under three seconds to exist
+    /// in — the third instance of this bug class on these five screens. Read by the two upload
+    /// seams in `ScreenHosts`: they sit deep in the tree, and the launch surface is this module's
+    /// business, so they ask here rather than have a timing threaded down to them.
+    static func launchUploadTiming() -> UploadSheetModel.Timing {
+        #if DEBUG
+        if launchOptions.holdConfirmations {
+            return UploadSheetModel.Timing(doneAutoDismiss: .seconds(3_600))
+        }
+        #endif
+        return UploadSheetModel.Timing()
     }
 
     /// The phone-side library (B1S). Mock runs stay **in-memory** — every
