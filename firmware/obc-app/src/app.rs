@@ -2413,6 +2413,77 @@ impl App {
         stats
     }
 
+    /// [`render_frame`](App::render_frame) plus the optional **rain overlay lease** (WX10) — the
+    /// frame-level entry a host with a mounted weather store uses; `None` is byte-identical to
+    /// [`render_frame`](App::render_frame).
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_frame_with_rain<D, F>(
+        &mut self,
+        scratch: Option<&mut RenderScratch>,
+        target: &mut D,
+        reader: &Reader,
+        route: Option<&RouteReader>,
+        rain: Option<&mut dyn obc_render::RainOverlaySource>,
+        w: f32,
+        h: f32,
+        color_fn: F,
+    ) -> RenderStats
+    where
+        D: DrawTarget,
+        F: Fn(u16) -> D::Color,
+    {
+        let stats = self.render_scene_map_rain_timed(
+            scratch,
+            target,
+            Some(reader),
+            Some(reader),
+            route,
+            rain,
+            w,
+            h,
+            &color_fn,
+            &NoopClock,
+        );
+        self.render_overlay(target, w, h, &color_fn);
+        stats
+    }
+
+    /// [`render_scene_frame`](App::render_scene_frame) plus the optional **rain overlay lease**
+    /// (WX10), for the volume-set scene seam; `None` is byte-identical to the plain call.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_scene_frame_with_rain<D, F, S>(
+        &mut self,
+        scratch: Option<&mut RenderScratch>,
+        target: &mut D,
+        scene: &S,
+        core_reader: &Reader,
+        route: Option<&RouteReader>,
+        rain: Option<&mut dyn obc_render::RainOverlaySource>,
+        w: f32,
+        h: f32,
+        color_fn: F,
+    ) -> RenderStats
+    where
+        D: DrawTarget,
+        F: Fn(u16) -> D::Color,
+        S: MapScene,
+    {
+        let stats = self.render_scene_map_rain_timed(
+            scratch,
+            target,
+            Some(scene),
+            Some(core_reader),
+            route,
+            rain,
+            w,
+            h,
+            &color_fn,
+            &NoopClock,
+        );
+        self.render_overlay(target, w, h, &color_fn);
+        stats
+    }
+
     /// Render **only the map plane** — the screen stack from the topmost opaque screen upward, but
     /// **excluding** the global hold-hint chrome. Returns the map [`RenderStats`].
     ///
@@ -2505,6 +2576,34 @@ impl App {
         F: Fn(u16) -> D::Color,
         S: MapScene,
     {
+        self.render_scene_map_rain_timed(scratch, target, scene, core_reader, route, None, w, h, color_fn, clock)
+    }
+
+    /// [`render_scene_map_timed`](App::render_scene_map_timed) plus the optional **rain overlay
+    /// lease** (WX10): a host that mounted a weather store passes the frame's
+    /// [`RainOverlayAdapter`](crate::RainOverlayAdapter) (or any [`RainOverlaySource`]) and the
+    /// map-drawing base screen renders precipitation below the road band; `None` is byte-identical
+    /// to the plain call. This is the single production hook — firmware and simulator both land
+    /// here.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_scene_map_rain_timed<D, F, S>(
+        &mut self,
+        scratch: Option<&mut RenderScratch>,
+        target: &mut D,
+        scene: Option<&S>,
+        core_reader: Option<&Reader>,
+        route: Option<&RouteReader>,
+        rain: Option<&mut dyn obc_render::RainOverlaySource>,
+        w: f32,
+        h: f32,
+        color_fn: F,
+        clock: &dyn Clock,
+    ) -> RenderStats
+    where
+        D: DrawTarget,
+        F: Fn(u16) -> D::Color,
+        S: MapScene,
+    {
         // Record the panel size for the screen ticks' region reporting (`advance_animations`) —
         // the one place every host states its real frame dimensions.
         self.ui.frame_size = (w as i16, h as i16);
@@ -2579,6 +2678,9 @@ impl App {
             .map(|seg| screen::ActiveClimb { seg, profile: &ride.climb_profile });
         let rx = Render {
             scratch,
+            // Reborrow so the lease's trait-object lifetime shrinks to this frame's `Render`
+            // borrow (a `&mut dyn` is invariant without the explicit coercion).
+            rain: rain.map(|r| &mut *r as &mut dyn obc_render::RainOverlaySource),
             state,
             activity,
             settings,

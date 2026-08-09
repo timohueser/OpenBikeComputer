@@ -247,6 +247,14 @@ pub struct Render<'a> {
     /// is exactly the set of frames that never reach the map scene's draw, the one place this is
     /// unwrapped.
     pub scratch: Option<&'a mut RenderScratch>,
+    /// The frame's **rain overlay lease** (WX10) — the host-constructed adapter over the active
+    /// weather bundle's *current* frame, or `None` when nothing may render (no store, no current
+    /// frame, expired bundle). Like the scratch it is per-frame: the map-drawing base screen
+    /// `take`s it and threads it into [`RenderScratch::render_rain_timed`], where the
+    /// precipitation raster draws below the road band; `None` renders a byte-identical rain-free
+    /// map. The freshness decision lives with the adapter (`obc-weather`'s `current_frame`), never
+    /// in a screen.
+    pub rain: Option<&'a mut dyn obc_render::RainOverlaySource>,
     pub state: &'a AppState,
     pub activity: &'a Activity,
     /// The persisted device settings (read-only here) — the riding views read

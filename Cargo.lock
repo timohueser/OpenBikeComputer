@@ -2502,6 +2502,7 @@ dependencies = [
  "obc-reader",
  "obc-render",
  "obc-route",
+ "obc-weather",
  "obcm-testkit",
 ]
 
