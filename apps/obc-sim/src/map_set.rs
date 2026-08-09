@@ -305,6 +305,7 @@ pub fn render_frame<D, F>(
     target: &mut D,
     scene: Scene<'_, '_, '_>,
     rain: Option<&mut dyn obc_render::RainOverlaySource>,
+    weather: obc_app::WeatherFeed,
     (w, h): (f32, f32),
     color_fn: F,
 ) -> RenderStats
@@ -324,6 +325,7 @@ where
             Some(reader),
             route,
             rain,
+            weather,
             w,
             h,
             &color_fn,
@@ -336,6 +338,7 @@ where
             Some(reader),
             route,
             rain,
+            weather,
             w,
             h,
             &color_fn,

@@ -4081,6 +4081,7 @@ mod tests {
         use crate::screen::{
             apply, AddFieldScreen, ConnectionsScreen, DateTimeScreen, FirmwareScreen, PowerScreen, ResetScreen,
             RideScreen, SettingsScreen, StatFieldsScreen, SystemScreen, Transition, UnitsScreen,
+            WeatherSettingsScreen,
         };
         use crate::settings::Units;
 
@@ -4092,7 +4093,7 @@ mod tests {
             let _ = v.push(s);
             v
         }
-        let cases: [Case; 11] = [
+        let cases: [Case; 12] = [
             // Pure navigation — no edit gesture of its own.
             ("Settings list", || one(Screen::Settings(SettingsScreen::new())), &[]),
             // Open the UTC-offset stepper (#641: the one editable row), +one step — and leave the
@@ -4125,6 +4126,12 @@ mod tests {
             ("Firmware", || one(Screen::Firmware(FirmwareScreen::new())), &[]),
             // Press arms, then the completed hold erases to defaults — a real diff off the seed below.
             ("Reset", || one(Screen::Reset(ResetScreen::new())), &[Gesture::Press, Gesture::Hold]),
+            // Open the refresh picker, step it once (and leave it open — Back closes it first).
+            (
+                "Weather",
+                || one(Screen::WeatherSettings(WeatherSettingsScreen::new())),
+                &[Gesture::Press, Gesture::Step(1)],
+            ),
         ];
 
         for (name, stack, edits) in cases {
