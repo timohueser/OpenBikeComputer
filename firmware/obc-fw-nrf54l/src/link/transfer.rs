@@ -199,6 +199,25 @@ pub(crate) fn classify_transfer(
                 TransferDisposition::Answer(transfer_result(desc.object_id, status))
             }
         },
+        // A **weather bundle** (WX8 #1193, spec §11.5): the singleton OBCW upload at `object_id = 0`,
+        // streamed into the WX7 crash-safe dual-slot store — never the destructive `UPLOAD.TMP`
+        // temp path. Radio-only, mirroring the map's transport gate in the other direction: §11.5
+        // binds the exchange to the CoC, the phone is the only OBCW producer the system has, and a
+        // cable host has no weather job — so a type-20 descriptor on USB falls to the catch-all's
+        // typed `error` below rather than arming a data plane with no weather runner. (If a USB
+        // weather path is ever wanted it is a deliberate spec change, not a missing arm.)
+        (Op::Upload, ObjectType::WeatherBundle) if transport == Transport::Ble => {
+            match store.borrow().weather_upload_open(shared, &desc) {
+                Ok(rx) => {
+                    log_transfer_arm(&desc);
+                    TransferDisposition::Arm(Armed::Upload(desc, rx))
+                }
+                Err(status) => {
+                    log_transfer_reject(&desc, status);
+                    TransferDisposition::Answer(transfer_result(desc.object_id, status))
+                }
+            }
+        }
         // A map upload (#889 for the type, #927 for the storage): **USB only** (spec §10). A map is
         // hundreds of megabytes — over BLE that is days, which is why the type did not exist before a
         // cable did — so a map descriptor on the radio is refused here rather than being handed to a
