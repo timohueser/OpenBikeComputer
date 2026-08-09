@@ -438,13 +438,14 @@ WXNAV="p d d d d w p"
 # Hourly rows (no separators; icons/temp/precip/wind columns), fresh + scrolled.
 "$SIM" "$MAP" --boot --weather demo:incoming --script "$WXNAV p" --png "$OUT/weather-hourly.png"
 "$SIM" "$MAP" --boot --weather demo:incoming --script "$WXNAV p d d d d d d" --png "$OUT/weather-hourly-scrolled.png"
-# Rain map: NOW frame, two time-steps ahead, and the three honest banners (stale / hourly-only /
-# out-of-regime at a far-out zoom).
+# Rain map: NOW frame, two time-steps ahead, the honest banners (stale / hourly-only), and the
+# zoom clamp — entering from a far-out camera snaps to the product's regime floor (round 2:
+# riders never see the out-of-regime state; the banner remains a defensive fallback only).
 "$SIM" "$MAP" --boot --weather demo:scattered --script "$WXNAV d p" --png "$OUT/weather-rainmap.png"
 "$SIM" "$MAP" --boot --weather demo:scattered --script "$WXNAV d p d d" --png "$OUT/weather-rainmap-step2.png"
 "$SIM" "$MAP" --boot --weather demo:storm --weather-now 1800012000 --script "$WXNAV d p" --png "$OUT/weather-rainmap-stale.png"
 "$SIM" "$MAP" --boot --weather demo:hourly --script "$WXNAV d p" --png "$OUT/weather-rainmap-hourly-only.png"
-"$SIM" "$MAP" --boot --weather demo:scattered --zoom 0.02 --script "$WXNAV d p" --png "$OUT/weather-rainmap-out-of-regime.png"
+"$SIM" "$MAP" --boot --weather demo:scattered --zoom 0.02 --script "$WXNAV d p" --png "$OUT/weather-rainmap-zoom-clamped.png"
 # The alert card (locked VIEW RAIN MAP + DISMISS) and the settings refresh picker (open field).
 "$SIM" "$MAP" --boot --weather demo:storm --weather-alert storm:28 --png "$OUT/weather-alert-storm.png"
 "$SIM" "$MAP" --boot --weather demo:incoming --weather-now 1800001500 --weather-alert rain:34 --png "$OUT/weather-alert-rain.png"
