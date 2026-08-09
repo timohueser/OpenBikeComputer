@@ -30,6 +30,7 @@ $S $M --boot --script "p d d d d d w p d d p"                                   
 # Language spot-checks (full sweep: ui-snapshots.sh's de/fr/es loop)
 $S $M --boot --weather demo:incoming --weather-now 1800001500 --lang de --script "$NAV"  --png $O/dash-rain-de.png
 $S $M --boot --weather demo:incoming --lang de --script "$NAV p"                         --png $O/hourly-de.png
+$S $M --boot --weather demo:incoming --lang fr --script "$NAV p"                         --png $O/hourly-fr.png
 $S $M --boot --weather demo:storm --lang fr --weather-alert storm:28                     --png $O/alert-storm-fr.png
 $S $M --boot --weather demo:storm --weather-now 1800012000 --lang es --script "$NAV"     --png $O/dash-stale-es.png
 ```
