@@ -131,14 +131,16 @@ impl WeatherUpload {
         self.expected_len - self.received
     }
 
-    /// Fold transport CRC and append only bytes after the held four-byte magic. A failed append
-    /// poisons the transaction permanently; retry always starts from byte zero in a fresh begin.
+    /// Fold transport CRC and append only bytes after the held four-byte magic. An oversize chunk
+    /// or failed append poisons and immediately abandons the transaction, releasing the slot so a
+    /// retry can start from byte zero with a fresh [`Self::begin`] without rebooting.
     pub fn push<I: WeatherSlotIo>(&mut self, io: &mut I, bytes: &[u8]) -> Result<(), UploadError<I::Error>> {
         if self.poisoned {
             return Err(UploadError::Poisoned);
         }
         if bytes.len() as u64 > self.remaining() as u64 {
             self.poisoned = true;
+            io.abandon_slot(self.target);
             return Err(UploadError::Length);
         }
         self.running_outer_crc.update(bytes);
@@ -151,6 +153,7 @@ impl WeatherUpload {
         if take < bytes.len() {
             if let Err(error) = io.append_slot(self.target, &bytes[take..]) {
                 self.poisoned = true;
+                io.abandon_slot(self.target);
                 return Err(UploadError::Io(error));
             }
         }
@@ -215,6 +218,7 @@ mod tests {
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum FakeError {
+        Busy,
         CardRemoved,
         CardFull,
         Close,
@@ -229,9 +233,10 @@ mod tests {
         Begin(FakeError),
         AppendAfter(usize, FakeError),
         Close,
-        Patch,
+        CommitSeek,
         FlushPatchLost,
         FlushPatchPersisted,
+        CommitClosePatchPersisted,
     }
 
     struct MemoryIo {
@@ -271,6 +276,9 @@ mod tests {
         }
 
         fn begin_slot(&mut self, slot: Slot) -> Result<(), Self::Error> {
+            if self.open.is_some() {
+                return Err(FakeError::Busy);
+            }
             if let Failure::Begin(error) = self.failure {
                 return Err(error);
             }
@@ -314,11 +322,15 @@ mod tests {
 
         fn commit_magic(&mut self, slot: Slot, magic: [u8; 4]) -> Result<(), Self::Error> {
             match self.failure {
-                Failure::Patch => Err(FakeError::Patch),
+                Failure::CommitSeek => Err(FakeError::Patch),
                 Failure::FlushPatchLost => Err(FakeError::Flush),
                 Failure::FlushPatchPersisted => {
                     self.slots[index(slot)].as_mut().unwrap()[..4].copy_from_slice(&magic);
                     Err(FakeError::Flush)
+                }
+                Failure::CommitClosePatchPersisted => {
+                    self.slots[index(slot)].as_mut().unwrap()[..4].copy_from_slice(&magic);
+                    Err(FakeError::Close)
                 }
                 _ => {
                     self.slots[index(slot)].as_mut().unwrap()[..4].copy_from_slice(&magic);
@@ -365,6 +377,40 @@ mod tests {
         assert_eq!(io.bytes(Slot::B), Some(new.as_slice()));
         let selected = inspect_slots(&mut io);
         assert_eq!(selected.active, Some(commit.installed));
+    }
+
+    #[test]
+    fn oversize_push_releases_the_slot_for_retry_without_reboot() {
+        let old = bundle(MINIMAL, 10, 100);
+        let new = bundle(DWD, 11, 200);
+        let mut io = MemoryIo::new(Some(old.clone()), None);
+        {
+            let mut transfer = WeatherUpload::begin(&mut io, new.len() as u32, Crc32::checksum(&new)).unwrap();
+            let mut too_many = new.clone();
+            too_many.push(0);
+            assert_eq!(transfer.push(&mut io, &too_many), Err(UploadError::Length));
+        }
+        let retry = WeatherUpload::begin(&mut io, new.len() as u32, Crc32::checksum(&new))
+            .expect("oversize push retained the inactive-slot handle");
+        assert_eq!(retry.target(), Slot::B);
+        assert_eq!(io.bytes(Slot::A), Some(old.as_slice()));
+    }
+
+    #[test]
+    fn append_failure_releases_the_slot_for_retry_without_reboot() {
+        let old = bundle(MINIMAL, 10, 100);
+        let new = bundle(DWD, 11, 200);
+        let mut io = MemoryIo::new(Some(old.clone()), None);
+        io.failure = Failure::AppendAfter(700, FakeError::CardFull);
+        {
+            let mut transfer = WeatherUpload::begin(&mut io, new.len() as u32, Crc32::checksum(&new)).unwrap();
+            assert_eq!(transfer.push(&mut io, &new), Err(UploadError::Io(FakeError::CardFull)));
+        }
+        io.failure = Failure::None;
+        let retry = WeatherUpload::begin(&mut io, new.len() as u32, Crc32::checksum(&new))
+            .expect("append failure retained the inactive-slot handle");
+        assert_eq!(retry.target(), Slot::B);
+        assert_eq!(io.bytes(Slot::A), Some(old.as_slice()));
     }
 
     #[test]
@@ -438,7 +484,6 @@ mod tests {
             Failure::AppendAfter(700, FakeError::CardRemoved),
             Failure::AppendAfter(700, FakeError::CardFull),
             Failure::Close,
-            Failure::Patch,
         ];
         for failure in failures {
             let mut io = MemoryIo::new(Some(old.clone()), None);
@@ -467,9 +512,16 @@ mod tests {
     }
 
     #[test]
-    fn failed_final_flush_recovers_whether_magic_persisted_or_not() {
+    fn final_eligibility_failures_recover_from_seek_flush_and_close_boundaries() {
         let old = bundle(MINIMAL, 4, 100);
         let new = bundle(DWD, 5, 200);
+
+        let mut seek = MemoryIo::new(Some(old.clone()), None);
+        seek.failure = Failure::CommitSeek;
+        assert_eq!(upload(&mut seek, &new), Err(UploadError::Io(FakeError::Patch)));
+        seek.power_cut();
+        assert_eq!(inspect_slots(&mut seek).active.unwrap().slot, Slot::A);
+        assert_eq!(seek.bytes(Slot::A), Some(old.as_slice()));
 
         let mut lost = MemoryIo::new(Some(old.clone()), None);
         lost.failure = Failure::FlushPatchLost;
@@ -484,5 +536,12 @@ mod tests {
         persisted.power_cut();
         assert_eq!(inspect_slots(&mut persisted).active.unwrap().slot, Slot::B);
         assert_eq!(persisted.bytes(Slot::A), Some(old.as_slice()));
+
+        let mut close = MemoryIo::new(Some(old.clone()), None);
+        close.failure = Failure::CommitClosePatchPersisted;
+        assert_eq!(upload(&mut close, &new), Err(UploadError::Io(FakeError::Close)));
+        close.power_cut();
+        assert_eq!(inspect_slots(&mut close).active.unwrap().slot, Slot::B);
+        assert_eq!(close.bytes(Slot::A), Some(old.as_slice()));
     }
 }
