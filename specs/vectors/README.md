@@ -80,6 +80,23 @@ producer/consumer paths. Rust builds them through the `obc-formats` authority an
 through the allocator-free `obc-weather` seam. The independent Swift `OBCWeatherWire` codec
 decodes and re-encodes every positive byte-for-byte and rejects every negative.
 
+### OBCG grid vectors
+
+The six positive `grid-*.obcg` files pin [`OBCG_Spec.md`](../OBCG_Spec.md): an all-dry
+sentinel-only object, raw4, RLE4, an explicit all-no-data tile (unavailable is never the dry
+sentinel), a 3 × 3-tile object across five directory pages with last-page padding (the corridor
+request-accounting target), and edge-tile no-data padding. Cells the Rust tests pin are the
+cells the Swift decoder must reproduce — OBCG is decoder-mirrored, not re-encoded, because its
+only producer is the Rust baker.
+
+The seventeen `grid-invalid-*` files isolate truncation, all four CRC scopes (header, object,
+page, tile), a shifted payload offset, an aliased/overlapping payload, impossible dimensions, a
+non-power-of-two tile edge, zero entries per page, overlong and noncanonical RLE, a compressible
+raw4 payload, an encoded all-dry tile (the sentinel is mandatory), and a nonzero dry sentinel,
+reserved byte, and double source-class flag. Except for truncation and the deliberate stale-CRC
+files, every CRC covering a corrupted byte is recomputed so structural validation cannot hide
+behind an integrity check.
+
 `manifest.json` restates each fixture's expected decoded values (plus the pinned
 protocol version, UUIDs, and the CRC-32 check value) so a test suite can assert
 against data instead of hard-coding.

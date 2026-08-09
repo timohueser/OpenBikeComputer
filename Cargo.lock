@@ -2998,6 +2998,7 @@ name = "obc-vectors"
 version = "0.1.0"
 dependencies = [
  "heapless 0.8.0",
+ "obc-crc",
  "obc-dfu",
  "obc-elevation",
  "obc-formats",
