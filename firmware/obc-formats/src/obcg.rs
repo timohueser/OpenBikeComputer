@@ -898,7 +898,7 @@ mod tests {
                 mutated[index] = (next() & 0xFF) as u8;
             }
             let truncate_to = (next() as usize) % (mutated.len() + 1);
-            if next() % 4 == 0 {
+            if next().is_multiple_of(4) {
                 mutated.truncate(truncate_to);
             }
             let _ = validate(&mutated, &mut scratch);
