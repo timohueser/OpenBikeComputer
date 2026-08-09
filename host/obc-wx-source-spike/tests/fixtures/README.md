@@ -34,8 +34,10 @@ test.
 
 ## Upstream terms and required attribution
 
-- DWD material is supplied under [CC BY 4.0 through DWD's Open Data
-  terms](https://www.dwd.de/EN/ourservices/opendata/opendata.html). Use
+- DWD's [official legal notice](https://www.dwd.de/DE/service/rechtliche_hinweise/rechtliche_hinweise.html)
+  permits freely accessible geodata under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
+  with source attribution; the [Open Data FAQ](https://www.dwd.de/DE/leistungen/opendata/faqs_opendata.html)
+  confirms the same terms for Open Data. Use
   `Source: Deutscher Wetterdienst (DWD); modified/quantized by
   OpenBikeComputer` for baked output and retain the CC BY link.
 - NOAA NODD data is [made available for unrestricted public

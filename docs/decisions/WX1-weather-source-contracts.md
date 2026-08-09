@@ -100,12 +100,21 @@ Pinned member contract:
 - ODIM quantity `ACRR`, five-minute liquid precipitation accumulation in mm;
 - 1,100 x 1,200 grid, native 1,000 m x 1,000 m cells;
 - exact stereographic projection recorded in the Rust validator;
+- exact ODIM corners `(LL 3.5669946350,45.6964253774)`,
+  `(UL 1.4633015103,55.8620871082)`, `(UR 18.7316164547,55.8454385633)`,
+  and `(LR 16.5808693486,45.6846057814)`; a shifted/flipped grid fails;
 - `gain=0.0009999999317806213` and
   `offset=-0.0009999999317806213` for the captured run;
 - encoded `nodata=4294967295` means missing;
 - encoded `undetect=0` means dry;
 - every other value is `encoded * gain + offset` mm/5 min and must be finite
   and nonnegative.
+
+The filename run (`YYYYMMDD_HHMM`) must equal the root ODIM `what/date,time`.
+For lead `L`, `dataset1/what/enddate,endtime` must equal run + `L` minutes and
+the internal start must be exactly five minutes earlier. Member names must be
+one coherent run with leads 000..120/5. A renamed member, duplicate lead, or
+internally stale forecast therefore fails even if the HDF5 values decode.
 
 The full 11:30 UTC tar was 2,017,280 bytes and was last modified at 11:33:25,
 an observed publication delay of 3 min 25 s. Its f000 member contained 28,048
@@ -134,7 +143,9 @@ Pinned contract:
 - two-minute nominal cadence, observation only;
 - GRIB discipline/category/parameter `209/6/1` (`PrecipRate_00.00`);
 - regular latitude/longitude grid template 3.0;
-- 7,000 x 3,500 / 24,500,000 points;
+- exact 7,000 x 3,500 / 24,500,000-point Section-3 geometry: first point
+  `54.995,230.005`, last `20.005001,299.994998`, increments `0.01/0.01`
+  degrees, scanning mode `0x00`, including the captured Earth shape/flags;
 - PNG representation template 5.41;
 - unit mm/hour;
 - `-1` is missing and `-3` is no coverage; neither is dry;
@@ -171,12 +182,19 @@ Pinned field contract:
 
 - discipline/category/parameter `0/1/7` (`PRATE` at surface);
 - Lambert conformal grid template 3.30;
-- 1,905,141 CONUS points at approximately 3 km;
+- exact 1,799 x 1,059 / 1,905,141-point Section-3 geometry: first point
+  `21.138123,237.280472`, `LaD=38.5`, `LoV=262.5`, `Latin1=Latin2=38.5`,
+  `Dx=Dy=3,000 m`, projection-centre `0x00`, scanning mode `0x40`, and the
+  captured Earth shape/remaining projection fields;
 - product template 4.0;
 - complex packing with spatial differencing, representation template 5.3;
 - unit kg/m2/s, numerically mm/s; multiply by 3,600 only when an mm/hour rate
   is required;
 - finite, nonnegative values only.
+
+The selected `<N> min fcst` value is passed to the validator and must equal
+the GRIB PDT 4.0 valid time minus its Section-1 reference time. Index text
+alone is not accepted as temporal identity.
 
 The captured f002 object was 186,047,054 bytes and appeared at 00:53:49 after
 the 00Z reference time. The selected +120-minute message was 42,861 bytes,
@@ -207,11 +225,20 @@ Pinned contract:
 
 - `TOT_PREC`, discipline/category/parameter `0/1/52`;
 - cumulative liquid precipitation in mm from reference time to valid time;
-- 0.0625-degree regular latitude/longitude grid, 904,689 points;
+- exact 1,377 x 657 / 904,689-point Section-3 geometry from
+  `29.5,336.5` to `70.5,62.5`, `Di=Dj=0.0625` degrees, scanning mode `0x40`,
+  including the captured Earth shape/flags;
 - product template 4.8;
 - CCSDS/AEC representation template 5.42;
 - bzip2 outer compression;
 - de-accumulate only consecutive leads from the same run and identical grid.
+
+For PDT 4.8 the generic forecast-time field is only the accumulation start.
+The validator therefore parses the template's explicit interval-end timestamp,
+statistical range unit/length, range count, and increment semantics. The CLI
+lead must equal `interval_end - reference`; de-accumulation additionally
+requires identical interval starts and exactly one hour between ends. Thus
+f001/f001, a renamed lead, a shifted grid, and a skipped lead all fail.
 
 Independent packing of cumulative fields produced 9,005 negative f002-f001
 differences of exactly 1/4096 mm. The two captured packing increments were
@@ -245,6 +272,9 @@ Pinned contract:
 
 - discipline/category/parameter `0/1/8` (`APCP` at surface);
 - global 0.25-degree regular latitude/longitude grid, 1,038,240 points;
+- exact 1,440 x 721 Section-3 geometry from `90,0` to `-90,359.75`,
+  `Di=Dj=0.25` degrees and scanning mode `0x00`, including the captured Earth
+  shape/flags;
 - product template 4.8;
 - complex packing representation template 5.3;
 - cumulative kg/m2, numerically mm of liquid precipitation;
@@ -258,16 +288,24 @@ hour N of run R = cumulative(R, fNNN) - cumulative(R, f(N-1))
 ```
 
 Both operands must have the same reference time and grid, and forecast hours
-must be consecutive. At a run transition, validate and publish the new run as
+must be consecutive. The validator parses the PDT 4.8 interval end/range and
+requires the caller's selected forecast hour to equal the byte-derived lead;
+the `.idx` label is not trusted as temporal identity. At a run transition,
+validate and publish the new run as
 a complete unit; never subtract the prior run's last field. A decrease is a
 contract failure, not dry weather. The Rust tests pin the zero baseline and
 reject cross-run subtraction.
 
 The captured f003 object was 539,185,590 bytes; its exact two-message APCP span
-was 640,466 bytes and appeared at 09:32:31 for the 06Z run. Decoding both global
-fields and proving equality took 0.04 s and 25.8 MB peak RSS. Budgeting 640,466
-bytes as an upper observed first-day field span gives about 61.5 MB/day for 24
-fields x four cycles, before small index requests.
+was 640,466 bytes and appeared at 09:32:31 for the 06Z run. That value is one
+fixture, not an upper bound: the same run's f004/f005/f006 spans were 688,950,
+723,372, and 753,828 bytes. All 24 selected spans totaled 12,299,954 bytes,
+with f006 as the high-water span. The live reproduction recomputes and records
+the total/high-water hour for every selected run, fails above 15,500,000 bytes,
+and reports 3,200,046 bytes of headroom for this capture. Four daily cycles are
+therefore budgeted at no more than 62.0 MB before small index requests.
+Decoding the captured f003 duplicates and proving equality took 0.04 s and
+25.8 MB peak RSS.
 
 ## IMERG Early: explicit v1 NO-GO
 
@@ -320,6 +358,32 @@ supplied both optional fields in all 24 captured hours; Manila supplied neither
 in any of the 24 hours. The provider-neutral OBCW model already represents
 unavailable values, so this geographic difference is not a launch blocker.
 
+Timestamps must be canonical UTC RFC3339 seconds and exactly one hour apart.
+An optional key may be absent, but when present it must be a finite numeric
+value in range; strings, objects, and null are malformed rather than silently
+treated as unavailable.
+
+Freeze this `symbol_code` mapping to WX2 `OBCWeatherCondition`; `_day`,
+`_night`, and `_polartwilight` variants keep the same semantic condition:
+
+| MET code family | OBC condition |
+| --- | --- |
+| `clearsky*` | `clear` |
+| `fair*` | `mostlyClear` |
+| `partlycloudy*` | `partlyCloudy` |
+| `cloudy`, `fog` | `overcast`, `fog` respectively |
+| `lightrain` | `drizzle` |
+| `rain`, `heavyrain` | `rain` |
+| rain `*showers*` without thunder | `showers` |
+| `*sleet*` without thunder | `sleet` |
+| `*snow*` without thunder | `snow` |
+| every documented `*andthunder*` rain/sleet/snow variant | `thunderstorm` |
+| new/unknown nonempty code | `unavailable` (never guessed) |
+
+An empty/non-string `symbol_code` is malformed and rejects the record.
+
+MET has no accepted mapping to WX2 `hail` or `wind`; those remain unavailable.
+
 Honor `Expires` and revalidate with `If-Modified-Since` using the exact
 `Last-Modified` value. Retain a visibly timestamped cache on network/provider
 failure. The direct request discloses the phone IP and requested coordinates to
@@ -335,7 +399,7 @@ The measured source-ingress budget is approximately:
 | MRMS full object | 456,264 | 720 | 329 MB |
 | ICON-EU f000..f011 | 4,134,603 | 4 | 16.5 MB |
 | HRRR eight byte ranges | 330,351 | 24 | 7.9 MB |
-| GFS first 24 APCP spans, conservative | <=15,371,184 | 4 | <=61.5 MB |
+| GFS first 24 APCP spans | 12,299,954 captured; <=15,500,000 enforced | 4 | <=62.0 MB |
 
 The total is about 1.0 GB/day of upstream ingress before HTTP metadata. This is
 small enough for a modest always-on host, but MRMS's 161 MB spike RSS requires
@@ -406,22 +470,30 @@ Run the opt-in live host reproduction:
 tools/weather-source-spike/reproduce.sh /tmp/obc-weather-evidence
 ```
 
-The live script requires only Bash, curl, and the Rust toolchain. It discovers
-current runs, uses exact NOAA index byte ranges, and passes every downloaded
-archive/field through the Rust validator. It prints an explicit IMERG v1
+The live script requires Bash, curl, `/usr/bin/time`, and the Rust toolchain.
+It discovers current runs, bounds objects before download, requires exact
+200/206 status and `Content-Range`, checks MIME, length, magic, validators and
+`Accept-Ranges` where applicable, and proves MET `If-Modified-Since` returns
+304. Every archive/field then passes through the Rust validator. It writes
+normalized per-validation user/system CPU seconds and peak RSS bytes plus the
+GFS run budget/high-water evidence into the output directory. It prints an explicit IMERG v1
 NO-GO notice and continues with GFS-only; it does not request credentials or
 claim an unauthenticated capture as evidence.
 
 Checked-in tests cover:
 
-- DWD raw projection, native resolution, scale, dry/missing values, and a
-  convective field;
+- DWD raw projection/extents, internal time/name identity, native resolution,
+  scale, dry/missing values, and a convective field;
 - MRMS PNG packing, dry/missing/no-coverage distinctions, and severe rain;
-- HRRR exact index selection and complex spatial differencing;
-- ICON-EU CCSDS decoding and the tightly bounded packing-roundoff rule;
-- GFS duplicate-record equality and run-boundary-safe cumulative
+- HRRR exact index/lead selection, full Lambert geometry, and representation
+  5.3 spatial differencing;
+- ICON-EU CCSDS decoding, exact geometry/interval cadence, and the tightly
+  bounded packing-roundoff rule;
+- GFS exact geometry/interval lead, representation 5.3, duplicate-record
+  equality, and run-boundary-safe cumulative
   de-accumulation;
-- MET Nordic and non-Nordic optional-field behavior.
+- MET Nordic/non-Nordic optional behavior, malformed optional types, exact
+  hourly RFC3339 cadence, and frozen condition mapping.
 
 ## Follow-up gates
 
