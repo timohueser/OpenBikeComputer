@@ -1923,7 +1923,9 @@ When the budget expires the device returns to advertising OBC Control. **The
 request itself does not expire with it**: it stays pending on the retry ladder
 (the reference firmware's is **5 / 10 / 20 minutes**), and each step re-raises the
 advertising hint with the *same* `request_id` (§11.2). The request is finished by a
-valid bundle committing (§11.6), not by an advertising window closing.
+valid bundle being **accepted** — any upload §11.6 answers `committed`, the
+duplicate/stale ignored-but-successful rows included, since each is the phone's
+complete answer — not by an advertising window closing.
 
 ### 11.4 `weatherRequestContext` — the request context (v1)
 
