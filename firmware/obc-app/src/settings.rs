@@ -1523,7 +1523,6 @@ mod tests {
         assert!(!app.map_contours, "adopt_ble_fields leaves the contour toggle alone");
     }
 
-
     /// The v8 tail: the routing-profile index round-trips every value, defaults **0**, is stored
     /// **verbatim** (never range-clamped on decode — an out-of-range index is a live-map concern, not
     /// a codec one), and is device-only — [`adopt_ble_fields`] must never pull it across (a phone
