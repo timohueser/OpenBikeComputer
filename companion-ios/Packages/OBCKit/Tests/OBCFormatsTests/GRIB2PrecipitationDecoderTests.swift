@@ -71,10 +71,75 @@ struct GRIB2PrecipitationDecoderTests {
         expectDecoderRejection(data)
     }
 
-    @Test("rejects packing scales that produce non-finite values")
-    func rejectsNonFinitePackingScale() throws {
-        let data = try mutateFirstMessage(section: 5, offset: 17, bytes: [0xff, 0xff])
-        expectDecoderRejection(data)
+    @Test("rejects positive decimal-scale underflow instead of returning false dry")
+    func rejectsPositiveDecimalScaleUnderflow() throws {
+        let original = try firstMessageData()
+        let rainy = try #require(GRIB2PrecipitationDecoder().decode(original).first)
+        #expect(rainy.valuesMM.allSatisfy { ($0 ?? 0) > 0 })
+
+        let mutated = try mutate(
+            original,
+            section: 5,
+            offset: 17,
+            bytes: signedMagnitude16(32_767)
+        )
+        #expect(mutated.count == original.count, "the reproducer changes only the exponent")
+        expectDecoderRejection(mutated)
+    }
+
+    @Test("rejects both signs of extreme binary and decimal scales")
+    func rejectsExtremePackingScales() throws {
+        for (offset, exponent) in [
+            (15, -32_767),
+            (15, 32_767),
+            (17, -32_767),
+            (17, 32_767),
+        ] {
+            let data = try mutateFirstMessage(
+                section: 5,
+                offset: offset,
+                bytes: signedMagnitude16(exponent)
+            )
+            expectDecoderRejection(data)
+        }
+    }
+
+    @Test("accepts audited scale boundaries without producing zero or non-finite rain")
+    func acceptsAuditedScaleBoundaries() throws {
+        for (offset, exponent) in [
+            (15, GRIB2PrecipitationDecoder.supportedBinaryScaleExponents.lowerBound),
+            (15, GRIB2PrecipitationDecoder.supportedBinaryScaleExponents.upperBound),
+            (17, GRIB2PrecipitationDecoder.supportedDecimalScaleExponents.lowerBound),
+            (17, GRIB2PrecipitationDecoder.supportedDecimalScaleExponents.upperBound),
+        ] {
+            let data = try mutateFirstMessage(
+                section: 5,
+                offset: offset,
+                bytes: signedMagnitude16(exponent)
+            )
+            let grid = try #require(GRIB2PrecipitationDecoder().decode(data).first)
+            #expect(grid.valuesMM.allSatisfy { value in
+                guard let value else { return false }
+                return value.isFinite && value > 0
+            })
+        }
+    }
+
+    @Test("rejects each scale immediately outside the audited exponent window")
+    func rejectsNeighboringScaleExponents() throws {
+        for (offset, exponent) in [
+            (15, GRIB2PrecipitationDecoder.supportedBinaryScaleExponents.lowerBound - 1),
+            (15, GRIB2PrecipitationDecoder.supportedBinaryScaleExponents.upperBound + 1),
+            (17, GRIB2PrecipitationDecoder.supportedDecimalScaleExponents.lowerBound - 1),
+            (17, GRIB2PrecipitationDecoder.supportedDecimalScaleExponents.upperBound + 1),
+        ] {
+            let data = try mutateFirstMessage(
+                section: 5,
+                offset: offset,
+                bytes: signedMagnitude16(exponent)
+            )
+            expectDecoderRejection(data)
+        }
     }
 
     @Test("rejects a forecast range that contradicts its end timestamp")
@@ -283,6 +348,11 @@ struct GRIB2PrecipitationDecoderTests {
 
     private func be16(_ value: UInt16) -> [UInt8] {
         [UInt8(value >> 8), UInt8(value & 0xff)]
+    }
+
+    private func signedMagnitude16(_ value: Int) -> [UInt8] {
+        let magnitude = UInt16(abs(value))
+        return be16(value < 0 ? magnitude | 0x8000 : magnitude)
     }
 
     private func be32(_ value: UInt32) -> [UInt8] {

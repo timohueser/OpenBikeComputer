@@ -159,6 +159,22 @@ observed crop used nearest source-cell values; it does not prove that every
 future GeoServer configuration will do so. Contract validation must fail if
 the relationship changes.
 
+The live validator permits an alternate raw cell only when it is in the
+immediately adjacent row/column (including a diagonal) and the WCS centre is
+less than 100 m from every crossed 1 km source-cell boundary. That spatial
+exception is also count-bounded by the smaller of two pixels or 0.025% of all
+comparisons. Duplicate raw-cell selections are independently bounded by the
+smaller of four mappings or 0.05%. In the clean 10:00 UTC reproduction, 9,974
+comparisons selected 9,971 unique raw cells: two boundary alternates (3.30 m and
+66.85 m maximum crossed-boundary distances) against a cap of two, and three
+duplicate mappings against a cap of four. The report exposes coordinates plus
+nearest/alternate errors. A deterministic local probe substitutes five eligible
+adjacent values (three dry-to-rain and two rain-to-dry); raising the clean count
+from two to seven must fail the reproduction before provider results are
+accepted. A subsequent clean 10:20 UTC run was entirely dry and used zero
+alternates and zero duplicate mappings; the caps remained two and four, and the
+same five-pixel probe was rejected.
+
 The live `2026-08-09T08:20Z` raw HDF5 analysis recorded:
 
 ```text
@@ -444,11 +460,16 @@ The checked-in pure-Swift decoder accepts only the audited NOMADS subset:
 
 It additionally caps the response at 8 MiB, each message at 3 MiB, the response
 at four messages, each dimension at 512, and the grid at 262,144 points before
-allocation. It requires exact section lengths, finite scales/decoded values,
-forecast hours at most 384, consistent point/bitmap/population counts, zero
-unused padding bits, exact packed payload length, and grid endpoints matching
-the increments and scan mode. Product template 4.8 must carry exactly one
-0-to-hour accumulation whose end timestamp equals reference plus forecast hour.
+allocation. The observed live GFS files use binary exponent `-4` and decimal
+exponent `0`; the audited decoder window is deliberately bounded to binary
+`-32...32` and decimal `-16...16`. Both factors, their combined scale, and any
+nonzero scaled reference must be normal finite `Double` values—zero, subnormal,
+overflowed, or out-of-window factors fail before values are decoded. It also
+requires exact section lengths, finite/nonnegative decoded values, forecast
+hours at most 384, consistent point/bitmap/population counts, zero unused
+padding bits, exact packed payload length, and grid endpoints matching the
+increments and scan mode. Product template 4.8 must carry exactly one 0-to-hour
+accumulation whose end timestamp equals reference plus forecast hour.
 
 Any other template or invariant fails closed. The decoder returns source
 scanning order, native 0.25-degree increments, and optional values. It does not
@@ -513,9 +534,11 @@ fetches required DWD WCS and raw HDF5, Oslo and Manila MET responses, and GFS
 f001-f024. Its pinned Python environment validates HTTP/MIME and TIFF/GRIB
 magic, DWD dimensions/times/units, raw-to-WCS cell correspondence, MET field
 availability/cache behavior, exact hashes, and GRIB terminators. It then passes
-the live GFS captures through the production Swift decoder. A fetch is not
-reported as validated merely because HTTP completed. This is intentionally not
-a CI test because it depends on mutable third-party services and current runs.
+the live GFS captures through the production Swift decoder. Before accepting
+live provider data, it also proves that a five-pixel adjacent dry/rain
+substitution exceeds the pinned DWD boundary budget. A fetch is not reported as
+validated merely because HTTP completed. This is intentionally not a CI test
+because it depends on mutable third-party services and current runs.
 
 Run fixture and decoder verification:
 
