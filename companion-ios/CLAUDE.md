@@ -24,7 +24,9 @@ Both rules are **test-enforced** (`swift test`): `CoreBluetoothSeamTests` fails 
 root); `OBCMock` compiles to an empty module in Release.
 
 Layers (lower may not import higher): `OBCDomain` → `OBCTransport` → `OBCMock`;
-`OBCUI` sits on `OBCDomain` + `OBCTransport`; `OBCFormats` on `OBCDomain` only.
+`OBCUI` sits on `OBCDomain` + `OBCTransport`; `OBCFormats` on `OBCDomain` only;
+`OBCWeatherWire` on `OBCDomain` only, and `OBCWeather` on those two — never on
+`OBCTransport`, so no weather code can reach CoreBluetooth.
 The app target is the **only** place that picks a concrete transport
 (`OBCCompanionApp.makeTransport()`).
 
@@ -39,6 +41,9 @@ companion-ios/
     OBCTransport         DeviceTransport + BondStore + LibraryStore + Codecs;
                          BLE/ = the only place CoreBluetooth is allowed
     OBCFormats           file formats at the edges (GPX/TCX import, ride export)
+    OBCWeatherWire       OBCW/OBCG codecs — the frozen weather wire contracts
+    OBCWeather           weather domain: MET hourly adapter, OBC weather service
+                         client (manifest + corridor Range reads), OBCW builder
     OBCMock  (#DEBUG)    MockTransport + MockControl + Scenario presets + fixtures
     OBCUI                SwiftUI component kit (OBCTheme) + feature screens
   OBCCompanionUITests/   XCUITest target — launch-arg driven
