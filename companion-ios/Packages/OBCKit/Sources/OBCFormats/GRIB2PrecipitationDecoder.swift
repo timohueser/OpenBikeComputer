@@ -46,6 +46,15 @@ public enum GRIB2PrecipitationDecoderError: Error, Equatable, Sendable {
 /// deliberate: an upstream template change fails closed instead of silently
 /// producing plausible-looking rain values.
 public struct GRIB2PrecipitationDecoder: Sendable {
+    static let maximumInputBytes = 8 * 1_024 * 1_024
+    static let maximumMessageBytes = 3 * 1_024 * 1_024
+    static let maximumGridDimension = 512
+    static let maximumGridPointCount = maximumGridDimension * maximumGridDimension
+    static let maximumMessageCount = 4
+    static let maximumForecastHour = 384
+
+    private static let coordinateToleranceDegrees = 0.000_002
+
     public init() {}
 
     /// Decodes cumulative (`startForecastHour == 0`) APCP messages.
@@ -56,11 +65,23 @@ public struct GRIB2PrecipitationDecoder: Sendable {
     /// are ignored so callers can derive rates by differencing two cumulative
     /// fields and dividing by their forecast-hour delta.
     public func decode(_ data: Data) throws -> [GRIB2PrecipitationGrid] {
+        guard data.count <= Self.maximumInputBytes else {
+            throw GRIB2PrecipitationDecoderError.unsupported(
+                reason: "GRIB input exceeds audited bbox limit"
+            )
+        }
         let bytes = [UInt8](data)
         var offset = 0
+        var messageCount = 0
         var cumulative: [GRIB2PrecipitationGrid] = []
 
         while offset < bytes.count {
+            messageCount += 1
+            guard messageCount <= Self.maximumMessageCount else {
+                throw GRIB2PrecipitationDecoderError.unsupported(
+                    reason: "too many GRIB messages for one filtered response"
+                )
+            }
             let parsed = try parseMessage(bytes, at: offset)
             offset = parsed.nextOffset
             guard parsed.grid.startForecastHour == 0 else { continue }
@@ -108,6 +129,11 @@ public struct GRIB2PrecipitationDecoder: Sendable {
             throw GRIB2PrecipitationDecoderError.malformed(reason: "invalid message length")
         }
         let messageLength = Int(length64)
+        guard messageLength <= Self.maximumMessageBytes else {
+            throw GRIB2PrecipitationDecoderError.unsupported(
+                reason: "GRIB message exceeds audited bbox limit"
+            )
+        }
         guard messageLength <= bytes.count - messageOffset else {
             throw GRIB2PrecipitationDecoderError.malformed(reason: "truncated GRIB2 message")
         }
@@ -144,7 +170,11 @@ public struct GRIB2PrecipitationDecoder: Sendable {
 
         let referenceTime = try parseReferenceTime(bytes, section: sections[1]!)
         let geometry = try parseGeometry(bytes, section: sections[3]!)
-        let period = try parseProduct(bytes, section: sections[4]!)
+        let period = try parseProduct(
+            bytes,
+            section: sections[4]!,
+            referenceTime: referenceTime
+        )
         let values = try parseValues(
             bytes,
             representation: sections[5]!,
@@ -182,7 +212,15 @@ public struct GRIB2PrecipitationDecoder: Sendable {
             )
         }
         let base = section.lowerBound
-        return GRIB2Timestamp(
+        guard bytes[base + 11] == 1,
+              bytes[base + 19] == 0,
+              bytes[base + 20] == 1
+        else {
+            throw GRIB2PrecipitationDecoderError.unsupported(
+                reason: "only operational forecast reference times"
+            )
+        }
+        let timestamp = GRIB2Timestamp(
             year: Int(try uint16(bytes, base + 12)),
             month: Int(bytes[base + 14]),
             day: Int(bytes[base + 15]),
@@ -190,6 +228,8 @@ public struct GRIB2PrecipitationDecoder: Sendable {
             minute: Int(bytes[base + 17]),
             second: Int(bytes[base + 18])
         )
+        _ = try utcDate(timestamp, context: "reference time")
+        return timestamp
     }
 
     private struct Geometry {
@@ -207,19 +247,41 @@ public struct GRIB2PrecipitationDecoder: Sendable {
     private func parseGeometry(
         _ bytes: [UInt8], section: Range<Int>
     ) throws -> Geometry {
-        guard section.count >= 72 else {
-            throw GRIB2PrecipitationDecoderError.malformed(reason: "short grid section")
+        guard section.count == 72 else {
+            throw GRIB2PrecipitationDecoderError.unsupported(
+                reason: "unexpected grid section length"
+            )
         }
         let base = section.lowerBound
+        guard bytes[base + 5] == 0,
+              bytes[base + 10] == 0,
+              bytes[base + 11] == 0
+        else {
+            throw GRIB2PrecipitationDecoderError.unsupported(
+                reason: "only directly specified grids without optional points"
+            )
+        }
         guard try uint16(bytes, base + 12) == 0 else {
             throw GRIB2PrecipitationDecoderError.unsupported(
                 reason: "only regular latitude/longitude grid template 3.0"
             )
         }
+        guard bytes[base + 14] == 6 else {
+            throw GRIB2PrecipitationDecoderError.unsupported(
+                reason: "only the GFS spherical-earth grid"
+            )
+        }
         let width = Int(try uint32(bytes, base + 30))
         let height = Int(try uint32(bytes, base + 34))
         let pointCount = Int(try uint32(bytes, base + 6))
-        guard width > 0, height > 0, width <= Int.max / height, width * height == pointCount else {
+        guard width > 0,
+              height > 0,
+              width <= Self.maximumGridDimension,
+              height <= Self.maximumGridDimension,
+              pointCount <= Self.maximumGridPointCount,
+              width <= pointCount / height,
+              width * height == pointCount
+        else {
             throw GRIB2PrecipitationDecoderError.malformed(reason: "inconsistent grid dimensions")
         }
         let basicAngle = try uint32(bytes, base + 38)
@@ -249,13 +311,24 @@ public struct GRIB2PrecipitationDecoder: Sendable {
               (-90.0 ... 90.0).contains(lastLatitude),
               (-180.0 ... 180.0).contains(firstLongitude),
               (-180.0 ... 180.0).contains(lastLongitude),
-              longitudeIncrement > 0,
-              longitudeIncrement <= 360,
-              latitudeIncrement > 0,
-              latitudeIncrement <= 180
+              nearlyEqual(longitudeIncrement, 0.25),
+              nearlyEqual(latitudeIncrement, 0.25)
         else {
             throw GRIB2PrecipitationDecoderError.malformed(
                 reason: "invalid grid coordinates or increments"
+            )
+        }
+        let expectedLastLongitude = normalizeLongitude(
+            firstLongitude + Double(width - 1) * longitudeIncrement
+        )
+        let latitudeDirection = scanningMode == 64 ? 1.0 : -1.0
+        let expectedLastLatitude = firstLatitude
+            + latitudeDirection * Double(height - 1) * latitudeIncrement
+        guard longitudesAreEquivalent(lastLongitude, expectedLastLongitude),
+              nearlyEqual(lastLatitude, expectedLastLatitude)
+        else {
+            throw GRIB2PrecipitationDecoderError.malformed(
+                reason: "grid endpoints contradict dimensions, increments, or scanning mode"
             )
         }
         return Geometry(
@@ -272,12 +345,21 @@ public struct GRIB2PrecipitationDecoder: Sendable {
     }
 
     private func parseProduct(
-        _ bytes: [UInt8], section: Range<Int>
+        _ bytes: [UInt8],
+        section: Range<Int>,
+        referenceTime: GRIB2Timestamp
     ) throws -> (startHour: Int, endHour: Int) {
-        guard section.count >= 58 else {
-            throw GRIB2PrecipitationDecoderError.malformed(reason: "short product section")
+        guard section.count == 58 else {
+            throw GRIB2PrecipitationDecoderError.unsupported(
+                reason: "unexpected product section length"
+            )
         }
         let base = section.lowerBound
+        guard try uint16(bytes, base + 5) == 0 else {
+            throw GRIB2PrecipitationDecoderError.unsupported(
+                reason: "product-specific coordinate values"
+            )
+        }
         guard try uint16(bytes, base + 7) == 8 else {
             throw GRIB2PrecipitationDecoderError.unsupported(
                 reason: "only product definition template 4.8"
@@ -288,27 +370,70 @@ public struct GRIB2PrecipitationDecoder: Sendable {
                 reason: "only total precipitation (category 1, parameter 8)"
             )
         }
+        guard bytes[base + 11] == 2,
+              bytes[base + 14] == 0,
+              try uint16(bytes, base + 15) == 0
+        else {
+            throw GRIB2PrecipitationDecoderError.unsupported(
+                reason: "only uncut forecast products"
+            )
+        }
         guard bytes[base + 17] == 1, bytes[base + 48] == 1 else {
             throw GRIB2PrecipitationDecoderError.unsupported(
                 reason: "only hour-based forecast periods"
             )
         }
-        guard bytes[base + 22] == 1 else {
+        guard bytes[base + 22] == 1,
+              bytes[base + 23] == 0,
+              try uint32(bytes, base + 24) == 0,
+              bytes[base + 28] == 255
+        else {
             throw GRIB2PrecipitationDecoderError.unsupported(
-                reason: "only surface precipitation"
+                reason: "only a single surface-level field"
             )
         }
-        guard bytes[base + 41] == 1, bytes[base + 46] == 1 else {
+        guard bytes[base + 41] == 1,
+              try uint32(bytes, base + 42) == 0,
+              bytes[base + 46] == 1,
+              bytes[base + 47] == 2,
+              bytes[base + 53] == 255,
+              try uint32(bytes, base + 54) == 0
+        else {
             throw GRIB2PrecipitationDecoderError.unsupported(
                 reason: "only one accumulation time range"
             )
         }
         let start = Int(try uint32(bytes, base + 18))
         let duration = Int(try uint32(bytes, base + 49))
-        guard start <= Int.max - duration else {
-            throw GRIB2PrecipitationDecoderError.malformed(reason: "forecast hour overflow")
+        guard duration > 0,
+              start <= Self.maximumForecastHour,
+              duration <= Self.maximumForecastHour - start
+        else {
+            throw GRIB2PrecipitationDecoderError.malformed(
+                reason: "forecast period exceeds the GFS contract"
+            )
         }
-        return (start, start + duration)
+        let end = start + duration
+        let endTimestamp = GRIB2Timestamp(
+            year: Int(try uint16(bytes, base + 34)),
+            month: Int(bytes[base + 36]),
+            day: Int(bytes[base + 37]),
+            hour: Int(bytes[base + 38]),
+            minute: Int(bytes[base + 39]),
+            second: Int(bytes[base + 40])
+        )
+        let referenceDate = try utcDate(referenceTime, context: "reference time")
+        let endDate = try utcDate(endTimestamp, context: "end of accumulation")
+        guard let expectedEndDate = utcCalendar.date(
+            byAdding: .hour,
+            value: end,
+            to: referenceDate
+        ), endDate == expectedEndDate else {
+            throw GRIB2PrecipitationDecoderError.malformed(
+                reason: "accumulation end timestamp contradicts its forecast range"
+            )
+        }
+        return (start, end)
     }
 
     private func parseValues(
@@ -318,9 +443,9 @@ public struct GRIB2PrecipitationDecoder: Sendable {
         data: Range<Int>,
         gridPointCount: Int
     ) throws -> [Double?] {
-        guard representation.count >= 21 else {
-            throw GRIB2PrecipitationDecoderError.malformed(
-                reason: "short data representation section"
+        guard representation.count == 21 else {
+            throw GRIB2PrecipitationDecoderError.unsupported(
+                reason: "unexpected data representation section length"
             )
         }
         let rep = representation.lowerBound
@@ -340,26 +465,65 @@ public struct GRIB2PrecipitationDecoder: Sendable {
         let binaryScale = try signedMagnitude16(bytes, rep + 15)
         let decimalScale = try signedMagnitude16(bytes, rep + 17)
         let bitsPerValue = Int(bytes[rep + 19])
-        let scale = pow(2, Double(binaryScale)) * pow(10, Double(-decimalScale))
-        let scaledReference = reference * pow(10, Double(-decimalScale))
+        guard bytes[rep + 20] == 0, bitsPerValue <= 64 else {
+            throw GRIB2PrecipitationDecoderError.unsupported(
+                reason: "unsupported packed-value representation"
+            )
+        }
+        let binaryFactor = pow(2, Double(binaryScale))
+        let decimalFactor = pow(10, Double(-decimalScale))
+        let scale = binaryFactor * decimalFactor
+        let scaledReference = reference * decimalFactor
+        guard binaryFactor.isFinite,
+              decimalFactor.isFinite,
+              scale.isFinite,
+              scaledReference.isFinite
+        else {
+            throw GRIB2PrecipitationDecoderError.malformed(
+                reason: "non-finite packing scale"
+            )
+        }
 
         guard bitmap.count >= 6 else {
             throw GRIB2PrecipitationDecoderError.malformed(reason: "short bitmap section")
         }
         let bitmapBase = bitmap.lowerBound
         let bitmapIndicator = bytes[bitmapBase + 5]
-        let presence: [Bool]
+        let packedCount: Int
         switch bitmapIndicator {
         case 255:
-            presence = Array(repeating: true, count: gridPointCount)
-        case 0:
-            let availableBits = (bitmap.count - 6) * 8
-            guard availableBits >= gridPointCount else {
-                throw GRIB2PrecipitationDecoderError.malformed(reason: "short bitmap")
+            guard bitmap.count == 6, declaredValueCount == gridPointCount else {
+                throw GRIB2PrecipitationDecoderError.malformed(
+                    reason: "no-bitmap value count mismatch"
+                )
             }
-            presence = (0 ..< gridPointCount).map { index in
-                let byte = bytes[bitmapBase + 6 + index / 8]
-                return byte & (1 << (7 - index % 8)) != 0
+            packedCount = gridPointCount
+        case 0:
+            let bitmapByteCount = (gridPointCount + 7) / 8
+            guard bitmap.count == 6 + bitmapByteCount else {
+                throw GRIB2PrecipitationDecoderError.malformed(
+                    reason: "bitmap length does not match grid"
+                )
+            }
+            guard paddingBitsAreZero(
+                bytes,
+                start: bitmapBase + 6,
+                usedBitCount: gridPointCount,
+                end: bitmap.upperBound
+            ) else {
+                throw GRIB2PrecipitationDecoderError.malformed(
+                    reason: "non-zero bitmap padding"
+                )
+            }
+            packedCount = (0 ..< gridPointCount).reduce(into: 0) { count, index in
+                if bitmapValueIsPresent(bytes, base: bitmapBase, index: index) {
+                    count += 1
+                }
+            }
+            guard declaredValueCount == packedCount else {
+                throw GRIB2PrecipitationDecoderError.malformed(
+                    reason: "bitmap population and packed value count disagree"
+                )
             }
         default:
             throw GRIB2PrecipitationDecoderError.unsupported(
@@ -367,16 +531,32 @@ public struct GRIB2PrecipitationDecoder: Sendable {
             )
         }
 
-        let packedCount = presence.reduce(into: 0) { count, present in
-            if present { count += 1 }
-        }
-        guard declaredValueCount == gridPointCount || declaredValueCount == packedCount else {
-            throw GRIB2PrecipitationDecoderError.malformed(
-                reason: "inconsistent packed value count"
-            )
-        }
         guard data.count >= 5 else {
             throw GRIB2PrecipitationDecoderError.malformed(reason: "short data section")
+        }
+        guard packedCount <= Self.maximumGridPointCount,
+              bitsPerValue == 0 || packedCount <= Int.max / bitsPerValue
+        else {
+            throw GRIB2PrecipitationDecoderError.unsupported(
+                reason: "packed field exceeds audited allocation limits"
+            )
+        }
+        let packedBitCount = packedCount * bitsPerValue
+        let packedByteCount = (packedBitCount + 7) / 8
+        guard data.count == 5 + packedByteCount else {
+            throw GRIB2PrecipitationDecoderError.malformed(
+                reason: "packed payload length does not match value count"
+            )
+        }
+        guard paddingBitsAreZero(
+            bytes,
+            start: data.lowerBound + 5,
+            usedBitCount: packedBitCount,
+            end: data.upperBound
+        ) else {
+            throw GRIB2PrecipitationDecoderError.malformed(
+                reason: "non-zero packed-value padding"
+            )
         }
         var reader = BitReader(
             bytes: bytes,
@@ -385,13 +565,21 @@ public struct GRIB2PrecipitationDecoder: Sendable {
         )
         var result: [Double?] = []
         result.reserveCapacity(gridPointCount)
-        for present in presence {
+        for index in 0 ..< gridPointCount {
+            let present = bitmapIndicator == 255
+                || bitmapValueIsPresent(bytes, base: bitmapBase, index: index)
             guard present else {
                 result.append(nil)
                 continue
             }
             let packed = try reader.read(bitCount: bitsPerValue)
-            result.append(scaledReference + Double(packed) * scale)
+            let value = scaledReference + Double(packed) * scale
+            guard value.isFinite, value >= 0 else {
+                throw GRIB2PrecipitationDecoderError.malformed(
+                    reason: "non-finite or negative precipitation value"
+                )
+            }
+            result.append(value)
         }
         return result
     }
@@ -403,7 +591,13 @@ public struct GRIB2PrecipitationDecoder: Sendable {
         var bitOffset = 0
 
         mutating func read(bitCount: Int) throws -> UInt64 {
-            guard bitCount <= 64, bitOffset + bitCount <= (end - start) * 8 else {
+            let availableByteCount = end - start
+            guard bitCount >= 0,
+                  bitCount <= 64,
+                  availableByteCount >= 0,
+                  availableByteCount <= Int.max / 8,
+                  bitOffset <= availableByteCount * 8 - bitCount
+            else {
                 throw GRIB2PrecipitationDecoderError.malformed(reason: "truncated packed values")
             }
             var value: UInt64 = 0
@@ -417,8 +611,85 @@ public struct GRIB2PrecipitationDecoder: Sendable {
         }
     }
 
+    private var utcCalendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        return calendar
+    }
+
+    private func utcDate(
+        _ timestamp: GRIB2Timestamp,
+        context: String
+    ) throws -> Date {
+        var components = DateComponents()
+        components.calendar = utcCalendar
+        components.timeZone = utcCalendar.timeZone
+        components.year = timestamp.year
+        components.month = timestamp.month
+        components.day = timestamp.day
+        components.hour = timestamp.hour
+        components.minute = timestamp.minute
+        components.second = timestamp.second
+        guard let date = utcCalendar.date(from: components) else {
+            throw GRIB2PrecipitationDecoderError.malformed(
+                reason: "invalid \(context)"
+            )
+        }
+        let fields = utcCalendar.dateComponents(
+            [.year, .month, .day, .hour, .minute, .second],
+            from: date
+        )
+        guard fields.year == timestamp.year,
+              fields.month == timestamp.month,
+              fields.day == timestamp.day,
+              fields.hour == timestamp.hour,
+              fields.minute == timestamp.minute,
+              fields.second == timestamp.second
+        else {
+            throw GRIB2PrecipitationDecoderError.malformed(
+                reason: "invalid \(context)"
+            )
+        }
+        return date
+    }
+
     private func normalizeLongitude(_ degrees: Double) -> Double {
-        degrees > 180 ? degrees - 360 : degrees
+        var normalized = degrees.truncatingRemainder(dividingBy: 360)
+        if normalized >= 180 { normalized -= 360 }
+        if normalized < -180 { normalized += 360 }
+        return normalized
+    }
+
+    private func nearlyEqual(_ lhs: Double, _ rhs: Double) -> Bool {
+        abs(lhs - rhs) <= Self.coordinateToleranceDegrees
+    }
+
+    private func longitudesAreEquivalent(_ lhs: Double, _ rhs: Double) -> Bool {
+        nearlyEqual(normalizeLongitude(lhs - rhs), 0)
+    }
+
+    private func bitmapValueIsPresent(
+        _ bytes: [UInt8],
+        base: Int,
+        index: Int
+    ) -> Bool {
+        let byte = bytes[base + 6 + index / 8]
+        return byte & (1 << (7 - index % 8)) != 0
+    }
+
+    private func paddingBitsAreZero(
+        _ bytes: [UInt8],
+        start: Int,
+        usedBitCount: Int,
+        end: Int
+    ) -> Bool {
+        let availableBitCount = (end - start) * 8
+        guard usedBitCount <= availableBitCount else { return false }
+        for index in usedBitCount ..< availableBitCount {
+            let byte = bytes[start + index / 8]
+            if byte & (1 << (7 - index % 8)) != 0 { return false }
+        }
+        return true
     }
 
     private func require(
