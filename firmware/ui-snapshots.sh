@@ -417,9 +417,9 @@ ETAFIELDS="time-to-go,eta,dist-to-go,to-climb,speed,ride-time"
 # heading-up so the rotated fixed-point walk is pinned too), and a violet storm core (the
 # high-coverage end; roads/route stay above the rain). Byte-stable: the demo bundle and the Bayer
 # matrix are both deterministic.
-"$SIM" "$MAP" --weather demo:scattered --clock "2025-06-29T14:40" --png "$OUT/map-rain-scattered.png"
-"$SIM" "$MAP" --weather demo:frontal --heading 35 --zoom 4 --clock "2025-06-29T14:40" --png "$OUT/map-rain-frontal-heading.png"
-"$SIM" "$MAP" --weather demo:storm --clock "2025-06-29T14:40" --png "$OUT/map-rain-storm.png"
+"$SIM" "$MAP" --weather demo:scattered --weather-now 1800000000 --clock "2025-06-29T14:40" --png "$OUT/map-rain-scattered.png"
+"$SIM" "$MAP" --weather demo:frontal --heading 35 --zoom 4 --weather-now 1800000000 --clock "2025-06-29T14:40" --png "$OUT/map-rain-frontal-heading.png"
+"$SIM" "$MAP" --weather demo:storm --weather-now 1800000000 --clock "2025-06-29T14:40" --png "$OUT/map-rain-storm.png"
 
 # Weather screens (WX11, epic #1185): the production dashboard / hourly / rain-map / alert /
 # settings surfaces over the deterministic demo bundles. The script prefix "p d d d d w p" walks

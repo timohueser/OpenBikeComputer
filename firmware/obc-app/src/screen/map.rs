@@ -922,7 +922,14 @@ fn outlined_arrow(
 /// action's self-explanatory edge cues, and (once the rider is off-screen) a back-to-you marker.
 /// Route mode needs no label or false screen-space arrow: frame + movement along the visible route
 /// is the feedback. The viewport carries the frozen rotation used by the off-screen test.
-fn draw_pan_hud(cv: &mut impl Surface, size: (f32, f32), pan: Pan, user_fix: Option<Fix>, marker: u16, vp: &Viewport) {
+pub(super) fn draw_pan_hud(
+    cv: &mut impl Surface,
+    size: (f32, f32),
+    pan: Pan,
+    user_fix: Option<Fix>,
+    marker: u16,
+    vp: &Viewport,
+) {
     use super::palette::*;
     use hud::*;
     let (w, h) = size;

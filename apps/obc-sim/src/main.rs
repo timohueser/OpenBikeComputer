@@ -1277,8 +1277,9 @@ fn main() {
             if let Some(w) = weather.as_mut() {
                 let pos = app.state.user_fix.map(|f| (f.lat, f.lon)).unwrap_or((app.state.cam_lat, app.state.cam_lon));
                 if let Some(snap) = w.snapshot(Some(pos)) {
-                    app.state.rain_steps_ahead = snap.steps_ahead(app.wall_unix_now() as i64);
-                    app.state.rain_zoom_min = snap.rain_zoom_floor(app.state.cam_lat).unwrap_or(0.0);
+                    let now = app.wall_unix_now() as i64;
+                    let floor = snap.rain_zoom_floor(app.state.cam_lat).unwrap_or(0.0);
+                    app.set_rain_view(snap.steps_ahead(now), floor);
                 }
             }
             apply_script(&mut app, script, &mut hook);
@@ -1527,9 +1528,9 @@ fn main() {
         let wx_pos = app.state.user_fix.map(|f| (f.lat, f.lon)).unwrap_or((app.state.cam_lat, app.state.cam_lon));
         let wx_snapshot = weather.as_mut().and_then(|w| w.snapshot(Some(wx_pos)));
         if let Some(snap) = &wx_snapshot {
-            app.state.rain_steps_ahead = snap.steps_ahead(app.wall_unix_now() as i64);
-            app.state.rain_step = app.state.rain_step.min(app.state.rain_steps_ahead);
-            app.state.rain_zoom_min = snap.rain_zoom_floor(app.state.cam_lat).unwrap_or(0.0);
+            let now = app.wall_unix_now() as i64;
+            let floor = snap.rain_zoom_floor(app.state.cam_lat).unwrap_or(0.0);
+            app.set_rain_view(snap.steps_ahead(now), floor);
         }
         let rain_step = app.state.rain_step;
         let refreshing = args.weather_refreshing;
@@ -1549,8 +1550,9 @@ fn main() {
                 |c| color_of(c, tc),
             )
         };
+        let wx_wall_now = app.wall_unix_now() as i64;
         let mut stats = match weather.as_mut() {
-            Some(weather) => weather.lease(rain_step, |rain| {
+            Some(weather) => weather.lease(wx_wall_now, rain_step, |rain| {
                 let feed = obc_app::WeatherFeed { snapshot: wx_snapshot.as_ref(), refreshing };
                 render_final(rain, feed, &mut app, &mut fb, &mut scratch)
             }),

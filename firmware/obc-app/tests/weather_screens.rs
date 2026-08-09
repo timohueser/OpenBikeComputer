@@ -185,6 +185,22 @@ fn alert_card_actions_and_priority() {
     app.apply_gesture(Gesture::Step(1));
     app.apply_gesture(Gesture::Press);
     assert!(!matches!(app.top_screen(), Screen::WeatherAlert(_)), "DISMISS closes the card");
+
+    // An alert landing over an ALREADY-OPEN rain map: VIEW RAIN MAP pops back to it — never a
+    // second identical rain map on the stack (review F4).
+    let mut app = App::new_idle(AppState::new(0, 0, 0.05));
+    open_dashboard(&mut app);
+    app.apply_gesture(Gesture::Step(1));
+    app.apply_gesture(Gesture::Press); // → rain map
+    assert!(matches!(app.top_screen(), Screen::WeatherRainMap(_)));
+    let depth_on_map = app.debug_stack_len();
+    app.state.rain_step = 2; // a viewed future frame the alert answer must reset
+    app.show_weather_alert(WeatherAlertKind::Rain, 10);
+    assert!(matches!(app.top_screen(), Screen::WeatherAlert(_)));
+    app.apply_gesture(Gesture::Press); // VIEW RAIN MAP
+    assert!(matches!(app.top_screen(), Screen::WeatherRainMap(_)));
+    assert_eq!(app.debug_stack_len(), depth_on_map, "pop, not replace: exactly one rain map remains");
+    assert_eq!(app.state.rain_step, 0, "the answered alert lands on the current frame");
 }
 
 /// Frame-level honesty + determinism: the dashboard renders byte-identically for identical

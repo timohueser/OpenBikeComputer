@@ -300,13 +300,24 @@ impl SimWeather {
     /// no frame is current at the effective instant (then the map renders rain-free, exactly as
     /// the device would). Closure-shaped because the adapter borrows a reader that borrows the
     /// bytes; nothing outlives the call.
-    pub fn lease<R>(&mut self, step: u8, frame: impl FnOnce(Option<&mut dyn obc_render::RainOverlaySource>) -> R) -> R {
+    /// `now` is the app's live wall clock (`App::wall_unix_now`), so the lease and the screens'
+    /// own freshness derivations are one instant — before review F5 the lease anchored on the
+    /// bundle's first frame forever, so after ~15 min of GUI runtime the screens' time-step
+    /// labels and the rendered raster silently diverged. An explicit `--weather-now` override
+    /// still wins (the deterministic stale-scenario tool; the clock-anchor rule in `main`/`gui`
+    /// makes the two coincide for every fixture command that doesn't pass `--clock`).
+    pub fn lease<R>(
+        &mut self,
+        now: i64,
+        step: u8,
+        frame: impl FnOnce(Option<&mut dyn obc_render::RainOverlaySource>) -> R,
+    ) -> R {
         let source = obc_formats::io::SliceSource(&self.bytes);
         let Ok(reader) = obc_weather::WeatherReader::open(&source) else {
             return frame(None);
         };
-        let now = self.now_override.or_else(|| reader.frame(0).ok().map(|f| f.valid_at));
-        let adapter = now.and_then(|now| obc_app::RainOverlayAdapter::at_step(&reader, &mut self.cache, now, step));
+        let now = self.now_override.unwrap_or(now);
+        let adapter = obc_app::RainOverlayAdapter::at_step(&reader, &mut self.cache, now, step);
         match adapter {
             Some(mut adapter) => frame(Some(&mut adapter)),
             None => frame(None),

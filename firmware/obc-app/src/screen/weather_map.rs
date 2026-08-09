@@ -25,7 +25,7 @@ use crate::wall_clock::MinuteTicker;
 use crate::weather::{local_hour_minute, rain_outlook, RainOutlook};
 use crate::Msg;
 
-use super::map::{draw_map_scene, handle_pan};
+use super::map::{draw_map_scene, draw_pan_hud, handle_pan};
 use super::{palette, wrapped, Ctx, RenderFrame, ScreenTick, Transition};
 
 /// The time-step label's top anchor — the Map clock's slot (there is no clock overlay here; the
@@ -93,36 +93,33 @@ impl WeatherRainMapScreen {
         // Whether the host leased a rain frame this call — consumed by the scene draw below, so
         // remember it before it's taken. `None` must never end as a silent dry-looking map.
         let had_lease = rx.rain.is_some();
-        if draw_map_scene(cv, rx, &vp, None).is_none() {
+        let Some(marker565) = draw_map_scene(cv, rx, &vp, None) else {
             return;
-        }
+        };
         let rx = &mut rx.render;
         let (w, h) = (rx.w, rx.h);
         let now = rx.now_utc as i64;
         let step = rx.state.rain_step;
-
-        // The pan HUD owns the frame while panning; the rain raster stays under it, but the
-        // time/banner chrome yields (the Map's own chip discipline).
-        if rx.state.pan.is_some() {
-            return;
-        }
+        let panning = rx.state.pan.is_some();
 
         // The viewed frame's REAL timestamp, top-centre (tier differences surface only through
         // real timestamps — locked): the current frame shows `HH:MM NOW`, a stepped one
-        // `HH:MM +NN`.
-        if let Some(snap) = rx.weather {
-            if let Some(current) = snap.current_frame_index(now) {
-                let index = (current + step as usize).min(snap.frames.len() - 1);
-                let frame = &snap.frames[index];
-                let (hh, mm) = local_hour_minute(frame.valid_at, rx.settings.utc_offset_min);
-                let mut label: heapless::String<20> = heapless::String::new();
-                if index == current {
-                    let _ = write!(label, "{hh:02}:{mm:02} {}", rx.t(Msg::WeatherNow));
-                } else {
-                    let ahead_min = ((frame.valid_at - now).max(0) + 59) / 60;
-                    let _ = write!(label, "{hh:02}:{mm:02} +{ahead_min}");
+        // `HH:MM +NN`. Yielded while panning — the pan chevrons own the top slot.
+        if !panning {
+            if let Some(snap) = rx.weather {
+                if let Some(current) = snap.current_frame_index(now) {
+                    let index = (current + step as usize).min(snap.frames.len() - 1);
+                    let frame = &snap.frames[index];
+                    let (hh, mm) = local_hour_minute(frame.valid_at, rx.settings.utc_offset_min);
+                    let mut label: heapless::String<20> = heapless::String::new();
+                    if index == current {
+                        let _ = write!(label, "{hh:02}:{mm:02} {}", rx.t(Msg::WeatherNow));
+                    } else {
+                        let ahead_min = ((frame.valid_at - now).max(0) + 59) / 60;
+                        let _ = write!(label, "{hh:02}:{mm:02} +{ahead_min}");
+                    }
+                    draw_halo_label(cv, w, &label);
                 }
-                draw_halo_label(cv, w, &label);
             }
         }
 
@@ -143,12 +140,22 @@ impl WeatherRainMapScreen {
             }
         } else if rx.stats.rain_out_of_regime {
             // DEFENSIVE FALLBACK ONLY (owner tuning round 2): the zoom-out clamp
-            // (`AppState::clamp_rain_zoom`, applied on entry and after every Inspect zoom step)
-            // keeps this screen inside the product's regime, so this banner should be
-            // unreachable. It stays because the honesty law is absolute — if a regime miss ever
-            // slips through (a host that skipped the floor feed, a product/frame edge case),
-            // the frame must still declare itself rather than pass as dry.
+            // (`AppState::clamp_rain_zoom`, applied on entry, after every Inspect gesture, and
+            // live in the host feed via `App::set_rain_view`) keeps this screen inside the
+            // product's regime, so this banner should be unreachable. It stays because the
+            // honesty law is absolute — if a regime miss ever slips through (a host that skipped
+            // the floor feed, a product/frame edge case), the frame must still declare itself
+            // rather than pass as dry. Drawn while panning too (under the pan HUD): review F2
+            // found the earlier early-return let a mid-pan regime miss render raster-free with
+            // no banner at all.
             draw_banner(cv, w, h, rx.t(Msg::WeatherZoomForRain), None);
+        }
+
+        // The shared Inspect HUD, over everything — exactly the Map's pan chrome (frame,
+        // move/zoom cues, back-to-you marker), so panning the rain map feels like panning the
+        // map. The honest-state banners above deliberately stay visible beneath it.
+        if let Some(pan) = rx.state.pan {
+            draw_pan_hud(cv, (w as f32, h as f32), pan, rx.state.user_fix, marker565, &vp);
         }
     }
 }
