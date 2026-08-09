@@ -102,6 +102,17 @@ struct Args {
     /// "today's hours" weekday + the OPEN/CLOSED-now badge for a reproducible render. Defaults to the
     /// device default (2025-01-01 12:00, a Wednesday noon).
     clock: Option<obc_ports::DateTime>,
+    /// `--weather DIR|demo[:SCENARIO]`: feed the production rain-overlay lease on every map frame —
+    /// GUI and headless `--png` alike (WX10). A directory is a weather-store root holding
+    /// `WEATHER.A`/`WEATHER.B` (the WX7 A/B layout; `specs/vectors/*.obcw` copied under those names
+    /// work). `demo` synthesizes a deterministic bundle over the loaded map's own bbox —
+    /// scenarios `scattered` (default) | `drizzle` | `frontal` | `storm` — the WX10 look-tuning
+    /// scenes.
+    weather: Option<String>,
+    /// `--weather-now UNIX`: the UTC instant the rain freshness gate evaluates at. Defaults to the
+    /// loaded bundle's **first frame timestamp**, so fixture stores render deterministically; pass
+    /// the real time to exercise staleness (an expired instant renders a rain-free map).
+    weather_now: Option<i64>,
     /// Headless `--png` only: the UI language `en` | `de` | `fr` | `es` (epic #602). Seeded into
     /// `Settings.language` before the render, so a scripted screen draws its de/fr/es copy from the
     /// i18n catalog — the per-language snapshot mechanism. Defaults to `en` (the device default), so
@@ -250,6 +261,8 @@ impl Default for Args {
             colorway: None,
             battery: None,
             clock: None,
+            weather: None,
+            weather_now: None,
             lang: None,
             stat_fields: None,
             ble_connected: false,
@@ -459,6 +472,10 @@ fn parse_args() -> Result<Args, String> {
             }
             "--clock" => {
                 a.clock = Some(parse_clock(&it.next().ok_or("--clock needs YYYY-MM-DDTHH:MM")?)?);
+            }
+            "--weather" => a.weather = Some(it.next().ok_or("--weather needs a store directory")?),
+            "--weather-now" => {
+                a.weather_now = Some(it.next().and_then(|s| s.parse().ok()).ok_or("--weather-now needs unix seconds")?);
             }
             "--route-retention" => {
                 a.route_retention =
@@ -878,7 +895,7 @@ fn main() {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: obc-sim <map.obcm> | --set <MS7.OBS> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--clock YYYY-MM-DDTHH:MM] [--route-retention LEVEL:AGE] [--lang en|de|fr|es] [--stat-fields LIST] [--ble-connected] [--ble-passkey N] [--ble-paired] [--sensors-screen] [--inject-upload ID] [--inject-upload-replace ID] [--nav-hold] [--inject-nav-fail exhausted|nopath] [--detour-hold] [--inject-detour-fail exhausted|nopath] [--inject-warning gps,altimeter,compass,map] [--boot-fault nocard|nomap|badmap] [--open-climb] [--freeze] [--baro-drift M_PER_HOUR]\n\n  --set <MS7.OBS>  open an OBCA volume set (specs/OBCA_Spec.md §5): the manifest plus every\n                   MS7S<kk>.OBM shard beside it, mounted as one map. Every shard must be\n                   present and exactly its recorded size, or the set is refused whole (§5.4).");
+            eprintln!("error: {e}\nusage: obc-sim <map.obcm> | --set <MS7.OBS> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--clock YYYY-MM-DDTHH:MM] [--route-retention LEVEL:AGE] [--lang en|de|fr|es] [--stat-fields LIST] [--ble-connected] [--ble-passkey N] [--ble-paired] [--sensors-screen] [--inject-upload ID] [--inject-upload-replace ID] [--nav-hold] [--inject-nav-fail exhausted|nopath] [--detour-hold] [--inject-detour-fail exhausted|nopath] [--inject-warning gps,altimeter,compass,map] [--boot-fault nocard|nomap|badmap] [--open-climb] [--freeze] [--baro-drift M_PER_HOUR] [--weather DIR|demo[:scattered|drizzle|frontal|storm]] [--weather-now UNIX]\n\n  --set <MS7.OBS>  open an OBCA volume set (specs/OBCA_Spec.md §5): the manifest plus every\n                   MS7S<kk>.OBM shard beside it, mounted as one map. Every shard must be\n                   present and exactly its recorded size, or the set is refused whole (§5.4).");
             std::process::exit(2);
         }
     };
@@ -1446,14 +1463,24 @@ fn main() {
         let set = map.set();
         let scene = map_set::Scene { set, reader: &reader, route: route.as_ref() };
         let mut scratch = Box::new(obc_render::RenderScratch::new());
-        let mut stats = map_set::render_frame(
-            &mut app,
-            &mut scratch,
-            &mut fb,
-            scene,
-            (args.width as f32, args.height as f32),
-            |c| color_of(c, tc),
-        );
+        // `--weather` (WX10): the final snapshot renders through the production rain lease — the
+        // same adapter + hook the device and the GUI use. No store / nothing current ⇒ `None`,
+        // byte-identical to a rain-free render.
+        let map_bbox = (reader.bbox.min_lon, reader.bbox.min_lat, reader.bbox.max_lon, reader.bbox.max_lat);
+        let mut weather =
+            args.weather.as_ref().and_then(|arg| weather_store::SimWeather::from_arg(arg, args.weather_now, map_bbox));
+        let render_final = |rain: Option<&mut dyn obc_render::RainOverlaySource>,
+                            app: &mut App,
+                            fb: &mut Framebuffer,
+                            scratch: &mut obc_render::RenderScratch| {
+            map_set::render_frame(app, scratch, fb, scene, rain, (args.width as f32, args.height as f32), |c| {
+                color_of(c, tc)
+            })
+        };
+        let mut stats = match weather.as_mut() {
+            Some(weather) => weather.lease(|rain| render_final(rain, &mut app, &mut fb, &mut scratch)),
+            None => render_final(None, &mut app, &mut fb, &mut scratch),
+        };
         stats.render_us = t0.elapsed().as_micros() as u32;
         let cache_reqs = stats.map_chunk_hits + stats.map_chunk_misses;
         let hit_pct = if cache_reqs == 0 { 0.0 } else { 100.0 * stats.map_chunk_hits as f32 / cache_reqs as f32 };
@@ -1488,6 +1515,16 @@ fn main() {
             stats.poly_rings,
             obc_render::MAX_FRAME_RINGS,
         );
+        // Rain overlay accounting (WX10), for the look-tuning rounds: how many 16×16 tiles were
+        // decoded, how many pixels the dither actually painted, and the overlay's own wall time.
+        if stats.rain_tiles > 0 || stats.rain_px > 0 {
+            eprintln!(
+                "  rain: {} tiles decoded, {} px painted, {:.2} ms overlay",
+                stats.rain_tiles,
+                stats.rain_px,
+                stats.rain_us as f64 / 1000.0
+            );
+        }
 
         if let Err(e) = write_png(&fb, args.scale, path) {
             eprintln!("{e}");
