@@ -443,5 +443,35 @@
       ],
       "total": 1
     }
+  },
+  "weather": {
+    "spec": "OBCW_Spec.md",
+    "format_version": 1,
+    "provenance": {
+      "semantic_seed": "WX2 issue #1187; generated_at=1800000000; bounds 47N,7E to 48N,8.5E",
+      "rust_builder": "host/obc-vectors/src/obcw.rs using obc-formats byte authority",
+      "rust_consumer": "firmware/obc-weather",
+      "swift_consumer": "companion-ios/Packages/OBCKit/Sources/OBCWeatherWire/OBCWeatherCodec.swift",
+      "contract": "Swift independently decodes and re-encodes every positive byte-identically; both readers reject every negative"
+    },
+    "producer_policy_max_bytes": 65536,
+    "positives": {
+      "weather-minimal-dry.obcw": {"byte_len": 688, "internal_crc32": "0x111A6E06", "sha256": "9c177036adcf2f9f9e3c01a319c09e3cac53c1692a71a2b611cffcdf05843b63", "shape": "24 dry hourly records; no rain frames"},
+      "weather-dwd-96x96-9f.obcw": {"byte_len": 46480, "internal_crc32": "0xFBFBD2D2", "sha256": "7dc80b4c7d1ae22da1707f03ffc368239939b622b1416c7a37b6098356601347", "shape": "96x96 at 1000 m; 9 native 15-minute frames; 36 raw4 tiles/frame"},
+      "weather-coarse-model.obcw": {"byte_len": 1008, "internal_crc32": "0xEFB6218D", "sha256": "388bc626370301c0bbf3992fa68df20c186d45886c9d5c5717d1163b399da5b1", "shape": "32x32 at 25000 m; 2 genuine 3-hour model times"},
+      "weather-nodata-tile.obcw": {"byte_len": 764, "internal_crc32": "0x08C865D8", "sha256": "61c038bc8fa678cf3bf2b42fc7c948627cba2d21943142854aad2e3d8812d3f6", "shape": "one independently compressed all-no-data tile"},
+      "weather-raw-tile.obcw": {"byte_len": 876, "internal_crc32": "0xC0AFE59C", "sha256": "da32b2db8eddb497de5ff83ec9dd7570cab5d046bbfbe8e43c13d30b55b07f79", "shape": "one 128-byte raw4 tile"},
+      "weather-rle-tile.obcw": {"byte_len": 764, "internal_crc32": "0x69BF4912", "sha256": "30c79bfb0d0916433b744bf092a93924a7cf2176abfeb8107a657fcdc75fed91", "shape": "one 16-byte RLE4 tile"},
+      "weather-max-policy.obcw": {"byte_len": 65536, "internal_crc32": "0x5250667F", "sha256": "2a8fd0ddb6bc3b2283bacdb8debcaad0352b81c08441cd9c264004ffa7573889", "shape": "exact v1 producer-policy boundary; 462 raw tiles plus one 108-byte RLE tile"}
+    },
+    "negatives": {
+      "weather-invalid-truncated.obcw": "last byte missing while total_len remains unchanged",
+      "weather-invalid-bad-offset.obcw": "hourly section points into the header; CRC recomputed",
+      "weather-invalid-overlap.obcw": "tile data aliases its directory; CRC recomputed",
+      "weather-invalid-nibble.obcw": "raw4 contains reserved intensity 13; CRC recomputed",
+      "weather-invalid-rle-overlong.obcw": "RLE expands past 256 cells; CRC recomputed",
+      "weather-invalid-crc.obcw": "payload changed without updating the internal CRC",
+      "weather-invalid-time-order.obcw": "two frame valid timestamps are equal; CRC recomputed"
+    }
   }
 }

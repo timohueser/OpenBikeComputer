@@ -16,7 +16,8 @@ and the simulator + tests first-class.
     the render path (obc-reader → obc-elevation → obc-route → obc-render →
     obc-app), the platform adapters (`obc-platform`, `obc-display`,
     `obc-sensors`, `obc-storage`), `obc-ble`, `obc-dfu`, the `obc-fw-nrf54l`
-    board crate and `obc-boot`.
+    board crate and `obc-boot`, plus the allocation-free `obc-weather` OBCW
+    reader seam (storage/cache policy comes later).
   - `host/` — tools and oracles, never on the device: `obc-pack` (the std-host
     map packer, OSM `.osm.pbf` → `.obcm`), `obc-bake` (the bakery: the curated
     region list → a catalog tree → published objects), `obc-dem` (the terrain

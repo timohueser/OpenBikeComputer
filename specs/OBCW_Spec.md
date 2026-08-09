@@ -1,0 +1,290 @@
+# OBCW v1 weather bundle specification
+
+Status: **normative** for format version 1. The Rust byte authority is
+`firmware/obc-formats/src/obcw.rs`; the allocation-free traversal is
+`firmware/obc-weather`. The Swift implementation is an independent consumer of this document. A
+producer in another language must not need any implementation.
+
+OBCW is the provider-neutral object delivered by a companion to OpenBikeComputer. It contains
+exactly 24 hourly conditions and zero or more genuine precipitation-grid frames. HTTP products,
+provider identifiers, projections, licensing metadata and selection policy end at the phone.
+Firmware sees only this file.
+
+The words MUST, MUST NOT, SHOULD and MAY are normative. All multibyte integers are **little
+endian**. All offsets are absolute from byte zero. Integers are unsigned unless their type begins
+with `int`. Unix timestamps are signed 64-bit seconds since 1970-01-01T00:00:00Z; leap seconds are
+not represented. Coordinates are signed integer microdegrees (10^-6 degrees). Strings and floats
+do not occur anywhere in v1.
+
+## 1. Design and limits
+
+- Format offsets and lengths are `uint32`. A reader MUST use checked addition and multiplication
+  and MUST reject a value it cannot represent or address.
+- A **phone producer policy**, separate from the format, caps v1 objects at 65,536 bytes. A
+  conforming reader MUST NOT treat 65,536 as a format limit. Future transports may carry a larger
+  valid v1 object without changing the byte layout.
+- Rain tiles are fixed at 16 x 16 cells and independently addressable. A reader needs one
+  128-byte encoded-tile buffer and one caller-owned 256-byte decoded-tile buffer; it never needs a
+  whole frame in RAM.
+- Providers may supply different grid dimensions, cell sizes and frame counts. A typical DWD
+  producer uses a 96 x 96 grid at nominal 1,000 m and nine genuine frames at 0, +15, ...,+120
+  minutes. A coarse global model emits only its genuine timestamps and resolution.
+- V1 grids do not cross the antimeridian. A producer whose source window does must split/select a
+  non-crossing window before encoding.
+- No provider IDs, source URLs, strings, polygons, contours, mipmaps, colors or screen bitmaps are
+  permitted. Provider attribution and diagnostics stay on the companion.
+
+## 2. Canonical file order
+
+A v1 file has exactly this order, with no gaps:
+
+1. 112-byte header;
+2. 24 x 24-byte hourly records;
+3. `frame_count` x 48-byte rain-frame descriptors;
+4. for each frame in descriptor order: its tile directory followed immediately by its tile data.
+
+Offsets restate that layout so truncation and aliases are detectable. A reader MUST require every
+offset to equal the checked end of the preceding region. Thus header, hourly section, descriptor
+section, tile directories and payloads can never overlap. The checked end of the final tile
+payload MUST equal `total_len`; trailing bytes are invalid.
+
+This canonical order is intentional. It lets a low-RAM reader prove non-overlap in a single pass
+without retaining every interval.
+
+## 3. Header (112 bytes)
+
+| Offset | Field | Size | Type | V1 rule |
+| ---: | --- | ---: | --- | --- |
+| 0 | Magic | 4 | `uint8[4]` | ASCII `OBCW` |
+| 4 | Version | 2 | `uint16` | `1` |
+| 6 | Header Len | 2 | `uint16` | `112` |
+| 8 | Total Len | 4 | `uint32` | Exact file length |
+| 12 | Generation | 4 | `uint32` | Monotonic cache generation chosen by the producer |
+| 16 | Request ID | 4 | `uint32` | Echoes the device request; `0` only for unsolicited/manual material |
+| 20 | Generated At | 8 | `int64` | Time the normalized bundle was built; positive |
+| 28 | Valid From | 8 | `int64` | Earliest represented validity; may precede generation for a current observation |
+| 36 | Valid Until | 8 | `int64` | Latest represented validity; `>= valid_from` |
+| 44 | South Latitude | 4 | `int32` | Overall grid bound, -90,000,000...90,000,000 |
+| 48 | West Longitude | 4 | `int32` | Overall grid bound, -180,000,000...180,000,000 |
+| 52 | North Latitude | 4 | `int32` | Strictly greater than south |
+| 56 | East Longitude | 4 | `int32` | Strictly greater than west; antimeridian crossing is not v1 |
+| 60 | Grid Origin Latitude | 4 | `int32` | South edge reference for cell `(row=0,col=0)`; equals South Latitude in v1 |
+| 64 | Grid Origin Longitude | 4 | `int32` | West edge reference for cell `(0,0)`; equals West Longitude in v1 |
+| 68 | Hourly Offset | 4 | `uint32` | `112` |
+| 72 | Hourly Count | 2 | `uint16` | `24` |
+| 74 | Hourly Record Len | 2 | `uint16` | `24` |
+| 76 | Frame Directory Offset | 4 | `uint32` | `112 + 24 x 24 = 688` |
+| 80 | Frame Count | 2 | `uint16` | Number of genuine precipitation timestamps; zero is legal |
+| 82 | Frame Descriptor Len | 2 | `uint16` | `48` |
+| 84 | Bundle Flags | 4 | `uint32` | `0`; all v1 bits reserved |
+| 88 | Bundle CRC-32 | 4 | `uint32` | Section 8 |
+| 92 | Reserved | 20 | - | All zero |
+
+Bounds describe the common geographic window as half-open `[south,north) x [west,east)`. Frames
+may change resolution and dimensions while retaining that window and origin. `cell_size_m` is the
+source's nominal ground resolution for truthful UI/selection; it does not ask firmware to recreate
+a provider projection.
+
+## 4. Hourly section
+
+There are exactly 24 fixed-width records in increasing valid-time order. `valid_at` is
+`header.valid_from + valid_time_offset_s`, computed with checked arithmetic, and MUST be no later
+than `valid_until`. Records MUST be strictly increasing; equal or decreasing values are invalid.
+
+| Offset | Field | Size | Type | Unit / rule |
+| ---: | --- | ---: | --- | --- |
+| 0 | Valid Time Offset | 4 | `uint32` | Seconds after header `valid_from` |
+| 4 | Temperature | 2 | `int16` | 0.1 degrees C; -1000...700, or `INT16_MIN` unavailable |
+| 6 | Precipitation Amount | 2 | `uint16` | 0.1 mm during this hourly period, or `65535` unavailable |
+| 8 | Precipitation Probability | 1 | `uint8` | 0...100 percent, or `255` unavailable |
+| 9 | Condition | 1 | `uint8` | Canonical table below |
+| 10 | Wind From | 2 | `uint16` | Meteorological degrees clockwise from true north, 0...359, or `65535` unavailable |
+| 12 | Wind Speed | 2 | `uint16` | 0.1 m/s, 0...2000, or `65535` unavailable |
+| 14 | Wind Gust | 2 | `uint16` | 0.1 m/s, 0...2000, or `65535` unavailable |
+| 16 | Flags | 2 | `uint16` | `0`; all v1 bits reserved |
+| 18 | Reserved | 6 | - | All zero |
+
+Missing values remain missing. In particular, an unavailable precipitation amount/probability
+MUST NOT be normalized to zero.
+
+### 4.1 Canonical conditions
+
+Adapters map their source taxonomy to these weather semantics. Codes express conditions, not
+provider products or icon names.
+
+| Code | Meaning |
+| ---: | --- |
+| 0 | Clear |
+| 1 | Mostly clear |
+| 2 | Partly cloudy |
+| 3 | Overcast |
+| 4 | Fog |
+| 5 | Drizzle |
+| 6 | Rain |
+| 7 | Sleet / mixed rain and snow |
+| 8 | Snow |
+| 9 | Showers |
+| 10 | Thunderstorm |
+| 11 | Hail |
+| 12 | Wind as the primary condition |
+| 13...254 | Reserved; reject |
+| 255 | Condition unavailable |
+
+Thunderstorm takes precedence over its associated precipitation; hail takes precedence when hail
+is the hazard supplied by the source. UI icon/color selection is not part of OBCW.
+
+## 5. Rain-frame descriptor (48 bytes)
+
+Descriptors are sorted by strictly increasing `valid_at`. Each timestamp is the actual native
+frame time, not an ordinal or forecast-step guess, and MUST be within the header validity range.
+
+| Offset | Field | Size | Type | V1 rule |
+| ---: | --- | ---: | --- | --- |
+| 0 | Valid At | 8 | `int64` | Actual frame validity timestamp |
+| 8 | Width | 2 | `uint16` | Cells west-to-east; nonzero |
+| 10 | Height | 2 | `uint16` | Cells south-to-north; nonzero |
+| 12 | Cell Size | 2 | `uint16` | Nominal metres, nonzero |
+| 14 | Tile Edge | 1 | `uint8` | `16` |
+| 15 | Reserved | 1 | - | Zero |
+| 16 | Tile Directory Offset | 4 | `uint32` | Exact checked end of preceding region |
+| 20 | Tile Count | 4 | `uint32` | `ceil(width/16) x ceil(height/16)` |
+| 24 | Tile Data Offset | 4 | `uint32` | Directory offset + tile count x 12 |
+| 28 | Tile Data Len | 4 | `uint32` | Sum of this frame's encoded tile lengths |
+| 32 | Quality Flags | 4 | `uint32` | Semantic flags below |
+| 36 | Reserved | 12 | - | All zero |
+
+Rows advance north and columns advance east. Tiles are row-major over
+`ceil(height/16) x ceil(width/16)`. Cells within a tile are row-major. A partial tile at the north
+or east edge still decodes to 256 cells; cells outside the declared width/height MUST be the
+no-data intensity. A consumer MUST clip those padding cells.
+
+For an in-bounds coordinate, lookup is integer affine mapping over the common bounds:
+
+```text
+row = floor((lat - south) * height / (north - south))
+col = floor((lon - west)  * width  / (east - west))
+```
+
+Intermediates MUST be checked signed 64-bit (or wider). The north/east edges are outside the
+half-open window; drawing code may clip a pixel at that edge to the last cell, but data queries MUST
+not claim coverage outside it. Nearest-neighbour sampling uses the selected cell exactly. No
+bilinear interpolation or fabricated sub-cell precision is permitted.
+
+### 5.1 Semantic quality flags
+
+| Bit | Name | Meaning |
+| ---: | --- | --- |
+| 0 | Observed | Based primarily on an observation valid at this time |
+| 1 | Forecast | Based primarily on a model/nowcast forecast valid at this time |
+| 2 | Partial coverage | Some in-bounds cells are unavailable |
+| 3 | Degraded | Producer used a valid but reduced-quality source/result |
+| 4...31 | Reserved | Must be zero in v1 |
+
+Exactly one of Observed or Forecast MUST be set. These flags say what the data means; they MUST
+NOT identify DWD, NOAA or another provider.
+
+## 6. Tile directory and payloads
+
+Each tile-directory entry is 12 bytes:
+
+| Offset | Field | Size | Type | V1 rule |
+| ---: | --- | ---: | --- | --- |
+| 0 | Data Offset | 4 | `uint32` | Absolute offset; first equals descriptor `tile_data_offset`, each next equals prior offset + length |
+| 4 | Encoded Len | 2 | `uint16` | Exact payload length |
+| 6 | Decoded Cells | 2 | `uint16` | `256` |
+| 8 | Codec | 1 | `uint8` | `0` raw4 or `1` RLE4 |
+| 9 | Flags | 1 | `uint8` | `0`; reserved |
+| 10 | Reserved | 2 | - | Zero |
+
+The checked end of the last payload MUST equal `tile_data_offset + tile_data_len`. A payload may
+not alias its directory, another tile, another frame or a header section.
+
+### 6.1 raw4 (codec 0)
+
+Length is exactly 128 bytes. Each byte holds two row-major cells: the earlier cell is the low
+nibble and the later cell is the high nibble.
+
+### 6.2 RLE4 (codec 1)
+
+Each byte is one run. The high nibble stores `run_length - 1` (therefore 1...16 cells); the low
+nibble stores the intensity. Runs never cross a tile boundary. Decoding MUST produce exactly 256
+cells: fewer is truncated; more is an overlong/zip-bomb-style input and MUST be rejected before
+writing beyond the caller's tile buffer.
+
+An RLE4 payload MUST be shorter than 128 bytes. Producers MUST choose RLE4 only when it is
+strictly smaller than raw4; ties use raw4. This makes the representation deterministic.
+
+## 7. Canonical 4-bit precipitation intensity
+
+The table represents instantaneous/rate precipitation in millimetres per hour. Interval notation
+is exact: a value on a lower bound belongs to that row. Producers should quantize from their best
+non-negative rate; negative or non-finite source values are no-data.
+
+| Code | Rate in mm/h | Meaning |
+| ---: | --- | --- |
+| 0 | exactly 0 | Dry; transparent in a rain overlay |
+| 1 | (0, 0.10) | Trace |
+| 2 | [0.10, 0.25) | Very light |
+| 3 | [0.25, 0.50) | Light |
+| 4 | [0.50, 1.00) | Light-moderate |
+| 5 | [1.00, 2.00) | Moderate |
+| 6 | [2.00, 4.00) | Moderate-heavy |
+| 7 | [4.00, 6.00) | Heavy |
+| 8 | [6.00, 10.00) | Very heavy |
+| 9 | [10.00, 16.00) | Intense |
+| 10 | [16.00, 25.00) | Severe |
+| 11 | [25.00, 50.00) | Extreme |
+| 12 | [50.00, infinity) | Exceptional |
+| 13, 14 | - | Reserved; a reader MUST reject the tile |
+| 15 | unavailable | No data; never dry and never an alert-clear signal |
+
+Colors, opacity, dithering and alert thresholds are consumer policy and are deliberately absent.
+
+## 8. Whole-bundle CRC
+
+`bundle_crc32` is CRC-32/IEEE (reflected polynomial `0xEDB88320`, initialization and xor-out
+`0xFFFFFFFF`; check value `CRC32("123456789") = 0xCBF43926`) over exactly `total_len` bytes while
+bytes 88...91 are treated as four zeros. Writers zero the field, hash the finished bundle, then
+store the result little-endian. Readers MUST validate it before accepting the object.
+
+The transport may also carry an outer whole-object CRC. The internal CRC is still required: it
+travels with cached OBCW bytes and protects parsing after transport metadata is gone.
+
+## 9. Required validation order
+
+A decoder MUST never panic, read outside the announced object or write beyond a tile buffer.
+Equivalent early-exit ordering is allowed, but acceptance requires every check below:
+
+1. Read the fixed header; validate magic, version, header length and reserved bytes.
+2. Require `total_len` to equal the available object length; checked arithmetic only.
+3. Validate fixed counts/record lengths, time range, coordinate bounds/origin and header flags.
+4. Verify the internal CRC with the CRC field treated as zero.
+5. Validate 24 hourly records and strictly increasing valid times.
+6. Validate descriptor extent and canonical section order.
+7. For each frame, validate timestamp, dimensions, quality flags and computed tile count.
+8. For each tile entry, validate canonical offset, lengths, reserved fields and codec.
+9. Validate every raw nibble or RLE run. Stop as soon as an RLE sum exceeds 256; require exactly
+   256 at its end.
+10. Require the final checked end to equal `total_len`.
+
+CRC success never excuses structural validation. A malicious producer can compute a CRC over
+malformed data.
+
+## 10. Golden and negative material
+
+Checked-in files live in `specs/vectors/` and are described in its `manifest.json` and README.
+Positive vectors cover a dry hourly-only bundle, raw and compressed tiles, a no-data tile, a
+coarse-model shape, a 96 x 96 x nine-frame DWD-shaped raw bundle, and the exact 65,536-byte
+producer-policy boundary. Negative vectors isolate truncation, bad offsets, overlapping sections,
+reserved intensity nibbles, overlong RLE, CRC mismatch and timestamp disorder.
+
+Rust and Swift must decode the same positives to the same values and independently re-encode the
+exact bytes. Both must reject every negative. Vector provenance is recorded beside the fixtures.
+
+## 11. Worked size budget
+
+A 96 x 96 frame has `6 x 6 = 36` tiles. Forced raw4 costs `36 x (12 + 128) = 5,040` bytes per
+frame. Nine frames cost 45,360 bytes. Header + hourly + descriptors cost
+`112 + 24 x 24 + 9 x 48 = 1,120` bytes, for **46,480 bytes (45.39 KiB)** total. Real RLE4 can only
+reduce it. This is the locked approximately 44-46 KiB DWD-shaped estimate and leaves 19,056 bytes
+under the 64 KiB producer policy.

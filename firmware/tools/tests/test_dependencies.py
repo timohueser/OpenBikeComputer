@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -65,6 +66,14 @@ def rules(exceptions=()):
 
 
 class DependencyTests(unittest.TestCase):
+    def test_obc_weather_is_core_and_cannot_pull_in_storage_policy(self):
+        production_rules = json.loads((Path(__file__).parents[1] / "dependency_rules.json").read_text())
+        self.assertIn("obc-weather", production_rules["groups"]["core"])
+        edges = {check_dependencies.Edge("obc-weather", "obc-storage")}
+        violations = check_dependencies.check_edges(edges, production_rules)
+        self.assertEqual(len(violations), 1)
+        self.assertIn("core -> platform", violations[0])
+
     def test_forbidden_edge_has_useful_message(self):
         edges = check_dependencies.local_edges(metadata(("low", "high", None)))
         violations = check_dependencies.check_edges(edges, rules())

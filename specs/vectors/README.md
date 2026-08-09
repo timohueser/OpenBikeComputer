@@ -61,6 +61,22 @@ A drift on any side fails that side's tests — the files are the contract.
 | `terrain-shard.obcd` | OBCT terrain shard ([`OBCT_Spec.md`](../OBCT_Spec.md) §4) | a 2 × 2 cell rectangle at ≈ 46.97°N / 7.98°E over a **plane** (`100 + 3·di + 5·dj` m), with the far cell **absent** (the `0` directory sentinel) and one `NODATA` sample. Posting is the v1 `2^9`; the cell is `2^14` — deliberately not the v1 `2^19`, because a v1 cell is 2 MiB of raster and the point of both being header data is that a small one is equally legal. A plane is an *oracle*: bilinear interpolation over one has a closed form, so a second implementation checks itself against arithmetic rather than a reference table, and the differing coefficients (3 vs 5) catch a transposed lat/lon |
 | `trip-list.bin` | `tripList` object §7.4 | one entry for the trip above: **6-byte v2 header** + a **76-byte** entry mirroring `routeList` (trailing whole-object `crc32`); `total_distance_m`/`total_ascent_m` (4414 / 152) summed over the two **resolvable** stages, `stage_count` 3 counts every stored stage (dangling included) |
 
+### OBCW weather vectors
+
+The seven positive `.obcw` files pin [`OBCW_Spec.md`](../OBCW_Spec.md): hourly-only dry,
+96 × 96 × nine-frame DWD shape, coarse native model times, all-no-data, raw4, RLE4, and the exact
+65,536-byte producer-policy boundary. The DWD-shaped raw object is 46,480 bytes (45.39 KiB).
+
+The seven `weather-invalid-*` files isolate truncation, a bad section offset, section overlap, a
+reserved intensity nibble, RLE expansion beyond 256 cells, CRC mismatch, and timestamp disorder.
+Except for truncation and the deliberate CRC mismatch, their CRCs are recomputed so structural
+validation cannot hide behind the integrity check.
+
+`manifest.json` records each positive's internal CRC, SHA-256, shape, semantic seed and exact
+producer/consumer paths. Rust builds them through the `obc-formats` authority and reads them
+through the allocator-free `obc-weather` seam. The independent Swift `OBCWeatherWire` codec
+decodes and re-encodes every positive byte-for-byte and rejects every negative.
+
 `manifest.json` restates each fixture's expected decoded values (plus the pinned
 protocol version, UUIDs, and the CRC-32 check value) so a test suite can assert
 against data instead of hard-coding.
