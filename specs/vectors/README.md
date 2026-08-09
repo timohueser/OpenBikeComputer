@@ -67,10 +67,11 @@ The seven positive `.obcw` files pin [`OBCW_Spec.md`](../OBCW_Spec.md): hourly-o
 96 × 96 × nine-frame DWD shape, coarse native model times, all-no-data, raw4, RLE4, and the exact
 65,536-byte producer-policy boundary. The DWD-shaped raw object is 46,480 bytes (45.39 KiB).
 
-The seven `weather-invalid-*` files isolate truncation, a bad section offset, section overlap, a
-reserved intensity nibble, RLE expansion beyond 256 cells, CRC mismatch, and timestamp disorder.
-Except for truncation and the deliberate CRC mismatch, their CRCs are recomputed so structural
-validation cannot hide behind the integrity check.
+The ten `weather-invalid-*` files isolate truncation, a bad section offset, section overlap,
+nonzero hourly flags/reserved bytes, a reserved intensity nibble, RLE expansion beyond 256 cells,
+noncanonical split RLE runs, CRC mismatch, and timestamp disorder. Except for truncation and the
+deliberate CRC mismatch, their CRCs are recomputed so structural validation cannot hide behind the
+integrity check.
 
 `manifest.json` records each positive's internal CRC, SHA-256, shape, semantic seed and exact
 producer/consumer paths. Rust builds them through the `obc-formats` authority and reads them

@@ -63,7 +63,7 @@ without retaining every interval.
 | 16 | Request ID | 4 | `uint32` | Echoes the device request; `0` only for unsolicited/manual material |
 | 20 | Generated At | 8 | `int64` | Time the normalized bundle was built; positive |
 | 28 | Valid From | 8 | `int64` | Earliest represented validity; may precede generation for a current observation |
-| 36 | Valid Until | 8 | `int64` | Latest represented validity; `>= valid_from` |
+| 36 | Valid Until | 8 | `int64` | Validity ceiling; every hourly interval end and frame `valid_at` is `<=` this value |
 | 44 | South Latitude | 4 | `int32` | Overall grid bound, -90,000,000...90,000,000 |
 | 48 | West Longitude | 4 | `int32` | Overall grid bound, -180,000,000...180,000,000 |
 | 52 | North Latitude | 4 | `int32` | Strictly greater than south |
@@ -87,9 +87,12 @@ a provider projection.
 
 ## 4. Hourly section
 
-There are exactly 24 fixed-width records in increasing valid-time order. `valid_at` is
-`header.valid_from + valid_time_offset_s`, computed with checked arithmetic, and MUST be no later
-than `valid_until`. Records MUST be strictly increasing; equal or decreasing values are invalid.
+There are exactly 24 fixed-width records for the 24 consecutive hours beginning at
+`header.valid_from`. Record index `i` MUST have `valid_time_offset_s = i * 3600`. Its `valid_at` is
+`header.valid_from + valid_time_offset_s`, computed with checked arithmetic, and is the beginning
+of the represented hour. The interval is **`[valid_at, valid_at + 3600)`**. Its checked exclusive
+end MUST be no later than `valid_until`; thus the last record requires
+`valid_until >= valid_from + 24 * 3600`.
 
 | Offset | Field | Size | Type | Unit / rule |
 | ---: | --- | ---: | --- | --- |
@@ -104,8 +107,12 @@ than `valid_until`. Records MUST be strictly increasing; equal or decreasing val
 | 16 | Flags | 2 | `uint16` | `0`; all v1 bits reserved |
 | 18 | Reserved | 6 | - | All zero |
 
-Missing values remain missing. In particular, an unavailable precipitation amount/probability
-MUST NOT be normalized to zero.
+Precipitation Amount is the total accumulated during that following-hour interval. Precipitation
+Probability is the probability of precipitation during that same interval. Adapters whose source
+labels an accumulation by its ending timestamp MUST therefore subtract the source interval before
+assigning the OBCW record; they MUST NOT shift a preceding-hour amount onto `valid_at`. Other
+fields describe conditions valid at the interval beginning. Missing values remain missing. In
+particular, an unavailable precipitation amount/probability MUST NOT be normalized to zero.
 
 ### 4.1 Canonical conditions
 
@@ -211,6 +218,11 @@ nibble stores the intensity. Runs never cross a tile boundary. Decoding MUST pro
 cells: fewer is truncated; more is an overlong/zip-bomb-style input and MUST be rejected before
 writing beyond the caller's tile buffer.
 
+Runs MUST be maximal subject to the 16-cell field limit. Two adjacent runs with the same intensity
+are valid only when the first run has length 16, because only that full run forces a continuation.
+For example, 20 equal cells encode as lengths 16 then 4; lengths 8 then 12 are noncanonical and
+MUST be rejected. Encoders coalesce equal cells and split only at 16-cell boundaries.
+
 An RLE4 payload MUST be shorter than 128 bytes. Producers MUST choose RLE4 only when it is
 strictly smaller than raw4; ties use raw4. This makes the representation deterministic.
 
@@ -259,12 +271,13 @@ Equivalent early-exit ordering is allowed, but acceptance requires every check b
 2. Require `total_len` to equal the available object length; checked arithmetic only.
 3. Validate fixed counts/record lengths, time range, coordinate bounds/origin and header flags.
 4. Verify the internal CRC with the CRC field treated as zero.
-5. Validate 24 hourly records and strictly increasing valid times.
+5. Validate the 24 exact following-hour offsets, each interval end, fields, flags and reserved
+   bytes.
 6. Validate descriptor extent and canonical section order.
 7. For each frame, validate timestamp, dimensions, quality flags and computed tile count.
 8. For each tile entry, validate canonical offset, lengths, reserved fields and codec.
-9. Validate every raw nibble or RLE run. Stop as soon as an RLE sum exceeds 256; require exactly
-   256 at its end.
+9. Validate every raw nibble or RLE run, including maximal-run canonicality. Stop as soon as an
+   RLE sum exceeds 256; require exactly 256 at its end.
 10. Require the final checked end to equal `total_len`.
 
 CRC success never excuses structural validation. A malicious producer can compute a CRC over
@@ -276,7 +289,8 @@ Checked-in files live in `specs/vectors/` and are described in its `manifest.jso
 Positive vectors cover a dry hourly-only bundle, raw and compressed tiles, a no-data tile, a
 coarse-model shape, a 96 x 96 x nine-frame DWD-shaped raw bundle, and the exact 65,536-byte
 producer-policy boundary. Negative vectors isolate truncation, bad offsets, overlapping sections,
-reserved intensity nibbles, overlong RLE, CRC mismatch and timestamp disorder.
+nonzero hourly flags/reserved bytes, reserved intensity nibbles, overlong and noncanonical RLE,
+CRC mismatch and timestamp disorder.
 
 Rust and Swift must decode the same positives to the same values and independently re-encode the
 exact bytes. Both must reject every negative. Vector provenance is recorded beside the fixtures.
@@ -288,3 +302,11 @@ frame. Nine frames cost 45,360 bytes. Header + hourly + descriptors cost
 `112 + 24 x 24 + 9 x 48 = 1,120` bytes, for **46,480 bytes (45.39 KiB)** total. Real RLE4 can only
 reduce it. This is the locked approximately 44-46 KiB DWD-shaped estimate and leaves 19,056 bytes
 under the 64 KiB producer policy.
+
+The allocation-free Rust reader validates CRC in 512-byte chunks, hourly records four at a time,
+and canonical tile directories/payloads in four-tile windows. Its largest explicit simultaneously
+live validation scratch is 864 bytes. A counting `ByteSource` regression over the 46,480-byte
+DWD-shaped vector pins `WeatherReader::open` at **269 `read_at` calls and 92,848 bytes read**, down
+from 1,046 calls while remaining below the 2 KiB scratch budget. The byte total is just under twice
+the object because integrity verification and structural validation are separate fail-closed
+passes; these measured implementation budgets do not change the wire format.

@@ -221,6 +221,21 @@ pub fn invalid_overlap() -> Vec<u8> {
     bytes
 }
 
+pub fn invalid_hourly_flags() -> Vec<u8> {
+    let mut bytes = minimal_dry();
+    let flags = obcw::HEADER_LEN + 16;
+    bytes[flags..flags + 2].copy_from_slice(&1u16.to_le_bytes());
+    refresh_crc(&mut bytes);
+    bytes
+}
+
+pub fn invalid_hourly_reserved() -> Vec<u8> {
+    let mut bytes = minimal_dry();
+    bytes[obcw::HEADER_LEN + 18] = 1;
+    refresh_crc(&mut bytes);
+    bytes
+}
+
 pub fn invalid_nibble() -> Vec<u8> {
     let mut bytes = raw_tile_bundle();
     let descriptor = obcw::HEADER_LEN + obcw::HOURLY_COUNT * obcw::HOURLY_RECORD_LEN;
@@ -242,6 +257,20 @@ pub fn invalid_rle_overlong() -> Vec<u8> {
     for byte in &mut bytes[data..data + len] {
         *byte = 0xF6;
     }
+    refresh_crc(&mut bytes);
+    bytes
+}
+
+pub fn invalid_rle_noncanonical() -> Vec<u8> {
+    // The final policy-boundary tile has 108 short alternating runs. Make its second run equal
+    // to the first without changing lengths or decoded cell count. The first run is shorter than
+    // 16 cells, so canonical RLE requires the equal runs to be coalesced.
+    let mut bytes = maximum_policy();
+    let descriptor = obcw::HEADER_LEN + obcw::HOURLY_COUNT * obcw::HOURLY_RECORD_LEN;
+    let directory = rd_u32(&bytes, descriptor + obcw::FRAME_TILE_DIRECTORY_OFFSET) as usize;
+    let last_entry = directory + 462 * obcw::TILE_DIRECTORY_ENTRY_LEN;
+    let data = rd_u32(&bytes, last_entry + obcw::TILE_DATA_OFFSET) as usize;
+    bytes[data + 1] = (bytes[data + 1] & 0xF0) | (bytes[data] & 0x0F);
     refresh_crc(&mut bytes);
     bytes
 }
@@ -279,8 +308,11 @@ pub fn negatives() -> Vec<(&'static str, Vec<u8>)> {
         ("weather-invalid-truncated.obcw", invalid_truncated()),
         ("weather-invalid-bad-offset.obcw", invalid_bad_offset()),
         ("weather-invalid-overlap.obcw", invalid_overlap()),
+        ("weather-invalid-hourly-flags.obcw", invalid_hourly_flags()),
+        ("weather-invalid-hourly-reserved.obcw", invalid_hourly_reserved()),
         ("weather-invalid-nibble.obcw", invalid_nibble()),
         ("weather-invalid-rle-overlong.obcw", invalid_rle_overlong()),
+        ("weather-invalid-rle-noncanonical.obcw", invalid_rle_noncanonical()),
         ("weather-invalid-crc.obcw", invalid_crc()),
         ("weather-invalid-time-order.obcw", invalid_time_order()),
     ]

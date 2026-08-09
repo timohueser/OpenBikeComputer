@@ -47,8 +47,9 @@ public enum OBCWeatherCondition: UInt8, CaseIterable, Sendable {
     case unavailable = 255
 }
 
-/// Fixed-width hourly wire values. Unavailable sentinels remain explicit here; WX4's semantic
-/// domain layer owns any optional-value translation.
+/// Fixed-width following-hour wire values. Record `i` begins at `validFrom + i*3600`; amount and
+/// probability describe `[validAt, validAt+3600)`. Unavailable sentinels remain explicit here;
+/// WX4's semantic domain layer owns any optional-value translation.
 public struct OBCWeatherHourlyRecord: Equatable, Sendable {
     public var validTimeOffsetSeconds: UInt32
     public var temperatureDeciCelsius: Int16
@@ -142,6 +143,7 @@ public enum OBCWeatherCodec {
     private static let headerLength = 112
     private static let hourlyCount = 24
     private static let hourlyRecordLength = 24
+    private static let hourlyIntervalSeconds: UInt32 = 3_600
     private static let frameDescriptorLength = 48
     private static let tileDirectoryEntryLength = 12
     private static let tileEdge = 16
@@ -184,12 +186,14 @@ public enum OBCWeatherCodec {
                 tileLengths: lengths))
             tail = try checkedAdd(dataOffset, dataLength)
         }
-        guard tail <= Int(UInt32.max) else { throw OBCWeatherWireError.malformed }
+        let totalLength = try checkedUInt32(tail)
+        let frameBaseWire = try checkedUInt32(frameBase)
+        let frameCountWire = try checkedUInt16(bundle.rainFrames.count)
         var data = Data(count: tail)
         data.replaceSubrange(0..<4, with: magic)
         data.putLE(version, at: 4)
         data.putLE(UInt16(headerLength), at: 6)
-        data.putLE(UInt32(tail), at: 8)
+        data.putLE(totalLength, at: 8)
         data.putLE(bundle.generation, at: 12)
         data.putLE(bundle.requestID, at: 16)
         data.putLE(bundle.generatedAtUnixSeconds, at: 20)
@@ -201,11 +205,11 @@ public enum OBCWeatherCodec {
         data.putLE(bundle.bounds.eastLongitudeMicrodegrees, at: 56)
         data.putLE(bundle.bounds.gridOriginLatitudeMicrodegrees, at: 60)
         data.putLE(bundle.bounds.gridOriginLongitudeMicrodegrees, at: 64)
-        data.putLE(UInt32(headerLength), at: 68)
+        data.putLE(try checkedUInt32(headerLength), at: 68)
         data.putLE(UInt16(hourlyCount), at: 72)
         data.putLE(UInt16(hourlyRecordLength), at: 74)
-        data.putLE(UInt32(frameBase), at: 76)
-        data.putLE(UInt16(bundle.rainFrames.count), at: 80)
+        data.putLE(frameBaseWire, at: 76)
+        data.putLE(frameCountWire, at: 80)
         data.putLE(UInt16(frameDescriptorLength), at: 82)
 
         for (index, record) in bundle.hourly.enumerated() {
@@ -228,10 +232,10 @@ public enum OBCWeatherCodec {
             data.putLE(frame.height, at: descriptor + 10)
             data.putLE(frame.cellSizeMetres, at: descriptor + 12)
             data[descriptor + 14] = UInt8(tileEdge)
-            data.putLE(UInt32(layout.directoryOffset), at: descriptor + 16)
-            data.putLE(UInt32(frame.tiles.count), at: descriptor + 20)
-            data.putLE(UInt32(layout.dataOffset), at: descriptor + 24)
-            data.putLE(UInt32(layout.dataLength), at: descriptor + 28)
+            data.putLE(try checkedUInt32(layout.directoryOffset), at: descriptor + 16)
+            data.putLE(try checkedUInt32(frame.tiles.count), at: descriptor + 20)
+            data.putLE(try checkedUInt32(layout.dataOffset), at: descriptor + 24)
+            data.putLE(try checkedUInt32(layout.dataLength), at: descriptor + 28)
             data.putLE(frame.quality.rawValue, at: descriptor + 32)
 
             var payload = layout.dataOffset
@@ -239,8 +243,8 @@ public enum OBCWeatherCodec {
                 let length = layout.tileLengths[tileIndex]
                 let codec: UInt8 = length < raw4Length ? 1 : 0
                 let entry = layout.directoryOffset + tileIndex * tileDirectoryEntryLength
-                data.putLE(UInt32(payload), at: entry)
-                data.putLE(UInt16(length), at: entry + 4)
+                data.putLE(try checkedUInt32(payload), at: entry)
+                data.putLE(try checkedUInt16(length), at: entry + 4)
                 data.putLE(UInt16(tileCells), at: entry + 6)
                 data[entry + 8] = codec
                 if codec == 0 {
@@ -267,11 +271,14 @@ public enum OBCWeatherCodec {
     }
 
     public static func decode(_ data: Data) throws -> OBCWeatherBundle {
-        guard data.count >= headerLength else { throw OBCWeatherWireError.malformed }
+        guard data.count >= headerLength, UInt64(data.count) <= UInt64(UInt32.max) else {
+            throw OBCWeatherWireError.malformed
+        }
+        let availableLength = try checkedUInt32(data.count)
         guard data.readBytes(at: 0, count: 4) == magic,
               try require(data.readUInt16LE(at: 4)) == version,
               try require(data.readUInt16LE(at: 6)) == UInt16(headerLength),
-              try require(data.readUInt32LE(at: 8)) == UInt32(data.count),
+              try require(data.readUInt32LE(at: 8)) == availableLength,
               try require(data.readUInt32LE(at: 68)) == UInt32(headerLength),
               try require(data.readUInt16LE(at: 72)) == UInt16(hourlyCount),
               try require(data.readUInt16LE(at: 74)) == UInt16(hourlyRecordLength),
@@ -303,10 +310,9 @@ public enum OBCWeatherCodec {
 
         var hourly: [OBCWeatherHourlyRecord] = []
         hourly.reserveCapacity(hourlyCount)
-        var priorHour: Int64?
         for index in 0..<hourlyCount {
             let offset = headerLength + index * hourlyRecordLength
-            guard data.allZero(in: offset + 18..<offset + 24),
+            guard data.allZero(in: offset + 16..<offset + 24),
                   let conditionRaw = data.readUInt8(at: offset + 9),
                   let condition = OBCWeatherCondition(rawValue: conditionRaw)
             else { throw OBCWeatherWireError.malformed }
@@ -320,10 +326,8 @@ public enum OBCWeatherCodec {
                 windSpeedDeciMetresPerSecond: try require(data.readUInt16LE(at: offset + 12)),
                 windGustDeciMetresPerSecond: try require(data.readUInt16LE(at: offset + 14)))
             guard valid(record) else { throw OBCWeatherWireError.malformed }
-            let (validAt, overflow) = validFrom.addingReportingOverflow(Int64(record.validTimeOffsetSeconds))
-            guard !overflow, validAt <= validUntil, priorHour.map({ validAt > $0 }) ?? true
-            else { throw OBCWeatherWireError.malformed }
-            priorHour = validAt
+            _ = try validateHourlyTime(
+                index: index, record: record, validFrom: validFrom, validUntil: validUntil)
             hourly.append(record)
         }
 
@@ -384,13 +388,17 @@ public enum OBCWeatherCodec {
                         cells.append(low); cells.append(high)
                     }
                 } else if codec == 1, encodedLength < raw4Length {
+                    var previous: (value: UInt8, run: Int)?
                     for byte in encoded {
                         let value = byte & 0x0F
                         let run = Int(byte >> 4) + 1
-                        guard validIntensity(value), cells.count <= tileCells - run else {
+                        guard validIntensity(value),
+                              previous.map({ $0.value != value || $0.run == 16 }) ?? true,
+                              cells.count <= tileCells - run else {
                             throw OBCWeatherWireError.malformed
                         }
                         cells.append(contentsOf: repeatElement(value, count: run))
+                        previous = (value, run)
                     }
                     guard cells.count == tileCells else { throw OBCWeatherWireError.malformed }
                 } else {
@@ -425,14 +433,11 @@ public enum OBCWeatherCodec {
                 generatedAt: bundle.generatedAtUnixSeconds, validFrom: bundle.validFromUnixSeconds,
                 validUntil: bundle.validUntilUnixSeconds, bounds: bundle.bounds)
         else { throw OBCWeatherWireError.malformed }
-        var priorHour: Int64?
-        for record in bundle.hourly {
-            let (validAt, overflow) = bundle.validFromUnixSeconds.addingReportingOverflow(
-                Int64(record.validTimeOffsetSeconds))
-            guard valid(record), !overflow, validAt <= bundle.validUntilUnixSeconds,
-                  priorHour.map({ validAt > $0 }) ?? true
-            else { throw OBCWeatherWireError.malformed }
-            priorHour = validAt
+        for (index, record) in bundle.hourly.enumerated() {
+            guard valid(record) else { throw OBCWeatherWireError.malformed }
+            _ = try validateHourlyTime(
+                index: index, record: record, validFrom: bundle.validFromUnixSeconds,
+                validUntil: bundle.validUntilUnixSeconds)
         }
         var priorFrame: Int64?
         for frame in bundle.rainFrames {
@@ -526,6 +531,30 @@ public enum OBCWeatherCodec {
         let (value, overflow) = lhs.multipliedReportingOverflow(by: rhs)
         guard !overflow, value >= 0 else { throw OBCWeatherWireError.malformed }
         return value
+    }
+
+    private static func checkedUInt16(_ value: Int) throws -> UInt16 {
+        guard value >= 0, UInt64(value) <= UInt64(UInt16.max) else { throw OBCWeatherWireError.malformed }
+        return UInt16(value)
+    }
+
+    private static func checkedUInt32(_ value: Int) throws -> UInt32 {
+        guard value >= 0, UInt64(value) <= UInt64(UInt32.max) else { throw OBCWeatherWireError.malformed }
+        return UInt32(value)
+    }
+
+    @discardableResult
+    private static func validateHourlyTime(
+        index: Int, record: OBCWeatherHourlyRecord, validFrom: Int64, validUntil: Int64
+    ) throws -> Int64 {
+        let expectedOffset = try checkedUInt32(try checkedMultiply(index, Int(hourlyIntervalSeconds)))
+        guard record.validTimeOffsetSeconds == expectedOffset else { throw OBCWeatherWireError.malformed }
+        let (validAt, startOverflow) = validFrom.addingReportingOverflow(Int64(record.validTimeOffsetSeconds))
+        let (intervalEnd, endOverflow) = validAt.addingReportingOverflow(Int64(hourlyIntervalSeconds))
+        guard !startOverflow, !endOverflow, intervalEnd <= validUntil else {
+            throw OBCWeatherWireError.malformed
+        }
+        return validAt
     }
 
     private static func require<T>(_ value: T?) throws -> T {

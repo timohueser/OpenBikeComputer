@@ -11,6 +11,7 @@ pub const VERSION: u16 = 1;
 pub const HEADER_LEN: usize = 112;
 pub const HOURLY_COUNT: usize = 24;
 pub const HOURLY_RECORD_LEN: usize = 24;
+pub const HOURLY_INTERVAL_SECONDS: u32 = 3_600;
 pub const FRAME_DESCRIPTOR_LEN: usize = 48;
 pub const TILE_DIRECTORY_ENTRY_LEN: usize = 12;
 pub const TILE_EDGE: usize = 16;
@@ -147,6 +148,8 @@ pub struct Header {
     pub crc32: u32,
 }
 
+/// Fixed-width following-hour values. Record `i` begins at `valid_from + i*3600`; amount and
+/// probability describe `[valid_at, valid_at+3600)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HourlyRecord {
     pub valid_time_offset_s: u32,
@@ -374,14 +377,10 @@ fn validate_input(input: &BundleInput<'_>) -> Result<(), EncodeError> {
         crc32: 0,
     };
     validate_header_semantics(&header).map_err(|_| EncodeError::InvalidInput)?;
-    let mut previous = None;
-    for hourly in input.hourly {
+    for (index, hourly) in input.hourly.iter().enumerate() {
         validate_hourly(hourly).map_err(|_| EncodeError::InvalidInput)?;
-        let at = input.valid_from.checked_add(hourly.valid_time_offset_s as i64).ok_or(EncodeError::InvalidInput)?;
-        if at > input.valid_until || previous.is_some_and(|p| at <= p) {
-            return Err(EncodeError::InvalidInput);
-        }
-        previous = Some(at);
+        validate_hourly_time(index, hourly, input.valid_from, input.valid_until)
+            .map_err(|_| EncodeError::InvalidInput)?;
     }
     let mut previous_frame = None;
     for frame in input.frames {
@@ -436,6 +435,28 @@ pub fn validate_hourly(record: &HourlyRecord) -> Result<(), DecodeError> {
         || (record.wind_gust_deci_ms != WIND_SPEED_UNAVAILABLE && record.wind_gust_deci_ms > 2_000)
     {
         return Err(DecodeError::Hourly);
+    }
+    Ok(())
+}
+
+/// Validate v1's fixed following-hour schedule.
+///
+/// Record `i` represents `[valid_from + i*1h, valid_from + (i+1)*1h)`, so its
+/// offset is not a provider-defined sample timestamp and the final interval end must remain
+/// inside `valid_until`.
+pub fn validate_hourly_time(
+    index: usize,
+    record: &HourlyRecord,
+    valid_from: i64,
+    valid_until: i64,
+) -> Result<(), DecodeError> {
+    if index >= HOURLY_COUNT || record.valid_time_offset_s != index as u32 * HOURLY_INTERVAL_SECONDS {
+        return Err(DecodeError::Timestamp);
+    }
+    let valid_at = valid_from.checked_add(record.valid_time_offset_s as i64).ok_or(DecodeError::Timestamp)?;
+    let interval_end = valid_at.checked_add(HOURLY_INTERVAL_SECONDS as i64).ok_or(DecodeError::Timestamp)?;
+    if interval_end > valid_until {
+        return Err(DecodeError::Timestamp);
     }
     Ok(())
 }
@@ -562,14 +583,22 @@ pub fn validate_tile_payload(entry: TileEntry, encoded: &[u8]) -> Result<(), Dec
         }
         TILE_CODEC_RLE4 if len < RAW4_LEN => {
             let mut count = 0usize;
+            let mut previous: Option<(u8, usize)> = None;
             for &byte in encoded {
-                if !valid_intensity(byte & 0x0F) {
+                let value = byte & 0x0F;
+                let run = (byte >> 4) as usize + 1;
+                if !valid_intensity(value) {
                     return Err(DecodeError::Intensity);
                 }
-                count = count.checked_add((byte >> 4) as usize + 1).ok_or(DecodeError::Rle)?;
+                if previous.is_some_and(|(previous_value, previous_run)| value == previous_value && previous_run != 16)
+                {
+                    return Err(DecodeError::Rle);
+                }
+                count = count.checked_add(run).ok_or(DecodeError::Rle)?;
                 if count > TILE_CELLS {
                     return Err(DecodeError::Rle);
                 }
+                previous = Some((value, run));
             }
             if count != TILE_CELLS {
                 return Err(DecodeError::Rle);
@@ -816,6 +845,32 @@ mod tests {
         )
         .unwrap();
         assert_eq!(decoded, dry);
+    }
+
+    #[test]
+    fn hourly_intervals_and_maximal_rle_runs_are_canonical() {
+        let hours = hourly();
+        assert_eq!(validate_hourly_time(0, &hours[0], 1_800_000_000, 1_800_086_400), Ok(()));
+        assert_eq!(validate_hourly_time(23, &hours[23], 1_800_000_000, 1_800_086_400), Ok(()));
+        assert_eq!(validate_hourly_time(23, &hours[23], 1_800_000_000, 1_800_086_399), Err(DecodeError::Timestamp));
+        let mut shifted = hours[0];
+        shifted.valid_time_offset_s = HOURLY_INTERVAL_SECONDS;
+        assert_eq!(validate_hourly_time(0, &shifted, 1_800_000_000, 1_800_086_400), Err(DecodeError::Timestamp));
+
+        let canonical = [0xF6; 16];
+        let canonical_entry = TileEntry {
+            data_offset: 0,
+            encoded_len: canonical.len() as u16,
+            decoded_cells: TILE_CELLS as u16,
+            codec: TILE_CODEC_RLE4,
+        };
+        assert_eq!(validate_tile_payload(canonical_entry, &canonical), Ok(()));
+
+        let mut split = [0xF6; 17];
+        split[0] = 0x76;
+        split[1] = 0x76;
+        let split_entry = TileEntry { encoded_len: split.len() as u16, ..canonical_entry };
+        assert_eq!(validate_tile_payload(split_entry, &split), Err(DecodeError::Rle));
     }
 
     #[test]

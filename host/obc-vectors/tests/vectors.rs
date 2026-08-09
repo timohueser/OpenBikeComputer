@@ -69,6 +69,14 @@ fn weather_vectors_cross_the_production_reader_and_reject_malformed_files() {
     for (name, expected) in obc_vectors::obcw::negatives() {
         let bytes = fixture(name);
         assert_eq!(bytes, expected, "negative OBCW fixture drift: {name}");
+        if name != "weather-invalid-truncated.obcw" && name != "weather-invalid-crc.obcw" {
+            let stored = u32::from_le_bytes(
+                bytes[obc_formats::obcw::HDR_CRC32..obc_formats::obcw::HDR_CRC32 + 4].try_into().unwrap(),
+            );
+            let mut crc_bytes = bytes.clone();
+            crc_bytes[obc_formats::obcw::HDR_CRC32..obc_formats::obcw::HDR_CRC32 + 4].fill(0);
+            assert_eq!(stored, crc32(&crc_bytes), "structural negative must carry a valid CRC: {name}");
+        }
         let source = SliceSource(&bytes);
         assert!(WeatherReader::open(&source).is_err(), "malformed OBCW fixture accepted: {name}");
     }
