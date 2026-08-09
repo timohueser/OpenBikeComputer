@@ -58,6 +58,7 @@ mod statistics;
 mod trip_delete;
 pub(crate) mod up_ahead;
 mod warning;
+pub mod weather_icons;
 
 pub use climb::ClimbScreen;
 pub use detour::{DetourPreviewScreen, DetourScreen};
