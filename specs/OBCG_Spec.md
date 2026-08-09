@@ -342,5 +342,6 @@ directory is `3 x 6,148 = 18,444` bytes and the header-plus-one-page first fetch
 would add `1,404 x 512 = 718,848` bytes, but real frames are dominated by dry sentinels and
 short RLE4 runs. ICON-EU (1,377 x 657 at 0.0625 deg, tile edge 16, `87 x 42 = 3,654` tiles)
 pages to `8 x 6,148 = 49,184` directory bytes. A CONUS-scale MRMS frame (7,000 x 3,500, tile
-edge 64) is `110 x 55 = 6,050` tiles — three pages — which is exactly why the directory is paged
+edge 64) is `110 x 55 = 6,050` tiles — twelve pages, 73,776 directory bytes — which is exactly
+why the directory is paged
 rather than "one small read": at tile edge 16 it would be 95,922 entries.
