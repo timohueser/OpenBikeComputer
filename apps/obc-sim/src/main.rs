@@ -1060,7 +1060,10 @@ fn main() {
         // instant. An explicit `--clock` always wins — the WX10 map sweeps pass one, so their
         // output stays byte-identical.
         let weather_clock = if args.clock.is_none() {
-            weather.as_ref().and_then(|w| w.effective_now()).map(|now| obc_ports::DateTime::from_unix(now.max(0) as u64 as u32))
+            weather
+                .as_ref()
+                .and_then(|w| w.effective_now())
+                .map(|now| obc_ports::DateTime::from_unix(now.max(0) as u64 as u32))
         } else {
             None
         };
@@ -1272,8 +1275,7 @@ fn main() {
             // snapshot's steps-ahead is fed before the script runs (position: rider fix, else the
             // camera centre — the demo bundles span the map bbox either way).
             if let Some(w) = weather.as_mut() {
-                let pos =
-                    app.state.user_fix.map(|f| (f.lat, f.lon)).unwrap_or((app.state.cam_lat, app.state.cam_lon));
+                let pos = app.state.user_fix.map(|f| (f.lat, f.lon)).unwrap_or((app.state.cam_lat, app.state.cam_lon));
                 if let Some(snap) = w.snapshot(Some(pos)) {
                     app.state.rain_steps_ahead = snap.steps_ahead(app.wall_unix_now() as i64);
                 }
@@ -1534,9 +1536,16 @@ fn main() {
                             app: &mut App,
                             fb: &mut Framebuffer,
                             scratch: &mut obc_render::RenderScratch| {
-            map_set::render_frame(app, scratch, fb, scene, rain, weather_feed, (args.width as f32, args.height as f32), |c| {
-                color_of(c, tc)
-            })
+            map_set::render_frame(
+                app,
+                scratch,
+                fb,
+                scene,
+                rain,
+                weather_feed,
+                (args.width as f32, args.height as f32),
+                |c| color_of(c, tc),
+            )
         };
         let mut stats = match weather.as_mut() {
             Some(weather) => weather.lease(rain_step, |rain| {
