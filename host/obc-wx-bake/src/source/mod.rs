@@ -4,16 +4,37 @@
 //! cycle, emitter, manifest and publisher never see a provider format.
 
 pub mod dwd_rv;
+pub mod gfs;
+pub mod hrrr;
 pub mod icon_eu;
+pub mod mrms;
+pub mod us;
 
 use crate::fetch::Upstream;
 use crate::geometry::GridGeometry;
 use crate::manifest::Product;
 
+/// NOAA Open Data Dissemination terms, the attribution URL of every NOAA-sourced product
+/// (WX1's license record: public-use U.S. government data, no endorsement implied).
+pub const NOAA_TERMS_URL: &str = "https://www.noaa.gov/information-technology/open-data-dissemination";
+
 #[derive(Debug, Clone, Copy)]
 pub struct Attribution {
     pub text: &'static str,
     pub url: &'static str,
+}
+
+/// Per-frame provenance and lattice, for a **composed** product whose frames do not all come
+/// from one upstream (WX6's US product: a 1 km MRMS radar observation followed by 3 km HRRR
+/// forward frames). OBCG stores geometry per object and the manifest restates it per frame, so
+/// heterogeneous frames compose with no resampling — this override is how an adapter says so.
+#[derive(Debug, Clone, Copy)]
+pub struct FrameSource {
+    /// `obc_formats::obcg` product registry code of the frame's own upstream.
+    pub product_code: u8,
+    /// The frame's own tier (a composed product's observation and model frames differ).
+    pub tier: u8,
+    pub geometry: GridGeometry,
 }
 
 /// One quantized frame: canonical WX2 intensity codes on the adapter's fixed lat/lon grid.
@@ -23,7 +44,24 @@ pub struct BakedFrame {
     pub valid_at: i64,
     /// `obc_formats::obcg::FLAG_OBSERVED` or `FLAG_FORECAST`.
     pub flags: u16,
+    /// `None` for a single-source product: the frame carries the product's own code, tier and
+    /// geometry.
+    pub source: Option<FrameSource>,
     pub cells: Vec<u8>,
+}
+
+impl BakedFrame {
+    pub fn product_code(&self, product: &BakedProduct) -> u8 {
+        self.source.map_or(product.product_code, |source| source.product_code)
+    }
+
+    pub fn tier(&self, product: &BakedProduct) -> u8 {
+        self.source.map_or(product.tier, |source| source.tier)
+    }
+
+    pub fn geometry(&self, product: &BakedProduct) -> GridGeometry {
+        self.source.map_or(product.geometry, |source| source.geometry)
+    }
 }
 
 #[derive(Debug)]
@@ -31,6 +69,8 @@ pub struct BakedProduct {
     pub id: &'static str,
     pub product_code: u8,
     pub tier: u8,
+    /// The product's nominal lattice. A composed product states its **anchor** frame's geometry
+    /// here; every frame's exact geometry travels with the frame.
     pub geometry: GridGeometry,
     /// Upstream run/reference time (the immutable key's `<generated-utc>` component).
     pub reference_time: i64,

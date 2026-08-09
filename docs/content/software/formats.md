@@ -1149,7 +1149,11 @@ The rain frames the phone crops into OBCW start life as **OBCG** grid objects â€
 the stateless weather bakery ([`obc-wx-bake`](src:host/obc-wx-bake)) publishes to object storage.
 One OBCG object is exactly one frame of one product (a DWD radar nowcast step, an ICON-EU model
 hour), so products whose frames have different native resolutions compose with no resampling at
-all. Inside, it deliberately mirrors the OBCW rain section: the same canonical four-bit
+all. The US product is exactly that: frame 0 is a 1 km MRMS radar observation and the forward
+frames are 3 km HRRR model steps, one timeline whose frames keep their own grids, their own real
+valid times and their own observation/forecast provenance. Beneath the regional tiers a
+worldwide GFS floor covers every rideable coordinate at a visibly coarse quarter degree â€” coarse
+on purpose, never smoothed into looking better than it is. Inside, it deliberately mirrors the OBCW rain section: the same canonical four-bit
 intensities and the same raw4/RLE4 tile codec, generalized to a per-product power-of-two tile
 size. Around that sits what an HTTP Range client needs and a device never does: a self-CRC'd
 fixed header carrying exact integer geometry, a **paged** tile directory whose pages carry their
