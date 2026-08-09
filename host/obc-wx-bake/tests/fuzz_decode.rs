@@ -32,7 +32,7 @@ fn mutate(bytes: &[u8], rng: &mut XorShift) -> Vec<u8> {
         let index = (rng.next() as usize) % mutated.len();
         mutated[index] = (rng.next() & 0xFF) as u8;
     }
-    if rng.next() % 4 == 0 {
+    if rng.next().is_multiple_of(4) {
         let keep = (rng.next() as usize) % (mutated.len() + 1);
         mutated.truncate(keep);
     }
