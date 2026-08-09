@@ -267,6 +267,15 @@ fn validate_grib_reader_inner(
             temporal.ref_time.ok_or_else(|| ContractError::new("GRIB reference time is invalid"))?.timestamp();
         let (valid_start_unix_seconds, valid_end_unix_seconds) =
             grib_valid_interval(submessage.prod_def(), product_template, reference_unix_seconds, &temporal)?;
+        if product_template == 8
+            && matches!((discipline, category, parameter), (0, Some(1), Some(8)) | (0, Some(1), Some(52)))
+            && valid_start_unix_seconds != reference_unix_seconds
+        {
+            return Err(ContractError::new(
+                "cumulative GFS APCP/ICON-EU TOT_PREC does not start at the model reference time",
+            )
+            .into());
+        }
         let section5 = submessage.section5()?;
         let simple = match &section5.payload.template {
             DataRepresentationTemplate::_5_2(template) => &template.simple,
@@ -1023,11 +1032,36 @@ struct MetHour {
     time: String,
     air_temperature_c: f64,
     precipitation_amount_mm: f64,
-    probability_of_precipitation_percent: Option<f64>,
+    #[serde(default, deserialize_with = "deserialize_present_met_number")]
+    probability_of_precipitation_percent: MetOptionalNumber,
     symbol_code: String,
     wind_from_direction_degrees: f64,
     wind_speed_mps: f64,
-    wind_gust_mps: Option<f64>,
+    #[serde(default, deserialize_with = "deserialize_present_met_number")]
+    wind_gust_mps: MetOptionalNumber,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+enum MetOptionalNumber {
+    #[default]
+    Missing,
+    Present(f64),
+}
+
+impl MetOptionalNumber {
+    fn value(self) -> Option<f64> {
+        match self {
+            Self::Missing => None,
+            Self::Present(value) => Some(value),
+        }
+    }
+}
+
+fn deserialize_present_met_number<'de, D>(deserializer: D) -> std::result::Result<MetOptionalNumber, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    f64::deserialize(deserializer).map(MetOptionalNumber::Present)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1038,7 +1072,11 @@ pub struct MetSummary {
 }
 
 pub fn validate_met_fixture(path: &Path) -> Result<MetSummary> {
-    let fixture: MetFixture = serde_json::from_slice(&read_json_input(path)?)?;
+    validate_met_fixture_bytes(&read_json_input(path)?)
+}
+
+fn validate_met_fixture_bytes(bytes: &[u8]) -> Result<MetSummary> {
+    let fixture: MetFixture = serde_json::from_slice(bytes)?;
     if fixture.hours.len() != 24 {
         return Err(ContractError::new("MET extract must contain exactly 24 hours").into());
     }
@@ -1059,8 +1097,9 @@ pub fn validate_met_fixture(path: &Path) -> Result<MetSummary> {
             || hour.wind_speed_mps < 0.0
             || hour
                 .probability_of_precipitation_percent
+                .value()
                 .is_some_and(|value| !value.is_finite() || !(0.0..=100.0).contains(&value))
-            || hour.wind_gust_mps.is_some_and(|value| !value.is_finite() || value < 0.0)
+            || hour.wind_gust_mps.value().is_some_and(|value| !value.is_finite() || value < 0.0)
         {
             return Err(ContractError::new("MET extract contains an invalid canonical value").into());
         }
@@ -1070,9 +1109,9 @@ pub fn validate_met_fixture(path: &Path) -> Result<MetSummary> {
         precipitation_probability_hours: fixture
             .hours
             .iter()
-            .filter(|hour| hour.probability_of_precipitation_percent.is_some())
+            .filter(|hour| hour.probability_of_precipitation_percent.value().is_some())
             .count(),
-        gust_hours: fixture.hours.iter().filter(|hour| hour.wind_gust_mps.is_some()).count(),
+        gust_hours: fixture.hours.iter().filter(|hour| hour.wind_gust_mps.value().is_some()).count(),
     })
 }
 
@@ -1266,6 +1305,37 @@ mod tests {
     }
 
     #[test]
+    fn cumulative_gfs_and_icon_reject_shifted_accumulation_start_and_duration() {
+        let mut gfs = include_bytes!("../tests/fixtures/gfs-global-20260809T06-apcp-f003.grib2").to_vec();
+        shift_accumulation_start_one_hour(&mut gfs);
+        let gfs_error = validate_grib_reader(Cursor::new(gfs), gfs_apcp_contract(2).unwrap()).unwrap_err();
+        assert!(gfs_error.to_string().contains("does not start at the model reference time"), "{gfs_error}");
+
+        let compressed = include_bytes!("../tests/fixtures/icon-eu-20260809T06-f002.grib2.bz2");
+        let mut icon = Vec::new();
+        bzip2_rs::DecoderReader::new(Cursor::new(compressed)).read_to_end(&mut icon).unwrap();
+        shift_accumulation_start_one_hour(&mut icon);
+        let icon_error = validate_grib_reader(
+            Cursor::new(icon),
+            ExpectedGrib {
+                discipline: 0,
+                category: 1,
+                parameter: 52,
+                grid_template: 0,
+                expected_points: Some(904_689),
+                expected_grid_definition_hex: ICON_EU_GRID_DEFINITION_HEX,
+                product_template: Some(8),
+                representation_templates: &[42],
+                expected_messages: 1,
+                require_identical_messages: false,
+                missing_sentinels: &[],
+            },
+        )
+        .unwrap_err();
+        assert!(icon_error.to_string().contains("does not start at the model reference time"), "{icon_error}");
+    }
+
+    #[test]
     fn dwd_member_name_must_match_internal_odim_times() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dwd-rv-20260809-1130-f000.h5");
         let summary = validate_dwd_rv_hdf5(&path).unwrap();
@@ -1325,12 +1395,81 @@ mod tests {
         assert!(validate_met_response_bytes(&serde_json::to_vec(&noncanonical).unwrap()).is_err());
     }
 
+    #[test]
+    fn met_extract_distinguishes_missing_optionals_from_null_and_wrong_types() {
+        let valid: serde_json::Value =
+            serde_json::from_slice(include_bytes!("../tests/fixtures/met-locationforecast-oslo-24h.json")).unwrap();
+
+        let mut absent = valid.clone();
+        let first = absent["hours"][0].as_object_mut().unwrap();
+        first.remove("wind_gust_mps");
+        first.remove("probability_of_precipitation_percent");
+        let summary = validate_met_fixture_bytes(&serde_json::to_vec(&absent).unwrap()).unwrap();
+        assert_eq!((summary.gust_hours, summary.precipitation_probability_hours), (23, 23));
+
+        for (field, malformed) in [
+            ("wind_gust_mps", serde_json::Value::Null),
+            ("wind_gust_mps", json!("fast")),
+            ("probability_of_precipitation_percent", serde_json::Value::Null),
+            ("probability_of_precipitation_percent", json!("likely")),
+        ] {
+            let mut extract = valid.clone();
+            extract["hours"][0][field] = malformed;
+            assert!(
+                validate_met_fixture_bytes(&serde_json::to_vec(&extract).unwrap()).is_err(),
+                "accepted malformed {field}"
+            );
+        }
+    }
+
     fn decode_hex(value: &str) -> Vec<u8> {
         value
             .as_bytes()
             .chunks_exact(2)
             .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
             .collect()
+    }
+
+    fn shift_accumulation_start_one_hour(bytes: &mut [u8]) {
+        let mut message = 0usize;
+        let mut shifted = 0usize;
+        while message < bytes.len() {
+            assert_eq!(&bytes[message..message + 4], b"GRIB");
+            let message_length =
+                usize::try_from(u64::from_be_bytes(bytes[message + 8..message + 16].try_into().unwrap())).unwrap();
+            let message_end = message.checked_add(message_length).unwrap();
+            assert!(message_end <= bytes.len());
+            assert_eq!(&bytes[message_end - 4..message_end], b"7777");
+            let mut section = message + 16;
+            while section < message_end - 4 {
+                let section_length = u32::from_be_bytes(bytes[section..section + 4].try_into().unwrap()) as usize;
+                assert!(section_length >= 5 && section + section_length <= message_end - 4);
+                if bytes[section + 4] == 4
+                    && u16::from_be_bytes(bytes[section + 7..section + 9].try_into().unwrap()) == 8
+                {
+                    let payload = section + 5;
+                    assert_eq!(u32::from_be_bytes(bytes[payload + 13..payload + 17].try_into().unwrap()), 0);
+                    let shifted_start = match bytes[payload + 12] {
+                        0 => 60u32,
+                        1 => 1u32,
+                        unit => panic!("unexpected forecast-time unit {unit}"),
+                    };
+                    let duration_decrement = match bytes[payload + 43] {
+                        0 => 60u32,
+                        1 => 1u32,
+                        unit => panic!("unexpected accumulation-duration unit {unit}"),
+                    };
+                    let duration = u32::from_be_bytes(bytes[payload + 44..payload + 48].try_into().unwrap());
+                    assert!(duration > duration_decrement);
+                    bytes[payload + 13..payload + 17].copy_from_slice(&shifted_start.to_be_bytes());
+                    bytes[payload + 44..payload + 48].copy_from_slice(&(duration - duration_decrement).to_be_bytes());
+                    shifted += 1;
+                }
+                section += section_length;
+            }
+            message = message_end;
+        }
+        assert!(shifted > 0);
     }
 
     fn met_response_fixture() -> serde_json::Value {
