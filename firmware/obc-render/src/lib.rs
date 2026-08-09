@@ -38,7 +38,8 @@ mod viewport;
 pub use canvas::{rect, Canvas};
 pub use overlay::{OverlayChunk, RouteOverlaySource};
 pub use rain::{
-    rain_style, RainGrid, RainOverlaySource, RAIN_BELOW_Z, RAIN_STYLE, RAIN_TILE_CELLS, RAIN_TILE_EDGE, RAIN_TILE_SLOTS,
+    rain_in_regime, rain_style, RainGrid, RainOverlaySource, RAIN_BELOW_Z, RAIN_MAX_CELL_STEP, RAIN_STYLE,
+    RAIN_TILE_CELLS, RAIN_TILE_EDGE, RAIN_TILE_SLOTS,
 };
 pub use surface::Surface;
 pub use text::{draw_text, glyph_supported, text_width, Font, TextAlign};
@@ -145,10 +146,10 @@ pub const MCU_SCRATCH_BYTES: usize = MAX_DECODE_POINTS * 8
     + MAX_SPANS * core::mem::size_of::<Span>()
     + MAX_SCREEN_POINTS * 8
     + MAX_CROSSINGS * 4
-    // WX10: the rain overlay's per-frame decoded-tile cache (~2.1 KB). On the board this grows the
-    // arena's render arm, which sits ~13.6 KB below the USB arm's max — so it costs the device
-    // zero resident bytes until the render arm ever overtakes USB (the arena assert names that
-    // cliff).
+    // WX10: the rain overlay's per-frame decoded-tile cache (12 slots, ~3.1 KB). On the board this
+    // grows the arena's render arm, which still sits ~10.5 KB below the USB arm's max — so it
+    // costs the device zero resident bytes until the render arm ever overtakes USB (the arena
+    // assert names that cliff).
     + core::mem::size_of::<rain::RainScratch>();
 // Loose per-crate ceiling catching an accidental cap blow-up; the binding fit check is the board
 // crate's whole-resident-set budget assert.
@@ -334,6 +335,11 @@ pub struct RenderStats {
     pub rain_tiles: u32,
     pub rain_px: u32,
     pub rain_us: u32,
+    /// The rain overlay was lent but declined to draw: outside its zoom regime
+    /// ([`RAIN_MAX_CELL_STEP`]) or degenerate/overflowing grid geometry. The owning screen must
+    /// surface this as its explicit out-of-regime state — a frame with this flag set must never
+    /// be presented as a dry map ([`rain_in_regime`] is the same predicate, queryable up front).
+    pub rain_out_of_regime: bool,
 }
 
 /// What a render call should draw — the presentation switches, stated **per frame** by the caller.
