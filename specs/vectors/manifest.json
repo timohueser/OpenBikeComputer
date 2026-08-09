@@ -460,6 +460,7 @@
       "weather-dwd-96x96-9f.obcw": {"byte_len": 46480, "internal_crc32": "0xFBFBD2D2", "sha256": "7dc80b4c7d1ae22da1707f03ffc368239939b622b1416c7a37b6098356601347", "shape": "96x96 at 1000 m; 9 native 15-minute frames; 36 raw4 tiles/frame"},
       "weather-coarse-model.obcw": {"byte_len": 1008, "internal_crc32": "0xEFB6218D", "sha256": "388bc626370301c0bbf3992fa68df20c186d45886c9d5c5717d1163b399da5b1", "shape": "32x32 at 25000 m; 2 genuine 3-hour model times"},
       "weather-nodata-tile.obcw": {"byte_len": 764, "internal_crc32": "0x08C865D8", "sha256": "61c038bc8fa678cf3bf2b42fc7c948627cba2d21943142854aad2e3d8812d3f6", "shape": "one independently compressed all-no-data tile"},
+      "weather-latent-observation.obcw": {"byte_len": 764, "internal_crc32": "0x661C6BA1", "sha256": "0d4ec0471fa2af92942722741cf938d9cd801c5f56434730350670178343a57a", "shape": "24 current-to-+24h hourly records; one observed rain frame 4h before the hourly base"},
       "weather-raw-tile.obcw": {"byte_len": 876, "internal_crc32": "0xC0AFE59C", "sha256": "da32b2db8eddb497de5ff83ec9dd7570cab5d046bbfbe8e43c13d30b55b07f79", "shape": "one 128-byte raw4 tile"},
       "weather-rle-tile.obcw": {"byte_len": 764, "internal_crc32": "0x69BF4912", "sha256": "30c79bfb0d0916433b744bf092a93924a7cf2176abfeb8107a657fcdc75fed91", "shape": "one 16-byte RLE4 tile"},
       "weather-max-policy.obcw": {"byte_len": 65536, "internal_crc32": "0x5250667F", "sha256": "2a8fd0ddb6bc3b2283bacdb8debcaad0352b81c08441cd9c264004ffa7573889", "shape": "exact v1 producer-policy boundary; 462 raw tiles plus one 108-byte RLE tile"}
@@ -475,7 +476,9 @@
       "weather-invalid-rle-overlong.obcw": "RLE expands past 256 cells; CRC recomputed",
       "weather-invalid-rle-noncanonical.obcw": "adjacent equal short RLE runs are not maximal; CRC recomputed",
       "weather-invalid-crc.obcw": "payload changed without updating the internal CRC",
-      "weather-invalid-time-order.obcw": "two frame valid timestamps are equal; CRC recomputed"
+      "weather-invalid-time-order.obcw": "two frame valid timestamps are equal; CRC recomputed",
+      "weather-invalid-frame-nonpositive.obcw": "rain frame valid_at is zero; CRC recomputed",
+      "weather-invalid-frame-after-valid-until.obcw": "rain frame valid_at exceeds the overall validity ceiling by one second; CRC recomputed"
     }
   }
 }
