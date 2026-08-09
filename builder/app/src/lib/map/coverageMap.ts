@@ -527,10 +527,14 @@ export class CoverageMapView {
 
     private onLassoStart(e: L.LeafletMouseEvent): void {
         if (!this.lassoArmed) return;
+        // Clear any leftover preview FIRST: removeLassoPoly also resets the
+        // point buffer, and calling it after seeding wiped the gesture's first
+        // point — every move then bailed on the null guard and the tool never
+        // drew anything (the 2026-08-09 on-glass catch).
+        this.removeLassoPoly();
         this.lassoing = true;
         this.lassoPoints = [e.latlng];
         this.lassoLastPx = this.map.latLngToContainerPoint(e.latlng);
-        this.removeLassoPoly();
         this.lassoPoly = L.polygon([e.latlng], LASSO_DRAW_STYLE).addTo(this.map);
     }
 
