@@ -98,8 +98,8 @@ XCUITests depend on them.
 
 `-OBCHideMockHUD` keeps the mock transport but removes its Debug status tag for clean automated
 captures; `-OBCDisableAnimations` runs the UI unanimated so a capture can't catch a transition
-mid-flight, and `-OBCHoldSyncConfirmation` parks the timed post-sync check so a shot of it isn't a
-race. The landing-page captures and their CI drift check live in
+mid-flight, and `-OBCHoldConfirmations` parks the timed confirmation states (sync check, synced
+line, the upload sheet's self-dismiss) so a shot of one isn't a race. The landing-page captures and their CI drift check live in
 `scripts/capture-website-screenshots.sh` — that gate compares pixels, so anything the capture
 screenshots must be *waited for*, never assumed (see `WebsiteScreenshotTests`).
 
