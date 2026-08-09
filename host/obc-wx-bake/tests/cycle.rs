@@ -414,3 +414,159 @@ fn unchanged_upstream_short_circuits_and_moves_no_frame_bytes() {
     assert!(second.requests.iter().any(|request| request == dwd_rv::LATEST_URL));
     assert_eq!(before, tree(&dir), "an unchanged cycle republishes identical bytes");
 }
+
+/// WX18: the per-adapter systemd timers invoke one adapter at a time so a broken upstream can
+/// only cost its own product freshness. The manifest is the whole service's state, so an
+/// invocation that bakes a subset must carry every other still-usable product forward untouched.
+#[test]
+fn a_per_adapter_cycle_carries_the_products_it_did_not_select() {
+    let (dwd, icon) = adapters();
+    let both: [&dyn Adapter; 2] = [&dwd, &icon];
+    let dir = scratch("per-adapter");
+    let mut store = DirStore::new(&dir);
+    run_cycle(&both, &mut upstream(), &mut store, now(), false).expect("full cycle");
+    let before = tree(&dir);
+    let published_before = manifest::from_json(&before["wx/v1/manifest.json"]).unwrap();
+    let icon_before = published_before.products.iter().find(|product| product.id == "icon-eu").unwrap();
+
+    // The radar timer alone, five minutes later.
+    let radar_only: [&dyn Adapter; 1] = [&dwd];
+    let report = run_cycle(&radar_only, &mut upstream(), &mut store, now() + 300, false).expect("radar-only cycle");
+    eprintln!("radar-only report:\n{}", report.summary());
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    assert_eq!(report.published_objects, 1, "only the manifest is republished");
+    assert!(
+        report.products.iter().any(|(id, status, _)| id == "icon-eu" && *status == ProductStatus::NotSelected),
+        "{:?}",
+        report.products
+    );
+
+    let after = tree(&dir);
+    assert_eq!(before.len(), after.len(), "a radar-only cycle publishes no new objects");
+    for (key, bytes) in &before {
+        if key == "wx/v1/manifest.json" {
+            continue;
+        }
+        assert_eq!(Some(bytes), after.get(key), "{key} changed on a radar-only cycle");
+    }
+
+    let document = manifest::from_json(&after["wx/v1/manifest.json"]).unwrap();
+    assert_eq!(
+        document.products.iter().map(|product| product.id.as_str()).collect::<Vec<_>>(),
+        ["dwd-rv", "icon-eu"],
+        "the unselected product stays in the manifest, in a stable order"
+    );
+    let icon_after = document.products.iter().find(|product| product.id == "icon-eu").unwrap();
+    assert_eq!(icon_after.reference_time, icon_before.reference_time);
+    assert_eq!(icon_after.generated_at, icon_before.generated_at, "a carried entry is not re-stamped");
+    assert_eq!(icon_after.staleness_deadline, icon_before.staleness_deadline);
+    assert_eq!(icon_after.frames.len(), icon_before.frames.len());
+    for (carried, original) in icon_after.frames.iter().zip(&icon_before.frames) {
+        assert_eq!(carried.key, original.key);
+        assert_eq!(carried.bytes, original.bytes);
+        assert_eq!(carried.object_crc32, original.object_crc32);
+        assert_eq!(carried.valid_at, original.valid_at);
+    }
+}
+
+/// The other half of the rule, and the one an adversarial review had to prove: an expired product
+/// is **carried, not dropped** — visibly expired in the manifest, with its frames exempt from the
+/// pre-swap fetchability proof. Dropping it would cost the product's own next tick its
+/// short-circuit, so a stalled upstream would be re-downloaded and re-published every few minutes
+/// while the manifest flickered the product present/absent (and the external alarm flapped with
+/// it). This is that scenario: an upstream frozen on one run, two timers alternating across the
+/// deadline.
+#[test]
+fn an_expired_product_is_carried_and_never_refetched_while_timers_alternate() {
+    let (dwd, icon) = adapters();
+    let both: [&dyn Adapter; 2] = [&dwd, &icon];
+    let radar_only: [&dyn Adapter; 1] = [&dwd];
+    let model_only: [&dyn Adapter; 1] = [&icon];
+    let dir = scratch("stalled-upstream");
+    let mut store = DirStore::new(&dir);
+    run_cycle(&both, &mut upstream(), &mut store, now(), false).expect("full cycle");
+
+    // ICON's deadline is its 06Z run + 10 h = 16:00Z. Both upstreams are frozen on the runs
+    // already published (the fixture never moves), so from here on nothing may be fetched again.
+    let mut manifest_bytes = std::fs::read(dir.join("wx/v1/manifest.json")).unwrap();
+    let mut tick = ts("2026-08-09T15:50:00Z");
+    for round in 0..6 {
+        let (label, selection): (&str, &[&dyn Adapter]) =
+            if round % 2 == 0 { ("radar", &radar_only) } else { ("model", &model_only) };
+        let mut stalled = upstream();
+        let report = run_cycle(selection, &mut stalled, &mut store, tick, false)
+            .unwrap_or_else(|error| panic!("{label} tick at round {round}: {error}"));
+        eprintln!("round {round} ({label}) at {tick}:\n{}", report.summary());
+
+        assert_eq!(report.fetched_bytes, 0, "round {round}: a stalled upstream must never be re-downloaded");
+        assert_eq!(report.published_objects, 1, "round {round}: only the manifest is republished");
+
+        let document = manifest::from_json(&std::fs::read(dir.join("wx/v1/manifest.json")).unwrap()).unwrap();
+        assert_eq!(
+            document.products.iter().map(|product| product.id.as_str()).collect::<Vec<_>>(),
+            ["dwd-rv", "icon-eu"],
+            "round {round}: both products stay listed — a manifest that flickers flaps the alarm"
+        );
+        // Everything except the manifest's own generated_at is frozen: same entries, same objects.
+        let now_bytes = std::fs::read(dir.join("wx/v1/manifest.json")).unwrap();
+        let strip = |bytes: &[u8]| {
+            let mut document = manifest::from_json(bytes).unwrap();
+            document.generated_at = String::new();
+            manifest::to_json(&document)
+        };
+        assert_eq!(strip(&manifest_bytes), strip(&now_bytes), "round {round}: the carried entries must not move");
+        manifest_bytes = now_bytes;
+        tick += 300;
+    }
+
+    // Past 16:00Z the ICON entry is expired — still published, still honest about why.
+    let last = run_cycle(&radar_only, &mut upstream(), &mut store, ts("2026-08-09T16:30:00Z"), false)
+        .expect("radar tick past the ICON deadline");
+    eprintln!("expired-carry report:\n{}", last.summary());
+    assert!(
+        last.warnings.iter().any(|warning| warning.contains("icon-eu") && warning.contains("staleness deadline")),
+        "{:?}",
+        last.warnings
+    );
+    let document = manifest::from_json(&std::fs::read(dir.join("wx/v1/manifest.json")).unwrap()).unwrap();
+    let icon = document.products.iter().find(|product| product.id == "icon-eu").expect("expired but present");
+    assert_eq!(icon.staleness_deadline, "2026-08-09T16:00:00Z", "the entry keeps its true, passed deadline");
+    assert_eq!(last.fetched_bytes, 0, "expiry does not trigger a re-fetch either");
+
+    // And the expired product's frames no longer have to exist: the lifecycle rule is allowed to
+    // collect them, and one dead product must not block a live one's publication.
+    std::fs::remove_file(dir.join("wx/v1/icon-eu/20260809T0600Z/f120.obcg")).unwrap();
+    let after = run_cycle(&radar_only, &mut upstream(), &mut store, ts("2026-08-09T16:35:00Z"), false)
+        .expect("a healthy product still publishes with an expired product's frames collected");
+    assert_eq!(after.published_objects, 1);
+}
+
+/// MINOR 4 from the review: the per-adapter and the whole-cycle routes to the same state must
+/// produce the *same document*, byte for byte — otherwise "one manifest, whoever baked it" is a
+/// claim rather than a property.
+#[test]
+fn a_subset_cycle_and_a_full_cycle_write_byte_identical_manifests() {
+    let (dwd, icon) = adapters();
+    let both: [&dyn Adapter; 2] = [&dwd, &icon];
+    let radar_only: [&dyn Adapter; 1] = [&dwd];
+    let model_only: [&dyn Adapter; 1] = [&icon];
+    let later = now() + 300;
+
+    let full_dir = scratch("permutation-full");
+    let mut full = DirStore::new(&full_dir);
+    run_cycle(&both, &mut upstream(), &mut full, now(), false).expect("full cycle");
+    run_cycle(&both, &mut upstream(), &mut full, later, false).expect("second full cycle");
+
+    let split_dir = scratch("permutation-split");
+    let mut split = DirStore::new(&split_dir);
+    run_cycle(&both, &mut upstream(), &mut split, now(), false).expect("full cycle");
+    run_cycle(&radar_only, &mut upstream(), &mut split, later, false).expect("radar tick");
+    run_cycle(&model_only, &mut upstream(), &mut split, later, false).expect("model tick");
+
+    assert_eq!(
+        std::fs::read(full_dir.join("wx/v1/manifest.json")).unwrap(),
+        std::fs::read(split_dir.join("wx/v1/manifest.json")).unwrap(),
+        "two timers and one cycle must agree on the published document"
+    );
+    assert_eq!(tree(&full_dir), tree(&split_dir), "and on every object beside it");
+}
