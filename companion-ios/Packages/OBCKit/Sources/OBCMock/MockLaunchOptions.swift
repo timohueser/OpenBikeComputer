@@ -18,6 +18,8 @@ import OBCDomain
 /// | `-OBCShowDevPanel` | (flag) | present the dev control panel at launch |
 /// | `-OBCShowUIGallery` | (flag) | present the B11 component gallery at launch |
 /// | `-OBCHideMockHUD` | (flag) | hide the Debug scenario HUD for clean automated captures |
+/// | `-OBCDisableAnimations` | (flag) | run the UI without animations so an automated capture can't catch a transition mid-flight (#1212) |
+/// | `-OBCHoldConfirmations` | (flag) | park every timed confirmation state instead of letting it expire, so a capture of one isn't a race against a wall clock (#1212). Three holds, all stretched to an hour: the 2 s top-bar sync check, the 60 s "Synced N new rides just now" line (both `RideSyncCoordinator.Timing`), and the upload sheet's 2.6 s self-dismiss (`UploadSheetModel.Timing`) |
 /// | `-OBCImportSample [kind]` | bare flag = `gpx`; or `gpx` / `tcx` / `bad` / `grimsel` | feed a bundled sample file to the import path at launch (E1; `bad` → H5; `grimsel` = generated website route) |
 /// | `-OBCNetwork <state>` | `offline` / `online` | pin the MapKit-basemap reachability (#294) — `offline` forces the grid fallback |
 /// | `-OBCFirmwareDemo` | (flag) | open the S7 firmware-update screen with a pre-staged sample update (the Files picker can't be automated) |
@@ -26,8 +28,9 @@ import OBCDomain
 ///
 /// Env fallbacks (used when the argument is absent): `OBC_SCENARIO`,
 /// `OBC_FIXTURES`, `OBC_CONNECTION`, `OBC_TRANSPORT`, `OBC_SHOW_DEV_PANEL=1`,
-/// `OBC_SHOW_UI_GALLERY=1`, `OBC_HIDE_MOCK_HUD=1`, `OBC_IMPORT_SAMPLE=1` (or a kind token), `OBC_NETWORK`,
-/// `OBC_FIRMWARE_DEMO=1`.
+/// `OBC_SHOW_UI_GALLERY=1`, `OBC_HIDE_MOCK_HUD=1`, `OBC_DISABLE_ANIMATIONS=1`,
+/// `OBC_HOLD_CONFIRMATIONS=1`, `OBC_IMPORT_SAMPLE=1` (or a kind token),
+/// `OBC_NETWORK`, `OBC_FIRMWARE_DEMO=1`.
 /// How far the `-OBCFirmwareDemo` hook drives the S7 screen. Raw values are the
 /// launch tokens (`-OBCFirmwareDemo` bare = `staged`, `-OBCFirmwareDemo send`).
 public enum FirmwareDemoStage: String, Sendable, Equatable {
@@ -51,6 +54,20 @@ public struct MockLaunchOptions: Equatable, Sendable {
     /// Suppress the bottom-right Debug scenario tag for product screenshots. The mock transport
     /// remains active; ordinary XCUITests keep the HUD unless they opt out explicitly.
     public var hideMockHUD: Bool
+    /// Run the UI with animations off (#1212) — screen pushes, sheet
+    /// presentations, and list insertions land in their final state on the frame
+    /// they happen. Automated captures need this: a screenshot taken the instant
+    /// an element exists must not catch a transition mid-flight. Affects
+    /// presentation only, never what is finally drawn.
+    public var disableAnimations: Bool
+    /// Hold every timed confirmation instead of letting it expire (#1212). Three
+    /// of them are real product beats and all three are impossible to photograph
+    /// reliably, because each counts down against a wall clock while a loaded CI
+    /// runner takes its time: the top-bar sync check (2 s), the "Synced N new
+    /// rides just now" line under it (60 s), and the upload sheet's self-dismiss
+    /// after "On the device" (2.6 s). Under this flag the composition root hands
+    /// each owner a hold long enough that the state simply parks.
+    public var holdConfirmations: Bool
     /// Feed a `SampleRouteFile` to the import path at launch (XCUITests /
     /// demos — the Files picker can't be driven from automation): `gpx`/`tcx`/`grimsel`
     /// land on E1 (or H4 when unpaired), `bad` raises H5. `nil` = no import.
@@ -83,6 +100,8 @@ public struct MockLaunchOptions: Equatable, Sendable {
         showDevPanel: Bool = false,
         showUIGallery: Bool = false,
         hideMockHUD: Bool = false,
+        disableAnimations: Bool = false,
+        holdConfirmations: Bool = false,
         importSample: SampleRouteFile.Kind? = nil,
         networkOnline: Bool? = nil,
         firmwareDemo: FirmwareDemoStage? = nil,
@@ -96,6 +115,8 @@ public struct MockLaunchOptions: Equatable, Sendable {
         self.showDevPanel = showDevPanel
         self.showUIGallery = showUIGallery
         self.hideMockHUD = hideMockHUD
+        self.disableAnimations = disableAnimations
+        self.holdConfirmations = holdConfirmations
         self.importSample = importSample
         self.networkOnline = networkOnline
         self.firmwareDemo = firmwareDemo
@@ -127,6 +148,10 @@ public struct MockLaunchOptions: Equatable, Sendable {
             || environment["OBC_SHOW_UI_GALLERY"] == "1"
         let hideMockHUD = arguments.contains("-OBCHideMockHUD")
             || environment["OBC_HIDE_MOCK_HUD"] == "1"
+        let disableAnimations = arguments.contains("-OBCDisableAnimations")
+            || environment["OBC_DISABLE_ANIMATIONS"] == "1"
+        let holdConfirmations = arguments.contains("-OBCHoldConfirmations")
+            || environment["OBC_HOLD_CONFIRMATIONS"] == "1"
         // Flag with an optional kind token: bare `-OBCImportSample` (or
         // `OBC_IMPORT_SAMPLE=1`) means gpx; an unknown kind degrades to gpx
         // (never crash — automation typo rule).
@@ -176,6 +201,8 @@ public struct MockLaunchOptions: Equatable, Sendable {
             showDevPanel: showPanel,
             showUIGallery: showGallery,
             hideMockHUD: hideMockHUD,
+            disableAnimations: disableAnimations,
+            holdConfirmations: holdConfirmations,
             importSample: importSample,
             networkOnline: networkOnline,
             firmwareDemo: firmwareDemo,

@@ -82,6 +82,10 @@ public struct ElevationProfileView: View {
         .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
         .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).strokeBorder(OBCTheme.line))
         .accessibilityLabel("Elevation profile")
+        // The card only exists once its samples do — on a tracked ride that's an
+        // async `rideDetail` read away (#1212). Automation waits on this to know
+        // the detail screen's layout is final before it captures.
+        .accessibilityIdentifier("detail.elevationProfile")
     }
 
     /// Dots + mono labels on the highest and lowest samples ("471 m" / "289 m").
