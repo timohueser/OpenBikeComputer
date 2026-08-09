@@ -14,7 +14,7 @@ public enum WeatherRefresh: UInt8, Equatable, Sendable, CaseIterable {
     case every120 = 4
 
     /// The device default (epic #1185 locks 30 minutes) — and what an **absent** Config field
-    /// means. Deliberately not `.off`: see `DeviceConfig.weatherRefresh`.
+    /// means. Deliberately not `.off`: see `DeviceConfig.weatherRefreshRaw`.
     public static let deviceDefault: WeatherRefresh = .every30
 
     /// The interval in minutes; `nil` for `.off`, which has no interval at all rather than a zero

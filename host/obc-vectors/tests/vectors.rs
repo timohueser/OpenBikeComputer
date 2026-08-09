@@ -630,11 +630,16 @@ fn the_southern_context_pins_every_signed_field() {
 
     // The two i64 timestamps, both before the epoch, and each at its own offset so one correct
     // sign extension cannot cover for the other.
-    assert_eq!(rd_i64(&southern, 20), wx::SOUTHERN_FIX_UTC, "fix_utc at 20");
-    assert_eq!(rd_i64(&southern, 40), wx::SOUTHERN_BUNDLE_GENERATED_AT, "bundle_generated_at at 40");
-    assert!(wx::SOUTHERN_FIX_UTC < 0 && wx::SOUTHERN_BUNDLE_GENERATED_AT < 0, "both are pre-1970");
+    // Read out of the *file*, not off the builder's constants: asserting a constant is negative
+    // says nothing about the bytes on disk, which are the only thing a mirror will ever see.
+    let fix_utc = rd_i64(&southern, 20);
+    let bundle_generated_at = rd_i64(&southern, 40);
+    assert_eq!(fix_utc, wx::SOUTHERN_FIX_UTC, "fix_utc at 20");
+    assert_eq!(bundle_generated_at, wx::SOUTHERN_BUNDLE_GENERATED_AT, "bundle_generated_at at 40");
+    assert!(fix_utc < 0, "fix_utc is pre-1970");
+    assert!(bundle_generated_at < 0, "bundle_generated_at is pre-1970");
     assert_eq!(
-        wx::SOUTHERN_FIX_UTC - wx::SOUTHERN_BUNDLE_GENERATED_AT,
+        fix_utc - bundle_generated_at,
         60 * 60,
         "the scheduled reason is arithmetic here too — one 60-minute interval past what it holds"
     );
@@ -644,12 +649,12 @@ fn the_southern_context_pins_every_signed_field() {
 
     // …and the trap run the other way: two u32s with the top bit set, which a *signed* mirror reads
     // as -2 and -2147483647.
-    assert_eq!(rd_u32(&southern, 36), wx::SOUTHERN_BUNDLE_GENERATION);
-    assert_eq!(rd_u32(&southern, 48), wx::SOUTHERN_BUNDLE_CRC32);
-    assert!(
-        wx::SOUTHERN_BUNDLE_GENERATION > i32::MAX as u32 && wx::SOUTHERN_BUNDLE_CRC32 > i32::MAX as u32,
-        "generation and crc32 are unsigned, and this file is where that is stated"
-    );
+    let bundle_generation = rd_u32(&southern, 36);
+    let bundle_crc32 = rd_u32(&southern, 48);
+    assert_eq!(bundle_generation, wx::SOUTHERN_BUNDLE_GENERATION);
+    assert_eq!(bundle_crc32, wx::SOUTHERN_BUNDLE_CRC32);
+    assert!(bundle_generation > i32::MAX as u32, "generation is unsigned, and this file states it");
+    assert!(bundle_crc32 > i32::MAX as u32, "crc32 is unsigned, and this file states it");
 }
 
 /// The two append-only extensions the Weather Request contract rode in on (#1188): the identity

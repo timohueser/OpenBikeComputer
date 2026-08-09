@@ -604,7 +604,7 @@ describe("round-trip over the loopback pipe", () => {
         try {
             const before = await client.readConfig();
             await client.writeConfig({ name: "Rejected", units: 1, weatherRefresh: 200 });
-            expect(await client.readConfig()).toEqual(before, "a refused write changes nothing at all");
+            expect(await client.readConfig(), "a refused write changes nothing at all").toEqual(before);
 
             // A known interval is accepted, name and all.
             await client.writeConfig({ name: "Accepted", units: 1, weatherRefresh: WeatherRefresh.every120 });
