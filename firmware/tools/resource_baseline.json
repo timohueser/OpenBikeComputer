@@ -43,6 +43,7 @@
       "framebuffer_bytes": 76800,
       "poll_frame_measured": 9728,
       "poll_frame_limit": 12288,
+      "_arena_render_note_1213": "**#1213 (WX10) — the rain overlay's per-frame decoded-tile cache joins `RenderScratch`: `arena_render` 117,408 → 120,544 B (+3,136 B = 12 tile slots × 256 B decoded cells + keys/ok flags/cursor + padding; `MCU_SCRATCH_BYTES` moves 117,376 → 120,512 and the 32 B delta is the same struct padding it always carried).** This is the arena-arm *composition* figure moving, not resident RAM: the arena is max(arms) and the USB arm (131,072 B) is still the maximum — `ARENA_BYTES == USB_ARM_BYTES` is compile-asserted in arena.rs — so `arena_total`, `measured_resident`, `uninit_max` and `resident_ram_max` are all unchanged, +0 B on glass. Render-arm headroom under the max-of-arms cliff is now 131,072 − 120,544 = 10,528 B; growth past that becomes 1:1 resident and moves the cliff (re-read arena.rs's growth-asymmetry notes before spending it). The slot count is 12 because the rain zoom regime's 45°-worst-case scanline crosses ~10 tiles (`RAIN_MAX_CELL_STEP` in obc-render/src/rain.rs); 8 slots measurably re-fetched at the regime edge. Identical in both profiles — the render path is the same image either way.",
       "compile_time_allocations": {
         "framebuffer": 76800,
         "row_diff": 1284,
@@ -56,7 +57,7 @@
         "route_index": 12396,
         "weather_reader_cache": 472,
         "arena_total": 131072,
-        "arena_render": 117408,
+        "arena_render": 120544,
         "arena_nav": 80832,
         "arena_usb": 131072,
         "terrain": 2152,
@@ -139,6 +140,7 @@
         "flash": 1166584,
         "poll_frame": 9728
       },
+      "_arena_render_note_1213": "**#1213 (WX10) — the rain overlay's per-frame decoded-tile cache joins `RenderScratch`: `arena_render` 117,408 → 120,544 B (+3,136 B = 12 tile slots × 256 B decoded cells + keys/ok flags/cursor + padding; `MCU_SCRATCH_BYTES` moves 117,376 → 120,512 and the 32 B delta is the same struct padding it always carried).** This is the arena-arm *composition* figure moving, not resident RAM: the arena is max(arms) and the USB arm (131,072 B) is still the maximum — `ARENA_BYTES == USB_ARM_BYTES` is compile-asserted in arena.rs — so `arena_total`, `measured_resident`, `uninit_max` and `resident_ram_max` are all unchanged, +0 B on glass. Render-arm headroom under the max-of-arms cliff is now 131,072 − 120,544 = 10,528 B; growth past that becomes 1:1 resident and moves the cliff (re-read arena.rs's growth-asymmetry notes before spending it). The slot count is 12 because the rain zoom regime's 45°-worst-case scanline crosses ~10 tiles (`RAIN_MAX_CELL_STEP` in obc-render/src/rain.rs); 8 slots measurably re-fetched at the regime edge. Identical in both profiles — the render path is the same image either way.",
       "compile_time_allocations": {
         "framebuffer": 76800,
         "row_diff": 1284,
@@ -152,7 +154,7 @@
         "route_index": 12396,
         "weather_reader_cache": 472,
         "arena_total": 131072,
-        "arena_render": 117408,
+        "arena_render": 120544,
         "arena_nav": 80832,
         "arena_usb": 131072,
         "terrain": 2152,
