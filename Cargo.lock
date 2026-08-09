@@ -2596,6 +2596,7 @@ dependencies = [
 name = "obc-formats"
 version = "0.1.0"
 dependencies = [
+ "obc-crc",
  "obc-ports",
 ]
 
@@ -2802,6 +2803,15 @@ dependencies = [
  "obc-elevation",
  "obc-formats",
  "obc-route",
+ "obc-weather",
+]
+
+[[package]]
+name = "obc-weather"
+version = "0.1.0"
+dependencies = [
+ "obc-crc",
+ "obc-formats",
 ]
 
 [[package]]

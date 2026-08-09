@@ -51,6 +51,7 @@ the normative byte layouts: [`OBCM_Spec.md`](specs/OBCM_Spec.md) /
 | `firmware/obc-reader/` | `no_std + alloc` — current OBCM parsing (header, style table, LOD table, per-LOD quadtree query + chunk decode). Dependency-light. |
 | `firmware/obc-render/` | `no_std` — the **shared rendering path**: `Viewport` projection, meters-per-pixel LOD selection, painter z-ordering, even-odd scanline polygon fill, weighted polylines, text. Generic over an `embedded-graphics` `DrawTarget` so host and MCU run identical drawing code. |
 | `firmware/obc-route/` | `no_std` — the OBCR route reader **and** the GPX → OBCR converter. |
+| `firmware/obc-weather/` | `no_std` — allocation-free OBCW validation and one-tile-at-a-time weather reads over the shared byte-source seam; storage/cache policy stays outside it. |
 | `host/obc-bench/` | The **render benchmark + pixel-hash tripwire**: seven fixed scenes through the real pipeline, timings printed and frame hashes gated against `hashes.txt` in CI. |
 | `host/obc-host-core/` | Host glue **shared by the two simulator hosts** (desktop + web): GPX replay stepping, the frame-interleaved route planner, in-memory stores. |
 | `host/obc-mkimage/` | Host tool (`wrap` / `inspect`) — prepends the 64-byte `OBCU` header to a raw app image to make an `UPDATE.BIN`, and decodes + CRC-verifies one. The release pipeline's image producer. |
@@ -85,7 +86,8 @@ The dependency direction includes `obc-sim → obc-app → obc-render → obc-ma
 `obc-formats`, `obc-map-scene`, and `obc-ports` foundations sit beneath the reader/route,
 renderer, and app/route layers respectively. The nRF54L firmware and the website's
 `obc-web-demo` are *sibling hosts* beside `obc-sim`, reusing `obc-app` / `obc-render` /
-`obc-reader` / `obc-route` unchanged. `firmware/tools/check_dependencies.py` enforces the
+`obc-reader` / `obc-route` unchanged; `obc-weather` is the parallel OBCW reader below future
+weather application policy. `firmware/tools/check_dependencies.py` enforces the
 whole layering mechanically, and CI runs it.
 
 One cargo workspace spans all three trees, rooted at `Cargo.toml` here — so one `Cargo.lock`

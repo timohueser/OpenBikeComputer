@@ -1291,6 +1291,7 @@ dependencies = [
 name = "obc-formats"
 version = "0.1.0"
 dependencies = [
+ "obc-crc",
  "obc-ports",
 ]
 
