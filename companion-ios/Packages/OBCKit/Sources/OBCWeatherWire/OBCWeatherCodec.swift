@@ -112,7 +112,9 @@ public struct OBCWeatherBundle: Equatable, Sendable {
     public var generation: UInt32
     public var requestID: UInt32
     public var generatedAtUnixSeconds: Int64
+    /// Base timestamp of hourly record zero; genuine observed rain may precede it.
     public var validFromUnixSeconds: Int64
+    /// Overall upper validity ceiling for hourly interval ends and rain timestamps.
     public var validUntilUnixSeconds: Int64
     public var bounds: OBCWeatherBounds
     public var hourly: [OBCWeatherHourlyRecord]
@@ -146,9 +148,9 @@ public enum OBCWeatherCodec {
     private static let hourlyIntervalSeconds: UInt32 = 3_600
     private static let frameDescriptorLength = 48
     private static let tileDirectoryEntryLength = 12
-    private static let tileEdge = 16
-    private static let tileCells = 256
-    private static let raw4Length = 128
+    private static let tileEdge = OBCPrecipitationTileCodec.tileEdge
+    private static let tileCells = OBCPrecipitationTileCodec.tileCells
+    private static let raw4Length = OBCPrecipitationTileCodec.raw4Length
     private static let crcOffset = 88
 
     private struct FrameLayout {
@@ -176,7 +178,7 @@ public enum OBCWeatherCodec {
         var layouts: [FrameLayout] = []
         layouts.reserveCapacity(bundle.rainFrames.count)
         for frame in bundle.rainFrames {
-            let lengths = frame.tiles.map(encodedTileLength)
+            let lengths = try frame.tiles.map(OBCPrecipitationTileCodec.encodedLength)
             let directoryLength = try checkedMultiply(frame.tiles.count, tileDirectoryEntryLength)
             let dataOffset = try checkedAdd(tail, directoryLength)
             var dataLength = 0
@@ -241,27 +243,15 @@ public enum OBCWeatherCodec {
             var payload = layout.dataOffset
             for (tileIndex, tile) in frame.tiles.enumerated() {
                 let length = layout.tileLengths[tileIndex]
-                let codec: UInt8 = length < raw4Length ? 1 : 0
+                let encoding = try OBCPrecipitationTileCodec.encode(tile)
+                guard encoding.bytes.count == length else { throw OBCWeatherWireError.malformed }
                 let entry = layout.directoryOffset + tileIndex * tileDirectoryEntryLength
                 data.putLE(try checkedUInt32(payload), at: entry)
                 data.putLE(try checkedUInt16(length), at: entry + 4)
                 data.putLE(UInt16(tileCells), at: entry + 6)
-                data[entry + 8] = codec
-                if codec == 0 {
-                    for cell in stride(from: 0, to: tileCells, by: 2) {
-                        data[payload] = tile[cell] | (tile[cell + 1] << 4)
-                        payload += 1
-                    }
-                } else {
-                    var cell = 0
-                    while cell < tileCells {
-                        var run = 1
-                        while cell + run < tileCells, run < 16, tile[cell + run] == tile[cell] { run += 1 }
-                        data[payload] = UInt8((run - 1) << 4) | tile[cell]
-                        payload += 1
-                        cell += run
-                    }
-                }
+                data[entry + 8] = encoding.codec
+                data.replaceSubrange(payload..<payload + length, with: encoding.bytes)
+                payload += length
             }
             guard payload == layout.dataOffset + layout.dataLength else { throw OBCWeatherWireError.malformed }
         }
@@ -353,7 +343,7 @@ public enum OBCWeatherCodec {
             let dataOffset = Int(try require(data.readUInt32LE(at: descriptor + 24)))
             let dataLength = Int(try require(data.readUInt32LE(at: descriptor + 28)))
             let quality = OBCWeatherQuality(rawValue: try require(data.readUInt32LE(at: descriptor + 32)))
-            guard validAt >= validFrom, validAt <= validUntil,
+            guard validAt > 0, validAt <= validUntil,
                   priorFrame.map({ validAt > $0 }) ?? true,
                   width > 0, height > 0, cellSize > 0, valid(quality),
                   expectedTileCount(width: width, height: height) == tileCount,
@@ -379,34 +369,7 @@ public enum OBCWeatherCodec {
                 guard encodedLength > 0, encodedLength <= raw4Length,
                       let encoded = data.readBytes(at: payload, count: encodedLength)
                 else { throw OBCWeatherWireError.malformed }
-                var cells: [UInt8] = []
-                cells.reserveCapacity(tileCells)
-                if codec == 0, encodedLength == raw4Length {
-                    for byte in encoded {
-                        let low = byte & 0x0F, high = byte >> 4
-                        guard validIntensity(low), validIntensity(high) else { throw OBCWeatherWireError.malformed }
-                        cells.append(low); cells.append(high)
-                    }
-                    guard encodedTileLength(cells) == raw4Length else {
-                        throw OBCWeatherWireError.malformed
-                    }
-                } else if codec == 1, encodedLength < raw4Length {
-                    var previous: (value: UInt8, run: Int)?
-                    for byte in encoded {
-                        let value = byte & 0x0F
-                        let run = Int(byte >> 4) + 1
-                        guard validIntensity(value),
-                              previous.map({ $0.value != value || $0.run == 16 }) ?? true,
-                              cells.count <= tileCells - run else {
-                            throw OBCWeatherWireError.malformed
-                        }
-                        cells.append(contentsOf: repeatElement(value, count: run))
-                        previous = (value, run)
-                    }
-                    guard cells.count == tileCells else { throw OBCWeatherWireError.malformed }
-                } else {
-                    throw OBCWeatherWireError.malformed
-                }
+                let cells = try OBCPrecipitationTileCodec.decode(codec: codec, encoded: encoded)
                 guard validPadding(cells, width: width, height: height, tileIndex: tileIndex) else {
                     throw OBCWeatherWireError.malformed
                 }
@@ -444,13 +407,13 @@ public enum OBCWeatherCodec {
         }
         var priorFrame: Int64?
         for frame in bundle.rainFrames {
-            guard frame.validAtUnixSeconds >= bundle.validFromUnixSeconds,
+            guard frame.validAtUnixSeconds > 0,
                   frame.validAtUnixSeconds <= bundle.validUntilUnixSeconds,
                   priorFrame.map({ frame.validAtUnixSeconds > $0 }) ?? true,
                   frame.cellSizeMetres > 0, valid(frame.quality),
                   expectedTileCount(width: frame.width, height: frame.height) == frame.tiles.count,
                   frame.tiles.enumerated().allSatisfy({ index, tile in
-                      tile.count == tileCells && tile.allSatisfy(validIntensity)
+                      tile.count == tileCells && tile.allSatisfy(OBCPrecipitationTileCodec.validIntensity)
                           && validPadding(tile, width: frame.width, height: frame.height, tileIndex: index)
                   })
             else { throw OBCWeatherWireError.malformed }
@@ -489,8 +452,6 @@ public enum OBCWeatherCodec {
         return quality.rawValue & ~known == 0 && (source == 1 || source == 2)
     }
 
-    private static func validIntensity(_ value: UInt8) -> Bool { value <= 12 || value == 15 }
-
     private static func expectedTileCount(width: UInt16, height: UInt16) -> Int? {
         guard width > 0, height > 0 else { return nil }
         let columns = (Int(width) + tileEdge - 1) / tileEdge
@@ -511,17 +472,6 @@ public enum OBCWeatherCodec {
             }
         }
         return true
-    }
-
-    private static func encodedTileLength(_ tile: [UInt8]) -> Int {
-        var runs = 0, cell = 0
-        while cell < tileCells {
-            var run = 1
-            while cell + run < tileCells, run < 16, tile[cell + run] == tile[cell] { run += 1 }
-            runs += 1
-            cell += run
-        }
-        return min(runs, raw4Length)
     }
 
     private static func checkedAdd(_ lhs: Int, _ rhs: Int) throws -> Int {
