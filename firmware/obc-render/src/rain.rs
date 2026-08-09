@@ -291,6 +291,29 @@ pub fn rain_in_regime(vp: &Viewport, grid: &RainGrid) -> bool {
     regime_steps_ok(dcol_dx, dcol_dy, drow_dx, drow_dy)
 }
 
+/// The smallest [`Viewport::zoom`] (pixels per microdegree of latitude) at which the overlay is
+/// still inside its zoom regime for `grid`, at `aspect` (the viewport's `cos(lat)` longitude
+/// compression) — the inversion of [`rain_in_regime`]'s criterion, and therefore **the rain
+/// map's zoom-out clamp** (WX11, owner tuning round 2): the screen clamps `zoom` to this floor
+/// so a rider never reaches the out-of-regime state at all; the coarser the product's cells,
+/// the further out the clamp allows, exactly as the regime does. Heading-invariant like the
+/// criterion itself. `None` for a degenerate grid (the clamp then does not engage and the
+/// defensive out-of-regime banner remains the backstop).
+///
+/// Derivation: the grid-axis row norms reduce to `kx/(zoom·aspect)` and `ky/zoom` (cells per
+/// pixel; see [`RAIN_MAX_CELL_STEP`]), so `zoom ≥ max(kx/aspect, ky) / RAIN_MAX_CELL_STEP`.
+pub fn rain_min_zoom(grid: &RainGrid, aspect: f32) -> Option<f32> {
+    let lon_span = grid.east_udeg as i64 - grid.west_udeg as i64;
+    let lat_span = grid.north_udeg as i64 - grid.south_udeg as i64;
+    if grid.width_cells == 0 || grid.height_cells == 0 || lon_span <= 0 || lat_span <= 0 || !(aspect > 0.0) {
+        return None;
+    }
+    let kx = grid.width_cells as f64 / lon_span as f64;
+    let ky = grid.height_cells as f64 / lat_span as f64;
+    let min_zoom = (kx / aspect as f64).max(ky) / RAIN_MAX_CELL_STEP;
+    (min_zoom.is_finite() && min_zoom > 0.0).then_some(min_zoom as f32)
+}
+
 /// The regime criterion on the screen→grid Jacobian: both **grid-axis** row norms at or below
 /// [`RAIN_MAX_CELL_STEP`]. Rotation-invariant by construction (see the constant's docs); the one
 /// implementation behind [`rain_in_regime`] and [`draw_rain`]'s gate.
@@ -844,5 +867,39 @@ mod tests {
                 assert!(quartiles.iter().all(|&q| q), "2×2 block ({bx},{by}) misses a quartile");
             }
         }
+    }
+    /// `rain_min_zoom` is the exact inversion of the regime criterion: at the returned floor the
+    /// overlay is in regime at every heading, a hair below it is out at every heading, and a
+    /// coarser product's floor sits proportionally further out (the WX11 rain-map zoom clamp).
+    #[test]
+    fn min_zoom_is_the_regime_edge_at_every_heading() {
+        let cam = (7_600_000, 47_400_000);
+        let fine = RainGrid {
+            west_udeg: 7_000_000,
+            south_udeg: 47_000_000,
+            east_udeg: 8_000_000,
+            north_udeg: 48_000_000,
+            width_cells: 96,
+            height_cells: 96,
+        };
+        let coarse = RainGrid { width_cells: 24, height_cells: 24, ..fine };
+        let aspect = obc_map_scene::cos_lat(cam.1);
+        let fine_floor = super::rain_min_zoom(&fine, aspect).unwrap();
+        let coarse_floor = super::rain_min_zoom(&coarse, aspect).unwrap();
+        assert!(
+            (fine_floor / coarse_floor - 4.0).abs() < 0.05,
+            "4x coarser cells allow ~4x wider zoom-out ({fine_floor} vs {coarse_floor})"
+        );
+        for (grid, floor) in [(&fine, fine_floor), (&coarse, coarse_floor)] {
+            for course_deg in [0.0f32, 35.0, 90.0, 215.0] {
+                let at = Viewport::new_rotated(240.0, 320.0, cam.0, cam.1, floor * 1.001, course_deg.to_radians());
+                assert!(super::rain_in_regime(&at, grid), "at the floor: in regime ({course_deg} deg)");
+                let below = Viewport::new_rotated(240.0, 320.0, cam.0, cam.1, floor * 0.98, course_deg.to_radians());
+                assert!(!super::rain_in_regime(&below, grid), "below the floor: out ({course_deg} deg)");
+            }
+        }
+        // Degenerate grids disengage the clamp rather than inventing a floor.
+        let degenerate = RainGrid { width_cells: 0, ..fine };
+        assert_eq!(super::rain_min_zoom(&degenerate, aspect), None);
     }
 }

@@ -174,6 +174,14 @@ pub struct AppState {
     /// [`rain_step`](AppState::rain_step), host-refreshed from the snapshot
     /// (`WeatherSnapshot::steps_ahead`) whenever it feeds weather. `0` when nothing is current.
     pub rain_steps_ahead: u8,
+    /// The rain map's **zoom-out floor** (WX11, owner tuning round 2): the smallest zoom at
+    /// which the active product's raster still renders — the regime edge, derived per product
+    /// from its cell density (`WeatherSnapshot::rain_zoom_floor` /
+    /// [`obc_render::rain_min_zoom`]) and host-refreshed alongside the snapshot. The weather
+    /// screens clamp against it on rain-map entry and on every Inspect zoom step, so a rider
+    /// never *sees* the out-of-regime state; `0.0` (no rain product) disengages the clamp. Only
+    /// the rain map reads it — the normal Map's zoom range is untouched.
+    pub rain_zoom_min: f32,
 }
 
 impl AppState {
@@ -198,6 +206,16 @@ impl AppState {
             has_nav_graph: false,
             rain_step: 0,
             rain_steps_ahead: 0,
+            rain_zoom_min: 0.0,
+        }
+    }
+
+    /// Clamp the camera to the rain map's zoom-out floor ([`rain_zoom_min`](AppState::rain_zoom_min)).
+    /// Called by the weather screens on rain-map entry and after each Inspect zoom step; a
+    /// disengaged floor (`0.0`) is a no-op, and zooming *in* is never touched.
+    pub fn clamp_rain_zoom(&mut self) {
+        if self.rain_zoom_min > 0.0 && self.zoom < self.rain_zoom_min {
+            self.zoom = self.rain_zoom_min;
         }
     }
 
