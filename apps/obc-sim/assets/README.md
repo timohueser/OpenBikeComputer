@@ -47,6 +47,27 @@ inside the bbox from disappearing when one member lies outside it. The current
 simulator fixtures were not re-packed for that correction; expect polygon and
 byte changes the next time their pinned snapshots are deliberately refreshed.
 
+## wx10-rain-previews/
+
+Rendered 240 x 320 review frames of the WX10 rain overlay (epic #1185), embedded in PR bodies so
+look-tuning rounds have a stable surface to point at. **Not fixtures** -- nothing reads them; they
+are regenerated (release sim, deterministic output) by exactly the `map-rain-*` commands in
+`firmware/ui-snapshots.sh` plus the `demo:drizzle` variant and the rain-free baseline:
+
+```sh
+cargo build --release -p obc-sim
+S=target/release/obc-sim; M=apps/obc-sim/assets/grimsel.obcm; O=apps/obc-sim/assets/wx10-rain-previews
+$S $M --weather demo:scattered --clock "2025-06-29T14:40" --png $O/map-rain-scattered.png
+$S $M --weather demo:frontal --heading 35 --zoom 4 --clock "2025-06-29T14:40" --png $O/map-rain-frontal-heading.png
+$S $M --weather demo:storm --clock "2025-06-29T14:40" --png $O/map-rain-storm.png
+$S $M --weather demo:drizzle --clock "2025-06-29T14:40" --png $O/map-rain-drizzle.png
+$S $M --clock "2025-06-29T14:40" --png $O/map-rain-none.png
+```
+
+Re-render after any edit to the rain tuning surface (`firmware/obc-render/src/rain.rs` -- the one
+file a look round touches) and commit the refreshed frames with it; delete the directory whenever
+the review era ends.
+
 ## The bbox-ratchet trap (read before re-packing)
 
 **Never derive an extract bbox from an existing fixture's header.** The header

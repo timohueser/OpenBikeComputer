@@ -391,6 +391,24 @@ impl Skin {
                 ));
             }
         }
+        // The rain band gap (WX10, `obc_map_scene::RAIN_BAND_GAP_LOW/HIGH`): no style may sit in
+        // the open interval the renderer's rain boundary lives in. Ground fills stay at or below
+        // the gap, the road band at or above it; a skin that parks a style inside would make
+        // "roads above precipitation" ambiguous for every map it is stamped onto.
+        for record in &out {
+            if record.z_index > obc_map_scene::RAIN_BAND_GAP_LOW && record.z_index < obc_map_scene::RAIN_BAND_GAP_HIGH {
+                return Err(format!(
+                    "style id {} places z_index {} inside the reserved rain band gap ({}, {}) — ground styles stay \
+                     at or below {}, the road band at or above {} (WX10, epic #1185)",
+                    record.id,
+                    record.z_index,
+                    obc_map_scene::RAIN_BAND_GAP_LOW,
+                    obc_map_scene::RAIN_BAND_GAP_HIGH,
+                    obc_map_scene::RAIN_BAND_GAP_LOW,
+                    obc_map_scene::RAIN_BAND_GAP_HIGH,
+                ));
+            }
+        }
         Ok(out)
     }
 }
