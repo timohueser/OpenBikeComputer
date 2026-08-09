@@ -57,3 +57,43 @@ impl BleStatus {
         self.link == BleLink::Connected
     }
 }
+
+/// A GPS position group for the weather request context (WX8, #1193; spec §11.4 validity bit 0).
+/// All three fields travel together because the spec guards them with **one** validity bit: a fix
+/// the app can't date (no trusted clock this boot) is not served as a fix at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WeatherFix {
+    /// WGS84 latitude, microdegrees.
+    pub lat_udeg: i32,
+    /// WGS84 longitude, microdegrees.
+    pub lon_udeg: i32,
+    /// UTC seconds of the fix — the wall clock read back to when the fix arrived.
+    pub fix_utc: i64,
+}
+
+/// The app-side half of the §11.4 weather request context (WX8, #1193): everything the *app* knows
+/// that the request context carries — position, travel bearing/speed, the active route's durable
+/// id, ride state, and the trusted-clock "now". Distilled by
+/// [`App::weather_snapshot`](crate::App::weather_snapshot) and pushed across the plane seam each
+/// pass, the reverse direction of [`BleStatus`]; like it, **no `obc-ble` type crosses here** — the
+/// board's weather plane maps these onto the wire layout and its validity bits.
+///
+/// Every field is optional-by-honesty: `None` means the group is *absent* (the spec's
+/// flags-not-sentinels rule), never a zero the peer could mistake for the equator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct WeatherSnapshot {
+    /// A ride is being tracked — the scheduler's "scheduled requests only while riding" gate.
+    pub ride_active: bool,
+    /// The last GPS fix, only while fresh **and** datable (trusted clock).
+    pub position: Option<WeatherFix>,
+    /// Travel bearing in whole degrees `0..=359` — the GPS course, only while actually moving
+    /// (a stationary receiver's course is noise, not a bearing the device believes).
+    pub bearing_deg: Option<u16>,
+    /// Ground speed in 0.1 m/s, from the same fresh fix.
+    pub speed_deci_ms: Option<u16>,
+    /// The active route's **durable object id** — the id the phone's route list knows.
+    pub route_id: Option<u16>,
+    /// UTC unix seconds now, only when the clock was established from a real source this boot
+    /// ([`App::clock_trusted`](crate::App::clock_trusted)) — the scheduler's bundle-age input.
+    pub now_utc: Option<u32>,
+}

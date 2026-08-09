@@ -67,7 +67,7 @@ pub use activity::{Activity, DetourRequest, DfuAction, Mode, NavRequest, TrackAc
 pub use altitude::AltitudeFusion;
 pub use app::{App, AppState, CameraMode, ClockTrust, Pan, PanBasis, PanTool, NAV_PREVIEW_MAX};
 pub use arena_gate::{ArenaError, ArenaGate, ArenaInit, ArenaOwner, MapQuiesced, TransferReady};
-pub use ble::{BleLink, BleStatus};
+pub use ble::{BleLink, BleStatus, WeatherFix, WeatherSnapshot};
 pub use breadcrumb::Breadcrumb;
 pub use corridor::{CorridorKey, CorridorScratch};
 pub use dfu::{DfuFailure, DfuInstallError, DfuScanError, DfuScanReport};
