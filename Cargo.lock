@@ -3061,6 +3061,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "obc-wx-bake"
+version = "0.1.0"
+dependencies = [
+ "bzip2-rs",
+ "chrono",
+ "flate2",
+ "grib",
+ "hdf5-pure",
+ "obc-crc",
+ "obc-formats",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tar",
+ "ureq",
+]
+
+[[package]]
 name = "obc-wx-source-spike"
 version = "0.1.0"
 dependencies = [
