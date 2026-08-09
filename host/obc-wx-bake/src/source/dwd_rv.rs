@@ -77,6 +77,7 @@ impl Adapter for DwdRv {
         upstream: &mut dyn Upstream,
         previous: Option<&Product>,
         _now: i64,
+        warnings: &mut Vec<String>,
     ) -> Result<AdapterOutcome, String> {
         let previous_etag = previous.and_then(|product| product.upstream_etag.as_deref());
         let fetched = match upstream.fetch(LATEST_URL, MAX_COMPRESSED_BYTES, previous_etag)? {
@@ -86,7 +87,18 @@ impl Adapter for DwdRv {
         let (run, frames) = bake_tar(&fetched.bytes)?;
         // A validator can miss (or the fixture upstream can serve the same bytes without one):
         // the run identity itself is the second short-circuit, keys being immutable per run.
-        if previous.is_some_and(|product| product.reference_unix() == Some(run)) {
+        let previous_run = previous.and_then(|product| product.reference_unix());
+        if previous_run == Some(run) {
+            return Ok(AdapterOutcome::Unchanged);
+        }
+        // Upstream regression: LATEST served an older run than the one already published (a
+        // withdrawn or re-published archive). Never regress reference_time/staleness — keep the
+        // published product and wait for a genuinely newer run.
+        if previous_run.is_some_and(|published| published > run) {
+            warnings.push(format!(
+                "dwd-rv: upstream serves run {run} older than the published {}; keeping the published product",
+                previous_run.expect("checked")
+            ));
             return Ok(AdapterOutcome::Unchanged);
         }
         Ok(AdapterOutcome::Baked(Box::new(BakedProduct {

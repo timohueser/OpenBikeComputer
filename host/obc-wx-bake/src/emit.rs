@@ -27,6 +27,17 @@ pub fn emit_product(product: &BakedProduct) -> Result<Vec<EmittedFrame>, String>
         if frame.cells.len() != geometry.cells() {
             return Err(format!("{}: frame f{} cell count disagrees with the geometry", product.id, frame.offset_min));
         }
+        // The key's `f<offset-min>` segment and the header's timestamps are one fact: a frame
+        // whose offset does not equal `(valid_at - reference_time) / 60` would publish a key
+        // that lies about its own header, so it never leaves the emitter.
+        if i64::from(frame.offset_min) * 60 != frame.valid_at - product.reference_time {
+            return Err(format!(
+                "{}: frame f{} offset disagrees with valid_at - reference_time = {} s",
+                product.id,
+                frame.offset_min,
+                frame.valid_at - product.reference_time
+            ));
+        }
         let input = FrameInput {
             product_id: product.product_code,
             tier: product.tier,

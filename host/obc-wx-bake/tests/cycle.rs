@@ -328,6 +328,70 @@ fn corrupt_upstream_fails_the_cycle_and_publishes_nothing() {
     assert_eq!(before_icon, tree(&dir));
 }
 
+/// Review finding 6: an upstream run regression (newest complete run older than the published
+/// one) keeps the published product and warns, instead of moving reference_time and the
+/// staleness deadline backwards.
+#[test]
+fn an_upstream_run_regression_keeps_the_published_product_and_warns() {
+    let (dwd, icon) = adapters();
+    let adapters: [&dyn Adapter; 2] = [&dwd, &icon];
+    let dir = scratch("regression");
+    let mut first = upstream();
+    let mut store = DirStore::new(&dir);
+    run_cycle(&adapters, &mut first, &mut store, now(), false).expect("first cycle");
+
+    // Pretend a newer ICON run had been published, then withdrawn upstream: the fixture's 06Z
+    // run is now a regression relative to the published 12Z reference.
+    let manifest_path = dir.join("wx/v1/manifest.json");
+    let mut document = manifest::from_json(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    for product in &mut document.products {
+        if product.id == "icon-eu" {
+            product.reference_time = "2026-08-09T12:00:00Z".to_string();
+        }
+    }
+    std::fs::write(&manifest_path, manifest::to_json(&document)).unwrap();
+
+    let mut second = upstream();
+    let report = run_cycle(&adapters, &mut second, &mut store, now() + 300, false).expect("regression cycle");
+    eprintln!("regression report:\n{}", report.summary());
+    assert!(report.products.iter().all(|(_, status, _)| *status == ProductStatus::Unchanged));
+    assert!(
+        report.warnings.iter().any(|warning| warning.contains("older than the published")),
+        "{:?}",
+        report.warnings
+    );
+    assert_eq!(report.fetched_bytes, 0, "a regression bakes nothing");
+    let republished = manifest::from_json(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    let icon_entry = republished.products.iter().find(|product| product.id == "icon-eu").unwrap();
+    assert_eq!(icon_entry.reference_time, "2026-08-09T12:00:00Z", "reference_time must not regress");
+}
+
+/// Review finding 5: a carried-forward frame an unchanged product still references must be
+/// fetchable at the destination, or the manifest swap is refused.
+#[test]
+fn a_deleted_carried_frame_blocks_the_manifest_swap() {
+    let (dwd, icon) = adapters();
+    let adapters: [&dyn Adapter; 2] = [&dwd, &icon];
+    let dir = scratch("carried");
+    let mut first = upstream();
+    let mut store = DirStore::new(&dir);
+    run_cycle(&adapters, &mut first, &mut store, now(), false).expect("first cycle");
+    let manifest_before = std::fs::read(dir.join("wx/v1/manifest.json")).unwrap();
+
+    // A lifecycle misconfiguration expires one published RV frame out from under the manifest.
+    std::fs::remove_file(dir.join("wx/v1/dwd-rv/20260809T1420Z/f45.obcg")).unwrap();
+
+    let mut second = upstream();
+    let error = run_cycle(&adapters, &mut second, &mut store, now() + 300, false).unwrap_err();
+    eprintln!("carried-frame error: {error}");
+    assert!(error.contains("refusing to swap the manifest in"), "{error}");
+    assert_eq!(
+        std::fs::read(dir.join("wx/v1/manifest.json")).unwrap(),
+        manifest_before,
+        "the manifest must not be replaced past a missing carried frame"
+    );
+}
+
 #[test]
 fn unchanged_upstream_short_circuits_and_moves_no_frame_bytes() {
     let (dwd, icon) = adapters();

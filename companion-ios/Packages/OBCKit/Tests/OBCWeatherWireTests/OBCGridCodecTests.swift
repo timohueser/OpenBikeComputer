@@ -33,6 +33,7 @@ struct OBCGridCodecTests {
         "grid-invalid-paging.obcg", "grid-invalid-rle-overlong.obcg",
         "grid-invalid-rle-noncanonical.obcg", "grid-invalid-raw-compressible.obcg",
         "grid-invalid-dry-encoded.obcg", "grid-invalid-dry-sentinel-nonzero.obcg",
+            "grid-invalid-dry-sentinel-edge-tile.obcg",
         "grid-invalid-tile-crc.obcg", "grid-invalid-reserved.obcg", "grid-invalid-flags.obcg",
     ]
 
@@ -116,7 +117,7 @@ struct OBCGridCodecTests {
             let bytes = try fixture(name)
             #expect(throws: (any Error).self, "accepted \(name)") { try OBCGridCodec.validate(bytes) }
         }
-        #expect(Self.negatives.count == 17)
+        #expect(Self.negatives.count == 18)
     }
 
     /// OBCG_Spec.md §7: a corridor consumer reads the header, the covering directory pages, and

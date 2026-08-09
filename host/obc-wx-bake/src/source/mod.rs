@@ -53,7 +53,13 @@ pub trait Adapter {
     fn id(&self) -> &'static str;
 
     /// Run one idempotent bake. `previous` is this product's entry in the currently published
-    /// manifest (for validator/run short-circuits); `now` is injected for deterministic tests.
-    fn bake(&self, upstream: &mut dyn Upstream, previous: Option<&Product>, now: i64)
-        -> Result<AdapterOutcome, String>;
+    /// manifest (for validator/run short-circuits); `now` is injected for deterministic tests;
+    /// non-fatal observations (an upstream run regression, for example) go into `warnings`.
+    fn bake(
+        &self,
+        upstream: &mut dyn Upstream,
+        previous: Option<&Product>,
+        now: i64,
+        warnings: &mut Vec<String>,
+    ) -> Result<AdapterOutcome, String>;
 }

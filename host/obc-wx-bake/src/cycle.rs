@@ -82,15 +82,17 @@ pub fn run_cycle(
     // Bake everything before publishing anything.
     let mut products = Vec::new();
     let mut frame_objects: Vec<PlannedObject> = Vec::new();
+    let mut carried_frames: Vec<(String, u64)> = Vec::new();
     let mut statuses = Vec::new();
     for adapter in adapters {
         let id = adapter.id();
-        match adapter.bake(upstream, previous_product(id), now)? {
+        match adapter.bake(upstream, previous_product(id), now, &mut warnings)? {
             AdapterOutcome::Unchanged => {
                 let carried = previous_product(id)
                     .ok_or_else(|| format!("{id}: adapter reported unchanged with no published entry"))?
                     .clone();
                 statuses.push((adapter.id(), ProductStatus::Unchanged, carried.frames.len()));
+                carried_frames.extend(carried.frames.iter().map(|frame| (frame.key.clone(), frame.bytes)));
                 products.push(carried);
             }
             AdapterOutcome::Baked(baked) => {
@@ -119,7 +121,7 @@ pub fn run_cycle(
     };
 
     let (published_objects, published_bytes) =
-        if dry_run { (0, 0) } else { publish::publish(store, &frame_objects, &manifest_object)? };
+        if dry_run { (0, 0) } else { publish::publish(store, &frame_objects, &carried_frames, &manifest_object)? };
 
     Ok(CycleReport {
         products: statuses,

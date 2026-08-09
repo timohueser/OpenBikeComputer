@@ -94,6 +94,7 @@ impl Adapter for IconEu {
         upstream: &mut dyn Upstream,
         previous: Option<&Product>,
         now: i64,
+        warnings: &mut Vec<String>,
     ) -> Result<AdapterOutcome, String> {
         GEOMETRY.validate()?;
         // Newest complete run: every retained lead (plus the f000 baseline) must exist before a
@@ -109,7 +110,18 @@ impl Adapter for IconEu {
             break;
         }
         let run = selected.ok_or("no complete ICON-EU run among the recent cycles")?;
-        if previous.is_some_and(|product| product.reference_unix() == Some(run)) {
+        let previous_run = previous.and_then(|product| product.reference_unix());
+        if previous_run == Some(run) {
+            return Ok(AdapterOutcome::Unchanged);
+        }
+        // Upstream regression: the newest complete run is older than the one already published
+        // (files withdrawn upstream). Never re-bake backwards — reference_time and the staleness
+        // deadline must not move into the past while published frames stand.
+        if previous_run.is_some_and(|published| published > run) {
+            warnings.push(format!(
+                "icon-eu: newest complete run {run} is older than the published {}; keeping the published product",
+                previous_run.expect("checked")
+            ));
             return Ok(AdapterOutcome::Unchanged);
         }
 

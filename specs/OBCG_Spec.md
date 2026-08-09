@@ -168,11 +168,14 @@ covered by that page's CRC like any other entry bytes.
 | 7 | Reserved | 1 | - | Zero |
 | 8 | Tile CRC-32 | 4 | `uint32` | CRC-32 of the payload bytes; `0` for a dry tile |
 
-**Dry sentinel.** `encoded_len == 0` declares every cell of the tile (including edge padding)
-to be intensity `0` (dry). A dry entry has no payload bytes and its other fields MUST be zero —
-a dry entry is exactly twelve zero bytes. The sentinel means **dry, never no-data**: a tile of
-unavailable cells MUST be encoded (as RLE4 no-data runs), because missing data must never decode
-as dry weather.
+**Dry sentinel.** `encoded_len == 0` declares every cell of the tile to be intensity `0`
+(dry). A dry entry has no payload bytes and its other fields MUST be zero — a dry entry is
+exactly twelve zero bytes. The sentinel means **dry, never no-data**: a tile of unavailable
+cells MUST be encoded (as RLE4 no-data runs), because missing data must never decode as dry
+weather. A dry sentinel MUST NOT be used for a partial tile at the north or east grid edge —
+such a tile contains no-data padding cells (§5) and MUST be encoded; a reader MUST reject a dry
+entry at a partial-edge tile index. Together with §5's all-dry noncanonicality rule this makes
+the encoding of every tile unique: exactly one byte representation exists for any frame.
 
 **Canonical packing.** Non-dry payloads are stored in ascending tile index order with no gaps:
 the first non-dry entry's `data_offset` MUST equal the header `data_offset`, and each subsequent
@@ -206,9 +209,10 @@ cell count `N = tile_edge^2` in place of 256:
   `N / 2` bytes.
 
 Producers MUST choose RLE4 if and only if its maximal-run encoding is strictly smaller than
-raw4; ties use raw4. A tile whose `N` cells are all dry MUST use the §4.1 sentinel instead of a
-payload; consequently a decoded payload with every cell dry is noncanonical and MUST be
-rejected. (An edge tile can never be all-dry, because its padding is no-data.)
+raw4; ties use raw4. A full (non-edge) tile whose `N` cells are all dry MUST use the §4.1
+sentinel instead of a payload; consequently a decoded payload with every cell dry is
+noncanonical and MUST be rejected. (An edge tile is never all-dry — its padding is no-data —
+and per §4.1 it is never a sentinel either, so both rules stay disjoint.)
 
 Cell intensities are the canonical 4-bit precipitation table of `OBCW_Spec.md` §7 — the same
 codes, the same mm/h thresholds, the same reserved values 13/14 (reject) and no-data 15 (never
@@ -338,7 +342,10 @@ vectors and both implementations in the same change, per the epic's working agre
 The launch DWD RV product window is 1,234 x 1,132 cells (§3 strides 9,000 x 14,000 udeg at
 nominal 1,000 m). At tile edge 32 that is `39 x 36 = 1,404` tiles; with 512 entries per page the
 directory is `3 x 6,148 = 18,444` bytes and the header-plus-one-page first fetch is under
-6.3 KiB. A dry Germany frame is `128 + 18,444 = 18,572` bytes total. Worst-case raw4 payloads
+6.3 KiB. A dry Germany frame is `24,440` bytes total: the `38 x 35 = 1,330` full interior tiles
+are sentinels, while the 74 partial north/east edge tiles carry short dry-plus-no-data RLE4
+payloads (`35 x 96 + 38 x 64 + 76 = 5,868` bytes) — the §4.1 edge rule keeps padding honest
+even on a dry day. Worst-case raw4 payloads
 would add `1,404 x 512 = 718,848` bytes, but real frames are dominated by dry sentinels and
 short RLE4 runs. ICON-EU (1,377 x 657 at 0.0625 deg, tile edge 16, `87 x 42 = 3,654` tiles)
 pages to `8 x 6,148 = 49,184` directory bytes. A CONUS-scale MRMS frame (7,000 x 3,500, tile
