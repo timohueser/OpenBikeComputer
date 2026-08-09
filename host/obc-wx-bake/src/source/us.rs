@@ -25,8 +25,8 @@ use obc_formats::obcg::{PRODUCT_MRMS, TIER_RADAR};
 
 use crate::fetch::Upstream;
 use crate::manifest::Product;
-use crate::source::{mrms, Adapter, AdapterOutcome, Attribution, BakedProduct, NOAA_TERMS_URL};
 use crate::source::hrrr;
+use crate::source::{mrms, Adapter, AdapterOutcome, Attribution, BakedProduct, NOAA_TERMS_URL};
 
 pub const ID: &str = "us";
 
@@ -59,8 +59,8 @@ impl Adapter for UsComposite {
     ) -> Result<AdapterOutcome, String> {
         // The observation anchors everything, so it is discovered first — by HEAD probes only,
         // which makes the unchanged short-circuit cost nothing but a request.
-        let observation = mrms::discover_latest(upstream, now)?
-            .ok_or("no MRMS observation published within the discovery window")?;
+        let observation =
+            mrms::discover_latest(upstream, now)?.ok_or("no MRMS observation published within the discovery window")?;
         let previous_reference = previous.and_then(|product| product.reference_unix());
         if previous_reference == Some(observation) {
             return Ok(AdapterOutcome::Unchanged);
@@ -76,8 +76,7 @@ impl Adapter for UsComposite {
             return Ok(AdapterOutcome::Unchanged);
         }
 
-        let run = hrrr::select_run(upstream, now)?
-            .ok_or("no complete HRRR subhourly run among the recent cycles")?;
+        let run = hrrr::select_run(upstream, now)?.ok_or("no complete HRRR subhourly run among the recent cycles")?;
         let leads = hrrr::published_leads(run, observation, HORIZON_SECONDS);
         if leads.len() < FULL_FORWARD_FRAMES {
             // Honest degradation: a late HRRR publication shortens the forward window instead of

@@ -13,7 +13,10 @@ use obc_formats::obcg::{self, FLAG_FORECAST, FLAG_OBSERVED, PRODUCT_GFS, PRODUCT
 use obc_formats::precip4;
 use obc_wx_bake::cycle::{run_cycle, ProductStatus};
 use obc_wx_bake::fetch::FixtureUpstream;
-use obc_wx_bake::grib::{decode_field, decode_gzip_field, ExpectedGrib, GFS_GLOBAL_GRID_DEFINITION_HEX, HRRR_CONUS_GRID_DEFINITION_HEX, MRMS_CONUS_GRID_DEFINITION_HEX};
+use obc_wx_bake::grib::{
+    decode_field, decode_gzip_field, ExpectedGrib, GFS_GLOBAL_GRID_DEFINITION_HEX, HRRR_CONUS_GRID_DEFINITION_HEX,
+    MRMS_CONUS_GRID_DEFINITION_HEX,
+};
 use obc_wx_bake::lcc;
 use obc_wx_bake::manifest::{self, SourceClass};
 use obc_wx_bake::publish::DirStore;
@@ -42,7 +45,7 @@ fn gfs_run() -> i64 {
     ts("2026-08-09T12:00:00Z")
 }
 
-/// The captured HRRR subhourly objects: file number → (upstream length, leads, ranges).
+/// The captured HRRR subhourly objects: file number → upstream `Content-Length`.
 const HRRR_OBJECTS: [(u32, u64); 3] = [(2, 210_757_046), (3, 214_632_128), (4, 220_555_508)];
 const HRRR_RANGES: [(u32, u32, u64); 9] = [
     (2, 120, 183_664_477),
@@ -89,17 +92,25 @@ fn upstream() -> FixtureUpstream {
     // The whole subhourly set must be discoverable for the run to be selectable; only the
     // objects a published lead lives in are ever read.
     for file in hrrr::SUBHOURLY_FILES {
-        upstream.insert(hrrr::index_url(hrrr_run(), file), fixture(&format!("hrrr-conus-20260809T15-f{file:02}.idx")), None);
+        upstream.insert(
+            hrrr::index_url(hrrr_run(), file),
+            fixture(&format!("hrrr-conus-20260809T15-f{file:02}.idx")),
+            None,
+        );
     }
     for (file, object_len) in HRRR_OBJECTS {
         upstream.declare(hrrr::object_url(hrrr_run(), file), object_len);
     }
     for (file, lead, start) in HRRR_RANGES {
-        upstream.insert_range(hrrr::object_url(hrrr_run(), file), 0, start, hrrr_message(lead));
-        upstream.declare(hrrr::object_url(hrrr_run(), file), HRRR_OBJECTS.iter().find(|(f, _)| *f == file).unwrap().1);
+        let object_len = HRRR_OBJECTS.iter().find(|(candidate, _)| *candidate == file).expect("declared object").1;
+        upstream.insert_range(hrrr::object_url(hrrr_run(), file), object_len, start, hrrr_message(lead));
     }
     for (lead, object_len, start) in GFS_SPANS {
-        upstream.insert(gfs::index_url(gfs_run(), lead), fixture(&format!("gfs-global-20260809T12-f{lead:03}.idx")), None);
+        upstream.insert(
+            gfs::index_url(gfs_run(), lead),
+            fixture(&format!("gfs-global-20260809T12-f{lead:03}.idx")),
+            None,
+        );
         upstream.insert_range(gfs::object_url(gfs_run(), lead), object_len, start, gfs_span(lead));
     }
     upstream
@@ -196,8 +207,8 @@ fn the_composed_us_product_and_the_global_floor_publish_a_valid_byte_stable_tree
         for frame in &product.frames {
             let bytes = tree_a.get(&frame.key).unwrap_or_else(|| panic!("{} is not published", frame.key));
             assert_eq!(bytes.len() as u64, frame.bytes, "{}", frame.key);
-            let header = obcg::validate(bytes, &mut scratch_buffer)
-                .unwrap_or_else(|error| panic!("{}: {error:?}", frame.key));
+            let header =
+                obcg::validate(bytes, &mut scratch_buffer).unwrap_or_else(|error| panic!("{}: {error:?}", frame.key));
             assert_eq!(format!("0x{:08X}", header.object_crc32), frame.object_crc32);
             assert_eq!(manifest::rfc3339(header.valid_at), frame.valid_at);
             // The manifest's per-frame geometry is the object's own geometry, restated.
@@ -416,9 +427,12 @@ fn published_cells_equal_quantized_nearest_neighbour_source_cells() {
     assert!(wet > 0, "the captured GFS run must contain rain");
 
     // Three coordinates outside every high-resolution domain still land on the right floor cell.
-    for (name, lat, lon) in
-        [("Lisbon", 38.72, -9.14), ("Patagonia", -51.62, -69.22), ("Tasmania", -42.88, 147.33), ("Fiji", -17.71, 178.06)]
-    {
+    for (name, lat, lon) in [
+        ("Lisbon", 38.72, -9.14),
+        ("Patagonia", -51.62, -69.22),
+        ("Tasmania", -42.88, 147.33),
+        ("Fiji", -17.71, 178.06),
+    ] {
         let col = ((lon * 1e6 - f64::from(geometry.west_lon_udeg)) / f64::from(geometry.cell_lon_udeg)).floor() as u32;
         let row = ((lat * 1e6 - f64::from(geometry.south_lat_udeg)) / f64::from(geometry.cell_lat_udeg)).floor() as u32;
         let native = gfs::native_index(col, row).unwrap_or_else(|| panic!("{name} is inside the floor window"));

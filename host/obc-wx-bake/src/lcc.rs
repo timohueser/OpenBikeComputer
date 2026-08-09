@@ -84,10 +84,10 @@ mod tests {
     #[test]
     fn hrrr_domain_corners_pin_the_projection() {
         let corners = [
-            (21.138_123, -122.719_528, 0u32, 0u32),                        // SW = the first point
-            (21.140_547, -72.289_718, NATIVE_COLS - 1, 0),                 // SE
-            (47.838_623, -134.095_480, 0, NATIVE_ROWS - 1),                // NW
-            (47.842_195, -60.917_193, NATIVE_COLS - 1, NATIVE_ROWS - 1),   // NE
+            (21.138_123, -122.719_528, 0u32, 0u32),         // SW = the first point
+            (21.140_547, -72.289_718, NATIVE_COLS - 1, 0),  // SE
+            (47.838_623, -134.095_480, 0, NATIVE_ROWS - 1), // NW
+            (47.842_195, -60.917_193, NATIVE_COLS - 1, NATIVE_ROWS - 1), // NE
         ];
         let (origin_x, origin_y) = forward(FIRST_POINT_LAT_DEG, FIRST_POINT_LON_DEG);
         for (lat, lon, col, row) in corners {

@@ -257,9 +257,8 @@ pub fn deaccumulate(
     }
     // WX1's exact roundoff rule: independently packed cumulative fields may disagree by at most
     // half the sum of their packing increments; a larger decrease fails rather than being clamped.
-    let roundoff_limit = earlier
-        .map(|earlier| f64::from(earlier.packing_increment + later.packing_increment) / 2.0)
-        .unwrap_or(0.0);
+    let roundoff_limit =
+        earlier.map(|earlier| f64::from(earlier.packing_increment + later.packing_increment) / 2.0).unwrap_or(0.0);
     let mut cells = Vec::with_capacity(GEOMETRY.cells());
     for row in 0..GEOMETRY.height as usize {
         // Output row 0 is the southernmost published centre (-89.75); the GRIB scans from +90 N,
@@ -349,7 +348,7 @@ mod tests {
         assert_eq!(sampled.len(), GEOMETRY.width as usize, "columns must not be published twice");
         for row in 0..GEOMETRY.height {
             let native_row = native_index(0, row).unwrap() / NATIVE_COLS;
-            assert!(native_row >= 1 && native_row <= NATIVE_ROWS - 2, "pole row {native_row} must not be published");
+            assert!((1..=NATIVE_ROWS - 2).contains(&native_row), "pole row {native_row} must not be published");
         }
     }
 

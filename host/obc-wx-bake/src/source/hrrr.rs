@@ -42,8 +42,7 @@ pub const GEOMETRY: GridGeometry = GridGeometry {
 /// Retained forward leads in minutes: 15-minute steps through +4 h, held in the four subhourly
 /// objects `wrfsubhf01..f04`. The published set is the sub-window that lies ahead of the MRMS
 /// observation anchor, so a run up to two hours old still supplies a full +2 h of forward frames.
-pub const LEADS_MIN: [u32; 16] =
-    [15, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165, 180, 195, 210, 225, 240];
+pub const LEADS_MIN: [u32; 16] = [15, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165, 180, 195, 210, 225, 240];
 /// Objects the run-completeness probe requires (`wrfsubhf01` ... `wrfsubhf04`).
 pub const SUBHOURLY_FILES: [u32; 4] = [1, 2, 3, 4];
 /// How many hourly runs back discovery will look before giving up.
@@ -163,7 +162,8 @@ pub fn bake_forward_frames(
         }
         let (_, object_len, index) = cached.as_ref().expect("just populated");
         let (range, _) = idx::resolve(index, &selector(*lead), *object_len, &[1])?;
-        let message = upstream.fetch_range(&object_url(run, file), range.start, range.end_inclusive, MAX_MESSAGE_BYTES)?;
+        let message =
+            upstream.fetch_range(&object_url(run, file), range.start, range.end_inclusive, MAX_MESSAGE_BYTES)?;
         let field = decode_field(&message.bytes, &EXPECTED)?;
         let valid_at = run + i64::from(*lead) * 60;
         // The selected lead must equal the byte-derived one; index text is not identity.
@@ -229,7 +229,13 @@ mod tests {
         GEOMETRY.validate().expect("geometry is within the OBCG limits");
         // The domain's extreme corners and its northern bulge on the central meridian all fall
         // inside the window (computed from the pinned projection, not from prose).
-        for (lat, lon) in [(21.138_123, -122.719_528), (21.140_547, -72.289_718), (47.838_623, -134.095_480), (47.842_195, -60.917_193), (52.615_653, -97.5)] {
+        for (lat, lon) in [
+            (21.138_123, -122.719_528),
+            (21.140_547, -72.289_718),
+            (47.838_623, -134.095_480),
+            (47.842_195, -60.917_193),
+            (52.615_653, -97.5),
+        ] {
             let lat_udeg = (lat * 1e6) as i64;
             let lon_udeg = (lon * 1e6) as i64;
             assert!(
