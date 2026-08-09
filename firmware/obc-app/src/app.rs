@@ -4086,8 +4086,7 @@ mod tests {
     fn every_settings_screen_holds_a_pending_save_until_exit() {
         use crate::screen::{
             apply, AddFieldScreen, ConnectionsScreen, DateTimeScreen, FirmwareScreen, PowerScreen, ResetScreen,
-            RideScreen, SettingsScreen, StatFieldsScreen, SystemScreen, Transition, UnitsScreen,
-            WeatherSettingsScreen,
+            RideScreen, SettingsScreen, StatFieldsScreen, SystemScreen, Transition, UnitsScreen, WeatherSettingsScreen,
         };
         use crate::settings::Units;
 

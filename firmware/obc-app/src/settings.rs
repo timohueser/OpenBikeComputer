@@ -587,7 +587,7 @@ impl IdleReturn {
 /// these exact values, so the two stores can never disagree — a parity test pins the mapping.
 /// Appended, never renumbered; an unknown stored byte sanitises to the default,
 /// [`Every30`](WeatherRefresh::Every30).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(u8)]
 pub enum WeatherRefresh {
     /// No scheduled refresh (opening Weather still requests urgently).
@@ -595,17 +595,12 @@ pub enum WeatherRefresh {
     /// Every 15 minutes.
     Every15 = 1,
     /// Every 30 minutes — the default (the epic's locked default interval).
+    #[default]
     Every30 = 2,
     /// Every 60 minutes.
     Every60 = 3,
     /// Every 120 minutes.
     Every120 = 4,
-}
-
-impl Default for WeatherRefresh {
-    fn default() -> Self {
-        WeatherRefresh::Every30
-    }
 }
 
 impl WeatherRefresh {

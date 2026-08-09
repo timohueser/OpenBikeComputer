@@ -90,8 +90,10 @@ impl WeatherAlertScreen {
         }
         cv.text(&timing, Point::new(w / 2, after + 10), Font::Display, TextAlign::Center, INK);
 
-        let items =
-            [MenuItem { label: rx.t(Msg::WeatherViewRainMap), guard: false }, MenuItem { label: rx.t(Msg::WeatherDismiss), guard: false }];
+        let items = [
+            MenuItem { label: rx.t(Msg::WeatherViewRainMap), guard: false },
+            MenuItem { label: rx.t(Msg::WeatherDismiss), guard: false },
+        ];
         let top = h - 2 * (46 + 8) - 12;
         draw_guarded_rows(cv, &items, self.selected, rx.hold_progress, WARNING, GuardedRowsGeometry::card(w, top));
     }

@@ -182,7 +182,14 @@ pub(super) fn hourly_icon(condition: u8, unix_utc: i64, utc_offset_min: i16) -> 
 
 /// The decision card's pane + two text lines (Body caption over the big Display value) with an
 /// optional 48-px icon on the right.
-fn draw_card_lines(cv: &mut impl Surface, w: i32, line1: &str, line2: &str, value_color: u16, icon: Option<WeatherIcon>) {
+fn draw_card_lines(
+    cv: &mut impl Surface,
+    w: i32,
+    line1: &str,
+    line2: &str,
+    value_color: u16,
+    icon: Option<WeatherIcon>,
+) {
     use palette::*;
     let area = rect(CARD_X, CARD_Y, w - 2 * CARD_X, CARD_H);
     cv.round(area, 6, PARCHMENT_SHADE);

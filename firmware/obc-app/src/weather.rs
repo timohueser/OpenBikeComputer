@@ -381,7 +381,8 @@ mod tests {
         let reader = WeatherReader::open(&source).unwrap();
         let header = reader.header();
         let mut cache = WeatherCache::new();
-        let pos = ((header.south_lat_udeg + header.north_lat_udeg) / 2, (header.west_lon_udeg + header.east_lon_udeg) / 2);
+        let pos =
+            ((header.south_lat_udeg + header.north_lat_udeg) / 2, (header.west_lon_udeg + header.east_lon_udeg) / 2);
         let snap = WeatherSnapshot::sample(&reader, &mut cache, Some(pos)).unwrap();
         (snap, reader.frame(0).unwrap().valid_at)
     }

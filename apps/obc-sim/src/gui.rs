@@ -322,9 +322,13 @@ impl SimGui {
         // (the panel's GPS-time controls can still move the clock afterwards).
         if let Some(arg) = args.weather.as_ref() {
             let b = map.reader().bbox;
-            if let Some(now) = crate::weather_store::SimWeather::from_arg(arg, args.weather_now, (b.min_lon, b.min_lat, b.max_lon, b.max_lat))
-                .as_ref()
-                .and_then(|w| w.effective_now())
+            if let Some(now) = crate::weather_store::SimWeather::from_arg(
+                arg,
+                args.weather_now,
+                (b.min_lon, b.min_lat, b.max_lon, b.max_lat),
+            )
+            .as_ref()
+            .and_then(|w| w.effective_now())
             {
                 boot_settings.clock = obc_ports::DateTime::from_unix(now.max(0) as u64 as u32);
                 boot_settings.utc_offset_min = 0;
