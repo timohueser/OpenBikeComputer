@@ -471,6 +471,7 @@
       "weather-invalid-hourly-flags.obcw": "first hourly record has nonzero v1 flags; CRC recomputed",
       "weather-invalid-hourly-reserved.obcw": "first hourly record has a nonzero reserved byte; CRC recomputed",
       "weather-invalid-nibble.obcw": "raw4 contains reserved intensity 13; CRC recomputed",
+      "weather-invalid-raw-compressible.obcw": "all-dry tile is labeled raw4 although canonical RLE4 is 16 bytes; CRC recomputed",
       "weather-invalid-rle-overlong.obcw": "RLE expands past 256 cells; CRC recomputed",
       "weather-invalid-rle-noncanonical.obcw": "adjacent equal short RLE runs are not maximal; CRC recomputed",
       "weather-invalid-crc.obcw": "payload changed without updating the internal CRC",

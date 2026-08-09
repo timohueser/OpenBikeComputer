@@ -209,7 +209,9 @@ not alias its directory, another tile, another frame or a header section.
 ### 6.1 raw4 (codec 0)
 
 Length is exactly 128 bytes. Each byte holds two row-major cells: the earlier cell is the low
-nibble and the later cell is the high nibble.
+nibble and the later cell is the high nibble. A raw4 tile is canonical only when its maximal-run
+RLE4 encoding would be 128 bytes or longer. A decoder MUST reject raw4 when that RLE4 encoding
+would be shorter than 128 bytes.
 
 ### 6.2 RLE4 (codec 1)
 
@@ -223,8 +225,9 @@ are valid only when the first run has length 16, because only that full run forc
 For example, 20 equal cells encode as lengths 16 then 4; lengths 8 then 12 are noncanonical and
 MUST be rejected. Encoders coalesce equal cells and split only at 16-cell boundaries.
 
-An RLE4 payload MUST be shorter than 128 bytes. Producers MUST choose RLE4 only when it is
-strictly smaller than raw4; ties use raw4. This makes the representation deterministic.
+An RLE4 payload MUST be shorter than 128 bytes. Producers MUST choose RLE4 if and only if its
+maximal-run encoding is strictly smaller than raw4; ties use raw4. Decoders MUST reject the wrong
+codec choice in either direction. This makes the representation deterministic.
 
 ## 7. Canonical 4-bit precipitation intensity
 
@@ -276,8 +279,8 @@ Equivalent early-exit ordering is allowed, but acceptance requires every check b
 6. Validate descriptor extent and canonical section order.
 7. For each frame, validate timestamp, dimensions, quality flags and computed tile count.
 8. For each tile entry, validate canonical offset, lengths, reserved fields and codec.
-9. Validate every raw nibble or RLE run, including maximal-run canonicality. Stop as soon as an
-   RLE sum exceeds 256; require exactly 256 at its end.
+9. Validate every raw nibble or RLE run, including maximal-run canonicality and the canonical
+   raw4/RLE4 codec choice. Stop as soon as an RLE sum exceeds 256; require exactly 256 at its end.
 10. Require the final checked end to equal `total_len`.
 
 CRC success never excuses structural validation. A malicious producer can compute a CRC over
@@ -289,8 +292,8 @@ Checked-in files live in `specs/vectors/` and are described in its `manifest.jso
 Positive vectors cover a dry hourly-only bundle, raw and compressed tiles, a no-data tile, a
 coarse-model shape, a 96 x 96 x nine-frame DWD-shaped raw bundle, and the exact 65,536-byte
 producer-policy boundary. Negative vectors isolate truncation, bad offsets, overlapping sections,
-nonzero hourly flags/reserved bytes, reserved intensity nibbles, overlong and noncanonical RLE,
-CRC mismatch and timestamp disorder.
+nonzero hourly flags/reserved bytes, reserved intensity nibbles, compressible raw4, overlong and
+noncanonical RLE, CRC mismatch and timestamp disorder.
 
 Rust and Swift must decode the same positives to the same values and independently re-encode the
 exact bytes. Both must reject every negative. Vector provenance is recorded beside the fixtures.

@@ -245,6 +245,17 @@ pub fn invalid_nibble() -> Vec<u8> {
     bytes
 }
 
+pub fn invalid_raw_compressible() -> Vec<u8> {
+    // Preserve the raw4 entry/length but replace its payload with an all-dry tile. Its canonical
+    // maximal-run RLE4 encoding is 16 bytes, so codec 0 is noncanonical despite valid nibbles.
+    let mut bytes = raw_tile_bundle();
+    let descriptor = obcw::HEADER_LEN + obcw::HOURLY_COUNT * obcw::HOURLY_RECORD_LEN;
+    let data = rd_u32(&bytes, descriptor + obcw::FRAME_TILE_DATA_OFFSET) as usize;
+    bytes[data..data + obcw::RAW4_LEN].fill(0);
+    refresh_crc(&mut bytes);
+    bytes
+}
+
 pub fn invalid_rle_overlong() -> Vec<u8> {
     // Use the 108-run max fixture: its fixed payload can be made 108 x 16 = 1,728 decoded cells
     // without changing any layout field, isolating the zip-bomb-style expansion error.
@@ -311,6 +322,7 @@ pub fn negatives() -> Vec<(&'static str, Vec<u8>)> {
         ("weather-invalid-hourly-flags.obcw", invalid_hourly_flags()),
         ("weather-invalid-hourly-reserved.obcw", invalid_hourly_reserved()),
         ("weather-invalid-nibble.obcw", invalid_nibble()),
+        ("weather-invalid-raw-compressible.obcw", invalid_raw_compressible()),
         ("weather-invalid-rle-overlong.obcw", invalid_rle_overlong()),
         ("weather-invalid-rle-noncanonical.obcw", invalid_rle_noncanonical()),
         ("weather-invalid-crc.obcw", invalid_crc()),

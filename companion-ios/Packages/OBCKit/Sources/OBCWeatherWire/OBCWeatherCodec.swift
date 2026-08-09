@@ -387,6 +387,9 @@ public enum OBCWeatherCodec {
                         guard validIntensity(low), validIntensity(high) else { throw OBCWeatherWireError.malformed }
                         cells.append(low); cells.append(high)
                     }
+                    guard encodedTileLength(cells) == raw4Length else {
+                        throw OBCWeatherWireError.malformed
+                    }
                 } else if codec == 1, encodedLength < raw4Length {
                     var previous: (value: UInt8, run: Int)?
                     for byte in encoded {
