@@ -111,6 +111,32 @@ describe("resolveSelection", () => {
         expect(r.parts[0].bytes).toBe(2088 + 1064 + 552 + 424 + 296 + 168);
     });
 
+    it("resolves a lasso ring per band through the same union", () => {
+        // A triangle strictly inside cell A: one fine cell, generous coarse
+        // coverage — the same consequence-of-cell-size the box test pins.
+        const r = resolveSelection(
+            {
+                parts: [
+                    {
+                        kind: "lasso",
+                        id: "lasso-1",
+                        name: "Drawn ring",
+                        points: [
+                            { lat: A.minLat + 1000, lon: A.minLon + 1000 },
+                            { lat: A.minLat + 1000, lon: A.maxLon - 1000 },
+                            { lat: A.maxLat - 1000, lon: (A.minLon + A.maxLon) / 2 },
+                        ],
+                    },
+                ],
+                corridorRadiusM: 0,
+            },
+            ctx,
+        );
+        expect(r.cellsByBand.get("fine")).toEqual(["18/1204/1052"]);
+        expect(r.cellsByBand.get("coarse")).toEqual(["20/0301/0263"]);
+        expect(r.missingByBand.size).toBe(0);
+    });
+
     it("treats verified-empty ground as zero-byte coverage rather than a hole", () => {
         const emptyBox: BoxPart = {
             kind: "box",

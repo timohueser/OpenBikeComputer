@@ -28,6 +28,7 @@
 
 import { corridorCells, type LatLon } from "./corridor";
 import { cellsIntersecting, formatCellId, type UBox } from "./grid";
+import { lassoCells } from "./lasso";
 import type { BandEntry, Catalog } from "./manifest";
 import {
     assertRegionCellsIndexed,
@@ -71,7 +72,14 @@ export interface CorridorPart extends PartBase {
     points: LatLon[];
 }
 
-export type SelectionPart = RegionPart | BoxPart | CorridorPart;
+/** A freehand ring drawn on the map, in integer microdegrees. Closed
+ *  implicitly — the last point connects back to the first. */
+export interface LassoPart extends PartBase {
+    kind: "lasso";
+    points: LatLon[];
+}
+
+export type SelectionPart = RegionPart | BoxPart | CorridorPart | LassoPart;
 
 /**
  * A selection: the parts, and the one corridor width that applies to every
@@ -260,6 +268,8 @@ function partCells(part: SelectionPart, bandEntry: BandEntry, ctx: SelectionCont
             return cellsIntersecting(bandEntry.cell_log2, part.box).map(formatCellId);
         case "corridor":
             return corridorCells(bandEntry.cell_log2, part.points, radiusM).map(formatCellId);
+        case "lasso":
+            return lassoCells(bandEntry.cell_log2, part.points).map(formatCellId);
     }
 }
 
@@ -281,6 +291,8 @@ function partTerrainCells(part: SelectionPart, log2: number, ctx: SelectionConte
             return cellsIntersecting(log2, part.box).map(formatCellId);
         case "corridor":
             return corridorCells(log2, part.points, radiusM).map(formatCellId);
+        case "lasso":
+            return lassoCells(log2, part.points).map(formatCellId);
     }
 }
 
