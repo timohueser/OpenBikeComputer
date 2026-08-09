@@ -387,7 +387,7 @@ pub fn wind_octant(wind_from_deg: u16) -> usize {
 
 /// Local `(hour, minute)` of a UTC unix instant under the device's UTC offset — the weather
 /// screens' one time-of-day formatter (frame timestamps, hourly rows, the freshness line). Pure
-/// modular arithmetic; negative instants are clamped to zero (pre-1970 weather does not exist).
+/// modular arithmetic; negative instants wrap via `rem_euclid` into a valid time of day.
 pub fn local_hour_minute(unix_utc: i64, utc_offset_min: i16) -> (u8, u8) {
     let local = unix_utc + utc_offset_min as i64 * 60;
     let minutes_of_day = local.div_euclid(60).rem_euclid(24 * 60) as u32;
