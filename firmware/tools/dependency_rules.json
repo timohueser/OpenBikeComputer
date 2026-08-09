@@ -18,7 +18,8 @@
       "obc-dfu",
       "obc-reader",
       "obc-render",
-      "obc-route"
+      "obc-route",
+      "obc-weather"
     ],
     "app": [
       "obc-app"

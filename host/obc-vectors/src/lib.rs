@@ -24,6 +24,8 @@ use std::path::PathBuf;
 use obc_formats::io::{ByteSink, Error, SliceSource};
 use obc_route::gpx_to_obcr;
 
+pub mod obcw;
+
 /// The `specs/vectors/` directory at the repo root.
 pub fn dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../specs/vectors")
@@ -714,7 +716,7 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
     // decodable pair rather than a descriptor pointing at a made-up length (#1044).
     let terrain = terrain_shard();
     let (terrain_len, terrain_crc) = (terrain.len() as u32, crc32(&terrain));
-    vec![
+    let mut fixtures = vec![
         ("route-waypoints.obcr", route_wp),
         ("route-plain.obcr", route_plain),
         // The recorded-track pair (epic #894, A2): the device's 20-byte-record ride log and the
@@ -859,5 +861,7 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
             "trip-list.bin",
             trip_list(&[trip_list_entry(TRIP_ID, trip_len, 2 * 2207, 2 * 76, 3, TRIP_NAME, trip_crc)], 1),
         ),
-    ]
+    ];
+    fixtures.extend(obcw::all());
+    fixtures
 }

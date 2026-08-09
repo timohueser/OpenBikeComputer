@@ -139,6 +139,7 @@ The whole project is built around two ideas: **compact binary formats a microcon
 | Cell assembler | [`obcm-assemble`](src:host/obcm-assemble) | Downloaded OBCA cells → one `.obcm` (or a volume set): geometry grafted, the nav graph rewritten, verified against the spec |
 | Elevation | [`obc-elevation`](src:firmware/obc-elevation) | The OBCT reader, the sampling rules and the shared climb dead-band — one implementation, host and device |
 | Map reader | [`obc-reader`](src:firmware/obc-reader) | Parses OBCM directly off bytes — header, styles, LOD table, quadtree, chunk decode |
+| Weather reader | [`obc-weather`](src:firmware/obc-weather) | Validates OBCW and decodes one independently addressed rain tile at a time, with no provider or storage policy |
 | Route reader | [`obc-route`](src:firmware/obc-route) | OBCR reading, GPX → OBCR conversion, map-matching, elevation profile |
 | Renderer | [`obc-render`](src:firmware/obc-render) | The shared draw path — projection, culling, rasterising. `no_std`, zero-alloc |
 | Application | [`obc-app`](src:firmware/obc-app) | Camera, screen stack, input model, ride tracking — one per-frame entry point |

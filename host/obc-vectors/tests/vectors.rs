@@ -11,6 +11,7 @@ use obc_vectors::{
     TERRAIN_CELL_MIN_I, TERRAIN_CELL_MIN_J, TERRAIN_COLS, TERRAIN_NODATA_AT, TERRAIN_POSTING_LOG2, TERRAIN_ROWS,
     TRACK_NAME, TRIP_DANGLING_STAGE, TRIP_ID, TRIP_NAME, TRIP_STAGE_IDS,
 };
+use obc_weather::WeatherReader;
 
 fn fixture(name: &str) -> Vec<u8> {
     std::fs::read(dir().join(name)).unwrap_or_else(|e| {
@@ -40,6 +41,45 @@ impl ByteSink for VecSink {
 #[test]
 fn crc32_check_value() {
     assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
+}
+
+#[test]
+fn weather_vectors_cross_the_production_reader_and_reject_malformed_files() {
+    for (name, expected) in obc_vectors::obcw::positives() {
+        let bytes = fixture(name);
+        assert_eq!(bytes, expected, "positive OBCW fixture drift: {name}");
+        let source = SliceSource(&bytes);
+        let reader = WeatherReader::open(&source).unwrap_or_else(|error| panic!("{name} rejected: {error:?}"));
+        assert_eq!(reader.header().total_len as usize, bytes.len());
+        assert_eq!(reader.hourly(0).unwrap().valid_time_offset_s, 0);
+    }
+
+    let dwd = fixture("weather-dwd-96x96-9f.obcw");
+    let dwd_source = SliceSource(&dwd);
+    let dwd_reader = WeatherReader::open(&dwd_source).unwrap();
+    assert_eq!(dwd.len(), 46_480, "the spec's 45.39 KiB DWD-shaped raw estimate");
+    assert_eq!(dwd_reader.header().frame_count, 9);
+    assert_eq!(dwd_reader.frame(0).unwrap().tile_count, 36);
+
+    let maximum = fixture("weather-max-policy.obcw");
+    assert_eq!(maximum.len(), obc_vectors::obcw::PRODUCER_POLICY_MAX_LEN);
+    let maximum_source = SliceSource(&maximum);
+    WeatherReader::open(&maximum_source).expect("the exact policy-boundary object is valid");
+
+    for (name, expected) in obc_vectors::obcw::negatives() {
+        let bytes = fixture(name);
+        assert_eq!(bytes, expected, "negative OBCW fixture drift: {name}");
+        if name != "weather-invalid-truncated.obcw" && name != "weather-invalid-crc.obcw" {
+            let stored = u32::from_le_bytes(
+                bytes[obc_formats::obcw::HDR_CRC32..obc_formats::obcw::HDR_CRC32 + 4].try_into().unwrap(),
+            );
+            let mut crc_bytes = bytes.clone();
+            crc_bytes[obc_formats::obcw::HDR_CRC32..obc_formats::obcw::HDR_CRC32 + 4].fill(0);
+            assert_eq!(stored, crc32(&crc_bytes), "structural negative must carry a valid CRC: {name}");
+        }
+        let source = SliceSource(&bytes);
+        assert!(WeatherReader::open(&source).is_err(), "malformed OBCW fixture accepted: {name}");
+    }
 }
 
 /// Every checked-in fixture equals its builder's output. A failure is either codec
