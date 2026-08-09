@@ -3081,6 +3081,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "obc-wx-client"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "obc-formats",
+ "obc-wx-bake",
+ "serde",
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
 name = "obcm-assemble"
 version = "0.1.0"
 dependencies = [
