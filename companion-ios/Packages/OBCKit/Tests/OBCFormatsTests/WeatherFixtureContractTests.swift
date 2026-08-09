@@ -20,6 +20,27 @@ struct WeatherFixtureContractTests {
         #expect(Set(hours.compactMap { $0["symbol_code"] as? String }).contains("heavyrain"))
     }
 
+    @Test("MET non-Nordic fixture proves gust/probability are not worldwide")
+    func metWorldwideAvailabilityContract() throws {
+        let root = try fixtureJSON("met-locationforecast-manila-24h")
+        let availability = try #require(
+            root["first_24_availability"] as? [String: Any]
+        )
+        #expect(try #require(availability["air_temperature_count"] as? Int) == 24)
+        #expect(try #require(availability["wind_speed_count"] as? Int) == 24)
+        #expect(try #require(availability["precipitation_amount_count"] as? Int) == 24)
+        #expect(try #require(availability["symbol_code_count"] as? Int) == 24)
+        #expect(try #require(availability["wind_gust_count"] as? Int) == 0)
+        #expect(try #require(availability["precipitation_probability_count"] as? Int) == 0)
+
+        let hours = try #require(root["hours"] as? [[String: Any]])
+        #expect(hours.count == 24)
+        #expect(hours.allSatisfy { $0["wind_gust_mps"] is NSNull })
+        #expect(hours.allSatisfy {
+            $0["probability_of_precipitation_percent"] is NSNull
+        })
+    }
+
     @Test("DWD fixtures pin convective rain, dry, and both missing sentinels")
     func dwdRasterContract() throws {
         let rain = try fixtureJSON("dwd-rv-convective-rain")
@@ -34,6 +55,28 @@ struct WeatherFixtureContractTests {
         let samples = try #require(dry["sentinel_samples"] as? [[String: Any]])
         let classes = Set(samples.compactMap { $0["classification"] as? String })
         #expect(classes.isSuperset(of: ["nodata", "invalid", "undetect", "zero"]))
+    }
+
+    @Test("DWD correspondence fixture maps many WCS pixels to unique raw cells")
+    func dwdRawWCSCorrespondenceContract() throws {
+        let root = try fixtureJSON("dwd-rv-raw-wcs-correspondence")
+        let comparison = try #require(root["comparison"] as? [String: Any])
+        let valid = try #require(comparison["valid_comparisons"] as? Int)
+        #expect(valid == 9_974)
+        #expect(try #require(comparison["unique_raw_cells"] as? Int) == valid)
+        #expect(try #require(comparison["positive_comparisons"] as? Int) == 10)
+        #expect(try #require(comparison["matches_within_1e-6"] as? Int) == valid)
+        #expect(
+            try #require(comparison["maximum_absolute_error"] as? Double) < 0.000_001
+        )
+
+        let samples = try #require(root["samples"] as? [[String: Any]])
+        let encodedValues = Set(samples.compactMap { $0["raw_encoded"] as? Int })
+        #expect(encodedValues.count >= 10)
+        #expect(encodedValues.contains(0))
+        #expect(samples.contains {
+            ($0["wcs_value"] as? Double) == 4_294_967_296
+        })
     }
 
     private func fixtureJSON(_ name: String) throws -> [String: Any] {
