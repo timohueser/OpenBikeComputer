@@ -44,7 +44,8 @@ pub const ATTRIBUTION: Attribution = Attribution {
     url: "https://www.dwd.de/EN/service/copyright/copyright_artikel.html",
 };
 
-const EXPECTED: ExpectedGrib = ExpectedGrib {
+/// The pinned WX1 field contract (public so tests decode through the same contract).
+pub const EXPECTED: ExpectedGrib = ExpectedGrib {
     discipline: 0,
     category: 1,
     parameter: 52,
@@ -53,6 +54,9 @@ const EXPECTED: ExpectedGrib = ExpectedGrib {
     expected_grid_definition_hex: ICON_EU_GRID_DEFINITION_HEX,
     product_template: 8,
     representation_templates: &[42],
+    missing_sentinels: &[],
+    allowed_messages: &[1],
+    require_identical_messages: false,
 };
 
 const CYCLE_HOURS: [u32; 4] = [0, 6, 12, 18];
@@ -185,5 +189,11 @@ pub fn deaccumulate(earlier: &DecodedField, later: &DecodedField, run: i64, lead
         // One hour between interval ends, so the mm delta is numerically an mm/h rate.
         cells.push(precip4::quantize_rate_mm_per_hour(delta.max(0.0)));
     }
-    Ok(BakedFrame { offset_min: lead * 60, valid_at: run + i64::from(lead) * 3_600, flags: FLAG_FORECAST, cells })
+    Ok(BakedFrame {
+        offset_min: lead * 60,
+        valid_at: run + i64::from(lead) * 3_600,
+        flags: FLAG_FORECAST,
+        source: None,
+        cells,
+    })
 }

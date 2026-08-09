@@ -74,13 +74,13 @@ class DependencyTests(unittest.TestCase):
         self.assertEqual(len(violations), 1)
         self.assertIn("core -> platform", violations[0])
 
-    def test_wx_source_spike_is_host_only(self):
+    def test_wx_bake_is_host_only(self):
         production_rules = json.loads((Path(__file__).parents[1] / "dependency_rules.json").read_text())
         self.assertEqual(
-            check_dependencies.group_index(production_rules)["obc-wx-source-spike"],
+            check_dependencies.group_index(production_rules)["obc-wx-bake"],
             "host",
         )
-        edges = {check_dependencies.Edge("obc-weather", "obc-wx-source-spike")}
+        edges = {check_dependencies.Edge("obc-weather", "obc-wx-bake")}
         violations = check_dependencies.check_edges(edges, production_rules)
         self.assertEqual(len(violations), 1)
         self.assertIn("core -> host", violations[0])
