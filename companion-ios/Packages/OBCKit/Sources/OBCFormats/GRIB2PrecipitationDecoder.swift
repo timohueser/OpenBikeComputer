@@ -52,6 +52,10 @@ public struct GRIB2PrecipitationDecoder: Sendable {
     static let maximumGridPointCount = maximumGridDimension * maximumGridDimension
     static let maximumMessageCount = 4
     static let maximumForecastHour = 384
+    // Live NOMADS captures use E=-4/D=0. These conservative windows keep every
+    // factor and any scaled Float reference far above Double subnormal range.
+    static let supportedBinaryScaleExponents = -32 ... 32
+    static let supportedDecimalScaleExponents = -16 ... 16
 
     private static let coordinateToleranceDegrees = 0.000_002
 
@@ -470,17 +474,24 @@ public struct GRIB2PrecipitationDecoder: Sendable {
                 reason: "unsupported packed-value representation"
             )
         }
+        guard Self.supportedBinaryScaleExponents.contains(binaryScale),
+              Self.supportedDecimalScaleExponents.contains(decimalScale)
+        else {
+            throw GRIB2PrecipitationDecoderError.unsupported(
+                reason: "packing exponent outside audited range"
+            )
+        }
         let binaryFactor = pow(2, Double(binaryScale))
         let decimalFactor = pow(10, Double(-decimalScale))
         let scale = binaryFactor * decimalFactor
         let scaledReference = reference * decimalFactor
-        guard binaryFactor.isFinite,
-              decimalFactor.isFinite,
-              scale.isFinite,
-              scaledReference.isFinite
+        guard binaryFactor.isNormal,
+              decimalFactor.isNormal,
+              scale.isNormal,
+              reference == 0 || scaledReference.isNormal
         else {
             throw GRIB2PrecipitationDecoderError.malformed(
-                reason: "non-finite packing scale"
+                reason: "non-finite, zero, or subnormal packing scale"
             )
         }
 
