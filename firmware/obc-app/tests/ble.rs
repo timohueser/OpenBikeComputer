@@ -101,7 +101,7 @@ fn a_link_change_repaints_the_bluetooth_screen() {
     app.apply_gesture(obc_app::Gesture::BackHold); // → Menu
     app.apply_gesture(obc_app::Gesture::Step(-1)); // compass: one ccw step to Settings
     app.apply_gesture(obc_app::Gesture::Press); // → Settings list
-    app.apply_gesture(obc_app::Gesture::Step(2)); // → Connections row (Ride, Display, Connections)
+    app.apply_gesture(obc_app::Gesture::Step(3)); // → Connections row (Ride, Display, Weather, Connections)
     app.apply_gesture(obc_app::Gesture::Press); // → Connections menu (Phone is the first row)
     app.apply_gesture(obc_app::Gesture::Press); // → Bluetooth screen (opened via the Phone row)
     assert!(matches!(app.top_screen(), obc_app::Screen::Bluetooth(_)), "navigated to the Bluetooth screen");

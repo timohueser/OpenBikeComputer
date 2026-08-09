@@ -58,7 +58,11 @@ mod statistics;
 mod trip_delete;
 pub(crate) mod up_ahead;
 mod warning;
+mod weather_alert;
+mod weather_dash;
+mod weather_hourly;
 pub mod weather_icons;
+mod weather_map;
 
 pub use climb::ClimbScreen;
 pub use detour::{DetourPreviewScreen, DetourScreen};
@@ -88,13 +92,17 @@ pub use route_swap::RouteSwapScreen;
 pub use settings::{
     AboutScreen, AddFieldScreen, BikeTypeScreen, BluetoothScreen, ConnectionsScreen, DateTimeScreen, DisplayScreen,
     FirmwareScreen, LanguageScreen, PowerScreen, ResetScreen, RideScreen, SensorScanScreen, SensorsScreen,
-    SettingsScreen, StatFieldsScreen, SystemScreen, UnitsScreen,
+    SettingsScreen, StatFieldsScreen, SystemScreen, UnitsScreen, WeatherSettingsScreen,
 };
 pub use statistics::StatisticsScreen;
 pub use trip_delete::TripDeleteScreen;
 pub(crate) use up_ahead::poi_row_name;
 pub use up_ahead::{UpAheadScreen, OFF_ROUTE_HINT_M};
 pub use warning::{WarningFlags, WarningScreen};
+pub use weather_alert::{WeatherAlertKind, WeatherAlertScreen};
+pub use weather_dash::WeatherScreen;
+pub use weather_hourly::WeatherHourlyScreen;
+pub use weather_map::WeatherRainMapScreen;
 
 /// Maximum overlay depth. The deepest normal path is eight screens
 /// (`Home → Map → Ride menu → Menu → Settings → Ride → Fields → Add field`); keep two more slots
@@ -390,6 +398,17 @@ pub struct Render<'a> {
     /// Free space on the SD card in bytes (T8 item 6), or `None` until the host answers the System
     /// screen's on-entry scan ([`App::apply_event`](crate::App::apply_event)).
     pub card_free_bytes: Option<u64>,
+    /// The host-fed resident **weather snapshot** (WX11, epic #1185) — the 24 hourly records +
+    /// sampled rain-frame table the weather screens derive every claim from
+    /// ([`rain_outlook`](crate::weather::rain_outlook) against this frame's [`now_utc`](Render::now_utc)),
+    /// or `None` when no store is mounted / nothing was ever fetched (the explicit no-data state).
+    /// Host-owned like the rain lease: the sim samples its loaded bundle, the board's WX8 mount
+    /// will feed the same shape.
+    pub weather: Option<&'a crate::weather::WeatherSnapshot>,
+    /// A weather refresh is in flight (WX8's request/upload cycle; the sim's injection flag).
+    /// The dashboard shows its one non-blocking cue off this — cached content stays visible
+    /// (locked UX), so this is a title-slot caption, never a blocking spinner.
+    pub weather_refreshing: bool,
 }
 
 impl Render<'_> {
@@ -835,6 +854,18 @@ screens! {
     /// The advisory warning card (issue #504): missing sensors / a slow (fragmented) map.
     /// **Host-pushed** by [`App::apply_event`], coalesced, dismissed on any press.
     Warning(WarningScreen) => Caps::modal(),
+    /// The Weather dashboard (WX11, epic #1185): the concept-C decision card, the two-hour strip,
+    /// and the HOURLY / RAIN MAP actions. Timed: the countdown/freshness copy moves once a minute.
+    Weather(WeatherScreen) => Caps::nav().timed(),
+    /// The hourly forecast list (WX11): 24 evenly-spaced rows, no separators — time, WX17 icon,
+    /// temperature, precipitation, wind.
+    WeatherHourly(WeatherHourlyScreen) => Caps::nav(),
+    /// The rain map (WX11): the normal map scene with the WX10 precipitation raster below the
+    /// road band, 15-minute time-step navigation, and the honest out-of-regime/stale banners.
+    WeatherRainMap(WeatherRainMapScreen) => Caps::map().timed(),
+    /// The weather alert card (WX11): RAIN AHEAD / STORM AHEAD with VIEW RAIN MAP + DISMISS.
+    /// **Host-pushed** by [`App::show_weather_alert`]; alert *generation* is WX12's.
+    WeatherAlert(WeatherAlertScreen) => Caps::modal(),
     Settings(SettingsScreen) => Caps::settings(),
     /// The Ride settings screen: routing profile + the riding stats grid (page cycle, fields, climb,
     /// waypoints) + the synced-ride retention ring. The one settings screen that scrolls (6 rows).
@@ -861,6 +892,9 @@ screens! {
     /// The Language screen (epic #602): cycles the UI language by endonym. Persists the choice today;
     /// the translation catalog that reads it lands later in the epic.
     Language(LanguageScreen) => Caps::settings(),
+    /// The Weather settings screen (WX11): the scheduled refresh interval picker
+    /// (Off / 15 / 30 / 60 / 120 min, default 30) the WX8 due scheduler consumes.
+    WeatherSettings(WeatherSettingsScreen) => Caps::settings(),
     /// The System settings menu: Units / Date & Time / Language / Firmware update / About / Reset —
     /// a thin nav list whose rows open those pages.
     System(SystemScreen) => Caps::settings(),
@@ -1028,6 +1062,10 @@ impl Screen {
             // reboot replaces them.
             Screen::DfuCheck(s) => s.tick_timers(now_ms, w, h),
             Screen::DfuProgress(s) => s.tick_timers(now_ms, w, h),
+            // The Weather dashboard's countdown + the rain map's frame-currency labels move with
+            // the wall clock — one region-free repaint per minute while up.
+            Screen::Weather(s) => s.tick_timers(now, ms_to_next_minute),
+            Screen::WeatherRainMap(s) => s.tick_timers(now, ms_to_next_minute),
             _ => ScreenTick::idle(),
         }
     }

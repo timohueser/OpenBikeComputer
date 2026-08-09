@@ -305,6 +305,7 @@ pub fn render_frame<D, F>(
     target: &mut D,
     scene: Scene<'_, '_, '_>,
     rain: Option<&mut dyn obc_render::RainOverlaySource>,
+    weather: obc_app::WeatherFeed,
     (w, h): (f32, f32),
     color_fn: F,
 ) -> RenderStats
@@ -324,6 +325,7 @@ where
             Some(reader),
             route,
             rain,
+            weather,
             w,
             h,
             &color_fn,
@@ -336,6 +338,7 @@ where
             Some(reader),
             route,
             rain,
+            weather,
             w,
             h,
             &color_fn,
@@ -590,7 +593,16 @@ mod tests {
         let mut scratch = Box::new(obc_render::RenderScratch::new());
         let set = map.set();
         let scene = Scene { set, reader: &reader, route: route.as_ref() };
-        render_frame(&mut app, &mut scratch, &mut fb, scene, None, (w as f32, h as f32), |c| crate::color_of(c, true));
+        render_frame(
+            &mut app,
+            &mut scratch,
+            &mut fb,
+            scene,
+            None,
+            obc_app::WeatherFeed::NONE,
+            (w as f32, h as f32),
+            |c| crate::color_of(c, true),
+        );
         fb.as_rgb888().to_vec()
     }
 

@@ -86,6 +86,12 @@ pub enum DemoScenario {
     /// One large violent cell with a violet ≥50 mm/h core over a heavy field — the high-coverage
     /// end, worst case for map legibility under rain.
     Storm,
+    /// Everywhere dry, all nine frames — the dashboard's DRY FOR 2 HOURS state (complete
+    /// two-hour coverage, every sample dry).
+    Dry,
+    /// An approaching light-rain front that reaches the map centre a few frames in — the
+    /// dashboard's RAIN IN NN MIN state.
+    Incoming,
 }
 
 impl DemoScenario {
@@ -120,6 +126,13 @@ impl DemoScenario {
                 let d2 = dr * dr + dc * dc;
                 clamp(14 - d2 / 24)
             }
+            DemoScenario::Dry => 0,
+            // A light SW front reaching the centre around the fourth 15-minute frame: dry ahead,
+            // drizzle-to-moderate bands behind — never storm-grade, so the card reads RAIN IN.
+            DemoScenario::Incoming => {
+                let behind = (row as i64 + col as i64) - 84 + drift * 6;
+                clamp(behind / 2).min(6)
+            }
         }
     }
 }
@@ -138,17 +151,23 @@ pub struct SimWeather {
 
 impl SimWeather {
     /// Resolve `--weather`'s argument: `demo` / `demo:<scenario>` synthesizes a deterministic
-    /// bundle over the loaded map's bbox ([`demo`](Self::demo) — scenarios in [`DemoScenario`]);
-    /// anything else is a WEATHER.A/WEATHER.B store root ([`load`](Self::load)).
+    /// bundle over the loaded map's bbox ([`demo`](Self::demo) — scenarios in [`DemoScenario`];
+    /// `demo:hourly` builds an hourly-only bundle with **no** rain frames, the WX11 explicit
+    /// hourly-only state); anything else is a WEATHER.A/WEATHER.B store root ([`load`](Self::load)).
     pub fn from_arg(arg: &str, now_override: Option<i64>, map_bbox: (i32, i32, i32, i32)) -> Option<Self> {
         if let Some(rest) = arg.strip_prefix("demo") {
             let scenario = match rest.strip_prefix(':').unwrap_or("") {
-                "" | "scattered" => DemoScenario::Scattered,
-                "drizzle" => DemoScenario::Drizzle,
-                "frontal" => DemoScenario::Frontal,
-                "storm" => DemoScenario::Storm,
+                "" | "scattered" => Some(DemoScenario::Scattered),
+                "drizzle" => Some(DemoScenario::Drizzle),
+                "frontal" => Some(DemoScenario::Frontal),
+                "storm" => Some(DemoScenario::Storm),
+                "dry" => Some(DemoScenario::Dry),
+                "incoming" => Some(DemoScenario::Incoming),
+                "hourly" => None,
                 other => {
-                    eprintln!("--weather demo:{other}: unknown scenario (scattered|drizzle|frontal|storm)");
+                    eprintln!(
+                        "--weather demo:{other}: unknown scenario (scattered|drizzle|frontal|storm|dry|incoming|hourly)"
+                    );
                     return None;
                 }
             };
@@ -156,6 +175,26 @@ impl SimWeather {
         } else {
             Self::load(Path::new(arg), now_override)
         }
+    }
+
+    /// The instant this store treats as "now" when the app clock isn't pinned: the explicit
+    /// `--weather-now`, else the bundle's first rain frame (so demo/fixture rain renders out of
+    /// the box), else `valid_from` for a frameless (hourly-only) bundle.
+    pub fn effective_now(&self) -> Option<i64> {
+        if let Some(now) = self.now_override {
+            return Some(now);
+        }
+        let source = obc_formats::io::SliceSource(&self.bytes);
+        let reader = obc_weather::WeatherReader::open(&source).ok()?;
+        Some(reader.frame(0).map(|f| f.valid_at).unwrap_or(reader.header().valid_from))
+    }
+
+    /// Sample the loaded bundle into the production resident [`WeatherSnapshot`]
+    /// (`obc-app`'s — the exact struct the screens consume) at `pos` (`(lat, lon)` µdeg).
+    pub fn snapshot(&mut self, pos: Option<(i32, i32)>) -> Option<obc_app::WeatherSnapshot> {
+        let source = obc_formats::io::SliceSource(&self.bytes);
+        let reader = obc_weather::WeatherReader::open(&source).ok()?;
+        obc_app::WeatherSnapshot::sample(&reader, &mut self.cache, pos).ok()
     }
 
     /// Load the newest valid generation from a WEATHER.A/WEATHER.B root, exactly as boot selection
@@ -168,40 +207,59 @@ impl SimWeather {
     }
 
     /// A deterministic in-memory demo bundle over `(west, south, east, north)` microdegrees: a
-    /// 48 × 48-cell grid, three 15-minute frames whose cells come from the chosen
-    /// [`DemoScenario`], drifting two cells east per frame. Exercises the exact adapter →
-    /// renderer path against any loaded map — cell edges stay hard (nearest-neighbour, no
-    /// smoothing), so the scenarios double as look-tuning material for the WX10 review rounds.
-    pub fn demo(scenario: DemoScenario, bbox: (i32, i32, i32, i32), now_override: Option<i64>) -> Self {
+    /// 48 × 48-cell grid, nine 15-minute frames (the radar-de policy shape, so the WX11 two-hour
+    /// derivations have full coverage) whose cells come from the chosen [`DemoScenario`],
+    /// drifting two cells east per frame — or **no** frames at all (`None`: the hourly-only
+    /// bundle). Exercises the exact adapter → renderer path against any loaded map — cell edges
+    /// stay hard (nearest-neighbour, no smoothing), so the scenarios double as look-tuning
+    /// material for the WX10/WX11 review rounds.
+    pub fn demo(scenario: Option<DemoScenario>, bbox: (i32, i32, i32, i32), now_override: Option<i64>) -> Self {
         use obc_formats::obcw::{
-            encode_format, encoded_len, BundleInput, HourlyRecord, RainFrameInput, CONDITION_RAIN, HOURLY_COUNT,
+            encode_format, encoded_len, BundleInput, HourlyRecord, RainFrameInput, CONDITION_MOSTLY_CLEAR,
+            CONDITION_PARTLY_CLOUDY, CONDITION_RAIN, CONDITION_SHOWERS, CONDITION_THUNDERSTORM, HOURLY_COUNT,
             HOURLY_INTERVAL_SECONDS, QUALITY_FORECAST, TILE_CELLS,
         };
         const GENERATED_AT: i64 = 1_800_000_000;
         const GRID: usize = 48; // 3 × 3 tiles
         let (west, south, east, north) = bbox;
+        // Hourly rows consistent with the chosen rain scenario (WX11 reads them on the
+        // dashboard card + hourly screen), with mild deterministic variation so the hourly list
+        // reads like a real day, not 24 clones.
+        let (base_condition, wet_tenth_mm, wet_pct) = match scenario {
+            Some(DemoScenario::Dry) => (CONDITION_MOSTLY_CLEAR, 0u16, 0u8),
+            Some(DemoScenario::Incoming) => (CONDITION_SHOWERS, 8, 55),
+            Some(DemoScenario::Storm) => (CONDITION_THUNDERSTORM, 62, 90),
+            Some(_) => (CONDITION_RAIN, 12, 60),
+            None => (CONDITION_PARTLY_CLOUDY, 2, 30),
+        };
         let hourly: [HourlyRecord; HOURLY_COUNT] = core::array::from_fn(|i| HourlyRecord {
             valid_time_offset_s: i as u32 * HOURLY_INTERVAL_SECONDS,
-            temperature_deci_c: 140,
-            precipitation_tenth_mm: 12,
-            precipitation_probability_pct: 60,
-            condition: CONDITION_RAIN,
-            wind_from_deg: 240,
-            wind_speed_deci_ms: 40,
+            temperature_deci_c: 95 + ((i as i16 + 3) % 12) * 14,
+            precipitation_tenth_mm: if i == 0 && scenario == Some(DemoScenario::Incoming) { 0 } else { wet_tenth_mm },
+            precipitation_probability_pct: wet_pct,
+            condition: if i == 0 && scenario == Some(DemoScenario::Incoming) {
+                CONDITION_PARTLY_CLOUDY
+            } else {
+                base_condition
+            },
+            wind_from_deg: (200 + i as u16 * 15) % 360,
+            wind_speed_deci_ms: 28 + (i as u16 % 5) * 13,
             wind_gust_deci_ms: 70,
             flags: 0,
         });
-        let cell = |row: usize, col: usize, drift: i64| -> u8 { scenario.cell(row, col, drift) };
         let mut frames_tiles = Vec::new();
-        for frame in 0..3i64 {
-            let mut tiles = vec![[0u8; TILE_CELLS]; (GRID / 16) * (GRID / 16)];
-            for row in 0..GRID {
-                for col in 0..GRID {
-                    let tile = (row / 16) * (GRID / 16) + col / 16;
-                    tiles[tile][(row % 16) * 16 + col % 16] = cell(row, col, frame * 2);
+        if let Some(scenario) = scenario {
+            let cell = |row: usize, col: usize, drift: i64| -> u8 { scenario.cell(row, col, drift) };
+            for frame in 0..9i64 {
+                let mut tiles = vec![[0u8; TILE_CELLS]; (GRID / 16) * (GRID / 16)];
+                for row in 0..GRID {
+                    for col in 0..GRID {
+                        let tile = (row / 16) * (GRID / 16) + col / 16;
+                        tiles[tile][(row % 16) * 16 + col % 16] = cell(row, col, frame * 2);
+                    }
                 }
+                frames_tiles.push(tiles);
             }
-            frames_tiles.push(tiles);
         }
         let frames: Vec<RainFrameInput<'_>> = frames_tiles
             .iter()
@@ -242,13 +300,24 @@ impl SimWeather {
     /// no frame is current at the effective instant (then the map renders rain-free, exactly as
     /// the device would). Closure-shaped because the adapter borrows a reader that borrows the
     /// bytes; nothing outlives the call.
-    pub fn lease<R>(&mut self, frame: impl FnOnce(Option<&mut dyn obc_render::RainOverlaySource>) -> R) -> R {
+    /// `now` is the app's live wall clock (`App::wall_unix_now`), so the lease and the screens'
+    /// own freshness derivations are one instant — before review F5 the lease anchored on the
+    /// bundle's first frame forever, so after ~15 min of GUI runtime the screens' time-step
+    /// labels and the rendered raster silently diverged. An explicit `--weather-now` override
+    /// still wins (the deterministic stale-scenario tool; the clock-anchor rule in `main`/`gui`
+    /// makes the two coincide for every fixture command that doesn't pass `--clock`).
+    pub fn lease<R>(
+        &mut self,
+        now: i64,
+        step: u8,
+        frame: impl FnOnce(Option<&mut dyn obc_render::RainOverlaySource>) -> R,
+    ) -> R {
         let source = obc_formats::io::SliceSource(&self.bytes);
         let Ok(reader) = obc_weather::WeatherReader::open(&source) else {
             return frame(None);
         };
-        let now = self.now_override.or_else(|| reader.frame(0).ok().map(|f| f.valid_at));
-        let adapter = now.and_then(|now| obc_app::RainOverlayAdapter::current(&reader, &mut self.cache, now));
+        let now = self.now_override.unwrap_or(now);
+        let adapter = obc_app::RainOverlayAdapter::at_step(&reader, &mut self.cache, now, step);
         match adapter {
             Some(mut adapter) => frame(Some(&mut adapter)),
             None => frame(None),

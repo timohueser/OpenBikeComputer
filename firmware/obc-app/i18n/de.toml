@@ -13,6 +13,7 @@ routes = "Routen"
 rides = "Fahrten"
 pois = "POIs"
 map = "Karte"
+weather = "Wetter"
 settings = "Einstellungen"
 
 # --- Das Kompassmenü während der Fahrt, die Voraus-Liste und die Vorspringen-Auswahl ---
@@ -181,6 +182,7 @@ ride = "Fahrt"
 display = "Anzeige"
 connections = "Verbindungen"
 power = "Energie"
+weather = "Wetter"
 system = "System"
 
 # --- Date & Time settings screen ---
@@ -540,3 +542,57 @@ cardtype_what = "Karte zu klein"
 cardtype_fix = "SDHC- oder SDXC-Karte verwenden"
 storagefault_what = "Leser gestört"
 storagefault_fix = "Gerät neu starten"
+
+# --- The Weather surfaces (epic #1185, WX11): dashboard, hourly, rain map, alert ---
+[weather]
+title = "WETTER"
+hourly = "STÜNDLICH"
+rain_map = "REGENKARTE"
+updated = "Stand"
+updating = "UPDATE"
+dry_1 = "TROCKEN"
+dry_2 = "2 STUNDEN"
+rain = "REGEN"
+storm = "STURM"
+rain_in = "REGEN IN"
+storm_in = "STURM IN"
+now = "JETZT"
+min = "MIN"
+in = "IN"
+update_needed = "WETTER-UPDATE NÖTIG"
+hourly_only = "KEINE REGENDATEN"
+hourly_only_sub = "Nur stündlich"
+no_data = "KEINE WETTERDATEN"
+no_data_sub = "Telefon koppeln"
+zoom_for_rain = "ZOOM FÜR REGEN"
+alert_rain = "REGEN VORAUS"
+alert_storm = "STURM VORAUS"
+alert_rain_body = "Starker Regen auf der Route."
+alert_storm_body = "Gewitter auf der Route."
+view_rain_map = "REGENKARTE"
+dismiss = "SCHLIESSEN"
+
+# --- WeatherRefresh enum labels (Weather settings screen picker) ---
+[weather_refresh]
+off = "Aus"
+m15 = "15 min"
+m30 = "30 min"
+m60 = "60 min"
+m120 = "120 min"
+
+# --- The Weather settings screen ---
+[weather_settings]
+title = "WETTER"
+refresh = "Abruf"
+refresh_sub = "per Telefon"
+
+# --- Cardinal/octant letters (the hourly rows' meteorological wind-from labels) ---
+[compass]
+n = "N"
+ne = "NO"
+e = "O"
+se = "SO"
+s = "S"
+sw = "SW"
+w = "W"
+nw = "NW"

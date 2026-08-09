@@ -113,6 +113,13 @@ struct Args {
     /// loaded bundle's **first frame timestamp**, so fixture stores render deterministically; pass
     /// the real time to exercise staleness (an expired instant renders a rain-free map).
     weather_now: Option<i64>,
+    /// Headless `--png` only (WX11): draw the dashboard's non-blocking refresh cue (the title
+    /// bar's UPDATING slot) — the cached content stays fully visible, which is the point.
+    weather_refreshing: bool,
+    /// Headless `--png` only (WX11): push the weather alert card through the production
+    /// `App::show_weather_alert` seam — `rain[:MIN]` or `storm[:MIN]` (default 28 minutes).
+    /// Alert *generation* is WX12's; this drives only the presentation.
+    weather_alert: Option<(obc_app::WeatherAlertKind, u16)>,
     /// Headless `--png` only: the UI language `en` | `de` | `fr` | `es` (epic #602). Seeded into
     /// `Settings.language` before the render, so a scripted screen draws its de/fr/es copy from the
     /// i18n catalog — the per-language snapshot mechanism. Defaults to `en` (the device default), so
@@ -263,6 +270,8 @@ impl Default for Args {
             clock: None,
             weather: None,
             weather_now: None,
+            weather_refreshing: false,
+            weather_alert: None,
             lang: None,
             stat_fields: None,
             ble_connected: false,
@@ -476,6 +485,18 @@ fn parse_args() -> Result<Args, String> {
             "--weather" => a.weather = Some(it.next().ok_or("--weather needs a store directory")?),
             "--weather-now" => {
                 a.weather_now = Some(it.next().and_then(|s| s.parse().ok()).ok_or("--weather-now needs unix seconds")?);
+            }
+            "--weather-refreshing" => a.weather_refreshing = true,
+            "--weather-alert" => {
+                let spec = it.next().ok_or("--weather-alert needs rain[:MIN] or storm[:MIN]")?;
+                let (kind, min) = spec.split_once(':').unwrap_or((spec.as_str(), "28"));
+                let kind = match kind {
+                    "rain" => obc_app::WeatherAlertKind::Rain,
+                    "storm" => obc_app::WeatherAlertKind::Storm,
+                    _ => return Err("--weather-alert: kind must be rain or storm".into()),
+                };
+                let minutes: u16 = min.parse().map_err(|_| "--weather-alert: bad minutes")?;
+                a.weather_alert = Some((kind, minutes));
             }
             "--route-retention" => {
                 a.route_retention =
@@ -895,7 +916,7 @@ fn main() {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: obc-sim <map.obcm> | --set <MS7.OBS> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--clock YYYY-MM-DDTHH:MM] [--route-retention LEVEL:AGE] [--lang en|de|fr|es] [--stat-fields LIST] [--ble-connected] [--ble-passkey N] [--ble-paired] [--sensors-screen] [--inject-upload ID] [--inject-upload-replace ID] [--nav-hold] [--inject-nav-fail exhausted|nopath] [--detour-hold] [--inject-detour-fail exhausted|nopath] [--inject-warning gps,altimeter,compass,map] [--boot-fault nocard|nomap|badmap] [--open-climb] [--freeze] [--baro-drift M_PER_HOUR] [--weather DIR|demo[:scattered|drizzle|frontal|storm]] [--weather-now UNIX]\n\n  --set <MS7.OBS>  open an OBCA volume set (specs/OBCA_Spec.md §5): the manifest plus every\n                   MS7S<kk>.OBM shard beside it, mounted as one map. Every shard must be\n                   present and exactly its recorded size, or the set is refused whole (§5.4).");
+            eprintln!("error: {e}\nusage: obc-sim <map.obcm> | --set <MS7.OBS> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--clock YYYY-MM-DDTHH:MM] [--route-retention LEVEL:AGE] [--lang en|de|fr|es] [--stat-fields LIST] [--ble-connected] [--ble-passkey N] [--ble-paired] [--sensors-screen] [--inject-upload ID] [--inject-upload-replace ID] [--nav-hold] [--inject-nav-fail exhausted|nopath] [--detour-hold] [--inject-detour-fail exhausted|nopath] [--inject-warning gps,altimeter,compass,map] [--boot-fault nocard|nomap|badmap] [--open-climb] [--freeze] [--baro-drift M_PER_HOUR] [--weather DIR|demo[:scattered|drizzle|frontal|storm|dry|incoming|hourly]] [--weather-now UNIX] [--weather-refreshing] [--weather-alert rain[:MIN]|storm[:MIN]]\n\n  --set <MS7.OBS>  open an OBCA volume set (specs/OBCA_Spec.md §5): the manifest plus every\n                   MS7S<kk>.OBM shard beside it, mounted as one map. Every shard must be\n                   present and exactly its recorded size, or the set is refused whole (§5.4).");
             std::process::exit(2);
         }
     };
@@ -1029,6 +1050,24 @@ fn main() {
             }
         }
         let mut app = if args.boot { App::new_idle(state) } else { App::new(state) };
+        // `--weather` (WX10/WX11): built *before* the settings seed so the wall clock can anchor
+        // on the store's effective instant (screens' `now_utc` then agrees with the rain lease)
+        // and the script's rain-map time-steps clamp against the real frame count.
+        let map_bbox = (reader.bbox.min_lon, reader.bbox.min_lat, reader.bbox.max_lon, reader.bbox.max_lat);
+        let mut weather =
+            args.weather.as_ref().and_then(|arg| weather_store::SimWeather::from_arg(arg, args.weather_now, map_bbox));
+        // WX11: with a weather store and no explicit `--clock`, pin the app clock to the weather
+        // instant. An explicit `--clock` always wins — the WX10 map sweeps pass one, so their
+        // output stays byte-identical.
+        let weather_clock = if args.clock.is_none() {
+            weather
+                .as_ref()
+                .and_then(|w| w.effective_now())
+                .map(|now| obc_ports::DateTime::from_unix(now.max(0) as u64 as u32))
+        } else {
+            None
+        };
+
         // `--clock` / `--lang` seed the headless Settings. `--clock` pins the UTC wall-clock anchor;
         // with the default `+00:00` offset `local_clock()` returns it verbatim for the POI-detail
         // weekday + OPEN/CLOSED-now badge. `--lang` selects the UI language (epic #602) so a scripted
@@ -1037,6 +1076,7 @@ fn main() {
         // the existing snapshots' output is byte-unchanged. `set_settings` restamps the WallClock
         // from this local set-point (see `App::set_settings`).
         if args.clock.is_some()
+            || weather_clock.is_some()
             || args.lang.is_some()
             || args.stat_fields.is_some()
             || args.sensors_demo
@@ -1044,6 +1084,8 @@ fn main() {
         {
             let mut settings = obc_app::settings::Settings::default();
             if let Some(clock) = args.clock {
+                settings.clock = clock;
+            } else if let Some(clock) = weather_clock {
                 settings.clock = clock;
             }
             if let Some(lang) = args.lang {
@@ -1229,6 +1271,17 @@ fn main() {
                     app.tick(obc_ports::RideClock(0), sensors, route.as_ref());
                 }
             };
+            // WX11: a scripted rain-map time-step must clamp against the real frame count, so the
+            // snapshot's steps-ahead is fed before the script runs (position: rider fix, else the
+            // camera centre — the demo bundles span the map bbox either way).
+            if let Some(w) = weather.as_mut() {
+                let pos = app.state.user_fix.map(|f| (f.lat, f.lon)).unwrap_or((app.state.cam_lat, app.state.cam_lon));
+                if let Some(snap) = w.snapshot(Some(pos)) {
+                    let now = app.wall_unix_now() as i64;
+                    let floor = snap.rain_zoom_floor(app.state.cam_lat).unwrap_or(0.0);
+                    app.set_rain_view(snap.steps_ahead(now), floor);
+                }
+            }
             apply_script(&mut app, script, &mut hook);
             // Anything the script's last press recorded with no trailing `f`: drain + apply it now so
             // the final render reflects the answer (the create-route commit, the detour plan/commit,
@@ -1441,6 +1494,12 @@ fn main() {
             app.debug_set_plan_live(true);
         }
 
+        // `--weather-alert` (WX11): push the alert card through the production seam WX12's
+        // decision engine will drive on the device.
+        if let Some((kind, minutes)) = args.weather_alert {
+            app.show_weather_alert(kind, minutes);
+        }
+
         let mut fb = Framebuffer::new(args.width, args.height);
         let tc = args.true_color;
 
@@ -1463,23 +1522,47 @@ fn main() {
         let set = map.set();
         let scene = map_set::Scene { set, reader: &reader, route: route.as_ref() };
         let mut scratch = Box::new(obc_render::RenderScratch::new());
-        // `--weather` (WX10): the final snapshot renders through the production rain lease — the
-        // same adapter + hook the device and the GUI use. No store / nothing current ⇒ `None`,
-        // byte-identical to a rain-free render.
-        let map_bbox = (reader.bbox.min_lon, reader.bbox.min_lat, reader.bbox.max_lon, reader.bbox.max_lat);
-        let mut weather =
-            args.weather.as_ref().and_then(|arg| weather_store::SimWeather::from_arg(arg, args.weather_now, map_bbox));
+        // `--weather` (WX10/WX11): the final frame renders through the production rain lease and
+        // the production resident snapshot — the same adapter/feed pair the device and the GUI
+        // use. No store / nothing current ⇒ `None`, byte-identical to a rain-free render.
+        let wx_pos = app.state.user_fix.map(|f| (f.lat, f.lon)).unwrap_or((app.state.cam_lat, app.state.cam_lon));
+        let wx_snapshot = weather.as_mut().and_then(|w| w.snapshot(Some(wx_pos)));
+        if let Some(snap) = &wx_snapshot {
+            let now = app.wall_unix_now() as i64;
+            let floor = snap.rain_zoom_floor(app.state.cam_lat).unwrap_or(0.0);
+            app.set_rain_view(snap.steps_ahead(now), floor);
+        }
+        let rain_step = app.state.rain_step;
+        let refreshing = args.weather_refreshing;
         let render_final = |rain: Option<&mut dyn obc_render::RainOverlaySource>,
+                            weather_feed: obc_app::WeatherFeed,
                             app: &mut App,
                             fb: &mut Framebuffer,
                             scratch: &mut obc_render::RenderScratch| {
-            map_set::render_frame(app, scratch, fb, scene, rain, (args.width as f32, args.height as f32), |c| {
-                color_of(c, tc)
-            })
+            map_set::render_frame(
+                app,
+                scratch,
+                fb,
+                scene,
+                rain,
+                weather_feed,
+                (args.width as f32, args.height as f32),
+                |c| color_of(c, tc),
+            )
         };
+        let wx_wall_now = app.wall_unix_now() as i64;
         let mut stats = match weather.as_mut() {
-            Some(weather) => weather.lease(|rain| render_final(rain, &mut app, &mut fb, &mut scratch)),
-            None => render_final(None, &mut app, &mut fb, &mut scratch),
+            Some(weather) => weather.lease(wx_wall_now, rain_step, |rain| {
+                let feed = obc_app::WeatherFeed { snapshot: wx_snapshot.as_ref(), refreshing };
+                render_final(rain, feed, &mut app, &mut fb, &mut scratch)
+            }),
+            None => render_final(
+                None,
+                obc_app::WeatherFeed { snapshot: wx_snapshot.as_ref(), refreshing },
+                &mut app,
+                &mut fb,
+                &mut scratch,
+            ),
         };
         stats.render_us = t0.elapsed().as_micros() as u32;
         let cache_reqs = stats.map_chunk_hits + stats.map_chunk_misses;

@@ -163,6 +163,25 @@ pub struct AppState {
     /// the station instead of failing a plan). Carried here because both `handle` (the gate) and
     /// `draw` (the dimming) need it without a `Reader`.
     pub has_nav_graph: bool,
+    /// The rain map's selected **time step** (WX11): `0` = the current frame, `n` = the n-th
+    /// future frame of the active bundle. Written by the rain-map screen's Step arm (clamped to
+    /// [`rain_steps_ahead`](AppState::rain_steps_ahead)) and reset to `0` on every entry/exit, so
+    /// it can never leak a stale offset; read by the host when it leases the frame's
+    /// [`RainOverlayAdapter`](crate::RainOverlayAdapter) (`at_step`), so the leased raster and the
+    /// on-screen frame timestamp are one decision.
+    pub rain_step: u8,
+    /// How many future frames exist past the current one (WX11) — the clamp for
+    /// [`rain_step`](AppState::rain_step), host-refreshed from the snapshot
+    /// (`WeatherSnapshot::steps_ahead`) whenever it feeds weather. `0` when nothing is current.
+    pub rain_steps_ahead: u8,
+    /// The rain map's **zoom-out floor** (WX11, owner tuning round 2): the smallest zoom at
+    /// which the active product's raster still renders — the regime edge, derived per product
+    /// from its cell density (`WeatherSnapshot::rain_zoom_floor` /
+    /// [`obc_render::rain_min_zoom`]) and host-refreshed alongside the snapshot. The weather
+    /// screens clamp against it on rain-map entry and on every Inspect zoom step, so a rider
+    /// never *sees* the out-of-regime state; `0.0` (no rain product) disengages the clamp. Only
+    /// the rain map reads it — the normal Map's zoom range is untouched.
+    pub rain_zoom_min: f32,
 }
 
 impl AppState {
@@ -185,6 +204,18 @@ impl AppState {
             ble_paired: false,
             ble_forget_pending: false,
             has_nav_graph: false,
+            rain_step: 0,
+            rain_steps_ahead: 0,
+            rain_zoom_min: 0.0,
+        }
+    }
+
+    /// Clamp the camera to the rain map's zoom-out floor ([`rain_zoom_min`](AppState::rain_zoom_min)).
+    /// Called by the weather screens on rain-map entry and after each Inspect zoom step; a
+    /// disengaged floor (`0.0`) is a no-op, and zooming *in* is never touched.
+    pub fn clamp_rain_zoom(&mut self) {
+        if self.rain_zoom_min > 0.0 && self.zoom < self.rain_zoom_min {
+            self.zoom = self.rain_zoom_min;
         }
     }
 
@@ -1539,6 +1570,58 @@ impl App {
         self.ui.map_dirty = true;
     }
 
+    /// Feed the frame's **weather view state** (WX11): the rain map's time-step range and the
+    /// product's zoom floor, refreshed by the host alongside the snapshot (the sim per frame /
+    /// per render; WX8's board mount the same way). Beyond storing the fields this **re-clamps
+    /// live** when the rain map is the current base screen: a denser product committing
+    /// mid-session, or a pan-move that raised the floor (the host recomputes it at the camera's
+    /// new latitude), must not leave the screen out of regime until the next gesture (review
+    /// F2). A zoom change dirties the map so the re-clamped frame actually paints.
+    pub fn set_rain_view(&mut self, steps_ahead: u8, zoom_floor: f32) {
+        self.state.rain_steps_ahead = steps_ahead;
+        self.state.rain_step = self.state.rain_step.min(steps_ahead);
+        self.state.rain_zoom_min = zoom_floor;
+        let base = self.ui.stack.iter().rposition(|s| !s.is_overlay());
+        if matches!(base.map(|i| &self.ui.stack[i]), Some(Screen::WeatherRainMap(_))) {
+            let before = self.state.zoom;
+            self.state.clamp_rain_zoom();
+            if self.state.zoom != before {
+                self.ui.map_dirty = true;
+            }
+        }
+    }
+
+    /// Host-push the **weather alert card** (WX11, epic #1185): RAIN AHEAD / STORM AHEAD with the
+    /// locked VIEW RAIN MAP + DISMISS actions. An alert already on the stack is *updated* in
+    /// place (re-fires never stack cards); the passkey card outranks it (the pairing prompt is
+    /// never covered — the upload-popup family's rule). Alert *generation* — thresholds, dedup,
+    /// cooldown persistence — is WX12's; this is only the presentation seam it (and the sim's
+    /// injection flag) drives.
+    pub fn show_weather_alert(&mut self, kind: crate::screen::WeatherAlertKind, minutes: u16) {
+        for scr in self.ui.stack.iter_mut() {
+            if let Screen::WeatherAlert(alert) = scr {
+                alert.update(kind, minutes);
+                self.ui.map_dirty = true;
+                return;
+            }
+        }
+        if matches!(self.ui.stack.last(), Some(Screen::Passkey(_))) {
+            return;
+        }
+        // Whether the card lands over an already-open rain map — its VIEW RAIN MAP action then
+        // pops back to it instead of stacking a second one (review F4).
+        let over_rain_map = matches!(self.ui.stack.last(), Some(Screen::WeatherRainMap(_)));
+        crate::screen::apply(
+            &mut self.ui.stack,
+            crate::screen::Transition::Push(Screen::WeatherAlert(crate::screen::WeatherAlertScreen::new(
+                kind,
+                minutes,
+                over_rain_map,
+            ))),
+        );
+        self.ui.map_dirty = true;
+    }
+
     /// Drop **everything derived from the active route's geometry** — the whole-App seam, and the
     /// only thing route-replacing paths should call.
     ///
@@ -1897,6 +1980,12 @@ impl App {
 
     /// The screen currently on top of the stack (receiving input). Always present — the Home root is
     /// never popped. A read-only handle for a host/test that needs to know which screen is up.
+    /// The visible screen-stack depth — test/diagnostic observability (the WX11 alert tests pin
+    /// "update in place, never stack" through it).
+    pub fn debug_stack_len(&self) -> usize {
+        self.ui.stack.len()
+    }
+
     pub fn top_screen(&self) -> &Screen {
         self.ui.stack.last().expect("the stack always has the Home root")
     }
@@ -2494,6 +2583,7 @@ impl App {
         reader: &Reader,
         route: Option<&RouteReader>,
         rain: Option<&mut dyn obc_render::RainOverlaySource>,
+        weather: crate::weather::WeatherFeed,
         w: f32,
         h: f32,
         color_fn: F,
@@ -2509,6 +2599,7 @@ impl App {
             Some(reader),
             route,
             rain,
+            weather,
             w,
             h,
             &color_fn,
@@ -2529,6 +2620,7 @@ impl App {
         core_reader: &Reader,
         route: Option<&RouteReader>,
         rain: Option<&mut dyn obc_render::RainOverlaySource>,
+        weather: crate::weather::WeatherFeed,
         w: f32,
         h: f32,
         color_fn: F,
@@ -2545,6 +2637,7 @@ impl App {
             Some(core_reader),
             route,
             rain,
+            weather,
             w,
             h,
             &color_fn,
@@ -2646,7 +2739,19 @@ impl App {
         F: Fn(u16) -> D::Color,
         S: MapScene,
     {
-        self.render_scene_map_rain_timed(scratch, target, scene, core_reader, route, None, w, h, color_fn, clock)
+        self.render_scene_map_rain_timed(
+            scratch,
+            target,
+            scene,
+            core_reader,
+            route,
+            None,
+            crate::weather::WeatherFeed::NONE,
+            w,
+            h,
+            color_fn,
+            clock,
+        )
     }
 
     /// [`render_scene_map_timed`](App::render_scene_map_timed) plus the optional **rain overlay
@@ -2664,6 +2769,7 @@ impl App {
         core_reader: Option<&Reader>,
         route: Option<&RouteReader>,
         rain: Option<&mut dyn obc_render::RainOverlaySource>,
+        weather: crate::weather::WeatherFeed,
         w: f32,
         h: f32,
         color_fn: F,
@@ -2788,6 +2894,8 @@ impl App {
             map_name: map_name.as_str(),
             map_obcm_version: *map_obcm_version,
             card_free_bytes: *card_free_bytes,
+            weather: weather.snapshot,
+            weather_refreshing: weather.refreshing,
         };
         let mut rx = RenderFrame { scene, render: rx };
         // The one Canvas of the frame: every screen draws through it (the base screen — the only
@@ -4092,7 +4200,7 @@ mod tests {
     fn every_settings_screen_holds_a_pending_save_until_exit() {
         use crate::screen::{
             apply, AddFieldScreen, ConnectionsScreen, DateTimeScreen, FirmwareScreen, PowerScreen, ResetScreen,
-            RideScreen, SettingsScreen, StatFieldsScreen, SystemScreen, Transition, UnitsScreen,
+            RideScreen, SettingsScreen, StatFieldsScreen, SystemScreen, Transition, UnitsScreen, WeatherSettingsScreen,
         };
         use crate::settings::Units;
 
@@ -4104,7 +4212,7 @@ mod tests {
             let _ = v.push(s);
             v
         }
-        let cases: [Case; 11] = [
+        let cases: [Case; 12] = [
             // Pure navigation — no edit gesture of its own.
             ("Settings list", || one(Screen::Settings(SettingsScreen::new())), &[]),
             // Open the UTC-offset stepper (#641: the one editable row), +one step — and leave the
@@ -4137,6 +4245,12 @@ mod tests {
             ("Firmware", || one(Screen::Firmware(FirmwareScreen::new())), &[]),
             // Press arms, then the completed hold erases to defaults — a real diff off the seed below.
             ("Reset", || one(Screen::Reset(ResetScreen::new())), &[Gesture::Press, Gesture::Hold]),
+            // Open the refresh picker, step it once (and leave it open — Back closes it first).
+            (
+                "Weather",
+                || one(Screen::WeatherSettings(WeatherSettingsScreen::new())),
+                &[Gesture::Press, Gesture::Step(1)],
+            ),
         ];
 
         for (name, stack, edits) in cases {

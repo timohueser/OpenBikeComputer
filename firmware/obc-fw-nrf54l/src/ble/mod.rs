@@ -470,7 +470,7 @@ pub async fn run(
     // resting value whenever the stored setting moves.
     let _ = server.set(
         &server.weather_request.context,
-        &obc_ble::WeatherRequestContext::resting(store.borrow().settings().weather_refresh).encode(),
+        &obc_ble::WeatherRequestContext::resting(store.borrow().settings().weather_refresh as u8).encode(),
     );
     info!(
         "ble: DIS fw '{}' hw '{}' serial '{}'",

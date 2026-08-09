@@ -61,13 +61,17 @@ pub mod store_meta;
 pub mod trip;
 pub(crate) mod ui_runtime;
 pub mod wall_clock;
+pub mod weather;
 pub mod weather_rain;
 
 pub use activity::{Activity, DetourRequest, DfuAction, Mode, NavRequest, TrackAction};
 pub use altitude::AltitudeFusion;
 pub use app::{App, AppState, CameraMode, ClockTrust, Pan, PanBasis, PanTool, NAV_PREVIEW_MAX};
 pub use arena_gate::{ArenaError, ArenaGate, ArenaInit, ArenaOwner, MapQuiesced, TransferReady};
-pub use ble::{BleLink, BleStatus, WeatherFix, WeatherSnapshot};
+// `ble::WeatherSnapshot` (WX8's request-context inputs) deliberately keeps its module-qualified
+// name: the crate-root `WeatherSnapshot` is the resident *forecast* snapshot the screens render
+// (WX11's `weather::WeatherSnapshot`) — two different objects that merged with the same name.
+pub use ble::{BleLink, BleStatus, WeatherFix};
 pub use breadcrumb::Breadcrumb;
 pub use corridor::{CorridorKey, CorridorScratch};
 pub use dfu::{DfuFailure, DfuInstallError, DfuScanError, DfuScanReport};
@@ -91,17 +95,18 @@ pub use retention::{
 };
 pub use ride::{RideCatalog, RideSummary, MAX_RIDES, UI_RIDES_CAP};
 pub use route::{Catalog, RouteSummary, MAX_ROUTES};
-pub use screen::{Screen, ScreenKind, Transition, WarningFlags, WarningScreen};
+pub use screen::{Screen, ScreenKind, Transition, WarningFlags, WarningScreen, WeatherAlertKind};
 pub use sensors::{SensorPhase, SensorScanHit, SensorScanHits, SensorStatus};
 pub use set_upload::{
     manifest_announce, orphan_shard_verdict, shard_announce, sweep_verdict, terrain_announce, terrain_record_agrees,
     RootMagic, SetReject, SetUpload, SweepVerdict,
 };
 pub use settings::{
-    ClimbMode, DateTimeEditorExt, IdleReturn, SavedSensor, Settings, Units, WaypointMode, DATETIME_MAX_YEAR,
-    DATETIME_MIN_YEAR, SENSOR_SLOTS,
+    ClimbMode, DateTimeEditorExt, IdleReturn, SavedSensor, Settings, Units, WaypointMode, WeatherRefresh,
+    DATETIME_MAX_YEAR, DATETIME_MIN_YEAR, SENSOR_SLOTS,
 };
 pub use stat_fields::{StatField, StatFieldList};
 pub use trip::{TripInput, TripSummary, Trips, MAX_TRIPS};
 pub use wall_clock::{MinuteTicker, WallClock};
+pub use weather::{rain_outlook, RainOutlook, WeatherFeed, WeatherSnapshot};
 pub use weather_rain::RainOverlayAdapter;

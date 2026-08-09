@@ -32,8 +32,25 @@ impl<'a, S: ByteSource + ?Sized> RainOverlayAdapter<'a, S> {
     /// bounds and the frame's cell dimensions, so the renderer's fixed-point sampler and
     /// `obc-weather`'s own `cell_index` name the same provider cell for the same coordinate.
     pub fn current(reader: &'a WeatherReader<'a, S>, cache: &'a mut WeatherCache, now_unix: i64) -> Option<Self> {
-        let (frame_index, frame) = reader.current_frame(now_unix, cache).ok().flatten()?;
+        Self::at_step(reader, cache, now_unix, 0)
+    }
+
+    /// The adapter for the `step`-th **future** frame past the one current at `now_unix` — the
+    /// rain map's time-step navigation (WX11). `step == 0` is exactly [`current`](Self::current);
+    /// a step past the table clamps to the last frame (the timeline's end is an end). Forecast
+    /// frames carry their real future timestamps, so stepping forward is not a freshness
+    /// violation — but the *anchor* stays the freshness-gated current frame: with nothing current
+    /// there is nothing to step from, and no adapter exists at any step.
+    pub fn at_step(
+        reader: &'a WeatherReader<'a, S>,
+        cache: &'a mut WeatherCache,
+        now_unix: i64,
+        step: u8,
+    ) -> Option<Self> {
+        let (current_index, current) = reader.current_frame(now_unix, cache).ok().flatten()?;
         let header = reader.header();
+        let frame_index = (current_index + step as usize).min(header.frame_count.saturating_sub(1) as usize);
+        let frame = if frame_index == current_index { current } else { reader.frame(frame_index).ok()? };
         Some(Self {
             reader,
             cache,
@@ -123,6 +140,33 @@ mod tests {
         assert!(RainOverlayAdapter::current(&reader, &mut cache, header.valid_from - 1).is_none());
         assert!(RainOverlayAdapter::current(&reader, &mut cache, last + 10_000).is_none());
         assert!(RainOverlayAdapter::current(&reader, &mut cache, header.valid_until + 1).is_none());
+    }
+
+    /// Time-step selection (WX11): `at_step` anchors on the freshness-gated current frame, steps
+    /// into genuine future frames, clamps at the table's end — and with nothing current there is
+    /// no adapter at *any* step (stepping can never resurrect stale rain).
+    #[test]
+    fn at_step_clamps_and_anchors_on_currency() {
+        let source = SliceSource(DWD);
+        let reader = WeatherReader::open(&source).unwrap();
+        let header = reader.header();
+        let first = reader.frame(0).unwrap().valid_at;
+        let mut cache = WeatherCache::new();
+        // Step 0 == current; a mid-table step lands on that future frame's grid (same dims here,
+        // so pin via the sampled tiles): compare against the target frame's own decode.
+        for step in [0u8, 3, 8, 200] {
+            let expected_index = (step as usize).min(header.frame_count as usize - 1);
+            let mut adapter = RainOverlayAdapter::at_step(&reader, &mut cache, first, step).expect("current at t0");
+            let mut got = [0u8; RAIN_TILE_CELLS];
+            assert!(adapter.tile(0, &mut got));
+            let mut want = [0u8; RAIN_TILE_CELLS];
+            reader.decode_tile(expected_index, 0, &mut want).unwrap();
+            assert_eq!(got, want, "step {step} reads frame {expected_index}'s tiles");
+        }
+        // Nothing current ⇒ no adapter at any step.
+        let last = reader.frame(header.frame_count as usize - 1).unwrap().valid_at;
+        assert!(RainOverlayAdapter::at_step(&reader, &mut cache, last + 10_000, 0).is_none());
+        assert!(RainOverlayAdapter::at_step(&reader, &mut cache, last + 10_000, 3).is_none());
     }
 
     /// A hostile tile index is a transparent tile, not a panic or a lie.

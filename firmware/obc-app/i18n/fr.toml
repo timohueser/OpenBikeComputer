@@ -13,6 +13,7 @@ routes = "Parcours"
 rides = "Sorties"
 pois = "POIs"
 map = "Carte"
+weather = "Météo"
 settings = "Réglages"
 
 # --- Le menu boussole en sortie, la liste À venir et le sélecteur Avancer ---
@@ -181,6 +182,7 @@ ride = "Sortie"
 display = "Affichage"
 connections = "Connexions"
 power = "Énergie"
+weather = "Météo"
 system = "Système"
 
 # --- Date & Time settings screen ---
@@ -540,3 +542,57 @@ cardtype_what = "Carte non gérée"
 cardtype_fix = "Utilisez une carte SDHC ou SDXC"
 storagefault_what = "Lecteur en panne"
 storagefault_fix = "Redémarrez l'appareil"
+
+# --- The Weather surfaces (epic #1185, WX11): dashboard, hourly, rain map, alert ---
+[weather]
+title = "MÉTÉO"
+hourly = "HORAIRE"
+rain_map = "CARTE PLUIE"
+updated = "Actualisé"
+updating = "MISE À JOUR"
+dry_1 = "SEC POUR"
+dry_2 = "2 HEURES"
+rain = "PLUIE"
+storm = "ORAGE"
+rain_in = "PLUIE DANS"
+storm_in = "ORAGE DANS"
+now = "MAINT."
+min = "MIN"
+in = "DANS"
+update_needed = "MISE À JOUR MÉTÉO REQUISE"
+hourly_only = "PAS DE DONNÉES PLUIE"
+hourly_only_sub = "Heures seules"
+no_data = "PAS DE DONNÉES MÉTÉO"
+no_data_sub = "Via téléphone"
+zoom_for_rain = "ZOOM POUR PLUIE"
+alert_rain = "PLUIE DEVANT"
+alert_storm = "ORAGE DEVANT"
+alert_rain_body = "Pluie forte sur le parcours."
+alert_storm_body = "Orage sur le parcours."
+view_rain_map = "CARTE PLUIE"
+dismiss = "FERMER"
+
+# --- WeatherRefresh enum labels (Weather settings screen picker) ---
+[weather_refresh]
+off = "Non"
+m15 = "15 min"
+m30 = "30 min"
+m60 = "60 min"
+m120 = "120 min"
+
+# --- The Weather settings screen ---
+[weather_settings]
+title = "MÉTÉO"
+refresh = "Mise à jour"
+refresh_sub = "via téléphone"
+
+# --- Cardinal/octant letters (the hourly rows' meteorological wind-from labels) ---
+[compass]
+n = "N"
+ne = "NE"
+e = "E"
+se = "SE"
+s = "S"
+sw = "SO"
+w = "O"
+nw = "NO"
