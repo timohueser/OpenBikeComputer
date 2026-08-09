@@ -83,6 +83,34 @@ describe("region parts", () => {
     });
 });
 
+describe("lasso parts", () => {
+    it("adds a drawn ring as a part, named and priced like a box", () => {
+        const store = makeStore();
+        // A triangle over the published column: same ground as PUBLISHED_BOX.
+        store.addLasso([
+            { lat: 47_210_000, lon: 7_360_000 },
+            { lat: 47_210_000, lon: 7_590_000 },
+            { lat: 47_390_000, lon: 7_470_000 },
+        ]);
+        expect(store.selection.parts).toHaveLength(1);
+        expect(store.selection.parts[0].kind).toBe("lasso");
+        expect(store.selection.parts[0].name).toBe("Lasso — Switzerland");
+        expect(store.ledger!.totalBytes).toBeGreaterThan(0);
+    });
+
+    it("refuses a world-sized ring as a sentence, not a crash", () => {
+        const store = makeStore();
+        store.addLasso([
+            { lat: -60_000_000, lon: -85_000_000 },
+            { lat: -60_000_000, lon: 85_000_000 },
+            { lat: 60_000_000, lon: 0 },
+        ]);
+        expect(store.selection.parts).toHaveLength(0);
+        expect(store.drawError).toMatch(/smaller one/);
+        expect(store.ledger).not.toBeNull();
+    });
+});
+
 describe("box parts", () => {
     it("names a box after the smallest region under its centre", () => {
         const store = makeStore();
@@ -112,13 +140,22 @@ describe("box parts", () => {
         const store = makeStore();
         store.addBox(degreesToUbox(-60, -170, 60, 170));
         expect(store.selection.parts).toHaveLength(0);
-        expect(store.boxError).toMatch(/smaller one/);
+        expect(store.drawError).toMatch(/smaller one/);
         // …and the ledger is still alive.
         expect(store.ledger).not.toBeNull();
 
         store.addBox(PUBLISHED_BOX);
-        expect(store.boxError).toBeNull();
+        expect(store.drawError).toBeNull();
         expect(store.selection.parts).toHaveLength(1);
+    });
+
+    it("lists the regions under a point smallest first — the ladder's order", () => {
+        const store = makeStore();
+        // A point inside Basel-Stadt, which sits inside Switzerland.
+        const ladder = store.regionsAt(47_550_000, 7_600_000);
+        expect(ladder.map((r) => r.id)).toEqual(["europe/switzerland/basel-stadt", "europe/switzerland"]);
+        // Open sea: no rungs at all.
+        expect(store.regionsAt(10_000_000, 10_000_000)).toEqual([]);
     });
 
     it("shows ground with no published cell as holes, and can point the map at them", () => {

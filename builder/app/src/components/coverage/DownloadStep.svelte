@@ -1051,17 +1051,22 @@
         {/if}
 
         <div class="facts">
-            <p class="line">
+            <!-- P1 (2026-08-09): the one number that matters leads the card as
+                 a stat band; everything descriptive is one quiet caption. -->
+            {#if ledger.isFinal}
+                <p class="line statband">
+                    <span class="mono big">{formatBytes(ledger.totalBytes)}</span>
+                    <span class="small faint">
+                        {ledger.cellCount}
+                        {ledger.cellCount === 1 ? "cell" : "cells"} · assembled on this computer
+                    </span>
+                </p>
+            {:else}
+                <p class="line statband"><span class="mono big faint">pricing…</span></p>
+            {/if}
+            <p class="line small faint">
                 <span class="serif">{store.catalog.schema.name}</span> schema ·
                 <span class="serif">{store.skin.name}</span> skin
-            </p>
-            <p class="line mono small">
-                {#if ledger.isFinal}
-                    {formatBytes(ledger.totalBytes)} · {ledger.cellCount}
-                    {ledger.cellCount === 1 ? "cell" : "cells"} · assembled on this computer
-                {:else}
-                    pricing…
-                {/if}
             </p>
 
             {#if refusal}
@@ -1081,8 +1086,11 @@
             {/if}
 
             {#if phase === "idle" || phase === "cancelled" || phase === "error" || phase === "done"}
+                <!-- No size in the label: the stat band above already leads
+                     with it, and the same number twice in one card was the P1
+                     round's headline complaint. -->
                 <button type="button" class="btn primary" disabled={!ready} onclick={run}>
-                    {ledger.isFinal ? `Download map (${formatBytes(ledger.totalBytes)})` : "Download map"}
+                    Download map
                 </button>
             {:else}
                 <div class="runrow">
@@ -1224,6 +1232,18 @@
     .line {
         margin: 0;
         line-height: 1.45;
+    }
+
+    .statband {
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+        flex-wrap: wrap;
+    }
+
+    .statband .big {
+        font-size: 19px;
+        font-weight: 600;
     }
 
     .serif {
