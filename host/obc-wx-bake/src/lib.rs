@@ -8,7 +8,8 @@
 //!
 //! Layer map (WX1's prescribed boundaries):
 //! - [`source`] — one adapter per upstream; the only provider-aware code.
-//! - [`grib`], [`stereo`] — pinned decode/projection primitives the adapters share.
+//! - [`grib`], [`idx`], [`stereo`], [`lcc`] — pinned decode/selection/projection primitives the
+//!   adapters share.
 //! - [`emit`] — cell grids → OBCG bytes through the `obc-formats` byte authority.
 //! - [`manifest`] — the `wx/v1/manifest.json` model and its pinned JSON Schema.
 //! - [`publish`] — frames-first, manifest-last object stores (directory and R2).
@@ -19,6 +20,8 @@ pub mod emit;
 pub mod fetch;
 pub mod geometry;
 pub mod grib;
+pub mod idx;
+pub mod lcc;
 pub mod manifest;
 pub mod publish;
 pub mod source;

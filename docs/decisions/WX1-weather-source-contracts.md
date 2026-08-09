@@ -31,13 +31,12 @@ normalization and baking. Missing data is never dry weather.
 
 ## Architecture boundary
 
-WX1 adds `host/obc-wx-source-spike`, a disposable Rust contract validator. It
-proves that a Rust host can decompress and validate the selected upstream
-bytes. It deliberately does not define the later baked object or R2 keyspace;
-those are WX5/WX6 decisions.
-
-The production `obc-wx-bake` implementation should preserve these module
-boundaries:
+WX1 proved, with a disposable Rust contract validator, that a host can
+decompress and validate the selected upstream bytes. That spike was deleted
+once WX6 landed the last adapter it covered; the contracts it measured now live
+in the production baker `host/obc-wx-bake` (`src/grib.rs` pins the Section-3
+bytes and templates, `src/source/*` the per-source rules), which preserves these
+module boundaries:
 
 ```text
 source/{dwd_rv,mrms,icon_eu,hrrr,gfs}
@@ -454,31 +453,26 @@ leaving attribution to UI guesswork:
 
 The exact fixture retrieval URLs/ranges, content hashes, full-vs-subset status,
 and terms are in
-[`host/obc-wx-source-spike/tests/fixtures/README.md`](../../host/obc-wx-source-spike/tests/fixtures/README.md).
+[`host/obc-wx-bake/tests/fixtures/README.md`](../../host/obc-wx-bake/tests/fixtures/README.md).
 
 ## Reproduction and checked evidence
 
 Run immutable fixture verification:
 
 ```bash
-cargo test -p obc-wx-source-spike
+cargo test -p obc-wx-bake
 ```
 
-Run the opt-in live host reproduction:
+Run a live host reproduction against the real upstreams (it discovers current
+runs, bounds every object before download, requires exact 206 `Content-Range`
+for byte-range reads, and fails the cycle on any contract surprise):
 
 ```bash
-tools/weather-source-spike/reproduce.sh /tmp/obc-weather-evidence
+cargo run --release -p obc-wx-bake -- cycle --store /tmp/obc-weather-evidence
 ```
 
-The live script requires Bash, curl, `/usr/bin/time`, and the Rust toolchain.
-It discovers current runs, bounds objects before download, requires exact
-200/206 status and `Content-Range`, checks MIME, length, magic, validators and
-`Accept-Ranges` where applicable, and proves MET `If-Modified-Since` returns
-304. Every archive/field then passes through the Rust validator. It writes
-normalized per-validation user/system CPU seconds and peak RSS bytes plus the
-GFS run budget/high-water evidence into the output directory. It prints an explicit IMERG v1
-NO-GO notice and continues with GFS-only; it does not request credentials or
-claim an unauthenticated capture as evidence.
+The MET Locationforecast contract has no baker-side reproduction: MET is a
+phone-only provider (WX4), and this record's MET evidence stands as captured.
 
 Checked-in tests cover:
 
@@ -492,8 +486,12 @@ Checked-in tests cover:
 - GFS exact geometry/interval lead, representation 5.3, duplicate-record
   equality, and run-boundary-safe cumulative
   de-accumulation;
-- MET Nordic/non-Nordic optional behavior, malformed optional types, exact
-  hourly RFC3339 cadence, and frozen condition mapping.
+- deterministic fixture cycles per product: byte-stable published trees,
+  corrupt upstream publishing nothing, unchanged upstream moving no bytes, and
+  every published cell equal to the quantized nearest-neighbour source cell.
+
+The MET condition mapping above is implemented and tested on the phone side
+(WX4), not in the baker.
 
 ## Follow-up gates
 

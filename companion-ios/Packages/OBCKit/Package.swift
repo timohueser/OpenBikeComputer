@@ -7,6 +7,10 @@ import PackageDescription
 // Layer order (lower may not import higher):
 //   OBCDomain  → pure value types, no framework deps
 //   OBCWeatherWire → provider-neutral OBCW wire DTOs + codec, depends only on OBCDomain
+//   OBCWeather → the weather domain: MET hourly adapter, OBC weather service client
+//                and the OBCW bundle builder. Depends on OBCDomain + OBCWeatherWire,
+//                never on OBCTransport (no CoreBluetooth anywhere near it) and never
+//                on SwiftUI
 //   OBCTransport → DeviceTransport protocol + (B1) BLETransport, depends on OBCDomain
 //   OBCFormats → interchange file formats (route import / ride export seams, B6/B7),
 //                depends on OBCDomain — sits beside OBCTransport, never on it
@@ -35,6 +39,7 @@ let package = Package(
         .library(name: "OBCDomain", targets: ["OBCDomain"]),
         .library(name: "OBCTransport", targets: ["OBCTransport"]),
         .library(name: "OBCWeatherWire", targets: ["OBCWeatherWire"]),
+        .library(name: "OBCWeather", targets: ["OBCWeather"]),
         .library(name: "OBCFormats", targets: ["OBCFormats"]),
         .library(name: "OBCMock", targets: ["OBCMock"]),
         .library(name: "OBCUI", targets: ["OBCUI"]),
@@ -55,6 +60,15 @@ let package = Package(
         .target(
             name: "OBCWeatherWire",
             dependencies: ["OBCDomain"],
+            swiftSettings: languageMode
+        ),
+        // The weather domain: semantic Sendable state, the MET Norway hourly adapter, the
+        // OBC weather service client (manifest + corridor Range reads) and the OBCW builder.
+        // Sits on OBCDomain + OBCWeatherWire so provider formats end at its adapters and the
+        // bytes it emits are the frozen wire contract, never a second one.
+        .target(
+            name: "OBCWeather",
+            dependencies: ["OBCDomain", "OBCWeatherWire"],
             swiftSettings: languageMode
         ),
         .target(
@@ -88,6 +102,11 @@ let package = Package(
         .testTarget(
             name: "OBCWeatherWireTests",
             dependencies: ["OBCWeatherWire"],
+            swiftSettings: languageMode
+        ),
+        .testTarget(
+            name: "OBCWeatherTests",
+            dependencies: ["OBCWeather"],
             swiftSettings: languageMode
         ),
         .testTarget(

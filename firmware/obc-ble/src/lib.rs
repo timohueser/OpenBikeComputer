@@ -41,11 +41,11 @@ pub use sensors::{
 };
 pub use transfer::{HeldMagic, Receiver, StreamSender, TransferError, MAGIC_LEN};
 pub use weather_request::{
-    authenticated_context_was_served, classify_upload, BundleIdentity, UploadDisposition, WeatherRefresh,
-    WeatherRequestBudget, WeatherRequestContext, REASON_NO_BUNDLE, REASON_OUT_OF_AREA, REASON_RETRY, REASON_SCHEDULED,
-    REASON_URGENT, VALID_BEARING, VALID_BUNDLE, VALID_POSITION, VALID_ROUTE, VALID_SPEED, WEATHER_BUNDLE_OBJECT_ID,
-    WEATHER_REQUEST_CONTEXT_UUID, WEATHER_REQUEST_CONTEXT_VERSION, WEATHER_REQUEST_SERVICE_UUID,
-    WEATHER_REQUEST_SERVICE_UUID_LE,
+    authenticated_context_was_served, classify_upload, BundleFacts, BundleIdentity, DueScheduler, Raise,
+    UploadDisposition, WeatherRefresh, WeatherRequestBudget, WeatherRequestContext, BUNDLE_EXPIRED_S, REASON_NO_BUNDLE,
+    REASON_OUT_OF_AREA, REASON_RETRY, REASON_SCHEDULED, REASON_URGENT, RETRY_LADDER_S, VALID_BEARING, VALID_BUNDLE,
+    VALID_POSITION, VALID_ROUTE, VALID_SPEED, WEATHER_BUNDLE_OBJECT_ID, WEATHER_REQUEST_CONTEXT_UUID,
+    WEATHER_REQUEST_CONTEXT_VERSION, WEATHER_REQUEST_SERVICE_UUID, WEATHER_REQUEST_SERVICE_UUID_LE,
 };
 
 /// The protocol version this crate implements. The app reads it (with the store epoch and the
