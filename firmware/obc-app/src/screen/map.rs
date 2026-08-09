@@ -355,7 +355,12 @@ where
     // screen lands on the very next map frame with no reload and nothing to reset. Suppression drops
     // the terrain layer in the collect pass, so nothing is decoded, let alone drawn.
     let cfg = obc_render::RenderConfig { terrain_layer: rx.settings.map_contours };
-    let mut stats = scratch.render_timed(target, scene, vp, bg, cfg, color_fn, rx.clock);
+    // The rain overlay lease (WX10), taken for this frame: precipitation draws inside the base-map
+    // paint order (below the road band), so roads, route, rider and the chrome below all stay
+    // above it. `None` — no store, nothing current, expired — renders the byte-identical
+    // rain-free map.
+    let rain = rx.rain.take();
+    let mut stats = scratch.render_rain_timed(target, scene, vp, bg, cfg, rain, color_fn, rx.clock);
     let arrows_at = (skip.is_none() && vp.meters_per_pixel() <= CHEVRON_MAX_MPP).then_some(rx.activity.progress_m);
 
     if let Some(route) = rx.route {
