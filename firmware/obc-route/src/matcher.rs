@@ -130,6 +130,12 @@ impl RouteMatch {
         Some(pos)
     }
 
+    /// Whether the matcher has locked onto the route at least once (its first fix has been
+    /// matched) — before that, `progress_m` is a default 0 nothing should derive from.
+    pub fn started(&self) -> bool {
+        self.started
+    }
+
     /// Ask the **next** match to search the wide (rejoin-sized) forward window once, then fall back
     /// to the tight one.
     ///

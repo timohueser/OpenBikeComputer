@@ -599,6 +599,8 @@ alert_rain = "RAIN AHEAD"
 alert_storm = "STORM AHEAD"
 alert_rain_body = "Heavy rain on the route ahead."
 alert_storm_body = "Thunderstorm on the route ahead."
+alert_gust = "STRONG WIND"
+alert_gust_body = "Dangerous gusts ahead."
 view_rain_map = "VIEW RAIN MAP"
 dismiss = "DISMISS"
 

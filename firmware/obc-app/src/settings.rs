@@ -928,34 +928,55 @@ pub struct Settings {
     /// [`device_name`](Settings::device_name)): the companion writes it via Config §7.3, so
     /// [`adopt_ble_fields`](Settings::adopt_ble_fields) pulls it across.
     pub weather_refresh: WeatherRefresh,
+    /// The last **fired weather alert** per class (WX12 #1197): the dedup/cooldown anchors —
+    /// event onset + position + severity, indexed by
+    /// [`AlertClass::slot`](crate::weather_alerts::AlertClass). Persisted in this blob (the RRAM
+    /// carve / sim file) so the same storm does not pop back up on the next *boot*, not just the
+    /// next frame; dedup compares event times, so it needs no trusted clock at boot. Written by
+    /// [`App::weather_alert_tick`](crate::App::weather_alert_tick) at alert-fire rate (rare),
+    /// through the same #810 persistence handshake as any rider edit. **Device-only** state, not
+    /// a preference: [`adopt_ble_fields`](Settings::adopt_ble_fields) never touches it.
+    pub weather_alert_marks: crate::weather_alerts::AlertMarks,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings {
-            units: Units::Metric,
-            clock: DateTime::default(),
-            utc_offset_min: 0,
-            fix_interval_s: 1,
-            power_saver: false,
-            stat_fields: StatFieldList::default(),
-            stat_cycle_s: STAT_CYCLE_DEFAULT,
-            device_name: DeviceName::EMPTY,
-            ble_enabled: true,
-            climb_mode: ClimbMode::default(),
-            idle_return: IdleReturn::default(),
-            map_clock: true,
-            map_scale_bar: true,
-            map_contours: true,
-            bike_profile_idx: 0,
-            waypoint_mode: WaypointMode::default(),
-            language: Language::default(),
-            saved_sensors: [SavedSensor::EMPTY; SENSOR_SLOTS],
-            ride_retention: RideRetention::default(),
-            up_ahead_source: UpAheadSource::default(),
-            weather_refresh: WeatherRefresh::default(),
-        }
+        Self::DEFAULT
     }
+}
+
+impl Settings {
+    /// The factory settings as a **`const`** — the same value [`Default`] returns (`default()`
+    /// delegates here, and the per-field defaults the literal names are pinned against each
+    /// type's own `Default` by test, so the two cannot drift). Exists so the board's ~13.6 KB object store can be built from a `.rodata` image
+    /// instead of a stack temporary: WX12 (#1197) grew this struct by 96 B and the optimizer
+    /// stopped collapsing the store's two-copy construction — the exact transient boot spike the
+    /// 2026-08-03 STKOF post-mortem banned, caught by the boot-chain guard. A future field must
+    /// be const-constructible here, which is a compile error rather than a convention.
+    pub const DEFAULT: Settings = Settings {
+        units: Units::Metric,
+        clock: DateTime::DEFAULT,
+        utc_offset_min: 0,
+        fix_interval_s: 1,
+        power_saver: false,
+        stat_fields: StatFieldList::DEFAULT,
+        stat_cycle_s: STAT_CYCLE_DEFAULT,
+        device_name: DeviceName::EMPTY,
+        ble_enabled: true,
+        climb_mode: ClimbMode::Auto,
+        idle_return: IdleReturn::S30,
+        map_clock: true,
+        map_scale_bar: true,
+        map_contours: true,
+        bike_profile_idx: 0,
+        waypoint_mode: WaypointMode::Approach,
+        language: Language::En,
+        saved_sensors: [SavedSensor::EMPTY; SENSOR_SLOTS],
+        ride_retention: RideRetention::Week1,
+        up_ahead_source: UpAheadSource::Both,
+        weather_refresh: WeatherRefresh::Every30,
+        weather_alert_marks: [None; crate::weather_alerts::ALERT_CLASSES],
+    };
 }
 
 impl Settings {
@@ -1009,8 +1030,10 @@ impl Settings {
 /// **provisional** field; removing it is a version bump like any other, which is exactly the point
 /// of it costing one appended byte); v15 appended the `weather_refresh` byte (weather epic #1185
 /// — WX8 #1193's scheduler field and WX11 #1196's settings screen, one byte carrying the BLE
-/// §11.8 discriminants).
-pub const VERSION: u8 = 15;
+/// §11.8 discriminants); v16 appended the 54-byte `weather_alert_marks` block (WX12 #1197) —
+/// 3 classes × 18 B (`present · onset i64 · lat i32 · lon i32 · severity`), the persisted alert
+/// dedup/cooldown anchors.
+pub const VERSION: u8 = 16;
 
 /// Fixed encoded length: the [`PAYLOAD_LEN`] CRC-covered bytes + a 2-byte CRC, **rounded up to the
 /// device RRAM's 16-byte write line** (the firmware store writes whole 128-bit lines) — so a codec
@@ -1019,7 +1042,12 @@ pub const VERSION: u8 = 15;
 pub const ENCODED_LEN: usize = (PAYLOAD_LEN + 2).div_ceil(16) * 16;
 
 /// Payload size before the trailing CRC. The CRC follows immediately at this offset.
-const PAYLOAD_LEN: usize = WEATHER_REFRESH_OFF + 1;
+const PAYLOAD_LEN: usize = ALERT_MARKS_OFF + crate::weather_alerts::ALERT_CLASSES * ALERT_MARK_LEN;
+/// Byte offset of the `weather_alert_marks` block (the v16 tail, right after `weather_refresh`).
+const ALERT_MARKS_OFF: usize = WEATHER_REFRESH_OFF + 1;
+/// Bytes per persisted alert mark: `present(1) · onset i64 LE(8) · lat i32 LE(4) · lon i32 LE(4)
+/// · severity(1)`.
+const ALERT_MARK_LEN: usize = 18;
 /// Byte offset of the `weather_refresh` byte (the v15 tail, right after `map_contours`).
 const WEATHER_REFRESH_OFF: usize = CONTOURS_OFF + 1;
 /// Byte offset of the `map_contours` flag (the v14 tail, right after `up_ahead_source`).
@@ -1113,6 +1141,17 @@ pub fn encode(s: &Settings) -> [u8; ENCODED_LEN] {
     b[CONTOURS_OFF] = s.map_contours as u8;
     // v15 tail: the weather-refresh interval — the enum discriminant IS the §11.8 wire byte.
     b[WEATHER_REFRESH_OFF] = s.weather_refresh as u8;
+    // v16 tail: the per-class weather-alert marks (WX12) — `present · onset · lat · lon · severity`.
+    for (slot, mark) in s.weather_alert_marks.iter().enumerate() {
+        let off = ALERT_MARKS_OFF + slot * ALERT_MARK_LEN;
+        if let Some(mark) = mark {
+            b[off] = 1;
+            b[off + 1..off + 9].copy_from_slice(&mark.onset.to_le_bytes());
+            b[off + 9..off + 13].copy_from_slice(&mark.lat.to_le_bytes());
+            b[off + 13..off + 17].copy_from_slice(&mark.lon.to_le_bytes());
+            b[off + 17] = mark.severity;
+        }
+    }
     let crc = crate::store_meta::crc16(&b[0..PAYLOAD_LEN]);
     b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
     b
@@ -1187,6 +1226,10 @@ pub fn decode(bytes: &[u8]) -> Option<Settings> {
         // the device default, like the other enum codec fields. Deliberately the default (30 min)
         // and not `Off`: §7.3 pins that only an explicit rider choice may disable weather.
         weather_refresh: WeatherRefresh::from_byte(b[WEATHER_REFRESH_OFF]),
+        // The v16 weather-alert marks (WX12): an absent slot (`present == 0`) is "no alert fired".
+        // Every stored value is a legal mark (any onset/position/severity is comparable), so no
+        // range clamp exists to apply.
+        weather_alert_marks: decode_alert_marks(b),
     };
     s.sanitize();
     Some(s)
@@ -1196,6 +1239,24 @@ pub fn decode(bytes: &[u8]) -> Option<Settings> {
 /// (`present == 0`) reads as [`SavedSensor::EMPTY`] regardless of the stored address; a present slot
 /// keeps its address and normalises `addr_kind` to `0`/`1` (`!= 0` = random), matching how the board
 /// maps it to `AddrKind`.
+/// Decode the v16 weather-alert-mark block: 3 slots × `present(1) · onset(8) · lat(4) · lon(4) ·
+/// severity(1)`. An absent slot reads as `None` regardless of the stored payload.
+fn decode_alert_marks(b: &[u8]) -> crate::weather_alerts::AlertMarks {
+    let mut marks: crate::weather_alerts::AlertMarks = [None; crate::weather_alerts::ALERT_CLASSES];
+    for (slot, mark) in marks.iter_mut().enumerate() {
+        let off = ALERT_MARKS_OFF + slot * ALERT_MARK_LEN;
+        if b[off] != 0 {
+            *mark = Some(crate::weather_alerts::AlertMark {
+                onset: i64::from_le_bytes(b[off + 1..off + 9].try_into().unwrap()),
+                lat: i32::from_le_bytes(b[off + 9..off + 13].try_into().unwrap()),
+                lon: i32::from_le_bytes(b[off + 13..off + 17].try_into().unwrap()),
+                severity: b[off + 17],
+            });
+        }
+    }
+    marks
+}
+
 fn decode_saved_sensors(b: &[u8]) -> [SavedSensor; SENSOR_SLOTS] {
     let mut slots = [SavedSensor::EMPTY; SENSOR_SLOTS];
     for (q, slot) in slots.iter_mut().enumerate() {
@@ -1212,6 +1273,23 @@ fn decode_saved_sensors(b: &[u8]) -> [SavedSensor; SENSOR_SLOTS] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `Settings::DEFAULT` (the const the board's `.rodata` store image is built from, #1197)
+    /// names every per-type default variant literally — pin each against its type's own
+    /// `Default`, so a retuned default can't silently fork the two.
+    #[test]
+    fn const_default_matches_every_field_default() {
+        let d = Settings::DEFAULT;
+        assert_eq!(d.clock, DateTime::default());
+        assert_eq!(d.stat_fields, StatFieldList::default());
+        assert_eq!(d.climb_mode, ClimbMode::default());
+        assert_eq!(d.idle_return, IdleReturn::default());
+        assert_eq!(d.waypoint_mode, WaypointMode::default());
+        assert_eq!(d.language, Language::default());
+        assert_eq!(d.ride_retention, RideRetention::default());
+        assert_eq!(d.up_ahead_source, UpAheadSource::default());
+        assert_eq!(d.weather_refresh, WeatherRefresh::default());
+    }
 
     /// A non-default settings value — including a customised, reordered field selection with a
     /// two-span tile — round-trips through the codec byte-for-byte.
@@ -1246,8 +1324,41 @@ mod tests {
             ride_retention: RideRetention::Month1,
             up_ahead_source: UpAheadSource::MapPoisOnly,
             weather_refresh: WeatherRefresh::Every120,
+            weather_alert_marks: [
+                Some(crate::weather_alerts::AlertMark {
+                    onset: 1_800_000_900,
+                    lat: 47_123_456,
+                    lon: 8_654_321,
+                    severity: 11,
+                }),
+                None,
+                Some(crate::weather_alerts::AlertMark { onset: -1, lat: -47_000_000, lon: -8_000_000, severity: 0 }),
+            ],
         };
         assert_eq!(decode(&encode(&s)), Some(s));
+    }
+
+    /// The v16 tail (WX12 #1197): the per-class weather-alert marks round-trip (present and
+    /// absent slots, negative onsets/coordinates — asserted field-precisely on top of
+    /// `codec_round_trips`' whole-struct pass), an absent slot stores all-zeros gated by the
+    /// `present` byte, and the block is **device-local state** — a BLE Config adopt never
+    /// clobbers it.
+    #[test]
+    fn weather_alert_marks_round_trip_and_are_device_only() {
+        use crate::weather_alerts::AlertMark;
+        let mark = AlertMark { onset: 1_800_123_456, lat: -12_345, lon: 9_876_543, severity: 7 };
+        let s = Settings { weather_alert_marks: [None, Some(mark), None], ..Settings::default() };
+        let b = encode(&s);
+        assert_eq!(decode(&b), Some(s), "marks round-trip through the v16 tail");
+        assert_eq!(b[ALERT_MARKS_OFF], 0, "slot 0 absent");
+        assert_eq!(b[ALERT_MARKS_OFF + ALERT_MARK_LEN], 1, "slot 1 present");
+
+        // Adopting a BLE settings write (units/name/refresh) must not clear the local marks.
+        let mut device = Settings { weather_alert_marks: [Some(mark), None, None], ..Settings::default() };
+        let phone = Settings { units: Units::Imperial, ..Settings::default() }; // marks all None
+        device.adopt_ble_fields(&phone);
+        assert_eq!(device.units, Units::Imperial);
+        assert_eq!(device.weather_alert_marks[0], Some(mark), "marks are device state, never adopted away");
     }
 
     /// The v15 tail (weather epic #1185 — WX8 #1193 + WX11 #1196, merged): the typed
@@ -1259,7 +1370,7 @@ mod tests {
     #[test]
     fn weather_refresh_round_trips_defaults_and_is_ble_writable() {
         assert_eq!(Settings::default().weather_refresh, WeatherRefresh::Every30, "default = 30 min, not Off");
-        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v15 weather_refresh tail)");
+        assert_eq!(ENCODED_LEN, 176, "the settings blob is 176 B / 11 RRAM lines (v16 weather_alert_marks tail)");
 
         // The stored byte IS the BLE Config §11.8 wire value — the double contract, pinned.
         for (r, wire, minutes) in [
@@ -1304,7 +1415,7 @@ mod tests {
     fn up_ahead_source_round_trips_and_is_device_only() {
         assert_eq!(Settings::default().up_ahead_source, UpAheadSource::Both, "the timeline defaults to Both");
         // The one new byte still fits inside the same 16-byte RRAM line rounding as v12.
-        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v15 weather_refresh tail)");
+        assert_eq!(ENCODED_LEN, 176, "the settings blob is 176 B / 11 RRAM lines (v16 weather_alert_marks tail)");
 
         for src in [UpAheadSource::Both, UpAheadSource::WaypointsOnly, UpAheadSource::MapPoisOnly] {
             let s = Settings { up_ahead_source: src, ..Settings::default() };
@@ -1478,7 +1589,7 @@ mod tests {
         assert!(Settings::default().map_clock, "the map clock defaults on");
         assert!(Settings::default().map_scale_bar, "the scale bar defaults on");
         // The RRAM carve is unchanged — the two new bytes fit inside the same 16-byte line rounding.
-        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v15 weather_refresh tail)");
+        assert_eq!(ENCODED_LEN, 176, "the settings blob is 176 B / 11 RRAM lines (v16 weather_alert_marks tail)");
 
         // Every on/off combination round-trips byte-for-byte.
         for clock in [false, true] {
@@ -1502,7 +1613,7 @@ mod tests {
     fn map_contours_round_trips_and_is_device_only() {
         assert!(Settings::default().map_contours, "contours default on");
         // The one new byte still fits inside the same 16-byte RRAM line rounding as v13.
-        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v15 weather_refresh tail)");
+        assert_eq!(ENCODED_LEN, 176, "the settings blob is 176 B / 11 RRAM lines (v16 weather_alert_marks tail)");
 
         for on in [false, true] {
             let s = Settings { map_contours: on, ..Settings::default() };
@@ -1531,7 +1642,7 @@ mod tests {
     fn bike_profile_idx_round_trips_and_is_device_only() {
         assert_eq!(Settings::default().bike_profile_idx, 0, "the profile index defaults to 0");
         // The one new byte still fits inside the same 16-byte RRAM line rounding as v7.
-        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v15 weather_refresh tail)");
+        assert_eq!(ENCODED_LEN, 176, "the settings blob is 176 B / 11 RRAM lines (v16 weather_alert_marks tail)");
 
         // Every index round-trips byte-for-byte — including a value past any real map's profile count,
         // which the codec stores verbatim (the router/UI own the fallback, not decode).
@@ -1554,7 +1665,7 @@ mod tests {
     fn waypoint_mode_round_trips_and_is_device_only() {
         assert_eq!(Settings::default().waypoint_mode, WaypointMode::Approach, "the chip defaults to Approach");
         // The one new byte still fits inside the same 16-byte RRAM line rounding as v8.
-        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v15 weather_refresh tail)");
+        assert_eq!(ENCODED_LEN, 176, "the settings blob is 176 B / 11 RRAM lines (v16 weather_alert_marks tail)");
 
         // Each mode round-trips through the codec byte-for-byte.
         for mode in [WaypointMode::Off, WaypointMode::Approach, WaypointMode::Always] {
@@ -1586,7 +1697,7 @@ mod tests {
         assert_eq!(Settings::default().language, Language::En, "the UI language defaults to English");
         // The saved_sensors tail (v11) then the ride_retention byte (v12) grew the blob to 128 B /
         // 8 RRAM lines; the language byte kept its v10 offset.
-        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v15 weather_refresh tail)");
+        assert_eq!(ENCODED_LEN, 176, "the settings blob is 176 B / 11 RRAM lines (v16 weather_alert_marks tail)");
 
         // Each language round-trips through the codec byte-for-byte.
         for lang in [Language::En, Language::De, Language::Fr, Language::Es] {
@@ -1623,7 +1734,7 @@ mod tests {
     /// repick the rider's sensors).
     #[test]
     fn saved_sensors_round_trip_and_migration() {
-        assert_eq!(VERSION, 15, "saved_sensors is the v11 tail; the codec is now v15 (weather_refresh)");
+        assert_eq!(VERSION, 16, "saved_sensors is the v11 tail; the codec is now v16 (weather_alert_marks)");
         assert_eq!(
             Settings::default().saved_sensors,
             [SavedSensor::EMPTY; SENSOR_SLOTS],

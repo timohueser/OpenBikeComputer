@@ -23,11 +23,15 @@ use super::{
     Screen, Transition,
 };
 
-/// What the alert is about — sets the title, body copy and glyph emphasis.
+/// What the alert is about — sets the title and body copy. The WX12 engine maps its classes onto
+/// these faces: heavy rain (≥ 10 mm/h reaching the corridor) → [`Rain`](WeatherAlertKind::Rain),
+/// thunderstorm/hail → [`Storm`](WeatherAlertKind::Storm), dangerous gusts →
+/// [`Gust`](WeatherAlertKind::Gust).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WeatherAlertKind {
     Rain,
     Storm,
+    Gust,
 }
 
 /// The alert card. Carries its own copy inputs (kind + minutes) so it renders identically
@@ -51,9 +55,19 @@ impl WeatherAlertScreen {
 
     /// Refresh the copy in place — how a re-fired alert updates an already-open card instead of
     /// stacking a second one (see [`App::show_weather_alert`](crate::App::show_weather_alert)).
-    pub fn update(&mut self, kind: WeatherAlertKind, minutes: u16) {
+    /// Returns whether anything actually changed, so a per-tick refresh with identical copy
+    /// (WX12's governor runs at fix cadence) doesn't dirty the frame.
+    pub fn update(&mut self, kind: WeatherAlertKind, minutes: u16) -> bool {
+        let changed = self.kind != kind || self.minutes != minutes;
         self.kind = kind;
         self.minutes = minutes;
+        changed
+    }
+
+    /// The card's current face — the WX12 governor reads it to route same-event countdown
+    /// refreshes to the open card.
+    pub fn kind(&self) -> WeatherAlertKind {
+        self.kind
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
@@ -87,6 +101,7 @@ impl WeatherAlertScreen {
         let (title, body) = match self.kind {
             WeatherAlertKind::Rain => (Msg::WeatherAlertRain, Msg::WeatherAlertRainBody),
             WeatherAlertKind::Storm => (Msg::WeatherAlertStorm, Msg::WeatherAlertStormBody),
+            WeatherAlertKind::Gust => (Msg::WeatherAlertGust, Msg::WeatherAlertGustBody),
         };
         title_frame(cv, w, h, rx.t(title), "");
 

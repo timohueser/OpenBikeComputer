@@ -409,6 +409,11 @@ pub struct Render<'a> {
     /// The dashboard shows its one non-blocking cue off this — cached content stays visible
     /// (locked UX), so this is a title-slot caption, never a blocking spinner.
     pub weather_refreshing: bool,
+    /// The rider's travel direction (degrees CW from north) for the route-relative wind arrows
+    /// (WX12, epic #1185): active-route tangent at the matched progress, else the moving GPS
+    /// course, else `None` — the hourly rows then draw neutral arrows, never a fabricated
+    /// head/tail ([`wind_class`](crate::weather::wind_class)'s locked fallback).
+    pub travel_deg: Option<f32>,
 }
 
 impl Render<'_> {

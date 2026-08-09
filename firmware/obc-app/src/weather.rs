@@ -8,15 +8,22 @@
 //! dry claim, incomplete two-hour coverage is **WEATHER UPDATE NEEDED**, and a corridor with no
 //! precipitation product at all is the explicit hourly-only state — never a fake map, never dry.
 //!
-//! The *ride decision* proper (route-projected sampling, alert generation, dedup/cooldown) is
-//! WX12; [`rain_outlook`] is deliberately the seam it will replace — a pure function of sampled
-//! frame intensities at the rider's position. The freshness arithmetic mirrors
+//! The *ride decision* (WX12, #1197) keeps [`rain_outlook`] as the one derivation — what changed
+//! is **where each frame is sampled**: with an active route the host samples frame `k` at the
+//! rider's *projected* route position for `k`'s timestamp ([`WeatherSnapshot::sample_along`] —
+//! progress advanced by a bounded recent moving-speed estimate, [`RideProjection`]), inside a
+//! conservative one-cell corridor. So DRY FOR 2 HOURS claims dryness along the ride, not just at
+//! the parked rider, and RAIN IN N MIN times the first *encounter* with rain. The known, accepted
+//! approximation: the hourly section stays a point forecast for the request coordinate applied
+//! along the projection — deliberately not "fixed" with mass point sampling (banned; a future
+//! multi-point hourly section is an OBCW/provider change). The freshness arithmetic mirrors
 //! [`WeatherReader::current_frame`]'s fail-closed rule (per-frame cap = min inter-frame spacing,
 //! bounded by [`FRAME_CURRENT_CAP_S`]) and is pinned against it by test, so what the overlay may
 //! *render* and what a screen may *say* can never disagree.
 
 use obc_formats::io::ByteSource;
 use obc_formats::obcw::{HourlyRecord, HOURLY_COUNT, HOURLY_INTERVAL_SECONDS, INTENSITY_NODATA};
+use obc_route::RouteReader;
 use obc_weather::{Error as WeatherError, WeatherCache, WeatherReader, FRAME_CURRENT_CAP_S};
 
 /// Rain-frame samples the snapshot holds. OBCW's radar-de policy is nine 15-minute frames; a
@@ -31,17 +38,37 @@ pub const OUTLOOK_WINDOW_S: i64 = 2 * 3_600;
 pub const RAIN_MIN_INTENSITY: u8 = 1;
 
 /// Smallest band the outlook counts as storm-grade: band 9 starts the >= 10 mm/h range — the same
-/// boundary the epic locked for the heavy-rain alert. Provisional here in the sense that WX12 owns
-/// the final decision thresholds; the constant lives in one place for that round.
+/// boundary the epic locked for the heavy-rain alert (the [`weather_alerts`](crate::weather_alerts)
+/// threshold table re-exports it so the card and the alert can never disagree on "storm").
 pub const STORM_MIN_INTENSITY: u8 = 9;
 
-/// One rain frame's timestamp plus the nearest-cell intensity sampled at the rider's position
-/// ([`INTENSITY_NODATA`] when the position lies outside the grid or the tile read failed — missing
-/// data stays missing, it never reads as dry).
+/// The touring fallback speed the projection uses while the rider is stopped (or before any
+/// moving sample exists): 18 km/h = 500 cm/s — a plain loaded-touring cruising pace. Chosen so a
+/// rider checking the sky at a rest stop still gets the ride-ahead answer, not the parked one;
+/// the exact figure is a tuning constant, not a law.
+pub const TOURING_FALLBACK_CMS: u32 = 500;
+
+/// Cap on any single speed sample feeding the projection: 15 m/s (54 km/h). Sustained faster
+/// riding doesn't happen on a 2 h touring horizon, and pathological GPS speeds (multipath jumps,
+/// teleports) must not fling the projected position tens of kilometres ahead.
+pub const SPEED_CAP_CMS: u32 = 1_500;
+
+/// Moving threshold for a speed sample (1 m/s) — mirrors the GPS-course trust rule: below it the
+/// receiver's speed is noise, not riding.
+pub const MOVING_MIN_CMS: u32 = 100;
+
+/// One rain frame's timestamp plus the nearest-cell intensity sampled at the rider's position for
+/// that frame's instant — the *current* position, or the route-projected one when the host passed
+/// a [`RideProjection`] ([`INTENSITY_NODATA`] when the position lies outside the grid or the tile
+/// read failed — missing data stays missing, it never reads as dry). `lat`/`lon` record the µdeg
+/// position the sample was taken at (the alert engine's spatial anchor); for a `None` position
+/// they are `(0, 0)` and the intensity is the no-data sentinel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameSample {
     pub valid_at: i64,
     pub intensity: u8,
+    pub lat: i32,
+    pub lon: i32,
 }
 
 /// The compact resident snapshot of the active weather bundle: the 24 hourly records verbatim,
@@ -65,9 +92,12 @@ pub struct WeatherSnapshot {
     /// The `(lat, lon)` microdegree position the frame intensities were sampled at, or `None`
     /// when no position was available (every sample is then no-data).
     pub sampled_at: Option<(i32, i32)>,
-    /// The sampled position lies inside the rain grid's bbox. `false` means the rain product
-    /// does not cover the rider — the explicit hourly-only state.
+    /// Some sampled (current or projected) position lies inside the rain grid's bbox. `false`
+    /// means the rain product covers no part of the sampled ride — the explicit hourly-only state.
     pub pos_in_grid: bool,
+    /// The frame samples were route-projected (a [`RideProjection`] was supplied) — diagnostics
+    /// and tests only; the derivation itself is projection-agnostic.
+    pub projected: bool,
     /// The bundle carried more frames than [`SNAPSHOT_MAX_FRAMES`]; coverage past the last kept
     /// frame is unknown and the outlook refuses the dry claim there.
     pub frames_truncated: bool,
@@ -79,14 +109,51 @@ pub struct WeatherSnapshot {
     pub rain_grid: Option<obc_render::RainGrid>,
 }
 
+/// The host-supplied ride projection ([`WeatherSnapshot::sample_along`]): where the rider is on
+/// the active route right now and how fast they've recently been moving. Frame `k`'s sample
+/// position becomes the route point at `progress_m + speed_cms · (valid_at − now)`, clamped to
+/// the route end — the epic's locked projection approximation (no per-position forecasts are
+/// fetched; the *rain grid* is simply read where the ride will be).
+///
+/// `speed_cms` should be the bounded recent moving median ([`SpeedWindow`], capped at
+/// [`SPEED_CAP_CMS`]) with [`TOURING_FALLBACK_CMS`] while stopped — [`crate::App::ride_projection`]
+/// builds exactly that.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RideProjection {
+    /// Matched along-route progress (m) at `now`.
+    pub progress_m: u32,
+    /// The projection speed (cm/s) — recent moving median, capped, touring fallback when stopped.
+    pub speed_cms: u32,
+    /// The UTC unix instant the projection is anchored at (the sampling instant). Hosts resample
+    /// at fix cadence, so the anchor never ages more than seconds.
+    pub now: i64,
+}
+
 impl WeatherSnapshot {
-    /// Sample the open bundle at `pos` (`(lat, lon)` microdegrees). Bounded I/O through the WX7
-    /// fixed cache: 24 hourly reads, one descriptor sweep, and at most one tile decode per kept
-    /// frame — run at refresh cadence by the host, never per rendered frame.
+    /// Sample the open bundle at the fixed position `pos` (`(lat, lon)` microdegrees) — the
+    /// routeless path; see [`sample_along`](Self::sample_along) for the route-projected one.
     pub fn sample<S: ByteSource + ?Sized>(
         reader: &WeatherReader<'_, S>,
         cache: &mut WeatherCache,
         pos: Option<(i32, i32)>,
+    ) -> Result<Self, WeatherError> {
+        Self::sample_along(reader, cache, pos, None)
+    }
+
+    /// Sample the open bundle for the ride: every kept frame is sampled at the rider's expected
+    /// position for that frame's timestamp — the current `pos` without a projection, else the
+    /// route point the [`RideProjection`] advances to — inside a conservative one-cell corridor
+    /// (projected sampling only): the projected position is uncertain by well over a 1 km cell,
+    /// so a wet cell immediately beside the line counts as wet (max intensity), while validity
+    /// is still governed by the centre cell — a corridor can raise a warning, never manufacture
+    /// coverage. Bounded I/O through the WX7 fixed cache: 24 hourly reads, one descriptor sweep,
+    /// and a handful of tile decodes per kept frame — run at refresh/fix cadence by the host,
+    /// never per rendered frame.
+    pub fn sample_along<S: ByteSource + ?Sized>(
+        reader: &WeatherReader<'_, S>,
+        cache: &mut WeatherCache,
+        pos: Option<(i32, i32)>,
+        projection: Option<(&RouteReader<'_>, RideProjection)>,
     ) -> Result<Self, WeatherError> {
         let header = reader.header();
         let mut hourly = [HourlyRecord {
@@ -123,19 +190,51 @@ impl WeatherSnapshot {
             if index >= kept {
                 continue;
             }
-            let intensity = match pos {
-                Some((lat, lon)) => match reader.intensity_at(index, lat, lon, cache) {
-                    Ok(Some(value)) => {
-                        pos_in_grid = true;
-                        value
+            // The position this frame is sampled at: the projected route point for the frame's
+            // timestamp when a projection was supplied (an undecodable route falls back to the
+            // current position — sampling somewhere real beats sampling nowhere), else `pos`.
+            let sample_pos = match (pos, projection) {
+                (Some(current), Some((route, proj))) => {
+                    Some(projected_position(route, proj, frame.valid_at).unwrap_or(current))
+                }
+                (current, _) => current,
+            };
+            let intensity = match sample_pos {
+                Some((lat, lon)) => {
+                    // µdeg-per-cell of *this* frame's grid, for the one-cell corridor offsets.
+                    let cell = corridor_cell_udeg(header, frame.width, frame.height);
+                    let center = match reader.intensity_at(index, lat, lon, cache) {
+                        Ok(Some(value)) => {
+                            pos_in_grid = true;
+                            value
+                        }
+                        // Outside the grid, or a failed read: missing stays missing.
+                        Ok(None) | Err(_) => INTENSITY_NODATA,
+                    };
+                    if projection.is_some() && center != INTENSITY_NODATA {
+                        // Conservative corridor: the four one-cell neighbours can only *raise*
+                        // the sample. Neighbours outside the grid / unreadable are ignored —
+                        // the corridor widens the warning, never the coverage claim.
+                        let mut max = center;
+                        for (dlat, dlon) in [(cell.0, 0), (-cell.0, 0), (0, cell.1), (0, -cell.1)] {
+                            if let Ok(Some(v)) =
+                                reader.intensity_at(index, lat.saturating_add(dlat), lon.saturating_add(dlon), cache)
+                            {
+                                if v != INTENSITY_NODATA {
+                                    max = max.max(v);
+                                }
+                            }
+                        }
+                        max
+                    } else {
+                        center
                     }
-                    // Outside the grid, or a failed read: missing stays missing.
-                    Ok(None) | Err(_) => INTENSITY_NODATA,
-                },
+                }
                 None => INTENSITY_NODATA,
             };
+            let (lat, lon) = sample_pos.unwrap_or((0, 0));
             // Capacity is `kept <= SNAPSHOT_MAX_FRAMES` by construction.
-            let _ = frames.push(FrameSample { valid_at: frame.valid_at, intensity });
+            let _ = frames.push(FrameSample { valid_at: frame.valid_at, intensity, lat, lon });
         }
 
         let rain_grid = (frame_count > 0).then_some(obc_render::RainGrid {
@@ -155,6 +254,7 @@ impl WeatherSnapshot {
             frame_cap_s,
             sampled_at: pos,
             pos_in_grid,
+            projected: pos.is_some() && projection.is_some(),
             frames_truncated: frame_count > SNAPSHOT_MAX_FRAMES,
             rain_grid,
         })
@@ -195,8 +295,9 @@ impl WeatherSnapshot {
     }
 
     /// The end of frame `index`'s honest coverage window: its successor's start, bounded by
-    /// `valid_at + cap`, bounded by the bundle's `valid_until`.
-    fn window_end(&self, index: usize) -> i64 {
+    /// `valid_at + cap`, bounded by the bundle's `valid_until`. `pub(crate)` for the alert
+    /// engine, which must judge frame currency by the exact same arithmetic.
+    pub(crate) fn window_end(&self, index: usize) -> i64 {
         let frame = &self.frames[index];
         let capped = frame.valid_at.saturating_add(self.frame_cap_s);
         let end = match self.frames.get(index + 1) {
@@ -355,11 +456,10 @@ pub enum WindClass {
 /// Classify the wind route-relatively, or `None` when there is no trustworthy travel direction —
 /// the arrows then render in neutral ink, never a false head/tail claim (the locked fallback).
 ///
-/// **This is the WX12 seam**: computing `travel_deg` (active-route tangent at the expected
-/// position, else trustworthy GPS course) is WX12's; until it lands every caller passes `None`.
-/// The classification itself is fixed here so the coloring can't drift when WX12 arrives:
-/// the wind's *to*-direction within 60° of travel is a tailwind, within 60° of dead-opposite a
-/// headwind, everything between a crosswind.
+/// `travel_deg` is the WX12 chain's output (active-route tangent at the matched position, else
+/// the moving GPS course — [`crate::App::travel_deg`], threaded to the rows as
+/// `Render::travel_deg`). The classification: the wind's *to*-direction within 60° of travel is
+/// a tailwind, within 60° of dead-opposite a headwind, everything between a crosswind.
 pub fn wind_class(wind_from_deg: u16, travel_deg: Option<f32>) -> Option<WindClass> {
     let travel = travel_deg?;
     let wind_to = (wind_from_deg as f32 + 180.0) % 360.0;
@@ -383,6 +483,120 @@ pub fn wind_class(wind_from_deg: u16, travel_deg: Option<f32>) -> Option<WindCla
 /// rows' `SW`-style labels.
 pub fn wind_octant(wind_from_deg: u16) -> usize {
     (((wind_from_deg as u32 + 22) / 45) % 8) as usize
+}
+
+/// One grid cell of the frame's raster in microdegrees `(dlat, dlon)` — the corridor offset.
+/// Never zero (a degenerate header would otherwise collapse the corridor onto the centre cell,
+/// which is harmless but pointless).
+fn corridor_cell_udeg(header: obc_formats::obcw::Header, width: u16, height: u16) -> (i32, i32) {
+    let dlat = (header.north_lat_udeg as i64 - header.south_lat_udeg as i64) / height.max(1) as i64;
+    let dlon = (header.east_lon_udeg as i64 - header.west_lon_udeg as i64) / width.max(1) as i64;
+    ((dlat.clamp(1, i32::MAX as i64)) as i32, (dlon.clamp(1, i32::MAX as i64)) as i32)
+}
+
+/// The expected rider position `(lat, lon)` µdeg at instant `t` under the projection: progress
+/// advanced by `speed · Δt` (frames at or before the anchor sample at the current progress — we
+/// don't reconstruct the past), clamped to the route end by `position_at` itself (the rider
+/// arriving stays at the destination — the conservative read for a finished ride). `None` when
+/// the route geometry doesn't decode (flaky SD); the caller falls back to the current position.
+fn projected_position(route: &RouteReader<'_>, proj: RideProjection, t: i64) -> Option<(i32, i32)> {
+    let dt_s = t.saturating_sub(proj.now).max(0) as u64;
+    let ahead_m = (proj.speed_cms as u64 * dt_s / 100).min(u32::MAX as u64) as u32;
+    let position = route.position_at(proj.progress_m.saturating_add(ahead_m))?;
+    Some((position.lat, position.lon))
+}
+
+/// Great-circle-free flat bearing from `a` to `b` (`(lat, lon)` µdeg), degrees CW from north in
+/// `0..360` — the scale of a tangent step or a wind comparison, where the equirectangular
+/// approximation is exact enough by orders of magnitude. `None` for coincident points.
+pub fn bearing_deg(a: (i32, i32), b: (i32, i32)) -> Option<f32> {
+    let cl = obc_map_scene::cos_lat(a.0);
+    let dx = (b.1 - a.1) as f32 * cl;
+    let dy = (b.0 - a.0) as f32;
+    if dx == 0.0 && dy == 0.0 {
+        return None;
+    }
+    let deg = libm::atan2f(dx, dy).to_degrees();
+    Some(if deg < 0.0 { deg + 360.0 } else { deg })
+}
+
+/// Along-route step over which the travel tangent is measured. Short enough to follow bends,
+/// long enough that µdeg quantization can't swing the angle.
+pub const TANGENT_STEP_M: u32 = 30;
+
+/// The active route's travel direction (degrees CW from north) at `progress_m`: the forward
+/// tangent over a [`TANGENT_STEP_M`] step, stepped back at the route end so the last metres keep
+/// a direction. `None` when the route has no usable geometry — the caller then falls through the
+/// locked chain (GPS course while moving, else neutral).
+pub fn route_tangent_deg(route: &RouteReader<'_>, progress_m: u32) -> Option<f32> {
+    let total = route.total_distance_m;
+    if total < 2 {
+        return None;
+    }
+    let step = TANGENT_STEP_M.min(total);
+    let (from_m, to_m) =
+        if progress_m.saturating_add(step) <= total { (progress_m, progress_m + step) } else { (total - step, total) };
+    let from = route.position_at(from_m)?;
+    let to = route.position_at(to_m)?;
+    bearing_deg((from.lat, from.lon), (to.lat, to.lon))
+}
+
+/// The bounded recent moving-speed window feeding [`RideProjection::speed_cms`]: the last
+/// [`SPEED_SAMPLES`](SpeedWindow::SPEED_SAMPLES) *moving* fixes' speeds (cm/s, each capped at
+/// [`SPEED_CAP_CMS`]), read as their median — robust to single-fix GPS glitches in both
+/// directions, and "recent" at fix cadence (≈ the last minute at 1 Hz). Stopped fixes are not
+/// pushed: a café stop doesn't erode the estimate, per the locked touring-fallback rule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpeedWindow {
+    samples: [u16; Self::SPEED_SAMPLES],
+    len: u8,
+    next: u8,
+}
+
+impl Default for SpeedWindow {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SpeedWindow {
+    /// Ring capacity — 64 moving fixes ≈ the last minute of riding at 1 Hz.
+    pub const SPEED_SAMPLES: usize = 64;
+
+    pub const fn new() -> Self {
+        SpeedWindow { samples: [0; Self::SPEED_SAMPLES], len: 0, next: 0 }
+    }
+
+    /// Forget every sample (session restart).
+    pub fn clear(&mut self) {
+        self.len = 0;
+        self.next = 0;
+    }
+
+    /// Record one fix's speed (m/s). Ignored below [`MOVING_MIN_CMS`] (stopped is not a pace);
+    /// capped at [`SPEED_CAP_CMS`] (a teleport is not a pace either).
+    pub fn push_mps(&mut self, speed_mps: f32) {
+        let cms = (speed_mps.max(0.0) * 100.0).min(SPEED_CAP_CMS as f32) as u32;
+        if cms < MOVING_MIN_CMS {
+            return;
+        }
+        self.samples[self.next as usize] = cms as u16;
+        self.next = (self.next + 1) % Self::SPEED_SAMPLES as u8;
+        self.len = (self.len + 1).min(Self::SPEED_SAMPLES as u8);
+    }
+
+    /// The median of the recorded moving speeds (cm/s), or `None` before any moving fix — the
+    /// caller then uses [`TOURING_FALLBACK_CMS`].
+    pub fn median_cms(&self) -> Option<u32> {
+        if self.len == 0 {
+            return None;
+        }
+        let n = self.len as usize;
+        let mut sorted = [0u16; Self::SPEED_SAMPLES];
+        sorted[..n].copy_from_slice(&self.samples[..n]);
+        sorted[..n].sort_unstable();
+        Some(sorted[n / 2] as u32)
+    }
 }
 
 /// Local `(hour, minute)` of a UTC unix instant under the device's UTC offset — the weather
@@ -467,9 +681,10 @@ mod tests {
     /// Synthetic snapshot helper: nine 15-minute frames from `t0` with the given intensities.
     fn synthetic(intensities: &[u8], t0: i64) -> WeatherSnapshot {
         let (snap, _) = snapshot_at_center();
+        let (lat, lon) = snap.sampled_at.unwrap();
         let mut frames = heapless::Vec::new();
         for (index, &intensity) in intensities.iter().enumerate() {
-            frames.push(FrameSample { valid_at: t0 + index as i64 * 900, intensity }).unwrap();
+            frames.push(FrameSample { valid_at: t0 + index as i64 * 900, intensity, lat, lon }).unwrap();
         }
         WeatherSnapshot {
             valid_from: t0 - 3_600,
@@ -525,10 +740,11 @@ mod tests {
         assert_eq!(rain_outlook(&wet_then_gap, t0), RainOutlook::RainIn { minutes: 15 });
         // A mid-table cadence gap: frames at 0/900/…, then a hole. Build directly.
         let mut gap = synthetic(&[0, 0, 0, 0, 0, 0, 0, 0, 0], t0);
+        let (lat, lon) = gap.sampled_at.unwrap();
         gap.frames.truncate(0);
         for (index, at) in [0i64, 900, 1_800, 5_400, 6_300, 7_200].iter().enumerate() {
             let _ = index;
-            gap.frames.push(FrameSample { valid_at: t0 + at, intensity: INTENSITY_DRY }).unwrap();
+            gap.frames.push(FrameSample { valid_at: t0 + at, intensity: INTENSITY_DRY, lat, lon }).unwrap();
         }
         gap.frame_cap_s = 900;
         assert_eq!(rain_outlook(&gap, t0), RainOutlook::UpdateNeeded, "a bake gap goes dark, not dry");
@@ -591,6 +807,45 @@ mod tests {
         assert_eq!(wind_octant(23), 1); // NE
         assert_eq!(wind_octant(225), 5); // SW
         assert_eq!(wind_octant(359), 0); // wraps back to N
+    }
+
+    /// The projection's pace window: stopped fixes never erode the estimate, a GPS teleport is
+    /// capped (and out-voted by the median anyway), and an empty window reads `None` so callers
+    /// apply the touring fallback.
+    #[test]
+    fn speed_window_median_ignores_stops_and_caps_teleports() {
+        let mut w = SpeedWindow::new();
+        assert_eq!(w.median_cms(), None, "no moving sample yet → fallback territory");
+        w.push_mps(0.0); // parked
+        w.push_mps(0.4); // pushing the bike — below the moving threshold
+        assert_eq!(w.median_cms(), None, "stopped fixes are not a pace");
+        for mps in [3.0, 5.0, 4.0] {
+            w.push_mps(mps);
+        }
+        assert_eq!(w.median_cms(), Some(400));
+        w.push_mps(80.0); // multipath teleport
+        let capped = w.median_cms().unwrap();
+        assert!(capped <= SPEED_CAP_CMS, "no single sample exceeds the cap");
+        // Even-length windows take the upper middle: {300,400,500,1500(capped)} → 500 — one
+        // glitch shifts the estimate a rank, never to the glitch.
+        assert_eq!(capped, 500, "…and the median barely notices one glitch");
+        // Saturate the ring: the estimate follows the recent pace, not ancient history.
+        for _ in 0..SpeedWindow::SPEED_SAMPLES {
+            w.push_mps(6.0);
+        }
+        assert_eq!(w.median_cms(), Some(600));
+    }
+
+    /// The tangent/bearing arithmetic: cardinal directions land on their degrees and coincident
+    /// points refuse an answer.
+    #[test]
+    fn bearing_deg_cardinals_and_degenerate() {
+        let a = (47_000_000, 8_000_000);
+        assert_eq!(bearing_deg(a, (47_010_000, 8_000_000)).map(|d| d.round()), Some(0.0), "north");
+        assert_eq!(bearing_deg(a, (47_000_000, 8_010_000)).map(|d| d.round()), Some(90.0), "east");
+        assert_eq!(bearing_deg(a, (46_990_000, 8_000_000)).map(|d| d.round()), Some(180.0), "south");
+        assert_eq!(bearing_deg(a, (47_000_000, 7_990_000)).map(|d| d.round()), Some(270.0), "west");
+        assert_eq!(bearing_deg(a, a), None, "coincident points have no bearing");
     }
 
     /// Local time folding: offsets shift across midnight correctly.

@@ -209,7 +209,26 @@ pub(crate) struct RideEngine {
     /// so without this edge a live tile only repainted when something *else* happened to dirty the
     /// frame — frozen solid on an indoor bench with no fix (epic #744, SR3).
     pub(crate) prev_live_sensors: (Option<u16>, Option<u16>, Option<u8>),
+    /// The rider's **travel direction** (degrees CW from north) for the route-relative wind
+    /// arrows (WX12, #1197), per the locked chain: the active-route tangent at the matched
+    /// progress while on-route (held while stopped — the wind question at a rest stop is about
+    /// the ride ahead), else the GPS course while actually moving, else `None` — the arrows then
+    /// render neutral, never a fabricated head/tail. Updated per fresh fix in `App::tick`;
+    /// cleared with the rest of the route-derived state.
+    pub(crate) travel_deg: Option<f32>,
+    /// The progress the route tangent in [`travel_deg`](RideEngine::travel_deg) was computed at —
+    /// the recompute hysteresis key, so the two `position_at` chunk decodes run only when the
+    /// rider has actually moved along the route (≥ [`TANGENT_MOVE_M`]), not per fix.
+    pub(crate) travel_at_m: Option<u32>,
+    /// The bounded recent moving-speed window feeding the weather ride projection (WX12) — see
+    /// [`SpeedWindow`](crate::weather::SpeedWindow). Cleared with the session.
+    pub(crate) speed_win: crate::weather::SpeedWindow,
 }
+
+/// Progress the rider must cover before the route tangent is re-derived (two chunk decodes).
+/// Small enough to track a hairpin within a couple of fixes, large enough that a stationary
+/// rider's GPS jitter never re-reads the card.
+pub(crate) const TANGENT_MOVE_M: u32 = 5;
 
 impl RideEngine {
     /// The boot state: no route caches, no session, nothing sensed yet.
@@ -234,6 +253,9 @@ impl RideEngine {
             pending_terrain: None,
             prev_no_fix: true,
             prev_live_sensors: (None, None, None),
+            travel_deg: None,
+            travel_at_m: None,
+            speed_win: crate::weather::SpeedWindow::new(),
         }
     }
 
@@ -271,6 +293,9 @@ impl RideEngine {
             addr_of_mut!((*slot).pending_terrain).write(None);
             addr_of_mut!((*slot).prev_no_fix).write(true);
             addr_of_mut!((*slot).prev_live_sensors).write((None, None, None));
+            addr_of_mut!((*slot).travel_deg).write(None);
+            addr_of_mut!((*slot).travel_at_m).write(None);
+            addr_of_mut!((*slot).speed_win).write(crate::weather::SpeedWindow::new());
             // Exhaustiveness guard: a field added to `RideEngine` fails to compile here until its
             // `addr_of_mut!(...).write(...)` is added above (see `App::init_idle`).
             let RideEngine {
@@ -293,6 +318,9 @@ impl RideEngine {
                 pending_terrain: _,
                 prev_no_fix: _,
                 prev_live_sensors: _,
+                travel_deg: _,
+                travel_at_m: _,
+                speed_win: _,
             } = &*slot;
         }
     }
@@ -319,6 +347,10 @@ impl RideEngine {
             // it must survive into. Stale seams die on the request's own route-key check.
             self.route_match.reset();
             self.matched_route = activity.active_route;
+            // The old route's tangent means nothing on the new line (WX12) — neutral until the
+            // next fix matches.
+            self.travel_deg = None;
+            self.travel_at_m = None;
             dirty = true; // route load / swap repaints the route line + recenters
         }
         if activity.session != self.ride_session {
@@ -327,6 +359,8 @@ impl RideEngine {
             self.route_match.reset();
             activity.reset_ride();
             self.breadcrumb.clear();
+            // A new session is a new pace too (WX12's projection window restarts with the ride).
+            self.speed_win.clear();
             self.ride_session = activity.session;
             dirty = true; // the breadcrumb cleared — the map's travelled trail changed
         }
@@ -563,6 +597,50 @@ impl RideEngine {
         activity.off_route = false;
         activity.dist_to_route_m = 0;
         activity.clear_seam();
+        // The route tangent was measured on the old geometry — neutral until the next fix
+        // re-derives it (WX12). The speed window survives: the rider's pace is route-agnostic.
+        self.travel_deg = None;
+        self.travel_at_m = None;
+    }
+
+    /// Update the WX12 travel direction from this tick's fresh fix (see
+    /// [`travel_deg`](RideEngine::travel_deg) for the locked chain). Runs after the matcher, so
+    /// `activity` carries this fix's match. Route-tangent recomputes only when the rider moved
+    /// ≥ [`TANGENT_MOVE_M`] along the route (two `position_at` chunk decodes, fix-cadence-bounded).
+    pub(crate) fn update_travel(&mut self, activity: &Activity, fix: obc_ports::Fix, route: Option<&RouteReader>) {
+        let on_route = route.is_some() && activity.active_route.is_some() && self.started() && !activity.off_route;
+        if on_route {
+            let route = route.unwrap();
+            let moved = self.travel_at_m.is_none_or(|at| activity.progress_m.abs_diff(at) >= TANGENT_MOVE_M);
+            if moved || self.travel_deg.is_none() {
+                if let Some(deg) = crate::weather::route_tangent_deg(route, activity.progress_m) {
+                    self.travel_deg = Some(deg);
+                    self.travel_at_m = Some(activity.progress_m);
+                    return;
+                }
+                // Undecodable geometry: fall through to the GPS-course chain below.
+            } else {
+                return; // held tangent (stopped, or sub-hysteresis creep)
+            }
+        }
+        self.travel_at_m = None;
+        // Off-route / no route / no tangent: the GPS course while actually moving; else neutral.
+        let moving = fix.speed_mps.is_some_and(|s| s >= 1.0);
+        self.travel_deg = match (moving, fix.course) {
+            (true, Some(course)) => {
+                let mut deg = course % 360.0;
+                if deg < 0.0 {
+                    deg += 360.0;
+                }
+                Some(deg)
+            }
+            _ => None,
+        };
+    }
+
+    /// Whether the route matcher has locked onto the active route at least once this load.
+    pub(crate) fn started(&self) -> bool {
+        self.route_match.started()
     }
 
     /// Re-point every route-keyed cache after a catalog replacement (#450): each build key follows
