@@ -6,170 +6,262 @@ if [[ $# -ne 1 ]]; then
   exit 64
 fi
 
+for wx_command in cargo curl awk date sed seq sort tail tee tr wc; do
+  if ! command -v "$wx_command" >/dev/null 2>&1; then
+    echo "$wx_command is required" >&2
+    exit 69
+  fi
+done
+
 wx_output=$1
-mkdir -p "$wx_output/dwd" "$wx_output/met" "$wx_output/gfs"
 wx_script_dir=$(cd "$(dirname "$0")" && pwd)
 wx_repository=$(cd "$wx_script_dir/../.." && pwd)
+wx_tool="$wx_repository/target/release/obc-wx-source-spike"
+mkdir -p "$wx_output"/{dwd,met,mrms,icon-eu,hrrr,gfs}
 
-if ! command -v uv >/dev/null 2>&1; then
-  echo "uv is required to run the pinned HDF5/GeoTIFF validator" >&2
-  exit 69
-fi
+utc_day() {
+  local days_back=$1
+  if [[ "$days_back" -eq 0 ]]; then
+    date -u +%Y%m%d
+  elif date -u -v-"${days_back}"d +%Y%m%d >/dev/null 2>&1; then
+    date -u -v-"${days_back}"d +%Y%m%d
+  else
+    date -u -d "$days_back days ago" +%Y%m%d
+  fi
+}
 
-echo "Fetching DWD coverage discovery documents"
-dwd_wcs='https://maps.dwd.de/geoserver/dwd/wcs'
-curl -fsS --compressed --get "$dwd_wcs" \
-  --data 'service=WCS' --data 'version=2.0.1' \
-  --data 'request=GetCapabilities' \
-  -D "$wx_output/dwd/capabilities.headers" \
-  -o "$wx_output/dwd/capabilities.xml"
-curl -fsS --compressed --get "$dwd_wcs" \
-  --data 'service=WCS' --data 'version=2.0.1' \
-  --data 'request=DescribeCoverage' \
-  --data 'coverageId=dwd__Niederschlagsradar' \
-  -D "$wx_output/dwd/describe.headers" \
-  -o "$wx_output/dwd/describe.xml"
+object_length() {
+  local url=$1
+  local length
+  length=$(curl -fsSI "$url" | tr -d '\r' | awk 'tolower($1) == "content-length:" { print $2 }' | tail -n 1)
+  if [[ ! "$length" =~ ^[0-9]+$ ]] || [[ "$length" -eq 0 ]]; then
+    echo "No valid Content-Length for $url" >&2
+    return 1
+  fi
+  printf '%s\n' "$length"
+}
 
-echo "Fetching the maintained Germany-wide RV bundle for numeric cross-checks"
-curl -fsS --compressed \
-  'https://opendata.dwd.de/weather/radar/composite/rv/composite_rv_LATEST.tar' \
-  -D "$wx_output/dwd/raw-rv.headers" \
+capture_range() {
+  local object_url=$1
+  local range=$2
+  local expected_bytes=$3
+  local destination=$4
+  curl -fsS --range "$range" "$object_url" -o "$destination"
+  local actual_bytes
+  actual_bytes=$(wc -c < "$destination" | tr -d ' ')
+  if [[ "$actual_bytes" -ne "$expected_bytes" ]]; then
+    echo "$destination has $actual_bytes bytes; expected $expected_bytes from range $range" >&2
+    return 1
+  fi
+}
+
+echo "Building the Rust-only source validator"
+(cd "$wx_repository" && cargo build --release -p obc-wx-source-spike)
+
+echo "Fetching and validating the complete DWD RV raw tar"
+dwd_url='https://opendata.dwd.de/weather/radar/composite/rv/composite_rv_LATEST.tar'
+curl -fsS "$dwd_url" \
+  -D "$wx_output/dwd/response.headers" \
   -o "$wx_output/dwd/composite_rv_LATEST.tar" \
-  -w 'raw-rv http=%{http_code} bytes=%{size_download} ttfb=%{time_starttransfer} total=%{time_total}\n' \
+  -w 'http=%{http_code} bytes=%{size_download} ttfb=%{time_starttransfer} total=%{time_total}\n' \
   | tee "$wx_output/dwd/metrics.txt"
+"$wx_tool" dwd-rv-tar "$wx_output/dwd/composite_rv_LATEST.tar" \
+  | tee "$wx_output/dwd/validation.txt"
 
-python3 - "$wx_output/dwd/composite_rv_LATEST.tar" \
-  "$wx_output/dwd/selected-reference.txt" \
-  "$wx_output/dwd/valid-times.txt" <<'PY'
-from datetime import datetime, timedelta
-import re
-import sys
-import tarfile
-
-with tarfile.open(sys.argv[1]) as archive:
-    members = archive.getnames()
-match = re.fullmatch(r"composite_rv_(\d{8})_(\d{4})_000-hd5", members[0])
-if match is None:
-    raise SystemExit("DWD RV archive does not start with a lead-000 HDF5 member")
-run = datetime.strptime("".join(match.groups()), "%Y%m%d%H%M")
-reference = run.isoformat(timespec="milliseconds") + "Z"
-with open(sys.argv[2], "w", encoding="utf-8") as output:
-    output.write(reference + "\n")
-with open(sys.argv[3], "w", encoding="utf-8") as output:
-    for minutes in range(0, 121, 15):
-        output.write(
-            (run + timedelta(minutes=minutes)).isoformat(timespec="milliseconds")
-            + "Z\n"
-        )
-PY
-
-dwd_reference=$(sed -n '1p' "$wx_output/dwd/selected-reference.txt")
-while IFS= read -r dwd_valid; do
-  dwd_token=$(printf '%s' "$dwd_valid" | tr -cd '0-9')
-  curl -fsS --compressed --get "$dwd_wcs" \
-    --data 'service=WCS' --data 'version=2.0.1' \
-    --data 'request=GetCoverage' \
-    --data 'coverageId=dwd__Niederschlagsradar' \
-    --data-urlencode 'subset=Lat(52.5016,53.3656)' \
-    --data-urlencode 'subset=Long(6.8560,8.2932)' \
-    --data-urlencode "subset=time(\"$dwd_valid\")" \
-    --data-urlencode "subset=REFERENCE_TIME(\"$dwd_reference\")" \
-    --data-urlencode 'format=image/tiff;application=geotiff' \
-    -D "$wx_output/dwd/$dwd_token.headers" \
-    -o "$wx_output/dwd/$dwd_token.tif" \
-    -w "$dwd_valid http=%{http_code} bytes=%{size_download} ttfb=%{time_starttransfer} total=%{time_total}\n" \
-    | tee -a "$wx_output/dwd/metrics.txt"
-done < "$wx_output/dwd/valid-times.txt"
-
-echo "Fetching one-off MET evidence; this does not authorize a direct native production client"
+echo "Fetching and validating the phone-only MET schema at Nordic and non-Nordic points"
 met_user_agent='OpenBikeComputer/WX1 https://github.com/timohueser/OpenBikeComputer'
 met_url='https://api.met.no/weatherapi/locationforecast/2.0/complete'
-curl -fsS --compressed --get "$met_url" \
-  -H "User-Agent: $met_user_agent" \
-  --data 'lat=59.9139' --data 'lon=10.7522' --data 'altitude=23' \
-  -D "$wx_output/met/oslo.headers" \
-  -o "$wx_output/met/oslo.json" \
-  -w 'met-oslo http=%{http_code} wire_bytes=%{size_download} ttfb=%{time_starttransfer} total=%{time_total}\n' \
-  | tee "$wx_output/met/metrics.txt"
+for met_case in oslo manila; do
+  if [[ "$met_case" == 'oslo' ]]; then
+    met_lat='59.9139'; met_lon='10.7522'; met_altitude='23'
+  else
+    met_lat='14.5995'; met_lon='120.9842'; met_altitude='16'
+  fi
+  curl -fsS --compressed --get "$met_url" \
+    -H "User-Agent: $met_user_agent" \
+    --data "lat=$met_lat" --data "lon=$met_lon" --data "altitude=$met_altitude" \
+    -D "$wx_output/met/$met_case.headers" \
+    -o "$wx_output/met/$met_case.json" \
+    -w "$met_case http=%{http_code} wire_bytes=%{size_download} ttfb=%{time_starttransfer} total=%{time_total}\n" \
+    | tee -a "$wx_output/met/metrics.txt"
+  "$wx_tool" met-response "$wx_output/met/$met_case.json" \
+    | tee "$wx_output/met/$met_case.validation.txt"
+done
 
-curl -fsS --compressed --get "$met_url" \
-  -H "User-Agent: $met_user_agent" \
-  --data 'lat=14.5995' --data 'lon=120.9842' --data 'altitude=16' \
-  -D "$wx_output/met/manila.headers" \
-  -o "$wx_output/met/manila.json" \
-  -w 'met-manila http=%{http_code} wire_bytes=%{size_download} ttfb=%{time_starttransfer} total=%{time_total}\n' \
-  | tee -a "$wx_output/met/metrics.txt"
+echo "Discovering and validating the newest NOAA MRMS CONUS observation"
+mrms_key=''
+for wx_days_back in 0 1; do
+  wx_day=$(utc_day "$wx_days_back")
+  mrms_listing="https://noaa-mrms-pds.s3.amazonaws.com/?list-type=2&prefix=CONUS/PrecipRate_00.00/$wx_day/"
+  mrms_key=$(curl -fsS "$mrms_listing" \
+    | tr '<' '\n' \
+    | sed -n 's#^Key>\([^<]*\.grib2\.gz\).*#\1#p' \
+    | sort \
+    | tail -n 1)
+  [[ -n "$mrms_key" ]] && break
+done
+if [[ -z "$mrms_key" ]]; then
+  echo "No MRMS PrecipRate object was discoverable for today or yesterday" >&2
+  exit 69
+fi
+printf '%s\n' "$mrms_key" > "$wx_output/mrms/selected-object.txt"
+mrms_url="https://noaa-mrms-pds.s3.amazonaws.com/$mrms_key"
+curl -fsS "$mrms_url" \
+  -D "$wx_output/mrms/response.headers" \
+  -o "$wx_output/mrms/precip-rate.grib2.gz" \
+  -w 'http=%{http_code} bytes=%{size_download} ttfb=%{time_starttransfer} total=%{time_total}\n' \
+  | tee "$wx_output/mrms/metrics.txt"
+"$wx_tool" mrms "$wx_output/mrms/precip-rate.grib2.gz" \
+  | tee "$wx_output/mrms/validation.txt"
 
-met_last_modified=$(awk '
-  BEGIN { IGNORECASE=1 }
-  /^last-modified:/ {
-    sub(/^last-modified:[[:space:]]*/, "")
-    sub(/\r$/, "")
-    print
-  }
- ' "$wx_output/met/oslo.headers")
-curl -sS --compressed --get "$met_url" \
-  -H "User-Agent: $met_user_agent" \
-  -H "If-Modified-Since: $met_last_modified" \
-  --data 'lat=59.9139' --data 'lon=10.7522' --data 'altitude=23' \
-  -D "$wx_output/met/conditional.headers" \
-  -o "$wx_output/met/conditional.body" \
-  -w 'met-conditional http=%{http_code} wire_bytes=%{size_download} total=%{time_total}\n' \
-  | tee -a "$wx_output/met/metrics.txt"
+echo "Selecting and validating the newest complete ICON-EU f000..f011 set"
+icon_date=''
+icon_cycle=''
+for wx_days_back in 0 1; do
+  wx_day=$(utc_day "$wx_days_back")
+  for wx_cycle_number in 18 12 6 0; do
+    printf -v wx_cycle '%02d' "$wx_cycle_number"
+    icon_probe="https://opendata.dwd.de/weather/nwp/icon-eu/grib/$wx_cycle/tot_prec/icon-eu_europe_regular-lat-lon_single-level_${wx_day}${wx_cycle}_011_TOT_PREC.grib2.bz2"
+    if curl -fIs "$icon_probe" >/dev/null; then
+      icon_date=$wx_day
+      icon_cycle=$wx_cycle
+      break 2
+    fi
+  done
+done
+if [[ -z "$icon_date" ]]; then
+  echo "No complete ICON-EU f011 run was available" >&2
+  exit 69
+fi
+printf '%s %s\n' "$icon_date" "$icon_cycle" > "$wx_output/icon-eu/selected-cycle.txt"
+icon_previous=''
+for icon_hour in $(seq 0 11); do
+  printf -v icon_fh '%03d' "$icon_hour"
+  icon_file="$wx_output/icon-eu/f$icon_fh.grib2.bz2"
+  icon_url="https://opendata.dwd.de/weather/nwp/icon-eu/grib/$icon_cycle/tot_prec/icon-eu_europe_regular-lat-lon_single-level_${icon_date}${icon_cycle}_${icon_fh}_TOT_PREC.grib2.bz2"
+  curl -fsS "$icon_url" -o "$icon_file"
+  "$wx_tool" icon-eu "$icon_file" > "$wx_output/icon-eu/f$icon_fh.validation.txt"
+  if [[ -n "$icon_previous" ]]; then
+    "$wx_tool" icon-eu-delta "$icon_previous" "$icon_file" \
+      > "$wx_output/icon-eu/f$icon_fh.delta-validation.txt"
+  fi
+  icon_previous=$icon_file
+done
 
-echo "Selecting the latest complete GFS cycle (f024 must exist)"
-python3 - <<'PY' > "$wx_output/gfs/candidates.txt"
-from datetime import datetime, timedelta, timezone
+echo "Selecting and validating the newest complete HRRR CONUS +2-hour run"
+hrrr_date=''
+hrrr_cycle=''
+for wx_days_back in 0 1; do
+  wx_day=$(utc_day "$wx_days_back")
+  for wx_cycle_number in $(seq 23 -1 0); do
+    printf -v wx_cycle '%02d' "$wx_cycle_number"
+    hrrr_probe="https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.$wx_day/conus/hrrr.t${wx_cycle}z.wrfsubhf02.grib2.idx"
+    if curl -fIs "$hrrr_probe" >/dev/null; then
+      hrrr_date=$wx_day
+      hrrr_cycle=$wx_cycle
+      break 2
+    fi
+  done
+done
+if [[ -z "$hrrr_date" ]]; then
+  echo "No complete HRRR f02 run was available" >&2
+  exit 69
+fi
+printf '%s %s\n' "$hrrr_date" "$hrrr_cycle" > "$wx_output/hrrr/selected-cycle.txt"
+for hrrr_file_hour in 01 02; do
+  hrrr_base="https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.$hrrr_date/conus/hrrr.t${hrrr_cycle}z.wrfsubhf${hrrr_file_hour}.grib2"
+  curl -fsS "$hrrr_base.idx" -o "$wx_output/hrrr/f$hrrr_file_hour.idx"
+  hrrr_length=$(object_length "$hrrr_base")
+  if [[ "$hrrr_file_hour" == '01' ]]; then
+    hrrr_minutes='15 30 45 60'
+  else
+    hrrr_minutes='75 90 105 120'
+  fi
+  for hrrr_minute in $hrrr_minutes; do
+    read -r hrrr_range hrrr_bytes < <(
+      "$wx_tool" idx-range "$wx_output/hrrr/f$hrrr_file_hour.idx" \
+        ":PRATE:surface:$hrrr_minute min fcst:" "$hrrr_length"
+    )
+    hrrr_field="$wx_output/hrrr/prate-$hrrr_minute.grib2"
+    capture_range "$hrrr_base" "$hrrr_range" "$hrrr_bytes" "$hrrr_field"
+    "$wx_tool" hrrr-prate "$hrrr_field" \
+      > "$wx_output/hrrr/prate-$hrrr_minute.validation.txt"
+  done
+done
 
-now = datetime.now(timezone.utc)
-for days_back in range(0, 3):
-    day = (now - timedelta(days=days_back)).date()
-    for cycle in (18, 12, 6, 0):
-        candidate = datetime(day.year, day.month, day.day, cycle, tzinfo=timezone.utc)
-        if candidate <= now:
-            print(candidate.strftime("%Y%m%d %H"))
-PY
-
+echo "Selecting and validating the newest complete GFS worldwide 24-hour floor"
 gfs_date=''
 gfs_cycle=''
-while read -r candidate_date candidate_cycle; do
-  idx="https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod/gfs.$candidate_date/$candidate_cycle/atmos/gfs.t${candidate_cycle}z.pgrb2.0p25.f024.idx"
-  gfs_http=$(curl -sS -o /dev/null -w '%{http_code}' "$idx")
-  if [[ "$gfs_http" == '200' ]]; then
-    gfs_date=$candidate_date
-    gfs_cycle=$candidate_cycle
-    break
-  fi
-done < "$wx_output/gfs/candidates.txt"
+for wx_days_back in 0 1; do
+  wx_day=$(utc_day "$wx_days_back")
+  for wx_cycle_number in 18 12 6 0; do
+    printf -v wx_cycle '%02d' "$wx_cycle_number"
+    gfs_probe="https://noaa-gfs-bdp-pds.s3.amazonaws.com/gfs.$wx_day/$wx_cycle/atmos/gfs.t${wx_cycle}z.pgrb2.0p25.f024.idx"
+    if curl -fIs "$gfs_probe" >/dev/null; then
+      gfs_date=$wx_day
+      gfs_cycle=$wx_cycle
+      break 2
+    fi
+  done
+done
 if [[ -z "$gfs_date" ]]; then
-  echo "No complete GFS f024 cycle was available" >&2
+  echo "No complete GFS f024 run was available" >&2
   exit 69
 fi
 printf '%s %s\n' "$gfs_date" "$gfs_cycle" > "$wx_output/gfs/selected-cycle.txt"
-
+gfs_previous=''
+gfs_previous_messages=''
+gfs_previous_hour=''
 for gfs_hour in $(seq 1 24); do
-  gfs_fh=$(printf '%03d' "$gfs_hour")
-  curl -fsS --compressed --get \
-    'https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl' \
-    --data "file=gfs.t${gfs_cycle}z.pgrb2.0p25.f${gfs_fh}" \
-    --data 'lev_surface=on' --data 'var_APCP=on' --data 'subregion=' \
-    --data 'leftlon=120.53' --data 'rightlon=121.43' \
-    --data 'toplat=15.03' --data 'bottomlat=14.17' \
-    --data-urlencode "dir=/gfs.$gfs_date/$gfs_cycle/atmos" \
-    -D "$wx_output/gfs/f${gfs_fh}.headers" \
-    -o "$wx_output/gfs/f${gfs_fh}.grib2" \
-    -w "f${gfs_fh} http=%{http_code} bytes=%{size_download} ttfb=%{time_starttransfer} total=%{time_total}\n" \
-    | tee -a "$wx_output/gfs/metrics.txt"
+  printf -v gfs_fh '%03d' "$gfs_hour"
+  gfs_base="https://noaa-gfs-bdp-pds.s3.amazonaws.com/gfs.$gfs_date/$gfs_cycle/atmos/gfs.t${gfs_cycle}z.pgrb2.0p25.f$gfs_fh"
+  gfs_index="$wx_output/gfs/f$gfs_fh.idx"
+  gfs_field="$wx_output/gfs/apcp-f$gfs_fh.grib2"
+  curl -fsS "$gfs_base.idx" -o "$gfs_index"
+  gfs_length=$(object_length "$gfs_base")
+  if [[ "$gfs_hour" -eq 24 ]]; then
+    gfs_selector=':APCP:surface:0-1 day acc fcst:'
+  else
+    gfs_selector=":APCP:surface:0-$gfs_hour hour acc fcst:"
+  fi
+  gfs_matches=$(awk -v selector="$gfs_selector" 'index($0, selector) { count++ } END { print count + 0 }' "$gfs_index")
+  if [[ "$gfs_matches" -eq 1 ]]; then
+    read -r gfs_range gfs_bytes < <(
+      "$wx_tool" idx-range "$gfs_index" "$gfs_selector" "$gfs_length"
+    )
+  elif [[ "$gfs_matches" -eq 2 ]]; then
+    read -r gfs_range gfs_bytes < <(
+      "$wx_tool" idx-span "$gfs_index" "$gfs_selector" "$gfs_length" 2
+    )
+  else
+    echo "GFS f$gfs_fh cumulative selector matched $gfs_matches records" >&2
+    exit 65
+  fi
+  capture_range "$gfs_base" "$gfs_range" "$gfs_bytes" "$gfs_field"
+  "$wx_tool" gfs-apcp "$gfs_field" "$gfs_matches" \
+    > "$wx_output/gfs/f$gfs_fh.validation.txt"
+  if [[ "$gfs_hour" -eq 1 ]]; then
+    "$wx_tool" gfs-apcp-first "$gfs_field" "$gfs_matches" \
+      > "$wx_output/gfs/f$gfs_fh.delta-validation.txt"
+  else
+    "$wx_tool" gfs-apcp-step \
+      "$gfs_previous" "$gfs_previous_messages" "$gfs_previous_hour" \
+      "$gfs_field" "$gfs_matches" "$gfs_hour" \
+      > "$wx_output/gfs/f$gfs_fh.delta-validation.txt"
+  fi
+  gfs_previous=$gfs_field
+  gfs_previous_messages=$gfs_matches
+  gfs_previous_hour=$gfs_hour
 done
 
-echo "Validating MIME, grids, timestamps, provider fields, raw/WCS cells, and hashes"
-uv run --script "$wx_script_dir/validate_sources.py" "$wx_output"
+cat > "$wx_output/imerg-status.txt" <<'EOF'
+IMERG Early V07B: explicit v1 NO-GO. Unattended NASA PPS credentials,
+live decode/publication latency, and transformed-output redistribution have not
+been proven. Worldwide v1 uses GFS-only; no IMERG observation was fabricated.
+EOF
+cat "$wx_output/imerg-status.txt"
 
-echo "Decoding every live GFS crop through the production Swift decoder"
-(
-  cd "$wx_repository/companion-ios/Packages/OBCKit"
-  OBC_WEATHER_LIVE_GFS_DIRECTORY="$wx_output/gfs" \
-    swift test --filter decodesOptInLiveCapture
-)
+echo "Running immutable contract tests"
+(cd "$wx_repository" && cargo test -p obc-wx-source-spike)
 
-echo "Validated evidence written to $wx_output"
+echo "Validated Rust host evidence written to $wx_output"
