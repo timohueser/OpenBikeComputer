@@ -1,7 +1,15 @@
-<!-- Direct set transfer plus standalone .obcm files obtained elsewhere. -->
+<!--
+  Direct set transfer plus standalone .obcm files obtained elsewhere.
+
+  The card meter and the write progress are ONE bar (2026-08-09 P1 cleanup):
+  amber is the share of the connected card this map needs, green is how much of
+  the job is done, filling the amber span. Two stacked bars told the same story
+  twice and made the step read as clutter; one bar is the whole picture — how
+  big, how far, how much room.
+-->
 <script lang="ts">
     import { onMount } from "svelte";
-    import { formatBytes } from "../../lib/format";
+    import { formatBytes, formatDuration, formatRate } from "../../lib/format";
     import { DeviceJob } from "../../lib/device/job.svelte";
     import { sendMapFile, type SendAssembledMap } from "../../lib/device/write";
     import { fitsOnCard, OVERHEAD_BUDGET, type Ledger } from "../../lib/catalog/ledger";
@@ -25,11 +33,34 @@
     let cardFree = $state<number | null | undefined>(undefined);
     let cardError = $state<string | null>(null);
     let cardPending = $state(false);
+    /** What the running job carries: the priced selection (meter applies) or a
+     *  picked file whose size the ledger knows nothing about (plain bar). */
+    let sending = $state<"selection" | "file" | null>(null);
 
     const requiredBytes = $derived(ledger ? Math.ceil(ledger.totalBytes * (1 + OVERHEAD_BUDGET)) : null);
     const cardFit = $derived(
         ledger && typeof cardFree === "number" ? fitsOnCard(ledger, cardFree) : null,
     );
+
+    /** The amber span: this map's share of the connected card. */
+    const needPct = $derived(
+        requiredBytes !== null && typeof cardFree === "number" && cardFree > 0
+            ? Math.min(100, (requiredBytes / cardFree) * 100)
+            : 0,
+    );
+    /** The green fill: job progress, drawn inside the amber span so one bar
+     *  says "this far through this much of the card". */
+    const donePct = $derived(
+        job.running && job.total > 0 ? Math.min(needPct, (job.done / job.total) * needPct) : 0,
+    );
+
+    const PHASES: Record<string, string> = {
+        reading: "Reading",
+        downloading: "Downloading cells",
+        assembling: "Assembling the map",
+        sending: "Writing to the device",
+        committing: "Finishing on the device",
+    };
 
     async function refreshCardSpace() {
         cardPending = true;
@@ -47,17 +78,22 @@
     onMount(() => void refreshCardSpace());
 
     async function sendSelection(send: SendAssembledMap) {
+        sending = "selection";
         await job.run(
             (ctx) => send(client, ctx),
             (result) => `Map set ${result.objectId} is on the device. Restart it to switch to the new map.`,
         );
+        sending = null;
         void refreshCardSpace();
     }
     async function sendFile(file: File) {
+        sending = "file";
         await job.run(
             (ctx) => sendMapFile(client, file, ctx),
             (result) => `${file.name} is on the device (map ${result.objectId}). Restart it to switch to the new map.`,
         );
+        sending = null;
+        void refreshCardSpace();
     }
 
     function onPick(event: Event) {
@@ -75,28 +111,49 @@
     {#if ledger && sendAssembled}
         <div class="card-space small">
             <div class="space-line">
-                <span>Connected card</span>
-                {#if cardPending}
-                    <span class="faint">checking space…</span>
-                {:else if typeof cardFree === "number" && requiredBytes !== null}
-                    <span class:warn={!cardFit?.fits}>
-                        {formatBytes(requiredBytes)} needed · {formatBytes(cardFree)} free
+                {#if job.running && sending === "selection"}
+                    <span class="muted">
+                        {PHASES[job.phase] ?? "Working"}{job.partTotal
+                            ? ` · ${job.partLabel ?? `shard ${job.partCurrent} of ${job.partTotal}`}`
+                            : ""}
                     </span>
-                {:else if cardFree === null}
-                    <span class="warn">no readable card</span>
+                    <span class="faint nums">
+                        {formatBytes(job.done)}{job.total ? ` of ${formatBytes(job.total)}` : ""}{job.rate
+                            ? ` · ${formatRate(job.rate)}`
+                            : ""}{job.etaSeconds ? ` · about ${formatDuration(job.etaSeconds)} left` : ""}
+                    </span>
                 {:else}
-                    <button type="button" class="retry" onclick={() => void refreshCardSpace()}>check again</button>
+                    <span>Connected card</span>
+                    {#if cardPending}
+                        <span class="faint">checking space…</span>
+                    {:else if typeof cardFree === "number" && requiredBytes !== null}
+                        <span class:warn={!cardFit?.fits}>
+                            {formatBytes(requiredBytes)} needed · {formatBytes(cardFree)} free
+                        </span>
+                    {:else if cardFree === null}
+                        <span class="warn">no readable card</span>
+                    {:else}
+                        <button type="button" class="retry" onclick={() => void refreshCardSpace()}>check again</button>
+                    {/if}
                 {/if}
             </div>
             {#if typeof cardFree === "number" && requiredBytes !== null}
-                <div class="space-bar" aria-hidden="true">
-                    <span
-                        class:short={!cardFit?.fits}
-                        style:width={`${Math.min(100, Math.round((requiredBytes / Math.max(1, cardFree)) * 100))}%`}
-                    ></span>
+                <div
+                    class="space-bar"
+                    aria-hidden="true"
+                    title={`this map's share of the card${job.running && sending === "selection" ? " — green is written" : ""}`}
+                >
+                    <span class="need" class:short={!cardFit?.fits} style:width={`${needPct}%`}></span>
+                    {#if job.running && sending === "selection"}
+                        <span class="written" style:width={`${donePct}%`}></span>
+                    {/if}
                 </div>
             {/if}
-            {#if cardFit && !cardFit.fits}
+            {#if job.running && sending === "selection"}
+                <div class="cancel-line">
+                    <button type="button" class="btn ghost" onclick={() => job.cancel()}>Cancel</button>
+                </div>
+            {:else if cardFit && !cardFit.fits}
                 <p class="warn">Free {formatBytes(cardFit.shortfallBytes)} more before sending this selection.</p>
             {:else if cardError}
                 <p class="warn">Card space could not be read: {cardError}</p>
@@ -135,11 +192,20 @@
         />
     </div>
 
-    <p class="small faint hint">
-        A regional map is hundreds of megabytes — expect minutes, and keep the cable in.
-    </p>
+    {#if !job.running}
+        <p class="small faint hint">
+            A regional map is hundreds of megabytes — expect minutes, and keep the cable in.
+        </p>
+    {/if}
 
-    <TransferBar {job} />
+    <!-- While a selection send runs, the unified meter above carries its
+         progress and the bar component would draw the same story a second
+         time. A file send (whose size the ledger does not price) keeps the
+         plain bar — and once any job settles, `sending` is null again, so the
+         bar component is what renders the error / done notes. -->
+    {#if sending !== "selection"}
+        <TransferBar {job} />
+    {/if}
 </section>
 
 <style>
@@ -180,8 +246,14 @@
         gap: 12px;
     }
 
+    .space-line .nums {
+        font-variant-numeric: tabular-nums;
+        text-align: right;
+    }
+
     .space-bar {
-        height: 5px;
+        position: relative;
+        height: 6px;
         margin-top: 6px;
         border-radius: 3px;
         background: var(--parchment-3);
@@ -189,13 +261,40 @@
     }
 
     .space-bar span {
+        position: absolute;
+        inset: 0 auto 0 0;
         display: block;
         height: 100%;
-        background: var(--forest);
     }
 
-    .space-bar span.short {
+    .space-bar .need {
+        background: var(--amber);
+    }
+
+    .space-bar .need.short {
         background: var(--coral);
+    }
+
+    .space-bar .written {
+        background: var(--forest);
+        transition: width 0.2s linear;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+        .space-bar .written {
+            transition: none;
+        }
+    }
+
+    .cancel-line {
+        display: flex;
+        justify-content: flex-end;
+        margin-top: 6px;
+    }
+
+    .cancel-line .btn {
+        padding: 2px 8px;
+        font-size: 12px;
     }
 
     .warn {

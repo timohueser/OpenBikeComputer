@@ -24,10 +24,9 @@
         CORRIDOR_RADIUS_MIN_M,
     } from "../../lib/coverage/store.svelte";
     import { formatBytes } from "../../lib/format";
+    import ToolIcon from "./ToolIcon.svelte";
 
     let { store }: { store: CoverageStore } = $props();
-
-    const GLYPH: Record<string, string> = { region: "◧", box: "▭", corridor: "◠" };
 
     const parts = $derived(store.resolution?.parts ?? []);
     const hasCorridor = $derived(store.selection.parts.some((p) => p.kind === "corridor"));
@@ -55,7 +54,7 @@
                     if (store.highlightPartId === p.part.id) store.highlightPartId = null;
                 }}
             >
-                <span class="glyph" aria-hidden="true">{GLYPH[p.part.kind]}</span>
+                <span class="glyph" aria-hidden="true"><ToolIcon kind={p.part.kind} size={15} /></span>
                 <span class="name">{p.part.kind === "corridor" ? `Corridor — ${p.part.name}` : p.part.name}</span>
                 {#if regionError}
                     <button
@@ -100,7 +99,7 @@
         <div class="width">
             <div class="width-head">
                 <label class="small muted" for="corridor-width-global">
-                    <span class="glyph" aria-hidden="true">◠</span> Corridor width — all routes
+                    <span class="glyph" aria-hidden="true"><ToolIcon kind="corridor" size={13} /></span> Corridor width — all routes
                 </label>
                 <span class="mono small">± {radiusKm} km</span>
             </div>
@@ -151,6 +150,8 @@
     .glyph {
         color: var(--ink-soft);
         flex: none;
+        display: inline-flex;
+        align-items: center;
     }
 
     .name {

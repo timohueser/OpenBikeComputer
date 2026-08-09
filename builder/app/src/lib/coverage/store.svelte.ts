@@ -13,6 +13,7 @@
 
 import { CatalogClient } from "../catalog/client";
 import { cellsIntersecting, coverageBbox, parseCellId, type UBox } from "../catalog/grid";
+import { lassoCells } from "../catalog/lasso";
 import { cellsTouchingHoles, detailBandId } from "./shape";
 import { ledgerFor, type Ledger } from "../catalog/ledger";
 import type { Catalog, RegionEntry, SkinEntry } from "../catalog/manifest";
@@ -34,6 +35,7 @@ import {
     type CorridorPart,
     type LatLon,
     type Selection,
+    type SelectionPart,
     type SelectionContext,
     type SelectionResolution,
 } from "../catalog/selection";
@@ -61,6 +63,25 @@ export interface PreviewSummary {
  * per `OBCC_Spec.md` §7). Every ring toggles — outer rings admit, holes
  * excise — which is the same rule the map's even-odd fill draws them with.
  */
+/** A boundary's bbox area in µdeg², the ladder's smallest-first sort key. Not a
+ *  real area — but ordering nested admin regions only needs monotonicity, and a
+ *  child's bbox never out-spans its parent's. */
+function ringsSpan(rings: [number, number][][]): number {
+    let minLat = Infinity;
+    let maxLat = -Infinity;
+    let minLon = Infinity;
+    let maxLon = -Infinity;
+    for (const ring of rings) {
+        for (const [lat, lon] of ring) {
+            if (lat < minLat) minLat = lat;
+            if (lat > maxLat) maxLat = lat;
+            if (lon < minLon) minLon = lon;
+            if (lon > maxLon) maxLon = lon;
+        }
+    }
+    return (maxLat - minLat) * (maxLon - minLon);
+}
+
 function pointInRings(lat: number, lon: number, rings: [number, number][][]): boolean {
     let inside = false;
     for (const ring of rings) {
@@ -122,6 +143,7 @@ export class CoverageStore {
     private readonly skinStorage: SkinStorage | null;
     private nextPartId = 1;
     private boxCount = 0;
+    private lassoCount = 0;
 
     constructor(client: CatalogClient, rootBody: string, skinStorage: SkinStorage | null = browserSkinStorage()) {
         this.client = client;
@@ -340,6 +362,18 @@ export class CoverageStore {
         return this.catalog.regions.find((r) => r.id === regionId);
     }
 
+    /**
+     * Every catalog region whose boundary contains the point, smallest first —
+     * the ancestor ladder a map click offers. Containment is against the
+     * drawable rings (presentation, like everything about the ladder); the
+     * added part still resolves through the region's stored cell list.
+     */
+    regionsAt(lat: number, lon: number): RegionEntry[] {
+        return this.catalog.regions
+            .filter((region) => pointInRings(lat, lon, region.boundary.rings))
+            .sort((a, b) => ringsSpan(a.boundary.rings) - ringsSpan(b.boundary.rings));
+    }
+
     /** Whether a region is already a part — the popover marks it, and a second
      *  add is a no-op rather than a duplicate row pricing the same cells. */
     hasRegion(regionId: string): boolean {
@@ -381,9 +415,9 @@ export class CoverageStore {
         void this.fetchRegionCells(regionId);
     }
 
-    /** Why the last drawn box was refused, shown as a map chip until the next
-     *  draw. */
-    boxError = $state<string | null>(null);
+    /** Why the last drawn box or lasso was refused, shown as a map chip until
+     *  the next draw. */
+    drawError = $state<string | null>(null);
 
     /**
      * Price a box mid-drag — the live chip under the rubber band.
@@ -395,17 +429,26 @@ export class CoverageStore {
      * under the cursor *is* `ledgerFor`'s number, by construction.
      */
     priceDraggedBox(box: UBox): { bytes: number; cells: number } | { refused: true } | null {
+        return this.priceDragged({ kind: "box", id: "drag", name: "", box });
+    }
+
+    /** Price a lasso mid-draw — the live chip under the pen, same discipline. */
+    priceDraggedLasso(points: LatLon[]): { bytes: number; cells: number } | { refused: true } | null {
+        return this.priceDragged({ kind: "lasso", id: "drag", name: "", points });
+    }
+
+    private priceDragged(part: SelectionPart): { bytes: number; cells: number } | { refused: true } | null {
         const ctx = this.ctx;
         if (!ctx || !this.indices) return null;
         const candidate: Selection = {
-            parts: [{ kind: "box", id: "drag", name: "", box }],
+            parts: [part],
             corridorRadiusM: this.selection.corridorRadiusM,
         };
         try {
             const ledger = ledgerFor(this.dragResolver.resolve(candidate, ctx), this.catalog, this.indices);
             return { bytes: ledger.totalBytes, cells: ledger.cellCount };
         } catch {
-            // The grid refused to enumerate it — same refusal `addBox` gives.
+            // The grid refused to enumerate it — same refusal the add gives.
             return { refused: true };
         }
     }
@@ -417,16 +460,43 @@ export class CoverageStore {
         try {
             for (const band of this.catalog.schema.bands) cellsIntersecting(band.cell_log2, box);
         } catch {
-            this.boxError = "That box covers more cells than a map can hold — draw a smaller one, or add a whole region instead.";
+            this.drawError = "That box covers more cells than a map can hold — draw a smaller one, or add a whole region instead.";
             return;
         }
-        this.boxError = null;
+        this.drawError = null;
         this.boxCount += 1;
+        const midLat = (box.minLat + box.maxLat) / 2;
+        const midLon = (box.minLon + box.maxLon) / 2;
         this.selection = withPart(this.selection, {
             kind: "box",
             id: `part-${this.nextPartId++}`,
-            name: this.boxName(box),
+            name: this.areaName("Box", midLat, midLon, this.boxCount),
             box,
+        });
+    }
+
+    addLasso(points: LatLon[]): void {
+        // Same pre-check as a box, through the ring's own enumeration: a part
+        // the grid refuses must never make the whole ledger throw.
+        try {
+            for (const band of this.catalog.schema.bands) lassoCells(band.cell_log2, points);
+        } catch {
+            this.drawError = "That lasso covers more cells than a map can hold — draw a smaller one, or add a whole region instead.";
+            return;
+        }
+        this.drawError = null;
+        this.lassoCount += 1;
+        let latSum = 0;
+        let lonSum = 0;
+        for (const p of points) {
+            latSum += p.lat;
+            lonSum += p.lon;
+        }
+        this.selection = withPart(this.selection, {
+            kind: "lasso",
+            id: `part-${this.nextPartId++}`,
+            name: this.areaName("Lasso", latSum / points.length, lonSum / points.length, this.lassoCount),
+            points,
         });
     }
 
@@ -435,32 +505,9 @@ export class CoverageStore {
      *  region's actual boundary rings, not its bounding box (#1041 low sweep):
      *  a box centred in the sea inside Italy's bbox is not "Box — Italy".
      *  Falls back to a counter off-catalog. */
-    private boxName(box: UBox): string {
-        const midLat = (box.minLat + box.maxLat) / 2;
-        const midLon = (box.minLon + box.maxLon) / 2;
-        let best: RegionEntry | null = null;
-        let bestSpan = Infinity;
-        for (const region of this.catalog.regions) {
-            if (!pointInRings(midLat, midLon, region.boundary.rings)) continue;
-            let minLat = Infinity;
-            let maxLat = -Infinity;
-            let minLon = Infinity;
-            let maxLon = -Infinity;
-            for (const ring of region.boundary.rings) {
-                for (const [lat, lon] of ring) {
-                    if (lat < minLat) minLat = lat;
-                    if (lat > maxLat) maxLat = lat;
-                    if (lon < minLon) minLon = lon;
-                    if (lon > maxLon) maxLon = lon;
-                }
-            }
-            const span = (maxLat - minLat) * (maxLon - minLon);
-            if (span < bestSpan) {
-                best = region;
-                bestSpan = span;
-            }
-        }
-        return best ? `Box — ${best.name}` : `Box ${this.boxCount}`;
+    private areaName(prefix: string, midLat: number, midLon: number, count: number): string {
+        const best = this.regionsAt(midLat, midLon)[0];
+        return best ? `${prefix} — ${best.name}` : `${prefix} ${count}`;
     }
 
     addCorridor(name: string, points: LatLon[]): void {
