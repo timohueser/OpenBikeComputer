@@ -152,7 +152,7 @@ pub struct SimWeather {
     /// clock, and a bundle pinned to the deterministic fixture instant is months stale (or
     /// future) in a live GUI session — every honest state then reads WEATHER UPDATE NEEDED.
     /// `None` for a store loaded from disk (real bundles must age truthfully).
-    demo_recipe: Option<(Option<DemoScenario>, (i32, i32, i32, i32))>,
+    demo_recipe: Option<DemoRecipe>,
     /// The instant the demo bundle is currently stamped at (`GENERATED_AT` until re-anchored).
     anchor: i64,
 }
@@ -169,6 +169,9 @@ const DEMO_REANCHOR_LIVE_S: i64 = 300;
 /// 301 s), and a re-anchor inside a scripted run would silently change preview bytes — so a
 /// non-live clock only re-stamps for a jump no script can produce (review #1230 F1).
 const DEMO_REANCHOR_SCRIPTED_S: i64 = 86_400;
+
+/// The `--weather demo` shape retained for re-anchoring: `(scenario, map bbox)`.
+type DemoRecipe = (Option<DemoScenario>, (i32, i32, i32, i32));
 
 impl SimWeather {
     /// Resolve `--weather`'s argument: `demo` / `demo:<scenario>` synthesizes a deterministic
