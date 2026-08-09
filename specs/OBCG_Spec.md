@@ -322,11 +322,17 @@ pinned by tests. It is delivery metadata, not a byte format, but its contract is
   silently dry.
 - The manifest always lists everything the service currently offers, whichever cycle wrote it. A
   publishing cycle may cover a **subset** of the products — the deployed service runs one timer per
-  adapter, so a broken upstream costs only its own product's freshness — and then the products it
-  did not bake are carried forward from the previous manifest verbatim, except that a carried
-  product already past its `staleness_deadline` is dropped. A client reads a missing product
-  exactly as it reads an expired one, and must never infer from a product's presence that this
-  document's cycle refreshed it: the product's own `generated_at` is that fact, not the manifest's.
+  adapter, so a broken upstream costs only its own product's freshness — and the products it did
+  not bake are carried forward from the previous manifest verbatim. A client must never infer from
+  a product's presence that this document's cycle refreshed it: the product's own `generated_at`
+  is that fact, not the manifest's.
+- **Expiry never removes an entry.** A product past its `staleness_deadline` stays listed with its
+  true timestamps, so expiry is visible rather than silent. In exchange, a publisher must not
+  require an expired product's frame objects to still exist — no client may read them, and a
+  lifecycle rule is entitled to have collected them. Removing a product from the manifest is an
+  operator act (retiring an adapter), never a consequence of an outage: a client may therefore
+  read an absent product as "this service does not offer it", and a monitor may read it as a
+  configuration fault rather than as weather.
 
 ## 11. Golden and negative material
 
