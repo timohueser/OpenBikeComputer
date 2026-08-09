@@ -44,3 +44,7 @@ The demo bundles anchor the app clock on their first frame (08:00 UTC, 2027-01-1
 `--clock` is passed, so every derivation — card countdown, strip, freshness line, frame labels —
 is deterministic. `--weather-now 1800001500` views the `incoming` front 25 min in (card reads
 RAIN IN 34 MIN); `1800012000` is past every frame's currency (the honest stale states).
+
+Byte-stability law (review #1230): a preview command must omit `--clock` or pass
+`--weather-now` — otherwise the demo bundle re-stamps itself onto the given clock and the
+rendered bytes are no longer the committed ones.
