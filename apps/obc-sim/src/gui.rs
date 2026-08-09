@@ -168,6 +168,12 @@ struct SimGui {
     /// `--weather` (WX10): the loaded weather store, leased to every map frame as the production
     /// rain-overlay adapter. `None` (no flag / no valid slot) renders byte-identical rain-free maps.
     weather: Option<crate::weather_store::SimWeather>,
+    /// `--weather live` (WX14): the host weather client behind the store. Present only in live
+    /// mode; it re-fetches on the device's own refresh cadence and feeds the panel's report.
+    live_weather: Option<crate::weather_live::LiveWeather>,
+    /// The §11 request/upload lifecycle, driven by the real firmware `DueScheduler` (WX14).
+    /// Present with `--weather live`; it is what decides *when* the companion fetches.
+    companion: crate::weather_companion::SimCompanion,
     /// The routes folder (the device-SD stand-in): the menu catalog + active geometry.
     store: RouteStore,
     /// The `.obt` trips beside the routes (epic #526, TR2): the grouped-route folders. Rescanned +
@@ -320,19 +326,27 @@ impl SimGui {
         // WX11: with a weather store, anchor the wall clock on the store's effective instant so
         // the weather screens' freshness derivations agree with the rain lease out of the box
         // (the panel's GPS-time controls can still move the clock afterwards).
-        if let Some(arg) = args.weather.as_ref() {
+        // WX14: `--weather live` fetches once here, so the boot clock anchors on the *real* now
+        // and the very first frame already carries service data. One build, not two — the old
+        // throwaway `from_arg` just to read `effective_now` fetched the network twice in live mode.
+        let map_bbox_for_weather = {
             let b = map.reader().bbox;
-            if let Some(now) = crate::weather_store::SimWeather::from_arg(
-                arg,
-                args.weather_now,
-                (b.min_lon, b.min_lat, b.max_lon, b.max_lat),
-            )
+            (b.min_lon, b.min_lat, b.max_lon, b.max_lat)
+        };
+        let wx_source = args
+            .weather
             .as_ref()
-            .and_then(|w| w.effective_now())
-            {
-                boot_settings.clock = obc_ports::DateTime::from_unix(now.max(0) as u64 as u32);
-                boot_settings.utc_offset_min = 0;
-            }
+            .map(|arg| {
+                let centre = (
+                    (map_bbox_for_weather.1 + map_bbox_for_weather.3) / 2,
+                    (map_bbox_for_weather.0 + map_bbox_for_weather.2) / 2,
+                );
+                crate::weather_live::build(arg, args.weather_now, map_bbox_for_weather, &args.live, centre)
+            })
+            .unwrap_or(crate::weather_live::WeatherSource { store: None, live: None, clock_anchor: None });
+        if let Some(now) = wx_source.clock_anchor {
+            boot_settings.clock = obc_ports::DateTime::from_unix(now.max(0) as u64 as u32);
+            boot_settings.utc_offset_min = 0;
         }
         app.set_settings(boot_settings);
         // Mirror the map's §8.6 routing-profile names into the app for the Bike-type screen +
@@ -351,19 +365,16 @@ impl SimGui {
         let points_per_mm = crate::calib::load();
         let physical = args.physical && points_per_mm.is_some();
         let colorway = args.colorway.as_deref().and_then(Colorway::from_label).unwrap_or(Colorway::Forest);
-        // `--weather` (WX10): a store root or a `demo[:scenario]` bundle over the map's bbox.
-        let map_bbox = {
-            let b = map.reader().bbox;
-            (b.min_lon, b.min_lat, b.max_lon, b.max_lat)
-        };
-        let weather = args
-            .weather
-            .as_ref()
-            .and_then(|arg| crate::weather_store::SimWeather::from_arg(arg, args.weather_now, map_bbox));
+        // `--weather` (WX10/WX14): the store built above — a store root, a `demo[:scenario]`
+        // bundle over the map's bbox, or a live service fetch.
+        let weather = wx_source.store;
+        let live_weather = wx_source.live;
         let mut gui = SimGui {
             app,
             scratch: Box::new(obc_render::RenderScratch::new()),
             weather,
+            live_weather,
+            companion: crate::weather_companion::SimCompanion::new(),
             store,
             trip_store,
             ride_store,
@@ -615,6 +626,18 @@ impl SimGui {
         let mut fbdev = FbDevice64::new(&mut self.fb, dev_w, dev_h);
         let set = self.map.set();
         let scene = crate::map_set::Scene { set, reader: &reader, route: route.as_ref() };
+        // WX14 live mode: one pass of the §11 lifecycle before the frame. The scheduler decides;
+        // when it raises, the companion fetches over HTTP (synchronously — the GUI stalls for the
+        // second or two a real phone would spend with BLE off) and the upload is committed only
+        // if the production classifier accepts it.
+        if let Some(live) = self.live_weather.as_mut() {
+            let now = self.app.wall_unix_now() as i64;
+            if let Some(bytes) = self.companion.poll(&self.app, self.weather.as_ref(), live, now) {
+                if let Some(store) = crate::weather_store::SimWeather::from_bytes(bytes, None) {
+                    self.weather = Some(store);
+                }
+            }
+        }
         // The rain-overlay lease (WX10): constructed per frame from the loaded weather store so
         // the GUI exercises exactly the device's adapter → hook path; no store ⇒ `None`.
         let (app, scratch, weather) = (&mut self.app, &mut *self.scratch, self.weather.as_mut());

@@ -31,6 +31,8 @@ mod sim_location;
 mod sim_sensors;
 mod track;
 mod trips;
+mod weather_companion;
+mod weather_live;
 mod weather_store;
 use framebuffer::Framebuffer;
 use obc_host_core::{finish_nav_plan, initial_camera, replay_step, ReplaySensors, VecSink};
@@ -120,6 +122,9 @@ struct Args {
     /// `App::show_weather_alert` seam — `rain[:MIN]` or `storm[:MIN]` (default 28 minutes).
     /// Alert *generation* is WX12's; this drives only the presentation.
     weather_alert: Option<(obc_app::WeatherAlertKind, u16)>,
+    /// `--weather live` knobs (WX14): the service origin, the corridor radius, and the failure
+    /// controls that make an outage, a corrupt tile or a cut connection reproducible on demand.
+    live: weather_live::LiveConfig,
     /// Headless `--png` only: the UI language `en` | `de` | `fr` | `es` (epic #602). Seeded into
     /// `Settings.language` before the render, so a scripted screen draws its de/fr/es copy from the
     /// i18n catalog — the per-language snapshot mechanism. Defaults to `en` (the device default), so
@@ -272,6 +277,7 @@ impl Default for Args {
             weather_now: None,
             weather_refreshing: false,
             weather_alert: None,
+            live: weather_live::LiveConfig::default(),
             lang: None,
             stat_fields: None,
             ble_connected: false,
@@ -487,6 +493,34 @@ fn parse_args() -> Result<Args, String> {
                 a.weather_now = Some(it.next().and_then(|s| s.parse().ok()).ok_or("--weather-now needs unix seconds")?);
             }
             "--weather-refreshing" => a.weather_refreshing = true,
+            "--weather-service" => {
+                a.live.service = it.next().ok_or("--weather-service needs an origin URL")?;
+            }
+            "--weather-radius-km" => {
+                a.live.radius_km =
+                    it.next().and_then(|s| s.parse().ok()).ok_or("--weather-radius-km needs kilometres")?;
+            }
+            "--weather-offline" => a.live.controls.offline = true,
+            "--weather-latency" => {
+                let ms: u64 = it.next().and_then(|s| s.parse().ok()).ok_or("--weather-latency needs milliseconds")?;
+                a.live.controls.latency = std::time::Duration::from_millis(ms);
+            }
+            "--weather-fail-from" => {
+                let spec = it.next().ok_or("--weather-fail-from needs N:CODE")?;
+                let (n, code) = spec.split_once(':').ok_or("--weather-fail-from needs N:CODE")?;
+                a.live.controls.fail_from = Some((
+                    n.parse().map_err(|_| "--weather-fail-from: bad request index")?,
+                    code.parse().map_err(|_| "--weather-fail-from: bad status code")?,
+                ));
+            }
+            "--weather-corrupt-request" => {
+                a.live.controls.corrupt_request =
+                    Some(it.next().and_then(|s| s.parse().ok()).ok_or("--weather-corrupt-request needs an index")?);
+            }
+            "--weather-truncate-request" => {
+                a.live.controls.truncate_request =
+                    Some(it.next().and_then(|s| s.parse().ok()).ok_or("--weather-truncate-request needs an index")?);
+            }
             "--weather-alert" => {
                 let spec = it.next().ok_or("--weather-alert needs rain[:MIN] or storm[:MIN]")?;
                 let (kind, min) = spec.split_once(':').unwrap_or((spec.as_str(), "28"));
@@ -1054,16 +1088,43 @@ fn main() {
         // on the store's effective instant (screens' `now_utc` then agrees with the rain lease)
         // and the script's rain-map time-steps clamp against the real frame count.
         let map_bbox = (reader.bbox.min_lon, reader.bbox.min_lat, reader.bbox.max_lon, reader.bbox.max_lat);
-        let mut weather =
-            args.weather.as_ref().and_then(|arg| weather_store::SimWeather::from_arg(arg, args.weather_now, map_bbox));
+        // The corridor a live fetch centres on: the rider's fix when there is one (`--gpx` /
+        // `--center` have already seeded it), else the camera. The *service* never receives it —
+        // it only shapes which immutable objects get Range-read.
+        let wx_seed_pos = app.state.user_fix.map(|f| (f.lat, f.lon)).unwrap_or((app.state.cam_lat, app.state.cam_lon));
+        let wx_source = args
+            .weather
+            .as_ref()
+            .map(|arg| weather_live::build(arg, args.weather_now, map_bbox, &args.live, wx_seed_pos))
+            .unwrap_or(weather_live::WeatherSource { store: None, live: None, clock_anchor: None });
+        let mut weather = wx_source.store;
+        let weather_anchor = wx_source.clock_anchor;
+        // Headless is one fetch, by design: a `--png` render must be a single, reportable
+        // transaction. The report goes to stdout beside the other render diagnostics — never
+        // into the emulated device pixels, which carry no provenance badge.
+        if let Some(live) = wx_source.live.as_ref() {
+            let report = &live.report;
+            match (&report.product, &report.error) {
+                (_, Some(error)) => println!("weather live: FAILED — {error}"),
+                (Some((id, tier)), None) => println!(
+                    "weather live: {id} (tier {tier}) | {} B bundle | {} requests, {} B | {}",
+                    report.bundle_bytes,
+                    report.requests,
+                    report.service_bytes,
+                    report.no_rain_map.as_deref().unwrap_or("rain map available")
+                ),
+                (None, None) => println!(
+                    "weather live: hourly only — {}",
+                    report.no_rain_map.as_deref().unwrap_or("no product selected")
+                ),
+            }
+        }
         // WX11: with a weather store and no explicit `--clock`, pin the app clock to the weather
         // instant. An explicit `--clock` always wins — the WX10 map sweeps pass one, so their
-        // output stays byte-identical.
+        // output stays byte-identical. In live mode that instant is the *real* clock (see
+        // `weather_live`): anchoring on the newest frame would hide a stalled baker.
         let weather_clock = if args.clock.is_none() {
-            weather
-                .as_ref()
-                .and_then(|w| w.effective_now())
-                .map(|now| obc_ports::DateTime::from_unix(now.max(0) as u64 as u32))
+            weather_anchor.map(|now| obc_ports::DateTime::from_unix(now.max(0) as u64 as u32))
         } else {
             None
         };
