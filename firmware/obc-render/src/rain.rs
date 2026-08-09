@@ -305,7 +305,13 @@ pub fn rain_in_regime(vp: &Viewport, grid: &RainGrid) -> bool {
 pub fn rain_min_zoom(grid: &RainGrid, aspect: f32) -> Option<f32> {
     let lon_span = grid.east_udeg as i64 - grid.west_udeg as i64;
     let lat_span = grid.north_udeg as i64 - grid.south_udeg as i64;
-    if grid.width_cells == 0 || grid.height_cells == 0 || lon_span <= 0 || lat_span <= 0 || !(aspect > 0.0) {
+    // The aspect gate must refuse NaN (partial_cmp None ≠ Greater), not just non-positives.
+    if grid.width_cells == 0
+        || grid.height_cells == 0
+        || lon_span <= 0
+        || lat_span <= 0
+        || aspect.partial_cmp(&0.0) != Some(core::cmp::Ordering::Greater)
+    {
         return None;
     }
     let kx = grid.width_cells as f64 / lon_span as f64;

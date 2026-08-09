@@ -140,8 +140,7 @@ pub(crate) fn config_bytes(store: &ObjectStore) -> ([u8; Config::MAX_ENCODED], u
     // validated discriminant — every writer goes through `refresh_to_apply`, and the settings
     // codec sanitises corruption to the default — so this read never carries a value this build
     // could not have stored.
-    let cfg =
-        Config { name: name.as_bytes(), units, weather_refresh: Some(store.settings().weather_refresh as u8) };
+    let cfg = Config { name: name.as_bytes(), units, weather_refresh: Some(store.settings().weather_refresh as u8) };
     let mut buf = [0u8; Config::MAX_ENCODED];
     let len = cfg.encode(&mut buf).unwrap_or(0); // both name sources are ≤ 48 by construction
     (buf, len)
