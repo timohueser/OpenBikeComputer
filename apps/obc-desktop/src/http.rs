@@ -3,10 +3,36 @@
 //! because the Tauri webview has no blanket network permission.
 
 use std::io::Read;
+use std::sync::OnceLock;
+use std::time::Duration;
+
+/// A cell is megabytes and the connection to a CDN edge can wedge half-open —
+/// without a deadline that read never returns and the download sits at nothing
+/// forever. Sized for the largest object over a poor link, not for a good one:
+/// the point is to *fail* an hour-long stall, not to police a slow connection.
+///
+/// Retrying is not done here. Every catalog object is digest-pinned and the
+/// frontend's `fetchVerified` — which both this host and the website go
+/// through — owns that policy, so there is one place where it lives.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
+const BODY_TIMEOUT: Duration = Duration::from_secs(300);
+
+fn agent() -> &'static ureq::Agent {
+    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+    AGENT.get_or_init(|| {
+        ureq::Agent::config_builder()
+            .timeout_connect(Some(CONNECT_TIMEOUT))
+            .timeout_recv_response(Some(RESPONSE_TIMEOUT))
+            .timeout_recv_body(Some(BODY_TIMEOUT))
+            .build()
+            .into()
+    })
+}
 
 /// Read a small text document whole.
 pub fn get_text(url: &str) -> Result<String, String> {
-    let mut response = ureq::get(url).call().map_err(|e| format!("GET {url}: {e}"))?;
+    let mut response = agent().get(url).call().map_err(|e| format!("GET {url}: {e}"))?;
     response.body_mut().read_to_string().map_err(|e| format!("read {url}: {e}"))
 }
 
@@ -14,7 +40,7 @@ pub fn get_text(url: &str) -> Result<String, String> {
 /// HTTP proxy: every URL must share the configured catalog root's origin.
 pub fn get_catalog_object(url: &str) -> Result<Vec<u8>, String> {
     same_catalog_origin(url, &crate::catalog::url())?;
-    let mut response = ureq::get(url).call().map_err(|e| format!("GET {url}: {e}"))?;
+    let mut response = agent().get(url).call().map_err(|e| format!("GET {url}: {e}"))?;
     let mut bytes = Vec::new();
     response.body_mut().as_reader().read_to_end(&mut bytes).map_err(|e| format!("read {url}: {e}"))?;
     Ok(bytes)

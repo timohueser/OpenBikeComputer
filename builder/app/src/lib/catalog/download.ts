@@ -59,6 +59,10 @@ export interface CellDownloadOptions {
     signal?: AbortSignal;
     fetchImpl?: typeof fetch;
     digest?: (bytes: Uint8Array) => Promise<ArrayBuffer>;
+    /** Per-cell retry, forwarded to `fetchVerified`. Left unset in the app: the
+     *  default is what keeps one dropped connection from ending the run. */
+    attempts?: number;
+    sleep?: (ms: number) => Promise<void>;
 }
 
 export const DEFAULT_CONCURRENCY = 6;
@@ -166,6 +170,8 @@ export async function downloadCells(
                     signal: controller.signal,
                     fetchImpl: opts.fetchImpl,
                     digest: opts.digest,
+                    attempts: opts.attempts,
+                    sleep: opts.sleep,
                     onProgress: (p) => {
                         inflight.set(index, p.received);
                         report();
