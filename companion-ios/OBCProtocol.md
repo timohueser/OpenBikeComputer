@@ -521,12 +521,20 @@ nothing, and any other value answers `notFound`. It is not `0xFFFF`/new-only lik
 map — a bundle is *always* a replacement, landing in the inactive one of the device's
 two slots so an interrupted upload leaves the old one intact.
 
-**Discovery ownership.** One CoreBluetooth manager serves both intents
+**Discovery ownership.** One CoreBluetooth manager serves every intent
 (`BLEDiscoveryIntentPolicy`). A foreground session scans for **both** services and
-accepts any advertiser (that is how a first pairing works); a weather-owned scan
-accepts **only** the peripheral UUID persisted after a successful authenticated
-session, and only a connection the weather request itself created may be dropped when
-it completes — a read that rode an existing foreground link must never tear it down.
+accepts any advertiser (that is how a first pairing works); the weather lane accepts
+**only** the peripheral UUID persisted after a successful authenticated session, and
+only a connection the weather work itself created may be dropped when it completes —
+a leg that rode an existing foreground link must never tear it down. Since WX9
+(#1194) the lane has three shapes: the **standing watch** (a weather-only background
+scan that wakes the app on a pending request and runs the context read
+autonomously), the bounded one-shot **context read**, and the bounded one-shot
+**bundle upload** — which does not scan at all: after the served read the device
+advertises OBC Control again, so the upload leg direct-connects to the known
+peripheral and iOS holds that pending connect until the device is reachable. An
+ephemeral weather connection never publishes `.connected` to the app's link
+lifecycle; the foreground screens cannot tell it happened.
 
 ---
 
