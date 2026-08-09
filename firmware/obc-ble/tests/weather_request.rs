@@ -22,7 +22,7 @@ fn full_context() -> WeatherRequestContext {
         version: WEATHER_REQUEST_CONTEXT_VERSION,
         validity: VALID_POSITION | VALID_BEARING | VALID_SPEED | VALID_BUNDLE | VALID_ROUTE,
         reason: REASON_SCHEDULED | REASON_RETRY,
-        refresh: WeatherRefresh::Every30,
+        refresh_raw: 2, // Every30
         request_id: 0xDEAD_BEEF,
         // Freiburg im Breisgau, in the OBCW header's microdegrees.
         lat_udeg: 47_999_008,
@@ -113,11 +113,27 @@ fn a_declared_length_longer_than_the_read_is_rejected() {
     assert_eq!(WeatherRequestContext::decode(&bytes), Err(DescriptorError::Truncated));
 }
 
+/// The read direction of §11.8. A firmware that appends a fifth interval must not be able to kill
+/// weather on every shipped app — so an unrecognised refresh byte rides through verbatim and reads
+/// as *unknown*, exactly like an unrecognised `reason` bit.
 #[test]
-fn an_unknown_refresh_byte_is_rejected() {
+fn an_unknown_refresh_byte_reads_as_unknown_rather_than_failing() {
     let mut bytes = full_context().encode();
     bytes[6] = 9;
-    assert_eq!(WeatherRequestContext::decode(&bytes), Err(DescriptorError::UnknownStatus(9)));
+    let decoded = WeatherRequestContext::decode(&bytes).expect("a newer interval must not be fatal");
+    assert_eq!(decoded.refresh(), None, "unknown, and specifically not Off and not the default");
+    assert_ne!(decoded.refresh(), Some(WeatherRefresh::Off));
+    assert_ne!(decoded.refresh(), Some(WeatherRefresh::DEFAULT));
+    assert_eq!(decoded.refresh_raw, 9, "the byte survives verbatim");
+    assert_eq!(decoded.encode(), bytes, "and round-trips unchanged");
+    // Everything else in the read still decodes — one unknown byte must not cost the whole request.
+    assert_eq!(decoded.request_id, full_context().request_id);
+}
+
+#[test]
+fn a_known_refresh_byte_reads_as_that_interval() {
+    let bytes = full_context().encode();
+    assert_eq!(WeatherRequestContext::decode(&bytes).unwrap().refresh(), Some(WeatherRefresh::Every30));
 }
 
 /// The append-only promise in the direction that matters: tomorrow's firmware appends a field, and
@@ -197,7 +213,7 @@ fn refresh_enum_round_trips_and_maps_to_the_documented_minutes() {
 #[test]
 fn an_out_of_range_refresh_value_is_an_error_not_a_default() {
     for byte in 5u8..=255 {
-        assert_eq!(WeatherRefresh::from_u8(byte), Err(DescriptorError::UnknownStatus(byte)));
+        assert_eq!(WeatherRefresh::from_u8(byte), Err(DescriptorError::UnknownRefresh(byte)));
     }
 }
 
@@ -440,8 +456,11 @@ fn an_old_apps_config_write_does_not_disable_weather() {
     assert_eq!(len, 2 + 8 + 1, "byte-identical to the pre-WX3 blob");
 
     let decoded = Config::decode(&out[..len]).unwrap();
-    assert_eq!(decoded.weather_refresh, None, "unspecified, which means device default");
-    assert_ne!(decoded.weather_refresh, Some(WeatherRefresh::Off));
+    assert_eq!(decoded.weather_refresh, None, "unspecified — no byte at all");
+    assert_eq!(decoded.known_refresh(), None);
+    assert_ne!(decoded.known_refresh(), Some(WeatherRefresh::Off), "absent is not Off");
+    // And on the write side, absent is not the default either: it is "change nothing".
+    assert_eq!(decoded.refresh_to_apply(), Ok(None));
 }
 
 /// **New app ↔ old firmware, Config.** The new app writes the trailing byte; a firmware that
@@ -449,7 +468,7 @@ fn an_old_apps_config_write_does_not_disable_weather() {
 #[test]
 fn config_round_trips_with_the_refresh_field() {
     let mut out = [0u8; Config::MAX_ENCODED];
-    let new = Config { name: b"Timo's OBC", units: 1, weather_refresh: Some(WeatherRefresh::Every120) };
+    let new = Config { name: b"Timo's OBC", units: 1, weather_refresh: Some(WeatherRefresh::Every120.as_u8()) };
     let len = new.encode(&mut out).unwrap();
     assert_eq!(len, 2 + 10 + 1 + 1);
     assert_eq!(out[len - 1], 4, "the appended refresh byte");
@@ -461,20 +480,46 @@ fn config_round_trips_with_the_refresh_field() {
     assert_eq!(out[2 + name_len], 1, "units still land where the old layout put them");
 }
 
+/// §11.8's asymmetry, both halves, on one blob. The *write* direction refuses an interval the
+/// device cannot honour; the *read* direction reports it as unknown and keeps going. A single
+/// direction-blind rule cannot be right for both: rejecting the read is what would let a future
+/// fifth interval stop a shipped app from renaming its device, and tolerating the write is what
+/// would tell a rider their choice was applied when it was discarded.
 #[test]
-fn a_config_with_an_unknown_refresh_byte_is_refused() {
+fn an_unknown_refresh_byte_is_refused_on_a_write_and_tolerated_on_a_read() {
     let mut out = [0u8; Config::MAX_ENCODED];
-    let ok = Config { name: b"OBC", units: 0, weather_refresh: Some(WeatherRefresh::Off) };
-    let len = ok.encode(&mut out).unwrap();
+    let cfg = Config { name: b"OBC", units: 0, weather_refresh: Some(WeatherRefresh::Off.as_u8()) };
+    let len = cfg.encode(&mut out).unwrap();
     out[len - 1] = 200;
-    assert_eq!(Config::decode(&out[..len]), None, "an interval we cannot honour is not a default");
+
+    let decoded = Config::decode(&out[..len]).expect("the blob itself is well-formed");
+    assert_eq!(decoded.weather_refresh, Some(200), "the byte survives verbatim");
+    assert_eq!(decoded.known_refresh(), None, "a reader sees unknown, not Off and not the default");
+    assert_eq!(
+        decoded.refresh_to_apply(),
+        Err(DescriptorError::UnknownRefresh(200)),
+        "a device asked to adopt it must refuse"
+    );
+}
+
+/// The write-direction meaning of *absent*, which is not the read-direction meaning. WX8 stores
+/// this: absent on a write means **leave the stored value alone**, so an old app's rename cannot
+/// reset a rider who deliberately chose `Off`.
+#[test]
+fn an_absent_refresh_on_a_write_means_leave_the_stored_value_alone() {
+    let mut out = [0u8; Config::MAX_ENCODED];
+    let old_app_rename = Config { name: b"Alps", units: 0, weather_refresh: None };
+    let len = old_app_rename.encode(&mut out).unwrap();
+    let decoded = Config::decode(&out[..len]).unwrap();
+    assert_eq!(decoded.refresh_to_apply(), Ok(None), "no refusal, and nothing to store");
+    assert_eq!(decoded.known_refresh(), None);
 }
 
 #[test]
 fn config_still_accepts_a_trailing_byte_past_the_fields_we_know() {
     // A future field appended after `weather_refresh` must not make this build refuse the blob.
     let mut out = [0u8; Config::MAX_ENCODED];
-    let cfg = Config { name: b"OBC", units: 0, weather_refresh: Some(WeatherRefresh::Every15) };
+    let cfg = Config { name: b"OBC", units: 0, weather_refresh: Some(WeatherRefresh::Every15.as_u8()) };
     let len = cfg.encode(&mut out).unwrap();
     out[len] = 0x77;
     let decoded = Config::decode(&out[..len + 1]).unwrap();

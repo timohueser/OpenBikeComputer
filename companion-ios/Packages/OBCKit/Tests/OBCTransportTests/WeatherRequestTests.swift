@@ -17,7 +17,7 @@ private func fullContext() -> WeatherRequestContext {
     WeatherRequestContext(
         validity: [.position, .bearing, .speed, .bundle, .route],
         reason: [.scheduled, .retry],
-        refresh: .every30,
+        refreshRaw: WeatherRefresh.every30.rawValue,
         requestID: 0xDEAD_BEEF,
         // Freiburg im Breisgau, in the OBCW header's microdegrees.
         latitudeMicrodegrees: 47_999_008,
@@ -227,12 +227,30 @@ struct WeatherRefreshTests {
         }
     }
 
-    @Test func anUnknownRefreshByteFailsTheWholeContextRead() {
+    /// §11.8's read direction, on the context. Appending a fifth interval is an ordinary enum
+    /// append; under a direction-blind reject it would instead break every *shipped* app against
+    /// new firmware — the context read would throw and weather would be permanently dead. So an
+    /// unrecognised refresh byte rides through verbatim and reads as *unknown*, exactly like an
+    /// unrecognised `reason` bit.
+    @Test func anUnknownRefreshByteReadsAsUnknownRatherThanFailing() throws {
         var bytes = [UInt8](fullContext().encode())
         bytes[6] = 9
-        #expect(throws: WeatherRequestError.unknownRefresh(9)) {
-            try WeatherRequestContext(decoding: Data(bytes))
-        }
+
+        let decoded = try WeatherRequestContext(decoding: Data(bytes))
+        #expect(decoded.refresh == nil, "unknown — and specifically not Off and not the default")
+        #expect(decoded.refresh != .off)
+        #expect(decoded.refresh != .deviceDefault)
+        #expect(decoded.refreshRaw == 9, "the byte survives verbatim")
+        #expect([UInt8](decoded.encode()) == bytes, "and round-trips unchanged")
+        // Everything else in the read still decodes — one unknown byte must not cost the whole
+        // request, which is the entire point of tolerating it.
+        #expect(decoded.requestID == fullContext().requestID)
+        #expect(decoded.fix != nil)
+        #expect(decoded.bundle?.crc32 == 0x1234_5678)
+    }
+
+    @Test func aKnownRefreshByteReadsAsThatInterval() throws {
+        #expect(try WeatherRequestContext(decoding: fullContext().encode()).refresh == .every30)
     }
 }
 
@@ -380,10 +398,22 @@ struct ConfigWeatherRefreshTests {
         #expect(oldBlob.count == 2 + 8 + 1)
 
         let decoded = try ConfigObjectCodec.decode(oldBlob)
-        #expect(decoded.weatherRefresh == nil, "unspecified, which means device default")
-        #expect(decoded.weatherRefresh != .off)
+        #expect(decoded.weatherRefreshRaw == nil, "unspecified — no byte at all")
+        #expect(decoded.knownWeatherRefresh == nil)
+        #expect(decoded.knownWeatherRefresh != .off, "absent is not Off")
         #expect(decoded.effectiveWeatherRefresh == .every30)
         #expect(ConfigObjectCodec.encode(decoded) == oldBlob, "and it round-trips byte-exactly")
+    }
+
+    /// The **write**-direction meaning of *absent*, which is not the read-direction meaning: leave
+    /// the stored value alone. An old app renaming the device sends the 3-byte-plus-name blob, and
+    /// a device that read that as "the rider chose the default" would reset a rider who
+    /// deliberately chose `.off` back to 30-minute wakeups.
+    @Test func anAbsentRefreshOnAWriteMeansLeaveTheStoredValueAlone() throws {
+        let renameOnly = ConfigObjectCodec.encode(DeviceConfig(name: "Alps"))
+        let decoded = try ConfigObjectCodec.decode(renameOnly)
+        #expect(try decoded.weatherRefreshToApply() == nil, "no refusal, and nothing to store")
+        #expect(decoded.knownWeatherRefresh == nil)
     }
 
     /// **New app ↔ old firmware.** The new app appends the refresh byte; a firmware predating it
@@ -402,11 +432,22 @@ struct ConfigWeatherRefreshTests {
         #expect(blob[b + 2 + nameLen] == 1, "units still land where the old layout put them")
     }
 
-    @Test func anUnknownRefreshByteIsRefusedRatherThanDefaulted() {
+    /// §11.8's asymmetry, both halves, on one blob. The *write* direction refuses an interval the
+    /// device cannot honour; the *read* direction reports it as unknown and keeps going. A single
+    /// direction-blind rule cannot be right for both: rejecting the read is what would let a future
+    /// fifth interval stop a shipped app from so much as renaming its device, and tolerating the
+    /// write is what would tell a rider their choice was applied when it was discarded.
+    @Test func anUnknownRefreshByteIsRefusedOnAWriteAndToleratedOnARead() throws {
         var blob = [UInt8](ConfigObjectCodec.encode(DeviceConfig(name: "OBC", weatherRefresh: .off)))
         blob[blob.count - 1] = 200
-        #expect(throws: (any Error).self, "an interval we cannot honour is not a default") {
-            try ConfigObjectCodec.decode(Data(blob))
+
+        let decoded = try ConfigObjectCodec.decode(Data(blob))
+        #expect(decoded.weatherRefreshRaw == 200, "the byte survives verbatim")
+        #expect(decoded.knownWeatherRefresh == nil, "a reader sees unknown, not Off and not the default")
+        #expect(decoded.effectiveWeatherRefresh == nil, "and it is never dressed up as the default")
+        #expect(ConfigObjectCodec.encode(decoded) == Data(blob), "a rename must not flatten it")
+        #expect(throws: WeatherRequestError.unknownRefresh(200), "a device asked to adopt it must refuse") {
+            try decoded.weatherRefreshToApply()
         }
     }
 
@@ -420,7 +461,9 @@ struct ConfigWeatherRefreshTests {
     @Test func everyRefreshValueSurvivesTheBlob() throws {
         for refresh in WeatherRefresh.allCases {
             let config = DeviceConfig(name: "OBC", weatherRefresh: refresh)
-            #expect(try ConfigObjectCodec.decode(ConfigObjectCodec.encode(config)) == config)
+            let decoded = try ConfigObjectCodec.decode(ConfigObjectCodec.encode(config))
+            #expect(decoded == config)
+            #expect(try decoded.weatherRefreshToApply() == refresh, "a known interval is applicable")
         }
     }
 }

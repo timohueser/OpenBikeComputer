@@ -66,6 +66,11 @@ pub const REFRESH_OFF: u8 = 0;
 pub const REFRESH_EVERY_30: u8 = 2;
 /// Every 60 minutes.
 pub const REFRESH_EVERY_60: u8 = 3;
+/// A refresh byte **v1 does not define** (the enum stops at `4`). Not corruption — the shape of a
+/// *newer* firmware naming a sixth interval, which is the one thing §11.8 says a reader may never
+/// treat as fatal. Both fixtures carrying an unrecognised value use a byte well clear of `4`, so no
+/// plausible future append accidentally makes them legal and quietly retires the pin.
+pub const REFRESH_UNKNOWN: u8 = 9;
 
 /// The capability bit that says this device implements the whole §11 contract (`feature_bits` in
 /// the identity read). One bit covers the service, the context, object type 20 and the Config
@@ -85,6 +90,11 @@ pub const FULL_REQUEST_ID: u32 = 0x1188_0001;
 /// The no-fix context's nonce — a *different* request, so a decoder that reads the wrong file is
 /// visible rather than merely wrong about the flags.
 pub const NO_FIX_REQUEST_ID: u32 = 0x1188_0002;
+/// The unknown-refresh context's nonce. It and the refresh byte are the *only* two fields
+/// [`unknown_refresh`] changes from [`full`] — see that builder for why the pair is shaped that way.
+pub const UNKNOWN_REFRESH_REQUEST_ID: u32 = 0x1188_0003;
+/// The southern context's nonce, continuing the same counter.
+pub const SOUTHERN_REQUEST_ID: u32 = 0x1188_0004;
 /// Heading north-north-west at 7.1 m/s (≈ 25.6 km/h): plausible for a loaded touring bike, and
 /// neither value is symmetric enough to survive a byte swap unnoticed.
 pub const FULL_BEARING_DEG: u16 = 342;
@@ -106,6 +116,41 @@ pub const CONFIG_NAME: &str = "OBC Alpine";
 /// …and imperial units, so the refresh byte is pinned as sitting *after* a nonzero `units` rather
 /// than after a zero that a misaligned reader could mistake for padding.
 pub const CONFIG_UNITS: u8 = 1;
+
+/// El Chaltén, Patagonia — the **southern and western** hemispheres, in the same microdegrees.
+/// Read unsigned, `lat_udeg` becomes 4 245 636 407 (≈ 4245°N) and `lon_udeg` 4 222 081 175: not
+/// subtly wrong, but visibly impossible, which is the whole point of picking a sign fixture rather
+/// than trusting that the field is spelled `i32` in three languages.
+pub const SOUTHERN_LAT_UDEG: i32 = -49_330_889;
+pub const SOUTHERN_LON_UDEG: i32 = -72_886_121;
+/// A **pre-1970** fix, 1938-04-24T22:13:20Z. Read unsigned it is ≈ 1.8 × 10¹⁹ seconds — a device
+/// whose clock is 585 billion years ahead — so the two `i64` offsets (20 and 40) are pinned as
+/// signed independently of one another.
+pub const SOUTHERN_FIX_UTC: i64 = -1_000_000_000;
+/// …and the bundle it holds, one 60-minute interval earlier, still on the far side of the epoch.
+pub const SOUTHERN_BUNDLE_GENERATED_AT: i64 = SOUTHERN_FIX_UTC - 60 * 60;
+/// Heading south-south-west into the wind at 4.3 m/s. Neither value is symmetric, for the same
+/// reason the full context's are not.
+pub const SOUTHERN_BEARING_DEG: u16 = 197;
+pub const SOUTHERN_SPEED_DECI_MS: u16 = 43;
+/// The southern context's bundle group is **synthetic** — no checked-in OBCW carries a pre-1970
+/// `generated_at`, so this one cannot name a real file the way [`full`] does. It earns its keep on
+/// the other axis instead: both numbers have their top bit set, so a mirror that reads either as
+/// *signed* (a `getInt32`, a Swift `Int32`) gets `-2` and `-2147483647` rather than these.
+pub const SOUTHERN_BUNDLE_GENERATION: u32 = 0xFFFF_FFFE;
+pub const SOUTHERN_BUNDLE_CRC32: u32 = 0x8000_0001;
+
+/// The device name in `config-weather-refresh-unknown.bin` — an 11-byte name, one longer than
+/// `config-weather-refresh.bin`'s and `config-v1.bin`'s ten, so the trailing byte sits at a third
+/// distinct offset across the three Config fixtures.
+pub const CONFIG_UNKNOWN_NAME: &str = "OBC Horizon";
+/// **Metric**, deliberately unlike its sibling's imperial: an off-by-one reader lands on this zero
+/// and decodes a perfectly *known* `Off`, so the misalignment shows up as a wrong answer rather
+/// than as a second helping of "unknown" that the tolerant path would have accepted anyway.
+pub const CONFIG_UNKNOWN_UNITS: u8 = 0;
+/// A refresh byte no v1 device defines, and far enough from the enum's `0..=4` that it stays
+/// undefined. Distinct from [`REFRESH_UNKNOWN`] so a test cannot pass by reading the other file.
+pub const CONFIG_UNKNOWN_REFRESH: u8 = 200;
 
 // ============================ Builders ============================
 
@@ -196,8 +241,15 @@ fn held_bundle() -> (u32, i64, u32) {
 /// the same file support. Every validity bit is set, which is what makes this the fixture a second
 /// implementation is held to: no field is left at zero where a wrong offset could hide.
 pub fn full() -> Vec<u8> {
+    context(&full_fields())
+}
+
+/// [`full`]'s fields, so [`unknown_refresh`] can restate exactly two of them and inherit the rest.
+/// A second hand-written copy of the same sixteen values would let the pair drift apart, and the
+/// pair's whole claim is that they *don't*.
+fn full_fields() -> ContextFields {
     let (bundle_generation, bundle_generated_at, bundle_crc32) = held_bundle();
-    context(&ContextFields {
+    ContextFields {
         validity: VALID_POSITION | VALID_BEARING | VALID_SPEED | VALID_BUNDLE | VALID_ROUTE,
         reason: REASON_SCHEDULED,
         refresh: REFRESH_EVERY_30,
@@ -211,6 +263,55 @@ pub fn full() -> Vec<u8> {
         bundle_generation,
         bundle_generated_at,
         bundle_crc32,
+        ..ContextFields::RESTING
+    }
+}
+
+/// The **forward-compatibility** context: [`full`] to the byte, except that its `refresh` names an
+/// interval v1 never defined ([`REFRESH_UNKNOWN`]) — what a phone shipped today receives the day a
+/// firmware appends a fifth interval to the enum.
+///
+/// Deliberately identical to `full` everywhere else, including the bundle group that names a real
+/// OBCW file, so the two differ at exactly two offsets: 6 (the refresh byte) and 8..12 (the nonce
+/// that keeps the files distinguishable). That makes the claim checkable by byte comparison rather
+/// than by trust — an unknown interval must change *what the phone can say about the schedule* and
+/// nothing else at all.
+///
+/// The failure it catches is the one an adversarial review of #1214 found in the canonical Rust: a
+/// direction-blind reject of this byte. Refusing the read here would mean an ordinary enum append
+/// killed weather on every shipped app — and, applied to Config's copy of the same byte, would lock
+/// that app out of renaming the device too (§11.8).
+pub fn unknown_refresh() -> Vec<u8> {
+    context(&ContextFields { refresh: REFRESH_UNKNOWN, request_id: UNKNOWN_REFRESH_REQUEST_ID, ..full_fields() })
+}
+
+/// The **southern** context: a rider in Patagonia with a clock set before the epoch — negative
+/// latitude, negative longitude, and both `i64` timestamps negative.
+///
+/// Shaped for **sign coverage, not plausibility**, exactly as `track_log` is: no other fixture in
+/// the set carries a negative coordinate or a pre-1970 time, so until this file existed a mirror
+/// could read all four signed fields as unsigned and pass everything. Every one of those reads is
+/// visibly wrong here (see [`SOUTHERN_LAT_UDEG`] and [`SOUTHERN_FIX_UTC`]), and the bundle group
+/// runs the trap the other way — two `u32`s with the top bit set, which a *signed* read turns
+/// negative.
+///
+/// `route_id` is the one cleared group. A file with every bit set has nowhere for a wrong offset to
+/// hide but also nothing to say about the flag it isn't testing; `full` already covers the
+/// all-present case, so this one keeps a bit clear beside the four it exercises.
+pub fn southern() -> Vec<u8> {
+    context(&ContextFields {
+        validity: VALID_POSITION | VALID_BEARING | VALID_SPEED | VALID_BUNDLE,
+        reason: REASON_SCHEDULED,
+        refresh: REFRESH_EVERY_60,
+        request_id: SOUTHERN_REQUEST_ID,
+        lat_udeg: SOUTHERN_LAT_UDEG,
+        lon_udeg: SOUTHERN_LON_UDEG,
+        fix_utc: SOUTHERN_FIX_UTC,
+        bearing_deg: SOUTHERN_BEARING_DEG,
+        speed_deci_ms: SOUTHERN_SPEED_DECI_MS,
+        bundle_generation: SOUTHERN_BUNDLE_GENERATION,
+        bundle_generated_at: SOUTHERN_BUNDLE_GENERATED_AT,
+        bundle_crc32: SOUTHERN_BUNDLE_CRC32,
         ..ContextFields::RESTING
     })
 }

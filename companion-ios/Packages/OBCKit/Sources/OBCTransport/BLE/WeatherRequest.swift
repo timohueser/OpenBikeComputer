@@ -62,7 +62,7 @@ public struct WeatherRequestReason: OptionSet, Equatable, Sendable {
 ///    1  u8   encoded_len = 52          the writer's own declared length
 ///    2  u16  validity flags
 ///    4  u16  reason flags
-///    6  u8   refresh (WeatherRefresh)
+///    6  u8   refresh (WeatherRefresh, raw — unknown values tolerated)
 ///    7  u8   reserved = 0
 ///    8  u32  request_id
 ///   12  i32  lat_udeg                  ┐
@@ -95,9 +95,13 @@ public struct WeatherRequestContext: Equatable, Sendable {
     public var version: UInt8
     public var validity: WeatherRequestValidity
     public var reason: WeatherRequestReason
-    /// The device's configured refresh interval, echoed here so the phone can schedule its own work
-    /// without also reading Config.
-    public var refresh: WeatherRefresh
+    /// The device's configured refresh interval **as the byte arrived**, echoed here so the phone
+    /// can schedule its own work without also reading Config.
+    ///
+    /// Raw for the same reason `validity` and `reason` are raw words: this is a device → phone
+    /// read, so a value this build does not know is a *newer firmware*, not a malformed one. Use
+    /// `refresh` for the typed view and keep this for a verbatim round-trip (spec §11.8).
+    public var refreshRaw: UInt8
     /// The request nonce, stamped into the OBCW header's `request_id`. Monotonic per device boot and
     /// **stable across the retry ladder**, so retries of one request stay one request.
     public var requestID: UInt32
@@ -118,7 +122,7 @@ public struct WeatherRequestContext: Equatable, Sendable {
         version: UInt8 = WeatherRequestContext.currentVersion,
         validity: WeatherRequestValidity = [],
         reason: WeatherRequestReason = [],
-        refresh: WeatherRefresh = .deviceDefault,
+        refreshRaw: UInt8 = WeatherRefresh.deviceDefault.rawValue,
         requestID: UInt32 = 0,
         latitudeMicrodegrees: Int32 = 0,
         longitudeMicrodegrees: Int32 = 0,
@@ -133,7 +137,7 @@ public struct WeatherRequestContext: Equatable, Sendable {
         self.version = version
         self.validity = validity
         self.reason = reason
-        self.refresh = refresh
+        self.refreshRaw = refreshRaw
         self.requestID = requestID
         self.latitudeMicrodegrees = latitudeMicrodegrees
         self.longitudeMicrodegrees = longitudeMicrodegrees
@@ -152,6 +156,15 @@ public struct WeatherRequestContext: Equatable, Sendable {
     public static let empty = WeatherRequestContext()
 
     // MARK: The optional groups
+
+    /// The device's configured refresh interval, or `nil` when it named one this build does not
+    /// know — the *read* direction of §11.8.
+    ///
+    /// `nil` here means **unknown**, not `.off` and not the default: a phone that collapsed it to
+    /// either would misreport the rider's own setting back to them. It is not an error, though —
+    /// tomorrow's firmware appending a fifth interval must not cost a shipped app its entire
+    /// weather path over one byte it was never going to act on.
+    public var refresh: WeatherRefresh? { WeatherRefresh(wireByte: refreshRaw) }
 
     /// Where the rider was, or `nil` when `validity` claims no fix. Absence is a cleared flag, never
     /// a sentinel — without this guard "no fix yet" reads as the Gulf of Guinea.
@@ -249,7 +262,7 @@ public struct WeatherRequestContext: Equatable, Sendable {
         bytes[Offset.encodedLength] = UInt8(Self.encodedLength)
         bytes.writeLE(validity.rawValue, at: Offset.validity)
         bytes.writeLE(reason.rawValue, at: Offset.reason)
-        bytes[Offset.refresh] = refresh.rawValue
+        bytes[Offset.refresh] = refreshRaw
         bytes[Offset.reserved0] = 0
         bytes.writeLE(requestID, at: Offset.requestID)
         bytes.writeLE(UInt32(bitPattern: latitudeMicrodegrees), at: Offset.latitude)
@@ -272,10 +285,12 @@ public struct WeatherRequestContext: Equatable, Sendable {
     /// **ignored**, so a future firmware that appends a field keeps working against a shipped app —
     /// the same append-only rule the identity read and Config live under.
     ///
-    /// Reserved bytes and unknown validity/reason bits are ignored, not rejected. An out-of-range
-    /// `refresh` byte *is* an error: absent means "the writer never said", whereas an unknown value
-    /// means it named an interval this build cannot honour, and reporting the default back to the
-    /// rider would claim a setting that was discarded.
+    /// Reserved bytes, unknown validity/reason bits and an unknown `refresh` byte are all
+    /// **ignored, not rejected**. The refresh byte belongs in that list precisely because this is a
+    /// device → phone read (§11.8): a value this build cannot name is a newer firmware naming a
+    /// newer interval, and failing the read over it would let one ordinary enum append switch
+    /// weather off permanently on every already-shipped app. It rides through verbatim and reads as
+    /// `nil` from `refresh`.
     public init(decoding data: Data) throws {
         guard data.count >= Self.minimumEncodedLength else { throw WeatherRequestError.truncated }
         let base = data.startIndex
@@ -285,15 +300,11 @@ public struct WeatherRequestContext: Equatable, Sendable {
         guard declared >= Self.encodedLength, data.count >= declared else {
             throw WeatherRequestError.invalidLength
         }
-        let refreshByte = data[base + Offset.refresh]
-        guard let refresh = WeatherRefresh(wireByte: refreshByte) else {
-            throw WeatherRequestError.unknownRefresh(refreshByte)
-        }
         self.init(
             version: data[base + Offset.version],
             validity: WeatherRequestValidity(rawValue: data.readLE(at: base + Offset.validity)),
             reason: WeatherRequestReason(rawValue: data.readLE(at: base + Offset.reason)),
-            refresh: refresh,
+            refreshRaw: data[base + Offset.refresh],
             requestID: data.readLE(at: base + Offset.requestID),
             latitudeMicrodegrees: Int32(bitPattern: data.readLE(at: base + Offset.latitude)),
             longitudeMicrodegrees: Int32(bitPattern: data.readLE(at: base + Offset.longitude)),
@@ -308,7 +319,8 @@ public struct WeatherRequestContext: Equatable, Sendable {
     }
 }
 
-/// Why one weather-request read did not produce a context.
+/// Why one weather-request read did not produce a context — plus the one Config-write refusal
+/// §11.8 defines (`unknownRefresh`), which shares this vocabulary because it is the same wire byte.
 ///
 /// The decode cases split what `obc_ble`'s `DescriptorError` folds into one `Truncated`:
 /// `.truncated` is "not even the length prefix arrived", `.invalidLength` is "byte 1 and the read
@@ -324,6 +336,14 @@ public enum WeatherRequestError: Error, Equatable, Sendable {
     /// Fewer than the two prefix bytes arrived.
     case truncated
     /// A refresh byte this build does not know — an interval it cannot honour, not a default.
+    ///
+    /// The mirror of `obc_ble::descriptor::DescriptorError::UnknownRefresh`, and its own case for
+    /// the same reason: it is the one decode failure whose correct handling depends on the
+    /// **direction of travel** (§11.8). It is thrown by exactly one caller,
+    /// `DeviceConfig.weatherRefreshToApply()` — the phone → device write. Both read directions
+    /// (a context read, a Config read) report unknown and carry on, so this case never surfaces
+    /// from `WeatherRequestContext(decoding:)`; a build that threw it there would take the strict
+    /// rule to a direction that cannot survive it.
     case unknownRefresh(UInt8)
     case readFailed
     case cancelled

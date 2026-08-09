@@ -420,7 +420,8 @@ fn config_weather_refresh_vector() {
     let config = Config::decode(&bytes).expect("valid config");
     assert_eq!(config.name, b"OBC Alpine");
     assert_eq!(config.units, 1, "imperial — the refresh byte follows a *nonzero* units byte");
-    assert_eq!(config.weather_refresh, Some(WeatherRefresh::Every60));
+    assert_eq!(config.known_refresh(), Some(WeatherRefresh::Every60));
+    assert_eq!(config.weather_refresh, Some(WeatherRefresh::Every60.as_u8()), "the raw byte");
     assert_eq!(bytes.len(), 2 + config.name.len() + 2, "name_len · name · units · weather_refresh");
 
     let mut out = [0u8; Config::MAX_ENCODED];
@@ -475,9 +476,16 @@ fn weather_request_context_vectors_round_trip() {
         VALID_BUNDLE, VALID_POSITION, VALID_ROUTE, VALID_SPEED, WEATHER_REQUEST_CONTEXT_VERSION,
     };
 
-    for name in
-        ["weather-request-context-full.bin", "weather-request-context-empty.bin", "weather-request-context-no-fix.bin"]
-    {
+    for name in [
+        "weather-request-context-full.bin",
+        "weather-request-context-empty.bin",
+        "weather-request-context-no-fix.bin",
+        // Both #1214 additions belong in this loop too: whatever else they pin, they are ordinary
+        // v1 values, and a codec that decoded them into something it could not re-encode verbatim
+        // would fail here before any of their own assertions ran.
+        "weather-request-context-unknown-refresh.bin",
+        "weather-request-context-southern.bin",
+    ] {
         let bytes = fixture(name);
         assert_eq!(bytes.len(), WeatherRequestContext::ENCODED_LEN, "{name} is a 52-byte v1 value");
         let ctx = WeatherRequestContext::decode(&bytes).unwrap_or_else(|e| panic!("{name} rejected: {e:?}"));
@@ -491,7 +499,7 @@ fn weather_request_context_vectors_round_trip() {
     let full = WeatherRequestContext::decode(&fixture("weather-request-context-full.bin")).unwrap();
     assert_eq!(full.validity, VALID_POSITION | VALID_BEARING | VALID_SPEED | VALID_BUNDLE | VALID_ROUTE);
     assert!(full.because(REASON_SCHEDULED));
-    assert_eq!(full.refresh, WeatherRefresh::Every30);
+    assert_eq!(full.refresh(), Some(WeatherRefresh::Every30));
     assert_eq!(full.request_id, 0x1188_0001);
     assert_eq!((full.lat_udeg, full.lon_udeg), (47_999_008, 7_842_104), "Freiburg, in OBCW microdegrees");
     assert_eq!((full.bearing_deg, full.speed_deci_ms), (342, 71));
@@ -505,16 +513,136 @@ fn weather_request_context_vectors_round_trip() {
     let empty = WeatherRequestContext::decode(&fixture("weather-request-context-empty.bin")).unwrap();
     assert_eq!(empty, WeatherRequestContext::EMPTY);
     assert!(!empty.has(VALID_POSITION) && !empty.has(VALID_BUNDLE));
-    assert_eq!(empty.refresh, WeatherRefresh::DEFAULT);
+    assert_eq!(empty.refresh(), Some(WeatherRefresh::DEFAULT));
 
     // The urgent request with nothing behind it — and a *scheduled* refresh of Off, which must not
     // read as a device that never asks.
     let no_fix = WeatherRequestContext::decode(&fixture("weather-request-context-no-fix.bin")).unwrap();
     assert_eq!(no_fix.validity, 0, "absence is a cleared flag, not a sentinel coordinate");
     assert!(no_fix.because(REASON_URGENT) && no_fix.because(REASON_NO_BUNDLE));
-    assert_eq!(no_fix.refresh, WeatherRefresh::Off);
+    assert_eq!(no_fix.refresh(), Some(WeatherRefresh::Off));
     assert_eq!(no_fix.request_id, 0x1188_0002, "a different request from the full one");
     assert_ne!(no_fix.request_id, full.request_id);
+}
+
+/// The context read whose `refresh` names an interval this build does not know (#1214, §11.8) —
+/// the **read** direction, where an unrecognised value is never fatal.
+///
+/// Three things have to hold at once, and the production codec is the only place they can be checked
+/// together: the read decodes, `refresh()` reports *unknown* rather than guessing, and the raw byte
+/// survives a re-encode **verbatim**. That last one is what makes the tolerance honest rather than
+/// merely quiet — a codec that normalised the byte to the default on the way back out would agree
+/// with every other assertion here and still misreport the rider's setting the moment the value was
+/// forwarded anywhere.
+///
+/// The failure this guards against is the one an adversarial review of #1214 found: a direction-blind
+/// reject. Under it, appending a fifth interval — an ordinary enum append — would have taken weather
+/// permanently dead on every shipped app the day the firmware shipped it.
+#[test]
+fn an_unknown_refresh_byte_is_tolerated_on_a_context_read() {
+    use obc_ble::weather_request::{WeatherRefresh, WeatherRequestContext, REASON_SCHEDULED, VALID_BUNDLE};
+
+    let bytes = fixture("weather-request-context-unknown-refresh.bin");
+    let ctx = WeatherRequestContext::decode(&bytes).expect("an unknown interval is not a malformed read");
+
+    assert_eq!(ctx.refresh_raw, 9, "carried as it arrived");
+    assert!(WeatherRefresh::from_u8(ctx.refresh_raw).is_err(), "…and this build genuinely cannot name it");
+    assert_eq!(ctx.refresh(), None, "unknown — not Off, not the default, which would misreport the rider");
+    assert_ne!(ctx.refresh(), Some(WeatherRefresh::Off));
+    assert_ne!(ctx.refresh(), Some(WeatherRefresh::DEFAULT));
+    assert_eq!(&ctx.encode()[..], &bytes[..], "the raw byte round-trips verbatim");
+
+    // The rest of the request is untouched by the byte the phone could not name: this is still a
+    // rider on route 7 holding a real bundle and due for its successor. An implementation that
+    // treated the value as malformed would have thrown all of that away.
+    let full = WeatherRequestContext::decode(&fixture("weather-request-context-full.bin")).unwrap();
+    assert!(ctx.because(REASON_SCHEDULED) && ctx.has(VALID_BUNDLE));
+    assert_eq!(
+        ctx,
+        WeatherRequestContext { refresh_raw: ctx.refresh_raw, request_id: ctx.request_id, ..full },
+        "identical to the full context but for the refresh byte and the nonce"
+    );
+    assert_eq!(full.refresh(), Some(WeatherRefresh::Every30), "…and the sibling still names its interval");
+}
+
+/// The southern context (#1214): the signed fields, through the production codec.
+///
+/// `obc-vectors` checks the bytes; this checks that `decode` sign-extends them. Every value below is
+/// one a wrong-signedness read gets visibly wrong — a latitude of 4245°, a clock 585 billion years
+/// ahead — and the two `u32`s at the end run the trap the other way, so a codec that "fixed" the
+/// signedness by flipping every field fails just as loudly.
+#[test]
+fn the_southern_context_decodes_its_signed_fields() {
+    use obc_ble::weather_request::{
+        WeatherRefresh, WeatherRequestContext, VALID_BEARING, VALID_BUNDLE, VALID_POSITION, VALID_ROUTE, VALID_SPEED,
+    };
+
+    let bytes = fixture("weather-request-context-southern.bin");
+    let ctx = WeatherRequestContext::decode(&bytes).unwrap();
+
+    assert_eq!((ctx.lat_udeg, ctx.lon_udeg), (-49_330_889, -72_886_121), "Patagonia — south and west");
+    assert!(ctx.lat_udeg < 0 && ctx.lon_udeg < 0, "read unsigned these are ≈ 4245°N / 4222°E");
+    assert_eq!(ctx.fix_utc, -1_000_000_000, "a pre-1970 fix");
+    assert_eq!(ctx.bundle_generated_at, -1_000_003_600, "…and an older bundle, at its own offset");
+    assert!(ctx.fix_utc < 0 && ctx.bundle_generated_at < 0);
+    assert_eq!(ctx.fix_utc - ctx.bundle_generated_at, 60 * 60, "one 60-minute interval, on the far side of zero");
+    assert_eq!(ctx.refresh(), Some(WeatherRefresh::Every60), "…which is the interval it says it is on");
+
+    // The unsigned pair: a codec reading these as i32 gets -2 and -2147483647.
+    assert_eq!(ctx.bundle_generation, 0xFFFF_FFFE);
+    assert_eq!(ctx.bundle_crc32, 0x8000_0001);
+
+    assert!(ctx.has(VALID_POSITION) && ctx.has(VALID_BEARING) && ctx.has(VALID_SPEED) && ctx.has(VALID_BUNDLE));
+    assert!(!ctx.has(VALID_ROUTE), "the one cleared group — no route is active");
+    assert_eq!(&ctx.encode()[..], &bytes[..], "re-encode");
+}
+
+/// Config's copy of the same byte (#1214, §11.8) — and the one place the rule is **not** tolerant.
+///
+/// One blob, read twice, two answers. `known_refresh()` is the read direction: `None`, meaning
+/// *unknown*, indistinguishable in type from an absent field because neither is something this build
+/// can show a rider — and, critically, not an error, or a phone facing a newer device could no longer
+/// read Config even to rename it. `refresh_to_apply()` is the write direction: a device asked to
+/// adopt an interval it cannot honour refuses the write whole, because storing the default, `Off`, or
+/// the previous value would all tell the rider their choice was applied when it was discarded.
+#[test]
+fn an_unknown_config_refresh_is_read_tolerantly_and_written_strictly() {
+    use obc_ble::descriptor::DescriptorError;
+    use obc_ble::weather_request::WeatherRefresh;
+
+    let bytes = fixture("config-weather-refresh-unknown.bin");
+    let config = Config::decode(&bytes).expect("decode is direction-blind — the blob itself is well-formed");
+    assert_eq!(config.name, b"OBC Horizon");
+    assert_eq!(config.units, 0, "metric — so an off-by-one reader decodes a *known* `Off` and is caught");
+    assert_eq!(config.weather_refresh, Some(200), "the raw byte, carried as it arrived");
+
+    // Read: unknown, never a substitute.
+    assert_eq!(config.known_refresh(), None, "unknown — not Off, not the default");
+    // Write: refused, and the refusal names the byte so a log says which interval was asked for.
+    assert!(
+        matches!(config.refresh_to_apply(), Err(DescriptorError::UnknownRefresh(200))),
+        "a device cannot store an interval it cannot honour"
+    );
+
+    // `known_refresh()` collapses unknown and absent, but the *raw* field does not — and the write
+    // direction depends on that difference: absent means "leave the stored value alone" (`Ok(None)`),
+    // unknown means "refuse". A codec that lost the distinction would reset a rider who had chosen
+    // `Off` back to 30-minute wakeups on the next rename.
+    let absent = Config { weather_refresh: None, ..config };
+    assert_eq!(absent.known_refresh(), None, "same answer to a reader…");
+    assert!(matches!(absent.refresh_to_apply(), Ok(None)), "…and a different one to a writer");
+    assert_ne!(absent.weather_refresh, config.weather_refresh);
+
+    // The byte survives a re-encode verbatim, which is what keeps the tolerance honest: a host that
+    // read this Config and wrote it back must not silently swap the interval for one it happens to
+    // know. And a *known* value still decodes as itself — tolerance is not blanket indifference.
+    let mut out = [0u8; Config::MAX_ENCODED];
+    let len = Config::encode(&config, &mut out).unwrap();
+    assert_eq!(&out[..len], &bytes[..], "re-encode");
+    let known_bytes = fixture("config-weather-refresh.bin");
+    let known = Config::decode(&known_bytes).unwrap();
+    assert_eq!(known.known_refresh(), Some(WeatherRefresh::Every60));
+    assert_eq!(known.refresh_to_apply().unwrap(), Some(WeatherRefresh::Every60), "…and it applies as a write");
 }
 
 /// The weather bundle's upload identity (§4.1 / §11): type `20`, singleton object id `0`. Pinned

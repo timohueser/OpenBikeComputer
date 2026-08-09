@@ -484,6 +484,7 @@ WeatherRequestContext v1 (52 bytes, little-endian) — spec §11:
   validity bits: 0 position · 1 bearing · 2 speed · 3 bundle · 4 route
   reason bits:   0 scheduled · 1 urgent · 2 retry · 3 no/expired bundle · 4 out of area
   refresh:       0 Off · 1 15 min · 2 30 min (default) · 3 60 min · 4 120 min
+                 (held raw — see the direction rule below)
 ```
 
 **Optional groups are guarded by flags, never by sentinel values.** A cleared
@@ -493,9 +494,12 @@ exposes them as computed optionals (`fix`, `bundle`, `routeID`, `bearingDegrees`
 `speedMetersPerSecond`) — reading the flat wire storage past its flag is how a rider
 ends up at 0°N 0°E. **Unknown validity/reason bits and the reserved bytes are ignored,
 not rejected**: those bits are how a later firmware says something this build was
-never going to act on. An out-of-range `refresh` byte **is** an error — it names an
-interval this build cannot honour, and reporting the default back to the rider would
-claim a setting that was discarded.
+never going to act on. **An out-of-range `refresh` byte is in that list too** — the
+context is a device → phone read, so an interval this build cannot name is a *newer
+firmware*, not a malformed one. It rides through verbatim in `refreshRaw` and reads
+as `nil` from `refresh` — *unknown*, never `.off` and never the default, since
+collapsing it to either would misreport the rider's own setting back to them. See
+§11.8's direction rule under Delta 1.
 
 **Length-declared, append-only.** Byte 1 states how many bytes the writer produced. A
 read that delivered fewer is refused rather than half-decoded; bytes **past 52 are
@@ -537,14 +541,29 @@ Character boundary at encode and the rename UI limits to the same, so an
 over-long name can't overflow the `u16` length field into a corrupt blob.
 
 **The blob is append-only, and absence ≠ `Off`.** WX3 appends a trailing
-`weather_refresh u8` after `units` (same enum as the request context). A blob that
-carries **no such byte** means *unspecified* — the device default, 30 minutes — and
-**never** `Off`: an app build predating the field round-trips `Config` to rename the
-device and writes the 3-byte-plus-name blob, and reading that as "the rider chose
-Off" would silently disable weather on a rename. `DeviceConfig.weatherRefresh` is
-therefore an `Optional`, with `effectiveWeatherRefresh` for the "what will the device
-actually do" question. An **unknown** refresh byte is malformed (rejected), not a
-default; trailing bytes past it are ignored, as always.
+`weather_refresh u8` after `units` (same enum as the request context), held as the
+**raw byte** in `DeviceConfig.weatherRefreshRaw` so an unrecognised value survives a
+round-trip. A blob that carries **no such byte** means *unspecified*, and what that
+means depends on the direction:
+
+- **Reading** a device's `Config`, absent = the device is on its **default**
+  (30 minutes) — `effectiveWeatherRefresh` answers that question, and is `nil` only
+  when the device named an interval this build does not know.
+- **Writing** a device's `Config`, absent = **leave the stored value alone**, not
+  "reset to the default". An app build predating the field round-trips `Config` to
+  rename the device and writes the 3-byte-plus-name blob; a device that took that as
+  a choice would reset a rider who deliberately picked `Off`.
+
+**An unknown refresh byte is direction-dependent too (spec §11.8), and decoding is
+direction-blind — it never rejects.** A *read* tolerates it: `knownWeatherRefresh`
+reports `nil`, exactly as an unrecognised `reason` bit is reported. Only a *write*
+refuses, via `weatherRefreshToApply()` throwing
+`WeatherRequestError.unknownRefresh` (the mirror of Rust's
+`DescriptorError::UnknownRefresh`), because a device cannot honour an interval it
+does not know and substituting one would report a setting the rider never chose.
+Taking the strict rule to both directions is what would let appending a fifth
+interval — an ordinary enum append — stop a shipped app from so much as renaming its
+device. Trailing bytes past the refresh byte are ignored, as always.
 
 ## Delta 2 — GPX **and** TCX import
 
@@ -568,7 +587,7 @@ The domain types `B1` finalizes live in `OBCKit`'s `OBCDomain` module (minimal
 |---|---|---|
 | `OBCProtocol.version` | `OBCProtocol.swift` | the pinned `protocol_version` |
 | `DeviceInfo` | `DeviceInfo.swift` | DIS mirror (name, fw/hw, serial, protocolVersion) + the identity read's trailing fields (`storeEpoch`, `obcmVersion`, `featureBits` → `supportsWeather`) |
-| `DeviceConfig` | `DeviceConfig.swift` | `Config` blob — **incl. `name`** (Delta 1) and the optional `weatherRefresh` |
+| `DeviceConfig` | `DeviceConfig.swift` | `Config` blob — **incl. `name`** (Delta 1) and the optional raw `weatherRefreshRaw` |
 | `WeatherRefresh` | `WeatherRefresh.swift` | the scheduled-request interval, on the wire in both `Config` and the request context |
 | `RouteSummary` / `RouteBlob` | `Route.swift` | route metadata + opaque binary payload |
 | `RouteDetail` | `Route.swift` | detail read for E2 (waypoints + elevation profile) — pinned: decoded from the downloaded OBCR v3 route object |

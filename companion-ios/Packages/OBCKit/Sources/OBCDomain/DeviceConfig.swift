@@ -24,25 +24,57 @@ public struct DeviceConfig: Equatable, Sendable {
     /// Display unit system.
     public var units: Units
     /// How often the device raises a scheduled weather request (WX3 / #1188) — the trailing,
-    /// optional Config field.
+    /// optional Config field, held **as the raw byte** so a value this build does not recognise
+    /// survives a round-trip and each direction can apply its own rule (spec §11.8). Mirrors
+    /// `obc_ble::descriptor::Config::weather_refresh`.
     ///
-    /// `nil` means the blob carried **no such byte**, which under the append-only rule means
-    /// *device default* (`WeatherRefresh.deviceDefault`), **not** `.off`. That distinction is the
-    /// whole reason this is an `Optional`: an app build predating WX3 round-trips Config to rename
-    /// the device and writes the 3-byte-plus-name blob, and a device that read that as "the rider
-    /// chose Off" would silently disable weather on a rename.
-    public var weatherRefresh: WeatherRefresh?
+    /// `nil` means the blob carried **no such byte** — and *absent* is not `.off`, nor does it mean
+    /// the same thing in both directions:
+    ///
+    /// - **Reading** a device's Config, absent means the device is on its **default**
+    ///   (`WeatherRefresh.deviceDefault`, 30 minutes) — see `effectiveWeatherRefresh`.
+    /// - **Writing** a device's Config, absent means **leave the stored value untouched**; it is
+    ///   not a request to reset anything. This is the load-bearing one: an app build predating WX3
+    ///   round-trips Config to rename the device and writes the 3-byte-plus-name blob, and a device
+    ///   that took that as "the rider chose the default" would reset a rider who deliberately chose
+    ///   `.off` back to 30-minute wakeups.
+    ///
+    /// Read it through `knownWeatherRefresh`; apply a write through `weatherRefreshToApply()`.
+    public var weatherRefreshRaw: UInt8?
 
+    /// The ordinary initializer, taking an interval this build knows.
     public init(name: String, units: Units = .metric, weatherRefresh: WeatherRefresh? = nil) {
-        self.name = name
-        self.units = units
-        self.weatherRefresh = weatherRefresh
+        self.init(name: name, units: units, weatherRefreshRaw: weatherRefresh?.rawValue)
     }
 
-    /// The interval the device will actually use: the explicit setting, or the documented default
-    /// when the blob said nothing. Read this rather than defaulting a `nil` at each call site —
-    /// that is exactly where an `?? .off` would slip in and silently disable weather.
-    public var effectiveWeatherRefresh: WeatherRefresh { weatherRefresh ?? .deviceDefault }
+    /// The raw-byte initializer — how the codec rebuilds a Config off the wire, including a refresh
+    /// byte this build cannot name. Deliberately *not* defaulted, so `DeviceConfig(name:)` still
+    /// resolves unambiguously to the typed initializer above.
+    public init(name: String, units: Units = .metric, weatherRefreshRaw: UInt8?) {
+        self.name = name
+        self.units = units
+        self.weatherRefreshRaw = weatherRefreshRaw
+    }
+
+    /// The refresh interval **as a reader sees it**: `nil` when the field was absent *or* names an
+    /// interval this build does not know (§11.8). Both collapse to "nothing this build can show",
+    /// and neither is `.off`. Mirrors `obc_ble::descriptor::Config::known_refresh`.
+    public var knownWeatherRefresh: WeatherRefresh? {
+        weatherRefreshRaw.flatMap(WeatherRefresh.init(wireByte:))
+    }
+
+    /// The interval the device will actually use, as far as *this* build can tell: the explicit
+    /// setting, or the documented default when the blob said nothing. Read this rather than
+    /// defaulting a `nil` at each call site — that is exactly where an `?? .off` would slip in and
+    /// silently disable weather.
+    ///
+    /// `nil` **only** when the device named an interval this build does not know. Collapsing that
+    /// case into the default here would be the same lie in a friendlier wrapper: the app would show
+    /// the rider "every 30 minutes" for a setting they never chose and cannot see.
+    public var effectiveWeatherRefresh: WeatherRefresh? {
+        guard let raw = weatherRefreshRaw else { return .deviceDefault }
+        return WeatherRefresh(wireByte: raw)
+    }
 
     /// Firmware S0 caps the device name at **48 UTF-8 bytes** (spec §7.3 /
     /// `OBCProtocol.md` → Delta 1). The `Config` codec truncates to this at

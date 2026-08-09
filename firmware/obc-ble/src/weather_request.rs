@@ -106,9 +106,21 @@ impl WeatherRefresh {
         self as u8
     }
 
-    /// Decode a refresh byte. An unknown value is **not** an error the caller can paper over with a
-    /// default: it means the peer configured an interval this build does not know, and silently
-    /// substituting 30 minutes would misreport the device's own setting back to the rider.
+    /// Decode a refresh byte. An unknown value is never silently substituted with the default —
+    /// that would misreport the peer's own setting — but what a caller *does* with the error is
+    /// **direction-dependent**, and that asymmetry is the whole rule (spec §11.8):
+    ///
+    /// - **Phone → device (a Config write)** is the one direction that must **reject**. The device
+    ///   is being asked to adopt an interval it cannot honour, and storing anything else would tell
+    ///   the rider their choice was applied when it was discarded. See
+    ///   [`Config::refresh_to_apply`].
+    /// - **Device → phone** (the context read, a Config read) must **tolerate**: an unknown value
+    ///   there is a *newer firmware naming an interval this build predates*. Treating it as fatal
+    ///   would mean that appending a fifth interval — an ordinary enum append — silently killed
+    ///   weather on every shipped app, and locked it out of Config badly enough that it could no
+    ///   longer even rename the device. Those readers take [`Config::known_refresh`] /
+    ///   [`WeatherRequestContext::refresh`], which report *unknown* exactly as an unrecognised
+    ///   `reason` bit is reported: ignored, not fatal.
     pub const fn from_u8(v: u8) -> Result<Self, DescriptorError> {
         Ok(match v {
             0 => Self::Off,
@@ -116,7 +128,7 @@ impl WeatherRefresh {
             2 => Self::Every30,
             3 => Self::Every60,
             4 => Self::Every120,
-            other => return Err(DescriptorError::UnknownStatus(other)),
+            other => return Err(DescriptorError::UnknownRefresh(other)),
         })
     }
 
@@ -150,8 +162,12 @@ pub struct WeatherRequestContext {
     /// Why this request is due — advisory scheduling help for the phone, never an upload gate. A
     /// phone that recognises none of the bits still performs the full fetch.
     pub reason: u16,
-    /// The device's configured refresh interval, so the phone need not read Config too.
-    pub refresh: WeatherRefresh,
+    /// The device's configured refresh interval, **as the byte arrived**, so the phone need not
+    /// read Config too. Raw for the same reason [`validity`](Self::validity) and
+    /// [`reason`](Self::reason) are raw words: this is a device → phone read, so a value this build
+    /// does not know is a *newer firmware*, not a malformed one. Use [`refresh`](Self::refresh) for
+    /// the typed view and keep this for a verbatim round-trip. Spec §11.8.
+    pub refresh_raw: u8,
     /// The request nonce, echoed into the OBCW header's `request_id`. Monotonic per device boot;
     /// **stable across the retry ladder** so retries of one request stay one request.
     pub request_id: u32,
@@ -208,7 +224,7 @@ impl WeatherRequestContext {
         version: WEATHER_REQUEST_CONTEXT_VERSION,
         validity: 0,
         reason: 0,
-        refresh: WeatherRefresh::DEFAULT,
+        refresh_raw: WeatherRefresh::DEFAULT.as_u8(),
         request_id: 0,
         lat_udeg: 0,
         lon_udeg: 0,
@@ -229,6 +245,17 @@ impl WeatherRequestContext {
         self.reason & flag != 0
     }
 
+    /// The configured refresh interval, or `None` when the device named one this build does not
+    /// know — the read direction of §11.8. `None` here means *unknown*, not `Off` and not the
+    /// default: a phone that collapsed it to either would misreport the rider's own setting back
+    /// to them.
+    pub const fn refresh(&self) -> Option<WeatherRefresh> {
+        match WeatherRefresh::from_u8(self.refresh_raw) {
+            Ok(refresh) => Some(refresh),
+            Err(_) => None,
+        }
+    }
+
     /// Encode the fixed 52-byte v1 value. Reserved bytes are written zero; see [`decode`](Self::decode)
     /// for why readers ignore rather than reject them.
     pub fn encode(&self) -> [u8; Self::ENCODED_LEN] {
@@ -237,7 +264,7 @@ impl WeatherRequestContext {
         b[Self::OFF_ENCODED_LEN] = Self::ENCODED_LEN as u8;
         b[Self::OFF_VALIDITY..Self::OFF_VALIDITY + 2].copy_from_slice(&self.validity.to_le_bytes());
         b[Self::OFF_REASON..Self::OFF_REASON + 2].copy_from_slice(&self.reason.to_le_bytes());
-        b[Self::OFF_REFRESH] = self.refresh.as_u8();
+        b[Self::OFF_REFRESH] = self.refresh_raw;
         b[Self::OFF_RESERVED0] = 0;
         b[Self::OFF_REQUEST_ID..Self::OFF_REQUEST_ID + 4].copy_from_slice(&self.request_id.to_le_bytes());
         b[Self::OFF_LAT..Self::OFF_LAT + 4].copy_from_slice(&self.lat_udeg.to_le_bytes());
@@ -279,7 +306,9 @@ impl WeatherRequestContext {
             version: data[Self::OFF_VERSION],
             validity: rd_u16(data, Self::OFF_VALIDITY),
             reason: rd_u16(data, Self::OFF_REASON),
-            refresh: WeatherRefresh::from_u8(data[Self::OFF_REFRESH])?,
+            // Never rejected: see `refresh_raw`. A byte this build does not know rides through
+            // verbatim and reads as `None` from `refresh()`.
+            refresh_raw: data[Self::OFF_REFRESH],
             request_id: rd_u32(data, Self::OFF_REQUEST_ID),
             lat_udeg: rd_u32(data, Self::OFF_LAT) as i32,
             lon_udeg: rd_u32(data, Self::OFF_LON) as i32,

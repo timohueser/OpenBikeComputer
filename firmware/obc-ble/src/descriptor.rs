@@ -27,6 +27,12 @@ pub enum DescriptorError {
     UnknownType(u8),
     /// A status/discriminator byte is not a known value.
     UnknownStatus(u8),
+    /// A `weather_refresh` byte names an interval this build does not know (§11.8). Its own variant
+    /// rather than a `UnknownStatus`, because it is the one decode failure whose *correct handling
+    /// depends on the direction of travel*: fatal on a phone → device Config write, ignorable on
+    /// either device → phone read. A caller that cannot tell the two apart cannot implement §11.8,
+    /// and sharing a discriminant with every other unknown byte is exactly what would hide that.
+    UnknownRefresh(u8),
 }
 
 /// The kind of object a bulk transfer carries.
@@ -1026,13 +1032,21 @@ pub struct Config<'a> {
     /// `0 = metric · 1 = imperial`.
     pub units: u8,
     /// How often the device raises a scheduled weather request (WX3, #1188) — the trailing,
-    /// optional field. `None` means the blob carried no such byte, which under the append-only rule
-    /// means **device default** ([`WeatherRefresh::DEFAULT`]); it does not mean `Off`.
+    /// optional field, held **as the raw byte** so an unrecognised value survives a round-trip and
+    /// each direction can apply its own rule (§11.8). `None` means the blob carried no such byte.
     ///
-    /// That distinction is the whole reason this is an `Option`: an old app round-tripping Config
-    /// to rename the device writes a 3-byte blob, and a device that read that as "the rider chose
-    /// Off" would silently disable weather on a rename.
-    pub weather_refresh: Option<WeatherRefresh>,
+    /// **Absent is not `Off`, and what absent *means* depends on the direction:**
+    ///
+    /// - **Reading** a device's Config, absent means the device is on its **default**
+    ///   ([`WeatherRefresh::DEFAULT`], 30 minutes).
+    /// - **Writing** a device's Config, absent means **leave the stored value untouched** — it is
+    ///   not a request to reset anything. This is the load-bearing one: an old app that renames the
+    ///   device writes a 3-byte blob, and a device that took that as "the rider chose the default"
+    ///   would reset a rider who had deliberately chosen `Off` back to 30-minute wakeups.
+    ///
+    /// Use [`known_refresh`](Self::known_refresh) to read it and
+    /// [`refresh_to_apply`](Self::refresh_to_apply) to apply a write.
+    pub weather_refresh: Option<u8>,
 }
 
 impl<'a> Config<'a> {
@@ -1055,7 +1069,7 @@ impl<'a> Config<'a> {
         out[2..2 + self.name.len()].copy_from_slice(self.name);
         out[2 + self.name.len()] = self.units;
         if let Some(refresh) = self.weather_refresh {
-            out[3 + self.name.len()] = refresh.as_u8();
+            out[3 + self.name.len()] = refresh;
         }
         Some(len)
     }
@@ -1065,10 +1079,12 @@ impl<'a> Config<'a> {
     /// (append-only rule). `None` = malformed (the board rejects it with an ATT error rather than
     /// silently storing it).
     ///
-    /// An **unknown** `weather_refresh` byte is malformed, not "absent": absent means the writer
-    /// never mentioned refresh, whereas an out-of-range value means it asked for an interval this
-    /// build cannot honour. Storing that as the default would tell the rider their choice was
-    /// applied when it was discarded.
+    /// The `weather_refresh` byte is **never** validated here, whichever value it carries: decoding
+    /// is direction-blind, and §11.8 makes an unknown interval fatal in exactly one direction. A
+    /// device applying a write calls [`refresh_to_apply`](Self::refresh_to_apply) and refuses; a
+    /// peer reading a device calls [`known_refresh`](Self::known_refresh) and sees `None`. Rejecting
+    /// the whole blob here would take the strict rule to both, which is how appending a fifth
+    /// interval would one day stop a shipped app from so much as renaming its device.
     pub fn decode(data: &'a [u8]) -> Option<Self> {
         if data.len() < Self::MIN_ENCODED || data.len() > Self::MAX_ENCODED {
             return None;
@@ -1077,10 +1093,30 @@ impl<'a> Config<'a> {
         if name_len > Self::MAX_NAME || 2 + name_len + 1 > data.len() {
             return None;
         }
-        let weather_refresh = match data.get(3 + name_len) {
-            Some(&byte) => Some(WeatherRefresh::from_u8(byte).ok()?),
-            None => None,
-        };
-        Some(Self { name: &data[2..2 + name_len], units: data[2 + name_len], weather_refresh })
+        Some(Self {
+            name: &data[2..2 + name_len],
+            units: data[2 + name_len],
+            weather_refresh: data.get(3 + name_len).copied(),
+        })
+    }
+
+    /// The refresh interval **as a reader sees it**: `None` when the field was absent *or* names an
+    /// interval this build does not know (§11.8). Both collapse to "nothing this build can show",
+    /// and neither is `Off`.
+    pub fn known_refresh(&self) -> Option<WeatherRefresh> {
+        self.weather_refresh.and_then(|byte| WeatherRefresh::from_u8(byte).ok())
+    }
+
+    /// The refresh interval **a device must store for this write**, or a refusal.
+    ///
+    /// `Ok(None)` means the writer said nothing about refresh, and the device MUST leave whatever
+    /// it has stored alone rather than reset it to the default. `Err` means the writer named an
+    /// interval this device cannot honour — the one place §11.8 is strict, because silently
+    /// substituting anything would report a setting the rider never chose.
+    pub fn refresh_to_apply(&self) -> Result<Option<WeatherRefresh>, DescriptorError> {
+        match self.weather_refresh {
+            None => Ok(None),
+            Some(byte) => WeatherRefresh::from_u8(byte).map(Some),
+        }
     }
 }

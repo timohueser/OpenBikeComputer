@@ -556,6 +556,102 @@ fn weather_request_context_vectors_describe_a_real_request() {
     assert_eq!(rd_u32(&no_fix, 36), 0, "no bundle held — absence is the cleared flag, not generation 0");
 }
 
+/// The **forward-compatibility** context (#1214): the day a firmware appends a fifth refresh
+/// interval, this is the byte every phone already in the field receives.
+///
+/// The file is `weather-request-context-full.bin` at every offset but two, and that is the assertion
+/// — the unknown byte is checked to change *only* the schedule the phone can name, not the request,
+/// the position, or the bundle identity. An implementation that treated the value as malformed would
+/// have to discard all of it, which is precisely the trap: §11.8 makes an unrecognised interval fatal
+/// in the *write* direction only, and a read that refused it would turn an ordinary enum append into
+/// the day weather went dead on every shipped app.
+#[test]
+fn an_unknown_refresh_byte_costs_a_context_read_nothing_else() {
+    use obc_vectors::weather_request as wx;
+
+    let full = fixture("weather-request-context-full.bin");
+    let unknown = fixture("weather-request-context-unknown-refresh.bin");
+
+    assert_eq!(unknown.len(), wx::CONTEXT_ENCODED_LEN, "still a well-formed 52-byte v1 value");
+    assert_eq!(unknown[0], wx::CONTEXT_VERSION, "…of the version this build knows");
+    assert_eq!(unknown[1] as usize, wx::CONTEXT_ENCODED_LEN, "…declaring its own length");
+    assert_eq!(unknown[6], wx::REFRESH_UNKNOWN, "the byte v1 never defined");
+    assert!(unknown[6] > 4, "…and it is outside the enum, not merely an unusual member of it");
+    assert_eq!(u32::from_le_bytes(unknown[8..12].try_into().unwrap()), wx::UNKNOWN_REFRESH_REQUEST_ID);
+
+    // Byte-for-byte identical to the full context except the refresh byte and the nonce. Nothing
+    // else about the request changes because the phone cannot name the interval.
+    let differ: Vec<usize> = (0..wx::CONTEXT_ENCODED_LEN).filter(|&i| full[i] != unknown[i]).collect();
+    assert!(differ.contains(&6), "the refresh byte is the difference this file exists for");
+    assert!(
+        differ.iter().all(|&i| i == 6 || (8..12).contains(&i)),
+        "only the refresh byte and the request-id nonce may differ, not {differ:?}"
+    );
+    assert_eq!(&full[12..], &unknown[12..], "position, fix, bearing, route and bundle identity all survive");
+}
+
+/// Sign coverage (#1214): the four signed fields of the context, and the two unsigned ones most
+/// likely to be read signed by a mirror.
+///
+/// Nothing else in the fixture set carries a negative coordinate or a pre-1970 time, so before this
+/// file a decoder could read `lat_udeg`/`lon_udeg` as `u32` and both timestamps as `u64` and pass the
+/// whole suite. Each assertion below is a value that a wrong-signedness read gets *visibly* wrong —
+/// a latitude of 4245°, a clock 585 billion years ahead — rather than subtly.
+#[test]
+fn the_southern_context_pins_every_signed_field() {
+    use obc_vectors::weather_request as wx;
+
+    let rd_u16 = |b: &[u8], off: usize| u16::from_le_bytes(b[off..off + 2].try_into().unwrap());
+    let rd_u32 = |b: &[u8], off: usize| u32::from_le_bytes(b[off..off + 4].try_into().unwrap());
+    let rd_i64 = |b: &[u8], off: usize| i64::from_le_bytes(b[off..off + 8].try_into().unwrap());
+
+    let southern = fixture("weather-request-context-southern.bin");
+    assert_eq!(southern.len(), wx::CONTEXT_ENCODED_LEN);
+    assert_eq!(southern[0], wx::CONTEXT_VERSION);
+    assert_eq!(southern[1] as usize, wx::CONTEXT_ENCODED_LEN);
+    assert_eq!(southern[7], 0, "reserved0");
+    assert_eq!(rd_u16(&southern, 34), 0, "reserved1");
+
+    assert_eq!(
+        rd_u16(&southern, 2),
+        wx::VALID_POSITION | wx::VALID_BEARING | wx::VALID_SPEED | wx::VALID_BUNDLE,
+        "everything but the route — a cleared bit beside the four groups this file exercises"
+    );
+    assert_eq!(rd_u16(&southern, 4), wx::REASON_SCHEDULED);
+    assert_eq!(southern[6], wx::REFRESH_EVERY_60);
+    assert_eq!(rd_u32(&southern, 8), wx::SOUTHERN_REQUEST_ID);
+    assert_ne!(wx::SOUTHERN_REQUEST_ID, wx::FULL_REQUEST_ID, "a fourth file, a fourth request");
+
+    // The two i32 coordinates. Read unsigned these are 4 245 636 407 and 4 222 081 175 — impossible
+    // rather than merely wrong, which is what a sign fixture is for.
+    let (lat, lon) = (rd_u32(&southern, 12) as i32, rd_u32(&southern, 16) as i32);
+    assert_eq!((lat, lon), (wx::SOUTHERN_LAT_UDEG, wx::SOUTHERN_LON_UDEG), "Patagonia — south *and* west");
+    assert!(lat < 0 && lon < 0, "both hemispheres are the point");
+
+    // The two i64 timestamps, both before the epoch, and each at its own offset so one correct
+    // sign extension cannot cover for the other.
+    assert_eq!(rd_i64(&southern, 20), wx::SOUTHERN_FIX_UTC, "fix_utc at 20");
+    assert_eq!(rd_i64(&southern, 40), wx::SOUTHERN_BUNDLE_GENERATED_AT, "bundle_generated_at at 40");
+    assert!(wx::SOUTHERN_FIX_UTC < 0 && wx::SOUTHERN_BUNDLE_GENERATED_AT < 0, "both are pre-1970");
+    assert_eq!(
+        wx::SOUTHERN_FIX_UTC - wx::SOUTHERN_BUNDLE_GENERATED_AT,
+        60 * 60,
+        "the scheduled reason is arithmetic here too — one 60-minute interval past what it holds"
+    );
+
+    assert_eq!(rd_u16(&southern, 28), wx::SOUTHERN_BEARING_DEG);
+    assert_eq!(rd_u16(&southern, 30), wx::SOUTHERN_SPEED_DECI_MS);
+
+    // …and the trap run the other way: two u32s with the top bit set, which a *signed* mirror reads
+    // as -2 and -2147483647.
+    assert_eq!(rd_u32(&southern, 36), wx::SOUTHERN_BUNDLE_GENERATION);
+    assert_eq!(rd_u32(&southern, 48), wx::SOUTHERN_BUNDLE_CRC32);
+    assert!(
+        wx::SOUTHERN_BUNDLE_GENERATION > i32::MAX as u32 && wx::SOUTHERN_BUNDLE_CRC32 > i32::MAX as u32,
+        "generation and crc32 are unsigned, and this file is where that is stated"
+    );
+}
+
 /// The two append-only extensions the Weather Request contract rode in on (#1188): the identity
 /// read's capability word and Config's trailing refresh byte. Both are pinned as *pairs* with the
 /// fixtures that predate them, because in both cases the only way to get it wrong is an offset, and
@@ -593,6 +689,39 @@ fn the_weather_capability_and_config_refresh_are_appends() {
     let v1 = fixture("config-v1.bin");
     let v1_name_len = u16::from_le_bytes([v1[0], v1[1]]) as usize;
     assert_eq!(v1.len(), 2 + v1_name_len + 1, "no trailing byte at all");
+}
+
+/// The Config blob whose refresh byte names an interval nobody defines (#1214) — the same wire value
+/// §11.8 says must be **refused as a write** and **tolerated as a read**.
+///
+/// The bytes here only have to be well-formed *apart from* that field: the direction rule lives in
+/// the codecs (`obc-ble`'s `refresh_to_apply` vs `known_refresh`, and the TS mirror's helper), and
+/// this file is the single input both are held to. What it pins on its own is that the blob really
+/// is otherwise ordinary — same three-field layout, a name of a third distinct length, and a
+/// trailing byte that a reader either finds where the spec says it is or gets wrong twice over.
+#[test]
+fn the_unknown_config_refresh_is_an_otherwise_ordinary_blob() {
+    use obc_vectors::weather_request as wx;
+
+    let bytes = fixture("config-weather-refresh-unknown.bin");
+    let name_len = u16::from_le_bytes([bytes[0], bytes[1]]) as usize;
+    assert_eq!(&bytes[2..2 + name_len], wx::CONFIG_UNKNOWN_NAME.as_bytes());
+    assert_eq!(bytes[2 + name_len], wx::CONFIG_UNKNOWN_UNITS, "metric");
+    assert_eq!(bytes[3 + name_len], wx::CONFIG_UNKNOWN_REFRESH, "the byte no version of the enum defines");
+    assert!(bytes[3 + name_len] > 4, "…outside `0..=4`, so a later append cannot quietly retire this file");
+    assert_eq!(bytes.len(), 2 + name_len + 2, "name_len u16 · name · units u8 · weather_refresh u8");
+
+    // Three Config fixtures, three name lengths: the trailing byte sits at a different offset in
+    // each, so no reader passes all three with one hard-coded index.
+    let sibling = fixture("config-weather-refresh.bin");
+    let v1 = fixture("config-v1.bin");
+    assert_ne!(name_len, u16::from_le_bytes([sibling[0], sibling[1]]) as usize, "vs config-weather-refresh");
+    assert_ne!(name_len, u16::from_le_bytes([v1[0], v1[1]]) as usize, "vs config-v1");
+    // …and this one's `units` is zero on purpose: an off-by-one reader lands on it and decodes a
+    // *known* `Off`, so the misalignment surfaces as a wrong answer rather than as another
+    // "unknown" the tolerant read direction would have accepted regardless.
+    assert_eq!(wx::CONFIG_UNKNOWN_UNITS, wx::REFRESH_OFF, "the off-by-one trap this fixture sets");
+    assert_ne!(wx::CONFIG_UNKNOWN_REFRESH, wx::REFRESH_UNKNOWN, "a distinct unknown from the context file's");
 }
 
 /// Rewrite every fixture from the builders. Run only after a deliberate spec change:

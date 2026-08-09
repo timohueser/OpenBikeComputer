@@ -55,6 +55,7 @@ import {
     SINGLETON_OBJECT_ID,
     TransferStatus,
     decodeConfig,
+    knownWeatherRefresh,
     decodeTransferControl,
     encodeConfig,
     encodeStatusMessage,
@@ -715,9 +716,22 @@ export class MockDevice {
             case HostFrame.CardFreeRead:
                 await this.send(DeviceFrame.CardFree, encodeCardFree(this.cardFreeBytes));
                 return;
-            case HostFrame.ConfigWrite:
-                this.config = decodeConfig(frame.payload);
+            case HostFrame.ConfigWrite: {
+                // The one place in this codebase where TypeScript plays the *device*, so it is the
+                // one place §11.8's strict half applies: a device asked to adopt a refresh interval
+                // it cannot honour refuses the write rather than storing something the rider never
+                // chose. Readers elsewhere stay tolerant — see `knownWeatherRefresh`.
+                const written = decodeConfig(frame.payload);
+                if (knownWeatherRefresh(written.weatherRefresh) === null && written.weatherRefresh !== null) {
+                    return; // refused; the stored config is left exactly as it was
+                }
+                // An *absent* field is not a request to reset anything (§7.3): keep what we hold.
+                this.config =
+                    written.weatherRefresh === null
+                        ? { ...written, weatherRefresh: this.config.weatherRefresh }
+                        : written;
                 return;
+            }
             case HostFrame.Command:
                 await this.command(frame.payload);
                 return;

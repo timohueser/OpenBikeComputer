@@ -91,7 +91,17 @@ public struct MockTransport: DeviceTransport {
 
     public func writeConfig(_ config: DeviceConfig) async throws {
         try await preludeThrowing()
-        control.setConfig(config)
+        // The mock stands in for a device, so it applies the *device's* half of spec §11.8 rather
+        // than storing whatever it is handed: an interval it cannot honour is refused, and an
+        // absent refresh field leaves the stored one alone instead of resetting it. Without the
+        // second half, a rename through the mock would quietly switch a rider's `Off` back to the
+        // 30-minute default — the exact regression the wire rule exists to prevent, and one no
+        // test could catch against a mock that simply overwrote.
+        var stored = config
+        if try config.weatherRefreshToApply() == nil {
+            stored.weatherRefreshRaw = control.fixtures.config.weatherRefreshRaw
+        }
+        control.setConfig(stored)
     }
 
     public func readDiagnostics() async throws -> Data {
