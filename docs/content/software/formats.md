@@ -1124,9 +1124,11 @@ directory. No strings, floats, provider ids, display colors or polygons cross th
 precipitation remains a distinct sentinel — it can never be mistaken for dry.
 
 Rain is cut into independently addressed 16 × 16 tiles. `raw4` packs two cells per byte; `RLE4`
-stays inside one tile, uses maximal runs, and is chosen only when smaller. That local compression boundary is the RAM
-story: [`obc-weather`](src:firmware/obc-weather) retains only a parsed header, reads at most 128
-encoded bytes, and expands into a caller-owned 256-byte tile. A 96 × 96 × nine-frame raw DWD-shaped
+stays inside one tile, uses maximal runs, and is the required codec whenever it is smaller. Readers
+reject a compressible tile mislabeled `raw4`, preserving byte-stable re-encoding. That local
+compression boundary is the RAM story: [`obc-weather`](src:firmware/obc-weather) retains only a
+parsed header, reads at most 128 encoded bytes, and expands into a caller-owned 256-byte tile. A
+96 × 96 × nine-frame raw DWD-shaped
 bundle is 46,480 bytes (45.39 KiB), inside the phone producer's separate 64 KiB policy without
 making 64 KiB a reader or format limit.
 

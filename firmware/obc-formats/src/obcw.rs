@@ -580,6 +580,9 @@ pub fn validate_tile_payload(entry: TileEntry, encoded: &[u8]) -> Result<(), Dec
             if encoded.iter().any(|b| !valid_intensity(b & 0x0F) || !valid_intensity(b >> 4)) {
                 return Err(DecodeError::Intensity);
             }
+            if raw4_canonical_rle_len(encoded) < RAW4_LEN {
+                return Err(DecodeError::TileCodec);
+            }
         }
         TILE_CODEC_RLE4 if len < RAW4_LEN => {
             let mut count = 0usize;
@@ -607,6 +610,26 @@ pub fn validate_tile_payload(entry: TileEntry, encoded: &[u8]) -> Result<(), Dec
         _ => return Err(DecodeError::TileCodec),
     }
     Ok(())
+}
+
+/// Count the maximal, 16-cell-capped runs represented by a valid raw4 payload without expanding
+/// the tile. The result is the canonical RLE4 byte length.
+fn raw4_canonical_rle_len(encoded: &[u8]) -> usize {
+    let mut runs = 0usize;
+    let mut previous = None;
+    let mut run_len = 0usize;
+    for cell_index in 0..TILE_CELLS {
+        let byte = encoded[cell_index / 2];
+        let value = if cell_index % 2 == 0 { byte & 0x0F } else { byte >> 4 };
+        if previous == Some(value) && run_len < 16 {
+            run_len += 1;
+        } else {
+            runs += 1;
+            previous = Some(value);
+            run_len = 1;
+        }
+    }
+    runs
 }
 
 pub fn decode_tile_payload(entry: TileEntry, encoded: &[u8], out: &mut [u8; TILE_CELLS]) -> Result<(), DecodeError> {
@@ -871,6 +894,20 @@ mod tests {
         split[1] = 0x76;
         let split_entry = TileEntry { encoded_len: split.len() as u16, ..canonical_entry };
         assert_eq!(validate_tile_payload(split_entry, &split), Err(DecodeError::Rle));
+
+        let incompressible_raw: [u8; RAW4_LEN] = core::array::from_fn(|index| {
+            let low = ((index * 2) % 13) as u8;
+            let high = ((index * 2 + 1) % 13) as u8;
+            low | (high << 4)
+        });
+        let raw_entry = TileEntry {
+            data_offset: 0,
+            encoded_len: RAW4_LEN as u16,
+            decoded_cells: TILE_CELLS as u16,
+            codec: TILE_CODEC_RAW4,
+        };
+        assert_eq!(validate_tile_payload(raw_entry, &incompressible_raw), Ok(()));
+        assert_eq!(validate_tile_payload(raw_entry, &[0u8; RAW4_LEN]), Err(DecodeError::TileCodec));
     }
 
     #[test]

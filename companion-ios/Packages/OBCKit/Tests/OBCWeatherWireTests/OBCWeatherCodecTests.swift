@@ -70,6 +70,7 @@ struct OBCWeatherCodecTests {
             "weather-invalid-truncated.obcw", "weather-invalid-bad-offset.obcw",
             "weather-invalid-overlap.obcw", "weather-invalid-hourly-flags.obcw",
             "weather-invalid-hourly-reserved.obcw", "weather-invalid-nibble.obcw",
+            "weather-invalid-raw-compressible.obcw",
             "weather-invalid-rle-overlong.obcw", "weather-invalid-rle-noncanonical.obcw",
             "weather-invalid-crc.obcw",
             "weather-invalid-time-order.obcw",

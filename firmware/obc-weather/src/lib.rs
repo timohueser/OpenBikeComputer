@@ -464,6 +464,21 @@ mod tests {
     }
 
     #[test]
+    fn rejects_compressible_raw_tile_with_valid_crc() {
+        let mut bytes = dwd_shaped_bundle();
+        let frame_base = HEADER_LEN + HOURLY_COUNT * HOURLY_RECORD_LEN;
+        let data_offset = u32::from_le_bytes(
+            bytes[frame_base + obcw::FRAME_TILE_DATA_OFFSET..frame_base + obcw::FRAME_TILE_DATA_OFFSET + 4]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        bytes[data_offset..data_offset + RAW4_LEN].fill(0);
+        refresh_crc(&mut bytes);
+        let source = SliceSource(&bytes);
+        assert!(matches!(WeatherReader::open(&source), Err(Error::Format(FormatError::TileCodec))));
+    }
+
+    #[test]
     fn rejects_impossible_dimensions_and_non_nodata_edge_padding() {
         let descriptor = HEADER_LEN + HOURLY_COUNT * HOURLY_RECORD_LEN;
         let mut impossible = valid_bundle();
