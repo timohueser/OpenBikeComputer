@@ -569,6 +569,8 @@ alert_rain = "LLUVIA CERCA"
 alert_storm = "TORMENTA CERCA"
 alert_rain_body = "Lluvia fuerte en la ruta."
 alert_storm_body = "Tormenta en la ruta."
+alert_gust = "VIENTO FUERTE"
+alert_gust_body = "Rachas peligrosas cerca."
 view_rain_map = "VER MAPA LLUVIA"
 dismiss = "CERRAR"
 

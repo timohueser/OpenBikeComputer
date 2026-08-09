@@ -620,15 +620,20 @@ impl SimGui {
         let (app, scratch, weather) = (&mut self.app, &mut *self.scratch, self.weather.as_mut());
         // WX11: the production resident snapshot, re-sampled each GUI frame at the rider/camera
         // position (host-side, in-memory — trivial), so the weather screens are live in the GUI.
+        // WX12: with an active matched route the samples are **route-projected** through the
+        // app's own `ride_projection` (recent pace + matched progress), and the real alert
+        // engine runs against the same snapshot — the exact device behaviour, live.
         let (wx_snapshot, rain_step) = match weather {
             Some(w) => {
                 let pos = app.state.user_fix.map(|f| (f.lat, f.lon)).unwrap_or((app.state.cam_lat, app.state.cam_lon));
-                let snap = w.snapshot(Some(pos));
+                let projection = route.as_ref().zip(app.ride_projection());
+                let snap = w.snapshot(Some(pos), projection);
                 if let Some(snap) = &snap {
                     let now = app.wall_unix_now() as i64;
                     let floor = snap.rain_zoom_floor(app.state.cam_lat).unwrap_or(0.0);
                     app.set_rain_view(snap.steps_ahead(now), floor);
                 }
+                app.weather_alert_tick(snap.as_ref());
                 (snap, app.state.rain_step)
             }
             None => (None, 0),

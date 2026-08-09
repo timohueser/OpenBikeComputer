@@ -64,18 +64,30 @@ pub(crate) const OBJECT_STORE_BYTES: usize = core::mem::size_of::<RefCell<Object
 /// transient frame — popped immediately, at boot's shallow depth — and not become a permanent slot
 /// in a caller's async poll frame, which is allocated at entry on *every* poll (#677).
 ///
-/// Construction is two-phase on purpose: the **empty** store makes the one by-value hop into the
-/// slot, then [`ObjectStore::hydrate`] loads settings and scans the card **in place**. The old
-/// `RefCell::new(ObjectStore::new(shared))` shape stacked two ~13.5 KB copies (the `new` return
-/// slot + the wrapper argument) into a measured ~27.6 KB frame — which overran the residual main
-/// stack the moment EL7 grew the ride task's poll frame by 2 KB (STKOF HardFault at this
-/// function's prologue, every boot, 2026-08-03).
+/// Construction is two-phase on purpose: the **const** empty store ([`ObjectStore::EMPTY`], a
+/// `.rodata` image the slot write memcpys from — no stack temporary can exist for a constant),
+/// then [`ObjectStore::hydrate`] loads settings and scans the card **in place**. History, because
+/// this shape has bitten twice: the original `RefCell::new(ObjectStore::new(shared))` stacked two
+/// ~13.5 KB copies (the `new` return slot + the wrapper argument) into a measured ~27.6 KB frame
+/// — which overran the residual main stack the moment EL7 grew the ride task's poll frame by 2 KB
+/// (STKOF HardFault at this function's prologue, every boot, 2026-08-03). The fix then was a
+/// by-value `empty()` hop the optimizer collapsed to one copy — until WX12 (#1197) grew
+/// `Settings` by 96 B and rustc 1.96 stopped collapsing it, re-stacking both temporaries (the
+/// boot-chain guard caught it before any glass did). The const image ends the optimizer's say in
+/// the matter, at the price of the empty store's bytes in flash.
 ///
 /// # Safety
 /// Sole writer of [`STORE`]; called exactly once, from `main`, before any plane is spawned.
 #[inline(never)]
 pub(crate) fn init_store(shared: &mut crate::SharedStore) -> &'static RefCell<ObjectStore> {
-    let cell = unsafe { init_static(core::ptr::addr_of_mut!(STORE), RefCell::new(ObjectStore::empty())) };
+    /// The fully-wrapped initial value as a named constant: `ptr::write` of a constant lowers to
+    /// a `.rodata` -> slot memcpy, with no `RefCell<ObjectStore>`-sized stack value anywhere.
+    /// The `declare_interior_mutable_const` lint warns that every use of such a const is a fresh
+    /// copy that forgets mutations — here that copy-on-use IS the mechanism (one write into the
+    /// slot, never mutated as a const), so the lint's hazard cannot arise.
+    #[allow(clippy::declare_interior_mutable_const)]
+    const INIT: RefCell<ObjectStore> = RefCell::new(ObjectStore::EMPTY);
+    let cell = unsafe { init_static(core::ptr::addr_of_mut!(STORE), INIT) };
     cell.borrow_mut().hydrate(shared);
     cell
 }

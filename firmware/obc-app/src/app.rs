@@ -880,6 +880,17 @@ impl App {
                 // re-windows a truncated table forward as the rider advances (see below).
                 self.update_next_waypoint(route);
             }
+            // The WX12 ride-weather inputs, from the same fresh fix: the recent moving-speed
+            // window (the projection's pace) and the travel direction (the wind arrows' frame of
+            // reference — route tangent at the fresh match, else moving GPS course, else neutral).
+            // A freeze holds the previous direction like it holds the matcher: the progress on
+            // glass hasn't moved, so neither has its tangent.
+            if let Some(speed) = fix.speed_mps {
+                self.ride.speed_win.push_mps(speed);
+            }
+            if !frozen {
+                self.ride.update_travel(&self.activity, fix, route);
+            }
             let motion = self.activity.record_motion(fix, now_ms);
             if motion.log {
                 self.ride.breadcrumb.push(fix.lon, fix.lat);
@@ -1600,8 +1611,9 @@ impl App {
     pub fn show_weather_alert(&mut self, kind: crate::screen::WeatherAlertKind, minutes: u16) {
         for scr in self.ui.stack.iter_mut() {
             if let Screen::WeatherAlert(alert) = scr {
-                alert.update(kind, minutes);
-                self.ui.map_dirty = true;
+                if alert.update(kind, minutes) {
+                    self.ui.map_dirty = true;
+                }
                 return;
             }
         }
@@ -1620,6 +1632,69 @@ impl App {
             ))),
         );
         self.ui.map_dirty = true;
+    }
+
+    /// The rider's current travel direction (degrees CW from north) for route-relative wind — the
+    /// WX12 chain: active-route tangent at the matched progress while on-route, else the moving
+    /// GPS course, else `None` (neutral arrows, never a fabricated head/tail).
+    pub fn travel_deg(&self) -> Option<f32> {
+        self.ride.travel_deg
+    }
+
+    /// The WX12 ride projection for [`WeatherSnapshot::sample_along`](crate::weather::WeatherSnapshot::sample_along),
+    /// or `None` when there is no matched active route (the host then samples at the fixed rider
+    /// position). Pace = the recent moving median, capped, with the documented touring fallback
+    /// while stopped; anchored at this instant's wall clock.
+    pub fn ride_projection(&self) -> Option<crate::weather::RideProjection> {
+        if self.activity.active_route.is_none() || !self.ride.started() {
+            return None;
+        }
+        let speed_cms = self
+            .ride
+            .speed_win
+            .median_cms()
+            .unwrap_or(crate::weather::TOURING_FALLBACK_CMS)
+            .min(crate::weather::SPEED_CAP_CMS);
+        Some(crate::weather::RideProjection {
+            progress_m: self.activity.progress_m,
+            speed_cms,
+            now: self.wall_unix_now() as i64,
+        })
+    }
+
+    /// Run the WX12 **alert engine** against the host's freshly-sampled snapshot: evaluate the
+    /// centralized threshold table, dedup against the persisted per-class marks, and drive the
+    /// WX11 card seam — a new (or materially escalated) event pushes/re-fires the card and
+    /// persists its mark through the #810 settings handshake; the same suppressed event only
+    /// refreshes an already-open card's countdown in place. Call at fix/frame cadence with the
+    /// same snapshot the screens render — cheap (a bounded scan), idempotent, deterministic.
+    /// `None` (no snapshot) never alerts, and neither does expired data (the engine's law).
+    pub fn weather_alert_tick(&mut self, snap: Option<&crate::weather::WeatherSnapshot>) {
+        let Some(snap) = snap else { return };
+        // The passkey card outranks the alert (`show_weather_alert` would refuse the push) — so
+        // don't *mark* an alert the rider will never see; the next tick after pairing re-fires it.
+        if matches!(self.ui.stack.last(), Some(Screen::Passkey(_))) {
+            return;
+        }
+        let now = self.wall_unix_now() as i64;
+        let candidates = crate::weather_alerts::evaluate(snap, now);
+        let open_card = self.ui.stack.iter().find_map(|s| match s {
+            Screen::WeatherAlert(alert) => Some(alert.kind()),
+            _ => None,
+        });
+        match crate::weather_alerts::govern(&candidates, &self.settings.weather_alert_marks, open_card) {
+            crate::weather_alerts::AlertAction::Fire(c) => {
+                self.settings.weather_alert_marks[c.class.slot()] = Some(crate::weather_alerts::mark_of(&c));
+                // The mark must survive the next boot: arm the #810 persistence handshake exactly
+                // like a rider edit (alert-fire rate, so the store write cost is negligible).
+                self.host.note_settings_edited();
+                self.show_weather_alert(c.class.kind(), c.minutes);
+            }
+            crate::weather_alerts::AlertAction::Update(c) => {
+                self.show_weather_alert(c.class.kind(), c.minutes);
+            }
+            crate::weather_alerts::AlertAction::None => {}
+        }
     }
 
     /// Drop **everything derived from the active route's geometry** — the whole-App seam, and the
@@ -2896,6 +2971,7 @@ impl App {
             card_free_bytes: *card_free_bytes,
             weather: weather.snapshot,
             weather_refreshing: weather.refreshing,
+            travel_deg: ride.travel_deg,
         };
         let mut rx = RenderFrame { scene, render: rx };
         // The one Canvas of the frame: every screen draws through it (the base screen — the only
@@ -6602,5 +6678,258 @@ mod tests {
         let after = drain_once(&mut app);
         assert!(after.contains(&HostCommand::DeleteRoute { id: 10 }), "route delete dispatches once trusted");
         assert!(after.contains(&HostCommand::DeleteRide { id: 7 }), "ride delete dispatches once trusted");
+    }
+
+    // ==================== WX12 (#1197): travel direction, ride projection, alert engine ====================
+
+    /// One tick with `fix` against the Grimsel fixture route (map-plane clock = `now_ms`).
+    fn tick_route_fix(app: &mut App, route: &RouteReader, fix: Fix, now_ms: u32) {
+        app.ui.now_ms = now_ms;
+        let mut loc = OneFix(Some(fix));
+        app.tick(RideClock(now_ms), Sensors::new(&mut loc), Some(route));
+    }
+
+    /// The WX12 travel-direction chain end to end: on-route fixes yield the route tangent at the
+    /// matched progress (held while stopped — a rest stop still knows the ride's direction);
+    /// off-route moving fixes fall back to the GPS course; off-route stationary is neutral, never
+    /// a fabricated head/tail.
+    #[test]
+    fn travel_direction_follows_route_tangent_then_course_then_neutral() {
+        let idx = grimsel_index();
+        let src = SliceSource(GRIMSEL);
+        let route = RouteReader::new(&idx, &src);
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        app.activity.active_route = Some(0);
+        assert_eq!(app.travel_deg(), None, "no fix yet → neutral");
+
+        // A moving on-route fix: the travel direction is the route tangent, not the (deliberately
+        // contradictory) GPS course.
+        let p = route.position_at(1_000).unwrap();
+        let on_route = Fix { lat: p.lat, lon: p.lon, course: Some(275.0), speed_mps: Some(4.0) };
+        tick_route_fix(&mut app, &route, on_route, 1_000);
+        assert!(!app.activity.off_route);
+        let tangent = crate::weather::route_tangent_deg(&route, app.activity.progress_m).unwrap();
+        let travel = app.travel_deg().expect("on-route: tangent");
+        assert!((travel - tangent).abs() < 0.01, "travel {travel} == tangent {tangent}");
+
+        // Stopped on the route (no course, no speed): the tangent is *held* — the wind question
+        // at a rest stop is about the ride ahead.
+        tick_route_fix(&mut app, &route, Fix { lat: p.lat, lon: p.lon, course: None, speed_mps: None }, 2_000);
+        assert_eq!(app.travel_deg(), Some(travel), "held while stopped");
+
+        // Far off the route, moving with a course: the trustworthy GPS course takes over.
+        let far = Fix { lat: p.lat + 200_000, lon: p.lon, course: Some(123.0), speed_mps: Some(5.0) };
+        tick_route_fix(&mut app, &route, far, 3_000);
+        assert!(app.activity.off_route);
+        assert_eq!(app.travel_deg(), Some(123.0), "off-route moving → GPS course");
+
+        // Off the route and stationary: neutral — never a fabricated head/tail (locked).
+        let parked = Fix { lat: p.lat + 200_000, lon: p.lon, course: None, speed_mps: Some(0.0) };
+        tick_route_fix(&mut app, &route, parked, 4_000);
+        assert_eq!(app.travel_deg(), None, "off-route stopped → neutral");
+
+        // Unloading the route drops the tangent with the rest of the derived state.
+        tick_route_fix(&mut app, &route, on_route, 5_000);
+        assert!(app.travel_deg().is_some());
+        app.activity.active_route = None;
+        app.drop_route_derived_state();
+        assert_eq!(app.travel_deg(), None, "route unload → neutral until re-derived");
+    }
+
+    /// `ride_projection` bundles the matched progress with the recent moving **median** pace —
+    /// capped against GPS teleports, with the documented touring fallback while stopped — and
+    /// exists only once the matcher has locked onto an active route.
+    #[test]
+    fn ride_projection_pace_median_cap_and_fallback() {
+        let idx = grimsel_index();
+        let src = SliceSource(GRIMSEL);
+        let route = RouteReader::new(&idx, &src);
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        assert_eq!(app.ride_projection(), None, "no active route → no projection");
+        app.activity.active_route = Some(0);
+        assert_eq!(app.ride_projection(), None, "route not matched yet → no projection");
+
+        // A stationary lock: no moving sample yet → the touring fallback pace.
+        let p = route.position_at(500).unwrap();
+        tick_route_fix(&mut app, &route, Fix { lat: p.lat, lon: p.lon, course: None, speed_mps: Some(0.0) }, 1_000);
+        let proj = app.ride_projection().expect("matched route → projection");
+        assert_eq!(proj.speed_cms, crate::weather::TOURING_FALLBACK_CMS, "stopped → touring fallback");
+        assert_eq!(proj.progress_m, app.activity.progress_m);
+
+        // Moving samples: the median of 3/5/60 m/s — the 60 m/s teleport is capped to 15, and the
+        // median (5 m/s) is immune to it anyway.
+        for (i, mps) in [3.0f32, 5.0, 60.0].into_iter().enumerate() {
+            let q = route.position_at(500 + i as u32 * 10).unwrap();
+            tick_route_fix(
+                &mut app,
+                &route,
+                Fix { lat: q.lat, lon: q.lon, course: None, speed_mps: Some(mps) },
+                2_000 + i as u32 * 1_000,
+            );
+        }
+        assert_eq!(app.ride_projection().unwrap().speed_cms, 500, "median of {{300, 500, 1500(capped)}}");
+    }
+
+    /// A synthetic ride snapshot for the alert engine: nine 15-min frames of `intensities`
+    /// anchored at the app's own wall clock, dry hourly rows.
+    fn alert_snap(app: &App, intensities: &[u8]) -> crate::weather::WeatherSnapshot {
+        let now = app.wall_unix_now() as i64;
+        let mut frames = heapless::Vec::new();
+        for (i, &intensity) in intensities.iter().enumerate() {
+            frames
+                .push(crate::weather::FrameSample {
+                    valid_at: now + i as i64 * 900,
+                    intensity,
+                    lat: 47_000_000,
+                    lon: 8_000_000,
+                })
+                .unwrap();
+        }
+        crate::weather::WeatherSnapshot {
+            generated_at: now,
+            valid_from: now - 3_600,
+            valid_until: now + 24 * 3_600,
+            hourly: [obc_formats::obcw::HourlyRecord {
+                valid_time_offset_s: 0,
+                temperature_deci_c: 150,
+                precipitation_tenth_mm: 0,
+                precipitation_probability_pct: 0,
+                condition: obc_formats::obcw::CONDITION_RAIN,
+                wind_from_deg: 200,
+                wind_speed_deci_ms: 40,
+                wind_gust_deci_ms: 80,
+                flags: 0,
+            }; obc_formats::obcw::HOURLY_COUNT],
+            frames,
+            frame_cap_s: 900,
+            sampled_at: Some((47_000_000, 8_000_000)),
+            pos_in_grid: true,
+            projected: true,
+            frames_truncated: false,
+            rain_grid: None,
+        }
+    }
+
+    /// The alert engine end to end through `weather_alert_tick`: a heavy-rain snapshot fires the
+    /// RAIN AHEAD card once (update-in-place on re-ticks, never a second card), arms the #810
+    /// settings persist for the mark, stays suppressed after DISMISS, re-fires on a material
+    /// escalation — and the persisted mark suppresses the same storm **across a reboot**.
+    #[test]
+    fn weather_alert_tick_fires_dedups_persists_and_survives_reboot() {
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        let snap = alert_snap(&app, &[0, 10, 0, 0, 0, 0, 0, 0, 0]); // band 10 at +15 min
+
+        // No snapshot → nothing; the engine never invents.
+        app.weather_alert_tick(None);
+        assert!(!matches!(app.top_screen(), Screen::WeatherAlert(_)));
+
+        app.weather_alert_tick(Some(&snap));
+        let Screen::WeatherAlert(card) = app.top_screen() else { panic!("heavy rain fires the card") };
+        assert_eq!(card.kind(), crate::screen::WeatherAlertKind::Rain, "≥10 mm/h = the RAIN AHEAD face");
+        assert!(drain_persist(&mut app).is_some(), "the fired mark arms the settings persist");
+        let depth = app.ui.stack.len();
+
+        // Re-ticks with the same event: the one card updates in place, no stack growth, no
+        // second persist.
+        app.weather_alert_tick(Some(&snap));
+        app.weather_alert_tick(Some(&snap));
+        assert_eq!(app.ui.stack.len(), depth, "update-in-place, never a second card");
+        assert!(drain_persist(&mut app).is_none(), "a suppressed duplicate rewrites no mark");
+
+        // DISMISS (Back pops the card): the cooldown mark keeps the same storm down.
+        app.apply_gesture(Gesture::Back);
+        assert!(!matches!(app.top_screen(), Screen::WeatherAlert(_)));
+        app.weather_alert_tick(Some(&snap));
+        assert!(!matches!(app.top_screen(), Screen::WeatherAlert(_)), "same event inside cooldown stays down");
+
+        // Material escalation (+2 bands) breaks the cooldown and re-fires.
+        let escalated = alert_snap(&app, &[0, 12, 0, 0, 0, 0, 0, 0, 0]);
+        app.weather_alert_tick(Some(&escalated));
+        assert!(matches!(app.top_screen(), Screen::WeatherAlert(_)), "a materially stronger storm re-fires");
+        app.apply_gesture(Gesture::Back);
+
+        // Reboot: the mark rides the settings blob, so the same storm stays down on a new App.
+        let blob = crate::settings::encode(app.settings());
+        let restored = crate::settings::decode(&blob).expect("v16 round-trip");
+        let mut rebooted = App::new(AppState::new(0, 0, 1.0));
+        rebooted.set_settings(restored);
+        rebooted.weather_alert_tick(Some(&escalated));
+        assert!(
+            !matches!(rebooted.top_screen(), Screen::WeatherAlert(_)),
+            "the persisted mark suppresses the same storm across a boot"
+        );
+
+        // A genuinely new event fires on the rebooted device: age the persisted mark past the
+        // cooldown (the equivalent of the storm having been hours ago) and the same-shaped
+        // candidate is a new encounter.
+        rebooted.settings.weather_alert_marks[crate::weather_alerts::AlertClass::HeavyRain.slot()] =
+            Some(crate::weather_alerts::AlertMark {
+                onset: rebooted.wall_unix_now() as i64 - crate::weather_alerts::COOLDOWN_S - 4_000,
+                lat: 47_000_000,
+                lon: 8_000_000,
+                severity: 12,
+            });
+        rebooted.weather_alert_tick(Some(&escalated));
+        assert!(matches!(rebooted.top_screen(), Screen::WeatherAlert(_)), "an event past the cooldown is a new alert");
+    }
+
+    /// The travel direction reaches the hourly rows' ink: with a tailwind-making `travel_deg`
+    /// the wind arrows pick up the green tail color that the neutral (no-direction) render has
+    /// nowhere on screen — the `Render::travel_deg` wiring, pinned at the pixel level.
+    #[test]
+    fn hourly_wind_arrows_color_route_relatively() {
+        use crate::harness::support::{build_min_obcm, Buf};
+        use embedded_graphics::pixelcolor::Rgb888;
+        use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader};
+
+        fn hourly_frame(travel: Option<f32>) -> Buf {
+            let mut app = App::new(AppState::new(0, 0, 1.0));
+            let snap = alert_snap(&app, &[0; 9]); // hourly rows: wind from 200°, 4 m/s
+            app.ride.travel_deg = travel;
+            let _ = app.ui.stack.push(Screen::WeatherHourly(crate::screen::WeatherHourlyScreen::new()));
+            let bytes = build_min_obcm(1);
+            let cache = MapCache::new();
+            let src = obc_reader::SliceSource(&bytes);
+            let tables = MapTables::parse(&src).unwrap();
+            let reader = Reader::new(&src, &tables, &cache);
+            let mut buf = Buf::new(240, 320);
+            let mut scratch = std::boxed::Box::new(obc_render::RenderScratch::new());
+            app.render_frame_with_rain(
+                Some(&mut scratch),
+                &mut buf,
+                &reader,
+                None,
+                None,
+                crate::weather::WeatherFeed { snapshot: Some(&snap), refreshing: false },
+                240.0,
+                320.0,
+                |c| {
+                    let (r, g, b) = rgb565_to_rgb888(c);
+                    Rgb888::new(r, g, b)
+                },
+            );
+            buf
+        }
+
+        let (r, g, b) = rgb565_to_rgb888(crate::screen::palette::ON);
+        let tail_green = Rgb888::new(r, g, b);
+        // Wind FROM 200° blows toward 20°; travelling at 20° that's a dead tailwind → green.
+        let colored = hourly_frame(Some(20.0));
+        let neutral = hourly_frame(None);
+        assert!(colored.count(tail_green) > 0, "a tailwind row inks the arrow green");
+        assert_eq!(neutral.count(tail_green), 0, "no travel direction → no head/tail claim anywhere");
+    }
+
+    /// The gust class drives the new STRONG WIND card face through the same seam.
+    #[test]
+    fn gust_forecast_fires_the_gust_card() {
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        let mut snap = alert_snap(&app, &[0; 9]);
+        let now = app.wall_unix_now() as i64;
+        let hour = ((now - snap.valid_from) / 3_600) as usize;
+        snap.hourly[hour].wind_gust_deci_ms = 220; // 22 m/s
+        app.weather_alert_tick(Some(&snap));
+        let Screen::WeatherAlert(card) = app.top_screen() else { panic!("dangerous gusts fire the card") };
+        assert_eq!(card.kind(), crate::screen::WeatherAlertKind::Gust);
     }
 }

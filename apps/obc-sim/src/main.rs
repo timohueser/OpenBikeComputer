@@ -117,9 +117,15 @@ struct Args {
     /// bar's UPDATING slot) — the cached content stays fully visible, which is the point.
     weather_refreshing: bool,
     /// Headless `--png` only (WX11): push the weather alert card through the production
-    /// `App::show_weather_alert` seam — `rain[:MIN]` or `storm[:MIN]` (default 28 minutes).
-    /// Alert *generation* is WX12's; this drives only the presentation.
+    /// `App::show_weather_alert` seam — `rain[:MIN]`, `storm[:MIN]` or `gust[:MIN]` (default 28
+    /// minutes). Drives only the presentation; the *engine* is [`Args::weather_decide`].
     weather_alert: Option<(obc_app::WeatherAlertKind, u16)>,
+    /// Headless `--png` only (WX12): run the production ride-decision path for the final frame —
+    /// sample the bundle **route-projected** (`App::ride_projection` → `sample_along`) and run
+    /// the real alert engine (`App::weather_alert_tick`: thresholds, dedup, cooldown), exactly
+    /// as the GUI does every frame. Opt-in so the WX10/WX11 fixture renders stay byte-identical
+    /// (their scenarios would otherwise grow alert cards).
+    weather_decide: bool,
     /// Headless `--png` only: the UI language `en` | `de` | `fr` | `es` (epic #602). Seeded into
     /// `Settings.language` before the render, so a scripted screen draws its de/fr/es copy from the
     /// i18n catalog — the per-language snapshot mechanism. Defaults to `en` (the device default), so
@@ -272,6 +278,7 @@ impl Default for Args {
             weather_now: None,
             weather_refreshing: false,
             weather_alert: None,
+            weather_decide: false,
             lang: None,
             stat_fields: None,
             ble_connected: false,
@@ -488,16 +495,18 @@ fn parse_args() -> Result<Args, String> {
             }
             "--weather-refreshing" => a.weather_refreshing = true,
             "--weather-alert" => {
-                let spec = it.next().ok_or("--weather-alert needs rain[:MIN] or storm[:MIN]")?;
+                let spec = it.next().ok_or("--weather-alert needs rain[:MIN], storm[:MIN] or gust[:MIN]")?;
                 let (kind, min) = spec.split_once(':').unwrap_or((spec.as_str(), "28"));
                 let kind = match kind {
                     "rain" => obc_app::WeatherAlertKind::Rain,
                     "storm" => obc_app::WeatherAlertKind::Storm,
-                    _ => return Err("--weather-alert: kind must be rain or storm".into()),
+                    "gust" => obc_app::WeatherAlertKind::Gust,
+                    _ => return Err("--weather-alert: kind must be rain, storm or gust".into()),
                 };
                 let minutes: u16 = min.parse().map_err(|_| "--weather-alert: bad minutes")?;
                 a.weather_alert = Some((kind, minutes));
             }
+            "--weather-decide" => a.weather_decide = true,
             "--route-retention" => {
                 a.route_retention =
                     Some(parse_route_retention(&it.next().ok_or("--route-retention needs LEVEL:AGE")?)?);
@@ -916,7 +925,7 @@ fn main() {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: obc-sim <map.obcm> | --set <MS7.OBS> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--clock YYYY-MM-DDTHH:MM] [--route-retention LEVEL:AGE] [--lang en|de|fr|es] [--stat-fields LIST] [--ble-connected] [--ble-passkey N] [--ble-paired] [--sensors-screen] [--inject-upload ID] [--inject-upload-replace ID] [--nav-hold] [--inject-nav-fail exhausted|nopath] [--detour-hold] [--inject-detour-fail exhausted|nopath] [--inject-warning gps,altimeter,compass,map] [--boot-fault nocard|nomap|badmap] [--open-climb] [--freeze] [--baro-drift M_PER_HOUR] [--weather DIR|demo[:scattered|drizzle|frontal|storm|dry|incoming|hourly]] [--weather-now UNIX] [--weather-refreshing] [--weather-alert rain[:MIN]|storm[:MIN]]\n\n  --set <MS7.OBS>  open an OBCA volume set (specs/OBCA_Spec.md §5): the manifest plus every\n                   MS7S<kk>.OBM shard beside it, mounted as one map. Every shard must be\n                   present and exactly its recorded size, or the set is refused whole (§5.4).");
+            eprintln!("error: {e}\nusage: obc-sim <map.obcm> | --set <MS7.OBS> [--size WxH] [--scale N] [--png OUT] [--true-color] [--heading DEG] [--gpx TRACK.gpx] [--at SEC] [--center LON,LAT] [--zoom MULT] [--palette] [--script TOKENS] [--boot] [--routes-dir DIR] [--tracks-dir DIR] [--import GPX] [--physical] [--calibrate] [--colorway NAME] [--battery PCT] [--clock YYYY-MM-DDTHH:MM] [--route-retention LEVEL:AGE] [--lang en|de|fr|es] [--stat-fields LIST] [--ble-connected] [--ble-passkey N] [--ble-paired] [--sensors-screen] [--inject-upload ID] [--inject-upload-replace ID] [--nav-hold] [--inject-nav-fail exhausted|nopath] [--detour-hold] [--inject-detour-fail exhausted|nopath] [--inject-warning gps,altimeter,compass,map] [--boot-fault nocard|nomap|badmap] [--open-climb] [--freeze] [--baro-drift M_PER_HOUR] [--weather DIR|demo[:scattered|drizzle|frontal|storm|dry|incoming|stormahead|rainahead|gusty|hourly]] [--weather-now UNIX] [--weather-refreshing] [--weather-alert rain[:MIN]|storm[:MIN]|gust[:MIN]] [--weather-decide]\n\n  --set <MS7.OBS>  open an OBCA volume set (specs/OBCA_Spec.md §5): the manifest plus every\n                   MS7S<kk>.OBM shard beside it, mounted as one map. Every shard must be\n                   present and exactly its recorded size, or the set is refused whole (§5.4).");
             std::process::exit(2);
         }
     };
@@ -1276,7 +1285,7 @@ fn main() {
             // camera centre — the demo bundles span the map bbox either way).
             if let Some(w) = weather.as_mut() {
                 let pos = app.state.user_fix.map(|f| (f.lat, f.lon)).unwrap_or((app.state.cam_lat, app.state.cam_lon));
-                if let Some(snap) = w.snapshot(Some(pos)) {
+                if let Some(snap) = w.snapshot(Some(pos), None) {
                     let now = app.wall_unix_now() as i64;
                     let floor = snap.rain_zoom_floor(app.state.cam_lat).unwrap_or(0.0);
                     app.set_rain_view(snap.steps_ahead(now), floor);
@@ -1526,11 +1535,20 @@ fn main() {
         // the production resident snapshot — the same adapter/feed pair the device and the GUI
         // use. No store / nothing current ⇒ `None`, byte-identical to a rain-free render.
         let wx_pos = app.state.user_fix.map(|f| (f.lat, f.lon)).unwrap_or((app.state.cam_lat, app.state.cam_lon));
-        let wx_snapshot = weather.as_mut().and_then(|w| w.snapshot(Some(wx_pos)));
+        // `--weather-decide` (WX12): the production ride path — frame samples route-projected
+        // from the app's own matched progress + recent-pace estimate (`ride_projection` →
+        // `sample_along`), then the real alert engine (thresholds/dedup/cooldown) over the very
+        // snapshot the screens render. Opt-in so the WX10/WX11 fixture renders stay
+        // byte-identical (their scenarios would otherwise grow alert cards).
+        let wx_projection = if args.weather_decide { route.as_ref().zip(app.ride_projection()) } else { None };
+        let wx_snapshot = weather.as_mut().and_then(|w| w.snapshot(Some(wx_pos), wx_projection));
         if let Some(snap) = &wx_snapshot {
             let now = app.wall_unix_now() as i64;
             let floor = snap.rain_zoom_floor(app.state.cam_lat).unwrap_or(0.0);
             app.set_rain_view(snap.steps_ahead(now), floor);
+        }
+        if args.weather_decide {
+            app.weather_alert_tick(wx_snapshot.as_ref());
         }
         let rain_step = app.state.rain_step;
         let refreshing = args.weather_refreshing;

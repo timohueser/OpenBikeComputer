@@ -92,6 +92,19 @@ pub enum DemoScenario {
     /// An approaching light-rain front that reaches the map centre a few frames in — the
     /// dashboard's RAIN IN NN MIN state.
     Incoming,
+    /// **WX12's route-projection scenario**: dry within 8 cells of the grid centre, a stationary
+    /// ≥ 10 mm/h ring 8–14 cells out, moderate rain beyond. A parked rider at the centre reads
+    /// DRY FOR 2 HOURS; a rider projected along a route crosses the ring — on the Grimsel
+    /// fixture, ~44 min out with the sweep's `--at 1500` replay (inside the 45-min heavy-rain
+    /// horizon, so the engine fires RAIN AHEAD). Deterministic in every direction.
+    StormAhead,
+    /// **WX12's gust scenario**: every frame dry, but the hourly rows forecast 22 m/s gusts —
+    /// the dashboard stays calm while the dangerous-gust alert fires.
+    Gusty,
+    /// [`StormAhead`](DemoScenario::StormAhead)'s moderate sibling: the same stationary ring at
+    /// band 6 (~2–5 mm/h — below every alert threshold), so the projected dashboard reads
+    /// RAIN IN NN with **no** alert card — the decision-card state photographed clean.
+    RainAhead,
 }
 
 impl DemoScenario {
@@ -133,6 +146,22 @@ impl DemoScenario {
                 let behind = (row as i64 + col as i64) - 84 + drift * 6;
                 clamp(behind / 2).min(6)
             }
+            // Stationary radial ring (deliberately no drift — the *projection* supplies the
+            // motion): dry core, storm ring, moderate field. Uses the raw column (not the
+            // drifted `c`) so every frame is identical.
+            DemoScenario::StormAhead | DemoScenario::RainAhead => {
+                let ring = if self == DemoScenario::StormAhead { 10 } else { 6 };
+                let (dr, dc) = (r - 24, col as i64 - 24);
+                let d2 = dr * dr + dc * dc;
+                if d2 < 8 * 8 {
+                    0
+                } else if d2 < 14 * 14 {
+                    ring
+                } else {
+                    3
+                }
+            }
+            DemoScenario::Gusty => 0,
         }
     }
 }
@@ -163,10 +192,13 @@ impl SimWeather {
                 "storm" => Some(DemoScenario::Storm),
                 "dry" => Some(DemoScenario::Dry),
                 "incoming" => Some(DemoScenario::Incoming),
+                "stormahead" => Some(DemoScenario::StormAhead),
+                "rainahead" => Some(DemoScenario::RainAhead),
+                "gusty" => Some(DemoScenario::Gusty),
                 "hourly" => None,
                 other => {
                     eprintln!(
-                        "--weather demo:{other}: unknown scenario (scattered|drizzle|frontal|storm|dry|incoming|hourly)"
+                        "--weather demo:{other}: unknown scenario (scattered|drizzle|frontal|storm|dry|incoming|stormahead|rainahead|gusty|hourly)"
                     );
                     return None;
                 }
@@ -190,11 +222,17 @@ impl SimWeather {
     }
 
     /// Sample the loaded bundle into the production resident [`WeatherSnapshot`]
-    /// (`obc-app`'s — the exact struct the screens consume) at `pos` (`(lat, lon)` µdeg).
-    pub fn snapshot(&mut self, pos: Option<(i32, i32)>) -> Option<obc_app::WeatherSnapshot> {
+    /// (`obc-app`'s — the exact struct the screens consume) at `pos` (`(lat, lon)` µdeg), with
+    /// frame samples advanced along the active route when the app supplied a WX12
+    /// [`RideProjection`](obc_app::RideProjection) — the production `sample_along` path.
+    pub fn snapshot(
+        &mut self,
+        pos: Option<(i32, i32)>,
+        projection: Option<(&obc_route::RouteReader<'_>, obc_app::RideProjection)>,
+    ) -> Option<obc_app::WeatherSnapshot> {
         let source = obc_formats::io::SliceSource(&self.bytes);
         let reader = obc_weather::WeatherReader::open(&source).ok()?;
-        obc_app::WeatherSnapshot::sample(&reader, &mut self.cache, pos).ok()
+        obc_app::WeatherSnapshot::sample_along(&reader, &mut self.cache, pos, projection).ok()
     }
 
     /// Load the newest valid generation from a WEATHER.A/WEATHER.B root, exactly as boot selection
@@ -226,12 +264,16 @@ impl SimWeather {
         // dashboard card + hourly screen), with mild deterministic variation so the hourly list
         // reads like a real day, not 24 clones.
         let (base_condition, wet_tenth_mm, wet_pct) = match scenario {
-            Some(DemoScenario::Dry) => (CONDITION_MOSTLY_CLEAR, 0u16, 0u8),
+            Some(DemoScenario::Dry) | Some(DemoScenario::Gusty) => (CONDITION_MOSTLY_CLEAR, 0u16, 0u8),
             Some(DemoScenario::Incoming) => (CONDITION_SHOWERS, 8, 55),
             Some(DemoScenario::Storm) => (CONDITION_THUNDERSTORM, 62, 90),
+            Some(DemoScenario::StormAhead) => (CONDITION_SHOWERS, 15, 65),
             Some(_) => (CONDITION_RAIN, 12, 60),
             None => (CONDITION_PARTLY_CLOUDY, 2, 30),
         };
+        // The gusty scenario forecasts 22 m/s gusts (over the WX12 dangerous-gust threshold);
+        // everything else stays a calm 7 m/s.
+        let gust_deci_ms = if scenario == Some(DemoScenario::Gusty) { 220 } else { 70 };
         let hourly: [HourlyRecord; HOURLY_COUNT] = core::array::from_fn(|i| HourlyRecord {
             valid_time_offset_s: i as u32 * HOURLY_INTERVAL_SECONDS,
             temperature_deci_c: 95 + ((i as i16 + 3) % 12) * 14,
@@ -244,7 +286,7 @@ impl SimWeather {
             },
             wind_from_deg: (200 + i as u16 * 15) % 360,
             wind_speed_deci_ms: 28 + (i as u16 % 5) * 13,
-            wind_gust_deci_ms: 70,
+            wind_gust_deci_ms: gust_deci_ms,
             flags: 0,
         });
         let mut frames_tiles = Vec::new();
