@@ -122,9 +122,10 @@ Einbindung in die Website zu großen Kartendaten bereitzustellen.
 
 ## 7. Speicherung auf dem Endgerät
 
-Der Kartenbaukasten verwendet `localStorage` und das *Origin Private File System*
-(OPFS) des Browsers. Diese Daten bleiben auf dem verwendeten Gerät und werden nicht an
-den Verantwortlichen übertragen.
+Webanwendung und installierte Desktop-App verwenden lokalen Gerätespeicher. Der
+Kartenbaukasten nutzt `localStorage` und das *Origin Private File System* (OPFS) des
+Browsers. Diese Daten bleiben auf dem verwendeten Gerät und werden nicht an den
+Verantwortlichen übertragen.
 
 | Daten | Zweck und Dauer |
 | --- | --- |
@@ -134,11 +135,15 @@ den Verantwortlichen übertragen.
 | Optional weiterverwendete Kartenzellen | Nur wenn „Keep downloaded map cells for future builds“ aktiviert wird; bis zum Deaktivieren, bis „Delete stored map data“ gewählt wird, bis Browserdaten gelöscht werden oder eine neue Kataloggeneration die alte ersetzt. |
 | Entscheidung über die Wiederverwendung von Kartenzellen | Damit die ausdrücklich gewählte Einstellung bei einem späteren Besuch erhalten bleibt; bis zur nächsten Änderung oder zum Löschen der Website-Daten. |
 | Beantwortete Firmware-Hinweise mit Geräte-Seriennummer und angebotener Version | Erst nachdem ein Hinweis geschlossen oder aufgerufen wurde, damit dieselbe Frage für dasselbe Gerät nicht ständig erscheint; höchstens die 32 jüngsten Antworten, bis die Website-Daten gelöscht werden. |
+| Routen- und Tourenvorschauen in der Webanwendung | Aus dem angeschlossenen Gerät geladene, ausgedünnte Koordinaten zur Darstellung der Kacheln; nur im Arbeitsspeicher der laufenden Seitensitzung, bis zum Neuladen oder Schließen. |
+| Routen- und Tourenvorschauen in der installierten Desktop-App | Ausgedünnte Koordinaten werden lokal zwischengespeichert, damit sie nach einem App-Neustart nicht erneut vom angeschlossenen Gerät geladen werden müssen. Der Cache ist auf 300 Einträge begrenzt und entfernt ältere, zuletzt nicht verwendete Einträge. Geänderte Objekte erhalten durch Inhaltsmerkmale einen neuen Cache-Schlüssel. Löschung ist auf der Geräteseite über „Delete saved previews“ oder durch Löschen der App-Daten möglich. |
 
 Das kurzfristige Speichern und Auslesen der Arbeitsdaten sowie das Speichern eines vom
-Nutzer ausdrücklich gesicherten Skins oder beantworteten Firmware-Hinweises ist für
-die jeweils angeforderte Funktion erforderlich (§ 25 Abs. 2 Nr. 2 TDDDG). Für diese
-Vorgänge ist keine Einwilligung erforderlich.
+Nutzer ausdrücklich gesicherten Skins oder beantworteten Firmware-Hinweises sowie der
+begrenzte Vorschau-Cache der ausdrücklich installierten Desktop-App sind für die jeweils
+angeforderte Funktion erforderlich (§ 25 Abs. 2 Nr. 2 TDDDG). Der Vorschau-Cache
+vermeidet insbesondere wiederholte vollständige Übertragungen aller dargestellten
+Routen und Touren über USB. Für diese Vorgänge ist keine Einwilligung erforderlich.
 
 Die Wiederverwendung heruntergeladener Kartenzellen bei späteren Builds ist dagegen
 optional und standardmäßig ausgeschaltet. Das Aktivieren der deutlich bezeichneten
