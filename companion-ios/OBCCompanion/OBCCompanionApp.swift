@@ -142,18 +142,32 @@ struct OBCCompanionApp: App {
         #endif
     }
 
-    /// The `-OBCHoldSyncConfirmation` hook (#1212): the sync coordinator normally returns the
-    /// top-bar check to idle two seconds after a sync lands. That beat is real product behaviour,
-    /// but it's a wall clock — an automated capture aiming at it is racing, which is how the
-    /// landing-page gate ended up flaky. The flag parks the confirmation instead of expiring it, so
-    /// the screenshot is of a state that simply stays. Ordinary runs get the shipped timing.
+    /// The `-OBCHoldConfirmations` hook (#1212), sync half: the coordinator normally returns the
+    /// top-bar check to idle two seconds after a sync lands, and drops the "Synced N new rides just
+    /// now" line a minute later. Both beats are real product behaviour and both are wall clocks —
+    /// an automated capture aiming at one is racing, which is how the landing-page gate ended up
+    /// flaky. The flag parks them instead of expiring them. Ordinary runs get the shipped timing.
     static func launchSyncTiming() -> RideSyncCoordinator.Timing {
         #if DEBUG
-        if launchOptions.holdSyncConfirmation {
+        if launchOptions.holdConfirmations {
             return RideSyncCoordinator.Timing(syncDoneHold: .seconds(3_600), syncedLineHold: .seconds(3_600))
         }
         #endif
         return RideSyncCoordinator.Timing()
+    }
+
+    /// The same hook's upload half: the B5 sheet dismisses **itself** 2.6 s after it says "On the
+    /// device", so the landing page's finished-upload screenshot has under three seconds to exist
+    /// in — the third instance of this bug class on these five screens. Read by the two upload
+    /// seams in `ScreenHosts`: they sit deep in the tree, and the launch surface is this module's
+    /// business, so they ask here rather than have a timing threaded down to them.
+    static func launchUploadTiming() -> UploadSheetModel.Timing {
+        #if DEBUG
+        if launchOptions.holdConfirmations {
+            return UploadSheetModel.Timing(doneAutoDismiss: .seconds(3_600))
+        }
+        #endif
+        return UploadSheetModel.Timing()
     }
 
     /// The phone-side library (B1S). Mock runs stay **in-memory** — every
