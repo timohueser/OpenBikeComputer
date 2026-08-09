@@ -6,6 +6,7 @@ publish = false # test-only: builds + verifies the shared specs/vectors/ fixture
 description = "S0 wire-protocol shared test vectors (obc-ble-interface-spec.md): builders and contract tests for the binary fixtures in specs/vectors/, consumed by both cargo test and the companion app's swift test"
 
 [dependencies]
+obc-crc = { path = "../../firmware/obc-crc" }
 obc-formats = { path = "../../firmware/obc-formats" }
 obc-weather = { path = "../../firmware/obc-weather" }
 # The OBCT terrain fixture is *built* here from the spec's field tables like every other one; this

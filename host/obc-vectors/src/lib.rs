@@ -24,6 +24,7 @@ use std::path::PathBuf;
 use obc_formats::io::{ByteSink, Error, SliceSource};
 use obc_route::gpx_to_obcr;
 
+pub mod obcg;
 pub mod obcw;
 pub mod weather_request;
 
@@ -941,5 +942,6 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         ("weather-request-context-southern.bin", weather_request::southern()),
     ];
     fixtures.extend(obcw::all());
+    fixtures.extend(obcg::all());
     fixtures
 }

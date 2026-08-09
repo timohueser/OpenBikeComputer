@@ -1,0 +1,331 @@
+//! DWD RV composite adapter: Germany's 1 km rain nowcast, tier 1.
+//!
+//! Upstream is the maintained raw OpenData tar of 25 ODIM HDF5 members (leads 000..120 in
+//! five-minute steps). Every member is validated against the WX1-pinned contract before the
+//! nine published leads (+0, +15, ..., +120) are selected; the discarded intermediate frames are
+//! never interpolated. Reprojection is nearest-neighbour from the pinned polar-stereographic
+//! raster onto a fixed regular lat/lon window at native ~1 km cell size — no smoothing.
+
+use chrono::NaiveDateTime;
+use hdf5_pure::{AttrValue, File as Hdf5File};
+use obc_formats::obcg::{FLAG_FORECAST, FLAG_OBSERVED, PRODUCT_DWD_RV, TIER_RADAR};
+use obc_formats::precip4;
+use std::collections::HashMap;
+use std::io::Read;
+
+use crate::fetch::{FetchOutcome, Upstream};
+use crate::geometry::GridGeometry;
+use crate::grib::{MAX_COMPRESSED_BYTES, MAX_DECOMPRESSED_BYTES};
+use crate::manifest::Product;
+use crate::source::{Adapter, AdapterOutcome, Attribution, BakedFrame, BakedProduct};
+use crate::stereo;
+
+pub const ID: &str = "dwd-rv";
+pub const LATEST_URL: &str = "https://opendata.dwd.de/weather/radar/composite/rv/composite_rv_LATEST.tar";
+
+/// The fixed publication window: a regular lat/lon cover of the composite's trapezoid at native
+/// ~1 km cells (9,000 x 14,000 microdegrees). Cells outside the projected raster are no-data.
+pub const GEOMETRY: GridGeometry = GridGeometry {
+    south_lat_udeg: 45_680_000,
+    west_lon_udeg: 1_460_000,
+    cell_lat_udeg: 9_000,
+    cell_lon_udeg: 14_000,
+    width: 1_234,
+    height: 1_132,
+    cell_size_m: 1_000,
+    tile_edge: 32,
+    entries_per_page: 512,
+};
+
+/// Published leads in minutes: the epic's nine 15-minute frames through +2 h.
+pub const LEADS_MIN: [u32; 9] = [0, 15, 30, 45, 60, 75, 90, 105, 120];
+/// A radar run refreshes every five minutes; half an hour without a fresh one is the epic's
+/// stuck-baker detection horizon, so the product must not outlive it.
+pub const STALENESS_SECONDS: i64 = 30 * 60;
+
+pub const ATTRIBUTION: Attribution = Attribution {
+    text: "Source: Deutscher Wetterdienst (DWD), radar composite RV; modified/quantized by OpenBikeComputer",
+    url: "https://www.dwd.de/EN/service/copyright/copyright_artikel.html",
+};
+
+// The WX1-pinned member contract.
+const NATIVE_SHAPE: [u64; 2] = [1_200, 1_100];
+const GAIN: f64 = 0.000_999_999_931_780_621_3;
+const OFFSET: f64 = -0.000_999_999_931_780_621_3;
+const NODATA: u64 = 4_294_967_295;
+const UNDETECT: u64 = 0;
+const CORNERS: [(&str, f64); 8] = [
+    ("LL_lon", 3.566_994_635_007_891_4),
+    ("LL_lat", 45.696_425_377_390_064),
+    ("UL_lon", 1.463_301_510_256_666),
+    ("UL_lat", 55.862_087_108_249_824),
+    ("UR_lon", 18.731_616_454_667_47),
+    ("UR_lat", 55.845_438_563_255_755),
+    ("LR_lon", 16.580_869_348_598_274),
+    ("LR_lat", 45.684_605_781_370_82),
+];
+
+pub struct DwdRv;
+
+impl Adapter for DwdRv {
+    fn id(&self) -> &'static str {
+        ID
+    }
+
+    fn bake(
+        &self,
+        upstream: &mut dyn Upstream,
+        previous: Option<&Product>,
+        _now: i64,
+        warnings: &mut Vec<String>,
+    ) -> Result<AdapterOutcome, String> {
+        let previous_etag = previous.and_then(|product| product.upstream_etag.as_deref());
+        let fetched = match upstream.fetch(LATEST_URL, MAX_COMPRESSED_BYTES, previous_etag)? {
+            FetchOutcome::Unchanged => return Ok(AdapterOutcome::Unchanged),
+            FetchOutcome::Body(fetched) => fetched,
+        };
+        let (run, frames) = bake_tar(&fetched.bytes)?;
+        // A validator can miss (or the fixture upstream can serve the same bytes without one):
+        // the run identity itself is the second short-circuit, keys being immutable per run.
+        let previous_run = previous.and_then(|product| product.reference_unix());
+        if previous_run == Some(run) {
+            return Ok(AdapterOutcome::Unchanged);
+        }
+        // Upstream regression: LATEST served an older run than the one already published (a
+        // withdrawn or re-published archive). Never regress reference_time/staleness — keep the
+        // published product and wait for a genuinely newer run.
+        if previous_run.is_some_and(|published| published > run) {
+            warnings.push(format!(
+                "dwd-rv: upstream serves run {run} older than the published {}; keeping the published product",
+                previous_run.expect("checked")
+            ));
+            return Ok(AdapterOutcome::Unchanged);
+        }
+        Ok(AdapterOutcome::Baked(Box::new(BakedProduct {
+            id: ID,
+            product_code: PRODUCT_DWD_RV,
+            tier: TIER_RADAR,
+            geometry: GEOMETRY,
+            reference_time: run,
+            staleness_deadline: run + STALENESS_SECONDS,
+            attribution: ATTRIBUTION,
+            upstream_etag: fetched.etag,
+            frames,
+        })))
+    }
+}
+
+/// Validate a complete RV tar and bake the nine published leads. Public for the fixture tests.
+pub fn bake_tar(tar_bytes: &[u8]) -> Result<(i64, Vec<BakedFrame>), String> {
+    GEOMETRY.validate()?;
+    if tar_bytes.is_empty() || tar_bytes.len() as u64 > MAX_COMPRESSED_BYTES {
+        return Err("DWD RV tar size is outside the WX1 limits".into());
+    }
+    let index_map = source_index_map();
+    let mut archive = tar::Archive::new(tar_bytes);
+    let mut run_time: Option<i64> = None;
+    let mut member_count = 0usize;
+    let mut frames: Vec<BakedFrame> = Vec::new();
+    for entry in archive.entries().map_err(|error| format!("DWD RV tar: {error}"))? {
+        let entry = entry.map_err(|error| format!("DWD RV tar: {error}"))?;
+        if entry.size() > MAX_DECOMPRESSED_BYTES {
+            return Err("DWD RV HDF5 member exceeds the WX1 limit".into());
+        }
+        let path = entry.path().map_err(|error| format!("DWD RV tar member: {error}"))?;
+        let name = path
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .ok_or("DWD RV tar member has a non-UTF-8 or empty name")?
+            .to_string();
+        let (member_run, lead_minutes) = parse_member_name(&name)?;
+        if run_time.is_none() {
+            run_time = Some(member_run);
+        }
+        let expected_lead = u32::try_from(member_count).unwrap() * 5;
+        if run_time != Some(member_run) || lead_minutes != expected_lead {
+            return Err(format!("DWD RV tar member {name} has the wrong run/lead"));
+        }
+        let mut bytes = Vec::new();
+        entry
+            .take(MAX_DECOMPRESSED_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| format!("DWD RV member {name}: {error}"))?;
+        if bytes.len() as u64 > MAX_DECOMPRESSED_BYTES {
+            return Err("DWD RV HDF5 member exceeds the WX1 limit".into());
+        }
+        let member = validate_member(bytes, member_run, lead_minutes)?;
+        // Every member is validated; only the nine published leads are baked.
+        if LEADS_MIN.contains(&lead_minutes) {
+            frames.push(BakedFrame {
+                offset_min: lead_minutes,
+                valid_at: member_run + i64::from(lead_minutes) * 60,
+                flags: if lead_minutes == 0 { FLAG_OBSERVED } else { FLAG_FORECAST },
+                cells: resample(&member, &index_map),
+            });
+        }
+        member_count += 1;
+    }
+    if member_count != 25 {
+        return Err(format!("DWD RV tar contains {member_count} members; expected leads 000..120 every 5 minutes"));
+    }
+    if frames.len() != LEADS_MIN.len() {
+        return Err("DWD RV tar is missing a published lead".into());
+    }
+    Ok((run_time.expect("25 members imply a run"), frames))
+}
+
+/// The per-cycle nearest-neighbour map: for every output cell, the native raster index (or
+/// `u32::MAX` outside the projected frame). One trigonometric pass, shared by all nine frames.
+fn source_index_map() -> Vec<u32> {
+    let mut map = vec![u32::MAX; GEOMETRY.cells()];
+    for row in 0..GEOMETRY.height {
+        let lat = GEOMETRY.center_lat_deg(row);
+        for col in 0..GEOMETRY.width {
+            let lon = GEOMETRY.center_lon_deg(col);
+            if let Some(index) = stereo::native_index(lat, lon) {
+                map[(row * GEOMETRY.width + col) as usize] = index as u32;
+            }
+        }
+    }
+    map
+}
+
+struct Member {
+    raw: Vec<u32>,
+}
+
+fn resample(member: &Member, index_map: &[u32]) -> Vec<u8> {
+    index_map
+        .iter()
+        .map(|&source| {
+            if source == u32::MAX {
+                return precip4::INTENSITY_NODATA;
+            }
+            let encoded = u64::from(member.raw[source as usize]);
+            if encoded == NODATA {
+                precip4::INTENSITY_NODATA
+            } else if encoded == UNDETECT {
+                precip4::INTENSITY_DRY
+            } else {
+                // mm per 5 minutes -> mm/h. `encoded * gain + offset` per the ODIM scale attrs.
+                let mm_5min = encoded as f64 * GAIN + OFFSET;
+                precip4::quantize_rate_mm_per_hour(mm_5min * 12.0)
+            }
+        })
+        .collect()
+}
+
+/// Full WX1 member validation: geometry, projection, scale, timing identity, value sanity.
+fn validate_member(bytes: Vec<u8>, run_time: i64, lead_minutes: u32) -> Result<Member, String> {
+    let file = Hdf5File::from_bytes(bytes).map_err(|error| format!("DWD RV HDF5: {error}"))?;
+    let dataset = file.dataset("dataset1/data1/data").map_err(|error| format!("DWD RV dataset: {error}"))?;
+    let shape = dataset.shape().map_err(|error| format!("DWD RV shape: {error}"))?;
+    if shape.as_slice() != NATIVE_SHAPE {
+        return Err("DWD RV raster is no longer the 1200x1100 native grid".into());
+    }
+    let attrs =
+        |path: &str| file.group(path).and_then(|group| group.attrs()).map_err(|error| format!("{path}: {error}"));
+    let data_attrs = attrs("dataset1/data1/what")?;
+    let where_attrs = attrs("where")?;
+    let root_what = attrs("what")?;
+    let dataset_what = attrs("dataset1/what")?;
+    if attr_string(&data_attrs, "quantity")? != "ACRR" {
+        return Err("DWD quantity is not ACRR".into());
+    }
+    if attr_f64(&where_attrs, "xscale")? != 1_000.0
+        || attr_f64(&where_attrs, "yscale")? != 1_000.0
+        || attr_u64(&where_attrs, "xsize")? != u64::from(stereo::NATIVE_COLS)
+        || attr_u64(&where_attrs, "ysize")? != u64::from(stereo::NATIVE_ROWS)
+        || CORNERS.iter().any(|(name, expected)| attr_f64(&where_attrs, name) != Ok(*expected))
+    {
+        return Err("DWD RV native grid is no longer the pinned 1 km registration".into());
+    }
+    if attr_string(&where_attrs, "projdef")? != stereo::DWD_RV_PROJDEF {
+        return Err("DWD RV stereographic projection changed".into());
+    }
+    if attr_f64(&data_attrs, "gain")? != GAIN
+        || attr_f64(&data_attrs, "offset")? != OFFSET
+        || attr_u64(&data_attrs, "nodata")? != NODATA
+        || attr_u64(&data_attrs, "undetect")? != UNDETECT
+    {
+        return Err("DWD RV scale or missing-value contract changed".into());
+    }
+    let reference = parse_odim_datetime(&root_what, "date", "time")?;
+    let valid_start = parse_odim_datetime(&dataset_what, "startdate", "starttime")?;
+    let valid_end = parse_odim_datetime(&dataset_what, "enddate", "endtime")?;
+    if valid_end.checked_sub(valid_start) != Some(300) {
+        return Err("DWD RV ODIM interval is not exactly five minutes".into());
+    }
+    let expected_end = run_time + i64::from(lead_minutes) * 60;
+    if reference != run_time || valid_end != expected_end {
+        return Err("DWD RV member name and internal ODIM times disagree".into());
+    }
+    let raw = dataset.read_u32().map_err(|error| format!("DWD RV raster: {error}"))?;
+    if raw.len() != (NATIVE_SHAPE[0] * NATIVE_SHAPE[1]) as usize {
+        return Err("DWD RV raster length disagrees with its shape".into());
+    }
+    for &encoded in &raw {
+        let encoded = u64::from(encoded);
+        if encoded == NODATA || encoded == UNDETECT {
+            continue;
+        }
+        let value = encoded as f64 * GAIN + OFFSET;
+        if !value.is_finite() || value < 0.0 {
+            return Err("DWD RV contains invalid scaled precipitation".into());
+        }
+    }
+    Ok(Member { raw })
+}
+
+fn parse_member_name(name: &str) -> Result<(i64, u32), String> {
+    let identity = name
+        .strip_prefix("composite_rv_")
+        .and_then(|value| value.strip_suffix("-hd5"))
+        .ok_or("DWD RV tar member name is outside the source contract")?;
+    let parts: Vec<_> = identity.split('_').collect();
+    if parts.len() != 3 || parts[0].len() != 8 || parts[1].len() != 4 || parts[2].len() != 3 {
+        return Err("DWD RV tar member date/time/lead shape changed".into());
+    }
+    let run = NaiveDateTime::parse_from_str(&format!("{}{}00", parts[0], parts[1]), "%Y%m%d%H%M%S")
+        .map_err(|error| format!("DWD RV member run time: {error}"))?
+        .and_utc()
+        .timestamp();
+    let lead = parts[2].parse::<u32>().map_err(|error| format!("DWD RV member lead: {error}"))?;
+    if lead > 120 || lead % 5 != 0 {
+        return Err("DWD RV tar member lead is outside 000..120/5m".into());
+    }
+    Ok((run, lead))
+}
+
+fn parse_odim_datetime(attrs: &HashMap<String, AttrValue>, date: &str, time: &str) -> Result<i64, String> {
+    let compact = format!("{}{}", attr_string(attrs, date)?, attr_string(attrs, time)?);
+    Ok(NaiveDateTime::parse_from_str(&compact, "%Y%m%d%H%M%S")
+        .map_err(|error| format!("ODIM {date}/{time}: {error}"))?
+        .and_utc()
+        .timestamp())
+}
+
+fn attr_string(attrs: &HashMap<String, AttrValue>, name: &str) -> Result<String, String> {
+    attrs
+        .get(name)
+        .and_then(AttrValue::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| format!("attribute {name} is not a scalar string"))
+}
+
+fn attr_f64(attrs: &HashMap<String, AttrValue>, name: &str) -> Result<f64, String> {
+    attrs.get(name).and_then(AttrValue::as_f64).ok_or_else(|| format!("attribute {name} is not a scalar number"))
+}
+
+fn attr_u64(attrs: &HashMap<String, AttrValue>, name: &str) -> Result<u64, String> {
+    let value = attrs.get(name).ok_or_else(|| format!("attribute {name} is absent"))?;
+    if let Some(value) = value.as_u64() {
+        return Ok(value);
+    }
+    if let Some(value) = value.as_f64() {
+        if value.is_finite() && value >= 0.0 && value.fract() == 0.0 && value <= u64::MAX as f64 {
+            return Ok(value as u64);
+        }
+    }
+    Err(format!("attribute {name} is not a scalar unsigned integer"))
+}

@@ -87,6 +87,145 @@ fn weather_vectors_cross_the_production_reader_and_reject_malformed_files() {
     }
 }
 
+#[test]
+fn grid_vectors_cross_the_byte_authority_and_reject_malformed_objects() {
+    use obc_formats::obcg;
+
+    for (name, expected) in obc_vectors::obcg::positives() {
+        let bytes = fixture(name);
+        assert_eq!(bytes, expected, "positive OBCG fixture drift: {name}");
+        let mut scratch = vec![0u8; obc_formats::precip4::MAX_CELLS];
+        let header = obcg::validate(&bytes, &mut scratch).unwrap_or_else(|error| panic!("{name} rejected: {error:?}"));
+        assert_eq!(header.total_len as usize, bytes.len());
+    }
+
+    // Pinned cells: the Swift decoder must agree on exactly these values (OBCG_Spec.md §11).
+    let sample = |bytes: &[u8], col: u32, row: u32| -> u8 {
+        let header_bytes: &[u8; obcg::HEADER_LEN] = bytes[..obcg::HEADER_LEN].try_into().unwrap();
+        let header = obcg::decode_header(header_bytes).unwrap();
+        let (tile_col, tile_row) = header.tile_of_cell(col, row).unwrap();
+        let tile_index = header.tile_index(tile_col, tile_row).unwrap();
+        let page = header.page_of_entry(tile_index);
+        let page_offset = header.page_offset(page).unwrap() as usize;
+        let page_slice = &bytes[page_offset..page_offset + header.page_bytes() as usize];
+        obcg::validate_page(&header, page_slice).unwrap();
+        let within = (tile_index - page * u32::from(header.entries_per_page)) as usize;
+        let entry = obcg::decode_entry(page_slice, within).unwrap();
+        let payload = if entry.is_dry() {
+            &[][..]
+        } else {
+            &bytes[entry.data_offset as usize..entry.data_offset as usize + usize::from(entry.encoded_len)]
+        };
+        let mut out = vec![0u8; header.tile_cells()];
+        obcg::decode_tile_cells(&header, &entry, payload, &mut out).unwrap();
+        out[header.cell_index_in_tile(col, row).unwrap()]
+    };
+    let multipage = fixture("grid-multipage.obcg");
+    assert_eq!(sample(&multipage, 0, 0), 6);
+    assert_eq!(sample(&multipage, 39, 39), 9);
+    assert_eq!(sample(&multipage, 20, 20), 0, "dry sentinel decodes as dry");
+    let raw = fixture("grid-raw-tile.obcg");
+    assert_eq!(sample(&raw, 0, 0), 0);
+    assert_eq!(sample(&raw, 12, 0), 12);
+    assert_eq!(sample(&raw, 5, 3), ((3 * 16 + 5) % 13) as u8);
+    let nodata = fixture("grid-nodata-tile.obcg");
+    assert_eq!(sample(&nodata, 8, 8), obc_formats::precip4::INTENSITY_NODATA, "no-data is never dry");
+    let padding = fixture("grid-edge-padding.obcg");
+    assert_eq!(sample(&padding, 3, 4), 2);
+    assert_eq!(sample(&padding, 20, 20), 12);
+
+    for (name, expected) in obc_vectors::obcg::negatives() {
+        let bytes = fixture(name);
+        assert_eq!(bytes, expected, "negative OBCG fixture drift: {name}");
+        let mut scratch = vec![0u8; obc_formats::precip4::MAX_CELLS];
+        assert!(obcg::validate(&bytes, &mut scratch).is_err(), "malformed OBCG fixture accepted: {name}");
+    }
+}
+
+/// OBCG_Spec.md §7: corridor extraction touches only the header, the covering directory pages,
+/// and the needed non-dry tiles. A counting range reader proves the request set exactly.
+#[test]
+fn grid_corridor_extraction_touches_only_header_pages_and_needed_tiles() {
+    use obc_formats::obcg;
+    use std::cell::RefCell;
+
+    let bytes = fixture("grid-multipage.obcg");
+    let requests: RefCell<Vec<(u32, u32)>> = RefCell::new(Vec::new());
+    let read = |offset: u32, len: u32| -> Vec<u8> {
+        requests.borrow_mut().push((offset, len));
+        bytes[offset as usize..(offset + len) as usize].to_vec()
+    };
+
+    // Corridor: the north-east quarter of the window — cells (20, 20) through (39, 39).
+    let header_read = read(0, obcg::HEADER_LEN as u32);
+    let header_bytes: &[u8; obcg::HEADER_LEN] = header_read.as_slice().try_into().unwrap();
+    let header = obcg::decode_header(header_bytes).unwrap();
+    let (tile_col_min, tile_row_min) = header.tile_of_cell(20, 20).unwrap();
+    let (tile_col_max, tile_row_max) = header.tile_of_cell(39, 39).unwrap();
+    assert_eq!((tile_col_min, tile_row_min, tile_col_max, tile_row_max), (1, 1, 2, 2));
+
+    // Covering pages, computed from the header alone, fetched once each.
+    let mut pages: Vec<u32> = Vec::new();
+    for tile_row in tile_row_min..=tile_row_max {
+        for tile_col in tile_col_min..=tile_col_max {
+            let page = header.page_of_entry(header.tile_index(tile_col, tile_row).unwrap());
+            if !pages.contains(&page) {
+                pages.push(page);
+            }
+        }
+    }
+    assert_eq!(pages, vec![2, 3, 4], "tiles 4, 5, 7, 8 at two entries per page");
+    let mut wet_cells = 0usize;
+    for page in &pages {
+        let page_read = read(header.page_offset(*page).unwrap(), header.page_bytes());
+        obcg::validate_page(&header, &page_read).unwrap();
+        for tile_row in tile_row_min..=tile_row_max {
+            for tile_col in tile_col_min..=tile_col_max {
+                let tile_index = header.tile_index(tile_col, tile_row).unwrap();
+                if header.page_of_entry(tile_index) != *page {
+                    continue;
+                }
+                let within = (tile_index - page * u32::from(header.entries_per_page)) as usize;
+                let entry = obcg::decode_entry(&page_read, within).unwrap();
+                if entry.is_dry() {
+                    continue; // a dry tile costs no tile read
+                }
+                let payload = read(entry.data_offset, u32::from(entry.encoded_len));
+                let mut out = vec![0u8; header.tile_cells()];
+                obcg::decode_tile_cells(&header, &entry, &payload, &mut out).unwrap();
+                wet_cells += out.iter().filter(|&&cell| cell != 0 && cell != 15).count();
+            }
+        }
+    }
+    assert_eq!(wet_cells, 1, "exactly the north-east corner cell");
+
+    // The complete request ledger: one header read, the three covering page reads, and one tile
+    // read per non-dry needed tile — tiles 5 and 7 are edge tiles (no-data padding, so encoded)
+    // and tile 8 holds the wet corner; interior tile 4 is a dry sentinel and costs nothing.
+    let ledger = requests.borrow();
+    assert_eq!(ledger.len(), 7, "request ledger: {ledger:?}");
+    assert_eq!(ledger[0], (0, obcg::HEADER_LEN as u32));
+    let page_reads: Vec<(u32, u32)> =
+        pages.iter().map(|page| (header.page_offset(*page).unwrap(), header.page_bytes())).collect();
+    let mut tile_reads = 0usize;
+    for request in ledger.iter().skip(1) {
+        if page_reads.contains(request) {
+            continue;
+        }
+        // Every remaining request is a tile payload read inside the data section.
+        let (tile_offset, tile_len) = *request;
+        assert!(tile_offset >= header.data_offset, "tile read lies in the data section: {request:?}");
+        assert!(u64::from(tile_offset) + u64::from(tile_len) <= u64::from(header.total_len));
+        tile_reads += 1;
+    }
+    assert_eq!(tile_reads, 3, "request ledger: {ledger:?}");
+    // On this deliberately tiny fixture the directory dominates, so the byte ratio is not the
+    // point — the exact request set above is. Still pin that no request was a whole-object read.
+    let fetched: u32 = ledger.iter().map(|(_, len)| len).sum();
+    assert!(fetched < bytes.len() as u32, "corridor fetched {fetched} of {} bytes", bytes.len());
+    assert!(ledger.iter().all(|&(_, len)| (len as usize) < bytes.len()));
+}
+
 /// Every checked-in fixture equals its builder's output. A failure is either codec
 /// drift (fix the code) or a deliberate spec change (regenerate + flag the app side).
 #[test]
