@@ -7,6 +7,7 @@ description = "Host-only WX1 source contract validator; not a production weather
 
 [dependencies]
 bzip2-rs = "0.1.2"
+chrono = "0.4.34"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 grib = { version = "0.17", default-features = false, features = ["ccsds-unpack-with-rust-aec", "png-unpack-with-png-crate", "time-calculation"] }
 hdf5-pure = "0.34"
