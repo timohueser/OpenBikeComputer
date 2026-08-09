@@ -1,9 +1,8 @@
 //! Allocation-free OBCW bundle traversal.
 //!
 //! [`WeatherReader`] validates a random-access [`ByteSource`] and fetches hourly records, frame
-//! descriptors and one 16 x 16 rain tile at a time. It owns no storage, A/B cache, scheduling,
-//! alert or rendering policy; WX7 can compose those around this seam without moving byte rules
-//! out of `obc-formats`.
+//! descriptors and one 16 x 16 rain tile at a time. The fixed cache and pure A/B generation policy
+//! live beside the reader; filesystem adapters, scheduling, alerts and rendering do not.
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -13,6 +12,15 @@ use obc_formats::io::{ByteSource, Error as SourceError};
 use obc_formats::obcw::{
     self, DecodeError as FormatError, FrameDescriptor, Header, HourlyRecord, TileEntry, FRAME_DESCRIPTOR_LEN,
     HEADER_LEN, HOURLY_COUNT, HOURLY_RECORD_LEN, RAW4_LEN, TILE_CELLS, TILE_DIRECTORY_ENTRY_LEN,
+};
+
+mod cache;
+mod slots;
+
+pub use cache::{CellIndex, HourlyIter, WeatherCache, READER_CACHE_RESIDENT_BYTES};
+pub use slots::{
+    candidate_is_newer, select_slots, validate_slot, validate_slot_with_magic, Candidate, SelectionReason, Slot,
+    SlotSelection, SlotValidation, WEATHER_A_FILE, WEATHER_B_FILE,
 };
 
 /// CRC reads are deliberately large enough to avoid one SD seek per tile-sized block while
@@ -57,6 +65,7 @@ pub struct WeatherReader<'a, S: ByteSource + ?Sized> {
 }
 
 impl<'a, S: ByteSource + ?Sized> WeatherReader<'a, S> {
+    #[inline(never)]
     pub fn open(source: &'a S) -> Result<Self, Error> {
         let mut bytes = [0u8; HEADER_LEN];
         source.read_at(0, &mut bytes)?;
@@ -121,6 +130,7 @@ impl<'a, S: ByteSource + ?Sized> WeatherReader<'a, S> {
         Ok(obcw::decode_tile_payload(entry, &encoded[..len], out)?)
     }
 
+    #[inline(never)]
     fn validate_sections(&self) -> Result<(), Error> {
         let mut hourly_bytes = [0u8; OPEN_HOURLY_WINDOW_RECORDS * HOURLY_RECORD_LEN];
         for first in (0..HOURLY_COUNT).step_by(OPEN_HOURLY_WINDOW_RECORDS) {
@@ -215,6 +225,7 @@ impl<'a, S: ByteSource + ?Sized> WeatherReader<'a, S> {
         Ok(())
     }
 
+    #[inline(never)]
     fn bundle_crc32(&self, header_bytes: &[u8; HEADER_LEN]) -> Result<u32, Error> {
         let mut hasher = Crc32::new();
         let mut crc_header = *header_bytes;

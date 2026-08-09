@@ -21,6 +21,9 @@
 //!                      zero-magic file the scan refuses and the boot sweep reclaims.
 //!   `/MAP.SEL`       — which map the renderer streams from (see `obc_app::store_meta`); absent or
 //!                      torn = no preference, and the loader takes the first readable map
+//!   `/WEATHER.A`, `/WEATHER.B` — OBCW generations. Uploads stream only into the inactive slot
+//!                      with zero magic; full outer/internal/structural validation precedes the
+//!                      magic-patch eligibility point. The active valid file is never truncated.
 //!   `/routes/*.obcr` — the route catalog the Route menu lists (side-loaded, long filenames)
 //!   `/routes/RT{id}.OBR` — BLE-uploaded routes (the durable object id lives in the name);
 //!                      the in-flight upload lives here as `UPLOAD.TMP` until commit
@@ -72,7 +75,9 @@ use obc_route::{
 use obc_storage::fat_extents::{
     BuildError, ExtentSource, ExtentSourceWithCapacity, ExtentTable, ExtentTableWithCapacity, SharedBlockDevice,
 };
+use obc_storage::weather::{self as weather_store, WeatherSlotIo};
 use obc_storage::{SdByteSink, SdByteSource, SdTrackSink};
+use obc_weather::{Candidate as WeatherCandidate, Slot as WeatherSlot, SlotSelection, SlotValidation};
 
 /// The in-progress ride log on the card — a header-less array of fixed track records (8.3
 /// name). Truncated-and-reused per ride, converted to the `RD{id}.ORD` ride object, then
@@ -185,6 +190,8 @@ enum UploadOwner {
     Map,
     /// One file of a volume set — a shard or the manifest (`OBCA_Spec.md` §5, #1039).
     Set,
+    /// The inactive `/WEATHER.A` or `/WEATHER.B` generation. It never uses `/routes/UPLOAD.TMP`.
+    Weather(WeatherSlot),
 }
 
 /// The staged firmware update in the **card root** (epic #615, locked: 8.3-safe, no LFN — the
@@ -612,6 +619,9 @@ pub struct Storage {
     /// is what stops one transport's teardown closing a handle the other transport is streaming
     /// through (issue #1039).
     open_upload: Option<(RawFile, UploadOwner)>,
+    /// Fully validated boot choice over `/WEATHER.A` and `/WEATHER.B`. Only metadata is resident;
+    /// OBCW bytes remain on SD and later readers reopen the selected fixed name.
+    weather_active: Option<WeatherCandidate>,
     /// The loaded map's display name — its filename stem, captured in [`open_map`](Storage::open_map)
     /// (T8 item 6). Empty until a map opens; the System settings screen renders it (`grimsel · v10`)
     /// via [`App::set_map_info`](obc_app::App::set_map_info).
@@ -1285,6 +1295,7 @@ impl Storage {
             ride_saved: false,
             open_object: None,
             open_upload: None,
+            weather_active: None,
             map_name: String::new(),
         })
     }
@@ -4582,6 +4593,158 @@ impl Storage {
     pub fn close_object(&mut self) {
         if let Some((_, file, _)) = self.open_object.take() {
             let _ = self.vmgr.close_file(file);
+        }
+    }
+}
+
+// ==================== WEATHER.A / WEATHER.B (WX7, #1192) ====================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WeatherIoError {
+    Busy,
+    Open,
+    Write,
+    Flush,
+    Close,
+}
+
+impl Storage {
+    /// Revalidate both fixed roots and retain the deterministic active generation. This runs once
+    /// at mount; later weather upload composition refreshes it after a successful commit.
+    pub fn refresh_weather_selection(&mut self) -> SlotSelection {
+        let selection = weather_store::inspect_slots(self);
+        self.weather_active = selection.active;
+        selection
+    }
+
+    pub const fn weather_active(&self) -> Option<WeatherCandidate> {
+        self.weather_active
+    }
+
+    /// Run after `Storage` has moved into its final `.bss` home. Keeping this out of
+    /// [`Storage::mount`] is load-bearing: naming a local `Storage` there materialized a second
+    /// ~13.5 KiB construction/copy slot in `main`'s permanent async poll frame (#677/#1108).
+    #[inline(never)]
+    pub fn select_weather_at_boot(&mut self) {
+        self.refresh_weather_selection();
+        match self.weather_active() {
+            Some(active) => defmt::info!(
+                "SD: weather slot {=str} generation {=u32} selected ({=u32} B)",
+                match active.slot {
+                    WeatherSlot::A => "A",
+                    WeatherSlot::B => "B",
+                },
+                active.generation,
+                active.total_len
+            ),
+            None => defmt::info!("SD: no valid WEATHER.A/WEATHER.B generation"),
+        }
+    }
+}
+
+impl WeatherSlotIo for Storage {
+    type Error = WeatherIoError;
+
+    fn inspect_slot(&mut self, slot: WeatherSlot, magic: Option<[u8; 4]>) -> SlotValidation {
+        let Ok(name) = ShortFileName::create_from_str(weather_store::slot_file_name(slot)) else {
+            return SlotValidation::Unreadable;
+        };
+        let file = match self.vmgr.open_file_in_dir(self.root, &name, Mode::ReadOnly) {
+            Ok(file) => file,
+            Err(embedded_sdmmc::Error::NotFound) => return SlotValidation::Missing,
+            Err(_) => return SlotValidation::Unreadable,
+        };
+        let len = match self.vmgr.file_length(file) {
+            Ok(len) => len,
+            _ => {
+                let _ = self.vmgr.close_file(file);
+                return SlotValidation::Unreadable;
+            }
+        };
+        let validation = {
+            let source = SdByteSource::new(&self.vmgr, file, len);
+            match magic {
+                Some(magic) => obc_weather::validate_slot_with_magic(slot, &source, magic),
+                None => obc_weather::validate_slot(slot, &source),
+            }
+        };
+        if self.vmgr.close_file(file).is_err() {
+            return SlotValidation::Unreadable;
+        }
+        validation
+    }
+
+    fn begin_slot(&mut self, slot: WeatherSlot) -> Result<(), Self::Error> {
+        if self.open_upload.is_some() || upload_pipe_enabled() {
+            return Err(WeatherIoError::Busy);
+        }
+        let file = self
+            .vmgr
+            .open_file_in_dir(self.root, weather_store::slot_file_name(slot), Mode::ReadWriteCreateOrTruncate)
+            .map_err(|_| WeatherIoError::Open)?;
+        self.open_upload = Some((file, UploadOwner::Weather(slot)));
+        Ok(())
+    }
+
+    fn append_slot(&mut self, slot: WeatherSlot, bytes: &[u8]) -> Result<(), Self::Error> {
+        let Some((file, UploadOwner::Weather(owner))) = self.open_upload else {
+            return Err(WeatherIoError::Busy);
+        };
+        if owner != slot {
+            return Err(WeatherIoError::Busy);
+        }
+        self.vmgr.write(file, bytes).map_err(|_| WeatherIoError::Write)
+    }
+
+    fn close_slot(&mut self, slot: WeatherSlot) -> Result<(), Self::Error> {
+        let Some((file, owner)) = self.open_upload.take() else {
+            return Err(WeatherIoError::Busy);
+        };
+        if owner != UploadOwner::Weather(slot) {
+            self.open_upload = Some((file, owner));
+            return Err(WeatherIoError::Busy);
+        }
+        let flushed = self.vmgr.flush_file(file).is_ok();
+        let closed = self.vmgr.close_file(file).is_ok();
+        if !flushed {
+            Err(WeatherIoError::Flush)
+        } else if !closed {
+            Err(WeatherIoError::Close)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn abandon_slot(&mut self, slot: WeatherSlot) {
+        let Some((file, owner)) = self.open_upload.take() else { return };
+        if owner == UploadOwner::Weather(slot) {
+            let _ = self.vmgr.close_file(file);
+        } else {
+            self.open_upload = Some((file, owner));
+        }
+    }
+
+    fn commit_magic(&mut self, slot: WeatherSlot, magic: [u8; 4]) -> Result<(), Self::Error> {
+        if self.open_upload.is_some() {
+            return Err(WeatherIoError::Busy);
+        }
+        let name =
+            ShortFileName::create_from_str(weather_store::slot_file_name(slot)).map_err(|_| WeatherIoError::Open)?;
+        let file =
+            self.vmgr.open_file_in_dir(self.root, &name, Mode::ReadWriteAppend).map_err(|_| WeatherIoError::Open)?;
+        let wrote = self.vmgr.file_seek_from_start(file, 0).is_ok() && self.vmgr.write(file, &magic).is_ok();
+        let flushed = wrote && self.vmgr.flush_file(file).is_ok();
+        let closed = self.vmgr.close_file(file).is_ok();
+        if !wrote {
+            Err(WeatherIoError::Write)
+        } else if !flushed {
+            // Magic may or may not have reached the card. Both recovery branches are tested by the
+            // pure store: old active stays valid; boot either ignores zero magic or selects new.
+            Err(WeatherIoError::Flush)
+        } else if !closed {
+            Err(WeatherIoError::Close)
+        } else {
+            Ok(())
         }
     }
 }
