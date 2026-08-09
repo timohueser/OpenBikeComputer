@@ -24,6 +24,7 @@ use std::path::PathBuf;
 use obc_formats::io::{ByteSink, Error, SliceSource};
 use obc_route::gpx_to_obcr;
 
+pub mod obcg;
 pub mod obcw;
 
 /// The `specs/vectors/` directory at the repo root.
@@ -863,5 +864,6 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         ),
     ];
     fixtures.extend(obcw::all());
+    fixtures.extend(obcg::all());
     fixtures
 }
