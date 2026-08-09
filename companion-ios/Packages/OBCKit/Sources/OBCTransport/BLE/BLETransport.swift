@@ -658,7 +658,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
             continuation.resume(throwing: WeatherUploadError.busy)
             return
         }
-        guard let knownID = discoveryStore.knownPeripheralID() else {
+        guard discoveryStore.knownPeripheralID() != nil else {
             continuation.resume(throwing: WeatherUploadError.noKnownBondedPeripheral)
             return
         }
@@ -677,20 +677,31 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         let deadline = Date().addingTimeInterval(Self.weatherUploadBudget)
         discoveryStore.armWeatherUploadRestoration(until: deadline)
         armWeatherUploadDeadline(until: deadline)
+        startWeatherUploadConnectIfReady()
+    }
 
-        guard central.state == .poweredOn else {
-            // .unknown/.resetting resolve via centralManagerDidUpdateState; hard-off fails now.
-            if central.state == .poweredOff || central.state == .unauthorized || central.state == .unsupported {
-                failWeatherUpload(.bluetoothUnavailable)
-            }
+    /// Take the upload intent as far as the radio currently allows. Re-entered from
+    /// `centralManagerDidUpdateState` because the engine's resume path can call
+    /// `uploadWeatherBundle` at app launch, **before** the manager has reached `.poweredOn` —
+    /// without the re-entry the attempt would sit parked until its overall deadline.
+    private func startWeatherUploadConnectIfReady() {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard weatherUploadWaiter != nil, let knownID = discoveryStore.knownPeripheralID() else { return }
+        switch central.state {
+        case .poweredOn:
+            break
+        case .poweredOff, .unauthorized, .unsupported:
+            failWeatherUpload(.bluetoothUnavailable)
             return
+        default:
+            return  // .unknown / .resetting — centralManagerDidUpdateState re-enters here
         }
         let connectedID = peripheral?.state == .connected ? peripheral?.identifier : nil
         switch discoveryPolicy.requestWeatherUpload(
             knownPeripheralID: knownID, connectedPeripheralID: connectedID
         ) {
         case .uploadOnExistingConnection:
-            weatherUploadConnectedAt = now
+            if weatherUploadConnectedAt == nil { weatherUploadConnectedAt = weatherRequestClock.now }
             weatherUploadReusedForeground = discoveryPolicy.connectionOwnership == .foreground
             beginWeatherUploadIfReady()
         case .connectDirect:
@@ -2238,6 +2249,10 @@ private actor RideDownloadRunner {
 extension BLETransport: CBCentralManagerDelegate {
     public func centralManagerDidUpdateState(_ central: CBCentralManager) {
         startConnectIfReady()
+        // An upload registered before the manager reached .poweredOn (the engine's launch-time
+        // resume) parks with no scan to revive it — re-enter its connect path now. The function
+        // handles every radio state itself, hard-off included.
+        startWeatherUploadConnectIfReady()
     }
 
     public func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
