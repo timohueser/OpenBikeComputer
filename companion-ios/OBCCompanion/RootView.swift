@@ -68,7 +68,11 @@ struct RootView: View {
         updateSurface: any UpdateSurfaceStore = InMemoryUpdateSurfaceStore(),
         updateNotifier: (any UpdateNotifying)? = nil,
         importAtLaunch: (data: Data, fileName: String)? = nil,
-        firmwareDemoAtLaunch: (data: Data, autoSend: Bool)? = nil
+        firmwareDemoAtLaunch: (data: Data, autoSend: Bool)? = nil,
+        // The sync coordinator's own timing seam, threaded so the composition root can park the
+        // post-sync confirmation for an automated capture (`-OBCHoldSyncConfirmation`, #1212).
+        // Untouched in every ordinary run.
+        syncTiming: RideSyncCoordinator.Timing = RideSyncCoordinator.Timing()
     ) {
         self.transport = transport
         self.bondStore = bondStore
@@ -87,6 +91,7 @@ struct RootView: View {
         _mainModel = State(initialValue: MainScreenModel(
             transport: transport, library: library,
             retentionDefaults: retentionDefaults,
+            syncTiming: syncTiming,
             // The rename self-heal (#361): once per established connection,
             // push the bond record's desired name if the device config
             // disagrees (a rename whose write never landed).
