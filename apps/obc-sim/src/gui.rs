@@ -625,9 +625,9 @@ impl SimGui {
                 let pos = app.state.user_fix.map(|f| (f.lat, f.lon)).unwrap_or((app.state.cam_lat, app.state.cam_lon));
                 let snap = w.snapshot(Some(pos));
                 if let Some(snap) = &snap {
-                    app.state.rain_steps_ahead = snap.steps_ahead(app.wall_unix_now() as i64);
-                    app.state.rain_step = app.state.rain_step.min(app.state.rain_steps_ahead);
-                    app.state.rain_zoom_min = snap.rain_zoom_floor(app.state.cam_lat).unwrap_or(0.0);
+                    let now = app.wall_unix_now() as i64;
+                    let floor = snap.rain_zoom_floor(app.state.cam_lat).unwrap_or(0.0);
+                    app.set_rain_view(snap.steps_ahead(now), floor);
                 }
                 (snap, app.state.rain_step)
             }
@@ -643,8 +643,9 @@ impl SimGui {
                 Rgb565::from(RawU16::new(c))
             })
         };
+        let wx_wall_now = app.wall_unix_now() as i64;
         let mut stats = match weather {
-            Some(weather) => weather.lease(rain_step, |rain| {
+            Some(weather) => weather.lease(wx_wall_now, rain_step, |rain| {
                 let feed = obc_app::WeatherFeed { snapshot: wx_snapshot.as_ref(), refreshing: false };
                 render(rain, feed, app, scratch, &mut fbdev)
             }),

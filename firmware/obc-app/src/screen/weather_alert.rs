@@ -37,11 +37,16 @@ pub struct WeatherAlertScreen {
     kind: WeatherAlertKind,
     minutes: u16,
     selected: usize,
+    /// The screen this card was pushed over is already the rain map (recorded by
+    /// [`App::show_weather_alert`](crate::App::show_weather_alert), which sees the stack) — VIEW
+    /// RAIN MAP then simply pops back to it instead of stacking a second identical rain map
+    /// (review F4).
+    over_rain_map: bool,
 }
 
 impl WeatherAlertScreen {
-    pub fn new(kind: WeatherAlertKind, minutes: u16) -> Self {
-        Self { kind, minutes, selected: 0 }
+    pub fn new(kind: WeatherAlertKind, minutes: u16, over_rain_map: bool) -> Self {
+        Self { kind, minutes, selected: 0, over_rain_map }
     }
 
     /// Refresh the copy in place — how a re-fired alert updates an already-open card instead of
@@ -56,12 +61,18 @@ impl WeatherAlertScreen {
             Gesture::Step(n) => super::list::on_step(&mut self.selected, n, 2),
             Gesture::Press => match self.selected {
                 0 => {
-                    // VIEW RAIN MAP replaces the card, so Back from the map returns to whatever
-                    // the rider was doing — the alert is answered, not parked underneath. Entry
-                    // is at the current frame and inside the product's zoom regime.
+                    // VIEW RAIN MAP answers the alert with the rain map, never parking the card
+                    // underneath: normally the card is *replaced*; when the rider was already on
+                    // the rain map the card simply pops back to it (review F4 — replacing would
+                    // stack two identical rain maps). Either way the view lands on the current
+                    // frame, inside the product's zoom regime.
                     cx.state.rain_step = 0;
                     cx.state.clamp_rain_zoom();
-                    Transition::Replace(Screen::WeatherRainMap(WeatherRainMapScreen::new()))
+                    if self.over_rain_map {
+                        Transition::Pop
+                    } else {
+                        Transition::Replace(Screen::WeatherRainMap(WeatherRainMapScreen::new()))
+                    }
                 }
                 _ => Transition::Pop, // DISMISS
             },

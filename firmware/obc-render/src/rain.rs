@@ -311,7 +311,22 @@ pub fn rain_min_zoom(grid: &RainGrid, aspect: f32) -> Option<f32> {
     let kx = grid.width_cells as f64 / lon_span as f64;
     let ky = grid.height_cells as f64 / lat_span as f64;
     let min_zoom = (kx / aspect as f64).max(ky) / RAIN_MAX_CELL_STEP;
-    (min_zoom.is_finite() && min_zoom > 0.0).then_some(min_zoom as f32)
+    if !(min_zoom.is_finite() && min_zoom > 0.0) {
+        return None;
+    }
+    // The caller clamps `Viewport::zoom` (an f32) to this floor and expects the clamped camera to
+    // be IN regime — but [`rain_in_regime`] re-derives the criterion in f64 from that f32, and a
+    // nearest-rounding `as` cast lands *below* the true f64 edge about half the time, making the
+    // clamp's own zoom evaluate out of regime (adversarial review of #1224, F1: 192/360 swept
+    // grid/latitude/heading cases). Return the next f32 whose f64 promotion clears the edge with
+    // a hair of margin for the criterion's own f64 rounding (sqrt of squares ~1 ULP of f64 —
+    // ten orders below one f32 ULP, so the loop steps at most twice).
+    let edge = min_zoom * (1.0 + 1e-9);
+    let mut z = min_zoom as f32;
+    while (z as f64) < edge {
+        z = f32::from_bits(z.to_bits() + 1);
+    }
+    Some(z)
 }
 
 /// The regime criterion on the screen→grid Jacobian: both **grid-axis** row norms at or below
@@ -892,8 +907,11 @@ mod tests {
         );
         for (grid, floor) in [(&fine, fine_floor), (&coarse, coarse_floor)] {
             for course_deg in [0.0f32, 35.0, 90.0, 215.0] {
-                let at = Viewport::new_rotated(240.0, 320.0, cam.0, cam.1, floor * 1.001, course_deg.to_radians());
-                assert!(super::rain_in_regime(&at, grid), "at the floor: in regime ({course_deg} deg)");
+                // The EXACT returned floor must be in regime — the clamp sets `zoom` to
+                // precisely this f32, so testing a nudged value would dodge the boundary the
+                // rider actually lands on (review F1).
+                let at = Viewport::new_rotated(240.0, 320.0, cam.0, cam.1, floor, course_deg.to_radians());
+                assert!(super::rain_in_regime(&at, grid), "at the exact floor: in regime ({course_deg} deg)");
                 let below = Viewport::new_rotated(240.0, 320.0, cam.0, cam.1, floor * 0.98, course_deg.to_radians());
                 assert!(!super::rain_in_regime(&below, grid), "below the floor: out ({course_deg} deg)");
             }
@@ -901,5 +919,40 @@ mod tests {
         // Degenerate grids disengage the clamp rather than inventing a floor.
         let degenerate = RainGrid { width_cells: 0, ..fine };
         assert_eq!(super::rain_min_zoom(&degenerate, aspect), None);
+    }
+    /// Adopted from the #1224 adversarial review's `hostile_floor` probe (F1): the EXACT
+    /// `rain_min_zoom` result is in regime across hostile grid shapes, spans, latitudes (equator
+    /// to 69°N) and headings — before the fix, 192/360 of these evaluated out of regime because
+    /// the f64→f32 cast rounded below the true edge.
+    #[test]
+    fn exact_floor_is_in_regime_everywhere() {
+        let mut total = 0u32;
+        for lat_udeg in [0i32, 15_000_000, 47_400_000, 60_000_000, 69_000_000] {
+            let aspect = obc_map_scene::cos_lat(lat_udeg);
+            for (w_cells, h_cells) in [(96u16, 96u16), (24, 24), (300, 200), (1100, 900), (7, 5), (640, 480)] {
+                for (lon_span, lat_span) in [(1_000_000i32, 1_000_000i32), (3_337_000, 2_221_000), (500_001, 777_777)] {
+                    let grid = RainGrid {
+                        west_udeg: 7_000_000,
+                        south_udeg: lat_udeg - lat_span / 2,
+                        east_udeg: 7_000_000 + lon_span,
+                        north_udeg: lat_udeg - lat_span / 2 + lat_span,
+                        width_cells: w_cells,
+                        height_cells: h_cells,
+                    };
+                    let Some(floor) = super::rain_min_zoom(&grid, aspect) else { continue };
+                    for course_deg in [0.0f32, 35.0, 90.0, 215.0] {
+                        total += 1;
+                        let vp =
+                            Viewport::new_rotated(240.0, 320.0, 7_500_000, lat_udeg, floor, course_deg.to_radians());
+                        assert!(
+                            super::rain_in_regime(&vp, &grid),
+                            "exact floor OUT of regime: lat={lat_udeg} cells={w_cells}x{h_cells} \
+                             span={lon_span}x{lat_span} course={course_deg} floor={floor}"
+                        );
+                    }
+                }
+            }
+        }
+        assert_eq!(total, 360, "the sweep's breadth is part of the pin");
     }
 }

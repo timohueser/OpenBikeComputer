@@ -1564,6 +1564,27 @@ impl App {
         self.ui.map_dirty = true;
     }
 
+    /// Feed the frame's **weather view state** (WX11): the rain map's time-step range and the
+    /// product's zoom floor, refreshed by the host alongside the snapshot (the sim per frame /
+    /// per render; WX8's board mount the same way). Beyond storing the fields this **re-clamps
+    /// live** when the rain map is the current base screen: a denser product committing
+    /// mid-session, or a pan-move that raised the floor (the host recomputes it at the camera's
+    /// new latitude), must not leave the screen out of regime until the next gesture (review
+    /// F2). A zoom change dirties the map so the re-clamped frame actually paints.
+    pub fn set_rain_view(&mut self, steps_ahead: u8, zoom_floor: f32) {
+        self.state.rain_steps_ahead = steps_ahead;
+        self.state.rain_step = self.state.rain_step.min(steps_ahead);
+        self.state.rain_zoom_min = zoom_floor;
+        let base = self.ui.stack.iter().rposition(|s| !s.is_overlay());
+        if matches!(base.map(|i| &self.ui.stack[i]), Some(Screen::WeatherRainMap(_))) {
+            let before = self.state.zoom;
+            self.state.clamp_rain_zoom();
+            if self.state.zoom != before {
+                self.ui.map_dirty = true;
+            }
+        }
+    }
+
     /// Host-push the **weather alert card** (WX11, epic #1185): RAIN AHEAD / STORM AHEAD with the
     /// locked VIEW RAIN MAP + DISMISS actions. An alert already on the stack is *updated* in
     /// place (re-fires never stack cards); the passkey card outranks it (the pairing prompt is
@@ -1581,10 +1602,15 @@ impl App {
         if matches!(self.ui.stack.last(), Some(Screen::Passkey(_))) {
             return;
         }
+        // Whether the card lands over an already-open rain map — its VIEW RAIN MAP action then
+        // pops back to it instead of stacking a second one (review F4).
+        let over_rain_map = matches!(self.ui.stack.last(), Some(Screen::WeatherRainMap(_)));
         crate::screen::apply(
             &mut self.ui.stack,
             crate::screen::Transition::Push(Screen::WeatherAlert(crate::screen::WeatherAlertScreen::new(
-                kind, minutes,
+                kind,
+                minutes,
+                over_rain_map,
             ))),
         );
         self.ui.map_dirty = true;
