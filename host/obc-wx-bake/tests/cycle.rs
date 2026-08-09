@@ -256,6 +256,9 @@ fn published_cells_equal_quantized_nearest_neighbour_source_cells() {
         expected_grid_definition_hex: ICON_EU_GRID_DEFINITION_HEX,
         product_template: 8,
         representation_templates: &[42],
+        missing_sentinels: &[],
+        allowed_messages: &[1],
+        require_identical_messages: false,
     };
     let f001 = decode_bzip2_field(&fixture("icon-eu-2026080906_001.grib2.bz2"), &expected_field).unwrap();
     let frame = &published["wx/v1/icon-eu/20260809T0600Z/f60.obcg"];

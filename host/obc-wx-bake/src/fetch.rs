@@ -31,11 +31,22 @@ pub trait Upstream {
     /// short-circuit. Implementations must count fetched bytes into their ledger.
     fn fetch(&mut self, url: &str, cap: u64, if_none_match: Option<&str>) -> Result<FetchOutcome, String>;
 
-    /// HEAD `url`: `Ok(true)` if it exists, `Ok(false)` on 404 — used for run discovery only.
-    fn exists(&mut self, url: &str) -> Result<bool, String>;
+    /// HEAD `url`: `Ok(Some(length))` if it exists, `Ok(None)` on 404. Used for run discovery and
+    /// for the object length a `.idx` byte-range selection needs to bound its final record.
+    fn content_length(&mut self, url: &str) -> Result<Option<u64>, String>;
+
+    /// GET the inclusive byte range `[start, end]` of `url` — the `.idx` fast path that fetches
+    /// one GRIB message out of a multi-gigabyte NOAA object. Implementations MUST prove the
+    /// server honored the range (206 plus a matching length) rather than accepting a whole body.
+    fn fetch_range(&mut self, url: &str, start: u64, end_inclusive: u64, cap: u64) -> Result<Fetched, String>;
 
     /// Total upstream bytes fetched so far (bodies only), for the cycle report.
     fn fetched_bytes(&self) -> u64;
+
+    /// HEAD `url`: `Ok(true)` if it exists, `Ok(false)` on 404 — used for run discovery only.
+    fn exists(&mut self, url: &str) -> Result<bool, String> {
+        Ok(self.content_length(url)?.is_some())
+    }
 }
 
 /// The production client: blocking rustls `ureq`, bounded exponential backoff.
@@ -146,17 +157,80 @@ impl Upstream for HttpUpstream {
         Ok(outcome)
     }
 
-    fn exists(&mut self, url: &str) -> Result<bool, String> {
+    fn content_length(&mut self, url: &str) -> Result<Option<u64>, String> {
         self.with_retries(url, |this| match this.agent.head(url).call() {
-            Ok(response) if response.status().as_u16() == 200 => Ok(true),
+            Ok(response) if response.status().as_u16() == 200 => {
+                let length = response
+                    .headers()
+                    .get("content-length")
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.trim().parse::<u64>().ok());
+                match length {
+                    Some(length) => Ok(Some(length)),
+                    None => Err(RetryClass::Fatal("HEAD announced no usable Content-Length".into())),
+                }
+            }
             Ok(response) => Err(RetryClass::Fatal(format!("upstream status {}", response.status()))),
-            Err(ureq::Error::StatusCode(404)) => Ok(false),
+            Err(ureq::Error::StatusCode(404)) => Ok(None),
             Err(ureq::Error::StatusCode(code)) if code == 429 || code >= 500 => {
                 Err(RetryClass::Retryable(format!("upstream status {code}"), None))
             }
             Err(ureq::Error::StatusCode(code)) => Err(RetryClass::Fatal(format!("upstream status {code}"))),
             Err(error) => Err(RetryClass::Retryable(format!("transport: {error}"), None)),
         })
+    }
+
+    fn fetch_range(&mut self, url: &str, start: u64, end_inclusive: u64, cap: u64) -> Result<Fetched, String> {
+        if end_inclusive < start {
+            return Err(format!("{url}: empty byte range {start}-{end_inclusive}"));
+        }
+        let wanted = end_inclusive - start + 1;
+        if wanted > cap {
+            return Err(format!("{url}: range of {wanted} bytes exceeds the {cap}-byte cap"));
+        }
+        let fetched = self.with_retries(url, |this| {
+            let response = match this.agent.get(url).header("Range", &format!("bytes={start}-{end_inclusive}")).call() {
+                Ok(response) => response,
+                Err(ureq::Error::StatusCode(code)) if code == 429 || code >= 500 => {
+                    return Err(RetryClass::Retryable(format!("upstream status {code}"), None));
+                }
+                Err(ureq::Error::StatusCode(code)) => {
+                    return Err(RetryClass::Fatal(format!("upstream status {code}")));
+                }
+                Err(error) => return Err(RetryClass::Retryable(format!("transport: {error}"), None)),
+            };
+            let (parts, body) = response.into_parts();
+            // A 200 here means the server ignored the range and is about to stream the whole
+            // multi-hundred-megabyte object: a contract failure, never a slow success.
+            if parts.status.as_u16() != 206 {
+                return Err(RetryClass::Fatal(format!("range request answered with status {}", parts.status)));
+            }
+            let content_range = parts
+                .headers
+                .get("content-range")
+                .and_then(|value| value.to_str().ok())
+                .map(str::trim)
+                .unwrap_or_default()
+                .to_string();
+            let expected_prefix = format!("bytes {start}-{end_inclusive}/");
+            if !content_range.starts_with(&expected_prefix) {
+                return Err(RetryClass::Fatal(format!("Content-Range {content_range:?} is not the requested range")));
+            }
+            let header = |name: &str| {
+                parts.headers.get(name).and_then(|value| value.to_str().ok()).map(|value| value.to_string())
+            };
+            let mut bytes = Vec::new();
+            let mut reader = body.into_reader().take(wanted + 1);
+            if let Err(error) = reader.read_to_end(&mut bytes) {
+                return Err(RetryClass::Retryable(format!("body read: {error}"), None));
+            }
+            if bytes.len() as u64 != wanted {
+                return Err(RetryClass::Fatal(format!("range returned {} bytes, expected {wanted}", bytes.len())));
+            }
+            Ok(Fetched { bytes, etag: header("etag"), last_modified: header("last-modified") })
+        })?;
+        self.fetched += fetched.bytes.len() as u64;
+        Ok(fetched)
     }
 
     fn fetched_bytes(&self) -> u64 {
@@ -176,6 +250,12 @@ impl Default for HttpUpstream {
 #[derive(Default)]
 pub struct FixtureUpstream {
     objects: BTreeMap<String, Fetched>,
+    /// Exact byte ranges of objects too large to check in whole (the NOAA `.idx` fast path):
+    /// `(url, start, end_inclusive)` → the captured message bytes.
+    ranges: BTreeMap<(String, u64, u64), Vec<u8>>,
+    /// Declared `Content-Length` of range-served objects, so an adapter's range arithmetic is
+    /// driven by the real upstream object length.
+    lengths: BTreeMap<String, u64>,
     fetched: u64,
     /// Every URL fetched or probed, in order — request accounting for the cycle tests.
     pub requests: Vec<String>,
@@ -183,7 +263,26 @@ pub struct FixtureUpstream {
 
 impl FixtureUpstream {
     pub fn insert(&mut self, url: impl Into<String>, bytes: Vec<u8>, etag: Option<&str>) {
-        self.objects.insert(url.into(), Fetched { bytes, etag: etag.map(str::to_string), last_modified: None });
+        let url = url.into();
+        self.lengths.insert(url.clone(), bytes.len() as u64);
+        self.objects.insert(url, Fetched { bytes, etag: etag.map(str::to_string), last_modified: None });
+    }
+
+    /// Declare that an object exists with a given upstream length, without checking in a body:
+    /// enough for discovery probes and for the range arithmetic of an object far too large to
+    /// store (a 500 MB GFS or 200 MB HRRR file).
+    pub fn declare(&mut self, url: impl Into<String>, object_len: u64) {
+        self.lengths.insert(url.into(), object_len);
+    }
+
+    /// Declare a range-served object: its real upstream length plus the one captured range. A
+    /// request for any other range (or for the whole body) then fails loudly, which is exactly
+    /// the request-accounting property the byte-range adapters must prove.
+    pub fn insert_range(&mut self, url: impl Into<String>, object_len: u64, start: u64, bytes: Vec<u8>) {
+        let url = url.into();
+        let end = start + bytes.len() as u64 - 1;
+        self.declare(url.clone(), object_len);
+        self.ranges.insert((url, start, end), bytes);
     }
 }
 
@@ -203,9 +302,23 @@ impl Upstream for FixtureUpstream {
         Ok(FetchOutcome::Body(object.clone()))
     }
 
-    fn exists(&mut self, url: &str) -> Result<bool, String> {
+    fn content_length(&mut self, url: &str) -> Result<Option<u64>, String> {
         self.requests.push(format!("HEAD {url}"));
-        Ok(self.objects.contains_key(url))
+        Ok(self.lengths.get(url).copied())
+    }
+
+    fn fetch_range(&mut self, url: &str, start: u64, end_inclusive: u64, cap: u64) -> Result<Fetched, String> {
+        self.requests.push(format!("{url}#{start}-{end_inclusive}"));
+        if end_inclusive < start || end_inclusive - start + 1 > cap {
+            return Err(format!("{url}: range {start}-{end_inclusive} is empty or exceeds the {cap}-byte cap"));
+        }
+        let bytes = self
+            .ranges
+            .get(&(url.to_string(), start, end_inclusive))
+            .ok_or_else(|| format!("{url}: no fixture for byte range {start}-{end_inclusive}"))?
+            .clone();
+        self.fetched += bytes.len() as u64;
+        Ok(Fetched { bytes, etag: None, last_modified: None })
     }
 
     fn fetched_bytes(&self) -> u64 {

@@ -1,0 +1,274 @@
+//! NOAA HRRR subhourly `PRATE` — the CONUS 3 km forecast, 15-minute steps.
+//!
+//! This module owns the forward half of the composed US product ([`crate::source::us`]). A
+//! subhourly HRRR object is ~200 MB and carries one 30-40 KB `PRATE` message per 15-minute step,
+//! so the baker reads the object's `.idx` text and fetches exactly the contracted message with an
+//! HTTP Range request (WX1's pinned technique; NOMADS is never contacted). The `.idx` label is
+//! never accepted as temporal identity — the selected lead must equal the decoded GRIB's valid
+//! time minus its reference time, or the cycle fails.
+//!
+//! The native raster is Lambert conformal, so output cells are filled nearest-neighbour through
+//! [`crate::lcc`] at the native 3 km cell size: one index map per cycle, shared by every frame,
+//! no smoothing and no invented sub-cell detail. Cells outside the projected domain are no-data.
+
+use obc_formats::obcg::{FLAG_FORECAST, PRODUCT_HRRR, TIER_MODEL};
+use obc_formats::precip4;
+use std::fmt::Write as _;
+
+use crate::fetch::{FetchOutcome, Upstream};
+use crate::geometry::GridGeometry;
+use crate::grib::{decode_field, ExpectedGrib, HRRR_CONUS_GRID_DEFINITION_HEX};
+use crate::idx::{self, MAX_INDEX_BYTES};
+use crate::lcc;
+use crate::source::{BakedFrame, FrameSource};
+
+pub const BUCKET: &str = "https://noaa-hrrr-bdp-pds.s3.amazonaws.com";
+
+/// The published window: a regular lat/lon cover of the Lambert domain at native ~3 km cells
+/// (27,000 x 34,000 microdegrees — 3.00 km north-south, 2.96 km east-west at the domain's 38.5 N
+/// standard parallel). Cells outside the projected raster are no-data.
+pub const GEOMETRY: GridGeometry = GridGeometry {
+    south_lat_udeg: 21_100_000,
+    west_lon_udeg: -134_100_000,
+    cell_lat_udeg: 27_000,
+    cell_lon_udeg: 34_000,
+    width: 2_153,
+    height: 1_168,
+    cell_size_m: 3_000,
+    tile_edge: 32,
+    entries_per_page: 512,
+};
+
+/// Retained forward leads in minutes: 15-minute steps through +4 h, held in the four subhourly
+/// objects `wrfsubhf01..f04`. The published set is the sub-window that lies ahead of the MRMS
+/// observation anchor, so a run up to two hours old still supplies a full +2 h of forward frames.
+pub const LEADS_MIN: [u32; 16] =
+    [15, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165, 180, 195, 210, 225, 240];
+/// Objects the run-completeness probe requires (`wrfsubhf01` ... `wrfsubhf04`).
+pub const SUBHOURLY_FILES: [u32; 4] = [1, 2, 3, 4];
+/// How many hourly runs back discovery will look before giving up.
+pub const MAX_RUN_CANDIDATES: usize = 6;
+/// One `PRATE` message is ~35 KB; the cap is generous but bounded well below a whole object.
+const MAX_MESSAGE_BYTES: u64 = 4 * 1024 * 1024;
+
+/// The pinned WX1 field contract (public so tests decode through the same contract).
+pub const EXPECTED: ExpectedGrib = ExpectedGrib {
+    discipline: 0,
+    category: 1,
+    parameter: 7,
+    grid_template: 30,
+    expected_points: (lcc::NATIVE_COLS * lcc::NATIVE_ROWS) as usize,
+    expected_grid_definition_hex: HRRR_CONUS_GRID_DEFINITION_HEX,
+    product_template: 0,
+    representation_templates: &[3],
+    missing_sentinels: &[],
+    allowed_messages: &[1],
+    require_identical_messages: false,
+};
+
+/// The subhourly object holding lead `lead_minutes` (`f01` holds 15...60, `f02` 75...120, ...).
+pub fn subhourly_file(lead_minutes: u32) -> u32 {
+    lead_minutes.div_ceil(60)
+}
+
+pub fn object_url(run: i64, file: u32) -> String {
+    let run_time = chrono::DateTime::from_timestamp(run, 0).expect("run timestamp");
+    let mut url = String::from(BUCKET);
+    let _ = write!(
+        url,
+        "/hrrr.{}/conus/hrrr.t{}z.wrfsubhf{file:02}.grib2",
+        run_time.format("%Y%m%d"),
+        run_time.format("%H")
+    );
+    url
+}
+
+pub fn index_url(run: i64, file: u32) -> String {
+    format!("{}.idx", object_url(run, file))
+}
+
+/// The `.idx` selector for one lead. The trailing colon matters: without it `0-1` would also
+/// match `0-10`, and `15 min` would match `150 min`.
+pub fn selector(lead_minutes: u32) -> String {
+    format!(":PRATE:surface:{lead_minutes} min fcst:")
+}
+
+/// Hourly run candidates at or before `now`, newest first.
+fn candidate_runs(now: i64) -> Vec<i64> {
+    let newest = now - now.rem_euclid(3_600);
+    (0..MAX_RUN_CANDIDATES as i64).map(|back| newest - back * 3_600).collect()
+}
+
+/// The newest run whose whole subhourly set is published. Completeness is probed before any
+/// body moves, so a partially published run can never produce a partial product.
+pub fn select_run(upstream: &mut dyn Upstream, now: i64) -> Result<Option<i64>, String> {
+    'candidates: for run in candidate_runs(now) {
+        // Probe the last file first: objects appear in lead order, so `f04` missing is the
+        // cheapest possible proof that a run is still publishing.
+        for file in SUBHOURLY_FILES.iter().rev() {
+            if !upstream.exists(&index_url(run, *file))? {
+                continue 'candidates;
+            }
+        }
+        return Ok(Some(run));
+    }
+    Ok(None)
+}
+
+/// The leads of `run` whose valid times lie strictly after `anchor` and no more than
+/// `horizon_seconds` beyond it — the forward window of the composed product.
+pub fn published_leads(run: i64, anchor: i64, horizon_seconds: i64) -> Vec<u32> {
+    LEADS_MIN
+        .iter()
+        .copied()
+        .filter(|lead| {
+            let valid_at = run + i64::from(*lead) * 60;
+            valid_at > anchor && valid_at <= anchor + horizon_seconds
+        })
+        .collect()
+}
+
+/// Fetch, decode and bake the forward frames of `run` that lie ahead of `anchor`.
+///
+/// `anchor` is the composed product's reference time (the MRMS observation instant), so each
+/// frame's `offset_min` is its real distance ahead of that observation — the frame's own upstream
+/// valid time, never a re-stamped or interpolated cadence.
+pub fn bake_forward_frames(
+    upstream: &mut dyn Upstream,
+    run: i64,
+    anchor: i64,
+    leads: &[u32],
+) -> Result<Vec<BakedFrame>, String> {
+    GEOMETRY.validate()?;
+    if leads.is_empty() {
+        return Ok(Vec::new());
+    }
+    let index_map = source_index_map();
+    let mut frames = Vec::with_capacity(leads.len());
+    // One `.idx` document and one HEAD per subhourly object, however many leads it serves.
+    let mut cached: Option<(u32, u64, String)> = None;
+    for lead in leads {
+        let file = subhourly_file(*lead);
+        if cached.as_ref().is_none_or(|(cached_file, _, _)| *cached_file != file) {
+            let object = object_url(run, file);
+            let object_len = upstream
+                .content_length(&object)?
+                .ok_or_else(|| format!("HRRR object {object} vanished between discovery and fetch"))?;
+            let index = match upstream.fetch(&index_url(run, file), MAX_INDEX_BYTES, None)? {
+                FetchOutcome::Body(fetched) => fetched,
+                FetchOutcome::Unchanged => return Err("HRRR index fetch returned 304 without a validator".into()),
+            };
+            let text = String::from_utf8(index.bytes).map_err(|_| "HRRR .idx is not UTF-8".to_string())?;
+            cached = Some((file, object_len, text));
+        }
+        let (_, object_len, index) = cached.as_ref().expect("just populated");
+        let (range, _) = idx::resolve(index, &selector(*lead), *object_len, &[1])?;
+        let message = upstream.fetch_range(&object_url(run, file), range.start, range.end_inclusive, MAX_MESSAGE_BYTES)?;
+        let field = decode_field(&message.bytes, &EXPECTED)?;
+        let valid_at = run + i64::from(*lead) * 60;
+        // The selected lead must equal the byte-derived one; index text is not identity.
+        if field.reference_unix_seconds != run
+            || field.valid_start_unix_seconds != valid_at
+            || field.valid_end_unix_seconds != valid_at
+        {
+            return Err(format!("HRRR +{lead} min message disagrees with its own GRIB timestamps"));
+        }
+        if field.values.len() != (lcc::NATIVE_COLS * lcc::NATIVE_ROWS) as usize {
+            return Err("HRRR field does not have the contracted point count".into());
+        }
+        let offset_seconds = valid_at - anchor;
+        if offset_seconds <= 0 || offset_seconds % 60 != 0 {
+            return Err(format!("HRRR +{lead} min frame is not a positive whole-minute offset from the anchor"));
+        }
+        frames.push(BakedFrame {
+            offset_min: u32::try_from(offset_seconds / 60).map_err(|_| "HRRR frame offset overflows")?,
+            valid_at,
+            flags: FLAG_FORECAST,
+            source: Some(FrameSource { product_code: PRODUCT_HRRR, tier: TIER_MODEL, geometry: GEOMETRY }),
+            cells: resample(&field.values, &index_map),
+        });
+    }
+    Ok(frames)
+}
+
+/// The per-cycle nearest-neighbour map: for every output cell, the native raster index (or
+/// `u32::MAX` outside the projected domain). One projection pass, shared by all frames.
+fn source_index_map() -> Vec<u32> {
+    let mut map = vec![u32::MAX; GEOMETRY.cells()];
+    for row in 0..GEOMETRY.height {
+        let lat = GEOMETRY.center_lat_deg(row);
+        for col in 0..GEOMETRY.width {
+            let lon = GEOMETRY.center_lon_deg(col);
+            if let Some(index) = lcc::native_index(lat, lon) {
+                map[(row * GEOMETRY.width + col) as usize] = index as u32;
+            }
+        }
+    }
+    map
+}
+
+fn resample(values: &[f32], index_map: &[u32]) -> Vec<u8> {
+    index_map
+        .iter()
+        .map(|&source| {
+            if source == u32::MAX {
+                return precip4::INTENSITY_NODATA;
+            }
+            // WX1's pinned unit is kg/m2/s, numerically mm/s: an mm/hour rate is x 3,600.
+            precip4::quantize_rate_mm_per_hour(f64::from(values[source as usize]) * 3_600.0)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_published_window_covers_the_whole_lambert_domain() {
+        GEOMETRY.validate().expect("geometry is within the OBCG limits");
+        // The domain's extreme corners and its northern bulge on the central meridian all fall
+        // inside the window (computed from the pinned projection, not from prose).
+        for (lat, lon) in [(21.138_123, -122.719_528), (21.140_547, -72.289_718), (47.838_623, -134.095_480), (47.842_195, -60.917_193), (52.615_653, -97.5)] {
+            let lat_udeg = (lat * 1e6) as i64;
+            let lon_udeg = (lon * 1e6) as i64;
+            assert!(
+                lat_udeg >= i64::from(GEOMETRY.south_lat_udeg) && lat_udeg <= GEOMETRY.north_lat_udeg(),
+                "latitude {lat} is outside the published window"
+            );
+            assert!(
+                lon_udeg >= i64::from(GEOMETRY.west_lon_udeg) && lon_udeg <= GEOMETRY.east_lon_udeg(),
+                "longitude {lon} is outside the published window"
+            );
+        }
+    }
+
+    #[test]
+    fn leads_map_to_their_subhourly_objects() {
+        assert_eq!(subhourly_file(15), 1);
+        assert_eq!(subhourly_file(60), 1);
+        assert_eq!(subhourly_file(75), 2);
+        assert_eq!(subhourly_file(120), 2);
+        assert_eq!(subhourly_file(240), 4);
+        assert_eq!(
+            object_url(crate::manifest::parse_rfc3339("2026-08-09T15:00:00Z").unwrap(), 2),
+            "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20260809/conus/hrrr.t15z.wrfsubhf02.grib2"
+        );
+        assert_eq!(selector(15), ":PRATE:surface:15 min fcst:");
+    }
+
+    /// The forward window is the real one: strictly ahead of the observation anchor, capped at
+    /// the horizon, and never re-spaced onto a fabricated cadence.
+    #[test]
+    fn published_leads_are_the_real_ones_ahead_of_the_anchor() {
+        let run = 1_800_000_000; // an exact hour
+        let anchor = run + 118 * 60; // an observation 118 minutes into the run
+        let leads = published_leads(run, anchor, 2 * 3_600);
+        assert_eq!(leads, vec![120, 135, 150, 165, 180, 195, 210, 225]);
+        // A fresh run supplies its own first steps.
+        assert_eq!(published_leads(run, run + 60, 2 * 3_600), vec![15, 30, 45, 60, 75, 90, 105, 120]);
+        // An old run supplies fewer frames rather than inventing any.
+        assert_eq!(published_leads(run, run + 230 * 60, 2 * 3_600), vec![240]);
+        assert!(published_leads(run, run + 245 * 60, 2 * 3_600).is_empty());
+    }
+}
