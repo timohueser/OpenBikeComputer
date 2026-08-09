@@ -12,6 +12,9 @@ import PackageDescription
 //                never on OBCTransport (no CoreBluetooth anywhere near it) and never
 //                on SwiftUI
 //   OBCTransport → DeviceTransport protocol + (B1) BLETransport, depends on OBCDomain
+//                + OBCWeather (WX9: the transport conforms to the weather job's
+//                `WeatherDeviceLink` seam — the dependency points *down* into the
+//                weather domain, never the other way around)
 //   OBCFormats → interchange file formats (route import / ride export seams, B6/B7),
 //                depends on OBCDomain — sits beside OBCTransport, never on it
 //   OBCMock    → #if DEBUG fixtures + MockTransport, depends on OBCTransport
@@ -51,7 +54,11 @@ let package = Package(
         ),
         .target(
             name: "OBCTransport",
-            dependencies: ["OBCDomain"],
+            // OBCWeather sits *below* the transport (a domain-layer package like OBCDomain): the
+            // WX9 job seam (`Weather/WeatherBLEDeviceLink.swift`) conforms the transport to
+            // OBCWeather's `WeatherDeviceLink` protocol. The direction that matters is unchanged —
+            // OBCWeather never imports OBCTransport, so no weather code can reach CoreBluetooth.
+            dependencies: ["OBCDomain", "OBCWeather"],
             swiftSettings: languageMode
         ),
         // Provider-neutral OBCW bytes and wire DTOs. Deliberately separate from
@@ -93,7 +100,9 @@ let package = Package(
             name: "OBCTransportTests",
             // OBCFormats so the route-encoder test can decode a real GPX export
             // through the production decoder and encode it to OBCR end to end.
-            dependencies: ["OBCTransport", "OBCFormats"],
+            // OBCWeather so the WX9 context → snapshot mapping is pinned against
+            // the job engine's own types.
+            dependencies: ["OBCTransport", "OBCFormats", "OBCWeather"],
             // Checked-in library files from older app versions (e.g. the v1
             // planned-route JSON) — the persistence-compat pins.
             resources: [.copy("Fixtures")],
