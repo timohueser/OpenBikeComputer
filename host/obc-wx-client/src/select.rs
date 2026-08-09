@@ -144,7 +144,7 @@ pub fn select<'m>(
 
 /// The frames of `product` worth fetching at `now`: inside the two-hour horizon ahead and no
 /// older than a genuinely useful observation.
-pub fn usable_frames<'p>(product: &'p Product, now: i64) -> Vec<&'p crate::manifest::Frame> {
+pub fn usable_frames(product: &Product, now: i64) -> Vec<&crate::manifest::Frame> {
     product
         .frames
         .iter()
