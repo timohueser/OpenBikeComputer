@@ -732,6 +732,16 @@ downloading it again. Cancelling terminates the worker; there is no verification
 bypass. The gate on a big selection is therefore **disk quota, checked before the
 download starts**, not the memory the run would have needed.
 
+**A dropped connection costs one cell, not the run.** A set is hundreds of
+objects and a CDN edge occasionally closes one part-way through, which arrives as
+a body that ends clean and short. Each object is therefore fetched up to four
+times with a widening backoff before its failure becomes the run's — and the
+pinning is what makes that safe, since a retry cannot slip past a check the first
+attempt failed. Only failures another attempt could mend are retried: a short
+body or a 5xx, never a 404 or a digest that simply disagrees. Without it a
+per-object drop rate as low as half a percent would end a 215-object set two runs
+in three.
+
 **Elevation rides along with the selection, and there is no switch for it.** The
 terrain squares a map needs are the ones its selection touches — the same intersect
 rule the bands use, run on the [terrain lattice](../terrain/) — so they are resolved,
