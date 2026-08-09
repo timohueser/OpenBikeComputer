@@ -414,3 +414,87 @@ fn unchanged_upstream_short_circuits_and_moves_no_frame_bytes() {
     assert!(second.requests.iter().any(|request| request == dwd_rv::LATEST_URL));
     assert_eq!(before, tree(&dir), "an unchanged cycle republishes identical bytes");
 }
+
+/// WX18: the per-adapter systemd timers invoke one adapter at a time so a broken upstream can
+/// only cost its own product freshness. The manifest is the whole service's state, so an
+/// invocation that bakes a subset must carry every other still-usable product forward untouched.
+#[test]
+fn a_per_adapter_cycle_carries_the_products_it_did_not_select() {
+    let (dwd, icon) = adapters();
+    let both: [&dyn Adapter; 2] = [&dwd, &icon];
+    let dir = scratch("per-adapter");
+    let mut store = DirStore::new(&dir);
+    run_cycle(&both, &mut upstream(), &mut store, now(), false).expect("full cycle");
+    let before = tree(&dir);
+    let published_before = manifest::from_json(&before["wx/v1/manifest.json"]).unwrap();
+    let icon_before = published_before.products.iter().find(|product| product.id == "icon-eu").unwrap();
+
+    // The radar timer alone, five minutes later.
+    let radar_only: [&dyn Adapter; 1] = [&dwd];
+    let report = run_cycle(&radar_only, &mut upstream(), &mut store, now() + 300, false).expect("radar-only cycle");
+    eprintln!("radar-only report:\n{}", report.summary());
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    assert_eq!(report.published_objects, 1, "only the manifest is republished");
+    assert!(
+        report.products.iter().any(|(id, status, _)| id == "icon-eu" && *status == ProductStatus::NotSelected),
+        "{:?}",
+        report.products
+    );
+
+    let after = tree(&dir);
+    assert_eq!(before.len(), after.len(), "a radar-only cycle publishes no new objects");
+    for (key, bytes) in &before {
+        if key == "wx/v1/manifest.json" {
+            continue;
+        }
+        assert_eq!(Some(bytes), after.get(key), "{key} changed on a radar-only cycle");
+    }
+
+    let document = manifest::from_json(&after["wx/v1/manifest.json"]).unwrap();
+    assert_eq!(
+        document.products.iter().map(|product| product.id.as_str()).collect::<Vec<_>>(),
+        ["dwd-rv", "icon-eu"],
+        "the unselected product stays in the manifest, in a stable order"
+    );
+    let icon_after = document.products.iter().find(|product| product.id == "icon-eu").unwrap();
+    assert_eq!(icon_after.reference_time, icon_before.reference_time);
+    assert_eq!(icon_after.generated_at, icon_before.generated_at, "a carried entry is not re-stamped");
+    assert_eq!(icon_after.staleness_deadline, icon_before.staleness_deadline);
+    assert_eq!(icon_after.frames.len(), icon_before.frames.len());
+    for (carried, original) in icon_after.frames.iter().zip(&icon_before.frames) {
+        assert_eq!(carried.key, original.key);
+        assert_eq!(carried.bytes, original.bytes);
+        assert_eq!(carried.object_crc32, original.object_crc32);
+        assert_eq!(carried.valid_at, original.valid_at);
+    }
+}
+
+/// The other half of the rule: an unselected product that is already past its own staleness
+/// deadline is dropped, not carried. A client reads a missing product exactly like an expired one
+/// (hourly-only, never "dry"), and carrying it would make the healthy products' publication
+/// depend on frames the bucket's 48 h lifecycle rule is allowed to have deleted.
+#[test]
+fn a_per_adapter_cycle_drops_an_unselected_product_that_expired() {
+    let (dwd, icon) = adapters();
+    let both: [&dyn Adapter; 2] = [&dwd, &icon];
+    let dir = scratch("per-adapter-expired");
+    let mut store = DirStore::new(&dir);
+    run_cycle(&both, &mut upstream(), &mut store, now(), false).expect("full cycle");
+
+    // ICON's staleness deadline is its 06Z run + 10 h = 16:00Z; run the radar timer at 16:30Z.
+    let radar_only: [&dyn Adapter; 1] = [&dwd];
+    let report = run_cycle(&radar_only, &mut upstream(), &mut store, ts("2026-08-09T16:30:00Z"), false)
+        .expect("radar-only cycle past the ICON deadline");
+    eprintln!("expired-carry report:\n{}", report.summary());
+    assert!(
+        report.warnings.iter().any(|warning| warning.contains("icon-eu") && warning.contains("expired at")),
+        "{:?}",
+        report.warnings
+    );
+    let document = manifest::from_json(&std::fs::read(dir.join("wx/v1/manifest.json")).unwrap()).unwrap();
+    assert_eq!(
+        document.products.iter().map(|product| product.id.as_str()).collect::<Vec<_>>(),
+        ["dwd-rv"],
+        "an expired unselected product is dropped from the manifest"
+    );
+}

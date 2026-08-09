@@ -7,6 +7,14 @@
 //! leaves the previous manifest and its frames fully consistent. Unchanged upstream runs
 //! short-circuit: their immutable frames are already published, so their previous manifest
 //! entries are carried forward verbatim and no bytes move.
+//!
+//! A cycle may bake a **subset** of the products — that is exactly what the per-adapter systemd
+//! timers (WX18) do, so one broken upstream costs only its own product's freshness. The manifest
+//! is the whole service's state, so products this invocation did not select are carried forward
+//! from the previous manifest verbatim. Only a product whose staleness deadline has already
+//! passed is dropped: a client must not use it anyway, and its frames may have aged out of the
+//! bucket's 48 h lifecycle, which would fail the pre-swap fetchability proof and take the
+//! healthy products down with it.
 
 use std::time::Instant;
 
@@ -22,11 +30,13 @@ pub enum ProductStatus {
     Baked,
     /// Upstream unchanged; the previous entry was carried forward.
     Unchanged,
+    /// Not selected by this invocation; the previous, still-unexpired entry was carried forward.
+    NotSelected,
 }
 
 #[derive(Debug)]
 pub struct CycleReport {
-    pub products: Vec<(&'static str, ProductStatus, usize)>,
+    pub products: Vec<(String, ProductStatus, usize)>,
     pub fetched_bytes: u64,
     pub published_objects: usize,
     pub published_bytes: u64,
@@ -41,6 +51,7 @@ impl CycleReport {
             lines.push(match status {
                 ProductStatus::Baked => format!("{id}: baked {frames} frames"),
                 ProductStatus::Unchanged => format!("{id}: upstream unchanged ({frames} published frames stand)"),
+                ProductStatus::NotSelected => format!("{id}: not selected ({frames} published frames carried forward)"),
             });
         }
         lines.push(format!(
@@ -91,14 +102,14 @@ pub fn run_cycle(
                 let carried = previous_product(id)
                     .ok_or_else(|| format!("{id}: adapter reported unchanged with no published entry"))?
                     .clone();
-                statuses.push((adapter.id(), ProductStatus::Unchanged, carried.frames.len()));
+                statuses.push((adapter.id().to_string(), ProductStatus::Unchanged, carried.frames.len()));
                 carried_frames.extend(carried.frames.iter().map(|frame| (frame.key.clone(), frame.bytes)));
                 products.push(carried);
             }
             AdapterOutcome::Baked(baked) => {
                 let emitted = emit::emit_product(&baked)?;
                 let entries: Vec<_> = emitted.iter().map(|frame| frame.entry.clone()).collect();
-                statuses.push((baked.id, ProductStatus::Baked, entries.len()));
+                statuses.push((baked.id.to_string(), ProductStatus::Baked, entries.len()));
                 for frame in emitted {
                     frame_objects.push(PlannedObject {
                         key: frame.key,
@@ -111,6 +122,37 @@ pub fn run_cycle(
             }
         }
     }
+
+    // Products no adapter in this invocation owns: carry the previous entry, or drop it once it
+    // is past its own staleness deadline. Dropping is the honest outcome — the client reads a
+    // missing product exactly like an expired one (no rain map, never "dry"), and keeping it
+    // would make every other product's publication depend on frames the lifecycle rule is
+    // allowed to have deleted.
+    if let Some(previous) = previous.as_ref() {
+        for product in &previous.products {
+            if products.iter().any(|selected| selected.id == product.id) {
+                continue;
+            }
+            match manifest::parse_rfc3339(&product.staleness_deadline) {
+                Some(deadline) if deadline > now => {
+                    statuses.push((product.id.clone(), ProductStatus::NotSelected, product.frames.len()));
+                    carried_frames.extend(product.frames.iter().map(|frame| (frame.key.clone(), frame.bytes)));
+                    products.push(product.clone());
+                }
+                Some(_) => warnings.push(format!(
+                    "{}: not selected and expired at {} — dropped from the manifest",
+                    product.id, product.staleness_deadline
+                )),
+                None => warnings.push(format!(
+                    "{}: not selected and its staleness deadline {} is unreadable — dropped from the manifest",
+                    product.id, product.staleness_deadline
+                )),
+            }
+        }
+    }
+    // One manifest, one order, whoever baked it: sort so a per-adapter cycle and a full cycle
+    // produce the same document for the same inputs.
+    products.sort_by(|left, right| left.id.cmp(&right.id));
 
     let document = Manifest { version: manifest::MANIFEST_VERSION, generated_at: manifest::rfc3339(now), products };
     let manifest_object = PlannedObject {

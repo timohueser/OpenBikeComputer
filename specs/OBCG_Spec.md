@@ -320,6 +320,13 @@ pinned by tests. It is delivery metadata, not a byte format, but its contract is
 - `staleness_deadline` is the moment the product must stop being used if no fresh manifest has
   replaced it. Expired products keep their true timestamps; expiry makes them unusable, never
   silently dry.
+- The manifest always lists everything the service currently offers, whichever cycle wrote it. A
+  publishing cycle may cover a **subset** of the products — the deployed service runs one timer per
+  adapter, so a broken upstream costs only its own product's freshness — and then the products it
+  did not bake are carried forward from the previous manifest verbatim, except that a carried
+  product already past its `staleness_deadline` is dropped. A client reads a missing product
+  exactly as it reads an expired one, and must never infer from a product's presence that this
+  document's cycle refreshed it: the product's own `generated_at` is that fact, not the manifest's.
 
 ## 11. Golden and negative material
 
