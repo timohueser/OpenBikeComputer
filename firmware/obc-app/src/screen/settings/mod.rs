@@ -49,6 +49,7 @@ mod ride;
 mod sensors;
 mod system;
 mod units;
+mod weather;
 
 pub use about::AboutScreen;
 pub use add_field::AddFieldScreen;
@@ -66,12 +67,14 @@ pub use ride::RideScreen;
 pub use sensors::{SensorScanScreen, SensorsScreen};
 pub use system::SystemScreen;
 pub use units::UnitsScreen;
+pub use weather::WeatherSettingsScreen;
 
-/// The number of Settings list entries — five themed groups. The row *labels* are looked up
+/// The number of Settings list entries — six themed groups. The row *labels* are looked up
 /// per-language at draw time (see [`SettingsScreen::draw`]). Each row opens a group screen: Ride
-/// (routing + the riding grid + retention), Display, Connections (Phone + Sensors), Power, and
-/// System (Units / Date & Time / Language / Firmware update / About / Reset).
-const N_ITEMS: usize = 5;
+/// (routing + the riding grid + retention), Display, Weather (the WX11 refresh interval),
+/// Connections (Phone + Sensors), Power, and System (Units / Date & Time / Language / Firmware
+/// update / About / Reset).
+const N_ITEMS: usize = 6;
 
 /// The Settings list — a nav menu whose rows open the individual settings screens. State is the
 /// highlighted row.
@@ -91,8 +94,9 @@ impl SettingsScreen {
             Gesture::Press => match self.selected {
                 0 => Transition::Push(Screen::Ride(RideScreen::new())),
                 1 => Transition::Push(Screen::Display(DisplayScreen::new())),
-                2 => Transition::Push(Screen::Connections(ConnectionsScreen::new())),
-                3 => Transition::Push(Screen::Power(PowerScreen::new())),
+                2 => Transition::Push(Screen::WeatherSettings(WeatherSettingsScreen::new())),
+                3 => Transition::Push(Screen::Connections(ConnectionsScreen::new())),
+                4 => Transition::Push(Screen::Power(PowerScreen::new())),
                 _ => Transition::Push(Screen::System(SystemScreen::new())),
             },
             Gesture::Back => Transition::Pop, // climb back to the main Menu
@@ -106,6 +110,7 @@ impl SettingsScreen {
         let items: [&str; N_ITEMS] = [
             rx.t(Msg::SettingsRide),
             rx.t(Msg::SettingsDisplay),
+            rx.t(Msg::SettingsWeather),
             rx.t(Msg::SettingsConnections),
             rx.t(Msg::SettingsPower),
             rx.t(Msg::SettingsSystem),

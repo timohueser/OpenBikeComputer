@@ -52,15 +52,18 @@ byte changes the next time their pinned snapshots are deliberately refreshed.
 Rendered 240 x 320 review frames of the WX10 rain overlay (epic #1185), embedded in PR bodies so
 look-tuning rounds have a stable surface to point at. **Not fixtures** -- nothing reads them; they
 are regenerated (release sim, deterministic output) by exactly the `map-rain-*` commands in
-`firmware/ui-snapshots.sh` plus the `demo:drizzle` variant and the rain-free baseline:
+`firmware/ui-snapshots.sh` plus the `demo:drizzle` variant and the rain-free baseline (the explicit `--weather-now
+1800000000` anchor pins the first demo frame now that the sim's rain lease follows the live wall
+clock — WX11 review F5; with `--clock` pinning the clock elsewhere the anchor keeps these frames
+byte-identical):
 
 ```sh
 cargo build --release -p obc-sim
 S=target/release/obc-sim; M=apps/obc-sim/assets/grimsel.obcm; O=apps/obc-sim/assets/wx10-rain-previews
-$S $M --weather demo:scattered --clock "2025-06-29T14:40" --png $O/map-rain-scattered.png
-$S $M --weather demo:frontal --heading 35 --zoom 4 --clock "2025-06-29T14:40" --png $O/map-rain-frontal-heading.png
-$S $M --weather demo:storm --clock "2025-06-29T14:40" --png $O/map-rain-storm.png
-$S $M --weather demo:drizzle --clock "2025-06-29T14:40" --png $O/map-rain-drizzle.png
+$S $M --weather demo:scattered --weather-now 1800000000 --clock "2025-06-29T14:40" --png $O/map-rain-scattered.png
+$S $M --weather demo:frontal --heading 35 --zoom 4 --weather-now 1800000000 --clock "2025-06-29T14:40" --png $O/map-rain-frontal-heading.png
+$S $M --weather demo:storm --weather-now 1800000000 --clock "2025-06-29T14:40" --png $O/map-rain-storm.png
+$S $M --weather demo:drizzle --weather-now 1800000000 --clock "2025-06-29T14:40" --png $O/map-rain-drizzle.png
 $S $M --clock "2025-06-29T14:40" --png $O/map-rain-none.png
 ```
 

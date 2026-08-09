@@ -6,7 +6,7 @@
 //! matrix, pinned against a synthetic clock); this module is only the plumbing around it:
 //!
 //! - **Inputs** cross the plane boundary the same way every other App fact does: the ride loop
-//!   distils an [`obc_app::WeatherSnapshot`] once per pass ([`set_weather_inputs`], the reverse
+//!   distils an [`obc_app::ble::WeatherSnapshot`] once per pass ([`set_weather_inputs`], the reverse
 //!   direction of `app_ble_status`), the Config write path pokes [`note_settings_changed`], and a
 //!   committed bundle pokes [`note_commit`] from the store's finish path.
 //! - **Outputs** are exactly two: `server.set` on the Weather Request context attribute (so the
@@ -26,7 +26,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Timer};
-use obc_app::WeatherSnapshot;
+use obc_app::ble::WeatherSnapshot;
 use obc_ble::{
     BundleFacts, DueScheduler, Raise, WeatherRefresh, WeatherRequestContext, VALID_BEARING, VALID_BUNDLE,
     VALID_POSITION, VALID_ROUTE, VALID_SPEED,
@@ -116,9 +116,9 @@ pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, share
             sched.open_weather();
         }
         let snapshot = SNAPSHOT.lock(|c| c.get());
-        // The persisted setting is always a validated §11.8 discriminant (writers go through the
-        // strict write direction; the codec sanitises corruption), so the fallback is unreachable.
-        let refresh_raw = store.borrow().settings().weather_refresh;
+        // The persisted setting is obc-app's typed enum whose discriminant IS the §11.8 wire
+        // byte (pinned), so the fallback is unreachable.
+        let refresh_raw = store.borrow().settings().weather_refresh as u8;
         let refresh = WeatherRefresh::from_u8(refresh_raw).unwrap_or(WeatherRefresh::DEFAULT);
         // The active bundle's identity — the boot/commit-refreshed selection, no card I/O — and
         // whether storage exists at all (#1221 F5: no card ⇒ no requests, or the phone burns).

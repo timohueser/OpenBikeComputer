@@ -316,7 +316,25 @@ impl SimGui {
         // Seed the live settings from the persisted store, falling back to defaults on a first
         // run / unreadable file — the device's boot path.
         let mut settings_store = FileSettingsStore::open(args.settings_path());
-        app.set_settings(settings_store.load().unwrap_or_default());
+        let mut boot_settings = settings_store.load().unwrap_or_default();
+        // WX11: with a weather store, anchor the wall clock on the store's effective instant so
+        // the weather screens' freshness derivations agree with the rain lease out of the box
+        // (the panel's GPS-time controls can still move the clock afterwards).
+        if let Some(arg) = args.weather.as_ref() {
+            let b = map.reader().bbox;
+            if let Some(now) = crate::weather_store::SimWeather::from_arg(
+                arg,
+                args.weather_now,
+                (b.min_lon, b.min_lat, b.max_lon, b.max_lat),
+            )
+            .as_ref()
+            .and_then(|w| w.effective_now())
+            {
+                boot_settings.clock = obc_ports::DateTime::from_unix(now.max(0) as u64 as u32);
+                boot_settings.utc_offset_min = 0;
+            }
+        }
+        app.set_settings(boot_settings);
         // Mirror the map's §8.6 routing-profile names into the app for the Bike-type screen +
         // created-route overview label (N5). The map is loaded once in the sim, so this is a one-shot
         // (a device re-runs it on every map load).
@@ -600,17 +618,44 @@ impl SimGui {
         // The rain-overlay lease (WX10): constructed per frame from the loaded weather store so
         // the GUI exercises exactly the device's adapter → hook path; no store ⇒ `None`.
         let (app, scratch, weather) = (&mut self.app, &mut *self.scratch, self.weather.as_mut());
+        // WX11: the production resident snapshot, re-sampled each GUI frame at the rider/camera
+        // position (host-side, in-memory — trivial), so the weather screens are live in the GUI.
+        let (wx_snapshot, rain_step) = match weather {
+            Some(w) => {
+                let pos = app.state.user_fix.map(|f| (f.lat, f.lon)).unwrap_or((app.state.cam_lat, app.state.cam_lon));
+                let snap = w.snapshot(Some(pos));
+                if let Some(snap) = &snap {
+                    let now = app.wall_unix_now() as i64;
+                    let floor = snap.rain_zoom_floor(app.state.cam_lat).unwrap_or(0.0);
+                    app.set_rain_view(snap.steps_ahead(now), floor);
+                }
+                (snap, app.state.rain_step)
+            }
+            None => (None, 0),
+        };
+        let weather = self.weather.as_mut();
         let render = |rain: Option<&mut dyn obc_render::RainOverlaySource>,
+                      feed: obc_app::WeatherFeed,
                       app: &mut App,
                       scratch: &mut obc_render::RenderScratch,
                       fbdev: &mut FbDevice64<'_>| {
-            crate::map_set::render_frame(app, scratch, fbdev, scene, rain, (dev_w as f32, dev_h as f32), |c| {
+            crate::map_set::render_frame(app, scratch, fbdev, scene, rain, feed, (dev_w as f32, dev_h as f32), |c| {
                 Rgb565::from(RawU16::new(c))
             })
         };
+        let wx_wall_now = app.wall_unix_now() as i64;
         let mut stats = match weather {
-            Some(weather) => weather.lease(|rain| render(rain, app, scratch, &mut fbdev)),
-            None => render(None, app, scratch, &mut fbdev),
+            Some(weather) => weather.lease(wx_wall_now, rain_step, |rain| {
+                let feed = obc_app::WeatherFeed { snapshot: wx_snapshot.as_ref(), refreshing: false };
+                render(rain, feed, app, scratch, &mut fbdev)
+            }),
+            None => render(
+                None,
+                obc_app::WeatherFeed { snapshot: wx_snapshot.as_ref(), refreshing: false },
+                app,
+                scratch,
+                &mut fbdev,
+            ),
         };
         stats.render_us = t0.elapsed().as_micros() as u32;
         self.last_stats = stats;

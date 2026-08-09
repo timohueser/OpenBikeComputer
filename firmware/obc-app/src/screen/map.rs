@@ -451,7 +451,7 @@ fn draw_waypoint_diamonds(cv: &mut impl Surface, vp: &Viewport, wpts: &[WptEntry
 /// Route/Free family and Select-hold changes only an active Free axis. Select-hold is inert in Zoom;
 /// Back-hold switches family and lands in Move. `back` exits to Follow. The holds override the
 /// riding map's normal long-press actions in Inspect.
-fn handle_pan(g: Gesture, cx: &mut Ctx) -> Transition {
+pub(super) fn handle_pan(g: Gesture, cx: &mut Ctx) -> Transition {
     let has_route = cx.activity.active_route.is_some();
     match g {
         Gesture::Step(n) => cx.state.pan_step(n, cx.activity.route_total_m),
@@ -922,7 +922,14 @@ fn outlined_arrow(
 /// action's self-explanatory edge cues, and (once the rider is off-screen) a back-to-you marker.
 /// Route mode needs no label or false screen-space arrow: frame + movement along the visible route
 /// is the feedback. The viewport carries the frozen rotation used by the off-screen test.
-fn draw_pan_hud(cv: &mut impl Surface, size: (f32, f32), pan: Pan, user_fix: Option<Fix>, marker: u16, vp: &Viewport) {
+pub(super) fn draw_pan_hud(
+    cv: &mut impl Surface,
+    size: (f32, f32),
+    pan: Pan,
+    user_fix: Option<Fix>,
+    marker: u16,
+    vp: &Viewport,
+) {
     use super::palette::*;
     use hud::*;
     let (w, h) = size;

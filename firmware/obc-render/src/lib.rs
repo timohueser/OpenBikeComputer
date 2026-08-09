@@ -38,8 +38,8 @@ mod viewport;
 pub use canvas::{rect, Canvas};
 pub use overlay::{OverlayChunk, RouteOverlaySource};
 pub use rain::{
-    rain_in_regime, rain_style, RainGrid, RainOverlaySource, RAIN_BELOW_Z, RAIN_MAX_CELL_STEP, RAIN_STYLE,
-    RAIN_TILE_CELLS, RAIN_TILE_EDGE, RAIN_TILE_SLOTS,
+    rain_in_regime, rain_min_zoom, rain_style, RainGrid, RainOverlaySource, RAIN_BELOW_Z, RAIN_MAX_CELL_STEP,
+    RAIN_STYLE, RAIN_TILE_CELLS, RAIN_TILE_EDGE, RAIN_TILE_SLOTS,
 };
 pub use surface::Surface;
 pub use text::{draw_text, glyph_supported, text_width, Font, TextAlign};

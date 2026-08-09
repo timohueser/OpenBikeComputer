@@ -775,7 +775,9 @@ impl ObjectStore {
         // what keeps an old app's rename from resetting a rider who chose `Off`). The caller
         // already validated the byte through the wire enum's strict write direction.
         if let Some(refresh) = weather_refresh {
-            self.settings.weather_refresh = refresh;
+            // Wire-validated upstream (obc-ble's strict write direction); this converts the §11.8
+            // byte into obc-app's typed representation (#1221/#1224 merge resolution).
+            self.settings.weather_refresh = obc_app::WeatherRefresh::from_byte(refresh);
         }
         // The BLE plane persists its owned fields directly (best-effort): the store logs a write
         // failure internally, and the phone re-asserts config on reconnect, so there is no App-side

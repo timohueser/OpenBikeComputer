@@ -577,6 +577,93 @@ impl IdleReturn {
     }
 }
 
+/// How often the device asks the phone for a fresh weather bundle (epic #1185 — WX11's settings
+/// entry; the WX8 due scheduler consumes it): Off, or every 15 / 30 / 60 / 120 minutes.
+/// Scheduled requests occur only during an active ride, and opening Weather is urgent regardless
+/// of this interval — both are WX8's lifecycle rules; this is just the persisted knob.
+///
+/// The discriminants are a **double** on-disk contract: the settings-codec byte *and* the BLE
+/// Config `weather_refresh` field (obc-ble-interface-spec §11.8, `obc_ble::WeatherRefresh`) use
+/// these exact values, so the two stores can never disagree — a parity test pins the mapping.
+/// Appended, never renumbered; an unknown stored byte sanitises to the default,
+/// [`Every30`](WeatherRefresh::Every30).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(u8)]
+pub enum WeatherRefresh {
+    /// No scheduled refresh (opening Weather still requests urgently).
+    Off = 0,
+    /// Every 15 minutes.
+    Every15 = 1,
+    /// Every 30 minutes — the default (the epic's locked default interval).
+    #[default]
+    Every30 = 2,
+    /// Every 60 minutes.
+    Every60 = 3,
+    /// Every 120 minutes.
+    Every120 = 4,
+}
+
+impl WeatherRefresh {
+    /// The ordered picker values (the left/right walk order) — Off first, then rising intervals;
+    /// the wire order is already monotonic, so the two coincide.
+    const ORDER: [WeatherRefresh; 5] = [
+        WeatherRefresh::Off,
+        WeatherRefresh::Every15,
+        WeatherRefresh::Every30,
+        WeatherRefresh::Every60,
+        WeatherRefresh::Every120,
+    ];
+
+    /// The label for the Weather settings screen's value picker (`Off` / `15 min` / …), in the UI
+    /// `lang`.
+    #[inline]
+    pub const fn name(self, lang: Language) -> &'static str {
+        match self {
+            WeatherRefresh::Off => t(Msg::WeatherRefreshOff, lang),
+            WeatherRefresh::Every15 => t(Msg::WeatherRefreshM15, lang),
+            WeatherRefresh::Every30 => t(Msg::WeatherRefreshM30, lang),
+            WeatherRefresh::Every60 => t(Msg::WeatherRefreshM60, lang),
+            WeatherRefresh::Every120 => t(Msg::WeatherRefreshM120, lang),
+        }
+    }
+
+    /// The scheduled interval in minutes, or `None` for [`Off`](WeatherRefresh::Off) — the shape
+    /// the WX8 scheduler consumes (mirrors `obc_ble::WeatherRefresh::minutes`).
+    #[inline]
+    pub const fn minutes(self) -> Option<u16> {
+        match self {
+            WeatherRefresh::Off => None,
+            WeatherRefresh::Every15 => Some(15),
+            WeatherRefresh::Every30 => Some(30),
+            WeatherRefresh::Every60 => Some(60),
+            WeatherRefresh::Every120 => Some(120),
+        }
+    }
+
+    /// Walk the picker `n` steps through [`ORDER`](WeatherRefresh::ORDER), wrapping at both ends.
+    /// Falls back to the default [`Every30`](WeatherRefresh::Every30) index.
+    #[inline]
+    pub fn stepped(self, n: i32) -> Self {
+        step_order(&Self::ORDER, self, n, 2)
+    }
+
+    /// Rebuild from a stored/wire byte, sanitising an unknown value to the default
+    /// ([`Every30`](WeatherRefresh::Every30)) — the decode-side clamp, like every codec enum.
+    /// `pub`: the board's Config write path converts the obc-ble-validated §11.8 byte through
+    /// this after wire validation (#1221/#1224 merge resolution).
+    #[inline]
+    pub fn from_byte(b: u8) -> Self {
+        match b {
+            0 => WeatherRefresh::Off,
+            1 => WeatherRefresh::Every15,
+            2 => WeatherRefresh::Every30,
+            3 => WeatherRefresh::Every60,
+            4 => WeatherRefresh::Every120,
+            _ => WeatherRefresh::default(),
+        }
+    }
+}
+
 /// The UI language (epic #602). A device-only setting, cycled by the Language settings screen's
 /// value picker and persisted in the codec next to [`waypoint_mode`](Settings::waypoint_mode). Only
 /// the on-glass **preference** ships here (L1); the translation catalog that actually reads it lands
@@ -827,24 +914,21 @@ pub struct Settings {
     /// shows, so [`adopt_ble_fields`](Settings::adopt_ble_fields) never pulls it across. Default
     /// **Both**; the scope is the Up-ahead list *only* (see [`UpAheadSource`]).
     pub up_ahead_source: UpAheadSource,
-    /// How often the device raises a **scheduled weather request** (weather epic #1185, WX8 #1193;
-    /// BLE spec §11.8) — the raw §11.8 discriminant: `0` Off · `1` 15 min · `2` 30 min (the device
-    /// default) · `3` 60 min · `4` 120 min. Stored as the raw byte rather than a local enum because
-    /// the wire crate (`obc-ble`'s `WeatherRefresh`) owns the vocabulary and the direction-dependent
-    /// validation rule, and `obc-app` must not depend on it: every writer (the BLE Config path
-    /// today, WX11's Settings screen later) validates through that enum before storing, so the
-    /// persisted value is always a known discriminant — [`decode`] still sanitises an out-of-range
-    /// byte to the default as belt-and-braces. **BLE-writable** (like [`units`](Settings::units) /
+    /// How often the device raises a **scheduled weather request** (weather epic #1185: WX8
+    /// #1193's due scheduler consumes it, WX11 #1196's Weather settings screen edits it) — the
+    /// typed [`WeatherRefresh`] whose discriminants ARE the BLE §11.8 wire bytes (pinned by
+    /// test). Division of labour (the #1221/#1224 merge resolution): the wire crate (`obc-ble`'s
+    /// own `WeatherRefresh`) owns the vocabulary and the direction-dependent validation rule at
+    /// the radio boundary — the board's Config write path validates there first and converts via
+    /// [`WeatherRefresh::from_byte`] — while this enum is `obc-app`'s typed representation the
+    /// settings screen cycles ([`stepped`](WeatherRefresh::stepped)) and the scheduler reads
+    /// ([`minutes`](WeatherRefresh::minutes)). [`decode`] sanitises an out-of-range stored byte
+    /// to the default — deliberately **30 min and not `Off`**: §7.3 pins that only an explicit
+    /// rider choice may disable weather. **BLE-writable** (like [`units`](Settings::units) /
     /// [`device_name`](Settings::device_name)): the companion writes it via Config §7.3, so
     /// [`adopt_ble_fields`](Settings::adopt_ble_fields) pulls it across.
-    pub weather_refresh: u8,
+    pub weather_refresh: WeatherRefresh,
 }
-
-/// The [`Settings::weather_refresh`] device default: `2` = every 30 minutes (spec §11.8 — also what
-/// an *absent* Config field means on a read, and explicitly **not** `Off`).
-pub const WEATHER_REFRESH_DEFAULT: u8 = 2;
-/// The largest §11.8 discriminant this build knows (`4` = 120 min) — the decode-side sanitise bound.
-pub const WEATHER_REFRESH_MAX: u8 = 4;
 
 impl Default for Settings {
     fn default() -> Self {
@@ -869,7 +953,7 @@ impl Default for Settings {
             saved_sensors: [SavedSensor::EMPTY; SENSOR_SLOTS],
             ride_retention: RideRetention::default(),
             up_ahead_source: UpAheadSource::default(),
-            weather_refresh: WEATHER_REFRESH_DEFAULT,
+            weather_refresh: WeatherRefresh::default(),
         }
     }
 }
@@ -923,7 +1007,9 @@ impl Settings {
 /// `ride_retention` byte (auto-expiry epic #638, S3); v13 appended the `up_ahead_source` byte
 /// ("Up ahead" epic #946, U4); v14 appended the `map_contours` byte (elevation EL10c, #1096 — a
 /// **provisional** field; removing it is a version bump like any other, which is exactly the point
-/// of it costing one appended byte); v15 appended the `weather_refresh` byte (weather WX8, #1193).
+/// of it costing one appended byte); v15 appended the `weather_refresh` byte (weather epic #1185
+/// — WX8 #1193's scheduler field and WX11 #1196's settings screen, one byte carrying the BLE
+/// §11.8 discriminants).
 pub const VERSION: u8 = 15;
 
 /// Fixed encoded length: the [`PAYLOAD_LEN`] CRC-covered bytes + a 2-byte CRC, **rounded up to the
@@ -1025,8 +1111,8 @@ pub fn encode(s: &Settings) -> [u8; ENCODED_LEN] {
     b[UP_AHEAD_OFF] = s.up_ahead_source as u8;
     // v14 tail: the Map's terrain-layer (contours) toggle.
     b[CONTOURS_OFF] = s.map_contours as u8;
-    // v15 tail: the weather-refresh interval (WX8, #1193) — the raw §11.8 discriminant.
-    b[WEATHER_REFRESH_OFF] = s.weather_refresh;
+    // v15 tail: the weather-refresh interval — the enum discriminant IS the §11.8 wire byte.
+    b[WEATHER_REFRESH_OFF] = s.weather_refresh as u8;
     let crc = crate::store_meta::crc16(&b[0..PAYLOAD_LEN]);
     b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
     b
@@ -1096,15 +1182,11 @@ pub fn decode(bytes: &[u8]) -> Option<Settings> {
         up_ahead_source: UpAheadSource::from_byte(b[UP_AHEAD_OFF]),
         // The v14 terrain-layer (contours) toggle: any non-zero byte is "on", like the other bools.
         map_contours: b[CONTOURS_OFF] != 0,
-        // The v15 weather-refresh interval (WX8): writers only ever store a validated §11.8
-        // discriminant, so an out-of-range byte here is corruption the CRC missed — sanitise to the
-        // device default (30 min), like the other enum codec fields. Deliberately the default and
-        // not `Off`: §7.3 pins that only an explicit rider choice may disable weather.
-        weather_refresh: if b[WEATHER_REFRESH_OFF] <= WEATHER_REFRESH_MAX {
-            b[WEATHER_REFRESH_OFF]
-        } else {
-            WEATHER_REFRESH_DEFAULT
-        },
+        // The v15 weather-refresh interval: writers only ever store a validated §11.8
+        // discriminant, so an out-of-range byte here is corruption the CRC missed — sanitise to
+        // the device default, like the other enum codec fields. Deliberately the default (30 min)
+        // and not `Off`: §7.3 pins that only an explicit rider choice may disable weather.
+        weather_refresh: WeatherRefresh::from_byte(b[WEATHER_REFRESH_OFF]),
     };
     s.sanitize();
     Some(s)
@@ -1163,37 +1245,55 @@ mod tests {
             ],
             ride_retention: RideRetention::Month1,
             up_ahead_source: UpAheadSource::MapPoisOnly,
-            weather_refresh: 4,
+            weather_refresh: WeatherRefresh::Every120,
         };
         assert_eq!(decode(&encode(&s)), Some(s));
     }
 
-    /// The v15 tail (WX8, #1193): the weather-refresh byte round-trips every §11.8 discriminant,
-    /// defaults to **30 min** (never `Off` — §7.3 pins that only an explicit rider choice disables
-    /// weather), sanitises an out-of-range stored byte back to the default, and is **BLE-writable**:
-    /// [`adopt_ble_fields`] pulls it across so an on-device edit's whole-blob save can't clobber
-    /// the interval the phone just wrote.
+    /// The v15 tail (weather epic #1185 — WX8 #1193 + WX11 #1196, merged): the typed
+    /// weather-refresh interval round-trips every value on its §11.8 wire discriminant, defaults
+    /// to **30 min** (never `Off` — §7.3 pins that only an explicit rider choice disables
+    /// weather), sanitises an out-of-range stored byte back to the default, walks its picker in
+    /// wire order with wrap, and is **BLE-writable**: [`adopt_ble_fields`] pulls it across so an
+    /// on-device edit's whole-blob save can't clobber the interval the phone just wrote.
     #[test]
     fn weather_refresh_round_trips_defaults_and_is_ble_writable() {
-        assert_eq!(Settings::default().weather_refresh, WEATHER_REFRESH_DEFAULT, "default = 30 min, not Off");
+        assert_eq!(Settings::default().weather_refresh, WeatherRefresh::Every30, "default = 30 min, not Off");
+        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v15 weather_refresh tail)");
 
-        for v in 0..=WEATHER_REFRESH_MAX {
-            let s = Settings { weather_refresh: v, ..Settings::default() };
-            assert_eq!(decode(&encode(&s)), Some(s), "refresh {v} round-trips");
+        // The stored byte IS the BLE Config §11.8 wire value — the double contract, pinned.
+        for (r, wire, minutes) in [
+            (WeatherRefresh::Off, 0u8, None),
+            (WeatherRefresh::Every15, 1, Some(15u16)),
+            (WeatherRefresh::Every30, 2, Some(30)),
+            (WeatherRefresh::Every60, 3, Some(60)),
+            (WeatherRefresh::Every120, 4, Some(120)),
+        ] {
+            assert_eq!(r as u8, wire, "{r:?} carries the §11.8 wire discriminant");
+            assert_eq!(WeatherRefresh::from_byte(wire), r);
+            assert_eq!(r.minutes(), minutes);
+            let s = Settings { weather_refresh: r, ..Settings::default() };
+            assert_eq!(decode(&encode(&s)), Some(s), "{r:?} round-trips");
+            assert_eq!(encode(&s)[WEATHER_REFRESH_OFF], wire, "{r:?} stores the wire byte verbatim");
         }
 
         // An out-of-range stored byte (corruption the CRC missed) sanitises to the default —
         // re-stamp the CRC so only the payload byte is "wrong".
-        let mut b = encode(&Settings::default());
+        let mut b = encode(&Settings { weather_refresh: WeatherRefresh::Off, ..Settings::default() });
         b[WEATHER_REFRESH_OFF] = 9;
         let crc = crate::store_meta::crc16(&b[0..PAYLOAD_LEN]);
         b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
-        assert_eq!(decode(&b).expect("valid CRC").weather_refresh, WEATHER_REFRESH_DEFAULT, "unknown → default");
+        assert_eq!(decode(&b).expect("valid CRC").weather_refresh, WeatherRefresh::Every30, "unknown → default");
+
+        // The picker walks Off → 15 → 30 → 60 → 120 and wraps at both ends (the settings screen).
+        assert_eq!(WeatherRefresh::Off.stepped(1), WeatherRefresh::Every15);
+        assert_eq!(WeatherRefresh::Every120.stepped(1), WeatherRefresh::Off, "wraps past 120");
+        assert_eq!(WeatherRefresh::Off.stepped(-1), WeatherRefresh::Every120, "wraps past Off");
 
         // BLE-writable: the #456 coherence merge adopts it (unlike the device-only fields).
-        let mut app = Settings { weather_refresh: 0, ..Settings::default() };
-        app.adopt_ble_fields(&Settings { weather_refresh: 3, ..Settings::default() });
-        assert_eq!(app.weather_refresh, 3, "adopt_ble_fields pulls the phone's interval across");
+        let mut app = Settings { weather_refresh: WeatherRefresh::Off, ..Settings::default() };
+        app.adopt_ble_fields(&Settings { weather_refresh: WeatherRefresh::Every60, ..Settings::default() });
+        assert_eq!(app.weather_refresh, WeatherRefresh::Every60, "adopt_ble_fields pulls the phone's interval across");
     }
 
     /// The v13 tail: the Up-ahead source scope round-trips every value, defaults **Both** (the
@@ -1204,7 +1304,7 @@ mod tests {
     fn up_ahead_source_round_trips_and_is_device_only() {
         assert_eq!(Settings::default().up_ahead_source, UpAheadSource::Both, "the timeline defaults to Both");
         // The one new byte still fits inside the same 16-byte RRAM line rounding as v12.
-        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v14 map_contours tail)");
+        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v15 weather_refresh tail)");
 
         for src in [UpAheadSource::Both, UpAheadSource::WaypointsOnly, UpAheadSource::MapPoisOnly] {
             let s = Settings { up_ahead_source: src, ..Settings::default() };
@@ -1378,7 +1478,7 @@ mod tests {
         assert!(Settings::default().map_clock, "the map clock defaults on");
         assert!(Settings::default().map_scale_bar, "the scale bar defaults on");
         // The RRAM carve is unchanged — the two new bytes fit inside the same 16-byte line rounding.
-        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v14 map_contours tail)");
+        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v15 weather_refresh tail)");
 
         // Every on/off combination round-trips byte-for-byte.
         for clock in [false, true] {
@@ -1402,7 +1502,7 @@ mod tests {
     fn map_contours_round_trips_and_is_device_only() {
         assert!(Settings::default().map_contours, "contours default on");
         // The one new byte still fits inside the same 16-byte RRAM line rounding as v13.
-        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v14 map_contours tail)");
+        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v15 weather_refresh tail)");
 
         for on in [false, true] {
             let s = Settings { map_contours: on, ..Settings::default() };
@@ -1431,7 +1531,7 @@ mod tests {
     fn bike_profile_idx_round_trips_and_is_device_only() {
         assert_eq!(Settings::default().bike_profile_idx, 0, "the profile index defaults to 0");
         // The one new byte still fits inside the same 16-byte RRAM line rounding as v7.
-        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v14 map_contours tail)");
+        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v15 weather_refresh tail)");
 
         // Every index round-trips byte-for-byte — including a value past any real map's profile count,
         // which the codec stores verbatim (the router/UI own the fallback, not decode).
@@ -1454,7 +1554,7 @@ mod tests {
     fn waypoint_mode_round_trips_and_is_device_only() {
         assert_eq!(Settings::default().waypoint_mode, WaypointMode::Approach, "the chip defaults to Approach");
         // The one new byte still fits inside the same 16-byte RRAM line rounding as v8.
-        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v14 map_contours tail)");
+        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v15 weather_refresh tail)");
 
         // Each mode round-trips through the codec byte-for-byte.
         for mode in [WaypointMode::Off, WaypointMode::Approach, WaypointMode::Always] {
@@ -1486,7 +1586,7 @@ mod tests {
         assert_eq!(Settings::default().language, Language::En, "the UI language defaults to English");
         // The saved_sensors tail (v11) then the ride_retention byte (v12) grew the blob to 128 B /
         // 8 RRAM lines; the language byte kept its v10 offset.
-        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v14 map_contours tail)");
+        assert_eq!(ENCODED_LEN, 128, "the settings blob is 128 B / 8 RRAM lines (v15 weather_refresh tail)");
 
         // Each language round-trips through the codec byte-for-byte.
         for lang in [Language::En, Language::De, Language::Fr, Language::Es] {
