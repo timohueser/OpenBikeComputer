@@ -1,0 +1,90 @@
+# One weather bake, one adapter: `systemctl start obc-wx-bake@dwd-rv.service`.
+#
+# The instance name (%i) is the `obc-wx-bake` subcommand. Installed by ops/weather/install.sh
+# to /etc/systemd/system/; the per-adapter timers are generated from ops/weather/adapters.conf.
+#
+# Type=oneshot with no Restart=: a failed bake publishes nothing and leaves the previous manifest
+# intact, so the correct response to a failure is to wait for the next timer tick, not to retry
+# in a tight loop against an upstream that is already unhappy. Failures are visible in
+# `systemctl list-timers` / `systemctl status` and, externally, as staleness in the manifest —
+# which is what the freshness probe watches. The box never alerts about itself.
+
+[Unit]
+Description=OBC weather bakery — bake and publish the %i product
+Documentation=https://github.com/timohueser/OpenBikeComputer/blob/develop/ops/weather/RUNBOOK.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=obc-wx
+Group=obc-wx
+
+# The R2 credentials. systemd reads this file as root before dropping privileges, so it stays
+# 0600 root:root — the service user itself cannot read the secret outside this unit.
+EnvironmentFile=/etc/obc-wx/r2.env
+
+WorkingDirectory=/var/lib/obc-wx
+
+# flock serializes every instance of this template against every other. The manifest is a
+# read-modify-write of one object: two adapters publishing at the same instant would race, and
+# the loser's product would vanish from the manifest until its next tick. --wait 240 lets a
+# tick queue behind a running bake (a full RV bake measured 2 s) and give up rather than pile up.
+ExecStart=/usr/bin/flock --wait 240 /var/lib/obc-wx/bake.lock /usr/local/bin/obc-wx-bake %i --r2
+
+# A bake that has not finished in five minutes is not going to produce useful weather; the next
+# tick's data is better than this one's. SIGKILL after the graceful stop so a wedged TLS read
+# cannot hold the flock.
+TimeoutStartSec=300
+KillMode=mixed
+KillSignal=SIGTERM
+FinalKillSignal=SIGKILL
+
+# journald is the log. Retention is bounded by journald.conf (install.sh sets SystemMaxUse).
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=obc-wx-bake
+
+# ── Resource caps ────────────────────────────────────────────────────────────────────────────
+# The epic's budget is <1 GB RSS per cycle; measured peaks are 52 MB (RV+ICON, #1215) and a
+# projected 161 MB spike for WX6's MRMS decode (WX1). MemoryMax is a hard fail-closed ceiling:
+# an OOM-killed bake publishes nothing, exactly like any other failure. Raise it here (and only
+# here) if a future adapter legitimately needs more.
+MemoryHigh=384M
+MemoryMax=768M
+TasksMax=64
+# Bakes are background work on a box that must stay responsive to ssh.
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+
+# ── Hardening ────────────────────────────────────────────────────────────────────────────────
+# This process fetches untrusted bytes from five upstreams and decodes them with tar/bzip2/GRIB2/
+# HDF5 parsers. Give it the smallest box that still lets it do its job: no privileges, no devices,
+# no home directories, a read-only system, one writable state directory, and outbound TCP only.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/obc-wx
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+UMask=0077
