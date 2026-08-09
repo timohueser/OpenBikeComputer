@@ -335,7 +335,7 @@
         await refreshLibrary();
     }
 
-    // --- thumbnails: one small download per object, ever, behind everything else ----
+    // --- thumbnails: session-only on web, durably cached in the desktop app --------------------
 
     function routeThumbRequest(c: ProtocolClient, route: RouteListEntry): ThumbRequest {
         return {
@@ -388,6 +388,16 @@
         // Unmount or disconnect: stop walking, and abort the download in flight.
         return () => aborter.abort();
     });
+
+    let thumbnailNotice = $state<string | null>(null);
+
+    function clearSavedPreviews(): void {
+        const removed = deviceThumbs.clearPersistent();
+        thumbnailNotice =
+            removed === 0
+                ? "No saved previews were present."
+                : `${removed} saved ${removed === 1 ? "preview" : "previews"} deleted. Current previews remain until the app closes.`;
+    }
 
     // --- previews: download the object, decode it, show it. Never acks. ----
 
@@ -761,6 +771,14 @@
             {/if}
         </section>
     {/if}
+
+    {#if platform.name === "desktop"}
+        <p class="small faint disclosure cache-control">
+            Route and ride previews are kept locally to avoid downloading them again after every restart.
+            <button type="button" class="btn ghost" onclick={clearSavedPreviews}>Delete saved previews</button>
+            {#if thumbnailNotice}<span role="status">{thumbnailNotice}</span>{/if}
+        </p>
+    {/if}
 </article>
 
 <style>
@@ -824,6 +842,13 @@
 
     .disclosure {
         margin: 0;
+    }
+
+    .cache-control {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 8px;
     }
 
     .identity {
