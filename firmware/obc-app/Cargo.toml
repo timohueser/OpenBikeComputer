@@ -21,6 +21,9 @@ obc-elevation = { path = "../obc-elevation" }
 obc-reader = { path = "../obc-reader" }
 obc-map-scene = { path = "../obc-map-scene" }
 obc-render = { path = "../obc-render" }
+# The OBCW weather reader + fixed cache (WX7): the rain-overlay adapter (WX10) bridges it onto
+# `obc-render`'s format-agnostic RainOverlaySource seam. no_std, shared with the firmware.
+obc-weather = { path = "../obc-weather" }
 # The route format + reader (RouteSummary for the menu catalog, RouteReader the Map
 # draws). no_std, shared with the firmware exactly like the map reader.
 obc-route = { path = "../obc-route" }
