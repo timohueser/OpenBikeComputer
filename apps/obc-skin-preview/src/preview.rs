@@ -194,6 +194,10 @@ impl MapPreview {
             RestampError::IdMismatch { .. } => PreviewFailure::input(
                 "The preview map belongs to a different schema revision; refresh the builder deployment.",
             ),
+            RestampError::RainBandMoved { id, from, to } => PreviewFailure::input(format!(
+                "Style {id} moves across the rain band boundary (z {from} \u{2192} {to}); ground styles stay below \
+                 z 20 and the road band above it, so rain always renders under roads."
+            )),
         })?;
         self.tables = MapTables::parse(&SliceSource(&self.bytes)).map_err(read_failure)?;
         self.dirty = true;
