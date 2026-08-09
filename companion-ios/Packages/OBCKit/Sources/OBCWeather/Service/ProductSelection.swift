@@ -33,10 +33,21 @@ public enum ProductSelection {
             return (.none(.allCoveringProductsExpired(latestDeadline: latest)), covering.map(\.id))
         }
 
+        // A candidate must also have a frame inside the two-hour question. Freshness and frame
+        // availability are *different* facts: a product entry can sit inside its staleness deadline
+        // while its newest frame is hours old — a baker that stopped mid-cycle, an upstream run that
+        // never landed. Without this check such a product shadows a perfectly usable lower tier and
+        // the corridor ends up with no rain map at all. It costs nothing: frame timestamps are
+        // manifest data, so nothing is fetched to find out.
+        let answerable = fresh.filter { !frames(of: $0, now: now).isEmpty }
+        guard !answerable.isEmpty else {
+            return (.none(.noFramesInWindow), covering.filter { !$0.isFresh(at: now) }.map(\.id))
+        }
+
         // Highest tier wins (tier 1 radar beats 2 model beats 3 floor, and an unknown tier orders
         // by its number). Ties break on the newer upstream run, then on id — so two equally good
         // products always pick the same one, which keeps a bundle reproducible.
-        let best = fresh.min { lhs, rhs in
+        let best = answerable.min { lhs, rhs in
             if lhs.tier != rhs.tier { return lhs.tier < rhs.tier }
             if lhs.referenceTime != rhs.referenceTime { return lhs.referenceTime > rhs.referenceTime }
             return lhs.id < rhs.id

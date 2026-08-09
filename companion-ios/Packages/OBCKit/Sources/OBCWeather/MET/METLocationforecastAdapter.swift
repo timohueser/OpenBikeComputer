@@ -60,7 +60,18 @@ public actor METLocationforecastAdapter: HourlyForecastProvider {
             return cached(entry.forecast, now: now)
         }
         // One request per place, however many jobs ask: the second caller awaits the first's task.
-        if let existing = inFlight[key] { return try await existing.value }
+        // It needs the *same* cache-on-failure handling as the caller that started that task —
+        // otherwise two identical concurrent jobs against a provider that is down give two
+        // different answers, one shipping the cached forecast and one failing the whole job. The
+        // cache is re-read after the await, since the in-flight attempt may have refreshed it.
+        if let existing = inFlight[key] {
+            do {
+                return try await existing.value
+            } catch {
+                if let entry = cache[key] { return cached(entry.forecast, now: now) }
+                throw error
+            }
+        }
 
         let entry = cache[key]
         let task = Task<HourlyForecast, any Error> { [client] in

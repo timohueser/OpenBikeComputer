@@ -244,6 +244,61 @@ struct WeatherBundleBuilderTests {
         #expect(bounds.eastLongitudeMicrodegrees >= 7_420_000)
     }
 
+    /// Regression, adversarial review finding 1: the shrink must keep the **rider** inside, not the
+    /// corridor's midpoint.
+    ///
+    /// A corridor is projected *ahead* of the rider, so for anyone moving quickly its midpoint sits
+    /// tens of kilometres up the road. Anchoring the shrink there walked the window off the back of
+    /// the rider entirely — the bundle carried rain for where they were going and none at all for
+    /// where they were.
+    @Test
+    func theShrinkKeepsTheRiderInsideNotTheCorridorMidpoint() throws {
+        let rider = Coordinate(latitude: 47.19, longitude: 7.29)
+        let crops = (0..<9).map { index in
+            Self.crop(
+                validAt: Self.now.addingTimeInterval(TimeInterval(index) * 900),
+                width: 400, height: 400, seed: UInt8(index))
+        }
+        let bounds = crops[0].bounds
+        let request = WeatherRequest(
+            requestID: 1, position: rider, fixTime: Self.now, bearingDegrees: 0,
+            speedMetresPerSecond: 15)
+        let built = try WeatherBundleBuilder().build(
+            request: request, corridor: WeatherCorridor(bounds: bounds, isUndirected: false),
+            hourly: Self.hourly(), precipitation: Self.selection(crops), noRainMapReason: nil,
+            generation: 1, now: Self.now)
+
+        #expect(built.bytes.count <= OBCWeatherCodec.producerPolicyMaximumLength)
+        #expect(built.bundle.rainFrames.count == 9, "every timestamp is still answered")
+        let window = built.bundle.bounds
+        #expect(Int64(window.southLatitudeMicrodegrees) <= rider.latitudeMicrodegrees)
+        #expect(Int64(window.northLatitudeMicrodegrees) > rider.latitudeMicrodegrees)
+        #expect(Int64(window.westLongitudeMicrodegrees) <= rider.longitudeMicrodegrees)
+        #expect(Int64(window.eastLongitudeMicrodegrees) > rider.longitudeMicrodegrees)
+        // And this really is the oversize path: the window did shrink.
+        #expect(Int64(window.northLatitudeMicrodegrees) < bounds.northMicrodegrees)
+    }
+
+    /// With no fix there is no rider cell, so the corridor's midpoint is the honest fallback.
+    @Test
+    func withoutAFixTheShrinkFallsBackToTheCorridorMidpoint() throws {
+        let crops = (0..<9).map { index in
+            Self.crop(
+                validAt: Self.now.addingTimeInterval(TimeInterval(index) * 900),
+                width: 400, height: 400, seed: UInt8(index))
+        }
+        let bounds = crops[0].bounds
+        let built = try WeatherBundleBuilder().build(
+            request: WeatherRequest(requestID: 1),
+            corridor: WeatherCorridor(bounds: bounds, isUndirected: true),
+            hourly: Self.hourly(), precipitation: Self.selection(crops), noRainMapReason: nil,
+            generation: 1, now: Self.now)
+        let window = built.bundle.bounds
+        let midpoint = (bounds.southMicrodegrees + bounds.northMicrodegrees) / 2
+        #expect(Int64(window.southLatitudeMicrodegrees) <= midpoint)
+        #expect(Int64(window.northLatitudeMicrodegrees) > midpoint)
+    }
+
     // MARK: - The two halves are independent
 
     @Test

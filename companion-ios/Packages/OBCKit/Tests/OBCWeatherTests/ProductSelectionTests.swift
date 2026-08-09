@@ -184,6 +184,72 @@ struct ProductSelectionTests {
         #expect(selectedID(parsed.manifest) == "gfs")
     }
 
+    /// Regression, adversarial review finding 2: entry-leniency has to survive a *type-wrong* or
+    /// incomplete entry, not just a semantically invalid one.
+    ///
+    /// Decoding `products` as one strongly-typed array meant a single `"tier": "radar"` threw out of
+    /// the array decode and took the whole document with it — one bad product, every region offline.
+    /// That is exactly the forward-compatibility story this architecture sells, so it is pinned.
+    @Test
+    func aTypeWrongOrIncompleteEntryIsSkippedRatherThanKillingTheManifest() throws {
+        var builder = ManifestBuilder()
+        try builder.add(ManifestBuilder.ProductSpec(
+            id: "gfs", tier: 3, vectors: ["grid-minimal-dry.obcg"],
+            referenceTime: Self.now.addingTimeInterval(-300), generatedAt: Self.now,
+            stalenessDeadline: Self.now.addingTimeInterval(21_600)))
+        var document = try JSONSerialization.jsonObject(with: builder.json()) as! [String: Any]
+        let products = document["products"] as! [[String: Any]]
+
+        // A tier that arrived as a string instead of a number.
+        var typeWrong = products[0]
+        typeWrong["id"] = "type-wrong"
+        typeWrong["tier"] = "radar"
+        // An entry missing a required key entirely.
+        var incomplete = products[0]
+        incomplete["id"] = "incomplete"
+        incomplete.removeValue(forKey: "staleness_deadline")
+
+        document["products"] = [typeWrong, products[0], incomplete]
+        let parsed = try WeatherServiceManifest.parse(
+            try JSONSerialization.data(withJSONObject: document))
+        #expect(parsed.skippedProducts == 2)
+        #expect(parsed.manifest.products.map(\.id) == ["gfs"])
+        #expect(selectedID(parsed.manifest) == "gfs", "the good region still answers")
+    }
+
+    /// Regression, adversarial review finding 5: freshness and frame availability are different
+    /// facts. A product inside its staleness deadline whose newest frame is hours old cannot answer
+    /// the two-hour question, and must not shadow a lower tier that can.
+    @Test
+    func aFreshProductWithNoUsableFramesFallsBackRatherThanShadowingTheFloor() throws {
+        var builder = ManifestBuilder()
+        // Radar: the entry is still inside its deadline, but its only frame is at T0.
+        try builder.add(ManifestBuilder.ProductSpec(
+            id: "dwd-rv", tier: 1, vectors: ["grid-multipage.obcg"],
+            referenceTime: Self.now.addingTimeInterval(-300), generatedAt: Self.now,
+            stalenessDeadline: Self.now.addingTimeInterval(12 * 3_600)))
+        // Floor: a frame an hour later, so it is still inside the window at T0 + 6.5 h.
+        try builder.add(ManifestBuilder.ProductSpec(
+            id: "gfs", tier: 3, vectors: ["grid-raw-tile.obcg"],
+            referenceTime: Self.now.addingTimeInterval(-300), generatedAt: Self.now,
+            stalenessDeadline: Self.now.addingTimeInterval(12 * 3_600)))
+        let manifest = try WeatherServiceManifest.parse(builder.json()).manifest
+        let radar = try #require(manifest.products.first { $0.id == "dwd-rv" })
+        let floor = try #require(manifest.products.first { $0.id == "gfs" })
+
+        #expect(selectedID(manifest) == "dwd-rv", "at T0 the radar answers")
+        let later = Self.now.addingTimeInterval(6.5 * 3_600)
+        #expect(radar.isFresh(at: later), "the entry has not expired — only its frames have aged out")
+        #expect(ProductSelection.frames(of: radar, now: later).isEmpty)
+        #expect(!ProductSelection.frames(of: floor, now: later).isEmpty)
+        #expect(selectedID(manifest, now: later) == "gfs")
+
+        // With nothing answerable at all, the state is the explicit no-frames one.
+        #expect(ProductSelection.select(
+            from: manifest, corridor: Self.corridor,
+            now: Self.now.addingTimeInterval(11 * 3_600)).outcome == .none(.noFramesInWindow))
+    }
+
     @Test
     func anUnknownDocumentVersionIsAnOutageRatherThanAGuess() throws {
         var builder = ManifestBuilder()
