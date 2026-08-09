@@ -21,7 +21,7 @@ trees — one `Cargo.lock`, one `target/`:
 | Tree | Holds | Reached by the device image? |
 | :-- | :-- | :-- |
 | `firmware/` | `obc-crc`, `obc-formats`, `obc-ports`, `obc-map-scene`, `obc-reader`, `obc-weather`, `obc-route`, `obc-render`, `obc-app`, `obc-ble`, `obc-dfu`, the platform adapters | **yes** — that is the rule |
-| `../host/` | the packer (`obc-pack`), the bakery (`obc-bake`), the terrain baker (`obc-dem`), the cell assembler (`obcm-assemble`), `obc-mkimage`, `obc-bench`, the oracles (`obcm-testkit`, `obc-vectors`), `obc-host-core`, `obc-replay`, `obc-usb-host` | no |
+| `../host/` | the packer (`obc-pack`), the bakery (`obc-bake`), the terrain baker (`obc-dem`), the cell assembler (`obcm-assemble`), `obc-mkimage`, `obc-bench`, the oracles (`obcm-testkit`, `obc-vectors`), `obc-host-core`, `obc-replay`, `obc-usb-host`, and the disposable weather-source validator (`obc-wx-source-spike`) | no |
 | `../apps/` | `obc-sim`, `obc-web-demo`, `obc-web-convert`, `obc-web-assemble`, `obc-skin-preview`, `obc-desktop` | no |
 
 Dev-dependencies cross that boundary on purpose — `obc-render` and `obc-reader`

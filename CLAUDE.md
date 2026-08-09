@@ -23,7 +23,8 @@ and the simulator + tests first-class.
     region list → a catalog tree → published objects), `obc-dem` (the terrain
     baker, GLO-30 → `.obcd`), `obcm-assemble` (the OBCA cell assembler),
     `obc-mkimage`, `obc-bench`, `obcm-testkit`, `obc-vectors`, `obc-host-core`,
-    `obc-replay`, `obc-usb-host`.
+    `obc-replay`, `obc-usb-host`, and the disposable host-only weather-source
+    contract validator `obc-wx-source-spike`.
   - `apps/` — the shells: `obc-sim`, `obc-web-demo`, `obc-web-convert`,
     `obc-web-assemble`, `obc-skin-preview`, `obc-desktop`.
 
