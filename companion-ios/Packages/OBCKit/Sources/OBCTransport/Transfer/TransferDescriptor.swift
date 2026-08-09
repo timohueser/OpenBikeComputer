@@ -16,6 +16,21 @@ public enum ObjectType: UInt8, Equatable, Sendable, CaseIterable {
     case echo = 8  // dev/test loopback (A5)
     case trip = 9  // TR1 (#650): the trip metadata object (spec §7.7)
     case tripList = 10  // TR1 (#650): the device's trip catalog (spec §7.4)
+    /// The singleton **weather bundle** — one OBCW v1 file, app → device, **upload only**, over the
+    /// ordinary reliable CoC with the normal whole-object CRC + `transferResult` flow (WX3 / #1188).
+    ///
+    /// **Why 20 and not 11:** `11`–`15` stay reserved for the sensor work (M4) and `16`–`19` are the
+    /// USB-introduced map types (host-side only, which is why they are absent from this enum), so
+    /// `20` is simply the next free value. The WX3 issue text said `11`; the epic's handover comment
+    /// on #1185 supersedes it for exactly this reason.
+    ///
+    /// **Singleton:** `objectID` MUST be `0`. There is one weather bundle and an upload always
+    /// targets it, so the id selects nothing — any other value is answered `notFound` rather than
+    /// quietly treated as this one. It is *not* `0xFFFF`/new-only like a map: new-only exists
+    /// because a map cannot be replaced in place, whereas a bundle is **always** a replacement,
+    /// landing in the inactive one of the device's two slots so an interrupted upload leaves the
+    /// old one intact.
+    case weatherBundle = 20
 }
 
 /// **Control-plane** descriptor written to the `transferControl` characteristic —

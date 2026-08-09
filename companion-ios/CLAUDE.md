@@ -96,6 +96,11 @@ Common ones: `-OBCScenario <name>`, `-OBCFixtures default|empty|large|trips|webs
 (force real BLE, device only). These names are **stable automation API** —
 XCUITests depend on them.
 
+The Debug-only, non-UI Weather Request transport harness (WX3) is
+`-OBCTransport ble -OBCWeatherRequestHarness`. Pair once in a normal BLE run first; the harness then
+runs one bounded authenticated read of the weather-request context without the ordinary foreground
+link, and logs it. No UI, no scheduler, no bundle upload.
+
 `-OBCHideMockHUD` keeps the mock transport but removes its Debug status tag for clean automated
 captures. The landing-page captures and their CI drift check live in
 `scripts/capture-website-screenshots.sh`.

@@ -136,7 +136,11 @@ pub(crate) const HARDWARE_REVISION: &str = "nrf54lm20-dk";
 pub(crate) fn config_bytes(store: &ObjectStore) -> ([u8; Config::MAX_ENCODED], usize) {
     let name = resolved_name(store);
     let units = if store.settings().units.is_imperial() { 1 } else { 0 };
-    let cfg = Config { name: name.as_bytes(), units };
+    // `weather_refresh` is deliberately **absent** (which the spec defines as "device default")
+    // until the interval becomes a persisted setting in the weather lifecycle work. `Some(DEFAULT)`
+    // would report a stored choice the rider has no way to make yet, and `Some(Off)` would report
+    // one they never made — both are worse than saying nothing.
+    let cfg = Config { name: name.as_bytes(), units, weather_refresh: None };
     let mut buf = [0u8; Config::MAX_ENCODED];
     let len = cfg.encode(&mut buf).unwrap_or(0); // both name sources are ≤ 48 by construction
     (buf, len)
@@ -149,6 +153,17 @@ pub(crate) fn apply_config_write(data: &[u8], store: &RefCell<ObjectStore>, shar
     match Config::decode(data) {
         Some(cfg) => match core::str::from_utf8(cfg.name) {
             Ok(name) => {
+                // §11.8's strict direction. A write naming an interval this build cannot honour is
+                // refused whole rather than applied in part: the rename in the same blob is not a
+                // consolation prize when the setting beside it was silently dropped.
+                //
+                // `Ok(None)` — the field absent — is *not* a request to reset anything, so nothing
+                // is written for it. That is what keeps an old app's rename from resetting a rider
+                // who deliberately chose `Off` back to 30-minute wakeups. Persisting the interval
+                // itself is WX8's; there is no setting to write to yet.
+                if cfg.refresh_to_apply().is_err() {
+                    return false;
+                }
                 store.borrow_mut().apply_config(shared, name, cfg.units);
                 true
             }
@@ -158,9 +173,10 @@ pub(crate) fn apply_config_write(data: &[u8], store: &RefCell<ObjectStore>, shar
     }
 }
 
-/// The §1 identity read (V2 / #632; card-resident epoch #776; OBCM version E1 / #911). With a store
-/// epoch (`Some`) it is the full 7-byte [`VersionRead`](obc_ble::VersionRead) — `version u16 ·
-/// store_epoch u32 · obcm_version u8`. With **no store** (`None` — a no-card boot has no epoch, and
+/// The §1 identity read (V2 / #632; card-resident epoch #776; OBCM version E1 / #911; capability
+/// word WX3 / #1188). With a store epoch (`Some`) it is the full 11-byte
+/// [`VersionRead`](obc_ble::VersionRead) — `version u16 ·
+/// store_epoch u32 · obcm_version u8 · feature_bits u32`. With **no store** (`None` — a no-card boot has no epoch, and
 /// 0 is a *legal* epoch we must never fabricate) it is the 2-byte **version-only** form
 /// (`PROTOCOL_VERSION` LE): the peer reads a short value, decodes `storeEpoch = nil`, and
 /// fail-closes the ack. Returned as `(buf, len)` so the caller serves whichever length applies.
@@ -175,6 +191,27 @@ pub(crate) fn apply_config_write(data: &[u8], store: &RefCell<ObjectStore>, shar
 /// The store-less read carries no `obcm_version` even though the device knows it — the fields are
 /// positional, `store_epoch` has no absent encoding, and a device with no card has nowhere to put a
 /// map anyway (see the [`VersionRead`](obc_ble::VersionRead) docs).
+/// The capability word this build announces (§1, §11).
+///
+/// **Zero, in every build this branch produces — including the harness one.** WX3 ships the Weather
+/// Request *layouts*: the 11-byte identity read, the service in the GATT table, the context
+/// characteristic. It does not ship the contract. `classify_transfer` answers every object type
+/// `20` with `error`, and nothing here persists a refresh interval, so a phone that saw
+/// [`FEATURE_WEATHER`](obc_ble::FEATURE_WEATHER) set would build a bundle, upload it, be refused,
+/// and retry forever.
+///
+/// Gating the bit on the `ble-weather-request` feature was the obvious thing and was wrong for the
+/// same reason: the feature arms the *advertising* spike, not the upload path, so a harness build
+/// would have announced a contract it could not honour. The iOS harness is launched by
+/// `-OBCWeatherRequestHarness`, never by reading this bit, so nothing needs the over-claim.
+///
+/// WX8 sets the bit in the same change that makes it true. Until then a device announces no
+/// optional contracts, which is exactly the old-client case the app already handles with no extra
+/// branch.
+const fn feature_bits() -> u32 {
+    0
+}
+
 pub(crate) fn version_read_bytes(store_epoch: Option<u32>) -> ([u8; obc_ble::VersionRead::ENCODED_LEN], usize) {
     let mut buf = [0u8; obc_ble::VersionRead::ENCODED_LEN];
     match store_epoch {
@@ -183,6 +220,7 @@ pub(crate) fn version_read_bytes(store_epoch: Option<u32>) -> ([u8; obc_ble::Ver
                 version: obc_ble::PROTOCOL_VERSION,
                 store_epoch: epoch,
                 obcm_version: Some(obc_formats::obcm::VERSION),
+                feature_bits: Some(feature_bits()),
             };
             let (encoded, len) = vr.encode();
             buf.copy_from_slice(&encoded);

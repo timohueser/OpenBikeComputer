@@ -45,6 +45,11 @@ import {
     decodeStatusMessage,
     decodeTransferControl,
     decodeVersionRead,
+    FEATURE_WEATHER,
+    knownWeatherRefresh,
+    WeatherRefresh,
+    WEATHER_REFRESH_DEFAULT,
+    WEATHER_REFRESH_MINUTES,
     encodeAckRides,
     encodeConfig,
     encodeSetClock,
@@ -249,19 +254,39 @@ describe("control-plane codecs", () => {
         expect(() => encodeSetRouteRetention(7, 6)).toThrow(RangeError);
     });
 
-    it("round-trips the identity read at all three lengths", () => {
-        // 7 bytes: the full read. `obcmVersion` is the OBCM *map-format* version the device's
+    it("round-trips the identity read at all four lengths", () => {
+        // 11 bytes: the full read a current firmware serves. `featureBits` is the capability word
+        // (§1, WX3) — bit 0 is the Weather Request contract, which is the phone's path and nothing
+        // this host acts on; it is mirrored so the read decodes whole rather than being silently
+        // truncated by the one consumer that does not care about it.
+        const features = decodeVersionRead(vector("version-read-features.bin"));
+        expect(features.featureBits).toBe(FEATURE_WEATHER);
+        expectSameBytes(encodeVersionRead(features), vector("version-read-features.bin"), "version-read-features");
+
+        // 7 bytes: a firmware predating the capability word. Absent, not zero — both mean "no
+        // optional contracts", but only one of them is something the device actually said.
+        // `obcmVersion` is the OBCM *map-format* version the device's
         // reader reads — the fact `OBCC_Spec.md` §10 filters the catalog on, and a different
         // number in a different sequence from the protocol `version` beside it.
         const full = decodeVersionRead(vector("version-read.bin"));
-        expect(full).toEqual({ version: 2, storeEpoch: hex("0xA1B2C3D4"), obcmVersion: REFERENCE_OBCM_VERSION });
+        expect(full).toEqual({
+            version: 2,
+            storeEpoch: hex("0xA1B2C3D4"),
+            obcmVersion: REFERENCE_OBCM_VERSION,
+            featureBits: null,
+        });
         expectSameBytes(encodeVersionRead(full), vector("version-read.bin"), "version-read");
 
         // 6 bytes: a firmware predating the field. Unknown, not zero — `obcmVersion: 0` would read
         // as "supports OBCM v0" and refuse every real map, where null takes §6(c)'s
         // no-known-target-firmware branch and offers the download stating the version.
         const noObcm = decodeVersionRead(vector("version-read-noobcm.bin"));
-        expect(noObcm).toEqual({ version: 2, storeEpoch: hex("0xA1B2C3D4"), obcmVersion: null });
+        expect(noObcm).toEqual({
+            version: 2,
+            storeEpoch: hex("0xA1B2C3D4"),
+            obcmVersion: null,
+            featureBits: null,
+        });
         expectSameBytes(encodeVersionRead(noObcm), vector("version-read-noobcm.bin"), "version-read-noobcm");
 
         // 2 bytes: no card means no era to name, so the device serves the version alone. That
@@ -269,7 +294,7 @@ describe("control-plane codecs", () => {
         // conflating them would let a peer stamp id-keyed state under an era it never read. There
         // is no room for an obcm byte after an epoch that is not there, either.
         const short = decodeVersionRead(vector("version-read-nostore.bin"));
-        expect(short).toEqual({ version: 2, storeEpoch: null, obcmVersion: null });
+        expect(short).toEqual({ version: 2, storeEpoch: null, obcmVersion: null, featureBits: null });
         expectSameBytes(encodeVersionRead(short), vector("version-read-nostore.bin"), "version-read-nostore");
     });
 
@@ -277,18 +302,70 @@ describe("control-plane codecs", () => {
         // The append-only rule the `obcm_version` byte itself rode in on (§1): a longer read from a
         // newer firmware decodes to what this build understands rather than failing, which is why
         // appending the field needed no `PROTOCOL_VERSION` bump.
-        const future = new Uint8Array([...vector("version-read.bin"), 0xee, 0xee]);
+        const future = new Uint8Array([...vector("version-read-features.bin"), 0xee, 0xee]);
         expect(decodeVersionRead(future)).toEqual({
             version: 2,
-            storeEpoch: hex("0xA1B2C3D4"),
-            obcmVersion: REFERENCE_OBCM_VERSION,
+            storeEpoch: decodeVersionRead(vector("version-read-features.bin")).storeEpoch,
+            obcmVersion: decodeVersionRead(vector("version-read-features.bin")).obcmVersion,
+            featureBits: FEATURE_WEATHER,
         });
+
+        // A *partial* capability word is absent, not the bytes that turned up: three bytes of a
+        // u32 are a broken read, not a small feature set, and decoding them could claim a contract
+        // the device never announced.
+        for (const len of [8, 9, 10]) {
+            expect(decodeVersionRead(vector("version-read-features.bin").subarray(0, len)).featureBits).toBeNull();
+        }
     });
 
     it("round-trips the Config object", () => {
         const config = decodeConfig(vector("config-v1.bin"));
-        expect(config).toEqual({ name: "OBC Tourer", units: 0 });
+        // An absent `weatherRefresh` means *device default*, not `Off` — collapsing the two would
+        // silently disable weather every time this host round-tripped a Config to rename a device.
+        expect(config).toEqual({ name: "OBC Tourer", units: 0, weatherRefresh: null });
         expectSameBytes(encodeConfig(config), vector("config-v1.bin"), "config-v1");
+
+        const withRefresh = decodeConfig(vector("config-weather-refresh.bin"));
+        expect(withRefresh.weatherRefresh).toBe(WeatherRefresh.every60);
+        expect(knownWeatherRefresh(withRefresh.weatherRefresh)).toBe(WeatherRefresh.every60);
+        expect(WEATHER_REFRESH_MINUTES[WeatherRefresh.every60]).toBe(60);
+        expectSameBytes(encodeConfig(withRefresh), vector("config-weather-refresh.bin"), "config-weather-refresh");
+    });
+
+    // §11.8's read direction, which this host is always on. The rule is asymmetric on purpose: a
+    // phone → device *write* must reject an interval the device cannot honour, but a *reader* must
+    // not, because an unrecognised value arriving from a device is a newer device rather than a
+    // broken one. Were this strict, appending a fifth interval — an ordinary append to an
+    // append-only enum — would break every shipped reader, and a host would no longer be able to
+    // read Config even to rename the device.
+    it("tolerates a refresh interval it does not know, and never calls it Off", () => {
+        const bytes = vector("config-weather-refresh-unknown.bin");
+        const config = decodeConfig(bytes); // must not throw
+        expect(config.name).toBe("OBC Horizon");
+
+        expect(config.weatherRefresh).toBe(200);
+        expect(knownWeatherRefresh(config.weatherRefresh)).toBeNull();
+        // Unknown is its own state: not Off, and not the default. Collapsing it to either would
+        // misreport the rider's own setting back to them.
+        expect(knownWeatherRefresh(config.weatherRefresh)).not.toBe(WeatherRefresh.off);
+        expect(knownWeatherRefresh(config.weatherRefresh)).not.toBe(WEATHER_REFRESH_DEFAULT);
+        // ...and it is distinguishable from *absent*, which the raw field alone can say.
+        expect(config.weatherRefresh).not.toBeNull();
+        expect(decodeConfig(vector("config-v1.bin")).weatherRefresh).toBeNull();
+
+        // The byte survives verbatim, so a host cannot launder a value it did not understand.
+        expectSameBytes(encodeConfig(config), bytes, "config-weather-refresh-unknown");
+    });
+
+    it("maps every known refresh discriminant, and nothing else", () => {
+        for (const value of Object.values(WeatherRefresh)) {
+            expect(knownWeatherRefresh(value)).toBe(value);
+        }
+        for (const unknown of [5, 9, 200, 255]) {
+            expect(knownWeatherRefresh(unknown)).toBeNull();
+        }
+        expect(knownWeatherRefresh(null)).toBeNull();
+        expect(WEATHER_REFRESH_MINUTES[WeatherRefresh.off]).toBeNull(); // Off has no interval
     });
 });
 
@@ -519,6 +596,33 @@ describe("round-trip over the loopback pipe", () => {
         }
     });
 
+    // The device role, which is §11.8's *strict* half — the mirror image of the tolerant read test
+    // above. A simulated device that quietly stored an interval it does not know would model a
+    // firmware that lies to the rider about their own setting.
+    it("refuses a Config write naming a refresh interval it cannot honour", async () => {
+        const { client, close } = loopbackDevice();
+        try {
+            const before = await client.readConfig();
+            await client.writeConfig({ name: "Rejected", units: 1, weatherRefresh: 200 });
+            expect(await client.readConfig(), "a refused write changes nothing at all").toEqual(before);
+
+            // A known interval is accepted, name and all.
+            await client.writeConfig({ name: "Accepted", units: 1, weatherRefresh: WeatherRefresh.every120 });
+            const stored = await client.readConfig();
+            expect(stored.name).toBe("Accepted");
+            expect(stored.weatherRefresh).toBe(WeatherRefresh.every120);
+
+            // ...and an *absent* field is not a request to reset it (§7.3): the rename lands, the
+            // interval the rider chose survives. This is the case an old app's rename hits.
+            await client.writeConfig({ name: "Renamed", units: 1, weatherRefresh: null });
+            const afterRename = await client.readConfig();
+            expect(afterRename.name).toBe("Renamed");
+            expect(afterRename.weatherRefresh).toBe(WeatherRefresh.every120);
+        } finally {
+            await close();
+        }
+    });
+
     it("serves an empty rideList", async () => {
         const { client, close } = loopbackDevice();
         try {
@@ -537,6 +641,7 @@ describe("round-trip over the loopback pipe", () => {
                 version: MANIFEST.protocol_version,
                 storeEpoch: hex("0xA1B2C3D4"),
                 obcmVersion: REFERENCE_OBCM_VERSION,
+                featureBits: 0,
             });
             expect((await client.deviceInfo()).firmwareRevision).toBe("0.4.0+abc1234");
         } finally {

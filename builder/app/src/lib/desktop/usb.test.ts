@@ -303,6 +303,7 @@ describe("the native pipe under C3's client", () => {
         // else, and the ones that would fail first if the control frame envelope were wrong.
         expect(state.identity).toEqual({
             version: PROTOCOL_VERSION,
+            featureBits: 0,
             storeEpoch: 0xa1b2c3d4,
             obcmVersion: REFERENCE_OBCM_VERSION,
         });
@@ -330,8 +331,8 @@ describe("the native pipe under C3's client", () => {
         // Config read and write — the longest control frame the protocol produces.
         const config = await client.readConfig();
         expect(config.name).toBe("OBC Tourer");
-        await client.writeConfig({ name: "Alps", units: 1 });
-        expect(await client.readConfig()).toEqual({ name: "Alps", units: 1 });
+        await client.writeConfig({ name: "Alps", units: 1, weatherRefresh: null });
+        expect(await client.readConfig()).toEqual({ name: "Alps", units: 1, weatherRefresh: null });
 
         await watcher.close();
     });

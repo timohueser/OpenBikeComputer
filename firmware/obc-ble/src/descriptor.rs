@@ -13,6 +13,8 @@
 //!
 //! Every layout mirrors the app's Swift codecs field-for-field. All integers little-endian.
 
+use crate::weather_request::WeatherRefresh;
+
 /// Why a control-plane descriptor failed to decode. Mirrors the app's `DescriptorError` so a
 /// firmware reject and an app reject classify the same wire byte the same way.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -25,6 +27,12 @@ pub enum DescriptorError {
     UnknownType(u8),
     /// A status/discriminator byte is not a known value.
     UnknownStatus(u8),
+    /// A `weather_refresh` byte names an interval this build does not know (§11.8). Its own variant
+    /// rather than a `UnknownStatus`, because it is the one decode failure whose *correct handling
+    /// depends on the direction of travel*: fatal on a phone → device Config write, ignorable on
+    /// either device → phone read. A caller that cannot tell the two apart cannot implement §11.8,
+    /// and sharing a discriminant with every other unknown byte is exactly what would hide that.
+    UnknownRefresh(u8),
 }
 
 /// The kind of object a bulk transfer carries.
@@ -96,6 +104,22 @@ pub enum ObjectType {
     /// announce-time length check `72 + 56 × (shards + terrain)` can only be right if it has
     /// already seen the raster.
     TerrainShard = 19,
+    /// The singleton **weather bundle** — one OBCW v1 file (`OBCW_Spec.md`), app → device, upload
+    /// only, over the ordinary reliable CoC (WX3, #1188).
+    ///
+    /// **Why 20 and not 11:** `11`–`15` remain reserved for the sensor work (M4) and `16`–`19` are
+    /// the USB-introduced map types, so `20` is simply the next free value. (The WX3 issue text
+    /// said `11`; the epic's handover comment on #1185 supersedes it for exactly this reason.)
+    ///
+    /// **Singleton.** `object_id` MUST be `0`: there is one weather bundle and an upload always
+    /// targets it. Any other id is answered `notFound`. It is not `0xFFFF`/new-only like a map —
+    /// "new-only" exists because a map cannot be replaced in place, whereas a bundle is *always* a
+    /// replacement, landing in the inactive one of the two slots (`WEATHER.A`/`WEATHER.B`) so an
+    /// interrupted upload leaves the old one intact.
+    ///
+    /// Unlike the map types this one is **BLE-first**: ~46 KiB is a couple of seconds on the CoC,
+    /// which is the whole reason the intermittent lifecycle is affordable.
+    WeatherBundle = 20,
 }
 
 impl ObjectType {
@@ -121,6 +145,7 @@ impl ObjectType {
             17 => Self::MapShard,
             18 => Self::MapSet,
             19 => Self::TerrainShard,
+            20 => Self::WeatherBundle,
             other => return Err(DescriptorError::UnknownType(other)),
         })
     }
@@ -903,46 +928,95 @@ pub struct VersionRead {
     /// The OBCM map-format version the device's reader reads; `None` when the read carried no such
     /// byte (a firmware predating E1). Never `Some(0)` from a decode of a short read.
     pub obcm_version: Option<u8>,
+    /// The optional capability word (WX3, #1188) — `None` when the read carried no such field, i.e.
+    /// any firmware predating it. Never `Some(0)` from a decode of a short read: absent means *this
+    /// device never told us*, and while both absent and `Some(0)` currently lead to the same
+    /// behaviour (no weather), fabricating a zero would make a diagnostic lie about which firmware
+    /// generation answered.
+    pub feature_bits: Option<u32>,
 }
 
+/// The device implements the Weather Request contract (§11): the secondary service, the request
+/// context, object type 20 and the Config refresh field.
+///
+/// One bit covers all four because they are useless apart — a phone that can read a request but
+/// cannot upload the answer has nothing to offer. Later, genuinely separable capabilities take
+/// their own bits; this word is append-only in the same sense the read is, and **unknown bits are
+/// ignored**.
+pub const FEATURE_WEATHER: u32 = 1 << 0;
+
 impl VersionRead {
-    /// The full read: `version u16 · store_epoch u32 · obcm_version u8`. Also the buffer size a
-    /// caller reserves — [`encode`](Self::encode) reports how much of it is live.
-    pub const ENCODED_LEN: usize = 7;
-    /// The pre-E1 read: everything but the trailing `obcm_version`. Still decoded (as `None`), and
-    /// still the shortest length a full [`decode`](Self::decode) accepts.
+    /// The full read: `version u16 · store_epoch u32 · obcm_version u8 · feature_bits u32`. Also
+    /// the buffer size a caller reserves — [`encode`](Self::encode) reports how much of it is live.
+    pub const ENCODED_LEN: usize = 11;
+    /// The pre-WX3 read: everything but the trailing `feature_bits`.
+    pub const ENCODED_LEN_NO_FEATURES: usize = 7;
+    /// The pre-E1 read: everything but `obcm_version` and `feature_bits`. Still decoded (both
+    /// `None`), and still the shortest length a full [`decode`](Self::decode) accepts.
     pub const ENCODED_LEN_NO_OBCM: usize = 6;
 
-    /// Encode into a fixed buffer; the returned length is the slice to serve (`&buf[..len]`) — 7
-    /// bytes with an `obcm_version`, 6 without. The 2-byte no-store form is **not** produced here:
-    /// it carries no `store_epoch`, so it is not a `VersionRead` at all (the board writes the bare
-    /// `PROTOCOL_VERSION` bytes for it).
+    /// Encode into a fixed buffer; the returned length is the slice to serve (`&buf[..len]`) — 11
+    /// bytes with a `feature_bits`, 7 with only an `obcm_version`, 6 with neither. The 2-byte
+    /// no-store form is **not** produced here: it carries no `store_epoch`, so it is not a
+    /// `VersionRead` at all (the board writes the bare `PROTOCOL_VERSION` bytes for it).
+    ///
+    /// The fields are positional, so `feature_bits` can only be served when `obcm_version` is: a
+    /// value with features but no map version encodes as the 6-byte form rather than fabricating a
+    /// byte 6 that would read as "this device supports OBCM v0" and refuse every real map. A device
+    /// that has features to announce always has a reader version to announce with them, so this
+    /// combination does not arise in the firmware — it is defined here so it cannot become a
+    /// silent corruption if it ever does.
     pub fn encode(&self) -> ([u8; Self::ENCODED_LEN], usize) {
         let mut b = [0u8; Self::ENCODED_LEN];
         b[0..2].copy_from_slice(&self.version.to_le_bytes());
         b[2..6].copy_from_slice(&self.store_epoch.to_le_bytes());
-        match self.obcm_version {
-            Some(v) => {
-                b[6] = v;
+        let Some(obcm) = self.obcm_version else {
+            return (b, Self::ENCODED_LEN_NO_OBCM);
+        };
+        b[6] = obcm;
+        match self.feature_bits {
+            Some(features) => {
+                b[7..11].copy_from_slice(&features.to_le_bytes());
                 (b, Self::ENCODED_LEN)
             }
-            None => (b, Self::ENCODED_LEN_NO_OBCM),
+            None => (b, Self::ENCODED_LEN_NO_FEATURES),
         }
     }
 
-    /// Decode an identity read. Accepts 6 bytes (`obcm_version = None`) and any longer read,
-    /// taking byte 6 when it is there and ignoring anything past it — the append-only rule that
-    /// lets this field land without a `PROTOCOL_VERSION` bump. A read shorter than 6 bytes —
-    /// including the 2-byte no-store form — is [`Truncated`](DescriptorError::Truncated): there is
-    /// no epoch in it, and inventing one is precisely what the ack fail-closed contract forbids.
+    /// Whether the peer announced the Weather Request contract. An absent capability word is a
+    /// firmware that predates it, which is exactly a device without weather — so this is `false`,
+    /// and the old-client path is preserved without a special case at every call site.
+    pub const fn has_weather(&self) -> bool {
+        match self.feature_bits {
+            Some(bits) => bits & FEATURE_WEATHER != 0,
+            None => false,
+        }
+    }
+
+    /// Decode an identity read. Accepts 6 bytes (`obcm_version` and `feature_bits` both `None`) and
+    /// any longer read, taking each trailing field on "did at least this many bytes arrive" and
+    /// ignoring anything past the fields it knows — the append-only rule that lets both trailing
+    /// fields land without a `PROTOCOL_VERSION` bump. A read shorter than 6 bytes — including the
+    /// 2-byte no-store form — is [`Truncated`](DescriptorError::Truncated): there is no epoch in
+    /// it, and inventing one is precisely what the ack fail-closed contract forbids.
+    ///
+    /// A **partial** capability word (7 < len < 11) decodes as absent rather than as the bytes that
+    /// did arrive: three bytes of a `u32` are not a small capability set, they are a broken read,
+    /// and treating them as data could claim a feature the device never announced.
     pub fn decode(data: &[u8]) -> Result<Self, DescriptorError> {
         if data.len() < Self::ENCODED_LEN_NO_OBCM {
             return Err(DescriptorError::Truncated);
         }
+        let feature_bits = if data.len() >= Self::ENCODED_LEN {
+            Some(u32::from_le_bytes([data[7], data[8], data[9], data[10]]))
+        } else {
+            None
+        };
         Ok(Self {
             version: u16::from_le_bytes([data[0], data[1]]),
             store_epoch: u32::from_le_bytes([data[2], data[3], data[4], data[5]]),
             obcm_version: data.get(6).copied(),
+            feature_bits,
         })
     }
 }
@@ -957,6 +1031,22 @@ pub struct Config<'a> {
     pub name: &'a [u8],
     /// `0 = metric · 1 = imperial`.
     pub units: u8,
+    /// How often the device raises a scheduled weather request (WX3, #1188) — the trailing,
+    /// optional field, held **as the raw byte** so an unrecognised value survives a round-trip and
+    /// each direction can apply its own rule (§11.8). `None` means the blob carried no such byte.
+    ///
+    /// **Absent is not `Off`, and what absent *means* depends on the direction:**
+    ///
+    /// - **Reading** a device's Config, absent means the device is on its **default**
+    ///   ([`WeatherRefresh::DEFAULT`], 30 minutes).
+    /// - **Writing** a device's Config, absent means **leave the stored value untouched** — it is
+    ///   not a request to reset anything. This is the load-bearing one: an old app that renames the
+    ///   device writes a 3-byte blob, and a device that took that as "the rider chose the default"
+    ///   would reset a rider who had deliberately chosen `Off` back to 30-minute wakeups.
+    ///
+    /// Use [`known_refresh`](Self::known_refresh) to read it and
+    /// [`refresh_to_apply`](Self::refresh_to_apply) to apply a write.
+    pub weather_refresh: Option<u8>,
 }
 
 impl<'a> Config<'a> {
@@ -966,22 +1056,35 @@ impl<'a> Config<'a> {
     /// The smallest well-formed blob: `name_len` (2) + empty name + `units` (1).
     pub const MIN_ENCODED: usize = 3;
 
-    /// Encode into `out` (must be ≥ `2 + name.len() + 1`), returning the written length. `None` if
-    /// the name is over-long or the buffer is too small.
+    /// Encode into `out`, returning the written length. `None` if the name is over-long or the
+    /// buffer is too small. A `weather_refresh` of `None` encodes as the 3-byte-plus-name v1 blob —
+    /// byte-identical to what a pre-WX3 build produced, which is what keeps the vector for it
+    /// meaningful.
     pub fn encode(&self, out: &mut [u8]) -> Option<usize> {
-        let len = 2 + self.name.len() + 1;
+        let len = 2 + self.name.len() + 1 + usize::from(self.weather_refresh.is_some());
         if self.name.len() > Self::MAX_NAME || len > Self::MAX_ENCODED || out.len() < len {
             return None;
         }
         out[0..2].copy_from_slice(&(self.name.len() as u16).to_le_bytes());
         out[2..2 + self.name.len()].copy_from_slice(self.name);
         out[2 + self.name.len()] = self.units;
+        if let Some(refresh) = self.weather_refresh {
+            out[3 + self.name.len()] = refresh;
+        }
         Some(len)
     }
 
     /// Decode + validate a written Config blob: a `name_len` ≤ 48 that fits, whole blob in
-    /// `[MIN_ENCODED, MAX_ENCODED]`. A trailing byte after `units` is tolerated (append-only rule).
-    /// `None` = malformed (the board rejects it with an ATT error rather than silently storing it).
+    /// `[MIN_ENCODED, MAX_ENCODED]`. Trailing bytes after the fields this build knows are tolerated
+    /// (append-only rule). `None` = malformed (the board rejects it with an ATT error rather than
+    /// silently storing it).
+    ///
+    /// The `weather_refresh` byte is **never** validated here, whichever value it carries: decoding
+    /// is direction-blind, and §11.8 makes an unknown interval fatal in exactly one direction. A
+    /// device applying a write calls [`refresh_to_apply`](Self::refresh_to_apply) and refuses; a
+    /// peer reading a device calls [`known_refresh`](Self::known_refresh) and sees `None`. Rejecting
+    /// the whole blob here would take the strict rule to both, which is how appending a fifth
+    /// interval would one day stop a shipped app from so much as renaming its device.
     pub fn decode(data: &'a [u8]) -> Option<Self> {
         if data.len() < Self::MIN_ENCODED || data.len() > Self::MAX_ENCODED {
             return None;
@@ -990,6 +1093,30 @@ impl<'a> Config<'a> {
         if name_len > Self::MAX_NAME || 2 + name_len + 1 > data.len() {
             return None;
         }
-        Some(Self { name: &data[2..2 + name_len], units: data[2 + name_len] })
+        Some(Self {
+            name: &data[2..2 + name_len],
+            units: data[2 + name_len],
+            weather_refresh: data.get(3 + name_len).copied(),
+        })
+    }
+
+    /// The refresh interval **as a reader sees it**: `None` when the field was absent *or* names an
+    /// interval this build does not know (§11.8). Both collapse to "nothing this build can show",
+    /// and neither is `Off`.
+    pub fn known_refresh(&self) -> Option<WeatherRefresh> {
+        self.weather_refresh.and_then(|byte| WeatherRefresh::from_u8(byte).ok())
+    }
+
+    /// The refresh interval **a device must store for this write**, or a refusal.
+    ///
+    /// `Ok(None)` means the writer said nothing about refresh, and the device MUST leave whatever
+    /// it has stored alone rather than reset it to the default. `Err` means the writer named an
+    /// interval this device cannot honour — the one place §11.8 is strict, because silently
+    /// substituting anything would report a setting the rider never chose.
+    pub fn refresh_to_apply(&self) -> Result<Option<WeatherRefresh>, DescriptorError> {
+        match self.weather_refresh {
+            None => Ok(None),
+            Some(byte) => WeatherRefresh::from_u8(byte).map(Some),
+        }
     }
 }
