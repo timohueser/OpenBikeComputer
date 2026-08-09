@@ -1331,6 +1331,7 @@ dependencies = [
  "obc-route",
  "obc-sensors",
  "obc-storage",
+ "obc-weather",
  "panic-probe",
  "static_cell",
  "trouble-host",
@@ -1409,8 +1410,18 @@ version = "0.1.0"
 dependencies = [
  "embedded-sdmmc",
  "heapless 0.8.0",
+ "obc-crc",
  "obc-formats",
  "obc-ports",
+ "obc-weather",
+]
+
+[[package]]
+name = "obc-weather"
+version = "0.1.0"
+dependencies = [
+ "obc-crc",
+ "obc-formats",
 ]
 
 [[package]]
