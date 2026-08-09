@@ -24,7 +24,9 @@ Both rules are **test-enforced** (`swift test`): `CoreBluetoothSeamTests` fails 
 root); `OBCMock` compiles to an empty module in Release.
 
 Layers (lower may not import higher): `OBCDomain` → `OBCTransport` → `OBCMock`;
-`OBCUI` sits on `OBCDomain` + `OBCTransport`; `OBCFormats` on `OBCDomain` only.
+`OBCUI` sits on `OBCDomain` + `OBCTransport`; `OBCFormats` on `OBCDomain` only;
+`OBCWeatherWire` on `OBCDomain` only, and `OBCWeather` on those two — never on
+`OBCTransport`, so no weather code can reach CoreBluetooth.
 The app target is the **only** place that picks a concrete transport
 (`OBCCompanionApp.makeTransport()`).
 
@@ -39,6 +41,9 @@ companion-ios/
     OBCTransport         DeviceTransport + BondStore + LibraryStore + Codecs;
                          BLE/ = the only place CoreBluetooth is allowed
     OBCFormats           file formats at the edges (GPX/TCX import, ride export)
+    OBCWeatherWire       OBCW/OBCG codecs — the frozen weather wire contracts
+    OBCWeather           weather domain: MET hourly adapter, OBC weather service
+                         client (manifest + corridor Range reads), OBCW builder
     OBCMock  (#DEBUG)    MockTransport + MockControl + Scenario presets + fixtures
     OBCUI                SwiftUI component kit (OBCTheme) + feature screens
   OBCCompanionUITests/   XCUITest target — launch-arg driven
@@ -102,8 +107,11 @@ runs one bounded authenticated read of the weather-request context without the o
 link, and logs it. No UI, no scheduler, no bundle upload.
 
 `-OBCHideMockHUD` keeps the mock transport but removes its Debug status tag for clean automated
-captures. The landing-page captures and their CI drift check live in
-`scripts/capture-website-screenshots.sh`.
+captures; `-OBCDisableAnimations` runs the UI unanimated so a capture can't catch a transition
+mid-flight, and `-OBCHoldConfirmations` parks the timed confirmation states (sync check, synced
+line, the upload sheet's self-dismiss) so a shot of one isn't a race. The landing-page captures and their CI drift check live in
+`scripts/capture-website-screenshots.sh` — that gate compares pixels, so anything the capture
+screenshots must be *waited for*, never assumed (see `WebsiteScreenshotTests`).
 
 Dev control panel (Debug): shake the sim (⌃⌘Z) or launch with
 `-OBCShowDevPanel` for live `MockControl` knobs; `-OBCShowUIGallery` opens the

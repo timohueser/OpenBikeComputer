@@ -1,13 +1,23 @@
 //! `obc-wx-bake` — the weather bakery CLI.
 //!
 //! ```text
-//! obc-wx-bake cycle   [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]   both adapters
-//! obc-wx-bake dwd-rv  [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]   one adapter
-//! obc-wx-bake icon-eu [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]   one adapter
+//! obc-wx-bake cycle   [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]   every adapter
+//! obc-wx-bake dwd-rv  [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]   Germany radar, tier 1
+//! obc-wx-bake icon-eu [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]   Europe model, tier 2
+//! obc-wx-bake us      [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]   CONUS MRMS+HRRR, tier 1
+//! obc-wx-bake gfs     [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]   worldwide floor, tier 3
 //! obc-wx-bake schema                                                       print the manifest JSON Schema
 //! ```
 //!
+//! One product's failure never blocks another's: run the per-product subcommands from separate
+//! timers when that isolation matters more than a single-manifest cycle.
+//!
 //! Every invocation is idempotent and stateless: state lives only in the published manifest.
+//! A single-adapter invocation is a first-class production mode — `ops/weather` runs one systemd
+//! timer per adapter, so a broken upstream cannot cost the other products their freshness — and
+//! it rewrites only its own product: every other still-unexpired product is carried forward from
+//! the published manifest verbatim (see [`obc_wx_bake::cycle`]). Two invocations must never
+//! overlap; the shipped units serialize every instance behind one `flock`.
 //! `--now` exists for deterministic replays; production timers omit it. `--store <dir>`
 //! publishes into a directory (any static host can serve it); `--r2` uses the `OBC_WX_R2_*`
 //! environment (bucket `obc-wx` by default).
@@ -16,7 +26,7 @@ use obc_wx_bake::cycle::run_cycle;
 use obc_wx_bake::fetch::HttpUpstream;
 use obc_wx_bake::manifest;
 use obc_wx_bake::publish::{DirStore, ObjectStore, RcloneStore};
-use obc_wx_bake::source::{dwd_rv::DwdRv, icon_eu::IconEu, Adapter};
+use obc_wx_bake::source::{dwd_rv::DwdRv, gfs::GfsFloor, icon_eu::IconEu, us::UsComposite, Adapter};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -37,10 +47,14 @@ fn run(args: &[String]) -> Result<(), String> {
     }
     let dwd = DwdRv;
     let icon = IconEu;
+    let us = UsComposite;
+    let gfs = GfsFloor;
     let adapters: Vec<&dyn Adapter> = match command {
-        "cycle" => vec![&dwd, &icon],
+        "cycle" => vec![&dwd, &icon, &us, &gfs],
         "dwd-rv" => vec![&dwd],
         "icon-eu" => vec![&icon],
+        "us" => vec![&us],
+        "gfs" => vec![&gfs],
         _ => return Err(usage()),
     };
 
@@ -79,5 +93,6 @@ fn run(args: &[String]) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: obc-wx-bake <cycle|dwd-rv|icon-eu> [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]\n       obc-wx-bake schema".to_string()
+    "usage: obc-wx-bake <cycle|dwd-rv|icon-eu|us|gfs> [--store <dir>|--r2] [--now <rfc3339>] [--dry-run]\n       obc-wx-bake schema"
+        .to_string()
 }
