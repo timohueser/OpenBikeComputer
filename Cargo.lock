@@ -2933,10 +2933,12 @@ dependencies = [
 name = "obc-sim"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "eframe",
  "embedded-graphics",
  "image",
  "obc-app",
+ "obc-ble",
  "obc-dfu",
  "obc-display",
  "obc-formats",
@@ -2947,6 +2949,7 @@ dependencies = [
  "obc-replay",
  "obc-route",
  "obc-weather",
+ "obc-wx-client",
  "obcm-testkit",
  "pollster",
  "rfd",
