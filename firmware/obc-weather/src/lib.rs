@@ -17,7 +17,7 @@ use obc_formats::obcw::{
 mod cache;
 mod slots;
 
-pub use cache::{CellIndex, HourlyIter, WeatherCache, READER_CACHE_RESIDENT_BYTES};
+pub use cache::{CellIndex, HourlyIter, WeatherCache, READER_CACHE_RESIDENT_BYTES, SINGLE_FRAME_MAX_AGE_S};
 pub use slots::{
     candidate_is_newer, select_slots, validate_slot, validate_slot_with_magic, Candidate, SelectionReason, Slot,
     SlotSelection, SlotValidation, WEATHER_A_FILE, WEATHER_B_FILE,
