@@ -607,15 +607,22 @@
         z-index: 1000;
     }
 
+    /* The wrap's flex row spans the rail PLUS the hint pill, and that mostly
+       transparent bounding box was swallowing every mousedown over it — a
+       ~230×160 px dead zone in the map's top-left where no tool could click
+       or start a drag (2026-08-09 on-glass catch). The wrapper lets events
+       through; only the rail itself takes them back. */
     .rail-wrap {
         top: 12px;
         left: 12px;
         display: flex;
         align-items: flex-start;
         gap: 8px;
+        pointer-events: none;
     }
 
     .rail {
+        pointer-events: auto;
         display: flex;
         flex-direction: column;
         gap: 4px;
@@ -811,10 +818,13 @@
         display: flex;
     }
 
+    /* Purely informational: the chip must never eat a click or a draw that
+       starts under it — same discipline as the rail wrap above. */
     .bottom-left {
         bottom: 12px;
         left: 12px;
         max-width: min(420px, calc(100% - 24px));
+        pointer-events: none;
     }
 
     /* At phone widths the attribution line spans nearly the whole pane, so
