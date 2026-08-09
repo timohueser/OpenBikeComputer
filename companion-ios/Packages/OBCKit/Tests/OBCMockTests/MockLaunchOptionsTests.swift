@@ -35,7 +35,7 @@ final class MockLaunchOptionsTests: XCTestCase {
             "-OBCShowUIGallery",
             "-OBCHideMockHUD",
             "-OBCDisableAnimations",
-            "-OBCHoldSyncConfirmation",
+            "-OBCHoldConfirmations",
         ])
         XCTAssertEqual(options.scenario, .outOfRange)
         XCTAssertEqual(options.fixtures, "large")
@@ -45,7 +45,7 @@ final class MockLaunchOptionsTests: XCTestCase {
         XCTAssertTrue(options.showUIGallery)
         XCTAssertTrue(options.hideMockHUD)
         XCTAssertTrue(options.disableAnimations)
-        XCTAssertTrue(options.holdSyncConfirmation)
+        XCTAssertTrue(options.holdConfirmations)
     }
 
     /// #1212 — the two capture-determinism flags. Both must default to **off**: an ordinary run
@@ -56,10 +56,10 @@ final class MockLaunchOptionsTests: XCTestCase {
         XCTAssertTrue(parse([], env: ["OBC_DISABLE_ANIMATIONS": "1"]).disableAnimations)
         XCTAssertFalse(parse([], env: ["OBC_DISABLE_ANIMATIONS": "0"]).disableAnimations)
 
-        XCTAssertFalse(parse([]).holdSyncConfirmation)
-        XCTAssertTrue(parse(["-OBCHoldSyncConfirmation"]).holdSyncConfirmation)
-        XCTAssertTrue(parse([], env: ["OBC_HOLD_SYNC_CONFIRMATION": "1"]).holdSyncConfirmation)
-        XCTAssertFalse(parse([], env: ["OBC_HOLD_SYNC_CONFIRMATION": "0"]).holdSyncConfirmation)
+        XCTAssertFalse(parse([]).holdConfirmations)
+        XCTAssertTrue(parse(["-OBCHoldConfirmations"]).holdConfirmations)
+        XCTAssertTrue(parse([], env: ["OBC_HOLD_CONFIRMATIONS": "1"]).holdConfirmations)
+        XCTAssertFalse(parse([], env: ["OBC_HOLD_CONFIRMATIONS": "0"]).holdConfirmations)
     }
 
     func testEnvironmentFallbacksApplyWhenArgsAbsent() {
