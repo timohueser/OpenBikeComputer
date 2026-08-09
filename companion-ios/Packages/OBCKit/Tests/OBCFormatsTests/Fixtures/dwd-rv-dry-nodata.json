@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "fixture": "dwd-rv-wcs-geotiff-samples",
+  "case": "dry-nodata",
+  "provenance": {
+    "captured_at": "2026-08-09T08:40:49Z",
+    "reference_time": "2026-08-09T08:20:00Z",
+    "valid_time": "2026-08-09T08:20:00Z",
+    "bbox_wgs84": {
+      "lat_min": 47.568,
+      "lat_max": 48.432,
+      "lon_min": 7.354,
+      "lon_max": 8.646
+    },
+    "source_response_bytes": 50586,
+    "source_response_sha256": "5b82455d132d1173c53a6bec5242fe0a15b546f2469a4b1cb8c6c485e9d92791"
+  },
+  "raster": {
+    "crs": "EPSG:4326",
+    "width": 107,
+    "height": 106,
+    "model_transformation": [
+      0.0129487859378026,
+      0.0,
+      0.0,
+      7.293235355159473,
+      0.0,
+      -0.008694014052420075,
+      0.0,
+      48.46319376808776,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ],
+    "gdal_nodata": 4294967296.0,
+    "native_source_resolution_m": 1000,
+    "minimum_valid_value": -0.001,
+    "maximum_valid_value": 0.003,
+    "counts": {
+      "gdal_nodata": 652,
+      "invalid_minus_999": 105,
+      "undetect_minus_0_001": 10541,
+      "zero": 31,
+      "positive": 13
+    }
+  },
+  "sample_window": {
+    "row_start": 62,
+    "column_start": 13,
+    "values_mm_per_5_min": [
+      [-0.001, -0.001, -0.001, -0.001, -0.001, -0.001, -0.001],
+      [-0.001, -0.001, -0.001, 0.0, 0.0, 0.0, 0.0],
+      [-0.001, -0.001, 0.0, 0.0, 0.0, 0.0, 0.0],
+      [-0.001, -0.001, 0.0, 0.003, 0.003, 0.0, -0.001],
+      [-0.001, -0.001, 0.0, 0.003, 0.0, 0.0, -0.001],
+      [-0.001, -0.001, -0.001, 0.0, 0.0, 0.0, -0.001],
+      [-0.001, -0.001, -0.001, -0.001, -0.001, -0.001, -0.001]
+    ]
+  },
+  "sentinel_samples": [
+    {
+      "classification": "nodata",
+      "row": 0,
+      "column": 0,
+      "value_mm_per_5_min": 4294967296.0
+    },
+    {
+      "classification": "invalid",
+      "row": 72,
+      "column": 59,
+      "value_mm_per_5_min": -999.0
+    },
+    {
+      "classification": "undetect",
+      "row": 0,
+      "column": 88,
+      "value_mm_per_5_min": -0.0009999999310821295
+    },
+    {
+      "classification": "zero",
+      "row": 62,
+      "column": 20,
+      "value_mm_per_5_min": 0.0
+    }
+  ]
+}

@@ -1,0 +1,305 @@
+{
+  "schema_version": 1,
+  "fixture": "dwd-rv-raw-wcs-cell-correspondence",
+  "case": "same-run-positive-and-dry-multipixel",
+  "provenance": {
+    "captured_at": "2026-08-09T09:37:00Z",
+    "reference_time": "2026-08-09T09:35:00.000Z",
+    "valid_time": "2026-08-09T09:35:00.000Z",
+    "bbox_wgs84": {
+      "lat_min": 52.5016,
+      "lat_max": 53.3656,
+      "lon_min": 6.856,
+      "lon_max": 8.2932
+    },
+    "wcs_geotiff_sha256": "ffb77cc8ded61c04c8d6f3d3422dce6d6f844d792ccba3eeb46c981a867f2c0d",
+    "raw_tar_sha256": "29f468dd03d39b3414c21349bed537d014d5b9de11bb7b8ee5cff5d9018a199f",
+    "raw_hdf5_member": "composite_rv_20260809_0935_000-hd5",
+    "raw_hdf5_sha256": "7ad9d8ddbe03c4799eb942391641af9f4d4b0f8b8323731e26a21f31c0dcee5d"
+  },
+  "raw": {
+    "shape": [
+      1200,
+      1100
+    ],
+    "xscale_m": 1000,
+    "yscale_m": 1000,
+    "projection": "+proj=stere +lat_ts=60 +lat_0=90 +lon_0=10 +x_0=543196.83521776402 +y_0=3622588.8619310022 +units=m +a=6378137 +b=6356752.3142451802 +no_defs",
+    "gain": 0.0009999999317806213,
+    "offset": -0.0009999999317806213,
+    "undetect": 0,
+    "nodata": 4294967295,
+    "corners_wgs84": {
+      "LL_lat": 45.696425377390064,
+      "LL_lon": 3.5669946350078914,
+      "LR_lat": 45.68460578137082,
+      "LR_lon": 16.580869348598274,
+      "UL_lat": 55.862087108249824,
+      "UL_lon": 1.463301510256666,
+      "UR_lat": 55.845438563255755,
+      "UR_lon": 18.73161645466747
+    }
+  },
+  "wcs": {
+    "crs": "EPSG:4326",
+    "width": 104,
+    "height": 104,
+    "transform": [
+      0.014929077113454191,
+      0.0,
+      6.781166697071493,
+      0.0,
+      -0.009017809543526899,
+      53.40458908334679
+    ],
+    "bounds": [
+      6.781166697071493,
+      52.466736890819995,
+      8.333790716870729,
+      53.40458908334679
+    ],
+    "nodata": 4294967296.0
+  },
+  "comparison": {
+    "method": "map each WCS pixel center into the raw stereographic grid and round to the nearest 1 km source-cell center",
+    "valid_comparisons": 9974,
+    "unique_raw_cells": 9974,
+    "positive_comparisons": 10,
+    "undetect_comparisons": 9964,
+    "missing_comparisons": 842,
+    "matches_within_1e-6": 9974,
+    "maximum_absolute_error": 1.0444433407030829e-07
+  },
+  "samples": [
+    {
+      "wcs_row": 8,
+      "wcs_column": 42,
+      "latitude": 53.32793770222681,
+      "longitude": 7.415652474393296,
+      "raw_row": 326,
+      "raw_column": 365,
+      "raw_encoded": 32,
+      "wcs_value": 0.03099999763071537,
+      "raw_gain_offset_value": 0.03099999788519926,
+      "absolute_error": 2.544838888229872e-10
+    },
+    {
+      "wcs_row": 9,
+      "wcs_column": 40,
+      "latitude": 53.31891989268329,
+      "longitude": 7.385794320166387,
+      "raw_row": 327,
+      "raw_column": 363,
+      "raw_encoded": 11,
+      "wcs_value": 0.009999998845160007,
+      "raw_gain_offset_value": 0.009999999317806213,
+      "absolute_error": 4.726462051601876e-10
+    },
+    {
+      "wcs_row": 9,
+      "wcs_column": 41,
+      "latitude": 53.31891989268329,
+      "longitude": 7.400723397279842,
+      "raw_row": 327,
+      "raw_column": 364,
+      "raw_encoded": 37,
+      "wcs_value": 0.035999998450279236,
+      "raw_gain_offset_value": 0.035999997544102366,
+      "absolute_error": 9.06176869652775e-10
+    },
+    {
+      "wcs_row": 10,
+      "wcs_column": 41,
+      "latitude": 53.30990208313976,
+      "longitude": 7.400723397279842,
+      "raw_row": 328,
+      "raw_column": 364,
+      "raw_encoded": 90,
+      "wcs_value": 0.08899999409914017,
+      "raw_gain_offset_value": 0.0889999939284753,
+      "absolute_error": 1.7066487112415984e-10
+    },
+    {
+      "wcs_row": 28,
+      "wcs_column": 43,
+      "latitude": 53.14758151135628,
+      "longitude": 7.43058155150675,
+      "raw_row": 347,
+      "raw_column": 365,
+      "raw_encoded": 20,
+      "wcs_value": 0.01899999938905239,
+      "raw_gain_offset_value": 0.018999998703831802,
+      "absolute_error": 6.852205886032081e-10
+    },
+    {
+      "wcs_row": 29,
+      "wcs_column": 42,
+      "latitude": 53.13856370181275,
+      "longitude": 7.415652474393296,
+      "raw_row": 348,
+      "raw_column": 364,
+      "raw_encoded": 5209,
+      "wcs_value": 5.2079997062683105,
+      "raw_gain_offset_value": 5.207999644713476,
+      "absolute_error": 6.155483411873774e-08
+    },
+    {
+      "wcs_row": 29,
+      "wcs_column": 43,
+      "latitude": 53.13856370181275,
+      "longitude": 7.43058155150675,
+      "raw_row": 348,
+      "raw_column": 365,
+      "raw_encoded": 3126,
+      "wcs_value": 3.124999761581421,
+      "raw_gain_offset_value": 3.1249997868144415,
+      "absolute_error": 2.523302056189891e-08
+    },
+    {
+      "wcs_row": 30,
+      "wcs_column": 41,
+      "latitude": 53.12954589226922,
+      "longitude": 7.400723397279842,
+      "raw_row": 349,
+      "raw_column": 363,
+      "raw_encoded": 1196,
+      "wcs_value": 1.1949998140335083,
+      "raw_gain_offset_value": 1.1949999184778424,
+      "absolute_error": 1.0444433407030829e-07
+    },
+    {
+      "wcs_row": 30,
+      "wcs_column": 42,
+      "latitude": 53.12954589226922,
+      "longitude": 7.415652474393296,
+      "raw_row": 349,
+      "raw_column": 364,
+      "raw_encoded": 1141,
+      "wcs_value": 1.1399998664855957,
+      "raw_gain_offset_value": 1.1399999222299082,
+      "absolute_error": 5.574431249932843e-08
+    },
+    {
+      "wcs_row": 30,
+      "wcs_column": 43,
+      "latitude": 53.12954589226922,
+      "longitude": 7.43058155150675,
+      "raw_row": 349,
+      "raw_column": 365,
+      "raw_encoded": 23,
+      "wcs_value": 0.02199999801814556,
+      "raw_gain_offset_value": 0.021999998499173667,
+      "absolute_error": 4.81028106236181e-10
+    },
+    {
+      "wcs_row": 0,
+      "wcs_column": 87,
+      "latitude": 53.40008017857503,
+      "longitude": 8.087460944498734,
+      "raw_row": 320,
+      "raw_column": 412,
+      "raw_encoded": 0,
+      "wcs_value": -0.0009999999310821295,
+      "raw_gain_offset_value": -0.0009999999317806213,
+      "absolute_error": 6.984918286129238e-13
+    },
+    {
+      "wcs_row": 21,
+      "wcs_column": 77,
+      "latitude": 53.21070617816096,
+      "longitude": 7.938170173364193,
+      "raw_row": 341,
+      "raw_column": 401,
+      "raw_encoded": 0,
+      "wcs_value": -0.0009999999310821295,
+      "raw_gain_offset_value": -0.0009999999317806213,
+      "absolute_error": 6.984918286129238e-13
+    },
+    {
+      "wcs_row": 41,
+      "wcs_column": 66,
+      "latitude": 53.03034998729043,
+      "longitude": 7.773950325116196,
+      "raw_row": 361,
+      "raw_column": 388,
+      "raw_encoded": 0,
+      "wcs_value": -0.0009999999310821295,
+      "raw_gain_offset_value": -0.0009999999317806213,
+      "absolute_error": 6.984918286129238e-13
+    },
+    {
+      "wcs_row": 61,
+      "wcs_column": 58,
+      "latitude": 52.84999379641989,
+      "longitude": 7.654517708208563,
+      "raw_row": 382,
+      "raw_column": 379,
+      "raw_encoded": 0,
+      "wcs_value": -0.0009999999310821295,
+      "raw_gain_offset_value": -0.0009999999317806213,
+      "absolute_error": 6.984918286129238e-13
+    },
+    {
+      "wcs_row": 81,
+      "wcs_column": 65,
+      "latitude": 52.66963760554935,
+      "longitude": 7.7590212480027425,
+      "raw_row": 403,
+      "raw_column": 386,
+      "raw_encoded": 0,
+      "wcs_value": -0.0009999999310821295,
+      "raw_gain_offset_value": -0.0009999999317806213,
+      "absolute_error": 6.984918286129238e-13
+    },
+    {
+      "wcs_row": 0,
+      "wcs_column": 0,
+      "latitude": 53.40008017857503,
+      "longitude": 6.78863123562822,
+      "raw_row": 316,
+      "raw_column": 322,
+      "raw_encoded": 0,
+      "wcs_value": 4294967296.0
+    },
+    {
+      "wcs_row": 2,
+      "wcs_column": 16,
+      "latitude": 53.38204455948797,
+      "longitude": 7.027496469443487,
+      "raw_row": 319,
+      "raw_column": 339,
+      "raw_encoded": 0,
+      "wcs_value": 4294967296.0
+    },
+    {
+      "wcs_row": 41,
+      "wcs_column": 102,
+      "latitude": 53.03034998729043,
+      "longitude": 8.311397101200548,
+      "raw_row": 363,
+      "raw_column": 426,
+      "raw_encoded": 0,
+      "wcs_value": 4294967296.0
+    },
+    {
+      "wcs_row": 80,
+      "wcs_column": 2,
+      "latitude": 52.67865541509288,
+      "longitude": 6.818489389855128,
+      "raw_row": 399,
+      "raw_column": 320,
+      "raw_encoded": 0,
+      "wcs_value": 4294967296.0
+    },
+    {
+      "wcs_row": 101,
+      "wcs_column": 101,
+      "latitude": 52.489281414678814,
+      "longitude": 8.296468024087094,
+      "raw_row": 425,
+      "raw_column": 423,
+      "raw_encoded": 0,
+      "wcs_value": 4294967296.0
+    }
+  ]
+}
