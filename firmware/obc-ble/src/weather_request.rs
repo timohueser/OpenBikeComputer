@@ -237,6 +237,15 @@ impl WeatherRequestContext {
         bundle_crc32: 0,
     };
 
+    /// The **resting** value the GATT attribute holds whenever no request is pending: structurally
+    /// [`EMPTY`](Self::EMPTY) — nothing valid, no reason, request id 0 — but carrying the device's
+    /// *stored* refresh byte rather than the compile-time default. §11.8's whole point is that the
+    /// refresh byte reports the rider's own setting; a resting value that said "30 min" over a
+    /// persisted `Off` would misreport it from boot until the first raise (#1221 F2).
+    pub const fn resting(refresh_raw: u8) -> Self {
+        Self { refresh_raw, ..Self::EMPTY }
+    }
+
     pub const fn has(&self, flag: u16) -> bool {
         self.validity & flag != 0
     }
@@ -409,9 +418,12 @@ pub const fn authenticated_context_was_served(link_secured: bool, reply_sent: bo
 // ============================ The due scheduler ============================
 
 /// The failure retry ladder, in seconds (spec §11.3: **5 / 10 / 20 minutes**): the waits between
-/// successive advertising raises of one pending request. Past the last rung the wait is the
-/// configured refresh cadence — "capped by the configured interval" (epic #1185) — and with the
-/// cadence `Off` a request simply lapses after the final rung (reopening Weather raises a new one).
+/// successive advertising raises of one pending request. Past the last rung a **scheduled**
+/// request's wait becomes the configured refresh cadence — "capped by the configured interval"
+/// (epic #1185) — while an **urgent** request always lapses after the final rung, cadence or not
+/// (locked in #1221's review round): the rider's tap earns three fast retries, never a standing
+/// beacon, and reopening Weather raises a fresh request. A scheduled request under `Off` lapses
+/// the same way (nothing configures a cadence to fall back to).
 pub const RETRY_LADDER_S: [u64; 3] = [5 * 60, 10 * 60, 20 * 60];
 
 /// When a held bundle stops counting as one for the `reason` word: OBCW v1 carries 24 hourly
@@ -461,9 +473,11 @@ pub struct Raise {
 struct Pending {
     request_id: u32,
     reason: u16,
-    /// When the next ladder re-raise fires (absolute, caller seconds); `None` = final rung passed,
-    /// kept only until the caller's poll observes the lapse.
-    next_raise_s: Option<u64>,
+    /// When the next ladder re-raise fires (absolute, caller seconds). Always meaningful while the
+    /// pending is stored: a raise with no next wait (an urgent past the ladder, or `Off` past it)
+    /// clears the whole `Pending` in the **same** poll that returns the final raise, so a lapsed
+    /// request never lingers as state.
+    next_raise_s: u64,
     /// Raises performed so far (1 = the initial raise).
     raises: u8,
 }
@@ -477,19 +491,26 @@ struct Pending {
 /// ride state, bundle facts), performs the returned [`Raise`] (context fill + advertising arm),
 /// and sleeps until [`next_wake_s`](Self::next_wake_s) or an event edge.
 ///
-/// The rules, from the epic + spec §11:
+/// The rules, from the epic + spec §11 (+ the two decisions locked in #1221's review round):
 /// - **Scheduled requests only while a ride is active**; a pending scheduled request is dropped the
 ///   moment the ride stops (or the cadence is set `Off`). Urgent requests survive both.
 /// - **Opening Weather is urgent** ([`open_weather`](Self::open_weather)) — raised immediately,
 ///   even outside a ride, even with refresh `Off`.
-/// - Due state derives from the last successful commit this boot, or — across a reboot — from the
-///   active bundle's age (no countdown is ever persisted). A held bundle whose age is unknown (no
-///   trusted clock) anchors at scheduler start: without a clock the device cannot claim the
-///   interval already elapsed.
-/// - Failure retries ladder at [`RETRY_LADDER_S`], then the configured cadence; every re-raise
-///   keeps the **same** `request_id` (§11.2) and adds [`REASON_RETRY`].
-/// - Only a successful commit ([`commit_succeeded`](Self::commit_succeeded)) finishes a request
-///   and re-anchors the schedule; a served context read or an expired advertising window does not
+/// - **No storage, no requests** (`store_ready`): a card-less device would answer every upload
+///   `error`, which is exactly §11.7's phone-burning loop — so it never advertises a request at
+///   all, urgent included, and a pending request is dropped the moment the card goes away.
+/// - Due state derives from the last **accepted upload** this boot, or — across a reboot — from
+///   the active bundle's age (no countdown is ever persisted). A held bundle whose age is unknown
+///   (no trusted clock) anchors at scheduler start: without a clock the device cannot claim the
+///   interval already elapsed. The anchor paces even an *unusable* (expired) bundle: an accepted
+///   answer means "nothing newer exists upstream", and re-asking a second later would loop.
+/// - Failure retries ladder at [`RETRY_LADDER_S`]; every re-raise keeps the **same** `request_id`
+///   (§11.2) and adds [`REASON_RETRY`]. Past the ladder a scheduled request falls back to the
+///   configured cadence; an **urgent request always lapses** (three fast retries, never a
+///   standing beacon).
+/// - **Any accepted upload finishes a request** ([`commit_succeeded`](Self::commit_succeeded)) —
+///   fresh, duplicate, or stale: §11.6 answers all three `committed`, and each is the phone's
+///   complete answer. A served context read or an expired advertising window does not finish one
 ///   (§11.3 — the advertising budget is the board's, not this scheduler's).
 pub struct DueScheduler {
     /// §11.2: the next request id this boot (starts at 1 — id 0 is the resting context's).
@@ -526,8 +547,11 @@ impl DueScheduler {
         self.urgent_queued = true;
     }
 
-    /// A weather bundle committed (the only thing that finishes a request — §11.6/§11.3): clear the
-    /// pending request and anchor the next scheduled interval here.
+    /// A weather upload was **accepted** — fresh (`commit`), duplicate, or stale, all of which the
+    /// wire answers `committed` (§11.6): clear the pending request and anchor the next scheduled
+    /// interval here. The duplicate/stale rows count deliberately (#1221 F3): they are the phone's
+    /// complete answer — "nothing newer exists upstream" — and treating them as anything less
+    /// would re-raise the same request against the same upstream a second later, forever.
     pub fn commit_succeeded(&mut self, now_s: u64) {
         self.pending = None;
         self.last_commit_s = Some(now_s);
@@ -542,15 +566,30 @@ impl DueScheduler {
     /// Advance the machine to `now_s` under the current levels and return the advertising raise to
     /// perform, if one is due. At most one raise per poll; a caller that sleeps until
     /// [`next_wake_s`](Self::next_wake_s) never misses one, only delays it.
+    ///
+    /// `store_ready` is "the device can accept a bundle right now" (a mounted card): with it false
+    /// **nothing** raises — see the type docs for why that is §11.7's rule, not caution.
     pub fn poll(
         &mut self,
         now_s: u64,
         refresh: WeatherRefresh,
         ride_active: bool,
+        store_ready: bool,
         bundle: BundleFacts,
     ) -> Option<Raise> {
         if self.started_s.is_none() {
             self.started_s = Some(now_s);
+        }
+        // No storage ⇒ no requests of any kind (#1221 F5): every upload would be answered `error`,
+        // so advertising a request would send the phone round §11.7's fetch-build-upload loop at
+        // its own expense, forever. A pending request is dropped (not parked): the card that left
+        // took the request's meaning with it, and a re-insert raises a fresh one through the
+        // normal machinery. A queued urgent tap is consumed too — reopening Weather after
+        // inserting a card is the honest re-arm.
+        if !store_ready {
+            self.pending = None;
+            self.urgent_queued = false;
+            return None;
         }
         // Seed the reboot anchor once: a bundle whose age is known counts as "satisfied age_s ago";
         // one with unknown age (no trusted clock) counts from scheduler start.
@@ -581,45 +620,45 @@ impl DueScheduler {
                 None => (self.mint_id(), 0),
             };
             let reason = prior_reason | REASON_URGENT | no_bundle_bit;
-            self.pending =
-                Some(Pending { request_id, reason, next_raise_s: Some(now_s + RETRY_LADDER_S[0]), raises: 1 });
+            self.pending = Some(Pending { request_id, reason, next_raise_s: now_s + RETRY_LADDER_S[0], raises: 1 });
             return Some(Raise { request_id, reason });
         }
 
         // The retry ladder: re-raise the pending request with the same id (§11.2), stepping the
-        // wait through §11.3's rungs and then the configured cadence.
+        // wait through §11.3's rungs; past them a scheduled request paces at the configured
+        // cadence, while an urgent one has no fallback at all (#1221 F4).
         if let Some(p) = &mut self.pending {
-            match p.next_raise_s {
-                Some(at) if now_s >= at => {
-                    p.raises = p.raises.saturating_add(1);
-                    p.reason |= REASON_RETRY | no_bundle_bit;
-                    // Waits between raises: the initial raise armed rung 0 (5 min); retry `k`
-                    // arms rung `k` (10, 20), and past the last rung the configured cadence.
-                    let next_wait = match RETRY_LADDER_S.get(p.raises as usize - 1) {
-                        Some(&rung) => Some(rung),
-                        None => refresh.minutes().map(|m| m as u64 * 60),
-                    };
-                    p.next_raise_s = next_wait.map(|w| now_s + w);
-                    let raise = Raise { request_id: p.request_id, reason: p.reason };
-                    if p.next_raise_s.is_none() {
-                        // Final rung with no cadence to fall back on (`Off`): this raise is the
-                        // request's last — it lapses rather than beaconing forever.
-                        let raise_final = raise;
-                        self.pending = None;
-                        return Some(raise_final);
-                    }
-                    return Some(raise);
-                }
-                _ => return None,
+            if now_s < p.next_raise_s {
+                return None;
             }
+            p.raises = p.raises.saturating_add(1);
+            p.reason |= REASON_RETRY | no_bundle_bit;
+            let raise = Raise { request_id: p.request_id, reason: p.reason };
+            // Waits between raises: the initial raise armed rung 0 (5 min); retry `k` arms rung
+            // `k` (10, 20), and past the last rung the cadence — or nothing.
+            let next_wait = match RETRY_LADDER_S.get(p.raises as usize - 1) {
+                Some(&rung) => Some(rung),
+                None if p.reason & REASON_URGENT != 0 => None,
+                None => refresh.minutes().map(|m| m as u64 * 60),
+            };
+            match next_wait {
+                Some(wait) => p.next_raise_s = now_s + wait,
+                // This raise is the request's last (urgent past the ladder, or `Off` with no
+                // cadence): it lapses in this same poll rather than beaconing forever.
+                None => self.pending = None,
+            }
+            return Some(raise);
         }
 
         // A fresh scheduled request: only while riding, only with a cadence, and only once the
-        // interval has elapsed since the last satisfaction (or immediately with no usable bundle).
+        // interval has elapsed since the last satisfaction. The anchor paces deliberately even
+        // when the bundle is unusable (#1221 F3): an accepted upload of a stale/expired bundle is
+        // the phone saying "nothing newer exists upstream", and bypassing the anchor for it would
+        // re-ask the same upstream seconds later, forever. With no anchor at all (no commit this
+        // boot, no bundle to date) the first ride-active poll is due.
         if ride_active {
             if let Some(minutes) = refresh.minutes() {
                 let due = match self.anchor_s() {
-                    _ if !bundle.usable() => true,
                     Some(anchor) => now_s as i64 >= anchor + minutes as i64 * 60,
                     None => true,
                 };
@@ -627,7 +666,7 @@ impl DueScheduler {
                     let request_id = self.mint_id();
                     let reason = REASON_SCHEDULED | no_bundle_bit;
                     self.pending =
-                        Some(Pending { request_id, reason, next_raise_s: Some(now_s + RETRY_LADDER_S[0]), raises: 1 });
+                        Some(Pending { request_id, reason, next_raise_s: now_s + RETRY_LADDER_S[0], raises: 1 });
                     return Some(Raise { request_id, reason });
                 }
             }
@@ -636,19 +675,20 @@ impl DueScheduler {
     }
 
     /// The absolute second of the next thing this machine will do under the given levels, or `None`
-    /// when only an event edge (ride start, urgent, commit, a setting change) can wake it. The
-    /// caller sleeps until this — never a periodic tick.
-    pub fn next_wake_s(&self, refresh: WeatherRefresh, ride_active: bool, bundle: BundleFacts) -> Option<u64> {
+    /// when only an event edge (ride start, urgent, commit, a setting change, a card mount) can
+    /// wake it. The caller sleeps until this — never a periodic tick.
+    pub fn next_wake_s(&self, refresh: WeatherRefresh, ride_active: bool, store_ready: bool) -> Option<u64> {
+        if !store_ready {
+            return None;
+        }
         if let Some(p) = self.pending {
-            return p.next_raise_s;
+            return Some(p.next_raise_s);
         }
         if !ride_active {
             return None;
         }
         let minutes = refresh.minutes()?;
-        if !bundle.usable() {
-            return self.started_s; // due immediately (a past instant): poll now
-        }
+        // Pacing is the anchor's alone (never the bundle's freshness) — see `poll`'s scheduled arm.
         match self.anchor_s() {
             Some(anchor) => Some((anchor + minutes as i64 * 60).max(0) as u64),
             None => self.started_s,

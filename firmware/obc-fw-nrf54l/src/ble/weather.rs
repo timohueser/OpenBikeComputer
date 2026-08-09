@@ -102,11 +102,15 @@ pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, share
     let mut sched = DueScheduler::new();
     // Whether the GATT attribute currently carries a live request (vs. the §11.4 resting value).
     let mut context_live = false;
+    // The refresh byte the attribute currently serves — `None` until this task's first write, so
+    // the first pass re-asserts the resting value even though `run` seeded one at boot (#1221 F2:
+    // a Config write between seed and first pass must never leave a stale byte served).
+    let mut served_refresh: Option<u8> = None;
     loop {
         let now_s = Instant::now().as_secs();
         if COMMITTED.swap(false, Ordering::Relaxed) {
             sched.commit_succeeded(now_s);
-            info!("ble: [weather] bundle committed — request satisfied, next interval anchored");
+            info!("ble: [weather] upload accepted — request satisfied, next interval anchored");
         }
         if URGENT.swap(false, Ordering::Relaxed) {
             sched.open_weather();
@@ -116,10 +120,11 @@ pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, share
         // strict write direction; the codec sanitises corruption), so the fallback is unreachable.
         let refresh_raw = store.borrow().settings().weather_refresh;
         let refresh = WeatherRefresh::from_u8(refresh_raw).unwrap_or(WeatherRefresh::DEFAULT);
-        // The active bundle's identity — the boot/commit-refreshed selection, no card I/O.
-        let bundle = {
+        // The active bundle's identity — the boot/commit-refreshed selection, no card I/O — and
+        // whether storage exists at all (#1221 F5: no card ⇒ no requests, or the phone burns).
+        let (store_ready, bundle) = {
             let guard = shared.lock().await;
-            store.borrow().weather_active(&guard)
+            (guard.storage.is_some(), store.borrow().weather_active(&guard))
         };
         let facts = BundleFacts {
             held: bundle.is_some(),
@@ -130,10 +135,11 @@ pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, share
             },
         };
 
-        if let Some(raise) = sched.poll(now_s, refresh, snapshot.ride_active, facts) {
+        if let Some(raise) = sched.poll(now_s, refresh, snapshot.ride_active, store_ready, facts) {
             let ctx = build_context(&snapshot, refresh_raw, raise, bundle);
             let _ = server.set(&server.weather_request.context, &ctx.encode());
             context_live = true;
+            served_refresh = Some(refresh_raw);
             state::arm_weather_request(Duration::from_secs(super::WEATHER_REQUEST_ADV_BUDGET_SECS));
             info!(
                 "ble: [weather] request {=u32} raised (reason {=u16:#06x}, validity {=u16:#06x})",
@@ -142,17 +148,18 @@ pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, share
             continue; // re-derive the next wake against the fresh pending state
         }
 
-        // No pending request → restore the resting "nothing is due" value, so a peer that reads
-        // the characteristic out of turn learns nothing stale about the rider (§11.4). Runs on a
-        // commit and on an Off-ladder lapse.
-        if context_live && sched.pending_request_id().is_none() {
-            let mut resting = WeatherRequestContext::EMPTY;
-            resting.refresh_raw = refresh_raw;
-            let _ = server.set(&server.weather_request.context, &resting.encode());
+        // No pending request → the attribute holds the resting "nothing is due" value, so a peer
+        // that reads it out of turn learns nothing stale about the rider (§11.4). Re-written when
+        // a request just ended (commit / lapse) **or** when the stored refresh byte moved (#1221
+        // F2): §11.8's refresh byte reports the rider's own setting, and a resting value frozen at
+        // an older one would misreport it — `note_settings_changed`'s wake lands here.
+        if sched.pending_request_id().is_none() && (context_live || served_refresh != Some(refresh_raw)) {
+            let _ = server.set(&server.weather_request.context, &WeatherRequestContext::resting(refresh_raw).encode());
             context_live = false;
+            served_refresh = Some(refresh_raw);
         }
 
-        match sched.next_wake_s(refresh, snapshot.ride_active, facts) {
+        match sched.next_wake_s(refresh, snapshot.ride_active, store_ready) {
             // A wake already in the past without a raise is a boundary case (levels moved under
             // us): yield a beat rather than spinning the executor.
             Some(at) if at <= now_s => Timer::after_millis(250).await,

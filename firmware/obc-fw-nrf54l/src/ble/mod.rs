@@ -464,7 +464,14 @@ pub async fn run(
     let _ = server.set(&server.obc.protocol_version, &gatt::version_read_blob(store_epoch));
     // The resting value: a structurally valid "nothing is due" rather than a zeroed buffer, so a
     // peer that reads the characteristic out of turn cannot mistake it for a request at 0°N 0°E.
-    let _ = server.set(&server.weather_request.context, &obc_ble::WeatherRequestContext::EMPTY.encode());
+    // Seeded with the **stored** refresh byte, not `EMPTY`'s compile-time default (#1221 F2):
+    // §11.8's byte reports the rider's own setting, and a rider who persisted Off/15/60/120 must
+    // not read back "30 min" between boot and the first raise. The weather plane re-asserts the
+    // resting value whenever the stored setting moves.
+    let _ = server.set(
+        &server.weather_request.context,
+        &obc_ble::WeatherRequestContext::resting(store.borrow().settings().weather_refresh).encode(),
+    );
     info!(
         "ble: DIS fw '{}' hw '{}' serial '{}'",
         identity::firmware_revision().as_str(),
