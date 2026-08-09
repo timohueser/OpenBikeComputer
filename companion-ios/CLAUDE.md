@@ -97,8 +97,11 @@ Common ones: `-OBCScenario <name>`, `-OBCFixtures default|empty|large|trips|webs
 XCUITests depend on them.
 
 `-OBCHideMockHUD` keeps the mock transport but removes its Debug status tag for clean automated
-captures. The landing-page captures and their CI drift check live in
-`scripts/capture-website-screenshots.sh`.
+captures; `-OBCDisableAnimations` runs the UI unanimated so a capture can't catch a transition
+mid-flight, and `-OBCHoldSyncConfirmation` parks the timed post-sync check so a shot of it isn't a
+race. The landing-page captures and their CI drift check live in
+`scripts/capture-website-screenshots.sh` — that gate compares pixels, so anything the capture
+screenshots must be *waited for*, never assumed (see `WebsiteScreenshotTests`).
 
 Dev control panel (Debug): shake the sim (⌃⌘Z) or launch with
 `-OBCShowDevPanel` for live `MockControl` knobs; `-OBCShowUIGallery` opens the
