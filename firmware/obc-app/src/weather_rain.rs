@@ -142,6 +142,33 @@ mod tests {
         assert!(RainOverlayAdapter::current(&reader, &mut cache, header.valid_until + 1).is_none());
     }
 
+    /// Time-step selection (WX11): `at_step` anchors on the freshness-gated current frame, steps
+    /// into genuine future frames, clamps at the table's end — and with nothing current there is
+    /// no adapter at *any* step (stepping can never resurrect stale rain).
+    #[test]
+    fn at_step_clamps_and_anchors_on_currency() {
+        let source = SliceSource(DWD);
+        let reader = WeatherReader::open(&source).unwrap();
+        let header = reader.header();
+        let first = reader.frame(0).unwrap().valid_at;
+        let mut cache = WeatherCache::new();
+        // Step 0 == current; a mid-table step lands on that future frame's grid (same dims here,
+        // so pin via the sampled tiles): compare against the target frame's own decode.
+        for step in [0u8, 3, 8, 200] {
+            let expected_index = (step as usize).min(header.frame_count as usize - 1);
+            let mut adapter = RainOverlayAdapter::at_step(&reader, &mut cache, first, step).expect("current at t0");
+            let mut got = [0u8; RAIN_TILE_CELLS];
+            assert!(adapter.tile(0, &mut got));
+            let mut want = [0u8; RAIN_TILE_CELLS];
+            reader.decode_tile(expected_index, 0, &mut want).unwrap();
+            assert_eq!(got, want, "step {step} reads frame {expected_index}'s tiles");
+        }
+        // Nothing current ⇒ no adapter at any step.
+        let last = reader.frame(header.frame_count as usize - 1).unwrap().valid_at;
+        assert!(RainOverlayAdapter::at_step(&reader, &mut cache, last + 10_000, 0).is_none());
+        assert!(RainOverlayAdapter::at_step(&reader, &mut cache, last + 10_000, 3).is_none());
+    }
+
     /// A hostile tile index is a transparent tile, not a panic or a lie.
     #[test]
     fn out_of_range_tiles_fail_closed() {
