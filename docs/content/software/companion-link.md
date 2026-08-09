@@ -751,9 +751,9 @@ The fix names each id era with something the phone can watch change: a **store
 epoch** — a `u32` random nonce. The device serves it in the same **open,
 pre-pairing** `protocolVersion` read the app already performs first on every
 connect, widened from a bare version to `version u16 · store_epoch u32 ·
-obcm_version u8`. So before `ackRides` or any reconcile write fires, the app knows
-the protocol version, which era it is looking at, and which map format the device
-reads (below).
+obcm_version u8 · feature_bits u32`. So before `ackRides` or any reconcile write
+fires, the app knows the protocol version, which era it is looking at, which map
+format the device reads, and which optional contracts it speaks (below).
 
 **The epoch lives on the card.** It is persisted as a tiny **`EPOCH.OBE`** file in
 the card root — the record layout and its torn-file → fresh-era conventions are in
@@ -786,7 +786,7 @@ is epic [#632](https://github.com/timohueser/OpenBikeComputer/issues/632) item 5
 with the card-resident decision in
 [#776](https://github.com/timohueser/OpenBikeComputer/issues/776).
 
-**One more field, and why it isn't a version bump.** The read carries a third value:
+**Two more fields, and why neither is a version bump.** The read carries a third value:
 `obcm_version`, the [OBCM map-format version](../formats/#the-catalog-the-map-builders-source-of-truth)
 this firmware's reader reads. It is a *different number in a different sequence* from
 the protocol version beside it — one is this wire contract, the other is the file
@@ -794,14 +794,29 @@ format on the card — and neither can be derived from the other, nor from the f
 revision string, which maps to a format version only through a table nobody keeps. A
 catalog builder needs it before offering assembled map bytes, and had nothing to read it from.
 
+And a fourth: `feature_bits`, a `u32` of **optional contracts this build actually
+implements**. The first bit is Weather ([§11](src:specs/obc-ble-interface-spec.md)) — the
+request service, the request context, the weather object type and the refresh setting, one
+bit for all four because a phone that can read a weather request but cannot upload the
+answer has nothing to offer. It is deliberately not inferred from the firmware revision:
+that string maps to a feature set through the same table nobody keeps. A device announces
+what is *there*, so a build carrying the layouts but not yet raising requests announces
+nothing — a phone that saw the bit set would sit waiting for an advertisement that never comes.
+
 Appending it changed the read's length, and a read whose length changed sounds like a
 protocol break. It isn't, because **the length has always been the version mechanism
 here**: a device with no card already served a short read, so the decode was never "expect
 exactly *n* bytes" — it is "take each field if that many bytes arrived, ignore anything
-past the ones you know". Three lengths now exist: **7** with a mounted store, **6** from a
-firmware predating this field, **2** with no card. A field that didn't arrive reads as
-*unknown*, never as a fabricated `0` — `0` is a legal store epoch, and OBCM `0` would read
-as "supports map format v0" and refuse every real map. So an old app against a new device
+past the ones you know". Four lengths now exist: **11** with a mounted store, **7** from a
+firmware predating the capability word, **6** from one predating the map version too, and
+**2** with no card. A field that didn't arrive reads as *unknown*, never as a fabricated `0`
+— `0` is a legal store epoch, OBCM `0` would read as "supports map format v0" and refuse
+every real map, and a fabricated capability word of `0` would make a diagnostic lie about
+which firmware generation answered. (Both *absent* and a genuine `0` mean no weather, so the
+behaviour is the same; it is the provenance that would be lost.) A **partial** capability
+word — 8, 9 or 10 bytes — reads as absent rather than as the bytes that turned up: three
+bytes of a `u32` are a broken read, not a small feature set, and treating them as data could
+claim a contract the device never announced. So an old app against a new device
 loses nothing it had, and a new site against an old device gets *unknown* and falls back to
 offering the download with its version stated. Bumping the protocol version would instead
 stop both — a hard mutual "we can't talk" for a field that is allowed to be missing.

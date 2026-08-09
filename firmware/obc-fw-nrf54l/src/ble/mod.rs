@@ -91,7 +91,7 @@ use gatt::{
     advertised_name, config_blob, device_address, dis_firmware_revision, dis_hardware_revision, dis_serial_number,
     Server, OBC_PSM,
 };
-use lifecycle::{advertise_lifecycle, negotiate_link};
+use lifecycle::{advertise_lifecycle, negotiate_link, AdvertisingIntent};
 use state::{publish, LinkState, FORGET_BOND, TRANSFER_ABORT, TRANSFER_ARM};
 
 bind_interrupts!(struct Irqs {
@@ -112,6 +112,12 @@ const SENSOR_LINKS: usize = 3;
 const CONNECTIONS_MAX: usize = 1 + SENSOR_LINKS;
 /// Advertising sets — one legacy connectable set is all the advertise policy needs.
 const ADV_SETS_MAX: usize = 1;
+/// Maximum radio-advertising time for one Weather Request hint. It is a one-shot budget, not a
+/// permanent secondary beacon: only a secured served probe read clears it early; the original
+/// monotonic deadline survives failed/unauthenticated connection cycles.
+// Only the harness arms a request today; the production weather lifecycle is the second caller.
+#[cfg_attr(not(feature = "ble-weather-request"), allow(dead_code))]
+const WEATHER_REQUEST_ADV_BUDGET_SECS: u64 = 60;
 /// Bonded peers stored in the host: exactly one — the **phone**. Sensors are **not** bonded (open
 /// GATT servers connected by stored address, no SMP), so they never consume a bond slot. While the
 /// phone slot is occupied new pairings are rejected (#455) and only Forget phone clears it, so the
@@ -415,6 +421,11 @@ pub async fn run(
     // Seed the radio switch from the persisted settings (#455): a device toggled off stays off
     // across a reboot, before the first advertise. The ride loop re-pushes the live value each pass.
     state::seed_radio_enabled(store.borrow().settings().ble_enabled);
+    #[cfg(feature = "ble-weather-request")]
+    {
+        state::arm_weather_request(embassy_time::Duration::from_secs(WEATHER_REQUEST_ADV_BUDGET_SECS));
+        info!("ble: Weather Request harness armed (60 s maximum advertising window)");
+    }
 
     let runner = stack.runner();
     let mut peripheral = stack.peripheral();
@@ -435,12 +446,16 @@ pub async fn run(
     // `protocolVersion` (V2 / #632; card-resident epoch #776): the pre-pairing read. `store_epoch` is
     // the boot mint pass's outcome, threaded in (never re-read here) — the epoch lives on the card
     // now, and a card swap must not silently change what this task serves. `Some(epoch)` → the full
-    // 7-byte `version u16 · store_epoch u32 · obcm_version u8` [`VersionRead`] (E1 / #911); `None`
+    // 11-byte `version u16 · store_epoch u32 · obcm_version u8 · feature_bits u32` [`VersionRead`]
+    // (E1 / #911; the capability word WX3 / #1188); `None`
     // (no mounted store) → the 2-byte **version-only** form (`PROTOCOL_VERSION` LE), which the app
     // decodes as `storeEpoch = nil` and fail-closes the ack — never a fabricated epoch (0 is a legal
-    // value). The attribute is a variable-length `Vec` so a 2- or 7-byte read is served verbatim.
+    // value). The attribute is a variable-length `Vec` so a 2- or 11-byte read is served verbatim.
     // The value never changes for the connection's life.
     let _ = server.set(&server.obc.protocol_version, &gatt::version_read_blob(store_epoch));
+    // The resting value: a structurally valid "nothing is due" rather than a zeroed buffer, so a
+    // peer that reads the characteristic out of turn cannot mistake it for a request at 0°N 0°E.
+    let _ = server.set(&server.weather_request.context, &obc_ble::WeatherRequestContext::EMPTY.encode());
     info!(
         "ble: DIS fw '{}' hw '{}' serial '{}'",
         identity::firmware_revision().as_str(),
@@ -511,13 +526,18 @@ pub async fn run(
                         store.borrow_mut().refresh_settings_if_changed(&mut guard);
                     }
                     let adv_name = advertised_name(&store.borrow());
+                    let advertising_intent = if state::weather_request_pending() {
+                        AdvertisingIntent::WeatherRequest
+                    } else {
+                        AdvertisingIntent::Control
+                    };
                     // Advertise until a central connects — or the radio switch flips off (dropping the
                     // advertiser future stops advertising), or a Forget request lands (handled, then this
                     // phase restarts — a moment of re-advertising is harmless).
                     let conn = match select3(
-                        advertise_lifecycle(adv_name.as_str(), &mut peripheral, server),
+                        advertise_lifecycle(adv_name.as_str(), advertising_intent, &mut peripheral, server),
                         state::radio_disabled(),
-                        FORGET_BOND.wait(),
+                        select(FORGET_BOND.wait(), weather_request_policy_change()),
                     )
                     .await
                     {
@@ -530,10 +550,11 @@ pub async fn run(
                             continue;
                         }
                         Either3::Second(()) => continue, // radio off — park at the loop top
-                        Either3::Third(()) => {
+                        Either3::Third(Either::First(())) => {
                             forget_bond(stack, store, shared).await;
                             continue;
                         }
+                        Either3::Third(Either::Second(())) => continue,
                     };
 
                     let peer = conn.raw().peer_address();
@@ -606,6 +627,33 @@ pub async fn run(
     )
     .await;
     unreachable!()
+}
+
+/// Wake the advertiser when the secondary intent changes. While it is pending, the same future
+/// also enforces the exact bounded window; the timeout lowers the intent before returning so the
+/// loop's next advertisement is OBC Control. A latched edge may cause one harmless immediate
+/// restart before the timer begins (the level remains authoritative).
+async fn weather_request_policy_change() {
+    if state::weather_request_pending() {
+        let Some(remaining) = state::weather_request_remaining() else {
+            state::clear_weather_request();
+            return;
+        };
+        if remaining.as_ticks() == 0 {
+            state::clear_weather_request();
+            info!("ble: Weather Request total budget already elapsed — returning to Control");
+            return;
+        }
+        match select(state::weather_request_changed(), Timer::after(remaining)).await {
+            Either::First(()) => {}
+            Either::Second(()) => {
+                state::clear_weather_request();
+                info!("ble: Weather Request advertising budget elapsed — returning to Control");
+            }
+        }
+    } else {
+        state::weather_request_changed().await;
+    }
 }
 
 /// Forget the bonded phone (#455): zero the RRAM bond slot (a reboot lands in open pairing), drop

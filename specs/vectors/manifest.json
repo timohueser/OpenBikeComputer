@@ -12,7 +12,17 @@
     "config": "3C920004-9916-4EBA-ABC2-342FE08F6B10",
     "transfer_control": "3C920005-9916-4EBA-ABC2-342FE08F6B10",
     "psm": "3C920007-9916-4EBA-ABC2-342FE08F6B10",
-    "protocol_version": "3C920008-9916-4EBA-ABC2-342FE08F6B10"
+    "protocol_version": "3C920008-9916-4EBA-ABC2-342FE08F6B10",
+    "weather_request_service": "B3B60000-33B4-4F02-A5FF-E5954D54B5AA",
+    "weather_request_context": "B3B60001-33B4-4F02-A5FF-E5954D54B5AA"
+  },
+  "uuid_notes": {
+    "weather_request_service": "A random 128-bit base of its own (WX3 #1188), deliberately NOT a block inside the OBC Control base: iOS matches the advertisement on this UUID alone, so the two services must be independently advertisable. Both live in GATT at all times — the device swaps which one it ADVERTISES. Advertising byte order is the display form reversed: AA B5 54 4D 95 E5 FF A5 02 4F B4 33 00 00 B6 B3",
+    "weather_request_context": "The read-only, authenticated request-context characteristic. Authenticated because the value says where the rider is; an unbonded peer gets an ATT security error and does not consume the pending request"
+  },
+  "feature_bits": {
+    "weather": "0x1",
+    "_note": "The protocolVersion read's trailing feature_bits u32 (spec 1, WX3 #1188). One bit covers the whole Weather Request contract — the secondary service, the request context, object type 20 and the Config refresh field — because a phone that has only some of those can do nothing. Unknown bits are ignored; an absent word means a firmware that predates it, never a fabricated 0"
   },
   "fixtures": {
     "route-waypoints.obcr": {
@@ -191,7 +201,28 @@
       "format": "Config v1 (spec 7.3)",
       "byte_len": 13,
       "name": "OBC Tourer",
-      "units": "metric (0)"
+      "units": "metric (0)",
+      "weather_refresh": null,
+      "_note": "No trailing refresh byte — what an app predating WX3 (#1188) writes to rename the device. A reader must take the absent field as UNSPECIFIED (device default), never as Off, or a rename silently switches weather off"
+    },
+    "config-weather-refresh.bin": {
+      "format": "Config (spec 7.3) with the WX3 (#1188) trailing field — name_len u16 · name · units u8 · weather_refresh u8",
+      "byte_len": 14,
+      "name": "OBC Alpine",
+      "units": "imperial (1)",
+      "weather_refresh": 3,
+      "weather_refresh_minutes": 60,
+      "_note": "The pair with config-v1.bin is the fixture: same object, one appended byte. The only way to get this wrong is the offset, and an off-by-one reads the shorter file correctly. Units are imperial on purpose, so the refresh byte follows a NONZERO units byte rather than a zero a misaligned reader could take for padding. Refresh enum: 0 Off · 1 15 min · 2 30 min (default) · 3 60 min · 4 120 min; an out-of-range value is malformed, not a default"
+    },
+    "config-weather-refresh-unknown.bin": {
+      "format": "Config (spec 7.3) with a WX3 trailing field naming an interval no version defines",
+      "byte_len": 15,
+      "name": "OBC Horizon",
+      "units": "metric (0)",
+      "weather_refresh": 200,
+      "weather_refresh_minutes": null,
+      "weather_refresh_known": false,
+      "_note": "The SAME blob read twice, with two right answers (spec 11.8, #1214). Phone -> device, as a Config WRITE: rejected — a device cannot honour an interval it does not know, and storing the default, Off, or the previous value would all tell the rider their choice was applied when it was discarded. Device -> phone, as a Config READ: unknown, never fatal — an unrecognised value arriving FROM a device is a NEWER device, and a direction-blind reject would mean appending a fifth interval broke every shipped app, right down to renaming the device. Unknown is its own state: not Off, not the default, and distinguishable from ABSENT, so implementations keep the raw byte and round-trip it verbatim. Units are metric on purpose: an off-by-one reader lands on that zero and decodes a perfectly KNOWN Off, so the misalignment surfaces as a wrong answer instead of another 'unknown' the tolerant path would have accepted anyway. The 11-byte name is a third distinct length across the three Config fixtures, so no reader passes all of them with one hard-coded index"
     },
     "transfer-upload-start.bin": {
       "format": "transferControl (spec 4.2) — 12 bytes, protocol v2",
@@ -385,7 +416,18 @@
       "version": 2,
       "store_epoch": "0xA1B2C3D4",
       "obcm_version": 13,
-      "_note": "obcm_version is the OBCM map-format version the reader reads (obc_formats::obcm::VERSION), NOT the protocol version beside it. The builder self-sources it, so an OBCM bump re-cuts this fixture and this number on purpose."
+      "feature_bits": null,
+      "_note": "obcm_version is the OBCM map-format version the reader reads (obc_formats::obcm::VERSION), NOT the protocol version beside it. The builder self-sources it, so an OBCM bump re-cuts this fixture and this number on purpose. Since WX3 (#1188) this is the read a device WITHOUT the weather contract serves — the capability word is absent, so has_weather is false; version-read-features.bin is the widened form."
+    },
+    "version-read-features.bin": {
+      "format": "protocolVersion read (spec 1), WX3 #1188 — version u16 · store_epoch u32 · obcm_version u8 · feature_bits u32",
+      "byte_len": 11,
+      "version": 2,
+      "store_epoch": "0xC0DEF00D",
+      "obcm_version": 13,
+      "feature_bits": "0x1",
+      "features": ["weather"],
+      "_note": "The only read that entitles a phone to look for the Weather Request service. The capability word is an APPEND — the protocol version underneath it does not move — and the epoch deliberately differs from the 0xA1B2C3D4 the three older identity reads share, so a consumer that opens the wrong file fails on the epoch rather than passing everything except the feature word. obcm_version is self-sourced like its siblings'. A read of 8, 9 or 10 bytes is a broken u32, not a smaller capability set: it decodes as feature_bits absent."
     },
     "version-read-noobcm.bin": {
       "format": "protocolVersion read (spec 1), pre-#911 — version u16 · store_epoch u32",
@@ -442,6 +484,106 @@
         }
       ],
       "total": 1
+    },
+    "weather-request-context-full.bin": {
+      "format": "weatherRequestContext v1 (spec 11, WX3 #1188) — 52 bytes LE: version u8 · encoded_len u8 · validity u16 · reason u16 · refresh u8 · reserved0 u8 · request_id u32 · lat_udeg i32 · lon_udeg i32 · fix_utc i64 · bearing_deg u16 · speed_deci_ms u16 · route_id u16 · reserved1 u16 · bundle_generation u32 · bundle_generated_at i64 · bundle_crc32 u32",
+      "byte_len": 52,
+      "version": 1,
+      "encoded_len": 52,
+      "validity": "0x1F",
+      "validity_flags": ["position", "bearing", "speed", "bundle", "route"],
+      "reason": "0x1",
+      "reason_flags": ["scheduled"],
+      "refresh": 2,
+      "refresh_minutes": 30,
+      "request_id": "0x11880001",
+      "lat_udeg": 47999008,
+      "lon_udeg": 7842104,
+      "fix_utc": 1800001800,
+      "bearing_deg": 342,
+      "speed_deci_ms": 71,
+      "route_id": 7,
+      "bundle_generation": 6,
+      "bundle_generated_at": 1800000000,
+      "bundle_crc32": "0xBC1E46C8",
+      "held_bundle": "weather-dwd-96x96-9f.obcw",
+      "_note": "A rider mid-ride with everything the device can know. The bundle group identifies a bundle that EXISTS: generation and generated_at are read out of weather-dwd-96x96-9f.obcw's header and bundle_crc32 is that file's whole-object CRC-32 — the number an upload of it announced, not its internal header CRC (0xFBFBD2D2). fix_utc is exactly one 30-minute refresh interval past bundle_generated_at, so REASON_SCHEDULED is arithmetic the same file supports. route_id 7 is the waypoint route route-list.bin catalogs. Validity bits: 0 position · 1 bearing · 2 speed · 3 bundle · 4 route. Reason bits: 0 scheduled · 1 urgent · 2 retry · 3 no_bundle · 4 out_of_area. Reserved bytes are written zero but IGNORED on read, and unknown validity/reason bits are ignored rather than rejected"
+    },
+    "weather-request-context-empty.bin": {
+      "format": "weatherRequestContext v1 (spec 11) — the resting value",
+      "byte_len": 52,
+      "version": 1,
+      "encoded_len": 52,
+      "validity": "0x0",
+      "validity_flags": [],
+      "reason": "0x0",
+      "reason_flags": [],
+      "refresh": 2,
+      "refresh_minutes": 30,
+      "request_id": 0,
+      "_note": "What the GATT attribute holds between requests, so a peer that reads it out of turn gets a structurally valid 'nothing is due' rather than the last ride's coordinates. Not all-zeroes: version 1 and the default 30-minute refresh are still stated, because an all-zero attribute would decode as layout version 0 with weather switched Off, and neither is true. Every field after the refresh byte is zero"
+    },
+    "weather-request-context-no-fix.bin": {
+      "format": "weatherRequestContext v1 (spec 11) — an urgent request with no fix and no bundle",
+      "byte_len": 52,
+      "version": 1,
+      "encoded_len": 52,
+      "validity": "0x0",
+      "validity_flags": [],
+      "reason": "0xA",
+      "reason_flags": ["urgent", "no_bundle"],
+      "refresh": 0,
+      "refresh_minutes": null,
+      "request_id": "0x11880002",
+      "_note": "Cold start indoors: the rider opened Weather before the receiver has a fix and with nothing usable on the card. The phone can still fetch by its own location, so this is a well-formed request, not a suppressed one. Two things are pinned here: absence is a CLEARED FLAG, so the zero coordinates must not put a rider at 0N 0E holding generation 0; and refresh Off configures the SCHEDULE, not the right to ask — a phone that gated on the refresh byte would answer everyone except the riders who turned automatic refresh off and then asked by hand"
+    },
+    "weather-request-context-unknown-refresh.bin": {
+      "format": "weatherRequestContext v1 (spec 11) — a refresh byte this layout version does not define",
+      "byte_len": 52,
+      "version": 1,
+      "encoded_len": 52,
+      "validity": "0x1F",
+      "validity_flags": ["position", "bearing", "speed", "bundle", "route"],
+      "reason": "0x1",
+      "reason_flags": ["scheduled"],
+      "refresh": 9,
+      "refresh_minutes": null,
+      "refresh_known": false,
+      "request_id": "0x11880003",
+      "lat_udeg": 47999008,
+      "lon_udeg": 7842104,
+      "fix_utc": 1800001800,
+      "bearing_deg": 342,
+      "speed_deci_ms": 71,
+      "route_id": 7,
+      "bundle_generation": 6,
+      "bundle_generated_at": 1800000000,
+      "bundle_crc32": "0xBC1E46C8",
+      "held_bundle": "weather-dwd-96x96-9f.obcw",
+      "_note": "The day a firmware appends a fifth refresh interval, this is the byte every phone already in the field receives (spec 11.8, #1214). A device -> phone read may NEVER treat it as fatal: an unrecognised value here is a newer firmware, not a malformed one, exactly as an unrecognised reason bit is. A direction-blind reject — the trap an adversarial review of PR #1214 found in the canonical Rust — would have turned an ordinary enum append into the day weather went dead on every shipped app. Readers decode it as UNKNOWN (not Off, not the default, either of which would misreport the rider's own setting) and carry the RAW byte so it round-trips verbatim. The file is weather-request-context-full.bin at every offset but two — the refresh byte at 6 and the request-id nonce at 8..12 — so the rule is checkable by byte comparison: an unknown interval costs a reader the schedule and nothing else, not the fix, the route or the bundle identity. 9 is well clear of the enum's 0..=4, so no plausible future append quietly makes this file legal"
+    },
+    "weather-request-context-southern.bin": {
+      "format": "weatherRequestContext v1 (spec 11) — sign coverage for the four signed fields",
+      "byte_len": 52,
+      "version": 1,
+      "encoded_len": 52,
+      "validity": "0xF",
+      "validity_flags": ["position", "bearing", "speed", "bundle"],
+      "reason": "0x1",
+      "reason_flags": ["scheduled"],
+      "refresh": 3,
+      "refresh_minutes": 60,
+      "request_id": "0x11880004",
+      "lat_udeg": -49330889,
+      "lon_udeg": -72886121,
+      "fix_utc": -1000000000,
+      "bearing_deg": 197,
+      "speed_deci_ms": 43,
+      "route_id": 0,
+      "bundle_generation": 4294967294,
+      "bundle_generated_at": -1000003600,
+      "bundle_crc32": "0x80000001",
+      "_note": "Shaped for COVERAGE, NOT PLAUSIBILITY, like track-log.obct: no other fixture in the set carries a negative coordinate or a pre-1970 time, so until this file existed a mirror could read lat_udeg/lon_udeg as u32 and both timestamps as u64 and pass the whole suite. El Chalten, Patagonia — southern AND western hemisphere. Read unsigned, lat_udeg becomes 4245636407 (~4245N) and lon_udeg 4222081175; fix_utc (1938-04-24T22:13:20Z) and bundle_generated_at become ~1.8e19 seconds, a device whose clock is 585 billion years ahead. Visibly impossible rather than subtly wrong, which is what a sign fixture is for, and the two i64s sit at different offsets (20 and 40) so one correct sign extension cannot cover for the other. The bundle group runs the trap the other way: generation and crc32 both have their top bit set, so a mirror reading them SIGNED gets -2 and -2147483647 — a codec that 'fixed' signedness by flipping every field fails just as loudly. That group is synthetic (no checked-in OBCW has a pre-1970 generated_at), unlike the full context's, which names a real file. route_id is the one cleared group, so the file says something about a clear flag as well as the four it exercises. fix_utc is one 60-minute interval past bundle_generated_at, matching the refresh it reports"
     }
   },
   "weather": {

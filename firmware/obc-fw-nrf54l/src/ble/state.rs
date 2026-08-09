@@ -12,6 +12,7 @@ use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::signal::Signal;
+use embassy_time::{Duration, Instant};
 
 use crate::link::Armed;
 
@@ -137,6 +138,50 @@ static RADIO_ENABLED: AtomicBool = AtomicBool::new(true);
 /// a `Signal` payload) so a toggle bounced off-and-on between polls degrades to a harmless
 /// re-advertise, never a stuck state.
 static RADIO_EDGE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+// ============================ Secondary advertising intent ============================
+
+/// A pending request for the peripheral advertiser to expose the dedicated **Weather Request**
+/// service instead of OBC Control (spec §11). The GATT database always contains both services; this
+/// bit only selects the one UUID that fits in the single legacy primary advertisement — which is
+/// why it is a swap rather than a second advertised UUID.
+static WEATHER_REQUEST_PENDING: AtomicBool = AtomicBool::new(false);
+static WEATHER_REQUEST_EDGE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+static WEATHER_REQUEST_BUDGET: BlockingMutex<CriticalSectionRawMutex, Cell<Option<obc_ble::WeatherRequestBudget>>> =
+    BlockingMutex::new(Cell::new(None));
+
+// The arming seam. Today only the `ble-weather-request` harness calls it; the production
+// lifecycle is the second caller, so it stays compiled (and type-checked) in every build rather
+// than being feature-gated out and rotting.
+#[cfg_attr(not(feature = "ble-weather-request"), allow(dead_code))]
+pub(crate) fn arm_weather_request(window: Duration) {
+    WEATHER_REQUEST_BUDGET.lock(|budget| {
+        budget.set(Some(obc_ble::WeatherRequestBudget::new(Instant::now().as_ticks(), window.as_ticks())))
+    });
+    if !WEATHER_REQUEST_PENDING.swap(true, Ordering::Relaxed) {
+        WEATHER_REQUEST_EDGE.signal(());
+    }
+}
+
+pub(crate) fn clear_weather_request() {
+    WEATHER_REQUEST_BUDGET.lock(|budget| budget.set(None));
+    if WEATHER_REQUEST_PENDING.swap(false, Ordering::Relaxed) {
+        WEATHER_REQUEST_EDGE.signal(());
+    }
+}
+
+pub(crate) fn weather_request_pending() -> bool {
+    WEATHER_REQUEST_PENDING.load(Ordering::Relaxed)
+}
+
+pub(crate) async fn weather_request_changed() {
+    WEATHER_REQUEST_EDGE.wait().await;
+}
+
+pub(crate) fn weather_request_remaining() -> Option<Duration> {
+    let now = Instant::now().as_ticks();
+    WEATHER_REQUEST_BUDGET.lock(|budget| budget.get().map(|budget| Duration::from_ticks(budget.remaining_ticks(now))))
+}
 
 /// The Bluetooth screen's **Forget phone** (#455), rung by the ride loop after
 /// [`App::drain_host_commands`](obc_app::App::drain_host_commands): the lifecycle loop clears the RRAM bond

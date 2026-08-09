@@ -25,6 +25,7 @@ use obc_formats::io::{ByteSink, Error, SliceSource};
 use obc_route::gpx_to_obcr;
 
 pub mod obcw;
+pub mod weather_request;
 
 /// The `specs/vectors/` directory at the repo root.
 pub fn dir() -> PathBuf {
@@ -733,6 +734,36 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         ("ride-v1.bin", ride_v1()),
         ("ride-v2.bin", ride_v2()),
         ("config-v1.bin", config_v1()),
+        // The same object with the WX3 (#1188) refresh byte appended — the *pair* is the fixture.
+        // Config is append-only, so the only thing that can go wrong is the offset: a reader that
+        // takes `units` for the refresh (or looks one byte past the end) passes `config-v1.bin` and
+        // fails this one. Imperial units and a 10-byte name, both different from the file above, so
+        // the trailing byte is not merely where it was last time.
+        (
+            "config-weather-refresh.bin",
+            weather_request::config_weather_refresh(
+                weather_request::CONFIG_NAME,
+                weather_request::CONFIG_UNITS,
+                weather_request::REFRESH_EVERY_60,
+            ),
+        ),
+        // The same object again with a refresh byte **no version of this enum defines** (#1214).
+        // Config is the one direction §11.8 makes strict, so this file is read twice and must give
+        // two different answers: a device applying it as a *write* refuses (it cannot honour an
+        // interval it does not know, and storing anything else would report a setting the rider
+        // never chose), while a host *reading* it sees "unknown" and carries on — because the same
+        // blob is what a newer firmware serves, and a host that rejected it could no longer read
+        // Config even to rename the device. Metric here, unlike the file above: an off-by-one reader
+        // then lands on that zero and decodes a *known* `Off`, so the misalignment is a wrong answer
+        // rather than another "unknown" the tolerant path would have swallowed.
+        (
+            "config-weather-refresh-unknown.bin",
+            weather_request::config_weather_refresh(
+                weather_request::CONFIG_UNKNOWN_NAME,
+                weather_request::CONFIG_UNKNOWN_UNITS,
+                weather_request::CONFIG_UNKNOWN_REFRESH,
+            ),
+        ),
         // The full protocolVersion read (spec §1): version 2 + a store epoch nonce + the OBCM
         // map-format version the reader reads. The last one is **self-sourced** from
         // `obc_formats::obcm::VERSION` rather than written out as a literal: the fixture's whole
@@ -746,6 +777,22 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         // The version-only protocolVersion read (spec §1, #776): a device with no mounted store
         // serves just the 2-byte version — the app treats the absent epoch as a failed identity read.
         ("version-read-nostore.bin", version_read_nostore(2)),
+        // The **11-byte** read a weather-capable device serves (WX3, #1188): the seven bytes above
+        // plus `feature_bits`, with `FEATURE_WEATHER` set. Kept as a fourth file rather than by
+        // re-cutting `version-read.bin`, because the three lengths are all still real firmware —
+        // this one is the *only* read that entitles a phone to look for the secondary service, and
+        // the fixture set has to hold both sides of that gate. The `obcm_version` byte is
+        // self-sourced like its shorter siblings'; the epoch deliberately is not `0xA1B2C3D4`, so a
+        // consumer reading the wrong file fails on the epoch rather than on the feature word alone.
+        (
+            "version-read-features.bin",
+            weather_request::version_read_features(
+                2,
+                weather_request::FEATURES_STORE_EPOCH,
+                obc_formats::obcm::VERSION,
+                weather_request::FEATURE_WEATHER,
+            ),
+        ),
         // op=1 upload, type=1 route, id 0xFFFF (new) — 12 bytes (no offset in v2).
         ("transfer-upload-start.bin", transfer_control(1, 1, 0xFFFF, len, crc)),
         // op=1 upload, type=17 mapShard (§4.1, #1039): one shard of a volume set. `object_id` is
@@ -861,6 +908,37 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
             "trip-list.bin",
             trip_list(&[trip_list_entry(TRIP_ID, trip_len, 2 * 2207, 2 * 76, 3, TRIP_NAME, trip_crc)], 1),
         ),
+        // The three `weatherRequestContext` reads (§11, WX3 #1188) — the whole of what the device
+        // says before the companion disconnects and goes to the network. Three files because the
+        // characteristic has three genuinely different states and the difference between them is
+        // *which flags are clear*, which is exactly the kind of thing a mirror implementation
+        // reproduces by encoding zeros and calling it agreement.
+        //
+        // Everything present: a fix, a bearing, a speed, an active route (id 7, the route the rest
+        // of these fixtures catalog) and a bundle whose generation/time/CRC are read back out of
+        // `weather-dwd-96x96-9f.obcw`, so the "bundle I hold" claim names a bundle that exists.
+        ("weather-request-context-full.bin", weather_request::full()),
+        // The resting value the attribute holds between requests. Not all-zeroes: version 1 and the
+        // default 30-minute refresh are still stated, because a device with nothing to ask is not a
+        // device speaking layout version 0 with weather switched off.
+        ("weather-request-context-empty.bin", weather_request::empty()),
+        // The opposite corner: an urgent request with no fix and no bundle, raised on a device whose
+        // *scheduled* refresh is Off. Absence is carried by cleared validity bits, never by sentinel
+        // coordinates — a phone must not read this as a rider at 0°N 0°E holding bundle generation 0.
+        ("weather-request-context-no-fix.bin", weather_request::no_fix()),
+        // The forward-compatibility file (#1214): the full context with a refresh byte this enum
+        // does not define. It is `weather-request-context-full.bin` at every other offset on
+        // purpose, so the rule it pins is checkable by byte comparison — an interval a build does
+        // not recognise costs it the schedule and nothing else. A reader that rejected this read
+        // would turn appending a fifth interval, an ordinary enum append, into the day weather went
+        // dead on every phone in the field.
+        ("weather-request-context-unknown-refresh.bin", weather_request::unknown_refresh()),
+        // Sign coverage (#1214), which nothing else in the set had: a rider in Patagonia with a
+        // pre-1970 clock — negative lat, negative lon, and both i64 timestamps negative — plus a
+        // bundle generation and CRC with their top bits set. Four fields that a mirror reading them
+        // unsigned gets visibly wrong, and two that a mirror reading them *signed* gets wrong the
+        // other way. Shaped for coverage rather than plausibility, like `track-log.obct`.
+        ("weather-request-context-southern.bin", weather_request::southern()),
     ];
     fixtures.extend(obcw::all());
     fixtures

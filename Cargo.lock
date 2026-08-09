@@ -2746,6 +2746,7 @@ dependencies = [
  "obc-crc",
  "obc-formats",
  "obc-vectors",
+ "obc-weather",
 ]
 
 [[package]]

@@ -55,6 +55,7 @@ import {
     SINGLETON_OBJECT_ID,
     TransferStatus,
     decodeConfig,
+    knownWeatherRefresh,
     decodeTransferControl,
     encodeConfig,
     encodeStatusMessage,
@@ -344,6 +345,9 @@ export interface MockDeviceOptions {
      *  serves the 6-byte read; a peer must read that as *unknown* and offer the download stating
      *  the version, never as "supports OBCM v0". */
     obcmVersion?: number | null;
+    /** The capability word (§1, WX3). `null` models a firmware predating it, which a peer must read
+     *  as *unknown* — the old-client path — rather than as a device that announced no features. */
+    featureBits?: number | null;
     deviceInfo?: DeviceInfo;
     config?: DeviceConfig;
     /** The update-slot ceiling. An announced `fwImage` past it is rejected before any bytes move. */
@@ -383,6 +387,7 @@ export class MockDevice {
     private storeEpoch: number | null;
     private readonly protocolVersion: number;
     private readonly obcmVersion: number | null;
+    private readonly featureBits: number | null;
     private info: DeviceInfo;
     private config: DeviceConfig;
 
@@ -506,12 +511,16 @@ export class MockDevice {
         this.storeEpoch = options.storeEpoch === undefined ? 0xa1b2c3d4 : options.storeEpoch;
         this.protocolVersion = options.protocolVersion ?? PROTOCOL_VERSION;
         this.obcmVersion = options.obcmVersion === undefined ? REFERENCE_OBCM_VERSION : options.obcmVersion;
+        // The reference device announces no optional contracts: weather is the phone's path, and a
+        // USB host that saw the bit set would learn nothing it could act on. `0` rather than `null`
+        // so the loopback still serves the full 11-byte read that a current firmware serves.
+        this.featureBits = options.featureBits === undefined ? 0 : options.featureBits;
         this.info = options.deviceInfo ?? {
             firmwareRevision: "0.4.0+abc1234",
             hardwareRevision: "obc-lm20-r1",
             serialNumber: "0011223344556677",
         };
-        this.config = options.config ?? { name: "OBC Tourer", units: 0 };
+        this.config = options.config ?? { name: "OBC Tourer", units: 0, weatherRefresh: null };
         this.maxFwImageLen = options.maxFwImageLen ?? 1024 * 1024;
         this.maxRoutes = options.maxRoutes ?? MAX_ROUTES;
         this.maxTrips = options.maxTrips ?? MAX_TRIPS;
@@ -694,6 +703,7 @@ export class MockDevice {
                         version: this.protocolVersion,
                         storeEpoch: this.storeEpoch,
                         obcmVersion: this.obcmVersion,
+                        featureBits: this.featureBits,
                     }),
                 );
                 return;
@@ -706,9 +716,22 @@ export class MockDevice {
             case HostFrame.CardFreeRead:
                 await this.send(DeviceFrame.CardFree, encodeCardFree(this.cardFreeBytes));
                 return;
-            case HostFrame.ConfigWrite:
-                this.config = decodeConfig(frame.payload);
+            case HostFrame.ConfigWrite: {
+                // The one place in this codebase where TypeScript plays the *device*, so it is the
+                // one place §11.8's strict half applies: a device asked to adopt a refresh interval
+                // it cannot honour refuses the write rather than storing something the rider never
+                // chose. Readers elsewhere stay tolerant — see `knownWeatherRefresh`.
+                const written = decodeConfig(frame.payload);
+                if (knownWeatherRefresh(written.weatherRefresh) === null && written.weatherRefresh !== null) {
+                    return; // refused; the stored config is left exactly as it was
+                }
+                // An *absent* field is not a request to reset anything (§7.3): keep what we hold.
+                this.config =
+                    written.weatherRefresh === null
+                        ? { ...written, weatherRefresh: this.config.weatherRefresh }
+                        : written;
                 return;
+            }
             case HostFrame.Command:
                 await this.command(frame.payload);
                 return;

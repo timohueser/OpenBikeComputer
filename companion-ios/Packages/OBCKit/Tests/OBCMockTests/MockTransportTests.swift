@@ -1,5 +1,6 @@
 import XCTest
 import OBCDomain
+import OBCTransport
 @testable import OBCMock
 
 /// Tests run in Debug, so `#if DEBUG` is active and `OBCMock` is non-empty here.
@@ -64,6 +65,39 @@ final class MockTransportTests: XCTestCase {
         XCTAssertEqual(config.name, "Ridgeline")
         XCTAssertEqual(config.units, .imperial)
         XCTAssertEqual(info.name, "Ridgeline")
+    }
+
+    /// Spec §11.8, write direction: an absent refresh field means **leave the stored value
+    /// alone**, not "reset to the default". A rename is exactly the write that carries no refresh
+    /// byte, so a device that treated absence as a choice would switch a rider who deliberately
+    /// picked `Off` back to 30-minute wakeups every time they renamed it.
+    func testWriteConfigWithoutARefreshFieldLeavesTheStoredIntervalAlone() async throws {
+        let transport = MockTransport(control: fastControl())
+        try await transport.writeConfig(DeviceConfig(name: "Ridgeline", weatherRefresh: .off))
+        let stored = try await transport.readConfig()
+        XCTAssertEqual(stored.knownWeatherRefresh, .off)
+
+        // …now the rename an app predating WX3 writes: name only, no refresh byte.
+        try await transport.writeConfig(DeviceConfig(name: "Alpine"))
+        let after = try await transport.readConfig()
+        XCTAssertEqual(after.name, "Alpine")
+        XCTAssertEqual(after.knownWeatherRefresh, .off, "the rename must not re-enable weather")
+    }
+
+    /// The other half of §11.8: the one direction that is strict. A device cannot honour an
+    /// interval it does not know, and storing anything else would report a setting back to the
+    /// rider that was in fact discarded.
+    func testWriteConfigRefusesAnIntervalTheDeviceCannotHonour() async throws {
+        let transport = MockTransport(control: fastControl())
+        let before = try await transport.readConfig()
+        do {
+            try await transport.writeConfig(DeviceConfig(name: "Ridgeline", weatherRefreshRaw: 200))
+            XCTFail("a device asked to adopt an unknown interval must refuse")
+        } catch {
+            XCTAssertEqual(error as? WeatherRequestError, .unknownRefresh(200))
+        }
+        let after = try await transport.readConfig()
+        XCTAssertEqual(after, before, "and it stores nothing at all")
     }
 
     func testReadDiagnosticsReturnsFixtureBlob() async throws {

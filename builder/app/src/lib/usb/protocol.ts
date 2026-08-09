@@ -436,24 +436,36 @@ export interface VersionRead {
     /** `null` when the read carried no `obcm_version` byte: a firmware predating it, or the
      *  store-less short read (which stops before the epoch, let alone the byte after it). */
     obcmVersion: number | null;
+    /** The optional capability word (§1, WX3). `null` when the read carried no such field — a
+     *  firmware predating it — and never a fabricated `0`: both mean "no optional contracts", but
+     *  only one of them is something the device actually said. */
+    featureBits: number | null;
 }
 
+/** Bit 0 of {@link VersionRead.featureBits}: the device speaks the Weather Request contract (§11).
+ *  Nothing in the browser builder acts on it — the weather path is the phone's — but the identity
+ *  read is one wire shape across BLE and USB, and a mirror that cannot represent a field it will
+ *  routinely receive is a mirror that quietly drops it. */
+export const FEATURE_WEATHER = 1 << 0;
+
 export function encodeVersionRead(v: VersionRead): Uint8Array {
-    // The three lengths, in the one place that decides them. An `obcmVersion` without a
-    // `storeEpoch` has no encoding — the fields are positional — so it is dropped rather than
-    // silently shifted into the epoch's bytes.
-    const length = v.storeEpoch === null ? 2 : v.obcmVersion === null ? 6 : 7;
+    // The four lengths, in the one place that decides them. A trailing field without the one
+    // before it has no encoding — the fields are positional — so it is dropped rather than
+    // silently shifted into its predecessor's bytes.
+    const length =
+        v.storeEpoch === null ? 2 : v.obcmVersion === null ? 6 : v.featureBits === null ? 7 : 11;
     const out = new Uint8Array(length);
     const view = new DataView(out.buffer);
     view.setUint16(0, v.version, true);
     if (length >= 6) view.setUint32(2, v.storeEpoch as number, true);
     if (length >= 7) out[6] = v.obcmVersion as number;
+    if (length >= 11) view.setUint32(7, v.featureBits as number, true);
     return out;
 }
 
 export function decodeVersionRead(data: Uint8Array): VersionRead {
     if (data.length < 2)
-        throw new DecodeError("truncated", `identity read is ${data.length} bytes, expected 2, 6 or 7.`);
+        throw new DecodeError("truncated", `identity read is ${data.length} bytes, expected 2, 6, 7 or 11.`);
     const view = viewOf(data);
     return {
         version: view.getUint16(0, true),
@@ -462,6 +474,10 @@ export function decodeVersionRead(data: Uint8Array): VersionRead {
         // what let this field land without a `PROTOCOL_VERSION` bump, and it has to keep holding
         // for whatever lands after it.
         obcmVersion: data.length >= 7 ? data[6] : null,
+        // A *partial* capability word (8, 9 or 10 bytes) is absent, not the bytes that turned up:
+        // three bytes of a u32 are a broken read, not a small feature set, and treating them as
+        // data could claim a contract the device never announced.
+        featureBits: data.length >= 11 ? view.getUint32(7, true) : null,
     };
 }
 
@@ -473,7 +489,10 @@ export const CONFIG_MAX_NAME = 48;
 export const CONFIG_MAX_ENCODED = 128;
 
 /**
- * The Config object: `name_len u16 · name · units u8`, append-only.
+ * The Config object: `name_len u16 · name · units u8 · weather_refresh u8`, append-only.
+ *
+ * The trailing refresh byte is decoded **raw and unvalidated** — §11.8 makes an unrecognised value
+ * fatal in one direction only (a phone → device write), and this host is never that direction.
  *
  * Readers must ignore unknown trailing bytes and treat absent trailing fields as "device default" —
  * that rule *is* the version mechanism, so this decoder never rejects a longer blob from a newer
@@ -484,6 +503,54 @@ export interface DeviceConfig {
     name: string;
     /** `0 = metric · 1 = imperial`. */
     units: number;
+    /** The weather refresh interval (§7.3, §11.8) **as the raw byte**: `0 = Off · 1 = 15 · 2 = 30 ·
+     *  3 = 60 · 4 = 120` minutes. `null` when the blob carried no such byte, which on a read means
+     *  **device default** — not `Off`. Round-tripping a Config read through a writer that collapsed
+     *  the two would silently disable weather on a plain rename.
+     *
+     *  Raw, and deliberately **not** range-checked here — see {@link knownWeatherRefresh}. */
+    weatherRefresh: number | null;
+}
+
+/** The §11.8 refresh enum, as the wire discriminants. */
+export const WeatherRefresh = {
+    off: 0,
+    every15: 1,
+    every30: 2,
+    every60: 3,
+    every120: 4,
+} as const;
+export type WeatherRefreshValue = (typeof WeatherRefresh)[keyof typeof WeatherRefresh];
+
+/** The device default (epic #1185) — also what an *absent* field means on a **read**. */
+export const WEATHER_REFRESH_DEFAULT: WeatherRefreshValue = WeatherRefresh.every30;
+
+/** Minutes per interval; `null` for `off`, which has no interval rather than a zero one. */
+export const WEATHER_REFRESH_MINUTES: Record<WeatherRefreshValue, number | null> = {
+    [WeatherRefresh.off]: null,
+    [WeatherRefresh.every15]: 15,
+    [WeatherRefresh.every30]: 30,
+    [WeatherRefresh.every60]: 60,
+    [WeatherRefresh.every120]: 120,
+};
+
+/**
+ * The refresh interval **as a reader sees it**: the value when it names an interval this build
+ * knows, or `null` when the field was absent *or* names one it does not (§11.8's read direction).
+ *
+ * The tolerance is the point, and it is why {@link decodeConfig} does not range-check. This host is
+ * always the *reading* side — it never has to adopt an interval — and an unrecognised value arriving
+ * from a device is a **newer** device, not a broken one. Rejecting it would mean that appending a
+ * fifth interval, an ordinary append to an append-only enum, broke every shipped reader. The strict
+ * rule belongs to the one direction that must honour the value: a phone → device Config write, which
+ * this host does not perform (see `client.writeConfig`, which sends what the caller supplies).
+ *
+ * `null` is its own state — specifically **not** `off` and **not** the default. Callers that need to
+ * tell "absent" from "unrecognised" read the raw {@link DeviceConfig.weatherRefresh} beside this.
+ */
+export function knownWeatherRefresh(raw: number | null): WeatherRefreshValue | null {
+    if (raw === null) return null;
+    return (Object.values(WeatherRefresh) as number[]).includes(raw) ? (raw as WeatherRefreshValue) : null;
 }
 
 export function encodeConfig(c: DeviceConfig): Uint8Array {
@@ -491,10 +558,11 @@ export function encodeConfig(c: DeviceConfig): Uint8Array {
     if (name.length > CONFIG_MAX_NAME) {
         throw new RangeError(`device name is ${name.length} UTF-8 bytes, the cap is ${CONFIG_MAX_NAME}.`);
     }
-    const out = new Uint8Array(2 + name.length + 1);
+    const out = new Uint8Array(2 + name.length + 1 + (c.weatherRefresh === null ? 0 : 1));
     new DataView(out.buffer).setUint16(0, name.length, true);
     out.set(name, 2);
     out[2 + name.length] = c.units;
+    if (c.weatherRefresh !== null) out[3 + name.length] = c.weatherRefresh;
     return out;
 }
 
@@ -506,7 +574,11 @@ export function decodeConfig(data: Uint8Array): DeviceConfig {
     if (nameLen > CONFIG_MAX_NAME || 2 + nameLen + 1 > data.length) {
         throw new DecodeError("truncated", `Config name_len ${nameLen} does not fit its ${data.length}-byte blob.`);
     }
-    return { name: new TextDecoder().decode(data.subarray(2, 2 + nameLen)), units: data[2 + nameLen] };
+    return {
+        name: new TextDecoder().decode(data.subarray(2, 2 + nameLen)),
+        units: data[2 + nameLen],
+        weatherRefresh: data.length >= 4 + nameLen ? data[3 + nameLen] : null,
+    };
 }
 
 // --- shared decode helpers ----------------------------------------------------
