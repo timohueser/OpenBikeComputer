@@ -5,9 +5,9 @@ description: OBCM maps and OBCR routes — the binary, table-driven formats a mi
 
 # Data formats
 
-The device reads three kinds of file: an **OBCM** map, an **OBCR** route, and — beside a map, never inside it — an **OBCT** raster of ground heights. All are binary, and all exist for the same reason — a microcontroller should read them *directly off flash*, with no JSON to parse, no structure to rebuild in RAM, and no heap to churn. A host produces them once; the device just points at the bytes and draws. (A fourth format, the [catalog manifest](#the-catalog-the-map-builders-source-of-truth), never reaches the device at all — it is how a builder finds verified cells.)
+The device reads four kinds of file: an **OBCM** map, an **OBCR** route, an **OBCT** raster of ground heights, and an **OBCW** weather bundle refreshed by the companion. All are binary, and all exist for the same reason — a microcontroller should read them *directly off flash*, with no JSON to parse, no structure to rebuild in RAM, and no heap to churn. A host produces them once; the device just points at the bytes and draws. (The [catalog manifest](#the-catalog-the-map-builders-source-of-truth) never reaches the device at all — it is how a builder finds verified cells.)
 
-This page is the guided tour of what's actually in those files. The exhaustive byte-level tables live in the repo specs — [`OBCM_Spec.md`](src:specs/OBCM_Spec.md), [`OBCR_Spec.md`](src:specs/OBCR_Spec.md) and [`OBCT_Spec.md`](src:specs/OBCT_Spec.md) — so here we focus on *why* the bytes are shaped the way they are. Those root specifications remain the normative contracts; the dependency-free [`obc-formats`](src:firmware/obc-formats) crate is the code authority beneath them for version numbers, fixed record lengths, flags, sentinels, endian primitives, and the shared byte-I/O seam. Parsing, caching, conversion, and file assembly stay in the reader, route, and packer crates.
+This page is the guided tour of what's actually in those files. The exhaustive byte-level tables live in the repo specs — [`OBCM_Spec.md`](src:specs/OBCM_Spec.md), [`OBCR_Spec.md`](src:specs/OBCR_Spec.md), [`OBCT_Spec.md`](src:specs/OBCT_Spec.md) and [`OBCW_Spec.md`](src:specs/OBCW_Spec.md) — so here we focus on *why* the bytes are shaped the way they are. Those root specifications remain the normative contracts; the dependency-light [`obc-formats`](src:firmware/obc-formats) crate is the code authority beneath them for version numbers, fixed record lengths, flags, sentinels, endian primitives, and the shared byte-I/O seam. Parsing, caching, conversion, and file assembly stay in the reader, route, weather, and packer crates.
 
 ## Two binaries, one philosophy
 
@@ -1106,9 +1106,35 @@ directory scan. Inside a [volume set](#one-map-several-files) the raster is
 manifest — so a host resolving terrain by the sidecar convention and one reading the
 manifest role open the same file.
 
+## OBCW — provider-neutral weather
+
+Weather reaches the device as one provider-neutral object, not as MET, DWD or global-model
+responses. The phone owns HTTP, projection, licensing and source taxonomies; OBCW owns only the
+facts every device consumer needs: 24 hourly conditions, genuine rain-frame times, grid geometry,
+semantic quality, and canonical four-bit intensities. Swapping a provider therefore cannot change
+firmware or the on-device presentation.
+
+The front of the file is deliberately boring: a fixed header with generation/request correlation,
+validity, bounds and section offsets, followed by 24 fixed hourly records and a compact frame
+directory. No strings, floats, provider ids, display colors or polygons cross the boundary. Missing
+precipitation remains a distinct sentinel — it can never be mistaken for dry.
+
+Rain is cut into independently addressed 16 × 16 tiles. `raw4` packs two cells per byte; `RLE4`
+stays inside one tile and is chosen only when smaller. That local compression boundary is the RAM
+story: [`obc-weather`](src:firmware/obc-weather) retains only a parsed header, reads at most 128
+encoded bytes, and expands into a caller-owned 256-byte tile. A 96 × 96 × nine-frame raw DWD-shaped
+bundle is 46,480 bytes (45.39 KiB), inside the phone producer's separate 64 KiB policy without
+making 64 KiB a reader or format limit.
+
+Every accepted object passes the internal whole-bundle CRC and structural checks: checked offset
+arithmetic, canonical non-overlap, ordered timestamps, possible tile counts, defined nibbles, and
+RLE that ends at exactly 256 cells. A valid CRC over malicious structure is still rejected. The
+normative tables and rejection rules live in [`OBCW_Spec.md`](src:specs/OBCW_Spec.md); shared
+positive/negative objects live in [`specs/vectors/`](src:specs/vectors).
+
 ## Streaming: resident vs on-demand
 
-All three formats are read through one trait. Neither reader touches a filesystem directly — they ask a [`ByteSource`](src:firmware/obc-formats/src/io.rs) for bytes at an offset:
+All four formats are read through one trait. No reader touches a filesystem directly — it asks a [`ByteSource`](src:firmware/obc-formats/src/io.rs) for bytes at an offset:
 
 ```rust
 pub trait ByteSource {
@@ -1478,6 +1504,7 @@ The grid, theorem, seam rules, assembly contract, volume-set manifest bytes, and
 - The browser's copy of both converters — a thin wasm shim over the same routines, plus the error vocabulary a dropped file needs: [`obc-web-convert`](src:apps/obc-web-convert)
 - Checked-in bytes both directions are held to (a route and its OBCR, a track log and its GPX export): [`specs/vectors/`](src:specs/vectors)
 - Normative OBCM / OBCR / ride / track constants, primitive codecs, and the shared byte seam: [`obc-formats`](src:firmware/obc-formats)
+- The OBCW byte contract and reader: spec [`OBCW_Spec.md`](src:specs/OBCW_Spec.md), authority [`obc-formats/src/obcw.rs`](src:firmware/obc-formats/src/obcw.rs), allocation-free traversal [`obc-weather`](src:firmware/obc-weather), and independent Swift mirror [`OBCWeatherWire`](src:companion-ios/Packages/OBCKit/Sources/OBCWeatherWire)
 - The byte-level specs: [`OBCM_Spec.md`](src:specs/OBCM_Spec.md) · [`OBCR_Spec.md`](src:specs/OBCR_Spec.md) · [`obc-ble-interface-spec.md`](src:specs/obc-ble-interface-spec.md) (the wire contract routes/rides cross to the companion app)
 - The catalog manifest — spec [`OBCC_Spec.md`](src:specs/OBCC_Spec.md), generator [`obc-pack/src/catalog.rs`](src:host/obc-pack/src/catalog.rs), JSON Schema [`catalog.schema.json`](src:host/obc-pack/schema/catalog.schema.json)
 - The terrain artifact class — spec [`OBCT_Spec.md`](src:specs/OBCT_Spec.md) and `OBCC_Spec.md` §13, rasteriser [`obc-dem`](src:host/obc-dem), bakery stage [`obc-bake/src/terrain.rs`](src:host/obc-bake/src/terrain.rs)
