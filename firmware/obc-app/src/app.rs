@@ -163,6 +163,17 @@ pub struct AppState {
     /// the station instead of failing a plan). Carried here because both `handle` (the gate) and
     /// `draw` (the dimming) need it without a `Reader`.
     pub has_nav_graph: bool,
+    /// The rain map's selected **time step** (WX11): `0` = the current frame, `n` = the n-th
+    /// future frame of the active bundle. Written by the rain-map screen's Step arm (clamped to
+    /// [`rain_steps_ahead`](AppState::rain_steps_ahead)) and reset to `0` on every entry/exit, so
+    /// it can never leak a stale offset; read by the host when it leases the frame's
+    /// [`RainOverlayAdapter`](crate::RainOverlayAdapter) (`at_step`), so the leased raster and the
+    /// on-screen frame timestamp are one decision.
+    pub rain_step: u8,
+    /// How many future frames exist past the current one (WX11) — the clamp for
+    /// [`rain_step`](AppState::rain_step), host-refreshed from the snapshot
+    /// (`WeatherSnapshot::steps_ahead`) whenever it feeds weather. `0` when nothing is current.
+    pub rain_steps_ahead: u8,
 }
 
 impl AppState {
@@ -185,6 +196,8 @@ impl AppState {
             ble_paired: false,
             ble_forget_pending: false,
             has_nav_graph: false,
+            rain_step: 0,
+            rain_steps_ahead: 0,
         }
     }
 
@@ -1533,6 +1546,32 @@ impl App {
         self.ui.map_dirty = true;
     }
 
+    /// Host-push the **weather alert card** (WX11, epic #1185): RAIN AHEAD / STORM AHEAD with the
+    /// locked VIEW RAIN MAP + DISMISS actions. An alert already on the stack is *updated* in
+    /// place (re-fires never stack cards); the passkey card outranks it (the pairing prompt is
+    /// never covered — the upload-popup family's rule). Alert *generation* — thresholds, dedup,
+    /// cooldown persistence — is WX12's; this is only the presentation seam it (and the sim's
+    /// injection flag) drives.
+    pub fn show_weather_alert(&mut self, kind: crate::screen::WeatherAlertKind, minutes: u16) {
+        for scr in self.ui.stack.iter_mut() {
+            if let Screen::WeatherAlert(alert) = scr {
+                alert.update(kind, minutes);
+                self.ui.map_dirty = true;
+                return;
+            }
+        }
+        if matches!(self.ui.stack.last(), Some(Screen::Passkey(_))) {
+            return;
+        }
+        crate::screen::apply(
+            &mut self.ui.stack,
+            crate::screen::Transition::Push(Screen::WeatherAlert(crate::screen::WeatherAlertScreen::new(
+                kind, minutes,
+            ))),
+        );
+        self.ui.map_dirty = true;
+    }
+
     /// Drop **everything derived from the active route's geometry** — the whole-App seam, and the
     /// only thing route-replacing paths should call.
     ///
@@ -2424,6 +2463,7 @@ impl App {
         reader: &Reader,
         route: Option<&RouteReader>,
         rain: Option<&mut dyn obc_render::RainOverlaySource>,
+        weather: crate::weather::WeatherFeed,
         w: f32,
         h: f32,
         color_fn: F,
@@ -2439,6 +2479,7 @@ impl App {
             Some(reader),
             route,
             rain,
+            weather,
             w,
             h,
             &color_fn,
@@ -2459,6 +2500,7 @@ impl App {
         core_reader: &Reader,
         route: Option<&RouteReader>,
         rain: Option<&mut dyn obc_render::RainOverlaySource>,
+        weather: crate::weather::WeatherFeed,
         w: f32,
         h: f32,
         color_fn: F,
@@ -2475,6 +2517,7 @@ impl App {
             Some(core_reader),
             route,
             rain,
+            weather,
             w,
             h,
             &color_fn,
@@ -2576,7 +2619,19 @@ impl App {
         F: Fn(u16) -> D::Color,
         S: MapScene,
     {
-        self.render_scene_map_rain_timed(scratch, target, scene, core_reader, route, None, w, h, color_fn, clock)
+        self.render_scene_map_rain_timed(
+            scratch,
+            target,
+            scene,
+            core_reader,
+            route,
+            None,
+            crate::weather::WeatherFeed::NONE,
+            w,
+            h,
+            color_fn,
+            clock,
+        )
     }
 
     /// [`render_scene_map_timed`](App::render_scene_map_timed) plus the optional **rain overlay
@@ -2594,6 +2649,7 @@ impl App {
         core_reader: Option<&Reader>,
         route: Option<&RouteReader>,
         rain: Option<&mut dyn obc_render::RainOverlaySource>,
+        weather: crate::weather::WeatherFeed,
         w: f32,
         h: f32,
         color_fn: F,
@@ -2718,6 +2774,8 @@ impl App {
             map_name: map_name.as_str(),
             map_obcm_version: *map_obcm_version,
             card_free_bytes: *card_free_bytes,
+            weather: weather.snapshot,
+            weather_refreshing: weather.refreshing,
         };
         let mut rx = RenderFrame { scene, render: rx };
         // The one Canvas of the frame: every screen draws through it (the base screen — the only

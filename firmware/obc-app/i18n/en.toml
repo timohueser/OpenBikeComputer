@@ -26,6 +26,7 @@ routes = "Routes"
 rides = "Rides"
 pois = "POIs"
 map = "Map"
+weather = "Weather"
 settings = "Settings"
 
 # --- The mid-ride compass, the Up-ahead timeline, and the Detour chooser ---
@@ -205,6 +206,7 @@ ride = "Ride"
 display = "Display"
 connections = "Connections"
 power = "Power"
+weather = "Weather"
 system = "System"
 
 # --- Date & Time settings screen ---
@@ -570,3 +572,57 @@ cardtype_what = "Card too small"
 cardtype_fix = "Use an SDHC or SDXC card"
 storagefault_what = "Reader fault"
 storagefault_fix = "Restart the device"
+
+# --- The Weather surfaces (epic #1185, WX11): dashboard, hourly, rain map, alert ---
+[weather]
+title = "WEATHER"
+hourly = "HOURLY"
+rain_map = "RAIN MAP"
+updated = "Updated"
+updating = "UPDATING"
+dry_1 = "DRY FOR"
+dry_2 = "2 HOURS"
+rain = "RAIN"
+storm = "STORM"
+rain_in = "RAIN IN"
+storm_in = "STORM IN"
+now = "NOW"
+min = "MIN"
+in = "IN"
+update_needed = "WEATHER UPDATE NEEDED"
+hourly_only = "NO RAIN DATA HERE"
+hourly_only_sub = "Hourly forecast only"
+no_data = "NO WEATHER DATA"
+no_data_sub = "Connect phone to update"
+zoom_for_rain = "ZOOM IN FOR RAIN"
+alert_rain = "RAIN AHEAD"
+alert_storm = "STORM AHEAD"
+alert_rain_body = "Heavy rain on the route ahead."
+alert_storm_body = "Thunderstorm on the route ahead."
+view_rain_map = "VIEW RAIN MAP"
+dismiss = "DISMISS"
+
+# --- WeatherRefresh enum labels (Weather settings screen picker) ---
+[weather_refresh]
+off = "Off"
+m15 = "15 min"
+m30 = "30 min"
+m60 = "60 min"
+m120 = "120 min"
+
+# --- The Weather settings screen ---
+[weather_settings]
+title = "WEATHER"
+refresh = "Refresh"
+refresh_sub = "via phone"
+
+# --- Cardinal/octant letters (the hourly rows' meteorological wind-from labels) ---
+[compass]
+n = "N"
+ne = "NE"
+e = "E"
+se = "SE"
+s = "S"
+sw = "SW"
+w = "W"
+nw = "NW"

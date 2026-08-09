@@ -1,11 +1,12 @@
 //! The Menu overlay — **layout prototype pass**: two candidate designs behind the [`COMPASS`]
-//! switch. Both show the five entries (Routes / Rides / POIs / Map / Settings) and keep the list
-//! semantics: `turn` moves the selection (wrapping), `press` enters, `back` returns to the caller.
-//! Four stations open a menu; the **Map** station opens the Map screen directly (see [`open_map`]) —
-//! the live riding map while tracking, else a route-less browse map.
+//! switch. Both show the six entries (Routes / Rides / POIs / Map / Weather / Settings) and keep
+//! the list semantics: `turn` moves the selection (wrapping), `press` enters, `back` returns to
+//! the caller. Most stations open a menu; the **Map** station opens the Map screen directly (see
+//! [`open_map`]) — the live riding map while tracking, else a route-less browse map — and the
+//! **Weather** station opens the WX11 dashboard.
 //!
-//! * Compass dial: a wood bezel ring with the five entries as stations evenly spaced around the
-//!   ring (72° apart, starting from N — see [`station_dir`]), an amber needle that *sweeps* to the
+//! * Compass dial: a wood bezel ring with the entries as stations evenly spaced around the
+//!   ring (60° apart, starting from N — see [`station_dir`]), an amber needle that *sweeps* to the
 //!   selection (an ease-out driven through [`tick_timers`](MenuScreen::tick_timers)), and the
 //!   selected name in Display type below.
 //! * Card grid: the conventional icon-card layout under the standard title bar.
@@ -27,15 +28,15 @@ use super::{
     ScreenTick, SettingsScreen, Transition,
 };
 
-/// The number of menu entries (Routes / Rides / POIs / Map / Settings). A compile-time constant
-/// because the ring geometry + selection wrap depend on it and it never varies by language; the
-/// entries' *labels* are looked up per-language at draw time (see [`MenuText`]).
-pub(super) const N_ITEMS: usize = 5;
+/// The number of main-menu entries (Routes / Rides / POIs / Map / Weather / Settings). The ride
+/// menu keeps its own five-station count ([`ride_menu`](super::ride_menu)); the shared
+/// [`CompassDial`] takes the count per call, so the two rings can differ without drifting apart.
+const N_ITEMS: usize = 6;
 
-/// The menu's per-language copy, resolved once per frame — the bar caption plus the five entry
+/// The menu's per-language copy, resolved once per frame — the bar caption plus the six entry
 /// labels in ring order. Built fresh each draw because the language is a runtime value (the old
 /// `const ITEMS` array couldn't stay `const`); bundled so the layout helpers take one param, not
-/// six.
+/// seven.
 struct MenuText {
     title: &'static str,
     items: [&'static str; N_ITEMS],
@@ -50,6 +51,7 @@ impl MenuText {
                 rx.t(Msg::MenuRides),
                 rx.t(Msg::MenuPois),
                 rx.t(Msg::MenuMap),
+                rx.t(Msg::MenuWeather),
                 rx.t(Msg::MenuSettings),
             ],
         }
@@ -67,9 +69,10 @@ fn station_dir(i: usize, n: usize) -> (f32, f32) {
     (libm::sinf(a), -libm::cosf(a)) // screen coords: 0° = up, clockwise positive
 }
 
-/// Degrees the needle sweeps per Up/Down step — one station step around the ring of [`ITEMS`]
-/// (360° ÷ five entries = 72°).
-const STEP_DEG: f32 = 360.0 / N_ITEMS as f32;
+/// Degrees the needle sweeps per Up/Down step — one station step around a ring of `len` entries.
+fn step_deg(len: usize) -> f32 {
+    360.0 / len.max(1) as f32
+}
 
 /// Needle sweep tuning: an ease-out — the needle moves at `SWEEP_RATE` of the remaining arc per
 /// second, floored at `SWEEP_MIN_DEG_S` so the tail doesn't crawl. A single step lands in ≈200 ms.
@@ -95,9 +98,9 @@ impl CompassDial {
         self.selected
     }
 
-    pub(super) fn step(&mut self, n: i32) -> Transition {
-        self.target_deg += n as f32 * STEP_DEG;
-        list::on_step(&mut self.selected, n, N_ITEMS)
+    pub(super) fn step(&mut self, n: i32, len: usize) -> Transition {
+        self.target_deg += n as f32 * step_deg(len);
+        list::on_step(&mut self.selected, n, len)
     }
 
     /// [`Screen::tick_timers`] arm: advance the needle toward the target by the eased step for the
@@ -130,7 +133,8 @@ impl CompassDial {
     }
 
     /// Draw this dial through the one compass renderer. `icons` changes only the station glyphs
-    /// and their enabled state; all geometry and needle chrome stay shared.
+    /// and their enabled state; all geometry and needle chrome stay shared. The station count is
+    /// `items.len()` — the main menu's six and the ride menu's five share every other line.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn draw(
         &self,
@@ -140,7 +144,7 @@ impl CompassDial {
         ble_connected: bool,
         battery: &str,
         title: &str,
-        items: &[&str; N_ITEMS],
+        items: &[&str],
         icons: CompassIcons,
     ) {
         draw_compass(cv, w, h, self.selected, self.needle_deg, ble_connected, battery, title, items, icons);
@@ -161,12 +165,13 @@ impl MenuScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Step(n) => self.dial.step(n),
+            Gesture::Step(n) => self.dial.step(n, N_ITEMS),
             Gesture::Press => match self.dial.selected() {
                 0 => Transition::Push(Screen::RouteMenu(RouteMenuScreen::new())), // Routes
                 1 => Transition::Push(Screen::Rides(RidesScreen::new())),         // Rides
                 2 => Transition::Push(Screen::PoiMenu(PoiMenuScreen::new())),     // POIs
                 3 => open_map(cx),                                                // Map
+                4 => Transition::Push(Screen::Weather(super::WeatherScreen::new())), // Weather (WX11)
                 _ => Transition::Push(Screen::Settings(SettingsScreen::new())),   // Settings
             },
             Gesture::Back => Transition::Pop, // return to caller (Home or Map)
@@ -250,7 +255,7 @@ fn draw_compass(
     ble_connected: bool,
     battery: &str,
     title: &str,
-    items: &[&str; N_ITEMS],
+    items: &[&str],
     icons: CompassIcons,
 ) {
     use palette::*;
@@ -261,11 +266,12 @@ fn draw_compass(
     // Bezel ring: a wood disc with the parchment punched back out of the middle.
     cv.disc(c, 106, WOOD);
     cv.disc(c, 98, PARCHMENT);
-    // Bezel ticks at the **station midpoints** — one per entry, at `36° + k·72°` (halfway between
-    // adjacent stations), so no tick sits under a station disc. Count + angle both derive from
-    // `N_ITEMS`. Doubled 1px lines for a visible 2px stroke, radial extent r 88→96, in WOOD.
-    for k in 0..N_ITEMS {
-        let a = (k as f32 + 0.5) / N_ITEMS as f32 * core::f32::consts::TAU;
+    // Bezel ticks at the **station midpoints** — one per entry, halfway between adjacent
+    // stations, so no tick sits under a station disc. Count + angle both derive from the ring's
+    // entry count. Doubled 1px lines for a visible 2px stroke, radial extent r 88→96, in WOOD.
+    let n_ring = items.len();
+    for k in 0..n_ring {
+        let a = (k as f32 + 0.5) / n_ring as f32 * core::f32::consts::TAU;
         let (dx, dy) = (libm::sinf(a), -libm::cosf(a));
         let (ix, iy) = (si(1.0, dx * 88.0), si(1.0, dy * 88.0));
         let (ox, oy) = (si(1.0, dx * 96.0), si(1.0, dy * 96.0));
@@ -332,8 +338,9 @@ pub(super) fn draw_needle(cv: &mut impl Surface, c: Point, deg: f32, r: f32, hal
     }
 }
 
-/// The 2×2 card-grid layout under the standard title bar: amber fill on the selected card, a tan
-/// outline on the rest, each with its icon over a centred label.
+/// The two-column card-grid layout under the standard title bar: amber fill on the selected card,
+/// a tan outline on the rest, each with its icon over a centred label. Card height derives from
+/// the row count so six entries still fit the 320-px panel.
 fn draw_grid(
     cv: &mut impl Surface,
     w: i32,
@@ -345,23 +352,25 @@ fn draw_grid(
 ) {
     use palette::*;
     title_frame_ble(cv, w, h, txt.title, battery, ble_connected);
+    let rows = txt.items.len().div_ceil(2) as i32;
+    let card_h = ((h - 51 - 6 - (rows - 1) * 8) / rows).min(124);
     for (i, label) in txt.items.iter().enumerate() {
         let col = (i % 2) as i32;
         let row = (i / 2) as i32;
-        let (x, y) = (14 + col * 110, 51 + row * 132);
-        let area = rect(x, y, 102, 124);
+        let (x, y) = (14 + col * 110, 51 + row * (card_h + 8));
+        let area = rect(x, y, 102, card_h);
         let is_sel = i == selected;
         if is_sel {
             cv.round(area, 8, AMBER);
         } else {
             // Doubled 1px outlines for a 2px card edge.
             cv.round_outline(area, 8, RULE);
-            cv.round_outline(rect(x + 1, y + 1, 100, 122), 7, RULE);
+            cv.round_outline(rect(x + 1, y + 1, 100, card_h - 2), 7, RULE);
         }
         let ink = if is_sel { INK } else { SUBTEXT };
         let bg = if is_sel { AMBER } else { PARCHMENT };
-        draw_icon(cv, i, Point::new(x + 51, y + 48), 1.5, ink, bg);
-        cv.text(label, Point::new(x + 51, y + 92), Font::Label, TextAlign::Center, INK);
+        draw_icon(cv, i, Point::new(x + 51, y + card_h * 2 / 5), 1.5, ink, bg);
+        cv.text(label, Point::new(x + 51, y + card_h - 32), Font::Label, TextAlign::Center, INK);
     }
 }
 
@@ -380,8 +389,28 @@ fn draw_icon(cv: &mut impl Surface, i: usize, c: Point, k: f32, color: u16, bg: 
         1 => icon_rides(cv, c, k, color, bg),
         2 => icon_poi(cv, c, k, color, bg),
         3 => icon_map(cv, c, k, color),
+        4 => icon_weather(cv, c, k, color, bg),
         _ => icon_sliders(cv, c, k, color),
     }
+}
+
+/// The Weather station glyph: a sun disc peeking over a simple cloud silhouette — the dial's
+/// single-ink glyph language (the WX17 content icons stay on the weather screens themselves,
+/// where their two-color art belongs).
+fn icon_weather(cv: &mut impl Surface, c: Point, k: f32, color: u16, bg: u16) {
+    // Sun: a filled disc up-right, with four short diagonal rays (drawn as small discs so they
+    // survive the dial's scale).
+    let sun = Point::new(c.x + si(k, 5.0), c.y + si(k, -6.0));
+    cv.disc(sun, si(k, 5.0) as u32, color);
+    for (dx, dy) in [(-7.0, -7.0), (7.0, -7.0), (7.0, 7.0), (-7.0, 7.0)] {
+        cv.disc(Point::new(sun.x + si(k, dx), sun.y + si(k, dy)), si(k, 1.5).max(1) as u32, color);
+    }
+    // Cloud: two overlapped lobes over a flat base, punched apart from the sun by the bg gap.
+    let base_y = c.y + si(k, 6.0);
+    cv.disc(Point::new(c.x - si(k, 5.0), base_y - si(k, 3.0)), si(k, 5.5) as u32, color);
+    cv.disc(Point::new(c.x + si(k, 2.0), base_y - si(k, 5.0)), si(k, 4.5) as u32, color);
+    cv.fill(rect(c.x - si(k, 10.0), base_y - si(k, 2.0), si(k, 20.0), si(k, 5.0)), color);
+    let _ = bg; // same signature family as the punched glyphs; this one needs no cutout
 }
 
 /// Ride-menu station glyphs in ring order: waypoints, skip ahead, POIs, routes, main menu.
