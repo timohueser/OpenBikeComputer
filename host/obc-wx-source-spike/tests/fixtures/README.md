@@ -30,7 +30,7 @@ test.
 | File | Retrieval and exact request | Bytes | SHA-256 |
 | --- | --- | ---: | --- |
 | `met-locationforecast-oslo-24h.json` | 2026-08-09T08:35:28Z; [Locationforecast complete](https://api.met.no/weatherapi/locationforecast/2.0/complete?lat=59.9139&lon=10.7522&altitude=23). Full decoded response SHA-256: `244b71b1136f70a89d882c217f1878717eb85b962de057b446cdee06c17362e5`. | 8,083 | `55c8f8fb22719a9bc1c5d11c30872786afa290d38834537619478dee70e065c5` |
-| `met-locationforecast-manila-24h.json` | 2026-08-09T09:46:14Z; [Locationforecast complete](https://api.met.no/weatherapi/locationforecast/2.0/complete?lat=14.5995&lon=120.9842&altitude=16). Full decoded response SHA-256: `9e63ec334ddd7a36c33caf4a28d49b2e0ea8373317eec20e37f1e6e8c074f81d`. | 8,953 | `c6d527dd1094eecd5bfe9971c5e2a4546cbf01827517a9d3cfd3d8cbd7665f99` |
+| `met-locationforecast-manila-24h.json` | 2026-08-09T09:46:14Z; [Locationforecast complete](https://api.met.no/weatherapi/locationforecast/2.0/complete?lat=14.5995&lon=120.9842&altitude=16). Full decoded response SHA-256: `9e63ec334ddd7a36c33caf4a28d49b2e0ea8373317eec20e37f1e6e8c074f81d`. | 7,009 | `42d7808344f1b4f853f8feb43482ffa79979125ecf9d4f0a423d4836e4832165` |
 
 ## Upstream terms and required attribution
 
