@@ -39,10 +39,14 @@ pub trait ObjectStore {
 }
 
 /// Publish `frames` then `manifest`, in that order, with a remote existence/size check between.
-/// Returns the number of objects uploaded and their byte total (manifest included).
+/// `carried` names the already-published objects the new manifest still references (unchanged
+/// products' frames): they upload nothing, but they are head-verified all the same, so a
+/// lifecycle misconfiguration that expired them is caught **before** the manifest swears they
+/// exist. Returns the number of objects uploaded and their byte total (manifest included).
 pub fn publish(
     store: &mut dyn ObjectStore,
     frames: &[PlannedObject],
+    carried: &[(String, u64)],
     manifest: &PlannedObject,
 ) -> Result<(usize, u64), String> {
     let mut bytes = 0u64;
@@ -50,18 +54,20 @@ pub fn publish(
         store.put(object).map_err(|error| format!("{}: {error}", object.key))?;
         bytes += object.bytes.len() as u64;
     }
-    for object in frames {
-        match store.head(&object.key)? {
-            Some(remote) if remote == object.bytes.len() as u64 => {}
+    let expectations = frames
+        .iter()
+        .map(|object| (object.key.as_str(), object.bytes.len() as u64))
+        .chain(carried.iter().map(|(key, bytes)| (key.as_str(), *bytes)));
+    for (key, expected) in expectations {
+        match store.head(key)? {
+            Some(remote) if remote == expected => {}
             Some(remote) => {
                 return Err(format!(
-                    "{}: published as {remote} bytes but the bake produced {} — refusing to swap the manifest in",
-                    object.key,
-                    object.bytes.len()
+                    "{key}: published as {remote} bytes but the manifest expects {expected} — refusing to swap the manifest in"
                 ));
             }
             None => {
-                return Err(format!("{}: not fetchable after upload — refusing to swap the manifest in", object.key));
+                return Err(format!("{key}: not fetchable — refusing to swap the manifest in"));
             }
         }
     }
@@ -296,7 +302,40 @@ mod tests {
             cache_control: MANIFEST_CACHE_CONTROL,
             content_type: "application/json",
         };
-        let error = publish(&mut BrokenStore, &[frame], &manifest).unwrap_err();
+        let error = publish(&mut BrokenStore, &[frame], &[], &manifest).unwrap_err();
+        assert!(error.contains("refusing to swap the manifest in"), "{error}");
+    }
+
+    /// A carried-forward frame an unchanged product still references must be fetchable, or the
+    /// manifest swap is refused — a lifecycle misconfiguration must not outrun the manifest.
+    #[test]
+    fn a_missing_carried_frame_never_replaces_the_manifest() {
+        struct EmptyStore;
+        impl ObjectStore for EmptyStore {
+            fn describe(&self) -> String {
+                "empty".into()
+            }
+            fn put(&mut self, object: &PlannedObject) -> Result<(), String> {
+                if object.key.ends_with("manifest.json") {
+                    panic!("the manifest must never be uploaded past a missing carried frame");
+                }
+                Ok(())
+            }
+            fn head(&mut self, _key: &str) -> Result<Option<u64>, String> {
+                Ok(None)
+            }
+            fn get(&mut self, _key: &str) -> Result<Option<Vec<u8>>, String> {
+                Ok(None)
+            }
+        }
+        let manifest = PlannedObject {
+            key: "wx/v1/manifest.json".into(),
+            bytes: b"{}".to_vec(),
+            cache_control: MANIFEST_CACHE_CONTROL,
+            content_type: "application/json",
+        };
+        let carried = vec![("wx/v1/x/20270101T0000Z/f0.obcg".to_string(), 3u64)];
+        let error = publish(&mut EmptyStore, &[], &carried, &manifest).unwrap_err();
         assert!(error.contains("refusing to swap the manifest in"), "{error}");
     }
 }

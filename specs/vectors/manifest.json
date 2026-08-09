@@ -514,6 +514,7 @@
       "grid-invalid-raw-compressible.obcg": "raw4 payload made all-no-data although canonical RLE4 is 16 bytes; all CRCs honest",
       "grid-invalid-dry-encoded.obcg": "all-dry tile carried as an encoded RLE payload instead of the len-0 sentinel; all CRCs honest",
       "grid-invalid-dry-sentinel-nonzero.obcg": "len-0 sentinel entry with a nonzero CRC field; all CRCs honest",
+      "grid-invalid-dry-sentinel-edge-tile.obcg": "dry sentinel at a partial edge tile whose padding is no-data; all CRCs honest",
       "grid-invalid-tile-crc.obcg": "payload byte changed; object+header CRCs refreshed, tile CRC stale",
       "grid-invalid-reserved.obcg": "nonzero reserved header byte; all CRCs honest",
       "grid-invalid-flags.obcg": "Observed and Forecast both set; all CRCs honest"

@@ -220,6 +220,15 @@ impl Header {
     pub fn tile_cells(&self) -> usize {
         usize::from(self.tile_edge) * usize::from(self.tile_edge)
     }
+
+    /// True when `tile_index` names a partial tile at the north or east grid edge. Such a tile
+    /// contains no-data padding and may therefore never be a dry sentinel (spec §4.1).
+    pub fn tile_is_partial(&self, tile_index: u32) -> bool {
+        let edge = u32::from(self.tile_edge);
+        let tile_col = tile_index % self.tile_cols();
+        let tile_row = tile_index / self.tile_cols();
+        self.width < (tile_col + 1) * edge || self.height < (tile_row + 1) * edge
+    }
 }
 
 /// One decoded directory entry. `encoded_len == 0` is the all-dry sentinel: no payload bytes
@@ -458,8 +467,9 @@ pub fn validate_tile_payload(header: &Header, entry: &TileEntry, payload: &[u8])
     precip4::validate_cells(entry.codec, payload, header.tile_cells()).map_err(|_| DecodeError::TileCodec)
 }
 
-/// Decode one verified tile into `out` (`header.tile_cells()` bytes). A dry entry fills the tile
-/// with [`INTENSITY_DRY`] without touching payload bytes.
+/// Decode one verified tile into `out` (`header.tile_cells()` bytes). A dry entry has no
+/// payload bytes — offering any is rejected (the Swift decoder gives the identical verdict) —
+/// and fills the tile with [`INTENSITY_DRY`].
 pub fn decode_tile_cells(
     header: &Header,
     entry: &TileEntry,
@@ -470,6 +480,9 @@ pub fn decode_tile_cells(
         return Err(DecodeError::Bounds);
     }
     if entry.is_dry() {
+        if !payload.is_empty() {
+            return Err(DecodeError::Directory);
+        }
         out.fill(INTENSITY_DRY);
         return Ok(());
     }
@@ -699,6 +712,11 @@ pub fn validate(bytes: &[u8], scratch: &mut [u8]) -> Result<Header, DecodeError>
             }
             let entry = decode_entry(page_slice, index_in_page)?;
             if entry.is_dry() {
+                // §4.1: a partial edge tile contains no-data padding and can never be a dry
+                // sentinel — accepting one would let missing edge data decode as dry weather.
+                if header.tile_is_partial(tile_index as u32) {
+                    return Err(DecodeError::Directory);
+                }
                 continue;
             }
             if entry.data_offset != cursor {
@@ -860,6 +878,43 @@ mod tests {
         let header = validated(&bytes).unwrap();
         assert_eq!(header.data_len, 0);
         assert_eq!(bytes.len(), HEADER_LEN + header.page_bytes() as usize);
+    }
+
+    /// §4.1: a dry sentinel at a partial edge tile is rejected, and a dry entry offered payload
+    /// bytes is rejected — both with the same verdict the Swift decoder gives.
+    #[test]
+    fn dry_sentinels_are_forbidden_at_partial_edge_tiles_and_never_carry_payload() {
+        // An 8 x 8 grid at tile edge 16: the single tile is partial. Rewrite its encoded entry
+        // as a dry sentinel with honest CRCs; the validator must refuse it.
+        let bytes = frame(8, 8, 16, 4, &[0u8; 64]);
+        let header = validated(&bytes).unwrap();
+        assert!(header.tile_is_partial(0));
+        let mut forged = bytes.clone();
+        forged.truncate(header.data_offset as usize);
+        let entry_offset = header.entry_offset(0).unwrap() as usize;
+        forged[entry_offset..entry_offset + DIRECTORY_ENTRY_LEN].fill(0);
+        put_u32(&mut forged, HDR_DATA_LEN, 0);
+        let total_len = forged.len() as u32;
+        put_u32(&mut forged, HDR_TOTAL_LEN, total_len);
+        let page_offset = header.page_offset(0).unwrap() as usize;
+        let page_bytes = header.page_bytes() as usize;
+        let page_crc = Crc32::checksum(&forged[page_offset..page_offset + page_bytes - PAGE_CRC_LEN]);
+        put_u32(&mut forged, page_offset + page_bytes - PAGE_CRC_LEN, page_crc);
+        put_u32(&mut forged, HDR_OBJECT_CRC32, 0);
+        put_u32(&mut forged, HDR_HEADER_CRC32, 0);
+        let object = object_crc(&forged);
+        put_u32(&mut forged, HDR_OBJECT_CRC32, object);
+        let header_bytes: &[u8; HEADER_LEN] = forged[..HEADER_LEN].try_into().unwrap();
+        let crc = header_crc(header_bytes);
+        put_u32(&mut forged, HDR_HEADER_CRC32, crc);
+        assert_eq!(validated(&forged), Err(DecodeError::Directory));
+
+        // A full-tile dry sentinel decodes only with an empty payload slice.
+        let dry = TileEntry { data_offset: 0, encoded_len: 0, codec: 0, crc32: 0 };
+        let mut out = vec![0u8; header.tile_cells()];
+        assert_eq!(decode_tile_cells(&header, &dry, &[], &mut out), Ok(()));
+        assert!(out.iter().all(|&cell| cell == INTENSITY_DRY));
+        assert_eq!(decode_tile_cells(&header, &dry, &[0xF0], &mut out), Err(DecodeError::Directory));
     }
 
     /// The obcw fuzz posture, applied here: arbitrary bytes and structured single-bit mutations

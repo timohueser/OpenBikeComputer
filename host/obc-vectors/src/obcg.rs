@@ -306,6 +306,23 @@ pub fn invalid_dry_encoded() -> Vec<u8> {
     bytes
 }
 
+/// A dry sentinel used for a partial edge tile: forbidden by §4.1 because edge padding is
+/// no-data, never dry. Built by rewriting an 8 x 8 single-partial-tile object as if the producer
+/// had emitted the sentinel — every CRC is honest, so only the edge rule can reject it.
+pub fn invalid_dry_sentinel_edge_tile() -> Vec<u8> {
+    let mut bytes = radar_frame(8, 8, 16, 4, &[0u8; 64]);
+    let h = header(&bytes);
+    bytes.truncate(128 + h.page_bytes() as usize);
+    let entry = entry_offset(&h, 0);
+    bytes[entry..entry + obcg::DIRECTORY_ENTRY_LEN].fill(0);
+    put_u32(&mut bytes, obcg::HDR_DATA_LEN, 0);
+    let total_len = bytes.len() as u32;
+    put_u32(&mut bytes, obcg::HDR_TOTAL_LEN, total_len);
+    refresh_page_crc(&mut bytes, &h, 0);
+    refresh_object_and_header_crc(&mut bytes);
+    bytes
+}
+
 /// A dry sentinel whose CRC field is nonzero: the len-0 entry must be exactly twelve zero bytes.
 pub fn invalid_dry_sentinel_nonzero() -> Vec<u8> {
     let mut bytes = multipage();
@@ -371,6 +388,7 @@ pub fn negatives() -> Vec<(&'static str, Vec<u8>)> {
         ("grid-invalid-raw-compressible.obcg", invalid_raw_compressible()),
         ("grid-invalid-dry-encoded.obcg", invalid_dry_encoded()),
         ("grid-invalid-dry-sentinel-nonzero.obcg", invalid_dry_sentinel_nonzero()),
+        ("grid-invalid-dry-sentinel-edge-tile.obcg", invalid_dry_sentinel_edge_tile()),
         ("grid-invalid-tile-crc.obcg", invalid_tile_crc()),
         ("grid-invalid-reserved.obcg", invalid_reserved()),
         ("grid-invalid-flags.obcg", invalid_flags()),

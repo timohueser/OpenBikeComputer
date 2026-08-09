@@ -89,10 +89,11 @@ request-accounting target), and edge-tile no-data padding. Cells the Rust tests 
 cells the Swift decoder must reproduce — OBCG is decoder-mirrored, not re-encoded, because its
 only producer is the Rust baker.
 
-The seventeen `grid-invalid-*` files isolate truncation, all four CRC scopes (header, object,
+The eighteen `grid-invalid-*` files isolate truncation, all four CRC scopes (header, object,
 page, tile), a shifted payload offset, an aliased/overlapping payload, impossible dimensions, a
 non-power-of-two tile edge, zero entries per page, overlong and noncanonical RLE, a compressible
-raw4 payload, an encoded all-dry tile (the sentinel is mandatory), and a nonzero dry sentinel,
+raw4 payload, an encoded all-dry full tile (the sentinel is mandatory there), a dry sentinel at
+a partial edge tile (forbidden — padding is no-data, never dry), and a nonzero dry sentinel,
 reserved byte, and double source-class flag. Except for truncation and the deliberate stale-CRC
 files, every CRC covering a corrupted byte is recomputed so structural validation cannot hide
 behind an integrity check.

@@ -194,6 +194,16 @@ public extension OBCGridHeader {
         return OBCGridTileCoordinate(column: Int(column) / Int(tileEdge), row: Int(row) / Int(tileEdge))
     }
 
+    /// True when `tileIndex` names a partial tile at the north or east grid edge. Such a tile
+    /// contains no-data padding and may therefore never be a dry sentinel (OBCG_Spec.md §4.1).
+    func tileIsPartial(_ tileIndex: Int) -> Bool {
+        guard tileColumns > 0, tileEdge > 0 else { return false }
+        let tileColumn = tileIndex % tileColumns
+        let tileRow = tileIndex / tileColumns
+        return Int(width) < (tileColumn + 1) * Int(tileEdge)
+            || Int(height) < (tileRow + 1) * Int(tileEdge)
+    }
+
     /// Row-major index of cell `(column, row)` inside its no-data-padded tile.
     func cellIndexInTile(column: UInt32, row: UInt32) -> Int? {
         guard tileOfCell(column: column, row: row) != nil else { return nil }
@@ -415,7 +425,12 @@ public enum OBCGridCodec {
         let location = try locateCell(header: header, column: column, row: row)
         try validatePage(header: header, page: page)
         let entry = try decodeEntry(page: page, indexInPage: location.indexInPage)
-        if !entry.isDry { _ = try payloadRange(header: header, entry: entry) }
+        if entry.isDry {
+            // §4.1: a partial edge tile can never be a dry sentinel — its padding is no-data.
+            guard !header.tileIsPartial(location.tileIndex) else { throw OBCWeatherWireError.malformed }
+        } else {
+            _ = try payloadRange(header: header, entry: entry)
+        }
         let cells = try decodeTileCells(header: header, entry: entry, payload: payload)
         guard location.cellIndexInTile < cells.count else { throw OBCWeatherWireError.malformed }
         return cells[location.cellIndexInTile]
@@ -455,7 +470,12 @@ public enum OBCGridCodec {
                     continue
                 }
                 let entry = try decodeEntry(page: pageSlice, indexInPage: indexInPage)
-                if entry.isDry { continue }
+                if entry.isDry {
+                    // §4.1: a partial edge tile contains no-data padding and can never be a dry
+                    // sentinel — accepting one would decode missing edge data as dry weather.
+                    guard !header.tileIsPartial(tileIndex) else { throw OBCWeatherWireError.malformed }
+                    continue
+                }
                 guard Int(entry.dataOffset) == cursor else { throw OBCWeatherWireError.malformed }
                 let range = try payloadRange(header: header, entry: entry)
                 guard let payload = bytes.readBytes(at: range.lowerBound, count: range.count) else {
