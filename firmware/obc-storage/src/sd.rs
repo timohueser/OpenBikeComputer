@@ -47,8 +47,16 @@ impl<D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: usiz
     for SdByteSource<'_, D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>
 {
     fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), Error> {
-        // Seeking past EOF is an out-of-range request, not a medium failure.
-        self.vmgr.file_seek_from_start(self.file, offset).map_err(|_| Error::BadOffset)?;
+        // Prove range errors before touching the medium. Once the range is known good, a seek
+        // failure is an I/O failure (card removal, corrupt FAT chain, etc.), not malformed caller
+        // input. Weather A/B publication relies on that distinction to avoid truncating a slot
+        // whose validity could not be established because the medium became unreadable.
+        let count = u32::try_from(buf.len()).map_err(|_| Error::BadOffset)?;
+        let end = offset.checked_add(count).ok_or(Error::BadOffset)?;
+        if end > self.len {
+            return Err(Error::BadOffset);
+        }
+        self.vmgr.file_seek_from_start(self.file, offset).map_err(|_| Error::Io)?;
         // One SD read returns at most a block, so loop until `buf` is filled; a 0-length read
         // means we ran into EOF before filling it (the caller asked for too much).
         let mut done = 0;

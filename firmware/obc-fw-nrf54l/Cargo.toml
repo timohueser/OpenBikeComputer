@@ -167,6 +167,9 @@ obc-sensors = { path = "../obc-sensors" }
 # The board-agnostic SD storage adapters (#807): `SdByteSource`/`SdByteSink`/`SdTrackSink` + the
 # FAT-extent map fast path — only the concrete SPIM bus type is board-specific here.
 obc-storage = { path = "../obc-storage" }
+# Shared no_std OBCW reader/cache and deterministic A/B selector. The board supplies only the
+# FatFs adapter; no provider, UI or BLE policy enters this edge.
+obc-weather = { path = "../obc-weather" }
 # The shared text renderer — `draw_text` + the Terminus `Font` tiers every on-device screen uses. (#122)
 obc-render = { path = "../obc-render" }
 # `Rgb565` / `DrawTarget` / `Point` / `Rectangle` for the map path's `color_fn` + the hold-bulge

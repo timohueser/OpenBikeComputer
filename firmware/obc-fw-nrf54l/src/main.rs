@@ -517,7 +517,7 @@ mod resource_report {
         entry("terrain_extents", sd::TERRAIN_EXTENT_BYTES),
     ];
 
-    const ENTRIES: usize = 31;
+    const ENTRIES: usize = 32;
 
     #[used]
     #[no_mangle]
@@ -534,6 +534,10 @@ mod resource_report {
         entry("set_sources", sd::SET_SOURCES_BYTES),
         entry("route_cache", core::mem::size_of::<RouteCache>()),
         entry("route_index", core::mem::size_of::<obc_route::RouteIndex>()),
+        // WX7's complete reader + generation-aware frame/directory/tile cache type. This is a
+        // target-ABI size report, not a second allocation; the linked resident gate remains the
+        // authority once WX10 places the cache in the rain-render path.
+        entry("weather_reader_cache", obc_weather::READER_CACHE_RESIDENT_BYTES),
         // The **scratch arena** (#1146 P2) and its three arms. `arena_total` is the only one of the
         // four that is resident RAM — it is `max` of the other three, not their sum, and the three
         // are reported beside it precisely so a reader can see *which* arm sets the total and how
@@ -793,6 +797,9 @@ async fn spawn_map_recovery_usb(
     };
     let objects = {
         let mut guard = shared_store.lock().await;
+        if let Some(storage) = guard.storage.as_mut() {
+            storage.select_weather_at_boot();
+        }
         link::init_store(&mut guard)
     };
     let stores = link::LinkStores { shared: shared_store, objects, epoch: None };
@@ -1596,6 +1603,9 @@ async fn main(_spawner: Spawner) {
         // every flavor regardless — only the served value is ble-specific.
         let _store_epoch: Option<u32> = {
             let mut guard = shared_store.lock().await;
+            if let Some(storage) = guard.storage.as_mut() {
+                storage.select_weather_at_boot();
+            }
             if guard.storage.is_none() {
                 defmt::info!("store-epoch: no mounted store — no epoch to mint or serve");
                 None

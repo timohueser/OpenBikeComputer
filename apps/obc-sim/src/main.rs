@@ -31,6 +31,7 @@ mod sim_location;
 mod sim_sensors;
 mod track;
 mod trips;
+mod weather_store;
 use framebuffer::Framebuffer;
 use obc_host_core::{finish_nav_plan, initial_camera, replay_step, ReplaySensors, VecSink};
 use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};

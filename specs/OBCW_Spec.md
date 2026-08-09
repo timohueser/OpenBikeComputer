@@ -325,4 +325,10 @@ live validation scratch is 864 bytes. A counting `ByteSource` regression over th
 DWD-shaped vector pins `WeatherReader::open` at **269 `read_at` calls and 92,848 bytes read**, down
 from 1,046 calls while remaining below the 2 KiB scratch budget. The byte total is just under twice
 the object because integrity verification and structural validation are separate fail-closed
-passes; these measured implementation budgets do not change the wire format.
+passes. A representative Thumb `WeatherReader` plus its generation-and-CRC-keyed lookup cache is
+**472 bytes**. Cold random tile lookup is pinned at at most **3 logical reads and 5 touched
+512-byte blocks** over every tile of the DWD-shaped vector; an exact tile-cache hit performs no
+reads. These measured implementation budgets do not change the wire format.
+
+The device's dual-slot publication and generation-selection rules are intentionally outside the
+wire format and are specified in [`firmware/docs/WEATHER_STORAGE.md`](../firmware/docs/WEATHER_STORAGE.md).
