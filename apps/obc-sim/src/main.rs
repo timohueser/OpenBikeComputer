@@ -1278,6 +1278,7 @@ fn main() {
                 let pos = app.state.user_fix.map(|f| (f.lat, f.lon)).unwrap_or((app.state.cam_lat, app.state.cam_lon));
                 if let Some(snap) = w.snapshot(Some(pos)) {
                     app.state.rain_steps_ahead = snap.steps_ahead(app.wall_unix_now() as i64);
+                    app.state.rain_zoom_min = snap.rain_zoom_floor(app.state.cam_lat).unwrap_or(0.0);
                 }
             }
             apply_script(&mut app, script, &mut hook);
