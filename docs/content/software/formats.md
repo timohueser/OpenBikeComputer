@@ -1114,13 +1114,17 @@ facts every device consumer needs: 24 hourly conditions, genuine rain-frame time
 semantic quality, and canonical four-bit intensities. Swapping a provider therefore cannot change
 firmware or the on-device presentation.
 
+Each hourly record is the following hour: record `i` begins at `valid_from + i × 1 h`, and its
+precipitation amount/probability belongs to that exact half-open hour. That explicit boundary keeps
+an ending-timestamp provider adapter from moving precipitation one record earlier or later.
+
 The front of the file is deliberately boring: a fixed header with generation/request correlation,
 validity, bounds and section offsets, followed by 24 fixed hourly records and a compact frame
 directory. No strings, floats, provider ids, display colors or polygons cross the boundary. Missing
 precipitation remains a distinct sentinel — it can never be mistaken for dry.
 
 Rain is cut into independently addressed 16 × 16 tiles. `raw4` packs two cells per byte; `RLE4`
-stays inside one tile and is chosen only when smaller. That local compression boundary is the RAM
+stays inside one tile, uses maximal runs, and is chosen only when smaller. That local compression boundary is the RAM
 story: [`obc-weather`](src:firmware/obc-weather) retains only a parsed header, reads at most 128
 encoded bytes, and expands into a caller-owned 256-byte tile. A 96 × 96 × nine-frame raw DWD-shaped
 bundle is 46,480 bytes (45.39 KiB), inside the phone producer's separate 64 KiB policy without
@@ -1131,6 +1135,11 @@ arithmetic, canonical non-overlap, ordered timestamps, possible tile counts, def
 RLE that ends at exactly 256 cells. A valid CRC over malicious structure is still rejected. The
 normative tables and rejection rules live in [`OBCW_Spec.md`](src:specs/OBCW_Spec.md); shared
 positive/negative objects live in [`specs/vectors/`](src:specs/vectors).
+
+Opening the 46,480-byte DWD-shaped vector is also a pinned I/O budget: CRC blocks and four-tile
+directory/payload windows reduce validation from 1,046 random reads to 269, with 92,848 bytes read
+and 864 bytes of explicit validation scratch. This matters because a `ByteSource` may be an SD
+file whose random read includes a seek.
 
 ## Streaming: resident vs on-demand
 
