@@ -173,10 +173,5 @@ pub fn deaccumulate(earlier: &DecodedField, later: &DecodedField, run: i64, lead
         // One hour between interval ends, so the mm delta is numerically an mm/h rate.
         cells.push(precip4::quantize_rate_mm_per_hour(delta.max(0.0)));
     }
-    Ok(BakedFrame {
-        offset_min: lead * 60,
-        valid_at: run + i64::from(lead) * 3_600,
-        flags: FLAG_FORECAST,
-        cells,
-    })
+    Ok(BakedFrame { offset_min: lead * 60, valid_at: run + i64::from(lead) * 3_600, flags: FLAG_FORECAST, cells })
 }

@@ -148,14 +148,16 @@ fn full_cycle_is_deterministic_byte_stable_and_valid() {
                 .unwrap_or_else(|error| panic!("{}: {error:?}", frame.key));
             assert_eq!(format!("0x{:08X}", header.object_crc32), frame.object_crc32);
             assert_eq!(manifest::rfc3339(header.valid_at), frame.valid_at);
-            assert_eq!(i64::from(header.flags & obc_formats::obcg::FLAG_OBSERVED != 0), i64::from(frame.source_class == SourceClass::Observation));
+            assert_eq!(
+                i64::from(header.flags & obc_formats::obcg::FLAG_OBSERVED != 0),
+                i64::from(frame.source_class == SourceClass::Observation)
+            );
             assert_eq!(header.width, frame.geometry.width);
             assert_eq!(header.height, frame.geometry.height);
             assert_eq!(header.tile_edge, frame.geometry.tile_edge);
         }
         // The observation flag appears exactly on the RV lead-0 frame.
-        let observations =
-            product.frames.iter().filter(|frame| frame.source_class == SourceClass::Observation).count();
+        let observations = product.frames.iter().filter(|frame| frame.source_class == SourceClass::Observation).count();
         assert_eq!(observations, usize::from(product.id == "dwd-rv"));
     }
 }
