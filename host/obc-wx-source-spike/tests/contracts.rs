@@ -2,8 +2,10 @@ use std::path::{Path, PathBuf};
 
 use obc_wx_source_spike::{
     idx_range, idx_span, validate_bzip2_grib_file, validate_dwd_rv_hdf5, validate_gfs_apcp_file,
-    validate_gfs_cumulative_step, validate_grib_file, validate_gzip_grib_file, validate_icon_eu_deaccumulation,
-    validate_met_fixture, CumulativeField, ExpectedGrib, DWD_RV_PROJDEF,
+    validate_gfs_cumulative_files, validate_gfs_cumulative_step, validate_grib_file, validate_gzip_grib_file,
+    validate_icon_eu_deaccumulation, validate_met_fixture, CumulativeField, ExpectedGrib, DWD_RV_PROJDEF,
+    GFS_GLOBAL_GRID_DEFINITION_HEX, HRRR_CONUS_GRID_DEFINITION_HEX, ICON_EU_GRID_DEFINITION_HEX,
+    MRMS_GRID_DEFINITION_HEX,
 };
 
 const NONE: &[f32] = &[];
@@ -32,6 +34,13 @@ fn expected(
             (0, 1, 8) => 1_038_240,
             _ => panic!("test helper has no pinned point count for this source"),
         }),
+        expected_grid_definition_hex: match (discipline, category, parameter) {
+            (209, 6, 1) => MRMS_GRID_DEFINITION_HEX,
+            (0, 1, 52) => ICON_EU_GRID_DEFINITION_HEX,
+            (0, 1, 7) => HRRR_CONUS_GRID_DEFINITION_HEX,
+            (0, 1, 8) => GFS_GLOBAL_GRID_DEFINITION_HEX,
+            _ => panic!("test helper has no pinned grid definition for this source"),
+        },
         product_template,
         representation_templates,
         expected_messages: 1,
@@ -50,6 +59,9 @@ fn dwd_rv_raw_hdf5_pins_projection_scale_missing_and_convective_rain() {
     assert_eq!(summary.positive_cells, 28_048);
     assert_eq!(summary.missing_cells, 621_815);
     assert!((summary.maximum_mm_5min - 4.192_999_713_956_145).abs() < 1e-12);
+    assert_eq!(summary.reference_unix_seconds, 1_786_275_000);
+    assert_eq!(summary.valid_start_unix_seconds, 1_786_274_700);
+    assert_eq!(summary.valid_end_unix_seconds, 1_786_275_000);
 }
 
 #[test]
@@ -63,7 +75,8 @@ fn mrms_contract_distinguishes_dry_missing_and_rain() {
     assert_eq!(summary.positive, 326_540);
     assert_eq!(summary.maximum, 185.3);
     assert_eq!(summary.reference_unix_seconds, 1_786_154_400);
-    assert_eq!(summary.forecast_time_unix_seconds, 1_786_154_400);
+    assert_eq!(summary.valid_start_unix_seconds, 1_786_154_400);
+    assert_eq!(summary.valid_end_unix_seconds, 1_786_154_400);
 }
 
 #[test]
@@ -77,7 +90,8 @@ fn icon_eu_contract_decodes_ccsds_and_bounds_deaccumulation_roundoff() {
     assert_eq!(field.dry, 620_164);
     assert_eq!(field.positive, 284_525);
     assert_eq!(field.reference_unix_seconds, 1_786_255_200);
-    assert_eq!(field.forecast_time_unix_seconds, 1_786_255_200);
+    assert_eq!(field.valid_start_unix_seconds, 1_786_255_200);
+    assert_eq!(field.valid_end_unix_seconds, 1_786_262_400);
 
     let delta = validate_icon_eu_deaccumulation(&first, &second, contract).unwrap();
     assert_eq!(delta.points, 904_689);
@@ -85,6 +99,7 @@ fn icon_eu_contract_decodes_ccsds_and_bounds_deaccumulation_roundoff() {
     assert_eq!(delta.maximum_negative_roundoff, 1.0 / 4096.0);
     assert_eq!(delta.packing_roundoff_limit_mm, 3.0 / 8192.0);
     assert!(delta.maximum_delta > 12.14 && delta.maximum_delta < 12.15);
+    assert!(validate_icon_eu_deaccumulation(&first, &first, contract).is_err());
 }
 
 #[test]
@@ -99,10 +114,12 @@ fn hrrr_idx_range_and_complex_spatial_packing_are_pinned() {
     )
     .unwrap();
     assert_eq!(summary.points, 1_905_141);
+    assert_eq!(summary.representation_template, 3);
     assert_eq!(summary.dry, 1_879_080);
     assert_eq!(summary.positive, 26_061);
     assert_eq!(summary.reference_unix_seconds, 1_786_147_200);
-    assert_eq!(summary.forecast_time_unix_seconds, 1_786_154_400);
+    assert_eq!(summary.valid_start_unix_seconds, 1_786_154_400);
+    assert_eq!(summary.valid_end_unix_seconds, 1_786_154_400);
 }
 
 #[test]
@@ -113,11 +130,15 @@ fn gfs_idx_duplicate_span_must_decode_to_identical_global_fields() {
 
     let summary = validate_gfs_apcp_file(&fixture("gfs-global-20260809T06-apcp-f003.grib2"), 2).unwrap();
     assert_eq!(summary.messages, 2);
+    assert_eq!(summary.representation_template, 3);
     assert_eq!(summary.points, 1_038_240);
     assert_eq!(summary.dry, 1_144_522);
     assert_eq!(summary.positive, 931_958);
     assert_eq!(summary.reference_unix_seconds, 1_786_255_200);
-    assert_eq!(summary.forecast_time_unix_seconds, 1_786_255_200);
+    assert_eq!(summary.valid_start_unix_seconds, 1_786_255_200);
+    assert_eq!(summary.valid_end_unix_seconds, 1_786_266_000);
+    let path = fixture("gfs-global-20260809T06-apcp-f003.grib2");
+    assert!(validate_gfs_cumulative_files(None, (&path, 2, 1)).is_err());
 }
 
 #[test]
