@@ -861,4 +861,47 @@ mod tests {
         assert_eq!(header.data_len, 0);
         assert_eq!(bytes.len(), HEADER_LEN + header.page_bytes() as usize);
     }
+
+    /// The obcw fuzz posture, applied here: arbitrary bytes and structured single-bit mutations
+    /// of a valid object must decode to an error or a valid header — never a panic, never an
+    /// out-of-bounds access.
+    #[test]
+    fn validator_never_panics_on_arbitrary_or_mutated_bytes() {
+        let mut scratch = vec![0u8; precip4::MAX_CELLS];
+        let mut state = 0x0BC5_1190u32;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state
+        };
+        // Arbitrary garbage at assorted lengths.
+        for length in [0usize, 1, 16, HEADER_LEN - 1, HEADER_LEN, HEADER_LEN + 3, 512, 4_096] {
+            let bytes: Vec<u8> = (0..length).map(|_| (next() & 0xFF) as u8).collect();
+            let _ = validate(&bytes, &mut scratch);
+        }
+        // Structured mutations: every single-bit flip of a small valid object, plus random
+        // multi-byte mutations of a paged one.
+        let mut cells = vec![0u8; 40 * 40];
+        cells[0] = 6;
+        cells[39 * 40 + 39] = 9;
+        let good = frame(40, 40, 16, 2, &cells);
+        for bit in 0..good.len() * 8 {
+            let mut mutated = good.clone();
+            mutated[bit / 8] ^= 1 << (bit % 8);
+            let _ = validate(&mutated, &mut scratch);
+        }
+        for _ in 0..512 {
+            let mut mutated = good.clone();
+            for _ in 0..(next() % 8 + 1) {
+                let index = (next() as usize) % mutated.len();
+                mutated[index] = (next() & 0xFF) as u8;
+            }
+            let truncate_to = (next() as usize) % (mutated.len() + 1);
+            if next() % 4 == 0 {
+                mutated.truncate(truncate_to);
+            }
+            let _ = validate(&mutated, &mut scratch);
+        }
+    }
 }
