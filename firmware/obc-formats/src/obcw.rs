@@ -6,6 +6,13 @@
 
 use obc_crc::Crc32;
 
+use crate::precip4;
+
+pub use crate::precip4::{
+    valid_intensity, CODEC_RAW4 as TILE_CODEC_RAW4, CODEC_RLE4 as TILE_CODEC_RLE4, INTENSITY_DRY, INTENSITY_MAX,
+    INTENSITY_NODATA, RAW4_LEN, TILE_CELLS, TILE_EDGE,
+};
+
 pub const MAGIC: [u8; 4] = *b"OBCW";
 pub const VERSION: u16 = 1;
 pub const HEADER_LEN: usize = 112;
@@ -14,9 +21,6 @@ pub const HOURLY_RECORD_LEN: usize = 24;
 pub const HOURLY_INTERVAL_SECONDS: u32 = 3_600;
 pub const FRAME_DESCRIPTOR_LEN: usize = 48;
 pub const TILE_DIRECTORY_ENTRY_LEN: usize = 12;
-pub const TILE_EDGE: usize = 16;
-pub const TILE_CELLS: usize = TILE_EDGE * TILE_EDGE;
-pub const RAW4_LEN: usize = TILE_CELLS / 2;
 
 pub const HDR_MAGIC: usize = 0;
 pub const HDR_VERSION: usize = 4;
@@ -62,16 +66,6 @@ pub const TILE_DECODED_CELLS: usize = 6;
 pub const TILE_CODEC: usize = 8;
 pub const TILE_FLAGS: usize = 9;
 pub const TILE_RESERVED: usize = 10;
-
-pub const TILE_CODEC_RAW4: u8 = 0;
-pub const TILE_CODEC_RLE4: u8 = 1;
-
-/// Dry/transparent. This is real zero precipitation, never missing data.
-pub const INTENSITY_DRY: u8 = 0;
-/// Highest defined precipitation band (`>= 50 mm/h`).
-pub const INTENSITY_MAX: u8 = 12;
-/// `13` and `14` are reserved so corrupt nibbles can be rejected.
-pub const INTENSITY_NODATA: u8 = 15;
 
 pub const QUALITY_OBSERVED: u32 = 1 << 0;
 pub const QUALITY_FORECAST: u32 = 1 << 1;
@@ -135,7 +129,9 @@ pub struct Header {
     pub generation: u32,
     pub request_id: u32,
     pub generated_at: i64,
+    /// Base timestamp of hourly record zero; not a lower bound for rain frames.
     pub valid_from: i64,
+    /// Overall upper validity ceiling for hourly interval ends and rain timestamps.
     pub valid_until: i64,
     pub south_lat_udeg: i32,
     pub west_lon_udeg: i32,
@@ -202,7 +198,9 @@ pub struct BundleInput<'a> {
     pub generation: u32,
     pub request_id: u32,
     pub generated_at: i64,
+    /// Base timestamp of hourly record zero; genuine observed rain may precede it.
     pub valid_from: i64,
+    /// Overall upper validity ceiling for hourly interval ends and rain timestamps.
     pub valid_until: i64,
     pub south_lat_udeg: i32,
     pub west_lon_udeg: i32,
@@ -272,7 +270,9 @@ pub fn encoded_len(input: &BundleInput<'_>) -> Result<u32, EncodeError> {
             .checked_add(frame.tiles.len().checked_mul(TILE_DIRECTORY_ENTRY_LEN).ok_or(EncodeError::LengthOverflow)?)
             .ok_or(EncodeError::LengthOverflow)?;
         for tile in frame.tiles {
-            total = total.checked_add(encoded_tile_len(tile)).ok_or(EncodeError::LengthOverflow)?;
+            total = total
+                .checked_add(precip4::encoded_tile_len(tile).map_err(|_| EncodeError::InvalidInput)?)
+                .ok_or(EncodeError::LengthOverflow)?;
         }
     }
     u32::try_from(total).map_err(|_| EncodeError::LengthOverflow)
@@ -319,7 +319,11 @@ pub fn encode_format(input: &BundleInput<'_>, out: &mut [u8]) -> Result<usize, E
         let directory_offset = tail;
         let directory_len = frame.tiles.len() * TILE_DIRECTORY_ENTRY_LEN;
         let data_offset = directory_offset + directory_len;
-        let data_len: usize = frame.tiles.iter().map(encoded_tile_len).sum();
+        let data_len: usize = frame
+            .tiles
+            .iter()
+            .map(|tile| precip4::encoded_tile_len(tile).map_err(|_| EncodeError::InvalidInput))
+            .try_fold(0usize, |sum, len| sum.checked_add(len?).ok_or(EncodeError::LengthOverflow))?;
         let descriptor_offset = frame_base + frame_index * FRAME_DESCRIPTOR_LEN;
         encode_frame(
             frame,
@@ -330,20 +334,19 @@ pub fn encode_format(input: &BundleInput<'_>, out: &mut [u8]) -> Result<usize, E
         )?;
         let mut payload = data_offset;
         for (tile_index, tile) in frame.tiles.iter().enumerate() {
-            let encoded_len = encoded_tile_len(tile);
-            let codec = if encoded_len < RAW4_LEN { TILE_CODEC_RLE4 } else { TILE_CODEC_RAW4 };
+            let encoded_len = precip4::encoded_tile_len(tile).map_err(|_| EncodeError::InvalidInput)?;
             let entry_offset = directory_offset + tile_index * TILE_DIRECTORY_ENTRY_LEN;
+            let encoding = precip4::encode_tile(tile, &mut bytes[payload..payload + encoded_len])
+                .map_err(|_| EncodeError::Internal)?;
+            if encoding.encoded_len as usize != encoded_len {
+                return Err(EncodeError::Internal);
+            }
             encode_tile_entry(
                 payload as u32,
                 encoded_len as u16,
-                codec,
+                encoding.codec,
                 &mut bytes[entry_offset..entry_offset + TILE_DIRECTORY_ENTRY_LEN],
             )?;
-            if codec == TILE_CODEC_RLE4 {
-                encode_rle4(tile, &mut bytes[payload..payload + encoded_len]);
-            } else {
-                encode_raw4(tile, &mut bytes[payload..payload + RAW4_LEN]);
-            }
             payload += encoded_len;
         }
         tail = data_offset + data_len;
@@ -387,7 +390,7 @@ fn validate_input(input: &BundleInput<'_>) -> Result<(), EncodeError> {
         let tile_count = expected_tile_count(frame.width, frame.height).ok_or(EncodeError::InvalidInput)?;
         if frame.tiles.len() != tile_count as usize
             || frame.cell_size_m == 0
-            || frame.valid_at < input.valid_from
+            || frame.valid_at <= 0
             || frame.valid_at > input.valid_until
             || previous_frame.is_some_and(|p| frame.valid_at <= p)
             || !valid_quality_flags(frame.quality_flags)
@@ -462,7 +465,7 @@ pub fn validate_hourly_time(
 }
 
 pub fn validate_frame(frame: &FrameDescriptor, header: &Header) -> Result<(), DecodeError> {
-    if frame.valid_at < header.valid_from
+    if frame.valid_at <= 0
         || frame.valid_at > header.valid_until
         || frame.cell_size_m == 0
         || !valid_quality_flags(frame.quality_flags)
@@ -476,10 +479,6 @@ pub fn validate_frame(frame: &FrameDescriptor, header: &Header) -> Result<(), De
 pub fn valid_quality_flags(flags: u32) -> bool {
     let source = flags & (QUALITY_OBSERVED | QUALITY_FORECAST);
     flags & !QUALITY_KNOWN_MASK == 0 && (source == QUALITY_OBSERVED || source == QUALITY_FORECAST)
-}
-
-pub const fn valid_intensity(value: u8) -> bool {
-    value <= INTENSITY_MAX || value == INTENSITY_NODATA
 }
 
 pub const fn valid_condition(value: u8) -> bool {
@@ -575,119 +574,22 @@ pub fn validate_tile_payload(entry: TileEntry, encoded: &[u8]) -> Result<(), Dec
     if len == 0 || len > RAW4_LEN || encoded.len() != len || entry.decoded_cells as usize != TILE_CELLS {
         return Err(DecodeError::TileCodec);
     }
-    match entry.codec {
-        TILE_CODEC_RAW4 if len == RAW4_LEN => {
-            if encoded.iter().any(|b| !valid_intensity(b & 0x0F) || !valid_intensity(b >> 4)) {
-                return Err(DecodeError::Intensity);
-            }
-            if raw4_canonical_rle_len(encoded) < RAW4_LEN {
-                return Err(DecodeError::TileCodec);
-            }
-        }
-        TILE_CODEC_RLE4 if len < RAW4_LEN => {
-            let mut count = 0usize;
-            let mut previous: Option<(u8, usize)> = None;
-            for &byte in encoded {
-                let value = byte & 0x0F;
-                let run = (byte >> 4) as usize + 1;
-                if !valid_intensity(value) {
-                    return Err(DecodeError::Intensity);
-                }
-                if previous.is_some_and(|(previous_value, previous_run)| value == previous_value && previous_run != 16)
-                {
-                    return Err(DecodeError::Rle);
-                }
-                count = count.checked_add(run).ok_or(DecodeError::Rle)?;
-                if count > TILE_CELLS {
-                    return Err(DecodeError::Rle);
-                }
-                previous = Some((value, run));
-            }
-            if count != TILE_CELLS {
-                return Err(DecodeError::Rle);
-            }
-        }
-        _ => return Err(DecodeError::TileCodec),
-    }
-    Ok(())
-}
-
-/// Count the maximal, 16-cell-capped runs represented by a valid raw4 payload without expanding
-/// the tile. The result is the canonical RLE4 byte length.
-fn raw4_canonical_rle_len(encoded: &[u8]) -> usize {
-    let mut runs = 0usize;
-    let mut previous = None;
-    let mut run_len = 0usize;
-    for cell_index in 0..TILE_CELLS {
-        let byte = encoded[cell_index / 2];
-        let value = if cell_index % 2 == 0 { byte & 0x0F } else { byte >> 4 };
-        if previous == Some(value) && run_len < 16 {
-            run_len += 1;
-        } else {
-            runs += 1;
-            previous = Some(value);
-            run_len = 1;
-        }
-    }
-    runs
+    precip4::validate_tile(entry.codec, encoded).map_err(|error| match error {
+        precip4::Error::Intensity => DecodeError::Intensity,
+        precip4::Error::Rle => DecodeError::Rle,
+        _ => DecodeError::TileCodec,
+    })
 }
 
 pub fn decode_tile_payload(entry: TileEntry, encoded: &[u8], out: &mut [u8; TILE_CELLS]) -> Result<(), DecodeError> {
-    validate_tile_payload(entry, encoded)?;
-    if entry.codec == TILE_CODEC_RAW4 {
-        for (index, &byte) in encoded.iter().enumerate() {
-            out[index * 2] = byte & 0x0F;
-            out[index * 2 + 1] = byte >> 4;
-        }
-    } else {
-        let mut index = 0usize;
-        for &byte in encoded {
-            let run = (byte >> 4) as usize + 1;
-            out[index..index + run].fill(byte & 0x0F);
-            index += run;
-        }
+    if entry.encoded_len as usize != encoded.len() || entry.decoded_cells as usize != TILE_CELLS {
+        return Err(DecodeError::TileCodec);
     }
-    Ok(())
-}
-
-fn encoded_tile_len(tile: &[u8; TILE_CELLS]) -> usize {
-    rle4_len(tile).min(RAW4_LEN)
-}
-
-fn rle4_len(tile: &[u8; TILE_CELLS]) -> usize {
-    let mut runs = 0usize;
-    let mut index = 0usize;
-    while index < TILE_CELLS {
-        let value = tile[index];
-        let mut run = 1usize;
-        while index + run < TILE_CELLS && run < 16 && tile[index + run] == value {
-            run += 1;
-        }
-        runs += 1;
-        index += run;
-    }
-    runs
-}
-
-fn encode_raw4(tile: &[u8; TILE_CELLS], out: &mut [u8]) {
-    for index in 0..RAW4_LEN {
-        out[index] = tile[index * 2] | (tile[index * 2 + 1] << 4);
-    }
-}
-
-fn encode_rle4(tile: &[u8; TILE_CELLS], out: &mut [u8]) {
-    let mut input = 0usize;
-    let mut output = 0usize;
-    while input < TILE_CELLS {
-        let value = tile[input];
-        let mut run = 1usize;
-        while input + run < TILE_CELLS && run < 16 && tile[input + run] == value {
-            run += 1;
-        }
-        out[output] = ((run as u8 - 1) << 4) | value;
-        input += run;
-        output += 1;
-    }
+    precip4::decode_tile(entry.codec, encoded, out).map_err(|error| match error {
+        precip4::Error::Intensity => DecodeError::Intensity,
+        precip4::Error::Rle => DecodeError::Rle,
+        _ => DecodeError::TileCodec,
+    })
 }
 
 fn encode_hourly(record: &HourlyRecord, out: &mut [u8]) -> Result<(), EncodeError> {

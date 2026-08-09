@@ -63,15 +63,17 @@ A drift on any side fails that side's tests — the files are the contract.
 
 ### OBCW weather vectors
 
-The seven positive `.obcw` files pin [`OBCW_Spec.md`](../OBCW_Spec.md): hourly-only dry,
-96 × 96 × nine-frame DWD shape, coarse native model times, all-no-data, raw4, RLE4, and the exact
-65,536-byte producer-policy boundary. The DWD-shaped raw object is 46,480 bytes (45.39 KiB).
+The eight positive `.obcw` files pin [`OBCW_Spec.md`](../OBCW_Spec.md): hourly-only dry,
+96 × 96 × nine-frame DWD shape, coarse native model times, a genuine four-hour-latent observation
+before the current hourly base, all-no-data, raw4, RLE4, and the exact 65,536-byte producer-policy
+boundary. The DWD-shaped raw object is 46,480 bytes (45.39 KiB).
 
-The eleven `weather-invalid-*` files isolate truncation, a bad section offset, section overlap,
+The thirteen `weather-invalid-*` files isolate truncation, a bad section offset, section overlap,
 nonzero hourly flags/reserved bytes, a reserved intensity nibble, RLE expansion beyond 256 cells,
 a compressible tile mislabeled raw4, noncanonical split RLE runs, CRC mismatch, and timestamp
-disorder. Except for truncation and the deliberate CRC mismatch, their CRCs are recomputed so
-structural validation cannot hide behind the integrity check.
+disorder, including nonpositive and after-ceiling frame times. Except for truncation and the
+deliberate CRC mismatch, their CRCs are recomputed so structural validation cannot hide behind the
+integrity check.
 
 `manifest.json` records each positive's internal CRC, SHA-256, shape, semantic seed and exact
 producer/consumer paths. Rust builds them through the `obc-formats` authority and reads them

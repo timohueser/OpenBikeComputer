@@ -45,6 +45,7 @@ struct OBCWeatherCodecTests {
         let names = [
             "weather-minimal-dry.obcw", "weather-dwd-96x96-9f.obcw",
             "weather-coarse-model.obcw", "weather-nodata-tile.obcw",
+            "weather-latent-observation.obcw",
             "weather-raw-tile.obcw", "weather-rle-tile.obcw", "weather-max-policy.obcw",
         ]
         for name in names {
@@ -62,6 +63,9 @@ struct OBCWeatherCodecTests {
         #expect(dwd.rainFrames.count == 9)
         #expect(dwd.rainFrames.allSatisfy { $0.width == 96 && $0.height == 96 && $0.tiles.count == 36 })
         #expect(try fixture("weather-max-policy.obcw").count == OBCWeatherCodec.producerPolicyMaximumLength)
+
+        let latent = try OBCWeatherCodec.decode(fixture("weather-latent-observation.obcw"))
+        #expect(latent.rainFrames[0].validAtUnixSeconds == latent.validFromUnixSeconds - 4 * 3_600)
     }
 
     @Test
@@ -74,6 +78,8 @@ struct OBCWeatherCodecTests {
             "weather-invalid-rle-overlong.obcw", "weather-invalid-rle-noncanonical.obcw",
             "weather-invalid-crc.obcw",
             "weather-invalid-time-order.obcw",
+            "weather-invalid-frame-nonpositive.obcw",
+            "weather-invalid-frame-after-valid-until.obcw",
         ]
         for name in names {
             let bytes = try fixture(name)
@@ -138,6 +144,47 @@ struct OBCWeatherCodecTests {
         bundle = try OBCWeatherCodec.decode(fixture("weather-minimal-dry.obcw"))
         bundle.hourly[0].validTimeOffsetSeconds = 3_600
         #expect(throws: OBCWeatherWireError.malformed) { try OBCWeatherCodec.encodeFormat(bundle) }
+    }
+
+    @Test
+    func sharedPrecipitationCodecPinsQuantizationAndCanonicalTiles() throws {
+        let boundaries: [(Double, UInt8)] = [
+            (0, 0), (Double.leastNonzeroMagnitude, 1), (0.10, 2), (0.25, 3),
+            (0.50, 4), (1, 5), (2, 6), (4, 7), (6, 8), (10, 9),
+            (16, 10), (25, 11), (50, 12), (500, 12),
+        ]
+        for (rate, expected) in boundaries {
+            #expect(OBCPrecipitationTileCodec.quantize(rateMillimetresPerHour: rate) == expected)
+        }
+        for rate in [-1.0, Double.nan, Double.infinity, -Double.infinity] {
+            #expect(OBCPrecipitationTileCodec.quantize(rateMillimetresPerHour: rate) == 15)
+        }
+
+        let raw = (0..<256).map { UInt8($0 % 13) }
+        let compressed = [UInt8](repeating: 6, count: 256)
+        for (tile, codec, length) in [(raw, UInt8(0), 128), (compressed, UInt8(1), 16)] {
+            let encoded = try OBCPrecipitationTileCodec.encode(tile)
+            #expect(encoded.codec == codec)
+            #expect(encoded.bytes.count == length)
+            #expect(try OBCPrecipitationTileCodec.decode(codec: encoded.codec, encoded: encoded.bytes) == tile)
+        }
+        #expect(throws: OBCWeatherWireError.malformed) {
+            try OBCPrecipitationTileCodec.encode([UInt8](repeating: 13, count: 256))
+        }
+        #expect(throws: OBCWeatherWireError.malformed) {
+            try OBCPrecipitationTileCodec.decode(codec: 0, encoded: Data(repeating: 0, count: 128))
+        }
+
+        var state: UInt32 = 0x1187_0BC5
+        for _ in 0..<256 {
+            let tile: [UInt8] = (0..<256).map { _ in
+                state ^= state << 13; state ^= state >> 17; state ^= state << 5
+                let candidate = UInt8(state & 0x0F)
+                return OBCPrecipitationTileCodec.validIntensity(candidate) ? candidate : 15
+            }
+            let encoded = try OBCPrecipitationTileCodec.encode(tile)
+            #expect(try OBCPrecipitationTileCodec.decode(codec: encoded.codec, encoded: encoded.bytes) == tile)
+        }
     }
 
     @Test
