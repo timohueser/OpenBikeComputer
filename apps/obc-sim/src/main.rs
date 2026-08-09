@@ -1276,7 +1276,7 @@ fn main() {
             // camera centre — the demo bundles span the map bbox either way).
             if let Some(w) = weather.as_mut() {
                 let pos = app.state.user_fix.map(|f| (f.lat, f.lon)).unwrap_or((app.state.cam_lat, app.state.cam_lon));
-                w.sync_clock(app.wall_unix_now() as i64);
+                w.sync_clock(app.wall_unix_now() as i64, false);
                 if let Some(snap) = w.snapshot(Some(pos)) {
                     let now = app.wall_unix_now() as i64;
                     let floor = snap.rain_zoom_floor(app.state.cam_lat).unwrap_or(0.0);
@@ -1528,7 +1528,7 @@ fn main() {
         // use. No store / nothing current ⇒ `None`, byte-identical to a rain-free render.
         let wx_pos = app.state.user_fix.map(|f| (f.lat, f.lon)).unwrap_or((app.state.cam_lat, app.state.cam_lon));
         let wx_snapshot = weather.as_mut().and_then(|w| {
-            w.sync_clock(app.wall_unix_now() as i64);
+            w.sync_clock(app.wall_unix_now() as i64, false);
             w.snapshot(Some(wx_pos))
         });
         if let Some(snap) = &wx_snapshot {
