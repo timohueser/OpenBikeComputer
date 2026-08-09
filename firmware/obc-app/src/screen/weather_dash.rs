@@ -194,22 +194,32 @@ fn draw_card_lines(cv: &mut impl Surface, w: i32, line1: &str, line2: &str, valu
     }
 }
 
-/// The card's honest-fallback face: a warning triangle (for the update-needed / no-data states)
-/// or plain copy (hourly-only), word-wrapped, with an optional muted sub-line.
+/// The card's honest-fallback face: the shared warning triangle on the left with the wrapped
+/// copy beside it (update-needed / no-data), or plain centred copy (hourly-only) — everything
+/// stays inside the card's own pane.
 fn draw_card_note(cv: &mut impl Surface, w: i32, text: &str, sub: Option<&str>, warn: bool) {
     use palette::*;
     let area = rect(CARD_X, CARD_Y, w - 2 * CARD_X, CARD_H);
     cv.round(area, 6, PARCHMENT_SHADE);
-    let cx = w / 2;
-    let top = if warn {
-        super::card_triangle(cv, Point::new(cx, CARD_Y + 22), 13);
-        CARD_Y + 40
+    if warn {
+        // Glyph left, text right — the horizontal split keeps three wrapped Label lines + the
+        // sub-caption inside the 88-px pane.
+        super::card_triangle(cv, Point::new(CARD_X + 30, CARD_Y + CARD_H / 2), 14);
+        let zone_x = CARD_X + 58;
+        let zone_w = area.size.width as i32 - 58 - 10;
+        let lines = 1 + (text.len() as i32 * Font::Label.char_width() as i32) / zone_w.max(1);
+        let block_h = lines * (Font::Label.cap_height() as i32 + 1) + sub.map_or(0, |_| 22);
+        let top = CARD_Y + ((CARD_H - block_h) / 2).max(8);
+        let after = wrapped(cv, text, zone_x + zone_w / 2, top, zone_w, Font::Label, INK);
+        if let Some(sub) = sub {
+            cv.text(sub, Point::new(zone_x + zone_w / 2, after + 4), Font::Label, TextAlign::Center, SUBTEXT);
+        }
     } else {
-        CARD_Y + 16
-    };
-    let after = wrapped(cv, text, cx, top, area.size.width as i32 - 20, Font::Body, INK);
-    if let Some(sub) = sub {
-        cv.text(sub, Point::new(cx, after + 4), Font::Label, TextAlign::Center, SUBTEXT);
+        let cx = w / 2;
+        let after = wrapped(cv, text, cx, CARD_Y + 16, area.size.width as i32 - 20, Font::Body, INK);
+        if let Some(sub) = sub {
+            cv.text(sub, Point::new(cx, after + 4), Font::Label, TextAlign::Center, SUBTEXT);
+        }
     }
 }
 

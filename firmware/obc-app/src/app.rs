@@ -1930,6 +1930,12 @@ impl App {
 
     /// The screen currently on top of the stack (receiving input). Always present — the Home root is
     /// never popped. A read-only handle for a host/test that needs to know which screen is up.
+    /// The visible screen-stack depth — test/diagnostic observability (the WX11 alert tests pin
+    /// "update in place, never stack" through it).
+    pub fn debug_stack_len(&self) -> usize {
+        self.ui.stack.len()
+    }
+
     pub fn top_screen(&self) -> &Screen {
         self.ui.stack.last().expect("the stack always has the Home root")
     }
