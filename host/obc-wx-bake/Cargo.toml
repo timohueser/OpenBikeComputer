@@ -1,0 +1,30 @@
+[package]
+name = "obc-wx-bake"
+version = "0.1.0"
+edition = "2021"
+publish = false # internal host service — never on the device or the phone
+description = "The OBC weather bakery: upstream radar/model products -> OBCG frames + manifest on R2 (WX5, specs/OBCG_Spec.md). The only place upstream weather formats are parsed."
+
+[dependencies]
+# The OBCG byte authority and the shared WX2 intensity/tile codec. The baker never re-derives a
+# byte layout or a quantization threshold: it hands cell grids to `obc_formats::obcg` and reads
+# its own output back through the same validator the vectors pin.
+obc-formats = { path = "../../firmware/obc-formats" }
+obc-crc = { path = "../../firmware/obc-crc" }
+# Upstream decode, exactly the WX1-pinned stack: GRIB2 with CCSDS/AEC for ICON-EU (the MRMS PNG
+# and complex-packing templates ride along for WX6), HDF5 for the DWD RV ODIM members, plus the
+# outer tar/bzip2 containers. These crates appear here and in the disposable WX1 spike only —
+# provider formats never reach firmware or the phone.
+grib = { version = "0.17", default-features = false, features = ["ccsds-unpack-with-rust-aec", "png-unpack-with-png-crate", "time-calculation"] }
+hdf5-pure = "0.34"
+bzip2-rs = "0.1.2"
+tar = "0.4"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+chrono = "0.4.34"
+# Manifest model + the schemars-derived JSON Schema, pinned the same way obc-pack pins its config
+# schema: the checked-in `schema/manifest.schema.json` must equal the generated document.
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+schemars = { version = "1", features = ["preserve_order"] }
+# The same blocking rustls HTTP client obc-dem and obc-pack already use; no second TLS stack.
+ureq = "3"

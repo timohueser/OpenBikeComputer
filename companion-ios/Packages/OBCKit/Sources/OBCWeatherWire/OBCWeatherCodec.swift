@@ -1,7 +1,8 @@
 import Foundation
 
-/// OBCW v1 errors. The public boundary intentionally does not expose parser offsets or provider
-/// concepts; malformed input is untrusted bytes, while the producer-policy error is actionable.
+/// OBCW/OBCG v1 errors. The public boundary intentionally does not expose parser offsets or
+/// provider concepts; malformed input is untrusted bytes, while the producer-policy error is
+/// actionable.
 public enum OBCWeatherWireError: Error, Equatable, Sendable {
     case malformed
     case crcMismatch
@@ -516,7 +517,9 @@ public enum OBCWeatherCodec {
     }
 }
 
-private extension Data {
+// Little-endian reads/writes shared by the module's codecs. Internal, never public: the wire
+// contract is the codec API, not these accessors.
+extension Data {
     func readUInt8(at offset: Int) -> UInt8? {
         guard offset >= 0, offset < count else { return nil }
         return self[startIndex + offset]
@@ -578,8 +581,8 @@ private extension Data {
 
 // OBCWeatherWire cannot depend on OBCTransport just to share CRC code. This independent table is
 // pinned by the same check value and golden objects; keeping the target below transport is the
-// architecture boundary, not a second wire contract.
-private enum CRC32 {
+// architecture boundary, not a second wire contract. OBCW and OBCG share this one implementation.
+enum CRC32 {
     private static let table: [UInt32] = (0..<256).map { value in
         var crc = UInt32(value)
         for _ in 0..<8 { crc = crc & 1 == 1 ? 0xEDB8_8320 ^ (crc >> 1) : crc >> 1 }

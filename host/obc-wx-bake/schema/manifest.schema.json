@@ -1,0 +1,283 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Manifest",
+  "type": "object",
+  "properties": {
+    "version": {
+      "description": "Manifest document version; readers reject an unknown value.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "generated_at": {
+      "description": "Wall-clock UTC time this manifest was produced (RFC 3339 seconds).",
+      "type": "string"
+    },
+    "products": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Product"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "generated_at",
+    "products"
+  ],
+  "$defs": {
+    "Product": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Stable product identifier (`dwd-rv`, `icon-eu`, ...). Selection data, not provider UI.",
+          "type": "string"
+        },
+        "tier": {
+          "description": "1 radar, 2 model, 3 floor — the client prefers the highest fresh tier covering a corridor.",
+          "type": "integer",
+          "format": "uint8",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "bbox_udeg": {
+          "description": "The region where the whole product timeline is answerable: the intersection of its\nframes' windows, integer microdegrees.",
+          "$ref": "#/$defs/Bbox"
+        },
+        "cell": {
+          "description": "Nominal lattice of the product's frames (frames restate their own exact geometry).",
+          "$ref": "#/$defs/Cell"
+        },
+        "reference_time": {
+          "description": "Upstream run/reference time (RFC 3339); also the immutable key segment, so a repeated\nbake of the same run overwrites objects with identical bytes.",
+          "type": "string"
+        },
+        "generated_at": {
+          "description": "When this product entry was baked (RFC 3339).",
+          "type": "string"
+        },
+        "staleness_deadline": {
+          "description": "The moment the product must stop being used if no fresh manifest replaced it (RFC 3339).\nExpiry never turns into a dry claim.",
+          "type": "string"
+        },
+        "attribution": {
+          "$ref": "#/$defs/AttributionEntry"
+        },
+        "upstream_etag": {
+          "description": "Upstream HTTP validator of the source object this entry was baked from, when the source\noffers one; the next cycle short-circuits on it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "frames": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Frame"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "tier",
+        "bbox_udeg",
+        "cell",
+        "reference_time",
+        "generated_at",
+        "staleness_deadline",
+        "attribution",
+        "frames"
+      ]
+    },
+    "Bbox": {
+      "type": "object",
+      "properties": {
+        "south_udeg": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "west_udeg": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "north_udeg": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "east_udeg": {
+          "type": "integer",
+          "format": "int64"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "south_udeg",
+        "west_udeg",
+        "north_udeg",
+        "east_udeg"
+      ]
+    },
+    "Cell": {
+      "type": "object",
+      "properties": {
+        "lat_udeg": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "lon_udeg": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "nominal_m": {
+          "description": "Nominal source ground resolution in metres, for truthful UI/selection.",
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "lat_udeg",
+        "lon_udeg",
+        "nominal_m"
+      ]
+    },
+    "AttributionEntry": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "text",
+        "url"
+      ]
+    },
+    "Frame": {
+      "type": "object",
+      "properties": {
+        "offset_min": {
+          "description": "`(valid_at - reference_time)` in minutes; the `f<offset-min>` key segment.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "valid_at": {
+          "description": "Real upstream UTC validity timestamp (RFC 3339) — never a re-stamped fetch time.",
+          "type": "string"
+        },
+        "source_class": {
+          "$ref": "#/$defs/SourceClass"
+        },
+        "key": {
+          "description": "Immutable object key under the service origin.",
+          "type": "string"
+        },
+        "bytes": {
+          "description": "Exact object length; a client may use it to bound Range arithmetic.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "object_crc32": {
+          "description": "The OBCG whole-object CRC-32 (`0x` + 8 uppercase hex digits).",
+          "type": "string"
+        },
+        "geometry": {
+          "description": "The frame's exact OBCG geometry and paging, restated so corridor page arithmetic is\nplannable from the manifest and verifiable against the fetched header.",
+          "$ref": "#/$defs/FrameGeometry"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "offset_min",
+        "valid_at",
+        "source_class",
+        "key",
+        "bytes",
+        "object_crc32",
+        "geometry"
+      ]
+    },
+    "SourceClass": {
+      "type": "string",
+      "enum": [
+        "observation",
+        "forecast"
+      ]
+    },
+    "FrameGeometry": {
+      "type": "object",
+      "properties": {
+        "south_udeg": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "west_udeg": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "cell_lat_udeg": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "cell_lon_udeg": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "width": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "height": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "cell_size_m": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "tile_edge": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "entries_per_page": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "south_udeg",
+        "west_udeg",
+        "cell_lat_udeg",
+        "cell_lon_udeg",
+        "width",
+        "height",
+        "cell_size_m",
+        "tile_edge",
+        "entries_per_page"
+      ]
+    }
+  }
+}

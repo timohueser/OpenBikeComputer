@@ -88,6 +88,24 @@ producer/consumer paths. Rust builds them through the `obc-formats` authority an
 through the allocator-free `obc-weather` seam. The independent Swift `OBCWeatherWire` codec
 decodes and re-encodes every positive byte-for-byte and rejects every negative.
 
+### OBCG grid vectors
+
+The six positive `grid-*.obcg` files pin [`OBCG_Spec.md`](../OBCG_Spec.md): an all-dry
+sentinel-only object, raw4, RLE4, an explicit all-no-data tile (unavailable is never the dry
+sentinel), a 3 × 3-tile object across five directory pages with last-page padding (the corridor
+request-accounting target), and edge-tile no-data padding. Cells the Rust tests pin are the
+cells the Swift decoder must reproduce — OBCG is decoder-mirrored, not re-encoded, because its
+only producer is the Rust baker.
+
+The eighteen `grid-invalid-*` files isolate truncation, all four CRC scopes (header, object,
+page, tile), a shifted payload offset, an aliased/overlapping payload, impossible dimensions, a
+non-power-of-two tile edge, zero entries per page, overlong and noncanonical RLE, a compressible
+raw4 payload, an encoded all-dry full tile (the sentinel is mandatory there), a dry sentinel at
+a partial edge tile (forbidden — padding is no-data, never dry), and a nonzero dry sentinel,
+reserved byte, and double source-class flag. Except for truncation and the deliberate stale-CRC
+files, every CRC covering a corrupted byte is recomputed so structural validation cannot hide
+behind an integrity check.
+
 `manifest.json` restates each fixture's expected decoded values (plus the pinned
 protocol version, the service/characteristic UUIDs — including the Weather
 Request service's own 128-bit base — the `feature_bits` assignments, and the

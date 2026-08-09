@@ -46,6 +46,7 @@
       "obc-web-assemble",
       "obc-web-convert",
       "obc-web-demo",
+      "obc-wx-bake",
       "obc-wx-source-spike",
       "obcm-assemble",
       "obcm-testkit"

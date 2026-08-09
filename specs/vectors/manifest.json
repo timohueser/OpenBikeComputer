@@ -622,5 +622,44 @@
       "weather-invalid-frame-nonpositive.obcw": "rain frame valid_at is zero; CRC recomputed",
       "weather-invalid-frame-after-valid-until.obcw": "rain frame valid_at exceeds the overall validity ceiling by one second; CRC recomputed"
     }
+  },
+  "grid": {
+    "spec": "OBCG_Spec.md",
+    "format_version": 1,
+    "provenance": {
+      "semantic_seed": "WX5 issue #1190; valid_at=1800000000; reference 300 s earlier; south-west corner 47N,7E",
+      "rust_builder": "host/obc-vectors/src/obcg.rs using the obc-formats byte authority",
+      "rust_consumer": "firmware/obc-formats obcg::validate + corridor helpers",
+      "swift_consumer": "companion-ios/Packages/OBCKit/Sources/OBCWeatherWire/OBCGridCodec.swift",
+      "contract": "Swift independently decodes every positive to the same pinned cells; both readers reject every negative; corridor extraction touches only header + covering pages + needed tiles"
+    },
+    "positives": {
+      "grid-minimal-dry.obcg": {"byte_len": 228, "object_crc32": "0x2E08A044", "sha256": "ef66c865e1be84420a359795b918dab247a19b35978f6385df40ac0ef0e6ac57", "shape": "32x32 at tile edge 32: one all-zero dry sentinel entry; data_len 0"},
+      "grid-raw-tile.obcg": {"byte_len": 308, "object_crc32": "0x2C3F9164", "sha256": "f2f813d0c718d73fa90e5ba0d8c0934ba8a224c9f36b57b54d9e11a817a42aeb", "shape": "16x16 ICON-EU-shaped forecast frame; one 128-byte raw4 tile"},
+      "grid-rle-tile.obcg": {"byte_len": 196, "object_crc32": "0x4879AADD", "sha256": "0f10c659fc1b9c9cd3afbe188e4712cabe975810286c9ec6cee5f4c2040421d6", "shape": "16x16 radar frame; one 16-byte RLE4 tile of intensity 6"},
+      "grid-nodata-tile.obcg": {"byte_len": 196, "object_crc32": "0x06EEC5E8", "sha256": "4b1ae197acd70e1a6971bb2c567133af19d5e86136bee5301945cacd37f59897", "shape": "16x16 all-no-data tile: unavailable is encoded, never the dry sentinel"},
+      "grid-multipage.obcg": {"byte_len": 406, "object_crc32": "0x91A44671", "sha256": "2230590d8f2fd0575d71943bb3b011aa5ba5e8606739c069e408cc1b432c6feb", "shape": "40x40 at tile edge 16, 2 entries/page: 9 tiles over 5 pages with last-page padding; wet SW+NE corners; corridor request-accounting target"},
+      "grid-edge-padding.obcg": {"byte_len": 324, "object_crc32": "0x065E72F0", "sha256": "b40d52f9281652e12ac730d1ba7a524be47487f3d915ea925c5cb49be9ef4d16", "shape": "24x24 at tile edge 16: every tile edge-padded with no-data; one wet cell per quadrant"}
+    },
+    "negatives": {
+      "grid-invalid-truncated.obcg": "last byte missing while total_len remains unchanged",
+      "grid-invalid-object-crc.obcg": "payload byte changed without updating any CRC covering it",
+      "grid-invalid-header-crc.obcg": "tier changed without recomputing the header CRC",
+      "grid-invalid-page-crc.obcg": "entry byte changed; object+header CRCs refreshed, page CRC stale",
+      "grid-invalid-bad-offset.obcg": "first payload offset shifted by one; all CRCs honest",
+      "grid-invalid-overlap.obcg": "second wet entry aliases the first payload; all CRCs honest",
+      "grid-invalid-impossible-dims.obcg": "width zero; all CRCs honest",
+      "grid-invalid-tile-edge.obcg": "tile edge 24 is not a power of two; all CRCs honest",
+      "grid-invalid-paging.obcg": "entries_per_page zero; all CRCs honest",
+      "grid-invalid-rle-overlong.obcg": "first RLE run expanded to 16 cells: 271 decoded cells; all CRCs honest",
+      "grid-invalid-rle-noncanonical.obcg": "full no-data run split 15+1: equal adjacent runs without a full first run; all CRCs honest",
+      "grid-invalid-raw-compressible.obcg": "raw4 payload made all-no-data although canonical RLE4 is 16 bytes; all CRCs honest",
+      "grid-invalid-dry-encoded.obcg": "all-dry tile carried as an encoded RLE payload instead of the len-0 sentinel; all CRCs honest",
+      "grid-invalid-dry-sentinel-nonzero.obcg": "len-0 sentinel entry with a nonzero CRC field; all CRCs honest",
+      "grid-invalid-dry-sentinel-edge-tile.obcg": "dry sentinel at a partial edge tile whose padding is no-data; all CRCs honest",
+      "grid-invalid-tile-crc.obcg": "payload byte changed; object+header CRCs refreshed, tile CRC stale",
+      "grid-invalid-reserved.obcg": "nonzero reserved header byte; all CRCs honest",
+      "grid-invalid-flags.obcg": "Observed and Forecast both set; all CRCs honest"
+    }
   }
 }

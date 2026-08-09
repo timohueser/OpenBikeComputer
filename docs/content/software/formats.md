@@ -1143,6 +1143,23 @@ directory/payload windows reduce validation from 1,046 random reads to 269, with
 and 864 bytes of explicit validation scratch. This matters because a `ByteSource` may be an SD
 file whose random read includes a seek.
 
+### Upstream of the phone: OBCG
+
+The rain frames the phone crops into OBCW start life as **OBCG** grid objects — the static files
+the stateless weather bakery ([`obc-wx-bake`](src:host/obc-wx-bake)) publishes to object storage.
+One OBCG object is exactly one frame of one product (a DWD radar nowcast step, an ICON-EU model
+hour), so products whose frames have different native resolutions compose with no resampling at
+all. Inside, it deliberately mirrors the OBCW rain section: the same canonical four-bit
+intensities and the same raw4/RLE4 tile codec, generalized to a per-product power-of-two tile
+size. Around that sits what an HTTP Range client needs and a device never does: a self-CRC'd
+fixed header carrying exact integer geometry, a **paged** tile directory whose pages carry their
+own CRCs, per-tile CRCs, and a len-0 sentinel for all-dry tiles — so fetching a corridor is a
+header read, a few directory-page reads and only the wet tiles, each independently verifiable.
+The mutable `manifest.json` beside the frames carries tiers, coverage, staleness deadlines and
+attribution; selection policy is manifest data, never code. The byte-level contract is
+[`OBCG_Spec.md`](src:specs/OBCG_Spec.md); OBCG never reaches the device, which continues to see
+only OBCW.
+
 ## Streaming: resident vs on-demand
 
 All four formats are read through one trait. No reader touches a filesystem directly — it asks a [`ByteSource`](src:firmware/obc-formats/src/io.rs) for bytes at an offset:
@@ -1516,6 +1533,7 @@ The grid, theorem, seam rules, assembly contract, volume-set manifest bytes, and
 - Checked-in bytes both directions are held to (a route and its OBCR, a track log and its GPX export): [`specs/vectors/`](src:specs/vectors)
 - Normative OBCM / OBCR / ride / track constants, primitive codecs, and the shared byte seam: [`obc-formats`](src:firmware/obc-formats)
 - The OBCW byte contract and reader: spec [`OBCW_Spec.md`](src:specs/OBCW_Spec.md), authority [`obc-formats/src/obcw.rs`](src:firmware/obc-formats/src/obcw.rs), allocation-free traversal [`obc-weather`](src:firmware/obc-weather), and independent Swift mirror [`OBCWeatherWire`](src:companion-ios/Packages/OBCKit/Sources/OBCWeatherWire)
+- The published weather grid objects the phone crops from: spec [`OBCG_Spec.md`](src:specs/OBCG_Spec.md), authority [`obc-formats/src/obcg.rs`](src:firmware/obc-formats/src/obcg.rs), producer [`obc-wx-bake`](src:host/obc-wx-bake) with its pinned manifest schema [`manifest.schema.json`](src:host/obc-wx-bake/schema/manifest.schema.json)
 - The byte-level specs: [`OBCM_Spec.md`](src:specs/OBCM_Spec.md) · [`OBCR_Spec.md`](src:specs/OBCR_Spec.md) · [`obc-ble-interface-spec.md`](src:specs/obc-ble-interface-spec.md) (the wire contract routes/rides cross to the companion app)
 - The catalog manifest — spec [`OBCC_Spec.md`](src:specs/OBCC_Spec.md), generator [`obc-pack/src/catalog.rs`](src:host/obc-pack/src/catalog.rs), JSON Schema [`catalog.schema.json`](src:host/obc-pack/schema/catalog.schema.json)
 - The terrain artifact class — spec [`OBCT_Spec.md`](src:specs/OBCT_Spec.md) and `OBCC_Spec.md` §13, rasteriser [`obc-dem`](src:host/obc-dem), bakery stage [`obc-bake/src/terrain.rs`](src:host/obc-bake/src/terrain.rs)
