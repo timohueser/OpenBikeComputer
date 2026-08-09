@@ -84,7 +84,7 @@ resource-report = []
 # raises one weather-request advertising intent so the iOS background-discovery states can be
 # measured without the rest of the weather lifecycle existing. The intent is cleared by the first
 # authenticated context read or by the bounded 60-second advertising budget, whichever comes first;
-# default builds never raise it, and their capability word reports no weather (see
+# default builds never raise it, and the capability word reports no weather in every build (see
 # `link::identity::feature_bits`).
 #
 # The service itself is in GATT in *every* BLE build regardless of this feature — advertising a
