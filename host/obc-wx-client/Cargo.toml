@@ -10,6 +10,9 @@ description = "The host weather client (WX14): manifest + OBCG corridor Range re
 # a byte layout: every fetched page/tile is validated by the same code the device and the vectors
 # run, and the bundle it emits is encoded by `obc_formats::obcw`.
 obc-formats = { path = "../../firmware/obc-formats" }
+# The device's own OBCW reader. `--dump` prints what the *firmware* would sample, not what this
+# crate's encoder thinks it wrote — the difference is the whole value of the check.
+obc-weather = { path = "../../firmware/obc-weather" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4.34", default-features = false, features = ["std", "clock"] }
@@ -20,6 +23,3 @@ ureq = "3"
 # Parity oracle: the client's independent manifest model must read a document the *baker* wrote.
 # A dev-dep only, so the release build never pulls the baker's GRIB/HDF5 stack.
 obc-wx-bake = { path = "../obc-wx-bake" }
-# The production OBCW reader — the tests prove a built bundle is one the *device* can open, not
-# merely one this crate's encoder accepts.
-obc-weather = { path = "../../firmware/obc-weather" }
