@@ -646,6 +646,7 @@ impl SimGui {
         let (wx_snapshot, rain_step) = match weather {
             Some(w) => {
                 let pos = app.state.user_fix.map(|f| (f.lat, f.lon)).unwrap_or((app.state.cam_lat, app.state.cam_lon));
+                w.sync_clock(app.wall_unix_now() as i64, true);
                 let snap = w.snapshot(Some(pos));
                 if let Some(snap) = &snap {
                     let now = app.wall_unix_now() as i64;
