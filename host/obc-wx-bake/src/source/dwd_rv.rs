@@ -160,6 +160,7 @@ pub fn bake_tar(tar_bytes: &[u8]) -> Result<(i64, Vec<BakedFrame>), String> {
                 offset_min: lead_minutes,
                 valid_at: member_run + i64::from(lead_minutes) * 60,
                 flags: if lead_minutes == 0 { FLAG_OBSERVED } else { FLAG_FORECAST },
+                source: None,
                 cells: resample(&member, &index_map),
             });
         }
