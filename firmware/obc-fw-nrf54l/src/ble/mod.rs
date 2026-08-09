@@ -41,6 +41,7 @@ mod gatt;
 mod lifecycle;
 mod sensors;
 mod state;
+mod weather;
 
 // The app-facing link snapshot (epic #447): the ride loop feeds it into `App::set_ble_status` each
 // pass. The only BLE state that crosses into the app seam, already distilled to `obc_app` vocabulary.
@@ -54,6 +55,14 @@ pub use state::wait_status_change;
 // The settings→radio controls (#455): the ride loop pushes the persisted Bluetooth switch each pass
 // and rings the Bluetooth screen's Forget-phone request; the lifecycle loop below honours both.
 pub use state::{request_forget_bond, set_radio_enabled};
+
+// The weather due plane's seams (WX8, #1193): the ride loop pushes the app-side context snapshot
+// each pass; the Weather screen (WX11) raises the urgent request; the store's commit/config paths
+// poke the two crate-internal edges.
+#[allow(unused_imports)] // WX11's Weather screen is the caller; the seam ships with the scheduler.
+pub use weather::request_weather_now;
+pub use weather::set_weather_inputs;
+pub(crate) use weather::{note_commit as weather_committed, note_settings_changed as weather_settings_changed};
 
 // The radio link's lifetime counters, for the §7.5 diagnostics blob any transport can serve.
 pub(crate) use state::link_counters;
@@ -71,7 +80,7 @@ use core::mem::MaybeUninit;
 
 use defmt::{info, unwrap, warn};
 use embassy_executor::Spawner;
-use embassy_futures::join::{join, join4, join5};
+use embassy_futures::join::{join, join3, join4, join5};
 use embassy_futures::select::{select, select3, Either, Either3};
 use embassy_nrf::mode::Blocking;
 use embassy_nrf::{bind_interrupts, cracen, peripherals, Peri};
@@ -114,10 +123,10 @@ const CONNECTIONS_MAX: usize = 1 + SENSOR_LINKS;
 const ADV_SETS_MAX: usize = 1;
 /// Maximum radio-advertising time for one Weather Request hint. It is a one-shot budget, not a
 /// permanent secondary beacon: only a secured served probe read clears it early; the original
-/// monotonic deadline survives failed/unauthenticated connection cycles.
-// Only the harness arms a request today; the production weather lifecycle is the second caller.
-#[cfg_attr(not(feature = "ble-weather-request"), allow(dead_code))]
-const WEATHER_REQUEST_ADV_BUDGET_SECS: u64 = 60;
+/// monotonic deadline survives failed/unauthenticated connection cycles. Armed by the production
+/// due scheduler ([`weather`]) on every raise, and once at boot by the `ble-weather-request`
+/// harness.
+pub(crate) const WEATHER_REQUEST_ADV_BUDGET_SECS: u64 = 60;
 /// Bonded peers stored in the host: exactly one — the **phone**. Sensors are **not** bonded (open
 /// GATT servers connected by stored address, no SMP), so they never consume a bond slot. While the
 /// phone slot is occupied new pairings are rejected (#455) and only Forget phone clears it, so the
@@ -475,9 +484,14 @@ pub async fn run(
         sensors::run(stack, server, sensor_injector),
         join5(
             host_task(runner),
-            // The trip cascade rides the route-delete slot (`join5` is embassy's ceiling): both are
-            // rare, signal-driven arms, so sharing a slot costs nothing.
-            join(route_delete_task(stack, server, store, shared), trip_cascade_task(stack, server, store, shared)),
+            // The trip cascade + the weather due plane ride the route-delete slot (`join5` is
+            // embassy's ceiling): all three are rare, edge/deadline-driven arms, so sharing a slot
+            // costs nothing.
+            join3(
+                route_delete_task(stack, server, store, shared),
+                trip_cascade_task(stack, server, store, shared),
+                weather::run(server, store, shared),
+            ),
             ride_delete_task(stack, server, store, shared),
             ride_saved_task(stack, server, store, shared),
             async {
@@ -613,6 +627,12 @@ pub async fn run(
                     {
                         let mut guard = shared.lock().await;
                         store.borrow_mut().link_reset(&mut guard);
+                        // The weather transaction is the radio's own (§11.5 binds it to the CoC),
+                        // so *this* teardown releases a cancelled one — deliberately not inside
+                        // `link_reset`, which also runs on the cable's teardown (#1039's rule:
+                        // only the wire that owns a handle may drop it). A no-op when none is
+                        // in flight; the inactive slot keeps its zero magic and is never eligible.
+                        store.borrow_mut().weather_abort(&mut guard);
                     }
                     TRANSFER_ACTIVE.release(crate::link::gate_owner(crate::link::Transport::Ble));
                     TRANSFER_ARM.reset();

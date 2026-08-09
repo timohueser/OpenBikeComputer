@@ -827,7 +827,24 @@ pub struct Settings {
     /// shows, so [`adopt_ble_fields`](Settings::adopt_ble_fields) never pulls it across. Default
     /// **Both**; the scope is the Up-ahead list *only* (see [`UpAheadSource`]).
     pub up_ahead_source: UpAheadSource,
+    /// How often the device raises a **scheduled weather request** (weather epic #1185, WX8 #1193;
+    /// BLE spec §11.8) — the raw §11.8 discriminant: `0` Off · `1` 15 min · `2` 30 min (the device
+    /// default) · `3` 60 min · `4` 120 min. Stored as the raw byte rather than a local enum because
+    /// the wire crate (`obc-ble`'s `WeatherRefresh`) owns the vocabulary and the direction-dependent
+    /// validation rule, and `obc-app` must not depend on it: every writer (the BLE Config path
+    /// today, WX11's Settings screen later) validates through that enum before storing, so the
+    /// persisted value is always a known discriminant — [`decode`] still sanitises an out-of-range
+    /// byte to the default as belt-and-braces. **BLE-writable** (like [`units`](Settings::units) /
+    /// [`device_name`](Settings::device_name)): the companion writes it via Config §7.3, so
+    /// [`adopt_ble_fields`](Settings::adopt_ble_fields) pulls it across.
+    pub weather_refresh: u8,
 }
+
+/// The [`Settings::weather_refresh`] device default: `2` = every 30 minutes (spec §11.8 — also what
+/// an *absent* Config field means on a read, and explicitly **not** `Off`).
+pub const WEATHER_REFRESH_DEFAULT: u8 = 2;
+/// The largest §11.8 discriminant this build knows (`4` = 120 min) — the decode-side sanitise bound.
+pub const WEATHER_REFRESH_MAX: u8 = 4;
 
 impl Default for Settings {
     fn default() -> Self {
@@ -852,6 +869,7 @@ impl Default for Settings {
             saved_sensors: [SavedSensor::EMPTY; SENSOR_SLOTS],
             ride_retention: RideRetention::default(),
             up_ahead_source: UpAheadSource::default(),
+            weather_refresh: WEATHER_REFRESH_DEFAULT,
         }
     }
 }
@@ -879,6 +897,10 @@ impl Settings {
     pub fn adopt_ble_fields(&mut self, other: &Settings) {
         self.units = other.units;
         self.device_name = other.device_name;
+        // WX8 (#1193): the §7.3 `weather_refresh` field is the third BLE-writable field. Pulled
+        // across for the same clobber reason as the two above — an on-device edit's whole-blob save
+        // must not overwrite the interval the phone just set.
+        self.weather_refresh = other.weather_refresh;
     }
 
     /// Clamp every field into its valid range — applied after a decode (see [`decode`]). The
@@ -901,8 +923,8 @@ impl Settings {
 /// `ride_retention` byte (auto-expiry epic #638, S3); v13 appended the `up_ahead_source` byte
 /// ("Up ahead" epic #946, U4); v14 appended the `map_contours` byte (elevation EL10c, #1096 — a
 /// **provisional** field; removing it is a version bump like any other, which is exactly the point
-/// of it costing one appended byte).
-pub const VERSION: u8 = 14;
+/// of it costing one appended byte); v15 appended the `weather_refresh` byte (weather WX8, #1193).
+pub const VERSION: u8 = 15;
 
 /// Fixed encoded length: the [`PAYLOAD_LEN`] CRC-covered bytes + a 2-byte CRC, **rounded up to the
 /// device RRAM's 16-byte write line** (the firmware store writes whole 128-bit lines) — so a codec
@@ -911,7 +933,9 @@ pub const VERSION: u8 = 14;
 pub const ENCODED_LEN: usize = (PAYLOAD_LEN + 2).div_ceil(16) * 16;
 
 /// Payload size before the trailing CRC. The CRC follows immediately at this offset.
-const PAYLOAD_LEN: usize = CONTOURS_OFF + 1;
+const PAYLOAD_LEN: usize = WEATHER_REFRESH_OFF + 1;
+/// Byte offset of the `weather_refresh` byte (the v15 tail, right after `map_contours`).
+const WEATHER_REFRESH_OFF: usize = CONTOURS_OFF + 1;
 /// Byte offset of the `map_contours` flag (the v14 tail, right after `up_ahead_source`).
 const CONTOURS_OFF: usize = UP_AHEAD_OFF + 1;
 /// Byte offset of the `up_ahead_source` byte (the v13 tail, right after `ride_retention`).
@@ -1001,6 +1025,8 @@ pub fn encode(s: &Settings) -> [u8; ENCODED_LEN] {
     b[UP_AHEAD_OFF] = s.up_ahead_source as u8;
     // v14 tail: the Map's terrain-layer (contours) toggle.
     b[CONTOURS_OFF] = s.map_contours as u8;
+    // v15 tail: the weather-refresh interval (WX8, #1193) — the raw §11.8 discriminant.
+    b[WEATHER_REFRESH_OFF] = s.weather_refresh;
     let crc = crate::store_meta::crc16(&b[0..PAYLOAD_LEN]);
     b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
     b
@@ -1070,6 +1096,15 @@ pub fn decode(bytes: &[u8]) -> Option<Settings> {
         up_ahead_source: UpAheadSource::from_byte(b[UP_AHEAD_OFF]),
         // The v14 terrain-layer (contours) toggle: any non-zero byte is "on", like the other bools.
         map_contours: b[CONTOURS_OFF] != 0,
+        // The v15 weather-refresh interval (WX8): writers only ever store a validated §11.8
+        // discriminant, so an out-of-range byte here is corruption the CRC missed — sanitise to the
+        // device default (30 min), like the other enum codec fields. Deliberately the default and
+        // not `Off`: §7.3 pins that only an explicit rider choice may disable weather.
+        weather_refresh: if b[WEATHER_REFRESH_OFF] <= WEATHER_REFRESH_MAX {
+            b[WEATHER_REFRESH_OFF]
+        } else {
+            WEATHER_REFRESH_DEFAULT
+        },
     };
     s.sanitize();
     Some(s)
@@ -1128,8 +1163,37 @@ mod tests {
             ],
             ride_retention: RideRetention::Month1,
             up_ahead_source: UpAheadSource::MapPoisOnly,
+            weather_refresh: 4,
         };
         assert_eq!(decode(&encode(&s)), Some(s));
+    }
+
+    /// The v15 tail (WX8, #1193): the weather-refresh byte round-trips every §11.8 discriminant,
+    /// defaults to **30 min** (never `Off` — §7.3 pins that only an explicit rider choice disables
+    /// weather), sanitises an out-of-range stored byte back to the default, and is **BLE-writable**:
+    /// [`adopt_ble_fields`] pulls it across so an on-device edit's whole-blob save can't clobber
+    /// the interval the phone just wrote.
+    #[test]
+    fn weather_refresh_round_trips_defaults_and_is_ble_writable() {
+        assert_eq!(Settings::default().weather_refresh, WEATHER_REFRESH_DEFAULT, "default = 30 min, not Off");
+
+        for v in 0..=WEATHER_REFRESH_MAX {
+            let s = Settings { weather_refresh: v, ..Settings::default() };
+            assert_eq!(decode(&encode(&s)), Some(s), "refresh {v} round-trips");
+        }
+
+        // An out-of-range stored byte (corruption the CRC missed) sanitises to the default —
+        // re-stamp the CRC so only the payload byte is "wrong".
+        let mut b = encode(&Settings::default());
+        b[WEATHER_REFRESH_OFF] = 9;
+        let crc = crate::store_meta::crc16(&b[0..PAYLOAD_LEN]);
+        b[PAYLOAD_LEN..PAYLOAD_LEN + 2].copy_from_slice(&crc.to_le_bytes());
+        assert_eq!(decode(&b).expect("valid CRC").weather_refresh, WEATHER_REFRESH_DEFAULT, "unknown → default");
+
+        // BLE-writable: the #456 coherence merge adopts it (unlike the device-only fields).
+        let mut app = Settings { weather_refresh: 0, ..Settings::default() };
+        app.adopt_ble_fields(&Settings { weather_refresh: 3, ..Settings::default() });
+        assert_eq!(app.weather_refresh, 3, "adopt_ble_fields pulls the phone's interval across");
     }
 
     /// The v13 tail: the Up-ahead source scope round-trips every value, defaults **Both** (the
@@ -1459,7 +1523,7 @@ mod tests {
     /// repick the rider's sensors).
     #[test]
     fn saved_sensors_round_trip_and_migration() {
-        assert_eq!(VERSION, 14, "saved_sensors is the v11 tail; the codec is now v14 (map_contours)");
+        assert_eq!(VERSION, 15, "saved_sensors is the v11 tail; the codec is now v15 (weather_refresh)");
         assert_eq!(
             Settings::default().saved_sensors,
             [SavedSensor::EMPTY; SENSOR_SLOTS],

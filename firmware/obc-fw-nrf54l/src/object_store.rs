@@ -36,6 +36,7 @@
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::channel::Channel;
 use embassy_sync::signal::Signal;
 use embedded_sdmmc::ShortFileName;
@@ -47,6 +48,7 @@ use obc_ble::{
     TransferStatus, TripListEntry,
 };
 use obc_ports::SettingsStore;
+use obc_storage::weather as weather_store;
 
 use crate::sd::Storage;
 use crate::SharedStore;
@@ -468,6 +470,24 @@ pub struct ObjectStore {
     set_upload: Option<obc_app::SetUpload>,
 }
 
+/// The **weather bundle** transaction in flight, if any (WX8, #1193; spec §11.5): the WX7
+/// crash-safe inactive-slot publication from `obc_storage::weather`, held across the CoC chunks
+/// exactly as the temp handle is for a route, and never routed through the destructive route
+/// `UPLOAD.TMP` path — the whole point of the dual-slot store is that the bundle the rider is
+/// looking at survives a torn transfer.
+///
+/// **Deliberately a module static and *not* an `ObjectStore` field.** As a field it re-opened the
+/// #677/#1108 boot-frame wound: one more (non-trivially-initialised) field in the ~13.5 KB struct
+/// made LLVM stop coalescing `init_store`'s construction temporaries, and the measured boot chain
+/// grew by a whole extra `ObjectStore` copy (`init_store` frame 14,692 → 27,556 B on the release
+/// disassembly). The transaction is ≤ 64 bytes (pinned in `obc-storage`), so a static of its own
+/// costs nothing resident and keeps the boot-critical struct's layout exactly as the two-phase
+/// `empty`/`hydrate` pattern measured it. Same access discipline as every store cell: locked
+/// synchronously inside the store's methods, never across an `await`, on the one cooperative
+/// executor.
+static WEATHER_TX: BlockingMutex<CriticalSectionRawMutex, core::cell::RefCell<Option<weather_store::WeatherUpload>>> =
+    BlockingMutex::new(core::cell::RefCell::new(None));
+
 impl ObjectStore {
     /// The empty store — no settings read, no card scan; [`hydrate`](Self::hydrate) does that,
     /// in place. Construction is split in two because this struct is ~13.5 KB by value: the old
@@ -737,16 +757,27 @@ impl ObjectStore {
     /// every field coherent (not only units + name). Then [`BLE_CONFIG_WRITTEN`] is raised so the
     /// ride loop reloads the units + name into the live `App` copy before its next save — the phone's
     /// write reaches the UI and can't be clobbered by the app's change-detection save (#456).
-    pub fn apply_config(&mut self, shared: &mut SharedStore, name: &str, units: u8) {
+    pub fn apply_config(&mut self, shared: &mut SharedStore, name: &str, units: u8, weather_refresh: Option<u8>) {
         // Start from the current persisted truth so an on-device edit racing this write isn't dropped.
         self.settings = shared.settings.load().unwrap_or_default();
         self.settings.device_name = DeviceName::from_str_lossy(name);
         self.settings.units = if units == 1 { obc_app::Units::Imperial } else { obc_app::Units::Metric };
+        // The §7.3 weather-refresh interval (WX8, #1193). `None` = the writer never mentioned the
+        // field — *leave the stored value untouched* (spec §7.3's absent-on-write rule; this is
+        // what keeps an old app's rename from resetting a rider who chose `Off`). The caller
+        // already validated the byte through the wire enum's strict write direction.
+        if let Some(refresh) = weather_refresh {
+            self.settings.weather_refresh = refresh;
+        }
         // The BLE plane persists its owned fields directly (best-effort): the store logs a write
         // failure internally, and the phone re-asserts config on reconnect, so there is no App-side
         // revision to retry here (the device-edit path owns the acknowledged handshake — #810).
         let _ = shared.settings.save(&self.settings);
         BLE_CONFIG_WRITTEN.store(true, Ordering::Relaxed);
+        // The due scheduler keys its cadence off this setting — wake it so an interval change
+        // lands now rather than at the next unrelated edge (WX8).
+        #[cfg(feature = "ble")]
+        crate::ble::weather_settings_changed();
     }
 
     /// Refresh the config cache from RRAM **if** the ride loop flagged an on-device settings change
@@ -1293,6 +1324,148 @@ impl ObjectStore {
     /// existence check (spec §4.4). Purely presence; the full CRC scan is the on-device flow's.
     pub fn update_staged(&self, shared: &SharedStore) -> bool {
         shared.storage.as_ref().is_some_and(|s| s.has_update_bin())
+    }
+
+    // ==================== the weather bundle upload (WX8, #1193) ====================
+
+    /// Validate + arm a **weather bundle** upload (spec §11.5): the singleton at `object_id = 0` —
+    /// any other id is answered `notFound` rather than quietly treated as `0`, and there is no
+    /// catalog-full refusal because a bundle is **always** a replacement (the WX7 store writes the
+    /// inactive slot). Like every upload, no storage is touched here; the data plane opens the WX7
+    /// transaction at the first streamed byte ([`weather_begin`](Self::weather_begin)).
+    pub fn weather_upload_open(
+        &self,
+        shared: &SharedStore,
+        desc: &TransferControl,
+    ) -> Result<Receiver, TransferStatus> {
+        if desc.object_id != obc_ble::WEATHER_BUNDLE_OBJECT_ID {
+            return Err(TransferStatus::NotFound);
+        }
+        // No card ⇒ no slots; answer now rather than after the CoC opens.
+        if shared.storage.is_none() {
+            return Err(TransferStatus::Error);
+        }
+        Receiver::new(desc).map_err(|_| TransferStatus::Error)
+    }
+
+    /// Open the WX7 crash-safe inactive-slot transaction at the transfer's first real byte —
+    /// the weather twin of [`upload_begin`](Self::upload_begin), backed by
+    /// [`obc_storage::weather::WeatherUpload`] rather than the destructive `UPLOAD.TMP` path.
+    /// `false` = no card, no safe inactive slot, or an open failure (the caller answers `error`).
+    pub fn weather_begin(&mut self, shared: &mut SharedStore, total_len: u32, crc32: u32) -> bool {
+        let Some(storage) = shared.storage.as_mut() else { return false };
+        match weather_store::WeatherUpload::begin(storage, total_len, crc32) {
+            Ok(tx) => {
+                WEATHER_TX.lock(|slot| *slot.borrow_mut() = Some(tx));
+                true
+            }
+            Err(e) => {
+                defmt::warn!("store: [weather] begin failed: {}", defmt::Debug2Format(&e));
+                false
+            }
+        }
+    }
+
+    /// Sink one CoC chunk into the inactive slot. `false` = storage failure (the transaction has
+    /// already released its slot; the caller aborts and answers `error`).
+    pub fn weather_append(&mut self, shared: &mut SharedStore, bytes: &[u8]) -> bool {
+        let Some(storage) = shared.storage.as_mut() else { return false };
+        WEATHER_TX.lock(|slot| {
+            let mut slot = slot.borrow_mut();
+            let Some(tx) = slot.as_mut() else { return false };
+            match tx.push(storage, bytes) {
+                Ok(()) => true,
+                Err(e) => {
+                    defmt::warn!("store: [weather] append failed: {}", defmt::Debug2Format(&e));
+                    // A terminal push released the slot handle itself — drop the poisoned transaction.
+                    *slot = None;
+                    false
+                }
+            }
+        })
+    }
+
+    /// All bytes arrived: validate + publish per §11.5/§11.6, returning the wire status for the
+    /// `transferResult`. The disposition rules, verbatim from the frozen contract:
+    ///
+    /// - a **valid, newer** bundle commits (magic flush = the eligibility point) → `committed`;
+    /// - a **duplicate or stale** bundle is *ignored but successful* → `committed` — an error here
+    ///   would push a phone whose HTTP path was slow into an unwinnable retry loop. The
+    ///   newest-wins comparison is the WX7 selector's own (`candidate_is_newer`), which
+    ///   `obc_ble::classify_upload` is parity-tested against;
+    /// - a wire-corrupted transfer → `crcMismatch` (*send the same bytes again*);
+    /// - bytes that arrived **intact but do not validate as OBCW** → `error`, deliberately not
+    ///   `crcMismatch`: a retry would reproduce the failure and the fault is the phone's to fix.
+    ///
+    /// A commit refreshes the boot-shared slot selection and pokes the due scheduler (success is
+    /// what finishes a request — §11.3).
+    pub fn weather_finish(&mut self, shared: &mut SharedStore) -> TransferStatus {
+        use weather_store::UploadError;
+        let Some(tx) = WEATHER_TX.lock(|slot| slot.borrow_mut().take()) else { return TransferStatus::Error };
+        let Some(storage) = shared.storage.as_mut() else { return TransferStatus::Error };
+        match tx.finish(storage) {
+            Ok(commit) => {
+                // Re-derive the active selection through the same shared selector boot uses, so
+                // what the wire answered and what the device renders cannot disagree.
+                storage.refresh_weather_selection();
+                defmt::info!(
+                    "store: [weather] committed generation {=u32} into slot {=str}",
+                    commit.installed.generation,
+                    match commit.installed.slot {
+                        obc_weather::Slot::A => "A",
+                        obc_weather::Slot::B => "B",
+                    }
+                );
+                #[cfg(feature = "ble")]
+                crate::ble::weather_committed();
+                TransferStatus::Committed
+            }
+            Err(UploadError::NotNewer { active, incoming }) => {
+                // §11.6's two "ignored but successful" rows. The classifier names which one — and
+                // is the host-tested twin of the `candidate_is_newer` call that just refused the
+                // commit, so the two verdicts cannot drift.
+                let disposition = obc_ble::classify_upload(
+                    obc_ble::BundleIdentity { generation: incoming.generation, generated_at: incoming.generated_at },
+                    Some(obc_ble::BundleIdentity { generation: active.generation, generated_at: active.generated_at }),
+                );
+                defmt::info!(
+                    "store: [weather] {=str} ignored (kept generation {=u32}) — answered committed",
+                    match disposition {
+                        obc_ble::UploadDisposition::DuplicateIgnored => "duplicate",
+                        _ => "stale",
+                    },
+                    active.generation
+                );
+                TransferStatus::Committed
+            }
+            Err(UploadError::OuterCrc) => TransferStatus::CrcMismatch,
+            Err(UploadError::InvalidBundle(v)) => {
+                // Intact bytes that are not a bundle: `error`, never `crcMismatch` (§11.5 — the
+                // pinned distinction; answering crcMismatch would hide a producer bug behind an
+                // infinite, blameless-looking retry ladder).
+                defmt::warn!("store: [weather] intact upload failed OBCW validation: {}", defmt::Debug2Format(&v));
+                TransferStatus::Error
+            }
+            Err(e) => {
+                defmt::warn!("store: [weather] finish failed: {}", defmt::Debug2Format(&e));
+                TransferStatus::Error
+            }
+        }
+    }
+
+    /// Abort/interrupt: release the in-flight weather transaction's slot handle (the zero magic
+    /// stays — the slot is never eligible). Runs from the radio's own teardown too, since a
+    /// cancelled future can't release it itself; a no-op when nothing is in flight.
+    pub fn weather_abort(&mut self, shared: &mut SharedStore) {
+        if let (Some(tx), Some(storage)) = (WEATHER_TX.lock(|slot| slot.borrow_mut().take()), shared.storage.as_mut()) {
+            tx.abort(storage);
+        }
+    }
+
+    /// The active bundle's identity for the request context's bundle group (§11.4 validity bit 3)
+    /// and the scheduler's age input — the boot/commit-refreshed slot selection, no card I/O.
+    pub fn weather_active(&self, shared: &SharedStore) -> Option<obc_weather::Candidate> {
+        shared.storage.as_ref().and_then(|s| s.weather_active())
     }
 
     // ==================== the map upload (issue #927) ====================

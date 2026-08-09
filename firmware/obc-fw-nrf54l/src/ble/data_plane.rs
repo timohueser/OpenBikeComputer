@@ -124,6 +124,12 @@ pub(crate) async fn serve_coc(
             }
             let outcome = match armed {
                 Armed::Echo(desc) => run_echo(stack, server, &mut ch, &desc, &mut buf).await,
+                // A weather bundle (WX8, #1193) streams into the WX7 dual-slot store, not the
+                // route temp — its own runner, routed on the type exactly like the fwimage/trip
+                // split inside `run_upload`.
+                Armed::Upload(desc, rx) if desc.ty == ObjectType::WeatherBundle => {
+                    run_weather_upload(stack, server, store, shared, &mut ch, &desc, rx, &mut buf).await
+                }
                 Armed::Upload(desc, rx) => run_upload(stack, server, store, shared, &mut ch, &desc, rx, &mut buf).await,
                 Armed::Download(desc) => run_download(stack, server, store, shared, &mut ch, &desc, &mut buf).await,
                 // Unreachable by construction: `classify_transfer` refuses every map-payload type
@@ -296,6 +302,89 @@ async fn run_upload(
         let ty = if is_trip { ObjectType::Trip } else { ObjectType::Route };
         publish_store_change(stack, server, store, ty).await;
     }
+    TransferOutcome::Answered
+}
+
+/// A **weather bundle** upload (WX8, #1193; spec §11.5): sink CoC bytes through the [`Receiver`]
+/// into the WX7 crash-safe inactive-slot transaction, then let
+/// [`ObjectStore::weather_finish`] deliver the §11.5/§11.6 verdict — commit, the two
+/// ignored-but-successful rows, `crcMismatch` for wire corruption, `error` for intact bytes that
+/// are not a bundle. The streaming skeleton is [`run_upload`]'s; only the storage calls differ,
+/// because a bundle must never touch the destructive `UPLOAD.TMP` path (the bundle the rider is
+/// looking at survives a torn transfer in the other slot).
+#[allow(clippy::too_many_arguments)]
+async fn run_weather_upload(
+    stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
+    server: &Server<'_>,
+    store: &RefCell<ObjectStore>,
+    shared: &SharedStoreMutex,
+    ch: &mut L2capChannel<'_, DefaultPacketPool>,
+    desc: &TransferControl,
+    mut rx: Receiver,
+    buf: &mut [u8],
+) -> TransferOutcome {
+    info!("ble: [coc] weather upload start: {} bytes", desc.total_len);
+    // Open the dual-slot transaction at the first real byte (same reasoning as `run_upload`): a
+    // peer that writes `transferControl` but never opens the CoC holds no slot handle.
+    let began = {
+        let mut guard = shared.lock().await;
+        store.borrow_mut().weather_begin(&mut guard, rx.total_len(), desc.crc32)
+    };
+    if !began {
+        warn!("ble: [coc] cannot open the inactive weather slot — rejecting");
+        close_transfer();
+        notify_status(server, stack, transfer_result(rx.object_id(), TransferStatus::Error)).await;
+        return TransferOutcome::Answered;
+    }
+    while !rx.is_complete() {
+        let n = match select(ch.receive(stack, buf), TRANSFER_ABORT.wait()).await {
+            Either::First(Ok(n)) if n > 0 => n,
+            Either::First(_) => {
+                // Channel gone with bytes still expected: release the slot (zero magic stays — the
+                // slot is never eligible) and re-accept; the app re-sends from the start.
+                {
+                    let mut guard = shared.lock().await;
+                    store.borrow_mut().weather_abort(&mut guard);
+                }
+                info!("ble: [coc] weather upload interrupted — slot released (uploads restart)");
+                close_transfer();
+                return TransferOutcome::ChannelDropped;
+            }
+            Either::Second(()) => {
+                {
+                    let mut guard = shared.lock().await;
+                    store.borrow_mut().weather_abort(&mut guard);
+                }
+                info!("ble: [coc] weather upload aborted by the app");
+                close_transfer();
+                notify_status(server, stack, transfer_result(rx.object_id(), TransferStatus::Aborted)).await;
+                return TransferOutcome::Answered;
+            }
+        };
+        let consumed = rx.push(&buf[..n]);
+        let appended = {
+            let mut guard = shared.lock().await;
+            store.borrow_mut().weather_append(&mut guard, &buf[..consumed])
+        };
+        if !appended {
+            // The transaction released its own handle on the failed append; nothing else to drop.
+            warn!("ble: [coc] weather slot append failed — upload rejected");
+            close_transfer();
+            notify_status(server, stack, transfer_result(rx.object_id(), TransferStatus::Error)).await;
+            return TransferOutcome::Answered;
+        }
+    }
+    let status = {
+        let mut guard = shared.lock().await;
+        store.borrow_mut().weather_finish(&mut guard)
+    };
+    let committed = status == TransferStatus::Committed;
+    info!("ble: [coc] weather upload finished -> status {}", status.as_u8());
+    let offset = if committed { rx.total_len() } else { 0 };
+    close_transfer();
+    notify_status(server, stack, transfer_result_at(rx.object_id(), status, offset)).await;
+    // Deliberately no `storeChanged`: a bundle is not a listed object and has no store revision —
+    // the phone learns the outcome from the `transferResult`, the rider from the next render.
     TransferOutcome::Answered
 }
 
