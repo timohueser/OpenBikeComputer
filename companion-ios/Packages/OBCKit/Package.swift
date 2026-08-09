@@ -107,6 +107,9 @@ let package = Package(
         .testTarget(
             name: "OBCWeatherTests",
             dependencies: ["OBCWeather"],
+            // The WX1 MET captures — rehomed here when WX6 deleted the source spike crate that
+            // used to carry them (the suite still pins the adapter against real provider bytes).
+            resources: [.copy("Fixtures")],
             swiftSettings: languageMode
         ),
         .testTarget(
