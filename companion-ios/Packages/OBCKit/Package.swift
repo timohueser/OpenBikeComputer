@@ -78,6 +78,7 @@ let package = Package(
         .testTarget(
             name: "OBCFormatsTests",
             dependencies: ["OBCFormats"],
+            resources: [.copy("Fixtures")],
             swiftSettings: languageMode
         ),
         .testTarget(
