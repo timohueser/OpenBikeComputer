@@ -124,6 +124,7 @@ if [ -n "$generate_only" ]; then
     cp "$SERVICE_TEMPLATE" "$generate_only/obc-wx-bake@.service"
     while IFS=$'\t' read -r name cal delay note; do
         timer_unit "$name" "$cal" "$delay" "$note" >"$generate_only/obc-wx-bake@$name.timer"
+        chmod 0644 "$generate_only/obc-wx-bake@$name.timer"
         say "generated obc-wx-bake@$name.timer ($cal)"
     done < <(read_adapters)
     printf '\nGenerated units in %s (nothing was installed).\n' "$generate_only"
@@ -169,8 +170,9 @@ if [ -f "$ENV_FILE" ]; then
     chown root:root "$ENV_FILE"; chmod 0600 "$ENV_FILE"
     say "$ENV_FILE exists — left untouched (0600 root:root)"
 else
-    umask 077
-    cat >"$ENV_FILE" <<'EOF'
+    # The umask lives in this subshell only: it must not leak into the unit files written below,
+    # which systemd expects to be world-readable 0644.
+    ( umask 077; cat >"$ENV_FILE" <<'EOF'
 # R2 credentials for obc-wx-bake. 0600 root:root — systemd reads this as root before dropping to
 # the obc-wx user, so the service account itself never has the secret on disk it can read.
 # NEVER commit this file. Rotation procedure: ops/weather/RUNBOOK.md § Rotate the R2 token.
@@ -179,9 +181,17 @@ OBC_WX_R2_BUCKET=obc-wx
 OBC_WX_R2_ACCESS_KEY_ID=
 OBC_WX_R2_SECRET_ACCESS_KEY=
 EOF
+    )
     chown root:root "$ENV_FILE"; chmod 0600 "$ENV_FILE"
     say "wrote the $ENV_FILE skeleton — fill in the R2 token before starting the timers"
 fi
+
+# Are the credentials actually filled in? Timers are installed either way, but starting them
+# against a placeholder file would only manufacture a failure every five minutes.
+credentials_ready=true
+for key in OBC_WX_R2_ACCOUNT_ID OBC_WX_R2_ACCESS_KEY_ID OBC_WX_R2_SECRET_ACCESS_KEY; do
+    grep -qE "^$key=.+" "$ENV_FILE" || credentials_ready=false
+done
 
 # ── The binary ───────────────────────────────────────────────────────────────────────────────
 step "Binary"
@@ -230,6 +240,7 @@ enabled=(); skipped=()
 while IFS=$'\t' read -r name cal delay note; do
     if supports_adapter "$name"; then
         timer_unit "$name" "$cal" "$delay" "$note" >"$UNIT_DIR/obc-wx-bake@$name.timer"
+        chmod 0644 "$UNIT_DIR/obc-wx-bake@$name.timer"
         enabled+=("$name")
     else
         skipped+=("$name")
@@ -251,9 +262,19 @@ done
 
 systemctl daemon-reload
 for name in "${enabled[@]}"; do
-    systemctl enable --now "obc-wx-bake@$name.timer" >/dev/null
+    # Enable always; start only when the credentials are real. Ticking against a placeholder env
+    # file would just manufacture a failed bake every few minutes and bury the real first publish.
+    if [ "$credentials_ready" = true ]; then
+        systemctl enable --now "obc-wx-bake@$name.timer" >/dev/null
+    else
+        systemctl enable "obc-wx-bake@$name.timer" >/dev/null
+    fi
 done
-say "enabled: ${enabled[*]}"
+if [ "$credentials_ready" = true ]; then
+    say "enabled and started: ${enabled[*]}"
+else
+    say "enabled (NOT started — $ENV_FILE has no credentials yet): ${enabled[*]}"
+fi
 [ ${#skipped[@]} -gt 0 ] && say "skipped (this binary has no such subcommand): ${skipped[*]}"
 
 # ── Bounded journal retention ────────────────────────────────────────────────────────────────
@@ -282,13 +303,27 @@ fi
 
 step "Installed"
 systemctl list-timers --all 'obc-wx-bake@*' --no-pager || true
-cat <<EOF
+if [ "$credentials_ready" = true ]; then
+    cat <<EOF
 
-Next:
-  1. Fill in $ENV_FILE (R2 account id + scoped token), then:
-       systemctl start obc-wx-bake@${enabled[0]}.service
-       journalctl -u obc-wx-bake@${enabled[0]}.service -n 50 --no-pager
+The timers are running. Next:
+  1. Watch the first ticks:
+       journalctl -u 'obc-wx-bake@*' -n 50 --no-pager
   2. Confirm the manifest is public:  curl -sI \$OBC_WX_BASE_URL/wx/v1/manifest.json
   3. The rest — bucket, lifecycle rule, token scope, freshness alerting — is in
      ops/weather/RUNBOOK.md.
 EOF
+else
+    cat <<EOF
+
+The timers are enabled but NOT started, because $ENV_FILE has no credentials yet. Next:
+  1. Fill in $ENV_FILE (R2 account id + scoped token), then take the first publish by hand:
+       systemctl start obc-wx-bake@${enabled[0]}.service
+       journalctl -u obc-wx-bake@${enabled[0]}.service -n 50 --no-pager
+  2. Start the timers:  systemctl start 'obc-wx-bake@*.timer'
+     (or simply re-run this installer — it starts them once the credentials are there)
+  3. Confirm the manifest is public:  curl -sI \$OBC_WX_BASE_URL/wx/v1/manifest.json
+  4. The rest — bucket, lifecycle rule, token scope, freshness alerting — is in
+     ops/weather/RUNBOOK.md.
+EOF
+fi

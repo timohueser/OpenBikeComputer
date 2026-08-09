@@ -16,7 +16,11 @@ Checks, in the order they are reported:
   2. `generated_at` is no older than --max-manifest-age-min (the epic's 30-minute rule: even with
      every upstream unchanged, a healthy box republishes the manifest on every tick);
   3. every product is inside its own `staleness_deadline` plus --grace-min;
-  4. cost guardrails: the current published set, and the projected 48 h rolling bucket footprint
+  4. every product named by --expect is actually listed. A product only ever leaves the manifest
+     when a human retires its adapter, so an absent one means its *timer* died — disabled,
+     renamed, never installed — rather than its upstream. That failure otherwise looks exactly
+     like health: everything still listed keeps publishing happily without it;
+  5. cost guardrails: the current published set, and the projected 48 h rolling bucket footprint
      (each product's current bytes x its upstream runs/day from adapters.conf x 2 days).
 
 Exit codes: 0 fresh, 1 stale or over budget, 2 the manifest could not be read at all. 1 and 2 are
@@ -98,6 +102,9 @@ def main() -> int:
                         help="alert when generated_at is older than this (default: 30)")
     parser.add_argument("--grace-min", type=int, default=15,
                         help="grace added to each product's staleness_deadline (default: 15)")
+    parser.add_argument("--expect", default="",
+                        help="comma-separated product ids that must be listed (e.g. dwd-rv,icon-eu); "
+                             "catches a dead timer, which no freshness check can see")
     parser.add_argument("--max-set-bytes", type=int, default=50 * BYTES_PER_MB,
                         help="alert when the currently published frame set exceeds this (default: 50 MB)")
     parser.add_argument("--max-rolling-bytes", type=int, default=1000 * BYTES_PER_MB,
@@ -210,7 +217,25 @@ def main() -> int:
         else:
             report.append(f"ok       {identifier:10s} {len(frames):3d} frames, {bytes_now / 1000:8.1f} kB, {age_text(left)} of validity left")
 
-    # ── 4. Cost guardrails ────────────────────────────────────────────────────────────────────
+    # ── 4. Product presence ───────────────────────────────────────────────────────────────────
+    expected = [name.strip() for name in args.expect.split(",") if name.strip()]
+    listed = {row["id"] for row in product_rows}
+    result["expected"] = expected
+    for name in expected:
+        if name in listed:
+            continue
+        alerts.append(
+            f"{name} is not in the manifest at all. An outage leaves a product listed and expired, so "
+            "this is its timer, not its upstream: check `systemctl list-timers 'obc-wx-bake@*'` and "
+            "ops/weather/adapters.conf (or drop it from --expect if the removal was deliberate)"
+        )
+        report.append(f"MISSING  {name:10s} expected by --expect, absent from the manifest")
+    if expected:
+        unexpected = sorted(listed - set(expected))
+        if unexpected:
+            report.append(f"note     listed but not expected: {', '.join(unexpected)}")
+
+    # ── 5. Cost guardrails ────────────────────────────────────────────────────────────────────
     result["published_set_bytes"] = set_bytes
     result["projected_rolling_bytes"] = rolling_bytes
     report.append(f"cost     published set {set_bytes / BYTES_PER_MB:.2f} MB; projected 48 h bucket {rolling_bytes / BYTES_PER_MB:.0f} MB")
