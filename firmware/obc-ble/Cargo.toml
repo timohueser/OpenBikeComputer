@@ -22,3 +22,9 @@ obc-vectors = { path = "../../host/obc-vectors" }
 # crate (same rule that keeps obc-dfu's size ceiling out of it). The *test* asserts that the
 # identity read's `obcm_version` fixture is the version the reader actually reads (E1, #911).
 obc-formats = { path = "../obc-formats" }
+# Dev-only for the same reason, and for a sharper one: `classify_upload`'s newest-wins rule must
+# agree byte-for-byte with the slot selector that actually picks a bundle at boot. The test asserts
+# the two against each other over the whole matrix — including the wrap and the half-range
+# ambiguity — because a divergence here is invisible until a rider's forecast silently stops
+# updating.
+obc-weather = { path = "../obc-weather" }

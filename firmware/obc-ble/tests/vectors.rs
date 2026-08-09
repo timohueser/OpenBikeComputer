@@ -49,13 +49,16 @@ fn transfer_control_vectors_round_trip() {
     }
 }
 
-/// The full `protocolVersion` read (spec §1): `version u16 · store_epoch u32 · obcm_version u8`.
-/// The production codec decodes the fixture, sees protocol version 2 and the OBCM version this
-/// build's reader actually reads, and re-encodes it byte-for-byte.
+/// The `protocolVersion` read of a device **without** the weather contract (spec §1): `version u16 ·
+/// store_epoch u32 · obcm_version u8`. The production codec decodes the fixture, sees protocol
+/// version 2 and the OBCM version this build's reader actually reads, and re-encodes it
+/// byte-for-byte. WX3 (#1188) appended a capability word after this; the fixture deliberately stays
+/// seven bytes, because that is still what a device without weather serves —
+/// `version-read-features.bin` is the widened read.
 #[test]
 fn version_read_vector() {
     let bytes = fixture("version-read.bin");
-    assert_eq!(bytes.len(), VersionRead::ENCODED_LEN);
+    assert_eq!(bytes.len(), VersionRead::ENCODED_LEN_NO_FEATURES);
     let vr = VersionRead::decode(&bytes).unwrap();
     assert_eq!(vr.version, obc_ble::PROTOCOL_VERSION, "the fixture pins protocol version 2");
     assert_eq!(vr.store_epoch, 0xA1B2_C3D4);
@@ -64,6 +67,8 @@ fn version_read_vector() {
         Some(obc_formats::obcm::VERSION),
         "the fixture is what a current device serves — the map version its reader reads, not a literal"
     );
+    assert_eq!(vr.feature_bits, None, "no capability word in a 7-byte read — absent, never Some(0)");
+    assert!(!vr.has_weather(), "…so this device is not offered weather");
     let (enc, len) = vr.encode();
     assert_eq!(&enc[..len], &bytes[..], "re-encode");
 }
@@ -393,10 +398,144 @@ fn config_vector() {
     let config = Config::decode(&bytes).expect("valid config");
     assert_eq!(config.name, b"OBC Tourer");
     assert_eq!(config.units, 0);
+    assert_eq!(config.weather_refresh, None, "a v1 blob says nothing about refresh — device default");
 
     let mut out = [0u8; Config::MAX_ENCODED];
     let len = Config::encode(&config, &mut out).unwrap();
     assert_eq!(&out[..len], &bytes[..]);
+}
+
+/// The Config blob **with** the WX3 (#1188) refresh byte. The production codec reads it at the
+/// offset after `units` and re-encodes the file byte-for-byte; the v1 fixture beside it is the same
+/// object without that byte, and decodes to `None`.
+///
+/// The pair is the test. An implementation that got the offset wrong — or that filled an absent
+/// field with a default — passes one of these two files and fails the other, and the failure mode
+/// it is guarding against is a rename silently switching a rider's weather off.
+#[test]
+fn config_weather_refresh_vector() {
+    use obc_ble::weather_request::WeatherRefresh;
+
+    let bytes = fixture("config-weather-refresh.bin");
+    let config = Config::decode(&bytes).expect("valid config");
+    assert_eq!(config.name, b"OBC Alpine");
+    assert_eq!(config.units, 1, "imperial — the refresh byte follows a *nonzero* units byte");
+    assert_eq!(config.weather_refresh, Some(WeatherRefresh::Every60));
+    assert_eq!(bytes.len(), 2 + config.name.len() + 2, "name_len · name · units · weather_refresh");
+
+    let mut out = [0u8; Config::MAX_ENCODED];
+    let len = Config::encode(&config, &mut out).unwrap();
+    assert_eq!(&out[..len], &bytes[..], "re-encode");
+
+    // The same value with the field dropped is exactly the v1 blob's shape — one byte shorter, and
+    // read back as "unspecified" rather than as `Off`.
+    let dropped = Config { weather_refresh: None, ..config };
+    let dropped_len = Config::encode(&dropped, &mut out).unwrap();
+    assert_eq!(dropped_len, len - 1);
+    assert_eq!(Config::decode(&out[..dropped_len]).unwrap().weather_refresh, None);
+}
+
+/// The **widened** `protocolVersion` read (spec §1, WX3 #1188): the seven bytes of
+/// `version-read.bin`'s layout plus `feature_bits u32`. This is the only read that entitles a phone
+/// to look for the Weather Request service, so the fixture pins both that the bit decodes and that
+/// the protocol version underneath it did **not** move — the capability rode in as an append.
+#[test]
+fn version_read_features_vector() {
+    use obc_ble::descriptor::FEATURE_WEATHER;
+
+    let bytes = fixture("version-read-features.bin");
+    assert_eq!(bytes.len(), VersionRead::ENCODED_LEN, "11 bytes: the full read");
+    let vr = VersionRead::decode(&bytes).unwrap();
+    assert_eq!(vr.version, obc_ble::PROTOCOL_VERSION, "a new capability is not a new protocol");
+    assert_eq!(vr.store_epoch, 0xC0DE_F00D);
+    assert_eq!(vr.obcm_version, Some(obc_formats::obcm::VERSION), "self-sourced, like the shorter reads");
+    assert_eq!(vr.feature_bits, Some(FEATURE_WEATHER));
+    assert!(vr.has_weather());
+
+    let (enc, len) = vr.encode();
+    assert_eq!(&enc[..len], &bytes[..], "re-encode");
+
+    // A truncated read of this very file must not claim the feature: three bytes of a u32 are a
+    // broken read, not a smaller capability set.
+    for cut in VersionRead::ENCODED_LEN_NO_FEATURES..VersionRead::ENCODED_LEN {
+        assert!(!VersionRead::decode(&bytes[..cut]).unwrap().has_weather(), "{cut} bytes must claim nothing");
+    }
+}
+
+/// The three `weatherRequestContext` fixtures (spec §11, WX3 #1188) through the **production**
+/// codec: each decodes to the documented value and re-encodes to the file byte-for-byte.
+///
+/// `obc-vectors` builds these from the spec's offset table by hand and `tests/weather_request.rs`
+/// pins the codec's behaviour; this is the join between the two, and the only place that can catch
+/// the hand-built table and the shipped encoder having drifted apart in the same direction.
+#[test]
+fn weather_request_context_vectors_round_trip() {
+    use obc_ble::weather_request::{
+        WeatherRefresh, WeatherRequestContext, REASON_NO_BUNDLE, REASON_SCHEDULED, REASON_URGENT, VALID_BEARING,
+        VALID_BUNDLE, VALID_POSITION, VALID_ROUTE, VALID_SPEED, WEATHER_REQUEST_CONTEXT_VERSION,
+    };
+
+    for name in
+        ["weather-request-context-full.bin", "weather-request-context-empty.bin", "weather-request-context-no-fix.bin"]
+    {
+        let bytes = fixture(name);
+        assert_eq!(bytes.len(), WeatherRequestContext::ENCODED_LEN, "{name} is a 52-byte v1 value");
+        let ctx = WeatherRequestContext::decode(&bytes).unwrap_or_else(|e| panic!("{name} rejected: {e:?}"));
+        assert_eq!(ctx.version, WEATHER_REQUEST_CONTEXT_VERSION, "{name} version");
+        assert_eq!(&ctx.encode()[..], &bytes[..], "{name} re-encode");
+    }
+
+    // The full request: a rider on route 7 near Freiburg, holding the DWD-shaped bundle fixture and
+    // due for its scheduled successor. The bundle identity is checked against the file it names —
+    // the same whole-object CRC-32 an upload of it would have announced.
+    let full = WeatherRequestContext::decode(&fixture("weather-request-context-full.bin")).unwrap();
+    assert_eq!(full.validity, VALID_POSITION | VALID_BEARING | VALID_SPEED | VALID_BUNDLE | VALID_ROUTE);
+    assert!(full.because(REASON_SCHEDULED));
+    assert_eq!(full.refresh, WeatherRefresh::Every30);
+    assert_eq!(full.request_id, 0x1188_0001);
+    assert_eq!((full.lat_udeg, full.lon_udeg), (47_999_008, 7_842_104), "Freiburg, in OBCW microdegrees");
+    assert_eq!((full.bearing_deg, full.speed_deci_ms), (342, 71));
+    assert_eq!(full.route_id, 7, "the waypoint route route-list.bin catalogs");
+    let held = fixture("weather-dwd-96x96-9f.obcw");
+    assert_eq!(full.bundle_crc32, Crc32::checksum(&held), "the bundle group names a bundle that exists");
+    assert_eq!(full.fix_utc, full.bundle_generated_at + 30 * 60, "one refresh interval past what it holds");
+
+    // The resting value: structurally valid, claiming nothing, and still stating the default
+    // interval — which is what keeps an out-of-turn read from looking like a device with weather off.
+    let empty = WeatherRequestContext::decode(&fixture("weather-request-context-empty.bin")).unwrap();
+    assert_eq!(empty, WeatherRequestContext::EMPTY);
+    assert!(!empty.has(VALID_POSITION) && !empty.has(VALID_BUNDLE));
+    assert_eq!(empty.refresh, WeatherRefresh::DEFAULT);
+
+    // The urgent request with nothing behind it — and a *scheduled* refresh of Off, which must not
+    // read as a device that never asks.
+    let no_fix = WeatherRequestContext::decode(&fixture("weather-request-context-no-fix.bin")).unwrap();
+    assert_eq!(no_fix.validity, 0, "absence is a cleared flag, not a sentinel coordinate");
+    assert!(no_fix.because(REASON_URGENT) && no_fix.because(REASON_NO_BUNDLE));
+    assert_eq!(no_fix.refresh, WeatherRefresh::Off);
+    assert_eq!(no_fix.request_id, 0x1188_0002, "a different request from the full one");
+    assert_ne!(no_fix.request_id, full.request_id);
+}
+
+/// The weather bundle's upload identity (§4.1 / §11): type `20`, singleton object id `0`. Pinned
+/// through the descriptor codec because the type byte and the id rule are what a companion has to
+/// get right before a single byte of a bundle moves — a wrong id is answered `notFound`.
+#[test]
+fn weather_bundle_upload_descriptor_round_trips() {
+    use obc_ble::weather_request::WEATHER_BUNDLE_OBJECT_ID;
+
+    let bundle = fixture("weather-dwd-96x96-9f.obcw");
+    let desc = TransferControl {
+        op: Op::Upload,
+        ty: ObjectType::WeatherBundle,
+        object_id: WEATHER_BUNDLE_OBJECT_ID,
+        total_len: bundle.len() as u32,
+        crc32: Crc32::checksum(&bundle),
+    };
+    assert_eq!(desc.encode()[1], 20, "the type byte on the wire");
+    assert_eq!(desc.object_id, 0, "there is one weather bundle, so the id selects nothing");
+    assert_eq!(TransferControl::decode(&desc.encode()).unwrap(), desc);
+    assert!(!ObjectType::WeatherBundle.is_map_payload(), "it stages through UPLOAD.TMP like a route");
 }
 
 /// Every `TransferStatus` variant round-trips through `as_u8`/`from_u8` and survives a full
@@ -641,7 +780,10 @@ fn volume_set_object_types() {
     assert_eq!(ObjectType::MapSet.as_u8(), 18);
     assert_eq!(ObjectType::from_u8(19).unwrap(), ObjectType::TerrainShard);
     assert_eq!(ObjectType::TerrainShard.as_u8(), 19);
-    assert!(ObjectType::from_u8(20).is_err(), "20 is not a type yet");
+    // 20 is the weather bundle (WX3, #1188) — the one type since #889 that is *not* USB-only, so it
+    // is named here rather than left as "not a type yet"; 21 is the next unallocated value.
+    assert_eq!(ObjectType::from_u8(20).unwrap(), ObjectType::WeatherBundle);
+    assert!(ObjectType::from_u8(21).is_err(), "21 is not a type yet");
     for reserved in 11..=15u8 {
         assert!(ObjectType::from_u8(reserved).is_err(), "{reserved} stays reserved for the sensor work");
     }

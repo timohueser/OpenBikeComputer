@@ -20,4 +20,14 @@ public enum OBCProtocol {
     public static func versionMismatch(reportedBy deviceVersion: UInt16) -> DeviceError? {
         deviceVersion == version ? nil : .protocolMismatch(expected: version, found: deviceVersion)
     }
+
+    /// The device implements the **Weather Request** contract (spec §11): the secondary service,
+    /// the request context, object type 20 and the Config refresh field — bit 0 of the identity
+    /// read's trailing capability word (WX3 / #1188).
+    ///
+    /// One bit covers all four because they are useless apart: a phone that can read a request but
+    /// cannot upload the answer has nothing to offer. The word is append-only in the same sense the
+    /// read is, and **unknown bits are ignored** — a future firmware announcing a feature this
+    /// build never heard of must not mask the one beside it.
+    public static let featureWeather: UInt32 = 1 << 0
 }

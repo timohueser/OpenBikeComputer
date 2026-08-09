@@ -73,8 +73,9 @@ targets:
         # callbacks stop, and a multi-minute L2CAP transfer (a ~900 KB firmware
         # image, a route upload, a ride sync) dies when the phone locks. L2CAP
         # CoC streaming continues under bluetooth-central, so those transfers
-        # genuinely keep running. This is background *continuation* only — no
-        # state restoration (relaunch-after-termination is a separate concern).
+        # genuinely keep running. The same mode also permits the transport-only
+        # Weather Request state-restoration spike (WX3 / #1188) to resume one bounded,
+        # service-filtered context read for the previously authenticated peripheral.
         UIBackgroundModes:
           - bluetooth-central
           # The periodic "has firmware been published?" check (#773 U5). BGAppRefreshTask needs

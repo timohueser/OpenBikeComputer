@@ -23,11 +23,26 @@ public struct DeviceConfig: Equatable, Sendable {
     public var name: String
     /// Display unit system.
     public var units: Units
+    /// How often the device raises a scheduled weather request (WX3 / #1188) — the trailing,
+    /// optional Config field.
+    ///
+    /// `nil` means the blob carried **no such byte**, which under the append-only rule means
+    /// *device default* (`WeatherRefresh.deviceDefault`), **not** `.off`. That distinction is the
+    /// whole reason this is an `Optional`: an app build predating WX3 round-trips Config to rename
+    /// the device and writes the 3-byte-plus-name blob, and a device that read that as "the rider
+    /// chose Off" would silently disable weather on a rename.
+    public var weatherRefresh: WeatherRefresh?
 
-    public init(name: String, units: Units = .metric) {
+    public init(name: String, units: Units = .metric, weatherRefresh: WeatherRefresh? = nil) {
         self.name = name
         self.units = units
+        self.weatherRefresh = weatherRefresh
     }
+
+    /// The interval the device will actually use: the explicit setting, or the documented default
+    /// when the blob said nothing. Read this rather than defaulting a `nil` at each call site —
+    /// that is exactly where an `?? .off` would slip in and silently disable weather.
+    public var effectiveWeatherRefresh: WeatherRefresh { weatherRefresh ?? .deviceDefault }
 
     /// Firmware S0 caps the device name at **48 UTF-8 bytes** (spec §7.3 /
     /// `OBCProtocol.md` → Delta 1). The `Config` codec truncates to this at

@@ -80,6 +80,17 @@ com-hw = []
 # table costs them no flash or RAM. See `firmware/docs/ARCHITECTURE_RESOURCE_BASELINE.md`.
 resource-report = []
 
+# The on-glass harness for the WX3 Weather Request discovery spike (#1188). When enabled, boot
+# raises one weather-request advertising intent so the iOS background-discovery states can be
+# measured without the rest of the weather lifecycle existing. The intent is cleared by the first
+# authenticated context read or by the bounded 60-second advertising budget, whichever comes first;
+# default builds never raise it, and their capability word reports no weather (see
+# `link::identity::feature_bits`).
+#
+# The service itself is in GATT in *every* BLE build regardless of this feature — advertising a
+# service the connected database does not contain is the trap this spike exists to avoid.
+ble-weather-request = []
+
 # The all-features stack (issue #270, epic #267): nrf-sdc/MPSL/TrouBLE folded into `main.rs`.
 # **Part of `default` since the LM20 retarget** — map + router + BLE run in one image, sharing
 # the SD + settings store. MPSL provides the critical-section impl (its radio timing forbids
